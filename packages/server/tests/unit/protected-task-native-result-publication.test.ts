@@ -122,6 +122,7 @@ function fixture(choice: "protected" | "dual" = "protected") {
     now: () => 2_000_000_000_000,
   };
   const overrides: Overrides = {
+    hasTemporarySigner: () => false,
     decodeRequest: () => {
       calls.push("decode");
       return request as never;
@@ -359,6 +360,7 @@ test("requires one exact resume binding on resumed result references", () => {
 test("destroys the decoded request when current authority is unavailable", async () => {
   const state = fixture();
   const overrides: Overrides = {
+    hasTemporarySigner: () => false,
     ...state.overrides,
     createPhaseAuthority: (() => async () => null) as never,
   };
@@ -379,6 +381,7 @@ test("does not publish when authority changes during native preparation", async 
   const state = fixture();
   let resolution = 0;
   const overrides: Overrides = {
+    hasTemporarySigner: () => false,
     ...state.overrides,
     createPhaseAuthority: (() => async () => {
       resolution += 1;
@@ -445,4 +448,36 @@ test("historical definition correlation remains exact throughout native result p
   expect(() => createProtectedTaskNativeResultPublication({ ...denied.input,
     reference: { ...reference, inputObjectId: "task-historical:v1:invalid" } },
   denied.overrides)).toThrow("Protected Task result reference is invalid");
+});
+
+
+test("certified execution prepares without loading permanent Runtime state or signer history", async () => {
+  const state = fixture();
+  let active = false;
+  const temporary = { runtime: { agentId: AGENT, generation: 0 }, certificateBytes: new Uint8Array([9]) };
+  const publishResult = createProtectedTaskNativeResultPublication(state.input, {
+    ...state.overrides,
+    hasTemporarySigner: () => true,
+    withTemporarySigner: (async (input: { evidence: unknown; domain: unknown; execute: (signer: unknown) => Promise<unknown> }) => {
+      active = true;
+      try { return await input.execute({ runtime: temporary.runtime, temporarySigner: temporary }); } finally { active = false; state.calls.push("loan:closed"); }
+    }) as never,
+    prepare: (async (input: Record<string, unknown>) => {
+      expect(active).toBe(true);
+      expect(input["signerPublication"]).toBeNull();
+      expect(input["temporarySigner"]).toBe(temporary);
+      expect(input["runtime"]).toBe(temporary.runtime);
+      expect(input["agentAuthorizationRevision"]).toBe(0);
+      await (input["assertCurrentTaskAuthority"] as () => Promise<void>)();
+      state.calls.push("prepare");
+      return { coordinate: { kind: "run_result", taskId: TASK, taskRunId: RUN, contentRevision: 1 }, objectId: RESULT_OBJECT };
+    }) as never,
+  });
+  await publishResult(publication());
+  expect(active).toBe(false);
+  expect(state.calls).not.toContain("runtime");
+  expect(state.calls).not.toContain("history:start");
+  expect(state.calls).not.toContain("signer");
+  expect(state.calls.indexOf("loan:closed")).toBeLessThan(state.calls.indexOf("publish:protected"));
+  expect(state.calls).toContain("attached");
 });

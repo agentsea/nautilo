@@ -13,10 +13,13 @@ import type {
   VerifiedAgentBackgroundAuthorizationDeviceResponseV2,
 } from "@nautilo/lattice-bridge";
 import {
+  decodeTaskRuntimeBackgroundAuthorizationResponseV2,
   decodeBackgroundAuthorizationResponseV2,
+  encodeTaskRuntimeBackgroundAuthorizationResponseV2,
   encodeBackgroundWorkDescriptorV2,
   inspectBackgroundAuthorizationResponseV2,
   backgroundProcessorNamespaceRequirementsV2,
+  MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_BYTES_V2,
   type VerifiedBackgroundAuthorizationV2,
 } from "@nautilo/lattice-crypto/background";
 import {
@@ -149,11 +152,20 @@ export type BackgroundAuthorizationVerifiedRuntimeResponseV3 = Readonly<{
   readonly expiresAt: number;
 }>;
 
+export type BackgroundAuthorizationVerifiedRuntimeResponseV4 = Readonly<
+  Omit<BackgroundAuthorizationVerifiedRuntimeResponseV3, "formatVersion"> & {
+    readonly formatVersion: 4;
+    readonly authorizationBytes: Uint8Array;
+    readonly certificateBytes: Uint8Array;
+  }
+>;
+
 export type BackgroundAuthorizationVerifiedDeviceResponse =
   | VerifiedBackgroundAuthorizationDeviceResponse
   | VerifiedAgentBackgroundAuthorizationDeviceResponseV2
   | BackgroundAuthorizationVerifiedProcessorResponseV2
-  | BackgroundAuthorizationVerifiedRuntimeResponseV3;
+  | BackgroundAuthorizationVerifiedRuntimeResponseV3
+  | BackgroundAuthorizationVerifiedRuntimeResponseV4;
 
 type BackgroundAuthorizationRecordFields = Readonly<{
   readonly workIdentityHash: Uint8Array;
@@ -847,10 +859,10 @@ export function isBackgroundAuthorizationResponseReplay(
   record: BackgroundAuthorizationRecord,
   response: BackgroundAuthorizationVerifiedDeviceResponse,
 ): boolean {
-  const credentialHash = isRuntimeV3Response(response)
+  const credentialHash = isRuntimeResponse(response)
     ? response.authorizationHash
     : response.credentialHash;
-  const credentialId = isRuntimeV3Response(response)
+  const credentialId = isRuntimeResponse(response)
     ? response.authorizationId
     : response.credentialId;
   return record.snapshot.acceptedResponse?.responseDigest
@@ -1451,6 +1463,20 @@ function isRuntimeV3Response(
     && response.kind === "runtime";
 }
 
+function isRuntimeV4Response(
+  response: BackgroundAuthorizationVerifiedDeviceResponse,
+): response is BackgroundAuthorizationVerifiedRuntimeResponseV4 {
+  return "formatVersion" in response && response.formatVersion === 4
+    && response.kind === "runtime";
+}
+
+function isRuntimeResponse(
+  response: BackgroundAuthorizationVerifiedDeviceResponse,
+): response is BackgroundAuthorizationVerifiedRuntimeResponseV3
+  | BackgroundAuthorizationVerifiedRuntimeResponseV4 {
+  return isRuntimeV3Response(response) || isRuntimeV4Response(response);
+}
+
 function assertSupportedVerifiedResponse(
   response: BackgroundAuthorizationVerifiedDeviceResponse,
 ): void {
@@ -1463,11 +1489,13 @@ function assertSupportedVerifiedResponse(
       (
         formatVersion !== 2
         && formatVersion !== 3
+        && formatVersion !== 4
       )
       || (
         !isAgentV2Response(response)
         && !isProcessorV2Response(response)
         && !isRuntimeV3Response(response)
+        && !isRuntimeV4Response(response)
       )
     )
   ) {
@@ -1480,7 +1508,7 @@ function verifiedResponseAuthorityMatches(
   response: BackgroundAuthorizationVerifiedDeviceResponse,
 ): boolean {
   if (isProcessorV2Response(response)) return false;
-  if (isRuntimeV3Response(response)) {
+  if (isRuntimeResponse(response)) {
     return current.snapshot.formatVersion === 3
       && current.snapshot.credentialSubject.kind === "runtime"
       && current.authoritySet !== undefined
@@ -1526,6 +1554,135 @@ function verifiedResponseAuthorityMatches(
     && response.policyRevision === current.expectedPolicyRevision;
 }
 
+function buildAcceptedBackgroundRuntimeAuthorizationResponseV4(
+  current: BackgroundAuthorizationRecord,
+  response: BackgroundAuthorizationVerifiedRuntimeResponseV4,
+  acceptedAt: number,
+): Readonly<{
+  readonly next: BackgroundAuthorizationRecord;
+  readonly signerEvidence: null;
+}> {
+  const recipient = current.snapshot.recipient;
+  if (
+    response.responseBytes.length
+      > MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_BYTES_V2
+  ) {
+    throw new TypeError(
+      "Verified Runtime response does not match current durable authorization",
+    );
+  }
+
+  let decoded:
+    | Readonly<{
+      readonly authorizationBytes: Uint8Array;
+      readonly certificateBytes: Uint8Array;
+    }>
+    | undefined;
+  let canonical: Uint8Array | undefined;
+  try {
+    decoded = decodeTaskRuntimeBackgroundAuthorizationResponseV2(
+      response.responseBytes,
+    );
+    canonical = encodeTaskRuntimeBackgroundAuthorizationResponseV2(decoded);
+    if (
+      current.snapshot.formatVersion !== 3
+      || current.snapshot.credentialSubject.kind !== "runtime"
+      || current.snapshot.credentialSubject.runtimeKind !== "task"
+      || current.snapshot.credentialSubject.runtimeVersion !== 1
+      || current.authoritySet === undefined
+      || current.descriptorBytes === null
+      || current.snapshot.descriptorDigest === null
+      || response.requestId !== current.snapshot.requestId
+      || response.recipientGeneration !== current.snapshot.recipientGeneration
+      || response.workId !== current.snapshot.workId
+      || response.workKind !== current.workKind
+      || response.purpose !== current.purpose
+      || response.workKind !== "task.execute"
+      || !verifiedResponseAuthorityMatches(current, response)
+      || response.recipientKeyId !== recipient?.recipientKeyId
+      || Buffer.from(response.recipientPublicKey).toString("base64url")
+        !== recipient.recipientPublicKey
+      || response.issuedAt > acceptedAt
+      || response.expiresAt !== recipient.expiresAt
+      || response.expiresAt <= acceptedAt
+      || response.expiresAt - response.issuedAt > PRODUCT_AUTHORIZATION_TTL_MS
+      || response.expiresAt - acceptedAt > PRODUCT_AUTHORIZATION_TTL_MS
+      || !equalBytes(response.responseBytes, canonical)
+      || !equalBytes(response.authorizationBytes, decoded.authorizationBytes)
+      || !equalBytes(response.certificateBytes, decoded.certificateBytes)
+      || !equalBytes(response.descriptorBytes, current.descriptorBytes)
+      || hexBytes(response.descriptorHash) !== current.snapshot.descriptorDigest
+      || !digestMatches(
+        response.descriptorBytes,
+        current.snapshot.descriptorDigest,
+      )
+      || hexBytes(response.responseHash) !== digestHex(response.responseBytes)
+      || hexBytes(response.authorizationHash)
+        !== digestHex(response.authorizationBytes)
+    ) {
+      throw new TypeError(
+        "Verified Runtime response does not match current durable authorization",
+      );
+    }
+    portable("Runtime authorization id", response.authorizationId);
+    portable("Runtime authorization Human id", response.issuingHumanId);
+    portable("Runtime authorization device id", response.issuingDeviceId);
+    counter(
+      "Runtime authorization device revision",
+      response.issuingDeviceAuthorizationRevision,
+    );
+    exactBytes(
+      "Runtime authorization issuer key hash",
+      response.issuerSigningPublicKeyHash,
+      BACKGROUND_AUTHORIZATION_BYTE_LIMITS.hash,
+    );
+
+    const nextSnapshot = markBackgroundAuthorizationGrantReady(
+      current.snapshot,
+      {
+        kind: "runtime",
+        requestId: response.requestId,
+        descriptorDigest: hexBytes(response.descriptorHash),
+        recipientKeyId: response.recipientKeyId,
+        recipientPublicKey: Buffer.from(response.recipientPublicKey).toString(
+          "base64url",
+        ),
+        expiresAt: response.expiresAt,
+        responseDigest: hexBytes(response.responseHash),
+        credentialDigest: hexBytes(response.authorizationHash),
+        issuingHumanId: response.issuingHumanId,
+        issuingDeviceId: response.issuingDeviceId,
+        recipientGeneration: response.recipientGeneration,
+        now: acceptedAt,
+      },
+    );
+    return Object.freeze({
+      next: parseBackgroundAuthorizationRecord({
+        ...current,
+        snapshot: nextSnapshot,
+        acceptedMaterial: {
+          responseBytes: response.responseBytes,
+          credentialId: response.authorizationId,
+          issuingDeviceAuthorizationRevision:
+            response.issuingDeviceAuthorizationRevision,
+          issuerSigningPublicKeyHash: response.issuerSigningPublicKeyHash,
+          authorizationExpiresAt: response.expiresAt,
+        },
+      }),
+      signerEvidence: null,
+    });
+  } catch (error) {
+    if (error instanceof TypeError) throw error;
+    throw new TypeError(
+      "Verified Runtime response does not match current durable authorization",
+    );
+  } finally {
+    decoded?.authorizationBytes.fill(0);
+    decoded?.certificateBytes.fill(0);
+    canonical?.fill(0);
+  }
+}
+
 export function backgroundAuthorizationVerifiedResponseRequestId(
   response: BackgroundAuthorizationVerifiedDeviceResponse,
 ): string {
@@ -1568,7 +1725,7 @@ function buildAcceptedBackgroundRuntimeAuthorizationResponseV3(
     || response.expiresAt - response.issuedAt > PRODUCT_AUTHORIZATION_TTL_MS
     || response.expiresAt - acceptedAt > PRODUCT_AUTHORIZATION_TTL_MS
     || response.responseBytes.length
-      > BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_LIMITS.runtime
+      > BACKGROUND_AUTHORIZATION_BYTE_LIMITS.legacyRuntimeResponse
     || !equalBytes(response.descriptorBytes, current.descriptorBytes)
     || hexBytes(response.descriptorHash) !== current.snapshot.descriptorDigest
     || !digestMatches(response.descriptorBytes, current.snapshot.descriptorDigest)
@@ -1804,6 +1961,13 @@ export function buildAcceptedBackgroundAuthorizationResponse(
   }
   if (isRuntimeV3Response(response)) {
     return buildAcceptedBackgroundRuntimeAuthorizationResponseV3(
+      current,
+      response,
+      acceptedAt,
+    );
+  }
+  if (isRuntimeV4Response(response)) {
+    return buildAcceptedBackgroundRuntimeAuthorizationResponseV4(
       current,
       response,
       acceptedAt,

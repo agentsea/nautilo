@@ -7,7 +7,7 @@ import {
 } from "@nautilo/db";
 import { LatticeCrypto, type TaskRuntimeRecipientRegistry } from "@nautilo/lattice-crypto";
 import {
-  decodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  decodeTaskRuntimeBackgroundAuthorizationRequestBase,
   destroyTaskRuntimeBackgroundAuthorizationRequestV1,
 } from "@nautilo/lattice-crypto/background";
 import {
@@ -258,7 +258,10 @@ export function createProtectedTaskRuntimeParkedDeviceAuthorization(
         const { record, current } = held;
         if (!isTaskRecipientActive(record) || record.descriptorBytes === null
           || !["awaiting_device", "grant_ready"].includes(record.snapshot.state)) return null;
-        const request = decodeTaskRuntimeBackgroundAuthorizationRequestV1(record.descriptorBytes);
+        const request = decodeTaskRuntimeBackgroundAuthorizationRequestBase(
+          crypto,
+          record.descriptorBytes,
+        );
         if (request === null) return null;
         const plan = parseDomainForegroundAuthorizationPlanV2(request.authorizationPlanBytes);
         if (plan === null) { destroyTaskRuntimeBackgroundAuthorizationRequestV1(request); return null; }

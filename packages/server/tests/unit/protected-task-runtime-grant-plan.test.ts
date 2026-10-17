@@ -10,10 +10,11 @@ import {
   type DomainForegroundAuthorityEntry,
 } from "@nautilo/lattice-crypto";
 import {
-  decodeTaskRuntimeBackgroundAuthorizationRequestV1,
-  encodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  decodeTaskRuntimeBackgroundAuthorizationRequestV2,
+  encodeTaskRuntimeBackgroundAuthorizationRequestV2,
 } from "@nautilo/lattice-crypto/background";
 import {
+  agentRuntimeObjectSignerKeyIdV1,
   parseDomainForegroundAuthorizationPlanV2,
 } from "@nautilo/lattice-crypto/wire";
 import { deriveTaskContentCryptoObjectIdV1 } from "@nautilo/lattice-bridge";
@@ -57,6 +58,31 @@ const SOURCE_ROOM = "d0000000-0000-4000-8000-00000000000d";
 
 function bytes(fill: number): Uint8Array {
   return new Uint8Array(32).fill(fill);
+}
+
+function temporarySigner(crypto: LatticeCrypto) {
+  const signerPublicKey = bytes(31);
+  return Object.freeze({
+    agentId: AGENT,
+    runtimeGeneration: 0 as const,
+    signerKeyId: agentRuntimeObjectSignerKeyIdV1(crypto, signerPublicKey),
+    signerPublicKey,
+  });
+}
+
+function currentDevice() {
+  return {
+    userId: REQUESTOR,
+    humanActorId: HUMAN,
+    deviceId: DEVICE,
+    deviceGeneration: 2,
+    securityRevision: 3,
+    serverInstanceId: "server-instance",
+    lineageGeneration: 1,
+    epoch: 2,
+    headDigest: bytes(32),
+    signingPublicKey: bytes(33),
+  } as never;
 }
 
 function occurrence(
@@ -314,6 +340,7 @@ test("builds an exact dark V3 plan from the predispatch Namespace inventory", as
   expect(plan.initialRecord.idempotencyKey)
     .toMatch(/^task-runtime-stable-v1:/u);
 
+  const requestCrypto = new LatticeCrypto();
   const recipient = plan.recipientAttempt({ record: plan.initialRecord, now: NOW });
   const attempt = Object.freeze({
     requestId: plan.initialRecord.snapshot.requestId,
@@ -322,19 +349,14 @@ test("builds an exact dark V3 plan from the predispatch Namespace inventory", as
     recipientKeyId: recipient.recipientKeyId,
     recipientPublicKey: new Uint8Array(65).fill(4),
     expiresAt: recipient.expiresAt,
+    signer: temporarySigner(requestCrypto),
   });
   const request = plan.buildRequest({
     record: plan.initialRecord,
     attempt,
     binding: { userId: REQUESTOR, humanActorId: HUMAN, deviceId: DEVICE },
     authority: {
-      device: {
-        userId: REQUESTOR,
-        humanActorId: HUMAN,
-        deviceId: DEVICE,
-        deviceGeneration: 2,
-        securityRevision: 3,
-      } as never,
+      device: currentDevice(),
       sourceRoomId: SOURCE_ROOM,
       policyRevision: 7,
       namespaceRequirements: plan.initialRecord.authoritySet.namespaceRequirements,
@@ -344,11 +366,19 @@ test("builds an exact dark V3 plan from the predispatch Namespace inventory", as
       ]),
     },
   });
-  expect(decodeTaskRuntimeBackgroundAuthorizationRequestV1(
-    encodeTaskRuntimeBackgroundAuthorizationRequestV1(request),
+  expect(request.formatVersion).toBe(2);
+  expect(decodeTaskRuntimeBackgroundAuthorizationRequestV2(
+    requestCrypto,
+    encodeTaskRuntimeBackgroundAuthorizationRequestV2(
+      requestCrypto,
+      request as never,
+    ),
   )).not.toBeNull();
+  const baseRequest = request.formatVersion === 2
+    ? request.baseRequest
+    : request;
   const authorization = parseDomainForegroundAuthorizationPlanV2(
-    request.authorizationPlanBytes,
+    baseRequest.authorizationPlanBytes,
   );
   expect(authorization).toMatchObject({
     authorizationId: `task-run-authorization:${RUN}`,
@@ -362,8 +392,9 @@ test("builds an exact dark V3 plan from the predispatch Namespace inventory", as
 test("shared recipient request planning preserves initial wire identity", async () => {
   const value = occurrence();
   const plan = await builder()(value);
+  const requestCrypto = new LatticeCrypto();
   const shared = createProtectedTaskRuntimeRecipientRequestPlan({
-    crypto: new LatticeCrypto(),
+    crypto: requestCrypto,
     occurrence: value,
     initialRecord: plan.initialRecord,
     sourceRoomId: SOURCE_ROOM,
@@ -393,15 +424,10 @@ test("shared recipient request planning preserves initial wire identity", async 
     recipientKeyId: sharedRecipient.recipientKeyId,
     recipientPublicKey: new Uint8Array(65).fill(4),
     expiresAt: sharedRecipient.expiresAt,
+    signer: temporarySigner(requestCrypto),
   });
   const current = {
-    device: {
-      userId: REQUESTOR,
-      humanActorId: HUMAN,
-      deviceId: DEVICE,
-      deviceGeneration: 2,
-      securityRevision: 3,
-    } as never,
+    device: currentDevice(),
     sourceRoomId: SOURCE_ROOM,
     policyRevision: 7,
     namespaceRequirements:
@@ -421,11 +447,17 @@ test("shared recipient request planning preserves initial wire identity", async 
     },
     authority: current,
   };
-  const originalBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV1(
-    plan.buildRequest(requestInput),
+  const originalRequest = plan.buildRequest(requestInput);
+  const sharedRequest = shared.buildRequest(requestInput);
+  expect(originalRequest.formatVersion).toBe(2);
+  expect(sharedRequest.formatVersion).toBe(2);
+  const originalBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV2(
+    requestCrypto,
+    originalRequest as never,
   );
-  const sharedBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV1(
-    shared.buildRequest(requestInput),
+  const sharedBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV2(
+    requestCrypto,
+    sharedRequest as never,
   );
   expect(sharedBytes).toEqual(originalBytes);
 });
@@ -490,8 +522,9 @@ test.each(["task.approval_resume", "task.await_reply_resume"] as const)(
     authority: current,
   };
   const request = shared.buildRequest(requestInput);
-  expect(request.workKind).toBe(workKind);
-  expect(request.workPurpose).toBe(workKind);
+  const baseRequest = request.formatVersion === 2 ? request.baseRequest : request;
+  expect(baseRequest.workKind).toBe(workKind);
+  expect(baseRequest.workPurpose).toBe(workKind);
   for (const changed of [
     { workKind: "task.execute" as const, purpose: workKind },
     { workKind, purpose: "task.execute" as const },

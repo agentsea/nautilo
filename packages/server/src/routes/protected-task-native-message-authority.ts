@@ -7,10 +7,11 @@ import {
   type PostgresJsBridgeConnection,
 } from "@nautilo/db";
 import {
-  assertAuthenticTaskRuntimeExecutionEvidence,
+  assertAuthenticTaskRuntimeExecutionEvidence, hasTaskRuntimeTemporarySigner, withTaskRuntimeTemporarySigner,
   type LatticeCrypto,
   type TaskRuntimeExecutionEvidence,
 } from "@nautilo/lattice-crypto";
+import { agentRuntimeObjectSignerKeyIdV1 } from "@nautilo/lattice-crypto/wire";
 import { deriveMessageCryptoObjectIdV2 } from "@nautilo/lattice-bridge";
 import {
   PostgresDomainKeyAuthorityRepository,
@@ -56,6 +57,7 @@ type SignerProjection = Readonly<{
   runtimeGeneration: number;
   agentAuthorizationRevision: number;
   signerKeyId: string;
+  signerAuthorizationHash?: string;
 }>;
 
 export type ProtectedTaskNativeMessageAuthorityInput = Readonly<{
@@ -232,6 +234,18 @@ async function inspectSigner(
   input: ProtectedTaskNativeMessageAuthorityInput,
   expected: NativeTaskMessageAuthority,
 ): Promise<SignerProjection | null> {
+  assertAuthenticTaskRuntimeExecutionEvidence(input.evidence);
+  if (hasTaskRuntimeTemporarySigner(input.evidence)) {
+    return withTaskRuntimeTemporarySigner(input.evidence, temporary => {
+      if (temporary.runtime.agentId !== expected.agentId) return null;
+      return Object.freeze({
+        runtimeGeneration: temporary.runtime.generation,
+        agentAuthorizationRevision: 0,
+        signerKeyId: agentRuntimeObjectSignerKeyIdV1(input.crypto, temporary.signerPublicKey),
+        signerAuthorizationHash: bytesToHex(input.crypto.hash(temporary.certificateBytes)),
+      });
+    });
+  }
   const handle = await verifyCryptoPostgresHandle(input.restricted);
   const storage = new PostgresLatticeStorage(handle);
   const state = await storage.getAgentRuntimeAtomicState(expected.agentId);
@@ -461,7 +475,8 @@ function sameSigner(
   return current.runtimeGeneration === expected.runtimeGeneration
     && current.agentAuthorizationRevision
       === expected.agentAuthorizationRevision
-    && current.signerKeyId === expected.signerKeyId;
+    && current.signerKeyId === expected.signerKeyId
+    && current.signerAuthorizationHash === expected.signerAuthorizationHash;
 }
 
 const productionDependencies: ProtectedTaskNativeMessageAuthorityDependencies =

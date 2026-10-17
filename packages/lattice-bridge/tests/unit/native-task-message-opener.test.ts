@@ -5,17 +5,27 @@ import type {
 } from "@nautilo/db";
 import {
   LatticeCrypto, accessRevision, agentId, authorizationRevision,
-  cryptoDeviceId, cryptoDomainId,
+  cryptoDeviceId, cryptoDomainId, createDomainForegroundAuthorizationPlan,
+  createTaskRuntimeBackgroundAuthorizationRequest,
+  encodeTaskRuntimeBackgroundAuthorizationRequest,
+  createTaskRuntimeSignerAuthorization,
   domainNamespaceRetainedAuthoritySetDigest, humanId,
+  mintDomainForegroundAuthorization,
   namespaceGeneration, namespaceId, prepareAgentRuntimeInitialization,
-  prepareDomainNamespaceBundle, type DomainForegroundSecretEntry,
+  prepareDomainNamespaceBundle, taskRuntimeBackgroundAuthorizationIssuer,
+  TaskRuntimeRecipientRegistry, type DomainForegroundSecretEntry,
   type TaskRuntimeExecutionEvidence,
+  withTaskRuntimeTemporarySigner,
 } from "@nautilo/lattice-crypto";
 import {
   DOMAIN_NAMESPACE_BUNDLE_FORMAT_VERSION_V2,
   DOMAIN_NAMESPACE_BUNDLE_INNER_PURPOSE_V2,
   encodeAgentRuntimeSignerPublicationV1,
+  serializeDomainForegroundAuthorizationPlanV2,
+  serializeDomainForegroundAuthorizationV2,
 } from "@nautilo/lattice-crypto/wire";
+import { createTaskRuntimeBackgroundAuthorizationRequestV1 } from
+  "@nautilo/lattice-crypto/background";
 import {
   withTaskRuntimeExecutionEvidenceV1,
   type TaskRuntimeExecutionEvidenceInputV1,
@@ -23,6 +33,8 @@ import {
 import {
   deriveMessageCryptoObjectIdV2,
 } from "../../src/message/conversation-repository.ts";
+import { deriveTaskContentCryptoObjectIdV1 } from
+  "../../src/task/task-content-repository.ts";
 import {
   prepareHumanExistingMessageRepresentationCryptoRevision,
 } from "../../src/message/human-existing-message-representation-crypto.ts";
@@ -41,7 +53,7 @@ import {
 } from "../../src/server/task/native-task-message-opener.ts";
 import {
   prepareNativeTaskMessage, readPreparedNativeTaskMessage,
-  type PrepareNativeTaskMessageInput,
+  type NativeTaskMessageAuthority, type PrepareNativeTaskMessageInput,
 } from "../../src/server/task/native-task-message-preparation.ts";
 
 const NOW = 1_920_000_000_000;
@@ -64,10 +76,24 @@ type Adjust = (
   rows: readonly PostgresJsBridgeRow[],
 ) => readonly PostgresJsBridgeRow[];
 
+type CertifiedPreparationControl = Readonly<{
+  onLoan?: (input: Readonly<{
+    runtimeKey: Uint8Array;
+    closeRegistry(): void;
+  }>) => void;
+  resolveCurrentAuthority?: (
+    expected: NativeTaskMessageAuthority,
+    read: number,
+  ) => Promise<NativeTaskMessageAuthority | null>;
+}>;
+
 async function fixture(
   adjust: Adjust = (_stage, rows) => rows,
+  certified = false,
+  certifiedPreparationControl?: CertifiedPreparationControl,
 ) {
-  const crypto = new LatticeCrypto();
+  let cryptoNow = NOW;
+  const crypto = new LatticeCrypto(undefined, { now: () => cryptoNow });
   const issuer = crypto.generateSigningKeyPair();
   const manager = crypto.generateSigningKeyPair();
   const domainKey = bytes(0x41);
@@ -170,7 +196,12 @@ async function fixture(
       taskId: TASK,
       taskRunId: RUN,
       contentRevision: 1,
-      objectId: "native-task-message-result",
+      objectId: deriveTaskContentCryptoObjectIdV1({
+        kind: "run_result",
+        taskId: TASK,
+        taskRunId: RUN,
+        contentRevision: 1,
+      }),
       signerAgentId: AGENT,
       namespace: {
         namespaceId: NAMESPACE,
@@ -192,6 +223,7 @@ async function fixture(
   };
   const coordinate = { sessionId: SESSION, messageId: 1, revision: 0 };
   const controller = new AbortController();
+  let preparationAuthorityReads = 0;
   const prepareInput: Omit<PrepareNativeTaskMessageInput, "evidence"> = {
     crypto,
     coordinates: {
@@ -223,17 +255,179 @@ async function fixture(
     agentAuthorizationRevision: 7,
     resolveHistoricalSignerPublicationManager: () => manager.publicKey,
     signal: controller.signal,
-    resolveCurrentAuthority: (expected) => Promise.resolve(expected),
+    resolveCurrentAuthority: (expected) => {
+      preparationAuthorityReads += 1;
+      return certifiedPreparationControl?.resolveCurrentAuthority?.(
+        expected,
+        preparationAuthorityReads,
+      ) ?? Promise.resolve(expected);
+    },
   };
-  const prepared = await withTaskRuntimeExecutionEvidenceV1({
-    evidence: evidenceInput,
-    signal: controller.signal,
-    now: () => NOW,
-    execute: (evidence) => prepareNativeTaskMessage({
-      ...prepareInput,
-      evidence,
-    }),
-  });
+  let certificateBytes: Uint8Array | undefined;
+  const prepared = certified
+    ? await (async () => {
+        const registry = new TaskRuntimeRecipientRegistry(crypto, {
+          now: () => NOW,
+        });
+        const attempt = await registry.createAttempt({
+          requestId: evidenceInput.requestId,
+          workId: evidenceInput.workId,
+          recipientGeneration: evidenceInput.recipientGeneration,
+          recipientKeyId: evidenceInput.recipientKeyId,
+          expiresAt: NOW + 60_000,
+          signerAgentId: AGENT,
+        });
+        if (attempt.status !== "created"
+          || attempt.attempt.signer === undefined) {
+          throw new Error("Certified transcript signer is unavailable");
+        }
+        const plan = createDomainForegroundAuthorizationPlan(crypto, {
+          authorizationId: evidenceInput.requestId,
+          policyRevision: evidenceInput.policyRevision,
+          sessionId: evidenceInput.episodeId,
+          roomId: evidenceInput.sourceRoomId,
+          subjectHumanId: humanId(HUMAN),
+          committerDeviceId: cryptoDeviceId(DEVICE),
+          committerDeviceSigningGeneration: 1,
+          hostAuthorizationRevision: authorizationRevision(
+            evidenceInput.hostAuthorizationRevision,
+          ),
+          recipientKind: "runtime",
+          recipientPrincipalId: "nautilo_task_runtime",
+          recipientAuthorizationRevision: authorizationRevision(0),
+          recipientRuntimeGeneration: evidenceInput.recipientGeneration,
+          recipientKeyId: evidenceInput.recipientKeyId,
+          operations: ["decrypt", "encrypt"],
+          issuedAt: NOW,
+          deadlineAt: NOW + 60_000,
+          maximumSecretBytes: 4_096,
+          domains: [domainRequirement],
+        });
+        const authorization = await mintDomainForegroundAuthorization(crypto, {
+          plan,
+          domains: [domain],
+          committerDeviceSigningPrivateKey: issuer.privateKey,
+          recipientEncryptionPublicKey: attempt.attempt.recipientPublicKey,
+        });
+        const authorizationBytes = serializeDomainForegroundAuthorizationV2(
+          authorization,
+        );
+        const baseRequest = createTaskRuntimeBackgroundAuthorizationRequestV1({
+          requestId: evidenceInput.requestId,
+          workId: evidenceInput.workId,
+          workKind: "task.execute",
+          workPurpose: "task.execute",
+          recipientGeneration: evidenceInput.recipientGeneration,
+          episodeId: evidenceInput.episodeId,
+          sourceRoomId: evidenceInput.sourceRoomId,
+          recipientKeyId: evidenceInput.recipientKeyId,
+          recipientPublicKey: attempt.attempt.recipientPublicKey,
+          authorizationPlan: plan,
+          issuedAt: NOW,
+          deadlineAt: NOW + 60_000,
+        });
+        const request = createTaskRuntimeBackgroundAuthorizationRequest(
+          crypto,
+          {
+            baseRequest,
+            work: {
+              taskId: TASK,
+              taskRunId: RUN,
+              inputObjectId: `task-definition:v1:${"b".repeat(64)}`,
+              resultObjectId: evidenceInput.result.objectId,
+              executionSegment: 1,
+              workIdentityHash: bytes(0x7a),
+            },
+            signer: attempt.attempt.signer,
+            deviceGroupHead: {
+              serverInstanceId: "native-task-message-server",
+              lineageGeneration: 3,
+              epoch: 5,
+              headDigest: bytes(0x7b),
+              signingPublicKeyHash: crypto.hash(issuer.publicKey),
+            },
+            namespaceRequirements: evidenceInput.namespaceRequirements,
+          },
+        );
+        const requestBytes = encodeTaskRuntimeBackgroundAuthorizationRequest(
+          crypto,
+          request,
+        );
+        certificateBytes = createTaskRuntimeSignerAuthorization(crypto, {
+          requestBytes,
+          authorizationBytes,
+          expectedAuthorizationPlanBytes:
+            serializeDomainForegroundAuthorizationPlanV2(plan),
+          expectedAuthorizationHash: crypto.hash(authorizationBytes),
+          issuerSigningPrivateKey: issuer.privateKey,
+        });
+        const opened = await registry.withOpenedGrant({
+          requestId: evidenceInput.requestId,
+          workId: evidenceInput.workId,
+          recipientGeneration: evidenceInput.recipientGeneration,
+          recipientKeyId: evidenceInput.recipientKeyId,
+          claimId: evidenceInput.claimId,
+          claimExpiresAt: evidenceInput.claimExpiresAt,
+          authorizationBytes,
+          current: {
+            authorizationId: plan.authorizationId,
+            policyRevision: plan.policyRevision,
+            sessionId: plan.sessionId,
+            roomId: plan.roomId,
+            subjectHumanId: plan.subjectHumanId,
+            committerDeviceId: plan.committerDeviceId,
+            committerDeviceSigningGeneration:
+              plan.committerDeviceSigningGeneration,
+            committerDeviceSigningPublicKey: issuer.publicKey,
+            committerDeviceActive: true,
+            hostAuthorizationRevision: plan.hostAuthorizationRevision,
+            recipientKind: plan.recipientKind,
+            recipientPrincipalId: plan.recipientPrincipalId,
+            recipientAuthorizationRevision:
+              plan.recipientAuthorizationRevision,
+            recipientRuntimeGeneration: plan.recipientRuntimeGeneration,
+            recipientKeyId: plan.recipientKeyId,
+            recipientAuthorized: true,
+            domains: plan.domains,
+          },
+          currentNamespaceRequirements: evidenceInput.namespaceRequirements,
+          result: evidenceInput.result,
+          certifiedSigning: {
+            requestBytes,
+            certificateBytes,
+            currentIssuer: taskRuntimeBackgroundAuthorizationIssuer(request),
+          },
+          operation: (_domains, _signal, evidence) =>
+            withTaskRuntimeTemporarySigner(evidence, temporarySigner => {
+              certifiedPreparationControl?.onLoan?.({
+                runtimeKey: temporarySigner.runtime.key,
+                closeRegistry: () => registry.close(),
+              });
+              return prepareNativeTaskMessage({
+                ...prepareInput,
+                evidence,
+                runtime: temporarySigner.runtime,
+                signerPublication: null,
+                temporarySigner,
+                agentAuthorizationRevision: 0,
+              });
+            }),
+        });
+        registry.close();
+        if (opened.status !== "opened") {
+          throw new Error("Certified transcript grant did not open");
+        }
+        return opened.value;
+      })()
+    : await withTaskRuntimeExecutionEvidenceV1({
+        evidence: evidenceInput,
+        signal: controller.signal,
+        now: () => NOW,
+        execute: (evidence) => prepareNativeTaskMessage({
+          ...prepareInput,
+          evidence,
+        }),
+      });
   const snapshot = readPreparedNativeTaskMessage(prepared);
   const created = snapshot.authority;
   const authority: NativeTaskMessageReadAuthorityV1 = {
@@ -340,10 +534,11 @@ async function fixture(
           previous_manifest_hash: null,
           payload_hash: payloadHash,
           manifest_bytes: snapshot.manifestBytes,
+          signer_evidence_bytes: snapshot.signerEvidenceBytes ?? null,
         }];
       } else if (statement.includes('from "agent_crypto_runtime_signers"')) {
         stage = "signer";
-        rows = [{
+        rows = certified ? [] : [{
           agent_id: signerPublication.agentId,
           runtime_generation: signerPublication.runtimeGeneration,
           authorization_revision: signerPublication.authorizationRevision,
@@ -353,6 +548,15 @@ async function fixture(
           signer_public_key: signerPublication.signerPublicKey,
           publication_bytes:
             encodeAgentRuntimeSignerPublicationV1(signerPublication),
+        }];
+      } else if (statement.includes('from "human_crypto_devices"')) {
+        stage = "device";
+        rows = [{
+          device_id: DEVICE,
+          human_id: HUMAN,
+          device_generation: 1,
+          signing_public_key: issuer.publicKey,
+          state: "revoked",
         }];
       } else {
         throw new Error(`Unexpected native Task Message query: ${statement}`);
@@ -401,7 +605,8 @@ async function fixture(
   });
   return {
     crypto, authority, target, domain, evidenceInput, controller, stages,
-    snapshot, open, restricted, generationKey,
+    snapshot, open, restricted, generationKey, certificateBytes,
+    expireCertificate: () => { cryptoNow = NOW + 120_000; },
     get authorityReads() { return authorityReads; },
   };
 }
@@ -633,6 +838,75 @@ describe("native Task Message opener", () => {
     expect(value.stages).toContain("signer");
     expect(value.authorityReads).toBeGreaterThanOrEqual(4);
     expect(await value.open(() => null)).toBeNull();
+  });
+
+  test("opens a certified Task transcript after certificate expiry and Device revocation", async () => {
+    const value = await fixture(undefined, true);
+    value.expireCertificate();
+    expect(await value.open(async (payload, assertCurrent) => {
+      await assertCurrent();
+      return payload.content;
+    })).toBe("Verified native Task transcript");
+    expect(value.snapshot.signerEvidenceBytes)
+      .toEqual(value.certificateBytes);
+    expect(value.stages).toContain("device");
+    expect(value.stages).not.toContain("signer");
+  });
+
+  test("does not retain a certified Runtime key while current authority is held", async () => {
+    let releaseAuthority!: () => void;
+    const heldAuthority = new Promise<void>((resolve) => {
+      releaseAuthority = resolve;
+    });
+    let authorityEntered!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      authorityEntered = resolve;
+    });
+    let closeRegistry!: () => void;
+    let loanKey!: Uint8Array;
+    let restoreKeySlice: (() => void) | undefined;
+    const detachedKeys: Uint8Array[] = [];
+    const pending = fixture(undefined, true, {
+      onLoan: (loan) => {
+        loanKey = loan.runtimeKey;
+        closeRegistry = loan.closeRegistry;
+        const original = loan.runtimeKey.slice.bind(loan.runtimeKey);
+        const keySlice = spyOn(loan.runtimeKey, "slice").mockImplementation(
+          (...args: Parameters<Uint8Array["slice"]>) => {
+            const detached = original(...args);
+            detachedKeys.push(detached);
+            return detached;
+          },
+        );
+        restoreKeySlice = () => keySlice.mockRestore();
+      },
+      resolveCurrentAuthority: async (expected) => {
+        authorityEntered();
+        await heldAuthority;
+        return expected;
+      },
+    });
+    await entered;
+    closeRegistry();
+    expect(loanKey.every((byte) => byte === 0)).toBe(true);
+    expect(detachedKeys).toHaveLength(0);
+    releaseAuthority();
+    try {
+      await fails(pending);
+      expect(detachedKeys.every((key) =>
+        key.every((byte) => byte === 0))).toBe(true);
+    } finally {
+      restoreKeySlice?.();
+      for (const key of detachedKeys) key.fill(0);
+    }
+  });
+
+  test("rejects substituted certified Task transcript evidence", async () => {
+    const value = await fixture(
+      change("verify-chain", "signer_evidence_bytes", bytes(0xee)),
+      true,
+    );
+    await fails(value.open(() => "must not open"));
   });
 
   test("rejects forged and spread read targets before database access", async () => {

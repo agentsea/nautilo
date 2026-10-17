@@ -4,9 +4,10 @@ import {
   type ProtectedTaskCheckpointAadBinding,
 } from "@nautilo/db";
 import {
-  decodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  decodeTaskRuntimeBackgroundAuthorizationRequestBase,
   destroyTaskRuntimeBackgroundAuthorizationRequestV1,
 } from "@nautilo/lattice-crypto/background";
+import { LatticeCrypto } from "@nautilo/lattice-crypto";
 import { parseDomainForegroundAuthorizationPlanV2, destroyDomainForegroundAuthorizationPlanV2 } from "@nautilo/lattice-crypto/wire";
 import {
   isTaskExecutionWorkKind,
@@ -24,6 +25,7 @@ export async function resolveProtectedTaskCheckpointAadBinding(
   expected: Pick<ParkedProtectedTaskAdditionalAuthority, "occurrence" | "priorJob">,
   repository: Pick<BackgroundAuthorizationRepository, "get">,
 ): Promise<ProtectedTaskCheckpointAadBinding | null> {
+  const crypto = new LatticeCrypto();
   const { priorJob, occurrence } = expected;
   if (priorJob.id !== occurrence.run.jobId
     || occurrence.run.taskId !== occurrence.task.id
@@ -53,7 +55,10 @@ export async function resolveProtectedTaskCheckpointAadBinding(
     || !isTaskExecutionWorkKind(record.workKind) || record.purpose !== record.workKind
     || !isTaskRuntimeStableIdempotencyKey(record.idempotencyKey, occurrence.run.id)
     || record.descriptorBytes === null) return null;
-  const request = decodeTaskRuntimeBackgroundAuthorizationRequestV1(record.descriptorBytes);
+  const request = decodeTaskRuntimeBackgroundAuthorizationRequestBase(
+    crypto,
+    record.descriptorBytes,
+  );
   if (request === null) return null;
   const plan = parseDomainForegroundAuthorizationPlanV2(request.authorizationPlanBytes);
   try {

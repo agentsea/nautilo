@@ -7,7 +7,7 @@ import type {
   ProtectedRepoDocsOpenedSelection,
 } from "@nautilo/agent";
 import type { PostgresJsBridgeConnection } from "@nautilo/db";
-import { bindEncryptionDataOperationOwner, type TaskPayloadV1 } from "@nautilo/lattice-bridge";
+import { bindEncryptionDataOperationOwner, deriveTaskContentCryptoObjectIdV1, type TaskPayloadV1 } from "@nautilo/lattice-bridge";
 import {
   LatticeCrypto,
   authorizationRevision,
@@ -18,9 +18,11 @@ import {
 } from "@nautilo/lattice-crypto";
 import {
   createTaskRuntimeBackgroundAuthorizationRequestV1,
-  decodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  createTaskRuntimeBackgroundAuthorizationRequestV2,
   encodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  encodeTaskRuntimeBackgroundAuthorizationRequestV2,
 } from "@nautilo/lattice-crypto/background";
+import { agentRuntimeObjectSignerKeyIdV1 } from "@nautilo/lattice-crypto/wire";
 import {
   createProtectedTaskTranscriptPort,
   ProtectedTaskExecutionDidNotBeginError,
@@ -65,12 +67,14 @@ const DOMAIN = "a0000000-0000-4000-8000-00000000000a";
 const SCOPE = "b0000000-0000-4000-8000-00000000000b";
 const MEMORY_ROOM = "c0000000-0000-4000-8000-00000000000c";
 const INPUT_OBJECT = `task-definition:v1:${"a".repeat(64)}`;
-const RESULT_OBJECT = `task-run-result:v1:${"b".repeat(64)}`;
+const RESULT_OBJECT = deriveTaskContentCryptoObjectIdV1({
+  kind: "run_result", taskId: TASK, taskRunId: RUN, contentRevision: 1,
+});
 const REQUEST = `task-run-authorization:${RUN}`;
 
 const bytes = (fill: number): Uint8Array => new Uint8Array(32).fill(fill);
 
-async function fixture(mode: "namespace" | "scope" = "namespace", requestId = REQUEST) {
+async function fixture(mode: "namespace" | "scope" = "namespace", requestId = REQUEST, wireVersion: 1 | 2 = 1) {
   const crypto = new LatticeCrypto();
   const recipient = await crypto.generateEncryptionKeyPair();
   const domainRequirement = {
@@ -127,6 +131,25 @@ async function fixture(mode: "namespace" | "scope" = "namespace", requestId = RE
     issuedAt: NOW,
     deadlineAt: NOW + 60_000,
   });
+  let descriptorBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV1(request);
+  if (wireVersion === 2) {
+    const signer = crypto.generateSigningKeyPair();
+    try {
+      const carrier = createTaskRuntimeBackgroundAuthorizationRequestV2(crypto, {
+        baseRequest: request,
+        work: { taskId: TASK, taskRunId: RUN, inputObjectId: INPUT_OBJECT,
+          resultObjectId: RESULT_OBJECT, executionSegment: 1, workIdentityHash: bytes(12) },
+        signer: { agentId: AGENT, runtimeGeneration: 0,
+          signerKeyId: agentRuntimeObjectSignerKeyIdV1(crypto, signer.publicKey),
+          signerPublicKey: signer.publicKey },
+        deviceGroupHead: { serverInstanceId: "server:fixed-memory", lineageGeneration: 1,
+          epoch: 2, headDigest: bytes(13), signingPublicKeyHash: bytes(14) },
+        namespaceRequirements: [namespaceRequirement],
+      });
+      descriptorBytes.fill(0);
+      descriptorBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV2(crypto, carrier);
+    } finally { signer.privateKey.fill(0); }
+  }
   const evidenceInput: TaskRuntimeExecutionEvidenceInputV1 = {
     requestId: requestId,
     workId: RUN,
@@ -270,7 +293,7 @@ async function fixture(mode: "namespace" | "scope" = "namespace", requestId = RE
       claimId: "fixed-memory-claim",
       claimExpiresAt: NOW + 60_000,
     },
-    descriptorBytes: encodeTaskRuntimeBackgroundAuthorizationRequestV1(request),
+    descriptorBytes,
     workKind: "task.execute",
     purpose: "task.execute",
     expectedPolicyRevision: 17,
@@ -453,7 +476,6 @@ function overrides(
       reason: "authorization_required" as const }),
   }) as ProtectedTaskMemoryAccessHandoff;
   return {
-    decodeRequest: decodeTaskRuntimeBackgroundAuthorizationRequestV1,
     destroyRequest: () => { calls.push("request-destroy"); },
     createDefinitionLoader: (
       _dependencies: unknown,
@@ -668,8 +690,9 @@ async function withScenario<Value>(
   use: (scenario: Awaited<ReturnType<typeof executeScenario>>) => Promise<Value>,
   onDefinitionClose?: () => void,
   grantSignal: AbortSignal = new AbortController().signal,
+  wireVersion: 1 | 2 = 1,
 ): Promise<Value> {
-  const value = await fixture(mode);
+  const value = await fixture(mode, REQUEST, wireVersion);
   const calls: string[] = [];
   const published: unknown[] = [];
   const prepare = createProtectedTaskNativeFixedMemorySegment(
@@ -707,6 +730,18 @@ async function withScenario<Value>(
 }
 
 describe("protected Task native fixed Memory segment", () => {
+  test("runs a certified request carrier through the production segment decoder", async () => {
+    await withScenario("namespace", "complete", async scenario => {
+      await consume(scenario.prepared.executor(
+        scenario.input, JOB, `task:${TASK}`, new AbortController().signal,
+      ));
+      expect(scenario.calls).toContain("runner");
+      expect(scenario.published).toEqual([{
+        formatVersion: 1, resultText: "done", lastError: null,
+      }]);
+    }, undefined, new AbortController().signal, 2);
+  });
+
   test("defers an offline local target before opening protected content or execution", async () => {
     const value = await fixture();
     const calls: string[] = [];

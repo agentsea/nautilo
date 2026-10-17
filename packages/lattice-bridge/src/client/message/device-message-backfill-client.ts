@@ -69,7 +69,7 @@ function historyRecords(source: ProtectedSource): readonly RoomHistoryShadowReco
   const ordinaryBytes = source.ordinaryPayloadBytesBase64url === null ? null : bytes(source.ordinaryPayloadBytesBase64url);
   try {
     const payload = ordinaryBytes === null ? null : decodePayload(ordinaryBytes);
-    return source.history.records.map(record => {
+    return source.history.records.filter(record => record.kind !== "task_runtime").map(record => {
       const projection = record.protectedMessage.projection;
       const projectionSource = { role: projection.role,
         ...(projection.logicalMessageKey === undefined ? {} : { logicalMessageKey: projection.logicalMessageKey }),

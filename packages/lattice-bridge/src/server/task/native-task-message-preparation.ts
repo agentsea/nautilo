@@ -1,6 +1,7 @@
 import { bytesToHex } from "@noble/hashes/utils.js";
 import {
   accessRevision, agentRuntimeSignerPublicationMatchesRuntime,
+  assertTaskRuntimeTemporarySignerForPreparation, createTaskRuntimeCommonObjectAccessManifest,
   assertAuthenticTaskRuntimeExecutionEvidence, authorizationRevision,
   createCommonAgentObjectAccessManifest, encryptedObjectWriteRecord,
   encryptObjectPayload, namespaceGeneration, namespaceId, objectId, unixTimestamp,
@@ -8,7 +9,7 @@ import {
   wrapObjectDekForNamespace,
   type AgentRuntimeKeyGeneration, type AgentRuntimeSignerPublication,
   type LatticeCrypto, type ResolveHistoricalAgentRuntimeSignerPublicationManager,
-  type TaskRuntimeExecutionEvidence,
+  type TaskRuntimeExecutionEvidence, type TaskRuntimeTemporarySigner,
 } from "@nautilo/lattice-crypto";
 import { encodeEncryptedPayloadV2, encodeNamespaceObjectEnvelopeV2 } from "@nautilo/lattice-crypto/wire";
 import {
@@ -62,6 +63,7 @@ export type NativeTaskMessageAuthority = NativeTaskMessageCoordinates & Readonly
   runtimeGeneration: number;
   agentAuthorizationRevision: number;
   signerKeyId: string;
+  signerAuthorizationHash?: string;
 }>;
 
 export type PrepareNativeTaskMessageInput = Readonly<{
@@ -73,7 +75,8 @@ export type PrepareNativeTaskMessageInput = Readonly<{
   createdAt: number;
   namespace: NativeTaskNamespaceSource;
   runtime: AgentRuntimeKeyGeneration;
-  signerPublication: AgentRuntimeSignerPublication;
+  signerPublication: AgentRuntimeSignerPublication | null;
+  temporarySigner?: TaskRuntimeTemporarySigner;
   agentAuthorizationRevision: number;
   resolveHistoricalSignerPublicationManager: ResolveHistoricalAgentRuntimeSignerPublicationManager;
   signal: AbortSignal;
@@ -100,6 +103,7 @@ export type NativeTaskMessageSnapshot = Readonly<{
   manifestBytes: Uint8Array;
   manifestHash: Uint8Array;
   envelopeBytes: readonly [Uint8Array];
+  signerEvidenceBytes?: Uint8Array;
 }>;
 const snapshots = new WeakMap<PreparedNativeTaskMessage, NativeTaskMessageSnapshot>();
 
@@ -133,6 +137,13 @@ export async function prepareNativeTaskMessage(input: PrepareNativeTaskMessageIn
   const requirement = requirements[0];
   const domains = evidence.domainRequirements.filter((entry) => entry.domainId === current.cryptoDomainId);
   const domain = domains[0];
+  const temporary = input.temporarySigner;
+  if ((input.signerPublication === null) === (temporary === undefined)) {
+    throw new TypeError("Native Task Message requires exactly one signer authority");
+  }
+  const certified = temporary === undefined ? null
+    : assertTaskRuntimeTemporarySignerForPreparation(crypto, evidence, input.runtime, temporary);
+  const publication = input.signerPublication;
   if ((input.mode !== "shadow_encryption" && input.mode !== "encrypted_only")
     || coordinates.taskId !== evidence.result.taskId || coordinates.taskRunId !== evidence.workId
     || coordinates.taskRunId !== evidence.result.taskRunId || coordinates.agentId !== evidence.result.signerAgentId
@@ -145,11 +156,14 @@ export async function prepareNativeTaskMessage(input: PrepareNativeTaskMessageIn
     || current.domainKeyGeneration !== domain.domainKeyGeneration || current.domainAuthorizationRevision !== domain.authorizationRevision
     || current.participantCount !== domain.participantCount || !equalBytes(current.participantDigest, domain.participantDigest)
     || !equalBytes(current.domainHeadDigest, domain.headDigest)
-    || input.runtime.agentId !== coordinates.agentId || input.signerPublication.agentId !== coordinates.agentId
-    || input.signerPublication.authorizationRevision !== authorizationRevision(input.agentAuthorizationRevision)
-    || !agentRuntimeSignerPublicationMatchesRuntime(crypto, input.runtime, input.signerPublication)
-    || !verifyHistoricalAgentRuntimeSignerPublication({ crypto, publication: input.signerPublication,
-      resolveHistoricalManagerAuthority: input.resolveHistoricalSignerPublicationManager })) {
+    || input.runtime.agentId !== coordinates.agentId
+    || (temporary === undefined
+      ? publication === null || publication.agentId !== coordinates.agentId
+        || publication.authorizationRevision !== authorizationRevision(input.agentAuthorizationRevision)
+        || !agentRuntimeSignerPublicationMatchesRuntime(crypto, input.runtime, publication)
+        || !verifyHistoricalAgentRuntimeSignerPublication({ crypto, publication,
+          resolveHistoricalManagerAuthority: input.resolveHistoricalSignerPublicationManager })
+      : input.agentAuthorizationRevision !== 0)) {
     throw new TypeError("Native Task Message coordinate or authority disagrees");
   }
   const authority: NativeTaskMessageAuthority = Object.freeze({ ...coordinates,
@@ -166,8 +180,10 @@ export async function prepareNativeTaskMessage(input: PrepareNativeTaskMessageIn
     domainHeadDigest: bytesToHex(domain.headDigest), participantDigest: bytesToHex(domain.participantDigest),
     participantCount: domain.participantCount, activeNamespaceBindingSetDigest: bytesToHex(domain.activeNamespaceBindingSetDigest),
     activeNamespaceBindingCount: domain.activeNamespaceBindingCount, runtimeGeneration: input.runtime.generation,
-    agentAuthorizationRevision: input.agentAuthorizationRevision, signerKeyId: input.signerPublication.signerKeyId,
+    agentAuthorizationRevision: input.agentAuthorizationRevision, signerKeyId: certified?.signerKeyId ?? publication!.signerKeyId,
+    ...(certified === null ? {} : { signerAuthorizationHash: bytesToHex(certified.certificateHash) }),
   });
+  certified?.certificateHash.fill(0);
   // Snapshot borrowed inputs before the first asynchronous product check. Only
   // owned copies are wiped here; the grant coordinator owns caller buffers.
   const owned: Uint8Array[] = [];
@@ -175,7 +191,25 @@ export async function prepareNativeTaskMessage(input: PrepareNativeTaskMessageIn
   try {
     const plaintext = encodeMessagePayloadV2(input.payload);
     owned.push(plaintext);
-    const runtime = Object.freeze({ ...input.runtime, key: copy(input.runtime.key) });
+    // Legacy preparation owns a detached Runtime snapshot. A certified Task
+    // signer instead borrows the registry loan key so abort/deadline/close can
+    // erase the sole private signing material even while an authority read is
+    // pending. The active evidence checks bracket both asynchronous reads.
+    const runtime = Object.freeze({ ...input.runtime,
+      key: temporary === undefined ? copy(input.runtime.key) : input.runtime.key });
+    const certifiedSigner = temporary === undefined ? undefined : Object.freeze({
+      runtime,
+      certificateBytes: copy(temporary.certificateBytes),
+      issuer: Object.freeze({
+        ...temporary.issuer,
+        headDigest: copy(temporary.issuer.headDigest),
+        signingPublicKeyHash: copy(temporary.issuer.signingPublicKeyHash),
+      }),
+      issuerSigningPublicKey: copy(temporary.issuerSigningPublicKey),
+      requestHash: copy(temporary.requestHash),
+      authorizationHash: copy(temporary.authorizationHash),
+      signerPublicKey: copy(temporary.signerPublicKey),
+    });
     const namespace: NativeTaskNamespaceSource = { bindingBytes: copy(source.bindingBytes), expectedBindingDigest: copy(source.expectedBindingDigest),
       issuerSigningPublicKey: copy(source.issuerSigningPublicKey), domainKey: copy(source.domainKey),
       current: { ...current, participantDigest: copy(current.participantDigest), domainHeadDigest: copy(current.domainHeadDigest),
@@ -202,13 +236,25 @@ export async function prepareNativeTaskMessage(input: PrepareNativeTaskMessageIn
         try {
           const payloadBytes = encodeEncryptedPayloadV2(encrypted.payload);
           const envelopeBytes = encodeNamespaceObjectEnvelopeV2(envelope);
-          const genesis = createCommonAgentObjectAccessManifest(crypto, { objectId: objectId(coordinates.objectId),
+          const unsigned = { objectId: objectId(coordinates.objectId),
             payloadHash: crypto.hash(payloadBytes), accessRevision: accessRevision(0), previousManifestHash: null,
-            envelopeHashes: [crypto.hash(envelopeBytes)], signer: { kind: "agent_runtime", agentId: runtime.agentId,
-              runtimeGeneration: runtime.generation, signerKeyId: authority.signerKeyId }, signerAuthorizationHash: null,
-            hostAuthorizationRevision: authorizationRevision(authority.agentAuthorizationRevision) }, runtime);
+            envelopeHashes: [crypto.hash(envelopeBytes)], signer: { kind: "agent_runtime" as const, agentId: runtime.agentId,
+              runtimeGeneration: runtime.generation, signerKeyId: authority.signerKeyId },
+            signerAuthorizationHash: certifiedSigner === undefined ? null : crypto.hash(certifiedSigner.certificateBytes),
+            hostAuthorizationRevision: authorizationRevision(certifiedSigner === undefined
+              ? authority.agentAuthorizationRevision : certifiedSigner.issuer.securityRevision) };
+          const genesis = certifiedSigner === undefined
+            ? createCommonAgentObjectAccessManifest(crypto, unsigned, runtime)
+            : createTaskRuntimeCommonObjectAccessManifest(crypto, unsigned, {
+              runtime, certificateBytes: certifiedSigner.certificateBytes,
+              issuerSigningPublicKey: certifiedSigner.issuerSigningPublicKey,
+              expectedRequestHash: certifiedSigner.requestHash,
+              expectedAuthorizationHash: certifiedSigner.authorizationHash,
+              now: crypto.clock.now(),
+            });
           return Object.freeze({ authority, object: encryptedObjectWriteRecord(payloadBytes),
-            manifestBytes: genesis.bytes, manifestHash: genesis.hash, envelopeBytes: Object.freeze([envelopeBytes] as const) });
+            manifestBytes: genesis.bytes, manifestHash: genesis.hash,
+            ...(certifiedSigner === undefined ? {} : { signerEvidenceBytes: certifiedSigner.certificateBytes.slice() }), envelopeBytes: Object.freeze([envelopeBytes] as const) });
         } finally { envelope.wrappedDek.fill(0); }
       } finally { encrypted.dek.fill(0); encrypted.payload.ciphertext.fill(0); }
     } });
@@ -227,5 +273,6 @@ export function readPreparedNativeTaskMessage(prepared: PreparedNativeTaskMessag
   return Object.freeze({ authority: snapshot.authority,
     object: encryptedObjectWriteRecord(snapshot.object.payloadBytes.ciphertext.slice()),
     manifestBytes: snapshot.manifestBytes.slice(), manifestHash: snapshot.manifestHash.slice(),
+    ...(snapshot.signerEvidenceBytes === undefined ? {} : { signerEvidenceBytes: snapshot.signerEvidenceBytes.slice() }),
     envelopeBytes: Object.freeze([snapshot.envelopeBytes[0].slice()] as const) });
 }

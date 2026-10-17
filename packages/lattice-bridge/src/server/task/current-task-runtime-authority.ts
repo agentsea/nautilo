@@ -16,6 +16,7 @@ import {
   type LatticeCrypto,
 } from "@nautilo/lattice-crypto";
 import {
+  decodeTaskRuntimeBackgroundAuthorizationRequestBase,
   decodeTaskRuntimeBackgroundAuthorizationRequestV1,
   destroyTaskRuntimeBackgroundAuthorizationRequestV1,
   encodeTaskRuntimeBackgroundAuthorizationRequestV1,
@@ -826,7 +827,8 @@ async function withCurrentAcceptedTaskRuntimeAuthorityInternal<Value>(
   const authorizationDigestBytes = input.crypto.hash(authorizationBytes);
   const authorizationDigest = hex(authorizationDigestBytes);
   authorizationDigestBytes.fill(0);
-  const request = decodeTaskRuntimeBackgroundAuthorizationRequestV1(
+  const request = decodeTaskRuntimeBackgroundAuthorizationRequestBase(
+    input.crypto,
     descriptorBytes,
   );
   if (request === null) {

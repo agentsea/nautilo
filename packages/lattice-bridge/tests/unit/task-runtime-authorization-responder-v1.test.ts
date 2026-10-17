@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import {
   LatticeCrypto,
   authorizationRevision,
@@ -10,11 +11,20 @@ import {
   type DomainForegroundSecretEntry,
 } from "@nautilo/lattice-crypto";
 import {
+  createTaskRuntimeBackgroundAuthorizationRequestV2,
   createTaskRuntimeBackgroundAuthorizationRequestV1,
+  decodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  decodeTaskRuntimeBackgroundAuthorizationResponseV2,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV2,
   destroyTaskRuntimeBackgroundAuthorizationRequestV1,
+  destroyVerifiedTaskRuntimeSignerAuthorizationV1,
+  encodeTaskRuntimeBackgroundAuthorizationRequestV2,
   encodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  verifyCurrentTaskRuntimeSignerAuthorizationV1,
+  type BackgroundAuthorizationIssuerV2,
 } from "@nautilo/lattice-crypto/background";
 import {
+  agentRuntimeObjectSignerKeyIdV1,
   destroyDomainForegroundAuthorizationPlanV2,
 } from "@nautilo/lattice-crypto/wire";
 import { seededRng } from "@nautilo/lattice-crypto/testing";
@@ -34,6 +44,10 @@ const DEVICE_GENERATION = 7;
 const POLICY_REVISION = 11;
 const HOST_AUTHORIZATION_REVISION = 13;
 const LEGACY_PROFILE_HOST_AUTHORIZATION_REVISION = 4;
+const SERVER_INSTANCE_ID = "10000000-0000-4000-8000-000000000907";
+const TASK_ID = "30000000-0000-4000-8000-000000000907";
+const TASK_RUN_ID = "40000000-0000-4000-8000-000000000907";
+const encoder = new TextEncoder();
 
 const DOMAIN: DomainForegroundAuthorityEntry = Object.freeze({
   domainId: "task-runtime-domain-907",
@@ -48,7 +62,7 @@ const DOMAIN: DomainForegroundAuthorityEntry = Object.freeze({
   activeNamespaceBindingCount: 1,
 });
 
-async function fixture() {
+async function fixture(workId = "task-run-907") {
   const crypto = new LatticeCrypto(seededRng(907_407), { now: () => NOW });
   const signer = crypto.generateSigningKeyPair();
   const recipient = await crypto.generateEncryptionKeyPair();
@@ -76,7 +90,7 @@ async function fixture() {
   });
   const request = createTaskRuntimeBackgroundAuthorizationRequestV1({
     requestId: plan.authorizationId,
-    workId: "task-run-907",
+    workId,
     workKind: "task.execute",
     workPurpose: "task.execute",
     recipientGeneration: RECIPIENT_GENERATION,
@@ -93,6 +107,97 @@ async function fixture() {
   );
   destroyTaskRuntimeBackgroundAuthorizationRequestV1(request);
   return { crypto, signer, recipient, plan, requestBytes };
+}
+
+function signingAuthority(
+  value: Awaited<ReturnType<typeof fixture>>,
+  issuer: Partial<BackgroundAuthorizationIssuerV2> = {},
+) {
+  return {
+    issuer: {
+      humanId: HUMAN_ID,
+      deviceId: DEVICE_ID,
+      deviceGeneration: DEVICE_GENERATION,
+      serverInstanceId: SERVER_INSTANCE_ID,
+      lineageGeneration: 2,
+      epoch: 3,
+      securityRevision: HOST_AUTHORIZATION_REVISION,
+      headDigest: new Uint8Array(32).fill(0x41),
+      signingPublicKeyHash: value.crypto.hash(value.signer.publicKey),
+      ...issuer,
+    },
+    signingPrivateKey: value.signer.privateKey,
+    policyRevision: POLICY_REVISION,
+    hostAuthorizationRevision: LEGACY_PROFILE_HOST_AUTHORIZATION_REVISION,
+  };
+}
+
+async function v2Fixture() {
+  const value = await fixture(TASK_RUN_ID);
+  const baseRequest = decodeTaskRuntimeBackgroundAuthorizationRequestV1(
+    value.requestBytes,
+  );
+  if (baseRequest === null) throw new Error("fixture request failed to decode");
+  const ephemeral = value.crypto.generateSigningKeyPair();
+  const resultObjectId = `task-run-result:v1:${bytesToHex(value.crypto.hash(
+    encoder.encode(
+      `nautilo/task-run-result-crypto-object/v1\n${TASK_ID}\n${TASK_RUN_ID}\n1`,
+    ),
+  ))}`;
+  const request = createTaskRuntimeBackgroundAuthorizationRequestV2(
+    value.crypto,
+    {
+      baseRequest,
+      work: {
+        taskId: TASK_ID,
+        taskRunId: TASK_RUN_ID,
+        inputObjectId: `task-definition:v1:${"a".repeat(64)}`,
+        resultObjectId,
+        executionSegment: 1,
+        workIdentityHash: new Uint8Array(32).fill(0x51),
+      },
+      signer: {
+        agentId: "task-runtime-agent-907",
+        runtimeGeneration: 0,
+        signerKeyId: agentRuntimeObjectSignerKeyIdV1(
+          value.crypto,
+          ephemeral.publicKey,
+        ),
+        signerPublicKey: ephemeral.publicKey,
+      },
+      deviceGroupHead: {
+        serverInstanceId: SERVER_INSTANCE_ID,
+        lineageGeneration: 2,
+        epoch: 3,
+        headDigest: new Uint8Array(32).fill(0x41),
+        signingPublicKeyHash: value.crypto.hash(value.signer.publicKey),
+      },
+      namespaceRequirements: [{
+        ordinal: 0,
+        namespaceId: DOMAIN.sourceNamespaceId,
+        domainId: DOMAIN.domainId,
+        operations: ["decrypt", "encrypt"],
+        expectedAccessRevision: 6,
+        expectedPolicyRevision: POLICY_REVISION,
+      }],
+    },
+  );
+  const requestBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV2(
+    value.crypto,
+    request,
+  );
+  destroyTaskRuntimeBackgroundAuthorizationRequestV2(request);
+  destroyTaskRuntimeBackgroundAuthorizationRequestV1(baseRequest);
+  value.requestBytes.fill(0);
+  return { ...value, requestBytes, ephemeral };
+}
+
+function destroyV2Fixture(value: Awaited<ReturnType<typeof v2Fixture>>): void {
+  destroyDomainForegroundAuthorizationPlanV2(value.plan);
+  value.requestBytes.fill(0);
+  value.signer.privateKey.fill(0);
+  value.recipient.privateKey.fill(0);
+  value.ephemeral.privateKey.fill(0);
 }
 
 function domainAuthority(observedRooms: string[]):
@@ -303,6 +408,195 @@ describe("Task Runtime device authorization responder", () => {
       value.requestBytes.fill(0);
       value.signer.privateKey.fill(0);
       value.recipient.privateKey.fill(0);
+    }
+  });
+
+  test("returns a verified V2 Domain grant and ephemeral signer certificate without mutating inputs", async () => {
+    const value = await v2Fixture();
+    const originalRequest = value.requestBytes.slice();
+    const originalSigningKey = value.signer.privateKey.slice();
+    let responseBytes: Uint8Array | undefined;
+    try {
+      const result = await tryRespondToCurrentTaskRuntimeAuthorizationV1({
+        requestBytes: value.requestBytes,
+        domainForegroundAuthority: domainAuthority([]),
+        crypto: value.crypto,
+        now: () => NOW + 1,
+        withCurrentSigningAuthority: async use => use(
+          signingAuthority(value),
+        ),
+      });
+      expect(result.status).toBe("ready");
+      if (result.status !== "ready") return;
+      responseBytes = result.responseBytes;
+      const response = decodeTaskRuntimeBackgroundAuthorizationResponseV2(
+        responseBytes,
+      );
+      try {
+        expect(await withOpenedDomainForegroundAuthorization(value.crypto, {
+          authorizationBytes: response.authorizationBytes,
+          now: NOW + 2,
+          current: {
+            authorizationId: value.plan.authorizationId,
+            policyRevision: POLICY_REVISION,
+            sessionId: EPISODE_ID,
+            roomId: ROOM_ID,
+            subjectHumanId: humanId(HUMAN_ID),
+            committerDeviceId: cryptoDeviceId(DEVICE_ID),
+            committerDeviceSigningGeneration: DEVICE_GENERATION,
+            committerDeviceSigningPublicKey: value.signer.publicKey,
+            committerDeviceActive: true,
+            hostAuthorizationRevision: authorizationRevision(
+              HOST_AUTHORIZATION_REVISION,
+            ),
+            recipientKind: "runtime",
+            recipientPrincipalId: "nautilo_task_runtime",
+            recipientAuthorizationRevision: authorizationRevision(0),
+            recipientRuntimeGeneration: RECIPIENT_GENERATION,
+            recipientKeyId: value.plan.recipientKeyId,
+            recipientEncryptionPrivateKey: value.recipient.privateKey,
+            recipientAuthorized: true,
+            domains: [DOMAIN],
+          },
+          operation: entries => entries.length,
+        })).toEqual({ status: "opened", value: 1 });
+        const verified = await verifyCurrentTaskRuntimeSignerAuthorizationV1(
+          value.crypto,
+          {
+            certificateBytes: response.certificateBytes,
+            requestBytes: value.requestBytes,
+            expectedRequestHash: value.crypto.hash(value.requestBytes),
+            expectedAuthorizationHash: value.crypto.hash(
+              response.authorizationBytes,
+            ),
+            now: NOW + 2,
+            resolveCurrentIssuer: context => {
+              expect(context.issuer).toEqual(signingAuthority(value).issuer);
+              return value.signer.publicKey;
+            },
+          },
+        );
+        expect(verified.request.signer.signerPublicKey).toEqual(
+          value.ephemeral.publicKey,
+        );
+        destroyVerifiedTaskRuntimeSignerAuthorizationV1(verified);
+      } finally {
+        response.authorizationBytes.fill(0);
+        response.certificateBytes.fill(0);
+      }
+      expect(value.requestBytes).toEqual(originalRequest);
+      expect(value.signer.privateKey).toEqual(originalSigningKey);
+    } finally {
+      responseBytes?.fill(0);
+      originalRequest.fill(0);
+      originalSigningKey.fill(0);
+      destroyV2Fixture(value);
+    }
+  });
+
+  test.each([
+    ["human", { humanId: "foreign-human" }],
+    ["device", { deviceId: "foreign-device" }],
+    ["generation", { deviceGeneration: DEVICE_GENERATION + 1 }],
+    ["server", { serverInstanceId: "90000000-0000-4000-8000-000000000907" }],
+    ["lineage", { lineageGeneration: 3 }],
+    ["epoch", { epoch: 4 }],
+    ["security revision", { securityRevision: HOST_AUTHORIZATION_REVISION + 1 }],
+    ["head", { headDigest: new Uint8Array(32).fill(0x42) }],
+    ["signing key", { signingPublicKeyHash: new Uint8Array(32).fill(0x43) }],
+  ] as const)("rejects a V2 %s issuer-coordinate change", async (
+    _coordinate,
+    changed,
+  ) => {
+    const value = await v2Fixture();
+    try {
+      const result = await tryRespondToCurrentTaskRuntimeAuthorizationV1({
+        requestBytes: value.requestBytes,
+        domainForegroundAuthority: domainAuthority([]),
+        crypto: value.crypto,
+        now: () => NOW + 1,
+        withCurrentSigningAuthority: async use => use(
+          signingAuthority(value, changed),
+        ),
+      });
+      expect(result).toEqual({
+        status: "stale",
+        reason: "device_authority_changed",
+      });
+    } finally {
+      destroyV2Fixture(value);
+    }
+  });
+
+  test("fails closed for malformed V2 scope, expiry, cancellation, and repeated signing callbacks", async () => {
+    const value = await v2Fixture();
+    try {
+      const malformed = value.requestBytes.slice();
+      const domainBytes = encoder.encode(DOMAIN.domainId);
+      const offset = malformed.findIndex((_, index) => domainBytes.every(
+        (byte, byteIndex) => malformed[index + byteIndex] === byte,
+      ));
+      expect(offset).toBeGreaterThan(0);
+      malformed[offset] = malformed[offset]! ^ 1;
+      let authorityCalls = 0;
+      const malformedResult = await tryRespondToCurrentTaskRuntimeAuthorizationV1({
+        requestBytes: malformed,
+        domainForegroundAuthority: domainAuthority([]),
+        crypto: value.crypto,
+        now: () => NOW + 1,
+        withCurrentSigningAuthority: () => {
+          authorityCalls += 1;
+          return Promise.reject(new Error("must not open"));
+        },
+      });
+      expect(malformedResult).toEqual({
+        status: "unavailable",
+        reason: "invalid_descriptor",
+      });
+      expect(authorityCalls).toBe(0);
+      malformed.fill(0);
+
+      const expired = await tryRespondToCurrentTaskRuntimeAuthorizationV1({
+        requestBytes: value.requestBytes,
+        domainForegroundAuthority: domainAuthority([]),
+        crypto: value.crypto,
+        now: () => value.plan.deadlineAt,
+        withCurrentSigningAuthority: () => Promise.reject(
+          new Error("must not open"),
+        ),
+      });
+      expect(expired).toEqual({ status: "stale", reason: "expired" });
+
+      const controller = new AbortController();
+      controller.abort(new DOMException("cancelled", "AbortError"));
+      expect(() => tryRespondToCurrentTaskRuntimeAuthorizationV1({
+        requestBytes: value.requestBytes,
+        signal: controller.signal,
+        domainForegroundAuthority: domainAuthority([]),
+        crypto: value.crypto,
+        now: () => NOW + 1,
+        withCurrentSigningAuthority: () => Promise.reject(
+          new Error("must not open"),
+        ),
+      })).toThrow(expect.objectContaining({ name: "AbortError" }));
+
+      const repeated = await tryRespondToCurrentTaskRuntimeAuthorizationV1({
+        requestBytes: value.requestBytes,
+        domainForegroundAuthority: domainAuthority([]),
+        crypto: value.crypto,
+        now: () => NOW + 1,
+        withCurrentSigningAuthority: async use => {
+          const authority = signingAuthority(value);
+          await Promise.resolve(use(authority));
+          return Promise.resolve(use(authority));
+        },
+      });
+      expect(repeated).toEqual({
+        status: "unavailable",
+        reason: "signing_authority_unavailable",
+      });
+    } finally {
+      destroyV2Fixture(value);
     }
   });
 

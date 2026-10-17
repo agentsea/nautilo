@@ -48,6 +48,10 @@ import type { VaultHumanTaskDeviceContentInputV1 } from
   "./vault-human-task-device-content.ts";
 import { withVaultHumanTaskReadAuthorityV1 } from
   "./vault-human-task-device-content.ts";
+import {
+  withTaskRuntimeSignerEvidenceResolversV1,
+  type TaskRuntimeSignerCertificateEvidenceTransportV1,
+} from "../task-runtime-signer-evidence.ts";
 
 export type VaultHumanTaskRunResultReaderInputV1 =
   VaultHumanTaskDeviceContentInputV1 & Readonly<{
@@ -103,7 +107,8 @@ export function createVaultHumanTaskRunResultReaderV1(
             });
         const agentEvidence = envelope.signerEvidence.filter(entry =>
           entry.kind === "agent_runtime_publication"
-          || entry.kind === "foreground_agent_accepted_execution");
+          || entry.kind === "foreground_agent_accepted_execution"
+          || entry.kind === "task_runtime_signer_certificate");
         const humanEvidence = envelope.signerEvidence.filter(entry =>
           entry.kind === "human_device");
         if (dependencies.subjectHumanId !== dependencies.coordinates.humanActorId
@@ -213,6 +218,10 @@ export function createVaultHumanTaskRunResultReaderV1(
             (entry): entry is ObjectAccessSignerEvidenceTransportV1 =>
               entry.kind === "agent_runtime_publication",
           );
+          const taskCertificates = envelope.signerEvidence.filter(
+            (entry): entry is TaskRuntimeSignerCertificateEvidenceTransportV1 =>
+              entry.kind === "task_runtime_signer_certificate",
+          );
           if (publications.length > 0) {
             try {
               await ingestObjectAccessSignerEvidenceV4({
@@ -247,11 +256,20 @@ export function createVaultHumanTaskRunResultReaderV1(
               });
               try {
                 const own = profile.baseProfile.baseProfile;
-                withClientObjectAccessSignerResolversV4({
-                  crypto: dependencies.crypto, profile,
-                  operation: resolvers => verifyCommonObjectAccessManifestChain(
-                    dependencies.crypto,
-                    {
+                withTaskRuntimeSignerEvidenceResolversV1({
+                  crypto: dependencies.crypto,
+                  profile,
+                  subjectHumanId: dependencies.subjectHumanId,
+                  ownDeviceGeneration: admission.deviceGeneration,
+                  expectedWork: { taskId: envelope.taskId,
+                    taskRunId: envelope.taskRunId },
+                  evidence: taskCertificates,
+                  operation: taskResolvers =>
+                    withClientObjectAccessSignerResolversV4({
+                      crypto: dependencies.crypto, profile,
+                      operation: resolvers => verifyCommonObjectAccessManifestChain(
+                        dependencies.crypto,
+                        {
                       manifestBytes: envelope.accessManifestBytes,
                       proof: prepared!.proof,
                       trustedMinimumHead: prepared!.trustedMinimumHead,
@@ -286,8 +304,10 @@ export function createVaultHumanTaskRunResultReaderV1(
                         ?? resolvers.resolveAgentRuntimeSignerPublicKey(principal),
                       resolveProcessorSignerAuthorizationBytes: () => null,
                       resolveHistoricalProcessorIssuingDevicePublicKey: () => null,
-                    },
-                  ),
+                      ...taskResolvers,
+                        },
+                      ),
+                    }),
                 });
               } finally { destroyOpenedClientDeviceProfileV4(profile); }
             },

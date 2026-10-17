@@ -1531,7 +1531,7 @@ export type ForegroundRoomHistoryShadowMessageReaderInput = Omit<
 > & Readonly<{
   api: ForegroundLiveShadowMessageClientInput["api"] & Pick<
     NautiloApiClient,
-    "acknowledgeRoomHistoryShadowRead"
+    "acknowledgeRoomHistoryShadowRead" | "deviceAdmission"
   >;
   resolveTrustedDeviceSigningPublicKey?: (input: Readonly<{
     deviceId: string;
@@ -1729,6 +1729,14 @@ export function createForegroundRoomHistoryShadowMessageReader(
     coordinates: clientIdentity.coordinates,
     authority,
     namespaceAuthority: namespace,
+    resolveCurrentOwnDeviceGeneration: async () => {
+      const admission = await input.api.deviceAdmission.status();
+      return admission.status === "admitted"
+        && admission.deviceId === clientIdentity.coordinates.deviceId
+        && admission.expiresAt > now()
+        ? admission.deviceGeneration
+        : null;
+    },
     resolveTrustedDeviceSigningPublicKey:
       input.resolveTrustedDeviceSigningPublicKey ?? (() => Promise.resolve(null)),
     createProfileStageId: createId,

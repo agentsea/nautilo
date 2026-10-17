@@ -263,6 +263,10 @@ const encryptedPayload = z.object({
   accessSignerEvidence: z.array(z.union([
     protectedObjectAccessSignerEvidenceV1Schema,
     z.object({
+      kind: z.literal("task_runtime_signer_certificate"),
+      evidenceBytesBase64url: base64url,
+    }).strict(),
+    z.object({
       kind: z.literal("human_device"),
       subjectHumanId: canonicalLowerUuid,
       committerDeviceId: portableId,

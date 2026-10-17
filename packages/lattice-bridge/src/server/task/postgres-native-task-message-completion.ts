@@ -1,3 +1,4 @@
+import { bytesToHex } from "@noble/hashes/utils.js";
 import {
   cryptoObjects, eq, objectCryptoAccessHeads, objectCryptoAccessManifests,
   objectCryptoNamespaceEnvelopes,
@@ -60,6 +61,8 @@ export type NativeTaskMessageOpaqueAuthority = Readonly<{
   runtimeGeneration: number;
   agentAuthorizationRevision: number;
   signerKeyId: string;
+  signerAuthorizationHash?: string;
+  signerHostAuthorizationRevision?: number;
 }>;
 
 /** @internal Product-reconstructable coordinates for durable inspection. */
@@ -81,6 +84,7 @@ export type NativeTaskMessageOpaqueSnapshot = Readonly<{
   manifestBytes: Uint8Array;
   manifestHash: Uint8Array;
   envelopeBytes: readonly [Uint8Array];
+  signerEvidenceBytes?: Uint8Array;
 }>;
 
 type Exact = NativeTaskMessageOpaqueSnapshot & Readonly<{
@@ -108,6 +112,7 @@ function rowCounter(row: DatabaseRow, key: string): number {
 }
 function destroyExact(value: Exact): void {
   value.object.payloadBytes.ciphertext.fill(0); value.manifestBytes.fill(0); value.manifestHash.fill(0);
+  value.signerEvidenceBytes?.fill(0);
   value.envelopeBytes[0].fill(0); value.payloadHash.fill(0); value.envelopeHash.fill(0);
 }
 
@@ -117,6 +122,7 @@ function exactPublication(crypto: LatticeCrypto, snapshot: NativeTaskMessageOpaq
     object: snapshot.object,
     manifestBytes: snapshot.manifestBytes.slice(),
     manifestHash: snapshot.manifestHash.slice(),
+    ...(snapshot.signerEvidenceBytes === undefined ? {} : { signerEvidenceBytes: snapshot.signerEvidenceBytes.slice() }),
     envelopeBytes: Object.freeze([snapshot.envelopeBytes[0].slice()] as const),
     payloadHash: crypto.hash(snapshot.object.payloadBytes.ciphertext),
     envelopeHash: crypto.hash(snapshot.envelopeBytes[0]),
@@ -126,7 +132,9 @@ function exactPublication(crypto: LatticeCrypto, snapshot: NativeTaskMessageOpaq
     const payload = decodeEncryptedPayloadV2(exact.object.payloadBytes.ciphertext);
     const envelope = decodeNamespaceObjectEnvelopeV2(exact.envelopeBytes[0]);
     const manifest = decodeObjectAccessManifestV5(exact.manifestBytes);
-    if (authority.objectId !== deriveMessageCryptoObjectIdV2(authority)
+    if ((authority.signerAuthorizationHash === undefined)
+        !== (authority.signerHostAuthorizationRevision === undefined)
+      || authority.objectId !== deriveMessageCryptoObjectIdV2(authority)
       || exact.object.objectId !== authority.objectId || payload.context.objectId !== authority.objectId
       || payload.context.objectType !== CONVERSATION_MESSAGE_OBJECT_TYPE || payload.context.keyClass !== "ai"
       || payload.context.createdAt !== authority.createdAt
@@ -134,12 +142,17 @@ function exactPublication(crypto: LatticeCrypto, snapshot: NativeTaskMessageOpaq
       || envelope.context.keyClass !== "ai" || envelope.context.keyGeneration !== authority.namespaceKeyGeneration
       || envelope.context.bindingRevisionAtWrap !== authority.namespaceAccessRevision
       || manifest.objectId !== authority.objectId || manifest.accessRevision !== 0 || manifest.previousManifestHash !== null
-      || manifest.signerAuthorizationHash !== null || !sameBytes(manifest.payloadHash, exact.payloadHash)
+      || (authority.signerAuthorizationHash === undefined
+        ? manifest.signerAuthorizationHash !== null || exact.signerEvidenceBytes !== undefined
+        : manifest.signerAuthorizationHash === null || exact.signerEvidenceBytes === undefined
+          || bytesToHex(manifest.signerAuthorizationHash) !== authority.signerAuthorizationHash
+          || bytesToHex(crypto.hash(exact.signerEvidenceBytes)) !== authority.signerAuthorizationHash)
+      || !sameBytes(manifest.payloadHash, exact.payloadHash)
       || manifest.envelopeHashes.length !== 1 || !sameBytes(manifest.envelopeHashes[0]!, exact.envelopeHash)
       || !sameBytes(crypto.hash(exact.manifestBytes), exact.manifestHash)
       || manifest.signer.kind !== "agent_runtime" || manifest.signer.agentId !== authority.signerAgentId
       || manifest.signer.runtimeGeneration !== authority.runtimeGeneration || manifest.signer.signerKeyId !== authority.signerKeyId
-      || manifest.hostAuthorizationRevision !== authority.agentAuthorizationRevision) {
+      || manifest.hostAuthorizationRevision !== (authority.signerHostAuthorizationRevision ?? authority.agentAuthorizationRevision)) {
       conflict("Prepared Task Message bytes disagree with their authority");
     }
     return exact;
@@ -164,6 +177,7 @@ async function readAndVerifyExact(
     object_id: objectCryptoAccessManifests.objectId, access_revision: objectCryptoAccessManifests.accessRevision,
     previous_manifest_hash: objectCryptoAccessManifests.previousManifestHash, payload_hash: objectCryptoAccessManifests.payloadHash,
     manifest_hash: objectCryptoAccessManifests.manifestHash, manifest_bytes: objectCryptoAccessManifests.manifestBytes,
+    signer_evidence_bytes: objectCryptoAccessManifests.signerEvidenceBytes,
   }).from(objectCryptoAccessManifests).where(eq(objectCryptoAccessManifests.objectId, id)).limit(2));
   const envelopes = await executeTypedCryptoQuery(executor, cryptoTypedDb.select({
     object_id: objectCryptoNamespaceEnvelopes.objectId, access_revision: objectCryptoNamespaceEnvelopes.accessRevision,
@@ -183,6 +197,9 @@ async function readAndVerifyExact(
     || !rowBytesEqual(object, "payload_hash", exact.payloadHash) || !rowBytesEqual(manifest, "payload_hash", exact.payloadHash)
     || !rowBytesEqual(head, "manifest_hash", exact.manifestHash) || !rowBytesEqual(manifest, "manifest_hash", exact.manifestHash)
     || !rowBytesEqual(manifest, "manifest_bytes", exact.manifestBytes)
+    || (exact.signerEvidenceBytes === undefined
+      ? manifest["signer_evidence_bytes"] != null
+      : !rowBytesEqual(manifest, "signer_evidence_bytes", exact.signerEvidenceBytes))
     || !rowBytesEqual(envelope, "envelope_bytes", exact.envelopeBytes[0]) || !rowBytesEqual(envelope, "envelope_hash", exact.envelopeHash)) {
     conflict("Task Message crypto completion conflicts with durable bytes");
   }
@@ -195,6 +212,7 @@ async function readAndVerifyExact(
   });
   try {
     const signer = verified.headManifest.signer;
+    if (exact.authority.signerAuthorizationHash === undefined) {
     const publications = verified.signerEvidence.filter((entry) => entry.kind === "agent_runtime_publication");
     if (publications.length !== 1) conflict("Task Message retained signer publication is not exact");
     const publication = decodeAgentRuntimeSignerPublicationV1(publications[0]!.evidenceBytes);
@@ -204,9 +222,14 @@ async function readAndVerifyExact(
       || publication.signerKeyId !== exact.authority.signerKeyId) {
       conflict("Task Message retained signer publication disagrees with its authority");
     }
+    } else if (verified.headManifest.signerAuthorizationHash === null
+      || bytesToHex(verified.headManifest.signerAuthorizationHash) !== exact.authority.signerAuthorizationHash
+      || verified.signerEvidence.filter(entry => entry.kind === "task_runtime_signer_certificate").length !== 1) {
+      conflict("Task Message retained signer certificate is not exact");
+    }
     if (signer.kind !== "agent_runtime" || signer.agentId !== exact.authority.signerAgentId
       || signer.runtimeGeneration !== exact.authority.runtimeGeneration || signer.signerKeyId !== exact.authority.signerKeyId
-      || verified.headManifest.hostAuthorizationRevision !== exact.authority.agentAuthorizationRevision) {
+      || verified.headManifest.hostAuthorizationRevision !== (exact.authority.signerHostAuthorizationRevision ?? exact.authority.agentAuthorizationRevision)) {
       conflict("Task Message historical signer disagrees with its authority");
     }
     return true;
@@ -221,6 +244,7 @@ async function insertExact(executor: CryptoPostgresExecutor, exact: Exact): Prom
   await executeTypedCryptoQuery(executor, cryptoTypedDb.insert(objectCryptoAccessManifests).values({
     objectId, accessRevision: 0, manifestHash: exact.manifestHash, previousManifestHash: null,
     payloadHash: exact.payloadHash, manifestBytes: exact.manifestBytes,
+    signerEvidenceBytes: exact.signerEvidenceBytes ?? null,
   }));
   await executeTypedCryptoQuery(executor, cryptoTypedDb.insert(objectCryptoNamespaceEnvelopes).values({
     objectId, accessRevision: 0, namespaceId: exact.authority.namespaceId, ordinal: 0,
@@ -338,7 +362,6 @@ export async function inspectNativeTaskMessageOpaquePublication(
           !== input.authority.namespaceAccessRevision
         || manifest.objectId !== id || manifest.accessRevision !== 0
         || manifest.previousManifestHash !== null
-        || manifest.signerAuthorizationHash !== null
         || !sameBytes(manifest.payloadHash, calculatedPayloadHash)
         || manifest.envelopeHashes.length !== 1
         || !sameBytes(manifest.envelopeHashes[0]!, calculatedEnvelopeHash)
@@ -358,6 +381,7 @@ export async function inspectNativeTaskMessageOpaquePublication(
         resolveHistoricalHumanDeviceSigningPublicKey: () => Promise.resolve(null),
       });
       try {
+        if (manifest.signerAuthorizationHash === null) {
         const publications = verified.signerEvidence.filter(entry =>
           entry.kind === "agent_runtime_publication");
         if (publications.length !== 1) {
@@ -371,6 +395,9 @@ export async function inspectNativeTaskMessageOpaquePublication(
             !== manifest.hostAuthorizationRevision
           || publication.signerKeyId !== manifest.signer.signerKeyId) {
           conflict("Task Message retained signer publication disagrees");
+        }
+        } else if (verified.signerEvidence.filter(entry => entry.kind === "task_runtime_signer_certificate").length !== 1) {
+          conflict("Task Message retained signer certificate is not exact");
         }
       } finally {
         destroyVerifiedStoredObjectAccessManifestChainV5(verified);
@@ -452,6 +479,10 @@ export function createPostgresNativeTaskMessageCryptoCompletion(
         agentAuthorizationRevision:
           snapshot.authority.agentAuthorizationRevision,
         signerKeyId: snapshot.authority.signerKeyId,
+        ...(snapshot.authority.signerAuthorizationHash === undefined ? {} : {
+          signerAuthorizationHash: snapshot.authority.signerAuthorizationHash,
+          signerHostAuthorizationRevision: snapshot.authority.hostAuthorizationRevision,
+        }),
       }),
     });
     const check = async (): Promise<void> => {

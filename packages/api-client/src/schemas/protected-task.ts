@@ -443,7 +443,11 @@ export const protectedTaskPublicationPlanV1Schema = z.object({
 
 const taskAccessSignerEvidenceV1Schema = z.union([
   z.object({
-    kind: z.enum(["agent_runtime_publication", "processor_authorization"]),
+    kind: z.enum([
+      "agent_runtime_publication",
+      "processor_authorization",
+      "task_runtime_signer_certificate",
+    ]),
     evidenceBytesBase64url: encryptedPayloadBase64url,
   }).strict(),
   z.object({
@@ -607,11 +611,13 @@ const protectedTaskRunResultReadReadyEnvelopeV1Schema = z.object({
     });
   const agentEvidence = value.signerEvidence.filter(entry =>
     entry.kind === "agent_runtime_publication"
-    || entry.kind === "foreground_agent_accepted_execution");
+    || entry.kind === "foreground_agent_accepted_execution"
+    || entry.kind === "task_runtime_signer_certificate");
   const onlyTaskSigners = value.signerEvidence.every(entry =>
     entry.kind === "human_device"
     || entry.kind === "agent_runtime_publication"
-    || entry.kind === "foreground_agent_accepted_execution");
+    || entry.kind === "foreground_agent_accepted_execution"
+    || entry.kind === "task_runtime_signer_certificate");
   const valid = onlyTaskSigners && (value.historicalRepair === undefined
     ? agentEvidence.length === 1
     : agentEvidence.length === 0 && value.signerEvidence.length > 0);

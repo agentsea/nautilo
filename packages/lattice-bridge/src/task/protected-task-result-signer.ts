@@ -21,6 +21,9 @@ import {
   type TaskRuntimeRunResultReadEvidence,
   type TaskRuntimeTerminalMessageEvidence,
   type TaskRuntimeWakeForegroundEvidence,
+  type TaskRuntimeTemporarySigner,
+  hasTaskRuntimeTemporarySigner,
+  withTaskRuntimeTemporarySigner,
 } from "@nautilo/lattice-crypto";
 import type {
   HistoricalAgentRuntimeCommitterResolverV1,
@@ -35,6 +38,37 @@ export type ProtectedTaskResultSignerAuthority = Readonly<{
   runtime: AgentRuntimeKeyGeneration;
   signerPublication: AgentRuntimeSignerPublication;
 }>;
+
+/** Initial native execution may borrow the Device-certified, in-memory signer. */
+export type ProtectedTaskExecutionSignerAuthority =
+  | (ProtectedTaskResultSignerAuthority & Readonly<{ temporarySigner?: never }>)
+  | Readonly<{
+    agentAuthorizationRevision: 0;
+    runtime: AgentRuntimeKeyGeneration;
+    signerPublication: null;
+    temporarySigner: TaskRuntimeTemporarySigner;
+  }>;
+
+/** Borrow only through the same exact execution/result Domain boundary. */
+export async function withProtectedTaskTemporaryResultSigner<Value>(input: Readonly<{
+  evidence: TaskRuntimeExecutionEvidence;
+  domain: DomainForegroundSecretEntry;
+  execute(signer: Extract<ProtectedTaskExecutionSignerAuthority,
+    { signerPublication: null }>): Value | PromiseLike<Value>;
+}>): Promise<Value> {
+  assertAuthenticTaskRuntimeExecutionEvidence(input.evidence);
+  if (!executionResultAuthorityMatches(input.evidence, input.domain)
+    || !hasTaskRuntimeTemporarySigner(input.evidence)) {
+    throw new TypeError("Temporary Task result signer Domain authority is unavailable");
+  }
+  return withTaskRuntimeTemporarySigner(input.evidence, temporarySigner =>
+    input.execute(Object.freeze({
+      agentAuthorizationRevision: 0,
+      runtime: temporarySigner.runtime,
+      signerPublication: null,
+      temporarySigner,
+    })));
+}
 
 export type ProtectedTaskResultSignerResult<Value> =
   | Readonly<{ status: "executed"; value: Value }>

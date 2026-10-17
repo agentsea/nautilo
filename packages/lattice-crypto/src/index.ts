@@ -10,6 +10,77 @@ export {
   systemClock,
   systemRng,
 } from "./crypto/index.ts";
+
+export {
+  MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V2
+    as MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES,
+  createTaskRuntimeBackgroundAuthorizationRequestV2
+    as createTaskRuntimeBackgroundAuthorizationRequest,
+  decodeTaskRuntimeBackgroundAuthorizationRequestV2
+    as decodeTaskRuntimeBackgroundAuthorizationRequest,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV2
+    as destroyTaskRuntimeBackgroundAuthorizationRequest,
+  encodeTaskRuntimeBackgroundAuthorizationRequestV2
+    as encodeTaskRuntimeBackgroundAuthorizationRequest,
+  isTaskRuntimeBackgroundAuthorizationRequestV2Carrier
+    as isTaskRuntimeBackgroundAuthorizationRequestCarrier,
+  taskRuntimeBackgroundAuthorizationIssuerV2
+    as taskRuntimeBackgroundAuthorizationIssuer,
+} from "./background/task-runtime-request-v2.ts";
+export type {
+  TaskRuntimeBackgroundAuthorizationRequestV2
+    as TaskRuntimeBackgroundAuthorizationRequest,
+  TaskRuntimeDeviceGroupHeadV2 as TaskRuntimeDeviceGroupHead,
+  TaskRuntimeEphemeralSignerV2 as TaskRuntimeEphemeralSigner,
+  TaskRuntimeExecutionWorkBindingV2 as TaskRuntimeExecutionWorkBinding,
+} from "./background/task-runtime-request-v2.ts";
+export {
+  MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_BYTES_V2
+    as MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_BYTES,
+  MAX_TASK_RUNTIME_SIGNER_AUTHORIZATION_PROJECTION_WIRE_BYTES_V1
+    as MAX_TASK_RUNTIME_SIGNER_AUTHORIZATION_PROJECTION_WIRE_BYTES,
+  MAX_TASK_RUNTIME_SIGNER_AUTHORIZATION_WIRE_BYTES_V1
+    as MAX_TASK_RUNTIME_SIGNER_AUTHORIZATION_WIRE_BYTES,
+  TaskRuntimeSignerAuthorizationErrorV1
+    as TaskRuntimeSignerAuthorizationError,
+  createTaskRuntimeSignerAuthorizationV1
+    as createTaskRuntimeSignerAuthorization,
+  decodeTaskRuntimeBackgroundAuthorizationResponseV2
+    as decodeTaskRuntimeBackgroundAuthorizationResponse,
+  decodeTaskRuntimeSignerAuthorizationProjectionV1
+    as decodeTaskRuntimeSignerAuthorizationProjection,
+  destroyTaskRuntimeSignerAuthorizationProjectionV1
+    as destroyTaskRuntimeSignerAuthorizationProjection,
+  destroyTaskRuntimeSignerAuthorizationV1
+    as destroyTaskRuntimeSignerAuthorization,
+  destroyVerifiedTaskRuntimeSignerAuthorizationV1
+    as destroyVerifiedTaskRuntimeSignerAuthorization,
+  encodeTaskRuntimeBackgroundAuthorizationResponseV2
+    as encodeTaskRuntimeBackgroundAuthorizationResponse,
+  readTaskRuntimeSignerAuthorizationIssuerV1
+    as readTaskRuntimeSignerAuthorizationIssuer,
+  verifyCurrentTaskRuntimeSignerAuthorizationV1
+    as verifyCurrentTaskRuntimeSignerAuthorization,
+  verifyHistoricalTaskRuntimeSignerAuthorizationV1
+    as verifyHistoricalTaskRuntimeSignerAuthorization,
+} from "./background/task-runtime-signer-authorization-v1.ts";
+export type {
+  ResolveCurrentTaskRuntimeSignerAuthorizationIssuerV1
+    as ResolveCurrentTaskRuntimeSignerAuthorizationIssuer,
+  ResolveHistoricalTaskRuntimeSignerAuthorizationIssuerV1
+    as ResolveHistoricalTaskRuntimeSignerAuthorizationIssuer,
+  TaskRuntimeSignerAuthorizationIssuerContextV1
+    as TaskRuntimeSignerAuthorizationIssuerContext,
+  TaskRuntimeSignerAuthorizationProjectionV1
+    as TaskRuntimeSignerAuthorizationProjection,
+  TaskRuntimeSignerAuthorizationV1 as TaskRuntimeSignerAuthorization,
+  VerifiedCurrentTaskRuntimeSignerAuthorizationV1
+    as VerifiedCurrentTaskRuntimeSignerAuthorization,
+  VerifiedHistoricalTaskRuntimeSignerAuthorizationV1
+    as VerifiedHistoricalTaskRuntimeSignerAuthorization,
+  VerifiedTaskRuntimeSignerAuthorizationV1
+    as VerifiedTaskRuntimeSignerAuthorization,
+} from "./background/task-runtime-signer-authorization-v1.ts";
 export type {
   Clock,
   KeyPair,
@@ -399,7 +470,9 @@ export {
     as assertAuthenticTaskRuntimeCancellationResultEvidence,
   assertAuthenticTaskRuntimeTerminalMessageEvidenceV1
     as assertAuthenticTaskRuntimeTerminalMessageEvidence,
+  hasTaskRuntimeTemporarySignerV1 as hasTaskRuntimeTemporarySigner,
   TaskRuntimeRecipientRegistryV1 as TaskRuntimeRecipientRegistry,
+  withTaskRuntimeTemporarySignerV1 as withTaskRuntimeTemporarySigner,
 } from "./background/task-runtime-recipient-registry-v1.ts";
 export type {
   TaskRuntimeCancellationResultEvidenceV1
@@ -411,6 +484,8 @@ export type {
   TaskRuntimeRecipientDeadlineHandleV1 as TaskRuntimeRecipientDeadlineHandle,
   TaskRuntimeRecipientDeadlineSchedulerV1 as TaskRuntimeRecipientDeadlineScheduler,
   TaskRuntimeRecipientOpenResultV1 as TaskRuntimeRecipientOpenResult,
+  TaskRuntimeCertifiedSigningInputV1 as TaskRuntimeCertifiedSigningInput,
+  TaskRuntimeTemporarySignerV1 as TaskRuntimeTemporarySigner,
 } from "./background/task-runtime-recipient-registry-v1.ts";
 export type {
   TaskRuntimeTerminalMessageEvidenceV1 as TaskRuntimeTerminalMessageEvidence,
@@ -1442,6 +1517,8 @@ export {
   createAgentObjectAccessManifestV5 as createCommonAgentObjectAccessManifest,
   createHumanObjectAccessManifestV5 as createCommonHumanObjectAccessManifest,
   createCurrentProcessorObjectAccessManifestV5 as createCurrentCommonProcessorObjectAccessManifest,
+  createTaskRuntimeObjectAccessManifestV5
+    as createTaskRuntimeCommonObjectAccessManifest,
   createProcessorObjectAccessManifestV5
     as createCommonProcessorObjectAccessManifest,
   verifyObjectAccessManifestChainV5 as verifyCommonObjectAccessManifestChain,
@@ -1468,6 +1545,8 @@ export type {
     as ResolveCommonHistoricalProcessorIssuingDevicePublicKey,
   ResolveProcessorSignerAuthorizationBytesV5
     as ResolveCommonProcessorSignerAuthorizationBytes,
+  ResolveTaskRuntimeSignerAuthorizationBytesV5
+    as ResolveTaskRuntimeCommonSignerAuthorizationBytes,
   TrustedMinimumObjectAccessHeadV5 as TrustedMinimumCommonObjectAccessHead,
   VerifiedObjectAccessManifestV5 as VerifiedCommonObjectAccessManifest,
   VerifyObjectAccessManifestChainV5Input
@@ -1672,3 +1751,5 @@ export {
 export type {
   TaskRuntimeWakeForegroundEvidenceV1 as TaskRuntimeWakeForegroundEvidence,
 } from "./background/task-runtime-wake-foreground-evidence-v1.ts";
+
+export { assertTaskRuntimeTemporarySignerForPreparationV1 as assertTaskRuntimeTemporarySignerForPreparation } from "./object/task-runtime-result-preparation-v1.ts";

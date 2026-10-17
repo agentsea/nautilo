@@ -99,6 +99,7 @@ export type ProtectedTaskNativeMessagePublicationInput = Readonly<{
     | "namespace"
     | "runtime"
     | "signerPublication"
+    | "temporarySigner"
     | "agentAuthorizationRevision"
     | "resolveHistoricalSignerPublicationManager"
   >;

@@ -1,3 +1,4 @@
+import { agentRuntimeObjectSignerKeyIdV1 } from "@nautilo/lattice-crypto/wire";
 import type { DomainForegroundSecretEntry } from "@nautilo/lattice-crypto";
 import type {
   ProtectedTaskMemoryAccessHandoff,
@@ -20,7 +21,7 @@ import {
   type ProtectedAgentMemoryRepository,
   type ProtectedMemoryAuthority,
   type ProtectedMemoryResult,
-  type ProtectedTaskResultSignerAuthority,
+  type ProtectedTaskExecutionSignerAuthority,
 } from "@nautilo/lattice-bridge";
 import {
   copyTaskScopeMemoryBinding,
@@ -109,7 +110,7 @@ export type ProtectedTaskNativeMemoryRepositoryInput<Value> = Readonly<{
   policy: ProtectedTaskMemoryBoundariesInput["policy"];
   current: ProtectedTaskMemoryAuthorityInput;
   domains: readonly DomainForegroundSecretEntry[];
-  signer: ProtectedTaskResultSignerAuthority;
+  signer: ProtectedTaskExecutionSignerAuthority;
   resolveHistoricalSignerPublicationManager:
     ResolveHistoricalAgentRuntimeSignerPublicationManager;
   product: ProductContext;
@@ -388,6 +389,15 @@ export async function withProtectedTaskNativeMemoryRepository<Value>(
   const productContext = Object.freeze({ ...input.product });
   const agentProductContext = Object.freeze({ ...input.agentProduct });
   const signer = Object.freeze({ ...input.signer });
+  const signerIdentity = signer.signerPublication !== null
+    ? { signerKeyId: signer.signerPublication.signerKeyId,
+      publicKey: signer.signerPublication.signerPublicKey }
+    : (() => {
+      const temporary = signer.temporarySigner;
+      if (temporary === undefined) throw new TypeError("Task Memory signer proof is unavailable");
+      return { signerKeyId: agentRuntimeObjectSignerKeyIdV1(current.crypto, temporary.signerPublicKey),
+        publicKey: temporary.signerPublicKey };
+    })();
   const domains = Object.freeze([...input.domains]);
   const owner = input.owner;
   const embedding = input.embedding;
@@ -401,7 +411,8 @@ export async function withProtectedTaskNativeMemoryRepository<Value>(
     || authority.agentId !== current.occurrence.task.agentId
     || authority.agentId !== current.evidence.result.signerAgentId
     || signer.runtime.agentId !== authority.agentId
-    || signer.signerPublication.agentId !== authority.agentId) {
+    || (signer.signerPublication !== null
+      && signer.signerPublication.agentId !== authority.agentId)) {
     throw new TypeError("Protected native Task Memory identity is unavailable");
   }
   const representation = selectLiveEncryptionRepresentationPolicy(
@@ -492,6 +503,9 @@ export async function withProtectedTaskNativeMemoryRepository<Value>(
         entities,
         runtime: signer.runtime,
         signerPublication: signer.signerPublication,
+        ...(signer.temporarySigner === undefined ? {} : {
+          temporarySigner: signer.temporarySigner,
+        }),
         resolveHistoricalSignerPublicationManager:
           resolveHistoricalSignerPublicationManager,
         agentAuthorizationRevision: signer.agentAuthorizationRevision,
@@ -683,8 +697,12 @@ export async function withProtectedTaskNativeMemoryRepository<Value>(
         crypto: current.crypto,
         entities,
         runtime: signer.runtime,
-        signerKeyId: signer.signerPublication.signerKeyId,
+        signerKeyId: signerIdentity.signerKeyId,
         agentAuthorizationRevision: signer.agentAuthorizationRevision,
+        ...(signer.signerPublication === null ? {
+          evidence: current.evidence,
+          temporarySigner: signer.temporarySigner,
+        } : {}),
         read: async request => {
           const value = await readNativeObject({
             ...request,
@@ -870,6 +888,21 @@ export async function withProtectedTaskNativeMemoryRepository<Value>(
           handle: binding.restrictedHandle,
           crypto: binding.crypto,
         });
+        if (signer.signerPublication === null) {
+          if (publication.signerEvidenceBytes === undefined
+            || !sameBytes(
+              publication.signerEvidenceBytes,
+              signer.temporarySigner.certificateBytes,
+            )) {
+            throw new TypeError(
+              "Protected Task Memory exact-access signer proof was substituted",
+            );
+          }
+        } else if (publication.signerEvidenceBytes !== undefined) {
+          throw new TypeError(
+            "Protected Task Memory exact-access has unexpected signer proof",
+          );
+        }
         const persisted = await dependencies.persistExact({
           handle: binding.restrictedHandle,
           crypto: binding.crypto,
@@ -881,8 +914,8 @@ export async function withProtectedTaskNativeMemoryRepository<Value>(
             principal.agentId === signer.runtime.agentId
               && principal.runtimeGeneration === signer.runtime.generation
               && principal.signerKeyId
-                === signer.signerPublication.signerKeyId
-              ? signer.signerPublication.signerPublicKey.slice()
+                === signerIdentity.signerKeyId
+              ? signerIdentity.publicKey.slice()
               : null,
         });
         await binding.assertCurrent();

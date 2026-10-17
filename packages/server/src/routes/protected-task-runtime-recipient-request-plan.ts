@@ -7,6 +7,10 @@ import {
 } from "@nautilo/lattice-crypto";
 import {
   createTaskRuntimeBackgroundAuthorizationRequestV1,
+  createTaskRuntimeBackgroundAuthorizationRequestV2,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV1,
+  type TaskRuntimeBackgroundAuthorizationRequestV1,
+  type TaskRuntimeBackgroundAuthorizationRequestV2,
 } from "@nautilo/lattice-crypto/background";
 import {
   DOMAIN_FOREGROUND_AUTHORIZATION_MAX_SECRET_BYTES_V2,
@@ -20,6 +24,7 @@ import type {
 } from "@nautilo/runtime";
 import type { ProtectedTaskOutputReadIntent } from "./protected-task-output-read-product";
 import type { ProtectedTaskCancellationOutputIntent } from "@nautilo/db";
+import { deriveTaskContentCryptoObjectIdV1 } from "@nautilo/lattice-bridge";
 
 const UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
@@ -88,15 +93,36 @@ function sameDomains(
 /** Build the exact recipient attempt and wire request for one Task segment. */
 export function createProtectedTaskRuntimeRecipientRequestPlan(
   input: ProtectedTaskRuntimeRecipientRequestPlanInput,
-): Pick<TaskRuntimeRecipientRequestPlan, "recipientAttempt" | "buildRequest"> {
+): Pick<TaskRuntimeRecipientRequestPlan<
+  TaskRuntimeBackgroundAuthorizationRequestV1
+    | TaskRuntimeBackgroundAuthorizationRequestV2
+>, "recipientAttempt" | "buildRequest"> {
   if (input.occurrence.run.taskId !== input.occurrence.task.id) {
     throw new TypeError("Protected Task recipient occurrence is not exact");
   }
-  return createRecipientRequestPlan({
+  const common = {
     ...input,
     workId: input.occurrence.run.id,
     requesterUserId: input.occurrence.task.requestorId,
     publication: "execution",
+  } as const;
+  if (input.initialRecord.workKind !== "task.execute") {
+    return createRecipientRequestPlan(common);
+  }
+  return createRecipientRequestPlan({
+    ...common,
+    initialExecution: Object.freeze({
+      taskId: input.occurrence.task.id,
+      taskRunId: input.occurrence.run.id,
+      inputObjectId: input.occurrence.task.cryptoObjectId,
+      resultObjectId: deriveTaskContentCryptoObjectIdV1({
+        kind: "run_result",
+        taskId: input.occurrence.task.id,
+        taskRunId: input.occurrence.run.id,
+        contentRevision: 1,
+      }),
+      agentId: input.occurrence.task.agentId,
+    }),
   });
 }
 
@@ -118,7 +144,7 @@ export function createProtectedTaskCancellationRecipientRequestPlan(
     || namespace.operations.length !== 1 || namespace.operations[0] !== "encrypt") {
     throw new TypeError("Protected Task cancellation recipient authority is not exact");
   }
-  return createRecipientRequestPlan({
+  return createLegacyRecipientRequestPlan({
     ...input,
     workId: intent.taskRunId,
     requesterUserId: intent.requesterUserId,
@@ -145,7 +171,7 @@ export function createProtectedTaskTerminalMessageRecipientRequestPlan(
     || namespace.operations.length !== 1 || namespace.operations[0] !== "encrypt") {
     throw new TypeError("Protected Task terminal Message recipient authority is not exact");
   }
-  return createRecipientRequestPlan({ ...input, workId: input.taskRunId,
+  return createLegacyRecipientRequestPlan({ ...input, workId: input.taskRunId,
     publication: "terminal_message" });
 }
 
@@ -189,19 +215,44 @@ export function createProtectedTaskOutputReadRecipientRequestPlan(
         || n.expectedPolicyRevision !== authority.policyRevision
         || n.operations.join(",") !== expectedOperations.join(",");
     })) throw new TypeError("Protected Task result-read recipient authority is not exact");
-  return createRecipientRequestPlan({ ...input, workId,
+  return createLegacyRecipientRequestPlan({ ...input, workId,
     requesterUserId: intent.requesterUserId, publication: "result_read",
     episodeId: intent.invocation.sessionId });
 }
 
-function createRecipientRequestPlan(
-  input: Omit<ProtectedTaskRuntimeRecipientRequestPlanInput, "occurrence"> & Readonly<{
+type RecipientRequestPlanInput =
+  Omit<ProtectedTaskRuntimeRecipientRequestPlanInput, "occurrence"> & Readonly<{
     workId: string;
     requesterUserId: string;
     publication: "execution" | "cancellation" | "terminal_message" | "result_read";
     episodeId?: string;
-  }>,
+  }>;
+
+type InitialExecutionSignerBinding = Readonly<{
+  taskId: string;
+  taskRunId: string;
+  inputObjectId: string;
+  resultObjectId: string;
+  agentId: string;
+}>;
+
+function createLegacyRecipientRequestPlan(
+  input: RecipientRequestPlanInput & Readonly<{ initialExecution?: undefined }>,
 ): Pick<TaskRuntimeRecipientRequestPlan, "recipientAttempt" | "buildRequest"> {
+  return createRecipientRequestPlan(input) as Pick<
+    TaskRuntimeRecipientRequestPlan,
+    "recipientAttempt" | "buildRequest"
+  >;
+}
+
+function createRecipientRequestPlan(
+  input: RecipientRequestPlanInput & Readonly<{
+    initialExecution?: InitialExecutionSignerBinding | undefined;
+  }>,
+): Pick<TaskRuntimeRecipientRequestPlan<
+  TaskRuntimeBackgroundAuthorizationRequestV1
+    | TaskRuntimeBackgroundAuthorizationRequestV2
+>, "recipientAttempt" | "buildRequest"> {
   const { initialRecord, workId, requesterUserId } = input;
   const crypto = input.crypto;
   const requestId = initialRecord.snapshot.requestId;
@@ -274,6 +325,9 @@ function createRecipientRequestPlan(
         recipientKeyId:
           `${recipientPrefix}:${workId}:${record.snapshot.recipientGeneration}`,
         expiresAt,
+        ...(input.initialExecution === undefined ? {} : {
+          signerAgentId: input.initialExecution.agentId,
+        }),
       });
     },
     buildRequest: ({ record, attempt, binding, authority: current }) => {
@@ -333,7 +387,7 @@ function createRecipientRequestPlan(
         domains: currentDomains,
       });
       try {
-        return createTaskRuntimeBackgroundAuthorizationRequestV1({
+        const baseRequest = createTaskRuntimeBackgroundAuthorizationRequestV1({
           requestId,
           workId,
           workKind,
@@ -347,6 +401,40 @@ function createRecipientRequestPlan(
           issuedAt,
           deadlineAt: attempt.expiresAt,
         });
+        if (input.initialExecution === undefined) return baseRequest;
+        const signer = attempt.signer;
+        let signingPublicKeyHash: Uint8Array | undefined;
+        try {
+          if (signer === undefined
+            || signer.agentId !== input.initialExecution.agentId
+            || signer.runtimeGeneration !== 0) {
+            throw new TypeError("Protected Task temporary signer is unavailable");
+          }
+          signingPublicKeyHash = crypto.hash(current.device.signingPublicKey);
+          return createTaskRuntimeBackgroundAuthorizationRequestV2(crypto, {
+            baseRequest,
+            work: Object.freeze({
+              taskId: input.initialExecution.taskId,
+              taskRunId: input.initialExecution.taskRunId,
+              inputObjectId: input.initialExecution.inputObjectId,
+              resultObjectId: input.initialExecution.resultObjectId,
+              executionSegment: 1,
+              workIdentityHash: workIdentityHash.slice(),
+            }),
+            signer,
+            deviceGroupHead: Object.freeze({
+              serverInstanceId: current.device.serverInstanceId,
+              lineageGeneration: current.device.lineageGeneration,
+              epoch: current.device.epoch,
+              headDigest: current.device.headDigest,
+              signingPublicKeyHash,
+            }),
+            namespaceRequirements: current.namespaceRequirements,
+          });
+        } finally {
+          signingPublicKeyHash?.fill(0);
+          destroyTaskRuntimeBackgroundAuthorizationRequestV1(baseRequest);
+        }
       } finally {
         destroyDomainForegroundAuthorizationPlanV2(grant);
       }

@@ -281,6 +281,9 @@ export function createProtectedTaskNativeTranscriptPublisher(
           namespace,
           runtime: segment.signer.runtime,
           signerPublication: segment.signer.signerPublication,
+          ...(segment.signer.temporarySigner === undefined ? {} : {
+            temporarySigner: segment.signer.temporarySigner,
+          }),
           agentAuthorizationRevision:
             segment.signer.agentAuthorizationRevision,
           resolveHistoricalSignerPublicationManager:

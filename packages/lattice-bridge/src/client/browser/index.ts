@@ -1154,7 +1154,7 @@ export type BrowserRoomHistoryShadowMessageReaderInput = Omit<
 > & Readonly<{
   api: BrowserLiveShadowMessageClientInput["api"] & Pick<
     NautiloApiClient,
-    "acknowledgeRoomHistoryShadowRead"
+    "acknowledgeRoomHistoryShadowRead" | "deviceAdmission"
   >;
   resolveTrustedDeviceSigningPublicKey?: (input: Readonly<{
     deviceId: string;

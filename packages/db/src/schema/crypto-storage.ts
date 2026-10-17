@@ -40,6 +40,9 @@ export const CRYPTO_STORAGE_BYTE_LIMITS = Object.freeze({
   objectAccessEnvelope: 1_048_576,
   agentRuntimeDomainEnvelope: 1_048_576,
   agentRuntimeSignerPublication: 1_024,
+  // Exact public Task signer-certificate wire maximum; bridge parity tests
+  // bind this durable copy to the structurally derived crypto codec bound.
+  taskRuntimeSignerEvidence: 2_039,
   historicalTaskPublicationRequest: 1_048_576,
   signingPublicKey: 32,
   wrappedDekMinimum: 40,
@@ -74,7 +77,9 @@ export const BACKGROUND_AUTHORIZATION_BYTE_LIMITS = Object.freeze({
   descriptor: 16_457_643,
   processorResponse: 35_669_931,
   agentResponse: 16 * 1_024 * 1_024 + 128 * 1_024 + 4 * 1_024,
-  runtimeResponse: 16 * 1_024 * 1_024,
+  legacyRuntimeResponse: 16 * 1_024 * 1_024,
+  // Domain grant plus the public Task signer certificate in Response V2.
+  runtimeResponse: 16_779_343,
   response: 35_669_931,
   recipientPublicKey: 65,
   signingPublicKey: 32,
@@ -919,6 +924,7 @@ export const objectCryptoAccessManifests = pgTable(
     previousManifestHash: bytea("previous_manifest_hash"),
     payloadHash: bytea("payload_hash").notNull(),
     manifestBytes: bytea("manifest_bytes").notNull(),
+    signerEvidenceBytes: bytea("signer_evidence_bytes"),
   },
   (table) => [
     primaryKey({ columns: [table.objectId, table.accessRevision] }),
@@ -980,6 +986,13 @@ export const objectCryptoAccessManifests = pgTable(
       table.manifestBytes,
       CRYPTO_STORAGE_BYTE_LIMITS.objectAccessManifest,
       1,
+    ),
+    check(
+      "object_crypto_access_manifests_signer_evidence_size",
+      sql`${table.signerEvidenceBytes} is null or (
+        octet_length(${table.signerEvidenceBytes}) between 1
+        and ${sql.raw(String(CRYPTO_STORAGE_BYTE_LIMITS.taskRuntimeSignerEvidence))}
+      )`,
     ),
     ...appendOnlyPolicies("object_crypto_access_manifests"),
   ],

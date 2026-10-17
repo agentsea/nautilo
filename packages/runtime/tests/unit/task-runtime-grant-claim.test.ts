@@ -14,10 +14,20 @@ import {
 } from "@nautilo/lattice-crypto";
 import {
   createTaskRuntimeBackgroundAuthorizationRequestV1,
+  createTaskRuntimeBackgroundAuthorizationRequestV2,
+  createTaskRuntimeSignerAuthorizationV1,
+  decodeTaskRuntimeBackgroundAuthorizationRequestBase,
+  decodeTaskRuntimeBackgroundAuthorizationRequestV2,
+  decodeTaskRuntimeBackgroundAuthorizationResponseV2,
   decodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  encodeTaskRuntimeBackgroundAuthorizationResponseV2,
+  isTaskRuntimeBackgroundAuthorizationRequestV2Carrier,
+  withTaskRuntimeTemporarySignerV1,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV2,
   destroyTaskRuntimeBackgroundAuthorizationRequestV1,
 } from "@nautilo/lattice-crypto/background";
 import {
+  agentRuntimeObjectSignerKeyIdV1,
   destroyDomainForegroundAuthorizationPlanV2,
   parseDomainForegroundAuthorizationPlanV2,
   serializeDomainForegroundAuthorizationV2,
@@ -371,6 +381,7 @@ type CompletionCas = (
 async function fixture(
   requestWorkKind: "task.execute" | "task.approval_resume" | "task.await_reply_resume" = "task.execute",
   authorizationLifetimeMs = 60_000,
+  certifiedSigner = false,
 ) {
   const crypto = new LatticeCrypto();
   const signing = crypto.generateSigningKeyPair();
@@ -421,6 +432,7 @@ async function fixture(
   const startInputs: StartProtectedTaskRunInput[] = [];
   const publishedResults: string[] = [];
   const openedOccurrences: ProtectedTaskRunningOccurrence[] = [];
+  const certifiedSignerLoans: string[] = [];
   const publishedOccurrences: ProtectedTaskRunningOccurrence[] = [];
   const authorityOccurrences: ProtectedTaskAuthorityOccurrence[] = [];
   const authorizationRequests: Array<Readonly<{
@@ -519,6 +531,7 @@ async function fixture(
     recipientAttempt: () => ({
       recipientKeyId: "task-runtime-recipient",
       expiresAt: NOW + authorizationLifetimeMs,
+      ...(certifiedSigner ? { signerAgentId: AGENT } : {}),
     }),
     buildRequest: ({ attempt, binding: currentBinding, authority }) => {
       builtRecipientKeys.push(Buffer.from(attempt.recipientPublicKey)
@@ -565,7 +578,7 @@ async function fixture(
         recipientAuthorized: true,
         domains: grantPlan.domains,
       };
-      return createTaskRuntimeBackgroundAuthorizationRequestV1({
+      const baseRequest = createTaskRuntimeBackgroundAuthorizationRequestV1({
         requestId: REQUEST,
         workId: RUN,
         workKind: requestWorkKind,
@@ -579,6 +592,26 @@ async function fixture(
         issuedAt: NOW,
         deadlineAt: attempt.expiresAt,
       });
+      if (!certifiedSigner) return baseRequest;
+      const temporary = attempt.signer;
+      if (temporary === undefined) {
+        throw new Error("temporary signer unavailable");
+      }
+      try {
+        return createTaskRuntimeBackgroundAuthorizationRequestV2(crypto, {
+          baseRequest,
+          work: {taskId: TASK, taskRunId: RUN, inputObjectId: INPUT_OBJECT,
+            resultObjectId: RESULT_OBJECT, executionSegment: 1,
+            workIdentityHash: initialRecord().workIdentityHash},
+          signer: temporary,
+          deviceGroupHead: {serverInstanceId: "task-runtime-server",
+            lineageGeneration: 1, epoch: 1, headDigest: bytes(6),
+            signingPublicKeyHash: digest(signing.publicKey)},
+          namespaceRequirements: authority.namespaceRequirements,
+        });
+      } finally {
+        destroyTaskRuntimeBackgroundAuthorizationRequestV1(baseRequest);
+      }
     },
     openTransientInput: async ({ occurrence: currentOccurrence, reference,
       domains, evidence, signal }) => {
@@ -591,6 +624,14 @@ async function fixture(
       expect(evidence.result.taskRunId).toBe(RUN);
       expect(reference.taskRunId).toBe(RUN);
       expect(evidence.namespaceRequirements).toEqual(currentNamespaceRequirements);
+      if (certifiedSigner) {
+        await withTaskRuntimeTemporarySignerV1(evidence, temporary => {
+          certifiedSignerLoans.push(agentRuntimeObjectSignerKeyIdV1(
+            crypto,
+            temporary.signerPublicKey,
+          ));
+        });
+      }
       return { message: SENTINEL };
     },
     publishResult: async ({ occurrence: currentOccurrence, reference, payload,
@@ -641,6 +682,17 @@ async function fixture(
           return await use({
             foreground: borrowed,
             namespaceRequirements: currentNamespaceRequirements,
+            ...(certifiedSigner ? { currentIssuer: {
+              humanId: REQUESTOR,
+              deviceId: "task-runtime-device",
+              deviceGeneration: 2,
+              serverInstanceId: "task-runtime-server",
+              lineageGeneration: 1,
+              epoch: 1,
+              securityRevision: 6,
+              headDigest: bytes(6),
+              signingPublicKeyHash: digest(signing.publicKey),
+            } } : {}),
           });
         } finally {
           destroyAuthority(borrowed);
@@ -717,6 +769,7 @@ async function fixture(
     startInputs,
     publishedResults,
     openedOccurrences,
+    certifiedSignerLoans,
     publishedOccurrences,
     authorityOccurrences,
     authorizationRequests,
@@ -751,7 +804,8 @@ async function acceptGrant(value: Fixture): Promise<void> {
     || record.snapshot.recipient === null || record.authoritySet === undefined) {
     throw new Error("prepared Task Runtime record is unavailable");
   }
-  const request = decodeTaskRuntimeBackgroundAuthorizationRequestV1(
+  const request = decodeTaskRuntimeBackgroundAuthorizationRequestBase(
+    value.crypto,
     record.descriptorBytes,
   );
   const plan = value.getPlan();
@@ -762,12 +816,36 @@ async function acceptGrant(value: Fixture): Promise<void> {
     committerDeviceSigningPrivateKey: value.signing.privateKey,
     recipientEncryptionPublicKey: request.recipientPublicKey,
   });
-  const responseBytes = serializeDomainForegroundAuthorizationV2(authorization);
+  const authorizationBytes = serializeDomainForegroundAuthorizationV2(
+    authorization,
+  );
+  const requestV2 = isTaskRuntimeBackgroundAuthorizationRequestV2Carrier(
+    record.descriptorBytes,
+  ) ? decodeTaskRuntimeBackgroundAuthorizationRequestV2(
+      value.crypto,
+      record.descriptorBytes,
+    ) : null;
+  let certificateBytes: Uint8Array | undefined;
+  let responseBytes = authorizationBytes;
+  if (requestV2 !== null) {
+    certificateBytes = createTaskRuntimeSignerAuthorizationV1(value.crypto, {
+      requestBytes: record.descriptorBytes,
+      authorizationBytes,
+      expectedAuthorizationPlanBytes: request.authorizationPlanBytes,
+      expectedAuthorizationHash: digest(authorizationBytes),
+      issuerSigningPrivateKey: value.signing.privateKey,
+    });
+    responseBytes = encodeTaskRuntimeBackgroundAuthorizationResponseV2({
+      authorizationBytes,
+      certificateBytes,
+    });
+  }
   const responseHash = digest(responseBytes);
+  const authorizationHash = digest(authorizationBytes);
   const accepted = await value.trackedRepository.acceptVerifiedResponse({
     acceptedAt: NOW + 2,
-    response: {
-      formatVersion: 3,
+    response: requestV2 === null ? {
+      formatVersion: 3 as const,
       kind: "runtime",
       requestId: REQUEST,
       descriptorHash: digest(record.descriptorBytes),
@@ -782,7 +860,32 @@ async function acceptGrant(value: Fixture): Promise<void> {
       responseBytes,
       responseHash,
       authorizationId: REQUEST,
-      authorizationHash: responseHash.slice(),
+      authorizationHash,
+      issuingHumanId: REQUESTOR,
+      issuingDeviceId: "task-runtime-device",
+      issuingDeviceAuthorizationRevision: 6,
+      issuerSigningPublicKeyHash: digest(value.signing.publicKey),
+      issuedAt: NOW,
+      expiresAt: plan.deadlineAt,
+    } : {
+      formatVersion: 4 as const,
+      kind: "runtime" as const,
+      requestId: REQUEST,
+      descriptorHash: digest(record.descriptorBytes),
+      descriptorBytes: record.descriptorBytes,
+      recipientGeneration: request.recipientGeneration,
+      recipientKeyId: request.recipientKeyId,
+      recipientPublicKey: request.recipientPublicKey,
+      workId: RUN,
+      workKind: record.workKind,
+      purpose: record.purpose,
+      authoritySet: record.authoritySet as BackgroundAuthorizationTaskRuntimeRecordV3["authoritySet"],
+      responseBytes,
+      responseHash,
+      authorizationId: REQUEST,
+      authorizationHash,
+      authorizationBytes,
+      certificateBytes: certificateBytes!,
       issuingHumanId: REQUESTOR,
       issuingDeviceId: "task-runtime-device",
       issuingDeviceAuthorizationRevision: 6,
@@ -792,6 +895,9 @@ async function acceptGrant(value: Fixture): Promise<void> {
     },
   });
   expect(accepted.status).toBe("accepted");
+  if (requestV2 !== null) {
+    destroyTaskRuntimeBackgroundAuthorizationRequestV2(requestV2);
+  }
   value.setClock(NOW + 3);
 }
 
@@ -2280,6 +2386,37 @@ describe("Task Runtime grant claim", () => {
     expect((await value.repository.get(REQUEST))?.snapshot.claimExpiresAt)
       .toBe(NOW + taskAuthorizationLifetimeMs);
     value.recipients.close();
+  });
+
+  test("opens a certified initial Task grant and lends its temporary signer only during execution", async () => {
+    const value = await fixture("task.execute", 60_000, true);
+    await prepareAndBind(value);
+    const bound = await value.repository.get(REQUEST);
+    expect(bound?.descriptorBytes).not.toBeNull();
+    expect(isTaskRuntimeBackgroundAuthorizationRequestV2Carrier(
+      bound!.descriptorBytes!,
+    )).toBe(true);
+    await acceptGrant(value);
+    const granted = await value.repository.get(REQUEST);
+    expect(() => decodeTaskRuntimeBackgroundAuthorizationResponseV2(
+      granted!.acceptedMaterial!.responseBytes,
+    )).not.toThrow();
+
+    const result = await value.coordinator.prepareOrClaimExact(occurrence());
+    if (result.status !== "claimed") throw new Error("grant not claimed");
+    expect(await result.dispatch.candidate.start("protected-certified-job"))
+      .toEqual({ status: "started" });
+    await result.dispatch.candidate.run(async (_input, _signal, settlement) => {
+      await settlement.publish({
+        formatVersion: 1,
+        resultText: "certified result",
+        lastError: null,
+      });
+    });
+    expect(value.certifiedSignerLoans).toHaveLength(1);
+    expect(value.certifiedSignerLoans[0])
+      .toMatch(/^agent_runtime_signer_[0-9a-f]{64}$/u);
+    expect(value.recipients.size).toBe(0);
   });
 
   test("adopts an exact completed successor written by recovery", async () => {

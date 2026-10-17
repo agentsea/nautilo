@@ -1,7 +1,7 @@
 import type { ProtectedTaskRuntimeMappedHeadReplan } from "./protected-task-runtime-mapped-head-replan";
-import type { TaskRuntimeRecipientRegistry } from "@nautilo/lattice-crypto";
+import { LatticeCrypto, type TaskRuntimeRecipientRegistry } from "@nautilo/lattice-crypto";
 import {
-  decodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  decodeTaskRuntimeBackgroundAuthorizationRequestBase,
   destroyTaskRuntimeBackgroundAuthorizationRequestV1,
 } from "@nautilo/lattice-crypto/background";
 import {
@@ -107,6 +107,7 @@ export function createProtectedTaskRuntimeInitialDeviceAuthorization(
 ): DeviceHooks {
   const now = input.now ?? Date.now;
   const recipients = input.recipients;
+  const crypto = new LatticeCrypto();
 
   const resolvePlan = async (
     occurrence: ProtectedTaskOccurrence,
@@ -233,7 +234,8 @@ export function createProtectedTaskRuntimeInitialDeviceAuthorization(
           )) return null;
           const descriptor = operation.record.descriptorBytes;
           if (descriptor === null) return null;
-          const request = decodeTaskRuntimeBackgroundAuthorizationRequestV1(
+          const request = decodeTaskRuntimeBackgroundAuthorizationRequestBase(
+            crypto,
             descriptor,
           );
           if (request === null) return null;

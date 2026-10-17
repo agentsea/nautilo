@@ -454,7 +454,6 @@ async function readVerifiedMessage(
         || manifest.objectId !== target.objectId
         || manifest.accessRevision !== target.cryptoAccessRevision
         || manifest.previousManifestHash !== null
-        || manifest.signerAuthorizationHash !== null
         || !sameBytes(manifest.payloadHash, payloadHash)
         || manifest.envelopeHashes.length !== 1
         || !sameBytes(manifest.envelopeHashes[0]!, envelopeHash)
@@ -462,7 +461,8 @@ async function readVerifiedMessage(
           ? manifest.signer.kind !== "agent_runtime"
             || manifest.signer.agentId !== signer.agentId
           : manifest.signer.kind !== "human_device"
-            || manifest.signer.subjectHumanId !== signer.subjectHumanId)) {
+            || manifest.signer.subjectHumanId !== signer.subjectHumanId
+            || manifest.signerAuthorizationHash !== null)) {
         throw new TypeError("Native Task Message ciphertext coordinates were substituted");
       }
       const verified = await verifyStoredObjectAccessManifestChainV5({
@@ -484,25 +484,32 @@ async function readVerifiedMessage(
           const publications = verified.signerEvidence.filter(
             (entry) => entry.kind === "agent_runtime_publication",
           );
+          const taskCertificates = verified.signerEvidence.filter(
+            (entry) => entry.kind === "task_runtime_signer_certificate",
+          );
           if (verifiedSigner.kind !== "agent_runtime"
             || verifiedSigner.agentId !== signer.agentId
-            || publications.length !== 1) {
+            || (verified.headManifest.signerAuthorizationHash === null
+              ? publications.length !== 1 || taskCertificates.length !== 0
+              : publications.length !== 0 || taskCertificates.length !== 1)) {
             throw new TypeError(
               "Native Task Message historical signer is invalid",
             );
           }
-          const publication = decodeAgentRuntimeSignerPublicationV1(
-            publications[0]!.evidenceBytes,
-          );
-          if (publication.agentId !== verifiedSigner.agentId
-            || publication.runtimeGeneration
-              !== verifiedSigner.runtimeGeneration
-            || publication.signerKeyId !== verifiedSigner.signerKeyId
-            || publication.authorizationRevision
-              !== verified.headManifest.hostAuthorizationRevision) {
-            throw new TypeError(
-              "Native Task Message signer publication was substituted",
+          if (verified.headManifest.signerAuthorizationHash === null) {
+            const publication = decodeAgentRuntimeSignerPublicationV1(
+              publications[0]!.evidenceBytes,
             );
+            if (publication.agentId !== verifiedSigner.agentId
+              || publication.runtimeGeneration
+                !== verifiedSigner.runtimeGeneration
+              || publication.signerKeyId !== verifiedSigner.signerKeyId
+              || publication.authorizationRevision
+                !== verified.headManifest.hostAuthorizationRevision) {
+              throw new TypeError(
+                "Native Task Message signer publication was substituted",
+              );
+            }
           }
         }
       } finally {

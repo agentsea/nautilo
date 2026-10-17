@@ -4,8 +4,16 @@ import {
   type LatticeCrypto,
 } from "@nautilo/lattice-crypto";
 import {
+  createTaskRuntimeSignerAuthorizationV1,
+  decodeTaskRuntimeBackgroundAuthorizationRequestV2,
   decodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV2,
   destroyTaskRuntimeBackgroundAuthorizationRequestV1,
+  encodeTaskRuntimeBackgroundAuthorizationResponseV2,
+  isTaskRuntimeBackgroundAuthorizationRequestV2Carrier,
+  taskRuntimeBackgroundAuthorizationIssuerV2,
+  type BackgroundAuthorizationIssuerV2,
+  type TaskRuntimeBackgroundAuthorizationRequestV2,
 } from "@nautilo/lattice-crypto/background";
 import {
   destroyDomainForegroundAuthorizationPlanV2,
@@ -110,6 +118,30 @@ function currentAuthorityMatches(
     : "device_authority_changed";
 }
 
+function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) return false;
+  let difference = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    difference |= left[index]! ^ right[index]!;
+  }
+  return difference === 0;
+}
+
+function sameIssuer(
+  expected: BackgroundAuthorizationIssuerV2,
+  actual: BackgroundAuthorizationIssuerV2,
+): boolean {
+  return expected.humanId === actual.humanId
+    && expected.deviceId === actual.deviceId
+    && expected.deviceGeneration === actual.deviceGeneration
+    && expected.serverInstanceId === actual.serverInstanceId
+    && expected.lineageGeneration === actual.lineageGeneration
+    && expected.epoch === actual.epoch
+    && expected.securityRevision === actual.securityRevision
+    && sameBytes(expected.headDigest, actual.headDigest)
+    && sameBytes(expected.signingPublicKeyHash, actual.signingPublicKeyHash);
+}
+
 /**
  * Attempts the canonical Task Runtime carrier before the fixed-processor
  * responder. A non-Task carrier is returned untouched to the caller so the
@@ -123,15 +155,28 @@ export async function tryRespondToCurrentTaskRuntimeAuthorizationV1(
     return Object.freeze({ status: "not_task_runtime" as const });
   }
   const requestBytes = Uint8Array.from(input.requestBytes);
-  const request = decodeTaskRuntimeBackgroundAuthorizationRequestV1(
-    requestBytes,
-  );
+  let requestV2: TaskRuntimeBackgroundAuthorizationRequestV2 | null =
+    decodeTaskRuntimeBackgroundAuthorizationRequestV2(
+      input.crypto,
+      requestBytes,
+    );
+  if (requestV2 === null
+    && isTaskRuntimeBackgroundAuthorizationRequestV2Carrier(requestBytes)) {
+    requestBytes.fill(0);
+    return Object.freeze({
+      status: "unavailable" as const,
+      reason: "invalid_descriptor" as const,
+    });
+  }
+  const request = requestV2?.baseRequest
+    ?? decodeTaskRuntimeBackgroundAuthorizationRequestV1(requestBytes);
   if (request === null) {
     requestBytes.fill(0);
     return Object.freeze({ status: "not_task_runtime" as const });
   }
 
   let plan: DomainForegroundAuthorizationPlanV2 | null = null;
+  let requestIssuer: BackgroundAuthorizationIssuerV2 | undefined;
   let candidateResponse: Uint8Array | undefined;
   try {
     let window = currentWindow(input, request.issuedAt, request.deadlineAt);
@@ -144,6 +189,9 @@ export async function tryRespondToCurrentTaskRuntimeAuthorizationV1(
         status: "unavailable" as const,
         reason: "invalid_descriptor" as const,
       });
+    }
+    if (requestV2 !== null) {
+      requestIssuer = taskRuntimeBackgroundAuthorizationIssuerV2(requestV2);
     }
 
     let opened;
@@ -186,6 +234,13 @@ export async function tryRespondToCurrentTaskRuntimeAuthorizationV1(
                     reason: authorityState,
                   });
                 }
+                if (requestIssuer !== undefined
+                  && !sameIssuer(requestIssuer, authority.issuer)) {
+                  return Object.freeze({
+                    status: "stale" as const,
+                    reason: "device_authority_changed" as const,
+                  });
+                }
                 try {
                   const authorization = await mintDomainForegroundAuthorization(
                     input.crypto,
@@ -199,8 +254,37 @@ export async function tryRespondToCurrentTaskRuntimeAuthorizationV1(
                     },
                   );
                   try {
-                    candidateResponse =
+                    const authorizationBytes =
                       serializeDomainForegroundAuthorizationV2(authorization);
+                    if (requestV2 === null) {
+                      candidateResponse = authorizationBytes;
+                    } else {
+                      let authorizationHash: Uint8Array | undefined;
+                      let certificateBytes: Uint8Array | undefined;
+                      try {
+                        authorizationHash = input.crypto.hash(authorizationBytes);
+                        certificateBytes = createTaskRuntimeSignerAuthorizationV1(
+                          input.crypto,
+                          {
+                            requestBytes,
+                            authorizationBytes,
+                            expectedAuthorizationPlanBytes:
+                              request.authorizationPlanBytes,
+                            expectedAuthorizationHash: authorizationHash,
+                            issuerSigningPrivateKey: authority.signingPrivateKey,
+                          },
+                        );
+                        candidateResponse =
+                          encodeTaskRuntimeBackgroundAuthorizationResponseV2({
+                            authorizationBytes,
+                            certificateBytes,
+                          });
+                      } finally {
+                        authorizationBytes.fill(0);
+                        authorizationHash?.fill(0);
+                        certificateBytes?.fill(0);
+                      }
+                    }
                   } finally {
                     destroyDomainForegroundAuthorizationV2(authorization);
                   }
@@ -267,8 +351,15 @@ export async function tryRespondToCurrentTaskRuntimeAuthorizationV1(
     return opened.value;
   } finally {
     candidateResponse?.fill(0);
+    requestIssuer?.headDigest.fill(0);
+    requestIssuer?.signingPublicKeyHash.fill(0);
     if (plan !== null) destroyDomainForegroundAuthorizationPlanV2(plan);
-    destroyTaskRuntimeBackgroundAuthorizationRequestV1(request);
+    if (requestV2 !== null) {
+      destroyTaskRuntimeBackgroundAuthorizationRequestV2(requestV2);
+      requestV2 = null;
+    } else {
+      destroyTaskRuntimeBackgroundAuthorizationRequestV1(request);
+    }
     requestBytes.fill(0);
   }
 }

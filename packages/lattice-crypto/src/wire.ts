@@ -8,6 +8,9 @@
 export type { OpaqueAgentRuntimeConfigDekV2 } from "./v2-types/opaque.ts";
 export { MAX_RETAINED_NAMESPACE_GENERATIONS_V2 } from "./v2-types/limits.ts";
 
+export * from "./background/task-runtime-request-v2.ts";
+export * from "./background/task-runtime-signer-authorization-v1.ts";
+
 export {
   ARTIFACT_BLOB_FORMAT_VERSION_V1,
   decodeArtifactBlobHeaderV1,
@@ -1002,12 +1005,16 @@ export type {
   VerifiedObjectAccessManifestV4,
 } from "./format/object-access-manifest-v4.ts";
 export {
+  createTaskRuntimeObjectAccessManifestV5,
   decodeObjectAccessManifestV5,
   encodeObjectAccessManifestV5,
   MAX_OBJECT_ACCESS_MANIFEST_WIRE_BYTES_V5,
   OBJECT_ACCESS_MANIFEST_DOMAIN_V5,
   OBJECT_ACCESS_MANIFEST_FORMAT_VERSION_V5,
   objectAccessManifestSigningBytesV5,
+} from "./format/object-access-manifest-v5.ts";
+export type {
+  ResolveTaskRuntimeSignerAuthorizationBytesV5,
 } from "./format/object-access-manifest-v5.ts";
 export {
   decodeObjectAccessStorageManifest as decodeObjectAccessStorageManifestV5,

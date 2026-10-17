@@ -58,6 +58,10 @@ import { protectedMemoryOrdinaryFallbackCreatePlanV1Schema,
 import { sha256 } from "@noble/hashes/sha2.js";
 import { AuthorizedHumanMemoryUnavailableError } from "./authorized-human-memory-client.ts";
 import {
+  withTaskRuntimeSignerEvidenceResolversV1,
+  type TaskRuntimeSignerCertificateEvidenceTransportV1,
+} from "../task-runtime-signer-evidence.ts";
+import {
   exactForegroundAgentSignerKeysV1,
   foregroundAgentSignerPrincipalKeyV1,
   type ForegroundAgentAcceptedExecutionEvidenceTransportV1,
@@ -580,6 +584,12 @@ async function authenticateAndOpen(
   verifiedProof: readonly Uint8Array[];
 }>> {
   const exact = exactEncryptedAccess(dto);
+  const admission = await input.resolveDeviceAdmissionStatus();
+  if (admission.status !== "admitted"
+    || admission.deviceId !== input.coordinates.deviceId
+    || admission.expiresAt <= input.now()) {
+    throw new AuthorizedHumanMemoryUnavailableError("authorization_required");
+  }
   let canonicalPayload: Uint8Array | undefined;
   let canonicalManifest: Uint8Array | undefined;
   try {
@@ -662,8 +672,20 @@ async function authenticateAndOpen(
       throw new AuthorizedHumanMemoryUnavailableError("integrity_failure");
     }
     try {
+      const taskCertificates = dto.protectedPayload.accessSignerEvidence.filter(
+        (entry): entry is TaskRuntimeSignerCertificateEvidenceTransportV1 =>
+          entry.kind === "task_runtime_signer_certificate",
+      );
       const verify = (signerResolvers: ClientObjectAccessSignerResolversV4) =>
-        verifyCommonObjectAccessManifestChain(input.crypto, {
+        withTaskRuntimeSignerEvidenceResolversV1({
+          crypto: input.crypto,
+          profile: profileV4,
+          subjectHumanId: input.subjectHumanId,
+          ownDeviceGeneration: admission.deviceGeneration,
+          evidence: taskCertificates,
+          operation: taskResolvers => verifyCommonObjectAccessManifestChain(
+            input.crypto,
+            {
           manifestBytes: exact.manifestBytes,
           proof,
           trustedMinimumHead: anchor,
@@ -683,6 +705,9 @@ async function authenticateAndOpen(
             signerResolvers.resolveProcessorSignerAuthorizationBytes,
           resolveHistoricalProcessorIssuingDevicePublicKey:
             signerResolvers.resolveHistoricalProcessorIssuingDevicePublicKey,
+          ...taskResolvers,
+            },
+          ),
         });
       let verified: ReturnType<typeof verify>;
       try {
@@ -1234,10 +1259,12 @@ export function createVaultAuthorizedHumanMemoryDeviceContentPort(
     const generalEvidence = dto.protectedPayload.accessSignerEvidence.filter(
       (entry): entry is Exclude<typeof entry,
         HumanSignerEvidence | EvidenceIssuer
-          | ForegroundAgentAcceptedExecutionEvidenceTransportV1> =>
+          | ForegroundAgentAcceptedExecutionEvidenceTransportV1
+          | TaskRuntimeSignerCertificateEvidenceTransportV1> =>
         entry.kind !== "human_device"
         && entry.kind !== "evidence_issuer_human_device"
-        && entry.kind !== "foreground_agent_accepted_execution",
+        && entry.kind !== "foreground_agent_accepted_execution"
+        && entry.kind !== "task_runtime_signer_certificate",
     );
     const issuerEvidence = dto.protectedPayload.accessSignerEvidence.filter(
       (entry): entry is EvidenceIssuer =>

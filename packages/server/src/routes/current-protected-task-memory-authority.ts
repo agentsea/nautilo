@@ -25,6 +25,8 @@ import {
 } from "@nautilo/lattice-crypto";
 import {
   encodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  decodeTaskRuntimeBackgroundAuthorizationRequestBase,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV1,
   type TaskRuntimeBackgroundAuthorizationRequestV1,
 } from "@nautilo/lattice-crypto/background";
 import {
@@ -248,7 +250,7 @@ function assertInputBinding(
     || snapshot.recipientGeneration !== evidence.recipientGeneration
     || snapshot.recipient?.recipientKeyId !== evidence.recipientKeyId
     || snapshot.recipient.expiresAt !== evidence.recipientExpiresAt
-    || snapshot.acceptedResponse?.responseDigest
+    || snapshot.acceptedResponse?.credentialDigest
       !== bytesToHex(evidence.authorizationDigest)
     || record.expectedPolicyRevision !== evidence.policyRevision
     || request.requestId !== evidence.requestId
@@ -272,13 +274,18 @@ function assertInputBinding(
   ) throw new TaskMemoryAuthorityUnavailable();
 
   const bytes = encodeTaskRuntimeBackgroundAuthorizationRequestV1(request);
+  let acceptedBase: TaskRuntimeBackgroundAuthorizationRequestV1 | null = null;
+  let acceptedBytes: Uint8Array | undefined;
   try {
-    if (record.descriptorBytes === null
-      || !sameBytes(bytes, record.descriptorBytes)) {
-      throw new TaskMemoryAuthorityUnavailable();
-    }
+    if (record.descriptorBytes === null) throw new TaskMemoryAuthorityUnavailable();
+    acceptedBase = decodeTaskRuntimeBackgroundAuthorizationRequestBase(input.crypto, record.descriptorBytes);
+    if (acceptedBase === null) throw new TaskMemoryAuthorityUnavailable();
+    acceptedBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV1(acceptedBase);
+    if (!sameBytes(bytes, acceptedBytes)) throw new TaskMemoryAuthorityUnavailable();
   } finally {
     bytes.fill(0);
+    acceptedBytes?.fill(0);
+    if (acceptedBase !== null) destroyTaskRuntimeBackgroundAuthorizationRequestV1(acceptedBase);
   }
 }
 

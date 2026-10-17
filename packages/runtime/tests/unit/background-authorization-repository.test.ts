@@ -28,10 +28,12 @@ import { DOMAIN_FOREGROUND_AUTHORIZATION_MAX_WIRE_BYTES_V2 } from
 import { BACKGROUND_AUTHORIZATION_BYTE_LIMITS } from "@nautilo/db/schema";
 import {
   createBackgroundAuthorizationResponseV2,
+  encodeTaskRuntimeBackgroundAuthorizationResponseV2,
   encodeBackgroundWorkDescriptorV2,
   MAX_ANY_BACKGROUND_PROCESSOR_WORK_DESCRIPTOR_WIRE_BYTES_V2,
   MAX_BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_BYTES_V2,
   MAX_BACKGROUND_WORK_DESCRIPTOR_WIRE_BYTES_V2,
+  MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_BYTES_V2,
   verifyBackgroundAuthorizationResponseV2,
 } from "@nautilo/lattice-crypto/background";
 import {
@@ -54,6 +56,7 @@ import {
   type BackgroundAuthorizationAgentRecordV2,
   type BackgroundAuthorizationTaskRuntimeRecordV3,
   type BackgroundAuthorizationVerifiedRuntimeResponseV3,
+  type BackgroundAuthorizationVerifiedRuntimeResponseV4,
 } from "../../src/protected-execution/background-authorization/repository";
 
 const START = 1_700_000_000_000;
@@ -211,6 +214,29 @@ function verifiedTaskRuntimeResponseV3(
     issuerSigningPublicKeyHash: new Uint8Array(32).fill(0x44),
     issuedAt: START,
     expiresAt: record.snapshot.recipient!.expiresAt,
+  };
+}
+
+function verifiedTaskRuntimeResponseV4(
+  record: BackgroundAuthorizationTaskRuntimeRecordV3,
+): BackgroundAuthorizationVerifiedRuntimeResponseV4 {
+  const authorizationBytes = new Uint8Array([0x51, 0x52, 0x53, 0x54]);
+  const certificateBytes = new Uint8Array([0x61, 0x62, 0x63]);
+  const responseBytes = encodeTaskRuntimeBackgroundAuthorizationResponseV2({
+    authorizationBytes,
+    certificateBytes,
+  });
+  return {
+    ...verifiedTaskRuntimeResponseV3(record),
+    formatVersion: 4,
+    responseBytes,
+    responseHash: Uint8Array.from(Buffer.from(digest(responseBytes), "hex")),
+    authorizationBytes,
+    authorizationHash: Uint8Array.from(Buffer.from(
+      digest(authorizationBytes),
+      "hex",
+    )),
+    certificateBytes,
   };
 }
 
@@ -668,6 +694,82 @@ describe("background authorization repository contract", () => {
     )).toThrow("does not match current durable authorization");
   });
 
+  test("accepts an exact verified v4 Task execute response with split durable digests", async () => {
+    const record = taskRuntimeRecordV3();
+    const response = verifiedTaskRuntimeResponseV4(record);
+    const expectedResponseBytes = response.responseBytes.slice();
+    const repository = new InMemoryBackgroundAuthorizationRepository();
+    expect((await repository.create(record)).status).toBe("created");
+
+    const accepted = await repository.acceptVerifiedResponse({
+      response,
+      acceptedAt: START + 2,
+    });
+    expect(accepted.status).toBe("accepted");
+    if (accepted.status !== "accepted") throw new Error("expected acceptance");
+    expect(accepted.record.snapshot.acceptedResponse).toMatchObject({
+      responseDigest: digest(response.responseBytes),
+      credentialDigest: digest(response.authorizationBytes),
+    });
+    expect(accepted.record.snapshot.acceptedResponse?.responseDigest)
+      .not.toBe(accepted.record.snapshot.acceptedResponse?.credentialDigest);
+    expect(accepted.record.acceptedMaterial?.responseBytes)
+      .toEqual(expectedResponseBytes);
+    expect(accepted.record.acceptedMaterial?.responseBytes)
+      .not.toBe(response.responseBytes);
+    expect((await repository.acceptVerifiedResponse({
+      response,
+      acceptedAt: START + 3,
+    })).status).toBe("duplicate");
+
+    response.responseBytes.fill(0);
+    response.authorizationBytes.fill(0);
+    response.certificateBytes.fill(0);
+    expect(accepted.record.acceptedMaterial?.responseBytes)
+      .toEqual(expectedResponseBytes);
+    expect(parseBackgroundAuthorizationRecord(accepted.record).acceptedMaterial
+      ?.responseBytes).toEqual(expectedResponseBytes);
+  });
+
+  test("rejects mismatched or stale verified v4 Task execute responses", () => {
+    const record = taskRuntimeRecordV3();
+    const response = verifiedTaskRuntimeResponseV4(record);
+    const alternateAuthorization = new Uint8Array([0x71]);
+    const alternateCertificate = new Uint8Array([0x72]);
+    const alternateWrapper = encodeTaskRuntimeBackgroundAuthorizationResponseV2({
+      authorizationBytes: alternateAuthorization,
+      certificateBytes: response.certificateBytes,
+    });
+    const reject = (
+      candidate: BackgroundAuthorizationVerifiedRuntimeResponseV4,
+      acceptedAt = START + 2,
+      candidateRecord = record,
+    ) => expect(() => buildAcceptedBackgroundAuthorizationResponse(
+      candidateRecord,
+      candidate,
+      acceptedAt,
+    )).toThrow("does not match current durable authorization");
+
+    reject({
+      ...response,
+      responseBytes: alternateWrapper,
+      responseHash: Uint8Array.from(Buffer.from(digest(alternateWrapper), "hex")),
+    });
+    reject({ ...response, authorizationBytes: alternateAuthorization });
+    reject({ ...response, certificateBytes: alternateCertificate });
+    reject({ ...response, responseHash: new Uint8Array(32).fill(0x73) });
+    reject({ ...response, authorizationHash: new Uint8Array(32).fill(0x74) });
+    reject({ ...response, descriptorBytes: new Uint8Array([0x75]) });
+    reject(response, response.expiresAt);
+
+    const resumed = {
+      ...record,
+      workKind: "task.approval_resume" as const,
+      purpose: "task.approval_resume" as const,
+    };
+    reject(verifiedTaskRuntimeResponseV4(resumed), START + 2, resumed);
+  });
+
   test.each(["task.execute", "task.approval_resume", "task.await_reply_resume"] as const)(
     "gives exactly one winner to Task inventory replacement versus claim (%s)", async workKind => {
     const waiting = { ...taskRuntimeRecordV3(), workKind, purpose: workKind };
@@ -909,7 +1011,7 @@ describe("background authorization repository contract", () => {
     )).toThrow("Invalid background work kind/purpose");
   });
 
-  test("keeps durable Reflection carrier limits in parity without widening legacy descriptors", () => {
+  test("keeps durable carrier limits in parity without widening legacy formats", () => {
     expect(Number(BACKGROUND_AUTHORIZATION_BYTE_LIMITS.descriptor)).toBe(
       MAX_ANY_BACKGROUND_PROCESSOR_WORK_DESCRIPTOR_WIRE_BYTES_V2,
     );
@@ -919,10 +1021,13 @@ describe("background authorization repository contract", () => {
     expect(Number(BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_LIMITS.processor)).toBe(
       MAX_BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_BYTES_V2,
     );
-    expect(BACKGROUND_AUTHORIZATION_BYTE_LIMITS.runtimeResponse).toBe(
-      DOMAIN_FOREGROUND_AUTHORIZATION_MAX_WIRE_BYTES_V2,
+    expect(Number(BACKGROUND_AUTHORIZATION_BYTE_LIMITS.runtimeResponse)).toBe(
+      MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_BYTES_V2,
     );
-    expect(BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_LIMITS.runtime).toBe(
+    expect(Number(BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_LIMITS.runtime)).toBe(
+      MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_BYTES_V2,
+    );
+    expect(BACKGROUND_AUTHORIZATION_BYTE_LIMITS.legacyRuntimeResponse).toBe(
       DOMAIN_FOREGROUND_AUTHORIZATION_MAX_WIRE_BYTES_V2,
     );
     expect(BACKGROUND_AUTHORIZATION_BYTE_LIMITS.legacyDescriptor).toBe(

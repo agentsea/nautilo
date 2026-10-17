@@ -158,6 +158,7 @@ describe("Wave 6 crypto storage schema", () => {
       "previous_manifest_hash",
       "payload_hash",
       "manifest_bytes",
+      "signer_evidence_bytes",
     ]);
     expect(columnsByTable["human_crypto_recovery_archives"]).toContain(
       "archive_hash",
@@ -185,6 +186,7 @@ describe("Wave 6 crypto storage schema", () => {
       objectAccessEnvelope: 1_048_576,
       agentRuntimeDomainEnvelope: 1_048_576,
       agentRuntimeSignerPublication: 1_024,
+      taskRuntimeSignerEvidence: 2_039,
       historicalTaskPublicationRequest: 1_048_576,
       signingPublicKey: 32,
       wrappedDekMinimum: 40,

@@ -17,7 +17,7 @@ import {
   type EncryptionDataOperationOwner,
   type ProtectedAgentMemoryEmbeddingPort,
   type ProtectedMemoryAuthority,
-  type ProtectedTaskResultSignerAuthority,
+  type ProtectedTaskExecutionSignerAuthority,
   type TaskRunResultPayloadV1,
   type TaskPayloadV1,
 } from "@nautilo/lattice-bridge";
@@ -37,7 +37,7 @@ import {
   type TaskRuntimeExecutionEvidence,
 } from "@nautilo/lattice-crypto";
 import {
-  decodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  decodeTaskRuntimeBackgroundAuthorizationRequestBase,
   destroyTaskRuntimeBackgroundAuthorizationRequestV1,
   type TaskRuntimeBackgroundAuthorizationRequestV1,
 } from "@nautilo/lattice-crypto/background";
@@ -167,7 +167,7 @@ export type ProtectedTaskNativeFixedMemorySegmentInput = Readonly<{
     assertCurrentTaskAuthority(): Promise<void>;
     /** Borrowed only while the current Runtime signer owner remains open. */
     domains: readonly DomainForegroundSecretEntry[];
-    signer: ProtectedTaskResultSignerAuthority;
+    signer: ProtectedTaskExecutionSignerAuthority;
     resolveHistoricalSignerPublicationManager:
       MemoryRepositoryInput["resolveHistoricalSignerPublicationManager"];
   }>): ProtectedTaskTranscriptMessagePublisher
@@ -181,14 +181,15 @@ type SignerUseInput = Readonly<{
   evidence: TaskRuntimeExecutionEvidence;
   domains: readonly DomainForegroundSecretEntry[];
   use(
-    signer: ProtectedTaskResultSignerAuthority,
+    signer: ProtectedTaskExecutionSignerAuthority,
     resolveHistoricalSignerPublicationManager:
       MemoryRepositoryInput["resolveHistoricalSignerPublicationManager"],
   ): Promise<unknown>;
 }>;
 
 type Dependencies = Readonly<{
-  decodeRequest: typeof decodeTaskRuntimeBackgroundAuthorizationRequestV1;
+  decodeRequest(bytes: Uint8Array, crypto: LatticeCrypto):
+    TaskRuntimeBackgroundAuthorizationRequestV1 | null;
   destroyRequest: typeof destroyTaskRuntimeBackgroundAuthorizationRequestV1;
   createDefinitionLoader:
     typeof createCurrentNativeProtectedTaskDefinitionOccurrenceLoader;
@@ -204,7 +205,7 @@ type Dependencies = Readonly<{
   withCurrentMemoryAuthority: typeof withCurrentProtectedTaskMemoryAuthority;
   withSigner<Value>(input: Omit<SignerUseInput, "use"> & Readonly<{
     use(
-      signer: ProtectedTaskResultSignerAuthority,
+      signer: ProtectedTaskExecutionSignerAuthority,
       resolveHistoricalSignerPublicationManager:
         MemoryRepositoryInput["resolveHistoricalSignerPublicationManager"],
     ): Promise<Value>;
@@ -213,7 +214,8 @@ type Dependencies = Readonly<{
 
 
 const productionDependencies: Dependencies = Object.freeze({
-  decodeRequest: decodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  decodeRequest: (bytes, crypto) =>
+    decodeTaskRuntimeBackgroundAuthorizationRequestBase(crypto, bytes),
   destroyRequest: destroyTaskRuntimeBackgroundAuthorizationRequestV1,
   createDefinitionLoader:
     createCurrentNativeProtectedTaskDefinitionOccurrenceLoader,
@@ -840,7 +842,7 @@ export function createProtectedTaskNativeFixedMemorySegment(
           if (descriptorBytes === null) {
             throw new TypeError("Protected Task fixed Memory request is unavailable");
           }
-          const request = dependencies.decodeRequest(descriptorBytes);
+          const request = dependencies.decodeRequest(descriptorBytes, input.crypto);
           if (request === null) {
             throw new TypeError("Protected Task fixed Memory request is unavailable");
           }

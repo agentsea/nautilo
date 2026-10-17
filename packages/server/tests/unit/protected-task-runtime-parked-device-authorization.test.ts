@@ -12,8 +12,9 @@ import {
   domainForegroundNamespaceBindingSetDigest,
 } from "@nautilo/lattice-crypto";
 import {
-  decodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  decodeTaskRuntimeBackgroundAuthorizationRequestBase,
   destroyTaskRuntimeBackgroundAuthorizationRequestV1,
+  isTaskRuntimeBackgroundAuthorizationRequestV2Carrier,
 } from "@nautilo/lattice-crypto/background";
 import type {
   InitialTaskRuntimeRecipientAuthority,
@@ -400,6 +401,7 @@ async function fixture() {
     signing.publicKey.fill(0);
   };
   return {
+    crypto,
     resolved,
     routing,
     canonical,
@@ -440,7 +442,11 @@ test("binds the exact parked request through the held repository", async () => {
   const f = await fixture();
   try {
     const { hooks, bound } = await bind(f);
-    const request = decodeTaskRuntimeBackgroundAuthorizationRequestV1(
+    expect(isTaskRuntimeBackgroundAuthorizationRequestV2Carrier(
+      bound.requestBytes,
+    )).toBe(true);
+    const request = decodeTaskRuntimeBackgroundAuthorizationRequestBase(
+      f.crypto,
       bound.requestBytes,
     );
     expect(request).not.toBeNull();

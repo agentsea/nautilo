@@ -80,6 +80,9 @@
       "tier": "critical",
       "mutate": [
         "src/background/task-runtime-recipient-registry-v1.ts",
+        "src/background/task-runtime-request-v1.ts",
+        "src/background/task-runtime-request-v2.ts",
+        "src/background/task-runtime-signer-authorization-v1.ts",
         "src/background/task-runtime-execution-evidence-v1.ts",
         "src/background/task-runtime-terminal-message-evidence-v1.ts",
         "src/background/task-runtime-run-result-read-evidence-v1.ts",
@@ -89,7 +92,7 @@
         "src/object/task-runtime-agent-access-manifest-set-v1.ts",
         "src/object/task-runtime-agent-storage-coordinator-v1.ts"
       ],
-      "command": "bun test --bail=1 --timeout 60000 tests/unit/task-runtime-recipient-registry-v1.test.ts tests/integration/task-runtime-object-v1.test.ts tests/unit/task-runtime-agent-object-access-set-v1.test.ts tests/property/task-runtime-agent-object-access-set-v1.property.test.ts tests/unit/task-runtime-execution-evidence-v1.test.ts tests/unit/task-runtime-terminal-message-evidence-v1.test.ts tests/unit/task-runtime-run-result-read-evidence-v1.test.ts tests/integration/task-runtime-result-preparation-v1.test.ts tests/unit/task-runtime-checkpoint-namespace-v1.test.ts"
+      "command": "bun test --bail=1 --timeout 60000 tests/unit/task-runtime-recipient-registry-v1.test.ts tests/integration/task-runtime-object-v1.test.ts tests/unit/task-runtime-agent-object-access-set-v1.test.ts tests/property/task-runtime-agent-object-access-set-v1.property.test.ts tests/unit/task-runtime-execution-evidence-v1.test.ts tests/unit/task-runtime-terminal-message-evidence-v1.test.ts tests/unit/task-runtime-run-result-read-evidence-v1.test.ts tests/integration/task-runtime-result-preparation-v1.test.ts tests/unit/task-runtime-checkpoint-namespace-v1.test.ts tests/unit/task-runtime-request-v2.test.ts tests/unit/task-runtime-signer-authorization-v1.test.ts tests/unit/task-runtime-object-access-manifest-v5.test.ts"
     },
     {
       "name": "background-work-manifest",

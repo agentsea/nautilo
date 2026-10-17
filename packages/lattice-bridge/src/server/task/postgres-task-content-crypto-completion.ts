@@ -129,6 +129,7 @@ type ExactPublication = Readonly<{
   payloadHash: Uint8Array;
   manifestBytes: Uint8Array;
   manifestHash: Uint8Array;
+  signerEvidenceBytes?: Uint8Array;
   envelopeBytes: Uint8Array;
   envelopeHash: Uint8Array;
 }>;
@@ -166,6 +167,8 @@ function exactPublication(
     payloadHash: crypto.hash(payloadBytes),
     manifestBytes,
     manifestHash: crypto.hash(manifestBytes),
+    ...("signerEvidenceBytes" in snapshot.access && snapshot.access.signerEvidenceBytes instanceof Uint8Array
+      ? { signerEvidenceBytes: snapshot.access.signerEvidenceBytes.slice() } : {}),
     envelopeBytes,
     envelopeHash: crypto.hash(envelopeBytes),
   });
@@ -368,6 +371,7 @@ async function insertExact(
       previousManifestHash: null,
       payloadHash: exact.payloadHash,
       manifestBytes: exact.manifestBytes,
+      signerEvidenceBytes: exact.signerEvidenceBytes ?? null,
     }),
   );
   await executeTypedCryptoQuery(

@@ -10,6 +10,7 @@ import {
   type ProtectedTaskClaudeSelection,
 } from "./protected-task-claude-selection";
 import { and, eq, inArray, sql } from "drizzle-orm";
+import { createHash } from "node:crypto";
 
 import {
   actors,
@@ -24,7 +25,12 @@ import {
 } from "@nautilo/db";
 import type { LatticeCrypto } from "@nautilo/lattice-crypto";
 import {
+  decodeTaskRuntimeBackgroundAuthorizationRequestBase,
+  decodeTaskRuntimeBackgroundAuthorizationResponseV2,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV1,
   encodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  isTaskRuntimeBackgroundAuthorizationRequestV2Carrier,
+  type BackgroundAuthorizationIssuerV2,
   type TaskRuntimeBackgroundAuthorizationRequestV1,
 } from "@nautilo/lattice-crypto/background";
 import type {
@@ -103,6 +109,7 @@ type WithAcceptedClaimAuthority =
 export type HeldProtectedTaskRuntimeAuthority = Readonly<{
   foreground: DomainForegroundAuthorizationPublicCurrentAuthorityV2;
   namespaceRequirements: CurrentTaskRuntimeAuthority["namespaceRequirements"];
+  currentIssuer?: BackgroundAuthorizationIssuerV2;
   /** Absent on legacy/test adapters; native execution must treat absence as false. */
   nativeExecutionSupported?: boolean;
   claudeExecutionSelection?: ProtectedTaskClaudeSelection | null;
@@ -169,7 +176,19 @@ export function acceptedTaskRuntimeRecord(
     || response.kind !== "runtime"
     || recipient === null
     || material === null) return null;
-  return Object.freeze({
+  let wrappedResponse: Readonly<{
+    authorizationBytes: Uint8Array;
+    certificateBytes: Uint8Array;
+  }> | undefined;
+  try {
+    if (isTaskRuntimeBackgroundAuthorizationRequestV2Carrier(
+      record.descriptorBytes,
+    )) {
+      wrappedResponse = decodeTaskRuntimeBackgroundAuthorizationResponseV2(
+        material.responseBytes,
+      );
+    }
+    return Object.freeze({
     descriptorBytes: Uint8Array.from(record.descriptorBytes),
     descriptorDigest: snapshot.descriptorDigest,
     requestId: snapshot.requestId,
@@ -183,8 +202,10 @@ export function acceptedTaskRuntimeRecord(
     namespaceRequirements: record.authoritySet.namespaceRequirements,
     domainRequirements: record.authoritySet.domainRequirements,
     authorizationId: material.credentialId,
-    authorizationBytes: Uint8Array.from(material.responseBytes),
-    authorizationDigest: response.responseDigest,
+    authorizationBytes: Uint8Array.from(
+      wrappedResponse?.authorizationBytes ?? material.responseBytes,
+    ),
+    authorizationDigest: response.credentialDigest,
     authorizationExpiresAt: material.authorizationExpiresAt,
     issuingHumanId: response.issuingHumanId,
     issuingDeviceId: response.issuingDeviceId,
@@ -192,7 +213,13 @@ export function acceptedTaskRuntimeRecord(
       material.issuingDeviceAuthorizationRevision,
     issuerSigningPublicKeyHash:
       Uint8Array.from(material.issuerSigningPublicKeyHash),
-  });
+    });
+  } catch {
+    return null;
+  } finally {
+    wrappedResponse?.authorizationBytes.fill(0);
+    wrappedResponse?.certificateBytes.fill(0);
+  }
 }
 
 export function destroyAcceptedTaskRuntimeRecord(
@@ -214,6 +241,9 @@ export function copyProtectedTaskRuntimeAuthority(
   opencodeExecutionSelection?: ProtectedTaskOpenCodeSelection | null,
 ): HeldProtectedTaskRuntimeAuthority {
   const plan = authority.plan;
+  const signingPublicKeyHash = new Uint8Array(
+    createHash("sha256").update(authority.device.signingPublicKey).digest(),
+  );
   return Object.freeze({
     foreground: Object.freeze({
       authorizationId: plan.authorizationId,
@@ -248,6 +278,17 @@ export function copyProtectedTaskRuntimeAuthority(
         operations: Object.freeze([...requirement.operations]),
       })),
     ),
+    currentIssuer: Object.freeze({
+      humanId: authority.device.humanActorId,
+      deviceId: authority.device.deviceId,
+      deviceGeneration: authority.device.deviceGeneration,
+      serverInstanceId: authority.device.serverInstanceId,
+      lineageGeneration: authority.device.lineageGeneration,
+      epoch: authority.device.epoch,
+      securityRevision: authority.device.securityRevision,
+      headDigest: Uint8Array.from(authority.device.headDigest),
+      signingPublicKeyHash,
+    }),
     nativeExecutionSupported,
     ...(claudeExecutionSelection === undefined ? {} : {
       claudeExecutionSelection: claudeExecutionSelection === null ? null
@@ -268,6 +309,8 @@ export function destroyProtectedTaskRuntimeAuthority(authority: HeldProtectedTas
     domain.headDigest.fill(0);
     domain.activeNamespaceBindingSetDigest.fill(0);
   }
+  authority.currentIssuer?.headDigest.fill(0);
+  authority.currentIssuer?.signingPublicKeyHash.fill(0);
 }
 
 export async function loadCurrentProtectedTaskRuntimeLifecycleFacts(input: Readonly<{
@@ -449,17 +492,35 @@ async function withLockedCurrentProtectedTaskRuntimeAuthority<Value>(
 ): Promise<Value | null> {
   const accepted = acceptedTaskRuntimeRecord(input.record);
   if (accepted === null || input.record.descriptorBytes === null) return null;
-  let requestBytes: Uint8Array;
+  let expectedRequestBytes: Uint8Array | undefined;
+  let descriptorRequestBytes: Uint8Array | undefined;
+  let descriptorRequest: TaskRuntimeBackgroundAuthorizationRequestV1 | null = null;
   try {
-    requestBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV1(
+    expectedRequestBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV1(
       input.request,
     );
+    descriptorRequest = decodeTaskRuntimeBackgroundAuthorizationRequestBase(
+      input.crypto,
+      input.record.descriptorBytes,
+    );
+    if (descriptorRequest !== null) {
+      descriptorRequestBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV1(
+        descriptorRequest,
+      );
+    }
   } catch {
     destroyAcceptedTaskRuntimeRecord(accepted);
     return null;
+  } finally {
+    if (descriptorRequest !== null) {
+      destroyTaskRuntimeBackgroundAuthorizationRequestV1(descriptorRequest);
+    }
   }
-  const exactRequest = sameBytes(requestBytes, input.record.descriptorBytes);
-  requestBytes.fill(0);
+  const exactRequest = expectedRequestBytes !== undefined
+    && descriptorRequestBytes !== undefined
+    && sameBytes(expectedRequestBytes, descriptorRequestBytes);
+  expectedRequestBytes?.fill(0);
+  descriptorRequestBytes?.fill(0);
   if (!exactRequest) {
     destroyAcceptedTaskRuntimeRecord(accepted);
     return null;

@@ -152,6 +152,15 @@ function transportRecord(
       ...retainedFields,
     }) as RoomHistoryShadowRecordTransportV1;
   }
+  if (record.kind === "task_runtime") {
+    return Object.freeze({
+      kind: record.kind,
+      taskId: record.taskId,
+      taskRunId: record.taskRunId,
+      ...shared,
+      ...retainedFields,
+    }) as RoomHistoryShadowRecordTransportV1;
+  }
   return Object.freeze({
     ...shared,
     shadowOperationId: record.shadowOperationId,

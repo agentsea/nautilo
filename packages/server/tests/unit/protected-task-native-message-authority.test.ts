@@ -469,6 +469,34 @@ function nonProductDependencies(): Partial<
 }
 
 describe("protected Task native Message current authority", () => {
+  test("binds the exact certified Runtime signer proof projection", async () => {
+    const certified = Object.freeze({
+      ...expected(),
+      runtimeGeneration: 0,
+      agentAuthorizationRevision: 0,
+      signerKeyId: `agent_runtime_signer_${"a".repeat(64)}`,
+      signerAuthorizationHash: hex(8),
+    });
+    const base = dependencies();
+    const resolve = createProtectedTaskNativeMessageAuthorityResolver(
+      input(),
+      {
+        ...base,
+        inspectSigner: () => Promise.resolve({
+          runtimeGeneration: certified.runtimeGeneration,
+          agentAuthorizationRevision: certified.agentAuthorizationRevision,
+          signerKeyId: certified.signerKeyId,
+          signerAuthorizationHash: certified.signerAuthorizationHash,
+        }),
+      },
+    );
+    expect(await resolve(certified)).toEqual(certified);
+    expect(await resolve({
+      ...certified,
+      signerAuthorizationHash: hex(9),
+    })).toBeNull();
+  });
+
   test("returns a detached exact projection when every authority is current", async () => {
     const resolve = createProtectedTaskNativeMessageAuthorityResolver(
       input(),

@@ -53,6 +53,7 @@ import {
   DOMAIN_NAMESPACE_BUNDLE_FORMAT_VERSION_V2,
   DOMAIN_NAMESPACE_BUNDLE_INNER_PURPOSE_V2,
   deriveHumanMessageEditCryptoObjectIdV1,
+  encodeObjectAccessManifestV5,
 } from "@nautilo/lattice-crypto/wire";
 import { prepareHumanExistingMessageRepresentationCryptoRevision,
   prepareHumanPeerLiveShadowCryptoRevision } from
@@ -2208,4 +2209,180 @@ describe("Room-owned Task wake history", () => {
       }
       expect(connection.queries.every(query => !/\b(?:tasks|task_runs|jobs|protected_task_run_output_bindings)\b/.test(query.statement))).toBe(true);
     });
+});
+
+describe("native Task transcript history", () => {
+  const TASK_ID = "43000000-0000-4000-8000-000000000275";
+  const TASK_RUN_ID = "31300000-0000-4000-8000-000000000089";
+
+  async function nativeFixture(
+    representationMode: "ordinary-and-protected" | "protected-only",
+    substituteProof = false,
+  ) {
+    const crypto = new LatticeCrypto(seededRng(913_280));
+    const operationId = "native-task-transcript-test";
+    const execution = sharedHistoryExecution(crypto, { operationId,
+      sessionId: SESSION_ID, roomId: ROOM_ID, namespaceId: NAMESPACE_ID,
+      humanId: HUMAN_ID, deviceId: DEVICE_ID, agentId: USER_ID,
+      createdAt: 1_800_000_000_000, generation: 1, accessRevision: 4,
+      headDigest: DIGEST_BYTES, publicationDigest: DIGEST_BYTES,
+      publicationSetDigest: DIGEST_BYTES,
+      audienceFingerprint: DIGEST_BYTES });
+    const nativeObjectId = deriveMessageCryptoObjectIdV2({
+      sessionId: SESSION_ID, messageId: 28, revision: 0,
+    });
+    const prepared = prepareDeviceWrappedLiveShadowAgentConversationCryptoRevisionWithDek({
+      crypto, objectId: nativeObjectId,
+      payload: { role: "assistant", content: "Native Task transcript" },
+      createdAt: 1_800_000_000_000,
+      objectDek: new Uint8Array(32).fill(0x63),
+      namespace: { namespaceId: NAMESPACE_ID, accessRevision: 4,
+        keyGeneration: 1, headDigest: DIGEST_BYTES,
+        publicationDigest: DIGEST_BYTES,
+        publicationSetDigest: DIGEST_BYTES,
+        audienceFingerprint: DIGEST_BYTES,
+        aiKey: new Uint8Array(32).fill(0x31) }, operationId,
+      grant: { grantId: "native-task-grant", grantHash: DIGEST_BYTES,
+        recipientKeyId: "native-task-recipient" },
+      runtime: execution.runtime,
+      signerKeyId: execution.signer.principal.signerKeyId,
+      signerPublicKey: execution.signer.publicKey,
+      agentAuthorizationRevision: 9,
+      resolveCurrentAuthorization: () => null,
+    });
+    const snapshot = readPreparedConversationCryptoRevisionSnapshot(prepared).value;
+    const certificateBytes = new Uint8Array([7, 8, 9]);
+    const authorizationHash = crypto.hash(certificateBytes);
+    const manifestBytes = encodeObjectAccessManifestV5({
+      formatVersion: 5, objectId: objectId(nativeObjectId),
+      payloadHash: crypto.hash(snapshot.object.payloadBytes.ciphertext),
+      accessRevision: accessRevision(0), previousManifestHash: null,
+      envelopeHashes: [crypto.hash(snapshot.access.envelopeBytes[0])],
+      signer: execution.signer.principal,
+      signerAuthorizationHash: authorizationHash,
+      hostAuthorizationRevision: authorizationRevision(9),
+      signature: new Uint8Array(64).fill(0x71),
+    });
+    const publicationKey = `task-transcript:${TASK_RUN_ID}:fp:v1:one`;
+    const candidate = productRow(0, 28, {
+      role: "assistant", author_role: "assistant", author_agent_id: USER_ID,
+      content: representationMode === "protected-only" ? null
+        : "Native Task transcript",
+      source_user_id: USER_ID, source_human_id: null,
+      crypto_object_id: nativeObjectId, lifecycle_object_id: nativeObjectId,
+      object_id_scheme: "message_v2", transcript_origin: "subagent",
+      append_idempotency_key: publicationKey,
+      session_thread_id: "task:one",
+      shadow_operation_id: null, human_peer_shadow_operation_id: null,
+      shared_agent_shadow_operation_id: null,
+      shared_agent_shadow_execution_id: null, task_wake_operation_id: null,
+      completion: "complete", disposition: "mapped",
+      parity_status: "server_authenticated", repair_identity_digest: null,
+    });
+    const restricted = connection(async statement => {
+      if (!statement.includes('from "object_crypto_access_manifests"')) {
+        throw new Error(`Unexpected restricted query: ${statement}`);
+      }
+      return [{ object_id: nativeObjectId,
+        signer_evidence_bytes: substituteProof
+          ? new Uint8Array([7, 8, 10]) : certificateBytes }];
+    });
+    const value = await subject([[candidate], [{ task_run_id: TASK_RUN_ID,
+      session_id: SESSION_ID, message_id: 28, published_revision: 0,
+      association_kind: "transcript", publication_key: publicationKey,
+      task_id: TASK_ID, graph_thread_id: "task:one" }]], restricted,
+    "agent", undefined, {
+      payloadBytes: snapshot.object.payloadBytes.ciphertext,
+      manifestBytes, envelopeBytes: snapshot.access.envelopeBytes[0],
+      signerPublicKey: execution.signer.publicKey, runtimeRetained: true,
+    });
+    return { ...value, certificateBytes };
+  }
+
+  test.each(["ordinary-and-protected", "protected-only"] as const)(
+    "projects exact Task provenance and certificate in %s mode", async (mode) => {
+      const value = await nativeFixture(mode);
+      const result = await value.project({ subjectUserId: USER_ID,
+        subjectHumanId: HUMAN_ID, readerDeviceId: DEVICE_ID, roomId: ROOM_ID,
+        selectedCoordinates: [coordinate(28, {
+          role: "assistant", logicalMessageKey: "row:28",
+        })],
+        representationMode: mode });
+      expect(result).toMatchObject({ status: "ready", records: [{
+        kind: "task_runtime", taskId: TASK_ID, taskRunId: TASK_RUN_ID,
+      }], signerEvidence: [{ kind: "task_runtime_signer_certificate",
+        evidenceBytesBase64url: Buffer.from(value.certificateBytes)
+          .toString("base64url") }] });
+      if (result.status !== "ready") throw new Error("Expected ready history");
+      if (mode === "protected-only") {
+        expect(result.records[0]).toHaveProperty(
+          "representationMode", "protected-only",
+        );
+        expect(result.records[0]).not.toHaveProperty(
+          "ordinaryPayloadBytesBase64url",
+        );
+        expect(value.connection.queries[1]!.statement)
+          .not.toContain("sm.content AS content");
+      } else {
+        expect(result.records[0]).toHaveProperty(
+          "ordinaryPayloadBytesBase64url",
+        );
+      }
+    },
+  );
+
+  test("rejects evidence bytes that disagree with the V5 proof hash", async () => {
+    const value = await nativeFixture("protected-only", true);
+    let rejected = false;
+    try {
+      await value.project({ subjectUserId: USER_ID,
+        subjectHumanId: HUMAN_ID, readerDeviceId: DEVICE_ID, roomId: ROOM_ID,
+        selectedCoordinates: [coordinate(28, {
+          role: "assistant", logicalMessageKey: "row:28",
+        })], representationMode: "protected-only" });
+    } catch { rejected = true; }
+    expect(rejected).toBeTrue();
+  });
+
+  test("requires the exact TaskRun association before ciphertext access", async () => {
+    const taskRunId = TASK_RUN_ID;
+    const nativeObjectId = deriveMessageCryptoObjectIdV2({
+      sessionId: SESSION_ID, messageId: 28, revision: 0,
+    });
+    const candidate = productRow(0, 28, {
+      role: "assistant", author_role: "assistant", author_agent_id: USER_ID,
+      content: null, source_user_id: USER_ID, source_human_id: null,
+      crypto_object_id: nativeObjectId, lifecycle_object_id: nativeObjectId,
+      object_id_scheme: "message_v2", transcript_origin: "subagent",
+      append_idempotency_key: `task-transcript:${taskRunId}:fp:v1:one`,
+      session_thread_id: "task:one",
+      shadow_operation_id: null, human_peer_shadow_operation_id: null,
+      shared_agent_shadow_operation_id: null,
+      shared_agent_shadow_execution_id: null, task_wake_operation_id: null,
+      completion: "complete", disposition: "mapped",
+      parity_status: "server_authenticated", repair_identity_digest: null,
+    });
+    const { project, connection, cryptoReads } = await subject([
+      [candidate],
+      [{ task_run_id: taskRunId,
+        session_id: "41000000-0000-4000-8000-000000000276",
+        message_id: 28, published_revision: 0,
+        association_kind: "transcript",
+        publication_key: `task-transcript:${taskRunId}:fp:v1:one`,
+        task_id: "43000000-0000-4000-8000-000000000275",
+        graph_thread_id: "task:one" }],
+    ]);
+    expect(await project({ subjectUserId: USER_ID,
+      subjectHumanId: HUMAN_ID, readerDeviceId: DEVICE_ID, roomId: ROOM_ID,
+      selectedCoordinates: [coordinate(28, {
+        role: "assistant", logicalMessageKey: "row:28",
+      })], representationMode: "protected-only" })).toEqual({
+      status: "unavailable", reason: "projection_corrupt",
+      selectedCount: 1, eligibleCount: 1,
+    });
+    expect(connection.queries.some(query =>
+      query.statement.includes('from "task_run_message_associations"')
+    )).toBeTrue();
+    expect(cryptoReads).toEqual([]);
+  });
 });

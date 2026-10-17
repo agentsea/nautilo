@@ -1641,12 +1641,16 @@ export class PostgresLatticeStorage implements LatticeStorage {
           authorization.kind
             === "device-wrapped-live-shadow-agent-genesis-set"
           || authorization.kind === "task-runtime-agent-genesis-set"
+          || authorization.kind
+            === "task-runtime-temporary-agent-genesis-set"
         ) {
           const context = authorization.context;
           // The Task owner holds product and accepted-request authority through
           // this transaction. Recheck its Domain and signer before Namespace
           // heads, in the same order used by native key rotation.
-          if (authorization.kind === "task-runtime-agent-genesis-set") {
+          if (authorization.kind === "task-runtime-agent-genesis-set"
+            || authorization.kind
+              === "task-runtime-temporary-agent-genesis-set") {
             for (const domain of authorization.context.domains) {
               const rows = await executeTypedCryptoQuery(transaction,
                 cryptoTypedDb.select({
@@ -1669,15 +1673,17 @@ export class PostgresLatticeStorage implements LatticeStorage {
                 return "stale";
               }
             }
-            const runtime = await getRuntime(transaction, context.agentId, true);
-            const signer = await getRuntimeSignerPublication(transaction,
-              context.agentId, context.runtimeGeneration);
-            if (runtime === null
-              || runtime.runtime.authorizationRevision !== context.agentAuthorizationRevision
-              || runtime.runtime.runtimeGeneration !== context.runtimeGeneration
-              || signer === null
-              || !signerPublicationsEqual(signer, authorization.signerPublication)) {
-              return "stale";
+            if (authorization.kind === "task-runtime-agent-genesis-set") {
+              const runtime = await getRuntime(transaction, context.agentId, true);
+              const signer = await getRuntimeSignerPublication(transaction,
+                context.agentId, context.runtimeGeneration);
+              if (runtime === null
+                || runtime.runtime.authorizationRevision !== context.agentAuthorizationRevision
+                || runtime.runtime.runtimeGeneration !== context.runtimeGeneration
+                || signer === null
+                || !signerPublicationsEqual(signer, authorization.signerPublication)) {
+                return "stale";
+              }
             }
           }
           const currentDomains = new Map<string, Readonly<{
@@ -1785,12 +1791,27 @@ export class PostgresLatticeStorage implements LatticeStorage {
             || manifest.previousManifestHash !== null
             || manifest.objectId !== context.objectId
             || !bytesEqual(manifest.payloadHash, context.payloadHash)
-            || manifest.hostAuthorizationRevision
-              !== context.agentAuthorizationRevision
+            || manifest.hostAuthorizationRevision !== (
+              authorization.kind
+                  === "task-runtime-temporary-agent-genesis-set"
+                ? authorization.context.hostAuthorizationRevision
+                : context.agentAuthorizationRevision
+            )
             || manifest.signer.kind !== "agent_runtime"
             || manifest.signer.agentId !== context.agentId
             || manifest.signer.runtimeGeneration !== context.runtimeGeneration
             || manifest.signer.signerKeyId !== context.signerKeyId
+            || (authorization.kind
+                === "task-runtime-temporary-agent-genesis-set"
+              ? context.agentAuthorizationRevision !== 0
+                || context.runtimeGeneration !== 0
+                || manifest.signerAuthorizationHash === null
+                || !bytesEqual(
+                  manifest.signerAuthorizationHash,
+                  sha256(authorization.signerEvidenceBytes),
+                )
+              : authorization.kind === "task-runtime-agent-genesis-set"
+                && manifest.signerAuthorizationHash !== null)
             || context.envelopes.length !== context.namespaces.length
             || context.envelopes.some((envelope, index) => {
               const namespace = context.namespaces[index]!;
@@ -1964,6 +1985,11 @@ export class PostgresLatticeStorage implements LatticeStorage {
           previousManifestHash: manifest.previousManifestHash,
           payloadHash: manifest.payloadHash,
           manifestBytes: intended.head.manifestBytes,
+          signerEvidenceBytes:
+            authorization.kind
+                === "task-runtime-temporary-agent-genesis-set"
+              ? authorization.signerEvidenceBytes
+              : null,
         }),
       );
       for (

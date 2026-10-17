@@ -1,8 +1,10 @@
 import type { PostgresJsBridgeConnection } from "@nautilo/db";
 import { ClassifiedDataOperationError, withProtectedTaskResultSigner,
-  type ProtectedTaskResultSignerAuthority } from "@nautilo/lattice-bridge";
+  withProtectedTaskTemporaryResultSigner,
+  type ProtectedTaskExecutionSignerAuthority } from "@nautilo/lattice-bridge";
 import { PostgresLatticeStorage, verifyCryptoPostgresHandle } from "@nautilo/lattice-bridge/server";
-import { assertAuthenticTaskRuntimeExecutionEvidence, type DomainForegroundSecretEntry,
+import { assertAuthenticTaskRuntimeExecutionEvidence, hasTaskRuntimeTemporarySigner,
+  type DomainForegroundSecretEntry,
   type LatticeCrypto, type TaskRuntimeExecutionEvidence } from "@nautilo/lattice-crypto";
 import { withProtectedTaskResultSignerHistory } from "./protected-task-result-signer-history";
 
@@ -21,7 +23,7 @@ export async function withProtectedTaskRuntimeSigner<Value>(input: Readonly<{
   evidence: TaskRuntimeExecutionEvidence;
   domains: readonly DomainForegroundSecretEntry[];
   use(
-    signer: ProtectedTaskResultSignerAuthority,
+    signer: ProtectedTaskExecutionSignerAuthority,
     resolveHistoricalSignerPublicationManager:
       ProtectedTaskHistoricalSignerPublicationResolver,
   ): Promise<Value>;
@@ -36,6 +38,17 @@ export async function withProtectedTaskRuntimeSigner<Value>(input: Readonly<{
       "authority",
       "Protected Task Memory result Domain is unavailable",
     );
+  }
+  if (hasTaskRuntimeTemporarySigner(input.evidence)) {
+    return withProtectedTaskTemporaryResultSigner({
+      evidence: input.evidence,
+      domain,
+      execute: async signer => {
+        const value = await input.use(signer, () => null);
+        assertAuthenticTaskRuntimeExecutionEvidence(input.evidence);
+        return value;
+      },
+    });
   }
   const handle = await verifyCryptoPostgresHandle(input.restricted);
   const storage = new PostgresLatticeStorage(handle);

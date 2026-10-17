@@ -11,8 +11,15 @@ import {
 } from "@nautilo/lattice-crypto";
 import {
   createTaskRuntimeBackgroundAuthorizationRequestV1,
+  createTaskRuntimeBackgroundAuthorizationRequestV2,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV1,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV2,
+  encodeTaskRuntimeBackgroundAuthorizationResponseV2,
   encodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  encodeTaskRuntimeBackgroundAuthorizationRequestV2,
 } from "@nautilo/lattice-crypto/background";
+import {agentRuntimeObjectSignerKeyIdV1} from "@nautilo/lattice-crypto/wire";
+import {bytesToHex} from "@noble/hashes/utils.js";
 import type {
   CurrentTaskRuntimeAuthority,
 } from "@nautilo/lattice-bridge/server";
@@ -29,6 +36,7 @@ import type {
 } from "@nautilo/runtime";
 
 import {
+  acceptedTaskRuntimeRecord,
   createCurrentProtectedTaskRuntimeClaimAuthorityPort,
   createCurrentProtectedTaskRuntimeAuthorityPort,
   loadCurrentProtectedTaskRuntimeLifecycleFacts,
@@ -233,6 +241,40 @@ async function fixture() {
 }
 
 describe("current protected Task Runtime authority adapter", () => {
+  test("unwraps a certified response for the existing accepted-grant authority owner", async () => {
+    const f = await fixture();
+    const domain = new TextEncoder().encode(
+      "nautilo/lattice-crypto/task-runtime-background-authorization-request/v2",
+    );
+    const descriptorBytes = new Uint8Array(4 + domain.length);
+    new DataView(descriptorBytes.buffer).setUint32(0, domain.length, false);
+    descriptorBytes.set(domain, 4);
+    const authorizationBytes = new Uint8Array([7, 8, 9]);
+    const responseBytes = encodeTaskRuntimeBackgroundAuthorizationResponseV2({
+      authorizationBytes,
+      certificateBytes: new Uint8Array([10]),
+    });
+    const credentialDigest = "33".repeat(32);
+    const accepted = acceptedTaskRuntimeRecord({
+      ...f.record,
+      descriptorBytes,
+      snapshot: {
+        ...f.record.snapshot,
+        acceptedResponse: {
+          ...f.record.snapshot.acceptedResponse!,
+          responseDigest: "44".repeat(32),
+          credentialDigest,
+        },
+      },
+      acceptedMaterial: {
+        ...f.record.acceptedMaterial!,
+        responseBytes,
+      },
+    });
+    expect(accepted?.authorizationBytes).toEqual(authorizationBytes);
+    expect(accepted?.authorizationDigest).toBe(credentialDigest);
+  });
+
   test("rechecks an accepted awaiting run before claim", async () => {
     const f = await fixture();
     const awaitingFacts: CurrentProtectedTaskRuntimeFacts = {
@@ -461,6 +503,19 @@ describe("current protected Task Runtime authority adapter", () => {
         expect(current.namespaceRequirements).toEqual(
           f.record.authoritySet.namespaceRequirements,
         );
+        expect(current.currentIssuer).toEqual({
+          humanId: f.authority.device.humanActorId,
+          deviceId: f.authority.device.deviceId,
+          deviceGeneration: f.authority.device.deviceGeneration,
+          serverInstanceId: f.authority.device.serverInstanceId,
+          lineageGeneration: f.authority.device.lineageGeneration,
+          epoch: f.authority.device.epoch,
+          securityRevision: f.authority.device.securityRevision,
+          headDigest: f.authority.device.headDigest,
+          signingPublicKeyHash: f.crypto.hash(
+            f.authority.device.signingPublicKey,
+          ),
+        });
         expect(current.nativeExecutionSupported).toBe(true);
         expect(current.opencodeExecutionSelection).toEqual(openCodeSelection);
         expect(current.opencodeExecutionSelection).not.toBe(openCodeSelection);
@@ -472,6 +527,120 @@ describe("current protected Task Runtime authority adapter", () => {
     expect(loaded).toBe(1);
     expect(order).toEqual(["lifecycle", "namespace", "room", "execution"]);
     f.signing.privateKey.fill(0);
+  });
+
+  test("accepts a V2 descriptor carrier through the current authority base projection", async () => {
+    const f = await fixture();
+    const taskId = "10000000-0000-4000-8000-000000000901";
+    const runId = "20000000-0000-4000-8000-000000000901";
+    const baseRequest = createTaskRuntimeBackgroundAuthorizationRequestV1({
+      requestId: f.request.requestId,
+      workId: runId,
+      workKind: f.request.workKind,
+      workPurpose: f.request.workPurpose,
+      recipientGeneration: f.request.recipientGeneration,
+      episodeId: f.request.episodeId,
+      sourceRoomId: f.request.sourceRoomId,
+      recipientKeyId: f.request.recipientKeyId,
+      recipientPublicKey: f.request.recipientPublicKey,
+      authorizationPlan: f.authority.plan,
+      issuedAt: f.request.issuedAt,
+      deadlineAt: f.request.deadlineAt,
+    });
+    const resultDigest = f.crypto.hash(new TextEncoder().encode(
+      `nautilo/task-run-result-crypto-object/v1\n${taskId}\n${runId}\n1`,
+    ));
+    const request = createTaskRuntimeBackgroundAuthorizationRequestV2(
+      f.crypto,
+      {
+        baseRequest,
+        work: {
+          taskId,
+          taskRunId: runId,
+          inputObjectId: f.occurrence.task.cryptoObjectId,
+          resultObjectId: `task-run-result:v1:${bytesToHex(resultDigest)}`,
+          executionSegment: 1,
+          workIdentityHash: new Uint8Array(32).fill(0x71),
+        },
+        signer: {
+          agentId: f.occurrence.task.agentId,
+          runtimeGeneration: 0,
+          signerKeyId: agentRuntimeObjectSignerKeyIdV1(
+            f.crypto,
+            f.signing.publicKey,
+          ),
+          signerPublicKey: f.signing.publicKey,
+        },
+        deviceGroupHead: {
+          serverInstanceId: f.authority.device.serverInstanceId,
+          lineageGeneration: f.authority.device.lineageGeneration,
+          epoch: f.authority.device.epoch,
+          headDigest: f.authority.device.headDigest,
+          signingPublicKeyHash: f.crypto.hash(f.signing.publicKey),
+        },
+        namespaceRequirements: f.record.authoritySet.namespaceRequirements,
+      },
+    );
+    resultDigest.fill(0);
+    const descriptorBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV2(
+      f.crypto,
+      request,
+    );
+    const occurrence: ProtectedTaskRunningOccurrence = {
+      task: { ...f.runningOccurrence.task, id: taskId },
+      run: { ...f.runningOccurrence.run, id: runId, taskId },
+    };
+    const facts: CurrentProtectedTaskRuntimeFacts = {
+      ...f.facts,
+      task: { ...f.facts.task, id: taskId },
+      run: { ...f.facts.run, id: runId, taskId },
+    };
+    const record = {
+      ...f.record,
+      descriptorBytes,
+      snapshot: { ...f.record.snapshot, workId: runId },
+      acceptedMaterial: {
+        ...f.record.acceptedMaterial!,
+        responseBytes: encodeTaskRuntimeBackgroundAuthorizationResponseV2({
+          authorizationBytes: f.record.acceptedMaterial!.responseBytes,
+          certificateBytes: new Uint8Array([4]),
+        }),
+      },
+    };
+    const port = createCurrentProtectedTaskRuntimeAuthorityPort({
+      ...factLoaders(facts),
+      withAcceptedAuthority: (async (input: Parameters<
+        typeof withCurrentAcceptedTaskRuntimeAuthority>[0]) => {
+        const product = {} as never;
+        if (!await input.validateCurrentProduct(product, {} as never)) {
+          return null;
+        }
+        return input.use(f.authority, product, {} as never);
+      }) as typeof withCurrentAcceptedTaskRuntimeAuthority,
+    });
+    try {
+      expect(await port({
+        runner: {} as never,
+        restricted: {} as never,
+        crypto: f.crypto,
+        serverScope: "https://nautilo.example",
+        subject: {
+          userId: occurrence.task.requestorId,
+          humanActorId: f.authority.plan.subjectHumanId,
+          deviceId: f.authority.plan.committerDeviceId,
+        },
+        occurrence,
+        record,
+        request: baseRequest,
+        now: () => f.now,
+        use: current => current.foreground.authorizationId,
+      })).toBe(f.request.requestId);
+    } finally {
+      descriptorBytes.fill(0);
+      destroyTaskRuntimeBackgroundAuthorizationRequestV2(request);
+      destroyTaskRuntimeBackgroundAuthorizationRequestV1(baseRequest);
+      f.signing.privateKey.fill(0);
+    }
   });
 
   test("accepts current running cron authority with a pending parent Task", async () => {

@@ -15,7 +15,7 @@ import {
   assertAuthenticTaskRuntimeExecutionEvidence,
 } from "@nautilo/lattice-crypto";
 import {
-  decodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  decodeTaskRuntimeBackgroundAuthorizationRequestBase,
   destroyTaskRuntimeBackgroundAuthorizationRequestV1,
 } from "@nautilo/lattice-crypto/background";
 import {
@@ -194,7 +194,10 @@ export function createProtectedTaskExternalExecution<Selection extends object, A
             used = true;
             const providerLifetime = new AbortController();
             const combined = AbortSignal.any([authorizationSignal, signal, providerLifetime.signal]);
-            const request = decodeTaskRuntimeBackgroundAuthorizationRequestV1(grant.record.descriptorBytes!);
+            const request = decodeTaskRuntimeBackgroundAuthorizationRequestBase(
+              input.crypto,
+              grant.record.descriptorBytes!,
+            );
             if (request === null || request.requestId !== reference.authorizationRequestId
               || request.workId !== running.run.id || request.sourceRoomId !== grant.evidence.sourceRoomId) {
               if (request !== null) destroyTaskRuntimeBackgroundAuthorizationRequestV1(request);

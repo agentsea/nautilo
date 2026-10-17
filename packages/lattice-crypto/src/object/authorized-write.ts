@@ -88,6 +88,13 @@ export interface TaskRuntimeAgentObjectAccessGenesisSetAuthorizationExpectationV
   readonly managerSigningPublicKeyHash: Uint8Array;
 }
 
+export interface TaskRuntimeTemporaryAgentObjectAccessGenesisSetAuthorizationExpectationV1 {
+  readonly kind: "task-runtime-temporary-agent-genesis-set";
+  readonly context:
+    TaskRuntimeAgentObjectAccessGenesisSetAuthorityContextV1;
+  readonly signerEvidenceBytes: Uint8Array;
+}
+
 export type ObjectAccessAuthorizationExpectationV2 =
   | ObjectAccessGenesisAuthorizationExpectationV2
   | HumanObjectAccessGenesisAuthorizationExpectationV5
@@ -95,7 +102,8 @@ export type ObjectAccessAuthorizationExpectationV2 =
   | AgentObjectAccessGenesisAuthorizationExpectationV3
   | DeviceWrappedLiveShadowAgentObjectAccessGenesisAuthorizationExpectationV1
   | DeviceWrappedAgentObjectAccessGenesisSetAuthorizationExpectationV1
-  | TaskRuntimeAgentObjectAccessGenesisSetAuthorizationExpectationV1;
+  | TaskRuntimeAgentObjectAccessGenesisSetAuthorizationExpectationV1
+  | TaskRuntimeTemporaryAgentObjectAccessGenesisSetAuthorizationExpectationV1;
 
 /**
  * Process-local proof that one object-access state write passed fresh host

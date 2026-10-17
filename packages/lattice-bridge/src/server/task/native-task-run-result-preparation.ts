@@ -430,6 +430,9 @@ async function prepareNativeResult(
           agentAuthorizationRevision: input.agentAuthorizationRevision,
           runtime: input.runtime,
           signerPublication: input.signerPublication,
+          ...(input.temporarySigner === undefined ? {} : {
+            temporarySigner: input.temporarySigner,
+          }),
           resolveHistoricalSignerPublicationManager:
             input.resolveHistoricalSignerPublicationManager,
           namespace,

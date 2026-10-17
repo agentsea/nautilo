@@ -16,7 +16,7 @@ import {
 import { LatticeCrypto } from "@nautilo/lattice-crypto";
 import { taskContentRevisionObjectIdV1 } from "@nautilo/lattice-bridge";
 import {
-  decodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  decodeTaskRuntimeBackgroundAuthorizationRequestBase,
   destroyTaskRuntimeBackgroundAuthorizationRequestV1,
 } from "@nautilo/lattice-crypto/background";
 import {
@@ -315,7 +315,10 @@ function exactBoundRecord(
     === record.snapshot.descriptorDigest;
   digest.fill(0);
   if (!exactDigest) return false;
-  const request = decodeTaskRuntimeBackgroundAuthorizationRequestV1(descriptor);
+  const request = decodeTaskRuntimeBackgroundAuthorizationRequestBase(
+    crypto,
+    descriptor,
+  );
   if (request === null) return false;
   try {
     return request.requestId === record.snapshot.requestId

@@ -12,8 +12,8 @@ import {
   domainForegroundNamespaceBindingSetDigest,
 } from "@nautilo/lattice-crypto";
 import {
-  destroyTaskRuntimeBackgroundAuthorizationRequestV1,
-  encodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV2,
+  encodeTaskRuntimeBackgroundAuthorizationRequestV2,
 } from "@nautilo/lattice-crypto/background";
 import { deriveTaskContentCryptoObjectIdV1 } from "@nautilo/lattice-bridge";
 import type {
@@ -700,12 +700,23 @@ test("lends exact bound authority without manufacturing an awaiting record", asy
       recipientKeyId,
       recipientPublicKey: keyPair.publicKey,
       expiresAt,
+      signer: {
+        agentId: AGENT,
+        runtimeGeneration: 0,
+        signerPublicKey: bytes(23),
+        signerKeyId: `agent_runtime_signer_${Buffer.from(
+          crypto.hash(bytes(23)),
+        ).toString("hex")}`,
+      },
     },
     binding,
     authority: boundAuthority,
   });
+  if (request.formatVersion !== 2) {
+    throw new TypeError("Initial Task request did not use V2");
+  }
   const descriptorBytes =
-    encodeTaskRuntimeBackgroundAuthorizationRequestV1(request);
+    encodeTaskRuntimeBackgroundAuthorizationRequestV2(crypto, request);
   const bound = {
     ...initial,
     snapshot: {
@@ -782,7 +793,7 @@ test("lends exact bound authority without manufacturing an awaiting record", asy
     })).rejects.toThrow("expired before commit");
     expect(scopedOperationsDrained).toBe(true);
   } finally {
-    destroyTaskRuntimeBackgroundAuthorizationRequestV1(request);
+    destroyTaskRuntimeBackgroundAuthorizationRequestV2(request);
     descriptorBytes.fill(0);
     keyPair.privateKey.fill(0);
     keyPair.publicKey.fill(0);

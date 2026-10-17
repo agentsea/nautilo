@@ -11,11 +11,14 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex } from "@noble/hashes/utils.js";
 
 import { LatticeCrypto, seededRng } from "../../src/crypto/index.ts";
+import { agentRuntimeObjectSignerKeyIdV1 } from
+  "../../src/agent-runtime/object-signer-v1.ts";
 import {
   createDomainForegroundAuthorizationPlanV2,
   DOMAIN_FOREGROUND_AUTHORIZATION_MAX_TTL_MS_V2,
   domainForegroundNamespaceBindingSetDigestV2,
   mintDomainForegroundAuthorizationV2,
+  serializeDomainForegroundAuthorizationPlanV2,
   serializeDomainForegroundAuthorizationV2,
   type DomainForegroundAuthorizationPublicCurrentAuthorityV2,
   type DomainForegroundSecretEntryV2,
@@ -23,11 +26,25 @@ import {
 import {
   assertAuthenticTaskRuntimeCancellationResultEvidenceV1,
   assertAuthenticTaskRuntimeTerminalMessageEvidenceV1,
+  hasTaskRuntimeTemporarySignerV1,
   TaskRuntimeRecipientRegistryV1,
+  withTaskRuntimeTemporarySignerV1,
   type TaskRuntimeCancellationResultEvidenceV1,
   type TaskRuntimeTerminalMessageEvidenceV1,
 } from
   "../../src/background/task-runtime-recipient-registry-v1.ts";
+import {
+  createTaskRuntimeBackgroundAuthorizationRequestV1,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV1,
+} from "../../src/background/task-runtime-request-v1.ts";
+import {
+  createTaskRuntimeBackgroundAuthorizationRequestV2,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV2,
+  encodeTaskRuntimeBackgroundAuthorizationRequestV2,
+  taskRuntimeBackgroundAuthorizationIssuerV2,
+} from "../../src/background/task-runtime-request-v2.ts";
+import { createTaskRuntimeSignerAuthorizationV1 } from
+  "../../src/background/task-runtime-signer-authorization-v1.ts";
 import type { TaskRuntimeRecipientDeadlineSchedulerV1 } from
   "../../src/background/task-runtime-recipient-registry-v1.ts";
 import {
@@ -39,11 +56,43 @@ import {
   type TaskRuntimeExecutionEvidenceV1,
 } from "../../src/background/task-runtime-execution-evidence-v1.ts";
 import {
+  accessRevision,
   authorizationRevision,
   cryptoDeviceId,
+  cryptoDomainId,
   humanId,
+  namespaceGeneration,
+  namespaceId,
+  objectId,
 } from "../../src/v2-types/ids.ts";
 import { V2_LIMITS } from "../../src/v2-types/limits.ts";
+import {
+  assertAuthenticPreparedTaskRuntimeAgentObjectAccessManifestGenesisSetV1,
+  prepareTaskRuntimeAgentObjectAccessManifestGenesisSetV1,
+} from "../../src/object/task-runtime-agent-access-manifest-set-v1.ts";
+import { persistPreparedTaskRuntimeAgentObjectAccessManifestGenesisSetV1 } from
+  "../../src/object/task-runtime-agent-storage-coordinator-v1.ts";
+import { consumeAuthorizedObjectAccessWriteV2 } from
+  "../../src/object/authorized-write.ts";
+import { wrapObjectDekForNamespaceV2 } from
+  "../../src/object/namespace-envelope.ts";
+import {
+  decodeEncryptedPayloadV2,
+  decodeNamespaceObjectEnvelopeV2,
+  encodeNamespaceObjectEnvelopeV2,
+} from "../../src/format/object-v2.ts";
+import {
+  DOMAIN_NAMESPACE_BUNDLE_FORMAT_VERSION_V2,
+  DOMAIN_NAMESPACE_BUNDLE_INNER_PURPOSE_V2,
+  domainNamespaceRetainedAuthoritySetDigestV2,
+  prepareDomainNamespaceBundleV2,
+} from "../../src/format/domain-namespace-bundle-v2.ts";
+import {
+  assertAuthenticPreparedTaskRuntimeResultObjectV1,
+  prepareNativeTaskRuntimeResultObjectV1,
+} from "../../src/object/task-runtime-result-preparation-v1.ts";
+import { decryptObjectThroughNamespaceV2 } from
+  "../../src/object/namespace-envelope.ts";
 
 const NOW = 1_800_400_000_000;
 const REQUEST = "task-runtime-request";
@@ -127,7 +176,12 @@ async function fixture(
   scheduler?: TaskRuntimeRecipientDeadlineSchedulerV1,
   cancellation = false,
   requestId = REQUEST,
-  options: { workId?: string; separateForeground?: boolean; authorizationExpiresAt?: number } = {},
+  options: {
+    workId?: string;
+    separateForeground?: boolean;
+    authorizationExpiresAt?: number;
+    signerAgentId?: string;
+  } = {},
 ) {
   let now = NOW;
   const crypto = new LatticeCrypto(seededRng(401_001), { now: () => now });
@@ -140,11 +194,20 @@ async function fixture(
   >> = [];
   const generateEncryptionKeyPair =
     crypto.generateEncryptionKeyPair.bind(crypto);
+  const generatedRandomKeys: Uint8Array[] = [];
+  const randomBytes = crypto.randomBytes.bind(crypto);
   const generator = spyOn(crypto, "generateEncryptionKeyPair")
     .mockImplementation(async () => {
       const pair = await generateEncryptionKeyPair();
       generatedRecipientPairs.push(pair);
       return pair;
+    });
+  const randomGenerator = options.signerAgentId === undefined
+    ? undefined
+    : spyOn(crypto, "randomBytes").mockImplementation((length) => {
+      const generated = randomBytes(length);
+      generatedRandomKeys.push(generated);
+      return generated;
     });
   const attempt = await registry.createAttempt({
     requestId,
@@ -152,7 +215,13 @@ async function fixture(
     recipientGeneration: 0,
     recipientKeyId: KEY,
     expiresAt: NOW + 60_000,
-  }).finally(() => generator.mockRestore());
+    ...(options.signerAgentId === undefined
+      ? {}
+      : { signerAgentId: options.signerAgentId }),
+  }).finally(() => {
+    generator.mockRestore();
+    randomGenerator?.mockRestore();
+  });
   if (attempt.status !== "created") throw new Error("recipient unavailable");
   const generatedRecipientPair = generatedRecipientPairs[0];
   if (generatedRecipientPair === undefined) {
@@ -235,6 +304,11 @@ async function fixture(
     attempt: attempt.attempt,
     generatedRecipientPrivateKey: generatedRecipientPair.privateKey,
     generatedRecipientPublicKey: generatedRecipientPair.publicKey,
+    generatedRuntimeKey: options.signerAgentId === undefined
+      ? null
+      : generatedRandomKeys.at(-1) ?? null,
+    deviceSigner: signer,
+    plan,
     authorizationBytes,
     current,
     requestId,
@@ -242,7 +316,873 @@ async function fixture(
   };
 }
 
+async function certifiedFixture(
+  scheduler?: TaskRuntimeRecipientDeadlineSchedulerV1,
+) {
+  const value = await fixture(scheduler, false, REQUEST, {
+    signerAgentId: RESULT.signerAgentId,
+  });
+  const temporarySigner = value.attempt.signer;
+  if (temporarySigner === undefined || value.generatedRuntimeKey === null) {
+    throw new Error("temporary signer was not generated");
+  }
+  const result = Object.freeze({
+    ...RESULT,
+    objectId: `task-run-result:v1:${bytesToHex(value.crypto.hash(
+      new TextEncoder().encode(
+        `nautilo/task-run-result-crypto-object/v1\n${RESULT.taskId}\n${WORK}\n1`,
+      ),
+    ))}`,
+  });
+  const baseRequest = createTaskRuntimeBackgroundAuthorizationRequestV1({
+    requestId: REQUEST,
+    workId: WORK,
+    workKind: "task.execute",
+    workPurpose: "task.execute",
+    recipientGeneration: 0,
+    episodeId: value.current.sessionId,
+    sourceRoomId: ROOM,
+    recipientKeyId: KEY,
+    recipientPublicKey: value.attempt.recipientPublicKey,
+    authorizationPlan: value.plan,
+    issuedAt: NOW,
+    deadlineAt: NOW + 60_000,
+  });
+  const request = createTaskRuntimeBackgroundAuthorizationRequestV2(
+    value.crypto,
+    {
+      baseRequest,
+      work: {
+        taskId: result.taskId,
+        taskRunId: WORK,
+        inputObjectId: `task-definition:v1:${"b".repeat(64)}`,
+        resultObjectId: result.objectId,
+        executionSegment: 1,
+        workIdentityHash: bytes(0x61),
+      },
+      signer: temporarySigner,
+      deviceGroupHead: {
+        serverInstanceId: "task-runtime-server",
+        lineageGeneration: 3,
+        epoch: 5,
+        headDigest: bytes(0x62),
+        signingPublicKeyHash: value.crypto.hash(
+          value.deviceSigner.publicKey,
+        ),
+      },
+      namespaceRequirements: CURRENT_NAMESPACES,
+    },
+  );
+  const requestBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV2(
+    value.crypto,
+    request,
+  );
+  const authorizationHash = value.crypto.hash(value.authorizationBytes);
+  const planBytes = serializeDomainForegroundAuthorizationPlanV2(value.plan);
+  const certificateBytes = createTaskRuntimeSignerAuthorizationV1(
+    value.crypto,
+    {
+      requestBytes,
+      authorizationBytes: value.authorizationBytes,
+      expectedAuthorizationPlanBytes: planBytes,
+      expectedAuthorizationHash: authorizationHash,
+      issuerSigningPrivateKey: value.deviceSigner.privateKey,
+    },
+  );
+  const currentIssuer = taskRuntimeBackgroundAuthorizationIssuerV2(request);
+  planBytes.fill(0);
+  authorizationHash.fill(0);
+  return {
+    ...value,
+    result,
+    baseRequest,
+    request,
+    requestBytes,
+    certificateBytes,
+    currentIssuer,
+  };
+}
+
+function cleanupCertifiedFixture(
+  value: Awaited<ReturnType<typeof certifiedFixture>>,
+): void {
+  value.registry.close();
+  destroyTaskRuntimeBackgroundAuthorizationRequestV2(value.request);
+  destroyTaskRuntimeBackgroundAuthorizationRequestV1(value.baseRequest);
+  value.requestBytes.fill(0);
+  value.certificateBytes.fill(0);
+  value.currentIssuer.headDigest.fill(0);
+  value.currentIssuer.signingPublicKeyHash.fill(0);
+  value.authorizationBytes.fill(0);
+  value.deviceSigner.privateKey.fill(0);
+  value.deviceSigner.publicKey.fill(0);
+}
+
+function recertify(
+  value: Awaited<ReturnType<typeof certifiedFixture>>,
+  request: Parameters<
+    typeof encodeTaskRuntimeBackgroundAuthorizationRequestV2
+  >[1],
+): Readonly<{ requestBytes: Uint8Array; certificateBytes: Uint8Array }> {
+  const requestBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV2(
+    value.crypto,
+    request,
+  );
+  const authorizationHash = value.crypto.hash(value.authorizationBytes);
+  const planBytes = serializeDomainForegroundAuthorizationPlanV2(value.plan);
+  try {
+    return Object.freeze({
+      requestBytes,
+      certificateBytes: createTaskRuntimeSignerAuthorizationV1(value.crypto, {
+        requestBytes,
+        authorizationBytes: value.authorizationBytes,
+        expectedAuthorizationPlanBytes: planBytes,
+        expectedAuthorizationHash: authorizationHash,
+        issuerSigningPrivateKey: value.deviceSigner.privateKey,
+      }),
+    });
+  } finally {
+    authorizationHash.fill(0);
+    planBytes.fill(0);
+  }
+}
+
 describe("Task Runtime recipient registry", () => {
+  test("keeps legacy attempts exact and exposes only public opt-in signer binding", async () => {
+    const legacy = await fixture();
+    expect(Object.hasOwn(legacy.attempt, "signer")).toBe(false);
+    expect(legacy.generatedRuntimeKey).toBeNull();
+    legacy.registry.close();
+
+    const certified = await certifiedFixture();
+    try {
+      expect(certified.attempt.signer).toEqual(certified.request.signer);
+      expect(Object.keys(certified.attempt.signer!).sort()).toEqual([
+        "agentId", "runtimeGeneration", "signerKeyId", "signerPublicKey",
+      ]);
+      expect(Object.hasOwn(certified.attempt.signer!, "key")).toBe(false);
+      expect(certified.generatedRuntimeKey!.some(byte => byte !== 0)).toBe(true);
+    } finally {
+      cleanupCertifiedFixture(certified);
+    }
+    expect(certified.generatedRuntimeKey!.every(byte => byte === 0)).toBe(true);
+  });
+
+  test("lends certified temporary signer only inside active execution evidence", async () => {
+    const value = await certifiedFixture();
+    let retainedEvidence: TaskRuntimeExecutionEvidenceV1 | null = null;
+    let borrowedRuntimeKey: Uint8Array | null = null;
+    let borrowedCertificate: Uint8Array | null = null;
+    let borrowedIssuerKey: Uint8Array | null = null;
+    let borrowedRequestHash: Uint8Array | null = null;
+    let borrowedAuthorizationHash: Uint8Array | null = null;
+    try {
+      const opened = await value.registry.withOpenedGrant({
+        requestId: REQUEST,
+        workId: WORK,
+        recipientGeneration: 0,
+        recipientKeyId: KEY,
+        claimId: "task-runtime-certified-claim",
+        claimExpiresAt: NOW + 30_000,
+        authorizationBytes: value.authorizationBytes,
+        current: value.current,
+        currentNamespaceRequirements: CURRENT_NAMESPACES,
+        result: value.result,
+        certifiedSigning: {
+          requestBytes: value.requestBytes,
+          certificateBytes: value.certificateBytes,
+          currentIssuer: value.currentIssuer,
+        },
+        operation: async (_domains, _signal, evidence) => {
+          retainedEvidence = evidence;
+          expect(hasTaskRuntimeTemporarySignerV1(evidence)).toBe(true);
+          return await withTaskRuntimeTemporarySignerV1(evidence, signer => {
+            expect(signer.runtime).toMatchObject({
+              agentId: RESULT.signerAgentId,
+              generation: 0,
+              keyClass: "runtime",
+            });
+            expect(signer.runtime.key).toEqual(value.generatedRuntimeKey!);
+            expect(signer.runtime.key).not.toBe(value.generatedRuntimeKey!);
+            expect(signer.signerPublicKey).toEqual(
+              value.attempt.signer!.signerPublicKey,
+            );
+            expect(signer.certificateBytes).toEqual(value.certificateBytes);
+            expect(signer.issuerSigningPublicKey).toEqual(
+              value.current.committerDeviceSigningPublicKey,
+            );
+            expect(signer.requestHash).toEqual(
+              value.crypto.hash(value.requestBytes),
+            );
+            expect(signer.authorizationHash).toEqual(
+              value.crypto.hash(value.authorizationBytes),
+            );
+            borrowedRuntimeKey = signer.runtime.key;
+            borrowedCertificate = signer.certificateBytes;
+            borrowedIssuerKey = signer.issuerSigningPublicKey;
+            borrowedRequestHash = signer.requestHash;
+            borrowedAuthorizationHash = signer.authorizationHash;
+            return "certified";
+          });
+        },
+      });
+      expect(opened).toEqual({ status: "opened", value: "certified" });
+      expect(value.generatedRuntimeKey!.every(byte => byte === 0)).toBe(true);
+      expect(borrowedRuntimeKey!.every(byte => byte === 0)).toBe(true);
+      expect(borrowedCertificate!.every(byte => byte === 0)).toBe(true);
+      expect(borrowedIssuerKey!.every(byte => byte === 0)).toBe(true);
+      expect(borrowedRequestHash!.every(byte => byte === 0)).toBe(true);
+      expect(borrowedAuthorizationHash!.every(byte => byte === 0)).toBe(true);
+      expect(() => hasTaskRuntimeTemporarySignerV1(retainedEvidence!)).toThrow(
+        "execution evidence is not active",
+      );
+      const lateSigning = withTaskRuntimeTemporarySignerV1(
+        retainedEvidence!,
+        () => "late",
+      );
+      // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+      await expect(lateSigning).rejects.toThrow(
+        "execution evidence is not active",
+      );
+    } finally {
+      cleanupCertifiedFixture(value);
+    }
+  });
+
+  test("prepares a dynamic Task Memory manifest from the active certified signer loan", async () => {
+    const value = await certifiedFixture();
+    try {
+      const opened = await value.registry.withOpenedGrant({
+        requestId: REQUEST,
+        workId: WORK,
+        recipientGeneration: 0,
+        recipientKeyId: KEY,
+        claimId: "task-runtime-certified-memory-claim",
+        claimExpiresAt: NOW + 30_000,
+        authorizationBytes: value.authorizationBytes,
+        current: value.current,
+        currentNamespaceRequirements: CURRENT_NAMESPACES,
+        result: value.result,
+        certifiedSigning: {
+          requestBytes: value.requestBytes,
+          certificateBytes: value.certificateBytes,
+          currentIssuer: value.currentIssuer,
+        },
+        operation: async (_domains, _signal, evidence) =>
+          withTaskRuntimeTemporarySignerV1(evidence, async signer => {
+            const targetObjectId = objectId("memory:task-runtime:dynamic");
+            const payloadBytes = new Uint8Array([0x73, 0x74, 0x75]);
+            const namespaceKey = bytes(0x71);
+            const dek = bytes(0x72);
+            const domain = evidence.domainRequirements[0]!;
+            const wrapped = wrapObjectDekForNamespaceV2(
+              value.crypto,
+              namespaceKey,
+              {
+                objectId: targetObjectId,
+                namespaceId: namespaceId(RESULT.namespace.namespaceId),
+                keyClass: "ai",
+                keyGeneration: namespaceGeneration(1),
+                bindingRevisionAtWrap: accessRevision(
+                  RESULT.namespace.expectedAccessRevision,
+                ),
+              },
+              dek,
+            );
+            const envelopeBytes = encodeNamespaceObjectEnvelopeV2(wrapped);
+            wrapped.wrappedDek.fill(0);
+            namespaceKey.fill(0);
+            dek.fill(0);
+            const preparation = {
+              evidence,
+              objectId: targetObjectId,
+              payloadHash: value.crypto.hash(payloadBytes),
+              envelopeBytes: [envelopeBytes],
+              operationId: "task-runtime-certified-memory-operation",
+              namespaces: [{
+                  namespaceId: RESULT.namespace.namespaceId,
+                  accessRevision: RESULT.namespace.expectedAccessRevision,
+                  keyGeneration: 1,
+                  domainId: domain.domainId,
+                  domainKeyGeneration: domain.domainKeyGeneration,
+                  domainAuthorizationRevision: domain.authorizationRevision,
+                  domainHeadDigest: domain.headDigest,
+                  headDigest: bytes(0x74),
+                  publicationDigest: bytes(0x75),
+                  publicationSetDigest: bytes(0x76),
+                  audienceFingerprint: bytes(0x77),
+              }],
+              agentAuthorizationRevision: 0,
+              runtime: signer.runtime,
+              signerPublication: null,
+              temporarySigner: signer,
+              resolveHistoricalSignerPublicationManager: () => null,
+            } as const;
+            const {
+              temporarySigner: _temporarySigner,
+              ...missingSignerPreparation
+            } = preparation;
+            expect(() =>
+              prepareTaskRuntimeAgentObjectAccessManifestGenesisSetV1(
+                value.crypto,
+                missingSignerPreparation,
+              )
+            ).toThrow("signer authority was substituted");
+            expect(() =>
+              prepareTaskRuntimeAgentObjectAccessManifestGenesisSetV1(
+                value.crypto,
+                {
+                  ...preparation,
+                  runtime: { ...signer.runtime, key: bytes(0x78) },
+                },
+              )
+            ).toThrow("temporary signer authority was substituted");
+            const prepared =
+              prepareTaskRuntimeAgentObjectAccessManifestGenesisSetV1(
+                value.crypto,
+                preparation,
+              );
+            envelopeBytes.fill(0);
+            expect(prepared.manifest.signerAuthorizationHash).toEqual(
+              value.crypto.hash(value.certificateBytes),
+            );
+            expect(prepared.manifest.hostAuthorizationRevision).toBe(
+              authorizationRevision(signer.issuer.securityRevision),
+            );
+            expect(prepared.signerEvidenceBytes).toEqual(
+              value.certificateBytes,
+            );
+            assertAuthenticPreparedTaskRuntimeAgentObjectAccessManifestGenesisSetV1(
+              prepared,
+            );
+            const proof = prepared.signerEvidenceBytes;
+            if (proof === undefined) throw new Error("missing signer evidence");
+            let inspected = false;
+            expect(await persistPreparedTaskRuntimeAgentObjectAccessManifestGenesisSetV1({
+              crypto: value.crypto,
+              prepared,
+              evidence,
+              withCurrentAuthorization: async (context, use) => {
+                expect(context.objectId).toBe(targetObjectId);
+                return use({
+                  storage: {
+                    getObject: async objectId => objectId === targetObjectId
+                      ? { objectId, payloadBytes: payloadBytes.slice() }
+                      : null,
+                    compareAndSwapObjectAccessState: async authorized => {
+                      const snapshot = consumeAuthorizedObjectAccessWriteV2(
+                        authorized,
+                      );
+                      expect(snapshot.authorization.kind)
+                        .toBe("task-runtime-temporary-agent-genesis-set");
+                      if (snapshot.authorization.kind
+                        !== "task-runtime-temporary-agent-genesis-set") {
+                        throw new Error("temporary authorization was not retained");
+                      }
+                      expect(snapshot.authorization.signerEvidenceBytes)
+                        .toEqual(value.certificateBytes);
+                      inspected = true;
+                      return "applied";
+                    },
+                  },
+                  temporarySigner: {
+                    certificateBytes: signer.certificateBytes,
+                    issuerSigningPublicKey: signer.issuerSigningPublicKey,
+                    requestHash: signer.requestHash,
+                    authorizationHash: signer.authorizationHash,
+                  },
+                });
+              },
+            })).toBe("applied");
+            expect(inspected).toBe(true);
+            proof[0] = proof[0]! ^ 0xff;
+            expect(() =>
+              assertAuthenticPreparedTaskRuntimeAgentObjectAccessManifestGenesisSetV1(
+                prepared,
+              )
+            ).toThrow("authentic preparation");
+            return prepared.manifest.objectId;
+          }),
+      });
+      expect(opened.status).toBe("opened");
+      if (opened.status !== "opened") throw new Error("grant did not open");
+      expect(opened.value).toBe(objectId("memory:task-runtime:dynamic"));
+    } finally {
+      cleanupCertifiedFixture(value);
+    }
+  });
+
+  test("prepares and decrypts a native Task result with the active certified signer loan", async () => {
+    const value = await certifiedFixture();
+    const generationKey = bytes(0x81);
+    const plaintext = new TextEncoder().encode(
+      "certified native Task result",
+    );
+    try {
+      const opened = await value.registry.withOpenedGrant({
+        requestId: REQUEST,
+        workId: WORK,
+        recipientGeneration: 0,
+        recipientKeyId: KEY,
+        claimId: "task-runtime-certified-native-result-claim",
+        claimExpiresAt: NOW + 30_000,
+        authorizationBytes: value.authorizationBytes,
+        current: value.current,
+        currentNamespaceRequirements: CURRENT_NAMESPACES,
+        result: value.result,
+        certifiedSigning: {
+          requestBytes: value.requestBytes,
+          certificateBytes: value.certificateBytes,
+          currentIssuer: value.currentIssuer,
+        },
+        operation: async (domains, _signal, evidence) => {
+          const domain = domains.find(entry =>
+            entry.domainId === RESULT.namespace.domainId
+          );
+          if (domain === undefined) {
+            throw new Error("certified result Domain was not opened");
+          }
+          const retained = Object.freeze([Object.freeze({
+            generation: namespaceGeneration(1),
+            accessRevision: accessRevision(
+              RESULT.namespace.expectedAccessRevision,
+            ),
+            headDigest: bytes(0x82),
+            generationKey,
+          })]);
+          const current = Object.freeze({
+            serverId: value.currentIssuer.serverInstanceId,
+            cryptoDomainId: cryptoDomainId(domain.domainId),
+            participantDigest: domain.participantDigest,
+            participantCount: domain.participantCount,
+            keyClass: domain.keyClass,
+            domainKeyGeneration: domain.domainKeyGeneration,
+            domainAuthorizationRevision: domain.authorizationRevision,
+            domainHeadDigest: domain.headDigest,
+            namespaceId: namespaceId(RESULT.namespace.namespaceId),
+            namespaceAccessRevision: accessRevision(
+              RESULT.namespace.expectedAccessRevision,
+            ),
+            namespaceCurrentGeneration: namespaceGeneration(1),
+            bundleRevision: 1,
+            retainedAuthoritySetDigest:
+              domainNamespaceRetainedAuthoritySetDigestV2(
+                value.crypto,
+                retained,
+              ),
+          });
+          const bundle = prepareDomainNamespaceBundleV2(value.crypto, {
+            operationId: "task-runtime-certified-native-result-bundle",
+            previousBindingDigest: null,
+            bundle: {
+              ...current,
+              formatVersion: DOMAIN_NAMESPACE_BUNDLE_FORMAT_VERSION_V2,
+              purpose: DOMAIN_NAMESPACE_BUNDLE_INNER_PURPOSE_V2,
+              retainedGenerationCount: retained.length,
+              retainedGenerations: retained,
+            },
+            issuerHumanId: value.current.subjectHumanId,
+            issuerDeviceId: value.current.committerDeviceId,
+            issuerDeviceSigningGeneration:
+              value.current.committerDeviceSigningGeneration,
+            issuerSigningPrivateKey: value.deviceSigner.privateKey,
+            issuerSigningPublicKey: value.deviceSigner.publicKey,
+            domainKey: domain.domainKey,
+            issuedAt: NOW,
+          });
+          try {
+            const signerKeyId: string = await withTaskRuntimeTemporarySignerV1(
+              evidence,
+              async signer => {
+                const prepared = await prepareNativeTaskRuntimeResultObjectV1(
+                  value.crypto,
+                  {
+                    evidence,
+                    plaintext,
+                    objectType: "nautilo-task-run-result-v1",
+                    createdAt: NOW,
+                    namespace: {
+                      current,
+                      bindingBytes: bundle.bytes,
+                      expectedBindingDigest: bundle.bindingDigest,
+                      issuerSigningPublicKey: value.deviceSigner.publicKey,
+                      domainKey: domain.domainKey,
+                    },
+                    agentAuthorizationRevision: 0,
+                    runtime: signer.runtime,
+                    signerPublication: null,
+                    temporarySigner: signer,
+                    resolveHistoricalSignerPublicationManager: () => null,
+                  },
+                );
+                expect(prepared.access.manifest.signerAuthorizationHash)
+                  .toEqual(value.crypto.hash(value.certificateBytes));
+                expect(prepared.access.manifest.hostAuthorizationRevision)
+                  .toBe(authorizationRevision(
+                    value.current.hostAuthorizationRevision,
+                  ));
+                expect(prepared.access.manifest.signer).toMatchObject({
+                  kind: "agent_runtime",
+                  agentId: RESULT.signerAgentId,
+                  runtimeGeneration: 0,
+                });
+                expect(prepared.access.authority).toMatchObject({
+                  agentId: RESULT.signerAgentId,
+                  runtimeGeneration: 0,
+                  agentAuthorizationRevision: 0,
+                });
+                expect(prepared.access.signerEvidenceBytes).toEqual(
+                  value.certificateBytes,
+                );
+                assertAuthenticPreparedTaskRuntimeResultObjectV1(prepared);
+                const decrypted = decryptObjectThroughNamespaceV2(
+                  value.crypto,
+                  generationKey,
+                  decodeNamespaceObjectEnvelopeV2(
+                    prepared.access.envelopeBytes[0],
+                  ),
+                  decodeEncryptedPayloadV2(
+                    prepared.object.payloadBytes.ciphertext,
+                  ),
+                );
+                expect(decrypted).toEqual(plaintext);
+                decrypted?.fill(0);
+                const signerEvidence = prepared.access.signerEvidenceBytes;
+                if (signerEvidence === undefined) {
+                  throw new Error("certified result signer evidence is absent");
+                }
+                const originalEvidenceByte = signerEvidence[0];
+                if (originalEvidenceByte === undefined) {
+                  throw new Error("certified result signer evidence is empty");
+                }
+                signerEvidence[0] = originalEvidenceByte ^ 0xff;
+                expect(() =>
+                  assertAuthenticPreparedTaskRuntimeResultObjectV1(prepared)
+                ).toThrow("authentic prepared object");
+                signerEvidence[0] = originalEvidenceByte;
+                assertAuthenticPreparedTaskRuntimeResultObjectV1(prepared);
+                return prepared.access.authority.signerKeyId;
+              },
+            );
+            return signerKeyId;
+          } finally {
+            current.retainedAuthoritySetDigest.fill(0);
+            for (const entry of retained) entry.headDigest.fill(0);
+            bundle.bytes.fill(0);
+            bundle.bindingDigest.fill(0);
+            bundle.plaintextDigest.fill(0);
+            bundle.binding.ciphertext.fill(0);
+            bundle.binding.ciphertextDigest.fill(0);
+            bundle.binding.signature.fill(0);
+          }
+        },
+      });
+      expect(opened.status).toBe("opened");
+      if (opened.status !== "opened") throw new Error("grant did not open");
+      expect(opened.value).toBe(value.attempt.signer!.signerKeyId);
+    } finally {
+      generationKey.fill(0);
+      plaintext.fill(0);
+      cleanupCertifiedFixture(value);
+    }
+  });
+
+  test("fails closed when certified custody and grant input disagree", async () => {
+    const bare = await certifiedFixture();
+    try {
+      const bareOpen = bare.registry.withOpenedGrant({
+        requestId: REQUEST, workId: WORK, recipientGeneration: 0,
+        recipientKeyId: KEY, claimId: "task-runtime-certified-claim",
+        claimExpiresAt: NOW + 30_000,
+        authorizationBytes: bare.authorizationBytes, current: bare.current,
+        currentNamespaceRequirements: CURRENT_NAMESPACES, result: bare.result,
+        operation: () => "must-not-open",
+      });
+      // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+      await expect(bareOpen).rejects.toThrow(
+        "certified signer custody is not exact",
+      );
+      expect(bare.generatedRuntimeKey!.every(byte => byte === 0)).toBe(true);
+    } finally { cleanupCertifiedFixture(bare); }
+
+    const legacy = await fixture();
+    const certificate = await certifiedFixture();
+    try {
+      const legacyOpen = legacy.registry.withOpenedGrant({
+        requestId: REQUEST, workId: WORK, recipientGeneration: 0,
+        recipientKeyId: KEY, claimId: "task-runtime-legacy-claim",
+        claimExpiresAt: NOW + 30_000,
+        authorizationBytes: legacy.authorizationBytes, current: legacy.current,
+        currentNamespaceRequirements: CURRENT_NAMESPACES, result: RESULT,
+        certifiedSigning: {
+          requestBytes: certificate.requestBytes,
+          certificateBytes: certificate.certificateBytes,
+          currentIssuer: certificate.currentIssuer,
+        },
+        operation: () => "must-not-open",
+      });
+      // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+      await expect(legacyOpen).rejects.toThrow(
+        "certified signer custody is not exact",
+      );
+    } finally {
+      legacy.registry.close();
+      cleanupCertifiedFixture(certificate);
+    }
+  });
+
+  test("rejects substituted certificate, request, signer, scope, and current head", async () => {
+    for (const changed of [
+      "certificate", "request", "signer", "scope", "head",
+    ] as const) {
+      const value = await certifiedFixture();
+      let replacement: Readonly<{
+        requestBytes: Uint8Array;
+        certificateBytes: Uint8Array;
+      }> | undefined;
+      let foreignSigner: ReturnType<LatticeCrypto["generateSigningKeyPair"]>
+        | undefined;
+      try {
+        if (changed === "signer") {
+          foreignSigner = value.crypto.generateSigningKeyPair();
+          replacement = recertify(value, {
+            ...value.request,
+            signer: {
+              ...value.request.signer,
+              signerKeyId: agentRuntimeObjectSignerKeyIdV1(
+                value.crypto,
+                foreignSigner.publicKey,
+              ),
+              signerPublicKey: foreignSigner.publicKey,
+            },
+          });
+        } else if (changed === "scope") {
+          replacement = recertify(value, {
+            ...value.request,
+            namespaceRequirements: [Object.freeze({
+              ...CURRENT_NAMESPACES[0]!,
+              namespaceId: "task-runtime-other-namespace",
+            })],
+          });
+        }
+        const certificateBytes = replacement?.certificateBytes
+          ?? value.certificateBytes.slice();
+        const requestBytes = changed === "request"
+          ? Uint8Array.from([...value.requestBytes, 0])
+          : replacement?.requestBytes ?? value.requestBytes;
+        if (changed === "certificate") {
+          const last = certificateBytes.length - 1;
+          certificateBytes[last] = certificateBytes[last]! ^ 1;
+        }
+        const currentIssuer = changed === "head"
+          ? Object.freeze({
+            ...value.currentIssuer,
+            headDigest: bytes(0x7f),
+          })
+          : value.currentIssuer;
+        const substitutedOpen = value.registry.withOpenedGrant({
+          requestId: REQUEST, workId: WORK, recipientGeneration: 0,
+          recipientKeyId: KEY, claimId: "task-runtime-certified-claim",
+          claimExpiresAt: NOW + 30_000,
+          authorizationBytes: value.authorizationBytes, current: value.current,
+          currentNamespaceRequirements: CURRENT_NAMESPACES,
+          result: value.result,
+          certifiedSigning: { requestBytes, certificateBytes, currentIssuer },
+          operation: () => "must-not-open",
+        });
+        // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+        await expect(substitutedOpen).rejects.toThrow();
+        expect(value.generatedRuntimeKey!.every(byte => byte === 0)).toBe(true);
+        if (changed === "head") currentIssuer.headDigest.fill(0);
+        if (replacement === undefined) certificateBytes.fill(0);
+        if (changed === "request") requestBytes.fill(0);
+      } finally {
+        replacement?.requestBytes.fill(0);
+        replacement?.certificateBytes.fill(0);
+        foreignSigner?.privateKey.fill(0);
+        foreignSigner?.publicKey.fill(0);
+        cleanupCertifiedFixture(value);
+      }
+    }
+  });
+
+  test("wipes temporary signer custody on delete, sweep, close, and failed open", async () => {
+    const deleteValue = await certifiedFixture();
+    deleteValue.registry.delete(REQUEST, 0);
+    expect(deleteValue.generatedRuntimeKey!.every(byte => byte === 0)).toBe(true);
+    cleanupCertifiedFixture(deleteValue);
+
+    const sweepValue = await certifiedFixture();
+    sweepValue.setNow(NOW + 60_000);
+    expect(sweepValue.registry.sweep()).toBe(1);
+    expect(sweepValue.generatedRuntimeKey!.every(byte => byte === 0)).toBe(true);
+    cleanupCertifiedFixture(sweepValue);
+
+    const closeValue = await certifiedFixture();
+    closeValue.registry.close();
+    expect(closeValue.generatedRuntimeKey!.every(byte => byte === 0)).toBe(true);
+    cleanupCertifiedFixture(closeValue);
+
+    const failureValue = await certifiedFixture();
+    const changed = failureValue.certificateBytes.slice();
+    const last = changed.length - 1;
+    changed[last] = changed[last]! ^ 1;
+    try {
+      const failedOpen = failureValue.registry.withOpenedGrant({
+        requestId: REQUEST, workId: WORK, recipientGeneration: 0,
+        recipientKeyId: KEY, claimId: "task-runtime-certified-claim",
+        claimExpiresAt: NOW + 30_000,
+        authorizationBytes: failureValue.authorizationBytes,
+        current: failureValue.current,
+        currentNamespaceRequirements: CURRENT_NAMESPACES,
+        result: failureValue.result,
+        certifiedSigning: { requestBytes: failureValue.requestBytes,
+          certificateBytes: changed,
+          currentIssuer: failureValue.currentIssuer },
+        operation: () => "must-not-open",
+      });
+      // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+      await expect(failedOpen).rejects.toThrow();
+      expect(failureValue.generatedRuntimeKey!.every(byte => byte === 0))
+        .toBe(true);
+    } finally {
+      changed.fill(0);
+      cleanupCertifiedFixture(failureValue);
+    }
+  });
+
+  test("revokes borrowed signer copies on execution expiry and abort", async () => {
+    for (const stop of ["expiry", "abort"] as const) {
+      const value = await certifiedFixture();
+      const controller = new AbortController();
+      let borrowedKey: Uint8Array | null = null;
+      try {
+        const execution = value.registry.withOpenedGrant({
+          requestId: REQUEST, workId: WORK, recipientGeneration: 0,
+          recipientKeyId: KEY, claimId: "task-runtime-certified-claim",
+          claimExpiresAt: NOW + 30_000,
+          authorizationBytes: value.authorizationBytes,
+          current: value.current,
+          currentNamespaceRequirements: CURRENT_NAMESPACES,
+          result: value.result,
+          signal: controller.signal,
+          certifiedSigning: { requestBytes: value.requestBytes,
+            certificateBytes: value.certificateBytes,
+            currentIssuer: value.currentIssuer },
+          operation: async (_domains, _signal, evidence) =>
+            await withTaskRuntimeTemporarySignerV1(evidence, signer => {
+              borrowedKey = signer.runtime.key;
+              if (stop === "expiry") value.setNow(NOW + 30_000);
+              else controller.abort(new Error("temporary signer aborted"));
+              return "must-not-finish";
+            }),
+        });
+        // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+        await expect(execution).rejects.toThrow();
+        expect(value.generatedRuntimeKey!.every(byte => byte === 0)).toBe(true);
+        expect(borrowedKey!.every(byte => byte === 0)).toBe(true);
+      } finally {
+        cleanupCertifiedFixture(value);
+      }
+    }
+  });
+
+  test.each(["expiry", "abort", "close"] as const)(
+    "wipes held temporary signer custody immediately on %s",
+    async stop => {
+      let expire = (): void => {
+        throw new Error("expiry callback was not scheduled");
+      };
+      const value = await certifiedFixture(stop === "expiry" ? {
+        scheduleAt: (_deadline, callback) => {
+          expire = callback;
+          return { cancel() {} };
+        },
+      } : undefined);
+      const controller = new AbortController();
+      const started = Promise.withResolvers<void>();
+      const release = Promise.withResolvers<void>();
+      let borrowedKey: Uint8Array | null = null;
+      const execution = value.registry.withOpenedGrant({
+        requestId: REQUEST, workId: WORK, recipientGeneration: 0,
+        recipientKeyId: KEY, claimId: "task-runtime-certified-held-claim",
+        claimExpiresAt: NOW + 30_000,
+        authorizationBytes: value.authorizationBytes,
+        current: value.current,
+        currentNamespaceRequirements: CURRENT_NAMESPACES,
+        result: value.result,
+        signal: controller.signal,
+        certifiedSigning: { requestBytes: value.requestBytes,
+          certificateBytes: value.certificateBytes,
+          currentIssuer: value.currentIssuer },
+        operation: async (_domains, _signal, evidence) =>
+          await withTaskRuntimeTemporarySignerV1(evidence, async signer => {
+            borrowedKey = signer.runtime.key;
+            started.resolve();
+            await release.promise;
+            return "must-not-finish";
+          }),
+      });
+      try {
+        await started.promise;
+        if (stop === "expiry") expire();
+        else if (stop === "abort") {
+          controller.abort(new Error("temporary signer aborted"));
+        } else value.registry.close();
+        expect(value.generatedRuntimeKey!.every(byte => byte === 0)).toBe(true);
+        expect(value.generatedRecipientPrivateKey.every(byte => byte === 0))
+          .toBe(true);
+        expect(borrowedKey!.every(byte => byte === 0)).toBe(true);
+        expect(value.registry.size).toBe(0);
+      } finally {
+        release.resolve();
+      }
+      // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+      await expect(execution).rejects.toThrow();
+      cleanupCertifiedFixture(value);
+    },
+  );
+
+  test("wipes HPKE and malformed Runtime material after opt-in creation failure", async () => {
+    const crypto = new LatticeCrypto(seededRng(401_099), { now: () => NOW });
+    const registry = new TaskRuntimeRecipientRegistryV1(crypto, {
+      now: () => NOW,
+    });
+    const generateEncryptionKeyPair =
+      crypto.generateEncryptionKeyPair.bind(crypto);
+    let generatedPair: Awaited<ReturnType<
+      LatticeCrypto["generateEncryptionKeyPair"]
+    >> | undefined;
+    const pairGenerator = spyOn(crypto, "generateEncryptionKeyPair")
+      .mockImplementation(async () => {
+        generatedPair = await generateEncryptionKeyPair();
+        return generatedPair;
+      });
+    const malformedRuntimeKey = new Uint8Array(31).fill(0x6a);
+    const randomGenerator = spyOn(crypto, "randomBytes")
+      .mockImplementation(() => malformedRuntimeKey);
+    try {
+      const creation = registry.createAttempt({
+        requestId: REQUEST, workId: WORK, recipientGeneration: 0,
+        recipientKeyId: KEY, expiresAt: NOW + 60_000,
+        signerAgentId: RESULT.signerAgentId,
+      });
+      // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+      await expect(creation).rejects.toThrow(
+        "temporary signer key is malformed",
+      );
+      expect(generatedPair).toBeDefined();
+      expect(generatedPair!.privateKey.every(byte => byte === 0)).toBe(true);
+      expect(generatedPair!.publicKey.every(byte => byte === 0)).toBe(true);
+      expect(malformedRuntimeKey.every(byte => byte === 0)).toBe(true);
+      expect(registry.size).toBe(0);
+    } finally {
+      pairGenerator.mockRestore();
+      randomGenerator.mockRestore();
+      registry.close();
+    }
+  });
+
   test("opens one exact encrypt-only terminal Message grant with callback-scoped evidence", async () => {
     const value = await fixture(undefined, true, TERMINAL_REQUEST);
     let retained: TaskRuntimeTerminalMessageEvidenceV1 | null = null;

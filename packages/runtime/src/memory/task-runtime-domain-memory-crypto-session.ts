@@ -23,6 +23,7 @@ import {
   type LatticeCrypto,
   type ResolveHistoricalAgentRuntimeSignerPublicationManager,
   type TaskRuntimeExecutionEvidence,
+  type TaskRuntimeTemporarySigner,
 } from "@nautilo/lattice-crypto";
 
 import {
@@ -42,7 +43,8 @@ export interface TaskRuntimeDomainMemoryCryptoSessionInput {
     "signal" | "use" | "useCurrentSet"
   >;
   runtime: AgentRuntimeKeyGeneration;
-  signerPublication: AgentRuntimeSignerPublication;
+  signerPublication: AgentRuntimeSignerPublication | null;
+  temporarySigner?: TaskRuntimeTemporarySigner;
   resolveHistoricalSignerPublicationManager:
     ResolveHistoricalAgentRuntimeSignerPublicationManager;
   agentAuthorizationRevision: number;
@@ -131,7 +133,10 @@ export function createTaskRuntimeDomainMemoryCryptoSession(
   if (
     input.evidence.result.signerAgentId !== input.agentId
     || input.runtime.agentId !== input.agentId
-    || input.signerPublication.agentId !== input.agentId
+    || (input.signerPublication !== null
+      && input.signerPublication.agentId !== input.agentId)
+    || (input.signerPublication === null)
+      !== (input.temporarySigner !== undefined)
   ) throw new TypeError(
     "Task Memory Agent does not match execution evidence",
   );
@@ -142,6 +147,9 @@ export function createTaskRuntimeDomainMemoryCryptoSession(
     entities: input.entities,
     runtime: input.runtime,
     signerPublication: input.signerPublication,
+    ...(input.temporarySigner === undefined ? {} : {
+      temporarySigner: input.temporarySigner,
+    }),
     resolveHistoricalSignerPublicationManager:
       input.resolveHistoricalSignerPublicationManager,
     agentAuthorizationRevision: input.agentAuthorizationRevision,

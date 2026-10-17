@@ -197,6 +197,8 @@ export {
   withProtectedTaskTerminalMessageSigner,
   withProtectedTaskRunResultMessageSigner,
   type ProtectedTaskResultSignerAuthority,
+  type ProtectedTaskExecutionSignerAuthority,
+  withProtectedTaskTemporaryResultSigner,
   type ProtectedTaskResultSignerResult,
 } from "./task/protected-task-result-signer.ts";
 export { withProtectedTaskResultNamespaceSource } from

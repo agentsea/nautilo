@@ -187,6 +187,15 @@ describe("protected Task prepared publication schema", () => {
     };
     expect(protectedTaskRunResultReadEnvelopeV1Schema.parse(foreground))
       .toEqual(foreground);
+    const certified = {
+      ...ready,
+      signerEvidence: [{
+        kind: "task_runtime_signer_certificate" as const,
+        evidenceBytesBase64url: "Y2VydGlmaWNhdGU",
+      }],
+    };
+    expect(protectedTaskRunResultReadEnvelopeV1Schema.parse(certified))
+      .toEqual(certified);
     const historical = {
       ...ready,
       accessManifestProofBytesBase64url: [] as [],
@@ -208,6 +217,10 @@ describe("protected Task prepared publication schema", () => {
     expect(() => protectedTaskRunResultReadEnvelopeV1Schema.parse({
       ...historical,
       signerEvidence: foreground.signerEvidence,
+    })).toThrow();
+    expect(() => protectedTaskRunResultReadEnvelopeV1Schema.parse({
+      ...historical,
+      signerEvidence: certified.signerEvidence,
     })).toThrow();
     expect(() => protectedTaskRunResultReadEnvelopeV1Schema.parse({
       ...historical,
@@ -536,6 +549,11 @@ describe("Task content v1 response schemas", () => {
       }],
     } as const;
     expect(protectedTaskDefinitionReadEnvelopeV1Schema.parse(ready).status).toBe("ready");
+    expect(() => protectedTaskDefinitionReadEnvelopeV1Schema.parse({
+      ...ready,
+      signerEvidence: [{ kind: "task_runtime_signer_certificate",
+        evidenceBytesBase64url: "Y2VydGlmaWNhdGU" }],
+    })).toThrow();
     for (const authority of [
       undefined,
       { ...readAuthority, namespaceId: TASK_ID },

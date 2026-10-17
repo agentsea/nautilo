@@ -231,6 +231,44 @@ export function createRoomHistoryDataAdapter(input: Readonly<{
             }),
         });
       }
+      if (record.kind === "task_runtime") {
+        return Object.freeze({
+          kind: record.kind,
+          taskId: record.taskId,
+          taskRunId: record.taskRunId,
+          sessionId: record.coordinate.sessionId,
+          messageId: String(record.coordinate.messageId),
+          editRevision: record.coordinate.editRevision,
+          ...("representationMode" in record
+              && record.representationMode === "protected-only"
+            ? { representationMode: "protected-only" as const,
+                selectedSource }
+            : {
+              ordinaryPayloadBytesBase64url:
+                "ordinaryPayloadBytesBase64url" in record
+                  ? record.ordinaryPayloadBytesBase64url
+                  : (() => { throw new ClassifiedDataOperationError(
+                    "integrity", "Selected Task history payload is missing",
+                  ); })(),
+              ordinarySibling: sibling ?? (() => {
+                throw new ClassifiedDataOperationError(
+                  "integrity", "Selected ordinary Task history row is invalid",
+                );
+              })(),
+            }),
+          namespaceGeneration: record.retainedGeneration.namespaceGeneration,
+          namespaceAccessRevision: record.retainedGeneration.accessRevision,
+          namespaceHeadDigestBase64url:
+            record.retainedGeneration.headDigestBase64url,
+          namespacePublicationDigestBase64url:
+            record.retainedGeneration.publicationDigestBase64url,
+          namespacePublicationSetDigestBase64url:
+            record.retainedGeneration.publicationSetDigestBase64url,
+          namespaceAudienceFingerprintBase64url:
+            record.retainedGeneration.audienceFingerprintBase64url,
+          protectedMessage: record.protectedMessage,
+        });
+      }
       return Object.freeze({
         sessionId: record.coordinate.sessionId,
         messageId: String(record.coordinate.messageId),

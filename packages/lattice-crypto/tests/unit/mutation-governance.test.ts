@@ -154,7 +154,7 @@ describe("M229 mutation governance", () => {
       fileURLToPath(new URL("../..", import.meta.url)),
     );
     expect(parsed.scopes).toHaveLength(30);
-    expect(eligible).toHaveLength(136);
+    expect(eligible).toHaveLength(139);
     expect(parsed.scopes.filter((scope) =>
       scope.name.startsWith("background-")
     ).map((scope) => ({
@@ -189,6 +189,9 @@ describe("M229 mutation governance", () => {
       name: "background-task-recipient",
       targets: [
         "src/background/task-runtime-recipient-registry-v1.ts",
+        "src/background/task-runtime-request-v1.ts",
+        "src/background/task-runtime-request-v2.ts",
+        "src/background/task-runtime-signer-authorization-v1.ts",
         "src/background/task-runtime-execution-evidence-v1.ts",
         "src/background/task-runtime-terminal-message-evidence-v1.ts",
         "src/background/task-runtime-run-result-read-evidence-v1.ts",

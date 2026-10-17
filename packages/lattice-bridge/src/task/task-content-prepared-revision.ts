@@ -88,6 +88,7 @@ const snapshots = new WeakMap<
     sealedPayloadHash: Uint8Array;
     sealedManifestHash: Uint8Array;
     sealedEnvelopeHash: Uint8Array;
+    sealedSignerEvidenceHash: Uint8Array | null;
   }>
 >();
 
@@ -147,6 +148,10 @@ function seal(
     namespaceId: input.authority.namespaceId,
     authorityFingerprint: common.authorityFingerprint,
   });
+  const signerEvidenceBytes = "signerEvidenceBytes" in input.access
+    && input.access.signerEvidenceBytes instanceof Uint8Array
+    ? input.access.signerEvidenceBytes
+    : null;
   snapshots.set(revision, Object.freeze({
     ...input,
     coordinate,
@@ -155,6 +160,9 @@ function seal(
     sealedPayloadHash: sha256(input.object.payloadBytes.ciphertext),
     sealedManifestHash: sha256(input.access.manifestBytes),
     sealedEnvelopeHash: sha256(input.access.envelopeBytes[0]),
+    sealedSignerEvidenceHash: signerEvidenceBytes === null
+      ? null
+      : sha256(signerEvidenceBytes),
   }));
   return revision;
 }
@@ -576,8 +584,14 @@ export function createPreparedTaskRuntimeResultContentCryptoRevisionV1(
     || common.manifest.signer.runtimeGeneration
       !== preparedAuthority.runtimeGeneration
     || common.manifest.signer.signerKeyId !== preparedAuthority.signerKeyId
-    || common.manifest.hostAuthorizationRevision
-      !== preparedAuthority.agentAuthorizationRevision
+    || (input.prepared.access.signerEvidenceBytes === undefined
+      ? common.manifest.hostAuthorizationRevision
+        !== preparedAuthority.agentAuthorizationRevision
+      : common.manifest.signerAuthorizationHash === null
+        || !sameBytes(
+          common.manifest.signerAuthorizationHash,
+          sha256(input.prepared.access.signerEvidenceBytes),
+        ))
     || input.authority.namespaceId
       !== preparedAuthority.namespace.namespaceId
     || input.authority.domainId !== preparedAuthority.namespace.domainId
@@ -597,6 +611,11 @@ export function readPreparedTaskContentCryptoRevisionSnapshotV1(
   revision: PreparedTaskContentCryptoRevisionV1,
 ): TaskContentCryptoRevisionSnapshotV1 {
   const snapshot = snapshots.get(revision);
+  const signerEvidenceBytes = snapshot !== undefined
+    && "signerEvidenceBytes" in snapshot.access
+    && snapshot.access.signerEvidenceBytes instanceof Uint8Array
+    ? snapshot.access.signerEvidenceBytes
+    : null;
   if (
     snapshot === undefined
     || !sameTaskContentCoordinateV1(snapshot.coordinate, revision.coordinate)
@@ -614,6 +633,13 @@ export function readPreparedTaskContentCryptoRevisionSnapshotV1(
       sha256(snapshot.access.envelopeBytes[0]),
       snapshot.sealedEnvelopeHash,
     )
+    || (snapshot.sealedSignerEvidenceHash === null)
+      !== (signerEvidenceBytes === null)
+    || (snapshot.sealedSignerEvidenceHash !== null
+      && !sameBytes(
+        sha256(signerEvidenceBytes!),
+        snapshot.sealedSignerEvidenceHash,
+      ))
   ) {
     throw new TypeError(
       "Task content crypto revision is foreign or changed after preparation",

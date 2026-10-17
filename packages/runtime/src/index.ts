@@ -743,6 +743,9 @@ export {
   type ForegroundAuthorizationView,
 } from "./protected-execution/foreground-authorization-session";
 export * from "./protected-execution/background-authorization";
+export type {
+  BackgroundAuthorizationVerifiedRuntimeResponseV4,
+} from "./protected-execution/background-authorization/repository";
 export {
   createForegroundProtectedAgentMemoryAccessPort,
   createForegroundProtectedAgentMemoryExactAccessPort,

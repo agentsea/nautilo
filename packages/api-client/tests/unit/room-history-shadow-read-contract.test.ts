@@ -297,6 +297,46 @@ describe("Room history Shadow-read HTTP contract", () => {
     }).success).toBeTrue();
   });
 
+  test("accepts protected-only Task Runtime records with bounded signer evidence", () => {
+    const value = readySidecar();
+    const selected = {
+      ...value.selectedCoordinates[0],
+      role: "assistant" as const,
+    };
+    const protectedMessage = {
+      ...value.records[0].protectedMessage,
+      projection: {
+        ...value.records[0].protectedMessage.projection,
+        role: "assistant" as const,
+      },
+    };
+    const record = {
+      kind: "task_runtime" as const,
+      taskId: "43000000-0000-4000-8000-000000000275",
+      taskRunId: "44000000-0000-4000-8000-000000000275",
+      coordinate: selected,
+      representationMode: "protected-only" as const,
+      selectedSource: { role: "assistant" as const },
+      retainedGeneration: value.records[0].retainedGeneration,
+      protectedMessage,
+    };
+    expect(roomHistoryShadowReadResponseV1Schema.safeParse({
+      ...value,
+      selectedCoordinates: [selected],
+      records: [record],
+      signerEvidence: [{ kind: "task_runtime_signer_certificate",
+        evidenceBytesBase64url: "Y2VydA" }],
+    }).success).toBeTrue();
+    const { taskRunId: _taskRunId, ...withoutTaskRun } = record;
+    expect(roomHistoryShadowReadResponseV1Schema.safeParse({
+      ...value, selectedCoordinates: [selected], records: [withoutTaskRun],
+    }).success).toBeFalse();
+    expect(roomHistoryShadowReadResponseV1Schema.safeParse({
+      ...value, selectedCoordinates: [selected], records: [{ ...record,
+        ordinaryPayloadBytesBase64url: "e30" }],
+    }).success).toBeFalse();
+  });
+
   test("preserves mixed-class authorities as one combined ready sidecar", () => {
     const value = readySidecar();
     const authorities = [
