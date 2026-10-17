@@ -1164,10 +1164,15 @@ describe("parked Task Runtime authority preparation", () => {
     expect(value.recipients.size).toBe(0);
   });
 
-  test("rejects a certificate for another segment before transient input or running effects", async () => {
+  test.each([
+    undefined,
+    "task.approval_resume",
+    "task.await_reply_resume",
+  ] as const)("rejects a certificate for another segment before transient input or running effects (%s)", async humanResumeWorkKind => {
     const value = await parkedClaimFixture({
       certifiedSigner: true,
       certifiedExecutionSegment: 1,
+      ...(humanResumeWorkKind === undefined ? {} : { humanResumeWorkKind }),
     });
     const claimed = await value.coordinator.prepareOrClaimExact(
       value.prepared.occurrence,
@@ -1447,10 +1452,15 @@ describe("parked Task Runtime grant claim", () => {
   });
 
   test.each([
-    "task.approval_resume",
-    "task.await_reply_resume",
-  ] as const)("claims an exact Human %s segment and preserves its acceptance identity", async resumeWorkKind => {
-    const value = await parkedClaimFixture({ humanResumeWorkKind: resumeWorkKind });
+    ["task.approval_resume", false],
+    ["task.await_reply_resume", false],
+    ["task.approval_resume", true],
+    ["task.await_reply_resume", true],
+  ] as const)("claims an exact Human %s segment and preserves its acceptance identity (certified signer %s)", async (resumeWorkKind, certifiedSigner) => {
+    const value = await parkedClaimFixture({
+      humanResumeWorkKind: resumeWorkKind,
+      certifiedSigner,
+    });
     const claimed = await value.coordinator.prepareOrClaimExact(
       value.prepared.occurrence,
     );
@@ -1473,14 +1483,17 @@ describe("parked Task Runtime grant claim", () => {
       await settlement.publish({ formatVersion: 1, resultText: "Human continuation completed", lastError: null });
     });
     expect(value.publishedResults).toEqual(["Human continuation completed"]);
+    expect(value.certifiedSignerLoans).toHaveLength(certifiedSigner ? 1 : 0);
+    expect(value.openedOccurrences).toHaveLength(1);
     expect((await value.repository.get(REQUEST))?.snapshot.state).toBe("completed");
     expect(value.recipients.size).toBe(0);
   });
 
-  test("rejects a different work kind before attaching a Human continuation grant", async () => {
+  test.each([false, true])("rejects a different work kind before attaching a Human continuation grant (certified signer %s)", async certifiedSigner => {
     const error = await parkedClaimFixture({
       humanResumeWorkKind: "task.approval_resume",
       requestWorkKind: "task.await_reply_resume",
+      certifiedSigner,
     }).then(() => null, (reason: unknown) => reason);
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toBe("Task Runtime request was substituted");

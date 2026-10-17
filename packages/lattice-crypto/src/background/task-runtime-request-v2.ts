@@ -168,9 +168,12 @@ function normalize(
   let signingPublicKeyHash: Uint8Array | undefined;
   const requirements: TaskRuntimeExecutionNamespaceAuthorityV1[] = [];
   try {
-    if (plan === null || baseRequest.workKind !== "task.execute"
-      || baseRequest.workPurpose !== "task.execute") {
-      throw new TypeError("Task Runtime V2 supports only task.execute");
+    const executionWorkKind = baseRequest.workKind === "task.execute"
+      || baseRequest.workKind === "task.approval_resume"
+      || baseRequest.workKind === "task.await_reply_resume";
+    if (plan === null || !executionWorkKind
+      || baseRequest.workPurpose !== baseRequest.workKind) {
+      throw new TypeError("Task Runtime V2 supports only Task execution work");
     }
     exactFields("Task Runtime work binding", value.work, [
       "taskId", "taskRunId", "inputObjectId", "resultObjectId",

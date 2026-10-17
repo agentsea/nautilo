@@ -69,6 +69,7 @@ for (const wake of [false, true]) {
             authority: current, attempt: { ...attemptConfig, requestId: record.snapshot.requestId,
               workId: record.snapshot.workId, recipientGeneration: record.snapshot.recipientGeneration,
               recipientPublicKey: keys.publicKey } });
+          expect(request.formatVersion).toBe(1);
           const grant = parseDomainForegroundAuthorizationPlanV2(request.authorizationPlanBytes);
           expect(grant?.sessionId).toBe(SESSION); expect(grant?.roomId).toBe(ROOM);
           expect(grant?.operations).toEqual(["decrypt", "encrypt"]);

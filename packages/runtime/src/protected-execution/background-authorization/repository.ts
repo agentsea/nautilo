@@ -1597,7 +1597,7 @@ function buildAcceptedBackgroundRuntimeAuthorizationResponseV4(
       || response.workId !== current.snapshot.workId
       || response.workKind !== current.workKind
       || response.purpose !== current.purpose
-      || response.workKind !== "task.execute"
+      || !isTaskExecutionWorkKind(response.workKind)
       || !verifiedResponseAuthorityMatches(current, response)
       || response.recipientKeyId !== recipient?.recipientKeyId
       || Buffer.from(response.recipientPublicKey).toString("base64url")

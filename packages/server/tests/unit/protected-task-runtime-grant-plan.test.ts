@@ -490,10 +490,11 @@ test.each(["task.approval_resume", "task.await_reply_resume"] as const)(
   const value = occurrence();
   const plan = await builder()(value);
   const initialRecord = { ...plan.initialRecord, workKind, purpose: workKind };
+  const crypto = new LatticeCrypto();
   const shared = createProtectedTaskRuntimeRecipientRequestPlan({
-    crypto: new LatticeCrypto(),
+    crypto,
     occurrence: value,
-    executionIdentity: plan.stableIdentity,
+    executionIdentity: { executionSegment: 2 },
     initialRecord,
     sourceRoomId: SOURCE_ROOM,
     authority: {
@@ -517,15 +518,10 @@ test.each(["task.approval_resume", "task.await_reply_resume"] as const)(
     recipientKeyId: sharedRecipient.recipientKeyId,
     recipientPublicKey: new Uint8Array(65).fill(4),
     expiresAt: sharedRecipient.expiresAt,
+    signer: temporarySigner(crypto),
   });
   const current = {
-    device: {
-      userId: REQUESTOR,
-      humanActorId: HUMAN,
-      deviceId: DEVICE,
-      deviceGeneration: 2,
-      securityRevision: 3,
-    } as never,
+    device: currentDevice(),
     sourceRoomId: SOURCE_ROOM,
     policyRevision: 7,
     namespaceRequirements:
@@ -546,9 +542,20 @@ test.each(["task.approval_resume", "task.await_reply_resume"] as const)(
     authority: current,
   };
   const request = shared.buildRequest(requestInput);
+  expect(request.formatVersion).toBe(2);
   const baseRequest = request.formatVersion === 2 ? request.baseRequest : request;
   expect(baseRequest.workKind).toBe(workKind);
   expect(baseRequest.workPurpose).toBe(workKind);
+  if (request.formatVersion === 2) {
+    expect(request.work.executionSegment).toBe(2);
+    expect(request.work.workIdentityHash).toEqual(initialRecord.workIdentityHash);
+    expect(request.work.resultObjectId).toBe(deriveTaskContentCryptoObjectIdV1({
+      kind: "run_result",
+      taskId: TASK,
+      taskRunId: RUN,
+      contentRevision: 1,
+    }));
+  }
   for (const changed of [
     { workKind: "task.execute" as const, purpose: workKind },
     { workKind, purpose: "task.execute" as const },
@@ -558,7 +565,7 @@ test.each(["task.approval_resume", "task.await_reply_resume"] as const)(
     expect(() => shared.buildRequest({ ...requestInput, record })).toThrow("authority is not exact");
     expect(() => createProtectedTaskRuntimeRecipientRequestPlan({
       crypto: new LatticeCrypto(), occurrence: value,
-      executionIdentity: plan.stableIdentity, initialRecord: record,
+      executionIdentity: { executionSegment: 2 }, initialRecord: record,
       sourceRoomId: SOURCE_ROOM, createdAt: NOW, recipientTtlMs: 60_000,
       authority: { policyRevision: initialRecord.expectedPolicyRevision,
         namespaces: initialRecord.authoritySet.namespaceRequirements,

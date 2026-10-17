@@ -31,6 +31,8 @@ const NOW = 1_800_800_000_000;
 const TASK = "11111111-1111-4111-8111-111111111111";
 const RUN = "22222222-2222-4222-8222-222222222222";
 const encoder = new TextEncoder();
+type TaskExecutionWorkKind = "task.execute" | "task.approval_resume"
+  | "task.await_reply_resume";
 
 function bytes(fill: number): Uint8Array {
   return new Uint8Array(32).fill(fill);
@@ -42,7 +44,10 @@ function resultObjectId(crypto: LatticeCrypto): string {
   )))}`;
 }
 
-async function fixture(executionSegment = 1) {
+async function fixture(
+  executionSegment = 1,
+  workKind: TaskExecutionWorkKind = "task.execute",
+) {
   const crypto = new LatticeCrypto(seededRng(808_101), { now: () => NOW });
   const recipient = await crypto.deriveEncryptionKeyPair(bytes(0x31));
   const device = crypto.generateSigningKeyPair();
@@ -69,7 +74,7 @@ async function fixture(executionSegment = 1) {
   });
   const baseRequest = createTaskRuntimeBackgroundAuthorizationRequestV1({
     requestId: "request:execute-one", workId: RUN,
-    workKind: "task.execute", workPurpose: "task.execute",
+    workKind, workPurpose: workKind,
     recipientGeneration: 12, episodeId: "episode:execute-one",
     sourceRoomId: "room:source-one", recipientKeyId: "recipient:key-one",
     recipientPublicKey: recipient.publicKey, authorizationPlan: plan,
@@ -162,6 +167,35 @@ describe("Task Runtime background authorization request v2", () => {
     }
   });
 
+  test.each([
+    ["task.approval_resume", 2],
+    ["task.await_reply_resume", 3],
+  ] as const)("round-trips %s execution segment %d", async (
+    workKind,
+    executionSegment,
+  ) => {
+    const f = await fixture(executionSegment, workKind);
+    try {
+      const encoded = encodeTaskRuntimeBackgroundAuthorizationRequestV2(
+        f.crypto,
+        f.request,
+      );
+      const decoded = decodeTaskRuntimeBackgroundAuthorizationRequestV2(
+        f.crypto,
+        encoded,
+      );
+      expect(decoded?.baseRequest.workKind).toBe(workKind);
+      expect(decoded?.baseRequest.workPurpose).toBe(workKind);
+      expect(decoded?.work.executionSegment).toBe(executionSegment);
+      expect(decoded?.work.resultObjectId).toBe(resultObjectId(f.crypto));
+      destroyTaskRuntimeBackgroundAuthorizationRequestV2(decoded!);
+    } finally {
+      destroyTaskRuntimeBackgroundAuthorizationRequestV2(f.request);
+      destroyTaskRuntimeBackgroundAuthorizationRequestV1(f.baseRequest);
+      destroyDomainForegroundAuthorizationPlanV2(f.plan);
+    }
+  });
+
   test("rejects signer, work, scope, and issuer-head substitutions", async () => {
     const f = await fixture();
     try {
@@ -196,7 +230,7 @@ describe("Task Runtime background authorization request v2", () => {
     }
   });
 
-  test("fails closed for future work purposes and malformed wire", async () => {
+  test("fails closed for mismatched or excluded work purposes and malformed wire", async () => {
     const f = await fixture();
     try {
       const encoded = encodeTaskRuntimeBackgroundAuthorizationRequestV2(
@@ -206,7 +240,35 @@ describe("Task Runtime background authorization request v2", () => {
         workPurpose: "task.dispatch" as const };
       expect(() => createTaskRuntimeBackgroundAuthorizationRequestV2(f.crypto, {
         ...f.request, baseRequest: otherBase,
-      })).toThrow("only task.execute");
+      })).toThrow("only Task execution work");
+      const mismatchedBase = {
+        ...f.baseRequest,
+        workKind: "task.approval_resume" as const,
+        workPurpose: "task.await_reply_resume" as const,
+      };
+      expect(() => createTaskRuntimeBackgroundAuthorizationRequestV2(f.crypto, {
+        ...f.request,
+        baseRequest: mismatchedBase,
+      })).toThrow("work kind and purpose disagree");
+      for (const workKind of [
+        "task.dispatch",
+        "task.cancel_result",
+        "task.deliver_message",
+        "task.deliver_result",
+        "task.delivery_wake",
+      ] as const) {
+        expect(() => createTaskRuntimeBackgroundAuthorizationRequestV2(
+          f.crypto,
+          {
+            ...f.request,
+            baseRequest: {
+              ...f.baseRequest,
+              workKind,
+              workPurpose: workKind,
+            },
+          },
+        )).toThrow();
+      }
       expect(decodeTaskRuntimeBackgroundAuthorizationRequestV2(
         f.crypto, Uint8Array.from([...encoded, 0]),
       )).toBeNull();

@@ -17,11 +17,12 @@ import {
   DOMAIN_FOREGROUND_AUTHORIZATION_MAX_TTL_MS_V2,
   destroyDomainForegroundAuthorizationPlanV2,
 } from "@nautilo/lattice-crypto/wire";
-import type {
-  BackgroundAuthorizationTaskRuntimeRecordV3,
-  ProtectedTaskOccurrence,
-  TaskRuntimeGrantStableIdentity,
-  TaskRuntimeRecipientRequestPlan,
+import {
+  isTaskExecutionWorkKind,
+  type BackgroundAuthorizationTaskRuntimeRecordV3,
+  type ProtectedTaskOccurrence,
+  type TaskRuntimeGrantStableIdentity,
+  type TaskRuntimeRecipientRequestPlan,
 } from "@nautilo/runtime";
 import type { ProtectedTaskOutputReadIntent } from "./protected-task-output-read-product";
 import type { ProtectedTaskCancellationOutputIntent } from "@nautilo/db";
@@ -114,7 +115,7 @@ export function createProtectedTaskRuntimeRecipientRequestPlan(
     requesterUserId: input.occurrence.task.requestorId,
     publication: "execution",
   } as const;
-  if (input.initialRecord.workKind !== "task.execute") {
+  if (!isTaskExecutionWorkKind(input.initialRecord.workKind)) {
     return createRecipientRequestPlan(common);
   }
   return createRecipientRequestPlan({

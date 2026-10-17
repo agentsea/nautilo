@@ -694,8 +694,9 @@ describe("background authorization repository contract", () => {
     )).toThrow("does not match current durable authorization");
   });
 
-  test("accepts an exact verified v4 Task execute response with split durable digests", async () => {
-    const record = taskRuntimeRecordV3();
+  test.each(["task.execute", "task.approval_resume", "task.await_reply_resume"] as const)(
+    "accepts an exact verified v4 %s response with split durable digests", async workKind => {
+    const record = { ...taskRuntimeRecordV3(), workKind, purpose: workKind };
     const response = verifiedTaskRuntimeResponseV4(record);
     const expectedResponseBytes = response.responseBytes.slice();
     const repository = new InMemoryBackgroundAuthorizationRepository();
@@ -762,12 +763,30 @@ describe("background authorization repository contract", () => {
     reject({ ...response, descriptorBytes: new Uint8Array([0x75]) });
     reject(response, response.expiresAt);
 
-    const resumed = {
-      ...record,
-      workKind: "task.approval_resume" as const,
-      purpose: "task.approval_resume" as const,
-    };
-    reject(verifiedTaskRuntimeResponseV4(resumed), START + 2, resumed);
+    reject({ ...response, workKind: "task.approval_resume", purpose: "task.approval_resume" });
+    reject({ ...response, purpose: "task.approval_resume" });
+    for (const workKind of [
+      "task.dispatch", "task.cancel_result", "task.deliver_message",
+      "task.deliver_result", "task.delivery_wake",
+    ] as const) {
+      const excluded = {
+        ...record,
+        workKind,
+        purpose: workKind,
+        authoritySet: {
+          ...record.authoritySet,
+          namespaceRequirements: record.authoritySet.namespaceRequirements.map(
+            requirement => ({
+              ...requirement,
+              operations: workKind === "task.cancel_result" || workKind === "task.deliver_message"
+                ? ["encrypt"] as const : requirement.operations,
+            }),
+          ),
+        },
+      };
+      expect(parseBackgroundAuthorizationRecord(excluded).workKind).toBe(workKind);
+      reject(verifiedTaskRuntimeResponseV4(excluded), START + 2, excluded);
+    }
   });
 
   test.each(["task.execute", "task.approval_resume", "task.await_reply_resume"] as const)(

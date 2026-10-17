@@ -298,6 +298,7 @@ for (const representation of ["protected", "dual"] as const) {
       }));
 
     const { recipient, request } = buildRequest(plan);
+    expect(request.formatVersion).toBe(1);
     expect(recipient.recipientKeyId)
       .toBe(`task-delivery-runtime:${RUN}:0`);
     expect(decodeTaskRuntimeBackgroundAuthorizationRequestV1(

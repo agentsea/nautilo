@@ -58,7 +58,11 @@ const HUMAN = "80000000-0000-4000-8000-000000000808";
 const DEVICE = "temporary-memory-device";
 const bytes = (value: number): Uint8Array => new Uint8Array(32).fill(value);
 
-test("fresh certified execution writes and reopens Memory without permanent Runtime state", async () => {
+test.each([
+  ["task.execute", 1],
+  ["task.approval_resume", 2],
+  ["task.await_reply_resume", 3],
+] as const)("fresh certified %s segment %s writes and reopens Memory without permanent Runtime state", async (workKind, executionSegment) => {
   let now = NOW;
   const crypto = new LatticeCrypto(undefined, { now: () => now });
   const issuer = crypto.generateSigningKeyPair();
@@ -127,8 +131,8 @@ test("fresh certified execution writes and reopens Memory without permanent Runt
   const baseRequest = createTaskRuntimeBackgroundAuthorizationRequestV1({
     requestId: plan.authorizationId,
     workId: RUN,
-    workKind: "task.execute",
-    workPurpose: "task.execute",
+    workKind,
+    workPurpose: workKind,
     recipientGeneration: 1,
     episodeId: plan.sessionId,
     sourceRoomId: plan.roomId,
@@ -150,7 +154,7 @@ test("fresh certified execution writes and reopens Memory without permanent Runt
       taskRunId: RUN,
       inputObjectId: `task-definition:v1:${"b".repeat(64)}`,
       resultObjectId,
-      executionSegment: 1,
+      executionSegment,
       workIdentityHash: bytes(0x45),
     },
     signer: attempt.attempt.signer,
@@ -226,7 +230,7 @@ test("fresh certified execution writes and reopens Memory without permanent Runt
     currentNamespaceRequirements: [namespaceRequirement],
     result,
     certifiedSigning: {
-      expectedExecutionSegment: 1,
+      expectedExecutionSegment: executionSegment,
       requestBytes,
       certificateBytes,
       currentIssuer: taskRuntimeBackgroundAuthorizationIssuer(request),

@@ -15,6 +15,7 @@ import {createBackgroundAuthorizationResponseV2, encodeBackgroundWorkDescriptorV
   createTaskRuntimeSignerAuthorizationV1,
   decodeTaskRuntimeBackgroundAuthorizationRequestBase,
   decodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV2,
   encodeTaskRuntimeBackgroundAuthorizationResponseV2,
   encodeTaskRuntimeBackgroundAuthorizationRequestV2,
   encodeTaskRuntimeBackgroundAuthorizationRequestV1,
@@ -365,7 +366,13 @@ test.each(["task.dispatch", "task.cancel_result", "task.deliver_message"] as con
   expect(accepted).toHaveLength(1);
 });
 
-test("accepts a certified initial Task response and rejects a changed Device head", async () => {
+test.each([
+  ["task.execute", 1],
+  ["task.approval_resume", 2],
+  ["task.await_reply_resume", 3],
+] as const)(
+  "accepts a certified %s Task response and rejects substituted signed facts",
+  async (workKind, executionSegment) => {
   const crypto = new LatticeCrypto();
   const signing = crypto.generateSigningKeyPair();
   const recipient = await crypto.generateEncryptionKeyPair();
@@ -406,7 +413,7 @@ test("accepts a certified initial Task response and rejects a changed Device hea
   });
   const baseRequest = createTaskRuntimeBackgroundAuthorizationRequestV1({
     requestId: plan.authorizationId, workId: runId,
-    workKind: "task.execute", workPurpose: "task.execute",
+    workKind, workPurpose: workKind,
     recipientGeneration: 0, episodeId: plan.sessionId,
     sourceRoomId: plan.roomId, recipientKeyId: plan.recipientKeyId,
     recipientPublicKey: recipient.publicKey, authorizationPlan: plan,
@@ -421,7 +428,7 @@ test("accepts a certified initial Task response and rejects a changed Device hea
     work: {taskId, taskRunId: runId,
       inputObjectId: `task-definition:v1:${"a".repeat(64)}`,
       resultObjectId: `task-run-result:v1:${bytesToHex(resultDigest)}`,
-      executionSegment: 1, workIdentityHash},
+      executionSegment, workIdentityHash},
     signer: {agentId: "agent:task", runtimeGeneration: 0,
       signerKeyId: agentRuntimeObjectSignerKeyIdV1(crypto, signer.publicKey),
       signerPublicKey: signer.publicKey},
@@ -468,7 +475,7 @@ test("accepts a certified initial Task response and rejects a changed Device hea
         recipientPublicKey: Buffer.from(recipient.publicKey).toString("base64url"),
         expiresAt: baseRequest.deadlineAt}},
     descriptorBytes: requestBytes, workIdentityHash,
-    workKind: "task.execute", purpose: "task.execute",
+    workKind, purpose: workKind,
     expectedPolicyRevision: plan.policyRevision,
     authoritySet: {namespaceRequirements: request.namespaceRequirements,
       domainRequirements: [{ordinal: 0, domainId: domain.domainId,
@@ -476,13 +483,14 @@ test("accepts a certified initial Task response and rejects a changed Device hea
         expectedAuthorizationRevision: domain.authorizationRevision}]},
   } as unknown as BackgroundAuthorizationTaskRuntimeRecordV3;
   let currentHead = device.headDigest.slice();
+  let currentRecord = structuredClone(record);
   const accepted: unknown[] = [];
   const connection = {query: async () => []};
   const service = createProductionBackgroundAuthorizationComposition({
     crypto, now: () => now,
     context: (async () => ({canonicalRunner: {}})) as unknown as Dependencies["context"],
     restricted: (() => connection) as unknown as Dependencies["restricted"],
-    repository: (async () => ({get: async () => structuredClone(record),
+    repository: (async () => ({get: async () => structuredClone(currentRecord),
       listAwaitingDevicePage: async () => ({records: [], continuation: null}),
       acceptVerifiedResponse: async (input: unknown) => {
         accepted.push(structuredClone(input));
@@ -491,8 +499,10 @@ test("accepts a certified initial Task response and rejects a changed Device hea
     withTaskAuthority: (async input => {
       const base = decodeTaskRuntimeBackgroundAuthorizationRequestBase(
         crypto,
-        requestBytes,
+        input.record.descriptorBytes!,
       )!;
+      if (input.record.workKind !== base.workKind
+        || input.record.purpose !== base.workPurpose) return null;
       const currentPlan = parseDomainForegroundAuthorizationPlanV2(
         base.authorizationPlanBytes,
       )!;
@@ -508,8 +518,46 @@ test("accepts a certified initial Task response and rejects a changed Device hea
     formatVersion: 4, responseBytes, authorizationBytes, certificateBytes,
     authorizationHash}});
 
+  currentRecord = {...structuredClone(record),
+    workKind: "task.execute", purpose: "task.execute"};
+  if (workKind === "task.execute") {
+    currentRecord = {...structuredClone(record),
+      workKind: "task.approval_resume", purpose: "task.approval_resume"};
+  }
+  expect(await service.respond(subject, {responseBytes}))
+    .toEqual({status: "stale"});
+
+  currentRecord = {...structuredClone(record), workIdentityHash: new Uint8Array(32).fill(10)};
+  await Promise.resolve(expect(service.respond(subject, {responseBytes}))
+    .rejects.toMatchObject({status: "malformed"}));
+
+  const substitutedWorkIdentityHash = new Uint8Array(32).fill(10);
+  const substitutedRequest = createTaskRuntimeBackgroundAuthorizationRequestV2(
+    crypto,
+    {
+      baseRequest: request.baseRequest,
+      work: {...request.work, workIdentityHash: substitutedWorkIdentityHash},
+      signer: request.signer,
+      deviceGroupHead: request.deviceGroupHead,
+      namespaceRequirements: request.namespaceRequirements,
+    },
+  );
+  const substitutedRequestBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV2(
+    crypto,
+    substitutedRequest,
+  );
+  currentRecord = {...structuredClone(record),
+    descriptorBytes: substitutedRequestBytes,
+    workIdentityHash: substitutedWorkIdentityHash};
+  await Promise.resolve(expect(service.respond(subject, {responseBytes}))
+    .rejects.toMatchObject({status: "malformed"}));
+  substitutedRequestBytes.fill(0);
+  substitutedWorkIdentityHash.fill(0);
+  destroyTaskRuntimeBackgroundAuthorizationRequestV2(substitutedRequest);
+
+  currentRecord = structuredClone(record);
   currentHead = new Uint8Array(32).fill(10);
-  expect(service.respond(subject, {responseBytes}))
-    .rejects.toMatchObject({status: "malformed"});
+  await Promise.resolve(expect(service.respond(subject, {responseBytes}))
+    .rejects.toMatchObject({status: "malformed"}));
   expect(accepted).toHaveLength(1);
 });

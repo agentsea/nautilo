@@ -21,6 +21,7 @@ import {
   encodeTaskRuntimeBackgroundAuthorizationRequestV2,
   encodeTaskRuntimeBackgroundAuthorizationRequestV1,
   verifyCurrentTaskRuntimeSignerAuthorizationV1,
+  verifyHistoricalTaskRuntimeSignerAuthorizationV1,
   type BackgroundAuthorizationIssuerV2,
 } from "@nautilo/lattice-crypto/background";
 import {
@@ -48,6 +49,14 @@ const SERVER_INSTANCE_ID = "10000000-0000-4000-8000-000000000907";
 const TASK_ID = "30000000-0000-4000-8000-000000000907";
 const TASK_RUN_ID = "40000000-0000-4000-8000-000000000907";
 const encoder = new TextEncoder();
+type TaskExecutionWorkKind = "task.execute" | "task.approval_resume"
+  | "task.await_reply_resume";
+
+function resultObjectId(crypto: LatticeCrypto): string {
+  return `task-run-result:v1:${bytesToHex(crypto.hash(encoder.encode(
+    `nautilo/task-run-result-crypto-object/v1\n${TASK_ID}\n${TASK_RUN_ID}\n1`,
+  )))}`;
+}
 
 const DOMAIN: DomainForegroundAuthorityEntry = Object.freeze({
   domainId: "task-runtime-domain-907",
@@ -62,7 +71,10 @@ const DOMAIN: DomainForegroundAuthorityEntry = Object.freeze({
   activeNamespaceBindingCount: 1,
 });
 
-async function fixture(workId = "task-run-907") {
+async function fixture(
+  workId = "task-run-907",
+  workKind: TaskExecutionWorkKind = "task.execute",
+) {
   const crypto = new LatticeCrypto(seededRng(907_407), { now: () => NOW });
   const signer = crypto.generateSigningKeyPair();
   const recipient = await crypto.generateEncryptionKeyPair();
@@ -91,8 +103,8 @@ async function fixture(workId = "task-run-907") {
   const request = createTaskRuntimeBackgroundAuthorizationRequestV1({
     requestId: plan.authorizationId,
     workId,
-    workKind: "task.execute",
-    workPurpose: "task.execute",
+    workKind,
+    workPurpose: workKind,
     recipientGeneration: RECIPIENT_GENERATION,
     episodeId: EPISODE_ID,
     sourceRoomId: ROOM_ID,
@@ -132,18 +144,19 @@ function signingAuthority(
   };
 }
 
-async function v2Fixture() {
-  const value = await fixture(TASK_RUN_ID);
+async function v2Fixture(options: Readonly<{
+  workKind?: TaskExecutionWorkKind;
+  executionSegment?: number;
+  workIdentityHashFill?: number;
+}> = {}) {
+  const workKind = options.workKind ?? "task.execute";
+  const executionSegment = options.executionSegment ?? 1;
+  const value = await fixture(TASK_RUN_ID, workKind);
   const baseRequest = decodeTaskRuntimeBackgroundAuthorizationRequestV1(
     value.requestBytes,
   );
   if (baseRequest === null) throw new Error("fixture request failed to decode");
   const ephemeral = value.crypto.generateSigningKeyPair();
-  const resultObjectId = `task-run-result:v1:${bytesToHex(value.crypto.hash(
-    encoder.encode(
-      `nautilo/task-run-result-crypto-object/v1\n${TASK_ID}\n${TASK_RUN_ID}\n1`,
-    ),
-  ))}`;
   const request = createTaskRuntimeBackgroundAuthorizationRequestV2(
     value.crypto,
     {
@@ -152,9 +165,11 @@ async function v2Fixture() {
         taskId: TASK_ID,
         taskRunId: TASK_RUN_ID,
         inputObjectId: `task-definition:v1:${"a".repeat(64)}`,
-        resultObjectId,
-        executionSegment: 1,
-        workIdentityHash: new Uint8Array(32).fill(0x51),
+        resultObjectId: resultObjectId(value.crypto),
+        executionSegment,
+        workIdentityHash: new Uint8Array(32).fill(
+          options.workIdentityHashFill ?? 0x51,
+        ),
       },
       signer: {
         agentId: "task-runtime-agent-907",
@@ -490,6 +505,161 @@ describe("Task Runtime device authorization responder", () => {
       responseBytes?.fill(0);
       originalRequest.fill(0);
       originalSigningKey.fill(0);
+      destroyV2Fixture(value);
+    }
+  });
+
+  test.each([
+    ["task.approval_resume", 2],
+    ["task.await_reply_resume", 3],
+  ] as const)("returns a current and historical certificate for %s segment %d", async (
+    workKind,
+    executionSegment,
+  ) => {
+    const value = await v2Fixture({ workKind, executionSegment });
+    let responseBytes: Uint8Array | undefined;
+    try {
+      const result = await tryRespondToCurrentTaskRuntimeAuthorizationV1({
+        requestBytes: value.requestBytes,
+        domainForegroundAuthority: domainAuthority([]),
+        crypto: value.crypto,
+        now: () => NOW + 1,
+        withCurrentSigningAuthority: async use => use(
+          signingAuthority(value),
+        ),
+      });
+      expect(result.status).toBe("ready");
+      if (result.status !== "ready") return;
+      responseBytes = result.responseBytes;
+      const response = decodeTaskRuntimeBackgroundAuthorizationResponseV2(
+        responseBytes,
+      );
+      try {
+        const requestHash = value.crypto.hash(value.requestBytes);
+        const authorizationHash = value.crypto.hash(
+          response.authorizationBytes,
+        );
+        const current = await verifyCurrentTaskRuntimeSignerAuthorizationV1(
+          value.crypto,
+          {
+            certificateBytes: response.certificateBytes,
+            requestBytes: value.requestBytes,
+            expectedRequestHash: requestHash,
+            expectedAuthorizationHash: authorizationHash,
+            now: NOW + 2,
+            resolveCurrentIssuer: () => value.signer.publicKey,
+          },
+        );
+        expect(current.request.baseRequest.workKind).toBe(workKind);
+        expect(current.request.baseRequest.workPurpose).toBe(workKind);
+        expect(current.request.work.executionSegment).toBe(executionSegment);
+        expect(current.request.work.resultObjectId).toBe(
+          resultObjectId(value.crypto),
+        );
+        destroyVerifiedTaskRuntimeSignerAuthorizationV1(current);
+
+        const historical = verifyHistoricalTaskRuntimeSignerAuthorizationV1(
+          value.crypto,
+          {
+            certificateBytes: response.certificateBytes,
+            resolveHistoricalIssuer: () => value.signer.publicKey,
+          },
+        );
+        expect(historical.projection.request.requestHash).toEqual(requestHash);
+        expect(historical.projection.work.executionSegment).toBe(
+          executionSegment,
+        );
+        destroyVerifiedTaskRuntimeSignerAuthorizationV1(historical);
+        requestHash.fill(0);
+        authorizationHash.fill(0);
+      } finally {
+        response.authorizationBytes.fill(0);
+        response.certificateBytes.fill(0);
+      }
+    } finally {
+      responseBytes?.fill(0);
+      destroyV2Fixture(value);
+    }
+  });
+
+  test("rejects a certificate paired with a swapped execution kind or work identity", async () => {
+    const value = await v2Fixture({
+      workKind: "task.approval_resume",
+      executionSegment: 2,
+    });
+    const swappedKind = await v2Fixture({
+      workKind: "task.await_reply_resume",
+      executionSegment: 2,
+    });
+    const swappedWork = await v2Fixture({
+      workKind: "task.approval_resume",
+      executionSegment: 2,
+      workIdentityHashFill: 0x52,
+    });
+    let responseBytes: Uint8Array | undefined;
+    try {
+      const result = await tryRespondToCurrentTaskRuntimeAuthorizationV1({
+        requestBytes: value.requestBytes,
+        domainForegroundAuthority: domainAuthority([]),
+        crypto: value.crypto,
+        now: () => NOW + 1,
+        withCurrentSigningAuthority: async use => use(
+          signingAuthority(value),
+        ),
+      });
+      expect(result.status).toBe("ready");
+      if (result.status !== "ready") return;
+      responseBytes = result.responseBytes;
+      const response = decodeTaskRuntimeBackgroundAuthorizationResponseV2(
+        responseBytes,
+      );
+      try {
+        const authorizationHash = value.crypto.hash(
+          response.authorizationBytes,
+        );
+        for (const substituted of [swappedKind, swappedWork]) {
+          await Promise.resolve(
+            expect(verifyCurrentTaskRuntimeSignerAuthorizationV1(
+              value.crypto,
+              {
+                certificateBytes: response.certificateBytes,
+                requestBytes: substituted.requestBytes,
+                expectedRequestHash: value.crypto.hash(
+                  substituted.requestBytes,
+                ),
+                expectedAuthorizationHash: authorizationHash,
+                now: NOW + 2,
+                resolveCurrentIssuer: () => value.signer.publicKey,
+              },
+            )).rejects.toMatchObject({ code: "invalid" }),
+          );
+        }
+        const historical = verifyHistoricalTaskRuntimeSignerAuthorizationV1(
+          value.crypto,
+          {
+            certificateBytes: response.certificateBytes,
+            resolveHistoricalIssuer: () => value.signer.publicKey,
+          },
+        );
+        expect(historical.projection.request.requestHash).toEqual(
+          value.crypto.hash(value.requestBytes),
+        );
+        expect(historical.projection.request.requestHash).not.toEqual(
+          value.crypto.hash(swappedKind.requestBytes),
+        );
+        expect(historical.projection.request.requestHash).not.toEqual(
+          value.crypto.hash(swappedWork.requestBytes),
+        );
+        destroyVerifiedTaskRuntimeSignerAuthorizationV1(historical);
+        authorizationHash.fill(0);
+      } finally {
+        response.authorizationBytes.fill(0);
+        response.certificateBytes.fill(0);
+      }
+    } finally {
+      responseBytes?.fill(0);
+      destroyV2Fixture(swappedWork);
+      destroyV2Fixture(swappedKind);
       destroyV2Fixture(value);
     }
   });
