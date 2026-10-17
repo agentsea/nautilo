@@ -358,3 +358,40 @@ describe("personal Memory funding projection", () => {
     expect(failure).toBeInstanceOf(Error);
   });
 });
+
+test("server Surplus capability sessions expose recovery for inference but never Memory", async () => {
+  const recoveryCustody = createPersonalProviderCustody();
+  const personalRow = credential("openrouter", recoveryCustody);
+  const deps: ModelFundingDeps = {
+    getPolicy: async () => ({ allowPersonalProviderKeys: true, fundingPreference: "server_first" }),
+    getCapabilities: async () => ["use_server_provider_credentials", "use_personal_provider_credentials"],
+    getCredential: async (humanId, provider) =>
+      humanId === HUMAN_ID && provider === "openrouter" ? personalRow : null,
+    serverRoute: () => "surplus",
+    personalSurplusRoute: () => true,
+    readCustody: async () => recoveryCustody,
+    decrypt: decryptPersonalProviderCredential,
+  };
+  const session = createCapabilityFundingSession(HUMAN_ID, async () => {}, deps);
+  const research = await session.openModel(RESEARCH_MODEL, "research");
+  const memory = await session.openModel(RESEARCH_MODEL, "memory");
+
+  expect(research.binding).toEqual({ kind: "server", providerRoute: "surplus" });
+  expect(research.fundingSession.openPersonalDirectRecovery).toBeFunction();
+  expect(memory.fundingSession.openPersonalDirectRecovery).toBeUndefined();
+
+  const recovery = await research.fundingSession.openPersonalDirectRecovery!(RESEARCH_MODEL);
+  expect(recovery).toMatchObject({ kind: "personal", workload: "research" });
+  expect(recovery.capabilityFunding).toBeUndefined();
+  const attempt = await recovery.runAttempt(RESEARCH_MODEL, async (value) => value);
+  expect(attempt).toMatchObject({
+    usageFunding: {
+      kind: "personal",
+      payerHumanId: HUMAN_ID,
+      providerRoute: "openrouter",
+      credentialId: CREDENTIAL_ID,
+      credentialRevision: 1,
+    },
+    personalCredential: { apiKey: "test-only-secret" },
+  });
+});

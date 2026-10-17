@@ -79,6 +79,40 @@ describe("ProviderCredentialsEditor", () => {
     expect(view.container.textContent).not.toContain("unmasked-secret");
   });
 
+  test("guides a configured Surplus server key to the explicit Models policy", async () => {
+    const surplus = key({
+      id: "surplus",
+      name: "Surplus Intelligence",
+      status: "present",
+      masked: "surplus-…1234",
+    });
+    const view = render(
+      <ProviderCredentialsEditor keyApi={api([surplus])} enabled viewerIsVerified />,
+    );
+
+    expect(await view.findByText(/Surplus is configured/u)).toBeTruthy();
+    const modelsLink = view.getByRole("link", { name: "Prefer Surplus in Models" });
+    expect(modelsLink.getAttribute("href")).toBe("/admin#models");
+    expect(view.getByText(/signed model catalogue/u)).toBeTruthy();
+    expect(view.getByText(/pilot-enabled Surplus account/u)).toBeTruthy();
+  });
+
+  test("does not present policy guidance for an unusable Surplus key status", async () => {
+    const rejected = key({
+      id: "surplus",
+      name: "Surplus Intelligence",
+      status: "invalid_key",
+      masked: "surplus-…1234",
+    });
+    const view = render(
+      <ProviderCredentialsEditor keyApi={api([rejected])} enabled viewerIsVerified />,
+    );
+
+    await view.findByText("Rejected by provider");
+    expect(view.queryByText(/Surplus is configured/u)).toBeNull();
+    expect(view.queryByRole("link", { name: "Prefer Surplus in Models" })).toBeNull();
+  });
+
   test("routes targeted validation and deletion while retaining Validate all", async () => {
     const openai = key({ id: "openai", name: "OpenAI", masked: "sk-…1234" });
     const keyApi = api([openai]);

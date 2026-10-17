@@ -1,3 +1,4 @@
+import { runAdmittedDirectModelRecovery } from "../runtime/direct-model-recovery";
 import { findChatGPTSubscriptionError } from "../providers/chatgpt-plan-errors";
 import type { AIMessage, BaseMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
@@ -152,16 +153,21 @@ class PersonalSurplusDirectFallbackUnavailableError extends SurplusDirectFallbac
 async function runAdmittedDirectFallback<T>(
   fundingSession: ForegroundChatFundingSession,
   modelId: string,
-  run: (attempt: ForegroundChatFundingAttempt) => Promise<T>,
+  run: (attempt: ForegroundChatFundingAttempt, session: ForegroundChatFundingSession) => Promise<T>,
   reason: "surplus-unavailable" | "request-not-qualified",
 ): Promise<T> {
   try {
-    return await fundingSession.runAttempt(modelId, run, "direct");
+    return await runAdmittedDirectModelRecovery(fundingSession, modelId, run);
   } catch (error) {
     if (error instanceof PersonalDirectFundingUnavailableError) {
       throw new PersonalSurplusDirectFallbackUnavailableError(reason, error);
     }
-    throw error;
+    if (error instanceof ProviderAttemptError || error instanceof PersonalAttemptLedgerUnavailableError) {
+      throw error;
+    }
+    // Direct/recovery admission runs inside the marketplace callback, but
+    // policy, permission and custody failures remain session failures.
+    throw new ForegroundFundingRecheckError(error);
   }
 }
 
@@ -999,6 +1005,7 @@ export async function invokeChatModelWithFallback(
     }
 
     let surplusAttemptedForModel = false;
+    let personalRecoveryAttemptedForModel = false;
     // Provider-local and attempt-local: unlike the turn-wide runtime flag this
     // cannot be pre-seeded by an earlier model/tool phase, and it also works
     // for research/background calls that do not publish Room token events.
@@ -1043,12 +1050,18 @@ export async function invokeChatModelWithFallback(
           model_id: currentModelId,
         },
       };
-      const runProviderAttempt = async ({ usageFunding, personalCredential }: ForegroundChatFundingAttempt): Promise<AIMessage> => {
-        if (fundingSession?.kind === "personal"
+      const runProviderAttempt = async (
+        { usageFunding, personalCredential }: ForegroundChatFundingAttempt,
+        attemptFundingSession = fundingSession,
+      ): Promise<AIMessage> => {
+        if (attemptFundingSession !== fundingSession && attemptFundingSession?.kind === "personal") {
+          personalRecoveryAttemptedForModel = true;
+        }
+        if (attemptFundingSession?.kind === "personal"
           && (usageFunding.kind !== "personal" || personalCredential === undefined)) {
           throw new Error("Personal foreground funding session returned an invalid attempt binding.");
         }
-        if (fundingSession?.kind === "server"
+        if (attemptFundingSession?.kind === "server"
           && (usageFunding.kind !== "server" || personalCredential !== undefined)) {
           throw new Error("Server foreground funding session returned an invalid attempt binding.");
         }
@@ -1057,13 +1070,13 @@ export async function invokeChatModelWithFallback(
           // Apply the server-wide serving preference inside the admitted payer.
           // Supported routes reuse the current signed catalogue and preserve
           // the selected provider pin.
-          if (!fundingSession || usageFunding.providerRoute === "surplus") {
+          if (!attemptFundingSession || usageFunding.providerRoute === "surplus") {
             kickServerModelConfigRefresh();
             const surplusKey = usageFunding.kind === "personal"
               ? personalCredential?.apiKey ?? null : resolveProviderKey("surplus");
             const surplus = resolveSurplusChatServingAvailability({
               catalogModelId: currentModelId,
-              policyEnabled: fundingSession ? usageFunding.providerRoute === "surplus" : getCachedServerModelConfigRow()?.preferSurplus === true,
+              policyEnabled: attemptFundingSession ? usageFunding.providerRoute === "surplus" : getCachedServerModelConfigRow()?.preferSurplus === true,
               keyConfigured: surplusKey !== null,
             });
             const catalogEntry = getActiveModelCatalogSync().catalog.entries.find((entry) => entry.id === currentModelId);
@@ -1105,7 +1118,7 @@ export async function invokeChatModelWithFallback(
                   currentModelId,
                   invokeOptions?.fundingHumanUserId ?? "",
                   invokeOptions?.serverFundedService,
-                  fundingSession,
+                  attemptFundingSession,
                   agentId,
                   controls,
                   undefined,
@@ -1124,11 +1137,12 @@ export async function invokeChatModelWithFallback(
               if (result.kind === "served") {
                 return result.response;
               }
-              if (fundingSession) {
-                // Re-admit the same payer on the direct rail before dispatch;
+              if (attemptFundingSession) {
+                assertNotCancelled();
+                // Re-admit the permitted direct rail before dispatch;
                 // marketplace credentials never reach the original provider.
                 return await runAdmittedDirectFallback(
-                  fundingSession,
+                  attemptFundingSession,
                   currentModelId,
                   runProviderAttempt,
                   "surplus-unavailable",
@@ -1145,9 +1159,10 @@ export async function invokeChatModelWithFallback(
               } catch (error) {
                 throw new ForegroundFundingRecheckError(error);
               }
-            } else if (fundingSession && usageFunding.providerRoute === "surplus") {
+            } else if (attemptFundingSession && usageFunding.providerRoute === "surplus") {
+              assertNotCancelled();
               return await runAdmittedDirectFallback(
-                fundingSession,
+                attemptFundingSession,
                 currentModelId,
                 runProviderAttempt,
                 "request-not-qualified",
@@ -1200,7 +1215,7 @@ export async function invokeChatModelWithFallback(
             currentModelId,
             invokeOptions?.fundingHumanUserId ?? "",
             invokeOptions?.serverFundedService,
-            fundingSession,
+            attemptFundingSession,
             agentId,
             controls,
             serving,
@@ -1218,7 +1233,7 @@ export async function invokeChatModelWithFallback(
           );
         } catch (error) {
           if (error instanceof ForegroundFundingRecheckError) throw error.cause;
-          if (error instanceof PersonalAttemptLedgerUnavailableError) throw error;
+          if (error instanceof PersonalAttemptLedgerUnavailableError || error instanceof ProviderAttemptError) throw error;
           throw new ProviderAttemptError(error);
         }
       };
@@ -1291,17 +1306,20 @@ export async function invokeChatModelWithFallback(
       // classification, health cooldown, reasoning retries, and chain
       // fallback even if the provider surfaced a timeout-shaped AbortError.
       if (invocationConfig?.signal?.aborted) {
-        throw personalFunding
+        throw (personalFunding || personalRecoveryAttemptedForModel)
           ? invocationConfig.signal.reason ?? new Error("Model invocation cancelled by caller")
           : providerFailure;
       }
       const subscriptionError = findChatGPTSubscriptionError(providerFailure);
       if (subscriptionError) throw subscriptionError;
       const classified = classifyError(providerFailure);
-      const terminalProviderError = personalFunding
+      const terminalProviderError = (personalFunding || personalRecoveryAttemptedForModel)
         && !(providerFailure instanceof SurplusDirectFallbackUnavailableError)
         ? new PersonalProviderInvocationError(classified.category)
         : providerFailure;
+      // Recovery uses a separate personal attempt, without granting another
+      // server/model-chain retry or logging the personal provider response.
+      if (personalRecoveryAttemptedForModel) throw terminalProviderError;
       // The short-retry loop preserves this explicit disposition. Honor it
       // again at the chain boundary before reasoning, recovery, or fallback.
       if (personalAttemptError?.disposition !== undefined

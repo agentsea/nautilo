@@ -91,7 +91,7 @@ export interface ResolveModelFundingInput {
   readonly transport?: "direct" | "surplus";
   /** A related image call may narrow admission to the main turn's payer class. */
   readonly fundingKind?: "server" | "personal";
-  /** A media request may require a supported direct-only wire contract. */
+  /** A media request or bounded Surplus recovery may require a direct-only wire contract. */
   readonly directOnly?: boolean;
 }
 
@@ -249,7 +249,7 @@ export async function resolveModelFunding(
     && input.workload !== "image_assistance" && input.workload !== "generation") {
     throw new ModelFundingError("unsupported_workload");
   }
-  if (input.directOnly && input.workload !== "generation") {
+  if (input.directOnly && input.workload === "memory") {
     throw new ModelFundingError("unsupported_workload");
   }
   if (!input.humanUserId.trim()) throw new ModelFundingError("server_credentials_forbidden");
@@ -284,7 +284,7 @@ export async function resolveModelFunding(
   // Explicit subscription selection pins a registration, including its failed
   // state. It must never degrade into API-key or server-funded inference.
   const pinnedSubscription = prior?.kind === "personal" && prior.providerRoute === "openai-chatgpt";
-  const subscription = pinnedSubscription || (!prior && provider === "openai" && input.fundingKind !== "server")
+  const subscription = pinnedSubscription || (!input.directOnly && !prior && provider === "openai" && input.fundingKind !== "server")
     ? await deps.getSubscription?.(input.humanUserId, pinnedSubscription ? prior.credentialId : undefined)
     : null;
   if (subscription || pinnedSubscription) {

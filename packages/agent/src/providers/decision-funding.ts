@@ -1,3 +1,5 @@
+import type { ForegroundChatFundingAttempt } from "../runtime/foreground-chat-funding";
+import { runAdmittedDirectModelRecovery } from "../runtime/direct-model-recovery";
 import type { TaskFundingBinding } from "@nautilo/types";
 import {
   getCapabilityFundingSession,
@@ -71,7 +73,7 @@ async function runTransport<T>(
   transport: "direct" | "surplus",
   invoke: (deps: DecisionDependencies) => Promise<T>,
 ): Promise<T> {
-  return prepared.fundingSession.runAttempt(prepared.modelId, async (attempt) => {
+  const run = async (attempt: ForegroundChatFundingAttempt) => {
     const ambient = getUsageContext();
     const personalApiKey = attempt.personalCredential?.apiKey;
     const admittedFundingAttempt = admitDecisionFundingAttempt(
@@ -92,12 +94,16 @@ async function runTransport<T>(
         ? {}
         : { apiKey: attempt.personalCredential.apiKey }),
     }));
-  }, transport);
+  };
+  return transport === "direct"
+    ? runAdmittedDirectModelRecovery(prepared.fundingSession, prepared.modelId, run)
+    : prepared.fundingSession.runAttempt(prepared.modelId, run, transport);
 }
 
 /**
- * Execute within the admitted payer. An unanswered marketplace attempt may
- * try the same model directly; the funding owner rejects cross-payer use.
+ * An unanswered marketplace attempt may try the same model directly. The
+ * server may additionally admit an exact personal recovery when its direct
+ * route is absent; the primary operation binding remains unchanged.
  */
 export async function runPreparedDecision<T>(
   prepared: PreparedDecisionFunding,

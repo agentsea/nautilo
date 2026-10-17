@@ -251,11 +251,57 @@ describe("PersonalProviderKeysSection", () => {
     const labels = [...view.container.querySelectorAll("label")].map((node) => node.textContent);
     expect(labels.indexOf("Surplus Intelligence")).toBe(labels.indexOf("OpenRouter") + 1);
     expect(view.getByTestId("personal-provider-key-coverage").textContent).toContain("Chat");
+    expect(view.getByTestId("personal-provider-key-coverage").textContent).toContain("Image understanding (qualified chat models)");
     expect(view.getByTestId("personal-provider-key-coverage").textContent).toContain("Research");
     expect(view.getByTestId("personal-provider-key-coverage").textContent).toContain("Decisions");
+    expect(view.getByTestId("personal-provider-key-coverage").textContent).toContain("Image generation");
+    expect(view.getByTestId("personal-provider-key-coverage").textContent).toContain("Video and music generation");
     expect(view.getByText(/Surplus Decisions also require a pilot-enabled account/)).toBeTruthy();
     expect(view.queryByRole("button", { name: /Gateway key/ })).toBeNull();
     expect(view.queryByText("OpenAI-Compatible Gateway")).toBeNull();
+  });
+
+  test("highlights server-advertised qualified Surplus personal families", async () => {
+    const surplusProvider: PersonalProviderCatalogEntry = {
+      id: "surplus",
+      name: "Surplus Intelligence",
+      purpose: "Qualified marketplace routes",
+      personalCapabilities: ["chat", "research", "decision", "images", "media"],
+      destination: "https://api.surplus.ai/v1",
+    };
+    const surplusCredential: CredentialMetadata = {
+      ...saved,
+      provider: "surplus",
+      validationStatus: "accepted",
+      masked: "surplus-…alue",
+    };
+    const view = render(<PersonalProviderKeysSection credentialApi={api({
+      listProviderCredentials: mock(async () => ({
+        credentials: [surplusCredential],
+        providers: [surplusProvider],
+      })),
+    })} />);
+
+    await view.findByText("surplus-…alue");
+    for (const functionality of [
+      "Chat",
+      "Research",
+      "Image understanding (qualified chat models)",
+      "Decisions",
+      "Image generation",
+      "Video and music generation",
+    ]) {
+      expect(
+        view.getByLabelText(`${functionality}: supporting API key configured`),
+      ).toBeTruthy();
+    }
+    for (const functionality of ["Browsing", "File conversion"]) {
+      expect(
+        view.getByLabelText(`${functionality}: no supporting API key configured`),
+      ).toBeTruthy();
+    }
+    expect(view.getByText(/qualified signed-catalogue routes/u)).toBeTruthy();
+    expect(view.getByText(/Surplus Decisions require a pilot-enabled account/u)).toBeTruthy();
   });
 
   test("shows a legacy gateway credential as delete-only and deletes by revision after confirmation", async () => {
@@ -330,8 +376,8 @@ describe("PersonalProviderKeysSection", () => {
     ];
     const view = render(<PersonalProviderKeysSection credentialApi={api({ listProviderCredentials: mock(async () => listResponse(credentials)) })} />);
     expect(await view.findByText("ant-…1234")).toBeTruthy();
-    expect(view.getAllByLabelText("Anthropic: API key configured")).toHaveLength(2);
-    expect(view.getAllByLabelText("OpenAI: API key not configured")).toHaveLength(2);
+    expect(view.getAllByLabelText("Anthropic: API key configured")).toHaveLength(3);
+    expect(view.getAllByLabelText("OpenAI: API key not configured")).toHaveLength(3);
     expect(view.getByTestId("personal-provider-key-coverage").textContent).not.toContain("server-only");
     expect(view.container.textContent).not.toContain("unmasked-secret");
     expect(view.getByRole("button", { name: "Delete legacy server-only key" })).toBeTruthy();

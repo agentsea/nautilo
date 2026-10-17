@@ -129,6 +129,49 @@ describe("personal decision funding", () => {
     });
   });
 
+  test("server Surplus may recover through its explicit same-model personal authority", async () => {
+    const primaryBinding = { kind: "server", providerRoute: "surplus" } as const;
+    const observed: unknown[] = [];
+    let recoveries = 0;
+    const primary: import("../../src/runtime/foreground-chat-funding").ForegroundChatFundingSession = {
+      kind: "server",
+      async recheckAttempt() {},
+      async runAttempt(_modelId, callback, transport) {
+        if (transport === "direct") throw Object.assign(new Error("missing server route"), { code: "provider_credentials_missing" });
+        return callback({ usageFunding: { kind: "server", humanUserId: "human-1", providerRoute: "surplus" } });
+      },
+      async openPersonalDirectRecovery(modelId) {
+        expect(modelId).toBe(MODEL_ID);
+        recoveries++;
+        return {
+          kind: "personal",
+          async recheckAttempt() {},
+          async runAttempt(candidate, callback, transport) {
+            expect(candidate).toBe(MODEL_ID);
+            expect(transport).toBe("direct");
+            return callback({
+              usageFunding: { kind: "personal", humanUserId: "human-1", payerHumanId: "human-1", providerRoute: "openrouter", credentialId: CREDENTIAL_ID, credentialRevision: 3 },
+              personalCredential: { apiKey: "synthetic-direct" },
+            });
+          },
+        };
+      },
+    };
+    const prepared = { modelId: MODEL_ID, preferenceRevision: 7, binding: primaryBinding, fundingSession: primary };
+    const result = await runPreparedDecision(prepared, async (deps) => {
+      observed.push({ funding: getUsageContext()?.funding, key: deps.apiKey, route: deps.providerRoute });
+      if (deps.providerRoute === "surplus") throw new SurplusDecisionDirectFallbackError();
+      return "recovered";
+    });
+    expect(result).toBe("recovered");
+    expect(recoveries).toBe(1);
+    expect(prepared.binding).toBe(primaryBinding);
+    expect(observed).toEqual([
+      { funding: { kind: "server", humanUserId: "human-1", providerRoute: "surplus" }, key: undefined, route: "surplus" },
+      { funding: { kind: "personal", humanUserId: "human-1", payerHumanId: "human-1", providerRoute: "openrouter", credentialId: CREDENTIAL_ID, credentialRevision: 3 }, key: "synthetic-direct", route: "direct" },
+    ]);
+  });
+
   test("personal-only decision rows become runnable in discover_models", async () => {
     const binding = { kind: "personal", providerRoute: "openrouter", credentialId: CREDENTIAL_ID,
       credentialRevision: 3 } as const;

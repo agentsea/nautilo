@@ -3,7 +3,8 @@ import { createCapabilityFundingSession, prepareCapabilityFundingSession } from 
 import {
   modelIdForCapabilityProjection, getProfileByAgentId, resolveTaskModel,
   validateExactTaskModelSelection, resolveRetainedModels, resolveCatalogModel,
-  type ForegroundChatFundingSession, isSupportedPersonalTool, readDeepResearchTaskMetadata,
+  type ForegroundChatFundingAttempt, type ForegroundChatFundingSession,
+  isSupportedPersonalTool, readDeepResearchTaskMetadata,
 } from "@nautilo/agent";
 import { and, eq, isNull, rooms, roomMembers, getServerProviderPolicy, getTaskById, getTaskRunForTask, getCachedServerModelConfigRow, recordTaskWakeFundingFailure, type Task, type TaskRun } from "@nautilo/db";
 import { assertCanInvokeAgent, findActorByOwnerId, getUserCapabilities } from "@nautilo/trust";
@@ -12,6 +13,7 @@ import { parseTaskFundingBinding, type TaskFundingBinding, type TaskFundingFailu
 import { usageFundingFor } from "./foreground-chat-funding";
 import { ModelFundingError, resolveModelFunding, withAdmittedPersonalCredential, type ModelFundingDecision } from "./model-funding";
 import { getServerDirectDb } from "./server-direct-db";
+import { openSurplusPersonalDirectRecovery } from "./surplus-personal-recovery";
 
 import { callerTaskModelEnvironment, callerTaskModelIds, personalOnlyTaskModelIds } from "./caller-task-model-context";
 
@@ -384,6 +386,27 @@ async function openSession(task: Task, run: TaskRun, modelId: string, wake: bool
       admitted.kind,
       bindingFor(admitted),
     ),
+    ...(admitted.kind === "server" && admitted.providerRoute === "surplus" ? {
+      openPersonalDirectRecovery: async (candidate: string) => {
+        const recovery = await fundingBoundary(() => openSurplusPersonalDirectRecovery({
+          humanUserId: task.requestorId,
+          modelId: candidate,
+          workload: "native_text_task",
+          primaryDecision: admitted,
+          recheckPrimary: () => resolveCandidate(candidate),
+        }));
+        return {
+          ...recovery,
+          recheckAttempt: (recoveryModelId: string, transport?: "direct" | "surplus") =>
+            fundingBoundary(() => recovery.recheckAttempt(recoveryModelId, transport)),
+          async runAttempt<T>(recoveryModelId: string,
+            callback: (attempt: ForegroundChatFundingAttempt) => Promise<T>,
+            transport?: "direct" | "surplus") {
+            return fundingBoundary(() => recovery.runAttempt(recoveryModelId, callback, transport));
+          },
+        };
+      },
+    } : {}),
     async recheckAttempt(candidate, transport) {
       const current = await resolveCandidate(candidate, transport);
       if (transport && lastAttempt?.kind === "personal" && current.kind === "personal"

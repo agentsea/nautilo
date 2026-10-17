@@ -1082,6 +1082,13 @@ store update, or Desktop/Host installation.
   these fixes.
 - Hue bridge rediscovery and pairing recovery.
 
+- Surplus-only servers can select supported chat, helper and generation models
+  without direct-provider keys. Key settings highlight qualified capabilities
+  and link to the Surplus policy. Unanswered server Surplus calls can recover
+  through the initiating user's permitted personal direct key when no direct
+  server route exists, with separate cost records for each attempt. Accepted
+  media jobs retain their creating account.
+
 ## Component release records verified 2026-09-09
 
 These are dated publication/ledger records, not claims about every user's

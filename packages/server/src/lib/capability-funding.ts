@@ -25,6 +25,7 @@ import { mediaPreferenceFunding, resolvePersonalMediaModel } from "./media-model
 import { openMediaFunding } from "./media-funding";
 import { currentMemoryOperatorDefaults, personalMemoryModels, resolveMemoryModelPreference } from "./memory-model-preferences";
 import { resolveImageUnderstandingModel } from "./image-model-preferences";
+import { openSurplusPersonalDirectRecovery } from "./surplus-personal-recovery";
 
 const RESEARCH_ROLES = {
   webSearchSynthesis: { role: "webSearchSynthesis", env: "NAUTILO_WEB_SEARCH_MODEL", tools: false },
@@ -220,7 +221,7 @@ export function createCapabilityFundingSession(
           workload,
           priorDecision: admitted,
           ...(transport ? { transport } : {}),
-        });
+        }, projectionDeps);
       };
       let lastAttempt: ModelFundingDecision | undefined;
       return {
@@ -228,6 +229,15 @@ export function createCapabilityFundingSession(
         fundingSession: {
           kind: admitted.kind,
           workload,
+          ...(workload !== "memory" && admitted.kind === "server" && admitted.providerRoute === "surplus" ? {
+            openPersonalDirectRecovery: (candidate: string) => openSurplusPersonalDirectRecovery({
+              humanUserId,
+              modelId: candidate,
+              workload,
+              primaryDecision: admitted,
+              recheckPrimary: () => resolve(candidate),
+            }, projectionDeps),
+          } : {}),
           async recheckAttempt(candidate, transport) {
             const current = await resolve(candidate, transport);
             if (lastAttempt?.kind === "personal" && current.kind === "personal"

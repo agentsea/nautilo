@@ -18,6 +18,7 @@ import {
 } from "./model-funding";
 import { getServerDirectDb } from "./server-direct-db";
 import { callerTaskModelIds, personalOnlyTaskModelIds } from "./caller-task-model-context";
+import { openSurplusPersonalDirectRecovery } from "./surplus-personal-recovery";
 
 type FundingPortInput = Readonly<{
   humanUserId: string;
@@ -181,6 +182,15 @@ export async function openForegroundChatFundingSession(
       && resolveCatalogModel(input.modelId, { env: {} }).features.tools === true,
     runnableModelIds,
     personalOnlyTaskModelIds: await personalOnlyTaskModelIds(input.humanUserId, runnableModelIds),
+    ...(admitted.kind === "server" && admitted.providerRoute === "surplus" ? {
+      openPersonalDirectRecovery: (modelId: string) => openSurplusPersonalDirectRecovery({
+        humanUserId: input.humanUserId,
+        modelId,
+        workload: "foreground_text_chat",
+        primaryDecision: admitted,
+        recheckPrimary: () => resolveCandidate(modelId),
+      }),
+    } : {}),
     async recheckAttempt(modelId, transport) {
       const current = await resolveCandidate(modelId, transport);
       if (transport && lastAttempt?.kind === "personal" && current.kind === "personal"
@@ -238,6 +248,15 @@ export async function openForegroundConductorFundingSession(
   return {
     kind: admitted.kind,
     admission: { modelId: admitted.modelId, binding: capabilityFundingBinding(admitted) },
+    ...(!input.protectedTurn && admitted.kind === "server" && admitted.providerRoute === "surplus" ? {
+      openPersonalDirectRecovery: (modelId: string) => openSurplusPersonalDirectRecovery({
+        humanUserId: input.humanUserId,
+        modelId,
+        workload: "foreground_text_chat",
+        primaryDecision: admitted,
+        recheckPrimary: () => resolveCandidate(modelId),
+      }),
+    } : {}),
     async recheckAttempt(modelId, transport) {
       const current = await resolveCandidate(modelId, transport);
       if (transport && lastAttempt?.kind === "personal" && current.kind === "personal"

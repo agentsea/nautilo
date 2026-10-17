@@ -75,6 +75,12 @@ export interface ForegroundChatFundingSession {
    * as a native root tool-free Task; canonical creation rechecks live funding.
    */
   readonly personalOnlyTaskModelIds?: readonly string[];
+  /**
+   * Request-local recovery for an unanswered server Surplus attempt. The
+   * returned session is limited to this operation's exact model and the
+   * initiating Human's direct credential; it carries no child authority.
+   */
+  openPersonalDirectRecovery?(modelId: string): Promise<ForegroundChatFundingSession>;
   runAttempt<T>(
     modelId: string,
     callback: (attempt: ForegroundChatFundingAttempt) => Promise<T>,

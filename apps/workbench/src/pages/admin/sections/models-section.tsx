@@ -540,7 +540,7 @@ export function ModelsSection() {
                     Prefer Surplus
                   </label>
                   <p className="mt-1 text-[11px] text-foreground-muted">
-                    For supported text calls, try Surplus Intelligence first using the admitted server or personal key, then eligible direct providers and the model fallback chain within that funding source. Surplus and its selected seller receive request content, and actual pricing varies by offer.
+                    For supported models, try Surplus Intelligence before the matching direct provider. Surplus can be the only configured provider. Unanswered server-funded model calls can use your permitted personal direct key when no server direct key is available; each attempt has separate costs. Accepted media jobs keep their creating account. Surplus and its selected seller receive request content, and actual pricing varies by offer.
                   </p>
                 </div>
                 <input

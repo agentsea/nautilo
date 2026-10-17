@@ -49,6 +49,50 @@ describe("foreground agent model selection", () => {
     expect(resolveForegroundAgentModelId(MODEL_ID, surplusOnly)).toBe(MODEL_ID);
   });
 
+  test("an explicit server-funded role may resolve the same signed Surplus-only model", () => {
+    expect(resolveModelRole("conductor", {
+      configuredId: MODEL_ID,
+      env: {},
+      serverSurplus: { policyEnabled: true, keyConfigured: true, routes: [ROUTE] },
+    })).toBe(MODEL_ID);
+    expect(resolveModelRole("memoryReview", {
+      configuredId: MODEL_ID,
+      env: {},
+      serverSurplus: { policyEnabled: true, keyConfigured: true, routes: [ROUTE] },
+    })).toBe(MODEL_ID);
+  });
+
+  test("automatic server-funded role selection can choose a qualified Surplus-only candidate", () => {
+    const automatic = {
+      ...ROUTE,
+      catalogModelId: "openrouter:minimax/minimax-m3",
+      surplusModelId: "minimax/minimax-m3",
+      maxContextTokens: 1_000,
+      maxOutputTokens: 100,
+    };
+    expect(resolveModelRole("conductor", {
+      env: {},
+      serverSurplus: { policyEnabled: true, keyConfigured: true, routes: [automatic] },
+    })).toBe(automatic.catalogModelId);
+  });
+
+  test("server-funded role resolution preserves policy and tool capability gates", () => {
+    expect(() => resolveModelRole("conductor", {
+      configuredId: MODEL_ID,
+      env: {},
+      serverSurplus: { policyEnabled: false, keyConfigured: true, routes: [ROUTE] },
+    })).toThrow(/credential/i);
+    expect(() => resolveModelRole("memoryReview", {
+      configuredId: MODEL_ID,
+      env: {},
+      serverSurplus: {
+        policyEnabled: true,
+        keyConfigured: true,
+        routes: [{ ...ROUTE, supportsTools: false }],
+      },
+    })).toThrow(/credential/i);
+  });
+
   test("policy-off, unqualified, and tool-unsupported routes remain unavailable", () => {
     expect(() => resolveForegroundAgentModelId(MODEL_ID, {
       ...surplusOnly,
