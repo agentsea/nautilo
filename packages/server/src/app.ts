@@ -15,6 +15,8 @@ import { resolveTaskLocalExecutionCaptureTarget, taskNeedsLocalExecutionCapture 
 import { createBolterController, type BolterController } from "./messaging/bolter-controller";
 import { bolterRoutes } from "./routes/bolter";
 import { createExternalRoomExecutionService } from "./messaging/external-room-execution";
+import { acceptPublishedProtectedTaskReply } from
+  "./messaging/protected-task-reply-acceptance";
 import { createTaskLocalExecutionSourceAssertion } from "./local-execution-task-source";
 import { setTaskLocalExecutionSourceComposition } from "@nautilo/runtime";
 import { parseLocalExecutionDelegation } from "@nautilo/types";
@@ -1046,6 +1048,15 @@ export async function createApp(options?: CreateAppOptions) {
       cancelTaskExternalRequestsForHuman: humanActorId => protectedTaskExternalRequestService?.cancelForHuman(humanActorId),
       wakeForegroundMemoryEffectRecovery: () =>
         foregroundMemoryEffectRecovery.wake(),
+      onSharedAgentHumanPublished: async message => {
+        const outcome = await acceptPublishedProtectedTaskReply(
+          getServerDirectDb(),
+          message,
+        );
+        if (outcome === "accepted" || outcome === "exact_replay") {
+          getTaskObserver()?.kick();
+        }
+      },
     });
   installProductionLiveShadowMessageComposition(
     app,

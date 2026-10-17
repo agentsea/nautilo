@@ -5,6 +5,9 @@ import { createLiveShadowDataOperationPolicyBinding } from "@nautilo/runtime";
 import ts from "typescript";
 
 const appSource = sourceFile("../../src/app.ts");
+const initialCompositionSource = sourceFile(
+  "../../src/routes/protected-task-runtime-initial-composition.ts",
+);
 
 function sourceFile(relativePath: string): ts.SourceFile {
   const path = new URL(relativePath, import.meta.url);
@@ -146,6 +149,24 @@ describe("live Task production composition", () => {
     expect(messageTaskOwner !== undefined && ts.isPropertyAssignment(messageTaskOwner)).toBe(true);
     expect((messageTaskOwner as ts.PropertyAssignment).initializer.getText(appSource))
       .toContain("taskContentOwner");
+    const replyAcceptance = propertyNamed(
+      liveMessages,
+      "onSharedAgentHumanPublished",
+    );
+    expect(replyAcceptance !== undefined).toBe(true);
+    const acceptanceCalls = descendants(replyAcceptance!, ts.isCallExpression)
+      .filter(call => identifierName(call.expression)
+        === "acceptPublishedProtectedTaskReply");
+    expect(acceptanceCalls).toHaveLength(1);
+    expect(acceptanceCalls[0]!.arguments.map(argument => argument.getText(appSource)))
+      .toEqual(["getServerDirectDb()", "message"]);
+    const acceptanceIdentifiers = descendants(replyAcceptance!, ts.isIdentifier)
+      .map(identifier => identifier.text);
+    expect(acceptanceIdentifiers).toContain("getTaskObserver");
+    expect(acceptanceIdentifiers).toContain("kick");
+    const acceptanceStatuses = descendants(replyAcceptance!, ts.isStringLiteral)
+      .map(value => value.text);
+    expect(acceptanceStatuses).toEqual(["accepted", "exact_replay"]);
 
     const response = objectArgument(callNamed(appSource, "createProtectedTaskHumanResponse"), 0);
     expect((propertyNamed(response, "owner") as ts.PropertyAssignment)
@@ -227,6 +248,28 @@ describe("live Task production composition", () => {
     expect(backgroundIdentifiers).toContain("isTaskRecipientActive");
     expect(backgroundIdentifiers).toContain("bindTaskRecipient");
     expect(backgroundIdentifiers).toContain("withTaskAuthority");
+  });
+
+  test("forwards authorization requests from every protected output preparation", () => {
+    for (const factory of [
+      "createProtectedTaskCancellationComposition",
+      "createProtectedTaskOutputReadComposition",
+      "terminalMessageComposition",
+      "createProtectedTaskRuntimeParkedPreparation",
+    ] as const) {
+      const options = objectArgument(
+        callNamed(initialCompositionSource, factory),
+        0,
+      );
+      const forwarded = propertyNamed(options, "authorizationRequested");
+      expect(
+        forwarded !== undefined && ts.isPropertyAssignment(forwarded),
+        `${factory} must forward authorizationRequested`,
+      ).toBe(true);
+      expect((forwarded as ts.PropertyAssignment).initializer.getText(
+        initialCompositionSource,
+      )).toBe("input.authorizationRequested");
+    }
   });
 
   test("Plain does not initialize protected work while Shadow and Full select it", async () => {

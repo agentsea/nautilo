@@ -24,6 +24,10 @@ import type { PolicyResolver } from "@nautilo/trust";
 import { getServerDirectDb } from "../lib/server-direct-db";
 import { publishDomainKeyCatchUpRequested } from "../realtime/ws-publisher";
 import { createHumanProductTransactionContext } from "./human-message-product-store";
+import {
+  notifyProtectedTaskAuthorizationRequestedAfterCommit,
+  type ProtectedTaskAuthorizationRequested,
+} from "./protected-task-authorization-requested";
 import { createProtectedTaskRuntimeParkedMemoryPlanResolver } from "./protected-task-runtime-parked-memory-plan";
 import {
   createParkedTaskRuntimeAuthorizationPlanResolver,
@@ -92,7 +96,11 @@ function createReadinessWake(db: DirectDatabase): Dependencies["wake"] {
 
 /** Prepare only: no device custody, authorization claim, Job creation or graph execution. */
 export function createProtectedTaskRuntimeParkedPreparation(
-  input: Readonly<{ resolver: PolicyResolver; recipients: TaskRuntimeRecipientRegistry }>,
+  input: Readonly<{
+    resolver: PolicyResolver;
+    recipients: TaskRuntimeRecipientRegistry;
+    authorizationRequested?: ProtectedTaskAuthorizationRequested | undefined;
+  }>,
   overrides: Partial<Dependencies> = {},
 ): (occurrence: ProtectedTaskOccurrence) => Promise<PrepareResult> {
   const db = overrides.db ?? getServerDirectDb();
@@ -127,6 +135,7 @@ export function createProtectedTaskRuntimeParkedPreparation(
     const occurrence = expected.occurrence;
     const product = await dependencies.productContext(occurrence.task.requestorId, db);
     let routing: ParkedTaskRuntimeCurrentRoutingFacts | null = null;
+    let authorizationRequestChanged = false;
     const missingNamespaces = new Set<string>();
     const result = await dependencies.withAuthority({
       runner: product.canonicalRunner, restricted: dependencies.restricted(),
@@ -161,17 +170,30 @@ export function createProtectedTaskRuntimeParkedPreparation(
         const repository = await dependencies.repository(restricted);
         const prepared = await dependencies.prepare({ occurrence, stableIdentity, initialRecord,
           repository, recipients: dependencies.recipients, now: dependencies.now });
-        if (prepared.status !== "exact_replay") return prepared;
+        if (prepared.status !== "exact_replay") {
+          authorizationRequestChanged = prepared.status === "created"
+            || prepared.status === "replaced";
+          return prepared;
+        }
         const selected = await repository.get(initialRecord.snapshot.requestId);
         if (selected === null || selected.snapshot.formatVersion !== 3) return { status: "stale" as const };
         if (!["awaiting_device", "grant_ready"].includes(selected.snapshot.state)) return prepared;
         const rotation = await dependencies.rotate({ occurrence,
           selected: selected as BackgroundAuthorizationTaskRuntimeRecordV3,
           initialRecord, repository, recipients: dependencies.recipients, now: dependencies.now });
+        authorizationRequestChanged = rotation.status === "rotated";
         return rotation.status === "not_due" ? prepared : { status: rotation.status };
       },
     });
-    if (result !== null) return result;
+    if (result !== null) {
+      if (authorizationRequestChanged) {
+        await notifyProtectedTaskAuthorizationRequestedAfterCommit(
+          input.authorizationRequested,
+          occurrence.task.requestorId,
+        );
+      }
+      return result;
+    }
     if (routing === null || missingNamespaces.size === 0) return { status: "inactive" };
     // No product or crypto transaction survives this point.
     await dependencies.wake({ expected, namespaceIds: [...missingNamespaces].sort() });

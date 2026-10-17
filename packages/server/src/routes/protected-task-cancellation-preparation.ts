@@ -50,6 +50,10 @@ import {
 } from "./protected-task-cancellation-plan";
 import { validateCurrentProtectedTaskCancellationIntent } from
   "./protected-task-cancellation-authority";
+import {
+  notifyProtectedTaskAuthorizationRequestedAfterCommit,
+  type ProtectedTaskAuthorizationRequested,
+} from "./protected-task-authorization-requested";
 
 export type ProtectedTaskCancellationPreparationResult =
   | Readonly<{
@@ -137,6 +141,7 @@ export function createProtectedTaskCancellationPreparation(
     recipientTtlMs: number;
     now?: () => number;
     restricted?: () => PostgresJsBridgeConnection;
+    authorizationRequested?: ProtectedTaskAuthorizationRequested | undefined;
   }>,
   overrides: Partial<Dependencies> = {},
 ): ProtectedTaskCancellationPreparation {
@@ -147,6 +152,7 @@ export function createProtectedTaskCancellationPreparation(
       || "http://localhost:3001");
   const restricted = overrides.restricted ?? input.restricted
     ?? (() => createPostgresJsBridgeConnection(getSharedDirectCryptoDb()));
+  const authorizationRequested = input.authorizationRequested;
   const dependencies: Dependencies = {
     db,
     crypto,
@@ -391,7 +397,14 @@ export function createProtectedTaskCancellationPreparation(
         return "rotated" as const;
       },
     });
-    return result ?? "stale";
+    const committed = result ?? "stale";
+    if (committed === "rotated") {
+      await notifyProtectedTaskAuthorizationRequestedAfterCommit(
+        authorizationRequested,
+        intent.requesterUserId,
+      );
+    }
+    return committed;
   }
 
   async function replaceDriftedPreclaimAuthority(
@@ -410,6 +423,7 @@ export function createProtectedTaskCancellationPreparation(
     if (coordinates === null) {
       return Object.freeze({ status: "stale" as const });
     }
+    let authorizationChanged = false;
     const result = await dependencies.withContentAuthority({
       runner: coordinates.product.canonicalRunner,
       restricted: dependencies.restricted(),
@@ -497,6 +511,7 @@ export function createProtectedTaskCancellationPreparation(
             loaded.snapshot.recipientGeneration,
           );
           replaceable = rotation.record;
+          authorizationChanged = true;
         } else if (loaded.snapshot.state !== "awaiting_recipient"
           && loaded.snapshot.state !== "awaiting_device"
           && loaded.snapshot.state !== "grant_ready") {
@@ -508,8 +523,11 @@ export function createProtectedTaskCancellationPreparation(
             replacement: currentPlan.initialRecord,
             now,
           });
-        if (replaced.status !== "replaced"
-          || !exactCancellationPlan(replaced.record, currentPlan)) {
+        if (replaced.status !== "replaced") {
+          return Object.freeze({ status: "stale" as const });
+        }
+        if (!exactCancellationPlan(replaced.record, currentPlan)) {
+          authorizationChanged = false;
           return Object.freeze({ status: "stale" as const });
         }
         if (replaceable === loaded) {
@@ -518,6 +536,7 @@ export function createProtectedTaskCancellationPreparation(
             loaded.snapshot.recipientGeneration,
           );
         }
+        authorizationChanged = true;
         return Object.freeze({
           status: "ready" as const,
           plan: currentPlan,
@@ -525,6 +544,12 @@ export function createProtectedTaskCancellationPreparation(
         });
       },
     });
+    if (result !== null && authorizationChanged) {
+      await notifyProtectedTaskAuthorizationRequestedAfterCommit(
+        authorizationRequested,
+        intent.requesterUserId,
+      );
+    }
     return result ?? Object.freeze({ status: "stale" as const });
   }
 
@@ -680,6 +705,10 @@ export function createProtectedTaskCancellationPreparation(
       try {
         const created = await repository.create(plan.initialRecord);
         if (created.status === "created") {
+          await notifyProtectedTaskAuthorizationRequestedAfterCommit(
+            authorizationRequested,
+            prepared.intent.requesterUserId,
+          );
           return Object.freeze({ status: "created" as const, plan });
         }
         if (cancellationRecord(created.record)

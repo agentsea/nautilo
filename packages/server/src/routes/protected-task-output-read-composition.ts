@@ -11,6 +11,7 @@ import { createProtectedTaskOutputReadClaim, type ProtectedTaskOutputReadPublica
 import { createProtectedTaskRunResultMessagePublication } from "./protected-task-run-result-message-publication";
 import { createProtectedTaskRunResultMessageRecovery } from "./protected-task-run-result-message-recovery";
 import type { BackgroundAuthorizationTaskRuntimeRecordV3 } from "@nautilo/runtime";
+import type { ProtectedTaskAuthorizationRequested } from "./protected-task-authorization-requested";
 
 /** Raw result reads and foreground wakes use fresh, independently admitted grants. */
 export function createProtectedTaskOutputReadComposition(input: Readonly<{
@@ -21,6 +22,7 @@ export function createProtectedTaskOutputReadComposition(input: Readonly<{
   serverScope: string;
   recipients: TaskRuntimeRecipientRegistry;
   recipientTtlMs: number;
+  authorizationRequested?: ProtectedTaskAuthorizationRequested | undefined;
   canonicalWakeForegroundAdmission?: ProtectedTaskWakeForegroundAdmission;
   now?: () => number;
   createWakePublication?(authority: ProtectedTaskOutputReadAuthorityPort): ProtectedTaskOutputReadPublication;

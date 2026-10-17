@@ -16,6 +16,8 @@ import { createProtectedTaskTerminalMessagePreparation } from "./protected-task-
 import { createProtectedTaskTerminalMessagePublication } from "./protected-task-terminal-message-publication";
 import { createProtectedTaskTerminalMessageRecovery } from "./protected-task-terminal-message-recovery";
 import { createProtectedTaskTerminalMessageSettlement } from "./protected-task-terminal-message-settlement";
+import type { ProtectedTaskAuthorizationRequested } from
+  "./protected-task-authorization-requested";
 
 type Repository = Pick<PostgresBackgroundAuthorizationRepository, "get" | "compareAndSwap">;
 type Dependencies = Readonly<{
@@ -39,6 +41,7 @@ export function createProtectedTaskTerminalMessageComposition(input: Readonly<{
   recipients: TaskRuntimeRecipientRegistry;
   recipientTtlMs: number;
   now?: () => number;
+  authorizationRequested?: ProtectedTaskAuthorizationRequested | undefined;
   deliverResult?(coordinates: Readonly<{ taskId: string; taskRunId: string }>, signal: AbortSignal): Promise<"mapped" | "pending">;
 }>, overrides: Partial<Dependencies> = {}) {
   const now = input.now ?? Date.now;

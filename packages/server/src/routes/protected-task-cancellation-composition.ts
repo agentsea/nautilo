@@ -17,6 +17,8 @@ import { createProtectedTaskCancellationPreparation } from "./protected-task-can
 import { createProtectedTaskCancellationSettlement } from "./protected-task-cancellation-settlement";
 import { createProtectedTaskCancellationPublication } from "./protected-task-cancellation-publication";
 import { createProtectedTaskCancellationPublicationRecovery } from "./protected-task-cancellation-publication-recovery";
+import type { ProtectedTaskAuthorizationRequested } from
+  "./protected-task-authorization-requested";
 
 type Dependencies = Readonly<{
   preparation: ReturnType<typeof createProtectedTaskCancellationPreparation>;
@@ -37,6 +39,7 @@ export function createProtectedTaskCancellationComposition(input: Readonly<{
   recipients: TaskRuntimeRecipientRegistry;
   recipientTtlMs: number;
   now?: () => number;
+  authorizationRequested?: ProtectedTaskAuthorizationRequested | undefined;
 }>, overrides: Partial<Dependencies> = {}) {
   const now = input.now ?? Date.now;
   const repository = overrides.repository ?? (async (connection: PostgresJsBridgeConnection) =>

@@ -153,6 +153,8 @@ function fixture(input: Readonly<{
   cancellationPublication?: boolean | readonly boolean[];
   policyRevision?: number;
   refreshFromPolicyRevision?: number;
+  authorizationRequested?: (requesterUserId: string) => void | Promise<void>;
+  rollbackContentAuthority?: boolean;
 }> = {}) {
   const repository = input.repository
     ?? new InMemoryBackgroundAuthorizationRepository();
@@ -160,6 +162,7 @@ function fixture(input: Readonly<{
   let prepares = 0;
   let publicationChecks = 0;
   let refreshGuardCalls = 0;
+  let contentAuthorityHeld = false;
   const policyRevision = input.policyRevision ?? 7;
   const previous: ProtectedTaskCancellationOutputAuthority = {
     taskId: TASK,
@@ -257,17 +260,24 @@ function fixture(input: Readonly<{
     withContentAuthority: async operation => {
       if (!await operation.validateCurrentTaskRun({} as never, {} as never,
         {} as never)) return null;
-      return operation.use(
-        input.authorityOverride ?? authority,
-        {} as never,
-        {} as never,
-        {} as never,
-      );
+      contentAuthorityHeld = true;
+      try {
+        const result = await operation.use(
+          input.authorityOverride ?? authority,
+          {} as never,
+          {} as never,
+          {} as never,
+        );
+        return input.rollbackContentAuthority ? null : result;
+      } finally {
+        contentAuthorityHeld = false;
+      }
     },
   };
   const preparation = createProtectedTaskCancellationPreparation({
     recipients: overrides.recipients!,
     recipientTtlMs: 60_000,
+    authorizationRequested: input.authorizationRequested,
   }, overrides);
   return {
     deleted,
@@ -281,12 +291,18 @@ function fixture(input: Readonly<{
     get refreshGuardCalls() {
       return refreshGuardCalls;
     },
+    get contentAuthorityHeld() {
+      return contentAuthorityHeld;
+    },
     repository,
   };
 }
 
 test("settles linked execution authority before creating an encrypt-only cancellation request", async () => {
-  const value = fixture();
+  const notifications: string[] = [];
+  const value = fixture({ authorizationRequested: userId => {
+    notifications.push(userId);
+  } });
   const prior = priorExecution();
   await value.repository.create(prior);
 
@@ -307,6 +323,7 @@ test("settles linked execution authority before creating an encrypt-only cancell
 
   const replay = await value.preparation.prepare({ taskId: TASK, taskRunId: RUN });
   expect(replay.status).toBe("exact_replay");
+  expect(notifications).toEqual([USER]);
   expect(cancellation?.snapshot.formatVersion).toBe(3);
   if (cancellation?.snapshot.formatVersion !== 3
     || cancellation.snapshot.credentialSubject.kind !== "runtime"
@@ -484,7 +501,15 @@ test("refreshes same-policy preclaim authority under the stopped Task lock", asy
     recipientTtlMs: 60_000,
   });
   await repository.create(stalePlan.initialRecord);
-  const value = fixture({ repository, jobAuthorizationRequestId: null });
+  const notifications: string[] = [];
+  const value = fixture({
+    repository,
+    jobAuthorizationRequestId: null,
+    authorizationRequested: userId => {
+      expect(value.contentAuthorityHeld).toBe(false);
+      notifications.push(userId);
+    },
+  });
 
   const result = await value.preparation.prepare({ taskId: TASK, taskRunId: RUN });
   expect(result.status).toBe("exact_replay");
@@ -508,6 +533,7 @@ test("refreshes same-policy preclaim authority under the stopped Task lock", asy
     stalePlan.initialRecord.snapshot.requestId,
     0,
   ]);
+  expect(notifications).toEqual([USER]);
   expect((await value.preparation.resolvePlan(stalePlan.initialRecord))
     ?.initialRecord.expectedNamespaceAccessRevision).toBe(3);
 });
@@ -562,10 +588,15 @@ test("rotates an expired claim then refreshes its same-policy authority", async 
     namespaceAuthority: priorAuthority,
   });
   await repository.create(selected);
+  const notifications: string[] = [];
   const value = fixture({
     repository,
     jobAuthorizationRequestId: null,
     now: () => NOW + 11,
+    authorizationRequested: userId => {
+      expect(value.contentAuthorityHeld).toBe(false);
+      notifications.push(userId);
+    },
   });
 
   const result = await value.preparation.prepare({ taskId: TASK, taskRunId: RUN });
@@ -587,6 +618,7 @@ test("rotates an expired claim then refreshes its same-policy authority", async 
     acceptedMaterial: null,
   });
   expect(value.deleted).toContainEqual([selected.snapshot.requestId, 0]);
+  expect(notifications).toEqual([USER]);
 });
 
 test("does not refresh drifted authority after revision 2 was reserved", async () => {
@@ -747,20 +779,32 @@ test("keeps settled custody revoked when the product reservation later rejects",
 });
 
 test("plaintext policy performs no cancellation preparation", async () => {
-  const value = fixture({ mode: "plaintext_only" });
+  const notifications: string[] = [];
+  const value = fixture({
+    mode: "plaintext_only",
+    authorizationRequested: userId => {
+      notifications.push(userId);
+    },
+  });
   expect(await value.preparation.prepare({ taskId: TASK, taskRunId: RUN }))
     .toEqual({ status: "inactive" });
   expect(value.prepares).toBe(0);
   expect(value.deleted).toEqual([]);
+  expect(notifications).toEqual([]);
 });
 
 test("rotates an exact durably expired cancellation recipient under held content authority", async () => {
   let clock = NOW;
   const repository = new InMemoryBackgroundAuthorizationRepository();
+  const notifications: string[] = [];
   const value = fixture({
     repository,
     jobAuthorizationRequestId: null,
     now: () => clock,
+    authorizationRequested: userId => {
+      expect(value.contentAuthorityHeld).toBe(false);
+      notifications.push(userId);
+    },
   });
   const attached = recipientCancellation();
   await repository.create(attached);
@@ -779,6 +823,39 @@ test("rotates an exact durably expired cancellation recipient under held content
     attached.snapshot.requestId,
     0,
   ]);
+  expect(notifications).toEqual([USER]);
+});
+
+test("does not notify when held cancellation authority rolls back its rotation", async () => {
+  let clock = NOW;
+  const notifications: string[] = [];
+  const repository = new InMemoryBackgroundAuthorizationRepository();
+  const attached = recipientCancellation();
+  await repository.create(attached);
+  clock = NOW + 11;
+  const value = fixture({
+    repository,
+    jobAuthorizationRequestId: null,
+    now: () => clock,
+    rollbackContentAuthority: true,
+    authorizationRequested: userId => {
+      notifications.push(userId);
+    },
+  });
+
+  expect(await value.preparation.prepare({ taskId: TASK, taskRunId: RUN }))
+    .toEqual({ status: "not_ready" });
+  expect(notifications).toEqual([]);
+});
+
+test("a rejecting cancellation notification does not change committed creation", async () => {
+  const value = fixture({
+    authorizationRequested: () => Promise.reject(new Error("offline")),
+  });
+  await value.repository.create(priorExecution());
+
+  expect((await value.preparation.prepare({ taskId: TASK, taskRunId: RUN })).status)
+    .toBe("created");
 });
 
 test("does not rotate an expired recipient when publication appears under the held authority", async () => {
@@ -983,4 +1060,84 @@ test("rotates an expired old-policy claim before replacing it with the current p
     acceptedMaterial: null,
   });
   expect(value.deleted).toContainEqual([selected.snapshot.requestId, 0]);
+});
+
+test("notifies after a committed rotation even when its stale replacement loses", async () => {
+  class StaleReplacementRepository
+    extends InMemoryBackgroundAuthorizationRepository {
+    override async replaceUnclaimedTaskCancellationAuthority(input: Parameters<
+      InMemoryBackgroundAuthorizationRepository[
+        "replaceUnclaimedTaskCancellationAuthority"
+      ]
+    >[0]) {
+      return Object.freeze({
+        status: "stale" as const,
+        current: await this.get(input.expected.snapshot.requestId),
+      });
+    }
+  }
+  const repository = new StaleReplacementRepository();
+  const selected = claimedCancellation({ running: true, claimExpiresAt: NOW + 10 });
+  await repository.create(selected);
+  const notifications: string[] = [];
+  const value = fixture({
+    repository,
+    jobAuthorizationRequestId: null,
+    now: () => NOW + 11,
+    policyRevision: 8,
+    refreshFromPolicyRevision: 7,
+    authorityOverride: authorityAtPolicy(8),
+    authorizationRequested: userId => {
+      expect(value.contentAuthorityHeld).toBe(false);
+      notifications.push(userId);
+    },
+  });
+
+  expect(await value.preparation.prepare({ taskId: TASK, taskRunId: RUN }))
+    .toEqual({ status: "not_ready" });
+  expect(notifications).toEqual([USER]);
+  expect(await repository.get(selected.snapshot.requestId)).toMatchObject({
+    snapshot: { state: "awaiting_recipient", recipientGeneration: 1 },
+  });
+});
+
+test("withholds a rotation hint when replacement returns substituted evidence", async () => {
+  class SubstitutedReplacementRepository
+    extends InMemoryBackgroundAuthorizationRepository {
+    override async replaceUnclaimedTaskCancellationAuthority(input: Parameters<
+      InMemoryBackgroundAuthorizationRepository[
+        "replaceUnclaimedTaskCancellationAuthority"
+      ]
+    >[0]) {
+      const replaced = await super
+        .replaceUnclaimedTaskCancellationAuthority(input);
+      if (replaced.status !== "replaced") return replaced;
+      return Object.freeze({
+        status: "replaced" as const,
+        record: Object.freeze({
+          ...replaced.record,
+          expectedPolicyRevision: replaced.record.expectedPolicyRevision + 1,
+        }),
+      });
+    }
+  }
+  const repository = new SubstitutedReplacementRepository();
+  const selected = claimedCancellation({ running: true, claimExpiresAt: NOW + 10 });
+  await repository.create(selected);
+  const notifications: string[] = [];
+  const value = fixture({
+    repository,
+    jobAuthorizationRequestId: null,
+    now: () => NOW + 11,
+    policyRevision: 8,
+    refreshFromPolicyRevision: 7,
+    authorityOverride: authorityAtPolicy(8),
+    authorizationRequested: userId => {
+      notifications.push(userId);
+    },
+  });
+
+  expect(await value.preparation.prepare({ taskId: TASK, taskRunId: RUN }))
+    .toEqual({ status: "not_ready" });
+  expect(notifications).toEqual([]);
 });

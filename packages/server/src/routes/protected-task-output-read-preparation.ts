@@ -20,6 +20,10 @@ import type { ProtectedTaskOutputReadAuthorityPort } from "./protected-task-outp
 import { createProtectedTaskOutputReadPlan, type ProtectedTaskOutputReadPlan } from "./protected-task-output-read-plan";
 import { readProtectedTaskOutputReadIntent, readCommittedProtectedTaskWakePark } from "./protected-task-output-read-product";
 import type { ProtectedTaskOutputReadParkCompletion } from "./protected-task-output-read-claim";
+import {
+  notifyProtectedTaskAuthorizationRequestedAfterCommit,
+  type ProtectedTaskAuthorizationRequested,
+} from "./protected-task-authorization-requested";
 
 type Coordinates = Readonly<{ taskId: string; taskRunId: string; kind: "raw" | "wake" }>;
 type Repository = BackgroundAuthorizationTaskOutputReadReplacementRepository & BackgroundAuthorizationTaskWakeParkRepository;
@@ -59,6 +63,7 @@ export function createProtectedTaskOutputReadPreparation(input: Readonly<{
   authority: ProtectedTaskOutputReadAuthorityPort;
   recipients: Pick<TaskRuntimeRecipientRegistry, "delete">;
   recipientTtlMs: number;
+  authorizationRequested?: ProtectedTaskAuthorizationRequested | undefined;
   crypto?: LatticeCrypto;
   restricted?: () => PostgresJsBridgeConnection;
   now?: () => number;
@@ -116,6 +121,7 @@ export function createProtectedTaskOutputReadPreparation(input: Readonly<{
       structuredClone(intent.continuation), readCommittedProtectedTaskWakePark(park.receipt,
         park.plan.intent, park.record.snapshot.recipientGeneration)))) return { status: "conflict" };
     const cleanup: Array<readonly [string, number]> = [];
+    let authorizationRequestChanged = false;
     const result = await input.authority.withPlanning<ProtectedTaskOutputReadPreparationResult>({ intent,
       subject: { userId: intent.requesterUserId, humanActorId: intent.requesterHumanId },
       restricted: restricted(),
@@ -127,7 +133,10 @@ export function createProtectedTaskOutputReadPreparation(input: Readonly<{
         if (existing === null) {
           if (!create || selected !== undefined || intent.continuation !== undefined) return { status: "not_ready" as const };
           const created = await store.create(plan.initialRecord);
-          if (created.status === "created") return { status: "created" as const, plan };
+          if (created.status === "created") {
+            authorizationRequestChanged = true;
+            return { status: "created" as const, plan };
+          }
           return outputReadRecord(created.record) && samePlan(created.record, plan)
             ? { status: "exact_replay" as const, plan } : { status: "conflict" as const };
         }
@@ -156,6 +165,7 @@ export function createProtectedTaskOutputReadPreparation(input: Readonly<{
               proof => store.renewParkedTaskWakeRecipient({ expected: existing, replacement: plan.initialRecord, proof, now: now() }));
             if (renewed?.status !== "rotated" || !samePlan(renewed.record, plan)
               || renewed.record.snapshot.recipientGeneration < continuation.segment) return { status: "conflict" as const };
+            authorizationRequestChanged = true;
             cleanup.push([existing.snapshot.requestId, renewed.releasedRecipientGeneration]);
             return { status: "exact_replay" as const, plan };
           }
@@ -169,6 +179,7 @@ export function createProtectedTaskOutputReadPreparation(input: Readonly<{
           }));
           if (parked === null || parked.status === "stale" || !samePlan(parked.record, plan)
             || parked.record.snapshot.recipientGeneration !== continuation.segment) return { status: "conflict" as const };
+          authorizationRequestChanged = parked.status === "parked";
           cleanup.push([existing.snapshot.requestId, existing.snapshot.recipientGeneration]);
           return { status: "exact_replay" as const, plan };
         }
@@ -181,13 +192,22 @@ export function createProtectedTaskOutputReadPreparation(input: Readonly<{
           expected: existing, replacement: plan.initialRecord, now: now(),
         });
         if (replaced.status !== "replaced" || !samePlan(replaced.record, plan)) return { status: "conflict" as const };
+        authorizationRequestChanged = true;
         cleanup.push([existing.snapshot.requestId, existing.snapshot.recipientGeneration]);
         return { status: "exact_replay" as const, plan };
       },
     });
     // A recipient remains usable until the held authority transaction commits.
-    if (result !== null && (result.status === "created" || result.status === "exact_replay")) {
-      for (const [requestId, generation] of cleanup) input.recipients.delete(requestId, generation);
+    if (result !== null) {
+      if (result.status === "created" || result.status === "exact_replay") {
+        for (const [requestId, generation] of cleanup) input.recipients.delete(requestId, generation);
+      }
+      if (authorizationRequestChanged) {
+        await notifyProtectedTaskAuthorizationRequestedAfterCommit(
+          input.authorizationRequested,
+          userId,
+        );
+      }
     }
     return result ?? { status: "not_ready" };
   }

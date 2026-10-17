@@ -34,8 +34,10 @@ function fixture(wake = false) {
   let at = NOW;
   let denied = false;
   let commitFails = false;
+  let notificationFails = false;
   let physicalChanged = false;
   const events: string[] = [];
+  const notifications: string[] = [];
   const deleted: Array<readonly [string, number]> = [];
   const repository = new InMemoryBackgroundAuthorizationRepository();
   const intent = (): ProtectedTaskOutputReadIntent => ({ requesterUserId: USER, requesterHumanId: HUMAN,
@@ -107,16 +109,22 @@ function fixture(wake = false) {
   const preparation = createProtectedTaskOutputReadPreparation({ db: {} as DirectDatabase, owner,
     authority: port, recipients: { delete: (id: string, generation: number) => {
       expect(events.at(-1)).toBe("committed"); deleted.push([id, generation]);
-    } } as never, recipientTtlMs: 60_000, crypto: new LatticeCrypto(),
+    } } as never, recipientTtlMs: 60_000,
+    authorizationRequested: async userId => {
+      expect(events.at(-1)).toBe("committed");
+      notifications.push(userId);
+      if (notificationFails) throw new Error("notification unavailable");
+    }, crypto: new LatticeCrypto(),
     restricted: () => ({} as PostgresJsBridgeConnection), now: () => at }, overrides);
-  return { preparation, repository, events, deleted,
+  return { preparation, repository, events, deleted, notifications,
     changePhysical: () => { physicalChanged = true; },
     plan: () => createProtectedTaskOutputReadPlan({ intent: intent(), authority: authority(), crypto: new LatticeCrypto(), now: at, recipientTtlMs: 60_000 }),
     setContinuation: (receipt: ProtectedTaskWakeContinuationReceipt, tx: NonNullable<typeof checkpointTx>) => {
       continuation = receipt; checkpointTx = tx;
     }, setMode: (value: typeof mode) => { mode = value; },
     setPolicy: (value: number) => { policy = value; }, setNow: (value: number) => { at = value; },
-    deny: () => { denied = true; }, failCommit: () => { commitFails = true; }, allowCommit: () => { commitFails = false; } };
+    deny: () => { denied = true; }, failCommit: () => { commitFails = true; }, allowCommit: () => { commitFails = false; },
+    failNotification: () => { notificationFails = true; } };
 }
 const coordinates = { taskId: TASK, taskRunId: RUN, kind: "raw" as const };
 async function prepare(f: ReturnType<typeof fixture>) {
@@ -131,6 +139,7 @@ test("Plain exits before any product discovery, Session allocation or crypto req
   const f = fixture(); f.setMode("plaintext_only");
   expect(await f.preparation.prepare(coordinates)).toEqual({ status: "inactive" });
   expect(f.events).toEqual([]);
+  expect(f.notifications).toEqual([]);
 });
 test("commits the canonical Session before preparing the held combined result-read request", async () => {
   const f = fixture(); const record = await prepare(f);
@@ -138,13 +147,16 @@ test("commits the canonical Session before preparing the held combined result-re
   expect(record.workKind).toBe("task.deliver_result");
   expect(record.snapshot.namespaceId).toBe(PRIVATE);
   expect(record.authoritySet.namespaceRequirements.map(n => n.operations)).toEqual([["decrypt"], ["encrypt"]]);
+  expect(f.notifications).toEqual([USER]);
   expect((await f.preparation.prepare(coordinates)).status).toBe("exact_replay");
+  expect(f.notifications).toEqual([USER]);
   expect((await f.repository.get(record.snapshot.requestId))?.snapshot.requestRevision).toBe(0);
 });
 test("denied current output authority cannot create a request", async () => {
   const f = fixture(); f.deny();
   expect(await f.preparation.prepare(coordinates)).toEqual({ status: "not_ready" });
   expect(await f.repository.get(`task-run-delivery-result-authorization:${RUN}`)).toBeNull();
+  expect(f.notifications).toEqual([]);
 });
 test("refreshes an unclaimed compatible policy without changing stable output identity", async () => {
   const f = fixture(); const first = await prepare(f); f.setPolicy(8);
@@ -154,12 +166,23 @@ test("refreshes an unclaimed compatible policy without changing stable output id
   expect(later?.idempotencyKey).toBe(first.idempotencyKey);
   expect(later?.snapshot.recipientGeneration).toBe(1);
   expect(f.deleted).toEqual([[first.snapshot.requestId, 0]]);
+  expect(f.notifications).toEqual([USER, USER]);
+});
+test("rejects a substituted replacement without publishing an authorization hint", async () => {
+  const f = fixture(); await prepare(f); f.notifications.length = 0; f.setPolicy(8);
+  f.repository.replaceUnclaimedTaskOutputReadAuthority = async input => ({
+    status: "replaced",
+    record: { ...input.replacement, workIdentityHash: new Uint8Array(32).fill(9) },
+  });
+  expect(await f.preparation.prepare(coordinates)).toEqual({ status: "conflict" });
+  expect(f.notifications).toEqual([]);
 });
 test("incompatible representation waits with no recipient rotation", async () => {
   const f = fixture(); const first = await prepare(f); f.setMode("shadow_encryption");
   expect(await f.preparation.prepare(coordinates)).toEqual({ status: "not_ready" });
   expect(await f.repository.get(first.snapshot.requestId)).toEqual(first);
   expect(f.deleted).toEqual([]);
+  expect(f.notifications).toEqual([USER]);
 });
 test("renews expired unclaimed recipient only after held authority commits", async () => {
   const f = fixture(); const first = await prepare(f);
@@ -175,11 +198,19 @@ test("renews expired unclaimed recipient only after held authority commits", asy
   expect((await f.preparation.prepare(coordinates)).status).toBe("exact_replay");
   expect((await f.repository.get(first.snapshot.requestId))?.snapshot.recipient).toBeNull();
   expect(f.deleted).toEqual([[first.snapshot.requestId, 0]]);
+  expect(f.notifications).toEqual([USER, USER]);
 });
 test("failed product commit retains recipient custody for exact durable recovery", async () => {
   const f = fixture(); await prepare(f); f.setPolicy(8); f.failCommit();
   const settled = await Promise.allSettled([f.preparation.prepare(coordinates)]);
   expect(settled[0]?.status).toBe("rejected"); expect(f.deleted).toEqual([]);
+  expect(f.notifications).toEqual([USER]);
+});
+
+test("notification failure cannot change a committed output preparation", async () => {
+  const f = fixture(); f.failNotification();
+  expect((await f.preparation.prepare(coordinates)).status).toBe("created");
+  expect(f.notifications).toEqual([USER]);
 });
 test("device resolution rereads an existing Session and rejects a substituted selected record", async () => {
   const f = fixture(); const first = await prepare(f); f.events.length = 0;
@@ -253,8 +284,10 @@ test("queued wake rotates only through genuine sealed proof and cleans custody a
   expect(next?.snapshot.state).toBe("awaiting_recipient"); expect(next?.snapshot.recipientGeneration).toBe(1);
   expect(next?.idempotencyKey).toBe(original.idempotencyKey);
   expect(f.deleted).toEqual([[original.snapshot.requestId, 0]]);
+  expect(f.notifications).toEqual([USER]);
   expect((await f.preparation.prepare({ ...coordinates, kind: "wake" })).status).toBe("exact_replay");
   expect((await f.repository.get(original.snapshot.requestId))?.snapshot.recipientGeneration).toBe(1);
+  expect(f.notifications).toEqual([USER]);
 });
 test("parked wake partial crypto commit retains custody until a subsequent exact current replay", async () => {
   const f = fixture(true); const original = await runningWake(f); const checkpoint = checkpointFixture();
@@ -262,10 +295,12 @@ test("parked wake partial crypto commit retains custody until a subsequent exact
   expect((await Promise.allSettled([f.preparation.prepare({ ...coordinates, kind: "wake" })]))[0]?.status).toBe("rejected");
   expect(f.deleted).toEqual([]);
   expect((await f.repository.get(original.snapshot.requestId))?.snapshot.recipientGeneration).toBe(1);
+  expect(f.notifications).toEqual([]);
   f.allowCommit();
   expect((await f.preparation.prepare({ ...coordinates, kind: "wake" })).status).toBe("exact_replay");
   expect((await f.repository.get(original.snapshot.requestId))?.snapshot.recipientGeneration).toBe(1);
   expect(f.deleted).toEqual([[original.snapshot.requestId, 0]]);
+  expect(f.notifications).toEqual([]);
 });
 test("running wake or missing prior authorization never obtains a replacement from receipt metadata alone", async () => {
   const f = fixture(true); const original = await runningWake(f); const checkpoint = checkpointFixture();
@@ -295,8 +330,10 @@ test("a queued resumed recipient renews under the same live receipt without repl
   expect(renewed?.snapshot.recipientGeneration).toBe(2);
   expect(renewed?.idempotencyKey).toBe(original.idempotencyKey);
   expect(f.deleted.at(-1)).toEqual([original.snapshot.requestId, 1]);
+  expect(f.notifications).toEqual([USER, USER]);
   expect((await f.preparation.prepare({ ...coordinates, kind: "wake" })).status).toBe("exact_replay");
   expect((await f.repository.get(original.snapshot.requestId))?.snapshot.recipientGeneration).toBe(2);
+  expect(f.notifications).toEqual([USER, USER]);
 });
 
 test("missing physical checkpoint proof cannot rotate a parked grant or admit its exact replay", async () => {

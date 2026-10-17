@@ -345,12 +345,14 @@ export async function createProductionProtectedTaskRuntimeInitialComposition(
   const cancellationOutput = createProtectedTaskCancellationComposition({
     db: input.db, restricted, crypto, owner: input.owner, serverScope,
     recipients: input.recipients,
+    authorizationRequested: input.authorizationRequested,
     recipientTtlMs: TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS, now,
   });
   let cancellationOutputCursor: ProtectedTaskCancellationOutputDiscoveryCursor | undefined;
   const outputRead = createProtectedTaskOutputReadComposition({
     db: input.db, restricted, crypto, owner: input.owner, serverScope,
     recipients: input.recipients,
+    authorizationRequested: input.authorizationRequested,
     recipientTtlMs: TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS, now,
     canonicalWakeForegroundAdmission: createProtectedTaskWakeForegroundAdmission({
       db: input.db, resolver: input.resolver,
@@ -397,6 +399,7 @@ export async function createProductionProtectedTaskRuntimeInitialComposition(
   const terminalMessageOutput = dependencies.terminalMessageComposition({
     db: input.db, restricted, crypto, owner: input.owner, serverScope,
     recipients: input.recipients,
+    authorizationRequested: input.authorizationRequested,
     recipientTtlMs: TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS, now,
     deliverResult: outputRead.deliverResult,
   });
@@ -565,6 +568,7 @@ export async function createProductionProtectedTaskRuntimeInitialComposition(
   });
   const prepareParked = createProtectedTaskRuntimeParkedPreparation({
     resolver: input.resolver, recipients: input.recipients,
+    authorizationRequested: input.authorizationRequested,
   }, { db: input.db, crypto, serverScope, now,
     restricted: () => restricted, productContext: dependencies.productContext });
   const recipientAuthority = createProtectedTaskRuntimeRecipientAuthorityPort({

@@ -16,7 +16,7 @@ const productionPorts: AcceptancePorts = {
   accept: acceptProtectedTaskHumanContinuation,
 };
 
-/** Dark composition leg: record one content-free reply acceptance, then wait
+/** Record one content-free reply acceptance, then wait
  * for a separate fresh-authority execution segment. */
 export async function acceptPublishedProtectedTaskReply(
   db: DirectDatabase,

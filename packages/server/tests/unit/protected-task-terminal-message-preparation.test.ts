@@ -83,6 +83,8 @@ function fixture(input: Readonly<{
   failAllocationCommitOnce?: boolean;
   refreshConflict?: boolean;
   changeSessionAfterAllocation?: boolean;
+  authorizationRequested?: (requesterUserId: string) => void | Promise<void>;
+  rollbackAuthorizationCommitOnce?: boolean;
 }> = {}) {
   const crypto = new LatticeCrypto();
   const intent = terminalIntent(input.representation);
@@ -103,6 +105,9 @@ function fixture(input: Readonly<{
   let destinationReads = 0;
   let deletionObservedBeforeAuthorityReturn = false;
   let failAllocationCommit = input.failAllocationCommitOnce ?? false;
+  let rollbackAuthorizationCommit = input.rollbackAuthorizationCommitOnce
+    ?? false;
+  let authorizationCommits = 0;
   const deleted: Array<readonly [string, number]> = [];
   const events: string[] = [];
 
@@ -201,7 +206,12 @@ function fixture(input: Readonly<{
         allocation = null;
         throw new Error("injected product commit failure");
       }
+      if (rollbackAuthorizationCommit && authorityCalls > 1) {
+        rollbackAuthorizationCommit = false;
+        return null;
+      }
       deletionObservedBeforeAuthorityReturn ||= deleted.length !== 0;
+      if (authorityCalls > 1) authorizationCommits += 1;
       return result;
     },
     resolveDestination: async () => {
@@ -245,6 +255,7 @@ function fixture(input: Readonly<{
   };
   const preparation = createProtectedTaskTerminalMessagePreparation({
     owner, recipients: overrides.recipients!, recipientTtlMs: 60_000,
+    authorizationRequested: input.authorizationRequested,
   }, overrides);
   return {
     preparation, repository, intent, crypto, deleted, events,
@@ -252,6 +263,7 @@ function fixture(input: Readonly<{
     get appendCalls() { return appendCalls; },
     get refreshCalls() { return refreshCalls; },
     get authorityCalls() { return authorityCalls; },
+    get authorizationCommits() { return authorizationCommits; },
     get intentReads() { return intentReads; },
     get deletionObservedBeforeAuthorityReturn() {
       return deletionObservedBeforeAuthorityReturn;
@@ -263,18 +275,32 @@ function fixture(input: Readonly<{
 }
 
 test("plaintext mode remains inactive before destination or allocation work", async () => {
-  const value = fixture({ mode: "plaintext_only" });
+  const notifications: string[] = [];
+  const value = fixture({
+    mode: "plaintext_only",
+    authorizationRequested: userId => {
+      notifications.push(userId);
+    },
+  });
   expect(await value.preparation.prepare({ taskId: TASK, taskRunId: RUN }))
     .toEqual({ status: "inactive" });
   expect(value.intentReads).toBe(0);
   expect(value.authorityCalls).toBe(0);
   expect(value.appendCalls).toBe(0);
+  expect(notifications).toEqual([]);
 });
 
 test.each(["protected", "dual"] as const)(
   "allocates the fixed %s cancellation Message before creating authorization",
   async representation => {
-    const value = fixture({ representation });
+    const notifications: string[] = [];
+    const value = fixture({
+      representation,
+      authorizationRequested: userId => {
+        expect(value.authorizationCommits).toBe(1);
+        notifications.push(userId);
+      },
+    });
     const result = await value.preparation.prepare({ taskId: TASK, taskRunId: RUN });
     expect(result.status).toBe("created");
     if (result.status !== "created") throw new Error("expected creation");
@@ -284,6 +310,7 @@ test.each(["protected", "dual"] as const)(
     expect(result.plan.initialRecord.authoritySet.namespaceRequirements[0])
       .toMatchObject({ namespaceId: NAMESPACE, operations: ["encrypt"] });
     expect(value.events).toEqual(["append", "absence_fence"]);
+    expect(notifications).toEqual([USER]);
     expect((await value.repository.get(
       protectedTaskTerminalMessageRequestId(RUN),
     ))?.snapshot.state).toBe("awaiting_recipient");
@@ -324,7 +351,10 @@ test("second pass refuses a changed canonical destination Session", async () => 
 });
 
 test("exact replay reuses one allocation and resolvePlan never allocates", async () => {
-  const value = fixture();
+  const notifications: string[] = [];
+  const value = fixture({ authorizationRequested: userId => {
+    notifications.push(userId);
+  } });
   const created = await value.preparation.prepare({ taskId: TASK, taskRunId: RUN });
   expect(created.status).toBe("created");
   if (created.status !== "created") throw new Error("expected creation");
@@ -336,6 +366,7 @@ test("exact replay reuses one allocation and resolvePlan never allocates", async
   expect((await value.preparation.resolvePlan(created.plan.initialRecord))
     ?.allocation).toEqual(created.plan.allocation);
   expect(value.appendCalls).toBe(1);
+  expect(notifications).toEqual([USER]);
 });
 
 test("a pristine Full allocation advances policy without reappend or digest rewrite", async () => {
@@ -513,7 +544,14 @@ test("an expired claim advances only under the absence fence and cleans up after
   });
   const repository = new InMemoryBackgroundAuthorizationRepository();
   await repository.create(claimedRecords(plan, NOW + 20_000).at(-1)!);
-  const value = fixture({ repository, now: NOW + 30_000 });
+  const notifications: string[] = [];
+  const value = fixture({
+    repository,
+    now: NOW + 30_000,
+    authorizationRequested: userId => {
+      notifications.push(userId);
+    },
+  });
   const replay = await value.preparation.prepare({ taskId: TASK, taskRunId: RUN });
   expect(replay.status).toBe("exact_replay");
   expect(await repository.get(protectedTaskTerminalMessageRequestId(RUN)))
@@ -525,6 +563,97 @@ test("an expired claim advances only under the absence fence and cleans up after
   ]]);
   expect(value.deletionObservedBeforeAuthorityReturn).toBe(false);
   expect(value.events).toContain("absence_fence");
+  expect(notifications).toEqual([USER]);
+});
+
+test("withholds a rotation hint when terminal replacement returns substituted evidence", async () => {
+  class SubstitutedReplacementRepository
+    extends InMemoryBackgroundAuthorizationRepository {
+    override async replaceUnclaimedTaskTerminalMessageAuthority(input: Parameters<
+      InMemoryBackgroundAuthorizationRepository[
+        "replaceUnclaimedTaskTerminalMessageAuthority"
+      ]
+    >[0]) {
+      const replaced = await super
+        .replaceUnclaimedTaskTerminalMessageAuthority(input);
+      if (replaced.status !== "replaced") return replaced;
+      return Object.freeze({
+        status: "replaced" as const,
+        record: Object.freeze({
+          ...replaced.record,
+          expectedPolicyRevision: replaced.record.expectedPolicyRevision + 1,
+        }),
+      });
+    }
+  }
+  const crypto = new LatticeCrypto();
+  const intent = terminalIntent();
+  const encoded = encodeMessagePayloadV2({
+    role: "assistant", content: PROTECTED_TASK_CANCELLED_RESULT,
+  });
+  const messageId = 41;
+  const lifecycle = Object.freeze({
+    sessionId: SESSION, messageId, revision: 0,
+    roomId: ROOM, namespaceIdAtAllocation: NAMESPACE,
+    cryptoObjectId: deriveMessageCryptoObjectIdV2({
+      sessionId: SESSION, messageId, revision: 0,
+    }),
+    objectIdScheme: "message_v2", representationMode: "full_encryption",
+    publicationPolicyRevision: 7,
+    appendIdempotencyKey: intent.messageOperationId,
+    allocationRequestDigest: crypto.hash(encoded),
+    authorRole: "assistant", keyClass: "ai",
+    completion: "pending", disposition: "active",
+  }) as ConversationRevisionLifecycle;
+  encoded.fill(0);
+  const plan = createProtectedTaskTerminalMessagePlan({
+    intent,
+    allocation: {
+      sessionId: SESSION, messageId, revision: 0,
+      objectId: lifecycle.cryptoObjectId,
+      createdAt: NOW - 500, publicationPolicyRevision: 7,
+    },
+    lifecycle, namespaceAuthority: authority(7), crypto,
+    now: NOW, recipientTtlMs: 60_000,
+  });
+  const repository = new SubstitutedReplacementRepository();
+  await repository.create(claimedRecords(plan, NOW + 20_000).at(-1)!);
+  const notifications: string[] = [];
+  const value = fixture({
+    repository,
+    now: NOW + 30_000,
+    authorizationRequested: userId => {
+      notifications.push(userId);
+    },
+  });
+  value.setPolicyRevision(8);
+
+  expect(await value.preparation.prepare({ taskId: TASK, taskRunId: RUN }))
+    .toEqual({ status: "conflict" });
+  expect(notifications).toEqual([]);
+});
+
+test("does not notify when terminal authorization creation is rolled back", async () => {
+  const notifications: string[] = [];
+  const value = fixture({
+    rollbackAuthorizationCommitOnce: true,
+    authorizationRequested: userId => {
+      notifications.push(userId);
+    },
+  });
+
+  expect(await value.preparation.prepare({ taskId: TASK, taskRunId: RUN }))
+    .toEqual({ status: "not_ready" });
+  expect(notifications).toEqual([]);
+});
+
+test("a rejecting terminal notification does not change committed creation", async () => {
+  const value = fixture({
+    authorizationRequested: () => Promise.reject(new Error("offline")),
+  });
+
+  expect((await value.preparation.prepare({ taskId: TASK, taskRunId: RUN })).status)
+    .toBe("created");
 });
 
 test("payload allocation digest is the exact fixed encoded Message digest", async () => {

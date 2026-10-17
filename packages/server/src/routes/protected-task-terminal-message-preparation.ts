@@ -46,6 +46,10 @@ import {
 } from "./protected-task-terminal-message-product";
 import { withProtectedTaskTerminalMessageProductStore } from
   "./protected-task-terminal-message-store";
+import {
+  notifyProtectedTaskAuthorizationRequestedAfterCommit,
+  type ProtectedTaskAuthorizationRequested,
+} from "./protected-task-authorization-requested";
 
 export type ProtectedTaskTerminalMessagePreparationResult =
   | Readonly<{
@@ -139,6 +143,7 @@ export function createProtectedTaskTerminalMessagePreparation(
     recipientTtlMs: number;
     now?: () => number;
     restricted?: () => PostgresJsBridgeConnection;
+    authorizationRequested?: ProtectedTaskAuthorizationRequested | undefined;
   }>,
   overrides: Partial<Dependencies> = {},
 ): ProtectedTaskTerminalMessagePreparation {
@@ -146,6 +151,7 @@ export function createProtectedTaskTerminalMessagePreparation(
   const crypto = overrides.crypto ?? input.crypto ?? new LatticeCrypto();
   const restricted = overrides.restricted ?? input.restricted
     ?? (() => createPostgresJsBridgeConnection(getSharedDirectCryptoDb()));
+  const authorizationRequested = input.authorizationRequested;
   const dependencies: Dependencies = {
     db, crypto, owner: overrides.owner ?? input.owner,
     serverScope: overrides.serverScope ?? input.serverScope
@@ -361,6 +367,7 @@ export function createProtectedTaskTerminalMessagePreparation(
       intent.requesterUserId, dependencies.db,
     );
     const cleanup: Array<readonly [string, number]> = [];
+    let authorizationChanged = false;
     const held = await dependencies.withDeliveryAuthority({
       runner: productContext.canonicalRunner,
       restricted: dependencies.restricted(),
@@ -494,6 +501,7 @@ export function createProtectedTaskTerminalMessagePreparation(
                     }
                     const created = await repository.create(plan.initialRecord);
                     if (created.status === "created") {
+                      authorizationChanged = true;
                       return Object.freeze({
                         status: "created" as const, plan,
                       });
@@ -518,6 +526,9 @@ export function createProtectedTaskTerminalMessagePreparation(
                   const reconciled = await reconcileAuthorization({
                     repository, existing, plan, now: dependencies.now(),
                     cleanup,
+                    authorizationChanged: changed => {
+                      authorizationChanged = changed;
+                    },
                   });
                   if (reconciled === "conflict") {
                     return Object.freeze({ status: "conflict" as const });
@@ -542,6 +553,12 @@ export function createProtectedTaskTerminalMessagePreparation(
     if (held === null) return Object.freeze({ status: "not_ready" as const });
     for (const [requestId, generation] of cleanup) {
       dependencies.recipients.delete(requestId, generation);
+    }
+    if (authorizationChanged) {
+      await notifyProtectedTaskAuthorizationRequestedAfterCommit(
+        authorizationRequested,
+        intent.requesterUserId,
+      );
     }
     return held;
   }
@@ -581,6 +598,7 @@ async function reconcileAuthorization(input: Readonly<{
   plan: ProtectedTaskTerminalMessagePlan;
   now: number;
   cleanup: Array<readonly [string, number]>;
+  authorizationChanged(changed: boolean): void;
 }>): Promise<"ready" | "conflict"> {
   let current = input.existing;
   const exact = exactPlan(current, input.plan);
@@ -631,6 +649,7 @@ async function reconcileAuthorization(input: Readonly<{
     input.cleanup.push([
       current.snapshot.requestId, current.snapshot.recipientGeneration,
     ]);
+    input.authorizationChanged(true);
     current = result.record;
     if (exact) return "ready";
   }
@@ -640,7 +659,11 @@ async function reconcileAuthorization(input: Readonly<{
       replacement: input.plan.initialRecord,
       now: input.now,
     });
-  if (replaced.status !== "replaced" || !exactPlan(replaced.record, input.plan)) {
+  if (replaced.status !== "replaced") {
+    return "conflict";
+  }
+  if (!exactPlan(replaced.record, input.plan)) {
+    input.authorizationChanged(false);
     return "conflict";
   }
   if (!expired && current.snapshot.state !== "awaiting_recipient") {
@@ -648,5 +671,6 @@ async function reconcileAuthorization(input: Readonly<{
       current.snapshot.requestId, current.snapshot.recipientGeneration,
     ]);
   }
+  input.authorizationChanged(true);
   return "ready";
 }
