@@ -3,99 +3,31 @@ name: Windows Desktop validation
 on:
   pull_request:
     branches: [main]
+    # Qualify Desktop/Relay, build inputs, and Windows tooling on PRs.
     paths:
       - ".github/workflows/windows-desktop.yml"
       - "apps/desktop/**"
-      - "apps/cli/**"
-      - "apps/workbench/**"
-      - "bin/nautilo-dev/**"
-      - "bin/nautilo-local/**"
       - "bin/nautilo-relay/**"
-      - "bin/nautilo-server/**"
+      - "packages/relay/**"
+      - "packages/lattice-crypto/vendor/openmls-wasm/**"
+      - "native/apply-patch/**"
+      - "patches/**"
+      - "package.json"
+      - "bun.lock"
+      - "**/package.json"
+      - "**/bun.lock"
       - ".bun-version"
       - ".gitattributes"
+      - "bunfig.toml"
+      - "tsconfig*.json"
+      - "turbo.json"
       - "dev/scripts/install-first-party-apps.ts"
       - "dev/scripts/fix-node-pty-perms.ts"
       - "dev/scripts/prepare-*.ts"
       - "dev/scripts/vendor-agent-browser.ts"
       - "dev/scripts/windows-unit-gate.ts"
-      - "dev/scripts/windows-validation-scope.ts"
       - "dev/scripts/test-repo-invariants.ts"
-      - "dev/scripts/pre-push-gate.sh"
-      - "dev/scripts/ci-gates.sh"
-      - "dev/scripts/tsconfig.json"
-      - "dev/tests/repo-invariants/**"
       - "dev/tests/test-lifecycle-preload.ts"
-      - "lefthook.yml"
-      - "infra/compose/**"
-      - "packages/acp-host/**"
-      - "packages/agent/**"
-      - "packages/api-client/**"
-      - "packages/attachments/**"
-      - "packages/browser-document-viewer/**"
-      - "packages/catalog/**"
-      - "packages/claude-agent-sdk-host/**"
-      - "packages/cli-auth/**"
-      - "packages/cloudconvert/**"
-      - "packages/codex-app-server/**"
-      - "packages/codex-app-server-host/**"
-      - "packages/computer-use-contracts/**"
-      - "packages/computer-use-host/**"
-      - "packages/computer-use-host-protocol/**"
-      - "packages/config/**"
-      - "packages/config-guard/**"
-      - "packages/db/**"
-      - "packages/deploy-config/**"
-      - "packages/desktop-filesystem-grants/**"
-      - "packages/document-mutations/**"
-      - "packages/encryption-invariants/**"
-      - "packages/event-feed/**"
-      - "packages/first-party-apps/**"
-      - "packages/fonts/**"
-      - "packages/generated-media-ui/**"
-      - "packages/genie-customization-ui/**"
-      - "packages/instance-discovery/**"
-      - "packages/lattice-bridge/**"
-      - "packages/lattice-crypto/**"
-      - "packages/loffice/**"
-      - "packages/logger/**"
-      - "packages/mcp-client/**"
-      - "packages/message-invariants/**"
-      - "packages/model-capabilities/**"
-      - "packages/office-board/**"
-      - "packages/office-core/**"
-      - "packages/office-docs/**"
-      - "packages/office-sheets/**"
-      - "packages/office-slides/**"
-      - "packages/operator-secrets/**"
-      - "packages/profile-portability/**"
-      - "packages/realtime-client/**"
-      - "packages/reflection/**"
-      - "packages/reflection-bridge/**"
-      - "packages/relay/**"
-      - "packages/runtime/**"
-      - "packages/sandbox/**"
-      - "packages/security/**"
-      - "packages/server/**"
-      - "packages/trust/**"
-      - "packages/types/**"
-      - "packages/vault/**"
-      - "packages/voice/**"
-      - "packages/voice-catalog-ui/**"
-      - "packages/workbench-components/**"
-      - "packages/workstation-profiles/**"
-      - "packages/writer-proposal-core/**"
-      - "packaging/openconnector/**"
-      - "package.json"
-      - "bun.lock"
-      - "bunfig.toml"
-      - "tsconfig*.json"
-      - "turbo.json"
-      - "patches/**"
-      - "native/apply-patch/**"
-      - "**/package.json"
-      - "**/bun.lock"
-      - "scripts/stack309-ios-simulator-input-helper.test.ts"
   schedule:
     - cron: "17 4 * * *"
   workflow_dispatch:
@@ -119,7 +51,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-          fetch-depth: 0
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
@@ -144,10 +75,6 @@ jobs:
           $gitBash = Join-Path $gitBashDirectory 'bash.exe'
           if (-not (Test-Path -LiteralPath $gitBash -PathType Leaf)) { throw 'Native Git Bash is missing' }
           Add-Content -LiteralPath $env:GITHUB_PATH -Value $gitBashDirectory
-
-      - name: Determine Windows validation scope
-        id: validation-scope
-        run: bun dev/scripts/windows-validation-scope.ts
 
       - name: Install frozen dependencies
         run: bun install --frozen-lockfile
@@ -177,45 +104,38 @@ jobs:
         run: bun run test:invariants
 
       - name: Typecheck Desktop
-        if: steps.validation-scope.outputs.full == 'true'
         env:
           NODE_OPTIONS: --max-old-space-size=4096
         run: bun run --cwd apps/desktop typecheck
 
       - name: Typecheck development tools
-        if: steps.validation-scope.outputs.full == 'true'
         env:
           # A cold check of the development-tools graph uses about 4.4 GiB.
           NODE_OPTIONS: --max-old-space-size=6144
         run: bun run --cwd bin/nautilo-dev typecheck
 
       - name: Typecheck database
-        if: steps.validation-scope.outputs.full == 'true'
         run: bun run --cwd packages/db typecheck
 
       - name: Typecheck server
-        if: steps.validation-scope.outputs.full == 'true'
         env:
           # A cold check of the server graph uses about 5.6 GiB on Windows.
           NODE_OPTIONS: --max-old-space-size=8192
         run: bun run --cwd packages/server typecheck
 
       - name: Build Windows Desktop installer
-        if: steps.validation-scope.outputs.full == 'true'
         env:
           CI: 'true'
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: bun run --cwd apps/desktop package:win
 
       - name: Verify packaged Relay Host launch
-        if: steps.validation-scope.outputs.full == 'true'
         run: |
           $appRoot = Join-Path $env:GITHUB_WORKSPACE 'apps\desktop\release\win-unpacked'
           $env:NAUTILO_PACKAGED_RESOURCES = Join-Path $appRoot 'resources'
           bun test apps/desktop/tests/unit-isolated/packaged-relay-host.test.ts
 
       - name: Smoke-test packaged Desktop boot
-        if: steps.validation-scope.outputs.full == 'true'
         run: |
           $appPath = Join-Path $env:GITHUB_WORKSPACE 'apps\desktop\release\win-unpacked\Nautilo.exe'
           if (-not (Test-Path -LiteralPath $appPath -PathType Leaf)) { throw 'Packaged Nautilo.exe is missing' }
