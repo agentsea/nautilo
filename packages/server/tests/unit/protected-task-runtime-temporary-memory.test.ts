@@ -226,6 +226,7 @@ test("fresh certified execution writes and reopens Memory without permanent Runt
     currentNamespaceRequirements: [namespaceRequirement],
     result,
     certifiedSigning: {
+      expectedExecutionSegment: 1,
       requestBytes,
       certificateBytes,
       currentIssuer: taskRuntimeBackgroundAuthorizationIssuer(request),

@@ -62,7 +62,7 @@ export type TaskRuntimeExecutionWorkBindingV2 = Readonly<{
   taskRunId: string;
   inputObjectId: string;
   resultObjectId: string;
-  executionSegment: 1;
+  executionSegment: number;
   workIdentityHash: Uint8Array;
 }>;
 
@@ -176,12 +176,16 @@ function normalize(
       "taskId", "taskRunId", "inputObjectId", "resultObjectId",
       "executionSegment", "workIdentityHash",
     ]);
+    const executionSegment = counter(
+      "Task Runtime execution segment",
+      value.work.executionSegment,
+    );
     const resultDigest = crypto.hash(new TextEncoder().encode(
       `${TASK_RUN_RESULT_OBJECT_ID_DOMAIN}\n${value.work.taskId}\n${value.work.taskRunId}\n1`,
     ));
     const expectedResultObjectId = `task-run-result:v1:${bytesToHex(resultDigest)}`;
     resultDigest.fill(0);
-    if (value.work.executionSegment !== 1
+    if (executionSegment < 1
       || value.work.taskRunId !== baseRequest.workId
       || !UUID.test(value.work.taskId)
       || !UUID.test(value.work.taskRunId)
@@ -271,7 +275,7 @@ function normalize(
         taskRunId: portable("Task Runtime Task Run ID", value.work.taskRunId),
         inputObjectId: portable("Task Runtime input object ID", value.work.inputObjectId),
         resultObjectId: portable("Task Runtime result object ID", value.work.resultObjectId),
-        executionSegment: 1,
+        executionSegment,
         workIdentityHash,
       }),
       signer: Object.freeze({
@@ -383,7 +387,7 @@ export function decodeTaskRuntimeBackgroundAuthorizationRequestV2(
           taskRunId: reader.readText(V2_LIMITS.idBytes),
           inputObjectId: reader.readText(V2_LIMITS.idBytes),
           resultObjectId: reader.readText(V2_LIMITS.idBytes),
-          executionSegment: reader.readU64() as 1,
+          executionSegment: reader.readU64(),
           workIdentityHash: reader.readFrame(HASH_BYTES),
         };
         const signer = {

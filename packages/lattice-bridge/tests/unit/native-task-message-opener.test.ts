@@ -393,6 +393,7 @@ async function fixture(
           currentNamespaceRequirements: evidenceInput.namespaceRequirements,
           result: evidenceInput.result,
           certifiedSigning: {
+            expectedExecutionSegment: 1,
             requestBytes,
             certificateBytes,
             currentIssuer: taskRuntimeBackgroundAuthorizationIssuer(request),

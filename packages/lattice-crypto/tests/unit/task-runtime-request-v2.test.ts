@@ -42,7 +42,7 @@ function resultObjectId(crypto: LatticeCrypto): string {
   )))}`;
 }
 
-async function fixture() {
+async function fixture(executionSegment = 1) {
   const crypto = new LatticeCrypto(seededRng(808_101), { now: () => NOW });
   const recipient = await crypto.deriveEncryptionKeyPair(bytes(0x31));
   const device = crypto.generateSigningKeyPair();
@@ -79,7 +79,8 @@ async function fixture() {
     baseRequest,
     work: { taskId: TASK, taskRunId: RUN,
       inputObjectId: `task-definition:v1:${"a".repeat(64)}`,
-      resultObjectId: resultObjectId(crypto), executionSegment: 1,
+      resultObjectId: resultObjectId(crypto),
+      executionSegment,
       workIdentityHash: bytes(0x21) },
     signer: { agentId: "agent:one", runtimeGeneration: 0,
       signerKeyId: agentRuntimeObjectSignerKeyIdV1(crypto, signer.publicKey),
@@ -102,6 +103,9 @@ describe("Task Runtime background authorization request v2", () => {
       const encoded = encodeTaskRuntimeBackgroundAuthorizationRequestV2(
         f.crypto, f.request,
       );
+      expect(bytesToHex(f.crypto.hash(encoded))).toBe(
+        "54e3b71d5c5fea70db202bd7e2a6683de29eecbb8b3349c5ad261ece6563c4f5",
+      );
       expect(isTaskRuntimeBackgroundAuthorizationRequestV2Carrier(encoded))
         .toBe(true);
       const decoded = decodeTaskRuntimeBackgroundAuthorizationRequestV2(
@@ -123,6 +127,34 @@ describe("Task Runtime background authorization request v2", () => {
         headDigest: bytes(0x22), signingPublicKeyHash: f.crypto.hash(f.device.publicKey) });
       issuer.headDigest.fill(0); issuer.signingPublicKeyHash.fill(0);
       destroyTaskRuntimeBackgroundAuthorizationRequestV2(decoded!);
+    } finally {
+      destroyTaskRuntimeBackgroundAuthorizationRequestV2(f.request);
+      destroyTaskRuntimeBackgroundAuthorizationRequestV1(f.baseRequest);
+      destroyDomainForegroundAuthorizationPlanV2(f.plan);
+    }
+  });
+
+  test("round-trips a resumed execution segment and rejects invalid segments", async () => {
+    const f = await fixture(2);
+    try {
+      const encoded = encodeTaskRuntimeBackgroundAuthorizationRequestV2(
+        f.crypto,
+        f.request,
+      );
+      const decoded = decodeTaskRuntimeBackgroundAuthorizationRequestV2(
+        f.crypto,
+        encoded,
+      );
+      expect(decoded?.work.executionSegment).toBe(2);
+      expect(decoded?.work.resultObjectId).toBe(resultObjectId(f.crypto));
+      destroyTaskRuntimeBackgroundAuthorizationRequestV2(decoded!);
+
+      for (const executionSegment of [0, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+        expect(() => encodeTaskRuntimeBackgroundAuthorizationRequestV2(
+          f.crypto,
+          { ...f.request, work: { ...f.request.work, executionSegment } },
+        )).toThrow();
+      }
     } finally {
       destroyTaskRuntimeBackgroundAuthorizationRequestV2(f.request);
       destroyTaskRuntimeBackgroundAuthorizationRequestV1(f.baseRequest);

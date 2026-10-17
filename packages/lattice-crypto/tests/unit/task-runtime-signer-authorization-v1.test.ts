@@ -42,7 +42,7 @@ function bytes(fill: number): Uint8Array {
   return new Uint8Array(32).fill(fill);
 }
 
-async function fixture(seed = 808_201) {
+async function fixture(seed = 808_201, executionSegment = 1) {
   const crypto = new LatticeCrypto(seededRng(seed), { now: () => NOW });
   const device = crypto.generateSigningKeyPair();
   const recipient = await crypto.deriveEncryptionKeyPair(bytes(0x41));
@@ -83,7 +83,7 @@ async function fixture(seed = 808_201) {
     baseRequest,
     work: { taskId: TASK, taskRunId: RUN,
       inputObjectId: `task-definition:v1:${"b".repeat(64)}`,
-      resultObjectId, executionSegment: 1, workIdentityHash: bytes(0x21) },
+      resultObjectId, executionSegment, workIdentityHash: bytes(0x21) },
     signer: { agentId: "agent:task", runtimeGeneration: 0,
       signerKeyId: agentRuntimeObjectSignerKeyIdV1(crypto, ephemeral.publicKey),
       signerPublicKey: ephemeral.publicKey },
@@ -217,6 +217,44 @@ describe("Task Runtime signer authorization v1", () => {
         now: NOW + 60_000, resolveCurrentIssuer: () => f.device.publicKey,
       })).rejects.toMatchObject({ code: "expired" });
     } finally { cleanup(f); }
+  });
+
+  test("authenticates execution segment two for current and historical readers", async () => {
+    const f = await fixture(808_204, 2);
+    try {
+      const current = await verifyCurrentTaskRuntimeSignerAuthorizationV1(
+        f.crypto,
+        {
+          certificateBytes: f.certificateBytes,
+          requestBytes: f.requestBytes,
+          expectedRequestHash: f.crypto.hash(f.requestBytes),
+          expectedAuthorizationHash: f.authorizationHash,
+          now: NOW + 1,
+          resolveCurrentIssuer: context => {
+            expect(context.projection.work.executionSegment).toBe(2);
+            return f.device.publicKey;
+          },
+        },
+      );
+      expect(current.request.work.executionSegment).toBe(2);
+      expect(current.projection.work.executionSegment).toBe(2);
+      destroyVerifiedTaskRuntimeSignerAuthorizationV1(current);
+
+      const historical = verifyHistoricalTaskRuntimeSignerAuthorizationV1(
+        f.crypto,
+        {
+          certificateBytes: f.certificateBytes,
+          resolveHistoricalIssuer: context => {
+            expect(context.projection.work.executionSegment).toBe(2);
+            return f.device.publicKey;
+          },
+        },
+      );
+      expect(historical.projection.work.executionSegment).toBe(2);
+      destroyVerifiedTaskRuntimeSignerAuthorizationV1(historical);
+    } finally {
+      cleanup(f);
+    }
   });
 
   test("rejects request, grant, issuer, key, and wrapper substitution", async () => {

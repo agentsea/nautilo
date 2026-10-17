@@ -681,6 +681,7 @@ test("lends exact bound authority without manufacturing an awaiting record", asy
   const requestPlan = createProtectedTaskRuntimeRecipientRequestPlan({
     crypto,
     occurrence: value,
+    executionIdentity: { executionSegment: 1 },
     initialRecord: initial,
     sourceRoomId: SOURCE_ROOM,
     authority: {

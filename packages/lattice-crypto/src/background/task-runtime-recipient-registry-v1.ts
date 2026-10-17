@@ -521,6 +521,7 @@ export type TaskRuntimeCertifiedSigningInputV1 = Readonly<{
   requestBytes: Uint8Array;
   certificateBytes: Uint8Array;
   currentIssuer: BackgroundAuthorizationIssuerV2;
+  expectedExecutionSegment: number;
 }>;
 
 type TaskRuntimeTemporarySignerStateV1 = Readonly<{
@@ -668,6 +669,12 @@ async function verifyTemporarySignerAuthorization(input: Readonly<{
       || request.work.taskId !== input.result.taskId
       || request.work.taskRunId !== input.result.taskRunId
       || request.work.resultObjectId !== input.result.objectId
+      || !Number.isSafeInteger(
+        input.certifiedSigning.expectedExecutionSegment,
+      )
+      || input.certifiedSigning.expectedExecutionSegment < 1
+      || request.work.executionSegment
+        !== input.certifiedSigning.expectedExecutionSegment
       || request.signer.agentId !== input.result.signerAgentId
       || request.signer.agentId !== signer.agentId
       || request.signer.runtimeGeneration !== signer.runtimeGeneration

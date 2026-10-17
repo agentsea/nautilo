@@ -93,7 +93,7 @@ export interface TaskRuntimeSignerAuthorizationProjectionV1 {
     taskRunId: string;
     inputObjectId: string;
     resultObjectId: string;
-    executionSegment: 1;
+    executionSegment: number;
     workIdentityHash: Uint8Array;
   }>;
 }
@@ -253,12 +253,12 @@ export function decodeTaskRuntimeSignerAuthorizationProjectionV1(
         request.requestHash, request.authorizationHash,
         signer.signerPublicKey, work.workIdentityHash].some(
         value => value.length !== HASH_BYTES,
-      ) || signer.runtimeGeneration !== 0 || work.executionSegment !== 1
+      ) || signer.runtimeGeneration !== 0 || work.executionSegment < 1
         || request.issuedAt >= request.deadlineAt) throw new Error("semantics");
       return Object.freeze({ formatVersion: 1 as const,
         purpose: TASK_RUNTIME_SIGNER_AUTHORIZATION_PURPOSE_V1,
         issuer, request, signer: Object.freeze({ ...signer, runtimeGeneration: 0 as const }),
-        work: Object.freeze({ ...work, executionSegment: 1 as const }) });
+        work });
     });
     const canonical = projectionBytes(value);
     const valid = same(canonical, bytes); canonical.fill(0);

@@ -12,8 +12,10 @@ import {
   domainForegroundNamespaceBindingSetDigest,
 } from "@nautilo/lattice-crypto";
 import {
+  decodeTaskRuntimeBackgroundAuthorizationRequestV2,
   decodeTaskRuntimeBackgroundAuthorizationRequestBase,
   destroyTaskRuntimeBackgroundAuthorizationRequestV1,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV2,
   isTaskRuntimeBackgroundAuthorizationRequestV2Carrier,
 } from "@nautilo/lattice-crypto/background";
 import type {
@@ -459,6 +461,14 @@ test("binds the exact parked request through the held repository", async () => {
     expect(bound.record.snapshot.state).toBe("awaiting_device");
     expect(bound.record.descriptorBytes).toEqual(bound.requestBytes);
     expect(hooks.isTaskRecipientActive(bound.record)).toBe(true);
+    const certified = decodeTaskRuntimeBackgroundAuthorizationRequestV2(
+      f.crypto,
+      bound.requestBytes,
+    );
+    expect(certified?.work.executionSegment).toBe(2);
+    if (certified !== null) {
+      destroyTaskRuntimeBackgroundAuthorizationRequestV2(certified);
+    }
     expect(f.counts()).toEqual({
       productCalls: 1,
       ownerCalls: 1,

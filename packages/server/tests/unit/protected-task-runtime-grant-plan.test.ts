@@ -367,6 +367,9 @@ test("builds an exact dark V3 plan from the predispatch Namespace inventory", as
     },
   });
   expect(request.formatVersion).toBe(2);
+  if (request.formatVersion === 2) {
+    expect(request.work.executionSegment).toBe(1);
+  }
   expect(decodeTaskRuntimeBackgroundAuthorizationRequestV2(
     requestCrypto,
     encodeTaskRuntimeBackgroundAuthorizationRequestV2(
@@ -389,6 +392,25 @@ test("builds an exact dark V3 plan from the predispatch Namespace inventory", as
   });
 });
 
+test("rejects an invalid canonical execution segment before request planning", async () => {
+  const value = occurrence();
+  const plan = await builder()(value);
+  expect(() => createProtectedTaskRuntimeRecipientRequestPlan({
+    crypto: new LatticeCrypto(),
+    occurrence: value,
+    executionIdentity: { executionSegment: 0 },
+    initialRecord: plan.initialRecord,
+    sourceRoomId: SOURCE_ROOM,
+    authority: {
+      policyRevision: plan.initialRecord.expectedPolicyRevision,
+      namespaces: plan.initialRecord.authoritySet.namespaceRequirements,
+      domains: plan.initialRecord.authoritySet.domainRequirements,
+    },
+    createdAt: NOW,
+    recipientTtlMs: 60_000,
+  })).toThrow("recipient occurrence is not exact");
+});
+
 test("shared recipient request planning preserves initial wire identity", async () => {
   const value = occurrence();
   const plan = await builder()(value);
@@ -396,6 +418,7 @@ test("shared recipient request planning preserves initial wire identity", async 
   const shared = createProtectedTaskRuntimeRecipientRequestPlan({
     crypto: requestCrypto,
     occurrence: value,
+    executionIdentity: plan.stableIdentity,
     initialRecord: plan.initialRecord,
     sourceRoomId: SOURCE_ROOM,
     authority: {
@@ -470,6 +493,7 @@ test.each(["task.approval_resume", "task.await_reply_resume"] as const)(
   const shared = createProtectedTaskRuntimeRecipientRequestPlan({
     crypto: new LatticeCrypto(),
     occurrence: value,
+    executionIdentity: plan.stableIdentity,
     initialRecord,
     sourceRoomId: SOURCE_ROOM,
     authority: {
@@ -533,7 +557,8 @@ test.each(["task.approval_resume", "task.await_reply_resume"] as const)(
     expect(() => shared.recipientAttempt({ record, now: NOW })).toThrow("record is not exact");
     expect(() => shared.buildRequest({ ...requestInput, record })).toThrow("authority is not exact");
     expect(() => createProtectedTaskRuntimeRecipientRequestPlan({
-      crypto: new LatticeCrypto(), occurrence: value, initialRecord: record,
+      crypto: new LatticeCrypto(), occurrence: value,
+      executionIdentity: plan.stableIdentity, initialRecord: record,
       sourceRoomId: SOURCE_ROOM, createdAt: NOW, recipientTtlMs: 60_000,
       authority: { policyRevision: initialRecord.expectedPolicyRevision,
         namespaces: initialRecord.authoritySet.namespaceRequirements,
@@ -553,6 +578,7 @@ test("shared recipient request planning rejects bad plans and stale domains", as
   expect(() => createProtectedTaskRuntimeRecipientRequestPlan({
     crypto: new LatticeCrypto(),
     occurrence: value,
+    executionIdentity: plan.stableIdentity,
     initialRecord: plan.initialRecord,
     sourceRoomId: SOURCE_ROOM,
     authority: {
@@ -571,6 +597,7 @@ test("shared recipient request planning rejects bad plans and stale domains", as
   const shared = createProtectedTaskRuntimeRecipientRequestPlan({
     crypto: new LatticeCrypto(),
     occurrence: value,
+    executionIdentity: plan.stableIdentity,
     initialRecord: plan.initialRecord,
     sourceRoomId: SOURCE_ROOM,
     authority: exactAuthority,

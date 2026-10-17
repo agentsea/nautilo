@@ -673,6 +673,7 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
     const recipientRequest = createProtectedTaskRuntimeRecipientRequestPlan({
       crypto: dependencies.crypto,
       occurrence,
+      executionIdentity: stableIdentity,
       initialRecord,
       sourceRoomId: resolvedAuthority.sourceRoomId,
       authority,

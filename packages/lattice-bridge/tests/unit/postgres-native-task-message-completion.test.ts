@@ -370,7 +370,9 @@ describe("native Task Message crypto completion", () => {
       current,
       currentNamespaceRequirements: namespaceRequirements,
       result: evidenceInput.result,
-      certifiedSigning: { requestBytes, certificateBytes, currentIssuer },
+      certifiedSigning: {
+        expectedExecutionSegment: 1, requestBytes, certificateBytes, currentIssuer,
+      },
       operation: async (_openedDomains, _signal, evidence) =>
         withTaskRuntimeTemporarySigner(evidence, async temporarySigner => {
           const prepared = await prepareNativeTaskMessage({

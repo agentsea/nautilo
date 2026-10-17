@@ -2073,6 +2073,7 @@ function createTaskRuntimeExecutionCandidate(
               result: input.result,
               ...(responseV2 === null ? {} : {
                 certifiedSigning: {
+                  expectedExecutionSegment: input.reference.executionSegment,
                   requestBytes: descriptorBytes,
                   certificateBytes: responseV2.certificateBytes,
                   currentIssuer: authority.currentIssuer!,

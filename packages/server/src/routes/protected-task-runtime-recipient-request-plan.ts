@@ -20,6 +20,7 @@ import {
 import type {
   BackgroundAuthorizationTaskRuntimeRecordV3,
   ProtectedTaskOccurrence,
+  TaskRuntimeGrantStableIdentity,
   TaskRuntimeRecipientRequestPlan,
 } from "@nautilo/runtime";
 import type { ProtectedTaskOutputReadIntent } from "./protected-task-output-read-product";
@@ -37,15 +38,20 @@ export type ProtectedTaskRuntimeRecipientCanonicalAuthority = Readonly<{
     BackgroundAuthorizationTaskRuntimeRecordV3["authoritySet"]["domainRequirements"];
 }>;
 
-export type ProtectedTaskRuntimeRecipientRequestPlanInput = Readonly<{
+type ProtectedTaskRecipientRequestPlanBaseInput = Readonly<{
   crypto: Pick<LatticeCrypto, "hash">;
-  occurrence: ProtectedTaskOccurrence;
   initialRecord: BackgroundAuthorizationTaskRuntimeRecordV3;
   sourceRoomId: string;
   authority: ProtectedTaskRuntimeRecipientCanonicalAuthority;
   createdAt: number;
   recipientTtlMs: number;
 }>;
+
+export type ProtectedTaskRuntimeRecipientRequestPlanInput =
+  ProtectedTaskRecipientRequestPlanBaseInput & Readonly<{
+    occurrence: ProtectedTaskOccurrence;
+    executionIdentity: Pick<TaskRuntimeGrantStableIdentity, "executionSegment">;
+  }>;
 
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
   return left.length === right.length
@@ -97,7 +103,9 @@ export function createProtectedTaskRuntimeRecipientRequestPlan(
   TaskRuntimeBackgroundAuthorizationRequestV1
     | TaskRuntimeBackgroundAuthorizationRequestV2
 >, "recipientAttempt" | "buildRequest"> {
-  if (input.occurrence.run.taskId !== input.occurrence.task.id) {
+  if (input.occurrence.run.taskId !== input.occurrence.task.id
+    || !Number.isSafeInteger(input.executionIdentity.executionSegment)
+    || input.executionIdentity.executionSegment < 1) {
     throw new TypeError("Protected Task recipient occurrence is not exact");
   }
   const common = {
@@ -122,13 +130,14 @@ export function createProtectedTaskRuntimeRecipientRequestPlan(
         contentRevision: 1,
       }),
       agentId: input.occurrence.task.agentId,
+      executionSegment: input.executionIdentity.executionSegment,
     }),
   });
 }
 
 /** A stopped result receives its own request; it never becomes an occurrence. */
 export function createProtectedTaskCancellationRecipientRequestPlan(
-  input: Omit<ProtectedTaskRuntimeRecipientRequestPlanInput, "occurrence"> & Readonly<{
+  input: ProtectedTaskRecipientRequestPlanBaseInput & Readonly<{
     intent: ProtectedTaskCancellationOutputIntent;
   }>,
 ): Pick<TaskRuntimeRecipientRequestPlan, "recipientAttempt" | "buildRequest"> {
@@ -154,7 +163,7 @@ export function createProtectedTaskCancellationRecipientRequestPlan(
 
 /** One terminal Message gets a fresh, write-only destination grant. */
 export function createProtectedTaskTerminalMessageRecipientRequestPlan(
-  input: Omit<ProtectedTaskRuntimeRecipientRequestPlanInput, "occurrence"> & Readonly<{
+  input: ProtectedTaskRecipientRequestPlanBaseInput & Readonly<{
     taskRunId: string;
     requesterUserId: string;
     destinationNamespaceId: string;
@@ -177,7 +186,7 @@ export function createProtectedTaskTerminalMessageRecipientRequestPlan(
 
 /** Fresh result reads name the actual delivery Session, never the old Task execution episode. */
 export function createProtectedTaskOutputReadRecipientRequestPlan(
-  input: Omit<ProtectedTaskRuntimeRecipientRequestPlanInput, "occurrence"> & Readonly<{
+  input: ProtectedTaskRecipientRequestPlanBaseInput & Readonly<{
     intent: ProtectedTaskOutputReadIntent;
     foregroundNamespaceIds: readonly string[];
     additionalMutationDestination?: Readonly<{ roomId: string; namespaceId: string; semanticDigest: string }>;
@@ -221,7 +230,7 @@ export function createProtectedTaskOutputReadRecipientRequestPlan(
 }
 
 type RecipientRequestPlanInput =
-  Omit<ProtectedTaskRuntimeRecipientRequestPlanInput, "occurrence"> & Readonly<{
+  ProtectedTaskRecipientRequestPlanBaseInput & Readonly<{
     workId: string;
     requesterUserId: string;
     publication: "execution" | "cancellation" | "terminal_message" | "result_read";
@@ -234,6 +243,7 @@ type InitialExecutionSignerBinding = Readonly<{
   inputObjectId: string;
   resultObjectId: string;
   agentId: string;
+  executionSegment: number;
 }>;
 
 function createLegacyRecipientRequestPlan(
@@ -418,7 +428,7 @@ function createRecipientRequestPlan(
               taskRunId: input.initialExecution.taskRunId,
               inputObjectId: input.initialExecution.inputObjectId,
               resultObjectId: input.initialExecution.resultObjectId,
-              executionSegment: 1,
+              executionSegment: input.initialExecution.executionSegment,
               workIdentityHash: workIdentityHash.slice(),
             }),
             signer,

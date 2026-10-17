@@ -382,6 +382,7 @@ async function fixture(
   requestWorkKind: "task.execute" | "task.approval_resume" | "task.await_reply_resume" = "task.execute",
   authorizationLifetimeMs = 60_000,
   certifiedSigner = false,
+  certifiedExecutionSegment = 1,
 ) {
   const crypto = new LatticeCrypto();
   const signing = crypto.generateSigningKeyPair();
@@ -407,6 +408,17 @@ async function fixture(
     userId: REQUESTOR,
     humanActorId: REQUESTOR,
     deviceId: "task-runtime-device",
+  });
+  const currentIssuer = Object.freeze({
+    humanId: REQUESTOR,
+    deviceId: "task-runtime-device",
+    deviceGeneration: 2,
+    serverInstanceId: "task-runtime-server",
+    lineageGeneration: 1,
+    epoch: 1,
+    securityRevision: 6,
+    headDigest: bytes(6),
+    signingPublicKeyHash: digest(signing.publicKey),
   });
   let currentAuthority: DomainForegroundAuthorizationPublicCurrentAuthorityV2
     | null = null;
@@ -601,7 +613,7 @@ async function fixture(
         return createTaskRuntimeBackgroundAuthorizationRequestV2(crypto, {
           baseRequest,
           work: {taskId: TASK, taskRunId: RUN, inputObjectId: INPUT_OBJECT,
-            resultObjectId: RESULT_OBJECT, executionSegment: 1,
+            resultObjectId: RESULT_OBJECT, executionSegment: certifiedExecutionSegment,
             workIdentityHash: initialRecord().workIdentityHash},
           signer: temporary,
           deviceGroupHead: {serverInstanceId: "task-runtime-server",
@@ -682,17 +694,7 @@ async function fixture(
           return await use({
             foreground: borrowed,
             namespaceRequirements: currentNamespaceRequirements,
-            ...(certifiedSigner ? { currentIssuer: {
-              humanId: REQUESTOR,
-              deviceId: "task-runtime-device",
-              deviceGeneration: 2,
-              serverInstanceId: "task-runtime-server",
-              lineageGeneration: 1,
-              epoch: 1,
-              securityRevision: 6,
-              headDigest: bytes(6),
-              signingPublicKeyHash: digest(signing.publicKey),
-            } } : {}),
+            ...(certifiedSigner ? { currentIssuer } : {}),
           });
         } finally {
           destroyAuthority(borrowed);
@@ -757,6 +759,7 @@ async function fixture(
     createCoordinator,
     binding,
     recipientAuthority,
+    currentIssuer,
     bindRecipient,
     builtRecipientKeys,
     plan,
@@ -911,6 +914,8 @@ async function prepareAndBind(value: Fixture): Promise<void> {
 async function parkedClaimFixture(
   options: Readonly<{
     scopeWithSemanticExtra?: boolean;
+    certifiedSigner?: boolean;
+    certifiedExecutionSegment?: number;
     humanResumeWorkKind?: "task.approval_resume" | "task.await_reply_resume";
     requestWorkKind?: "task.execute" | "task.approval_resume" | "task.await_reply_resume";
     requestCheckpointPause?: NonNullable<
@@ -918,7 +923,12 @@ async function parkedClaimFixture(
     >;
   }> = {},
 ) {
-  const value = await fixture(options.requestWorkKind ?? options.humanResumeWorkKind);
+  const value = await fixture(
+    options.requestWorkKind ?? options.humanResumeWorkKind,
+    60_000,
+    options.certifiedSigner ?? false,
+    options.certifiedExecutionSegment ?? 2,
+  );
   const discovered = options.humanResumeWorkKind === undefined
     ? parkedPreparation()
     : humanParkedPreparation(options.humanResumeWorkKind);
@@ -1092,6 +1102,7 @@ async function parkedClaimFixture(
         return await use({
           foreground: borrowed,
           namespaceRequirements: currentNamespaces,
+          ...(options.certifiedSigner ? { currentIssuer: value.currentIssuer } : {}),
         });
       } finally {
         destroyAuthority(borrowed);
@@ -1124,6 +1135,60 @@ describe("parked Task Runtime authority preparation", () => {
     expect(await prepareUnclaimedParkedTaskRuntimeAuthority({
       ...input, repository, recipients, now: () => NOW,
     })).toEqual({ status: "exact_replay" });
+  });
+
+  test("opens a certified parked segment against the exact running Job reference", async () => {
+    const value = await parkedClaimFixture({ certifiedSigner: true });
+    const claimed = await value.coordinator.prepareOrClaimExact(
+      value.prepared.occurrence,
+    );
+    if (claimed.status !== "claimed") throw new Error("parked grant not claimed");
+    const candidate = claimed.dispatch.candidate;
+    const jobId = "certified-parked-segment-job";
+    value.setPersistedJobId(jobId);
+    expect(value.plan.reference.executionSegment).toBe(2);
+    expect(await candidate.persistJob?.(parkedPersistPayload(value.plan.reference)))
+      .toBe(jobId);
+    expect(await candidate.start(jobId)).toEqual({ status: "started" });
+    await candidate.run(async (_input, _signal, settlement) => {
+      await settlement.publish({
+        formatVersion: 1,
+        resultText: "certified parked result",
+        lastError: null,
+      });
+    });
+    expect(value.certifiedSignerLoans).toHaveLength(1);
+    expect(value.openedOccurrences).toHaveLength(1);
+    expect(value.publishedResults).toEqual(["certified parked result"]);
+    expect((await value.repository.get(REQUEST))?.snapshot.state).toBe("completed");
+    expect(value.recipients.size).toBe(0);
+  });
+
+  test("rejects a certificate for another segment before transient input or running effects", async () => {
+    const value = await parkedClaimFixture({
+      certifiedSigner: true,
+      certifiedExecutionSegment: 1,
+    });
+    const claimed = await value.coordinator.prepareOrClaimExact(
+      value.prepared.occurrence,
+    );
+    if (claimed.status !== "claimed") throw new Error("parked grant not claimed");
+    const candidate = claimed.dispatch.candidate;
+    const jobId = "mismatched-certified-segment-job";
+    value.setPersistedJobId(jobId);
+    expect(await candidate.persistJob?.(parkedPersistPayload(value.plan.reference)))
+      .toBe(jobId);
+    expect(await candidate.start(jobId)).toEqual({ status: "started" });
+    let workCalls = 0;
+    const error = await candidate.run(async () => { workCalls += 1; })
+      .catch((failure: unknown) => failure);
+    expect(error).toBeInstanceOf(ProtectedTaskExecutionDidNotBeginError);
+    expect(value.openedOccurrences).toHaveLength(0);
+    expect(value.certifiedSignerLoans).toHaveLength(0);
+    expect(value.publishedResults).toEqual([]);
+    expect(workCalls).toBe(0);
+    expect((await value.repository.get(REQUEST))?.snapshot.state).toBe("claimed");
+    expect(value.recipients.size).toBe(0);
   });
 
   test.each([

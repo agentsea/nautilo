@@ -205,6 +205,7 @@ async function fixture(
   const requestPlan = createProtectedTaskRuntimeRecipientRequestPlan({
     crypto,
     occurrence: occurrence(),
+    executionIdentity: { executionSegment: 1 },
     initialRecord: initial,
     sourceRoomId: ROOM,
     authority: {

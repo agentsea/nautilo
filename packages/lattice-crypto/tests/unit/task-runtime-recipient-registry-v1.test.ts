@@ -320,6 +320,7 @@ async function fixture(
 
 async function certifiedFixture(
   scheduler?: TaskRuntimeRecipientDeadlineSchedulerV1,
+  executionSegment = 1,
 ) {
   const value = await fixture(scheduler, false, REQUEST, {
     signerAgentId: RESULT.signerAgentId,
@@ -359,7 +360,7 @@ async function certifiedFixture(
         taskRunId: WORK,
         inputObjectId: `task-definition:v1:${"b".repeat(64)}`,
         resultObjectId: result.objectId,
-        executionSegment: 1,
+        executionSegment,
         workIdentityHash: bytes(0x61),
       },
       signer: temporarySigner,
@@ -494,6 +495,7 @@ describe("Task Runtime recipient registry", () => {
           requestBytes: value.requestBytes,
           certificateBytes: value.certificateBytes,
           currentIssuer: value.currentIssuer,
+          expectedExecutionSegment: 1,
         },
         operation: async (_domains, _signal, evidence) => {
           retainedEvidence = evidence;
@@ -551,6 +553,55 @@ describe("Task Runtime recipient registry", () => {
     }
   });
 
+  test("lends only for the exact trusted execution segment", async () => {
+    for (const expectedExecutionSegment of [
+      2,
+      1,
+      0,
+      1.5,
+      Number.MAX_SAFE_INTEGER + 1,
+    ]) {
+      const value = await certifiedFixture(undefined, 2);
+      let operations = 0;
+      try {
+        const opened = value.registry.withOpenedGrant({
+          requestId: REQUEST,
+          workId: WORK,
+          recipientGeneration: 0,
+          recipientKeyId: KEY,
+          claimId: "task-runtime-certified-segment-claim",
+          claimExpiresAt: NOW + 30_000,
+          authorizationBytes: value.authorizationBytes,
+          current: value.current,
+          currentNamespaceRequirements: CURRENT_NAMESPACES,
+          result: value.result,
+          certifiedSigning: {
+            requestBytes: value.requestBytes,
+            certificateBytes: value.certificateBytes,
+            currentIssuer: value.currentIssuer,
+            expectedExecutionSegment,
+          },
+          operation: (_domains, _signal, evidence) => {
+            operations += 1;
+            expect(hasTaskRuntimeTemporarySignerV1(evidence)).toBe(true);
+            return "opened";
+          },
+        });
+        if (expectedExecutionSegment === 2) {
+          expect(await opened).toEqual({ status: "opened", value: "opened" });
+          expect(operations).toBe(1);
+        } else {
+          await Promise.resolve(expect(opened).rejects.toThrow(
+            "certified signer scope is not exact",
+          ));
+          expect(operations).toBe(0);
+        }
+      } finally {
+        cleanupCertifiedFixture(value);
+      }
+    }
+  });
+
   test("prepares a dynamic Task Memory manifest from the active certified signer loan", async () => {
     const value = await certifiedFixture();
     try {
@@ -569,6 +620,7 @@ describe("Task Runtime recipient registry", () => {
           requestBytes: value.requestBytes,
           certificateBytes: value.certificateBytes,
           currentIssuer: value.currentIssuer,
+          expectedExecutionSegment: 1,
         },
         operation: async (_domains, _signal, evidence) =>
           withTaskRuntimeTemporarySignerV1(evidence, async signer => {
@@ -763,6 +815,7 @@ describe("Task Runtime recipient registry", () => {
           requestBytes: value.requestBytes,
           certificateBytes: value.certificateBytes,
           currentIssuer: value.currentIssuer,
+          expectedExecutionSegment: 1,
         },
         operation: async (domains, _signal, evidence) => {
           const domain = domains.find(entry =>
@@ -947,6 +1000,7 @@ describe("Task Runtime recipient registry", () => {
           requestBytes: certificate.requestBytes,
           certificateBytes: certificate.certificateBytes,
           currentIssuer: certificate.currentIssuer,
+          expectedExecutionSegment: 1,
         },
         operation: () => "must-not-open",
       });
@@ -1016,7 +1070,8 @@ describe("Task Runtime recipient registry", () => {
           authorizationBytes: value.authorizationBytes, current: value.current,
           currentNamespaceRequirements: CURRENT_NAMESPACES,
           result: value.result,
-          certifiedSigning: { requestBytes, certificateBytes, currentIssuer },
+          certifiedSigning: { requestBytes, certificateBytes, currentIssuer,
+            expectedExecutionSegment: 1 },
           operation: () => "must-not-open",
         });
         // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
@@ -1067,7 +1122,8 @@ describe("Task Runtime recipient registry", () => {
         result: failureValue.result,
         certifiedSigning: { requestBytes: failureValue.requestBytes,
           certificateBytes: changed,
-          currentIssuer: failureValue.currentIssuer },
+          currentIssuer: failureValue.currentIssuer,
+          expectedExecutionSegment: 1 },
         operation: () => "must-not-open",
       });
       // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
@@ -1097,7 +1153,8 @@ describe("Task Runtime recipient registry", () => {
           signal: controller.signal,
           certifiedSigning: { requestBytes: value.requestBytes,
             certificateBytes: value.certificateBytes,
-            currentIssuer: value.currentIssuer },
+            currentIssuer: value.currentIssuer,
+            expectedExecutionSegment: 1 },
           operation: async (_domains, _signal, evidence) =>
             await withTaskRuntimeTemporarySignerV1(evidence, signer => {
               borrowedKey = signer.runtime.key;
@@ -1143,7 +1200,8 @@ describe("Task Runtime recipient registry", () => {
         signal: controller.signal,
         certifiedSigning: { requestBytes: value.requestBytes,
           certificateBytes: value.certificateBytes,
-          currentIssuer: value.currentIssuer },
+          currentIssuer: value.currentIssuer,
+          expectedExecutionSegment: 1 },
         operation: async (_domains, _signal, evidence) =>
           await withTaskRuntimeTemporarySignerV1(evidence, async signer => {
             borrowedKey = signer.runtime.key;

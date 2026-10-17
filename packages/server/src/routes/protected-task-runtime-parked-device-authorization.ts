@@ -223,6 +223,7 @@ export function createProtectedTaskRuntimeParkedDeviceAuthorization(
         return await withHeldPlan(operation, async held => {
           const callbacks = createProtectedTaskRuntimeRecipientRequestPlan({
             crypto, occurrence: held.resolved.expected.occurrence,
+            executionIdentity: held.canonical.stableIdentity,
             initialRecord: held.canonical.initialRecord, sourceRoomId: held.current.sourceRoomId,
             authority: held.canonical.authority, createdAt: held.record.snapshot.createdAt,
             recipientTtlMs: TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS,
