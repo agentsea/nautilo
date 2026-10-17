@@ -72,6 +72,89 @@ export type ProtectedTaskDeliveryRoomMember = Readonly<{
   actorAgentId: string | null;
 }>;
 
+type TranscriptAudienceTask = Readonly<{
+  ownerId: string;
+  requestorId: string;
+  agentId: string;
+  targetRoomId: string | null;
+  contentRepresentation: string;
+  cryptoMappingState: string | null;
+  contentNamespaceId: string | null;
+}>;
+
+type TranscriptAudienceSession = Readonly<{
+  ownerId: string;
+  roomId: string | null;
+}>;
+
+type TranscriptAudienceRoom = Readonly<{
+  id: string;
+  ownerId: string;
+  namespaceId: string;
+  type: string;
+  kind: string;
+  parentRoomId: string | null;
+  humanActorIds: readonly string[];
+  archivedAt: Date | null;
+}>;
+
+type TranscriptAudienceMember = Readonly<{
+  actorId: string;
+  actorKind: string;
+  actorOwnerId: string;
+  actorAgentId: string | null;
+}>;
+
+function resolveProtectedTaskTranscriptAudience(input: Readonly<{
+  task: TranscriptAudienceTask;
+  session: TranscriptAudienceSession;
+  targetRoom: TranscriptAudienceRoom;
+  sourceRoom: TranscriptAudienceRoom;
+  sourceMembers: readonly TranscriptAudienceMember[];
+}>): "task_target" | "requester_private" | null {
+  const { task, session, targetRoom, sourceRoom, sourceMembers } = input;
+  if (task.targetRoomId !== targetRoom.id
+    || session.roomId !== sourceRoom.id
+    || session.ownerId !== sourceRoom.ownerId) return null;
+
+  if (sourceRoom.id === targetRoom.id) {
+    return sourceMembers.some(member => member.actorKind === "user"
+        && member.actorOwnerId === sourceRoom.ownerId)
+      && sourceMembers.some(member => member.actorKind === "agent"
+        && member.actorAgentId === task.agentId)
+      ? "task_target"
+      : null;
+  }
+
+  if ((task.contentRepresentation !== "dual"
+      && task.contentRepresentation !== "protected")
+    || task.cryptoMappingState !== "verified"
+    || task.contentNamespaceId === null
+    || task.ownerId !== task.requestorId
+    || targetRoom.ownerId !== task.ownerId
+    || targetRoom.type !== "private"
+    || targetRoom.kind !== "task"
+    || targetRoom.archivedAt !== null
+    || targetRoom.humanActorIds.length !== 0
+    || sourceRoom.ownerId !== task.requestorId
+    || sourceRoom.namespaceId !== task.contentNamespaceId
+    || sourceRoom.type !== "private"
+    || sourceRoom.kind !== "private"
+    || sourceRoom.parentRoomId !== null
+    || sourceRoom.archivedAt !== null
+    || sourceRoom.humanActorIds.length !== 1
+    || sourceMembers.length !== 2) return null;
+  const requesterActorId = sourceRoom.humanActorIds[0];
+  return sourceMembers.filter(member => member.actorKind === "user"
+      && member.actorId === requesterActorId
+      && member.actorOwnerId === task.requestorId
+      && member.actorAgentId === null).length === 1
+    && sourceMembers.filter(member => member.actorKind === "agent"
+      && member.actorAgentId === task.agentId).length === 1
+    ? "requester_private"
+    : null;
+}
+
 /**
  * Derive the only Room thread that may receive a protected Task result.
  * Strict one-Human/one-target-Agent Rooms retain their canonical Room thread;
@@ -166,8 +249,12 @@ export async function recordTaskRunMessageAssociationInTx(
   const [task] = await tx.select({
     id: tasks.id,
     ownerId: tasks.ownerId,
+    requestorId: tasks.requestorId,
     agentId: tasks.agentId,
     targetRoomId: tasks.targetRoomId,
+    contentRepresentation: tasks.contentRepresentation,
+    cryptoMappingState: tasks.cryptoMappingState,
+    contentNamespaceId: tasks.contentNamespaceId,
   }).from(tasks).where(eq(tasks.id, input.taskId)).limit(1).for("share");
   const [run] = await tx.select({
     id: taskRuns.id,
@@ -260,29 +347,55 @@ export async function recordTaskRunMessageAssociationInTx(
       return Object.freeze({ status: "rejected" as const, reason: "not_found" as const });
     }
   } else {
-    const [room] = await tx.select({
+    const roomIds = input.kind === "transcript" && session.roomId !== null
+      ? [...new Set([destinationRoomId, session.roomId])].sort()
+      : [destinationRoomId];
+    const lockedRooms: (TranscriptAudienceRoom & Readonly<{
+      graphThreadId: string;
+    }>)[] = [];
+    for (const roomId of roomIds) {
+      const [room] = await tx.select({
       id: rooms.id,
       ownerId: rooms.ownerId,
       namespaceId: rooms.namespaceId,
       graphThreadId: rooms.graphThreadId,
+      type: rooms.type,
+      kind: rooms.kind,
+      parentRoomId: rooms.parentRoomId,
+      humanActorIds: rooms.humanActorIds,
       archivedAt: rooms.archivedAt,
-    }).from(rooms).where(and(
-      eq(rooms.id, destinationRoomId),
-      ...(input.kind === "raw_delivery" || wakeTranscript
-        ? [
-            eq(rooms.namespaceId, input.expectedDestinationNamespaceId!),
-            isNull(rooms.archivedAt),
-          ]
-        : []),
-    ))
-      .limit(1).for("share");
+      }).from(rooms).where(and(
+        eq(rooms.id, roomId),
+        ...(input.kind === "raw_delivery" || wakeTranscript
+          ? [
+              eq(rooms.namespaceId, input.expectedDestinationNamespaceId!),
+              isNull(rooms.archivedAt),
+            ]
+          : []),
+      )).limit(1).for("share");
+      if (room === undefined) {
+        return Object.freeze({ status: "rejected" as const, reason: "not_found" as const });
+      }
+      lockedRooms.push(room);
+    }
+    const room = lockedRooms.find(value => value.id === destinationRoomId);
+    const sourceRoom = session.roomId === null
+      ? undefined
+      : lockedRooms.find(value => value.id === session.roomId);
+    const memberRoomId = input.kind === "transcript"
+      ? session.roomId
+      : destinationRoomId;
+    if (room === undefined || memberRoomId === null) {
+      return Object.freeze({ status: "rejected" as const, reason: "not_found" as const });
+    }
     const members = await tx.select({
+      actorId: actors.id,
       actorKind: actors.kind,
       actorOwnerId: actors.ownerId,
       actorAgentId: actors.agentId,
     }).from(roomMembers)
       .innerJoin(actors, eq(actors.id, roomMembers.actorId))
-      .where(eq(roomMembers.roomId, destinationRoomId))
+      .where(eq(roomMembers.roomId, memberRoomId))
       .for("share");
     const protectedDeliveryThreadId = room === undefined
       || input.kind !== "raw_delivery" && !wakeTranscript
@@ -293,18 +406,26 @@ export async function recordTaskRunMessageAssociationInTx(
           targetAgentId: task.agentId,
           members,
         });
-    if (room === undefined
-      || room.id !== destinationRoomId
+    if (room.id !== destinationRoomId
       || (input.kind === "raw_delivery" || wakeTranscript)
         && (room.namespaceId !== input.expectedDestinationNamespaceId
           || protectedDeliveryThreadId !== input.expectedThreadId
           || room.archivedAt !== null)
-      || session.roomId !== destinationRoomId
-      || session.ownerId !== room.ownerId
-      || !members.some(member =>
-        member.actorKind === "user" && member.actorOwnerId === room.ownerId)
-      || !members.some(member =>
-        member.actorKind === "agent" && member.actorAgentId === task.agentId)) {
+      || (input.kind === "transcript"
+        ? sourceRoom === undefined
+          || resolveProtectedTaskTranscriptAudience({
+            task,
+            session,
+            targetRoom: room,
+            sourceRoom,
+            sourceMembers: members,
+          }) === null
+        : session.roomId !== destinationRoomId
+          || session.ownerId !== room.ownerId
+          || !members.some(member =>
+            member.actorKind === "user" && member.actorOwnerId === room.ownerId)
+          || !members.some(member =>
+            member.actorKind === "agent" && member.actorAgentId === task.agentId))) {
       return Object.freeze({ status: "rejected" as const, reason: "not_found" as const });
     }
   }
@@ -641,8 +762,6 @@ export async function readProtectedTaskRunTranscriptIndex(
       || row.messageSessionId !== row.sessionId
       || row.threadId !== lifecycle.graphThreadId
       || row.sessionAgentId !== lifecycle.agentId
-      || (lifecycle.targetRoomId !== null
-        && row.roomId !== lifecycle.targetRoomId)
       || (lifecycle.targetRoomId === null
         && row.roomId !== null
         && (row.sessionOwnerId !== lifecycle.requestorId
@@ -693,12 +812,71 @@ export async function readProtectedTaskRunTranscriptIndex(
       reason: "integrity_failure" as const,
     });
   }
+  let sourceKind: "task_target" | "requester_private";
+  if (lifecycle.targetRoomId === null) {
+    sourceKind = "requester_private";
+  } else if (sourceRoomId === lifecycle.targetRoomId) {
+    sourceKind = "task_target";
+  } else {
+    const transcriptRoomIds = [sourceRoomId, lifecycle.targetRoomId].sort();
+    const transcriptRooms = await db.select({
+      id: rooms.id,
+      ownerId: rooms.ownerId,
+      namespaceId: rooms.namespaceId,
+      type: rooms.type,
+      kind: rooms.kind,
+      parentRoomId: rooms.parentRoomId,
+      humanActorIds: rooms.humanActorIds,
+      archivedAt: rooms.archivedAt,
+    }).from(rooms).where(inArray(rooms.id, transcriptRoomIds))
+      .orderBy(asc(rooms.id));
+    const targetRoom = transcriptRooms.find(room =>
+      room.id === lifecycle.targetRoomId);
+    const sourceRoom = transcriptRooms.find(room => room.id === sourceRoomId);
+    const sourceMembers = await db.select({
+      roomId: roomMembers.roomId,
+      actorId: actors.id,
+      actorKind: actors.kind,
+      actorOwnerId: actors.ownerId,
+      actorAgentId: actors.agentId,
+    }).from(roomMembers)
+      .innerJoin(actors, eq(actors.id, roomMembers.actorId))
+      .where(eq(roomMembers.roomId, sourceRoomId));
+    const first = pageRows[0];
+    if (targetRoom === undefined || sourceRoom === undefined || first === undefined
+      || resolveProtectedTaskTranscriptAudience({
+        task: {
+          ownerId: lifecycle.ownerId,
+          requestorId: lifecycle.requestorId,
+          agentId: lifecycle.agentId,
+          targetRoomId: lifecycle.targetRoomId,
+          contentRepresentation: lifecycle.contentRepresentation,
+          cryptoMappingState: lifecycle.cryptoMappingState,
+          contentNamespaceId: lifecycle.contentNamespaceId,
+        },
+        session: {
+          ownerId: first.sessionOwnerId ?? "",
+          roomId: first.roomId,
+        },
+        targetRoom,
+        sourceRoom,
+        sourceMembers,
+      }) !== "requester_private"
+      || sourceRoom.humanActorIds[0] !== input.viewerActorId
+      || pageRows.some(row => row.sessionOwnerId !== first.sessionOwnerId)) {
+      return Object.freeze({
+        status: "unavailable" as const,
+        reason: "integrity_failure" as const,
+      });
+    }
+    sourceKind = "requester_private";
+  }
   const nextAfterMessageId = rows.length > input.limit
     ? projected.at(-1)?.messageId ?? null
     : null;
   return Object.freeze({
     status: "ready" as const,
-    source: lifecycle.targetRoomId === null
+    source: sourceKind === "requester_private"
       ? Object.freeze({
           kind: "requester_private" as const,
           requesterUserId: lifecycle.requestorId,

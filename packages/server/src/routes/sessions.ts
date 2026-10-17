@@ -227,11 +227,16 @@ type AroundDisplayMessage = {
   authorHarnessId?: string;
   workcardContinuation?: AdvancedVideoWorkcardContinuation | undefined;
   imageAssistance?: import("@nautilo/types").ImageAssistanceSummary | undefined;
+  foregroundExecutionId?: string;
+  modelInputExposure?: unknown;
   externalOrigin?: import("@nautilo/types").ExternalMessageOrigin | undefined;
   externalAttributionInvalid?: true | undefined;
 };
 
-export function serializeRoomMessageForAround(message: AroundDisplayMessage) {
+export function serializeRoomMessageForAround(
+  message: AroundDisplayMessage,
+  options: Readonly<{ includeProtectedParityMetadata?: boolean }> = {},
+) {
   return {
     id: message.id,
     ...(message.logicalMessageKey ? { logicalMessageKey: message.logicalMessageKey } : {}),
@@ -268,6 +273,15 @@ export function serializeRoomMessageForAround(message: AroundDisplayMessage) {
       : {}),
     ...(message.workcardContinuation ? { workcardContinuation: message.workcardContinuation } : {}),
     ...(message.imageAssistance ? { imageAssistance: message.imageAssistance } : {}),
+    ...(options.includeProtectedParityMetadata === true
+        && typeof message.foregroundExecutionId === "string"
+        && message.foregroundExecutionId.length > 0
+      ? { foregroundExecutionId: message.foregroundExecutionId }
+      : {}),
+    ...(options.includeProtectedParityMetadata === true
+        && message.modelInputExposure !== undefined
+      ? { modelInputExposure: message.modelInputExposure }
+      : {}),
   };
 }
 
@@ -608,6 +622,14 @@ export function sessionRoutes(
           : {}),
         ...(m.workcardContinuation ? { workcardContinuation: m.workcardContinuation } : {}),
         ...(m.imageAssistance ? { imageAssistance: m.imageAssistance } : {}),
+        ...(!protectedOnly && shadowReadIntent !== null
+            && typeof m.foregroundExecutionId === "string"
+            && m.foregroundExecutionId.length > 0
+          ? { foregroundExecutionId: m.foregroundExecutionId }
+          : {}),
+        ...(!protectedOnly && shadowReadIntent !== null && m.modelInputExposure !== undefined
+          ? { modelInputExposure: m.modelInputExposure }
+          : {}),
         ...(() => {
           const reactions = reactionsByMessage.get(Number(m.id));
           return reactions && reactions.length > 0 ? { reactions } : {};
@@ -918,7 +940,10 @@ export function sessionRoutes(
     // The around reader's bounded transcript shape is sufficient for navigation
     // without hydrating attachments/artifacts.
     return reply.send({
-      messages: (shadowReadIntent === null ? messages.filter(isVisibleSessionMessage) : messages).map(serializeRoomMessageForAround),
+      messages: (shadowReadIntent === null ? messages.filter(isVisibleSessionMessage) : messages)
+        .map((message) => serializeRoomMessageForAround(message, {
+          includeProtectedParityMetadata: shadowReadIntent !== null,
+        })),
       target: serializeRoomSearchCursor(page.target),
       includedToolCallCompanion: page.includedToolCallCompanion,
       hasOlder: page.hasOlder,

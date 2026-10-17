@@ -107,14 +107,21 @@ test("exact protected result read decodes large ciphertext and wipes it after de
     bytes.every((byte) => byte === 0))).toBe(true);
 });
 
-test("accepted foreground signer proof reaches the authentic device boundary", async () => {
+for (const signerEvidence of [
+  [{
+    kind: "foreground_agent_accepted_execution" as const,
+    planBytesBase64url: base64url(new Uint8Array([11, 12])),
+    planDigestBase64url: base64url(new Uint8Array(32).fill(13)),
+  }],
+  [{
+    kind: "task_runtime_signer_certificate" as const,
+    evidenceBytesBase64url: base64url(new Uint8Array([14, 15])),
+  }],
+]) {
+test(`${signerEvidence[0]!.kind} proof reaches only the authentic device boundary`, async () => {
   const foreground = {
     ...ready(),
-    signerEvidence: [{
-      kind: "foreground_agent_accepted_execution" as const,
-      planBytesBase64url: base64url(new Uint8Array([11, 12])),
-      planDigestBase64url: base64url(new Uint8Array(32).fill(13)),
-    }],
+    signerEvidence,
   };
   let received: Extract<ProtectedTaskRunResultReadEnvelopeV1,
     { status: "ready" }>["signerEvidence"] | undefined;
@@ -136,7 +143,16 @@ test("accepted foreground signer proof reaches the authentic device boundary", a
     payload: { resultText: "foreground result" },
   });
   expect(received).toEqual(foreground.signerEvidence);
+  const mixed = createAuthorizedHumanTaskRunResultReaderV1({
+    api: api({ ...foreground,
+      signerEvidence: [...signerEvidence, ...ready().signerEvidence] }),
+    device: { openExact: () => { throw new Error("mixed proof opened"); } },
+  });
+  await Promise.resolve(expect(mixed.read(request)).rejects.toThrow(
+    "Protected Task result access evidence is invalid",
+  ));
 });
+}
 
 test("dynamic result access history reaches the authentic device boundary", async () => {
   const response = {

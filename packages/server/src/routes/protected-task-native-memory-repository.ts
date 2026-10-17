@@ -25,6 +25,8 @@ import {
 } from "@nautilo/lattice-bridge";
 import {
   copyTaskScopeMemoryBinding,
+  createPostgresForegroundAgentAcceptedExecutionEvidenceResolver,
+  foregroundAgentAcceptedExecutionSigner,
   PostgresAgentMemoryProductPort,
   PostgresAgentMemoryExactAccessProduct,
   PostgresDomainKeyAuthorityRepository,
@@ -164,6 +166,10 @@ type Dependencies = Readonly<{
   createSignerHistory(
     input: ConstructorParameters<typeof PostgresHumanDeviceSignerHistory>[0],
   ): PostgresHumanDeviceSignerHistory;
+  createForegroundAgentAcceptedExecutionEvidenceResolver:
+    typeof createPostgresForegroundAgentAcceptedExecutionEvidenceResolver;
+  foregroundAgentAcceptedExecutionSigner:
+    typeof foregroundAgentAcceptedExecutionSigner;
   resolveNativeEntries: typeof resolveForegroundMemoryNativeEntries;
 }>;
 
@@ -200,6 +206,9 @@ const productionDependencies: Dependencies = Object.freeze({
   createDomainKeys: (...input) =>
     new PostgresDomainKeyAuthorityRepository(...input),
   createSignerHistory: input => new PostgresHumanDeviceSignerHistory(input),
+  createForegroundAgentAcceptedExecutionEvidenceResolver:
+    createPostgresForegroundAgentAcceptedExecutionEvidenceResolver,
+  foregroundAgentAcceptedExecutionSigner,
   resolveNativeEntries: resolveForegroundMemoryNativeEntries,
 });
 
@@ -481,6 +490,16 @@ export async function withProtectedTaskNativeMemoryRepository<Value>(
               ...request,
               resolveHistoricalAgentSignerAuthority:
                 history.resolveAgentRuntimeSignerManager,
+              resolveLiveShadowAgentSigner:
+                dependencies.foregroundAgentAcceptedExecutionSigner({
+                  crypto: binding.crypto,
+                  resolveEvidence: dependencies
+                    .createForegroundAgentAcceptedExecutionEvidenceResolver({
+                      product: binding.productHandle,
+                      crypto: binding.crypto,
+                      rejectInvalidSelectedEvidence: true,
+                    }),
+                }),
               resolveNativeNamespaceEntries: coordinates =>
                 dependencies.resolveNativeEntries(domainKeys, coordinates),
             });
@@ -909,7 +928,16 @@ export async function withProtectedTaskNativeMemoryRepository<Value>(
           publication,
           resolveHistoricalAgentSignerAuthority:
             history.resolveAgentRuntimeSignerManager,
-          resolveLiveShadowAgentSigner: () => null,
+          resolveLiveShadowAgentSigner:
+            dependencies.foregroundAgentAcceptedExecutionSigner({
+              crypto: binding.crypto,
+              resolveEvidence: dependencies
+                .createForegroundAgentAcceptedExecutionEvidenceResolver({
+                  product: binding.productHandle,
+                  crypto: binding.crypto,
+                  rejectInvalidSelectedEvidence: true,
+                }),
+            }),
           resolveCurrentAgentSigner: principal =>
             principal.agentId === signer.runtime.agentId
               && principal.runtimeGeneration === signer.runtime.generation

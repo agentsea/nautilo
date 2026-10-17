@@ -335,6 +335,7 @@ export {
 export {
   createPostgresForegroundAgentAcceptedExecutionEvidenceResolver,
   createPostgresForegroundAgentSignerResolver,
+  foregroundAgentAcceptedExecutionSigner,
 } from "./message/postgres-foreground-agent-signer.ts";
 export type {
   ForegroundAgentAcceptedExecutionEvidence,

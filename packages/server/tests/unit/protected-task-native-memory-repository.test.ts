@@ -124,6 +124,8 @@ type Overrides = NonNullable<Parameters<
   typeof withProtectedTaskNativeMemoryRepository
 >[1]>;
 type Dependency<Key extends keyof Overrides> = NonNullable<Overrides[Key]>;
+type ProductHandle =
+  ProtectedTaskNativeMemoryRepositoryInput<string>["product"]["handle"];
 type ExactCrypto = ReturnType<Dependency<"createExactCrypto">>;
 type ExactProduct = ReturnType<Dependency<"createExactProduct">>;
 
@@ -571,6 +573,124 @@ describe("protected native Task Memory repository", () => {
       ).rejects.toThrow("Scope binding is unavailable"));
     });
   }
+
+  test("opens foreground-signed protected candidates through retained accepted execution evidence", async () => {
+    const base = fixture();
+    type NativeRead = Parameters<Dependency<"createSession">>[0]["read"];
+    let read: NativeRead | undefined;
+    let signerFactoryCalls = 0;
+    let signerAdapterCalls = 0;
+    const signerPublicKey = new Uint8Array(32).fill(19);
+    const objectId = deriveMemoryCryptoObjectIdV1({
+      memoryId: MEMORY,
+      contentRevision: 2,
+    });
+    const openedNativeObject = Object.freeze({
+      objectId,
+      accessRevision: 1,
+      payloadBytes: new Uint8Array([7]),
+      payloadHash: new Uint8Array(32).fill(7),
+      accessManifestBytes: new Uint8Array([9]),
+      accessManifestHash: new Uint8Array(32).fill(9),
+      namespaceEnvelopes: Object.freeze([Object.freeze({
+        namespaceId: NAMESPACE,
+        keyGeneration: 0,
+        bindingRevisionAtWrap: 1,
+        envelopeBytes: new Uint8Array([8]),
+      })]),
+    }) satisfies NonNullable<Awaited<ReturnType<Dependency<"readObject">>>>;
+    const borrowedProductHandle = Object.freeze({
+      role: "nautilo" as const,
+      borrowed: true,
+    }) as unknown as ProductHandle;
+    const validPrincipal = Object.freeze({
+      agentId: AGENT,
+      runtimeGeneration: 4,
+      signerKeyId: "foreground-signer",
+    });
+    const input = {
+      ...base,
+      execute: async () => {
+        const nativeRead = read;
+        if (nativeRead === undefined) throw new Error("native read was not assembled");
+        expect(await nativeRead({
+          objectId,
+          expectedObjectType: "Memory",
+          expectedAccessRevision: 1,
+          expectedNamespaceIds: [NAMESPACE],
+        })).toBe(openedNativeObject);
+        return "assembled";
+      },
+    } satisfies ProtectedTaskNativeMemoryRepositoryInput<string>;
+    const overrides = assemblyOverrides(input, []);
+    const createSession = overrides.createSession!;
+    await withProtectedTaskNativeMemoryRepository(input, {
+      ...overrides,
+      createSession: request => {
+        read = request.read;
+        return createSession(request);
+      },
+      requireHeldWriterAuthority: () => Object.freeze({
+        crypto: input.current.crypto,
+        restricted: input.current.restricted,
+        restrictedHandle: Object.freeze({}),
+        productHandle: borrowedProductHandle,
+        assertCurrent: () => Promise.resolve(),
+      }) as never,
+      createDomainKeys: () => Object.freeze({}) as never,
+      createSignerHistory: () => Object.freeze({
+        resolveAgentRuntimeSignerManager: async () => null,
+      }) as never,
+      createForegroundAgentAcceptedExecutionEvidenceResolver: request => {
+        signerFactoryCalls += 1;
+        expect(request.product).toBe(borrowedProductHandle);
+        expect(request.product).not.toBe(input.product.handle);
+        expect(request.crypto).toBe(input.current.crypto);
+        expect(request.rejectInvalidSelectedEvidence).toBe(true);
+        return async principal => {
+          if (principal.signerKeyId === "substituted-signer") {
+            throw new TypeError(
+              "Foreground Agent execution signer evidence was substituted",
+            );
+          }
+          return principal.agentId === validPrincipal.agentId
+              && principal.runtimeGeneration === validPrincipal.runtimeGeneration
+              && principal.signerKeyId === validPrincipal.signerKeyId
+            ? Object.freeze({
+                signerPublicKey: signerPublicKey.slice(),
+                planBytes: new Uint8Array([1]),
+                planDigest: new Uint8Array(32).fill(2),
+              })
+            : null;
+        };
+      },
+      foregroundAgentAcceptedExecutionSigner: request => {
+        signerAdapterCalls += 1;
+        expect(request.crypto).toBe(input.current.crypto);
+        expect(request.resolveEvidence).toBeDefined();
+        return async principal => {
+          const evidence = await request.resolveEvidence?.(principal) ?? null;
+          return evidence?.signerPublicKey.slice() ?? null;
+        };
+      },
+      readObject: async request => {
+        const resolve = request.resolveLiveShadowAgentSigner;
+        if (resolve === undefined) {
+          throw new Error("foreground signer resolver was not supplied");
+        }
+        expect(await resolve(validPrincipal)).toEqual(signerPublicKey);
+        expect(await resolve({ ...validPrincipal,
+          signerKeyId: "missing-signer" })).toBeNull();
+        await Promise.resolve(expect(resolve({ ...validPrincipal,
+          signerKeyId: "substituted-signer" })).rejects.toThrow(
+          "signer evidence was substituted",
+        ));
+        return openedNativeObject;
+      },
+    });
+    expect(signerFactoryCalls).toBe(1);
+    expect(signerAdapterCalls).toBe(1);
+  });
 
   for (const shadowBehavior of ["strict", "fallback"] as const) {
     test(`repairs and verifies an ordinary-only ${shadowBehavior} Shadow source before sealing access`, async () => {
@@ -1484,6 +1604,10 @@ describe("protected native Task Memory repository", () => {
       } satisfies ProtectedTaskNativeMemoryRepositoryInput<string>;
       const overrides = assemblyOverrides(input, events);
       const currentHeld = held(input);
+      const borrowedProductHandle = Object.freeze({
+        role: "nautilo" as const,
+        borrowed: true,
+      }) as unknown as ProductHandle;
       expect(await withProtectedTaskNativeMemoryRepository(input, {
         ...overrides,
         withCurrentAuthority: (async (_, use) => {
@@ -1507,6 +1631,7 @@ describe("protected native Task Memory repository", () => {
             evidence: input.current.evidence,
             restricted: Object.freeze({}),
             restrictedHandle: Object.freeze({}),
+            productHandle: borrowedProductHandle,
             assertCurrent: () => {
               expect(taskLocked).toBe(true);
               expect(cancelled).toBe(false);
@@ -1597,12 +1722,35 @@ describe("protected native Task Memory repository", () => {
                 memoryId: MEMORY }) });
           },
         }) as never,
-        persistExact: async () => {
+        persistExact: async request => {
           expect(entityAuthorized).toBe(true);
           expect(taskLocked).toBe(true);
           expect(cancelled).toBe(false);
+          expect(await request.resolveLiveShadowAgentSigner?.({
+            agentId: AGENT,
+            runtimeGeneration: 4,
+            signerKeyId: "retained-foreground-signer",
+          })).toEqual(new Uint8Array(32).fill(23));
           events.push("crypto-persist");
           return "created";
+        },
+        createForegroundAgentAcceptedExecutionEvidenceResolver: request => {
+          expect(request.product).toBe(borrowedProductHandle);
+          expect(request.product).not.toBe(input.product.handle);
+          return async principal =>
+          principal.agentId === AGENT
+              && principal.runtimeGeneration === 4
+              && principal.signerKeyId === "retained-foreground-signer"
+            ? Object.freeze({
+                signerPublicKey: new Uint8Array(32).fill(23),
+                planBytes: new Uint8Array([1]),
+                planDigest: new Uint8Array(32).fill(2),
+              })
+            : null;
+        },
+        foregroundAgentAcceptedExecutionSigner: request => async principal => {
+          const evidence = await request.resolveEvidence?.(principal) ?? null;
+          return evidence?.signerPublicKey.slice() ?? null;
         },
         createSignerHistory: () => Object.freeze({
           resolveAgentRuntimeSignerManager: async () => null,

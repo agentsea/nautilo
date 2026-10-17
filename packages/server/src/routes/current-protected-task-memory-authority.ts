@@ -48,6 +48,7 @@ import {
   verifyCryptoPostgresHandle,
   withCurrentAcceptedTaskRuntimeAuthority,
   type ConversationProductCanonicalTransactionRunner,
+  type ConversationProductPostgresHandle,
   type CryptoPostgresHandle,
   type CurrentTaskRuntimeAuthority,
   type TaskRuntimeAuthoritySubject,
@@ -112,6 +113,8 @@ export type HeldProtectedTaskMemoryAuthority = Readonly<{
 export type HeldProtectedTaskMemoryWriterAuthority = Readonly<{
   crypto: LatticeCrypto;
   evidence: TaskRuntimeExecutionEvidence;
+  /** Borrowed from this held transaction; never acquire a nested product connection. */
+  productHandle: ConversationProductPostgresHandle;
   restricted: PostgresJsBridgeConnection;
   restrictedHandle: CryptoPostgresHandle;
   assertCurrent(): Promise<void>;
@@ -128,6 +131,7 @@ type HeldState = {
   restricted: PostgresJsBridgeConnection | null;
   restrictedHandle: CryptoPostgresHandle | null;
   product: PostgresJsBridgeConnection;
+  productHandle: ConversationProductPostgresHandle | null;
   transaction: CanonicalTranscriptTx;
 };
 
@@ -426,12 +430,14 @@ export function requireHeldProtectedTaskMemoryWriterAuthority(
   held: HeldProtectedTaskMemoryAuthority,
 ): HeldProtectedTaskMemoryWriterAuthority {
   const state = stateFor(held);
-  if (state.restricted === null || state.restrictedHandle === null) {
+  if (state.restricted === null || state.restrictedHandle === null
+    || state.productHandle === null) {
     throw new TypeError("Task Memory restricted authority is unavailable");
   }
   return Object.freeze({
     crypto: state.input.crypto,
     evidence: state.input.evidence,
+    productHandle: state.productHandle,
     restricted: state.restricted,
     restrictedHandle: state.restrictedHandle,
     assertCurrent: () => assertHeldCurrent(held),
@@ -655,10 +661,15 @@ async function withCurrentProtectedTaskMemoryAuthorityTransaction<Value>(
               restricted: null,
               restrictedHandle: null,
               product,
+              productHandle: null,
               transaction: tx,
             };
             heldStates.set(held, state);
             try {
+              state.productHandle = await verifyConversationProductPostgresHandle(
+                guardedRestrictedConnection(held, product),
+              );
+              assertHeldCurrentSync(held);
               const restricted = guardedRestrictedConnection(
                 held,
                 currentRestricted,

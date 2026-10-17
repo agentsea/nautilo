@@ -347,6 +347,44 @@ export function createProtectedTaskForegroundSignerTransport(input: Readonly<{
   });
 }
 
+type ProtectedTaskRunResultForegroundSignerEvidence = Extract<
+  ProtectedTaskRunResultReadReadyEnvelopeV1["signerEvidence"][number],
+  { kind: "foreground_agent_accepted_execution" }
+>;
+
+type ProtectedTaskRunResultAgentSignerEvidence =
+  | ProtectedTaskRunResultForegroundSignerEvidence
+  | Readonly<{
+    kind: "agent_runtime_publication" | "task_runtime_signer_certificate";
+    evidenceBytesBase64url: string;
+  }>;
+
+/** Project the already verified native Task signer evidence onto the public
+ * result-read transport while preserving its authenticated evidence kind. */
+export function projectVerifiedProtectedTaskRunResultAgentSignerEvidence(
+  input: Readonly<{
+    verifiedSignerEvidence: Awaited<ReturnType<
+      typeof verifyStoredObjectAccessManifestChainV5
+    >>["signerEvidence"];
+    foregroundEvidence: ProtectedTaskRunResultForegroundSignerEvidence | null;
+  }>,
+): readonly ProtectedTaskRunResultAgentSignerEvidence[] | null {
+  if (input.foregroundEvidence !== null) {
+    return input.verifiedSignerEvidence.length === 0
+      ? Object.freeze([input.foregroundEvidence])
+      : null;
+  }
+  if (input.verifiedSignerEvidence.length !== 1) return null;
+  const evidence = input.verifiedSignerEvidence[0]!;
+  if (evidence.kind !== "agent_runtime_publication"
+    && evidence.kind !== "task_runtime_signer_certificate") return null;
+  return Object.freeze([Object.freeze({
+    kind: evidence.kind,
+    evidenceBytesBase64url:
+      Buffer.from(evidence.evidenceBytes).toString("base64url"),
+  })]);
+}
+
 type HumanSignerContext = Readonly<{
   subjectHumanId: string;
   committerDeviceId: string;
@@ -2158,28 +2196,23 @@ export function createProductionProtectedTaskComposition(
         const historicalSigner = historicalRepair !== null
           && genesisKind === "human_device"
           && verified.genesisHumanId === input.authority.subjectHumanId;
-        const publicationEvidence = verified.signerEvidence.length === 1
-          && verified.signerEvidence[0]?.kind === "agent_runtime_publication"
-          ? verified.signerEvidence[0]
+        const agentEvidence = historicalRepair === null
+          && genesisKind === "agent_runtime"
+          && verified.genesisHumanId === null
+          ? projectVerifiedProtectedTaskRunResultAgentSignerEvidence({
+              verifiedSignerEvidence: verified.signerEvidence,
+              foregroundEvidence,
+            })
           : null;
         const nativeSigner = historicalRepair === null
           && genesisKind === "agent_runtime"
           && verified.genesisHumanId === null
-          && (foregroundEvidence !== null
-            ? verified.signerEvidence.length === 0
-            : publicationEvidence !== null);
+          && agentEvidence !== null;
         if (!historicalSigner && !nativeSigner) {
           return unavailable("integrity_failure");
         }
-        const agentEvidence = nativeSigner
-          ? foregroundEvidence !== null ? [foregroundEvidence] : [Object.freeze({
-              kind: "agent_runtime_publication" as const,
-              evidenceBytesBase64url: Buffer.from(
-                publicationEvidence!.evidenceBytes,
-              ).toString("base64url"),
-            })] : [];
         const signerEvidence = [
-          ...agentEvidence,
+          ...(agentEvidence ?? []),
           ...humanSigners.evidence(),
         ];
         let readAuthority: ProtectedTaskNamespaceReadAuthority | null;

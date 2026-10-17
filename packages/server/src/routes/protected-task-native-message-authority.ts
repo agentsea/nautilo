@@ -432,6 +432,7 @@ function exactFixedProjection(
     && productAuthority.sessionId === coordinates.sessionId
     && productAuthority.agentId === occurrence.task.agentId
     && productAuthority.requestorId === occurrence.task.requestorId
+    && productAuthority.requesterHumanId === input.subject.humanActorId
     && productAuthority.contentNamespaceId
       === occurrence.task.contentNamespaceId
     && productAuthority.contentRevision === occurrence.task.contentRevision

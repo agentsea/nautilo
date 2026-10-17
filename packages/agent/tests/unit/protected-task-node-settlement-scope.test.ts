@@ -163,6 +163,35 @@ describe("protected Task graph node settlement scope", () => {
     expect(drained).toBe(true);
   });
 
+  test("retains the first consumer failure and rejects future node bodies", async () => {
+    const scope = createProtectedTaskNodeSettlementScope();
+    const release = Promise.withResolvers<void>();
+    const admitted = scope.run("agent", () => release.promise);
+    const firstFailure = new Error("protected transcript publication failed");
+    const secondFailure = new Error("replacement failure");
+
+    expect(scope.fail(firstFailure)).toBe(true);
+    expect(scope.fail(secondFailure)).toBe(false);
+    let lateBodyStarted = false;
+    const rejected = scope.run("post_model", () => {
+      lateBodyStarted = true;
+    }).catch((error: unknown) => error);
+
+    expect(await rejected).toBe(firstFailure);
+    expect(lateBodyStarted).toBe(false);
+    const draining = scope.closeAndWait();
+    let drained = false;
+    void draining.then(() => {
+      drained = true;
+    });
+    await Promise.resolve();
+    expect(drained).toBe(false);
+    release.resolve();
+    await admitted;
+    await draining;
+    expect(drained).toBe(true);
+  });
+
   test("authorization abort wins over an already requested pause", async () => {
     const authorization = new AbortController();
     const pause = createProtectedTaskCheckpointPauseController();
@@ -181,6 +210,26 @@ describe("protected Task graph node settlement scope", () => {
 
     expect(failure).toBe(abortReason);
     expect(isProtectedTaskCheckpointPauseInterruption(failure)).toBe(false);
+    expect(bodyCalls).toBe(0);
+    await scope.closeAndWait();
+  });
+
+  test("authorization abort wins over a retained consumer failure", async () => {
+    const authorization = new AbortController();
+    const scope = createProtectedTaskNodeSettlementScope(
+      authorization.signal,
+    );
+    const consumerFailure = new Error("protected transcript publication failed");
+    const abortReason = new Error("authorization revoked");
+    let bodyCalls = 0;
+
+    expect(scope.fail(consumerFailure)).toBe(true);
+    authorization.abort(abortReason);
+    const failure = await scope.run("agent", () => {
+      bodyCalls += 1;
+    }).catch((error: unknown) => error);
+
+    expect(failure).toBe(abortReason);
     expect(bodyCalls).toBe(0);
     await scope.closeAndWait();
   });

@@ -37,6 +37,8 @@ const ids = {
   agent: "60000000-0000-4000-8000-000000000001",
   otherAgent: "60000000-0000-4000-8000-000000000002",
   actor: "70000000-0000-4000-8000-000000000001",
+  agentActor: "70000000-0000-4000-8000-000000000002",
+  peerActor: "70000000-0000-4000-8000-000000000003",
 };
 const graphThreadId = `subagent:task:${ids.task}:${ids.run}`;
 const destinationGraphThreadId = `room:${ids.room}:conversation`;
@@ -86,9 +88,13 @@ function writeHarness(
   ],
   options: Readonly<{
     sessionRoomId?: string;
+    sessionOwnerId?: string;
     sessionThreadId?: string;
     roomGraphThreadId?: string;
+    task?: Readonly<Record<string, unknown>>;
+    rooms?: readonly Readonly<Record<string, unknown>>[];
     members?: readonly Readonly<{
+      actorId?: string;
       actorKind: string;
       actorOwnerId: string;
       actorAgentId: string | null;
@@ -104,6 +110,10 @@ function writeHarness(
     callingRoomId: ids.otherRoom,
     targetRoomId: ids.room,
     targetUserIds: [ids.owner, ids.roomOwner],
+    contentRepresentation: "protected",
+    cryptoMappingState: "verified",
+    contentNamespaceId: ids.namespace,
+    ...options.task,
   }, {
     id: ids.otherTask,
     ownerId: ids.owner,
@@ -116,7 +126,7 @@ function writeHarness(
   const availableSessions = [{
     id: ids.session,
     threadId: options.sessionThreadId ?? graphThreadId,
-    ownerId: ids.roomOwner,
+    ownerId: options.sessionOwnerId ?? ids.roomOwner,
     agentId: ids.agent,
     roomId: options.sessionRoomId ?? ids.room,
   }];
@@ -125,17 +135,25 @@ function writeHarness(
     ownerId: ids.roomOwner,
     namespaceId: ids.namespace,
     graphThreadId: options.roomGraphThreadId ?? graphThreadId,
+    type: "private",
+    kind: "private",
+    parentRoomId: null,
+    humanActorIds: [ids.actor],
     archivedAt: null,
   }];
+  const selectedRooms = options.rooms ?? availableRooms;
   const availableMembers = options.members ?? [{
+    actorId: ids.actor,
     actorKind: "user",
     actorOwnerId: ids.roomOwner,
     actorAgentId: null,
   }, {
+    actorId: ids.agentActor,
     actorKind: "agent",
     actorOwnerId: ids.roomOwner,
     actorAgentId: ids.agent,
   }];
+  let roomRead = 0;
   const availableMessages = [{
     id: 41,
     sessionId: ids.session,
@@ -172,7 +190,11 @@ function writeHarness(
             if (selectedTable === tasks) return availableTasks;
             if (selectedTable === sessions) return availableSessions;
             if (selectedTable === sessionMessages) return availableMessages;
-            if (selectedTable === rooms) return availableRooms;
+            if (selectedTable === rooms) {
+              const room = selectedRooms[roomRead % selectedRooms.length];
+              roomRead += 1;
+              return room === undefined ? [] : [room];
+            }
             if (selectedTable === roomMembers) return availableMembers;
             if (selectedTable === protectedTaskRunOutputBindings) {
               return availableOutputBindings;
@@ -277,6 +299,91 @@ describe("TaskRun Message association receipts", () => {
     expect(await recordTaskRunMessageAssociationInTx(substituted.tx, input()))
       .toEqual({ status: "rejected", reason: "not_found" });
     expect(substituted.rows).toHaveLength(0);
+  });
+
+  const hiddenTranscriptHarness = (overrides: Readonly<{
+    task?: Readonly<Record<string, unknown>>;
+    targetRoom?: Readonly<Record<string, unknown>>;
+    sourceRoom?: Readonly<Record<string, unknown>>;
+    members?: readonly Readonly<{
+      actorId?: string;
+      actorKind: string;
+      actorOwnerId: string;
+      actorAgentId: string | null;
+    }>[];
+  }> = {}) => writeHarness([], undefined, {
+    sessionRoomId: ids.otherRoom,
+    sessionOwnerId: ids.owner,
+    ...(overrides.task === undefined ? {} : { task: overrides.task }),
+    rooms: [{
+      id: ids.room,
+      ownerId: ids.owner,
+      namespaceId: ids.otherRoom,
+      graphThreadId,
+      type: "private",
+      kind: "task",
+      parentRoomId: null,
+      humanActorIds: [],
+      archivedAt: null,
+      ...overrides.targetRoom,
+    }, {
+      id: ids.otherRoom,
+      ownerId: ids.owner,
+      namespaceId: ids.namespace,
+      graphThreadId,
+      type: "private",
+      kind: "private",
+      parentRoomId: null,
+      humanActorIds: [ids.actor],
+      archivedAt: null,
+      ...overrides.sourceRoom,
+    }],
+    members: overrides.members ?? [{
+      actorId: ids.actor,
+      actorKind: "user",
+      actorOwnerId: ids.owner,
+      actorAgentId: null,
+    }, {
+      actorId: ids.agentActor,
+      actorKind: "agent",
+      actorOwnerId: ids.owner,
+      actorAgentId: ids.agent,
+    }],
+  });
+
+  test("records a protected hidden-Task transcript in its exact requester-private Room", async () => {
+    const harness = hiddenTranscriptHarness();
+    expect(await recordTaskRunMessageAssociationInTx(harness.tx, input()))
+      .toMatchObject({ status: "recorded" });
+  });
+
+  test("rejects substituted hidden-Task transcript audiences", async () => {
+    const cases = [
+      hiddenTranscriptHarness({
+        sourceRoom: { humanActorIds: [ids.actor, ids.peerActor] },
+        members: [{ actorId: ids.actor, actorKind: "user", actorOwnerId: ids.owner, actorAgentId: null },
+          { actorId: ids.peerActor, actorKind: "user", actorOwnerId: ids.peer, actorAgentId: null },
+          { actorId: ids.agentActor, actorKind: "agent", actorOwnerId: ids.owner, actorAgentId: ids.agent }],
+      }),
+      hiddenTranscriptHarness({ sourceRoom: { namespaceId: ids.otherRoom } }),
+      hiddenTranscriptHarness({ sourceRoom: { ownerId: ids.peer } }),
+      hiddenTranscriptHarness({
+        members: [{ actorId: ids.actor, actorKind: "user", actorOwnerId: ids.owner, actorAgentId: null },
+          { actorId: ids.agentActor, actorKind: "agent", actorOwnerId: ids.owner, actorAgentId: ids.otherAgent }],
+      }),
+      hiddenTranscriptHarness({ sourceRoom: { archivedAt: createdAt } }),
+      hiddenTranscriptHarness({ sourceRoom: { kind: "group" } }),
+      hiddenTranscriptHarness({ task: { cryptoMappingState: "pending" } }),
+      hiddenTranscriptHarness({ task: { contentRepresentation: "ordinary" } }),
+      hiddenTranscriptHarness({ targetRoom: { kind: "group" } }),
+      hiddenTranscriptHarness({ targetRoom: { ownerId: ids.peer } }),
+      hiddenTranscriptHarness({ targetRoom: { humanActorIds: [ids.actor] } }),
+    ];
+    for (const harness of cases) {
+      expect(await recordTaskRunMessageAssociationInTx(harness.tx, input()))
+        .toEqual({ status: "rejected", reason: "not_found" });
+      expect(harness.rows).toHaveLength(0);
+    }
   });
 
   test("records raw delivery in the accepted destination, not the calling Room", async () => {
@@ -586,6 +693,12 @@ function transcriptReadHarness(input: Readonly<{
   taskRequestorId?: string;
   taskAgentId?: string;
   sessionAgentId?: string | null;
+  taskOwnerId?: string;
+  contentRepresentation?: string;
+  cryptoMappingState?: string;
+  contentNamespaceId?: string;
+  rooms?: readonly Readonly<Record<string, unknown>>[];
+  members?: readonly Readonly<Record<string, unknown>>[];
   messagePresent?: boolean;
   messageIds?: readonly number[];
   observations?: { where: SQL[]; limits: number[] };
@@ -596,12 +709,12 @@ function transcriptReadHarness(input: Readonly<{
     : input.targetRoomId;
   const data = (table: unknown) => {
     if (table === tasks) return [{
-      ownerId: ids.owner,
+      ownerId: input.taskOwnerId ?? ids.owner,
       requestorId: input.taskRequestorId ?? ids.owner,
       agentId: input.taskAgentId ?? ids.agent,
-      contentRepresentation: "protected",
-      cryptoMappingState: "verified",
-      contentNamespaceId: ids.namespace,
+      contentRepresentation: input.contentRepresentation ?? "protected",
+      cryptoMappingState: input.cryptoMappingState ?? "verified",
+      contentNamespaceId: input.contentNamespaceId ?? ids.namespace,
       targetRoomId,
       runTaskId: ids.task,
       graphThreadId,
@@ -630,8 +743,16 @@ function transcriptReadHarness(input: Readonly<{
       createdAt: input.messagePresent === false ? null : createdAt,
     }));
     if (table === roomMembers) {
-      return input.member === false || roomId === null ? [] : [{ roomId }];
+      return input.member === false || roomId === null ? []
+        : input.members ?? [{
+          roomId,
+          actorId: ids.actor,
+          actorKind: "user",
+          actorOwnerId: input.taskRequestorId ?? ids.owner,
+          actorAgentId: null,
+        }];
     }
+    if (table === rooms) return input.rooms ?? [];
     return [];
   };
   return {
@@ -650,7 +771,7 @@ function transcriptReadHarness(input: Readonly<{
           },
           orderBy: (_order: unknown) => query,
           then: <Value>(
-            resolve: (value: unknown[]) => Value | PromiseLike<Value>,
+            resolve: (value: readonly unknown[]) => Value | PromiseLike<Value>,
             reject?: (reason: unknown) => unknown,
           ) => Promise.resolve(data(table)).then(resolve, reject),
         };
@@ -738,6 +859,62 @@ describe("protected TaskRun transcript index", () => {
       transcriptReadHarness({ sessionAgentId: ids.otherTask }),
       request,
     )).toEqual({ status: "unavailable", reason: "integrity_failure" });
+  });
+
+  test("reads a hidden Task transcript from the exact requester-private audience", async () => {
+    const hidden = {
+      roomId: ids.otherRoom,
+      targetRoomId: ids.room,
+      sessionOwnerId: ids.owner,
+      rooms: [{
+        id: ids.room,
+        ownerId: ids.owner,
+        namespaceId: ids.otherRoom,
+        type: "private",
+        kind: "task",
+        parentRoomId: null,
+        humanActorIds: [],
+        archivedAt: null,
+      }, {
+        id: ids.otherRoom,
+        ownerId: ids.owner,
+        namespaceId: ids.namespace,
+        type: "private",
+        kind: "private",
+        parentRoomId: null,
+        humanActorIds: [ids.actor],
+        archivedAt: null,
+      }],
+      members: [{
+        roomId: ids.otherRoom,
+        actorId: ids.actor,
+        actorKind: "user",
+        actorOwnerId: ids.owner,
+        actorAgentId: null,
+      }, {
+        roomId: ids.otherRoom,
+        actorId: ids.agentActor,
+        actorKind: "agent",
+        actorOwnerId: ids.owner,
+        actorAgentId: ids.agent,
+      }],
+    } as const;
+    expect(await readProtectedTaskRunTranscriptIndex(
+      transcriptReadHarness(hidden),
+      request,
+    )).toMatchObject({
+      status: "ready",
+      source: {
+        kind: "requester_private",
+        requesterUserId: ids.owner,
+        roomId: ids.otherRoom,
+        namespaceId: ids.namespace,
+      },
+    });
+    expect(await readProtectedTaskRunTranscriptIndex(
+      transcriptReadHarness({ ...hidden, cryptoMappingState: "pending" }),
+      request,
+    )).toEqual({ status: "unavailable", reason: "transcript_not_protected" });
   });
 
   test("Task ownership does not grant a peer-private Room transcript", async () => {

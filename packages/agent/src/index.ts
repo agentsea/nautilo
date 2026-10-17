@@ -436,6 +436,7 @@ export type {
 } from "./nodes/tools";
 export {
   createNautiloToolInvocationSession,
+  readToolInvocationStatus,
 } from "./tools/invocation-service";
 export type {
   InvocationAuthorityResolution,

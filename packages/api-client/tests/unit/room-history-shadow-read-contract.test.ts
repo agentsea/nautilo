@@ -128,7 +128,10 @@ describe("Room history Shadow-read HTTP contract", () => {
         ? target
         : target instanceof URL ? target.href : target.url;
       return json({
-        messages: [],
+        messages: [{ id: "27", role: "assistant", content: "ordinary",
+          createdAt: "2026-08-23T11:59:00.000Z",
+          foregroundExecutionId: "foreground:27",
+          modelInputExposure: { version: 1, status: "incomplete" } }],
         pageInfo: { hasMoreBefore: false, oldestCursor: null },
         shadowEncryption: readySidecar(),
       });
@@ -151,6 +154,10 @@ describe("Room history Shadow-read HTTP contract", () => {
     expect(seen).toContain("shadowReadRequestKey=history-page%3Aone");
     expect(seen).toContain("shadowReadDeviceId=device%3Abrowser");
     expect(page.shadowEncryption?.status).toBe("ready");
+    expect(page.messages[0]).toMatchObject({
+      foregroundExecutionId: "foreground:27",
+      modelInputExposure: { version: 1, status: "incomplete" },
+    });
   });
 
   test("opts protected around reads into metadata while ordinary history URLs stay unchanged", async () => {

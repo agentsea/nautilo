@@ -60,6 +60,9 @@ import {
 import type {
   ObjectAccessAuthorizationExpectationV2,
 } from "../object/authorized-write.ts";
+import {
+  MAX_TASK_RUNTIME_SIGNER_AUTHORIZATION_WIRE_BYTES_V1,
+} from "../background/task-runtime-signer-authorization-v1.ts";
 import type {
   DeviceWrappedAgentEnvelopeAuthorityV1,
   DeviceWrappedAgentNamespaceAuthorityV1,
@@ -812,18 +815,23 @@ export function assertObjectAccessAuthorizationExpectation(
     }
     return;
   }
-  if (expectation.kind === "task-runtime-agent-genesis-set") {
+  if (expectation.kind === "task-runtime-agent-genesis-set"
+    || expectation.kind === "task-runtime-temporary-agent-genesis-set") {
+    const temporary = expectation.kind
+      === "task-runtime-temporary-agent-genesis-set";
     assertExactFields(
       "Task Runtime Agent object access set authorization expectation",
       expectation,
-      [
-        "kind",
-        "context",
-        "signerPublication",
-        "signerPublicationHash",
-        "signerPublicKeyHash",
-        "managerSigningPublicKeyHash",
-      ],
+      temporary
+        ? ["kind", "context", "signerEvidenceBytes"]
+        : [
+            "kind",
+            "context",
+            "signerPublication",
+            "signerPublicationHash",
+            "signerPublicKeyHash",
+            "managerSigningPublicKeyHash",
+          ],
     );
     const context = expectation.context;
     assertExactFields(
@@ -1036,6 +1044,19 @@ export function assertObjectAccessAuthorizationExpectation(
         || !equalBytes(namespace.domainHeadDigest, domain.headDigest);
       })
     ) throw new TypeError("Task Runtime Agent Domain set is not exact");
+    if (temporary) {
+      if (
+        context.agentAuthorizationRevision !== 0
+        || context.runtimeGeneration !== 0
+        || !(expectation.signerEvidenceBytes instanceof Uint8Array)
+        || expectation.signerEvidenceBytes.length < 1
+        || expectation.signerEvidenceBytes.length
+          > MAX_TASK_RUNTIME_SIGNER_AUTHORIZATION_WIRE_BYTES_V1
+      ) throw new TypeError(
+        "Temporary Task Runtime Agent signer expectation is invalid",
+      );
+      return;
+    }
     const publication = decodeAgentRuntimeSignerPublicationV1(
       encodeAgentRuntimeSignerPublicationV1(expectation.signerPublication),
     );

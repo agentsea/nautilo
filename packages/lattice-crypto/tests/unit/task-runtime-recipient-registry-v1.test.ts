@@ -74,6 +74,8 @@ import { persistPreparedTaskRuntimeAgentObjectAccessManifestGenesisSetV1 } from
   "../../src/object/task-runtime-agent-storage-coordinator-v1.ts";
 import { consumeAuthorizedObjectAccessWriteV2 } from
   "../../src/object/authorized-write.ts";
+import { storageAdapterSupportV2 } from
+  "../../src/storage/v2-adapter-support.ts";
 import { wrapObjectDekForNamespaceV2 } from
   "../../src/object/namespace-envelope.ts";
 import {
@@ -679,8 +681,35 @@ describe("Task Runtime recipient registry", () => {
                         !== "task-runtime-temporary-agent-genesis-set") {
                         throw new Error("temporary authorization was not retained");
                       }
-                      expect(snapshot.authorization.signerEvidenceBytes)
+                      const authorization = storageAdapterSupportV2
+                        .validateObjectAccessAuthorizationExpectation(
+                          snapshot.authorization,
+                        );
+                      if (authorization.kind
+                        !== "task-runtime-temporary-agent-genesis-set") {
+                        throw new Error(
+                          "temporary authorization validation changed its kind",
+                        );
+                      }
+                      expect(authorization.signerEvidenceBytes)
                         .toEqual(value.certificateBytes);
+                      expect(() => storageAdapterSupportV2
+                        .validateObjectAccessAuthorizationExpectation({
+                          ...authorization,
+                          signerEvidenceBytes: new Uint8Array(),
+                        })).toThrow(
+                          "Temporary Task Runtime Agent signer expectation is invalid",
+                        );
+                      expect(() => storageAdapterSupportV2
+                        .validateObjectAccessAuthorizationExpectation({
+                          ...authorization,
+                          context: {
+                            ...authorization.context,
+                            runtimeGeneration: 1,
+                          },
+                        })).toThrow(
+                          "Temporary Task Runtime Agent signer expectation is invalid",
+                        );
                       inspected = true;
                       return "applied";
                     },

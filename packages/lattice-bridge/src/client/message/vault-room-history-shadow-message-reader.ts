@@ -533,8 +533,42 @@ function ordinarySiblingMatches(
   }
   if (ordinary.role !== sibling.payload.role) return false;
   if (ordinary.role === "tool") {
-    return ordinary.content === sibling.payload.content
-      && ordinary.toolName === sibling.payload.toolName;
+    const {
+      toolCallId: _protectedToolCallId,
+      ...protectedParityMetadata
+    } = ordinary.sensitiveMetadata ?? {};
+    const {
+      toolCallId: _ordinaryToolCallId,
+      ...ordinaryParityMetadata
+    } = sibling.payload.sensitiveMetadata ?? {};
+    const comparable: MessagePayloadV2 = Object.freeze({
+      role: "tool",
+      content: ordinary.content,
+      ...(ordinary.toolName === undefined ? {} : { toolName: ordinary.toolName }),
+      ...(Object.keys(protectedParityMetadata).length === 0
+        ? {}
+        : { sensitiveMetadata: protectedParityMetadata }),
+    });
+    let ordinaryBytes: Uint8Array | undefined;
+    let siblingBytes: Uint8Array | undefined;
+    try {
+      ordinaryBytes = encodeMessagePayloadV2(comparable);
+      siblingBytes = encodeMessagePayloadV2(Object.freeze({
+        role: "tool",
+        content: sibling.payload.content,
+        ...(sibling.payload.toolName === undefined
+          ? {}
+          : { toolName: sibling.payload.toolName }),
+        ...(Object.keys(ordinaryParityMetadata).length === 0
+          ? {}
+          : { sensitiveMetadata: ordinaryParityMetadata }),
+      }));
+      return equalBytes(ordinaryBytes, siblingBytes);
+    } catch {
+      return false;
+    } finally {
+      wipe([ordinaryBytes, siblingBytes]);
+    }
   }
   let ordinaryBytes: Uint8Array | undefined;
   let siblingBytes: Uint8Array | undefined;

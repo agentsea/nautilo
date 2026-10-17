@@ -10705,6 +10705,8 @@ export class NautiloApiClient {
       attachments?: MessageAttachmentRef[];
       imageAssistance?: ImageAssistanceSummary;
       artifacts?: MessageArtifactOpenRef[];
+      foregroundExecutionId?: string;
+      modelInputExposure?: unknown;
     }>;
     pageInfo: {
       hasMoreBefore: boolean;
@@ -10750,6 +10752,8 @@ export class NautiloApiClient {
         attachments?: MessageAttachmentRef[];
         imageAssistance?: ImageAssistanceSummary;
         artifacts?: MessageArtifactOpenRef[];
+        foregroundExecutionId?: string;
+        modelInputExposure?: unknown;
       }>;
       pageInfo: {
         hasMoreBefore: boolean;

@@ -70,6 +70,8 @@ import type { ProtectedCheckpointCellCrypto } from
   "../../checkpoint/protected-checkpoint-cell-crypto.ts";
 
 const ZERO_HASH = new Uint8Array(32);
+const MODEL_INPUT_EXPOSURE_METADATA_KEY =
+  "nautilo_memory_model_exposure" as const;
 
 declare const reservationBrand: unique symbol;
 export type LiveShadowAgentMessageReservation = Readonly<{
@@ -1018,11 +1020,30 @@ function createAgentTurnSession(
               parentThreadId: null,
               scopeId: null,
               metadata: full ? null : (() => {
+                const metadata: Record<string, unknown> = {};
                 const imageAssistance = request.payload.role === "assistant"
                   ? parseImageAssistanceSummary(request.payload.sensitiveMetadata?.["imageAssistance"]) : undefined;
-                if (imageAssistance) return { nautilo_image_assistance: imageAssistance };
+                if (imageAssistance) metadata["nautilo_image_assistance"] = imageAssistance;
+                const modelInputExposure = request.payload.sensitiveMetadata?.[
+                  MODEL_INPUT_EXPOSURE_METADATA_KEY
+                ];
+                // The protected payload is the canonical Agent-produced value
+                // already covered by this publication's ciphertext/signature
+                // checks. Persist only this named parity sibling; callers do
+                // not get a generic sensitive-metadata projection.
+                if (modelInputExposure !== undefined) {
+                  metadata[MODEL_INPUT_EXPOSURE_METADATA_KEY] = modelInputExposure;
+                }
+                const foregroundExecutionId = request.payload.sensitiveMetadata?.["foregroundExecutionId"];
+                if (foregroundExecutionId !== undefined) {
+                  if (typeof foregroundExecutionId !== "string" || foregroundExecutionId.length === 0) {
+                    throw new TypeError("Live Shadow foreground execution identity is invalid");
+                  }
+                  metadata["nautilo_foreground_execution_id"] = foregroundExecutionId;
+                }
                 const toolCallId = request.payload.role === "tool" ? request.payload.sensitiveMetadata?.["toolCallId"] : undefined;
-                return typeof toolCallId === "string" ? { nautilo_tool_result: { toolCallId } } : null;
+                if (typeof toolCallId === "string") metadata["nautilo_tool_result"] = { toolCallId };
+                return Object.keys(metadata).length === 0 ? null : metadata;
               })(),
               subthreadRoomId: null,
               replyToMessageId: null,

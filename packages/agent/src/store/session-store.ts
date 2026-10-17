@@ -407,6 +407,10 @@ export async function appendTranscriptMessages(
 
 export interface SessionMessage extends TranscriptToolPresentation, ExternalMessageAttributionFields {
   imageAssistance?: ImageAssistanceSummary | undefined;
+  /** Ordinary sibling of the protected foreground execution coordinate. */
+  foregroundExecutionId?: string;
+  /** Opaque parity sibling; authority is established only by protected history verification. */
+  modelInputExposure?: unknown;
   id: string;
   logicalMessageKey?: string;
   role: string;
@@ -442,6 +446,31 @@ export interface SessionMessage extends TranscriptToolPresentation, ExternalMess
   fingerprint?: string | null | undefined;
   /** Closed, server-authored neutral presentation for a workcard continuation. */
   workcardContinuation?: AdvancedVideoWorkcardContinuation | undefined;
+}
+
+export function projectRoomHistoryParityMetadata(
+  role: string,
+  metadata: unknown,
+): Pick<SessionMessage, "foregroundExecutionId" | "modelInputExposure"> {
+  if (
+    (role !== "assistant" && role !== "tool")
+    || typeof metadata !== "object"
+    || metadata === null
+    || Array.isArray(metadata)
+  ) return {};
+  const record = metadata as Record<string, unknown>;
+  const foregroundExecutionId = record["nautilo_foreground_execution_id"];
+  // Ordinary transcript exposure ancestry can be large and predates Shadow
+  // parity. Project it only for the protected foreground rows identified by
+  // their canonical execution sidecar; Plain rows retain their response shape.
+  if (typeof foregroundExecutionId !== "string" || foregroundExecutionId.length === 0) {
+    return {};
+  }
+  const modelInputExposure = record[MODEL_INPUT_EXPOSURE_METADATA_KEY];
+  return {
+    foregroundExecutionId,
+    ...(modelInputExposure === undefined ? {} : { modelInputExposure }),
+  };
 }
 
 export interface CurrentOrdinaryTranscriptExposureRow {
@@ -998,6 +1027,7 @@ export async function getSessionMessages(
     id: String(r.id),
     ...(external.get(r.id) ?? {}),
     logicalMessageKey: logicalMessageKey(r),
+    ...projectRoomHistoryParityMetadata(r.role, r.metadata),
     ...(parseImageAssistanceSummary(r.metadata?.["nautilo_image_assistance"]) ? { imageAssistance: parseImageAssistanceSummary(r.metadata?.["nautilo_image_assistance"]) } : {}),
     role: r.role,
     content: r.content,
@@ -1043,6 +1073,7 @@ export async function getLatestSessionMessages(
     id: String(r.id),
     ...(external.get(r.id) ?? {}),
     logicalMessageKey: logicalMessageKey(r),
+    ...projectRoomHistoryParityMetadata(r.role, r.metadata),
     ...(parseImageAssistanceSummary(r.metadata?.["nautilo_image_assistance"]) ? { imageAssistance: parseImageAssistanceSummary(r.metadata?.["nautilo_image_assistance"]) } : {}),
     role: r.role,
     content: r.content,
@@ -1109,6 +1140,7 @@ export async function getRoomMessagesBeforeCursor(args: {
       id: String(r.id),
       ...(external.get(r.id) ?? {}),
       logicalMessageKey: logicalMessageKey(r),
+      ...projectRoomHistoryParityMetadata(r.role, r.metadata),
   ...(parseImageAssistanceSummary(r.metadata?.["nautilo_image_assistance"]) ? { imageAssistance: parseImageAssistanceSummary(r.metadata?.["nautilo_image_assistance"]) } : {}),
       role: r.role,
       content: r.content,
@@ -1306,6 +1338,9 @@ export async function getRoomMessagesAcrossMemberSessionsWithSelection(args: {
       id: String(r.id),
       ...(external.get(r.id) ?? {}),
       logicalMessageKey: logicalMessageKey(r),
+      ...(args.contentRepresentation === "structural"
+        ? {}
+        : projectRoomHistoryParityMetadata(r.role, r.metadata)),
     ...(args.contentRepresentation !== "structural" && parseImageAssistanceSummary(r.metadata?.["nautilo_image_assistance"]) ? { imageAssistance: parseImageAssistanceSummary(r.metadata?.["nautilo_image_assistance"]) } : {}),
       role: r.role,
       content: args.contentRepresentation === "structural" ? null : (r.content ?? null),

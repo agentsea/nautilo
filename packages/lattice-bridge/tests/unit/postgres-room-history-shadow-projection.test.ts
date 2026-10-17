@@ -25,7 +25,11 @@ import type {
   PostgresJsBridgeExecutor,
   PostgresJsBridgeRow,
 } from "@nautilo/db";
-import { decodeMessagePayloadV2 } from
+import {
+  decodeMessagePayloadV2,
+  encodeMessagePayloadV2,
+  type MessagePayloadV2,
+} from
   "../../src/message/message-payload-v2.ts";
 import {
   verifyConversationProductPostgresHandle,
@@ -2218,6 +2222,22 @@ describe("native Task transcript history", () => {
   async function nativeFixture(
     representationMode: "ordinary-and-protected" | "protected-only",
     substituteProof = false,
+    lifecycle: Readonly<{
+      representationMode: "shadow_encryption" | "full_encryption";
+      parityStatus: "server_verified" | "server_authenticated";
+      publicationPolicyRevision: number | null;
+    }> = {
+      representationMode: "shadow_encryption",
+      parityStatus: "server_verified",
+      publicationPolicyRevision: null,
+    },
+    message: Readonly<{
+      payload: MessagePayloadV2;
+      metadataJson: string | null;
+    }> = {
+      payload: { role: "assistant", content: "Native Task transcript" },
+      metadataJson: null,
+    },
   ) {
     const crypto = new LatticeCrypto(seededRng(913_280));
     const operationId = "native-task-transcript-test";
@@ -2233,7 +2253,7 @@ describe("native Task transcript history", () => {
     });
     const prepared = prepareDeviceWrappedLiveShadowAgentConversationCryptoRevisionWithDek({
       crypto, objectId: nativeObjectId,
-      payload: { role: "assistant", content: "Native Task transcript" },
+      payload: message.payload,
       createdAt: 1_800_000_000_000,
       objectDek: new Uint8Array(32).fill(0x63),
       namespace: { namespaceId: NAMESPACE_ID, accessRevision: 4,
@@ -2265,9 +2285,14 @@ describe("native Task transcript history", () => {
     });
     const publicationKey = `task-transcript:${TASK_RUN_ID}:fp:v1:one`;
     const candidate = productRow(0, 28, {
-      role: "assistant", author_role: "assistant", author_agent_id: USER_ID,
+      role: message.payload.role, author_role: message.payload.role,
+      author_agent_id: USER_ID,
       content: representationMode === "protected-only" ? null
-        : "Native Task transcript",
+        : message.payload.content,
+      tool_calls: message.payload.toolCalls === undefined
+        ? null : JSON.stringify(message.payload.toolCalls),
+      tool_name: message.payload.toolName ?? null,
+      metadata_json: message.metadataJson,
       source_user_id: USER_ID, source_human_id: null,
       crypto_object_id: nativeObjectId, lifecycle_object_id: nativeObjectId,
       object_id_scheme: "message_v2", transcript_origin: "subagent",
@@ -2277,7 +2302,9 @@ describe("native Task transcript history", () => {
       shared_agent_shadow_operation_id: null,
       shared_agent_shadow_execution_id: null, task_wake_operation_id: null,
       completion: "complete", disposition: "mapped",
-      parity_status: "server_authenticated", repair_identity_digest: null,
+      representation_mode: lifecycle.representationMode,
+      publication_policy_revision: lifecycle.publicationPolicyRevision,
+      parity_status: lifecycle.parityStatus, repair_identity_digest: null,
     });
     const restricted = connection(async statement => {
       if (!statement.includes('from "object_crypto_access_manifests"')) {
@@ -2296,7 +2323,7 @@ describe("native Task transcript history", () => {
       manifestBytes, envelopeBytes: snapshot.access.envelopeBytes[0],
       signerPublicKey: execution.signer.publicKey, runtimeRetained: true,
     });
-    return { ...value, certificateBytes };
+    return { ...value, certificateBytes, payload: message.payload };
   }
 
   test.each(["ordinary-and-protected", "protected-only"] as const)(
@@ -2344,6 +2371,131 @@ describe("native Task transcript history", () => {
     expect(rejected).toBeTrue();
   });
 
+  test("reconstructs exact native Assistant and Tool ordinary payload bytes", async () => {
+    const exposure = { model: "model-1", provider: "provider-1" } as const;
+    const toolCallId = "call-native-task-1";
+    const fixtures = [
+      await nativeFixture("ordinary-and-protected", false, undefined, {
+        payload: {
+          role: "assistant", content: "",
+          toolCalls: [{ id: toolCallId, name: "remember", args: {} }],
+          sensitiveMetadata: { nautilo_memory_model_exposure: exposure },
+        },
+        metadataJson: JSON.stringify({
+          nautilo_memory_model_exposure: exposure,
+        }),
+      }),
+      await nativeFixture("ordinary-and-protected", false, undefined, {
+        payload: {
+          role: "tool", content: "Saved", toolName: "remember",
+          sensitiveMetadata: {
+            toolCallId, toolStatus: "success",
+            nautilo_memory_model_exposure: exposure,
+          },
+        },
+        metadataJson: JSON.stringify({
+          nautilo_memory_model_exposure: exposure,
+          nautilo_tool_result: { toolCallId, toolStatus: "success" },
+        }),
+      }),
+    ];
+
+    for (const value of fixtures) {
+      const result = await value.project({ subjectUserId: USER_ID,
+        subjectHumanId: HUMAN_ID, readerDeviceId: DEVICE_ID, roomId: ROOM_ID,
+        selectedCoordinates: [coordinate(28, {
+          role: value.payload.role, logicalMessageKey: "row:28",
+        })], representationMode: "ordinary-and-protected" });
+      if (result.status !== "ready") throw new Error("Expected ready history");
+      const record = result.records[0];
+      if (record === undefined
+        || record.representationMode === "protected-only"
+        || !("ordinaryPayloadBytesBase64url" in record)
+        || typeof record.ordinaryPayloadBytesBase64url !== "string") {
+        throw new Error("Expected ordinary native Task transcript");
+      }
+      const actual = new Uint8Array(Buffer.from(
+        record.ordinaryPayloadBytesBase64url, "base64url",
+      ));
+      const expected = encodeMessagePayloadV2(value.payload);
+      try { expect([...actual]).toEqual([...expected]); } finally {
+        actual.fill(0);
+        expected.fill(0);
+      }
+    }
+  });
+
+  test("withholds native Tool ordinary payloads without canonical correlation", async () => {
+    for (const metadataJson of [null, JSON.stringify({
+      nautilo_tool_result: { toolCallId: "", untrusted: true },
+    })]) {
+      const value = await nativeFixture(
+        "ordinary-and-protected", false, undefined, {
+          payload: { role: "tool", content: "Saved", toolName: "remember",
+            sensitiveMetadata: { toolCallId: "call-native-task-1" } },
+          metadataJson,
+        },
+      );
+      expect(await value.project({ subjectUserId: USER_ID,
+        subjectHumanId: HUMAN_ID, readerDeviceId: DEVICE_ID, roomId: ROOM_ID,
+        selectedCoordinates: [coordinate(28, {
+          role: "tool", logicalMessageKey: "row:28",
+        })], representationMode: "ordinary-and-protected" })).toEqual({
+        status: "unavailable", reason: "projection_corrupt",
+        selectedCount: 1, eligibleCount: 1,
+      });
+    }
+  });
+
+  test("projects only mode-coherent native Task transcript lifecycles", async () => {
+    const full = await nativeFixture("protected-only", false, {
+      representationMode: "full_encryption",
+      parityStatus: "server_authenticated",
+      publicationPolicyRevision: 7,
+    });
+    expect(await full.project({ subjectUserId: USER_ID,
+      subjectHumanId: HUMAN_ID, readerDeviceId: DEVICE_ID, roomId: ROOM_ID,
+      selectedCoordinates: [coordinate(28, {
+        role: "assistant", logicalMessageKey: "row:28",
+      })], representationMode: "protected-only" })).toMatchObject({
+      status: "ready", records: [{ kind: "task_runtime" }],
+    });
+
+    const fullWithOrdinary = await nativeFixture("ordinary-and-protected", false, {
+      representationMode: "full_encryption",
+      parityStatus: "server_authenticated",
+      publicationPolicyRevision: 7,
+    });
+    expect(await fullWithOrdinary.project({ subjectUserId: USER_ID,
+      subjectHumanId: HUMAN_ID, readerDeviceId: DEVICE_ID, roomId: ROOM_ID,
+      selectedCoordinates: [coordinate(28, {
+        role: "assistant", logicalMessageKey: "row:28",
+      })], representationMode: "ordinary-and-protected" })).toEqual({
+      status: "ineligible", selectedCount: 1, eligibleCount: 0,
+    });
+
+    for (const lifecycle of [
+      { representationMode: "shadow_encryption" as const,
+        parityStatus: "server_authenticated" as const,
+        publicationPolicyRevision: null },
+      { representationMode: "full_encryption" as const,
+        parityStatus: "server_verified" as const,
+        publicationPolicyRevision: 7 },
+      { representationMode: "full_encryption" as const,
+        parityStatus: "server_authenticated" as const,
+        publicationPolicyRevision: null },
+    ]) {
+      const value = await nativeFixture("protected-only", false, lifecycle);
+      expect(await value.project({ subjectUserId: USER_ID,
+        subjectHumanId: HUMAN_ID, readerDeviceId: DEVICE_ID, roomId: ROOM_ID,
+        selectedCoordinates: [coordinate(28, {
+          role: "assistant", logicalMessageKey: "row:28",
+        })], representationMode: "protected-only" })).toEqual({
+        status: "ineligible", selectedCount: 1, eligibleCount: 0,
+      });
+    }
+  });
+
   test("requires the exact TaskRun association before ciphertext access", async () => {
     const taskRunId = TASK_RUN_ID;
     const nativeObjectId = deriveMessageCryptoObjectIdV2({
@@ -2360,6 +2512,7 @@ describe("native Task transcript history", () => {
       shared_agent_shadow_operation_id: null,
       shared_agent_shadow_execution_id: null, task_wake_operation_id: null,
       completion: "complete", disposition: "mapped",
+      representation_mode: "full_encryption", publication_policy_revision: 7,
       parity_status: "server_authenticated", repair_identity_digest: null,
     });
     const { project, connection, cryptoReads } = await subject([

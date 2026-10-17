@@ -1075,6 +1075,10 @@ export interface RoomHistoryTerminalExecutionSummary {
 /** Row shape for `GET /api/rooms/:id/messages`. */
 export interface RoomMessageDto extends ExternalMessageAttributionFields {
   imageAssistance?: ImageAssistanceSummary;
+  /** Protected-read parity coordinate; omitted from ordinary-only responses. */
+  foregroundExecutionId?: string;
+  /** Opaque protected-read parity value; never an ordinary authorization source. */
+  modelInputExposure?: unknown;
   id: string;
   /** opaque client identity for one logical persisted message/turn. */
   logicalMessageKey?: string;

@@ -157,7 +157,8 @@ export function createAuthorizedHumanTaskRunResultReaderV1(input: Readonly<{
       }
       const agentEvidence = response.signerEvidence.filter(entry =>
         entry.kind === "agent_runtime_publication"
-        || entry.kind === "foreground_agent_accepted_execution");
+        || entry.kind === "foreground_agent_accepted_execution"
+        || entry.kind === "task_runtime_signer_certificate");
       const humanEvidence = response.signerEvidence.filter(entry =>
         entry.kind === "human_device");
       if (response.accessManifestProofBytesBase64url.length

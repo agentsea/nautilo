@@ -221,6 +221,7 @@ function input(): ProtectedTaskNativeMessageAuthorityInput {
       graphThreadId,
       sessionId: ids.session,
       sessionOwnerId: ids.owner,
+      executionRoomId: ids.room,
       roomId: ids.room,
       namespaceId: ids.namespace,
       contentNamespaceId: ids.contentNamespace,
@@ -228,6 +229,7 @@ function input(): ProtectedTaskNativeMessageAuthorityInput {
       requiredNamespaceFingerprint: digest(5),
       agentId: ids.agent,
       requestorId: ids.requestor,
+      requesterHumanId: ids.human,
       inputObjectId: currentOccurrence.task.cryptoObjectId,
       resultObjectId: value.result.objectId,
       authorizationRequestId: requestId,
@@ -626,6 +628,16 @@ describe("protected Task native Message current authority", () => {
       dependencies(),
     );
     expect(await changedProduct(expected())).toBeNull();
+    expect(await createProtectedTaskNativeMessageAuthorityResolver(
+      {
+        ...current,
+        productAuthority: {
+          ...current.productAuthority,
+          requesterHumanId: ids.owner,
+        },
+      },
+      dependencies(),
+    )(expected())).toBeNull();
   });
 
   test("fails closed when product or accepted recipient authority changed", async () => {

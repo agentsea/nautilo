@@ -2,6 +2,7 @@ import { getBolterCanonicalAttributions, normalizedRoomLabelSql, sql, usersPubli
 import { externalMessageAttributionFields, logicalMessageKey, type ExternalMessageAttributionFields } from "@nautilo/types";
 import {
   projectRoomHistorySelectedMessageCoordinate,
+  projectRoomHistoryParityMetadata,
   type RoomHistorySelectedMessageCoordinate,
   type SessionMessage,
 } from "./session-store";
@@ -323,6 +324,7 @@ function toSessionMessage(row: RawHumanRoomMessageRow): SessionMessage {
       role: row.role,
       fingerprint: row.fingerprint,
     }),
+    ...projectRoomHistoryParityMetadata(row.role, row.metadata),
     role: row.role,
     content: row.content,
     toolCalls: sanitizeSerializedTranscriptToolCalls(row.tool_calls),

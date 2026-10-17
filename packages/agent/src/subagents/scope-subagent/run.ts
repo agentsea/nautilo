@@ -1512,10 +1512,7 @@ async function runScopeSubagentUntilPauseInternal(
       : null;
 
   try {
-    const consumeEvents = async () => {
-      const eventStream = graph.streamEvents(streamInput, streamConfig);
-      for await (const ev of eventStream) {
-      if (opts.signal?.aborted) break;
+    const consumeEvent = async (ev: unknown): Promise<void> => {
       metrics.noteStreamEvent(ev);
       // Report only into this subagent's canonical slot. A group turn can run
       // several agents concurrently, so a bare parent turn ID is unsafe.
@@ -1530,7 +1527,7 @@ async function runScopeSubagentUntilPauseInternal(
       const progressDetail = extractTaskProgressFromStreamEvent(ev);
       if (progressDetail) progressTap?.noteToolProgress(progressDetail);
       const batch = extractPersistedMessagesFromChainEnd(ev);
-      if (batch.length === 0) continue;
+      if (batch.length === 0) return;
       const assistantMessageKey = tokenStream?.completeMessage();
       if (opts.protectedTaskTranscriptPort !== undefined) {
         await publishProtectedTaskTranscriptBatch(
@@ -1567,8 +1564,47 @@ async function runScopeSubagentUntilPauseInternal(
               : {}),
           },
         );
-        }
       }
+    };
+    const consumeEvents = async () => {
+      const eventStream = graph.streamEvents(streamInput, streamConfig);
+      let consumerFailed = false;
+      let consumerFailure: Error | undefined;
+      try {
+        for await (const ev of eventStream) {
+          if (opts.signal?.aborted) {
+            if (nodeSettlement === undefined) break;
+            continue;
+          }
+          if (consumerFailed) continue;
+          if (nodeSettlement === undefined) {
+            await consumeEvent(ev);
+            continue;
+          }
+          try {
+            await consumeEvent(ev);
+          } catch (error) {
+            const retainedFailure = error instanceof Error
+              ? error
+              : new Error("Protected Task stream consumer failed", {
+                  cause: error,
+                });
+            // Do not throw out of LangChain's event iterator: its private
+            // abort race can settle while the graph scheduler is still
+            // advancing. Fence future node admissions, stop event effects,
+            // and keep this consumer attached until the graph observes it.
+            consumerFailed = true;
+            consumerFailure = retainedFailure;
+            nodeSettlement.fail(retainedFailure);
+          }
+        }
+      } catch (error) {
+        if (consumerFailed && opts.signal?.aborted !== true) {
+          throw consumerFailure!;
+        }
+        throw error;
+      }
+      if (consumerFailed) throw consumerFailure!;
     };
     if (repoDocsProjectFilePort === undefined) await consumeEvents();
     else await runWithProtectedTaskProjectFilePort(

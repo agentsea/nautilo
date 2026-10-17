@@ -249,7 +249,23 @@ export type ConversationProductPublicationGuardInput =
     >;
   }>);
 
+export type ConversationProductAppendPreparationGuardInput = Omit<
+  Extract<
+    ConversationProductPublicationGuardInput,
+    Readonly<{ action: "appendAllocated" }>
+  >,
+  "messageId"
+>;
+
 export interface ConversationProductPublicationGuard {
+  /**
+   * Acquire authority and write rows in the guard's canonical order before
+   * the transcript append. The ordinary guard still revalidates allocation.
+   */
+  prepareAppendPublication?(
+    transaction: CanonicalTranscriptTx,
+    input: ConversationProductAppendPreparationGuardInput,
+  ): Promise<void>;
   assertPublicationAllowed(
     transaction: CanonicalTranscriptTx,
     input: ConversationProductPublicationGuardInput,
@@ -2475,6 +2491,16 @@ export class PostgresConversationProductStore
           ? { status: "replayed", lifecycle }
           : { status: "conflict" };
       }
+
+      await this.publicationGuard?.prepareAppendPublication?.(transaction, {
+        action: "appendAllocated",
+        sessionId: input.sessionId,
+        revision: 0,
+        idempotencyKey: input.idempotencyKey,
+        authorRole: input.authorRole,
+        keyClass: input.keyClass,
+        publicationPolicy: input.publicationPolicy,
+      });
 
       const result = await appendCanonicalTranscriptRowsToExistingSessionInTx(
         transaction,

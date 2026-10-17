@@ -220,6 +220,8 @@ import {
   PostgresLatticeStorage,
   PostgresTaskContentProductStore,
   bindDurableTaskContentRepositoryV1,
+  conversationProductTypedDb,
+  executeTypedConversationProductQuery,
   createPostgresTaskContentCryptoCompletion,
   createPostgresTaskContentRepositoryV1,
   PostgresNamespaceProductAuthority,
@@ -230,6 +232,7 @@ import {
   withNativeProtectedTaskDefinitionV1,
   withNativeProtectedTaskRunResultMessageSourceV1,
   type ConversationProductCanonicalTransactionRunner,
+  type ConversationProductPostgresHandle,
   type CryptoPostgresHandle,
   type TaskScopeMemoryBinding,
 } from "@nautilo/lattice-bridge/server";
@@ -8831,6 +8834,7 @@ describePostgres("sealed protected Task Memory object writer", () => {
       let escapedAssertCurrent: (() => Promise<void>) | null = null;
       let escapedRestricted: PostgresJsBridgeConnection | null = null;
       let escapedRestrictedHandle: CryptoPostgresHandle | null = null;
+      let escapedProductHandle: ConversationProductPostgresHandle | null = null;
       let restrictedQueryCalls = 0;
       const observedRestricted = observeRestrictedConnection(
         base.restricted,
@@ -8853,6 +8857,7 @@ describePostgres("sealed protected Task Memory object writer", () => {
               escapedAssertCurrent = binding.assertCurrent;
               escapedRestricted = binding.restricted;
               escapedRestrictedHandle = binding.restrictedHandle;
+              escapedProductHandle = binding.productHandle;
               return persistProtectedTaskMemoryObjectUnderHeld(held, write);
             },
           );
@@ -8865,7 +8870,9 @@ describePostgres("sealed protected Task Memory object writer", () => {
           }
           const closedRestricted = escapedRestricted;
           const closedRestrictedHandle = escapedRestrictedHandle;
-          if (closedRestricted === null || closedRestrictedHandle === null) {
+          const closedProductHandle = escapedProductHandle;
+          if (closedRestricted === null || closedRestrictedHandle === null
+            || closedProductHandle === null) {
             throw new Error("Held Task Memory restricted authority was not observed");
           }
           const queriesBeforeClosedUse = restrictedQueryCalls;
@@ -8912,6 +8919,11 @@ describePostgres("sealed protected Task Memory object writer", () => {
             "Task Memory authority is not active",
           );
           expect(restrictedQueryCalls).toBe(queriesBeforeClosedUse);
+          await Promise.resolve(expect(executeTypedConversationProductQuery(
+            closedProductHandle,
+            conversationProductTypedDb.select({ id: memories.id })
+              .from(memories).limit(1),
+          )).rejects.toThrow("Task Memory authority is not active"));
           return result;
         },
         observedRestricted,

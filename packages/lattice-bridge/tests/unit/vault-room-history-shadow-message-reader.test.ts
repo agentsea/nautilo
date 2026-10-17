@@ -943,7 +943,14 @@ async function sharedExecutionFixture(role: "assistant" | "tool") {
   const messageId = 275 + ordinal;
   const payload: MessagePayloadV2 = {
     role, content: `shared ${role} durable ciphertext`,
-    ...(role === "tool" ? { sensitiveMetadata: { toolCallId: "history-tool-call" } } : {}),
+    sensitiveMetadata: {
+      ...(role === "tool" ? { toolCallId: "history-tool-call" } : {}),
+      foregroundExecutionId: "history:shared:execution",
+      nautilo_memory_model_exposure: {
+        version: 1,
+        status: "incomplete",
+      },
+    },
   };
   const objectId = deriveLiveShadowMessageCryptoObjectIdV1({
     operationId: execution.plan.operationId, sessionId: SESSION, messageId,
@@ -1782,6 +1789,36 @@ describe("M275 Browser Room-history Shadow reader", () => {
     expect(result.verifiedCount).toBe(1);
     expect(result.records[0]).toMatchObject({ status: "verified", payload: state.payload });
   });
+
+  test.each(["foregroundExecutionId", "nautilo_memory_model_exposure"] as const)(
+    "rejects shared Tool ordinary sibling with substituted %s",
+    async (field) => {
+      const state = await sharedExecutionFixture("tool");
+      const sibling = state.record.ordinarySibling;
+      const metadata = sibling.payload.sensitiveMetadata!;
+      const record = {
+        ...state.record,
+        ordinarySibling: {
+          ...sibling,
+          payload: {
+            ...sibling.payload,
+            sensitiveMetadata: {
+              ...metadata,
+              [field]: field === "foregroundExecutionId"
+                ? "substituted:execution"
+                : { version: 1, status: "complete", dependencies: [] },
+            },
+          },
+        },
+      } as RoomHistoryShadowRecordTransportV1;
+      const result = await state.reader.reconcile({ ...state.input, records: [record] });
+      expect(result.verifiedCount).toBe(0);
+      expect(result.records[0]).toMatchObject({
+        status: "fallback",
+        reason: "integrity_failure",
+      });
+    },
+  );
 
   test.each(["ordinary-and-protected", "protected-only"] as const)(
     "opens certified Task Runtime history in %s mode",

@@ -20,8 +20,10 @@ let capturedGraphDeps: NautiloGraphDeps | undefined;
 let protectedHandlerStarted = Promise.withResolvers<void>();
 let releaseProtectedHandler = Promise.withResolvers<void>();
 let getStateCalled = false;
-let graphMode: "abort" | "pause_next" | "drain_then_pause" = "abort";
+let graphMode: "abort" | "consumer_failure" | "pause_next" | "stream_failure"
+  | "drain_then_pause" = "abort";
 let pausedNodeBodyCalls = 0;
+let streamFailure = new Error("protected graph stream failed");
 
 const protectedTaskTranscriptPort = {
   publishBatch: async () => {},
@@ -69,9 +71,28 @@ beforeAll(async () => {
             yield { event: "ordinary" };
             return;
           }
+          if (graphMode === "stream_failure") throw streamFailure;
           if (graphMode === "pause_next") {
             await scope.run("pre_model", () => {
               pausedNodeBodyCalls += 1;
+            });
+            return;
+          }
+          if (graphMode === "consumer_failure") {
+            const assistant = new AIMessage("protected assistant body");
+            await scope.run("agent", () => ({ messages: [assistant] }));
+            yield {
+              event: "on_chain_end",
+              name: "agent",
+              data: {
+                input: { messages: [] },
+                output: { messages: [assistant] },
+              },
+            };
+            await scope.run("post_model", () => {
+              pausedNodeBodyCalls += 1;
+            }).catch(() => {
+              throw new Error("incidental graph shutdown failure");
             });
             return;
           }
@@ -133,6 +154,7 @@ beforeEach(() => {
   getStateCalled = false;
   graphMode = "abort";
   pausedNodeBodyCalls = 0;
+  streamFailure = new Error("protected graph stream failed");
 });
 
 const baseOpts = {
@@ -266,6 +288,49 @@ describe("protected Task node settlement in the scope runner", () => {
     expect(await running).toEqual({ status: "checkpoint_paused",
       threadId: "subagent:parent-thread:protected", reason: "grant_refresh" });
     expect(pausedNodeBodyCalls).toBe(0);
+  });
+
+  test("fences the graph before a node after protected transcript failure", async () => {
+    graphMode = "consumer_failure";
+    const publicationFailure = new Error(
+      "protected transcript publication failed",
+    );
+    const failure = await runScopeSubagentUntilPause({
+      ...baseOpts,
+      taskRun: true,
+      trustedExecutionEntrypoint: "background.task",
+      currentTaskId: "task-1",
+      currentTaskRunId: "task-run-1",
+      subagentThreadId: "subagent:parent-thread:protected",
+      taskRunCheckpointSaver: encryptedSaver(),
+      protectedTaskTranscriptPort: {
+        publishBatch: async () => {
+          throw publicationFailure;
+        },
+      },
+    }).then(() => null, (error: unknown) => error);
+
+    expect(failure).toBe(publicationFailure);
+    expect(pausedNodeBodyCalls).toBe(0);
+    expect(getStateCalled).toBe(false);
+  });
+
+  test("preserves a protected graph rejection before its first event", async () => {
+    graphMode = "stream_failure";
+    const failure = await runScopeSubagentUntilPause({
+      ...baseOpts,
+      taskRun: true,
+      trustedExecutionEntrypoint: "background.task",
+      currentTaskId: "task-1",
+      currentTaskRunId: "task-run-1",
+      subagentThreadId: "subagent:parent-thread:protected",
+      taskRunCheckpointSaver: encryptedSaver(),
+      protectedTaskTranscriptPort,
+    }).then(() => null, (error: unknown) => error);
+
+    expect(failure).toBe(streamFailure);
+    expect(pausedNodeBodyCalls).toBe(0);
+    expect(getStateCalled).toBe(false);
   });
 
   test("authorization abort wins over an already requested pause", async () => {

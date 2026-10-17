@@ -83,12 +83,17 @@ ProtectedTaskCheckpointPauseController {
 export interface ProtectedTaskNodeSettlementScope {
   /**
    * Admit one graph node body before it starts and retain only its settlement
-   * lifetime. Arguments, state, results, and errors are never retained here.
+   * lifetime. Arguments, state, and results are never retained here. The first
+   * stream-consumer failure may be retained only for this invocation so later
+   * node bodies reject with that exact failure.
    */
   run<Value>(
     name: ProtectedTaskGraphNodeName,
     body: () => Value | PromiseLike<Value>,
   ): Promise<Value>;
+
+  /** Retain the first stream-consumer failure and reject every future body. */
+  fail(error: Error): boolean;
 
   /** Stop admission and wait for every body that was already admitted. */
   closeAndWait(): Promise<void>;
@@ -124,6 +129,8 @@ export function createProtectedTaskNodeSettlementScope(
   const active = new Set<Promise<void>>();
   let state: ScopeState = "open";
   let closePromise: Promise<void> | null = null;
+  let failed = false;
+  let failure: Error | null = null;
 
   const closeAndWait = (): Promise<void> => {
     if (closePromise !== null) return closePromise;
@@ -148,6 +155,7 @@ export function createProtectedTaskNodeSettlementScope(
       if (signal?.aborted === true) {
         return Promise.reject(authorizationAbortError(signal));
       }
+      if (failed) return Promise.reject(failure!);
       if (state !== "open") {
         return Promise.reject(new Error(
           "Protected Task graph node started after settlement closed",
@@ -177,6 +185,13 @@ export function createProtectedTaskNodeSettlementScope(
         active.delete(settled.promise);
       });
       return result;
+    },
+
+    fail(error: Error): boolean {
+      if (state !== "open" || failed) return false;
+      failed = true;
+      failure = error;
+      return true;
     },
 
     closeAndWait,

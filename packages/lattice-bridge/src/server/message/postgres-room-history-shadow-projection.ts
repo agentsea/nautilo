@@ -633,6 +633,10 @@ function selectRoomRows(
       crypto_object_id: sql`${sessionMessages.cryptoObjectId}`.as("crypto_object_id"),
       lifecycle_object_id: sql`${sessionMessageCryptoRevisions.cryptoObjectId}`.as("lifecycle_object_id"),
       object_id_scheme: sql`${sessionMessageCryptoRevisions.objectIdScheme}`.as("object_id_scheme"),
+      representation_mode:
+        sessionMessageCryptoRevisions.representationMode,
+      publication_policy_revision:
+        sessionMessageCryptoRevisions.publicationPolicyRevision,
       shadow_operation_id: sql`${sessionMessageCryptoRevisions.shadowOperationId}`.as("shadow_operation_id"),
       human_peer_shadow_operation_id: sql`${sessionMessageCryptoRevisions.humanPeerShadowOperationId}`.as("human_peer_shadow_operation_id"),
       shared_agent_shadow_operation_id: sql`${sessionMessageCryptoRevisions.sharedAgentShadowOperationId}`.as("shared_agent_shadow_operation_id"),
@@ -1158,6 +1162,20 @@ function isNativeTaskTranscriptCandidate(
   row: ConversationProductDatabaseRow,
 ): boolean {
   const publicationKey = row["append_idempotency_key"];
+  const representationMode = row["representation_mode"];
+  const publicationPolicyRevision = row["publication_policy_revision"];
+  const lifecycleMatchesRepresentation =
+    representationMode === "shadow_encryption"
+      ? row["parity_status"] === "server_verified"
+        && publicationPolicyRevision == null
+      : representationMode === "full_encryption"
+        && row["parity_status"] === "server_authenticated"
+        && Number.isSafeInteger(publicationPolicyRevision)
+        && Number(publicationPolicyRevision) >= 0
+        // Protected-only selection omits the ordinary body; it does not prove
+        // historical plaintext was removed. When ordinary content is selected,
+        // reject a Full lifecycle that nevertheless carries a body.
+        && typeof row["content"] !== "string";
   return row["object_id_scheme"] === "message_v2"
     && row["transcript_origin"] === "subagent"
     && typeof publicationKey === "string"
@@ -1173,7 +1191,7 @@ function isNativeTaskTranscriptCandidate(
     && row["role"] === row["author_role"]
     && row["completion"] === "complete"
     && row["disposition"] === "mapped"
-    && row["parity_status"] === "server_authenticated"
+    && lifecycleMatchesRepresentation
     && row["crypto_object_id"] === row["lifecycle_object_id"];
 }
 
@@ -1189,6 +1207,48 @@ function isNativeTaskTranscript(row: ConversationProductDatabaseRow): boolean {
     && typeof row["task_id"] === "string"
     && typeof row["task_graph_thread_id"] === "string"
     && row["task_graph_thread_id"] === row["session_thread_id"];
+}
+
+function nativeTaskTranscriptToolPresentation(
+  row: ConversationProductDatabaseRow,
+): Readonly<{
+  toolCallId: string | null;
+  toolStatus: "success" | "error" | null;
+}> {
+  if (row["role"] !== "tool") {
+    return Object.freeze({ toolCallId: null, toolStatus: null });
+  }
+  const metadataJson = text(
+    "Native Task Tool transcript metadata", row["metadata_json"],
+  );
+  const metadata: unknown = JSON.parse(metadataJson);
+  if (metadata === null || typeof metadata !== "object"
+    || Array.isArray(metadata)) {
+    throw new TypeError("Native Task Tool transcript metadata is invalid");
+  }
+  const presentation = (metadata as Record<string, unknown>)[
+    "nautilo_tool_result"
+  ];
+  if (presentation === null || typeof presentation !== "object"
+    || Array.isArray(presentation)) {
+    throw new TypeError("Native Task Tool transcript presentation is invalid");
+  }
+  const fields = presentation as Record<string, unknown>;
+  const toolCallId = fields["toolCallId"];
+  if (typeof toolCallId !== "string" || toolCallId.length === 0
+    || Object.keys(fields).some(key => key !== "toolCallId"
+      && key !== "toolStatus")
+    || (fields["toolStatus"] !== undefined
+      && fields["toolStatus"] !== "success"
+      && fields["toolStatus"] !== "error")) {
+    throw new TypeError("Native Task Tool transcript presentation is invalid");
+  }
+  return Object.freeze({
+    toolCallId,
+    toolStatus: fields["toolStatus"] === "success"
+        || fields["toolStatus"] === "error"
+      ? fields["toolStatus"] : null,
+  });
 }
 
 function isHumanEditedRepresentation(row: ConversationProductDatabaseRow): boolean {
@@ -2219,8 +2279,13 @@ export function createPostgresRoomHistoryShadowProjection(
           if (dto.projection.logicalMessageKey !== coordinate.logicalMessageKey) {
             throw new TypeError("Native Task transcript selection changed");
           }
-          const ordinary = !protectedOnly && typeof row["content"] === "string"
-            ? encodeLiveShadowOrdinaryPayloadV2(row, null) : null;
+          const presentation = !protectedOnly
+              && typeof row["content"] === "string"
+            ? nativeTaskTranscriptToolPresentation(row) : null;
+          const ordinary = presentation === null ? null
+            : encodeLiveShadowOrdinaryPayloadV2(
+                row, presentation.toolCallId, presentation.toolStatus,
+              );
           try {
             records.push(Object.freeze({
               kind: "task_runtime" as const,

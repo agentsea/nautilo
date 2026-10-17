@@ -33,6 +33,7 @@ import {
   createProtectedTaskPrivateReadAuthorityResolver,
   createProtectedTaskForegroundSignerTransport,
   createProductionProtectedTaskComposition,
+  projectVerifiedProtectedTaskRunResultAgentSignerEvidence,
   withCurrentProtectedTaskPublicationDeviceAuthority,
 } from
   "../../src/routes/task-protected-composition";
@@ -406,6 +407,70 @@ describe("production protected Task composition", () => {
       ROUTE_AUTHORITY.agentId,
     )).toBeNull();
     runtime.key.fill(0);
+  });
+
+  test("transports exactly one verified durable Task result signer proof", () => {
+    const certificateBytes = new Uint8Array([1, 2, 3, 4]);
+    expect(projectVerifiedProtectedTaskRunResultAgentSignerEvidence({
+      verifiedSignerEvidence: [{
+        kind: "task_runtime_signer_certificate",
+        evidenceBytes: certificateBytes,
+      }],
+      foregroundEvidence: null,
+    })).toEqual([{
+      kind: "task_runtime_signer_certificate",
+      evidenceBytesBase64url: Buffer.from(certificateBytes).toString("base64url"),
+    }]);
+
+    expect(projectVerifiedProtectedTaskRunResultAgentSignerEvidence({
+      verifiedSignerEvidence: [{
+        kind: "agent_runtime_publication",
+        evidenceBytes: new Uint8Array([5, 6]),
+      }],
+      foregroundEvidence: null,
+    })).toEqual([{
+      kind: "agent_runtime_publication",
+      evidenceBytesBase64url: Buffer.from([5, 6]).toString("base64url"),
+    }]);
+
+    const foregroundEvidence = Object.freeze({
+      kind: "foreground_agent_accepted_execution" as const,
+      planBytesBase64url: Buffer.from([7]).toString("base64url"),
+      planDigestBase64url: Buffer.from(new Uint8Array(32).fill(8))
+        .toString("base64url"),
+    });
+    expect(projectVerifiedProtectedTaskRunResultAgentSignerEvidence({
+      verifiedSignerEvidence: [],
+      foregroundEvidence,
+    })).toEqual([foregroundEvidence]);
+
+    expect(projectVerifiedProtectedTaskRunResultAgentSignerEvidence({
+      verifiedSignerEvidence: [{
+        kind: "processor_authorization",
+        evidenceBytes: new Uint8Array([9]),
+      }],
+      foregroundEvidence: null,
+    })).toBeNull();
+    expect(projectVerifiedProtectedTaskRunResultAgentSignerEvidence({
+      verifiedSignerEvidence: [
+        {
+          kind: "task_runtime_signer_certificate",
+          evidenceBytes: certificateBytes,
+        },
+        {
+          kind: "agent_runtime_publication",
+          evidenceBytes: new Uint8Array([5, 6]),
+        },
+      ],
+      foregroundEvidence: null,
+    })).toBeNull();
+    expect(projectVerifiedProtectedTaskRunResultAgentSignerEvidence({
+      verifiedSignerEvidence: [{
+        kind: "task_runtime_signer_certificate",
+        evidenceBytes: certificateBytes,
+      }],
+      foregroundEvidence,
+    })).toBeNull();
   });
 
   test("does not verify or query the crypto database during construction", async () => {
