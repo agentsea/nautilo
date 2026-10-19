@@ -1,10 +1,13 @@
 import { setup, replanFixture } from "../fixtures/human-task-mapped-content.ts";
+import { fixture as taskCryptoFixture, authority as taskAuthority,
+  coordinate as taskCoordinate } from "../fixtures/task-content-crypto-completion.ts";
 import { taskRuntimeStableIdempotencyKey } from "../../../runtime/src/protected-execution/background-authorization/task-runtime-grant-claim";
 import { InMemoryBackgroundAuthorizationRepository, buildUnclaimedTaskMappedHeadAuthorityReplacement } from "../../../runtime/src/protected-execution/background-authorization/repository";
 import { readVerifiedTaskDefinitionAccessLineage, inspectMappedTaskDefinitionAccessLineage,
   readVerifiedForegroundTaskDefinitionAccessRevision, refreshHumanMappedTaskContentAccessHead } from "../../src/server/task/postgres-foreground-task-definition-inspector.ts";
 import { describe, expect, test } from "bun:test";
 import { rejects } from "node:assert/strict";
+import { decodeObjectAccessManifestV5 } from "@nautilo/lattice-crypto/wire";
 
 describe("Human Task mapped access head", () => {
   for (const kind of ["human", "historical", "agent"] as const) {
@@ -153,4 +156,48 @@ test("detached lineage verifies retained signed prefixes and grants no live meta
     (f.crypto.connection.state.manifests.get(0)!["manifest_bytes"] as Uint8Array)[0]! ^= 1;
     await rejects(inspectMappedTaskDefinitionAccessLineage(input));
   } finally { f.cleanup(); }
+});
+
+test("detached lineage accepts a retained same-Human cross-Agent definition author", async () => {
+  const crypto = await taskCryptoFixture("foreground", true, true);
+  await crypto.adapter.complete(crypto.prepared);
+  crypto.rewrapHuman(3);
+  const input = {
+    handle: crypto.handle,
+    crypto: crypto.crypto,
+    coordinate: taskCoordinate,
+    objectId: crypto.prepared.objectId,
+    namespaceId: taskAuthority.namespaceId,
+    requesterHumanId: taskAuthority.requesterHumanId,
+    mappedAccessRevision: 1,
+    expectedAgentId: "different-task-executor",
+    ...crypto.history,
+  };
+  expect(await inspectMappedTaskDefinitionAccessLineage(input)).not.toBeNull();
+  crypto.invalidateAcceptedPlan();
+  await rejects(inspectMappedTaskDefinitionAccessLineage(input));
+});
+
+for (const kind of ["human", "foreground"] as const) test(`detached ${kind} lineage keeps its original signer rule without a Domain head`, async () => {
+  const crypto = await taskCryptoFixture(kind, true, true);
+  await crypto.adapter.complete(crypto.prepared);
+  crypto.rewrapHuman(3);
+  const genesis = decodeObjectAccessManifestV5(
+    crypto.connection.state.manifests.get(0)!["manifest_bytes"] as Uint8Array,
+  );
+  const input = {
+    handle: crypto.handle, crypto: crypto.crypto, coordinate: taskCoordinate,
+    objectId: crypto.prepared.objectId, namespaceId: taskAuthority.namespaceId,
+    requesterHumanId: taskAuthority.requesterHumanId, mappedAccessRevision: 1,
+    expectedAgentId: genesis.signer.kind === "agent_runtime"
+      ? genesis.signer.agentId : "unused-human-genesis",
+    ...crypto.history,
+  };
+  crypto.connection.namespaceHead = null;
+  expect(await inspectMappedTaskDefinitionAccessLineage(input)).not.toBeNull();
+  if (kind === "foreground") {
+    expect(await inspectMappedTaskDefinitionAccessLineage({
+      ...input, expectedAgentId: "different-task-executor",
+    })).toBeNull();
+  }
 });

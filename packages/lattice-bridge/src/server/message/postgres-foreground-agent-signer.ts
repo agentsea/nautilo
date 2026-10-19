@@ -8,12 +8,15 @@ import {
   eq,
   isNotNull,
   or,
+  rooms,
   sql,
 } from "@nautilo/db";
 import type { LatticeCrypto } from "@nautilo/lattice-crypto";
 import {
   agentRuntimeObjectSignerKeyIdV1,
+  destroyDomainForegroundAuthorizationPlanV2,
   decodeLiveShadowMessagePlanV4,
+  parseDomainForegroundAuthorizationPlanV2,
 } from "@nautilo/lattice-crypto/wire";
 
 import type { ResolveLiveShadowAgentObjectSigner } from
@@ -40,11 +43,49 @@ export type ForegroundAgentAcceptedExecutionEvidence = Readonly<{
   signerPublicKey: Uint8Array;
   planBytes: Uint8Array;
   planDigest: Uint8Array;
+  /** Authenticated retained grant facts. Absent evidence cannot authorize a
+   * definition written by an Agent other than the Task executor. */
+  acceptedAuthority?: Readonly<{
+    subjectHumanId: string;
+    authorizedDomainIds: readonly string[];
+  }>;
 }>;
 
 export type ResolveForegroundAgentAcceptedExecutionEvidence = (
   principal: Parameters<ResolveLiveShadowAgentObjectSigner>[0],
 ) => Promise<ForegroundAgentAcceptedExecutionEvidence | null>;
+
+type DefinitionAuthorPrincipal = Parameters<
+  ResolveForegroundAgentAcceptedExecutionEvidence
+>[0];
+
+function principalKey(principal: DefinitionAuthorPrincipal): string {
+  return `${principal.agentId}\0${principal.runtimeGeneration}\0${principal.signerKeyId}`;
+}
+
+/** Capture only the exact accepted foreground principal whose retained grant
+ * covered the Task definition's Human and Domain. */
+export function captureForegroundTaskDefinitionAuthor(input: Readonly<{
+  resolveEvidence?: ResolveForegroundAgentAcceptedExecutionEvidence | undefined;
+  subjectHumanId: string;
+  domainId: string | null;
+}>) {
+  const accepted = new Set<string>();
+  return Object.freeze({
+    resolveEvidence: async (principal: DefinitionAuthorPrincipal) => {
+      const evidence = await input.resolveEvidence?.(principal) ?? null;
+      const authority = evidence?.acceptedAuthority;
+      if (authority !== undefined && input.domainId !== null
+        && authority.subjectHumanId === input.subjectHumanId
+        && authority.authorizedDomainIds.includes(input.domainId)) {
+        accepted.add(principalKey(principal));
+      }
+      return evidence;
+    },
+    authorizes: (principal: DefinitionAuthorPrincipal) =>
+      accepted.has(principalKey(principal)),
+  });
+}
 
 export function createPostgresForegroundAgentAcceptedExecutionEvidenceResolver(input: Readonly<{
   product: ConversationProductPostgresHandle;
@@ -133,12 +174,125 @@ export function createPostgresForegroundAgentAcceptedExecutionEvidenceResolver(i
         || (!invocationBacked && plan.authorization.disposition === "authorization_reusable"
           && !equal(plan.authorization.authorizationDigest, acceptedDigest))
       ) return null;
+      let acceptedAuthority: ForegroundAgentAcceptedExecutionEvidence[
+        "acceptedAuthority"
+      ];
+      const authorizationPlanBytes = invocationBacked
+        ? row["invocation_authorization_plan_bytes"]
+        : shared
+          ? row["execution_authorization_plan_bytes"]
+          : row["agent_grant_plan_bytes"];
+      const authorizationPlanDigest = invocationBacked
+        ? row["invocation_authorization_plan_digest"]
+        : shared
+          ? row["execution_authorization_plan_digest"]
+          : row["agent_grant_plan_digest"];
+      const recipientKeyId = invocationBacked
+        ? row["invocation_recipient_key_id"]
+        : shared
+          ? row["execution_recipient_key_id"]
+          : row["recipient_key_id"];
+      const authorizationDisposition = invocationBacked
+        ? row["invocation_authorization_disposition"]
+        : shared ? row["execution_authorization_disposition"] : null;
+      const authorizationSessionReference = invocationBacked
+        ? row["invocation_authorization_session_reference"]
+        : shared ? row["execution_authorization_session_reference"] : null;
+      const authorityRoomId = shared
+        ? row["source_room_parent_id"] ?? row["source_room_id"]
+        : plan.roomId;
+      if (authorizationPlanBytes instanceof Uint8Array
+        && authorizationPlanDigest instanceof Uint8Array
+        && authorizationPlanDigest.length === 32
+        && typeof recipientKeyId === "string") {
+        let authorization: ReturnType<
+          typeof parseDomainForegroundAuthorizationPlanV2
+        > = null;
+        try {
+          authorization = parseDomainForegroundAuthorizationPlanV2(
+            authorizationPlanBytes,
+          );
+        } catch {
+          // The retained execution remains valid signer evidence. A malformed
+          // retained grant simply cannot authorize a cross-Agent definition.
+        }
+        const actual = input.crypto.hash(authorizationPlanBytes);
+        try {
+          const sharedRecipient = authorization?.recipientKind === "runtime"
+            && authorization.recipientPrincipalId === "nautilo_foreground_runtime"
+            && authorization.recipientAuthorizationRevision === 0
+            && authorization.recipientRuntimeGeneration === 0;
+          const agentRecipient = authorization?.recipientKind === "agent"
+            && authorization.recipientPrincipalId === principal.agentId
+            && authorization.recipientAuthorizationRevision
+              === plan.agentAuthorizationRevision
+            && authorization.recipientRuntimeGeneration
+              === principal.runtimeGeneration;
+          const requiredPlanMatches =
+            plan.authorization.disposition === "authorization_required"
+            && authorization !== null
+            && authorization.authorizationId
+              === plan.authorization.authorizationId
+            && equal(authorizationPlanBytes,
+              plan.authorization.authorizationPlanBytes)
+            && equal(authorizationPlanDigest,
+              plan.authorization.authorizationPlanDigest);
+          const invocationEstablishmentMatches = invocationBacked
+            && plan.authorization.disposition === "authorization_reusable"
+            && authorization !== null
+            && plan.authorization.sessionReference
+              === `pending:${authorization.authorizationId}`
+            && equal(plan.authorization.authorizationDigest,
+              authorizationPlanDigest);
+          const dispositionMatches = !shared
+            ? plan.authorization.disposition === "authorization_reusable"
+              || requiredPlanMatches
+            : authorizationDisposition === "establish"
+              ? requiredPlanMatches || invocationEstablishmentMatches
+              : authorizationDisposition === "reuse"
+                && plan.authorization.disposition === "authorization_reusable"
+                && authorizationSessionReference
+                  === plan.authorization.sessionReference
+                && equal(acceptedDigest,
+                  plan.authorization.authorizationDigest);
+          if (authorization !== null
+            && equal(actual, authorizationPlanDigest)
+            && authorization.subjectHumanId === plan.subjectHumanId
+            && authorization.committerDeviceId === plan.committerDeviceId
+            && authorization.committerDeviceSigningGeneration
+              === plan.committerDeviceSigningKeyGeneration
+            && authorization.hostAuthorizationRevision
+              === plan.hostAuthorizationRevision
+            && authorization.sessionId === (shared
+              ? row["client_action_session_id"]
+              : plan.sessionId)
+            && authorization.roomId === authorityRoomId
+            && authorization.policyRevision === plan.policyRevision
+            && authorization.recipientKeyId === recipientKeyId
+            && (shared ? sharedRecipient : agentRecipient)
+            && authorization.operations.includes("encrypt")
+            && dispositionMatches) {
+            acceptedAuthority = Object.freeze({
+              subjectHumanId: authorization.subjectHumanId,
+              authorizedDomainIds: Object.freeze(
+                authorization.domains.map(domain => domain.domainId),
+              ),
+            });
+          }
+        } finally {
+          actual.fill(0);
+          if (authorization !== null) {
+            destroyDomainForegroundAuthorizationPlanV2(authorization);
+          }
+        }
+      }
       return Object.freeze({
         // postgres-js bytea values can be Buffers: Buffer.slice() aliases the
         // row, so later evidence cleanup would also erase the returned signer.
         signerPublicKey: Uint8Array.from(publicKey),
         planBytes: Uint8Array.from(planBytes),
         planDigest: Uint8Array.from(planDigest),
+        ...(acceptedAuthority === undefined ? {} : { acceptedAuthority }),
       });
     } catch {
       return null;
@@ -199,9 +353,43 @@ export function createPostgresForegroundAgentAcceptedExecutionEvidenceResolver(i
         invocation_authorization_digest:
           sql<Uint8Array | null>`${invocations.authorizationDigest}`
             .as("invocation_authorization_digest"),
+        invocation_authorization_plan_bytes:
+          sql<Uint8Array | null>`${invocations.authorizationPlanBytes}`
+            .as("invocation_authorization_plan_bytes"),
+        invocation_authorization_plan_digest:
+          sql<Uint8Array | null>`${invocations.authorizationPlanDigest}`
+            .as("invocation_authorization_plan_digest"),
+        invocation_recipient_key_id:
+          sql<string | null>`${invocations.recipientKeyId}`
+            .as("invocation_recipient_key_id"),
+        invocation_authorization_disposition:
+          sql<string | null>`${invocations.authorizationDisposition}`
+            .as("invocation_authorization_disposition"),
+        invocation_authorization_session_reference:
+          sql<string | null>`${invocations.authorizationSessionReference}`
+            .as("invocation_authorization_session_reference"),
+        execution_authorization_plan_bytes:
+          sql<Uint8Array | null>`${executions.authorizationPlanBytes}`
+            .as("execution_authorization_plan_bytes"),
+        execution_authorization_plan_digest:
+          sql<Uint8Array | null>`${executions.authorizationPlanDigest}`
+            .as("execution_authorization_plan_digest"),
+        execution_recipient_key_id:
+          sql<string | null>`${executions.recipientKeyId}`
+            .as("execution_recipient_key_id"),
+        execution_authorization_disposition:
+          sql<string | null>`${executions.authorizationDisposition}`
+            .as("execution_authorization_disposition"),
+        execution_authorization_session_reference:
+          sql<string | null>`${executions.authorizationSessionReference}`
+            .as("execution_authorization_session_reference"),
+        source_room_id: sql<string | null>`${rooms.id}`
+          .as("source_room_id"),
+        source_room_parent_id: sql<string | null>`${rooms.parentRoomId}`
+          .as("source_room_parent_id"),
       }).from(executions).leftJoin(invocations,
         eq(invocations.invocationId, executions.invocationId),
-      ).where(and(
+      ).leftJoin(rooms, eq(rooms.id, executions.roomId)).where(and(
         eq(executions.agentId, principal.agentId),
         eq(executions.agentRuntimeGeneration, principal.runtimeGeneration),
         eq(executions.agentSignerKeyId, principal.signerKeyId),
@@ -231,6 +419,9 @@ export function createPostgresForegroundAgentAcceptedExecutionEvidenceResolver(i
         planDigest: turns.planDigest,
         grantDigest: turns.grantDigest,
         humanRequestDigest: turns.humanRequestDigest,
+        authorizationPlanBytes: turns.agentGrantPlanBytes,
+        authorizationPlanDigest: turns.agentGrantPlanDigest,
+        recipientKeyId: turns.recipientKeyId,
       }).from(signers).innerJoin(turns,
         eq(turns.operationId, signers.operationId),
       ).where(and(

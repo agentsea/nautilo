@@ -279,6 +279,10 @@ type RetainedForegroundAgentExecution = Readonly<{
   principal: ForegroundAgentSignerPrincipal;
   planBytes: Uint8Array;
   planDigest: Uint8Array;
+  acceptedAuthority?: Readonly<{
+    subjectHumanId: string;
+    authorizedDomainIds: readonly string[];
+  }>;
 }>;
 
 function sameForegroundAgentSigner(
@@ -309,6 +313,14 @@ export function createProtectedTaskForegroundSignerTransport(input: Readonly<{
           principal: Object.freeze({ ...principal }),
           planBytes: Uint8Array.from(evidence.planBytes),
           planDigest: Uint8Array.from(evidence.planDigest),
+          ...(evidence.acceptedAuthority === undefined ? {} : {
+            acceptedAuthority: Object.freeze({
+              subjectHumanId: evidence.acceptedAuthority.subjectHumanId,
+              authorizedDomainIds: Object.freeze([
+                ...evidence.acceptedAuthority.authorizedDomainIds,
+              ]),
+            }),
+          }),
         });
         if (retained !== null && (
           !sameForegroundAgentSigner(retained.principal, next.principal)
@@ -333,6 +345,26 @@ export function createProtectedTaskForegroundSignerTransport(input: Readonly<{
     ) => retained !== null
       && principal.agentId === expectedAgentId
       && sameForegroundAgentSigner(retained.principal, principal)
+      ? Object.freeze({
+          kind: "foreground_agent_accepted_execution" as const,
+          planBytesBase64url: Buffer.from(retained.planBytes).toString("base64url"),
+          planDigestBase64url: Buffer.from(retained.planDigest).toString("base64url"),
+        })
+      : null,
+    definitionEvidenceFor: (
+      principal: ForegroundAgentSignerPrincipal,
+      expected: Readonly<{
+        taskAgentId: string;
+        subjectHumanId: string;
+        domainId: string;
+      }>,
+    ) => retained !== null
+      && sameForegroundAgentSigner(retained.principal, principal)
+      && (principal.agentId === expected.taskAgentId
+        || retained.acceptedAuthority?.subjectHumanId
+          === expected.subjectHumanId
+          && retained.acceptedAuthority.authorizedDomainIds
+            .includes(expected.domainId))
       ? Object.freeze({
           kind: "foreground_agent_accepted_execution" as const,
           planBytesBase64url: Buffer.from(retained.planBytes).toString("base64url"),
@@ -475,6 +507,7 @@ function validateProtectedTaskReadManifestSigners(input: Readonly<{
   requesterHumanId: string;
   historicalRepair: Extract<TaskHistoricalRepairProvenanceV1, { version: 2 }> | null;
   allowHumanGenesis: boolean;
+  allowForegroundDefinitionAuthor?: boolean;
 }>): "agent_runtime" | "human_device" {
   if (input.chain.length === 0) {
     throw new TypeError("Protected Task access chain is empty");
@@ -490,7 +523,8 @@ function validateProtectedTaskReadManifestSigners(input: Readonly<{
         }
         if (manifest.signer.kind === "agent_runtime"
           && input.historicalRepair === null
-          && manifest.signer.agentId === input.expectedAgentId) {
+          && (manifest.signer.agentId === input.expectedAgentId
+            || input.allowForegroundDefinitionAuthor === true)) {
           genesisKind = "agent_runtime";
         } else if (manifest.signer.kind === "human_device"
           && (input.allowHumanGenesis || input.historicalRepair !== null)
@@ -1681,6 +1715,7 @@ export function createProductionProtectedTaskComposition(
         }
         const genesis = decodeObjectAccessManifestV5(chain[0]!);
         let genesisKind: "agent_runtime" | "human_device";
+        let genesisIsTaskAgent = false;
         let foregroundEvidence: ReturnType<
           NonNullable<typeof foreground>["evidenceFor"]
         > = null;
@@ -1692,9 +1727,16 @@ export function createProductionProtectedTaskComposition(
             requesterHumanId: input.authority.subjectHumanId,
             historicalRepair,
             allowHumanGenesis: true,
+            allowForegroundDefinitionAuthor: true,
           });
+          genesisIsTaskAgent = genesis.signer.kind === "agent_runtime"
+            && genesis.signer.agentId === task.agentId;
           foregroundEvidence = genesis.signer.kind === "agent_runtime"
-            ? foreground?.evidenceFor(genesis.signer, task.agentId) ?? null
+            ? foreground?.definitionEvidenceFor(genesis.signer, {
+                taskAgentId: task.agentId,
+                subjectHumanId: input.authority.subjectHumanId,
+                domainId: current.content.domainId,
+              }) ?? null
             : null;
         } finally {
           wipeDecodedAccessManifest(genesis);
@@ -1710,7 +1752,7 @@ export function createProductionProtectedTaskComposition(
           && verified.genesisHumanId === null
           && (foregroundEvidence !== null
             ? verified.signerEvidence.length === 0
-            : publicationEvidence !== null);
+            : genesisIsTaskAgent && publicationEvidence !== null);
         if (!humanGenesis && !agentGenesis) {
           throw new ProtectedTaskRouteError(
             409,

@@ -90,6 +90,7 @@ export function exactForegroundAgentSignerKeysV1(input: Readonly<{
   evidence: readonly unknown[];
   manifestBytes: readonly Uint8Array[];
   expectedAgentId?: string;
+  expectedDefinitionAuthorHumanId?: string;
 }>): Map<string, Uint8Array> {
   const keys = new Map<string, Uint8Array>();
   try {
@@ -126,11 +127,17 @@ export function exactForegroundAgentSignerKeysV1(input: Readonly<{
         plan = decodeLiveShadowMessagePlanV4(planBytes);
         actualDigest = input.crypto.hash(planBytes);
         canonical = encodeLiveShadowMessagePlanV4(plan);
+        const expectedWriterMatches =
+          input.expectedDefinitionAuthorHumanId !== undefined
+            ? plan.recipientAgentId === input.expectedAgentId
+              || plan.subjectHumanId
+                === input.expectedDefinitionAuthorHumanId
+            : input.expectedAgentId === undefined
+              || plan.recipientAgentId === input.expectedAgentId;
         if (planDigest.length !== 32
           || !sameBytes(actualDigest, planDigest)
           || !sameBytes(canonical, planBytes)
-          || input.expectedAgentId !== undefined
-            && plan.recipientAgentId !== input.expectedAgentId) {
+          || !expectedWriterMatches) {
           throw new TypeError("Accepted foreground Agent plan is invalid");
         }
         const key = foregroundAgentSignerPrincipalKeyV1({
@@ -156,7 +163,8 @@ export function exactForegroundAgentSignerKeysV1(input: Readonly<{
       const manifest = decodeObjectAccessManifestV5(bytes);
       try {
         if (manifest.signer.kind !== "agent_runtime") continue;
-        if (input.expectedAgentId !== undefined
+        if (input.expectedDefinitionAuthorHumanId === undefined
+          && input.expectedAgentId !== undefined
           && manifest.signer.agentId !== input.expectedAgentId) {
           throw new TypeError("Accepted foreground Agent belongs to another Agent");
         }

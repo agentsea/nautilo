@@ -206,7 +206,12 @@ async function fixture(adjust: Adjust = (_stage, rows) => rows, options: {
     transactionOnce: async (use) => use(restricted),
   };
   const accepted = options.ephemeral && agentSignerRow !== null
-    ? await acceptedForegroundSignerFixture(crypto, agentSignerRow) : undefined;
+    ? await acceptedForegroundSignerFixture(crypto, agentSignerRow, {
+        subjectHumanId: HUMAN,
+        namespaceId: NAMESPACE,
+        domainId: DOMAIN,
+      })
+    : undefined;
   if (options.ephemeral) agentSignerRow = null;
   const signal = new AbortController().signal;
   const open = <Value>(execute: Parameters<typeof withNativeProtectedTaskDefinitionV1<Value>>[0]["execute"],
@@ -283,6 +288,18 @@ describe("native protected Task definition opener", () => {
     let called = false;
     await fails(value.open(() => { called = true; }));
     expect(called).toBe(false);
+  });
+
+  test("opens a different-Agent genesis only with retained same-Human Domain authority", async () => {
+    const value = await fixture(undefined, {
+      agent: TASK,
+      rewrap: true,
+      ephemeral: true,
+    });
+    expect(await value.open(payload => payload.prompt))
+      .toBe("Open native protected Task");
+    value.accepted!.invalidate();
+    await fails(value.open(() => "must not open"));
   });
 
   for (const [stage, field, replacement] of [

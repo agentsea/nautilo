@@ -122,6 +122,9 @@ function orchestrationFixture(
   let resumable = false;
   let recoverPrepared = false;
   let lastPreparedContent: TaskDefinitionContent | null = null;
+  const openedTaskAgents: string[] = [];
+  const inspectedAuthorAgents: string[] = [];
+  const privateNamespaceLookups: Array<{ namespaceId: string; taskExecutorAgentId: string }> = [];
   const transaction = {
     select: () => {
       let table: unknown;
@@ -222,7 +225,10 @@ function orchestrationFixture(
           cryptoRequiredNamespaceFingerprint: Uint8Array.from(committedOperation.product.cryptoRequiredNamespaceFingerprint!) } };
       const value = await use({ transaction: transaction as never, product: {} as never, restricted: {} as never,
         resolveCurrentForegroundDefinitionAuthorization: async () => null,
-        resolveAuthority: async namespaceId => namespaceId === NS ? authority : null,
+        resolveAuthority: async (namespaceId, taskExecutorAgentId) => {
+          privateNamespaceLookups.push({ namespaceId, taskExecutorAgentId });
+          return namespaceId === NS ? authority : null;
+        },
         assertCurrent: async () => {} });
       if (failCommit && working?.contentRevision !== startingRevision) {
         working = null; workingOperation = null; throw new Error("Product commit rejected");
@@ -235,9 +241,13 @@ function orchestrationFixture(
   }, {
     verifyProduct: async value => value as never, verifyCrypto: async value => value as never,
     productStore: () => productStore,
-    open: async input => ({ status: "opened", value: await input.use({ payload: workingPayload,
-      retainedHistoricalError: workingRetainedHistoricalError }) }),
+    open: async input => {
+      openedTaskAgents.push(input.expectedAgentId);
+      return { status: "opened", value: await input.use({ payload: workingPayload,
+        retainedHistoricalError: workingRetainedHistoricalError }) };
+    },
     inspectPrepared: async input => {
+      inspectedAuthorAgents.push(input.expectedAgentId);
       if (!recoverPrepared || lastPreparedContent === null) return { status: "missing" };
       expect(input.payload).toEqual(lastPreparedContent);
       return { status: "verified", value: await input.use({} as never) };
@@ -290,6 +300,9 @@ function orchestrationFixture(
     payload: () => committedPayload,
     retainedHistoricalError: () => committedRetainedHistoricalError,
     preparedContent: () => lastPreparedContent,
+    openedTaskAgents,
+    inspectedAuthorAgents,
+    privateNamespaceLookups,
     counts: () => ({ prepares, completions }),
     operation: () => committedOperation, setFailCommit: (value: boolean) => { failCommit = value; },
     recoverPrepared: (content?: TaskDefinitionContent) => {
@@ -301,6 +314,23 @@ function orchestrationFixture(
 }
 
 describe("foreground protected Task update orchestration", () => {
+  test("another admitted Genie edits the same Human's Task without changing its executor or origin", async () => {
+    const f = orchestrationFixture();
+    const authorAgentId = "30000000-0000-4000-8000-000000000002";
+    await f.publish("task-foreground-update:other-author", {
+      ...f.request, agentId: authorAgentId,
+    });
+    expect(f.openedTaskAgents).toEqual([AGENT]);
+    expect(f.privateNamespaceLookups).toEqual([
+      { namespaceId: NS, taskExecutorAgentId: AGENT },
+      { namespaceId: NS, taskExecutorAgentId: AGENT },
+    ]);
+    expect(f.row()).toMatchObject({ ownerId: USER, requestorId: USER,
+      agentId: AGENT, callingRoomId: "stored-origin-room", contentRevision: 5 });
+    expect(f.payload().prompt).toBe("private changed");
+    expect(f.counts()).toEqual({ prepares: 1, completions: 1 });
+  });
+
   for (const representation of ["protected", "dual"] as const) test(`publishes ${representation} revision N+1 without exposing protected content`, async () => {
     const f = orchestrationFixture(representation);
     const result = await f.publish(`task-foreground-update:${representation}`);
@@ -347,6 +377,29 @@ describe("foreground protected Task update orchestration", () => {
     expect(restarted.operation()?.lifecycle).toMatchObject({ operationId,
       coordinate: { kind: "definition", taskId: TASK, contentRevision: 5 },
       completion: "complete", disposition: "mapped" });
+    expect(restarted.counts()).toEqual({ prepares: 0, completions: 0 });
+  });
+
+  test("cross-Genie recovery verifies the foreground author while preserving the stored executor", async () => {
+    const f = orchestrationFixture();
+    const authorAgentId = "30000000-0000-4000-8000-000000000002";
+    const operationId = "task-foreground-update:recover-other-author";
+    f.setFailCommit(true);
+    await rejects(f.publish(operationId, { ...f.request, agentId: authorAgentId }), /commit rejected/u);
+    expect(f.row().contentRevision).toBe(4);
+    const prepared = f.preparedContent();
+    if (prepared === null) throw new Error("Expected prepared definition");
+    const restarted = orchestrationFixture();
+    restarted.recoverPrepared(prepared);
+    await restarted.publish(operationId, { ...restarted.request, agentId: authorAgentId });
+    expect(restarted.inspectedAuthorAgents).toEqual([authorAgentId]);
+    expect(restarted.openedTaskAgents).toEqual([AGENT]);
+    expect(restarted.privateNamespaceLookups).toEqual([
+      { namespaceId: NS, taskExecutorAgentId: AGENT },
+      { namespaceId: NS, taskExecutorAgentId: AGENT },
+    ]);
+    expect(restarted.row()).toMatchObject({ agentId: AGENT,
+      callingRoomId: "stored-origin-room", contentRevision: 5 });
     expect(restarted.counts()).toEqual({ prepares: 0, completions: 0 });
   });
 

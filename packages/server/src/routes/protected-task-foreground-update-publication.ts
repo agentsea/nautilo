@@ -64,7 +64,7 @@ export type ProtectedTaskForegroundUpdateProductContext = Readonly<{
   product: PostgresJsBridgeConnection;
   restricted: PostgresJsBridgeConnection;
   resolveCurrentForegroundDefinitionAuthorization: ResolveCurrentDeviceWrappedAgentObjectAccessGenesisSetAuthorization;
-  resolveAuthority(namespaceId: string): Promise<TaskContentAuthorityV1 | null>;
+  resolveAuthority(namespaceId: string, taskExecutorAgentId: string): Promise<TaskContentAuthorityV1 | null>;
   assertCurrent(): Promise<void>;
 }>;
 
@@ -258,13 +258,13 @@ export function createProtectedTaskForegroundUpdatePublication(input: Dependenci
           lifecycleOnly: true, ownerId: request.ownerId,
         });
         if (current === undefined || current.ownerId !== request.requestorId
-          || current.requestorId !== request.requestorId || current.agentId !== request.agentId
+          || current.requestorId !== request.requestorId
           || current.parentTaskId !== null || current.depth !== 0
           || (current.status !== "pending" && current.status !== "paused") || current.fireLockId !== null
           || current.contentRepresentation !== representation || current.contentNamespaceId === null
           || current.contentRevision < 1 || current.cryptoMappingState !== "verified"
           || current.cryptoObjectId === null) invalid("Foreground Task update target changed");
-        const authority = await context.resolveAuthority(current.contentNamespaceId);
+        const authority = await context.resolveAuthority(current.contentNamespaceId, current.agentId);
         if (authority === null) unavailable("Foreground Task private authority is unavailable");
         const product = await (overrides.verifyProduct ?? verifyConversationProductPostgresHandle)(context.product);
         const productStore = overrides.productStore?.({ product, authority, assertCurrent })
@@ -331,7 +331,6 @@ export function createProtectedTaskForegroundUpdatePublication(input: Dependenci
           });
           if (safe === undefined) invalid("Foreground Task update target is unavailable");
           if (safe.ownerId !== request.requestorId || safe.requestorId !== request.requestorId
-            || safe.agentId !== request.agentId
             || safe.parentTaskId !== null || safe.depth !== 0
             || (safe.status !== "pending" && safe.status !== "paused")
             || safe.fireLockId !== null || safe.contentRepresentation !== representation
@@ -339,7 +338,7 @@ export function createProtectedTaskForegroundUpdatePublication(input: Dependenci
             || safe.cryptoMappingState !== "verified" || safe.cryptoObjectId === null) {
             invalid("Foreground Task update target changed");
           }
-          const authority = await context.resolveAuthority(safe.contentNamespaceId);
+          const authority = await context.resolveAuthority(safe.contentNamespaceId, safe.agentId);
           if (authority === null) unavailable("Foreground Task private authority is unavailable");
           const product = await (overrides.verifyProduct ?? verifyConversationProductPostgresHandle)(context.product);
           const crypto = await (overrides.verifyCrypto ?? verifyCryptoPostgresHandle)(context.restricted);
@@ -429,7 +428,7 @@ export function createProtectedTaskForegroundUpdatePublication(input: Dependenci
             crypto: input.crypto,
             taskId: request.taskId,
             contentRevision: safe.contentRevision,
-            expectedAgentId: request.agentId,
+            expectedAgentId: safe.agentId,
             currentAuthority: authority,
             entities: input.entities,
             resolveForegroundAgentAcceptedExecutionEvidence,

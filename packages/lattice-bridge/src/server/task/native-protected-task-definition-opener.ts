@@ -1,5 +1,5 @@
 import { parseTaskHistoricalRepairProvenanceV1, type TaskHistoricalRepairProvenanceV1 } from "../../task/task-historical-repair-provenance.ts";
-import { foregroundAgentAcceptedExecutionSigner, type ResolveForegroundAgentAcceptedExecutionEvidence } from "../message/postgres-foreground-agent-signer.ts";
+import { captureForegroundTaskDefinitionAuthor, foregroundAgentAcceptedExecutionSigner, type ResolveForegroundAgentAcceptedExecutionEvidence } from "../message/postgres-foreground-agent-signer.ts";
 import { and, domainKeyHeads, eq, objectCryptoAccessManifests, type PostgresJsBridgeConnection } from "@nautilo/db";
 import {
   assertAuthenticTaskRuntimeExecutionEvidence,
@@ -275,12 +275,17 @@ export async function withNativeProtectedTaskDefinitionV1<Value>(input: Readonly
         || envelope.context.bindingRevisionAtWrap !== occurrence.expectedAccessRevision) {
         throw new TypeError("Native Task definition ciphertext coordinates are invalid");
       }
+      const author = captureForegroundTaskDefinitionAuthor({
+        resolveEvidence: input.resolveForegroundAgentAcceptedExecutionEvidence,
+        subjectHumanId: occurrence.requesterHumanId,
+        domainId: occurrence.domainId,
+      });
       const verified = await verifyStoredObjectAccessManifestChainV5({
         executor: handle, crypto: input.crypto, objectId: occurrence.objectId,
         headAccessRevision: occurrence.cryptoAccessRevision, expectedPayloadHash: payloadHash,
         expectedHeadManifestHash: access.head.manifestHash,
         resolveLiveShadowAgentSigner: foregroundAgentAcceptedExecutionSigner({ crypto: input.crypto,
-          resolveEvidence: input.resolveForegroundAgentAcceptedExecutionEvidence }),
+          resolveEvidence: author.resolveEvidence }),
         resolveHistoricalAgentManagerAuthority: new PostgresHumanDeviceSignerHistory({ handle, crypto: input.crypto })
           .resolveAgentRuntimeSignerManager,
       });
@@ -303,7 +308,9 @@ export async function withNativeProtectedTaskDefinitionV1<Value>(input: Readonly
         const genesisSignerMatches = genesis.signer.kind === "human_device"
           ? genesis.signer.subjectHumanId === occurrence.requesterHumanId
             && verified.genesisHumanId === occurrence.requesterHumanId
-          : genesis.signer.kind === "agent_runtime" && genesis.signer.agentId === occurrence.agentId;
+          : genesis.signer.kind === "agent_runtime"
+            && (genesis.signer.agentId === occurrence.agentId
+              || author.authorizes(genesis.signer));
         if (genesis.objectId !== occurrence.objectId || genesis.accessRevision !== 0
           || genesis.previousManifestHash !== null || !genesisSignerMatches
           || (occurrence.definitionHistoricalRepair != null && (genesis.signer.kind !== "human_device"

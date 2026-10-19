@@ -67,6 +67,7 @@ const TASK_ID = "30000000-0000-4000-8000-000000000248";
 const ROOM_ID = "40000000-0000-4000-8000-000000000248";
 const NAMESPACE_ID = "50000000-0000-4000-8000-000000000248";
 const AGENT_ID = "60000000-0000-4000-8000-000000000248";
+const OTHER_AGENT_ID = "60000000-0000-4000-8000-000000000249";
 const BINDING_HASH = new Uint8Array(32).fill(0x19);
 const NAMESPACE_KEY = new Uint8Array(32).fill(0x48);
 
@@ -107,11 +108,13 @@ function seededRng(seed: number): (length: number) => Uint8Array {
 async function preparedAgentDefinition(
   manager: Awaited<ReturnType<typeof setup>>,
   managerDeviceId: string,
+  writerAgentId = AGENT_ID,
+  evidenceHumanId = HUMAN_ID,
 ) {
   const initialized = await prepareAgentRuntimeInitialization({
     crypto: manager.crypto,
     operationId: "task-definition-agent-initialization",
-    agentId: agentId(AGENT_ID),
+    agentId: agentId(writerAgentId),
     authorizationRevision: authorizationRevision(7),
     configObjects: [{
       objectId: "task-definition-agent-config",
@@ -201,11 +204,11 @@ async function preparedAgentDefinition(
     humanMessageId: 1,
     revision: 0,
     createdAt: unixTimestamp(NOW),
-    subjectHumanId: humanId(HUMAN_ID),
+    subjectHumanId: humanId(evidenceHumanId),
     committerDeviceId: cryptoDeviceId(managerDeviceId),
     committerDeviceSigningKeyGeneration: 1,
     hostAuthorizationRevision: authorizationRevision(11),
-    recipientAgentId: agentId(AGENT_ID),
+    recipientAgentId: agentId(writerAgentId),
     agentAuthorizationRevision: authorizationRevision(7),
     agentRuntimeGeneration: initialized.runtime.generation,
     agentSignerKeyId: signer.principal.signerKeyId,
@@ -1135,6 +1138,64 @@ test("vault-backed Task open accepts only the Task-bound trusted Agent Runtime s
   if (decodedPlan.authorization.disposition === "authorization_reusable") {
     decodedPlan.authorization.authorizationDigest.fill(0);
   }
+});
+
+test("vault-backed Task definition accepts an authenticated same-Human cross-Agent author", async () => {
+  const manager = await setup("device:cross-agent-manager", 0x262);
+  const reader = await setup("device:cross-agent-reader", 0x263);
+  const prepared = await preparedAgentDefinition(
+    manager,
+    "device:cross-agent-manager",
+    OTHER_AGENT_ID,
+  );
+  const envelope = {
+    ...prepared.envelope,
+    signerEvidence: [prepared.foregroundEvidence],
+  };
+  const opened = await reader.content.openExact({
+    reference: prepared.reference,
+    envelope,
+    expectedAgentId: AGENT_ID,
+  });
+  expect(decodeTaskPayloadV1(opened).prompt)
+    .toBe("Agent-created private prompt");
+  opened.fill(0);
+
+  const badDigest = decodeBase64url(
+    prepared.foregroundEvidence.planDigestBase64url,
+  );
+  badDigest[0] = badDigest[0]! ^ 1;
+  for (const signerEvidence of [
+    [],
+    [{ ...prepared.foregroundEvidence,
+      planDigestBase64url: base64url(badDigest) }],
+  ]) {
+    const rejected = await reader.content.openExact({
+      reference: prepared.reference,
+      envelope: { ...envelope, signerEvidence },
+      expectedAgentId: AGENT_ID,
+    }).catch((cause: unknown) => cause);
+    expect(rejected).toBeInstanceOf(ClassifiedDataOperationError);
+    expect((rejected as ClassifiedDataOperationError).failureClass)
+      .toBe("integrity");
+  }
+  badDigest.fill(0);
+
+  const wrongHuman = await preparedAgentDefinition(
+    manager,
+    "device:cross-agent-manager",
+    OTHER_AGENT_ID,
+    "other-human",
+  );
+  const wrongHumanResult = await reader.content.openExact({
+    reference: wrongHuman.reference,
+    envelope: { ...wrongHuman.envelope,
+      signerEvidence: [wrongHuman.foregroundEvidence] },
+    expectedAgentId: AGENT_ID,
+  }).catch((cause: unknown) => cause);
+  expect(wrongHumanResult).toBeInstanceOf(ClassifiedDataOperationError);
+  expect((wrongHumanResult as ClassifiedDataOperationError).failureClass)
+    .toBe("integrity");
 });
 
 test("vault-backed Task open keeps terminal custody loss classified as key waiting", async () => {

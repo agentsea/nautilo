@@ -1,10 +1,10 @@
 import { assertProtectedTaskOperationalMetadataProjectionV1 } from "@nautilo/types";
 import { withCurrentHumanTaskMappedContentAuthority, type HumanTaskMappedContentAuthorityInput, type HeldHumanTaskMappedContentAuthority } from "./postgres-human-task-mapped-content-authority.ts";
 import { PostgresHumanDeviceSignerHistory } from "../storage/postgres-human-device-signer-history.ts";
-import { createPostgresForegroundAgentAcceptedExecutionEvidenceResolver } from "../message/postgres-foreground-agent-signer.ts";
+import { captureForegroundTaskDefinitionAuthor, createPostgresForegroundAgentAcceptedExecutionEvidenceResolver } from "../message/postgres-foreground-agent-signer.ts";
 import { verifyConversationProductPostgresHandle } from "../message/postgres-conversation-product-store.ts";
 import { isDeepStrictEqual } from "node:util";
-import { eq, objectCryptoAccessHeads } from "@nautilo/db";
+import { and, eq, namespaceDomainKeyHeads, objectCryptoAccessHeads } from "@nautilo/db";
 import { decryptObjectThroughNamespace, type LatticeCrypto } from "@nautilo/lattice-crypto";
 import { decodeEncryptedPayloadV2, decodeNamespaceObjectEnvelopeV2,
   decodeObjectAccessManifestV5 } from "@nautilo/lattice-crypto/wire";
@@ -103,7 +103,21 @@ export async function inspectMappedTaskDefinitionAccessLineage(input: Readonly<{
   assertVerifiedCryptoPostgresHandle(input.handle);
   const pinned = { ...input, coordinate: Object.freeze({ ...input.coordinate }) };
   return withVerifiedCryptoPostgresTransaction(input.handle, async handle => {
-  const durable = await readDurableTaskContentPublication({ ...pinned, executor: handle });
+  const domains = await executeTypedCryptoQuery(handle, cryptoTypedDb.select({
+    domainId: namespaceDomainKeyHeads.domainId,
+  }).from(namespaceDomainKeyHeads).where(and(
+    eq(namespaceDomainKeyHeads.namespaceId, pinned.namespaceId),
+    eq(namespaceDomainKeyHeads.keyClass, "ai"),
+  )).limit(2));
+  const author = captureForegroundTaskDefinitionAuthor({
+    resolveEvidence: pinned.resolveForegroundAgentAcceptedExecutionEvidence,
+    subjectHumanId: pinned.requesterHumanId,
+    domainId: domains.length === 1 ? domains[0]!.domain_id : null,
+  });
+  const durable = await readDurableTaskContentPublication({ ...pinned,
+    executor: handle,
+    resolveForegroundAgentAcceptedExecutionEvidence: author.resolveEvidence,
+  });
   if (durable === null) return null;
   try {
     const genesis = decodeObjectAccessManifestV5(durable.genesisManifestBytes);
@@ -114,7 +128,9 @@ export async function inspectMappedTaskDefinitionAccessLineage(input: Readonly<{
         || payload.context.objectId !== pinned.objectId
         || (genesis.signer.kind === "human_device"
           ? genesis.signer.subjectHumanId !== pinned.requesterHumanId
-          : genesis.signer.kind !== "agent_runtime" || genesis.signer.agentId !== pinned.expectedAgentId)) return null;
+          : genesis.signer.kind !== "agent_runtime"
+            || genesis.signer.agentId !== pinned.expectedAgentId
+              && !author.authorizes(genesis.signer))) return null;
       return mintDefinitionLineage(pinned.coordinate, durable);
     } finally { payload.ciphertext.fill(0); }
   } finally { for (const bytes of Object.values(durable)) if (bytes instanceof Uint8Array) bytes.fill(0); }
@@ -206,7 +222,16 @@ async function inspectDefinition<Value>(input:
       // access head stable through reservation and mapping, including rewrap races.
       await executeTypedCryptoQuery(handle, cryptoTypedDb.select({ objectId: objectCryptoAccessHeads.objectId })
         .from(objectCryptoAccessHeads).where(eq(objectCryptoAccessHeads.objectId, objectId)).for("share"));
-      const durable = await readDurableTaskContentPublication({ ...input, executor: handle, objectId });
+      const author = captureForegroundTaskDefinitionAuthor({
+        resolveEvidence: input.resolveForegroundAgentAcceptedExecutionEvidence,
+        subjectHumanId: authority.requesterHumanId,
+        domainId: authority.domainId,
+      });
+      const durable = await readDurableTaskContentPublication({ ...input,
+        executor: handle,
+        objectId,
+        resolveForegroundAgentAcceptedExecutionEvidence: author.resolveEvidence,
+      });
       if (durable === null) return { status: "missing" as const };
       const payload = decodeEncryptedPayloadV2(durable.payloadBytes);
       const envelope = decodeNamespaceObjectEnvelopeV2(durable.envelopeBytes);
@@ -214,6 +239,7 @@ async function inspectDefinition<Value>(input:
         const genesis = decodeObjectAccessManifestV5(durable.genesisManifestBytes);
         const signerMatches = genesis.signer.kind === "agent_runtime"
           ? genesis.signer.agentId === expectedAgentId
+            || author.authorizes(genesis.signer)
           : input.signerPolicy === "supported_current" && genesis.signer.kind === "human_device"
             && genesis.signer.subjectHumanId === authority.requesterHumanId;
         if (!signerMatches
@@ -350,10 +376,17 @@ export async function refreshHumanMappedTaskContentAccessHead(
     const history = new PostgresHumanDeviceSignerHistory({ handle: context.handle, crypto: input.crypto });
     await executeTypedCryptoQuery(context.handle, cryptoTypedDb.select({ objectId: objectCryptoAccessHeads.objectId })
       .from(objectCryptoAccessHeads).where(eq(objectCryptoAccessHeads.objectId, lifecycle.cryptoObjectId)).for("share"));
+    const author = captureForegroundTaskDefinitionAuthor({
+      resolveEvidence: createPostgresForegroundAgentAcceptedExecutionEvidenceResolver({
+        product: await verifyConversationProductPostgresHandle(context.product), crypto: input.crypto,
+        rejectInvalidSelectedEvidence: true,
+      }),
+      subjectHumanId: authority.requesterHumanId,
+      domainId: authority.domainId,
+    });
     const durable = await readDurableTaskContentPublication({ executor: context.handle, crypto: input.crypto,
       objectId: lifecycle.cryptoObjectId, resolveHistoricalAgentSignerAuthority: history.resolveAgentRuntimeSignerManager,
-      resolveForegroundAgentAcceptedExecutionEvidence: createPostgresForegroundAgentAcceptedExecutionEvidenceResolver({
-        product: await verifyConversationProductPostgresHandle(context.product), crypto: input.crypto, rejectInvalidSelectedEvidence: true }),
+      resolveForegroundAgentAcceptedExecutionEvidence: author.resolveEvidence,
     });
     if (durable === null) return "unavailable" as const;
     const payload = decodeEncryptedPayloadV2(durable.payloadBytes);
@@ -364,7 +397,9 @@ export async function refreshHumanMappedTaskContentAccessHead(
       const signerMatches = genesis.signer.kind === "human_device"
         ? genesis.signer.subjectHumanId === authority.requesterHumanId
           && (historical == null || genesis.signer.committerDeviceId === historical.publisherDeviceId)
-        : historical == null && genesis.signer.kind === "agent_runtime" && genesis.signer.agentId === context.expectedAgentId;
+        : historical == null && genesis.signer.kind === "agent_runtime"
+          && (genesis.signer.agentId === context.expectedAgentId
+            || author.authorizes(genesis.signer));
       if (!signerMatches || genesis.objectId !== lifecycle.cryptoObjectId || genesis.accessRevision !== 0
         || genesis.previousManifestHash !== null || payload.context.objectId !== lifecycle.cryptoObjectId
         || payload.context.objectType !== taskContentObjectTypeV1(lifecycle.coordinate) || payload.context.keyClass !== "ai"

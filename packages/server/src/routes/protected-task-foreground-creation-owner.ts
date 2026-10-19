@@ -58,12 +58,12 @@ export function createProtectedTaskForegroundCreationOwner(input: Omit<Publicati
     assertLive();
   };
   const privateFact = async (request: Pick<ProtectedTaskCreationResolutionInputV1, "requestorId" | "agentId">,
-    expectedNamespaceId?: string): Promise<RequesterPrivateNamespaceFactV1> => {
+    expectedNamespaceId?: string, taskExecutorAgentId = request.agentId): Promise<RequesterPrivateNamespaceFactV1> => {
     const loan = current();
     if (request.requestorId !== input.subject.userId || request.agentId !== input.subject.agentId) unavailable();
     await loan.assertCurrent();
     const room = await createProtectedTaskRequesterPrivateRoomResolver(loan.transaction)(
-      request.requestorId, request.agentId, expectedNamespaceId);
+      request.requestorId, taskExecutorAgentId, expectedNamespaceId);
     if (room === null || !input.subject.namespaceIds.includes(room.namespaceId)) {
       return { status: "unavailable", reason: "requester_private_namespace_unauthorized" };
     }
@@ -143,8 +143,8 @@ export function createProtectedTaskForegroundCreationOwner(input: Omit<Publicati
         product: loan.product,
         restricted: input.restricted,
         resolveCurrentForegroundDefinitionAuthorization: loan.authority.resolveCurrentForegroundEntityObjectWrite,
-        resolveAuthority: async namespaceId => {
-          const fact = await privateFact(request, namespaceId);
+        resolveAuthority: async (namespaceId, taskExecutorAgentId) => {
+          const fact = await privateFact(request, namespaceId, taskExecutorAgentId);
           if (fact.status !== "authorized") return null;
           return {
             authorityVersion: 1,

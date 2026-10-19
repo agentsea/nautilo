@@ -376,6 +376,10 @@ describe("production protected Task composition", () => {
           signerPublicKey,
           planBytes,
           planDigest,
+          acceptedAuthority: {
+            subjectHumanId: ROUTE_AUTHORITY.subjectHumanId,
+            authorizedDomainIds: ["domain:task-private"],
+          },
         };
       },
     });
@@ -400,6 +404,27 @@ describe("production protected Task composition", () => {
       signer.principal,
       "10000000-0000-4000-8000-000000000099",
     )).toBeNull();
+    expect(transport.definitionEvidenceFor(signer.principal, {
+      taskAgentId: "10000000-0000-4000-8000-000000000099",
+      subjectHumanId: ROUTE_AUTHORITY.subjectHumanId,
+      domainId: "domain:task-private",
+    })).toEqual({
+      kind: "foreground_agent_accepted_execution",
+      planBytesBase64url: Buffer.from([1, 2, 3, 4]).toString("base64url"),
+      planDigestBase64url: Buffer.from(
+        new Uint8Array(32).fill(0x42),
+      ).toString("base64url"),
+    });
+    for (const expected of [
+      { taskAgentId: "10000000-0000-4000-8000-000000000099",
+        subjectHumanId: "other-human", domainId: "domain:task-private" },
+      { taskAgentId: "10000000-0000-4000-8000-000000000099",
+        subjectHumanId: ROUTE_AUTHORITY.subjectHumanId,
+        domainId: "domain:other" },
+    ]) {
+      expect(transport.definitionEvidenceFor(signer.principal, expected))
+        .toBeNull();
+    }
 
     transport.destroy();
     expect(transport.evidenceFor(

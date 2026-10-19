@@ -624,6 +624,7 @@ export function createVaultHumanTaskDeviceContentPortV1(
       let envelopeHash: Uint8Array | undefined;
       let humanKeys: Map<string, Uint8Array> | undefined;
       let prepared: ReturnType<typeof prepareTaskAccessManifestChain> | undefined;
+      let crossAgentGenesisPrincipal: string | undefined;
       try {
         const payload = decodeEncryptedPayloadV2(envelope.encryptedPayloadBytes);
         const manifest = decodeObjectAccessManifestV5(envelope.accessManifestBytes);
@@ -684,9 +685,13 @@ export function createVaultHumanTaskDeviceContentPortV1(
               expected.fill(0);
             }
           } else if (genesis.signer.kind === "agent_runtime") {
-            if (input.expectedAgentId === undefined
-              || genesis.signer.agentId !== input.expectedAgentId) {
+            if (input.expectedAgentId === undefined) {
               throw new TypeError("Task definition Agent genesis was substituted");
+            }
+            if (genesis.signer.agentId !== input.expectedAgentId) {
+              crossAgentGenesisPrincipal = foregroundAgentSignerPrincipalKeyV1(
+                genesis.signer,
+              );
             }
           } else if (genesis.signer.kind !== "human_device"
             || genesis.signer.subjectHumanId !== dependencies.subjectHumanId) {
@@ -709,7 +714,12 @@ export function createVaultHumanTaskDeviceContentPortV1(
           manifestBytes: prepared.fullChain,
           ...(input.expectedAgentId === undefined
             ? {} : { expectedAgentId: input.expectedAgentId }),
+          expectedDefinitionAuthorHumanId: dependencies.subjectHumanId,
         });
+        if (crossAgentGenesisPrincipal !== undefined
+          && !foregroundKeys.has(crossAgentGenesisPrincipal)) {
+          throw new TypeError("Task definition Agent genesis was substituted");
+        }
         humanKeys = exactTaskHumanSignerKeys({
           evidence: envelope.signerEvidence,
           chain: prepared.fullChain,

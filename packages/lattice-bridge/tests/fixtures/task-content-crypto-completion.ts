@@ -11,6 +11,7 @@ import {
   authorizationRevision,
   coordinateGrantAuthoritySetUse,
   createCommonHumanObjectAccessManifest,
+  createDomainForegroundAuthorizationPlan,
   cryptoDeviceId,
   cryptoDomainId,
   domainEpoch,
@@ -37,10 +38,12 @@ import {
 } from "@nautilo/lattice-crypto";
 import {
   decodeNamespaceObjectEnvelopeV2,
+  destroyDomainForegroundAuthorizationPlanV2,
   encodeAgentRuntimeSignerPublicationV1,
   encodeEncryptedPayloadV2,
   encodeLiveShadowMessagePlanV4,
   encodeNamespaceObjectEnvelopeV2,
+  serializeDomainForegroundAuthorizationPlanV2,
   serializeGrantV2,
 } from "@nautilo/lattice-crypto/wire";
 
@@ -660,23 +663,32 @@ async function fixture(kind: "human" | "agent" | "historical" | "foreground",
 
 export { fixture, authority, coordinate, NAMESPACE_ID, OTHER_TASK_ID };
 
-export async function acceptedForegroundSignerFixture(crypto: LatticeCrypto, publication: Readonly<Record<string, unknown>>) {
+export async function acceptedForegroundSignerFixture(
+  crypto: LatticeCrypto,
+  publication: Readonly<Record<string, unknown>>,
+  coordinates: Readonly<{
+    subjectHumanId: string;
+    namespaceId: string;
+    domainId: string;
+  }> = { subjectHumanId: HUMAN_ID, namespaceId: NAMESPACE_ID,
+    domainId: DOMAIN_ID },
+) {
   let acceptedPlanValid = true;
     const planBytes = encodeLiveShadowMessagePlanV4({
       formatVersion: 4, purpose: "message.live_shadow_plan", operationId: "accepted-foreground-turn",
       policyRevision: authority.expectedPolicyRevision, sessionId: TASK_ID, roomId: TASK_ID,
       humanMessageId: 12, revision: 0, createdAt: unixTimestamp(NOW),
-      subjectHumanId: humanId(HUMAN_ID), committerDeviceId: cryptoDeviceId("human-device"),
+      subjectHumanId: humanId(coordinates.subjectHumanId), committerDeviceId: cryptoDeviceId("human-device"),
       committerDeviceSigningKeyGeneration: 1, hostAuthorizationRevision: authorizationRevision(1),
       recipientAgentId: agentId(publication["agent_id"] as string),
       agentAuthorizationRevision: authorizationRevision(17),
       agentRuntimeGeneration: agentRuntimeGeneration(publication["runtime_generation"] as number),
       agentSignerKeyId: publication["signer_key_id"] as string,
       agentSignerPublicKey: publication["signer_public_key"] as Uint8Array,
-      namespaceId: namespaceId(NAMESPACE_ID), namespaceAccessRevision: accessRevision(2),
+      namespaceId: namespaceId(coordinates.namespaceId), namespaceAccessRevision: accessRevision(2),
       namespaceKeyGeneration: namespaceGeneration(4), namespaceHeadDigest: new Uint8Array(32).fill(32),
       namespacePublicationDigest: new Uint8Array(32).fill(32), namespacePublicationSetDigest: new Uint8Array(32).fill(32),
-      namespaceAudienceFingerprint: new Uint8Array(32).fill(32), grantDomainId: DOMAIN_ID,
+      namespaceAudienceFingerprint: new Uint8Array(32).fill(32), grantDomainId: coordinates.domainId,
       grantDomainParticipantDigest: new Uint8Array(32).fill(32), grantDomainKeyGeneration: 1,
       grantDomainHeadDigest: new Uint8Array(32).fill(31), grantDomainPublicationDigest: new Uint8Array(32).fill(32),
       grantDomainAuthorizationRevision: authorizationRevision(2), namespaceBundleGrantDomainAuthorizationRevision: authorizationRevision(2),
@@ -685,11 +697,42 @@ export async function acceptedForegroundSignerFixture(crypto: LatticeCrypto, pub
         authorizationDigest: new Uint8Array(32).fill(21) },
       attemptCoordinate: "accepted-attempt", issuedAt: unixTimestamp(NOW), deadlineAt: unixTimestamp(NOW + 1000),
     });
+    const authorizationPlan = createDomainForegroundAuthorizationPlan(crypto, {
+      authorizationId: "accepted-foreground-authorization",
+      policyRevision: authority.expectedPolicyRevision,
+      sessionId: TASK_ID,
+      roomId: TASK_ID,
+      subjectHumanId: humanId(coordinates.subjectHumanId),
+      committerDeviceId: cryptoDeviceId("human-device"),
+      committerDeviceSigningGeneration: 1,
+      hostAuthorizationRevision: authorizationRevision(1),
+      recipientKind: "agent",
+      recipientPrincipalId: agentId(publication["agent_id"] as string),
+      recipientAuthorizationRevision: authorizationRevision(17),
+      recipientRuntimeGeneration:
+        agentRuntimeGeneration(publication["runtime_generation"] as number),
+      recipientKeyId: "foreground-recipient",
+      operations: ["decrypt", "encrypt"],
+      issuedAt: unixTimestamp(NOW),
+      deadlineAt: unixTimestamp(NOW + 1_000),
+      maximumSecretBytes: 4_096,
+      domains: [{ domainId: coordinates.domainId, sourceNamespaceId: namespaceId(coordinates.namespaceId),
+        participantDigest: new Uint8Array(32).fill(32), participantCount: 1,
+        keyClass: "ai", domainKeyGeneration: 1,
+        authorizationRevision: authorizationRevision(2),
+        headDigest: new Uint8Array(32).fill(31),
+        activeNamespaceBindingSetDigest: new Uint8Array(32).fill(32),
+        activeNamespaceBindingCount: 1 }],
+    });
+    const authorizationPlanBytes =
+      serializeDomainForegroundAuthorizationPlanV2(authorizationPlan);
+    destroyDomainForegroundAuthorizationPlanV2(authorizationPlan);
     const row = { operation_id: "accepted-foreground-turn", session_id: TASK_ID, room_id: TASK_ID,
       agent_id: publication["agent_id"], agent_runtime_generation: publication["runtime_generation"],
       agent_signer_key_id: publication["signer_key_id"], agent_signer_public_key: publication["signer_public_key"],
       plan_bytes: planBytes, plan_digest: crypto.hash(planBytes), grant_digest: new Uint8Array(32).fill(21),
-      human_request_digest: new Uint8Array(32).fill(22) };
+      human_request_digest: new Uint8Array(32).fill(22), agent_grant_plan_bytes: authorizationPlanBytes,
+      agent_grant_plan_digest: crypto.hash(authorizationPlanBytes), recipient_key_id: "foreground-recipient" };
     const query = async <Row extends import("../../src/server/message/postgres-conversation-product-store.ts").ConversationProductDatabaseRow>(statement: string): Promise<readonly Row[]> => {
       if (statement.includes("current_user")) return [{current_user: "nautilo", session_user: "nautilo"}] as unknown as Row[];
       if (statement.includes("conversation_shared_agent_shadow_executions")) return [];
