@@ -324,6 +324,8 @@ export function PersonalProviderKeysSection({
       chat: forCapability("chat"),
       research: forCapability("research"),
       decision: forCapability("decision"),
+      images: forCapability("images"),
+      media: forCapability("media"),
       browsing: forCapability("browsing"),
       conversion: forCapability("conversion"),
     };
@@ -489,7 +491,7 @@ export function PersonalProviderKeysSection({
     <SectionCard
       id="personal-provider-keys"
       title="Personal API keys and subscriptions"
-      description={personalKeysDisabled ? undefined : "Add your own provider keys for supported personal chat, native text Tasks, Research, Decisions, browsing and file conversion. Keys belong to your account on this Server; after saving, only a masked preview is shown."}
+      description={personalKeysDisabled ? undefined : "Add your own provider keys for supported personal chat, native text Tasks, Research, Decisions, image generation, video and music generation, browsing and file conversion. Keys belong to your account on this Server; after saving, only a masked preview is shown."}
       actions={<a className="text-sm font-medium text-primary hover:underline" href="/account/costs">View your costs</a>}
     >
       <div>
@@ -513,13 +515,16 @@ export function PersonalProviderKeysSection({
           ) : null}
           {!personalKeysDisabled ? <><section className="mb-5 border-b border-border pb-5" aria-labelledby="personal-provider-key-coverage-title" data-testid="personal-provider-key-coverage">
             <h3 id="personal-provider-key-coverage-title" className="text-sm font-semibold">API key coverage</h3>
-            <p className="mt-1 text-xs text-foreground-muted">Shows which saved keys can fund personal chat, Research, Decisions, browsing and file conversion. Provider and key status remain pending until the server confirms them.</p>
+            <p className="mt-1 text-xs text-foreground-muted">Shows which saved keys can fund personal chat, Research, Decisions, image generation, video or music generation, browsing and file conversion. Image understanding requires an image-capable chat model. Surplus requires qualified signed-catalogue routes, and Surplus Decisions require a pilot-enabled account. Provider and key status remain pending until the server confirms them.</p>
             <ProviderKeyCoverageTable
               configuredProviderIds={configuredPersonalProviderIds}
               rows={[
                 { functionality: "Chat", providers: personalCapabilityProviders.chat },
+                { functionality: "Image understanding (qualified chat models)", providers: personalCapabilityProviders.chat },
                 { functionality: "Research", providers: personalCapabilityProviders.research },
                 { functionality: "Decisions", providers: personalCapabilityProviders.decision },
+                { functionality: "Image generation", providers: personalCapabilityProviders.images },
+                { functionality: "Video and music generation", providers: personalCapabilityProviders.media },
                 { functionality: "Browsing", providers: personalCapabilityProviders.browsing },
                 { functionality: "File conversion", providers: personalCapabilityProviders.conversion },
               ]}

@@ -142,6 +142,40 @@ describe("Surplus automatic financial recovery", () => {
     }]);
   });
 
+  test.each(["/v1/chat/completions", "/v1/decisions"])(
+    "recovers an explicit unpinned model receipt for %s across provider/model aliases",
+    async (endpoint) => {
+      const writes: unknown[] = [];
+      const unpinned = {
+        ...row,
+        endpoint,
+        metadata: {
+          ...row.metadata,
+          catalogModelId: row.model,
+          surplusUnpinnedModel: true,
+        },
+      } satisfies SurplusPendingAttempt;
+      const recovery = createRecovery({
+        list: async () => [unpinned],
+        resolveCredential: () => available(),
+        fetchCost: async ({ binding }) => {
+          expect(binding).toEqual({
+            requestId: row.providerRequestId!,
+            surplusModelId: "gpt-5.5",
+            providerPin: null,
+            unpinnedModel: true,
+          });
+          return { status: "settled", costMicro: 283 };
+        },
+        settle: async (input) => { writes.push(input); return true; },
+      });
+      recovery.wake();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await recovery.stop();
+      expect(writes).toHaveLength(1);
+    },
+  );
+
   test("keeps other endpoint protocols blocked without a receipt read", async () => {
     let reads = 0;
     let classified: unknown;

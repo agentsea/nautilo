@@ -90,6 +90,36 @@ describe("server media generation defaults", () => {
     expect(openRouterImages.some((model) => model.enabled)).toBe(true);
   });
 
+  test("Surplus policy and credential enable only implemented signed media routes", () => {
+    const surplus = { policyEnabled: true, keyConfigured: true };
+    const images = listMediaGenerationModels("image", {}, surplus);
+    const videos = listMediaGenerationModels("video", {}, surplus);
+    const music = listMediaGenerationModels("music", {}, surplus);
+
+    expect(images.find((model) => model.id === "venice:gpt-image-2"))
+      .toMatchObject({ enabled: true });
+    expect(videos.filter((model) => model.enabled).map((model) => model.id)).toEqual([
+      "venice:seedance-2-5-text-to-video-basic",
+      "venice:minimax-h3-enhanced-text-to-video",
+    ]);
+    expect(music.find((model) => model.id === "venice:minimax-music-v26"))
+      .toMatchObject({ enabled: true });
+    expect(music.find((model) => model.id === "venice:sonilo-v1-1-music"))
+      .toMatchObject({ enabled: false });
+  });
+
+  test("Surplus media eligibility requires both explicit policy and a configured key", () => {
+    const model = (policyEnabled: boolean, keyConfigured: boolean) =>
+      listMediaGenerationModels("video", {}, { policyEnabled, keyConfigured })
+        .find((entry) => entry.id === "venice:seedance-2-5-text-to-video-basic");
+    expect(model(false, true)).toMatchObject({ enabled: false });
+    expect(model(true, false)).toMatchObject({ enabled: false });
+    expect(getDefaultMediaGenerationModel("video", {}, {
+      policyEnabled: true,
+      keyConfigured: true,
+    }).id).toBe("venice:seedance-2-5-text-to-video-basic");
+  });
+
   test("explicit media choices are preserved; missing model is accepted without guessing model-specific defaults", () => {
     const explicit = { model: "minimax-music-v26", prompt: "A lyrical song" };
     expect(withMediaGenerationDefault("music", explicit)).toBe(explicit);

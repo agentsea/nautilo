@@ -89,6 +89,7 @@ export function SlackShapeRoom({
   if (checkPersonalReadiness && personalChatNeedsSetup(personalState)) {
     return <ProviderSetupEmptyState
       canManageProviders={false}
+      canUseServerKeys={canUseServerKeys}
       personalState={personalState}
       onRetry={() => setRefreshGeneration((generation) => generation + 1)}
     />;

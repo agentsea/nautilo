@@ -22,6 +22,8 @@ export interface BolterPublicationTransport {
     receiver: Readonly<BolterBindingContext>;
     claim: Claim;
     authorize(): Promise<BolterPublicationContent | null>;
+    /** File preparation is asynchronous; recheck the same immutable claim before every subsequent dispatch. */
+    reauthorize(): Promise<boolean>;
   }>): Promise<BolterPublicationTransportOutcome>;
 }
 
@@ -84,6 +86,13 @@ export function createBolterPublicationService(options: {
       let outcome: BolterPublicationTransportOutcome;
       try {
         outcome = await transport.send(Object.freeze({ receiver, claim,
+          async reauthorize() {
+            if (!attemptOpen || !authorized || !current(transport, receiver)) return false;
+            try {
+              const fresh = await store.load(receiver, claim);
+              return attemptOpen && current(transport, receiver) && JSON.stringify(fresh) === JSON.stringify(authorized);
+            } catch { return false; }
+          },
           async authorize() {
             if (!attemptOpen || authorizationUsed) return null;
             authorizationUsed = true;
@@ -91,7 +100,8 @@ export function createBolterPublicationService(options: {
             try {
               const content = await store.load(receiver, claim);
               if (!attemptOpen || !content || !current(transport, receiver)) return null;
-              authorized = Object.freeze({ ...content });
+              authorized = Object.freeze({ ...content,
+                ...(content.files ? { files: Object.freeze(content.files.map(file => Object.freeze({ ...file }))) } : {}) });
               return authorized;
             } catch { return null; }
           },

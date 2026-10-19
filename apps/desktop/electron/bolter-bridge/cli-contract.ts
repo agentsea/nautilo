@@ -8,6 +8,7 @@ export type BolterContractResult<T> =
   | { ok: false; reason: BolterContractFailure };
 
 export interface BolterCliSelection {
+  label?: string;
   origin: string;
   /** Canonical provider identity, never inferred from the short CLI selector. */
   agentId: string;
@@ -34,7 +35,7 @@ export interface BolterCliBinding {
   threadRootId: string | null;
 }
 
-export interface BolterCliIdentity { origin: string; agentId: string }
+export interface BolterCliIdentity { origin: string; agentId: string; label?: string }
 export interface BolterCliDiscoveredIdentity extends BolterCliSelection { label?: string }
 export interface BolterCliConversation extends BolterCliBinding { label: string }
 export interface BolterCliAuthLink { url: string; code: string }
@@ -75,6 +76,7 @@ export interface BolterQualifiedDecoders {
   authLink?: (stdout: string) => unknown;
   receiveItem?: (raw: unknown) => unknown;
   receipt?: (raw: unknown) => unknown;
+  fileCreated?: (raw: unknown) => { url: string };
 }
 
 function success<T>(value: T): BolterContractResult<T> { return { ok: true, value }; }
@@ -165,6 +167,19 @@ export function createBolterSendInvocation(
   return invocation(runtime, args, JSON.stringify({ content }));
 }
 
+/** Fixed chat-scoped upload. The provider chooses the resulting access-gated URL. */
+export function createBolterFileInvocation(runtime: BolterCliRuntime, selection: BolterCliSelection,
+  binding: BolterCliBinding, file: { path: string; mimeType: string; content: string }): BolterContractResult<BolterCliInvocation> {
+  const flags = selected(selection);
+  if (!flags.ok) return flags;
+  if (!id(binding.chatId) || (binding.threadRootId !== null && !id(binding.threadRootId))
+    || !/^\/nautilo\/[a-f0-9-]+\/[^/]+$/u.test(file.path) || hasControlCharacters(file.path)
+    || !argument(file.mimeType) || typeof file.content !== "string") return failure("invalid-input");
+  const args = ["call", "files_create_file", "-", "--json", ...flags.value, "--chat", binding.chatId];
+  if (binding.threadRootId !== null) args.push("--thread", binding.threadRootId);
+  return invocation(runtime, args, JSON.stringify({ path: file.path, mime_type: file.mimeType, content: file.content }));
+}
+
 export function createBolterReceiveInvocation(
   runtime: BolterCliRuntime, selection: BolterCliSelection, handoverExecutable: string,
 ): BolterContractResult<BolterCliInvocation> {
@@ -181,7 +196,8 @@ export function createBolterReceiveInvocation(
 
 export function validateBolterIdentity(raw: unknown): BolterContractResult<BolterCliIdentity> {
   if (!record(raw) || !origin(raw["origin"]) || !id(raw["agentId"])) return failure("unsupported-output");
-  return success({ origin: raw["origin"], agentId: raw["agentId"] });
+  return success({ origin: raw["origin"], agentId: raw["agentId"],
+    ...(typeof raw["label"] === "string" && raw["label"].trim() ? { label: raw["label"] } : {}) });
 }
 
 export function decodeBolterIdentities(raw: unknown, version: string,

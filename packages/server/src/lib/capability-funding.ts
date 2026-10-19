@@ -16,7 +16,7 @@ import {
   isMemoryCapabilityRole,
   type TaskFundingBinding,
 } from "@nautilo/types";
-import { ModelFundingError, createModelFundingSnapshot, resolveModelFunding, withAdmittedPersonalCredential, type ModelFundingDecision, type ModelFundingDeps } from "./model-funding";
+import { ModelFundingError, createModelFundingSnapshot, readModelFundingPolicy, resolveModelFunding, withAdmittedPersonalCredential, type ModelFundingDecision, type ModelFundingDeps } from "./model-funding";
 import { usageFundingFor } from "./foreground-chat-funding";
 import { readPersonalProviderCustody } from "./personal-provider-custody";
 import { getServerDirectDb } from "./server-direct-db";
@@ -25,6 +25,10 @@ import { mediaPreferenceFunding, resolvePersonalMediaModel } from "./media-model
 import { openMediaFunding } from "./media-funding";
 import { currentMemoryOperatorDefaults, personalMemoryModels, resolveMemoryModelPreference } from "./memory-model-preferences";
 import { resolveImageUnderstandingModel } from "./image-model-preferences";
+import {
+  openServerFirstPersonalRecovery,
+  openSurplusPersonalDirectRecovery,
+} from "./surplus-personal-recovery";
 
 const RESEARCH_ROLES = {
   webSearchSynthesis: { role: "webSearchSynthesis", env: "NAUTILO_WEB_SEARCH_MODEL", tools: false },
@@ -52,6 +56,7 @@ function assertModel(
 
 interface CapabilityFundingOverrides {
   readonly parentBinding?: TaskFundingBinding;
+  readonly allowUnpinnedSurplusRetry?: true;
   readonly readPreferences?: (humanUserId: string) => Promise<PersonalCapabilityPreferences>;
   readonly readProjectionCustody?: typeof readPersonalProviderCustody;
   readonly resolveCatalog?: typeof resolveCatalogModel;
@@ -210,6 +215,9 @@ export function createCapabilityFundingSession(
         : undefined;
       const admitted = await resolveFunding(modelId, workload, priorDecision);
       await validateProjectionCredential(admitted);
+      const fundingPolicy = workload !== "memory" && admitted.kind === "server"
+        ? await readModelFundingPolicy(projectionDeps)
+        : null;
       const resolve = async (candidate: string, transport?: "direct" | "surplus") => {
         await recheckAuthority();
         if (candidate !== modelId) throw new ModelFundingError("funding_source_changed");
@@ -220,14 +228,38 @@ export function createCapabilityFundingSession(
           workload,
           priorDecision: admitted,
           ...(transport ? { transport } : {}),
-        });
+        }, projectionDeps);
       };
       let lastAttempt: ModelFundingDecision | undefined;
+      const allowUnpinnedSurplusRetry = workload !== "memory"
+        && overrides.allowUnpinnedSurplusRetry === true;
       return {
         binding: capabilityFundingBinding(admitted),
         fundingSession: {
           kind: admitted.kind,
           workload,
+          ...(allowUnpinnedSurplusRetry ? { allowUnpinnedSurplusRetry: true as const } : {}),
+          ...(workload !== "memory" && admitted.kind === "server" && admitted.providerRoute === "surplus" ? {
+            openPersonalDirectRecovery: (candidate: string) => openSurplusPersonalDirectRecovery({
+              humanUserId,
+              modelId: candidate,
+              workload,
+              primaryDecision: admitted,
+              ...(allowUnpinnedSurplusRetry ? { allowUnpinnedSurplusRetry: true as const } : {}),
+              recheckPrimary: () => resolve(candidate),
+            }, projectionDeps),
+          } : {}),
+          ...(workload !== "memory" && admitted.kind === "server"
+            && fundingPolicy?.fundingPreference === "server_first" ? {
+              openPersonalRecovery: (candidate: string) => openServerFirstPersonalRecovery({
+                humanUserId,
+                modelId: candidate,
+                workload,
+                primaryDecision: admitted,
+                ...(allowUnpinnedSurplusRetry ? { allowUnpinnedSurplusRetry: true as const } : {}),
+                recheckPrimary: () => resolve(candidate),
+              }, projectionDeps),
+            } : {}),
           async recheckAttempt(candidate, transport) {
             const current = await resolve(candidate, transport);
             if (lastAttempt?.kind === "personal" && current.kind === "personal"
@@ -282,7 +314,7 @@ export function createCapabilityFundingSession(
 
 
 /** Readiness is a projection; the selected operation still admits and rechecks live. */
-export async function prepareCapabilityFundingSession(humanUserId: string, recheckAuthority: () => Promise<void>, parentFundingKind: "personal" | "server", parentBinding?: TaskFundingBinding): Promise<CapabilityFundingSession> {
+export async function prepareCapabilityFundingSession(humanUserId: string, recheckAuthority: () => Promise<void>, parentFundingKind: "personal" | "server", parentBinding?: TaskFundingBinding, allowUnpinnedSurplusRetry?: true): Promise<CapabilityFundingSession> {
   await recheckAuthority();
   const [snapshot, preferences] = await Promise.all([
     createModelFundingSnapshot(humanUserId),
@@ -294,7 +326,10 @@ export async function prepareCapabilityFundingSession(humanUserId: string, reche
     readPreferences: () => Promise.resolve(preferences),
     ...(parentBinding ? { parentBinding } : {}),
   });
-  const session = createCapabilityFundingSession(humanUserId, recheckAuthority, undefined, { ...(parentBinding ? { parentBinding } : {}) });
+  const session = createCapabilityFundingSession(humanUserId, recheckAuthority, undefined, {
+    ...(parentBinding ? { parentBinding } : {}),
+    ...(allowUnpinnedSurplusRetry ? { allowUnpinnedSurplusRetry } : {}),
+  });
   const [decisionModelId, image, video, music] = await Promise.all([
     projection.resolveModel("decision").then((choice) => choice.modelId).catch(() => null),
     projection.resolveModel("imageGeneration").then(() => true).catch(() => false),

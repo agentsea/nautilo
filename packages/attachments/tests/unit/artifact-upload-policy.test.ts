@@ -7,7 +7,7 @@ import {
   extensionOfArtifactName,
   isArtifactUploadAllowedByExtension,
   isLikelyIsoBmffMp4,
-  isLikelyOoxmlZip,
+  isOoxmlArtifactName,
 } from "../../src/artifact-upload-policy";
 
 describe("artifact-upload-policy", () => {
@@ -84,55 +84,16 @@ describe("artifact-upload-policy", () => {
     expect(classifyArtifactUpload({ filename: "readme.md", headBytes: md })).toEqual({ ok: true });
   });
 
-  /**
-   * Minimal OOXML package prefix used by the carve-out tests below. A real
-   * .docx/.xlsx/.pptx starts with a ZIP local-file header whose first entry
-   * is `[Content_Types].xml`. We approximate that with: 30-byte local-file
-   * header (PK\x03\x04 + 26 zero bytes) + the 19-byte filename
-   * `[Content_Types].xml` + a little padding.
-   */
-  function ooxmlPrefix(marker = "[Content_Types].xml"): Uint8Array {
-    const header = new Uint8Array(30);
-    header[0] = 0x50;
-    header[1] = 0x4b;
-    header[2] = 0x03;
-    header[3] = 0x04;
-    const name = new TextEncoder().encode(marker);
-    const tail = new Uint8Array(64);
-    const out = new Uint8Array(header.length + name.length + tail.length);
-    out.set(header, 0);
-    out.set(name, header.length);
-    out.set(tail, header.length + name.length);
-    return out;
-  }
-
-  test("isLikelyOoxmlZip requires OOXML extension + ZIP magic + content-types marker", () => {
-    const prefix = ooxmlPrefix();
-    expect(isLikelyOoxmlZip("report.docx", prefix)).toBe(true);
-    expect(isLikelyOoxmlZip("sheet.xlsx", prefix)).toBe(true);
-    expect(isLikelyOoxmlZip("deck.pptx", prefix)).toBe(true);
-    // Wrong extension: marker + ZIP magic but not an office extension.
-    expect(isLikelyOoxmlZip("archive.zip", prefix)).toBe(false);
-    // Plain zip prefix without the OOXML marker.
-    const plainZip = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x00, 0x00, 0x00, 0x00]);
-    expect(isLikelyOoxmlZip("report.docx", plainZip)).toBe(false);
-    // Right extension + marker but missing ZIP magic (executable bytes).
-    const elfWithMarker = new Uint8Array(30);
-    elfWithMarker[0] = 0x7f;
-    elfWithMarker[1] = 0x45;
-    elfWithMarker[2] = 0x4c;
-    elfWithMarker[3] = 0x46;
-    elfWithMarker.set(new TextEncoder().encode("[Content_Types].xml"), 4);
-    expect(isLikelyOoxmlZip("report.docx", elfWithMarker)).toBe(false);
-    // Non-OOXML extension rejected outright.
-    expect(isLikelyOoxmlZip("notes.txt", prefix)).toBe(false);
-  });
-
-  test("classifyArtifactUpload allows OOXML docx/xlsx/pptx with marker in sniff window", () => {
-    const prefix = ooxmlPrefix();
-    expect(classifyArtifactUpload({ filename: "report.docx", headBytes: prefix })).toEqual({ ok: true });
-    expect(classifyArtifactUpload({ filename: "sheet.xlsx", headBytes: prefix })).toEqual({ ok: true });
-    expect(classifyArtifactUpload({ filename: "deck.pptx", headBytes: prefix })).toEqual({ ok: true });
+  test("Office uploads require authoritative package validation, not a prefix marker", () => {
+    const prefix = new TextEncoder().encode("PK\x03\x04[Content_Types].xml");
+    for (const name of ["report.docx", "sheet.xlsx", "deck.pptx"]) {
+      expect(isOoxmlArtifactName(name)).toBe(true);
+      expect(classifyArtifactUpload({ filename: name, headBytes: prefix }).ok).toBe(false);
+      expect(classifyArtifactUpload({ filename: name, headBytes: prefix, ooxmlPackageValidated: true })).toEqual({ ok: true });
+    }
+    expect(isOoxmlArtifactName("archive.zip")).toBe(false);
+    expect(classifyArtifactUpload({ filename: "archive.zip", headBytes: prefix, ooxmlPackageValidated: true }).ok).toBe(false);
+    expect(classifyArtifactUpload({ filename: "sheet.xlsx", headBytes: new TextEncoder().encode("plain text"), ooxmlPackageValidated: true }).ok).toBe(false);
   });
 
   test("classifyArtifactUpload rejects plain .zip with archive_magic", () => {
@@ -153,11 +114,9 @@ describe("artifact-upload-policy", () => {
     });
   });
 
-  test("classifyArtifactUpload rejects .docx ZIP without OOXML marker in sniff window", () => {
+  test("classifyArtifactUpload rejects unvalidated .docx ZIP bytes", () => {
     // ZIP magic but no [Content_Types].xml reachable in the sniffed prefix.
-    // Conservative: reject as archive_magic rather than trusting the extension
-    // alone. See isLikelyOoxmlZip docstring re: tracked follow-up for the
-    // server route to do a deeper sniff / full central-directory check.
+    // A prefix alone cannot establish an Office package.
     const zipNoMarker = new Uint8Array(256);
     zipNoMarker[0] = 0x50;
     zipNoMarker[1] = 0x4b;
@@ -165,8 +124,8 @@ describe("artifact-upload-policy", () => {
     zipNoMarker[3] = 0x04;
     expect(classifyArtifactUpload({ filename: "report.docx", headBytes: zipNoMarker })).toEqual({
       ok: false,
-      reason: "Archive content detected in upload",
-      code: "archive_magic",
+      reason: "Office document package is invalid or unsupported",
+      code: "invalid_office_package",
     });
   });
 

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef } from "react";
+import { RECONNECT_RECONCILED_EVENT } from "./reconnect-toast";
 
 /** One read at a time; hints during a read discard it and coalesce into a fresh read. */
 export function useBolterStateReload(
@@ -31,11 +32,13 @@ export function useBolterStateReload(
     active.current = true;
     const invalidate = () => { void reload(); };
     window.addEventListener("nautilo:bolter-state-changed", invalidate);
+    window.addEventListener(RECONNECT_RECONCILED_EVENT, invalidate);
     return () => {
       active.current = false;
       pending.current = false;
       revision.current += 1;
       window.removeEventListener("nautilo:bolter-state-changed", invalidate);
+      window.removeEventListener(RECONNECT_RECONCILED_EVENT, invalidate);
     };
   }, [reload]);
   return reload;

@@ -20,6 +20,7 @@ import {
   resolveQualifiedSurplusChatRoute,
   resolveServerFundedForegroundCatalogModel,
   resolveSurplusChatServingAvailability,
+  resolveSurplusDecisionServingAvailability,
   type QualifiedSurplusChatRoute,
 } from "@nautilo/agent";
 import { candidatesForModelRole } from "@nautilo/config";
@@ -49,14 +50,37 @@ function catalogModels(input?: {
   readonly routes?: readonly QualifiedSurplusChatRoute[];
 }) {
   kickRuntimeModelCatalogRefresh();
+  const surplusMediaIds = input
+    ? new Set(([
+        ...listMediaGenerationModels("image", process.env, input),
+        ...listMediaGenerationModels("music", process.env, input),
+        ...listMediaGenerationModels("video", process.env, input),
+      ]).filter((model) => model.enabled).map((model) => model.id))
+    : new Set<string>();
   return listResolvedCatalogModels({ includeUnavailable: true }).map((directModel) => {
-    const model = input
+    let model = input
       ? resolveServerFundedForegroundCatalogModel(directModel.id, {
           policyEnabled: input.policyEnabled,
           keyConfigured: input.keyConfigured,
           ...(input.routes === undefined ? {} : { routes: input.routes }),
         })
       : directModel;
+    if (input && directModel.availability === "missing_credentials"
+      && model.availability === "missing_credentials") {
+      const decision = directModel.workload === "decision"
+        ? resolveSurplusDecisionServingAvailability({
+            catalogModelId: directModel.id,
+            policyEnabled: input.policyEnabled,
+            keyConfigured: input.keyConfigured,
+            fundingKind: "server",
+          })
+        : null;
+      if (decision?.status === "available" || surplusMediaIds.has(directModel.id)) {
+        const selectable = { ...model, availability: "selectable" as const };
+        delete selectable.unavailableReason;
+        model = selectable;
+      }
+    }
     return ({
       id: model.id,
       displayName: model.displayName,
@@ -105,8 +129,11 @@ function effectiveEmbeddingModel(): string | null {
 
 type MediaGenerationModelKind = "image" | "music" | "video";
 
-function mediaGenerationModels(kind: MediaGenerationModelKind) {
-  return listMediaGenerationModels(kind).map((model) => ({
+function mediaGenerationModels(
+  kind: MediaGenerationModelKind,
+  surplusInput?: { readonly policyEnabled: boolean; readonly keyConfigured: boolean },
+) {
+  return listMediaGenerationModels(kind, process.env, surplusInput).map((model) => ({
     id: model.id,
     displayName: model.displayName,
     provider: model.provider,
@@ -270,7 +297,7 @@ function parseUpdateBody(
     }
     const id = value?.trim() ?? null;
     if (id) {
-      const option = listMediaModels(kind).find((entry) => entry.id === id);
+      const option = listMediaModels(kind, surplusInput).find((entry) => entry.id === id);
       if (!option) {
         return { ok: false, error: `Unsupported ${kind} generation model` };
       }
@@ -318,7 +345,7 @@ function parseUpdateBody(
     if (typeof v !== "string") return { ok: false, error: "conductorModel must be a string" };
     // Empty string ⇒ inherit the default chat model (stored as null).
     if (v.trim() !== "") {
-      const reason = unavailableReason(v, "chat", false);
+      const reason = unavailableReason(v, "chat", true);
       if (reason && v !== retained?.conductorModel) return { ok: false, error: `model unavailable: ${v} (${reason})` };
     }
     patch.conductorModel = v.trim() === "" ? null : v;
@@ -330,7 +357,7 @@ function parseUpdateBody(
       return { ok: false, error: "stenographerModel must be a string" };
     }
     if (v.trim() !== "") {
-      const reason = unavailableReason(v, "chat", false);
+      const reason = unavailableReason(v, "chat", true);
       if (reason && v !== retained?.stenographerModel) return { ok: false, error: `model unavailable: ${v} (${reason})` };
     }
     patch.stenographerModel = v.trim() === "" ? null : v;
@@ -342,7 +369,7 @@ function parseUpdateBody(
       return { ok: false, error: "reflectionModel must be a string" };
     }
     if (v.trim() !== "") {
-      const reason = unavailableReason(v, "chat", false);
+      const reason = unavailableReason(v, "chat", true);
       if (reason && v !== retained?.reflectionModel) return { ok: false, error: `model unavailable: ${v} (${reason})` };
     }
     patch.reflectionModel = v.trim() === "" ? null : v;
@@ -354,7 +381,7 @@ function parseUpdateBody(
       return { ok: false, error: "memoryReviewModel must be a string or null" };
     }
     if (value?.trim()) {
-      const reason = unavailableReason(value, "chat-tools", false);
+      const reason = unavailableReason(value, "chat-tools", true);
       if (reason && value !== retained?.memoryReviewModel) return { ok: false, error: `model unavailable: ${value} (${reason})` };
     }
     patch.memoryReviewModel = value?.trim() ? value : null;
@@ -565,9 +592,9 @@ export function serverModelsRoutes(
       effectiveImageUnderstandingModel: config.imageUnderstandingModel
         ? visionModels.find((model) => model.id === config.imageUnderstandingModel && model.available)?.id ?? null
         : visionModels.find((model) => model.available)?.id ?? null,
-      imageModels: listMediaModels("image"),
-      musicModels: listMediaModels("music"),
-      videoModels: listMediaModels("video"),
+      imageModels: listMediaModels("image", visionProjection),
+      musicModels: listMediaModels("music", visionProjection),
+      videoModels: listMediaModels("video", visionProjection),
       speechModels: listSpeechModels().map(({ speech, providerModelId, ...model }) => model),
       effectiveSpeechModel: (overrides.getEffectiveSpeechModel ?? (() => { try { return getServerSpeechModel().id; } catch { return null; } }))(),
       effectiveImageModel: getEffectiveMediaModel("image"),

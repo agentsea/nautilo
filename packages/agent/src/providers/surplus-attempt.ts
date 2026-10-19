@@ -30,6 +30,8 @@ type InvokeModel = (
 export interface SurplusChatAttemptInput {
   readonly route: QualifiedSurplusChatRoute;
   readonly apiKey: string;
+  /** Omit the provider pin for the one admitted same-model marketplace retry. */
+  readonly providerMode?: "any";
   readonly messages: BaseMessage[];
   readonly tools: readonly StructuredTool[];
   readonly toolBindingOptions?: Record<string, unknown>;
@@ -47,7 +49,7 @@ export interface SurplusChatAttemptInput {
 
 export type SurplusChatAttemptResult =
   | Readonly<{ kind: "served"; response: AIMessage; requestId?: string }>
-  | Readonly<{ kind: "direct_fallback" }>;
+  | Readonly<{ kind: "direct_fallback"; retryUnpinned?: true }>;
 
 export class SurplusProviderRouteMismatchError extends Error {
   readonly code = "surplus_provider_route_mismatch" as const;
@@ -132,12 +134,14 @@ export function assertSuccessfulSurplusProviderReceipt(
   route: QualifiedSurplusChatRoute,
   receipt: SurplusWireReceipt,
   responseStatus: number,
+  providerMode?: "any",
 ): void {
   if (responseStatus < 200 || responseStatus >= 300) return;
   if (hasUnsupportedSurplusAdaptation(receipt.adaptedParameters)) {
     throw new SurplusAdaptedParametersError();
   }
-  if (receipt.providerFamily?.trim().toLowerCase() !== route.providerPin) {
+  const servingProvider = receipt.providerFamily?.trim().toLowerCase();
+  if (!servingProvider || (providerMode !== "any" && servingProvider !== route.providerPin)) {
     throw new SurplusProviderRouteMismatchError();
   }
 }
@@ -347,7 +351,7 @@ export async function invokeSurplusChatAttempt(input: SurplusChatAttemptInput): 
     roomId: normalizeUsageRoomId(context?.roomId),
     ...(typeof context?.metadata?.["taskId"] === "string" ? { taskId: context.metadata["taskId"] } : {}),
     metadata: {
-      ...surplusAttemptBinding(input.route, input.apiKey),
+      ...surplusAttemptBinding(input.route, input.apiKey, input.providerMode),
       catalogModelId: input.route.catalogModelId,
       ...(typeof context?.metadata?.["taskRunId"] === "string" ? { taskRunId: context.metadata["taskRunId"] } : {}),
       ...(typeof context?.metadata?.["agentId"] === "string" ? { agentId: context.metadata["agentId"] } : {}),
@@ -380,12 +384,13 @@ export async function invokeSurplusChatAttempt(input: SurplusChatAttemptInput): 
         warn("[nautilo/surplus] request receipt persistence failed", { failureCode: "request_receipt_failed" });
       }
     }
-    assertSuccessfulSurplusProviderReceipt(input.route, next, status);
+    assertSuccessfulSurplusProviderReceipt(input.route, next, status, input.providerMode);
   };
   try {
     const model = createSurplusChatModel({
       route: input.route,
       apiKey: input.apiKey,
+      ...(input.providerMode === undefined ? {} : { providerMode: input.providerMode }),
       maxOutputTokens: input.maxOutputTokens,
       ...(input.reasoningEffort === undefined ? {} : { reasoningEffort: input.reasoningEffort }),
       ...(input.reasoningOutput === undefined ? {} : { reasoningOutput: input.reasoningOutput }),
@@ -459,7 +464,14 @@ export async function invokeSurplusChatAttempt(input: SurplusChatAttemptInput): 
       warn("[nautilo/surplus] attempt settlement failed", { failureCode: "attempt_settlement_failed" });
     }
     if (cancelled) throw input.config.signal?.reason ?? error;
-    if (disposition.directFallback) return { kind: "direct_fallback" };
+    if (disposition.directFallback) {
+      return {
+        kind: "direct_fallback",
+        ...(input.providerMode !== "any" && disposition.failureCode === "no_sellers_for_model"
+          ? { retryUnpinned: true as const }
+          : {}),
+      };
+    }
     throw new SurplusOutcomeUnknownError();
   }
 }

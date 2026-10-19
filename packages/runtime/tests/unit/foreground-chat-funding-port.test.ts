@@ -98,6 +98,31 @@ describe("foreground chat funding port", () => {
     },
   );
 
+  test("forwards the trusted protected-turn boundary to the funding owner", async () => {
+    const opened: unknown[] = [];
+    installForegroundChatFundingPort({
+      openSession: async (input) => {
+        opened.push(input);
+        return { ...personalSession, kind: "server" };
+      },
+    });
+
+    await openForegroundChatFundingSessionForInvocation({
+      authority: createAcceptedInvocationAuthority("human-1"),
+      jobInput: baseJobInput,
+      causalHumanUserId: "human-1",
+      entrypoint: "foreground.main",
+      modelId: "openrouter:test-model",
+      roomId: "room-1",
+      agentId: "agent-1",
+      protectedTurn: true,
+    });
+
+    expect(opened).toEqual([
+      expect.objectContaining({ protectedTurn: true }),
+    ]);
+  });
+
   test.each([
     { label: "requestor spoof", jobInput: { ...baseJobInput, requestorId: "human-2" }, causalHumanUserId: "human-1" },
     { label: "causal Human spoof", jobInput: baseJobInput, causalHumanUserId: "human-2" },

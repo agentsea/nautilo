@@ -5,8 +5,13 @@ import { ProviderKeyCoverageTable } from "../../../components/provider-key-cover
 // KeyReport categories are broader registry groupings, not capabilities.
 const COVERAGE_ROWS = [
   {
-    functionality: "Classification and scoring",
-    providers: [["typesafe", "TypeSafe"], ["openrouter", "OpenRouter"], ["venice", "Venice"]],
+    functionality: "Classification, scoring, and Decisions (Surplus pilot account required)",
+    providers: [
+      ["typesafe", "TypeSafe"],
+      ["openrouter", "OpenRouter"],
+      ["venice", "Venice"],
+      ["surplus", "Surplus Intelligence (qualified routes)"],
+    ],
   },
   {
     functionality: "Chat",
@@ -19,12 +24,21 @@ const COVERAGE_ROWS = [
       ["xai", "xAI"],
       ["fireworks", "Fireworks"],
       ["together", "Together AI"],
+      ["surplus", "Surplus Intelligence (qualified routes)"],
       ["gateway", "OpenAI-compatible Gateway"],
     ],
   },
   {
-    functionality: "Surplus marketplace key",
-    providers: [["surplus", "Surplus Intelligence"]],
+    functionality: "Image understanding",
+    providers: [
+      ["openai", "OpenAI"],
+      ["anthropic", "Anthropic"],
+      ["google", "Google"],
+      ["openrouter", "OpenRouter"],
+      ["venice", "Venice"],
+      ["fireworks", "Fireworks"],
+      ["surplus", "Surplus Intelligence (qualified models)"],
+    ],
   },
   {
     functionality: "Embeddings",
@@ -49,10 +63,17 @@ const COVERAGE_ROWS = [
       ["openrouter", "OpenRouter"],
       ["openai", "OpenAI"],
       ["google", "Google"],
+      ["surplus", "Surplus Intelligence (generation only; qualified routes)"],
     ],
   },
-  { functionality: "Music generation", providers: [["venice", "Venice"]] },
-  { functionality: "Video generation", providers: [["venice", "Venice"]] },
+  {
+    functionality: "Music generation",
+    providers: [["venice", "Venice"], ["surplus", "Surplus Intelligence (qualified routes)"]],
+  },
+  {
+    functionality: "Video generation",
+    providers: [["venice", "Venice"], ["surplus", "Surplus Intelligence (qualified routes)"]],
+  },
   { functionality: "Web search", providers: [["tavily", "Tavily"]] },
   { functionality: "Browser use", providers: [["browser-use", "Browser Use"]] },
   {
@@ -83,8 +104,9 @@ export function ProviderKeyCoverage({
         API key coverage
       </h3>
       <p className="mt-1 text-xs text-foreground-muted">
-        Shows API key coverage, not service availability. Additional configuration and local
-        alternatives are not evaluated.
+        Shows API key coverage, not service availability. Surplus rows require Prefer Surplus
+        and a matching qualified route in the signed catalogue. Additional configuration and
+        local alternatives are not evaluated.
       </p>
 
       <ProviderKeyCoverageTable

@@ -1,4 +1,4 @@
-// D396 Wave 1 — Headless office generation via OfficeCLI.
+// Headless office generation via OfficeCLI.
 //
 // Server-side orchestration for the full OfficeCLI command surface. Mirrors
 // the structure of `office-export.ts` / `office-import.ts` and reuses the
@@ -22,7 +22,7 @@
 // This module is pure OfficeCLI orchestration.
 //
 // Relocated from packages/server/src/office-create.ts to @nautilo/config
-// (D396 Wave 2a) so both @nautilo/agent and @nautilo/server can import the
+// so both @nautilo/agent and @nautilo/server can import the
 // pure OfficeCLI core. Node-only subpath — uses node:fs / node:os.
 //
 // Wave 2a additions: buildOpenArgv / buildSaveArgv / buildRefreshArgv /
@@ -755,12 +755,14 @@ export function buildHelpArgv(options: HelpArgvOptions): string[] {
 export function makeOfficeCreateRun(options: {
   binaryPath: string;
   timeoutMs?: number;
+  signal?: AbortSignal;
 }): OfficeCreateRunFn {
   return async (argv: readonly string[]): Promise<OfficeCliRunResult> => {
     return runOfficeCliRaw({
       binaryPath: options.binaryPath,
       argv,
       ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+      ...(options.signal !== undefined ? { signal: options.signal } : {}),
     });
   };
 }

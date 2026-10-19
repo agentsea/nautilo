@@ -43,7 +43,7 @@ export interface ComposerAttachment {
   /** server attachmentId after the bytes are uploaded. Set when the
    *  chip's upload completes; the send path references this. */
   attachmentId?: string;
-  /** PDFs use the canonical Room-scoped Workspace upload and focus path. */
+  /** Documents use the canonical Room-scoped Workspace upload and focus path. */
   workspaceArtifact?: { artifactId: string; roomId: string };
   /** UX state. The server-side gate remains authoritative; this is for
    *  composer feedback only. */
