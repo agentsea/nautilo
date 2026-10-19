@@ -551,6 +551,29 @@ export function createHumanDeviceMembershipClient(input: Readonly<{
       throw new Error("Human-device staged profile state is ambiguous");
     }
     const stageId = staged[0]!.stageId;
+    const conflictMessage = exactProfileCoordinates(staged[0]!.coordinates)
+      ? `Another client profile transition is already staged (${stageId}; generation ${String(staged[0]!.generation)})`
+      : "Another client profile transition is already staged";
+    const currentAuthorityStageId =
+      `human-device-authority:${input.coordinates.deviceId}:${String(current.deviceRevision)}`;
+    if (current.membershipState === "current"
+      && exactProfileCoordinates(staged[0]!.coordinates)
+      && stageId === currentAuthorityStageId) {
+      const alreadyCurrent = await withProfile(({ profile }) => {
+        const base = profile.baseProfile.baseProfile;
+        return Promise.resolve(
+          base.trustedDeviceRevision === current.deviceRevision
+          && base.trustedHostAuthorizationRevision === current.deviceRevision,
+        );
+      });
+      if (alreadyCurrent) {
+        throw new Error(conflictMessage);
+      }
+      // The current-member path below deterministically reconstructs this
+      // authority-only candidate. Vault staging accepts it only when every
+      // byte matches the interrupted stage before activation.
+      return false;
+    }
     const knownStage = stageId.startsWith("human-device-initial:")
       || stageId.startsWith("human-device-join:")
       || stageId.startsWith("human-device-add:")
@@ -559,7 +582,7 @@ export function createHumanDeviceMembershipClient(input: Readonly<{
       || stageId.startsWith("human-device-welcome:")
       || stageId.startsWith("human-device-catch-up:");
     if (!knownStage) {
-      throw new Error("Another client profile transition is already staged");
+      throw new Error(conflictMessage);
     }
     if (current.head === null) {
       await input.vault.abortStagedProfile(input.coordinates, stageId);
