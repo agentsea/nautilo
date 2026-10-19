@@ -22,6 +22,7 @@ import {
   type TaskRuntimeExecutionEvidence,
 } from "@nautilo/lattice-crypto";
 import {
+  bindProtectedCheckpointCellDataOperationOwner,
   createProtectedCheckpointCellCrypto,
   type ProtectedCheckpointCellAuthorityPort,
 } from "../../checkpoint/protected-checkpoint-cell-crypto.ts";
@@ -33,6 +34,8 @@ import {
   PostgresDomainKeyAuthorityRepository,
   type DomainForegroundNamespaceAuthorityInspectionV2,
 } from "../delivery/postgres-domain-key-authority.ts";
+import type { EncryptionDataOperationOwner } from
+  "../../transition/encryption-data-operation-owner.ts";
 import {
   cryptoTypedDb,
   executeTypedCryptoQuery,
@@ -43,6 +46,7 @@ import {
 export type NativeTaskRuntimeCheckpointCellCryptoInput = Readonly<{
   restricted: PostgresJsBridgeConnection;
   crypto: LatticeCrypto;
+  owner: EncryptionDataOperationOwner;
   serverScope: string;
   evidence: TaskRuntimeExecutionEvidence;
   identity: TaskRuntimeCheckpointCellIdentity;
@@ -549,13 +553,17 @@ function createNativeTaskCheckpointCells(
       }
     },
   };
+  const crypto = createProtectedCheckpointCellCrypto({
+    crypto: input.crypto,
+    authority,
+    domainId: identity.domainId,
+    entrypointId: "task.execute",
+    aadBinding: checkpointAadBinding,
+  });
   return Object.freeze({
-    crypto: createProtectedCheckpointCellCrypto({
-      crypto: input.crypto,
-      authority,
-      domainId: identity.domainId,
-      entrypointId: "task.execute",
-      aadBinding: checkpointAadBinding,
+    crypto: bindProtectedCheckpointCellDataOperationOwner({
+      owner: input.owner,
+      crypto,
     }),
     scope,
     checkpointAadBinding,

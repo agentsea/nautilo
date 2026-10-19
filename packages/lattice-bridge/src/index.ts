@@ -657,6 +657,7 @@ export type {
 export {
   ProtectedCheckpointCryptoError,
   createProtectedCheckpointCellCrypto,
+  bindProtectedCheckpointCellDataOperationOwner,
   createProtectedCheckpointNamespaceSessionContentExecutor,
 } from "./checkpoint/protected-checkpoint-cell-crypto.ts";
 export type {
@@ -674,7 +675,6 @@ export type {
   ProtectedCheckpointNamespaceSessionContentExecutor,
 } from "./checkpoint/protected-checkpoint-cell-crypto.ts";
 export {
-  createTaskRuntimeCheckpointCellCrypto,
   type TaskRuntimeCheckpointCellCrypto,
   type TaskRuntimeCheckpointCellIdentity,
 } from "./checkpoint/task-runtime-checkpoint-cell-crypto.ts";

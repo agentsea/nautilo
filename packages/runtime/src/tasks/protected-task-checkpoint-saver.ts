@@ -6,17 +6,15 @@ import {
   type EncryptedCheckpointPhysicalManifest,
   type EncryptedCheckpointSaver,
 } from "@nautilo/agent";
-import { createTaskRuntimeCheckpointCellCrypto } from "@nautilo/lattice-bridge";
 import {
   createNativeTaskRuntimeCheckpointCellCrypto,
   type NativeTaskRuntimeCheckpointCellCryptoInput,
 } from "@nautilo/lattice-bridge/server";
 
 type DedicatedPool = CreateEncryptedCheckpointSaverOptions["dedicatedPool"];
-type TaskCellInput = Parameters<
-  typeof createTaskRuntimeCheckpointCellCrypto
->[0];
-type CheckpointCell = ReturnType<typeof createTaskRuntimeCheckpointCellCrypto>;
+type CheckpointCell = ReturnType<
+  typeof createNativeTaskRuntimeCheckpointCellCrypto
+>;
 const ownedPools = new WeakSet<object>();
 
 function freshOwnedPool(createDedicatedPool: () => DedicatedPool): DedicatedPool {
@@ -83,25 +81,6 @@ async function withOwnedTaskCheckpointSaver<Value>(
   return outcome.value;
 }
 
-/**
- * One Task-run graph segment owns one saver and physical checkpoint pool. The
- * callback cannot retain authority after this function closes the saver.
- */
-export async function withProtectedTaskCheckpointSaver<Value>(
-  input: Readonly<
-    TaskCellInput & {
-      createDedicatedPool(): DedicatedPool;
-      execute(saver: EncryptedCheckpointSaver): Promise<Value>;
-    }
-  >,
-): Promise<Value> {
-  return withOwnedTaskCheckpointSaver({
-    cell: createTaskRuntimeCheckpointCellCrypto(input),
-    createDedicatedPool: input.createDedicatedPool,
-    execute: input.execute,
-  });
-}
-
 /** Native Domain-bundle Task checkpoint cells, under the same one-run pool owner. */
 export async function withNativeProtectedTaskCheckpointSaver<Value>(
   input: Readonly<
@@ -127,8 +106,8 @@ export type NativeProtectedTaskCheckpointManifestResult<Value> = Readonly<{
 /**
  * Native Task segment owner that closes saver admissions, drains every
  * accepted operation, hashes the exact encrypted physical rows, then closes
- * the dedicated pool. Existing foreground/compatibility owners retain the
- * original value-only close contract above.
+ * the dedicated pool. Existing foreground owners retain their independent
+ * value-only close contract.
  */
 export async function withNativeProtectedTaskCheckpointManifest<Value>(
   input: Readonly<

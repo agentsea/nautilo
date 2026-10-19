@@ -553,8 +553,10 @@ function overrides(
       finally { calls.push("repository-close"); }
     },
     withCheckpointSaver: async (input: {
+      owner: unknown;
       execute(value: unknown): Promise<unknown>;
     }) => {
+      expect(input.owner).toBeDefined();
       calls.push("checkpoint-open");
       try {
         return {

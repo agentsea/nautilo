@@ -434,7 +434,6 @@ export type {
   ProtectedTaskRunTerminalPort,
 } from "./tasks/protected-task-result-publication";
 export {
-  withProtectedTaskCheckpointSaver,
   withNativeProtectedTaskCheckpointSaver,
   withNativeProtectedTaskCheckpointManifest,
   readProtectedTaskCheckpointPhysicalManifest,

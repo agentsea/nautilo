@@ -1002,6 +1002,7 @@ export function createProtectedTaskNativeFixedMemorySegment(
                             return dependencies.withCheckpointSaver({
                             restricted: input.restricted,
                             crypto: input.crypto,
+                            owner: input.owner,
                             serverScope: input.serverScope,
                             evidence: grant.evidence,
                             identity: {

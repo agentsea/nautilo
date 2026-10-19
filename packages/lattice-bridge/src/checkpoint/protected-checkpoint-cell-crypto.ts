@@ -21,6 +21,8 @@ import {
   withProtectedCurrentNamespaceKeyring,
   type ProtectedNamespaceKeyringMaterial,
 } from "../invocation/protected-namespace-keyring.ts";
+import type { EncryptionDataOperationOwner } from
+  "../transition/encryption-data-operation-owner.ts";
 
 const CHECKPOINT_CELL_KEY_DOMAIN =
   "nautilo/lattice-crypto/checkpoint-cell-key/v1";
@@ -193,6 +195,61 @@ export interface ProtectedCheckpointCellCrypto {
     ciphertext: Uint8Array;
     signal: AbortSignal;
   }>): Promise<Uint8Array>;
+}
+
+/**
+ * Route one complete checkpoint operation through the shared representation
+ * owner while retaining the existing authority, cell and storage protocol.
+ * The selected closure is executed only from consume/publish, so an operation
+ * failure cannot be mistaken for a failed protected preparation and replayed.
+ */
+export function bindProtectedCheckpointCellDataOperationOwner(input: Readonly<{
+  owner: EncryptionDataOperationOwner;
+  crypto: ProtectedCheckpointCellCrypto;
+}>): ProtectedCheckpointCellCrypto {
+  const prepare = <Value>(operation: Readonly<{
+    operation: ProtectedCheckpointAuthorizationOperation;
+    scope: ProtectedCheckpointInvocationScope;
+    execute(
+      context: ProtectedCheckpointAuthorizedOperationContext,
+    ): Promise<Value>;
+  }>) => Promise.resolve(Object.freeze({
+    execute: () => input.crypto.executeAuthorizedOperation(operation),
+  }));
+
+  return Object.freeze({
+    async executeAuthorizedOperation<Value>(operation: Readonly<{
+      operation: ProtectedCheckpointAuthorizationOperation;
+      scope: ProtectedCheckpointInvocationScope;
+      execute(
+        context: ProtectedCheckpointAuthorizedOperationContext,
+      ): Promise<Value>;
+    }>): Promise<Value> {
+      if (operation.operation === "read") {
+        const selected = await input.owner.read<
+          never,
+          Readonly<{ execute(): Promise<Value> }>,
+          Value
+        >({
+          protected: () => prepare(operation),
+          consumeOrdinary: value => value,
+          consumeProtected: prepared => prepared.execute(),
+        });
+        return selected.value;
+      }
+      return input.owner.mutate({
+        protected: () => prepare(operation),
+        dual: () => prepare(operation),
+        publish: prepared => prepared.execute(),
+      });
+    },
+    seal: (
+      operation: Parameters<ProtectedCheckpointCellCrypto["seal"]>[0],
+    ) => input.crypto.seal(operation),
+    open: (
+      operation: Parameters<ProtectedCheckpointCellCrypto["open"]>[0],
+    ) => input.crypto.open(operation),
+  });
 }
 
 export type ProtectedCheckpointCryptoErrorCode =

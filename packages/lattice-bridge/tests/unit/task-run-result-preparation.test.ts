@@ -95,9 +95,6 @@ import {
   encodeTaskRunResultPayloadV1,
 } from "../../src/task/task-payload-v1.ts";
 import {
-  createTaskRuntimeCheckpointCellCrypto,
-} from "../../src/checkpoint/task-runtime-checkpoint-cell-crypto.ts";
-import {
   prepareTaskRuntimeRunResult,
   taskRuntimePreparedResultDigestV1,
 } from "../../src/task/task-run-result-preparation.ts";
@@ -1014,73 +1011,4 @@ describe("Task Runtime checkpoint Namespace authority", () => {
     expect(opened).toBe(false);
   });
 
-  test("seals and opens the exact Task graph cell through Task authority", async () => {
-    const scenario = await setup();
-    const controller = new AbortController();
-    const graphThreadId = `subagent:task:${TASK_ID}:${RUN_ID}`;
-    const coordinate = Object.freeze({
-      kind: "channel" as const,
-      threadId: graphThreadId,
-      checkpointNs: "root",
-      channel: "messages",
-      version: "1",
-    });
-    const plaintext = new TextEncoder().encode("private graph state");
-    let checks = 0;
-    const opened = await withTaskRuntimeExecutionEvidenceV1({
-      evidence: scenario.evidence,
-      signal: controller.signal,
-      now: () => NOW,
-      execute: async evidence => {
-        const cell = createTaskRuntimeCheckpointCellCrypto({
-          crypto: scenario.crypto,
-          evidence,
-          identity: {
-            taskId: TASK_ID,
-            taskRunId: RUN_ID,
-            graphThreadId,
-            sourceRoomId: scenario.evidence.sourceRoomId,
-            namespaceId: NAMESPACE_ID,
-            domainId: DOMAIN_ID,
-            expectedAccessRevision: ACCESS_REVISION,
-            expectedPolicyRevision: POLICY_REVISION,
-          },
-          namespace: prepareInput(scenario, evidence).namespace,
-          signal: controller.signal,
-          now: () => NOW,
-          assertCurrentTaskAuthority: async () => { checks += 1; },
-        });
-        const ciphertext = await cell.crypto.executeAuthorizedOperation({
-          operation: "write",
-          scope: cell.scope,
-          execute: async context => {
-            const sealed = await cell.crypto.seal({
-              scope: cell.scope,
-              coordinate,
-              plaintext,
-              signal: context.signal,
-            });
-            await context.assertCommitAllowed();
-            return sealed;
-          },
-        });
-        const result = await cell.crypto.executeAuthorizedOperation({
-          operation: "read",
-          scope: cell.scope,
-          execute: context => cell.crypto.open({
-            scope: cell.scope,
-            coordinate,
-            ciphertext,
-            signal: context.signal,
-          }),
-        });
-        expect(ciphertext).not.toEqual(plaintext);
-        return result;
-      },
-    });
-    expect(opened).toEqual(plaintext);
-    expect(checks).toBe(3);
-    opened.fill(0);
-    plaintext.fill(0);
-  });
 });

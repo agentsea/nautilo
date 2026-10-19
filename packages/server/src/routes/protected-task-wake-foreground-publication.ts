@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
-import { ClassifiedDataOperationError, createDormantConversationShadowRepository,
+import { bindProtectedCheckpointCellDataOperationOwner,
+  ClassifiedDataOperationError, createDormantConversationShadowRepository,
   withProtectedTaskWakeForegroundSigner } from "@nautilo/lattice-bridge";
 import { createPostgresConversationCryptoCompletion, createTaskWakeForegroundAgentTurnSession,
   PostgresHumanDeviceSignerHistory, PostgresLatticeStorage, verifyCryptoPostgresHandle,
@@ -256,6 +257,18 @@ function sessionOwner(input: ProtectedTaskWakeForegroundPublicationInput):
                         signerAuthorizationHash: certified.certificateHash,
                       }),
                     };
+                    const checkpoint = createForegroundEntityCheckpointAuthorization({
+                      crypto: input.crypto,
+                      entities,
+                      namespaceId,
+                      namespaceAccessRevision: current.namespaceAccessRevision,
+                      namespaceKeyGeneration: current.namespaceKeyGeneration,
+                      domainId: current.domainId,
+                      agentAuthorizationRevision:
+                        signer.agentAuthorizationRevision,
+                      authorizationDeadlineAt: evidence.expiresAt,
+                      entrypointId: "foreground.main",
+                    });
                     const session = createTaskWakeForegroundAgentTurnSession({ crypto: input.crypto, evidence,
                       ...(taskRuntimeSigner === undefined ? {} : { taskRuntimeSigner }),
                       ...(input.onDiagnostic === undefined ? {} : { onDiagnostic: input.onDiagnostic }),
@@ -278,11 +291,13 @@ function sessionOwner(input: ProtectedTaskWakeForegroundPublicationInput):
                       runtime: { ...signer.runtime, key: signer.runtime.key.slice() },
                       grantId: evidence.requestId, grantDigest: evidence.authorizationDigest.slice(),
                       recipientKeyId: evidence.recipientKeyId, authorizationSignal: entities.signal,
-                      checkpoint: createForegroundEntityCheckpointAuthorization({ crypto: input.crypto, entities,
-                        namespaceId, namespaceAccessRevision: current.namespaceAccessRevision,
-                        namespaceKeyGeneration: current.namespaceKeyGeneration, domainId: current.domainId,
-                        agentAuthorizationRevision: signer.agentAuthorizationRevision,
-                        authorizationDeadlineAt: evidence.expiresAt, entrypointId: "foreground.main" }),
+                      checkpoint: Object.freeze({
+                        ...checkpoint,
+                        crypto: bindProtectedCheckpointCellDataOperationOwner({
+                          owner: input.owner,
+                          crypto: checkpoint.crypto,
+                        }),
+                      }),
                       ...services,
                       withCurrentTranscriptAuthority: async sink => {
                         await assertAllCurrent();

@@ -26,6 +26,8 @@ import {
   type TaskRuntimeExecutionEvidenceInputV1,
 } from "../../../lattice-crypto/src/background/task-runtime-execution-evidence-v1.ts";
 import { deriveTaskContentCryptoObjectIdV1 } from "../../src/task/task-content-repository.ts";
+import { bindEncryptionDataOperationOwner } from
+  "../../src/transition/encryption-data-operation-owner.ts";
 import type { TaskRuntimeCheckpointCellCrypto } from "../../src/checkpoint/task-runtime-checkpoint-cell-crypto.ts";
 import {
   createNativeTaskRuntimeCheckpointCellCrypto,
@@ -227,6 +229,22 @@ function fixture(adjust: Adjust = (_stage, rows) => rows) {
   const base = {
     restricted,
     crypto,
+    owner: bindEncryptionDataOperationOwner({
+      policy: {
+        resolve: async () => ({
+          policy: {
+            mode: "encrypted_only" as const,
+            shadowBehavior: "strict" as const,
+          },
+          revalidationToken: evidenceInput.policyRevision,
+        }),
+        revalidate: async expectedRevision => {
+          if (expectedRevision !== evidenceInput.policyRevision) {
+            throw new Error("Task checkpoint policy changed");
+          }
+        },
+      },
+    }),
     serverScope: SERVER,
     domains: [domain],
     signal: new AbortController().signal,
@@ -374,6 +392,20 @@ async function fails(operation: Promise<unknown>): Promise<void> {
     ),
   ).toBeInstanceOf(Error);
 }
+function plainOwner() {
+  return bindEncryptionDataOperationOwner({
+    policy: {
+      resolve: async () => ({
+        policy: {
+          mode: "plaintext_only" as const,
+          shadowBehavior: "fallback" as const,
+        },
+        revalidationToken: 3,
+      }),
+      revalidate: async () => undefined,
+    },
+  });
+}
 function change(
   stage: string,
   field: string,
@@ -384,6 +416,21 @@ function change(
 }
 
 describe("native Task checkpoint cell crypto", () => {
+  test("Plain refuses the native checkpoint operation before authority or SQL", async () => {
+    const value = fixture();
+    let executed = false;
+    await fails(value.run(cell => cell.crypto.executeAuthorizedOperation({
+      operation: "write",
+      scope: cell.scope,
+      execute: async () => {
+        executed = true;
+      },
+    }), { owner: plainOwner() }));
+    expect(executed).toBe(false);
+    expect(value.stages).toEqual([]);
+    expect(value.checks()).toBe(0);
+  });
+
   test("roundtrips a live cell and opens a retained generation under the current signed bundle", async () => {
     const value = fixture();
     const encrypted = await value.run(seal);
@@ -649,6 +696,22 @@ describe("native Task checkpoint cell crypto", () => {
 
 
 describe("Human Task checkpoint reader", () => {
+  test("Plain refuses a Human checkpoint read before authority or SQL", async () => {
+    const value = fixture();
+    const reader = value.reader({ owner: plainOwner() });
+    let executed = false;
+    await fails(reader.crypto.executeAuthorizedOperation({
+      operation: "read",
+      scope: reader.scope,
+      execute: async () => {
+        executed = true;
+      },
+    }));
+    expect(executed).toBe(false);
+    expect(value.stages).toEqual([]);
+    expect(value.checks()).toBe(0);
+  });
+
   test("opens Runtime-written cells after key rotation without execution evidence", async () => {
     const f = fixture(); const ciphertext = await f.run(seal);
     f.rotate();

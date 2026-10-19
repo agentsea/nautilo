@@ -218,7 +218,8 @@ export function createProtectedTaskPendingAttention(input: Readonly<{
       if (checkpointAadBinding === null) throw new TypeError("Task checkpoint retained ciphertext binding is unavailable");
       const cell = createHumanTaskCheckpointCellReader({
         checkpointAadBinding,
-        crypto, restricted, serverScope, domains: context.domains, signal: context.signal,
+        crypto, owner: input.owner, restricted, serverScope,
+        domains: context.domains, signal: context.signal,
         deadlineAt: context.deadlineAt, now, assertCurrentTaskAuthority: context.assertCurrentAuthority,
         identity: { taskId: candidate.occurrence.task.id, taskRunId: candidate.occurrence.run.id,
           sourceRoomId: context.locator.topLevelRoomId, graphThreadId: context.locator.checkpointThreadId,
