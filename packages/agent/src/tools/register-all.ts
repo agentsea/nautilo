@@ -1163,6 +1163,9 @@ export function registerAllTools(
       requiresApproval: false,
       requiredCapabilities: ["use_project_content"],
       resultScanPolicy: "on-suspicious",
+      // Document text can contain benign emoji joiners and layout controls.
+      // Sanitize returned text before injection scanning; source files stay intact.
+      scanInvisibleUnicode: "strip",
     });
   }
 
