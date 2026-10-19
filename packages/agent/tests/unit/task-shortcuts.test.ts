@@ -719,6 +719,81 @@ describe("task intent shortcuts", () => {
     expect(capturedCreate?.toolsWhitelist).toEqual(["exec_command", "write_stdin"]);
   });
 
+  test("Full ask_peer exposes a strict Artifact-free schema and uses protected creation", async () => {
+    const protectedCreate = mock(async (input: TaskToolCreateInput) => {
+      capturedProtectedCreate = input;
+      return { taskId: "protected-peer", status: "pending" };
+    });
+    stubRuntime({
+      canUseLegacyTaskContent: async () => false,
+      createProtectedTask: protectedCreate,
+    });
+    const tool = createAskPeerTool({ ...CTX, fullEncryptionOnly: true });
+
+    expect(tool.schema.safeParse({
+      peer_handle: "alex",
+      message_to_peer: "Can you review this?",
+      artifact_ids: ["doc-1"],
+    }).success).toBe(false);
+    const result = JSON.parse(String(await tool.invoke({
+      peer_handle: "alex",
+      message_to_peer: "Can you review this?",
+    }))) as { taskId: string };
+
+    expect(result.taskId).toBe("protected-peer");
+    expect(capturedCreate).toBeNull();
+    expect(capturedProtectedCreate).toMatchObject({
+      preset: "ask_peer",
+      targetChat: "last_dm",
+      targetChatHandle: "@alex",
+      awaitResponse: true,
+    });
+    expect(protectedCreate).toHaveBeenCalledTimes(1);
+  });
+
+  test("Shadow Artifact handoff rejects before access sharing or Task creation", async () => {
+    const commit = mock(async () => {
+      throw new Error("ordinary access must not commit");
+    });
+    const directGrant = spyOn(shareArtifact, "grantArtifactExactUserAccess");
+    restores.push(() => directGrant.mockRestore());
+    const protectedCreate = mock(async (_input: TaskToolCreateInput) => {
+      throw new Error("protected creator must not run");
+    });
+    stubRuntime({
+      canUseLegacyTaskContent: async () => false,
+      createProtectedTask: protectedCreate,
+    });
+
+    const raw = await createAskPeerTool({
+      ...CTX,
+      ordinaryContentAccessRequired: true,
+      ordinaryContentAccess: { commit },
+      memoryAccessEnvelope: {
+        memoryMode: "namespace",
+        ownerId: OWNER_ID,
+        actorId: "owner-actor",
+        agentId: AGENT_ID,
+        roomId: ROOM_ID,
+        readableNamespaces: ["ns-source"],
+        mutableNamespaces: ["ns-source"],
+        writableNamespaces: ["ns-source"],
+        toolPolicy: { share_artifact: "allow" },
+      },
+    }).invoke({
+      peer_handle: "elias",
+      message_to_peer: "Review this.",
+      artifact_ids: ["doc-1"],
+      sensitivity: "normal",
+    });
+
+    expect(JSON.parse(String(raw))).toMatchObject({ status: "not_contacted" });
+    expect(commit).not.toHaveBeenCalled();
+    expect(directGrant).not.toHaveBeenCalled();
+    expect(capturedCreate).toBeNull();
+    expect(protectedCreate).not.toHaveBeenCalled();
+  });
+
   test("ask_peer focused Artifact handoff grants exact access and authors sealed task metadata", async () => {
     stubRuntime();
     const artifactGrantSpy = spyOn(shareArtifact, "grantArtifactExactUserAccess").mockResolvedValue({

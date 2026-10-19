@@ -237,6 +237,7 @@ import { claudeConnectionsRoutes } from "./routes/claude-connections";
 import { codexRequestsRoutes } from "./routes/codex-requests";
 import { acpReadinessRoutes } from "./acp/routes";
 import { createHermesAcpHarnessTask } from "./acp/harness-task";
+import { createOpenCodeAcpHarnessTask } from "./acp/opencode-harness-task";
 import { createHermesAcpTaskExecutionRouteRegistration } from "./acp/task-execution-composition";
 import { createOpenCodeAcpTaskExecutionRouteRegistration } from "./acp/opencode-task-execution-composition";
 import { CodexAdminControlPlane } from "./codex/admin-control-plane";
@@ -4641,7 +4642,7 @@ export async function createApp(options?: CreateAppOptions) {
     },
     createTask: createTaskForAgentTool,
   };
-  const hermesAcpHarnessTaskDeps = {
+  const acpHarnessTaskDeps = {
     facts: codexCanonicalFactsReader,
     relay: relayRegistry,
     createTask: createTaskForAgentTool,
@@ -4719,7 +4720,7 @@ export async function createApp(options?: CreateAppOptions) {
       }, { isolationLevel: "read committed" });
     },
     createProtectedHarnessTask: async input => {
-      if (input.harness === "opencode-acp" || input.callingRoomId === null) {
+      if (input.callingRoomId === null) {
         throw new TypeError("Protected harness Task creation is unavailable");
       }
       const source = currentProtectedTaskForegroundCreationContext();
@@ -4729,7 +4730,8 @@ export async function createApp(options?: CreateAppOptions) {
         return { taskId: result.taskId, status: result.status, nextFireAt: result.nextFireAt };
       };
       if (input.harness === "codex") return createCodexHarnessTask({ ...codexHarnessTaskDeps, createTask: createProtected }, input);
-      if (input.harness === "hermes-acp") return createHermesAcpHarnessTask({ ...hermesAcpHarnessTaskDeps, createTask: createProtected }, input);
+      if (input.harness === "hermes-acp") return createHermesAcpHarnessTask({ ...acpHarnessTaskDeps, createTask: createProtected }, input);
+      if (input.harness === "opencode-acp") return createOpenCodeAcpHarnessTask({ ...acpHarnessTaskDeps, createTask: createProtected }, input);
       if (!enableClaudeCodeTasks) throw new TypeError("Protected Claude execution is unavailable");
       const selectedModels = (await claudeConnections.listExecutionModels(input.ownerId))
         .filter(model => model.selected);
@@ -4770,12 +4772,10 @@ export async function createApp(options?: CreateAppOptions) {
         })();
       }
       if (input.harness === "hermes-acp") {
-        return createHermesAcpHarnessTask(hermesAcpHarnessTaskDeps, input);
+        return createHermesAcpHarnessTask(acpHarnessTaskDeps, input);
       }
       if (input.harness === "opencode-acp") {
-        throw Object.assign(new Error("ACP_HARNESS_UNAVAILABLE"), {
-          code: "ACP_HARNESS_UNAVAILABLE" as const,
-        });
+        return createOpenCodeAcpHarnessTask(acpHarnessTaskDeps, input);
       }
       throw new Error("Unsupported harness selection.");
     },

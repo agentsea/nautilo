@@ -31,6 +31,7 @@ import {
   type TaskToolCreateInput,
   type TaskToolHarnessCreateInput,
   type TaskToolHermesAcpHarnessCreateInput,
+  type TaskToolOpenCodeAcpHarnessCreateInput,
 } from "./task-tool-runtime";
 import { normalizeTaskToolWhitelist } from "../subagents/validate-subagent-whitelist";
 import { rejectNotYetWiredTaskParams } from "./validate";
@@ -229,8 +230,8 @@ export async function dispatchTaskCommand(
 ): Promise<string> {
   try {
     const staleArgs = args as unknown as { harness?: string; execution_profile?: unknown };
-    if (staleArgs.harness === "opencode-acp" || staleArgs.execution_profile !== undefined) {
-      return "OpenCode Tasks are temporarily unavailable while Nautilo completes reliability work. Use Codex, Hermes, or Nautilo Native instead.";
+    if (staleArgs.execution_profile !== undefined) {
+      return "Cannot create OpenCode task: execution profile is server-owned.";
     }
     if (
       args.command !== "create"
@@ -353,6 +354,58 @@ export async function dispatchTaskCommand(
             model: created.model,
             message:
               "The task was accepted for Claude Code; it will report back to this chat when done.",
+          });
+        }
+        if (args.harness === "opencode-acp") {
+          if (!ctx.roomId) {
+            return "Cannot create OpenCode task: a current Room is required.";
+          }
+          if (ctx.currentTaskId || args.parent_task_id !== undefined) {
+            return "Cannot create OpenCode task: it must be a root task.";
+          }
+          if (
+            args.expected_output !== undefined
+            || args.schedule_kind !== undefined
+            || args.run_at !== undefined
+            || args.cron !== undefined
+            || args.timezone !== undefined
+            || args.target_chat !== undefined
+            || args.target_users !== undefined
+            || args.use_scope !== undefined
+            || args.scope_id !== undefined
+            || args.tools !== undefined
+            || args.result_delivery !== undefined
+            || args.time_limit_seconds !== undefined
+            || args.model_selection_profile !== undefined
+            || args.model_selection_spec !== undefined
+            || args.model_id !== undefined
+            || args.collaboration_mode !== undefined
+            || args.harness_model_id !== undefined
+            || args.working_directory !== undefined
+          ) {
+            return "Cannot create OpenCode task: scheduling, routing, scope, tools, delivery, and model settings are server-owned.";
+          }
+          if (canUseLegacyTaskContent ? !rt.createHarnessTask : !rt.createProtectedHarnessTask) {
+            return "OpenCode is unavailable on a paired Nautilo desktop. Open Nautilo Desktop, finish OpenCode setup, then try again.";
+          }
+          const request: TaskToolOpenCodeAcpHarnessCreateInput = {
+            ownerId: ctx.ownerId,
+            requestorId: ctx.causalHumanUserId,
+            agentId: ctx.agentId,
+            prompt: args.prompt,
+            callingRoomId: ctx.roomId,
+            harness: "opencode-acp",
+            executionProfile: "autonomous",
+          };
+          const created = canUseLegacyTaskContent
+            ? await rt.createHarnessTask!(request)
+            : await rt.createProtectedHarnessTask!(request);
+          return JSON.stringify({
+            taskId: created.taskId,
+            status: created.status,
+            execution: created.execution,
+            message:
+              "The task was accepted for the selected external harness; it will report back to this chat when done.",
           });
         }
         if (args.harness === "codex" || args.harness === "hermes-acp") {
@@ -948,6 +1001,9 @@ export async function dispatchTaskCommand(
     }
     if (args.command === "create" && args.harness === "claude-code") {
       return claudeCodeHarnessUnavailable();
+    }
+    if (args.command === "create" && args.harness === "opencode-acp") {
+      return "OpenCode is unavailable on a paired Nautilo desktop. Open Nautilo Desktop, finish OpenCode setup, then try again.";
     }
     const codexGuidance = codexHarnessFailureGuidance(err);
     if (codexGuidance) return codexGuidance;

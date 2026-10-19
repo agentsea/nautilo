@@ -361,6 +361,9 @@ const externalCreationExecutions = [
     readiness: { relayId: "relay", pairingGenerationRef: "pairing", capabilityRevision: 4 }, workingDirectory: "/private/workspace" },
   { version: 1, harnessId: "hermes-acp", source: "genie", readiness: { relayId: "relay", relaySessionId: "socket",
     pairingGenerationRef: "pairing", desktopSessionId: "desktop", selectedProtocolVersion: 14, capabilityRevision: 4 } },
+  { version: 1, harnessId: "opencode-acp", source: "genie", executionProfile: "autonomous", readiness: {
+    relayId: "relay", relaySessionId: "socket", pairingGenerationRef: "pairing", desktopSessionId: "desktop",
+    selectedProtocolVersion: 15, capabilityRevision: 4 } },
 ];
 for (const execution of externalCreationExecutions) for (const mode of ["encrypted_only", "shadow_encryption"] as const) {
   test(`${execution.harnessId} definition creation uses protected bytes and exact replay under ${mode}`, async () => {
@@ -381,14 +384,18 @@ for (const execution of externalCreationExecutions) for (const mode of ["encrypt
     } finally { f.publisher.dispose(); }
   });
 }
-test("external publication rejects protected directory substitution and unsupported OpenCode before custody", async () => {
-  for (const variant of ["directory", "opencode"] as const) {
+test("external publication rejects protected directory substitution and non-autonomous OpenCode before custody", async () => {
+  for (const variant of ["directory", "opencode-profile"] as const) {
     const f = fixture();
     try {
-      const request = claudeCreationRequest(f, externalCreationExecutions[0]);
-      const changed = { ...request, candidate: { ...request.candidate, metadata: { execution: {
-        ...externalCreationExecutions[0], ...(variant === "directory" ? { workingDirectory: "/substituted" } : { harnessId: "opencode-acp" }),
-      } } } };
+      const changed = variant === "directory"
+        ? (() => {
+            const request = claudeCreationRequest(f, externalCreationExecutions[0]);
+            return { ...request, candidate: { ...request.candidate, metadata: { execution: {
+              ...externalCreationExecutions[0], workingDirectory: "/substituted",
+            } } } };
+          })()
+        : claudeCreationRequest(f, { ...externalCreationExecutions[2], executionProfile: "plan" });
       await rejects(async () => f.publisher.publish(changed));
       expect(f.counts()).toEqual({ prepares: 0, writes: 0, commits: 0 }); expect(f.row()).toBeNull();
     } finally { f.publisher.dispose(); }

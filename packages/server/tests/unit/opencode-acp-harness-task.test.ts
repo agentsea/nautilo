@@ -18,7 +18,7 @@ const request: CreateOpenCodeAcpHarnessTaskInput = {
   prompt: "Inspect the repository",
   callingRoomId: ROOM,
   harness: "opencode-acp",
-  executionProfile: "interactive",
+  executionProfile: "autonomous",
 };
 
 function session(relayId = "relay-1", overrides: Partial<{
@@ -82,11 +82,11 @@ async function expectFailure(promise: Promise<unknown>, code: string): Promise<v
 }
 
 describe("createOpenCodeAcpHarnessTask", () => {
-  test.each(["interactive", "autonomous", "plan"] as const)(
-    "admits one authenticated v15-ready desktop and seals the explicit %s profile",
-    async (executionProfile) => {
+  test(
+    "admits one authenticated v15-ready desktop and seals the autonomous profile",
+    async () => {
       const h = harness();
-      expect(await createOpenCodeAcpHarnessTask(h.deps, { ...request, executionProfile })).toEqual({
+      expect(await createOpenCodeAcpHarnessTask(h.deps, request)).toEqual({
         taskId: "55555555-5555-4555-8555-555555555555",
         status: "pending",
         execution: "opencode-acp",
@@ -115,7 +115,7 @@ describe("createOpenCodeAcpHarnessTask", () => {
         metadata: {
           execution: {
             ...OPENCODE_ACP_HARNESS_TASK_EXECUTION_DESCRIPTOR,
-            executionProfile,
+            executionProfile: "autonomous",
             readiness: {
               relayId: "relay-1",
               relaySessionId: "session-1",
@@ -127,6 +127,19 @@ describe("createOpenCodeAcpHarnessTask", () => {
           },
         },
       });
+    },
+  );
+
+  test.each(["interactive", "plan"] as const)(
+    "rejects unsupported %s profile before relay admission",
+    async executionProfile => {
+      const h = harness();
+      await expectFailure(createOpenCodeAcpHarnessTask(h.deps, {
+        ...request,
+        executionProfile,
+      } as never), "ACP_HARNESS_UNAVAILABLE");
+      expect(h.readinessCalls()).toEqual([]);
+      expect(h.created()).toBeUndefined();
     },
   );
 
@@ -243,7 +256,7 @@ describe("createOpenCodeAcpHarnessTask", () => {
     await expectFailure(createOpenCodeAcpHarnessTask(writeFailure.deps, request), "ACP_HARNESS_UNAVAILABLE");
   });
 
-  test("snapshots profile and authority before readiness", async () => {
+  test("snapshots autonomous profile and authority before readiness", async () => {
     const mutable = { ...request };
     const h = harness({
       relay: {
@@ -252,7 +265,7 @@ describe("createOpenCodeAcpHarnessTask", () => {
           relayId === "relay-1" && userId === OWNER && registrationId === "opencode-acp" ? session() : null,
         requestAcpReadiness: async () => {
           mutable.prompt = "changed";
-          mutable.executionProfile = "autonomous";
+          (mutable as { executionProfile: string }).executionProfile = "plan";
           return "ready";
         },
       },
@@ -260,7 +273,7 @@ describe("createOpenCodeAcpHarnessTask", () => {
     await createOpenCodeAcpHarnessTask(h.deps, mutable);
     expect(h.created()).toMatchObject({
       prompt: "Inspect the repository",
-      metadata: { execution: { executionProfile: "interactive" } },
+      metadata: { execution: { executionProfile: "autonomous" } },
     });
   });
 

@@ -259,7 +259,7 @@ describe("task tool", () => {
     expect(calls).toEqual([]);
   });
 
-  for (const harness of ["codex", "hermes-acp"] as const) for (const plain of [true, false]) {
+  for (const harness of ["codex", "hermes-acp", "opencode-acp"] as const) for (const plain of [true, false]) {
     test(`${harness} uses only its ${plain ? "ordinary" : "protected"} creator`, async () => {
       const calls: string[] = []; const received: unknown[] = [];
       stubRuntime({ canUseLegacyTaskContent: async () => plain,
@@ -276,20 +276,21 @@ describe("task tool", () => {
       expect(received[0]).toMatchObject({ ownerId: OWNER_ID, requestorId: OWNER_ID, agentId: AGENT_ID,
         callingRoomId: ROOM_ID, prompt: "private request", harness });
       if (harness === "codex") expect(received[0]).toMatchObject({ harnessModelId: "catalog-model", workingDirectory: "/user/workspace", collaborationMode: "plan" });
+      else if (harness === "opencode-acp") expect(received[0]).toEqual({ ownerId: OWNER_ID, requestorId: OWNER_ID,
+        agentId: AGENT_ID, callingRoomId: ROOM_ID, prompt: "private request", harness, executionProfile: "autonomous" });
       else expect(received[0]).toEqual({ ownerId: OWNER_ID, requestorId: OWNER_ID, agentId: AGENT_ID,
         callingRoomId: ROOM_ID, prompt: "private request", harness });
     });
   }
-  test("protected Codex and Hermes forbid caller Scope/routing overrides and OpenCode stays unavailable", async () => {
+  test("protected external harnesses forbid caller Scope and routing overrides", async () => {
     const calls: string[] = [];
     stubRuntime({ canUseLegacyTaskContent: async () => false,
       createHarnessTask: async () => { throw new Error("Ordinary fallback forbidden"); },
       createProtectedHarnessTask: async () => { calls.push("protected"); return { taskId: "wrong", status: "pending", execution: "codex" }; },
     });
-    for (const harness of ["codex", "hermes-acp"] as const) for (const patch of [
+    for (const harness of ["codex", "hermes-acp", "opencode-acp"] as const) for (const patch of [
       { use_scope: true }, { scope_id: "scope" }, { target_chat: "orphan" as const }, { result_delivery: "wake" as const },
     ]) expect(await dispatchTaskCommand({ command: "create", prompt: "private", harness, ...patch }, CTX)).toContain("server-owned");
-    expect(taskToolSchema.safeParse({ command: "create", prompt: "private", harness: "opencode-acp" }).success).toBe(false);
     expect(calls).toEqual([]);
   });
 
@@ -394,8 +395,10 @@ describe("task tool", () => {
     expect(taskToolSchema.parse({ command: "create", prompt: "Native by default" }).harness).toBeUndefined();
   });
 
-  test("schema does not advertise deferred OpenCode execution", () => {
-    expect(() => taskToolSchema.parse({ command: "create", prompt: "Use OpenCode", harness: "opencode-acp" })).toThrow();
+  test("schema advertises OpenCode without a caller-selected execution profile", () => {
+    expect(taskToolSchema.parse({ command: "create", prompt: "Use OpenCode", harness: "opencode-acp" })).toMatchObject({
+      harness: "opencode-acp",
+    });
     expect("execution_profile" in taskToolSchema.shape).toBeFalse();
   });
 
@@ -669,7 +672,7 @@ describe("task tool", () => {
     });
   });
 
-  test("rejects stale OpenCode create shapes before either runtime seam", async () => {
+  test("rejects caller-selected OpenCode profiles before either runtime seam", async () => {
     let calls = 0;
     setTaskToolRuntime({
       db: {} as never,
@@ -687,9 +690,29 @@ describe("task tool", () => {
       execution_profile: "autonomous",
     } as never, CTX);
     const staleProfile = await dispatchTaskCommand({ command: "create", prompt: "x", execution_profile: "autonomous" } as never, CTX);
-    expect(staleHarness).toBe("OpenCode Tasks are temporarily unavailable while Nautilo completes reliability work. Use Codex, Hermes, or Nautilo Native instead.");
+    expect(staleHarness).toBe("Cannot create OpenCode task: execution profile is server-owned.");
     expect(staleProfile).toBe(staleHarness);
     expect(calls).toBe(0);
+  });
+
+  test("protected OpenCode failure never retries the ordinary creator", async () => {
+    let ordinaryCalls = 0;
+    let protectedCalls = 0;
+    setTaskToolRuntime({
+      db: {} as never,
+      canUseLegacyTaskContent: async () => false,
+      createTask: async () => ({ taskId: "native", status: "pending" }),
+      createHarnessTask: async () => { ordinaryCalls += 1; throw new Error("ordinary forbidden"); },
+      createProtectedHarnessTask: async () => { protectedCalls += 1; throw new Error("ACP_HARNESS_UNAVAILABLE"); },
+      computeNextFireAt: () => new Date(),
+      pauseTask: async () => ({ ok: true, status: "paused", message: "" }),
+      unpauseTask: async () => ({ ok: true, status: "pending", message: "" }),
+      stopTask: async () => ({ ok: true, status: "cancelled", message: "" }),
+    });
+    expect(await dispatchTaskCommand({ command: "create", prompt: "x", harness: "opencode-acp" }, CTX)).toContain(
+      "OpenCode is unavailable",
+    );
+    expect({ ordinaryCalls, protectedCalls }).toEqual({ ordinaryCalls: 0, protectedCalls: 1 });
   });
 
   test("turns bounded Hermes admission failures into safe setup guidance", async () => {

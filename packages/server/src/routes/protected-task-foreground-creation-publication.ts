@@ -1,5 +1,6 @@
 import { parseProtectedTaskCodexSelection } from "./protected-task-codex-selection";
 import { parseProtectedTaskHermesSelection } from "./protected-task-hermes-selection";
+import { parseProtectedTaskOpenCodeSelection } from "./protected-task-opencode-selection";
 import { createProtectedTaskHistoricalHumanDeviceSigningKeyResolver } from "./protected-task-historical-human-device-signing-key";
 import { withVerifiedForegroundTaskDefinitionPublication, publishVerifiedForegroundTaskDefinition } from "@nautilo/lattice-bridge/server";
 import { isDeepStrictEqual } from "node:util";
@@ -66,7 +67,8 @@ function snapshotCreation(input: Creation) {
       : input.prepared.shape.executor !== "external_harness"
         || (parseClaudeTaskExecutionMetadata({ execution: classification.operational["execution"] }) === null
           && parseProtectedTaskCodexSelection({ execution: classification.operational["execution"] }) === null
-          && parseProtectedTaskHermesSelection({ execution: classification.operational["execution"] }) === null))
+          && parseProtectedTaskHermesSelection({ execution: classification.operational["execution"] }) === null
+          && parseProtectedTaskOpenCodeSelection({ execution: classification.operational["execution"] }) === null))
     || !isDeepStrictEqual(classification.operational, input.prepared.operationalMetadata)
     || !isDeepStrictEqual({ formatVersion: 1, prompt: candidate.prompt,
       expectedOutput: candidate.expectedOutput ?? null, protectedMetadata: classification.protectedContent }, input.prepared.payload)

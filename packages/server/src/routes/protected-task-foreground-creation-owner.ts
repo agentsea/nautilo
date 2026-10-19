@@ -1,5 +1,6 @@
 import { parseProtectedTaskCodexSelection } from "./protected-task-codex-selection";
 import { parseProtectedTaskHermesSelection } from "./protected-task-hermes-selection";
+import { parseProtectedTaskOpenCodeSelection } from "./protected-task-opencode-selection";
 import { AsyncLocalStorage } from "node:async_hooks";
 import {
   acquireEncryptionPublicationFence, lockProtectedTaskForegroundCreationIdentity, eq, rooms,
@@ -102,7 +103,8 @@ export function createProtectedTaskForegroundCreationOwner(input: Omit<Publicati
       const executor = execution === undefined ? "native" as const
         : (parseClaudeTaskExecutionMetadata({ execution }) !== null
           || parseProtectedTaskCodexSelection({ execution }) !== null
-          || parseProtectedTaskHermesSelection({ execution }) !== null) ? "external_harness" as const : null;
+          || parseProtectedTaskHermesSelection({ execution }) !== null
+          || parseProtectedTaskOpenCodeSelection({ execution }) !== null) ? "external_harness" as const : null;
       if (executor === null) return { status: "unavailable", reason: "task_shape_unsupported" };
       return { status: "resolved", shape: {
         conversation: conversation as "orphan" | "private" | "group" | "public" | "open" | "dm",

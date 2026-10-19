@@ -154,8 +154,7 @@ export interface TaskToolClaudeCodeHarnessCreateInput {
   readonly harnessModelId?: string;
 }
 
-/** Dormant OpenCode ACP admission seam. The public task schema and dispatcher
- * do not expose this provider until the activation vertical is composed. */
+/** OpenCode ACP creates only the autonomous shape accepted by its mounted executor. */
 export interface TaskToolOpenCodeAcpHarnessCreateInput {
   readonly ownerId: string;
   readonly requestorId: string;
@@ -163,7 +162,7 @@ export interface TaskToolOpenCodeAcpHarnessCreateInput {
   readonly prompt: string;
   readonly callingRoomId: string | null;
   readonly harness: "opencode-acp";
-  readonly executionProfile: "interactive" | "autonomous" | "plan";
+  readonly executionProfile: "autonomous";
 }
 
 export type TaskToolHarnessCreateInput =

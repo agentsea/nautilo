@@ -210,6 +210,9 @@ for (const execution of [
     readiness: { relayId: "relay", pairingGenerationRef: "pairing", capabilityRevision: 4 }, workingDirectory: "/private/workspace" },
   { version: 1, harnessId: "hermes-acp", source: "genie", readiness: { relayId: "relay", relaySessionId: "socket",
     pairingGenerationRef: "pairing", desktopSessionId: "desktop", selectedProtocolVersion: 14, capabilityRevision: 4 } },
+  { version: 1, harnessId: "opencode-acp", source: "genie", executionProfile: "autonomous", readiness: {
+    relayId: "relay", relaySessionId: "socket", pairingGenerationRef: "pairing", desktopSessionId: "desktop",
+    selectedProtocolVersion: 15, capabilityRevision: 4 } },
 ]) test(`${execution.harnessId} shape cannot substitute foreground ownership or calling Room`, async () => {
   for (const patch of [{ requestorId: "other-user" }, { ownerId: "other-user" }, { agentId: "other-agent" }, { callingRoomId: "other-room" }]) {
     const f = fixture();
