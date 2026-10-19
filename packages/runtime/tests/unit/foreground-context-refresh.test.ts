@@ -11,6 +11,7 @@ import { ModelCatalogSchema } from "@nautilo/types";
 import type { ProtectedConversationExecutorTurnScope } from "../../src/conversation/conversation-execution-services";
 import { createLocalExecutionHistoryPort } from "../../src/conversation/local-execution-history";
 import type { RoomHistoryHit } from "../../src/conductor/history-search";
+import { buildForegroundHistoryMessages } from "../../src/context/foreground-history";
 import { acceptedForegroundMessages, createForegroundContextRebuilder, ForegroundContextReceipts } from "../../src/executors/foreground-context-refresh";
 
 function transition(signal?: AbortSignal, modelId = "test-model"): ForegroundContextRefreshTransition {
@@ -234,6 +235,77 @@ describe("foreground narrative continuation", () => {
     expect(observedCuts).toEqual(
       Array.from({ length: updateCount }, (_, index) => 11 + index),
     );
+  });
+
+  test("repeated real narrative rebuilds retain the latest answer and receipt under foreign pressure", async () => {
+    const accepted = new HumanMessage("Complete every numbered update");
+    const receipts = new ForegroundContextReceipts(10);
+    const rows: RoomHistoryHit[] = [];
+    const rebuild = createForegroundContextRebuilder({
+      roomId: "room", ownerId: "owner", agentId: "agent", receipts,
+    }, {
+      readHistory: async ({ modelId: _modelId, ...args }) => buildForegroundHistoryMessages(args, {
+        readRoomTranscript: async () => rows.filter((row) =>
+          row.messageId <= args.throughMessageIdInclusive!),
+        readSubagentTranscript: async () => [],
+        readRoomJournal: async () => ({
+          rollup: null,
+          events: [{
+            id: "journal-continuity", roomId: "room", kind: "fact",
+            statement: "JOURNAL_CONTINUITY", sequence: 1, status: "active",
+          }],
+        }),
+      }),
+    });
+    let state = {
+      messages: [accepted],
+      foregroundContextRefreshSource: {
+        acceptedMessages: [accepted], triggerMessageId: 10,
+        throughMessageIdInclusive: 10, executionId: "repeated-run",
+      },
+    } as unknown as NautiloState;
+
+    for (let update = 1; update <= 64; update += 1) {
+      const firstId = 11 + (update - 1) * 3;
+      for (const [offset, role, snippet, foreign] of [
+        [0, "assistant", `ANSWER[${update}] already delivered`, false],
+        [1, "tool", `RECEIPT[${update}] action succeeded`, false],
+        [2, "assistant", `FOREIGN[${update}] ${"surrounding activity ".repeat(100)}`, true],
+      ] as const) {
+        rows.push({
+          messageId: firstId + offset, role, snippet,
+          ts: new Date((firstId + offset) * 1_000),
+          authorDisplayName: foreign ? "Other" : "Agent",
+          handle: foreign ? "other" : "agent",
+          authorActorId: foreign ? "actor-other" : "actor-agent",
+          authorAgentId: foreign ? "other" : "agent",
+          foregroundExecutionId: foreign ? "foreign-run" : "repeated-run",
+        });
+      }
+      receipts.recordIds([firstId + 2]);
+      const result = await rebuild({
+        state,
+        request: {
+          kind: "foreground_context_refresh", status: "ready",
+          reason: "visible_assistant_text", modelId: "test-model",
+          maximumContextCharacters: 1_000, projectionFingerprint: `refresh-${update}`,
+        },
+      });
+      if (Array.isArray(result)) throw new Error("expected source-aware rebuild");
+      const narrative = result.messages.filter((message) =>
+        message.additional_kwargs["nautilo_room_context_budgeted"] === true)
+        .map((message) => typeof message.content === "string"
+          ? message.content
+          : JSON.stringify(message.content)).join("\n");
+      expect(result.messages.filter((message) => message === accepted)).toHaveLength(1);
+      expect(result.messages[0]).toBe(accepted);
+      expect(narrative).toContain(`ANSWER[${update}] already delivered`);
+      expect(narrative).toContain(`RECEIPT[${update}] action succeeded`);
+      expect(narrative).toContain("JOURNAL_CONTINUITY");
+      expect(narrative).not.toContain(`FOREIGN[${update}]`);
+      expect(narrative.length).toBeLessThanOrEqual(1_000);
+      state = { ...state, messages: result.messages, foregroundContextRefreshSource: result.source };
+    }
   });
 
   test("fresh authorized tool hits replace the local-execution recovery source", async () => {
@@ -657,6 +729,7 @@ describe("foreground narrative continuation", () => {
           messageId: 12,
           message: reply,
         }]);
+        expect(args.excludeMessageIds).toEqual([10]);
         return [questionNarrative, reply, resultNarrative];
       },
     });
@@ -666,6 +739,7 @@ describe("foreground narrative continuation", () => {
         messages: [original, question, reply],
         foregroundContextRefreshSource: {
           acceptedMessages: [original, reply],
+          acceptedMessageIds: [10, 12],
           acceptedMessageCoordinates: [{
             acceptedMessageIndex: 1,
             messageId: 12,

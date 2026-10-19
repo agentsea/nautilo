@@ -233,6 +233,7 @@ function narrativeTranscript(
   activeTurnAfterMessageId?: number,
   foregroundExecutionId?: string,
   foregroundAgentId?: string,
+  pinnedEntries: readonly string[] = [],
 ): ForegroundNarrativeTranscriptV1 {
   const maximumLines = Math.max(
     1,
@@ -280,6 +281,7 @@ function narrativeTranscript(
     turns,
     minimumCompleteTurns,
     earlierEntriesOmitted,
+    ...(pinnedEntries.length === 0 ? {} : { pinnedEntries }),
     ...(opts.addressedBy
       ? { suffix: `--- you were addressed by: ${opts.addressedBy} ---` }
       : {}),
@@ -440,8 +442,8 @@ function roomContextBudgets(
 }
 
 /**
- * Applies the invocation envelope to current progress and the Room policy
- * to semantic continuity plus any older history that fits afterward.
+ * Applies the invocation envelope to semantic continuity and current progress,
+ * and the Room policy to optional older transcript history.
  */
 export function buildBudgetedRoomContext(input: {
   journal: RoomJournalContext;
@@ -747,6 +749,7 @@ export async function buildTranscriptContext(
                 : undefined,
               opts.scope.foregroundExecutionId,
               opts.scope.agentId,
+              slots.map((slot) => slot.marker),
             ),
           });
           projectionFacts = projection.facts;

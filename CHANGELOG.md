@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Long-running conversations retain the current run's recent exchanges ahead
+  of surrounding Room activity, keep accepted Human replies in order, and
+  reserve Journal and recalled Records independently of older-history settings.
+
 - Office files upload to Artifacts regardless of ZIP entry order. The Room
   paperclip and file drop also accept Word, Excel and PowerPoint as Workspace
   documents, with the same Room access checks as PDF attachments.

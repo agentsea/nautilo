@@ -214,6 +214,10 @@ export function createForegroundContextRebuilder(input: Readonly<{
       messageId: coordinate.messageId,
       message: accepted[coordinate.acceptedMessageIndex]!,
     }));
+    // Keep authorized steering rows as chronology anchors. The renderer
+    // replaces each row with its exact accepted Human message once.
+    const anchoredHumanIds = new Set(acceptedHumanMessages.map((entry) => entry.messageId));
+    const excludeMessageIds = source.acceptedMessageIds?.filter((id) => !anchoredHumanIds.has(id));
     const retained = cutAdvanced
       ? { messages: [], narrativeInsertionIndex: 0 }
       : liveSegmentForRebuild(state.messages, source.acceptedMessages);
@@ -239,10 +243,13 @@ export function createForegroundContextRebuilder(input: Readonly<{
         maximumContextCharacters: narrativeMaximumCharacters,
         recentConversationLimit: roomPolicy?.recentConversationLimit ?? RECENT_CONVERSATION_LIMIT_DEFAULT,
         excludeMessageId: trigger,
-        ...(source.acceptedMessageIds === undefined ? {} : { excludeMessageIds: source.acceptedMessageIds }),
+        ...(excludeMessageIds === undefined ? {} : { excludeMessageIds }),
         ...(source.executionId === undefined
           ? {}
           : { foregroundExecutionId: source.executionId }),
+        ...(acceptedHumanMessages.length === 0
+          ? {}
+          : { acceptedHumanMessageIds: acceptedHumanMessages.map((entry) => entry.messageId) }),
         execute: async (hits) => {
           const rebuilt = await buildProtectedRoomHybridContext({
             hits: imageAssistanceHistory(hits),
@@ -272,7 +279,7 @@ export function createForegroundContextRebuilder(input: Readonly<{
         modelId: request.modelId,
         currentHumanText,
         currentMessageId: trigger,
-        ...(source.acceptedMessageIds === undefined ? {} : { excludeMessageIds: source.acceptedMessageIds }),
+        ...(excludeMessageIds === undefined ? {} : { excludeMessageIds }),
         throughMessageIdInclusive: through,
         ...(acceptedHumanMessages.length === 0 ? {} : { acceptedHumanMessages }),
         ...(source.executionId === undefined
