@@ -1,10 +1,12 @@
 /**
- * M088C Phase 1 — envelope-gated workspace artifact HTTP API + SSE.
+ * Envelope-gated workspace artifact HTTP API + SSE.
  *
  * Delete visibility for SSE uses namespace id snapshots on the bus payload
  * (§1.8 option b) so subscribers filter without re-querying soft-deleted rows.
  */
 
+import { isOoxmlArtifactName } from "@nautilo/attachments/artifact-upload-policy";
+import { validateOfficeUploadPackage } from "../lib/office-upload-package";
 import { workspaceSharingRoutes, type WorkspaceSharingService } from "./workspace-sharing";
 
 import { randomUUID } from "node:crypto";
@@ -96,7 +98,7 @@ import {
 } from "../lib/maintenance-rejection";
 
 const SCOPE_REJECTION_MESSAGE =
-  "Artifact scope mode is not implemented yet; use namespace context or wait for M088 Phase 4.";
+  "Artifact scope mode is not implemented yet; use namespace context.";
 const ARTIFACT_KEYSET_PAGINATION = "keyset_v1";
 
 type ArtifactListCursor = Readonly<{
@@ -164,7 +166,7 @@ function uploadCapBytes(): number {
 }
 
 /**
- * D362 — blank-document templates for `POST /api/office/new`. Each kind maps
+ * Blank-document templates for `POST /api/office/new`. Each kind maps
  * to a committed OOXML template minted by LibreOffice, its file extension,
  * MIME type, and the LibreOffice-style default "Untitled …" base name.
  */
@@ -212,7 +214,7 @@ function rowToDto(row: Artifact, namespaceIds: string[], mutableNamespaceIds: re
   };
 }
 
-/** D356 — bulk zip export caps (in-memory zipSync; keep bounded). */
+/** Bulk zip export caps (in-memory zipSync; keep bounded). */
 const EXPORT_MAX_FILES = 200;
 const EXPORT_MAX_TOTAL_BYTES = 200 * 1024 * 1024;
 
@@ -226,7 +228,7 @@ const EXPORT_MAX_TOTAL_BYTES = 200 * 1024 * 1024;
 const ARTIFACT_SAVE_BODY_LIMIT_BYTES = 64 * 1024 * 1024;
 
 /**
- * D356 — make a zip entry name from a logical artifact path, preserving folder
+ * Make a zip entry name from a logical artifact path, preserving folder
  * structure but de-duping collisions within the batch (`foo.md`, `foo (2).md`).
  */
 function uniqueZipEntryName(logicalPath: string, used: Set<string>): string {
@@ -478,7 +480,7 @@ export function isWorkspaceArtifactSseEvent(event: ServerEvent): boolean {
 }
 
 /**
- * D442 Phase 4.1 — optional service seam for the discussion-rooms route.
+ * Optional service seam for the discussion-rooms route.
  * Production omits it (the default falls back to the imported
  * `listDiscussionRoomsForArtifact`); hermetic route unit tests inject a
  * mock here so the contract can be exercised without a DB. Mirrors the
@@ -496,7 +498,7 @@ export type WorkspaceArtifactsRouteService = {
   ) => Promise<MemoryAccessEnvelope>;
   listDiscussionRoomsForArtifact?: typeof listDiscussionRoomsForArtifact;
   /**
-   * D442 Phase 4.2 — atomic room-create + artifact-attach. Optional so
+   * Atomic room-create + artifact-attach. Optional so
    * hermetic route unit tests can inject a mock without a DB; production
    * falls back to the imported `createDiscussionRoomForArtifact`.
    */
@@ -505,20 +507,20 @@ export type WorkspaceArtifactsRouteService = {
   findPersonalAgentsForUser?: typeof findPersonalAgentsForUser;
   /** Optional so hermetic route unit tests can inject a mock agent-actor lookup. */
   findAgentActorForAgent?: typeof findAgentActorForAgent;
-  /** M254 test seam; production resolves current canonical RBAC state. */
+  /** Test seam; production resolves current canonical RBAC state. */
   assertCanInvokeAgent?: AssertCanInvokeAgent;
-  /** M259 test seam; production resolves current canonical RBAC state. */
+  /** Test seam; production resolves current canonical RBAC state. */
   assertCanWriteArtifacts?: AssertCanWriteArtifacts;
-  /** M254 hermetic ping-admission seams. */
+  /** Hermetic ping-admission seams. */
   findArtifactByInternalIdForNamespaces?: typeof findArtifactByInternalIdForNamespaces;
   findArtifactByIdForNamespaces?: typeof findArtifactByIdForNamespaces;
   getArtifactNamespaces?: typeof getArtifactNamespaces;
   appendPendingArtifactEvent?: typeof appendPendingArtifactEvent;
-  /** M322 hermetic policy seam for opt-in plaintext Artifact pagination. */
+  /** Hermetic policy seam for opt-in plaintext Artifact pagination. */
   loadEncryptionPolicy?: typeof currentStrictShadowPolicy;
-  /** M322 frozen Artifact-share adapter; production composition is mandatory in plaintext mode. */
+  /** Frozen Artifact-share adapter; production composition is mandatory in plaintext mode. */
   contentAccessCoordinator?: WorkspaceSharingService["contentAccessCoordinator"];
-  /** M322 deterministic snapshot cutoff for hermetic pagination tests. */
+  /** Deterministic snapshot cutoff for hermetic pagination tests. */
   now?: () => Date;
 };
 
@@ -666,7 +668,7 @@ export function workspaceArtifactsRoutes(
       service.assertCanWriteArtifacts,
     );
   }
-  // M180 — PUT …/content accepts raw UTF-8 text bodies (not JSON).
+  // PUT …/content accepts raw UTF-8 text bodies (not JSON).
   app.addContentTypeParser(
     /^text\//,
     { parseAs: "string", bodyLimit: ARTIFACT_SAVE_BODY_LIMIT_BYTES },
@@ -697,7 +699,7 @@ export function workspaceArtifactsRoutes(
         limit: limitN,
       });
 
-      // M088C item 7: single batched query instead of N per-row lookups.
+      // Use a single batched query instead of N per-row lookups.
       const nsByArtifact = await getNamespacesForArtifactIds(rows.map((r) => r.id));
       const mutable = envelopeMutableNamespaces(env);
       const readableSet = admission === "human" ? new Set(readable) : null;
@@ -1009,7 +1011,7 @@ export function workspaceArtifactsRoutes(
     }));
   });
 
-  // ─── D442 Phase 4.1 — artifact discussion-room candidates ────────────
+  // ─── Artifact discussion-room candidates ────────────
   //
   // Discover eligible discussion rooms for a specific readable artifact
   // WITHOUT exposing raw namespaces as UI and WITHOUT client-side
@@ -1048,7 +1050,7 @@ export function workspaceArtifactsRoutes(
     return reply.send({ rooms });
   });
 
-  // ─── D442 Phase 4.2 — "Start a new conversation" from an artifact ────
+  // ─── "Start a new conversation" from an artifact ────
   //
   // Atomically mints a server-authorized conversational discussion Room
   // (kind='private') for the caller + the caller's personal agent AND
@@ -1439,7 +1441,7 @@ export function workspaceArtifactsRoutes(
     let fileFilename = "upload.bin";
     let fileMimetype = "";
     const fields: Record<string, string> = {};
-    // M088C item 6: track whether we successfully attached the row to
+    // Track whether we successfully attached the row to
     // the DB. On any earlier non-2xx exit OR thrown exception the
     // uploaded file would otherwise be orphaned under <artifactsRoot>.
     let attached = false;
@@ -1529,6 +1531,8 @@ export function workspaceArtifactsRoutes(
       const uploadClass = classifyArtifactUpload({
         filename: pathCheck.path,
         headBytes: new Uint8Array(headBuf),
+        ooxmlPackageValidated: isOoxmlArtifactName(pathCheck.path)
+          && await validateOfficeUploadPackage(uploadedPath, pathCheck.path),
       });
       if (!uploadClass.ok) {
         await discardOrphanUpload();
@@ -1541,7 +1545,7 @@ export function workspaceArtifactsRoutes(
         artifactId: externalArtifactId,
         path: pathCheck.path,
         storageUri,
-        mimeType,
+        mimeType: isOoxmlArtifactName(pathCheck.path) ? mimeFromExtensionOr(pathCheck.path) : mimeType,
         size: st.size,
       });
       await attachArtifactToNamespace({
@@ -1567,7 +1571,7 @@ export function workspaceArtifactsRoutes(
     }
   });
 
-  // D362 — create a blank LibreOffice document from a committed template.
+  // Create a blank LibreOffice document from a committed template.
   //
   // The three blank templates (`blank.docx` / `blank.xlsx` / `blank.pptx`)
   // were minted once by LibreOffice itself (valid OOXML) and live under
@@ -1693,7 +1697,7 @@ export function workspaceArtifactsRoutes(
     }
   });
 
-  // D356 — bulk export: zip the selected artifacts (by internal id) into a
+  // Bulk export: zip the selected artifacts (by internal id) into a
   // single download. One request, one save dialog — no per-file fan-out.
   app.post("/api/workspace/artifacts/export", async (request, reply) => {
     const env = request.memoryEnvelope;
@@ -1813,7 +1817,7 @@ export function workspaceArtifactsRoutes(
     return reply.send(rowToDto(updated, namespaceIds, mutable));
   });
 
-  // ─── D121-P3 — artifact state bridge ────────────────────────────────
+  // ─── Artifact state bridge ────────────────────────────────
   //
   // GET  /api/workspace/artifacts/:id/state/:key — read state value
   // PUT  /api/workspace/artifacts/:id/state/:key — write state value
@@ -1825,9 +1829,9 @@ export function workspaceArtifactsRoutes(
   // resolve the row first to map between them.
   //
   // Reads apply the subset rule via `envelopeReadableNamespaces`
-  // exactly like the other GET routes (M082). Writes target the
+  // exactly like the other GET routes. Writes target the
   // namespace the artifact attaches to that overlaps the envelope's
-  // writable set; if no overlap, 403. That matches the D121 §D-3
+  // writable set; if no overlap, 403. That matches the artifact-state
   // contract: "writes target the current-Room namespace."
   //
   // 404 for unknown artifact (or one outside the caller's read
@@ -1964,7 +1968,7 @@ export function workspaceArtifactsRoutes(
     },
   );
 
-  // ─── D261 P6b — artifact event back-channel (channel 3) ───────────────
+  // ─── Artifact event back-channel (channel 3) ───────────────
 
   const PENDING_EVENT_PAYLOAD_MAX_BYTES = 32 * 1024;
 
