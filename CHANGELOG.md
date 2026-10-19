@@ -1095,6 +1095,12 @@ store update, or Desktop/Host installation.
   personal-first calls stay personal. Privacy-constrained routes keep their
   provider pin, and every attempt retains separate costs and serving-provider evidence.
 
+- Completing Genie customization for the first time opens the user's existing
+  Personal chat. If that chat cannot be opened, the wizard offers a retry;
+  canceling and later customization still return to the starting page.
+  Accounts without server-funding permission receive an explanation and a
+  personal-key setup link when they cannot fund chat.
+
 ## Component release records verified 2026-09-09
 
 These are dated publication/ledger records, not claims about every user's

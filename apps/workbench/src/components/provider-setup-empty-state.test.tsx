@@ -53,3 +53,34 @@ test("personal setup explains disabled policy without linking to Server Admin", 
   );
   expect(missingModel).toContain("/settings#model");
 });
+
+test("missing personal key explains when the account cannot use server funding", () => {
+  const community = renderToStaticMarkup(
+    <ProviderSetupEmptyState
+      canManageProviders={false}
+      canUseServerKeys={false}
+      personalState="missing-key"
+    />,
+  );
+  expect(community).toContain("account currently requires its own provider key");
+  expect(community).toContain("Server-first funding only applies when your account is permitted");
+  expect(community).toContain("ask an administrator for server-funded access");
+  expect(community).toContain("/settings#personal-provider-keys");
+  expect(community).not.toContain("/admin");
+
+  const dualCapability = renderToStaticMarkup(
+    <ProviderSetupEmptyState
+      canManageProviders={false}
+      canUseServerKeys
+      personalState="missing-key"
+    />,
+  );
+  expect(dualCapability).toContain("Add one of your provider keys in Settings");
+  expect(dualCapability).not.toContain("account currently requires its own provider key");
+
+  const unknownCapability = renderToStaticMarkup(
+    <ProviderSetupEmptyState canManageProviders={false} personalState="missing-key" />,
+  );
+  expect(unknownCapability).toContain("Add one of your provider keys in Settings");
+  expect(unknownCapability).not.toContain("account currently requires its own provider key");
+});
