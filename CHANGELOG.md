@@ -1101,6 +1101,10 @@ store update, or Desktop/Host installation.
   Accounts without server-funding permission receive an explanation and a
   personal-key setup link when they cannot fund chat.
 
+- Administrators can select any active, shareable server invitation for `/join`,
+  including Contributor and higher-role invitations. Normal invite limits,
+  destination validity and enrollment controls still apply.
+
 ## Component release records verified 2026-09-09
 
 These are dated publication/ledger records, not claims about every user's
