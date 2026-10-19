@@ -1,9 +1,15 @@
 import { expect, test } from "bun:test";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, desc, eq } from "drizzle-orm";
 import { TASK_FUNDING_FAILURE_CODES } from "@nautilo/types";
 import { QueryBuilder, type PgTable } from "drizzle-orm/pg-core";
 import type { DirectDatabase } from "../../src/config/direct-database";
-import { getTaskById, getTaskByIdWithMutationVersion, getTaskRuns, listTasksForOwner } from "../../src/queries/tasks";
+import {
+  getLatestResumableTaskRun,
+  getTaskById,
+  getTaskByIdWithMutationVersion,
+  getTaskRuns,
+  listTasksForOwner,
+} from "../../src/queries/tasks";
 import { tasks } from "../../src/schema/tasks";
 import { taskRuns } from "../../src/schema/task-runs";
 
@@ -46,7 +52,7 @@ test("lifecycle list never selects ordinary Task bodies, including both bounded 
 });
 
 
-function capturedDetailDb() {
+function capturedDetailDb(rows: readonly unknown[] = []) {
   const queries: Array<{ sql: string; params: unknown[] }> = [];
   const db = {
     select(fields: Parameters<QueryBuilder["select"]>[0]) {
@@ -57,7 +63,7 @@ function capturedDetailDb() {
           orderBy: (...order: Parameters<typeof query.orderBy>) => { query.orderBy(...order); return chain; },
           limit: (limit: number) => { query.limit(limit); return chain; },
           then: (resolve: (rows: never[]) => unknown) => {
-            queries.push(query.toSQL()); return Promise.resolve([]).then(resolve);
+            queries.push(query.toSQL()); return Promise.resolve(rows as never[]).then(resolve);
           },
         };
         return chain;
@@ -100,12 +106,43 @@ test("protected mutation snapshot adds tuple identity without selecting Task bod
   expect(query.params.filter(value => value === ownerId)).toHaveLength(2);
 });
 
+test("protected funding reads only the newest resumable Run coordinates", async () => {
+  const paused = {
+    id: "73000000-0000-4000-8000-000000000001",
+    taskId: ownerId,
+    jobId: "74000000-0000-4000-8000-000000000001",
+    graphThreadId: "thread-1",
+    status: "paused" as const,
+    modelId: "openai/gpt-5.2",
+    fundingBinding: null,
+    fundingPredecessorRunId: null,
+  };
+  const captured = capturedDetailDb([paused]);
+  expect(await getLatestResumableTaskRun(captured.db, ownerId, { fundingOnly: true }))
+    .toEqual(paused);
+  const query = captured.queries[0]!;
+  expect(query.sql).not.toContain('"result_text"');
+  expect(query.sql).not.toContain('"last_error"');
+  expect(query.sql.slice(0, query.sql.indexOf(" from "))).toBe([
+    'select "id", "task_id", "job_id", "graph_thread_id", "status", "model_id",',
+    '"funding_binding", "funding_predecessor_run_id"',
+  ].join(" "));
+  expect(query.sql).toContain('order by "task_runs"."started_at" desc limit');
+
+  const completed = capturedDetailDb([{ ...paused, status: "completed" }]);
+  expect(await getLatestResumableTaskRun(completed.db, ownerId, { fundingOnly: true }))
+    .toBeUndefined();
+});
+
 test("ordinary detail query text and ordering remain the original full-row contract", async () => {
   const { db, queries } = capturedDetailDb();
   await getTaskById(db, ownerId);
   await getTaskRuns(db, ownerId);
+  await getLatestResumableTaskRun(db, ownerId);
   expect(queries[0]).toEqual(new QueryBuilder().select().from(tasks)
     .where(and(eq(tasks.id, ownerId))).limit(1).toSQL());
   expect(queries[1]).toEqual(new QueryBuilder().select().from(taskRuns)
     .where(eq(taskRuns.taskId, ownerId)).orderBy(asc(taskRuns.startedAt)).toSQL());
+  expect(queries[2]).toEqual(new QueryBuilder().select().from(taskRuns)
+    .where(eq(taskRuns.taskId, ownerId)).orderBy(desc(taskRuns.startedAt)).limit(1).toSQL());
 });

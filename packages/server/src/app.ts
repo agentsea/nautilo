@@ -4672,7 +4672,9 @@ export async function createApp(options?: CreateAppOptions) {
   ): Promise<void> => {
     const definedPatch = Object.fromEntries(Object.entries(patch ?? {}).filter(([, value]) => value !== undefined));
     const prospective = { ...task, ...definedPatch };
-    const priorRun = await getLatestResumableTaskRun(getServerDirectDb(), task.id);
+    const priorRun = task.contentRepresentation === "dual" || task.contentRepresentation === "protected"
+      ? await getLatestResumableTaskRun(getServerDirectDb(), task.id, { fundingOnly: true })
+      : await getLatestResumableTaskRun(getServerDirectDb(), task.id);
     if (task.fundingMode === "caller" && priorRun && prospective.targetChat !== task.targetChat) {
       throw new TaskFundingError("funding_source_changed");
     }

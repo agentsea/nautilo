@@ -1404,12 +1404,45 @@ export async function countActiveTaskWorkWith(
  * not paused — critically, this prevents a later cron fire (whose previous run
  * already completed) from wrongly resuming a stale earlier checkpoint.
  */
+type TaskFundingRunProjection = Readonly<Pick<TaskRun,
+  | "id" | "taskId" | "jobId" | "graphThreadId" | "status" | "modelId"
+  | "fundingBinding" | "fundingPredecessorRunId"
+>>;
+
+export function getLatestResumableTaskRun(
+  db: DirectDatabase,
+  taskId: string,
+): Promise<TaskRun | undefined>;
+export function getLatestResumableTaskRun(
+  db: DirectDatabase,
+  taskId: string,
+  projection: Readonly<{ fundingOnly: true }>,
+): Promise<TaskFundingRunProjection | undefined>;
 export async function getLatestResumableTaskRun(
   db: DirectDatabase,
   taskId: string,
-): Promise<TaskRun | undefined> {
+  projection?: Readonly<{ fundingOnly: true }>,
+): Promise<TaskRun | TaskFundingRunProjection | undefined> {
+  if (projection?.fundingOnly !== true) {
+    const [row] = await db
+      .select()
+      .from(taskRuns)
+      .where(eq(taskRuns.taskId, taskId))
+      .orderBy(desc(taskRuns.startedAt))
+      .limit(1);
+    return row?.status === "paused" ? row : undefined;
+  }
   const [row] = await db
-    .select()
+    .select({
+      id: taskRuns.id,
+      taskId: taskRuns.taskId,
+      jobId: taskRuns.jobId,
+      graphThreadId: taskRuns.graphThreadId,
+      status: taskRuns.status,
+      modelId: taskRuns.modelId,
+      fundingBinding: taskRuns.fundingBinding,
+      fundingPredecessorRunId: taskRuns.fundingPredecessorRunId,
+    })
     .from(taskRuns)
     .where(eq(taskRuns.taskId, taskId))
     .orderBy(desc(taskRuns.startedAt))
