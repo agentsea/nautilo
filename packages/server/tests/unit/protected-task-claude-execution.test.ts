@@ -157,14 +157,17 @@ async function fixture() {
   const providerEntered = Promise.withResolvers<void>();
   const control = {now:NOW,current:true,currentSelection:{...selection},admission:{...selection,scope:{...scope}} as ClaudeExecutionAdmission|null,
     metadata:{} as TaskPayloadV1["protectedMetadata"],liveRequest:true,failTranscript:false,signerCurrent:true,
-    waitForAbort:false,effectCount:0,costCount:0,afterOutput: (_output:HarnessExecutionOutput) => {},
+    failResult:false,waitForAbort:false,effectCount:0,costCount:0,
+    afterAdmission: (_count:number) => {},afterOutput: (_output:HarnessExecutionOutput) => {},
   };
   const abort = new AbortController();
+  let admissionCount = 0;
   // Database/policy objects are inert: each consuming production boundary is overridden below.
   const input: Input = {crypto,db:{} as unknown as Input["db"],restricted:{} as unknown as Input["restricted"],
     serverScope:"https://server.example.test",owner:{} as unknown as Input["owner"],now:()=>control.now,
     controller:{admitExecution:async (user:string,selected:typeof selection)=>{
-      expect(user).toBe(USER);expect(selected).toEqual(selection);calls.push("admit");return control.admission;
+      expect(user).toBe(USER);expect(selected).toEqual(selection);calls.push("admit");
+      admissionCount += 1;control.afterAdmission(admissionCount);return control.admission;
     }},
     execution:{async *start(admitted: Parameters<Input["execution"]["start"]>[0]) {
       expect(admitted.prompt).toBe("private task prompt");
@@ -231,7 +234,9 @@ async function consume(prepared:Awaited<ReturnType<Fixture["prepare"]>>,transien
   expect(outputs).toEqual([]);
 }
 function resultInput(f:Fixture,transient:Record<string,unknown>) {
-  return {...transient,protectedTaskResultPublication:{publish:async(value:unknown)=>{f.calls.push("result");f.results.push(value);}}};
+  return {...transient,protectedTaskResultPublication:{publish:async(value:unknown)=>{
+    f.calls.push("result");f.results.push(value);if(f.control.failResult)throw new Error("result publication unavailable");
+  }}};
 }
 
 describe("protected Claude execution", () => {
@@ -294,7 +299,7 @@ describe("protected Claude execution", () => {
     expect(f.calls).not.toContain("provider");
   });
 
-  for(const scenario of ["selection","socket","authority","expired","metadata","offline","signer"] as const) {
+  for(const scenario of ["selection","authority","expired","metadata","offline","signer"] as const) {
     test(`rejects ${scenario} drift before provider starts`,async()=>{
       const f=await fixture();await withPrepared(f,async({prepared,grant})=>{
         if(scenario==="offline"){
@@ -302,7 +307,6 @@ describe("protected Claude execution", () => {
         }
         const transient=resultInput(f,await prepared.openTransientInput(grant));
         if(scenario==="selection")f.control.currentSelection={...selection,selectedModel:"another-model"};
-        if(scenario==="socket")f.control.admission={...selection,scope:{...scope,relaySessionId:"replacement-socket"}};
         if(scenario==="authority")f.control.current=false;
         if(scenario==="expired")f.control.now=f.evidenceInput.expiresAt;
         if(scenario==="signer")f.control.signerCurrent=false;
@@ -312,6 +316,48 @@ describe("protected Claude execution", () => {
       });
     });
   }
+
+  for(const scenario of ["unavailable","changed"] as const) {
+    test(`publishes one protected failure when second provider admission is ${scenario}`,async()=>{
+      const f=await fixture();await withPrepared(f,async({prepared,grant})=>{
+        const transient=resultInput(f,await prepared.openTransientInput(grant));
+        f.control.admission=scenario==="unavailable"?null:
+          {...selection,scope:{...scope,relaySessionId:"replacement-socket"}};
+        await consume(prepared,transient);
+        expect(f.results).toEqual([{formatVersion:1,resultText:null,lastError:"Protected Task execution failed"}]);
+        expect(f.calls).not.toContain("provider");expect(f.calls.filter(value=>value==="result")).toHaveLength(1);
+      });
+    });
+  }
+
+  test("does not publish a second-admission failure after authority becomes stale",async()=>{
+    const f=await fixture();await withPrepared(f,async({prepared,grant})=>{
+      const transient=resultInput(f,await prepared.openTransientInput(grant));
+      f.control.afterAdmission=count=>{if(count===2){f.control.admission=null;f.control.current=false;}};
+      await Promise.resolve(expect(consume(prepared,transient)).rejects.toThrow("authority changed"));
+      expect(f.results).toEqual([]);expect(f.calls).not.toContain("provider");
+    });
+  });
+
+  test("does not publish a second-admission failure after cancellation",async()=>{
+    const f=await fixture();await withPrepared(f,async({prepared,grant})=>{
+      const transient=resultInput(f,await prepared.openTransientInput(grant));
+      f.control.afterAdmission=count=>{if(count===2){f.control.admission=null;f.abort.abort(new DOMException("Grant revoked","AbortError"));}};
+      await Promise.resolve(expect(consume(prepared,transient)).rejects.toMatchObject({name:"AbortError"}));
+      expect(f.results).toEqual([]);expect(f.calls).not.toContain("provider");
+    });
+  });
+
+  test("does not retry an uncertain protected failure publication",async()=>{
+    const f=await fixture();await withPrepared(f,async({prepared,grant})=>{
+      const transient=resultInput(f,await prepared.openTransientInput(grant));
+      f.control.admission=null;f.control.failResult=true;
+      await Promise.resolve(expect(consume(prepared,transient)).rejects.toThrow("result publication unavailable"));
+      await Promise.resolve(expect(consume(prepared,transient)).rejects.toThrow());
+      expect(f.results).toEqual([{formatVersion:1,resultText:null,lastError:"Protected Task execution failed"}]);
+      expect(f.calls.filter(value=>value==="result")).toHaveLength(1);expect(f.calls).not.toContain("provider");
+    });
+  });
 
   test("rejects wrong lane, Job and another prepared operation's genuine token",async()=>{
     const f=await fixture();await withPrepared(f,async({prepared,grant})=>{

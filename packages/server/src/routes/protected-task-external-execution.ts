@@ -2,6 +2,7 @@ import { AIMessage } from "@langchain/core/messages";
 import { isDeepStrictEqual } from "node:util";
 import {
   createProtectedTaskTranscriptPort,
+  createProtectedTaskFailurePayload,
   ProtectedTaskExecutionDidNotBeginError,
   assertProtectedTaskJobReferenceV1,
   type HarnessExecutionOutput,
@@ -242,10 +243,10 @@ export function createProtectedTaskExternalExecution<Selection extends object, A
                 execute: async payload => {
                   const admitted = await waitForProtectedTaskExternalOperation(combined, input.provider.admit(running.task.requestorId, selection));
                   if (admitted === null || !input.provider.sameAdmission(admitted, beforeStart)) {
-                    throw new TypeError("Protected external Task provider admission changed before disclosure");
+                    return Object.freeze({ status: "provider_not_invoked" as const });
                   }
                   await assertCurrent();
-                  return dependencies.signer({ restricted: input.restricted, crypto: input.crypto,
+                  const result = await dependencies.signer({ restricted: input.restricted, crypto: input.crypto,
                     evidence: grant.evidence, domains: grant.domains,
                     use: async (signer, history) => {
                       const identity = { taskId: running.task.id, taskRunId: running.run.id,
@@ -332,10 +333,13 @@ export function createProtectedTaskExternalExecution<Selection extends object, A
                       return outcome.value;
                     },
                   });
+                  return Object.freeze({ status: "completed" as const, result });
                 },
               });
               await assertCurrent();
-              await publication.publish(opened);
+              await publication.publish(opened.status === "provider_not_invoked"
+                ? createProtectedTaskFailurePayload()
+                : opened.result);
             } finally {
               providerLifetime.abort(new Error("Protected Task provider custody ended"));
               for (const value of pending.values()) value.close();
