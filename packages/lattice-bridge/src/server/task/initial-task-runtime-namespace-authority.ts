@@ -430,8 +430,7 @@ async function withInitialTaskRuntimeProductAuthority<Value>(
             || members.filter((member) => member.kind === "user"
               && member.id === request.requesterHumanId
               && member.owner_id === request.requesterUserId).length !== 1
-            || members.filter((member) => member.kind === "agent"
-              && member.agent_id === request.agentId).length !== 1) return null;
+            || members.filter((member) => member.kind === "agent").length !== 1) return null;
           if (entries.length !== request.namespaceIds.length) return null;
           const accessRevisions: number[] = [];
           for (const [index, entry] of entries.entries()) {

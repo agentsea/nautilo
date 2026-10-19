@@ -153,6 +153,16 @@ test("discovery binds only encrypt-only content authority and rechecks before co
   expect(events).toEqual(["use", "commit-check"]);
 });
 
+test("accepts Human-owned cancellation content when the source Room Agent differs", async () => {
+  const value = fixture((stage, row) => stage === "members"
+    && row["kind"] === "agent" ? { ...row, agent_id: "other-private-room-agent" } : row);
+  expect(await value.port.withDiscovery({
+    intent,
+    subject,
+    use: () => "bound",
+  })).toBe("bound");
+});
+
 test("accepted cancellation checks the caller's claim lease before and after use", async () => {
   const value = fixture();
   const events: string[] = [];

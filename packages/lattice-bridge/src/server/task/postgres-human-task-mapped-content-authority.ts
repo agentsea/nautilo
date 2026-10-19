@@ -1,7 +1,7 @@
 import {
-  acquireEncryptionConsumptionFence, actors, and, asc, backgroundCryptoAuthorizationRequests,
+  acquireEncryptionConsumptionFence, and, asc, backgroundCryptoAuthorizationRequests,
   eq, humanCryptoCustodies, humanCryptoDeviceGroupHeads, humanCryptoDevices, inArray,
-  jobs, protectedTaskDefinitionSupportsPolicy, protectedTaskRunWakeJobId, roomMembers, taskRuns, tasks,
+  jobs, protectedTaskDefinitionSupportsPolicy, protectedTaskRunWakeJobId, taskRuns, tasks,
   type PostgresJsBridgeConnection,
 } from "@nautilo/db";
 import type { LatticeCrypto } from "@nautilo/lattice-crypto";
@@ -86,11 +86,6 @@ export async function withCurrentHumanTaskMappedContentAuthority<Value>(
         subjectUserId: subject.userId, subjectHumanId: subject.humanActorId,
         roomId: input.sourceRoomId, namespaceId: task.contentNamespaceId,
         use: async namespaceAuthority => {
-          const members = await transaction.select({ agentId: actors.agentId }).from(roomMembers)
-            .innerJoin(actors, eq(actors.id, roomMembers.actorId)).where(and(
-              eq(roomMembers.roomId, input.sourceRoomId), eq(actors.kind, "agent")))
-            .for("share", { of: actors });
-          if (members.length !== 1 || members[0]?.agentId !== task.agentId) return null;
           return input.restricted.transactionOnce(async cryptoTransaction => {
             const deviceRows = await executeTypedCryptoQuery(cryptoTransaction, cryptoTypedDb.select({ device_id: humanCryptoDevices.deviceId })
               .from(humanCryptoDevices).innerJoin(humanCryptoCustodies, eq(humanCryptoCustodies.humanId, humanCryptoDevices.humanId))

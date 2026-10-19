@@ -136,8 +136,7 @@ async function exactPrivateRoom(
     && members.filter(member => member.kind === "user"
       && member.id === subject.humanActorId
       && member.owner_id === subject.userId).length === 1
-    && members.filter(member => member.kind === "agent"
-      && member.agent_id === intent.agentId).length === 1;
+    && members.filter(member => member.kind === "agent").length === 1;
 }
 
 /** The canonical destination owner has already locked this Room and roster. */

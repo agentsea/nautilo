@@ -25,7 +25,8 @@ import { readDurableTaskContentPublication } from "./postgres-task-content-crypt
 export type { VerifiedForegroundTaskDefinitionPublication } from "../../task/task-content-repository.ts";
 type Durable = NonNullable<Awaited<ReturnType<typeof readDurableTaskContentPublication>>>;
 type Custody = Readonly<{ coordinate: TaskContentCoordinateV1; authority: TaskContentAuthorityV1;
-  durable: Durable; expectedPayload: Uint8Array; metadataOnly?: true; assertMetadataCurrent?(): void; mappedLifecycle?: TaskContentRevisionLifecycleV1; assertCurrent(): Promise<void> }>;
+  durable: Durable; expectedPayload: Uint8Array; expectedRequestDigest?: Uint8Array;
+  metadataOnly?: true; assertMetadataCurrent?(): void; mappedLifecycle?: TaskContentRevisionLifecycleV1; assertCurrent(): Promise<void> }>;
 const custody = new WeakMap<VerifiedForegroundTaskDefinitionPublication, Custody>();
 const same = (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((v, i) => v === b[i]);
 function read(proof: VerifiedForegroundTaskDefinitionPublication): Custody {
@@ -52,8 +53,10 @@ function checkLifecycle(value: Custody, lifecycle: TaskContentRevisionLifecycleV
     || (lifecycle.historicalRepair != null
       ? value.metadataOnly !== true || lifecycle.historicalRepair.version !== 2
         || lifecycle.historicalRepair.genesisManifestHash !== Array.from(value.durable.genesisManifestHash, byte => byte.toString(16).padStart(2, "0")).join("")
-      : !(value.metadataOnly === true && decodeObjectAccessManifestV5(value.durable.genesisManifestBytes).signer.kind === "human_device")
-        && !same(lifecycle.requestDigest, value.durable.genesisManifestHash))) {
+      // A mapped reservation retains its signed-request or semantic-operation
+      // digest. The exact held snapshot above binds it independently of ciphertext.
+      : !(value.metadataOnly === true && mapped !== undefined)
+        && !same(lifecycle.requestDigest, value.expectedRequestDigest ?? value.durable.genesisManifestHash))) {
     throw new TypeError("Foreground Task inspection does not match its reservation");
   }
 }
@@ -168,20 +171,32 @@ export type InspectForegroundTaskDefinitionInput = Readonly<{
 
 /** Verify and compare plaintext only inside a fresh current foreground key loan. */
 export async function withVerifiedForegroundTaskDefinitionPublication<Value>(input: InspectForegroundTaskDefinitionInput & Readonly<{
+  /** Recovery of an edit retains its semantic request identity. Creation uses the genesis hash. */
+  expectedRequestDigest?: Uint8Array;
   use(proof: VerifiedForegroundTaskDefinitionPublication): Promise<Value>;
 }>): Promise<Readonly<{ status: "missing" | "unavailable" }> | Readonly<{ status: "verified"; value: Value }>> {
   const contentRevision = input.contentRevision ?? 1;
   if (!Number.isSafeInteger(contentRevision) || contentRevision < 1) throw new TypeError("Foreground Task definition revision is invalid");
-  return inspectDefinition({ ...input, coordinate: { kind: "definition", taskId: input.taskId, contentRevision },
-    signerPolicy: "agent_creation",
-    consume: plaintext => {
-      const expected = encodeTaskDefinitionContent(input.payload);
-      try {
-        if (!same(plaintext, expected)) throw new TypeError("Foreground Task stored definition source changed");
-      } finally { expected.fill(0); }
-      const proof = Object.freeze({ kind: "verified_foreground_task_definition" as const });
-      return Promise.resolve({ proof, use: () => input.use(proof) });
-    } });
+  if (input.expectedRequestDigest !== undefined
+    && (!(input.expectedRequestDigest instanceof Uint8Array) || input.expectedRequestDigest.length !== 32)) {
+    throw new TypeError("Foreground Task expected request digest is invalid");
+  }
+  const expectedRequestDigest = input.expectedRequestDigest === undefined
+    ? undefined : Uint8Array.from(input.expectedRequestDigest);
+  try {
+    return await inspectDefinition({ ...input,
+      ...(expectedRequestDigest === undefined ? {} : { expectedRequestDigest }),
+      coordinate: { kind: "definition", taskId: input.taskId, contentRevision },
+      signerPolicy: "agent_creation",
+      consume: plaintext => {
+        const expected = encodeTaskDefinitionContent(input.payload);
+        try {
+          if (!same(plaintext, expected)) throw new TypeError("Foreground Task stored definition source changed");
+        } finally { expected.fill(0); }
+        const proof = Object.freeze({ kind: "verified_foreground_task_definition" as const });
+        return Promise.resolve({ proof, use: () => input.use(proof) });
+      } });
+  } finally { expectedRequestDigest?.fill(0); }
 }
 
 export type OpenForegroundTaskDefinitionInput = Omit<InspectForegroundTaskDefinitionInput, "payload">;
@@ -204,6 +219,7 @@ export async function withOpenForegroundTaskDefinition<Value>(input: OpenForegro
 async function inspectDefinition<Value>(input:
   Omit<InspectForegroundTaskDefinitionInput, "taskId" | "payload"> & Readonly<{
     coordinate: TaskDefinitionContentCoordinateV1;
+    expectedRequestDigest?: Uint8Array;
     signerPolicy: "agent_creation" | "supported_current";
     consume(plaintext: Uint8Array): Promise<Readonly<{
       proof?: VerifiedForegroundTaskDefinitionPublication;
@@ -273,6 +289,7 @@ async function inspectDefinition<Value>(input:
             }
             const expectedPayload = Uint8Array.from(plaintext);
             const value: Custody = { coordinate, authority, durable, expectedPayload,
+              ...(input.expectedRequestDigest === undefined ? {} : { expectedRequestDigest: input.expectedRequestDigest }),
               assertCurrent: async () => {
               read(proof); await assertCurrent(); read(proof);
             } };
@@ -328,7 +345,7 @@ export async function publishVerifiedForegroundTaskDefinition(input: Readonly<{
       requesterHumanId: value.authority.requesterHumanId, namespaceId: value.authority.namespaceId,
       authorityFingerprint: fingerprintTaskContentAuthorityV1(value.authority),
       requiredNamespaceFingerprint: fingerprintTaskContentNamespaceV1(value.authority.namespaceId),
-      representation: input.representation, requestDigest: Uint8Array.from(value.durable.genesisManifestHash),
+      representation: input.representation, requestDigest: Uint8Array.from(value.expectedRequestDigest ?? value.durable.genesisManifestHash),
       cryptoObjectId: value.durable.objectId, objectType: taskContentObjectTypeV1(value.coordinate), payloadVersion: 1,
       operationalMetadata: input.operationalMetadata });
     if (!("state" in reserved)) throw new Error("Foreground Task reservation is unavailable");

@@ -20,6 +20,8 @@ const ROOM = "10000000-0000-4000-8000-000000000012";
 const AGENT = "10000000-0000-4000-8000-000000000013";
 const RUN = "10000000-0000-4000-8000-000000000014";
 const JOB = "10000000-0000-4000-8000-000000000015";
+const OTHER_SOURCE_AGENT = "10000000-0000-4000-8000-000000000016";
+const EXTRA_SOURCE_AGENT = "10000000-0000-4000-8000-000000000017";
 const DEVICE = "mapped-reader";
 const hash = () => new Uint8Array(32).fill(9);
 
@@ -27,6 +29,10 @@ export async function setup(kind: "human" | "historical" | "agent" = "human", re
   const coordinate = result ? { kind: "run_result" as const, taskId: definitionCoordinate.taskId, taskRunId: RUN, contentRevision: revision } : { ...definitionCoordinate, contentRevision: revision };
   const crypto = await fixture(kind, true, false, coordinate);
   const agent = kind === "agent" ? "task-agent" : AGENT;
+  let sourceHumanId = authority.requesterHumanId;
+  let sourceAgentActorId = AGENT;
+  let sourceAgentId = agent;
+  let extraSourceAgent = false;
   await crypto.adapter.complete(crypto.prepared);
   crypto.rewrapHuman(3);
   const head = crypto.connection.state.head!;
@@ -46,7 +52,9 @@ export async function setup(kind: "human" | "historical" | "agent" = "human", re
   let ledgerReads = 0;
   let failCommit = false;
   const events: string[] = [];
-  const ledgerDigest = kind === "agent" ? Uint8Array.from(crypto.connection.state.manifests.get(0)!["manifest_hash"] as Uint8Array) : historical === null ? new Uint8Array(32).fill(17) : Uint8Array.from(historical.signedRequestDigest.match(/../gu)!, byte => Number.parseInt(byte, 16)); // Human signed-request digest, deliberately not genesis hash.
+  // Human publication and foreground Agent edits bind request identity separately
+  // from the independently authenticated genesis manifest.
+  const ledgerDigest = historical === null ? new Uint8Array(32).fill(17) : Uint8Array.from(historical.signedRequestDigest.match(/../gu)!, byte => Number.parseInt(byte, 16));
   const fp = fingerprintTaskContentNamespaceV1(authority.namespaceId);
   const ledger = { sequence: 1, task_id: coordinate.taskId, task_run_id: RUN, content_revision: revision, result_revision: revision,
     operation_id: "human-definition", request_digest: ledgerDigest,
@@ -68,7 +76,13 @@ export async function setup(kind: "human" | "historical" | "agent" = "human", re
     else if (sql.includes("_namespace_key_product_room")) { events.push("room"); rows = [{ room_id: ROOM,
       namespace_id: authority.namespaceId, kind: "private", parent_room_id: null, archived_at: archived ? new Date() : null,
       namespace_access_revision: 3, human_actor_ids: [authority.requesterHumanId], effective_human_actor_ids: [authority.requesterHumanId], subject_user_id: USER }]; }
-    else if (sql.includes("_namespace_key_product_members")) rows = [{ actor_id: authority.requesterHumanId, kind: "user" }, { actor_id: AGENT, kind: "agent" }];
+    else if (sql.includes("_namespace_key_product_members")) rows = [
+      { actor_id: sourceHumanId, kind: "user" },
+      { actor_id: sourceAgentActorId, kind: "agent", agent_id: sourceAgentId },
+      ...(extraSourceAgent
+        ? [{ actor_id: EXTRA_SOURCE_AGENT, kind: "agent", agent_id: "extra-source-agent" }]
+        : []),
+    ];
     else if (sql.includes('from "task_definition_crypto_revisions"') || sql.includes('from "task_run_result_crypto_revisions"')) { events.push("ledger"); if (substituteLedger && ledgerReads++ > 0) ledger.request_digest.fill(0); rows = [ledger]; }
     else if (sql.includes('from "encryption_transition_policy"')) { events.push("policy-map"); rows = [{ mode, revision: 4 }]; }
     else if (sql.includes('from "actors"')) rows = [{ owner_id: USER }];
@@ -95,7 +109,7 @@ export async function setup(kind: "human" | "historical" | "agent" = "human", re
               contentNamespaceId: authority.namespaceId, contentRepresentation: representation, cryptoMappingState: "verified", fireLockId: null, status: taskStatus }]
             : table === "task_runs" ? [{ id: RUN, jobId: JOB, status: runStatus }]
             : table === "jobs" ? [{ status: jobStatus }]
-            : table === "room_members" ? [{ agentId: agent }] : [];
+            : table === "room_members" ? [{ agentId: sourceAgentId }] : [];
           return Promise.resolve(rows).then(resolve, reject);
         },
       };
@@ -152,10 +166,14 @@ export async function setup(kind: "human" | "historical" | "agent" = "human", re
     sourceRoomId: ROOM, expectedPolicyRevision: 4, subject: { userId: USER, humanActorId: authority.requesterHumanId,
       admission: { status: "admitted" as const, deviceId: DEVICE, deviceGeneration: 1, serverInstanceId: "test",
         lineageGeneration: 1, epoch: 1, securityRevision: 1, headDigest: hash(), expiresAt: 200 } }, now: () => now };
-  return { input, product, crypto, head, ledger, events, access: () => mappedAccess,
+  return { input, product, crypto, head, ledger, events, taskAgentId: agent,
+    access: () => mappedAccess,
     running: () => { runStatus = "running"; }, queued: () => { jobStatus = "queued"; },
     grant: () => { backgroundActive = true; }, archive: () => { archived = true; }, revoke: () => { deviceActive = false; },
     plain: () => { mode = "plaintext_only"; }, expire: () => { now = 201; },
+    sourceAgent: (value: string) => { sourceAgentActorId = OTHER_SOURCE_AGENT; sourceAgentId = value; },
+    wrongSourceHuman: () => { sourceHumanId = USER; },
+    addSourceAgent: () => { extraSourceAgent = true; },
     substituteLedger: () => { substituteLedger = true; }, failCommit: () => { failCommit = true; }, domain: () => { wrongDomain = true; },
     cleanup: () => { admission.mockRestore(); inspect.mockRestore(); read.mockRestore(); } };
 }

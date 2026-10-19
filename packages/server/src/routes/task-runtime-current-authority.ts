@@ -458,8 +458,7 @@ export async function loadCurrentProtectedTaskRuntimeRequesterRoomFacts(
     if (memberRows.length !== 2
       || memberRows.filter((member) => member.kind === "user"
         && member.id === humanActorId).length !== 1
-      || memberRows.filter((member) => member.kind === "agent"
-        && member.agent_id === task.agentId).length !== 1) return null;
+      || memberRows.filter((member) => member.kind === "agent").length !== 1) return null;
     requesterPrivateRoom = Object.freeze({
       roomId: room.id,
       namespaceId: room.namespace_id,

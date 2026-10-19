@@ -720,9 +720,12 @@ describe("current protected Task Runtime authority adapter", () => {
     }
   });
 
-  test("projects only content-free native route admission from the locked Task", async () => {
+  test("projects only content-free native route admission from the locked Task and keeps source custody Human-owned", async () => {
     const f = await fixture();
-    const load = async (nativeExecutionSupported: boolean) => {
+    const load = async (
+      nativeExecutionSupported: boolean,
+      sourceRoomAgentId = f.occurrence.task.agentId,
+    ) => {
       const statements: Readonly<{sql: string; params: readonly unknown[]}>[] = [];
       const rows: unknown[][] = [
         [{
@@ -767,7 +770,7 @@ describe("current protected Task Runtime authority adapter", () => {
         }],
         [
           { id: f.authority.plan.subjectHumanId, kind: "user", agent_id: null },
-          { id: "actor:agent", kind: "agent", agent_id: f.occurrence.task.agentId },
+          { id: "actor:agent", kind: "agent", agent_id: sourceRoomAgentId },
         ],
       ];
       const product = {
@@ -816,6 +819,13 @@ describe("current protected Task Runtime authority adapter", () => {
     ]);
 
     expect((await load(false)).facts?.nativeExecutionSupported).toBe(false);
+    const otherAgentSource = await load(true, "agent:other-private-room-member");
+    expect(otherAgentSource.facts?.requesterPrivateRoom).toEqual({
+      roomId: f.request.sourceRoomId,
+      namespaceId: f.occurrence.task.contentNamespaceId,
+    });
+    expect(otherAgentSource.facts?.task.agentId)
+      .toBe(f.occurrence.task.agentId);
     f.signing.privateKey.fill(0);
   });
 });

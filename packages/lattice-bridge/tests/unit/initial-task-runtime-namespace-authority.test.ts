@@ -366,7 +366,9 @@ function substitute(stage: string, field: string, value: PostgresJsBridgeScalar)
   return (current, rows) => current === stage ? rows.map((row) => ({ ...row, [field]: value })) : rows;
 }
 
-function contentAuthorityFixture() {
+function contentAuthorityFixture(
+  adjust: Adjust = (_stage, rows) => rows,
+) {
   return fixture((stage, rows) => {
     if (["candidates", "room-locks", "targets"].includes(stage)) {
       return rows.slice(0, 1);
@@ -374,7 +376,7 @@ function contentAuthorityFixture() {
     if (stage === "target-members") {
       return rows.filter((row) => row["room_id"] === ROOMS[0]);
     }
-    return rows;
+    return adjust(stage, rows);
   });
 }
 
@@ -424,6 +426,11 @@ describe("initial Task Runtime Namespace authority", () => {
       ? [...rows, { id: TASK, kind: "agent", agent_id: TASK, owner_id: USER }] : rows);
     expect(await inspectInitialTaskRuntimeNamespaceAuthority(input)).toBeNull();
     expect(events).not.toContain("restricted");
+  });
+
+  test("keeps Human-owned source custody when its private Room Agent differs from the Task executor", async () => {
+    const { input } = fixture(substitute("exact-members", "agent_id", PEER));
+    expect(await inspectInitialTaskRuntimeNamespaceAuthority(input)).not.toBeNull();
   });
 
   test("accepts a dual Task under Shadow consumption authority", async () => {
@@ -521,6 +528,16 @@ describe("initial Task Runtime Namespace authority", () => {
     });
     expect(await inspectInitialTaskRuntimeNamespaceAuthority(scoped.input))
       .toBeNull();
+  });
+
+  test("keeps content custody with the Human when the source Room Agent differs from the Task executor", async () => {
+    const { input } = contentAuthorityFixture(
+      substitute("exact-members", "agent_id", PEER),
+    );
+    const { targetRoomId: _targetRoomId, namespaceIds: _namespaceIds,
+      ...contentInput } = input;
+    expect(await inspectTaskContentNamespaceAuthority(contentInput))
+      .not.toBeNull();
   });
 
   test("lends the canonical product transaction under current content authority", async () => {
@@ -672,7 +689,7 @@ describe("initial Task Runtime Namespace authority", () => {
     ["exact-source", "type", "shared"], ["exact-source", "kind", "group"],
     ["exact-source", "parent_room_id", ROOMS[1]], ["exact-source", "archived_at", new Date()],
     ["exact-source", "human_actor_ids", [HUMAN, AGENT]],
-    ["exact-members", "agent_id", TASK], ["exact-members", "owner_id", AGENT],
+    ["exact-members", "owner_id", AGENT],
     ["exact-members", "id", TASK],
     ["targets", "effective_human_actor_ids", []],
     ["namespace", "namespace_access_revision", 88], ["namespace", "namespace_id", TASK],
@@ -1585,6 +1602,13 @@ describe("terminal Task delivery Namespace authority", () => {
     expect(events).not.toContain("restricted");
   });
 
+  test("keeps source custody Human-owned while delivery still binds the Task executor", async () => {
+    const { delivery } = deliveryFixture(
+      substitute("exact-members", "agent_id", PEER),
+    );
+    expect(await inspectTaskDeliveryNamespaceAuthority(delivery)).not.toBeNull();
+  });
+
   for (const [stage, field, value] of [
     ["task", "content_namespace_id", NAMESPACES[1]],
     ["task", "agent_id", PEER],
@@ -1593,7 +1617,6 @@ describe("terminal Task delivery Namespace authority", () => {
     ["exact-source", "namespace_id", NAMESPACES[1]],
     ["exact-source", "kind", "group"],
     ["exact-source", "archived_at", new Date()],
-    ["exact-members", "agent_id", PEER],
     ["delivery-room", "namespace_id", NAMESPACES[0]],
     ["delivery-room", "archived_at", new Date()],
     ["delivery-room", "destination_access_allowed", false],

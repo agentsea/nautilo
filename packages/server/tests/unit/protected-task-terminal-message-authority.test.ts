@@ -161,7 +161,10 @@ function accepted(
   });
 }
 
-function fixture(options: Readonly<{ removeDestinationTarget?: boolean }> = {}) {
+function fixture(options: Readonly<{
+  removeDestinationTarget?: boolean;
+  sourceAgentId?: string;
+}> = {}) {
   const calls: string[] = [];
   const connection: PostgresJsBridgeConnection = {
     query: async <Row extends PostgresJsBridgeRow>(
@@ -185,7 +188,8 @@ function fixture(options: Readonly<{ removeDestinationTarget?: boolean }> = {}) 
           { id: HUMAN, kind: "user", owner_id: USER, agent_id: null },
           { id: "agent-actor", kind: "agent", owner_id: USER,
             agent_id: destination && options.removeDestinationTarget
-              ? "other-agent" : AGENT },
+              ? "other-agent"
+              : destination ? AGENT : options.sourceAgentId ?? AGENT },
         ] as unknown as readonly Row[];
       }
       throw new Error(`Unexpected query: ${sql}`);
@@ -326,6 +330,16 @@ test("bound and accepted authority require the actual destination Room", async (
   })).toBe(DESTINATION_ROOM);
   expect(events).toEqual(["lease", "use", "lease"]);
   expect(record.authorizationBytes[0]).toBe(2);
+});
+
+test("accepts a Human-owned private source whose Agent differs from the Task Agent", async () => {
+  const value = fixture({ sourceAgentId: "other-private-room-agent" });
+  expect(await value.port.withDiscovery({
+    intent,
+    publicationPolicyRevision: POLICY,
+    subject,
+    use: () => "bound",
+  })).toBe("bound");
 });
 
 test("bound and accepted reject a removed target Agent even when another Agent remains", async () => {

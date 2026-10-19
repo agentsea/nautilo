@@ -178,10 +178,41 @@ describe("foreground Task definition restart inspection", () => {
       } })).toEqual({ status: "verified", value: expected });
     }
     expect(p.access()).toBe(1); expect(p.maps()).toBe(2);
+    expect(p.state().lifecycle.requestDigest).toEqual(
+      Uint8Array.from(f.f.connection.state.manifests.get(0)!["manifest_hash"] as Uint8Array),
+    );
     expect(Uint8Array.from(f.f.connection.state.object["payload_bytes"] as Uint8Array)).toEqual(ciphertext);
     expect(f.key()?.every(byte => byte === 0)).toBe(true);
     expect(() => readVerifiedForegroundTaskDefinitionAccessRevision(escaped!, {
       lifecycle: p.state().lifecycle, currentAuthority: f.input().currentAuthority })).toThrow(/closed/);
+  });
+  test("recovered update reservation retains its detached operation digest across exact replay", async () => {
+    const f = await setup(false, 2);
+    const p = product(f.input().currentAuthority);
+    const expectedDigest = new Uint8Array(32).fill(41);
+    for (const expected of ["mapped", "replayed"] as const) {
+      const suppliedDigest = Uint8Array.from(expectedDigest);
+      expect(await withVerifiedForegroundTaskDefinitionPublication({ ...f.input(),
+        expectedRequestDigest: suppliedDigest,
+        use: proof => {
+          suppliedDigest.fill(99);
+          return publishVerifiedForegroundTaskDefinition({ proof, product: p.port,
+            operationId: "task-update:effect", representation: "protected", operationalMetadata: null });
+        },
+      })).toEqual({ status: "verified", value: expected });
+      expect(p.state().lifecycle.requestDigest).toEqual(expectedDigest);
+    }
+    expect(p.maps()).toBe(2);
+    await rejects(withVerifiedForegroundTaskDefinitionPublication({ ...f.input(),
+      expectedRequestDigest: new Uint8Array(32).fill(42),
+      use: proof => publishVerifiedForegroundTaskDefinition({ proof, product: p.port,
+        operationId: "task-update:effect", representation: "protected", operationalMetadata: null }),
+    }), /reservation/u);
+    expect(p.maps()).toBe(2);
+    await rejects(withVerifiedForegroundTaskDefinitionPublication({ ...f.input(),
+      expectedRequestDigest: new Uint8Array(31),
+      use: async () => { throw new Error("Invalid request digest must not lend a proof"); },
+    }), /request digest/u);
   });
   test("forged tokens and source, signer, Namespace and ciphertext substitutions never map", async () => {
     const p = product(authority);

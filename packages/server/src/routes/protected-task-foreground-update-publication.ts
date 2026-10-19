@@ -508,6 +508,7 @@ export function createProtectedTaskForegroundUpdatePublication(input: Dependenci
                   taskId: request.taskId,
                   contentRevision: nextRevision,
                   expectedAgentId: request.agentId,
+                  expectedRequestDigest: Uint8Array.from(Buffer.from(fingerprint, "hex")),
                   payload: nextContent,
                   currentAuthority: authority,
                   entities: input.entities,

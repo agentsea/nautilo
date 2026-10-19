@@ -3,6 +3,7 @@ import { encryptionTransitionPolicy, tasks, taskRuns, type PostgresJsBridgeConne
 import { LatticeCrypto } from "@nautilo/lattice-crypto";
 import type { ConversationProductCanonicalTransactionRunner } from "../../src/server/message/postgres-conversation-product-store";
 import { withCurrentHumanTaskMappedContentAuthority } from "../../src/server/task/postgres-human-task-mapped-content-authority";
+import { setup } from "../fixtures/human-task-mapped-content";
 
 const TASK = "10000000-0000-4000-8000-000000000001";
 const USER = "20000000-0000-4000-8000-000000000002";
@@ -55,5 +56,47 @@ test.each([
   } else {
     expect(await result).toBeNull();
     expect(checked).not.toContain(taskRuns);
+  }
+});
+
+test("Human mapped authority keeps stored Task executor proof when the source Room Agent differs", async () => {
+  const fixture = await setup("agent");
+  try {
+    fixture.sourceAgent("different-source-agent");
+    let expectedAgentId: string | undefined;
+    const result = await withCurrentHumanTaskMappedContentAuthority({
+      ...fixture.input,
+      use: async (context) => {
+        expectedAgentId = context.expectedAgentId;
+        return "held";
+      },
+    });
+    expect(result).toBe("held");
+    expect(expectedAgentId).toBe(fixture.taskAgentId);
+    expect(fixture.events).not.toContain("room_members");
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test.each([
+  ["wrong Human", (fixture: Awaited<ReturnType<typeof setup>>) => fixture.wrongSourceHuman()],
+  ["extra Agent", (fixture: Awaited<ReturnType<typeof setup>>) => fixture.addSourceAgent()],
+] as const)("Human mapped authority rejects a source Room with %s", async (_scenario, change) => {
+  const fixture = await setup("agent");
+  try {
+    change(fixture);
+    let used = false;
+    const result = await withCurrentHumanTaskMappedContentAuthority({
+      ...fixture.input,
+      use: async () => {
+        used = true;
+        return "held";
+      },
+    });
+    expect(result).toBeNull();
+    expect(used).toBe(false);
+  } finally {
+    fixture.cleanup();
   }
 });

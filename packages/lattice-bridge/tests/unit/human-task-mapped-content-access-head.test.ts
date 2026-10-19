@@ -43,9 +43,24 @@ describe("Human Task mapped access head", () => {
     } finally { f.cleanup(); }
   });
   test("a substituted immutable ledger between inspection and CAS cannot map", async () => {
-    const f = await setup();
-    try { f.substituteLedger(); await rejects(refreshHumanMappedTaskContentAccessHead(f.input), /reservation changed/); expect(f.access()).toBe(0); }
-    finally { f.cleanup(); }
+    for (const kind of ["human", "agent"] as const) {
+      const f = await setup(kind);
+      try { f.substituteLedger(); await rejects(refreshHumanMappedTaskContentAccessHead(f.input), /reservation changed/); expect(f.access()).toBe(0); }
+      finally { f.cleanup(); }
+    }
+  });
+
+  test("mapped Agent definition refresh preserves the operation digest without treating it as a manifest hash", async () => {
+    const f = await setup("agent", false, 2);
+    try {
+      const before = structuredClone(f.ledger);
+      const genesisHash = f.crypto.connection.state.manifests.get(0)!["manifest_hash"];
+      expect(f.ledger.request_digest).not.toEqual(genesisHash);
+      expect(await refreshHumanMappedTaskContentAccessHead(f.input)).toBe("applied");
+      expect(f.access()).toBe(1);
+      expect(f.ledger).toEqual(before);
+      expect(await refreshHumanMappedTaskContentAccessHead(f.input)).toBe("duplicate");
+    } finally { f.cleanup(); }
   });
 
   test("repairs a paused definition through metadata authority without a key loan and preserves the signed-request digest", async () => {

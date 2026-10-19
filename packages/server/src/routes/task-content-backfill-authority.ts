@@ -263,7 +263,7 @@ export function createTaskContentBackfillAuthority(input: Readonly<{
                   subjectUserId: subject.userId, subjectHumanId: subject.humanActorId,
                   roomId: room.roomId, namespaceId: room.namespaceId,
                   use: async productAuthority => {
-                    // Membership locks are held; bind the same canonical Agent, too.
+                    // Membership locks are held; revalidate the pinned Human-private Room and Namespace.
                     const exactRoom = await resolveRoom(subject.userId, source.agentId, room.namespaceId);
                     if (exactRoom?.roomId !== room.roomId) return null;
                     const namespace = await inspectCurrentBackfillNamespace({

@@ -122,6 +122,7 @@ function orchestrationFixture(
   let resumable = false;
   let recoverPrepared = false;
   let lastPreparedContent: TaskDefinitionContent | null = null;
+  let recoveredRequestDigest: Uint8Array | null = null;
   const openedTaskAgents: string[] = [];
   const inspectedAuthorAgents: string[] = [];
   const privateNamespaceLookups: Array<{ namespaceId: string; taskExecutorAgentId: string }> = [];
@@ -249,11 +250,13 @@ function orchestrationFixture(
     inspectPrepared: async input => {
       inspectedAuthorAgents.push(input.expectedAgentId);
       if (!recoverPrepared || lastPreparedContent === null) return { status: "missing" };
+      if (input.expectedRequestDigest === undefined) throw new Error("Update recovery must retain request identity");
+      recoveredRequestDigest = Uint8Array.from(input.expectedRequestDigest);
       expect(input.payload).toEqual(lastPreparedContent);
       return { status: "verified", value: await input.use({} as never) };
     },
     publishVerified: async input => {
-      if (working === null || lastPreparedContent === null) throw new Error("Missing recovered publication");
+      if (working === null || lastPreparedContent === null || recoveredRequestDigest === null) throw new Error("Missing recovered publication");
       const before = currentState();
       const coordinate = { kind: "definition" as const, taskId: TASK,
         contentRevision: working.contentRevision + 1 };
@@ -269,6 +272,7 @@ function orchestrationFixture(
         expectedOutput: representation === "dual" ? workingPayload.expectedOutput : null };
       workingOperation = { ...before, lifecycle: { ...before.lifecycle,
         operationId: input.operationId, coordinate, cryptoObjectId: objectId,
+        requestDigest: Uint8Array.from(recoveredRequestDigest),
         operationalMetadata: input.operationalMetadata, completion: "complete", disposition: "mapped" },
       product: { coordinate, namespaceId: NS, representation, cryptoObjectId: objectId,
         cryptoAccessRevision: 0,
@@ -377,6 +381,9 @@ describe("foreground protected Task update orchestration", () => {
     expect(restarted.operation()?.lifecycle).toMatchObject({ operationId,
       coordinate: { kind: "definition", taskId: TASK, contentRevision: 5 },
       completion: "complete", disposition: "mapped" });
+    expect(restarted.counts()).toEqual({ prepares: 0, completions: 0 });
+    await restarted.publish(operationId);
+    expect(restarted.row().contentRevision).toBe(5);
     expect(restarted.counts()).toEqual({ prepares: 0, completions: 0 });
   });
 
