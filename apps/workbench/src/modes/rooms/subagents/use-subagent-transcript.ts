@@ -130,7 +130,7 @@ export function useSubagentTranscript(
           fundingSource: null, fundingFailure: null });
 
     void readWorkbenchTaskForViewer({
-      mode: policyMode,
+      owner: protectedOwner,
       taskId,
       protectedController,
     }).then((read) => {
@@ -222,7 +222,8 @@ export function useSubagentTranscript(
     return () => {
       generationRef.current += 1;
     };
-  }, [enabled, taskId, refreshKey, scopeKey, auth.viewer.isVerified, policyMode,
+  }, [enabled, taskId, refreshKey, scopeKey, auth.viewer.isVerified,
+    protectedOwner,
     protectedController, requestKey, requestedTaskRunId]);
 
   const loadMore = useCallback(() => {

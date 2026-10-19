@@ -15,7 +15,8 @@ import { useScheduledTasks } from "./use-scheduled-tasks";
  */
 export function ScheduledTasksSurface(): ReactElement {
   const { tasks, protectedTasks, protectedLoading, protectedError, loading, error,
-    protectedController, protectedMode, protectedScopeKey, protectedHistory,
+    protectedController, protectedOwner, protectedScopeKey,
+    protectedHistory,
     busyIds, refresh, openProtectedHistory, closeProtectedHistory,
     disable, enable, remove } = useScheduledTasks();
   const [query, setQuery] = useState("");
@@ -142,7 +143,7 @@ export function ScheduledTasksSurface(): ReactElement {
                     onDisable={disable}
                     onRemove={remove}
                     controller={protectedController}
-                    mode={protectedMode}
+                    owner={protectedOwner}
                     scopeKey={protectedScopeKey}
                     history={protectedHistory}
                     onOpenHistory={openProtectedHistory}

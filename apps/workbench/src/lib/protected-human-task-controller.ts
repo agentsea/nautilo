@@ -17,6 +17,7 @@ import type {
   TaskOperationRunTranscriptReadV1,
   TaskOperationalCreateV1,
   TaskOperationalUpdateV1,
+  TaskRunSummary,
   TaskRunSummaryV1,
 } from "@nautilo/types";
 import type { TaskPayloadV1 } from "@nautilo/lattice-bridge";
@@ -124,74 +125,155 @@ export type WorkbenchTaskViewerRead =
     }>;
 
 export type WorkbenchTaskRunResultViewerRead =
-  | Readonly<{ representation: "ordinary" }>
+  | Readonly<{ representation: "ordinary"; run: TaskRunSummary }>
   | Readonly<{
       representation: "protected";
       result: TaskOperationRunResultReadV1;
     }>;
 
-/** Exact policy-aware viewer read; Plain retains the legacy route unchanged. */
+function taskContentFailure(
+  reason: "waiting_for_authorization" | "device_not_ready" | "authority_changed"
+    | "unsupported_client" | "integrity_failure",
+): ClassifiedDataOperationError {
+  const failureClass = reason === "waiting_for_authorization"
+      || reason === "device_not_ready"
+    ? "key_waiting" as const
+    : reason === "authority_changed"
+      ? "authority" as const
+      : reason === "integrity_failure"
+        ? "integrity" as const
+        : "unsupported" as const;
+  return new ClassifiedDataOperationError(
+    failureClass,
+    "Protected Task content is unavailable",
+  );
+}
+
+/** Exact owner-selected viewer read; Plain retains one legacy detail request. */
 export async function readWorkbenchTaskForViewer(input: Readonly<{
-  mode: "plaintext_only" | "shadow_encryption" | "encrypted_only" | "unknown";
+  owner: EncryptionDataOperationOwner;
   taskId: string;
   protectedController?: WorkbenchProtectedHumanTaskController | undefined;
 }>): Promise<WorkbenchTaskViewerRead> {
-  if (input.mode === "plaintext_only") {
-    return Object.freeze({
+  const selected = await input.owner.read<
+    TaskDetail,
+    Readonly<{
+      opened: Awaited<ReturnType<WorkbenchProtectedHumanTaskController["open"]>>;
+      runs: readonly TaskRunSummaryV1[];
+    }>,
+    WorkbenchTaskViewerRead
+  >({
+    ordinary: () => apiClient.getTask(input.taskId),
+    protected: async () => {
+      const classified = await apiClient.getTaskContentV1(input.taskId);
+      if (classified.definition.status === "ordinary") {
+        throw new ClassifiedDataOperationError(
+          "key_waiting",
+          "Protected Task representation is unavailable",
+        );
+      }
+      if (classified.definition.status === "unavailable") {
+        throw taskContentFailure(classified.definition.reason);
+      }
+      if (input.protectedController === undefined) {
+        throw new ClassifiedDataOperationError(
+          "key_waiting",
+          "Protected Task device custody is unavailable",
+        );
+      }
+      const opened = await input.protectedController.open(Object.freeze({
+        ...classified.task,
+        content: classified.definition,
+      }));
+      if (opened.content.status !== "protected") {
+        throw new ClassifiedDataOperationError(
+          "recoverable_availability",
+          "Protected Task representation resolved to its ordinary sibling",
+        );
+      }
+      return Object.freeze({ opened, runs: classified.runs });
+    },
+    consumeOrdinary: (detail) => Object.freeze({
       representation: "ordinary" as const,
-      detail: await apiClient.getTask(input.taskId),
-    });
-  }
-  if (input.mode === "unknown") unavailable();
-  if (input.mode === "shadow_encryption" || input.mode === "encrypted_only") {
-    const classified = await apiClient.getTaskContentV1(input.taskId);
-    if (classified.definition.status === "ordinary") {
-      return Object.freeze({
-        representation: "ordinary" as const,
-        detail: await apiClient.getTask(input.taskId),
-      });
-    }
-    if (classified.definition.status === "protected") {
-      if (input.protectedController === undefined) unavailable();
-      return Object.freeze({
-        representation: "protected" as const,
-        opened: await input.protectedController.open(Object.freeze({
-          ...classified.task,
-          content: classified.definition,
-        })),
-        runs: classified.runs,
-      });
-    }
-    throw new ClassifiedDataOperationError(
-      "key_waiting",
-      "Protected Task content is unavailable",
-    );
-  }
-  return unavailable();
+      detail,
+    }),
+    consumeProtected: ({ opened, runs }) => Object.freeze({
+      representation: "protected" as const,
+      opened,
+      runs,
+    }),
+  });
+  return selected.value;
 }
 
-/** Plain results stay on the already-loaded legacy Task detail and never enter crypto. */
+/**
+ * Select one exact result without manufacturing an ordinary counterpart. The
+ * optional legacy detail must already belong to the same viewer read.
+ */
 export async function readWorkbenchTaskRunResultForViewer(input: Readonly<{
-  mode: "plaintext_only" | "shadow_encryption" | "encrypted_only" | "unknown";
+  owner: EncryptionDataOperationOwner;
   taskId: string;
   taskRunId: string;
   agentId: string;
+  ordinaryDetail?: TaskDetail | undefined;
   protectedController?: WorkbenchProtectedHumanTaskController | undefined;
 }>): Promise<WorkbenchTaskRunResultViewerRead> {
-  if (input.mode === "plaintext_only") {
-    return Object.freeze({ representation: "ordinary" as const });
-  }
-  if (input.mode === "unknown" || input.protectedController === undefined) {
-    unavailable();
-  }
-  return Object.freeze({
-    representation: "protected" as const,
-    result: await input.protectedController.openResult({
-      taskId: input.taskId,
-      taskRunId: input.taskRunId,
-      agentId: input.agentId,
+  const ordinaryDetail = input.ordinaryDetail;
+  const selected = await input.owner.read<
+    TaskRunSummary,
+    TaskOperationRunResultReadV1,
+    WorkbenchTaskRunResultViewerRead
+  >({
+    ordinary: ordinaryDetail === undefined ? undefined : () => {
+      if (ordinaryDetail.task.id !== input.taskId) {
+        return Promise.reject(new ClassifiedDataOperationError(
+          "integrity",
+          "Ordinary Task result identity was substituted",
+        ));
+      }
+      const run = ordinaryDetail.runs.find(
+        candidate => candidate.id === input.taskRunId,
+      );
+      if (run === undefined) {
+        return Promise.reject(new ClassifiedDataOperationError(
+          "recoverable_availability",
+          "Ordinary Task result is unavailable",
+        ));
+      }
+      return Promise.resolve(run);
+    },
+    protected: async () => {
+      if (input.protectedController === undefined) {
+        throw new ClassifiedDataOperationError(
+          "recoverable_availability",
+          "Protected Task result custody is unavailable in this client",
+        );
+      }
+      const result = await input.protectedController.openResult({
+        taskId: input.taskId,
+        taskRunId: input.taskRunId,
+        agentId: input.agentId,
+      });
+      if (ordinaryDetail !== undefined
+        && result.status === "unavailable"
+        && result.reason === "result_not_protected") {
+        throw new ClassifiedDataOperationError(
+          "recoverable_availability",
+          "Protected Task result resolved to its ordinary sibling",
+        );
+      }
+      return result;
+    },
+    consumeOrdinary: (run) => Object.freeze({
+      representation: "ordinary" as const,
+      run,
+    }),
+    consumeProtected: (result) => Object.freeze({
+      representation: "protected" as const,
+      result,
     }),
   });
+  return selected.value;
 }
 
 function unavailable(): never {

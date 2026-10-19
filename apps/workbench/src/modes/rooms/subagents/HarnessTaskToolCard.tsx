@@ -382,7 +382,7 @@ function HarnessExecutionToolCard({
       poll: taskResult.execution === "native",
       initialStatus: liveCanonicalStatus ?? entry?.status ?? taskResult.status,
       read: () => readWorkbenchTaskForViewer({
-        mode: encryptionPolicyMode,
+        owner: protectedOwner,
         taskId: taskResult.taskId,
         protectedController,
       }),
@@ -405,8 +405,8 @@ function HarnessExecutionToolCard({
       onError: () => { /* Recovery UI below remains available. */ },
     });
   }, [auth.viewer.isVerified, contentScopeKey, encryptionPolicyMode, entry?.status,
-    entry?.terminalAtMs, liveCanonicalStatus, protectedController, taskResult.execution,
-    taskResult.status, taskResult.taskId]);
+    entry?.terminalAtMs, liveCanonicalStatus, protectedController, protectedOwner,
+    taskResult.execution, taskResult.status, taskResult.taskId]);
   const researchProgress = entry ? entry.researchProgress
     : (taskMap[taskResult.taskId] ?? durableDetail?.task)?.preparation?.research;
   const canonicalStatus = harnessTaskCanonicalStatus({
@@ -710,7 +710,7 @@ function HarnessExecutionToolCard({
                 <ProtectedTaskRunResult
                   agentId={protectedOpened.task.agentId}
                   controller={protectedController}
-                  mode={encryptionPolicyMode}
+                  owner={protectedOwner}
                   refreshToken={`${taskStatus ?? ""}:${lastSuccessfulAtMs ?? 0}`}
                   scopeKey={contentScopeKey}
                   taskId={taskResult.taskId}

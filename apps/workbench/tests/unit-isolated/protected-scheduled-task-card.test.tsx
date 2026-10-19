@@ -1,6 +1,7 @@
 import "../bun-dom-preload";
 import { cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, describe, expect, mock, test } from "bun:test";
+import { bindEncryptionDataOperationOwner } from "@nautilo/lattice-bridge";
 import type { TaskRunSummaryV1 } from "@nautilo/types";
 
 import type {
@@ -54,6 +55,13 @@ function run(id: string, status: string, startedAt: string | null): TaskRunSumma
 }
 
 const actions = {
+  owner: bindEncryptionDataOperationOwner({ policy: {
+    resolve: async () => ({
+      policy: { mode: "encrypted_only", shadowBehavior: "fallback" },
+      revalidationToken: 1,
+    }),
+    revalidate: async () => {},
+  } }),
   onEnable: mock(() => {}),
   onDisable: mock(() => {}),
   onRemove: mock(() => {}),
@@ -77,13 +85,17 @@ describe("ProtectedScheduledTaskCard run history", () => {
   afterEach(() => {
     cleanup();
     renderProtectedResult.mockClear();
-    Object.values(actions).forEach((action) => action.mockClear());
+    actions.onEnable.mockClear();
+    actions.onDisable.mockClear();
+    actions.onRemove.mockClear();
+    actions.onOpenHistory.mockClear();
+    actions.onCloseHistory.mockClear();
   });
 
   test("opens history on demand and reports loading and failures truthfully", () => {
     const view = render(
       <ProtectedScheduledTaskCard row={openedRow()} {...actions}
-        controller={undefined} mode="encrypted_only" scopeKey="scope-a"
+        controller={undefined} scopeKey="scope-a"
         history={null} />,
     );
 
@@ -92,14 +104,14 @@ describe("ProtectedScheduledTaskCard run history", () => {
 
     view.rerender(
       <ProtectedScheduledTaskCard row={openedRow()} {...actions}
-        controller={undefined} mode="encrypted_only" scopeKey="scope-a"
+        controller={undefined} scopeKey="scope-a"
         history={{ taskId: "protected-schedule", state: "loading" }} />,
     );
     expect(view.getByRole("status").textContent).toBe("Loading run history…");
 
     view.rerender(
       <ProtectedScheduledTaskCard row={openedRow()} {...actions}
-        controller={undefined} mode="encrypted_only" scopeKey="scope-a"
+        controller={undefined} scopeKey="scope-a"
         history={{
           taskId: "protected-schedule",
           state: "error",
@@ -115,7 +127,7 @@ describe("ProtectedScheduledTaskCard run history", () => {
     const opened = { ...openedRow(), retainedHistoricalError: "Provider unavailable before repair" };
     const view = render(
       <ProtectedScheduledTaskCard row={opened} {...actions}
-        controller={undefined} mode="encrypted_only" scopeKey="scope-a"
+        controller={undefined} scopeKey="scope-a"
         history={null} />,
     );
     expect(view.getByTestId("task-retained-historical-error").textContent)
@@ -126,7 +138,7 @@ describe("ProtectedScheduledTaskCard run history", () => {
         availability: "unavailable",
         task: opened.task,
         reason: "waiting_for_authorization",
-      }} {...actions} controller={undefined} mode="encrypted_only"
+      }} {...actions} controller={undefined}
         scopeKey="scope-a" history={null} />,
     );
     expect(view.queryByTestId("task-retained-historical-error")).toBeNull();
@@ -138,7 +150,7 @@ describe("ProtectedScheduledTaskCard run history", () => {
     const history = readyHistory();
     const view = render(
       <ProtectedScheduledTaskCard row={openedRow()} {...actions}
-        controller={undefined} mode="encrypted_only" scopeKey="scope-a"
+        controller={undefined} scopeKey="scope-a"
         history={history} />,
     );
 
@@ -155,7 +167,7 @@ describe("ProtectedScheduledTaskCard run history", () => {
     expect(renderProtectedResult).toHaveBeenLastCalledWith(
       expect.objectContaining({
         agentId: "agent-one",
-        mode: "encrypted_only",
+        owner: actions.owner,
         scopeKey: "scope-a",
         taskId: "protected-schedule",
         taskRunId: "failed-run",
@@ -170,7 +182,7 @@ describe("ProtectedScheduledTaskCard run history", () => {
     const history = readyHistory();
     const view = render(
       <ProtectedScheduledTaskCard row={openedRow()} {...actions}
-        controller={undefined} mode="encrypted_only" scopeKey="scope-a"
+        controller={undefined} scopeKey="scope-a"
         history={history} />,
     );
     fireEvent.click(view.getByRole("button", { name: /completed/i }));
@@ -178,7 +190,7 @@ describe("ProtectedScheduledTaskCard run history", () => {
 
     view.rerender(
       <ProtectedScheduledTaskCard row={openedRow()} {...actions}
-        controller={undefined} mode="encrypted_only" scopeKey="scope-b"
+        controller={undefined} scopeKey="scope-b"
         history={history} />,
     );
     expect(view.queryByTestId("selected-protected-result")).toBeNull();

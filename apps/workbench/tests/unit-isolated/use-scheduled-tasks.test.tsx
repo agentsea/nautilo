@@ -323,7 +323,7 @@ describe("useScheduledTasks protected refresh", () => {
       state: "loading",
     });
     expect(readProtectedHistory).toHaveBeenCalledWith({
-      mode: "encrypted_only",
+      owner: view.result.current.protectedOwner,
       taskId: "scheduled-task",
       protectedController: controller,
     });

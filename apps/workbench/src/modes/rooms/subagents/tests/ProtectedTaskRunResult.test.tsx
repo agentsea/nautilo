@@ -1,6 +1,7 @@
 import { reapplyHappyDomGlobals } from "../../../../../tests/bun-dom-preload";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { bindEncryptionDataOperationOwner } from "@nautilo/lattice-bridge";
 
 import type { WorkbenchProtectedHumanTaskController } from
   "../../../../lib/protected-human-task-controller";
@@ -21,9 +22,22 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+function operationOwner(
+  mode: "plaintext_only" | "shadow_encryption" | "encrypted_only",
+  shadowBehavior: "fallback" | "strict" = "fallback",
+) {
+  return bindEncryptionDataOperationOwner({ policy: {
+    resolve: async () => ({
+      policy: { mode, shadowBehavior },
+      revalidationToken: 1,
+    }),
+    revalidate: async () => {},
+  } });
+}
+
 const base = {
   agentId: "agent-1",
-  mode: "encrypted_only" as const,
+  owner: operationOwner("encrypted_only"),
   refreshToken: "completed:1",
   scopeKey: "server-a:viewer-a:1",
   taskId: "task-1",
@@ -61,14 +75,19 @@ describe("ProtectedTaskRunResult", () => {
     }
   });
 
-  test("keeps Plain out of protected result custody", async () => {
-    const openResult = mock(async () => ({ status: "waiting" as const,
-      reason: "result_not_mapped" as const }));
+  test("preserves precise unavailable status when Fallback has no ordinary sibling", async () => {
+    const openResult = mock(async () => ({
+      status: "unavailable" as const,
+      reason: "result_not_protected" as const,
+    }));
     const view = render(<ProtectedTaskRunResult {...base}
-      mode="plaintext_only" controller={controller(openResult)} />);
-    await Promise.resolve();
-    expect(view.queryByTestId("protected-task-run-result")).toBeNull();
-    expect(openResult).not.toHaveBeenCalled();
+      owner={operationOwner("shadow_encryption", "fallback")}
+      controller={controller(openResult)} />);
+    await waitFor(() => expect(view.getByText(
+      "This Task run does not have a protected result.",
+    )).toBeTruthy());
+    expect(view.queryByText("Opening protected result…")).toBeNull();
+    expect(openResult).toHaveBeenCalledTimes(1);
   });
 
   test("submits exact identity and exposes retriable read errors", async () => {

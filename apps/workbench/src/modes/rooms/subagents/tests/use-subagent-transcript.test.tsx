@@ -10,6 +10,7 @@ import type {
 const actualApi = await import("../../../../lib/api");
 const actualAuth = await import("../../../../hooks/use-auth");
 const { ConversationEncryptionPolicyModeContext } = await import("../../../../adapters/runtime-contexts");
+const cryptoAdmission = await import("../../../../lib/crypto-admission-access");
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -81,6 +82,18 @@ const actionSession = await import("../../../../lib/client-action-session");
 const { useSubagentTranscript } = await import("../use-subagent-transcript");
 
 function wrapper({ children }: { children: ReactNode }) {
+  // Production mounts this subtree only after the admission gate has opened
+  // the exact policy snapshot. Keep the React presentation context and the
+  // canonical operation owner on the same generation in this direct-hook
+  // fixture too.
+  cryptoAdmission.setCryptoAdmissionAccessState({
+    status: "open",
+    identity: `${viewerId}:device:test`,
+    policy: {
+      mode: policyMode,
+      shadowBehavior: "fallback",
+    },
+  });
   return <ConversationEncryptionPolicyModeContext.Provider value={policyMode}>{children}</ConversationEncryptionPolicyModeContext.Provider>;
 }
 
@@ -103,6 +116,7 @@ function detail(content: string, funding?: {
 beforeEach(() => {
   cleanup();
   reapplyHappyDomGlobals();
+  cryptoAdmission.resetCryptoAdmissionAccess();
   viewerGeneration = 1;
   viewerId = "viewer-a";
   policyMode = "plaintext_only";
@@ -117,6 +131,7 @@ beforeEach(() => {
 
 afterAll(() => {
   cleanup();
+  cryptoAdmission.resetCryptoAdmissionAccess();
   mock.module("../../../../lib/api", () => actualApi);
   mock.module("../../../../hooks/use-auth", () => actualAuth);
   mock.module("../../../../lib/protected-human-task-controller", () =>
@@ -159,7 +174,7 @@ describe("Task transcript viewer scope", () => {
     view.rerender();
     expect(view.result.current.messages).toEqual([]);
     expect(pending).toHaveLength(1);
-    expect(getTaskContentV1).toHaveBeenCalledWith("task-1");
+    await waitFor(() => expect(getTaskContentV1).toHaveBeenCalledWith("task-1"));
 
     await act(async () => { pending[0]!.resolve(detail("stale plaintext")); });
     expect(view.result.current.messages).toEqual([]);

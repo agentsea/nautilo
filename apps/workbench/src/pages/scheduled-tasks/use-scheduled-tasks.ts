@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "@nautilo/api-client/browser";
 import { classifyDataOperationFailure } from "@nautilo/lattice-bridge";
+import type { EncryptionDataOperationOwner } from "@nautilo/lattice-bridge";
 import type { TaskRunSummaryV1, TaskSummary } from "@nautilo/types";
 import { useTaskState } from "../../contexts/task-state/task-state-context";
 import { filterScheduledTasks } from "./scheduled-tasks-view-model";
 import { useAuth } from "../../hooks/use-auth";
 import { useConversationEncryptionPolicyMode } from
-  "../../adapters/runtime-contexts";
-import type { ConversationEncryptionPolicyMode } from
   "../../adapters/runtime-contexts";
 import { createWorkbenchDataOperationOwner } from
   "../../lib/encryption-data-operation-policy";
@@ -62,7 +61,7 @@ export interface ScheduledTasksState {
   protectedLoading: boolean;
   protectedError: string | null;
   protectedController: WorkbenchProtectedHumanTaskController | undefined;
-  protectedMode: ConversationEncryptionPolicyMode;
+  protectedOwner: EncryptionDataOperationOwner;
   protectedScopeKey: string;
   protectedHistory: ProtectedScheduledTaskHistory | null;
   loading: boolean;
@@ -205,7 +204,7 @@ export function useScheduledTasks(enabled = true): ScheduledTasksState {
       history: { taskId, state: "loading" },
     });
     void readWorkbenchTaskForViewer({
-      mode: policyMode,
+      owner: protectedOwner,
       taskId,
       protectedController,
     }).then((read) => {
@@ -238,7 +237,7 @@ export function useScheduledTasks(enabled = true): ScheduledTasksState {
         },
       });
     });
-  }, [policyMode, protectedController, protectedScopeKey]);
+  }, [protectedController, protectedOwner, protectedScopeKey]);
 
   const closeProtectedHistory = useCallback((taskId: string): void => {
     protectedHistoryGenerationRef.current += 1;
@@ -273,7 +272,7 @@ export function useScheduledTasks(enabled = true): ScheduledTasksState {
     protectedError: protectedState.scopeKey === protectedScopeKey
       ? protectedState.error : null,
     protectedController,
-    protectedMode: policyMode,
+    protectedOwner,
     protectedScopeKey,
     protectedHistory: protectedHistoryState?.scopeKey === protectedScopeKey
       ? protectedHistoryState.history : null,

@@ -1,7 +1,6 @@
 import { useState, type ReactElement } from "react";
 import type { TaskRunSummaryV1 } from "@nautilo/types";
-import type { ConversationEncryptionPolicyMode } from
-  "../../adapters/runtime-contexts";
+import type { EncryptionDataOperationOwner } from "@nautilo/lattice-bridge";
 import type { WorkbenchProtectedHumanTaskController } from
   "../../lib/protected-human-task-controller";
 import { ProtectedTaskRunResult } from
@@ -23,7 +22,7 @@ export function ProtectedScheduledTaskCard({
   onDisable,
   onRemove,
   controller,
-  mode,
+  owner,
   scopeKey,
   history,
   onOpenHistory,
@@ -35,7 +34,7 @@ export function ProtectedScheduledTaskCard({
   onDisable(taskId: string): void;
   onRemove(taskId: string): void;
   controller: WorkbenchProtectedHumanTaskController | undefined;
-  mode: ConversationEncryptionPolicyMode;
+  owner: EncryptionDataOperationOwner;
   scopeKey: string;
   history: ProtectedScheduledTaskHistory | null;
   onOpenHistory(taskId: string): void;
@@ -182,7 +181,7 @@ export function ProtectedScheduledTaskCard({
                 <ProtectedTaskRunResult
                   agentId={task.agentId}
                   controller={controller}
-                  mode={mode}
+                  owner={owner}
                   scopeKey={scopeKey}
                   taskId={task.id}
                   taskRunId={selectedRunId}

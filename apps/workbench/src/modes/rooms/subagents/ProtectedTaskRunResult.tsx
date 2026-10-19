@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ReactElement } from "react";
 import type { TaskOperationRunResultReadV1 } from "@nautilo/types";
+import type { EncryptionDataOperationOwner } from "@nautilo/lattice-bridge";
 
 import {
   readWorkbenchTaskRunResultForViewer,
@@ -69,7 +70,7 @@ function ResultBody({ result }: {
 export function ProtectedTaskRunResult({
   agentId,
   controller,
-  mode,
+  owner,
   refreshToken,
   scopeKey,
   taskId,
@@ -77,7 +78,7 @@ export function ProtectedTaskRunResult({
 }: Readonly<{
   agentId: string | null | undefined;
   controller: WorkbenchProtectedHumanTaskController | undefined;
-  mode: "plaintext_only" | "shadow_encryption" | "encrypted_only" | "unknown";
+  owner: EncryptionDataOperationOwner;
   refreshToken?: string | number | null;
   scopeKey: string;
   taskId: string;
@@ -93,29 +94,32 @@ export function ProtectedTaskRunResult({
   useEffect(() => {
     const generation = ++generationRef.current;
     setSnapshot(null);
-    if (mode === "plaintext_only" || requestKey === null
+    if (requestKey === null
       || taskRunId === null || taskRunId === undefined
       || agentId === null || agentId === undefined) return;
     setSnapshot({ requestKey, state: "loading" });
     void readWorkbenchTaskRunResultForViewer({
-      mode,
+      owner,
       taskId,
       taskRunId,
       agentId,
       protectedController: controller,
     }).then((read) => {
-      if (generation !== generationRef.current
-        || read.representation !== "protected") return;
+      if (generation !== generationRef.current) return;
+      if (read.representation !== "protected") {
+        setSnapshot({ requestKey, state: "error" });
+        return;
+      }
       setSnapshot({ requestKey, state: "resolved", result: read.result });
     }).catch(() => {
       if (generation !== generationRef.current) return;
       setSnapshot({ requestKey, state: "error" });
     });
     return () => { generationRef.current += 1; };
-  }, [agentId, controller, mode, refreshToken, requestKey, retryGeneration,
+  }, [agentId, controller, owner, refreshToken, requestKey, retryGeneration,
     taskId, taskRunId]);
 
-  if (mode === "plaintext_only" || taskRunId === null || taskRunId === undefined) {
+  if (taskRunId === null || taskRunId === undefined) {
     return null;
   }
   if (agentId === null || agentId === undefined) {
