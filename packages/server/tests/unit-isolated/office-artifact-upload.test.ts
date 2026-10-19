@@ -9,10 +9,11 @@ import * as actualDb from "@nautilo/db";
 
 const insert = mock(async (input: Record<string, unknown>) => ({ ...input, id: "artifact-row", revision: 1, createdAt: new Date(0), updatedAt: new Date(0) }));
 const attach = mock(async (_input: { artifactId: string; namespaceId: string }) => {});
-mock.module("@nautilo/db", () => ({ ...actualDb, insertArtifact: insert, attachArtifactToNamespace: attach, getArtifactNamespaces: async () => ["namespace-a"] }));
+const namespacesForArtifacts = mock(async (ids: string[]) => new Map(ids.map(id => [id, ["namespace-a"]])));
+mock.module("@nautilo/db", () => ({ ...actualDb, insertArtifact: insert, attachArtifactToNamespace: attach, getArtifactNamespaces: async () => ["namespace-a"], getNamespacesForArtifactIds: namespacesForArtifacts }));
 const { workspaceArtifactsRoutes } = await import("../../src/routes/workspace-artifacts");
 const roots: string[] = [];
-afterEach(async () => { insert.mockClear(); attach.mockClear(); await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
+afterEach(async () => { insert.mockClear(); attach.mockClear(); namespacesForArtifacts.mockClear(); await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true }))); });
 
 test("late Office markers reach artifact persistence; renamed or malformed archives are removed", async () => {
   const root = await mkdtemp(join(tmpdir(), "office-route-"));
@@ -42,6 +43,8 @@ test("late Office markers reach artifact persistence; renamed or malformed archi
     }
     expect(insert).toHaveBeenCalledTimes(1);
     expect(attach).toHaveBeenCalledTimes(1);
+    expect(namespacesForArtifacts).toHaveBeenCalledTimes(1);
+    expect(namespacesForArtifacts.mock.calls[0]).toEqual([["artifact-row"]]);
     expect(attach.mock.calls[0]).toEqual([{ artifactId: "artifact-row", namespaceId: "namespace-a" }]);
   } finally {
     await app.close();
