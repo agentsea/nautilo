@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import * as nautiloSchema from "@nautilo/db/schema";
 
+import { DTO_BASELINE_DECLARATIONS } from "../../baseline/dto-declarations";
 import {
   REVIEWED_TASK_PROTECTION_DATABASE_WRITER_LOCATORS,
 } from "../../baseline/reviewed-task-protection-coverage";
@@ -79,12 +80,19 @@ describe("Task protection inventory closure", () => {
     const observations = (await discoverDtoInventory(repositoryRoot)).filter(
       (observation) => locators.has(observation.locator),
     );
+    const effectiveDeclarations = DTO_BASELINE_DECLARATIONS.filter(
+      (declaration) => locators.has(declaration.locator),
+    );
 
     expect(REVIEWED_TASK_PROTECTION_DTO_DECLARATIONS).toHaveLength(32);
+    expect(locators.size).toBe(32);
+    expect(effectiveDeclarations).toHaveLength(32);
+    expect(new Set(effectiveDeclarations.map((declaration) =>
+      declaration.locator)).size).toBe(32);
     expect(observations).toHaveLength(32);
     expect(auditDtoDeclarations({
       observations,
-      declarations: REVIEWED_TASK_PROTECTION_DTO_DECLARATIONS,
+      declarations: effectiveDeclarations,
     })).toEqual({
       ok: true,
       counts: {
