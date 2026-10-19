@@ -1,6 +1,7 @@
 import { chatGPTFundingRegistration } from "./chatgpt-plan/runtime";
 import { createCapabilityFundingSession, prepareCapabilityFundingSession } from "./capability-funding";
 import {
+  COMBO_SPECS,
   modelIdForCapabilityProjection, getProfileByAgentId, resolveTaskModel,
   validateExactTaskModelSelection, resolveRetainedModels, resolveCatalogModel,
   type ForegroundChatFundingAttempt, type ForegroundChatFundingSession,
@@ -13,11 +14,27 @@ import { parseTaskFundingBinding, type TaskFundingBinding, type TaskFundingFailu
 import { usageFundingFor } from "./foreground-chat-funding";
 import { ModelFundingError, resolveModelFunding, withAdmittedPersonalCredential, type ModelFundingDecision } from "./model-funding";
 import { getServerDirectDb } from "./server-direct-db";
-import { openSurplusPersonalDirectRecovery } from "./surplus-personal-recovery";
+import {
+  openServerFirstPersonalRecovery,
+  openSurplusPersonalDirectRecovery,
+} from "./surplus-personal-recovery";
 
 import { callerTaskModelEnvironment, callerTaskModelIds, personalOnlyTaskModelIds } from "./caller-task-model-context";
 
 type Candidate = Parameters<TaskFundingPort["prepareCreation"]>[0];
+
+export function nativeTaskAllowsUnpinnedSurplusRetry(
+  task: Pick<Candidate, "contentRepresentation" | "selectionProfile" | "selectionSpec">,
+): boolean {
+  if ((task.contentRepresentation ?? "ordinary") !== "ordinary") return false;
+  const profile = task.selectionProfile;
+  const effective = task.selectionSpec ?? (profile && profile !== "balanced"
+    ? COMBO_SPECS[profile]
+    : undefined);
+  return effective?.band !== "privacy"
+    && effective?.objective !== "privacy"
+    && effective?.absoluteFloors?.privacy === undefined;
+}
 
 const NATIVE_TASK_METADATA_KEYS = new Set([
   "preparation", "lastInterruption", "deepResearch", "bringBack",
@@ -377,14 +394,20 @@ async function openSession(task: Task, run: TaskRun, modelId: string, wake: bool
     }
   };
   await resolveCandidate(modelId);
+  const allowUnpinnedSurplusRetry = nativeTaskAllowsUnpinnedSurplusRetry(task);
+  const fundingPolicy = admitted.kind === "server"
+    ? await getServerProviderPolicy(getServerDirectDb())
+    : null;
   let lastAttempt: ModelFundingDecision | undefined;
   return {
     kind: admitted.kind,
+    ...(allowUnpinnedSurplusRetry ? { allowUnpinnedSurplusRetry: true as const } : {}),
     capabilityFunding: await prepareCapabilityFundingSession(
       task.requestorId,
       async () => { await resolveCandidate(modelId); },
       admitted.kind,
       bindingFor(admitted),
+      allowUnpinnedSurplusRetry ? true : undefined,
     ),
     ...(admitted.kind === "server" && admitted.providerRoute === "surplus" ? {
       openPersonalDirectRecovery: async (candidate: string) => {
@@ -393,6 +416,29 @@ async function openSession(task: Task, run: TaskRun, modelId: string, wake: bool
           modelId: candidate,
           workload: "native_text_task",
           primaryDecision: admitted,
+          ...(allowUnpinnedSurplusRetry ? { allowUnpinnedSurplusRetry: true as const } : {}),
+          recheckPrimary: () => resolveCandidate(candidate),
+        }));
+        return {
+          ...recovery,
+          recheckAttempt: (recoveryModelId: string, transport?: "direct" | "surplus") =>
+            fundingBoundary(() => recovery.recheckAttempt(recoveryModelId, transport)),
+          async runAttempt<T>(recoveryModelId: string,
+            callback: (attempt: ForegroundChatFundingAttempt) => Promise<T>,
+            transport?: "direct" | "surplus") {
+            return fundingBoundary(() => recovery.runAttempt(recoveryModelId, callback, transport));
+          },
+        };
+      },
+    } : {}),
+    ...(admitted.kind === "server" && fundingPolicy?.fundingPreference === "server_first" ? {
+      openPersonalRecovery: async (candidate: string) => {
+        const recovery = await fundingBoundary(() => openServerFirstPersonalRecovery({
+          humanUserId: task.requestorId,
+          modelId: candidate,
+          workload: "native_text_task",
+          primaryDecision: admitted,
+          ...(allowUnpinnedSurplusRetry ? { allowUnpinnedSurplusRetry: true as const } : {}),
           recheckPrimary: () => resolveCandidate(candidate),
         }));
         return {

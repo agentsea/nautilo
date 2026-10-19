@@ -2,8 +2,8 @@ import type { ForegroundChatFundingAttempt, ForegroundChatFundingSession } from 
 
 /**
  * Called only after an admitted marketplace attempt permits direct recovery.
- * A missing server route may use the exact personal recovery authority minted
- * by the server. An error after a direct callback begins cannot change payer.
+ * A missing server route may enter the exact personal sequence minted by the
+ * server. A direct callback failure is handled by the caller's output guards.
  */
 export async function runAdmittedDirectModelRecovery<T>(
   session: ForegroundChatFundingSession,
@@ -17,10 +17,14 @@ export async function runAdmittedDirectModelRecovery<T>(
       return run(attempt, session);
     }, "direct");
   } catch (error) {
-    if (directAttemptStarted || session.kind !== "server" || !session.openPersonalDirectRecovery
+    if (directAttemptStarted || session.kind !== "server"
+      || (!session.openPersonalRecovery && !session.openPersonalDirectRecovery)
       || typeof error !== "object" || error === null
       || !("code" in error) || error.code !== "provider_credentials_missing") throw error;
-    const recovery = await session.openPersonalDirectRecovery(modelId);
-    return recovery.runAttempt(modelId, (attempt) => run(attempt, recovery), "direct");
+    const recovery = session.openPersonalRecovery
+      ? await session.openPersonalRecovery(modelId)
+      : await session.openPersonalDirectRecovery!(modelId);
+    return recovery.runAttempt(modelId, (attempt) => run(attempt, recovery),
+      session.openPersonalRecovery ? undefined : "direct");
   }
 }

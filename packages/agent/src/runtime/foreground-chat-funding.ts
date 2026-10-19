@@ -53,6 +53,8 @@ export interface ForegroundChatFundingSession {
   readonly kind: "personal" | "server";
   /** Trusted request-local diagnostics policy; independent of who pays. Never serialized. */
   readonly contentPrivateDiagnostics?: true;
+  /** Trusted operation owner permits ordinary marketplace seller broadening. Never serialized. */
+  readonly allowUnpinnedSurplusRetry?: true;
   /** Server-admitted operation family, never accepted from serialized input. */
   readonly workload?: "research" | "decision" | "memory" | "image_assistance";
   /** Independently admitted child research/decision operations. Never serialized. */
@@ -81,6 +83,8 @@ export interface ForegroundChatFundingSession {
    * initiating Human's direct credential; it carries no child authority.
    */
   openPersonalDirectRecovery?(modelId: string): Promise<ForegroundChatFundingSession>;
+  /** Exact-model, same-Human personal sequence after an unanswered server-first sequence. */
+  openPersonalRecovery?(modelId: string): Promise<ForegroundChatFundingSession>;
   runAttempt<T>(
     modelId: string,
     callback: (attempt: ForegroundChatFundingAttempt) => Promise<T>,

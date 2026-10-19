@@ -117,6 +117,10 @@ class TestModelFundingError extends Error {
 }
 mock.module("../../src/lib/model-funding", () => ({
   ModelFundingError: TestModelFundingError,
+  readModelFundingPolicy: async () => ({
+    allowPersonalProviderKeys,
+    fundingPreference: "server_first" as const,
+  }),
   resolveModelFunding: async (input: { humanUserId: string; modelId: string }) => ({
     kind: "server" as const,
     humanUserId: input.humanUserId,

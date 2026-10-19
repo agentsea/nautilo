@@ -8,7 +8,7 @@ import { beforeEach, describe, expect, mock, test } from "bun:test";
 
 const createModelInputs: Record<string, unknown>[] = [];
 const bindTools = mock((_tools: unknown[], _options?: Record<string, unknown>) => ({ invoke: async () => new AIMessage("unused") }));
-let observedResponse: ((receipt: { requestId: string; providerFamily: string; truncated: boolean; adaptedParameters?: string; buyerCostMicro?: number }, status: number) => Promise<void>) | undefined;
+let observedResponse: ((receipt: { requestId: string; providerFamily?: string; marketplaceAttempts?: number; truncated: boolean; adaptedParameters?: string; buyerCostMicro?: number }, status: number) => Promise<void>) | undefined;
 const beginAttempt = mock(async (_input: Record<string, unknown>) => {});
 const settleAttempt = mock(async (_input: Record<string, unknown>) => {});
 
@@ -26,7 +26,13 @@ mock.module("../../src/providers/surplus-transport", () => ({
     observedResponse = input["onResponse"] as typeof observedResponse;
     return { invoke: async () => new AIMessage("unused"), bindTools };
   },
-  isSafeSurplusDirectFallback: () => false,
+  isSafeSurplusDirectFallback: (
+    error: { code?: string } | undefined,
+    status: number | undefined,
+    receipt: { marketplaceAttempts?: number } | undefined,
+    visibleOutput: boolean,
+  ) => !visibleOutput && status === 404 && error?.code === "no_sellers_for_model"
+    && receipt?.marketplaceAttempts === 0,
   SurplusOutcomeUnknownError: MockSurplusOutcomeUnknownError,
 }));
 
@@ -423,6 +429,107 @@ describe("Surplus reasoning parity", () => {
       costState: "actual",
       actualCostUsd: 0.000283,
       failureCode: "outcome_unknown",
+    });
+  });
+
+  test("marks only the original pinned no-seller refusal for one unpinned retry", async () => {
+    const run = async (options: {
+      providerMode?: "any";
+      status?: number;
+      code?: string;
+      marketplaceAttempts?: number;
+      deliveredOutput?: boolean;
+      cancelled?: boolean;
+    }) => {
+      const controller = new AbortController();
+      if (options.cancelled) controller.abort(new Error("cancelled"));
+      return invokeSurplusChatAttempt({
+        route: ROUTE,
+        apiKey: "synthetic-surplus-key",
+        ...(options.providerMode ? { providerMode: options.providerMode } : {}),
+        messages: [new HumanMessage("test")],
+        tools: [],
+        config: { signal: controller.signal },
+        maxOutputTokens: 256,
+        funding: { kind: "server", providerRoute: "surplus", humanUserId: "user-1" },
+        hasDeliveredOutput: () => options.deliveredOutput === true,
+        invokeModel: async () => {
+          if (options.status !== undefined) {
+            await observedResponse!({
+              requestId: "refusal-request",
+              ...(options.marketplaceAttempts === undefined
+                ? {}
+                : { marketplaceAttempts: options.marketplaceAttempts }),
+              truncated: false,
+            }, options.status);
+          }
+          throw Object.assign(new Error(options.code ?? "request failed"), { code: options.code });
+        },
+      });
+    };
+
+    expect(await run({ status: 404, code: "no_sellers_for_model", marketplaceAttempts: 0 }))
+      .toEqual({ kind: "direct_fallback", retryUnpinned: true });
+    expect(await run({ providerMode: "any", status: 404, code: "no_sellers_for_model", marketplaceAttempts: 0 }))
+      .toEqual({ kind: "direct_fallback" });
+    expect(await run({ status: 404, code: "no_sellers_for_model", marketplaceAttempts: 1 }))
+      .toEqual({ kind: "direct_fallback" });
+    expect(await run({ status: 401, code: "invalid_api_key" }))
+      .toEqual({ kind: "direct_fallback" });
+    expect(await run({ code: "timeout" })).toEqual({ kind: "direct_fallback" });
+    const delivered = await run({
+      status: 404,
+      code: "no_sellers_for_model",
+      marketplaceAttempts: 0,
+      deliveredOutput: true,
+    }).catch((error: unknown) => error);
+    expect(delivered).toBeInstanceOf(MockSurplusOutcomeUnknownError);
+    const cancelled = await run({
+      status: 404,
+      code: "no_sellers_for_model",
+      marketplaceAttempts: 0,
+      cancelled: true,
+    }).catch((error: unknown) => error);
+    expect(cancelled).toBeInstanceOf(Error);
+    expect((cancelled as Error).message).toBe("cancelled");
+  });
+
+  test("records unpinned attempts separately with their original catalogue binding", async () => {
+    const response = new AIMessage({ content: "ok", response_metadata: { finish_reason: "stop" } });
+    await invokeSurplusChatAttempt({
+      route: ROUTE,
+      apiKey: "synthetic-surplus-key",
+      providerMode: "any",
+      messages: [new HumanMessage("test")],
+      tools: [],
+      config: {},
+      maxOutputTokens: 256,
+      funding: { kind: "server", providerRoute: "surplus", humanUserId: "user-1" },
+      hasDeliveredOutput: () => false,
+      invokeModel: async () => {
+        await observedResponse!({
+          requestId: "unpinned-request",
+          providerFamily: "alternate-provider",
+          truncated: false,
+        }, 200);
+        return response;
+      },
+    });
+
+    expect(createModelInputs.at(-1)).toMatchObject({ providerMode: "any" });
+    expect(beginAttempt.mock.calls.at(-1)?.[0]).toMatchObject({
+      model: MODEL_ID,
+      provider: "openrouter",
+      metadata: {
+        catalogModelId: MODEL_ID,
+        surplusModelId: ROUTE.surplusModelId,
+        surplusProviderPin: ROUTE.providerPin,
+        surplusUnpinnedModel: true,
+      },
+    });
+    expect(settleAttempt.mock.calls.at(-1)?.[0]).toMatchObject({
+      providerRequestId: "unpinned-request",
+      servingProvider: "alternate-provider",
     });
   });
 

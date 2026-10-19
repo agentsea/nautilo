@@ -23,6 +23,7 @@ import {
   hasContentPrivateModelDiagnostics,
   type ForegroundChatFundingSession,
 } from "../../src/runtime/foreground-chat-funding";
+import type { RecoverPreparedContext } from "../../src/utils/chat-model-invocation";
 import type { ResolvedFallbackPolicy } from "../../src/utils/resolve-fallback-policy";
 import { setAgentEventSink } from "../../src/runtime-hooks";
 import { getOrCreateAgentTurnContextByKey, turnContextKey, _resetAgentTurnContextsForTests } from "../../src/runtime/turn-context";
@@ -80,6 +81,7 @@ const createUniversalModelMock = mock(
 const markModelInvokeFailureMock = mock((_modelId: string, _message: string): void => {});
 const invokeSurplusChatAttemptMock = mock(async (_input?: {
   config: RunnableConfig;
+  providerMode?: "any";
   apiKey: string;
   route: { catalogModelId: string };
   messages: BaseMessage[];
@@ -93,7 +95,7 @@ const invokeSurplusChatAttemptMock = mock(async (_input?: {
     config: RunnableConfig,
   ) => Promise<AIMessage>;
 }): Promise<
-  { kind: "served"; response: AIMessage } | { kind: "direct_fallback" }
+  { kind: "served"; response: AIMessage } | { kind: "direct_fallback"; retryUnpinned?: true }
 > => ({ kind: "direct_fallback" }));
 let surplusQualificationOverride: boolean | undefined;
 let cachedServerModelConfig: { preferSurplus: boolean } | null = null;
@@ -215,6 +217,7 @@ let invokeChatModelWithFallback: (
     firstProgressTimeoutMs?: number;
     preparedStableSystemPrefixLength?: number;
     providerCacheRoomId?: string | null;
+    recoverContext?: RecoverPreparedContext;
   },
 ) => Promise<{ response: AIMessage; modelUsed: string }>;
 
@@ -3253,4 +3256,124 @@ describe("personal marketplace invocation", () => {
     expect(attemptedRoutes).toEqual([A, C]);
     expect(createUniversalModelMock).not.toHaveBeenCalled();
   });
+});
+
+
+describe("exact-model marketplace funding sequence", () => {
+  const modelId = T1;
+  const messages = [new HumanMessage("synthetic routing test")];
+  beforeEach(() => {
+    Object.assign(process.env, TEST_PROVIDER_KEYS);
+    policyState = { enabled: false, chain: [] };
+    cachedServerModelConfig = { preferSurplus: true };
+    createUniversalModelMock.mockReset();
+    invokeSurplusChatAttemptMock.mockReset();
+    _resetAgentTurnContextsForTests();
+  });
+  function harness(options: { personalFirst?: boolean; allowAny?: boolean; missingServerDirect?: boolean } = {}) {
+    const order: string[] = [];
+    let recovered = 0;
+    const source = (kind: "server" | "personal"): ForegroundChatFundingSession => ({
+      kind,
+      ...(options.allowAny === false ? {} : { allowUnpinnedSurplusRetry: true as const }),
+      async recheckAttempt() {},
+      async runAttempt(candidate, run, transport) {
+        expect(candidate).toBe(modelId);
+        if (kind === "server" && transport === "direct" && options.missingServerDirect) {
+          throw Object.assign(new Error("missing"), { code: "provider_credentials_missing" });
+        }
+        const providerRoute = transport === "direct" ? "openrouter" : "surplus";
+        return run({ usageFunding: kind === "server"
+          ? { kind, humanUserId: "human", providerRoute }
+          : { kind, humanUserId: "human", payerHumanId: "human", providerRoute,
+            credentialId: providerRoute, credentialRevision: 1 },
+          ...(kind === "personal" ? { personalCredential: { apiKey: `personal-${providerRoute}` } } : {}),
+        });
+      },
+    });
+    const personal = source("personal");
+    const server = source("server");
+    server.openPersonalRecovery = async candidate => {
+      expect(candidate).toBe(modelId); recovered++;
+      return personal;
+    };
+    invokeSurplusChatAttemptMock.mockImplementation(async input => {
+      order.push(`${input!.funding.kind}:${input!.providerMode ?? "pinned"}`);
+      return { kind: "direct_fallback", ...(input!.providerMode ? {} : { retryUnpinned: true as const }) };
+    });
+    createUniversalModelMock.mockImplementation(async (_id, options): Promise<AuraModel> => ({
+      bindTools: () => ({ invoke: async () => {
+        const personalKey = options?.["personalCredential"] !== undefined;
+        order.push(`${personalKey ? "personal" : "server"}:direct`);
+        if (!personalKey) throw Object.assign(new Error("unauthorized"), { status: 401 });
+        return new AIMessage("personal answer");
+      } }),
+    }) as unknown as AuraModel);
+    return { order, server, personal, recovered: () => recovered,
+      invoke: () => invokeChatModelWithFallback(messages, [], modelId, "human", "agent", null, undefined, {
+        fundingSession: options.personalFirst ? personal : server, sameModelRetryMode: "none", modelFallbackMode: "none",
+      }) };
+  }
+  test("server first exhausts server rails before the personal sequence", async () => {
+    const h = harness();
+    expect((await h.invoke()).response.content).toBe("personal answer");
+    expect(h.order).toEqual(["server:pinned", "server:any", "server:direct", "personal:pinned", "personal:any", "personal:direct"]);
+    expect(h.recovered()).toBe(1);
+    expect(h.server.kind).toBe("server");
+  });
+  test("missing server direct still begins at personal Surplus", async () => {
+    const h = harness({ missingServerDirect: true });
+    expect((await h.invoke()).response.content).toBe("personal answer");
+    expect(h.order).toEqual(["server:pinned", "server:any", "personal:pinned", "personal:any", "personal:direct"]);
+  });
+  test("personal-first has no server hop", async () => {
+    const h = harness({ personalFirst: true });
+    await h.invoke();
+    expect(h.order).toEqual(["personal:pinned", "personal:any", "personal:direct"]);
+    expect(h.recovered()).toBe(0);
+  });
+  test("operations without seller-broadening authority retain provider pins", async () => {
+    const h = harness({ allowAny: false });
+    await h.invoke();
+    expect(h.order).toEqual(["server:pinned", "server:direct", "personal:pinned", "personal:direct"]);
+  });
+  test("a successful model-only response ends the sequence", async () => {
+    const h = harness();
+    invokeSurplusChatAttemptMock.mockImplementation(async input => {
+      h.order.push(input!.providerMode ?? "pinned");
+      return input!.providerMode === "any" ? { kind: "served", response: new AIMessage("marketplace answer") }
+        : { kind: "direct_fallback", retryUnpinned: true };
+    });
+    expect((await h.invoke()).response.content).toBe("marketplace answer");
+    expect(h.order).toEqual(["pinned", "any"]);
+    expect(createUniversalModelMock).not.toHaveBeenCalled();
+  });
+  test("a policy or revision failure between marketplace attempts is terminal", async () => {
+    const h = harness();
+    const stale = new Error("revision changed");
+    h.server.recheckAttempt = async () => { throw stale; };
+    expect(h.invoke()).rejects.toBe(stale);
+    expect(h.order).toEqual(["server:pinned"]);
+    expect(h.recovered()).toBe(0);
+  });
+  test("research shrinks rejected server context before considering personal funding", async () => {
+    const h = harness();
+    let attempts = 0;
+    let recoveries = 0;
+    createUniversalModelMock.mockImplementation(async (): Promise<AuraModel> => ({
+      bindTools: () => ({ invoke: async () => {
+        if (++attempts === 1) throw TOKEN_LIMIT_ERR;
+        return new AIMessage("server after context repair");
+      } }),
+    }) as unknown as AuraModel);
+    const result = await invokeChatModelWithFallback([new HumanMessage("long context ".repeat(50))], [], modelId,
+      "human", "agent", null, undefined, {
+        fundingSession: h.server, sameModelRetryMode: "none", modelFallbackMode: "none",
+        recoverContext: async () => { recoveries++; return [new HumanMessage("short")]; },
+      });
+    expect(result.response.content).toBe("server after context repair");
+    expect(recoveries).toBe(1);
+    expect(h.recovered()).toBe(0);
+  });
+
 });

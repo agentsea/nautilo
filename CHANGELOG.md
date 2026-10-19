@@ -1089,6 +1089,12 @@ store update, or Desktop/Host installation.
   server route exists, with separate cost records for each attempt. Accepted
   media jobs retain their creating account.
 
+- Ordinary Surplus chat and Decision routes can retry the exact model with
+  another seller after a confirmed no-seller refusal. Server-first calls may
+  then try the initiating user's personal keys after server routes are exhausted;
+  personal-first calls stay personal. Privacy-constrained routes keep their
+  provider pin, and every attempt retains separate costs and serving-provider evidence.
+
 ## Component release records verified 2026-09-09
 
 These are dated publication/ledger records, not claims about every user's

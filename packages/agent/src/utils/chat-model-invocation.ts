@@ -26,6 +26,7 @@ import { createUniversalModel } from "../providers/universal";
 import { resolveProviderKey } from "../resolve-provider-key";
 import {
   resolveSurplusChatServingAvailability,
+  canBroadenSurplusModelRoute,
   SurplusDirectFallbackUnavailableError,
 } from "../providers/surplus-route";
 import { canUseQualifiedSurplusChatRoute, invokeSurplusChatAttempt } from "../providers/surplus-attempt";
@@ -807,6 +808,8 @@ export async function invokeChatModelWithFallback(
     fundingHumanUserId?: string;
     /** Trusted request-local authority for foreground funding and credential injection. */
     fundingSession?: ForegroundChatFundingSession;
+    /** Trusted service invocation only; protected operations leave absent. */
+    allowUnpinnedSurplusRetry?: true;
     /** Reserved for the server-owned Room-side shared-memory pipeline. */
     serverFundedService?: ModelFundingService;
     /** Explicit output bound owned by the admitted research lane. */
@@ -1006,6 +1009,7 @@ export async function invokeChatModelWithFallback(
 
     let surplusAttemptedForModel = false;
     let personalRecoveryAttemptedForModel = false;
+    let serverDirectAttemptedForModel = false;
     // Provider-local and attempt-local: unlike the turn-wide runtime flag this
     // cannot be pre-seeded by an earlier model/tool phase, and it also works
     // for research/background calls that do not publish Room token events.
@@ -1097,7 +1101,8 @@ export async function invokeChatModelWithFallback(
               })) {
               surplusAttemptedForModel = true;
               const surplusFunding = { ...usageFunding, providerRoute: "surplus" };
-              const result = await invokeSurplusChatAttempt({
+              const invokeMarketplace = (providerMode?: "any") => invokeSurplusChatAttempt({
+                ...(providerMode ? { providerMode } : {}),
                 route: surplus.route,
                 apiKey: surplusKey,
                 messages: attemptMessages,
@@ -1134,6 +1139,20 @@ export async function invokeChatModelWithFallback(
                   "/v1/chat/completions",
                 ),
               });
+              let result = await invokeMarketplace();
+              if (result.kind === "direct_fallback" && result.retryUnpinned
+                && (attemptFundingSession?.allowUnpinnedSurplusRetry === true
+                  || (!attemptFundingSession && invokeOptions?.allowUnpinnedSurplusRetry === true))
+                && canBroadenSurplusModelRoute(currentModelId)
+                && !attemptVisibility.hasVisibleOutput() && !hasAssistantVisibleOutputForCurrentTurn(agentId)) {
+                assertNotCancelled();
+                try {
+                  if (attemptFundingSession) await attemptFundingSession.recheckAttempt(currentModelId, "surplus");
+                  else await assertModelFunding(invokeOptions?.fundingHumanUserId, invokeOptions?.serverFundedService);
+                } catch (error) { throw new ForegroundFundingRecheckError(error); }
+                assertNotCancelled();
+                result = await invokeMarketplace("any");
+              }
               if (result.kind === "served") {
                 return result.response;
               }
@@ -1181,6 +1200,7 @@ export async function invokeChatModelWithFallback(
               providerRoute: usageProviderRoute(currentModelId),
             };
           }
+          if (attemptFundingSession?.kind === "server") serverDirectAttemptedForModel = true;
           log(`[nautilo/agent] Attempting model: ${currentModelId}`);
           const model = await createUniversalModel(currentModelId, {
             maxTokens,
@@ -1286,6 +1306,7 @@ export async function invokeChatModelWithFallback(
         currentModelId = nextModelId;
         continue;
       }
+      if (error instanceof ForegroundFundingRecheckError) throw error.cause;
       if (!(error instanceof ProviderAttemptError)) throw error;
       const providerError = error.cause;
       const personalAttemptError = providerError instanceof PersonalAttemptInvocationError
@@ -1313,6 +1334,19 @@ export async function invokeChatModelWithFallback(
       const subscriptionError = findChatGPTSubscriptionError(providerFailure);
       if (subscriptionError) throw subscriptionError;
       const classified = classifyError(providerFailure);
+      if (!personalRecoveryAttemptedForModel && serverDirectAttemptedForModel
+        && currentModelId === initialModelId && fundingSession?.kind === "server"
+        && fundingSession.openPersonalRecovery
+        && !attemptVisibility.hasVisibleOutput() && !hasAssistantVisibleOutputForCurrentTurn(agentId)
+        && !(isProviderTimeoutError(providerFailure) && !isSafelyRetryableProviderTimeout(providerFailure))
+        && !(classified.category === "TOKEN_LIMIT" && invokeOptions?.recoverContext)
+        && (shouldFallbackToNextModel(classified) || classified.category === "AUTH_ERROR")) {
+        // The server sequence is exhausted. This exact-model session carries
+        // only the initiating Human's personal rails, with no reverse hop.
+        const recovery = await fundingSession.openPersonalRecovery(currentModelId);
+        return invokeChatModelWithFallback(messages, tools, currentModelId, userId, agentId,
+          laneKey, invocationConfig, { ...invokeOptions, fundingSession: recovery, modelFallbackMode: "none" });
+      }
       const terminalProviderError = (personalFunding || personalRecoveryAttemptedForModel)
         && !(providerFailure instanceof SurplusDirectFallbackUnavailableError)
         ? new PersonalProviderInvocationError(classified.category)

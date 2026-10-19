@@ -76,6 +76,19 @@ async function errorCode(promise: Promise<unknown>): Promise<string | undefined>
 }
 
 describe("capability funding projection", () => {
+  test("propagates ordinary marketplace broadening into non-Memory capability funding", async () => {
+    const session = createCapabilityFundingSession(HUMAN_ID, async () => {}, serverProjectionDeps(), {
+      allowUnpinnedSurplusRetry: true,
+    });
+    const decision = await session.openModel(DECISION_MODEL, "decision");
+    const research = await session.openModel(RESEARCH_MODEL, "research");
+    const memory = await session.openModel(RESEARCH_MODEL, "memory");
+
+    expect(decision.fundingSession.allowUnpinnedSurplusRetry).toBe(true);
+    expect(research.fundingSession.allowUnpinnedSurplusRetry).toBe(true);
+    expect(memory.fundingSession.allowUnpinnedSurplusRetry).toBeUndefined();
+  });
+
   test("marks a personal choice unavailable when its envelope belongs to replaced custody", async () => {
     const replacedCustody = createPersonalProviderCustody();
     const currentCustody = {
@@ -378,7 +391,9 @@ test("server Surplus capability sessions expose recovery for inference but never
 
   expect(research.binding).toEqual({ kind: "server", providerRoute: "surplus" });
   expect(research.fundingSession.openPersonalDirectRecovery).toBeFunction();
+  expect(research.fundingSession.openPersonalRecovery).toBeFunction();
   expect(memory.fundingSession.openPersonalDirectRecovery).toBeUndefined();
+  expect(memory.fundingSession.openPersonalRecovery).toBeUndefined();
 
   const recovery = await research.fundingSession.openPersonalDirectRecovery!(RESEARCH_MODEL);
   expect(recovery).toMatchObject({ kind: "personal", workload: "research" });
@@ -388,6 +403,20 @@ test("server Surplus capability sessions expose recovery for inference but never
     usageFunding: {
       kind: "personal",
       payerHumanId: HUMAN_ID,
+      providerRoute: "openrouter",
+      credentialId: CREDENTIAL_ID,
+      credentialRevision: 1,
+    },
+    personalCredential: { apiKey: "test-only-secret" },
+  });
+
+  const fullRecovery = await research.fundingSession.openPersonalRecovery!(RESEARCH_MODEL);
+  expect(fullRecovery).toMatchObject({ kind: "personal", workload: "research" });
+  expect(fullRecovery.capabilityFunding).toBeUndefined();
+  expect(fullRecovery.openPersonalRecovery).toBeUndefined();
+  expect(await fullRecovery.runAttempt(RESEARCH_MODEL, async (value) => value)).toMatchObject({
+    usageFunding: {
+      kind: "personal",
       providerRoute: "openrouter",
       credentialId: CREDENTIAL_ID,
       credentialRevision: 1,

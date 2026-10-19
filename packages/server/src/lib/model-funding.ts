@@ -93,6 +93,8 @@ export interface ResolveModelFundingInput {
   readonly fundingKind?: "server" | "personal";
   /** A media request or bounded Surplus recovery may require a direct-only wire contract. */
   readonly directOnly?: boolean;
+  /** A bounded personal recovery may use API keys but never a subscription registration. */
+  readonly apiKeyOnly?: boolean;
 }
 
 export interface ModelFundingDeps {
@@ -195,6 +197,11 @@ const DEFAULT_DEPS: ModelFundingDeps = {
   decrypt: decryptPersonalProviderCredential,
 };
 
+/** Read the live operator policy through the same dependency boundary as funding admission. */
+export function readModelFundingPolicy(deps: ModelFundingDeps = DEFAULT_DEPS) {
+  return deps.getPolicy();
+}
+
 function directProvider(modelId: string): PersonalProviderId | null {
   const colon = modelId.indexOf(":");
   if (colon <= 0 || colon === modelId.length - 1) return null;
@@ -284,7 +291,8 @@ export async function resolveModelFunding(
   // Explicit subscription selection pins a registration, including its failed
   // state. It must never degrade into API-key or server-funded inference.
   const pinnedSubscription = prior?.kind === "personal" && prior.providerRoute === "openai-chatgpt";
-  const subscription = pinnedSubscription || (!input.directOnly && !prior && provider === "openai" && input.fundingKind !== "server")
+  const subscription = pinnedSubscription || (!input.apiKeyOnly && !input.directOnly && !prior
+    && provider === "openai" && input.fundingKind !== "server")
     ? await deps.getSubscription?.(input.humanUserId, pinnedSubscription ? prior.credentialId : undefined)
     : null;
   if (subscription || pinnedSubscription) {
