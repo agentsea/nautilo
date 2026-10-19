@@ -4,6 +4,7 @@ import { admittedDeepResearchTaskMetadata, deepResearchTaskMetadata } from "@nau
 
 import {
   assertNativeTaskRetainedModelSelection,
+  nativeTaskAllowsUnpinnedSurplusRetry,
   nativeTaskSelectionPurpose,
   shouldPrepareNativeTaskCallerFunding,
   validateNativeTaskExactModelSelection,
@@ -73,6 +74,36 @@ beforeEach(() => {
 });
 
 describe("native caller-funded Task model selection", () => {
+  test("allows marketplace broadening only for ordinary selectors without privacy intent", () => {
+    expect(nativeTaskAllowsUnpinnedSurplusRetry({
+      contentRepresentation: "ordinary",
+      selectionProfile: "balanced",
+      selectionSpec: null,
+    })).toBeTrue();
+    expect(nativeTaskAllowsUnpinnedSurplusRetry({
+      contentRepresentation: "ordinary",
+      selectionProfile: "cheapest",
+      selectionSpec: null,
+    })).toBeTrue();
+    for (const selection of [
+      { selectionProfile: "most_private" as const, selectionSpec: null },
+      { selectionProfile: "private_smart" as const, selectionSpec: null },
+      { selectionProfile: "cheap_private" as const, selectionSpec: null },
+      { selectionProfile: "balanced" as const,
+        selectionSpec: { objective: "cheap" as const, absoluteFloors: { privacy: 4 } } },
+    ]) {
+      expect(nativeTaskAllowsUnpinnedSurplusRetry({
+        contentRepresentation: "ordinary",
+        ...selection,
+      })).toBeFalse();
+    }
+    expect(nativeTaskAllowsUnpinnedSurplusRetry({
+      contentRepresentation: "protected",
+      selectionProfile: "balanced",
+      selectionSpec: null,
+    })).toBeFalse();
+  });
+
   test("keeps admitted server-funded v2 research on caller funding without personal-key access", () => {
     expect(shouldPrepareNativeTaskCallerFunding(SERVER_RESEARCH_METADATA, {
       allowPersonalProviderKeys: false,

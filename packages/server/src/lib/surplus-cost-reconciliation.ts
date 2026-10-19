@@ -127,12 +127,15 @@ export function createSurplusCostRecovery(overrides: Partial<SurplusCostRecovery
           continue;
         }
         const binding = row.metadata;
+        const unpinnedModel = !imageEndpoint && binding?.["surplusUnpinnedModel"] === true;
         const catalogProvider = typeof binding?.["catalogModelId"] === "string"
           ? binding["catalogModelId"].split(":", 1)[0]
           : binding?.["surplusProviderPin"];
         if (typeof binding?.["surplusCredentialFingerprint"] !== "string"
           || typeof binding["surplusModelId"] !== "string"
-          || (imageEndpoint ? binding["surplusUnpinnedMedia"] !== true : typeof binding["surplusProviderPin"] !== "string")
+          || (imageEndpoint
+            ? binding["surplusUnpinnedMedia"] !== true
+            : typeof binding["surplusProviderPin"] !== "string")
           || catalogProvider !== row.provider) {
           await classify(row, "blocked_repair", "receipt_binding_invalid");
           continue;
@@ -169,7 +172,8 @@ export function createSurplusCostRecovery(overrides: Partial<SurplusCostRecovery
             binding: {
               requestId: row.providerRequestId,
               surplusModelId: binding["surplusModelId"],
-              providerPin: imageEndpoint ? null : binding["surplusProviderPin"] as string,
+              providerPin: imageEndpoint || unpinnedModel ? null : binding["surplusProviderPin"] as string,
+              ...(unpinnedModel ? { unpinnedModel: true as const } : {}),
             },
             signal: AbortSignal.any([shutdown.signal, AbortSignal.timeout(10_000)]),
           });

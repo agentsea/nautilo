@@ -18,6 +18,10 @@ import {
 } from "./model-funding";
 import { getServerDirectDb } from "./server-direct-db";
 import { callerTaskModelIds, personalOnlyTaskModelIds } from "./caller-task-model-context";
+import {
+  openServerFirstPersonalRecovery,
+  openSurplusPersonalDirectRecovery,
+} from "./surplus-personal-recovery";
 
 type FundingPortInput = Readonly<{
   humanUserId: string;
@@ -26,6 +30,7 @@ type FundingPortInput = Readonly<{
   agentId: string;
   entrypoint: "foreground.main" | "foreground.fork" | "foreground.external_room";
   assertExternalRoomSponsorship?: () => Promise<void>;
+  protectedTurn?: boolean;
   prior?: ForegroundFundingSnapshot;
 }>;
 
@@ -174,13 +179,36 @@ export async function openForegroundChatFundingSession(
   let lastAttempt: ModelFundingDecision | undefined;
   return {
     kind: admitted.kind,
+    ...(input.protectedTurn !== true ? { allowUnpinnedSurplusRetry: true as const } : {}),
     ...(external ? { contentPrivateDiagnostics: true as const } : {}),
     admission: { modelId: admitted.modelId, binding: capabilityFundingBinding(admitted) },
-    capabilityFunding: await prepareCapabilityFundingSession(input.humanUserId, recheckAuthority, admitted.kind, capabilityFundingBinding(admitted)),
+    capabilityFunding: await prepareCapabilityFundingSession(input.humanUserId, recheckAuthority,
+      admitted.kind, capabilityFundingBinding(admitted),
+      input.protectedTurn !== true ? true : undefined),
     personalTaskControls: admitted.kind === "personal"
       && resolveCatalogModel(input.modelId, { env: {} }).features.tools === true,
     runnableModelIds,
     personalOnlyTaskModelIds: await personalOnlyTaskModelIds(input.humanUserId, runnableModelIds),
+    ...(admitted.kind === "server" && admitted.providerRoute === "surplus" ? {
+      openPersonalDirectRecovery: (modelId: string) => openSurplusPersonalDirectRecovery({
+        humanUserId: input.humanUserId,
+        modelId,
+        workload: "foreground_text_chat",
+        primaryDecision: admitted,
+        ...(input.protectedTurn !== true ? { allowUnpinnedSurplusRetry: true as const } : {}),
+        recheckPrimary: () => resolveCandidate(modelId),
+      }),
+    } : {}),
+    ...(admitted.kind === "server" && policy.fundingPreference === "server_first" ? {
+      openPersonalRecovery: (modelId: string) => openServerFirstPersonalRecovery({
+        humanUserId: input.humanUserId,
+        modelId,
+        workload: "foreground_text_chat",
+        primaryDecision: admitted,
+        ...(input.protectedTurn !== true ? { allowUnpinnedSurplusRetry: true as const } : {}),
+        recheckPrimary: () => resolveCandidate(modelId),
+      }),
+    } : {}),
     async recheckAttempt(modelId, transport) {
       const current = await resolveCandidate(modelId, transport);
       if (transport && lastAttempt?.kind === "personal" && current.kind === "personal"
@@ -223,6 +251,9 @@ export async function openForegroundConductorFundingSession(
     workload: "foreground_text_chat",
     ...(input.protectedTurn ? { fundingKind: "server" as const } : {}),
   });
+  const policy = admitted.kind === "server"
+    ? await getServerProviderPolicy(getServerDirectDb())
+    : null;
   let lastAttempt: ModelFundingDecision | undefined;
   const resolveCandidate = async (modelId: string, transport?: "direct" | "surplus") => {
     await recheckAuthority();
@@ -237,7 +268,29 @@ export async function openForegroundConductorFundingSession(
   };
   return {
     kind: admitted.kind,
+    ...(!input.protectedTurn ? { allowUnpinnedSurplusRetry: true as const } : {}),
     admission: { modelId: admitted.modelId, binding: capabilityFundingBinding(admitted) },
+    ...(!input.protectedTurn && admitted.kind === "server" && admitted.providerRoute === "surplus" ? {
+      openPersonalDirectRecovery: (modelId: string) => openSurplusPersonalDirectRecovery({
+        humanUserId: input.humanUserId,
+        modelId,
+        workload: "foreground_text_chat",
+        primaryDecision: admitted,
+        allowUnpinnedSurplusRetry: true,
+        recheckPrimary: () => resolveCandidate(modelId),
+      }),
+    } : {}),
+    ...(!input.protectedTurn && admitted.kind === "server"
+      && policy?.fundingPreference === "server_first" ? {
+        openPersonalRecovery: (modelId: string) => openServerFirstPersonalRecovery({
+          humanUserId: input.humanUserId,
+          modelId,
+          workload: "foreground_text_chat",
+          primaryDecision: admitted,
+          allowUnpinnedSurplusRetry: true,
+          recheckPrimary: () => resolveCandidate(modelId),
+        }),
+      } : {}),
     async recheckAttempt(modelId, transport) {
       const current = await resolveCandidate(modelId, transport);
       if (transport && lastAttempt?.kind === "personal" && current.kind === "personal"

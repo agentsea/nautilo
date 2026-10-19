@@ -1086,6 +1086,29 @@ store update, or Desktop/Host installation.
   these fixes.
 - Hue bridge rediscovery and pairing recovery.
 
+- Surplus-only servers can select supported chat, helper and generation models
+  without direct-provider keys. Key settings highlight qualified capabilities
+  and link to the Surplus policy. Unanswered server Surplus calls can recover
+  through the initiating user's permitted personal direct key when no direct
+  server route exists, with separate cost records for each attempt. Accepted
+  media jobs retain their creating account.
+
+- Ordinary Surplus chat and Decision routes can retry the exact model with
+  another seller after a confirmed no-seller refusal. Server-first calls may
+  then try the initiating user's personal keys after server routes are exhausted;
+  personal-first calls stay personal. Privacy-constrained routes keep their
+  provider pin, and every attempt retains separate costs and serving-provider evidence.
+
+- Completing Genie customization for the first time opens the user's existing
+  Personal chat. If that chat cannot be opened, the wizard offers a retry;
+  canceling and later customization still return to the starting page.
+  Accounts without server-funding permission receive an explanation and a
+  personal-key setup link when they cannot fund chat.
+
+- Administrators can select any active, shareable server invitation for `/join`,
+  including Contributor and higher-role invitations. Normal invite limits,
+  destination validity and enrollment controls still apply.
+
 ## Component release records verified 2026-09-09
 
 These are dated publication/ledger records, not claims about every user's

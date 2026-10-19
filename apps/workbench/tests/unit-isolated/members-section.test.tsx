@@ -3,7 +3,10 @@ import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { InviteShareApiError } from "@nautilo/api-client/browser";
+import {
+  InviteShareApiError,
+  type InviteSummary,
+} from "@nautilo/api-client/browser";
 
 const realUseCan = await import("../../src/hooks/use-can");
 
@@ -32,7 +35,7 @@ const inviteRow = {
   codeAvailable: true,
 };
 
-let inviteRows: Array<typeof inviteRow> = [];
+let inviteRows: InviteSummary[] = [];
 let grantedCapabilities = new Set(["create_invites"]);
 let publicJoinSelection = { inviteId: null as string | null, revision: 0, joinUrl: "https://community.example/join" };
 
@@ -166,9 +169,9 @@ describe("MembersSection invite presentation", () => {
     expect(source).toContain("getInviteShare");
   });
 
-  test("lets a doubly-authorized admin repeatedly select and clear the canonical /join invite", async () => {
+  test("lets a doubly-authorized admin repeatedly select and clear a Contributor invite for /join", async () => {
     grantedCapabilities = new Set(["manage_members", "manage_server_enrollment"]);
-    inviteRows = [{ ...inviteRow, targetRoleSlug: "community" }];
+    inviteRows = [{ ...inviteRow, targetRoleSlug: "contributor" }];
     const view = render(<InviteManagement adminSurface />);
     expect(await view.findByRole("link", { name: publicJoinSelection.joinUrl })).toBeTruthy();
     fireEvent.click(view.getByRole("button", { name: "Use for /join" }));
@@ -178,6 +181,51 @@ describe("MembersSection invite presentation", () => {
     await waitFor(() => expect(updatePublicJoinSelection).toHaveBeenLastCalledWith({ inviteId: null, revision: 1 }));
     fireEvent.click(view.getByRole("button", { name: "Use for /join" }));
     await waitFor(() => expect(updatePublicJoinSelection).toHaveBeenLastCalledWith({ inviteId: inviteRow.id, revision: 2 }));
+  });
+
+  test("offers every canonical server role for the public /join invite", async () => {
+    grantedCapabilities = new Set(["manage_members", "manage_server_enrollment"]);
+    const roles = ["owner", "admin", "superuser", "member", "contributor", "community", "guest"];
+    inviteRows = roles.map((role, index) => ({
+      ...inviteRow,
+      id: `00000000-0000-4000-8000-00000000028${index}`,
+      displayName: `${role} invitation`,
+      targetRoleSlug: role,
+    }));
+    const view = render(<InviteManagement adminSurface />);
+
+    expect(await view.findAllByRole("button", { name: "Use for /join" })).toHaveLength(roles.length);
+    fireEvent.click(view.getAllByRole("button", { name: "Use for /join" })[4]);
+    await waitFor(() => expect(updatePublicJoinSelection).toHaveBeenCalledWith({
+      inviteId: inviteRows[4].id,
+      revision: 0,
+    }));
+  });
+
+  test("does not require a recognized role label to select an ordinary invite", async () => {
+    grantedCapabilities = new Set(["manage_members", "manage_server_enrollment"]);
+    inviteRows = [{ ...inviteRow, targetRoleSlug: "custom-role" }];
+    const view = render(<InviteManagement adminSurface />);
+    fireEvent.click(await view.findByRole("button", { name: "Use for /join" }));
+    await waitFor(() => expect(updatePublicJoinSelection).toHaveBeenCalledWith({
+      inviteId: inviteRow.id, revision: 0,
+    }));
+  });
+
+  test("does not offer revoked, expired, exhausted, unshareable, or claim invites for /join", async () => {
+    grantedCapabilities = new Set(["manage_members", "manage_server_enrollment"]);
+    inviteRows = [
+      { ...inviteRow, id: "revoked", displayName: "Revoked", revokedAt: "2026-08-15T00:00:00.000Z" },
+      { ...inviteRow, id: "expired", displayName: "Expired", expiresAt: "2020-01-01T00:00:00.000Z" },
+      { ...inviteRow, id: "exhausted", displayName: "Exhausted", usedCount: 1 },
+      { ...inviteRow, id: "unshareable", displayName: "Unshareable", codeAvailable: false },
+      { ...inviteRow, id: "claim", displayName: "Claim", kind: "claim" },
+    ];
+    const view = render(<InviteManagement adminSurface />);
+
+    await view.findByText("Unshareable");
+    expect(view.queryByRole("button", { name: "Use for /join" })).toBeNull();
+    expect(view.getByText("Create an active shareable server invite to make /join available.")).toBeTruthy();
   });
 
   test("does not expose the /join selector without both capabilities", async () => {

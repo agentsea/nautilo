@@ -7,10 +7,15 @@ export function surplusCredentialFingerprint(apiKey: string): string {
   return createHash("sha256").update("nautilo:surplus:receipt:v1\0").update(apiKey.trim()).digest("hex");
 }
 
-export function surplusAttemptBinding(route: QualifiedSurplusChatRoute, apiKey: string) {
+export function surplusAttemptBinding(
+  route: QualifiedSurplusChatRoute,
+  apiKey: string,
+  providerMode?: "any",
+) {
   return {
     surplusModelId: route.surplusModelId,
     surplusProviderPin: route.providerPin,
+    ...(providerMode === "any" ? { surplusUnpinnedModel: true } : {}),
     surplusCredentialFingerprint: surplusCredentialFingerprint(apiKey),
   };
 }
@@ -34,8 +39,10 @@ export function surplusReceiptTelemetry(receipt: SurplusWireReceipt): Record<str
 export interface SurplusSettlementBinding {
   requestId: string;
   surplusModelId: string;
-  /** Null is reserved for explicitly unpinned media receipts. */
+  /** Null is reserved for an explicitly unpinned media or model receipt. */
   providerPin: string | null;
+  /** Explicit chat/decision retry: exact authenticated request identity is authoritative across aliases. */
+  unpinnedModel?: true;
 }
 
 export type SurplusSettlementReadResult =
@@ -64,7 +71,10 @@ export function readConfirmedSurplusSettlement(value: unknown, binding: SurplusS
   // that spelling change must not discard a confirmed financial receipt.
   // Model/answer correctness is a separate execution concern.
   if (row["request_id"] !== binding.requestId) return null;
-  if (binding.providerPin === null) {
+  if (binding.unpinnedModel === true) {
+    if (binding.providerPin !== null
+      || typeof row["provider"] !== "string" || !row["provider"].trim()) return null;
+  } else if (binding.providerPin === null) {
     if (row["model"] !== binding.surplusModelId
       || typeof row["provider"] !== "string" || !row["provider"].trim()) return null;
   } else if (row["provider"] !== binding.providerPin) return null;

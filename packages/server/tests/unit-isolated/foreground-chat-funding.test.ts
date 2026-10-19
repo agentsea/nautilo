@@ -110,6 +110,10 @@ mock.module("../../src/lib/model-funding", () => ({
     constructor(readonly code: string) { super(code); }
   },
   resolveModelFunding: resolveFunding,
+  readModelFundingPolicy: async () => ({
+    allowPersonalProviderKeys: switchOn,
+    fundingPreference: freshFundingKind === "server" ? "server_first" : "personal_first",
+  }),
   createModelFundingSnapshot: async () => ({ deps: {} }),
   resolveServerFundingRoute: (modelId: string) => actualAgent.modelHasRunnableCredentials(modelId, process.env)
     ? modelId.split(":", 1)[0] : null,
@@ -251,6 +255,7 @@ describe("foreground chat funding admission", () => {
     const session = await openForegroundChatFundingSession(input);
 
     expect(session?.kind).toBe("server");
+    expect(session?.allowUnpinnedSurplusRetry).toBe(true);
     expect(await session!.runAttempt(FALLBACK, async (attempt) => attempt)).toEqual({
       usageFunding: {
         kind: "server",
@@ -263,6 +268,27 @@ describe("foreground chat funding admission", () => {
       priorDecision: { kind: "server", modelId: MODEL },
     });
     expect(withKey).not.toHaveBeenCalled();
+  });
+
+  test("server-first direct sessions expose exact-model personal recovery without child authority", async () => {
+    freshFundingKind = "server";
+    capabilities = ["use_server_provider_credentials", "use_personal_provider_credentials"];
+    const session = await openForegroundChatFundingSession(input);
+    expect(session?.openPersonalRecovery).toBeFunction();
+
+    const recovery = await session!.openPersonalRecovery!(MODEL);
+    expect(recovery).toMatchObject({ kind: "personal" });
+    expect(recovery.allowUnpinnedSurplusRetry).toBe(true);
+    expect(recovery.admission).toBeUndefined();
+    expect(recovery.capabilityFunding).toBeUndefined();
+    expect(recovery.openPersonalRecovery).toBeUndefined();
+    expect(await recovery.runAttempt(MODEL, async (attempt) => attempt)).toMatchObject({
+      usageFunding: { kind: "personal", humanUserId: HUMAN, payerHumanId: HUMAN },
+      personalCredential: { apiKey: "synthetic-personal-secret" },
+    });
+    expect(recovery.recheckAttempt(FALLBACK)).rejects.toMatchObject({
+      code: "funding_source_changed",
+    });
   });
 
   test("a live session keeps its admitted payer after the saved preference changes", async () => {
@@ -431,8 +457,18 @@ describe("foreground chat funding admission", () => {
       protectedTurn: true,
     });
     expect(session.kind).toBe("server");
+    expect(session.allowUnpinnedSurplusRetry).toBeUndefined();
+    expect(session.openPersonalRecovery).toBeUndefined();
     expect(resolveFunding.mock.calls[0]?.[0]).toMatchObject({ fundingKind: "server" });
     expect(withKey).not.toHaveBeenCalled();
+  });
+
+  test("protected foreground funding omits marketplace broadening", async () => {
+    freshFundingKind = "server";
+    capabilities = ["use_server_provider_credentials"];
+    const session = await openForegroundChatFundingSession({ ...input, protectedTurn: true });
+    expect(session?.kind).toBe("server");
+    expect(session?.allowUnpinnedSurplusRetry).toBeUndefined();
   });
 
   test("Conductor capability revocation stops a later provider attempt", async () => {
