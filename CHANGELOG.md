@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Office files upload to Artifacts regardless of ZIP entry order. The Room
+  paperclip and file drop also accept Word, Excel and PowerPoint as Workspace
+  documents, with the same Room access checks as PDF attachments.
+
 - Windows x64 source builds produce a Desktop installer with bundled Bun and
   the private Relay Host for connecting to a Nautilo server.
   ACP-backed local agents remain unavailable on Windows until process-tree
