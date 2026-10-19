@@ -3,11 +3,26 @@ import { join, resolve } from "node:path";
 
 import {
   defaultStagingRoot,
+  instancePath,
   localInstanceRootDir,
   remoteInstanceRootDir,
   resolveRemoteBaseDir,
 } from "../../src/instance-paths.ts";
 import type { SshProfile } from "../../src/types.ts";
+
+describe("instancePath", () => {
+  test("keeps a remote POSIX root POSIX on every operator platform", () => {
+    expect(instancePath("/opt/nautilo-prod", "runtime-config", "instance.env"))
+      .toBe("/opt/nautilo-prod/runtime-config/instance.env");
+    expect(instancePath("/home/deploy/nautilo/", ".bootstrap", "postgres-password"))
+      .toBe("/home/deploy/nautilo/.bootstrap/postgres-password");
+  });
+
+  test("joins a local root natively", () => {
+    const local = resolve("operator-root");
+    expect(instancePath(local, "deploy.server.env")).toBe(join(local, "deploy.server.env"));
+  });
+});
 
 describe("remoteInstanceRootDir", () => {
   test("defaults to /opt/nautilo", () => {

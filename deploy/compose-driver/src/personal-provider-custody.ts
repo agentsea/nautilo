@@ -1,5 +1,5 @@
 import * as nodeFs from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 
 import {
   PERSONAL_PROVIDER_CUSTODY_ENV,
@@ -21,6 +21,7 @@ export {
 } from "@nautilo/operator-secrets";
 import { shellQuote } from "./remote-exec.ts";
 
+import { instancePath } from "./instance-paths.ts";
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -322,7 +323,7 @@ async function withFileLock<T>(
   instanceRootDir: string,
   operation: () => Promise<T>,
 ): Promise<T> {
-  const lockPath = join(instanceRootDir, "runtime-config", ".personal-provider-custody.lock");
+  const lockPath = instancePath(instanceRootDir, "runtime-config", ".personal-provider-custody.lock");
   await nodeFs.mkdir(dirname(lockPath), { recursive: true, mode: 0o700 });
   let handle: nodeFs.FileHandle | undefined;
   for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -355,9 +356,9 @@ export function defaultEnsurePersonalProviderCustodyDeps(): EnsurePersonalProvid
   return {
     withProvisioningLock: withFileLock,
     readInstanceEnv: (instanceRootDir) =>
-      nodeFs.readFile(join(instanceRootDir, "runtime-config", "instance.env"), "utf8"),
+      nodeFs.readFile(instancePath(instanceRootDir, "runtime-config", "instance.env"), "utf8"),
     writeInstanceEnv: async (instanceRootDir, raw) => {
-      const path = join(instanceRootDir, "runtime-config", "instance.env");
+      const path = instancePath(instanceRootDir, "runtime-config", "instance.env");
       const temporary = `${path}.tmp-${process.pid}-${Date.now()}`;
       let handle: nodeFs.FileHandle | undefined;
       try {

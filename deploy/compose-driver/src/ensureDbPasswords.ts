@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 
 import { transaction } from "@nautilo/config-guard";
 
+import { instancePath } from "./instance-paths.ts";
 const execFileAsync = promisify(execFile);
 
 // Minimal local typing for the `postgres` package surface we touch — avoids
@@ -352,7 +353,7 @@ export function defaultEnsureDbPasswordsDeps(opts?: {
   return {
     readInstanceEnv: async (instanceRootDir) => {
       try {
-        return await readFile(join(instanceRootDir, "instance.env"), "utf8");
+        return await readFile(instancePath(instanceRootDir, "instance.env"), "utf8");
       } catch {
         return "";
       }
@@ -360,7 +361,7 @@ export function defaultEnsureDbPasswordsDeps(opts?: {
     readCryptoDbPassword: async (instanceRootDir) => {
       try {
         const value = await readFile(
-          join(instanceRootDir, CRYPTO_DB_PASSWORD_RELATIVE_PATH),
+          instancePath(instanceRootDir, CRYPTO_DB_PASSWORD_RELATIVE_PATH),
           "utf8",
         );
         return value.trim() || undefined;
@@ -370,7 +371,7 @@ export function defaultEnsureDbPasswordsDeps(opts?: {
     },
     writeCryptoDbPassword: async (instanceRootDir, password) => {
       validateCryptoPassword(password);
-      const target = join(
+      const target = instancePath(
         instanceRootDir,
         CRYPTO_DB_PASSWORD_RELATIVE_PATH,
       );
@@ -382,7 +383,7 @@ export function defaultEnsureDbPasswordsDeps(opts?: {
     },
     removeCryptoDbPasswordFromInstanceEnv: async (instanceRootDir) => {
       const previousTarget = process.env["NAUTILO_DOTENV_PATH"];
-      process.env["NAUTILO_DOTENV_PATH"] = join(
+      process.env["NAUTILO_DOTENV_PATH"] = instancePath(
         instanceRootDir,
         "instance.env",
       );

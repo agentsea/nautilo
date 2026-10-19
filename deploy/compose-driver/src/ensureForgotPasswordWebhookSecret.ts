@@ -1,9 +1,9 @@
 import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 
 import { transaction } from "@nautilo/config-guard";
 
+import { instancePath } from "./instance-paths.ts";
 /**
  * M120 — the shared secret between Logto's `http-email` connector
  * (`Authorization: Bearer <secret>`) and Nautilo's webhook receiver
@@ -65,7 +65,7 @@ export function defaultEnsureWebhookSecretDeps(): EnsureWebhookSecretDeps {
   return {
     readInstanceEnv: async (instanceRootDir) => {
       try {
-        return await readFile(join(instanceRootDir, "instance.env"), "utf8");
+        return await readFile(instancePath(instanceRootDir, "instance.env"), "utf8");
       } catch {
         return "";
       }
