@@ -1,5 +1,5 @@
 import type { AssistantModelSummary } from "@nautilo/api-client/browser";
-import { COMPOSER_CHAT_ATTACHMENT_EXTENSIONS, isComposerImageAttachment, IMAGE_ATTACHMENT_SELECTION_HINT, IMAGE_HISTORY_NOTICE,
+import { COMPOSER_CHAT_ATTACHMENT_EXTENSIONS, WORKSPACE_DOCUMENT_ATTACHMENT_EXTENSIONS, isComposerImageAttachment, IMAGE_ATTACHMENT_SELECTION_HINT, IMAGE_HISTORY_NOTICE,
   imageAttachmentModelError } from "@nautilo/attachments/composer-chat-extensions";
 import { hasVisibleAssistantContent } from "./conversation-visible-content";
 import { UserText } from "./conversation-message-text";
@@ -2713,7 +2713,7 @@ function Composer({
         setAttachmentError(IMAGE_ATTACHMENT_SELECTION_HINT);
         continue;
       }
-      const pf = preflightComposerChatAttachment(file.name, { workspacePdf: true });
+      const pf = preflightComposerChatAttachment(file.name, { workspaceDocuments: true });
       if (!pf.ok) {
         skipped.push(pf.skip);
         continue;
@@ -2735,7 +2735,7 @@ function Composer({
       void uploadComposerBlob(id, file, file.name, { roomId: uploadRoomId });
     }
     if (skipped.length > 0) {
-      const { title, message } = formatComposerAttachmentSkipToast(skipped);
+      const { title, message } = formatComposerAttachmentSkipToast(skipped, { workspaceDocuments: true });
       toast.show({ variant: "warning", title, message });
     }
   }, [toast]);
@@ -2847,7 +2847,7 @@ function Composer({
         setAttachmentError(IMAGE_ATTACHMENT_SELECTION_HINT);
         continue;
       }
-      const pf = preflightComposerChatAttachment(file.name, { workspacePdf: true });
+      const pf = preflightComposerChatAttachment(file.name, { workspaceDocuments: true });
       if (!pf.ok) {
         skipped.push(pf.skip);
         continue;
@@ -2869,7 +2869,7 @@ function Composer({
       void uploadComposerAttachment(id, file, { roomId: pickerRoomId });
     }
     if (skipped.length > 0) {
-      const { title, message } = formatComposerAttachmentSkipToast(skipped);
+      const { title, message } = formatComposerAttachmentSkipToast(skipped, { workspaceDocuments: true });
       toast.show({ variant: "warning", title, message });
     }
   }, [toast]);
@@ -3121,7 +3121,7 @@ function Composer({
             ref={browserAttachmentInputRef}
             type="file"
             multiple
-            accept={imageInputUnsupported ? [...COMPOSER_CHAT_ATTACHMENT_EXTENSIONS]
+            accept={imageInputUnsupported ? [...COMPOSER_CHAT_ATTACHMENT_EXTENSIONS, ...WORKSPACE_DOCUMENT_ATTACHMENT_EXTENSIONS]
               .filter((extension) => !isComposerImageAttachment(`file${extension}`)).join(",") : undefined}
             hidden
             onChange={handleBrowserAttachmentChange}
@@ -3252,19 +3252,19 @@ function AttachmentChip({ attachment }: { attachment: ComposerAttachment }) {
       : attachment.workspaceArtifact ? "ready — stored in this Room’s Workspace" : "ready";
   return (
     <span
-      className={`flex max-w-[16rem] items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] ${
+      className={`flex min-w-0 max-w-[16rem] items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] ${
         isError
           ? "border-error/50 bg-error/10 text-foreground"
           : "border-border bg-background text-foreground"
       }`}
-      title={`${attachment.path}\n${statusLabel}`}
+      title={`${attachment.path || attachment.name}\n${statusLabel}`}
       data-testid="composer-attachment"
       data-path={attachment.path}
       data-status={attachment.status ?? "queued"}
     >
       <FileText aria-hidden="true" className="h-3 w-3 shrink-0 text-foreground-muted" />
-      <span className="truncate">{displayLabel}</span>
-      <span className="shrink-0 text-foreground-muted">· {statusLabel}</span>
+      <span className="min-w-0 flex-1 truncate">{displayLabel}</span>
+      <span className="shrink-0 text-foreground-muted">· {isError ? "rejected" : attachment.status === "pending" ? "pending" : "ready"}</span>
       <button
         type="button"
         onClick={() => removeAttachment(attachment.id)}
