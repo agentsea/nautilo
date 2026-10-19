@@ -14,7 +14,8 @@ import { deriveTaskContentCryptoObjectIdV1, taskContentRevisionObjectIdV1, finge
   fingerprintTaskContentNamespaceV1, sameTaskContentCoordinateV1, taskContentObjectTypeV1,
   type TaskContentProductStorePort, type TaskContentRevisionLifecycleV1, type VerifiedForegroundTaskDefinitionPublication,
   type TaskDefinitionContentCoordinateV1, type TaskContentCoordinateV1 } from "../../task/task-content-repository.ts";
-import { decodeTaskDefinitionContent, encodeTaskPayloadV1, type TaskPayloadV1 } from "../../task/task-payload-v1.ts";
+import { decodeTaskDefinitionContent, encodeTaskDefinitionContent, encodeTaskPayloadV1,
+  type DecodedTaskDefinitionContent, type TaskDefinitionContent, type TaskPayloadV1 } from "../../task/task-payload-v1.ts";
 import { cryptoTypedDb, executeTypedCryptoQuery } from "../storage/postgres-lattice-storage.ts";
 import { assertVerifiedCryptoPostgresHandle, withVerifiedCryptoPostgresTransaction,
   type CryptoPostgresHandle } from "../storage/postgres-lattice-storage.ts";
@@ -142,7 +143,7 @@ export function readVerifiedForegroundTaskDefinitionAccessRevision(
 export type InspectForegroundTaskDefinitionInput = Readonly<{
   handle: CryptoPostgresHandle; crypto: LatticeCrypto; taskId: string; expectedAgentId: string;
   contentRevision?: number;
-  payload: TaskPayloadV1; currentAuthority: TaskContentAuthorityV1; entities: AgentEntityCryptoInvocation;
+  payload: TaskDefinitionContent; currentAuthority: TaskContentAuthorityV1; entities: AgentEntityCryptoInvocation;
   resolveForegroundAgentAcceptedExecutionEvidence?: Parameters<typeof readDurableTaskContentPublication>[0]["resolveForegroundAgentAcceptedExecutionEvidence"];
   resolveHistoricalAgentSignerAuthority: Parameters<typeof readDurableTaskContentPublication>[0]["resolveHistoricalAgentSignerAuthority"];
   resolveHistoricalHumanDeviceSigningPublicKey?: Parameters<typeof readDurableTaskContentPublication>[0]["resolveHistoricalHumanDeviceSigningPublicKey"];
@@ -158,7 +159,7 @@ export async function withVerifiedForegroundTaskDefinitionPublication<Value>(inp
   return inspectDefinition({ ...input, coordinate: { kind: "definition", taskId: input.taskId, contentRevision },
     signerPolicy: "agent_creation",
     consume: plaintext => {
-      const expected = encodeTaskPayloadV1(input.payload);
+      const expected = encodeTaskDefinitionContent(input.payload);
       try {
         if (!same(plaintext, expected)) throw new TypeError("Foreground Task stored definition source changed");
       } finally { expected.fill(0); }
@@ -172,14 +173,14 @@ export type OpenForegroundTaskDefinitionInput = Omit<InspectForegroundTaskDefini
 /** Open one exact current foreground definition only for the supplied callback.
  * Plaintext bytes and the Namespace key loan are wiped before this returns. */
 export async function withOpenForegroundTaskDefinition<Value>(input: OpenForegroundTaskDefinitionInput & Readonly<{
-  use(payload: TaskPayloadV1): Promise<Value>;
+  use(content: DecodedTaskDefinitionContent): Promise<Value>;
 }>): Promise<Readonly<{ status: "missing" | "unavailable" }> | Readonly<{ status: "opened"; value: Value }>> {
   const contentRevision = input.contentRevision ?? 1;
   if (!Number.isSafeInteger(contentRevision) || contentRevision < 1) throw new TypeError("Foreground Task definition revision is invalid");
   const result = await inspectDefinition({ ...input,
     coordinate: { kind: "definition", taskId: input.taskId, contentRevision },
     signerPolicy: "supported_current",
-    consume: plaintext => Promise.resolve({ use: () => input.use(decodeTaskDefinitionContent(plaintext).payload) }),
+    consume: plaintext => Promise.resolve({ use: () => input.use(decodeTaskDefinitionContent(plaintext)) }),
   });
   return result.status === "verified" ? { status: "opened", value: result.value } : result;
 }

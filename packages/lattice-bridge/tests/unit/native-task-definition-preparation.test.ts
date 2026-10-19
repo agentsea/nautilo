@@ -9,6 +9,7 @@ import { readPreparedDeviceWrappedAgentObjectSnapshot,
   type PreparedDeviceWrappedAgentObject } from "../../src/object/device-wrapped-agent-object-crypto.ts";
 import type { ForegroundAgentEntityCryptoInvocation } from "../../src/object/foreground-agent-entity-crypto.ts";
 import { deriveTaskContentCryptoObjectIdV1 } from "../../src/task/task-content-repository.ts";
+import { encodeTaskDefinitionContent, encodeTaskPayloadV1 } from "../../src/task/task-payload-v1.ts";
 
 const taskId = "10000000-0000-4000-8000-000000000001";
 const namespaceId = "40000000-0000-4000-8000-000000000001";
@@ -50,6 +51,20 @@ function fixture() {
 }
 
 describe("native foreground Task definition preparation", () => {
+  test("keeps V1 definition bytes identical and accepts retained V2 content", async () => {
+    const v1 = fixture();
+    expect(encodeTaskDefinitionContent(v1.input.payload))
+      .toEqual(encodeTaskPayloadV1(v1.input.payload));
+    const v2 = fixture();
+    const prepared = await prepareNativeTaskDefinitionCryptoRevision({ ...v2.input,
+      payload: { formatVersion: 2, prompt: v2.input.payload.prompt,
+        expectedOutput: v2.input.payload.expectedOutput,
+        protectedMetadata: v2.input.payload.protectedMetadata,
+        retainedHistoricalError: "provider unavailable" } });
+    expect(prepared).not.toBeNull();
+    expect(prepared?.payloadVersion).toBe(1);
+  });
+
   test("prepares one private definition with the real foreground signing family", async () => {
     const f = fixture();
     const prepared = await prepareNativeTaskDefinitionCryptoRevision(f.input);

@@ -5,14 +5,14 @@ import type { TaskContentAuthorityV1 } from "../../task/task-content-authority-v
 import { createPreparedForegroundTaskDefinitionCryptoRevisionV1 } from "../../task/task-content-prepared-revision.ts";
 import { deriveTaskContentCryptoObjectIdV1, taskContentObjectTypeV1,
   type PreparedTaskContentCryptoRevisionV1 } from "../../task/task-content-repository.ts";
-import { encodeTaskPayloadV1, type TaskPayloadV1 } from "../../task/task-payload-v1.ts";
+import { encodeTaskDefinitionContent, type TaskDefinitionContent } from "../../task/task-payload-v1.ts";
 
 export type PrepareNativeTaskDefinitionCryptoRevisionInput = Readonly<{
   crypto: LatticeCrypto;
   taskId: string;
   /** Defaults to the creation revision so existing callers retain identical bytes. */
   contentRevision?: number;
-  payload: TaskPayloadV1;
+  payload: TaskDefinitionContent;
   createdAt: number;
   authority: TaskContentAuthorityV1;
   entities: ForegroundAgentEntityCryptoInvocation;
@@ -49,7 +49,7 @@ export async function prepareNativeTaskDefinitionCryptoRevision(
     taskId: input.taskId, contentRevision });
   const authority = Object.freeze({ ...input.authority });
   const objectId = deriveTaskContentCryptoObjectIdV1(coordinate);
-  const plaintext = encodeTaskPayloadV1(input.payload);
+  const plaintext = encodeTaskDefinitionContent(input.payload);
   try {
     const result = await input.entities.useCurrentSet({
       operations: ["encrypt"], namespaceIds: [authority.namespaceId],

@@ -17,11 +17,16 @@ import {
   readPreparedTaskContentCryptoRevisionSnapshotV1,
   type EncryptionDataOperationOwner,
   type PreparedTaskContentCryptoRevisionV1,
+  type TaskDefinitionContent,
   type TaskContentAuthorityV1,
   type TaskContentProductStorePort,
   type TaskContentRepository,
 } from "@nautilo/lattice-bridge";
-import { reconstructProtectedTaskMetadataV1 } from "@nautilo/types";
+import {
+  classifyProtectedTaskMetadataV1,
+  reconstructProtectedTaskMetadataV1,
+  type ProtectedTaskOperationalMetadataProjectionV1,
+} from "@nautilo/types";
 import {
   createPostgresForegroundAgentAcceptedExecutionEvidenceResolver,
   createPostgresTaskContentCryptoCompletion,
@@ -47,6 +52,7 @@ type PreflightInput = Readonly<{ operationId: string; request: UpdateInput }>;
 export type ProtectedTaskForegroundUpdatePreflight = Readonly<{
   operationId: string;
   requestFingerprint: string;
+  scheduleReferenceTime: number;
   representation: "protected" | "dual";
   source: Task & Readonly<{ mutationVersion: string }>;
   patch: Readonly<Partial<NewTask>>;
@@ -122,7 +128,14 @@ function safeResult(task: Pick<Task, "id" | "ownerId" | "status" | "scheduleKind
   return { id: task.id, ownerId: task.ownerId, status: task.status, scheduleKind: task.scheduleKind,
     targetChat: task.targetChat, nextFireAt: task.nextFireAt, resultDelivery: task.resultDelivery };
 }
-function operationalPatch(request: UpdateInput, current: Task): Partial<NewTask> {
+function scheduleReferenceDate(value: number): Date {
+  const date = new Date(value);
+  if (!Number.isFinite(value) || Number.isNaN(date.getTime())) {
+    invalid("Foreground Task update time is invalid");
+  }
+  return date;
+}
+function operationalPatch(request: UpdateInput, current: Task, now: Date): Partial<NewTask> {
   const patch: Partial<NewTask> = {};
   if (request.scheduleKind !== undefined) patch.scheduleKind = request.scheduleKind;
   if (request.runAt !== undefined) patch.runAt = request.runAt;
@@ -143,9 +156,64 @@ function operationalPatch(request: UpdateInput, current: Task): Partial<NewTask>
     || request.cron !== undefined || request.timezone !== undefined) {
     patch.nextFireAt = computeNextFireAt(request.scheduleKind ?? current.scheduleKind,
       request.runAt ?? current.runAt ?? undefined, request.cron ?? current.cron,
-      request.timezone ?? current.timezone);
+      request.timezone ?? current.timezone, now);
   }
   return patch;
+}
+const MUTABLE_RUNTIME_METADATA_KEYS = new Set(["preparation", "lastInterruption"]);
+function withoutMutableRuntimeMetadata(input: Readonly<Record<string, unknown>>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(input)
+    .filter(([key]) => !MUTABLE_RUNTIME_METADATA_KEYS.has(key)));
+}
+function mutableRuntimeMetadata(input: Readonly<Record<string, unknown>>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(input)
+    .filter(([key]) => MUTABLE_RUNTIME_METADATA_KEYS.has(key)));
+}
+function reconcileCurrentRuntimeMetadata(
+  current: Task["metadata"],
+  definition: Task["metadata"],
+  representation: "protected" | "dual",
+): Readonly<{ metadata: Task["metadata"];
+  operational: ProtectedTaskOperationalMetadataProjectionV1;
+  revisionOperational: ProtectedTaskOperationalMetadataProjectionV1 }> {
+  const definitionParts = classifyProtectedTaskMetadataV1(definition);
+  if (definitionParts.status !== "supported") {
+    invalid("Foreground Task definition metadata cannot be classified");
+  }
+  const currentDefinition = representation === "protected"
+    ? reconstructProtectedTaskMetadataV1(current, definitionParts.protectedContent)
+    : null;
+  if (currentDefinition?.status === "unsupported") {
+    invalid("Foreground Task protected projection cannot be reconstructed");
+  }
+  const currentParts = classifyProtectedTaskMetadataV1(
+    currentDefinition?.status === "supported" ? currentDefinition.metadata : current);
+  if (currentParts.status !== "supported"
+    || !isDeepStrictEqual(withoutMutableRuntimeMetadata(currentParts.operational),
+      withoutMutableRuntimeMetadata(definitionParts.operational))
+    || representation === "dual"
+      && !isDeepStrictEqual(withoutMutableRuntimeMetadata(currentParts.protectedContent),
+        withoutMutableRuntimeMetadata(definitionParts.protectedContent))
+    || representation === "protected" && !isDeepStrictEqual(current, currentParts.operational)) {
+    invalid("Foreground Task metadata changed outside mutable runtime diagnostics");
+  }
+  const operational = {
+    ...withoutMutableRuntimeMetadata(definitionParts.operational),
+    ...mutableRuntimeMetadata(currentParts.operational),
+  };
+  const protectedContent = {
+    ...withoutMutableRuntimeMetadata(definitionParts.protectedContent),
+    ...mutableRuntimeMetadata(representation === "dual"
+      ? currentParts.protectedContent : definitionParts.protectedContent),
+  };
+  const reconciled = reconstructProtectedTaskMetadataV1(operational, protectedContent);
+  if (reconciled.status !== "supported") {
+    invalid("Foreground Task mutable runtime diagnostics cannot be reconciled");
+  }
+  const classified = classifyProtectedTaskMetadataV1(reconciled.metadata);
+  if (classified.status !== "supported") invalid("Foreground Task metadata cannot be classified");
+  return Object.freeze({ metadata: reconciled.metadata, operational: classified.operational,
+    revisionOperational: definitionParts.operational });
 }
 
 /** The foreground grant opens, validates, transforms and reseals one current
@@ -178,6 +246,8 @@ export function createProtectedTaskForegroundUpdatePublication(input: Dependenci
     assertLive();
     const request = structuredClone(raw.request);
     const requestFingerprint = fingerprintRequest(request);
+    const scheduleReferenceTime = (input.now ?? Date.now)();
+    const scheduleReference = scheduleReferenceDate(scheduleReferenceTime);
     const perform = async (representation: "protected" | "dual") =>
       input.withCurrentProduct(request, async context => {
         const assertCurrent = async () => { assertLive(); await context.assertCurrent(); assertLive(); };
@@ -216,9 +286,9 @@ export function createProtectedTaskForegroundUpdatePublication(input: Dependenci
           || state.product.cryptoMappingState !== "verified") invalid("Foreground Task mapped definition changed");
         const source = Object.freeze({ ...current, prompt: "", expectedOutput: null,
           metadata: state.lifecycle.operationalMetadata ?? {} });
-        const patch = Object.freeze(operationalPatch(request, source));
+        const patch = Object.freeze(operationalPatch(request, source, scheduleReference));
         await assertCurrent();
-        return Object.freeze({ operationId: raw.operationId, requestFingerprint,
+        return Object.freeze({ operationId: raw.operationId, requestFingerprint, scheduleReferenceTime,
           representation, source, patch });
       });
     return input.owner.runMutation({ protected: () => perform("protected"), dual: () => perform("dual") });
@@ -229,7 +299,8 @@ export function createProtectedTaskForegroundUpdatePublication(input: Dependenci
     const request = structuredClone(raw.request);
     const fingerprint = fingerprintRequest(request);
     if (raw.preflight.operationId !== raw.operationId
-      || raw.preflight.requestFingerprint !== fingerprint) {
+      || raw.preflight.requestFingerprint !== fingerprint
+      || !Number.isFinite(raw.preflight.scheduleReferenceTime)) {
       invalid("Foreground Task funding preflight changed");
     }
     let entry = entries.get(raw.operationId);
@@ -311,7 +382,8 @@ export function createProtectedTaskForegroundUpdatePublication(input: Dependenci
             || !isDeepStrictEqual({ ...safe, prompt: "", expectedOutput: null,
               metadata: currentState.lifecycle.operationalMetadata ?? {} },
               raw.preflight.source)
-            || !isDeepStrictEqual(operationalPatch(request, raw.preflight.source), raw.preflight.patch)) {
+            || !isDeepStrictEqual(operationalPatch(request, raw.preflight.source,
+              scheduleReferenceDate(raw.preflight.scheduleReferenceTime)), raw.preflight.patch)) {
             invalid("Foreground Task changed after funding preflight");
           }
           const nextRevision = safe.contentRevision + 1;
@@ -351,6 +423,7 @@ export function createProtectedTaskForegroundUpdatePublication(input: Dependenci
           currentEntry.baseRevision ??= safe.contentRevision;
           currentEntry.targetRevision ??= nextRevision;
           let recoveredPreparedPublication = false;
+          let revisionOperationalMetadata: ProtectedTaskOperationalMetadataProjectionV1 | undefined;
           const opened = await (overrides.open ?? withOpenForegroundTaskDefinition)({
             handle: crypto,
             crypto: input.crypto,
@@ -363,7 +436,8 @@ export function createProtectedTaskForegroundUpdatePublication(input: Dependenci
             resolveHistoricalAgentSignerAuthority,
             resolveHistoricalHumanDeviceSigningPublicKey: createProtectedTaskHistoricalHumanDeviceSigningKeyResolver(crypto),
             assertCurrent,
-            use: async payload => {
+            use: async opened => {
+              const payload = opened.payload;
               const current = await getTaskByIdWithMutationVersion(db, request.taskId);
               if (current === undefined || current.status !== safe.status
                 || current.contentRevision !== safe.contentRevision
@@ -376,14 +450,16 @@ export function createProtectedTaskForegroundUpdatePublication(input: Dependenci
               if (Object.hasOwn(currentState.lifecycle.operationalMetadata ?? {}, "execution")) {
                 invalid("Foreground Task update supports native Tasks only");
               }
+              const reconciledMetadata = reconcileCurrentRuntimeMetadata(
+                current.metadata, reconstructed.metadata, representation);
+              revisionOperationalMetadata = reconciledMetadata.revisionOperational;
               if (representation === "dual" && (current.prompt !== payload.prompt
                 || current.expectedOutput !== payload.expectedOutput
-                || !isDeepStrictEqual(current.metadata, reconstructed.metadata))) {
+                )) {
                 invalid("Foreground Task dual definition parity changed");
               }
               if (representation === "protected" && (current.prompt !== ""
-                || current.expectedOutput !== null
-                || !isDeepStrictEqual(current.metadata, currentState.lifecycle.operationalMetadata ?? {}))) {
+                || current.expectedOutput !== null)) {
                 invalid("Foreground Task protected projection changed");
               }
               const nextPayload = Object.freeze({
@@ -392,11 +468,20 @@ export function createProtectedTaskForegroundUpdatePublication(input: Dependenci
                 expectedOutput: request.expectedOutput ?? payload.expectedOutput,
                 protectedMetadata: payload.protectedMetadata,
               });
+              const nextContent: TaskDefinitionContent = opened.retainedHistoricalError === null
+                ? nextPayload
+                : Object.freeze({
+                  formatVersion: 2 as const,
+                  prompt: nextPayload.prompt,
+                  expectedOutput: nextPayload.expectedOutput,
+                  protectedMetadata: nextPayload.protectedMetadata,
+                  retainedHistoricalError: opened.retainedHistoricalError,
+                });
               const patch: Partial<NewTask> = {
                 ...raw.preflight.patch,
                 metadata: representation === "dual"
-                  ? reconstructed.metadata
-                  : currentState.lifecycle.operationalMetadata ?? {},
+                  ? reconciledMetadata.metadata
+                  : reconciledMetadata.operational,
                 ...(representation === "dual" ? {
                   prompt: nextPayload.prompt,
                   expectedOutput: nextPayload.expectedOutput,
@@ -424,7 +509,7 @@ export function createProtectedTaskForegroundUpdatePublication(input: Dependenci
                   taskId: request.taskId,
                   contentRevision: nextRevision,
                   expectedAgentId: request.agentId,
-                  payload: nextPayload,
+                  payload: nextContent,
                   currentAuthority: authority,
                   entities: input.entities,
                   resolveForegroundAgentAcceptedExecutionEvidence,
@@ -442,7 +527,7 @@ export function createProtectedTaskForegroundUpdatePublication(input: Dependenci
                     if (updated === undefined) invalid("Foreground Task changed during validation");
                     await (overrides.publishVerified ?? publishVerifiedForegroundTaskDefinition)({
                       proof, product: productStore, operationId: raw.operationId,
-                      representation, operationalMetadata: currentState.lifecycle.operationalMetadata,
+                      representation, operationalMetadata: reconciledMetadata.revisionOperational,
                     });
                     recoveredPreparedPublication = true;
                   },
@@ -457,7 +542,7 @@ export function createProtectedTaskForegroundUpdatePublication(input: Dependenci
                   crypto: input.crypto,
                   taskId: current.id,
                   contentRevision: nextRevision,
-                  payload: nextPayload,
+                  payload: nextContent,
                   authority,
                   entities: input.entities,
                   publication: input.publication,
@@ -484,6 +569,9 @@ export function createProtectedTaskForegroundUpdatePublication(input: Dependenci
           if (!recoveredPreparedPublication) {
           const prepared = currentEntry.prepared;
           if (prepared === undefined) invalid("Foreground Task update was not prepared");
+          if (revisionOperationalMetadata === undefined) {
+            invalid("Foreground Task update metadata was not classified");
+          }
           const repository = overrides.repository?.({ product: productStore })
             ?? createDormantTaskContentShadowRepository({
             product: productStore,
@@ -514,7 +602,7 @@ export function createProtectedTaskForegroundUpdatePublication(input: Dependenci
             representation,
             authority,
             prepared,
-            operationalMetadata: currentState.lifecycle.operationalMetadata,
+            operationalMetadata: revisionOperationalMetadata,
           });
           if (reserved.status !== "reserved" && reserved.status !== "replayed") {
             invalid("Foreground Task update reservation changed");

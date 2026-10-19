@@ -10,9 +10,14 @@ import { fingerprintTaskContentAuthorityV1, type TaskContentProductStorePort,
   type TaskContentRevisionStateV1 } from "../../src/task/task-content-repository.ts";
 import type { AgentEntityCryptoInvocation } from "../../src/object/agent-entity-crypto.ts";
 
-async function setup(ephemeral = false, contentRevision = 1, source: "foreground" | "human" = "foreground") {
+async function setup(ephemeral = false, contentRevision = 1,
+  source: "foreground" | "human" = "foreground", retainedHistoricalError?: string) {
   const selectedCoordinate = { ...coordinate, contentRevision };
-  const f = await fixture(source, true, ephemeral, selectedCoordinate);
+  const f = await fixture(source, true, ephemeral, selectedCoordinate,
+    retainedHistoricalError === undefined ? undefined : {
+      formatVersion: 2, prompt: "Private definition", expectedOutput: null,
+      protectedMetadata: {}, retainedHistoricalError,
+    });
   await f.adapter.complete(f.prepared);
   const abort = new AbortController();
   let denied = false;
@@ -95,8 +100,9 @@ describe("foreground Task definition restart inspection", () => {
     let callbacks = 0;
     expect(await withOpenForegroundTaskDefinition({ ...f.input(), use: async payload => {
       callbacks += 1;
-      expect(payload.prompt).toBe("Native definition");
-      return payload.expectedOutput;
+      expect(payload.payload.prompt).toBe("Native definition");
+      expect(payload.retainedHistoricalError).toBeNull();
+      return payload.payload.expectedOutput;
     } })).toEqual({ status: "opened", value: null });
     expect(callbacks).toBe(1);
     expect(f.key()?.every(byte => byte === 0)).toBe(true);
@@ -112,10 +118,19 @@ describe("foreground Task definition restart inspection", () => {
   });
   test("opens an authenticated current Human-device definition without weakening creation proof", async () => {
     const f = await setup(false, 2, "human");
-    expect(await withOpenForegroundTaskDefinition({ ...f.input(), use: async payload => payload.prompt }))
+    expect(await withOpenForegroundTaskDefinition({ ...f.input(), use: async payload => payload.payload.prompt }))
       .toEqual({ status: "opened", value: "Private definition" });
     await rejects(withVerifiedForegroundTaskDefinitionPublication({ ...f.input(),
       use: async () => { throw new Error("Human source must not mint creation proof"); } }), /identity|authority/u);
+  });
+  test("opens an authenticated V2 definition with its retained historical display error", async () => {
+    const f = await setup(false, 2, "human", "provider unavailable");
+    expect(await withOpenForegroundTaskDefinition({ ...f.input(), use: async content => content }))
+      .toEqual({ status: "opened", value: {
+        payload: { formatVersion: 1, prompt: "Private definition", expectedOutput: null,
+          protectedMetadata: {} },
+        retainedHistoricalError: "provider unavailable",
+      } });
   });
   test("retains genuine classifier authority during orphan adoption rather than cloning its brand", async () => {
     const f = await setup();

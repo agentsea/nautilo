@@ -72,7 +72,8 @@ import {
   type TaskContentCryptoRevisionReferenceV1,
 } from "../../src/task/task-content-repository.ts";
 import { prepareDeviceWrappedAgentObject } from "../../src/object/device-wrapped-agent-object-crypto.ts";
-import { encodeTaskPayloadV1, encodeTaskRunResultPayloadV1 } from "../../src/task/task-payload-v1.ts";
+import { encodeTaskDefinitionContent, encodeTaskPayloadV1, encodeTaskRunResultPayloadV1,
+  type TaskDefinitionContent } from "../../src/task/task-payload-v1.ts";
 
 const NOW = 1_820_000_000_000;
 const HUMAN_ID = "30000000-0000-4000-8000-000000000001";
@@ -258,16 +259,14 @@ class TaskCryptoConnection implements CryptoPostgresConnection {
   }
 }
 
-function encryptedFixture(seed: number, objectIdentity = deriveTaskContentCryptoObjectIdV1(coordinate), contentCoordinate: TaskContentCoordinateV1 = coordinate) {
+function encryptedFixture(seed: number, objectIdentity = deriveTaskContentCryptoObjectIdV1(coordinate),
+  contentCoordinate: TaskContentCoordinateV1 = coordinate,
+  definitionContent: TaskDefinitionContent = { formatVersion: 1, prompt: "Private definition",
+    expectedOutput: null, protectedMetadata: {} }) {
   const crypto = new LatticeCrypto(seededRng(seed), { now: () => NOW });
   const plaintext = contentCoordinate.kind === "run_result"
     ? encodeTaskRunResultPayloadV1({ formatVersion: 1, resultText: "Private result", lastError: null })
-    : encodeTaskPayloadV1({
-    formatVersion: 1,
-    prompt: "Private definition",
-    expectedOutput: null,
-    protectedMetadata: {},
-  });
+    : encodeTaskDefinitionContent(definitionContent);
   const encrypted = encryptObjectPayload(crypto, {
     objectId: objectId(objectIdentity),
     keyClass: "ai",
@@ -297,12 +296,15 @@ function encryptedFixture(seed: number, objectIdentity = deriveTaskContentCrypto
   };
 }
 
-async function fixture(kind: "human" | "agent" | "historical" | "foreground", includeForegroundResolver = true, ephemeralForeground = false, contentCoordinate: TaskContentCoordinateV1 = coordinate) {
+async function fixture(kind: "human" | "agent" | "historical" | "foreground",
+  includeForegroundResolver = true, ephemeralForeground = false,
+  contentCoordinate: TaskContentCoordinateV1 = coordinate,
+  definitionContent?: TaskDefinitionContent) {
   const coordinate = contentCoordinate;
   const sourceDigest = new Uint8Array(32).fill(12);
   const encrypted = encryptedFixture(kind === "agent" ? 12 : 11, kind === "historical"
     ? deriveTaskHistoricalContentCryptoObjectIdV1({ coordinate, sourceDigest, namespaceId: NAMESPACE_ID })
-    : deriveTaskContentCryptoObjectIdV1(coordinate), coordinate);
+    : deriveTaskContentCryptoObjectIdV1(coordinate), coordinate, definitionContent);
   let signerRow: DatabaseRow | null = null;
   let humanPublicKey: Uint8Array | null = null;
   let managerPublicKey: Uint8Array | null = null;
