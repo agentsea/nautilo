@@ -86,7 +86,10 @@ describe("DROP_LOGTO_TENANT_ROLES_SQL (clean follow-up)", () => {
 
 describe("resolveLogtoContainer (M059)", () => {
   test("returns the canonical nautilo-postgres-1 by default", () => {
-    expect(resolveLogtoContainer({})).toBe("nautilo-postgres-1");
+    expect(resolveLogtoContainer({
+      NAUTILO_INSTANCE_ID: "",
+      COMPOSE_PROJECT_NAME: "nautilo",
+    })).toBe("nautilo-postgres-1");
   });
 
   test("respects LOGTO_DB_CONTAINER override for non-default compose project names", () => {
