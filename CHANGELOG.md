@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- OfficeCLI results containing emoji joiners or invisible layout controls
+  are sanitized before instruction scanning instead of blocking the entire
+  result. Original documents remain unchanged.
+
 - Large Excel reads use indexed shared strings through OfficeCLI 1.0.157,
   pinned together for Desktop and Server. Stopping a server OfficeCLI call
   now cancels its child process before temporary files are cleaned up.
