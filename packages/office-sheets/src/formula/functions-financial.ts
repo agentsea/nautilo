@@ -1675,7 +1675,9 @@ function yearFrac(startDate: Date, endDate: Date, basis: number): number {
   const ed = new Date(endDate);
   const y1 = sd.getFullYear(), m1 = sd.getMonth() + 1, d1Orig = sd.getDate();
   const y2 = ed.getFullYear(), m2 = ed.getMonth() + 1, d2Orig = ed.getDate();
-  const actualDays = (ed.getTime() - sd.getTime()) / 86400000;
+  // Rounded: two local midnights either side of a DST change are not a whole
+  // number of 24-hour days apart.
+  const actualDays = Math.round((ed.getTime() - sd.getTime()) / 86400000);
 
   switch (basis) {
     case 0: { // US 30/360
