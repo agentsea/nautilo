@@ -244,17 +244,20 @@ export function createPostgresForegroundAgentAcceptedExecutionEvidenceResolver(i
               === `pending:${authorization.authorizationId}`
             && equal(plan.authorization.authorizationDigest,
               authorizationPlanDigest);
+          const acceptedSessionMatches =
+            plan.authorization.disposition === "authorization_reusable"
+            && authorizationSessionReference
+              === plan.authorization.sessionReference
+            && equal(acceptedDigest,
+              plan.authorization.authorizationDigest);
           const dispositionMatches = !shared
             ? plan.authorization.disposition === "authorization_reusable"
               || requiredPlanMatches
             : authorizationDisposition === "establish"
               ? requiredPlanMatches || invocationEstablishmentMatches
+                || invocationBacked && acceptedSessionMatches
               : authorizationDisposition === "reuse"
-                && plan.authorization.disposition === "authorization_reusable"
-                && authorizationSessionReference
-                  === plan.authorization.sessionReference
-                && equal(acceptedDigest,
-                  plan.authorization.authorizationDigest);
+                && acceptedSessionMatches;
           if (authorization !== null
             && equal(actual, authorizationPlanDigest)
             && authorization.subjectHumanId === plan.subjectHumanId

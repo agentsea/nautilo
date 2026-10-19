@@ -141,8 +141,8 @@ function fixture() {
     serializeDomainForegroundAuthorizationPlanV2(authorizationPlan);
   destroyDomainForegroundAuthorizationPlanV2(authorizationPlan);
   const authorizationPlanDigest = crypto.hash(authorizationPlanBytes);
-  plan.authorization.sessionReference = "pending:authorization-retained";
-  plan.authorization.authorizationDigest = Uint8Array.from(authorizationPlanDigest);
+  plan.authorization.sessionReference = "accepted-runtime-session";
+  plan.authorization.authorizationDigest = Uint8Array.from(invocationDigest);
   const planBytes = encodeLiveShadowMessagePlanV4(plan);
   const planDigest = crypto.hash(planBytes);
   const row: ConversationProductDatabaseRow = {
@@ -402,6 +402,40 @@ describe("retained foreground Agent signer", () => {
     });
   });
 
+  for (const disposition of ["establish", "reuse"] as const) {
+    test(`accepted ${disposition} execution binds the retained session and authorization digest`, async () => {
+      const input = fixture();
+      const row = { ...input.row,
+        invocation_authorization_disposition: disposition };
+      expect((await resolveEvidence(input, row))?.acceptedAuthority).toEqual({
+        subjectHumanId: input.plan.subjectHumanId,
+        authorizedDomainIds: [TASK_DOMAIN],
+      });
+      for (const invalid of [
+        { ...row, invocation_authorization_session_reference: "another-session" },
+        { ...row, invocation_authorization_digest: hash(95) },
+      ]) {
+        const evidence = await resolveEvidence(input, invalid);
+        expect(evidence?.signerPublicKey).toEqual(input.signer.publicKey);
+        expect(evidence?.acceptedAuthority).toBeUndefined();
+      }
+    });
+  }
+
+  test("retained pending establishment descriptors still bind the exact V2 plan", async () => {
+    const input = fixture();
+    const planBytes = encodeLiveShadowMessagePlanV4({ ...input.plan,
+      authorization: { disposition: "authorization_reusable",
+        sessionReference: "pending:authorization-retained",
+        authorizationDigest: input.authorizationPlanDigest } });
+    const evidence = await resolveEvidence(input, { ...input.row,
+      plan_bytes: planBytes, plan_digest: input.crypto.hash(planBytes) });
+    expect(evidence?.acceptedAuthority).toEqual({
+      subjectHumanId: input.plan.subjectHumanId,
+      authorizedDomainIds: [TASK_DOMAIN],
+    });
+  });
+
   test("cross-Agent definition authority binds retained Human, Domain, session, room, recipient, and digest", async () => {
     const input = fixture();
     const malformedPlanBytes = new Uint8Array([0xff]);
@@ -473,13 +507,18 @@ describe("retained foreground Agent signer", () => {
 
   test("accepts invocation-backed turn evidence with independent grant digest and per-Agent session", async () => {
     const input = fixture();
+    const descriptor = { ...input.plan, authorization: {
+      disposition: "authorization_reusable" as const,
+      sessionReference: "pending:authorization-retained",
+      authorizationDigest: input.authorizationPlanDigest,
+    } };
+    const planBytes = encodeLiveShadowMessagePlanV4(descriptor);
     expect(input.row["invocation_authorization_digest"]).not.toEqual(
-      input.plan.authorization.disposition === "authorization_reusable"
-        ? input.plan.authorization.authorizationDigest
-        : null,
+      descriptor.authorization.authorizationDigest,
     );
     expect(input.row["invocation_session_id"]).not.toBe(input.row["session_id"]);
-    const result = await resolve(input, [[input.row]]);
+    const result = await resolve(input, [[{ ...input.row,
+      plan_bytes: planBytes, plan_digest: input.crypto.hash(planBytes) }]]);
     expect(result.key).toEqual(input.signer.publicKey);
     for (const alias of [
       "joined_invocation_id",
