@@ -1,5 +1,5 @@
 /**
- * D392 P2 — tool-runtimes.manifest.json schema validation.
+ * tool-runtimes.manifest.json schema validation.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -120,7 +120,7 @@ describe("committed tool-runtimes.manifest.json", () => {
     }
   });
 
-  test("uses D392 os-arch keys and includes aligned Desktop and Server officecli artifacts", () => {
+  test("uses os-arch keys and includes aligned Desktop and Server officecli artifacts", () => {
     const manifest = parseToolRuntimesManifest(readFileSync(manifestPath, "utf8"));
 
     for (const tool of ["agent-browser", "gog"] as const) {
@@ -147,14 +147,14 @@ describe("committed tool-runtimes.manifest.json", () => {
     expect(ffmpeg?.artifacts["darwin-x64"]?.sizeMin).toBeGreaterThanOrEqual(300_000);
 
     const officecli = manifest.officecli;
-    expect(officecli?.version).toBe("1.0.148");
+    expect(officecli?.version).toBe("1.0.157");
     expect(officecli?.binaryName).toBe("officecli");
     expect(officecli?.license).toBe("Apache-2.0");
 
     for (const platformKey of ["darwin-arm64", "darwin-x64"] as const) {
       const desktopArtifact = officecli?.artifacts[platformKey];
       expect(desktopArtifact?.url).toContain(
-        "github.com/iOfficeAI/OfficeCLI/releases/download/v1.0.148/",
+        "github.com/iOfficeAI/OfficeCLI/releases/download/v1.0.157/",
       );
       expect(desktopArtifact?.sha256).toMatch(/^[a-f0-9]{64}$/);
       expect(desktopArtifact?.sizeMin).toBe(1_000_000);
@@ -193,7 +193,7 @@ describe("committed tool-runtimes.manifest.json", () => {
         nautiloExtractionRevision: "d".repeat(64),
       },
       artifacts: {
-        "darwin-arm64": { url: "https://token@example.com/releases/download/v0/a", sha256: "a".repeat(64), sizeMin: 100_000, machOArch: "arm64", target: "aarch64-apple-darwin" },
+        "darwin-arm64": { url: "https://example.invalid/releases/download/v0/a", sha256: "a".repeat(64), sizeMin: 100_000, machOArch: "arm64", target: "aarch64-apple-darwin" },
         "darwin-x64": { sizeMin: 100_000, machOArch: "x64", target: "x86_64-apple-darwin" },
       },
     };

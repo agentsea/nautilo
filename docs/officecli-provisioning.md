@@ -59,7 +59,7 @@ Template: `dev/scripts/officecli/manifest.template.json`.
 ```json
 {
   "officecli": {
-    "version": "1.0.148",
+    "version": "1.0.157",
     "source": "https://github.com/iOfficeAI/OfficeCLI",
     "license": "Apache-2.0",
     "binaryName": "officecli",
