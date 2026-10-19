@@ -10,6 +10,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 - Long-running conversations retain the current run's recent exchanges ahead
   of surrounding Room activity, keep accepted Human replies in order, and
   reserve Journal and recalled Records independently of older-history settings.
+- Explicitly selected assistants are guided to recognize already-delivered
+  current-turn responses and successful tool actions, close completed requests
+  briefly, and continue unfinished work or later Human input.
 
 - Office files upload to Artifacts regardless of ZIP entry order. The Room
   paperclip and file drop also accept Word, Excel and PowerPoint as Workspace
