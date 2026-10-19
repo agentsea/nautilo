@@ -355,7 +355,7 @@ export interface CreateOfficeCliToolDeps {
   readImagePixelSize?: typeof readImagePixelSize;
   getOfficeSessionManager?: () => SessionManagerWithProbe;
   /**
-   * M206 — relay registry accessor (legacy test seam; local zones use
+   * relay registry accessor (legacy test seam; local zones use
    * executeLocalOfficeOperation instead of fs byte transport).
    */
   getRelayRegistry?: () => ToolRelayRegistry | null;
@@ -436,7 +436,7 @@ function isWriteCommand(command: OfficeCliCommand): boolean {
 }
 
 /**
- * M206 — `current`/`absolute` zones dispatch one structured `kind:"office"`
+ * `current`/`absolute` zones dispatch one structured `kind:"office"`
  * local-file operation to the Electron relay. The server never stages local
  * OOXML bytes or runs OfficeCLI for these zones.
  */
@@ -518,14 +518,17 @@ function officeZoneContext(ctx: OfficeCliToolContext): { workspaceRoot: string; 
   return { workspaceRoot: ctx.workspacePath, currentFolder: ctx.currentFolder || null };
 }
 
-function makeRun(deps: CreateOfficeCliToolDeps): OfficeCreateRunFn | { error: string } {
+function makeRun(deps: CreateOfficeCliToolDeps, signal?: AbortSignal): OfficeCreateRunFn | { error: string } {
   if (deps.run) return deps.run;
   const resolver = deps.resolveOfficeCliPath ?? resolveVendoredOfficeCliOrNull;
   const binaryPath = resolver();
   if (!binaryPath) {
     return { error: "officecli binary not found for this platform. The bundled OfficeCLI binary is missing or not executable." };
   }
-  return (deps.makeOfficeCreateRun ?? makeOfficeCreateRun)({ binaryPath });
+  return (deps.makeOfficeCreateRun ?? makeOfficeCreateRun)({
+    binaryPath,
+    ...(signal !== undefined ? { signal } : {}),
+  });
 }
 
 function buildDispatchContext(ctx: OfficeCliToolContext, meta?: WorkspaceArtifactPatchMeta): DispatchContext {
@@ -1062,13 +1065,13 @@ async function applyGeneratedBytes(
   const sizeError = assertGeneratedSizeForFormat(bytes.byteLength, ext);
   if (sizeError) return error(sizeError);
 
-  // M206 — current/absolute writes are applied on the Electron relay via
+  // current/absolute writes are applied on the Electron relay via
   // structured local-file office dispatch (never server staging).
   if (isRelayZone(args.zone)) {
     return error("applyGeneratedBytes called for relay zone — use dispatchLocalOfficeCli");
   }
 
-  // D448: Workspace OfficeCLI candidates never use the legacy generic binary
+  // Workspace OfficeCLI candidates never use the legacy generic binary
   // committer. The server-installed port re-resolves current Room authority,
   // admits human leases, and commits exactly one binary coordinator plan.
   if (args.zone === "workspace") {
@@ -1480,7 +1483,9 @@ Workspace writes are zero-clobber when out differs from path (new artifact). To 
 
 Help grammar: command=help with format, legacy type, or a .docx/.xlsx/.pptx path. Omit verb for create or general format help; help verbs are add, set, get, query, and remove, with optional element. One-call Markdown DOCX: {"command":"create","out":"report.docx","commands":[{"command":"add","parent":"/body","type":"markdown","props":{"markdown":"# Title\\n\\nBody text"}}]}. The markdown add element expands supported Markdown into native Word elements; it is not a convert format. Top-level data is merge-only.`,
     schema: OfficeCliSchema,
-    func: async (args: OfficeCliArgs) => {
+    func: async (args: OfficeCliArgs, _runManager, config) => {
+      const signal = config?.signal;
+      signal?.throwIfAborted();
       if (args.command === "create" && args.data !== undefined) {
         return error(OFFICECLI_CREATE_DATA_ERROR);
       }
@@ -1505,7 +1510,7 @@ Help grammar: command=help with format, legacy type, or a .docx/.xlsx/.pptx path
         return dispatchLocalOfficeCli(relayArgs, ctx, deps, { path: inputPath });
       }
 
-      const run = makeRun(deps);
+      const run = makeRun(deps, signal);
       if ("error" in run) return error(run.error);
 
       let facts: EnvelopeFacts | null = null;
@@ -1553,6 +1558,7 @@ Help grammar: command=help with format, legacy type, or a .docx/.xlsx/.pptx path
               ...(args.minimal !== undefined ? { minimal: args.minimal } : {}),
               ...(deps.tempDirRoot !== undefined ? { tempDirRoot: deps.tempDirRoot } : {}),
             });
+            signal?.throwIfAborted();
             return await applyGeneratedBytes(
               args,
               ctx,
@@ -1605,6 +1611,7 @@ Help grammar: command=help with format, legacy type, or a .docx/.xlsx/.pptx path
             });
           });
           if ("error" in bytes) return error(bytes.error);
+          signal?.throwIfAborted();
           return await applyGeneratedBytes(
             writeArgs,
             ctx,

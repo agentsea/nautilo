@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Large Excel reads use indexed shared strings through OfficeCLI 1.0.157,
+  pinned together for Desktop and Server. Stopping a server OfficeCLI call
+  now cancels its child process before temporary files are cleaned up.
+
 - Office files upload to Artifacts regardless of ZIP entry order. The Room
   paperclip and file drop also accept Word, Excel and PowerPoint as Workspace
   documents, with the same Room access checks as PDF attachments.
