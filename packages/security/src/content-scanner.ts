@@ -205,14 +205,20 @@ export function scanToolResult(
 ): ScanResult {
   const { scanPolicy, securityLevel, source, stripInvisibleUnicode: strip } = options;
   const redacted = redactSecrets(result);
+  const normalized = strip ? stripInvisibleUnicode(redacted.text).text : redacted.text;
+  // Keep exact secrets protected before normalization, including Unicode
+  // credentials, then redact values exposed by removing invisible controls.
+  const normalizedRedaction = normalized !== redacted.text ? redactSecrets(normalized) : null;
+  const redactions = normalizedRedaction ? [redacted, normalizedRedaction] : [redacted];
+  const exactRedactions = redactions.reduce((sum, item) => sum + item.exactRedactions, 0);
+  const leakFindings = redactions.flatMap((item) => item.leakFindings);
   const secretThreats = [
-    ...(redacted.exactRedactions > 0 ? ["connection_exact_redacted"] : []),
-    ...redacted.leakFindings.map((finding) => `secret_like_${finding.id}`),
+    ...(exactRedactions > 0 ? ["connection_exact_redacted"] : []),
+    ...leakFindings.map((finding) => `secret_like_${finding.id}`),
   ];
-  const safeResult = strip ? stripInvisibleUnicode(redacted.text).text : redacted.text;
+  const safeResult = normalizedRedaction?.text ?? redacted.text;
   const secretRedactionCount =
-    redacted.exactRedactions +
-    redacted.leakFindings.reduce((sum, finding) => sum + finding.count, 0);
+    exactRedactions + leakFindings.reduce((sum, finding) => sum + finding.count, 0);
 
   const layers = resolveSecurityLayers(securityLevel);
 

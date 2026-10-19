@@ -8,7 +8,7 @@ import { checkPathAccess, _buildResolvedDenyForTests, _resolveWithRealpathForTes
 describe("checkPathAccess", () => {
   test("allows normal files at standard level", () => {
     expect(checkPathAccess("/tmp/test.txt", "standard").allowed).toBe(true);
-    expect(checkPathAccess("/home/user/project/file.ts", "standard").allowed).toBe(true);
+    expect(checkPathAccess(join(tmpdir(), "project", "file.ts"), "standard").allowed).toBe(true);
     expect(checkPathAccess("./relative/path.md", "standard").allowed).toBe(true);
   });
 
@@ -69,7 +69,7 @@ describe("checkPathAccess", () => {
   });
 
   // -----------------------------------------------------------------
-  // D063 PR-001 M-2 — macOS paths are platform-gated
+  // macOS paths are platform-gated
   // -----------------------------------------------------------------
 
   test("M-2: Linux platform does NOT include macOS Library/* entries", () => {

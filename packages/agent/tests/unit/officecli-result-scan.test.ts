@@ -1,6 +1,7 @@
 import { beforeAll, describe, expect, test } from "bun:test";
 import { ToolCatalog } from "@nautilo/catalog";
 import { BLOCKED_CONTENT_USER_MESSAGE, scanToolResult } from "@nautilo/security";
+import { registerSecretForRedaction, unregisterSecretForRedaction } from "@nautilo/vault";
 import { registerAllTools } from "../../src/tools/register-all";
 
 const catalog = new ToolCatalog();
@@ -34,6 +35,22 @@ describe("OfficeCLI result scanning", () => {
     const result = scanOfficeResult("\ufeffHeading\nProject\u200b status\u202e");
     expect(result.blocked).toBe(false);
     expect(result.content).toBe("Heading\nProject status");
+  });
+
+  test.each([
+    ["synthetic-redaction-fixture", "synthetic-redaction-\u200dfixture"],
+    ["synthetic-redaction-\u200dfixture", "synthetic-redaction-\u200dfixture"],
+  ])("keeps registered values redacted across normalization: %s", (secret, content) => {
+    registerSecretForRedaction(secret);
+    try {
+      const result = scanOfficeResult(JSON.stringify({ rows: [{ bio: content }] }));
+      expect(result.blocked).toBe(false);
+      expect(result.secretRedactions).toBe(1);
+      expect(result.threats).toContain("connection_exact_redacted");
+      expect(JSON.parse(result.content)).toEqual({ rows: [{ bio: "[REDACTED CONNECTION]" }] });
+    } finally {
+      unregisterSecretForRedaction(secret);
+    }
   });
 
   test.each([
