@@ -9,25 +9,32 @@ import {
   destroyTaskRuntimeBackgroundAuthorizationRequestV2,
   isTaskRuntimeBackgroundAuthorizationRequestV2Carrier,
 } from "./task-runtime-request-v2.ts";
+import {
+  decodeTaskRuntimeBackgroundAuthorizationRequestV3,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV3,
+  isTaskRuntimeBackgroundAuthorizationRequestV3Carrier,
+} from "./task-runtime-request-v3.ts";
 
 /**
  * Decode only the common Task Runtime admission coordinates.
  *
- * A recognized V2 carrier is always decoded as V2 first. Malformed V2 bytes
- * never fall through to the legacy decoder, while a valid V2 request returns
- * an independently owned V1 projection for existing admission owners.
+ * A recognized certified carrier is always decoded as its owned format first.
+ * Malformed carrier bytes never fall through to the legacy decoder, while a
+ * valid request returns an independently owned V1 projection for existing
+ * admission owners.
  */
 export function decodeTaskRuntimeBackgroundAuthorizationRequestBase(
   crypto: Pick<LatticeCrypto, "hash">,
   bytes: Uint8Array,
 ): TaskRuntimeBackgroundAuthorizationRequestV1 | null {
-  if (!isTaskRuntimeBackgroundAuthorizationRequestV2Carrier(bytes)) {
+  const v2 = isTaskRuntimeBackgroundAuthorizationRequestV2Carrier(bytes);
+  const v3 = isTaskRuntimeBackgroundAuthorizationRequestV3Carrier(bytes);
+  if (!v2 && !v3) {
     return decodeTaskRuntimeBackgroundAuthorizationRequestV1(bytes);
   }
-  const request = decodeTaskRuntimeBackgroundAuthorizationRequestV2(
-    crypto,
-    bytes,
-  );
+  const request = v2
+    ? decodeTaskRuntimeBackgroundAuthorizationRequestV2(crypto, bytes)
+    : decodeTaskRuntimeBackgroundAuthorizationRequestV3(crypto, bytes);
   if (request === null) return null;
   let encoded: Uint8Array | undefined;
   try {
@@ -37,6 +44,10 @@ export function decodeTaskRuntimeBackgroundAuthorizationRequestBase(
     return decodeTaskRuntimeBackgroundAuthorizationRequestV1(encoded);
   } finally {
     encoded?.fill(0);
-    destroyTaskRuntimeBackgroundAuthorizationRequestV2(request);
+    if (request.formatVersion === 2) {
+      destroyTaskRuntimeBackgroundAuthorizationRequestV2(request);
+    } else {
+      destroyTaskRuntimeBackgroundAuthorizationRequestV3(request);
+    }
   }
 }

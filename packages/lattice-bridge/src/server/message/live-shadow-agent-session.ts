@@ -1,3 +1,4 @@
+import type { TaskRuntimePublicationSigning } from "@nautilo/lattice-crypto";
 import {
   accessRevision,
   assertAuthenticTaskRuntimeWakeForegroundEvidence,
@@ -301,6 +302,7 @@ type LiveShadowAgentTurnSessionInput = Readonly<{
     aiKey: Uint8Array;
   }>;
   runtime: AgentRuntimeKeyGeneration;
+  taskRuntimeSigner?: TaskRuntimePublicationSigning;
   grantId: string;
   grantDigest: Uint8Array;
   /** Exact expiry of the retained foreground authorization, not the request plan. */
@@ -945,6 +947,7 @@ function createAgentTurnSession(
                 useStatus: "reusable",
               },
               runtime: input.runtime,
+              ...(input.taskRuntimeSigner === undefined ? {} : { taskRuntimeSigner: input.taskRuntimeSigner }),
               agentAuthorizationRevision:
                 input.plan.agentAuthorizationRevision,
               signerKeyId: input.plan.agentSignerKeyId,

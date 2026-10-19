@@ -16,6 +16,7 @@ import {
   bindConversationProductCanonicalTransactionRunner,
   createForegroundMessageHistoryRepairer,
   createPostgresConversationCryptoCompletion,
+  createPostgresForegroundAgentSignerResolver,
   createPostgresForegroundJournalSelectionPort,
   loadPostgresForegroundJournalRepairSources,
   loadPostgresForegroundMemoryRepairSources,
@@ -38,7 +39,10 @@ import {
   type AgentMemoryPublicationBoundary,
   type TaskWakeLiveShadowCurrentWriter,
 } from "@nautilo/lattice-bridge/server";
-import type { LatticeCrypto } from "@nautilo/lattice-crypto";
+import {
+  assertTaskRuntimeTemporarySignerForPreparation,
+  type LatticeCrypto,
+} from "@nautilo/lattice-crypto";
 import {
   canonicalProtectedTaskSemanticAuthorityRequirements,
   type PostgresJsBridgeConnection,
@@ -148,7 +152,7 @@ export function createProtectedTaskWakeForegroundServices(
     || !Number.isSafeInteger(
       checkpointBinding.initialAgentAuthorizationRevision,
     )
-    || checkpointBinding.initialAgentAuthorizationRevision < 1) {
+    || checkpointBinding.initialAgentAuthorizationRevision < 0) {
     unavailable("Wake foreground checkpoint binding changed");
   }
   const plannedAdditional = publication.plan.additionalMutationDestination;
@@ -188,14 +192,42 @@ export function createProtectedTaskWakeForegroundServices(
       namespaceId !== checkpointBinding.retainedSourceNamespaceIds[index])) {
     unavailable("Wake foreground checkpoint binding changed");
   }
+  const temporary = signer.signerPublication === null;
+  if (temporary
+    ? (context.continuation === undefined
+      && checkpointBinding.initialAgentAuthorizationRevision !== 0
+      || checkpointBinding.initialAgentAuthorizationRevision < 0)
+    : checkpointBinding.initialAgentAuthorizationRevision < 1) {
+    unavailable("Wake foreground checkpoint binding changed");
+  }
+  const certified = temporary
+    ? assertTaskRuntimeTemporarySignerForPreparation(
+        input.crypto,
+        evidence,
+        signer.runtime,
+        signer.temporarySigner,
+      )
+    : undefined;
+  const signerKeyId = temporary
+    ? certified!.signerKeyId
+    : signer.signerPublication.signerKeyId;
+  const signerPublicKey = temporary
+    ? signer.temporarySigner.signerPublicKey
+    : signer.signerPublication.signerPublicKey;
+  const taskRuntimeSigner = temporary
+    ? Object.freeze({ evidence, signer: signer.temporarySigner })
+    : undefined;
   const sourceRepresentationMode = context.enforcementPolicy.mode === "encrypted_only"
     ? "protected-only" as const
     : "ordinary-and-protected" as const;
   const writerSigner = Object.freeze({
     agentAuthorizationRevision: signer.agentAuthorizationRevision,
     runtimeGeneration: signer.runtime.generation,
-    signerKeyId: signer.signerPublication.signerKeyId,
-    signerPublicKey: Uint8Array.from(signer.signerPublication.signerPublicKey),
+    signerKeyId,
+    signerPublicKey: Uint8Array.from(signerPublicKey),
+    ...(certified === undefined ? {} : {
+      signerAuthorizationHash: certified.certificateHash,
+    }),
   });
   const publicationFacts = Object.freeze({
     operationId: evidence.invocation.operationId,
@@ -203,10 +235,11 @@ export function createProtectedTaskWakeForegroundServices(
     grantDigest: Uint8Array.from(evidence.authorizationDigest),
     recipientKeyId: evidence.recipientKeyId,
     runtime: signer.runtime,
-    signerKeyId: signer.signerPublication.signerKeyId,
-    signerPublicKey: Uint8Array.from(signer.signerPublication.signerPublicKey),
+    signerKeyId,
+    signerPublicKey: Uint8Array.from(signerPublicKey),
     agentAuthorizationRevision: signer.agentAuthorizationRevision,
     policyRevision: evidence.policyRevision,
+    ...(taskRuntimeSigner === undefined ? {} : { taskRuntimeSigner }),
   });
   const writerStore = new AsyncLocalStorage<Readonly<{
     writer: TaskWakeLiveShadowCurrentWriter;
@@ -354,9 +387,20 @@ export function createProtectedTaskWakeForegroundServices(
     signerKeyId: string;
   }>) => principal.agentId === evidence.signerAgentId
       && principal.runtimeGeneration === signer.runtime.generation
-      && principal.signerKeyId === signer.signerPublication.signerKeyId
-    ? Uint8Array.from(signer.signerPublication.signerPublicKey)
+      && principal.signerKeyId === signerKeyId
+    ? Uint8Array.from(signerPublicKey)
     : null;
+
+  const createReadSignerResolver = (
+    product: Awaited<ReturnType<typeof verifyConversationProductPostgresHandle>>,
+  ) => {
+    const resolveForegroundSigner = createPostgresForegroundAgentSignerResolver({
+      product,
+      crypto: input.crypto,
+    });
+    return async (principal: Parameters<typeof resolveLiveSigner>[0]) =>
+      resolveLiveSigner(principal) ?? resolveForegroundSigner(principal);
+  };
 
   const persistWakeMemoryObject = (
     prepared: Parameters<typeof persistDeviceWrappedAgentObject>[0]["prepared"],
@@ -373,8 +417,12 @@ export function createProtectedTaskWakeForegroundServices(
       "handle" | "crypto" | "resolveLiveShadowAgentSigner"
       | "resolveHistoricalAgentSignerAuthority">,
   ) => withWriter(async writer => {
+    const product = borrow(writer.product);
     const restricted = borrow(writer.restricted);
-    const cryptoHandle = await verifyCryptoPostgresHandle(restricted);
+    const [productHandle, cryptoHandle] = await Promise.all([
+      verifyConversationProductPostgresHandle(product),
+      verifyCryptoPostgresHandle(restricted),
+    ]);
     const history = new PostgresHumanDeviceSignerHistory({
       handle: cryptoHandle,
       crypto: input.crypto,
@@ -390,7 +438,7 @@ export function createProtectedTaskWakeForegroundServices(
       ...request,
       resolveNativeNamespaceEntries: coordinates =>
         resolveForegroundMemoryNativeEntries(namespaceKeys, coordinates),
-      resolveLiveShadowAgentSigner: resolveLiveSigner,
+      resolveLiveShadowAgentSigner: createReadSignerResolver(productHandle),
       resolveHistoricalAgentSignerAuthority:
         history.resolveAgentRuntimeSignerManager,
     });
@@ -398,12 +446,14 @@ export function createProtectedTaskWakeForegroundServices(
 
   const currentExactAccessOwner: ForegroundMemoryCurrentExactAccessOwner = async use =>
     withWriter(async writer => {
+      const product = borrow(writer.product);
       const restricted = borrow(writer.restricted);
-      const [productContext, cryptoHandle] = await Promise.all([
+      const [productContext, productHandle, cryptoHandle] = await Promise.all([
         createForegroundProductTransactionContext({
           userId: context.memoryAccessEnvelope.ownerId,
           agentId: lifecycle.scheduling.agentId,
         }),
+        verifyConversationProductPostgresHandle(product),
         verifyCryptoPostgresHandle(restricted),
       ]);
       const history = new PostgresHumanDeviceSignerHistory({
@@ -415,6 +465,7 @@ export function createProtectedTaskWakeForegroundServices(
         input.crypto,
         input.serverScope,
       );
+      const resolveReadSigner = createReadSignerResolver(productHandle);
       const read = (request: Omit<Parameters<
         typeof readVerifiedDeviceWrappedAgentObject
       >[0], "handle" | "crypto" | "resolveLiveShadowAgentSigner"
@@ -425,7 +476,7 @@ export function createProtectedTaskWakeForegroundServices(
           ...request,
           resolveNativeNamespaceEntries: coordinates =>
             resolveForegroundMemoryNativeEntries(namespaceKeys, coordinates),
-          resolveLiveShadowAgentSigner: resolveLiveSigner,
+          resolveLiveShadowAgentSigner: resolveReadSigner,
           resolveHistoricalAgentSignerAuthority:
             history.resolveAgentRuntimeSignerManager,
         });
@@ -437,7 +488,7 @@ export function createProtectedTaskWakeForegroundServices(
           namespaceKeys,
           resolveHistoricalAgentSignerAuthority:
             history.resolveAgentRuntimeSignerManager,
-          resolveLiveShadowAgentSigner: resolveLiveSigner,
+          resolveLiveShadowAgentSigner: resolveReadSigner,
           resolveCurrentAgentSigner: resolveLiveSigner,
           read: async (request: Parameters<
             ForegroundMemoryCurrentExactAccess["exact"]["read"]
@@ -469,14 +520,16 @@ export function createProtectedTaskWakeForegroundServices(
       handle: cryptoHandle,
       crypto: input.crypto,
     });
+    const resolveReadSigner = createReadSignerResolver(productHandle);
     const completion = createPostgresConversationCryptoCompletion({
       handle: await committedCrypto(),
       crypto: input.crypto,
+      commonManifestExpectedAgentId: evidence.signerAgentId,
       resolveCurrentWriteAuthorization: () => Promise.resolve(null),
       resolveHistoricalSigner: history.resolveHistoricalObjectSigner,
       resolveHistoricalAgentSignerAuthority:
         history.resolveAgentRuntimeSignerManager,
-      resolveLiveShadowAgentSigner: resolveLiveSigner,
+      resolveLiveShadowAgentSigner: resolveReadSigner,
     });
     const conversation = createDormantConversationShadowRepository({
       product: writer.productStore,
@@ -505,7 +558,7 @@ export function createProtectedTaskWakeForegroundServices(
         ...selection,
       }),
       resolveHistoricalHumanSigner: history.resolveHistoricalObjectSigner,
-      resolveLiveShadowAgentSigner: resolveLiveSigner,
+      resolveLiveShadowAgentSigner: resolveReadSigner,
       resolveHistoricalAgentSignerAuthority:
         history.resolveAgentRuntimeSignerManager,
     }).protect(request);
@@ -524,6 +577,7 @@ export function createProtectedTaskWakeForegroundServices(
       handle: cryptoHandle,
       crypto: input.crypto,
     });
+    const resolveReadSigner = createReadSignerResolver(productHandle);
     const canonical = bindConversationProductCanonicalTransactionRunner(
       productHandle,
       { transaction: callback => callback(writer.transaction, product) },
@@ -546,7 +600,7 @@ export function createProtectedTaskWakeForegroundServices(
         resolveCurrentAuthorization: writer.resolveCurrentForegroundEntityObjectWrite }),
       read: value => readVerifiedDeviceWrappedAgentObject({ handle: cryptoHandle,
         crypto: input.crypto, ...value,
-        resolveLiveShadowAgentSigner: resolveLiveSigner,
+        resolveLiveShadowAgentSigner: resolveReadSigner,
         resolveHistoricalAgentSignerAuthority: history.resolveAgentRuntimeSignerManager }),
       validateExisting: value => validatePostgresForegroundJournalRepairSource({
         product: productHandle, ...value }),
@@ -572,6 +626,7 @@ export function createProtectedTaskWakeForegroundServices(
       handle: cryptoHandle,
       crypto: input.crypto,
     });
+    const resolveReadSigner = createReadSignerResolver(productHandle);
     const canonical = bindConversationProductCanonicalTransactionRunner(
       productHandle,
       { transaction: callback => callback(writer.transaction, product) },
@@ -589,7 +644,7 @@ export function createProtectedTaskWakeForegroundServices(
         resolveCurrentAuthorization: writer.resolveCurrentForegroundEntityObjectWrite }),
       read: value => readVerifiedDeviceWrappedAgentObject({ handle: cryptoHandle,
         crypto: input.crypto, ...value,
-        resolveLiveShadowAgentSigner: resolveLiveSigner,
+        resolveLiveShadowAgentSigner: resolveReadSigner,
         resolveHistoricalAgentSignerAuthority: history.resolveAgentRuntimeSignerManager }),
       validateExisting: value => validatePostgresForegroundRecordRepairSource({
         product: productHandle, ...value }),
@@ -615,6 +670,7 @@ export function createProtectedTaskWakeForegroundServices(
       handle: cryptoHandle,
       crypto: input.crypto,
     });
+    const resolveReadSigner = createReadSignerResolver(productHandle);
     const canonical = bindConversationProductCanonicalTransactionRunner(
       productHandle,
       { transaction: callback => callback(writer.transaction, product) },
@@ -632,7 +688,7 @@ export function createProtectedTaskWakeForegroundServices(
         resolveCurrentAuthorization: writer.resolveCurrentForegroundEntityObjectWrite }),
       read: value => readVerifiedDeviceWrappedAgentObject({ handle: cryptoHandle,
         crypto: input.crypto, ...value,
-        resolveLiveShadowAgentSigner: resolveLiveSigner,
+        resolveLiveShadowAgentSigner: resolveReadSigner,
         resolveHistoricalAgentSignerAuthority: history.resolveAgentRuntimeSignerManager }),
       validateExisting: value => validatePostgresForegroundMemoryRepairSource({
         product: productHandle, ...value }),
@@ -657,9 +713,10 @@ export function createProtectedTaskWakeForegroundServices(
       grantDigest: evidence.authorizationDigest,
       recipientKeyId: evidence.recipientKeyId,
       runtime: signer.runtime,
-      signerKeyId: signer.signerPublication.signerKeyId,
-      signerPublicKey: signer.signerPublication.signerPublicKey,
+      signerKeyId,
+      signerPublicKey,
       agentAuthorizationRevision: signer.agentAuthorizationRevision,
+      ...(taskRuntimeSigner === undefined ? {} : { taskRuntimeSigner }),
     },
     persist: persistWakeMemoryObject,
     read: readWakeMemoryObject,
@@ -687,21 +744,25 @@ export function createProtectedTaskWakeForegroundServices(
       publication: {
         forReservation: proof => ({
           recover: request => withWriter(async writer => {
+            const product = borrow(writer.product);
             const handle = await committedCrypto();
+            const productHandle = await verifyConversationProductPostgresHandle(product);
             const history = new PostgresHumanDeviceSignerHistory({ handle, crypto: input.crypto });
             return createPostgresForegroundMemoryPublication({ handle, crypto: input.crypto,
               resolveCurrentAuthorization: writer.resolveCurrentForegroundEntityObjectWrite,
               resolveHistoricalAgentSignerAuthority: history.resolveAgentRuntimeSignerManager,
-              resolveLiveShadowAgentSigner: resolveLiveSigner,
+              resolveLiveShadowAgentSigner: createReadSignerResolver(productHandle),
             }).forReservation(proof).recover(request);
           }),
           persist: (prepared, source) => withWriter(async writer => {
+            const product = borrow(writer.product);
             const handle = await committedCrypto();
+            const productHandle = await verifyConversationProductPostgresHandle(product);
             const history = new PostgresHumanDeviceSignerHistory({ handle, crypto: input.crypto });
             return createPostgresForegroundMemoryPublication({ handle, crypto: input.crypto,
               resolveCurrentAuthorization: writer.resolveCurrentForegroundEntityObjectWrite,
               resolveHistoricalAgentSignerAuthority: history.resolveAgentRuntimeSignerManager,
-              resolveLiveShadowAgentSigner: resolveLiveSigner,
+              resolveLiveShadowAgentSigner: createReadSignerResolver(productHandle),
             }).forReservation(proof).persist(prepared, source);
           }),
         }),

@@ -11,6 +11,7 @@ import {
   wrapObjectDekForNamespace,
   type AgentRuntimeKeyGeneration,
   type LatticeCrypto,
+  type TaskRuntimePublicationSigning,
   type PreparedDeviceWrappedAgentObjectAccessManifestGenesisSet,
 } from "@nautilo/lattice-crypto";
 import {
@@ -89,6 +90,7 @@ export function prepareDeviceWrappedAgentObject(input: Readonly<{
   signerKeyId: string;
   signerPublicKey: Uint8Array;
   agentAuthorizationRevision: number;
+  taskRuntimeSigner?: TaskRuntimePublicationSigning;
 }>): PreparedDeviceWrappedAgentObject {
   if (
     input.namespaceSet.length < 1
@@ -148,6 +150,7 @@ export function prepareDeviceWrappedAgentObject(input: Readonly<{
         runtime: input.runtime,
         signerKeyId: input.signerKeyId,
         signerPublicKey: input.signerPublicKey,
+        ...(input.taskRuntimeSigner === undefined ? {} : { taskRuntimeSigner: input.taskRuntimeSigner }),
       },
     );
     const prepared = Object.freeze({

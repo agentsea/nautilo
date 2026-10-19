@@ -42,8 +42,11 @@ function bytes(fill: number): Uint8Array {
   return new Uint8Array(32).fill(fill);
 }
 
-async function fixture(seed = 808_201, executionSegment = 1) {
+async function fixture(seed = 808_201, executionSegment = 1, deterministicGrant = false) {
   const crypto = new LatticeCrypto(seededRng(seed), { now: () => NOW });
+  // Pin only the opaque HPKE envelope for byte-compatibility assertions.
+  // The other tests keep real recipient encryption and signature verification.
+  if (deterministicGrant) crypto.sealTo = async () => new Uint8Array(128).fill(0xa5);
   const device = crypto.generateSigningKeyPair();
   const recipient = await crypto.deriveEncryptionKeyPair(bytes(0x41));
   const ephemeral = crypto.generateSigningKeyPair();
@@ -131,6 +134,23 @@ function cleanup(f: Awaited<ReturnType<typeof fixture>>): void {
 }
 
 describe("Task Runtime signer authorization v1", () => {
+  test("preserves execution certificate and response wire bytes", async () => {
+    const f = await fixture(808_201, 1, true);
+    const responseBytes = encodeTaskRuntimeBackgroundAuthorizationResponseV2({
+      authorizationBytes: f.authorizationBytes,
+      certificateBytes: f.certificateBytes,
+    });
+    try {
+      expect(bytesToHex(f.crypto.hash(f.certificateBytes)))
+        .toBe("35c2fbf35521813208ca75ac9a6c2bbaf8de52204cfff11da58240674063b27b");
+      expect(bytesToHex(f.crypto.hash(responseBytes)))
+        .toBe("e96d257fa9102c111d2ca26c29a4bf4ffee23d0d35d7967b3670db2cf915bde6");
+    } finally {
+      responseBytes.fill(0);
+      cleanup(f);
+    }
+  });
+
   test("reads a detached untrusted issuer hint and rejects malformed certificates", async () => {
     const f = await fixture();
     const original = f.certificateBytes.slice();

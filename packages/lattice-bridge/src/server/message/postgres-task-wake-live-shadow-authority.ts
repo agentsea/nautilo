@@ -6,7 +6,10 @@ import {
 import {
   agentId, agentRuntimeGeneration, authorizationRevision,
   assertAuthenticTaskRuntimeWakeForegroundEvidence,
+  assertTaskRuntimeTemporarySignerForPreparation,
+  hasTaskRuntimeTemporarySigner,
   verifyHistoricalAgentRuntimeSignerPublication,
+  withTaskRuntimeTemporarySigner,
   type ResolveHistoricalAgentRuntimeSignerPublicationManager,
   type ResolveCurrentDeviceWrappedLiveShadowAgentObjectAccessGenesisAuthorization,
   type ResolveCurrentDeviceWrappedAgentObjectAccessGenesisSetAuthorization,
@@ -68,6 +71,7 @@ export type TaskWakeLiveShadowRuntimeSigner = Readonly<{
   runtimeGeneration: number;
   signerKeyId: string;
   signerPublicKey: Uint8Array;
+  signerAuthorizationHash?: Uint8Array;
 }>;
 export type TaskWakeLiveShadowCurrentWriter = Readonly<{
   /** Recheck the exact parent through the callback-live borrowed transaction. */
@@ -154,7 +158,14 @@ export async function withPostgresTaskWakeLiveShadowAuthority<Value>(
     || input.accepted.authorizationDigest !== bytesToHex(evidence.authorizationDigest)
     || input.subject.humanActorId !== evidence.requesterHumanId
     || input.subject.deviceId !== evidence.committerDeviceId) return null;
-  const signer = { ...input.signer, signerPublicKey: Uint8Array.from(input.signer.signerPublicKey) };
+  const signer = {
+    ...input.signer,
+    signerPublicKey: Uint8Array.from(input.signer.signerPublicKey),
+    ...(input.signer.signerAuthorizationHash === undefined ? {} : {
+      signerAuthorizationHash:
+        Uint8Array.from(input.signer.signerAuthorizationHash),
+    }),
+  };
   return withTaskOutputProductAuthorityContext(input.productAuthority, context => {
     if (context.input.workKind !== "task.delivery_wake"
       || context.input.taskId !== evidence.invocation.reference.taskId
@@ -198,17 +209,71 @@ export async function withPostgresTaskWakeLiveShadowAuthority<Value>(
         const cryptoHandle = await verifyCryptoPostgresHandle(restricted);
         const storage = new PostgresLatticeStorage(cryptoHandle);
         const namespaceOwner = new PostgresDomainKeyAuthorityRepository(restricted, input.crypto, input.serverScope);
-        const runtime = await storage.getAgentRuntimeAtomicState(evidence.signerAgentId);
-        const publication = await storage.getAgentRuntimeSignerPublication(evidence.signerAgentId, signer.runtimeGeneration);
-        if (runtime === null || publication === null
-          || runtime.runtime.agentId !== evidence.signerAgentId || publication.agentId !== evidence.signerAgentId
-          || runtime.runtime.authorizationRevision !== signer.agentAuthorizationRevision
-          || runtime.runtime.runtimeGeneration !== signer.runtimeGeneration
-          || publication.authorizationRevision !== signer.agentAuthorizationRevision
-          || publication.runtimeGeneration !== signer.runtimeGeneration
-          || publication.signerKeyId !== signer.signerKeyId || !equal(publication.signerPublicKey, signer.signerPublicKey)
-          || !verifyHistoricalAgentRuntimeSignerPublication({ crypto: input.crypto, publication,
-            resolveHistoricalManagerAuthority: input.resolveHistoricalSignerPublicationManager })) return null;
+        const hasTemporarySigner = hasTaskRuntimeTemporarySigner(evidence);
+        const expectsTemporarySigner = signer.signerAuthorizationHash !== undefined;
+        if (hasTemporarySigner !== expectsTemporarySigner) return null;
+        let runtime: Awaited<ReturnType<
+          typeof storage.getAgentRuntimeAtomicState
+        >> = null;
+        if (expectsTemporarySigner) {
+          if (signer.agentAuthorizationRevision !== 0
+            || signer.runtimeGeneration !== 0) return null;
+          let temporaryMatches = false;
+          try {
+            temporaryMatches = await withTaskRuntimeTemporarySigner(
+              evidence,
+              temporarySigner => {
+                const verified = assertTaskRuntimeTemporarySignerForPreparation(
+                  input.crypto,
+                  evidence,
+                  temporarySigner.runtime,
+                  temporarySigner,
+                );
+                try {
+                  return verified.signerKeyId === signer.signerKeyId
+                    && equal(temporarySigner.signerPublicKey, signer.signerPublicKey)
+                    && equal(verified.certificateHash, signer.signerAuthorizationHash!)
+                    && temporarySigner.issuer.humanId === input.accepted.issuingHumanId
+                    && temporarySigner.issuer.deviceId === input.accepted.issuingDeviceId
+                    && temporarySigner.issuer.deviceGeneration
+                      === evidence.committerDeviceSigningGeneration
+                    && temporarySigner.issuer.securityRevision
+                      === input.accepted.issuingDeviceAuthorizationRevision
+                    && temporarySigner.issuer.securityRevision
+                      === evidence.hostAuthorizationRevision
+                    && equal(
+                      temporarySigner.issuer.signingPublicKeyHash,
+                      input.accepted.issuerSigningPublicKeyHash,
+                    )
+                    && equal(
+                      temporarySigner.issuer.signingPublicKeyHash,
+                      evidence.committerDeviceSigningPublicKeyHash,
+                    );
+                } finally {
+                  verified.certificateHash.fill(0);
+                }
+              },
+            );
+          } catch {
+            temporaryMatches = false;
+          }
+          if (!temporaryMatches) return null;
+        } else {
+          runtime = await storage.getAgentRuntimeAtomicState(evidence.signerAgentId);
+          const publication = await storage.getAgentRuntimeSignerPublication(
+            evidence.signerAgentId,
+            signer.runtimeGeneration,
+          );
+          if (runtime === null || publication === null
+            || runtime.runtime.agentId !== evidence.signerAgentId || publication.agentId !== evidence.signerAgentId
+            || runtime.runtime.authorizationRevision !== signer.agentAuthorizationRevision
+            || runtime.runtime.runtimeGeneration !== signer.runtimeGeneration
+            || publication.authorizationRevision !== signer.agentAuthorizationRevision
+            || publication.runtimeGeneration !== signer.runtimeGeneration
+            || publication.signerKeyId !== signer.signerKeyId || !equal(publication.signerPublicKey, signer.signerPublicKey)
+            || !verifyHistoricalAgentRuntimeSignerPublication({ crypto: input.crypto, publication,
+              resolveHistoricalManagerAuthority: input.resolveHistoricalSignerPublicationManager })) return null;
+        }
         const namespaces = new Map<string, DomainForegroundNamespaceAuthorityInspectionV2>();
         for (const expected of requirements) {
           const inspected = await namespaceOwner.inspectForegroundNamespaceAuthority({ namespaceId: expected.namespaceId, keyClass: "ai" });
@@ -217,7 +282,7 @@ export async function withPostgresTaskWakeLiveShadowAuthority<Value>(
             || inspected.namespaceAccessRevision !== expected.expectedAccessRevision
             || inspected.domainId !== expected.domainId || inspected.domainKeyGeneration !== domain.domainKeyGeneration
             || inspected.domainAuthorizationRevision !== domain.authorizationRevision || !equal(inspected.domainHeadDigest, domain.headDigest)
-            || !runtime.domainEnvelopes.some(e => e.agentId === evidence.signerAgentId && e.domainId === domain.domainId && e.domainEpoch === domain.domainKeyGeneration
+            || runtime !== null && !runtime.domainEnvelopes.some(e => e.agentId === evidence.signerAgentId && e.domainId === domain.domainId && e.domainEpoch === domain.domainKeyGeneration
               && e.agentAuthorizationRevision === signer.agentAuthorizationRevision && e.runtimeGeneration === signer.runtimeGeneration)) return null;
           namespaces.set(expected.namespaceId, inspected);
         }
@@ -242,9 +307,14 @@ export async function withPostgresTaskWakeLiveShadowAuthority<Value>(
           store.publishReservedLiveShadowAgent = value => publish({ ...value, taskWakeAuthority: token });
           const record = store.recordLiveShadowAgentEvidence.bind(store);
           store.recordLiveShadowAgentEvidence = value => record({ ...value, taskWakeAuthority: token });
-          const signerMatches = (value: { agentId: string; agentAuthorizationRevision: number; runtimeGeneration: number; signerKeyId: string }) =>
+          const signerMatches = (value: { agentId: string; agentAuthorizationRevision: number;
+            runtimeGeneration: number; signerKeyId: string; signerAuthorizationHash?: Uint8Array }) =>
             value.agentId === evidence.signerAgentId && value.agentAuthorizationRevision === signer.agentAuthorizationRevision
-            && value.runtimeGeneration === signer.runtimeGeneration && value.signerKeyId === signer.signerKeyId;
+            && value.runtimeGeneration === signer.runtimeGeneration && value.signerKeyId === signer.signerKeyId
+            && (signer.signerAuthorizationHash === undefined
+              ? value.signerAuthorizationHash === undefined
+              : value.signerAuthorizationHash !== undefined
+                && equal(value.signerAuthorizationHash, signer.signerAuthorizationHash));
           const authorization = { grantAuthorized: true as const, agentAuthorized: true as const, hostAllowsOperation: true as const,
             currentRuntime: { agentId: agentId(evidence.signerAgentId), authorizationRevision: authorizationRevision(signer.agentAuthorizationRevision),
               runtimeGeneration: agentRuntimeGeneration(signer.runtimeGeneration) }, signerPublicKey: signer.signerPublicKey };

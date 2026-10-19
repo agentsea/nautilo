@@ -2,6 +2,7 @@ import { afterAll, describe, expect, mock, test } from "bun:test";
 import type { Task, TaskRun } from "@nautilo/db";
 
 const HUMAN = "11111111-1111-4111-8111-111111111111";
+const PEER = "11111111-1111-4111-8111-111111111112";
 const AGENT = "22222222-2222-4222-8222-222222222222";
 const ROOM = "33333333-3333-4333-8333-333333333333";
 const TASK = "44444444-4444-4444-8444-444444444444";
@@ -23,6 +24,11 @@ let providerAttempts = 0;
 let ordinaryTaskReads = 0;
 let ordinaryRunReads = 0;
 let protectedTaskProjectionKeys: readonly string[] = [];
+let legacyTaskProjectionKeys: readonly string[] = [];
+let returnPersonalForServer = false;
+let failServerFundingAt = Number.POSITIVE_INFINITY;
+let fundingRequests: Array<Record<string, unknown>> = [];
+let fundingDecisions: Array<Record<string, unknown>> = [];
 
 function task(overrides: Partial<Task> = {}): Task {
   return {
@@ -130,6 +136,8 @@ const directDb = {
     };
     if (Object.hasOwn(projection, "contentRevision")) {
       protectedTaskProjectionKeys = Object.keys(projection);
+    } else if (Object.hasOwn(projection, "fundingMode")) {
+      legacyTaskProjectionKeys = Object.keys(projection);
     }
     return query;
   },
@@ -139,7 +147,10 @@ mock.module("../../src/lib/server-direct-db", () => ({
 }));
 mock.module("../../src/lib/foreground-chat-funding", () => ({
   isOwnPrivateGenieRoom: async () => true,
-  usageFundingFor: () => ({ kind: "personal", providerRoute: "anthropic" }),
+  usageFundingFor: (decision: { kind: "personal" | "server"; providerRoute: string }) => ({
+    kind: decision.kind,
+    providerRoute: decision.providerRoute,
+  }),
 }));
 mock.module("../../src/lib/capability-funding", () => ({
   createCapabilityFundingSession: () => ({
@@ -153,13 +164,21 @@ class TestModelFundingError extends Error {
 }
 mock.module("../../src/lib/model-funding", () => ({
   ModelFundingError: TestModelFundingError,
-  resolveModelFunding: async () => ({
-    ...binding,
-    humanUserId: HUMAN,
-    payerHumanId: HUMAN,
-    modelId: MODEL,
-    workload: "native_text_task" as const,
-  }),
+  resolveModelFunding: async (input: Record<string, unknown>) => {
+    fundingRequests.push(input);
+    if (input["fundingKind"] === "server"
+      && fundingRequests.length >= failServerFundingAt) {
+      throw new TestModelFundingError("server_credentials_forbidden");
+    }
+    const decision = input["fundingKind"] === "server" && !returnPersonalForServer
+      ? { kind: "server" as const, providerRoute: "anthropic",
+          humanUserId: input["humanUserId"], modelId: input["modelId"],
+          workload: input["workload"] }
+      : { ...binding, humanUserId: HUMAN, payerHumanId: HUMAN,
+          modelId: input["modelId"] ?? MODEL, workload: "native_text_task" as const };
+    fundingDecisions.push(decision);
+    return decision;
+  },
   withAdmittedPersonalCredential: async (
     _decision: unknown,
     use: (credential: { apiKey: string }) => Promise<unknown>,
@@ -361,6 +380,192 @@ describe("protected native Task funding", () => {
       expect(await openProtectedTaskWakeFundingSession({
         taskSource: currentTask,
         runSource: current,
+        modelId: null,
+        assertCurrent: async () => {},
+      }).then(
+        () => null,
+        (error: unknown) => (error as { code?: unknown }).code,
+      )).toBe("funding_source_changed");
+    }
+  });
+
+  test("opens a server-pinned legacy wake without caller-only shape or custody", async () => {
+    currentTask = task({
+      ownerId: PEER,
+      fundingMode: "legacy_server",
+      useScope: true,
+      scopeId: NAMESPACE,
+      targetChat: "orphan",
+      targetRoomId: null,
+      targetUserIds: [HUMAN, PEER],
+      toolsMode: "auto",
+    });
+    currentRun = run({
+      status: "completed",
+      fundingBinding: null,
+    });
+    fundingRequests = [];
+    fundingDecisions = [];
+    legacyTaskProjectionKeys = [];
+    providerAttempts = 0;
+    let authorityChecks = 0;
+    let current = true;
+    const session = await openProtectedTaskWakeFundingSession({
+      taskSource: currentTask,
+      runSource: currentRun,
+      modelId: MODEL,
+      assertCurrent: async () => {
+        authorityChecks += 1;
+        if (!current) throw new Error("protected_authority_revoked");
+      },
+    });
+    expect(session).not.toBeNull();
+    expect(session!.kind).toBe("server");
+    expect(session!.capabilityFunding).toBeUndefined();
+    expect(await session!.runAttempt(MODEL, async attempt => attempt.usageFunding))
+      .toEqual({ kind: "server", providerRoute: "anthropic" });
+    expect(providerAttempts).toBe(0);
+    expect(fundingRequests).toHaveLength(3);
+    expect(fundingRequests.every(request => request["fundingKind"] === "server"
+      && request["workload"] === "native_text_task"
+      && request["humanUserId"] === HUMAN)).toBeTrue();
+    expect(fundingRequests[0]?.["priorDecision"]).toBeUndefined();
+    expect(fundingRequests[1]?.["priorDecision"]).toBe(fundingDecisions[0]);
+    expect(fundingRequests[2]?.["priorDecision"]).toBe(fundingDecisions[0]);
+    await session!.recheckAttempt("anthropic:alternate", "direct");
+    expect(fundingRequests[3]).toMatchObject({
+      modelId: "anthropic:alternate",
+      transport: "direct",
+      fundingKind: "server",
+      priorDecision: fundingDecisions[0],
+    });
+    expect(legacyTaskProjectionKeys).toEqual([
+      "id", "ownerId", "requestorId", "agentId", "fundingMode",
+      "requestedModelId", "selectionProfile", "selectionSpec", "toolsMode",
+      "toolsWhitelist",
+    ]);
+    expect(legacyTaskProjectionKeys).not.toContain("metadata");
+    expect(legacyTaskProjectionKeys).not.toContain("prompt");
+    expect(authorityChecks).toBeGreaterThanOrEqual(7);
+
+    current = false;
+    expect(await session!.runAttempt(MODEL, async () => "unreachable").then(
+      () => null,
+      (error: unknown) => (error as Error).message,
+    )).toBe("protected_authority_revoked");
+    expect(fundingRequests).toHaveLength(4);
+  });
+
+  test("fences legacy funding coordinates and rejects a non-server resolution", async () => {
+    const acceptedTask = task({ fundingMode: "legacy_server" });
+    const acceptedRun = run({ status: "errored", fundingBinding: null });
+    currentTask = acceptedTask;
+    currentRun = acceptedRun;
+    fundingRequests = [];
+    fundingDecisions = [];
+    const session = await openProtectedTaskWakeFundingSession({
+      taskSource: acceptedTask,
+      runSource: acceptedRun,
+      modelId: MODEL,
+      assertCurrent: async () => {},
+    });
+    expect(session).not.toBeNull();
+    for (const [changedTask, changedRun] of [
+      [task({ fundingMode: "legacy_server", selectionProfile: "smartest" }), acceptedRun],
+      [task({ fundingMode: "legacy_server", toolsWhitelist: ["file"] }), acceptedRun],
+      [task({ fundingMode: "legacy_server", requestorId: PEER }), acceptedRun],
+      [task({ fundingMode: "caller" }), acceptedRun],
+      [acceptedTask, run({ status: "errored", fundingBinding: null, graphThreadId: "changed" })],
+      [acceptedTask, run({ status: "errored", fundingBinding: null,
+        fundingPredecessorRunId: "99999999-9999-4999-8999-999999999999" })],
+      [acceptedTask, run({ status: "completed", fundingBinding: null })],
+      [acceptedTask, run({ status: "errored", fundingBinding: null,
+        modelId: "anthropic:alternate" })],
+      [acceptedTask, run({ status: "errored", fundingBinding: binding })],
+    ] as const) {
+      currentTask = changedTask;
+      currentRun = changedRun;
+      expect(await session!.recheckAttempt(MODEL).then(
+        () => null,
+        (error: unknown) => (error as { code?: unknown }).code,
+      )).toBe("funding_source_changed");
+    }
+
+    currentTask = acceptedTask;
+    currentRun = acceptedRun;
+    returnPersonalForServer = true;
+    try {
+      expect(await openProtectedTaskWakeFundingSession({
+        taskSource: acceptedTask,
+        runSource: acceptedRun,
+        modelId: MODEL,
+        assertCurrent: async () => {},
+      }).then(
+        () => null,
+        (error: unknown) => (error as { code?: unknown }).code,
+      )).toBe("funding_source_changed");
+    } finally {
+      returnPersonalForServer = false;
+    }
+
+    currentTask = acceptedTask;
+    currentRun = acceptedRun;
+    fundingRequests = [];
+    fundingDecisions = [];
+    const policySession = await openProtectedTaskWakeFundingSession({
+      taskSource: acceptedTask,
+      runSource: acceptedRun,
+      modelId: MODEL,
+      assertCurrent: async () => {},
+    });
+    failServerFundingAt = 3;
+    let callbackCalled = false;
+    try {
+      expect(await policySession!.runAttempt(MODEL, async () => {
+        callbackCalled = true;
+        return "unreachable";
+      }).then(
+        () => null,
+        (error: unknown) => (error as { code?: unknown }).code,
+      )).toBe("server_credentials_forbidden");
+      expect(callbackCalled).toBeFalse();
+    } finally {
+      failServerFundingAt = Number.POSITIVE_INFINITY;
+    }
+  });
+
+  test("selects server funding only for a fully null synthetic legacy cancellation", async () => {
+    currentTask = task({ fundingMode: "legacy_server" });
+    currentRun = run({
+      status: "cancelled",
+      jobId: null,
+      modelId: null,
+      fundingBinding: null,
+      fundingPredecessorRunId: null,
+    });
+    fundingRequests = [];
+    fundingDecisions = [];
+    const session = await openProtectedTaskWakeFundingSession({
+      taskSource: currentTask,
+      runSource: currentRun,
+      modelId: null,
+      assertCurrent: async () => {},
+    });
+    expect(session).not.toBeNull();
+    expect(fundingRequests[0]?.["modelId"]).toBe(MODEL);
+    expect(await session!.runAttempt(MODEL, async () => "accepted"))
+      .toBe("accepted");
+
+    const partial = run({ status: "cancelled", jobId: JOB, modelId: null,
+      fundingBinding: null, fundingPredecessorRunId: null });
+    for (const invalid of [
+      partial,
+      run({ status: "completed", modelId: null, fundingBinding: null }),
+      run({ status: "errored", modelId: null, fundingBinding: null }),
+    ]) {
+      expect(await openProtectedTaskWakeFundingSession({
+        taskSource: currentTask,
+        runSource: invalid,
         modelId: null,
         assertCurrent: async () => {},
       }).then(

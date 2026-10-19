@@ -15,8 +15,12 @@ import {
 import {
   createTaskRuntimeBackgroundAuthorizationRequestV1,
   createTaskRuntimeBackgroundAuthorizationRequestV2,
+  createTaskRuntimeBackgroundAuthorizationRequestV3,
   createTaskRuntimeSignerAuthorizationV1,
+  createTaskRuntimeSignerAuthorizationV2,
   encodeTaskRuntimeBackgroundAuthorizationRequestV2,
+  encodeTaskRuntimeBackgroundAuthorizationRequestV3,
+  readTaskRuntimeSignerAuthorizationIssuer,
   readTaskRuntimeSignerAuthorizationIssuerV1,
 } from "@nautilo/lattice-crypto/background";
 import {
@@ -59,7 +63,7 @@ function profile(
   } as unknown as OpenedClientDeviceProfileV4;
 }
 
-async function fixture() {
+async function fixture(publication = false) {
   const crypto = new LatticeCrypto(seededRng(2_711_001), { now: () => NOW });
   const device = crypto.generateSigningKeyPair();
   const recipient = await crypto.deriveEncryptionKeyPair(bytes(0x41));
@@ -84,8 +88,10 @@ async function fixture() {
     deadlineAt: NOW + 60_000, maximumSecretBytes: 2_048, domains: [domain],
   });
   const baseRequest = createTaskRuntimeBackgroundAuthorizationRequestV1({
-    requestId: "request:task", workId: RUN, workKind: "task.execute",
-    workPurpose: "task.execute", recipientGeneration: 0,
+    requestId: "request:task", workId: RUN,
+    workKind: publication ? "task.deliver_result" : "task.execute",
+    workPurpose: publication ? "task.deliver_result" : "task.execute",
+    recipientGeneration: 0,
     episodeId: "episode:task", sourceRoomId: "room:task",
     recipientKeyId: "recipient:task", recipientPublicKey: recipient.publicKey,
     authorizationPlan: plan, issuedAt: NOW, deadlineAt: NOW + 60_000,
@@ -95,11 +101,7 @@ async function fixture() {
       `nautilo/task-run-result-crypto-object/v1\n${TASK}\n${RUN}\n1`,
     ),
   ))}`;
-  const request = createTaskRuntimeBackgroundAuthorizationRequestV2(crypto, {
-    baseRequest,
-    work: { taskId: TASK, taskRunId: RUN,
-      inputObjectId: `task-definition:v1:${"b".repeat(64)}`,
-      resultObjectId, executionSegment: 1, workIdentityHash: bytes(0x21) },
+  const requestAuthority = {
     signer: { agentId: "agent:task", runtimeGeneration: 0,
       signerKeyId: agentRuntimeObjectSignerKeyIdV1(crypto, signer.publicKey),
       signerPublicKey: signer.publicKey },
@@ -109,19 +111,35 @@ async function fixture() {
     namespaceRequirements: [{ ordinal: 0, namespaceId: "namespace:task",
       domainId: "domain:task", operations: ["decrypt", "encrypt"],
       expectedAccessRevision: 8, expectedPolicyRevision: 9 }],
-  });
+  } as const;
+  const request = publication
+    ? createTaskRuntimeBackgroundAuthorizationRequestV3(crypto, {
+      baseRequest,
+      work: { kind: "task.deliver_result", taskId: TASK, taskRunId: RUN,
+        contentRevision: 1, workIdentityHash: bytes(0x21) },
+      ...requestAuthority,
+    })
+    : createTaskRuntimeBackgroundAuthorizationRequestV2(crypto, {
+      baseRequest,
+      work: { taskId: TASK, taskRunId: RUN,
+        inputObjectId: `task-definition:v1:${"b".repeat(64)}`,
+        resultObjectId, executionSegment: 1, workIdentityHash: bytes(0x21) },
+      ...requestAuthority,
+    });
   const authorization = await mintDomainForegroundAuthorization(crypto, {
     plan, domains: [{ ...domain, domainKey: bytes(0x31) }],
     committerDeviceSigningPrivateKey: device.privateKey,
     recipientEncryptionPublicKey: recipient.publicKey,
   });
-  const requestBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV2(
-    crypto, request,
-  );
+  const requestBytes = request.formatVersion === 3
+    ? encodeTaskRuntimeBackgroundAuthorizationRequestV3(crypto, request)
+    : encodeTaskRuntimeBackgroundAuthorizationRequestV2(crypto, request);
   const authorizationBytes = serializeDomainForegroundAuthorizationV2(
     authorization,
   );
-  const certificateBytes = createTaskRuntimeSignerAuthorizationV1(crypto, {
+  const certificateBytes = (publication
+    ? createTaskRuntimeSignerAuthorizationV2
+    : createTaskRuntimeSignerAuthorizationV1)(crypto, {
     requestBytes, authorizationBytes,
     expectedAuthorizationPlanBytes:
       serializeDomainForegroundAuthorizationPlanV2(plan),
@@ -231,5 +249,46 @@ describe("Task Runtime signer read evidence", () => {
           evidenceBytesBase64url: encoded },
       ],
     })).toThrow();
+  });
+
+  test("dispatches publication certificates through the retained Device resolver", async () => {
+    const value = await fixture(true);
+    const issuer = readTaskRuntimeSignerAuthorizationIssuer(
+      value.crypto, value.certificateBytes,
+    );
+    try {
+      const resolved = withTaskRuntimeSignerEvidenceResolversV1({
+        crypto: value.crypto,
+        profile: profile(value.device.publicKey),
+        subjectHumanId: HUMAN,
+        ownDeviceGeneration: 4,
+        expectedWork: { taskId: TASK, taskRunId: RUN },
+        evidence: [{ kind: "task_runtime_signer_certificate",
+          evidenceBytesBase64url:
+            Buffer.from(value.certificateBytes).toString("base64url") }],
+        operation: resolvers => ({
+          certificate: resolvers.resolveTaskRuntimeSignerAuthorizationBytes({
+            signer: { kind: "agent_runtime", agentId: agentId("agent:task"),
+              runtimeGeneration: agentRuntimeGeneration(0),
+              signerKeyId: "signer:task" },
+            authorizationHash: value.crypto.hash(value.certificateBytes),
+            objectId: objectId(`memory:v2:${"e".repeat(64)}`),
+          })?.slice(),
+          issuerKey: resolvers.resolveHistoricalTaskRuntimeIssuer({
+            issuer,
+            projection: { work: { taskId: TASK, taskRunId: RUN } } as never,
+          })?.slice(),
+        }),
+      });
+      expect(Buffer.from(resolved.certificate ?? []).equals(
+        Buffer.from(value.certificateBytes),
+      )).toBeTrue();
+      expect(Buffer.from(resolved.issuerKey ?? []).equals(
+        Buffer.from(value.device.publicKey),
+      )).toBeTrue();
+    } finally {
+      issuer.headDigest.fill(0);
+      issuer.signingPublicKeyHash.fill(0);
+    }
   });
 });

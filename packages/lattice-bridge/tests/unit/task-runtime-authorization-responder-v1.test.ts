@@ -11,6 +11,13 @@ import {
   type DomainForegroundSecretEntry,
 } from "@nautilo/lattice-crypto";
 import {
+  createTaskRuntimeBackgroundAuthorizationRequestV3,
+  encodeTaskRuntimeBackgroundAuthorizationRequestV3,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV3,
+  verifyCurrentTaskRuntimeSignerAuthorization,
+  verifyHistoricalTaskRuntimeSignerAuthorization,
+  destroyVerifiedTaskRuntimeSignerAuthorization,
+  type TaskRuntimePublicationWorkBindingV3,
   createTaskRuntimeBackgroundAuthorizationRequestV2,
   createTaskRuntimeBackgroundAuthorizationRequestV1,
   decodeTaskRuntimeBackgroundAuthorizationRequestV1,
@@ -73,7 +80,7 @@ const DOMAIN: DomainForegroundAuthorityEntry = Object.freeze({
 
 async function fixture(
   workId = "task-run-907",
-  workKind: TaskExecutionWorkKind = "task.execute",
+  workKind: TaskExecutionWorkKind | TaskRuntimePublicationWorkBindingV3["kind"] = "task.execute",
 ) {
   const crypto = new LatticeCrypto(seededRng(907_407), { now: () => NOW });
   const signer = crypto.generateSigningKeyPair();
@@ -94,7 +101,8 @@ async function fixture(
     recipientAuthorizationRevision: authorizationRevision(0),
     recipientRuntimeGeneration: RECIPIENT_GENERATION,
     recipientKeyId: "task-runtime-recipient-key-907",
-    operations: ["decrypt", "encrypt"],
+    operations: workKind === "task.cancel_result" || workKind === "task.deliver_message"
+      ? ["encrypt"] : ["decrypt", "encrypt"],
     issuedAt: NOW,
     deadlineAt: NOW + 300_000,
     maximumSecretBytes: 1024,
@@ -205,6 +213,38 @@ async function v2Fixture(options: Readonly<{
   destroyTaskRuntimeBackgroundAuthorizationRequestV1(baseRequest);
   value.requestBytes.fill(0);
   return { ...value, requestBytes, ephemeral };
+}
+
+async function v3Fixture(kind: TaskRuntimePublicationWorkBindingV3["kind"]) {
+  const jobId = "50000000-0000-4000-8000-000000000907";
+  const value = await fixture(kind === "task.delivery_wake" ? jobId : TASK_RUN_ID, kind);
+  const baseRequest = decodeTaskRuntimeBackgroundAuthorizationRequestV1(value.requestBytes);
+  if (baseRequest === null) throw new Error("publication fixture base request");
+  const ephemeral = value.crypto.generateSigningKeyPair();
+  const common = { taskId: TASK_ID, taskRunId: TASK_RUN_ID, workIdentityHash: new Uint8Array(32).fill(0x51) };
+  const work: TaskRuntimePublicationWorkBindingV3 = kind === "task.cancel_result"
+    ? { ...common, kind, contentRevision: 2 }
+    : kind === "task.deliver_message"
+      ? { ...common, kind, contentRevision: 2, messageObjectId: `message:v2:${"a".repeat(64)}` }
+      : kind === "task.deliver_result" ? { ...common, kind, contentRevision: 1 }
+      : { ...common, kind, contentRevision: 2, jobId };
+  const request = createTaskRuntimeBackgroundAuthorizationRequestV3(value.crypto, {
+    baseRequest, work,
+    signer: { agentId: "task-runtime-agent-907", runtimeGeneration: 0,
+      signerKeyId: agentRuntimeObjectSignerKeyIdV1(value.crypto, ephemeral.publicKey),
+      signerPublicKey: ephemeral.publicKey },
+    deviceGroupHead: { serverInstanceId: SERVER_INSTANCE_ID, lineageGeneration: 2,
+      epoch: 3, headDigest: new Uint8Array(32).fill(0x41),
+      signingPublicKeyHash: value.crypto.hash(value.signer.publicKey) },
+    namespaceRequirements: [{ ordinal: 0, namespaceId: DOMAIN.sourceNamespaceId,
+      domainId: DOMAIN.domainId, operations: value.plan.operations,
+      expectedAccessRevision: 6, expectedPolicyRevision: POLICY_REVISION }],
+  });
+  const requestBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV3(value.crypto, request);
+  destroyTaskRuntimeBackgroundAuthorizationRequestV3(request);
+  destroyTaskRuntimeBackgroundAuthorizationRequestV1(baseRequest);
+  value.requestBytes.fill(0);
+  return { ...value, requestBytes, ephemeral, work };
 }
 
 function destroyV2Fixture(value: Awaited<ReturnType<typeof v2Fixture>>): void {
@@ -792,5 +832,52 @@ describe("Task Runtime device authorization responder", () => {
     expect(result).toEqual({ status: "not_task_runtime" });
     expect(processorCarrier).toEqual(originalCarrier);
     expect(authorityOpened).toBe(false);
+  });
+});
+
+
+describe("Task publication automatic Device response", () => {
+  test.each(["task.cancel_result", "task.deliver_message", "task.deliver_result", "task.delivery_wake"] as const)("%s returns a usable grant and retained public certificate", async kind => {
+    const value = await v3Fixture(kind);
+    let responseBytes: Uint8Array | undefined;
+    try {
+      const result = await tryRespondToCurrentTaskRuntimeAuthorizationV1({
+        requestBytes: value.requestBytes, crypto: value.crypto, now: () => NOW + 1,
+        domainForegroundAuthority: domainAuthority([]),
+        withCurrentSigningAuthority: async use => use(signingAuthority(value)),
+      });
+      expect(result.status).toBe("ready");
+      if (result.status !== "ready") return;
+      responseBytes = result.responseBytes;
+      const response = decodeTaskRuntimeBackgroundAuthorizationResponseV2(responseBytes);
+      try {
+        const verified = await verifyCurrentTaskRuntimeSignerAuthorization(value.crypto, {
+          certificateBytes: response.certificateBytes, requestBytes: value.requestBytes,
+          expectedAuthorizationHash: value.crypto.hash(response.authorizationBytes), now: NOW + 2,
+          resolveCurrentIssuer: () => value.signer.publicKey,
+        });
+        expect(verified.request.formatVersion).toBe(3);
+        expect(verified.projection.work).toEqual(value.work);
+        expect(verified.request.signer.signerPublicKey).toEqual(value.ephemeral.publicKey);
+        destroyVerifiedTaskRuntimeSignerAuthorization(verified);
+        const retained = verifyHistoricalTaskRuntimeSignerAuthorization(value.crypto, {
+          certificateBytes: response.certificateBytes, resolveHistoricalIssuer: () => value.signer.publicKey,
+        });
+        expect(retained.projection.work).toEqual(value.work);
+        destroyVerifiedTaskRuntimeSignerAuthorization(retained);
+      } finally { response.authorizationBytes.fill(0); response.certificateBytes.fill(0); }
+    } finally { responseBytes?.fill(0); destroyV2Fixture(value); }
+  });
+  test("a recognized malformed publication request never falls through to processor/legacy handling", async () => {
+    const value = await v3Fixture("task.cancel_result");
+    try {
+      const result = await tryRespondToCurrentTaskRuntimeAuthorizationV1({
+        requestBytes: value.requestBytes.subarray(0, value.requestBytes.length - 1),
+        crypto: value.crypto, now: () => NOW + 1,
+        domainForegroundAuthority: domainAuthority([]),
+        withCurrentSigningAuthority: async () => { throw new Error("must not request authority"); },
+      });
+      expect(result).toEqual({ status: "unavailable", reason: "invalid_descriptor" });
+    } finally { destroyV2Fixture(value); }
   });
 });

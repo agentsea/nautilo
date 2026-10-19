@@ -14,12 +14,15 @@ import {
   decodeTaskRuntimeBackgroundAuthorizationRequestV2,
   decodeTaskRuntimeBackgroundAuthorizationResponseV2,
   destroyTaskRuntimeBackgroundAuthorizationRequestV2,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV3,
   destroyTaskRuntimeBackgroundAuthorizationRequestV1,
   encodeTaskRuntimeBackgroundAuthorizationRequestV2,
+  encodeTaskRuntimeBackgroundAuthorizationRequestV3,
   encodeTaskRuntimeBackgroundAuthorizationRequestV1,
   isTaskRuntimeBackgroundAuthorizationRequestV2Carrier,
   type BackgroundAuthorizationIssuerV2,
   type TaskRuntimeBackgroundAuthorizationRequestV2,
+  type TaskRuntimeBackgroundAuthorizationRequestV3,
   type TaskRuntimeBackgroundAuthorizationRequestV1,
 } from "@nautilo/lattice-crypto/background";
 import {
@@ -157,6 +160,7 @@ export type BindTaskRuntimeRecipientResult = Readonly<{
 export type TaskRuntimeRecipientRequestPlan<
   Request extends TaskRuntimeBackgroundAuthorizationRequestV1
     | TaskRuntimeBackgroundAuthorizationRequestV2
+    | TaskRuntimeBackgroundAuthorizationRequestV3
     = TaskRuntimeBackgroundAuthorizationRequestV1,
 > = Readonly<{
   initialRecord: BackgroundAuthorizationTaskRuntimeRecordV3;
@@ -184,6 +188,7 @@ export type AttachExactTaskRuntimeRecipientInput = Readonly<{
   plan: TaskRuntimeRecipientRequestPlan<
     TaskRuntimeBackgroundAuthorizationRequestV1
       | TaskRuntimeBackgroundAuthorizationRequestV2
+      | TaskRuntimeBackgroundAuthorizationRequestV3
   >;
   binding: TaskRuntimeRecipientDeviceBinding;
   authority: TaskRuntimeRecipientCurrentAuthority;
@@ -1327,6 +1332,7 @@ export async function attachExactTaskRuntimeRecipient(
   let request:
     | TaskRuntimeBackgroundAuthorizationRequestV1
     | TaskRuntimeBackgroundAuthorizationRequestV2
+    | TaskRuntimeBackgroundAuthorizationRequestV3
     | null = null;
   try {
     request = buildRequest({
@@ -1335,7 +1341,7 @@ export async function attachExactTaskRuntimeRecipient(
       binding,
       authority,
     });
-    const baseRequest = request.formatVersion === 2
+    const baseRequest = request.formatVersion === 2 || request.formatVersion === 3
       ? request.baseRequest
       : request;
     if (!exactBoundRequest({
@@ -1347,16 +1353,19 @@ export async function attachExactTaskRuntimeRecipient(
       request: baseRequest,
       now,
     })) throw new TypeError("Task Runtime request was substituted");
+    const requestCrypto = {
+      hash: (value: Uint8Array) => new Uint8Array(
+        createHash("sha256").update(value).digest(),
+      ),
+    };
     const descriptorBytes = request.formatVersion === 2
       ? encodeTaskRuntimeBackgroundAuthorizationRequestV2(
-        {
-          hash: value => new Uint8Array(
-            createHash("sha256").update(value).digest(),
-          ),
-        },
+        requestCrypto,
         request,
       )
-      : encodeTaskRuntimeBackgroundAuthorizationRequestV1(request);
+      : request.formatVersion === 3
+        ? encodeTaskRuntimeBackgroundAuthorizationRequestV3(requestCrypto, request)
+        : encodeTaskRuntimeBackgroundAuthorizationRequestV1(request);
     const descriptorDigest = createHash("sha256")
       .update(descriptorBytes)
       .digest("hex");
@@ -1409,6 +1418,8 @@ export async function attachExactTaskRuntimeRecipient(
     if (request !== null) {
       if (request.formatVersion === 2) {
         destroyTaskRuntimeBackgroundAuthorizationRequestV2(request);
+      } else if (request.formatVersion === 3) {
+        destroyTaskRuntimeBackgroundAuthorizationRequestV3(request);
       } else {
         destroyTaskRuntimeBackgroundAuthorizationRequestV1(request);
       }

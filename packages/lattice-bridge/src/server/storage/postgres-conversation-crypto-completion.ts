@@ -438,6 +438,10 @@ export async function readVerifiedStoredConversationCryptoRevision(input: {
 async function verifyStoredConversationRevision(input: {
   readonly crypto: LatticeCrypto;
   readonly storage: LatticeStorage;
+  readonly commonManifest?: Readonly<{
+    handle: CryptoPostgresHandle;
+    expectedAgentId: string;
+  }>;
   readonly objectId: string;
   readonly expected?: PreparedConversationCryptoRevisionSnapshot;
   readonly resolveHistoricalSigner:
@@ -502,6 +506,8 @@ async function verifyStoredConversationRevision(input: {
 export function createPostgresConversationCryptoCompletion(input: {
   readonly handle: CryptoPostgresHandle;
   readonly crypto: LatticeCrypto;
+  /** Trusted Session Agent identity for common-v5 Message verification. */
+  readonly commonManifestExpectedAgentId?: string;
   readonly resolveCurrentWriteAuthorization:
     ResolveCurrentObjectAccessGenesisAuthorization;
   readonly resolveHistoricalSigner:
@@ -525,6 +531,14 @@ export function createPostgresConversationCryptoCompletion(input: {
       "Conversation crypto completion historical signer resolver is required",
     );
   }
+  if (
+    input.commonManifestExpectedAgentId !== undefined
+    && input.commonManifestExpectedAgentId.length === 0
+  ) {
+    throw new TypeError(
+      "Conversation crypto completion common-v5 Agent identity is invalid",
+    );
+  }
 
   return Object.freeze({
     async complete(
@@ -533,6 +547,22 @@ export function createPostgresConversationCryptoCompletion(input: {
       const snapshot =
         readPreparedConversationCryptoRevisionSnapshot(revision);
       const value = snapshot.value;
+      const preparedCommonAgentId =
+          snapshot.kind === "agent-v3-device-wrapped-live-shadow"
+          && snapshot.value.access.signerEvidence !== undefined
+        ? snapshot.value.access.authority.agentId
+        : null;
+      if (
+        preparedCommonAgentId !== null
+        && (
+          input.commonManifestExpectedAgentId === undefined
+          || preparedCommonAgentId !== input.commonManifestExpectedAgentId
+        )
+      ) {
+        conflict(
+          "Conversation crypto completion common-v5 Agent identity is unavailable or conflicts with trusted authority",
+        );
+      }
       return withVerifiedCryptoPostgresTransaction(
         input.handle,
         async (scopedHandle) => {
@@ -540,6 +570,12 @@ export function createPostgresConversationCryptoCompletion(input: {
           const replay = await verifyStoredConversationRevision({
             crypto: input.crypto,
             storage,
+            ...(input.commonManifestExpectedAgentId === undefined ? {} : {
+              commonManifest: {
+                handle: scopedHandle,
+                expectedAgentId: input.commonManifestExpectedAgentId,
+              },
+            }),
             objectId: value.objectId,
             expected: snapshot,
             resolveHistoricalSigner: input.resolveHistoricalSigner,
@@ -592,6 +628,12 @@ export function createPostgresConversationCryptoCompletion(input: {
           const verified = await verifyStoredConversationRevision({
             crypto: input.crypto,
             storage,
+            ...(input.commonManifestExpectedAgentId === undefined ? {} : {
+              commonManifest: {
+                handle: scopedHandle,
+                expectedAgentId: input.commonManifestExpectedAgentId,
+              },
+            }),
             objectId: value.objectId,
             expected: snapshot,
             resolveHistoricalSigner: input.resolveHistoricalSigner,
@@ -617,6 +659,12 @@ export function createPostgresConversationCryptoCompletion(input: {
           verifyStoredConversationRevision({
             crypto: input.crypto,
             storage: new PostgresLatticeStorage(scopedHandle),
+            ...(input.commonManifestExpectedAgentId === undefined ? {} : {
+              commonManifest: {
+                handle: scopedHandle,
+                expectedAgentId: input.commonManifestExpectedAgentId,
+              },
+            }),
             objectId,
             resolveHistoricalSigner: input.resolveHistoricalSigner,
             resolveHistoricalAgentSignerAuthority:

@@ -75,6 +75,7 @@ test("wake evidence owns snapshots, carries only the foreground partition and ex
     value.committerDeviceSigningPublicKeyHash.fill(0);
     assertAuthenticTaskRuntimeWakeForegroundEvidenceV1(evidence);
     expect(evidence.workId).toBe(JOB);
+    expect(evidence.sourceContentRevision).toBe(1);
     expect(evidence.namespaceRequirements.map(n => n.namespaceId)).toEqual(["foreground"]);
     expect(evidence.domainRequirements[0]!.headDigest).toEqual(bytes(6));
     expect(evidence.committerDeviceSigningPublicKeyHash).toEqual(bytes(8));
@@ -95,10 +96,10 @@ test.each(["expiry", "abort", "failure", "mutation"])("revokes wake authority on
     if (reason === "expiry") now = NOW + 10;
     if (reason === "abort") controller.abort();
     if (reason === "mutation") {
-      const saved = Uint8Array.from(evidence.domainRequirements[0]!.headDigest);
-      evidence.domainRequirements[0]!.headDigest.fill(0);
+      const mutable = evidence as { sourceContentRevision: number };
+      mutable.sourceContentRevision = 2;
       expect(() => assertAuthenticTaskRuntimeWakeForegroundEvidenceV1(evidence)).toThrow();
-      evidence.domainRequirements[0]!.headDigest.set(saved);
+      mutable.sourceContentRevision = 1;
     }
     expect(() => assertAuthenticTaskRuntimeWakeForegroundEvidenceV1(evidence)).toThrow();
   }, foreground(), readInput(), () => now, controller.signal))).toBeInstanceOf(Error);

@@ -153,21 +153,35 @@ export function createProtectedTaskOutputReadClaim(dependencies: ProtectedTaskOu
         return use(current, ...handles);
       },
     }),
-    openGrant: async ({ plan, request, record, claimId, claimExpiresAt,
-      authority, signal, assertCurrentClaim }) => {
+    openGrant: async ({ plan, request, certifiedSigning, authorizationBytes,
+      record, claimId, claimExpiresAt, authority, signal, assertCurrentClaim }) => {
       const result = resultProof(plan);
       const projection = projections(plan);
       if (result === null || projection === null
         || request.episodeId !== plan.intent.invocation.sessionId
         || !isDeepStrictEqual(authority.namespaceRequirements,
           record.authoritySet.namespaceRequirements)) return false;
+      const expectedPublication = Object.freeze(plan.intent.invocation.kind === "wake" ? {
+        kind: "task.delivery_wake" as const,
+        taskId: result.taskId,
+        taskRunId: result.taskRunId,
+        contentRevision: result.contentRevision,
+        jobId: plan.intent.invocation.jobId,
+        workIdentityHash: Uint8Array.from(record.workIdentityHash),
+      } : {
+        kind: "task.deliver_result" as const,
+        taskId: result.taskId,
+        taskRunId: result.taskRunId,
+        contentRevision: 1 as const,
+        workIdentityHash: Uint8Array.from(record.workIdentityHash),
+      });
       try {
         const opened = await dependencies.recipients.withOpenedRunResultReadGrant({
           requestId: request.requestId, workId: request.workId,
           workKind: dependencies.workKind,
           recipientGeneration: record.snapshot.recipientGeneration,
           recipientKeyId: request.recipientKeyId, claimId, claimExpiresAt,
-          authorizationBytes: record.acceptedMaterial!.responseBytes,
+          authorizationBytes,
           current: authority.foreground, requesterHumanId: plan.intent.requesterHumanId,
           result, invocation: plan.intent.invocation,
           currentNamespaceRequirements: authority.namespaceRequirements,
@@ -175,6 +189,9 @@ export function createProtectedTaskOutputReadClaim(dependencies: ProtectedTaskOu
           ...(projection.additionalMutationDestination === undefined ? {} : {
             currentAdditionalMutationDestination: projection.additionalMutationDestination,
           }), signal,
+          certifiedSigning: Object.freeze({
+            ...certifiedSigning, expectedPublication,
+          }),
           operation: async (partitions, activeSignal, evidence, wakeEvidence) => {
             await assertCurrentClaim();
             return dependencies.publish({ plan, record, partitions, evidence,
@@ -190,7 +207,10 @@ export function createProtectedTaskOutputReadClaim(dependencies: ProtectedTaskOu
         const parked = await dependencies.finishParkedWake({ plan, record, receipt: opened.value.receipt });
         if (parked === null) throw new Error("Task wake park authorization rotation is pending");
         return { status: "parked" as const, record: parked };
-      } finally { result.genesisManifestHash.fill(0); }
+      } finally {
+        result.genesisManifestHash.fill(0);
+        expectedPublication.workIdentityHash.fill(0);
+      }
     },
   });
   return (input: TaskPublicationClaimInput<ProtectedTaskOutputReadPlan>) => {

@@ -1292,3 +1292,7 @@ export {
   encodeHumanExistingTaskRepresentationPublicationRequestV1,
   humanExistingTaskRepresentationPublicationRequestSigningBytesV1,
 } from "./task/existing-representation-publication-request-v1.ts";
+
+export * from "./background/task-runtime-request-v3.ts";
+
+export * from "./object/task-runtime-publication-signing.ts";

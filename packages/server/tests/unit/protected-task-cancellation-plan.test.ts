@@ -6,11 +6,7 @@ import {
   authorizationRevision,
   type DomainForegroundAuthorityEntry,
 } from "@nautilo/lattice-crypto";
-import {
-  decodeTaskRuntimeBackgroundAuthorizationRequestV1,
-  encodeTaskRuntimeBackgroundAuthorizationRequestV1,
-} from "@nautilo/lattice-crypto/background";
-import { parseDomainForegroundAuthorizationPlanV2 } from
+import { agentRuntimeObjectSignerKeyIdV1, parseDomainForegroundAuthorizationPlanV2 } from
   "@nautilo/lattice-crypto/wire";
 import { deriveTaskContentCryptoObjectIdV1 } from "@nautilo/lattice-bridge";
 import type { InitialTaskRuntimeNamespaceAuthority } from
@@ -109,6 +105,8 @@ function buildRequest(
   plan: ReturnType<typeof createProtectedTaskCancellationPlan>,
   authorityPatch: Readonly<Record<string, unknown>> = {},
 ) {
+  const crypto = new LatticeCrypto();
+  const signerPublicKey = new Uint8Array(32).fill(9);
   const recipient = plan.recipientAttempt({ record: plan.initialRecord, now: NOW });
   const attempt = Object.freeze({
     requestId: plan.initialRecord.snapshot.requestId,
@@ -117,6 +115,8 @@ function buildRequest(
     recipientKeyId: recipient.recipientKeyId,
     recipientPublicKey: new Uint8Array(65).fill(4),
     expiresAt: recipient.expiresAt,
+    signer: Object.freeze({ agentId: AGENT, runtimeGeneration: 0 as const,
+      signerKeyId: agentRuntimeObjectSignerKeyIdV1(crypto, signerPublicKey), signerPublicKey }),
   });
   return {
     recipient,
@@ -130,7 +130,12 @@ function buildRequest(
           humanActorId: HUMAN,
           deviceId: DEVICE,
           deviceGeneration: 2,
+          signingPublicKey: new Uint8Array(65).fill(5),
+          serverInstanceId: "test-server",
+          lineageGeneration: 1,
+          epoch: 2,
           securityRevision: 3,
+          headDigest: bytes(6),
         } as never,
         sourceRoomId: ROOM,
         policyRevision: 7,
@@ -176,11 +181,9 @@ test("builds a fresh cancellation request with encrypt-only authority", () => {
 
   const { recipient, request } = buildRequest(plan);
   expect(recipient.recipientKeyId).toBe(`task-cancellation-runtime:${RUN}:0`);
-  expect(decodeTaskRuntimeBackgroundAuthorizationRequestV1(
-    encodeTaskRuntimeBackgroundAuthorizationRequestV1(request),
-  )).not.toBeNull();
+  expect(request.formatVersion).toBe(3);
   const authorization = parseDomainForegroundAuthorizationPlanV2(
-    request.authorizationPlanBytes,
+    request.baseRequest.authorizationPlanBytes,
   );
   expect(authorization).toMatchObject({
     authorizationId: protectedTaskCancellationRequestId(RUN),
@@ -190,12 +193,14 @@ test("builds a fresh cancellation request with encrypt-only authority", () => {
     operations: ["encrypt"],
     domainCount: 1,
   });
-  expect(request).toMatchObject({
+  expect(request.baseRequest).toMatchObject({
     requestId: protectedTaskCancellationRequestId(RUN),
     workId: RUN,
     workKind: "task.cancel_result",
     workPurpose: "task.cancel_result",
   });
+  expect(request.work).toMatchObject({ kind: "task.cancel_result", taskId: TASK,
+    taskRunId: RUN, contentRevision: 2 });
 });
 
 test("rejects every changed stopped-result coordinate", () => {

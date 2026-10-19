@@ -43,6 +43,7 @@ export type TaskRuntimeWakeForegroundEvidenceV1 = Readonly<{
   committerDeviceSigningPublicKeyHash: Uint8Array;
   /** Attribution for the HIVE signer, never individual Agent grant membership. */
   signerAgentId: string;
+  sourceContentRevision: 1 | 2;
   invocation: Extract<TaskRuntimeRunResultReadInvocationV1, { kind: "wake" }>;
   operations: readonly ["decrypt", "encrypt"];
   namespaceRequirements: readonly TaskRuntimeExecutionNamespaceAuthorityV1[];
@@ -187,6 +188,7 @@ export async function withTaskRuntimeWakeForegroundEvidenceV1<Value>(input: Read
     committerDeviceSigningGeneration: input.committerDeviceSigningGeneration,
     committerDeviceSigningPublicKeyHash: bytes(input.committerDeviceSigningPublicKeyHash),
     signerAgentId: read.result.signerAgentId,
+    sourceContentRevision: read.result.contentRevision,
     invocation: Object.freeze({ ...read.invocation, reference: Object.freeze({ ...read.invocation.reference }) }),
     operations: Object.freeze(["decrypt", "encrypt"] as const),
     ...(mutation === undefined ? {} : { additionalMutationDestination: mutation }),

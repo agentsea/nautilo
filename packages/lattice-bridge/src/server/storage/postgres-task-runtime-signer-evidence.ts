@@ -1,11 +1,11 @@
 import { eq, humanCryptoDevices } from "@nautilo/db";
-import type { LatticeCrypto } from "@nautilo/lattice-crypto";
 import {
-  destroyVerifiedTaskRuntimeSignerAuthorizationV1,
-  readTaskRuntimeSignerAuthorizationIssuerV1,
-  verifyHistoricalTaskRuntimeSignerAuthorizationV1,
-  type VerifiedTaskRuntimeSignerAuthorizationV1,
-} from "@nautilo/lattice-crypto/background";
+  destroyVerifiedTaskRuntimeSignerAuthorization,
+  readTaskRuntimeSignerAuthorizationIssuer,
+  type LatticeCrypto,
+  verifyHistoricalTaskRuntimeSignerAuthorization,
+  type VerifiedHistoricalTaskRuntimeSignerAuthorization,
+} from "@nautilo/lattice-crypto";
 
 import { ClassifiedDataOperationError } from
   "../../transition/encryption-data-operation-owner.ts";
@@ -17,7 +17,7 @@ import {
 import type { DatabaseRow } from "./postgres-record-codecs.ts";
 
 export interface VerifiedStoredTaskRuntimeSignerEvidenceV1 {
-  readonly certificate: VerifiedTaskRuntimeSignerAuthorizationV1;
+  readonly certificate: VerifiedHistoricalTaskRuntimeSignerAuthorization;
   readonly issuerPublicKey: Uint8Array;
 }
 
@@ -74,10 +74,10 @@ export async function loadVerifiedTaskRuntimeSignerEvidenceV1(
   certificateBytes: Uint8Array,
 ): Promise<VerifiedStoredTaskRuntimeSignerEvidenceV1> {
   let hint: ReturnType<
-    typeof readTaskRuntimeSignerAuthorizationIssuerV1
+    typeof readTaskRuntimeSignerAuthorizationIssuer
   >;
   try {
-    hint = readTaskRuntimeSignerAuthorizationIssuerV1(
+    hint = readTaskRuntimeSignerAuthorizationIssuer(
       crypto,
       certificateBytes,
     );
@@ -89,7 +89,7 @@ export async function loadVerifiedTaskRuntimeSignerEvidenceV1(
     );
   }
   let issuerPublicKey: Uint8Array | undefined;
-  let verified: VerifiedTaskRuntimeSignerAuthorizationV1 | undefined;
+  let verified: VerifiedHistoricalTaskRuntimeSignerAuthorization | undefined;
   let retained = false;
   try {
     const rows = await executeTypedCryptoQuery(
@@ -132,7 +132,7 @@ export async function loadVerifiedTaskRuntimeSignerEvidenceV1(
       keyHash.fill(0);
     }
     try {
-      verified = verifyHistoricalTaskRuntimeSignerAuthorizationV1(crypto, {
+      verified = verifyHistoricalTaskRuntimeSignerAuthorization(crypto, {
         certificateBytes,
         resolveHistoricalIssuer: context =>
           context.issuer.humanId === hint.humanId
@@ -164,7 +164,7 @@ export async function loadVerifiedTaskRuntimeSignerEvidenceV1(
     if (!retained) {
       issuerPublicKey?.fill(0);
       if (verified !== undefined) {
-        destroyVerifiedTaskRuntimeSignerAuthorizationV1(verified);
+        destroyVerifiedTaskRuntimeSignerAuthorization(verified);
       }
     }
   }
@@ -173,6 +173,6 @@ export async function loadVerifiedTaskRuntimeSignerEvidenceV1(
 export function destroyVerifiedStoredTaskRuntimeSignerEvidenceV1(
   value: VerifiedStoredTaskRuntimeSignerEvidenceV1,
 ): void {
-  destroyVerifiedTaskRuntimeSignerAuthorizationV1(value.certificate);
+  destroyVerifiedTaskRuntimeSignerAuthorization(value.certificate);
   value.issuerPublicKey.fill(0);
 }

@@ -16,6 +16,8 @@ import {
   namespaceId,
   prepareAgentRuntimeInitialization,
   prepareDomainNamespaceBundle,
+  encodeTaskRuntimeBackgroundAuthorizationResponse,
+  verifyCommonObjectAccessManifest,
   type TaskRuntimeTerminalMessageEvidence,
 } from "@nautilo/lattice-crypto";
 import {
@@ -55,6 +57,8 @@ import type {
   DatabaseRow,
   DatabaseScalar,
 } from "../../src/server/storage/postgres-record-codecs.ts";
+import { withCertifiedTerminalPublicationSigner } from
+  "../fixtures/task-publication-signer.ts";
 
 const NOW = 1_930_000_000_000;
 const TASK = "10000000-0000-4000-8000-000000000731";
@@ -238,7 +242,7 @@ async function fixture() {
   });
   return {
     crypto, base, prepare, message, evidenceInput, checks, generationKey,
-    controller, managerPublicKey: manager.publicKey,
+    controller, managerPublicKey: manager.publicKey, issuer, domain,
     expire: () => { time = NOW + 60_000; },
   };
 }
@@ -254,6 +258,63 @@ async function fails(operation: Promise<unknown>): Promise<void> {
 }
 
 describe("native terminal Task Message preparation", () => {
+  test("uses a certified fresh signer and retains its historical proof", async () => {
+    const value = await fixture();
+    let expectedCertificate: Uint8Array | undefined;
+    const prepared = await withCertifiedTerminalPublicationSigner({
+      crypto: value.crypto,
+      now: value.crypto.clock.now(),
+      deviceSigner: value.issuer,
+      requestId: REQUEST,
+      sessionId: value.evidenceInput.episodeId,
+      roomId: ROOM,
+      requesterHumanId: "human",
+      signerAgentId: AGENT,
+      policyRevision: 7,
+      domains: [{ ...value.domain, domainKey: value.base.namespace.domainKey }],
+      namespaceRequirements: value.evidenceInput.namespaceRequirements,
+      work: {
+        kind: "task.deliver_message",
+        taskId: TASK,
+        taskRunId: RUN,
+        contentRevision: 2,
+        workIdentityHash: bytes(0xb1),
+        messageObjectId: value.message.objectId,
+      },
+      message: value.message,
+    }, async ({ evidence, signer, certificateBytes }) => {
+      expectedCertificate = certificateBytes.slice();
+      return prepareNativeTaskTerminalMessage({
+        ...value.base,
+        evidence,
+        runtime: signer.runtime,
+        signerPublication: null,
+        temporarySigner: signer,
+        agentAuthorizationRevision: 0,
+        resolveHistoricalSignerPublicationManager: () => {
+          throw new Error("permanent signer history must not be loaded");
+        },
+      });
+    });
+    const snapshot = readPreparedNativeTaskTerminalMessage(prepared);
+    expect(snapshot.signerEvidenceBytes).toEqual(expectedCertificate);
+    expect(prepared.authority.signerAuthorizationHash).toBeDefined();
+    const verified = verifyCommonObjectAccessManifest(value.crypto, {
+      manifestBytes: snapshot.manifestBytes,
+      resolveHistoricalHumanDeviceSigningPublicKey: () => null,
+      resolveAgentRuntimeSignerPublicKey: () => {
+        throw new Error("permanent signer history must not be loaded");
+      },
+      resolveProcessorSignerAuthorizationBytes: () => null,
+      resolveHistoricalProcessorIssuingDevicePublicKey: () => null,
+      resolveTaskRuntimeSignerAuthorizationBytes: () =>
+        snapshot.signerEvidenceBytes!,
+      resolveHistoricalTaskRuntimeIssuer: () => value.issuer.publicKey,
+    });
+    expect(String(verified.manifest.objectId)).toBe(value.message.objectId);
+    expectedCertificate?.fill(0);
+  });
+
   test("prepares only the fixed assistant payload under exact terminal evidence", async () => {
     const value = await fixture();
     const prepared = await value.prepare();
@@ -271,6 +332,8 @@ describe("native terminal Task Message preparation", () => {
     });
     expect(value.checks).toHaveLength(2);
     const snapshot = readPreparedNativeTaskTerminalMessage(prepared);
+    expect(snapshot.signerEvidenceBytes).toBeUndefined();
+    expect(prepared.authority.signerAuthorizationHash).toBeUndefined();
     const opened = decryptObjectThroughNamespace(
       value.crypto,
       value.generationKey,
@@ -305,6 +368,7 @@ describe("native terminal Task Message preparation", () => {
       }),
     }));
     await fails(value.prepare({ agentAuthorizationRevision: 8 }));
+    await fails(value.prepare({ signerPublication: null }));
     value.expire();
     await fails(value.prepare());
   });
@@ -369,6 +433,7 @@ class TerminalMessageCryptoConnection implements CryptoPostgresConnection {
   claim: DatabaseRow | null = null;
   failReceipt = false;
   claimReads = 0;
+  humanDevice: DatabaseRow | null = null;
 
   constructor(readonly signer: DatabaseRow) {}
 
@@ -435,6 +500,10 @@ class TerminalMessageCryptoConnection implements CryptoPostgresConnection {
         if (normalized.includes("from object_crypto_namespace_envelopes")) {
           return working.envelopes.map(cloneRow) as Row[];
         }
+        if (normalized.includes("from human_crypto_devices")) {
+          return (this.humanDevice === null ? []
+            : [cloneRow(this.humanDevice)]) as Row[];
+        }
         if (normalized.includes("from agent_crypto_runtime_signers")) {
           return [cloneRow(this.signer)] as Row[];
         }
@@ -454,6 +523,8 @@ class TerminalMessageCryptoConnection implements CryptoPostgresConnection {
             previous_manifest_hash: parameters[3] as null,
             payload_hash: (parameters[4] as Uint8Array).slice(),
             manifest_bytes: (parameters[5] as Uint8Array).slice(),
+            signer_evidence_bytes: parameters[6] === null ? null
+              : (parameters[6] as Uint8Array).slice(),
           });
           return [];
         }
@@ -487,6 +558,111 @@ class TerminalMessageCryptoConnection implements CryptoPostgresConnection {
 
 describe("terminal Task Message crypto staging", () => {
   test.each([
+    "valid", "wrapper_hash", "inner_grant", "certificate", "expired",
+  ] as const)("binds a certified V3 response for %s", async mutation => {
+    const value = await fixture();
+    const publication = value.base.signerPublication!;
+    const connection = new TerminalMessageCryptoConnection({
+      agent_id: publication.agentId,
+      runtime_generation: publication.runtimeGeneration,
+      authorization_revision: publication.authorizationRevision,
+      transition_kind: publication.transitionKind,
+      operation_id: publication.operationId,
+      signer_key_id: publication.signerKeyId,
+      signer_public_key: publication.signerPublicKey,
+      publication_bytes: encodeAgentRuntimeSignerPublicationV1(publication),
+    });
+    connection.humanDevice = {
+      device_id: "device:task-publication-signer-fixture",
+      human_id: "human", device_generation: 1,
+      signing_public_key: value.issuer.publicKey, state: "active",
+    };
+    const intent: NativeTaskTerminalMessageIntent = {
+      ...value.message,
+      payloadDigest: Array.from(value.message.payloadDigest, byte =>
+        byte.toString(16).padStart(2, "0")).join(""),
+      role: "assistant", createdAt: NOW, requestId: REQUEST,
+    };
+    const current = {
+      taskId: intent.taskId, taskRunId: intent.taskRunId,
+      bindingId: intent.bindingId,
+      messageOperationId: intent.messageOperationId,
+      sessionId: intent.sessionId, messageId: intent.messageId,
+      revision: intent.revision, objectId: intent.objectId,
+      roomId: intent.roomId, namespaceId: intent.namespaceId,
+      domainId: intent.domainId, mode: intent.mode,
+      acceptedPolicyRevision: intent.acceptedPolicyRevision,
+      currentPolicyRevision: intent.publicationPolicyRevision,
+      namespaceAccessRevision: 0,
+    };
+    await withCertifiedTerminalPublicationSigner({
+      crypto: value.crypto,
+      now: value.crypto.clock.now(),
+      deviceSigner: value.issuer,
+      requestId: REQUEST,
+      sessionId: value.evidenceInput.episodeId,
+      roomId: ROOM,
+      requesterHumanId: "human",
+      signerAgentId: AGENT,
+      policyRevision: 7,
+      domains: [{ ...value.domain,
+        domainKey: value.base.namespace.domainKey }],
+      namespaceRequirements: value.evidenceInput.namespaceRequirements,
+      work: {
+        kind: "task.deliver_message",
+        taskId: TASK,
+        taskRunId: RUN,
+        contentRevision: 2,
+        workIdentityHash: bytes(0xb1),
+        messageObjectId: value.message.objectId,
+      },
+      message: value.message,
+    }, async ({ evidence, signer, authorizationBytes, certificateBytes }) => {
+      const inner = mutation === "inner_grant"
+        ? new Uint8Array([0x71]) : authorizationBytes;
+      const certificate = certificateBytes.slice();
+      if (mutation === "certificate") {
+        certificate[0] = certificate[0]! ^ 0xff;
+      }
+      const responseBytes = encodeTaskRuntimeBackgroundAuthorizationResponse({
+        authorizationBytes: inner,
+        certificateBytes: certificate,
+      });
+      certificate.fill(0);
+      connection.claim = {
+        request_id: REQUEST, work_id: RUN,
+        work_kind: "task.deliver_message", purpose: "task.deliver_message",
+        state: "running", format_version: 3,
+        credential_subject_kind: "runtime", runtime_kind: "task",
+        runtime_version: 1, claim_id: evidence.claimId,
+        recipient_generation: evidence.recipientGeneration,
+        recipient_key_id: evidence.recipientKeyId,
+        accepted_response_kind: "runtime",
+        accepted_response_hash: mutation === "wrapper_hash"
+          ? bytes(0xee) : value.crypto.hash(responseBytes),
+        accepted_response_bytes: responseBytes,
+        expected_policy_revision: 7, namespace_id: NS, domain_id: DOMAIN,
+        expected_namespace_access_revision: 0, expected_domain_epoch: 4,
+        live: mutation !== "expired",
+      };
+      const operation = stageNativeTaskTerminalMessagePublication({
+        restricted: connection as unknown as PostgresJsBridgeConnection,
+        preparation: { ...value.base, evidence,
+          runtime: signer.runtime, signerPublication: null,
+          temporarySigner: signer, agentAuthorizationRevision: 0 },
+        resolveHistoricalAgentSignerAuthority: context => ({ ...context,
+          managerSigningPublicKey: value.managerPublicKey.slice() }),
+        assertCurrentClaim: () => undefined,
+        resolveCurrentDeliveryAuthority: () => Promise.resolve(current),
+      });
+      if (mutation === "valid") expect(await operation).toBe("staged");
+      else await fails(operation);
+    });
+    expect(connection.state.object === null).toBe(mutation !== "valid");
+    expect(connection.state.receipt === null).toBe(mutation !== "valid");
+  });
+
+  test.each([
     { policyAdvance: 0, behavior: "atomically stages immutable provenance and inspects replay without decryption" },
     { policyAdvance: 1, behavior: "rejects newer current policy before preparation or crypto writes" },
   ])("$behavior", async ({ policyAdvance }) => {
@@ -496,7 +672,7 @@ describe("terminal Task Message crypto staging", () => {
       ...value.evidenceInput,
       authorizationDigest: value.crypto.hash(authorizationBytes),
     };
-    const publication = value.base.signerPublication;
+      const publication = value.base.signerPublication!;
     const connection = new TerminalMessageCryptoConnection({
       agent_id: publication.agentId,
       runtime_generation: publication.runtimeGeneration,
@@ -622,7 +798,7 @@ describe("terminal Task Message crypto staging", () => {
       ...value.evidenceInput,
       authorizationDigest: value.crypto.hash(authorizationBytes),
     };
-    const publication = value.base.signerPublication;
+      const publication = value.base.signerPublication!;
     const connection = new TerminalMessageCryptoConnection({
       agent_id: publication.agentId,
       runtime_generation: publication.runtimeGeneration,

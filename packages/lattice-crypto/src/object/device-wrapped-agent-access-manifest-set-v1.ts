@@ -1,6 +1,14 @@
+import {
+  prepareTaskRuntimePublicationSigning,
+  copyTaskRuntimePublicationSignerEvidence,
+  equalTaskRuntimePublicationSignerEvidence,
+  type TaskRuntimePublicationSigning,
+  type TaskRuntimePublicationSignerEvidence,
+} from "./task-runtime-publication-signing.ts";
 import type { LatticeCrypto } from "../crypto/index.ts";
 import {
   createAgentObjectAccessManifestV5,
+  createTaskRuntimeObjectAccessManifestV5,
   type ObjectAccessManifestV5,
 } from "../format/object-access-manifest-v5.ts";
 import {
@@ -62,6 +70,7 @@ export interface DeviceWrappedAgentObjectAccessGenesisSetAuthorityContextV1 {
   readonly agentId: string;
   readonly runtimeGeneration: number;
   readonly signerKeyId: string;
+  readonly signerAuthorizationHash?: Uint8Array;
 }
 
 export interface PrepareDeviceWrappedAgentObjectAccessManifestGenesisSetInputV1 {
@@ -79,9 +88,11 @@ export interface PrepareDeviceWrappedAgentObjectAccessManifestGenesisSetInputV1 
   readonly runtime: AgentRuntimeGenerationV2;
   readonly signerKeyId: string;
   readonly signerPublicKey: Uint8Array;
+  readonly taskRuntimeSigner?: TaskRuntimePublicationSigning;
 }
 
 export interface PreparedDeviceWrappedAgentObjectAccessManifestGenesisSetV1 {
+  readonly signerEvidence?: TaskRuntimePublicationSignerEvidence;
   readonly manifest: ObjectAccessManifestV5;
   readonly manifestBytes: Uint8Array;
   readonly manifestHash: Uint8Array;
@@ -91,6 +102,7 @@ export interface PreparedDeviceWrappedAgentObjectAccessManifestGenesisSetV1 {
 }
 
 type PreparedSnapshot = Readonly<{
+  signerEvidence?: TaskRuntimePublicationSignerEvidence;
   manifestBytes: Uint8Array;
   manifestHash: Uint8Array;
   envelopeBytes: readonly Uint8Array[];
@@ -144,6 +156,7 @@ export function cloneDeviceWrappedAgentObjectAccessGenesisSetAuthorityContextV1(
 ): DeviceWrappedAgentObjectAccessGenesisSetAuthorityContextV1 {
   return Object.freeze({
     ...value,
+    ...(value.signerAuthorizationHash === undefined ? {} : { signerAuthorizationHash: value.signerAuthorizationHash.slice() }),
     payloadHash: exactHash("Agent object payload hash", value.payloadHash),
     grantHash: exactHash("Agent object Grant hash", value.grantHash),
     envelopes: Object.freeze(value.envelopes.map((entry) => Object.freeze({
@@ -257,7 +270,15 @@ export function prepareDeviceWrappedAgentObjectAccessManifestGenesisSetV1(
         "Agent object payload hash",
         input.payloadHash,
       );
-      const created = createAgentObjectAccessManifestV5(crypto, {
+    const certified = input.taskRuntimeSigner === undefined ? undefined
+      : prepareTaskRuntimePublicationSigning(crypto, input.taskRuntimeSigner, input.runtime, {
+        operationId: input.operationId, grant: input.grant,
+        namespaceIds: namespaces.map(namespace => namespace.namespaceId),
+      });
+    if (certified !== undefined && agentAuthorization !== 0) {
+      throw new TypeError("Task publication requires temporary signer revision zero");
+    }
+      const unsigned = {
         objectId: targetObjectId,
         payloadHash,
         accessRevision: accessRevision(0),
@@ -267,8 +288,18 @@ export function prepareDeviceWrappedAgentObjectAccessManifestGenesisSetV1(
         ),
         signer: derived.principal,
         signerAuthorizationHash: null,
-        hostAuthorizationRevision: agentAuthorization,
-      }, input.runtime);
+        hostAuthorizationRevision: certified === undefined ? agentAuthorization : authorizationRevision(certified.hostAuthorizationRevision),
+      };
+      const created = certified === undefined
+        ? createAgentObjectAccessManifestV5(crypto, unsigned, input.runtime)
+        : createTaskRuntimeObjectAccessManifestV5(crypto, { ...unsigned,
+          signerAuthorizationHash: certified.certificateHash }, {
+            runtime: input.runtime, certificateBytes: certified.signerEvidence.certificateBytes,
+            issuerSigningPublicKey: certified.signerEvidence.issuerSigningPublicKey,
+          expectedRequestHash: input.taskRuntimeSigner!.signer.requestHash,
+          expectedAuthorizationHash: input.taskRuntimeSigner!.signer.authorizationHash,
+          now: crypto.clock.now(),
+          });
       const authority =
         cloneDeviceWrappedAgentObjectAccessGenesisSetAuthorityContextV1({
           purpose:
@@ -288,8 +319,10 @@ export function prepareDeviceWrappedAgentObjectAccessManifestGenesisSetV1(
           agentId: input.runtime.agentId,
           runtimeGeneration: input.runtime.generation,
           signerKeyId: input.signerKeyId,
+      ...(certified === undefined ? {} : { signerAuthorizationHash: certified.certificateHash.slice() }),
         });
       const prepared = Object.freeze({
+        ...(certified === undefined ? {} : { signerEvidence: certified.signerEvidence }),
         manifest: created.manifest,
         manifestBytes: created.bytes,
         manifestHash: created.hash,
@@ -299,6 +332,7 @@ export function prepareDeviceWrappedAgentObjectAccessManifestGenesisSetV1(
         authority,
       });
       preparedSnapshots.set(prepared, Object.freeze({
+        ...(prepared.signerEvidence === undefined ? {} : { signerEvidence: copyTaskRuntimePublicationSignerEvidence(prepared.signerEvidence) }),
         manifestBytes: copyOwnedBytesV2(created.bytes),
         manifestHash: copyOwnedBytesV2(created.hash),
         envelopeBytes: Object.freeze(
@@ -322,6 +356,7 @@ export function assertAuthenticPreparedDeviceWrappedAgentObjectAccessManifestGen
   const snapshot = preparedSnapshots.get(prepared);
   if (
     snapshot === undefined
+    || !equalTaskRuntimePublicationSignerEvidence(snapshot.signerEvidence, prepared.signerEvidence)
     || !equalBytes(snapshot.manifestBytes, prepared.manifestBytes)
     || !equalBytes(snapshot.manifestHash, prepared.manifestHash)
     || snapshot.envelopeBytes.length !== prepared.envelopeBytes.length

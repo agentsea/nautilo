@@ -80,6 +80,33 @@ const protectedRunProjection = {
   fundingPredecessorRunId: taskRuns.fundingPredecessorRunId,
 } as const;
 
+const legacyServerFundingTaskProjection = {
+  id: tasks.id,
+  ownerId: tasks.ownerId,
+  requestorId: tasks.requestorId,
+  agentId: tasks.agentId,
+  fundingMode: tasks.fundingMode,
+  requestedModelId: tasks.requestedModelId,
+  selectionProfile: tasks.selectionProfile,
+  selectionSpec: tasks.selectionSpec,
+  toolsMode: tasks.toolsMode,
+  toolsWhitelist: tasks.toolsWhitelist,
+} as const;
+
+type LegacyServerFundingTask = Readonly<Pick<ProtectedTaskWakeFundingTaskSource,
+  "id" | "ownerId" | "requestorId" | "agentId" | "fundingMode" |
+  "requestedModelId" | "selectionProfile" | "selectionSpec" | "toolsMode" |
+  "toolsWhitelist"
+>>;
+
+async function readLegacyServerFundingTask(
+  taskId: string,
+): Promise<LegacyServerFundingTask | undefined> {
+  const [task] = await getServerDirectDb().select(legacyServerFundingTaskProjection)
+    .from(tasks).where(eq(tasks.id, taskId)).limit(1);
+  return task;
+}
+
 async function readProtectedFundingTask(
   taskId: string,
   acceptedMetadata: ProtectedTaskWakeFundingTaskSource["metadata"],
@@ -697,7 +724,7 @@ async function openSession(task: FundingTaskSource, run: FundingRunSource,
 }
 
 /**
- * Open caller funding for one already-terminal protected Task Run without
+ * Open funding for one already-terminal protected Task Run without
  * materializing the Task prompt, expected output, or Run result columns.
  */
 export async function openProtectedTaskWakeFundingSession(input: Readonly<{
@@ -720,7 +747,91 @@ export async function openProtectedTaskWakeFundingSession(input: Readonly<{
     ...input.runSource,
     fundingBinding: structuredClone(input.runSource.fundingBinding),
   });
-  if (task.fundingMode === "legacy_server") return null;
+  if (task.fundingMode === "legacy_server") {
+    const terminal = ["completed", "errored", "cancelled"].includes(run.status);
+    const freshCancelledWake = run.status === "cancelled"
+      && run.jobId === null && run.modelId === null && run.fundingBinding === null
+      && run.fundingPredecessorRunId === null;
+    if (run.taskId !== task.id || !terminal || run.fundingBinding !== null
+      || (freshCancelledWake ? input.modelId !== null : run.modelId === null
+        || run.modelId !== input.modelId)) {
+      throw new TaskFundingError("funding_source_changed");
+    }
+    return fundingBoundary(async () => {
+      await input.assertCurrent();
+      const modelId = run.modelId ?? await selectTaskModel(task);
+      assertNativeTaskRetainedModelSelection(modelId, task);
+      const admitted = await resolveModelFunding({
+        humanUserId: task.requestorId,
+        modelId,
+        workload: "native_text_task",
+        fundingKind: "server",
+      });
+      if (admitted.kind !== "server") throw new TaskFundingError("funding_source_changed");
+      await input.assertCurrent();
+      const resolveCandidateUnchecked = async (
+        candidateModelId: string,
+        transport?: "direct" | "surplus",
+      ): Promise<ModelFundingDecision> => {
+        await input.assertCurrent();
+        const [currentTask, currentRun] = await Promise.all([
+          readLegacyServerFundingTask(task.id),
+          readProtectedFundingRun(task.id, run.id),
+        ]);
+        if (!currentTask || !currentRun
+          || currentTask.id !== task.id
+          || currentTask.ownerId !== task.ownerId
+          || currentTask.requestorId !== task.requestorId
+          || currentTask.agentId !== task.agentId
+          || currentTask.fundingMode !== "legacy_server"
+          || currentTask.requestedModelId !== task.requestedModelId
+          || currentTask.selectionProfile !== task.selectionProfile
+          || JSON.stringify(currentTask.selectionSpec) !== JSON.stringify(task.selectionSpec)
+          || currentTask.toolsMode !== task.toolsMode
+          || JSON.stringify(currentTask.toolsWhitelist) !== JSON.stringify(task.toolsWhitelist)
+          || currentRun.id !== run.id
+          || currentRun.taskId !== run.taskId
+          || currentRun.jobId !== run.jobId
+          || currentRun.graphThreadId !== run.graphThreadId
+          || currentRun.status !== run.status
+          || currentRun.modelId !== run.modelId
+          || currentRun.fundingBinding !== null
+          || currentRun.fundingPredecessorRunId !== run.fundingPredecessorRunId) {
+          throw new TaskFundingError("funding_source_changed");
+        }
+        assertNativeTaskRetainedModelSelection(candidateModelId, currentTask);
+        const decision = await resolveModelFunding({
+          humanUserId: task.requestorId,
+          modelId: candidateModelId,
+          workload: "native_text_task",
+          fundingKind: "server",
+          priorDecision: admitted,
+          ...(transport ? { transport } : {}),
+        });
+        if (decision.kind !== "server") throw new TaskFundingError("funding_source_changed");
+        await input.assertCurrent();
+        return decision;
+      };
+      const resolveCandidate = async (
+        candidateModelId: string,
+        transport?: "direct" | "surplus",
+      ) => fundingBoundary(
+        () => resolveCandidateUnchecked(candidateModelId, transport),
+      );
+      await resolveCandidate(modelId);
+      return {
+        kind: "server",
+        async recheckAttempt(candidate, transport) {
+          await resolveCandidate(candidate, transport);
+        },
+        async runAttempt(candidate, runAttempt, transport) {
+          const decision = await resolveCandidate(candidate, transport);
+          try { return await runAttempt({ usageFunding: usageFundingFor(decision) }); }
+          finally { await input.assertCurrent(); }
+        },
+      };
+    });
+  }
   const freshCancelledWake = run.status === "cancelled"
     && run.jobId === null && run.modelId === null && run.fundingBinding === null
     && run.fundingPredecessorRunId === null;

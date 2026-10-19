@@ -7,6 +7,7 @@ import type { ProtectedTaskWakeScheduling } from "@nautilo/db";
 import type { TaskRunResultPayloadV1 } from "@nautilo/lattice-bridge";
 import {
   assertAuthenticTaskRuntimeWakeForegroundEvidence,
+  hasTaskRuntimeTemporarySigner,
   type TaskRuntimeWakeForegroundEvidence,
 } from "@nautilo/lattice-crypto";
 import type { MemoryAccessEnvelope, RoomParticipant } from "@nautilo/trust";
@@ -168,6 +169,7 @@ export function snapshotProtectedTaskWakeForegroundSource(
   });
   const currentNamespaceIds = evidence.namespaceRequirements
     .map(requirement => requirement.namespaceId).sort();
+  const certifiedSigner = hasTaskRuntimeTemporarySigner(evidence);
   const reference = evidence.invocation.reference;
   assertResult(result);
   const sourceKeys = Object.keys(value).sort().join(",");
@@ -212,7 +214,9 @@ export function snapshotProtectedTaskWakeForegroundSource(
     || !Number.isSafeInteger(
       checkpointBinding.initialAgentAuthorizationRevision,
     )
-    || checkpointBinding.initialAgentAuthorizationRevision < 1
+    || checkpointBinding.initialAgentAuthorizationRevision < 0
+    || checkpointBinding.initialAgentAuthorizationRevision === 0
+      && !certifiedSigner
     || (continuation === undefined
       ? checkpointBinding.initialPolicyRevision !== evidence.policyRevision
       : checkpointBinding.initialPolicyRevision > evidence.policyRevision)

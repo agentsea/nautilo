@@ -19,6 +19,7 @@ import {
 } from "@nautilo/lattice-bridge/server";
 import {
   assertAuthenticTaskRuntimeTerminalMessageEvidence,
+  hasTaskRuntimeTemporarySigner,
   type DomainForegroundSecretEntry,
   type LatticeCrypto,
   type TaskRuntimeTerminalMessageEvidence,
@@ -201,30 +202,12 @@ export function createProtectedTaskTerminalMessagePublication(
       || domain.keyClass !== "ai") {
       return unavailable("Terminal Task Message Domain is unavailable");
     }
-    const state = await storage.getAgentRuntimeAtomicState(
-      value.plan.intent.agentId,
-    );
-    let agentAuthorizationRevision: number;
-    let runtimeGeneration: number;
-    try {
-      if (state === null
-        || state.runtime.agentId !== value.plan.intent.agentId) {
-        return unavailable("Terminal Task Message Runtime is unavailable");
-      }
-      agentAuthorizationRevision = state.runtime.authorizationRevision;
-      runtimeGeneration = state.runtime.runtimeGeneration;
-    } finally {
-      wipe(state);
-    }
-    return withProtectedTaskResultSignerHistory({
-      handle,
-      crypto: input.crypto,
-      agentId: value.plan.intent.agentId,
-      domainId: domain.domainId,
-      domainEpoch: domain.domainKeyGeneration,
-      expectedAgentAuthorizationRevision: agentAuthorizationRevision,
-      expectedRuntimeGeneration: runtimeGeneration,
-      use: async history => {
+    const publish = async (
+      history: Parameters<Parameters<
+        typeof withProtectedTaskResultSignerHistory
+      >[0]["use"]>[0],
+      agentAuthorizationRevision: number,
+    ) => {
         const signed = await withProtectedTaskTerminalMessageSigner({
           crypto: input.crypto,
           storage,
@@ -264,6 +247,9 @@ export function createProtectedTaskTerminalMessagePublication(
               namespace,
               runtime: signer.runtime,
               signerPublication: signer.signerPublication,
+              ...(signer.temporarySigner === undefined ? {} : {
+                temporarySigner: signer.temporarySigner,
+              }),
               agentAuthorizationRevision: signer.agentAuthorizationRevision,
               resolveHistoricalSignerPublicationManager:
                 history.resolveHistoricalSignerPublicationManager,
@@ -281,7 +267,37 @@ export function createProtectedTaskTerminalMessagePublication(
           return unavailable("Terminal Task Message signer is unavailable");
         }
         return signed.value;
-      },
+    };
+    if (hasTaskRuntimeTemporarySigner(value.evidence)) {
+      return publish({
+        resolveHistoricalRuntimeCommitter: () => null,
+        resolveHistoricalSignerPublicationManager: () => null,
+      }, 0);
+    }
+    const state = await storage.getAgentRuntimeAtomicState(
+      value.plan.intent.agentId,
+    );
+    let agentAuthorizationRevision: number;
+    let runtimeGeneration: number;
+    try {
+      if (state === null
+        || state.runtime.agentId !== value.plan.intent.agentId) {
+        return unavailable("Terminal Task Message Runtime is unavailable");
+      }
+      agentAuthorizationRevision = state.runtime.authorizationRevision;
+      runtimeGeneration = state.runtime.runtimeGeneration;
+    } finally {
+      wipe(state);
+    }
+    return withProtectedTaskResultSignerHistory({
+      handle,
+      crypto: input.crypto,
+      agentId: value.plan.intent.agentId,
+      domainId: domain.domainId,
+      domainEpoch: domain.domainKeyGeneration,
+      expectedAgentAuthorizationRevision: agentAuthorizationRevision,
+      expectedRuntimeGeneration: runtimeGeneration,
+      use: history => publish(history, agentAuthorizationRevision),
     });
   });
   const verifyAllocation = overrides.verifyAllocation ?? (async (

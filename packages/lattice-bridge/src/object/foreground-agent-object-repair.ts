@@ -1,6 +1,7 @@
 import type {
   AgentRuntimeKeyGeneration,
   LatticeCrypto,
+  TaskRuntimePublicationSigning,
 } from "@nautilo/lattice-crypto";
 
 import {
@@ -50,6 +51,7 @@ export function createForegroundAgentObjectRepairer(input: Readonly<{
     signerKeyId: string;
     signerPublicKey: Uint8Array;
     agentAuthorizationRevision: number;
+    taskRuntimeSigner?: TaskRuntimePublicationSigning;
   }>;
   freshPublication?: ForegroundAgentFreshPublication;
   persist(prepared: PreparedDeviceWrappedAgentObject): Promise<
@@ -113,6 +115,9 @@ export function createForegroundAgentObjectRepairer(input: Readonly<{
         signerPublicKey: input.publication.signerPublicKey,
         agentAuthorizationRevision:
           input.publication.agentAuthorizationRevision,
+        ...(input.publication.taskRuntimeSigner === undefined ? {} : {
+          taskRuntimeSigner: input.publication.taskRuntimeSigner,
+        }),
       });
   };
   const protector = createAgentObjectProtector({

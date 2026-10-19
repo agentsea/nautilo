@@ -37,6 +37,8 @@ import {
   type NativeTaskTerminalMessageAuthority,
   type PrepareNativeTaskTerminalMessageInput,
 } from "./native-task-terminal-message-preparation.ts";
+import { taskRuntimeAcceptedResponseIsCurrent } from
+  "./task-runtime-accepted-response-integrity.ts";
 
 const receipts = taskTerminalMessageCryptoStagingReceipts;
 const encoder = new TextEncoder();
@@ -258,6 +260,11 @@ function opaqueAuthority(
     runtimeGeneration: authority.runtimeGeneration,
     agentAuthorizationRevision: authority.agentAuthorizationRevision,
     signerKeyId: authority.signerKeyId,
+    ...(authority.signerAuthorizationHash === undefined ? {} : {
+      signerAuthorizationHash: authority.signerAuthorizationHash,
+      signerHostAuthorizationRevision:
+        authority.signerHostAuthorizationRevision,
+    }),
   });
 }
 
@@ -500,6 +507,16 @@ export async function stageNativeTaskTerminalMessagePublication(
         }).from(table).where(eq(table.requestId, evidence.requestId))
           .limit(2).for("update"));
       const row = rows[0];
+      const acceptedResponseHash = row === undefined ? undefined
+        : bytes(row, "accepted_response_hash");
+      const acceptedResponseCurrent = acceptedResponseHash !== undefined
+        && row?.accepted_response_bytes instanceof Uint8Array
+        && await taskRuntimeAcceptedResponseIsCurrent({
+          crypto: input.preparation.crypto,
+          evidence,
+          acceptedResponseHash,
+          acceptedResponseBytes: row.accepted_response_bytes,
+        });
       if (rows.length !== 1 || row === undefined || row.live !== true
         || row.request_id !== evidence.requestId
         || row.work_id !== evidence.workId
@@ -521,11 +538,7 @@ export async function stageNativeTaskTerminalMessagePublication(
           !== namespaceAccessRevision
         || integer(row, "expected_domain_epoch")
           !== evidence.domainRequirements[0]?.domainKeyGeneration
-        || !equal(bytes(row, "accepted_response_hash"),
-          evidence.authorizationDigest)
-        || !(row.accepted_response_bytes instanceof Uint8Array)
-        || !equal(input.preparation.crypto.hash(row.accepted_response_bytes),
-          evidence.authorizationDigest)) {
+        || !acceptedResponseCurrent) {
         conflict("Terminal Message staging claim is not current");
       }
     };
@@ -614,6 +627,7 @@ export async function stageNativeTaskTerminalMessagePublication(
       snapshot.object.payloadBytes.ciphertext.fill(0);
       snapshot.manifestBytes.fill(0);
       snapshot.manifestHash.fill(0);
+      snapshot.signerEvidenceBytes?.fill(0);
       snapshot.envelopeBytes[0].fill(0);
     }
     current = await assertLive();

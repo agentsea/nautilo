@@ -9,9 +9,11 @@ import {
   type DomainForegroundAuthorityEntry,
 } from "@nautilo/lattice-crypto";
 import {
-  encodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  encodeTaskRuntimeBackgroundAuthorizationRequestV3,
+  encodeTaskRuntimeBackgroundAuthorizationResponseV2,
 } from "@nautilo/lattice-crypto/background";
-import { parseDomainForegroundAuthorizationPlanV2 } from
+import { agentRuntimeObjectSignerKeyIdV1,
+  parseDomainForegroundAuthorizationPlanV2 } from
   "@nautilo/lattice-crypto/wire";
 import { deriveTaskContentCryptoObjectIdV1 } from "@nautilo/lattice-bridge";
 import type { CurrentTaskRuntimeAuthority } from "@nautilo/lattice-bridge/server";
@@ -103,6 +105,7 @@ function fixture(options: Readonly<{
   });
   const recipientPublicKey = new Uint8Array(65).fill(4);
   const currentDomain = domain();
+  const signer = crypto.generateSigningKeyPair();
   const request = plan.buildRequest({
     record: plan.initialRecord,
     attempt: {
@@ -112,23 +115,35 @@ function fixture(options: Readonly<{
       recipientKeyId: `task-cancellation-runtime:${RUN}:0`,
       recipientPublicKey,
       expiresAt: NOW + 60_000,
+      signer: { agentId: AGENT, runtimeGeneration: 0,
+        signerKeyId: agentRuntimeObjectSignerKeyIdV1(crypto, signer.publicKey),
+        signerPublicKey: signer.publicKey },
     },
     binding: { userId: REQUESTER, humanActorId: HUMAN, deviceId: DEVICE },
     authority: {
       device: { userId: REQUESTER, humanActorId: HUMAN, deviceId: DEVICE,
-        deviceGeneration: 2, securityRevision: 3 } as never,
+        deviceGeneration: 2, securityRevision: 3,
+        signingPublicKey: bytes(12),
+        serverInstanceId: "b0000000-0000-4000-8000-00000000000b",
+        lineageGeneration: 1, epoch: 1, headDigest: bytes(13) } as never,
       sourceRoomId: ROOM,
       policyRevision: 7,
       namespaceRequirements: plan.initialRecord.authoritySet.namespaceRequirements,
       domains: [currentDomain],
     },
   });
+  signer.privateKey.fill(0);
+  signer.publicKey.fill(0);
+  const baseRequest = request.baseRequest;
   const foreground = parseDomainForegroundAuthorizationPlanV2(
-    request.authorizationPlanBytes,
+    baseRequest.authorizationPlanBytes,
   );
   if (foreground === null) throw new Error("fixture foreground plan is invalid");
-  const responseBytes = bytes(7);
-  const descriptorBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV1(request);
+  const authorizationBytes = bytes(7);
+  const responseBytes = encodeTaskRuntimeBackgroundAuthorizationResponseV2({
+    authorizationBytes, certificateBytes: bytes(6),
+  });
+  const descriptorBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV3(crypto, request);
   const selected: BackgroundAuthorizationTaskRuntimeRecordV3 = {
     ...plan.initialRecord,
     snapshot: {
@@ -138,9 +153,9 @@ function fixture(options: Readonly<{
       updatedAt: NOW,
       descriptorDigest: createHash("sha256").update(descriptorBytes).digest("hex"),
       recipient: {
-        recipientKeyId: request.recipientKeyId,
+        recipientKeyId: baseRequest.recipientKeyId,
         recipientPublicKey: Buffer.from(recipientPublicKey).toString("base64url"),
-        expiresAt: request.deadlineAt,
+        expiresAt: baseRequest.deadlineAt,
       },
       acceptedResponse: {
         kind: "runtime",
@@ -155,7 +170,7 @@ function fixture(options: Readonly<{
     descriptorBytes,
     acceptedMaterial: {
       responseBytes,
-      credentialId: request.requestId,
+      credentialId: baseRequest.requestId,
       issuingDeviceAuthorizationRevision: authorizationRevision(3),
       issuerSigningPublicKeyHash: bytes(8),
       authorizationExpiresAt: NOW + 60_000,
@@ -280,6 +295,12 @@ function fixture(options: Readonly<{
             operations: ["encrypt"], expectedAccessRevision: 3,
             expectedPolicyRevision: 7 },
         });
+        expect(operation.certifiedSigning?.expectedPublication).toMatchObject({
+          kind: "task.cancel_result", taskId: TASK, taskRunId: RUN,
+          contentRevision: 2,
+        });
+        expect(operation.certifiedSigning?.expectedPublication.workIdentityHash)
+          .toEqual(plan.initialRecord.workIdentityHash);
         state.publicSigning = operation.current.committerDeviceSigningPublicKey;
         state.publicParticipant = operation.current.domains[0]!.participantDigest;
         if (options.registryUnavailable) {

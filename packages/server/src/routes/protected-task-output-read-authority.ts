@@ -11,6 +11,7 @@ import { lockAtomicProjectionDestinationAuthority, fingerprintProjectionAudience
 import { protectedTaskProjectionDestinationAuthorityDigest, type ProtectedTaskProjectionPlanDestination } from "./protected-task-memory-projection-plan";
 import type { ForegroundMemoryProjectionDestination } from "./foreground-memory-repository";
 import {
+  decodeTaskRuntimeBackgroundAuthorizationRequestBase,
   decodeTaskRuntimeBackgroundAuthorizationRequestV1,
   destroyTaskRuntimeBackgroundAuthorizationRequestV1,
   encodeTaskRuntimeBackgroundAuthorizationRequestV1,
@@ -512,7 +513,10 @@ export function createProtectedTaskOutputReadAuthorityPort(
         namespaceRequirements: copyNamespaces(input.accepted.namespaceRequirements),
         domainRequirements: Object.freeze(input.accepted.domainRequirements.map(d => Object.freeze({ ...d }))) });
       try {
-        const request = decodeTaskRuntimeBackgroundAuthorizationRequestV1(record.descriptorBytes);
+        const request = decodeTaskRuntimeBackgroundAuthorizationRequestBase(
+          crypto,
+          record.descriptorBytes,
+        );
         if (request === null) return null;
         let current: (Prepared & Readonly<{ subject: TaskRuntimeAuthoritySubject }>) | null;
         try {
@@ -578,7 +582,10 @@ export function createProtectedTaskOutputReadAuthorityPort(
         namespaceRequirements: copyNamespaces(input.accepted.namespaceRequirements),
         domainRequirements: Object.freeze(input.accepted.domainRequirements.map(d => Object.freeze({ ...d }))) });
       try {
-        const request = decodeTaskRuntimeBackgroundAuthorizationRequestV1(record.descriptorBytes);
+        const request = decodeTaskRuntimeBackgroundAuthorizationRequestBase(
+          crypto,
+          record.descriptorBytes,
+        );
         if (request === null) return null;
         let current: (Prepared & Readonly<{ subject: TaskRuntimeAuthoritySubject }>) | null;
         try {

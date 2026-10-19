@@ -752,14 +752,19 @@ export class InMemoryV2Store implements V2Storage {
             === "device-wrapped-live-shadow-agent-genesis-set"
         ) {
           const context = authorization.context;
+          const signerEvidence = authorization.signerEvidence;
           if (
             intendedManifest.formatVersion !== 5
+            || (signerEvidence !== undefined && (intendedManifest.formatVersion !== 5
+              || intendedManifest.signerAuthorizationHash === null
+              || context.signerAuthorizationHash === undefined
+              || !equalBytes(intendedManifest.signerAuthorizationHash, context.signerAuthorizationHash)))
             || intendedManifest.accessRevision !== 0
             || intendedManifest.previousManifestHash !== null
             || intendedManifest.objectId !== context.objectId
             || !equalBytes(intendedManifest.payloadHash, context.payloadHash)
             || intendedManifest.hostAuthorizationRevision
-              !== context.agentAuthorizationRevision
+              !== (signerEvidence?.hostAuthorizationRevision ?? context.agentAuthorizationRevision)
             || intendedManifest.signer.kind !== "agent_runtime"
             || intendedManifest.signer.agentId !== context.agentId
             || intendedManifest.signer.runtimeGeneration
@@ -780,13 +785,19 @@ export class InMemoryV2Store implements V2Storage {
             === "device-wrapped-live-shadow-agent-genesis"
         ) {
           const context = authorization.context;
+          const signerEvidence = authorization.signerEvidence;
           if (
-            intendedManifest.formatVersion !== 3
+            intendedManifest.formatVersion !== (signerEvidence === undefined ? 3 : 5)
+            || (signerEvidence !== undefined && (intendedManifest.formatVersion !== 5
+              || intendedManifest.signerAuthorizationHash === null
+              || context.signerAuthorizationHash === undefined
+              || !equalBytes(intendedManifest.signerAuthorizationHash, context.signerAuthorizationHash)))
             || intendedManifest.accessRevision !== 0
             || intendedManifest.objectId !== context.objectId
             || !equalBytes(intendedManifest.payloadHash, context.payloadHash)
             || intendedManifest.hostAuthorizationRevision
-              !== context.agentAuthorizationRevision
+              !== (signerEvidence?.hostAuthorizationRevision ?? context.agentAuthorizationRevision)
+            || intendedManifest.signer.kind !== "agent_runtime"
             || intendedManifest.signer.agentId !== context.agentId
             || intendedManifest.signer.runtimeGeneration
               !== context.runtimeGeneration

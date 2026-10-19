@@ -4,7 +4,12 @@ import {
   type LatticeCrypto,
 } from "@nautilo/lattice-crypto";
 import {
-  createTaskRuntimeSignerAuthorizationV1,
+  createTaskRuntimeSignerAuthorization,
+  decodeTaskRuntimeBackgroundAuthorizationRequestV3,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV3,
+  isTaskRuntimeBackgroundAuthorizationRequestV3Carrier,
+  taskRuntimeBackgroundAuthorizationIssuerV3,
+  type TaskRuntimeBackgroundAuthorizationRequestV3,
   decodeTaskRuntimeBackgroundAuthorizationRequestV2,
   decodeTaskRuntimeBackgroundAuthorizationRequestV1,
   destroyTaskRuntimeBackgroundAuthorizationRequestV2,
@@ -155,20 +160,17 @@ export async function tryRespondToCurrentTaskRuntimeAuthorizationV1(
     return Object.freeze({ status: "not_task_runtime" as const });
   }
   const requestBytes = Uint8Array.from(input.requestBytes);
-  let requestV2: TaskRuntimeBackgroundAuthorizationRequestV2 | null =
-    decodeTaskRuntimeBackgroundAuthorizationRequestV2(
-      input.crypto,
-      requestBytes,
-    );
-  if (requestV2 === null
-    && isTaskRuntimeBackgroundAuthorizationRequestV2Carrier(requestBytes)) {
+  const recognizedV3 = isTaskRuntimeBackgroundAuthorizationRequestV3Carrier(requestBytes);
+  let certifiedRequest: TaskRuntimeBackgroundAuthorizationRequestV2
+    | TaskRuntimeBackgroundAuthorizationRequestV3 | null = recognizedV3
+    ? decodeTaskRuntimeBackgroundAuthorizationRequestV3(input.crypto, requestBytes)
+    : decodeTaskRuntimeBackgroundAuthorizationRequestV2(input.crypto, requestBytes);
+  if (certifiedRequest === null
+    && (recognizedV3 || isTaskRuntimeBackgroundAuthorizationRequestV2Carrier(requestBytes))) {
     requestBytes.fill(0);
-    return Object.freeze({
-      status: "unavailable" as const,
-      reason: "invalid_descriptor" as const,
-    });
+    return Object.freeze({ status: "unavailable" as const, reason: "invalid_descriptor" as const });
   }
-  const request = requestV2?.baseRequest
+  const request = certifiedRequest?.baseRequest
     ?? decodeTaskRuntimeBackgroundAuthorizationRequestV1(requestBytes);
   if (request === null) {
     requestBytes.fill(0);
@@ -190,8 +192,10 @@ export async function tryRespondToCurrentTaskRuntimeAuthorizationV1(
         reason: "invalid_descriptor" as const,
       });
     }
-    if (requestV2 !== null) {
-      requestIssuer = taskRuntimeBackgroundAuthorizationIssuerV2(requestV2);
+    if (certifiedRequest !== null) {
+      requestIssuer = certifiedRequest.formatVersion === 3
+        ? taskRuntimeBackgroundAuthorizationIssuerV3(certifiedRequest)
+        : taskRuntimeBackgroundAuthorizationIssuerV2(certifiedRequest);
     }
 
     let opened;
@@ -256,14 +260,14 @@ export async function tryRespondToCurrentTaskRuntimeAuthorizationV1(
                   try {
                     const authorizationBytes =
                       serializeDomainForegroundAuthorizationV2(authorization);
-                    if (requestV2 === null) {
+                    if (certifiedRequest === null) {
                       candidateResponse = authorizationBytes;
                     } else {
                       let authorizationHash: Uint8Array | undefined;
                       let certificateBytes: Uint8Array | undefined;
                       try {
                         authorizationHash = input.crypto.hash(authorizationBytes);
-                        certificateBytes = createTaskRuntimeSignerAuthorizationV1(
+                        certificateBytes = createTaskRuntimeSignerAuthorization(
                           input.crypto,
                           {
                             requestBytes,
@@ -354,9 +358,10 @@ export async function tryRespondToCurrentTaskRuntimeAuthorizationV1(
     requestIssuer?.headDigest.fill(0);
     requestIssuer?.signingPublicKeyHash.fill(0);
     if (plan !== null) destroyDomainForegroundAuthorizationPlanV2(plan);
-    if (requestV2 !== null) {
-      destroyTaskRuntimeBackgroundAuthorizationRequestV2(requestV2);
-      requestV2 = null;
+    if (certifiedRequest !== null) {
+      if (certifiedRequest.formatVersion === 3) destroyTaskRuntimeBackgroundAuthorizationRequestV3(certifiedRequest);
+      else destroyTaskRuntimeBackgroundAuthorizationRequestV2(certifiedRequest);
+      certifiedRequest = null;
     } else {
       destroyTaskRuntimeBackgroundAuthorizationRequestV1(request);
     }

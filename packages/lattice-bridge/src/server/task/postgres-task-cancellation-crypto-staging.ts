@@ -26,6 +26,8 @@ import {
 } from "./postgres-task-content-crypto-completion.ts";
 import { prepareNativeTaskRuntimeCancelledRunResult,
   type PrepareNativeTaskRuntimeCancelledRunResultInput } from "./native-task-run-result-preparation.ts";
+import { taskRuntimeAcceptedResponseIsCurrent } from
+  "./task-runtime-accepted-response-integrity.ts";
 
 type Intent = ProtectedTaskCancellationOutputIntent;
 type History = Pick<Parameters<typeof createPostgresTaskContentCryptoCompletion>[0],
@@ -238,6 +240,16 @@ export async function stageNativeTaskCancellationPublication(
           and to_timestamp(${Math.min(evidence.claimExpiresAt, evidence.expiresAt, evidence.recipientExpiresAt)} / 1000.0) > clock_timestamp()`.as("live"),
       }).from(table).where(eq(table.requestId, evidence.requestId)).limit(2).for("update"));
       const row = rows[0];
+      const acceptedResponseHash = row === undefined ? undefined
+        : bytes(row, "accepted_response_hash");
+      const acceptedResponseCurrent = acceptedResponseHash !== undefined
+        && row?.accepted_response_bytes instanceof Uint8Array
+        && await taskRuntimeAcceptedResponseIsCurrent({
+          crypto: preparation.crypto,
+          evidence,
+          acceptedResponseHash,
+          acceptedResponseBytes: row.accepted_response_bytes,
+        });
       if (rows.length !== 1 || row === undefined || row.live !== true
         || row.request_id !== evidence.requestId || row.work_id !== intent.taskRunId
         || row.work_kind !== "task.cancel_result" || row.purpose !== "task.cancel_result"
@@ -251,9 +263,7 @@ export async function stageNativeTaskCancellationPublication(
         || integer(row, "expected_domain_epoch") !== evidence.domainRequirements[0].domainKeyGeneration
         || integer(row, "expected_namespace_access_revision") !== authority.expectedAccessRevision
         || row.idempotency_key !== stableKey(intent)
-        || !equal(bytes(row, "accepted_response_hash"), evidence.authorizationDigest)
-        || !(row.accepted_response_bytes instanceof Uint8Array)
-        || !equal(preparation.crypto.hash(row.accepted_response_bytes), evidence.authorizationDigest)) {
+        || !acceptedResponseCurrent) {
         conflict("Cancellation staging claim is not current");
       }
     };

@@ -18,10 +18,20 @@ import {
   assertAuthenticTaskRuntimeCancellationResultEvidenceV1,
   type TaskRuntimeTemporarySignerV1,
   type TaskRuntimeCancellationResultEvidenceV1,
+  type TaskRuntimeTemporarySignerEvidenceV1,
 } from "../background/task-runtime-recipient-registry-v1.ts";
 import {
-  destroyVerifiedTaskRuntimeSignerAuthorizationV1,
-  verifyHistoricalTaskRuntimeSignerAuthorizationV1,
+  assertAuthenticTaskRuntimeRunResultReadEvidenceV1,
+} from "../background/task-runtime-run-result-read-evidence-v1.ts";
+import {
+  assertAuthenticTaskRuntimeTerminalMessageEvidenceV1,
+} from "../background/task-runtime-terminal-message-evidence-v1.ts";
+import {
+  assertAuthenticTaskRuntimeWakeForegroundEvidenceV1,
+} from "../background/task-runtime-wake-foreground-evidence-v1.ts";
+import {
+  destroyVerifiedTaskRuntimeSignerAuthorization,
+  verifyHistoricalTaskRuntimeSignerAuthorization,
 } from "../background/task-runtime-signer-authorization-v1.ts";
 import type { LatticeCrypto } from "../crypto/index.ts";
 import {
@@ -72,6 +82,84 @@ function assertResultEvidence(evidence: ResultEvidence): void {
     assertAuthenticTaskRuntimeCancellationResultEvidenceV1(evidence);
   } else {
     assertAuthenticTaskRuntimeExecutionEvidenceV1(evidence);
+  }
+}
+
+function assertTemporarySignerPreparationEvidence(
+  evidence: TaskRuntimeTemporarySignerEvidenceV1,
+): void {
+  switch (evidence.purpose) {
+    case "task.runtime.execution":
+      assertAuthenticTaskRuntimeExecutionEvidenceV1(evidence);
+      break;
+    case "task.runtime.cancellation_result":
+      assertAuthenticTaskRuntimeCancellationResultEvidenceV1(evidence);
+      break;
+    case "task.runtime.terminal_message":
+      assertAuthenticTaskRuntimeTerminalMessageEvidenceV1(evidence);
+      break;
+    case "task.runtime.run_result_read":
+      assertAuthenticTaskRuntimeRunResultReadEvidenceV1(evidence);
+      break;
+    case "task.runtime.wake_foreground":
+      assertAuthenticTaskRuntimeWakeForegroundEvidenceV1(evidence);
+      break;
+  }
+}
+
+function taskRuntimePublicationWorkMatchesEvidence(
+  projection: Extract<
+    ReturnType<typeof verifyHistoricalTaskRuntimeSignerAuthorization>["projection"],
+    { formatVersion: 2 }
+  >,
+  evidence: Exclude<
+    TaskRuntimeTemporarySignerEvidenceV1,
+    TaskRuntimeExecutionEvidenceV1
+  >,
+): boolean {
+  const work = projection.work;
+  switch (evidence.purpose) {
+    case "task.runtime.cancellation_result":
+      return work.kind === "task.cancel_result"
+        && work.taskId === evidence.result.taskId
+        && work.taskRunId === evidence.result.taskRunId
+        && work.contentRevision === 2;
+    case "task.runtime.terminal_message":
+      return work.kind === "task.deliver_message"
+        && work.taskId === evidence.message.taskId
+        && work.taskRunId === evidence.message.taskRunId
+        && work.contentRevision === 2
+        && work.messageObjectId === evidence.message.objectId;
+    case "task.runtime.run_result_read":
+      return evidence.workKind === "task.deliver_result"
+        && evidence.invocation.kind === "raw"
+        && evidence.result.contentRevision === 1
+        && work.kind === "task.deliver_result"
+        && work.taskId === evidence.result.taskId
+        && work.taskRunId === evidence.result.taskRunId
+        && work.contentRevision === 1;
+    case "task.runtime.wake_foreground":
+      return work.kind === "task.delivery_wake"
+        && work.taskId === evidence.invocation.reference.taskId
+        && work.taskRunId === evidence.invocation.reference.taskRunId
+        && work.contentRevision === evidence.sourceContentRevision
+        && work.jobId === evidence.invocation.jobId;
+  }
+}
+
+function taskRuntimeEvidenceSignerAgentId(
+  evidence: TaskRuntimeTemporarySignerEvidenceV1,
+): string {
+  switch (evidence.purpose) {
+    case "task.runtime.execution":
+    case "task.runtime.cancellation_result":
+      return evidence.result.signerAgentId;
+    case "task.runtime.terminal_message":
+      return evidence.message.signerAgentId;
+    case "task.runtime.run_result_read":
+      return evidence.result.signerAgentId;
+    case "task.runtime.wake_foreground":
+      return evidence.signerAgentId;
   }
 }
 
@@ -173,7 +261,7 @@ function sameIssuer(
 
 export function assertTaskRuntimeTemporarySignerForPreparationV1(
   crypto: LatticeCrypto,
-  evidence: TaskRuntimeExecutionEvidenceV1,
+  evidence: TaskRuntimeTemporarySignerEvidenceV1,
   runtime: AgentRuntimeGenerationV2,
   signer: TaskRuntimeTemporarySignerV1,
 ): Readonly<{
@@ -181,12 +269,13 @@ export function assertTaskRuntimeTemporarySignerForPreparationV1(
   certificateHash: Uint8Array;
   hostAuthorizationRevision: number;
 }> {
+  assertTemporarySignerPreparationEvidence(evidence);
   let verified: ReturnType<
-    typeof verifyHistoricalTaskRuntimeSignerAuthorizationV1
+    typeof verifyHistoricalTaskRuntimeSignerAuthorization
   > | undefined;
   const derived = deriveAgentRuntimeObjectSignerPublicV1(crypto, signer.runtime);
   try {
-    verified = verifyHistoricalTaskRuntimeSignerAuthorizationV1(crypto, {
+    verified = verifyHistoricalTaskRuntimeSignerAuthorization(crypto, {
       certificateBytes: signer.certificateBytes,
       resolveHistoricalIssuer: context =>
         sameBytes(
@@ -200,9 +289,16 @@ export function assertTaskRuntimeTemporarySignerForPreparationV1(
           && sameIssuer(context.issuer, signer.issuer)
           ? signer.issuerSigningPublicKey
           : null,
-    });
+    }, evidence.purpose === "task.runtime.execution" ? 1 : 2);
     const projection = verified.projection;
     const request = projection.request;
+    const workMatches = evidence.purpose === "task.runtime.execution"
+      ? projection.formatVersion === 1
+        && projection.work.taskRunId === evidence.workId
+        && projection.work.taskId === evidence.result.taskId
+        && projection.work.resultObjectId === evidence.result.objectId
+      : projection.formatVersion === 2
+        && taskRuntimePublicationWorkMatchesEvidence(projection, evidence);
     if (
       runtime.agentId !== signer.runtime.agentId
       || runtime.generation !== signer.runtime.generation
@@ -232,11 +328,8 @@ export function assertTaskRuntimeTemporarySignerForPreparationV1(
       || request.recipientKeyId !== evidence.recipientKeyId
       || request.policyRevision !== evidence.policyRevision
       || request.deadlineAt !== evidence.recipientExpiresAt
-      || projection.work.taskRunId !== evidence.workId
-      || projection.work.taskId !== evidence.result.taskId
-      || projection.work.taskRunId !== evidence.result.taskRunId
-      || projection.work.resultObjectId !== evidence.result.objectId
-      || projection.signer.agentId !== evidence.result.signerAgentId
+      || !workMatches
+      || projection.signer.agentId !== taskRuntimeEvidenceSignerAgentId(evidence)
       || verified.issuer.securityRevision !== evidence.hostAuthorizationRevision
     ) throw new TypeError("Task Runtime temporary signer authority was substituted");
     return Object.freeze({
@@ -247,7 +340,7 @@ export function assertTaskRuntimeTemporarySignerForPreparationV1(
   } finally {
     derived.publicKey.fill(0);
     if (verified !== undefined) {
-      destroyVerifiedTaskRuntimeSignerAuthorizationV1(verified);
+      destroyVerifiedTaskRuntimeSignerAuthorization(verified);
     }
   }
 }
@@ -351,9 +444,6 @@ function preparationSigner(
     throw new TypeError("Task result preparation requires exactly one signer authority");
   }
   if (temporary !== undefined) {
-    if (evidence.purpose !== "task.runtime.execution") {
-      throw new TypeError("Cancellation publication cannot use a temporary signer");
-    }
     if (input.agentAuthorizationRevision !== 0) {
       throw new TypeError("Temporary Task Runtime Agent authorization revision must be zero");
     }

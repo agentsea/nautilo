@@ -13,14 +13,23 @@ import {
   frameText,
   utf8V2,
 } from "../format/v2-primitives.ts";
-import { agentRuntimeObjectSignerKeyIdV1 } from "../agent-runtime/object-signer-v1.ts";
-import { compareUnsignedUtf8 } from "../domain/participants.ts";
 import { assertPortableId, assertU64Counter } from "../v2-types/ids.ts";
 import { V2_LIMITS } from "../v2-types/limits.ts";
 import { copyOwnedBytesV2 } from "../v2-types/opaque.ts";
 import type { BackgroundAuthorizationIssuerV2 } from "./processor-authorization-v2.ts";
 import type { TaskRuntimeExecutionNamespaceAuthorityV1 } from
   "./task-runtime-execution-evidence-v1.ts";
+import {
+  destroyTaskRuntimeRequestAuthorityV2,
+  encodeTaskRuntimeRequestAuthorityV2,
+  MAX_TASK_RUNTIME_REQUEST_AUTHORITY_WIRE_BYTES_V2,
+  normalizeTaskRuntimeRequestAuthorityV2,
+  readTaskRuntimeRequestAuthorityV2,
+  taskRuntimeRequestAuthorityIssuerV2,
+  type TaskRuntimeDeviceGroupHeadV2,
+  type TaskRuntimeEphemeralSignerV2,
+  type TaskRuntimeRequestAuthorityV2,
+} from "./task-runtime-request-authority.ts";
 import {
   decodeTaskRuntimeBackgroundAuthorizationRequestV1,
   destroyTaskRuntimeBackgroundAuthorizationRequestV1,
@@ -43,19 +52,14 @@ const TASK_DEFINITION_OBJECT_ID =
   /^(?:task-definition|task-historical):v1:[0-9a-f]{64}$/u;
 const TASK_RUN_RESULT_OBJECT_ID_DOMAIN =
   "nautilo/task-run-result-crypto-object/v1";
-const MAX_OPERATION_BYTES = utf8V2("decrypt").length;
 const MAX_ID_FRAME_BYTES = 4 + V2_LIMITS.idBytes;
-const MAX_NAMESPACE_REQUIREMENT_BYTES = 8 + MAX_ID_FRAME_BYTES * 2
-  + 4 + 2 * (4 + MAX_OPERATION_BYTES) + 8 + 8;
 
 export const MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V2 =
   4 + utf8V2(REQUEST_DOMAIN).length + 4
   + 4 + utf8V2(TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_PURPOSE_V2).length
   + 4 + MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V1
   + MAX_ID_FRAME_BYTES * 4 + 8 + 4 + HASH_BYTES
-  + MAX_ID_FRAME_BYTES * 2 + 8 + 4 + V2_LIMITS.signingPublicKeyBytes
-  + MAX_ID_FRAME_BYTES + 8 + 8 + 4 + HASH_BYTES + 4 + HASH_BYTES
-  + 4 + V2_LIMITS.agentGrantNamespaces * MAX_NAMESPACE_REQUIREMENT_BYTES;
+  + MAX_TASK_RUNTIME_REQUEST_AUTHORITY_WIRE_BYTES_V2;
 
 export type TaskRuntimeExecutionWorkBindingV2 = Readonly<{
   taskId: string;
@@ -66,20 +70,10 @@ export type TaskRuntimeExecutionWorkBindingV2 = Readonly<{
   workIdentityHash: Uint8Array;
 }>;
 
-export type TaskRuntimeEphemeralSignerV2 = Readonly<{
-  agentId: string;
-  runtimeGeneration: 0;
-  signerKeyId: string;
-  signerPublicKey: Uint8Array;
-}>;
-
-export type TaskRuntimeDeviceGroupHeadV2 = Readonly<{
-  serverInstanceId: string;
-  lineageGeneration: number;
-  epoch: number;
-  headDigest: Uint8Array;
-  signingPublicKeyHash: Uint8Array;
-}>;
+export type {
+  TaskRuntimeDeviceGroupHeadV2,
+  TaskRuntimeEphemeralSignerV2,
+} from "./task-runtime-request-authority.ts";
 
 export interface TaskRuntimeBackgroundAuthorizationRequestV2 {
   readonly formatVersion:
@@ -125,20 +119,6 @@ function exactFields(label: string, value: object, expected: readonly string[]):
   }
 }
 
-function operations(
-  value: readonly ("decrypt" | "encrypt")[],
-): readonly ("decrypt" | "encrypt")[] {
-  if (!Array.isArray(value as unknown)
-    || (value.length !== 1 && value.length !== 2)
-    || (value.length === 1
-      && value[0] !== "decrypt" && value[0] !== "encrypt")
-    || (value.length === 2
-      && (value[0] !== "decrypt" || value[1] !== "encrypt"))) {
-    throw new TypeError("Task Runtime Namespace operations are invalid");
-  }
-  return Object.freeze([...value]);
-}
-
 function normalize(
   crypto: Pick<LatticeCrypto, "hash">,
   value: TaskRuntimeBackgroundAuthorizationRequestV2,
@@ -163,10 +143,7 @@ function normalize(
     baseRequest.authorizationPlanBytes,
   );
   let workIdentityHash: Uint8Array | undefined;
-  let signerPublicKey: Uint8Array | undefined;
-  let headDigest: Uint8Array | undefined;
-  let signingPublicKeyHash: Uint8Array | undefined;
-  const requirements: TaskRuntimeExecutionNamespaceAuthorityV1[] = [];
+  let authority: TaskRuntimeRequestAuthorityV2 | undefined;
   try {
     const executionWorkKind = baseRequest.workKind === "task.execute"
       || baseRequest.workKind === "task.approval_resume"
@@ -199,76 +176,7 @@ function normalize(
     workIdentityHash = bytes(
       "Task Runtime work identity hash", value.work.workIdentityHash, HASH_BYTES,
     );
-    exactFields("Task Runtime ephemeral signer", value.signer, [
-      "agentId", "runtimeGeneration", "signerKeyId", "signerPublicKey",
-    ]);
-    if (value.signer.runtimeGeneration !== 0) {
-      throw new TypeError("Task Runtime ephemeral signer generation is unsupported");
-    }
-    signerPublicKey = bytes(
-      "Task Runtime signer public key",
-      value.signer.signerPublicKey,
-      V2_LIMITS.signingPublicKeyBytes,
-    );
-    if (value.signer.signerKeyId
-      !== agentRuntimeObjectSignerKeyIdV1(crypto, signerPublicKey)) {
-      throw new TypeError("Task Runtime signer key ID disagrees with its public key");
-    }
-    exactFields("Task Runtime Device Group head", value.deviceGroupHead, [
-      "serverInstanceId", "lineageGeneration", "epoch", "headDigest",
-      "signingPublicKeyHash",
-    ]);
-    headDigest = bytes(
-      "Task Runtime Device Group head digest",
-      value.deviceGroupHead.headDigest,
-      HASH_BYTES,
-    );
-    signingPublicKeyHash = bytes(
-      "Task Runtime Device signing public key hash",
-      value.deviceGroupHead.signingPublicKeyHash,
-      HASH_BYTES,
-    );
-    if (!Array.isArray(value.namespaceRequirements as unknown)
-      || value.namespaceRequirements.length < 1
-      || value.namespaceRequirements.length > V2_LIMITS.agentGrantNamespaces) {
-      throw new RangeError("Task Runtime Namespace requirements exceed capacity");
-    }
-    for (const [index, requirement] of value.namespaceRequirements.entries()) {
-      exactFields("Task Runtime Namespace requirement", requirement, [
-        "ordinal", "namespaceId", "domainId", "operations",
-        "expectedAccessRevision", "expectedPolicyRevision",
-      ]);
-      const selectedOperations = operations(requirement.operations);
-      if (requirement.ordinal !== index
-        || (index > 0 && compareUnsignedUtf8(
-          value.namespaceRequirements[index - 1]!.namespaceId,
-          requirement.namespaceId,
-        ) >= 0)
-        || requirement.expectedPolicyRevision !== plan.policyRevision
-        || !plan.domains.some((domain) => domain.domainId === requirement.domainId)
-        || selectedOperations.some((operation) =>
-          !plan!.operations.includes(operation))) {
-        throw new TypeError("Task Runtime Namespace requirement exceeds its Domain plan");
-      }
-      requirements.push(Object.freeze({
-        ordinal: counter("Task Runtime Namespace ordinal", requirement.ordinal),
-        namespaceId: portable("Task Runtime Namespace ID", requirement.namespaceId),
-        domainId: portable("Task Runtime Namespace Domain ID", requirement.domainId),
-        operations: selectedOperations,
-        expectedAccessRevision: counter(
-          "Task Runtime Namespace access revision",
-          requirement.expectedAccessRevision,
-        ),
-        expectedPolicyRevision: counter(
-          "Task Runtime Namespace policy revision",
-          requirement.expectedPolicyRevision,
-        ),
-      }));
-    }
-    if (new Set(requirements.map((entry) => entry.namespaceId)).size
-      !== requirements.length) {
-      throw new TypeError("Task Runtime Namespace requirements must be unique");
-    }
+    authority = normalizeTaskRuntimeRequestAuthorityV2(crypto, plan, value);
     return Object.freeze({
       formatVersion: TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_FORMAT_VERSION_V2,
       purpose: TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_PURPOSE_V2,
@@ -281,31 +189,12 @@ function normalize(
         executionSegment,
         workIdentityHash,
       }),
-      signer: Object.freeze({
-        agentId: portable("Task Runtime signer Agent ID", value.signer.agentId),
-        runtimeGeneration: 0,
-        signerKeyId: portable("Task Runtime signer key ID", value.signer.signerKeyId),
-        signerPublicKey,
-      }),
-      deviceGroupHead: Object.freeze({
-        serverInstanceId: portable(
-          "Task Runtime server instance ID", value.deviceGroupHead.serverInstanceId,
-        ),
-        lineageGeneration: counter(
-          "Task Runtime lineage generation", value.deviceGroupHead.lineageGeneration,
-        ),
-        epoch: counter("Task Runtime Device Group epoch", value.deviceGroupHead.epoch),
-        headDigest,
-        signingPublicKeyHash,
-      }),
-      namespaceRequirements: Object.freeze(requirements),
+      ...authority,
     });
   } catch (error) {
     destroyTaskRuntimeBackgroundAuthorizationRequestV1(baseRequest);
     workIdentityHash?.fill(0);
-    signerPublicKey?.fill(0);
-    headDigest?.fill(0);
-    signingPublicKeyHash?.fill(0);
+    if (authority !== undefined) destroyTaskRuntimeRequestAuthorityV2(authority);
     throw error;
   } finally {
     if (plan !== null) destroyDomainForegroundAuthorizationPlanV2(plan);
@@ -315,6 +204,7 @@ function normalize(
 
 function requestBytes(value: TaskRuntimeBackgroundAuthorizationRequestV2): Uint8Array {
   const baseBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV1(value.baseRequest);
+  const authorityBytes = encodeTaskRuntimeRequestAuthorityV2(value);
   try {
     return concatV2(
       frameText(REQUEST_DOMAIN), encodeU32(value.formatVersion),
@@ -323,22 +213,11 @@ function requestBytes(value: TaskRuntimeBackgroundAuthorizationRequestV2): Uint8
       frameText(value.work.inputObjectId), frameText(value.work.resultObjectId),
       encodeU64(value.work.executionSegment),
       frame(value.work.workIdentityHash),
-      frameText(value.signer.agentId), encodeU64(value.signer.runtimeGeneration),
-      frameText(value.signer.signerKeyId), frame(value.signer.signerPublicKey),
-      frameText(value.deviceGroupHead.serverInstanceId),
-      encodeU64(value.deviceGroupHead.lineageGeneration),
-      encodeU64(value.deviceGroupHead.epoch), frame(value.deviceGroupHead.headDigest),
-      frame(value.deviceGroupHead.signingPublicKeyHash),
-      encodeU32(value.namespaceRequirements.length),
-      ...value.namespaceRequirements.flatMap((entry) => [
-        encodeU64(entry.ordinal), frameText(entry.namespaceId), frameText(entry.domainId),
-        encodeU32(entry.operations.length), ...entry.operations.map(frameText),
-        encodeU64(entry.expectedAccessRevision),
-        encodeU64(entry.expectedPolicyRevision),
-      ]),
+      authorityBytes,
     );
   } finally {
     baseBytes.fill(0);
+    authorityBytes.fill(0);
   }
 }
 
@@ -384,6 +263,8 @@ export function decodeTaskRuntimeBackgroundAuthorizationRequestV2(
       const baseRequest = decodeTaskRuntimeBackgroundAuthorizationRequestV1(baseBytes);
       baseBytes.fill(0);
       if (baseRequest === null) throw new TypeError("Task Runtime base request is invalid");
+      let workIdentityHash: Uint8Array | undefined;
+      let authority: TaskRuntimeRequestAuthorityV2 | undefined;
       try {
         const work = {
           taskId: reader.readText(V2_LIMITS.idBytes),
@@ -391,39 +272,18 @@ export function decodeTaskRuntimeBackgroundAuthorizationRequestV2(
           inputObjectId: reader.readText(V2_LIMITS.idBytes),
           resultObjectId: reader.readText(V2_LIMITS.idBytes),
           executionSegment: reader.readU64(),
-          workIdentityHash: reader.readFrame(HASH_BYTES),
+          workIdentityHash: workIdentityHash = reader.readFrame(HASH_BYTES),
         };
-        const signer = {
-          agentId: reader.readText(V2_LIMITS.idBytes),
-          runtimeGeneration: reader.readU64() as 0,
-          signerKeyId: reader.readText(V2_LIMITS.idBytes),
-          signerPublicKey: reader.readFrame(V2_LIMITS.signingPublicKeyBytes),
-        };
-        const deviceGroupHead = {
-          serverInstanceId: reader.readText(V2_LIMITS.idBytes),
-          lineageGeneration: reader.readU64(), epoch: reader.readU64(),
-          headDigest: reader.readFrame(HASH_BYTES),
-          signingPublicKeyHash: reader.readFrame(HASH_BYTES),
-        };
-        const namespaceRequirements = Array.from(
-          { length: reader.readCount(V2_LIMITS.agentGrantNamespaces) },
-          () => ({
-            ordinal: reader.readU64(),
-            namespaceId: reader.readText(V2_LIMITS.idBytes),
-            domainId: reader.readText(V2_LIMITS.idBytes),
-            operations: Array.from({ length: reader.readCount(2) }, () =>
-              reader.readText(MAX_OPERATION_BYTES) as "decrypt" | "encrypt"),
-            expectedAccessRevision: reader.readU64(),
-            expectedPolicyRevision: reader.readU64(),
-          }),
-        );
+        authority = readTaskRuntimeRequestAuthorityV2(reader);
         return normalize(crypto, {
           formatVersion: TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_FORMAT_VERSION_V2,
           purpose: TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_PURPOSE_V2,
-          baseRequest, work, signer, deviceGroupHead, namespaceRequirements,
+          baseRequest, work, ...authority,
         });
       } finally {
         destroyTaskRuntimeBackgroundAuthorizationRequestV1(baseRequest);
+        workIdentityHash?.fill(0);
+        if (authority !== undefined) destroyTaskRuntimeRequestAuthorityV2(authority);
       }
     });
     const canonical = requestBytes(value);
@@ -477,45 +337,7 @@ export function taskRuntimeBackgroundAuthorizationIssuerV2(
     value.baseRequest,
   );
   baseBytes.fill(0);
-  const plan = parseDomainForegroundAuthorizationPlanV2(
-    value.baseRequest.authorizationPlanBytes,
-  );
-  if (plan === null) throw new TypeError("Task Runtime authorization plan is invalid");
-  let headDigest: Uint8Array | undefined;
-  let signingPublicKeyHash: Uint8Array | undefined;
-  try {
-    headDigest = bytes(
-      "Task Runtime Device Group head digest",
-      value.deviceGroupHead.headDigest,
-      HASH_BYTES,
-    );
-    signingPublicKeyHash = bytes(
-      "Task Runtime Device signing public key hash",
-      value.deviceGroupHead.signingPublicKeyHash,
-      HASH_BYTES,
-    );
-    return Object.freeze({
-      humanId: plan.subjectHumanId,
-      deviceId: plan.committerDeviceId,
-      deviceGeneration: plan.committerDeviceSigningGeneration,
-      serverInstanceId: portable(
-        "Task Runtime server instance ID", value.deviceGroupHead.serverInstanceId,
-      ),
-      lineageGeneration: counter(
-        "Task Runtime lineage generation", value.deviceGroupHead.lineageGeneration,
-      ),
-      epoch: counter("Task Runtime Device Group epoch", value.deviceGroupHead.epoch),
-      securityRevision: plan.hostAuthorizationRevision,
-      headDigest,
-      signingPublicKeyHash,
-    });
-  } catch (error) {
-    headDigest?.fill(0);
-    signingPublicKeyHash?.fill(0);
-    throw error;
-  } finally {
-    destroyDomainForegroundAuthorizationPlanV2(plan);
-  }
+  return taskRuntimeRequestAuthorityIssuerV2(value.baseRequest, value);
 }
 
 export function destroyTaskRuntimeBackgroundAuthorizationRequestV2(
@@ -523,7 +345,5 @@ export function destroyTaskRuntimeBackgroundAuthorizationRequestV2(
 ): void {
   destroyTaskRuntimeBackgroundAuthorizationRequestV1(value.baseRequest);
   value.work.workIdentityHash.fill(0);
-  value.signer.signerPublicKey.fill(0);
-  value.deviceGroupHead.headDigest.fill(0);
-  value.deviceGroupHead.signingPublicKeyHash.fill(0);
+  destroyTaskRuntimeRequestAuthorityV2(value);
 }

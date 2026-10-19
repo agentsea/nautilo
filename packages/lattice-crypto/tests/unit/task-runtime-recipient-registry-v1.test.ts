@@ -43,7 +43,17 @@ import {
   encodeTaskRuntimeBackgroundAuthorizationRequestV2,
   taskRuntimeBackgroundAuthorizationIssuerV2,
 } from "../../src/background/task-runtime-request-v2.ts";
-import { createTaskRuntimeSignerAuthorizationV1 } from
+import {
+  createTaskRuntimeBackgroundAuthorizationRequestV3,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV3,
+  encodeTaskRuntimeBackgroundAuthorizationRequestV3,
+  taskRuntimeBackgroundAuthorizationIssuerV3,
+  type TaskRuntimePublicationWorkBindingV3,
+} from "../../src/background/task-runtime-request-v3.ts";
+import {
+  createTaskRuntimeSignerAuthorizationV1,
+  createTaskRuntimeSignerAuthorizationV2,
+} from
   "../../src/background/task-runtime-signer-authorization-v1.ts";
 import type { TaskRuntimeRecipientDeadlineSchedulerV1 } from
   "../../src/background/task-runtime-recipient-registry-v1.ts";
@@ -91,6 +101,7 @@ import {
 } from "../../src/format/domain-namespace-bundle-v2.ts";
 import {
   assertAuthenticPreparedTaskRuntimeResultObjectV1,
+  prepareNativeTaskRuntimeCancellationResultObjectV1,
   prepareNativeTaskRuntimeResultObjectV1,
 } from "../../src/object/task-runtime-result-preparation-v1.ts";
 import { decryptObjectThroughNamespaceV2 } from
@@ -2429,11 +2440,17 @@ const READ_RESULT = { ...RESULT,
 };
 const WAKE_JOB = "474b01a6-658f-5664-889e-79aedbf85413";
 
-async function readFixture(wake = false, separateForeground = true, authorizationExpiresAt = NOW + 60_000) {
+async function readFixture(
+  wake = false,
+  separateForeground = true,
+  authorizationExpiresAt = NOW + 60_000,
+  certified = false,
+) {
   const requestId = wake ? `task-wake-authorization:${WAKE_JOB}`
     : `task-run-delivery-result-authorization:${WORK}`;
   const value = await fixture(undefined, false, requestId, {
     workId: wake ? WAKE_JOB : WORK, separateForeground, authorizationExpiresAt,
+    ...(certified ? { signerAgentId: RESULT.signerAgentId } : {}),
   });
   const common = { bindingId: `task-run-output:${WORK}`, roomId: ROOM,
     sessionId: value.current.sessionId };
@@ -2464,6 +2481,418 @@ async function readFixture(wake = false, separateForeground = true, authorizatio
   };
   return { ...value, input };
 }
+
+async function publicationCertifiedFixture(
+  kind: TaskRuntimePublicationWorkBindingV3["kind"],
+) {
+  const isRead = kind === "task.deliver_result" || kind === "task.delivery_wake";
+  const readValue = isRead
+    ? await readFixture(kind === "task.delivery_wake", false, NOW + 60_000, true)
+    : undefined;
+  const value = readValue ?? await fixture(
+        undefined,
+        true,
+        kind === "task.deliver_message" ? TERMINAL_REQUEST : REQUEST,
+        { signerAgentId: RESULT.signerAgentId },
+      );
+  const signer = value.attempt.signer;
+  if (signer === undefined || value.generatedRuntimeKey === null) {
+    throw new Error("publication temporary signer was not generated");
+  }
+  const publication: TaskRuntimePublicationWorkBindingV3 = kind === "task.cancel_result"
+    ? { kind, taskId: CANCEL_RESULT.taskId, taskRunId: CANCEL_RESULT.taskRunId,
+        contentRevision: 2, workIdentityHash: bytes(0x91) }
+    : kind === "task.deliver_message"
+      ? { kind, taskId: TERMINAL_MESSAGE.taskId,
+          taskRunId: TERMINAL_MESSAGE.taskRunId, contentRevision: 2,
+          workIdentityHash: bytes(0x91),
+          messageObjectId: TERMINAL_MESSAGE.objectId }
+      : kind === "task.deliver_result"
+        ? { kind, taskId: READ_RESULT.taskId, taskRunId: READ_RESULT.taskRunId,
+            contentRevision: 1, workIdentityHash: bytes(0x91) }
+        : { kind, taskId: READ_RESULT.taskId, taskRunId: READ_RESULT.taskRunId,
+            contentRevision: READ_RESULT.contentRevision,
+            workIdentityHash: bytes(0x91), jobId: WAKE_JOB };
+  const namespaces = readValue?.input.currentNamespaceRequirements
+    ?? CANCELLATION_NAMESPACES;
+  const baseRequest = createTaskRuntimeBackgroundAuthorizationRequestV1({
+    requestId: value.requestId,
+    workId: kind === "task.delivery_wake" ? WAKE_JOB : WORK,
+    workKind: kind,
+    workPurpose: kind,
+    recipientGeneration: 0,
+    episodeId: value.current.sessionId,
+    sourceRoomId: value.current.roomId,
+    recipientKeyId: KEY,
+    recipientPublicKey: value.attempt.recipientPublicKey,
+    authorizationPlan: value.plan,
+    issuedAt: NOW,
+    deadlineAt: NOW + 60_000,
+  });
+  const request = createTaskRuntimeBackgroundAuthorizationRequestV3(
+    value.crypto,
+    {
+      baseRequest,
+      work: publication,
+      signer,
+      deviceGroupHead: {
+        serverInstanceId: "task-runtime-server",
+        lineageGeneration: 3,
+        epoch: 5,
+        headDigest: bytes(0x92),
+        signingPublicKeyHash: value.crypto.hash(value.deviceSigner.publicKey),
+      },
+      namespaceRequirements: namespaces,
+    },
+  );
+  const requestBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV3(
+    value.crypto,
+    request,
+  );
+  const authorizationHash = value.crypto.hash(value.authorizationBytes);
+  const planBytes = serializeDomainForegroundAuthorizationPlanV2(value.plan);
+  const certificateBytes = createTaskRuntimeSignerAuthorizationV2(
+    value.crypto,
+    {
+      requestBytes,
+      authorizationBytes: value.authorizationBytes,
+      expectedAuthorizationPlanBytes: planBytes,
+      expectedAuthorizationHash: authorizationHash,
+      issuerSigningPrivateKey: value.deviceSigner.privateKey,
+    },
+  );
+  const currentIssuer = taskRuntimeBackgroundAuthorizationIssuerV3(request);
+  authorizationHash.fill(0);
+  planBytes.fill(0);
+  return {
+    ...value,
+    publication,
+    baseRequest,
+    request,
+    requestBytes,
+    certificateBytes,
+    currentIssuer,
+    readInput: readValue?.input,
+  };
+}
+
+function cleanupPublicationCertifiedFixture(
+  value: Awaited<ReturnType<typeof publicationCertifiedFixture>>,
+): void {
+  value.registry.close();
+  destroyTaskRuntimeBackgroundAuthorizationRequestV3(value.request);
+  destroyTaskRuntimeBackgroundAuthorizationRequestV1(value.baseRequest);
+  value.publication.workIdentityHash.fill(0);
+  value.requestBytes.fill(0);
+  value.certificateBytes.fill(0);
+  value.currentIssuer.headDigest.fill(0);
+  value.currentIssuer.signingPublicKeyHash.fill(0);
+  value.authorizationBytes.fill(0);
+  value.deviceSigner.privateKey.fill(0);
+  value.deviceSigner.publicKey.fill(0);
+}
+
+test.each([
+  "task.cancel_result",
+  "task.deliver_message",
+  "task.deliver_result",
+  "task.delivery_wake",
+] as const)("lends a fresh certified signer for exact %s publication evidence", async kind => {
+  const value = await publicationCertifiedFixture(kind);
+  let retained: Parameters<typeof withTaskRuntimeTemporarySignerV1>[0] | undefined;
+  const useSigner = async (
+    evidence: Parameters<typeof withTaskRuntimeTemporarySignerV1>[0],
+  ) => {
+    retained = evidence;
+    expect(hasTaskRuntimeTemporarySignerV1(evidence)).toBe(true);
+    return await withTaskRuntimeTemporarySignerV1(evidence, signer => {
+      expect(signer.runtime.key).toEqual(value.generatedRuntimeKey!);
+      expect(signer.certificateBytes).toEqual(value.certificateBytes);
+      expect(signer.requestHash).toEqual(value.crypto.hash(value.requestBytes));
+      return kind;
+    });
+  };
+  const certifiedSigning = {
+    requestBytes: value.requestBytes,
+    certificateBytes: value.certificateBytes,
+    currentIssuer: value.currentIssuer,
+    expectedPublication: value.publication,
+  };
+  try {
+    const opened = kind === "task.cancel_result"
+      ? await value.registry.withOpenedCancellationResultGrant({
+          requestId: value.requestId,
+          workId: WORK,
+          recipientGeneration: 0,
+          recipientKeyId: KEY,
+          claimId: "certified-cancellation-claim",
+          claimExpiresAt: NOW + 30_000,
+          authorizationBytes: value.authorizationBytes,
+          current: value.current,
+          currentNamespaceRequirements: CANCELLATION_NAMESPACES,
+          result: CANCEL_RESULT,
+          certifiedSigning,
+          operation: (_domains, _signal, evidence) => useSigner(evidence),
+        })
+      : kind === "task.deliver_message"
+        ? await value.registry.withOpenedTerminalMessageGrant({
+            requestId: value.requestId,
+            workId: WORK,
+            recipientGeneration: 0,
+            recipientKeyId: KEY,
+            claimId: "certified-terminal-claim",
+            claimExpiresAt: NOW + 30_000,
+            authorizationBytes: value.authorizationBytes,
+            current: value.current,
+            currentNamespaceRequirements: CANCELLATION_NAMESPACES,
+            message: TERMINAL_MESSAGE,
+            certifiedSigning,
+            operation: (_domains, _signal, evidence) => useSigner(evidence),
+          })
+        : value.readInput !== undefined
+          ? await value.registry.withOpenedRunResultReadGrant({
+              ...value.readInput,
+              certifiedSigning,
+              operation: (_partitions, _signal, read, wake) =>
+                useSigner(wake ?? read),
+            })
+          : null;
+    expect(opened).toEqual({ status: "opened", value: kind });
+    expect(retained).toBeDefined();
+    expect(() => hasTaskRuntimeTemporarySignerV1(retained!)).toThrow();
+    expect(value.generatedRuntimeKey!.every(byte => byte === 0)).toBe(true);
+  } finally {
+    cleanupPublicationCertifiedFixture(value);
+  }
+});
+
+test("prepares a revision-two cancellation result with its certified signer", async () => {
+  const value = await publicationCertifiedFixture("task.cancel_result");
+  const generationKey = bytes(0xa1);
+  const plaintext = new TextEncoder().encode("certified cancellation result");
+  try {
+    const opened = await value.registry.withOpenedCancellationResultGrant({
+      requestId: value.requestId,
+      workId: WORK,
+      recipientGeneration: 0,
+      recipientKeyId: KEY,
+      claimId: "certified-cancellation-preparation",
+      claimExpiresAt: NOW + 30_000,
+      authorizationBytes: value.authorizationBytes,
+      current: value.current,
+      currentNamespaceRequirements: CANCELLATION_NAMESPACES,
+      result: CANCEL_RESULT,
+      certifiedSigning: {
+        requestBytes: value.requestBytes,
+        certificateBytes: value.certificateBytes,
+        currentIssuer: value.currentIssuer,
+        expectedPublication: value.publication,
+      },
+      operation: async (domains, _signal, evidence) => {
+        const domain = domains[0];
+        if (domain === undefined) throw new Error("cancellation Domain missing");
+        const retained = Object.freeze([Object.freeze({
+          generation: namespaceGeneration(1),
+          accessRevision: accessRevision(
+            CANCEL_RESULT.namespace.expectedAccessRevision,
+          ),
+          headDigest: bytes(0xa2),
+          generationKey,
+        })]);
+        const current = Object.freeze({
+          serverId: value.currentIssuer.serverInstanceId,
+          cryptoDomainId: cryptoDomainId(domain.domainId),
+          participantDigest: domain.participantDigest,
+          participantCount: domain.participantCount,
+          keyClass: domain.keyClass,
+          domainKeyGeneration: domain.domainKeyGeneration,
+          domainAuthorizationRevision: domain.authorizationRevision,
+          domainHeadDigest: domain.headDigest,
+          namespaceId: namespaceId(CANCEL_RESULT.namespace.namespaceId),
+          namespaceAccessRevision: accessRevision(
+            CANCEL_RESULT.namespace.expectedAccessRevision,
+          ),
+          namespaceCurrentGeneration: namespaceGeneration(1),
+          bundleRevision: 1,
+          retainedAuthoritySetDigest: domainNamespaceRetainedAuthoritySetDigestV2(
+            value.crypto,
+            retained,
+          ),
+        });
+        const bundle = prepareDomainNamespaceBundleV2(value.crypto, {
+          operationId: "task-runtime-certified-cancellation-bundle",
+          previousBindingDigest: null,
+          bundle: {
+            ...current,
+            formatVersion: DOMAIN_NAMESPACE_BUNDLE_FORMAT_VERSION_V2,
+            purpose: DOMAIN_NAMESPACE_BUNDLE_INNER_PURPOSE_V2,
+            retainedGenerationCount: retained.length,
+            retainedGenerations: retained,
+          },
+          issuerHumanId: value.current.subjectHumanId,
+          issuerDeviceId: value.current.committerDeviceId,
+          issuerDeviceSigningGeneration:
+            value.current.committerDeviceSigningGeneration,
+          issuerSigningPrivateKey: value.deviceSigner.privateKey,
+          issuerSigningPublicKey: value.deviceSigner.publicKey,
+          domainKey: domain.domainKey,
+          issuedAt: NOW,
+        });
+        try {
+          return await withTaskRuntimeTemporarySignerV1(evidence, async signer => {
+            const prepared = await prepareNativeTaskRuntimeCancellationResultObjectV1(
+              value.crypto,
+              {
+                evidence,
+                plaintext,
+                objectType: "nautilo-task-run-result-v1",
+                createdAt: NOW,
+                namespace: {
+                  current,
+                  bindingBytes: bundle.bytes,
+                  expectedBindingDigest: bundle.bindingDigest,
+                  issuerSigningPublicKey: value.deviceSigner.publicKey,
+                  domainKey: domain.domainKey,
+                },
+                agentAuthorizationRevision: 0,
+                runtime: signer.runtime,
+                signerPublication: null,
+                temporarySigner: signer,
+                resolveHistoricalSignerPublicationManager: () => null,
+              },
+            );
+            expect(prepared.access.manifest.signerAuthorizationHash)
+              .toEqual(value.crypto.hash(value.certificateBytes));
+            expect(prepared.access.authority.contentRevision).toBe(2);
+            expect(prepared.access.authority.objectId).toBe(CANCEL_RESULT.objectId);
+            expect(prepared.access.signerEvidenceBytes).toEqual(
+              value.certificateBytes,
+            );
+            assertAuthenticPreparedTaskRuntimeResultObjectV1(prepared);
+            return prepared.access.authority.signerKeyId;
+          });
+        } finally {
+          current.retainedAuthoritySetDigest.fill(0);
+          for (const entry of retained) entry.headDigest.fill(0);
+          bundle.bytes.fill(0);
+          bundle.bindingDigest.fill(0);
+          bundle.plaintextDigest.fill(0);
+          bundle.binding.ciphertext.fill(0);
+          bundle.binding.ciphertextDigest.fill(0);
+          bundle.binding.signature.fill(0);
+        }
+      },
+    });
+    expect(opened.status).toBe("opened");
+    if (opened.status !== "opened") throw new Error("cancellation grant did not open");
+    expect(opened.value).toBe(value.attempt.signer!.signerKeyId);
+  } finally {
+    generationKey.fill(0);
+    plaintext.fill(0);
+    cleanupPublicationCertifiedFixture(value);
+  }
+});
+
+test.each([
+  "task.cancel_result",
+  "task.deliver_message",
+  "task.deliver_result",
+  "task.delivery_wake",
+] as const)("rejects substituted certified %s publication binding", async kind => {
+  const value = await publicationCertifiedFixture(kind);
+  const changedPublication = {
+    ...value.publication,
+    workIdentityHash: bytes(0x99),
+  } as TaskRuntimePublicationWorkBindingV3;
+  const certifiedSigning = {
+    requestBytes: value.requestBytes,
+    certificateBytes: value.certificateBytes,
+    currentIssuer: value.currentIssuer,
+    expectedPublication: changedPublication,
+  };
+  let called = false;
+  try {
+    const outcome = kind === "task.cancel_result"
+      ? await value.registry.withOpenedCancellationResultGrant({
+          requestId: value.requestId, workId: WORK, recipientGeneration: 0,
+          recipientKeyId: KEY, claimId: "substituted-cancellation",
+          claimExpiresAt: NOW + 30_000,
+          authorizationBytes: value.authorizationBytes, current: value.current,
+          currentNamespaceRequirements: CANCELLATION_NAMESPACES,
+          result: CANCEL_RESULT, certifiedSigning,
+          operation: () => { called = true; },
+        }).catch(() => null)
+      : kind === "task.deliver_message"
+        ? await value.registry.withOpenedTerminalMessageGrant({
+            requestId: value.requestId, workId: WORK, recipientGeneration: 0,
+            recipientKeyId: KEY, claimId: "substituted-terminal",
+            claimExpiresAt: NOW + 30_000,
+            authorizationBytes: value.authorizationBytes, current: value.current,
+            currentNamespaceRequirements: CANCELLATION_NAMESPACES,
+            message: TERMINAL_MESSAGE, certifiedSigning,
+            operation: () => { called = true; },
+          }).catch(() => null)
+        : value.readInput !== undefined
+          ? await value.registry.withOpenedRunResultReadGrant({
+              ...value.readInput, certifiedSigning,
+              operation: () => { called = true; },
+            }).catch(() => null)
+          : null;
+    expect(outcome?.status).not.toBe("opened");
+    expect(called).toBe(false);
+    expect(value.generatedRuntimeKey!.every(byte => byte === 0)).toBe(true);
+  } finally {
+    changedPublication.workIdentityHash.fill(0);
+    cleanupPublicationCertifiedFixture(value);
+  }
+});
+
+test.each(["expiry", "abort", "close"] as const)(
+  "revokes certified publication signer custody on %s",
+  async mode => {
+    const value = await publicationCertifiedFixture("task.cancel_result");
+    const controller = new AbortController();
+    let borrowedKey: Uint8Array | undefined;
+    let retained: TaskRuntimeCancellationResultEvidenceV1 | undefined;
+    try {
+      const failure = await value.registry.withOpenedCancellationResultGrant({
+        requestId: value.requestId,
+        workId: WORK,
+        recipientGeneration: 0,
+        recipientKeyId: KEY,
+        claimId: `certified-cancellation-${mode}`,
+        claimExpiresAt: NOW + 30_000,
+        authorizationBytes: value.authorizationBytes,
+        current: value.current,
+        currentNamespaceRequirements: CANCELLATION_NAMESPACES,
+        result: CANCEL_RESULT,
+        certifiedSigning: {
+          requestBytes: value.requestBytes,
+          certificateBytes: value.certificateBytes,
+          currentIssuer: value.currentIssuer,
+          expectedPublication: value.publication,
+        },
+        signal: controller.signal,
+        operation: async (_domains, _signal, evidence) => {
+          retained = evidence;
+          await withTaskRuntimeTemporarySignerV1(evidence, signer => {
+            borrowedKey = signer.runtime.key;
+            if (mode === "expiry") value.setNow(NOW + 30_000);
+            if (mode === "abort") controller.abort(new Error("cancelled"));
+            if (mode === "close") value.registry.close();
+            expect(() => hasTaskRuntimeTemporarySignerV1(evidence)).toThrow();
+          });
+        },
+      }).then(() => null, (error: unknown) => error);
+      expect(failure).toBeInstanceOf(Error);
+      expect(borrowedKey?.every(byte => byte === 0)).toBe(true);
+      expect(value.generatedRuntimeKey!.every(byte => byte === 0)).toBe(true);
+      expect(() => hasTaskRuntimeTemporarySignerV1(retained!)).toThrow();
+    } finally {
+      cleanupPublicationCertifiedFixture(value);
+    }
+  },
+);
 
 describe("closed Task result read grants", () => {
   test.each([false, true])("authenticates fresh raw/wake custody and keeps private result out of foreground (%s)", async wake => {
@@ -2652,6 +3081,7 @@ test.each([false, true])("registry mints foreground evidence only for a verified
         retained = foreground;
         assertAuthenticTaskRuntimeWakeForegroundEvidenceV1(foreground);
         expect(foreground.workKind).toBe("task.delivery_wake");
+        expect(foreground.sourceContentRevision).toBe(value.input.result.contentRevision);
         expect(foreground.namespaceRequirements).toEqual(partitions.foregroundNamespaceRequirements);
         expect(foreground.domainRequirements.map(domain => domain.domainId)).toEqual(["foreground-domain"]);
         expect(foreground.committerDeviceId).toBe(value.current.committerDeviceId);

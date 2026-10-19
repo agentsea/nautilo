@@ -1598,6 +1598,7 @@ function buildAcceptedBackgroundRuntimeAuthorizationResponseV4(
       || response.workKind !== current.workKind
       || response.purpose !== current.purpose
       || !isTaskExecutionWorkKind(response.workKind)
+        && !isTaskPublicationWorkKind(response.workKind)
       || !verifiedResponseAuthorityMatches(current, response)
       || response.recipientKeyId !== recipient?.recipientKeyId
       || Buffer.from(response.recipientPublicKey).toString("base64url")
@@ -2530,6 +2531,15 @@ function validateTaskRuntimeCancellationPageInput(input: Readonly<{
 export function isTaskExecutionWorkKind(value: BackgroundAuthorizationRecord["workKind"]): boolean {
   return value === "task.execute" || value === "task.approval_resume"
     || value === "task.await_reply_resume";
+}
+
+function isTaskPublicationWorkKind(
+  value: BackgroundAuthorizationRecord["workKind"],
+): boolean {
+  return value === "task.cancel_result"
+    || value === "task.deliver_message"
+    || value === "task.deliver_result"
+    || value === "task.delivery_wake";
 }
 
 function isTaskRuntimeCancellationCandidate(

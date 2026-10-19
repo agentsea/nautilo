@@ -1,5 +1,7 @@
 import { createHash } from "node:crypto";
 import type { LatticeCrypto } from "@nautilo/lattice-crypto";
+import type { TaskRuntimeBackgroundAuthorizationRequestV3 } from
+  "@nautilo/lattice-crypto/background";
 import type { TaskOutputNamespaceAuthority } from "@nautilo/lattice-bridge/server";
 import {
   createBackgroundAuthorizationTaskRuntimeRequestV3,
@@ -10,7 +12,9 @@ import {
 import type { ProtectedTaskOutputReadIntent } from "./protected-task-output-read-product";
 import { createProtectedTaskOutputReadRecipientRequestPlan } from "./protected-task-runtime-recipient-request-plan";
 
-export type ProtectedTaskOutputReadPlan = TaskRuntimeRecipientRequestPlan & Readonly<{
+export type ProtectedTaskOutputReadPlan = TaskRuntimeRecipientRequestPlan<
+  TaskRuntimeBackgroundAuthorizationRequestV3
+> & Readonly<{
   intent: ProtectedTaskOutputReadIntent;
   foregroundNamespaceIds: readonly string[];
   sourceRoomId: string;

@@ -1,8 +1,10 @@
 import {
-  MAX_TASK_RUNTIME_SIGNER_AUTHORIZATION_WIRE_BYTES_V1,
-  readTaskRuntimeSignerAuthorizationIssuerV1,
+  readTaskRuntimeSignerAuthorizationIssuer,
   type LatticeCrypto,
-  type ResolveHistoricalTaskRuntimeSignerAuthorizationIssuerV1,
+  type ResolveHistoricalTaskRuntimeSignerAuthorizationIssuer,
+} from "@nautilo/lattice-crypto";
+import {
+  MAX_TASK_RUNTIME_SIGNER_AUTHORIZATION_WIRE_BYTES_V1,
 } from "@nautilo/lattice-crypto/background";
 import type { ResolveTaskRuntimeSignerAuthorizationBytesV5 } from
   "@nautilo/lattice-crypto/wire";
@@ -67,7 +69,7 @@ export function withTaskRuntimeSignerEvidenceResolversV1<Value>(input: Readonly<
     resolveTaskRuntimeSignerAuthorizationBytes:
       ResolveTaskRuntimeSignerAuthorizationBytesV5;
     resolveHistoricalTaskRuntimeIssuer:
-      ResolveHistoricalTaskRuntimeSignerAuthorizationIssuerV1;
+      ResolveHistoricalTaskRuntimeSignerAuthorizationIssuer;
   }>): Value;
 }>): Value {
   const certificates = new Map<string, Uint8Array>();
@@ -77,7 +79,7 @@ export function withTaskRuntimeSignerEvidenceResolversV1<Value>(input: Readonly<
       const bytes = fromBase64url(entry.evidenceBytesBase64url);
       let hash: Uint8Array | undefined;
       try {
-        const issuer = readTaskRuntimeSignerAuthorizationIssuerV1(
+        const issuer = readTaskRuntimeSignerAuthorizationIssuer(
           input.crypto,
           bytes,
         );
@@ -95,7 +97,7 @@ export function withTaskRuntimeSignerEvidenceResolversV1<Value>(input: Readonly<
       } finally { hash?.fill(0); }
     }
     const resolveHistoricalTaskRuntimeIssuer:
-      ResolveHistoricalTaskRuntimeSignerAuthorizationIssuerV1 = context => {
+      ResolveHistoricalTaskRuntimeSignerAuthorizationIssuer = context => {
         const issuer = context.issuer;
         if (input.expectedWork !== undefined
           && (context.projection.work.taskId !== input.expectedWork.taskId

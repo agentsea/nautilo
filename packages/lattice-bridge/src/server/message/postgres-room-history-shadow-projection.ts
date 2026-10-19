@@ -1143,7 +1143,7 @@ function isEligible(row: ConversationProductDatabaseRow): boolean {
   const family = operationFamily(row);
   const role = row["role"];
   if (isHumanEditedRepresentation(row)) return true;
-  if (isNativeTaskTranscriptCandidate(row)) return true;
+  if (isNativeTaskMessageCandidate(row)) return true;
   if (isExistingRepresentation(row)) return row["completion"] === "complete"
     && (row["key_class"] === "ai" || row["key_class"] === "human")
     && role === row["author_role"] && (role === "user" || role === "assistant" || role === "tool" || role === "system");
@@ -1158,10 +1158,22 @@ function isEligible(row: ConversationProductDatabaseRow): boolean {
   return family === "legacy" && (role === "user" || role === "assistant" || role === "tool");
 }
 
-function isNativeTaskTranscriptCandidate(
+function nativeTaskMessagePublicationFamily(
+  row: ConversationProductDatabaseRow,
+): "transcript" | "raw_delivery" | null {
+  const publicationKey = row["append_idempotency_key"];
+  if (typeof publicationKey !== "string") return null;
+  if (/^task-transcript:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}:fp:v1:/.test(publicationKey)) {
+    return "transcript";
+  }
+  return /^task-run-delivery-message:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(publicationKey)
+    ? "raw_delivery" : null;
+}
+
+function isNativeTaskMessageCandidate(
   row: ConversationProductDatabaseRow,
 ): boolean {
-  const publicationKey = row["append_idempotency_key"];
+  const publicationFamily = nativeTaskMessagePublicationFamily(row);
   const representationMode = row["representation_mode"];
   const publicationPolicyRevision = row["publication_policy_revision"];
   const lifecycleMatchesRepresentation =
@@ -1178,16 +1190,15 @@ function isNativeTaskTranscriptCandidate(
         && typeof row["content"] !== "string";
   return row["object_id_scheme"] === "message_v2"
     && row["transcript_origin"] === "subagent"
-    && typeof publicationKey === "string"
-    && /^task-transcript:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}:fp:v1:/.test(
-      publicationKey,
-    )
+    && publicationFamily !== null
     && ["shadow_operation_id", "human_peer_shadow_operation_id",
       "shared_agent_shadow_operation_id", "shared_agent_shadow_execution_id",
       "task_wake_operation_id"].every(field => row[field] == null)
     && row["repair_identity_digest"] == null
     && row["key_class"] === "ai"
-    && (row["role"] === "assistant" || row["role"] === "tool")
+    && (publicationFamily === "transcript"
+      ? row["role"] === "assistant" || row["role"] === "tool"
+      : row["role"] === "assistant")
     && row["role"] === row["author_role"]
     && row["completion"] === "complete"
     && row["disposition"] === "mapped"
@@ -1197,7 +1208,8 @@ function isNativeTaskTranscriptCandidate(
 
 function isNativeTaskTranscript(row: ConversationProductDatabaseRow): boolean {
   const taskRunId = row["task_run_id"];
-  return isNativeTaskTranscriptCandidate(row)
+  return isNativeTaskMessageCandidate(row)
+    && nativeTaskMessagePublicationFamily(row) === "transcript"
     && typeof taskRunId === "string"
     && (row["append_idempotency_key"] as string).startsWith(
       `task-transcript:${taskRunId}:fp:v1:`,
@@ -1207,6 +1219,23 @@ function isNativeTaskTranscript(row: ConversationProductDatabaseRow): boolean {
     && typeof row["task_id"] === "string"
     && typeof row["task_graph_thread_id"] === "string"
     && row["task_graph_thread_id"] === row["session_thread_id"];
+}
+
+function isNativeTaskRawDelivery(row: ConversationProductDatabaseRow): boolean {
+  const taskRunId = row["task_run_id"];
+  return isNativeTaskMessageCandidate(row)
+    && nativeTaskMessagePublicationFamily(row) === "raw_delivery"
+    && typeof taskRunId === "string"
+    && row["append_idempotency_key"]
+      === `task-run-delivery-message:${taskRunId}`
+    && row["task_run_association_kind"] === "raw_delivery"
+    && row["task_run_publication_key"] === row["append_idempotency_key"]
+    && typeof row["task_id"] === "string"
+    && typeof row["task_graph_thread_id"] === "string";
+}
+
+function isNativeTaskMessage(row: ConversationProductDatabaseRow): boolean {
+  return isNativeTaskTranscript(row) || isNativeTaskRawDelivery(row);
 }
 
 function nativeTaskTranscriptToolPresentation(
@@ -1384,18 +1413,18 @@ function operationIdFor(row: ConversationProductDatabaseRow): string {
       ?? row["shared_agent_shadow_operation_id"] ?? row["shared_agent_shadow_execution_id"] ?? row["task_wake_operation_id"]);
 }
 
-async function withNativeTaskTranscriptProvenance(
+async function withNativeTaskMessageProvenance(
   options: PostgresRoomHistoryShadowProjectionOptions,
   row: ConversationProductDatabaseRow,
   coordinate: RoomHistorySelectedCoordinate,
   roomId: string,
   namespaceId: string,
 ): Promise<ConversationProductDatabaseRow> {
-  if (!isNativeTaskTranscript(row)) {
-    throw new TypeError("Native Task transcript product provenance is unavailable");
+  if (!isNativeTaskMessage(row)) {
+    throw new TypeError("Native Task Message product provenance is unavailable");
   }
-  const taskId = text("Native Task transcript Task", row["task_id"]);
-  const taskRunId = text("Native Task transcript TaskRun", row["task_run_id"]);
+  const taskId = text("Native Task Message Task", row["task_id"]);
+  const taskRunId = text("Native Task Message TaskRun", row["task_run_id"]);
   const expectedId = deriveMessageCryptoObjectIdV2({
     sessionId: coordinate.sessionId,
     messageId: coordinate.messageId,
@@ -1408,7 +1437,7 @@ async function withNativeTaskTranscriptProvenance(
     || dto.protectedPayload.keyClass !== "ai"
     || dto.protectedPayload.cryptoObjectId !== expectedId
     || dto.projection.authorAgentId !== row["author_agent_id"]) {
-    throw new TypeError("Native Task transcript ciphertext is unavailable");
+    throw new TypeError("Native Task Message ciphertext is unavailable");
   }
   const manifestBytes = Buffer.from(
     dto.protectedPayload.accessManifestBytesBase64url, "base64url",
@@ -1416,19 +1445,57 @@ async function withNativeTaskTranscriptProvenance(
   const envelopeBytes = Buffer.from(
     dto.protectedPayload.namespaceEnvelopeBytesBase64url, "base64url",
   );
-  const manifest = decodeObjectAccessManifestV5(manifestBytes);
   const envelope = decodeNamespaceObjectEnvelopeV2(envelopeBytes);
+  let signerKeyId: string;
+  let signerAuthorizationHash: Uint8Array | null = null;
   try {
-    if (manifest.objectId !== expectedId
-      || manifest.accessRevision !== 0
-      || manifest.previousManifestHash !== null
-      || manifest.signer.kind !== "agent_runtime"
-      || manifest.signer.agentId !== row["author_agent_id"]
-      || manifest.signerAuthorizationHash === null
-      || envelope.context.objectId !== expectedId
+    let currentManifest: ReturnType<typeof decodeObjectAccessManifestV5>
+      | undefined;
+    try {
+      currentManifest = decodeObjectAccessManifestV5(manifestBytes);
+    } catch {
+      currentManifest = undefined;
+    }
+    if (currentManifest !== undefined) {
+      try {
+        if (currentManifest.objectId !== expectedId
+          || currentManifest.accessRevision !== 0
+          || currentManifest.previousManifestHash !== null
+          || currentManifest.signer.kind !== "agent_runtime"
+          || currentManifest.signer.agentId !== row["author_agent_id"]
+          || (isNativeTaskTranscript(row)
+            && currentManifest.signerAuthorizationHash === null)) {
+          throw new TypeError("Native Task Message signer is unavailable");
+        }
+        signerKeyId = currentManifest.signer.signerKeyId;
+        signerAuthorizationHash =
+          currentManifest.signerAuthorizationHash?.slice() ?? null;
+      } finally {
+        currentManifest.payloadHash.fill(0);
+        currentManifest.previousManifestHash?.fill(0);
+        currentManifest.envelopeHashes.forEach(hash => hash.fill(0));
+        currentManifest.signerAuthorizationHash?.fill(0);
+        currentManifest.signature.fill(0);
+      }
+    } else {
+      if (!isNativeTaskRawDelivery(row)) {
+        throw new TypeError("Native Task Message manifest is unavailable");
+      }
+      const legacyManifest = decodeObjectAccessManifestV2OrV3(manifestBytes);
+      if (legacyManifest.formatVersion !== 3
+        || legacyManifest.objectId !== expectedId
+        || legacyManifest.accessRevision !== 0
+        || legacyManifest.previousManifestHash !== null
+        || legacyManifest.signer.kind !== "agent_runtime"
+        || legacyManifest.signer.agentId !== row["author_agent_id"]) {
+        throw new TypeError("Native Task Message legacy signer is unavailable");
+      }
+      signerKeyId = legacyManifest.signer.signerKeyId;
+    }
+    if (envelope.context.objectId !== expectedId
       || envelope.context.namespaceId !== namespaceId
       || envelope.context.keyClass !== "ai") {
-      throw new TypeError("Native Task transcript signer or Namespace is unavailable");
+      throw new TypeError("Native Task Message Namespace is unavailable");
     }
     const retained = await options.resolveExistingRetainedGeneration?.({
       namespaceId, keyClass: "ai", generation: envelope.context.keyGeneration,
@@ -1437,10 +1504,10 @@ async function withNativeTaskTranscriptProvenance(
     if (retained === undefined || retained === null
       || retained.namespaceGeneration !== envelope.context.keyGeneration
       || retained.accessRevision !== envelope.context.bindingRevisionAtWrap) {
-      throw new TypeError("Native Task transcript retained Namespace is unavailable");
+      throw new TypeError("Native Task Message retained Namespace is unavailable");
     }
     const decodeDigest = (value: string) => {
-      digest("Native Task transcript retained Namespace digest", value);
+      digest("Native Task Message retained Namespace digest", value);
       return Uint8Array.from(Buffer.from(value, "base64url"));
     };
     return { ...row, turn_room_id: roomId, turn_namespace_id: namespaceId,
@@ -1450,17 +1517,13 @@ async function withNativeTaskTranscriptProvenance(
       namespace_publication_digest: decodeDigest(retained.publicationDigestBase64url),
       namespace_publication_set_digest: decodeDigest(retained.publicationSetDigestBase64url),
       namespace_audience_fingerprint: decodeDigest(retained.audienceFingerprintBase64url),
-      agent_signer_key_id: manifest.signer.signerKeyId,
+      agent_signer_key_id: signerKeyId,
       task_id: taskId, task_run_id: taskRunId,
-      task_runtime_signer_authorization_hash:
-        manifest.signerAuthorizationHash.slice(),
+      ...(signerAuthorizationHash === null ? {} : {
+        task_runtime_signer_authorization_hash: signerAuthorizationHash,
+      }),
     };
   } finally {
-    manifest.payloadHash.fill(0);
-    manifest.previousManifestHash?.fill(0);
-    manifest.envelopeHashes.forEach(hash => hash.fill(0));
-    manifest.signerAuthorizationHash?.fill(0);
-    manifest.signature.fill(0);
     manifestBytes.fill(0); envelopeBytes.fill(0); envelope.wrappedDek.fill(0);
   }
 }
@@ -1493,18 +1556,58 @@ async function withWakeProvenance(
   }
   const manifestBytes = Buffer.from(dto.protectedPayload.accessManifestBytesBase64url, "base64url");
   const envelopeBytes = Buffer.from(dto.protectedPayload.namespaceEnvelopeBytesBase64url, "base64url");
-  const manifest = decodeObjectAccessManifestV2OrV3(manifestBytes);
   const envelope = decodeNamespaceObjectEnvelopeV2(envelopeBytes);
+  let signerKeyId: string;
+  let signerAuthorizationHash: Uint8Array | null = null;
   try {
-    if (manifest.formatVersion !== 3 || manifest.objectId !== expectedId
-      || manifest.signer.agentId !== row["author_agent_id"]
-      || envelope.context.objectId !== expectedId || envelope.context.namespaceId !== namespaceId
-      || envelope.context.keyClass !== "ai") {
-      throw new TypeError("Task wake history signer or Namespace is unavailable");
+    let currentManifest: ReturnType<typeof decodeObjectAccessManifestV5>
+      | undefined;
+    try {
+      currentManifest = decodeObjectAccessManifestV5(manifestBytes);
+    } catch {
+      currentManifest = undefined;
     }
-    const publicKey = await options.resolveTaskWakeAgentSigner?.(manifest.signer);
-    if (publicKey == null || publicKey.length !== 32) throw new TypeError("Task wake history signer unavailable");
-    publicKey.fill(0);
+    if (currentManifest !== undefined) {
+      try {
+        if (currentManifest.objectId !== expectedId
+          || currentManifest.accessRevision !== 0
+          || currentManifest.previousManifestHash !== null
+          || currentManifest.signer.kind !== "agent_runtime"
+          || currentManifest.signer.agentId !== row["author_agent_id"]
+          || currentManifest.signerAuthorizationHash === null) {
+          throw new TypeError("Task wake history certified signer is unavailable");
+        }
+        signerKeyId = currentManifest.signer.signerKeyId;
+        signerAuthorizationHash =
+          currentManifest.signerAuthorizationHash.slice();
+      } finally {
+        currentManifest.payloadHash.fill(0);
+        currentManifest.previousManifestHash?.fill(0);
+        currentManifest.envelopeHashes.forEach(hash => hash.fill(0));
+        currentManifest.signerAuthorizationHash?.fill(0);
+        currentManifest.signature.fill(0);
+      }
+    } else {
+      const legacyManifest = decodeObjectAccessManifestV2OrV3(manifestBytes);
+      if (legacyManifest.formatVersion !== 3
+        || legacyManifest.objectId !== expectedId
+        || legacyManifest.signer.agentId !== row["author_agent_id"]) {
+        throw new TypeError("Task wake history signer is unavailable");
+      }
+      const publicKey = await options.resolveTaskWakeAgentSigner?.(
+        legacyManifest.signer,
+      );
+      if (publicKey == null || publicKey.length !== 32) {
+        throw new TypeError("Task wake history signer unavailable");
+      }
+      publicKey.fill(0);
+      signerKeyId = legacyManifest.signer.signerKeyId;
+    }
+    if (envelope.context.objectId !== expectedId
+      || envelope.context.namespaceId !== namespaceId
+      || envelope.context.keyClass !== "ai") {
+      throw new TypeError("Task wake history Namespace is unavailable");
+    }
     const retained = await options.resolveExistingRetainedGeneration?.({ namespaceId, keyClass: "ai",
       generation: envelope.context.keyGeneration, accessRevision: envelope.context.bindingRevisionAtWrap });
     if (retained === undefined || retained === null || retained.namespaceGeneration !== envelope.context.keyGeneration
@@ -1521,7 +1624,10 @@ async function withWakeProvenance(
       namespace_publication_digest: decodeDigest(retained.publicationDigestBase64url),
       namespace_publication_set_digest: decodeDigest(retained.publicationSetDigestBase64url),
       namespace_audience_fingerprint: decodeDigest(retained.audienceFingerprintBase64url),
-      agent_signer_key_id: manifest.signer.signerKeyId,
+      agent_signer_key_id: signerKeyId,
+      ...(signerAuthorizationHash === null ? {} : {
+        task_runtime_signer_authorization_hash: signerAuthorizationHash,
+      }),
     };
   } finally {
     manifestBytes.fill(0); envelopeBytes.fill(0); envelope.wrappedDek.fill(0);
@@ -2015,7 +2121,7 @@ export function createPostgresRoomHistoryShadowProjection(
     const readerDeviceId = input.readerDeviceId;
 
     const nativeCandidates = eligible.filter(({ row }) =>
-      isNativeTaskTranscriptCandidate(row)
+      isNativeTaskMessageCandidate(row)
     );
     if (nativeCandidates.length > 0) {
       try {
@@ -2077,6 +2183,9 @@ export function createPostgresRoomHistoryShadowProjection(
             task_id: association["task_id"],
             task_graph_thread_id: association["graph_thread_id"],
           } });
+          if (!isNativeTaskMessage(eligible[index].row)) {
+            throw new TypeError("Native Task Message association is substituted");
+          }
         }
       } catch {
         return Object.freeze({ status: "unavailable" as const,
@@ -2159,8 +2268,8 @@ export function createPostgresRoomHistoryShadowProjection(
         const entry = eligible[index]!;
         eligible[index] = operationFamily(entry.row) === "task_wake"
           ? { ...entry, row: await withWakeProvenance(options, entry.row, entry.coordinate, input.roomId, namespaceId) }
-          : isNativeTaskTranscript(entry.row)
-            ? { ...entry, row: await withNativeTaskTranscriptProvenance(
+          : isNativeTaskMessage(entry.row)
+            ? { ...entry, row: await withNativeTaskMessageProvenance(
               options, entry.row, entry.coordinate, input.roomId, namespaceId,
             ) }
           : isHumanEditedRepresentation(entry.row)
@@ -2173,7 +2282,7 @@ export function createPostgresRoomHistoryShadowProjection(
 
     const operationIds = keyClass === "ai" && !protectedOnly
       ? [...new Set(eligible.filter(({ row }) => !isExistingRepresentation(row)
-        && !isNativeTaskTranscript(row)
+        && !isNativeTaskMessage(row)
         && typeof row["content"] === "string")
         .map(({ row }) => operationIdFor(row)))].sort()
       : [];
@@ -2269,7 +2378,7 @@ export function createPostgresRoomHistoryShadowProjection(
           ));
           continue;
         }
-        if (isNativeTaskTranscript(row)) {
+        if (isNativeTaskMessage(row)) {
           const dto = await projectRoomHistoryProtectedMessageDto(
             row,
             { sessionId: coordinate.sessionId, roomId: input.roomId,
@@ -2277,7 +2386,7 @@ export function createPostgresRoomHistoryShadowProjection(
             options.crypto,
           );
           if (dto.projection.logicalMessageKey !== coordinate.logicalMessageKey) {
-            throw new TypeError("Native Task transcript selection changed");
+            throw new TypeError("Native Task Message selection changed");
           }
           const presentation = !protectedOnly
               && typeof row["content"] === "string"
@@ -2289,9 +2398,9 @@ export function createPostgresRoomHistoryShadowProjection(
           try {
             records.push(Object.freeze({
               kind: "task_runtime" as const,
-              taskId: text("Native Task transcript Task", row["task_id"]),
+              taskId: text("Native Task Message Task", row["task_id"]),
               taskRunId: text(
-                "Native Task transcript TaskRun", row["task_run_id"],
+                "Native Task Message TaskRun", row["task_run_id"],
               ),
               coordinate,
               protectedMessage: dto,
@@ -2304,11 +2413,11 @@ export function createPostgresRoomHistoryShadowProjection(
               }),
               retainedGeneration: Object.freeze({
                 namespaceGeneration: counter(
-                  "Native Task transcript Namespace generation",
+                  "Native Task Message Namespace generation",
                   row["namespace_generation"],
                 ),
                 accessRevision: counter(
-                  "Native Task transcript Namespace access revision",
+                  "Native Task Message Namespace access revision",
                   row["turn_namespace_access_revision"],
                 ),
                 headDigestBase64url: base64url(byteField(
@@ -2449,7 +2558,8 @@ export function createPostgresRoomHistoryShadowProjection(
     const signerOperations = [...new Map(eligible
       .filter(({ row }) => !isExistingRepresentation(row)
         && !isHumanEditedRepresentation(row)
-        && !isNativeTaskTranscript(row)
+        && !isNativeTaskMessage(row)
+        && row["task_runtime_signer_authorization_hash"] == null
         && (row["role"] === "assistant" || row["role"] === "tool"
           || operationFamily(row) === "shared_human"))
       .map(({ row }) => {
@@ -2510,6 +2620,15 @@ export function createPostgresRoomHistoryShadowProjection(
       })));
     }
     const legacySignerKeys = new Set<string>();
+    for (const { row } of eligible) {
+      if (isNativeTaskMessage(row)
+        && row["task_runtime_signer_authorization_hash"] == null) {
+        legacySignerKeys.add(text(
+          "Native Task Message Agent signer key ID",
+          row["agent_signer_key_id"],
+        ));
+      }
+    }
     for (const [operationId, row] of signerOperations) {
       if (operationFamily(row) === "shared_human") {
         const planBytes = row["plan_bytes"];

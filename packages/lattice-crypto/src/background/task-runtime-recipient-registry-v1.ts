@@ -42,11 +42,19 @@ import type { BackgroundAuthorizationIssuerV2 } from
 import type { TaskRuntimeEphemeralSignerV2 } from
   "./task-runtime-request-v2.ts";
 import {
+  destroyVerifiedTaskRuntimeSignerAuthorization,
   destroyVerifiedTaskRuntimeSignerAuthorizationV1,
+  verifyCurrentTaskRuntimeSignerAuthorization,
   verifyCurrentTaskRuntimeSignerAuthorizationV1,
+  type VerifiedCurrentTaskRuntimeSignerAuthorization,
   type VerifiedCurrentTaskRuntimeSignerAuthorizationV1,
 } from "./task-runtime-signer-authorization-v1.ts";
 import {
+  encodeTaskRuntimePublicationWorkBindingV3,
+  type TaskRuntimePublicationWorkBindingV3,
+} from "./task-runtime-request-v3.ts";
+import {
+  assertAuthenticTaskRuntimeTerminalMessageEvidenceV1,
   withTaskRuntimeTerminalMessageEvidenceV1,
   type TaskRuntimeTerminalMessageEvidenceV1,
   type TaskRuntimeTerminalMessageProofV1,
@@ -60,6 +68,7 @@ export type {
 } from "./task-runtime-terminal-message-evidence-v1.ts";
 
 import {
+  assertAuthenticTaskRuntimeRunResultReadEvidenceV1,
   withTaskRuntimeRunResultReadEvidenceV1,
   snapshotTaskRuntimeRunResultReadEvidenceV1,
   type TaskRuntimeRunResultReadEvidenceV1,
@@ -68,6 +77,7 @@ import {
 } from "./task-runtime-run-result-read-evidence-v1.ts";
 
 import {
+  assertAuthenticTaskRuntimeWakeForegroundEvidenceV1,
   withTaskRuntimeWakeForegroundEvidenceV1,
   type TaskRuntimeWakeForegroundEvidenceV1,
   type TaskRuntimeWakeMutationDestinationV1,
@@ -524,6 +534,13 @@ export type TaskRuntimeCertifiedSigningInputV1 = Readonly<{
   expectedExecutionSegment: number;
 }>;
 
+export type TaskRuntimeCertifiedPublicationSigningInputV1 = Readonly<{
+  requestBytes: Uint8Array;
+  certificateBytes: Uint8Array;
+  currentIssuer: BackgroundAuthorizationIssuerV2;
+  expectedPublication: TaskRuntimePublicationWorkBindingV3;
+}>;
+
 type TaskRuntimeTemporarySignerStateV1 = Readonly<{
   runtime: AgentRuntimeGenerationV2;
   certificateBytes: Uint8Array;
@@ -539,6 +556,13 @@ const temporarySignerStates = new WeakMap<
   object,
   TaskRuntimeTemporarySignerStateV1
 >();
+
+export type TaskRuntimeTemporarySignerEvidenceV1 =
+  | TaskRuntimeExecutionEvidenceV1
+  | TaskRuntimeCancellationResultEvidenceV1
+  | TaskRuntimeTerminalMessageEvidenceV1
+  | TaskRuntimeRunResultReadEvidenceV1
+  | TaskRuntimeWakeForegroundEvidenceV1;
 
 function attemptKey(requestId: string, generation: number): string {
   return JSON.stringify([requestId, generation]);
@@ -699,6 +723,131 @@ async function verifyTemporarySignerAuthorization(input: Readonly<{
   }
 }
 
+function samePublicationWork(
+  left: TaskRuntimePublicationWorkBindingV3,
+  right: TaskRuntimePublicationWorkBindingV3,
+): boolean {
+  const leftBytes = encodeTaskRuntimePublicationWorkBindingV3(left);
+  const rightBytes = encodeTaskRuntimePublicationWorkBindingV3(right);
+  try {
+    return sameBytes(leftBytes, rightBytes);
+  } finally {
+    leftBytes.fill(0);
+    rightBytes.fill(0);
+  }
+}
+
+function assertPublicationProofBinding(input: Readonly<{
+  expected: TaskRuntimePublicationWorkBindingV3;
+  kind: TaskRuntimePublicationWorkBindingV3["kind"];
+  taskId: string;
+  taskRunId: string;
+  contentRevision: 1 | 2;
+  selectedId?: string;
+}>): void {
+  const selectedMatches = input.kind === "task.deliver_message"
+    ? input.expected.kind === input.kind
+      && input.expected.messageObjectId === input.selectedId
+    : input.kind === "task.delivery_wake"
+      ? input.expected.kind === input.kind
+        && input.expected.jobId === input.selectedId
+      : input.expected.kind === input.kind;
+  if (!selectedMatches
+    || input.expected.taskId !== input.taskId
+    || input.expected.taskRunId !== input.taskRunId
+    || input.expected.contentRevision !== input.contentRevision) {
+    throw new TypeError("Task Runtime certified publication proof is not exact");
+  }
+}
+
+async function verifyTemporaryPublicationSignerAuthorization(input: Readonly<{
+  crypto: LatticeCrypto;
+  now: number;
+  entry: RecipientEntry;
+  requestId: string;
+  workId: string;
+  recipientGeneration: number;
+  recipientKeyId: string;
+  authorizationBytes: Uint8Array;
+  current: DomainForegroundAuthorizationPublicCurrentAuthorityV2;
+  currentNamespaceRequirements:
+    readonly TaskRuntimeExecutionNamespaceAuthorityV1[];
+  certifiedSigning: TaskRuntimeCertifiedPublicationSigningInputV1;
+}>): Promise<VerifiedCurrentTaskRuntimeSignerAuthorization> {
+  const requestHash = input.crypto.hash(input.certifiedSigning.requestBytes);
+  const authorizationHash = input.crypto.hash(input.authorizationBytes);
+  const currentSigningPublicKeyHash = input.crypto.hash(
+    input.current.committerDeviceSigningPublicKey,
+  );
+  let verified: VerifiedCurrentTaskRuntimeSignerAuthorization | undefined;
+  try {
+    verified = await verifyCurrentTaskRuntimeSignerAuthorization(
+      input.crypto,
+      {
+        certificateBytes: input.certifiedSigning.certificateBytes,
+        requestBytes: input.certifiedSigning.requestBytes,
+        expectedRequestHash: requestHash,
+        expectedAuthorizationHash: authorizationHash,
+        now: input.now,
+        resolveCurrentIssuer: context =>
+          sameIssuer(context.issuer, input.certifiedSigning.currentIssuer)
+            && context.issuer.humanId === input.current.subjectHumanId
+            && context.issuer.deviceId === input.current.committerDeviceId
+            && context.issuer.deviceGeneration
+              === input.current.committerDeviceSigningGeneration
+            && context.issuer.securityRevision
+              === input.current.hostAuthorizationRevision
+            && sameBytes(
+              context.issuer.signingPublicKeyHash,
+              currentSigningPublicKeyHash,
+            )
+            ? input.current.committerDeviceSigningPublicKey
+            : null,
+      },
+      2,
+    );
+    const request = verified.request;
+    const signer = input.entry.attempt.signer;
+    if (request.formatVersion !== 3
+      || verified.projection.formatVersion !== 2
+      || input.entry.temporaryRuntime === null
+      || signer === undefined
+      || request.baseRequest.requestId !== input.requestId
+      || request.baseRequest.workId !== input.workId
+      || request.baseRequest.recipientGeneration !== input.recipientGeneration
+      || request.baseRequest.recipientKeyId !== input.recipientKeyId
+      || !sameBytes(
+        request.baseRequest.recipientPublicKey,
+        input.entry.attempt.recipientPublicKey,
+      )
+      || request.baseRequest.deadlineAt !== input.entry.attempt.expiresAt
+      || !samePublicationWork(
+        request.work,
+        input.certifiedSigning.expectedPublication,
+      )
+      || request.signer.agentId !== signer.agentId
+      || request.signer.runtimeGeneration !== signer.runtimeGeneration
+      || request.signer.signerKeyId !== signer.signerKeyId
+      || !sameBytes(request.signer.signerPublicKey, signer.signerPublicKey)
+      || !sameNamespaceRequirements(
+        request.namespaceRequirements,
+        input.currentNamespaceRequirements,
+      )) {
+      throw new TypeError("Task Runtime certified publication scope is not exact");
+    }
+    const result = verified;
+    verified = undefined;
+    return result;
+  } finally {
+    requestHash.fill(0);
+    authorizationHash.fill(0);
+    currentSigningPublicKeyHash.fill(0);
+    if (verified !== undefined) {
+      destroyVerifiedTaskRuntimeSignerAuthorization(verified);
+    }
+  }
+}
+
 function destroyTemporarySigner(value: TaskRuntimeTemporarySignerV1): void {
   value.runtime.key.fill(0);
   value.certificateBytes.fill(0);
@@ -726,11 +875,33 @@ function temporarySignerCopy(
   });
 }
 
-/** True only for an active certified execution; stale evidence throws. */
+function assertAuthenticTaskRuntimeTemporarySignerEvidenceV1(
+  evidence: TaskRuntimeTemporarySignerEvidenceV1,
+): void {
+  switch (evidence.purpose) {
+    case "task.runtime.execution":
+      assertAuthenticTaskRuntimeExecutionEvidenceV1(evidence);
+      break;
+    case "task.runtime.cancellation_result":
+      assertAuthenticTaskRuntimeCancellationResultEvidenceV1(evidence);
+      break;
+    case "task.runtime.terminal_message":
+      assertAuthenticTaskRuntimeTerminalMessageEvidenceV1(evidence);
+      break;
+    case "task.runtime.run_result_read":
+      assertAuthenticTaskRuntimeRunResultReadEvidenceV1(evidence);
+      break;
+    case "task.runtime.wake_foreground":
+      assertAuthenticTaskRuntimeWakeForegroundEvidenceV1(evidence);
+      break;
+  }
+}
+
+/** True only for active certified Task Runtime evidence; stale evidence throws. */
 export function hasTaskRuntimeTemporarySignerV1(
-  evidence: TaskRuntimeExecutionEvidenceV1,
+  evidence: TaskRuntimeTemporarySignerEvidenceV1,
 ): boolean {
-  assertAuthenticTaskRuntimeExecutionEvidenceV1(evidence);
+  assertAuthenticTaskRuntimeTemporarySignerEvidenceV1(evidence);
   const state = temporarySignerStates.get(evidence as object);
   if (state === undefined) return false;
   if (!state.active || state.signal.aborted) {
@@ -739,9 +910,9 @@ export function hasTaskRuntimeTemporarySignerV1(
   return true;
 }
 
-/** Loan detached signer copies only while the certified execution is active. */
+/** Loan detached signer copies only while certified evidence is active. */
 export async function withTaskRuntimeTemporarySignerV1<Value>(
-  evidence: TaskRuntimeExecutionEvidenceV1,
+  evidence: TaskRuntimeTemporarySignerEvidenceV1,
   use: (
     signer: TaskRuntimeTemporarySignerV1,
   ) => Value | PromiseLike<Value>,
@@ -749,7 +920,7 @@ export async function withTaskRuntimeTemporarySignerV1<Value>(
   if (typeof use !== "function") {
     throw new TypeError("Task Runtime temporary signer callback is required");
   }
-  assertAuthenticTaskRuntimeExecutionEvidenceV1(evidence);
+  assertAuthenticTaskRuntimeTemporarySignerEvidenceV1(evidence);
   const state = temporarySignerStates.get(evidence as object);
   if (state === undefined || !state.active || state.signal.aborted) {
     throw new TypeError("Task Runtime temporary signer is not active");
@@ -763,7 +934,7 @@ export async function withTaskRuntimeTemporarySignerV1<Value>(
       throw new TypeError("Task Runtime temporary signer is not active");
     }
     const value = await use(signer);
-    assertAuthenticTaskRuntimeExecutionEvidenceV1(evidence);
+    assertAuthenticTaskRuntimeTemporarySignerEvidenceV1(evidence);
     if (!state.active || state.signal.aborted
       || temporarySignerStates.get(evidence as object) !== state) {
       throw new TypeError("Task Runtime temporary signer is not active");
@@ -772,6 +943,41 @@ export async function withTaskRuntimeTemporarySignerV1<Value>(
   } finally {
     state.signal.removeEventListener("abort", wipeSigner);
     wipeSigner();
+  }
+}
+
+async function withInstalledTaskRuntimeTemporarySignerV1<Value>(input: Readonly<{
+  evidence: TaskRuntimeTemporarySignerEvidenceV1;
+  signal: AbortSignal;
+  entry: RecipientEntry;
+  verified: VerifiedCurrentTaskRuntimeSignerAuthorization;
+  issuerSigningPublicKey: Uint8Array;
+  operation(): Value | PromiseLike<Value>;
+}>): Promise<Value> {
+  assertAuthenticTaskRuntimeTemporarySignerEvidenceV1(input.evidence);
+  const runtime = input.entry.temporaryRuntime;
+  const signer = input.entry.attempt.signer;
+  if (runtime === null || signer === undefined) {
+    throw new TypeError("Task Runtime certified signer custody is unavailable");
+  }
+  const state: TaskRuntimeTemporarySignerStateV1 = {
+    active: true,
+    runtime,
+    certificateBytes: input.verified.certificateBytes,
+    issuer: input.verified.issuer,
+    issuerSigningPublicKey: input.issuerSigningPublicKey.slice(),
+    requestHash: input.verified.requestHash,
+    authorizationHash: input.verified.projection.request.authorizationHash,
+    signerPublicKey: signer.signerPublicKey,
+    signal: input.signal,
+  };
+  temporarySignerStates.set(input.evidence as object, state);
+  try {
+    return await input.operation();
+  } finally {
+    state.active = false;
+    temporarySignerStates.delete(input.evidence as object);
+    state.issuerSigningPublicKey.fill(0);
   }
 }
 
@@ -1087,34 +1293,15 @@ export class TaskRuntimeRecipientRegistryV1 {
               if (verifiedSigner === undefined) {
                 return await input.operation(domains, signal, evidence);
               }
-              const runtime = entry.temporaryRuntime;
-              const signer = entry.attempt.signer;
-              if (runtime === null || signer === undefined) {
-                throw new TypeError(
-                  "Task Runtime certified signer custody is unavailable",
-                );
-              }
-              const state: TaskRuntimeTemporarySignerStateV1 = {
-                active: true,
-                runtime,
-                certificateBytes: verifiedSigner.certificateBytes,
-                issuer: verifiedSigner.issuer,
-                issuerSigningPublicKey:
-                  input.current.committerDeviceSigningPublicKey.slice(),
-                requestHash: verifiedSigner.requestHash,
-                authorizationHash:
-                  verifiedSigner.projection.request.authorizationHash,
-                signerPublicKey: signer.signerPublicKey,
+              return await withInstalledTaskRuntimeTemporarySignerV1({
+                evidence,
                 signal,
-              };
-              temporarySignerStates.set(evidence as object, state);
-              try {
-                return await input.operation(domains, signal, evidence);
-              } finally {
-                state.active = false;
-                temporarySignerStates.delete(evidence as object);
-                state.issuerSigningPublicKey.fill(0);
-              }
+                entry,
+                verified: verifiedSigner,
+                issuerSigningPublicKey:
+                  input.current.committerDeviceSigningPublicKey,
+                operation: () => input.operation(domains, signal, evidence),
+              });
             },
           });
         } finally {
@@ -1139,6 +1326,7 @@ export class TaskRuntimeRecipientRegistryV1 {
     currentNamespaceRequirements:
       readonly TaskRuntimeCurrentNamespaceAuthorityV1[];
     result: TaskRuntimeCancellationResultProofV1;
+    certifiedSigning?: TaskRuntimeCertifiedPublicationSigningInputV1;
     signal?: AbortSignal;
     operation(
       domains: readonly DomainForegroundSecretEntryV2[],
@@ -1175,13 +1363,44 @@ export class TaskRuntimeRecipientRegistryV1 {
           current,
         }),
         operation: async (domains, signal, entry, deadline) => {
+          const hasTemporarySigner = entry.temporaryRuntime !== null
+            && entry.attempt.signer !== undefined;
+          if (hasTemporarySigner !== (input.certifiedSigning !== undefined)) {
+            throw new TypeError(
+              "Task Runtime certified signer custody is not exact",
+            );
+          }
           const domainRequirement = current.domains[0];
           const namespaceRequirement = currentNamespaceRequirements[0];
           if (domainRequirement === undefined || namespaceRequirement === undefined) {
             throw new TypeError("Task Runtime cancellation authority is incomplete");
           }
+          let verifiedSigner: VerifiedCurrentTaskRuntimeSignerAuthorization
+            | undefined;
           const authorizationDigest = this.crypto.hash(authorizationBytes);
           try {
+            if (input.certifiedSigning !== undefined) {
+              assertPublicationProofBinding({
+                expected: input.certifiedSigning.expectedPublication,
+                kind: "task.cancel_result",
+                taskId: result.taskId,
+                taskRunId: result.taskRunId,
+                contentRevision: result.contentRevision,
+              });
+              verifiedSigner = await verifyTemporaryPublicationSignerAuthorization({
+                crypto: this.crypto,
+                now: this.#now(),
+                entry,
+                requestId: input.requestId,
+                workId: input.workId,
+                recipientGeneration: input.recipientGeneration,
+                recipientKeyId: input.recipientKeyId,
+                authorizationBytes,
+                current,
+                currentNamespaceRequirements,
+                certifiedSigning: input.certifiedSigning,
+              });
+            }
             return await withCancellationResultEvidence({
               evidence: {
                 purpose: "task.runtime.cancellation_result",
@@ -1211,10 +1430,23 @@ export class TaskRuntimeRecipientRegistryV1 {
               },
               signal,
               now: this.#now,
-              execute: (evidence) => input.operation(domains, signal, evidence),
+              execute: async (evidence) => verifiedSigner === undefined
+                ? await input.operation(domains, signal, evidence)
+                : await withInstalledTaskRuntimeTemporarySignerV1({
+                    evidence,
+                    signal,
+                    entry,
+                    verified: verifiedSigner,
+                    issuerSigningPublicKey:
+                      current.committerDeviceSigningPublicKey,
+                    operation: () => input.operation(domains, signal, evidence),
+                  }),
             });
           } finally {
             authorizationDigest.fill(0);
+            if (verifiedSigner !== undefined) {
+              destroyVerifiedTaskRuntimeSignerAuthorization(verifiedSigner);
+            }
           }
         },
       });
@@ -1240,6 +1472,7 @@ export class TaskRuntimeRecipientRegistryV1 {
     currentNamespaceRequirements:
       readonly TaskRuntimeCurrentNamespaceAuthorityV1[];
     message: TaskRuntimeTerminalMessageProofV1;
+    certifiedSigning?: TaskRuntimeCertifiedPublicationSigningInputV1;
     signal?: AbortSignal;
     operation(
       domains: readonly DomainForegroundSecretEntryV2[],
@@ -1272,13 +1505,45 @@ export class TaskRuntimeRecipientRegistryV1 {
           current,
         }),
         operation: async (domains, signal, entry, deadline) => {
+          const hasTemporarySigner = entry.temporaryRuntime !== null
+            && entry.attempt.signer !== undefined;
+          if (hasTemporarySigner !== (input.certifiedSigning !== undefined)) {
+            throw new TypeError(
+              "Task Runtime certified signer custody is not exact",
+            );
+          }
           const domainRequirement = current.domains[0];
           const namespaceRequirement = currentNamespaceRequirements[0];
           if (domainRequirement === undefined || namespaceRequirement === undefined) {
             throw new TypeError("Task Runtime terminal Message authority is incomplete");
           }
+          let verifiedSigner: VerifiedCurrentTaskRuntimeSignerAuthorization
+            | undefined;
           const authorizationDigest = this.crypto.hash(authorizationBytes);
           try {
+            if (input.certifiedSigning !== undefined) {
+              assertPublicationProofBinding({
+                expected: input.certifiedSigning.expectedPublication,
+                kind: "task.deliver_message",
+                taskId: message.taskId,
+                taskRunId: message.taskRunId,
+                contentRevision: 2,
+                selectedId: message.objectId,
+              });
+              verifiedSigner = await verifyTemporaryPublicationSignerAuthorization({
+                crypto: this.crypto,
+                now: this.#now(),
+                entry,
+                requestId: input.requestId,
+                workId: input.workId,
+                recipientGeneration: input.recipientGeneration,
+                recipientKeyId: input.recipientKeyId,
+                authorizationBytes,
+                current,
+                currentNamespaceRequirements,
+                certifiedSigning: input.certifiedSigning,
+              });
+            }
             return await withTaskRuntimeTerminalMessageEvidenceV1({
               evidence: {
                 purpose: "task.runtime.terminal_message",
@@ -1309,10 +1574,23 @@ export class TaskRuntimeRecipientRegistryV1 {
               },
               signal,
               now: this.#now,
-              execute: evidence => input.operation(domains, signal, evidence),
+              execute: async evidence => verifiedSigner === undefined
+                ? await input.operation(domains, signal, evidence)
+                : await withInstalledTaskRuntimeTemporarySignerV1({
+                    evidence,
+                    signal,
+                    entry,
+                    verified: verifiedSigner,
+                    issuerSigningPublicKey:
+                      current.committerDeviceSigningPublicKey,
+                    operation: () => input.operation(domains, signal, evidence),
+                  }),
             });
           } finally {
             authorizationDigest.fill(0);
+            if (verifiedSigner !== undefined) {
+              destroyVerifiedTaskRuntimeSignerAuthorization(verifiedSigner);
+            }
           }
         },
       });
@@ -1339,6 +1617,7 @@ export class TaskRuntimeRecipientRegistryV1 {
     currentNamespaceRequirements: readonly TaskRuntimeCurrentNamespaceAuthorityV1[];
     currentForegroundNamespaceRequirements: readonly TaskRuntimeCurrentNamespaceAuthorityV1[];
     currentAdditionalMutationDestination?: TaskRuntimeWakeMutationDestinationV1;
+    certifiedSigning?: TaskRuntimeCertifiedPublicationSigningInputV1;
     signal?: AbortSignal;
     operation(
       partitions: TaskRuntimeRunResultReadPartitionsV1,
@@ -1463,33 +1742,105 @@ export class TaskRuntimeRecipientRegistryV1 {
         ...input, authorizationBytes, current, authorizationExpiresAt,
         expectedOperations: ["decrypt", "encrypt"], authorityIsCurrent,
         operation: async (domains, signal, entry, deadline) => {
+          const hasTemporarySigner = entry.temporaryRuntime !== null
+            && entry.attempt.signer !== undefined;
+          if (hasTemporarySigner !== (input.certifiedSigning !== undefined)) {
+            throw new TypeError(
+              "Task Runtime certified signer custody is not exact",
+            );
+          }
           const source = domains.find(d => d.domainId === evidence.resultDomain.domainId);
           if (source === undefined) throw new TypeError("Task result read Domain is missing");
-          return withTaskRuntimeRunResultReadEvidenceV1({
-            evidence: { ...evidence, recipientExpiresAt: entry.attempt.expiresAt, expiresAt: deadline },
-            signal, now: this.#now,
-            execute: proof => {
-              const partitions = Object.freeze({
-                resultDomains: Object.freeze([source] as const),
-                foregroundDomains: Object.freeze(domains.filter(d => foregroundDomains.has(d.domainId))),
-                foregroundNamespaceRequirements: foreground,
-                ...(mutation === undefined ? {} : { additionalMutationDomains: Object.freeze(
-                  domains.filter(d => d.domainId === mutation.namespace.domainId)) }),
+          let verifiedSigner: VerifiedCurrentTaskRuntimeSignerAuthorization
+            | undefined;
+          try {
+            if (input.certifiedSigning !== undefined) {
+              assertPublicationProofBinding({
+                expected: input.certifiedSigning.expectedPublication,
+                kind: input.workKind,
+                taskId: evidence.result.taskId,
+                taskRunId: evidence.result.taskRunId,
+                contentRevision: evidence.result.contentRevision,
+                ...(evidence.invocation.kind === "wake"
+                  ? { selectedId: evidence.invocation.jobId }
+                  : {}),
               });
-              if (proof.workKind !== "task.delivery_wake") return input.operation(partitions, signal, proof, null);
-              return withTaskRuntimeWakeForegroundEvidenceV1({
-                readEvidence: proof,
-                committerDeviceId: current.committerDeviceId,
-                committerDeviceSigningGeneration: current.committerDeviceSigningGeneration,
-                committerDeviceSigningPublicKeyHash: this.crypto.hash(current.committerDeviceSigningPublicKey),
-                namespaceRequirements: foreground,
-                domainRequirements: current.domains.filter(d => foregroundDomains.has(d.domainId)
-                  || mutation?.namespace.domainId === d.domainId),
-                ...(mutation === undefined ? {} : { additionalMutationDestination: mutation }),
-                execute: wake => input.operation(partitions, signal, proof, wake),
+              verifiedSigner = await verifyTemporaryPublicationSignerAuthorization({
+                crypto: this.crypto,
+                now: this.#now(),
+                entry,
+                requestId: input.requestId,
+                workId: input.workId,
+                recipientGeneration: input.recipientGeneration,
+                recipientKeyId: input.recipientKeyId,
+                authorizationBytes,
+                current,
+                currentNamespaceRequirements: combined,
+                certifiedSigning: input.certifiedSigning,
               });
-            },
-          });
+            }
+            return await withTaskRuntimeRunResultReadEvidenceV1({
+              evidence: { ...evidence, recipientExpiresAt: entry.attempt.expiresAt, expiresAt: deadline },
+              signal, now: this.#now,
+              execute: async proof => {
+                const partitions = Object.freeze({
+                  resultDomains: Object.freeze([source] as const),
+                  foregroundDomains: Object.freeze(domains.filter(d => foregroundDomains.has(d.domainId))),
+                  foregroundNamespaceRequirements: foreground,
+                  ...(mutation === undefined ? {} : { additionalMutationDomains: Object.freeze(
+                    domains.filter(d => d.domainId === mutation.namespace.domainId)) }),
+                });
+                if (proof.workKind !== "task.delivery_wake") {
+                  return verifiedSigner === undefined
+                    ? await input.operation(partitions, signal, proof, null)
+                    : await withInstalledTaskRuntimeTemporarySignerV1({
+                        evidence: proof,
+                        signal,
+                        entry,
+                        verified: verifiedSigner,
+                        issuerSigningPublicKey:
+                          current.committerDeviceSigningPublicKey,
+                        operation: () => input.operation(
+                          partitions, signal, proof, null,
+                        ),
+                      });
+                }
+                return await withTaskRuntimeWakeForegroundEvidenceV1({
+                  readEvidence: proof,
+                  committerDeviceId: current.committerDeviceId,
+                  committerDeviceSigningGeneration:
+                    current.committerDeviceSigningGeneration,
+                  committerDeviceSigningPublicKeyHash: this.crypto.hash(
+                    current.committerDeviceSigningPublicKey,
+                  ),
+                  namespaceRequirements: foreground,
+                  domainRequirements: current.domains.filter(d =>
+                    foregroundDomains.has(d.domainId)
+                    || mutation?.namespace.domainId === d.domainId),
+                  ...(mutation === undefined
+                    ? {}
+                    : { additionalMutationDestination: mutation }),
+                  execute: async wake => verifiedSigner === undefined
+                    ? await input.operation(partitions, signal, proof, wake)
+                    : await withInstalledTaskRuntimeTemporarySignerV1({
+                        evidence: wake,
+                        signal,
+                        entry,
+                        verified: verifiedSigner,
+                        issuerSigningPublicKey:
+                          current.committerDeviceSigningPublicKey,
+                        operation: () => input.operation(
+                          partitions, signal, proof, wake,
+                        ),
+                      }),
+                });
+              },
+            });
+          } finally {
+            if (verifiedSigner !== undefined) {
+              destroyVerifiedTaskRuntimeSignerAuthorization(verifiedSigner);
+            }
+          }
         },
       });
     } finally { authorizationBytes.fill(0); }

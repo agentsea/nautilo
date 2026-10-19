@@ -14,6 +14,7 @@ import {
 } from "@nautilo/lattice-bridge/server";
 import {
   assertAuthenticTaskRuntimeCancellationResultEvidence,
+  hasTaskRuntimeTemporarySigner,
   type DomainForegroundSecretEntry, type LatticeCrypto,
   type TaskRuntimeCancellationResultEvidence,
 } from "@nautilo/lattice-crypto";
@@ -23,7 +24,7 @@ import type { ProtectedTaskCancellationPlan } from "./protected-task-cancellatio
 import { createProtectedTaskCancellationPublicationRecovery } from "./protected-task-cancellation-publication-recovery";
 import { createProtectedTaskHistoricalHumanDeviceSigningKeyResolver } from
   "./protected-task-historical-human-device-signing-key";
-import { withProtectedTaskResultSignerHistory } from "./protected-task-result-signer-history";
+import { withProtectedTaskResultSignerHistory, type ProtectedTaskResultSignerHistory } from "./protected-task-result-signer-history";
 import { acceptedTaskRuntimeRecord, destroyAcceptedTaskRuntimeRecord } from
   "./task-runtime-current-authority";
 
@@ -83,6 +84,37 @@ export function createProtectedTaskCancellationPublication(input: Readonly<{
       const domain = domains[0];
       if (domains.length !== 1 || domain === undefined || domain.domainId !== value.authority.domainId
         || domain.keyClass !== "ai") unavailable();
+      const publish = async (history: ProtectedTaskResultSignerHistory, authorizationRevision: number) => {
+        const result = await withProtectedTaskCancellationResultSigner({
+            crypto: input.crypto, storage, evidence: value.evidence, domain,
+            expectedAgentAuthorizationRevision: authorizationRevision,
+            resolveHistoricalRuntimeCommitter: history.resolveHistoricalRuntimeCommitter,
+            resolveHistoricalSignerPublicationManager: history.resolveHistoricalSignerPublicationManager,
+            execute: signer => stageNativeTaskCancellationPublication({
+              intent: value.intent, assertCurrentClaim: value.assertCurrentClaim,
+              resolveHistoricalAgentSignerAuthority: signerHistory.resolveAgentRuntimeSignerManager,
+              resolveHistoricalHumanDeviceSigningPublicKey:
+                createProtectedTaskHistoricalHumanDeviceSigningKeyResolver(handle),
+              preparation: { restricted: value.restricted, serverScope: input.serverScope, domains,
+              signal: value.signal, assertCurrentTaskAuthority: value.assertCurrentTaskAuthority,
+              crypto: input.crypto, evidence: value.evidence, authority: value.authority,
+              createdAt: now(), agentAuthorizationRevision: signer.agentAuthorizationRevision,
+              runtime: signer.runtime, signerPublication: signer.signerPublication,
+              ...(signer.temporarySigner === undefined ? {} : { temporarySigner: signer.temporarySigner }),
+              resolveHistoricalSignerPublicationManager: history.resolveHistoricalSignerPublicationManager,
+              },
+            }),
+          });
+        if (result.status !== "executed") unavailable();
+        return result.value;
+      };
+      if (hasTaskRuntimeTemporarySigner(value.evidence)) {
+        // Certified publication never loads permanent Agent Runtime state.
+        return publish({
+          resolveHistoricalRuntimeCommitter: () => null,
+          resolveHistoricalSignerPublicationManager: () => null,
+        }, 0);
+      }
       const runtime = await storage.getAgentRuntimeAtomicState(value.agentId);
       let agentAuthorizationRevision: number;
       let runtimeGeneration: number;
@@ -96,29 +128,7 @@ export function createProtectedTaskCancellationPublication(input: Readonly<{
         domainId: domain.domainId, domainEpoch: domain.domainKeyGeneration,
         expectedAgentAuthorizationRevision: agentAuthorizationRevision,
         expectedRuntimeGeneration: runtimeGeneration,
-        use: async history => {
-          const result = await withProtectedTaskCancellationResultSigner({
-            crypto: input.crypto, storage, evidence: value.evidence, domain,
-            expectedAgentAuthorizationRevision: agentAuthorizationRevision,
-            resolveHistoricalRuntimeCommitter: history.resolveHistoricalRuntimeCommitter,
-            resolveHistoricalSignerPublicationManager: history.resolveHistoricalSignerPublicationManager,
-            execute: signer => stageNativeTaskCancellationPublication({
-              intent: value.intent, assertCurrentClaim: value.assertCurrentClaim,
-              resolveHistoricalAgentSignerAuthority: signerHistory.resolveAgentRuntimeSignerManager,
-              resolveHistoricalHumanDeviceSigningPublicKey:
-                createProtectedTaskHistoricalHumanDeviceSigningKeyResolver(handle),
-              preparation: { restricted: value.restricted, serverScope: input.serverScope, domains,
-              signal: value.signal, assertCurrentTaskAuthority: value.assertCurrentTaskAuthority,
-              crypto: input.crypto, evidence: value.evidence, authority: value.authority,
-              createdAt: now(), agentAuthorizationRevision: signer.agentAuthorizationRevision,
-              runtime: signer.runtime, signerPublication: signer.signerPublication,
-              resolveHistoricalSignerPublicationManager: history.resolveHistoricalSignerPublicationManager,
-              },
-            }),
-          });
-          if (result.status !== "executed") unavailable();
-          return result.value;
-        },
+        use: history => publish(history, agentAuthorizationRevision),
       });
     });
   const recover = overrides.recover ?? createProtectedTaskCancellationPublicationRecovery({

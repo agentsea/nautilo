@@ -4,17 +4,20 @@ import {LatticeCrypto} from "@nautilo/lattice-crypto";
 import {decodeAnyBackgroundProcessorWorkDescriptorV2, decodeTaskRuntimeBackgroundAuthorizationRequestBase,
   decodeTaskRuntimeBackgroundAuthorizationResponseV2,
   destroyTaskRuntimeBackgroundAuthorizationRequestV1,
-  destroyVerifiedTaskRuntimeSignerAuthorizationV1,
+  destroyVerifiedTaskRuntimeSignerAuthorization,
   inspectBackgroundAuthorizationResponseV2,
   isTaskRuntimeBackgroundAuthorizationRequestV2Carrier,
-  verifyCurrentTaskRuntimeSignerAuthorizationV1,
+  isTaskRuntimeBackgroundAuthorizationRequestV3Carrier,
+  verifyCurrentTaskRuntimeSignerAuthorization,
   verifyBackgroundAuthorizationResponseV2, MAX_ANY_BACKGROUND_PROCESSOR_WORK_DESCRIPTOR_WIRE_BYTES_V2,
   MAX_BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_BYTES_V2,
   MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V1,
   MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V2,
+  MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V3,
   MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_BYTES_V2,
   type BackgroundAuthorizationIssuerV2,
   type TaskRuntimeBackgroundAuthorizationRequestV2,
+  type TaskRuntimeBackgroundAuthorizationRequestV3,
   type AnyBackgroundProcessorWorkDescriptorV2} from "@nautilo/lattice-crypto/background";
 import {destroyDomainForegroundAuthorizationPlanV2, destroyDomainForegroundAuthorizationV2,
   parseDomainForegroundAuthorizationPlanV2, parseDomainForegroundAuthorizationV2,
@@ -86,11 +89,19 @@ function sameTaskRuntimeIssuer(
 }
 
 function exactCertifiedTaskRuntimeRequest(
-  request: TaskRuntimeBackgroundAuthorizationRequestV2,
+  request: TaskRuntimeBackgroundAuthorizationRequestV2
+    | TaskRuntimeBackgroundAuthorizationRequestV3,
   record: BackgroundAuthorizationTaskRuntimeRecordV3,
 ): boolean {
   const expected = record.authoritySet.namespaceRequirements;
-  return request.work.taskRunId === record.snapshot.workId
+  const exactWork = request.formatVersion === 2
+    ? request.work.taskRunId === record.snapshot.workId
+    : request.work.kind === record.workKind
+      && request.work.kind === record.purpose
+      && (request.work.kind === "task.delivery_wake"
+        ? request.work.jobId === record.snapshot.workId
+        : request.work.taskRunId === record.snapshot.workId);
+  return exactWork
     && sameBytes(request.work.workIdentityHash, record.workIdentityHash)
     && request.namespaceRequirements.length === expected.length
     && request.namespaceRequirements.every((actual, index) => {
@@ -265,10 +276,12 @@ export function createProductionBackgroundAuthorizationComposition(dependencies:
   return {
     limits: {requestBytes: Math.max(MAX_ANY_BACKGROUND_PROCESSOR_WORK_DESCRIPTOR_WIRE_BYTES_V2,
         MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V1,
-        MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V2),
+        MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V2,
+        MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V3),
       requestPageBytes: Math.max(MAX_ANY_BACKGROUND_PROCESSOR_WORK_DESCRIPTOR_WIRE_BYTES_V2,
         MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V1,
-        MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V2), maximumRequests: BACKGROUND_AUTHORIZATION_REPOSITORY_MAX_BATCH,
+        MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V2,
+        MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V3), maximumRequests: BACKGROUND_AUTHORIZATION_REPOSITORY_MAX_BATCH,
       responseBytes: Math.max(MAX_BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_BYTES_V2,
         DOMAIN_FOREGROUND_AUTHORIZATION_MAX_WIRE_BYTES_V2,
         MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_BYTES_V2), continuationCharacters: cursorCharacters},
@@ -312,7 +325,8 @@ export function createProductionBackgroundAuthorizationComposition(dependencies:
           let totalRequestBytes = 0;
           const maximumPageBytes = Math.max(MAX_ANY_BACKGROUND_PROCESSOR_WORK_DESCRIPTOR_WIRE_BYTES_V2,
             MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V1,
-            MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V2);
+            MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V2,
+            MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V3);
           for (const candidate of candidates) {
             const coordinate = recordCursor(candidate.record);
             if (frontier !== null && compareAwaitingCursor(coordinate, frontier) > 0) break;
@@ -437,9 +451,8 @@ export function createProductionBackgroundAuthorizationComposition(dependencies:
           if (record === null || !isTaskRuntimeRecord(record)) return {status: "stale"};
           const accepted = await withTaskAuthority({subject, admission, restricted, record,
             use: async (request, plan, domains, currentDeviceAuthority, restrictedInTx) => {
-              const certified = isTaskRuntimeBackgroundAuthorizationRequestV2Carrier(
-                record.descriptorBytes!,
-              );
+              const certified = isTaskRuntimeBackgroundAuthorizationRequestV2Carrier(record.descriptorBytes!)
+                || isTaskRuntimeBackgroundAuthorizationRequestV3Carrier(record.descriptorBytes!);
               if ((taskWrapper !== null) !== certified
                 || !sameBytes(taskResponse.planBytes, request.authorizationPlanBytes)) {
                 throw new BackgroundAuthorizationDeviceServiceError("malformed");
@@ -482,13 +495,13 @@ export function createProductionBackgroundAuthorizationComposition(dependencies:
               const issuerSigningPublicKeyHash = crypto.hash(currentDeviceAuthority.signingPublicKey);
               const currentIssuer = issuerFromDevice(crypto, currentDeviceAuthority);
               let signerAuthorization: Awaited<ReturnType<
-                typeof verifyCurrentTaskRuntimeSignerAuthorizationV1
+                typeof verifyCurrentTaskRuntimeSignerAuthorization
               >> | undefined;
               try {
                 if (taskWrapper !== null) {
                   try {
                     signerAuthorization =
-                      await verifyCurrentTaskRuntimeSignerAuthorizationV1(
+                      await verifyCurrentTaskRuntimeSignerAuthorization(
                         crypto,
                         {
                           certificateBytes: taskWrapper.certificateBytes,
@@ -588,7 +601,7 @@ export function createProductionBackgroundAuthorizationComposition(dependencies:
                 return {status: result.status === "lost" ? "stale" as const : result.status};
               } finally {
                 if (signerAuthorization !== undefined) {
-                  destroyVerifiedTaskRuntimeSignerAuthorizationV1(
+                  destroyVerifiedTaskRuntimeSignerAuthorization(
                     signerAuthorization,
                   );
                 }

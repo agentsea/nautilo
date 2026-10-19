@@ -19,7 +19,6 @@ import {
   prepareDomainNamespaceBundle,
   unixTimestamp,
   wrapObjectDekForNamespace,
-  type DomainForegroundSecretEntry,
   type TaskRuntimeRunResultReadEvidence,
 } from "@nautilo/lattice-crypto";
 import {
@@ -208,6 +207,10 @@ export async function taskRunResultMessageFixture() {
         expectedPolicyRevision: 7 },
       domain: destinationNamespace.publicDomain },
   };
+  const messageWrite = evidenceInput.messageWrite;
+  if (messageWrite === null) {
+    throw new Error("Task result Message write fixture is absent");
+  }
   const manifestRow = { object_id: result.objectId, access_revision: 0,
     manifest_hash: resultManifest.hash, previous_manifest_hash: null,
     payload_hash: crypto.hash(resultPayloadBytes),
@@ -263,7 +266,7 @@ export async function taskRunResultMessageFixture() {
     transaction: async use => use(restricted),
     transactionOnce: async use => use(restricted),
   };
-  const privateDomain: DomainForegroundSecretEntry = {
+  const privateDomain = {
     ...privateNamespace.publicDomain, domainKey: privateDomainKey,
   };
   const allocation = { sessionId: SESSION, messageId: 23, revision: 0 as const,
@@ -281,15 +284,15 @@ export async function taskRunResultMessageFixture() {
     issuerSigningPublicKey: issuer.publicKey,
     domainKey: destinationDomainKey,
   };
-  const run = <Value>(operation: (input: Readonly<{
+  const open = <Value>(
+    evidence: TaskRuntimeRunResultReadEvidence,
+    operation: (input: Readonly<{
     evidence: TaskRuntimeRunResultReadEvidence;
     source: Parameters<typeof prepareNativeTaskRunResultMessage>[0]["source"];
     prepare(overrides?: Partial<PrepareNativeTaskRunResultMessageInput>):
       Promise<PreparedNativeTaskRunResultMessage>;
-  }>) => Value | PromiseLike<Value>) =>
-    withTaskRuntimeRunResultReadEvidenceV1({ evidence: evidenceInput,
-      signal: controller.signal, now: () => now,
-      execute: evidence => withNativeProtectedTaskRunResultMessageSourceV1({
+  }>) => Value | PromiseLike<Value>,
+  ) => withNativeProtectedTaskRunResultMessageSourceV1({
         restricted, crypto, serverScope: SERVER, evidence,
         domains: [privateDomain], signal: controller.signal,
         loadCurrentResult: () => Promise.resolve(occurrence),
@@ -311,9 +314,36 @@ export async function taskRunResultMessageFixture() {
             ...overrides,
           }),
         }),
-      }),
+      }).then(opened => {
+        if (opened.status !== "available") {
+          throw new Error("Task result Message source was unavailable");
+        }
+        return opened.value;
+      });
+  const run = <Value>(operation: (input: Readonly<{
+    evidence: TaskRuntimeRunResultReadEvidence;
+    source: Parameters<typeof prepareNativeTaskRunResultMessage>[0]["source"];
+    prepare(overrides?: Partial<PrepareNativeTaskRunResultMessageInput>):
+      Promise<PreparedNativeTaskRunResultMessage>;
+  }>) => Value | PromiseLike<Value>) =>
+    withTaskRuntimeRunResultReadEvidenceV1({ evidence: evidenceInput,
+      signal: controller.signal, now: () => now,
+      execute: evidence => open(evidence, operation),
     });
   return { crypto, run, allocation, checks, destinationGenerationKey,
-    destinationSource,
-    controller, evidenceInput, expire: () => { now = NOW + 60_000; } };
+    destinationSource, open, issuer,
+    domains: [privateDomain, {
+      ...destinationNamespace.publicDomain,
+      domainKey: destinationDomainKey,
+    }] as const,
+    namespaceRequirements: [
+      { ordinal: 0, ...messageWrite.namespace },
+      { ordinal: 1, ...result.namespace },
+    ] as const,
+    foregroundNamespaceRequirements: [{
+      ordinal: 0,
+      ...messageWrite.namespace,
+    }] as const,
+    invocation, controller, evidenceInput,
+    expire: () => { now = NOW + 60_000; } };
 }

@@ -10,7 +10,7 @@ import {
   type ProtectedAgentMemoryCryptoSessionPort,
   type VerifiedForegroundAgentObject,
 } from "@nautilo/lattice-bridge";
-import type { AgentRuntimeKeyGeneration, LatticeCrypto } from
+import type { AgentRuntimeKeyGeneration, LatticeCrypto, TaskRuntimePublicationSigning } from
   "@nautilo/lattice-crypto";
 
 import { createDomainMemoryCryptoSession } from
@@ -41,6 +41,7 @@ export function createForegroundDomainMemoryCryptoSession(input: Readonly<{
     signerKeyId: string;
     signerPublicKey: Uint8Array;
     agentAuthorizationRevision: number;
+    taskRuntimeSigner?: TaskRuntimePublicationSigning;
   }>;
   freshPublication?: Parameters<typeof createForegroundAgentObjectRepairer>[0]["freshPublication"];
   persist(prepared: PreparedDeviceWrappedAgentObject): Promise<
@@ -71,6 +72,9 @@ export function createForegroundDomainMemoryCryptoSession(input: Readonly<{
           signerPublicKey: input.publication.signerPublicKey,
           agentAuthorizationRevision:
             input.publication.agentAuthorizationRevision,
+          ...(input.publication.taskRuntimeSigner === undefined ? {} : {
+            taskRuntimeSigner: input.publication.taskRuntimeSigner,
+          }),
         },
         ...(input.freshPublication === undefined ? {} : { freshPublication: input.freshPublication }),
         persist: input.persist,

@@ -86,7 +86,19 @@ type ContextSnapshot = Readonly<{
   assertCurrent: CurrentAssertion;
   taskSource: ProtectedTaskWakeFundingTaskSource;
   runSource: ProtectedTaskWakeFundingRunSource;
+  envelopeRoomId: string;
 }>; 
+
+type ContextCoordinates = Readonly<{
+  room: Readonly<{
+    id: string;
+    ownerId: string;
+    namespaceId: string;
+    graphThreadId: string;
+  }>;
+  envelopeRoomId: string;
+  subthread: ContextSnapshot["subthread"];
+}>;
 
 const ROLE_RANK = Object.freeze(new Map<string, number>([
   ["owner", 0], ["admin", 1], ["superuser", 2], ["member", 3],
@@ -202,13 +214,11 @@ function roster(rows: readonly Readonly<{
   return Object.freeze(result);
 }
 
-async function snapshotCurrentContext(input: Readonly<{
+async function snapshotCurrentCoordinates(input: Readonly<{
   publication: ProtectedTaskWakePublication;
   scheduling: ProtectedTaskWakeScheduling;
   transaction: CanonicalTranscriptTx;
-  resolver: PolicyResolver;
-  assertCurrent: CurrentAssertion;
-}>): Promise<ContextSnapshot | null> {
+}>): Promise<ContextCoordinates | null> {
   const { publication, scheduling, transaction } = input;
   const { plan, wakeEvidence } = publication;
   if (plan.intent.invocation.kind !== "wake"
@@ -264,6 +274,81 @@ async function snapshotCurrentContext(input: Readonly<{
   } else if (room.parentRoomId !== null
     || room.threadRootMessageId !== null
     || room.deletedThreadRootMessageId !== null) return null;
+
+  return Object.freeze({
+    room: Object.freeze({
+      id: room.id,
+      ownerId: room.ownerId,
+      namespaceId: room.namespaceId,
+      graphThreadId: room.graphThreadId,
+    }),
+    envelopeRoomId,
+    subthread,
+  });
+}
+
+function restrictCurrentEnvelope(input: Readonly<{
+  publication: ProtectedTaskWakePublication;
+  scheduling: ProtectedTaskWakeScheduling;
+  envelopeRoomId: string;
+  envelope: MemoryAccessEnvelope;
+}>): MemoryAccessEnvelope | null {
+  const { publication, scheduling, envelopeRoomId } = input;
+  const { plan } = publication;
+  let envelope = input.envelope;
+  if (isScopeMemoryEnvelope(envelope)
+    || envelope.ownerId !== scheduling.requestorId
+    || envelope.actorId !== plan.intent.requesterHumanId
+    || envelope.agentId !== scheduling.agentId
+    || envelope.roomId !== envelopeRoomId) return null;
+  const currentReadableIds = canonicalIds(envelope.readableNamespaces);
+  const plannedNamespaceIds = canonicalIds(plan.foregroundNamespaceIds);
+  const retained = plan.intent.continuation?.retainedSourceNamespaceIds;
+  if (currentReadableIds === null || plannedNamespaceIds === null
+    || plannedNamespaceIds.length !== plan.foregroundNamespaceIds.length
+    || (retained === undefined
+      ? !sameIds(currentReadableIds, plannedNamespaceIds)
+      : !sameIds(retained, plannedNamespaceIds)
+        || !retained.every(id => currentReadableIds.includes(id)))
+    || !plannedNamespaceIds.includes(scheduling.namespaceId)
+    || !exactWakeNamespaces({ publication, foregroundNamespaceIds: plannedNamespaceIds })) return null;
+  if (retained !== undefined) {
+    // A receipt can restrict fresh authority to the original source envelope;
+    // newly readable namespaces never become new sources during continuation.
+    envelope = { ...envelope,
+      readableNamespaces: [...retained],
+      mutableNamespaces: envelope.mutableNamespaces.filter(id => retained.includes(id)),
+      writableNamespaces: envelope.writableNamespaces.filter(id => retained.includes(id)),
+    };
+  }
+  const readableNamespaces = [...envelope.readableNamespaces];
+  const mutableNamespaces = [...envelope.mutableNamespaces];
+  const writableNamespaces = [...envelope.writableNamespaces];
+  const toolPolicy = { ...envelope.toolPolicy };
+  Object.freeze(readableNamespaces);
+  Object.freeze(mutableNamespaces);
+  Object.freeze(writableNamespaces);
+  Object.freeze(toolPolicy);
+  return Object.freeze({ ...envelope, readableNamespaces, mutableNamespaces,
+    writableNamespaces, toolPolicy });
+}
+
+async function snapshotCurrentContext(input: Readonly<{
+  publication: ProtectedTaskWakePublication;
+  scheduling: ProtectedTaskWakeScheduling;
+  transaction: CanonicalTranscriptTx;
+  envelope: MemoryAccessEnvelope;
+  assertCurrent: CurrentAssertion;
+}>): Promise<ContextSnapshot | null> {
+  const { publication, scheduling, transaction } = input;
+  const { plan } = publication;
+  const coordinates = await snapshotCurrentCoordinates({
+    publication,
+    scheduling,
+    transaction,
+  });
+  if (coordinates === null) return null;
+  const { room, envelopeRoomId, subthread } = coordinates;
 
   const [sessionRows, memberRows, roleRows, policyRows, bindingRows,
     taskRows, runRows] =
@@ -415,43 +500,13 @@ async function snapshotCurrentContext(input: Readonly<{
     || taskSource.fundingMode === "caller"
       && !hasWakeFundingSource(runSource)) return null;
 
-  let envelope: MemoryAccessEnvelope;
-  try {
-    envelope = await input.resolver.buildEnvelope(
-      plan.intent.requesterHumanId,
-      `room:${envelopeRoomId}`,
-      scheduling.agentId,
-      envelopeRoomId,
-    );
-  } catch {
-    return null;
-  }
-  if (isScopeMemoryEnvelope(envelope)
-    || envelope.ownerId !== scheduling.requestorId
-    || envelope.actorId !== plan.intent.requesterHumanId
-    || envelope.agentId !== scheduling.agentId
-    || envelope.roomId !== envelopeRoomId) return null;
-  const currentReadableIds = canonicalIds(envelope.readableNamespaces);
-  const plannedNamespaceIds = canonicalIds(plan.foregroundNamespaceIds);
-  const retained = plan.intent.continuation?.retainedSourceNamespaceIds;
-  if (currentReadableIds === null || plannedNamespaceIds === null
-    || plannedNamespaceIds.length !== plan.foregroundNamespaceIds.length
-    || (retained === undefined
-      ? !sameIds(currentReadableIds, plannedNamespaceIds)
-      : !sameIds(retained, plannedNamespaceIds)
-        || !retained.every(id => currentReadableIds.includes(id)))
-    || !plannedNamespaceIds.includes(scheduling.namespaceId)
-    || !exactWakeNamespaces({ publication, foregroundNamespaceIds: plannedNamespaceIds })) return null;
-  if (retained !== undefined) {
-    // A receipt can restrict fresh authority to the original source envelope;
-    // newly readable namespaces never become new sources during continuation.
-    envelope = Object.freeze({ ...envelope,
-      readableNamespaces: [...retained],
-      mutableNamespaces: envelope.mutableNamespaces.filter(id => retained.includes(id)),
-      writableNamespaces: envelope.writableNamespaces.filter(id => retained.includes(id)),
-      toolPolicy: Object.freeze({ ...envelope.toolPolicy }),
-    });
-  }
+  const envelope = restrictCurrentEnvelope({
+    publication,
+    scheduling,
+    envelopeRoomId,
+    envelope: input.envelope,
+  });
+  if (envelope === null) return null;
 
   return Object.freeze({
     actorRole: highestRole(roleRows.map(row => row.slug)),
@@ -474,6 +529,7 @@ async function snapshotCurrentContext(input: Readonly<{
     runSource: Object.freeze({ ...runSource,
       fundingBinding: structuredClone(runSource.fundingBinding),
     }),
+    envelopeRoomId,
   });
 }
 
@@ -489,12 +545,48 @@ export function createProtectedTaskWakeForegroundContextOwner(
     ?? (operation => openProtectedTaskWakeFundingSession(operation));
   return async input => {
     input.signal.throwIfAborted();
+    const coordinates = await dependencies.withCurrentFacts({ ...input,
+      use: async (transaction, assertCurrent) => {
+        const value = await snapshotCurrentCoordinates({
+          publication: input.publication,
+          scheduling: input.scheduling,
+          transaction,
+        });
+        return value === null ? null : Object.freeze({ ...value, assertCurrent });
+      },
+    });
+    if (coordinates === null) {
+      throw new TypeError("Protected Task wake foreground context is unavailable");
+    }
+    input.signal.throwIfAborted();
+    await coordinates.assertCurrent();
+    let candidateEnvelope: MemoryAccessEnvelope;
+    try {
+      candidateEnvelope = await dependencies.resolver.buildEnvelope(
+        input.publication.plan.intent.requesterHumanId,
+        `room:${coordinates.envelopeRoomId}`,
+        input.scheduling.agentId,
+        coordinates.envelopeRoomId,
+      );
+    } catch {
+      throw new TypeError("Protected Task wake foreground context is unavailable");
+    }
+    const restrictedCandidate = restrictCurrentEnvelope({
+      publication: input.publication,
+      scheduling: input.scheduling,
+      envelopeRoomId: coordinates.envelopeRoomId,
+      envelope: candidateEnvelope,
+    });
+    if (restrictedCandidate === null) {
+      throw new TypeError("Protected Task wake foreground context is unavailable");
+    }
+    await coordinates.assertCurrent();
     const snapshot = await dependencies.withCurrentFacts({ ...input,
       use: (transaction, assertCurrent) => snapshotCurrentContext({
         publication: input.publication,
         scheduling: input.scheduling,
         transaction,
-        resolver: dependencies.resolver,
+        envelope: restrictedCandidate,
         assertCurrent,
       }),
     });
@@ -503,10 +595,37 @@ export function createProtectedTaskWakeForegroundContextOwner(
     }
     input.signal.throwIfAborted();
     await snapshot.assertCurrent();
-    const continuation = input.publication.plan.intent.continuation;
-    const sourceEnvelopeDigest = protectedTaskWakeSourceEnvelopeDigest(
+    let currentEnvelope: MemoryAccessEnvelope;
+    try {
+      currentEnvelope = await dependencies.resolver.buildEnvelope(
+        input.publication.plan.intent.requesterHumanId,
+        `room:${snapshot.envelopeRoomId}`,
+        input.scheduling.agentId,
+        snapshot.envelopeRoomId,
+      );
+    } catch {
+      throw new TypeError("Protected Task wake foreground context is unavailable");
+    }
+    const restrictedCurrent = restrictCurrentEnvelope({
+      publication: input.publication,
+      scheduling: input.scheduling,
+      envelopeRoomId: snapshot.envelopeRoomId,
+      envelope: currentEnvelope,
+    });
+    if (restrictedCurrent === null) {
+      throw new TypeError("Protected Task wake foreground context is unavailable");
+    }
+    const candidateDigest = protectedTaskWakeSourceEnvelopeDigest(
       snapshot.memoryAccessEnvelope,
     );
+    const currentDigest = protectedTaskWakeSourceEnvelopeDigest(restrictedCurrent);
+    if (candidateDigest.length !== currentDigest.length
+      || !candidateDigest.every((byte, index) => byte === currentDigest[index])) {
+      throw new TypeError("Protected Task wake foreground context changed");
+    }
+    await snapshot.assertCurrent();
+    const continuation = input.publication.plan.intent.continuation;
+    const sourceEnvelopeDigest = currentDigest;
     if (continuation !== undefined
       && (continuation.sourceEnvelopeDigest.length !== sourceEnvelopeDigest.length
         || !sourceEnvelopeDigest.every((byte, index) =>
@@ -514,6 +633,7 @@ export function createProtectedTaskWakeForegroundContextOwner(
       throw new TypeError("Protected Task wake retained source changed");
     }
     const fundingSession = snapshot.taskSource.fundingMode === "caller"
+      || snapshot.taskSource.fundingMode === "legacy_server"
       ? await openWakeFunding({
           publication: input.publication,
           scheduling: input.scheduling,
@@ -543,7 +663,7 @@ export function createProtectedTaskWakeForegroundContextOwner(
       resultMessagePublished: snapshot.resultMessagePublished,
       actorRole: snapshot.actorRole,
       roomRoster: snapshot.roomRoster,
-      memoryAccessEnvelope: snapshot.memoryAccessEnvelope,
+      memoryAccessEnvelope: restrictedCurrent,
       subthread: snapshot.subthread,
       fundingSession,
       checkpointBinding,

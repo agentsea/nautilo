@@ -49,6 +49,9 @@ export type ProtectedTaskExecutionSignerAuthority =
     temporarySigner: TaskRuntimeTemporarySigner;
   }>;
 
+/** Publication reuses the same bounded signer loan and retained public proof. */
+export type ProtectedTaskPublicationSignerAuthority = ProtectedTaskExecutionSignerAuthority;
+
 /** Borrow only through the same exact execution/result Domain boundary. */
 export async function withProtectedTaskTemporaryResultSigner<Value>(input: Readonly<{
   evidence: TaskRuntimeExecutionEvidence;
@@ -357,6 +360,31 @@ async function withAuthenticatedProtectedTaskResultSigner<Value>(
   }
 }
 
+async function withAuthenticatedPublicationSigner<Value>(
+  input: Omit<ProtectedTaskResultSignerInput<Value>, "execute"> & Readonly<{
+    execute(authority: ProtectedTaskPublicationSignerAuthority): Value | PromiseLike<Value>;
+  }>,
+): Promise<ProtectedTaskResultSignerResult<Value>> {
+  input.assertAuthenticEvidence();
+  if (!hasTaskRuntimeTemporarySigner(input.evidence)) {
+    return withAuthenticatedProtectedTaskResultSigner(input);
+  }
+  return withTaskRuntimeTemporarySigner(input.evidence, async temporarySigner => {
+    input.assertAuthenticEvidence();
+    if (temporarySigner.runtime.agentId !== signerAgentId(input.evidence)) {
+      throw new TypeError("Temporary Task publication signer attribution disagrees");
+    }
+    const value = await input.execute(Object.freeze({
+      agentAuthorizationRevision: 0,
+      runtime: temporarySigner.runtime,
+      signerPublication: null,
+      temporarySigner,
+    }));
+    input.assertAuthenticEvidence();
+    return Object.freeze({ status: "executed" as const, value });
+  });
+}
+
 /**
  * Lend the current, historically authorized Agent Runtime signer only while an
  * authenticated Task execution holds the exact result Domain secret.
@@ -411,7 +439,7 @@ export async function withProtectedTaskCancellationResultSigner<Value>(
     resolveHistoricalSignerPublicationManager:
       ResolveHistoricalAgentRuntimeSignerPublicationManager;
     execute(
-      authority: ProtectedTaskResultSignerAuthority,
+      authority: ProtectedTaskPublicationSignerAuthority,
     ): Value | PromiseLike<Value>;
   }>,
 ): Promise<ProtectedTaskResultSignerResult<Value>> {
@@ -422,7 +450,7 @@ export async function withProtectedTaskCancellationResultSigner<Value>(
       reason: "authority_unavailable" as const,
     });
   }
-  return withAuthenticatedProtectedTaskResultSigner({
+  return withAuthenticatedPublicationSigner({
     ...input,
     assertAuthenticEvidence: () =>
       assertAuthenticTaskRuntimeCancellationResultEvidence(input.evidence),
@@ -448,7 +476,7 @@ export async function withProtectedTaskTerminalMessageSigner<Value>(
     resolveHistoricalSignerPublicationManager:
       ResolveHistoricalAgentRuntimeSignerPublicationManager;
     execute(
-      authority: ProtectedTaskResultSignerAuthority,
+      authority: ProtectedTaskPublicationSignerAuthority,
     ): Value | PromiseLike<Value>;
   }>,
 ): Promise<ProtectedTaskResultSignerResult<Value>> {
@@ -459,7 +487,7 @@ export async function withProtectedTaskTerminalMessageSigner<Value>(
       reason: "authority_unavailable" as const,
     });
   }
-  return withAuthenticatedProtectedTaskResultSigner({
+  return withAuthenticatedPublicationSigner({
     ...input,
     assertAuthenticEvidence: () =>
       assertAuthenticTaskRuntimeTerminalMessageEvidence(input.evidence),
@@ -485,7 +513,7 @@ export async function withProtectedTaskRunResultMessageSigner<Value>(
     resolveHistoricalSignerPublicationManager:
       ResolveHistoricalAgentRuntimeSignerPublicationManager;
     execute(
-      authority: ProtectedTaskResultSignerAuthority,
+      authority: ProtectedTaskPublicationSignerAuthority,
     ): Value | PromiseLike<Value>;
   }>,
 ): Promise<ProtectedTaskResultSignerResult<Value>> {
@@ -496,7 +524,7 @@ export async function withProtectedTaskRunResultMessageSigner<Value>(
       reason: "authority_unavailable" as const,
     });
   }
-  return withAuthenticatedProtectedTaskResultSigner({
+  return withAuthenticatedPublicationSigner({
     ...input,
     assertAuthenticEvidence: () =>
       assertAuthenticTaskRuntimeRunResultReadEvidence(input.evidence),
@@ -505,9 +533,10 @@ export async function withProtectedTaskRunResultMessageSigner<Value>(
 
 /** Lend a HIVE signer through an independently admitted wake foreground Namespace. */
 export async function withProtectedTaskWakeForegroundSigner<Value>(
-  input: Omit<ProtectedTaskResultSignerInput<Value>, "evidence" | "assertAuthenticEvidence"> & Readonly<{
+  input: Omit<ProtectedTaskResultSignerInput<Value>, "evidence" | "assertAuthenticEvidence" | "execute"> & Readonly<{
     evidence: TaskRuntimeWakeForegroundEvidence;
     namespaceId: string;
+    execute(authority: ProtectedTaskPublicationSignerAuthority): Value | PromiseLike<Value>;
   }>,
 ): Promise<ProtectedTaskResultSignerResult<Value>> {
   const evidence = input.evidence;
@@ -533,7 +562,7 @@ export async function withProtectedTaskWakeForegroundSigner<Value>(
   try { assertAuthority(); } catch {
     return Object.freeze({ status: "unavailable", reason: "authority_unavailable" });
   }
-  return withAuthenticatedProtectedTaskResultSigner({
+  return withAuthenticatedPublicationSigner({
     ...input, assertAuthenticEvidence: assertAuthority,
   });
 }

@@ -3,6 +3,7 @@ import type { PostgresJsBridgeConnection, PostgresJsBridgeRow } from "@nautilo/d
 import {
   LatticeCrypto, accessRevision, agentId, authorizationRevision, cryptoDeviceId, cryptoDomainId,
   decryptObjectThroughNamespace,
+  encodeTaskRuntimeBackgroundAuthorizationResponse,
   createDomainForegroundAuthorizationPlan, domainNamespaceRetainedAuthoritySetDigest,
   humanId, mintDomainForegroundAuthorization, namespaceGeneration, namespaceId,
   prepareAgentRuntimeInitialization, prepareDomainNamespaceBundle,
@@ -19,6 +20,8 @@ import { deriveTaskContentCryptoObjectIdV1, fingerprintTaskContentAuthorityV1, f
 import { PostgresTaskContentProductStore } from "../../src/server/task/postgres-task-content-product-store.ts";
 import { verifyConversationProductPostgresHandle, type ConversationProductPostgresConnection, type ConversationProductDatabaseRow, type ConversationProductPostgresScalar } from "../../src/server/message/postgres-conversation-product-store.ts";
 import { decodeTaskRunResultPayloadV1 } from "../../src/task/task-payload-v1.ts";
+import { withCertifiedCancellationPublicationSigner } from
+  "../fixtures/task-publication-signer.ts";
 
 import { verifyCryptoPostgresHandle, type CryptoPostgresConnection, type CryptoPostgresExecutor } from "../../src/server/storage/postgres-lattice-storage.ts";
 import type { DatabaseRow, DatabaseScalar } from "../../src/server/storage/postgres-record-codecs.ts";
@@ -47,7 +50,8 @@ async function fixture(adjust: Adjust = (_stage, rows) => rows) {
     participantDigest: bytes(0x61), participantCount: 1, keyClass: "ai" as const,
     domainKeyGeneration: 4, authorizationRevision: authorizationRevision(9), headDigest: bytes(0x62),
     activeNamespaceBindingSetDigest: bytes(0x63), activeNamespaceBindingCount: 1 };
-  const domain: DomainForegroundSecretEntry = { ...domainRequirement, domainKey };
+  const domain = { ...domainRequirement,
+    domainKey } satisfies DomainForegroundSecretEntry;
   const current = { serverId: SERVER, cryptoDomainId: cryptoDomainId(DOMAIN), participantDigest: domain.participantDigest,
     participantCount: 1, keyClass: "ai" as const, domainKeyGeneration: 4,
     domainAuthorizationRevision: authorizationRevision(9), domainHeadDigest: domain.headDigest,
@@ -216,7 +220,9 @@ async function fixture(adjust: Adjust = (_stage, rows) => rows) {
     crypto,
     cancellationCoordinate,
     cancellationResult,
+    certifiedDomains: [domain] as const,
     generationKey,
+    deviceSigner: issuer,
     base,
     setCancellationNow: (value: number) => { cancellationNow = value; },
     stages,
@@ -260,6 +266,7 @@ class NativeResultCryptoConnection implements CryptoPostgresConnection {
   };
   claim: DatabaseRow | null = null;
   failReceipt = false;
+  humanDevice: DatabaseRow | null = null;
   rejectFinalClaim = false;
   claimReads = 0;
   statements: string[] = [];
@@ -342,6 +349,10 @@ class NativeResultCryptoConnection implements CryptoPostgresConnection {
         if (normalized.includes("from agent_crypto_runtime_signers")) {
           return (this.signer === null ? [] : [cloneRow(this.signer)]) as Row[];
         }
+        if (normalized.includes("from human_crypto_devices")) {
+          return (this.humanDevice === null ? []
+            : [cloneRow(this.humanDevice)]) as Row[];
+        }
         if (normalized.includes("insert into crypto_objects")) {
           working.object = {
             object_id: parameters[0] as string,
@@ -361,6 +372,8 @@ class NativeResultCryptoConnection implements CryptoPostgresConnection {
               : (parameters[3] as Uint8Array).slice(),
             payload_hash: (parameters[4] as Uint8Array).slice(),
             manifest_bytes: (parameters[5] as Uint8Array).slice(),
+            signer_evidence_bytes: parameters[6] === null ? null
+              : (parameters[6] as Uint8Array).slice(),
           });
           return [];
         }
@@ -487,6 +500,86 @@ test("stages only fixed ciphertext atomically and reserves verified restart meta
   })).toEqual({ status: "stale" });
   expect(reserved).toBe(true);
   expect(f.connection.statements.some(statement => statement.includes("clock_timestamp()"))).toBe(true);
+});
+
+test("stages a certified V3 cancellation response bound to its active signer", async () => {
+  const f = await stagingFixture();
+  const value = f.value;
+  f.connection.humanDevice = {
+    device_id: "device:task-publication-signer-fixture",
+    human_id: HUMAN, device_generation: 1,
+    signing_public_key: value.deviceSigner.publicKey, state: "active",
+  };
+  await withCertifiedCancellationPublicationSigner({
+    crypto: value.crypto,
+    now: value.crypto.clock.now(),
+    deviceSigner: value.deviceSigner,
+    requestId: `task-run-cancellation-result-authorization:${RUN}`,
+    sessionId: "native-cancel-result-episode",
+    roomId: "native-cancel-result-room",
+    requesterHumanId: HUMAN,
+    signerAgentId: AGENT,
+    policyRevision: 3,
+    domains: value.certifiedDomains,
+    namespaceRequirements: [{
+      ordinal: 0, namespaceId: NAMESPACE, domainId: DOMAIN,
+      operations: ["encrypt"], expectedAccessRevision: 0,
+      expectedPolicyRevision: 3,
+    }],
+    work: {
+      kind: "task.cancel_result", taskId: TASK, taskRunId: RUN,
+      contentRevision: 2, workIdentityHash: bytes(0xb2),
+    },
+    result: value.cancellationResult,
+  }, async ({ evidence, signer, authorizationBytes, certificateBytes }) => {
+    const responseBytes = encodeTaskRuntimeBackgroundAuthorizationResponse({
+      authorizationBytes,
+      certificateBytes,
+    });
+    const identity = JSON.stringify(["nautilo/task-cancellation-result/v1",
+      TASK, RUN, OWNER, AGENT, NAMESPACE, f.intent.resultOperationId,
+      f.intent.resultObjectId, f.intent.terminalAt.getTime()]);
+    f.connection.claim = {
+      request_id: evidence.requestId, work_id: RUN,
+      work_kind: "task.cancel_result", purpose: "task.cancel_result",
+      state: "running", format_version: 3,
+      credential_subject_kind: "runtime", runtime_kind: "task",
+      runtime_version: 1, claim_id: evidence.claimId,
+      recipient_generation: evidence.recipientGeneration,
+      recipient_key_id: evidence.recipientKeyId,
+      accepted_response_kind: "runtime",
+      accepted_response_hash: value.crypto.hash(responseBytes),
+      accepted_response_bytes: responseBytes,
+      issuing_human_id: HUMAN, expected_policy_revision: 3,
+      namespace_id: NAMESPACE, domain_id: DOMAIN,
+      expected_namespace_access_revision: 0, expected_domain_epoch: 4,
+      idempotency_key: `task-cancellation:${Buffer.from(value.crypto.hash(
+        new TextEncoder().encode(identity))).toString("hex")}`,
+      live: true,
+    };
+    const result = await f.connection.transaction(async tx => {
+      const executor = tx as unknown as Pick<PostgresJsBridgeConnection,
+        "query">;
+      const borrowed: PostgresJsBridgeConnection = {
+        query: executor.query.bind(executor),
+        transaction: callback => callback(executor),
+        transactionOnce: callback => callback(executor),
+      };
+      return stageNativeTaskCancellationPublication({
+        ...f.history,
+        intent: f.intent,
+        preparation: { ...value.base, evidence,
+          signal: new AbortController().signal,
+          restricted: borrowed, runtime: signer.runtime,
+          signerPublication: null, temporarySigner: signer,
+          agentAuthorizationRevision: 0 },
+        assertCurrentClaim: () => Promise.resolve(),
+      });
+    });
+    expect(result).toBe("staged");
+  });
+  expect(f.connection.state.object).not.toBeNull();
+  expect(f.connection.state.receipt).not.toBeNull();
 });
 
 test("exact receipt replay does not prepare randomized ciphertext again", async () => {

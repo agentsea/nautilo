@@ -10,7 +10,7 @@ import {
 import {
   parseDomainForegroundAuthorizationPlanV2, serializeDomainForegroundAuthorizationV2,
 } from "@nautilo/lattice-crypto/wire";
-import { encodeTaskRuntimeBackgroundAuthorizationRequestV1 } from "@nautilo/lattice-crypto/background";
+import { encodeTaskRuntimeBackgroundAuthorizationRequestV3, createTaskRuntimeSignerAuthorizationV2, encodeTaskRuntimeBackgroundAuthorizationResponseV2, taskRuntimeBackgroundAuthorizationIssuerV3 } from "@nautilo/lattice-crypto/background";
 import { attachBackgroundAuthorizationRecipient, markBackgroundAuthorizationGrantReady,
   claimTaskRuntimeBackgroundAuthorizationRequest, markBackgroundAuthorizationRunning,
   type BackgroundAuthorizationTaskRuntimeRecordV3 } from "@nautilo/runtime";
@@ -66,29 +66,36 @@ async function fixture(representation: "protected" | "dual" = "protected") {
     policyRevision: 3, sourceRoomId: ROOM };
   const request = plan.buildRequest({ record: initial, attempt: attempt.attempt,
     binding: { userId: USER, humanActorId: HUMAN, deviceId: DEVICE }, authority: current });
-  const grant = parseDomainForegroundAuthorizationPlanV2(request.authorizationPlanBytes)!;
+  const base = request.baseRequest;
+  const grant = parseDomainForegroundAuthorizationPlanV2(base.authorizationPlanBytes)!;
   const authorization = await mintDomainForegroundAuthorization(crypto, { plan: grant,
     domains: [{ ...domain, domainKey }], committerDeviceSigningPrivateKey: issuer.privateKey,
     recipientEncryptionPublicKey: attempt.attempt.recipientPublicKey });
   const authorizationBytes = serializeDomainForegroundAuthorizationV2(authorization);
-  const descriptorBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV1(request);
+  const descriptorBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV3(crypto, request);
+  const certificateBytes = createTaskRuntimeSignerAuthorizationV2(crypto, {
+    requestBytes: descriptorBytes, authorizationBytes,
+    expectedAuthorizationPlanBytes: base.authorizationPlanBytes,
+    expectedAuthorizationHash: crypto.hash(authorizationBytes), issuerSigningPrivateKey: issuer.privateKey,
+  });
+  const responseBytes = encodeTaskRuntimeBackgroundAuthorizationResponseV2({ authorizationBytes, certificateBytes });
   const descriptorDigest = Buffer.from(crypto.hash(descriptorBytes)).toString("hex");
-  const responseDigest = Buffer.from(crypto.hash(authorizationBytes)).toString("hex");
+  const responseDigest = Buffer.from(crypto.hash(responseBytes)).toString("hex");
   const recipient = { recipientKeyId: attempt.attempt.recipientKeyId,
     recipientPublicKey: Buffer.from(attempt.attempt.recipientPublicKey).toString("base64url"), expiresAt: NOW + 60_000 };
   const awaiting = attachBackgroundAuthorizationRecipient(initial.snapshot, {
-    ...recipient, descriptorDigest, recipientGeneration: request.recipientGeneration, now: NOW,
+    ...recipient, descriptorDigest, recipientGeneration: base.recipientGeneration, now: NOW,
   });
   const ready = markBackgroundAuthorizationGrantReady(awaiting, {
-    ...recipient, kind: "runtime", requestId: request.requestId, descriptorDigest,
-    responseDigest, credentialDigest: responseDigest, issuingHumanId: HUMAN, issuingDeviceId: DEVICE,
-    recipientGeneration: request.recipientGeneration, now: NOW,
+    ...recipient, kind: "runtime", requestId: base.requestId, descriptorDigest,
+    responseDigest, credentialDigest: Buffer.from(crypto.hash(authorizationBytes)).toString("hex"), issuingHumanId: HUMAN, issuingDeviceId: DEVICE,
+    recipientGeneration: base.recipientGeneration, now: NOW,
   });
   const claimed = claimTaskRuntimeBackgroundAuthorizationRequest(ready, {
     claimId: CLAIM, now: NOW, requestDeadlineAt: NOW + 60_000, authorizationExpiresAt: NOW + 60_000,
   });
   const record = { ...initial, descriptorBytes, snapshot: markBackgroundAuthorizationRunning(claimed, NOW),
-    acceptedMaterial: { credentialId: grant.authorizationId, responseBytes: authorizationBytes,
+    acceptedMaterial: { credentialId: grant.authorizationId, responseBytes,
       authorizationExpiresAt: NOW + 60_000, issuingDeviceAuthorizationRevision: 5,
       issuerSigningPublicKeyHash: crypto.hash(issuer.publicKey) },
   } as unknown as BackgroundAuthorizationTaskRuntimeRecordV3;
@@ -137,15 +144,17 @@ async function fixture(representation: "protected" | "dual" = "protected") {
   const publish = createProtectedTaskCancellationPublication({ db, restricted, crypto,
     owner, serverScope: SERVER, authority, now: () => clock }, dependencies);
   const withEvidence = <Value>(use: (publication: Parameters<typeof publish>[0]) => Promise<Value>) =>
-    recipients.withOpenedCancellationResultGrant({ requestId: request.requestId, workId: RUN,
-      recipientGeneration: request.recipientGeneration, recipientKeyId: request.recipientKeyId,
+    recipients.withOpenedCancellationResultGrant({ requestId: base.requestId, workId: RUN,
+      recipientGeneration: base.recipientGeneration, recipientKeyId: base.recipientKeyId,
       claimId: CLAIM, claimExpiresAt: NOW + 60_000, authorizationBytes,
+      certifiedSigning: { requestBytes: descriptorBytes, certificateBytes,
+        currentIssuer: taskRuntimeBackgroundAuthorizationIssuerV3(request), expectedPublication: request.work },
       current: { authorizationId: grant.authorizationId, policyRevision: 3, sessionId: grant.sessionId, roomId: ROOM,
         subjectHumanId: grant.subjectHumanId, committerDeviceId: grant.committerDeviceId,
         committerDeviceSigningGeneration: 1, committerDeviceSigningPublicKey: issuer.publicKey, committerDeviceActive: true,
         hostAuthorizationRevision: grant.hostAuthorizationRevision, recipientKind: "runtime", recipientPrincipalId: "nautilo_task_runtime",
-        recipientAuthorizationRevision: authorizationRevision(0), recipientRuntimeGeneration: request.recipientGeneration,
-        recipientKeyId: request.recipientKeyId, recipientAuthorized: true, domains: [domain] },
+        recipientAuthorizationRevision: authorizationRevision(0), recipientRuntimeGeneration: base.recipientGeneration,
+        recipientKeyId: base.recipientKeyId, recipientAuthorized: true, domains: [domain] },
       currentNamespaceRequirements: initial.authoritySet.namespaceRequirements,
       result: { taskId: TASK, taskRunId: RUN, contentRevision: 2, objectId: intent.resultObjectId, signerAgentId: AGENT,
         namespace: { namespaceId: NS, domainId: DOMAIN, operations: ["encrypt"], expectedAccessRevision: 0, expectedPolicyRevision: 3 } },

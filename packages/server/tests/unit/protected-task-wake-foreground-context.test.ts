@@ -32,6 +32,7 @@ const AGENT_ACTOR = "60000000-0000-4000-8000-000000000004";
 const AGENT = "80000000-0000-4000-8000-000000000001";
 const NS = "90000000-0000-4000-8000-000000000001";
 const PARENT = "90000000-0000-4000-8000-000000000002";
+const CHANGED_PARENT = "90000000-0000-4000-8000-000000000004";
 const EXECUTION_JOB = "90000000-0000-4000-8000-000000000003";
 const domain = Object.freeze({ domainId: "wake-domain", sourceNamespaceId: NS,
   keyClass: "ai", participantCount: 1, participantDigest: new Uint8Array(32).fill(1),
@@ -56,6 +57,10 @@ type Options = Readonly<{
   mutableNamespaces?: readonly string[];
   writableNamespaces?: readonly string[];
   toolPolicy?: Readonly<Record<string, "allow" | "forbidden">>;
+  secondReadableNamespaces?: readonly string[];
+  secondToolPolicy?: Readonly<Record<string, "allow" | "forbidden">>;
+  secondOwnerId?: string;
+  changedParentOnSecondPass?: boolean;
 }>;
 
 async function withFixture<Value>(options: Options,
@@ -156,13 +161,15 @@ async function make(
   const rows = (table: unknown): readonly unknown[] => {
     if (table === rooms) {
       roomRead += 1;
-      if (roomRead === 1) return [{ id: scheduling.roomId, ownerId: ROOM_OWNER,
+      if (!options.subthread || roomRead % 2 === 1) return [{ id: scheduling.roomId, ownerId: ROOM_OWNER,
         namespaceId: NS, graphThreadId: "child-thread",
         kind: options.subthread ? "subthread" : "group",
         parentRoomId: options.subthread ? PARENT : null,
         threadRootMessageId: options.subthread ? 42 : null,
         deletedThreadRootMessageId: null, archivedAt: null }];
-      return [{ id: PARENT, archivedAt: null, parentRoomId: null, kind: "group" }];
+      const parentId = options.changedParentOnSecondPass && roomRead > 2
+        ? CHANGED_PARENT : PARENT;
+      return [{ id: parentId, archivedAt: null, parentRoomId: null, kind: "group" }];
     }
     if (table === sessions) return [{ id: scheduling.sessionId,
       ownerId: ROOM_OWNER, agentId: AGENT, roomId: scheduling.roomId,
@@ -211,10 +218,10 @@ async function make(
       cryptoRequiredNamespaceFingerprint: new Uint8Array(32).fill(8),
       cryptoMappingState: "verified" }];
     if (table === taskRuns) return [{ id: result.taskRunId, taskId: result.taskId,
-      jobId: fundingMode === "caller" && !options.syntheticCancelledRun
+      jobId: !options.syntheticCancelledRun
         ? EXECUTION_JOB : null,
       graphThreadId: "task-thread", status: runStatus,
-      modelId: fundingMode === "caller" && !options.syntheticCancelledRun
+      modelId: !options.syntheticCancelledRun
         ? "anthropic:test" : null,
       fundingBinding: fundingMode === "caller" && !options.syntheticCancelledRun
         ? { kind: "server", providerRoute: "anthropic" } : null,
@@ -247,15 +254,24 @@ async function make(
     runAttempt: async <Value>(_model: string,
       use: (value: never) => Promise<Value>) => use({} as never),
   });
+  let resolverCalls = 0;
   const resolver = { buildEnvelope: async (_actor: string, lane: string,
     _agent: string, roomId: string) => {
+    if (borrowed) throw new Error("global resolver invoked under borrowed facts");
+    resolverCalls += 1;
     events.push(`envelope:${lane}`);
-    return { memoryMode: "namespace", ownerId: USER,
+    return { memoryMode: "namespace", ownerId: resolverCalls === 2
+        ? options.secondOwnerId ?? USER : USER,
       actorId: wakeEvidence.requesterHumanId, agentId: AGENT, roomId,
-      readableNamespaces: [...(options.readableNamespaces ?? [NS])],
+      readableNamespaces: [...(resolverCalls === 2
+        ? options.secondReadableNamespaces ?? options.readableNamespaces ?? [NS]
+        : options.readableNamespaces ?? [NS])],
       mutableNamespaces: [...(options.mutableNamespaces ?? [NS])],
       writableNamespaces: [...(options.writableNamespaces ?? [NS])],
-      toolPolicy: { ...(options.toolPolicy
+      toolPolicy: { ...(resolverCalls === 2
+        ? options.secondToolPolicy ?? options.toolPolicy
+          ?? (options.resume ? defaultResumeToolPolicy : {})
+        : options.toolPolicy
         ?? (options.resume ? defaultResumeToolPolicy : {})) } };
   } } as unknown as PolicyResolver;
   const owner = createProtectedTaskWakeForegroundContextOwner({ resolver,
@@ -339,7 +355,41 @@ describe("protected Task wake foreground context", () => {
       expect(fixture.events.indexOf("released")).toBeLessThan(
         fixture.events.indexOf("funding"),
       );
+      expect(fixture.events.slice(0, 10)).toEqual([
+        "borrowed", "released", "current",
+        `envelope:room:${fixture.scheduling.roomId}`, "current",
+        "borrowed", "released", "current",
+        `envelope:room:${fixture.scheduling.roomId}`, "current",
+      ]);
       expect(fixture.authorityChecks()).toBeGreaterThanOrEqual(4);
+    }));
+
+  test.each([
+    { secondOwnerId: ROOM_OWNER },
+    { secondReadableNamespaces: [PARENT] },
+    { secondToolPolicy: { save_memory: "forbidden" as const } },
+  ])("rejects a changed canonical envelope after locked facts release: %o", options =>
+    withFixture(options, async fixture => {
+      expect(await fixture.owner({ publication: fixture.publication,
+        scheduling: fixture.scheduling, signal: new AbortController().signal,
+        use: async () => { throw new Error("must not run"); },
+      }).then(
+        () => null,
+        (error: unknown) => (error as Error).message,
+      )).toContain("Protected Task wake foreground context");
+      expect(fixture.events).not.toContain("funding");
+    }));
+
+  test("rejects a changed Subthread parent between coordinate and full facts", () =>
+    withFixture({ subthread: true, changedParentOnSecondPass: true }, async fixture => {
+      expect(await fixture.owner({ publication: fixture.publication,
+        scheduling: fixture.scheduling, signal: new AbortController().signal,
+        use: async () => { throw new Error("must not run"); },
+      }).then(
+        () => null,
+        (error: unknown) => (error as Error).message,
+      )).toContain("context is unavailable");
+      expect(fixture.events).not.toContain("funding");
     }));
 
   test("Full wake uses a retained dual definition with current protected output authority", () =>
@@ -349,6 +399,8 @@ describe("protected Task wake foreground context", () => {
         use: async context => {
           expect(context.enforcementPolicy.mode).toBe("encrypted_only");
           expect(fixture.publication.plan.intent.representation).toBe("protected");
+          expect(context.fundingSession).toBe(fixture.funding);
+          expect(fixture.events).toContain("funding");
           return 42;
         },
       })).toBe(42);
@@ -375,8 +427,8 @@ describe("protected Task wake foreground context", () => {
           expect(context.subthread).toEqual({ parentRoomId: PARENT,
             anchorMessageId: 42 });
           expect(context.memoryAccessEnvelope.roomId).toBe(PARENT);
-          expect(context.fundingSession).toBeNull();
-          expect(fixture.events).not.toContain("funding");
+          expect(context.fundingSession).toBe(fixture.funding);
+          expect(fixture.events).toContain("funding");
         } });
       expect(fixture.events).toContain(`envelope:room:${PARENT}`);
     }));

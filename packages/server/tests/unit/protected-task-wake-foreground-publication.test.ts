@@ -1,12 +1,14 @@
 import { rejects } from "node:assert/strict";
 import { expect, test } from "bun:test";
 import { LatticeCrypto, type DomainForegroundSecretEntry } from "@nautilo/lattice-crypto";
-import type { LiveShadowAgentTurnSession } from "@nautilo/lattice-bridge/server";
+import type { LiveShadowAgentPublishedMessage, LiveShadowAgentTurnSession } from "@nautilo/lattice-bridge/server";
+import type { ServerEvent } from "@nautilo/types";
 import { protectedTaskSemanticAuthorityRequirementsDigest } from "@nautilo/db";
-import type { ProtectedTaskWakeExecutionCandidate, ProtectedTaskWakeExecutionCustody,
-  ProtectedTaskWakeParkRequest } from "@nautilo/runtime";
+import { eventBus, type ProtectedTaskWakeExecutionCandidate, type ProtectedTaskWakeExecutionCustody,
+  type ProtectedTaskWakeParkRequest } from "@nautilo/runtime";
 import { withWakeEvidence } from "../../../lattice-bridge/tests/fixtures/task-wake-foreground-evidence.ts";
-import { getCurrentProtectedTaskWakeForegroundContext } from "../../../runtime/src/conversation/live-shadow-turn-context.ts";
+import { getCurrentLiveShadowTurnContext,
+  getCurrentProtectedTaskWakeForegroundContext } from "../../../runtime/src/conversation/live-shadow-turn-context.ts";
 import { createProtectedTaskWakeForegroundPublication,
   type ProtectedTaskWakePublication, type ProtectedTaskWakeForegroundPublicationInput,
   type ProtectedTaskWakeAdditionalProjectionAuthority,
@@ -24,19 +26,24 @@ const domain = { domainId: "wake-domain", sourceNamespaceId: NS, keyClass: "ai",
   authorizationRevision: 2, headDigest: new Uint8Array(32).fill(2), domainKey: new Uint8Array(32).fill(7),
 } as DomainForegroundSecretEntry;
 
-async function fixture(use: (f: Awaited<ReturnType<typeof make>>) => Promise<void>) {
+async function fixture(
+  use: (f: Awaited<ReturnType<typeof make>>) => Promise<void>,
+  representation: "protected" | "dual" = "protected",
+) {
   const controller = new AbortController();
   try { await withWakeEvidence({ now: Date.now(), signal: controller.signal, domain, namespaceId: NS,
     accessRevision: 3, policyRevision: 7, signerAgentId: AGENT,
-    execute: async (wakeEvidence, evidence) => use(await make({ wakeEvidence, evidence, controller })),
+    execute: async (wakeEvidence, evidence) => use(await make({ wakeEvidence, evidence, controller,
+      representation })),
   }); } catch (error) {
     if (!controller.signal.aborted || !(error instanceof TypeError)
       || error.message !== "Task wake foreground evidence is not active") throw error;
   }
 }
-async function make({ wakeEvidence, evidence, controller }: {
+async function make({ wakeEvidence, evidence, controller, representation }: {
   wakeEvidence: ProtectedTaskWakePublication["wakeEvidence"];
   evidence: ProtectedTaskWakePublication["evidence"]; controller: AbortController;
+  representation: "protected" | "dual";
 }) {
   const { namespace, ...result } = evidence.result;
   const publication = { wakeEvidence, evidence, signal: controller.signal,
@@ -44,7 +51,7 @@ async function make({ wakeEvidence, evidence, controller }: {
     partitions: { resultDomains: [domain], foregroundDomains: [domain],
       foregroundNamespaceRequirements: wakeEvidence.namespaceRequirements },
     plan: { intent: { requesterUserId: USER, requesterHumanId: wakeEvidence.requesterHumanId,
-      agentId: AGENT, contentNamespaceId: namespace.namespaceId, representation: "protected",
+      agentId: AGENT, contentNamespaceId: namespace.namespaceId, representation,
       expectedPolicyRevision: 7, acceptedPolicyRevision: 6, initialState: "wake_queued",
       result, invocation: wakeEvidence.invocation } },
     record: { workKind: "task.delivery_wake", purpose: "task.delivery_wake",
@@ -65,7 +72,8 @@ async function make({ wakeEvidence, evidence, controller }: {
     checkpointBinding: { retainedSourceNamespaceIds: [NS], sourceEnvelopeDigest: new Uint8Array(32).fill(7),
       initialPolicyRevision: 7,
       initialAgentAuthorizationRevision: 7 },
-    enforcementPolicy: { mode: "encrypted_only", shadowBehavior: "strict", revision: 7 },
+    enforcementPolicy: { mode: representation === "protected" ? "encrypted_only" : "shadow_encryption",
+      shadowBehavior: representation === "protected" ? "strict" : "fallback", revision: 7 },
     dataOperationPolicy: { resolve: async () => { throw new Error("unexpected policy call"); },
       revalidate: async () => undefined },
   } as unknown as ProtectedTaskWakeForegroundContext;
@@ -76,6 +84,9 @@ async function make({ wakeEvidence, evidence, controller }: {
   let failed = false;
   let failAfterTurn = false;
   let captureProjection = false;
+  let sessionPublishMessage: LiveShadowAgentTurnSession["publishMessage"] =
+    async () => { throw new Error("unexpected session publication"); };
+  const diagnostics: string[] = [];
   let captureMutation: ((capture: ProtectedTaskWakeAdditionalProjectionAuthority) =>
     ProtectedTaskWakeAdditionalProjectionAuthority) | undefined;
   let parkCalls = 0;
@@ -112,10 +123,15 @@ async function make({ wakeEvidence, evidence, controller }: {
   };
   const input: ProtectedTaskWakeForegroundPublicationInput = { crypto: new LatticeCrypto(),
     restricted: {} as never, serverScope: "wake-test", executor: async function* () {},
+    onDiagnostic: (stage, error) => diagnostics.push(
+      `${stage}:${error instanceof Error ? error.message : String(error)}`,
+    ),
     owner: { runMutation: async operation => {
       events.push("policy");
       if (deny) throw new Error("Plain policy unavailable");
-      return operation.protected!({ revalidationToken: 7 });
+      return representation === "protected"
+        ? operation.protected!({ revalidationToken: 7 })
+        : operation.dual!({ revalidationToken: 7 });
     } } as ProtectedTaskWakeForegroundPublicationInput["owner"],
     createLifecycle: async () => { events.push("lifecycle"); return lifecycle; },
     withForegroundContext: async operation => { events.push("context"); return operation.use(context); },
@@ -133,7 +149,8 @@ async function make({ wakeEvidence, evidence, controller }: {
       const { enforcementPolicy: _policy, dataOperationPolicy: _binding, ...facts } = context;
       try {
         const value = await invoke({ authorizationDeadlineAt: wakeEvidence.expiresAt,
-          authorizationSignal: controller.signal, checkpoint: {} } as LiveShadowAgentTurnSession,
+          authorizationSignal: controller.signal, checkpoint: {},
+          publishMessage: request => sessionPublishMessage(request) } as LiveShadowAgentTurnSession,
         { ...facts, evidence: wakeEvidence, scheduling, result: { formatVersion: 1, resultText: "Private result", lastError: null } });
         if (failAfterTurn) throw new Error("post-turn proof changed");
         return value;
@@ -144,8 +161,12 @@ async function make({ wakeEvidence, evidence, controller }: {
   const waitForAdoption = async () => { for (let n = 0; n < 20 && candidate === undefined; n++) await Promise.resolve();
     if (candidate === undefined) throw new Error("candidate missing"); return candidate; };
   return { publication, input, deps, publish, events, controller, scheduling, waitForAdoption,
+    diagnostics,
     deny: () => { deny = true; }, stale: () => { stale = true; }, failSettlement: () => { failed = true; },
     failAfterTurn: () => { failAfterTurn = true; },
+    publishMessage: (publish: LiveShadowAgentTurnSession["publishMessage"]) => {
+      sessionPublishMessage = publish;
+    },
     captureProjection: (mutate?: typeof captureMutation) => { captureProjection = true; captureMutation = mutate; },
     parkCalls: () => parkCalls,
     parkRequest: (changes: Partial<ProtectedTaskWakeParkRequest> = {}): ProtectedTaskWakeParkRequest => ({
@@ -187,6 +208,51 @@ async function dispatch(f: Awaited<ReturnType<typeof make>>,
   } finally { candidate.onIneligible(); }
 }
 
+function committedMessage(
+  f: Awaited<ReturnType<typeof make>>,
+  changes: Readonly<{
+    roomId?: string;
+    representationMode?: "shadow_encryption" | "full_encryption";
+  }> = {},
+): LiveShadowAgentPublishedMessage {
+  const roomId = changes.roomId ?? f.scheduling.roomId;
+  return {
+    representationMode: changes.representationMode ?? "full_encryption",
+    reservation: {
+      messageId: 42,
+      transcriptOrdinal: 2,
+      authorRole: "assistant",
+    } as LiveShadowAgentPublishedMessage["reservation"],
+    policyRevision: 7,
+    ordinaryPayloadBytes: new TextEncoder().encode("private reply"),
+    openedPayload: { role: "assistant", content: "private reply" },
+    protectedMessage: {
+      dtoVersion: 2,
+      projection: {
+        messageId: "42",
+        sessionId: f.publication.wakeEvidence.episodeId,
+        roomId,
+        namespaceId: NS,
+        role: "assistant",
+        createdAt: "2027-01-15T08:00:00.000Z",
+        editRevision: 0,
+        authorAgentId: AGENT,
+      },
+      protectedPayload: {
+        status: "encrypted",
+        cryptoObjectId: "message:certified-task:42",
+        payloadVersion: 2,
+        keyClass: "ai",
+        encryptedPayloadBytesBase64url: "AQ",
+        accessManifestBytesBase64url: "Ag",
+        namespaceEnvelopeBytesBase64url: "Aw",
+      },
+    },
+    durableEventDigest: new Uint8Array(32).fill(3),
+    streamEvidence: null,
+  };
+}
+
 test("genuine wake keeps custody through FIFO dispatch, protected ALS and exact completed receipt", () => fixture(async f => {
   let finished = false;
   const pending = f.publish().then(() => { finished = true; });
@@ -197,6 +263,104 @@ test("genuine wake keeps custody through FIFO dispatch, protected ALS and exact 
   expect(f.events.indexOf("settle:completed")).toBeLessThan(f.events.indexOf("session.closed"));
   expect(getCurrentProtectedTaskWakeForegroundContext()).toBeUndefined();
 }));
+
+test("committed wake receipt emits the existing Full durable event without reclassifying notification failure", () => fixture(async f => {
+  const receipt = committedMessage(f);
+  f.publishMessage(async () => ({ status: "protected", value: receipt }));
+  const emitted: ServerEvent[] = [];
+  const capture = (event: ServerEvent) => { emitted.push(event); };
+  const failNotification = () => { throw new Error("test notification failed"); };
+  eventBus.on(capture);
+  eventBus.on(failNotification);
+  try {
+    const pending = f.publish();
+    await dispatch(f, async () => {
+      const session = getCurrentLiveShadowTurnContext()?.session;
+      expect(session?.authorizationSignal).toBe(f.controller.signal);
+      const result = await session!.publishMessage({
+        payload: { role: "assistant", content: "private reply" },
+        stage: "assistant_message",
+      });
+      expect(result).toEqual({ status: "protected", value: receipt });
+    });
+    await pending;
+  } finally {
+    eventBus.off(capture);
+    eventBus.off(failNotification);
+  }
+  expect(emitted).toHaveLength(1);
+  expect(emitted[0]).toMatchObject({
+    type: "message.shadow_durable",
+    wireVersion: 2,
+    laneKey: f.scheduling.laneKey,
+    operationId: f.publication.wakeEvidence.invocation.operationId,
+    protectedMessage: receipt.protectedMessage,
+  });
+  expect(emitted[0]).not.toHaveProperty("ordinaryPayloadBytesBase64url");
+  expect(f.events).toContain("settle:completed");
+}));
+
+test("committed dual wake receipt emits the exact admitted ordinary sibling", () => fixture(async f => {
+  const receipt = committedMessage(f, { representationMode: "shadow_encryption" });
+  f.publishMessage(async () => ({ status: "protected", value: receipt }));
+  const emitted: ServerEvent[] = [];
+  const capture = (event: ServerEvent) => { emitted.push(event); };
+  eventBus.on(capture);
+  try {
+    const pending = f.publish();
+    await dispatch(f, async () => {
+      const session = getCurrentLiveShadowTurnContext()?.session;
+      expect(await session!.publishMessage({
+        payload: { role: "assistant", content: "private reply" },
+        stage: "assistant_message",
+      })).toEqual({ status: "protected", value: receipt });
+    });
+    await pending;
+  } finally {
+    eventBus.off(capture);
+  }
+  expect(emitted).toHaveLength(1);
+  expect(emitted[0]).toMatchObject({
+    type: "message.shadow_durable",
+    wireVersion: 1,
+    ordinaryPayloadBytesBase64url: "cHJpdmF0ZSByZXBseQ",
+  });
+}, "dual"));
+
+for (const scenario of ["fallback", "wrong_room", "wrong_representation"] as const) {
+  test(`wake committed notification ${scenario} preserves the session result without broadcasting`, () => fixture(async f => {
+    const receipt = committedMessage(f, scenario === "wrong_room"
+      ? { roomId: EXTRA_ROOM }
+      : scenario === "wrong_representation"
+        ? { representationMode: "shadow_encryption" }
+        : {});
+    const result = scenario === "fallback"
+      ? { status: "ordinary_fallback" as const, stage: "assistant_message" as const,
+        reason: "protected_unavailable" as const }
+      : { status: "protected" as const, value: receipt };
+    f.publishMessage(async () => result);
+    const emitted: ServerEvent[] = [];
+    const capture = (event: ServerEvent) => { emitted.push(event); };
+    eventBus.on(capture);
+    try {
+      const pending = f.publish();
+      await dispatch(f, async () => {
+        const session = getCurrentLiveShadowTurnContext()?.session;
+        expect(await session!.publishMessage({
+          payload: { role: "assistant", content: "private reply" },
+          stage: "assistant_message",
+        })).toEqual(result);
+      });
+      await pending;
+    } finally {
+      eventBus.off(capture);
+    }
+    expect(emitted).toEqual([]);
+    expect(f.events).toContain("settle:completed");
+    if (scenario === "fallback") expect(f.diagnostics).toEqual([]);
+    else expect(f.diagnostics[0]).toStartWith("assistant_message:");
+  }));
+}
 
 test("queued authorization expiry releases without decryption, model or terminal Job write", () => fixture(async f => {
   const pending = f.publish(); const candidate = await f.waitForAdoption(); f.controller.abort();

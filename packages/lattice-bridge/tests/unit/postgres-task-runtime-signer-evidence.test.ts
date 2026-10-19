@@ -20,8 +20,11 @@ import {
 import {
   createTaskRuntimeBackgroundAuthorizationRequestV1,
   createTaskRuntimeBackgroundAuthorizationRequestV2,
+  createTaskRuntimeBackgroundAuthorizationRequestV3,
   createTaskRuntimeSignerAuthorizationV1,
+  createTaskRuntimeSignerAuthorizationV2,
   encodeTaskRuntimeBackgroundAuthorizationRequestV2,
+  encodeTaskRuntimeBackgroundAuthorizationRequestV3,
 } from "@nautilo/lattice-crypto/background";
 import {
   serializeDomainForegroundAuthorizationPlanV2,
@@ -54,7 +57,7 @@ function normalizedSql(statement: string): string {
     .toLowerCase();
 }
 
-async function fixture() {
+async function fixture(publication = false) {
   const crypto = new LatticeCrypto(seededRng(2_631_101), { now: () => NOW });
   const issuer = crypto.generateSigningKeyPair();
   const recipient = await crypto.deriveEncryptionKeyPair(bytes(0x41));
@@ -100,8 +103,8 @@ async function fixture() {
   const base = createTaskRuntimeBackgroundAuthorizationRequestV1({
     requestId: "request:task",
     workId: RUN,
-    workKind: "task.execute",
-    workPurpose: "task.execute",
+    workKind: publication ? "task.deliver_result" : "task.execute",
+    workPurpose: publication ? "task.deliver_result" : "task.execute",
     recipientGeneration: 0,
     episodeId: "episode:task",
     sourceRoomId: "room:task",
@@ -116,16 +119,7 @@ async function fixture() {
       `nautilo/task-run-result-crypto-object/v1\n${TASK}\n${RUN}\n1`,
     ),
   ))}`;
-  const request = createTaskRuntimeBackgroundAuthorizationRequestV2(crypto, {
-    baseRequest: base,
-    work: {
-      taskId: TASK,
-      taskRunId: RUN,
-      inputObjectId: `task-definition:v1:${"b".repeat(64)}`,
-      resultObjectId,
-      executionSegment: 1,
-      workIdentityHash: bytes(0x21),
-    },
+  const requestAuthority = {
     signer: {
       agentId: signer.principal.agentId,
       runtimeGeneration: 0,
@@ -147,23 +141,43 @@ async function fixture() {
       expectedAccessRevision: 8,
       expectedPolicyRevision: 9,
     }],
-  });
+  } as const;
+  const request = publication
+    ? createTaskRuntimeBackgroundAuthorizationRequestV3(crypto, {
+      baseRequest: base,
+      work: { kind: "task.deliver_result", taskId: TASK, taskRunId: RUN,
+        contentRevision: 1, workIdentityHash: bytes(0x21) },
+      ...requestAuthority,
+    })
+    : createTaskRuntimeBackgroundAuthorizationRequestV2(crypto, {
+      baseRequest: base,
+      work: {
+        taskId: TASK,
+        taskRunId: RUN,
+        inputObjectId: `task-definition:v1:${"b".repeat(64)}`,
+        resultObjectId,
+        executionSegment: 1,
+        workIdentityHash: bytes(0x21),
+      },
+      ...requestAuthority,
+    });
   const authorization = await mintDomainForegroundAuthorization(crypto, {
     plan,
     domains: [{ ...domain, domainKey: bytes(0x31) }],
     committerDeviceSigningPrivateKey: issuer.privateKey,
     recipientEncryptionPublicKey: recipient.publicKey,
   });
-  const requestBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV2(
-    crypto,
-    request,
-  );
+  const requestBytes = request.formatVersion === 3
+    ? encodeTaskRuntimeBackgroundAuthorizationRequestV3(crypto, request)
+    : encodeTaskRuntimeBackgroundAuthorizationRequestV2(crypto, request);
   const authorizationBytes = serializeDomainForegroundAuthorizationV2(
     authorization,
   );
   const planBytes = serializeDomainForegroundAuthorizationPlanV2(plan);
   const authorizationHash = crypto.hash(authorizationBytes);
-  const certificateBytes = createTaskRuntimeSignerAuthorizationV1(crypto, {
+  const certificateBytes = (publication
+    ? createTaskRuntimeSignerAuthorizationV2
+    : createTaskRuntimeSignerAuthorizationV1)(crypto, {
     requestBytes,
     authorizationBytes,
     expectedAuthorizationPlanBytes: planBytes,
@@ -261,6 +275,37 @@ describe("stored Task Runtime signer evidence", () => {
       value.crypto,
       value.certificateBytes,
     )).rejects.toThrow("issuer history is unavailable");
+  });
+
+  test("authenticates retained publication evidence without a new store", async () => {
+    const value = await fixture(true);
+    const verified = await loadVerifiedTaskRuntimeSignerEvidenceV1(
+      executorFor(value), value.crypto, value.certificateBytes,
+    );
+    try {
+      expect(verified.certificate.projection.formatVersion).toBe(2);
+      expect(verified.certificate.projection.work).toMatchObject({
+        kind: "task.deliver_result",
+        taskId: TASK,
+        taskRunId: RUN,
+        contentRevision: 1,
+      });
+      expect(verified.issuerPublicKey).toEqual(value.issuer.publicKey);
+    } finally {
+      destroyVerifiedStoredTaskRuntimeSignerEvidenceV1(verified);
+    }
+    const chain = await verifyStoredObjectAccessManifestChainV5({
+      executor: executorFor(value),
+      crypto: value.crypto,
+      objectId: value.resultObjectId,
+      headAccessRevision: 0,
+      expectedPayloadHash: value.payloadHash,
+      expectedHeadManifestHash: value.manifest.hash,
+      resolveHistoricalAgentManagerAuthority: () => null,
+      resolveLiveShadowAgentSigner: () => null,
+    });
+    expect(chain.headSignerPublicKey).toEqual(value.signer.publicKey);
+    expect(chain.headSignerAuthorizationBytes).toEqual(value.certificateBytes);
   });
 
   test("verifies certified Agent history only from its retained row proof", async () => {

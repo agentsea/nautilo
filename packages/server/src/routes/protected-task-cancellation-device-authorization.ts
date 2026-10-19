@@ -2,9 +2,11 @@ import { createHash } from "node:crypto";
 import type { PostgresJsBridgeConnection } from "@nautilo/db";
 import type { TaskRuntimeRecipientRegistry } from "@nautilo/lattice-crypto";
 import {
-  decodeTaskRuntimeBackgroundAuthorizationRequestV1,
-  destroyTaskRuntimeBackgroundAuthorizationRequestV1,
-  encodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  decodeTaskRuntimeBackgroundAuthorizationRequestV3,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV3,
+  encodeTaskRuntimeBackgroundAuthorizationRequestV3,
+  isTaskRuntimeBackgroundAuthorizationRequestV3Carrier,
+  type TaskRuntimeBackgroundAuthorizationRequestV3,
 } from "@nautilo/lattice-crypto/background";
 import {
   destroyDomainForegroundAuthorizationPlanV2,
@@ -87,7 +89,7 @@ export function createProtectedTaskCancellationDeviceAuthorization(
 }
 
 /** Shared device lifecycle; each publication owner retains its exact product proof. */
-export function createProtectedTaskPublicationDeviceAuthorization<Plan extends TaskRuntimeRecipientRequestPlan & Readonly<{ sourceRoomId: string }>>(
+export function createProtectedTaskPublicationDeviceAuthorization<Plan extends TaskRuntimeRecipientRequestPlan<TaskRuntimeBackgroundAuthorizationRequestV3> & Readonly<{ sourceRoomId: string }>>(
   input: Readonly<{
     workKind: "task.cancel_result" | "task.deliver_message" | "task.deliver_result" | "task.delivery_wake";
     recipients: TaskRuntimeRecipientRegistry;
@@ -171,26 +173,36 @@ export function createProtectedTaskPublicationDeviceAuthorization<Plan extends T
             const expected = plan.recipientAttempt({ record: loaded, now: at });
             const attempt = await recipients.createAttempt({ requestId: loaded.snapshot.requestId,
               workId: loaded.snapshot.workId, recipientGeneration: loaded.snapshot.recipientGeneration,
-              recipientKeyId: expected.recipientKeyId, expiresAt: expected.expiresAt });
+              recipientKeyId: expected.recipientKeyId, expiresAt: expected.expiresAt,
+              ...(expected.signerAgentId === undefined ? {} : {
+                signerAgentId: expected.signerAgentId,
+              }) });
             if (attempt.status !== "created") return null;
             created = { requestId: loaded.snapshot.requestId, generation: loaded.snapshot.recipientGeneration };
             const request = plan.buildRequest({ record: loaded, attempt: attempt.attempt, binding: subject, authority: current });
-            const grant = parseDomainForegroundAuthorizationPlanV2(request.authorizationPlanBytes);
+            const baseRequest = request.baseRequest;
+            const grant = parseDomainForegroundAuthorizationPlanV2(baseRequest.authorizationPlanBytes);
             try {
-              if (grant === null || request.workKind !== workKind || request.workPurpose !== workKind
-                || request.requestId !== loaded.snapshot.requestId || request.workId !== input.coordinates(plan).workId
-                || request.sourceRoomId !== plan.sourceRoomId || current.sourceRoomId !== plan.sourceRoomId
-                || request.recipientGeneration !== loaded.snapshot.recipientGeneration
-                || request.recipientKeyId !== attempt.attempt.recipientKeyId
-                || request.deadlineAt !== attempt.attempt.expiresAt
-                || !sameBytes(request.recipientPublicKey, attempt.attempt.recipientPublicKey)
-                || !matchesCurrentTaskRuntimeAuthority({ request, plan: grant, subject, admission,
+              if (grant === null || request.work.kind !== workKind
+                || !sameBytes(request.work.workIdentityHash, loaded.workIdentityHash)
+                || baseRequest.workKind !== workKind || baseRequest.workPurpose !== workKind
+                || baseRequest.requestId !== loaded.snapshot.requestId
+                || baseRequest.workId !== input.coordinates(plan).workId
+                || baseRequest.sourceRoomId !== plan.sourceRoomId || current.sourceRoomId !== plan.sourceRoomId
+                || baseRequest.recipientGeneration !== loaded.snapshot.recipientGeneration
+                || baseRequest.recipientKeyId !== attempt.attempt.recipientKeyId
+                || baseRequest.deadlineAt !== attempt.attempt.expiresAt
+                || !sameBytes(baseRequest.recipientPublicKey, attempt.attempt.recipientPublicKey)
+                || !matchesCurrentTaskRuntimeAuthority({ request: baseRequest, plan: grant, subject, admission,
                   device: current.device, namespaces: current.namespaceRequirements,
                   domainRequirements: loaded.authoritySet.domainRequirements,
                   domains: current.domains, policyRevision: current.policyRevision, now: now() })) {
                 throw new TypeError("Cancellation recipient request was substituted");
               }
-              const descriptorBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV1(request);
+              const descriptorBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV3(
+                { hash: value => new Uint8Array(createHash("sha256").update(value).digest()) },
+                request,
+              );
               const descriptorDigest = digest(descriptorBytes);
               const next: BackgroundAuthorizationTaskRuntimeRecordV3 = { ...loaded,
                 snapshot: attachBackgroundAuthorizationRecipient(loaded.snapshot, {
@@ -222,7 +234,7 @@ export function createProtectedTaskPublicationDeviceAuthorization<Plan extends T
               return attached;
             } finally {
               if (grant !== null) destroyDomainForegroundAuthorizationPlanV2(grant);
-              destroyTaskRuntimeBackgroundAuthorizationRequestV1(request);
+              destroyTaskRuntimeBackgroundAuthorizationRequestV3(request);
             }
           },
         });
@@ -247,11 +259,19 @@ export function createProtectedTaskPublicationDeviceAuthorization<Plan extends T
           || selected.descriptorBytes === null || digest(selected.descriptorBytes) !== selected.snapshot.descriptorDigest) return null;
         const plan = await resolvePlan(selected);
         if (plan === null || !exactPlan(selected, plan) || subject.userId !== input.coordinates(plan).requesterUserId) return null;
-        const request = decodeTaskRuntimeBackgroundAuthorizationRequestV1(selected.descriptorBytes);
+        if (!isTaskRuntimeBackgroundAuthorizationRequestV3Carrier(selected.descriptorBytes)) return null;
+        const requestV3 = decodeTaskRuntimeBackgroundAuthorizationRequestV3(
+          { hash: value => new Uint8Array(createHash("sha256").update(value).digest()) },
+          selected.descriptorBytes,
+        );
+        const request = requestV3?.baseRequest ?? null;
         if (request === null) return null;
         try {
           const recipient = selected.snapshot.recipient;
-          if (recipient === null || request.requestId !== selected.snapshot.requestId
+          if (recipient === null || requestV3 === null
+            || requestV3.work.kind !== workKind
+            || !sameBytes(requestV3.work.workIdentityHash, selected.workIdentityHash)
+            || request.requestId !== selected.snapshot.requestId
             || request.workId !== input.coordinates(plan).workId || request.workKind !== workKind
             || request.workPurpose !== workKind || request.sourceRoomId !== plan.sourceRoomId
             || request.recipientGeneration !== selected.snapshot.recipientGeneration
@@ -274,7 +294,11 @@ export function createProtectedTaskPublicationDeviceAuthorization<Plan extends T
               return value;
             },
           });
-        } finally { destroyTaskRuntimeBackgroundAuthorizationRequestV1(request); }
+        } finally {
+          if (requestV3 !== null) {
+            destroyTaskRuntimeBackgroundAuthorizationRequestV3(requestV3);
+          }
+        }
       } finally { admission.headDigest.fill(0); }
     },
   });

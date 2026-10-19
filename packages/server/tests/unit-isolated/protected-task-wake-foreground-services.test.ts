@@ -1,6 +1,10 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { ProtectedTaskWakeAdditionalProjectionAuthority } from
   "../../src/routes/protected-task-wake-foreground-publication";
+import {
+  PUBLICATION_NAMESPACE,
+  withPublicationSigner,
+} from "../../../lattice-crypto/tests/fixtures/task-publication-signer.ts";
 
 const realBridgeServer = await import("@nautilo/lattice-bridge/server");
 const realBridge = await import("@nautilo/lattice-bridge");
@@ -14,7 +18,24 @@ const ownerInputs: unknown[] = [];
 const repairs: string[] = [];
 const committedRoot = { role: "nautilo_crypto", query: () => Promise.resolve([]) };
 const completionHandles: unknown[] = [];
+const completionExpectedAgents: Array<string | undefined> = [];
 const cryptoOperations: string[] = [];
+const verifiedProductHandles: unknown[] = [];
+const retainedSignerProducts: unknown[] = [];
+const retainedSignerPrincipals: unknown[] = [];
+const observedReadSignerKeys: Array<Uint8Array | null> = [];
+const historicalSignerKey = new Uint8Array(32).fill(9);
+type AgentSignerPrincipal = Readonly<{
+  agentId: string;
+  runtimeGeneration: number;
+  signerKeyId: string;
+}>;
+const historicalPrincipal: AgentSignerPrincipal = Object.freeze({
+  agentId: "agent",
+  runtimeGeneration: 2,
+  signerKeyId: "historical",
+});
+let exerciseRepairReadSigner = false;
 const memoryEnvelope = Object.freeze({
   ownerId: "human", actorId: "actor", agentId: "agent", roomId: "room",
   readableNamespaces: Object.freeze(["00000000-0000-4000-8000-000000000001"]),
@@ -30,7 +51,10 @@ mock.module("@nautilo/lattice-bridge", () => ({
 
 mock.module("@nautilo/lattice-bridge/server", () => ({
   ...realBridgeServer,
-  verifyConversationProductPostgresHandle: async (value: unknown) => value,
+  verifyConversationProductPostgresHandle: async (value: unknown) => {
+    verifiedProductHandles.push(value);
+    return value;
+  },
   verifyCryptoPostgresHandle: async (value: unknown) => value,
   bindConversationProductCanonicalTransactionRunner: () => ({
     role: "nautilo_agent",
@@ -42,9 +66,21 @@ mock.module("@nautilo/lattice-bridge/server", () => ({
   },
   PostgresDomainKeyAuthorityRepository: class {},
   PostgresLatticeStorage: class {},
-  createPostgresConversationCryptoCompletion: (input: { handle: unknown }) => {
+  createPostgresConversationCryptoCompletion: (input: { handle: unknown; commonManifestExpectedAgentId?: string }) => {
     completionHandles.push(input.handle);
+    completionExpectedAgents.push(input.commonManifestExpectedAgentId);
     return {};
+  },
+  createPostgresForegroundAgentSignerResolver: (input: { product: unknown }) => {
+    retainedSignerProducts.push(input.product);
+    return async (principal: AgentSignerPrincipal) => {
+      retainedSignerPrincipals.push(principal);
+      return principal.agentId === historicalPrincipal.agentId
+          && principal.runtimeGeneration === historicalPrincipal.runtimeGeneration
+          && principal.signerKeyId === historicalPrincipal.signerKeyId
+        ? historicalSignerKey.slice()
+        : null;
+    };
   },
   createPostgresForegroundJournalSelectionPort: () => ({}),
   persistDeviceWrappedAgentObject: async (input: { handle: unknown }) => {
@@ -52,25 +88,56 @@ mock.module("@nautilo/lattice-bridge/server", () => ({
     cryptoOperations.push("persist");
     return "created";
   },
-  readVerifiedDeviceWrappedAgentObject: async () => {
+  readVerifiedDeviceWrappedAgentObject: async (input: {
+    resolveLiveShadowAgentSigner(principal: AgentSignerPrincipal):
+      Promise<Uint8Array | null> | Uint8Array | null;
+  }) => {
     cryptoOperations.push("read");
+    if (exerciseRepairReadSigner) {
+      observedReadSignerKeys.push(
+        await input.resolveLiveShadowAgentSigner(historicalPrincipal),
+      );
+    }
     return null;
   },
-  createForegroundMessageHistoryRepairer: () => ({
-    protect: async () => { repairs.push("history"); return { status: "verified" }; },
+  createForegroundMessageHistoryRepairer: (input: {
+    resolveLiveShadowAgentSigner(principal: AgentSignerPrincipal):
+      Promise<Uint8Array | null> | Uint8Array | null;
+  }) => ({
+    protect: async () => {
+      repairs.push("history");
+      if (exerciseRepairReadSigner) {
+        observedReadSignerKeys.push(
+          await input.resolveLiveShadowAgentSigner(historicalPrincipal),
+        );
+      }
+      return { status: "verified" };
+    },
   }),
 }));
 
 mock.module("@nautilo/runtime", () => ({
   ...realRuntime,
-  createForegroundJournalHistoryRepairer: () => ({
-    protect: async () => { repairs.push("journal"); return { status: "verified" }; },
+  createForegroundJournalHistoryRepairer: (input: { read(value: unknown): Promise<unknown> }) => ({
+    protect: async () => {
+      repairs.push("journal");
+      if (exerciseRepairReadSigner) await input.read({});
+      return { status: "verified" };
+    },
   }),
-  createForegroundRecordHistoryRepairer: () => ({
-    protect: async () => { repairs.push("records"); return { status: "verified" }; },
+  createForegroundRecordHistoryRepairer: (input: { read(value: unknown): Promise<unknown> }) => ({
+    protect: async () => {
+      repairs.push("records");
+      if (exerciseRepairReadSigner) await input.read({});
+      return { status: "verified" };
+    },
   }),
-  createForegroundMemoryHistoryRepairer: () => ({
-    protect: async () => { repairs.push("memories"); return { status: "verified" }; },
+  createForegroundMemoryHistoryRepairer: (input: { read(value: unknown): Promise<unknown> }) => ({
+    protect: async () => {
+      repairs.push("memories");
+      if (exerciseRepairReadSigner) await input.read({});
+      return { status: "verified" };
+    },
   }),
 }));
 
@@ -121,6 +188,58 @@ describe("protected Task wake foreground services", () => {
       lifecycle: { scheduling: { requestorId: "human", agentId: "agent" } },
       publication: { wakeEvidence: {} },
     } as never)).toThrow("Wake foreground service identity changed");
+  });
+
+  test("retains a positive authenticated capsule revision with a certified signer", async () => {
+    await withPublicationSigner(async ({ crypto, evidence, signer }) => {
+      const common = {
+        crypto, restricted: committedRoot, serverScope: "server",
+        wakeEffectRecovery() {},
+        lifecycle: { scheduling: {
+          taskId: evidence.invocation.reference.taskId,
+          taskRunId: evidence.invocation.reference.taskRunId,
+          graphThreadId: "thread", namespaceId: PUBLICATION_NAMESPACE,
+          roomId: evidence.sourceRoomId, agentId: evidence.signerAgentId,
+          requestorId: "human",
+        } },
+        publication: {
+          plan: { intent: { contentNamespaceId: PUBLICATION_NAMESPACE },
+            foregroundNamespaceIds: [PUBLICATION_NAMESPACE] },
+          wakeEvidence: evidence,
+        },
+        entities: {},
+        signer: { agentAuthorizationRevision: 0, runtime: signer.runtime,
+          signerPublication: null, temporarySigner: signer },
+        resolveHistoricalSignerPublicationManager: () => null,
+      };
+      const context = {
+        enforcementPolicy: { mode: "encrypted_only" as const,
+          shadowBehavior: "strict" as const, revision: 7 },
+        memoryAccessEnvelope: { ownerId: "human",
+          actorId: evidence.requesterHumanId, agentId: evidence.signerAgentId,
+          roomId: evidence.sourceRoomId,
+          readableNamespaces: [PUBLICATION_NAMESPACE],
+          mutableNamespaces: [PUBLICATION_NAMESPACE],
+          writableNamespaces: [PUBLICATION_NAMESPACE], toolPolicy: {} },
+        checkpointBinding: { retainedSourceNamespaceIds: [PUBLICATION_NAMESPACE],
+          sourceEnvelopeDigest: new Uint8Array(32), initialPolicyRevision: 7,
+          initialAgentAuthorizationRevision: 11 },
+        continuation: { segment: 1, checkpointThreadId: "wake:thread",
+          resume: { interruptId: "projection:interrupt",
+            authorizationRequestId: "projection:authorization",
+            effectDisposition: "not_started_v1" as const,
+            operationId: "projection:operation",
+            requestDigest: new Uint8Array(32).fill(7),
+            requiredAuthorityDigest: new Uint8Array(32).fill(8) } },
+      };
+      expect(Object.keys(await createProtectedTaskWakeForegroundServices({
+        ...common, context,
+      } as never))).toHaveLength(7);
+      expect(() => createProtectedTaskWakeForegroundServices({
+        ...common,
+        context: { ...context, continuation: undefined },
+      } as never)).toThrow("Wake foreground checkpoint binding changed");
+    }, { recipientGeneration: 1 });
   });
 
   test("rejects substituted or ordinary-listed additional destination authority", () => {
@@ -191,6 +310,9 @@ describe("protected Task wake foreground services", () => {
     ownerInputs.length = 0;
     repairs.length = 0;
     cryptoOperations.length = 0;
+    verifiedProductHandles.length = 0;
+    retainedSignerProducts.length = 0;
+    retainedSignerPrincipals.length = 0;
     let current = true;
     let writerLoans = 0;
     let currentAssertions = 0;
@@ -372,11 +494,40 @@ describe("protected Task wake foreground services", () => {
       const current = value as {
         productContext: { handle: { role: string } };
         assertCurrentAuthority(): Promise<void>;
+        exact: {
+          resolveLiveShadowAgentSigner(principal: AgentSignerPrincipal):
+            Promise<Uint8Array | null> | Uint8Array | null;
+          resolveCurrentAgentSigner(principal: AgentSignerPrincipal):
+            Promise<Uint8Array | null> | Uint8Array | null;
+        };
       };
       await current.assertCurrentAuthority();
       expect(await accessInput.domain.persist({})).toBe("created");
+      const currentPrincipal = {
+        agentId: "agent",
+        runtimeGeneration: 3,
+        signerKeyId: "signer",
+      };
+      const fallbackCalls = retainedSignerPrincipals.length;
+      expect(await current.exact.resolveLiveShadowAgentSigner(currentPrincipal))
+        .toEqual(new Uint8Array(32));
+      expect(retainedSignerPrincipals).toHaveLength(fallbackCalls);
+      expect(await current.exact.resolveLiveShadowAgentSigner(historicalPrincipal))
+        .toEqual(historicalSignerKey);
+      expect(await current.exact.resolveLiveShadowAgentSigner({
+        ...historicalPrincipal,
+        signerKeyId: "unknown",
+      })).toBeNull();
+      expect(await current.exact.resolveCurrentAgentSigner(currentPrincipal))
+        .toEqual(new Uint8Array(32));
+      expect(await current.exact.resolveCurrentAgentSigner(historicalPrincipal))
+        .toBeNull();
       return current.productContext.handle.role;
     })).toBe("nautilo_agent");
+    expect(retainedSignerProducts.length).toBeGreaterThanOrEqual(2);
+    for (const product of retainedSignerProducts) {
+      expect(verifiedProductHandles).toContain(product);
+    }
     expect(cryptoOperations).toEqual(["persist", "read", "persist"]);
     expect(currentAssertions).toBe(6);
     expect(projection).toBe(projectionStub);
@@ -509,6 +660,10 @@ describe("protected Task wake foreground services", () => {
   test("keeps each repair inside one nonescaping current-writer callback", async () => {
     repairs.length = 0;
     completionHandles.length = 0;
+    completionExpectedAgents.length = 0;
+    retainedSignerPrincipals.length = 0;
+    observedReadSignerKeys.length = 0;
+    exerciseRepairReadSigner = true;
     let loans = 0;
     let open = false;
     const services = await createProtectedTaskWakeForegroundServices({
@@ -556,15 +711,32 @@ describe("protected Task wake foreground services", () => {
       resolveHistoricalSignerPublicationManager: () => null,
     } as never);
     const expected = ["history", "journal", "records", "memories"];
-    for (const [index, repair] of [services.protectForegroundHistory,
-      services.protectForegroundJournal, services.protectForegroundRecords,
-      services.protectForegroundMemories].entries()) {
-      expect(open).toBeFalse();
-      await repair({} as never);
-      expect(repairs[index]).toBe(expected[index]);
-      expect(open).toBeFalse();
+    try {
+      for (const [index, repair] of [services.protectForegroundHistory,
+        services.protectForegroundJournal, services.protectForegroundRecords,
+        services.protectForegroundMemories].entries()) {
+        expect(open).toBeFalse();
+        await repair({} as never);
+        expect(repairs[index]).toBe(expected[index]);
+        expect(open).toBeFalse();
+      }
+    } finally {
+      exerciseRepairReadSigner = false;
     }
     expect(loans).toBe(4);
     expect(completionHandles).toEqual([committedRoot]);
+    expect(completionExpectedAgents).toEqual(["agent"]);
+    expect(observedReadSignerKeys).toEqual([
+      historicalSignerKey,
+      historicalSignerKey,
+      historicalSignerKey,
+      historicalSignerKey,
+    ]);
+    expect(retainedSignerPrincipals).toEqual([
+      historicalPrincipal,
+      historicalPrincipal,
+      historicalPrincipal,
+      historicalPrincipal,
+    ]);
   });
 });

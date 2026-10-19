@@ -2,8 +2,10 @@ import { createHash } from "node:crypto";
 import { expect, test } from "bun:test";
 import { protectedTaskRunWakeJobId, protectedTaskRunResultObjectId } from "@nautilo/db";
 import { LatticeCrypto, type DomainForegroundAuthorityEntry } from "@nautilo/lattice-crypto";
-import { encodeTaskRuntimeBackgroundAuthorizationRequestV1 } from "@nautilo/lattice-crypto/background";
-import { parseDomainForegroundAuthorizationPlanV2 } from "@nautilo/lattice-crypto/wire";
+import { encodeTaskRuntimeBackgroundAuthorizationRequestV3,
+  encodeTaskRuntimeBackgroundAuthorizationResponseV2 } from "@nautilo/lattice-crypto/background";
+import { agentRuntimeObjectSignerKeyIdV1,
+  parseDomainForegroundAuthorizationPlanV2 } from "@nautilo/lattice-crypto/wire";
 import { InMemoryBackgroundAuthorizationRepository,
   type BackgroundAuthorizationTaskRuntimeRecordV3 } from "@nautilo/runtime";
 import { createProtectedTaskOutputReadClaim,
@@ -65,30 +67,39 @@ async function fixture(wake = false, sameNamespace = false, additional = false) 
     epoch: 1, securityRevision: 1, headDigest: bytes(6) };
   const namespaces = plan.initialRecord.authoritySet.namespaceRequirements;
   const publicKey = new Uint8Array(65).fill(7);
+  const signer = crypto.generateSigningKeyPair();
   const request = plan.buildRequest({ record: plan.initialRecord,
     binding: { userId: USER, humanActorId: HUMAN, deviceId: DEVICE },
     authority: { sourceRoomId: ROOM, policyRevision: 7, device,
       namespaceRequirements: namespaces, domains: [domain] },
     attempt: { ...plan.recipientAttempt({ record: plan.initialRecord, now: NOW }),
       requestId: plan.initialRecord.snapshot.requestId, workId: plan.initialRecord.snapshot.workId,
-      recipientGeneration: 0, recipientPublicKey: publicKey } });
-  const descriptorBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV1(request);
-  const responseBytes = bytes(8);
+      recipientGeneration: 0, recipientPublicKey: publicKey,
+      signer: { agentId: AGENT, runtimeGeneration: 0,
+        signerKeyId: agentRuntimeObjectSignerKeyIdV1(crypto, signer.publicKey),
+        signerPublicKey: signer.publicKey } } });
+  signer.privateKey.fill(0);
+  signer.publicKey.fill(0);
+  const baseRequest = request.baseRequest;
+  const descriptorBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV3(crypto, request);
+  const responseBytes = encodeTaskRuntimeBackgroundAuthorizationResponseV2({
+    authorizationBytes: bytes(8), certificateBytes: bytes(9),
+  });
   const record: BackgroundAuthorizationTaskRuntimeRecordV3 = {
     ...plan.initialRecord, descriptorBytes,
     snapshot: { ...plan.initialRecord.snapshot, state: "grant_ready", requestRevision: 2,
-      descriptorDigest: hash(descriptorBytes), recipient: { recipientKeyId: request.recipientKeyId,
-        recipientPublicKey: Buffer.from(publicKey).toString("base64url"), expiresAt: request.deadlineAt },
+      descriptorDigest: hash(descriptorBytes), recipient: { recipientKeyId: baseRequest.recipientKeyId,
+        recipientPublicKey: Buffer.from(publicKey).toString("base64url"), expiresAt: baseRequest.deadlineAt },
       acceptedResponse: { kind: "runtime", responseDigest: hash(responseBytes), credentialDigest: "aa".repeat(32),
         issuingHumanId: HUMAN, issuingDeviceId: DEVICE, recipientGeneration: 0, acceptedAt: NOW } },
-    acceptedMaterial: { responseBytes, credentialId: request.requestId,
+    acceptedMaterial: { responseBytes, credentialId: baseRequest.requestId,
       issuingDeviceAuthorizationRevision: 1, issuerSigningPublicKeyHash: bytes(9), authorizationExpiresAt: NOW + 60_000 },
   };
   const projectedResult = { ...namespaces[0]!, operations: ["decrypt"] as const };
   const projectedForeground = namespaces.filter(n => plan.foregroundNamespaceIds.includes(n.namespaceId))
     .map(n => ({ ...n, operations: wake ? ["decrypt", "encrypt"] as const : ["encrypt"] as const }));
   const current: ProtectedTaskOutputReadCurrentAuthority = {
-    device, plan: parseDomainForegroundAuthorizationPlanV2(request.authorizationPlanBytes)!,
+    device, plan: parseDomainForegroundAuthorizationPlanV2(baseRequest.authorizationPlanBytes)!,
     domains: [domain], namespaceRequirements: namespaces, policyRevision: 7, namespaceAuthority,
     resultNamespaceRequirement: projectedResult, foregroundNamespaceRequirements: projectedForeground,
     occurrence: { requesterHumanId: HUMAN, result: { ...intent.result, namespace: {
@@ -128,6 +139,13 @@ async function fixture(wake = false, sameNamespace = false, additional = false) 
         signingCopy = operation.current.committerDeviceSigningPublicKey;
         expect(operation.workId).toBe(wake ? protectedTaskRunWakeJobId(RUN) : RUN);
         expect(operation.workKind).toBe(workKind);
+        expect(operation.certifiedSigning?.expectedPublication).toMatchObject(
+          wake
+            ? { kind: "task.delivery_wake", taskId: TASK, taskRunId: RUN,
+                contentRevision: 1, jobId: protectedTaskRunWakeJobId(RUN) }
+            : { kind: "task.deliver_result", taskId: TASK, taskRunId: RUN,
+                contentRevision: 1 },
+        );
         expect(operation.result.namespace.operations).toEqual(["decrypt"]);
         expect(operation.currentNamespaceRequirements).toEqual(namespaces);
         expect(operation.currentForegroundNamespaceRequirements).toEqual(projectedForeground);

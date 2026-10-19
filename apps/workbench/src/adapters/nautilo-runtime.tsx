@@ -215,7 +215,10 @@ import {
   isProtectedTopLevelRoomKind,
   type MessagePayloadV2,
 } from "@nautilo/lattice-bridge";
-import { projectLiveShadowMessageResult } from
+import {
+  projectLiveShadowMessageResult,
+  resolveLiveShadowMessageDisplayAction,
+} from
   "./live-shadow-message-projection";
 import { sendOrdinaryRoomMessage } from "../lib/ordinary-room-message";
 import {
@@ -3418,13 +3421,26 @@ export function NautiloRuntimeProvider({
   const roomHistoryAroundControllerRef = useRef<RoomHistoryAroundController | null>(null);
   if (!roomHistoryAroundControllerRef.current) {
     roomHistoryAroundControllerRef.current = createRoomHistoryAroundController({
-      fetchPage: (options) => roomMessageOperationsRef.current.readRoomMessagesAround(options),
+      fetchPage: async (options) => {
+        const viewerKey = viewerKeyRef.current;
+        const viewerGeneration = viewerGenerationRef.current;
+        const admissionGeneration = getCryptoAdmissionSnapshot().generation;
+        const page = await roomMessageOperationsRef.current.readRoomMessagesAround(options);
+        if (
+          viewerKeyRef.current !== viewerKey
+          || viewerGenerationRef.current !== viewerGeneration
+          || !isCryptoAdmissionGenerationCurrent(admissionGeneration)
+        ) throw new Error("Room history access changed while the request was in flight.");
+        return page;
+      },
       getActiveRoomId: () => activeRoomIdRef.current,
       isMessageLoaded: (messageId) =>
         messagesRef.current.some((message) => String(message.id) === messageId),
-      onPage: (page) => {
+      onPage: (page, options) => {
         const restored = restoreSessionMessages(page.messages);
-        messagesRef.current = mergeRoomMessagesAround(messagesRef.current, restored);
+        messagesRef.current = mergeRoomMessagesAround(messagesRef.current, restored, {
+          appendWhenNoOverlap: options.targetOnly,
+        });
         flush();
         drainMountedBackfillPriorityRef.current();
       },
@@ -4083,10 +4099,18 @@ export function NautiloRuntimeProvider({
                 `[live-shadow] Foreground client rejected ${event.type} at ${result.checkpoint}`,
               );
             }
-            for (const projected of projectLiveShadowMessageResult({
+            const display = resolveLiveShadowMessageDisplayAction({
               event,
               result,
-            })) {
+              activeRoomId: activeRoomIdRef.current,
+            });
+            if (display.kind === "history_refresh") {
+              if (!sameReceivingViewer()) return;
+              await roomHistoryAroundController.load(display.messageId, { targetOnly: true });
+              if (!sameReceivingViewer()) return;
+              return;
+            }
+            for (const projected of display.events) {
               if (result.status !== "failed") protectedProjectedEventsRef.current.add(projected);
               projectedLiveShadowEventRef.current(projected);
             }
@@ -5776,6 +5800,7 @@ export function NautiloRuntimeProvider({
       sharedAgentOutputLiveShadowReceiver,
       liveShadowMessageClient,
       roomHistoryShadowReadAdapter,
+      roomHistoryAroundController,
       roomMessageOperations,
       applyConnectedWebActionAttention,
       applyConnectedWebActionResumeFailed,

@@ -16,11 +16,7 @@ import {
   authorizationRevision,
   type DomainForegroundAuthorityEntry,
 } from "@nautilo/lattice-crypto";
-import {
-  decodeTaskRuntimeBackgroundAuthorizationRequestV1,
-  encodeTaskRuntimeBackgroundAuthorizationRequestV1,
-} from "@nautilo/lattice-crypto/background";
-import { parseDomainForegroundAuthorizationPlanV2 } from
+import { agentRuntimeObjectSignerKeyIdV1, parseDomainForegroundAuthorizationPlanV2 } from
   "@nautilo/lattice-crypto/wire";
 import {
   isTaskExecutionWorkKind,
@@ -235,6 +231,8 @@ function buildRequest(
   now = NOW,
   authority: TaskRuntimeRecipientCurrentAuthority = currentAuthority(plan),
 ) {
+  const crypto = new LatticeCrypto();
+  const signerPublicKey = new Uint8Array(32).fill(9);
   const recipient = plan.recipientAttempt({ record, now });
   const attempt = Object.freeze({
     requestId: record.snapshot.requestId,
@@ -243,6 +241,8 @@ function buildRequest(
     recipientKeyId: recipient.recipientKeyId,
     recipientPublicKey: new Uint8Array(65).fill(7),
     expiresAt: recipient.expiresAt,
+    signer: Object.freeze({ agentId: AGENT, runtimeGeneration: 0 as const,
+      signerKeyId: agentRuntimeObjectSignerKeyIdV1(crypto, signerPublicKey), signerPublicKey }),
   });
   return {
     recipient,
@@ -298,14 +298,11 @@ for (const representation of ["protected", "dual"] as const) {
       }));
 
     const { recipient, request } = buildRequest(plan);
-    expect(request.formatVersion).toBe(1);
+    expect(request.formatVersion).toBe(3);
     expect(recipient.recipientKeyId)
       .toBe(`task-delivery-runtime:${RUN}:0`);
-    expect(decodeTaskRuntimeBackgroundAuthorizationRequestV1(
-      encodeTaskRuntimeBackgroundAuthorizationRequestV1(request),
-    )).not.toBeNull();
     const authorization = parseDomainForegroundAuthorizationPlanV2(
-      request.authorizationPlanBytes,
+      request.baseRequest.authorizationPlanBytes,
     );
     expect(authorization).toMatchObject({
       authorizationId: protectedTaskTerminalMessageRequestId(RUN),
@@ -315,13 +312,15 @@ for (const representation of ["protected", "dual"] as const) {
       operations: ["encrypt"],
       domainCount: 1,
     });
-    expect(request).toMatchObject({
+    expect(request.baseRequest).toMatchObject({
       requestId: protectedTaskTerminalMessageRequestId(RUN),
       workId: RUN,
       workKind: "task.deliver_message",
       workPurpose: "task.deliver_message",
       sourceRoomId: ROOM,
     });
+    expect(request.work).toMatchObject({ kind: "task.deliver_message", taskId: TASK,
+      taskRunId: RUN, contentRevision: 2, messageObjectId: plan.allocation.objectId });
   });
 }
 
@@ -373,10 +372,10 @@ test("keeps one logical Message identity across fresh recipient attempts", () =>
     .toBe(plan.initialRecord.idempotencyKey);
   expect(reordered.initialRecord.workIdentityHash)
     .toEqual(plan.initialRecord.workIdentityHash);
-  expect(first.request.requestId).toBe(second.request.requestId);
-  expect(first.request.workId).toBe(second.request.workId);
-  expect(first.request.workKind).toBe("task.deliver_message");
-  expect(second.request.workKind).toBe("task.deliver_message");
+  expect(first.request.baseRequest.requestId).toBe(second.request.baseRequest.requestId);
+  expect(first.request.baseRequest.workId).toBe(second.request.baseRequest.workId);
+  expect(first.request.work.kind).toBe("task.deliver_message");
+  expect(second.request.work.kind).toBe("task.deliver_message");
   expect(plan.allocation.objectId).toBe(
     deriveMessageCryptoObjectIdV2(plan.allocation),
   );

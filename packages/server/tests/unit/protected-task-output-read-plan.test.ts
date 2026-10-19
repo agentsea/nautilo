@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { LatticeCrypto, type DomainForegroundAuthorityEntry } from "@nautilo/lattice-crypto";
-import { parseDomainForegroundAuthorizationPlanV2 } from "@nautilo/lattice-crypto/wire";
+import { agentRuntimeObjectSignerKeyIdV1, parseDomainForegroundAuthorizationPlanV2 } from "@nautilo/lattice-crypto/wire";
 import type { TaskOutputNamespaceAuthority } from "@nautilo/lattice-bridge/server";
 import { buildUnclaimedTaskOutputReadAuthorityReplacement, sameTaskRuntimeAuthorityPlan, type TaskRuntimeRecipientCurrentAuthority } from "@nautilo/runtime";
 import { createProtectedTaskOutputReadPlan } from "../../src/routes/protected-task-output-read-plan";
@@ -68,13 +68,15 @@ for (const wake of [false, true]) {
           const request = plan.buildRequest({ record, binding: { userId: USER, humanActorId: HUMAN, deviceId: DEVICE },
             authority: current, attempt: { ...attemptConfig, requestId: record.snapshot.requestId,
               workId: record.snapshot.workId, recipientGeneration: record.snapshot.recipientGeneration,
-              recipientPublicKey: keys.publicKey } });
-          expect(request.formatVersion).toBe(1);
-          const grant = parseDomainForegroundAuthorizationPlanV2(request.authorizationPlanBytes);
+              recipientPublicKey: keys.publicKey, signer: Object.freeze({ agentId: AGENT,
+                runtimeGeneration: 0 as const, signerPublicKey: new Uint8Array(32).fill(9),
+                signerKeyId: agentRuntimeObjectSignerKeyIdV1(new LatticeCrypto(), new Uint8Array(32).fill(9)) }) } });
+          expect(request.formatVersion).toBe(3);
+          const grant = parseDomainForegroundAuthorizationPlanV2(request.baseRequest.authorizationPlanBytes);
           expect(grant?.sessionId).toBe(SESSION); expect(grant?.roomId).toBe(ROOM);
           expect(grant?.operations).toEqual(["decrypt", "encrypt"]);
-          expect(request.workKind).toBe(wake ? "task.delivery_wake" : "task.deliver_result");
-          expect(request.workId).toBe(wake ? JOB : RUN);
+          expect(request.work.kind).toBe(wake ? "task.delivery_wake" : "task.deliver_result");
+          expect(request.baseRequest.workId).toBe(wake ? JOB : RUN);
         } finally { keys.privateKey.fill(0); keys.publicKey.fill(0); }
       });
     });

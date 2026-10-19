@@ -3,6 +3,8 @@ import {
   agentRuntimeSignerPublicationMatchesRuntime,
   authorizationRevision,
   createCommonAgentObjectAccessManifest,
+  createTaskRuntimeCommonObjectAccessManifest,
+  deriveAgentRuntimeObjectSignerPublic,
   encryptedObjectWriteRecord,
   encryptObjectPayload,
   namespaceGeneration,
@@ -16,8 +18,10 @@ import {
   type AgentRuntimeSignerPublication,
   type LatticeCrypto,
   type ResolveHistoricalAgentRuntimeSignerPublicationManager,
+  type TaskRuntimeTemporarySigner,
 } from "@nautilo/lattice-crypto";
 import {
+  agentRuntimeObjectSignerKeyIdV1,
   encodeEncryptedPayloadV2,
   encodeNamespaceObjectEnvelopeV2,
 } from "@nautilo/lattice-crypto/wire";
@@ -36,6 +40,7 @@ export type NativeTaskAssistantMessageEncryptionResult = Readonly<{
   manifestBytes: Uint8Array;
   manifestHash: Uint8Array;
   envelopeBytes: readonly [Uint8Array];
+  signerEvidenceBytes?: Uint8Array;
 }>;
 
 function equal(left: Uint8Array, right: Uint8Array): boolean {
@@ -56,7 +61,8 @@ export async function encryptNativeTaskAssistantMessage(input: Readonly<{
   namespace: NativeTaskNamespaceSource;
   signerAgentId: string;
   runtime: AgentRuntimeKeyGeneration;
-  signerPublication: AgentRuntimeSignerPublication;
+  signerPublication: AgentRuntimeSignerPublication | null;
+  temporarySigner?: TaskRuntimeTemporarySigner;
   agentAuthorizationRevision: number;
   resolveHistoricalSignerPublicationManager:
     ResolveHistoricalAgentRuntimeSignerPublicationManager;
@@ -72,6 +78,16 @@ export async function encryptNativeTaskAssistantMessage(input: Readonly<{
     return result;
   };
   try {
+    const temporary = input.temporarySigner;
+    if ((input.signerPublication === null) === (temporary === undefined)) {
+      throw new TypeError("Native Task assistant Message requires one signer authority");
+    }
+    const derivedTemporary = temporary === undefined
+      ? null : deriveAgentRuntimeObjectSignerPublic(input.crypto, input.runtime);
+    if (derivedTemporary !== null) owned.push(derivedTemporary.publicKey);
+    const signerKeyId = temporary === undefined
+      ? input.signerPublication!.signerKeyId
+      : agentRuntimeObjectSignerKeyIdV1(input.crypto, temporary.signerPublicKey);
     if (input.payload.role !== "assistant"
       || !equal(payloadDigest, input.expectedPayloadDigest)
       || input.namespace.current.namespaceId !== input.namespaceId
@@ -81,22 +97,37 @@ export async function encryptNativeTaskAssistantMessage(input: Readonly<{
         !== input.namespaceKeyGeneration
       || input.namespace.current.keyClass !== "ai"
       || input.runtime.agentId !== input.signerAgentId
-      || input.signerPublication.agentId !== input.signerAgentId
-      || input.signerPublication.authorizationRevision
-        !== authorizationRevision(input.agentAuthorizationRevision)
-      || !agentRuntimeSignerPublicationMatchesRuntime(
-        input.crypto, input.runtime, input.signerPublication)
-      || !verifyHistoricalAgentRuntimeSignerPublication({
-        crypto: input.crypto,
-        publication: input.signerPublication,
-        resolveHistoricalManagerAuthority:
-          input.resolveHistoricalSignerPublicationManager,
-      })) {
+      || (temporary === undefined
+        ? input.signerPublication!.agentId !== input.signerAgentId
+          || input.signerPublication!.authorizationRevision
+            !== authorizationRevision(input.agentAuthorizationRevision)
+          || !agentRuntimeSignerPublicationMatchesRuntime(
+            input.crypto, input.runtime, input.signerPublication!)
+          || !verifyHistoricalAgentRuntimeSignerPublication({
+            crypto: input.crypto,
+            publication: input.signerPublication!,
+            resolveHistoricalManagerAuthority:
+              input.resolveHistoricalSignerPublicationManager,
+          })
+        : input.agentAuthorizationRevision !== 0
+          || temporary.runtime.agentId !== input.runtime.agentId
+          || temporary.runtime.generation !== input.runtime.generation
+          || !equal(temporary.runtime.key, input.runtime.key)
+          || derivedTemporary === null
+          || derivedTemporary.principal.signerKeyId !== signerKeyId
+          || !equal(derivedTemporary.publicKey, temporary.signerPublicKey))) {
       throw new TypeError("Native Task assistant Message authority disagrees");
     }
     const runtime = Object.freeze({
       ...input.runtime,
-      key: copy(input.runtime.key),
+      key: temporary === undefined ? copy(input.runtime.key) : input.runtime.key,
+    });
+    const certified = temporary === undefined ? undefined : Object.freeze({
+      certificateBytes: copy(temporary.certificateBytes),
+      issuerSigningPublicKey: copy(temporary.issuerSigningPublicKey),
+      requestHash: copy(temporary.requestHash),
+      authorizationHash: copy(temporary.authorizationHash),
+      securityRevision: temporary.issuer.securityRevision,
     });
     const source = input.namespace;
     const namespace: NativeTaskNamespaceSource = {
@@ -148,27 +179,43 @@ export async function encryptNativeTaskAssistantMessage(input: Readonly<{
           try {
             const payloadBytes = encodeEncryptedPayloadV2(encrypted.payload);
             const envelopeBytes = encodeNamespaceObjectEnvelopeV2(envelope);
-            const genesis = createCommonAgentObjectAccessManifest(input.crypto, {
+            const unsigned = {
               objectId: objectId(input.objectId),
               payloadHash: input.crypto.hash(payloadBytes),
               accessRevision: accessRevision(0),
               previousManifestHash: null,
               envelopeHashes: [input.crypto.hash(envelopeBytes)],
               signer: {
-                kind: "agent_runtime",
+                kind: "agent_runtime" as const,
                 agentId: runtime.agentId,
                 runtimeGeneration: runtime.generation,
-                signerKeyId: input.signerPublication.signerKeyId,
+                signerKeyId,
               },
-              signerAuthorizationHash: null,
+              signerAuthorizationHash: certified === undefined
+                ? null : input.crypto.hash(certified.certificateBytes),
               hostAuthorizationRevision:
-                authorizationRevision(input.agentAuthorizationRevision),
-            }, runtime);
+                authorizationRevision(certified === undefined
+                  ? input.agentAuthorizationRevision
+                  : certified.securityRevision),
+            };
+            const genesis = certified === undefined
+              ? createCommonAgentObjectAccessManifest(input.crypto, unsigned, runtime)
+              : createTaskRuntimeCommonObjectAccessManifest(input.crypto, unsigned, {
+                runtime,
+                certificateBytes: certified.certificateBytes,
+                issuerSigningPublicKey: certified.issuerSigningPublicKey,
+                expectedRequestHash: certified.requestHash,
+                expectedAuthorizationHash: certified.authorizationHash,
+                now: input.crypto.clock.now(),
+              });
             return Object.freeze({
               object: encryptedObjectWriteRecord(payloadBytes),
               manifestBytes: genesis.bytes,
               manifestHash: genesis.hash,
               envelopeBytes: Object.freeze([envelopeBytes] as const),
+              ...(certified === undefined ? {} : {
+                signerEvidenceBytes: certified.certificateBytes.slice(),
+              }),
             });
           } finally {
             envelope.wrappedDek.fill(0);

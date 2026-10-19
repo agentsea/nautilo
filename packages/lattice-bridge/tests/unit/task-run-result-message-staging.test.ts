@@ -12,6 +12,7 @@ import {
   cryptoDomainId,
   domainNamespaceRetainedAuthoritySetDigest,
   encryptObjectPayload,
+  encodeTaskRuntimeBackgroundAuthorizationResponse,
   humanId,
   namespaceGeneration,
   namespaceId,
@@ -68,6 +69,8 @@ import {
 } from "../../src/server/storage/postgres-lattice-storage.ts";
 import type { DatabaseRow, DatabaseScalar } from
   "../../src/server/storage/postgres-record-codecs.ts";
+import { withCertifiedRunResultPublicationSigner } from
+  "../fixtures/task-publication-signer.ts";
 
 const NOW = 1_940_000_000_000;
 const TASK = "10000000-0000-4000-8000-000000000741";
@@ -289,9 +292,9 @@ async function fixture(mappedAccess = 0) {
     transaction: async use => use(restricted),
     transactionOnce: async use => use(restricted),
   };
-  const privateDomain: DomainForegroundSecretEntry = {
+  const privateDomain = {
     ...privateNamespace.publicDomain, domainKey: privateDomainKey,
-  };
+  } satisfies DomainForegroundSecretEntry;
   const allocation = { sessionId: SESSION, messageId: 23, revision: 0 as const,
     objectId: deriveMessageCryptoObjectIdV2({ sessionId: SESSION,
       messageId: 23, revision: 0 }), createdAt: NOW,
@@ -337,10 +340,77 @@ async function fixture(mappedAccess = 0) {
         }),
       }),
     });
-  return { crypto, run, allocation, checks, destinationGenerationKey,
+  const certifiedRun = <Value>(operation: (input: Readonly<{
+    evidence: TaskRuntimeRunResultReadEvidence;
+    source: PrepareNativeTaskRunResultMessageInput["source"];
+    preparation: PrepareNativeTaskRunResultMessageInput;
+    authorizationBytes: Uint8Array;
+    certificateBytes: Uint8Array;
+  }>) => Value | PromiseLike<Value>) =>
+    withCertifiedRunResultPublicationSigner({
+      crypto,
+      now: crypto.clock.now(),
+      deviceSigner: issuer,
+      requestId: evidenceInput.requestId,
+      sessionId: SESSION,
+      roomId: ROOM,
+      requesterHumanId: HUMAN,
+      signerAgentId: AGENT,
+      policyRevision: 7,
+      domains: [privateDomain, {
+        ...destinationNamespace.publicDomain,
+        domainKey: destinationDomainKey,
+      }],
+      namespaceRequirements: [
+        { ...evidenceInput.messageWrite!.namespace, ordinal: 0 },
+        { ...result.namespace, ordinal: 1 },
+      ],
+      work: {
+        kind: "task.deliver_result",
+        taskId: TASK,
+        taskRunId: RUN,
+        contentRevision: 1,
+        workIdentityHash: bytes(0xb3),
+      },
+      result,
+      invocation,
+      foregroundNamespaceRequirements: [{
+        ...evidenceInput.messageWrite!.namespace,
+        ordinal: 0,
+      }],
+    }, async ({ evidence, signer, authorizationBytes, certificateBytes }) =>
+      withNativeProtectedTaskRunResultMessageSourceV1({
+        restricted, crypto, serverScope: SERVER, evidence,
+        domains: [privateDomain], signal: controller.signal,
+        loadCurrentResult: async () => occurrence,
+        resolveHistoricalAgentSignerAuthority: context => ({ ...context,
+          managerSigningPublicKey: manager.publicKey }),
+        execute: source => operation({ evidence, source,
+          authorizationBytes, certificateBytes,
+          preparation: {
+            crypto, evidence, source, allocation,
+            namespace: destinationSource,
+            runtime: signer.runtime,
+            signerPublication: null,
+            temporarySigner: signer,
+            agentAuthorizationRevision: 0,
+            resolveHistoricalSignerPublicationManager: () => {
+              throw new Error("permanent signer history must not be loaded");
+            },
+            signal: controller.signal,
+            resolveCurrentAuthority: authority => {
+              checks.push(authority);
+              return Promise.resolve({ ...authority });
+            },
+          },
+        }),
+      }));
+  return { crypto, run, certifiedRun, allocation, checks,
+    destinationGenerationKey,
     rewrapSource: () => { sourceHead = 1; }, sourceObjectId: result.objectId, sourceQuery: restricted.query,
     destinationSource,
     controller, evidenceInput, signerPublication: initialized.signerPublication,
+    deviceSigningPublicKey: issuer.publicKey.slice(),
     managerPublicKey: manager.publicKey.slice(),
     authorizationBytes,
     expire: () => { now = NOW + 60_000; } };
@@ -378,6 +448,7 @@ class ResultMessageCryptoConnection implements CryptoPostgresConnection {
   sourceQuery: PostgresJsBridgeConnection["query"] | undefined;
   failReceipt = false;
   claimReads = 0;
+  humanDevice: DatabaseRow | null = null;
   readonly locks: string[] = [];
 
   constructor(readonly signer: DatabaseRow) {}
@@ -457,6 +528,10 @@ class ResultMessageCryptoConnection implements CryptoPostgresConnection {
         if (normalized.includes("from agent_crypto_runtime_signers")) {
           return [cloneRow(this.signer)] as Row[];
         }
+        if (normalized.includes("from human_crypto_devices")) {
+          return (this.humanDevice === null ? []
+            : [cloneRow(this.humanDevice)]) as Row[];
+        }
         if (normalized.includes("insert into crypto_objects")) {
           (working as { object: DatabaseRow | null }).object = {
             object_id: parameters[0] as string,
@@ -472,6 +547,8 @@ class ResultMessageCryptoConnection implements CryptoPostgresConnection {
             previous_manifest_hash: parameters[3] as null,
             payload_hash: (parameters[4] as Uint8Array).slice(),
             manifest_bytes: (parameters[5] as Uint8Array).slice(),
+            signer_evidence_bytes: parameters[6] === null ? null
+              : (parameters[6] as Uint8Array).slice(),
           }); return [];
         }
         if (normalized.includes("insert into object_crypto_namespace_envelopes")) {
@@ -512,6 +589,113 @@ async function failure(operation: Promise<unknown>): Promise<Error> {
 }
 
 describe("Task run result Message crypto staging", () => {
+  test("stages a certified V3 result response bound to its active signer", async () => {
+    const value = await fixture();
+    const publication = value.signerPublication;
+    const connection = new ResultMessageCryptoConnection({
+      agent_id: publication.agentId,
+      runtime_generation: publication.runtimeGeneration,
+      authorization_revision: publication.authorizationRevision,
+      transition_kind: publication.transitionKind,
+      operation_id: publication.operationId,
+      signer_key_id: publication.signerKeyId,
+      signer_public_key: publication.signerPublicKey,
+      publication_bytes: encodeAgentRuntimeSignerPublicationV1(publication),
+    });
+    connection.humanDevice = {
+      device_id: "device:task-publication-signer-fixture",
+      human_id: HUMAN, device_generation: 1,
+      signing_public_key: value.deviceSigningPublicKey, state: "active",
+    };
+    await value.certifiedRun(async ({ evidence, source, preparation,
+      authorizationBytes, certificateBytes }) => {
+      const write = evidence.messageWrite!;
+      if (evidence.result.terminalStatus !== "completed"
+        && evidence.result.terminalStatus !== "errored") {
+        throw new Error("Expected a raw revision-one terminal result");
+      }
+      const responseBytes = encodeTaskRuntimeBackgroundAuthorizationResponse({
+        authorizationBytes,
+        certificateBytes,
+      });
+      connection.claim = {
+        request_id: evidence.requestId, work_id: evidence.workId,
+        work_kind: "task.deliver_result", purpose: "task.deliver_result",
+        state: "running", format_version: 3,
+        credential_subject_kind: "runtime", runtime_kind: "task",
+        runtime_version: 1, claim_id: evidence.claimId,
+        recipient_generation: evidence.recipientGeneration,
+        recipient_key_id: evidence.recipientKeyId,
+        idempotency_key: `task-output-read:${"c".repeat(64)}`,
+        accepted_response_kind: "runtime",
+        accepted_response_hash: value.crypto.hash(responseBytes),
+        accepted_response_bytes: responseBytes,
+        expected_policy_revision: evidence.policyRevision,
+        namespace_id: evidence.result.namespace.namespaceId,
+        domain_id: evidence.result.namespace.domainId,
+        expected_namespace_access_revision:
+          evidence.result.namespace.expectedAccessRevision,
+        expected_domain_epoch: evidence.resultDomain.domainKeyGeneration,
+        live: true,
+      };
+      connection.namespaces = [
+        { request_id: evidence.requestId,
+          namespace_id: evidence.result.namespace.namespaceId, ordinal: 0,
+          domain_id: evidence.result.namespace.domainId, operation_mask: 1,
+          expected_access_revision:
+            evidence.result.namespace.expectedAccessRevision,
+          expected_policy_revision: evidence.policyRevision },
+        { request_id: evidence.requestId,
+          namespace_id: write.namespace.namespaceId, ordinal: 1,
+          domain_id: write.namespace.domainId, operation_mask: 2,
+          expected_access_revision: write.namespace.expectedAccessRevision,
+          expected_policy_revision: evidence.policyRevision },
+      ];
+      connection.domains = [evidence.resultDomain, write.domain].map(
+        (domain, ordinal) => ({ request_id: evidence.requestId,
+          domain_id: domain.domainId, ordinal,
+          expected_epoch: domain.domainKeyGeneration,
+          expected_agent_authorization_revision: null,
+          expected_authorization_revision: domain.authorizationRevision }));
+      const current: NativeTaskRunResultMessageCurrentAuthority = {
+        taskId: evidence.result.taskId, taskRunId: evidence.result.taskRunId,
+        bindingId: evidence.invocation.bindingId,
+        messageOperationId: evidence.invocation.operationId,
+        sessionId: preparation.allocation.sessionId,
+        messageId: preparation.allocation.messageId, revision: 0,
+        objectId: preparation.allocation.objectId,
+        roomId: evidence.invocation.roomId,
+        namespaceId: write.namespace.namespaceId,
+        domainId: write.namespace.domainId, mode: preparation.allocation.mode,
+        acceptedPolicyRevision: preparation.allocation.acceptedPolicyRevision,
+        currentPolicyRevision:
+          preparation.allocation.publicationPolicyRevision,
+        namespaceAccessRevision: write.namespace.expectedAccessRevision,
+        requesterHumanId: evidence.requesterHumanId,
+        resultTerminalStatus: evidence.result.terminalStatus,
+        resultContentRevision: 1,
+        resultObjectId: evidence.result.objectId,
+        resultGenesisManifestHash: hex(evidence.result.genesisManifestHash),
+        resultCryptoAccessRevision: evidence.result.cryptoAccessRevision,
+        resultNamespaceId: evidence.result.namespace.namespaceId,
+        resultDomainId: evidence.result.namespace.domainId,
+        resultNamespaceAccessRevision:
+          evidence.result.namespace.expectedAccessRevision,
+      };
+      expect(source.result.objectId).toBe(evidence.result.objectId);
+      expect(await stageNativeTaskRunResultMessagePublication({
+        restricted: connection as unknown as PostgresJsBridgeConnection,
+        preparation,
+        resolveHistoricalAgentSignerAuthority: context => ({ ...context,
+          managerSigningPublicKey: value.managerPublicKey.slice() }),
+        assertCurrentClaim: () => undefined,
+        resolveCurrentDeliveryAuthority: () => Promise.resolve(current),
+      })).toBe("staged");
+    });
+    expect(connection.state.object).not.toBeNull();
+    expect(connection.state.receipt).not.toBeNull();
+  });
+
   test.each([0, 1])("atomically stages and recovers authentic result head %s without another read grant", async mappedAccess => {
     const value = await fixture(mappedAccess);
     const publication = value.signerPublication;

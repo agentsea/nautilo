@@ -154,6 +154,9 @@ export {
   runWithTaskWakeLiveShadowTurnSession,
   type LiveShadowTurnContext,
 } from "./conversation/live-shadow-turn-context";
+export {
+  projectLiveShadowPublishedMessageEvent,
+} from "./conversation/live-shadow-agent-runtime-events";
 export type { ProtectedTaskWakeForegroundSource } from "./tasks/protected-task-wake-foreground-context";
 export {
   requiresEncryptedForegroundCheckpoint,

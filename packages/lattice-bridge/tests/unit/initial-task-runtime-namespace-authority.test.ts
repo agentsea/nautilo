@@ -2096,7 +2096,9 @@ async function wakeWriterFixture(scenario = "ready") {
       namespaceKeyGeneration: 1, namespaceHeadDigest: digest(13), namespacePublicationDigest: digest(14), namespacePublicationSetDigest: digest(15),
       namespaceAudienceFingerprint: digest(16), domainId: namespaceId === NAMESPACES[0] ? DOMAINS[0] : DOMAINS[1], domainKeyGeneration: 2,
       domainAuthorizationRevision: 3, domainHeadDigest: digest(4), bundleRevision: 1, bundleDigest: digest(17) }));
-  const run = <T>(use: (current: TaskWakeLiveShadowCurrentWriter, evidence: TaskRuntimeWakeForegroundEvidence) => Promise<T>) =>
+  const run = <T>(use: (current: TaskWakeLiveShadowCurrentWriter, evidence: TaskRuntimeWakeForegroundEvidence) => Promise<T>,
+    signerChange: Partial<Readonly<{ agentAuthorizationRevision: number; runtimeGeneration: number;
+      signerKeyId: string; signerPublicKey: Uint8Array; signerAuthorizationHash: Uint8Array }>> = {}) =>
     withTaskRuntimeRunResultReadEvidenceV1({ now: () => signed.now, signal: new AbortController().signal,
       evidence: { purpose: "task.runtime.run_result_read", workKind: "task.delivery_wake", requestId: signed.request.requestId,
         workId: jobId, claimId: "wake-claim", claimExpiresAt: signed.now + 60_000, recipientExpiresAt: signed.now + 60_000,
@@ -2118,14 +2120,16 @@ async function wakeWriterFixture(scenario = "ready") {
             validateCurrentProduct: async () => true, validateBeforeCommit: () => {},
             evidence: scenario === "forged" ? { ...evidence } : evidence,
             signer: { agentAuthorizationRevision: 3, runtimeGeneration: publication.runtimeGeneration,
-              signerKeyId: publication.signerKeyId, signerPublicKey: publication.signerPublicKey },
+              signerKeyId: publication.signerKeyId, signerPublicKey: publication.signerPublicKey,
+              ...signerChange },
             resolveHistoricalSignerPublicationManager: () => manager.publicKey,
             use: current => { entered = true; return use(current, evidence); },
           }),
         }),
       }),
     });
-  return { ...value, signed, publication, operationId, objectId, lifecycle, parent, run, entered: () => entered,
+  return { ...value, signed, publication, operationId, objectId, lifecycle, parent, run, atomic,
+    entered: () => entered,
     cleanup: () => { admission.mockRestore(); atomic.mockRestore(); signerPublication.mockRestore(); namespace.mockRestore(); } };
 }
 
@@ -2157,6 +2161,19 @@ describe("held Task wake live transcript authority", () => {
   }
 });
 
+test("legacy wake refuses an arbitrary certified signer hash before Runtime lookup", async () => {
+  const f = await wakeWriterFixture();
+  try {
+    f.atomic.mockClear();
+    const result = await f.run(async () => "must-not-enter", {
+      signerAuthorizationHash: digest(30),
+    });
+    expect(result).toBeNull();
+    expect(f.entered()).toBe(false);
+    expect(f.atomic).not.toHaveBeenCalled();
+  } finally { f.cleanup(); }
+});
+
 test("wake writer resolves only the current selected Room Message and independent foreground entity partitions", async () => {
   const f = await wakeWriterFixture();
   let escaped: TaskWakeLiveShadowCurrentWriter | undefined;
@@ -2172,7 +2189,8 @@ test("wake writer resolves only the current selected Room Message and independen
       } as unknown as Parameters<typeof current.resolveCurrentAgentObjectWrite>[0];
       expect(await current.resolveCurrentAgentObjectWrite(context)).toMatchObject({ namespaceAuthorized: true, agentAuthorized: true });
       for (const substitute of [{ operationId: "wrong" }, { namespaceId: NAMESPACES[0] }, { agentId: PEER }, { runtimeGeneration: 88 },
-        { grantId: "wrong-grant" }, { grantHash: digest(29) }]) {
+        { grantId: "wrong-grant" }, { grantHash: digest(29) },
+        { signerAuthorizationHash: digest(30) }]) {
         expect(await current.resolveCurrentAgentObjectWrite({ ...context, ...substitute })).toBeNull();
       }
       const entity = { operationId: f.operationId, grantId: evidence.requestId, grantHash: evidence.authorizationDigest,
@@ -2187,6 +2205,8 @@ test("wake writer resolves only the current selected Room Message and independen
       expect(await current.resolveCurrentForegroundEntityObjectWrite({ ...entity,
         namespaces: [{ ...entity.namespaces[0]!, namespaceId: NAMESPACES[0] }] })).toBeNull();
       expect(await current.resolveCurrentForegroundEntityObjectWrite({ ...entity, grantHash: digest(29) })).toBeNull();
+      expect(await current.resolveCurrentForegroundEntityObjectWrite({ ...entity,
+        signerAuthorizationHash: digest(30) })).toBeNull();
       return true;
     });
     expect(escaped).toBeDefined();

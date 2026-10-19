@@ -5,6 +5,8 @@ import {
 } from "@nautilo/lattice-bridge";
 import type { InitialTaskRuntimeNamespaceAuthority } from "@nautilo/lattice-bridge/server";
 import type { LatticeCrypto } from "@nautilo/lattice-crypto";
+import type { TaskRuntimeBackgroundAuthorizationRequestV3 } from
+  "@nautilo/lattice-crypto/background";
 import {
   createBackgroundAuthorizationTaskRuntimeRequestV3,
   parseBackgroundAuthorizationRecord,
@@ -23,7 +25,9 @@ export type ProtectedTaskTerminalMessageAllocation = Readonly<{
   publicationPolicyRevision: number;
 }>;
 
-export type ProtectedTaskTerminalMessagePlan = TaskRuntimeRecipientRequestPlan & Readonly<{
+export type ProtectedTaskTerminalMessagePlan = TaskRuntimeRecipientRequestPlan<
+  TaskRuntimeBackgroundAuthorizationRequestV3
+> & Readonly<{
   intent: ProtectedTaskTerminalMessageIntent;
   allocation: ProtectedTaskTerminalMessageAllocation;
   publicationPolicyRevision: number;
@@ -107,7 +111,9 @@ export function createProtectedTaskTerminalMessagePlan(input: Readonly<{
     publicationPolicyRevision: allocation.publicationPolicyRevision,
     sourceRoomId: authority.sourceRoomId, initialRecord,
     ...createProtectedTaskTerminalMessageRecipientRequestPlan({
-      taskRunId: intent.taskRunId, requesterUserId: intent.requesterUserId,
+      taskId: intent.taskId, taskRunId: intent.taskRunId,
+      agentId: intent.agentId, messageObjectId: allocation.objectId,
+      requesterUserId: intent.requesterUserId,
       destinationNamespaceId: intent.destinationNamespaceId,
       initialRecord, sourceRoomId: authority.sourceRoomId,
       authority: { policyRevision: fact.expectedPolicyRevision, namespaces, domains },

@@ -5,15 +5,17 @@ import { createPostgresConversationCryptoCompletion, createTaskWakeForegroundAge
   PostgresHumanDeviceSignerHistory, PostgresLatticeStorage, verifyCryptoPostgresHandle,
   withNativeProtectedTaskRunResultV1, withNativeTaskWakeForegroundEntityCrypto } from "@nautilo/lattice-bridge/server";
 import { agentId, namespaceId as cryptoNamespaceId, authorizationRevision as cryptoAuthorizationRevision, unixTimestamp, assertAuthenticTaskRuntimeRunResultReadEvidence,
-  assertAuthenticTaskRuntimeWakeForegroundEvidence } from "@nautilo/lattice-crypto";
-import { runWithTaskWakeLiveShadowTurnSession } from "@nautilo/runtime";
+  assertAuthenticTaskRuntimeWakeForegroundEvidence, assertTaskRuntimeTemporarySignerForPreparation,
+  hasTaskRuntimeTemporarySigner } from "@nautilo/lattice-crypto";
+import { eventBus, projectLiveShadowPublishedMessageEvent,
+  runWithTaskWakeLiveShadowTurnSession } from "@nautilo/runtime";
 import { protectedTaskSemanticAuthorityRequirementsDigest,
   sameProtectedTaskSemanticAuthorityRequirements } from "@nautilo/db";
 import { createForegroundEntityCheckpointAuthorization } from "./foreground-agent-entity-crypto-gateway";
 import { withProtectedTaskResultSignerHistory } from "./protected-task-result-signer-history";
 import type { ProtectedTaskWakeScheduling, PostgresJsBridgeConnection } from "@nautilo/db";
 import type { AgentEntityCryptoInvocation, DataOperationPolicyBinding, EncryptionDataOperationOwner,
-  ProtectedTaskResultSignerAuthority, StrictShadowEnforcementPolicy } from "@nautilo/lattice-bridge";
+  ProtectedTaskPublicationSignerAuthority, StrictShadowEnforcementPolicy } from "@nautilo/lattice-bridge";
 import type { LiveShadowAgentTurnSession, LiveShadowAgentSessionFailureStage, NativeProtectedTaskRunResultOccurrenceV1,
   TaskWakeLiveShadowCurrentWriter, TaskWakeLiveShadowRuntimeSigner } from "@nautilo/lattice-bridge/server";
 import type { LatticeCrypto, ResolveHistoricalAgentRuntimeSignerPublicationManager,
@@ -81,7 +83,7 @@ export type ProtectedTaskWakeForegroundServicesInput = Readonly<{
   lifecycle: ProtectedTaskWakePublicationLifecycle;
   context: ProtectedTaskWakeForegroundContext;
   entities: AgentEntityCryptoInvocation;
-  signer: ProtectedTaskResultSignerAuthority;
+  signer: ProtectedTaskPublicationSignerAuthority;
   resolveHistoricalSignerPublicationManager: ResolveHistoricalAgentRuntimeSignerPublicationManager;
   onAdditionalProjectionAuthority?(capture: ProtectedTaskWakeAdditionalProjectionAuthority): void;
 }>;
@@ -119,6 +121,47 @@ export type ProtectedTaskWakeForegroundPublicationDependencies = Readonly<{
     use: (session: LiveShadowAgentTurnSession, source: ProtectedTaskWakeForegroundSource) => Promise<Value>): Promise<Value>;
 }>;
 
+function withCommittedWakeRealtimePublication(input: Readonly<{
+  session: LiveShadowAgentTurnSession;
+  evidence: TaskRuntimeWakeForegroundEvidence;
+  scheduling: ProtectedTaskWakeScheduling;
+  representationMode: "shadow_encryption" | "full_encryption";
+  onDiagnostic?(stage: LiveShadowAgentSessionFailureStage, error: unknown): void;
+}>): LiveShadowAgentTurnSession {
+  return Object.freeze({
+    ...input.session,
+    async publishMessage(request: Parameters<LiveShadowAgentTurnSession["publishMessage"]>[0]) {
+      const result = await input.session.publishMessage(request);
+      if (result.status !== "protected") return result;
+      // Notification is downstream of the durable protected commit. A broken
+      // realtime listener must not reclassify or retry that committed effect.
+      try {
+        const projection = result.value.protectedMessage.projection;
+        const expectedLane = `room:${projection.roomId}`;
+        if (
+          input.scheduling.roomId !== projection.roomId
+          || input.scheduling.laneKey !== expectedLane
+        ) throw new TypeError("Wake committed Message Room changed");
+        const event = projectLiveShadowPublishedMessageEvent({
+          message: result.value,
+          representationMode: input.representationMode,
+          sharedAgentPlanBytesBase64url: null,
+          operationId: input.evidence.invocation.operationId,
+          laneKey: expectedLane,
+        });
+        if (event.type !== "message.shadow_durable") {
+          throw new TypeError("Wake committed Message notification is invalid");
+        }
+        eventBus.emit(event);
+      } catch (error) {
+        // Authenticated history remains canonical and will converge on reload.
+        try { input.onDiagnostic?.("assistant_message", error); } catch { /* diagnostic only */ }
+      }
+      return result;
+    },
+  });
+}
+
 function sessionOwner(input: ProtectedTaskWakeForegroundPublicationInput):
   ProtectedTaskWakeForegroundPublicationDependencies["withSession"] {
   return async (turn, use) => {
@@ -148,6 +191,164 @@ function sessionOwner(input: ProtectedTaskWakeForegroundPublicationInput):
           serverScope: input.serverScope, evidence, domains: foregroundDomains, signal,
           assertCurrentTaskAuthority: assertAllCurrent,
           execute: async entities => {
+            const useSigner = async (
+              signer: ProtectedTaskPublicationSignerAuthority,
+              resolveHistoricalSignerPublicationManager:
+                ResolveHistoricalAgentRuntimeSignerPublicationManager,
+            ) => {
+              const temporary = signer.signerPublication === null;
+              const certified = temporary
+                ? assertTaskRuntimeTemporarySignerForPreparation(
+                    input.crypto,
+                    evidence,
+                    signer.runtime,
+                    signer.temporarySigner,
+                  )
+                : undefined;
+              const signerKeyId = temporary
+                ? certified!.signerKeyId
+                : signer.signerPublication.signerKeyId;
+              const signerPublicKey = temporary
+                ? signer.temporarySigner.signerPublicKey
+                : signer.signerPublication.signerPublicKey;
+              const taskRuntimeSigner = temporary
+                ? Object.freeze({ evidence, signer: signer.temporarySigner })
+                : undefined;
+              try {
+                // A fresh certified Runtime has revision zero. A continuation
+                // retains the revision authenticated by its locked capsule.
+                const retainedRevision = context.continuation === undefined
+                  ? signer.agentAuthorizationRevision
+                  : context.checkpointBinding.initialAgentAuthorizationRevision;
+                if (temporary
+                  ? (context.continuation === undefined && retainedRevision !== 0
+                    || retainedRevision < 0)
+                  : retainedRevision < 1
+                    || retainedRevision > signer.agentAuthorizationRevision) {
+                  unavailable("Wake retained capsule signer authority changed");
+                }
+                const signedContext: ProtectedTaskWakeForegroundContext = Object.freeze({
+                  ...context,
+                  checkpointBinding: Object.freeze({ ...context.checkpointBinding,
+                    initialAgentAuthorizationRevision: retainedRevision }),
+                });
+                const borrowed = await entities.useCurrentSet({ operations: ["decrypt", "encrypt"],
+                  namespaceIds: [namespaceId], execute: async items => {
+                    const item = items[0];
+                    if (items.length !== 1 || item === undefined) unavailable("Wake Namespace key is unavailable");
+                    const current = item.authority;
+                    const services = await input.createProtectedServices({ publication, lifecycle, context: signedContext, entities, signer,
+                      ...(turn.onAdditionalProjectionAuthority === undefined ? {} : {
+                        onAdditionalProjectionAuthority: turn.onAdditionalProjectionAuthority,
+                      }),
+                      resolveHistoricalSignerPublicationManager });
+                    for (const method of ["protectForegroundHistory", "protectForegroundJournal", "protectForegroundRecords",
+                      "protectForegroundMemories", "createForegroundMemoryRepository", "createForegroundMemoryAccessPort",
+                      "createForegroundMemoryProjectionPort"] as const) {
+                      if (typeof services[method] !== "function") unavailable("Wake protected content service is missing");
+                    }
+                    const writerSigner: TaskWakeLiveShadowRuntimeSigner = {
+                      agentAuthorizationRevision: signer.agentAuthorizationRevision,
+                      runtimeGeneration: signer.runtime.generation,
+                      signerKeyId,
+                      signerPublicKey,
+                      ...(certified === undefined ? {} : {
+                        signerAuthorizationHash: certified.certificateHash,
+                      }),
+                    };
+                    const session = createTaskWakeForegroundAgentTurnSession({ crypto: input.crypto, evidence,
+                      ...(taskRuntimeSigner === undefined ? {} : { taskRuntimeSigner }),
+                      ...(input.onDiagnostic === undefined ? {} : { onDiagnostic: input.onDiagnostic }),
+                      publication: { agentAuthorizationRevision: cryptoAuthorizationRevision(writerSigner.agentAuthorizationRevision), agentSignerKeyId: writerSigner.signerKeyId,
+                        agentSignerPublicKey: writerSigner.signerPublicKey, recipientAgentId: agentId(evidence.signerAgentId),
+                        operationId: evidence.invocation.operationId, sessionId: evidence.episodeId,
+                        roomId: evidence.sourceRoomId, namespaceId: cryptoNamespaceId(namespaceId), policyRevision: evidence.policyRevision,
+                        hostAuthorizationRevision: cryptoAuthorizationRevision(evidence.hostAuthorizationRevision), deadlineAt: unixTimestamp(evidence.expiresAt),
+                        namespaceHeadDigest: current.namespaceHeadDigest,
+                        namespacePublicationDigest: current.namespacePublicationDigest,
+                        namespacePublicationSetDigest: current.namespacePublicationSetDigest,
+                        namespaceAudienceFingerprint: current.namespaceAudienceFingerprint },
+                      representationMode: publication.plan.intent.representation === "protected" ? "full_encryption" : "shadow_encryption",
+                      namespace: { namespaceId, accessRevision: current.namespaceAccessRevision,
+                        keyGeneration: current.namespaceKeyGeneration, headDigest: current.namespaceHeadDigest.slice(),
+                        publicationDigest: current.namespacePublicationDigest.slice(), publicationSetDigest: current.namespacePublicationSetDigest.slice(),
+                        audienceFingerprint: current.namespaceAudienceFingerprint.slice(), aiKey: item.namespaceKey.slice() },
+                      // The session destroys its owned inputs before the enclosing
+                      // grant owner performs the final authority recheck.
+                      runtime: { ...signer.runtime, key: signer.runtime.key.slice() },
+                      grantId: evidence.requestId, grantDigest: evidence.authorizationDigest.slice(),
+                      recipientKeyId: evidence.recipientKeyId, authorizationSignal: entities.signal,
+                      checkpoint: createForegroundEntityCheckpointAuthorization({ crypto: input.crypto, entities,
+                        namespaceId, namespaceAccessRevision: current.namespaceAccessRevision,
+                        namespaceKeyGeneration: current.namespaceKeyGeneration, domainId: current.domainId,
+                        agentAuthorizationRevision: signer.agentAuthorizationRevision,
+                        authorizationDeadlineAt: evidence.expiresAt, entrypointId: "foreground.main" }),
+                      ...services,
+                      withCurrentTranscriptAuthority: async sink => {
+                        await assertAllCurrent();
+                        const result = await lifecycle.withCurrentWriter({ signer: writerSigner,
+                          resolveHistoricalSignerPublicationManager,
+                          use: async writer => {
+                            // Commit crypto independently before the product mapping FK is checked.
+                            // Its prepared write resolver still borrows this held current writer.
+                            const completion = createPostgresConversationCryptoCompletion({ handle, crypto: input.crypto,
+                              commonManifestExpectedAgentId: evidence.signerAgentId,
+                              resolveCurrentWriteAuthorization: () => Promise.resolve(null),
+                              resolveHistoricalSigner: history.resolveHistoricalObjectSigner,
+                              resolveHistoricalAgentSignerAuthority: history.resolveAgentRuntimeSignerManager,
+                              resolveLiveShadowAgentSigner: principal => principal.agentId === evidence.signerAgentId
+                                && principal.runtimeGeneration === writerSigner.runtimeGeneration
+                                && principal.signerKeyId === writerSigner.signerKeyId
+                                ? Uint8Array.from(writerSigner.signerPublicKey) : null });
+                            const value = await sink({ product: writer.productStore,
+                              conversation: createDormantConversationShadowRepository({ product: writer.productStore, crypto: completion }),
+                              resolveCurrentDeviceWrappedAgentObjectAuthorization: writer.resolveCurrentAgentObjectWrite });
+                            signal.throwIfAborted();
+                            assertAuthenticTaskRuntimeWakeForegroundEvidence(evidence);
+                            return { value };
+                          } });
+                        if (result === null) unavailable("Wake transcript publication authority changed");
+                        return result.value;
+                      },
+                    });
+                    try {
+                      const { enforcementPolicy: _policy, dataOperationPolicy: _binding, ...facts } = signedContext;
+                      const source: ProtectedTaskWakeForegroundSource = { ...facts, evidence,
+                        scheduling: lifecycle.scheduling, result };
+                      return await use(session, source);
+                    } finally { session.destroy(); }
+                  } });
+                if (borrowed.status !== "executed") unavailable("Wake Namespace custody is unavailable");
+                return borrowed.value;
+              } finally {
+                certified?.certificateHash.fill(0);
+              }
+            };
+            const openSigner = (
+              expectedAgentAuthorizationRevision: number,
+              signerHistory: Readonly<{
+                resolveHistoricalRuntimeCommitter: Parameters<
+                  typeof withProtectedTaskWakeForegroundSigner
+                >[0]["resolveHistoricalRuntimeCommitter"];
+                resolveHistoricalSignerPublicationManager:
+                  ResolveHistoricalAgentRuntimeSignerPublicationManager;
+              }>,
+            ) => withProtectedTaskWakeForegroundSigner({ crypto: input.crypto, storage,
+              evidence, namespaceId, domain, expectedAgentAuthorizationRevision,
+              ...signerHistory,
+              execute: signer => useSigner(
+                signer,
+                signerHistory.resolveHistoricalSignerPublicationManager,
+              ),
+            });
+            if (hasTaskRuntimeTemporarySigner(evidence)) {
+              const signed = await openSigner(0, {
+                resolveHistoricalRuntimeCommitter: () => null,
+                resolveHistoricalSignerPublicationManager: () => null,
+              });
+              if (signed.status !== "executed") unavailable("Wake HIVE signer custody is unavailable");
+              return signed.value;
+            }
             const state = await storage.getAgentRuntimeAtomicState(evidence.signerAgentId);
             let authorizationRevision: number;
             let runtimeGeneration: number;
@@ -159,108 +360,7 @@ function sessionOwner(input: ProtectedTaskWakeForegroundPublicationInput):
             const signed = await withProtectedTaskResultSignerHistory({ handle, crypto: input.crypto,
               agentId: evidence.signerAgentId, domainId: domain.domainId, domainEpoch: domain.domainKeyGeneration,
               expectedAgentAuthorizationRevision: authorizationRevision, expectedRuntimeGeneration: runtimeGeneration,
-              use: signerHistory => withProtectedTaskWakeForegroundSigner({ crypto: input.crypto, storage,
-                evidence, namespaceId, domain, expectedAgentAuthorizationRevision: authorizationRevision,
-                ...signerHistory,
-                execute: async signer => {
-                  // Result-read recipients are not HIVE runtime signers. Bind
-                  // the capsule to the actual authenticated signer revision.
-                  const retainedRevision = context.continuation === undefined
-                    ? signer.agentAuthorizationRevision
-                    : context.checkpointBinding.initialAgentAuthorizationRevision;
-                  if (retainedRevision < 1 || retainedRevision > signer.agentAuthorizationRevision) {
-                    unavailable("Wake retained capsule signer authority changed");
-                  }
-                  const signedContext: ProtectedTaskWakeForegroundContext = Object.freeze({
-                    ...context,
-                    checkpointBinding: Object.freeze({ ...context.checkpointBinding,
-                      initialAgentAuthorizationRevision: retainedRevision }),
-                  });
-                  const borrowed = await entities.useCurrentSet({ operations: ["decrypt", "encrypt"],
-                    namespaceIds: [namespaceId], execute: async items => {
-                      const item = items[0];
-                      if (items.length !== 1 || item === undefined) unavailable("Wake Namespace key is unavailable");
-                      const current = item.authority;
-                      const services = await input.createProtectedServices({ publication, lifecycle, context: signedContext, entities, signer,
-                        ...(turn.onAdditionalProjectionAuthority === undefined ? {} : {
-                          onAdditionalProjectionAuthority: turn.onAdditionalProjectionAuthority,
-                        }),
-                        resolveHistoricalSignerPublicationManager: signerHistory.resolveHistoricalSignerPublicationManager });
-                      for (const method of ["protectForegroundHistory", "protectForegroundJournal", "protectForegroundRecords",
-                        "protectForegroundMemories", "createForegroundMemoryRepository", "createForegroundMemoryAccessPort",
-                        "createForegroundMemoryProjectionPort"] as const) {
-                        if (typeof services[method] !== "function") unavailable("Wake protected content service is missing");
-                      }
-                      const writerSigner: TaskWakeLiveShadowRuntimeSigner = {
-                        agentAuthorizationRevision: signer.agentAuthorizationRevision,
-                        runtimeGeneration: signer.runtime.generation,
-                        signerKeyId: signer.signerPublication.signerKeyId,
-                        signerPublicKey: signer.signerPublication.signerPublicKey,
-                      };
-                      const session = createTaskWakeForegroundAgentTurnSession({ crypto: input.crypto, evidence,
-                        ...(input.onDiagnostic === undefined ? {} : { onDiagnostic: input.onDiagnostic }),
-                        publication: { agentAuthorizationRevision: cryptoAuthorizationRevision(writerSigner.agentAuthorizationRevision), agentSignerKeyId: writerSigner.signerKeyId,
-                          agentSignerPublicKey: writerSigner.signerPublicKey, recipientAgentId: agentId(evidence.signerAgentId),
-                          operationId: evidence.invocation.operationId, sessionId: evidence.episodeId,
-                          roomId: evidence.sourceRoomId, namespaceId: cryptoNamespaceId(namespaceId), policyRevision: evidence.policyRevision,
-                          hostAuthorizationRevision: cryptoAuthorizationRevision(evidence.hostAuthorizationRevision), deadlineAt: unixTimestamp(evidence.expiresAt),
-                          namespaceHeadDigest: current.namespaceHeadDigest,
-                          namespacePublicationDigest: current.namespacePublicationDigest,
-                          namespacePublicationSetDigest: current.namespacePublicationSetDigest,
-                          namespaceAudienceFingerprint: current.namespaceAudienceFingerprint },
-                        representationMode: publication.plan.intent.representation === "protected" ? "full_encryption" : "shadow_encryption",
-                        namespace: { namespaceId, accessRevision: current.namespaceAccessRevision,
-                          keyGeneration: current.namespaceKeyGeneration, headDigest: current.namespaceHeadDigest.slice(),
-                          publicationDigest: current.namespacePublicationDigest.slice(), publicationSetDigest: current.namespacePublicationSetDigest.slice(),
-                          audienceFingerprint: current.namespaceAudienceFingerprint.slice(), aiKey: item.namespaceKey.slice() },
-                        // The session destroys its owned inputs before the enclosing
-                        // grant owner performs the final authority recheck.
-                        runtime: { ...signer.runtime, key: signer.runtime.key.slice() },
-                        grantId: evidence.requestId, grantDigest: evidence.authorizationDigest.slice(),
-                        recipientKeyId: evidence.recipientKeyId, authorizationSignal: entities.signal,
-                        checkpoint: createForegroundEntityCheckpointAuthorization({ crypto: input.crypto, entities,
-                          namespaceId, namespaceAccessRevision: current.namespaceAccessRevision,
-                          namespaceKeyGeneration: current.namespaceKeyGeneration, domainId: current.domainId,
-                          agentAuthorizationRevision: signer.agentAuthorizationRevision,
-                          authorizationDeadlineAt: evidence.expiresAt, entrypointId: "foreground.main" }),
-                        ...services,
-                        withCurrentTranscriptAuthority: async sink => {
-                          await assertAllCurrent();
-                          const result = await lifecycle.withCurrentWriter({ signer: writerSigner,
-                            resolveHistoricalSignerPublicationManager: signerHistory.resolveHistoricalSignerPublicationManager,
-                            use: async writer => {
-                              // Commit crypto independently before the product mapping FK is checked.
-                              // Its prepared write resolver still borrows this held current writer.
-                              const completion = createPostgresConversationCryptoCompletion({ handle, crypto: input.crypto,
-                                resolveCurrentWriteAuthorization: () => Promise.resolve(null),
-                                resolveHistoricalSigner: history.resolveHistoricalObjectSigner,
-                                resolveHistoricalAgentSignerAuthority: history.resolveAgentRuntimeSignerManager,
-                                resolveLiveShadowAgentSigner: principal => principal.agentId === evidence.signerAgentId
-                                  && principal.runtimeGeneration === writerSigner.runtimeGeneration
-                                  && principal.signerKeyId === writerSigner.signerKeyId
-                                  ? Uint8Array.from(writerSigner.signerPublicKey) : null });
-                              const value = await sink({ product: writer.productStore,
-                                conversation: createDormantConversationShadowRepository({ product: writer.productStore, crypto: completion }),
-                                resolveCurrentDeviceWrappedAgentObjectAuthorization: writer.resolveCurrentAgentObjectWrite });
-                              signal.throwIfAborted();
-                              assertAuthenticTaskRuntimeWakeForegroundEvidence(evidence);
-                              return { value };
-                            } });
-                          if (result === null) unavailable("Wake transcript publication authority changed");
-                          return result.value;
-                        },
-                      });
-                      try {
-                        const { enforcementPolicy: _policy, dataOperationPolicy: _binding, ...facts } = signedContext;
-                        const source: ProtectedTaskWakeForegroundSource = { ...facts, evidence,
-                          scheduling: lifecycle.scheduling, result };
-                        return await use(session, source);
-                      } finally { session.destroy(); }
-                    } });
-                  if (borrowed.status !== "executed") unavailable("Wake Namespace custody is unavailable");
-                  return borrowed.value;
-                },
-              }),
+              use: signerHistory => openSigner(authorizationRevision, signerHistory),
             });
             if (signed.status !== "executed") unavailable("Wake HIVE signer custody is unavailable");
             return signed.value;
@@ -361,7 +461,18 @@ export function createProtectedTaskWakeForegroundPublication(input: ProtectedTas
               }, (session, source) => {
                 const authorizationSignal = session.authorizationSignal;
                 if (authorizationSignal === undefined) unavailable("Wake session cancellation is missing");
-                return runWithTaskWakeLiveShadowTurnSession({ source, session,
+                const realtimeSession = withCommittedWakeRealtimePublication({
+                  session,
+                  evidence,
+                  scheduling: lifecycle.scheduling,
+                  representationMode: representation === "protected"
+                    ? "full_encryption"
+                    : "shadow_encryption",
+                  ...(input.onDiagnostic === undefined ? {} : {
+                    onDiagnostic: input.onDiagnostic,
+                  }),
+                });
+                return runWithTaskWakeLiveShadowTurnSession({ source, session: realtimeSession,
                   enforcementPolicy: context.enforcementPolicy, dataOperationPolicy: context.dataOperationPolicy,
                   work: () => work({ ownerId: lifecycle.scheduling.ownerId, requestorId: lifecycle.scheduling.requestorId,
                     agentId: lifecycle.scheduling.agentId, roomId: lifecycle.scheduling.roomId,

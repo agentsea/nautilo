@@ -36,9 +36,9 @@ export function createProtectedTaskTerminalMessageClaim(input: Readonly<{
       ...operation, intent: plan.intent, publicationPolicyRevision: plan.publicationPolicyRevision }),
     ...(input.now === undefined ? {} : { now: input.now }),
     ...(input.claimId === undefined ? {} : { claimId: input.claimId }),
-    openGrant: async ({ plan, request, record, claimId, claimExpiresAt, authority, signal, assertCurrentClaim }) => {
+    openGrant: async ({ plan, request, certifiedSigning, authorizationBytes,
+      record, claimId, claimExpiresAt, authority, signal, assertCurrentClaim }) => {
       const namespace = record.authoritySet.namespaceRequirements[0]!;
-      const material = record.acceptedMaterial!;
       const payload = encodeMessagePayloadV2({ role: "assistant", content: PROTECTED_TASK_CANCELLED_RESULT });
       const digest = input.crypto.hash(payload);
       try {
@@ -54,20 +54,35 @@ export function createProtectedTaskTerminalMessageClaim(input: Readonly<{
           publicationPolicyRevision: plan.publicationPolicyRevision,
           signerAgentId: plan.intent.agentId, payloadDigest: digest,
         });
-        const opened = await input.recipients.withOpenedTerminalMessageGrant({
-          requestId: request.requestId, workId: request.workId,
-          recipientGeneration: record.snapshot.recipientGeneration,
-          recipientKeyId: request.recipientKeyId, claimId, claimExpiresAt,
-          authorizationBytes: material.responseBytes, current: authority.foreground,
-          currentNamespaceRequirements: authority.namespaceRequirements,
-          message, signal,
-          operation: async (domains, activeSignal, evidence) => {
-            await assertCurrentClaim();
-            await input.publish({ plan, record, domains, evidence,
-              signal: activeSignal, assertCurrentClaim });
-          },
+        const expectedPublication = Object.freeze({
+          kind: "task.deliver_message" as const,
+          taskId: message.taskId,
+          taskRunId: message.taskRunId,
+          contentRevision: 2 as const,
+          messageObjectId: message.objectId,
+          workIdentityHash: Uint8Array.from(record.workIdentityHash),
         });
-        return opened.status === "opened";
+        try {
+          const opened = await input.recipients.withOpenedTerminalMessageGrant({
+            requestId: request.requestId, workId: request.workId,
+            recipientGeneration: record.snapshot.recipientGeneration,
+            recipientKeyId: request.recipientKeyId, claimId, claimExpiresAt,
+            authorizationBytes, current: authority.foreground,
+            currentNamespaceRequirements: authority.namespaceRequirements,
+            message, signal,
+            certifiedSigning: Object.freeze({
+              ...certifiedSigning, expectedPublication,
+            }),
+            operation: async (domains, activeSignal, evidence) => {
+              await assertCurrentClaim();
+              await input.publish({ plan, record, domains, evidence,
+                signal: activeSignal, assertCurrentClaim });
+            },
+          });
+          return opened.status === "opened";
+        } finally {
+          expectedPublication.workIdentityHash.fill(0);
+        }
       } finally { payload.fill(0); digest.fill(0); }
     },
   });

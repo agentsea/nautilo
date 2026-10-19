@@ -8,7 +8,14 @@ import {
 import {
   LatticeCrypto, authorizationRevision, createDomainForegroundAuthorizationPlan, cryptoDeviceId, humanId,
 } from "@nautilo/lattice-crypto";
-import { createTaskRuntimeBackgroundAuthorizationRequestV1, encodeTaskRuntimeBackgroundAuthorizationRequestV1 } from "@nautilo/lattice-crypto/background";
+import {
+  createTaskRuntimeBackgroundAuthorizationRequestV1,
+  createTaskRuntimeBackgroundAuthorizationRequestV3,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV3,
+  encodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  encodeTaskRuntimeBackgroundAuthorizationRequestV3,
+} from "@nautilo/lattice-crypto/background";
+import { agentRuntimeObjectSignerKeyIdV1 } from "@nautilo/lattice-crypto/wire";
 import type {
   AcceptedTaskRuntimeAuthorizationV3, CurrentTaskRuntimeAuthority, TaskOutputNamespaceAuthority,
   TaskOutputNamespaceAuthorityInput, TaskOutputProductAuthority, TaskOutputRecipientAuthority,
@@ -74,7 +81,8 @@ function continuation(): ProtectedTaskWakeContinuationReceipt {
     checkpointOrderedDigest: bytes(), expectedBlobCount: 0, blobOrderedDigest: bytes(),
     expectedPendingWriteCount: 0, pendingWriteOrderedDigest: bytes(), sealedAt: new Date(NOW - 1000) };
 }
-function fixture(wake = false, foreground = [DESTINATION], additional = false) {
+function fixture(wake = false, foreground = [DESTINATION], additional = false,
+  carrier: "legacy" | "v3" | "corrupt_v3" = "legacy") {
   const selected = { ...intent(wake), ...(additional ? { continuation: continuation() } : {}) };
   const crypto = new LatticeCrypto();
   const events: string[] = [];
@@ -116,8 +124,40 @@ function fixture(wake = false, foreground = [DESTINATION], additional = false) {
     workKind: wake ? "task.delivery_wake" : "task.deliver_result", workPurpose: wake ? "task.delivery_wake" : "task.deliver_result",
     recipientGeneration: 1, episodeId: SESSION, sourceRoomId: ROOM, recipientKeyId: plan.recipientKeyId,
     recipientPublicKey: new Uint8Array(65).fill(2), authorizationPlan: plan, issuedAt: NOW, deadlineAt: plan.deadlineAt });
+  let descriptorBytes: Uint8Array;
+  if (carrier === "legacy") {
+    descriptorBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV1(request);
+  } else {
+    const signerPublicKey = new Uint8Array(32).fill(9);
+    const certified = createTaskRuntimeBackgroundAuthorizationRequestV3(crypto, {
+      baseRequest: request,
+      work: wake ? {
+        kind: "task.delivery_wake", taskId: TASK, taskRunId: RUN,
+        contentRevision: 1, jobId: workId, workIdentityHash: bytes(),
+      } : {
+        kind: "task.deliver_result", taskId: TASK, taskRunId: RUN,
+        contentRevision: 1, workIdentityHash: bytes(),
+      },
+      signer: { agentId: AGENT, runtimeGeneration: 0,
+        signerKeyId: agentRuntimeObjectSignerKeyIdV1(crypto, signerPublicKey),
+        signerPublicKey },
+      deviceGroupHead: { serverInstanceId: device.serverInstanceId,
+        lineageGeneration: device.lineageGeneration, epoch: device.epoch,
+        headDigest: device.headDigest,
+        signingPublicKeyHash: crypto.hash(device.signingPublicKey) },
+      namespaceRequirements: namespaces,
+    });
+    descriptorBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV3(
+      crypto,
+      certified,
+    );
+    destroyTaskRuntimeBackgroundAuthorizationRequestV3(certified);
+    if (carrier === "corrupt_v3") {
+      descriptorBytes[descriptorBytes.length - 1]! ^= 1;
+    }
+  }
   const accepted: AcceptedTaskRuntimeAuthorizationV3 = {
-    descriptorBytes: encodeTaskRuntimeBackgroundAuthorizationRequestV1(request), descriptorDigest: "descriptor",
+    descriptorBytes, descriptorDigest: "descriptor",
     requestId, workId, workKind: request.workKind, workPurpose: request.workPurpose,
     recipientGeneration: 1, recipientKeyId: request.recipientKeyId,
     recipientPublicKeyBase64url: Buffer.from(request.recipientPublicKey).toString("base64url"),
@@ -375,6 +415,33 @@ describe("protected Task output read authority server port", () => {
       });
     }
   }
+  test("accepted raw authority admits a genuine V3 carrier and retains legacy V1", async () => {
+    for (const carrier of ["legacy", "v3"] as const) {
+      const f = fixture(false, [DESTINATION], false, carrier);
+      let used = false;
+      const result = await f.port().withAccepted({ intent: f.selected, subject,
+        accepted: f.accepted, validateBeforeCommit: () => {}, use: () => {
+          used = true;
+          return carrier;
+        } });
+      expect(result).toBe(carrier);
+      expect(used).toBe(true);
+      expect(f.events).toContain("accepted-crypto");
+    }
+  });
+  test("accepted raw authority rejects a corrupted V3 carrier before product custody", async () => {
+    const f = fixture(false, [DESTINATION], false, "corrupt_v3");
+    let used = false;
+    const result = await f.port().withAccepted({ intent: f.selected, subject,
+      accepted: f.accepted, validateBeforeCommit: () => {}, use: () => {
+        used = true;
+        return "forbidden";
+      } });
+    expect(result).toBeNull();
+    expect(used).toBe(false);
+    expect(f.events).not.toContain("product-held");
+    expect(f.events).not.toContain("accepted-crypto");
+  });
   for (const change of ["private_write", "extra_foreground", "wrong_session", "wrong_work", "wrong_request"] as const) {
     test(`bound refuses ${change} before accepted custody`, async () => {
       const f = fixture();
@@ -475,6 +542,29 @@ test("running wake writers enter the genuine product owner without nesting accep
   })).toBe("written");
   expect(writes).toBe(1);
   expect(f.state.held).toBe(false);
+});
+
+test("running wake writer admits a genuine V3 carrier and rejects corruption", async () => {
+  for (const carrier of ["v3", "corrupt_v3"] as const) {
+    const f = fixture(true, [DESTINATION], false, carrier);
+    let writes = 0;
+    const port = createProtectedTaskOutputReadAuthorityPort({ ...f.dependencies,
+      withWakeWriterAuthority: async input => {
+        writes += 1;
+        return input.use({} as never);
+      },
+    });
+    const result = await port.withWakeWriter!({ subject, accepted: f.accepted,
+      intent: { ...f.selected, initialState: "wake_running" },
+      evidence: {} as never, signer: {} as never,
+      resolveHistoricalSignerPublicationManager: () => null,
+      validateBeforeCommit: () => Promise.resolve(),
+      use: () => Promise.resolve("written"),
+    });
+    expect(result).toBe(carrier === "v3" ? "written" : null);
+    expect(writes).toBe(carrier === "v3" ? 1 : 0);
+    expect(f.events.includes("product-held")).toBe(carrier === "v3");
+  }
 });
 
 test("wake projection stays inside its accepted Namespace set and canonical destination locks", async () => {

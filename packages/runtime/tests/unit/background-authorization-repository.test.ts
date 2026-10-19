@@ -116,6 +116,31 @@ function taskRuntimeRecordV3(): BackgroundAuthorizationTaskRuntimeRecordV3 {
   };
 }
 
+function taskRuntimePublicationRecordV3(
+  workKind: "task.cancel_result" | "task.deliver_message"
+    | "task.deliver_result" | "task.delivery_wake",
+): BackgroundAuthorizationTaskRuntimeRecordV3 {
+  const record = taskRuntimeRecordV3();
+  return {
+    ...record,
+    workKind,
+    purpose: workKind,
+    idempotencyKey: `task-publication:${workKind}:${record.snapshot.workId}`,
+    authoritySet: {
+      ...record.authoritySet,
+      namespaceRequirements: record.authoritySet.namespaceRequirements.map(
+        requirement => ({
+          ...requirement,
+          operations: workKind === "task.cancel_result"
+              || workKind === "task.deliver_message"
+            ? ["encrypt"] as const
+            : requirement.operations,
+        }),
+      ),
+    },
+  };
+}
+
 function taskRuntimeAwaitingRecipientV3():
   BackgroundAuthorizationTaskRuntimeRecordV3 {
   const record = taskRuntimeRecordV3();
@@ -732,6 +757,42 @@ describe("background authorization repository contract", () => {
       ?.responseBytes).toEqual(expectedResponseBytes);
   });
 
+  test.each([
+    "task.cancel_result",
+    "task.deliver_message",
+    "task.deliver_result",
+    "task.delivery_wake",
+  ] as const)(
+    "accepts and round-trips an exact verified v4 %s publication response",
+    async workKind => {
+      const record = taskRuntimePublicationRecordV3(workKind);
+      const response = verifiedTaskRuntimeResponseV4(record);
+      const expectedResponseBytes = response.responseBytes.slice();
+      const repository = new InMemoryBackgroundAuthorizationRepository();
+      expect((await repository.create(record)).status).toBe("created");
+
+      const accepted = await repository.acceptVerifiedResponse({
+        response,
+        acceptedAt: START + 2,
+      });
+      expect(accepted.status).toBe("accepted");
+      if (accepted.status !== "accepted") throw new Error("expected acceptance");
+      expect(accepted.record).toMatchObject({ workKind, purpose: workKind });
+      expect(accepted.record.snapshot.acceptedResponse).toMatchObject({
+        responseDigest: digest(response.responseBytes),
+        credentialDigest: digest(response.authorizationBytes),
+      });
+      expect(accepted.record.acceptedMaterial?.responseBytes)
+        .toEqual(expectedResponseBytes);
+      expect(parseBackgroundAuthorizationRecord(accepted.record).acceptedMaterial
+        ?.responseBytes).toEqual(expectedResponseBytes);
+      expect((await repository.acceptVerifiedResponse({
+        response,
+        acceptedAt: START + 3,
+      })).status).toBe("duplicate");
+    },
+  );
+
   test("rejects mismatched or stale verified v4 Task execute responses", () => {
     const record = taskRuntimeRecordV3();
     const response = verifiedTaskRuntimeResponseV4(record);
@@ -765,24 +826,11 @@ describe("background authorization repository contract", () => {
 
     reject({ ...response, workKind: "task.approval_resume", purpose: "task.approval_resume" });
     reject({ ...response, purpose: "task.approval_resume" });
-    for (const workKind of [
-      "task.dispatch", "task.cancel_result", "task.deliver_message",
-      "task.deliver_result", "task.delivery_wake",
-    ] as const) {
+    for (const workKind of ["task.dispatch"] as const) {
       const excluded = {
         ...record,
         workKind,
         purpose: workKind,
-        authoritySet: {
-          ...record.authoritySet,
-          namespaceRequirements: record.authoritySet.namespaceRequirements.map(
-            requirement => ({
-              ...requirement,
-              operations: workKind === "task.cancel_result" || workKind === "task.deliver_message"
-                ? ["encrypt"] as const : requirement.operations,
-            }),
-          ),
-        },
       };
       expect(parseBackgroundAuthorizationRecord(excluded).workKind).toBe(workKind);
       reject(verifiedTaskRuntimeResponseV4(excluded), START + 2, excluded);

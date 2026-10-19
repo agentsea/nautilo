@@ -15,6 +15,7 @@ import {
 } from "@nautilo/lattice-bridge/server";
 import {
   assertAuthenticTaskRuntimeRunResultReadEvidence,
+  hasTaskRuntimeTemporarySigner,
   type LatticeCrypto,
 } from "@nautilo/lattice-crypto";
 import type { ProtectedTaskOutputReadAuthorityPort } from "./protected-task-output-read-authority";
@@ -164,6 +165,58 @@ export function createProtectedTaskRunResultMessagePublication(input: Readonly<{
                 });
               };
               await verifyAllocation();
+              const stageWithSigner = async (
+                history: Parameters<Parameters<
+                  typeof withProtectedTaskResultSignerHistory
+                >[0]["use"]>[0],
+                authorizationRevision: number,
+              ) => withProtectedTaskRunResultMessageSigner({
+                crypto: input.crypto, storage, evidence, domain,
+                expectedAgentAuthorizationRevision: authorizationRevision,
+                resolveHistoricalRuntimeCommitter:
+                  history.resolveHistoricalRuntimeCommitter,
+                resolveHistoricalSignerPublicationManager:
+                  history.resolveHistoricalSignerPublicationManager,
+                execute: signer => withNativeTaskRunResultMessageNamespaceSource({ restricted,
+                  crypto: input.crypto, serverScope: input.serverScope, evidence,
+                  domains: partitions.foregroundDomains, signal,
+                  assertCurrentTaskAuthority: verifyAllocation,
+                }, namespaceSource => stageNativeTaskRunResultMessagePublication({ restricted,
+                  resolveHistoricalAgentSignerAuthority:
+                    signerHistory.resolveAgentRuntimeSignerManager,
+                  assertCurrentClaim: assertLive,
+                  resolveCurrentDeliveryAuthority: async expected => {
+                    await verifyAllocation();
+                    return delivery(expected);
+                  },
+                  preparation: { crypto: input.crypto, evidence, source, allocation,
+                    namespace: namespaceSource, runtime: signer.runtime,
+                    signerPublication: signer.signerPublication,
+                    ...(signer.temporarySigner === undefined ? {} : {
+                      temporarySigner: signer.temporarySigner,
+                    }),
+                    agentAuthorizationRevision: signer.agentAuthorizationRevision,
+                    resolveHistoricalSignerPublicationManager:
+                      history.resolveHistoricalSignerPublicationManager,
+                    signal, resolveCurrentAuthority: async expected => {
+                      await verifyAllocation();
+                      return delivery(expected) === null
+                        ? null : Object.freeze({ ...expected });
+                    },
+                  },
+                })),
+              });
+              if (hasTaskRuntimeTemporarySigner(evidence)) {
+                const result = await stageWithSigner({
+                  resolveHistoricalRuntimeCommitter: () => null,
+                  resolveHistoricalSignerPublicationManager: () => null,
+                }, 0);
+                if (result.status !== "executed") {
+                  unavailable("Task result Message signer is unavailable");
+                }
+                await verifyAllocation();
+                return result.value;
+              }
               const state = await storage.getAgentRuntimeAtomicState(intent.agentId);
               let authorizationRevision: number;
               let runtimeGeneration: number;
@@ -176,32 +229,7 @@ export function createProtectedTaskRunResultMessagePublication(input: Readonly<{
                 agentId: intent.agentId, domainId: domain.domainId, domainEpoch: domain.domainKeyGeneration,
                 expectedAgentAuthorizationRevision: authorizationRevision,
                 expectedRuntimeGeneration: runtimeGeneration,
-                use: history => withProtectedTaskRunResultMessageSigner({ crypto: input.crypto, storage,
-                  evidence, domain, expectedAgentAuthorizationRevision: authorizationRevision,
-                  resolveHistoricalRuntimeCommitter: history.resolveHistoricalRuntimeCommitter,
-                  resolveHistoricalSignerPublicationManager: history.resolveHistoricalSignerPublicationManager,
-                  execute: signer => withNativeTaskRunResultMessageNamespaceSource({ restricted,
-                    crypto: input.crypto, serverScope: input.serverScope, evidence,
-                    domains: partitions.foregroundDomains, signal, assertCurrentTaskAuthority: verifyAllocation,
-                  }, namespaceSource => stageNativeTaskRunResultMessagePublication({ restricted,
-                    resolveHistoricalAgentSignerAuthority: signerHistory.resolveAgentRuntimeSignerManager,
-                    assertCurrentClaim: assertLive,
-                    resolveCurrentDeliveryAuthority: async expected => {
-                      await verifyAllocation();
-                      return delivery(expected);
-                    },
-                    preparation: { crypto: input.crypto, evidence, source, allocation,
-                      namespace: namespaceSource, runtime: signer.runtime,
-                      signerPublication: signer.signerPublication,
-                      agentAuthorizationRevision: signer.agentAuthorizationRevision,
-                      resolveHistoricalSignerPublicationManager: history.resolveHistoricalSignerPublicationManager,
-                      signal, resolveCurrentAuthority: async expected => {
-                        await verifyAllocation();
-                        return delivery(expected) === null ? null : Object.freeze({ ...expected });
-                      },
-                    },
-                  })),
-                }),
+                use: history => stageWithSigner(history, authorizationRevision),
               });
               if (result.status !== "executed") unavailable("Task result Message signer is unavailable");
               await verifyAllocation();

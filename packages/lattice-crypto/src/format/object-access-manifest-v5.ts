@@ -31,10 +31,10 @@ import {
 } from "../background/processor-authorization-v2.ts";
 import { assertCurrentProcessorAuthorizationBoundaryV4 } from "./object-access-manifest-v4.ts";
 import {
-  destroyVerifiedTaskRuntimeSignerAuthorizationV1,
-  verifyHistoricalTaskRuntimeSignerAuthorizationV1,
-  type ResolveHistoricalTaskRuntimeSignerAuthorizationIssuerV1,
-  type VerifiedTaskRuntimeSignerAuthorizationV1,
+  destroyVerifiedTaskRuntimeSignerAuthorization,
+  verifyHistoricalTaskRuntimeSignerAuthorization,
+  type ResolveHistoricalTaskRuntimeSignerAuthorizationIssuer,
+  type VerifiedHistoricalTaskRuntimeSignerAuthorization,
 } from "../background/task-runtime-signer-authorization-v1.ts";
 import { compareUnsignedUtf8 } from "../domain/participants.ts";
 import {
@@ -193,7 +193,7 @@ export interface VerifyObjectAccessManifestV5Input {
   readonly resolveTaskRuntimeSignerAuthorizationBytes?:
     ResolveTaskRuntimeSignerAuthorizationBytesV5;
   readonly resolveHistoricalTaskRuntimeIssuer?:
-    ResolveHistoricalTaskRuntimeSignerAuthorizationIssuerV1;
+    ResolveHistoricalTaskRuntimeSignerAuthorizationIssuer;
 }
 
 export interface VerifiedObjectAccessManifestV5 {
@@ -690,10 +690,27 @@ export function createAgentObjectAccessManifestV5(
 }
 
 function assertTaskRuntimeSignerBoundary(
+  crypto: LatticeCrypto,
   manifest: ObjectAccessManifestUnsignedV5,
-  verified: VerifiedTaskRuntimeSignerAuthorizationV1,
+  verified: VerifiedHistoricalTaskRuntimeSignerAuthorization,
 ): void {
   const signer = verified.projection.signer;
+  let objectDisagrees = false;
+  if (verified.projection.formatVersion === 1) {
+    objectDisagrees = manifest.objectId.startsWith("task-run-result:v1:")
+      && manifest.objectId !== verified.projection.work.resultObjectId;
+  } else if (verified.projection.work.kind === "task.cancel_result") {
+    const digest = crypto.hash(new TextEncoder().encode(
+      `nautilo/task-run-result-crypto-object/v1\n${verified.projection.work.taskId}\n${verified.projection.work.taskRunId}\n2`,
+    ));
+    try {
+      objectDisagrees = manifest.objectId
+        !== `task-run-result:v1:${bytesToHex(digest)}`;
+    } finally { digest.fill(0); }
+  } else if (verified.projection.work.kind === "task.deliver_message") {
+    objectDisagrees = manifest.objectId
+      !== verified.projection.work.messageObjectId;
+  }
   if (manifest.signer.kind !== AGENT_RUNTIME_SIGNER_KIND
     || manifest.signerAuthorizationHash === null
     || !equalBytes(manifest.signerAuthorizationHash, verified.certificateHash)
@@ -701,8 +718,7 @@ function assertTaskRuntimeSignerBoundary(
     || manifest.signer.runtimeGeneration !== signer.runtimeGeneration
     || manifest.signer.signerKeyId !== signer.signerKeyId
     || manifest.hostAuthorizationRevision !== verified.issuer.securityRevision
-    || (manifest.objectId.startsWith("task-run-result:v1:")
-      && manifest.objectId !== verified.projection.work.resultObjectId)) {
+    || objectDisagrees) {
     throw new TypeError("Task manifest disagrees with its certified Runtime signer");
   }
 }
@@ -724,7 +740,7 @@ export function createTaskRuntimeObjectAccessManifestV5(
   }>,
 ): CreatedObjectAccessManifestV5 {
   const normalized = normalizeUnsigned(unsigned);
-  const verified = verifyHistoricalTaskRuntimeSignerAuthorizationV1(crypto, {
+  const verified = verifyHistoricalTaskRuntimeSignerAuthorization(crypto, {
     certificateBytes: input.certificateBytes,
     resolveHistoricalIssuer: context =>
       equalBytes(context.projection.request.requestHash, input.expectedRequestHash)
@@ -737,7 +753,7 @@ export function createTaskRuntimeObjectAccessManifestV5(
       || input.now < request.issuedAt || input.now >= request.deadlineAt) {
       throw new TypeError("Task manifest signer grant is outside its live window");
     }
-    assertTaskRuntimeSignerBoundary(normalized, verified);
+    assertTaskRuntimeSignerBoundary(crypto, normalized, verified);
     return createManifest(crypto, normalized, manifest => {
       if (manifest.signer.kind !== AGENT_RUNTIME_SIGNER_KIND) {
         throw new TypeError("Task manifest requires an Agent attribution signer");
@@ -749,7 +765,7 @@ export function createTaskRuntimeObjectAccessManifestV5(
         });
       } finally { bytes.fill(0); }
     });
-  } finally { destroyVerifiedTaskRuntimeSignerAuthorizationV1(verified); }
+  } finally { destroyVerifiedTaskRuntimeSignerAuthorization(verified); }
 }
 
 function assertProcessorAuthorizationBoundary(
@@ -989,15 +1005,15 @@ export function verifyObjectAccessManifestV5(
         if (!(certificateBytes instanceof Uint8Array)) {
           throw new TypeError("Task manifest signer certificate is unavailable");
         }
-        const certificate = verifyHistoricalTaskRuntimeSignerAuthorizationV1(crypto, {
+        const certificate = verifyHistoricalTaskRuntimeSignerAuthorization(crypto, {
           certificateBytes,
           resolveHistoricalIssuer: input.resolveHistoricalTaskRuntimeIssuer,
         });
         try {
-          assertTaskRuntimeSignerBoundary(manifest, certificate);
+          assertTaskRuntimeSignerBoundary(crypto, manifest, certificate);
           verifyAgentSignature(crypto, manifest, signingBytes,
             () => certificate.projection.signer.signerPublicKey);
-        } finally { destroyVerifiedTaskRuntimeSignerAuthorizationV1(certificate); }
+        } finally { destroyVerifiedTaskRuntimeSignerAuthorization(certificate); }
       }
     } else {
       if (manifest.signerAuthorizationHash === null) {

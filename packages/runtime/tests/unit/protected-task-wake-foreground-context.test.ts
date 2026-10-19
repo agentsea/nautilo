@@ -17,6 +17,8 @@ import {
   withTaskRuntimeWakeForegroundEvidenceV1,
   type TaskRuntimeWakeForegroundEvidenceV1,
 } from "../../../lattice-crypto/src/background/task-runtime-wake-foreground-evidence-v1.ts";
+import { withPublicationSigner } from
+  "../../../lattice-crypto/tests/fixtures/task-publication-signer.ts";
 import {
   getCurrentLiveShadowTurnContext,
   getCurrentProtectedTaskWakeForegroundContext,
@@ -121,32 +123,42 @@ const fundingSession: ForegroundChatFundingSession = {
   }),
 };
 
-function source(evidence: TaskRuntimeWakeForegroundEvidenceV1): ProtectedTaskWakeForegroundSource {
+function source(
+  evidence: TaskRuntimeWakeForegroundEvidenceV1,
+  initialAgentAuthorizationRevision = 11,
+): ProtectedTaskWakeForegroundSource {
+  const namespaceId = evidence.namespaceRequirements[0]?.namespaceId;
+  if (namespaceId === undefined) throw new Error("wake namespace fixture");
   const scheduling: ProtectedTaskWakeScheduling = {
-    taskId: TASK, taskRunId: RUN, jobId: protectedTaskRunWakeJobId(RUN),
-    ownerId: REQUESTER, requestorId: REQUESTER, agentId: AGENT, roomId: ROOM,
-    namespaceId: NAMESPACE, sessionId: SESSION, sessionOwnerId: OWNER,
-    graphThreadId: "room-thread", laneKey: `room:${ROOM}`,
+    taskId: evidence.invocation.reference.taskId,
+    taskRunId: evidence.invocation.reference.taskRunId,
+    jobId: evidence.invocation.jobId,
+    ownerId: REQUESTER, requestorId: REQUESTER,
+    agentId: evidence.signerAgentId, roomId: evidence.sourceRoomId,
+    namespaceId, sessionId: evidence.episodeId, sessionOwnerId: OWNER,
+    graphThreadId: "room-thread", laneKey: `room:${evidence.sourceRoomId}`,
     reference: evidence.invocation.reference, jobState: "queued",
   };
   return { evidence, scheduling,
     result: { formatVersion: 1, resultText: "private result", lastError: null },
     resultMessagePublished: false, actorRole: "member",
     roomRoster: [
-      { actorId: HUMAN, kind: "user", userId: REQUESTER,
+      { actorId: evidence.requesterHumanId, kind: "user", userId: REQUESTER,
         displayName: "Requester", roomRole: "member" },
-      { actorId: "agent-actor", kind: "agent", agentId: AGENT,
+      { actorId: "agent-actor", kind: "agent", agentId: evidence.signerAgentId,
         displayName: "Genie", roomRole: "member" },
     ],
-    memoryAccessEnvelope: { ownerId: REQUESTER, actorId: HUMAN,
-      agentId: AGENT, roomId: ROOM, readableNamespaces: [NAMESPACE],
-      mutableNamespaces: [NAMESPACE], writableNamespaces: [NAMESPACE],
+    memoryAccessEnvelope: { ownerId: REQUESTER,
+      actorId: evidence.requesterHumanId,
+      agentId: evidence.signerAgentId, roomId: evidence.sourceRoomId,
+      readableNamespaces: [namespaceId],
+      mutableNamespaces: [namespaceId], writableNamespaces: [namespaceId],
       toolPolicy: {} }, subthread: null, fundingSession,
     checkpointBinding: {
-      retainedSourceNamespaceIds: [NAMESPACE],
+      retainedSourceNamespaceIds: [namespaceId],
       sourceEnvelopeDigest: bytes(9),
       initialPolicyRevision: evidence.policyRevision,
-      initialAgentAuthorizationRevision: 11,
+      initialAgentAuthorizationRevision,
     } };
 }
 
@@ -214,6 +226,9 @@ test("binds a genuine wake to one protected foreground scope and reuses its fund
         const control = messages[1]!.content;
         if (typeof control !== "string") throw new Error("control fixture");
         expect(control).not.toContain("private result");
+        expect(messages[1]!.additional_kwargs).toEqual({
+          nautilo_task_wake_continuation: true,
+        });
         expect(freshProtectedTaskWakeForegroundActivationState()).toMatchObject({
           trustedExecutionEntrypoint: "foreground.task_report_back",
           suppressToolLifecycleEvents: true,
@@ -259,6 +274,10 @@ test("rejects serialized wake markers, substituted identities and caller mutatio
     expect(protectedTaskWakeForegroundMessages({ ...snap,
       resultMessagePublished: true }).map(message => message._getType()))
       .toEqual(["system"]);
+    expect(protectedTaskWakeForegroundMessages({ ...snap,
+      resultMessagePublished: true })[0]!.additional_kwargs).toEqual({
+      nautilo_task_wake_continuation: true,
+    });
     const child = source(evidence);
     const childEnvelope = child.memoryAccessEnvelope;
     if (childEnvelope.memoryMode === "scope") throw new Error("fixture");
@@ -266,6 +285,41 @@ test("rejects serialized wake markers, substituted identities and caller mutatio
       subthread: { parentRoomId: PARENT_ROOM, anchorMessageId: 42 },
       memoryAccessEnvelope: { ...childEnvelope, roomId: PARENT_ROOM },
     }).subthread).toEqual({ parentRoomId: PARENT_ROOM, anchorMessageId: 42 });
+  });
+});
+
+test("binds revision zero to a live certified signer and retains an authenticated continuation revision", async () => {
+  await withPublicationSigner(({ evidence }) => {
+    const fresh = snapshotProtectedTaskWakeForegroundSource(source(evidence, 0));
+    expect(fresh.checkpointBinding.initialAgentAuthorizationRevision).toBe(0);
+
+    const continuation = {
+      segment: 1,
+      checkpointThreadId: protectedTaskWakeCheckpointThreadId(
+        fresh.scheduling.jobId,
+      ),
+      resume: {
+        interruptId: "interrupt:projection:1",
+        authorizationRequestId: "task.memory.projection:request-1",
+        effectDisposition: "not_started_v1" as const,
+        operationId: "memory:projection:1",
+        requestDigest: bytes(20),
+        requiredAuthorityDigest: bytes(21),
+      },
+    };
+    const resumed = snapshotProtectedTaskWakeForegroundSource({
+      ...source(evidence, 11), continuation,
+    });
+    expect(resumed.checkpointBinding.initialAgentAuthorizationRevision).toBe(11);
+    expect(() => snapshotProtectedTaskWakeForegroundSource({
+      ...source(evidence, 11),
+      continuation: { ...continuation, checkpointThreadId: "substituted" },
+    })).toThrow("foreground source is invalid");
+  }, { recipientGeneration: 1 });
+
+  await withWake(evidence => {
+    expect(() => snapshotProtectedTaskWakeForegroundSource(source(evidence, 0)))
+      .toThrow("foreground source is invalid");
   });
 });
 

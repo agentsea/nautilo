@@ -30,6 +30,7 @@ import {
   destroyTaskRuntimeBackgroundAuthorizationRequestV1,
   encodeTaskRuntimeBackgroundAuthorizationRequestV1,
   isTaskRuntimeBackgroundAuthorizationRequestV2Carrier,
+  isTaskRuntimeBackgroundAuthorizationRequestV3Carrier,
   type BackgroundAuthorizationIssuerV2,
   type TaskRuntimeBackgroundAuthorizationRequestV1,
 } from "@nautilo/lattice-crypto/background";
@@ -181,9 +182,8 @@ export function acceptedTaskRuntimeRecord(
     certificateBytes: Uint8Array;
   }> | undefined;
   try {
-    if (isTaskRuntimeBackgroundAuthorizationRequestV2Carrier(
-      record.descriptorBytes,
-    )) {
+    if (isTaskRuntimeBackgroundAuthorizationRequestV2Carrier(record.descriptorBytes)
+      || isTaskRuntimeBackgroundAuthorizationRequestV3Carrier(record.descriptorBytes)) {
       wrappedResponse = decodeTaskRuntimeBackgroundAuthorizationResponseV2(
         material.responseBytes,
       );

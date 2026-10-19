@@ -1,6 +1,7 @@
 import { bytesToHex } from "@noble/hashes/utils.js";
 import {
   assertAuthenticTaskRuntimeTerminalMessageEvidence,
+  assertTaskRuntimeTemporarySignerForPreparation,
   encryptedObjectWriteRecord,
   unixTimestamp,
   type AgentRuntimeKeyGeneration,
@@ -8,6 +9,7 @@ import {
   type LatticeCrypto,
   type ResolveHistoricalAgentRuntimeSignerPublicationManager,
   type TaskRuntimeTerminalMessageEvidence,
+  type TaskRuntimeTemporarySigner,
 } from "@nautilo/lattice-crypto";
 import {
   assertConversationDurableKey,
@@ -68,6 +70,8 @@ export type NativeTaskTerminalMessageAuthority = Readonly<{
   runtimeGeneration: number;
   agentAuthorizationRevision: number;
   signerKeyId: string;
+  signerAuthorizationHash?: string;
+  signerHostAuthorizationRevision?: number;
 }>;
 
 export type PrepareNativeTaskTerminalMessageInput = Readonly<{
@@ -77,7 +81,8 @@ export type PrepareNativeTaskTerminalMessageInput = Readonly<{
   createdAt: number;
   namespace: NativeTaskNamespaceSource;
   runtime: AgentRuntimeKeyGeneration;
-  signerPublication: AgentRuntimeSignerPublication;
+  signerPublication: AgentRuntimeSignerPublication | null;
+  temporarySigner?: TaskRuntimeTemporarySigner;
   agentAuthorizationRevision: number;
   resolveHistoricalSignerPublicationManager:
     ResolveHistoricalAgentRuntimeSignerPublicationManager;
@@ -100,6 +105,7 @@ export type NativeTaskTerminalMessageSnapshot = Readonly<{
   manifestBytes: Uint8Array;
   manifestHash: Uint8Array;
   envelopeBytes: readonly [Uint8Array];
+  signerEvidenceBytes?: Uint8Array;
 }>;
 
 const snapshots = new WeakMap<PreparedNativeTaskTerminalMessage,
@@ -144,6 +150,14 @@ export async function prepareNativeTaskTerminalMessage(
   const domains = evidence.domainRequirements.filter(entry =>
     entry.domainId === current.cryptoDomainId);
   const domain = domains[0];
+  const temporary = input.temporarySigner;
+  if ((input.signerPublication === null) === (temporary === undefined)) {
+    throw new TypeError("Native terminal Task Message requires one signer authority");
+  }
+  const certified = temporary === undefined ? null
+    : assertTaskRuntimeTemporarySignerForPreparation(
+      crypto, evidence, input.runtime, temporary,
+    );
   const plaintext = encodeMessagePayloadV2(input.payload);
   const payloadDigest = crypto.hash(plaintext);
   try {
@@ -214,8 +228,15 @@ export async function prepareNativeTaskTerminalMessage(
       activeNamespaceBindingCount: domain.activeNamespaceBindingCount,
       runtimeGeneration: input.runtime.generation,
       agentAuthorizationRevision: input.agentAuthorizationRevision,
-      signerKeyId: input.signerPublication.signerKeyId,
+      signerKeyId: certified?.signerKeyId
+        ?? input.signerPublication!.signerKeyId,
+      ...(certified === null ? {} : {
+        signerAuthorizationHash: bytesToHex(certified.certificateHash),
+        signerHostAuthorizationRevision:
+          certified.hostAuthorizationRevision,
+      }),
     });
+    certified?.certificateHash.fill(0);
     const check = async (): Promise<void> => {
       assertActive();
       const resolved = await input.resolveCurrentAuthority(authority);
@@ -238,6 +259,7 @@ export async function prepareNativeTaskTerminalMessage(
       signerAgentId: authority.signerAgentId,
       runtime: input.runtime,
       signerPublication: input.signerPublication,
+      ...(temporary === undefined ? {} : { temporarySigner: temporary }),
       agentAuthorizationRevision: input.agentAuthorizationRevision,
       resolveHistoricalSignerPublicationManager:
         input.resolveHistoricalSignerPublicationManager,
@@ -271,5 +293,8 @@ export function readPreparedNativeTaskTerminalMessage(
     manifestBytes: snapshot.manifestBytes.slice(),
     manifestHash: snapshot.manifestHash.slice(),
     envelopeBytes: Object.freeze([snapshot.envelopeBytes[0].slice()] as const),
+    ...(snapshot.signerEvidenceBytes === undefined ? {} : {
+      signerEvidenceBytes: snapshot.signerEvidenceBytes.slice(),
+    }),
   });
 }

@@ -1,3 +1,4 @@
+import type { TaskRuntimePublicationSignerEvidence } from "./task-runtime-publication-signing.ts";
 import type {
   ObjectAccessManifestStorageHeadV2,
   ObjectAccessStorageStateV2,
@@ -68,6 +69,7 @@ export interface DeviceWrappedLiveShadowAgentObjectAccessGenesisAuthorizationExp
     DeviceWrappedLiveShadowAgentObjectAccessGenesisAuthorityContextV1;
   readonly signerPublicKey: Uint8Array;
   readonly signerPublicKeyHash: Uint8Array;
+  readonly signerEvidence?: TaskRuntimePublicationSignerEvidence;
 }
 
 export interface DeviceWrappedAgentObjectAccessGenesisSetAuthorizationExpectationV1 {
@@ -76,6 +78,7 @@ export interface DeviceWrappedAgentObjectAccessGenesisSetAuthorizationExpectatio
     DeviceWrappedAgentObjectAccessGenesisSetAuthorityContextV1;
   readonly signerPublicKey: Uint8Array;
   readonly signerPublicKeyHash: Uint8Array;
+  readonly signerEvidence?: TaskRuntimePublicationSignerEvidence;
 }
 
 export interface TaskRuntimeAgentObjectAccessGenesisSetAuthorizationExpectationV1 {

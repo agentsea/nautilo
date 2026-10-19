@@ -1,4 +1,8 @@
 import { withWakeEvidence } from "../fixtures/task-wake-foreground-evidence.ts";
+import {
+  PUBLICATION_NAMESPACE,
+  withPublicationSigner,
+} from "../../../lattice-crypto/tests/fixtures/task-publication-signer.ts";
 import { describe, expect, test } from "bun:test";
 
 import {
@@ -936,6 +940,73 @@ test("wake opens genuine HIVE signer by independent foreground Namespace and wip
   expect(result).toEqual({ status: "executed", value: 42 });
   expect(key!.every(b => b === 0)).toBe(true);
   expect(f.domain.domainKey.some(b => b !== 0)).toBe(true);
+});
+
+test("wake lends a certified fresh signer without permanent Runtime lookups", async () => {
+  let permanentLookups = 0;
+  let borrowedKey: Uint8Array | undefined;
+  const result = await withPublicationSigner(({ crypto, evidence, domain }) =>
+    withProtectedTaskWakeForegroundSigner({
+      crypto,
+      storage: {
+        getAgentRuntimeAtomicState: async () => {
+          permanentLookups += 1;
+          throw new Error("fresh signer queried permanent Runtime state");
+        },
+        getAgentRuntimeSignerPublication: async () => {
+          permanentLookups += 1;
+          throw new Error("fresh signer queried permanent signer publication");
+        },
+      },
+      evidence,
+      namespaceId: PUBLICATION_NAMESPACE,
+      domain: { ...domain, domainKey: bytes(0x51) },
+      expectedAgentAuthorizationRevision: 0,
+      resolveHistoricalRuntimeCommitter: () => {
+        throw new Error("fresh signer queried Runtime history");
+      },
+      resolveHistoricalSignerPublicationManager: () => {
+        throw new Error("fresh signer queried signer history");
+      },
+      execute: authority => {
+        expect(authority.signerPublication).toBeNull();
+        expect(authority.agentAuthorizationRevision).toBe(0);
+        expect(authority.runtime.generation).toBe(agentRuntimeGeneration(0));
+        borrowedKey = authority.runtime.key;
+        expect(borrowedKey.some(byte => byte !== 0)).toBe(true);
+        return "certified";
+      },
+    }));
+  expect(result).toEqual({ status: "executed", value: "certified" });
+  expect(permanentLookups).toBe(0);
+  expect(borrowedKey?.every(byte => byte === 0)).toBe(true);
+});
+
+test("wake certified signer refuses a substituted foreground Namespace before lookup", async () => {
+  let permanentLookups = 0;
+  const result = await withPublicationSigner(({ crypto, evidence, domain }) =>
+    withProtectedTaskWakeForegroundSigner({
+      crypto,
+      storage: {
+        getAgentRuntimeAtomicState: async () => {
+          permanentLookups += 1;
+          return null;
+        },
+        getAgentRuntimeSignerPublication: async () => {
+          permanentLookups += 1;
+          return null;
+        },
+      },
+      evidence,
+      namespaceId: "namespace:substituted",
+      domain: { ...domain, domainKey: bytes(0x51) },
+      expectedAgentAuthorizationRevision: 0,
+      resolveHistoricalRuntimeCommitter: () => null,
+      resolveHistoricalSignerPublicationManager: () => null,
+      execute: () => { throw new Error("substituted Namespace executed"); },
+    }));
+  expect(result).toMatchObject({ status: "unavailable" });
+  expect(permanentLookups).toBe(0);
 });
 
 test.each(["private", "domain", "revision", "read-proof", "forgery", "manager"])("wake signer rejects %s authority", async reason => {

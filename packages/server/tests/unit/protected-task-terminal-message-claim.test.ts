@@ -21,9 +21,11 @@ import {
   type DomainForegroundAuthorityEntry,
 } from "@nautilo/lattice-crypto";
 import {
-  encodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  encodeTaskRuntimeBackgroundAuthorizationRequestV3,
+  encodeTaskRuntimeBackgroundAuthorizationResponseV2,
 } from "@nautilo/lattice-crypto/background";
-import { parseDomainForegroundAuthorizationPlanV2 } from
+import { agentRuntimeObjectSignerKeyIdV1,
+  parseDomainForegroundAuthorizationPlanV2 } from
   "@nautilo/lattice-crypto/wire";
 import {
   isTaskExecutionWorkKind,
@@ -171,6 +173,7 @@ function fixture(options: Readonly<{ publicationError?: Error }> = {}) {
     recipientTtlMs: 60_000,
   });
   const recipientPublicKey = new Uint8Array(65).fill(5);
+  const signer = crypto.generateSigningKeyPair();
   const request = plan.buildRequest({
     record: plan.initialRecord,
     attempt: {
@@ -180,6 +183,9 @@ function fixture(options: Readonly<{ publicationError?: Error }> = {}) {
       recipientKeyId: `task-delivery-runtime:${RUN}:0`,
       recipientPublicKey,
       expiresAt: NOW + 60_000,
+      signer: { agentId: AGENT, runtimeGeneration: 0,
+        signerKeyId: agentRuntimeObjectSignerKeyIdV1(crypto, signer.publicKey),
+        signerPublicKey: signer.publicKey },
     },
     binding: { userId: REQUESTER, humanActorId: HUMAN, deviceId: DEVICE },
     authority: {
@@ -202,14 +208,17 @@ function fixture(options: Readonly<{ publicationError?: Error }> = {}) {
       domains: [domain()],
     },
   });
+  signer.privateKey.fill(0);
+  signer.publicKey.fill(0);
+  const baseRequest = request.baseRequest;
   const foreground = parseDomainForegroundAuthorizationPlanV2(
-    request.authorizationPlanBytes,
+    baseRequest.authorizationPlanBytes,
   );
   if (foreground === null) throw new Error("terminal fixture plan is invalid");
-  const descriptorBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV1(
-    request,
-  );
-  const responseBytes = bytes(8);
+  const descriptorBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV3(crypto, request);
+  const responseBytes = encodeTaskRuntimeBackgroundAuthorizationResponseV2({
+    authorizationBytes: bytes(8), certificateBytes: bytes(10),
+  });
   const selected: BackgroundAuthorizationTaskRuntimeRecordV3 = {
     ...plan.initialRecord,
     snapshot: {
@@ -219,9 +228,9 @@ function fixture(options: Readonly<{ publicationError?: Error }> = {}) {
       updatedAt: NOW,
       descriptorDigest: createHash("sha256").update(descriptorBytes).digest("hex"),
       recipient: {
-        recipientKeyId: request.recipientKeyId,
+        recipientKeyId: baseRequest.recipientKeyId,
         recipientPublicKey: Buffer.from(recipientPublicKey).toString("base64url"),
-        expiresAt: request.deadlineAt,
+        expiresAt: baseRequest.deadlineAt,
       },
       acceptedResponse: {
         kind: "runtime",
@@ -236,7 +245,7 @@ function fixture(options: Readonly<{ publicationError?: Error }> = {}) {
     descriptorBytes,
     acceptedMaterial: {
       responseBytes,
-      credentialId: request.requestId,
+      credentialId: baseRequest.requestId,
       issuingDeviceAuthorizationRevision: authorizationRevision(3),
       issuerSigningPublicKeyHash: bytes(9),
       authorizationExpiresAt: NOW + 60_000,
@@ -329,7 +338,7 @@ function fixture(options: Readonly<{ publicationError?: Error }> = {}) {
           requestId: selected.snapshot.requestId,
           workId: RUN,
           recipientGeneration: 0,
-          recipientKeyId: request.recipientKeyId,
+          recipientKeyId: baseRequest.recipientKeyId,
           claimId: CLAIM,
         });
         expect(operation.currentNamespaceRequirements).toEqual([{
@@ -356,6 +365,10 @@ function fixture(options: Readonly<{ publicationError?: Error }> = {}) {
           acceptedPolicyRevision: 7,
           publicationPolicyRevision: POLICY_REVISION,
           signerAgentId: AGENT,
+        });
+        expect(operation.certifiedSigning?.expectedPublication).toMatchObject({
+          kind: "task.deliver_message", taskId: TASK, taskRunId: RUN,
+          contentRevision: 2, messageObjectId: objectId,
         });
         const encoded = encodeMessagePayloadV2({
           role: "assistant",

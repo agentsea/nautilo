@@ -1,6 +1,7 @@
 import { bytesToHex } from "@noble/hashes/utils.js";
 import {
   assertAuthenticTaskRuntimeRunResultReadEvidence,
+  assertTaskRuntimeTemporarySignerForPreparation,
   assertU64Counter,
   encryptedObjectWriteRecord,
   unixTimestamp,
@@ -9,6 +10,7 @@ import {
   type LatticeCrypto,
   type ResolveHistoricalAgentRuntimeSignerPublicationManager,
   type TaskRuntimeRunResultReadEvidence,
+  type TaskRuntimeTemporarySigner,
 } from "@nautilo/lattice-crypto";
 
 import {
@@ -93,6 +95,8 @@ export type NativeTaskRunResultMessageAuthority = Readonly<{
   runtimeGeneration: number;
   agentAuthorizationRevision: number;
   signerKeyId: string;
+  signerAuthorizationHash?: string;
+  signerHostAuthorizationRevision?: number;
 }>;
 
 export type PrepareNativeTaskRunResultMessageInput = Readonly<{
@@ -102,7 +106,8 @@ export type PrepareNativeTaskRunResultMessageInput = Readonly<{
   allocation: NativeTaskRunResultMessageAllocation;
   namespace: NativeTaskNamespaceSource;
   runtime: AgentRuntimeKeyGeneration;
-  signerPublication: AgentRuntimeSignerPublication;
+  signerPublication: AgentRuntimeSignerPublication | null;
+  temporarySigner?: TaskRuntimeTemporarySigner;
   agentAuthorizationRevision: number;
   resolveHistoricalSignerPublicationManager:
     ResolveHistoricalAgentRuntimeSignerPublicationManager;
@@ -124,6 +129,7 @@ export type NativeTaskRunResultMessageSnapshot = Readonly<{
   manifestBytes: Uint8Array;
   manifestHash: Uint8Array;
   envelopeBytes: readonly [Uint8Array];
+  signerEvidenceBytes?: Uint8Array;
 }>;
 
 const snapshots = new WeakMap<PreparedNativeTaskRunResultMessage,
@@ -233,6 +239,14 @@ export async function prepareNativeTaskRunResultMessage(
   const namespace = input.namespace;
   const current = namespace.current;
   const domain = write.domain;
+  const temporary = input.temporarySigner;
+  if ((input.signerPublication === null) === (temporary === undefined)) {
+    throw new TypeError("Native Task result Message requires one signer authority");
+  }
+  const certified = temporary === undefined ? null
+    : assertTaskRuntimeTemporarySignerForPreparation(
+      input.crypto, evidence, input.runtime, temporary,
+    );
   assertU64Counter("Task result Message accepted policy revision",
     allocation.acceptedPolicyRevision);
   assertU64Counter("Task result Message publication policy revision",
@@ -323,8 +337,15 @@ export async function prepareNativeTaskRunResultMessage(
     activeNamespaceBindingCount: domain.activeNamespaceBindingCount,
     runtimeGeneration: input.runtime.generation,
     agentAuthorizationRevision: input.agentAuthorizationRevision,
-    signerKeyId: input.signerPublication.signerKeyId,
+    signerKeyId: certified?.signerKeyId
+      ?? input.signerPublication!.signerKeyId,
+    ...(certified === null ? {} : {
+      signerAuthorizationHash: bytesToHex(certified.certificateHash),
+      signerHostAuthorizationRevision:
+        certified.hostAuthorizationRevision,
+    }),
   });
+  certified?.certificateHash.fill(0);
   const check = async (): Promise<void> => {
     assertActive();
     const resolved = await input.resolveCurrentAuthority(authority);
@@ -347,6 +368,7 @@ export async function prepareNativeTaskRunResultMessage(
     signerAgentId: authority.signerAgentId,
     runtime: input.runtime,
     signerPublication: input.signerPublication,
+    ...(temporary === undefined ? {} : { temporarySigner: temporary }),
     agentAuthorizationRevision: input.agentAuthorizationRevision,
     resolveHistoricalSignerPublicationManager:
       input.resolveHistoricalSignerPublicationManager,
@@ -378,5 +400,8 @@ export function readPreparedNativeTaskRunResultMessage(
     manifestBytes: snapshot.manifestBytes.slice(),
     manifestHash: snapshot.manifestHash.slice(),
     envelopeBytes: Object.freeze([snapshot.envelopeBytes[0].slice()] as const),
+    ...(snapshot.signerEvidenceBytes === undefined ? {} : {
+      signerEvidenceBytes: snapshot.signerEvidenceBytes.slice(),
+    }),
   });
 }

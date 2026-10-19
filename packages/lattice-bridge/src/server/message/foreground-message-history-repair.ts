@@ -14,6 +14,7 @@ import {
   type LatticeStorage,
   type ResolveCurrentDeviceWrappedLiveShadowAgentObjectAccessGenesisAuthorization,
   type ResolveCurrentDeviceWrappedAgentObjectAccessGenesisSetAuthorization,
+  type TaskRuntimePublicationSigning,
 } from "@nautilo/lattice-crypto";
 import {
   decodeEncryptedPayloadV2,
@@ -220,6 +221,7 @@ export function createForegroundMessageHistoryRepairer(input: Readonly<{
     signerKeyId: string;
     signerPublicKey: Uint8Array;
     runtime: AgentRuntimeKeyGeneration;
+    taskRuntimeSigner?: TaskRuntimePublicationSigning;
     withCurrentPublication: ForegroundMessageRepairPublication;
   }>;
   loadSources(selection: Readonly<{
@@ -676,6 +678,9 @@ export function createForegroundMessageHistoryRepairer(input: Readonly<{
                   recipientKeyId: input.publication.recipientKeyId,
                 },
                 runtime: input.publication.runtime,
+                ...(input.publication.taskRuntimeSigner === undefined ? {} : {
+                  taskRuntimeSigner: input.publication.taskRuntimeSigner,
+                }),
                 signerKeyId: input.publication.signerKeyId,
                 signerPublicKey: input.publication.signerPublicKey,
                 agentAuthorizationRevision:

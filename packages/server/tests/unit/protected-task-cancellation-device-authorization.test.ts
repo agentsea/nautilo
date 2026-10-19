@@ -5,7 +5,10 @@ import {
   LatticeCrypto, TaskRuntimeRecipientRegistry, authorizationRevision,
   domainForegroundNamespaceBindingSetDigest,
 } from "@nautilo/lattice-crypto";
-import { isTaskRuntimeBackgroundAuthorizationRequestV2Carrier } from
+import { decodeTaskRuntimeBackgroundAuthorizationRequestV3,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV3,
+  isTaskRuntimeBackgroundAuthorizationRequestV2Carrier,
+  isTaskRuntimeBackgroundAuthorizationRequestV3Carrier } from
   "@nautilo/lattice-crypto/background";
 import { destroyDomainForegroundAuthorizationPlanV2, parseDomainForegroundAuthorizationPlanV2 } from "@nautilo/lattice-crypto/wire";
 import {
@@ -110,6 +113,21 @@ test("binds a real cancellation recipient and admits only its encrypt-only reque
   expect(isTaskRuntimeBackgroundAuthorizationRequestV2Carrier(
     attached!.requestBytes,
   )).toBe(false);
+  expect(isTaskRuntimeBackgroundAuthorizationRequestV3Carrier(
+    attached!.requestBytes,
+  )).toBe(true);
+  const certified = decodeTaskRuntimeBackgroundAuthorizationRequestV3(
+    new LatticeCrypto(),
+    attached!.requestBytes,
+  );
+  expect(certified?.work).toMatchObject({
+    kind: "task.cancel_result", taskId: TASK, taskRunId: RUN,
+    contentRevision: 2,
+  });
+  expect(certified?.signer).toMatchObject({ agentId: AGENT, runtimeGeneration: 0 });
+  if (certified !== null) {
+    destroyTaskRuntimeBackgroundAuthorizationRequestV3(certified);
+  }
   expect(value.hasAttempt()).toBe(true);
   expect(value.hooks.isTaskRecipientActive(attached!.record)).toBe(true);
   const result = await value.hooks.withTaskAuthority({ ...value.operation, record: attached!.record,

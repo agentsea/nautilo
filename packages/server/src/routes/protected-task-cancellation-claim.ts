@@ -1,15 +1,20 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
 import type { PostgresJsBridgeConnection } from "@nautilo/db";
 import type {
   TaskRuntimeCancellationResultProof,
+  TaskRuntimeCertifiedPublicationSigningInputV1,
   TaskRuntimeRecipientRegistry,
 } from "@nautilo/lattice-crypto";
 import {
-  decodeTaskRuntimeBackgroundAuthorizationRequestV1,
-  destroyTaskRuntimeBackgroundAuthorizationRequestV1,
+  decodeTaskRuntimeBackgroundAuthorizationRequestV3,
+  decodeTaskRuntimeBackgroundAuthorizationResponseV2,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV3,
+  isTaskRuntimeBackgroundAuthorizationRequestV3Carrier,
+  type BackgroundAuthorizationIssuerV2,
   type TaskRuntimeBackgroundAuthorizationRequestV1,
+  type TaskRuntimeBackgroundAuthorizationRequestV3,
 } from "@nautilo/lattice-crypto/background";
 import {
   claimTaskRuntimeBackgroundAuthorizationRequest,
@@ -110,6 +115,11 @@ function exactRunningRecord(
     && sameBackgroundAuthorizationRecord(current, expected);
 }
 
+function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  return left.length === right.length
+    && left.every((value, index) => value === right[index]);
+}
+
 /**
  * Claims and publishes only the fixed stopped-Task result. It never constructs
  * an execution occurrence, Job, model input, or executor.
@@ -126,9 +136,9 @@ export function createProtectedTaskCancellationClaim(
       ...operation, intent: plan.intent }),
     ...(dependencies.now === undefined ? {} : { now: dependencies.now }),
     ...(dependencies.claimId === undefined ? {} : { claimId: dependencies.claimId }),
-    openGrant: async ({ plan, request, record, claimId, claimExpiresAt, authority, signal, assertCurrentClaim }) => {
+    openGrant: async ({ plan, request, certifiedSigning, authorizationBytes,
+      record, claimId, claimExpiresAt, authority, signal, assertCurrentClaim }) => {
       const namespace = record.authoritySet.namespaceRequirements[0]!;
-      const material = record.acceptedMaterial!;
       const proof: TaskRuntimeCancellationResultProof = Object.freeze({
         taskId: plan.intent.taskId, taskRunId: plan.intent.taskRunId,
         contentRevision: 2, objectId: plan.intent.resultObjectId,
@@ -138,27 +148,47 @@ export function createProtectedTaskCancellationClaim(
           expectedAccessRevision: namespace.expectedAccessRevision,
           expectedPolicyRevision: namespace.expectedPolicyRevision }),
       });
-      const opened = await dependencies.recipients.withOpenedCancellationResultGrant({
-        requestId: request.requestId, workId: request.workId,
-        recipientGeneration: record.snapshot.recipientGeneration,
-        recipientKeyId: request.recipientKeyId, claimId, claimExpiresAt,
-        authorizationBytes: material.responseBytes, current: authority.foreground,
-        currentNamespaceRequirements: authority.namespaceRequirements,
-        result: proof, signal,
-        operation: async (domains, activeSignal, evidence) => {
-          await assertCurrentClaim();
-          await dependencies.publish({ plan, record, domains, evidence,
-            signal: activeSignal, assertCurrentClaim });
-        },
+      const expectedPublication = Object.freeze({
+        kind: "task.cancel_result" as const,
+        taskId: proof.taskId,
+        taskRunId: proof.taskRunId,
+        contentRevision: 2 as const,
+        workIdentityHash: Uint8Array.from(record.workIdentityHash),
       });
-      return opened.status === "opened";
+      try {
+        const opened = await dependencies.recipients.withOpenedCancellationResultGrant({
+          requestId: request.requestId, workId: request.workId,
+          recipientGeneration: record.snapshot.recipientGeneration,
+          recipientKeyId: request.recipientKeyId, claimId, claimExpiresAt,
+          authorizationBytes, current: authority.foreground,
+          currentNamespaceRequirements: authority.namespaceRequirements,
+          result: proof, signal,
+          certifiedSigning: Object.freeze({
+            ...certifiedSigning, expectedPublication,
+          }),
+          operation: async (domains, activeSignal, evidence) => {
+            await assertCurrentClaim();
+            await dependencies.publish({ plan, record, domains, evidence,
+              signal: activeSignal, assertCurrentClaim });
+          },
+        });
+        return opened.status === "opened";
+      } finally {
+        expectedPublication.workIdentityHash.fill(0);
+      }
     },
   });
 }
 
 type PublicationWorkKind = "task.cancel_result" | "task.deliver_message"
   | "task.deliver_result" | "task.delivery_wake";
-type PublicationPlan = TaskRuntimeRecipientRequestPlan & Readonly<{ sourceRoomId: string }>;
+type PublicationPlan = TaskRuntimeRecipientRequestPlan<
+  TaskRuntimeBackgroundAuthorizationRequestV3
+> & Readonly<{ sourceRoomId: string }>;
+type PublicationSigningBase = Omit<
+  TaskRuntimeCertifiedPublicationSigningInputV1,
+  "expectedPublication"
+>;
 export type TaskPublicationClaimInput<Plan extends PublicationPlan> = Readonly<{
   plan: Plan;
   record: BackgroundAuthorizationTaskRuntimeRecordV3;
@@ -179,6 +209,8 @@ export type TaskPublicationClaimDependencies<Plan extends PublicationPlan> = Rea
   openGrant(input: Readonly<{
     plan: Plan;
     request: TaskRuntimeBackgroundAuthorizationRequestV1;
+    certifiedSigning: PublicationSigningBase;
+    authorizationBytes: Uint8Array;
     record: BackgroundAuthorizationTaskRuntimeRecordV3;
     claimId: string;
     claimExpiresAt: number;
@@ -242,15 +274,27 @@ export function createProtectedTaskPublicationClaim<Plan extends PublicationPlan
       || selected.descriptorBytes === null) return null;
     const accepted = acceptedTaskRuntimeRecord(selected);
     if (accepted === null) return null;
-    const request = decodeTaskRuntimeBackgroundAuthorizationRequestV1(
+    if (!isTaskRuntimeBackgroundAuthorizationRequestV3Carrier(
       selected.descriptorBytes,
-    );
-    if (request === null) {
+    )) {
       destroyAcceptedTaskRuntimeRecord(accepted);
       return null;
     }
+    const certifiedRequest = decodeTaskRuntimeBackgroundAuthorizationRequestV3(
+      { hash: value => new Uint8Array(createHash("sha256").update(value).digest()) },
+      selected.descriptorBytes,
+    );
+    if (certifiedRequest === null) {
+      destroyAcceptedTaskRuntimeRecord(accepted);
+      return null;
+    }
+    const request = certifiedRequest.baseRequest;
     const recipient = selected.snapshot.recipient;
     const material = selected.acceptedMaterial;
+    const wrappedResponse = material === null ? null
+      : decodeTaskRuntimeBackgroundAuthorizationResponseV2(
+        material.responseBytes,
+      );
     const namespace = selected.authoritySet.namespaceRequirements[0];
     const domain = selected.authoritySet.domainRequirements[0];
     const claimId = createClaimId();
@@ -259,8 +303,11 @@ export function createProtectedTaskPublicationClaim<Plan extends PublicationPlan
       runningRecord: BackgroundAuthorizationTaskRuntimeRecordV3 | null;
     } = { publicAuthority: null, runningRecord: null };
     try {
-      if (recipient === null || material === null || namespace === undefined
+      if (recipient === null || material === null || wrappedResponse === null
+        || namespace === undefined
         || domain === undefined
+        || certifiedRequest.work.kind !== dependencies.workKind
+        || !sameBytes(certifiedRequest.work.workIdentityHash, selected.workIdentityHash)
         || !publicationAuthorityShape(selected, dependencies.workKind)
         || request.requestId !== selected.snapshot.requestId
         || request.workId !== coordinates.workId
@@ -385,9 +432,24 @@ export function createProtectedTaskPublicationClaim<Plan extends PublicationPlan
       if (claimExpiresAt === null) {
         throw new Error("Cancellation result claim expiry is unavailable");
       }
-      const opened = await dependencies.openGrant({ plan: input.plan, request, record: runningRecord,
-        claimId, claimExpiresAt, authority: publicAuthority, signal: input.signal,
-        assertCurrentClaim });
+      const currentIssuer = publicAuthority.currentIssuer;
+      if (currentIssuer === undefined) return null;
+      const certifiedSigning: PublicationSigningBase = Object.freeze({
+        requestBytes: Uint8Array.from(selected.descriptorBytes),
+        certificateBytes: Uint8Array.from(wrappedResponse.certificateBytes),
+        currentIssuer: copyIssuer(currentIssuer),
+      });
+      let opened: Awaited<ReturnType<typeof dependencies.openGrant>>;
+      try {
+        opened = await dependencies.openGrant({ plan: input.plan, request,
+          certifiedSigning,
+          authorizationBytes: wrappedResponse.authorizationBytes,
+          record: runningRecord,
+          claimId, claimExpiresAt, authority: publicAuthority, signal: input.signal,
+          assertCurrentClaim });
+      } finally {
+        destroyPublicationSigningBase(certifiedSigning);
+      }
       if (opened === false) throw new Error("Task publication authorization could not be opened");
       if (opened !== true) {
         const parked = opened.record;
@@ -450,8 +512,27 @@ export function createProtectedTaskPublicationClaim<Plan extends PublicationPlan
       if (lifecycle.publicAuthority !== null) {
         destroyProtectedTaskRuntimeAuthority(lifecycle.publicAuthority);
       }
-      destroyTaskRuntimeBackgroundAuthorizationRequestV1(request);
+      wrappedResponse?.authorizationBytes.fill(0);
+      wrappedResponse?.certificateBytes.fill(0);
+      destroyTaskRuntimeBackgroundAuthorizationRequestV3(certifiedRequest);
       destroyAcceptedTaskRuntimeRecord(accepted);
     }
   };
+}
+
+function copyIssuer(
+  issuer: BackgroundAuthorizationIssuerV2,
+): BackgroundAuthorizationIssuerV2 {
+  return Object.freeze({
+    ...issuer,
+    headDigest: Uint8Array.from(issuer.headDigest),
+    signingPublicKeyHash: Uint8Array.from(issuer.signingPublicKeyHash),
+  });
+}
+
+function destroyPublicationSigningBase(value: PublicationSigningBase): void {
+  value.requestBytes.fill(0);
+  value.certificateBytes.fill(0);
+  value.currentIssuer.headDigest.fill(0);
+  value.currentIssuer.signingPublicKeyHash.fill(0);
 }

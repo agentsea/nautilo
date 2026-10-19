@@ -3,6 +3,8 @@ import type { ProtectedTaskCancellationOutputIntent } from "@nautilo/db";
 import { deriveTaskContentCryptoObjectIdV1 } from "@nautilo/lattice-bridge";
 import type { InitialTaskRuntimeNamespaceAuthority } from "@nautilo/lattice-bridge/server";
 import type { LatticeCrypto } from "@nautilo/lattice-crypto";
+import type { TaskRuntimeBackgroundAuthorizationRequestV3 } from
+  "@nautilo/lattice-crypto/background";
 import {
   createBackgroundAuthorizationTaskRuntimeRequestV3,
   parseBackgroundAuthorizationRecord,
@@ -12,7 +14,9 @@ import {
 import { createProtectedTaskCancellationRecipientRequestPlan } from
   "./protected-task-runtime-recipient-request-plan";
 
-export type ProtectedTaskCancellationPlan = TaskRuntimeRecipientRequestPlan & Readonly<{
+export type ProtectedTaskCancellationPlan = TaskRuntimeRecipientRequestPlan<
+  TaskRuntimeBackgroundAuthorizationRequestV3
+> & Readonly<{
   intent: ProtectedTaskCancellationOutputIntent;
   sourceRoomId: string;
 }>;

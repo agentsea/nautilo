@@ -99,6 +99,7 @@ export {
   withTaskRuntimeTemporarySignerV1,
 } from "./task-runtime-recipient-registry-v1.ts";
 export type {
+  TaskRuntimeCertifiedPublicationSigningInputV1,
   TaskRuntimeCertifiedSigningInputV1,
   TaskRuntimeTemporarySignerV1,
 } from "./task-runtime-recipient-registry-v1.ts";
@@ -209,3 +210,7 @@ export type {BackgroundProcessorDomainKeyV2, CreateBackgroundAuthorizationRespon
 export {reflectionAuthorityReconciliationFingerprintV2, type ReflectionAuthorityObjectPortV2, type ReflectionAuthorityRunInputV2, type ReflectionAuthorityReconciliationBindingV2, type ReflectionSemanticReconciliationBindingV2, type ReflectionPublicationReconciliationBindingV2} from "./reflection-authority-reprojection-v2.ts";
 
 export type {ReflectionSemanticRunInputV2, ReflectionSemanticObjectPortV2, ReflectionSemanticInputV2, ReflectionSemanticOutputV2} from "./reflection-authority-reprojection-v2.ts";
+
+export * from "./task-runtime-request-v3.ts";
+export { createTaskRuntimeSignerAuthorization, createTaskRuntimeSignerAuthorizationV2, verifyCurrentTaskRuntimeSignerAuthorization, verifyHistoricalTaskRuntimeSignerAuthorization, readTaskRuntimeSignerAuthorizationIssuer, destroyVerifiedTaskRuntimeSignerAuthorization, decodeTaskRuntimeSignerAuthorizationProjection, destroyTaskRuntimeSignerAuthorizationProjection } from "./task-runtime-signer-authorization-v1.ts";
+export type { ResolveCurrentTaskRuntimeSignerAuthorizationIssuer, ResolveHistoricalTaskRuntimeSignerAuthorizationIssuer, VerifiedCurrentTaskRuntimeSignerAuthorization, VerifiedHistoricalTaskRuntimeSignerAuthorization, TaskRuntimeSignerAuthorizationProjection, TaskRuntimeSignerAuthorizationIssuerContext } from "./task-runtime-signer-authorization-v1.ts";

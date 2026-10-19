@@ -1645,6 +1645,7 @@ export class PostgresLatticeStorage implements LatticeStorage {
             === "task-runtime-temporary-agent-genesis-set"
         ) {
           const context = authorization.context;
+          const signerEvidence = "signerEvidence" in authorization ? authorization.signerEvidence : undefined;
           // The Task owner holds product and accepted-request authority through
           // this transaction. Recheck its Domain and signer before Namespace
           // heads, in the same order used by native key rotation.
@@ -1795,8 +1796,11 @@ export class PostgresLatticeStorage implements LatticeStorage {
               authorization.kind
                   === "task-runtime-temporary-agent-genesis-set"
                 ? authorization.context.hostAuthorizationRevision
-                : context.agentAuthorizationRevision
+                : signerEvidence?.hostAuthorizationRevision ?? context.agentAuthorizationRevision
             )
+            || (signerEvidence !== undefined && (manifest.signerAuthorizationHash === null
+              || !("signerAuthorizationHash" in context) || context.signerAuthorizationHash === undefined
+              || !bytesEqual(manifest.signerAuthorizationHash, context.signerAuthorizationHash)))
             || manifest.signer.kind !== "agent_runtime"
             || manifest.signer.agentId !== context.agentId
             || manifest.signer.runtimeGeneration !== context.runtimeGeneration
@@ -1828,6 +1832,7 @@ export class PostgresLatticeStorage implements LatticeStorage {
             === "device-wrapped-live-shadow-agent-genesis"
         ) {
           const context = authorization.context;
+          const signerEvidence = authorization.signerEvidence;
           const rows = await executeTypedCryptoQuery(
             transaction,
             cryptoTypedDb.select({
@@ -1853,12 +1858,17 @@ export class PostgresLatticeStorage implements LatticeStorage {
           );
           const row = oneOrNull(rows, "Device-wrapped Namespace head lookup");
           if (
-            manifest.formatVersion !== 3
+            manifest.formatVersion !== (signerEvidence === undefined ? 3 : 5)
+            || (signerEvidence !== undefined && (manifest.formatVersion !== 5
+              || manifest.signerAuthorizationHash === null
+              || context.signerAuthorizationHash === undefined
+              || !bytesEqual(manifest.signerAuthorizationHash, context.signerAuthorizationHash)))
             || intended.head.accessRevision !== 0
             || manifest.objectId !== context.objectId
             || !bytesEqual(manifest.payloadHash, context.payloadHash)
             || manifest.hostAuthorizationRevision
-              !== context.agentAuthorizationRevision
+              !== (signerEvidence?.hostAuthorizationRevision ?? context.agentAuthorizationRevision)
+            || manifest.signer.kind !== "agent_runtime"
             || manifest.signer.agentId !== context.agentId
             || manifest.signer.runtimeGeneration
               !== context.runtimeGeneration
@@ -1989,7 +1999,8 @@ export class PostgresLatticeStorage implements LatticeStorage {
             authorization.kind
                 === "task-runtime-temporary-agent-genesis-set"
               ? authorization.signerEvidenceBytes
-              : null,
+              : "signerEvidence" in authorization
+                ? authorization.signerEvidence?.certificateBytes ?? null : null,
         }),
       );
       for (

@@ -83,6 +83,7 @@ import {
   buildProtectedRoomHybridContext,
 } from "../context/build-transcript-context";
 import type { MemoryAccessEnvelope, RoomParticipant } from "@nautilo/trust";
+import { hasTaskRuntimeTemporarySigner } from "@nautilo/lattice-crypto";
 import {
   envelopeReadableNamespaces,
   getRoomWithAccess,
@@ -149,6 +150,7 @@ import {
 } from
   "../conversation/live-shadow-checkpoint-saver";
 import {
+  filterDurableOnlyLiveShadowEvents,
   protectLiveShadowAssistantToken,
   publishLiveShadowRuntimeMessages,
 } from "../conversation/live-shadow-agent-runtime-events";
@@ -333,6 +335,14 @@ export function freshProtectedTaskWakeForegroundActivationState():
   };
 }
 
+/** Certified Task signers publish only through the retained V5 durable proof. */
+function certifiedTaskWakeUsesDurableOnlyOutput(
+  source: ProtectedTaskWakeForegroundSource | undefined,
+): boolean {
+  return source !== undefined
+    && hasTaskRuntimeTemporarySigner(source.evidence);
+}
+
 /** A wake contributes no Human message and never puts result bytes in System. */
 export function protectedTaskWakeForegroundMessages(
   source: ProtectedTaskWakeForegroundSource,
@@ -346,6 +356,7 @@ export function protectedTaskWakeForegroundMessages(
       })]),
     new SystemMessage({
       content: "Continue the Room conversation using the authenticated Task outcome. Do not restart the Task.",
+      additional_kwargs: { nautilo_task_wake_continuation: true },
     }),
   ];
 }
@@ -585,7 +596,7 @@ export async function* langgraphExecutor(
   const externalContext = externalExecution.externalContext;
   const taskWake = getCurrentProtectedTaskWakeForegroundContext();
   if (taskWake !== undefined) {
-    if (externalTurn !== null || externalContext
+    if (externalTurn !== undefined || externalContext
       || protectedServices !== undefined || protectedTurn !== undefined) {
       throw new TypeError("Protected Task wake cannot borrow a Human turn scope");
     }
@@ -596,6 +607,8 @@ export async function* langgraphExecutor(
       laneKey,
     });
   }
+  const durableOnlyTaskWakeOutput =
+    certifiedTaskWakeUsesDurableOnlyOutput(taskWake);
   const ownerId = taskWake?.scheduling.requestorId
     ?? (typeof input["ownerId"] === "string" ? input["ownerId"] : "");
   const transcriptOwnerId =
@@ -1671,6 +1684,7 @@ export async function* langgraphExecutor(
         if (liveShadowRuntime !== undefined) {
           const protectedStream = await protectLiveShadowAssistantToken({
             ...(foregroundContextRefreshEligible ? { foregroundExecutionId } : {}),
+            ...(durableOnlyTaskWakeOutput ? { durableOnly: true as const } : {}),
             runtime: liveShadowRuntime,
             operationId: liveShadowContext!.operationId,
             laneKey: effectiveLaneKey,
@@ -1741,7 +1755,10 @@ export async function* langgraphExecutor(
     }
 
     tokenBatcher.completeMessage();
-    for (const event of tokenBatcher.drain()) {
+    for (const event of filterDurableOnlyLiveShadowEvents(
+      tokenBatcher.drain(),
+      durableOnlyTaskWakeOutput,
+    )) {
       yield event;
     }
 
@@ -1892,7 +1909,10 @@ export async function* langgraphExecutor(
 
     const errorSkipSuppressed = fallbackSuppressedForTurn(turnId);
     tokenBatcher.completeMessage();
-    const drained = tokenBatcher.drain();
+    const drained = filterDurableOnlyLiveShadowEvents(
+      tokenBatcher.drain(),
+      durableOnlyTaskWakeOutput,
+    );
     if (!errorSkipSuppressed) {
       for (const event of drained) yield event;
     }

@@ -49,6 +49,8 @@ import { deriveMessageCryptoObjectIdV2 } from "../../message/conversation-reposi
 import { decodeObjectAccessManifestV5, decodeEncryptedPayloadV2 } from "@nautilo/lattice-crypto/wire";
 import { readDurableTaskContentPublication } from "./postgres-task-content-crypto-completion.ts";
 import { deriveTaskContentCryptoObjectIdV1, TASK_RUN_RESULT_OBJECT_TYPE_V1 } from "../../task/task-content-repository.ts";
+import { taskRuntimeAcceptedResponseIsCurrent } from
+  "./task-runtime-accepted-response-integrity.ts";
 
 const receipts = taskTerminalMessageCryptoStagingReceipts;
 const encoder = new TextEncoder();
@@ -380,6 +382,11 @@ function opaqueAuthority(
     runtimeGeneration: authority.runtimeGeneration,
     agentAuthorizationRevision: authority.agentAuthorizationRevision,
     signerKeyId: authority.signerKeyId,
+    ...(authority.signerAuthorizationHash === undefined ? {} : {
+      signerAuthorizationHash: authority.signerAuthorizationHash,
+      signerHostAuthorizationRevision:
+        authority.signerHostAuthorizationRevision,
+    }),
   });
 }
 
@@ -702,6 +709,16 @@ export async function stageNativeTaskRunResultMessagePublication(
             && integer(entry, "expected_authorization_revision")
               === expected.authorizationRevision;
         });
+      const acceptedResponseHash = row === undefined ? undefined
+        : bytes(row, "accepted_response_hash");
+      const acceptedResponseCurrent = acceptedResponseHash !== undefined
+        && row?.accepted_response_bytes instanceof Uint8Array
+        && await taskRuntimeAcceptedResponseIsCurrent({
+          crypto: preparation.crypto,
+          evidence,
+          acceptedResponseHash,
+          acceptedResponseBytes: row.accepted_response_bytes,
+        });
       if (requestRows.length !== 1 || row === undefined || row.live !== true
         || row.request_id !== evidence.requestId
         || row.work_id !== evidence.workId
@@ -725,11 +742,7 @@ export async function stageNativeTaskRunResultMessagePublication(
           !== evidence.result.namespace.expectedAccessRevision
         || integer(row, "expected_domain_epoch")
           !== evidence.resultDomain.domainKeyGeneration
-        || !equal(bytes(row, "accepted_response_hash"),
-          evidence.authorizationDigest)
-        || !(row.accepted_response_bytes instanceof Uint8Array)
-        || !equal(preparation.crypto.hash(row.accepted_response_bytes),
-          evidence.authorizationDigest)
+        || !acceptedResponseCurrent
         || !namespaceRowsMatch || !domainRowsMatch) {
         conflict("Task result Message staging claim is not current");
       }
@@ -834,6 +847,7 @@ export async function stageNativeTaskRunResultMessagePublication(
       snapshot.object.payloadBytes.ciphertext.fill(0);
       snapshot.manifestBytes.fill(0);
       snapshot.manifestHash.fill(0);
+      snapshot.signerEvidenceBytes?.fill(0);
       snapshot.envelopeBytes[0].fill(0);
     }
     current = await assertLive();
