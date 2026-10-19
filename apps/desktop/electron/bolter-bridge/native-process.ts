@@ -1,7 +1,9 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { createHash } from "node:crypto";
+import { bolterAttachmentPayloadSchema, type BolterAttachmentPayload } from "@nautilo/types";
 import { RELAY_HOST_CONTROL_MAX_BYTES } from "@nautilo/relay";
 import { createBolterConversationsInvocation, createBolterDiscoveryInvocation, createBolterIdentityInvocation, createBolterLoginInvocation, createBolterReceiveInvocation,
-  createBolterSendInvocation, type BolterCliBinding, type BolterCliInvocation, type BolterCliRuntime, type BolterCliSelection } from "./cli-contract";
+  createBolterSendInvocation, createBolterFileInvocation, type BolterCliBinding, type BolterCliInvocation, type BolterCliRuntime, type BolterCliSelection } from "./cli-contract";
 import type { BolterCliProcessResult } from "./cli-client";
 
 /** Local admission budgets, not claims about provider-supported payload maxima. */
@@ -38,8 +40,15 @@ function fixedPlan(plan: BolterCliInvocation, runtime: BolterCliRuntime, helper?
     case "call": {
       let input: unknown;
       try { input = JSON.parse(plan.stdin); } catch { return false; }
-      if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).length !== 1
-        || !("content" in input) || typeof input.content !== "string") return false;
+      if (!input || typeof input !== "object" || Array.isArray(input) || !("content" in input) || typeof input.content !== "string") return false;
+      if (args[1] === "files_create_file") {
+        if (Object.keys(input).length !== 3 || !("path" in input) || typeof input.path !== "string"
+          || !("mime_type" in input) || typeof input.mime_type !== "string") return false;
+        expected = createBolterFileInvocation(runtime, selection, { chatId: args[args.indexOf("--chat") + 1] ?? "",
+          threadRootId: args.includes("--thread") ? args[args.indexOf("--thread") + 1] ?? "" : null },
+          { path: input.path, mimeType: input.mime_type, content: input.content }); break;
+      }
+      if (Object.keys(input).length !== 1) return false;
       expected = createBolterSendInvocation(runtime, selection, {
         chatId: args[args.indexOf("--chat") + 1] ?? "",
         threadRootId: args.includes("--thread") ? args[args.indexOf("--thread") + 1] ?? "" : null,
@@ -126,6 +135,32 @@ export class BolterNativeProcessOwner {
       if (!send.ok || !current()) return Promise.reject(unavailable());
       // No asynchronous attestation, queue or callback precedes this exact native spawn.
       try { return this.launch(send.value, true, current).result; } catch { return Promise.reject(unavailable()); }
+    } });
+  }
+
+  /** Prepare one upload, then let the server reauthorize before its immediate native spawn. */
+  async prepareFileUpload(selection: BolterCliSelection, binding: BolterCliBinding, file: BolterAttachmentPayload,
+    additionalCurrent: () => boolean): Promise<{ execute(): Promise<BolterCliProcessResult> }> {
+    const parsed = bolterAttachmentPayloadSchema.safeParse(file);
+    if (!parsed.success) throw unavailable();
+    const bytes = Buffer.from(file.base64, "base64");
+    if (bytes.toString("base64") !== file.base64 || bytes.length !== file.sizeBytes
+      || createHash("sha256").update(bytes).digest("hex") !== file.sha256) throw unavailable();
+    const name = file.filename.split(/[/\\]/u).at(-1) || "attachment";
+    // Bolter storage paths accept ASCII names; the share label retains the original filename.
+    const slug = name.normalize("NFKD").replace(/\p{M}/gu, "").replace(/[^A-Za-z0-9._-]+/gu, "-").replace(/^-+|-+$/gu, "");
+    const storageName = /^[A-Za-z0-9]/u.test(slug) ? slug : `attachment${slug}`;
+    const isText = file.mimeType.startsWith("text/") || ["application/json", "application/yaml", "application/toml"].includes(file.mimeType);
+    const content = isText ? new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes) : file.base64;
+    const plan = createBolterFileInvocation(this.runtime, selection, binding, { path: `/nautilo/${file.id}/${storageName}`, mimeType: file.mimeType, content });
+    const current = () => this.isCurrent() && additionalCurrent();
+    if (!plan.ok || !current() || !hasBolterNativeQualification(this.qualification, this.runtime.version)) throw unavailable();
+    if (!await this.options.attest(plan.value) || !current()) throw unavailable();
+    let used = false;
+    return Object.freeze({ execute: () => {
+      if (used || !current()) return Promise.reject(unavailable());
+      used = true;
+      return this.launch(plan.value, true, current).result;
     } });
   }
 

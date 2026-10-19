@@ -98,3 +98,15 @@ describe("Bolter canonical HTTP client", () => {
     expect(dispatches).toBe(1);
   });
 });
+
+test("status refresh requests only its exact outbox or submitted request", async () => {
+  const seen: URL[] = [];
+  const client = new NautiloApiClient("https://fixture.invalid", { fetchImpl: async url => {
+    seen.push(new URL(url instanceof Request ? url.url : url));
+    return new Response(JSON.stringify({ deliveries: [] }), { headers: { "content-type": "application/json" } });
+  } });
+  client.setToken("fixture-token");
+  await client.getBolterDeliveries(ID, undefined, { outboxId: ROOM });
+  await client.getBolterDeliveries(ID, undefined, { requestId: ROOM });
+  expect(seen.map(url => url.search)).toEqual([`?outboxId=${ROOM}`, `?requestId=${ROOM}`]);
+});

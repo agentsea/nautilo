@@ -53,6 +53,7 @@ mock.module("@nautilo/db", () => ({
   listBolterConnectionsWith: async () => [connection],
   listBolterBindingsWith: async () => [],
   listBolterOutboxWith: async () => [],
+  getBolterDeliveryCountsWith: async () => ({ pending: 0, uncertain: 0 }),
   createFreshBolterBindingWith: async (_db: unknown, context: unknown,
     createRoom: (tx: unknown, row: typeof connection) => Promise<Record<string, unknown>>) => {
     order.push("binding-transaction:start");

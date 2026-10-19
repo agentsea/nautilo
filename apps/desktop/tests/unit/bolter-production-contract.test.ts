@@ -75,7 +75,7 @@ test("discovery and me retain provider aliases without projecting private identi
   expect(decodeBolterIdentities({ agents: [{ ...discovered, releaseChannel: "future" }], harness: "fixture", metadata: { future: true } }, version, decoders)).toEqual({
     ok: true, value: [{ origin: "https://bolter.chat", agentId, cliSelector: agentId, label: "Fixture agent" }],
   });
-  expect(decoders.identity!({ ...identity, futureMetadata: { ignored: true } })).toEqual({ origin: "https://bolter.chat", agentId });
+  expect(decoders.identity!({ ...identity, futureMetadata: { ignored: true } })).toEqual({ origin: "https://bolter.chat", agentId, label: "Fixture agent" });
   expect(decodeBolterIdentities({ agents: [discovered, discovered], harness: "fixture" }, version, decoders).ok).toBe(false);
   for (const invalid of [
     { ...discovered, url: "https://example.com" }, { ...discovered, url: "https://bolter.chat/" },
@@ -230,4 +230,18 @@ test("validated system notices become inert controls and do not poison mixed Hum
     version, decoders)).toEqual({ ok: false, reason: "invalid-batch" });
   expect(decoders.receiveItem!({ ...system, attachments: [], conversation: null,
     sender: { ...system.sender, futureMetadata: true } })).toEqual({ type: "control", kind: "system_message" });
+});
+
+test("file upload receipts retain only real provider URLs and reject errors or destination smuggling", () => {
+  const uploaded = { text: JSON.stringify({ url: "https://fixture-chat-0123456789abcdef.bolter.page/files/brief.txt", audience: "chat_members" }), isError: false };
+  const uploadedValue: unknown = JSON.parse(uploaded.text);
+  expect(decoders.fileCreated!({ text: JSON.stringify({ ok: true, value: uploadedValue }), isError: false })).toEqual({ url: "https://fixture-chat-0123456789abcdef.bolter.page/files/brief.txt" });
+  for (const invalid of [{ ...uploaded, isError: true }, { text: "{}", isError: false },
+    { text: JSON.stringify({ ok: false, value: uploadedValue }), isError: false },
+    { text: JSON.stringify({ url: "https://example.com/foreign" }), isError: false },
+    { text: JSON.stringify({ url: "https://fixture.bolter.page.example.com/foreign" }), isError: false },
+    { text: JSON.stringify({ url: "http://fixture.bolter.page/foreign" }), isError: false },
+    { text: JSON.stringify({ url: "https://user:fixture@example.com/files/private" }), isError: false }]) {
+    expect(() => decoders.fileCreated!(invalid)).toThrow();
+  }
 });

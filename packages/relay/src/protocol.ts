@@ -168,8 +168,8 @@ import type {
  * from shadowing a built-in dispatch lane.
  */
 // v20 adds owner-private Claude permission detail; never sent to older peers.
-/** v30 adds the finite owned Bolter adapter lane. */
-export const RELAY_PROTOCOL_VERSION = 30;
+/** v30 adds the owned Bolter lane; v31 adds selected files and publication revalidation. */
+export const RELAY_PROTOCOL_VERSION = 31;
 /** Minimum admission contract after retiring legacy Agent shell execution. */
 export const RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION = 29;
 /** Retained shell-output reads were introduced in protocol v22. */

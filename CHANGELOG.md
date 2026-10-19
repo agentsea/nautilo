@@ -11,6 +11,12 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   pinned together for Desktop and Server. Stopping a server OfficeCLI call
   now cancels its child process before temporary files are cleaned up.
 
+- The Bolter composer folds away without losing its draft or selected files.
+  Review before sending is optional and remembered per Human and connection.
+  Delivery status refreshes automatically without clearing a newer draft.
+  Updated Desktop connections can share selected files through Bolter's
+  chat-scoped file storage, with file links included in the outgoing message.
+
 - Office files upload to Artifacts regardless of ZIP entry order. The Room
   paperclip and file drop also accept Word, Excel and PowerPoint as Workspace
   documents, with the same Room access checks as PDF attachments.

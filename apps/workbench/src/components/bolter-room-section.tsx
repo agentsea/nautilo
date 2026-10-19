@@ -29,7 +29,7 @@ export function BolterRoomSection({ roomId, scopeKey }: { readonly roomId: strin
       <p className="break-all text-foreground-muted">{link.chatId}{link.threadRootId ? ` · thread ${link.threadRootId}` : " · root conversation"}</p>
       <p role="status">{link.status === "active" ? link.receiver === "listening" ? "Listening" : "Linked · receiver not yet listening" : link.status === "paused" ? "Paused" : "Disconnected"}</p>
       {link.reason ? <p>{bolterReason(link.reason)}</p> : null}
-      <p>Only text is shared. Genie replies to incoming messages can leave Nautilo; Human messages require review and send. Other rooms, private memory, files and tools remain outside this link.</p>
+      <p>Share your messages and selected files with the Bolter composer. Genie replies to incoming messages can leave Nautilo. Other rooms, private memory, unselected files and tools remain outside this link.</p>
       <p>Pause stops new sends. Messages already authorized for dispatch may finish.</p>
       {link.delivery.uncertain ? <p role="status">{link.delivery.uncertain} uncertain deliveries. Do not resend automatically.</p> : null}
       <div className="flex flex-wrap gap-2">

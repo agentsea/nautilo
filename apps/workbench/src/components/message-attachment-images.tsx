@@ -12,7 +12,7 @@ const SUPPORTED_IMAGE_MIME_TYPES = new Set([
   "image/webp",
 ]);
 
-function isSupportedMessageImage(
+export function isSupportedMessageImage(
   attachment: MessageAttachmentRef,
 ): boolean {
   return SUPPORTED_IMAGE_MIME_TYPES.has(attachment.mimeType.toLowerCase());

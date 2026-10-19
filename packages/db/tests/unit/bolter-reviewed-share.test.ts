@@ -53,3 +53,14 @@ describe("Bolter explicit Human sharing", () => {
     expect(sql).toContain("SELECT(id,user_id,binding_id,session_message_id), UPDATE(id), DELETE ON TABLE public.bolter_explicit_shares TO nautilo");
   });
 });
+
+test("file sharing binds exact order, names, MIME, byte count and content checksum while preserving text-only digests", () => {
+  const file = { id: "10000000-0000-4000-8000-000000000001", filename: "brief.txt", mimeType: "text/plain", sizeBytes: 5, sha256: "a".repeat(64) };
+  const text = bolterReviewedTextFingerprint("binding", "request", "text");
+  expect(bolterReviewedTextFingerprint("binding", "request", "text", [])).toBe(text);
+  const digest = bolterReviewedTextFingerprint("binding", "request", "text", [file]);
+  expect(digest).not.toBe(text);
+  for (const patch of [{ filename: "other.txt" }, { mimeType: "application/json" }, { sizeBytes: 6 }, { sha256: "b".repeat(64) }]) {
+    expect(bolterReviewedTextFingerprint("binding", "request", "text", [{ ...file, ...patch }])).not.toBe(digest);
+  }
+});
