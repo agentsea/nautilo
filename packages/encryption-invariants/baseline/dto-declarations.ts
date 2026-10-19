@@ -1,6 +1,9 @@
 import { CHATGPT_PLAN_DTO_DECLARATIONS } from "./reviewed-chatgpt-plan-coverage";
 import { BOLTER_HTTP_DECLARATIONS } from "./reviewed-bolter-http";
 import { reviewedBolterRelayDtoReplacements } from "./reviewed-bolter-relay-dto";
+import {
+  reviewedTaskRuntimeSignerDtoReplacements,
+} from "./reviewed-task-runtime-signer-dto";
 import { reviewedTaskResearchDtoReplacements, SUPERSEDED_TASK_RESEARCH_DTO_LOCATORS } from "./reviewed-task-research-dto";
 import {
   REVIEWED_MAIN_2026_09_12_DTO_REPLACEMENTS,
@@ -6230,8 +6233,9 @@ const PRE_MAIN_2026_10_13_DTO_DECLARATIONS: readonly DtoDeclaration[] = [
 ];
 
 export const DTO_BASELINE_DECLARATIONS: readonly DtoDeclaration[] =
-  reviewedBolterRelayDtoReplacements(
-    reviewedExternalMessageAttributionDtoReplacements([
+  reviewedTaskRuntimeSignerDtoReplacements(
+    reviewedBolterRelayDtoReplacements(
+      reviewedExternalMessageAttributionDtoReplacements([
   ...PRE_MAIN_2026_10_13_DTO_DECLARATIONS.filter((entry) =>
     !SUPERSEDED_MAIN_2026_10_13_DTO_LOCATORS.has(entry.locator)
     && !SUPERSEDED_RELEASE_RECONCILIATION_DTO_LOCATORS.has(entry.locator)
@@ -6245,5 +6249,6 @@ export const DTO_BASELINE_DECLARATIONS: readonly DtoDeclaration[] =
   ...REVIEWED_RELEASE_RECONCILIATION_DTO_DECLARATIONS,
   ...BOLTER_HTTP_DECLARATIONS,
   ...CHATGPT_PLAN_DTO_DECLARATIONS,
-    ]),
+      ]),
+    ),
   );
