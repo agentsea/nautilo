@@ -769,6 +769,7 @@ export function authRoutes(app: FastifyInstance, deps: AuthRouteDeps) {
         const result = await composition.runAgentTurn({
           operationId: prepared.executionId,
           capability: prepared.capability,
+          publishTaskDefinitionAuthorizationRequired: event => eventBus.emit(event),
           work: (session) => runWithLiveShadowTurnSession({
             operationId: prepared.executionId,
             capability: prepared.capability,

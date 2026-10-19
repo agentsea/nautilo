@@ -19,6 +19,15 @@ export type ProtectedTaskForegroundCreationContext = Readonly<{
     request: Parameters<NonNullable<TaskToolRuntime["updateProtectedTask"]>>[0];
     preflight: ProtectedTaskForegroundUpdatePreflight }>):
     ReturnType<NonNullable<TaskToolRuntime["updateProtectedTask"]>>;
+  withTaskDefinitionAuthorization<Value>(input: Readonly<{
+    taskId: string;
+    taskExecutorAgentId: string;
+    operation: "create" | "update";
+    targetContentRevision: number;
+    operationId: string;
+    workDescriptorDigest: Uint8Array;
+    use(): Promise<Value>;
+  }>): Promise<Value>;
   withProduct<Value>(input: Readonly<{ taskId: string; transaction: CanonicalTranscriptTx; executor: PostgresJsBridgeExecutor;
     use(): Promise<Value> }>): Promise<Value>;
 }>;
@@ -61,6 +70,20 @@ export async function withProtectedTaskForegroundCreationContext<Value>(
     updateProtectedTask: async input => {
       await assertCurrent();
       const result = await source.updateProtectedTask(input);
+      await assertCurrent();
+      return result;
+    },
+    withTaskDefinitionAuthorization: async input => {
+      await assertCurrent();
+      const result = await source.withTaskDefinitionAuthorization({
+        ...input,
+        use: async () => {
+          if (!active) unavailable();
+          const value = await input.use();
+          if (!active) unavailable();
+          return value;
+        },
+      });
       await assertCurrent();
       return result;
     },

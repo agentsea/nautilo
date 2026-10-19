@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { LATTICE_LIMITS } from "@nautilo/lattice-crypto/wire-limits";
+import {
+  LATTICE_LIMITS,
+  MAX_ENCRYPTED_PAYLOAD_WIRE_BYTES_V2,
+  MAX_NAMESPACE_OBJECT_ENVELOPE_WIRE_BYTES_V2,
+} from "@nautilo/lattice-crypto/wire-limits";
 import { TASK_FUNDING_FAILURE_CODES } from "@nautilo/types";
 
 import {
@@ -9,6 +13,7 @@ import {
   protectedTaskPreparedPublicationRequestV1Schema,
   protectedTaskPreparedUpdateRequestV1Schema,
   protectedTaskPublicationPlanRequestV1Schema,
+  protectedTaskPublicationPlanV1Schema,
   protectedTaskDefinitionReadEnvelopeV1Schema,
   protectedTaskRunResultReadEnvelopeV1Schema,
   protectedTaskContentListV1Schema,
@@ -73,6 +78,27 @@ function createRequest(): ProtectedTaskPreparedCreateRequestV1 {
 }
 
 describe("protected Task prepared publication schema", () => {
+  test("admits bounded repair source bytes only for an existing update plan", () => {
+    const plan = {
+      planVersion: 1, operation: "update", operationId: "task:repair:source",
+      taskId: TASK_ID, expectedContentRevision: 1, nextContentRevision: 2,
+      expectedCryptoAccessRevision: 0, planDigestBase64url: "A".repeat(43),
+      authority: {
+        requesterHumanId: TASK_ID, sourceRoomId: TASK_RUN_ID, namespaceId: NAMESPACE_ID,
+        domainId: "domain:private", expectedAccessRevision: 1, expectedPolicyRevision: 1,
+        bindingHashBase64url: "A".repeat(43), keyGeneration: 1,
+      },
+    } as const;
+    expect(protectedTaskPublicationPlanV1Schema.parse(plan)).toEqual(plan);
+    const repair = { ...plan, ordinaryRepairPayloadBase64url: "c291cmNl" };
+    expect(protectedTaskPublicationPlanV1Schema.parse(repair)).toEqual(repair);
+    for (const invalid of [
+      { ...repair, operation: "create", expectedContentRevision: 0, nextContentRevision: 1 },
+      { ...repair, expectedContentRevision: 0, nextContentRevision: 1 },
+      { ...repair, ordinaryRepairPayloadBase64url: "c291cmNl=" },
+      { ...repair, ordinaryRepairPayloadBase64url: "A".repeat(Math.ceil(LATTICE_LIMITS.plaintextBytes * 4 / 3) + 4) },
+    ]) expect(() => protectedTaskPublicationPlanV1Schema.parse(invalid)).toThrow();
+  });
   test("accepts exact create and adjacent update coordinates", () => {
     const create = createRequest();
     expect(protectedTaskPreparedPublicationRequestV1Schema.parse(create)).toEqual(create);
@@ -114,12 +140,12 @@ describe("protected Task prepared publication schema", () => {
     })).toThrow();
   });
 
-  test("uses the lattice ciphertext bound without truncation", () => {
+  test("uses the exact encrypted-payload and Namespace-envelope codec bounds", () => {
     const maximumEncodedLength = Math.ceil(
-      LATTICE_LIMITS.ciphertextBytes * 4 / 3,
+      MAX_ENCRYPTED_PAYLOAD_WIRE_BYTES_V2 * 4 / 3,
     );
     const create = createRequest();
-    for (const length of [maximumEncodedLength - 1, maximumEncodedLength]) {
+    for (const length of [maximumEncodedLength - 2, maximumEncodedLength]) {
       expect(protectedTaskPreparedCreateRequestV1Schema.parse({
         ...create,
         encryptedPayloadBytesBase64url: "A".repeat(length),
@@ -128,6 +154,25 @@ describe("protected Task prepared publication schema", () => {
     expect(() => protectedTaskPreparedCreateRequestV1Schema.parse({
       ...create,
       encryptedPayloadBytesBase64url: "A".repeat(maximumEncodedLength + 1),
+    })).toThrow();
+
+    const maximumEnvelopeEncodedLength = Math.ceil(
+      MAX_NAMESPACE_OBJECT_ENVELOPE_WIRE_BYTES_V2 * 4 / 3,
+    );
+    expect(protectedTaskPreparedCreateRequestV1Schema.parse({
+      ...create,
+      namespaceEnvelopes: [{
+        ...create.namespaceEnvelopes[0],
+        envelopeBytesBase64url: "A".repeat(maximumEnvelopeEncodedLength),
+      }],
+    }).namespaceEnvelopes[0].envelopeBytesBase64url)
+      .toHaveLength(maximumEnvelopeEncodedLength);
+    expect(() => protectedTaskPreparedCreateRequestV1Schema.parse({
+      ...create,
+      namespaceEnvelopes: [{
+        ...create.namespaceEnvelopes[0],
+        envelopeBytesBase64url: "A".repeat(maximumEnvelopeEncodedLength + 1),
+      }],
     })).toThrow();
   });
 
@@ -171,6 +216,19 @@ describe("protected Task prepared publication schema", () => {
       }],
     };
     expect(protectedTaskRunResultReadEnvelopeV1Schema.parse(ready)).toEqual(ready);
+    const maximumEncodedPayloadLength = Math.ceil(
+      MAX_ENCRYPTED_PAYLOAD_WIRE_BYTES_V2 * 4 / 3,
+    );
+    const maximumReady = protectedTaskRunResultReadEnvelopeV1Schema.parse({
+      ...ready,
+      encryptedPayloadBytesBase64url: "A".repeat(maximumEncodedPayloadLength),
+    });
+    if (maximumReady.status !== "ready") throw new Error("Expected ready Task result");
+    expect(maximumReady.encryptedPayloadBytesBase64url).toHaveLength(maximumEncodedPayloadLength);
+    expect(() => protectedTaskRunResultReadEnvelopeV1Schema.parse({
+      ...ready,
+      encryptedPayloadBytesBase64url: "A".repeat(maximumEncodedPayloadLength + 1),
+    })).toThrow();
     expect(() => protectedTaskRunResultReadEnvelopeV1Schema.parse({
       ...ready, readAuthority: undefined,
     })).toThrow();
@@ -549,10 +607,56 @@ describe("Task content v1 response schemas", () => {
       }],
     } as const;
     expect(protectedTaskDefinitionReadEnvelopeV1Schema.parse(ready).status).toBe("ready");
+    const maximumEncodedPayloadLength = Math.ceil(
+      MAX_ENCRYPTED_PAYLOAD_WIRE_BYTES_V2 * 4 / 3,
+    );
+    const maximumReady = protectedTaskDefinitionReadEnvelopeV1Schema.parse({
+      ...ready,
+      encryptedPayloadBytesBase64url: "A".repeat(maximumEncodedPayloadLength),
+    });
+    if (maximumReady.status !== "ready") throw new Error("Expected ready Task definition");
+    expect(maximumReady.encryptedPayloadBytesBase64url).toHaveLength(maximumEncodedPayloadLength);
+    expect(() => protectedTaskDefinitionReadEnvelopeV1Schema.parse({
+      ...ready,
+      encryptedPayloadBytesBase64url: "A".repeat(maximumEncodedPayloadLength + 1),
+    })).toThrow();
     expect(() => protectedTaskDefinitionReadEnvelopeV1Schema.parse({
       ...ready,
       signerEvidence: [{ kind: "task_runtime_signer_certificate",
         evidenceBytesBase64url: "Y2VydGlmaWNhdGU" }],
+    })).toThrow();
+    const taskAuthorizationEvidence = {
+      kind: "task_definition_foreground_authorization" as const,
+      evidenceBytesBase64url: "YXV0aG9yaXphdGlvbg",
+    };
+    const foregroundParentEvidence = {
+      kind: "foreground_agent_accepted_execution" as const,
+      planBytesBase64url: "cGFyZW50",
+      planDigestBase64url: "A".repeat(43),
+    };
+    expect(protectedTaskDefinitionReadEnvelopeV1Schema.parse({
+      ...ready,
+      signerEvidence: [foregroundParentEvidence, taskAuthorizationEvidence],
+    }).status).toBe("ready");
+    expect(() => protectedTaskDefinitionReadEnvelopeV1Schema.parse({
+      ...ready,
+      signerEvidence: [taskAuthorizationEvidence],
+    })).toThrow();
+    expect(() => protectedTaskRunResultReadEnvelopeV1Schema.parse({
+      readVersion: 1,
+      status: "ready",
+      taskId: TASK_ID,
+      taskRunId: TASK_RUN_ID,
+      objectId: protectedSummary.content.objectId,
+      resultRevision: 1,
+      cryptoAccessRevision: 0,
+      namespaceId: NAMESPACE_ID,
+      readAuthority,
+      encryptedPayloadBytesBase64url: "Y2lwaGVy",
+      accessManifestBytesBase64url: "bWFuaWZlc3Q",
+      accessManifestProofBytesBase64url: [],
+      namespaceEnvelopeBytesBase64url: "ZW52ZWxvcGU",
+      signerEvidence: [foregroundParentEvidence, taskAuthorizationEvidence],
     })).toThrow();
     for (const authority of [
       undefined,

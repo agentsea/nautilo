@@ -52,20 +52,61 @@ export type TaskContentBackfillPublicationPlan = Readonly<{
   expiresAt: number;
 }>;
 
+type SupportedHistoricalSource = Extract<
+  HeldTaskContentBackfillAuthority["source"]["classification"],
+  { status: "supported" }
+>;
+type SourceDigestGeneration = "current" | "legacy";
+type HistoricalPublicationCandidate = Readonly<{
+  generation: SourceDigestGeneration;
+  coordinate: TaskContentCoordinateV1;
+  objectId: string;
+  operationId: string;
+  sourceDigest: Uint8Array;
+}>;
+
+function selectedSourceDigest(
+  source: SupportedHistoricalSource,
+  generation: SourceDigestGeneration,
+): Uint8Array {
+  return generation === "current" ? source.sourceDigest : source.legacySourceDigest;
+}
+
+function publicationCandidate(
+  current: HeldTaskContentBackfillAuthority,
+  generation: SourceDigestGeneration,
+): HistoricalPublicationCandidate | null {
+  const source = current.source.classification;
+  if (source.status !== "supported") return null;
+  const claimed = current.claim.candidate;
+  const coordinate: TaskContentCoordinateV1 = Object.freeze(claimed.kind === "definition"
+    ? { kind: "definition" as const, taskId: claimed.taskId, contentRevision: 1 }
+    : { kind: "run_result" as const, taskId: claimed.taskId,
+        taskRunId: claimed.taskRunId, contentRevision: 1 });
+  const sourceDigest = selectedSourceDigest(source, generation);
+  const objectId = deriveTaskHistoricalContentCryptoObjectIdV1({
+    coordinate,
+    sourceDigest,
+    namespaceId: current.authority.namespaceId,
+  });
+  return Object.freeze({
+    generation,
+    coordinate,
+    objectId,
+    operationId: `task-historical-publish:${objectId.split(":").at(-1)!}`,
+    sourceDigest,
+  });
+}
+
 function plan(current: HeldTaskContentBackfillAuthority): TaskContentBackfillPublicationPlan | null {
   const source = current.source.classification;
   if (source.status !== "supported") return null;
-  const candidate = current.claim.candidate;
-  const coordinate: TaskContentCoordinateV1 = Object.freeze(candidate.kind === "definition"
-    ? { kind: "definition" as const, taskId: candidate.taskId, contentRevision: 1 }
-    : { kind: "run_result" as const, taskId: candidate.taskId,
-        taskRunId: candidate.taskRunId, contentRevision: 1 });
-  const objectId = deriveTaskHistoricalContentCryptoObjectIdV1({ coordinate,
-    sourceDigest: source.sourceDigest, namespaceId: current.authority.namespaceId });
+  const candidate = publicationCandidate(current, "current");
+  if (candidate === null) return null;
   const unsigned = Object.freeze({
     planVersion: 1 as const, claimId: current.claim.claimId,
-    operationId: `task-historical-publish:${objectId.split(":").at(-1)!}`,
-    coordinate, objectId,
+    operationId: candidate.operationId,
+    coordinate: candidate.coordinate, objectId: candidate.objectId,
     namespaceId: current.authority.namespaceId, domainId: current.authority.domainId,
     requesterHumanId: current.authority.requesterHumanId,
     deviceId: current.claim.deviceId,
@@ -74,7 +115,7 @@ function plan(current: HeldTaskContentBackfillAuthority): TaskContentBackfillPub
     expectedPolicyRevision: current.authority.expectedPolicyRevision,
     keyGeneration: current.namespace.namespaceKeyGeneration,
     bindingHashBase64url: encode(current.namespace.bundleDigest),
-    sourceDigestBase64url: encode(source.sourceDigest),
+    sourceDigestBase64url: encode(candidate.sourceDigest),
     sourcePayloadHashBase64url: encode(source.sourcePayloadHash),
     operationalFieldsDigestBase64url: encode(source.operationalFieldsDigest),
     expiresAt: Math.min(current.claim.expiresAt.getTime(), current.admissionExpiresAt),
@@ -117,7 +158,7 @@ export function createTaskContentBackfillPublication(input: Input) {
   const now = input.now ?? Date.now;
 
   const inspect = async (current: HeldTaskContentBackfillAuthority,
-    expected: TaskContentBackfillPublicationPlan) => {
+    expected: HistoricalPublicationCandidate) => {
     const source = current.source.classification;
     if (source.status !== "supported") return null;
     const handle = await verifyCryptoPostgresHandle(input.restricted);
@@ -125,7 +166,7 @@ export function createTaskContentBackfillPublication(input: Input) {
     return inspectStagedHistoricalTaskContentPublication({
       handle, crypto: input.crypto, objectId: expected.objectId,
       expected: { coordinate: expected.coordinate, operationId: expected.operationId,
-        sourceDigest: source.sourceDigest, sourcePayloadHash: source.sourcePayloadHash,
+        sourceDigest: expected.sourceDigest, sourcePayloadHash: source.sourcePayloadHash,
         operationalFieldsDigest: source.operationalFieldsDigest,
         requesterHumanId: current.authority.requesterHumanId,
         namespaceId: current.authority.namespaceId },
@@ -136,8 +177,22 @@ export function createTaskContentBackfillPublication(input: Input) {
     });
   };
 
+  const inspectExisting = async (current: HeldTaskContentBackfillAuthority) => {
+    const currentCandidate = publicationCandidate(current, "current");
+    if (currentCandidate === null) return null;
+    const currentStaged = await inspect(current, currentCandidate);
+    if (currentStaged !== null) {
+      return Object.freeze({ candidate: currentCandidate, staged: currentStaged });
+    }
+    const legacyCandidate = publicationCandidate(current, "legacy");
+    if (legacyCandidate === null) return null;
+    const legacyStaged = await inspect(current, legacyCandidate);
+    return legacyStaged === null ? null
+      : Object.freeze({ candidate: legacyCandidate, staged: legacyStaged });
+  };
+
   const map = async (current: HeldTaskContentBackfillAuthority,
-    expected: TaskContentBackfillPublicationPlan,
+    expected: HistoricalPublicationCandidate,
     staged: VerifiedStagedHistoricalTaskContentPublication) => {
     const source = current.source.classification;
     if (source.status !== "supported") return false;
@@ -155,13 +210,20 @@ export function createTaskContentBackfillPublication(input: Input) {
         current.assertCurrent();
         if (!current.isCurrentProductTransaction(borrowed)) return false;
         const fresh = await readTaskContentBackfillSource(current.transaction, current.claim);
-        if (fresh?.classification.status !== "supported"
-          || proof.provenance.version !== 2
-          || proof.provenance.sourceDigest !== hex(fresh.classification.sourceDigest)
+        if (fresh?.classification.status !== "supported") return false;
+        const freshSourceDigest = selectedSourceDigest(
+          fresh.classification,
+          expected.generation,
+        );
+        if (proof.provenance.version !== 2
+          || proof.provenance.sourceDigest !== hex(freshSourceDigest)
           || proof.provenance.sourcePayloadHash !== hex(fresh.classification.sourcePayloadHash)
           || proof.provenance.signedRequestDigest !== hex(staged.signedRequestDigest)
           || proof.provenance.genesisManifestHash !== hex(staged.genesisManifestHash)) return false;
-        return equal(fresh.classification.sourceDigest, source.sourceDigest);
+        return equal(freshSourceDigest, expected.sourceDigest)
+          && equal(fresh.classification.sourcePayloadHash, source.sourcePayloadHash)
+          && equal(fresh.classification.operationalFieldsDigest,
+            source.operationalFieldsDigest);
       },
     );
     const repository = createDormantTaskContentShadowRepository({ product,
@@ -226,8 +288,10 @@ export function createTaskContentBackfillPublication(input: Input) {
           const expected = plan(current);
           const source = current.source.classification;
           if (expected === null || source.status !== "supported") return false;
-          let staged = await inspect(current, expected);
-          if (staged === null) {
+          const currentCandidate = publicationCandidate(current, "current");
+          if (currentCandidate === null) return false;
+          let inspected = await inspectExisting(current);
+          if (inspected === null) {
             const prepared = await authenticatePreparedHistoricalTaskContentCryptoRevisionV1({
               ...owned, crypto: input.crypto, now: now(),
               operationId: expected.operationId, claimId: current.claim.claimId,
@@ -257,19 +321,21 @@ export function createTaskContentBackfillPublication(input: Input) {
               resolveHistoricalHumanDeviceSigningPublicKey:
                 createProtectedTaskHistoricalHumanDeviceSigningKeyResolver(handle),
             });
-            staged = await inspect(current, expected);
+            const staged = await inspect(current, currentCandidate);
+            if (staged !== null) {
+              inspected = Object.freeze({ candidate: currentCandidate, staged });
+            }
           }
-          if (staged === null) throw new Error("Historical Task repair stage is not durable");
-          return map(current, expected, staged);
+          if (inspected === null) throw new Error("Historical Task repair stage is not durable");
+          return map(current, inspected.candidate, inspected.staged);
         } });
       } finally { for (const bytes of Object.values(owned)) bytes.fill(0); }
     },
     recover(subject: TaskContentBackfillSubject, claimId: string) {
       return authority.withCurrent({ subject, claimId, purpose: "read", use: async current => {
-        const expected = plan(current);
-        if (expected === null) return false;
-        const staged = await inspect(current, expected);
-        return staged === null ? false : map(current, expected, staged);
+        const inspected = await inspectExisting(current);
+        return inspected === null ? false
+          : map(current, inspected.candidate, inspected.staged);
       } });
     },
   });

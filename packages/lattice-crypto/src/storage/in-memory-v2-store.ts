@@ -753,12 +753,26 @@ export class InMemoryV2Store implements V2Storage {
         ) {
           const context = authorization.context;
           const signerEvidence = authorization.signerEvidence;
+          const signerEvidenceBytes = authorization.signerEvidenceBytes;
           if (
             intendedManifest.formatVersion !== 5
+            || (signerEvidence !== undefined
+              && signerEvidenceBytes !== undefined)
             || (signerEvidence !== undefined && (intendedManifest.formatVersion !== 5
               || intendedManifest.signerAuthorizationHash === null
               || context.signerAuthorizationHash === undefined
               || !equalBytes(intendedManifest.signerAuthorizationHash, context.signerAuthorizationHash)))
+            || (signerEvidenceBytes !== undefined
+              && (intendedManifest.signerAuthorizationHash === null
+                || context.signerAuthorizationHash === undefined
+                || !equalBytes(
+                  intendedManifest.signerAuthorizationHash,
+                  context.signerAuthorizationHash,
+                )
+                || !equalBytes(
+                  intendedManifest.signerAuthorizationHash,
+                  sha256(signerEvidenceBytes),
+                )))
             || intendedManifest.accessRevision !== 0
             || intendedManifest.previousManifestHash !== null
             || intendedManifest.objectId !== context.objectId

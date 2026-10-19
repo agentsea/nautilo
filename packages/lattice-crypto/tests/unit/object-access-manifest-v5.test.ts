@@ -37,6 +37,7 @@ import {
   createAgentObjectAccessManifestV5,
   createHumanObjectAccessManifestV5,
   createProcessorObjectAccessManifestV5,
+  createTaskDefinitionForegroundObjectAccessManifestV5,
   createTaskRuntimeObjectAccessManifestV5,
   decodeObjectAccessManifestV5,
   encodeObjectAccessManifestV5,
@@ -520,6 +521,60 @@ describe("ObjectAccessManifestV5", () => {
           .toThrow("disagrees with its certified Runtime signer");
       }
     }
+  });
+
+  test("verifies Task-definition foreground evidence only through its explicit resolver", () => {
+    const crypto = new LatticeCrypto(seededRng(2_635));
+    const agentRuntime = runtime();
+    const signer = deriveAgentRuntimeObjectSignerPublicV1(crypto, agentRuntime);
+    const authorizationBytes = new Uint8Array(128).fill(0x71);
+    const created = createTaskDefinitionForegroundObjectAccessManifestV5(
+      crypto,
+      {
+        objectId: objectId(`task-definition:v1:${"a".repeat(64)}`),
+        payloadHash: hash(0x72),
+        accessRevision: accessRevision(0),
+        previousManifestHash: null,
+        envelopeHashes: [hash(0x73)],
+        signer: signer.principal,
+        signerAuthorizationHash: crypto.hash(authorizationBytes),
+        hostAuthorizationRevision: authorizationRevision(9),
+      },
+      agentRuntime,
+    );
+    const base = {
+      manifestBytes: created.bytes,
+      resolveHistoricalHumanDeviceSigningPublicKey: () => null,
+      resolveAgentRuntimeSignerPublicKey: () => null,
+      resolveProcessorSignerAuthorizationBytes: () => null,
+      resolveHistoricalProcessorIssuingDevicePublicKey: () => null,
+    };
+    expect(() => verifyObjectAccessManifestV5(crypto, base))
+      .toThrow("Task definition foreground authorization resolver is required");
+    const verified = verifyObjectAccessManifestV5(crypto, {
+      ...base,
+      resolveTaskDefinitionForegroundAuthorizationSignerPublicKey: evidence => {
+        expect(evidence.authorizationHash).toEqual(crypto.hash(authorizationBytes));
+        return signer.publicKey.slice();
+      },
+    });
+    expect(verified.manifest.objectId).toBe(created.manifest.objectId);
+    expect(() => createTaskDefinitionForegroundObjectAccessManifestV5(
+      crypto,
+      {
+        objectId: objectId(`memory:v2:${"b".repeat(64)}`),
+        payloadHash: created.manifest.payloadHash,
+        accessRevision: created.manifest.accessRevision,
+        previousManifestHash: created.manifest.previousManifestHash,
+        envelopeHashes: created.manifest.envelopeHashes,
+        signer: created.manifest.signer,
+        signerAuthorizationHash:
+          created.manifest.signerAuthorizationHash,
+        hostAuthorizationRevision:
+          created.manifest.hostAuthorizationRevision,
+      },
+      agentRuntime,
+    )).toThrow("Task definition manifest requires");
   });
 
   test("rejects unknown signers, altered signatures, and authorization misuse", () => {

@@ -1,5 +1,7 @@
 import {
   LATTICE_LIMITS,
+  MAX_ENCRYPTED_PAYLOAD_WIRE_BYTES_V2,
+  MAX_NAMESPACE_OBJECT_ENVELOPE_WIRE_BYTES_V2,
   MAX_OBJECT_ACCESS_MANIFEST_WIRE_BYTES_V5,
 } from "@nautilo/lattice-crypto/wire-limits";
 import { z } from "zod";
@@ -264,6 +266,10 @@ function unpaddedBase64url(maxBytes: number, label: string) {
 
 const encryptedPayloadBase64url = unpaddedBase64url(
   LATTICE_LIMITS.ciphertextBytes,
+  "Task evidence bytes",
+);
+const taskEncryptedPayloadBase64url = unpaddedBase64url(
+  MAX_ENCRYPTED_PAYLOAD_WIRE_BYTES_V2,
   "encrypted Task payload",
 );
 const accessManifestBase64url = unpaddedBase64url(
@@ -273,6 +279,10 @@ const accessManifestBase64url = unpaddedBase64url(
 const namespaceEnvelopeBase64url = unpaddedBase64url(
   LATTICE_LIMITS.ciphertextBytes,
   "Task Namespace envelope",
+);
+const preparedNamespaceEnvelopeBase64url = unpaddedBase64url(
+  MAX_NAMESPACE_OBJECT_ENVELOPE_WIRE_BYTES_V2,
+  "prepared Task Namespace envelope",
 );
 const signedPublicationRequestBase64url = unpaddedBase64url(
   LATTICE_LIMITS.plaintextBytes,
@@ -286,7 +296,7 @@ const ordinaryPayloadBase64url = unpaddedBase64url(
 const exactTaskNamespaceIdsSchema = z.tuple([canonicalLowerUuid]);
 const exactTaskNamespaceEnvelopesSchema = z.tuple([z.object({
   namespaceId: canonicalLowerUuid,
-  envelopeBytesBase64url: namespaceEnvelopeBase64url,
+  envelopeBytesBase64url: preparedNamespaceEnvelopeBase64url,
 }).strict()]);
 
 const protectedTaskPreparedPublicationBaseV1Schema = z.object({
@@ -301,7 +311,7 @@ const protectedTaskPreparedPublicationBaseV1Schema = z.object({
   cryptoObjectId: portableId,
   payloadVersion: z.literal(1),
   requiredNamespaceIds: exactTaskNamespaceIdsSchema,
-  encryptedPayloadBytesBase64url: encryptedPayloadBase64url,
+  encryptedPayloadBytesBase64url: taskEncryptedPayloadBase64url,
   accessManifestBytesBase64url: accessManifestBase64url,
   namespaceEnvelopes: exactTaskNamespaceEnvelopesSchema,
   signedPublicationRequestBytesBase64url: signedPublicationRequestBase64url,
@@ -411,6 +421,8 @@ export const protectedTaskPublicationPlanV1Schema = z.object({
   nextContentRevision: positiveCounter,
   expectedCryptoAccessRevision: counter,
   planDigestBase64url: digestBase64url,
+  /** Complete source bytes only for an authorized stale Shadow counterpart repair. */
+  ordinaryRepairPayloadBase64url: ordinaryPayloadBase64url.optional(),
   authority: z.object({
     requesterHumanId: canonicalLowerUuid,
     sourceRoomId: canonicalLowerUuid,
@@ -422,6 +434,14 @@ export const protectedTaskPublicationPlanV1Schema = z.object({
     keyGeneration: counter,
   }).strict(),
 }).strict().superRefine((value, context) => {
+  if (value.ordinaryRepairPayloadBase64url !== undefined
+    && (value.operation !== "update" || value.expectedContentRevision < 1)) {
+    context.addIssue({
+      code: "custom",
+      message: "ordinary Task repair payload requires an existing update revision",
+      path: ["ordinaryRepairPayloadBase64url"],
+    });
+  }
   if (value.nextContentRevision !== value.expectedContentRevision + 1) {
     context.addIssue({
       code: "custom",
@@ -471,6 +491,14 @@ const taskAccessSignerEvidenceV1Schema = z.union([
   }).strict(),
 ]);
 
+const taskDefinitionAccessSignerEvidenceV1Schema = z.union([
+  taskAccessSignerEvidenceV1Schema,
+  z.object({
+    kind: z.literal("task_definition_foreground_authorization"),
+    evidenceBytesBase64url: encryptedPayloadBase64url,
+  }).strict(),
+]);
+
 const historicalTaskContentRepairV2Schema = z.object({
   version: z.literal(2),
   claimId: canonicalLowerUuid,
@@ -500,12 +528,12 @@ const protectedTaskDefinitionReadReadyEnvelopeV1Schema = z.object({
   status: z.literal("ready"),
   namespaceId: canonicalLowerUuid,
   readAuthority: protectedMemoryNamespaceAuthorityV1Schema,
-  encryptedPayloadBytesBase64url: encryptedPayloadBase64url,
+  encryptedPayloadBytesBase64url: taskEncryptedPayloadBase64url,
   accessManifestBytesBase64url: accessManifestBase64url,
   accessManifestProofBytesBase64url: z.array(accessManifestBase64url),
   namespaceEnvelopeBytesBase64url: namespaceEnvelopeBase64url,
   historicalRepair: historicalTaskContentRepairV2Schema.optional(),
-  signerEvidence: z.array(taskAccessSignerEvidenceV1Schema).superRefine((entries, context) => {
+  signerEvidence: z.array(taskDefinitionAccessSignerEvidenceV1Schema).superRefine((entries, context) => {
     const keys = entries.map((entry) => entry.kind === "human_device"
       ? `${entry.kind}:${entry.subjectHumanId}:${entry.committerDeviceId}:${entry.hostAuthorizationRevision}`
       : entry.kind === "evidence_issuer_human_device"
@@ -548,12 +576,19 @@ const protectedTaskDefinitionReadReadyEnvelopeV1Schema = z.object({
   const agentEvidence = value.signerEvidence.filter(entry =>
     entry.kind === "agent_runtime_publication"
     || entry.kind === "foreground_agent_accepted_execution");
+  const taskDefinitionAuthorizations = value.signerEvidence.filter(entry =>
+    entry.kind === "task_definition_foreground_authorization");
   const onlyTaskSigners = value.signerEvidence.every(entry =>
     entry.kind === "human_device"
     || entry.kind === "agent_runtime_publication"
-    || entry.kind === "foreground_agent_accepted_execution");
+    || entry.kind === "foreground_agent_accepted_execution"
+    || entry.kind === "task_definition_foreground_authorization");
   if (!onlyTaskSigners || value.signerEvidence.length === 0
     || agentEvidence.length > 1
+    || taskDefinitionAuthorizations.length > 1
+    || taskDefinitionAuthorizations.length === 1
+      && (agentEvidence.length !== 1
+        || agentEvidence[0]?.kind !== "foreground_agent_accepted_execution")
     || value.historicalRepair !== undefined && agentEvidence.length !== 0) {
     context.addIssue({
       code: "custom",
@@ -591,7 +626,7 @@ const protectedTaskRunResultReadReadyEnvelopeV1Schema = z.object({
   status: z.literal("ready"),
   namespaceId: canonicalLowerUuid,
   readAuthority: protectedMemoryNamespaceAuthorityV1Schema,
-  encryptedPayloadBytesBase64url: encryptedPayloadBase64url,
+  encryptedPayloadBytesBase64url: taskEncryptedPayloadBase64url,
   accessManifestBytesBase64url: accessManifestBase64url,
   accessManifestProofBytesBase64url: z.array(accessManifestBase64url),
   namespaceEnvelopeBytesBase64url: namespaceEnvelopeBase64url,

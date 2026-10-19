@@ -8,7 +8,7 @@ import type { PreparedTaskContentCryptoRevisionV1, TaskContentProductStorePort,
 import { LatticeCrypto } from "@nautilo/lattice-crypto";
 import { assertProtectedTaskOperationalMetadataProjectionV1,
   classifyProtectedTaskMetadataV1, reconstructProtectedTaskMetadataV1 } from "@nautilo/types";
-import { taskRuns, type Task } from "@nautilo/db";
+import { actors, rooms, taskRuns, type Task } from "@nautilo/db";
 import { createProtectedTaskForegroundUpdatePublication } from
   "../../src/routes/protected-task-foreground-update-publication";
 
@@ -16,6 +16,7 @@ const TASK = "10000000-0000-4000-8000-000000000001";
 const USER = "20000000-0000-4000-8000-000000000001";
 const AGENT = "30000000-0000-4000-8000-000000000001";
 const ROOM = "40000000-0000-4000-8000-000000000001";
+const PRIVATE_ROOM = "40000000-0000-4000-8000-000000000002";
 const updateIdentity = () => ({ taskId: TASK, ownerId: USER, requestorId: USER,
   agentId: AGENT, callingRoomId: ROOM });
 
@@ -123,16 +124,22 @@ function orchestrationFixture(
   let recoverPrepared = false;
   let lastPreparedContent: TaskDefinitionContent | null = null;
   let recoveredRequestDigest: Uint8Array | null = null;
+  let privateRoomNamespace = NS;
   const openedTaskAgents: string[] = [];
   const inspectedAuthorAgents: string[] = [];
   const privateNamespaceLookups: Array<{ namespaceId: string; taskExecutorAgentId: string }> = [];
   const transaction = {
     select: () => {
       let table: unknown;
-      const query = { from: (value: unknown) => { table = value; return query; }, where: () => query,
-        orderBy: () => query,
+      const query = { from: (value: unknown) => { table = value; return query; }, innerJoin: () => query,
+        where: () => query, groupBy: () => query, having: () => query, orderBy: () => query,
         limit: async () => table === taskRuns ? (resumable ? [{ id: "run", taskId: TASK, status: "paused" }] : [])
-          : working === null ? [] : [working] };
+          : table === actors ? [{ id: USER }]
+            : table === rooms ? [{ roomId: PRIVATE_ROOM,
+                namespaceId: privateRoomNamespace, type: "private", kind: "private",
+                graphThreadId: "app:default", createdAt: new Date(0),
+                humanActorIds: [USER], memberCount: 2, humanCount: 1, agentCount: 1 }]
+              : working === null ? [] : [working] };
       return query;
     },
     update: () => ({ set: (patch: Partial<Task>) => ({ where: () => ({ returning: async () => {
@@ -314,6 +321,9 @@ function orchestrationFixture(
       recoverPrepared = true;
     },
     advanceTime: (milliseconds: number) => { clock += milliseconds; },
+    mismatchPrivateRoomNamespace: () => {
+      privateRoomNamespace = "50000000-0000-4000-8000-000000000002";
+    },
     setResumable: () => { resumable = true; }, setFunding: (fundingMode: Task["fundingMode"]) => { committed = { ...committed, fundingMode }; } };
 }
 
@@ -426,6 +436,15 @@ describe("foreground protected Task update orchestration", () => {
     await rejects(f.publisher.preflight({ operationId: "task-foreground-update:not-native",
       request: f.request }), /mapped definition changed/u);
     expect(f.counts()).toEqual({ prepares: 0, completions: 0 });
+  });
+
+  test("a private Room outside the mapped Namespace cannot authorize an update", async () => {
+    const f = orchestrationFixture();
+    f.mismatchPrivateRoomNamespace();
+    await rejects(f.publish("task-foreground-update:wrong-private-room"),
+      /private Room is unavailable/u);
+    expect(f.counts()).toEqual({ prepares: 0, completions: 0 });
+    expect(f.row().contentRevision).toBe(4);
   });
 
   for (const representation of ["protected", "dual"] as const) {

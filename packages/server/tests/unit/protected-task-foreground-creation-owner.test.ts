@@ -135,6 +135,20 @@ function fixture() {
     entities: { signal: controller.signal, use: async () => { throw new Error("No entity key expected"); },
       useCurrentSet: async () => { throw new Error("No entity key expected"); } },
     assertCurrentForeground: async () => { originalProofs += 1; },
+    authorizeTaskDefinition: input => input.use({
+      authority: {
+        authorityVersion: 1, kind: "requester_private_namespace", keyClass: "ai",
+        requesterHumanId: "actor", namespaceId: "namespace", domainId: "domain",
+        expectedAccessRevision: 1, expectedPolicyRevision: 3,
+      },
+      entities: { signal: controller.signal,
+        use: async () => { throw new Error("No Task entity key expected"); },
+        useCurrentSet: async () => { throw new Error("No Task entity key expected"); } },
+      publication: { operationId: input.operationId, grantId: input.operationId,
+        grantDigest: new Uint8Array(32), recipientKeyId: "task-recipient" },
+      resolveCurrentForegroundDefinitionAuthorization: async () => null,
+      assertCurrent: async () => {},
+    }),
     createCurrentAuthority: async product => { borrowed = product; events.push("borrow-authority"); return authority; },
   });
   return { ...owner, transaction, executor, controller, events,

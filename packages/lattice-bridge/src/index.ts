@@ -183,6 +183,27 @@ export * from "./task/task-historical-content-identity.ts";
 export * from "./task/task-historical-repair-provenance.ts";
 export * from "./task/task-content-prepared-revision.ts";
 export * from "./task/task-operational-fields-digest-v1.ts";
+export {
+  createHumanTaskOrdinaryFallbackReplayAdmissionV1,
+  decodeHumanTaskOrdinaryFallbackRequestV1,
+  digestHumanTaskOrdinaryFallbackRequestV1,
+  encodeHumanTaskOrdinaryFallbackRequestV1,
+  fingerprintHumanTaskOrdinaryFallbackContentV1,
+  fingerprintHumanTaskOrdinaryFallbackPlanV1,
+  prepareHumanTaskOrdinaryFallbackRequestV1,
+  verifyHumanTaskOrdinaryFallbackRequestV1,
+  type HumanTaskOrdinaryFallbackPlanV1,
+  type HumanTaskOrdinaryFallbackRequestV1,
+} from "./task/human-task-ordinary-fallback-request.ts";
+export { hasTaskOrdinaryFallbackReceiptV1, type TaskOrdinaryFallbackReceiptV1 } from
+  "./task/task-ordinary-fallback-receipt.ts";
+export {
+  taskDefinitionForegroundAuthorizationIdV1,
+  deriveTaskDefinitionForegroundRecipientKeyIdV1,
+  parseTaskDefinitionForegroundAuthorizationIdV1,
+  taskDefinitionForegroundAuthorizationIdV1Matches,
+  type TaskDefinitionForegroundAuthorizationCoordinatesV1,
+} from "./task/task-definition-foreground-authorization-id-v1.ts";
 export * from "./task/task-content-shadow-saga.ts";
 export * from "./task/task-content-operation.ts";
 export {

@@ -24,6 +24,7 @@ import type {
 import {
   ClassifiedDataOperationError,
   deriveTaskContentCryptoObjectIdV1,
+  hasTaskOrdinaryFallbackReceiptV1,
   type EncryptionDataOperationOwner,
 } from "@nautilo/lattice-bridge";
 import {
@@ -428,11 +429,14 @@ function taskDefinitionContentV1(
   task: Task,
   pendingReason?: PendingTaskDefinitionReason,
   historicalProof?: HistoricalTaskDefinitionSummaryProof,
+  allowOrdinaryFallbackDefinition = false,
 ): TaskDefinitionContentV1 {
   if (pendingReason !== undefined) {
     return { dtoVersion: 1, status: "unavailable", reason: pendingReason };
   }
-  if (task.contentRepresentation === "ordinary") {
+  if (task.contentRepresentation === "ordinary"
+    || allowOrdinaryFallbackDefinition && task.contentRepresentation === "dual"
+      && task.cryptoMappingState === "stale" && hasTaskOrdinaryFallbackReceiptV1(task)) {
     return {
       dtoVersion: 1,
       status: "ordinary",
@@ -471,10 +475,12 @@ export function toTaskContentSummaryV1(
     readonly canResumeResearch?: boolean;
     readonly pendingDefinitionReason?: PendingTaskDefinitionReason;
     readonly historicalDefinitionProof?: HistoricalTaskDefinitionSummaryProof;
+    readonly allowOrdinaryFallbackDefinition?: boolean;
   },
   projection: TaskFundingProjectionOptions = {},
 ): TaskContentSummaryV1 {
-  const definition = taskDefinitionContentV1(task, enrichment.pendingDefinitionReason, enrichment.historicalDefinitionProof);
+  const definition = taskDefinitionContentV1(task, enrichment.pendingDefinitionReason,
+    enrichment.historicalDefinitionProof, enrichment.allowOrdinaryFallbackDefinition);
   const preparation = definition.status === "ordinary"
     ? readTaskPreparation(task.metadata?.["preparation"])
     : null;
@@ -763,6 +769,7 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
     ]);
     return { status: 200, body: await Promise.all(tasks.map(async (task) =>
       toTaskContentSummaryV1(task, {
+        allowOrdinaryFallbackDefinition: true,
         ...(historicalDefinitions.has(task.id) ? { historicalDefinitionProof: historicalDefinitions.get(task.id)! } : {}),
         agentName: agentNames.get(task.agentId) ?? null,
         lastModelId: lastModels.get(task.id) ?? null,
@@ -808,6 +815,7 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
         getOwnerAgentDisplayNamesByAgentId(db, ownerId, [task.agentId]),
       ]);
       const { content, ...lifecycle } = toTaskContentSummaryV1(task, {
+        allowOrdinaryFallbackDefinition: allowOrdinary,
         ...(historicalDefinitions.has(task.id) ? { historicalDefinitionProof: historicalDefinitions.get(task.id)! } : {}),
         agentName: agentNames.get(task.agentId) ?? null,
         lastModelId: runs.at(-1)?.modelId ?? null,
@@ -872,7 +880,8 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
           createdAt: task.createdAt.toISOString(),
           updatedAt: task.updatedAt.toISOString(),
         },
-        definition: content.status === "ordinary" ? taskDefinitionContentV1(task) : content,
+        definition: content.status === "ordinary"
+          ? taskDefinitionContentV1(task, undefined, undefined, allowOrdinary) : content,
         runs: runSummaries,
       };
       return { status: 200, body: detail };

@@ -75,6 +75,42 @@ function sameScope(
     );
 }
 
+function capabilityMatchesScope(
+  capability: DomainCompressedLiveShadowSessionCapability,
+  scope: LiveShadowForegroundAuthorizationScope,
+): boolean {
+  const description =
+    inspectDomainCompressedLiveShadowSessionCapability(capability);
+  if (description === null) return false;
+  try {
+    if (
+      description.subjectHumanId !== scope.subjectHumanId
+      || description.issuingDeviceId !== scope.issuingDeviceId
+      || description.policyRevision !== scope.policyRevision
+      || description.hostAuthorizationRevision
+        !== scope.hostAuthorizationRevision
+      || !sameIds(description.namespaceIds, scope.namespaceIds)
+      || !sameIds(description.grantDomainIds, scope.grantDomainIds)
+      || ("recipientAgentId" in description
+        !== "recipientAgentId" in scope)
+    ) return false;
+    if ("recipientAgentId" in description) {
+      if (!("recipientAgentId" in scope)) return false;
+      return description.recipientAgentId === scope.recipientAgentId
+        && description.sessionId === scope.sessionId
+        && description.roomId === scope.roomId
+        && description.agentAuthorizationRevision
+          === scope.agentAuthorizationRevision;
+    }
+    if ("recipientAgentId" in scope) return false;
+    return description.recipientKind === scope.recipientKind
+      && description.browserSessionId === scope.browserSessionId
+      && description.topLevelRoomId === scope.topLevelRoomId;
+  } finally {
+    description.authorizationDigest.fill(0);
+  }
+}
+
 function binding(scope: LiveShadowForegroundAuthorizationScope) {
   return "recipientAgentId" in scope
     ? Object.freeze({
@@ -245,6 +281,109 @@ export class LiveShadowForegroundAuthorizationSessions
       publicEvidence,
     }));
     return copyEvidence(publicEvidence);
+  }
+
+  /**
+   * Execute one exact, work-bound authorization without making it reusable or
+   * discoverable by scope. The Runtime registry owns the opaque capability for
+   * the callback window and destroys it when the root session is cancelled.
+   */
+  async executeTransient<Value>(input: Readonly<{
+    capability: DomainCompressedLiveShadowSessionCapability;
+    scope: LiveShadowForegroundAuthorizationScope;
+    namespaceIds: readonly string[];
+    domainIds: readonly string[];
+    operations: readonly ("decrypt" | "encrypt")[];
+    workDescriptorDigest: Uint8Array;
+    operationDeadline?: number;
+    entrypointId?:
+      | "foreground.conductor"
+      | "foreground.main"
+      | "foreground.fork";
+    execute(
+      capability: DomainCompressedLiveShadowSessionCapability,
+      signal: AbortSignal,
+    ): Promise<
+      | Readonly<{ status: "executed"; value: Value }>
+      | Readonly<{
+        status: "unavailable";
+        reason: "authorization_unavailable" | "content_unavailable";
+      }>
+    >;
+  }>): Promise<ForegroundAuthorizationExecutionResult<Value>> {
+    if (!capabilityMatchesScope(input.capability, input.scope)) {
+      destroyDomainCompressedLiveShadowSessionCapability(input.capability);
+      return Object.freeze({
+        status: "unavailable",
+        reason: "session_cancelled",
+      });
+    }
+    const authenticatedBinding = binding(input.scope);
+    const registration = this.#registry.register({
+      capability: input.capability,
+      authenticatedBinding,
+      allowedOperations: input.operations,
+      ...(input.operationDeadline === undefined
+        ? {}
+        : { sessionDeadline: input.operationDeadline }),
+    });
+    if (registration.status !== "registered") {
+      return Object.freeze({
+        status: "unavailable",
+        reason: registration.reason === "capability_expired"
+            || registration.reason === "session_deadline_invalid"
+          ? "session_expired"
+          : "session_cancelled",
+      });
+    }
+    try {
+      const child = this.#registry.createChildView({
+        parent: registration.rootView,
+        namespaceIds: input.namespaceIds,
+        domainIds: input.domainIds,
+        operations: input.operations,
+        workDescriptorDigest: input.workDescriptorDigest,
+        ...(input.operationDeadline === undefined
+          ? {}
+          : { deadline: input.operationDeadline }),
+      });
+      if (child.status !== "created") {
+        return Object.freeze({
+          status: "unavailable",
+          reason: child.reason === "session_expired"
+            ? "session_expired"
+            : "session_cancelled",
+        });
+      }
+      const leased = this.#registry.leaseAuthorizationSetOperation({
+        view: child.view,
+        entrypointId: input.entrypointId ?? "foreground.main",
+        operations: input.operations,
+        namespaceIds: input.namespaceIds,
+        domainIds: input.domainIds,
+        ...(input.operationDeadline === undefined
+          ? {}
+          : { executionDeadline: input.operationDeadline }),
+      });
+      if (leased.status !== "leased") {
+        return Object.freeze({
+          status: "unavailable",
+          reason: leased.reason === "session_expired"
+              || leased.reason === "operation_deadline_invalid"
+            ? "session_expired"
+            : "session_cancelled",
+        });
+      }
+      return await this.#registry.executeWithCapability(leased.lease, {
+        execute: ({ capability, signal }) =>
+          input.execute(capability, signal),
+      });
+    } finally {
+      this.#registry.cancelSession({
+        sessionId: registration.sessionId,
+        authenticatedBinding,
+      });
+    }
   }
 
   async execute<Value>(input: Readonly<{

@@ -43,6 +43,9 @@ export const CRYPTO_STORAGE_BYTE_LIMITS = Object.freeze({
   // Exact public Task signer-certificate wire maximum; bridge parity tests
   // bind this durable copy to the structurally derived crypto codec bound.
   taskRuntimeSignerEvidence: 2_039,
+  // Existing V2 grant restricted to one private Task Domain. Server parity
+  // coverage derives the complete canonical wire bound from its fields.
+  taskDefinitionForegroundAuthorizationEvidence: 3_675,
   historicalTaskPublicationRequest: 1_048_576,
   signingPublicKey: 32,
   wrappedDekMinimum: 40,
@@ -991,7 +994,10 @@ export const objectCryptoAccessManifests = pgTable(
       "object_crypto_access_manifests_signer_evidence_size",
       sql`${table.signerEvidenceBytes} is null or (
         octet_length(${table.signerEvidenceBytes}) between 1
-        and ${sql.raw(String(CRYPTO_STORAGE_BYTE_LIMITS.taskRuntimeSignerEvidence))}
+        and ${sql.raw(String(Math.max(
+          CRYPTO_STORAGE_BYTE_LIMITS.taskRuntimeSignerEvidence,
+          CRYPTO_STORAGE_BYTE_LIMITS.taskDefinitionForegroundAuthorizationEvidence,
+        )))}
       )`,
     ),
     ...appendOnlyPolicies("object_crypto_access_manifests"),

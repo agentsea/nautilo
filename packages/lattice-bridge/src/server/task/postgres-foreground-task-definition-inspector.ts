@@ -102,6 +102,7 @@ export async function inspectMappedTaskDefinitionAccessLineage(input: Readonly<{
   resolveHistoricalAgentSignerAuthority: Parameters<typeof readDurableTaskContentPublication>[0]["resolveHistoricalAgentSignerAuthority"];
   resolveForegroundAgentAcceptedExecutionEvidence?: Parameters<typeof readDurableTaskContentPublication>[0]["resolveForegroundAgentAcceptedExecutionEvidence"];
   resolveHistoricalHumanDeviceSigningPublicKey?: Parameters<typeof readDurableTaskContentPublication>[0]["resolveHistoricalHumanDeviceSigningPublicKey"];
+  resolveTaskDefinitionForegroundAuthorization?: Parameters<typeof readDurableTaskContentPublication>[0]["resolveTaskDefinitionForegroundAuthorization"];
 }>): Promise<VerifiedTaskDefinitionAccessLineage | null> {
   assertVerifiedCryptoPostgresHandle(input.handle);
   const pinned = { ...input, coordinate: Object.freeze({ ...input.coordinate }) };
@@ -114,12 +115,17 @@ export async function inspectMappedTaskDefinitionAccessLineage(input: Readonly<{
   )).limit(2));
   const author = captureForegroundTaskDefinitionAuthor({
     resolveEvidence: pinned.resolveForegroundAgentAcceptedExecutionEvidence,
+    resolveTaskDefinitionForegroundAuthorization:
+      pinned.resolveTaskDefinitionForegroundAuthorization,
     subjectHumanId: pinned.requesterHumanId,
+    namespaceId: pinned.namespaceId,
     domainId: domains.length === 1 ? domains[0]!.domain_id : null,
   });
   const durable = await readDurableTaskContentPublication({ ...pinned,
     executor: handle,
     resolveForegroundAgentAcceptedExecutionEvidence: author.resolveEvidence,
+    resolveTaskDefinitionForegroundAuthorization:
+      author.resolveTaskDefinitionForegroundAuthorization,
   });
   if (durable === null) return null;
   try {
@@ -166,6 +172,7 @@ export type InspectForegroundTaskDefinitionInput = Readonly<{
   resolveForegroundAgentAcceptedExecutionEvidence?: Parameters<typeof readDurableTaskContentPublication>[0]["resolveForegroundAgentAcceptedExecutionEvidence"];
   resolveHistoricalAgentSignerAuthority: Parameters<typeof readDurableTaskContentPublication>[0]["resolveHistoricalAgentSignerAuthority"];
   resolveHistoricalHumanDeviceSigningPublicKey?: Parameters<typeof readDurableTaskContentPublication>[0]["resolveHistoricalHumanDeviceSigningPublicKey"];
+  resolveTaskDefinitionForegroundAuthorization?: Parameters<typeof readDurableTaskContentPublication>[0]["resolveTaskDefinitionForegroundAuthorization"];
   assertCurrent(): void | Promise<void>;
 }>;
 
@@ -240,13 +247,18 @@ async function inspectDefinition<Value>(input:
         .from(objectCryptoAccessHeads).where(eq(objectCryptoAccessHeads.objectId, objectId)).for("share"));
       const author = captureForegroundTaskDefinitionAuthor({
         resolveEvidence: input.resolveForegroundAgentAcceptedExecutionEvidence,
+        resolveTaskDefinitionForegroundAuthorization:
+          input.resolveTaskDefinitionForegroundAuthorization,
         subjectHumanId: authority.requesterHumanId,
+        namespaceId: authority.namespaceId,
         domainId: authority.domainId,
       });
       const durable = await readDurableTaskContentPublication({ ...input,
         executor: handle,
         objectId,
         resolveForegroundAgentAcceptedExecutionEvidence: author.resolveEvidence,
+        resolveTaskDefinitionForegroundAuthorization:
+          author.resolveTaskDefinitionForegroundAuthorization,
       });
       if (durable === null) return { status: "missing" as const };
       const payload = decodeEncryptedPayloadV2(durable.payloadBytes);
@@ -370,6 +382,9 @@ export async function publishVerifiedForegroundTaskDefinition(input: Readonly<{
 /** Repair existing mapped content before a fresh grant captures its access head. */
 export async function refreshHumanMappedTaskContentAccessHead(
   input: HumanTaskMappedContentAuthorityInput & Readonly<{
+    resolveTaskDefinitionForegroundAuthorization?: Parameters<
+      typeof readDurableTaskContentPublication
+    >[0]["resolveTaskDefinitionForegroundAuthorization"];
     /** Runs under the current Human/Task/claim locks; proof expires before the outer commit. */
     withMappedHead?(input: Readonly<{ context: HeldHumanTaskMappedContentAuthority;
       proof: VerifiedForegroundTaskDefinitionPublication; lineage: VerifiedTaskDefinitionAccessLineage | null;
@@ -398,12 +413,17 @@ export async function refreshHumanMappedTaskContentAccessHead(
         product: await verifyConversationProductPostgresHandle(context.product), crypto: input.crypto,
         rejectInvalidSelectedEvidence: true,
       }),
+      resolveTaskDefinitionForegroundAuthorization:
+        input.resolveTaskDefinitionForegroundAuthorization,
       subjectHumanId: authority.requesterHumanId,
+      namespaceId: lifecycle.namespaceId,
       domainId: authority.domainId,
     });
     const durable = await readDurableTaskContentPublication({ executor: context.handle, crypto: input.crypto,
       objectId: lifecycle.cryptoObjectId, resolveHistoricalAgentSignerAuthority: history.resolveAgentRuntimeSignerManager,
       resolveForegroundAgentAcceptedExecutionEvidence: author.resolveEvidence,
+      resolveTaskDefinitionForegroundAuthorization:
+        author.resolveTaskDefinitionForegroundAuthorization,
     });
     if (durable === null) return "unavailable" as const;
     const payload = decodeEncryptedPayloadV2(durable.payloadBytes);

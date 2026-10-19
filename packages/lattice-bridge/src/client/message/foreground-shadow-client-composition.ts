@@ -1,4 +1,4 @@
-import type { NautiloApiClient } from "@nautilo/api-client/browser";
+import { ApiError, type NautiloApiClient } from "@nautilo/api-client/browser";
 import { createObservedHumanMemoryDeviceContent } from "../memory/observed-human-memory-device-content.ts";
 import type { DeviceAdmissionStatus } from "@nautilo/api-client/browser";
 import {
@@ -1051,6 +1051,17 @@ export function createForegroundHumanTaskClient(
     mutation: PreparedHumanMutation,
   ): mutation is PreparedHumanTaskMutation =>
     mutation.kind === "task_create" || mutation.kind === "task_update";
+  const withTaskPlanAvailability = async <Value>(use: () => Promise<Value>): Promise<Value> => {
+    try { return await use(); }
+    catch (error) {
+      if (error instanceof ApiError && error.status === 409
+        && (error.message === "task_encryption_not_ready"
+          || error.message === "task_counterpart_not_ready")) {
+        throw new ClassifiedDataOperationError("key_waiting", "Task encryption is not ready", { cause: error });
+      }
+      throw error;
+    }
+  };
 
   return createAuthorizedHumanTaskClientV1({
     owner: input.dataOperationOwner,
@@ -1058,9 +1069,13 @@ export function createForegroundHumanTaskClient(
     plans: {
       listProtected: (query) => input.api.listProtectedTaskContentV1(query),
       create: ({ operationId, task }) =>
-        input.api.planProtectedTaskCreateV1({ operationId, task }),
+        withTaskPlanAvailability(() => input.api.planProtectedTaskCreateV1({ operationId, task })),
       update: ({ operationId, taskId, task }) =>
-        input.api.planProtectedTaskUpdateV1(taskId, { operationId, task }),
+        withTaskPlanAvailability(() => input.api.planProtectedTaskUpdateV1(taskId, { operationId, task })),
+      ordinaryFallbackCreate: ({ operationId, task }) =>
+        input.api.planTaskOrdinaryFallbackCreateV1({ operationId, task }),
+      ordinaryFallbackUpdate: ({ operationId, taskId, task }) =>
+        input.api.planTaskOrdinaryFallbackUpdateV1(taskId, { operationId, task }),
       readExact: async ({ taskId, reference }) => {
         const envelope = await input.api.getProtectedTaskDefinitionEnvelopeV1(
           taskId,

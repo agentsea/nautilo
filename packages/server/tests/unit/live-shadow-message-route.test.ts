@@ -543,6 +543,49 @@ describe("live Shadow Message plan route", () => {
     await app.close();
   });
 
+  test("admits Task-only authorization only at the signed-in exact operation coordinate", async () => {
+    let seen: unknown;
+    let retainedPlan: Uint8Array | undefined;
+    let retainedAuthorization: Uint8Array | undefined;
+    const app = appWith({ surface: "workbench.browser", composition: {
+      plan: () => Promise.resolve({ status: "disabled", mode: "plaintext_only" }),
+      verifyClient: () => Promise.resolve({ status: "conflict" }),
+      admitTaskDefinitionAuthorization: (input) => {
+        retainedPlan = input.authorizationPlanBytes;
+        retainedAuthorization = input.authorizationBytes;
+        seen = { ...input,
+          authorizationPlanBytes: Uint8Array.from(input.authorizationPlanBytes),
+          authorizationBytes: Uint8Array.from(input.authorizationBytes) };
+        return Promise.resolve("authorized" as const);
+      },
+    } });
+    const authorizationId = "task-definition-authority";
+    const body = { requestVersion: 1, status: "prepared", operationId: authorizationId,
+      parentOperationId: "parent-execution", clientActionSessionId: "browser-session",
+      authorizationScheme: "runtime_foreground_v1",
+      authorizationPlanBytesBase64url: "AQI", authorizationBytesBase64url: "AwQ" } as const;
+    const path = `/api/rooms/${ROOM}/live-shadow/task-definition/${authorizationId}/authorize`;
+    try {
+      expect((await app.inject({ method: "POST", url: path, payload: body })).statusCode).toBe(401);
+      expect((await app.inject({ method: "POST",
+        url: `/api/rooms/${ROOM}/live-shadow/task-definition/wrong/authorize`,
+        headers: { authorization: "Bearer ok" }, payload: body })).statusCode).toBe(400);
+      expect((await app.inject({ method: "POST", url: path,
+        headers: { authorization: "Bearer ok" }, payload: { ...body, plaintext: "forbidden" } })).statusCode).toBe(400);
+      expect(seen).toBeUndefined();
+      const response = await app.inject({ method: "POST", url: path,
+        headers: { authorization: "Bearer ok" }, payload: body });
+      expect(response.statusCode).toBe(200);
+      expect(response.json<Record<string, unknown>>()).toEqual({ responseVersion: 1, status: "authorized", authorizationId });
+      expect(seen).toEqual({ authorizationId, parentOperationId: "parent-execution", roomId: ROOM,
+        clientActionSessionId: "browser-session", userId: USER, actorId: HUMAN,
+        authorizationPlanBytes: new Uint8Array([1, 2]), authorizationBytes: new Uint8Array([3, 4]),
+        now: 1_800_000_000_000 });
+      expect(retainedPlan).toEqual(new Uint8Array(2));
+      expect(retainedAuthorization).toEqual(new Uint8Array(2));
+    } finally { await app.close(); }
+  });
+
   test("registers production without eagerly opening either database", async () => {
     const app = Fastify();
     const composition = createProductionLiveShadowMessageComposition({

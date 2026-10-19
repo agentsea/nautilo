@@ -56,6 +56,25 @@ describe("protected Task persistence schema", () => {
     }
   });
 
+  test("ordinary fallback receipts are nullable together and reject partial SQL-null receipts", () => {
+    const columns = getTableColumns(tasks);
+    for (const key of ["ordinaryFallbackOperationId", "ordinaryFallbackRequestDigest",
+      "ordinaryFallbackReason", "ordinaryFallbackPolicyRevision", "ordinaryFallbackCompletedAt"] as const) {
+      expect(columns[key].notNull).toBe(false);
+    }
+    const receipt = getTableConfig(tasks).checks.find(item =>
+      item.name === "tasks_ordinary_fallback_receipt_coherent");
+    expect(receipt).toBeDefined();
+    const statement = dialect.sqlToQuery(receipt!.value).sql.replaceAll('"', "");
+    for (const field of ["operation_id", "request_digest", "reason", "policy_revision", "completed_at"]) {
+      expect(statement).toContain(`ordinary_fallback_${field} is null`);
+      expect(statement).toContain(`ordinary_fallback_${field} is not null`);
+    }
+    expect(statement).toContain("octet_length(tasks.ordinary_fallback_request_digest) = 32");
+    expect(statement).toContain("tasks.ordinary_fallback_policy_revision > 0");
+    expect(statement).toContain("= 'target_encryption_not_ready'");
+  });
+
   test("uses exactly two content-free receipt and revision ledgers", () => {
     for (const table of [
       taskDefinitionCryptoRevisions,

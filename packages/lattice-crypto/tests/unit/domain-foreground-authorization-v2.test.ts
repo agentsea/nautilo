@@ -12,6 +12,7 @@ import {
   serializeDomainForegroundAuthorizationPlanV2,
   serializeDomainForegroundAuthorizationV2,
   verifyDomainForegroundAuthorizationV2,
+  verifyHistoricalDomainForegroundAuthorizationV2,
   withOpenedDomainForegroundAuthorizationV2,
   type DomainForegroundAuthorityEntryV2,
   type DomainForegroundAuthorizationCurrentAuthorityV2,
@@ -172,6 +173,54 @@ async function fixture(
 }
 
 describe("M301 V2 Domain foreground authorization", () => {
+  test("verifies exact historical public evidence after the live deadline", async () => {
+    const value = await fixture("runtime");
+    const authorizationBytes = serializeDomainForegroundAuthorizationV2(
+      value.authorization,
+    );
+    const planBytes = serializeDomainForegroundAuthorizationPlanV2(value.plan);
+    expect(verifyDomainForegroundAuthorizationV2(value.crypto, {
+      authorizationBytes,
+      now: value.plan.deadlineAt,
+      current: value.current,
+    })).toEqual({ status: "unavailable", reason: "expired" });
+    expect(verifyHistoricalDomainForegroundAuthorizationV2(value.crypto, {
+      authorizationBytes,
+      expectedPlanBytes: planBytes,
+      committerDeviceSigningPublicKey:
+        value.current.committerDeviceSigningPublicKey,
+    })).toEqual({ status: "verified" });
+
+    const changedPlan = planBytes.slice();
+    changedPlan[changedPlan.length - 1] =
+      changedPlan[changedPlan.length - 1]! ^ 1;
+    expect(verifyHistoricalDomainForegroundAuthorizationV2(value.crypto, {
+      authorizationBytes,
+      expectedPlanBytes: changedPlan,
+      committerDeviceSigningPublicKey:
+        value.current.committerDeviceSigningPublicKey,
+    })).toEqual({ status: "unavailable", reason: "invalid" });
+
+    const changedSignature = authorizationBytes.slice();
+    changedSignature[changedSignature.length - 1] =
+      changedSignature[changedSignature.length - 1]! ^ 1;
+    expect(verifyHistoricalDomainForegroundAuthorizationV2(value.crypto, {
+      authorizationBytes: changedSignature,
+      expectedPlanBytes: planBytes,
+      committerDeviceSigningPublicKey:
+        value.current.committerDeviceSigningPublicKey,
+    })).toEqual({ status: "unavailable", reason: "invalid" });
+
+    const changedKey = value.crypto.generateSigningKeyPair();
+    expect(verifyHistoricalDomainForegroundAuthorizationV2(value.crypto, {
+      authorizationBytes,
+      expectedPlanBytes: planBytes,
+      committerDeviceSigningPublicKey: changedKey.publicKey,
+    })).toEqual({ status: "unavailable", reason: "invalid" });
+    changedKey.privateKey.fill(0);
+    changedKey.publicKey.fill(0);
+  });
+
   test("verifies a signed Runtime grant without borrowing a recipient private key", async () => {
     const value = await fixture("runtime");
     const authorizationBytes = serializeDomainForegroundAuthorizationV2(

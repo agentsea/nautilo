@@ -604,6 +604,22 @@ export async function persistPreparedDeviceWrappedAgentObjectAccessManifestGenes
   try {
     if (input.prepared.signerEvidence !== undefined) {
       verifyTaskPublicationPreparedManifest(input.crypto, input.prepared, context, decision.signerPublicKey);
+    } else if (input.prepared.signerEvidenceBytes !== undefined) {
+      verifyObjectAccessManifestV5(input.crypto, {
+        manifestBytes: input.prepared.manifestBytes,
+        resolveHistoricalHumanDeviceSigningPublicKey: () => null,
+        resolveAgentRuntimeSignerPublicKey: () => null,
+        resolveProcessorSignerAuthorizationBytes: () => null,
+        resolveHistoricalProcessorIssuingDevicePublicKey: () => null,
+        resolveTaskDefinitionForegroundAuthorizationSignerPublicKey:
+          evidence => evidence.objectId === context.objectId
+              && context.signerAuthorizationHash !== undefined
+              && bytesEqual(
+                evidence.authorizationHash,
+                context.signerAuthorizationHash,
+              )
+            ? decision.signerPublicKey.slice() : null,
+      });
     } else verifyObjectAccessManifestV5(input.crypto, {
       manifestBytes: input.prepared.manifestBytes,
       resolveHistoricalHumanDeviceSigningPublicKey: () => null,
@@ -627,6 +643,9 @@ export async function persistPreparedDeviceWrappedAgentObjectAccessManifestGenes
         authorization: {
           kind: "device-wrapped-live-shadow-agent-genesis-set",
           ...(input.prepared.signerEvidence === undefined ? {} : { signerEvidence: input.prepared.signerEvidence }),
+          ...(input.prepared.signerEvidenceBytes === undefined ? {} : {
+            signerEvidenceBytes: input.prepared.signerEvidenceBytes,
+          }),
           context,
           signerPublicKey: decision.signerPublicKey,
           signerPublicKeyHash: input.crypto.hash(decision.signerPublicKey),

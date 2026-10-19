@@ -338,6 +338,10 @@ import {
   runtimeInvocationAuthorizationResponseV1Schema,
   type RuntimeInvocationAuthorizationRequestV1,
   type RuntimeInvocationAuthorizationResponseV1,
+  taskDefinitionAuthorizationRequestV1Schema,
+  taskDefinitionAuthorizationResponseV1Schema,
+  type TaskDefinitionAuthorizationRequestV1,
+  type TaskDefinitionAuthorizationResponseV1,
   type LiveShadowMessageRecoveryResponseV1,
   humanMessageEditPlanRequestV1Schema,
   humanMessageEditPlanResponseV1Schema,
@@ -509,6 +513,18 @@ import {
   type DualTaskPreparedCreateRequestV1,
   type DualTaskPreparedUpdateRequestV1,
 } from "./schemas/protected-task";
+import {
+  taskOrdinaryFallbackPlanCreateRequestV1Schema,
+  taskOrdinaryFallbackCreatePlanV1Schema,
+  taskOrdinaryFallbackPreparedCreateRequestV1Schema,
+  taskOrdinaryFallbackPlanUpdateRequestV1Schema,
+  taskOrdinaryFallbackUpdatePlanV1Schema,
+  taskOrdinaryFallbackPreparedUpdateRequestV1Schema,
+  type TaskOrdinaryFallbackCreatePlanV1,
+  type TaskOrdinaryFallbackPreparedCreateRequestV1,
+  type TaskOrdinaryFallbackUpdatePlanV1,
+  type TaskOrdinaryFallbackPreparedUpdateRequestV1,
+} from "./schemas/task-ordinary-fallback";
 import {
   protectedTaskTranscriptReadRequestV1Schema,
   protectedTaskTranscriptReadResponseV1Schema,
@@ -6797,6 +6813,25 @@ export class NautiloApiClient {
     });
   }
 
+  /** Complete a foreground Task-definition authorization. */
+  async authorizeTaskDefinition(
+    roomId: string,
+    authorizationId: string,
+    input: TaskDefinitionAuthorizationRequestV1,
+  ): Promise<TaskDefinitionAuthorizationResponseV1> {
+    const body = taskDefinitionAuthorizationRequestV1Schema.parse(input);
+    return this.request({
+      method: "POST",
+      path: `/api/rooms/${encodeURIComponent(roomId)}/live-shadow/task-definition/${
+        encodeURIComponent(authorizationId)
+      }/authorize`,
+      body,
+      schema: taskDefinitionAuthorizationResponseV1Schema,
+      defaultErrorPrefix:
+        `POST /api/rooms/${roomId}/live-shadow/task-definition/${authorizationId}/authorize`,
+    });
+  }
+
   /** Recover durable live-turn evidence without replaying the Agent run. */
   async recoverLiveShadowRoomMessage(
     roomId: string,
@@ -8422,6 +8457,80 @@ export class NautiloApiClient {
       body,
       schema: protectedTaskPublicationPlanV1Schema,
       defaultErrorPrefix: "POST /api/protected/tasks/publication-plan",
+    });
+  }
+
+  async planTaskOrdinaryFallbackCreateV1(input: Readonly<{
+    operationId: string;
+    task: TaskOperationalCreateV1;
+  }>): Promise<TaskOrdinaryFallbackCreatePlanV1> {
+    const body = taskOrdinaryFallbackPlanCreateRequestV1Schema.parse({
+      requestVersion: 1,
+      ...input,
+    });
+    return this.request<TaskOrdinaryFallbackCreatePlanV1>({
+      method: "POST",
+      path: "/api/protected/tasks/ordinary-fallback-plan",
+      body,
+      schema: taskOrdinaryFallbackCreatePlanV1Schema,
+      defaultErrorPrefix:
+        "POST /api/protected/tasks/ordinary-fallback-plan",
+    });
+  }
+
+  async planTaskOrdinaryFallbackUpdateV1(taskId: string, input: Readonly<{
+    operationId: string;
+    task: TaskOperationalUpdateV1;
+  }>): Promise<TaskOrdinaryFallbackUpdatePlanV1> {
+    const id = z.string().uuid().parse(taskId);
+    const body = taskOrdinaryFallbackPlanUpdateRequestV1Schema.parse({
+      requestVersion: 1,
+      ...input,
+    });
+    return this.request<TaskOrdinaryFallbackUpdatePlanV1>({
+      method: "POST",
+      path:
+        `/api/protected/tasks/${encodeURIComponent(id)}/ordinary-fallback-plan`,
+      body,
+      schema: taskOrdinaryFallbackUpdatePlanV1Schema,
+      defaultErrorPrefix:
+        `POST /api/protected/tasks/${id}/ordinary-fallback-plan`,
+    });
+  }
+
+  async createTaskOrdinaryFallbackV1(
+    prepared: TaskOrdinaryFallbackPreparedCreateRequestV1,
+  ): Promise<TaskCreateResponse> {
+    const body = taskOrdinaryFallbackPreparedCreateRequestV1Schema.parse(prepared);
+    return this.request<TaskCreateResponse>({
+      method: "POST",
+      path: "/api/protected/tasks/ordinary-fallback",
+      body,
+      schema: z.object({
+        taskId: z.string().uuid(),
+        status: z.string(),
+        nextFireAt: z.string().nullable(),
+      }).strict(),
+      defaultErrorPrefix: "POST /api/protected/tasks/ordinary-fallback",
+    });
+  }
+
+  async updateTaskOrdinaryFallbackV1(
+    taskId: string,
+    prepared: TaskOrdinaryFallbackPreparedUpdateRequestV1,
+  ): Promise<TaskContentSummaryV1> {
+    const id = z.string().uuid().parse(taskId);
+    const body = taskOrdinaryFallbackPreparedUpdateRequestV1Schema.parse(prepared);
+    if (body.taskId !== id) {
+      throw new TypeError("Task ordinary fallback update does not match path Task");
+    }
+    return this.request<TaskContentSummaryV1>({
+      method: "PATCH",
+      path: `/api/protected/tasks/${encodeURIComponent(id)}/ordinary-fallback`,
+      body,
+      schema: taskContentSummaryV1Schema,
+      defaultErrorPrefix:
+        `PATCH /api/protected/tasks/${id}/ordinary-fallback`,
     });
   }
 

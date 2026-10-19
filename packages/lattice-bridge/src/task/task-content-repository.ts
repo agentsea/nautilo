@@ -10,6 +10,7 @@ import type {
   TaskRunResultPayloadV1,
 } from "./task-payload-v1.ts";
 import { deriveTaskHistoricalContentCryptoObjectIdV1 } from "./task-historical-content-identity.ts";
+import { hasTaskOrdinaryFallbackReceiptV1 } from "./task-ordinary-fallback-receipt.ts";
 import { parseTaskHistoricalRepairProvenanceV1,
   type TaskHistoricalRepairProvenanceV1 } from
   "./task-historical-repair-provenance.ts";
@@ -337,6 +338,82 @@ export type TaskContentProductMappingCasResult =
 /** Opaque callback-live custody; only the foreground durable inspector mints it. */
 export interface VerifiedForegroundTaskDefinitionPublication { readonly kind: "verified_foreground_task_definition" }
 
+declare const TASK_ORDINARY_FALLBACK_REPAIR_SOURCE_V1: unique symbol;
+
+/**
+ * Callback-live claim for one exact persisted ordinary-fallback source. The
+ * product store remains authoritative and revalidates every coordinate while
+ * holding the Task row lock before it admits the next protected revision.
+ */
+export type TaskOrdinaryFallbackRepairSourceProofV1 = Readonly<{
+  [TASK_ORDINARY_FALLBACK_REPAIR_SOURCE_V1]: true;
+  taskId: string;
+  sourceMutationVersion: string;
+  sourceUpdatedAt: Date;
+  sourceContentRevision: number;
+  sourceNamespaceId: string;
+  sourceCryptoObjectId: string;
+  sourceCryptoAccessRevision: number;
+  sourceRequiredNamespaceFingerprint: Uint8Array;
+  fallbackOperationId: string;
+  fallbackRequestDigest: Uint8Array;
+  fallbackReason: "target_encryption_not_ready";
+  fallbackPolicyRevision: number;
+  fallbackCompletedAt: Date;
+}>;
+
+const taskOrdinaryFallbackRepairSourceProofs = new WeakSet<object>();
+
+export function prepareTaskOrdinaryFallbackRepairSourceProofV1(
+  input: Omit<
+    TaskOrdinaryFallbackRepairSourceProofV1,
+    typeof TASK_ORDINARY_FALLBACK_REPAIR_SOURCE_V1
+  >,
+): TaskOrdinaryFallbackRepairSourceProofV1 {
+  assertUuid("Fallback repair Task ID", input.taskId);
+  if (!/^[0-9]+$/u.test(input.sourceMutationVersion)) {
+    throw new TypeError("Fallback repair mutation version is invalid");
+  }
+  assertRevision("Fallback repair source revision", input.sourceContentRevision, 1);
+  assertPortableId("Fallback repair Namespace ID", input.sourceNamespaceId);
+  assertPortableId("Fallback repair crypto object ID", input.sourceCryptoObjectId);
+  assertRevision("Fallback repair crypto access revision", input.sourceCryptoAccessRevision, 0);
+  assertDigest(
+    "Fallback repair Namespace fingerprint",
+    input.sourceRequiredNamespaceFingerprint,
+  );
+  if (!hasTaskOrdinaryFallbackReceiptV1({
+    ordinaryFallbackOperationId: input.fallbackOperationId,
+    ordinaryFallbackRequestDigest: input.fallbackRequestDigest,
+    ordinaryFallbackReason: input.fallbackReason,
+    ordinaryFallbackPolicyRevision: input.fallbackPolicyRevision,
+    ordinaryFallbackCompletedAt: input.fallbackCompletedAt,
+  })) {
+    throw new TypeError("Fallback repair receipt is invalid");
+  }
+  if (!(input.sourceUpdatedAt instanceof Date)
+    || !Number.isFinite(input.sourceUpdatedAt.getTime())) {
+    throw new TypeError("Fallback repair timestamp is invalid");
+  }
+  const proof = Object.freeze({
+    ...input,
+    sourceUpdatedAt: new Date(input.sourceUpdatedAt),
+    sourceRequiredNamespaceFingerprint:
+      input.sourceRequiredNamespaceFingerprint.slice(),
+    fallbackRequestDigest: input.fallbackRequestDigest.slice(),
+    fallbackCompletedAt: new Date(input.fallbackCompletedAt),
+  }) as TaskOrdinaryFallbackRepairSourceProofV1;
+  taskOrdinaryFallbackRepairSourceProofs.add(proof);
+  return proof;
+}
+
+export function isTaskOrdinaryFallbackRepairSourceProofV1(
+  value: unknown,
+): value is TaskOrdinaryFallbackRepairSourceProofV1 {
+  return typeof value === "object" && value !== null
+    && taskOrdinaryFallbackRepairSourceProofs.has(value);
+}
+
 export interface TaskContentProductStorePort {
   reserveRevision(input: Readonly<{
     operationId: string;
@@ -353,6 +430,8 @@ export interface TaskContentProductStorePort {
     operationalMetadata: ProtectedTaskOperationalMetadataProjectionV1 | null;
     /** Only a source-bound authenticated revision may reserve historical content. */
     historicalPrepared?: PreparedTaskContentCryptoRevisionV1;
+    /** Exact receipt-bound stale dual predecessor; revalidated under row lock. */
+    fallbackRepairSource?: TaskOrdinaryFallbackRepairSourceProofV1;
   }>): Promise<
     | Readonly<{
         status: "reserved" | "replayed";
@@ -447,6 +526,7 @@ export interface TaskContentRepository {
     prepared: PreparedTaskContentCryptoRevisionV1;
     operationalMetadata: ProtectedTaskOperationalMetadataProjectionV1 | null;
     historicalRepair?: true;
+    fallbackRepairSource?: TaskOrdinaryFallbackRepairSourceProofV1;
   }>): Promise<
     | Readonly<{
         status: "reserved" | "replayed";

@@ -22,6 +22,7 @@ import {
   type TaskContentCoordinateV1,
   type TaskContentPayloadV1,
   type TaskContentRepository,
+  type TaskOrdinaryFallbackRepairSourceProofV1,
 } from "../../task/task-content-repository.ts";
 import { readPreparedTaskContentCryptoRevisionSnapshotV1 } from "../../task/task-content-prepared-revision.ts";
 import {
@@ -78,6 +79,7 @@ type PreparedTaskContentPublicationCommonV1 = Readonly<{
     TaskContentRepository["reserveRevision"]
   >[0]["operationalMetadata"];
   prepared: PreparedTaskContentCryptoRevisionV1;
+  fallbackRepairSource?: TaskOrdinaryFallbackRepairSourceProofV1;
 }>;
 
 export type ProtectedPreparedTaskContentPublicationV1<ProductResult> =
@@ -245,6 +247,9 @@ export function bindDurableTaskContentRepositoryV1<ProductResult>(input: Readonl
           authority: request.authority,
           prepared: request.prepared,
           operationalMetadata: request.operationalMetadata,
+          ...(request.fallbackRepairSource === undefined ? {} : {
+            fallbackRepairSource: request.fallbackRepairSource,
+          }),
         });
         if (reservation.status === "stale") {
           throw new ClassifiedDataOperationError(
@@ -298,6 +303,9 @@ export function bindDurableTaskContentRepositoryV1<ProductResult>(input: Readonl
           authority: request.authority,
           prepared: request.prepared,
           operationalMetadata: request.operationalMetadata,
+          ...(request.fallbackRepairSource === undefined ? {} : {
+            fallbackRepairSource: request.fallbackRepairSource,
+          }),
         });
         if (reservation.status === "stale") {
           throw new ClassifiedDataOperationError(

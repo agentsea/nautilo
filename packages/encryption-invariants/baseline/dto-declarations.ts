@@ -4,6 +4,9 @@ import { reviewedBolterRelayDtoReplacements } from "./reviewed-bolter-relay-dto"
 import {
   reviewedTaskRuntimeSignerDtoReplacements,
 } from "./reviewed-task-runtime-signer-dto";
+import {
+  reviewedMessageModelInputExposureDtoReplacements,
+} from "./reviewed-message-model-input-exposure-dto";
 import { reviewedTaskResearchDtoReplacements, SUPERSEDED_TASK_RESEARCH_DTO_LOCATORS } from "./reviewed-task-research-dto";
 import {
   REVIEWED_MAIN_2026_09_12_DTO_REPLACEMENTS,
@@ -39,6 +42,7 @@ import {
 } from "./reviewed-paid-service-funding-dto";
 import {
   REVIEWED_TASK_PROTECTION_DTO_DECLARATIONS,
+  reviewedTaskDefinitionAuthorizationDtoReplacements,
   SUPERSEDED_TASK_PROTECTION_DTO_LOCATORS,
 } from "./reviewed-task-protection-dto";
 import {
@@ -6232,7 +6236,8 @@ const PRE_MAIN_2026_10_13_DTO_DECLARATIONS: readonly DtoDeclaration[] = [
   ...REVIEWED_TASK_PROTECTION_DTO_DECLARATIONS,
 ];
 
-export const DTO_BASELINE_DECLARATIONS: readonly DtoDeclaration[] =
+const PRE_MESSAGE_MODEL_INPUT_EXPOSURE_DTO_DECLARATIONS:
+  readonly DtoDeclaration[] =
   reviewedTaskRuntimeSignerDtoReplacements(
     reviewedBolterRelayDtoReplacements(
       reviewedExternalMessageAttributionDtoReplacements([
@@ -6250,5 +6255,12 @@ export const DTO_BASELINE_DECLARATIONS: readonly DtoDeclaration[] =
   ...BOLTER_HTTP_DECLARATIONS,
   ...CHATGPT_PLAN_DTO_DECLARATIONS,
       ]),
+    ),
+  );
+
+export const DTO_BASELINE_DECLARATIONS: readonly DtoDeclaration[] =
+  reviewedTaskDefinitionAuthorizationDtoReplacements(
+    reviewedMessageModelInputExposureDtoReplacements(
+      PRE_MESSAGE_MODEL_INPUT_EXPOSURE_DTO_DECLARATIONS,
     ),
   );

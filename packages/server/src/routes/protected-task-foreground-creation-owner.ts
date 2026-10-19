@@ -15,10 +15,26 @@ import { createProtectedTaskRequesterPrivateRoomResolver } from "./protected-tas
 import { createProtectedTaskForegroundCreationPublication } from "./protected-task-foreground-creation-publication";
 import { createProtectedTaskForegroundUpdatePublication } from "./protected-task-foreground-update-publication";
 import type { ProtectedTaskForegroundCreationContext } from "./protected-task-foreground-creation-context";
+import type { ForegroundAgentEntityCryptoInvocation } from "@nautilo/lattice-bridge";
+import type { ResolveCurrentDeviceWrappedAgentObjectAccessGenesisSetAuthorization } from "@nautilo/lattice-crypto";
 import { parseClaudeTaskExecutionMetadata } from "../claude/task-execution-route";
 
 type Publication = Parameters<typeof createProtectedTaskForegroundCreationPublication>[0];
 type ProductLoan = Parameters<ProtectedTaskForegroundCreationContext["withProduct"]>[0];
+type TaskDefinitionAuthorization = Readonly<{
+  authority: TaskContentAuthorityV1;
+  entities: ForegroundAgentEntityCryptoInvocation;
+  publication: Readonly<{
+    operationId: string;
+    grantId: string;
+    grantDigest: Uint8Array;
+    recipientKeyId: string;
+    taskDefinitionForegroundAuthorizationBytes?: Uint8Array | undefined;
+  }>;
+  resolveCurrentForegroundDefinitionAuthorization:
+    ResolveCurrentDeviceWrappedAgentObjectAccessGenesisSetAuthorization;
+  assertCurrent(): Promise<void>;
+}>;
 
 function unavailable(): never {
   throw new ClassifiedDataOperationError("authority", "Protected Task creation foreground authority is unavailable");
@@ -34,11 +50,21 @@ export function createProtectedTaskForegroundCreationOwner(input: Omit<Publicati
     policyRevision: number; namespaceIds: readonly string[] }>;
   assertCurrentForeground(): Promise<void>;
   createCurrentAuthority(product: PostgresJsBridgeConnection): Promise<DomainKeyV2LiveShadowCurrentAuthority | null>;
+  authorizeTaskDefinition?<Value>(input: Readonly<{
+    taskId: string;
+    taskExecutorAgentId: string;
+    operation: "create" | "update";
+    targetContentRevision: number;
+    operationId: string;
+    workDescriptorDigest: Uint8Array;
+    use(authorization: TaskDefinitionAuthorization): Promise<Value>;
+  }>): Promise<Value>;
 }>) {
   type Loan = Readonly<{ taskId: string; transaction: ProductLoan["transaction"]; executor: ProductLoan["executor"];
     product: PostgresJsBridgeConnection; authority: DomainKeyV2LiveShadowCurrentAuthority;
     assertCurrent(): Promise<void> }>;
   const loans = new AsyncLocalStorage<Loan>();
+  const taskAuthorizations = new AsyncLocalStorage<TaskDefinitionAuthorization>();
   let disposed = false;
   const assertLive = () => {
     input.entities.signal.throwIfAborted();
@@ -50,11 +76,14 @@ export function createProtectedTaskForegroundCreationOwner(input: Omit<Publicati
     if (loan === undefined) unavailable();
     return loan;
   };
+  const currentTaskAuthorization = (): TaskDefinitionAuthorization | null =>
+    taskAuthorizations.getStore() ?? null;
   const assertCurrent = async () => {
     assertLive();
     const loan = loans.getStore();
     if (loan === undefined) await input.assertCurrentForeground();
     else await loan.assertCurrent();
+    await currentTaskAuthorization()?.assertCurrent();
     assertLive();
   };
   const privateFact = async (request: Pick<ProtectedTaskCreationResolutionInputV1, "requestorId" | "agentId">,
@@ -64,8 +93,24 @@ export function createProtectedTaskForegroundCreationOwner(input: Omit<Publicati
     await loan.assertCurrent();
     const room = await createProtectedTaskRequesterPrivateRoomResolver(loan.transaction)(
       request.requestorId, taskExecutorAgentId, expectedNamespaceId);
-    if (room === null || !input.subject.namespaceIds.includes(room.namespaceId)) {
+    const taskAuthorization = currentTaskAuthorization();
+    if (room === null || (!input.subject.namespaceIds.includes(room.namespaceId)
+      && taskAuthorization?.authority.namespaceId !== room.namespaceId)) {
       return { status: "unavailable", reason: "requester_private_namespace_unauthorized" };
+    }
+    if (taskAuthorization !== null) {
+      await taskAuthorization.assertCurrent();
+      const authority = taskAuthorization.authority;
+      if (authority.requesterHumanId !== input.subject.humanId
+        || authority.namespaceId !== room.namespaceId) {
+        return { status: "unavailable", reason: "requester_private_namespace_unauthorized" };
+      }
+      return Object.freeze({ status: "authorized" as const,
+        subjectHumanId: authority.requesterHumanId,
+        namespaceId: authority.namespaceId,
+        domainId: authority.domainId,
+        accessRevision: authority.expectedAccessRevision,
+        policyRevision: authority.expectedPolicyRevision });
     }
     const fact = await new PostgresNamespaceProductAuthority(loan.product).withCurrentPrivateRoom({
       subjectUserId: input.subject.userId, subjectHumanId: input.subject.humanId,
@@ -113,7 +158,46 @@ export function createProtectedTaskForegroundCreationOwner(input: Omit<Publicati
       } };
     },
   });
+  const useEntity: ForegroundAgentEntityCryptoInvocation["use"] = request =>
+    (currentTaskAuthorization()?.entities ?? input.entities).use(request);
+  const useCurrentEntitySet: ForegroundAgentEntityCryptoInvocation["useCurrentSet"] = request =>
+    (currentTaskAuthorization()?.entities ?? input.entities).useCurrentSet(request);
+  const entities: ForegroundAgentEntityCryptoInvocation = Object.freeze({
+    get signal() {
+      return currentTaskAuthorization()?.entities.signal ?? input.entities.signal;
+    },
+    use: useEntity,
+    useCurrentSet: useCurrentEntitySet,
+  });
+  const publicationCoordinates = Object.freeze({
+    get operationId() {
+      return currentTaskAuthorization()?.publication.operationId
+        ?? input.publication.operationId;
+    },
+    policyRevision: input.publication.policyRevision,
+    get grantId() {
+      return currentTaskAuthorization()?.publication.grantId
+        ?? input.publication.grantId;
+    },
+    get grantDigest() {
+      return currentTaskAuthorization()?.publication.grantDigest
+        ?? input.publication.grantDigest;
+    },
+    get recipientKeyId() {
+      return currentTaskAuthorization()?.publication.recipientKeyId
+        ?? input.publication.recipientKeyId;
+    },
+    get taskDefinitionForegroundAuthorizationBytes() {
+      return currentTaskAuthorization()?.publication
+        .taskDefinitionForegroundAuthorizationBytes;
+    },
+    agentAuthorizationRevision: input.publication.agentAuthorizationRevision,
+    signerKeyId: input.publication.signerKeyId,
+    signerPublicKey: input.publication.signerPublicKey,
+    runtime: input.publication.runtime,
+  });
   const publication = createProtectedTaskForegroundCreationPublication({ ...input,
+    entities, publication: publicationCoordinates,
     withCurrentProduct: async request => {
       const loan = current();
       const fact = await privateFact(request.candidate, request.plan.authority.namespaceId);
@@ -122,15 +206,17 @@ export function createProtectedTaskForegroundCreationOwner(input: Omit<Publicati
         keyClass: "ai", requesterHumanId: fact.subjectHumanId, namespaceId: fact.namespaceId,
         domainId: fact.domainId, expectedAccessRevision: fact.accessRevision, expectedPolicyRevision: fact.policyRevision };
       return request.use({ transaction: loan.transaction, product: loan.product, restricted: input.restricted,
-        authority, resolveCurrentForegroundDefinitionAuthorization: loan.authority.resolveCurrentForegroundEntityObjectWrite,
+        authority, resolveCurrentForegroundDefinitionAuthorization:
+          currentTaskAuthorization()?.resolveCurrentForegroundDefinitionAuthorization
+            ?? loan.authority.resolveCurrentForegroundEntityObjectWrite,
         assertCurrent: loan.assertCurrent });
     },
   });
   const updatePublication = createProtectedTaskForegroundUpdatePublication({
     owner: input.owner,
     crypto: input.crypto,
-    entities: input.entities,
-    publication: input.publication,
+    entities,
+    publication: publicationCoordinates,
     withCurrentProduct: async (request, use) => {
       const loan = current();
       if (request.taskId !== loan.taskId
@@ -142,7 +228,9 @@ export function createProtectedTaskForegroundCreationOwner(input: Omit<Publicati
         transaction: loan.transaction,
         product: loan.product,
         restricted: input.restricted,
-        resolveCurrentForegroundDefinitionAuthorization: loan.authority.resolveCurrentForegroundEntityObjectWrite,
+        resolveCurrentForegroundDefinitionAuthorization:
+          currentTaskAuthorization()?.resolveCurrentForegroundDefinitionAuthorization
+            ?? loan.authority.resolveCurrentForegroundEntityObjectWrite,
         resolveAuthority: async (namespaceId, taskExecutorAgentId) => {
           const fact = await privateFact(request, namespaceId, taskExecutorAgentId);
           if (fact.status !== "authorized") return null;
@@ -163,6 +251,14 @@ export function createProtectedTaskForegroundCreationOwner(input: Omit<Publicati
   });
   const context: ProtectedTaskForegroundCreationContext = {
     admission, assertCurrent,
+    withTaskDefinitionAuthorization: async request => {
+      if (taskAuthorizations.getStore() !== undefined) {
+        throw new TypeError("Protected Task definition authorization cannot nest");
+      }
+      if (input.authorizeTaskDefinition === undefined) return request.use();
+      return input.authorizeTaskDefinition({ ...request,
+        use: authorization => taskAuthorizations.run(authorization, request.use) });
+    },
     publishProtected: async request => {
       const loan = current();
       if (request.candidate.id !== loan.taskId || request.transaction !== loan.transaction || request.executor !== loan.executor) unavailable();

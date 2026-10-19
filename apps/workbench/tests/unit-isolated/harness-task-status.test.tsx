@@ -35,7 +35,11 @@ mock.module("../../src/adapters/runtime-contexts", () => ({ ...contexts,
 mock.module("../../src/hooks/use-auth", () => ({
   useAuth: () => ({
     viewerGeneration: 1,
-    viewer: { isVerified: true, sessionUserId: "task-owner" },
+    viewer: {
+      isVerified: true,
+      sessionUserId: "task-owner",
+      sessionActorId: null,
+    },
   }),
 }));
 mock.module("../../src/contexts/task-state/task-state-context", () => ({ ...taskContext,
@@ -52,7 +56,22 @@ mock.module("../../src/contexts/task-state/task-state-context", () => ({ ...task
 }));
 mock.module("../../src/lib/api", () => ({ ...api,
   apiClient: {
-    getTaskContentV1: async () => ({ task: { id: "task" }, definition: { status: "ordinary" } }),
+    getTaskContentV1: async () => ({
+      task: {
+        id: "task",
+        status: durableStatus,
+        agentId: null,
+        fundingFailure: durableFundingFailure,
+      },
+      definition: {
+        dtoVersion: 1,
+        status: "ordinary",
+        prompt: "Saved source bytes",
+        expectedOutput: null,
+        lastError: null,
+      },
+      runs: [],
+    }),
     getTask: async () => ({
       task: { status: durableStatus, fundingFailure: durableFundingFailure },
       runs: durableFundingSource || durableFundingFailure ? [{

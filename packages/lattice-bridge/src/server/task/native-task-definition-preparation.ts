@@ -26,6 +26,7 @@ export type PrepareNativeTaskDefinitionCryptoRevisionInput = Readonly<{
     signerPublicKey: Uint8Array;
     agentAuthorizationRevision: number;
     policyRevision: number;
+    taskDefinitionForegroundAuthorizationBytes?: Uint8Array | undefined;
   }>;
 }>;
 
@@ -82,6 +83,9 @@ export async function prepareNativeTaskDefinitionCryptoRevision(
           runtime: input.publication.runtime, signerKeyId: input.publication.signerKeyId,
           signerPublicKey: input.publication.signerPublicKey,
           agentAuthorizationRevision: input.publication.agentAuthorizationRevision,
+          ...(input.publication.taskDefinitionForegroundAuthorizationBytes === undefined
+            ? {} : { taskDefinitionForegroundAuthorizationBytes:
+              input.publication.taskDefinitionForegroundAuthorizationBytes }),
         });
         return createPreparedForegroundTaskDefinitionCryptoRevisionV1({ coordinate, authority, prepared });
       },

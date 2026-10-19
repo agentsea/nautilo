@@ -172,12 +172,28 @@ describe("live Task production composition", () => {
     expect((propertyNamed(response, "owner") as ts.PropertyAssignment)
       .initializer.getText(appSource)).toBe("taskContentOwner");
 
-    const protectedRoutes = objectArgument(
-      callNamed(appSource, "createProductionProtectedTaskComposition"),
-      0,
+    const protectedDependencies = variableNamed(
+      appSource,
+      "taskProtectedHttpDependencies",
     );
-    expect((propertyNamed(protectedRoutes, "owner") as ts.PropertyAssignment)
+    expect(
+      protectedDependencies.initializer !== undefined
+        && ts.isObjectLiteralExpression(protectedDependencies.initializer),
+    ).toBe(true);
+    const protectedDependencyObject =
+      protectedDependencies.initializer as ts.ObjectLiteralExpression;
+    expect((propertyNamed(protectedDependencyObject, "owner") as ts.PropertyAssignment)
       .initializer.getText(appSource)).toBe("taskContentOwner");
+
+    const protectedRoutes = callNamed(
+      appSource,
+      "createProductionProtectedTaskComposition",
+    );
+    expect(protectedRoutes.arguments[0]?.getText(appSource))
+      .toBe("taskProtectedHttpDependencies");
+    const fallbackRoutes = callNamed(appSource, "createTaskOrdinaryFallbackPorts");
+    expect(fallbackRoutes.arguments[0]?.getText(appSource))
+      .toBe("taskProtectedHttpDependencies");
   });
 
   test("mounts protected repair and occurrence recovery behind the live owner", () => {

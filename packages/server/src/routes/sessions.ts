@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { parseModelInputExposureMetadataV1 } from "@nautilo/reflection/payload";
 import type { AdvancedVideoWorkcardContinuation, MessageArtifactOpenRef } from "@nautilo/types";
 import type {
   ChatSearchPage,
@@ -280,9 +281,17 @@ export function serializeRoomMessageForAround(
       : {}),
     ...(options.includeProtectedParityMetadata === true
         && message.modelInputExposure !== undefined
-      ? { modelInputExposure: message.modelInputExposure }
+      ? { modelInputExposure: requireModelInputExposureMetadata(message.modelInputExposure) }
       : {}),
   };
+}
+
+function requireModelInputExposureMetadata(value: unknown) {
+  const parsed = parseModelInputExposureMetadataV1(value);
+  if (parsed === null) {
+    throw new TypeError("Room history model-input exposure metadata is invalid");
+  }
+  return parsed;
 }
 
 function isEncryptedOnlyMode(mode: string): boolean {
@@ -628,7 +637,7 @@ export function sessionRoutes(
           ? { foregroundExecutionId: m.foregroundExecutionId }
           : {}),
         ...(!protectedOnly && shadowReadIntent !== null && m.modelInputExposure !== undefined
-          ? { modelInputExposure: m.modelInputExposure }
+          ? { modelInputExposure: requireModelInputExposureMetadata(m.modelInputExposure) }
           : {}),
         ...(() => {
           const reactions = reactionsByMessage.get(Number(m.id));

@@ -130,8 +130,6 @@ export function exactForegroundAgentSignerKeysV1(input: Readonly<{
         const expectedWriterMatches =
           input.expectedDefinitionAuthorHumanId !== undefined
             ? plan.recipientAgentId === input.expectedAgentId
-              || plan.subjectHumanId
-                === input.expectedDefinitionAuthorHumanId
             : input.expectedAgentId === undefined
               || plan.recipientAgentId === input.expectedAgentId;
         if (planDigest.length !== 32

@@ -110,6 +110,13 @@ export const tasks = pgTable(
     cryptoMappingState: text("crypto_mapping_state", {
       enum: ["unmapped", "verified", "stale"],
     }).notNull().default("unmapped"),
+    ordinaryFallbackOperationId: text("ordinary_fallback_operation_id"),
+    ordinaryFallbackRequestDigest: bytea("ordinary_fallback_request_digest"),
+    ordinaryFallbackReason: text("ordinary_fallback_reason", {
+      enum: ["target_encryption_not_ready"],
+    }),
+    ordinaryFallbackPolicyRevision: integer("ordinary_fallback_policy_revision"),
+    ordinaryFallbackCompletedAt: timestamp("ordinary_fallback_completed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
@@ -131,6 +138,23 @@ export const tasks = pgTable(
     }).onDelete("restrict"),
     check("tasks_content_revision_nonnegative", sql`${t.contentRevision} >= 0`),
     check("tasks_crypto_access_revision_nonnegative", sql`${t.cryptoAccessRevision} >= 0`),
+    check("tasks_ordinary_fallback_receipt_coherent", sql`(
+      ${t.ordinaryFallbackOperationId} is null
+      and ${t.ordinaryFallbackRequestDigest} is null
+      and ${t.ordinaryFallbackReason} is null
+      and ${t.ordinaryFallbackPolicyRevision} is null
+      and ${t.ordinaryFallbackCompletedAt} is null
+    ) or (
+      ${t.ordinaryFallbackOperationId} is not null
+      and length(${t.ordinaryFallbackOperationId}) > 0
+      and ${t.ordinaryFallbackRequestDigest} is not null
+      and octet_length(${t.ordinaryFallbackRequestDigest}) = 32
+      and ${t.ordinaryFallbackReason} is not null
+      and ${t.ordinaryFallbackReason} = 'target_encryption_not_ready'
+      and ${t.ordinaryFallbackPolicyRevision} is not null
+      and ${t.ordinaryFallbackPolicyRevision} > 0
+      and ${t.ordinaryFallbackCompletedAt} is not null
+    )`),
     check("tasks_protected_pause_intent_coherent", sql`(
       ${t.pauseRequestId} is null and ${t.pauseRequestedAt} is null and ${t.pauseReason} is null
     ) or (

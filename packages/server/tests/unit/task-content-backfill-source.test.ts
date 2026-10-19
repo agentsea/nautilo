@@ -82,7 +82,12 @@ function taskRow(overrides: Record<string, unknown> = {}) {
     runAt: new Date("2026-10-10T10:30:00.000Z"),
     cron: null,
     timezone: "Europe/Athens",
+    catchup: "run_once",
+    callingRoomId: ids.namespace,
     targetChat: "last_in_namespace",
+    targetChatHandle: "agent:release",
+    targetRoomId: ids.namespace,
+    targetUserIds: [ids.user],
     resultDelivery: "raw_and_wake",
     useScope: true,
     scopeId: ids.scope,
@@ -91,7 +96,10 @@ function taskRow(overrides: Record<string, unknown> = {}) {
     selectionProfile: "smartest",
     selectionSpec: null,
     requestedModelId: null,
+    fundingMode: "legacy_server",
     timeLimitSeconds: 900,
+    awaitResponse: false,
+    localExecutionDelegation: null,
     parentTaskId: null,
     depth: 0,
     status: "pending",
@@ -198,10 +206,66 @@ describe("Task content backfill source", () => {
         selectionSpec: null,
         requestedModelId: null,
       },
+      agentId: ids.agent,
+      preset: "task",
+      catchup: "run_once",
+      callingRoomId: ids.namespace,
+      targetChatHandle: "agent:release",
+      targetRoomId: ids.namespace,
+      targetUserIds: [ids.user],
+      awaitResponse: false,
+      fundingMode: "legacy_server",
+      localExecutionDelegation: null,
     });
     expect(result.classification.status).toBe("supported");
     expect(f.projections[0]).toContain("prompt");
-    expect(f.projections[0]).not.toContain("localExecutionDelegation");
+    expect(f.projections[0]).toContain("localExecutionDelegation");
+  });
+
+  test("binds every server-owned execution coordinate without changing the legacy digest", async () => {
+    const base = await readTaskContentBackfillSource(
+      transaction([[taskRow()], []]).tx,
+      definitionClaim(),
+    );
+    expect(base?.classification.status).toBe("supported");
+    if (base?.classification.status !== "supported") throw new Error("Expected supported source");
+    const variants = [
+      { agentId: "90000000-0000-4000-8000-000000000009" },
+      { preset: "schedule" },
+      { catchup: "skip" },
+      { callingRoomId: null },
+      { targetChatHandle: null },
+      { targetRoomId: null },
+      { targetUserIds: [] },
+      { awaitResponse: true },
+      { fundingMode: "caller" },
+      { localExecutionDelegation: {
+        version: 1,
+        humanUserId: ids.user,
+        agentId: ids.agent,
+        sourceRoomId: ids.namespace,
+        sourceConversationId: "conversation:release",
+        rootTaskId: ids.task,
+        target: { instanceId: "desktop", relayId: "relay:test",
+          pairingGeneration: "pairing:1", serverOrigin: "https://nautilo.test",
+          serverFingerprint: "server:test" },
+        projectGrantId: "grant:test",
+        ceiling: "basic",
+        profile: null,
+      } },
+    ];
+    for (const variant of variants) {
+      const changed = await readTaskContentBackfillSource(
+        transaction([[taskRow(variant)], []]).tx,
+        definitionClaim(),
+      );
+      expect(changed?.classification.status).toBe("supported");
+      if (changed?.classification.status !== "supported") throw new Error("Expected supported source");
+      expect(changed.classification.sourceDigest).not.toEqual(base.classification.sourceDigest);
+      expect(changed.classification.legacySourceDigest).toEqual(
+        base.classification.legacySourceDigest,
+      );
+    }
   });
 
   test.each(["in_background", "schedule"])(

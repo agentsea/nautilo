@@ -63,9 +63,13 @@ import type {
 import {
   MAX_TASK_RUNTIME_SIGNER_AUTHORIZATION_WIRE_BYTES_V1,
 } from "../background/task-runtime-signer-authorization-v1.ts";
-import type {
+import {
+  TASK_DEFINITION_FOREGROUND_AUTHORIZATION_MAX_EVIDENCE_BYTES_V1,
+  type
   DeviceWrappedAgentEnvelopeAuthorityV1,
+  type
   DeviceWrappedAgentNamespaceAuthorityV1,
+  type
   DeviceWrappedAgentObjectAccessGenesisSetAuthorityContextV1,
 } from "../object/device-wrapped-agent-access-manifest-set-v1.ts";
 import type {
@@ -1098,9 +1102,15 @@ export function assertObjectAccessAuthorizationExpectation(
       "Device-wrapped Agent object access set authorization expectation",
       expectation,
       ["kind", "context", "signerPublicKey", "signerPublicKeyHash",
-        ...(expectation.signerEvidence === undefined ? [] : ["signerEvidence"])],
+        ...(expectation.signerEvidence === undefined ? [] : ["signerEvidence"]),
+        ...(expectation.signerEvidenceBytes === undefined
+          ? [] : ["signerEvidenceBytes"])],
     );
     const context = expectation.context;
+    if (expectation.signerEvidence !== undefined
+      && expectation.signerEvidenceBytes !== undefined) {
+      throw new TypeError("Task publication signer proof is ambiguous");
+    }
     if (expectation.signerEvidence !== undefined) {
       const proof = expectation.signerEvidence;
       assertExactFields("Task publication signer proof", proof,
@@ -1113,6 +1123,22 @@ export function assertObjectAccessAuthorizationExpectation(
         || context.agentAuthorizationRevision !== 0 || context.runtimeGeneration !== 0
         || !equalBytes(sha256(proof.certificateBytes), context.signerAuthorizationHash)) {
         throw new TypeError("Task publication signer proof is invalid");
+      }
+    }
+    if (expectation.signerEvidenceBytes !== undefined) {
+      const proof = expectation.signerEvidenceBytes;
+      assertHash(
+        "Task definition foreground authorization hash",
+        context.signerAuthorizationHash,
+      );
+      if (proof.length < 1
+        || proof.length
+          > TASK_DEFINITION_FOREGROUND_AUTHORIZATION_MAX_EVIDENCE_BYTES_V1
+        || context.agentAuthorizationRevision !== 0
+        || !equalBytes(sha256(proof), context.signerAuthorizationHash)) {
+        throw new TypeError(
+          "Task definition foreground authorization proof is invalid",
+        );
       }
     }
 
@@ -1133,7 +1159,9 @@ export function assertObjectAccessAuthorizationExpectation(
         "agentId",
         "runtimeGeneration",
         "signerKeyId",
-        ...(expectation.signerEvidence === undefined ? [] : ["signerAuthorizationHash"]),
+        ...(expectation.signerEvidence === undefined
+            && expectation.signerEvidenceBytes === undefined
+          ? [] : ["signerAuthorizationHash"]),
       ],
     );
     if (

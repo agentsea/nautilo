@@ -1,7 +1,10 @@
 import { parseProtectedTaskCodexSelection } from "./protected-task-codex-selection";
 import { parseProtectedTaskHermesSelection } from "./protected-task-hermes-selection";
 import { parseProtectedTaskOpenCodeSelection } from "./protected-task-opencode-selection";
-import { createProtectedTaskHistoricalHumanDeviceSigningKeyResolver } from "./protected-task-historical-human-device-signing-key";
+import { createProtectedTaskHistoricalForegroundAuthorizationDeviceSigningKeyResolver,
+  createProtectedTaskHistoricalHumanDeviceSigningKeyResolver } from "./protected-task-historical-human-device-signing-key";
+import { createTaskDefinitionForegroundAuthorizationResolver } from "./task-definition-foreground-authorization";
+import { createProtectedTaskRequesterPrivateRoomResolver } from "./protected-task-requester-private-room";
 import { withVerifiedForegroundTaskDefinitionPublication, publishVerifiedForegroundTaskDefinition } from "@nautilo/lattice-bridge/server";
 import { isDeepStrictEqual } from "node:util";
 import { eq, tasks, type NewTask, type PostgresJsBridgeConnection } from "@nautilo/db";
@@ -194,6 +197,32 @@ export function createProtectedTaskForegroundCreationPublication(input: Readonly
               createPostgresForegroundAgentAcceptedExecutionEvidenceResolver({
                 product, crypto: input.crypto, rejectInvalidSelectedEvidence: true,
               });
+            const privateRoom = await createProtectedTaskRequesterPrivateRoomResolver(
+              context.transaction,
+            )(creation.candidate.ownerId, creation.candidate.agentId,
+              context.authority.namespaceId);
+            if (privateRoom === null) invalid("Foreground Task private Room is unavailable");
+            const objectId = deriveTaskContentCryptoObjectIdV1({
+              kind: "definition", taskId: creation.candidate.id, contentRevision: 1,
+            });
+            const resolveTaskDefinitionForegroundAuthorization =
+              createTaskDefinitionForegroundAuthorizationResolver({
+                crypto: input.crypto,
+                expectedObjectId: objectId,
+                taskId: creation.candidate.id,
+                operation: "create",
+                targetContentRevision: 1,
+                privateRoomId: privateRoom.roomId,
+                humanId: context.authority.requesterHumanId,
+                namespaceId: context.authority.namespaceId,
+                domainId: context.authority.domainId,
+                resolveAcceptedExecutionEvidence:
+                  resolveForegroundAgentAcceptedExecutionEvidence,
+                resolveHistoricalDeviceSigningPublicKey:
+                  createProtectedTaskHistoricalForegroundAuthorizationDeviceSigningKeyResolver(
+                    crypto,
+                  ),
+              });
             const productStore = new PostgresTaskContentProductStore(product, async expected => {
                 await assertCurrent();
                 return expected.requesterHumanId === context.authority.requesterHumanId
@@ -211,15 +240,16 @@ export function createProtectedTaskForegroundCreationPublication(input: Readonly
                   await assertCurrent();
                   return context.resolveCurrentForegroundDefinitionAuthorization(ctx);
                 }, resolveHistoricalAgentSignerAuthority: history.resolveAgentRuntimeSignerManager,
-                resolveHistoricalHumanDeviceSigningPublicKey: () => Promise.resolve(null) }),
+                resolveHistoricalHumanDeviceSigningPublicKey: () => Promise.resolve(null),
+                resolveTaskDefinitionForegroundAuthorization }),
             });
-            const objectId = deriveTaskContentCryptoObjectIdV1({ kind: "definition", taskId: creation.candidate.id, contentRevision: 1 });
             const inspected = await dependencies.inspect({ handle: crypto, crypto: input.crypto,
                 resolveForegroundAgentAcceptedExecutionEvidence,
                 taskId: creation.candidate.id, expectedAgentId: creation.candidate.agentId,
                 payload: creation.prepared.payload, currentAuthority: context.authority, entities: input.entities,
                 resolveHistoricalAgentSignerAuthority: history.resolveAgentRuntimeSignerManager,
                 resolveHistoricalHumanDeviceSigningPublicKey: createProtectedTaskHistoricalHumanDeviceSigningKeyResolver(crypto),
+                resolveTaskDefinitionForegroundAuthorization,
                 assertCurrent, use: async proof => {
                   if (existing === undefined) await context.transaction.insert(tasks).values(values);
                   await dependencies.publishVerified({ proof, product: productStore, operationId: creation.operationId,

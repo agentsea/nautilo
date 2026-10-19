@@ -19,7 +19,10 @@ import {
   parseDomainForegroundAuthorizationPlanV2,
 } from "@nautilo/lattice-crypto/wire";
 
-import type { ResolveLiveShadowAgentObjectSigner } from
+import type {
+  ResolveLiveShadowAgentObjectSigner,
+  ResolveTaskDefinitionForegroundAuthorization,
+} from
   "../storage/postgres-object-access-manifest-v5.ts";
 import {
   assertVerifiedConversationProductPostgresHandle,
@@ -47,12 +50,16 @@ export type ForegroundAgentAcceptedExecutionEvidence = Readonly<{
    * definition written by an Agent other than the Task executor. */
   acceptedAuthority?: Readonly<{
     subjectHumanId: string;
-    authorizedDomainIds: readonly string[];
+    authorizedNamespaces: readonly Readonly<{
+      namespaceId: string;
+      domainId: string;
+    }>[];
   }>;
 }>;
 
 export type ResolveForegroundAgentAcceptedExecutionEvidence = (
   principal: Parameters<ResolveLiveShadowAgentObjectSigner>[0],
+  selection?: Readonly<{ parentOperationHash: Uint8Array }>,
 ) => Promise<ForegroundAgentAcceptedExecutionEvidence | null>;
 
 type DefinitionAuthorPrincipal = Parameters<
@@ -67,7 +74,10 @@ function principalKey(principal: DefinitionAuthorPrincipal): string {
  * covered the Task definition's Human and Domain. */
 export function captureForegroundTaskDefinitionAuthor(input: Readonly<{
   resolveEvidence?: ResolveForegroundAgentAcceptedExecutionEvidence | undefined;
+  resolveTaskDefinitionForegroundAuthorization?:
+    ResolveTaskDefinitionForegroundAuthorization | undefined;
   subjectHumanId: string;
+  namespaceId: string;
   domainId: string | null;
 }>) {
   const accepted = new Set<string>();
@@ -77,10 +87,22 @@ export function captureForegroundTaskDefinitionAuthor(input: Readonly<{
       const authority = evidence?.acceptedAuthority;
       if (authority !== undefined && input.domainId !== null
         && authority.subjectHumanId === input.subjectHumanId
-        && authority.authorizedDomainIds.includes(input.domainId)) {
+        && authority.authorizedNamespaces.some(namespace =>
+          namespace.namespaceId === input.namespaceId
+          && namespace.domainId === input.domainId)) {
         accepted.add(principalKey(principal));
       }
       return evidence;
+    },
+    resolveTaskDefinitionForegroundAuthorization: async (
+      evidence: Parameters<ResolveTaskDefinitionForegroundAuthorization>[0],
+    ) => {
+      const signerPublicKey = await input
+        .resolveTaskDefinitionForegroundAuthorization?.(evidence) ?? null;
+      if (signerPublicKey !== null) {
+        accepted.add(principalKey(evidence.principal));
+      }
+      return signerPublicKey;
     },
     authorizes: (principal: DefinitionAuthorPrincipal) =>
       accepted.has(principalKey(principal)),
@@ -277,8 +299,11 @@ export function createPostgresForegroundAgentAcceptedExecutionEvidenceResolver(i
             && dispositionMatches) {
             acceptedAuthority = Object.freeze({
               subjectHumanId: authorization.subjectHumanId,
-              authorizedDomainIds: Object.freeze(
-                authorization.domains.map(domain => domain.domainId),
+              authorizedNamespaces: Object.freeze(
+                authorization.domains.map(domain => Object.freeze({
+                  namespaceId: domain.sourceNamespaceId,
+                  domainId: domain.domainId,
+                })),
               ),
             });
           }
@@ -319,7 +344,14 @@ export function createPostgresForegroundAgentAcceptedExecutionEvidenceResolver(i
       }
     }
   };
-  return async (principal) => {
+  return async (principal, selection) => {
+    const parentOperationHash = selection === undefined ? undefined
+      : Uint8Array.from(selection.parentOperationHash);
+    if (parentOperationHash !== undefined && parentOperationHash.length !== 32) {
+      parentOperationHash.fill(0);
+      throw new TypeError("Foreground parent operation hash is invalid");
+    }
+    try {
     const shared = await executeTypedConversationProductQuery(input.product,
       conversationProductTypedDb.select({
         operationId: executions.executionId,
@@ -396,6 +428,12 @@ export function createPostgresForegroundAgentAcceptedExecutionEvidenceResolver(i
         eq(executions.agentId, principal.agentId),
         eq(executions.agentRuntimeGeneration, principal.runtimeGeneration),
         eq(executions.agentSignerKeyId, principal.signerKeyId),
+        ...(parentOperationHash === undefined ? [] : [eq(
+          sql<Uint8Array>`sha256(convert_to(${
+            "nautilo/task-definition-parent-operation/v1\n"
+          } || ${executions.executionId}::text, 'UTF8'))`,
+          parentOperationHash,
+        )]),
         isNotNull(executions.authorizedAt),
         or(isNotNull(invocations.authorizationDigest),
           isNotNull(executions.authorizationDigest)),
@@ -431,6 +469,12 @@ export function createPostgresForegroundAgentAcceptedExecutionEvidenceResolver(i
         eq(signers.agentSignerKeyId, principal.signerKeyId),
         eq(signers.agentRuntimeGeneration, principal.runtimeGeneration),
         eq(turns.agentId, principal.agentId),
+        ...(parentOperationHash === undefined ? [] : [eq(
+          sql<Uint8Array>`sha256(convert_to(${
+            "nautilo/task-definition-parent-operation/v1\n"
+          } || ${turns.operationId}::text, 'UTF8'))`,
+          parentOperationHash,
+        )]),
         isNotNull(turns.grantDigest),
         isNotNull(turns.humanRequestDigest),
       )).orderBy(desc(signers.createdAt), desc(signers.operationId)).limit(1));
@@ -439,6 +483,9 @@ export function createPostgresForegroundAgentAcceptedExecutionEvidenceResolver(i
       throw new TypeError("Selected foreground Agent execution evidence is invalid");
     }
     return evidence;
+    } finally {
+      parentOperationHash?.fill(0);
+    }
   };
 }
 

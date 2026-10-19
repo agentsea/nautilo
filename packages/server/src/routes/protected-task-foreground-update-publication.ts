@@ -44,7 +44,10 @@ import {
 import type { LatticeCrypto, ResolveCurrentDeviceWrappedAgentObjectAccessGenesisSetAuthorization } from "@nautilo/lattice-crypto";
 import { computeNextFireAt } from "@nautilo/runtime";
 import type { CanonicalTranscriptTx } from "@nautilo/trust";
-import { createProtectedTaskHistoricalHumanDeviceSigningKeyResolver } from "./protected-task-historical-human-device-signing-key";
+import { createProtectedTaskHistoricalForegroundAuthorizationDeviceSigningKeyResolver,
+  createProtectedTaskHistoricalHumanDeviceSigningKeyResolver } from "./protected-task-historical-human-device-signing-key";
+import { createProtectedTaskRequesterPrivateRoomResolver } from "./protected-task-requester-private-room";
+import { createTaskDefinitionForegroundAuthorizationResolver } from "./task-definition-foreground-authorization";
 
 type UpdateInput = Parameters<NonNullable<TaskToolRuntime["updateProtectedTask"]>>[0];
 type UpdateResult = Awaited<ReturnType<NonNullable<TaskToolRuntime["updateProtectedTask"]>>>;
@@ -387,6 +390,34 @@ export function createProtectedTaskForegroundUpdatePublication(input: Dependenci
           }
           const nextRevision = safe.contentRevision + 1;
           if (!Number.isSafeInteger(nextRevision)) invalid("Foreground Task content revision is exhausted");
+          const privateRoom = await createProtectedTaskRequesterPrivateRoomResolver(
+            context.transaction,
+          )(safe.ownerId, safe.agentId, authority.namespaceId);
+          if (privateRoom === null) invalid("Foreground Task private Room is unavailable");
+          const resolveTaskAuthorization = (contentRevision: number) =>
+            createTaskDefinitionForegroundAuthorizationResolver({
+              crypto: input.crypto,
+              expectedObjectId: deriveTaskContentCryptoObjectIdV1({
+                kind: "definition", taskId: request.taskId, contentRevision,
+              }),
+              taskId: request.taskId,
+              operation: contentRevision === 1 ? "create" : "update",
+              targetContentRevision: contentRevision,
+              privateRoomId: privateRoom.roomId,
+              humanId: authority.requesterHumanId,
+              namespaceId: authority.namespaceId,
+              domainId: authority.domainId,
+              resolveAcceptedExecutionEvidence:
+                resolveForegroundAgentAcceptedExecutionEvidence,
+              resolveHistoricalDeviceSigningPublicKey:
+                createProtectedTaskHistoricalForegroundAuthorizationDeviceSigningKeyResolver(
+                  crypto,
+                ),
+            });
+          const resolveCurrentTaskDefinitionForegroundAuthorization =
+            resolveTaskAuthorization(safe.contentRevision);
+          const resolveNextTaskDefinitionForegroundAuthorization =
+            resolveTaskAuthorization(nextRevision);
           const operation = await productStore.getRevisionByOperation({ operationId: raw.operationId });
           if (operation.status === "authority_unavailable") unavailable("Foreground Task retry authority is unavailable");
           if (operation.status === "conflict") invalid("Foreground Task retry publication is ambiguous");
@@ -434,6 +465,8 @@ export function createProtectedTaskForegroundUpdatePublication(input: Dependenci
             resolveForegroundAgentAcceptedExecutionEvidence,
             resolveHistoricalAgentSignerAuthority,
             resolveHistoricalHumanDeviceSigningPublicKey: createProtectedTaskHistoricalHumanDeviceSigningKeyResolver(crypto),
+            resolveTaskDefinitionForegroundAuthorization:
+              resolveCurrentTaskDefinitionForegroundAuthorization,
             assertCurrent,
             use: async opened => {
               const payload = opened.payload;
@@ -515,6 +548,8 @@ export function createProtectedTaskForegroundUpdatePublication(input: Dependenci
                   resolveForegroundAgentAcceptedExecutionEvidence,
                   resolveHistoricalAgentSignerAuthority,
                   resolveHistoricalHumanDeviceSigningPublicKey: createProtectedTaskHistoricalHumanDeviceSigningKeyResolver(crypto),
+                  resolveTaskDefinitionForegroundAuthorization:
+                    resolveNextTaskDefinitionForegroundAuthorization,
                   assertCurrent,
                   use: async proof => {
                     const updated = await updateTaskIfCurrent(db, {
@@ -590,6 +625,8 @@ export function createProtectedTaskForegroundUpdatePublication(input: Dependenci
               },
               resolveHistoricalAgentSignerAuthority,
               resolveHistoricalHumanDeviceSigningPublicKey: () => Promise.resolve(null),
+              resolveTaskDefinitionForegroundAuthorization:
+                resolveNextTaskDefinitionForegroundAuthorization,
             }),
           });
           // The durable request digest binds both private-definition and

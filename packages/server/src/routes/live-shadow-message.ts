@@ -8,6 +8,7 @@ import {
   sharedAgentLiveShadowAcknowledgementPlanRequestV1Schema,
   sharedAgentExecutionAuthorizationRequestV1Schema,
   runtimeInvocationAuthorizationRequestV1Schema,
+  taskDefinitionAuthorizationRequestV1Schema,
   sharedAgentOutputReadPlanRequestV1Schema,
   liveShadowMessagePlanRequestSchema,
   type LiveShadowMessagePlanResponseV1,
@@ -57,6 +58,17 @@ export interface LiveShadowMessagePlanComposition {
     authorizationBytes: Uint8Array;
     now: number;
   }>): Promise<"authorized" | "replayed" | "unavailable">;
+  admitTaskDefinitionAuthorization?(input: Readonly<{
+    authorizationId: string;
+    parentOperationId: string;
+    roomId: string;
+    clientActionSessionId: string;
+    userId: string;
+    actorId: string;
+    authorizationPlanBytes: Uint8Array;
+    authorizationBytes: Uint8Array;
+    now: number;
+  }>): Promise<"authorized" | "unavailable">;
   acknowledgeHumanPeer?(input: Readonly<{
     userId: string;
     actorId: string;
@@ -351,6 +363,67 @@ export function liveShadowMessageRoutes(
           responseVersion: 1,
           status,
           invocationId: request.params.invocationId,
+        });
+      } finally {
+        authorizationPlanBytes.fill(0);
+        authorizationBytes.fill(0);
+      }
+    },
+  );
+
+  app.post<{
+    Params: { roomId: string; authorizationId: string };
+    Body: unknown;
+  }>(
+    "/api/rooms/:roomId/live-shadow/task-definition/:authorizationId/authorize",
+    liveShadowLargeRequestRouteOptions,
+    async (request, reply) => {
+      const authority = signedInAuthority(request);
+      if (authority === null) {
+        return reply.code(401).send({ error: "unauthorized" });
+      }
+      const parsed = taskDefinitionAuthorizationRequestV1Schema.safeParse(
+        request.body,
+      );
+      if (!parsed.success
+        || parsed.data.operationId !== request.params.authorizationId) {
+        return reply.code(400).send({ error: "invalid_request" });
+      }
+      const session = options.clientSessions.inspect({
+        clientActionSessionId: parsed.data.clientActionSessionId,
+        actorId: authority.humanActorId,
+      });
+      if (session === null) {
+        return reply.code(409).send({ error: "client_session_unavailable" });
+      }
+      const authorizationPlanBytes = decodeBase64url(
+        parsed.data.authorizationPlanBytesBase64url,
+      );
+      const authorizationBytes = decodeBase64url(
+        parsed.data.authorizationBytesBase64url,
+      );
+      if (authorizationPlanBytes === null || authorizationBytes === null) {
+        authorizationPlanBytes?.fill(0);
+        authorizationBytes?.fill(0);
+        return reply.code(400).send({ error: "invalid_request" });
+      }
+      try {
+        const status = await options.composition
+          .admitTaskDefinitionAuthorization?.({
+            authorizationId: request.params.authorizationId,
+            parentOperationId: parsed.data.parentOperationId,
+            roomId: request.params.roomId,
+            clientActionSessionId: parsed.data.clientActionSessionId,
+            userId: authority.userId,
+            actorId: authority.humanActorId,
+            authorizationPlanBytes,
+            authorizationBytes,
+            now: now(),
+          }) ?? "unavailable";
+        return reply.send({
+          responseVersion: 1,
+          status,
+          authorizationId: request.params.authorizationId,
         });
       } finally {
         authorizationPlanBytes.fill(0);

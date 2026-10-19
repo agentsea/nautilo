@@ -10,6 +10,7 @@ const DB_SCHEMA_EVIDENCE = [
   "packages/db/tests/unit/foreground-memory-publication-schema.test.ts",
   "packages/lattice-bridge/tests/unit/postgres-foreground-memory-publication.test.ts",
   "packages/db/tests/unit/task-crypto-schema.test.ts",
+  "packages/server/tests/lattice-integration/protected-task-memory-object-writer.integration.test.ts",
   "packages/db/tests/unit/task-content-backfill.test.ts",
   "packages/db/tests/unit/protected-task-output-binding-schema.test.ts",
   "packages/db/tests/unit/protected-task-wake-continuation-schema.test.ts",
@@ -21,6 +22,24 @@ const PROTECTED_ROUTE_EVIDENCE = [
   "packages/server/tests/unit/protected-task-transcript-read.test.ts",
   "packages/server/tests/unit/task-content-backfill-routes.test.ts",
   "packages/server/tests/unit/protected-task-pending-attention-route.test.ts",
+] as const;
+const TASK_ORDINARY_FALLBACK_EVIDENCE = [
+  ...EVIDENCE,
+  "packages/api-client/tests/unit/task-ordinary-fallback-schema.test.ts",
+  "packages/lattice-bridge/tests/unit/authorized-human-task-client.test.ts",
+  "packages/lattice-bridge/tests/unit/human-task-ordinary-fallback-request.test.ts",
+  "packages/lattice-bridge/tests/unit/vault-human-task-device-content.test.ts",
+  "packages/server/tests/unit-isolated/task-ordinary-fallback-composition.test.ts",
+  "packages/server/tests/unit-isolated/task-ordinary-fallback-routes.test.ts",
+  "packages/server/tests/lattice-integration/protected-task-memory-object-writer.integration.test.ts",
+] as const;
+const TASK_DEFINITION_AUTHORIZATION_EVIDENCE = [
+  ...EVIDENCE,
+  "packages/lattice-bridge/tests/unit/authorized-human-live-shadow-message-client.test.ts",
+  "packages/lattice-crypto/tests/unit/domain-foreground-authorization-v2.test.ts",
+  "packages/server/tests/unit/live-shadow-message-route.test.ts",
+  "packages/server/tests/unit/task-definition-foreground-authorization.test.ts",
+  "packages/server/tests/unit/ws-publisher-task-authorization-audience.test.ts",
 ] as const;
 
 const TASK_PROTECTION_DATABASE_LOCATORS = [
@@ -224,6 +243,11 @@ const TASK_PROTECTION_DATABASE_LOCATORS = [
   "public.tasks.crypto_required_namespace_fingerprint",
   "public.tasks.funding_mode",
   "public.tasks.local_execution_delegation",
+  "public.tasks.ordinary_fallback_completed_at",
+  "public.tasks.ordinary_fallback_operation_id",
+  "public.tasks.ordinary_fallback_policy_revision",
+  "public.tasks.ordinary_fallback_reason",
+  "public.tasks.ordinary_fallback_request_digest",
   "public.tasks.pause_reason",
   "public.tasks.pause_request_id",
   "public.tasks.pause_requested_at",
@@ -281,6 +305,7 @@ export const REVIEWED_TASK_PROTECTION_DATABASE_WRITER_LOCATORS = [
   "packages/runtime/src/protected-execution/background-authorization/postgres-repository.ts#renewParkedTaskWakeRecipient:update:public.background_crypto_authorization_requests:1",
   "packages/server/src/routes/protected-task-foreground-creation-publication.ts#use:insert:public.tasks:1",
   "packages/server/src/routes/protected-task-foreground-creation-publication.ts#use:insert:public.tasks:2",
+  "packages/server/src/routes/task-ordinary-fallback-composition.ts#dual:update:public.tasks:1",
   "packages/server/src/routes/protected-task-output-read-product.ts#loadForegroundState:insert:public.sessions:1",
   "packages/server/src/routes/protected-task-terminal-message-product.ts#refreshUnstagedProtectedTaskTerminalMessagePolicy:update:public.session_message_crypto_revisions:1",
   "packages/server/src/routes/protected-task-terminal-message-product.ts#resolveProtectedTaskTerminalMessageDestination:insert:public.sessions:1",
@@ -298,7 +323,6 @@ const TASK_PROTECTION_PROTECTED_WIRE_LOCATORS = [
   "http:request_response:GET /api/protected/tasks/:taskId/definition",
   "http:request_response:GET /api/protected/tasks/:taskId/runs/:taskRunId/result",
   "http:request_response:PATCH /api/protected/tasks/:taskId/publication",
-  "http:request_response:POST /api/protected/tasks/:taskId/publication-plan",
   "http:request_response:POST /api/protected/tasks/publication",
   "http:request_response:POST /api/protected/tasks/publication-plan",
   "http:request_response:POST /api/tasks/:taskId/runs/:taskRunId/transcript-v1",
@@ -308,6 +332,9 @@ const TASK_PROTECTION_PROTECTED_WIRE_LOCATORS = [
   "http:request_response:POST /api/tasks/pending-attention",
   "http:request_response:POST /api/tasks/pending-attention/read",
   "http:request_response:POST /api/tasks/pending-attention/read#response.body.events[].tools[].args",
+  "http:request_response:POST /api/rooms/:roomId/live-shadow/task-definition/:authorizationId/authorize",
+  "http:request_response:POST /api/rooms/:roomId/live-shadow/task-definition/:authorizationId/authorize#request.body",
+  "ws:server_to_client:message.task_definition_authorization_required",
 ] as const;
 
 function databaseReason(locator: string): string {
@@ -316,6 +343,9 @@ function databaseReason(locator: string): string {
   }
   if (locator.endsWith(".signed_publication_request_bytes")) {
     return "The retained signed request is the schema-bounded public publication statement: coordinates, digests, revisions and signer evidence only. The encrypted Task payload remains in canonical crypto storage.";
+  }
+  if (locator.includes("public.tasks.ordinary_fallback_")) {
+    return "This field is one component of the coherent signed Shadow fallback receipt: an operation identifier, fixed 32-byte authenticated request digest, closed reason, positive policy revision, or completion timestamp. It does not duplicate the ordinary Task definition stored elsewhere on the owning Task row.";
   }
   if (locator.endsWith(".raw_result_message_intent")) {
     return "The nullable recovery intent is accepted only after exact decoding as the fixed terminal Task Message coordinates and delivery policy. It cannot contain an authored prompt, result, tool payload, credential or key.";
@@ -339,6 +369,10 @@ function databaseReason(locator: string): string {
 }
 
 function bridgeRepositoryFor(locator: string): string {
+  if (locator.includes("/live-shadow/task-definition/")
+    || locator === "ws:server_to_client:message.task_definition_authorization_required") {
+    return "packages/lattice-crypto/src/format/domain-foreground-authorization-v2.ts";
+  }
   if (locator.includes("/pending-attention")) {
     return "packages/lattice-bridge/src/server/task/native-task-runtime-checkpoint-cell-crypto.ts";
   }
@@ -349,6 +383,27 @@ function bridgeRepositoryFor(locator: string): string {
     return "packages/lattice-bridge/src/server/task/postgres-task-historical-content-staging.ts";
   }
   return "packages/lattice-bridge/src/server/task/task-content-repository-composition.ts";
+}
+
+function protectedRouteEvidenceFor(locator: string): readonly string[] {
+  return locator.includes("/live-shadow/task-definition/")
+      || locator === "ws:server_to_client:message.task_definition_authorization_required"
+    ? TASK_DEFINITION_AUTHORIZATION_EVIDENCE
+    : PROTECTED_ROUTE_EVIDENCE;
+}
+
+function protectedRouteMigrationState(locator: string): "ciphertext_reading" | "shadow" {
+  return locator.includes("/live-shadow/task-definition/")
+      || locator === "ws:server_to_client:message.task_definition_authorization_required"
+    ? "shadow"
+    : "ciphertext_reading";
+}
+
+function protectedRouteKeyFamily(locator: string): "agent_runtime" | "namespace_ai" {
+  return locator.includes("/live-shadow/task-definition/")
+      || locator === "ws:server_to_client:message.task_definition_authorization_required"
+    ? "agent_runtime"
+    : "namespace_ai";
 }
 
 export const REVIEWED_TASK_PROTECTION_COVERAGE_ENTRIES:
@@ -388,13 +443,13 @@ export const REVIEWED_TASK_PROTECTION_COVERAGE_ENTRIES:
     owner: "packages/server",
     readers: ["packages/api-client", "packages/lattice-bridge"],
     writers: ["packages/server"],
-    migrationState: "ciphertext_reading" as const,
+    migrationState: protectedRouteMigrationState(locator),
     retention: "Authenticated private no-store request lifetime only; payload bytes are wiped or released by the bounded client and server operation after use.",
-    testEvidence: PROTECTED_ROUTE_EVIDENCE,
+    testEvidence: protectedRouteEvidenceFor(locator),
     classification: "protected" as const,
-    keyFamily: "namespace_ai" as const,
+    keyFamily: protectedRouteKeyFamily(locator),
     bridgeRepository: bridgeRepositoryFor(locator),
-    negativeTestEvidence: PROTECTED_ROUTE_EVIDENCE,
+    negativeTestEvidence: protectedRouteEvidenceFor(locator),
   })),
 ];
 
@@ -404,10 +459,21 @@ const CONTENT_ROUTE_DEBT = [
   ["http:request_response:GET /api/tasks/content-v1", "debt.wire.http.request.response.get.api.tasks.1veo2i8"],
 ] as const;
 
-export const REVIEWED_TASK_PROTECTION_DEBT_LINKS: readonly ReviewedDebtLink[] =
-  CONTENT_ROUTE_DEBT.map(([locator, targetDebtId], index) => ({
+const ORDINARY_FALLBACK_ROUTE_DEBT = [
+  ["http:request_response:POST /api/protected/tasks/ordinary-fallback-plan", "debt.wire.http.request.response.post.api.tasks.1o4qxxy"],
+  ["http:request_response:POST /api/protected/tasks/ordinary-fallback", "debt.wire.http.request.response.post.api.tasks.1o4qxxy"],
+  ["http:request_response:POST /api/protected/tasks/:taskId/ordinary-fallback-plan", "debt.wire.http.request.response.patch.api.tasks.id.1conpo2"],
+  ["http:request_response:PATCH /api/protected/tasks/:taskId/ordinary-fallback", "debt.wire.http.request.response.patch.api.tasks.id.1conpo2"],
+] as const;
+
+const TASK_UPDATE_PLAN_ROUTE_DEBT = [
+  ["http:request_response:POST /api/protected/tasks/:taskId/publication-plan", "debt.wire.http.request.response.get.api.tasks.id.gfjl0w"],
+] as const;
+
+export const REVIEWED_TASK_PROTECTION_DEBT_LINKS: readonly ReviewedDebtLink[] = [
+  ...CONTENT_ROUTE_DEBT.map(([locator, targetDebtId], index) => ({
     id: `wire.task-protection.existing-content-debt.${index + 1}`,
-    surface: "wire",
+    surface: "wire" as const,
     locator,
     owner: "packages/server",
     targetDebtIds: [targetDebtId],
@@ -416,4 +482,28 @@ export const REVIEWED_TASK_PROTECTION_DEBT_LINKS: readonly ReviewedDebtLink[] =
       ...EVIDENCE,
       "packages/server/tests/unit-isolated/task-content-detail-policy.test.ts",
     ],
-  }));
+  })),
+  ...ORDINARY_FALLBACK_ROUTE_DEBT.map(([locator, targetDebtId], index) => ({
+    id: `wire.task-protection.existing-ordinary-fallback-debt.${index + 1}`,
+    surface: "wire" as const,
+    locator,
+    owner: "packages/server",
+    targetDebtIds: [targetDebtId],
+    reason: "The signed Shadow fallback route carries the ordinary Task definition already frozen at the established create or update transport boundary. Its plan binds the same source and publication coordinates but does not reclassify those definition bytes as metadata.",
+    testEvidence: TASK_ORDINARY_FALLBACK_EVIDENCE,
+  })),
+  ...TASK_UPDATE_PLAN_ROUTE_DEBT.map(([locator, targetDebtId], index) => ({
+    id: `wire.task-protection.existing-update-plan-debt.${index + 1}`,
+    surface: "wire" as const,
+    locator,
+    owner: "packages/server",
+    targetDebtIds: [targetDebtId],
+    reason: "In Shadow mode this signed update plan can include the complete current ordinary Task definition for exact repair. Full and Plain omit that optional source, but the route as a whole cannot be classified as protected or metadata.",
+    testEvidence: [
+      ...EVIDENCE,
+      "packages/api-client/tests/unit/protected-task-schema.test.ts",
+      "packages/server/tests/unit-isolated/task-protected-composition.test.ts",
+      "packages/server/tests/unit-isolated/task-protected-routes.test.ts",
+    ],
+  })),
+];

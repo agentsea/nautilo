@@ -13,6 +13,7 @@ function source(assertCurrent: () => Promise<void>): ProtectedTaskForegroundCrea
     publishProtected: () => Promise.reject(new Error("Fixture cannot publish a Task")),
     preflightProtectedTaskUpdate: () => Promise.reject(new Error("Fixture cannot preflight a Task update")),
     updateProtectedTask: () => Promise.reject(new Error("Fixture cannot update a Task")),
+    withTaskDefinitionAuthorization: input => input.use(),
     withProduct: input => input.use(),
   };
 }

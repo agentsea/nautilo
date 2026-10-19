@@ -436,6 +436,26 @@ describe("protected Task native Message publication", () => {
     ).payload));
   });
 
+  test("rejects malformed present model-input exposure before dual persistence", async () => {
+    const value = harness("dual");
+    const original = request(value.controller.signal);
+    expect(value.publisher({
+      ...original,
+      payload: {
+        ...original.payload,
+        sensitiveMetadata: {
+          ...original.payload.sensitiveMetadata,
+          nautilo_memory_model_exposure: {
+            version: 1,
+            status: "complete",
+            dependencies: "invalid",
+          },
+        },
+      },
+    })).rejects.toThrow("Protected Task model-input exposure metadata is invalid");
+    expect(value.appended()).toBeNull();
+  });
+
   test("projects only canonical Tool parity metadata in Shadow mode", async () => {
     const value = harness("dual", "pending", {}, false, "tool");
     await value.publisher(request(value.controller.signal, "tool"));

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { rejects } from "node:assert/strict";
-import { agentScopes, type NewTask, type Task, type PostgresJsBridgeConnection } from "@nautilo/db";
+import { actors, agentScopes, rooms, type NewTask, type Task, type PostgresJsBridgeConnection } from "@nautilo/db";
 import { bindEncryptionDataOperationOwner, readPreparedTaskContentCryptoRevisionSnapshotV1,
   type PreparedTaskContentCryptoRevisionV1, type TaskContentRepository } from "@nautilo/lattice-bridge";
 import { prepareNativeTaskDefinitionCryptoRevision, TaskContentCryptoCompletionConflictError } from "@nautilo/lattice-bridge/server";
@@ -17,6 +17,7 @@ const HUMAN = "30000000-0000-4000-8000-000000000001";
 const NS = "40000000-0000-4000-8000-000000000001";
 const DOMAIN = "50000000-0000-4000-8000-000000000001";
 const AGENT = "60000000-0000-4000-8000-000000000001";
+const PRIVATE_ROOM = "70000000-0000-4000-8000-000000000001";
 const NOW = 1_820_000_000_000;
 
 function fixture(mode: "encrypted_only" | "shadow_encryption" | "plaintext_only" = "encrypted_only") {
@@ -54,6 +55,7 @@ function fixture(mode: "encrypted_only" | "shadow_encryption" | "plaintext_only"
   let cryptoConflict = false;
   let deny = false;
   let privateDenied = false;
+  let privateRoomNamespace = NS;
   let prepares = 0;
   let writes = 0;
   let commits = 0;
@@ -68,11 +70,19 @@ function fixture(mode: "encrypted_only" | "shadow_encryption" | "plaintext_only"
     select: () => {
       check();
       let table: unknown;
-      const query = { from: (value: unknown) => { table = value; return query; }, where: () => query, for: () => query,
+      const query = { from: (value: unknown) => { table = value; return query; }, innerJoin: () => query,
+        where: () => query, groupBy: () => query, having: () => query, orderBy: () => query, for: () => query,
         limit: (count: number) => {
           void count; check();
-          const value = table === agentScopes ? workingScope : working;
-          const result = Promise.resolve(value === null ? [] : [value]);
+          const values = table === agentScopes
+            ? workingScope === null ? [] : [workingScope]
+            : table === actors ? [{ id: HUMAN }]
+              : table === rooms ? [{ roomId: PRIVATE_ROOM,
+                  namespaceId: privateRoomNamespace, type: "private", kind: "private",
+                  graphThreadId: "app:default", createdAt: new Date(0),
+                  humanActorIds: [HUMAN], memberCount: 2, humanCount: 1, agentCount: 1 }]
+                : working === null ? [] : [working];
+          const result = Promise.resolve(values);
           return Object.assign(result, { for: () => result });
         } };
       return query;
@@ -195,6 +205,9 @@ function fixture(mode: "encrypted_only" | "shadow_encryption" | "plaintext_only"
     conflict: () => { cryptoConflict = true; }, setFailure: (value: boolean) => { failCommit = value; }, setDenied: () => { deny = true; },
     loseCrypto: () => { cryptoExists = false; },
     denyPrivate: () => { privateDenied = true; }, orphan: () => { cryptoExists = true; },
+    mismatchPrivateRoomNamespace: () => {
+      privateRoomNamespace = "80000000-0000-4000-8000-000000000001";
+    },
     gate: (value: Promise<void>) => { gate = value; } };
 }
 
@@ -295,6 +308,13 @@ describe("foreground protected Task creation publication", () => {
       await rejects(f.publisher.publish(f.request));
       expect(f.row()).toBeNull(); expect(f.counts().writes).toBe(0);
     }
+  });
+  test("a private Room outside the admitted Namespace has no product writes", async () => {
+    const f = fixture();
+    f.mismatchPrivateRoomNamespace();
+    await rejects(f.publisher.publish(f.request), /private Room is unavailable/);
+    expect(f.row()).toBeNull();
+    expect(f.counts()).toEqual({ prepares: 0, writes: 0, commits: 0 });
   });
   test("mismatched payload, owner and nested Task never enter the product owner", () => {
     for (const patch of [{ prompt: "substituted" }, { requestorId: HUMAN }, { parentTaskId: TASK }]) {

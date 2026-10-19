@@ -117,6 +117,9 @@ type Dependencies = Readonly<{
     ResolveHistoricalAgentRuntimeSignerManagerAuthority;
   resolveHistoricalHumanDeviceSigningPublicKey:
     ResolveHistoricalHumanDeviceSigningPublicKeyV5Async;
+  resolveTaskDefinitionForegroundAuthorization?: Parameters<
+    typeof verifyStoredObjectAccessManifestChainV5
+  >[0]["resolveTaskDefinitionForegroundAuthorization"];
 }>;
 
 type ExactPublication = Readonly<{
@@ -198,6 +201,9 @@ export async function readDurableTaskContentPublication(input: Readonly<{
     ResolveHistoricalAgentRuntimeSignerManagerAuthority;
   resolveHistoricalHumanDeviceSigningPublicKey?:
     ResolveHistoricalHumanDeviceSigningPublicKeyV5Async | undefined;
+  resolveTaskDefinitionForegroundAuthorization?: Parameters<
+    typeof verifyStoredObjectAccessManifestChainV5
+  >[0]["resolveTaskDefinitionForegroundAuthorization"];
 }>): Promise<DurablePublication | null> {
   const object = oneOrNull(await executeTypedCryptoQuery(
     input.executor,
@@ -298,6 +304,10 @@ export async function readDurableTaskContentPublication(input: Readonly<{
       input.resolveHistoricalAgentSignerAuthority,
     resolveHistoricalHumanDeviceSigningPublicKey:
       input.resolveHistoricalHumanDeviceSigningPublicKey,
+    ...(input.resolveTaskDefinitionForegroundAuthorization === undefined
+      ? {}
+      : { resolveTaskDefinitionForegroundAuthorization:
+          input.resolveTaskDefinitionForegroundAuthorization }),
   });
   try {
     return Object.freeze({
@@ -463,6 +473,8 @@ async function verifyReference(
         input.resolveHistoricalAgentSignerAuthority,
       resolveHistoricalHumanDeviceSigningPublicKey:
         input.resolveHistoricalHumanDeviceSigningPublicKey,
+      resolveTaskDefinitionForegroundAuthorization:
+        input.resolveTaskDefinitionForegroundAuthorization,
     }),
   );
   if (durable === null) return null;
@@ -534,6 +546,8 @@ export function createPostgresTaskContentCryptoCompletion(
               resolveForegroundAgentAcceptedExecutionEvidence: input.resolveForegroundAgentAcceptedExecutionEvidence,
               resolveHistoricalAgentSignerAuthority: input.resolveHistoricalAgentSignerAuthority,
               resolveHistoricalHumanDeviceSigningPublicKey: input.resolveHistoricalHumanDeviceSigningPublicKey,
+              resolveTaskDefinitionForegroundAuthorization:
+                input.resolveTaskDefinitionForegroundAuthorization,
             });
             if (published === null || !exactMatchesDurable(exact, published)) {
               conflict("Foreground Task definition publication disagrees");
@@ -549,6 +563,8 @@ export function createPostgresTaskContentCryptoCompletion(
               input.resolveHistoricalAgentSignerAuthority,
             resolveHistoricalHumanDeviceSigningPublicKey:
               input.resolveHistoricalHumanDeviceSigningPublicKey,
+            resolveTaskDefinitionForegroundAuthorization:
+              input.resolveTaskDefinitionForegroundAuthorization,
           });
           if (durable !== null) {
             const currentAuthority = await input.resolveCurrentAuthority(
@@ -588,6 +604,8 @@ export function createPostgresTaskContentCryptoCompletion(
               input.resolveHistoricalAgentSignerAuthority,
             resolveHistoricalHumanDeviceSigningPublicKey:
               input.resolveHistoricalHumanDeviceSigningPublicKey,
+            resolveTaskDefinitionForegroundAuthorization:
+              input.resolveTaskDefinitionForegroundAuthorization,
           });
           if (inserted === null || !exactMatchesDurable(exact, inserted)) {
             conflict("Task crypto completion did not persist exact bytes");

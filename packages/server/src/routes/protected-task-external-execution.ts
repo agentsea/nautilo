@@ -21,6 +21,7 @@ import {
 } from "@nautilo/lattice-crypto/background";
 import {
   createPostgresForegroundAgentAcceptedExecutionEvidenceResolver,
+  verifyCryptoPostgresHandle,
   withNativeProtectedTaskDefinitionV1,
 } from "@nautilo/lattice-bridge/server";
 import type { TaskPayloadV1, TaskRunResultPayloadV1 } from "@nautilo/lattice-bridge";
@@ -36,6 +37,8 @@ import { createCurrentNativeProtectedTaskDefinitionOccurrenceLoader } from "./pr
 import { createProtectedTaskNativeTranscriptPublisher } from "./protected-task-native-transcript-composition";
 import { waitForProtectedTaskExternalOperation } from "./protected-task-external-operation";
 import { withProtectedTaskRuntimeSigner } from "./protected-task-runtime-signer";
+import { createProtectedTaskDefinitionForegroundAuthorizationResolver } from
+  "./protected-task-runtime-access-lineage";
 
 import type { ProductionProtectedTaskNativeExecutionInput } from "./protected-task-native-execution-composition";
 import type { ProtectedTaskRuntimeGrantPlanBuilderDependencies } from "./protected-task-runtime-grant-plan";
@@ -240,6 +243,14 @@ export function createProtectedTaskExternalExecution<Selection extends object, A
                   createPostgresForegroundAgentAcceptedExecutionEvidenceResolver({
                     product: product.handle, crypto: input.crypto, rejectInvalidSelectedEvidence: true,
                   })(principal),
+                resolveTaskDefinitionForegroundAuthorization: async evidence => {
+                  const resolver = await createProtectedTaskDefinitionForegroundAuthorizationResolver({
+                    product, handle: await verifyCryptoPostgresHandle(input.restricted),
+                    crypto: input.crypto, requesterHumanId: accepted.issuingHumanId,
+                    task: running.task,
+                  });
+                  return resolver === null ? null : resolver(evidence);
+                },
                 execute: async payload => {
                   const admitted = await waitForProtectedTaskExternalOperation(combined, input.provider.admit(running.task.requestorId, selection));
                   if (admitted === null || !input.provider.sameAdmission(admitted, beforeStart)) {

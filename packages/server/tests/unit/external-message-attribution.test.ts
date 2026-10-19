@@ -52,4 +52,10 @@ test("around serialization exposes parity siblings only for protected reads", ()
     foregroundExecutionId: "foreground:one",
     modelInputExposure: { version: 1, status: "incomplete" },
   });
+  expect(() => serializeRoomMessageForAround({
+    ...parity,
+    modelInputExposure: { version: 1, status: "complete", dependencies: "invalid" },
+  }, { includeProtectedParityMetadata: true })).toThrow(
+    "Room history model-input exposure metadata is invalid",
+  );
 });

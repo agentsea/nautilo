@@ -30,7 +30,7 @@ import type {
 type ForegroundGrantSessions = Pick<
   LiveShadowForegroundAuthorizationSessions,
   "execute"
->;
+> & Partial<Pick<LiveShadowForegroundAuthorizationSessions, "executeTransient">>;
 type NamespaceAuthority = Omit<
   DomainForegroundNamespaceAuthorityInspectionV2,
   "status"
@@ -80,6 +80,22 @@ export interface ForegroundAgentEntityCryptoGateway {
   readonly execute: <Value>(
     input: Readonly<ForegroundAgentEntityCryptoRequest<Value>>,
   ) => Promise<ForegroundAuthorizationExecutionResult<Value>>;
+  /** Open one exact non-reusable Task-definition authorization. */
+  readonly executeTransient: <Value>(input: Readonly<{
+    capability: DomainCompressedLiveShadowSessionCapability;
+    scope: LiveShadowForegroundAuthorizationScope;
+    namespaceIds: readonly string[];
+    domainIds: readonly string[];
+    operations: readonly Operation[];
+    workDescriptorDigest: Uint8Array;
+    operationDeadline?: number;
+    entrypointId?: "foreground.conductor" | "foreground.main" | "foreground.fork";
+    execute(context: Readonly<{
+      entities: ForegroundAgentEntityCryptoInvocation;
+      grant: DomainCompressedLiveShadowSessionCapabilityDescription;
+      signal: AbortSignal;
+    }>): Promise<Value> | Value;
+  }>) => Promise<ForegroundAuthorizationExecutionResult<Value>>;
 }
 
 function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
@@ -551,6 +567,78 @@ export function createForegroundAgentEntityCryptoGateway(input: Readonly<{
   const openCapabilityEntries = input.openCapabilityEntries
     ?? withDomainCompressedLiveShadowSessionCapabilityEntries;
   return Object.freeze({
+    executeTransient: async <Value>(request: Readonly<{
+      capability: DomainCompressedLiveShadowSessionCapability;
+      scope: LiveShadowForegroundAuthorizationScope;
+      namespaceIds: readonly string[];
+      domainIds: readonly string[];
+      operations: readonly Operation[];
+      workDescriptorDigest: Uint8Array;
+      operationDeadline?: number;
+      entrypointId?: "foreground.conductor" | "foreground.main" | "foreground.fork";
+      execute(context: Readonly<{
+        entities: ForegroundAgentEntityCryptoInvocation;
+        grant: DomainCompressedLiveShadowSessionCapabilityDescription;
+        signal: AbortSignal;
+      }>): Promise<Value> | Value;
+    }>) => {
+      const operations = canonicalOperations(request.operations);
+      if (input.authorizations.executeTransient === undefined) {
+        return Object.freeze({
+          status: "unavailable" as const,
+          reason: "authorization_unavailable" as const,
+        });
+      }
+      return input.authorizations.executeTransient({
+        capability: request.capability,
+        scope: request.scope,
+        namespaceIds: request.namespaceIds,
+        domainIds: request.domainIds,
+        operations,
+        workDescriptorDigest: request.workDescriptorDigest,
+        ...(request.operationDeadline === undefined
+          ? {} : { operationDeadline: request.operationDeadline }),
+        ...(request.entrypointId === undefined
+          ? {} : { entrypointId: request.entrypointId }),
+        execute: async (capability, signal) => {
+          if (signal.aborted) return Object.freeze({
+            status: "unavailable" as const,
+            reason: "authorization_unavailable" as const,
+          });
+          const grant = inspectDomainCompressedLiveShadowSessionCapability(
+            capability,
+          );
+          if (grant === null) return Object.freeze({
+            status: "unavailable" as const,
+            reason: "authorization_unavailable" as const,
+          });
+          try {
+            const opened = await openCapabilityEntries<Readonly<{ value: Value }>>(
+              capability,
+              async (entries) => {
+                const entities = createInvocation({
+                  operations,
+                  namespaceIds: grant.namespaceIds,
+                  entries,
+                  namespaceKeys: input.namespaceKeys,
+                  signal,
+                });
+                try {
+                  return Object.freeze({
+                    value: await request.execute({ entities, grant, signal }),
+                  });
+                } finally { entities.close(); }
+              },
+            );
+            return opened === null
+              ? Object.freeze({ status: "unavailable" as const,
+                reason: "authorization_unavailable" as const })
+              : Object.freeze({ status: "executed" as const,
+                value: opened.value });
+          } finally { grant.authorizationDigest.fill(0); }
+        },
+      });
+    },
     execute: async <Value>(
       request: Readonly<ForegroundAgentEntityCryptoRequest<Value>>,
     ) => {

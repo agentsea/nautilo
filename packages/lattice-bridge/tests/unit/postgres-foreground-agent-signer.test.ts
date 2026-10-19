@@ -30,13 +30,19 @@ import {
 const UUID = "10000000-0000-4000-8000-000000000001";
 const AUTHORITY_ROOM = "20000000-0000-4000-8000-000000000002";
 const TASK_DOMAIN = "domain:task-definition-private";
+const TASK_NAMESPACE = "30000000-0000-4000-8000-000000000003";
 const hash = (marker: number) => new Uint8Array(32).fill(marker);
 
 class ScriptedConnection implements ConversationProductPostgresConnection {
   readonly queries: string[] = [];
+  readonly parameterSets: Array<Parameters<ConversationProductPostgresConnection["query"]>[1]> = [];
   constructor(readonly batches: Array<readonly ConversationProductDatabaseRow[]>) {}
-  query<Row extends ConversationProductDatabaseRow>(statement: string) {
+  query<Row extends ConversationProductDatabaseRow>(
+    statement: string,
+    parameters?: Parameters<ConversationProductPostgresConnection["query"]>[1],
+  ) {
     this.queries.push(statement);
+    this.parameterSets.push(parameters?.map(value => value instanceof Uint8Array ? value.slice() : value));
     const batch = this.batches.shift();
     if (batch === undefined) throw new Error("Unexpected signer query");
     return Promise.resolve(batch as readonly Row[]);
@@ -48,6 +54,34 @@ class ScriptedConnection implements ConversationProductPostgresConnection {
     return callback(this);
   }
 }
+
+test.each(["shared", "legacy"] as const)("Task parent selection constrains the %s receipt before newest-record selection", async family => {
+  const input = fixture();
+  const parentOperationHash = input.crypto.hash(new TextEncoder().encode(
+    `nautilo/task-definition-parent-operation/v1\n${input.plan.operationId}`,
+  ));
+  const connection = new ScriptedConnection([
+    [{ current_user: "nautilo", session_user: "nautilo" }],
+    ...(family === "shared" ? [[input.row]] : [[], [legacyPlanRow(input)]]),
+  ]);
+  const product = await verifyConversationProductPostgresHandle(connection);
+  const evidence = await createPostgresForegroundAgentAcceptedExecutionEvidenceResolver({
+    product, crypto: input.crypto, rejectInvalidSelectedEvidence: true,
+  })(input.signer.principal, { parentOperationHash });
+  expect(evidence?.signerPublicKey).toEqual(input.signer.publicKey);
+  for (let index = 1; index < connection.queries.length; index += 1) {
+    const query = connection.queries[index]!;
+    expect(query).toContain("sha256(convert_to(");
+    expect(query.indexOf("sha256(convert_to(")).toBeLessThan(query.indexOf("order by"));
+    expect(connection.parameterSets[index]).toContain("nautilo/task-definition-parent-operation/v1\n");
+    expect(connection.parameterSets[index]?.some(value => value instanceof Uint8Array
+      && Buffer.from(value).equals(Buffer.from(parentOperationHash)))).toBe(true);
+  }
+  evidence?.signerPublicKey.fill(0);
+  evidence?.planBytes.fill(0);
+  evidence?.planDigest.fill(0);
+  parentOperationHash.fill(0);
+});
 
 function fixture() {
   const crypto = new LatticeCrypto(seededRng(3_110_001));
@@ -126,7 +160,7 @@ function fixture() {
     maximumSecretBytes: 4_096,
     domains: [{
       domainId: TASK_DOMAIN,
-      sourceNamespaceId: namespaceId("30000000-0000-4000-8000-000000000003"),
+      sourceNamespaceId: namespaceId(TASK_NAMESPACE),
       participantDigest: hash(31),
       participantCount: 1,
       keyClass: "ai",
@@ -289,7 +323,7 @@ function legacyAuthorRow(input: ReturnType<typeof fixture>): ConversationProduct
     maximumSecretBytes: 4_096,
     domains: [{
       domainId: TASK_DOMAIN,
-      sourceNamespaceId: namespaceId("30000000-0000-4000-8000-000000000003"),
+      sourceNamespaceId: namespaceId(TASK_NAMESPACE),
       participantDigest: hash(31),
       participantCount: 1,
       keyClass: "ai",
@@ -398,7 +432,7 @@ describe("retained foreground Agent signer", () => {
     expect(evidence?.planDigest).toEqual(input.planDigest);
     expect(evidence?.acceptedAuthority).toEqual({
       subjectHumanId: input.plan.subjectHumanId,
-      authorizedDomainIds: [TASK_DOMAIN],
+      authorizedNamespaces: [{ namespaceId: TASK_NAMESPACE, domainId: TASK_DOMAIN }],
     });
   });
 
@@ -409,7 +443,7 @@ describe("retained foreground Agent signer", () => {
         invocation_authorization_disposition: disposition };
       expect((await resolveEvidence(input, row))?.acceptedAuthority).toEqual({
         subjectHumanId: input.plan.subjectHumanId,
-        authorizedDomainIds: [TASK_DOMAIN],
+        authorizedNamespaces: [{ namespaceId: TASK_NAMESPACE, domainId: TASK_DOMAIN }],
       });
       for (const invalid of [
         { ...row, invocation_authorization_session_reference: "another-session" },
@@ -432,7 +466,7 @@ describe("retained foreground Agent signer", () => {
       plan_bytes: planBytes, plan_digest: input.crypto.hash(planBytes) });
     expect(evidence?.acceptedAuthority).toEqual({
       subjectHumanId: input.plan.subjectHumanId,
-      authorizedDomainIds: [TASK_DOMAIN],
+      authorizedNamespaces: [{ namespaceId: TASK_NAMESPACE, domainId: TASK_DOMAIN }],
     });
   });
 
@@ -485,10 +519,32 @@ describe("retained foreground Agent signer", () => {
           crypto: input.crypto,
         }),
       subjectHumanId: input.plan.subjectHumanId,
-      domainId: "domain:not-authorized",
+      namespaceId: "namespace:not-authorized",
+      domainId: TASK_DOMAIN,
     });
     await captured.resolveEvidence(input.signer.principal);
     expect(captured.authorizes(input.signer.principal)).toBe(false);
+
+    const taskAuthorization = captureForegroundTaskDefinitionAuthor({
+      resolveEvidence: captured.resolveEvidence,
+      resolveTaskDefinitionForegroundAuthorization: async (evidence) => {
+        expect(evidence.principal).toEqual(input.signer.principal);
+        expect(evidence.objectId).toBe("task-definition:v1:object");
+        return input.signer.publicKey.slice();
+      },
+      subjectHumanId: input.plan.subjectHumanId,
+      namespaceId: "namespace:not-authorized",
+      domainId: TASK_DOMAIN,
+    });
+    expect(taskAuthorization.authorizes(input.signer.principal)).toBe(false);
+    expect(await taskAuthorization
+      .resolveTaskDefinitionForegroundAuthorization({
+        principal: input.signer.principal,
+        authorizationHash: hash(91),
+        objectId: "task-definition:v1:object",
+        authorizationBytes: new Uint8Array([1, 2, 3]),
+      })).toEqual(input.signer.publicKey);
+    expect(taskAuthorization.authorizes(input.signer.principal)).toBe(true);
   });
 
   test("same-Agent signer evidence survives missing historical Room and V2 facts", async () => {
@@ -603,7 +659,7 @@ describe("retained foreground Agent signer", () => {
     expect(evidence?.signerPublicKey).toEqual(input.signer.publicKey);
     expect(evidence?.acceptedAuthority).toEqual({
       subjectHumanId: input.plan.subjectHumanId,
-      authorizedDomainIds: [TASK_DOMAIN],
+      authorizedNamespaces: [{ namespaceId: TASK_NAMESPACE, domainId: TASK_DOMAIN }],
     });
   });
 

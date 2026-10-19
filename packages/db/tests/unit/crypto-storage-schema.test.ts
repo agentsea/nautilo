@@ -187,6 +187,7 @@ describe("Wave 6 crypto storage schema", () => {
       agentRuntimeDomainEnvelope: 1_048_576,
       agentRuntimeSignerPublication: 1_024,
       taskRuntimeSignerEvidence: 2_039,
+      taskDefinitionForegroundAuthorizationEvidence: 3_675,
       historicalTaskPublicationRequest: 1_048_576,
       signingPublicKey: 32,
       wrappedDekMinimum: 40,

@@ -14,6 +14,7 @@ import {
   parseProtectedMessageDtoV2,
   type LiveShadowMessageRealtimeEventV1,
 } from "@nautilo/types";
+import { parseModelInputExposureMetadataV1 } from "@nautilo/reflection/payload";
 
 import {
   encodeMessagePayloadV2,
@@ -293,6 +294,12 @@ export function encodeLiveShadowOrdinaryPayloadV2(
       && !Array.isArray(metadata)
     ? (metadata as Record<string, unknown>)[MODEL_INPUT_EXPOSURE_METADATA_KEY]
     : undefined;
+  const parsedModelInputExposure = modelInputExposure === undefined
+    ? undefined
+    : parseModelInputExposureMetadataV1(modelInputExposure);
+  if (modelInputExposure !== undefined && parsedModelInputExposure === null) {
+    throw new TypeError("Live Shadow model-input exposure metadata is invalid");
+  }
   const rawForegroundExecutionId = (role === "assistant" || role === "tool")
       && metadata !== null
       && typeof metadata === "object"
@@ -307,11 +314,11 @@ export function encodeLiveShadowOrdinaryPayloadV2(
   }
   const sensitiveMetadata = {
     ...(imageAssistance ? { imageAssistance: { ...imageAssistance } } : {}),
-    ...(modelInputExposure === undefined
+    ...(parsedModelInputExposure === undefined
       ? {}
       : {
         [MODEL_INPUT_EXPOSURE_METADATA_KEY]:
-          modelInputExposure as CanonicalJsonValue,
+          parsedModelInputExposure as CanonicalJsonValue,
       }),
     ...(rawForegroundExecutionId === undefined
       ? {}

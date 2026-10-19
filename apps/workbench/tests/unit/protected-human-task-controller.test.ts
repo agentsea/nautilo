@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
-import { bindEncryptionDataOperationOwner } from "@nautilo/lattice-bridge";
+import {
+  bindEncryptionDataOperationOwner,
+  ClassifiedDataOperationError,
+} from "@nautilo/lattice-bridge";
 import type {
   TaskContentSummaryV1,
   TaskDetail,
@@ -126,9 +129,13 @@ test("protected scheduled rows remain visible while device authorization is pend
   let openCalls = 0;
   const controller = {
     list: async () => [waiting],
-    open: async () => {
+    open: async (task: TaskContentSummaryV1) => {
       openCalls += 1;
-      throw new Error("unavailable Task must not be opened");
+      expect(task).toEqual(waiting);
+      throw new ClassifiedDataOperationError(
+        "key_waiting",
+        "Task repair is waiting for Device authority",
+      );
     },
   } as unknown as WorkbenchProtectedHumanTaskController;
 
@@ -137,7 +144,7 @@ test("protected scheduled rows remain visible while device authorization is pend
     task: waiting,
     reason: "waiting_for_authorization",
   }]);
-  expect(openCalls).toBe(0);
+  expect(openCalls).toBe(1);
 });
 
 test("Plain viewer preserves the exact legacy detail request and skips protected custody", async () => {
@@ -202,10 +209,29 @@ test("Fallback viewer reads protected first and uses legacy only for an eligible
       runs: [safeRun],
     } as never;
   }) as typeof apiClient.getTaskContentV1;
+  let repairFailure = false;
   const protectedController = {
     open: async (task: TaskContentSummaryV1) => {
       calls.push("protected-open");
-      return { task, content: { status: "protected" as const, payload: {
+      if (repairFailure) {
+        throw new ClassifiedDataOperationError(
+          "key_waiting",
+          "Task repair is waiting for Device authority",
+        );
+      }
+      const openedTask = task.content.status === "ordinary"
+        ? {
+            ...task,
+            content: {
+              dtoVersion: 1 as const,
+              status: "protected" as const,
+              objectId: "object:2",
+              contentRevision: 2,
+              cryptoAccessRevision: 0,
+            },
+          }
+        : task;
+      return { task: openedTask, content: { status: "protected" as const, payload: {
         formatVersion: 1 as const, prompt: "private", expectedOutput: null,
         protectedMetadata: {},
       }, retainedHistoricalError: null } };
@@ -223,10 +249,29 @@ test("Fallback viewer reads protected first and uses legacy only for an eligible
     classification = "ordinary";
     expect(await readWorkbenchTaskForViewer({
       owner, taskId: "task-1", protectedController,
-    })).toEqual({ representation: "ordinary", detail: ordinaryDetail });
-    expect(calls).toEqual(["content-classification", "legacy-detail"]);
+    })).toMatchObject({
+      representation: "protected",
+      opened: {
+        task: {
+          content: { status: "protected", contentRevision: 2 },
+        },
+      },
+    });
+    expect(calls).toEqual(["content-classification", "protected-open"]);
 
     calls.length = 0;
+    repairFailure = true;
+    expect(await readWorkbenchTaskForViewer({
+      owner, taskId: "task-1", protectedController,
+    })).toEqual({ representation: "ordinary", detail: ordinaryDetail });
+    expect(calls).toEqual([
+      "content-classification",
+      "protected-open",
+      "legacy-detail",
+    ]);
+
+    calls.length = 0;
+    repairFailure = false;
     classification = "protected";
     expect(await readWorkbenchTaskForViewer({
       owner, taskId: "task-1",

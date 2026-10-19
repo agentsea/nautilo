@@ -593,6 +593,8 @@ export {
   sharedAgentExecutionAuthorizationResponseV1Schema,
   runtimeInvocationAuthorizationRequestV1Schema,
   runtimeInvocationAuthorizationResponseV1Schema,
+  taskDefinitionAuthorizationRequestV1Schema,
+  taskDefinitionAuthorizationResponseV1Schema,
   liveShadowMessageRecoveryResponseV1Schema,
   type LiveShadowMessagePlanRequestV1,
   type LiveShadowMessagePlanRequestV2,
@@ -623,6 +625,8 @@ export {
   type SharedAgentExecutionAuthorizationResponseV1,
   type RuntimeInvocationAuthorizationRequestV1,
   type RuntimeInvocationAuthorizationResponseV1,
+  type TaskDefinitionAuthorizationRequestV1,
+  type TaskDefinitionAuthorizationResponseV1,
   type LiveShadowMessageRecoveryResponseV1,
 } from "./schemas/live-shadow-message";
 export {
@@ -667,3 +671,4 @@ export {
 export * from "./schemas/task-content-backfill";
 
 export * from "./schemas/protected-task-external-requests";
+export * from "./schemas/task-ordinary-fallback";

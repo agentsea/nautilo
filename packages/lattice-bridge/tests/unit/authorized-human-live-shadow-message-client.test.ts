@@ -80,6 +80,11 @@ import { createClientDeviceProfileV4Candidate, destroyOpenedClientDeviceProfileV
   stageAndActivateClientDeviceProfileV4 } from "../../src/client-vault/profile-v4.ts";
 import type { PreparedMutationJournalVaultPort } from
   "../../src/client/memory/prepared-mutation-journal.ts";
+import {
+  deriveTaskDefinitionForegroundRecipientKeyIdV1,
+  taskDefinitionForegroundAuthorizationIdV1,
+} from
+  "../../src/task/task-definition-foreground-authorization-id-v1.ts";
 
 const NOW = 1_800_000_000_000;
 const ROOM = "40000000-0000-4000-8000-000000000282";
@@ -1228,6 +1233,7 @@ describe("authorized Human live Shadow Message client", () => {
     };
     let ready = false;
     let publications = 0;
+    let taskPublications = 0;
     const diagnostics: unknown[] = [];
     let diagnosticObserverThrows = false;
     let currentNow = NOW + 1;
@@ -1238,6 +1244,11 @@ describe("authorized Human live Shadow Message client", () => {
           publications += 1;
           return Promise.resolve({ responseVersion: 1 as const, status: "authorized" as const,
             invocationId: "runtime-invocation:m321" });
+        },
+        authorizeTaskDefinition: (_roomId, authorizationId) => {
+          taskPublications += 1;
+          return Promise.resolve({ responseVersion: 1 as const, status: "authorized" as const,
+            authorizationId });
         } },
       crypto, vault, coordinates: COORDINATES,
       journal: createPreparedMutationJournal({ vault: {} as PreparedMutationJournalVaultPort,
@@ -1266,6 +1277,68 @@ describe("authorized Human live Shadow Message client", () => {
     expect(authorized).toBe(true);
     expect(publications).toBe(1);
     diagnosticObserverThrows = false;
+
+    const workDescriptorDigest = new Uint8Array(32).fill(0x95);
+    const taskAuthorizationId = taskDefinitionForegroundAuthorizationIdV1(
+      crypto,
+      {
+        parentOperationId: "parent-operation:m321",
+        taskId: TASK,
+        operation: "update",
+        targetContentRevision: 2,
+        workDescriptorDigest,
+      },
+    );
+    const parentAgentSignerPublicKey = new Uint8Array(32).fill(0x96);
+    const taskRecipientKeyId = deriveTaskDefinitionForegroundRecipientKeyIdV1(
+      crypto,
+      { authorizationId: taskAuthorizationId, parentAgentSignerPublicKey },
+    );
+    const taskPlan = createDomainForegroundAuthorizationPlan(crypto, {
+      authorizationId: taskAuthorizationId, policyRevision: 1,
+      sessionId: "30000000-0000-4000-8000-000000000298",
+      roomId: "private-room:m321",
+      subjectHumanId: humanId(COORDINATES.humanActorId),
+      committerDeviceId: cryptoDeviceId(COORDINATES.deviceId),
+      committerDeviceSigningGeneration: 1,
+      hostAuthorizationRevision: authorizationRevision(1), recipientKind: "runtime",
+      recipientPrincipalId: "nautilo_foreground_runtime",
+      recipientAuthorizationRevision: authorizationRevision(0),
+      recipientRuntimeGeneration: 0, recipientKeyId: taskRecipientKeyId,
+      operations: ["decrypt", "encrypt"], issuedAt: unixTimestamp(NOW),
+      deadlineAt: unixTimestamp(NOW + 30_000), maximumSecretBytes: 1024,
+      domains: Object.freeze([domain]),
+    });
+    const taskPlanBytes = serializeDomainForegroundAuthorizationPlanV2(taskPlan);
+    destroyDomainForegroundAuthorizationPlanV2(taskPlan);
+    const taskEvent = {
+      wireVersion: 1 as const,
+      type: "message.task_definition_authorization_required" as const,
+      laneKey: `room:${ROOM}`, userId: COORDINATES.userId, roomId: ROOM,
+      parentOperationId: "parent-operation:m321",
+      authorizationId: taskAuthorizationId,
+      taskId: TASK, operation: "update" as const, targetContentRevision: 2,
+      workDescriptorDigestBase64url: base64url(workDescriptorDigest),
+      parentAgentSignerPublicKeyBase64url:
+        base64url(parentAgentSignerPublicKey),
+      clientActionSessionId: "30000000-0000-4000-8000-000000000298",
+      deadlineAt: NOW + 30_000, authorizationScheme: "runtime_foreground_v1" as const,
+      authorizationPlanBytesBase64url: base64url(taskPlanBytes),
+      recipientPublicKeyBase64url: base64url(recipient.publicKey),
+    };
+    expect(await client.authorizeSharedAgentExecution(taskEvent)).toBe(true);
+    expect(taskPublications).toBe(1);
+    expect(await client.authorizeSharedAgentExecution({
+      ...taskEvent,
+      targetContentRevision: 3,
+    })).toBe(false);
+    expect(await client.authorizeSharedAgentExecution({
+      ...taskEvent,
+      parentAgentSignerPublicKeyBase64url:
+        base64url(new Uint8Array(32).fill(0x97)),
+    })).toBe(false);
+    expect(taskPublications).toBe(1);
+
     currentNow = NOW + 30_000;
     expect(await client.authorizeSharedAgentExecution(event)).toBe(false);
     expect(publications).toBe(1);
@@ -1277,8 +1350,19 @@ describe("authorized Human live Shadow Message client", () => {
       { stage: "runtime_authorization", reason: "prepare_complete_prepared" },
       { stage: "runtime_authorization", reason: "request_started" },
       { stage: "runtime_authorization", reason: "request_authorized" },
+      { stage: "runtime_authorization", reason: "prepare_started" },
+      { stage: "runtime_authorization", reason: "prepare_complete_prepared" },
+      { stage: "runtime_authorization", reason: "request_started" },
+      { stage: "runtime_authorization", reason: "request_authorized" },
+      { stage: "runtime_authorization", reason: "event_stale" },
+      { stage: "runtime_authorization", reason: "prepare_started" },
+      { stage: "runtime_authorization", reason: "prepare_complete_unavailable" },
+      { stage: "runtime_authorization", reason: "plan_stale" },
       { stage: "runtime_authorization", reason: "event_stale" },
     ]);
+    workDescriptorDigest.fill(0);
+    parentAgentSignerPublicKey.fill(0);
+    taskPlanBytes.fill(0);
     planBytes.fill(0);
     recipient.publicKey.fill(0);
     recipient.privateKey.fill(0);

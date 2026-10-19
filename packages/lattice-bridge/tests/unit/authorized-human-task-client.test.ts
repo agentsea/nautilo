@@ -2,6 +2,10 @@ import { describe, expect, test } from "bun:test";
 import type {
   DualTaskPreparedCreateRequestV1,
   DualTaskPreparedUpdateRequestV1,
+  TaskOrdinaryFallbackCreatePlanV1,
+  TaskOrdinaryFallbackPreparedCreateRequestV1,
+  TaskOrdinaryFallbackPreparedUpdateRequestV1,
+  TaskOrdinaryFallbackUpdatePlanV1,
   NautiloApiClient,
   ProtectedTaskPreparedCreateRequestV1,
   ProtectedTaskPreparedUpdateRequestV1,
@@ -116,6 +120,10 @@ function publicationPlan(operation: "create" | "update"): TaskDefinitionPublicat
   };
 }
 
+function base64url(bytes: Uint8Array): string {
+  return Buffer.from(bytes).toString("base64url");
+}
+
 function dualCreateRequest(): DualTaskPreparedCreateRequestV1 {
   return {
     operation: "create",
@@ -142,6 +150,54 @@ function dualUpdateRequest(): DualTaskPreparedUpdateRequestV1 {
   } as DualTaskPreparedUpdateRequestV1;
 }
 
+function fallbackCreatePlan(): TaskOrdinaryFallbackCreatePlanV1 {
+  return {
+    formatVersion: 1,
+    purpose: "task.ordinary_fallback.create",
+    reason: "target_encryption_not_ready",
+    operationId: "operation",
+    taskId,
+    sourceDigestBase64url: "A".repeat(43),
+    operationalFieldsDigestBase64url: "B".repeat(43),
+    expectedContentRevision: 0,
+    expectedCryptoAccessRevision: 0,
+    expectedUpdatedAt: null,
+    policyRevision: 3,
+    subjectHumanId: "human",
+    committerDeviceId: "device",
+    committerDeviceSigningKeyGeneration: 1,
+    hostAuthorizationRevision: 2,
+    planIssuedAt: 1,
+    planDeadlineAt: 30_001,
+    planDigestBase64url: "C".repeat(43),
+  };
+}
+
+function fallbackCreateRequest(): TaskOrdinaryFallbackPreparedCreateRequestV1 {
+  return {
+    requestVersion: 1,
+    representation: "ordinary_fallback",
+    operationId: "operation",
+    taskId,
+    authenticatedRequestDigestBase64url: "D".repeat(43),
+    ordinaryPayloadBytesBase64url: "cGF5bG9hZA",
+    signedOrdinaryFallbackRequestBytesBase64url: "c2lnbmVk",
+    task: {},
+  };
+}
+
+function fallbackUpdatePlan(): TaskOrdinaryFallbackUpdatePlanV1 {
+  return {
+    ...fallbackCreatePlan(),
+    purpose: "task.ordinary_fallback.update",
+    expectedUpdatedAt: "2026-10-19T10:11:12.345Z",
+  };
+}
+
+function fallbackUpdateRequest(): TaskOrdinaryFallbackPreparedUpdateRequestV1 {
+  return { ...fallbackCreateRequest(), task: {} };
+}
+
 function client(input: {
   mode?: "plaintext_only" | "shadow_encryption" | "encrypted_only";
   shadowBehavior?: "fallback" | "strict";
@@ -150,6 +206,7 @@ function client(input: {
   content?: Partial<HumanTaskDeviceContentPortV1>;
   journal?: Partial<HumanTaskPreparedJournalV1>;
   ordinary?: HumanTaskOrdinaryPublicationPortV1;
+  createOperationId?: () => string;
 }) {
   return createAuthorizedHumanTaskClientV1({
     owner: owner(input.mode, input.shadowBehavior),
@@ -158,7 +215,7 @@ function client(input: {
     content: input.content as HumanTaskDeviceContentPortV1,
     journal: input.journal as HumanTaskPreparedJournalV1,
     ...(input.ordinary === undefined ? {} : { ordinary: input.ordinary }),
-    createOperationId: () => "operation",
+    createOperationId: input.createOperationId ?? (() => "operation"),
   });
 }
 
@@ -317,6 +374,263 @@ describe("authorized Human Task client boundary", () => {
     expect((error as ClassifiedDataOperationError).failureClass).toBe("integrity");
     expect(opened).toBe(false);
     expect(envelope.encryptedPayloadBytes.every((value) => value === 0)).toBe(true);
+  });
+
+  test("Shadow open repairs one stale Dual revision from the exact plan payload and opens the verified successor", async () => {
+    const stale = {
+      ...summary,
+      content: {
+        dtoVersion: 1,
+        status: "ordinary",
+        promptPreview: "stale preview",
+        lastError: "stale error",
+      },
+    } as TaskContentSummaryV1;
+    const repaired = {
+      ...summary,
+      content: {
+        ...summary.content,
+        objectId: "repaired-object",
+        contentRevision: 2,
+        cryptoAccessRevision: 0,
+      },
+    } as TaskContentSummaryV1;
+    const definition = {
+      formatVersion: 2 as const,
+      prompt: "complete source prompt",
+      expectedOutput: "complete source output",
+      protectedMetadata: {
+        instructions: "retain metadata",
+        execution: { workingDirectory: "/workspace/task" },
+      },
+      retainedHistoricalError: "retained source error",
+    };
+    const repairBytes = encodeTaskDefinitionContentV2(definition);
+    const repairPayload = base64url(repairBytes);
+    repairBytes.fill(0);
+    const events: string[] = [];
+    let retained: Parameters<HumanTaskPreparedJournalV1["putBeforeSend"]>[0]
+      | undefined;
+    let operationIds = 0;
+    const opened = await client({
+      mode: "shadow_encryption",
+      shadowBehavior: "strict",
+      createOperationId: () => {
+        operationIds += 1;
+        return "operation";
+      },
+      plans: {
+        async update(input) {
+          events.push(`plan:${input.operationId}`);
+          expect(input.current).toBe(stale);
+          expect(input.task).toEqual({});
+          return {
+            ...publicationPlan("update"),
+            ordinaryRepairPayloadBase64url: repairPayload,
+          };
+        },
+        async readExact({ reference }) {
+          events.push(`read:${reference.contentRevision}`);
+          expect(reference).toEqual({
+            dtoVersion: 1,
+            status: "protected",
+            objectId: "repaired-object",
+            contentRevision: 2,
+            cryptoAccessRevision: 0,
+          });
+          return {
+            ...readEnvelope(),
+            objectId: "repaired-object",
+            contentRevision: 2,
+          };
+        },
+      },
+      content: {
+        async prepareDualUpdate(input) {
+          events.push("prepare");
+          expect(input.task).toEqual({});
+          expect(input.payload).toEqual(definition);
+          return dualUpdateRequest();
+        },
+        async openExact() {
+          events.push("open");
+          return encodeTaskDefinitionContentV2(definition);
+        },
+      },
+      journal: {
+        async putBeforeSend(mutation) {
+          events.push("journal");
+          retained = mutation;
+          return { status: "inserted", index: {
+            operationId: "operation",
+            authenticatedRequestDigestBase64url: "request-digest",
+          } as never };
+        },
+        async withPrepared(operationId, use) {
+          events.push(`unseal:${operationId}`);
+          return use(retained!);
+        },
+        async recordOutcome({ outcome }) { events.push(`outcome:${outcome}`); },
+      },
+      api: {
+        async getTaskContentV1() {
+          throw new Error("Repair must not load the incomplete ordinary detail");
+        },
+        async updateDualPreparedTaskV1(sentTaskId, request) {
+          events.push(`send:${request.operationId}`);
+          expect(sentTaskId).toBe(taskId);
+          return repaired;
+        },
+      },
+    }).open(stale);
+    expect(opened).toEqual({
+      task: repaired,
+      content: {
+        status: "protected",
+        payload: {
+          formatVersion: 1,
+          prompt: definition.prompt,
+          expectedOutput: definition.expectedOutput,
+          protectedMetadata: definition.protectedMetadata,
+        },
+        retainedHistoricalError: definition.retainedHistoricalError,
+      },
+    });
+    expect(operationIds).toBe(1);
+    expect(events).toEqual([
+      "plan:operation", "prepare", "journal", "unseal:operation",
+      "send:operation", "outcome:completed", "read:2", "open",
+    ]);
+  });
+
+  test.each(["stale", "authority"] as const)(
+    "Shadow repair propagates a %s plan denial before preparation or journaling",
+    async failureClass => {
+      const events: string[] = [];
+      const stale = { ...summary, content: { dtoVersion: 1, status: "ordinary",
+        promptPreview: "stale", lastError: null } } as TaskContentSummaryV1;
+      const error = await client({
+        mode: "shadow_encryption",
+        shadowBehavior: "fallback",
+        plans: { async update() {
+          events.push("plan");
+          throw new ClassifiedDataOperationError(failureClass, "repair denied");
+        } },
+        content: { async prepareDualUpdate() {
+          events.push("prepare");
+          throw new Error("unreachable");
+        } },
+        journal: { async putBeforeSend() {
+          events.push("journal");
+          throw new Error("unreachable");
+        } },
+        api: { async getTaskContentV1() {
+          events.push("ordinary");
+          throw new Error("unreachable");
+        } },
+      }).open(stale).catch((cause: unknown) => cause);
+      expect(error).toBeInstanceOf(ClassifiedDataOperationError);
+      expect((error as ClassifiedDataOperationError).failureClass)
+        .toBe(failureClass);
+      expect(events).toEqual(["plan"]);
+    },
+  );
+
+  test.each([
+    ["noncanonical base64url", "bm90LWpzb24="],
+    ["invalid Task JSON", "bm90LWpzb24"],
+  ])("Shadow repair rejects present %s as integrity before Device or fallback", async (_label, ordinaryRepairPayloadBase64url) => {
+    const events: string[] = [];
+    const stale = { ...summary, content: { dtoVersion: 1, status: "ordinary",
+      promptPreview: "stale", lastError: null } } as TaskContentSummaryV1;
+    const error = await client({
+      mode: "shadow_encryption",
+      shadowBehavior: "fallback",
+      plans: { async update() {
+        events.push("plan");
+        return { ...publicationPlan("update"), ordinaryRepairPayloadBase64url };
+      } },
+      content: { async prepareDualUpdate() {
+        events.push("prepare");
+        throw new Error("unreachable");
+      } },
+      journal: { async putBeforeSend() {
+        events.push("journal");
+        throw new Error("unreachable");
+      } },
+      api: { async getTaskContentV1() {
+        events.push("ordinary");
+        throw new Error("unreachable");
+      }, async updateDualPreparedTaskV1() {
+        events.push("send");
+        throw new Error("unreachable");
+      } },
+    }).open(stale).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(ClassifiedDataOperationError);
+    expect((error as ClassifiedDataOperationError).failureClass)
+      .toBe("integrity");
+    expect(events).toEqual(["plan"]);
+  });
+
+  test("Plain opens one legacy detail without repair while Full neither repairs nor reads ordinary", async () => {
+    const stale = { ...summary, content: { dtoVersion: 1, status: "ordinary",
+      promptPreview: "stale", lastError: null } } as TaskContentSummaryV1;
+    const plainEvents: string[] = [];
+    const plain = await client({
+      mode: "plaintext_only",
+      api: { async getTaskContentV1() {
+        plainEvents.push("ordinary");
+        return { task: stale, definition: { dtoVersion: 1, status: "ordinary",
+          prompt: "plain", expectedOutput: null, lastError: null }, runs: [] } as never;
+      } },
+      plans: { async update() { plainEvents.push("plan"); throw new Error("unreachable"); } },
+      content: { async prepareDualUpdate() { plainEvents.push("crypto"); throw new Error("unreachable"); } },
+    }).open(stale);
+    expect(plain.content).toMatchObject({ status: "ordinary", prompt: "plain" });
+    expect(plainEvents).toEqual(["ordinary"]);
+
+    const fullEvents: string[] = [];
+    const fullError = await client({
+      mode: "encrypted_only",
+      api: { async getTaskContentV1() { fullEvents.push("ordinary"); throw new Error("unreachable"); } },
+      plans: { async update() { fullEvents.push("plan"); throw new Error("unreachable"); } },
+      content: { async prepareDualUpdate() { fullEvents.push("crypto"); throw new Error("unreachable"); } },
+    }).open(stale).catch((cause: unknown) => cause);
+    expect(fullError).toBeInstanceOf(ClassifiedDataOperationError);
+    expect((fullError as ClassifiedDataOperationError).failureClass)
+      .toBe("recoverable_availability");
+    expect(fullEvents).toEqual([]);
+  });
+
+  test("Fallback Shadow returns the ordinary definition when an eligible unavailable summary has no repair payload", async () => {
+    const unavailable = { ...summary, content: { dtoVersion: 1,
+      status: "unavailable", reason: "device_not_ready" } } as TaskContentSummaryV1;
+    const events: string[] = [];
+    const opened = await client({
+      mode: "shadow_encryption",
+      shadowBehavior: "fallback",
+      plans: { async update() {
+        events.push("plan");
+        return publicationPlan("update");
+      } },
+      api: { async getTaskContentV1() {
+        events.push("ordinary");
+        return { task: unavailable, definition: { dtoVersion: 1,
+          status: "ordinary", prompt: "fallback source", expectedOutput: null,
+          lastError: "waiting" }, runs: [] } as never;
+      } },
+      content: { async prepareDualUpdate() {
+        events.push("crypto");
+        throw new Error("unreachable");
+      } },
+      journal: { async putBeforeSend() {
+        events.push("journal");
+        throw new Error("unreachable");
+      } },
+    }).open(unavailable);
+    expect(opened.content).toEqual({ status: "ordinary",
+      prompt: "fallback source", expectedOutput: null, lastError: "waiting" });
+    expect(events).toEqual(["plan", "ordinary"]);
   });
 
   test.each(["fallback", "strict"] as const)(
@@ -574,6 +888,248 @@ describe("authorized Human Task client boundary", () => {
     });
     expect(response.taskId).toBe(taskId);
     expect(events).toEqual(["plan", "prepare:dual", "ordinary:private prompt"]);
+  });
+
+  test("Fallback Shadow journals and publishes a signed Task fallback when available", async () => {
+    const events: string[] = [];
+    let retained: Parameters<HumanTaskPreparedJournalV1["putBeforeSend"]>[0]
+      | undefined;
+    const response = await client({
+      mode: "shadow_encryption",
+      shadowBehavior: "fallback",
+      plans: {
+        async create() {
+          events.push("plan:protected");
+          return publicationPlan("create");
+        },
+        async ordinaryFallbackCreate({ operationId }) {
+          events.push(`plan:fallback:${operationId}`);
+          return fallbackCreatePlan();
+        },
+      },
+      content: {
+        async prepareDualCreate() {
+          events.push("prepare:dual");
+          throw new ClassifiedDataOperationError("key_waiting", "key unavailable");
+        },
+        async prepareOrdinaryFallbackCreate({ plan }) {
+          events.push(`prepare:fallback:${plan.operationId}`);
+          return fallbackCreateRequest();
+        },
+      },
+      journal: {
+        async putBeforeSend(mutation) {
+          retained = mutation;
+          events.push("journal");
+          return { status: "inserted", index: {
+            operationId: mutation.request.operationId,
+            authenticatedRequestDigestBase64url: "D".repeat(43),
+          } as never };
+        },
+        async withPrepared(_operationId, use) { return use(retained!); },
+        async recordOutcome({ outcome }) { events.push(`outcome:${outcome}`); },
+      },
+      api: {
+        async createTaskOrdinaryFallbackV1(request) {
+          events.push(`publish:${request.operationId}`);
+          return { taskId, status: "pending", nextFireAt: null };
+        },
+      },
+    }).create({
+      payload: {
+        formatVersion: 1,
+        prompt: "private prompt",
+        expectedOutput: null,
+        protectedMetadata: {},
+      },
+      task: {},
+    });
+    expect(response.taskId).toBe(taskId);
+    expect(events).toEqual([
+      "plan:protected",
+      "prepare:dual",
+      "plan:fallback:operation",
+      "prepare:fallback:operation",
+      "journal",
+      "publish:operation",
+      "outcome:completed",
+    ]);
+  });
+
+  test("Fallback create rejects a plan for another operation before Device preparation", async () => {
+    let prepared = false;
+    const error = await client({
+      mode: "shadow_encryption",
+      shadowBehavior: "fallback",
+      plans: {
+        async create() { return publicationPlan("create"); },
+        async ordinaryFallbackCreate() {
+          return { ...fallbackCreatePlan(), operationId: "substituted" };
+        },
+      },
+      content: {
+        async prepareDualCreate() {
+          throw new ClassifiedDataOperationError("key_waiting", "key unavailable");
+        },
+        async prepareOrdinaryFallbackCreate() {
+          prepared = true;
+          throw new Error("substituted plan reached Device preparation");
+        },
+      },
+    }).create({
+      payload: { formatVersion: 1, prompt: "private prompt", expectedOutput: null,
+        protectedMetadata: {} },
+      task: {},
+    }).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(ClassifiedDataOperationError);
+    expect((error as ClassifiedDataOperationError).failureClass).toBe("integrity");
+    expect(prepared).toBe(false);
+  });
+
+  test("a receipt-backed ordinary sibling can take the normal signed dual update path", async () => {
+    const ordinary = { ...summary, content: { dtoVersion: 1, status: "ordinary", promptPreview: "old", lastError: "prior error" } } as TaskContentSummaryV1;
+    let retained: Parameters<HumanTaskPreparedJournalV1["putBeforeSend"]>[0] | undefined;
+    let actualPayload: unknown;
+    const result = await client({ mode: "shadow_encryption", shadowBehavior: "fallback",
+      api: {
+        async getTaskContentV1() { return { task: ordinary, definition: {
+          dtoVersion: 1, status: "ordinary", prompt: "old", expectedOutput: null, lastError: "prior error",
+        }, runs: [] } as never; },
+        async updateDualPreparedTaskV1() { return { ...summary,
+          content: { ...summary.content, contentRevision: 2 } }; },
+        async updateTaskOrdinaryFallbackV1() { throw new Error("Repair must not record another fallback"); },
+      },
+      plans: { async update() { return publicationPlan("update"); } },
+      content: {
+        async prepareDualUpdate({ payload }) { actualPayload = payload; return dualUpdateRequest(); },
+        async openExact() { throw new Error("Stale encrypted content must not be used as the new definition"); },
+      },
+      journal: {
+        async putBeforeSend(mutation) { retained = mutation; return { status: "inserted", index: {
+          operationId: "operation", authenticatedRequestDigestBase64url: "request-digest",
+        } as never }; },
+        async withPrepared(_id, use) { return use(retained!); },
+        async recordOutcome() {},
+      },
+    }).update(ordinary, { payload: { formatVersion: 1, prompt: "edited", expectedOutput: null,
+      protectedMetadata: { instructions: "Retain this complete supplied metadata" } }, task: {} });
+    expect(result.content).toMatchObject({ status: "protected", contentRevision: 2 });
+    expect(actualPayload).toMatchObject({ formatVersion: 2, prompt: "edited", retainedHistoricalError: "prior error",
+      protectedMetadata: { instructions: "Retain this complete supplied metadata" } });
+  });
+
+  test("Fallback update alone loads an ordinary rev0 source and retains its error", async () => {
+    const ordinarySummary = {
+      ...summary,
+      content: {
+        dtoVersion: 1,
+        status: "ordinary",
+        promptPreview: "old",
+        lastError: "retained failure",
+      },
+    } as TaskContentSummaryV1;
+    let retained: Parameters<HumanTaskPreparedJournalV1["putBeforeSend"]>[0]
+      | undefined;
+    let preparedPayload: unknown;
+    const result = await client({
+      mode: "shadow_encryption",
+      shadowBehavior: "fallback",
+      api: {
+        async getTaskContentV1() {
+          return {
+            task: ordinarySummary,
+            definition: {
+              dtoVersion: 1,
+              status: "ordinary",
+              prompt: "old",
+              expectedOutput: null,
+              lastError: "retained failure",
+            },
+            runs: [],
+          } as never;
+        },
+        async updateTaskOrdinaryFallbackV1() { return ordinarySummary; },
+      },
+      plans: {
+        async update() { throw new ClassifiedDataOperationError("key_waiting", "Task counterpart awaiting repair"); },
+        async ordinaryFallbackUpdate() { return fallbackUpdatePlan(); },
+      },
+      content: {
+        async prepareOrdinaryFallbackUpdate({ payload }) {
+          preparedPayload = payload;
+          return fallbackUpdateRequest();
+        },
+      },
+      journal: {
+        async putBeforeSend(mutation) {
+          retained = mutation;
+          return { status: "inserted", index: {
+            operationId: mutation.request.operationId,
+            authenticatedRequestDigestBase64url: "D".repeat(43),
+          } as never };
+        },
+        async withPrepared(_operationId, use) { return use(retained!); },
+        async recordOutcome() {},
+      },
+    }).update(ordinarySummary, {
+      payload: {
+        formatVersion: 1,
+        prompt: "edited",
+        expectedOutput: null,
+        protectedMetadata: {},
+      },
+      task: {},
+    });
+    expect(result).toBe(ordinarySummary);
+    expect(preparedPayload).toMatchObject({
+      formatVersion: 2,
+      prompt: "edited",
+      retainedHistoricalError: "retained failure",
+    });
+  });
+
+  test("Fallback update rejects substituted operation and Task coordinates before Device preparation", async () => {
+    const ordinarySummary = {
+      ...summary,
+      content: { dtoVersion: 1, status: "ordinary", promptPreview: "old", lastError: null },
+    } as TaskContentSummaryV1;
+    for (const patch of [
+      { operationId: "substituted" },
+      { taskId: "44444444-4444-4444-8444-444444444444" },
+    ]) {
+      let prepared = false;
+      const error = await client({
+        mode: "shadow_encryption",
+        shadowBehavior: "fallback",
+        api: {
+          async getTaskContentV1() {
+            return { task: ordinarySummary, definition: {
+              dtoVersion: 1, status: "ordinary", prompt: "old",
+              expectedOutput: null, lastError: null,
+            }, runs: [] } as never;
+          },
+        },
+        plans: {
+          async update() { throw new ClassifiedDataOperationError("key_waiting", "Task counterpart awaiting repair"); },
+          async ordinaryFallbackUpdate() {
+            return { ...fallbackUpdatePlan(), ...patch };
+          },
+        },
+        content: {
+          async prepareOrdinaryFallbackUpdate() {
+            prepared = true;
+            throw new Error("substituted plan reached Device preparation");
+          },
+        },
+      }).update(ordinarySummary, {
+        payload: { formatVersion: 1, prompt: "edited", expectedOutput: null,
+          protectedMetadata: {} },
+        task: {},
+      }).catch((cause: unknown) => cause);
+      expect(error).toBeInstanceOf(ClassifiedDataOperationError);
+      expect((error as ClassifiedDataOperationError).failureClass).toBe("integrity");
+      expect(prepared).toBe(false);
+    }
   });
 
   test("Strict Shadow rejects the same pre-send failure without ordinary publication", async () => {

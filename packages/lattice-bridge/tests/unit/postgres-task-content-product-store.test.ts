@@ -19,6 +19,7 @@ import {
   deriveTaskContentCryptoObjectIdV1,
   fingerprintTaskContentAuthorityV1,
   fingerprintTaskContentNamespaceV1,
+  prepareTaskOrdinaryFallbackRepairSourceProofV1,
   taskContentObjectTypeV1,
   type TaskContentCoordinateV1,
 } from "../../src/task/task-content-repository.ts";
@@ -168,6 +169,62 @@ function reservation(coordinate: TaskContentCoordinateV1) {
       ? metadata.operational
       : null,
   });
+}
+
+const FALLBACK_COMPLETED_AT = new Date("2026-09-22T11:55:00.000Z");
+const FALLBACK_UPDATED_AT = new Date("2026-09-22T11:56:00.000Z");
+const FALLBACK_OPERATION_ID = "fallback:task:update";
+const FALLBACK_REQUEST_DIGEST = new Uint8Array(32).fill(0x51);
+
+function fallbackRepairProof(overrides: Readonly<{
+  sourceMutationVersion?: string;
+}> = {}) {
+  return prepareTaskOrdinaryFallbackRepairSourceProofV1({
+    taskId: TASK_ID,
+    sourceMutationVersion: overrides.sourceMutationVersion ?? "41",
+    sourceUpdatedAt: FALLBACK_UPDATED_AT,
+    sourceContentRevision: 1,
+    sourceNamespaceId: NAMESPACE_ID,
+    sourceCryptoObjectId: deriveTaskContentCryptoObjectIdV1(definition()),
+    sourceCryptoAccessRevision: 0,
+    sourceRequiredNamespaceFingerprint:
+      fingerprintTaskContentNamespaceV1(NAMESPACE_ID),
+    fallbackOperationId: FALLBACK_OPERATION_ID,
+    fallbackRequestDigest: FALLBACK_REQUEST_DIGEST,
+    fallbackReason: "target_encryption_not_ready",
+    fallbackPolicyRevision: 1,
+    fallbackCompletedAt: FALLBACK_COMPLETED_AT,
+  });
+}
+
+function fallbackSourceRow(overrides: Record<string, unknown> = {}) {
+  return {
+    task_id: TASK_ID,
+    owner_id: OWNER_ID,
+    requestor_id: OWNER_ID,
+    mutation_version: "41",
+    task_status: "pending",
+    fire_lock_id: null,
+    content_namespace_id: NAMESPACE_ID,
+    content_revision: 1,
+    content_representation: "dual",
+    crypto_object_id: deriveTaskContentCryptoObjectIdV1(definition()),
+    crypto_access_revision: 0,
+    crypto_required_namespace_fingerprint:
+      fingerprintTaskContentNamespaceV1(NAMESPACE_ID),
+    crypto_mapping_state: "stale",
+    ordinary_fallback_operation_id: FALLBACK_OPERATION_ID,
+    ordinary_fallback_request_digest: FALLBACK_REQUEST_DIGEST,
+    ordinary_fallback_reason: "target_encryption_not_ready",
+    ordinary_fallback_policy_revision: 1,
+    ordinary_fallback_completed_at: FALLBACK_COMPLETED_AT,
+    updated_at: FALLBACK_UPDATED_AT,
+    prompt: "fallback sibling",
+    expected_output: null,
+    last_error: null,
+    metadata_json: "{}",
+    ...overrides,
+  };
 }
 
 async function setup(
@@ -423,6 +480,55 @@ describe("PostgresTaskContentProductStore", () => {
       }] },
     ]);
     expect((await runSetup.store.reserveRevision(reservation(run))).status).toBe("reserved");
+  });
+
+  test("reserves a normal next revision only from the exact receipt-bound stale dual source", async () => {
+    const coordinate = definition(2);
+    const sourceLedger = lifecycleRow(definition(), {
+      representation: "dual",
+      completion: "complete",
+      disposition: "mapped",
+      crypto_completed_at: NOW,
+    });
+    const nextLedger = lifecycleRow(coordinate, {
+      representation: "dual",
+    });
+    const exact = await setup(definitionReservationSteps([
+      ...emptyOperations,
+      { contains: 'from "task_definition_crypto_revisions"', rows: [] },
+      requesterOwner,
+      { contains: 'from "tasks"', rows: [fallbackSourceRow()] },
+      { contains: 'from "task_definition_crypto_revisions"', rows: [sourceLedger] },
+      { contains: 'insert into "task_definition_crypto_revisions"', rows: [nextLedger] },
+      { contains: 'from "tasks"', rows: [fallbackSourceRow()] },
+    ]).map((step, index) => index === 0 ? {
+      contains: 'from "encryption_transition_policy"',
+      rows: [{ mode: "shadow_encryption", revision: 1 }],
+    } : step));
+    expect((await exact.store.reserveRevision({
+      ...reservation(coordinate),
+      representation: "dual",
+      fallbackRepairSource: fallbackRepairProof(),
+    })).status).toBe("reserved");
+    expect(exact.connection.steps).toHaveLength(0);
+
+    const changed = await setup(definitionReservationSteps([
+      ...emptyOperations,
+      { contains: 'from "task_definition_crypto_revisions"', rows: [] },
+      requesterOwner,
+      { contains: 'from "tasks"', rows: [fallbackSourceRow()] },
+    ]).map((step, index) => index === 0 ? {
+      contains: 'from "encryption_transition_policy"',
+      rows: [{ mode: "shadow_encryption", revision: 1 }],
+    } : step));
+    expect(await changed.store.reserveRevision({
+      ...reservation(coordinate),
+      representation: "dual",
+      fallbackRepairSource: fallbackRepairProof({
+        sourceMutationVersion: "42",
+      }),
+    })).toEqual({ status: "stale" });
+    expect(changed.connection.steps).toHaveLength(0);
   });
 
   test("refuses a definition update while an occurrence owns the fire lock", async () => {
@@ -964,6 +1070,54 @@ describe("PostgresTaskContentProductStore", () => {
       { contains: 'update "tasks"', rows: [{ task_id: TASK_ID }] },
       { contains: 'update "task_definition_crypto_revisions"', rows: [{
         ...complete, disposition: "mapped",
+      }] },
+    ]));
+    expect(await store.compareAndSwapCryptoMapping({
+      coordinate,
+      cryptoObjectId: deriveTaskContentCryptoObjectIdV1(coordinate),
+      expectedAuthorityFingerprint: fingerprintTaskContentAuthorityV1(authority),
+      expectedRepresentation: "dual",
+      leaseToken: null,
+    })).toBe("applied");
+    expect(connection.steps).toHaveLength(0);
+  });
+
+  test("maps a reserved repair from the exact stale dual receipt while retaining the predecessor ledger", async () => {
+    const coordinate = definition(2);
+    const complete = lifecycleRow(coordinate, {
+      representation: "dual",
+      completion: "complete",
+      crypto_completed_at: NOW,
+      lease_is_live: true,
+    });
+    const predecessor = lifecycleRow(definition(), {
+      representation: "dual",
+      completion: "complete",
+      disposition: "mapped",
+      crypto_completed_at: NOW,
+    });
+    const source = fallbackSourceRow();
+    const { store, connection } = await setup(definitionMappingSteps([
+      { contains: "for update", rows: [complete] },
+      requesterOwner,
+      { contains: 'from "tasks"', rows: [source] },
+      {
+        contains: 'from "encryption_transition_policy"',
+        rows: [{ mode: "shadow_encryption", revision: 1 }],
+      },
+      { contains: 'from "task_definition_crypto_revisions"', rows: [predecessor] },
+      {
+        contains: 'update "tasks"',
+        rows: [{ task_id: TASK_ID }],
+        inspect(_parameters, statement) {
+          expect(statement).toContain('"crypto_mapping_state" = $');
+          expect(statement).toContain('"ordinary_fallback_operation_id" = $');
+          expect(statement).toContain('"ordinary_fallback_request_digest" = $');
+        },
+      },
+      { contains: 'update "task_definition_crypto_revisions"', rows: [{
+        ...complete,
+        disposition: "mapped",
       }] },
     ]));
     expect(await store.compareAndSwapCryptoMapping({

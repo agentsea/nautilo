@@ -42,12 +42,17 @@ import {
 import {
   ClassifiedDataOperationError,
   deriveTaskContentCryptoObjectIdV1,
+  encodeTaskDefinitionContent,
+  hasTaskOrdinaryFallbackReceiptV1,
   parseTaskHistoricalRepairProvenanceV1,
+  prepareTaskOrdinaryFallbackRepairSourceProofV1,
+  parseTaskDefinitionForegroundAuthorizationIdV1,
   taskContentRevisionObjectIdV1,
   type EncryptionDataOperationOwner,
   type TaskHistoricalRepairProvenanceV1,
   type TaskContentAuthorityV1,
   type TaskContentPayloadV1,
+  type TaskOrdinaryFallbackRepairSourceProofV1,
 } from "@nautilo/lattice-bridge";
 import {
   createPostgresTaskContentRepositoryV1,
@@ -73,6 +78,8 @@ import {
   decodeHumanTaskPublicationRequestV1,
   decodeNamespaceObjectEnvelopeV2,
   decodeObjectAccessManifestV5,
+  destroyDomainForegroundAuthorizationV2,
+  parseDomainForegroundAuthorizationV2,
 } from "@nautilo/lattice-crypto/wire";
 import {
   computeNextFireAt,
@@ -83,6 +90,7 @@ import {
 } from "@nautilo/runtime";
 import {
   classifyProtectedTaskMetadataV1,
+  reconstructProtectedTaskMetadataV1,
   type ListTasksQuery,
   type TaskContentListV1,
   type TaskContentSummaryV1,
@@ -102,6 +110,8 @@ import {
   createProtectedTaskRequesterPrivateRoomResolver,
   type ProtectedTaskRequesterPrivateRoomResolver,
 } from "./protected-task-requester-private-room";
+import { createProtectedTaskDefinitionForegroundAuthorizationResolver } from
+  "./protected-task-runtime-access-lineage";
 import { listProtectedTaskContentV1, toTaskContentSummaryV1 } from "./tasks";
 
 export type ProtectedTaskRouteAuthority = Readonly<{
@@ -281,7 +291,7 @@ type RetainedForegroundAgentExecution = Readonly<{
   planDigest: Uint8Array;
   acceptedAuthority?: Readonly<{
     subjectHumanId: string;
-    authorizedDomainIds: readonly string[];
+    authorizedNamespaces: readonly Readonly<{ namespaceId: string; domainId: string }>[];
   }>;
 }>;
 
@@ -316,9 +326,8 @@ export function createProtectedTaskForegroundSignerTransport(input: Readonly<{
           ...(evidence.acceptedAuthority === undefined ? {} : {
             acceptedAuthority: Object.freeze({
               subjectHumanId: evidence.acceptedAuthority.subjectHumanId,
-              authorizedDomainIds: Object.freeze([
-                ...evidence.acceptedAuthority.authorizedDomainIds,
-              ]),
+              authorizedNamespaces: Object.freeze(evidence.acceptedAuthority
+                .authorizedNamespaces.map(entry => Object.freeze({ ...entry }))),
             }),
           }),
         });
@@ -332,6 +341,40 @@ export function createProtectedTaskForegroundSignerTransport(input: Readonly<{
           throw new TypeError("Foreground Task signer evidence was substituted");
         }
         if (retained === null) retained = next;
+        return Uint8Array.from(evidence.signerPublicKey);
+      } finally {
+        evidence.signerPublicKey.fill(0);
+        evidence.planBytes.fill(0);
+        evidence.planDigest.fill(0);
+      }
+    },
+    resolveDefinitionSigner: async (
+      principal: ForegroundAgentSignerPrincipal,
+      parentOperationHash: Uint8Array,
+    ): Promise<Uint8Array | null> => {
+      const evidence = await input.resolveEvidence(principal, {
+        parentOperationHash,
+      });
+      if (evidence === null) return null;
+      try {
+        const next = Object.freeze({
+          principal: Object.freeze({ ...principal }),
+          planBytes: Uint8Array.from(evidence.planBytes),
+          planDigest: Uint8Array.from(evidence.planDigest),
+          ...(evidence.acceptedAuthority === undefined ? {} : {
+            acceptedAuthority: Object.freeze({
+              subjectHumanId: evidence.acceptedAuthority.subjectHumanId,
+              authorizedNamespaces: Object.freeze(evidence.acceptedAuthority
+                .authorizedNamespaces.map(entry => Object.freeze({ ...entry }))),
+            }),
+          }),
+        });
+        if (retained !== null) {
+          next.planBytes.fill(0);
+          next.planDigest.fill(0);
+          throw new TypeError("Foreground Task definition evidence was duplicated");
+        }
+        retained = next;
         return Uint8Array.from(evidence.signerPublicKey);
       } finally {
         evidence.signerPublicKey.fill(0);
@@ -357,14 +400,16 @@ export function createProtectedTaskForegroundSignerTransport(input: Readonly<{
         taskAgentId: string;
         subjectHumanId: string;
         domainId: string;
+        namespaceId: string;
       }>,
     ) => retained !== null
       && sameForegroundAgentSigner(retained.principal, principal)
       && (principal.agentId === expected.taskAgentId
         || retained.acceptedAuthority?.subjectHumanId
           === expected.subjectHumanId
-          && retained.acceptedAuthority.authorizedDomainIds
-            .includes(expected.domainId))
+          && retained.acceptedAuthority.authorizedNamespaces.some(entry =>
+            entry.domainId === expected.domainId
+              && entry.namespaceId === expected.namespaceId))
       ? Object.freeze({
           kind: "foreground_agent_accepted_execution" as const,
           planBytesBase64url: Buffer.from(retained.planBytes).toString("base64url"),
@@ -706,7 +751,7 @@ function digestJson(crypto: LatticeCrypto, value: unknown): string {
   finally { bytes.fill(0); }
 }
 
-function deterministicTaskId(
+export function deterministicTaskId(
   authority: ProtectedTaskRouteAuthority,
   operationId: string,
 ): string {
@@ -723,7 +768,7 @@ function deterministicTaskId(
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-function parseRunAt(value: string | undefined): Date | undefined {
+export function parseRunAt(value: string | undefined): Date | undefined {
   if (value === undefined) return undefined;
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
@@ -732,7 +777,7 @@ function parseRunAt(value: string | undefined): Date | undefined {
   return date;
 }
 
-function validateSchedule(input: Readonly<{
+export function validateSchedule(input: Readonly<{
   scheduleKind: Task["scheduleKind"];
   runAt: Date | null | undefined;
   cron: string | null | undefined;
@@ -754,7 +799,7 @@ function validateSchedule(input: Readonly<{
   }
 }
 
-function toolsFields(
+export function toolsFields(
   tools: readonly string[] | undefined,
 ): Pick<NewTask, "toolsMode" | "toolsWhitelist"> | Record<string, never> {
   if (tools === undefined) return {};
@@ -779,7 +824,7 @@ function emptyMetadata() {
   return metadataFor({ metadata: {} });
 }
 
-function validateCreateShape(task: OperationalCreate): void {
+export function validateCreateShape(task: OperationalCreate): void {
   if (task.parentTaskId != null) {
     throw new ProtectedTaskRouteError(
       422,
@@ -808,7 +853,7 @@ function validateSelection(
   }
 }
 
-function taskCreateInput(
+export function taskCreateInput(
   authority: ProtectedTaskRouteAuthority,
   taskId: string,
   task: OperationalCreate,
@@ -861,7 +906,7 @@ async function readCreatedTask(
   return current;
 }
 
-function taskUpdatePatch(
+export function taskUpdatePatch(
   current: Task,
   task: OperationalUpdate,
   payload: TaskDefinitionPayload | null,
@@ -895,6 +940,82 @@ function taskUpdatePatch(
     );
   }
   return patch;
+}
+
+type VersionedTask = Task & Readonly<{ mutationVersion: string }>;
+
+type VersionedTaskWithFallbackReceipt = VersionedTask & Readonly<{
+  ordinaryFallbackOperationId: string;
+  ordinaryFallbackRequestDigest: Uint8Array;
+  ordinaryFallbackReason: "target_encryption_not_ready";
+  ordinaryFallbackPolicyRevision: number;
+  ordinaryFallbackCompletedAt: Date;
+}>;
+
+function fallbackRepairSource(
+  task: VersionedTask,
+): TaskOrdinaryFallbackRepairSourceProofV1 | null {
+  if ((task.status !== "pending" && task.status !== "paused")
+    || task.fireLockId !== null
+    || task.contentRepresentation !== "dual"
+    || task.contentNamespaceId === null
+    || task.contentRevision < 1
+    || task.cryptoObjectId === null
+    || task.cryptoAccessRevision < 0
+    || !(task.cryptoRequiredNamespaceFingerprint instanceof Uint8Array)
+    || task.cryptoRequiredNamespaceFingerprint.length !== 32
+    || task.cryptoMappingState !== "stale"
+    || !hasTaskOrdinaryFallbackReceiptV1(task)) return null;
+  const receipt = task as VersionedTaskWithFallbackReceipt;
+  return prepareTaskOrdinaryFallbackRepairSourceProofV1({
+    taskId: task.id,
+    sourceMutationVersion: task.mutationVersion,
+    sourceUpdatedAt: task.updatedAt,
+    sourceContentRevision: task.contentRevision,
+    sourceNamespaceId: task.contentNamespaceId,
+    sourceCryptoObjectId: task.cryptoObjectId,
+    sourceCryptoAccessRevision: task.cryptoAccessRevision,
+    sourceRequiredNamespaceFingerprint:
+      task.cryptoRequiredNamespaceFingerprint,
+    fallbackOperationId: receipt.ordinaryFallbackOperationId,
+    fallbackRequestDigest: receipt.ordinaryFallbackRequestDigest,
+    fallbackReason: receipt.ordinaryFallbackReason,
+    fallbackPolicyRevision: receipt.ordinaryFallbackPolicyRevision,
+    fallbackCompletedAt: receipt.ordinaryFallbackCompletedAt,
+  });
+}
+
+function fallbackRepairPlanBinding(
+  source: TaskOrdinaryFallbackRepairSourceProofV1,
+) {
+  return Object.freeze({
+    sourceMutationVersion: source.sourceMutationVersion,
+    sourceUpdatedAt: source.sourceUpdatedAt.toISOString(),
+    sourceContentRevision: source.sourceContentRevision,
+    sourceNamespaceId: source.sourceNamespaceId,
+    sourceCryptoObjectId: source.sourceCryptoObjectId,
+    sourceCryptoAccessRevision: source.sourceCryptoAccessRevision,
+    sourceRequiredNamespaceFingerprintBase64url: Buffer.from(
+      source.sourceRequiredNamespaceFingerprint,
+    ).toString("base64url"),
+    fallbackOperationId: source.fallbackOperationId,
+    fallbackRequestDigestBase64url: Buffer.from(
+      source.fallbackRequestDigest,
+    ).toString("base64url"),
+    fallbackReason: source.fallbackReason,
+    fallbackPolicyRevision: source.fallbackPolicyRevision,
+    fallbackCompletedAt: source.fallbackCompletedAt.toISOString(),
+  });
+}
+
+function sameFallbackRepairSource(
+  left: TaskOrdinaryFallbackRepairSourceProofV1 | null,
+  right: TaskOrdinaryFallbackRepairSourceProofV1 | null,
+): boolean {
+  return left === null || right === null
+    ? left === right
+    : JSON.stringify(fallbackRepairPlanBinding(left))
+      === JSON.stringify(fallbackRepairPlanBinding(right));
 }
 
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
@@ -1098,6 +1219,7 @@ export function createProductionProtectedTaskComposition(
     authority: ProtectedTaskRouteAuthority,
     coordinate: Parameters<typeof refreshHumanMappedTaskContentAccessHead>[0]["coordinate"],
     expectedNamespaceId: string,
+    definitionObjectId?: string | null,
   ): Promise<"applied" | "duplicate" | "unavailable"> => {
     if (authority.admission === undefined) return "unavailable";
     const privateRoom = await resolveRequesterPrivateRoom(
@@ -1122,6 +1244,22 @@ export function createProductionProtectedTaskComposition(
         coordinate,
         sourceRoomId: privateRoom.roomId,
         expectedPolicyRevision: await readPolicyRevision(),
+        ...(coordinate.kind !== "definition" || definitionObjectId == null ? {} : {
+          resolveTaskDefinitionForegroundAuthorization: async (evidence: Parameters<
+            NonNullable<Parameters<typeof refreshHumanMappedTaskContentAccessHead>[0]["resolveTaskDefinitionForegroundAuthorization"]>
+          >[0]) => {
+            const resolver = await createProtectedTaskDefinitionForegroundAuthorizationResolver({
+              product, handle: await cryptoHandle(), crypto: dependencies.crypto,
+              requesterHumanId: authority.subjectHumanId,
+              task: {
+                id: coordinate.taskId, ownerId: authority.userId, agentId: authority.agentId,
+                contentNamespaceId: expectedNamespaceId, cryptoObjectId: definitionObjectId,
+                contentRevision: coordinate.contentRevision,
+              },
+            });
+            return resolver === null ? null : resolver(evidence);
+          },
+        }),
         subject: {
           userId: authority.userId,
           humanActorId: authority.subjectHumanId,
@@ -1138,22 +1276,36 @@ export function createProductionProtectedTaskComposition(
     }
   };
 
-  const currentPrivateAuthority = async (
-    authority: ProtectedTaskRouteAuthority,
-    expectedNamespaceId?: string,
-  ): Promise<Readonly<{
+  type CurrentPrivateAuthority = Readonly<{
     sourceRoomId: string;
     content: TaskContentAuthorityV1;
     bindingHash: Uint8Array;
     keyGeneration: number;
-  }> | null> => {
+  }>;
+
+  type CurrentPrivateAuthorityInspection =
+    | Readonly<{ status: "ready"; value: CurrentPrivateAuthority }>
+    | Readonly<{
+      status: "unavailable";
+      reason: "authority_unavailable" | "encryption_not_ready";
+    }>;
+
+  const inspectCurrentPrivateAuthority = async (
+    authority: ProtectedTaskRouteAuthority,
+    expectedNamespaceId?: string,
+  ): Promise<CurrentPrivateAuthorityInspection> => {
     const privateRoom = await resolveRequesterPrivateRoom(
       authority.userId,
       authority.agentId,
       expectedNamespaceId,
     );
     if (privateRoom === null || (expectedNamespaceId !== undefined
-      && privateRoom.namespaceId !== expectedNamespaceId)) return null;
+      && privateRoom.namespaceId !== expectedNamespaceId)) {
+      return Object.freeze({
+        status: "unavailable" as const,
+        reason: "authority_unavailable" as const,
+      });
+    }
     // Global policy reads must not borrow another pool connection while the
     // private Room owner retains its product locks.
     const policyRevision = await readPolicyRevision();
@@ -1167,39 +1319,73 @@ export function createProductionProtectedTaskComposition(
             namespaceId: privateRoom.namespaceId,
             keyClass: "ai",
           });
-          if (domain.status !== "ready") return null;
+          if (domain.status !== "ready") {
+            return Object.freeze({
+              status: "unavailable" as const,
+              reason: domain.reason === "namespace_bundle_unavailable"
+                ? "encryption_not_ready" as const
+                : "authority_unavailable" as const,
+            });
+          }
           return Object.freeze({
-            sourceRoomId: privateRoom.roomId,
-            content: Object.freeze({
-              authorityVersion: 1 as const,
-              kind: "requester_private_namespace" as const,
-              keyClass: "ai" as const,
-              requesterHumanId: authority.subjectHumanId,
-              namespaceId: privateRoom.namespaceId,
-              domainId: domain.domainId,
-              expectedAccessRevision: domain.namespaceAccessRevision,
-              expectedPolicyRevision: policyRevision,
+            status: "ready" as const,
+            value: Object.freeze({
+              sourceRoomId: privateRoom.roomId,
+              content: Object.freeze({
+                authorityVersion: 1 as const,
+                kind: "requester_private_namespace" as const,
+                keyClass: "ai" as const,
+                requesterHumanId: authority.subjectHumanId,
+                namespaceId: privateRoom.namespaceId,
+                domainId: domain.domainId,
+                expectedAccessRevision: domain.namespaceAccessRevision,
+                expectedPolicyRevision: policyRevision,
+              }),
+              bindingHash: domain.bundleDigest.slice(),
+              keyGeneration: domain.namespaceKeyGeneration,
             }),
-            bindingHash: domain.bundleDigest.slice(),
-            keyGeneration: domain.namespaceKeyGeneration,
           });
         },
       });
-    if (current === null) return null;
+    if (current === null) {
+      return Object.freeze({
+        status: "unavailable" as const,
+        reason: "authority_unavailable" as const,
+      });
+    }
+    if (current.status !== "ready") return current;
     try {
       if (await readPolicyRevision() === policyRevision) return current;
     } catch (error) {
-      current.bindingHash.fill(0);
+      current.value.bindingHash.fill(0);
       throw error;
     }
-    current.bindingHash.fill(0);
-    return null;
+    current.value.bindingHash.fill(0);
+    return Object.freeze({
+      status: "unavailable" as const,
+      reason: "authority_unavailable" as const,
+    });
+  };
+
+  const currentPrivateAuthority = async (
+    authority: ProtectedTaskRouteAuthority,
+    expectedNamespaceId?: string,
+  ): Promise<CurrentPrivateAuthority | null> => {
+    const inspected = await inspectCurrentPrivateAuthority(
+      authority,
+      expectedNamespaceId,
+    );
+    return inspected.status === "ready" ? inspected.value : null;
   };
 
   const buildPlan = async (
     authority: ProtectedTaskRouteAuthority,
     taskId: string | null,
     request: ProtectedTaskPublicationPlanRequestV1,
+    expectedUpdateSource?: Readonly<{
+      mutationVersion: string;
+      fallbackRepairSource: TaskOrdinaryFallbackRepairSourceProofV1 | null;
+    }>,
   ): Promise<ProtectedTaskPublicationPlanV1> => {
     if (request.operation === "create") {
       validateCreateShape(request.task);
@@ -1217,8 +1403,10 @@ export function createProductionProtectedTaskComposition(
     let expectedCryptoAccessRevision = 0;
     let expectedNamespaceId: string | undefined;
     let taskAuthority = authority;
+    let repairSource: TaskOrdinaryFallbackRepairSourceProofV1 | null = null;
+    let repairTask: VersionedTask | undefined;
     if (request.operation === "update") {
-      const task = await getTaskById(dependencies.db, id);
+      const task = await getTaskByIdWithMutationVersion(dependencies.db, id);
       if (task === undefined) {
         throw new ProtectedTaskRouteError(404, "task_not_found", "Task not found");
       }
@@ -1227,13 +1415,45 @@ export function createProductionProtectedTaskComposition(
         throw new ProtectedTaskRouteError(404, "task_not_found", "Task not found");
       }
       taskAuthority = resolved;
+      // Revision-zero definitions are owned by the existing historical repair
+      // path. They cannot be admitted as a normal n -> n+1 protected edit.
+      if ((task.status === "pending" || task.status === "paused")
+        && task.fireLockId === null && task.ownerId === task.requestorId
+        && task.parentTaskId === null && task.depth === 0
+        && task.contentRepresentation === "ordinary" && task.contentRevision === 0
+        && task.contentNamespaceId === null && task.cryptoObjectId === null
+        && task.cryptoAccessRevision === 0 && task.cryptoRequiredNamespaceFingerprint === null
+        && task.cryptoMappingState === "unmapped"
+        && (hasTaskOrdinaryFallbackReceiptV1(task)
+          || task.ordinaryFallbackOperationId === null
+            && task.ordinaryFallbackRequestDigest === null
+            && task.ordinaryFallbackReason === null
+            && task.ordinaryFallbackPolicyRevision === null
+            && task.ordinaryFallbackCompletedAt === null)) {
+        throw new ProtectedTaskRouteError(409, "task_counterpart_not_ready",
+          "Task representation repair is required before a protected update");
+      }
+      repairSource = fallbackRepairSource(task);
+      if (repairSource !== null) repairTask = task;
       if ((task.status !== "pending" && task.status !== "paused")
         || task.fireLockId !== null
         || (task.contentRepresentation !== "protected"
           && task.contentRepresentation !== "dual")
         || task.contentNamespaceId === null
-        || task.cryptoMappingState !== "verified") {
+        || task.cryptoMappingState !== "verified" && repairSource === null) {
         throw new ProtectedTaskRouteError(409, "task_not_mutable", "Task cannot be updated");
+      }
+      if (expectedUpdateSource !== undefined
+        && (task.mutationVersion !== expectedUpdateSource.mutationVersion
+          || !sameFallbackRepairSource(
+            repairSource,
+            expectedUpdateSource.fallbackRepairSource,
+          ))) {
+        throw new ProtectedTaskRouteError(
+          409,
+          "task_changed",
+          "Task changed while the update was prepared",
+        );
       }
       expectedContentRevision = task.contentRevision;
       expectedCryptoAccessRevision = task.cryptoAccessRevision;
@@ -1267,15 +1487,57 @@ export function createProductionProtectedTaskComposition(
         }
       }
     }
-    const current = await currentPrivateAuthority(taskAuthority, expectedNamespaceId);
-    if (current === null) {
+    const inspected = await inspectCurrentPrivateAuthority(
+      taskAuthority,
+      expectedNamespaceId,
+    );
+    if (inspected.status !== "ready") {
+      if (inspected.reason === "encryption_not_ready") {
+        throw new ProtectedTaskRouteError(
+          409,
+          "task_encryption_not_ready",
+          "Task encryption is not ready",
+        );
+      }
       throw new ProtectedTaskRouteError(
         403,
         "task_authority_unavailable",
         "Task authority is unavailable",
       );
     }
+    const current = inspected.value;
     try {
+      const sourceTask = repairTask;
+      // The shared owner alone selects whether the ordinary sibling may be
+      // serialized. Full and Plain never invoke the Shadow source loader.
+      const ordinaryRepairPayloadBase64url = sourceTask === undefined
+        || Object.keys(request.task).length !== 0 ? undefined
+        : await dependencies.owner.mutate<string | undefined, string | undefined>({
+          ordinary: () => Promise.resolve(undefined),
+          protected: () => Promise.resolve(undefined),
+          dual: () => {
+            const classified = classifyProtectedTaskMetadataV1(sourceTask.metadata ?? {});
+            if (classified.status !== "supported") {
+              throw new ProtectedTaskRouteError(409, "task_metadata_unsupported",
+                "Task metadata cannot be protected");
+            }
+            const content = {
+              prompt: sourceTask.prompt,
+              expectedOutput: sourceTask.expectedOutput,
+              protectedMetadata: classified.protectedContent,
+            };
+            const bytes = encodeTaskDefinitionContent(sourceTask.lastError === null
+              ? { formatVersion: 1, ...content }
+              : { formatVersion: 2, ...content,
+                  retainedHistoricalError: sourceTask.lastError });
+            try {
+              return Promise.resolve(Buffer.from(bytes).toString("base64url"));
+            } finally {
+              bytes.fill(0);
+            }
+          },
+          publish: (payload) => Promise.resolve(payload),
+        });
       const plan = {
         planVersion: 1 as const,
         operation: request.operation,
@@ -1284,6 +1546,9 @@ export function createProductionProtectedTaskComposition(
         expectedContentRevision,
         nextContentRevision: expectedContentRevision + 1,
         expectedCryptoAccessRevision,
+        ...(ordinaryRepairPayloadBase64url === undefined ? {} : {
+          ordinaryRepairPayloadBase64url,
+        }),
         authority: {
           requesterHumanId: current.content.requesterHumanId,
           sourceRoomId: current.sourceRoomId,
@@ -1297,10 +1562,10 @@ export function createProductionProtectedTaskComposition(
       };
       return Object.freeze({
         ...plan,
-        planDigestBase64url: digestJson(dependencies.crypto, {
-          ...plan,
-          task: request.task,
-        }),
+        planDigestBase64url: digestJson(dependencies.crypto, repairSource === null
+          ? { ...plan, task: request.task }
+          : { ...plan, task: request.task,
+              fallbackRepairSource: fallbackRepairPlanBinding(repairSource) }),
       });
     } finally {
       current.bindingHash.fill(0);
@@ -1496,6 +1761,9 @@ export function createProductionProtectedTaskComposition(
     authority: ProtectedTaskRouteAuthority,
     taskId: string,
     expectedContentRevision: number,
+    expectedMutationVersion: string,
+    expectedFallbackRepairSource:
+      TaskOrdinaryFallbackRepairSourceProofV1 | null,
     task: OperationalUpdate,
     payload: TaskDefinitionPayload | null,
   ): Promise<Task> => {
@@ -1509,13 +1777,39 @@ export function createProductionProtectedTaskComposition(
     if (current.status !== "pending" && current.status !== "paused") {
       throw new ProtectedTaskRouteError(409, "task_not_mutable", "Task cannot be updated");
     }
+    if (current.mutationVersion !== expectedMutationVersion
+      || !sameFallbackRepairSource(
+        fallbackRepairSource(current),
+        expectedFallbackRepairSource,
+      )) {
+      throw new ProtectedTaskRouteError(
+        409,
+        "task_changed",
+        "Task changed while the update was prepared",
+      );
+    }
+    const patch = taskUpdatePatch(current, task, payload);
+    if (expectedFallbackRepairSource !== null && payload !== null) {
+      const reconstructed = reconstructProtectedTaskMetadataV1(
+        metadataFor(current),
+        payload.protectedMetadata,
+      );
+      if (reconstructed.status !== "supported") {
+        throw new ProtectedTaskRouteError(
+          409,
+          "task_metadata_unsupported",
+          "Task metadata cannot be protected",
+        );
+      }
+      patch.metadata = reconstructed.metadata;
+    }
     const updated = await updateTaskIfCurrent(dependencies.db, {
       id: current.id,
       ownerId: authority.userId,
       expectedStatus: current.status,
-      expectedMutationVersion: current.mutationVersion,
+      expectedMutationVersion,
       expectedContentRevision,
-    }, taskUpdatePatch(current, task, payload));
+    }, patch);
     if (updated === undefined) {
       throw new ProtectedTaskRouteError(
         409,
@@ -1545,11 +1839,11 @@ export function createProductionProtectedTaskComposition(
         throw new ProtectedTaskRouteError(404, "task_not_found", "Task not found");
       }
       if (task.contentNamespaceId !== null) {
-        const refreshedAccess = await refreshMappedReadAccess(input.authority, {
+        const refreshedAccess = await refreshMappedReadAccess(taskAuthority, {
           kind: "definition",
           taskId: input.taskId,
           contentRevision: input.contentRevision,
-        }, task.contentNamespaceId);
+        }, task.contentNamespaceId, task.cryptoObjectId);
         const refreshed = refreshedAccess === "unavailable" ? task
           : await getTaskById(dependencies.db, input.taskId);
         if (refreshed === undefined
@@ -1670,6 +1964,25 @@ export function createProductionProtectedTaskComposition(
       const foreground = historicalRepair === null
         ? await foregroundSignerTransport(input.authority.userId)
         : null;
+      const taskDefinitionAuthorization = historicalRepair === null
+        ? await createProtectedTaskDefinitionForegroundAuthorizationResolver({
+            product: await createHumanProductTransactionContext(
+              input.authority.userId,
+              dependencies.db,
+            ),
+            handle: verifiedCryptoHandle,
+            crypto: dependencies.crypto,
+            requesterHumanId: input.authority.subjectHumanId,
+            task: {
+              id: task.id,
+              ownerId: task.ownerId,
+              agentId: task.agentId,
+              contentNamespaceId: task.contentNamespaceId,
+              cryptoObjectId: task.cryptoObjectId,
+              contentRevision: task.contentRevision,
+            },
+          })
+        : null;
       const humanSigners = createProtectedTaskHumanSignerTransport(
         resolveHistoricalHumanDeviceSigningPublicKey,
       );
@@ -1707,6 +2020,10 @@ export function createProductionProtectedTaskComposition(
             resolveHistoricalAgentManagerAuthority:
               history.resolveAgentRuntimeSignerManager,
             resolveLiveShadowAgentSigner: foreground?.resolveSigner,
+            ...(taskDefinitionAuthorization === null ? {} : {
+              resolveTaskDefinitionForegroundAuthorization:
+                taskDefinitionAuthorization,
+            }),
             resolveHistoricalHumanDeviceSigningPublicKey:
               humanSigners.resolve,
           });
@@ -1731,11 +2048,45 @@ export function createProductionProtectedTaskComposition(
           });
           genesisIsTaskAgent = genesis.signer.kind === "agent_runtime"
             && genesis.signer.agentId === task.agentId;
+          const taskDefinitionEvidence = verified
+            .taskDefinitionForegroundAuthorizationEvidence;
+          if (genesis.signer.kind === "agent_runtime"
+            && taskDefinitionEvidence.length === 1) {
+            const authorization = parseDomainForegroundAuthorizationV2(
+              taskDefinitionEvidence[0]!,
+            );
+            if (authorization === null) {
+              throw new TypeError("Task definition authorization evidence is invalid");
+            }
+            const coordinates = parseTaskDefinitionForegroundAuthorizationIdV1(
+              authorization.authorizationId,
+            );
+            try {
+              if (coordinates === null) {
+                throw new TypeError("Task definition authorization ID is invalid");
+              }
+              const key = await foreground?.resolveDefinitionSigner(
+                genesis.signer,
+                coordinates.parentOperationHash,
+              ) ?? null;
+              key?.fill(0);
+              if (key === null) {
+                throw new TypeError("Task definition parent evidence is unavailable");
+              }
+            } finally {
+              coordinates?.parentOperationHash.fill(0);
+              coordinates?.workDescriptorDigest.fill(0);
+              destroyDomainForegroundAuthorizationV2(authorization);
+            }
+          } else if (taskDefinitionEvidence.length !== 0) {
+            throw new TypeError("Task definition authorization evidence is inexact");
+          }
           foregroundEvidence = genesis.signer.kind === "agent_runtime"
             ? foreground?.definitionEvidenceFor(genesis.signer, {
                 taskAgentId: task.agentId,
                 subjectHumanId: input.authority.subjectHumanId,
                 domainId: current.content.domainId,
+                namespaceId: task.contentNamespaceId,
               }) ?? null
             : null;
         } finally {
@@ -1768,8 +2119,15 @@ export function createProductionProtectedTaskComposition(
               ).toString("base64url"),
             })]
           : [];
+        const taskDefinitionEvidence = verified
+          .taskDefinitionForegroundAuthorizationEvidence.map(bytes =>
+            Object.freeze({
+              kind: "task_definition_foreground_authorization" as const,
+              evidenceBytesBase64url: Buffer.from(bytes).toString("base64url"),
+            }));
         const signerEvidence = [
           ...agentEvidence,
+          ...taskDefinitionEvidence,
           ...humanSigners.evidence(),
         ];
         let readAuthority: ProtectedTaskNamespaceReadAuthority | null;
@@ -1898,7 +2256,7 @@ export function createProductionProtectedTaskComposition(
         throw new ProtectedTaskRouteError(404, "task_run_not_found", "Task run not found");
       }
       if (task.contentNamespaceId !== null) {
-        const refreshedAccess = await refreshMappedReadAccess(input.authority, {
+        const refreshedAccess = await refreshMappedReadAccess(taskAuthority, {
           kind: "run_result",
           taskId: input.taskId,
           taskRunId: input.taskRunId,
@@ -2413,7 +2771,10 @@ export function createProductionProtectedTaskComposition(
     },
 
     async publishUpdate({ authority, taskId, prepared }) {
-      const ownedTask = await getTaskById(dependencies.db, taskId);
+      const ownedTask = await getTaskByIdWithMutationVersion(
+        dependencies.db,
+        taskId,
+      );
       if (ownedTask === undefined) {
         throw new ProtectedTaskRouteError(404, "task_not_found", "Task not found");
       }
@@ -2421,12 +2782,16 @@ export function createProductionProtectedTaskComposition(
       if (taskAuthority === null) {
         throw new ProtectedTaskRouteError(404, "task_not_found", "Task not found");
       }
+      const repairSource = fallbackRepairSource(ownedTask);
       const durable = await repository(taskAuthority);
       const freshPlan = await buildPlan(taskAuthority, taskId, {
         requestVersion: 1,
         operation: "update",
         operationId: prepared.operationId,
         task: prepared.task,
+      }, {
+        mutationVersion: ownedTask.mutationVersion,
+        fallbackRepairSource: repairSource,
       });
       const imported = await importProtectedTaskPublicationV1({
         crypto: dependencies.crypto,
@@ -2438,10 +2803,28 @@ export function createProductionProtectedTaskComposition(
           resolveSignedAuthority(taskAuthority, request),
         lookupPreparedReplay: (request) => durable.lookupPreparedReplay(request),
       });
-      const current = await getTaskById(dependencies.db, taskId);
+      const current = await getTaskByIdWithMutationVersion(
+        dependencies.db,
+        taskId,
+      );
       if (current === undefined || current.ownerId !== taskAuthority.userId
         || current.agentId !== taskAuthority.agentId) {
         throw new ProtectedTaskRouteError(404, "task_not_found", "Task not found");
+      }
+      if (current.mutationVersion !== ownedTask.mutationVersion
+        || !sameFallbackRepairSource(fallbackRepairSource(current), repairSource)) {
+        throw new ProtectedTaskRouteError(
+          409,
+          "task_changed",
+          "Task changed while the update was prepared",
+        );
+      }
+      if (repairSource !== null && imported.representation !== "dual") {
+        throw new ProtectedTaskRouteError(
+          409,
+          "task_not_mutable",
+          "Fallback Task repair requires dual publication",
+        );
       }
       const common = {
         owner: dependencies.owner,
@@ -2450,6 +2833,9 @@ export function createProductionProtectedTaskComposition(
         authority: imported.authority,
         operationalMetadata: metadataFor(current),
         prepared: imported.prepared,
+        ...(repairSource === null ? {} : {
+          fallbackRepairSource: repairSource,
+        }),
       } as const;
       const publicationRequest = decodePreparedTaskPublicationRequest(prepared);
       let publication;
@@ -2468,6 +2854,8 @@ export function createProductionProtectedTaskComposition(
                   taskAuthority,
                   taskId,
                   prepared.expectedContentRevision,
+                  ownedTask.mutationVersion,
+                  repairSource,
                   prepared.task,
                   (content as Extract<TaskContentPayloadV1, {
                     coordinate: { kind: "definition" };
@@ -2481,6 +2869,8 @@ export function createProductionProtectedTaskComposition(
                 taskAuthority,
                 taskId,
                 prepared.expectedContentRevision,
+                ownedTask.mutationVersion,
+                repairSource,
                 prepared.task,
                 null,
               ),

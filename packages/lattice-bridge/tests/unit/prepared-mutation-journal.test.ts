@@ -10,6 +10,7 @@ import type {
   DualTaskPreparedCreateRequestV1,
   ProtectedTaskPreparedCreateRequestV1,
   ProtectedTaskPreparedUpdateRequestV1,
+  TaskOrdinaryFallbackPreparedCreateRequestV1,
 } from "@nautilo/api-client/browser";
 
 import {
@@ -194,6 +195,19 @@ function dualTaskCreateRequest(): DualTaskPreparedCreateRequestV1 {
     ...taskCreateRequest("task-dual-create:1"),
     representation: "dual",
     ordinaryPayloadBytesBase64url: "c2Vuc2l0aXZlLXRhc2stY2FuYXJ5",
+  };
+}
+
+function fallbackTaskCreateRequest(): TaskOrdinaryFallbackPreparedCreateRequestV1 {
+  return {
+    requestVersion: 1,
+    representation: "ordinary_fallback",
+    operationId: "task-fallback-create:1",
+    taskId: TASK_ID,
+    authenticatedRequestDigestBase64url: "A".repeat(43),
+    ordinaryPayloadBytesBase64url: "c2Vuc2l0aXZlLXRhc2stY2FuYXJ5",
+    signedOrdinaryFallbackRequestBytesBase64url: "c2lnbmVk",
+    task: { scheduleKind: "now" },
   };
 }
 
@@ -444,6 +458,28 @@ describe("vault-sealed prepared Human Memory mutation journal", () => {
     });
     expect(JSON.stringify(inserted.index)).not.toContain("ordinaryPayload");
     expect(JSON.stringify(inserted.index)).not.toContain("sensitive-task-canary");
+    let opened: unknown;
+    await state.journal.withPrepared(request.operationId, (mutation) => {
+      opened = mutation;
+    });
+    expect(opened).toEqual({ kind: "task_create", taskId: TASK_ID, request });
+    expect(state.vault.openedBufferWiped).toBeTrue();
+  });
+
+  test("seals the complete fallback Task body in the existing Task journal", async () => {
+    const state = fixture();
+    const request = fallbackTaskCreateRequest();
+    const inserted = await state.journal.putBeforeSend({
+      kind: "task_create",
+      taskId: TASK_ID,
+      request,
+    });
+    expect(inserted.index).toMatchObject({
+      kind: "task_create",
+      taskId: TASK_ID,
+      operationId: request.operationId,
+    });
+    expect(JSON.stringify(inserted.index)).not.toContain("ordinaryPayload");
     let opened: unknown;
     await state.journal.withPrepared(request.operationId, (mutation) => {
       opened = mutation;

@@ -91,6 +91,7 @@ export function prepareDeviceWrappedAgentObject(input: Readonly<{
   signerPublicKey: Uint8Array;
   agentAuthorizationRevision: number;
   taskRuntimeSigner?: TaskRuntimePublicationSigning;
+  taskDefinitionForegroundAuthorizationBytes?: Uint8Array | undefined;
 }>): PreparedDeviceWrappedAgentObject {
   if (
     input.namespaceSet.length < 1
@@ -151,6 +152,10 @@ export function prepareDeviceWrappedAgentObject(input: Readonly<{
         signerKeyId: input.signerKeyId,
         signerPublicKey: input.signerPublicKey,
         ...(input.taskRuntimeSigner === undefined ? {} : { taskRuntimeSigner: input.taskRuntimeSigner }),
+        ...(input.taskDefinitionForegroundAuthorizationBytes === undefined ? {} : {
+          taskDefinitionForegroundAuthorizationBytes:
+            input.taskDefinitionForegroundAuthorizationBytes,
+        }),
       },
     );
     const prepared = Object.freeze({

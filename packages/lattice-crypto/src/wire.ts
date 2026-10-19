@@ -279,6 +279,7 @@ export {
   serializeDomainForegroundAuthorizationPlanV2,
   serializeDomainForegroundAuthorizationV2,
   verifyDomainForegroundAuthorizationV2,
+  verifyHistoricalDomainForegroundAuthorizationV2,
 } from "./format/domain-foreground-authorization-v2.ts";
 export type {
   DomainForegroundAuthorizationPlanV2,

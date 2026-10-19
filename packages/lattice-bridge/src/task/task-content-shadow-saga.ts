@@ -13,6 +13,7 @@ import {
   fingerprintTaskContentAuthorityIdentityV1,
   fingerprintTaskContentAuthorityV1,
   fingerprintTaskContentNamespaceV1,
+  isTaskOrdinaryFallbackRepairSourceProofV1,
   sameTaskContentCoordinateV1,
   taskContentObjectTypeV1,
   type AtomicTaskContentCryptoCompletionPort,
@@ -470,6 +471,19 @@ export function createDormantTaskContentShadowRepository(input: Readonly<{
           throw new TypeError("Historical Task repair reservation disagrees");
         }
       }
+      if (request.fallbackRepairSource !== undefined) {
+        const source = request.fallbackRepairSource;
+        if (!isTaskOrdinaryFallbackRepairSourceProofV1(source)
+          || request.historicalRepair !== undefined
+          || request.representation !== "dual"
+          || request.prepared.coordinate.kind !== "definition"
+          || request.prepared.coordinate.taskId !== source.taskId
+          || request.prepared.coordinate.contentRevision
+            !== source.sourceContentRevision + 1
+          || request.prepared.namespaceId !== source.sourceNamespaceId) {
+          throw new TypeError("Fallback Task repair reservation disagrees");
+        }
+      }
       if (request.prepared.coordinate.kind === "definition") {
         assertProtectedTaskOperationalMetadataProjectionV1(
           request.operationalMetadata,
@@ -494,6 +508,9 @@ export function createDormantTaskContentShadowRepository(input: Readonly<{
         operationalMetadata: request.operationalMetadata,
         ...(request.historicalRepair === true
           ? { historicalPrepared: request.prepared } : {}),
+        ...(request.fallbackRepairSource === undefined ? {} : {
+          fallbackRepairSource: request.fallbackRepairSource,
+        }),
       });
       if (!("state" in reserved)) {
         return reserved;

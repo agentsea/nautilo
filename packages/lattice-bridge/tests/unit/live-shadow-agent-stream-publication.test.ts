@@ -186,6 +186,44 @@ for (const mode of ["shadow_encryption", "full_encryption"] as const) {
   });
 }
 
+test("malformed present exposure is integrity failure only when writing its ordinary sibling", async () => {
+  const payload = {
+    role: "assistant" as const,
+    content: "Result",
+    sensitiveMetadata: {
+      nautilo_memory_model_exposure: {
+        version: 1,
+        status: "complete",
+        dependencies: "invalid",
+      },
+    },
+  };
+  const shadow = fixture("shadow_encryption");
+  try {
+    const result = await shadow.session.publishMessage({
+      payload,
+      stage: "assistant_message",
+    });
+    expect(result).toMatchObject({
+      status: "ordinary_fallback",
+      reason: "integrity_failure",
+    });
+    expect(shadow.state.writes).toEqual([]);
+  } finally {
+    shadow.session.destroy();
+  }
+
+  const full = fixture("full_encryption");
+  try {
+    expect(await full.session.publishMessage({
+      payload,
+      stage: "assistant_message",
+    })).toMatchObject({ status: "protected" });
+  } finally {
+    full.session.destroy();
+  }
+});
+
 
 for (const mode of ["shadow_encryption", "full_encryption"] as const) {
   test(`${mode} keeps image attribution parity while protecting ordinary metadata`, async () => {

@@ -1646,6 +1646,8 @@ export class PostgresLatticeStorage implements LatticeStorage {
         ) {
           const context = authorization.context;
           const signerEvidence = "signerEvidence" in authorization ? authorization.signerEvidence : undefined;
+          const signerEvidenceBytes = "signerEvidenceBytes" in authorization
+            ? authorization.signerEvidenceBytes : undefined;
           // The Task owner holds product and accepted-request authority through
           // this transaction. Recheck its Domain and signer before Namespace
           // heads, in the same order used by native key rotation.
@@ -1801,6 +1803,20 @@ export class PostgresLatticeStorage implements LatticeStorage {
             || (signerEvidence !== undefined && (manifest.signerAuthorizationHash === null
               || !("signerAuthorizationHash" in context) || context.signerAuthorizationHash === undefined
               || !bytesEqual(manifest.signerAuthorizationHash, context.signerAuthorizationHash)))
+            || (authorization.kind
+                === "device-wrapped-live-shadow-agent-genesis-set"
+              && signerEvidenceBytes !== undefined
+              && (manifest.signerAuthorizationHash === null
+                || !("signerAuthorizationHash" in context)
+                || context.signerAuthorizationHash === undefined
+                || !bytesEqual(
+                  manifest.signerAuthorizationHash,
+                  context.signerAuthorizationHash,
+                )
+                || !bytesEqual(
+                  manifest.signerAuthorizationHash,
+                  sha256(signerEvidenceBytes),
+                )))
             || manifest.signer.kind !== "agent_runtime"
             || manifest.signer.agentId !== context.agentId
             || manifest.signer.runtimeGeneration !== context.runtimeGeneration
@@ -1999,6 +2015,10 @@ export class PostgresLatticeStorage implements LatticeStorage {
             authorization.kind
                 === "task-runtime-temporary-agent-genesis-set"
               ? authorization.signerEvidenceBytes
+              : authorization.kind
+                  === "device-wrapped-live-shadow-agent-genesis-set"
+                  && authorization.signerEvidenceBytes !== undefined
+                ? authorization.signerEvidenceBytes
               : "signerEvidence" in authorization
                 ? authorization.signerEvidence?.certificateBytes ?? null : null,
         }),

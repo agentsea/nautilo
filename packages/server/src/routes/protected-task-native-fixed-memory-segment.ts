@@ -84,6 +84,8 @@ import type {
   ProtectedTaskRuntimeMemoryPolicy,
 } from "./protected-task-runtime-grant-plan";
 import { withProtectedTaskRuntimeSigner } from "./protected-task-runtime-signer";
+import { createProtectedTaskDefinitionForegroundAuthorizationResolver } from
+  "./protected-task-runtime-access-lineage";
 
 import { createProtectedTaskNativeReplyAuthorityResolver, createProtectedTaskHistoricalHumanReplySignerResolver } from "./protected-task-native-reply-authority";
 import { scheduleProtectedTaskCheckpointRefresh } from "./protected-task-checkpoint-refresh";
@@ -909,6 +911,15 @@ export function createProtectedTaskNativeFixedMemorySegment(
                     crypto: input.crypto,
                     rejectInvalidSelectedEvidence: true,
                   })(principal),
+                resolveTaskDefinitionForegroundAuthorization: async evidence => {
+                  const resolver = await createProtectedTaskDefinitionForegroundAuthorizationResolver({
+                    product: input.product,
+                    handle: await verifyCryptoPostgresHandle(input.restricted),
+                    crypto: input.crypto, requesterHumanId: subject.humanActorId,
+                    task: runningOccurrence.task,
+                  });
+                  return resolver === null ? null : resolver(evidence);
+                },
                 execute: async payload => {
                   const repoDocs = openFixedProtectedMetadata(
                     payload.protectedMetadata,

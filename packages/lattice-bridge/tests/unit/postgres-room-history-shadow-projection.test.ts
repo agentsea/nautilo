@@ -2574,7 +2574,7 @@ describe("native Task transcript history", () => {
   });
 
   test("reconstructs exact native Assistant and Tool ordinary payload bytes", async () => {
-    const exposure = { model: "model-1", provider: "provider-1" } as const;
+    const exposure = { version: 1, status: "incomplete" } as const;
     const toolCallId = "call-native-task-1";
     const fixtures = [
       await nativeFixture("ordinary-and-protected", false, undefined, {
@@ -2625,6 +2625,42 @@ describe("native Task transcript history", () => {
         expected.fill(0);
       }
     }
+  });
+
+  test("rejects malformed present native transcript exposure metadata", async () => {
+    const value = await nativeFixture("ordinary-and-protected", false, undefined, {
+      payload: {
+        role: "assistant",
+        content: "Malformed exposure",
+        sensitiveMetadata: {
+          nautilo_memory_model_exposure: { version: 1, status: "incomplete" },
+        },
+      },
+      metadataJson: JSON.stringify({
+        nautilo_memory_model_exposure: {
+          version: 1,
+          status: "incomplete",
+          unexpected: true,
+        },
+      }),
+    });
+
+    expect(await value.project({
+      subjectUserId: USER_ID,
+      subjectHumanId: HUMAN_ID,
+      readerDeviceId: DEVICE_ID,
+      roomId: ROOM_ID,
+      selectedCoordinates: [coordinate(28, {
+        role: "assistant",
+        logicalMessageKey: "row:28",
+      })],
+      representationMode: "ordinary-and-protected",
+    })).toEqual({
+      status: "unavailable",
+      reason: "projection_corrupt",
+      selectedCount: 1,
+      eligibleCount: 1,
+    });
   });
 
   test("withholds native Tool ordinary payloads without canonical correlation", async () => {

@@ -1,4 +1,5 @@
 import type { TaskRuntimePublicationSigning } from "@nautilo/lattice-crypto";
+import { parseModelInputExposureMetadataV1 } from "@nautilo/reflection/payload";
 import {
   accessRevision,
   assertAuthenticTaskRuntimeWakeForegroundEvidence,
@@ -73,6 +74,8 @@ import type { ProtectedCheckpointCellCrypto } from
 const ZERO_HASH = new Uint8Array(32);
 const MODEL_INPUT_EXPOSURE_METADATA_KEY =
   "nautilo_memory_model_exposure" as const;
+
+class InvalidModelInputExposureMetadataError extends TypeError {}
 
 declare const reservationBrand: unique symbol;
 export type LiveShadowAgentMessageReservation = Readonly<{
@@ -1035,7 +1038,13 @@ function createAgentTurnSession(
                 // checks. Persist only this named parity sibling; callers do
                 // not get a generic sensitive-metadata projection.
                 if (modelInputExposure !== undefined) {
-                  metadata[MODEL_INPUT_EXPOSURE_METADATA_KEY] = modelInputExposure;
+                  const parsed = parseModelInputExposureMetadataV1(modelInputExposure);
+                  if (parsed === null) {
+                    throw new InvalidModelInputExposureMetadataError(
+                      "Live Shadow model-input exposure metadata is invalid",
+                    );
+                  }
+                  metadata[MODEL_INPUT_EXPOSURE_METADATA_KEY] = parsed;
                 }
                 const foregroundExecutionId = request.payload.sensitiveMetadata?.["foregroundExecutionId"];
                 if (foregroundExecutionId !== undefined) {
@@ -1223,7 +1232,9 @@ function createAgentTurnSession(
         pendingPublication.value?.streamEvidence?.terminalDigest.fill(0);
         pendingPublication.value?.streamEvidence?.streamedTextDigest.fill(0);
         input.onDiagnostic?.(request.stage, error);
-        fail(request.stage, "protected_unavailable");
+        fail(request.stage, error instanceof InvalidModelInputExposureMetadataError
+          ? "integrity_failure"
+          : "protected_unavailable");
         return !wake && ordinaryPersisted
           ? withOrdinaryPublication(terminalFailure!, {
             reservation: state.token,

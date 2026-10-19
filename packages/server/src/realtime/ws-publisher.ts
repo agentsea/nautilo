@@ -403,6 +403,7 @@ function inferDeliveryScope(event: ServerEvent): DeliveryScope {
   if (
     event.type === "message.shared_agent_authorization_required"
     || event.type === "message.runtime_invocation_authorization_required"
+    || event.type === "message.task_definition_authorization_required"
   ) {
     if (typeof event.userId === "string" && event.userId.length > 0) {
       return { kind: "user", userId: event.userId };

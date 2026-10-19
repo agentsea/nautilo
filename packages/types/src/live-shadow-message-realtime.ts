@@ -108,6 +108,26 @@ const runtimeInvocationAuthorizationRequiredSchema = z.strictObject({
   recipientPublicKeyBase64url: base64url,
 });
 
+const taskDefinitionAuthorizationRequiredSchema = z.strictObject({
+  wireVersion: z.literal(1),
+  type: z.literal("message.task_definition_authorization_required"),
+  laneKey: lane,
+  userId: portable,
+  roomId: portable,
+  parentOperationId: portable,
+  authorizationId: portable,
+  taskId: portable,
+  operation: z.enum(["create", "update"]),
+  targetContentRevision: z.number().int().positive(),
+  workDescriptorDigestBase64url: digest,
+  parentAgentSignerPublicKeyBase64url: digest,
+  clientActionSessionId: portable,
+  deadlineAt: z.number().int().nonnegative(),
+  authorizationScheme: z.literal("runtime_foreground_v1"),
+  authorizationPlanBytesBase64url: base64url,
+  recipientPublicKeyBase64url: base64url,
+});
+
 const sharedAgentStreamStartSchema = z.strictObject({
   wireVersion: z.literal(1),
   type: z.literal("message.shared_agent_stream_start"),
@@ -152,6 +172,7 @@ export const liveShadowMessageRealtimeEventV1Schema = z.discriminatedUnion(
     sharedAgentHumanDurableSchema,
     sharedAgentAuthorizationRequiredSchema,
     runtimeInvocationAuthorizationRequiredSchema,
+    taskDefinitionAuthorizationRequiredSchema,
     sharedAgentStreamStartSchema,
     sharedAgentStreamFrameSchema,
     sharedAgentOutputDurableSchema,

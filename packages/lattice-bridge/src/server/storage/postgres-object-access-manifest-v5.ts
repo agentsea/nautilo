@@ -52,6 +52,15 @@ export type ResolveLiveShadowAgentObjectSigner = (principal: Readonly<{
   signerKeyId: string;
 }>) => Uint8Array | null | Promise<Uint8Array | null>;
 
+export type ResolveTaskDefinitionForegroundAuthorization = (
+  input: Readonly<{
+    principal: Parameters<ResolveLiveShadowAgentObjectSigner>[0];
+    authorizationHash: Uint8Array;
+    objectId: string;
+    authorizationBytes: Uint8Array;
+  }>,
+) => Promise<Uint8Array | null>;
+
 function bytesEqual(left: Uint8Array, right: Uint8Array): boolean {
   return left.length === right.length
     && left.every((byte, index) => byte === right[index]);
@@ -258,6 +267,7 @@ export type VerifiedStoredObjectAccessManifestChainV5 = Readonly<{
   headSignerPublicKey: Uint8Array;
   headSignerAuthorizationBytes?: Uint8Array;
   headSignerIssuingPublicKey?: Uint8Array;
+  taskDefinitionForegroundAuthorizationEvidence: readonly Uint8Array[];
   signerEvidence: readonly Readonly<{
     kind: "agent_runtime_publication" | "processor_authorization"
       | "task_runtime_signer_certificate";
@@ -289,6 +299,8 @@ export function destroyVerifiedStoredObjectAccessManifestChainV5(
   value.headSignerPublicKey.fill(0);
   value.headSignerAuthorizationBytes?.fill(0);
   value.headSignerIssuingPublicKey?.fill(0);
+  value.taskDefinitionForegroundAuthorizationEvidence.forEach(bytes =>
+    bytes.fill(0));
   value.signerEvidence.forEach(({ evidenceBytes, issuer }) => {
     evidenceBytes.fill(0);
     issuer?.signingPublicKey.fill(0);
@@ -309,6 +321,8 @@ export async function verifyStoredObjectAccessManifestChainV5(input: Readonly<{
   resolveHistoricalAgentManagerAuthority:
     ResolveHistoricalAgentRuntimeSignerManagerAuthority;
   resolveLiveShadowAgentSigner?: ResolveLiveShadowAgentObjectSigner | undefined;
+  resolveTaskDefinitionForegroundAuthorization?:
+    ResolveTaskDefinitionForegroundAuthorization;
   resolveHistoricalHumanDeviceSigningPublicKey?:
     ResolveHistoricalHumanDeviceSigningPublicKeyV5Async | undefined;
 }>): Promise<VerifiedStoredObjectAccessManifestChainV5> {
@@ -328,6 +342,7 @@ export async function verifyStoredObjectAccessManifestChainV5(input: Readonly<{
       signingPublicKey: Uint8Array;
     }>;
   }>>();
+  const taskDefinitionEvidence = new Map<string, Uint8Array>();
   try {
     while (cursor <= input.headAccessRevision) {
       const rows = await executeTypedCryptoQuery(
@@ -374,6 +389,7 @@ export async function verifyStoredObjectAccessManifestChainV5(input: Readonly<{
           | "agent_runtime_publication"
           | "processor_authorization"
           | "task_runtime_signer_certificate"
+          | "task_definition_foreground_authorization"
           | undefined;
         let publicEvidenceIssuer: Readonly<{
           subjectHumanId: string;
@@ -421,6 +437,38 @@ export async function verifyStoredObjectAccessManifestChainV5(input: Readonly<{
                 "common v5 Task Runtime signer evidence is unavailable or substituted",
               );
             }
+            if (decoded.objectId.startsWith("task-definition:v1:")
+              && input.resolveTaskDefinitionForegroundAuthorization !== undefined) {
+              const authorizationHash =
+                decoded.signerAuthorizationHash.slice();
+              const authorizationBytes = storedSignerEvidence.slice();
+              try {
+                signerPublicKey = await input
+                  .resolveTaskDefinitionForegroundAuthorization({
+                  principal: Object.freeze({
+                    agentId: decoded.signer.agentId,
+                    runtimeGeneration: decoded.signer.runtimeGeneration,
+                    signerKeyId: decoded.signer.signerKeyId,
+                  }),
+                  authorizationHash,
+                  objectId: decoded.objectId,
+                  authorizationBytes,
+                }) ?? undefined;
+              } finally {
+                authorizationHash.fill(0);
+                authorizationBytes.fill(0);
+              }
+              if (signerPublicKey === undefined) {
+                throw new ClassifiedDataOperationError(
+                  "integrity",
+                  "common v5 Task definition foreground authorization is invalid",
+                );
+              }
+              signerAuthorizationBytes = storedSignerEvidence.slice();
+              publicEvidenceBytes = storedSignerEvidence.slice();
+              publicEvidenceKind =
+                "task_definition_foreground_authorization";
+            } else {
             taskSignerEvidence = await loadVerifiedTaskRuntimeSignerEvidenceV1(
               input.executor,
               input.crypto,
@@ -455,6 +503,7 @@ export async function verifyStoredObjectAccessManifestChainV5(input: Readonly<{
             });
             publicEvidenceBytes = storedSignerEvidence.slice();
             publicEvidenceKind = "task_runtime_signer_certificate";
+            }
           } else {
             if (storedSignerEvidence !== null) {
               throw new ClassifiedDataOperationError(
@@ -595,6 +644,22 @@ export async function verifyStoredObjectAccessManifestChainV5(input: Readonly<{
                     decoded.signerAuthorizationHash,
                   )
                 ? signerAuthorizationBytes ?? null : null,
+            resolveTaskDefinitionForegroundAuthorizationSignerPublicKey:
+              evidence => publicEvidenceKind
+                  === "task_definition_foreground_authorization"
+                && decoded.signer.kind === "agent_runtime"
+                && decoded.signerAuthorizationHash !== null
+                && evidence.objectId === decoded.objectId
+                && evidence.signer.agentId === decoded.signer.agentId
+                && evidence.signer.runtimeGeneration
+                  === decoded.signer.runtimeGeneration
+                && evidence.signer.signerKeyId
+                  === decoded.signer.signerKeyId
+                && bytesEqual(
+                  evidence.authorizationHash,
+                  decoded.signerAuthorizationHash,
+                )
+                ? signerPublicKey?.slice() ?? null : null,
             resolveHistoricalTaskRuntimeIssuer: context => {
               const issuer = taskSignerEvidence?.certificate.issuer;
               return issuer !== undefined
@@ -665,6 +730,8 @@ export async function verifyStoredObjectAccessManifestChainV5(input: Readonly<{
           if (
             publicEvidenceBytes !== undefined
             && publicEvidenceKind !== undefined
+            && publicEvidenceKind
+              !== "task_definition_foreground_authorization"
           ) {
             const evidenceHash = input.crypto.hash(publicEvidenceBytes);
             const key = `${publicEvidenceKind}:${bytesHex(evidenceHash)}`;
@@ -680,6 +747,15 @@ export async function verifyStoredObjectAccessManifestChainV5(input: Readonly<{
                   }),
                 }),
               }));
+            }
+          } else if (publicEvidenceBytes !== undefined
+            && publicEvidenceKind
+              === "task_definition_foreground_authorization") {
+            const evidenceHash = input.crypto.hash(publicEvidenceBytes);
+            const key = bytesHex(evidenceHash);
+            evidenceHash.fill(0);
+            if (!taskDefinitionEvidence.has(key)) {
+              taskDefinitionEvidence.set(key, publicEvidenceBytes.slice());
             }
           }
           if (revision === input.headAccessRevision) {
@@ -700,6 +776,7 @@ export async function verifyStoredObjectAccessManifestChainV5(input: Readonly<{
               ...(signerIssuingPublicKey === undefined ? {} : {
                 headSignerIssuingPublicKey: signerIssuingPublicKey.slice(),
               }),
+              taskDefinitionForegroundAuthorizationEvidence: Object.freeze([]),
               signerEvidence: Object.freeze([]),
             });
             keepVerifiedManifest = true;
@@ -731,6 +808,11 @@ export async function verifyStoredObjectAccessManifestChainV5(input: Readonly<{
     }
     const result = Object.freeze({
       ...head,
+      taskDefinitionForegroundAuthorizationEvidence: Object.freeze(
+        [...taskDefinitionEvidence.entries()]
+          .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+          .map(([, bytes]) => bytes.slice()),
+      ),
       signerEvidence: Object.freeze([...signerEvidence.entries()]
         .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
         .map(([, entry]) => Object.freeze({
@@ -752,6 +834,7 @@ export async function verifyStoredObjectAccessManifestChainV5(input: Readonly<{
       evidenceBytes.fill(0);
       issuer?.signingPublicKey.fill(0);
     });
+    taskDefinitionEvidence.forEach(bytes => bytes.fill(0));
     if (!succeeded && head !== undefined) {
       destroyVerifiedStoredObjectAccessManifestChainV5(head);
     }

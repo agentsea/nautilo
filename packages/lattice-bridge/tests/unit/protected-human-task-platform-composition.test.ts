@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { NautiloApiClient } from "@nautilo/api-client/browser";
+import { ApiError, type NautiloApiClient } from "@nautilo/api-client/browser";
 import type { TaskContentSummaryV1 } from "@nautilo/types";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -266,7 +266,7 @@ describe("protected Human Task platform composition", () => {
     }
   });
 
-  test("Browser maps a recoverable pre-send Shadow failure to the legacy ordinary API", async () => {
+  test("Browser cannot downgrade a Shadow failure through the legacy Plain endpoints", async () => {
     const calls: unknown[] = [];
     let protectedDefinitionReads = 0;
     const api = {
@@ -279,6 +279,10 @@ describe("protected Human Task platform composition", () => {
       },
       planProtectedTaskUpdateV1: async () => {
         throw new ClassifiedDataOperationError("key_waiting", "device key unavailable");
+      },
+      planTaskOrdinaryFallbackCreateV1: async () => {
+        calls.push("signed-fallback-plan");
+        throw new ClassifiedDataOperationError("key_waiting", "Device fallback authority unavailable");
       },
       createOrdinaryTaskV1: async (body: unknown) => {
         calls.push(["ordinary-create", body]);
@@ -304,7 +308,7 @@ describe("protected Human Task platform composition", () => {
       api,
       owner("shadow_encryption", "fallback"),
     ));
-    const created = await taskClient.create({
+    expect(taskClient.create({
       payload: {
         formatVersion: 1,
         prompt: "private prompt",
@@ -312,8 +316,8 @@ describe("protected Human Task platform composition", () => {
         protectedMetadata: {},
       },
       task: { scheduleKind: "now" },
-    });
-    const updated = await taskClient.update(summary, {
+    })).rejects.toThrow("Device fallback authority unavailable");
+    expect(taskClient.update(summary, {
       payload: {
         formatVersion: 1,
         prompt: "updated private prompt",
@@ -321,26 +325,29 @@ describe("protected Human Task platform composition", () => {
         protectedMetadata: {},
       },
       task: { timezone: "UTC" },
-    });
-    expect(created.taskId).toBe(summary.id);
+    })).rejects.toThrow("source content is unavailable");
     expect(protectedDefinitionReads).toBe(1);
-    expect(updated.content).toEqual({
-      dtoVersion: 1,
-      status: "ordinary",
-      promptPreview: "updated private prompt",
-      lastError: null,
-    });
-    expect(calls).toEqual([
-      ["ordinary-create", {
-        scheduleKind: "now",
-        prompt: "private prompt",
-        expectedOutput: null,
-      }],
-      ["ordinary-update", {
-        timezone: "UTC",
-        prompt: "updated private prompt",
-        expectedOutput: "answer",
-      }],
-    ]);
+    expect(calls).toEqual(["signed-fallback-plan"]);
+  });
+
+  test("Browser classifies only the exact server encryption-availability plan failure", async () => {
+    for (const [status, code, expectedFallback] of [
+      [409, "task_encryption_not_ready", true],
+      [403, "task_encryption_not_ready", false],
+      [403, "task_authority_unavailable", false],
+      [409, "task_changed", false],
+    ] as const) {
+      let plans = 0;
+      const initial = new ApiError(status, code);
+      const missingDevice = new Error("signed fallback Device unavailable");
+      const client = createBrowserHumanTaskClient(input({
+        planProtectedTaskCreateV1: async () => { throw initial; },
+        planTaskOrdinaryFallbackCreateV1: async () => { plans += 1; throw missingDevice; },
+        createOrdinaryTaskV1: async () => { throw new Error("Plain route must remain idle"); },
+      } as unknown as NautiloApiClient, owner("shadow_encryption", "fallback")));
+      expect(client.create({ payload: { formatVersion: 1, prompt: "Task", expectedOutput: null, protectedMetadata: {} },
+        task: {} })).rejects.toBe(expectedFallback ? missingDevice : initial);
+      expect(plans).toBe(expectedFallback ? 1 : 0);
+    }
   });
 });

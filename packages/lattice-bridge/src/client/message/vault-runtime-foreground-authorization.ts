@@ -63,6 +63,8 @@ type VaultRuntimeAuthorizationInput = Readonly<{
   sourceHumanPlanBytes?: Uint8Array;
   recipientPublicKey: Uint8Array;
   expectedSessionId: string;
+  expectedAuthorizationId?: string;
+  expectedRecipientKeyId?: string;
   expectedSourceRoomId?: string;
   expectedRecipientPrincipalId?: string;
   now: number;
@@ -94,6 +96,10 @@ async function prepareVaultRuntimeAuthorization(
       || input.now >= plan.deadlineAt
       || plan.recipientKind !== "runtime"
       || plan.sessionId !== input.expectedSessionId
+      || (input.expectedAuthorizationId !== undefined
+        && plan.authorizationId !== input.expectedAuthorizationId)
+      || (input.expectedRecipientKeyId !== undefined
+        && plan.recipientKeyId !== input.expectedRecipientKeyId)
       || (
         input.expectedSourceRoomId !== undefined
         && plan.roomId !== input.expectedSourceRoomId
@@ -190,6 +196,8 @@ export function prepareVaultRuntimeForegroundAuthorization(input: Readonly<{
   sourceHumanPlanBytes?: Uint8Array;
   recipientPublicKey: Uint8Array;
   browserSessionId: string;
+  expectedAuthorizationId?: string;
+  expectedRecipientKeyId?: string;
   now: number;
 }>): Promise<PrepareVaultRuntimeForegroundAuthorizationResult> {
   return prepareVaultRuntimeAuthorization({

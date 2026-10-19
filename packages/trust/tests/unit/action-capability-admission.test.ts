@@ -657,6 +657,7 @@ test("invocation admission and authority mint sites stay mechanically inventorie
     "packages/server/src/routes/ordinary-content-access-recovery.ts",
     "packages/server/src/routes/protected-task-external-request-routes.ts",
     "packages/server/src/routes/task-content-access-recovery.ts",
+    "packages/server/src/routes/task-ordinary-fallback-composition.ts",
     "packages/server/src/routes/task-protected-composition.ts",
     "packages/server/src/routes/tasks.ts",
     "packages/server/src/routes/workspace-artifacts.ts",

@@ -10,6 +10,10 @@ const ids = {
   human: "10000000-0000-4000-8000-000000000001",
   task: "20000000-0000-4000-8000-000000000002",
   run: "30000000-0000-4000-8000-000000000003",
+  agent: "40000000-0000-4000-8000-000000000004",
+  room: "50000000-0000-4000-8000-000000000005",
+  targetRoom: "60000000-0000-4000-8000-000000000006",
+  targetUser: "70000000-0000-4000-8000-000000000007",
 };
 const createdAt = new Date("2026-10-10T08:00:00.000Z");
 const updatedAt = new Date("2026-10-10T09:00:00.000Z");
@@ -46,6 +50,16 @@ function definition(
     expectedOutput: "A short report",
     metadata: {},
     operationalFields: operationalFields(),
+    agentId: ids.agent,
+    preset: "task",
+    catchup: "run_once",
+    callingRoomId: ids.room,
+    targetChatHandle: null,
+    targetRoomId: ids.targetRoom,
+    targetUserIds: [ids.targetUser],
+    awaitResponse: false,
+    fundingMode: "legacy_server",
+    localExecutionDelegation: null,
     ...overrides,
   };
 }
@@ -69,6 +83,16 @@ function result(
     lastError: null,
     metadata: {},
     operationalFields: operationalFields(),
+    agentId: ids.agent,
+    preset: "task",
+    catchup: "run_once",
+    callingRoomId: ids.room,
+    targetChatHandle: null,
+    targetRoomId: ids.targetRoom,
+    targetUserIds: [ids.targetUser],
+    awaitResponse: false,
+    fundingMode: "legacy_server",
+    localExecutionDelegation: null,
     ...overrides,
   };
 }
@@ -94,6 +118,7 @@ describe("historical Task content source", () => {
     expect(base.sourcePayloadHash).toHaveLength(32);
     expect(base.operationalFieldsDigest).toHaveLength(32);
     expect(base.sourceDigest).toHaveLength(32);
+    expect(base.legacySourceDigest).toHaveLength(32);
 
     const promptEdit = supported(definition({ prompt: "Summarize different evidence." }));
     const statusEdit = supported(definition({ taskStatus: "paused" }));
@@ -106,6 +131,55 @@ describe("historical Task content source", () => {
     expect(statusEdit.sourceDigest).not.toEqual(base.sourceDigest);
     expect(timeEdit.sourcePayloadHash).toEqual(base.sourcePayloadHash);
     expect(timeEdit.sourceDigest).not.toEqual(base.sourceDigest);
+  });
+
+  test("binds server-owned execution coordinates only in the current digest", () => {
+    const base = supported(definition());
+    const delegation = {
+      version: 1 as const,
+      humanUserId: ids.human,
+      agentId: ids.agent,
+      sourceRoomId: ids.room,
+      sourceConversationId: "conversation:source",
+      rootTaskId: ids.task,
+      target: {
+        instanceId: "desktop-instance",
+        relayId: "relay:test",
+        pairingGeneration: "pairing:1",
+        serverOrigin: "https://nautilo.test",
+        serverFingerprint: "server:test",
+      },
+      projectGrantId: "grant:test",
+      ceiling: "development" as const,
+      profile: { id: "profile:test", revision: 2 },
+    };
+    const changes: Partial<TaskHistoricalDefinitionSourceV1>[] = [
+      { agentId: "80000000-0000-4000-8000-000000000008" },
+      { preset: "schedule" },
+      { catchup: "skip" },
+      { callingRoomId: null },
+      { targetChatHandle: "agent:test" },
+      { targetRoomId: null },
+      { targetUserIds: [] },
+      { awaitResponse: true },
+      { fundingMode: "caller" },
+      { localExecutionDelegation: delegation },
+    ];
+    for (const change of changes) {
+      const changed = supported(definition(change));
+      expect(changed.sourceDigest).not.toEqual(base.sourceDigest);
+      expect(changed.legacySourceDigest).toEqual(base.legacySourceDigest);
+      expect(changed.operationalFieldsDigest).toEqual(base.operationalFieldsDigest);
+      expect(changed.sourcePayloadHash).toEqual(base.sourcePayloadHash);
+    }
+  });
+
+  test("rejects malformed local-source coordinates", () => {
+    expect(classifyTaskHistoricalContentSourceV1(definition({
+      localExecutionDelegation: { version: 1 },
+    } as unknown as Partial<TaskHistoricalDefinitionSourceV1>))).toEqual({
+      status: "unsupported", reason: "operational_fields",
+    });
   });
 
   test("accounts for active, nested, malformed, and unencodable definitions", () => {

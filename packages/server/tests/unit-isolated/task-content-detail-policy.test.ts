@@ -59,7 +59,10 @@ beforeEach(() => {
     catchup: "skip", targetChatHandle: null, targetUserIds: [], awaitResponse: false,
     fundingMode: "legacy_server", lastFiredAt: null, fireLockId: null, fireLockedAt: null,
     pauseRequestId: null, pauseRequestedAt: null, pauseReason: null,
-    localExecutionDelegation: null, cancelledAt: null };
+    localExecutionDelegation: null, cancelledAt: null,
+    ordinaryFallbackOperationId: null, ordinaryFallbackRequestDigest: null,
+    ordinaryFallbackReason: null, ordinaryFallbackPolicyRevision: null,
+    ordinaryFallbackCompletedAt: null };
   run = { id: runId, status: "completed", modelId: null, startedAt: new Date(0), completedAt: new Date(1),
     graphThreadId: "thread", resultRepresentation: "ordinary", resultText: "private result", lastError: "private run error",
     taskId, jobId: null, fundingBinding: null, fundingPredecessorRunId: null,
@@ -104,6 +107,31 @@ const policies: LiveShadowEncryptionTransitionPolicy[] = [
   { mode: "shadow_encryption", shadowBehavior: "strict" },
   { mode: "encrypted_only", shadowBehavior: "fallback" },
 ];
+for (const policy of policies) {
+  test(`${policy.mode}/${policy.shadowBehavior} projects a receipt-bound stale Task only through ordinary reads`, async () => {
+    Object.assign(task, { contentRepresentation: "dual", contentRevision: 2,
+      contentNamespaceId: namespaceId, cryptoMappingState: "stale",
+      cryptoObjectId: deriveTaskContentCryptoObjectIdV1({ kind: "definition", taskId, contentRevision: 2 }),
+      cryptoRequiredNamespaceFingerprint: new Uint8Array(32),
+      ordinaryFallbackOperationId: "task:fallback:edit", ordinaryFallbackRequestDigest: new Uint8Array(32),
+      ordinaryFallbackReason: "target_encryption_not_ready", ordinaryFallbackPolicyRevision: 25,
+      ordinaryFallbackCompletedAt: new Date(1) });
+    const response = await read(policy);
+    expect(response.statusCode).toBe(200);
+    const detail = taskContentDetailV1Schema.parse(response.json());
+    const allowed = policy.mode === "plaintext_only"
+      || policy.mode === "shadow_encryption" && policy.shadowBehavior === "fallback";
+    if (allowed) {
+      expect(detail.definition).toMatchObject({ status: "ordinary", prompt: task.prompt });
+    } else {
+      expect(detail.definition.status).toBe("unavailable");
+      expect(response.body).not.toContain("private ");
+    }
+    task.ordinaryFallbackRequestDigest = null;
+    const withoutReceipt = await read(policy);
+    expect(taskContentDetailV1Schema.parse(withoutReceipt.json()).definition.status).toBe("unavailable");
+  });
+}
 for (const policy of policies) {
   test(`${policy.mode}/${policy.shadowBehavior} retains mixed lifecycle rows without a whole-list denial`, async () => {
     task.metadata = { execution: { harnessId: "private harness marker" } };

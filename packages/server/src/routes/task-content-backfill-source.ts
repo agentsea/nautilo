@@ -22,10 +22,12 @@ const ACTIVE_RUN_STATUSES = ["running", "awaiting", "paused"] as const;
 type TaskCommonSourceRow = Pick<Task,
   | "id" | "ownerId" | "requestorId" | "agentId"
   | "metadata"
-  | "preset" | "scheduleKind" | "runAt" | "cron" | "timezone"
-  | "targetChat" | "resultDelivery" | "useScope" | "scopeId"
+  | "preset" | "scheduleKind" | "runAt" | "cron" | "timezone" | "catchup"
+  | "callingRoomId" | "targetChat" | "targetChatHandle" | "targetRoomId"
+  | "targetUserIds" | "resultDelivery" | "useScope" | "scopeId"
   | "toolsMode" | "toolsWhitelist" | "selectionProfile" | "selectionSpec"
-  | "requestedModelId" | "timeLimitSeconds" | "parentTaskId" | "depth"
+  | "requestedModelId" | "fundingMode" | "timeLimitSeconds" | "awaitResponse"
+  | "localExecutionDelegation" | "parentTaskId" | "depth"
   | "status" | "fireLockId" | "contentRepresentation"
   | "contentNamespaceId" | "contentRevision" | "cryptoObjectId"
   | "cryptoAccessRevision" | "cryptoRequiredNamespaceFingerprint"
@@ -133,7 +135,12 @@ const commonTaskProjection = {
   runAt: tasks.runAt,
   cron: tasks.cron,
   timezone: tasks.timezone,
+  catchup: tasks.catchup,
+  callingRoomId: tasks.callingRoomId,
   targetChat: tasks.targetChat,
+  targetChatHandle: tasks.targetChatHandle,
+  targetRoomId: tasks.targetRoomId,
+  targetUserIds: tasks.targetUserIds,
   resultDelivery: tasks.resultDelivery,
   useScope: tasks.useScope,
   scopeId: tasks.scopeId,
@@ -142,7 +149,10 @@ const commonTaskProjection = {
   selectionProfile: tasks.selectionProfile,
   selectionSpec: tasks.selectionSpec,
   requestedModelId: tasks.requestedModelId,
+  fundingMode: tasks.fundingMode,
   timeLimitSeconds: tasks.timeLimitSeconds,
+  awaitResponse: tasks.awaitResponse,
+  localExecutionDelegation: tasks.localExecutionDelegation,
   parentTaskId: tasks.parentTaskId,
   depth: tasks.depth,
   status: tasks.status,
@@ -183,7 +193,9 @@ async function readResultTask(
 function exactCommonTask(
   task: TaskCommonSourceRow,
   claim: TaskContentBackfillClaim,
-): boolean {
+): task is TaskCommonSourceRow & Readonly<{
+  preset: TaskHistoricalContentSourceV1["preset"];
+}> {
   return task.id === claim.candidate.taskId
     && task.ownerId === claim.requesterUserId
     && task.requestorId === claim.requesterUserId
@@ -229,6 +241,16 @@ export async function readTaskContentBackfillSource(
       expectedOutput: task.expectedOutput,
       metadata: task.metadata,
       operationalFields: operational.fields,
+      agentId: task.agentId,
+      preset: task.preset,
+      catchup: task.catchup,
+      callingRoomId: task.callingRoomId,
+      targetChatHandle: task.targetChatHandle,
+      targetRoomId: task.targetRoomId,
+      targetUserIds: [...task.targetUserIds],
+      awaitResponse: task.awaitResponse,
+      fundingMode: task.fundingMode,
+      localExecutionDelegation: task.localExecutionDelegation,
     });
     return Object.freeze({
       source,
@@ -286,6 +308,16 @@ export async function readTaskContentBackfillSource(
     lastError: run.lastError,
     metadata: task.metadata,
     operationalFields: operational.fields,
+    agentId: task.agentId,
+    preset: task.preset,
+    catchup: task.catchup,
+    callingRoomId: task.callingRoomId,
+    targetChatHandle: task.targetChatHandle,
+    targetRoomId: task.targetRoomId,
+    targetUserIds: [...task.targetUserIds],
+    awaitResponse: task.awaitResponse,
+    fundingMode: task.fundingMode,
+    localExecutionDelegation: task.localExecutionDelegation,
   });
   return Object.freeze({
     source,

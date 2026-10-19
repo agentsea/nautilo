@@ -11,6 +11,8 @@ import {
   namespaceId,
   prepareAgentRuntimeInitialization,
   createCommonHumanObjectAccessManifest,
+  createDomainForegroundAuthorizationPlan,
+  mintDomainForegroundAuthorization,
   unixTimestamp,
 } from "@nautilo/lattice-crypto";
 import type { TrustedMinimumObjectAccessHead } from "@nautilo/lattice-crypto";
@@ -44,8 +46,11 @@ import {
   decodeHumanTaskPublicationRequestV1,
   decodeObjectAccessManifestV5,
   decodeLiveShadowMessagePlanV4,
+  destroyDomainForegroundAuthorizationPlanV2,
+  destroyDomainForegroundAuthorizationV2,
   encodeAgentRuntimeSignerPublicationV1,
   encodeLiveShadowMessagePlanV4,
+  serializeDomainForegroundAuthorizationV2,
 } from
   "@nautilo/lattice-crypto/wire";
 import {
@@ -54,12 +59,23 @@ import {
 } from "../../src/task/task-payload-v1.ts";
 import { fingerprintTaskDualPublicationFieldsV1 } from
   "../../src/task/task-operational-fields-digest-v1.ts";
+import { fingerprintTaskOperationalFieldsV1 } from
+  "../../src/task/task-operational-fields-digest-v1.ts";
+import {
+  decodeHumanTaskOrdinaryFallbackRequestV1,
+  fingerprintHumanTaskOrdinaryFallbackContentV1,
+  fingerprintHumanTaskOrdinaryFallbackPlanV1,
+} from "../../src/task/human-task-ordinary-fallback-request.ts";
 import {
   prepareNativeTaskDefinitionCryptoRevision,
 } from "../../src/server/task/native-task-definition-preparation.ts";
 import {
   readPreparedTaskContentCryptoRevisionSnapshotV1,
 } from "../../src/task/task-content-prepared-revision.ts";
+import {
+  deriveTaskDefinitionForegroundRecipientKeyIdV1,
+  taskDefinitionForegroundAuthorizationIdV1,
+} from "../../src/task/task-definition-foreground-authorization-id-v1.ts";
 
 const NOW = 1_800_000_000_000;
 const HUMAN_ID = "20000000-0000-4000-8000-000000000248";
@@ -110,6 +126,7 @@ async function preparedAgentDefinition(
   managerDeviceId: string,
   writerAgentId = AGENT_ID,
   evidenceHumanId = HUMAN_ID,
+  taskDefinitionAuthorization = false,
 ) {
   const initialized = await prepareAgentRuntimeInitialization({
     crypto: manager.crypto,
@@ -135,6 +152,117 @@ async function preparedAgentDefinition(
     manager.crypto,
     initialized.runtime,
   );
+  const foregroundPlanBytes = encodeLiveShadowMessagePlanV4({
+    formatVersion: 4,
+    purpose: "message.live_shadow_plan",
+    operationId: "task-definition-accepted-execution",
+    policyRevision: 1,
+    sessionId: TASK_ID,
+    roomId: ROOM_ID,
+    humanMessageId: 1,
+    revision: 0,
+    createdAt: unixTimestamp(NOW),
+    subjectHumanId: humanId(evidenceHumanId),
+    committerDeviceId: cryptoDeviceId(managerDeviceId),
+    committerDeviceSigningKeyGeneration: 1,
+    hostAuthorizationRevision: authorizationRevision(11),
+    recipientAgentId: agentId(writerAgentId),
+    agentAuthorizationRevision: authorizationRevision(7),
+    agentRuntimeGeneration: initialized.runtime.generation,
+    agentSignerKeyId: signer.principal.signerKeyId,
+    agentSignerPublicKey: Uint8Array.from(signer.publicKey),
+    namespaceId: namespaceId(NAMESPACE_ID),
+    namespaceAccessRevision: accessRevision(9),
+    namespaceKeyGeneration: namespaceGeneration(2),
+    namespaceHeadDigest: new Uint8Array(32).fill(0x51),
+    namespacePublicationDigest: new Uint8Array(32).fill(0x52),
+    namespacePublicationSetDigest: new Uint8Array(32).fill(0x53),
+    namespaceAudienceFingerprint: new Uint8Array(32).fill(0x54),
+    grantDomainId: "domain:1",
+    grantDomainParticipantDigest: new Uint8Array(32).fill(0x55),
+    grantDomainKeyGeneration: 3,
+    grantDomainHeadDigest: new Uint8Array(32).fill(0x56),
+    grantDomainPublicationDigest: new Uint8Array(32).fill(0x57),
+    grantDomainAuthorizationRevision: authorizationRevision(7),
+    namespaceBundleGrantDomainAuthorizationRevision: authorizationRevision(7),
+    namespaceBundleRevision: 1,
+    namespaceBundleDigest: new Uint8Array(32).fill(0x58),
+    authorization: {
+      disposition: "authorization_reusable",
+      sessionReference: "task-definition-accepted-session",
+      authorizationDigest: new Uint8Array(32).fill(0x59),
+    },
+    attemptCoordinate: "task-definition-accepted-attempt",
+    issuedAt: unixTimestamp(NOW),
+    deadlineAt: unixTimestamp(NOW + 30_000),
+  });
+  let taskAuthorizationBytes: Uint8Array | undefined;
+  if (taskDefinitionAuthorization) {
+    const workDescriptorDigest = new Uint8Array(32).fill(0x5a);
+    const authorizationId = taskDefinitionForegroundAuthorizationIdV1(
+      manager.crypto,
+      {
+        parentOperationId: "task-definition-accepted-execution",
+        taskId: TASK_ID,
+        operation: "create",
+        targetContentRevision: 1,
+        workDescriptorDigest,
+      },
+    );
+    const recipient = await manager.crypto.generateEncryptionKeyPair();
+    const domain = Object.freeze({
+      domainId: "domain:1",
+      sourceNamespaceId: NAMESPACE_ID,
+      participantDigest: new Uint8Array(32).fill(0x31),
+      participantCount: 1,
+      keyClass: "ai" as const,
+      domainKeyGeneration: 3,
+      authorizationRevision: authorizationRevision(7),
+      headDigest: new Uint8Array(32).fill(0x31),
+      activeNamespaceBindingSetDigest: new Uint8Array(32).fill(0x32),
+      activeNamespaceBindingCount: 1,
+    });
+    const plan = createDomainForegroundAuthorizationPlan(manager.crypto, {
+      authorizationId,
+      policyRevision: 1,
+      sessionId: TASK_ID,
+      roomId: ROOM_ID,
+      subjectHumanId: humanId(evidenceHumanId),
+      committerDeviceId: cryptoDeviceId(managerDeviceId),
+      committerDeviceSigningGeneration: 1,
+      hostAuthorizationRevision: authorizationRevision(11),
+      recipientKind: "runtime",
+      recipientPrincipalId: "nautilo_foreground_runtime",
+      recipientAuthorizationRevision: authorizationRevision(0),
+      recipientRuntimeGeneration: 0,
+      recipientKeyId: deriveTaskDefinitionForegroundRecipientKeyIdV1(
+        manager.crypto,
+        { authorizationId, parentAgentSignerPublicKey: signer.publicKey },
+      ),
+      operations: ["decrypt", "encrypt"],
+      issuedAt: NOW,
+      deadlineAt: NOW + 30_000,
+      maximumSecretBytes: 1_024,
+      domains: [domain],
+    });
+    const authorization = await mintDomainForegroundAuthorization(
+      manager.crypto,
+      {
+        plan,
+        domains: [{ ...domain, domainKey: NAMESPACE_KEY }],
+        committerDeviceSigningPrivateKey: manager.signing.privateKey,
+        recipientEncryptionPublicKey: recipient.publicKey,
+      },
+    );
+    taskAuthorizationBytes = serializeDomainForegroundAuthorizationV2(
+      authorization,
+    );
+    destroyDomainForegroundAuthorizationV2(authorization);
+    destroyDomainForegroundAuthorizationPlanV2(plan);
+    recipient.publicKey.fill(0);
+    recipient.privateKey.fill(0);
+    workDescriptorDigest.fill(0);
+  }
   const prepared = await prepareNativeTaskDefinitionCryptoRevision({
     crypto: manager.crypto,
     taskId: TASK_ID,
@@ -190,54 +318,13 @@ async function preparedAgentDefinition(
       signerPublicKey: signer.publicKey,
       agentAuthorizationRevision: 7,
       policyRevision: 1,
+      ...(taskAuthorizationBytes === undefined ? {} : {
+        taskDefinitionForegroundAuthorizationBytes: taskAuthorizationBytes,
+      }),
     },
   });
   if (prepared === null) throw new Error("Agent Task definition was unavailable");
   const snapshot = readPreparedTaskContentCryptoRevisionSnapshotV1(prepared);
-  const foregroundPlanBytes = encodeLiveShadowMessagePlanV4({
-    formatVersion: 4,
-    purpose: "message.live_shadow_plan",
-    operationId: "task-definition-accepted-execution",
-    policyRevision: 1,
-    sessionId: TASK_ID,
-    roomId: ROOM_ID,
-    humanMessageId: 1,
-    revision: 0,
-    createdAt: unixTimestamp(NOW),
-    subjectHumanId: humanId(evidenceHumanId),
-    committerDeviceId: cryptoDeviceId(managerDeviceId),
-    committerDeviceSigningKeyGeneration: 1,
-    hostAuthorizationRevision: authorizationRevision(11),
-    recipientAgentId: agentId(writerAgentId),
-    agentAuthorizationRevision: authorizationRevision(7),
-    agentRuntimeGeneration: initialized.runtime.generation,
-    agentSignerKeyId: signer.principal.signerKeyId,
-    agentSignerPublicKey: Uint8Array.from(signer.publicKey),
-    namespaceId: namespaceId(NAMESPACE_ID),
-    namespaceAccessRevision: accessRevision(9),
-    namespaceKeyGeneration: namespaceGeneration(2),
-    namespaceHeadDigest: new Uint8Array(32).fill(0x51),
-    namespacePublicationDigest: new Uint8Array(32).fill(0x52),
-    namespacePublicationSetDigest: new Uint8Array(32).fill(0x53),
-    namespaceAudienceFingerprint: new Uint8Array(32).fill(0x54),
-    grantDomainId: "domain:1",
-    grantDomainParticipantDigest: new Uint8Array(32).fill(0x55),
-    grantDomainKeyGeneration: 3,
-    grantDomainHeadDigest: new Uint8Array(32).fill(0x56),
-    grantDomainPublicationDigest: new Uint8Array(32).fill(0x57),
-    grantDomainAuthorizationRevision: authorizationRevision(7),
-    namespaceBundleGrantDomainAuthorizationRevision: authorizationRevision(7),
-    namespaceBundleRevision: 1,
-    namespaceBundleDigest: new Uint8Array(32).fill(0x58),
-    authorization: {
-      disposition: "authorization_reusable",
-      sessionReference: "task-definition-accepted-session",
-      authorizationDigest: new Uint8Array(32).fill(0x59),
-    },
-    attemptCoordinate: "task-definition-accepted-attempt",
-    issuedAt: unixTimestamp(NOW),
-    deadlineAt: unixTimestamp(NOW + 30_000),
-  });
   const foregroundEvidence = {
     kind: "foreground_agent_accepted_execution" as const,
     planBytesBase64url: base64url(foregroundPlanBytes),
@@ -248,6 +335,11 @@ async function preparedAgentDefinition(
     initialized,
     foregroundPlanBytes,
     foregroundEvidence,
+    taskAuthorizationEvidence: taskAuthorizationBytes === undefined
+      ? null : {
+          kind: "task_definition_foreground_authorization" as const,
+          evidenceBytesBase64url: base64url(taskAuthorizationBytes),
+        },
     reference: {
       dtoVersion: 1 as const,
       status: "protected" as const,
@@ -1142,15 +1234,26 @@ test("vault-backed Task open accepts only the Task-bound trusted Agent Runtime s
 
 test("vault-backed Task definition accepts an authenticated same-Human cross-Agent author", async () => {
   const manager = await setup("device:cross-agent-manager", 0x262);
-  const reader = await setup("device:cross-agent-reader", 0x263);
+  const reader = await setup("device:cross-agent-reader", 0x263, {
+    deviceId: "device:cross-agent-manager",
+    signingPublicKey: manager.signing.publicKey,
+  });
   const prepared = await preparedAgentDefinition(
     manager,
     "device:cross-agent-manager",
     OTHER_AGENT_ID,
+    HUMAN_ID,
+    true,
   );
+  if (prepared.taskAuthorizationEvidence === null) {
+    throw new Error("Task authorization evidence was unavailable");
+  }
   const envelope = {
     ...prepared.envelope,
-    signerEvidence: [prepared.foregroundEvidence],
+    signerEvidence: [
+      prepared.foregroundEvidence,
+      prepared.taskAuthorizationEvidence,
+    ],
   };
   const opened = await reader.content.openExact({
     reference: prepared.reference,
@@ -1169,6 +1272,7 @@ test("vault-backed Task definition accepts an authenticated same-Human cross-Age
     [],
     [{ ...prepared.foregroundEvidence,
       planDigestBase64url: base64url(badDigest) }],
+    [prepared.foregroundEvidence],
   ]) {
     const rejected = await reader.content.openExact({
       reference: prepared.reference,
@@ -1186,11 +1290,18 @@ test("vault-backed Task definition accepts an authenticated same-Human cross-Age
     "device:cross-agent-manager",
     OTHER_AGENT_ID,
     "other-human",
+    true,
   );
+  if (wrongHuman.taskAuthorizationEvidence === null) {
+    throw new Error("Task authorization evidence was unavailable");
+  }
   const wrongHumanResult = await reader.content.openExact({
     reference: wrongHuman.reference,
     envelope: { ...wrongHuman.envelope,
-      signerEvidence: [wrongHuman.foregroundEvidence] },
+      signerEvidence: [
+        wrongHuman.foregroundEvidence,
+        wrongHuman.taskAuthorizationEvidence,
+      ] },
     expectedAgentId: AGENT_ID,
   }).catch((cause: unknown) => cause);
   expect(wrongHumanResult).toBeInstanceOf(ClassifiedDataOperationError);
@@ -1346,6 +1457,85 @@ test("dual Task preparation encrypts and signs the same canonical ordinary paylo
   });
   expect(signedDigests[0]).not.toEqual(signedDigests[1]);
   for (const digest of signedDigests) digest.fill(0);
+});
+
+test("ordinary fallback preparation signs the exact plan, payload, and Task fields", async () => {
+  const writer = await setup("device:fallback-writer", 0x253);
+  const task = { scheduleKind: "now" as const };
+  const sourceDigest = new Uint8Array(32).fill(0x41);
+  const operationalFieldsDigest = fingerprintTaskOperationalFieldsV1(
+    "create",
+    task,
+  );
+  const binaryPlan = {
+    formatVersion: 1 as const,
+    purpose: "task.ordinary_fallback.create" as const,
+    reason: "target_encryption_not_ready" as const,
+    operationId: "task:fallback:create:1",
+    taskId: TASK_ID,
+    sourceDigest,
+    operationalFieldsDigest,
+    expectedContentRevision: 0 as const,
+    expectedCryptoAccessRevision: 0 as const,
+    expectedUpdatedAt: null,
+    policyRevision: 7,
+    subjectHumanId: HUMAN_ID,
+    committerDeviceId: "device:fallback-writer",
+    committerDeviceSigningKeyGeneration: 1,
+    hostAuthorizationRevision: 11,
+    planIssuedAt: NOW - 1_000,
+    planDeadlineAt: NOW + 29_000,
+  };
+  const planDigest = fingerprintHumanTaskOrdinaryFallbackPlanV1(binaryPlan);
+  const payload = {
+    formatVersion: 1 as const,
+    prompt: "fallback prompt",
+    expectedOutput: "fallback result",
+    protectedMetadata: {},
+  };
+  const prepared = await writer.content.prepareOrdinaryFallbackCreate({
+    plan: {
+      ...binaryPlan,
+      sourceDigestBase64url: base64url(sourceDigest),
+      operationalFieldsDigestBase64url: base64url(operationalFieldsDigest),
+      planDigestBase64url: base64url(planDigest),
+    },
+    payload,
+    task,
+  });
+  const contentBytes = decodeBase64url(prepared.ordinaryPayloadBytesBase64url);
+  const signedBytes = decodeBase64url(
+    prepared.signedOrdinaryFallbackRequestBytesBase64url,
+  );
+  const signed = decodeHumanTaskOrdinaryFallbackRequestV1(signedBytes);
+  const contentDigest = fingerprintHumanTaskOrdinaryFallbackContentV1(
+    contentBytes,
+  );
+  try {
+    expect(prepared).toMatchObject({
+      representation: "ordinary_fallback",
+      operationId: binaryPlan.operationId,
+      taskId: TASK_ID,
+      task,
+    });
+    expect(signed.planDigest).toEqual(planDigest);
+    expect(signed.taskDefinitionContentDigest).toEqual(contentDigest);
+    expect(signed.operationalFieldsDigest).toEqual(operationalFieldsDigest);
+    expect(signed.committerDeviceSigningKeyGeneration).toBe(1);
+    expect(signed.hostAuthorizationRevision).toBe(11);
+  } finally {
+    sourceDigest.fill(0);
+    operationalFieldsDigest.fill(0);
+    planDigest.fill(0);
+    contentBytes.fill(0);
+    signedBytes.fill(0);
+    contentDigest.fill(0);
+    signed.planDigest.fill(0);
+    signed.sourceDigest.fill(0);
+    signed.operationalFieldsDigest.fill(0);
+    signed.taskDefinitionContentDigest.fill(0);
+    signed.signature.fill(0);
+  }
 });
 
 test("dual Task update signs and publishes the exact carried V2 definition bytes", async () => {

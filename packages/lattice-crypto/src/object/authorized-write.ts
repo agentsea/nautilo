@@ -79,6 +79,7 @@ export interface DeviceWrappedAgentObjectAccessGenesisSetAuthorizationExpectatio
   readonly signerPublicKey: Uint8Array;
   readonly signerPublicKeyHash: Uint8Array;
   readonly signerEvidence?: TaskRuntimePublicationSignerEvidence;
+  readonly signerEvidenceBytes?: Uint8Array;
 }
 
 export interface TaskRuntimeAgentObjectAccessGenesisSetAuthorizationExpectationV1 {

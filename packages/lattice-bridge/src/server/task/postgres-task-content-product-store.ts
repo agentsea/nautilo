@@ -25,6 +25,7 @@ import {
 } from "@nautilo/db";
 
 import type { TaskContentAuthorityV1 } from "../../task/task-content-authority-v1.ts";
+import { hasTaskOrdinaryFallbackReceiptV1 } from "../../task/task-ordinary-fallback-receipt.ts";
 import {
   TaskCancellationPublicationPolicyUnavailableError,
   TaskHistoricalRepairPublicationUnavailableError,
@@ -38,6 +39,7 @@ import {
   fingerprintTaskContentAuthorityIdentityV1,
   fingerprintTaskContentAuthorityV1,
   fingerprintTaskContentNamespaceV1,
+  isTaskOrdinaryFallbackRepairSourceProofV1,
   taskContentObjectTypeV1,
   type TaskContentCoordinateV1,
   type TaskContentFailureCode,
@@ -191,6 +193,28 @@ function date(row: ConversationProductDatabaseRow, key: string): Date | null {
     throw new TypeError(`${key} is not a timestamp`);
   }
   return parsed;
+}
+
+function hasFallbackReceiptRow(
+  row: ConversationProductDatabaseRow,
+): boolean {
+  try {
+    const policyRevision = row["ordinary_fallback_policy_revision"] === null
+      ? null : integer(row, "ordinary_fallback_policy_revision");
+    return hasTaskOrdinaryFallbackReceiptV1({
+      ordinaryFallbackOperationId:
+        nullableText(row, "ordinary_fallback_operation_id"),
+      ordinaryFallbackRequestDigest:
+        nullableBytes(row, "ordinary_fallback_request_digest"),
+      ordinaryFallbackReason:
+        nullableText(row, "ordinary_fallback_reason"),
+      ordinaryFallbackPolicyRevision: policyRevision,
+      ordinaryFallbackCompletedAt:
+        date(row, "ordinary_fallback_completed_at"),
+    });
+  } catch {
+    return false;
+  }
 }
 
 function bool(row: ConversationProductDatabaseRow, key: string): boolean {
@@ -919,6 +943,18 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
     } else if (input.operationalMetadata !== null) {
       throw new TypeError("Task content operational metadata is invalid");
     }
+    if (input.fallbackRepairSource !== undefined) {
+      const source = input.fallbackRepairSource;
+      if (!isTaskOrdinaryFallbackRepairSourceProofV1(source)
+        || input.historicalPrepared !== undefined
+        || input.coordinate.kind !== "definition"
+        || input.representation !== "dual"
+        || input.coordinate.taskId !== source.taskId
+        || input.coordinate.contentRevision !== source.sourceContentRevision + 1
+        || input.namespaceId !== source.sourceNamespaceId) {
+        throw new TypeError("Fallback Task repair reservation is invalid");
+      }
+    }
     if (!PORTABLE_ID.test(input.operationId)
       || new TextEncoder().encode(input.operationId).length > 128) {
       throw new TypeError("Task content operation ID is invalid");
@@ -1088,13 +1124,21 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
       const rows = await executeTypedConversationProductQuery(transaction, conversationProductTypedDb.select({
         owner_id: tasks.ownerId,
         requestor_id: tasks.requestorId,
+        mutation_version: sql<string>`${tasks}.xmin::text`.as("mutation_version"),
         task_status: sql<string>`${tasks.status}`.as("task_status"),
         fire_lock_id: tasks.fireLockId,
         content_namespace_id: tasks.contentNamespaceId,
         content_revision: tasks.contentRevision, content_representation: tasks.contentRepresentation,
         crypto_object_id: tasks.cryptoObjectId,
+        crypto_access_revision: tasks.cryptoAccessRevision,
         crypto_required_namespace_fingerprint: tasks.cryptoRequiredNamespaceFingerprint,
         crypto_mapping_state: tasks.cryptoMappingState,
+        ordinary_fallback_operation_id: tasks.ordinaryFallbackOperationId,
+        ordinary_fallback_request_digest: tasks.ordinaryFallbackRequestDigest,
+        ordinary_fallback_reason: tasks.ordinaryFallbackReason,
+        ordinary_fallback_policy_revision: tasks.ordinaryFallbackPolicyRevision,
+        ordinary_fallback_completed_at: tasks.ordinaryFallbackCompletedAt,
+        updated_at: tasks.updatedAt,
       }).from(tasks).where(eq(tasks.id, input.coordinate.taskId)).for("update").limit(2));
       const row = oneOrNone(rows, "Task predecessor lookup");
       if (input.coordinate.contentRevision === 1) {
@@ -1113,6 +1157,14 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
           && integer(row, "content_revision") === 0
           && nullableText(row, "content_namespace_id") === null
           && text(row, "content_representation") === "ordinary");
+      }
+      if (input.fallbackRepairSource !== undefined) {
+        return this.#fallbackRepairPredecessorIsCurrent(
+          transaction,
+          row,
+          input,
+          requesterOwnerId,
+        );
       }
       return row !== null && text(row, "owner_id") === requesterOwnerId
         && text(row, "requestor_id") === requesterOwnerId
@@ -1167,9 +1219,74 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
           && text(row, "result_crypto_mapping_state") === "verified");
   }
 
+  async #fallbackRepairPredecessorIsCurrent(
+    transaction: ConversationProductPostgresTransaction,
+    row: ConversationProductDatabaseRow | null,
+    input: Parameters<TaskContentProductStorePort["reserveRevision"]>[0],
+    requesterOwnerId: string,
+  ): Promise<boolean> {
+    const source = input.fallbackRepairSource;
+    if (source === undefined
+      || !isTaskOrdinaryFallbackRepairSourceProofV1(source)
+      || row === null
+      || input.coordinate.kind !== "definition"
+      || input.historicalPrepared !== undefined
+      || input.representation !== "dual"
+      || input.coordinate.taskId !== source.taskId
+      || input.coordinate.contentRevision !== source.sourceContentRevision + 1
+      || input.namespaceId !== source.sourceNamespaceId
+      || text(row, "owner_id") !== requesterOwnerId
+      || text(row, "requestor_id") !== requesterOwnerId
+      || !inAllowedDefinitionStatus(row)
+      || nullableText(row, "fire_lock_id") !== null
+      || text(row, "mutation_version") !== source.sourceMutationVersion
+      || integer(row, "content_revision") !== source.sourceContentRevision
+      || nullableText(row, "content_namespace_id") !== source.sourceNamespaceId
+      || text(row, "content_representation") !== "dual"
+      || nullableText(row, "crypto_object_id") !== source.sourceCryptoObjectId
+      || integer(row, "crypto_access_revision") !== source.sourceCryptoAccessRevision
+      || !sameBytes(
+        nullableBytes(row, "crypto_required_namespace_fingerprint")
+          ?? new Uint8Array(),
+        source.sourceRequiredNamespaceFingerprint,
+      )
+      || text(row, "crypto_mapping_state") !== "stale"
+      || !hasFallbackReceiptRow(row)
+      || nullableText(row, "ordinary_fallback_operation_id")
+        !== source.fallbackOperationId
+      || !sameBytes(
+        nullableBytes(row, "ordinary_fallback_request_digest")
+          ?? new Uint8Array(),
+        source.fallbackRequestDigest,
+      )
+      || integer(row, "ordinary_fallback_policy_revision")
+        !== source.fallbackPolicyRevision
+      || date(row, "ordinary_fallback_completed_at")?.getTime()
+        !== source.fallbackCompletedAt.getTime()
+      || date(row, "updated_at")?.getTime() !== source.sourceUpdatedAt.getTime()) {
+      return false;
+    }
+    const predecessor = await this.#coordinateRow(transaction, {
+      kind: "definition",
+      taskId: source.taskId,
+      contentRevision: source.sourceContentRevision,
+    }, true);
+    if (predecessor === null) return false;
+    const lifecycle = lifecycleFromRow("definition", predecessor);
+    return lifecycle.completion === "complete"
+      && lifecycle.disposition === "mapped"
+      && lifecycle.representation === "dual"
+      && lifecycle.namespaceId === source.sourceNamespaceId
+      && lifecycle.cryptoObjectId === source.sourceCryptoObjectId
+      && sameBytes(
+        lifecycle.requiredNamespaceFingerprint,
+        source.sourceRequiredNamespaceFingerprint,
+      );
+  }
+
   async #productRow(transaction: ConversationProductPostgresTransaction, coordinate: TaskContentCoordinateV1, lock: boolean): Promise<ConversationProductDatabaseRow | null> {
     const query = coordinate.kind === "definition"
-      ? conversationProductTypedDb.select({ task_id: sql<string>`${tasks.id}`.as("task_id"), owner_id: tasks.ownerId, requestor_id: tasks.requestorId, task_status: sql<string>`${tasks.status}`.as("task_status"), prompt: tasks.prompt, expected_output: tasks.expectedOutput, last_error: tasks.lastError, metadata_json: sql<string>`${tasks.metadata}::text`.as("metadata_json"), content_revision: tasks.contentRevision, content_namespace_id: tasks.contentNamespaceId, content_representation: tasks.contentRepresentation, crypto_object_id: tasks.cryptoObjectId, crypto_access_revision: tasks.cryptoAccessRevision, crypto_required_namespace_fingerprint: tasks.cryptoRequiredNamespaceFingerprint, crypto_mapping_state: tasks.cryptoMappingState }).from(tasks).where(eq(tasks.id, coordinate.taskId)).limit(2)
+      ? conversationProductTypedDb.select({ task_id: sql<string>`${tasks.id}`.as("task_id"), owner_id: tasks.ownerId, requestor_id: tasks.requestorId, task_status: sql<string>`${tasks.status}`.as("task_status"), prompt: tasks.prompt, expected_output: tasks.expectedOutput, last_error: tasks.lastError, metadata_json: sql<string>`${tasks.metadata}::text`.as("metadata_json"), content_revision: tasks.contentRevision, content_namespace_id: tasks.contentNamespaceId, content_representation: tasks.contentRepresentation, crypto_object_id: tasks.cryptoObjectId, crypto_access_revision: tasks.cryptoAccessRevision, crypto_required_namespace_fingerprint: tasks.cryptoRequiredNamespaceFingerprint, crypto_mapping_state: tasks.cryptoMappingState, ordinary_fallback_operation_id: tasks.ordinaryFallbackOperationId, ordinary_fallback_request_digest: tasks.ordinaryFallbackRequestDigest, ordinary_fallback_reason: tasks.ordinaryFallbackReason, ordinary_fallback_policy_revision: tasks.ordinaryFallbackPolicyRevision, ordinary_fallback_completed_at: tasks.ordinaryFallbackCompletedAt }).from(tasks).where(eq(tasks.id, coordinate.taskId)).limit(2)
       : conversationProductTypedDb.select({ task_id: taskRuns.taskId, task_run_id: sql<string>`${taskRuns.id}`.as("task_run_id"), run_status: sql<string>`${taskRuns.status}`.as("run_status"), result_revision: taskRuns.resultRevision, result_content_namespace_id: taskRuns.resultContentNamespaceId, result_representation: taskRuns.resultRepresentation, crypto_object_id: sql<string | null>`${taskRuns.resultCryptoObjectId}`.as("crypto_object_id"), crypto_access_revision: sql<number>`${taskRuns.resultCryptoAccessRevision}`.as("crypto_access_revision"), crypto_required_namespace_fingerprint: sql<Uint8Array | null>`${taskRuns.resultCryptoRequiredNamespaceFingerprint}`.as("crypto_required_namespace_fingerprint"), crypto_mapping_state: sql<string>`${taskRuns.resultCryptoMappingState}`.as("crypto_mapping_state") }).from(taskRuns).where(and(eq(taskRuns.id, coordinate.taskRunId), eq(taskRuns.taskId, coordinate.taskId))).limit(2);
     return oneOrNone(await executeTypedConversationProductQuery(transaction, lock ? query.for("update") : query), "Task content product lookup");
   }
@@ -1263,6 +1380,26 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
       lifecycle.representation,
     )) return "wrong_authority";
     const expected = coordinate.contentRevision - 1;
+    const fallbackRepair = await this.#isFallbackRepairMappingPredecessor(
+      transaction,
+      row,
+      lifecycle,
+      requesterOwnerId,
+    );
+    const fallbackObjectId = fallbackRepair
+      ? nullableText(row, "crypto_object_id") : null;
+    const fallbackOperationId = fallbackRepair
+      ? nullableText(row, "ordinary_fallback_operation_id") : null;
+    const fallbackRequestDigest = fallbackRepair
+      ? nullableBytes(row, "ordinary_fallback_request_digest") : null;
+    const fallbackCompletedAt = fallbackRepair
+      ? date(row, "ordinary_fallback_completed_at") : null;
+    if (fallbackRepair && (fallbackObjectId === null
+      || fallbackOperationId === null
+      || fallbackRequestDigest === null
+      || fallbackCompletedAt === null)) {
+      throw new Error("Fallback Task repair mapping predecessor is incomplete");
+    }
     const updated = await executeTypedConversationProductQuery(transaction, conversationProductTypedDb.update(tasks).set({
       ...(expected === 0 ? { ownerId: requesterOwnerId } : {}),
       contentRepresentation: lifecycle.representation, contentNamespaceId: lifecycle.namespaceId,
@@ -1284,8 +1421,61 @@ export class PostgresTaskContentProductStore implements TaskContentProductStoreP
         ? ["pending", "paused", "completed", "errored", "cancelled"] : ["pending", "paused"]),
       isNull(tasks.fireLockId), eq(tasks.contentRevision, expected), expected === 0
       ? and(isNull(tasks.contentNamespaceId), eq(tasks.contentRepresentation, "ordinary"))
-      : and(eq(tasks.ownerId, requesterOwnerId), eq(tasks.contentNamespaceId, lifecycle.namespaceId), inArray(tasks.contentRepresentation, ["protected", "dual"]), eq(tasks.cryptoMappingState, "verified")))).returning({ task_id: tasks.id }));
+      : fallbackRepair
+        ? and(eq(tasks.ownerId, requesterOwnerId),
+            eq(tasks.contentNamespaceId, lifecycle.namespaceId),
+            eq(tasks.contentRepresentation, "dual"),
+            eq(tasks.cryptoMappingState, "stale"),
+            eq(tasks.cryptoObjectId, fallbackObjectId!),
+            eq(tasks.ordinaryFallbackOperationId,
+              fallbackOperationId!),
+            eq(tasks.ordinaryFallbackRequestDigest,
+              fallbackRequestDigest!),
+            eq(tasks.ordinaryFallbackReason, "target_encryption_not_ready"),
+            eq(tasks.ordinaryFallbackPolicyRevision,
+              integer(row, "ordinary_fallback_policy_revision")),
+            eq(tasks.ordinaryFallbackCompletedAt,
+              fallbackCompletedAt!))
+        : and(eq(tasks.ownerId, requesterOwnerId), eq(tasks.contentNamespaceId, lifecycle.namespaceId), inArray(tasks.contentRepresentation, ["protected", "dual"]), eq(tasks.cryptoMappingState, "verified")))).returning({ task_id: tasks.id }));
     return oneOrNone(updated, "Task definition mapping CAS") === null ? "stale" : "applied";
+  }
+
+  async #isFallbackRepairMappingPredecessor(
+    transaction: ConversationProductPostgresTransaction,
+    row: ConversationProductDatabaseRow,
+    lifecycle: TaskContentRevisionLifecycleV1,
+    requesterOwnerId: string,
+  ): Promise<boolean> {
+    if (lifecycle.coordinate.kind !== "definition"
+      || lifecycle.coordinate.contentRevision <= 1
+      || lifecycle.historicalRepair !== null
+      || lifecycle.representation !== "dual"
+      || text(row, "owner_id") !== requesterOwnerId
+      || text(row, "requestor_id") !== requesterOwnerId
+      || integer(row, "content_revision")
+        !== lifecycle.coordinate.contentRevision - 1
+      || nullableText(row, "content_namespace_id") !== lifecycle.namespaceId
+      || text(row, "content_representation") !== "dual"
+      || text(row, "crypto_mapping_state") !== "stale"
+      || nullableText(row, "crypto_object_id") === null
+      || nullableBytes(row, "crypto_required_namespace_fingerprint") === null
+      || !hasFallbackReceiptRow(row)) return false;
+    const predecessor = await this.#coordinateRow(transaction, {
+      kind: "definition",
+      taskId: lifecycle.coordinate.taskId,
+      contentRevision: lifecycle.coordinate.contentRevision - 1,
+    }, true);
+    if (predecessor === null) return false;
+    const previous = lifecycleFromRow("definition", predecessor);
+    return previous.completion === "complete"
+      && previous.disposition === "mapped"
+      && previous.representation === "dual"
+      && previous.namespaceId === lifecycle.namespaceId
+      && previous.cryptoObjectId === nullableText(row, "crypto_object_id")
+      && sameBytes(
+        previous.requiredNamespaceFingerprint,
+        nullableBytes(row, "crypto_required_namespace_fingerprint")!,
+      );
   }
 
   async #mapResult(

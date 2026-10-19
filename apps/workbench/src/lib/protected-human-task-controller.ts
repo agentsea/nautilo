@@ -79,22 +79,35 @@ export async function listProtectedScheduledTasks(
     task.scheduleKind === "cron" || task.scheduleKind === "one_shot"
   );
   const opened = await Promise.all(scheduled.map(async (task) => {
-    if (task.content.status === "unavailable") {
+    try {
+      const definition = await controller.open(task);
+      if (definition.content.status !== "protected") {
+        return task.content.status === "unavailable"
+          ? Object.freeze({
+              availability: "unavailable" as const,
+              task,
+              reason: task.content.reason,
+            })
+          : null;
+      }
+      return Object.freeze({
+        availability: "opened" as const,
+        task: definition.task,
+        prompt: definition.content.payload.prompt,
+        expectedOutput: definition.content.payload.expectedOutput,
+        retainedHistoricalError: definition.content.retainedHistoricalError,
+      });
+    } catch (error) {
+      if (task.content.status !== "unavailable"
+        || !(error instanceof ClassifiedDataOperationError)
+        || (error.failureClass !== "recoverable_availability"
+          && error.failureClass !== "key_waiting")) throw error;
       return Object.freeze({
         availability: "unavailable" as const,
         task,
         reason: task.content.reason,
       });
     }
-    const definition = await controller.open(task);
-    if (definition.content.status !== "protected") return null;
-    return Object.freeze({
-      availability: "opened" as const,
-      task,
-      prompt: definition.content.payload.prompt,
-      expectedOutput: definition.content.payload.expectedOutput,
-      retainedHistoricalError: definition.content.retainedHistoricalError,
-    });
   }));
   return Object.freeze(opened.filter(
     (row): row is ProtectedScheduledTaskProjection => row !== null,
@@ -166,24 +179,27 @@ export async function readWorkbenchTaskForViewer(input: Readonly<{
     ordinary: () => apiClient.getTask(input.taskId),
     protected: async () => {
       const classified = await apiClient.getTaskContentV1(input.taskId);
-      if (classified.definition.status === "ordinary") {
-        throw new ClassifiedDataOperationError(
-          "key_waiting",
-          "Protected Task representation is unavailable",
-        );
-      }
-      if (classified.definition.status === "unavailable") {
-        throw taskContentFailure(classified.definition.reason);
-      }
       if (input.protectedController === undefined) {
+        if (classified.definition.status === "unavailable") {
+          throw taskContentFailure(classified.definition.reason);
+        }
         throw new ClassifiedDataOperationError(
           "key_waiting",
           "Protected Task device custody is unavailable",
         );
       }
+      const content: TaskContentSummaryV1["content"] =
+        classified.definition.status === "ordinary"
+          ? Object.freeze({
+              dtoVersion: 1 as const,
+              status: "ordinary" as const,
+              promptPreview: classified.definition.prompt,
+              lastError: classified.definition.lastError,
+            })
+          : classified.definition;
       const opened = await input.protectedController.open(Object.freeze({
         ...classified.task,
-        content: classified.definition,
+        content,
       }));
       if (opened.content.status !== "protected") {
         throw new ClassifiedDataOperationError(

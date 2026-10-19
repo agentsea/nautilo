@@ -4,6 +4,8 @@ import type {
   DualTaskPreparedUpdateRequestV1,
   ProtectedTaskPreparedCreateRequestV1,
   ProtectedTaskPreparedUpdateRequestV1,
+  TaskOrdinaryFallbackPreparedCreateRequestV1,
+  TaskOrdinaryFallbackPreparedUpdateRequestV1,
 } from "@nautilo/api-client/browser";
 import {
   LatticeCrypto,
@@ -55,6 +57,13 @@ import {
 import { deriveTaskHistoricalContentCryptoObjectIdV1 } from
   "../../task/task-historical-content-identity.ts";
 import { encodeTaskDefinitionContent } from "../../task/task-payload-v1.ts";
+import {
+  digestHumanTaskOrdinaryFallbackRequestV1,
+  fingerprintHumanTaskOrdinaryFallbackContentV1,
+  fingerprintHumanTaskOrdinaryFallbackPlanV1,
+  prepareHumanTaskOrdinaryFallbackRequestV1,
+  type HumanTaskOrdinaryFallbackPlanV1,
+} from "../../task/human-task-ordinary-fallback-request.ts";
 import { parseTaskHistoricalRepairProvenanceV1 } from
   "../../task/task-historical-repair-provenance.ts";
 import {
@@ -83,6 +92,8 @@ import {
   prepareTaskAccessManifestChain,
   taskHumanSignerCoordinate,
 } from "./task-access-manifest-read.ts";
+import { exactTaskDefinitionForegroundAgentSignerKeysV1 } from
+  "./task-definition-foreground-authorization-evidence-v1.ts";
 
 const BASE64URL = /^[A-Za-z0-9_-]+$/u;
 const SIGNED_REQUEST_TTL_MS = 30_000;
@@ -527,7 +538,157 @@ export function createVaultHumanTaskDeviceContentPortV1(
     },
   );
 
+  const prepareOrdinaryFallback = async (
+    operation: "create" | "update",
+    input:
+      Parameters<HumanTaskDeviceContentPortV1["prepareOrdinaryFallbackCreate"]>[0]
+      | Parameters<HumanTaskDeviceContentPortV1["prepareOrdinaryFallbackUpdate"]>[0],
+  ): Promise<TaskOrdinaryFallbackPreparedCreateRequestV1
+    | TaskOrdinaryFallbackPreparedUpdateRequestV1> => withProfile(
+      dependencies,
+      (profileV4, admission) => {
+        const profile = profileV4.baseProfile.baseProfile;
+        const { plan } = input;
+        const now = dependencies.now();
+        let sourceDigest: Uint8Array | undefined;
+        let operationalFieldsDigest: Uint8Array | undefined;
+        let planDigest: Uint8Array | undefined;
+        let expectedPlanDigest: Uint8Array | undefined;
+        let contentBytes: Uint8Array | undefined;
+        let contentDigest: Uint8Array | undefined;
+        let signedBytes: Uint8Array | undefined;
+        let requestDigest: Uint8Array | undefined;
+        try {
+          sourceDigest = fromBase64url(
+            "Task ordinary fallback source digest",
+            plan.sourceDigestBase64url,
+          );
+          operationalFieldsDigest = fromBase64url(
+            "Task ordinary fallback operational digest",
+            plan.operationalFieldsDigestBase64url,
+          );
+          planDigest = fromBase64url(
+            "Task ordinary fallback plan digest",
+            plan.planDigestBase64url,
+          );
+          const localOperationalFieldsDigest = fingerprintTaskOperationalFieldsV1(
+            operation,
+            input.task,
+          );
+          try {
+            if (plan.purpose !== `task.ordinary_fallback.${operation}`
+              || plan.subjectHumanId !== dependencies.subjectHumanId
+              || plan.committerDeviceId !== profile.deviceId
+              || plan.committerDeviceSigningKeyGeneration
+                !== admission.deviceGeneration
+              || plan.hostAuthorizationRevision
+                !== profile.trustedHostAuthorizationRevision
+              || now < plan.planIssuedAt || now >= plan.planDeadlineAt
+              || sourceDigest.length !== 32
+              || operationalFieldsDigest.length !== 32
+              || planDigest.length !== 32
+              || !equalBytes(
+                operationalFieldsDigest,
+                localOperationalFieldsDigest,
+              )) {
+              throw new ClassifiedDataOperationError(
+                "integrity",
+                "Task ordinary fallback plan disagrees with current authority",
+              );
+            }
+          } finally {
+            localOperationalFieldsDigest.fill(0);
+          }
+          const binaryPlan: HumanTaskOrdinaryFallbackPlanV1 = {
+            formatVersion: plan.formatVersion,
+            purpose: plan.purpose,
+            reason: plan.reason,
+            operationId: plan.operationId,
+            taskId: plan.taskId,
+            sourceDigest,
+            operationalFieldsDigest,
+            expectedContentRevision: plan.expectedContentRevision,
+            expectedCryptoAccessRevision: plan.expectedCryptoAccessRevision,
+            expectedUpdatedAt: plan.expectedUpdatedAt,
+            policyRevision: plan.policyRevision,
+            subjectHumanId: plan.subjectHumanId,
+            committerDeviceId: plan.committerDeviceId,
+            committerDeviceSigningKeyGeneration:
+              plan.committerDeviceSigningKeyGeneration,
+            hostAuthorizationRevision: plan.hostAuthorizationRevision,
+            planIssuedAt: plan.planIssuedAt,
+            planDeadlineAt: plan.planDeadlineAt,
+          };
+          expectedPlanDigest = fingerprintHumanTaskOrdinaryFallbackPlanV1(
+            binaryPlan,
+          );
+          if (!equalBytes(planDigest, expectedPlanDigest)) {
+            throw new ClassifiedDataOperationError(
+              "integrity",
+              "Task ordinary fallback plan digest is invalid",
+            );
+          }
+          contentBytes = encodeTaskDefinitionContent(input.payload);
+          contentDigest = fingerprintHumanTaskOrdinaryFallbackContentV1(
+            contentBytes,
+          );
+          const signed = prepareHumanTaskOrdinaryFallbackRequestV1(
+            dependencies.crypto,
+            {
+              ...binaryPlan,
+              planDigest,
+              taskDefinitionContentDigest: contentDigest,
+              issuedAt: now,
+              deadlineAt: Math.min(
+                now + SIGNED_REQUEST_TTL_MS,
+                plan.planDeadlineAt,
+              ),
+              signingPrivateKey: profile.signingPrivateKey,
+            },
+          );
+          signedBytes = signed.bytes;
+          requestDigest = digestHumanTaskOrdinaryFallbackRequestV1(signedBytes);
+          return Object.freeze({
+            requestVersion: 1 as const,
+            representation: "ordinary_fallback" as const,
+            operationId: plan.operationId,
+            taskId: plan.taskId,
+            authenticatedRequestDigestBase64url: toBase64url(requestDigest),
+            ordinaryPayloadBytesBase64url: toBase64url(contentBytes),
+            signedOrdinaryFallbackRequestBytesBase64url:
+              toBase64url(signedBytes),
+            task: input.task,
+          });
+        } finally {
+          sourceDigest?.fill(0);
+          operationalFieldsDigest?.fill(0);
+          planDigest?.fill(0);
+          expectedPlanDigest?.fill(0);
+          contentBytes?.fill(0);
+          contentDigest?.fill(0);
+          signedBytes?.fill(0);
+          requestDigest?.fill(0);
+        }
+      },
+    );
+
   return Object.freeze({
+    prepareOrdinaryFallbackCreate: async (
+      input: Parameters<
+        HumanTaskDeviceContentPortV1["prepareOrdinaryFallbackCreate"]
+      >[0],
+    ) =>
+      prepareOrdinaryFallback("create", input) as Promise<
+        TaskOrdinaryFallbackPreparedCreateRequestV1
+      >,
+    prepareOrdinaryFallbackUpdate: async (
+      input: Parameters<
+        HumanTaskDeviceContentPortV1["prepareOrdinaryFallbackUpdate"]
+      >[0],
+    ) =>
+      prepareOrdinaryFallback("update", input) as Promise<
+        TaskOrdinaryFallbackPreparedUpdateRequestV1
+      >,
     prepareCreate: async (
       input: Parameters<HumanTaskDeviceContentPortV1["prepareCreate"]>[0],
     ) => prepare("create", input, "protected") as Promise<ProtectedTaskPreparedCreateRequestV1>,
@@ -616,7 +777,7 @@ export function createVaultHumanTaskDeviceContentPortV1(
       retainedAnchor = await dependencies.accessAnchors.load(
         input.reference.objectId,
       );
-      result = await withProfile(dependencies, (profileV4) => {
+      result = await withProfile(dependencies, async (profileV4) => {
       let canonicalPayload: Uint8Array | undefined;
       let canonicalManifest: Uint8Array | undefined;
       let canonicalEnvelope: Uint8Array | undefined;
@@ -708,29 +869,72 @@ export function createVaultHumanTaskDeviceContentPortV1(
           prepared.fullChain,
           dependencies.subjectHumanId,
         );
-        foregroundKeys = exactForegroundAgentSignerKeysV1({
-          crypto: dependencies.crypto,
-          evidence: envelope.signerEvidence,
-          manifestBytes: prepared.fullChain,
-          ...(input.expectedAgentId === undefined
-            ? {} : { expectedAgentId: input.expectedAgentId }),
-          expectedDefinitionAuthorHumanId: dependencies.subjectHumanId,
-        });
-        if (crossAgentGenesisPrincipal !== undefined
-          && !foregroundKeys.has(crossAgentGenesisPrincipal)) {
-          throw new TypeError("Task definition Agent genesis was substituted");
-        }
+        const hasTaskDefinitionAuthorization = envelope.signerEvidence.some(
+          entry => typeof entry === "object" && entry !== null
+            && (entry as { kind?: unknown }).kind
+              === "task_definition_foreground_authorization",
+        );
+        foregroundKeys = hasTaskDefinitionAuthorization
+          ? new Map<string, Uint8Array>()
+          : exactForegroundAgentSignerKeysV1({
+              crypto: dependencies.crypto,
+              evidence: envelope.signerEvidence,
+              manifestBytes: prepared.fullChain,
+              ...(input.expectedAgentId === undefined
+                ? {} : { expectedAgentId: input.expectedAgentId }),
+              expectedDefinitionAuthorHumanId: dependencies.subjectHumanId,
+            });
         humanKeys = exactTaskHumanSignerKeys({
           evidence: envelope.signerEvidence,
           chain: prepared.fullChain,
           expectedHumanId: dependencies.subjectHumanId,
         });
+        const taskDomainId = hasTaskDefinitionAuthorization
+          ? await withClientNamespaceKeyring({
+              profile: profileV4.baseProfile.baseProfile,
+              namespaceId: envelope.namespaceId,
+              keyClass: "ai",
+              operation: keyring => keyring.domainId,
+            })
+          : null;
         withClientObjectAccessSignerResolversV4({
           crypto: dependencies.crypto,
           profile: profileV4,
-          operation: resolvers => verifyCommonObjectAccessManifestChain(
-            dependencies.crypto,
-            {
+          operation: resolvers => {
+            const taskForegroundKeys = hasTaskDefinitionAuthorization
+              ? exactTaskDefinitionForegroundAgentSignerKeysV1({
+                  crypto: dependencies.crypto,
+                  evidence: envelope.signerEvidence,
+                  genesisManifestBytes: prepared!.genesisManifestBytes,
+                  taskId: envelope.taskId,
+                  contentRevision: envelope.contentRevision,
+                  namespaceId: envelope.namespaceId,
+                  domainId: taskDomainId!,
+                  privateRoomId: envelope.readAuthority.sourceRoomId,
+                  expectedHumanId: dependencies.subjectHumanId,
+                  resolveHistoricalDeviceSigningPublicKey:
+                    resolvers.resolveHistoricalHumanDeviceSigningPublicKey,
+                })
+              : new Map<string, Uint8Array>();
+            try {
+              for (const [principal, key] of taskForegroundKeys) {
+                const existing = foregroundKeys!.get(principal);
+                if (existing !== undefined && !equalBytes(existing, key)) {
+                  throw new TypeError(
+                    "Task definition Agent signer evidence collided",
+                  );
+                }
+                if (existing === undefined) foregroundKeys!.set(principal, key);
+              }
+              if (crossAgentGenesisPrincipal !== undefined
+                && !foregroundKeys!.has(crossAgentGenesisPrincipal)) {
+                throw new TypeError(
+                  "Task definition Agent genesis was substituted",
+                );
+              }
+              verifyCommonObjectAccessManifestChain(
+                dependencies.crypto,
+                {
               manifestBytes: envelope.accessManifestBytes,
               proof: prepared!.proof,
               trustedMinimumHead: prepared!.trustedMinimumHead,
@@ -765,8 +969,21 @@ export function createVaultHumanTaskDeviceContentPortV1(
                 ?? resolvers.resolveAgentRuntimeSignerPublicKey(principal),
               resolveProcessorSignerAuthorizationBytes: () => null,
               resolveHistoricalProcessorIssuingDevicePublicKey: () => null,
-            },
-          ),
+              resolveTaskDefinitionForegroundAuthorizationSignerPublicKey:
+                evidence => foregroundKeys!.get(
+                  foregroundAgentSignerPrincipalKeyV1(evidence.signer),
+                ) ?? null,
+                },
+              );
+            } finally {
+              taskForegroundKeys.forEach((key, principal) => {
+                if (foregroundKeys!.get(principal) === key) {
+                  foregroundKeys!.delete(principal);
+                }
+                key.fill(0);
+              });
+            }
+          },
         });
         return Object.freeze({ nextAnchor: Object.freeze({
           ...prepared.nextAnchor,

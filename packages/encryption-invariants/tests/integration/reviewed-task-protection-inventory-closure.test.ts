@@ -65,9 +65,9 @@ describe("Task protection inventory closure", () => {
       tableExports,
     )).map(writer => writer.locator));
 
-    expect(REVIEWED_TASK_PROTECTION_DATABASE_WRITER_LOCATORS).toHaveLength(53);
+    expect(REVIEWED_TASK_PROTECTION_DATABASE_WRITER_LOCATORS).toHaveLength(54);
     expect(new Set(REVIEWED_TASK_PROTECTION_DATABASE_WRITER_LOCATORS).size)
-      .toBe(53);
+      .toBe(54);
     for (const locator of REVIEWED_TASK_PROTECTION_DATABASE_WRITER_LOCATORS) {
       expect(observed).toContain(locator);
     }
@@ -84,26 +84,48 @@ describe("Task protection inventory closure", () => {
       (declaration) => locators.has(declaration.locator),
     );
 
-    expect(REVIEWED_TASK_PROTECTION_DTO_DECLARATIONS).toHaveLength(32);
-    expect(locators.size).toBe(32);
-    expect(effectiveDeclarations).toHaveLength(32);
+    expect(REVIEWED_TASK_PROTECTION_DTO_DECLARATIONS).toHaveLength(38);
+    expect(locators.size).toBe(38);
+    expect(effectiveDeclarations).toHaveLength(38);
     expect(new Set(effectiveDeclarations.map((declaration) =>
-      declaration.locator)).size).toBe(32);
-    expect(observations).toHaveLength(32);
+      declaration.locator)).size).toBe(38);
+    expect(observations).toHaveLength(38);
     expect(auditDtoDeclarations({
       observations,
       declarations: effectiveDeclarations,
     })).toEqual({
       ok: true,
       counts: {
-        observations: 32,
-        declarations: 32,
-        arbitraryPayloads: 8,
+        observations: 38,
+        declarations: 38,
+        arbitraryPayloads: 9,
       },
     });
     expect([...locators].filter((locator) =>
       locator.startsWith("http:request_response:POST /api/tasks/external-requests")
     )).toHaveLength(4);
+    const fallbackDeclarations = new Map(effectiveDeclarations
+      .filter((declaration) => declaration.locator.includes("ordinary-fallback"))
+      .map((declaration) => [
+        declaration.locator,
+        declaration.structuralSignatures?.join("\n") ?? "",
+      ]));
+    expect(fallbackDeclarations.size).toBe(4);
+    expect(fallbackDeclarations.get(
+      "http:request_response:POST /api/protected/tasks/ordinary-fallback-plan",
+    )).toContain('purpose:"task.ordinary_fallback.create"');
+    expect(fallbackDeclarations.get(
+      "http:request_response:POST /api/protected/tasks/:taskId/ordinary-fallback-plan",
+    )).toContain('purpose:"task.ordinary_fallback.update"');
+    expect(fallbackDeclarations.get(
+      "http:request_response:POST /api/protected/tasks/ordinary-fallback",
+    )).toContain("response.body:{nextFireAt:string;status:string;taskId:string}");
+    expect(fallbackDeclarations.get(
+      "http:request_response:PATCH /api/protected/tasks/:taskId/ordinary-fallback",
+    )).toContain("content:{contentRevision:number;cryptoAccessRevision:number");
+    for (const signature of fallbackDeclarations.values()) {
+      expect(signature).not.toMatch(/catch:function|finally:function|then:function/);
+    }
     expect(SUPERSEDED_TASK_PROTECTION_DTO_LOCATORS).toEqual(new Set([
       "http:request_response:GET /api/tasks",
       "http:request_response:GET /api/tasks/:id",

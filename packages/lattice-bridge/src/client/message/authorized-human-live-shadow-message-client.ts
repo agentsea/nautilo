@@ -61,6 +61,11 @@ import { PREPARED_MUTATION_JOURNAL_LIMITS } from
   "../memory/prepared-mutation-journal-limits.ts";
 import { isOwnedHumanPublication, matchesHumanPublicationReceipt } from
   "./live-shadow-human-publication-receipt.ts";
+import {
+  deriveTaskDefinitionForegroundRecipientKeyIdV1,
+  taskDefinitionForegroundAuthorizationIdV1Matches,
+} from
+  "../../task/task-definition-foreground-authorization-id-v1.ts";
 
 type RoomSendBody = Parameters<NautiloApiClient["sendRoomMessage"]>[1];
 type RoomSendResult = Awaited<ReturnType<NautiloApiClient["sendRoomMessage"]>>;
@@ -102,6 +107,7 @@ export interface HumanLiveShadowMessageApiPort {
   authorizeSharedAgentExecution?:
     NautiloApiClient["authorizeSharedAgentExecution"];
   authorizeRuntimeInvocation?: NautiloApiClient["authorizeRuntimeInvocation"];
+  authorizeTaskDefinition?: NautiloApiClient["authorizeTaskDefinition"];
   getRoomPendingAttention?: NautiloApiClient["getRoomPendingAttention"];
   readRoomPendingAttention?: NautiloApiClient["readRoomPendingAttention"];
   getTaskPendingAttention?: NautiloApiClient["getTaskPendingAttention"];
@@ -1121,6 +1127,113 @@ export function createAuthorizedHumanLiveShadowMessageClient(
           authorizationPlanBytes?.fill(0);
           sourceHumanPlanBytes?.fill(0);
           recipientPublicKey?.fill(0);
+        }
+      }
+      if (event.type === "message.task_definition_authorization_required") {
+        if (input.api.authorizeTaskDefinition === undefined) {
+          reportRuntimeAuthorizationDiagnostic(input.onUnavailable, "api_unavailable");
+          return false;
+        }
+        let authorizationPlanBytes: Uint8Array | undefined;
+        let recipientPublicKey: Uint8Array | undefined;
+        let workDescriptorDigest: Uint8Array | undefined;
+        let parentAgentSignerPublicKey: Uint8Array | undefined;
+        try {
+          authorizationPlanBytes = fromBase64url(
+            event.authorizationPlanBytesBase64url,
+          );
+          recipientPublicKey = fromBase64url(
+            event.recipientPublicKeyBase64url,
+          );
+          workDescriptorDigest = fromBase64url(
+            event.workDescriptorDigestBase64url,
+          );
+          parentAgentSignerPublicKey = fromBase64url(
+            event.parentAgentSignerPublicKeyBase64url,
+          );
+          const expectedRecipientKeyId =
+            deriveTaskDefinitionForegroundRecipientKeyIdV1(input.crypto, {
+              authorizationId: event.authorizationId,
+              parentAgentSignerPublicKey,
+            });
+          if (
+            event.userId !== input.coordinates.userId
+            || event.laneKey !== `room:${event.roomId}`
+            || input.now() >= event.deadlineAt
+            || !taskDefinitionForegroundAuthorizationIdV1Matches(
+              input.crypto,
+              {
+                authorizationId: event.authorizationId,
+                parentOperationId: event.parentOperationId,
+                taskId: event.taskId,
+                operation: event.operation,
+                targetContentRevision: event.targetContentRevision,
+                workDescriptorDigest,
+              },
+            )
+          ) {
+            reportRuntimeAuthorizationDiagnostic(input.onUnavailable, "event_stale");
+            return false;
+          }
+          reportRuntimeAuthorizationDiagnostic(input.onUnavailable, "prepare_started");
+          const prepared = await prepareVaultRuntimeForegroundAuthorization({
+            crypto: input.crypto,
+            vault: input.vault,
+            coordinates: input.coordinates,
+            domainForegroundAuthority: input.domainForegroundAuthority,
+            authorizationPlanBytes,
+            recipientPublicKey,
+            browserSessionId: event.clientActionSessionId,
+            expectedAuthorizationId: event.authorizationId,
+            expectedRecipientKeyId,
+            now: input.now(),
+          });
+          reportRuntimeAuthorizationDiagnostic(
+            input.onUnavailable,
+            prepared.status === "prepared"
+              ? "prepare_complete_prepared"
+              : "prepare_complete_unavailable",
+          );
+          if (prepared.status !== "prepared") {
+            reportRuntimeAuthorizationDiagnostic(input.onUnavailable, prepared.reason);
+            return false;
+          }
+          try {
+            reportRuntimeAuthorizationDiagnostic(input.onUnavailable, "request_started");
+            const result = await input.api.authorizeTaskDefinition(
+              event.roomId,
+              event.authorizationId,
+              {
+                requestVersion: 1,
+                status: "prepared",
+                operationId: event.authorizationId,
+                parentOperationId: event.parentOperationId,
+                clientActionSessionId: event.clientActionSessionId,
+                authorizationScheme: "runtime_foreground_v1",
+                authorizationPlanBytesBase64url:
+                  toBase64url(authorizationPlanBytes),
+                authorizationBytesBase64url:
+                  toBase64url(prepared.authorizationBytes),
+              },
+            );
+            const accepted = result.status === "authorized";
+            reportRuntimeAuthorizationDiagnostic(
+              input.onUnavailable,
+              accepted ? "request_authorized" : "result_rejected",
+            );
+            return accepted;
+          } finally {
+            prepared.authorizationBytes.fill(0);
+            prepared.authorizationDigest.fill(0);
+          }
+        } catch {
+          reportRuntimeAuthorizationDiagnostic(input.onUnavailable, "request_failed");
+          return false;
+        } finally {
+          authorizationPlanBytes?.fill(0);
+          recipientPublicKey?.fill(0);
+          workDescriptorDigest?.fill(0);
+          parentAgentSignerPublicKey?.fill(0);
         }
       }
       if (event.type !== "message.shared_agent_authorization_required") {

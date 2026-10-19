@@ -72,3 +72,27 @@ test("Task updates use the trusted tool effect and exact Task coordinate", () =>
   expect(() => protectedTaskForegroundUpdateIdentity({ invocation, taskId: "task-1",
     requestorId: "other", agentId: "agent", callingRoomId: "room" })).toThrow(/trusted checkpointed tool effect/u);
 });
+
+test("Task authorization work binds the complete candidate and exact observed update source", () => {
+  const first = identity();
+  expect(first.workDescriptorDigest).toHaveLength(32);
+  expect(identity({ prepared: { ...plan, payload: { ...plan.payload, prompt: "changed" } } }).workDescriptorDigest)
+    .not.toEqual(first.workDescriptorDigest);
+  const update = (contentRevision: number, mutationVersion: string) => protectedTaskForegroundUpdateIdentity({
+    invocation, taskId: "task-1", requestorId: "user", agentId: "agent", callingRoomId: "room",
+    source: { contentRevision, mutationVersion },
+  });
+  const current = update(3, "123");
+  for (const changed of [update(4, "123"), update(3, "124")]) {
+    expect(changed.operationId).toBe(current.operationId);
+    expect(changed.workDescriptorDigest).not.toEqual(current.workDescriptorDigest);
+  }
+  const intent = { taskId: "task-1", ownerId: "user", requestorId: "user", agentId: "agent",
+    callingRoomId: "room", prompt: "first" };
+  const withRequest = (prompt: string) => protectedTaskForegroundUpdateIdentity({
+    invocation, taskId: "task-1", requestorId: "user", agentId: "agent", callingRoomId: "room",
+    source: { contentRevision: 3, mutationVersion: "123" }, request: { ...intent, prompt },
+  });
+  expect(withRequest("first").operationId).toBe(withRequest("second").operationId);
+  expect(withRequest("first").workDescriptorDigest).not.toEqual(withRequest("second").workDescriptorDigest);
+});

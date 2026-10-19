@@ -147,6 +147,7 @@ import {
   createDomainForegroundAuthorizationPlan,
   cryptoDeviceId,
   cryptoDomainId,
+  decryptObjectThroughNamespace,
   domainEpoch,
   domainNamespaceGenerationHeadDigest,
   domainNamespaceRetainedAuthoritySetDigest,
@@ -167,6 +168,7 @@ import {
   prepareDomainNamespaceBundle,
   prepareHumanExistingTaskRepresentationPublicationRequestV1,
   prepareHumanObjectAccessManifestGenesisSet,
+  prepareHumanTaskPublicationRequest,
   TaskRuntimeRecipientRegistry,
   unixTimestamp,
   wrapObjectDekForNamespace,
@@ -185,6 +187,8 @@ import {
   destroyDomainKeyHeadV2,
   destroyDomainKeyRecipientAuthorizationV2,
   destroyDomainKeyRecipientEnvelopeV2,
+  decodeEncryptedPayloadV2,
+  decodeNamespaceObjectEnvelopeV2,
   encodeEncryptedPayloadV2,
   encodeNamespaceObjectEnvelopeV2,
   parseDomainForegroundAuthorizationPlanV2,
@@ -192,17 +196,26 @@ import {
   verifyDomainForegroundAuthorizationV2,
 } from "@nautilo/lattice-crypto/wire";
 import {
+  authenticatePreparedHistoricalTaskContentCryptoRevisionV1,
   bindEncryptionDataOperationOwner,
   createDormantTaskContentShadowRepository,
   createPreparedHumanTaskContentCryptoRevisionV1,
   deriveMemoryCryptoObjectIdV1,
   deriveLiveShadowMessageCryptoObjectIdV1,
   deriveTaskContentCryptoObjectIdV1,
+  deriveTaskHistoricalContentCryptoObjectIdV1,
+  digestHumanTaskOrdinaryFallbackRequestV1,
+  encodeTaskDefinitionContent,
   encodeMemoryPayloadV1,
   encodeTaskPayloadV1,
   decodeTaskDefinitionContent,
+  fingerprintHumanTaskOrdinaryFallbackContentV1,
+  fingerprintHumanTaskOrdinaryFallbackPlanV1,
+  fingerprintTaskDualPublicationFieldsV1,
+  fingerprintTaskOperationalFieldsV1,
   fingerprintRequiredMemoryNamespaces,
   MEMORY_OBJECT_TYPE,
+  prepareHumanTaskOrdinaryFallbackRequestV1,
   prepareTaskRuntimeAgentObject,
   TASK_CONTENT_RECONCILE_MAX_ATTEMPTS,
   taskContentObjectTypeV1,
@@ -227,6 +240,7 @@ import {
   PostgresNamespaceProductAuthority,
   inspectInitialTaskRuntimeNamespaceAuthority,
   inspectTaskContentNamespaceAuthority,
+  stageHistoricalTaskContentPublication,
   verifyCryptoPostgresHandle,
   withTaskContentNamespaceAuthority,
   withNativeProtectedTaskDefinitionV1,
@@ -376,6 +390,13 @@ import { createProtectedTaskTerminalMessagePreparation } from
   "../../src/routes/protected-task-terminal-message-preparation.ts";
 import { createProtectedTaskTerminalMessagePublication } from
   "../../src/routes/protected-task-terminal-message-publication.ts";
+import {
+  createProductionProtectedTaskComposition,
+  type ProtectedTaskRouteAuthority,
+} from "../../src/routes/task-protected-composition.ts";
+import {
+  createTaskOrdinaryFallbackPorts,
+} from "../../src/routes/task-ordinary-fallback-composition.ts";
 
 const ENABLE_ENV = "NAUTILO_PROTECTED_TASK_MEMORY_WRITER_INTEGRATION";
 // The caller must first verify ownership of the disposable clone, then bind
@@ -2392,7 +2413,7 @@ async function objectRowCounts(
 }
 
 async function repairHistoricalTaskDefinition(base: BaseFixture, taskId: string,
-  repairOptions: Readonly<{ expireAfterStage?: boolean; now?: () => number; afterStage?: () => void; expectedRetainedHistoricalError?: string | null }> = {},
+  repairOptions: Readonly<{ expireAfterStage?: boolean; legacyReceipt?: boolean; legacyUploadWithoutReceipt?: boolean; now?: () => number; afterStage?: () => void; expectedRetainedHistoricalError?: string | null }> = {},
 ): Promise<string> {
   const discovery = await discoverTaskContentBackfill(base.admin, {
     humanActorId: base.humanActorId, deviceId: base.deviceId, now: new Date(NOW),
@@ -2415,9 +2436,13 @@ async function repairHistoricalTaskDefinition(base: BaseFixture, taskId: string,
     use: () => Promise.resolve(true),
   })).toBe(true);
   const context = await createHumanProductTransactionContext(base.userId, base.productDb);
-  await context.canonicalRunner.transaction(async tx => {
+  const legacySourceDigest = await context.canonicalRunner.transaction(async tx => {
     const historicalSource = await readTaskContentBackfillSource(tx, claimed.claim);
     expect(historicalSource?.classification.status).toBe("supported");
+    if (historicalSource?.classification.status !== "supported") {
+      throw new Error("Historical source classification was unavailable");
+    }
+    return historicalSource.classification.legacySourceDigest;
   }, { isolationLevel: "read committed" });
   const stageConnection: PostgresJsBridgeConnection = {
     query: base.restricted.query.bind(base.restricted),
@@ -2447,14 +2472,34 @@ async function repairHistoricalTaskDefinition(base: BaseFixture, taskId: string,
   });
   const source = await publication.source(subject, claimed.claim.claimId);
   if (source?.status !== "source" || !("plan" in source)) throw new Error("Historical source was unavailable");
-  const plan = source.plan;
+  const currentPlan = source.plan;
+  const legacyObjectId = deriveTaskHistoricalContentCryptoObjectIdV1({
+    coordinate: currentPlan.coordinate,
+    sourceDigest: legacySourceDigest,
+    namespaceId: currentPlan.namespaceId,
+  });
+  const legacyUnsigned = {
+    ...currentPlan,
+    objectId: legacyObjectId,
+    operationId: `task-historical-publish:${legacyObjectId.split(":").at(-1)!}`,
+    sourceDigestBase64url: Buffer.from(legacySourceDigest).toString("base64url"),
+  };
+  const { expiresAt: _legacyExpiry, planDigestBase64url: _legacyPlanDigest,
+    ...legacyDigestCoordinates } = legacyUnsigned;
+  const plan = repairOptions.legacyReceipt === true
+    || repairOptions.legacyUploadWithoutReceipt === true ? Object.freeze({
+    ...legacyUnsigned,
+    planDigestBase64url: createHash("sha256")
+      .update("nautilo/task-content-backfill-publication-plan/v1\n")
+      .update(JSON.stringify(legacyDigestCoordinates)).digest("base64url"),
+  }) : currentPlan;
   const renewedSubject = Object.freeze({ ...subject,
     admission: Object.freeze({ ...subject.admission, expiresAt: NOW + 60_000 }),
   });
   const renewedSource = await publication.source(renewedSubject, claimed.claim.claimId);
   if (renewedSource?.status !== "source") throw new Error("Renewed device source was unavailable");
-  expect(renewedSource.plan.expiresAt).toBeGreaterThan(plan.expiresAt);
-  expect(renewedSource.plan.planDigestBase64url).toBe(plan.planDigestBase64url);
+  expect(renewedSource.plan.expiresAt).toBeGreaterThan(currentPlan.expiresAt);
+  expect(renewedSource.plan.planDigestBase64url).toBe(currentPlan.planDigestBase64url);
   base.objectIds.add(plan.objectId);
   const plaintext = Buffer.from(source.payloadBytesBase64url, "base64url");
   expect(decodeTaskDefinitionContent(plaintext).retainedHistoricalError)
@@ -2500,7 +2545,58 @@ async function repairHistoricalTaskDefinition(base: BaseFixture, taskId: string,
   });
   const upload = { payloadBytes, manifestBytes: access.manifestBytes,
     envelopeBytes, signedPublicationRequestBytes: signed.bytes };
-  if (repairOptions.expireAfterStage === true) {
+  if (repairOptions.legacyReceipt === true) {
+    const authority = Object.freeze({
+      authorityVersion: 1 as const,
+      kind: "requester_private_namespace" as const,
+      keyClass: "ai" as const,
+      requesterHumanId: plan.requesterHumanId,
+      namespaceId: plan.namespaceId,
+      domainId: plan.domainId,
+      expectedAccessRevision: plan.expectedAccessRevision,
+      expectedPolicyRevision: plan.expectedPolicyRevision,
+    });
+    const prepared = await authenticatePreparedHistoricalTaskContentCryptoRevisionV1({
+      ...upload,
+      crypto: base.crypto,
+      now: NOW,
+      operationId: plan.operationId,
+      claimId: plan.claimId,
+      coordinate: plan.coordinate,
+      authority,
+      sourceDigest: legacySourceDigest,
+      sourcePayloadHash: Buffer.from(plan.sourcePayloadHashBase64url, "base64url"),
+      operationalFieldsDigest: Buffer.from(plan.operationalFieldsDigestBase64url, "base64url"),
+      planDigest: Buffer.from(plan.planDigestBase64url, "base64url"),
+      resolveCurrentAuthority: () => Promise.resolve(
+        base.currentDevice.signingPublicKey.slice(),
+      ),
+    });
+    const handle = await verifyCryptoPostgresHandle(stageConnection);
+    await stageHistoricalTaskContentPublication({
+      handle,
+      crypto: base.crypto,
+      prepared,
+      currentAuthority: authority,
+      assertCurrent: () => {},
+      resolveHistoricalAgentSignerAuthority: () => null,
+      resolveHistoricalHumanDeviceSigningPublicKey: () => Promise.resolve(
+        base.currentDevice.signingPublicKey.slice(),
+      ),
+    });
+    expect(await publication.recover(renewedSubject, plan.claimId)).toBe(true);
+  } else if (repairOptions.legacyUploadWithoutReceipt === true) {
+    let failure: unknown;
+    try {
+      await publication.publish(renewedSubject, plan.claimId, upload);
+    } catch (error) {
+      failure = error;
+    }
+    expect(failure).toBeInstanceOf(Error);
+    expect(await objectRowCounts(base, plan.objectId)).toEqual({
+      payload: 0, head: 0, manifest: 0, envelope: 0,
+    });
+  } else if (repairOptions.expireAfterStage === true) {
     // Expiry after independent crypto commit must roll back only product
     // mapping. A fresh admitted device session can reuse the durable copy.
     let failure: unknown;
@@ -10218,6 +10314,1256 @@ describePostgres("sealed protected Task Memory object writer", () => {
   });
 });
 
+describePostgres("historical Task repair and ordinary fallback", () => {
+
+type ProtectedTaskPublicationPlan = Awaited<ReturnType<
+  ReturnType<typeof createProductionProtectedTaskComposition>["ports"]["plan"]
+>>;
+
+function fallbackRouteAuthority(base: BaseFixture): ProtectedTaskRouteAuthority {
+  return Object.freeze({
+    userId: base.userId,
+    subjectHumanId: base.humanActorId,
+    actorId: base.humanActorId,
+    agentId: base.productAgentId,
+    deviceId: base.deviceId,
+    deviceGeneration: base.currentDevice.deviceGeneration,
+    admission: Object.freeze({
+      ...base.currentDevice,
+      headDigest: base.currentDevice.headDigest.slice(),
+      expiresAt: NOW + 120_000,
+    }),
+  });
+}
+
+function shadowFallbackOwner(policyRevision: number) {
+  return bindEncryptionDataOperationOwner({ policy: {
+    resolve: async () => ({ policy: {
+      mode: "shadow_encryption" as const,
+      shadowBehavior: "fallback" as const,
+    }, revalidationToken: policyRevision }),
+    revalidate: async token => {
+      if (token !== policyRevision) throw new Error("Task fallback policy changed");
+    },
+  } });
+}
+
+async function prepareSignedDualTaskUpdate(
+  base: BaseFixture,
+  plan: ProtectedTaskPublicationPlan,
+  payload: Parameters<typeof encodeTaskDefinitionContent>[0],
+) {
+  const [device] = await base.admin.select({
+    revision: humanCryptoDevices.revision,
+  }).from(humanCryptoDevices).where(and(
+    eq(humanCryptoDevices.humanId, base.humanActorId),
+    eq(humanCryptoDevices.deviceId, base.deviceId),
+  ));
+  if (device === undefined) throw new Error("Current Task signing device is missing");
+  const task = Object.freeze({});
+  const coordinate = Object.freeze({
+    kind: "definition" as const,
+    taskId: plan.taskId,
+    contentRevision: plan.nextContentRevision,
+  });
+  const cryptoObjectId = deriveTaskContentCryptoObjectIdV1(coordinate);
+  const authority = Object.freeze({
+    authorityVersion: 1 as const,
+    kind: "requester_private_namespace" as const,
+    keyClass: "ai" as const,
+    requesterHumanId: plan.authority.requesterHumanId,
+    namespaceId: plan.authority.namespaceId,
+    domainId: plan.authority.domainId,
+    expectedAccessRevision: plan.authority.expectedAccessRevision,
+    expectedPolicyRevision: plan.authority.expectedPolicyRevision,
+  });
+  const plaintext = encodeTaskDefinitionContent(payload);
+  const encrypted = encryptObjectPayload(base.crypto, {
+    objectId: objectId(cryptoObjectId),
+    keyClass: "ai",
+    objectType: taskContentObjectTypeV1(coordinate),
+    createdAt: unixTimestamp(NOW),
+  }, plaintext);
+  const payloadBytes = encodeEncryptedPayloadV2(encrypted.payload);
+  const envelopeBytes = encodeNamespaceObjectEnvelopeV2(
+    wrapObjectDekForNamespace(base.crypto, base.namespace.key, {
+      objectId: objectId(cryptoObjectId),
+      namespaceId: namespaceId(plan.authority.namespaceId),
+      keyClass: "ai",
+      keyGeneration: namespaceGeneration(plan.authority.keyGeneration),
+      bindingRevisionAtWrap: accessRevision(
+        plan.authority.expectedAccessRevision,
+      ),
+    }, encrypted.dek),
+  );
+  encrypted.dek.fill(0);
+  const access = prepareHumanObjectAccessManifestGenesisSet(base.crypto, {
+    objectId: cryptoObjectId,
+    payloadHash: base.crypto.hash(payloadBytes),
+    envelopeBytes: [envelopeBytes],
+    sourceAuthorized: true,
+    targetAuthorized: true,
+    subjectHumanId: humanId(base.humanActorId),
+    committerDeviceId: cryptoDeviceId(base.deviceId),
+    hostAuthorizationRevision: authorizationRevision(
+      device.revision,
+    ),
+    committerSigningPublicKey: base.currentDevice.signingPublicKey,
+    committerSigningPrivateKey: base.signingPrivateKey,
+  });
+  const opaque = createPreparedHumanTaskContentCryptoRevisionV1({
+    signerKind: "human_device",
+    coordinate,
+    authority,
+    object: encryptedObjectWriteRecord(payloadBytes),
+    access,
+  });
+  const planDigest = new Uint8Array(Buffer.from(
+    plan.planDigestBase64url,
+    "base64url",
+  ));
+  const bindingHash = new Uint8Array(Buffer.from(
+    plan.authority.bindingHashBase64url,
+    "base64url",
+  ));
+  const operationalFieldsDigest = fingerprintTaskDualPublicationFieldsV1(
+    "update",
+    task,
+    plaintext,
+  );
+  const signed = prepareHumanTaskPublicationRequest(base.crypto, {
+    operation: "update",
+    operationId: plan.operationId,
+    taskId: plan.taskId,
+    cryptoObjectId,
+    expectedContentRevision: plan.expectedContentRevision,
+    nextContentRevision: plan.nextContentRevision,
+    expectedCryptoAccessRevision: plan.expectedCryptoAccessRevision,
+    resultCryptoAccessRevision: 0,
+    planDigest,
+    operationalFieldsDigest,
+    subjectHumanId: plan.authority.requesterHumanId,
+    committerDeviceId: base.deviceId,
+    hostAuthorizationRevision: device.revision,
+    namespaceId: plan.authority.namespaceId,
+    domainId: plan.authority.domainId,
+    expectedNamespaceAccessRevision: plan.authority.expectedAccessRevision,
+    expectedPolicyRevision: plan.authority.expectedPolicyRevision,
+    bindingHash,
+    keyGeneration: plan.authority.keyGeneration,
+    payloadHash: base.crypto.hash(payloadBytes),
+    manifestHash: base.crypto.hash(access.manifestBytes),
+    envelopeHash: base.crypto.hash(envelopeBytes),
+    issuedAt: NOW,
+    deadlineAt: NOW + 30_000,
+    committerSigningPublicKey: base.currentDevice.signingPublicKey,
+    committerSigningPrivateKey: base.signingPrivateKey,
+  });
+  const prepared = Object.freeze({
+    requestVersion: 1 as const,
+    operation: "update" as const,
+    operationId: plan.operationId,
+    planDigestBase64url: plan.planDigestBase64url,
+    taskId: plan.taskId,
+    expectedContentRevision: plan.expectedContentRevision,
+    nextContentRevision: plan.nextContentRevision,
+    expectedCryptoAccessRevision: plan.expectedCryptoAccessRevision,
+    resultCryptoAccessRevision: 0 as const,
+    cryptoObjectId,
+    payloadVersion: 1 as const,
+    requiredNamespaceIds: [plan.authority.namespaceId] as [string],
+    encryptedPayloadBytesBase64url: Buffer.from(payloadBytes).toString("base64url"),
+    accessManifestBytesBase64url:
+      Buffer.from(access.manifestBytes).toString("base64url"),
+    namespaceEnvelopes: [{
+      namespaceId: plan.authority.namespaceId,
+      envelopeBytesBase64url: Buffer.from(envelopeBytes).toString("base64url"),
+    }] as [{ namespaceId: string; envelopeBytesBase64url: string }],
+    signedPublicationRequestBytesBase64url:
+      Buffer.from(signed.bytes).toString("base64url"),
+    task,
+    representation: "dual" as const,
+    ordinaryPayloadBytesBase64url: Buffer.from(plaintext).toString("base64url"),
+  });
+  planDigest.fill(0);
+  bindingHash.fill(0);
+  operationalFieldsDigest.fill(0);
+  signed.bytes.fill(0);
+  plaintext.fill(0);
+  return Object.freeze({ prepared, opaque, authority, coordinate, cryptoObjectId });
+}
+
+async function prepareSignedFallbackTaskUpdate(
+  base: BaseFixture,
+  ports: ReturnType<typeof createTaskOrdinaryFallbackPorts>,
+  authority: ProtectedTaskRouteAuthority,
+  taskId: string,
+  payload: Parameters<typeof encodeTaskDefinitionContent>[0],
+) {
+  const task = Object.freeze({});
+  const operationId = `task:fallback:update:${randomUUID()}`;
+  const plan = await ports.planUpdate({ authority, taskId, request: {
+    requestVersion: 1,
+    operationId,
+    task,
+  } });
+  const binaryPlan = Object.freeze({
+    formatVersion: plan.formatVersion,
+    purpose: plan.purpose,
+    reason: plan.reason,
+    operationId: plan.operationId,
+    taskId: plan.taskId,
+    sourceDigest: new Uint8Array(Buffer.from(
+      plan.sourceDigestBase64url,
+      "base64url",
+    )),
+    operationalFieldsDigest: new Uint8Array(Buffer.from(
+      plan.operationalFieldsDigestBase64url,
+      "base64url",
+    )),
+    expectedContentRevision: plan.expectedContentRevision,
+    expectedCryptoAccessRevision: plan.expectedCryptoAccessRevision,
+    expectedUpdatedAt: plan.expectedUpdatedAt,
+    policyRevision: plan.policyRevision,
+    subjectHumanId: plan.subjectHumanId,
+    committerDeviceId: plan.committerDeviceId,
+    committerDeviceSigningKeyGeneration:
+      plan.committerDeviceSigningKeyGeneration,
+    hostAuthorizationRevision: plan.hostAuthorizationRevision,
+    planIssuedAt: plan.planIssuedAt,
+    planDeadlineAt: plan.planDeadlineAt,
+  });
+  const content = encodeTaskDefinitionContent(payload);
+  const signed = prepareHumanTaskOrdinaryFallbackRequestV1(base.crypto, {
+    ...binaryPlan,
+    planDigest: fingerprintHumanTaskOrdinaryFallbackPlanV1(binaryPlan),
+    taskDefinitionContentDigest:
+      fingerprintHumanTaskOrdinaryFallbackContentV1(content),
+    issuedAt: NOW,
+    deadlineAt: plan.planDeadlineAt,
+    signingPrivateKey: base.signingPrivateKey,
+  });
+  const prepared = Object.freeze({
+    requestVersion: 1 as const,
+    representation: "ordinary_fallback" as const,
+    operationId,
+    taskId,
+    authenticatedRequestDigestBase64url: Buffer.from(
+      digestHumanTaskOrdinaryFallbackRequestV1(signed.bytes),
+    ).toString("base64url"),
+    ordinaryPayloadBytesBase64url: Buffer.from(content).toString("base64url"),
+    signedOrdinaryFallbackRequestBytesBase64url:
+      Buffer.from(signed.bytes).toString("base64url"),
+    task,
+  });
+  content.fill(0);
+  signed.bytes.fill(0);
+  binaryPlan.sourceDigest.fill(0);
+  binaryPlan.operationalFieldsDigest.fill(0);
+  return Object.freeze({ plan, prepared });
+}
+
+async function prepareReceiptBoundStaleDualRepair(
+  base: BaseFixture,
+  taskId: string,
+  label: string,
+) {
+  await base.admin.update(encryptionTransitionPolicy).set({
+    mode: "shadow_encryption",
+    shadowBehavior: "strict",
+    revision: base.policyRevision,
+    shadowEncryptionStartedAt: new Date(NOW),
+    updatedAt: new Date(NOW),
+  }).where(eq(encryptionTransitionPolicy.id, "server"));
+  await base.admin.insert(tasks).values({
+    id: taskId,
+    ownerId: base.userId,
+    requestorId: base.userId,
+    agentId: base.productAgentId,
+    prompt: `${label} historical source`,
+    expectedOutput: `${label} historical output`,
+    scheduleKind: "now",
+    status: "paused",
+    callingRoomId: base.roomId,
+    targetChat: "orphan",
+    useScope: false,
+    scopeId: null,
+    metadata: {
+      target: "file:///private/repository",
+      mode: "update",
+      publish: "branch",
+      instructions: `${label} historical instructions`,
+    },
+  });
+  await repairHistoricalTaskDefinition(base, taskId);
+  await base.admin.update(encryptionTransitionPolicy).set({
+    mode: "shadow_encryption",
+    shadowBehavior: "fallback",
+    revision: base.policyRevision,
+    updatedAt: new Date(NOW + 1),
+  }).where(eq(encryptionTransitionPolicy.id, "server"));
+  const owner = shadowFallbackOwner(base.policyRevision);
+  const authority = fallbackRouteAuthority(base);
+  const fallbackPorts = createTaskOrdinaryFallbackPorts({
+    db: base.productDb,
+    restricted: base.restricted,
+    crypto: base.crypto,
+    owner,
+    observer: { kick() {} },
+    now: () => NOW,
+  });
+  const fallback = await prepareSignedFallbackTaskUpdate(
+    base,
+    fallbackPorts,
+    authority,
+    taskId,
+    {
+      formatVersion: 1,
+      prompt: `${label} fallback source`,
+      expectedOutput: `${label} fallback output`,
+      protectedMetadata: {
+        target: "file:///private/repository",
+        instructions: `${label} fallback instructions`,
+      },
+    },
+  );
+  await fallbackPorts.publishUpdate({
+    authority,
+    taskId,
+    prepared: fallback.prepared,
+  });
+  const protectedComposition = createProductionProtectedTaskComposition({
+    db: base.productDb,
+    restricted: base.restricted,
+    crypto: base.crypto,
+    serverScope: SERVER_SCOPE,
+    owner,
+    observer: { kick() {} },
+    now: () => NOW,
+  });
+  const plan = await protectedComposition.ports.plan({
+    authority,
+    taskId,
+    request: {
+      requestVersion: 1,
+      operation: "update",
+      operationId: `task:protected:update:${randomUUID()}`,
+      task: {},
+    },
+  });
+  const repair = await prepareSignedDualTaskUpdate(base, plan, {
+    formatVersion: 1,
+    prompt: `${label} protected repair`,
+    expectedOutput: `${label} repaired output`,
+    protectedMetadata: {
+      target: "file:///private/repository",
+      instructions: `${label} repaired instructions`,
+    },
+  });
+  base.objectIds.add(repair.cryptoObjectId);
+  return Object.freeze({
+    authority,
+    fallback,
+    fallbackPorts,
+    protectedComposition,
+    repair,
+  });
+}
+
+test("signed Task ordinary fallback serializes exact create replay and rejects stale or disabled admission", async () => {
+  let observedNow = NOW;
+  const base = await createBaseFixture({
+    connectedExecution: true,
+    cryptoNow: () => observedNow,
+  });
+  try {
+    await base.admin.update(encryptionTransitionPolicy).set({
+      mode: "shadow_encryption", shadowBehavior: "fallback",
+      revision: base.policyRevision, shadowEncryptionStartedAt: new Date(NOW),
+      updatedAt: new Date(NOW),
+    }).where(eq(encryptionTransitionPolicy.id, "server"));
+    const owner = bindEncryptionDataOperationOwner({ policy: {
+      resolve: async () => ({ policy: {
+        mode: "shadow_encryption" as const, shadowBehavior: "fallback" as const,
+      }, revalidationToken: base.policyRevision }),
+      revalidate: async token => {
+        if (token !== base.policyRevision) throw new Error("Task fallback policy changed");
+      },
+    } });
+    const ports = createTaskOrdinaryFallbackPorts({
+      db: base.productDb, restricted: base.restricted, crypto: base.crypto,
+      owner, observer: { kick() {} }, now: () => observedNow,
+    });
+    const authority: ProtectedTaskRouteAuthority = Object.freeze({
+      userId: base.userId,
+      subjectHumanId: base.humanActorId,
+      actorId: base.humanActorId,
+      agentId: base.productAgentId,
+      deviceId: base.deviceId,
+      deviceGeneration: base.currentDevice.deviceGeneration,
+      admission: Object.freeze({
+        ...base.currentDevice,
+        headDigest: base.currentDevice.headDigest.slice(),
+        expiresAt: NOW + 120_000,
+      }),
+    });
+    const task = Object.freeze({});
+    const operationId = `task:fallback:${randomUUID()}`;
+    const plan = await ports.planCreate({ authority, request: {
+      requestVersion: 1, operationId, task,
+    } });
+    base.taskIds.add(plan.taskId);
+    const binaryPlan = Object.freeze({
+      formatVersion: plan.formatVersion,
+      purpose: plan.purpose,
+      reason: plan.reason,
+      operationId: plan.operationId,
+      taskId: plan.taskId,
+      sourceDigest: new Uint8Array(Buffer.from(plan.sourceDigestBase64url, "base64url")),
+      operationalFieldsDigest: new Uint8Array(Buffer.from(
+        plan.operationalFieldsDigestBase64url,
+        "base64url",
+      )),
+      expectedContentRevision: plan.expectedContentRevision,
+      expectedCryptoAccessRevision: plan.expectedCryptoAccessRevision,
+      expectedUpdatedAt: plan.expectedUpdatedAt,
+      policyRevision: plan.policyRevision,
+      subjectHumanId: plan.subjectHumanId,
+      committerDeviceId: plan.committerDeviceId,
+      committerDeviceSigningKeyGeneration: plan.committerDeviceSigningKeyGeneration,
+      hostAuthorizationRevision: plan.hostAuthorizationRevision,
+      planIssuedAt: plan.planIssuedAt,
+      planDeadlineAt: plan.planDeadlineAt,
+    });
+    const expectedOperationalFieldsDigest =
+      fingerprintTaskOperationalFieldsV1("create", task);
+    try {
+      expect(Buffer.from(binaryPlan.operationalFieldsDigest).toString("hex"))
+        .toBe(Buffer.from(expectedOperationalFieldsDigest).toString("hex"));
+    } finally {
+      expectedOperationalFieldsDigest.fill(0);
+    }
+    expect(fingerprintHumanTaskOrdinaryFallbackPlanV1(binaryPlan)).toEqual(
+      new Uint8Array(Buffer.from(plan.planDigestBase64url, "base64url")),
+    );
+    const prepare = (prompt: string) => {
+      const content = encodeTaskPayloadV1({
+        formatVersion: 1, prompt, expectedOutput: null, protectedMetadata: {},
+      });
+      const signed = prepareHumanTaskOrdinaryFallbackRequestV1(base.crypto, {
+        ...binaryPlan,
+        planDigest: fingerprintHumanTaskOrdinaryFallbackPlanV1(binaryPlan),
+        taskDefinitionContentDigest:
+          fingerprintHumanTaskOrdinaryFallbackContentV1(content),
+        issuedAt: NOW,
+        deadlineAt: plan.planDeadlineAt,
+        signingPrivateKey: base.signingPrivateKey,
+      });
+      return Object.freeze({
+        requestVersion: 1 as const,
+        representation: "ordinary_fallback" as const,
+        operationId,
+        taskId: plan.taskId,
+        authenticatedRequestDigestBase64url: Buffer.from(
+          digestHumanTaskOrdinaryFallbackRequestV1(signed.bytes),
+        ).toString("base64url"),
+        ordinaryPayloadBytesBase64url: Buffer.from(content).toString("base64url"),
+        signedOrdinaryFallbackRequestBytesBase64url:
+          Buffer.from(signed.bytes).toString("base64url"),
+        task,
+      });
+    };
+    const prepared = prepare("Concurrent signed fallback");
+    const [first, second] = await Promise.all([
+      ports.publishCreate({ authority, prepared }),
+      ports.publishCreate({ authority, prepared }),
+    ]);
+    expect(first).toEqual(second);
+    expect(first.taskId).toBe(plan.taskId);
+    const rows = await base.admin.select({
+      id: tasks.id,
+      operationId: tasks.ordinaryFallbackOperationId,
+      requestDigest: tasks.ordinaryFallbackRequestDigest,
+      reason: tasks.ordinaryFallbackReason,
+      policyRevision: tasks.ordinaryFallbackPolicyRevision,
+      completedAt: tasks.ordinaryFallbackCompletedAt,
+    }).from(tasks).where(eq(tasks.id, plan.taskId));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      id: plan.taskId,
+      operationId,
+      reason: "target_encryption_not_ready",
+      policyRevision: base.policyRevision,
+    });
+    expect(rows[0]?.requestDigest).toHaveLength(32);
+    expect(rows[0]?.completedAt).toBeInstanceOf(Date);
+
+    observedNow = plan.planDeadlineAt + 1;
+    expect(await ports.publishCreate({ authority, prepared })).toEqual(first);
+    const staleError = await ports.publishCreate({
+      authority,
+      prepared: prepare("Different signed fallback"),
+    }).catch((error: unknown) => error);
+    expect(staleError).toMatchObject({
+      statusCode: 409,
+      code: "task_fallback_request_invalid",
+    });
+
+    for (const [offset, policy] of [
+      [1, { mode: "shadow_encryption" as const, shadowBehavior: "strict" as const }],
+      [2, { mode: "encrypted_only" as const, shadowBehavior: "strict" as const }],
+    ] as const) {
+      await base.admin.update(encryptionTransitionPolicy).set({
+        ...policy,
+        revision: base.policyRevision + offset,
+        updatedAt: new Date(NOW + offset),
+      }).where(eq(encryptionTransitionPolicy.id, "server"));
+      const disabledError = await ports.publishCreate({ authority, prepared })
+        .catch((error: unknown) => error);
+      expect(disabledError).toMatchObject({
+        statusCode: 409,
+        code: "task_ordinary_fallback_unavailable",
+      });
+    }
+  } finally {
+    await base.cleanup();
+  }
+});
+
+test("receipt-bound stale dual appends one signed protected revision without replacing history", async () => {
+  const base = await createBaseFixture();
+  const taskId = randomUUID();
+  base.taskIds.add(taskId);
+  try {
+    await base.admin.update(encryptionTransitionPolicy).set({
+      mode: "shadow_encryption",
+      shadowBehavior: "strict",
+      revision: base.policyRevision,
+      shadowEncryptionStartedAt: new Date(NOW),
+      updatedAt: new Date(NOW),
+    }).where(eq(encryptionTransitionPolicy.id, "server"));
+    await base.admin.insert(tasks).values({
+      id: taskId,
+      ownerId: base.userId,
+      requestorId: base.userId,
+      agentId: base.productAgentId,
+      prompt: "Historical private Task",
+      expectedOutput: "Preserve this output",
+      scheduleKind: "now",
+      status: "paused",
+      callingRoomId: base.roomId,
+      targetChat: "orphan",
+      useScope: false,
+      scopeId: null,
+      metadata: {
+        target: "file:///private/repository",
+        mode: "update",
+        publish: "branch",
+        instructions: "Keep the original private instructions.",
+      },
+      lastError: "Earlier private Task failure.",
+    });
+    const oldObjectId = await repairHistoricalTaskDefinition(base, taskId, {
+      expectedRetainedHistoricalError: "Earlier private Task failure.",
+    });
+    const [oldTask] = await base.admin.select({
+      contentRevision: tasks.contentRevision,
+      contentNamespaceId: tasks.contentNamespaceId,
+      cryptoObjectId: tasks.cryptoObjectId,
+      cryptoAccessRevision: tasks.cryptoAccessRevision,
+      cryptoRequiredNamespaceFingerprint:
+        tasks.cryptoRequiredNamespaceFingerprint,
+    }).from(tasks).where(eq(tasks.id, taskId));
+    const [oldLedger] = await base.admin.select({
+      taskId: taskDefinitionCryptoRevisions.taskId,
+      contentNamespaceId: taskDefinitionCryptoRevisions.contentNamespaceId,
+      contentRevision: taskDefinitionCryptoRevisions.contentRevision,
+      operationId: taskDefinitionCryptoRevisions.operationId,
+      requestDigest: taskDefinitionCryptoRevisions.requestDigest,
+      cryptoObjectId: taskDefinitionCryptoRevisions.cryptoObjectId,
+      requiredNamespaceFingerprint:
+        taskDefinitionCryptoRevisions.requiredNamespaceFingerprint,
+      completion: taskDefinitionCryptoRevisions.completion,
+      disposition: taskDefinitionCryptoRevisions.disposition,
+      historicalRepair: taskDefinitionCryptoRevisions.historicalRepair,
+    }).from(taskDefinitionCryptoRevisions).where(and(
+      eq(taskDefinitionCryptoRevisions.taskId, taskId),
+      eq(taskDefinitionCryptoRevisions.contentRevision, 1),
+    ));
+    if (oldTask === undefined || oldLedger === undefined) {
+      throw new Error("Historical Task predecessor is missing");
+    }
+    expect(oldTask).toMatchObject({
+      contentRevision: 1,
+      contentNamespaceId: base.namespaceValue,
+      cryptoObjectId: oldObjectId,
+      cryptoAccessRevision: 0,
+    });
+    expect(oldLedger).toMatchObject({
+      contentRevision: 1,
+      cryptoObjectId: oldObjectId,
+      completion: "complete",
+      disposition: "mapped",
+      historicalRepair: { version: 2 },
+    });
+
+    await base.admin.update(encryptionTransitionPolicy).set({
+      mode: "shadow_encryption",
+      shadowBehavior: "fallback",
+      revision: base.policyRevision,
+      updatedAt: new Date(NOW + 1),
+    }).where(eq(encryptionTransitionPolicy.id, "server"));
+    const owner = shadowFallbackOwner(base.policyRevision);
+    const fallbackPorts = createTaskOrdinaryFallbackPorts({
+      db: base.productDb,
+      restricted: base.restricted,
+      crypto: base.crypto,
+      owner,
+      observer: { kick() {} },
+      now: () => NOW,
+    });
+    const authority = fallbackRouteAuthority(base);
+    const fallback = await prepareSignedFallbackTaskUpdate(
+      base,
+      fallbackPorts,
+      authority,
+      taskId,
+      {
+        formatVersion: 2,
+        prompt: "Fallback-edited private Task",
+        expectedOutput: "Preserve the fallback output",
+        protectedMetadata: {
+          target: "file:///private/repository",
+          instructions: "Keep the fallback private instructions.",
+        },
+        retainedHistoricalError: "Earlier private Task failure.",
+      },
+    );
+    await fallbackPorts.publishUpdate({
+      authority,
+      taskId,
+      prepared: fallback.prepared,
+    });
+    const [stale] = await base.admin.select({
+      prompt: tasks.prompt,
+      expectedOutput: tasks.expectedOutput,
+      metadata: tasks.metadata,
+      lastError: tasks.lastError,
+      representation: tasks.contentRepresentation,
+      contentRevision: tasks.contentRevision,
+      contentNamespaceId: tasks.contentNamespaceId,
+      cryptoObjectId: tasks.cryptoObjectId,
+      cryptoAccessRevision: tasks.cryptoAccessRevision,
+      requiredNamespaceFingerprint: tasks.cryptoRequiredNamespaceFingerprint,
+      mapping: tasks.cryptoMappingState,
+      fallbackOperationId: tasks.ordinaryFallbackOperationId,
+      fallbackRequestDigest: tasks.ordinaryFallbackRequestDigest,
+      fallbackReason: tasks.ordinaryFallbackReason,
+      fallbackPolicyRevision: tasks.ordinaryFallbackPolicyRevision,
+      fallbackCompletedAt: tasks.ordinaryFallbackCompletedAt,
+    }).from(tasks).where(eq(tasks.id, taskId));
+    if (stale === undefined) throw new Error("Fallback Task source is missing");
+    expect(stale).toMatchObject({
+      prompt: "Fallback-edited private Task",
+      expectedOutput: "Preserve the fallback output",
+      metadata: {
+        target: "file:///private/repository",
+        mode: "update",
+        publish: "branch",
+        instructions: "Keep the fallback private instructions.",
+      },
+      lastError: "Earlier private Task failure.",
+      representation: "dual",
+      contentRevision: 1,
+      contentNamespaceId: oldTask?.contentNamespaceId,
+      cryptoObjectId: oldObjectId,
+      cryptoAccessRevision: oldTask?.cryptoAccessRevision,
+      requiredNamespaceFingerprint: oldTask?.cryptoRequiredNamespaceFingerprint,
+      mapping: "stale",
+      fallbackOperationId: fallback.plan.operationId,
+      fallbackReason: "target_encryption_not_ready",
+      fallbackPolicyRevision: base.policyRevision,
+    });
+    expect(stale?.fallbackRequestDigest).toHaveLength(32);
+    expect(stale?.fallbackCompletedAt).toBeInstanceOf(Date);
+    for (const incomplete of [
+      { ordinaryFallbackOperationId: null },
+      { ordinaryFallbackRequestDigest: null },
+      { ordinaryFallbackReason: null },
+      { ordinaryFallbackPolicyRevision: null },
+      { ordinaryFallbackCompletedAt: null },
+    ]) {
+      const rejectedReceipt = await base.admin.update(tasks).set(incomplete)
+        .where(eq(tasks.id, taskId)).then(() => null, (error: unknown) => error);
+      expect(rejectedReceipt).toMatchObject({ cause: {
+        code: "23514", constraint_name: "tasks_ordinary_fallback_receipt_coherent",
+      } });
+    }
+    expect(await base.admin.select({
+      taskId: taskDefinitionCryptoRevisions.taskId,
+      contentNamespaceId: taskDefinitionCryptoRevisions.contentNamespaceId,
+      contentRevision: taskDefinitionCryptoRevisions.contentRevision,
+      operationId: taskDefinitionCryptoRevisions.operationId,
+      requestDigest: taskDefinitionCryptoRevisions.requestDigest,
+      cryptoObjectId: taskDefinitionCryptoRevisions.cryptoObjectId,
+      requiredNamespaceFingerprint:
+        taskDefinitionCryptoRevisions.requiredNamespaceFingerprint,
+      completion: taskDefinitionCryptoRevisions.completion,
+      disposition: taskDefinitionCryptoRevisions.disposition,
+      historicalRepair: taskDefinitionCryptoRevisions.historicalRepair,
+    }).from(taskDefinitionCryptoRevisions).where(and(
+      eq(taskDefinitionCryptoRevisions.taskId, taskId),
+      eq(taskDefinitionCryptoRevisions.contentRevision, 1),
+    ))).toEqual([oldLedger]);
+
+    const protectedComposition = createProductionProtectedTaskComposition({
+      db: base.productDb,
+      restricted: base.restricted,
+      crypto: base.crypto,
+      serverScope: SERVER_SCOPE,
+      owner,
+      observer: { kick() {} },
+      now: () => NOW,
+    });
+    const updatePlan = await protectedComposition.ports.plan({
+      authority,
+      taskId,
+      request: {
+        requestVersion: 1,
+        operation: "update",
+        operationId: `task:protected:update:${randomUUID()}`,
+        task: {},
+      },
+    });
+    expect(updatePlan).toMatchObject({
+      taskId,
+      expectedContentRevision: 1,
+      nextContentRevision: 2,
+      expectedCryptoAccessRevision: 0,
+    });
+    if (updatePlan.ordinaryRepairPayloadBase64url === undefined) {
+      throw new Error("Shadow repair plan omitted its complete source");
+    }
+    const repairSourceBytes = new Uint8Array(Buffer.from(
+      updatePlan.ordinaryRepairPayloadBase64url, "base64url",
+    ));
+    try {
+      expect(decodeTaskDefinitionContent(repairSourceBytes)).toEqual({
+        payload: {
+          formatVersion: 1,
+          prompt: "Fallback-edited private Task",
+          expectedOutput: "Preserve the fallback output",
+          protectedMetadata: {
+            target: "file:///private/repository",
+            instructions: "Keep the fallback private instructions.",
+          },
+        },
+        retainedHistoricalError: "Earlier private Task failure.",
+      });
+    } finally {
+      repairSourceBytes.fill(0);
+    }
+    // The same receipt-backed row may expose repair source bytes only through
+    // the shared owner's Shadow port, never through Full or Plain.
+    for (const policy of [
+      { mode: "shadow_encryption", shadowBehavior: "strict" },
+      { mode: "encrypted_only", shadowBehavior: "fallback" },
+      { mode: "plaintext_only", shadowBehavior: "fallback" },
+    ] as const) {
+      await base.admin.update(encryptionTransitionPolicy).set({
+        ...policy,
+        shadowEncryptionStartedAt: policy.mode === "plaintext_only" ? null : new Date(NOW),
+        updatedAt: new Date(NOW + 2),
+      }).where(eq(encryptionTransitionPolicy.id, "server"));
+      const modePorts = createProductionProtectedTaskComposition({
+        db: base.productDb, restricted: base.restricted, crypto: base.crypto,
+        serverScope: SERVER_SCOPE,
+        owner: bindEncryptionDataOperationOwner({ policy: {
+          resolve: async () => ({ policy, revalidationToken: base.policyRevision }),
+          revalidate: async () => {},
+        } }),
+        observer: { kick() {} }, now: () => NOW,
+      }).ports;
+      const modePlan = modePorts.plan({ authority, taskId, request: {
+        requestVersion: 1, operation: "update",
+        operationId: updatePlan.operationId, task: {},
+      } });
+      if (policy.mode === "plaintext_only") {
+        expect(await modePlan.then(() => null, (error: unknown) => error))
+          .toMatchObject({ statusCode: 409, code: "protected_task_policy_unavailable" });
+      } else {
+        const selected = await modePlan;
+        expect(selected.ordinaryRepairPayloadBase64url).toBe(
+          policy.mode === "shadow_encryption"
+            ? updatePlan.ordinaryRepairPayloadBase64url : undefined,
+        );
+        if (policy.mode === "shadow_encryption") {
+          expect(selected.planDigestBase64url).toBe(updatePlan.planDigestBase64url);
+        } else {
+          expect(selected.planDigestBase64url).not.toBe(updatePlan.planDigestBase64url);
+        }
+      }
+    }
+    await base.admin.update(encryptionTransitionPolicy).set({
+      mode: "shadow_encryption", shadowBehavior: "fallback",
+      shadowEncryptionStartedAt: new Date(NOW),
+      updatedAt: new Date(NOW + 1),
+    }).where(eq(encryptionTransitionPolicy.id, "server"));
+    const next = await prepareSignedDualTaskUpdate(base, updatePlan, {
+      formatVersion: 2,
+      prompt: "Repaired protected Task",
+      expectedOutput: "Preserve the repaired output",
+      protectedMetadata: {
+        target: "file:///private/repository",
+        instructions: "Keep the repaired private instructions.",
+      },
+      retainedHistoricalError: "Earlier private Task failure.",
+    });
+    base.objectIds.add(next.cryptoObjectId);
+    const firstPublication = await protectedComposition.ports.publishUpdate({
+      authority,
+      taskId,
+      prepared: next.prepared,
+    });
+    const [repaired] = await base.admin.select({
+      prompt: tasks.prompt,
+      expectedOutput: tasks.expectedOutput,
+      metadata: tasks.metadata,
+      lastError: tasks.lastError,
+      representation: tasks.contentRepresentation,
+      contentRevision: tasks.contentRevision,
+      cryptoObjectId: tasks.cryptoObjectId,
+      cryptoAccessRevision: tasks.cryptoAccessRevision,
+      mapping: tasks.cryptoMappingState,
+      fallbackOperationId: tasks.ordinaryFallbackOperationId,
+      fallbackRequestDigest: tasks.ordinaryFallbackRequestDigest,
+      fallbackReason: tasks.ordinaryFallbackReason,
+      fallbackPolicyRevision: tasks.ordinaryFallbackPolicyRevision,
+      fallbackCompletedAt: tasks.ordinaryFallbackCompletedAt,
+    }).from(tasks).where(eq(tasks.id, taskId));
+    if (repaired === undefined) throw new Error("Repaired Task is missing");
+    expect(repaired).toEqual({
+      prompt: "Repaired protected Task",
+      expectedOutput: "Preserve the repaired output",
+      metadata: {
+        target: "file:///private/repository",
+        mode: "update",
+        publish: "branch",
+        instructions: "Keep the repaired private instructions.",
+      },
+      lastError: "Earlier private Task failure.",
+      representation: "dual",
+      contentRevision: 2,
+      cryptoObjectId: next.cryptoObjectId,
+      cryptoAccessRevision: 0,
+      mapping: "verified",
+      fallbackOperationId: stale.fallbackOperationId,
+      fallbackRequestDigest: stale.fallbackRequestDigest,
+      fallbackReason: stale.fallbackReason,
+      fallbackPolicyRevision: stale.fallbackPolicyRevision,
+      fallbackCompletedAt: stale.fallbackCompletedAt,
+    });
+    const ledgers = await base.admin.select({
+      contentRevision: taskDefinitionCryptoRevisions.contentRevision,
+      operationId: taskDefinitionCryptoRevisions.operationId,
+      requestDigest: taskDefinitionCryptoRevisions.requestDigest,
+      cryptoObjectId: taskDefinitionCryptoRevisions.cryptoObjectId,
+      requiredNamespaceFingerprint:
+        taskDefinitionCryptoRevisions.requiredNamespaceFingerprint,
+      completion: taskDefinitionCryptoRevisions.completion,
+      disposition: taskDefinitionCryptoRevisions.disposition,
+      historicalRepair: taskDefinitionCryptoRevisions.historicalRepair,
+    }).from(taskDefinitionCryptoRevisions).where(
+      eq(taskDefinitionCryptoRevisions.taskId, taskId),
+    );
+    expect(ledgers).toHaveLength(2);
+    expect(ledgers.find(row => row.contentRevision === 1)).toMatchObject({
+      cryptoObjectId: oldObjectId,
+      completion: "complete",
+      disposition: "mapped",
+      historicalRepair: { version: 2 },
+    });
+    expect(ledgers.find(row => row.contentRevision === 2)).toMatchObject({
+      contentRevision: 2,
+      cryptoObjectId: next.cryptoObjectId,
+      completion: "complete",
+      disposition: "mapped",
+      historicalRepair: null,
+    });
+
+    const replayedPublication = await protectedComposition.ports.publishUpdate({
+      authority,
+      taskId,
+      prepared: next.prepared,
+    });
+    expect(replayedPublication).toEqual(firstPublication);
+    expect(await base.admin.select({
+      prompt: tasks.prompt,
+      expectedOutput: tasks.expectedOutput,
+      metadata: tasks.metadata,
+      lastError: tasks.lastError,
+      representation: tasks.contentRepresentation,
+      contentRevision: tasks.contentRevision,
+      cryptoObjectId: tasks.cryptoObjectId,
+      cryptoAccessRevision: tasks.cryptoAccessRevision,
+      mapping: tasks.cryptoMappingState,
+      fallbackOperationId: tasks.ordinaryFallbackOperationId,
+      fallbackRequestDigest: tasks.ordinaryFallbackRequestDigest,
+      fallbackReason: tasks.ordinaryFallbackReason,
+      fallbackPolicyRevision: tasks.ordinaryFallbackPolicyRevision,
+      fallbackCompletedAt: tasks.ordinaryFallbackCompletedAt,
+    }).from(tasks).where(eq(tasks.id, taskId))).toEqual([repaired]);
+    expect(await base.admin.select({
+      contentRevision: taskDefinitionCryptoRevisions.contentRevision,
+      operationId: taskDefinitionCryptoRevisions.operationId,
+      requestDigest: taskDefinitionCryptoRevisions.requestDigest,
+      cryptoObjectId: taskDefinitionCryptoRevisions.cryptoObjectId,
+      requiredNamespaceFingerprint:
+        taskDefinitionCryptoRevisions.requiredNamespaceFingerprint,
+      completion: taskDefinitionCryptoRevisions.completion,
+      disposition: taskDefinitionCryptoRevisions.disposition,
+      historicalRepair: taskDefinitionCryptoRevisions.historicalRepair,
+    }).from(taskDefinitionCryptoRevisions).where(
+      eq(taskDefinitionCryptoRevisions.taskId, taskId),
+    )).toEqual(ledgers);
+
+    const storage = new PostgresLatticeStorage(base.cryptoHandle);
+    const oldObject = await storage.getObject(oldObjectId);
+    const oldAccess = await storage.getObjectAccessState(oldObjectId);
+    const oldEnvelope = oldAccess?.namespaceEnvelopes.find(
+      entry => entry.namespaceId === base.namespaceValue,
+    );
+    if (oldObject === null || oldAccess === null || oldEnvelope === undefined) {
+      throw new Error("Retained historical Task object is incomplete");
+    }
+    const decrypted = decryptObjectThroughNamespace(
+      base.crypto,
+      base.namespace.key,
+      decodeNamespaceObjectEnvelopeV2(oldEnvelope.envelopeBytes),
+      decodeEncryptedPayloadV2(oldObject.payloadBytes),
+    );
+    if (decrypted === null) throw new Error("Retained historical Task object cannot be opened");
+    try {
+      expect(decodeTaskDefinitionContent(decrypted)).toEqual({
+        payload: {
+          formatVersion: 1,
+          prompt: "Historical private Task",
+          expectedOutput: "Preserve this output",
+          protectedMetadata: {
+            target: "file:///private/repository",
+            instructions: "Keep the original private instructions.",
+          },
+        },
+        retainedHistoricalError: "Earlier private Task failure.",
+      });
+    } finally {
+      decrypted.fill(0);
+      oldObject.payloadBytes.fill(0);
+      oldEnvelope.envelopeBytes.fill(0);
+    }
+  } finally {
+    await base.cleanup();
+  }
+});
+
+test("signed stale-dual repair rejects a replaced fallback receipt", async () => {
+  const base = await createBaseFixture();
+  const taskId = randomUUID();
+  base.taskIds.add(taskId);
+  try {
+    const prepared = await prepareReceiptBoundStaleDualRepair(
+      base,
+      taskId,
+      "Receipt replacement race",
+    );
+    const replacement = await prepareSignedFallbackTaskUpdate(
+      base,
+      prepared.fallbackPorts,
+      prepared.authority,
+      taskId,
+      {
+        formatVersion: 1,
+        prompt: "Replacement fallback source",
+        expectedOutput: "Replacement fallback output",
+        protectedMetadata: {
+          target: "file:///private/repository",
+          instructions: "Replacement fallback instructions",
+        },
+      },
+    );
+    await prepared.fallbackPorts.publishUpdate({
+      authority: prepared.authority,
+      taskId,
+      prepared: replacement.prepared,
+    });
+
+    const rejected = await prepared.protectedComposition.ports.publishUpdate({
+      authority: prepared.authority,
+      taskId,
+      prepared: prepared.repair.prepared,
+    }).catch((error: unknown) => error);
+    expect(rejected).toBeInstanceOf(TypeError);
+    expect(rejected).toMatchObject({
+      message: "Expired Task publication is not an exact durable replay",
+    });
+    const replacementRows = await base.admin.select({
+      prompt: tasks.prompt,
+      representation: tasks.contentRepresentation,
+      contentRevision: tasks.contentRevision,
+      mapping: tasks.cryptoMappingState,
+      fallbackOperationId: tasks.ordinaryFallbackOperationId,
+      fallbackRequestDigest: tasks.ordinaryFallbackRequestDigest,
+      fallbackReason: tasks.ordinaryFallbackReason,
+      fallbackPolicyRevision: tasks.ordinaryFallbackPolicyRevision,
+      fallbackCompletedAt: tasks.ordinaryFallbackCompletedAt,
+    }).from(tasks).where(eq(tasks.id, taskId));
+    expect(replacementRows).toHaveLength(1);
+    expect(replacementRows[0]).toMatchObject({
+      prompt: "Replacement fallback source",
+      representation: "dual",
+      contentRevision: 1,
+      mapping: "stale",
+      fallbackOperationId: replacement.plan.operationId,
+      fallbackReason: "target_encryption_not_ready",
+      fallbackPolicyRevision: base.policyRevision,
+    });
+    expect(replacementRows[0]?.fallbackRequestDigest).toEqual(
+      new Uint8Array(Buffer.from(
+        replacement.prepared.authenticatedRequestDigestBase64url,
+        "base64url",
+      )),
+    );
+    expect(replacementRows[0]?.fallbackCompletedAt).toBeInstanceOf(Date);
+    expect(await base.admin.select({
+      contentRevision: taskDefinitionCryptoRevisions.contentRevision,
+    }).from(taskDefinitionCryptoRevisions).where(and(
+      eq(taskDefinitionCryptoRevisions.taskId, taskId),
+      eq(taskDefinitionCryptoRevisions.contentRevision, 2),
+    ))).toEqual([]);
+    expect(await objectRowCounts(base, prepared.repair.cryptoObjectId)).toEqual({
+      payload: 0,
+      head: 0,
+      manifest: 0,
+      envelope: 0,
+    });
+  } finally {
+    await base.cleanup();
+  }
+});
+
+test("signed stale-dual repair rejects publication policy revision drift", async () => {
+  const base = await createBaseFixture();
+  const taskId = randomUUID();
+  base.taskIds.add(taskId);
+  try {
+    const prepared = await prepareReceiptBoundStaleDualRepair(
+      base,
+      taskId,
+      "Policy revision race",
+    );
+    await base.admin.update(encryptionTransitionPolicy).set({
+      mode: "shadow_encryption",
+      shadowBehavior: "strict",
+      revision: base.policyRevision + 1,
+      updatedAt: new Date(NOW + 2),
+    }).where(eq(encryptionTransitionPolicy.id, "server"));
+
+    const rejected = await prepared.protectedComposition.ports.publishUpdate({
+      authority: prepared.authority,
+      taskId,
+      prepared: prepared.repair.prepared,
+    }).catch((error: unknown) => error);
+    expect(rejected).toBeInstanceOf(TypeError);
+    expect(rejected).toMatchObject({
+      name: "TypeError",
+      message: "Expired Task publication is not an exact durable replay",
+    });
+    expect(await base.admin.select({
+      prompt: tasks.prompt,
+      representation: tasks.contentRepresentation,
+      contentRevision: tasks.contentRevision,
+      mapping: tasks.cryptoMappingState,
+      fallbackOperationId: tasks.ordinaryFallbackOperationId,
+    }).from(tasks).where(eq(tasks.id, taskId))).toEqual([{
+      prompt: "Policy revision race fallback source",
+      representation: "dual",
+      contentRevision: 1,
+      mapping: "stale",
+      fallbackOperationId: prepared.fallback.plan.operationId,
+    }]);
+    expect(await base.admin.select({
+      contentRevision: taskDefinitionCryptoRevisions.contentRevision,
+    }).from(taskDefinitionCryptoRevisions).where(and(
+      eq(taskDefinitionCryptoRevisions.taskId, taskId),
+      eq(taskDefinitionCryptoRevisions.contentRevision, 2),
+    ))).toEqual([]);
+    expect(await objectRowCounts(base, prepared.repair.cryptoObjectId)).toEqual({
+      payload: 0,
+      head: 0,
+      manifest: 0,
+      envelope: 0,
+    });
+  } finally {
+    await base.cleanup();
+  }
+});
+
+test("preexisting protected successor reservation blocks signed ordinary fallback", async () => {
+  const base = await createBaseFixture();
+  const taskId = randomUUID();
+  base.taskIds.add(taskId);
+  try {
+    await base.admin.update(encryptionTransitionPolicy).set({
+      mode: "shadow_encryption",
+      shadowBehavior: "strict",
+      revision: base.policyRevision,
+      shadowEncryptionStartedAt: new Date(NOW),
+      updatedAt: new Date(NOW),
+    }).where(eq(encryptionTransitionPolicy.id, "server"));
+    await base.admin.insert(tasks).values({
+      id: taskId,
+      ownerId: base.userId,
+      requestorId: base.userId,
+      agentId: base.productAgentId,
+      prompt: "Reserved successor source",
+      scheduleKind: "now",
+      status: "paused",
+      callingRoomId: base.roomId,
+      targetChat: "orphan",
+      useScope: false,
+      scopeId: null,
+    });
+    await repairHistoricalTaskDefinition(base, taskId);
+    await base.admin.update(encryptionTransitionPolicy).set({
+      mode: "shadow_encryption",
+      shadowBehavior: "fallback",
+      revision: base.policyRevision,
+      updatedAt: new Date(NOW + 1),
+    }).where(eq(encryptionTransitionPolicy.id, "server"));
+    const owner = shadowFallbackOwner(base.policyRevision);
+    const authority = fallbackRouteAuthority(base);
+    const fallbackPorts = createTaskOrdinaryFallbackPorts({
+      db: base.productDb,
+      restricted: base.restricted,
+      crypto: base.crypto,
+      owner,
+      observer: { kick() {} },
+      now: () => NOW,
+    });
+    const fallback = await prepareSignedFallbackTaskUpdate(
+      base,
+      fallbackPorts,
+      authority,
+      taskId,
+      {
+        formatVersion: 1,
+        prompt: "Fallback must lose the reservation race",
+        expectedOutput: null,
+        protectedMetadata: {},
+      },
+    );
+    const protectedComposition = createProductionProtectedTaskComposition({
+      db: base.productDb,
+      restricted: base.restricted,
+      crypto: base.crypto,
+      serverScope: SERVER_SCOPE,
+      owner,
+      observer: { kick() {} },
+      now: () => NOW,
+    });
+    const successorPlan = await protectedComposition.ports.plan({
+      authority,
+      taskId,
+      request: {
+        requestVersion: 1,
+        operation: "update",
+        operationId: `task:protected:reserved:${randomUUID()}`,
+        task: {},
+      },
+    });
+    const successor = await prepareSignedDualTaskUpdate(base, successorPlan, {
+      formatVersion: 1,
+      prompt: "Reserved protected successor",
+      expectedOutput: null,
+      protectedMetadata: {},
+    });
+    const classified = classifyProtectedTaskMetadataV1({});
+    if (classified.status !== "supported") {
+      throw new Error("Reserved successor metadata is unsupported");
+    }
+    const repository = createDormantTaskContentShadowRepository({
+      product: new PostgresTaskContentProductStore(
+        base.product.handle,
+        () => successor.authority,
+      ),
+      crypto: createPostgresTaskContentCryptoCompletion({
+        handle: base.cryptoHandle,
+        crypto: base.crypto,
+        resolveCurrentAuthority: () => Promise.resolve(successor.authority),
+        resolveHistoricalAgentSignerAuthority: () => null,
+        resolveHistoricalHumanDeviceSigningPublicKey: () =>
+          Promise.resolve(base.currentDevice.signingPublicKey.slice()),
+      }),
+    });
+    expect(await repository.reserveRevision({
+      operationId: successorPlan.operationId,
+      requestDigest: base.crypto.hash(new TextEncoder().encode(
+        successorPlan.operationId,
+      )),
+      representation: "dual",
+      authority: successor.authority,
+      prepared: successor.opaque,
+      operationalMetadata: classified.operational,
+    })).toMatchObject({
+      status: "reserved",
+      coordinate: { taskId, contentRevision: 2 },
+    });
+
+    const blocked = await fallbackPorts.publishUpdate({
+      authority,
+      taskId,
+      prepared: fallback.prepared,
+    }).catch((error: unknown) => error);
+    expect(blocked).toMatchObject({
+      statusCode: 409,
+      code: "task_ordinary_fallback_unavailable",
+    });
+    expect(await base.admin.select({
+      contentRevision: tasks.contentRevision,
+      mapping: tasks.cryptoMappingState,
+      fallbackOperationId: tasks.ordinaryFallbackOperationId,
+      fallbackRequestDigest: tasks.ordinaryFallbackRequestDigest,
+      fallbackReason: tasks.ordinaryFallbackReason,
+      fallbackPolicyRevision: tasks.ordinaryFallbackPolicyRevision,
+      fallbackCompletedAt: tasks.ordinaryFallbackCompletedAt,
+    }).from(tasks).where(eq(tasks.id, taskId))).toEqual([{
+      contentRevision: 1,
+      mapping: "verified",
+      fallbackOperationId: null,
+      fallbackRequestDigest: null,
+      fallbackReason: null,
+      fallbackPolicyRevision: null,
+      fallbackCompletedAt: null,
+    }]);
+    expect(await base.admin.select({
+      contentRevision: taskDefinitionCryptoRevisions.contentRevision,
+      completion: taskDefinitionCryptoRevisions.completion,
+      disposition: taskDefinitionCryptoRevisions.disposition,
+      historicalRepair: taskDefinitionCryptoRevisions.historicalRepair,
+    }).from(taskDefinitionCryptoRevisions).where(and(
+      eq(taskDefinitionCryptoRevisions.taskId, taskId),
+      eq(taskDefinitionCryptoRevisions.contentRevision, 2),
+    ))).toEqual([{
+      contentRevision: 2,
+      completion: "pending",
+      disposition: "active",
+      historicalRepair: null,
+    }]);
+  } finally {
+    await base.cleanup();
+  }
+});
+
 
 test.each([
   { expireAfterStage: false, retainedHistoricalError: null },
@@ -10268,6 +11614,70 @@ test.each([
   } finally { await base.cleanup(); }
 });
 
+
+test("historical Task repair recovers an exact accepted legacy receipt", async () => {
+  const base = await createBaseFixture();
+  const taskId = randomUUID();
+  base.taskIds.add(taskId);
+  try {
+    await base.admin.update(encryptionTransitionPolicy).set({
+      mode: "shadow_encryption", shadowBehavior: "strict", revision: base.policyRevision,
+      shadowEncryptionStartedAt: new Date(NOW), updatedAt: new Date(NOW),
+    }).where(eq(encryptionTransitionPolicy.id, "server"));
+    await base.admin.insert(tasks).values({
+      id: taskId, ownerId: base.userId, requestorId: base.userId,
+      agentId: base.productAgentId, prompt: "Historical receipt compatibility",
+      expectedOutput: "Preserve this output", scheduleKind: "now",
+      status: "paused", callingRoomId: base.roomId, targetChat: "orphan",
+      useScope: false, scopeId: null,
+    });
+    const objectId = await repairHistoricalTaskDefinition(base, taskId, {
+      legacyReceipt: true,
+    });
+    const [mapped] = await base.admin.select({
+      representation: tasks.contentRepresentation,
+      revision: tasks.contentRevision,
+      objectId: tasks.cryptoObjectId,
+      mapping: tasks.cryptoMappingState,
+    }).from(tasks).where(eq(tasks.id, taskId));
+    expect(mapped).toEqual({
+      representation: "dual", revision: 1, objectId, mapping: "verified",
+    });
+  } finally {
+    await base.cleanup();
+  }
+});
+
+test("historical Task repair never stages a legacy upload without its receipt", async () => {
+  const base = await createBaseFixture();
+  const taskId = randomUUID();
+  base.taskIds.add(taskId);
+  try {
+    await base.admin.update(encryptionTransitionPolicy).set({
+      mode: "shadow_encryption", shadowBehavior: "strict", revision: base.policyRevision,
+      shadowEncryptionStartedAt: new Date(NOW), updatedAt: new Date(NOW),
+    }).where(eq(encryptionTransitionPolicy.id, "server"));
+    await base.admin.insert(tasks).values({
+      id: taskId, ownerId: base.userId, requestorId: base.userId,
+      agentId: base.productAgentId, prompt: "Unaccepted historical upload",
+      status: "paused", callingRoomId: base.roomId, targetChat: "orphan",
+      useScope: false, scopeId: null,
+    });
+    await repairHistoricalTaskDefinition(base, taskId, {
+      legacyUploadWithoutReceipt: true,
+    });
+    const [unchanged] = await base.admin.select({
+      representation: tasks.contentRepresentation,
+      revision: tasks.contentRevision,
+      mapping: tasks.cryptoMappingState,
+    }).from(tasks).where(eq(tasks.id, taskId));
+    expect(unchanged).toEqual({
+      representation: "ordinary", revision: 0, mapping: "unmapped",
+    });
+  } finally {
+    await base.cleanup();
+  }
+});
 
 test("historical scan defers an unavailable first Room, reaches later work, and retries it next sweep", async () => {
   const base = await createBaseFixture();
@@ -10382,4 +11792,6 @@ test.each(["definition", "result"] as const)("historical %s scan orders fraction
       pageLimit: 1, resumeAt: new Date(NOW + 60_000),
     })).toMatchObject({ status: "swept" });
   } finally { await base.cleanup(); }
+});
+
 });

@@ -2647,6 +2647,20 @@
       "when": 1792232771177,
       "tag": "0377_remarkable_shriek",
       "breakpoints": true
+    },
+    {
+      "idx": 378,
+      "version": "7",
+      "when": 1792422355127,
+      "tag": "0378_daily_junta",
+      "breakpoints": true
+    },
+    {
+      "idx": 379,
+      "version": "7",
+      "when": 1792423708523,
+      "tag": "0379_loud_beast",
+      "breakpoints": true
     }
   ]
 }

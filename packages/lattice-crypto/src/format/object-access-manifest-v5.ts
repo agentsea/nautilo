@@ -164,6 +164,14 @@ export type ResolveTaskRuntimeSignerAuthorizationBytesV5 = (
   }>,
 ) => Uint8Array | null;
 
+export type ResolveTaskDefinitionForegroundAuthorizationSignerPublicKeyV5 = (
+  evidence: Readonly<{
+    signer: AgentRuntimeObjectSignerPrincipalV1;
+    authorizationHash: Uint8Array;
+    objectId: ObjectId;
+  }>,
+) => Uint8Array | null;
+
 export interface ProcessorSignerAuthorizationEvidenceV5 {
   readonly authorizationId: string;
   readonly authorizationHash: Uint8Array;
@@ -194,6 +202,8 @@ export interface VerifyObjectAccessManifestV5Input {
     ResolveTaskRuntimeSignerAuthorizationBytesV5;
   readonly resolveHistoricalTaskRuntimeIssuer?:
     ResolveHistoricalTaskRuntimeSignerAuthorizationIssuer;
+  readonly resolveTaskDefinitionForegroundAuthorizationSignerPublicKey?:
+    ResolveTaskDefinitionForegroundAuthorizationSignerPublicKeyV5;
 }
 
 export interface VerifiedObjectAccessManifestV5 {
@@ -689,6 +699,35 @@ export function createAgentObjectAccessManifestV5(
   });
 }
 
+/** Sign a Task definition whose separate retained Device grant authenticates
+ * this exact foreground Agent publication. The existing V5 bytes carry only
+ * the evidence hash; the Task-specific durable reader verifies the evidence. */
+export function createTaskDefinitionForegroundObjectAccessManifestV5(
+  crypto: LatticeCrypto,
+  unsigned: ObjectAccessManifestUnsignedV5,
+  runtime: AgentRuntimeGenerationV2,
+): CreatedObjectAccessManifestV5 {
+  const normalized = normalizeUnsigned(unsigned);
+  if (!normalized.objectId.startsWith("task-definition:v1:")
+    || normalized.signer.kind !== AGENT_RUNTIME_SIGNER_KIND
+    || normalized.signerAuthorizationHash === null) {
+    throw new TypeError("Task definition manifest requires foreground authorization evidence");
+  }
+  return createManifest(crypto, normalized, manifest => {
+    if (manifest.signer.kind !== AGENT_RUNTIME_SIGNER_KIND) {
+      throw new TypeError("Task definition manifest requires an Agent attribution signer");
+    }
+    const bytes = signingBytesFromNormalized(manifest);
+    try {
+      return signAgentRuntimeObjectBytesV1(crypto, {
+        runtime,
+        signer: manifest.signer,
+        message: bytes,
+      });
+    } finally { bytes.fill(0); }
+  });
+}
+
 function assertTaskRuntimeSignerBoundary(
   crypto: LatticeCrypto,
   manifest: ObjectAccessManifestUnsignedV5,
@@ -988,6 +1027,27 @@ export function verifyObjectAccessManifestV5(
         verifyAgentSignature(
           crypto, manifest, signingBytes, input.resolveAgentRuntimeSignerPublicKey,
         );
+      } else if (manifest.objectId.startsWith("task-definition:v1:")) {
+        const resolver = input
+          .resolveTaskDefinitionForegroundAuthorizationSignerPublicKey;
+        if (resolver === undefined) {
+          throw new TypeError("Task definition foreground authorization resolver is required");
+        }
+        const evidence = Object.freeze({
+          signer: manifest.signer,
+          authorizationHash: manifest.signerAuthorizationHash.slice(),
+          objectId: manifest.objectId,
+        });
+        let signerPublicKey: Uint8Array | null;
+        try { signerPublicKey = resolver(evidence); }
+        finally { evidence.authorizationHash.fill(0); }
+        if (!(signerPublicKey instanceof Uint8Array)) {
+          throw new TypeError("Task definition foreground authorization is unavailable");
+        }
+        try {
+          verifyAgentSignature(crypto, manifest, signingBytes,
+            () => signerPublicKey);
+        } finally { signerPublicKey.fill(0); }
       } else {
         if (input.resolveTaskRuntimeSignerAuthorizationBytes === undefined
           || input.resolveHistoricalTaskRuntimeIssuer === undefined) {

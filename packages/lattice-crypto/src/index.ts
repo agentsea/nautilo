@@ -832,6 +832,8 @@ export {
   domainForegroundNamespaceBindingSetDigestV2
     as domainForegroundNamespaceBindingSetDigest,
   mintDomainForegroundAuthorizationV2 as mintDomainForegroundAuthorization,
+  verifyHistoricalDomainForegroundAuthorizationV2
+    as verifyHistoricalDomainForegroundAuthorization,
   withOpenedDomainForegroundAuthorizationV2
     as withOpenedDomainForegroundAuthorization,
 } from "./format/domain-foreground-authorization-v2.ts";
@@ -1501,6 +1503,7 @@ export type {
 } from "./format/object-access-manifest-v3.ts";
 export {
   createAgentObjectAccessManifestV5 as createCommonAgentObjectAccessManifest,
+  createTaskDefinitionForegroundObjectAccessManifestV5,
   createHumanObjectAccessManifestV5 as createCommonHumanObjectAccessManifest,
   createCurrentProcessorObjectAccessManifestV5 as createCurrentCommonProcessorObjectAccessManifest,
   createTaskRuntimeObjectAccessManifestV5
@@ -1525,6 +1528,7 @@ export type {
     as CommonProcessorSignerAuthorizationEvidence,
   ResolveAgentRuntimeSignerPublicKeyV5
     as ResolveCommonAgentRuntimeSignerPublicKey,
+  ResolveTaskDefinitionForegroundAuthorizationSignerPublicKeyV5,
   ResolveHistoricalHumanDeviceSigningPublicKeyV5
     as ResolveCommonHistoricalHumanDeviceSigningPublicKey,
   ResolveHistoricalProcessorIssuingDevicePublicKeyV5

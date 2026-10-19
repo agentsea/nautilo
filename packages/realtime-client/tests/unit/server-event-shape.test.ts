@@ -33,6 +33,7 @@ const EVENT_ROUTING = {
   // lane; the authorization request is additionally filtered to its issuer.
   "message.shared_agent_shadow": "scoped",
   "message.shared_agent_authorization_required": "scoped",
+    "message.task_definition_authorization_required": "scoped",
   "message.runtime_invocation_authorization_required": "scoped",
   "message.shared_agent_stream_start": "scoped",
   "message.shared_agent_stream_frame": "scoped",

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { TaskCreationInvocationProvenance } from "@nautilo/agent";
+import type { TaskCreationInvocationProvenance, TaskToolRuntime } from "@nautilo/agent";
 import { encodeTaskPayloadV1, fingerprintTaskOperationalMetadataV1 } from "@nautilo/lattice-bridge";
 import type { ProtectedTaskCreationPlanV1, TaskCreateInput } from "@nautilo/runtime";
 import { assertProtectedTaskOperationalMetadataProjectionV1, classifyProtectedTaskMetadataV1 } from "@nautilo/types";
@@ -64,13 +64,15 @@ export function protectedTaskForegroundCreationIdentity(input: Readonly<{
     };
     const digest = createHash("sha256").update("nautilo/task-foreground-definition/v1\0")
       .update(effectDigest).update(JSON.stringify(canonical(operational))).update(payload).update(metadata).digest();
+    const workDescriptorDigest = Uint8Array.from(digest);
     // RFC 9562 custom-name UUID: no randomized ciphertext or transient grant fields.
     digest[6] = (digest[6]! & 0x0f) | 0x80;
     digest[8] = (digest[8]! & 0x3f) | 0x80;
     const hex = digest.subarray(0, 16).toString("hex");
     digest.fill(0);
     return Object.freeze({ taskId: `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
-      operationId: `task-foreground-effect:${effectDigest}`, scheduleReference: new Date(timeReferenceMs) });
+      operationId: `task-foreground-effect:${effectDigest}`, scheduleReference: new Date(timeReferenceMs),
+      workDescriptorDigest });
   } finally { payload.fill(0); metadata.fill(0); }
 }
 
@@ -82,11 +84,17 @@ export function protectedTaskForegroundUpdateIdentity(input: Readonly<{
   requestorId: string;
   agentId: string;
   callingRoomId: string | null;
-}>): Readonly<{ operationId: string }> {
+  source?: Readonly<{ contentRevision: number; mutationVersion: string }>;
+  request?: Parameters<NonNullable<TaskToolRuntime["updateProtectedTask"]>>[0];
+}>): Readonly<{ operationId: string; workDescriptorDigest: Uint8Array }> {
   const { effectDigest } = trustedForegroundEffectDigest(input);
   const digest = createHash("sha256").update("nautilo/task-foreground-update/v1\0")
     .update(effectDigest).update("\0").update(input.taskId).digest("hex");
-  return Object.freeze({ operationId: `task-foreground-update:${digest}` });
+  const workDescriptorDigest = Uint8Array.from(createHash("sha256")
+    .update("nautilo/task-foreground-update-work/v1\0")
+    .update(JSON.stringify([digest, input.source?.contentRevision ?? null,
+      input.source?.mutationVersion ?? null, canonical(input.request ?? null)])).digest());
+  return Object.freeze({ operationId: `task-foreground-update:${digest}`, workDescriptorDigest });
 }
 
 /** Discover the exact lock coordinate before holding any Room locks. The

@@ -2,7 +2,10 @@ import type { ProtectedTaskPublicationPlanRequestV1 } from "@nautilo/api-client/
 import { sha256 } from "@noble/hashes/sha2.js";
 import {
   classifyProtectedTaskMetadataV1,
+  parseLocalExecutionDelegation,
+  type LocalExecutionDelegation,
   type ProtectedTaskOperationalMetadataProjectionV1,
+  type TaskFundingMode,
 } from "@nautilo/types";
 
 import {
@@ -17,6 +20,7 @@ import {
 } from "./task-payload-v1.ts";
 
 const SOURCE_DIGEST_DOMAIN_V1 = "nautilo/task-historical-content-source/v1";
+const SOURCE_DIGEST_DOMAIN_V2 = "nautilo/task-historical-content-source/v2";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const TASK_STATUSES = [
   "pending", "running", "awaiting", "paused", "completed", "cancelled", "errored",
@@ -29,6 +33,19 @@ export type TaskHistoricalOperationalFieldsV1 = Extract<
   { operation: "create" }
 >["task"];
 
+export type TaskHistoricalInternalSourceCoordinatesV2 = Readonly<{
+  agentId: string;
+  preset: "task" | "in_scope" | "in_private_namespace" | "in_background" | "schedule";
+  catchup: "skip" | "run_once";
+  callingRoomId: string | null;
+  targetChatHandle: string | null;
+  targetRoomId: string | null;
+  targetUserIds: readonly string[];
+  awaitResponse: boolean;
+  fundingMode: TaskFundingMode;
+  localExecutionDelegation: LocalExecutionDelegation | null;
+}>;
+
 type TaskHistoricalSourceCommonV1 = Readonly<{
   taskId: string;
   requesterHumanId: string;
@@ -38,7 +55,7 @@ type TaskHistoricalSourceCommonV1 = Readonly<{
   taskStatus: typeof TASK_STATUSES[number];
   metadata: unknown;
   operationalFields: TaskHistoricalOperationalFieldsV1;
-}>;
+}> & TaskHistoricalInternalSourceCoordinatesV2;
 
 export type TaskHistoricalDefinitionSourceV1 = TaskHistoricalSourceCommonV1 & Readonly<{
   kind: "definition";
@@ -80,7 +97,10 @@ type SupportedHistoricalSourceV1<
   operationalMetadata: ProtectedTaskOperationalMetadataProjectionV1;
   operationalFieldsDigest: Uint8Array;
   sourcePayloadHash: Uint8Array;
+  /** Current digest for every newly prepared historical publication. */
   sourceDigest: Uint8Array;
+  /** Internal compatibility coordinate for exact receipt-only recovery. */
+  legacySourceDigest: Uint8Array;
 }>;
 
 export type TaskHistoricalContentSourceClassificationV1 =
@@ -113,11 +133,62 @@ function validCommon(source: TaskHistoricalContentSourceV1): boolean {
     && TASK_STATUSES.includes(source.taskStatus);
 }
 
+type InternalSourceCoordinates = readonly unknown[];
+
+function internalSourceCoordinates(
+  source: TaskHistoricalContentSourceV1,
+): InternalSourceCoordinates | null {
+  if (!UUID.test(source.agentId)
+    || !["task", "in_scope", "in_private_namespace", "in_background", "schedule"]
+      .includes(source.preset)
+    || source.catchup !== "skip" && source.catchup !== "run_once"
+    || source.callingRoomId !== null && !UUID.test(source.callingRoomId)
+    || source.targetChatHandle !== null && typeof source.targetChatHandle !== "string"
+    || source.targetRoomId !== null && !UUID.test(source.targetRoomId)
+    || !Array.isArray(source.targetUserIds)
+    || source.targetUserIds.some(id => typeof id !== "string" || !UUID.test(id))
+    || typeof source.awaitResponse !== "boolean"
+    || source.fundingMode !== "legacy_server" && source.fundingMode !== "caller") {
+    return null;
+  }
+  const delegation = source.localExecutionDelegation === null
+    ? null : parseLocalExecutionDelegation(source.localExecutionDelegation);
+  if (source.localExecutionDelegation !== null && delegation === null) return null;
+  const delegationCoordinates = delegation === null ? null : [
+    delegation.version,
+    delegation.humanUserId,
+    delegation.agentId,
+    delegation.sourceRoomId,
+    delegation.sourceConversationId,
+    delegation.rootTaskId,
+    delegation.target.instanceId,
+    delegation.target.relayId,
+    delegation.target.pairingGeneration,
+    delegation.target.serverOrigin,
+    delegation.target.serverFingerprint,
+    delegation.projectGrantId,
+    delegation.ceiling,
+    delegation.profile === null ? null : [delegation.profile.id, delegation.profile.revision],
+  ] as const;
+  return [
+    source.agentId,
+    source.preset,
+    source.catchup,
+    source.callingRoomId,
+    source.targetChatHandle,
+    source.targetRoomId,
+    Array.from(source.targetUserIds as readonly string[]),
+    source.awaitResponse,
+    source.fundingMode,
+    delegationCoordinates,
+  ] as const;
+}
+
 function hex(value: Uint8Array): string {
   return Array.from(value, byte => byte.toString(16).padStart(2, "0")).join("");
 }
 
-function sourceDigest(
+function legacySourceDigest(
   source: TaskHistoricalContentSourceV1,
   operationalFieldsDigest: Uint8Array,
   metadataDigest: Uint8Array,
@@ -146,6 +217,22 @@ function sourceDigest(
   }
 }
 
+function currentSourceDigest(
+  legacyDigest: Uint8Array,
+  coordinates: InternalSourceCoordinates,
+): Uint8Array {
+  const bytes = encoder.encode(JSON.stringify([
+    SOURCE_DIGEST_DOMAIN_V2,
+    hex(legacyDigest),
+    coordinates,
+  ]));
+  try {
+    return sha256(bytes);
+  } finally {
+    bytes.fill(0);
+  }
+}
+
 /**
  * Classify and fingerprint one exact ordinary historical Task source without
  * inferring device, Namespace, policy, or publication authority.
@@ -154,6 +241,8 @@ export function classifyTaskHistoricalContentSourceV1(
   source: TaskHistoricalContentSourceV1,
 ): TaskHistoricalContentSourceClassificationV1 {
   if (!validCommon(source)) return unsupported("invalid_source");
+  const internalCoordinates = internalSourceCoordinates(source);
+  if (internalCoordinates === null) return unsupported("operational_fields");
   if (source.kind === "definition") {
     if (typeof source.activeRun !== "boolean") return unsupported("invalid_source");
     if (source.parentTaskId !== null) return unsupported("nested_task");
@@ -216,6 +305,12 @@ export function classifyTaskHistoricalContentSourceV1(
 
   const sourcePayloadHash = sha256(payloadBytes);
   const metadataDigest = fingerprintTaskOperationalMetadataV1(metadata.operational);
+  const legacyDigest = legacySourceDigest(
+    source,
+    operationalFieldsDigest,
+    metadataDigest,
+    sourcePayloadHash,
+  );
   try {
     return Object.freeze({
       status: "supported" as const,
@@ -224,12 +319,8 @@ export function classifyTaskHistoricalContentSourceV1(
       operationalMetadata: metadata.operational,
       operationalFieldsDigest,
       sourcePayloadHash,
-      sourceDigest: sourceDigest(
-        source,
-        operationalFieldsDigest,
-        metadataDigest,
-        sourcePayloadHash,
-      ),
+      sourceDigest: currentSourceDigest(legacyDigest, internalCoordinates),
+      legacySourceDigest: legacyDigest,
     }) as TaskHistoricalContentSourceClassificationV1;
   } finally {
     payloadBytes.fill(0);

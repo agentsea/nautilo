@@ -27,6 +27,7 @@ import {
 import {
   parseImageAssistanceSummary,
 } from "@nautilo/types";
+import { parseModelInputExposureMetadataV1 } from "@nautilo/reflection/payload";
 import {
   createProtectedTaskMessageProductGuard,
 } from "./protected-task-message-product-authority";
@@ -201,7 +202,11 @@ function nativeShadowMetadata(
       MODEL_INPUT_EXPOSURE_METADATA_KEY
     ];
     if (modelInputExposure !== undefined) {
-      metadata[MODEL_INPUT_EXPOSURE_METADATA_KEY] = modelInputExposure;
+      const parsed = parseModelInputExposureMetadataV1(modelInputExposure);
+      if (parsed === null) {
+        throw new TypeError("Protected Task model-input exposure metadata is invalid");
+      }
+      metadata[MODEL_INPUT_EXPOSURE_METADATA_KEY] = parsed;
     }
   }
   if (payload.role === "tool") {

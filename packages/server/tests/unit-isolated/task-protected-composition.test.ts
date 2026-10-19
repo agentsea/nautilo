@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import type {
   DirectDatabase,
   PostgresJsBridgeConnection,
@@ -22,10 +22,10 @@ import {
   namespaceId,
   type HumanTaskPublicationRequest,
 } from "@nautilo/lattice-crypto";
-import type {
-  NamespaceProductAuthoritySnapshot,
+import {
   PostgresDomainKeyAuthorityRepository,
   PostgresNamespaceProductAuthority,
+  type NamespaceProductAuthoritySnapshot,
 } from "@nautilo/lattice-bridge/server";
 
 import {
@@ -120,6 +120,30 @@ function productDatabaseWithReadRows(
                   return Promise.resolve(rowSets[index++] ?? []);
                 },
               };
+            },
+          };
+        },
+      };
+    },
+  } as unknown as DirectDatabase;
+}
+
+function productDatabaseWithProtectedPolicy(): DirectDatabase {
+  const client = Object.assign(function postgresClient() {}, {
+    unsafe: () => Promise.reject(new Error("Product DB client must remain idle")),
+    begin: () => Promise.reject(new Error("Product DB client must remain idle")),
+  });
+  return {
+    $client: client,
+    select() {
+      return {
+        from() {
+          return {
+            where() {
+              return Promise.resolve([{
+                revision: 3,
+                mode: "shadow_encryption",
+              }]);
             },
           };
         },
@@ -357,6 +381,40 @@ describe("production protected Task composition", () => {
     expect(cryptoActivity.queries).toBe(0);
   });
 
+  test("refreshes a definition through its stored executor rather than the active Genie", async () => {
+    const executor = "10000000-0000-4000-8000-000000000099";
+    const selected: string[] = [];
+    const composition = createProductionProtectedTaskComposition({
+      db: productDatabaseWithReadRows([[{
+        ownerId: ROUTE_AUTHORITY.userId, requestorId: ROUTE_AUTHORITY.userId,
+        agentId: executor, contentRepresentation: "dual",
+        contentNamespaceId: "10000000-0000-4000-8000-000000000005",
+        cryptoObjectId: "task-definition:v1:fixture", contentRevision: 1,
+        cryptoAccessRevision: 0, cryptoMappingState: "stale",
+      }]], []),
+      restricted: observedRestrictedConnection({ queries: 0 }),
+      crypto: new LatticeCrypto(), serverScope: "https://nautilo.test",
+      owner: bindEncryptionDataOperationOwner({ policy: {
+        resolve: async () => ({
+          policy: { mode: "encrypted_only", shadowBehavior: "strict" }, revalidationToken: 1,
+        }),
+        revalidate: async () => {},
+      } }), observer: { kick() {} },
+      resolveRequesterPrivateRoom: async (_owner, agent) => { selected.push(agent); return null; },
+    });
+    const failure = await composition.ports.readDefinition({
+      authority: { ...ROUTE_AUTHORITY, admission: {
+        deviceId: ROUTE_AUTHORITY.deviceId, deviceGeneration: 4,
+        serverInstanceId: "server", lineageGeneration: 1, epoch: 1,
+        securityRevision: 1, headDigest: new Uint8Array(32), expiresAt: Date.now() + 30_000,
+      } },
+      taskId: "10000000-0000-4000-8000-000000000004",
+      objectId: "task-definition:v1:fixture", contentRevision: 1, cryptoAccessRevision: 0,
+    }).catch((error: unknown) => error);
+    expect(failure).toMatchObject({ statusCode: 409, code: "task_content_changed" });
+    expect(selected).toEqual([executor]);
+  });
+
   test("retains only the exact accepted foreground execution proof for the Task Agent", async () => {
     const crypto = new LatticeCrypto();
     const runtime = {
@@ -378,7 +436,10 @@ describe("production protected Task composition", () => {
           planDigest,
           acceptedAuthority: {
             subjectHumanId: ROUTE_AUTHORITY.subjectHumanId,
-            authorizedDomainIds: ["domain:task-private"],
+            authorizedNamespaces: [
+              { domainId: "domain:task-private", namespaceId: "namespace:task-private" },
+              { domainId: "domain:other", namespaceId: "namespace:another" },
+            ],
           },
         };
       },
@@ -408,6 +469,7 @@ describe("production protected Task composition", () => {
       taskAgentId: "10000000-0000-4000-8000-000000000099",
       subjectHumanId: ROUTE_AUTHORITY.subjectHumanId,
       domainId: "domain:task-private",
+      namespaceId: "namespace:task-private",
     })).toEqual({
       kind: "foreground_agent_accepted_execution",
       planBytesBase64url: Buffer.from([1, 2, 3, 4]).toString("base64url"),
@@ -417,10 +479,14 @@ describe("production protected Task composition", () => {
     });
     for (const expected of [
       { taskAgentId: "10000000-0000-4000-8000-000000000099",
-        subjectHumanId: "other-human", domainId: "domain:task-private" },
+        subjectHumanId: "other-human", domainId: "domain:task-private",
+        namespaceId: "namespace:task-private" },
       { taskAgentId: "10000000-0000-4000-8000-000000000099",
         subjectHumanId: ROUTE_AUTHORITY.subjectHumanId,
-        domainId: "domain:other" },
+        domainId: "domain:other", namespaceId: "namespace:task-private" },
+      { taskAgentId: "10000000-0000-4000-8000-000000000099",
+        subjectHumanId: ROUTE_AUTHORITY.subjectHumanId,
+        domainId: "domain:task-private", namespaceId: "namespace:another" },
     ]) {
       expect(transport.definitionEvidenceFor(signer.principal, expected))
         .toBeNull();
@@ -591,6 +657,273 @@ describe("production protected Task composition", () => {
     }).then(() => null, (error: unknown) => error);
     expect(updateFailure).toBeInstanceOf(ProtectedTaskRouteError);
     expect(expectedNamespaces).toEqual([undefined, namespaceId]);
+  });
+
+  test("keeps mutable ordinary definitions with historical repair without reclassifying invalid sources", async () => {
+    const ordinary = {
+      id: "10000000-0000-4000-8000-000000000004",
+      ownerId: ROUTE_AUTHORITY.userId,
+      requestorId: ROUTE_AUTHORITY.userId,
+      agentId: ROUTE_AUTHORITY.agentId,
+      status: "paused", fireLockId: null, parentTaskId: null, depth: 0,
+      contentRepresentation: "ordinary", contentRevision: 0,
+      contentNamespaceId: null, cryptoObjectId: null, cryptoAccessRevision: 0,
+      cryptoRequiredNamespaceFingerprint: null, cryptoMappingState: "unmapped",
+      ordinaryFallbackOperationId: null, ordinaryFallbackRequestDigest: null,
+      ordinaryFallbackReason: null, ordinaryFallbackPolicyRevision: null,
+      ordinaryFallbackCompletedAt: null,
+    } as const;
+    for (const [overrides, expected] of [
+      [{}, { statusCode: 409, code: "task_counterpart_not_ready" }],
+      [{ status: "running" }, { statusCode: 409, code: "task_not_mutable" }],
+      [{ ordinaryFallbackOperationId: "partial" }, { statusCode: 409, code: "task_not_mutable" }],
+      [{ ownerId: "another-human" }, { statusCode: 404, code: "task_not_found" }],
+    ] as const) {
+      const queries = { queries: 0 };
+      const composition = createProductionProtectedTaskComposition({
+        db: productDatabaseWithReadRows([[{ ...ordinary, ...overrides }]], []),
+        restricted: observedRestrictedConnection(queries),
+        crypto: new LatticeCrypto(), serverScope: "https://nautilo.test",
+        owner: bindEncryptionDataOperationOwner({ policy: {
+          resolve: async () => ({
+            policy: { mode: "shadow_encryption", shadowBehavior: "fallback" },
+            revalidationToken: 1,
+          }),
+          revalidate: async () => {},
+        } }),
+        observer: { kick() {} },
+        resolveRequesterPrivateRoom: async () => { throw new Error("Private authority must remain idle"); },
+      });
+      const failure = await composition.ports.plan({
+        authority: ROUTE_AUTHORITY, taskId: ordinary.id,
+        request: { requestVersion: 1, operation: "update", operationId: "ordinary-update", task: {} },
+      }).catch((error: unknown) => error);
+      expect(failure).toMatchObject(expected);
+      expect(queries.queries).toBe(0);
+    }
+  });
+
+  test("admits only a coherent receipt-bound stale dual source for normal update planning", async () => {
+    const namespaceId = "10000000-0000-4000-8000-000000000005";
+    const staleSource = {
+      id: "10000000-0000-4000-8000-000000000004",
+      ownerId: ROUTE_AUTHORITY.userId,
+      requestorId: ROUTE_AUTHORITY.userId,
+      agentId: ROUTE_AUTHORITY.agentId,
+      status: "paused",
+      fireLockId: null,
+      contentRepresentation: "dual",
+      contentNamespaceId: namespaceId,
+      contentRevision: 1,
+      cryptoObjectId: "task-definition:v1:source",
+      cryptoAccessRevision: 0,
+      cryptoRequiredNamespaceFingerprint: new Uint8Array(32).fill(8),
+      cryptoMappingState: "stale",
+      ordinaryFallbackOperationId: "task:fallback:source",
+      ordinaryFallbackRequestDigest: new Uint8Array(32).fill(9),
+      ordinaryFallbackReason: "target_encryption_not_ready",
+      ordinaryFallbackPolicyRevision: 3,
+      ordinaryFallbackCompletedAt: new Date("2026-10-19T08:00:00.000Z"),
+      updatedAt: new Date("2026-10-19T08:00:01.000Z"),
+      mutationVersion: "17",
+      scheduleKind: "now",
+      runAt: null,
+      cron: null,
+      timezone: "UTC",
+      toolsMode: "auto",
+      toolsWhitelist: [],
+      requestedModelId: null,
+      selectionProfile: "balanced",
+      selectionSpec: null,
+    } as const;
+    let authorityCalls = 0;
+    const composition = createProductionProtectedTaskComposition({
+      db: productDatabaseWithReadRows([[staleSource]], []),
+      restricted: observedRestrictedConnection({ queries: 0 }),
+      crypto: new LatticeCrypto(),
+      serverScope: "https://nautilo.test",
+      owner: bindEncryptionDataOperationOwner({
+        policy: {
+          resolve: () => Promise.resolve({
+            policy: { mode: "shadow_encryption", shadowBehavior: "strict" },
+            revalidationToken: 1,
+          }),
+          revalidate: () => Promise.resolve(),
+        },
+      }),
+      observer: { kick() {} },
+      resolveRequesterPrivateRoom: async () => {
+        authorityCalls += 1;
+        return null;
+      },
+    });
+
+    const admitted = await composition.ports.plan({
+      authority: ROUTE_AUTHORITY,
+      taskId: staleSource.id,
+      request: {
+        requestVersion: 1,
+        operation: "update",
+        operationId: "operation-repair",
+        task: {},
+      },
+    }).then(() => null, (caught: unknown) => caught);
+    expect(admitted).toMatchObject({
+      statusCode: 403,
+      code: "task_authority_unavailable",
+    });
+    expect(authorityCalls).toBe(1);
+
+    const malformed = createProductionProtectedTaskComposition({
+      db: productDatabaseWithReadRows([[{
+        ...staleSource,
+        ordinaryFallbackRequestDigest: new Uint8Array(31),
+      }]], []),
+      restricted: observedRestrictedConnection({ queries: 0 }),
+      crypto: new LatticeCrypto(),
+      serverScope: "https://nautilo.test",
+      owner: bindEncryptionDataOperationOwner({
+        policy: {
+          resolve: () => Promise.resolve({
+            policy: { mode: "shadow_encryption", shadowBehavior: "strict" },
+            revalidationToken: 1,
+          }),
+          revalidate: () => Promise.resolve(),
+        },
+      }),
+      observer: { kick() {} },
+      resolveRequesterPrivateRoom: async () => {
+        authorityCalls += 1;
+        return null;
+      },
+    });
+    const rejected = await malformed.ports.plan({
+      authority: ROUTE_AUTHORITY,
+      taskId: staleSource.id,
+      request: {
+        requestVersion: 1,
+        operation: "update",
+        operationId: "operation-repair",
+        task: {},
+      },
+    }).then(() => null, (caught: unknown) => caught);
+    expect(rejected).toMatchObject({
+      statusCode: 409,
+      code: "task_not_mutable",
+    });
+    expect(authorityCalls).toBe(1);
+  });
+
+  test("classifies a missing current Namespace bundle as retryable encryption availability", async () => {
+    const productAuthority = spyOn(
+      PostgresNamespaceProductAuthority.prototype,
+      "withCurrentPrivateRoom",
+    ).mockImplementation(async input => input.use(Object.freeze({}) as never));
+    const domainAuthority = spyOn(
+      PostgresDomainKeyAuthorityRepository.prototype,
+      "inspectForegroundNamespaceAuthority",
+    ).mockResolvedValue(Object.freeze({
+      status: "unavailable" as const,
+      reason: "namespace_bundle_unavailable",
+    }));
+    try {
+      const composition = createProductionProtectedTaskComposition({
+        db: productDatabaseWithProtectedPolicy(),
+        restricted: observedRestrictedConnection({ queries: 0 }),
+        crypto: new LatticeCrypto(),
+        serverScope: "https://nautilo.test",
+        owner: bindEncryptionDataOperationOwner({
+          policy: {
+            resolve: () => Promise.resolve({
+              policy: { mode: "shadow_encryption", shadowBehavior: "strict" },
+              revalidationToken: 1,
+            }),
+            revalidate: () => Promise.resolve(),
+          },
+        }),
+        observer: { kick() {} },
+        resolveRequesterPrivateRoom: async () => ({
+          roomId: "10000000-0000-4000-8000-000000000006",
+          namespaceId: "10000000-0000-4000-8000-000000000005",
+        }),
+      });
+
+      const error = await composition.ports.plan({
+        authority: ROUTE_AUTHORITY,
+        taskId: null,
+        request: {
+          requestVersion: 1,
+          operation: "create",
+          operationId: "operation-create",
+          task: { scheduleKind: "now" },
+        },
+      }).then(() => null, (caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(ProtectedTaskRouteError);
+      expect(error).toMatchObject({
+        statusCode: 409,
+        code: "task_encryption_not_ready",
+      });
+    } finally {
+      domainAuthority.mockRestore();
+      productAuthority.mockRestore();
+    }
+  });
+
+  test("keeps inconsistent current Namespace authority in the denial class", async () => {
+    const productAuthority = spyOn(
+      PostgresNamespaceProductAuthority.prototype,
+      "withCurrentPrivateRoom",
+    ).mockImplementation(async input => input.use(Object.freeze({}) as never));
+    const domainAuthority = spyOn(
+      PostgresDomainKeyAuthorityRepository.prototype,
+      "inspectForegroundNamespaceAuthority",
+    ).mockResolvedValue(Object.freeze({
+      status: "unavailable" as const,
+      reason: "authority_inconsistent",
+    }));
+    try {
+      const composition = createProductionProtectedTaskComposition({
+        db: productDatabaseWithProtectedPolicy(),
+        restricted: observedRestrictedConnection({ queries: 0 }),
+        crypto: new LatticeCrypto(),
+        serverScope: "https://nautilo.test",
+        owner: bindEncryptionDataOperationOwner({
+          policy: {
+            resolve: () => Promise.resolve({
+              policy: { mode: "shadow_encryption", shadowBehavior: "strict" },
+              revalidationToken: 1,
+            }),
+            revalidate: () => Promise.resolve(),
+          },
+        }),
+        observer: { kick() {} },
+        resolveRequesterPrivateRoom: async () => ({
+          roomId: "10000000-0000-4000-8000-000000000006",
+          namespaceId: "10000000-0000-4000-8000-000000000005",
+        }),
+      });
+
+      const error = await composition.ports.plan({
+        authority: ROUTE_AUTHORITY,
+        taskId: null,
+        request: {
+          requestVersion: 1,
+          operation: "create",
+          operationId: "operation-create",
+          task: { scheduleKind: "now" },
+        },
+      }).then(() => null, (caught: unknown) => caught);
+
+      expect(error).toBeInstanceOf(ProtectedTaskRouteError);
+      expect(error).toMatchObject({
+        statusCode: 403,
+        code: "task_authority_unavailable",
+      });
+    } finally {
+      domainAuthority.mockRestore();
+      productAuthority.mockRestore();
+    }
   });
 
   test("holds current device authority until publication mapping completes", async () => {

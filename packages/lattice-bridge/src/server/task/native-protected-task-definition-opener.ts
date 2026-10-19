@@ -34,6 +34,7 @@ import {
 import {
   destroyVerifiedStoredObjectAccessManifestChainV5,
   verifyStoredObjectAccessManifestChainV5,
+  type ResolveTaskDefinitionForegroundAuthorization,
 } from "../storage/postgres-object-access-manifest-v5.ts";
 
 export type NativeProtectedTaskDefinitionOccurrenceV1 =
@@ -162,6 +163,8 @@ export async function withNativeProtectedTaskDefinitionV1<Value>(input: Readonly
   domains: readonly DomainForegroundSecretEntry[];
   signal: AbortSignal;
   resolveForegroundAgentAcceptedExecutionEvidence?: ResolveForegroundAgentAcceptedExecutionEvidence | undefined;
+  resolveTaskDefinitionForegroundAuthorization?:
+    ResolveTaskDefinitionForegroundAuthorization | undefined;
   loadCurrentOccurrence(): Promise<NativeProtectedTaskDefinitionOccurrenceV1 | null>;
   execute(payload: TaskPayloadV1, assertCurrentOccurrence: () => Promise<void>): Value | PromiseLike<Value>;
 }>): Promise<Value> {
@@ -277,7 +280,10 @@ export async function withNativeProtectedTaskDefinitionV1<Value>(input: Readonly
       }
       const author = captureForegroundTaskDefinitionAuthor({
         resolveEvidence: input.resolveForegroundAgentAcceptedExecutionEvidence,
+        resolveTaskDefinitionForegroundAuthorization:
+          input.resolveTaskDefinitionForegroundAuthorization,
         subjectHumanId: occurrence.requesterHumanId,
+        namespaceId: occurrence.namespaceId,
         domainId: occurrence.domainId,
       });
       const verified = await verifyStoredObjectAccessManifestChainV5({
@@ -286,6 +292,8 @@ export async function withNativeProtectedTaskDefinitionV1<Value>(input: Readonly
         expectedHeadManifestHash: access.head.manifestHash,
         resolveLiveShadowAgentSigner: foregroundAgentAcceptedExecutionSigner({ crypto: input.crypto,
           resolveEvidence: author.resolveEvidence }),
+        resolveTaskDefinitionForegroundAuthorization:
+          author.resolveTaskDefinitionForegroundAuthorization,
         resolveHistoricalAgentManagerAuthority: new PostgresHumanDeviceSignerHistory({ handle, crypto: input.crypto })
           .resolveAgentRuntimeSignerManager,
       });

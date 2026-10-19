@@ -5,6 +5,8 @@ import { createProtectedTaskHermesExecution } from "./routes/protected-task-herm
 import { createTaskOccurrencePolicyPorts } from "./routes/task-occurrence-policy";
 import { protectedTaskRoutes } from "./routes/task-protected-routes";
 import { createProductionProtectedTaskComposition } from "./routes/task-protected-composition";
+import { createTaskOrdinaryFallbackPorts } from "./routes/task-ordinary-fallback-composition";
+import { taskOrdinaryFallbackRoutes } from "./routes/task-ordinary-fallback-routes";
 import { createProtectedTaskRequestAuthorityResolver } from "./routes/task-protected-request-authority";
 import { createProtectedTaskActivationReadinessAssertion, ProtectedTaskActivationReadinessError } from "./routes/protected-task-activation-readiness";
 import { createProtectedTaskActivationParkedIntegrityInspector } from "./routes/protected-task-activation-parked-integrity";
@@ -299,6 +301,7 @@ import {
   getServerContextConfig,
   getCodexUserInputRequestWith,
   getTaskById,
+  getTaskByIdWithMutationVersion,
   getTaskRuns,
   recordTaskWriterReviewAcceptedReceipt,
   reserveTaskWriterReviewWorkspaceOperation,
@@ -4371,6 +4374,7 @@ export async function createApp(options?: CreateAppOptions) {
     task: Parameters<typeof runtimeCreateTask>[1],
     protectedCreation?: ProtectedTaskForegroundCreationContext,
   ) => {
+    if (protectedCreation !== undefined) task = structuredClone(task);
     const liveMiniAppContext = getTaskCreationLiveMiniAppContext();
     const taskProvenance = getTaskCreationBackgroundTaskProvenance();
     const invocationProvenance = getTaskCreationInvocationProvenance();
@@ -4476,6 +4480,8 @@ export async function createApp(options?: CreateAppOptions) {
     const preparedCreate = protectedCreation === undefined
       ? undefined
       : await prepareTaskCreation(createInput, provenance);
+    const definitionIdentity = protectedCreation === undefined ? undefined
+      : protectedTaskForegroundCreationCandidateIdentity({ invocation: invocationProvenance, candidate: taskForCreate });
     let bindingTaskId: string | null = null;
     let created: Awaited<ReturnType<typeof runtimeCreateTask>>;
     try {
@@ -4618,11 +4624,20 @@ export async function createApp(options?: CreateAppOptions) {
         };
         if (protectedCreation === undefined) return create();
         if (executor === undefined) throw new TypeError("Protected Task creation needs its canonical product executor");
-        const identity = protectedTaskForegroundCreationCandidateIdentity({ invocation: invocationProvenance, candidate: taskForCreate });
+        const identity = definitionIdentity!;
         return protectedCreation.withProduct({ taskId: identity.taskId, transaction: tx, executor, use: create });
       };
       created = protectedCreation === undefined ? await directDb.transaction(createInTransaction)
-        : await createPostgresJsCanonicalBridgeConnection(directDb).transaction(createInTransaction, { isolationLevel: "read committed" });
+        : await protectedCreation.withTaskDefinitionAuthorization({
+            taskId: definitionIdentity!.taskId,
+            taskExecutorAgentId: createInput.agentId,
+            targetContentRevision: 1,
+            operation: "create",
+            operationId: definitionIdentity!.operationId,
+            workDescriptorDigest: definitionIdentity!.workDescriptorDigest,
+            use: () => createPostgresJsCanonicalBridgeConnection(directDb)
+              .transaction(createInTransaction, { isolationLevel: "read committed" }),
+          });
     } catch (error) {
       if (bindingTaskId) removeTaskReturnBinding(bindingTaskId);
       throw error;
@@ -4703,23 +4718,45 @@ export async function createApp(options?: CreateAppOptions) {
     updateProtectedTask: async input => {
       const source = currentProtectedTaskForegroundCreationContext();
       if (source === null) throw new Error("Protected Task update requires the current admitted foreground turn");
+      // Hold one exact semantic intent while the Device authorization is in flight.
+      input = structuredClone(input);
+      await source.assertCurrent();
+      const observed = await getTaskByIdWithMutationVersion(getServerDirectDb(), input.taskId,
+        { lifecycleOnly: true, ownerId: input.ownerId });
+      if (observed === undefined || observed.ownerId !== input.ownerId
+        || observed.requestorId !== input.requestorId) {
+        throw new Error("Protected Task update source is unavailable");
+      }
       const identity = protectedTaskForegroundUpdateIdentity({
         invocation: getTaskCreationInvocationProvenance(), taskId: input.taskId,
         requestorId: input.requestorId, agentId: input.agentId, callingRoomId: input.callingRoomId,
+        source: { contentRevision: observed.contentRevision, mutationVersion: observed.mutationVersion },
+        request: input,
       });
       const bridge = createPostgresJsCanonicalBridgeConnection(getServerDirectDb());
-      const preflight = await bridge.transaction(async (transaction, executor) => {
-        if (executor === undefined) throw new TypeError("Protected Task update needs its canonical product executor");
-        return source.withProduct({ taskId: input.taskId, transaction, executor,
-          use: () => source.preflightProtectedTaskUpdate({ operationId: identity.operationId, request: input }) });
-      }, { isolationLevel: "read committed" });
-      await withProtectedTaskFundingAuthority(source.assertCurrent, () =>
-        assertTaskMutationFunding(preflight.source, "update", preflight.patch));
-      return bridge.transaction(async (transaction, executor) => {
-        if (executor === undefined) throw new TypeError("Protected Task update needs its canonical product executor");
-        return source.withProduct({ taskId: input.taskId, transaction, executor,
-          use: () => source.updateProtectedTask({ operationId: identity.operationId, request: input, preflight }) });
-      }, { isolationLevel: "read committed" });
+      return source.withTaskDefinitionAuthorization({
+        taskId: input.taskId, taskExecutorAgentId: observed.agentId,
+        targetContentRevision: observed.contentRevision + 1, operation: "update",
+        operationId: identity.operationId, workDescriptorDigest: identity.workDescriptorDigest,
+        use: async () => {
+          const preflight = await bridge.transaction(async (transaction, executor) => {
+            if (executor === undefined) throw new TypeError("Protected Task update needs its canonical product executor");
+            return source.withProduct({ taskId: input.taskId, transaction, executor,
+              use: () => source.preflightProtectedTaskUpdate({ operationId: identity.operationId, request: input }) });
+          }, { isolationLevel: "read committed" });
+          if (preflight.source.mutationVersion !== observed.mutationVersion
+            || preflight.source.contentRevision !== observed.contentRevision) {
+            throw new Error("Protected Task changed while its authorization was prepared");
+          }
+          await withProtectedTaskFundingAuthority(source.assertCurrent, () =>
+            assertTaskMutationFunding(preflight.source, "update", preflight.patch));
+          return bridge.transaction(async (transaction, executor) => {
+            if (executor === undefined) throw new TypeError("Protected Task update needs its canonical product executor");
+            return source.withProduct({ taskId: input.taskId, transaction, executor,
+              use: () => source.updateProtectedTask({ operationId: identity.operationId, request: input, preflight }) });
+          }, { isolationLevel: "read committed" });
+        },
+      });
     },
     createProtectedHarnessTask: async input => {
       if (input.callingRoomId === null) {
@@ -4881,16 +4918,23 @@ export async function createApp(options?: CreateAppOptions) {
       history: createProductionRoomHistoryShadowReadComposition(),
     }),
   });
-  const taskProtectedHttpComposition = createProductionProtectedTaskComposition({
+  const taskProtectedHttpDependencies = {
     db: getServerDirectDb(),
     restricted: createPostgresJsBridgeConnection(getSharedDirectCryptoDb()),
     crypto: new LatticeCrypto(),
     serverScope: process.env["NAUTILO_PUBLIC_BASE_URL"]?.trim() || "http://localhost:3001",
     owner: taskContentOwner,
     observer: taskObserver,
-  });
+  };
+  const taskProtectedHttpComposition = createProductionProtectedTaskComposition(taskProtectedHttpDependencies);
   protectedTaskRoutes(app, {
     composition: taskProtectedHttpComposition,
+    resolveAuthorizedRequest: createProtectedTaskRequestAuthorityResolver({
+      deviceAdmission: deviceAdmissionComposition,
+    }),
+  });
+  taskOrdinaryFallbackRoutes(app, {
+    ports: createTaskOrdinaryFallbackPorts(taskProtectedHttpDependencies),
     resolveAuthorizedRequest: createProtectedTaskRequestAuthorityResolver({
       deviceAdmission: deviceAdmissionComposition,
     }),
