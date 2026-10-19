@@ -28,6 +28,11 @@ const ids = {
   run2: "40000000-0000-4000-8000-000000000006",
   claim: "50000000-0000-4000-8000-000000000007",
 };
+const compatibleIds = {
+  definitionV8: "836a18fb-2373-8420-a6c3-69213687b35e",
+  resultTaskV7: "018f3df1-8d42-7c59-a112-17d92f9aa110",
+  resultRunV8: "8f46dca1-2ab3-8c4d-9e5f-1029384756ab",
+};
 const now = new Date("2026-10-12T12:00:00.000Z");
 const later = new Date("2026-10-12T12:05:00.000Z");
 const created = new Date("2026-10-11T09:00:00.000Z");
@@ -612,6 +617,141 @@ describe("Task content backfill persistence", () => {
       expiresAt: later,
     })).status).toBe("held");
     expect(second.updates).toHaveLength(0);
+  });
+
+  test("claim accepts a deterministic UUIDv8 definition coordinate", async () => {
+    const candidate: TaskContentBackfillCandidate = {
+      kind: "definition",
+      taskId: compatibleIds.definitionV8,
+      sourceCreatedAt: created,
+      sourceUpdatedAt: updated,
+      sourceRevision: 0,
+      sourceStatus: "pending",
+    };
+    const unclaimed = scan({
+      throughAt: created,
+      throughTaskId: compatibleIds.definitionV8,
+    });
+    const fixture = harness({ selects: [
+      [{ mode: "shadow_encryption", shadowBehavior: "retain", revision: 9 }],
+      [{ ownerId: ids.user }],
+      [unclaimed],
+      [{
+        taskId: compatibleIds.definitionV8,
+        createdAt: created,
+        updatedAt: updated,
+        status: "pending",
+        contentRevision: 0,
+        representation: "ordinary",
+        requestorId: ids.user,
+        parentTaskId: null,
+      }],
+      [unclaimed],
+    ] });
+
+    const outcome = await claimTaskContentBackfill(fixture.database, {
+      humanActorId: ids.human,
+      requesterUserId: ids.user,
+      deviceId: "device-a",
+      claimId: ids.claim,
+      policyRevision: 9,
+      candidate,
+      now,
+      expiresAt: later,
+    });
+
+    expect(outcome).toMatchObject({
+      status: "claimed",
+      claim: { candidate: { kind: "definition", taskId: compatibleIds.definitionV8 } },
+    });
+  });
+
+  test("claim accepts UUIDv7 and UUIDv8 result coordinates", async () => {
+    const candidate = resultCandidate({
+      taskId: compatibleIds.resultTaskV7,
+      taskRunId: compatibleIds.resultRunV8,
+    });
+    const unclaimed = scan({
+      phase: "result",
+      throughAt: completed,
+      throughTaskId: compatibleIds.resultTaskV7,
+      throughTaskRunId: compatibleIds.resultRunV8,
+    });
+    const fixture = harness({ selects: [
+      [{ mode: "shadow_encryption", shadowBehavior: "retain", revision: 9 }],
+      [{ ownerId: ids.user }],
+      [unclaimed],
+      [{
+        taskId: compatibleIds.resultTaskV7,
+        updatedAt: updated,
+        requestorId: ids.user,
+        representation: "dual",
+        mappingState: "verified",
+      }],
+      [{
+        taskId: compatibleIds.resultTaskV7,
+        taskRunId: compatibleIds.resultRunV8,
+        startedAt: created,
+        completedAt: completed,
+        status: "completed",
+        resultRevision: 0,
+        representation: "ordinary",
+      }],
+      [unclaimed],
+    ] });
+
+    const outcome = await claimTaskContentBackfill(fixture.database, {
+      humanActorId: ids.human,
+      requesterUserId: ids.user,
+      deviceId: "device-a",
+      claimId: ids.claim,
+      policyRevision: 9,
+      candidate,
+      now,
+      expiresAt: later,
+    });
+
+    expect(outcome).toMatchObject({
+      status: "claimed",
+      claim: {
+        candidate: {
+          kind: "result",
+          taskId: compatibleIds.resultTaskV7,
+          taskRunId: compatibleIds.resultRunV8,
+        },
+      },
+    });
+  });
+
+  test("claim still rejects malformed UUID versions, variants, and shapes", async () => {
+    const invalidTaskIds = [
+      "836a18fb-2373-9420-a6c3-69213687b35e",
+      "836a18fb-2373-8420-76c3-69213687b35e",
+      "836a18fb-2373-8420-a6c3-69213687b35",
+    ];
+
+    for (const taskId of invalidTaskIds) {
+      const candidate: TaskContentBackfillCandidate = {
+        kind: "definition",
+        taskId,
+        sourceCreatedAt: created,
+        sourceUpdatedAt: updated,
+        sourceRevision: 0,
+        sourceStatus: "pending",
+      };
+      const rejection = await claimTaskContentBackfill({} as Database, {
+        humanActorId: ids.human,
+        requesterUserId: ids.user,
+        deviceId: "device-a",
+        claimId: ids.claim,
+        policyRevision: 9,
+        candidate,
+        now,
+        expiresAt: later,
+      }).then(() => null, (error: unknown) => error);
+      expect(rejection).toBeInstanceOf(TypeError);
+      expect(rejection).toHaveProperty("message", "Task content backfill claim is invalid");
+    }
   });
 
   test("acknowledgement rejects source drift before recording a proxy disposition", async () => {

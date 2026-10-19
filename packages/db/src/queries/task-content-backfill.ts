@@ -27,7 +27,7 @@ import { actors } from "../schema/trust";
 import { acquireEncryptionConsumptionFence } from
   "../utils/encryption-transition-queries";
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const TERMINAL_RUN_STATUSES = ["completed", "errored", "cancelled"] as const;
 const clearLease = Object.freeze({
   leaseToken: null,
