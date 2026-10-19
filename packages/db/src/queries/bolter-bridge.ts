@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { and, desc, eq, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
+import { and, count, desc, eq, gt, inArray, isNotNull, isNull, ne, sql } from "drizzle-orm";
 import { getSharedDirectAgentDb } from "../config/agent-database";
 import { getSharedDirectDb } from "../config/direct-database";
 import { withTrustContext } from "../connection/with-trust-context";
@@ -8,7 +8,8 @@ import { acquireEncryptionConsumptionFence } from "../utils/encryption-transitio
 import { jobs } from "../schema/jobs";
 import { workAcceptances } from "../schema/work-acceptances";
 import { sessions, sessionMessages } from "../schema/sessions";
-import { parseExternalMessageOrigin, type ExternalMessageOrigin } from "@nautilo/types";
+import { bolterAttachmentDescriptorSchema, parseExternalMessageOrigin, type BolterAttachmentDescriptor, type ExternalMessageOrigin } from "@nautilo/types";
+import { messageAttachments } from "../schema/message-attachments";
 import { bolterConnections, bolterRoomBindings, bolterInboxReceipts, bolterOutbox, bolterExplicitShares, type BolterConnection, type BolterRoomBinding, type BolterInboxReceipt } from "../schema/bolter-bridge";
 
 export type BolterBridgeDatabase = ReturnType<typeof getSharedDirectAgentDb>;
@@ -321,16 +322,63 @@ export function attachBolterInboundJobWith(db: BolterBridgeDatabase, ctx: Bolter
   });
 }
 /** Stable request identity binds the exact reviewed body and destination. */
-export function bolterReviewedTextFingerprint(bindingId: string, requestId: string, content: string): string {
-  return createHash("sha256").update(JSON.stringify(["bolter-reviewed-text-v1", bindingId, requestId, content]), "utf8").digest("hex");
+export function bolterReviewedTextFingerprint(bindingId: string, requestId: string, content: string, attachments: readonly BolterAttachmentDescriptor[] = []): string {
+  const payload = attachments.length ? ["bolter-reviewed-files-v1", bindingId, requestId, content,
+    attachments.map(file => [file.id, file.filename, file.mimeType, file.sizeBytes, file.sha256])]
+    : ["bolter-reviewed-text-v1", bindingId, requestId, content];
+  return createHash("sha256").update(JSON.stringify(payload), "utf8").digest("hex");
+}
+
+/** Pending capabilities remain bound to their uploader and the exact connected Room. */
+export function loadBolterShareAttachmentsWith(db: BolterBridgeDatabase, ctx: BolterBindingContext,
+  input: { attachmentIds: readonly string[]; uploaderActorId: string }) {
+  return scoped(db, ctx, async tx => {
+    await externalPlaintextFence(tx);
+    const binding = await lockBinding(tx, ctx);
+    if (!binding) throw new BolterBridgeAuthorityError();
+    if (!input.attachmentIds.length) return [];
+    const rows = await tx.select().from(messageAttachments).where(and(
+      inArray(messageAttachments.id, [...input.attachmentIds]), eq(messageAttachments.namespaceId, binding.namespaceId),
+      eq(messageAttachments.uploaderActorId, input.uploaderActorId), inArray(messageAttachments.status, ["pending", "retained"])));
+    return input.attachmentIds.map(id => {
+      const row = rows.find(item => item.id === id);
+      if (!row || (row.status === "pending" && (!row.expiresAt || row.expiresAt <= new Date()))) throw new BolterBridgeAuthorityError();
+      return row;
+    });
+  });
+}
+
+/** Called in the same transaction that persists the Human share and outbox. */
+export async function retainBolterShareAttachmentsInTx(tx: BolterBridgeTransaction, input: {
+  attachments: readonly BolterAttachmentDescriptor[]; uploaderActorId: string; namespaceId: string; fingerprint: string;
+}) {
+  for (const file of input.attachments) {
+    const [row] = await tx.update(messageAttachments).set({ status: "retained", turnId: input.fingerprint,
+      resolvedAt: new Date(), expiresAt: null }).where(and(eq(messageAttachments.id, file.id),
+      eq(messageAttachments.namespaceId, input.namespaceId), eq(messageAttachments.uploaderActorId, input.uploaderActorId),
+      eq(messageAttachments.status, "pending"), gt(messageAttachments.expiresAt, new Date()), isNull(messageAttachments.turnId),
+      eq(messageAttachments.filename, file.filename), eq(messageAttachments.mimeType, file.mimeType),
+      eq(messageAttachments.sizeBytes, file.sizeBytes))).returning();
+    if (!row) throw new BolterBridgeAuthorityError();
+  }
+}
+
+function shareAttachments(metadata: unknown): readonly BolterAttachmentDescriptor[] | null {
+  if (!metadata || typeof metadata !== "object" || !("bolterAttachments" in metadata)) return [];
+  const value = metadata.bolterAttachments;
+  if (!Array.isArray(value)) return null;
+  const parsed = value.map(file => bolterAttachmentDescriptorSchema.safeParse(file));
+  if (parsed.some(file => !file.success)) return null;
+  const files = parsed.map(file => file.data!);
+  return new Set(files.map(file => file.id)).size === files.length ? files : null;
 }
 
 /** Trusted Human route only. This operation does not accept model or provider authority. */
 export function acceptBolterReviewedShareWith(db: BolterBridgeDatabase, ctx: BolterBindingContext,
-  input: { readonly requestId: string; readonly content: string },
+  input: { readonly requestId: string; readonly content: string; readonly attachments?: readonly BolterAttachmentDescriptor[] },
   persist: (tx: BolterBridgeTransaction, input: { shareId: string; fingerprint: string; binding: BolterRoomBinding }) => Promise<number>) {
   if (!input.content.trim()) throw new BolterBridgeAuthorityError();
-  const digest = bolterReviewedTextFingerprint(ctx.bindingId, input.requestId, input.content);
+  const digest = bolterReviewedTextFingerprint(ctx.bindingId, input.requestId, input.content, input.attachments);
   return scoped(db, ctx, async tx => {
     await externalPlaintextFence(tx);
     const binding = await lockBinding(tx, ctx);
@@ -345,9 +393,11 @@ export function acceptBolterReviewedShareWith(db: BolterBridgeDatabase, ctx: Bol
     }
     const shareId = randomUUID();
     const sessionMessageId = await persist(tx, { shareId, fingerprint: digest, binding });
-    const [canonical] = await tx.select({ content: sessionMessages.content, fingerprint: sessionMessages.fingerprint })
+    const [canonical] = await tx.select({ content: sessionMessages.content, fingerprint: sessionMessages.fingerprint, metadata: sessionMessages.metadata })
       .from(sessionMessages).where(eq(sessionMessages.id, sessionMessageId)).limit(1);
     if (canonical?.content !== input.content || canonical.fingerprint !== digest) throw new BolterBridgeIdentityConflictError();
+    const files = shareAttachments(canonical.metadata);
+    if (!files || bolterReviewedTextFingerprint(binding.id, input.requestId, input.content, files) !== digest) throw new BolterBridgeIdentityConflictError();
     await tx.insert(bolterExplicitShares).values({ id: shareId, userId: ctx.userId, bindingId: binding.id,
       bindingRevision: binding.revision, connectionGeneration: ctx.connectionGeneration,
       requestId: input.requestId, sessionMessageId, fingerprint: digest });
@@ -669,6 +719,7 @@ export interface BolterPublicationContent {
   readonly chatId: string;
   readonly threadRootId: string | null;
   readonly content: string;
+  readonly files?: readonly (BolterAttachmentDescriptor & { readonly storageUri: string })[];
 }
 
 /**
@@ -696,18 +747,28 @@ export function loadBolterPublicationContentWith(db: BolterBridgeDatabase, ctx: 
       if (!share || share.sessionMessageId !== candidate.sessionMessageId || share.fingerprint !== candidate.fingerprint) return null;
       const [claim] = await tx.select().from(bolterOutbox).where(predicate).for("update");
       if (!claim || claim.explicitShareId !== share.id || claim.sourceInboxId !== null) return null;
-      const [message] = await tx.select({ content: sessionMessages.content, fingerprint: sessionMessages.fingerprint })
+      const [message] = await tx.select({ content: sessionMessages.content, fingerprint: sessionMessages.fingerprint, metadata: sessionMessages.metadata })
         .from(sessionMessages).innerJoin(sessions, eq(sessions.id, sessionMessages.sessionId)).where(and(
           eq(sessionMessages.id, share.sessionMessageId), eq(sessions.ownerId, ctx.userId), eq(sessions.roomId, binding.roomId),
           eq(sessions.agentId, binding.agentId), eq(sessionMessages.role, "user"), eq(sessionMessages.externalAuthorship, false),
           eq(sessionMessages.transcriptOrigin, "main"), isNull(sessionMessages.toolCalls), isNull(sessionMessages.toolName),
           sql`${sessionMessages.metadata}->'bolterReviewedShare' = ${JSON.stringify({ shareId: share.id, requestId: share.requestId })}::jsonb`
         )).limit(1);
-      if (!message || typeof message.content !== "string" || !message.content.trim()
-        || bolterReviewedTextFingerprint(binding.id, share.requestId, message.content) !== share.fingerprint
+      const files = shareAttachments(message?.metadata);
+      if (!message || !files || typeof message.content !== "string" || !message.content.trim()
+        || bolterReviewedTextFingerprint(binding.id, share.requestId, message.content, files) !== share.fingerprint
         || message.fingerprint !== share.fingerprint) return null;
+      const retained = files.length ? await tx.select().from(messageAttachments).where(and(
+        inArray(messageAttachments.id, files.map(file => file.id)), eq(messageAttachments.namespaceId, binding.namespaceId),
+        eq(messageAttachments.status, "retained"), eq(messageAttachments.turnId, share.fingerprint))) : [];
+      const selected = files.map(file => {
+        const row = retained.find(item => item.id === file.id && item.filename === file.filename && item.mimeType === file.mimeType && item.sizeBytes === file.sizeBytes);
+        return row ? { ...file, storageUri: row.storageUri } : null;
+      });
+      if (selected.some(file => file === null)) return null;
       return Object.freeze({ origin: binding.origin, providerAgentId: binding.providerAgentId,
-        chatId: binding.chatId, threadRootId: binding.threadId || null, content: message.content });
+        chatId: binding.chatId, threadRootId: binding.threadId || null, content: message.content,
+        ...(files.length ? { files: selected as (BolterAttachmentDescriptor & { storageUri: string })[] } : {}) });
     }
     if (!candidate.sourceInboxId || !binding.modelSponsorshipAcceptedAt) return null;
     const [work] = await tx.select({ jobId: jobs.id, input: jobs.input }).from(bolterInboxReceipts)
@@ -796,10 +857,22 @@ export const listBolterOutbox = (ctx: BolterOwnerContext, bindingId: string) => 
 export const getBolterInboxReceipt = (ctx: BolterOwnerContext, id: string) => getBolterInboxReceiptWith(getSharedDirectAgentDb(), ctx, id);
 
 /** Owner-only request reconciliation; reply deliveries have no Human share request. */
-export function listBolterDeliverySummariesWith(db: BolterBridgeDatabase, ctx: BolterOwnerContext, bindingId: string) {
+export function getBolterDeliveryCountsWith(db: BolterBridgeDatabase, ctx: BolterOwnerContext, bindingId: string) {
+  return scoped(db, ctx, async tx => {
+    const rows = await tx.select({ state: bolterOutbox.state, quantity: count() }).from(bolterOutbox).where(and(
+      eq(bolterOutbox.userId, ctx.userId), eq(bolterOutbox.bindingId, bindingId),
+      inArray(bolterOutbox.state, ["pending", "publishing", "uncertain"]))).groupBy(bolterOutbox.state);
+    return { pending: rows.filter(row => row.state === "pending" || row.state === "publishing").reduce((sum, row) => sum + row.quantity, 0),
+      uncertain: rows.find(row => row.state === "uncertain")?.quantity ?? 0 };
+  });
+}
+export function listBolterDeliverySummariesWith(db: BolterBridgeDatabase, ctx: BolterOwnerContext, bindingId: string,
+  selection?: { outboxId?: string | undefined; requestId?: string | undefined }) {
   return scoped(db, ctx, tx => tx.select({ messageId: bolterOutbox.sessionMessageId, outboxId: bolterOutbox.id,
     state: bolterOutbox.state, createdAt: bolterOutbox.createdAt, requestId: bolterExplicitShares.requestId })
     .from(bolterOutbox).leftJoin(bolterExplicitShares, and(eq(bolterExplicitShares.id, bolterOutbox.explicitShareId),
       eq(bolterExplicitShares.userId, bolterOutbox.userId), eq(bolterExplicitShares.bindingId, bolterOutbox.bindingId)))
-    .where(and(eq(bolterOutbox.userId, ctx.userId), eq(bolterOutbox.bindingId, bindingId))).orderBy(bolterOutbox.createdAt, bolterOutbox.id));
+    .where(and(eq(bolterOutbox.userId, ctx.userId), eq(bolterOutbox.bindingId, bindingId),
+      ...(selection?.outboxId ? [eq(bolterOutbox.id, selection.outboxId)] : []),
+      ...(selection?.requestId ? [eq(bolterExplicitShares.requestId, selection.requestId)] : []))).orderBy(bolterOutbox.createdAt, bolterOutbox.id));
 }

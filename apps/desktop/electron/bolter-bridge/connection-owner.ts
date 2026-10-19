@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { BolterAttachmentPayload } from "@nautilo/types";
 import { BolterCliClient, type BolterCliConversationsOutcome, type BolterCliDiscoveryOutcome, type BolterCliIdentityOutcome, type BolterCliSendOutcome } from "./cli-client";
 import { createBolterLoginInvocation, createBolterReceiveInvocation, decodeBolterReceiveBatch, validateBolterReceipt,
   type BolterCliAuthLink, type BolterCliBinding, type BolterCliRuntime, type BolterCliSelection,
@@ -85,6 +86,7 @@ export class BolterConnectionOwner {
     return this.retired ? "retired" : this.current() ? this.stateValue : "unavailable";
   }
   get listening(): boolean { return this.current() && this.confirmed && this.receiver !== null && this.receiverReady; }
+  get canShareFiles(): boolean { return this.current() && this.confirmed && !!this.decoders?.fileCreated; }
   private notifyReceiver(): void {
     try { if (this.current()) this.receiverObserver?.(); } catch { /* Observation failure does not undo durable handover. */ }
   }
@@ -100,6 +102,7 @@ export class BolterConnectionOwner {
     const outcome = await this.client.confirmIdentity(this.selection);
     if (outcome.status === "confirmed" && this.current()) {
       this.confirmed = true;
+      if (outcome.identity.label) this.selection = Object.freeze({ ...this.selection, label: outcome.identity.label });
       if (this.receiver === null) this.stateValue = "connected";
     } else {
       this.confirmed = false;
@@ -220,16 +223,33 @@ export class BolterConnectionOwner {
     if (this.current() && this.confirmed) this.stateValue = "connected";
     this.notifyReceiver();
   }
-  async prepareSend(): Promise<{ send(binding: BolterCliBinding, content: string): Promise<BolterCliSendOutcome> } | null> {
+  async prepareSend(): Promise<{ send(binding: BolterCliBinding, content: string, files?: readonly BolterAttachmentPayload[], reauthorize?: () => Promise<boolean>): Promise<BolterCliSendOutcome> } | null> {
     if (!this.current() || !this.confirmed || !this.selection || this.decoders?.version !== this.runtime.version || !this.decoders.receipt) return null;
     const decoders = this.decoders;
     try {
       const prepared = await this.native.prepareSend(this.selection, () => this.current() && this.confirmed);
-      return Object.freeze({ send: async (binding: BolterCliBinding, content: string): Promise<BolterCliSendOutcome> => {
+      return Object.freeze({ send: async (binding: BolterCliBinding, content: string, files?: readonly BolterAttachmentPayload[], reauthorize?: () => Promise<boolean>): Promise<BolterCliSendOutcome> => {
         const destination = Object.freeze({ ...binding });
         if (!this.current() || !this.confirmed) return { status: "unavailable", reason: "stale-authority" };
         let result;
-        try { result = await prepared.execute(destination, content); } catch { return { status: "uncertain", reason: "execution-failed" }; }
+        try {
+          if (files?.length) {
+            if (!decoders.fileCreated || !reauthorize) return { status: "unavailable", reason: "unsupported-output" };
+            const links: string[] = [];
+            for (const file of files) {
+              const upload = await this.native.prepareFileUpload(this.selection!, destination, file, () => this.current() && this.confirmed);
+              if (!await reauthorize() || !this.current()) return { status: "uncertain", reason: "stale-authority" };
+              const uploaded = await upload.execute();
+              if (uploaded.exitCode !== 0 || !this.current()) return { status: "uncertain", reason: "execution-failed" };
+              const { url } = decoders.fileCreated(JSON.parse(uploaded.stdout) as unknown);
+              const label = file.filename.replace(/[\r\n]/gu, " ").replace(/[\\[\]]/gu, "\\$&");
+              links.push(`- [${label}](<${url}>)`);
+            }
+            if (!await reauthorize() || !this.current()) return { status: "uncertain", reason: "stale-authority" };
+            content = `${content}\n\n${links.join("\n")}`;
+          }
+          result = await prepared.execute(destination, content);
+        } catch { return { status: "uncertain", reason: "execution-failed" }; }
         if (!this.current() || result.exitCode !== 0) return { status: "uncertain", reason: "stale-authority" };
         try {
           const receipt = validateBolterReceipt(decoders.receipt!(JSON.parse(result.stdout) as unknown));

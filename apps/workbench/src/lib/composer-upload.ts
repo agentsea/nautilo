@@ -67,9 +67,10 @@ export async function uploadComposerAttachment(
 }
 
 /** Shared native-picker ingestion; each composer retains its own Room-bound queue. */
-export function uploadPickedAttachment(file: { name: string; base64: string }, opts?: { roomId?: string | null }) {
+export function uploadPickedAttachment(file: { name: string; base64: string }, opts?: { roomId?: string | null; purpose?: "bolter" }) {
   const bytes = base64ToBytes(file.base64);
   return apiClient.uploadMessageAttachment(new Blob([bytes.buffer as ArrayBuffer]), file.name, {
     ...(opts?.roomId ? { roomId: opts.roomId } : {}),
+    ...(opts?.purpose ? { purpose: opts.purpose } : {}),
   });
 }

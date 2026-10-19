@@ -140,3 +140,21 @@ describe("owned Bolter relay transport", () => {
     complete("accepted"); await first;
   });
 });
+
+test("file peers can sequentially revalidate one pending send while old peers keep one-shot release", async () => {
+  const { bridge, live, sent } = fixture();
+  live.value = { ...live.value!, selectedProtocolVersion: 31 };
+  bridge.publish("relay-1", "human-1");
+  const abort = new AbortController(); let calls = 0;
+  const pending = bridge.request({ relayId: "relay-1", userId: "human-1", signal: abort.signal,
+    command: { action: "send", connectionId, generation: 1, outboxId: connectionId, bindingId: connectionId, bindingRevision: 0 },
+    authorize: async () => { calls++; return { chatId: "fixture-chat", threadRootId: null, content: "Fixture text" }; },
+  }).catch(() => null);
+  const command = sent[0] as RelayBolterCommand;
+  const message = { type: "relay:bolter-authorize" as const, version: 30 as const, scope: command.scope, correlationId: command.correlationId, outboxId: connectionId };
+  expect(await bridge.accept({ relayId: "relay-1", userId: "human-1", message })).toEqual({ ok: true });
+  expect(await bridge.accept({ relayId: "relay-1", userId: "human-1", message })).toEqual({ ok: true });
+  expect(calls).toBe(2);
+  abort.abort(); await pending;
+  expect(await bridge.accept({ relayId: "relay-1", userId: "human-1", message })).toMatchObject({ ok: false });
+});
