@@ -11,7 +11,7 @@ import { createProtectedTaskActivationParkedIntegrityInspector } from "./routes/
 import { lockProtectedTaskActivationDrainingLease, readProtectedTaskActivationOperationalPersistenceInTransaction } from "@nautilo/db";
 import { protectedTaskPendingAttentionRoutes } from "./routes/protected-task-pending-attention-routes";
 import { createProtectedTaskHumanResponse } from "./routes/protected-task-human-response";
-import { resolveTaskLocalExecutionCaptureTarget, taskNeedsLocalExecutionCapture } from "./local-execution-task-capture";
+import { createTaskLocalExecutionCaptureAdmission, resolveTaskLocalExecutionCaptureTarget, taskNeedsLocalExecutionCapture } from "./local-execution-task-capture";
 import { createBolterController, type BolterController } from "./messaging/bolter-controller";
 import { bolterRoutes } from "./routes/bolter";
 import { createExternalRoomExecutionService } from "./messaging/external-room-execution";
@@ -39,7 +39,8 @@ import { createProtectedTaskExternalRequestAuthority } from "./routes/protected-
 import { protectedTaskExternalRequestRoutes } from "./routes/protected-task-external-request-routes";
 import { createProtectedTaskClaudeExecution } from "./routes/protected-task-claude-execution";
 import { currentProtectedTaskForegroundCreationContext, type ProtectedTaskForegroundCreationContext } from "./routes/protected-task-foreground-creation-context";
-import { protectedTaskForegroundCreationIdentity, protectedTaskForegroundCreationCandidateIdentity } from "./routes/protected-task-foreground-creation-identity";
+import { protectedTaskForegroundCreationIdentity, protectedTaskForegroundCreationCandidateIdentity,
+  protectedTaskForegroundUpdateIdentity } from "./routes/protected-task-foreground-creation-identity";
 import type { ProtectedTaskCreationPlanV1 } from "@nautilo/runtime";
 import {decodeBackgroundProcessorWorkDescriptorV2} from "@nautilo/lattice-crypto/background";
 import { createHmacProtectedStenographerRecordCommitmentPort, createHmacRecordSemanticCommitmentPort, verifyRecordProductPostgresHandle } from "@nautilo/reflection-bridge/server";
@@ -76,9 +77,10 @@ import {
   assertRunnableNativeTaskSelection,
   isPersonalOnlyNativeTaskSelection,
   nativeTaskFundingPort,
+  withProtectedTaskFundingAuthority,
 } from "./lib/native-task-funding";
 import { assertTaskFundingAdmission, TaskFundingError } from "@nautilo/runtime";
-import { getLatestResumableTaskRun } from "@nautilo/db";
+import { getLatestResumableTaskRun, type NewTask, type Task } from "@nautilo/db";
 import { assertCanUseServerProviderCredentials } from "@nautilo/trust";
 import { memoryStatusRoutes } from "./routes/memory-status";
 import {
@@ -4508,10 +4510,20 @@ export async function createApp(options?: CreateAppOptions) {
               const context = getTaskCreationReturnContext();
               if (!context?.localExecutionSource) return null;
               const source = context.localExecutionSource;
-              if (context.ownerId !== candidate.requestorId || candidate.callingRoomId !== source.roomId) {
+              if (context.ownerId !== candidate.requestorId || candidate.callingRoomId !== source.roomId
+                || candidate.agentId !== source.agentId) {
                 throw new Error("Task project source changed. Create the Task again from the intended Room.");
               }
-              return source.withAdmission(async (signal) => {
+              return source.withBorrowedAdmission(createTaskLocalExecutionCaptureAdmission({
+                database: tx,
+                humanUserId: candidate.requestorId,
+                agentId: source.agentId,
+                roomId: source.roomId,
+                conversationId: source.conversationId,
+                ...(protectedCreation === undefined ? {} : {
+                  assertCurrentProtected: () => protectedCreation.assertCurrent(),
+                }),
+              }), async (signal) => {
                 const target = resolveTaskLocalExecutionCaptureTarget(context, candidate.requestorId, relayRegistry);
                 if (!target) {
                   throw new Error("This Mac cannot capture Task project access. Reconnect the original Desktop and create the Task again.");
@@ -4652,6 +4664,23 @@ export async function createApp(options?: CreateAppOptions) {
     await prepareHarnessStop(taskId);
     return runtimeStopTask(taskLifecycleDeps(), taskId);
   };
+  const assertTaskMutationFunding = async (
+    task: Task,
+    operation: "update" | "unpause",
+    patch?: Readonly<Partial<NewTask>>,
+  ): Promise<void> => {
+    const definedPatch = Object.fromEntries(Object.entries(patch ?? {}).filter(([, value]) => value !== undefined));
+    const prospective = { ...task, ...definedPatch };
+    const priorRun = await getLatestResumableTaskRun(getServerDirectDb(), task.id);
+    if (task.fundingMode === "caller" && priorRun && prospective.targetChat !== task.targetChat) {
+      throw new TaskFundingError("funding_source_changed");
+    }
+    if (task.fundingMode === "caller" && priorRun && operation === "update") {
+      await assertRunnableNativeTaskSelection(prospective);
+    }
+    const admission = await assertTaskFundingAdmission(prospective, priorRun);
+    if (!admission) await assertCanUseServerProviderCredentials(task.requestorId, `task_${operation}`);
+  };
   setTaskToolRuntime({
     onDefinitionChanged: (task) => eventBus.emit({ type: "task.status", taskId: task.id, ownerId: task.ownerId, status: task.status }),
     db: getServerDirectDb(),
@@ -4667,6 +4696,27 @@ export async function createApp(options?: CreateAppOptions) {
       const source = currentProtectedTaskForegroundCreationContext();
       if (source === null) throw new Error("Protected Task creation requires the current admitted foreground turn");
       return createTaskForAgentTool(input, source);
+    },
+    updateProtectedTask: async input => {
+      const source = currentProtectedTaskForegroundCreationContext();
+      if (source === null) throw new Error("Protected Task update requires the current admitted foreground turn");
+      const identity = protectedTaskForegroundUpdateIdentity({
+        invocation: getTaskCreationInvocationProvenance(), taskId: input.taskId,
+        requestorId: input.requestorId, agentId: input.agentId, callingRoomId: input.callingRoomId,
+      });
+      const bridge = createPostgresJsCanonicalBridgeConnection(getServerDirectDb());
+      const preflight = await bridge.transaction(async (transaction, executor) => {
+        if (executor === undefined) throw new TypeError("Protected Task update needs its canonical product executor");
+        return source.withProduct({ taskId: input.taskId, transaction, executor,
+          use: () => source.preflightProtectedTaskUpdate({ operationId: identity.operationId, request: input }) });
+      }, { isolationLevel: "read committed" });
+      await withProtectedTaskFundingAuthority(source.assertCurrent, () =>
+        assertTaskMutationFunding(preflight.source, "update", preflight.patch));
+      return bridge.transaction(async (transaction, executor) => {
+        if (executor === undefined) throw new TypeError("Protected Task update needs its canonical product executor");
+        return source.withProduct({ taskId: input.taskId, transaction, executor,
+          use: () => source.updateProtectedTask({ operationId: identity.operationId, request: input, preflight }) });
+      }, { isolationLevel: "read committed" });
     },
     createProtectedHarnessTask: async input => {
       if (input.harness === "opencode-acp" || input.callingRoomId === null) {
@@ -4800,19 +4850,8 @@ export async function createApp(options?: CreateAppOptions) {
       };
     },
     computeNextFireAt: runtimeComputeNextFireAt,
-    assertMutationFunding: async ({ task, operation, patch }) => {
-      const definedPatch = Object.fromEntries(Object.entries(patch ?? {}).filter(([, value]) => value !== undefined));
-      const prospective = { ...task, ...definedPatch };
-      const priorRun = await getLatestResumableTaskRun(getServerDirectDb(), task.id);
-      if (task.fundingMode === "caller" && priorRun && prospective.targetChat !== task.targetChat) {
-        throw new TaskFundingError("funding_source_changed");
-      }
-      if (task.fundingMode === "caller" && priorRun && operation === "update") {
-        await assertRunnableNativeTaskSelection(prospective);
-      }
-      const admission = await assertTaskFundingAdmission(prospective, priorRun);
-      if (!admission) await assertCanUseServerProviderCredentials(task.requestorId, `task_${operation}`);
-    },
+    assertMutationFunding: ({ task, operation, patch }) =>
+      assertTaskMutationFunding(task, operation, patch),
     canResumeResearch: (task) => canResumeSecurityResearchContextFailure(getServerDirectDb(), task),
     // lifecycle commands funnel through the runtime fns (shared abort
     // seam); `unpauseTask` kicks this observer to re-claim for checkpoint resume.

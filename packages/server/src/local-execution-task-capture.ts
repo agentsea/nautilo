@@ -1,5 +1,13 @@
 import { RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION, type RelayCapabilities } from "@nautilo/relay";
-import type { TaskCreationReturnContext } from "@nautilo/agent";
+import {
+  roomGraphThreadFromLaneThread,
+  type TaskCreationReturnContext,
+} from "@nautilo/agent";
+import { getEncryptionTransitionPolicy } from "@nautilo/db";
+import {
+  readHumanTerminalSourceAuthority,
+  type HumanTerminalSourceAuthorityDatabase,
+} from "@nautilo/trust";
 
 /** Protected repo-docs keeps the model file-only while its trusted wrapper
  * needs the same captured project authority as an executable Task. */
@@ -25,6 +33,50 @@ interface CaptureRegistry {
   getPairingGeneration(relayId: string): string | null;
   getLocalExecutionPairingGeneration(relayId: string): string | null;
   isRelayHeartbeatFresh(relayId: string): boolean;
+}
+
+type TaskLocalExecutionCaptureDatabase = HumanTerminalSourceAuthorityDatabase
+  & Parameters<typeof getEncryptionTransitionPolicy>[0];
+
+interface TaskLocalExecutionCaptureAdmissionInput {
+  readonly database: TaskLocalExecutionCaptureDatabase;
+  readonly humanUserId: string;
+  readonly agentId: string;
+  readonly roomId: string;
+  readonly conversationId: string;
+  readonly assertCurrentProtected?: () => Promise<void>;
+}
+
+interface TaskLocalExecutionCaptureAdmissionDeps {
+  readonly readPolicy?: (database: TaskLocalExecutionCaptureDatabase) =>
+    Promise<Readonly<{ mode: string; revision: number }>>;
+  readonly readSourceAuthority?: typeof readHumanTerminalSourceAuthority;
+}
+
+/** Supply the Human Terminal owner with transaction-bound policy and source
+ * facts while its original signal and before/after algorithm remain in force. */
+export function createTaskLocalExecutionCaptureAdmission(
+  input: TaskLocalExecutionCaptureAdmissionInput,
+  deps: TaskLocalExecutionCaptureAdmissionDeps = {},
+): Parameters<NonNullable<TaskCreationReturnContext["localExecutionSource"]>["withBorrowedAdmission"]>[0] {
+  const readPolicy = deps.readPolicy ?? getEncryptionTransitionPolicy;
+  const readSourceAuthority = deps.readSourceAuthority ?? readHumanTerminalSourceAuthority;
+  return {
+    readPolicy: () => readPolicy(input.database),
+    readScope: () => readSourceAuthority(input.database, {
+      humanUserId: input.humanUserId,
+      agentId: input.agentId,
+      roomId: input.roomId,
+      graphThreadId: roomGraphThreadFromLaneThread(input.conversationId),
+    }),
+    async validateProtected() {
+      if (!input.assertCurrentProtected) throw new Error("TASK_LOCAL_EXECUTION_PROTECTED_SOURCE_UNAVAILABLE");
+      // The protected product owner pins the enforcement revision while this
+      // borrowed reader loads that same policy through its held transaction.
+      // Human Terminal still compares both reads around dispatch.
+      await input.assertCurrentProtected();
+    },
+  };
 }
 
 /** Ordinary-origin context pins the raw pairing row. The managed wire carries

@@ -12,6 +12,7 @@ import { PostgresDomainKeyAuthorityRepository, PostgresNamespaceProductAuthority
 import { createProtectedTaskCreationAdmissionV1, type ProtectedTaskCreationResolutionInputV1 } from "@nautilo/runtime";
 import { createProtectedTaskRequesterPrivateRoomResolver } from "./protected-task-requester-private-room";
 import { createProtectedTaskForegroundCreationPublication } from "./protected-task-foreground-creation-publication";
+import { createProtectedTaskForegroundUpdatePublication } from "./protected-task-foreground-update-publication";
 import type { ProtectedTaskForegroundCreationContext } from "./protected-task-foreground-creation-context";
 import { parseClaudeTaskExecutionMetadata } from "../claude/task-execution-route";
 
@@ -123,6 +124,41 @@ export function createProtectedTaskForegroundCreationOwner(input: Omit<Publicati
         assertCurrent: loan.assertCurrent });
     },
   });
+  const updatePublication = createProtectedTaskForegroundUpdatePublication({
+    owner: input.owner,
+    crypto: input.crypto,
+    entities: input.entities,
+    publication: input.publication,
+    withCurrentProduct: async (request, use) => {
+      const loan = current();
+      if (request.taskId !== loan.taskId
+        || request.ownerId !== input.subject.userId
+        || request.requestorId !== input.subject.userId
+        || request.agentId !== input.subject.agentId
+        || request.callingRoomId !== input.subject.roomId) unavailable();
+      return use({
+        transaction: loan.transaction,
+        product: loan.product,
+        restricted: input.restricted,
+        resolveCurrentForegroundDefinitionAuthorization: loan.authority.resolveCurrentForegroundEntityObjectWrite,
+        resolveAuthority: async namespaceId => {
+          const fact = await privateFact(request, namespaceId);
+          if (fact.status !== "authorized") return null;
+          return {
+            authorityVersion: 1,
+            kind: "requester_private_namespace",
+            keyClass: "ai",
+            requesterHumanId: fact.subjectHumanId,
+            namespaceId: fact.namespaceId,
+            domainId: fact.domainId,
+            expectedAccessRevision: fact.accessRevision,
+            expectedPolicyRevision: fact.policyRevision,
+          };
+        },
+        assertCurrent: loan.assertCurrent,
+      });
+    },
+  });
   const context: ProtectedTaskForegroundCreationContext = {
     admission, assertCurrent,
     publishProtected: async request => {
@@ -130,6 +166,8 @@ export function createProtectedTaskForegroundCreationOwner(input: Omit<Publicati
       if (request.candidate.id !== loan.taskId || request.transaction !== loan.transaction || request.executor !== loan.executor) unavailable();
       return publication.publish(request);
     },
+    preflightProtectedTaskUpdate: request => updatePublication.preflight(request),
+    updateProtectedTask: request => updatePublication.publish(request),
     withProduct: async request => {
       assertLive();
       if (loans.getStore() !== undefined) throw new TypeError("Protected Task product creation cannot nest");
@@ -163,5 +201,10 @@ export function createProtectedTaskForegroundCreationOwner(input: Omit<Publicati
       } finally { active = false; authority?.destroy(); }
     },
   };
-  return Object.freeze({ context, dispose() { if (disposed) return; disposed = true; publication.dispose(); } });
+  return Object.freeze({ context, dispose() {
+    if (disposed) return;
+    disposed = true;
+    publication.dispose();
+    updatePublication.dispose();
+  } });
 }

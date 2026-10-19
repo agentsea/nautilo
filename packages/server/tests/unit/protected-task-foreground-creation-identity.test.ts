@@ -2,7 +2,8 @@ import { expect, test } from "bun:test";
 import type { TaskCreationInvocationProvenance } from "@nautilo/agent";
 import { classifyProtectedTaskMetadataV1 } from "@nautilo/types";
 import type { ProtectedTaskCreationPlanV1, TaskCreateInput } from "@nautilo/runtime";
-import { protectedTaskForegroundCreationIdentity, protectedTaskForegroundCreationCandidateIdentity } from "../../src/routes/protected-task-foreground-creation-identity";
+import { protectedTaskForegroundCreationIdentity, protectedTaskForegroundCreationCandidateIdentity,
+  protectedTaskForegroundUpdateIdentity } from "../../src/routes/protected-task-foreground-creation-identity";
 
 const metadata = classifyProtectedTaskMetadataV1({});
 if (metadata.status !== "supported") throw new Error("Fixture metadata unsupported");
@@ -56,4 +57,18 @@ test("caller-provided IDs and fresh clocks cannot substitute for missing trusted
     { ...invocation, effect: { ...invocation.effect!, timeReferenceMs: NaN } }]) {
     expect(() => identity({ invocation: provenance })).toThrow("trusted checkpointed tool effect");
   }
+});
+
+test("Task updates use the trusted tool effect and exact Task coordinate", () => {
+  const first = protectedTaskForegroundUpdateIdentity({ invocation, taskId: "task-1",
+    requestorId: "user", agentId: "agent", callingRoomId: "room" });
+  expect(protectedTaskForegroundUpdateIdentity({ invocation, taskId: "task-1",
+    requestorId: "user", agentId: "agent", callingRoomId: "room" })).toEqual(first);
+  expect(protectedTaskForegroundUpdateIdentity({ invocation, taskId: "task-2",
+    requestorId: "user", agentId: "agent", callingRoomId: "room" })).not.toEqual(first);
+  expect(protectedTaskForegroundUpdateIdentity({ invocation: { ...invocation,
+    effect: { ...invocation.effect!, toolCallId: "other" } }, taskId: "task-1",
+    requestorId: "user", agentId: "agent", callingRoomId: "room" })).not.toEqual(first);
+  expect(() => protectedTaskForegroundUpdateIdentity({ invocation, taskId: "task-1",
+    requestorId: "other", agentId: "agent", callingRoomId: "room" })).toThrow(/trusted checkpointed tool effect/u);
 });

@@ -1209,9 +1209,11 @@ export {
 } from "./task/current-task-runtime-authority.ts";
 export {
   withVerifiedForegroundTaskDefinitionPublication,
+  withOpenForegroundTaskDefinition,
   publishVerifiedForegroundTaskDefinition,
   type VerifiedForegroundTaskDefinitionPublication,
   type InspectForegroundTaskDefinitionInput,
+  type OpenForegroundTaskDefinitionInput,
   inspectMappedTaskDefinitionAccessLineage,
   readVerifiedTaskDefinitionAccessLineage,
   isVerifiedMappedTaskContentMetadataProof,

@@ -84,6 +84,34 @@ describe("task tool", () => {
     expect(update).not.toHaveBeenCalled();
   });
 
+  test("protected update routes only the requested patch and foreground identity through the server seam", async () => {
+    let received: Parameters<NonNullable<TaskToolRuntime["updateProtectedTask"]>>[0] | null = null;
+    stubRuntime({
+      updateProtectedTask: async input => {
+        received = input;
+        return { id: input.taskId, ownerId: input.ownerId, status: "paused",
+          scheduleKind: input.scheduleKind ?? "now", targetChat: input.targetChat ?? "orphan",
+          nextFireAt: null, resultDelivery: input.resultDelivery ?? "wake" };
+      },
+    });
+    const getTask = spyOn(db, "getTaskById").mockResolvedValue({
+      id: "protected-task", ownerId: OWNER_ID, requestorId: OWNER_ID, agentId: AGENT_ID,
+      callingRoomId: ROOM_ID, status: "paused", contentRepresentation: "protected",
+    } as never);
+    restores.push(() => getTask.mockRestore());
+
+    const result = await dispatchTaskCommand({ command: "update", taskId: "protected-task",
+      prompt: "new private text", tools: [], target_chat: "last_in_namespace" }, CTX);
+
+    expect(received as unknown).toEqual({ taskId: "protected-task", ownerId: OWNER_ID,
+      requestorId: OWNER_ID, agentId: AGENT_ID, callingRoomId: ROOM_ID,
+      prompt: "new private text", toolsMode: "none", toolsWhitelist: [],
+      targetChat: "last_in_namespace" });
+    expect(result).not.toContain("new private text");
+    expect(result).toContain('"status":"paused"');
+    expect(db.getTaskByIdWithMutationVersion).not.toHaveBeenCalled();
+  });
+
   test("non-Plain native create fails closed when protected publication is unavailable", async () => {
     const canUseLegacyTaskContent = async () => false;
     stubRuntime({ canUseLegacyTaskContent });
@@ -1619,7 +1647,25 @@ describe("task tool dispatcher", () => {
       expectedMutationVersion: "fixture-version", expectedContentRevision: 7,
     }, expect.objectContaining({ prompt: "new" }));
     expect(unconditional).not.toHaveBeenCalled();
-    expect(getTask).toHaveBeenCalledTimes(1);
+    expect(getTask).toHaveBeenCalledTimes(2);
+    expect(db.getTaskByIdWithMutationVersion).toHaveBeenCalledWith(expect.anything(), "task-1", {
+      ordinaryOnly: true,
+    });
+  });
+
+  test("update does not read or mutate a Task that becomes protected after the lifecycle probe", async () => {
+    stubRuntime();
+    const getTask = spyOn(db, "getTaskById").mockResolvedValue({
+      id: "task-1", ownerId: OWNER_ID, status: "pending", contentRepresentation: "ordinary",
+    } as never);
+    const versioned = spyOn(db, "getTaskByIdWithMutationVersion").mockResolvedValue(undefined);
+    const update = spyOn(db, "updateTaskIfCurrent");
+    restores.push(() => getTask.mockRestore(), () => versioned.mockRestore(), () => update.mockRestore());
+
+    expect(await dispatchTaskCommand({ command: "update", taskId: "task-1", prompt: "new" }, CTX))
+      .toBe("Task not found.");
+    expect(versioned).toHaveBeenCalledWith(expect.anything(), "task-1", { ordinaryOnly: true });
+    expect(update).not.toHaveBeenCalled();
   });
 
   test("update happy path recomputes next_fire_at", async () => {

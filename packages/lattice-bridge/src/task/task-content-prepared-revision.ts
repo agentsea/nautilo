@@ -528,8 +528,10 @@ export function createPreparedForegroundTaskDefinitionCryptoRevisionV1(input: Re
   authority: TaskContentAuthorityV1;
   prepared: PreparedDeviceWrappedAgentObject;
 }>): PreparedTaskContentCryptoRevisionV1 {
-  if (input.coordinate.kind !== "definition" || input.coordinate.contentRevision !== 1) {
-    throw new TypeError("Foreground Task creation requires a new definition");
+  if (input.coordinate.kind !== "definition"
+    || !Number.isSafeInteger(input.coordinate.contentRevision)
+    || input.coordinate.contentRevision < 1) {
+    throw new TypeError("Foreground Task definition revision is invalid");
   }
   const prepared = readPreparedDeviceWrappedAgentObjectSnapshot(input.prepared);
   assertAuthenticPreparedDeviceWrappedAgentObjectAccessManifestGenesisSet(prepared.access);

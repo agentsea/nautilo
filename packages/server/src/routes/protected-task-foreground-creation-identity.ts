@@ -5,12 +5,34 @@ import type { ProtectedTaskCreationPlanV1, TaskCreateInput } from "@nautilo/runt
 import { assertProtectedTaskOperationalMetadataProjectionV1, classifyProtectedTaskMetadataV1 } from "@nautilo/types";
 
 function canonical(value: unknown): unknown {
+  if (value instanceof Date) return value.toISOString();
   if (Array.isArray(value)) return value.map(canonical);
   if (value !== null && typeof value === "object") {
     return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0)
       .map(([key, item]) => [key, canonical(item)]));
   }
   return value;
+}
+
+function trustedForegroundEffectDigest(input: Readonly<{
+  invocation: TaskCreationInvocationProvenance | null;
+  requestorId: string;
+  agentId: string;
+  callingRoomId: string | null;
+}>): Readonly<{ effectDigest: string; timeReferenceMs: number }> {
+  const { invocation } = input;
+  const effect = invocation?.effect;
+  if (invocation === null || effect === undefined || (invocation.entrypoint !== "foreground.main"
+    && invocation.entrypoint !== "foreground.fork")
+    || invocation.ownerId !== input.requestorId || invocation.roomId !== input.callingRoomId
+    || !effect.turnId || !effect.toolCallId || !Number.isSafeInteger(effect.timeReferenceMs)
+    || effect.timeReferenceMs < 0) throw new TypeError("Protected Task operation needs its trusted checkpointed tool effect");
+  return Object.freeze({
+    effectDigest: createHash("sha256").update("nautilo/task-foreground-effect/v1\0")
+      .update(JSON.stringify([invocation.ownerId, invocation.roomId, input.agentId,
+        invocation.entrypoint, effect.turnId, effect.toolCallId])).digest("hex"),
+    timeReferenceMs: effect.timeReferenceMs,
+  });
 }
 
 /** Only the trusted invocation boundary supplies the checkpointed tool effect.
@@ -21,15 +43,8 @@ export function protectedTaskForegroundCreationIdentity(input: Readonly<{
   candidate: TaskCreateInput;
 }>) {
   const { invocation, prepared, candidate: c } = input;
-  const effect = invocation?.effect;
-  if (effect === undefined || (invocation?.entrypoint !== "foreground.main"
-    && invocation?.entrypoint !== "foreground.fork")
-    || invocation.ownerId !== c.requestorId || invocation.roomId !== (c.callingRoomId ?? null)
-    || !effect.turnId || !effect.toolCallId || !Number.isSafeInteger(effect.timeReferenceMs)
-    || effect.timeReferenceMs < 0) throw new TypeError("Protected Task creation needs its trusted checkpointed tool effect");
-  const effectDigest = createHash("sha256").update("nautilo/task-foreground-effect/v1\0")
-    .update(JSON.stringify([invocation.ownerId, invocation.roomId, c.agentId,
-      invocation.entrypoint, effect.turnId, effect.toolCallId])).digest("hex");
+  const { effectDigest, timeReferenceMs } = trustedForegroundEffectDigest({ invocation,
+    requestorId: c.requestorId, agentId: c.agentId, callingRoomId: c.callingRoomId ?? null });
   assertProtectedTaskOperationalMetadataProjectionV1(prepared.operationalMetadata);
   const payload = encodeTaskPayloadV1(prepared.payload);
   const metadata = fingerprintTaskOperationalMetadataV1(prepared.operationalMetadata);
@@ -45,7 +60,7 @@ export function protectedTaskForegroundCreationIdentity(input: Readonly<{
       awaitResponse: c.awaitResponse ?? false, selectionProfile: c.selectionProfile ?? "balanced",
       selectionSpec: c.selectionSpec ?? null, requestedModelId: c.requestedModelId ?? null,
       timeLimitSeconds: c.timeLimitSeconds ?? null, parentTaskId: c.parentTaskId ?? null,
-      depth: c.depth ?? 0, timeReferenceMs: effect.timeReferenceMs,
+      depth: c.depth ?? 0, timeReferenceMs,
     };
     const digest = createHash("sha256").update("nautilo/task-foreground-definition/v1\0")
       .update(effectDigest).update(JSON.stringify(canonical(operational))).update(payload).update(metadata).digest();
@@ -55,8 +70,23 @@ export function protectedTaskForegroundCreationIdentity(input: Readonly<{
     const hex = digest.subarray(0, 16).toString("hex");
     digest.fill(0);
     return Object.freeze({ taskId: `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`,
-      operationId: `task-foreground-effect:${effectDigest}`, scheduleReference: new Date(effect.timeReferenceMs) });
+      operationId: `task-foreground-effect:${effectDigest}`, scheduleReference: new Date(timeReferenceMs) });
   } finally { payload.fill(0); metadata.fill(0); }
+}
+
+/** Stable private publication identity for one trusted foreground Task edit.
+ * The Task coordinate prevents one captured tool effect from crossing Tasks. */
+export function protectedTaskForegroundUpdateIdentity(input: Readonly<{
+  invocation: TaskCreationInvocationProvenance | null;
+  taskId: string;
+  requestorId: string;
+  agentId: string;
+  callingRoomId: string | null;
+}>): Readonly<{ operationId: string }> {
+  const { effectDigest } = trustedForegroundEffectDigest(input);
+  const digest = createHash("sha256").update("nautilo/task-foreground-update/v1\0")
+    .update(effectDigest).update("\0").update(input.taskId).digest("hex");
+  return Object.freeze({ operationId: `task-foreground-update:${digest}` });
 }
 
 /** Discover the exact lock coordinate before holding any Room locks. The

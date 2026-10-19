@@ -3,6 +3,8 @@ import { ClassifiedDataOperationError } from "@nautilo/lattice-bridge";
 import type { CreateTaskDeps, ProtectedTaskCreationPlanV1 } from "@nautilo/runtime";
 import type { CanonicalTranscriptTx } from "@nautilo/trust";
 import type { PostgresJsBridgeExecutor } from "@nautilo/db";
+import type { TaskToolRuntime } from "@nautilo/agent";
+import type { ProtectedTaskForegroundUpdatePreflight } from "./protected-task-foreground-update-publication";
 
 type Create = CreateTaskDeps<ProtectedTaskCreationPlanV1>;
 export type ProtectedTaskForegroundCreationContext = Readonly<{
@@ -10,6 +12,13 @@ export type ProtectedTaskForegroundCreationContext = Readonly<{
   publishProtected(input: Parameters<NonNullable<Create["publishProtected"]>>[0] &
     Readonly<{ transaction: CanonicalTranscriptTx; executor: PostgresJsBridgeExecutor; operationId: string }>): ReturnType<NonNullable<Create["publishProtected"]>>;
   assertCurrent(): Promise<void>;
+  preflightProtectedTaskUpdate(input: Readonly<{ operationId: string;
+    request: Parameters<NonNullable<TaskToolRuntime["updateProtectedTask"]>>[0] }>):
+    Promise<ProtectedTaskForegroundUpdatePreflight>;
+  updateProtectedTask(input: Readonly<{ operationId: string;
+    request: Parameters<NonNullable<TaskToolRuntime["updateProtectedTask"]>>[0];
+    preflight: ProtectedTaskForegroundUpdatePreflight }>):
+    ReturnType<NonNullable<TaskToolRuntime["updateProtectedTask"]>>;
   withProduct<Value>(input: Readonly<{ taskId: string; transaction: CanonicalTranscriptTx; executor: PostgresJsBridgeExecutor;
     use(): Promise<Value> }>): Promise<Value>;
 }>;
@@ -40,6 +49,18 @@ export async function withProtectedTaskForegroundCreationContext<Value>(
     publishProtected: async input => {
       await assertCurrent();
       const result = await source.publishProtected(input);
+      await assertCurrent();
+      return result;
+    },
+    preflightProtectedTaskUpdate: async input => {
+      await assertCurrent();
+      const result = await source.preflightProtectedTaskUpdate(input);
+      await assertCurrent();
+      return result;
+    },
+    updateProtectedTask: async input => {
+      await assertCurrent();
+      const result = await source.updateProtectedTask(input);
       await assertCurrent();
       return result;
     },

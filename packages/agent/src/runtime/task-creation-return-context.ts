@@ -4,6 +4,7 @@ import type {
   TrustedLiveMiniAppSessionContext,
 } from "@nautilo/types";
 import type { NautiloState, TrustedExecutionEntrypoint } from "../agent/state";
+import type { BorrowedHumanTerminalAdmission } from "../tools/terminal/admission";
 
 /**
  * Process-local creation facts for an immediate Task started by one direct
@@ -25,6 +26,10 @@ export interface TaskCreationReturnContext {
     readonly conversationId: string;
     readonly agentId: string;
     withAdmission<T>(work: (signal: AbortSignal) => Promise<T>): Promise<T>;
+    withBorrowedAdmission<T>(
+      admission: BorrowedHumanTerminalAdmission,
+      work: (signal: AbortSignal) => Promise<T>,
+    ): Promise<T>;
   };
 }
 

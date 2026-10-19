@@ -2,7 +2,39 @@ import { expect, spyOn, test } from "bun:test";
 import { RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION, RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION,
   type RelayLocalExecutionDelegationCapture, type RelayServerMessage } from "@nautilo/relay";
 import { InMemoryRelayRegistry } from "@nautilo/runtime";
-import { resolveTaskLocalExecutionCaptureTarget, taskNeedsLocalExecutionCapture } from "../../src/local-execution-task-capture";
+import { createTaskLocalExecutionCaptureAdmission, resolveTaskLocalExecutionCaptureTarget,
+  taskNeedsLocalExecutionCapture } from "../../src/local-execution-task-capture";
+
+test("capture admission reads policy and source facts through the borrowed transaction", async () => {
+  const database = { select() { throw new Error("dependency should receive the exact borrowed handle"); } };
+  const events: string[] = [];
+  const admission = createTaskLocalExecutionCaptureAdmission({ database: database as never,
+    humanUserId: "human", agentId: "agent", roomId: "room", conversationId: "lane-thread",
+    assertCurrentProtected: async () => { events.push("protected"); } }, {
+    readPolicy: async received => {
+      expect(received).toBe(database as never); events.push("policy");
+      return { mode: "full_encryption", shadowBehavior: "strict", revision: 4 };
+    },
+    readSourceAuthority: async (received, input) => {
+      expect(received).toBe(database as never); events.push("scope");
+      expect(input).toEqual({ humanUserId: "human", agentId: "agent", roomId: "room", graphThreadId: "lane-thread" });
+      return { roomId: "room", graphThreadId: "lane-thread", agentActorId: "agent-actor" };
+    },
+  });
+  expect(await admission.readPolicy()).toMatchObject({ mode: "full_encryption", revision: 4 });
+  expect(await admission.readScope()).toEqual({ roomId: "room", graphThreadId: "lane-thread", agentActorId: "agent-actor" });
+  await admission.validateProtected({ mode: "full_encryption", revision: 4 });
+  expect(events).toEqual(["policy", "scope", "protected"]);
+});
+
+test("capture admission refuses protected policy without the current protected owner", async () => {
+  const admission = createTaskLocalExecutionCaptureAdmission({ database: {} as never,
+    humanUserId: "human", agentId: "agent", roomId: "room", conversationId: "thread" }, {
+    readPolicy: async () => ({ mode: "full_encryption", shadowBehavior: "strict", revision: 1 }),
+    readSourceAuthority: async () => null,
+  });
+  expect(await admission.validateProtected({ mode: "full_encryption", revision: 1 }).then(() => false, () => true)).toBeTrue();
+});
 
 test("only protected file-only repo-docs adds project capture; ordinary admission stays identical", () => {
   for (const preset of ["task", "repo_docs", "schedule", "in_scope"]) {

@@ -3,7 +3,7 @@ import { and, asc, eq } from "drizzle-orm";
 import { TASK_FUNDING_FAILURE_CODES } from "@nautilo/types";
 import { QueryBuilder, type PgTable } from "drizzle-orm/pg-core";
 import type { DirectDatabase } from "../../src/config/direct-database";
-import { getTaskById, getTaskRuns, listTasksForOwner } from "../../src/queries/tasks";
+import { getTaskById, getTaskByIdWithMutationVersion, getTaskRuns, listTasksForOwner } from "../../src/queries/tasks";
 import { tasks } from "../../src/schema/tasks";
 import { taskRuns } from "../../src/schema/task-runs";
 
@@ -87,6 +87,17 @@ test("protected detail selects owner-fenced Task metadata and closed Run funding
   expect(runQuery.params).toEqual([...TASK_FUNDING_FAILURE_CODES, ownerId]);
   expect(runQuery.sql).toContain('"funding_binding"');
   expect(runQuery.sql).toContain('order by "task_runs"."started_at" asc');
+});
+
+test("protected mutation snapshot adds tuple identity without selecting Task bodies", async () => {
+  const { db, queries } = capturedDetailDb();
+  await getTaskByIdWithMutationVersion(db, ownerId, { lifecycleOnly: true, ownerId });
+  const query = queries[0]!;
+  expect(query.sql).not.toContain('"prompt"');
+  expect(query.sql).not.toContain('"expected_output"');
+  expect(query.sql).toContain('xmin::text');
+  expect(query.sql).toContain('"tasks"."owner_id" =');
+  expect(query.params.filter(value => value === ownerId)).toHaveLength(2);
 });
 
 test("ordinary detail query text and ordering remain the original full-row contract", async () => {

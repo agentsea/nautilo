@@ -14,7 +14,7 @@ import { deriveTaskContentCryptoObjectIdV1, taskContentRevisionObjectIdV1, finge
   fingerprintTaskContentNamespaceV1, sameTaskContentCoordinateV1, taskContentObjectTypeV1,
   type TaskContentProductStorePort, type TaskContentRevisionLifecycleV1, type VerifiedForegroundTaskDefinitionPublication,
   type TaskDefinitionContentCoordinateV1, type TaskContentCoordinateV1 } from "../../task/task-content-repository.ts";
-import { encodeTaskPayloadV1, type TaskPayloadV1 } from "../../task/task-payload-v1.ts";
+import { decodeTaskDefinitionContent, encodeTaskPayloadV1, type TaskPayloadV1 } from "../../task/task-payload-v1.ts";
 import { cryptoTypedDb, executeTypedCryptoQuery } from "../storage/postgres-lattice-storage.ts";
 import { assertVerifiedCryptoPostgresHandle, withVerifiedCryptoPostgresTransaction,
   type CryptoPostgresHandle } from "../storage/postgres-lattice-storage.ts";
@@ -141,6 +141,7 @@ export function readVerifiedForegroundTaskDefinitionAccessRevision(
 
 export type InspectForegroundTaskDefinitionInput = Readonly<{
   handle: CryptoPostgresHandle; crypto: LatticeCrypto; taskId: string; expectedAgentId: string;
+  contentRevision?: number;
   payload: TaskPayloadV1; currentAuthority: TaskContentAuthorityV1; entities: AgentEntityCryptoInvocation;
   resolveForegroundAgentAcceptedExecutionEvidence?: Parameters<typeof readDurableTaskContentPublication>[0]["resolveForegroundAgentAcceptedExecutionEvidence"];
   resolveHistoricalAgentSignerAuthority: Parameters<typeof readDurableTaskContentPublication>[0]["resolveHistoricalAgentSignerAuthority"];
@@ -152,26 +153,54 @@ export type InspectForegroundTaskDefinitionInput = Readonly<{
 export async function withVerifiedForegroundTaskDefinitionPublication<Value>(input: InspectForegroundTaskDefinitionInput & Readonly<{
   use(proof: VerifiedForegroundTaskDefinitionPublication): Promise<Value>;
 }>): Promise<Readonly<{ status: "missing" | "unavailable" }> | Readonly<{ status: "verified"; value: Value }>> {
-  return inspectDefinition({ ...input, coordinate: { kind: "definition", taskId: input.taskId, contentRevision: 1 },
-    expectedPayload: encodeTaskPayloadV1(input.payload) });
+  const contentRevision = input.contentRevision ?? 1;
+  if (!Number.isSafeInteger(contentRevision) || contentRevision < 1) throw new TypeError("Foreground Task definition revision is invalid");
+  return inspectDefinition({ ...input, coordinate: { kind: "definition", taskId: input.taskId, contentRevision },
+    signerPolicy: "agent_creation",
+    consume: plaintext => {
+      const expected = encodeTaskPayloadV1(input.payload);
+      try {
+        if (!same(plaintext, expected)) throw new TypeError("Foreground Task stored definition source changed");
+      } finally { expected.fill(0); }
+      const proof = Object.freeze({ kind: "verified_foreground_task_definition" as const });
+      return Promise.resolve({ proof, use: () => input.use(proof) });
+    } });
+}
+
+export type OpenForegroundTaskDefinitionInput = Omit<InspectForegroundTaskDefinitionInput, "payload">;
+
+/** Open one exact current foreground definition only for the supplied callback.
+ * Plaintext bytes and the Namespace key loan are wiped before this returns. */
+export async function withOpenForegroundTaskDefinition<Value>(input: OpenForegroundTaskDefinitionInput & Readonly<{
+  use(payload: TaskPayloadV1): Promise<Value>;
+}>): Promise<Readonly<{ status: "missing" | "unavailable" }> | Readonly<{ status: "opened"; value: Value }>> {
+  const contentRevision = input.contentRevision ?? 1;
+  if (!Number.isSafeInteger(contentRevision) || contentRevision < 1) throw new TypeError("Foreground Task definition revision is invalid");
+  const result = await inspectDefinition({ ...input,
+    coordinate: { kind: "definition", taskId: input.taskId, contentRevision },
+    signerPolicy: "supported_current",
+    consume: plaintext => Promise.resolve({ use: () => input.use(decodeTaskDefinitionContent(plaintext).payload) }),
+  });
+  return result.status === "verified" ? { status: "opened", value: result.value } : result;
 }
 
 async function inspectDefinition<Value>(input:
   Omit<InspectForegroundTaskDefinitionInput, "taskId" | "payload"> & Readonly<{
     coordinate: TaskDefinitionContentCoordinateV1;
-    expectedPayload: Uint8Array;
-    use(proof: VerifiedForegroundTaskDefinitionPublication): Promise<Value>;
+    signerPolicy: "agent_creation" | "supported_current";
+    consume(plaintext: Uint8Array): Promise<Readonly<{
+      proof?: VerifiedForegroundTaskDefinitionPublication;
+      use(): Promise<Value>;
+    }>>;
   }>): Promise<Readonly<{ status: "missing" | "unavailable" }> | Readonly<{ status: "verified"; value: Value }>> {
   assertVerifiedCryptoPostgresHandle(input.handle);
   const coordinate = Object.freeze({ ...input.coordinate });
   const objectId = deriveTaskContentCryptoObjectIdV1(coordinate);
   const authority = Object.freeze({ ...input.currentAuthority });
   const expectedAgentId = input.expectedAgentId;
-  const expected = input.expectedPayload;
   const assertCurrent = async () => { input.entities.signal.throwIfAborted(); await input.assertCurrent(); input.entities.signal.throwIfAborted(); };
-  try {
-    await assertCurrent();
-    return await withVerifiedCryptoPostgresTransaction(input.handle, async handle => {
+  await assertCurrent();
+  return withVerifiedCryptoPostgresTransaction(input.handle, async handle => {
       // The caller already holds the canonical product authority. Keep the inspected
       // access head stable through reservation and mapping, including rewrap races.
       await executeTypedCryptoQuery(handle, cryptoTypedDb.select({ objectId: objectCryptoAccessHeads.objectId })
@@ -182,7 +211,10 @@ async function inspectDefinition<Value>(input:
       const envelope = decodeNamespaceObjectEnvelopeV2(durable.envelopeBytes);
       try {
         const genesis = decodeObjectAccessManifestV5(durable.genesisManifestBytes);
-        const signerMatches = genesis.signer.kind === "agent_runtime" && genesis.signer.agentId === expectedAgentId;
+        const signerMatches = genesis.signer.kind === "agent_runtime"
+          ? genesis.signer.agentId === expectedAgentId
+          : input.signerPolicy === "supported_current" && genesis.signer.kind === "human_device"
+            && genesis.signer.subjectHumanId === authority.requesterHumanId;
         if (!signerMatches
           || genesis.accessRevision !== 0 || genesis.previousManifestHash !== null
           || payload.context.objectType !== taskContentObjectTypeV1(coordinate)
@@ -204,20 +236,26 @@ async function inspectDefinition<Value>(input:
           const plaintext = decryptObjectThroughNamespace(input.crypto, namespaceKey, envelope, payload);
           if (plaintext === null) throw new TypeError("Foreground Task stored definition cannot be opened");
           try {
-            if (!same(plaintext, expected)) throw new TypeError("Foreground Task stored definition source changed");
-          } finally { plaintext.fill(0); }
-          await assertCurrent();
-          const proof = Object.freeze({ kind: "verified_foreground_task_definition" as const });
-          const value: Custody = { coordinate, authority, durable, expectedPayload: expected,
-            assertCurrent: async () => {
-            read(proof); await assertCurrent(); read(proof);
-          } };
-          custody.set(proof, value);
-          try {
-            const value = await input.use(proof);
+            const consumed = await input.consume(plaintext);
             await assertCurrent();
-            return value;
-          } finally { custody.delete(proof); }
+            const proof = consumed.proof;
+            if (proof === undefined) {
+              const result = await consumed.use();
+              await assertCurrent();
+              return result;
+            }
+            const expectedPayload = Uint8Array.from(plaintext);
+            const value: Custody = { coordinate, authority, durable, expectedPayload,
+              assertCurrent: async () => {
+              read(proof); await assertCurrent(); read(proof);
+            } };
+            custody.set(proof, value);
+            try {
+              const result = await consumed.use();
+              await assertCurrent();
+              return result;
+            } finally { custody.delete(proof); expectedPayload.fill(0); }
+          } finally { plaintext.fill(0); }
         } });
         return opened.status === "executed" ? { status: "verified" as const, value: opened.value }
           : { status: "unavailable" as const };
@@ -225,8 +263,7 @@ async function inspectDefinition<Value>(input:
         payload.ciphertext.fill(0); envelope.wrappedDek.fill(0);
         for (const bytes of Object.values(durable)) if (bytes instanceof Uint8Array) bytes.fill(0);
       }
-    });
-  } finally { expected?.fill(0); }
+  });
 }
 
 /** Reserve and map already verified bytes; this never encrypts or completes crypto. */

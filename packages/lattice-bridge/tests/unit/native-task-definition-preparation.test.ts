@@ -67,6 +67,13 @@ describe("native foreground Task definition preparation", () => {
     expect(await prepareNativeTaskDefinitionCryptoRevision(f.input)).toBeNull();
     expect(f.loans()).toBe(0);
   });
+  test("prepares an explicitly coordinated later definition revision", async () => {
+    const f = fixture();
+    const prepared = await prepareNativeTaskDefinitionCryptoRevision({ ...f.input, contentRevision: 2 });
+    const snapshot = readPreparedTaskContentCryptoRevisionSnapshotV1(prepared!);
+    expect(snapshot.coordinate).toEqual({ kind: "definition", taskId, contentRevision: 2 });
+    expect(prepared!.objectId).toBe(deriveTaskContentCryptoObjectIdV1(snapshot.coordinate));
+  });
   test("policy, Namespace, Domain, access and expiry changes refuse preparation", async () => {
     const p = fixture();
     await rejects(prepareNativeTaskDefinitionCryptoRevision({ ...p.input,
@@ -82,7 +89,7 @@ describe("native foreground Task definition preparation", () => {
     await rejects(prepareNativeTaskDefinitionCryptoRevision(expired.input));
     expect(expired.loans()).toBe(0);
   });
-  test("the opaque adapter refuses forged preparations, later revisions and mutable authority", async () => {
+  test("the opaque adapter refuses forged preparations, invalid revisions, rebound coordinates and mutable authority", async () => {
     const f = fixture();
     const coordinate = { kind: "definition" as const, taskId, contentRevision: 1 };
     expect(() => createPreparedForegroundTaskDefinitionCryptoRevisionV1({ coordinate,
@@ -91,7 +98,9 @@ describe("native foreground Task definition preparation", () => {
     const snapshot = readPreparedTaskContentCryptoRevisionSnapshotV1(prepared!);
     if (!("foregroundPrepared" in snapshot)) throw new Error("Expected foreground preparation");
     expect(() => createPreparedForegroundTaskDefinitionCryptoRevisionV1({ coordinate: { ...coordinate, contentRevision: 2 },
-      authority: f.input.authority, prepared: snapshot.foregroundPrepared })).toThrow(/new definition/);
+      authority: f.input.authority, prepared: snapshot.foregroundPrepared })).toThrow(/coordinates|authority/);
+    expect(() => createPreparedForegroundTaskDefinitionCryptoRevisionV1({ coordinate: { ...coordinate, contentRevision: 0 },
+      authority: f.input.authority, prepared: snapshot.foregroundPrepared })).toThrow(/revision/);
     const original = readPreparedDeviceWrappedAgentObjectSnapshot(snapshot.foregroundPrepared);
     original.access.authority.grantHash[0] = original.access.authority.grantHash[0]! ^ 1;
     expect(() => readPreparedTaskContentCryptoRevisionSnapshotV1(prepared!)).toThrow(/authentic preparation/);

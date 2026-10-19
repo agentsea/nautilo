@@ -1400,7 +1400,7 @@ export function createNautiloToolInvocationSession(
   const taskCreationBrowserSessionId = taskCreationRelayId === null
     ? null
     : _relayRegistry?.getCapabilities(taskCreationRelayId)?.browserSessionId;
-  const taskLocalSourceEligible = Boolean(trustedContext.humanTerminalAdmissionPort && taskCreationRelayId
+  const taskLocalSourceEligible = Boolean(trustedContext.humanTerminalAdmissionPort?.withBorrowedAdmission && taskCreationRelayId
     && _relayRegistry?.getCapabilities(taskCreationRelayId)?.canDelegateLocalExecution === true
     && (_relayRegistry.getProtocolVersion?.(taskCreationRelayId) ?? 0) >= RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION);
   const taskCreationReturnBase = taskCreationReturnContextForState(
@@ -1414,6 +1414,7 @@ export function createNautiloToolInvocationSession(
     ? { ...taskCreationReturnBase, localExecutionSource: {
       roomId: state.roomId, conversationId: state.currentThreadId || state.langgraphThreadId, agentId: state.agentId,
       withAdmission: trustedContext.humanTerminalAdmissionPort.withAdmission.bind(trustedContext.humanTerminalAdmissionPort),
+      withBorrowedAdmission: trustedContext.humanTerminalAdmissionPort.withBorrowedAdmission!.bind(trustedContext.humanTerminalAdmissionPort),
     } } : taskCreationReturnBase;
   const taskCreationLiveMiniAppContext = taskCreationLiveMiniAppContextForState(state);
   const taskCreationBackgroundTaskProvenance = taskCreationBackgroundTaskProvenanceForState(state);

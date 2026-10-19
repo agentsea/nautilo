@@ -235,16 +235,20 @@ export async function getTaskById(
 export async function getTaskByIdWithMutationVersion(
   db: DirectDatabase,
   id: string,
-  options?: Readonly<{ ordinaryOnly?: boolean }>,
+  options?: Readonly<{ ordinaryOnly?: boolean; lifecycleOnly?: false }>
+    | Readonly<{ lifecycleOnly: true; ownerId: string }>,
 ): Promise<(Task & { mutationVersion: string }) | undefined> {
+  const fields = options?.lifecycleOnly === true ? taskLifecycleMetadataProjection : getTableColumns(tasks);
   const [row] = await db
     .select({
-      ...getTableColumns(tasks),
+      ...fields,
       mutationVersion: sql<string>`${tasks}.xmin::text`,
     })
     .from(tasks)
     .where(and(eq(tasks.id, id),
-      ...(options?.ordinaryOnly === true ? [eq(tasks.contentRepresentation, "ordinary")] : [])))
+      ...(options?.lifecycleOnly === true ? [eq(tasks.ownerId, options.ownerId)] : []),
+      ...(options?.lifecycleOnly !== true && options?.ordinaryOnly === true
+        ? [eq(tasks.contentRepresentation, "ordinary")] : [])))
     .limit(1);
   return row;
 }

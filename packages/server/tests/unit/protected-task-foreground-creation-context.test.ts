@@ -11,6 +11,8 @@ function source(assertCurrent: () => Promise<void>): ProtectedTaskForegroundCrea
     assertCurrent,
     admission: { admit: () => Promise.resolve({ kind: "unavailable", reason: "creation_origin_unavailable" }) },
     publishProtected: () => Promise.reject(new Error("Fixture cannot publish a Task")),
+    preflightProtectedTaskUpdate: () => Promise.reject(new Error("Fixture cannot preflight a Task update")),
+    updateProtectedTask: () => Promise.reject(new Error("Fixture cannot update a Task")),
     withProduct: input => input.use(),
   };
 }

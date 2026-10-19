@@ -10,6 +10,8 @@ import { encodeTaskPayloadV1, type TaskPayloadV1 } from "../../task/task-payload
 export type PrepareNativeTaskDefinitionCryptoRevisionInput = Readonly<{
   crypto: LatticeCrypto;
   taskId: string;
+  /** Defaults to the creation revision so existing callers retain identical bytes. */
+  contentRevision?: number;
   payload: TaskPayloadV1;
   createdAt: number;
   authority: TaskContentAuthorityV1;
@@ -39,8 +41,12 @@ export async function prepareNativeTaskDefinitionCryptoRevision(
   if (input.publication.policyRevision !== input.authority.expectedPolicyRevision) {
     throw new TypeError("Foreground Task publication policy changed");
   }
+  const contentRevision = input.contentRevision ?? 1;
+  if (!Number.isSafeInteger(contentRevision) || contentRevision < 1) {
+    throw new TypeError("Foreground Task definition revision is invalid");
+  }
   const coordinate = Object.freeze({ kind: "definition" as const,
-    taskId: input.taskId, contentRevision: 1 });
+    taskId: input.taskId, contentRevision });
   const authority = Object.freeze({ ...input.authority });
   const objectId = deriveTaskContentCryptoObjectIdV1(coordinate);
   const plaintext = encodeTaskPayloadV1(input.payload);

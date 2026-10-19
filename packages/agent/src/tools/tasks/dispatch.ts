@@ -710,7 +710,51 @@ export async function dispatchTaskCommand(
         if (reject) return reject;
 
         const rt = getTaskToolRuntime();
-        const task = await getTaskByIdWithMutationVersion(rt.db, args.taskId);
+        const lifecycle = await getTaskById(rt.db, args.taskId, {
+          lifecycleOnly: true,
+          ownerId: ctx.ownerId,
+        });
+        if (!lifecycle) return "Task not found.";
+        if (lifecycle.contentRepresentation === "protected" || lifecycle.contentRepresentation === "dual") {
+          if (!rt.updateProtectedTask) {
+            return "Cannot update task: protected Task content requires an authorized client.";
+          }
+          const parsedRunAt = parseRunAt(args.run_at);
+          const toolsFields = args.tools === undefined ? {} : (() => {
+            const fields = toolsFieldsFromArgs(args.tools);
+            return { ...fields, toolsWhitelist: fields.toolsWhitelist ?? [] };
+          })();
+          const updated = await rt.updateProtectedTask({
+            taskId: lifecycle.id,
+            ownerId: ctx.ownerId,
+            requestorId: ctx.causalHumanUserId,
+            agentId: ctx.agentId,
+            callingRoomId: ctx.roomId,
+            ...(args.prompt !== undefined ? { prompt: args.prompt } : {}),
+            ...(args.expected_output !== undefined ? { expectedOutput: args.expected_output } : {}),
+            ...(args.schedule_kind !== undefined ? { scheduleKind: args.schedule_kind } : {}),
+            ...(parsedRunAt !== undefined ? { runAt: parsedRunAt } : {}),
+            ...(args.cron !== undefined ? { cron: args.cron } : {}),
+            ...(args.timezone !== undefined ? { timezone: args.timezone } : {}),
+            ...(args.target_chat !== undefined ? { targetChat: args.target_chat } : {}),
+            ...(args.result_delivery !== undefined ? { resultDelivery: args.result_delivery } : {}),
+            ...toolsFields,
+            ...(args.time_limit_seconds !== undefined ? { timeLimitSeconds: args.time_limit_seconds } : {}),
+            ...(args.model_selection_profile !== undefined ? { selectionProfile: args.model_selection_profile } : {}),
+            ...(args.model_selection_spec !== undefined ? { selectionSpec: args.model_selection_spec } : {}),
+            ...(args.model_id !== undefined ? { requestedModelId: args.model_id } : {}),
+          });
+          rt.onDefinitionChanged?.(updated);
+          return JSON.stringify({ task: {
+            id: updated.id,
+            status: updated.status,
+            scheduleKind: updated.scheduleKind,
+            targetChat: updated.targetChat,
+            nextFireAt: updated.nextFireAt,
+            resultDelivery: updated.resultDelivery,
+          } });
+        }
+        const task = await getTaskByIdWithMutationVersion(rt.db, args.taskId, { ordinaryOnly: true });
         if (!task || task.ownerId !== ctx.ownerId) {
           return "Task not found.";
         }

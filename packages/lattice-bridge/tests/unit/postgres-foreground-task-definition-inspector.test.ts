@@ -3,20 +3,24 @@ import { describe, expect, test } from "bun:test";
 import { rejects } from "node:assert/strict";
 import { authority, coordinate, fixture } from "../fixtures/task-content-crypto-completion.ts";
 import { withVerifiedForegroundTaskDefinitionPublication, publishVerifiedForegroundTaskDefinition,
+  withOpenForegroundTaskDefinition,
   readVerifiedForegroundTaskDefinitionAccessRevision,
   type VerifiedForegroundTaskDefinitionPublication } from "../../src/server/task/postgres-foreground-task-definition-inspector.ts";
 import { fingerprintTaskContentAuthorityV1, type TaskContentProductStorePort,
   type TaskContentRevisionStateV1 } from "../../src/task/task-content-repository.ts";
 import type { AgentEntityCryptoInvocation } from "../../src/object/agent-entity-crypto.ts";
 
-async function setup(ephemeral = false) {
-  const f = await fixture("foreground", true, ephemeral);
+async function setup(ephemeral = false, contentRevision = 1, source: "foreground" | "human" = "foreground") {
+  const selectedCoordinate = { ...coordinate, contentRevision };
+  const f = await fixture(source, true, ephemeral, selectedCoordinate);
   await f.adapter.complete(f.prepared);
   const abort = new AbortController();
   let denied = false;
+  let currentProof = true;
   let loans = 0;
   let keyGeneration = 4;
   let current = { ...authority };
+  const namespaceKeyByte = source === "foreground" ? 51 : 0x51;
   let borrowedKey: Uint8Array | null = null;
   const entities: AgentEntityCryptoInvocation = {
     signal: abort.signal,
@@ -27,7 +31,7 @@ async function setup(ephemeral = false) {
         accessRevision: current.expectedAccessRevision });
       if (denied) return { status: "unavailable", reason: "authorization_unavailable" };
       loans += 1;
-      const key = new Uint8Array(32).fill(keyGeneration === 4 ? 51 : 0x52); borrowedKey = key;
+      const key = new Uint8Array(32).fill(keyGeneration === 4 ? namespaceKeyByte : 0x52); borrowedKey = key;
       try { return { status: "executed", value: await request.execute({ namespaceKey: key, authority: {
         namespaceId: current.namespaceId, domainId: current.domainId, namespaceAccessRevision: current.expectedAccessRevision,
         namespaceKeyGeneration: keyGeneration, domainKeyGeneration: 1, domainAuthorizationRevision: 2,
@@ -37,13 +41,17 @@ async function setup(ephemeral = false) {
       } }) }; } finally { key.fill(0); }
     },
   };
-  const input = () => ({ handle: f.handle, crypto: f.crypto, taskId: coordinate.taskId,
+  const input = () => ({ handle: f.handle, crypto: f.crypto, taskId: coordinate.taskId, contentRevision,
     expectedAgentId: "task-agent", payload: { formatVersion: 1 as const, prompt: "Native definition", expectedOutput: null, protectedMetadata: {} },
-    currentAuthority: current, entities, ...f.history, assertCurrent: () => { abort.signal.throwIfAborted(); } });
+    currentAuthority: current, entities, ...f.history, assertCurrent: () => {
+      abort.signal.throwIfAborted();
+      if (!currentProof) throw new Error("Foreground authority revoked");
+    } });
   return { f, input, abort, key: () => borrowedKey, loans: () => loans,
     deny: () => { denied = true; }, rewrap: () => { f.rewrapHuman(3); keyGeneration = 5;
       current = { ...authority, expectedAccessRevision: 3, expectedPolicyRevision: 4 }; },
-    drift: () => { current = { ...current, domainId: "changed" }; } };
+    drift: () => { current = { ...current, domainId: "changed" }; },
+    revoke: () => { currentProof = false; } };
 }
 function product(current: ReturnType<Awaited<ReturnType<typeof setup>>["input"]>["currentAuthority"]) {
   let state: TaskContentRevisionStateV1 | null = null;
@@ -82,6 +90,33 @@ function product(current: ReturnType<Awaited<ReturnType<typeof setup>>["input"]>
 }
 
 describe("foreground Task definition restart inspection", () => {
+  test("opens one exact later revision only inside the current callback", async () => {
+    const f = await setup(false, 2);
+    let callbacks = 0;
+    expect(await withOpenForegroundTaskDefinition({ ...f.input(), use: async payload => {
+      callbacks += 1;
+      expect(payload.prompt).toBe("Native definition");
+      return payload.expectedOutput;
+    } })).toEqual({ status: "opened", value: null });
+    expect(callbacks).toBe(1);
+    expect(f.key()?.every(byte => byte === 0)).toBe(true);
+    await rejects(withOpenForegroundTaskDefinition({ ...f.input(), contentRevision: 1,
+      use: async () => { throw new Error("wrong revision opened"); } }), /substituted|identity|authority/);
+  });
+  test("revalidates current authority after an open-definition callback", async () => {
+    const f = await setup(false, 2);
+    await rejects(withOpenForegroundTaskDefinition({ ...f.input(), use: async () => {
+      f.revoke();
+      return "must not escape";
+    } }), /Foreground authority revoked/u);
+  });
+  test("opens an authenticated current Human-device definition without weakening creation proof", async () => {
+    const f = await setup(false, 2, "human");
+    expect(await withOpenForegroundTaskDefinition({ ...f.input(), use: async payload => payload.prompt }))
+      .toEqual({ status: "opened", value: "Private definition" });
+    await rejects(withVerifiedForegroundTaskDefinitionPublication({ ...f.input(),
+      use: async () => { throw new Error("Human source must not mint creation proof"); } }), /identity|authority/u);
+  });
   test("retains genuine classifier authority during orphan adoption rather than cloning its brand", async () => {
     const f = await setup();
     const p = product(f.input().currentAuthority);
