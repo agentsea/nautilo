@@ -1,5 +1,5 @@
 /**
- * M195 / D345 Phase 2b + M206 Phase 3 — integrity guard for
+ * integrity guard for
  * vendor/tool-runtimes.manifest.json.
  *
  * Static metadata checks only; does not fetch large vendor binaries.
@@ -68,7 +68,7 @@ describe("tool-runtimes.manifest.json", () => {
       expect(openhue?.artifacts?.["darwin-x64"]).toBeUndefined();
 
       const officecli = manifest.officecli;
-      expect(officecli?.version).toBe("1.0.148");
+      expect(officecli?.version).toBe("1.0.157");
       expect(officecli?.binaryName).toBe("officecli");
       expect(officecli?.license).toBe("Apache-2.0");
       expect(officecli?.source).toBe("https://github.com/iOfficeAI/OfficeCLI");
@@ -76,14 +76,14 @@ describe("tool-runtimes.manifest.json", () => {
       for (const platformKey of ["darwin-arm64", "darwin-x64"] as const) {
         const artifact = officecli?.artifacts?.[platformKey];
         expect(typeof artifact?.url).toBe("string");
-        expect((artifact?.url as string)).toContain("github.com/iOfficeAI/OfficeCLI/releases/download/v1.0.148/");
+        expect((artifact?.url as string)).toContain("github.com/iOfficeAI/OfficeCLI/releases/download/v1.0.157/");
         expect(typeof artifact?.sha256).toBe("string");
         expect(artifact?.sha256).toMatch(SHA256_HEX);
         expect(artifact?.sizeMin).toBe(1_000_000);
       }
     },
   );
-  test("D448 apply-patch keeps a Desktop-only URL-free source-build descriptor", () => {
+  test("apply-patch keeps a Desktop-only URL-free source-build descriptor", () => {
     const manifest = parseToolRuntimesManifest(readFileSync(manifestPath, "utf8"));
     const applyPatch = getApplyPatchDesktopManifestEntry(manifest);
 
@@ -277,8 +277,8 @@ describe("packaging layout expectations", () => {
   });
 
   test("root and Desktop expose contributor packaging without official signed commands", () => {
-    const pkg = JSON.parse(readFileSync(join(desktopRoot, "package.json"), "utf8"));
-    const rootPkg = JSON.parse(readFileSync(join(desktopRoot, "../../package.json"), "utf8"));
+    const pkg = JSON.parse(readFileSync(join(desktopRoot, "package.json"), "utf8")) as { scripts: Record<string, string | undefined> };
+    const rootPkg = JSON.parse(readFileSync(join(desktopRoot, "../../package.json"), "utf8")) as { scripts: Record<string, string | undefined> };
     expect(pkg.scripts["package:mac:signed"]).toBeUndefined();
     expect(rootPkg.scripts["desktop:package:mac:signed"]).toBeUndefined();
     expect(rootPkg.scripts["desktop:package:mac"]).toContain("package:mac");

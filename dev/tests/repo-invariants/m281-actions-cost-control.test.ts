@@ -399,30 +399,83 @@ describe("M281 GitHub Actions cost controls", () => {
     expect(supply.on.schedule).toEqual([{ cron: "0 4 * * 1" }]);
   });
 
-  test("Windows validation covers its transitive workspaces and root build inputs", async () => {
+  test("Windows validation admits packaging inputs and excludes ordinary product changes", async () => {
     const windows = await workflow("windows-desktop.yml");
-    expect(Object.keys(windows.on).sort()).toEqual(["pull_request", "workflow_dispatch"]);
     expect(eventConfig(windows.on.pull_request).branches).toEqual(["main"]);
     const paths = eventPaths(windows.on.pull_request);
-    for (const name of [
-      "@nautilo/desktop", "@nautilo/workbench", "@nautilo/server",
-      "@nautilo/dev-tools", "@nautilo/relay-bin", "@nautilo/server-bin",
-    ]) {
-      expectPathsCover(paths, await workspacePathsFor(name));
-    }
-    expectPathsCover(paths, await firstPartyRuntimeWorkspacePaths());
-    for (const file of [
-      "package.json", "bun.lock", "bunfig.toml", ".bun-version", ".gitattributes", "turbo.json",
-      "tsconfig.base.json", "patches/dependency.patch",
-      "dev/scripts/install-first-party-apps.ts", "dev/scripts/windows-unit-gate.ts",
+    const matches = (path: string) => paths.some((pattern) => new Bun.Glob(pattern).match(path));
+    for (const path of [
+      ".github/workflows/windows-desktop.yml",
+      "apps/desktop/electron/main.ts",
+      "bin/nautilo-relay/src/main.ts",
+      "packages/relay/src/client.ts",
+      "packages/lattice-crypto/vendor/openmls-wasm/openmls_wasm_bg.wasm",
+      "native/apply-patch/Cargo.toml",
+      "patches/dependency.patch",
+      "THIRD_PARTY_NOTICES.md",
+      "package.json",
+      "packages/config/package.json",
+      "bun.lock",
+      "packages/first-party-apps/writer/bun.lock",
+      ".bun-version",
+      ".gitattributes",
+      "bunfig.toml",
+      "tsconfig.base.json",
+      "turbo.json",
+      "dev/scripts/install-first-party-apps.ts",
+      "dev/scripts/fix-node-pty-perms.ts",
+      "dev/scripts/prepare-board.ts",
+      "dev/scripts/vendor-agent-browser.ts",
+      "dev/scripts/windows-unit-gate.ts",
       "dev/scripts/test-repo-invariants.ts",
       "dev/tests/test-lifecycle-preload.ts",
-      "dev/scripts/fix-node-pty-perms.ts", "dev/scripts/prepare-board.ts",
-      "dev/scripts/prepare-sheets.ts", "dev/scripts/prepare-slides.ts",
-      "dev/scripts/vendor-agent-browser.ts", ".github/workflows/windows-desktop.yml",
     ]) {
-      expect(paths.some((pattern) => new Bun.Glob(pattern).match(file)), `Windows workflow must cover ${file}`).toBe(true);
+      expect(matches(path), `Windows workflow must admit ${path}`).toBe(true);
     }
+    for (const path of [
+      "packages/server/src/routes/rooms.ts",
+      "packages/agent/src/tools/catalog.ts",
+      "packages/db/src/schema/users.ts",
+      "apps/workbench/src/components/Chat.tsx",
+      "packages/config/src/instance-id.ts",
+      "packages/runtime/src/jobs.ts",
+      "dev/tests/repo-invariants/query-inventory.test.ts",
+      "packages/server/tests/unit/app-routes.test.ts",
+    ]) {
+      expect(matches(path), `Windows workflow must skip ${path}`).toBe(false);
+    }
+  });
+
+  test("Windows full qualification remains daily, manual, and unconditional when admitted", async () => {
+    const windows = await workflow("windows-desktop.yml");
+    expect(Object.keys(windows.on).sort()).toEqual(["pull_request", "schedule", "workflow_dispatch"]);
+    expect(windows.on.schedule).toEqual([{ cron: "17 4 * * *" }]);
+
+    const steps = windows.jobs["windows-x64"]?.steps ?? [];
+    for (const name of [
+      "Verify pinned tools and native compiler",
+      "Install frozen dependencies",
+      "Install Writer development dependencies",
+      "Install Video development dependencies",
+      "Typecheck Writer",
+      "Typecheck Video",
+      "Build Writer",
+      "Build Video",
+      "Test Windows source contracts",
+      "Test repository invariants on Windows",
+      "Typecheck Desktop",
+      "Typecheck development tools",
+      "Typecheck database",
+      "Typecheck server",
+      "Build Windows Desktop installer",
+      "Verify packaged Relay Host launch",
+      "Smoke-test packaged Desktop boot",
+    ]) {
+      const step = steps.find((candidate) => candidate.name === name);
+      expect(step, `Windows validation step must remain: ${name}`).toBeDefined();
+      expect(step?.if, `Windows validation step must be unconditional: ${name}`).toBeUndefined();
+    }
+    expect(steps.some((step) => step.id === "validation-scope")).toBe(false);
   });
 
   test("every Actions Bun cache is versioned and architecture-safe", async () => {

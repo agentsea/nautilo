@@ -235,8 +235,8 @@ describe("Bolter connection journey through the real HTTP client", () => {
 describe("intentional Human text sharing", () => {
   async function reviewDraft(content = "  Fixture text\n<script>literal</script>\n/command  ") {
     const view = render(<BolterMessageComposer roomId={ROOM} scopeKey="fixture-scope" />);
-    await waitFor(() => expect(view.getByRole("button", { name: "Write a message to Bolter" })).toBeTruthy());
-    fireEvent.click(view.getByRole("button", { name: "Write a message to Bolter" }));
+    await waitFor(() => expect(view.getByRole("button", { name: "Open Bolter draft" })).toBeTruthy());
+    fireEvent.click(view.getByRole("button", { name: "Open Bolter draft" }));
     input(view.getByRole("textbox", { name: "Message to Bolter" }), content);
     fireEvent.click(view.getByRole("button", { name: "Review & send" }));
     return view;
@@ -245,7 +245,8 @@ describe("intentional Human text sharing", () => {
     const view = await reviewDraft();
     expect(view.getByRole("region", { name: "Review message for Bolter" }).querySelector("pre")!.textContent).toBe("  Fixture text\n<script>literal</script>\n/command  ");
     expect(view.container.querySelector("script")).toBeNull();
-    expect(view.getByText("Chat fixture-chat · thread fixture-thread")).toBeTruthy();
+    expect(view.getByText("Posting as Fixture agent")).toBeTruthy();
+    expect(view.getByText(/Bolter · Fixture chat/)).toBeTruthy();
     expect(writes).toEqual([]);
     fireEvent.click(view.getByRole("button", { name: "Keep editing" }));
     expect((view.getByRole("textbox", { name: "Message to Bolter" }) as HTMLTextAreaElement).value).toContain("/command");
@@ -296,8 +297,6 @@ describe("intentional Human text sharing", () => {
       return defaults(path, method, body);
     };
     const view = await reviewDraft(); fireEvent.click(view.getByRole("button", { name: "Send to Bolter", exact: true }));
-    await waitFor(() => expect(view.getByRole("button", { name: "Recover same request" })).toBeTruthy());
-    fireEvent.click(view.getByRole("button", { name: "Check delivery", exact: true }));
     await waitFor(() => expect(view.getByText("Sent to Bolter")).toBeTruthy());
     expect(writes).toHaveLength(1);
   });
@@ -340,9 +339,12 @@ describe("Bolter owner state invalidation", () => {
       ? { link: { ...link, receiver: listening ? "listening" : "running", canSend: listening } }
       : defaults(path, method, body);
     const view = render(<><BolterRoomSection roomId={ROOM} scopeKey="fixture" /><BolterMessageComposer roomId={ROOM} scopeKey="fixture" /></>);
-    await waitFor(() => expect((view.getByRole("button", { name: "Write a message to Bolter" }) as HTMLButtonElement).disabled).toBe(true));
+    await view.findByRole("button", { name: "Open Bolter draft" });
+    fireEvent.click(view.getByRole("button", { name: "Open Bolter draft" }));
+    input(view.getByRole("textbox", { name: "Message to Bolter" }), "Fixture draft");
+    expect((view.getByRole("button", { name: "Review & send" }) as HTMLButtonElement).disabled).toBe(true);
     listening = true; invalidate();
-    await waitFor(() => expect((view.getByRole("button", { name: "Write a message to Bolter" }) as HTMLButtonElement).disabled).toBe(false));
+    await waitFor(() => expect((view.getByRole("button", { name: "Review & send" }) as HTMLButtonElement).disabled).toBe(false));
     expect(view.getAllByText(/Listening/).length).toBeGreaterThan(0);
   });
   test("invalidation coalesces behind an outstanding Room read and rejects its stale response", async () => {
@@ -355,7 +357,9 @@ describe("Bolter owner state invalidation", () => {
     invalidate(); invalidate();
     expect(reads).toBe(1);
     await act(async () => { late.resolve({ link }); await late.promise; });
-    await waitFor(() => expect((view.getByRole("button", { name: "Write a message to Bolter" }) as HTMLButtonElement).disabled).toBe(true));
+    await view.findByRole("button", { name: "Open Bolter draft" });
+    fireEvent.click(view.getByRole("button", { name: "Open Bolter draft" }));
+    expect((view.getByRole("textbox", { name: "Message to Bolter" }) as HTMLTextAreaElement).disabled).toBe(true);
     expect(reads).toBe(2);
   });
   test("an automatic state refresh cannot unlock controls while a mutation is pending", async () => {
@@ -400,4 +404,122 @@ describe("Bolter owner state invalidation", () => {
     expect(reads).toBe(2);
     expect(view.queryByText(/^Listening/)).toBeNull();
   });
+});
+
+describe("foldaway Bolter composer", () => {
+  beforeEach(() => { window.localStorage.clear(); });
+  async function open(viewerId = "fixture-viewer") {
+    const view = render(<BolterMessageComposer roomId={ROOM} scopeKey="fixture" viewerId={viewerId} />);
+    fireEvent.click(await view.findByRole("button", { name: "Open Bolter draft" }));
+    return view;
+  }
+  test("direct send skips preview and remembers the choice only for this viewer and connection", async () => {
+    const view = await open();
+    input(view.getByRole("textbox", { name: "Message to Bolter" }), "Fixture direct message");
+    fireEvent.click(view.getByRole("checkbox", { name: "Review before sending" }));
+    fireEvent.click(view.getByRole("button", { name: "Send to Bolter", exact: true }));
+    await waitFor(() => expect(writes).toHaveLength(1));
+    expect(view.queryByRole("region", { name: "Review message for Bolter" })).toBeNull();
+    expect(writes[0]!.body["content"]).toBe("Fixture direct message");
+    view.unmount();
+    const same = await open();
+    expect((same.getByRole("checkbox") as HTMLInputElement).checked).toBe(false);
+    same.unmount();
+    const other = await open("other-fixture-viewer");
+    expect((other.getByRole("checkbox") as HTMLInputElement).checked).toBe(true);
+  });
+  test("folding preserves text and selected files, and sends only the explicit file IDs", async () => {
+    responder = (path, method, body) => path === `/api/bolter/rooms/${ROOM}` ? { link: { ...link, canAttach: true } } : defaults(path, method, body);
+    const upload = spyOn(apiClient, "uploadMessageAttachment").mockResolvedValue({ attachmentId: OTHER_ROOM, filename: "brief.txt", mimeType: "text/plain", sizeBytes: 5, status: "pending" });
+    try {
+      const view = await open();
+      input(view.getByRole("textbox", { name: "Message to Bolter" }), "Fixture draft");
+      fireEvent.change(view.getByLabelText("Choose files for Bolter"), { target: { files: [new File(["brief"], "brief.txt")] } });
+      await waitFor(() => expect(view.getByText("· ready")).toBeTruthy());
+      fireEvent.click(view.getByRole("checkbox"));
+      fireEvent.click(view.getByRole("button", { name: "Minimize Bolter draft" }));
+      expect(view.queryByRole("textbox", { name: "Message to Bolter" })).toBeNull();
+      fireEvent.click(view.getByRole("button", { name: "Open Bolter draft" }));
+      expect((view.getByRole("textbox", { name: "Message to Bolter" }) as HTMLTextAreaElement).value).toBe("Fixture draft");
+      expect(view.getByRole("button", { name: "Remove brief.txt" })).toBeTruthy();
+      fireEvent.click(view.getByRole("button", { name: "Send to Bolter", exact: true }));
+      await waitFor(() => expect(writes).toHaveLength(1));
+      expect(writes[0]!.body["attachmentIds"]).toEqual([OTHER_ROOM]);
+      expect(upload.mock.calls[0]?.[2]).toEqual({ roomId: ROOM, purpose: "bolter" });
+    } finally { upload.mockRestore(); }
+  });
+  test("removed pending files cannot reappear or become part of a send", async () => {
+    responder = (path, method, body) => path === `/api/bolter/rooms/${ROOM}` ? { link: { ...link, canAttach: true } } : defaults(path, method, body);
+    const pending = deferred<Awaited<ReturnType<typeof apiClient.uploadMessageAttachment>>>();
+    const upload = spyOn(apiClient, "uploadMessageAttachment").mockReturnValue(pending.promise);
+    const remove = spyOn(apiClient, "deleteMessageAttachment").mockResolvedValue({ ok: true });
+    try {
+      const view = await open();
+      input(view.getByRole("textbox", { name: "Message to Bolter" }), "Fixture with file");
+      fireEvent.change(view.getByLabelText("Choose files for Bolter"), { target: { files: [new File(["brief"], "brief.txt")] } });
+      expect((view.getByRole("button", { name: "Review & send" }) as HTMLButtonElement).disabled).toBe(true);
+      fireEvent.click(view.getByRole("button", { name: "Remove brief.txt" }));
+      await act(async () => { pending.resolve({ attachmentId: OTHER_ROOM, filename: "brief.txt", mimeType: "text/plain", sizeBytes: 5, status: "pending" }); });
+      expect(view.queryByRole("button", { name: "Remove brief.txt" })).toBeNull();
+      expect(remove).toHaveBeenCalledWith(OTHER_ROOM);
+      expect(writes).toHaveLength(0);
+    } finally { upload.mockRestore(); remove.mockRestore(); }
+  });
+  test.each(["nautilo:bolter-state-changed", "nautilo:reconnect-reconciled"])("delivery refresh on %s never erases a newer draft", async event => {
+    let delivered = false;
+    responder = (path, method, body) => path.endsWith("/deliveries") ? { deliveries: [{ messageId: 1, outboxId: OUTBOX,
+      requestId: writes[0]?.body["requestId"] ?? null, state: delivered ? "published" : "pending", createdAt: "2030-01-01T00:00:00Z" }] } : defaults(path, method, body);
+    const view = await open();
+    input(view.getByRole("textbox", { name: "Message to Bolter" }), "Fixture first message");
+    fireEvent.click(view.getByRole("checkbox"));
+    fireEvent.click(view.getByRole("button", { name: "Send to Bolter", exact: true }));
+    await view.findByText("Queued for Bolter");
+    input(view.getByRole("textbox", { name: "Message to Bolter" }), "Fixture next draft");
+    delivered = true;
+    act(() => { window.dispatchEvent(new CustomEvent(event)); });
+    await view.findByText("Sent to Bolter");
+    expect((view.getByRole("textbox", { name: "Message to Bolter" }) as HTMLTextAreaElement).value).toBe("Fixture next draft");
+    expect(writes).toHaveLength(1);
+    expect(view.queryByRole("button", { name: "Check delivery" })).toBeNull();
+  });
+});
+
+test("an explicit HTTP rejection preserves editable draft text without inventing an uncertain send", async () => {
+  responder = (path, method, body) => path.endsWith("/messages")
+    ? new Response(JSON.stringify({ code: "invalid_request" }), { status: 400, headers: { "content-type": "application/json" } })
+    : defaults(path, method, body);
+  const view = render(<BolterMessageComposer roomId={ROOM} scopeKey="fixture" />);
+  fireEvent.click(await view.findByRole("button", { name: "Open Bolter draft" }));
+  input(view.getByRole("textbox", { name: "Message to Bolter" }), "Fixture rejected draft");
+  fireEvent.click(view.getByRole("checkbox"));
+  fireEvent.click(view.getByRole("button", { name: "Send to Bolter", exact: true }));
+  await view.findByText(/Bolter did not accept this message/);
+  expect((view.getByRole("textbox", { name: "Message to Bolter" }) as HTMLTextAreaElement).value).toBe("Fixture rejected draft");
+  expect((view.getByRole("checkbox") as HTMLInputElement).disabled).toBe(false);
+  expect(view.queryByRole("button", { name: "Recover same request" })).toBeNull();
+  expect(writes).toHaveLength(1);
+});
+
+test.each(["pending", "lost"])("a late %s HTTP response cannot undo confirmed delivery or replace a newer draft", async outcome => {
+  const late = deferred<unknown>();
+  responder = (path, method, body) => path.endsWith("/messages") ? late.promise
+    : path.endsWith("/deliveries") ? { deliveries: [{ messageId: 1, outboxId: OUTBOX, requestId: writes[0]?.body["requestId"],
+      state: "published", createdAt: "2030-01-01T00:00:00Z" }] } : defaults(path, method, body);
+  const view = render(<BolterMessageComposer roomId={ROOM} scopeKey="fixture" />);
+  fireEvent.click(await view.findByRole("button", { name: "Open Bolter draft" }));
+  input(view.getByRole("textbox", { name: "Message to Bolter" }), "Fixture sent message");
+  fireEvent.click(view.getByRole("checkbox"));
+  fireEvent.click(view.getByRole("button", { name: "Send to Bolter", exact: true }));
+  await view.findByText("Sent to Bolter");
+  expect((view.getByRole("textbox", { name: "Message to Bolter" }) as HTMLTextAreaElement).disabled).toBe(false);
+  input(view.getByRole("textbox", { name: "Message to Bolter" }), "Fixture newer draft");
+  await act(async () => {
+    late.resolve(outcome === "pending" ? { messageId: 1, outboxId: OUTBOX, state: "pending" }
+      : new Response(JSON.stringify({ code: "runtime_unavailable" }), { status: 503, headers: { "content-type": "application/json" } }));
+    await late.promise;
+  });
+  expect(view.getByText("Sent to Bolter")).toBeTruthy();
+  expect(view.queryByRole("alert")).toBeNull();
+  expect((view.getByRole("textbox", { name: "Message to Bolter" }) as HTMLTextAreaElement).value).toBe("Fixture newer draft");
+  expect(writes).toHaveLength(1);
 });

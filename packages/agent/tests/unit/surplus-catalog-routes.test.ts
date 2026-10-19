@@ -7,6 +7,7 @@ import {
   resetRuntimeModelCatalog,
 } from "../../src/config/model-catalog/runtime-catalog";
 import {
+  canBroadenSurplusModelRoute,
   resolveQualifiedSurplusChatRoute,
   resolveSurplusChatServingAvailability,
 } from "../../src/providers/surplus-route";
@@ -123,5 +124,27 @@ describe("catalog-derived Surplus chat routes", () => {
     for (const id of [disabled.id, nonChat.id, unsupported.id, e2ee.id, privateE2ee.id, china.id]) {
       expect(resolveQualifiedSurplusChatRoute(id), id).toBeNull();
     }
+  });
+});
+
+
+describe("marketplace provider broadening", () => {
+  test("ordinary aggregator rows allow exact-model seller recovery", () => {
+    expect(canBroadenSurplusModelRoute("openrouter:minimax/minimax-m3")).toBe(true);
+    expect(canBroadenSurplusModelRoute("openrouter:typesafe/jev-1.13")).toBe(true);
+    expect(canBroadenSurplusModelRoute("fireworks:accounts/fireworks/models/kimi-k3")).toBe(true);
+  });
+  test("provider-bound privacy routes and unknown models retain their pin", () => {
+    for (const row of getActiveModelCatalogSync().catalog.entries.filter(row => row.provider === "venice")) {
+      expect(canBroadenSurplusModelRoute(row.id)).toBe(false);
+    }
+    expect(canBroadenSurplusModelRoute("openai:gpt-5.6-sol")).toBe(false);
+    expect(canBroadenSurplusModelRoute("missing:unknown")).toBe(false);
+  });
+  test.each(["e2ee", "anonymized"] as const)("an explicit %s label keeps even aggregator rows pinned", async label => {
+    const current = getActiveModelCatalogSync().catalog;
+    const source = current.entries.find(row => row.id === "openrouter:minimax/minimax-m3")!;
+    await installCatalog({ ...current, entries: [{ ...source, privacy: { ...source.privacy, label } }] } as ModelCatalog);
+    expect(canBroadenSurplusModelRoute(source.id)).toBe(false);
   });
 });

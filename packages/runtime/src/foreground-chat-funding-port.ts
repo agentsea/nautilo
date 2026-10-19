@@ -19,6 +19,8 @@ export interface ForegroundChatFundingOpenInput {
   readonly agentId: string;
   readonly entrypoint: ForegroundChatFundingEntrypoint;
   readonly hasImages?: boolean;
+  /** Trusted protected-content boundary from the admitted foreground executor. */
+  readonly protectedTurn?: boolean;
   readonly assertExternalRoomSponsorship?: () => Promise<void>;
 }
 
@@ -182,6 +184,7 @@ export async function openForegroundChatFundingSessionForInvocation(input: Reado
     agentId: input.agentId,
     entrypoint: input.entrypoint,
     hasImages: Array.isArray(input.jobInput["multimodalImages"]) && input.jobInput["multimodalImages"].length > 0,
+    ...(input.protectedTurn === true ? { protectedTurn: true } : {}),
   });
   const imageIds = new Set(Array.isArray(input.jobInput["multimodalImages"])
     ? input.jobInput["multimodalImages"].flatMap((image: unknown) =>

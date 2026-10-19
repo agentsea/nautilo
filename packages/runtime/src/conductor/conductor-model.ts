@@ -4,7 +4,10 @@ import {
   resolveModelRole,
   runWithUsageContext,
   type ForegroundChatFundingSession,
+  type ResolveModelRoleOptions,
 } from "@nautilo/agent";
+
+type ServerSurplusRoleOptions = NonNullable<ResolveModelRoleOptions["serverSurplus"]>;
 
 /**
  * M135 P5 — production Floor Manager model invoker. Resolves the configured
@@ -15,10 +18,14 @@ import {
  * silence. NEVER escalates to a bigger model beyond the user's own fallback
  * chain.
  */
-export function resolveConductorModelId(configuredModelId: string): string {
+export function resolveConductorModelId(
+  configuredModelId: string,
+  serverSurplus: ServerSurplusRoleOptions = {},
+): string {
   const trimmed = configuredModelId.trim();
   return resolveModelRole("conductor", {
     ...(trimmed.length > 0 ? { configuredId: trimmed } : {}),
+    serverSurplus,
   });
 }
 
@@ -26,12 +33,14 @@ export function resolveConductorModelId(configuredModelId: string): string {
 export function resolveRoomSideModelId(input: {
   serverConfiguredModelId: string | null | undefined;
   runtimeConfiguredModelId: string;
+  serverSurplus?: ServerSurplusRoleOptions;
 }): string {
   const serverConfigured = input.serverConfiguredModelId?.trim() ?? "";
   return resolveConductorModelId(
     serverConfigured.length > 0
       ? serverConfigured
       : input.runtimeConfiguredModelId,
+    input.serverSurplus ?? {},
   );
 }
 
@@ -40,13 +49,18 @@ export function resolveStenographerModelId(input: {
   serverConfiguredModelId: string | null | undefined;
   serverConfiguredConductorModelId: string | null | undefined;
   runtimeConfiguredConductorModelId: string;
+  serverSurplus?: ServerSurplusRoleOptions;
 }): string {
   const stenographer = input.serverConfiguredModelId?.trim() ?? "";
   return stenographer.length > 0
-    ? resolveModelRole("stenographer", { configuredId: stenographer })
+    ? resolveModelRole("stenographer", {
+        configuredId: stenographer,
+        serverSurplus: input.serverSurplus ?? {},
+      })
     : resolveRoomSideModelId({
         serverConfiguredModelId: input.serverConfiguredConductorModelId,
         runtimeConfiguredModelId: input.runtimeConfiguredConductorModelId,
+        serverSurplus: input.serverSurplus ?? {},
       });
 }
 
@@ -55,22 +69,31 @@ export function resolveMemoryReviewModelId(input: {
   serverConfiguredModelId: string | null | undefined;
   serverConfiguredConductorModelId: string | null | undefined;
   runtimeConfiguredConductorModelId: string;
+  serverSurplus?: ServerSurplusRoleOptions;
 }): string {
   const configuredId = input.serverConfiguredModelId?.trim() || resolveRoomSideModelId({
     serverConfiguredModelId: input.serverConfiguredConductorModelId,
     runtimeConfiguredModelId: input.runtimeConfiguredConductorModelId,
+    serverSurplus: input.serverSurplus ?? {},
   });
-  return resolveModelRole("memoryReview", { configuredId });
+  return resolveModelRole("memoryReview", {
+    configuredId,
+    serverSurplus: input.serverSurplus ?? {},
+  });
 }
 
 /** M271 — explicit Reflection/Sleep selection, otherwise inherit Stenographer. */
 export function resolveReflectionModelId(input: {
   serverConfiguredModelId: string | null | undefined;
   resolvedStenographerModelId: string;
+  serverSurplus?: ServerSurplusRoleOptions;
 }): string {
   const reflection = input.serverConfiguredModelId?.trim() ?? "";
   return reflection.length > 0
-    ? resolveModelRole("stenographer", { configuredId: reflection })
+    ? resolveModelRole("stenographer", {
+        configuredId: reflection,
+        serverSurplus: input.serverSurplus ?? {},
+      })
     : input.resolvedStenographerModelId;
 }
 

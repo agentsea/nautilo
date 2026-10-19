@@ -23,6 +23,7 @@ import {
   hasContentPrivateModelDiagnostics,
   type ForegroundChatFundingSession,
 } from "../../src/runtime/foreground-chat-funding";
+import type { RecoverPreparedContext } from "../../src/utils/chat-model-invocation";
 import type { ResolvedFallbackPolicy } from "../../src/utils/resolve-fallback-policy";
 import { setAgentEventSink } from "../../src/runtime-hooks";
 import { getOrCreateAgentTurnContextByKey, turnContextKey, _resetAgentTurnContextsForTests } from "../../src/runtime/turn-context";
@@ -51,6 +52,9 @@ mock.module("@nautilo/trust", () => ({ ...actualTrust,
   assertCanUseServerProviderCredentials: fundingAdmission,
 }));
 
+const recoveryCostBegins: Array<Record<string, unknown>> = [];
+const recoveryCostSettlements: Array<Record<string, unknown>> = [];
+
 const A = "anthropic:claude-sonnet-4-6";
 const B = "openai:gpt-5.5-2026-04-23";
 const C = "google:gemini-2.5-pro";
@@ -77,6 +81,7 @@ const createUniversalModelMock = mock(
 const markModelInvokeFailureMock = mock((_modelId: string, _message: string): void => {});
 const invokeSurplusChatAttemptMock = mock(async (_input?: {
   config: RunnableConfig;
+  providerMode?: "any";
   apiKey: string;
   route: { catalogModelId: string };
   messages: BaseMessage[];
@@ -90,7 +95,7 @@ const invokeSurplusChatAttemptMock = mock(async (_input?: {
     config: RunnableConfig,
   ) => Promise<AIMessage>;
 }): Promise<
-  { kind: "served"; response: AIMessage } | { kind: "direct_fallback" }
+  { kind: "served"; response: AIMessage } | { kind: "direct_fallback"; retryUnpinned?: true }
 > => ({ kind: "direct_fallback" }));
 let surplusQualificationOverride: boolean | undefined;
 let cachedServerModelConfig: { preferSurplus: boolean } | null = null;
@@ -152,8 +157,8 @@ beforeAll(() => {
     throw new Error("network disabled in chat-model-fallback unit test");
   }) as unknown as typeof fetch;
   mock.module("@nautilo/db", () => ({
-    beginPersonalLlmAttempt: async () => {},
-    settlePersonalLlmAttempt: async () => {},
+    beginPersonalLlmAttempt: async (input: Record<string, unknown>) => { recoveryCostBegins.push(input); },
+    settlePersonalLlmAttempt: async (input: Record<string, unknown>) => { recoveryCostSettlements.push(input); },
     db: {},
     profiles: {},
     agents: {},
@@ -212,6 +217,7 @@ let invokeChatModelWithFallback: (
     firstProgressTimeoutMs?: number;
     preparedStableSystemPrefixLength?: number;
     providerCacheRoomId?: string | null;
+    recoverContext?: RecoverPreparedContext;
   },
 ) => Promise<{ response: AIMessage; modelUsed: string }>;
 
@@ -1473,6 +1479,159 @@ describe("invokeChatModelWithFallback — Surplus serving order", () => {
     expect(result).toMatchObject({ modelUsed: id, response: { content: "surplus kimi" } });
     expect(invokeSurplusChatAttemptMock).toHaveBeenCalledTimes(1);
     expect(createUniversalModelMock).not.toHaveBeenCalled();
+  });
+
+  function serverSurplusRecoverySession() {
+    let recoveryOpened = 0;
+    const personal: ForegroundChatFundingSession = {
+      kind: "personal",
+      async recheckAttempt() {},
+      async runAttempt(modelId, callback, transport) {
+        expect(modelId).toBe(A);
+        expect(transport).toBe("direct");
+        return callback({
+          usageFunding: { kind: "personal", humanUserId: "user-1", payerHumanId: "user-1",
+            providerRoute: "anthropic", credentialId: "11111111-1111-4111-8111-111111111111", credentialRevision: 3 },
+          personalCredential: { apiKey: "synthetic-personal-recovery-key" },
+        });
+      },
+    };
+    const primary: ForegroundChatFundingSession = {
+      kind: "server",
+      admission: { modelId: A, binding: { kind: "server", providerRoute: "surplus" } },
+      async recheckAttempt() {},
+      async runAttempt(modelId, callback, transport) {
+        expect(modelId).toBe(A);
+        if (transport === "direct") throw Object.assign(new Error("provider_credentials_missing"), { code: "provider_credentials_missing" });
+        return callback({ usageFunding: { kind: "server", humanUserId: "user-1", providerRoute: "surplus" } });
+      },
+      async openPersonalDirectRecovery(modelId) {
+        expect(modelId).toBe(A);
+        recoveryOpened++;
+        return personal;
+      },
+    };
+    return { primary, recoveryOpened: () => recoveryOpened };
+  }
+
+  test("unanswered server Surplus recovers on the same model with a separate personal cost attempt", async () => {
+    const h = serverSurplusRecoverySession();
+    recoveryCostBegins.length = 0;
+    recoveryCostSettlements.length = 0;
+    const marketplaceFunding: UsageFundingProvenance[] = [];
+    const directFunding: UsageFundingProvenance[] = [];
+    invokeSurplusChatAttemptMock.mockImplementation(async (input) => {
+      marketplaceFunding.push(input!.funding);
+      return { kind: "direct_fallback" };
+    });
+    createUniversalModelMock.mockImplementation(async (_modelId, options): Promise<AuraModel> => {
+      expect(options?.["personalCredential"]).toEqual({ apiKey: "synthetic-personal-recovery-key" });
+      return { bindTools: () => ({ invoke: async () => {
+        directFunding.push(getUsageContext()!.funding!);
+        return new AIMessage("personal recovery answer");
+      } }) } as unknown as AuraModel;
+    });
+    const result = await invokeChatModelWithFallback(messages, tools, A, "user-1", "agent-1", null, {}, {
+      fundingSession: h.primary, modelFallbackMode: "none",
+    });
+    expect(result.response.content).toBe("personal recovery answer");
+    expect(h.recoveryOpened()).toBe(1);
+    expect(h.primary.admission?.binding).toEqual({ kind: "server", providerRoute: "surplus" });
+    expect(marketplaceFunding).toEqual([{ kind: "server", humanUserId: "user-1", providerRoute: "surplus" }]);
+    expect(directFunding).toHaveLength(1);
+    expect(directFunding[0]).toMatchObject({ kind: "personal", payerHumanId: "user-1", providerRoute: "anthropic", credentialRevision: 3 });
+    expect(recoveryCostBegins).toHaveLength(1);
+    expect(recoveryCostBegins[0]).toMatchObject({ userId: "user-1", providerRoute: "anthropic", credentialRevision: 3, model: A });
+    expect(recoveryCostSettlements.at(-1)).toMatchObject({ outcome: "succeeded", costState: "unknown" });
+    expect(modelIdsFromCalls()).toEqual([A]);
+  });
+
+  test("a failed personal recovery stays personal, sanitizes its error and cannot enter the model chain", async () => {
+    const h = serverSurplusRecoverySession();
+    policyState = { enabled: true, chain: [B, C] };
+    invokeSurplusChatAttemptMock.mockResolvedValue({ kind: "direct_fallback" });
+    createUniversalModelMock.mockImplementation(async (): Promise<AuraModel> => ({ bindTools: () => ({
+      invoke: async () => { throw Object.assign(new Error("private-provider-payload"), { status: 503 }); },
+    }) } as unknown as AuraModel));
+    const error = await invokeChatModelWithFallback(messages, tools, A, "user-1", "agent-1", null, {}, {
+      fundingSession: h.primary,
+    }).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ name: "PersonalProviderInvocationError" });
+    expect(String(error)).not.toContain("private-provider-payload");
+    expect(modelIdsFromCalls()).toEqual([A]);
+    expect(markModelInvokeFailureMock).not.toHaveBeenCalled();
+    expect(h.recoveryOpened()).toBe(1);
+  });
+
+  test.each(["personal_credentials_disabled", "personal_credentials_forbidden", "personal_credential_stale", "personal_credential_unavailable"])("personal recovery admission failure %s is terminal before provider classification", async (code) => {
+    const h = serverSurplusRecoverySession();
+    const admissionError = Object.assign(new Error(code), { code });
+    h.primary.openPersonalDirectRecovery = async () => { throw admissionError; };
+    policyState = { enabled: true, chain: [B, C] };
+    invokeSurplusChatAttemptMock.mockResolvedValue({ kind: "direct_fallback" });
+    const error = await invokeChatModelWithFallback(messages, tools, A, "user-1", "agent-1", null, {}, {
+      fundingSession: h.primary,
+    }).catch((caught: unknown) => caught);
+    expect(error).toBe(admissionError);
+    expect(createUniversalModelMock).not.toHaveBeenCalled();
+    expect(markModelInvokeFailureMock).not.toHaveBeenCalled();
+    expect(invokeSurplusChatAttemptMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("a recovery revision failure before its callback stays a terminal session error", async () => {
+    const h = serverSurplusRecoverySession();
+    const admissionError = Object.assign(new Error("personal_credential_stale"), { code: "personal_credential_stale" });
+    h.primary.openPersonalDirectRecovery = async () => ({
+      kind: "personal",
+      async recheckAttempt() {},
+      async runAttempt() { throw admissionError; },
+    });
+    policyState = { enabled: true, chain: [B, C] };
+    invokeSurplusChatAttemptMock.mockResolvedValue({ kind: "direct_fallback" });
+    const error = await invokeChatModelWithFallback(messages, tools, A, "user-1", "agent-1", null, {}, {
+      fundingSession: h.primary,
+    }).catch((caught: unknown) => caught);
+    expect(error).toBe(admissionError);
+    expect(createUniversalModelMock).not.toHaveBeenCalled();
+    expect(markModelInvokeFailureMock).not.toHaveBeenCalled();
+    expect(invokeSurplusChatAttemptMock).toHaveBeenCalledTimes(1);
+  });
+
+  test("successful Surplus and cancellation do not open personal recovery", async () => {
+    const h = serverSurplusRecoverySession();
+    invokeSurplusChatAttemptMock.mockResolvedValue({ kind: "served", response: new AIMessage("served") });
+    await invokeChatModelWithFallback(messages, tools, A, "user-1", "agent-1", null, {}, { fundingSession: h.primary });
+    expect(h.recoveryOpened()).toBe(0);
+    const cancellation = new AbortController();
+    invokeSurplusChatAttemptMock.mockImplementation(async () => {
+      cancellation.abort(new Error("caller cancelled"));
+      return { kind: "direct_fallback" };
+    });
+    expect(invokeChatModelWithFallback(messages, tools, A, "user-1", "agent-1", null, { signal: cancellation.signal }, {
+      fundingSession: h.primary,
+    })).rejects.toThrow("caller cancelled");
+    expect(h.recoveryOpened()).toBe(0);
+    expect(createUniversalModelMock).not.toHaveBeenCalled();
+  });
+
+  test("cancellation inside personal recovery returns only the caller's reason", async () => {
+    const h = serverSurplusRecoverySession();
+    const cancellation = new AbortController();
+    const reason = new Error("personal recovery cancelled");
+    policyState = { enabled: true, chain: [B, C] };
+    invokeSurplusChatAttemptMock.mockResolvedValue({ kind: "direct_fallback" });
+    createUniversalModelMock.mockImplementation(async (): Promise<AuraModel> => ({ bindTools: () => ({
+      invoke: async () => {
+        cancellation.abort(reason);
+        throw new Error("private-cancelled-provider-payload");
+      },
+    }) } as unknown as AuraModel));
+    const error = await invokeChatModelWithFallback(messages, tools, A, "user-1", "agent-1", null,
+      { signal: cancellation.signal }, { fundingSession: h.primary }).catch((caught: unknown) => caught);
+    expect(error).toBe(reason);
+    expect(modelIdsFromCalls()).toEqual([A]);
+    expect(markModelInvokeFailureMock).not.toHaveBeenCalled();
+    expect(h.recoveryOpened()).toBe(1);
   });
 
   test("tries the original direct provider only after a definitive Surplus refusal", async () => {
@@ -3097,4 +3256,124 @@ describe("personal marketplace invocation", () => {
     expect(attemptedRoutes).toEqual([A, C]);
     expect(createUniversalModelMock).not.toHaveBeenCalled();
   });
+});
+
+
+describe("exact-model marketplace funding sequence", () => {
+  const modelId = T1;
+  const messages = [new HumanMessage("synthetic routing test")];
+  beforeEach(() => {
+    Object.assign(process.env, TEST_PROVIDER_KEYS);
+    policyState = { enabled: false, chain: [] };
+    cachedServerModelConfig = { preferSurplus: true };
+    createUniversalModelMock.mockReset();
+    invokeSurplusChatAttemptMock.mockReset();
+    _resetAgentTurnContextsForTests();
+  });
+  function harness(options: { personalFirst?: boolean; allowAny?: boolean; missingServerDirect?: boolean } = {}) {
+    const order: string[] = [];
+    let recovered = 0;
+    const source = (kind: "server" | "personal"): ForegroundChatFundingSession => ({
+      kind,
+      ...(options.allowAny === false ? {} : { allowUnpinnedSurplusRetry: true as const }),
+      async recheckAttempt() {},
+      async runAttempt(candidate, run, transport) {
+        expect(candidate).toBe(modelId);
+        if (kind === "server" && transport === "direct" && options.missingServerDirect) {
+          throw Object.assign(new Error("missing"), { code: "provider_credentials_missing" });
+        }
+        const providerRoute = transport === "direct" ? "openrouter" : "surplus";
+        return run({ usageFunding: kind === "server"
+          ? { kind, humanUserId: "human", providerRoute }
+          : { kind, humanUserId: "human", payerHumanId: "human", providerRoute,
+            credentialId: providerRoute, credentialRevision: 1 },
+          ...(kind === "personal" ? { personalCredential: { apiKey: `personal-${providerRoute}` } } : {}),
+        });
+      },
+    });
+    const personal = source("personal");
+    const server = source("server");
+    server.openPersonalRecovery = async candidate => {
+      expect(candidate).toBe(modelId); recovered++;
+      return personal;
+    };
+    invokeSurplusChatAttemptMock.mockImplementation(async input => {
+      order.push(`${input!.funding.kind}:${input!.providerMode ?? "pinned"}`);
+      return { kind: "direct_fallback", ...(input!.providerMode ? {} : { retryUnpinned: true as const }) };
+    });
+    createUniversalModelMock.mockImplementation(async (_id, options): Promise<AuraModel> => ({
+      bindTools: () => ({ invoke: async () => {
+        const personalKey = options?.["personalCredential"] !== undefined;
+        order.push(`${personalKey ? "personal" : "server"}:direct`);
+        if (!personalKey) throw Object.assign(new Error("unauthorized"), { status: 401 });
+        return new AIMessage("personal answer");
+      } }),
+    }) as unknown as AuraModel);
+    return { order, server, personal, recovered: () => recovered,
+      invoke: () => invokeChatModelWithFallback(messages, [], modelId, "human", "agent", null, undefined, {
+        fundingSession: options.personalFirst ? personal : server, sameModelRetryMode: "none", modelFallbackMode: "none",
+      }) };
+  }
+  test("server first exhausts server rails before the personal sequence", async () => {
+    const h = harness();
+    expect((await h.invoke()).response.content).toBe("personal answer");
+    expect(h.order).toEqual(["server:pinned", "server:any", "server:direct", "personal:pinned", "personal:any", "personal:direct"]);
+    expect(h.recovered()).toBe(1);
+    expect(h.server.kind).toBe("server");
+  });
+  test("missing server direct still begins at personal Surplus", async () => {
+    const h = harness({ missingServerDirect: true });
+    expect((await h.invoke()).response.content).toBe("personal answer");
+    expect(h.order).toEqual(["server:pinned", "server:any", "personal:pinned", "personal:any", "personal:direct"]);
+  });
+  test("personal-first has no server hop", async () => {
+    const h = harness({ personalFirst: true });
+    await h.invoke();
+    expect(h.order).toEqual(["personal:pinned", "personal:any", "personal:direct"]);
+    expect(h.recovered()).toBe(0);
+  });
+  test("operations without seller-broadening authority retain provider pins", async () => {
+    const h = harness({ allowAny: false });
+    await h.invoke();
+    expect(h.order).toEqual(["server:pinned", "server:direct", "personal:pinned", "personal:direct"]);
+  });
+  test("a successful model-only response ends the sequence", async () => {
+    const h = harness();
+    invokeSurplusChatAttemptMock.mockImplementation(async input => {
+      h.order.push(input!.providerMode ?? "pinned");
+      return input!.providerMode === "any" ? { kind: "served", response: new AIMessage("marketplace answer") }
+        : { kind: "direct_fallback", retryUnpinned: true };
+    });
+    expect((await h.invoke()).response.content).toBe("marketplace answer");
+    expect(h.order).toEqual(["pinned", "any"]);
+    expect(createUniversalModelMock).not.toHaveBeenCalled();
+  });
+  test("a policy or revision failure between marketplace attempts is terminal", async () => {
+    const h = harness();
+    const stale = new Error("revision changed");
+    h.server.recheckAttempt = async () => { throw stale; };
+    expect(h.invoke()).rejects.toBe(stale);
+    expect(h.order).toEqual(["server:pinned"]);
+    expect(h.recovered()).toBe(0);
+  });
+  test("research shrinks rejected server context before considering personal funding", async () => {
+    const h = harness();
+    let attempts = 0;
+    let recoveries = 0;
+    createUniversalModelMock.mockImplementation(async (): Promise<AuraModel> => ({
+      bindTools: () => ({ invoke: async () => {
+        if (++attempts === 1) throw TOKEN_LIMIT_ERR;
+        return new AIMessage("server after context repair");
+      } }),
+    }) as unknown as AuraModel);
+    const result = await invokeChatModelWithFallback([new HumanMessage("long context ".repeat(50))], [], modelId,
+      "human", "agent", null, undefined, {
+        fundingSession: h.server, sameModelRetryMode: "none", modelFallbackMode: "none",
+        recoverContext: async () => { recoveries++; return [new HumanMessage("short")]; },
+      });
+    expect(result.response.content).toBe("server after context repair");
+    expect(recoveries).toBe(1);
+    expect(h.recovered()).toBe(0);
+  });
+
 });

@@ -119,6 +119,65 @@ describe("trusted model funding", () => {
     expect(await code(resolveModelFunding({ ...input, fundingKind: "personal" }, h.deps))).toBe("personal_credential_missing");
   });
 
+  test("direct-only inference selects the Human's direct key without subscription or Surplus admission", async () => {
+    const h = harness();
+    h.capabilities.set(ALICE, ["use_server_provider_credentials", "use_personal_provider_credentials"]);
+    h.rows.set(`${ALICE}:openai`, row(ALICE, "openai"));
+    h.rows.set(`${ALICE}:surplus`, row(ALICE, "surplus"));
+    h.setFundingPreference("server_first");
+    h.setSurplusEligible(true);
+    let subscriptionReads = 0;
+    h.deps.getSubscription = async () => {
+      subscriptionReads += 1;
+      return { id: "50000000-0000-4000-8000-000000000005", revision: 1,
+        available: true, modelIds: ["openai:gpt-6.1-sol"] };
+    };
+    const admitted = await resolveModelFunding({
+      humanUserId: ALICE,
+      modelId: "openai:gpt-6.1-sol",
+      workload: "foreground_text_chat",
+      fundingKind: "personal",
+      directOnly: true,
+    }, h.deps);
+    expect(admitted).toMatchObject({ kind: "personal", providerRoute: "openai" });
+    expect(subscriptionReads).toBe(0);
+    expect(h.reads).toEqual([`${ALICE}:openai`]);
+    expect(await code(resolveModelFunding({
+      humanUserId: ALICE,
+      modelId: "openai:gpt-6.1-sol",
+      workload: "memory",
+      fundingKind: "personal",
+      directOnly: true,
+    }, h.deps))).toBe("unsupported_workload");
+  });
+
+  test("API-key-only personal recovery may select Surplus without consulting subscriptions", async () => {
+    const h = harness();
+    h.capabilities.set(ALICE, ["use_server_provider_credentials", "use_personal_provider_credentials"]);
+    h.rows.set(`${ALICE}:openai`, row(ALICE, "openai"));
+    h.rows.set(`${ALICE}:surplus`, row(ALICE, "surplus"));
+    h.setFundingPreference("server_first");
+    h.setSurplusEligible(true);
+    let subscriptionReads = 0;
+    h.deps.getSubscription = async () => {
+      subscriptionReads += 1;
+      return { id: "50000000-0000-4000-8000-000000000005", revision: 1,
+        available: true, modelIds: ["openai:gpt-6.1-sol"] };
+    };
+
+    const admitted = await resolveModelFunding({
+      humanUserId: ALICE,
+      modelId: "openai:gpt-6.1-sol",
+      workload: "foreground_text_chat",
+      fundingKind: "personal",
+      apiKeyOnly: true,
+    }, h.deps);
+
+    expect(admitted).toMatchObject({ kind: "personal", providerRoute: "surplus" });
+    expect(subscriptionReads).toBe(0);
+    expect(h.reads).toEqual([`${ALICE}:surplus`]);
+  });
+
   test("image assistance excludes unsupported marketplace transport and rechecks exact personal revision", async () => {
     const h = harness();
     h.capabilities.set(ALICE, ["use_server_provider_credentials", "use_personal_provider_credentials"]);

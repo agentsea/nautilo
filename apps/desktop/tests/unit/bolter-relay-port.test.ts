@@ -40,6 +40,26 @@ function fixture(options: { failFirstFactory?: boolean; deferFirstSend?: boolean
 }
 const tick = () => new Promise<void>(resolve => setImmediate(resolve));
 
+test("old server peers receive legacy observations while new peers can observe file support", async () => {
+  for (const version of [30, 31]) {
+    const selected = { ...scope, selectedProtocolVersion: version };
+    const messages: RelayBolterDesktopMessage[] = [];
+    const supported = { ...observation, attachments: true };
+    const port = createBolterNativeRelayPort({ isCurrent: () => true, createConnection: async () => ({
+      connect: async () => supported, check: async () => supported, pause: async () => supported,
+      start: async () => supported, conversations: async () => ({ kind: "conversations", conversations: [] }),
+      prepareSend: async () => null, retire: async () => {},
+    }) });
+    port.onRegistered(selected, { send: message => { messages.push(message); return true; } });
+    await port.onCommand({ type: "relay:bolter-command", version: 30, scope: selected, correlationId: outboxId,
+      command: { action: "check", connectionId: id, generation: 1 } });
+    const last = messages.at(-1);
+    expect(last?.type === "relay:bolter-result" && last.result.kind === "observation" ? last.result.observation.attachments : null)
+      .toBe(version === 31 ? true : undefined);
+    await port.retire();
+  }
+});
+
 test("native send releases no text until exact one-shot authorization and never replays an outbox", async () => {
   const f = fixture();
   const command = f.envelope({ action: "send", connectionId: id, generation: 1, outboxId, bindingId, bindingRevision: 0 });

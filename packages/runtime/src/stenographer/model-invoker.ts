@@ -48,6 +48,8 @@ export function createRoomSideModelInvoker(opts: {
   operationId: string;
   invocationPolicy?: RoomSideModelInvocationPolicy;
   fundingSession?: ForegroundChatFundingSession;
+  /** Trusted admission for one same-model marketplace retry without a provider pin. */
+  allowUnpinnedSurplusRetry?: true;
   assertCurrent?: () => Promise<void>;
 }): (prompt: string, signal?: AbortSignal) => Promise<string> {
   return async (prompt, signal) => {
@@ -78,6 +80,9 @@ export function createRoomSideModelInvoker(opts: {
                 ? { serverFundedService: "shared_memory_maintenance" as const }
                 : { fundingSession: opts.fundingSession }),
               reasoningOutput: false,
+              ...(opts.allowUnpinnedSurplusRetry === true
+                ? { allowUnpinnedSurplusRetry: true as const }
+                : {}),
               modelFallbackMode: opts.fundingSession === undefined ? opts.invocationPolicy?.modelFallbackMode ?? "agent_chain" : "none",
               ...(opts.invocationPolicy === undefined ? {} : {
                 sameModelRetryMode: opts.invocationPolicy.sameModelRetryMode,

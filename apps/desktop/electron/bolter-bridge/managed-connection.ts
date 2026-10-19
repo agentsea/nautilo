@@ -100,8 +100,9 @@ export function createManagedBolterConnectionFactory(options: {
       const identity = owner?.confirmedIdentity;
       return { runtime: !platform ? "unavailable" : qualified ? "qualified" : "qualification_required",
         authentication: identity ? "confirmed" : pending ? "pending" : descriptor.identity ? "unknown" : "required",
-        identity: identity ? { providerAgentId: identity.agentId, label: "Bolter agent", identityFingerprint: identityFingerprint(identity) } : null,
+        identity: identity ? { providerAgentId: identity.agentId, label: identity.label ?? "Bolter agent", identityFingerprint: identityFingerprint(identity) } : null,
         receiver: owner?.listening ? "listening" : owner?.state === "receiver-running" ? "running" : "stopped",
+        attachments: owner?.canShareFiles === true,
         ...(!platform ? { reason: "runtime_unavailable" as const } : !qualified ? { reason: "qualification_required" as const } : ingressBlocked ? { reason: "receiver_unavailable" as const } : {}) };
     };
     const performEnsure = async (refresh: boolean) => {
@@ -310,8 +311,8 @@ export function createManagedBolterConnectionFactory(options: {
         if (!prepared && await recover(version)) prepared = await owner?.prepareSend();
         // All preparation and recovery precedes the server's release of exact content.
         const sendPrepared = prepared;
-        return sendPrepared ? async content => {
-          const result = await sendPrepared.send({ chatId: content.chatId, threadRootId: content.threadRootId }, content.content);
+        return sendPrepared ? async (content, reauthorize) => {
+          const result = await sendPrepared.send({ chatId: content.chatId, threadRootId: content.threadRootId }, content.content, content.files, reauthorize);
           if (result.status !== "sent") {
             // The provider may have accepted this send. Upgrade only future work; never replay content.
             void recover(version).catch(() => undefined);

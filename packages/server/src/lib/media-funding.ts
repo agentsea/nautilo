@@ -7,6 +7,7 @@ import {
   isPaidServiceProvider,
   type DurableServiceFundingBinding,
 } from "@nautilo/types";
+import { resolveSurplusPersonalDirectRecovery } from "./surplus-personal-recovery";
 import { ModelFundingError, resolveModelFunding, type ModelFundingDeps, type ModelFundingDecision } from "./model-funding";
 import { bindAdmittedServiceFunding, runWithDurableServiceFunding } from "./service-funding";
 
@@ -20,6 +21,7 @@ export interface MediaFundingDependencies {
   readonly bindFunding?: typeof bindAdmittedServiceFunding;
   readonly runFunding?: typeof runWithDurableServiceFunding;
   readonly findModel?: typeof findSurplusMediaModel;
+  readonly resolvePersonalRecovery?: typeof resolveSurplusPersonalDirectRecovery;
 }
 
 /** Structural catalogue admission is independent of server credential presence. */
@@ -76,7 +78,24 @@ export async function openMediaFunding(
     // Replacing a server key or losing personal custody ends this operation.
     await runFunding(prior, "spend", async () => {});
   }
-  let decision = await resolveFunding({
+  const resolveDirect = async (primary: ModelFundingDecision) => {
+    try {
+      return await resolveFunding({ humanUserId, modelId, workload: "generation", priorDecision: primary, transport: "direct", directOnly: true });
+    } catch (error) {
+      if (!(error instanceof ModelFundingError) || error.code !== "provider_credentials_missing"
+        || primary.kind !== "server" || primary.providerRoute !== "surplus") throw error;
+      return (dependencies.resolvePersonalRecovery ?? resolveSurplusPersonalDirectRecovery)({
+        humanUserId, modelId, workload: "generation", primaryDecision: primary,
+        recheckPrimary: async () => {
+          await recheckAuthority();
+          return resolveFunding({ humanUserId, modelId, workload: "generation", priorDecision: primary, transport: "surplus" });
+        },
+      });
+    }
+  };
+  let decision = priorDecision && options?.transport === "direct"
+    ? await resolveDirect(priorDecision)
+    : await resolveFunding({
     humanUserId, modelId, workload: "generation",
     ...(priorDecision ? { priorDecision } : {}),
     ...(options?.directOnly ? { directOnly: true } : {}),
@@ -87,7 +106,8 @@ export async function openMediaFunding(
     if (!isPaidServiceProvider(selected.providerRoute)) throw new ModelFundingError("unsupported_provider");
     if (prior?.provider === selected.providerRoute) return prior;
     if (prior && (options?.transport !== "direct" || prior.provider !== "surplus"
-      || selected.kind !== prior.binding.kind)) throw new ModelFundingError("funding_source_changed");
+      || (selected.kind !== prior.binding.kind
+        && !(prior.binding.kind === "server" && selected.kind === "personal")))) throw new ModelFundingError("funding_source_changed");
     return bindFunding(humanUserId, selected.providerRoute,
       selected.kind === "personal"
         ? { kind: "personal", providerRoute: selected.providerRoute, credentialId: selected.credentialId, credentialRevision: selected.credentialRevision }
@@ -105,12 +125,13 @@ export async function openMediaFunding(
     if (!found) {
       await recheckAuthority();
       await runFunding(funding, "spend", async () => {});
-      decision = await resolveFunding({
-        humanUserId, modelId, workload: "generation", priorDecision: decision, transport: "direct",
-      });
-      // The fallback is a new transport attempt within the original payer
-      // class, before any media generation or approval-bound reservation.
-      if (decision.kind !== funding.binding.kind) throw new ModelFundingError("funding_source_changed");
+      decision = await resolveDirect(decision);
+      // This is before generation or an approval-bound reservation. Only
+      // the explicit server-Surplus recovery may admit an own personal key.
+      if (decision.kind !== funding.binding.kind
+        && !(funding.binding.kind === "server" && decision.kind === "personal")) {
+        throw new ModelFundingError("funding_source_changed");
+      }
       if (!isPaidServiceProvider(decision.providerRoute) || decision.providerRoute === "surplus") {
         throw new ModelFundingError("funding_source_changed");
       }

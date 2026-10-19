@@ -60,10 +60,13 @@ test("personal-only member enters their Genie Room without a server chat key", a
   expect(view.queryByTestId("provider-setup-empty-state")).toBeNull();
 });
 
-test("missing personal key offers Settings rather than Server Admin", async () => {
+test("Community member without a personal key gets account-specific guidance and Settings", async () => {
   credentials = [];
   const view = render(<SlackShapeRoom roomId="room-one" members={ownGenie} />);
   await waitFor(() => expect(view.getByTestId("personal-provider-setup-empty-state")).toBeTruthy());
+  expect(view.getByText(/account currently requires its own provider key/)).toBeTruthy();
+  expect(view.getByText(/Server-first funding only applies when your account is permitted/)).toBeTruthy();
+  expect(view.getByText(/ask an administrator for server-funded access/)).toBeTruthy();
   expect(view.getByRole("link", { name: "Set up your key" }).getAttribute("href"))
     .toBe("/settings#personal-provider-keys");
   expect(view.queryByRole("link", { name: "API Keys" })).toBeNull();
@@ -77,6 +80,16 @@ test("ordinary server-funded member keeps the existing Room path", () => {
   expect(view.getByTestId("conversation")).toBeTruthy();
 });
 
+test("Contributor can enter their Genie chat with server funding and no personal keys", async () => {
+  setupState = "ready";
+  hasLlm = true;
+  capabilities = new Set(["invoke_agents", "use_personal_provider_credentials", "use_server_provider_credentials"]);
+  credentials = [];
+  const view = render(<SlackShapeRoom roomId="room-one" members={ownGenie} />);
+  await waitFor(() => expect(view.getByTestId("conversation")).toBeTruthy());
+  expect(view.queryByTestId("personal-provider-setup-empty-state")).toBeNull();
+});
+
 test("a dual-capability member repairs a stale personal key before chat", async () => {
   setupState = "ready";
   hasLlm = true;
@@ -85,6 +98,7 @@ test("a dual-capability member repairs a stale personal key before chat", async 
   const view = render(<SlackShapeRoom roomId="room-one" members={ownGenie} />);
   await waitFor(() => expect(view.getByTestId("personal-provider-setup-empty-state")).toBeTruthy());
   expect(view.queryByTestId("conversation")).toBeNull();
+  expect(view.queryByText(/account currently requires its own provider key/)).toBeNull();
   expect(view.getByRole("link", { name: "Set up your key" }).getAttribute("href"))
     .toBe("/settings#personal-provider-keys");
 });

@@ -30,6 +30,13 @@ function renderEntry(path: string) {
 afterEach(() => cleanup());
 
 describe("public join entry", () => {
+  test("uses a neutral title while authentication is loading", () => {
+    sessionState = "unknown";
+    const view = renderEntry("/join/continue");
+    expect(view.getByText("Opening Nautilo")).toBeTruthy();
+    expect(view.queryByText("Opening Community")).toBeNull();
+  });
+
   test("a signed-in visitor goes straight into the app even with no active invite", () => {
     sessionState = "signed-in";
     const view = renderEntry("/join/continue");

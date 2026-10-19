@@ -50,3 +50,14 @@ describe("Bolter HTTP Human authority", () => {
     expect(calls).toEqual([[user, requestId]]);
   });
 });
+
+test("delivery status selectors remain UUID-only and owner-scoped", async () => {
+  const calls: unknown[] = [];
+  const app = await fixture({ deliveries: async (...input) => { calls.push(input); return { deliveries: [] }; } });
+  expect((await app.inject({ method: "GET", url: `/api/bolter/bindings/${binding}/deliveries?requestId=${requestId}` })).statusCode).toBe(200);
+  expect(calls).toEqual([[user, binding, { requestId }]]);
+  for (const query of ["requestId=invalid", `requestId=${requestId}&chatId=foreign`, `userId=${user}`]) {
+    expect((await app.inject({ method: "GET", url: `/api/bolter/bindings/${binding}/deliveries?${query}` })).statusCode).toBe(400);
+  }
+  expect(calls).toHaveLength(1);
+});

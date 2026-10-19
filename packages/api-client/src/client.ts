@@ -3826,15 +3826,18 @@ function readBrowserDocument(): AnchorDownloadDocument | undefined {
 export async function saveArtifactToDisk(
   data: Blob | ArrayBuffer,
   suggestedFilename: string,
+  opts?: { signal?: AbortSignal },
 ): Promise<void> {
+  if (opts?.signal?.aborted) return;
   const blob = data instanceof Blob ? data : new Blob([data]);
   const bytes = await blob.arrayBuffer();
+  if (opts?.signal?.aborted) return;
   const desk = readNautiloDesktopBridge();
   const pickPath = desk?.dialog?.showSaveDialog;
   const writeBytes = desk?.fs?.writeFileBytes;
   if (typeof pickPath === "function" && typeof writeBytes === "function") {
     const picked = await pickPath({ defaultPath: suggestedFilename });
-    if (picked.canceled) return;
+    if (picked.canceled || opts?.signal?.aborted) return;
     const fp = picked.filePath;
     if (typeof fp === "string" && fp.length > 0) {
       await writeBytes(fp, bytes);
@@ -7566,8 +7569,11 @@ export class NautiloApiClient {
     return this.bolterRequest({ method: "POST", path: `/api/bolter/bindings/${encodeURIComponent(bindingId)}/messages`,
       body: bolterReviewedMessageRequestSchema.parse(input), schema: bolterReviewedMessageResponseSchema });
   }
-  getBolterDeliveries(bindingId: string, signal?: AbortSignal) {
-    return this.bolterRequest({ path: `/api/bolter/bindings/${encodeURIComponent(bindingId)}/deliveries`, schema: bolterDeliveriesResponseSchema, ...(signal ? { signal } : {}) });
+  getBolterDeliveries(bindingId: string, signal?: AbortSignal, selection?: { outboxId?: string; requestId?: string }) {
+    const query = new URLSearchParams();
+    if (selection?.outboxId) query.set("outboxId", selection.outboxId);
+    if (selection?.requestId) query.set("requestId", selection.requestId);
+    return this.bolterRequest({ path: `/api/bolter/bindings/${encodeURIComponent(bindingId)}/deliveries${query.size ? `?${query.toString()}` : ""}`, schema: bolterDeliveriesResponseSchema, ...(signal ? { signal } : {}) });
   }
 
   async getConnectedAppResultMedia(
@@ -13620,15 +13626,14 @@ export class NautiloApiClient {
   async uploadMessageAttachment(
     file: Blob,
     filename: string,
-    opts?: { roomId?: string },
+    opts?: { roomId?: string; purpose?: "bolter" },
   ): Promise<{ attachmentId: string; filename: string; mimeType: string; sizeBytes: number; status: string }> {
     const form = new FormData();
     form.append("file", file, filename.length > 0 ? filename : "attachment");
-    const q =
-      opts?.roomId !== undefined && opts.roomId.length > 0
-        ? `?roomId=${encodeURIComponent(opts.roomId)}`
-        : "";
-    const res = await this._fetch(`${this.baseUrl}/api/message-attachments${q}`, {
+    const query = new URLSearchParams();
+    if (opts?.roomId) query.set("roomId", opts.roomId);
+    if (opts?.purpose) query.set("purpose", opts.purpose);
+    const res = await this._fetch(`${this.baseUrl}/api/message-attachments${query.size ? `?${query.toString()}` : ""}`, {
       method: "POST",
       headers: this.authHeaders(),
       body: form,

@@ -107,3 +107,22 @@ test("explicitly unpinned media receipts bind exact request and model without cl
   expect(readConfirmedSurplusSettlement({ ...value, model: "other-model" }, media)).toBeNull();
   expect(readConfirmedSurplusSettlement({ ...value, provider: "" }, media)).toBeNull();
 });
+
+test("explicitly unpinned model receipts accept provider and model aliases for the exact request", () => {
+  const unpinned = {
+    requestId: "chat-request",
+    surplusModelId: "openai/gpt-5.6-sol",
+    providerPin: null,
+    unpinnedModel: true as const,
+  };
+  const value = {
+    ...receipt,
+    request_id: unpinned.requestId,
+    model: "canonical-gpt-5.6-sol-alias",
+    provider: "actual-serving-provider",
+  };
+  expect(readConfirmedSurplusSettlement(value, unpinned)).toBe(283);
+  expect(readConfirmedSurplusSettlement({ ...value, request_id: "other" }, unpinned)).toBeNull();
+  expect(readConfirmedSurplusSettlement({ ...value, provider: "" }, unpinned)).toBeNull();
+  expect(readConfirmedSurplusSettlement(value, { ...unpinned, providerPin: "openrouter" })).toBeNull();
+});

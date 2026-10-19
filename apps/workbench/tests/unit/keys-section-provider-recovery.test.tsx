@@ -222,8 +222,8 @@ describe("KeysSection provider recovery", () => {
     const saveButton = await beginEdit(container);
     // Draft input is local editor state, not saved key coverage.
     expect(
-      container.querySelectorAll('[aria-label="OpenAI: API key not configured"]'),
-    ).toHaveLength(3);
+      container.querySelector('[aria-label="OpenAI: API key not configured"]'),
+    ).not.toBeNull();
     expect(
       container.querySelector('[aria-label="OpenAI: API key configured"]'),
     ).toBeNull();

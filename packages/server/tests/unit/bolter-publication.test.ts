@@ -158,3 +158,19 @@ test("rejected content authorization returns no text and contains private diagno
   expect(await f.service().publish(receiver, "outbox")).toEqual({ status: "cancelled" });
   expect(f.state.settlements.at(-1)?.state).toBe("cancelled");
 });
+
+test("file preparation must revalidate the same claim and immutable content before later dispatch", async () => {
+  const f = fixture();
+  f.transport.send = async request => {
+    expect(await request.reauthorize()).toBe(false);
+    expect(await request.authorize()).toEqual(content);
+    expect(await request.reauthorize()).toBe(true);
+    f.state.content = { ...content, chatId: "other-chat" };
+    expect(await request.reauthorize()).toBe(false);
+    f.state.content = content;
+    f.state.current = false;
+    expect(await request.reauthorize()).toBe(false);
+    return { status: "uncertain" };
+  };
+  expect(await f.service().publish(receiver, "outbox")).toEqual({ status: "uncertain" });
+});
