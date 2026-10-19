@@ -610,7 +610,6 @@ function productionFilesMatching(pattern: RegExp): string[] {
 
 test("invocation admission and authority mint sites stay mechanically inventoried", () => {
   expect(productionFilesMatching(INVOCATION_ADMISSION_PATTERN)).toEqual([
-    "packages/runtime/src/conversation/human-terminal-admission.ts",
     "packages/runtime/src/tasks/report-back.ts",
     "packages/server/src/lib/foreground-chat-funding.ts",
     "packages/server/src/lib/native-task-funding.ts",
@@ -620,6 +619,8 @@ test("invocation admission and authority mint sites stay mechanically inventorie
     // Durable adoption and hydration recheck current sponsor, Room and Genie access.
     "packages/server/src/messaging/external-room-execution.ts",
     "packages/trust/src/action-capability-admission.ts",
+    // Human Terminal and Task capture use the same transaction-capable source owner.
+    "packages/trust/src/human-terminal-source-authority.ts",
   ]);
 
   expect(productionFilesMatching(SERVER_INVOCATION_ADAPTER_PATTERN)).toEqual([
