@@ -36,6 +36,20 @@ const relocatedDeclaration = (
 
 export const REVIEWED_TASK_FOUNDATION_SOURCE_ALARMS: readonly SourceAlarmReview[] = [
   {
+    locator: "packages/server/src/routes/protected-task-native-fixed-memory-segment.ts#log_emitter:7ef703451e44cded:1",
+    owner: "packages/server",
+    closure: "reviewed_exclusion",
+    exclusionId: "exclusion.task.segment-failure-code",
+    reason: "This exact protected Task diagnostic emits only a fixed label and the closed PTFMS001–PTFMS008 stage codes. The exception is discarded from the log; no Task prompt, result, transcript, checkpoint, Human identity, key, or provider error is emitted.",
+  },
+  {
+    locator: "packages/server/src/routes/protected-task-native-fixed-memory-segment.ts#log_emitter:7ef703451e44cded:2",
+    owner: "packages/server",
+    closure: "reviewed_exclusion",
+    exclusionId: "exclusion.task.failure-publication-code",
+    reason: "This exact protected Task diagnostic emits only a fixed label and the closed PTFMS001–PTFMS008 stage codes. The exception is discarded from the log; no Task prompt, result, transcript, checkpoint, Human identity, key, or provider error is emitted.",
+  },
+  {
     locator:
       "packages/db/scripts/finalize-task-crypto-lifecycle.ts#filesystem_write:5e7543910a09a852:1",
     owner: "packages/db",

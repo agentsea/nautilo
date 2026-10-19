@@ -135,9 +135,6 @@ export function createBackgroundAuthorizationSweepV2(input: Readonly<{
             );
             if (authorization.status === "ready") {
               responseBytes = authorization.responseBytes;
-            } else {
-              console.info("[background-authorization] Request not authorized",
-                JSON.stringify({status: authorization.status, reason: authorization.reason}));
             }
             throwIfAborted(options.signal);
             if (authorization.status === "pending"
