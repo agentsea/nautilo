@@ -457,6 +457,23 @@ export interface CurrentOrdinaryTranscriptExposureRow {
   readonly namespaceId: string;
 }
 
+/** Resolve a current execution's saved tool call without creating a second output store. */
+export async function readExecutionToolResult(input: {
+  ownerId: string; agentId: string; graphThreadId: string; callId: string;
+}): Promise<{ content: string; toolName: string | null } | null> {
+  if (!input.ownerId || !input.agentId || !input.graphThreadId || !input.callId) return null;
+  return withSerializableAgentTrustContext({ userId: input.ownerId, agentId: input.agentId }, async (tx) => {
+    const rows = await tx.select({ content: sessionMessages.content, toolName: sessionMessages.toolName })
+      .from(sessionMessages).innerJoin(sessions, eq(sessions.id, sessionMessages.sessionId))
+      .where(and(eq(sessions.ownerId, input.ownerId), eq(sessions.agentId, input.agentId),
+        eq(sessions.threadId, input.graphThreadId), eq(sessionMessages.role, "tool"),
+        sql`${sessionMessages.metadata}->'nautilo_tool_result'->>'toolCallId' = ${input.callId}`))
+      .limit(2); // Two rows suffice to reject an ambiguous call identity.
+    if (rows.length !== 1 || rows[0]!.content === null) return null;
+    return { content: rows[0]!.content, toolName: rows[0]!.toolName };
+  });
+}
+
 export function projectCurrentOrdinaryTranscriptExposureRows(
   messageIds: readonly number[],
   rows: readonly Readonly<{

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { resultReceipt, resultVersion } from "../result-reader/result-window";
 import { AIMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
 import { z } from "zod";
 import { getRunAgentTranscriptSnapshot, type GetRunAgentTranscriptOptions, type RunTranscriptBoundary } from "../../store/session-store";
@@ -127,7 +128,13 @@ export async function readTaskSection(args: TaskToolArgs, ctx: TaskReadContext, 
     const matched = search === undefined ? snapshot.messages : snapshot.messages.filter((message) => message.content.includes(search) || JSON.stringify(message.toolCalls).includes(search));
     // The ordinary session row does not persist ToolMessage.status. Preserve
     // that uncertainty instead of interpreting an error-looking content string.
-    value = matched.map((message) => ({ ...message, ...(message.role === "tool" ? { outcome: "unknown" as const } : {}) }));
+    const legacy = cursor !== null && cursor.sourceVersion === digest(sourceSnapshot);
+    value = matched.map((message) => ({ ...message,
+      ...(!legacy && message.role === "tool" && message.toolName === "officecli" ? {
+        content: JSON.stringify(resultReceipt({ kind: "task", taskId: data.task.id, runId: run.id,
+          messageId: message.id, sourceVersion: resultVersion(message.content) }, message.content)),
+      } : {}), ...(message.role === "tool" ? { outcome: "unknown" as const } : {}) }));
+    if (!legacy) sourceSnapshot = { source: sourceSnapshot, presentation: "retained-office-results" };
     counts = { transcriptEntries: snapshot.messages.length, matchingEntries: matched.length };
   } else if (section === "result" && run) value = { resultText: run.resultText, lastError: run.lastError };
   else value = { task: data.task, runs: data.runs.filter((entry) => !run || entry.id === run.id).map(({ transcript: _transcript, resultText: _result, ...metadata }) => metadata), ...(data.harness ? { harness: data.harness } : {}) };

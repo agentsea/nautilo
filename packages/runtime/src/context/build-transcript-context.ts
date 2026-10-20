@@ -2,6 +2,8 @@ import { HumanMessage, type BaseMessage } from "@langchain/core/messages";
 import { randomUUID } from "node:crypto";
 import {
   bindModelInputExposure,
+  resultReceipt,
+  resultVersion,
   getModelTokenLimit,
   ROOM_CONTEXT_MESSAGE_HEADER,
   type ModelInputExposure,
@@ -160,6 +162,8 @@ export interface ForegroundContextClock {
 
 /** Injected readers so the builder is unit-testable without a DB. */
 export interface BuildTranscriptContextDeps {
+  /** Ordinary authorized transcript source only; never enabled for protected projections. */
+  ordinaryResultReferences?: boolean;
   /** Author-labelled room transcript (reuse roomMessagesSince-family in Phase C). */
   readRoomTranscript(
     scope: Extract<TranscriptContextScope, { kind: "room" }>,
@@ -607,8 +611,19 @@ export async function buildTranscriptContext(
   const slotNonce = randomUUID();
   const slots = admitted.map((entry) => ({ ...entry, marker: `[${slotNonce}:${entry.messageId}]` }));
   const slotsById = new Map(slots.map((entry) => [entry.messageId, entry]));
+  const modelContextTokens = opts.modelId ? getModelTokenLimit(opts.modelId) : 128_000;
+  const resultCount = hitsResult.value.filter((hit) => hit.role === "tool").length;
+  const resultAllowance = Math.floor(Math.min(modelContextTokens,
+    (opts.maximumContextCharacters ?? modelContextTokens * 4) / 4) / (2 * Math.max(1, resultCount)));
   const hits = hitsResult.value.map((hit) => {
     const slot = hit.role === "user" ? slotsById.get(hit.messageId) : undefined;
+    if (slot === undefined && opts.scope.kind === "room" && !opts.scope.subthread
+      && deps.ordinaryResultReferences === true && hit.role === "tool"
+      && (hit.toolName === "officecli" || hit.toolName === "task" || hit.toolName === "read_tool_result")
+      && Buffer.byteLength(hit.snippet, "utf8") > resultAllowance) {
+      return { ...hit, snippet: JSON.stringify(resultReceipt({ kind: "room", roomId: opts.scope.roomId,
+        messageId: hit.messageId, sourceVersion: resultVersion(hit.snippet) }, hit.snippet)) };
+    }
     return slot === undefined ? hit : { ...hit, snippet: slot.marker };
   });
   let journal = journalResult.value;
@@ -685,7 +700,6 @@ export async function buildTranscriptContext(
       })),
     };
   }
-  const modelContextTokens = opts.modelId ? getModelTokenLimit(opts.modelId) : 128_000;
   let projectionFacts: ForegroundContextProjectionFactsV1 | undefined;
   const block =
     opts.scope.kind === "room"

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { AIMessage, ToolMessage } from "@langchain/core/messages";
@@ -244,4 +245,27 @@ test("oversized Task overview preserves a server-confirmed Resume affordance", (
   expect(projected?.["task"]).toMatchObject({ id: value.task.id, status: "errored", canResumeResearch: true });
   const unavailable = projectOversizedTaskRead({ ...value, task: { ...value.task, canResumeResearch: "true" } }, args, 2400);
   expect(unavailable?.["task"]).not.toHaveProperty("canResumeResearch");
+});
+
+
+test("OfficeCLI transcript reads return stable source references while legacy cursors preserve their original bytes", async () => {
+  const content = JSON.stringify({ rows: ["first", "x".repeat(12000), "last"] });
+  const rows = [{ id: 1, role: "tool", content, toolName: "officecli", toolCalls: null, createdAt: new Date("2026-09-07T12:10:00Z") }];
+  const end = { createdAt: "2026-09-07 12:10:00+00", id: 1 };
+  const spy = spyOn(store, "getRunAgentTranscriptSnapshot").mockResolvedValue({ end, messages: rows });
+  restores.push(() => spy.mockRestore());
+  const selection = { ...args, readSection: "transcript" as const };
+  const current = await readAll(selection);
+  const parsed = z.array(z.object({ content: z.string(), outcome: z.string() })).parse(JSON.parse(current.text));
+  const receipt = json(parsed[0]!.content);
+  expect(receipt["kind"]).toBe("retained");
+  expect(receipt["reference"]).toEqual({ kind: "task", taskId: "task", runId: "run", messageId: 1,
+    sourceVersion: createHash("sha256").update(content).digest("hex") });
+  expect(parsed[0]!.outcome).toBe("unknown");
+  expect(rows[0]!.content).toBe(content);
+  const cursor = Buffer.from(JSON.stringify({ version: "task-read-v1", ownerId: ctx.ownerId, agentId: ctx.agentId,
+    taskId: "task", runId: "run", graphThreadId: run.graphThreadId, readSection: "transcript", readSearch: null,
+    snapshotEnd: end, sourceVersion: createHash("sha256").update(JSON.stringify(rows)).digest("hex"), offset: 0 })).toString("base64url");
+  const legacy = await readAll({ ...selection, readCursor: cursor });
+  expect(legacy.text).toBe(JSON.stringify(rows.map((row) => ({ ...row, outcome: "unknown" }))));
 });

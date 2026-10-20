@@ -173,6 +173,7 @@ export async function buildForegroundHistoryMessages(
       };
   const authorizedDeps: BuildTranscriptContextDeps = {
     ...effectiveDeps,
+    ordinaryResultReferences: liveShadowContext?.session == null && depsOverride === undefined,
     ...(effectiveDeps.readOrdinaryModelExposure !== undefined
       ? {}
       : depsOverride === undefined && liveShadowContext?.session == null

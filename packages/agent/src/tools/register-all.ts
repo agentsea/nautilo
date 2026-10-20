@@ -107,6 +107,7 @@ import { createEjectCommandTool } from "./commands/eject-command";
 import { createExecuteArtifactTool } from "./execute-artifact/execute-artifact";
 import { createOfficeTool, createEditDocTool } from "./office/office";
 import { createOfficeCliTool } from "./office/officecli";
+import { createReadToolResult } from "./result-reader/read-tool-result";
 import { createTranscribeAudioTool } from "./audio/transcribe-audio";
 import { createConvertTool } from "./convert/convert-tool";
 import { createGenerateImageTool } from "./media/generate-image";
@@ -1168,6 +1169,13 @@ export function registerAllTools(
       scanInvisibleUnicode: "strip",
     });
   }
+
+  register({
+    name: "read_tool_result", factory: (ctx) => createReadToolResult(ctx),
+    category: "documents", executor: "cloud", trustTier: "standard", impact: "read-only",
+    exposure: "core", tags: ["result", "read", "search"], requiresApproval: false,
+    requiredCapabilities: ["use_project_content"], resultScanPolicy: "on-suspicious", scanInvisibleUnicode: "strip",
+  });
 
   // --- Config / onboarding ---
   register({

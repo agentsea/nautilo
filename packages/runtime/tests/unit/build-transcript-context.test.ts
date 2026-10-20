@@ -53,6 +53,25 @@ function depsFrom(room: RoomHistoryHit[], sub: RoomHistoryHit[] = []): BuildTran
   };
 }
 
+test("reloaded oversized OfficeCLI and Task rows become retrievable receipts before narration", async () => {
+  const output = JSON.stringify({ diagnostics: "x".repeat(300_000), last: "evidence at end" });
+  const hits = [
+    { ...makeHit("human", "Human", "Inspect the document", "2026-06-01T10:00:01Z", "user"), messageId: 1 },
+    ...["officecli", "task"].map((toolName, index) => ({ ...makeHit("genie", "Genie", output, "2026-06-01T10:00:02Z", "tool"), toolName, messageId: index + 2 })),
+  ];
+  const messages = await buildTranscriptContext({ scope: { kind: "room", roomId: "room", ownerId: "owner", agentId: "agent" } }, {
+    ...depsFrom(hits), ordinaryResultReferences: true, readOrdinaryModelExposure: async () => ({ status: "incomplete" }),
+  });
+  const text = messages.map((message) => typeof message.content === "string" ? message.content : JSON.stringify(message.content)).join("\n");
+  expect(text).toContain("read_tool_result");
+  expect(text).toContain('"messageId":2');
+  expect(text).toContain('"messageId":3');
+  expect(text).not.toContain(output);
+  expect(hits[1]!.snippet).toBe(output);
+  const protectedMessages = await buildTranscriptContext({ scope: { kind: "room", roomId: "room", ownerId: "owner", agentId: "agent" } }, depsFrom(hits));
+  expect(protectedMessages.map((message) => typeof message.content === "string" ? message.content : JSON.stringify(message.content)).join("\n")).not.toContain("read_tool_result");
+});
+
 test("ordinary multi-turn narration carries the authorized canonical row union", async () => {
   const dependencies = [
     { kind: "source" as const, sourceKind: "message" as const, logicalSourceRef: "message:1",
