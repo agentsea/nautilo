@@ -24,6 +24,7 @@ import {
 import { eventBus, type InMemoryRelayRegistry } from "@nautilo/runtime";
 import { createDatabaseBolterPublicationService } from "./bolter-publication";
 import { readBolterAttachmentBytes } from "./bolter-attachments";
+import { isBolterMessageAddressed } from "./bolter-addressing";
 import type { createExternalRoomExecutionService } from "./external-room-execution";
 
 type Registry = Pick<InMemoryRelayRegistry, "getBolterSession" | "listBolterSessions" | "requestBolterCommand" | "onBolterObservation" | "onBolterBatch" | "onBolterContext">;
@@ -292,7 +293,7 @@ export function createBolterController(options: { relay: Registry; execution: Ex
         const ctx = receiver(row, entry.scope);
         for (const item of message.messages) {
           if (!active(entry.scope)) return "blocked";
-          if (item.senderType === "system" || item.senderId === row.providerAgentId || (item.senderType === "anima" && !item.addressed)) continue;
+          if (item.senderType === "system" || item.senderId === row.providerAgentId || !isBolterMessageAddressed(item, row.providerAgentId)) continue;
           if (item.truncated || !item.content.trim()) {
             remember(row.id, { ...entry, value: { ...entry.value, reason: "unsupported_content" } });
             return "blocked";
