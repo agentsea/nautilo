@@ -102,6 +102,10 @@ function fixture() {
   let borrowed: PostgresJsBridgeConnection | null = null;
   let originalProofs = 0;
   let taskCurrentProofs = 0;
+  let borrowedEntityProofs = 0;
+  const borrowedEntityContexts: unknown[] = [];
+  const borrowedEntityDecision = Object.freeze({ marker: "borrowed-entity-decision" }) as unknown as
+    Awaited<ReturnType<DomainKeyV2LiveShadowCurrentAuthority["resolveCurrentForegroundEntityObjectWrite"]>>;
   let probeCurrentProduct: (() => Promise<TaskDefinitionProductLoan | null>) | null = null;
   const taskProductLoans: Array<TaskDefinitionProductLoan | null> = [];
   const controller = new AbortController();
@@ -119,7 +123,12 @@ function fixture() {
     causalHumanUserId: "user", verifyCurrentPlan: async () => { events.push("current-proof"); return authorized; },
     resolveCurrentHumanAuthority: () => null, resolveCurrentForegroundAuthorization: async () => null,
     withCurrentRoomNamespaceKey: async () => null, resolveCurrentHumanObjectWrite: async () => null,
-    resolveCurrentAgentObjectWrite: async () => null, resolveCurrentForegroundEntityObjectWrite: async () => null,
+    resolveCurrentAgentObjectWrite: async () => null,
+    resolveCurrentForegroundEntityObjectWrite: async context => {
+      borrowedEntityProofs += 1;
+      borrowedEntityContexts.push(context);
+      return borrowedEntityDecision;
+    },
     signingPublicKey: () => null, destroy: () => { events.push("destroy"); },
   };
   const restricted: PostgresJsBridgeConnection = {
@@ -165,6 +174,9 @@ function fixture() {
   return { ...owner, transaction, executor, controller, events,
     borrowed: () => borrowed, originalProofs: () => originalProofs,
     taskCurrentProofs: () => taskCurrentProofs,
+    borrowedEntityProofs: () => borrowedEntityProofs,
+    borrowedEntityContexts,
+    borrowedEntityDecision,
     taskProductLoans,
     probeCurrentProduct: () => probeCurrentProduct,
     revoke: () => { authorized = false; }, setPolicy: (next: typeof policy) => { policy = next; } };
@@ -190,6 +202,9 @@ test("creation loans fence policy before Room proof and use only the existing ex
 
 test("Task definition revalidation borrows only the active product loan", async () => {
   const f = fixture();
+  const entityContext = Object.freeze({ marker: "entity-context" }) as unknown as Parameters<
+    TaskDefinitionProductLoan["resolveCurrentForegroundEntityObjectWrite"]
+  >[0];
   await f.context.withTaskDefinitionAuthorization({
     taskId: "11111111-1111-4111-8111-111111111111",
     taskExecutorAgentId: "agent",
@@ -202,7 +217,16 @@ test("Task definition revalidation borrows only the active product loan", async 
         taskId: "11111111-1111-4111-8111-111111111111",
         transaction: f.transaction,
         executor: f.executor,
-        use: () => f.context.assertCurrent(),
+        use: async () => {
+          await f.context.assertCurrent();
+          const probe = f.probeCurrentProduct();
+          if (probe === null) throw new Error("Missing Task product loan probe");
+          const loan = await probe();
+          if (loan === null) throw new Error("Missing active Task product loan");
+          await loan.assertCurrent();
+          expect(await loan.resolveCurrentForegroundEntityObjectWrite(entityContext))
+            .toBe(f.borrowedEntityDecision);
+        },
       });
       await f.context.assertCurrent();
     },
@@ -221,9 +245,15 @@ test("Task definition revalidation borrows only the active product loan", async 
   }
   expect(retained.transaction).toBe(f.transaction);
   expect(retained.product).toBe(borrowed);
+  expect(f.borrowedEntityProofs()).toBe(1);
+  expect(f.borrowedEntityContexts).toEqual([entityContext]);
   expect(f.taskProductLoans[2]).toBeNull();
   await rejects(retained.product.transactionOnce(() => Promise.resolve(true)),
     /foreground authority is unavailable/u);
+  await rejects(retained.assertCurrent(), /foreground authority is unavailable/u);
+  await rejects(async () => await retained.resolveCurrentForegroundEntityObjectWrite(entityContext),
+    /foreground authority is unavailable/u);
+  expect(f.borrowedEntityProofs()).toBe(1);
   f.dispose();
   await rejects(probe(), /foreground authority is unavailable/u);
 });

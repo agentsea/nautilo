@@ -24,6 +24,9 @@ type ProductLoan = Parameters<ProtectedTaskForegroundCreationContext["withProduc
 export type TaskDefinitionProductLoan = Readonly<{
   transaction: ProductLoan["transaction"];
   product: PostgresJsBridgeConnection;
+  assertCurrent(): Promise<void>;
+  resolveCurrentForegroundEntityObjectWrite:
+    ResolveCurrentDeviceWrappedAgentObjectAccessGenesisSetAuthorization;
 }>;
 type TaskDefinitionAuthorization = Readonly<{
   authority: TaskContentAuthorityV1;
@@ -270,6 +273,14 @@ export function createProtectedTaskForegroundCreationOwner(input: Omit<Publicati
           const value = await use(loan === undefined ? null : Object.freeze({
             transaction: loan.transaction,
             product: loan.product,
+            assertCurrent: loan.assertCurrent,
+            resolveCurrentForegroundEntityObjectWrite: async context => {
+              await loan.assertCurrent();
+              const decision = await loan.authority
+                .resolveCurrentForegroundEntityObjectWrite(context);
+              await loan.assertCurrent();
+              return decision;
+            },
           }));
           assertLive();
           return value;

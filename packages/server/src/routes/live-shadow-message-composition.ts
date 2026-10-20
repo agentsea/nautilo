@@ -710,7 +710,7 @@ export async function loadTaskDefinitionAuthority(request: Readonly<{
   crypto: LatticeCrypto;
   serverId: string;
   loadRuntimePolicy(): Promise<StrictShadowEnforcementPolicy>;
-  currentProduct?: TaskDefinitionProductLoan | null;
+  currentProduct?: Pick<TaskDefinitionProductLoan, "transaction" | "product"> | null;
 }>): Promise<TaskDefinitionAuthoritySnapshot | null> {
   const { crypto, serverId, loadRuntimePolicy } = context;
   const privateRoom = await createProtectedTaskRequesterPrivateRoomResolver(
@@ -5010,13 +5010,19 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
                                           recipientKeyId:
                                             description.recipientKeyId,
                                         },
-                                        resolveCurrentForegroundDefinitionAuthorization:
-                                          authority!.resolveCurrentForegroundEntityObjectWrite,
+                                        resolveCurrentForegroundDefinitionAuthorization: context =>
+                                          request.withCurrentProduct(async current => current === null
+                                            ? authority!.resolveCurrentForegroundEntityObjectWrite(context)
+                                            : current.resolveCurrentForegroundEntityObjectWrite(context)),
                                         assertCurrent: async () => {
                                           entities.signal.throwIfAborted();
-                                          if (!await authority!.verifyCurrentPlan()) {
-                                            throw new Error("Foreground Task authority changed");
-                                          }
+                                          await request.withCurrentProduct(async current => {
+                                            if (current === null) {
+                                              if (!await authority!.verifyCurrentPlan()) {
+                                                throw new Error("Foreground Task authority changed");
+                                              }
+                                            } else await current.assertCurrent();
+                                          });
                                           entities.signal.throwIfAborted();
                                         },
                                       });
