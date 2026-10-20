@@ -332,8 +332,8 @@ const TASK_PROTECTION_PROTECTED_WIRE_LOCATORS = [
   "http:request_response:POST /api/tasks/pending-attention",
   "http:request_response:POST /api/tasks/pending-attention/read",
   "http:request_response:POST /api/tasks/pending-attention/read#response.body.events[].tools[].args",
-  "http:request_response:POST /api/rooms/:roomId/live-shadow/task-definition/:authorizationId/authorize",
-  "http:request_response:POST /api/rooms/:roomId/live-shadow/task-definition/:authorizationId/authorize#request.body",
+  "http:request_response:POST /api/rooms/:roomId/live-shadow/task-definition/authorize",
+  "http:request_response:POST /api/rooms/:roomId/live-shadow/task-definition/authorize#request.body",
   "ws:server_to_client:message.task_definition_authorization_required",
 ] as const;
 

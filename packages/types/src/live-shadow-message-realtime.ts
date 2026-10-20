@@ -183,6 +183,23 @@ export type LiveShadowMessageRealtimeEventV1 = z.infer<
   typeof liveShadowMessageRealtimeEventV1Schema
 >;
 
+export type LiveShadowForegroundAuthorizationRequestV1 = Extract<
+  LiveShadowMessageRealtimeEventV1,
+  { type:
+    | "message.shared_agent_authorization_required"
+    | "message.runtime_invocation_authorization_required"
+    | "message.task_definition_authorization_required" }
+>;
+
+/** Classify an already parsed realtime event for foreground authorization dispatch. */
+export function isLiveShadowForegroundAuthorizationRequestV1(
+  event: Readonly<{ type: string }>,
+): event is LiveShadowForegroundAuthorizationRequestV1 {
+  return event.type === "message.shared_agent_authorization_required"
+    || event.type === "message.runtime_invocation_authorization_required"
+    || event.type === "message.task_definition_authorization_required";
+}
+
 export function parseLiveShadowMessageRealtimeEventV1(
   value: unknown,
 ): LiveShadowMessageRealtimeEventV1 {

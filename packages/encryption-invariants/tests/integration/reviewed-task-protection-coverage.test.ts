@@ -140,10 +140,10 @@ describe("Task protection inventory review", () => {
       "http:request_response:POST /api/tasks/pending-attention/read#response.body.events[].tools[].args",
     );
     expect(protectedLocators).toContain(
-      "http:request_response:POST /api/rooms/:roomId/live-shadow/task-definition/:authorizationId/authorize",
+      "http:request_response:POST /api/rooms/:roomId/live-shadow/task-definition/authorize",
     );
     expect(protectedLocators).toContain(
-      "http:request_response:POST /api/rooms/:roomId/live-shadow/task-definition/:authorizationId/authorize#request.body",
+      "http:request_response:POST /api/rooms/:roomId/live-shadow/task-definition/authorize#request.body",
     );
     expect(protectedLocators).toContain(
       "ws:server_to_client:message.task_definition_authorization_required",
@@ -153,8 +153,8 @@ describe("Task protection inventory review", () => {
     );
 
     const taskAuthorizationLocators = new Set([
-      "http:request_response:POST /api/rooms/:roomId/live-shadow/task-definition/:authorizationId/authorize",
-      "http:request_response:POST /api/rooms/:roomId/live-shadow/task-definition/:authorizationId/authorize#request.body",
+      "http:request_response:POST /api/rooms/:roomId/live-shadow/task-definition/authorize",
+      "http:request_response:POST /api/rooms/:roomId/live-shadow/task-definition/authorize#request.body",
       "ws:server_to_client:message.task_definition_authorization_required",
     ]);
     for (const entry of REVIEWED_TASK_PROTECTION_COVERAGE_ENTRIES.filter(

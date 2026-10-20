@@ -372,10 +372,12 @@ export function liveShadowMessageRoutes(
   );
 
   app.post<{
-    Params: { roomId: string; authorizationId: string };
+    Params: { roomId: string };
     Body: unknown;
   }>(
-    "/api/rooms/:roomId/live-shadow/task-definition/:authorizationId/authorize",
+    // The canonical Task authorization ID exceeds the router's path-parameter
+    // limit. It is already bound by the request body and signed plan.
+    "/api/rooms/:roomId/live-shadow/task-definition/authorize",
     liveShadowLargeRequestRouteOptions,
     async (request, reply) => {
       const authority = signedInAuthority(request);
@@ -385,10 +387,10 @@ export function liveShadowMessageRoutes(
       const parsed = taskDefinitionAuthorizationRequestV1Schema.safeParse(
         request.body,
       );
-      if (!parsed.success
-        || parsed.data.operationId !== request.params.authorizationId) {
+      if (!parsed.success) {
         return reply.code(400).send({ error: "invalid_request" });
       }
+      const authorizationId = parsed.data.operationId;
       const session = options.clientSessions.inspect({
         clientActionSessionId: parsed.data.clientActionSessionId,
         actorId: authority.humanActorId,
@@ -410,7 +412,7 @@ export function liveShadowMessageRoutes(
       try {
         const status = await options.composition
           .admitTaskDefinitionAuthorization?.({
-            authorizationId: request.params.authorizationId,
+            authorizationId,
             parentOperationId: parsed.data.parentOperationId,
             roomId: request.params.roomId,
             clientActionSessionId: parsed.data.clientActionSessionId,
@@ -423,7 +425,7 @@ export function liveShadowMessageRoutes(
         return reply.send({
           responseVersion: 1,
           status,
-          authorizationId: request.params.authorizationId,
+          authorizationId,
         });
       } finally {
         authorizationPlanBytes.fill(0);

@@ -2963,6 +2963,72 @@ function destroyConnectedDomainSecrets(
 }
 
 describePostgres("sealed protected Task Memory object writer", () => {
+  test("foreground Task authority binds Device revision independently of MLS security revision", async () => {
+    const base = await createBaseFixture();
+    const { loadTaskDefinitionAuthority } = await import(
+      "../../src/routes/live-shadow-message-composition"
+    );
+    const request = {
+      userId: base.userId,
+      humanId: base.humanActorId,
+      deviceId: base.deviceId,
+      clientActionSessionId: randomUUID(),
+      roomId: base.seedRoomId,
+      agentId: base.productAgentId,
+    };
+    const context = {
+      crypto: base.crypto,
+      serverId: SERVER_SCOPE,
+      loadRuntimePolicy: () => Promise.resolve({
+        mode: "encrypted_only" as const,
+        shadowBehavior: "strict" as const,
+        revision: base.policyRevision,
+      }),
+    };
+    const hostRevision = base.currentDevice.securityRevision + 1;
+    try {
+      await base.admin.update(humanCryptoDevices).set({ revision: hostRevision })
+        .where(eq(humanCryptoDevices.deviceId, base.deviceId));
+      const current = await new PostgresDeviceAdmissionRepository(
+        base.cryptoHandle, base.crypto,
+      ).currentAuthorityForDelegation(base.subject);
+      expect(current?.securityRevision).toBe(base.currentDevice.securityRevision);
+      current?.signingPublicKey.fill(0);
+      current?.headDigest.fill(0);
+      const snapshot = await loadTaskDefinitionAuthority(request, context);
+      try {
+        expect(snapshot).not.toBeNull();
+        expect(snapshot?.hostAuthorizationRevision).toBe(hostRevision);
+        expect(snapshot?.deviceGeneration).toBe(base.currentDevice.deviceGeneration);
+        expect(snapshot?.privateRoomId).toBe(base.roomId);
+        expect(snapshot?.namespace.namespaceId).toBe(base.namespaceValue);
+        expect(snapshot?.namespace.domainId).toBe(base.domainAuthority.domains[0]!.domainId);
+        expect(snapshot?.deviceSigningPublicKey).toEqual(base.currentDevice.signingPublicKey);
+      } finally {
+        snapshot?.deviceSigningPublicKey.fill(0);
+        for (const value of Object.values(snapshot?.namespace ?? {})) {
+          if (value instanceof Uint8Array) value.fill(0);
+        }
+        for (const domain of snapshot?.domains ?? []) {
+          domain.participantDigest.fill(0);
+          domain.headDigest.fill(0);
+          domain.activeNamespaceBindingSetDigest.fill(0);
+        }
+      }
+      expect(await loadTaskDefinitionAuthority(request, {
+        ...context,
+        loadRuntimePolicy: () => Promise.resolve({
+          mode: "plaintext_only", shadowBehavior: "fallback", revision: base.policyRevision,
+        }),
+      })).toBeNull();
+      await base.admin.update(humanCryptoDevices).set({ state: "revoked", revokedAt: new Date(NOW) })
+        .where(eq(humanCryptoDevices.deviceId, base.deviceId));
+      expect(await loadTaskDefinitionAuthority(request, context)).toBeNull();
+    } finally {
+      await base.cleanup();
+    }
+  });
+
   test("concurrent protected projections retain shared Agent identity without lock upgrade", async () => {
     const base = await createBaseFixture({ connectedExecution: true });
     const peerUserId = randomUUID();

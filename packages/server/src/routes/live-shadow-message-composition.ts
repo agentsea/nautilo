@@ -697,6 +697,97 @@ export async function notifyProtectedTaskReplyAfterSharedAgentPublication(
   }
 }
 
+export async function loadTaskDefinitionAuthority(request: Readonly<{
+  userId: string;
+  humanId: string;
+  deviceId: string;
+  clientActionSessionId: string;
+  roomId: string;
+  agentId: string;
+  expectedNamespaceId?: string;
+}>, context: Readonly<{
+  crypto: LatticeCrypto;
+  serverId: string;
+  loadRuntimePolicy(): Promise<StrictShadowEnforcementPolicy>;
+}>): Promise<TaskDefinitionAuthoritySnapshot | null> {
+  const { crypto, serverId, loadRuntimePolicy } = context;
+  const privateRoom = await createProtectedTaskRequesterPrivateRoomResolver(
+    getServerDirectDb(),
+  )(request.userId, request.agentId, request.expectedNamespaceId);
+  if (privateRoom === null) return null;
+  const policy = await loadRuntimePolicy();
+  if (policy.mode === "plaintext_only") return null;
+  const product = createPostgresJsBridgeConnection(getServerDirectDb());
+  const currentRoom = await new PostgresNamespaceProductAuthority(product)
+    .withCurrentPrivateRoom({
+      subjectUserId: request.userId,
+      subjectHumanId: request.humanId,
+      roomId: privateRoom.roomId,
+      namespaceId: privateRoom.namespaceId,
+      use: () => Promise.resolve(true),
+    });
+  if (currentRoom !== true) return null;
+  const restricted = createPostgresJsBridgeConnection(
+    getSharedDirectCryptoDb(),
+  );
+  const handle = await verifyCryptoPostgresHandle(restricted);
+  const device = await new PostgresDeviceAdmissionRepository(handle, crypto)
+    .currentAuthorityForDelegation({
+      userId: request.userId,
+      humanActorId: request.humanId,
+      deviceId: request.deviceId,
+    });
+  if (device === null) return null;
+  const repository = new PostgresDomainKeyAuthorityRepository(
+    restricted,
+    crypto,
+    serverId,
+  );
+  const [foreground, namespace] = await Promise.all([
+    repository.inspectForegroundAuthority({
+      namespaceIds: [privateRoom.namespaceId],
+      keyClass: "ai",
+      subjectHumanId: request.humanId,
+      deviceId: request.deviceId,
+    }),
+    repository.inspectForegroundNamespaceAuthority({
+      namespaceId: privateRoom.namespaceId,
+      keyClass: "ai",
+    }),
+  ]);
+  if (foreground.status !== "ready" || namespace.status !== "ready"
+    || foreground.domains.length !== 1
+    || foreground.domains[0]!.domainId !== namespace.domainId
+    || foreground.domains[0]!.sourceNamespaceId !== namespace.namespaceId
+    || foreground.committerDeviceId !== device.deviceId
+    || foreground.committerDeviceSigningGeneration !== device.deviceGeneration) {
+    if (foreground.status === "ready") foreground.domains.forEach((domain) => {
+      domain.participantDigest.fill(0);
+      domain.headDigest.fill(0);
+      domain.activeNamespaceBindingSetDigest.fill(0);
+    });
+    if (namespace.status === "ready") Object.values(namespace).forEach(
+      value => { if (value instanceof Uint8Array) value.fill(0); },
+    );
+    device.signingPublicKey.fill(0);
+    device.headDigest.fill(0);
+    return null;
+  }
+  device.headDigest.fill(0);
+  return Object.freeze({
+    ...request,
+    privateRoomId: privateRoom.roomId,
+    namespace,
+    policyRevision: policy.revision,
+    deviceGeneration: device.deviceGeneration,
+    deviceSigningPublicKey: device.signingPublicKey,
+    // Foreground grants bind the current Device row revision, as their
+    // parent Room grant does. MLS securityRevision is a separate counter.
+    hostAuthorizationRevision: foreground.hostAuthorizationRevision,
+    domains: foreground.domains,
+  });
+}
+
 export function createProductionLiveShadowMessageComposition(input: Readonly<{
   taskContentOwner?: () => EncryptionDataOperationOwner;
   cancelTaskExternalRequestsForHuman?: (humanActorId: string) => void;
@@ -911,90 +1002,6 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
     && equalBytes(left.domains[0]!.headDigest, right.domains[0]!.headDigest)
     && equalBytes(left.domains[0]!.activeNamespaceBindingSetDigest,
       right.domains[0]!.activeNamespaceBindingSetDigest);
-  const loadTaskDefinitionAuthority = async (request: Readonly<{
-    userId: string;
-    humanId: string;
-    deviceId: string;
-    clientActionSessionId: string;
-    roomId: string;
-    agentId: string;
-    expectedNamespaceId?: string;
-  }>): Promise<TaskDefinitionAuthoritySnapshot | null> => {
-    const privateRoom = await createProtectedTaskRequesterPrivateRoomResolver(
-      getServerDirectDb(),
-    )(request.userId, request.agentId, request.expectedNamespaceId);
-    if (privateRoom === null) return null;
-    const policy = await loadRuntimePolicy();
-    if (policy.mode === "plaintext_only") return null;
-    const product = createPostgresJsBridgeConnection(getServerDirectDb());
-    const currentRoom = await new PostgresNamespaceProductAuthority(product)
-      .withCurrentPrivateRoom({
-        subjectUserId: request.userId,
-        subjectHumanId: request.humanId,
-        roomId: privateRoom.roomId,
-        namespaceId: privateRoom.namespaceId,
-        use: () => Promise.resolve(true),
-      });
-    if (currentRoom !== true) return null;
-    const restricted = createPostgresJsBridgeConnection(
-      getSharedDirectCryptoDb(),
-    );
-    const handle = await verifyCryptoPostgresHandle(restricted);
-    const device = await new PostgresDeviceAdmissionRepository(handle, crypto)
-      .currentAuthorityForDelegation({
-        userId: request.userId,
-        humanActorId: request.humanId,
-        deviceId: request.deviceId,
-      });
-    if (device === null) return null;
-    const repository = new PostgresDomainKeyAuthorityRepository(
-      restricted,
-      crypto,
-      serverId,
-    );
-    const [foreground, namespace] = await Promise.all([
-      repository.inspectForegroundAuthority({
-        namespaceIds: [privateRoom.namespaceId],
-        keyClass: "ai",
-        subjectHumanId: request.humanId,
-        deviceId: request.deviceId,
-      }),
-      repository.inspectForegroundNamespaceAuthority({
-        namespaceId: privateRoom.namespaceId,
-        keyClass: "ai",
-      }),
-    ]);
-    if (foreground.status !== "ready" || namespace.status !== "ready"
-      || foreground.domains.length !== 1
-      || foreground.domains[0]!.domainId !== namespace.domainId
-      || foreground.domains[0]!.sourceNamespaceId !== namespace.namespaceId
-      || foreground.committerDeviceId !== device.deviceId
-      || foreground.committerDeviceSigningGeneration !== device.deviceGeneration
-      || foreground.hostAuthorizationRevision !== device.securityRevision) {
-      if (foreground.status === "ready") foreground.domains.forEach((domain) => {
-        domain.participantDigest.fill(0);
-        domain.headDigest.fill(0);
-        domain.activeNamespaceBindingSetDigest.fill(0);
-      });
-      if (namespace.status === "ready") Object.values(namespace).forEach(
-        value => { if (value instanceof Uint8Array) value.fill(0); },
-      );
-      device.signingPublicKey.fill(0);
-      device.headDigest.fill(0);
-      return null;
-    }
-    device.headDigest.fill(0);
-    return Object.freeze({
-      ...request,
-      privateRoomId: privateRoom.roomId,
-      namespace,
-      policyRevision: policy.revision,
-      deviceGeneration: device.deviceGeneration,
-      deviceSigningPublicKey: device.signingPublicKey,
-      hostAuthorizationRevision: device.securityRevision,
-      domains: foreground.domains,
-    });
-  };
   const destroySharedAgentAcceptedAuthorization = (
     executionId: string,
     accepted: Readonly<{
@@ -3186,7 +3193,7 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
       roomId: waiter.snapshot.roomId,
       agentId: waiter.snapshot.agentId,
       expectedNamespaceId: waiter.snapshot.namespace.namespaceId,
-    });
+    }, { crypto, serverId, loadRuntimePolicy });
     if (current === null) return reject();
     const currentMatches = sameTaskDefinitionAuthoritySnapshot(
       waiter.snapshot,
@@ -4956,7 +4963,7 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
                                     agentId: request.taskExecutorAgentId,
                                     ...(expectedNamespaceId === undefined
                                       ? {} : { expectedNamespaceId }),
-                                  });
+                                  }, { crypto, serverId, loadRuntimePolicy });
                                   if (snapshot === null) {
                                     throw new Error("Foreground Task private authority is unavailable");
                                   }
@@ -5176,7 +5183,7 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
                                               agentId: snapshot.agentId,
                                               expectedNamespaceId:
                                                 snapshot.namespace.namespaceId,
-                                            });
+                                            }, { crypto, serverId, loadRuntimePolicy });
                                             if (current === null) throw new Error("Foreground Task private authority changed");
                                             const matches = sameTaskDefinitionAuthoritySnapshot(snapshot, current);
                                             wipeTaskDefinitionAuthoritySnapshot(current);

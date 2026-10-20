@@ -6820,15 +6820,18 @@ export class NautiloApiClient {
     input: TaskDefinitionAuthorizationRequestV1,
   ): Promise<TaskDefinitionAuthorizationResponseV1> {
     const body = taskDefinitionAuthorizationRequestV1Schema.parse(input);
+    if (body.operationId !== authorizationId) {
+      throw new TypeError(
+        "Task definition authorization ID does not match the prepared operation",
+      );
+    }
     return this.request({
       method: "POST",
-      path: `/api/rooms/${encodeURIComponent(roomId)}/live-shadow/task-definition/${
-        encodeURIComponent(authorizationId)
-      }/authorize`,
+      path: `/api/rooms/${encodeURIComponent(roomId)}/live-shadow/task-definition/authorize`,
       body,
       schema: taskDefinitionAuthorizationResponseV1Schema,
       defaultErrorPrefix:
-        `POST /api/rooms/${roomId}/live-shadow/task-definition/${authorizationId}/authorize`,
+        `POST /api/rooms/${roomId}/live-shadow/task-definition/authorize`,
     });
   }
 

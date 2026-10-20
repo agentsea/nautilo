@@ -20,6 +20,7 @@ import {
 } from "@assistant-ui/react";
 import {
   isProtectedMessageRealtimeEventV2,
+  isLiveShadowForegroundAuthorizationRequestV1,
   normalizeHumanMessageText,
   GENIE_APPLICATION_BRIDGE_VERSION_V1,
   type ChatUploadedAttachmentRef,
@@ -3957,10 +3958,7 @@ export function NautiloRuntimeProvider({
         }
       }
 
-      if (
-        event.type === "message.shared_agent_authorization_required"
-        || event.type === "message.runtime_invocation_authorization_required"
-      ) {
+      if (isLiveShadowForegroundAuthorizationRequestV1(event)) {
         if (liveShadowMessageClient === undefined) return;
         liveShadowAuthorizationQueueRef.current =
           liveShadowAuthorizationQueueRef.current
@@ -3969,9 +3967,9 @@ export function NautiloRuntimeProvider({
             const authorized = await liveShadowMessageClient
               .authorizeSharedAgentExecution(event);
             if (!authorized && import.meta.env.DEV) {
-              const coordinate = "invocationId" in event
-                ? event.invocationId
-                : event.executionId;
+              const coordinate = "authorizationId" in event
+                ? event.authorizationId
+                : "invocationId" in event ? event.invocationId : event.executionId;
               console.warn(
                 `[live-shadow] Foreground Runtime ${coordinate} authorization was unavailable`,
               );

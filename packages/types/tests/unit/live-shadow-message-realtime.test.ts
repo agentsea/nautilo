@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  isLiveShadowForegroundAuthorizationRequestV1,
   parseFullEncryptionMessageRealtimeContentEventV2,
   parseLiveShadowMessageRealtimeEventV1,
 } from "../../src/live-shadow-message-realtime";
@@ -34,6 +35,88 @@ const common = {
   operationId: "turn:m318",
   transcriptOrdinal: 2,
 };
+
+describe("foreground authorization realtime classification", () => {
+  test("narrows all three parsed authorization request types", () => {
+    const commonAuthorization = {
+      wireVersion: 1 as const,
+      laneKey: "room:20000000-0000-4000-8000-000000000318",
+      userId: "user-1",
+      roomId: "room-1",
+      clientActionSessionId: "session-1",
+      deadlineAt: 1,
+    };
+    const events: ServerEvent[] = [
+      parseLiveShadowMessageRealtimeEventV1({
+        ...commonAuthorization,
+        type: "message.shared_agent_authorization_required",
+        executionId: "execution-1",
+      }),
+      parseLiveShadowMessageRealtimeEventV1({
+        ...commonAuthorization,
+        type: "message.runtime_invocation_authorization_required",
+        invocationId: "invocation-1",
+        authorizationScheme: "runtime_foreground_v1",
+        authorizationPlanBytesBase64url: "AQ",
+        sourceHumanPlanBytesBase64url: "Ag",
+        recipientPublicKeyBase64url: "Aw",
+      }),
+      parseLiveShadowMessageRealtimeEventV1({
+        ...commonAuthorization,
+        type: "message.task_definition_authorization_required",
+        parentOperationId: "parent-1",
+        authorizationId: "authorization-1",
+        taskId: "task-1",
+        operation: "update",
+        targetContentRevision: 2,
+        workDescriptorDigestBase64url: "A".repeat(43),
+        parentAgentSignerPublicKeyBase64url: "B".repeat(43),
+        authorizationScheme: "runtime_foreground_v1",
+        authorizationPlanBytesBase64url: "AQ",
+        recipientPublicKeyBase64url: "Aw",
+      }),
+    ];
+    for (const event of events) {
+      expect(isLiveShadowForegroundAuthorizationRequestV1(event)).toBe(true);
+      if (!isLiveShadowForegroundAuthorizationRequestV1(event)) {
+        throw new Error("Expected foreground authorization request");
+      }
+      const coordinate = "authorizationId" in event
+        ? event.authorizationId
+        : "invocationId" in event ? event.invocationId : event.executionId;
+      expect(coordinate.length).toBeGreaterThan(0);
+    }
+  });
+
+  test("rejects ordinary and content events", () => {
+    const events: ServerEvent[] = [
+      {
+        type: "message.tokens",
+        laneKey: "room:20000000-0000-4000-8000-000000000318",
+        content: "hello",
+        chunkSequence: 1,
+        done: false,
+      },
+      parseLiveShadowMessageRealtimeEventV1({
+        wireVersion: 1,
+        type: "message.shadow_stream_start",
+        laneKey: "room:20000000-0000-4000-8000-000000000318",
+        operationId: "foreground-dispatch-turn",
+        transcriptOrdinal: 1,
+        streamStartBytesBase64url: "AQ",
+      }),
+      parseFullEncryptionMessageRealtimeContentEventV2({
+        ...common,
+        type: "message.shadow_stream_frame",
+        frameBytesBase64url: "Ag",
+        done: false,
+      }),
+    ];
+    for (const event of events) {
+      expect(isLiveShadowForegroundAuthorizationRequestV1(event)).toBe(false);
+    }
+  });
+});
 
 describe("Full encryption realtime content V2", () => {
   test("accepts protected-only stream and durable content events", () => {

@@ -385,11 +385,11 @@ export const REVIEWED_TASK_PROTECTION_DTO_DECLARATIONS:
   "arbitraryPayloads": []
 },
 {
-  "observationId": "wire.http.request.response.post.api.rooms.roomid.live.shadow.task.definition.authorizationid.authorize.1xz1yfi",
-  "locator": "http:request_response:POST /api/rooms/:roomId/live-shadow/task-definition/:authorizationId/authorize",
+  "observationId": "wire.http.request.response.post.api.rooms.roomid.live.shadow.task.definition.authorize.pwcz7b",
+  "locator": "http:request_response:POST /api/rooms/:roomId/live-shadow/task-definition/authorize",
   "structuralSignatures": [
     "request.body:unknown",
-    "request.params:{authorizationId:string;roomId:string}",
+    "request.params:{roomId:string}",
     "response.body:{authorizationId:string;responseVersion:number;status:\"authorized\"|\"unavailable\"}",
     "response.body:{error:string}"
   ],

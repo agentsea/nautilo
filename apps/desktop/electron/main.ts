@@ -428,6 +428,7 @@ import {
   normalizeRemoteOrdinaryRequestBody,
   codexPermissionSelectionResponseSchema,
   codexRequestResponseSchema,
+  isLiveShadowForegroundAuthorizationRequestV1,
   parseLiveShadowMessageRealtimeEventV1,
   parseFullEncryptionMessageRealtimeContentEventV2,
   parseVoiceFundingRecovery,
@@ -8824,10 +8825,9 @@ ipcMain.handle("foregroundShadow:authorize", async (e, raw: unknown) => {
   const event = parseLiveShadowMessageRealtimeEventV1(
     value?.event,
   );
-  if (
-    event.type !== "message.shared_agent_authorization_required"
-    && event.type !== "message.runtime_invocation_authorization_required"
-  ) throw new Error("Foreground Shadow authorization kind is unsupported.");
+  if (!isLiveShadowForegroundAuthorizationRequestV1(event)) {
+    throw new Error("Foreground Shadow authorization kind is unsupported.");
+  }
   const { controller } = await foregroundShadowControllerForSender(e);
   return controller.authorizeSharedAgentExecution(event);
 });

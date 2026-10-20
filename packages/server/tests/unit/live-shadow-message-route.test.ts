@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import Fastify from "fastify";
+import { LatticeCrypto } from "@nautilo/lattice-crypto";
+import { taskDefinitionForegroundAuthorizationIdV1 } from "@nautilo/lattice-bridge";
 
 import { createProductionLiveShadowMessageComposition } from "../../src/routes/live-shadow-message-composition";
 import {
@@ -543,7 +545,7 @@ describe("live Shadow Message plan route", () => {
     await app.close();
   });
 
-  test("admits Task-only authorization only at the signed-in exact operation coordinate", async () => {
+  test("admits canonical long Task authorization IDs from the signed request body", async () => {
     let seen: unknown;
     let retainedPlan: Uint8Array | undefined;
     let retainedAuthorization: Uint8Array | undefined;
@@ -559,17 +561,23 @@ describe("live Shadow Message plan route", () => {
         return Promise.resolve("authorized" as const);
       },
     } });
-    const authorizationId = "task-definition-authority";
+    const authorizationId = taskDefinitionForegroundAuthorizationIdV1(new LatticeCrypto(), {
+      parentOperationId: "parent-execution",
+      taskId: "00000000-0000-4000-8000-000000000004",
+      operation: "create",
+      targetContentRevision: 1,
+      workDescriptorDigest: new Uint8Array(32),
+    });
     const body = { requestVersion: 1, status: "prepared", operationId: authorizationId,
       parentOperationId: "parent-execution", clientActionSessionId: "browser-session",
       authorizationScheme: "runtime_foreground_v1",
       authorizationPlanBytesBase64url: "AQI", authorizationBytesBase64url: "AwQ" } as const;
-    const path = `/api/rooms/${ROOM}/live-shadow/task-definition/${authorizationId}/authorize`;
+    const path = `/api/rooms/${ROOM}/live-shadow/task-definition/authorize`;
     try {
       expect((await app.inject({ method: "POST", url: path, payload: body })).statusCode).toBe(401);
       expect((await app.inject({ method: "POST",
-        url: `/api/rooms/${ROOM}/live-shadow/task-definition/wrong/authorize`,
-        headers: { authorization: "Bearer ok" }, payload: body })).statusCode).toBe(400);
+        url: path,
+        headers: { authorization: "Bearer ok" }, payload: { ...body, operationId: "" } })).statusCode).toBe(400);
       expect((await app.inject({ method: "POST", url: path,
         headers: { authorization: "Bearer ok" }, payload: { ...body, plaintext: "forbidden" } })).statusCode).toBe(400);
       expect(seen).toBeUndefined();
