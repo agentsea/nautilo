@@ -7,6 +7,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Background Tasks can save Workspace files using their authorized namespace
+  room while keeping their transcripts separate from the originating chat.
+
 - Bolter messages explicitly mentioning only another agent no longer trigger
   the linked Genie. Direct and shared mentions still reach the linked Genie,
   and ordinary Human messages without agent mentions continue to work.
