@@ -31,16 +31,16 @@ export function publicJoinInviteToken(value: string | undefined): string | null 
   return token && INVITE_TOKEN.test(token) ? token : null;
 }
 
-/** The role and live invite state are checked at selection and on every public visit. */
+/** Live invite and destination state are checked at selection and on every public visit. */
 async function eligibleToken(inviteId: string): Promise<string | null> {
   const [invite] = await db.select().from(invites).where(eq(invites.id, inviteId)).limit(1);
   if (!invite || invite.kind !== "server" || !invite.token || !publicJoinInviteToken(invite.token)
     || invite.revokedAt || (invite.expiresAt && invite.expiresAt.getTime() <= Date.now())
     || (invite.maxUses !== null && invite.usedCount >= invite.maxUses)
     || !invite.targetGroupId) return null;
-  const [group] = await db.select({ type: groups.type }).from(groups)
+  const [group] = await db.select({ id: groups.id }).from(groups)
     .where(eq(groups.id, invite.targetGroupId)).limit(1);
-  if (!group || !["communities", "guests"].includes(group.type)) return null;
+  if (!group) return null;
   if (invite.targetRoomId) {
     const [room] = await db.select({ archivedAt: rooms.archivedAt }).from(rooms)
       .where(eq(rooms.id, invite.targetRoomId)).limit(1);

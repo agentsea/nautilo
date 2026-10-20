@@ -226,11 +226,11 @@ describe("message attachment upload route", () => {
 
 });
 
-// D391 — authed byte route + retained delete. The GET route streams a retained
+// Authenticated byte route + retained delete. The GET route streams a retained
 // attachment's blob, gated by the same namespace-readability check the history
 // read uses; non-members get 404 (existence hidden). Type-agnostic: serves any
 // retained kind.
-describe("message attachment byte route (D391)", () => {
+describe("message attachment byte route", () => {
   const RETAINED_ID = "44444444-4444-4444-8444-444444444444";
 
   function retainedRow(storageUri: string, mimeType = "image/png", sizeBytes = 5): {
@@ -320,4 +320,35 @@ describe("message attachment byte route (D391)", () => {
     expect(markedDeletedId).toBe(RETAINED_ID);
     expect(existsSync(blobPath)).toBe(false);
   });
+});
+
+test("Bolter document uploads use storage admission without weakening ordinary model uploads", async () => {
+  const inserted: InsertPendingMessageAttachmentInput[] = [];
+  const deps: MessageAttachmentRouteDeps = {
+    sumPendingBytesForActor: async () => 0,
+    insertPending: async input => {
+      inserted.push(input);
+      return { ...input, id: input.id!, claimedMime: input.claimedMime ?? null, status: "pending", turnId: null,
+        createdAt: new Date(), expiresAt: input.expiresAt, resolvedAt: null, deletedAt: null };
+    },
+    cancelPending: async () => null, findRetained: async () => null, markRetainedDeleted: async () => null,
+  };
+  const app = await makeApp(deps);
+  const { zipSync } = await import("fflate");
+  const xml = new TextEncoder().encode("<synthetic/>");
+  const office = zipSync({ "[Content_Types].xml": xml, "_rels/.rels": xml, "xl/workbook.xml": xml });
+  const pdf = new TextEncoder().encode("%PDF-1.7\nSynthetic test document\n%%EOF");
+  async function upload(name: string, bytes: Uint8Array, url: string) {
+    const form = new FormData();
+    form.set("file", new Blob([new Uint8Array(bytes).buffer]), name);
+    return app.inject({ method: "POST", url, payload: form });
+  }
+  expect((await upload("sample.pdf", pdf, "/api/message-attachments")).statusCode).toBe(400);
+  expect((await upload("sample.pdf", pdf, "/api/message-attachments?purpose=bolter")).statusCode).toBe(200);
+  expect((await upload("sample.xlsx", office, "/api/message-attachments?purpose=bolter")).statusCode).toBe(200);
+  for (const [name, bytes] of [["renamed.docx", office], ["fake.xlsx", zipSync({ "notes.txt": xml })], ["bad.pdf", xml]] as const) {
+    expect((await upload(name, bytes, "/api/message-attachments?purpose=bolter")).statusCode).toBe(400);
+  }
+  expect(inserted.map(row => row.mimeType)).toEqual(["application/pdf", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"]);
+  expect(inserted.every(row => row.namespaceId === NAMESPACE_ID && row.uploaderActorId === ACTOR_ID)).toBe(true);
 });

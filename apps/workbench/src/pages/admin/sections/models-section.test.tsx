@@ -486,7 +486,7 @@ describe("ModelsSection Stenographer model", () => {
     await waitFor(() => expect(setServerModelsMock.mock.calls[0]?.[0].preferSurplus).toBe(true));
   });
 
-  test("refreshes foreground and fallback choices after enabling Surplus while keeping backgrounds direct-only", async () => {
+  test("refreshes foreground, fallback and auxiliary choices after enabling Surplus", async () => {
     gateVeniceBySurplusPolicy = true;
     savedConfig.catalogModels = [...catalogModels, {
       id: "venice:minimax-m3-preview", displayName: "MiniMax M3 (Venice)", provider: "venice",
@@ -514,9 +514,9 @@ describe("ModelsSection Stenographer model", () => {
     ).toBeTruthy());
     expect(within(view.getByRole("combobox", { name: "Add fallback model" }))
       .getByRole("option", { name: "MiniMax M3 (Venice)" })).toBeTruthy();
-    for (const name of ["Conductor / floor-manager model", "Stenographer model", "Reflection / Sleep model"]) {
-      expect(within(view.getByRole("combobox", { name }))
-        .queryByRole("option", { name: /MiniMax M3 \(Venice\)/ })).toBeNull();
+    for (const name of ["Conductor / floor-manager model", "Stenographer model", "Reflection / Sleep model", "Memory review model"]) {
+      expect((within(view.getByRole("combobox", { name }))
+        .getByRole("option", { name: /MiniMax M3 \(Venice\)/ }) as HTMLOptionElement).disabled).toBe(false);
     }
     expect(view.getByText("Saved. Live now.")).toBeTruthy();
   });
@@ -538,7 +538,7 @@ describe("ModelsSection Stenographer model", () => {
     });
   });
 
-  test("offers Surplus-only models for chat but excludes them from background roles", async () => {
+  test("offers and retains Surplus-only models for all supported auxiliary roles", async () => {
     anthropicDirectAvailable = false;
     retainedRows = [{ id: "anthropic:claude-sonnet-4-6", displayName: "Claude Sonnet 4.6", availability: "missing-key", unavailableReason: "Anthropic credential is not configured" }];
     savedConfig.catalogModels = [...catalogModels, {
@@ -548,17 +548,23 @@ describe("ModelsSection Stenographer model", () => {
       features: { tools: true, structuredOutputs: true, reasoning: true, visualGrounding: null, webSearch: false, e2ee: false },
       decision: null,
     }];
-    savedConfig.memoryReviewModel = "anthropic:claude-sonnet-4-6";
+    Object.assign(savedConfig, {
+      preferSurplus: true,
+      conductorModel: "anthropic:claude-sonnet-4-6",
+      stenographerModel: "anthropic:claude-sonnet-4-6",
+      reflectionModel: "anthropic:claude-sonnet-4-6",
+      memoryReviewModel: "anthropic:claude-sonnet-4-6",
+    });
     const view = render(<ModelsSection />);
     const defaultSelect = await view.findByRole("combobox", { name: "Default chat model" });
     expect(within(defaultSelect).getByRole("option", { name: "Claude Sonnet 4.6" })).toBeTruthy();
-    for (const name of ["Conductor / floor-manager model", "Stenographer model", "Reflection / Sleep model"]) {
-      expect(within(view.getByRole("combobox", { name })).queryByRole("option", { name: "Claude Sonnet 4.6" })).toBeNull();
+    for (const name of ["Conductor / floor-manager model", "Stenographer model", "Reflection / Sleep model", "Memory review model"]) {
+      const select = view.getByRole("combobox", { name });
+      expect((within(select).getByRole("option", { name: "Claude Sonnet 4.6" }) as HTMLOptionElement).disabled).toBe(false);
+      expect((select as HTMLSelectElement).value).toBe("anthropic:claude-sonnet-4-6");
+      expect(within(select).queryByRole("option", { name: "Claude Sonnet 4.6 (Unavailable)" })).toBeNull();
     }
-    const memorySelect = view.getByTestId("server-memory-review-model");
-    expect((within(memorySelect).getByRole("option", { name: "Claude Sonnet 4.6 (Unavailable)" }) as HTMLOptionElement).disabled).toBe(true);
-    expect(within(memorySelect).queryByRole("option", { name: "Claude Sonnet 4.6" })).toBeNull();
-    expect(view.getByText("Anthropic credential is not configured")).toBeTruthy();
+    expect(view.queryByText("Anthropic credential is not configured")).toBeNull();
   });
 
   test("retains unavailable values in all five Admin roles with reasons and recovery actions", async () => {

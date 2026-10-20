@@ -52,7 +52,7 @@ Versions are release pins, not upstream-latest claims.
 | [FFmpeg](https://github.com/ispysoftware/agentdvr-ffmpeg-build) | 9.0.1 | FFmpeg / iSpy Connect | LGPL-3.0-or-later | Desktop macOS arm64/x64; GPL/nonfree disabled. Exact source, build scripts and licenses are included. |
 | [OpenSSL](https://openssl.org/) | 3.5.7 | OpenSSL Project | Apache-2.0 | Statically included in the Desktop FFmpeg libraries; source and license included. |
 | [OpenHue CLI](https://github.com/openhue/openhue-cli) | 0.24 | OpenHue | Apache-2.0 | Desktop vendored CLI. |
-| [OfficeCLI](https://github.com/iOfficeAI/OfficeCLI) | 1.0.148 | iOfficeAI | Apache-2.0 | Desktop macOS and Server macOS/Linux document-processing binaries; both manifests pin the same release and identical macOS artifacts. |
+| [OfficeCLI](https://github.com/iOfficeAI/OfficeCLI) | 1.0.157 | iOfficeAI | Apache-2.0 | Desktop macOS and Server macOS/Linux document-processing binaries; both manifests pin the same release and identical macOS artifacts. |
 | [ripgrep](https://github.com/BurntSushi/ripgrep) | 15.1.0 | BurntSushi | MIT OR Unlicense | Desktop vendored `rg` binary (macOS arm64/x64). |
 | [OpenMLS](https://github.com/openmls/openmls) | 0.8.1, commit `47dbedecad0c1fd8eb5368d582250ebfcc1e1ce6` | OpenMLS | MIT | Vendored `openmls_wasm_bg.wasm` used by the server lattice-crypto runtime. |
 | [Silurus OOXML](https://github.com/yukiyokotani/office-open-xml-viewer) | 0.75.2 | Yuki Yokotani | MIT | Workbench and mobile OOXML parser assets. |

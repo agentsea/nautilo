@@ -218,6 +218,50 @@ async function installHermeticVendoredOfficeCli(
 }
 
 describe("officecli tool", () => {
+  test("passes the invocation cancellation signal to the server OfficeCLI runner", async () => {
+    const controller = new AbortController();
+    let runnerSignal: AbortSignal | undefined;
+    const runnerDeps = deps();
+    delete runnerDeps.run;
+    const tool = createOfficeCliTool(
+      { ownerId: USER_A, agentId: AGENT_1, roomId: ROOM_1, memoryAccessEnvelope: namespaceEnvelope() },
+      {
+        ...runnerDeps,
+        resolveOfficeCliPath: () => "/path/to/officecli",
+        makeOfficeCreateRun: (options) => {
+          runnerSignal = options.signal;
+          return fakeRun;
+        },
+      },
+    );
+
+    await tool.invoke({ command: "view", path: "synthetic.xlsx", mode: "stats" }, { signal: controller.signal });
+    expect(runnerSignal).toBe(controller.signal);
+    expect(runnerCalls[0]?.[0]).toBe("view");
+  });
+
+  test("cancellation after candidate generation prevents a Workspace commit", async () => {
+    const controller = new AbortController();
+    const tool = createOfficeCliTool(
+      { ownerId: USER_A, agentId: AGENT_1, roomId: ROOM_1, turnId: "synthetic-turn", memoryAccessEnvelope: namespaceEnvelope() },
+      deps({
+        run: async (argv) => {
+          const result = await fakeRun(argv);
+          if (argv[0] === "close") controller.abort();
+          return result;
+        },
+      }),
+    );
+
+    try {
+      await tool.invoke({ command: "create", out: "synthetic.xlsx" }, { signal: controller.signal });
+    } catch {
+      expect(controller.signal.aborted).toBe(true);
+    }
+    expect(workspaceCommitExecutionMock).not.toHaveBeenCalled();
+    expect(applyBinaryContentPatchMock).not.toHaveBeenCalled();
+  });
+
   test("resolves the bundled officecli binary with OFFICECLI_PATH unset", async () => {
     outputPhysical = join(tmpRoot, "zero-config-output.bin");
     const previousOfficeCliPath = process.env["OFFICECLI_PATH"];
@@ -268,7 +312,7 @@ describe("officecli tool", () => {
     }
   });
 
-  test("rejects blank/unflushed output and persists nothing (D396 0-byte bug guard)", async () => {
+  test("rejects blank/unflushed output and persists nothing (0-byte bug guard)", async () => {
     // Regression: OfficeCLI's default resident defers the disk write, so a
     // process that mutates then exits without flush leaves a blank file. The
     // tool must NOT persist that or report success.

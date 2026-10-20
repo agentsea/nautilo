@@ -32,17 +32,21 @@ export function shouldShowProviderSetupEmptyState(
 
 export function ProviderSetupEmptyState({
   canManageProviders,
+  canUseServerKeys,
   personalState,
   onRetry,
 }: {
   readonly canManageProviders: boolean;
+  readonly canUseServerKeys?: boolean;
   readonly personalState?: PersonalChatReadiness;
   readonly onRetry?: () => void;
 }) {
   const personalMessage = personalState === "checking"
     ? "Checking which models you can use…"
     : personalState === "missing-key"
-      ? "Add one of your provider keys in Settings to chat with your Genie."
+      ? canUseServerKeys === false
+        ? "Your account currently requires its own provider key. Server-first funding only applies when your account is permitted to use server funding. Add your own provider key or ask an administrator for server-funded access."
+        : "Add one of your provider keys in Settings to chat with your Genie."
       : personalState === "missing-model"
         ? "Your saved key does not currently make a text-chat model available. Check the provider and choose an eligible model in Settings."
         : personalState === "disabled"

@@ -32,7 +32,7 @@ export class SurplusDecisionHttpError extends Error {
 export class SurplusDecisionDirectFallbackError extends Error {
   readonly code = "surplus_decision_direct_fallback" as const;
 
-  constructor() {
+  constructor(readonly retryUnpinned = false) {
     super("Surplus did not return a usable decision; try the admitted direct route.");
     this.name = "SurplusDecisionDirectFallbackError";
   }
@@ -68,6 +68,27 @@ function safeDecisionFallback(
   return isSafeSurplusDirectFallback(error.payload, error.status, receipt, false);
 }
 
+function isExplicitNoSellerRefusal(
+  error: unknown,
+  receipt: SurplusWireReceipt | undefined,
+): boolean {
+  return error instanceof SurplusDecisionHttpError
+    && error.status === 404
+    && errorCode(error.payload) === "no_sellers_for_model"
+    && receipt?.marketplaceAttempts === 0;
+}
+
+function decisionRequestBody(body: string, providerMode: "any" | undefined): string {
+  if (providerMode !== "any") return body;
+  const parsed: unknown = JSON.parse(body);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Surplus decision request body must be a JSON object.");
+  }
+  const request = { ...(parsed as Record<string, unknown>) };
+  delete request["provider"];
+  return JSON.stringify(request);
+}
+
 async function settleWithRetry(input: SettleSurplusLlmAttemptInput): Promise<void> {
   const settlement = Object.freeze({ ...input, settledAt: input.settledAt ?? new Date() });
   try {
@@ -87,6 +108,8 @@ interface SurplusDecisionAttemptDependencies {
 export async function invokeSurplusDecisionAttempt<T>(input: {
   readonly route: QualifiedSurplusDecisionRoute;
   readonly apiKey: string;
+  /** Omit the provider pin for the one admitted same-model marketplace retry. */
+  readonly providerMode?: "any";
   readonly body: string;
   readonly signal: AbortSignal;
   readonly funding: UsageFundingProvenance;
@@ -96,6 +119,7 @@ export async function invokeSurplusDecisionAttempt<T>(input: {
   if (input.funding.kind === "personal" && input.funding.providerRoute !== "surplus") {
     throw new Error("A personal marketplace attempt requires its admitted marketplace credential.");
   }
+  const requestBody = decisionRequestBody(input.body, input.providerMode);
   const attemptId = randomUUID();
   const context = getUsageContext();
   try {
@@ -121,6 +145,7 @@ export async function invokeSurplusDecisionAttempt<T>(input: {
       metadata: {
         surplusModelId: input.route.surplusModelId,
         surplusProviderPin: input.route.providerPin,
+        ...(input.providerMode === "any" ? { surplusUnpinnedModel: true } : {}),
         surplusCredentialFingerprint: surplusCredentialFingerprint(input.apiKey),
         catalogModelId: input.route.catalogModelId,
         operation: "decision",
@@ -153,10 +178,13 @@ export async function invokeSurplusDecisionAttempt<T>(input: {
         Accept: "application/json",
         "Idempotency-Key": attemptId,
       },
-      body: input.body,
+      body: requestBody,
       signal: input.signal,
     });
     receipt = readSurplusWireReceipt(response.headers);
+    if (response.ok && input.providerMode === "any" && !receipt.providerFamily?.trim()) {
+      throw new SurplusOutcomeUnknownError();
+    }
     if (receipt.requestId) {
       try {
         await (dependencies.attach ?? attachSurplusRequestReceipt)({
@@ -234,7 +262,11 @@ export async function invokeSurplusDecisionAttempt<T>(input: {
       });
     }
     if (cancelled) throw input.signal.reason ?? error;
-    if (safeFallback) throw new SurplusDecisionDirectFallbackError();
+    if (safeFallback) {
+      throw new SurplusDecisionDirectFallbackError(
+        input.providerMode !== "any" && isExplicitNoSellerRefusal(error, receipt),
+      );
+    }
     throw new SurplusOutcomeUnknownError();
   }
 }

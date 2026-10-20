@@ -717,7 +717,11 @@ export {
   type ImageProvider,
 } from "./config/image-models";
 export { listMediaGenerationModels, listOrderedMediaGenerationModels, getDefaultMediaGenerationModel } from "./config/media-generation-models";
-export type { MediaGenerationFamily, MediaGenerationModel } from "./config/media-generation-models";
+export type {
+  MediaGenerationFamily,
+  MediaGenerationModel,
+  ServerSurplusMediaAvailability,
+} from "./config/media-generation-models";
 export {
   generateImages,
   runFundedDirectImageAttempt,

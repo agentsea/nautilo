@@ -588,12 +588,14 @@ describe("D525 production media generation runtime", () => {
     expect((requests[0]?.init?.headers as Record<string, string>)["Authorization"]).toBeUndefined();
   });
 
-  test("falls back to the same-payer direct model before reserving when no healthy exact offer exists", async () => {
+  test.each(["personal", "server"] as const)("%s Surplus may use admitted personal direct before reserving when no healthy exact offer exists", async (primaryKind) => {
     const state = operations();
     const surplusFunding = {
       humanUserId: actor.userId,
       provider: "surplus" as const,
-      binding: { kind: "personal" as const, providerRoute: "surplus" as const, credentialId: "55555555-5555-4555-8555-555555555555", credentialRevision: 2 },
+      binding: primaryKind === "server"
+        ? { kind: "server" as const, providerRoute: "surplus" }
+        : { kind: "personal" as const, providerRoute: "surplus", credentialId: "55555555-5555-4555-8555-555555555555", credentialRevision: 2 },
       credentialFingerprint: "a".repeat(64),
     };
     const directFunding = {

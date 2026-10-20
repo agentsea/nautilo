@@ -41,7 +41,7 @@ export function getBolterProductionDecoders(version: string): BolterQualifiedDec
     const value = record(raw, ["agentId"]);
     if (!alias(value["agentId"]) || (Object.hasOwn(value, "origin") && value["origin"] !== origin)) throw unqualified();
     // `me` omits origin. This decoder is used only by the fixed origin-pinned invocation.
-    return { origin, agentId: value["agentId"] };
+    return { origin, agentId: value["agentId"], ...(nonempty(value["name"]) ? { label: value["name"] } : {}) };
   }, conversations(raw: unknown): unknown {
     if (!Array.isArray(raw)) throw unqualified();
     return raw.map(rawChat => {
@@ -97,6 +97,17 @@ export function getBolterProductionDecoders(version: string): BolterQualifiedDec
     // This CLI version reports full UUIDs in receipts but routes receive/chat/thread IDs by their eight-hex alias.
     return { messageId: value["messageId"], chatId: value["groupId"].slice(0, 8),
       threadRootId: value["threadRootId"] === null ? null : (value["threadRootId"] as string).slice(0, 8) };
+  }, fileCreated(raw: unknown): { url: string } {
+    const outer = record(raw, ["text", "isError"]);
+    if (outer["isError"] !== false || !text(outer["text"])) throw unqualified();
+    const result = record(JSON.parse(outer["text"]) as unknown);
+    if (Object.hasOwn(result, "ok") && result["ok"] !== true) throw unqualified();
+    const value = record(Object.hasOwn(result, "ok") ? result["value"] : result, ["url"]);
+    if (!nonempty(value["url"]) || /[<>\s]/u.test(value["url"])) throw unqualified();
+    const url = new URL(value["url"]);
+    if (url.protocol !== "https:" || url.port || url.username || url.password
+      || (url.origin !== origin && !url.hostname.endsWith(".bolter.page"))) throw unqualified();
+    return { url: value["url"] };
   }, authLink(stdout: string): unknown {
     // Permit provider notices around the concrete prompt, while retaining one fixed URL and one unambiguous code.
     const prompt = /Open this link on any device to sign in \(or create a Bolter account\): https:\/\/bolter\.chat\/device\?code=([A-Z]{4}-[A-Z]{4})\nCheck that the page shows the code ([A-Z]{4}-[A-Z]{4})\. If this command is stopped, run it again to keep waiting on the same code\.\n/u.exec(stdout);

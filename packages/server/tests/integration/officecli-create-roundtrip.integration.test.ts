@@ -1,5 +1,5 @@
 /**
- * D396 Wave 1 — real OfficeCLI create + batch + read round-trip for ALL
+ * Real OfficeCLI create + batch + read round-trip for ALL
  * THREE formats: .docx paragraph, .xlsx cell, .pptx slide + shape.
  *
  * Exercises the production `generateOffice` helper against a vendored
@@ -12,6 +12,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, test } from "bun:test";
+import { strToU8, zipSync } from "fflate";
 import type { MemoryAccessEnvelope } from "@nautilo/trust";
 import {
   buildGetArgvRun as buildGetArgv,
@@ -166,9 +167,40 @@ async function readNode(
   return parseGetEnvelope(result.stdout);
 }
 
-describe("officecli create round-trip (D396 Wave 1)", () => {
+describe("officecli create and read round-trips", () => {
   const hasOfficeCli = officeCliAvailable(OFFICECLI_PROBE);
   const runTest = hasOfficeCli ? test : test.skip;
+
+  runTest(".xlsx: stats reads every shared-string cell in a large synthetic workbook", async () => {
+    const count = 40_000;
+    const namespace = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+    const relationships = "http://schemas.openxmlformats.org/package/2006/relationships";
+    const officeRelationships = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+    const directory = mkdtempSync(join(tmpdir(), "officecli-shared-strings-"));
+    const file = join(directory, "synthetic.xlsx");
+    const parts = {
+      "[Content_Types].xml": '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/></Types>',
+      "_rels/.rels": `<Relationships xmlns="${relationships}"><Relationship Id="rId1" Type="${officeRelationships}/officeDocument" Target="xl/workbook.xml"/></Relationships>`,
+      "xl/workbook.xml": `<workbook xmlns="${namespace}" xmlns:r="${officeRelationships}"><sheets><sheet name="Synthetic" sheetId="1" r:id="rId1"/></sheets></workbook>`,
+      "xl/_rels/workbook.xml.rels": `<Relationships xmlns="${relationships}"><Relationship Id="rId1" Type="${officeRelationships}/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="${officeRelationships}/sharedStrings" Target="sharedStrings.xml"/></Relationships>`,
+      "xl/sharedStrings.xml": `<sst xmlns="${namespace}" count="${count}" uniqueCount="${count}">${Array.from({ length: count }, (_, index) => `<si><t>Synthetic ${index}</t></si>`).join("")}</sst>`,
+      "xl/worksheets/sheet1.xml": `<worksheet xmlns="${namespace}"><sheetData>${Array.from({ length: count }, (_, index) => `<row r="${index + 1}"><c r="A${index + 1}" t="s"><v>${index}</v></c></row>`).join("")}</sheetData></worksheet>`,
+    };
+    try {
+      writeFileSync(file, zipSync(Object.fromEntries(Object.entries(parts).map(([name, xml]) => [name, strToU8(xml)]))));
+      const run = makeOfficeCreateRun({ binaryPath: resolveOfficeCliOrNull(OFFICECLI_PROBE)! });
+      const result = await run(["view", file, "stats", "--json"]);
+      expect(result.exitCode).toBe(0);
+      const parsed = JSON.parse(result.stdout) as { success: boolean; data: Record<string, unknown> };
+      expect(parsed.success).toBe(true);
+      expect(parsed.data).toMatchObject({
+        sheets: 1, totalCells: count, emptyCells: 0, formulaCells: 0, errorCells: 0,
+        dataTypeDistribution: { SharedString: count },
+      });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  }, 120_000);
 
   runTest(
     hasOfficeCli
@@ -183,10 +215,10 @@ describe("officecli create round-trip (D396 Wave 1)", () => {
       const run = makeOfficeCreateRun({ binaryPath: binaryPath! });
 
       const commands: OfficeBatchCommand[] = [
-        { command: "add", parent: "/body", type: "paragraph", props: { text: "D396 docx paragraph" } },
+        { command: "add", parent: "/body", type: "paragraph", props: { text: "Synthetic docx paragraph" } },
       ];
       const generated = await generateOffice({
-        fileName: "d396-create-docx.docx",
+        fileName: "synthetic-create-docx.docx",
         commands,
         run,
         locale: "en-US",
@@ -196,11 +228,11 @@ describe("officecli create round-trip (D396 Wave 1)", () => {
       expect(generated.bytes.byteLength, "docx byte size").toBeGreaterThan(100);
       expect(generated.bytes.subarray(0, 2).toString("utf8"), "docx zip header").toBe("PK");
 
-      const staged = stageBytesForReadback(generated.bytes, "d396-create-docx.docx", run);
+      const staged = stageBytesForReadback(generated.bytes, "synthetic-create-docx.docx", run);
       try {
         const node = await readNode(run, staged.path, "/body/p[1]", 1);
         expect(node.type, "first child type").toBe("paragraph");
-        expect(node.text, "paragraph text").toBe("D396 docx paragraph");
+        expect(node.text, "paragraph text").toBe("Synthetic docx paragraph");
       } finally {
         staged.cleanup();
       }
@@ -238,24 +270,24 @@ describe("officecli create round-trip (D396 Wave 1)", () => {
       };
       let postImage: Uint8Array | undefined;
       const tool = createOfficeCliTool(
-        { ownerId, agentId, roomId, turnId: "d573-markdown-turn", memoryAccessEnvelope: envelope },
+        { ownerId, agentId, roomId, turnId: "synthetic-markdown-turn", memoryAccessEnvelope: envelope },
         {
           run,
           resolveWorkspaceArtifact: (async (params: Parameters<NonNullable<CreateOfficeCliToolDeps["resolveWorkspaceArtifact"]>>[0]) => ({
             ok: true,
             artifact: null,
             physicalPath: `/artifacts/${params.logicalPath}`,
-            artifactId: "d573-markdown-artifact",
-            storageUri: "file:///artifacts/d573-markdown-native.docx",
+            artifactId: "synthetic-markdown-artifact",
+            storageUri: "file:///artifacts/markdown-native.docx",
             logicalPath: params.logicalPath,
           })) as unknown as NonNullable<CreateOfficeCliToolDeps["resolveWorkspaceArtifact"]>,
           workspaceCommitExecution: async (request) => {
             postImage = request.postImage;
             return {
               ok: true,
-              revisionId: "d573-markdown-revision",
-              artifactInternalId: "d573-markdown-artifact",
-              artifactId: "d573-markdown-artifact",
+              revisionId: "synthetic-markdown-revision",
+              artifactInternalId: "synthetic-markdown-artifact",
+              artifactId: "synthetic-markdown-artifact",
             };
           },
         },
@@ -263,13 +295,13 @@ describe("officecli create round-trip (D396 Wave 1)", () => {
 
       const result = JSON.parse(String(await tool.invoke({
         command: "create",
-        out: "d573-markdown-native.docx",
+        out: "markdown-native.docx",
         commands: [{
           command: "add",
           parent: "/body",
           type: "markdown",
           props: {
-            markdown: "# D573 Heading\n\nA native paragraph.\n\n- First item\n- Second item",
+            markdown: "# Synthetic Heading\n\nA native paragraph.\n\n- First item\n- Second item",
           },
         }],
       }))) as { applied?: boolean };
@@ -280,13 +312,14 @@ describe("officecli create round-trip (D396 Wave 1)", () => {
       expect(invocations.filter((argv) => argv[0] === "batch")).toHaveLength(1);
       expect(invocations.filter((argv) => argv[0] === "close")).toHaveLength(1);
 
-      const staged = stageBytesForReadback(postImage!, "d573-markdown-native.docx", run);
+      const staged = stageBytesForReadback(postImage!, "markdown-native.docx", run);
       try {
         const body = await readNode(run, staged.path, "/body", 4);
-        const heading = body.children.find((child) => child.text === "D573 Heading");
+        const heading = body.children.find((child) => child.text === "Synthetic Heading");
         const paragraph = body.children.find((child) => child.text === "A native paragraph.");
         const bullets = body.children.filter((child) => child.text === "First item" || child.text === "Second item");
-        expect(heading).toMatchObject({ type: "paragraph", style: "Heading1" });
+        // OfficeCLI materializes Word's built-in style and reports its display name.
+        expect(heading).toMatchObject({ type: "paragraph", style: "heading 1" });
         expect(paragraph).toMatchObject({ type: "paragraph" });
         expect(bullets).toHaveLength(2);
         for (const bullet of bullets) {
@@ -309,10 +342,10 @@ describe("officecli create round-trip (D396 Wave 1)", () => {
       const run = makeOfficeCreateRun({ binaryPath: binaryPath! });
 
       const commands: OfficeBatchCommand[] = [
-        { command: "set", path: "/Sheet1/A1", props: { value: "D396 xlsx cell" } },
+        { command: "set", path: "/Sheet1/A1", props: { value: "Synthetic xlsx cell" } },
       ];
       const generated = await generateOffice({
-        fileName: "d396-create-xlsx.xlsx",
+        fileName: "synthetic-create-xlsx.xlsx",
         commands,
         run,
       });
@@ -321,11 +354,11 @@ describe("officecli create round-trip (D396 Wave 1)", () => {
       expect(generated.bytes.byteLength, "xlsx byte size").toBeGreaterThan(100);
       expect(generated.bytes.subarray(0, 2).toString("utf8"), "xlsx zip header").toBe("PK");
 
-      const staged = stageBytesForReadback(generated.bytes, "d396-create-xlsx.xlsx", run);
+      const staged = stageBytesForReadback(generated.bytes, "synthetic-create-xlsx.xlsx", run);
       try {
         const node = await readNode(run, staged.path, "/Sheet1/A1", 0);
         expect(node.type, "cell type").toBe("cell");
-        expect(node.text, "cell value text").toBe("D396 xlsx cell");
+        expect(node.text, "cell value text").toBe("Synthetic xlsx cell");
       } finally {
         staged.cleanup();
       }
@@ -343,13 +376,13 @@ describe("officecli create round-trip (D396 Wave 1)", () => {
       const run = makeOfficeCreateRun({ binaryPath: binaryPath! });
 
       const commands: OfficeBatchCommand[] = [
-        { command: "add", parent: "/", type: "slide", props: { title: "D396 Slide Title" } },
+        { command: "add", parent: "/", type: "slide", props: { title: "Synthetic Slide Title" } },
         {
           command: "add",
           parent: "/slide[1]",
           type: "shape",
           props: {
-            text: "D396 pptx shape body",
+            text: "Synthetic pptx shape body",
             x: "1cm",
             y: "5cm",
             width: "20cm",
@@ -358,7 +391,7 @@ describe("officecli create round-trip (D396 Wave 1)", () => {
         },
       ];
       const generated = await generateOffice({
-        fileName: "d396-create-pptx.pptx",
+        fileName: "synthetic-create-pptx.pptx",
         commands,
         run,
       });
@@ -367,7 +400,7 @@ describe("officecli create round-trip (D396 Wave 1)", () => {
       expect(generated.bytes.byteLength, "pptx byte size").toBeGreaterThan(100);
       expect(generated.bytes.subarray(0, 2).toString("utf8"), "pptx zip header").toBe("PK");
 
-      const staged = stageBytesForReadback(generated.bytes, "d396-create-pptx.pptx", run);
+      const staged = stageBytesForReadback(generated.bytes, "synthetic-create-pptx.pptx", run);
       try {
         const slide = await readNode(run, staged.path, "/slide[1]", 1);
         expect(slide.type, "slide type").toBe("slide");
@@ -375,9 +408,9 @@ describe("officecli create round-trip (D396 Wave 1)", () => {
         // carries phType=title. Body shapes carry text we passed in.
         const titleChild = slide.children.find((c) => c.isTitle === true || c.phType === "title");
         expect(titleChild, "title child shape").toBeDefined();
-        expect(titleChild!.text, "title text").toBe("D396 Slide Title");
+        expect(titleChild!.text, "title text").toBe("Synthetic Slide Title");
 
-        const bodyChild = slide.children.find((c) => c.text === "D396 pptx shape body");
+        const bodyChild = slide.children.find((c) => c.text === "Synthetic pptx shape body");
         expect(bodyChild, "body shape with our text").toBeDefined();
       } finally {
         staged.cleanup();
