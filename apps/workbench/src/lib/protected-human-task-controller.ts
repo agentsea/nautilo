@@ -20,6 +20,7 @@ import type {
   TaskRunSummary,
   TaskRunSummaryV1,
 } from "@nautilo/types";
+import { ApiError } from "@nautilo/api-client/browser";
 import type { TaskPayloadV1 } from "@nautilo/lattice-bridge";
 import { apiClient } from "./api";
 import { readOrCreateBrowserCryptoInstallationId } from
@@ -71,6 +72,14 @@ export type ProtectedScheduledTaskProjection =
         | "authority_changed" | "unsupported_client" | "integrity_failure";
     }>;
 
+function isTaskContentIntegrityFailure(error: unknown): boolean {
+  return error instanceof ClassifiedDataOperationError
+      && error.failureClass === "integrity"
+    || error instanceof ApiError
+      && error.status === 409
+      && error.message === "task_content_integrity_failure";
+}
+
 export async function listProtectedScheduledTasks(
   controller: WorkbenchProtectedHumanTaskController,
 ): Promise<readonly ProtectedScheduledTaskProjection[]> {
@@ -98,6 +107,13 @@ export async function listProtectedScheduledTasks(
         retainedHistoricalError: definition.content.retainedHistoricalError,
       });
     } catch (error) {
+      if (isTaskContentIntegrityFailure(error)) {
+        return Object.freeze({
+          availability: "unavailable" as const,
+          task,
+          reason: "integrity_failure" as const,
+        });
+      }
       if (task.content.status !== "unavailable"
         || !(error instanceof ClassifiedDataOperationError)
         || (error.failureClass !== "recoverable_availability"

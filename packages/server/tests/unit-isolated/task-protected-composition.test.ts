@@ -9,6 +9,7 @@ import type {
 } from "@nautilo/db";
 import {
   bindEncryptionDataOperationOwner,
+  ClassifiedDataOperationError,
   deriveTaskContentCryptoObjectIdV1,
   deriveTaskHistoricalContentCryptoObjectIdV1,
 } from "@nautilo/lattice-bridge";
@@ -413,6 +414,48 @@ describe("production protected Task composition", () => {
     }).catch((error: unknown) => error);
     expect(failure).toMatchObject({ statusCode: 409, code: "task_content_changed" });
     expect(selected).toEqual([executor]);
+  });
+
+  test.each([
+    new TypeError("Mapped Task metadata access proof disagrees"),
+    new ClassifiedDataOperationError("integrity", "Task proof is invalid"),
+    new Error("Authority service unavailable"),
+  ])("Full definition metadata refresh classifies validation failures before ciphertext reads: %s", async failure => {
+    const selections: string[][] = [];
+    const cryptoActivity = { queries: 0 };
+    const composition = createProductionProtectedTaskComposition({
+      db: productDatabaseWithReadRows([[{
+        ownerId: ROUTE_AUTHORITY.userId, requestorId: ROUTE_AUTHORITY.userId,
+        agentId: ROUTE_AUTHORITY.agentId, contentRepresentation: "dual",
+        contentNamespaceId: "10000000-0000-4000-8000-000000000005",
+        cryptoObjectId: "task-definition:v1:fixture", contentRevision: 2,
+        cryptoAccessRevision: 0, cryptoMappingState: "verified",
+      }]], selections),
+      restricted: observedRestrictedConnection(cryptoActivity),
+      crypto: new LatticeCrypto(), serverScope: "https://nautilo.test",
+      owner: bindEncryptionDataOperationOwner({ policy: {
+        resolve: async () => ({
+          policy: { mode: "encrypted_only", shadowBehavior: "strict" },
+          revalidationToken: 1,
+        }),
+        revalidate: async () => {},
+      } }), observer: { kick() {} },
+      resolveRequesterPrivateRoom: async () => { throw failure; },
+    });
+    const result = await composition.ports.readDefinition({
+      authority: { ...ROUTE_AUTHORITY, admission: {
+        deviceId: ROUTE_AUTHORITY.deviceId, deviceGeneration: 4,
+        serverInstanceId: "server", lineageGeneration: 1, epoch: 1,
+        securityRevision: 1, headDigest: new Uint8Array(32), expiresAt: Date.now() + 30_000,
+      } },
+      taskId: "10000000-0000-4000-8000-000000000004",
+      objectId: "task-definition:v1:fixture", contentRevision: 2, cryptoAccessRevision: 0,
+    }).catch((error: unknown) => error);
+    if (failure instanceof TypeError || failure instanceof ClassifiedDataOperationError) {
+      expect(result).toMatchObject({ statusCode: 409, code: "task_content_integrity_failure" });
+    } else expect(result).toBe(failure);
+    expect(selections).toHaveLength(1);
+    expect(cryptoActivity.queries).toBe(0);
   });
 
   test("retains only the exact accepted foreground execution proof for the Task Agent", async () => {

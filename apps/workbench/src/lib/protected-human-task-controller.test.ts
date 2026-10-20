@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { ApiError } from "@nautilo/api-client/browser";
 import type { TaskContentSummaryV1, TaskDetail } from "@nautilo/types";
 import {
   bindEncryptionDataOperationOwner,
@@ -183,14 +184,71 @@ describe("protected Human Task Workbench routing", () => {
     }]);
   });
 
-  test("scheduled Tasks propagate non-availability repair failures", async () => {
-    const failure = new ClassifiedDataOperationError(
+  test.each([
+    new ClassifiedDataOperationError(
       "integrity",
       "repair proof was substituted",
-    );
+    ),
+    new ApiError(409, "task_content_integrity_failure"),
+  ])("scheduled Tasks isolate one exact integrity failure and keep healthy peers", async failure => {
+    const invalid = {
+      ...unavailable,
+      id: "invalid-task",
+    } as TaskContentSummaryV1;
+    const healthy = {
+      ...repaired,
+      id: "healthy-task",
+      scheduleKind: "one_shot",
+    } as TaskContentSummaryV1;
+    const invalidBefore = structuredClone(invalid);
+    const healthyBefore = structuredClone(healthy);
+    const rows = await listProtectedScheduledTasks({
+      list: async () => [invalid, healthy],
+      open: async task => {
+        if (task === invalid) throw failure;
+        return opened(healthy);
+      },
+    } as never);
+    expect(rows).toEqual([{
+      availability: "unavailable",
+      task: invalid,
+      reason: "integrity_failure",
+    }, {
+      availability: "opened",
+      task: healthy,
+      prompt: "repaired prompt",
+      expectedOutput: "repaired output",
+      retainedHistoricalError: "source error",
+    }]);
+    expect(rows[0]?.task).toBe(invalid);
+    expect(rows[1]?.task).toBe(healthy);
+    expect(invalid).toEqual(invalidBefore);
+    expect(healthy).toEqual(healthyBefore);
+  });
+
+  test.each([
+    new Error("network unavailable"),
+    new ClassifiedDataOperationError("authority", "authority changed"),
+    new ApiError(403, "task_content_integrity_failure"),
+    new ApiError(409, "task_content_changed"),
+    new ApiError(500, "task_content_integrity_failure"),
+  ])("scheduled Tasks propagate non-integrity row failures", async failure => {
     await expect(listProtectedScheduledTasks({
       list: async () => [unavailable],
       open: async () => { throw failure; },
     } as never)).rejects.toBe(failure);
+  });
+
+  test("scheduled Tasks propagate list failures before opening rows", async () => {
+    const failure = new Error("list unavailable");
+    let opens = 0;
+    await expect(listProtectedScheduledTasks({
+      list: async () => { throw failure; },
+      open: async () => {
+        opens += 1;
+        return opened();
+      },
+    } as never)).rejects.toBe(failure);
+    expect(opens).toBe(0);
   });
 });

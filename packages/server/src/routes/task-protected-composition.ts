@@ -1937,11 +1937,25 @@ export function createProductionProtectedTaskComposition(
         throw new ProtectedTaskRouteError(404, "task_not_found", "Task not found");
       }
       if (task.contentNamespaceId !== null) {
-        const refreshedAccess = await refreshMappedReadAccess(taskAuthority, {
-          kind: "definition",
-          taskId: input.taskId,
-          contentRevision: input.contentRevision,
-        }, task.contentNamespaceId, task.cryptoObjectId);
+        let refreshedAccess: Awaited<ReturnType<typeof refreshMappedReadAccess>>;
+        try {
+          refreshedAccess = await refreshMappedReadAccess(taskAuthority, {
+            kind: "definition",
+            taskId: input.taskId,
+            contentRevision: input.contentRevision,
+          }, task.contentNamespaceId, task.cryptoObjectId);
+        } catch (error) {
+          if (error instanceof TypeError
+            || error instanceof ClassifiedDataOperationError
+              && error.failureClass === "integrity") {
+            throw new ProtectedTaskRouteError(
+              409,
+              "task_content_integrity_failure",
+              "Task content could not be verified",
+            );
+          }
+          throw error;
+        }
         const refreshed = refreshedAccess === "unavailable" ? task
           : (await readTaskSource(input.authority, input.taskId))?.task;
         if (refreshed === undefined

@@ -7,6 +7,8 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Encrypted schedules with invalid content verification remain locked while
+  other schedules stay visible.
 - Windows x64 source builds produce a Desktop installer with bundled Bun and
   the private Relay Host for connecting to a Nautilo server.
   ACP-backed local agents remain unavailable on Windows until process-tree

@@ -219,6 +219,6 @@ function protectedTaskUnavailableLabel(
     case "unsupported_client":
       return "This client cannot unlock the task.";
     case "integrity_failure":
-      return "Task content could not be verified.";
+      return "Locked — Task content could not be verified.";
   }
 }
