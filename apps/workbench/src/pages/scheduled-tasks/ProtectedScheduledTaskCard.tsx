@@ -47,7 +47,9 @@ export function ProtectedScheduledTaskCard({
     taskRunId: string;
   }> | null>(null);
   const { task } = row;
-  const enabled = isScheduleEnabled(task.status);
+  const controllable = task.status === "pending" || task.status === "running"
+    || task.status === "awaiting" || task.status === "paused";
+  const enabled = controllable && isScheduleEnabled(task.status);
   const cadence = task.scheduleKind === "cron" ? task.cron || "recurring" : "once";
   const unavailableLabel = row.availability === "unavailable"
     ? protectedTaskUnavailableLabel(row.reason)
@@ -78,14 +80,15 @@ export function ProtectedScheduledTaskCard({
         <div className="ml-auto flex shrink-0 items-center gap-2">
           <label className="flex cursor-pointer items-center gap-1.5 text-[11px] text-foreground-muted">
             <span>{enabled ? "On" : "Off"}</span>
-            <input type="checkbox" checked={enabled} disabled={busy}
+            <input type="checkbox" checked={enabled} disabled={busy || !controllable}
               onChange={() => (enabled ? onDisable(task.id) : onEnable(task.id))}
-              aria-label={enabled ? "Disable protected schedule" : "Enable protected schedule"}
+              aria-label={!controllable ? "Finished protected schedule"
+                : enabled ? "Disable protected schedule" : "Enable protected schedule"}
               className="h-3.5 w-3.5 cursor-pointer disabled:cursor-wait disabled:opacity-40" />
           </label>
           {confirmRemove ? (
             <span className="flex items-center gap-1">
-              <button type="button" disabled={busy} className="rounded px-1 text-[11px] font-medium text-red-500"
+              <button type="button" disabled={busy || !controllable} className="rounded px-1 text-[11px] font-medium text-red-500"
                 onClick={() => { setConfirmRemove(false); onRemove(task.id); }}>
                 confirm
               </button>
@@ -93,7 +96,7 @@ export function ProtectedScheduledTaskCard({
                 onClick={() => setConfirmRemove(false)}>cancel</button>
             </span>
           ) : (
-            <button type="button" disabled={busy} aria-label="Remove protected schedule"
+            <button type="button" disabled={busy || !controllable} aria-label="Remove protected schedule"
               className="rounded px-1 text-[11px] text-foreground-muted hover:text-red-500"
               onClick={() => setConfirmRemove(true)}>Remove</button>
           )}
@@ -119,7 +122,8 @@ export function ProtectedScheduledTaskCard({
       )}
       <div className="flex items-center gap-3 text-[11px] text-foreground-muted">
         <span className="font-mono">{cadence}</span>
-        <span>{enabled ? `next ${formatNextFire(task.nextFireAt)}` : "paused"}</span>
+        <span>{!controllable ? "No future runs"
+          : enabled ? `next ${formatNextFire(task.nextFireAt)}` : "paused"}</span>
         {row.availability === "opened" ? (
           <button type="button" className="font-medium text-primary"
             aria-expanded={currentHistory !== null}

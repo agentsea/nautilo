@@ -92,6 +92,46 @@ describe("ProtectedScheduledTaskCard run history", () => {
     actions.onCloseHistory.mockClear();
   });
 
+  test.each(["completed", "cancelled", "errored"])(
+    "%s history cannot advertise or re-enable a future occurrence", (status) => {
+      const row = openedRow();
+      const view = render(
+        <ProtectedScheduledTaskCard row={{ ...row, task: { ...row.task, status } }}
+          {...actions} controller={undefined} scopeKey="scope-a" history={null} />,
+      );
+      const toggle = view.getByRole("checkbox", { name: "Finished protected schedule" }) as HTMLInputElement;
+      expect(toggle.checked).toBe(false);
+      expect(toggle.disabled).toBe(true);
+      expect((view.getByRole("button", { name: "Remove protected schedule" }) as HTMLButtonElement).disabled)
+        .toBe(true);
+      expect(view.getByText("No future runs")).toBeTruthy();
+      expect(view.queryByText(/^next /)).toBeNull();
+      fireEvent.click(view.getByRole("button", { name: "Run history" }));
+      expect(actions.onOpenHistory).toHaveBeenCalledWith("protected-schedule");
+      expect(actions.onEnable).not.toHaveBeenCalled();
+      expect(actions.onDisable).not.toHaveBeenCalled();
+      expect(actions.onRemove).not.toHaveBeenCalled();
+    },
+  );
+
+  test("a terminal refresh disables an open Stop confirmation and preserves result history", () => {
+    const row = openedRow();
+    const view = render(
+      <ProtectedScheduledTaskCard row={row} {...actions}
+        controller={undefined} scopeKey="scope-a" history={readyHistory()} />,
+    );
+    fireEvent.click(view.getByRole("button", { name: "Remove protected schedule" }));
+    view.rerender(
+      <ProtectedScheduledTaskCard row={{ ...row, task: { ...row.task, status: "cancelled" } }}
+        {...actions} controller={undefined} scopeKey="scope-a" history={readyHistory()} />,
+    );
+    expect((view.getByRole("button", { name: "confirm" }) as HTMLButtonElement).disabled)
+      .toBe(true);
+    fireEvent.click(view.getByRole("button", { name: /completed/i }));
+    expect(view.getByTestId("selected-protected-result").textContent).toBe("Opened result");
+    expect(actions.onRemove).not.toHaveBeenCalled();
+  });
+
   test("opens history on demand and reports loading and failures truthfully", () => {
     const view = render(
       <ProtectedScheduledTaskCard row={openedRow()} {...actions}

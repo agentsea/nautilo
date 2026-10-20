@@ -1030,7 +1030,10 @@ export function createForegroundHumanTaskClient(
     now,
     createId,
   });
-  if (authorities.namespaceAuthority === undefined) {
+  if (
+    authorities.namespaceAuthority === undefined
+    || authorities.namespaceV2 === undefined
+  ) {
     throw new TypeError("Domain Key V2 Human Task authority is unavailable");
   }
   const journal = createPreparedMutationJournal({ vault: journalVault, now });
@@ -1120,6 +1123,7 @@ export function createForegroundHumanTaskClient(
       subjectHumanId: input.humanActorId,
       now,
       namespaceAuthority: authorities.namespaceAuthority,
+      nativeNamespaceAuthority: authorities.namespaceV2,
       resolveDeviceAdmissionStatus: input.resolveDeviceAdmissionStatus,
       accessAnchors: createClientProfileObjectAccessAnchorPortV4({
         crypto,

@@ -1,6 +1,10 @@
 import { beforeEach, expect, mock, test } from "bun:test";
 import Fastify from "fastify";
 import type { Task, TaskRun } from "@nautilo/db";
+import {
+  bindEncryptionDataOperationOwner,
+  type LiveShadowEncryptionTransitionPolicy,
+} from "@nautilo/lattice-bridge";
 import type { ServerEvent } from "@nautilo/types";
 const actualDb = await import("@nautilo/db");
 const actualRuntime = await import("@nautilo/runtime");
@@ -19,6 +23,8 @@ let nondelegatedRepresentation: Task["contentRepresentation"] | undefined;
 let protectNondelegatedDuringReplay = false;
 let removeNondelegatedDuringReplay = false;
 let findCount = 0;
+let failPolicyRevalidation = false;
+let policyRevalidations = 0;
 const query = mock(async () => rows);
 const find = mock(async (_db: unknown, taskId: string, threadId: string) => {
   findCount++;
@@ -59,14 +65,82 @@ function row(localExecutionDelegation: unknown = delegation,
 beforeEach(() => { rows = [row()]; allowed = true; replayed = 0; revokeDuringReplay = false;
   authorizedRepresentation = undefined; nondelegatedRepresentation = undefined;
   protectNondelegatedDuringReplay = false; removeNondelegatedDuringReplay = false;
-  findCount = 0; query.mockClear(); find.mockClear(); authorize.mockClear(); });
-async function read(user: string) {
+  findCount = 0; failPolicyRevalidation = false; policyRevalidations = 0;
+  query.mockClear(); find.mockClear(); authorize.mockClear(); });
+const plainPolicy: LiveShadowEncryptionTransitionPolicy = {
+  mode: "plaintext_only",
+  shadowBehavior: "fallback",
+};
+async function read(
+  user: string,
+  policy: LiveShadowEncryptionTransitionPolicy = plainPolicy,
+) {
   const app = Fastify();
   app.addHook("preHandler", async request => { request.sessionUserId = user; });
-  tasksRoutes(app, { observer: { kick() {} }, contentOwner: {} as Parameters<typeof tasksRoutes>[1]["contentOwner"] });
+  tasksRoutes(app, {
+    observer: { kick() {} },
+    contentOwner: bindEncryptionDataOperationOwner({
+      policy: {
+        resolve: async () => ({ policy, revalidationToken: 1 }),
+        revalidate: async () => {
+          policyRevalidations += 1;
+          if (failPolicyRevalidation && policyRevalidations > 1) {
+            throw new Error("policy changed");
+          }
+        },
+      },
+    }),
+  });
   try { return await app.inject({ method: "GET", url: "/api/tasks/pending-attention" }); }
   finally { await app.close(); }
 }
+test("Plain reads ordinary attention without a protected runtime prerequisite", async () => {
+  const response = await read("requestor");
+  expect(response.statusCode).toBe(200);
+  expect(response.json<ServerEvent[]>()).toMatchObject([
+    { userId: "requestor", taskId: "task", taskRunId: "run", origin: "task" },
+  ]);
+  expect(query).toHaveBeenCalledTimes(1);
+  expect(authorize).toHaveBeenCalledTimes(2);
+  expect(replayed).toBe(1);
+  expect(policyRevalidations).toBeGreaterThan(0);
+});
+test("Strict and Full reject ordinary attention before any query or checkpoint read", async () => {
+  for (const policy of [
+    { mode: "shadow_encryption", shadowBehavior: "strict" },
+    { mode: "encrypted_only", shadowBehavior: "fallback" },
+  ] as const) {
+    const response = await read("requestor", policy);
+    expect(response.statusCode).toBe(409);
+    expect(response.json<{ error: string }>()).toEqual({
+      error: "task_content_unavailable",
+    });
+  }
+  expect(query).not.toHaveBeenCalled();
+  expect(find).not.toHaveBeenCalled();
+  expect(authorize).not.toHaveBeenCalled();
+  expect(replayed).toBe(0);
+});
+test("Fallback retains the legal ordinary attention read", async () => {
+  const response = await read("requestor", {
+    mode: "shadow_encryption",
+    shadowBehavior: "fallback",
+  });
+  expect(response.statusCode).toBe(200);
+  expect(response.json<ServerEvent[]>()).toMatchObject([{ taskId: "task", taskRunId: "run" }]);
+  expect(query).toHaveBeenCalledTimes(1);
+  expect(authorize).toHaveBeenCalledTimes(2);
+  expect(replayed).toBe(1);
+});
+test("a failed policy revalidation discards attention without repeating access", async () => {
+  failPolicyRevalidation = true;
+  const response = await read("requestor");
+  expect(response.statusCode).toBe(500);
+  expect(response.body).not.toContain("taskRunId");
+  expect(query).toHaveBeenCalledTimes(1);
+  expect(authorize).toHaveBeenCalledTimes(2);
+  expect(replayed).toBe(1);
+});
 test("requester-private checkpoint attention freshly admits source before and after replay", async () => {
   const response = await read("requestor");
   expect(response.statusCode).toBe(200); expect(response.headers["cache-control"]).toBe("private, no-store");

@@ -245,6 +245,17 @@ test("Task avatar accepts generated UUIDv8 Task IDs", async () => {
   expect(response.statusCode).toBe(200);
   expect(response.headers["content-type"]).toContain("image/svg+xml");
   expect(findTask.mock.calls[0]?.[1]).toBe(protectedTaskV8Id);
+  expect(findTask.mock.calls[0]?.[2]).toEqual({ lifecycleOnly: true, ownerId });
+});
+test("Task avatar uses a content-free owner projection and preserves foreign-owner 404", async () => {
+  const foreignResponse = await request(
+    policies[3]!,
+    `/api/tasks/${taskId}/agent/avatar`,
+    "other",
+  );
+  expect(foreignResponse.statusCode).toBe(404);
+  expect(findTask).toHaveBeenCalledTimes(1);
+  expect(findTask.mock.calls[0]?.[2]).toEqual({ lifecycleOnly: true, ownerId: "other" });
 });
 test("ordinary Task detail retains valid v4 and uppercase UUID behavior", async () => {
   const ordinaryResponse = await request(policies[0]!, `/api/tasks/${taskId}`);

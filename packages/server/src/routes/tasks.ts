@@ -902,12 +902,13 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
    * persists no parallel approval state and returns nothing for terminal or
    * superseded runs.
    */
-  app.get("/api/tasks/pending-attention", async (request, reply) => {
+  app.get<{ Reply: ServerEvent[] | { error: string } }>("/api/tasks/pending-attention", async (request, reply) => {
     reply.header("Cache-Control", "private, no-store");
     reply.header("Vary", "Authorization");
     const ownerId = request.sessionUserId ?? request.memoryEnvelope?.ownerId ?? "";
     if (!ownerId) return reply.status(401).send({ error: "Authentication required" });
 
+    return readOrdinaryTaskProjection(deps.contentOwner, reply, async () => {
     const parked = await listAwaitingTaskRunsForOwner(getServerDirectDb(), ownerId, { approvalRecipient: true });
     const projected = await Promise.all(parked.map(async ({ task, run }) => {
       try {
@@ -949,7 +950,8 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
         return [] as ServerEvent[];
       }
     }));
-    return reply.send(projected.flat());
+    return { status: 200, body: projected.flat() };
+    });
   });
 
   /**
@@ -971,7 +973,10 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
     }
 
     const db = getServerDirectDb();
-    const task = await getTaskById(db, request.params.id);
+    const task = await getTaskById(db, request.params.id, {
+      lifecycleOnly: true,
+      ownerId,
+    });
     if (!task || task.ownerId !== ownerId) {
       return reply.code(404).send({ error: "Task not found" });
     }

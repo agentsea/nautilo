@@ -5,6 +5,7 @@ import {
   agentId,
   authorizationRevision,
   cryptoDeviceId,
+  decryptObjectThroughNamespace,
   deriveAgentRuntimeObjectSignerPublic,
   humanId,
   namespaceGeneration,
@@ -32,18 +33,27 @@ import {
 } from "../../src/client-vault/profile-v4.ts";
 import type { ClientProfileCoordinates, ClientProfileVault } from
   "../../src/client-vault/types.ts";
+import type {
+  DomainNamespaceAccessResultV2,
+  DomainNamespaceAuthorityClientV2,
+  OpenedDomainNamespaceAuthorityV2,
+  OpenedDomainNamespaceGenerationV2,
+} from
+  "../../src/client/message/domain-namespace-authority-client.ts";
 import { MemoryClientProfileVault } from
   "../../src/testing/client-profile-vault.ts";
 import {
   createVaultHumanTaskDeviceContentPortV1,
 } from "../../src/client/task/vault-human-task-device-content.ts";
-import { ClassifiedDataOperationError } from
+import { ClassifiedDataOperationError, fallbackEligible } from
   "../../src/transition/encryption-data-operation-owner.ts";
 import { decodeTaskPayloadV1 } from "../../src/task/task-payload-v1.ts";
 import { addAdditionalDeviceDomainSignerEvidenceV4 } from
   "../../src/device/additional-device-client.ts";
 import {
   decodeHumanTaskPublicationRequestV1,
+  decodeEncryptedPayloadV2,
+  decodeNamespaceObjectEnvelopeV2,
   decodeObjectAccessManifestV5,
   decodeLiveShadowMessagePlanV4,
   destroyDomainForegroundAuthorizationPlanV2,
@@ -417,7 +427,7 @@ async function setup(deviceId: string, seed: number, peer?: Readonly<{
   deviceId: string;
   signingPublicKey: Uint8Array;
   includeLegacyKeyring?: boolean;
-}>, includeLegacyKeyring = peer?.includeLegacyKeyring !== false) {
+}>, includeLegacyKeyring = peer?.includeLegacyKeyring === true) {
   const crypto = new LatticeCrypto({ bytes: seededRng(seed) }, { now: () => NOW });
   const signing = crypto.generateSigningKeyPair();
   const encryption = await crypto.generateEncryptionKeyPair();
@@ -501,6 +511,78 @@ async function setup(deviceId: string, seed: number, peer?: Readonly<{
   let selectedGenerationKey: Uint8Array = NAMESPACE_KEY;
   let openedDomainId: string | undefined = "domain:1";
   let namespaceAuthorityFailure: Error | undefined;
+  const nativeAuthorityRequests: Array<Parameters<
+    DomainNamespaceAuthorityClientV2["withOpenedGenerations"]
+  >[0]> = [];
+  let nativeAuthorityFailure: Error | undefined;
+  let nativeAuthorityResult: Readonly<{
+    status: "pending" | "unavailable";
+    reason: string;
+  }> | undefined;
+  let omitNativeGeneration = false;
+  let nativeAuthority = {
+    sourceRoomId: ROOM_ID,
+    namespaceId: NAMESPACE_ID,
+    keyClass: "ai" as const,
+    namespaceAccessRevision: 9,
+    namespaceKeyGeneration: 2,
+    domainId: "domain:1",
+    bundleDigest: BINDING_HASH,
+  };
+  const nativeNamespaceAuthority: DomainNamespaceAuthorityClientV2 = {
+    ensure: () => Promise.resolve({ status: "ready" as const }),
+    servicePending: () => Promise.resolve(0),
+    withOpenedGenerations: async <Value>(request: Parameters<
+      DomainNamespaceAuthorityClientV2["withOpenedGenerations"]
+    >[0], use: (
+      entries: readonly OpenedDomainNamespaceGenerationV2[],
+      authority: OpenedDomainNamespaceAuthorityV2,
+    ) => Value | Promise<Value>): Promise<DomainNamespaceAccessResultV2<Value>> => {
+      nativeAuthorityRequests.push(request);
+      if (nativeAuthorityFailure !== undefined) throw nativeAuthorityFailure;
+      if (nativeAuthorityResult !== undefined) return nativeAuthorityResult;
+      return vault.withOpenProfile(coordinates, async () => {
+        const generationKey = selectedGenerationKey.slice();
+        const bundleDigest = nativeAuthority.bundleDigest.slice();
+        const headDigest = new Uint8Array(32).fill(0x71);
+        const namespaceHeadDigest = new Uint8Array(32).fill(0x72);
+        const domainHeadDigest = new Uint8Array(32).fill(0x73);
+        try {
+          return {
+            status: "opened" as const,
+            value: await use(omitNativeGeneration ? [] : [Object.freeze({
+              namespaceId: nativeAuthority.namespaceId,
+              keyClass: nativeAuthority.keyClass,
+              accessRevision: nativeAuthority.namespaceAccessRevision,
+              generation: nativeAuthority.namespaceKeyGeneration,
+              headDigest,
+              generationKey,
+            })], Object.freeze({
+              sourceRoomId: nativeAuthority.sourceRoomId,
+              serverId: "server:1",
+              namespaceId: nativeAuthority.namespaceId,
+              keyClass: nativeAuthority.keyClass,
+              namespaceAccessRevision: nativeAuthority.namespaceAccessRevision,
+              namespaceKeyGeneration: nativeAuthority.namespaceKeyGeneration,
+              namespaceHeadDigest,
+              domainId: nativeAuthority.domainId,
+              domainKeyGeneration: 3,
+              domainAuthorizationRevision: 9,
+              domainHeadDigest,
+              bundleRevision: 4,
+              bundleDigest,
+            })),
+          };
+        } finally {
+          generationKey.fill(0);
+          bundleDigest.fill(0);
+          headDigest.fill(0);
+          namespaceHeadDigest.fill(0);
+          domainHeadDigest.fill(0);
+        }
+      });
+    },
+  };
   const contentDependencies = {
     crypto,
     vault,
@@ -558,6 +640,7 @@ async function setup(deviceId: string, seed: number, peer?: Readonly<{
         };
       },
     },
+    nativeNamespaceAuthority,
     accessAnchors: {
       load: (cryptoObjectId: string) => {
         const anchor = anchors.get(cryptoObjectId);
@@ -582,6 +665,7 @@ async function setup(deviceId: string, seed: number, peer?: Readonly<{
     vault,
     anchors,
     authorityRequests,
+    nativeAuthorityRequests,
     setNamespaceUnavailable(value: boolean) { namespaceUnavailable = value; },
     setOmitSelectedGeneration(value: boolean) { omitSelectedGeneration = value; },
     setSelectedGenerationKey(value: Uint8Array) { selectedGenerationKey = value; },
@@ -589,8 +673,236 @@ async function setup(deviceId: string, seed: number, peer?: Readonly<{
     setNamespaceAuthorityFailure(value: Error | undefined) {
       namespaceAuthorityFailure = value;
     },
+    setNativeAuthority(value: Partial<typeof nativeAuthority>) {
+      nativeAuthority = { ...nativeAuthority, ...value };
+    },
+    setNativeAuthorityResult(value: typeof nativeAuthorityResult) {
+      nativeAuthorityResult = value;
+    },
+    setNativeAuthorityFailure(value: Error | undefined) {
+      nativeAuthorityFailure = value;
+    },
+    setOmitNativeGeneration(value: boolean) { omitNativeGeneration = value; },
   };
 }
+
+function publicationPlan(operation: "create" | "update", suffix: string) {
+  const expectedContentRevision = operation === "create" ? 0 : 1;
+  return {
+    planVersion: 1 as const,
+    operation,
+    operationId: `task:${suffix}`,
+    taskId: TASK_ID,
+    expectedContentRevision,
+    nextContentRevision: expectedContentRevision + 1,
+    expectedCryptoAccessRevision: 0,
+    planDigestBase64url: base64url(new Uint8Array(32).fill(0x31)),
+    authority: {
+      requesterHumanId: HUMAN_ID,
+      sourceRoomId: ROOM_ID,
+      namespaceId: NAMESPACE_ID,
+      domainId: "domain:1",
+      expectedAccessRevision: 9,
+      expectedPolicyRevision: 1,
+      bindingHashBase64url: base64url(BINDING_HASH),
+      keyGeneration: 2,
+    },
+  };
+}
+
+function taskPayload(prompt = "private prompt") {
+  return {
+    formatVersion: 1 as const,
+    prompt,
+    expectedOutput: null,
+    protectedMetadata: {},
+  };
+}
+
+test("Domain V2-only Task preparation covers protected and dual create and update", async () => {
+  const writer = await setup("device:v2-writer", 0x270);
+  const task = { scheduleKind: "now" as const };
+  const prepared = await Promise.all([
+    writer.content.prepareCreate({
+      plan: publicationPlan("create", "v2-protected-create"),
+      payload: taskPayload("protected create"),
+      task,
+    }),
+    writer.content.prepareUpdate({
+      plan: publicationPlan("update", "v2-protected-update"),
+      payload: taskPayload("protected update"),
+      task,
+    }),
+    writer.content.prepareDualCreate({
+      plan: publicationPlan("create", "v2-dual-create"),
+      payload: taskPayload("dual create"),
+      task,
+    }),
+    writer.content.prepareDualUpdate({
+      plan: publicationPlan("update", "v2-dual-update"),
+      payload: taskPayload("dual update"),
+      task,
+    }),
+  ]);
+
+  expect(prepared.map(request => request.operation)).toEqual([
+    "create", "update", "create", "update",
+  ]);
+  expect(writer.nativeAuthorityRequests).toHaveLength(4);
+  for (const request of writer.nativeAuthorityRequests) {
+    expect(request).toEqual({
+      sourceRoomId: ROOM_ID,
+      namespaceId: NAMESPACE_ID,
+      keyClass: "ai",
+      expectedAccessRevision: 9,
+      expectedCurrentGeneration: 2,
+    });
+  }
+});
+
+test("Domain V2 Task preparation rejects substituted authority coordinates", async () => {
+  const cases = [
+    { name: "Domain", change: { domainId: "domain:substituted" } },
+    { name: "bundle", change: { bundleDigest: new Uint8Array(32).fill(0xee) } },
+    { name: "access revision", change: { namespaceAccessRevision: 10 } },
+    { name: "current generation", change: { namespaceKeyGeneration: 3 } },
+  ] as const;
+  for (const [index, authorityCase] of cases.entries()) {
+    const writer = await setup(`device:v2-${index}`, 0x280 + index);
+    writer.setNativeAuthority(authorityCase.change);
+    const error = await writer.content.prepareCreate({
+      plan: publicationPlan("create", `v2-${authorityCase.name}`),
+      payload: taskPayload(),
+      task: {},
+    }).catch((cause: unknown) => cause);
+    expect(authorityCase.name).toBeString();
+    expect(error).toBeInstanceOf(ClassifiedDataOperationError);
+    expect((error as ClassifiedDataOperationError).failureClass).toBe("stale");
+  }
+});
+
+test("Domain V2 Task preparation separates exclusive vault loans", async () => {
+  const writer = await setup("device:v2-exclusive", 0x290);
+  const payload = taskPayload("original prompt");
+  const expectedPlaintext = encodeTaskPayloadV1(payload);
+  let openLoan: "native" | "profile" | null = null;
+  const guardedVault: ClientProfileVault = {
+    availability: () => writer.vault.availability(),
+    unlock: () => writer.vault.unlock(),
+    lock: () => writer.vault.lock(),
+    stageProfile: input => writer.vault.stageProfile(input),
+    activateProfile: (coordinates, stageId) =>
+      writer.vault.activateProfile(coordinates, stageId),
+    abortStagedProfile: (coordinates, stageId) =>
+      writer.vault.abortStagedProfile(coordinates, stageId),
+    recoverInterruptedActivation: (coordinates, resolution) =>
+      writer.vault.recoverInterruptedActivation(coordinates, resolution),
+    withOpenProfile: async (coordinates, operation) => {
+      if (openLoan !== null) throw new Error("Nested exclusive vault loan");
+      openLoan = "profile";
+      try {
+        return await writer.vault.withOpenProfile(coordinates, operation);
+      } finally {
+        openLoan = null;
+      }
+    },
+    listPublicProfiles: () => writer.vault.listPublicProfiles(),
+    rotateWrappingMaterial: () => writer.vault.rotateWrappingMaterial(),
+    forgetProfile: coordinates => writer.vault.forgetProfile(coordinates),
+  };
+  const native = writer.contentDependencies.nativeNamespaceAuthority;
+  const content = createVaultHumanTaskDeviceContentPortV1({
+    ...writer.contentDependencies,
+    vault: guardedVault,
+    nativeNamespaceAuthority: {
+      ...native,
+      withOpenedGenerations: async (request, use) => {
+        if (openLoan !== null) throw new Error("Nested exclusive vault loan");
+        openLoan = "native";
+        try {
+          const result = await native.withOpenedGenerations(request, use);
+          payload.prompt = "mutated after Namespace authority returned";
+          return result;
+        } finally {
+          openLoan = null;
+        }
+      },
+    },
+  });
+
+  const prepared = await content.prepareDualCreate({
+    plan: publicationPlan("create", "v2-exclusive"),
+    payload,
+    task: {},
+  });
+  const ordinary = decodeBase64url(prepared.ordinaryPayloadBytesBase64url);
+  const payloadBytes = decodeBase64url(prepared.encryptedPayloadBytesBase64url);
+  const envelopeBytes = decodeBase64url(
+    prepared.namespaceEnvelopes[0].envelopeBytesBase64url,
+  );
+  const encryptedPayload = decodeEncryptedPayloadV2(payloadBytes);
+  const envelope = decodeNamespaceObjectEnvelopeV2(envelopeBytes);
+  const decrypted = decryptObjectThroughNamespace(
+    writer.crypto,
+    NAMESPACE_KEY,
+    envelope,
+    encryptedPayload,
+  );
+  try {
+    expect(prepared.operation).toBe("create");
+    expect(openLoan).toBe(null);
+    expect(payload.prompt).toBe("mutated after Namespace authority returned");
+    expect(ordinary).toEqual(expectedPlaintext);
+    expect(decrypted).toEqual(expectedPlaintext);
+  } finally {
+    expectedPlaintext.fill(0);
+    ordinary.fill(0);
+    payloadBytes.fill(0);
+    envelopeBytes.fill(0);
+    decrypted?.fill(0);
+  }
+});
+
+test("Domain V2 Task preparation preserves transport errors and classifies authority states", async () => {
+  const transportWriter = await setup("device:v2-transport", 0x291);
+  const transportFailure = new Error("transport failed");
+  transportWriter.setNativeAuthorityFailure(transportFailure);
+  const transport = await transportWriter.content.prepareCreate({
+    plan: publicationPlan("create", "v2-transport"),
+    payload: taskPayload(),
+    task: {},
+  }).catch((cause: unknown) => cause);
+  expect(transport).toBe(transportFailure);
+
+  const reasonCases = [
+    { reason: "bundle_not_ready", failureClass: "key_waiting" },
+    { reason: "head_changed", failureClass: "stale" },
+    { reason: "authority_inconsistent", failureClass: "integrity" },
+    { reason: "head_response_invalid", failureClass: "integrity" },
+    { reason: "head_authorization_denied", failureClass: "authority" },
+    { reason: "request_failed", failureClass: "unknown" },
+    { reason: "envelope_unavailable", failureClass: "unknown" },
+    { reason: "future_unclassified_reason", failureClass: "unknown" },
+  ] as const;
+  for (const [index, reasonCase] of reasonCases.entries()) {
+    const writer = await setup(`device:v2-reason-${index}`, 0x292 + index);
+    writer.setNativeAuthorityResult({
+      status: "unavailable",
+      reason: reasonCase.reason,
+    });
+    const error = await writer.content.prepareCreate({
+      plan: publicationPlan("create", `v2-${reasonCase.reason}`),
+      payload: taskPayload(),
+      task: {},
+    }).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(ClassifiedDataOperationError);
+    const failureClass = (error as ClassifiedDataOperationError).failureClass;
+    expect(failureClass).toBe(reasonCase.failureClass);
+    expect(fallbackEligible(failureClass)).toBe(
+      reasonCase.failureClass === "key_waiting",
+    );
+  }
+});
 
 async function preparedHumanTask(
   writer: Awaited<ReturnType<typeof setup>>,

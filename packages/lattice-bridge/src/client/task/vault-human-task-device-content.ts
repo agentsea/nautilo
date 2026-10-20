@@ -48,8 +48,6 @@ import type {
   ClientProfileCoordinates,
   ClientProfileVault,
 } from "../../client-vault/types.ts";
-import { withClientNamespaceKeyring } from
-  "../../device/client-namespace-keyring.ts";
 import {
   deriveTaskContentCryptoObjectIdV1,
   TASK_DEFINITION_OBJECT_TYPE_V1,
@@ -81,6 +79,9 @@ import type {
   NamespaceAuthorityClient,
   NamespaceGenerationAuthority,
 } from "../message/namespace-authority-client.ts";
+import type {
+  DomainNamespaceAuthorityClientV2,
+} from "../message/domain-namespace-authority-client.ts";
 import {
   exactForegroundAgentSignerKeysV1,
   foregroundAgentSignerPrincipalKeyV1,
@@ -120,6 +121,45 @@ export interface VaultHumanTaskDeviceContentInputV1 {
 function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
   return left.length === right.length
     && left.every((byte, index) => byte === right[index]);
+}
+
+function classifyNativeNamespaceUnavailableReason(reason: string):
+  | "key_waiting"
+  | "stale"
+  | "integrity"
+  | "authority"
+  | "unknown" {
+  switch (reason) {
+    case "source_required":
+    case "qualified_source_required":
+    case "source_key_unavailable":
+    case "bundle_not_ready":
+    case "bundle_source_unavailable":
+    case "custody_unavailable":
+    case "cache_miss":
+    case "domain_unavailable":
+    case "device_unavailable":
+    case "head_unavailable":
+    case "recipient_unavailable":
+    case "recipient_sync_required":
+    case "request_unavailable":
+    case "bundle_unavailable":
+      return "key_waiting";
+    case "binding_stale":
+    case "domain_stale":
+    case "head_changed":
+      return "stale";
+    case "binding_invalid":
+    case "bundle_open_failed":
+    case "authority_inconsistent":
+    case "head_response_invalid":
+    case "recovery_envelope_invalid":
+      return "integrity";
+    case "head_authorization_denied":
+      return "authority";
+    default:
+      return "unknown";
+  }
 }
 
 function toBase64url(value: Uint8Array): string {
@@ -353,7 +393,9 @@ async function ensureVaultAvailable(
 
 /** Vault-backed Task content preparation/opening shared by Browser and Electron. */
 export function createVaultHumanTaskDeviceContentPortV1(
-  dependencies: VaultHumanTaskDeviceContentInputV1,
+  dependencies: VaultHumanTaskDeviceContentInputV1 & Readonly<{
+    nativeNamespaceAuthority: DomainNamespaceAuthorityClientV2;
+  }>,
 ): HumanTaskDeviceContentPortV1 {
   const prepare = async (
     operation: "create" | "update",
@@ -363,10 +405,7 @@ export function createVaultHumanTaskDeviceContentPortV1(
   ): Promise<ProtectedTaskPreparedCreateRequestV1
     | ProtectedTaskPreparedUpdateRequestV1
     | DualTaskPreparedCreateRequestV1
-    | DualTaskPreparedUpdateRequestV1> => withProfile(
-      dependencies,
-      async (profileV4) => {
-    const profile = profileV4.baseProfile.baseProfile;
+    | DualTaskPreparedUpdateRequestV1> => {
     const { plan } = input;
     const now = dependencies.now();
     if (plan.authority.requesterHumanId !== dependencies.subjectHumanId) {
@@ -381,165 +420,231 @@ export function createVaultHumanTaskDeviceContentPortV1(
       contentRevision: plan.nextContentRevision,
     });
     let plaintext: Uint8Array | undefined;
-    let dek: Uint8Array | undefined;
+    let bindingHash: Uint8Array | undefined;
     let payloadBytes: Uint8Array | undefined;
     let envelopeBytes: Uint8Array | undefined;
-    let manifestBytes: Uint8Array | undefined;
-    let signedBytes: Uint8Array | undefined;
-    let planDigest: Uint8Array | undefined;
-    let bindingHash: Uint8Array | undefined;
-    let operationalFieldsDigest: Uint8Array | undefined;
     try {
       plaintext = encodeTaskDefinitionContent(input.payload);
-      const encrypted = encryptObjectPayload(dependencies.crypto, {
-        objectId: objectId(cryptoObjectId),
-        keyClass: "ai",
-        objectType: TASK_DEFINITION_OBJECT_TYPE_V1,
-        createdAt: unixTimestamp(now),
-      }, plaintext);
-      dek = encrypted.dek;
-      payloadBytes = encodeEncryptedPayloadV2(encrypted.payload);
-      bindingHash = fromBase64url(
+      const exactPlaintext = plaintext;
+      const exactBindingHash = fromBase64url(
         "Protected Task Namespace binding hash",
         plan.authority.bindingHashBase64url,
       );
-      envelopeBytes = await withClientNamespaceKeyring({
-        profile,
+      bindingHash = exactBindingHash;
+      await ensureVaultAvailable(dependencies);
+      type EncryptedPreparation = Readonly<{
+        status: "prepared";
+        payloadBytes: Uint8Array;
+        envelopeBytes: Uint8Array;
+      }> | Readonly<{ status: "stale" }>
+        | Readonly<{ status: "integrity" }>
+        | Readonly<{ status: "failed"; error: Error }>;
+      const opened = await dependencies.nativeNamespaceAuthority
+        .withOpenedGenerations<EncryptedPreparation>({
+        sourceRoomId: plan.authority.sourceRoomId,
         namespaceId: plan.authority.namespaceId,
         keyClass: "ai",
-        requiredAccessRevision: plan.authority.expectedAccessRevision,
-        requiredGeneration: plan.authority.keyGeneration,
-        operation: (keyring) => {
-          if (
-            keyring.domainId !== plan.authority.domainId
-            || keyring.accessRevision !== plan.authority.expectedAccessRevision
-            || keyring.currentGeneration !== plan.authority.keyGeneration
-            || !equalBytes(keyring.bindingHash, bindingHash!)
-          ) throw new ClassifiedDataOperationError(
-            "stale",
-            "Protected Task Namespace authority changed",
+        expectedAccessRevision: plan.authority.expectedAccessRevision,
+        expectedCurrentGeneration: plan.authority.keyGeneration,
+      }, (entries, authority) => {
+        if (
+          authority.sourceRoomId !== plan.authority.sourceRoomId
+          || authority.namespaceId !== plan.authority.namespaceId
+          || authority.keyClass !== "ai"
+          || authority.domainId !== plan.authority.domainId
+          || authority.namespaceAccessRevision
+            !== plan.authority.expectedAccessRevision
+          || authority.namespaceKeyGeneration !== plan.authority.keyGeneration
+          || !equalBytes(authority.bundleDigest, exactBindingHash)
+        ) return Object.freeze({ status: "stale" as const });
+        const generation = entries.find((entry) =>
+          entry.namespaceId === plan.authority.namespaceId
+          && entry.keyClass === "ai"
+          && entry.accessRevision === plan.authority.expectedAccessRevision
+          && entry.generation === plan.authority.keyGeneration
+        );
+        if (generation === undefined) {
+          return Object.freeze({ status: "integrity" as const });
+        }
+        let dek: Uint8Array | undefined;
+        let encryptedPayloadBytes: Uint8Array | undefined;
+        try {
+          const encrypted = encryptObjectPayload(dependencies.crypto, {
+            objectId: objectId(cryptoObjectId),
+            keyClass: "ai",
+            objectType: TASK_DEFINITION_OBJECT_TYPE_V1,
+            createdAt: unixTimestamp(now),
+          }, exactPlaintext);
+          dek = encrypted.dek;
+          encryptedPayloadBytes = encodeEncryptedPayloadV2(encrypted.payload);
+          const encryptedEnvelopeBytes = encodeNamespaceObjectEnvelopeV2(
+            wrapObjectDekForNamespace(
+              dependencies.crypto,
+              generation.generationKey,
+              {
+                objectId: objectId(cryptoObjectId),
+                namespaceId: namespaceId(plan.authority.namespaceId),
+                keyClass: "ai",
+                keyGeneration: namespaceGeneration(generation.generation),
+                bindingRevisionAtWrap: accessRevision(generation.accessRevision),
+              },
+              dek,
+            ),
           );
-          const generation = keyring.generations.find((entry) =>
-            entry.generation === plan.authority.keyGeneration
-          );
-          if (generation === undefined) throw new ClassifiedDataOperationError(
-            "key_waiting",
-            "Protected Task Namespace key is unavailable",
-          );
-          return encodeNamespaceObjectEnvelopeV2(wrapObjectDekForNamespace(
+          const prepared = Object.freeze({
+            status: "prepared" as const,
+            payloadBytes: encryptedPayloadBytes,
+            envelopeBytes: encryptedEnvelopeBytes,
+          });
+          encryptedPayloadBytes = undefined;
+          return prepared;
+        } catch (cause) {
+          return Object.freeze({
+            status: "failed" as const,
+            error: cause instanceof Error
+              ? cause
+              : new Error("Protected Task encryption failed", { cause }),
+          });
+        } finally {
+          dek?.fill(0);
+          encryptedPayloadBytes?.fill(0);
+        }
+      });
+      if (opened.status !== "opened") {
+        const failureClass = classifyNativeNamespaceUnavailableReason(
+          opened.reason,
+        );
+        throw new ClassifiedDataOperationError(
+          failureClass,
+          `Protected Task Namespace authority is unavailable (${opened.reason})`,
+        );
+      }
+      if (opened.value.status === "stale") {
+        throw new ClassifiedDataOperationError(
+          "stale", "Protected Task Namespace authority changed",
+        );
+      }
+      if (opened.value.status === "integrity") {
+        throw new ClassifiedDataOperationError(
+          "integrity", "Protected Task Namespace generation is invalid",
+        );
+      }
+      if (opened.value.status === "failed") throw opened.value.error;
+      const exactPayloadBytes = opened.value.payloadBytes;
+      const exactEnvelopeBytes = opened.value.envelopeBytes;
+      payloadBytes = exactPayloadBytes;
+      envelopeBytes = exactEnvelopeBytes;
+      return await withProfile(dependencies, (profileV4) => {
+        const profile = profileV4.baseProfile.baseProfile;
+        let manifestBytes: Uint8Array | undefined;
+        let signedBytes: Uint8Array | undefined;
+        let planDigest: Uint8Array | undefined;
+        let operationalFieldsDigest: Uint8Array | undefined;
+        try {
+          const access = prepareHumanObjectAccessManifestGenesisSet(
             dependencies.crypto,
-            generation.key,
             {
               objectId: objectId(cryptoObjectId),
-              namespaceId: namespaceId(plan.authority.namespaceId),
-              keyClass: "ai",
-              keyGeneration: namespaceGeneration(generation.generation),
-              bindingRevisionAtWrap: accessRevision(keyring.accessRevision),
+              payloadHash: dependencies.crypto.hash(exactPayloadBytes),
+              envelopeBytes: [exactEnvelopeBytes],
+              sourceAuthorized: true,
+              targetAuthorized: true,
+              subjectHumanId: humanId(dependencies.subjectHumanId),
+              committerDeviceId: cryptoDeviceId(profile.deviceId),
+              hostAuthorizationRevision: authorizationRevision(
+                profile.trustedHostAuthorizationRevision,
+              ),
+              committerSigningPublicKey: profile.signingPublicKey,
+              committerSigningPrivateKey: profile.signingPrivateKey,
             },
-            dek!,
-          ));
-        },
-      });
-      const access = prepareHumanObjectAccessManifestGenesisSet(
-        dependencies.crypto,
-        {
-          objectId: objectId(cryptoObjectId),
-          payloadHash: dependencies.crypto.hash(payloadBytes),
-          envelopeBytes: [envelopeBytes],
-          sourceAuthorized: true,
-          targetAuthorized: true,
-          subjectHumanId: humanId(dependencies.subjectHumanId),
-          committerDeviceId: cryptoDeviceId(profile.deviceId),
-          hostAuthorizationRevision: authorizationRevision(
-            profile.trustedHostAuthorizationRevision,
-          ),
-          committerSigningPublicKey: profile.signingPublicKey,
-          committerSigningPrivateKey: profile.signingPrivateKey,
-        },
-      );
-      manifestBytes = access.manifestBytes;
-      planDigest = fromBase64url("Protected Task plan digest", plan.planDigestBase64url);
-      operationalFieldsDigest = representation === "dual"
-        ? fingerprintTaskDualPublicationFieldsV1(
+          );
+          manifestBytes = access.manifestBytes;
+          planDigest = fromBase64url(
+            "Protected Task plan digest",
+            plan.planDigestBase64url,
+          );
+          operationalFieldsDigest = representation === "dual"
+            ? fingerprintTaskDualPublicationFieldsV1(
+                operation,
+                input.task,
+                exactPlaintext,
+              )
+            : fingerprintTaskOperationalFieldsV1(operation, input.task);
+          const signed = prepareHumanTaskPublicationRequest(dependencies.crypto, {
             operation,
-            input.task,
-            plaintext,
-          )
-        : fingerprintTaskOperationalFieldsV1(operation, input.task);
-      const signed = prepareHumanTaskPublicationRequest(dependencies.crypto, {
-        operation,
-        operationId: plan.operationId,
-        taskId: plan.taskId,
-        cryptoObjectId,
-        expectedContentRevision: plan.expectedContentRevision,
-        nextContentRevision: plan.nextContentRevision,
-        expectedCryptoAccessRevision: plan.expectedCryptoAccessRevision,
-        resultCryptoAccessRevision: 0,
-        planDigest,
-        operationalFieldsDigest,
-        subjectHumanId: plan.authority.requesterHumanId,
-        committerDeviceId: profile.deviceId,
-        hostAuthorizationRevision: profile.trustedHostAuthorizationRevision,
-        namespaceId: plan.authority.namespaceId,
-        domainId: plan.authority.domainId,
-        expectedNamespaceAccessRevision: plan.authority.expectedAccessRevision,
-        expectedPolicyRevision: plan.authority.expectedPolicyRevision,
-        bindingHash,
-        keyGeneration: plan.authority.keyGeneration,
-        payloadHash: dependencies.crypto.hash(payloadBytes),
-        manifestHash: dependencies.crypto.hash(manifestBytes),
-        envelopeHash: dependencies.crypto.hash(envelopeBytes),
-        issuedAt: unixTimestamp(now),
-        deadlineAt: unixTimestamp(now + SIGNED_REQUEST_TTL_MS),
-        committerSigningPublicKey: profile.signingPublicKey,
-        committerSigningPrivateKey: profile.signingPrivateKey,
+            operationId: plan.operationId,
+            taskId: plan.taskId,
+            cryptoObjectId,
+            expectedContentRevision: plan.expectedContentRevision,
+            nextContentRevision: plan.nextContentRevision,
+            expectedCryptoAccessRevision: plan.expectedCryptoAccessRevision,
+            resultCryptoAccessRevision: 0,
+            planDigest,
+            operationalFieldsDigest,
+            subjectHumanId: plan.authority.requesterHumanId,
+            committerDeviceId: profile.deviceId,
+            hostAuthorizationRevision: profile.trustedHostAuthorizationRevision,
+            namespaceId: plan.authority.namespaceId,
+            domainId: plan.authority.domainId,
+            expectedNamespaceAccessRevision: plan.authority.expectedAccessRevision,
+            expectedPolicyRevision: plan.authority.expectedPolicyRevision,
+            bindingHash: exactBindingHash,
+            keyGeneration: plan.authority.keyGeneration,
+            payloadHash: dependencies.crypto.hash(exactPayloadBytes),
+            manifestHash: dependencies.crypto.hash(manifestBytes),
+            envelopeHash: dependencies.crypto.hash(exactEnvelopeBytes),
+            issuedAt: unixTimestamp(now),
+            deadlineAt: unixTimestamp(now + SIGNED_REQUEST_TTL_MS),
+            committerSigningPublicKey: profile.signingPublicKey,
+            committerSigningPrivateKey: profile.signingPrivateKey,
+          });
+          signedBytes = signed.bytes;
+          const prepared = {
+            requestVersion: 1 as const,
+            operation,
+            operationId: plan.operationId,
+            planDigestBase64url: plan.planDigestBase64url,
+            taskId: plan.taskId,
+            expectedContentRevision: plan.expectedContentRevision,
+            nextContentRevision: plan.nextContentRevision,
+            expectedCryptoAccessRevision: plan.expectedCryptoAccessRevision,
+            resultCryptoAccessRevision: 0 as const,
+            cryptoObjectId,
+            payloadVersion: 1 as const,
+            requiredNamespaceIds: [plan.authority.namespaceId] as [string],
+            encryptedPayloadBytesBase64url: toBase64url(exactPayloadBytes),
+            accessManifestBytesBase64url: toBase64url(manifestBytes),
+            namespaceEnvelopes: [{
+              namespaceId: plan.authority.namespaceId,
+              envelopeBytesBase64url: toBase64url(exactEnvelopeBytes),
+            }] as [{ namespaceId: string; envelopeBytesBase64url: string }],
+            signedPublicationRequestBytesBase64url: toBase64url(signedBytes),
+            task: input.task,
+          };
+          return Object.freeze(representation === "dual"
+            ? {
+                ...prepared,
+                representation: "dual" as const,
+                ordinaryPayloadBytesBase64url: toBase64url(exactPlaintext),
+              }
+            : prepared) as ProtectedTaskPreparedCreateRequestV1
+              | ProtectedTaskPreparedUpdateRequestV1
+              | DualTaskPreparedCreateRequestV1
+              | DualTaskPreparedUpdateRequestV1;
+        } finally {
+          manifestBytes?.fill(0);
+          signedBytes?.fill(0);
+          planDigest?.fill(0);
+          operationalFieldsDigest?.fill(0);
+        }
       });
-      signedBytes = signed.bytes;
-      const prepared = {
-        requestVersion: 1 as const,
-        operation,
-        operationId: plan.operationId,
-        planDigestBase64url: plan.planDigestBase64url,
-        taskId: plan.taskId,
-        expectedContentRevision: plan.expectedContentRevision,
-        nextContentRevision: plan.nextContentRevision,
-        expectedCryptoAccessRevision: plan.expectedCryptoAccessRevision,
-        resultCryptoAccessRevision: 0 as const,
-        cryptoObjectId,
-        payloadVersion: 1 as const,
-        requiredNamespaceIds: [plan.authority.namespaceId] as [string],
-        encryptedPayloadBytesBase64url: toBase64url(payloadBytes),
-        accessManifestBytesBase64url: toBase64url(manifestBytes),
-        namespaceEnvelopes: [{
-          namespaceId: plan.authority.namespaceId,
-          envelopeBytesBase64url: toBase64url(envelopeBytes),
-        }] as [{ namespaceId: string; envelopeBytesBase64url: string }],
-        signedPublicationRequestBytesBase64url: toBase64url(signedBytes),
-        task: input.task,
-      };
-      return Object.freeze(representation === "dual"
-        ? {
-            ...prepared,
-            representation: "dual" as const,
-            ordinaryPayloadBytesBase64url: toBase64url(plaintext),
-          }
-        : prepared) as ProtectedTaskPreparedCreateRequestV1
-          | ProtectedTaskPreparedUpdateRequestV1
-          | DualTaskPreparedCreateRequestV1
-          | DualTaskPreparedUpdateRequestV1;
     } finally {
       plaintext?.fill(0);
-      dek?.fill(0);
+      bindingHash?.fill(0);
       payloadBytes?.fill(0);
       envelopeBytes?.fill(0);
-      manifestBytes?.fill(0);
-      signedBytes?.fill(0);
-      planDigest?.fill(0);
-      bindingHash?.fill(0);
-      operationalFieldsDigest?.fill(0);
     }
-    },
-  );
+  };
 
   const prepareOrdinaryFallback = async (
     operation: "create" | "update",

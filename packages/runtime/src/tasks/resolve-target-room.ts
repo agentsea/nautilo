@@ -209,8 +209,12 @@ export async function resolveTargetRoom(
   switch (task.targetChat) {
     case "orphan":
       return resolveOrphan(task, db);
-    case "last_in_namespace":
-      return resolveLastInNamespace(task, db);
+    case "last_in_namespace": {
+      const resolved = await resolveLastInNamespace(task, db);
+      return task.preset === "schedule"
+        ? { ...resolved, graphThreadId: orphanRunThreadId(task) }
+        : resolved;
+    }
     case "new_in_namespace":
       return resolveNewInNamespace(task, db);
     case "last_dm":
