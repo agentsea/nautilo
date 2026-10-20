@@ -1318,9 +1318,11 @@ export function createProductionProtectedTaskComposition(
         ...(coordinate.kind !== "definition" || definitionObjectId == null ? {} : {
           resolveTaskDefinitionForegroundAuthorization: async (evidence: Parameters<
             NonNullable<Parameters<typeof refreshHumanMappedTaskContentAccessHead>[0]["resolveTaskDefinitionForegroundAuthorization"]>
-          >[0]) => {
+          >[0], current: Parameters<
+            NonNullable<Parameters<typeof refreshHumanMappedTaskContentAccessHead>[0]["resolveTaskDefinitionForegroundAuthorization"]>
+          >[1]) => {
             const resolver = await createProtectedTaskDefinitionForegroundAuthorizationResolver({
-              product, handle: await cryptoHandle(), crypto: dependencies.crypto,
+              product, currentProduct: current, handle: current.handle, crypto: dependencies.crypto,
               requesterHumanId: authority.subjectHumanId,
               task: {
                 id: coordinate.taskId, ownerId: authority.userId, agentId: authority.agentId,

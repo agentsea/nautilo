@@ -127,6 +127,10 @@ async function preparedAgentDefinition(
   writerAgentId = AGENT_ID,
   evidenceHumanId = HUMAN_ID,
   taskDefinitionAuthorization = false,
+  taskAuthorizationDevice: Readonly<{
+    generation: number;
+    hostAuthorizationRevision: number;
+  }> = { generation: 1, hostAuthorizationRevision: 11 },
 ) {
   const initialized = await prepareAgentRuntimeInitialization({
     crypto: manager.crypto,
@@ -164,8 +168,10 @@ async function preparedAgentDefinition(
     createdAt: unixTimestamp(NOW),
     subjectHumanId: humanId(evidenceHumanId),
     committerDeviceId: cryptoDeviceId(managerDeviceId),
-    committerDeviceSigningKeyGeneration: 1,
-    hostAuthorizationRevision: authorizationRevision(11),
+    committerDeviceSigningKeyGeneration: taskAuthorizationDevice.generation,
+    hostAuthorizationRevision: authorizationRevision(
+      taskAuthorizationDevice.hostAuthorizationRevision,
+    ),
     recipientAgentId: agentId(writerAgentId),
     agentAuthorizationRevision: authorizationRevision(7),
     agentRuntimeGeneration: initialized.runtime.generation,
@@ -229,8 +235,10 @@ async function preparedAgentDefinition(
       roomId: ROOM_ID,
       subjectHumanId: humanId(evidenceHumanId),
       committerDeviceId: cryptoDeviceId(managerDeviceId),
-      committerDeviceSigningGeneration: 1,
-      hostAuthorizationRevision: authorizationRevision(11),
+      committerDeviceSigningGeneration: taskAuthorizationDevice.generation,
+      hostAuthorizationRevision: authorizationRevision(
+        taskAuthorizationDevice.hostAuthorizationRevision,
+      ),
       recipientKind: "runtime",
       recipientPrincipalId: "nautilo_foreground_runtime",
       recipientAuthorizationRevision: authorizationRevision(0),
@@ -409,7 +417,7 @@ async function setup(deviceId: string, seed: number, peer?: Readonly<{
   deviceId: string;
   signingPublicKey: Uint8Array;
   includeLegacyKeyring?: boolean;
-}>) {
+}>, includeLegacyKeyring = peer?.includeLegacyKeyring !== false) {
   const crypto = new LatticeCrypto({ bytes: seededRng(seed) }, { now: () => NOW });
   const signing = crypto.generateSigningKeyPair();
   const encryption = await crypto.generateEncryptionKeyPair();
@@ -431,7 +439,7 @@ async function setup(deviceId: string, seed: number, peer?: Readonly<{
     trustedDeviceRevision: 7,
     trustedHostAuthorizationRevision: 11,
     deliveryHighWatermark: 4,
-    keyringDeliveries: Object.freeze(peer?.includeLegacyKeyring === false ? [] : [Object.freeze({
+    keyringDeliveries: Object.freeze(!includeLegacyKeyring ? [] : [Object.freeze({
       deliverySequence: 4,
       operationId: "delivery:4",
       namespaceId: NAMESPACE_ID,
@@ -491,6 +499,8 @@ async function setup(deviceId: string, seed: number, peer?: Readonly<{
   let namespaceUnavailable = false;
   let omitSelectedGeneration = false;
   let selectedGenerationKey: Uint8Array = NAMESPACE_KEY;
+  let openedDomainId: string | undefined = "domain:1";
+  let namespaceAuthorityFailure: Error | undefined;
   const contentDependencies = {
     crypto,
     vault,
@@ -519,6 +529,9 @@ async function setup(deviceId: string, seed: number, peer?: Readonly<{
           .OpenedNamespaceGeneration[],
       ) => Promise<Value> | Value) => {
         authorityRequests.push(request);
+        if (namespaceAuthorityFailure !== undefined) {
+          throw namespaceAuthorityFailure;
+        }
         if (namespaceUnavailable) return {
           status: "unavailable" as const,
           reason: "bundle_not_ready",
@@ -537,6 +550,9 @@ async function setup(deviceId: string, seed: number, peer?: Readonly<{
               ? selectedGenerationKey : new Uint8Array(32).fill(0x49),
             audienceFingerprint: entry.audienceFingerprint,
             headDigest: entry.headDigest,
+            ...(openedDomainId === undefined ? {} : {
+              domainId: openedDomainId,
+            }),
           }))
           )),
         };
@@ -569,6 +585,10 @@ async function setup(deviceId: string, seed: number, peer?: Readonly<{
     setNamespaceUnavailable(value: boolean) { namespaceUnavailable = value; },
     setOmitSelectedGeneration(value: boolean) { omitSelectedGeneration = value; },
     setSelectedGenerationKey(value: Uint8Array) { selectedGenerationKey = value; },
+    setOpenedDomainId(value: string | undefined) { openedDomainId = value; },
+    setNamespaceAuthorityFailure(value: Error | undefined) {
+      namespaceAuthorityFailure = value;
+    },
   };
 }
 
@@ -1237,6 +1257,7 @@ test("vault-backed Task definition accepts an authenticated same-Human cross-Age
   const reader = await setup("device:cross-agent-reader", 0x263, {
     deviceId: "device:cross-agent-manager",
     signingPublicKey: manager.signing.publicKey,
+    includeLegacyKeyring: false,
   });
   const prepared = await preparedAgentDefinition(
     manager,
@@ -1307,6 +1328,112 @@ test("vault-backed Task definition accepts an authenticated same-Human cross-Age
   expect(wrongHumanResult).toBeInstanceOf(ClassifiedDataOperationError);
   expect((wrongHumanResult as ClassifiedDataOperationError).failureClass)
     .toBe("integrity");
+});
+
+test("vault-backed Task definition accepts its current Device authorization without imported signer history", async () => {
+  const manager = await setup(
+    "device:current-task-manager",
+    0x264,
+    undefined,
+    false,
+  );
+  const prepared = await preparedAgentDefinition(
+    manager,
+    "device:current-task-manager",
+    OTHER_AGENT_ID,
+    HUMAN_ID,
+    true,
+  );
+  if (prepared.taskAuthorizationEvidence === null) {
+    throw new Error("Task authorization evidence was unavailable");
+  }
+  const opened = await manager.content.openExact({
+    reference: prepared.reference,
+    envelope: {
+      ...prepared.envelope,
+      signerEvidence: [
+        prepared.foregroundEvidence,
+        prepared.taskAuthorizationEvidence,
+      ],
+    },
+    expectedAgentId: AGENT_ID,
+  });
+  try {
+    expect(decodeTaskPayloadV1(opened).prompt)
+      .toBe("Agent-created private prompt");
+  } finally {
+    opened.fill(0);
+  }
+
+  for (const [label, deviceAuthority, domainId, failureClass, seed] of [
+    ["wrong generation", { generation: 2, hostAuthorizationRevision: 11 }, "domain:1", "integrity", 0x265],
+    ["future host revision", { generation: 1, hostAuthorizationRevision: 12 }, "domain:1", "integrity", 0x266],
+    ["missing Domain metadata", { generation: 1, hostAuthorizationRevision: 11 }, undefined, "key_waiting", 0x267],
+    ["wrong canonical Domain", { generation: 1, hostAuthorizationRevision: 11 }, "domain:other", "integrity", 0x268],
+  ] as const) {
+    const deviceId = `device:current-task-manager:${label.replaceAll(" ", "-")}`;
+    const boundedManager = await setup(deviceId, seed, undefined, false);
+    boundedManager.setOpenedDomainId(domainId);
+    const bounded = await preparedAgentDefinition(
+      boundedManager,
+      deviceId,
+      OTHER_AGENT_ID,
+      HUMAN_ID,
+      true,
+      deviceAuthority,
+    );
+    if (bounded.taskAuthorizationEvidence === null) {
+      throw new Error("Task authorization evidence was unavailable");
+    }
+    const rejected = await boundedManager.content.openExact({
+      reference: bounded.reference,
+      envelope: {
+        ...bounded.envelope,
+        signerEvidence: [
+          bounded.foregroundEvidence,
+          bounded.taskAuthorizationEvidence,
+        ],
+      },
+      expectedAgentId: AGENT_ID,
+    }).catch((cause: unknown) => cause);
+    expect(rejected).toBeInstanceOf(ClassifiedDataOperationError);
+    expect((rejected as ClassifiedDataOperationError).failureClass)
+      .toBe(failureClass);
+    expect(boundedManager.anchors.has(bounded.reference.objectId)).toBe(false);
+  }
+
+  const networkManager = await setup(
+    "device:current-task-manager:network",
+    0x269,
+    undefined,
+    false,
+  );
+  const networkPrepared = await preparedAgentDefinition(
+    networkManager,
+    "device:current-task-manager:network",
+    OTHER_AGENT_ID,
+    HUMAN_ID,
+    true,
+  );
+  if (networkPrepared.taskAuthorizationEvidence === null) {
+    throw new Error("Task authorization evidence was unavailable");
+  }
+  const networkFailure = new Error("Namespace authority transport failed");
+  networkManager.setNamespaceAuthorityFailure(networkFailure);
+  const networkResult = await networkManager.content.openExact({
+    reference: networkPrepared.reference,
+    envelope: {
+      ...networkPrepared.envelope,
+      signerEvidence: [
+        networkPrepared.foregroundEvidence,
+        networkPrepared.taskAuthorizationEvidence,
+      ],
+    },
+    expectedAgentId: AGENT_ID,
+  }).catch((cause: unknown) => cause);
+  expect(networkResult).toBe(networkFailure);
+  expect(networkManager.anchors.has(networkPrepared.reference.objectId))
+    .toBe(false);
 });
 
 test("vault-backed Task open keeps terminal custody loss classified as key waiting", async () => {

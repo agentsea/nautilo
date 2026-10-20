@@ -1222,7 +1222,8 @@ export {
 } from "./task/postgres-foreground-task-definition-inspector.ts";
 
 export { refreshHumanMappedTaskContentAccessHead } from "./task/postgres-foreground-task-definition-inspector.ts";
-export { type HumanTaskMappedContentAuthorityInput } from "./task/postgres-human-task-mapped-content-authority.ts";
+export { type HumanTaskMappedContentAuthorityInput,
+  type HeldHumanTaskMappedContentAuthority } from "./task/postgres-human-task-mapped-content-authority.ts";
 
 export { readTaskContentCryptoObjectPage, readTaskContentCryptoStagingPage,
   type TaskContentCryptoInventoryRow, type TaskContentCryptoStagingKind,

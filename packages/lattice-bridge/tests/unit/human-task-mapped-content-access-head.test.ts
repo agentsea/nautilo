@@ -8,6 +8,7 @@ import { readVerifiedTaskDefinitionAccessLineage, inspectMappedTaskDefinitionAcc
 import { describe, expect, test } from "bun:test";
 import { rejects } from "node:assert/strict";
 import { decodeObjectAccessManifestV5 } from "@nautilo/lattice-crypto/wire";
+import type { HeldHumanTaskMappedContentAuthority } from "../../src/server/task/postgres-human-task-mapped-content-authority.ts";
 
 describe("Human Task mapped access head", () => {
   for (const kind of ["human", "historical", "agent"] as const) {
@@ -61,6 +62,78 @@ describe("Human Task mapped access head", () => {
       expect(f.ledger).toEqual(before);
       expect(await refreshHumanMappedTaskContentAccessHead(f.input)).toBe("duplicate");
     } finally { f.cleanup(); }
+  });
+
+  test("foreground Task authorization borrows the exact held mapped-content authority only during refresh", async () => {
+    const f = await setup("foreground");
+    const resolverContexts: HeldHumanTaskMappedContentAuthority[] = [];
+    const mappedHeadContexts: HeldHumanTaskMappedContentAuthority[] = [];
+    try {
+      expect(await refreshHumanMappedTaskContentAccessHead({
+        ...f.input,
+        resolveTaskDefinitionForegroundAuthorization: async (
+          evidence,
+          context,
+        ) => {
+          context.assertCurrent();
+          expect(evidence.objectId).toBe(f.crypto.prepared.objectId);
+          expect(evidence.authorizationBytes).toEqual(
+            f.foregroundAuthorizationBytes,
+          );
+          expect(evidence.principal.agentId).toBe("task-agent");
+          resolverContexts.push(context);
+          return f.crypto.foregroundSignerPublicKey?.slice() ?? null;
+        },
+        withMappedHead: async ({ context }) => {
+          context.assertCurrent();
+          mappedHeadContexts.push(context);
+          const resolverContext = resolverContexts[0];
+          if (resolverContext === undefined) {
+            throw new Error("authorization resolver context was not observed");
+          }
+          expect(context).toBe(resolverContext);
+        },
+      })).toBe("applied");
+      const resolverContext = resolverContexts[0];
+      const mappedHeadContext = mappedHeadContexts[0];
+      if (resolverContext === undefined || mappedHeadContext === undefined) {
+        throw new Error("borrowed mapped-content authority was not observed");
+      }
+      expect(resolverContext).toBe(mappedHeadContext);
+      expect(() => resolverContext.assertCurrent()).toThrow(
+        "Human Task mapped authority is closed or expired",
+      );
+    } finally {
+      f.cleanup();
+    }
+  });
+
+  test("foreground Task authorization wipes a returned signer key when held authority expires", async () => {
+    const f = await setup("foreground");
+    const returnedKeys: Uint8Array[] = [];
+    try {
+      await rejects(refreshHumanMappedTaskContentAccessHead({
+        ...f.input,
+        resolveTaskDefinitionForegroundAuthorization: async () => {
+          const signerPublicKey = f.crypto.foregroundSignerPublicKey?.slice();
+          if (signerPublicKey === undefined) {
+            throw new Error("foreground signer key is unavailable");
+          }
+          returnedKeys.push(signerPublicKey);
+          f.expire();
+          return signerPublicKey;
+        },
+      }), /Human Task mapped authority is closed or expired/);
+      const returnedKey = returnedKeys[0];
+      if (returnedKey === undefined) {
+        throw new Error("foreground signer key was not returned");
+      }
+      expect(returnedKey).toEqual(new Uint8Array(returnedKey.length));
+      expect(f.access()).toBe(0);
+      expect(f.events).not.toContain("map");
+    } finally {
+      f.cleanup();
+    }
   });
 
   test("repairs a paused definition through metadata authority without a key loan and preserves the signed-request digest", async () => {

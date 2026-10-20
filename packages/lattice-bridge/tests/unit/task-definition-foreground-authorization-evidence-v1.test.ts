@@ -196,6 +196,12 @@ async function fixture(parentDeadlineAt = NOW + 29_000) {
 describe("Task definition retained foreground authorization", () => {
   test("authenticates the exact Device, parent execution, Task and private Domain", async () => {
     const value = await fixture(NOW - 500);
+    const resolvedDeviceAuthorities: Array<Readonly<{
+      humanId: string;
+      deviceId: string;
+      deviceGeneration: number;
+      hostAuthorizationRevision: number;
+    }>> = [];
     const verify = (overrides: Partial<Parameters<
       typeof exactTaskDefinitionForegroundAgentSignerKeysV1
     >[0]> = {}) => exactTaskDefinitionForegroundAgentSignerKeysV1({
@@ -208,7 +214,10 @@ describe("Task definition retained foreground authorization", () => {
       domainId: DOMAIN_ID,
       privateRoomId: PRIVATE_ROOM_ID,
       expectedHumanId: HUMAN_ID,
-      resolveHistoricalDeviceSigningPublicKey: () => value.device.publicKey,
+      resolveHistoricalDeviceSigningPublicKey: input => {
+        resolvedDeviceAuthorities.push(input);
+        return value.device.publicKey;
+      },
       ...overrides,
     });
     const keys = verify();
@@ -216,6 +225,12 @@ describe("Task definition retained foreground authorization", () => {
       value.signer.principal,
     ))).toEqual(value.signer.publicKey);
     keys.forEach(key => key.fill(0));
+    expect(resolvedDeviceAuthorities[0]).toEqual({
+      humanId: HUMAN_ID,
+      deviceId: "device:task-author",
+      deviceGeneration: 2,
+      hostAuthorizationRevision: 5,
+    });
 
     expect(() => verify({ namespaceId: "namespace:other" })).toThrow();
     expect(() => verify({ contentRevision: 2 })).toThrow();

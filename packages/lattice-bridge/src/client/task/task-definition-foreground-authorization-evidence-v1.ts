@@ -43,6 +43,8 @@ export function exactTaskDefinitionForegroundAgentSignerKeysV1(input: Readonly<{
   resolveHistoricalDeviceSigningPublicKey(input: Readonly<{
     humanId: string;
     deviceId: string;
+    deviceGeneration: number;
+    hostAuthorizationRevision: number;
   }>): Uint8Array | null;
 }>): Map<string, Uint8Array> {
   const taskEvidence = input.evidence.filter((candidate): candidate is
@@ -155,6 +157,8 @@ export function exactTaskDefinitionForegroundAgentSignerKeysV1(input: Readonly<{
     const deviceKey = input.resolveHistoricalDeviceSigningPublicKey({
       humanId: input.expectedHumanId,
       deviceId: plan.committerDeviceId,
+      deviceGeneration: plan.committerDeviceSigningGeneration,
+      hostAuthorizationRevision: plan.hostAuthorizationRevision,
     });
     if (deviceKey === null || verifyHistoricalDomainForegroundAuthorizationV2(
       input.crypto,

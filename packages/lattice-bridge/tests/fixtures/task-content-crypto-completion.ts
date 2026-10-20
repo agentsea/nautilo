@@ -231,6 +231,9 @@ class TaskCryptoConnection implements CryptoPostgresConnection {
               : (parameters[3] as Uint8Array).slice(),
             payload_hash: (parameters[4] as Uint8Array).slice(),
             manifest_bytes: (parameters[5] as Uint8Array).slice(),
+            signer_evidence_bytes: parameters[6] instanceof Uint8Array
+              ? parameters[6].slice()
+              : null,
           });
           return [];
         }
@@ -302,7 +305,8 @@ function encryptedFixture(seed: number, objectIdentity = deriveTaskContentCrypto
 async function fixture(kind: "human" | "agent" | "historical" | "foreground",
   includeForegroundResolver = true, ephemeralForeground = false,
   contentCoordinate: TaskContentCoordinateV1 = coordinate,
-  definitionContent?: TaskDefinitionContent) {
+  definitionContent?: TaskDefinitionContent,
+  taskDefinitionForegroundAuthorizationBytes?: Uint8Array) {
   const coordinate = contentCoordinate;
   const sourceDigest = new Uint8Array(32).fill(12);
   const encrypted = encryptedFixture(kind === "agent" ? 12 : 11, kind === "historical"
@@ -489,7 +493,14 @@ async function fixture(kind: "human" | "agent" | "historical" | "foreground",
         createdAt: NOW, operationId: "foreground-task-create",
         grant: { grantId: "foreground-task-grant", grantHash: new Uint8Array(32).fill(21), recipientKeyId: "foreground-recipient" },
         runtime: initialized.runtime, signerKeyId: publication.signerKeyId,
-        signerPublicKey: publication.signerPublicKey, agentAuthorizationRevision: publication.authorizationRevision,
+        signerPublicKey: publication.signerPublicKey,
+        agentAuthorizationRevision:
+          taskDefinitionForegroundAuthorizationBytes === undefined
+            ? publication.authorizationRevision
+            : 0,
+        ...(taskDefinitionForegroundAuthorizationBytes === undefined ? {} : {
+          taskDefinitionForegroundAuthorizationBytes,
+        }),
         namespaceSet: [{ namespaceId: NAMESPACE_ID, domainId: DOMAIN_ID,
           accessRevision: authority.expectedAccessRevision, keyGeneration: 4,
           domainKeyGeneration: 1, domainAuthorizationRevision: 2,
@@ -528,6 +539,19 @@ async function fixture(kind: "human" | "agent" | "historical" | "foreground",
     crypto: encrypted.crypto,
     resolveCurrentAuthority: () => Promise.resolve(currentAuthority),
     resolveForegroundAgentAcceptedExecutionEvidence: foregroundEvidence,
+    ...(taskDefinitionForegroundAuthorizationBytes === undefined ? {} : {
+      resolveTaskDefinitionForegroundAuthorization: async (evidence: Readonly<{
+        objectId: string;
+        authorizationBytes: Uint8Array;
+      }>) => evidence.objectId === encrypted.objectIdentity
+        && evidence.authorizationBytes.length
+          === taskDefinitionForegroundAuthorizationBytes.length
+        && evidence.authorizationBytes.every((byte, index) =>
+          byte === taskDefinitionForegroundAuthorizationBytes[index])
+        && signerRow?.["signer_public_key"] instanceof Uint8Array
+          ? signerRow["signer_public_key"].slice()
+          : null,
+    }),
     ...(kind !== "foreground" || !includeForegroundResolver ? {} : { resolveCurrentForegroundDefinitionAuthorization: (context: import("@nautilo/lattice-crypto").DeviceWrappedAgentObjectAccessGenesisSetAuthorityContext) => {
       if (!foregroundAllowed || signerRow === null) return null;
       if (changeAfterForeground) currentAuthority = null;
@@ -559,6 +583,10 @@ async function fixture(kind: "human" | "agent" | "historical" | "foreground",
   };
   return {
     adapter, handle, crypto: encrypted.crypto,
+    foregroundSignerPublicKey: kind === "foreground"
+      && signerRow?.["signer_public_key"] instanceof Uint8Array
+      ? signerRow["signer_public_key"].slice()
+      : null,
     historicalDevicePublicKey(deviceId: string) { return (deviceId === "manager-device" ? managerPublicKey : humanPublicKey)?.slice() ?? null; },
     invalidateAcceptedPlan() { acceptedForeground?.invalidate(); },
     history: {

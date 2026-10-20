@@ -25,9 +25,11 @@ const EXTRA_SOURCE_AGENT = "10000000-0000-4000-8000-000000000017";
 const DEVICE = "mapped-reader";
 const hash = () => new Uint8Array(32).fill(9);
 
-export async function setup(kind: "human" | "historical" | "agent" = "human", result = false, revision = 1) {
+export async function setup(kind: "human" | "historical" | "agent" | "foreground" = "human", result = false, revision = 1) {
   const coordinate = result ? { kind: "run_result" as const, taskId: definitionCoordinate.taskId, taskRunId: RUN, contentRevision: revision } : { ...definitionCoordinate, contentRevision: revision };
-  const crypto = await fixture(kind, true, false, coordinate);
+  const foregroundAuthorizationBytes = new Uint8Array([1, 3, 3, 7]);
+  const crypto = await fixture(kind, true, false, coordinate, undefined,
+    kind === "foreground" ? foregroundAuthorizationBytes : undefined);
   const agent = kind === "agent" ? "task-agent" : AGENT;
   let sourceHumanId = authority.requesterHumanId;
   let sourceAgentActorId = AGENT;
@@ -167,6 +169,7 @@ export async function setup(kind: "human" | "historical" | "agent" = "human", re
       admission: { status: "admitted" as const, deviceId: DEVICE, deviceGeneration: 1, serverInstanceId: "test",
         lineageGeneration: 1, epoch: 1, securityRevision: 1, headDigest: hash(), expiresAt: 200 } }, now: () => now };
   return { input, product, crypto, head, ledger, events, taskAgentId: agent,
+    foregroundAuthorizationBytes,
     access: () => mappedAccess,
     running: () => { runStatus = "running"; }, queued: () => { jobStatus = "queued"; },
     grant: () => { backgroundActive = true; }, archive: () => { archived = true; }, revoke: () => { deviceActive = false; },

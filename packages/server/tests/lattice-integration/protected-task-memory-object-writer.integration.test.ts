@@ -6,6 +6,7 @@ import {
   type ConnectedDelegatedLocalExecutionFixture,
 } from "./protected-task-caller-local-execution-fixture";
 import { createHash, randomUUID } from "node:crypto";
+import { rejects } from "node:assert/strict";
 
 import { beforeEach, describe, expect, test } from "bun:test";
 import { HumanMessage } from "@langchain/core/messages";
@@ -133,6 +134,8 @@ import {
 import { withCurrentTaskContentBackfillDevice } from "../../src/routes/task-content-backfill-authority";
 import { readTaskContentBackfillSource } from "../../src/routes/task-content-backfill-source";
 import { createHumanProductTransactionContext } from "../../src/routes/human-message-product-store";
+import { createProtectedTaskDefinitionForegroundAuthorizationResolver } from
+  "../../src/routes/protected-task-runtime-access-lineage";
 import { createTaskContentBackfillPublication } from "../../src/routes/task-content-backfill-publication";
 import { createTaskContentBackfillScanService } from "../../src/routes/task-content-backfill-scan";
 import { readHistoricalTaskDefinitionSummaryProofs } from "../../src/routes/task-historical-definition-summary";
@@ -3095,6 +3098,76 @@ describePostgres("sealed protected Task Memory object writer", () => {
       if (timeout !== undefined) clearTimeout(timeout);
       await contender?.catch(() => null);
       if (pending !== undefined) wipe(await pending.catch(() => null));
+      await base.cleanup();
+    }
+  });
+
+  test("mapped Task proof resolution borrows the held product transaction and closes with its owner", async () => {
+    const base = await createBaseFixture();
+    type Resolver = NonNullable<Awaited<ReturnType<
+      typeof createProtectedTaskDefinitionForegroundAuthorizationResolver
+    >>>;
+    let retainedResolver: Resolver | undefined;
+    let current = true;
+    let nestedCheckouts = 0;
+    const product = {
+      ...base.product,
+      canonicalRunner: {
+        ...base.product.canonicalRunner,
+        transaction: () => {
+          nestedCheckouts += 1;
+          return Promise.reject(new Error("Nested product checkout"));
+        },
+      },
+    };
+    const taskId = randomUUID();
+    const input = {
+      product, handle: base.cryptoHandle, crypto: base.crypto,
+      requesterHumanId: base.humanActorId,
+      task: {
+        id: taskId, ownerId: base.userId, agentId: base.productAgentId,
+        contentNamespaceId: base.namespaceValue,
+        cryptoObjectId: `task-definition:v1:${taskId}`, contentRevision: 1,
+      },
+    };
+    try {
+      await base.product.canonicalRunner.transaction(async (transaction, executor) => {
+        const heldProduct: PostgresJsBridgeConnection = {
+          query: executor.query.bind(executor),
+          transaction: use => use(executor),
+          transactionOnce: use => use(executor),
+        };
+        await new PostgresNamespaceProductAuthority(heldProduct).withCurrentPrivateRoom({
+          subjectUserId: base.userId, subjectHumanId: base.humanActorId,
+          roomId: base.roomId, namespaceId: base.namespaceValue,
+          use: async () => {
+            const resolver = await createProtectedTaskDefinitionForegroundAuthorizationResolver({
+              ...input,
+              currentProduct: {
+                transaction, product: heldProduct,
+                assertCurrent: () => {
+                  if (!current) throw new TypeError("Mapped Task owner is closed");
+                },
+              },
+            });
+            expect(resolver).not.toBeNull();
+            if (resolver === null) throw new Error("Missing retained Task resolver");
+            retainedResolver = resolver;
+          },
+        });
+      }, { isolationLevel: "read committed" });
+      current = false;
+      expect(nestedCheckouts).toBe(0);
+      if (retainedResolver === undefined) throw new Error("Task resolver was not retained");
+      // The owner must reject before parsing or reading any retained proof.
+      await rejects(retainedResolver({} as Parameters<Resolver>[0]),
+        /Mapped Task owner is closed/);
+      // Detached callers still use their existing canonical transaction owner.
+      await rejects(createProtectedTaskDefinitionForegroundAuthorizationResolver(input),
+        /Nested product checkout/);
+      expect(nestedCheckouts).toBe(1);
+    } finally {
+      current = false;
       await base.cleanup();
     }
   });

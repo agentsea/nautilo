@@ -175,7 +175,10 @@ export async function withVaultHumanTaskReadAuthorityV1<Value>(input: Readonly<{
   namespaceId: string;
   generation: number;
   accessRevision: number;
-  operation(generationKey: Uint8Array): Promise<Value> | Value;
+  operation(
+    generationKey: Uint8Array,
+    domainId?: string,
+  ): Promise<Value> | Value;
 }>): Promise<Value> {
   const authority = input.authority;
   if (
@@ -282,7 +285,7 @@ export async function withVaultHumanTaskReadAuthorityV1<Value>(input: Readonly<{
         ? Object.freeze({ status: "missing" as const })
         : Object.freeze({
             status: "selected" as const,
-            value: await input.operation(exact.generationKey),
+            value: await input.operation(exact.generationKey, exact.domainId),
           });
     });
     if (opened.status !== "opened" || opened.value.status === "missing") {
@@ -743,6 +746,11 @@ export function createVaultHumanTaskDeviceContentPortV1(
       }
       await ensureVaultAvailable(dependencies);
       let foregroundKeys: Map<string, Uint8Array> | undefined;
+      const hasTaskDefinitionAuthorization = envelope.signerEvidence.some(
+        entry => typeof entry === "object" && entry !== null
+          && (entry as { kind?: unknown }).kind
+            === "task_definition_foreground_authorization",
+      );
       const publications = envelope.signerEvidence.filter(
         (entry): entry is ObjectAccessSignerEvidenceTransportV1 =>
           typeof entry === "object" && entry !== null && !Array.isArray(entry)
@@ -769,6 +777,64 @@ export function createVaultHumanTaskDeviceContentPortV1(
           );
         }
       }
+      const taskDomainId = hasTaskDefinitionAuthorization
+        ? await (async () => {
+            let namespaceEnvelope: ReturnType<
+              typeof decodeNamespaceObjectEnvelopeV2
+            > | undefined;
+            let canonicalEnvelope: Uint8Array | undefined;
+            try {
+              try {
+                namespaceEnvelope = decodeNamespaceObjectEnvelopeV2(
+                  envelope.namespaceEnvelopeBytes,
+                );
+                canonicalEnvelope = encodeNamespaceObjectEnvelopeV2(
+                  namespaceEnvelope,
+                );
+                if (!equalBytes(
+                  canonicalEnvelope,
+                  envelope.namespaceEnvelopeBytes,
+                ) || namespaceEnvelope.context.objectId
+                    !== input.reference.objectId
+                  || namespaceEnvelope.context.namespaceId
+                    !== envelope.namespaceId
+                  || namespaceEnvelope.context.keyClass !== "ai") {
+                  throw new ClassifiedDataOperationError(
+                    "integrity",
+                    "Protected Task Namespace envelope coordinates are invalid",
+                  );
+                }
+              } catch (cause) {
+                if (cause instanceof ClassifiedDataOperationError) throw cause;
+                throw new ClassifiedDataOperationError(
+                  "integrity",
+                  "Protected Task Namespace envelope coordinates are invalid",
+                  { cause },
+                );
+              }
+              return await withVaultHumanTaskReadAuthorityV1({
+                dependencies,
+                authority: envelope.readAuthority,
+                namespaceId: envelope.namespaceId,
+                generation: namespaceEnvelope.context.keyGeneration,
+                accessRevision:
+                  namespaceEnvelope.context.bindingRevisionAtWrap,
+                operation: (_generationKey, domainId) => {
+                  if (domainId === undefined || domainId.length === 0) {
+                    throw new ClassifiedDataOperationError(
+                      "key_waiting",
+                      "Protected Task Domain authority is unavailable",
+                    );
+                  }
+                  return domainId;
+                },
+              });
+            } finally {
+              namespaceEnvelope?.wrappedDek.fill(0);
+              canonicalEnvelope?.fill(0);
+            }
+          })()
+        : null;
       let retainedAnchor: TrustedMinimumObjectAccessHead | null;
       let result: Readonly<{
         nextAnchor: TrustedMinimumObjectAccessHead;
@@ -777,7 +843,7 @@ export function createVaultHumanTaskDeviceContentPortV1(
       retainedAnchor = await dependencies.accessAnchors.load(
         input.reference.objectId,
       );
-      result = await withProfile(dependencies, async (profileV4) => {
+      result = await withProfile(dependencies, (profileV4, admission) => {
       let canonicalPayload: Uint8Array | undefined;
       let canonicalManifest: Uint8Array | undefined;
       let canonicalEnvelope: Uint8Array | undefined;
@@ -869,11 +935,6 @@ export function createVaultHumanTaskDeviceContentPortV1(
           prepared.fullChain,
           dependencies.subjectHumanId,
         );
-        const hasTaskDefinitionAuthorization = envelope.signerEvidence.some(
-          entry => typeof entry === "object" && entry !== null
-            && (entry as { kind?: unknown }).kind
-              === "task_definition_foreground_authorization",
-        );
         foregroundKeys = hasTaskDefinitionAuthorization
           ? new Map<string, Uint8Array>()
           : exactForegroundAgentSignerKeysV1({
@@ -889,14 +950,6 @@ export function createVaultHumanTaskDeviceContentPortV1(
           chain: prepared.fullChain,
           expectedHumanId: dependencies.subjectHumanId,
         });
-        const taskDomainId = hasTaskDefinitionAuthorization
-          ? await withClientNamespaceKeyring({
-              profile: profileV4.baseProfile.baseProfile,
-              namespaceId: envelope.namespaceId,
-              keyClass: "ai",
-              operation: keyring => keyring.domainId,
-            })
-          : null;
         withClientObjectAccessSignerResolversV4({
           crypto: dependencies.crypto,
           profile: profileV4,
@@ -912,8 +965,24 @@ export function createVaultHumanTaskDeviceContentPortV1(
                   domainId: taskDomainId!,
                   privateRoomId: envelope.readAuthority.sourceRoomId,
                   expectedHumanId: dependencies.subjectHumanId,
-                  resolveHistoricalDeviceSigningPublicKey:
-                    resolvers.resolveHistoricalHumanDeviceSigningPublicKey,
+                  resolveHistoricalDeviceSigningPublicKey: signer => {
+                    if (signer.humanId === dependencies.subjectHumanId
+                      && signer.deviceId === own.deviceId) {
+                      return admission.deviceId === own.deviceId
+                          && admission.deviceGeneration
+                            === signer.deviceGeneration
+                          && admission.expiresAt > dependencies.now()
+                          && signer.hostAuthorizationRevision
+                            <= own.trustedHostAuthorizationRevision
+                        ? own.signingPublicKey
+                        : null;
+                    }
+                    return resolvers
+                      .resolveHistoricalHumanDeviceSigningPublicKey({
+                        humanId: signer.humanId,
+                        deviceId: signer.deviceId,
+                      });
+                  },
                 })
               : new Map<string, Uint8Array>();
             try {

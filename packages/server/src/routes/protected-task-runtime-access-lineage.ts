@@ -4,7 +4,9 @@ import type { LatticeCrypto } from "@nautilo/lattice-crypto";
 import { inspectMappedTaskDefinitionAccessLineage, PostgresHumanDeviceSignerHistory,
   createPostgresForegroundAgentAcceptedExecutionEvidenceResolver, cryptoTypedDb,
   executeTypedCryptoQuery, verifyCryptoPostgresHandle,
+  verifyConversationProductPostgresHandle,
   type CryptoPostgresHandle,
+  type HeldHumanTaskMappedContentAuthority,
   type VerifiedTaskDefinitionAccessLineage } from "@nautilo/lattice-bridge/server";
 import { createHumanProductTransactionContext } from "./human-message-product-store";
 import type { ProtectedTaskOccurrence } from "@nautilo/runtime";
@@ -19,6 +21,8 @@ import { createTaskDefinitionForegroundAuthorizationResolver } from
  * with the calling Lattice owner. */
 export async function createProtectedTaskDefinitionForegroundAuthorizationResolver(input: Readonly<{
   product: Pick<Awaited<ReturnType<typeof createHumanProductTransactionContext>>, "canonicalRunner" | "handle">;
+  currentProduct?: Pick<HeldHumanTaskMappedContentAuthority,
+    "transaction" | "product" | "assertCurrent">;
   handle: CryptoPostgresHandle;
   crypto: LatticeCrypto;
   requesterHumanId: string;
@@ -28,12 +32,16 @@ export async function createProtectedTaskDefinitionForegroundAuthorizationResolv
   }>;
 }>) {
   const { task } = input;
-  const privateRoom = await input.product.canonicalRunner.transaction(
-    transaction => createProtectedTaskRequesterPrivateRoomResolver(transaction)(
+  input.currentProduct?.assertCurrent();
+  const selectPrivateRoom = (transaction: HeldHumanTaskMappedContentAuthority["transaction"]) =>
+    createProtectedTaskRequesterPrivateRoomResolver(transaction)(
       task.ownerId, task.agentId, task.contentNamespaceId,
-    ),
-    { isolationLevel: "read committed" },
-  );
+    );
+  const privateRoom = input.currentProduct === undefined
+    ? await input.product.canonicalRunner.transaction(selectPrivateRoom,
+      { isolationLevel: "read committed" })
+    : await selectPrivateRoom(input.currentProduct.transaction);
+  input.currentProduct?.assertCurrent();
   if (privateRoom === null) return null;
   const domains = await executeTypedCryptoQuery(input.handle, cryptoTypedDb.select({
     domainId: namespaceDomainKeyHeads.domainId,
@@ -43,7 +51,7 @@ export async function createProtectedTaskDefinitionForegroundAuthorizationResolv
   )).limit(2));
   const domain = domains[0];
   if (domains.length !== 1 || domain === undefined) return null;
-  return createTaskDefinitionForegroundAuthorizationResolver({
+  const resolver = createTaskDefinitionForegroundAuthorizationResolver({
     crypto: input.crypto,
     expectedObjectId: task.cryptoObjectId,
     taskId: task.id,
@@ -55,12 +63,28 @@ export async function createProtectedTaskDefinitionForegroundAuthorizationResolv
     domainId: domain.domain_id,
     resolveAcceptedExecutionEvidence:
       createPostgresForegroundAgentAcceptedExecutionEvidenceResolver({
-        product: input.product.handle, crypto: input.crypto,
+        product: input.currentProduct === undefined ? input.product.handle
+          : await verifyConversationProductPostgresHandle(input.currentProduct.product),
+        crypto: input.crypto,
         rejectInvalidSelectedEvidence: true,
       }),
     resolveHistoricalDeviceSigningPublicKey:
       createProtectedTaskHistoricalForegroundAuthorizationDeviceSigningKeyResolver(input.handle),
   });
+  input.currentProduct?.assertCurrent();
+  if (input.currentProduct === undefined) return resolver;
+  const current = input.currentProduct;
+  return async (evidence: Parameters<typeof resolver>[0]) => {
+    current.assertCurrent();
+    const key = await resolver(evidence);
+    try {
+      current.assertCurrent();
+      return key;
+    } catch (error) {
+      key?.fill(0);
+      throw error;
+    }
+  };
 }
 
 /** Detached signed history only; the parked owner subsequently locks and matches the exact Task head. */

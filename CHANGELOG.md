@@ -9,6 +9,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 - Encrypted schedules with invalid content verification remain locked while
   other schedules stay visible.
+- New encrypted Tasks can be read on their signing Device without previously
+  imported signer history or legacy Namespace key caches. Concurrent encrypted
+  Task reads no longer exhaust database connections while loading schedules or chats.
 - Windows x64 source builds produce a Desktop installer with bundled Bun and
   the private Relay Host for connecting to a Nautilo server.
   ACP-backed local agents remain unavailable on Windows until process-tree

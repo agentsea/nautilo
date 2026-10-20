@@ -20,6 +20,7 @@ import { cryptoTypedDb, executeTypedCryptoQuery } from "../storage/postgres-latt
 import { assertVerifiedCryptoPostgresHandle, withVerifiedCryptoPostgresTransaction,
   type CryptoPostgresHandle } from "../storage/postgres-lattice-storage.ts";
 import { readDurableTaskContentPublication } from "./postgres-task-content-crypto-completion.ts";
+import type { ResolveTaskDefinitionForegroundAuthorization } from "../storage/postgres-object-access-manifest-v5.ts";
 
 /** This is an inspected existing object, never a newly prepared genesis. */
 export type { VerifiedForegroundTaskDefinitionPublication } from "../../task/task-content-repository.ts";
@@ -382,9 +383,10 @@ export async function publishVerifiedForegroundTaskDefinition(input: Readonly<{
 /** Repair existing mapped content before a fresh grant captures its access head. */
 export async function refreshHumanMappedTaskContentAccessHead(
   input: HumanTaskMappedContentAuthorityInput & Readonly<{
-    resolveTaskDefinitionForegroundAuthorization?: Parameters<
-      typeof readDurableTaskContentPublication
-    >[0]["resolveTaskDefinitionForegroundAuthorization"];
+    resolveTaskDefinitionForegroundAuthorization?: (
+      evidence: Parameters<ResolveTaskDefinitionForegroundAuthorization>[0],
+      context: HeldHumanTaskMappedContentAuthority,
+    ) => ReturnType<ResolveTaskDefinitionForegroundAuthorization>;
     /** Runs under the current Human/Task/claim locks; proof expires before the outer commit. */
     withMappedHead?(input: Readonly<{ context: HeldHumanTaskMappedContentAuthority;
       proof: VerifiedForegroundTaskDefinitionPublication; lineage: VerifiedTaskDefinitionAccessLineage | null;
@@ -408,13 +410,36 @@ export async function refreshHumanMappedTaskContentAccessHead(
     const history = new PostgresHumanDeviceSignerHistory({ handle: context.handle, crypto: input.crypto });
     await executeTypedCryptoQuery(context.handle, cryptoTypedDb.select({ objectId: objectCryptoAccessHeads.objectId })
       .from(objectCryptoAccessHeads).where(eq(objectCryptoAccessHeads.objectId, lifecycle.cryptoObjectId)).for("share"));
+    const suppliedTaskDefinitionAuthorization =
+      input.resolveTaskDefinitionForegroundAuthorization;
+    const resolveTaskDefinitionForegroundAuthorization =
+      suppliedTaskDefinitionAuthorization === undefined
+        ? undefined
+        : async (
+            evidence: Parameters<
+              ResolveTaskDefinitionForegroundAuthorization
+            >[0],
+          ) => {
+            context.assertCurrent();
+            const signerPublicKey = await suppliedTaskDefinitionAuthorization(
+              evidence,
+              context,
+            );
+            try {
+              context.assertCurrent();
+              return signerPublicKey;
+            } catch (cause) {
+              signerPublicKey?.fill(0);
+              throw cause;
+            }
+          };
     const author = captureForegroundTaskDefinitionAuthor({
       resolveEvidence: createPostgresForegroundAgentAcceptedExecutionEvidenceResolver({
         product: await verifyConversationProductPostgresHandle(context.product), crypto: input.crypto,
         rejectInvalidSelectedEvidence: true,
       }),
       resolveTaskDefinitionForegroundAuthorization:
-        input.resolveTaskDefinitionForegroundAuthorization,
+        resolveTaskDefinitionForegroundAuthorization,
       subjectHumanId: authority.requesterHumanId,
       namespaceId: lifecycle.namespaceId,
       domainId: authority.domainId,
