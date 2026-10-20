@@ -45,7 +45,11 @@ Returns summarized results grouped by session, not raw transcript dumps.`,
         return results
           .map(
             (r, i) =>
-              `${i + 1}. Session: ${r.title ?? "Untitled"} (${r.startedAt.toISOString().slice(0, 10)})\n${r.summary}`,
+              `${i + 1}. Session: ${r.title ?? "Untitled"} (${r.startedAt.toISOString().slice(0, 10)})\n${r.summary}` +
+              (r.excerptSources?.length
+                ? `\nSummarized from partial excerpts. Full messages remain in conversation history (session ${r.sessionId}): ` +
+                  r.excerptSources.map((source) => `message ${source.messageId}${source.roomId ? ` in room ${source.roomId}` : ""}`).join("; ")
+                : ""),
           )
           .join("\n\n");
       } catch (error) {
