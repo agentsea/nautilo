@@ -799,6 +799,7 @@ describe("officecli tool", () => {
       shape: {
         data: { description?: string };
         verb: { description?: string };
+        cols: { description?: string };
         commands: {
           unwrap: () => {
             element: { options: Array<{ shape: { command: { value?: string }; type?: { description?: string } } }> };
@@ -809,6 +810,8 @@ describe("officecli tool", () => {
     const add = schema.shape.commands.unwrap().element.options.find((option) => option.shape.command.value === "add");
 
     expect(tool.description).toContain("Start with document structure or stats");
+    expect(schema.shape.cols.description).toContain("Comma-separated Excel column letters");
+    expect(schema.shape.cols.description).toContain("Ranges such as A:C are not supported");
     expect(tool.description).toContain("read_tool_result");
     expect(tool.description).toContain("without repeating the original operation");
     expect(tool.description).toContain("view issues returns document diagnostics, not spreadsheet rows");

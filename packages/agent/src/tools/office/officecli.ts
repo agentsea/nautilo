@@ -297,7 +297,7 @@ const OfficeCliSchema = z.object({
   start: z.number().int().optional(),
   end: z.number().int().optional(),
   maxLines: z.number().int().positive().optional(),
-  cols: z.string().optional(),
+  cols: z.string().optional().describe("Comma-separated Excel column letters, e.g. A,B,C. Ranges such as A:C are not supported."),
   page: z.string().optional(),
   browser: z.boolean().optional(),
   screenshotWidth: z.number().int().positive().optional(),
