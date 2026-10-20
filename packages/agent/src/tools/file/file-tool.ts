@@ -6,7 +6,7 @@
 
 import { DynamicStructuredTool } from "@langchain/core/tools";
 import { getCurrentTurnId, log } from "@nautilo/logger";
-import type { MemoryAccessEnvelope } from "@nautilo/trust";
+import { isNamespaceMemoryEnvelope, type MemoryAccessEnvelope } from "@nautilo/trust";
 import {
   fileToolSchema,
   securityResearchFileToolSchema,
@@ -96,12 +96,23 @@ function contextFromUnknown(ctx: unknown): FileToolContext {
     envRaw && typeof envRaw === "object"
       ? (envRaw as MemoryAccessEnvelope)
       : null;
+  // An isolated Task has no transcript Room, but its resolved namespace
+  // envelope carries the Room authorized for Workspace operations. Keep that
+  // distinction local to the tool; the coordinator rechecks current membership.
+  const taskWorkspaceRoomId =
+    typeof c["currentTaskId"] === "string" && c["currentTaskId"].length > 0 &&
+    typeof c["currentTaskRunId"] === "string" && c["currentTaskRunId"].length > 0 &&
+    isNamespaceMemoryEnvelope(envelope) &&
+    envelope.ownerId === c["ownerId"] && envelope.agentId === c["agentId"] &&
+    typeof envelope.roomId === "string"
+      ? envelope.roomId
+      : "";
   return {
     ownerId: typeof c["ownerId"] === "string" ? c["ownerId"] : "",
     currentFolder: typeof c["currentFolder"] === "string" ? c["currentFolder"] : "",
     workspacePath: typeof c["workspacePath"] === "string" ? c["workspacePath"] : "",
     agentId: typeof c["agentId"] === "string" ? c["agentId"] : "",
-    roomId: typeof c["roomId"] === "string" ? c["roomId"] : "",
+    roomId: (typeof c["roomId"] === "string" ? c["roomId"] : "") || taskWorkspaceRoomId,
     activeModelId: typeof c["activeModelId"] === "string" ? c["activeModelId"] : "",
     memoryAccessEnvelope: envelope,
     securityResearchReadOnly: Array.isArray(c["toolWhitelist"])

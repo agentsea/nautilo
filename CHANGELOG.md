@@ -7,6 +7,31 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Background Tasks can save Workspace files using their authorized namespace
+  room while keeping their transcripts separate from the originating chat.
+
+- Bolter messages explicitly mentioning only another agent no longer trigger
+  the linked Genie. Direct and shared mentions still reach the linked Genie,
+  and ordinary Human messages without agent mentions continue to work.
+
+- Oversized OfficeCLI results stay in conversation history while Genie receives
+  a compact receipt and can inspect, page through or search the retained output.
+  Task reads and reopened conversations keep these results within the model
+  request budget without discarding the original content.
+
+- Long-running conversations retain the current run's recent exchanges ahead
+  of surrounding Room activity, keep accepted Human replies in order, and
+  reserve Journal and recalled Records independently of older-history settings.
+- Explicitly selected assistants are guided to recognize already-delivered
+  current-turn responses and successful tool actions, close completed requests
+  briefly, and continue unfinished work or later Human input.
+
+- Messages exceeding PostgreSQL's full-text index size limit now save intact
+  and remain immediately searchable. These oversized messages use literal
+  word/prefix/path matching without stemming; ordinary indexed search is unchanged.
+  Session search summarizes a marked excerpt of an oversized match while retaining
+  its full source in conversation history.
+
 - OfficeCLI results containing emoji joiners or invisible layout controls
   are sanitized before instruction scanning instead of blocking the entire
   result. Original documents remain unchanged.

@@ -13,6 +13,7 @@ import {
 } from "@nautilo/message-invariants";
 import { securityScanToolResultSchema, type SecurityScanLedgerRecord, type SecurityScanResultEnvelope } from "@nautilo/types";
 import { projectBrowserHistory } from "../tools/browser/browser-history";
+import { resultResponseByteBudget } from "../tools/result-reader/result-projection";
 import { projectOversizedTaskRead, taskReadPageFingerprint, pageSchema, type TaskReadPendingPage } from "../tools/tasks/read-projection";
 
 export interface HistoryConfig {
@@ -41,7 +42,7 @@ export function taskReadResponseByteBudget(
   preparedMessages: BaseMessage[],
 ): number {
   // The page measures its entire escaped UTF-8 envelope, not just inner text.
-  return Math.floor(Math.max(0, maxMessageTokens - estimateTokenCount(preparedMessages)) / 2) * 4;
+  return resultResponseByteBudget(maxMessageTokens, preparedMessages);
 }
 
 /** Preserve omitted ranges across ordinary history windowing without storing source again. */
@@ -302,7 +303,8 @@ function projectTaskReadMessages(
   messages: BaseMessage[],
   config: Pick<HistoryConfig, "maxMessageTokens" | "researchContinuity">,
 ): { messages: BaseMessage[]; clampedCount: number; taskReadOriginals: WeakMap<BaseMessage, BaseMessage> } {
-  const perMessageMaxChars = Math.max(0, config.maxMessageTokens) * 4;
+  const toolCount = messages.filter((message) => ToolMessage.isInstance(message)).length;
+  const perMessageMaxChars = Math.floor(Math.max(0, config.maxMessageTokens) / (2 * Math.max(1, toolCount)));
 
   let clampedCount = 0;
   const taskReadOriginals = new WeakMap<BaseMessage, BaseMessage>();
@@ -321,7 +323,7 @@ function projectTaskReadMessages(
     if (config.researchContinuity && (ToolMessage.isInstance(msg)
       || HumanMessage.isInstance(msg))) return msg;
     if (typeof msg.content !== "string") return msg; // skip multimodal/array content
-    if (msg.content.length <= perMessageMaxChars) return msg;
+    if (Buffer.byteLength(msg.content, "utf8") <= perMessageMaxChars) return msg;
     if (msg instanceof ToolMessage && msg.name === "task" && paired?.name === "task" && paired.args["command"] === "read") {
       let value: unknown = null;
       try { value = JSON.parse(msg.content); } catch { /* Older checkpoints may already contain a lossy clamp. */ }

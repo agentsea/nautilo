@@ -142,6 +142,8 @@ export interface ForegroundNarrativeTranscriptV1 {
   readonly minimumCompleteTurns: number;
   /** The source reader or renderer already omitted older entries. */
   readonly earlierEntriesOmitted: boolean;
+  /** Existing accepted-Human slot markers that must follow retained older progress. */
+  readonly pinnedEntries?: readonly string[];
   /** Optional renderer-owned suffix, such as the addressed-by marker. */
   readonly suffix?: string;
 }
@@ -270,6 +272,8 @@ function joinSections(sections: readonly (string | null)[]): string | null {
 }
 
 const EARLIER_NARRATIVE_OMITTED = "… earlier narrative entries omitted …";
+const INTERNAL_NARRATIVE_OMITTED = "… narrative entries omitted here …";
+const LATER_NARRATIVE_OMITTED = "… later narrative entries omitted …";
 const PARTIAL_SOURCE_TURN =
   "[Partial recent turn — source window begins after its Human request]";
 const PARTIAL_SELECTED_TURN =
@@ -286,12 +290,15 @@ type NarrativeProvenance = NonNullable<ForegroundNarrativeTurnV1["provenance"]>;
 interface NarrativeSelectionEntry {
   readonly text: string;
   readonly provenance: NarrativeProvenance;
+  readonly index?: number;
+  readonly pinned?: boolean;
 }
 
 function transcriptBlock(input: Readonly<{
   readonly narrative: ForegroundNarrativeTranscriptV1;
   readonly entries: readonly NarrativeSelectionEntry[];
   readonly omittedBefore: boolean;
+  readonly omittedAfter?: boolean;
   readonly partial: "source" | "selection" | null;
   readonly excerpt: boolean;
   readonly includeSuffix?: boolean;
@@ -303,22 +310,189 @@ function transcriptBlock(input: Readonly<{
   if (input.partial === "selection") lines.push(PARTIAL_SELECTED_TURN);
   if (input.excerpt) lines.push(OVERSIZED_ENTRY_EXCERPT);
   let previousProvenance: NarrativeProvenance | null = null;
+  let previousIndex: number | null = null;
+  let previousPinned = false;
   for (const entry of input.entries) {
-    if (entry.provenance === "active_turn" && previousProvenance !== "active_turn") {
+    const internalGap =
+      entry.index !== undefined
+      && previousIndex !== null
+      && entry.index > previousIndex + 1;
+    if (previousPinned && (internalGap || !entry.pinned)) lines.push(input.narrative.header);
+    if (internalGap) lines.push(INTERNAL_NARRATIVE_OMITTED);
+    if (
+      !entry.pinned
+      && entry.provenance === "active_turn"
+      && previousProvenance !== "active_turn"
+    ) {
       lines.push(CURRENT_ACTIVE_TURN_PROGRESS);
     } else if (
-      entry.provenance === "surrounding"
+      !entry.pinned
+      && entry.provenance === "surrounding"
       && previousProvenance !== "surrounding"
     ) {
       lines.push(SURROUNDING_ROOM_ACTIVITY);
     }
     lines.push(entry.text);
-    previousProvenance = entry.provenance;
+    previousProvenance = entry.pinned ? null : entry.provenance;
+    previousIndex = entry.index ?? previousIndex;
+    previousPinned = entry.pinned === true;
+  }
+  if (input.omittedAfter) {
+    if (previousPinned) lines.push(input.narrative.header);
+    lines.push(LATER_NARRATIVE_OMITTED);
+    previousPinned = false;
   }
   if (input.includeSuffix !== false && input.narrative.suffix) {
+    if (previousPinned) lines.push(input.narrative.header);
     lines.push(input.narrative.suffix);
   }
   return lines.join("\n");
+}
+
+function refreshNarrativeTranscript(input: Readonly<{
+  readonly narrative: ForegroundNarrativeTranscriptV1;
+  readonly maximumCharacters: number;
+  readonly maximumHistoricalCharacters: number;
+}>): string | null {
+  const { narrative } = input;
+  if (input.maximumCharacters <= narrative.header.length) return null;
+  const turns = narrative.turns.filter((turn) => turn.entries.length > 0);
+  if (turns.length === 0) return null;
+  const pinnedMarkers = narrative.pinnedEntries ?? [];
+  const flattened = turns.flatMap((turn, turnIndex) => turn.entries.map(
+    (text, entryIndex) => ({
+      text,
+      provenance: turn.provenance ?? "prior" as NarrativeProvenance,
+      turnIndex,
+      entryIndex,
+      pinned: pinnedMarkers.some((marker) => marker.length > 0 && text.includes(marker)),
+    }),
+  )).map((entry, index) => ({ ...entry, index }));
+
+  const render = (
+    entries: readonly typeof flattened[number][],
+    excerpt = false,
+  ): string | null => {
+    if (entries.length === 0) return null;
+    const ordered = [...entries].sort((left, right) => left.index - right.index);
+    const first = ordered[0]!;
+    const firstTurn = turns[first.turnIndex]!;
+    return transcriptBlock({
+      narrative,
+      entries: ordered.map(({ text, provenance, index, pinned }) => ({
+        text,
+        provenance,
+        index,
+        pinned,
+      })),
+      omittedBefore: narrative.earlierEntriesOmitted || first.index > 0,
+      omittedAfter: ordered.at(-1)!.index < flattened.length - 1,
+      partial: first.pinned
+        ? null
+        : first.entryIndex > 0
+          ? "selection"
+          : firstTurn.completeness === "partial"
+            ? "source"
+            : null,
+      excerpt,
+    });
+  };
+  const fits = (entries: readonly typeof flattened[number][]): boolean => {
+    const rendered = render(entries);
+    if ((rendered?.length ?? 0) > input.maximumCharacters) return false;
+    const prior = entries.filter((entry) => entry.provenance === "prior");
+    return (render(prior)?.length ?? 0) <= input.maximumHistoricalCharacters;
+  };
+  const pins = flattened.filter((entry) => entry.pinned);
+  const withRequiredPins = (
+    entries: readonly typeof flattened[number][],
+  ): typeof flattened => {
+    if (entries.length === 0) return [];
+    const required = [...entries];
+    const oldestIndex = Math.min(...entries.map((entry) => entry.index));
+    for (const pin of pins) {
+      if (
+        pin.index > oldestIndex
+        && !required.some((entry) => entry.index === pin.index)
+      ) required.push(pin);
+    }
+    return required;
+  };
+
+  let selected: typeof flattened = [];
+  const addNewestSuffix = (entries: readonly typeof flattened[number][]) => {
+    for (let index = entries.length - 1; index >= 0; index -= 1) {
+      const entry = entries[index]!;
+      if (selected.some((candidate) => candidate.index === entry.index)) continue;
+      const candidate = withRequiredPins([...selected, entry]);
+      if (!fits(candidate)) break;
+      selected = candidate;
+    }
+  };
+
+  const active = flattened.filter((entry) =>
+    entry.provenance === "active_turn" && !entry.pinned
+  );
+  addNewestSuffix(active);
+  if (selected.length === 0 && active.length > 0) {
+    const newest = active.at(-1)!;
+    const emptyCandidate = withRequiredPins([{ ...newest, text: "" }]);
+    const emptyRendered = render(emptyCandidate, true);
+    const excerptAllowance = input.maximumCharacters - (emptyRendered?.length ?? 0);
+    if (excerptAllowance > 0) {
+      const excerptCandidate = withRequiredPins([{
+        ...newest,
+        text: clampText(newest.text, excerptAllowance),
+      }]);
+      const excerptLabelled = render(excerptCandidate, true);
+      if (excerptLabelled !== null && excerptLabelled.length <= input.maximumCharacters) {
+        return excerptLabelled;
+      }
+    }
+  }
+
+  addNewestSuffix(flattened.filter((entry) =>
+    entry.provenance === "surrounding" && !entry.pinned
+  ));
+  addNewestSuffix(flattened.filter((entry) =>
+    entry.provenance === "prior" && !entry.pinned
+  ));
+  if (selected.length > 0) return render(selected);
+
+  const newest = flattened.at(-1);
+  if (newest === undefined || newest.pinned) return null;
+  const excerptMaximum = newest.provenance === "prior"
+    ? Math.min(input.maximumCharacters, input.maximumHistoricalCharacters)
+    : input.maximumCharacters;
+  const emptyExcerpt = transcriptBlock({
+    narrative,
+    entries: [{
+      text: "",
+      provenance: newest.provenance,
+      index: newest.index,
+    }],
+    omittedBefore: true,
+    partial: turns[newest.turnIndex]!.completeness === "partial"
+      ? "source"
+      : "selection",
+    excerpt: true,
+  });
+  const excerptAllowance = excerptMaximum - (emptyExcerpt?.length ?? 0);
+  if (excerptAllowance <= 0) return null;
+  const rendered = transcriptBlock({
+    narrative,
+    entries: [{
+      text: clampText(newest.text, excerptAllowance),
+      provenance: newest.provenance,
+      index: newest.index,
+    }],
+    omittedBefore: true,
+    partial: turns[newest.turnIndex]!.completeness === "partial"
+      ? "source"
+      : "selection",
+    excerpt: true,
+  });
+  return rendered !== null && rendered.length <= excerptMaximum ? rendered : null;
 }
 
 function truthfulBaselineTranscript(
@@ -603,10 +777,7 @@ export function buildForegroundContextProjectionV1(input: Readonly<{
     completeBody === null
     || (
       completeBody.length <= input.maximumCharacters
-      && (
-        input.maximumHistoricalCharacters === undefined
-        || completeBody.length <= historicalMaximum
-      )
+      && input.maximumHistoricalCharacters === undefined
     )
   ) {
     body = completeBody;
@@ -615,39 +786,34 @@ export function buildForegroundContextProjectionV1(input: Readonly<{
     transcriptCharacters = baselineTranscript?.length ?? 0;
     packedRecordCount = selected.length;
   } else if (input.maximumHistoricalCharacters !== undefined) {
+    const fullSemanticBlock = joinSections([input.journalBlock, recordBlock]);
     const transcriptPresent = input.narrative.turns.some(
       (turn) => turn.entries.length > 0,
     );
-    const semanticPresent = input.journalBlock !== null || selected.length > 0;
-    const semanticTranscriptSeparator = semanticPresent && transcriptPresent ? 2 : 0;
-    const semantic = boundedSemanticSections({
-      journalBlock: input.journalBlock,
-      records: selected,
-      maximumCharacters: Math.max(
-        0,
-        historicalMaximum - semanticTranscriptSeparator,
-      ),
-    });
-    const semanticSections = [semantic.journal, semantic.records].filter(
-      (section): section is string => section !== null,
-    );
-    const semanticCharacters = semanticSections.reduce(
-      (sum, section) => sum + section.length,
-      0,
-    ) + Math.max(0, semanticSections.length - 1) * 2;
-    const transcriptSeparator = semanticSections.length > 0 && transcriptPresent ? 2 : 0;
-    const transcript = boundedNarrativeTranscript({
+    const semantic = fullSemanticBlock !== null
+        && fullSemanticBlock.length <= input.maximumCharacters
+      ? {
+          journal: input.journalBlock,
+          records: recordBlock,
+          packedRecordCount: selected.length,
+        }
+      : boundedSemanticSections({
+          journalBlock: input.journalBlock,
+          records: selected,
+          maximumCharacters: input.maximumCharacters,
+        });
+    const semanticBlock = joinSections([semantic.journal, semantic.records]);
+    const semanticCharacters = semanticBlock?.length ?? 0;
+    const transcriptSeparator = semanticBlock !== null && transcriptPresent ? 2 : 0;
+    const transcript = refreshNarrativeTranscript({
       narrative: input.narrative,
       maximumCharacters: Math.max(
         0,
         input.maximumCharacters - semanticCharacters - transcriptSeparator,
       ),
-      maximumHistoricalCharacters: Math.max(
-        0,
-        historicalMaximum - semanticCharacters - transcriptSeparator,
-      ),
+      maximumHistoricalCharacters: historicalMaximum,
     });
-    body = joinSections([semantic.journal, semantic.records, transcript]);
+    body = joinSections([semanticBlock, transcript]);
     journalCharacters = semantic.journal?.length ?? 0;
     recordCharacters = semantic.records?.length ?? 0;
     transcriptCharacters = transcript?.length ?? 0;

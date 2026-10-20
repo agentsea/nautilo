@@ -197,8 +197,8 @@ missing runtime components.
 ## Windows CI
 
 `.github/workflows/windows-desktop.yml` runs on the Windows 2025 image with
-Visual Studio 2026 for pull requests that touch relevant source and on manual
-dispatch. It checks the pinned toolchain, frozen install, package typechecks,
+Visual Studio 2026 nightly at 04:17 UTC and on manual dispatch. It does not run
+on pull requests. It checks the pinned toolchain, frozen install, package typechecks,
 first-party install and seeding tests, all repository invariants, Writer and
 Video builds and unit tests, `package:win`, a packaged Relay Host launch test,
 and a hidden Desktop boot

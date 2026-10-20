@@ -399,56 +399,9 @@ describe("M281 GitHub Actions cost controls", () => {
     expect(supply.on.schedule).toEqual([{ cron: "0 4 * * 1" }]);
   });
 
-  test("Windows validation admits packaging inputs and excludes ordinary product changes", async () => {
+  test("Windows full qualification runs only nightly or manually", async () => {
     const windows = await workflow("windows-desktop.yml");
-    expect(eventConfig(windows.on.pull_request).branches).toEqual(["main"]);
-    const paths = eventPaths(windows.on.pull_request);
-    const matches = (path: string) => paths.some((pattern) => new Bun.Glob(pattern).match(path));
-    for (const path of [
-      ".github/workflows/windows-desktop.yml",
-      "apps/desktop/electron/main.ts",
-      "bin/nautilo-relay/src/main.ts",
-      "packages/relay/src/client.ts",
-      "packages/lattice-crypto/vendor/openmls-wasm/openmls_wasm_bg.wasm",
-      "native/apply-patch/Cargo.toml",
-      "patches/dependency.patch",
-      "THIRD_PARTY_NOTICES.md",
-      "package.json",
-      "packages/config/package.json",
-      "bun.lock",
-      "packages/first-party-apps/writer/bun.lock",
-      ".bun-version",
-      ".gitattributes",
-      "bunfig.toml",
-      "tsconfig.base.json",
-      "turbo.json",
-      "dev/scripts/install-first-party-apps.ts",
-      "dev/scripts/fix-node-pty-perms.ts",
-      "dev/scripts/prepare-board.ts",
-      "dev/scripts/vendor-agent-browser.ts",
-      "dev/scripts/windows-unit-gate.ts",
-      "dev/scripts/test-repo-invariants.ts",
-      "dev/tests/test-lifecycle-preload.ts",
-    ]) {
-      expect(matches(path), `Windows workflow must admit ${path}`).toBe(true);
-    }
-    for (const path of [
-      "packages/server/src/routes/rooms.ts",
-      "packages/agent/src/tools/catalog.ts",
-      "packages/db/src/schema/users.ts",
-      "apps/workbench/src/components/Chat.tsx",
-      "packages/config/src/instance-id.ts",
-      "packages/runtime/src/jobs.ts",
-      "dev/tests/repo-invariants/query-inventory.test.ts",
-      "packages/server/tests/unit/app-routes.test.ts",
-    ]) {
-      expect(matches(path), `Windows workflow must skip ${path}`).toBe(false);
-    }
-  });
-
-  test("Windows full qualification remains daily, manual, and unconditional when admitted", async () => {
-    const windows = await workflow("windows-desktop.yml");
-    expect(Object.keys(windows.on).sort()).toEqual(["pull_request", "schedule", "workflow_dispatch"]);
+    expect(Object.keys(windows.on).sort()).toEqual(["schedule", "workflow_dispatch"]);
     expect(windows.on.schedule).toEqual([{ cron: "17 4 * * *" }]);
 
     const steps = windows.jobs["windows-x64"]?.steps ?? [];
@@ -650,7 +603,7 @@ describe("M281 GitHub Actions cost controls", () => {
       const shallow = join(fixtureRoot, "shallow");
       await git(fixtureRoot, "init", "--bare", remote);
       await git(fixtureRoot, "init", seed);
-      await git(seed, "config", "user.email", "m281@example.invalid");
+      await git(seed, "config", "user.email", "fixture@example.invalid");
       await git(seed, "config", "user.name", "M281 fixture");
       writeFileSync(join(seed, "fixture.txt"), "base\n");
       await git(seed, "add", "fixture.txt");

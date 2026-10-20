@@ -1,34 +1,6 @@
 name: Windows Desktop validation
 
 on:
-  pull_request:
-    branches: [main]
-    # Qualify Desktop/Relay, build inputs, and Windows tooling on PRs.
-    paths:
-      - ".github/workflows/windows-desktop.yml"
-      - "apps/desktop/**"
-      - "bin/nautilo-relay/**"
-      - "packages/relay/**"
-      - "packages/lattice-crypto/vendor/openmls-wasm/**"
-      - "native/apply-patch/**"
-      - "patches/**"
-      - "THIRD_PARTY_NOTICES.md"
-      - "package.json"
-      - "bun.lock"
-      - "**/package.json"
-      - "**/bun.lock"
-      - ".bun-version"
-      - ".gitattributes"
-      - "bunfig.toml"
-      - "tsconfig*.json"
-      - "turbo.json"
-      - "dev/scripts/install-first-party-apps.ts"
-      - "dev/scripts/fix-node-pty-perms.ts"
-      - "dev/scripts/prepare-*.ts"
-      - "dev/scripts/vendor-agent-browser.ts"
-      - "dev/scripts/windows-unit-gate.ts"
-      - "dev/scripts/test-repo-invariants.ts"
-      - "dev/tests/test-lifecycle-preload.ts"
   schedule:
     - cron: "17 4 * * *"
   workflow_dispatch:
