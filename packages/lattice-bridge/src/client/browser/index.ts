@@ -110,6 +110,7 @@ import {
   type ClientProfileVaultAvailability,
   type InterruptedClientProfileResolution,
   type PublicClientProfile,
+  type RecoverExactStagedClientProfileInput,
   type StageClientProfileInput,
   type StagedClientProfileReceipt,
 } from "../../client-vault/types.ts";
@@ -117,6 +118,9 @@ import {
   assertClientProfileCoordinates,
   assertStageInput,
   coordinatesKey,
+  sameExactClientProfileMaterial,
+  snapshotRecoverExactStagedClientProfileInput,
+  wipeRecoverExactStagedClientProfileInput,
 } from "../../client-vault/validation.ts";
 
 const DATABASE_NAME = "nautilo-crypto-client-profile-v1";
@@ -492,10 +496,14 @@ export class BrowserClientProfileVault implements ClientProfileVault {
   }
 
   lock(): Promise<void> {
-    this.#key = undefined;
-    this.#database?.close();
-    this.#database = undefined;
-    return Promise.resolve();
+    const clear = () => {
+      this.#key = undefined;
+      this.#database?.close();
+      this.#database = undefined;
+      return Promise.resolve();
+    };
+    if (typeof globalThis.navigator?.locks?.request !== "function") return clear();
+    return this.#exclusive(clear);
   }
 
   stageProfile(
@@ -640,6 +648,73 @@ export class BrowserClientProfileVault implements ClientProfileVault {
     return resolution.action === "activate"
       ? this.activateProfile(coordinates, resolution.stageId)
       : this.abortStagedProfile(coordinates, resolution.stageId);
+  }
+
+  recoverExactStagedProfile(
+    input: RecoverExactStagedClientProfileInput,
+  ): Promise<boolean> {
+    const snapshot = snapshotRecoverExactStagedClientProfileInput(input);
+    let recovery: Promise<boolean>;
+    try {
+      recovery = this.#exclusive(async () => {
+        const key = this.#requiredKey();
+        const document = await this.#readDocument();
+        const activeId = recordId(snapshot.coordinates, "active");
+        const stagedId = recordId(snapshot.coordinates, "staged");
+        const active = document.records.find(
+          (record) => record.recordId === activeId,
+        );
+        const staged = document.records.find(
+          (record) => record.recordId === stagedId,
+        );
+        if (active === undefined || staged === undefined) return false;
+
+        const activePlaintext = await open(key, active);
+        let stagedPlaintext: Uint8Array | undefined;
+        try {
+          stagedPlaintext = await open(key, staged);
+          if (!sameExactClientProfileMaterial({
+            generation: active.generation,
+            profileBytes: activePlaintext,
+            publicState: active.publicState,
+          }, snapshot.expectedActive) || !sameExactClientProfileMaterial({
+            generation: staged.generation,
+            profileBytes: stagedPlaintext,
+            publicState: staged.publicState,
+          }, snapshot.candidate)) return false;
+
+          const recovered = await seal(key, {
+            formatVersion: CLIENT_PROFILE_VAULT_FORMAT_VERSION,
+            recordId: activeId,
+            lifecycle: "active",
+            coordinates: { ...snapshot.coordinates },
+            generation: staged.generation,
+            publicState: { ...staged.publicState },
+          }, stagedPlaintext);
+          await this.#writeDocument({
+            ...document,
+            records: [
+              ...document.records.filter((record) =>
+                record.recordId !== activeId && record.recordId !== stagedId
+              ),
+              recovered,
+            ],
+          });
+          return true;
+        } finally {
+          activePlaintext.fill(0);
+          stagedPlaintext?.fill(0);
+        }
+      });
+    } catch (error) {
+      wipeRecoverExactStagedClientProfileInput(snapshot);
+      return Promise.reject(
+        error instanceof Error ? error : new Error("vault recovery failed"),
+      );
+    }
+    return recovery.finally(() =>
+      wipeRecoverExactStagedClientProfileInput(snapshot)
+    );
   }
 
   withOpenProfile<T>(
@@ -1302,6 +1377,7 @@ export type {
   ClientProfileVault,
   ClientProfileVaultAvailability,
   PublicClientProfile,
+  RecoverExactStagedClientProfileInput,
 } from "../../client-vault/types.ts";
 export * from "../task/device-task-content-backfill-client.ts";
 export * from "../task/task-content-backfill-worker.ts";

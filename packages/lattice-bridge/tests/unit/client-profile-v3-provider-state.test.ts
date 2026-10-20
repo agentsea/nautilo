@@ -141,6 +141,105 @@ describe("client profile v3 provider-state custody", () => {
     destroyOpenedClientDeviceProfileV3(profile); setup.bytes.fill(0);
   });
 
+  test("recovers only the freshly reconstructed interrupted v3 anchor candidate", async () => {
+    const setup = await v2Fixture();
+    const profile = await createClientDeviceProfileV3Candidate({
+      crypto: setup.crypto,
+      currentProfileBytes: setup.bytes,
+      expectedDeviceId: DEVICE,
+    });
+    const vault = new MemoryClientProfileVault();
+    await vault.unlock();
+    const profileBytes = encodeClientDeviceProfileV3(profile);
+    const publicState = {
+      clientKind: "browser" as const,
+      publicFingerprint: "ab".repeat(32),
+    };
+    await vault.stageProfile({ coordinates: COORDINATES, stageId: "v3-base",
+      generation: 1, profileBytes, publicState });
+    await vault.activateProfile(COORDINATES, "v3-base");
+    const next = { objectId: objectId("object_profile_v3_interrupted"),
+      payloadHash: new Uint8Array(32).fill(3), accessRevision: accessRevision(0),
+      manifestHash: new Uint8Array(32).fill(4) };
+    const activate = vault.activateProfile.bind(vault);
+    let interrupted = false;
+    vault.activateProfile = (coordinates, stageId) => {
+      if (!interrupted && stageId === "v3-anchor-interrupted") {
+        interrupted = true;
+        return Promise.reject(new Error("simulated v3 anchor interruption"));
+      }
+      return activate(coordinates, stageId);
+    };
+    const firstOwner = createClientProfileObjectAccessAnchorPort({
+      crypto: setup.crypto, vault, coordinates: COORDINATES,
+      createStageId: () => "v3-anchor-interrupted",
+    });
+    expect(await firstOwner.advance({ expected: null, next }).then(
+      () => null,
+      (error: unknown) => error,
+    )).toHaveProperty("message", "simulated v3 anchor interruption");
+
+    vault.activateProfile = activate;
+    let replacementStageCalls = 0;
+    const recreatedOwner = createClientProfileObjectAccessAnchorPort({
+      crypto: setup.crypto, vault, coordinates: COORDINATES,
+      createStageId: () => {
+        replacementStageCalls += 1;
+        return "v3-anchor-recreated-random";
+      },
+    });
+    expect(await recreatedOwner.advance({ expected: null, next })).toBeTrue();
+    expect(replacementStageCalls).toBe(0);
+    expect(await recreatedOwner.load(next.objectId)).toEqual(next);
+    expect((await vault.listPublicProfiles())).toHaveLength(1);
+    expect((await vault.listPublicProfiles())[0]?.generation).toBe(2);
+
+    const advanced = { ...next,
+      payloadHash: new Uint8Array(32).fill(8), accessRevision: accessRevision(1),
+      manifestHash: new Uint8Array(32).fill(9) };
+    interrupted = false;
+    vault.activateProfile = (coordinates, stageId) => {
+      if (!interrupted && stageId === "v3-anchor-drift-pending") {
+        interrupted = true;
+        return Promise.reject(new Error("simulated v3 drift interruption"));
+      }
+      return activate(coordinates, stageId);
+    };
+    const driftProducer = createClientProfileObjectAccessAnchorPort({
+      crypto: setup.crypto, vault, coordinates: COORDINATES,
+      createStageId: () => "v3-anchor-drift-pending",
+    });
+    expect(await driftProducer.advance({ expected: next, next: advanced }).then(
+      () => null,
+      (error: unknown) => error,
+    )).toHaveProperty("message", "simulated v3 drift interruption");
+    vault.activateProfile = activate;
+    const listProfiles = vault.listPublicProfiles.bind(vault);
+    vault.listPublicProfiles = async () => (await listProfiles()).map((entry) =>
+      entry.lifecycle === "active"
+        ? Object.freeze({ ...entry, generation: entry.generation - 1 })
+        : entry
+    );
+    const driftError = await driftProducer.advance({
+      expected: next,
+      next: advanced,
+    }).then(() => null, (error: unknown) => error);
+    expect(driftError).toHaveProperty(
+      "message",
+      "another client profile stage is already pending",
+    );
+    expect((await listProfiles()).filter((entry) => entry.lifecycle === "staged"))
+      .toHaveLength(1);
+    vault.listPublicProfiles = listProfiles;
+    expect(await driftProducer.advance({ expected: next, next: advanced }))
+      .toBeTrue();
+    expect((await vault.listPublicProfiles())[0]?.generation).toBe(3);
+
+    profileBytes.fill(0);
+    destroyOpenedClientDeviceProfileV3(profile);
+    setup.bytes.fill(0);
+  });
+
   test("migrates v1 through an empty v2 base without inventing provider state", async () => {
     const setup = await v2Fixture();
     const opened = await authenticateClientDeviceProfile({ crypto: setup.crypto,

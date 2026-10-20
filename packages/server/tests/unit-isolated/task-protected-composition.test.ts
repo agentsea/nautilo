@@ -659,6 +659,46 @@ describe("production protected Task composition", () => {
     expect(expectedNamespaces).toEqual([undefined, namespaceId]);
   });
 
+  test("keeps Plain definition reads on the original non-versioned full-row query", async () => {
+    const selections: string[][] = [];
+    const composition = createProductionProtectedTaskComposition({
+      db: productDatabaseWithReadRows([[{
+        id: "10000000-0000-4000-8000-000000000004",
+        ownerId: ROUTE_AUTHORITY.userId,
+        requestorId: ROUTE_AUTHORITY.userId,
+        agentId: ROUTE_AUTHORITY.agentId,
+        contentRepresentation: "ordinary",
+        contentNamespaceId: null,
+        cryptoMappingState: "unmapped",
+      }]], selections),
+      restricted: observedRestrictedConnection({ queries: 0 }),
+      crypto: new LatticeCrypto(),
+      serverScope: "https://nautilo.test",
+      owner: bindEncryptionDataOperationOwner({ policy: {
+        resolve: async () => ({
+          policy: { mode: "plaintext_only", shadowBehavior: "strict" },
+          revalidationToken: 1,
+        }),
+        revalidate: async () => {},
+      } }),
+      observer: { kick() {} },
+    });
+
+    const failure = await composition.ports.readDefinition({
+      authority: ROUTE_AUTHORITY,
+      taskId: "10000000-0000-4000-8000-000000000004",
+      objectId: "task-definition:v1:fixture",
+      contentRevision: 1,
+      cryptoAccessRevision: 0,
+    }).catch((error: unknown) => error);
+    expect(failure).toMatchObject({ statusCode: 409, code: "task_content_changed" });
+    expect(selections).toHaveLength(1);
+    expect(selections[0]).toContain("prompt");
+    expect(selections[0]).toContain("expectedOutput");
+    expect(selections[0]).toContain("lastError");
+    expect(selections[0]).not.toContain("mutationVersion");
+  });
+
   test("keeps mutable ordinary definitions with historical repair without reclassifying invalid sources", async () => {
     const ordinary = {
       id: "10000000-0000-4000-8000-000000000004",

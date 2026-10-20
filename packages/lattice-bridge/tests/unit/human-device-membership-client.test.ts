@@ -593,6 +593,94 @@ describe("Human-device membership client", () => {
       }
     });
 
+    current = Object.freeze({ ...current, deviceRevision: 5 });
+    const producerStageId = "object-access-anchor:interrupted";
+    const [activeBeforeProducer] = (await profileVault.listPublicProfiles())
+      .filter((entry) => entry.lifecycle === "active");
+    await profileVault.stageProfile({
+      coordinates: COORDINATES,
+      stageId: producerStageId,
+      generation: activeBeforeProducer!.generation + 1,
+      profileBytes: activeBytes,
+      publicState: activeBeforeProducer!.publicState,
+    });
+    const stageProfile = profileVault.stageProfile.bind(profileVault);
+    const abortProfile = profileVault.abortStagedProfile.bind(profileVault);
+    let membershipVaultMutations = 0;
+    profileVault.stageProfile = (request) => {
+      membershipVaultMutations += 1;
+      return stageProfile(request);
+    };
+    profileVault.activateProfile = (coordinates, stageId) => {
+      membershipVaultMutations += 1;
+      return activateProfile(coordinates, stageId);
+    };
+    profileVault.abortStagedProfile = (coordinates, stageId) => {
+      membershipVaultMutations += 1;
+      return abortProfile(coordinates, stageId);
+    };
+    expect(await createClient().ensure()).toEqual({ status: "ready" });
+    expect(membershipVaultMutations).toBe(0);
+    expect((await profileVault.listPublicProfiles()).map((entry) =>
+      entry.lifecycle
+    )).toEqual(["active", "staged"]);
+
+    current = Object.freeze({ ...current, personalAuthority: Object.freeze({
+      roomId: PERSONAL_ROOM_ID,
+      namespaceId: PERSONAL_NAMESPACE_ID,
+    }) });
+    const wrongAuthorityClient = createHumanDeviceMembershipClient({
+      api,
+      crypto: targetCrypto,
+      vault: profileVault,
+      coordinates: COORDINATES,
+      clientKind: "electron",
+      installationLineageDigest: LINEAGE,
+      idempotencyKey: "m304-concurrent-welcome-wrong-authority",
+      personalAuthority: {
+        ensure: () => Promise.resolve({ status: "unavailable" as const }),
+      },
+    });
+    expect(await wrongAuthorityClient.ensure().then(
+      () => null,
+      (error: unknown) => error,
+    )).toHaveProperty(
+      "message",
+      expect.stringContaining("Another client profile transition is already staged"),
+    );
+    expect(membershipVaultMutations).toBe(0);
+    current = Object.freeze({ ...current, personalAuthority: null });
+    profileVault.stageProfile = stageProfile;
+    profileVault.activateProfile = activateProfile;
+    profileVault.abortStagedProfile = abortProfile;
+    await profileVault.abortStagedProfile(COORDINATES, producerStageId);
+
+    const wrongCoordinates = Object.freeze({
+      ...COORDINATES,
+      userId: "20000000-0000-4000-8000-000000000399",
+    });
+    await profileVault.stageProfile({
+      coordinates: wrongCoordinates,
+      stageId: "object-access-anchor:wrong-coordinates",
+      generation: 1,
+      profileBytes: activeBytes,
+      publicState: activeBeforeProducer!.publicState,
+    });
+    expect(await createClient().ensure().then(
+      () => null,
+      (error: unknown) => error,
+    )).toHaveProperty(
+      "message",
+      "Another client profile transition is already staged",
+    );
+    expect((await profileVault.listPublicProfiles()).filter((entry) =>
+      entry.lifecycle === "staged"
+    )).toHaveLength(1);
+    await profileVault.abortStagedProfile(
+      wrongCoordinates,
+      "object-access-anchor:wrong-coordinates",
+    );
+
     const assertRejectedStagePreserved = async (
       stageId: string,
       membershipState: "current" | "stale" | "removed",

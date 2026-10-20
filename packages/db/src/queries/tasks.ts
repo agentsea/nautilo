@@ -17,7 +17,7 @@ import {
  * Every helper takes an explicit database handle, allowing either a pooled
  * DirectDatabase or a transaction-scoped handle. No singleton is required.
  */
-import { and, arrayContains, asc, desc, eq, exists, getTableColumns, gt, inArray, isNotNull, isNull, lt, lte, ne, notExists, notInArray, or, sql } from "drizzle-orm";
+import { and, arrayContains, asc, desc, eq, exists, getTableColumns, gt, inArray, isNotNull, isNull, lt, lte, ne, notExists, notInArray, or, sql, type SQL } from "drizzle-orm";
 import { alias, QueryBuilder } from "drizzle-orm/pg-core";
 import type { DirectDatabase } from "../config/direct-database";
 import { tasks, type Task, type NewTask } from "../schema/tasks";
@@ -212,6 +212,139 @@ const taskLifecycleMetadataProjection = {
     then ${tasks.metadata}->'execution'->>'harnessId' else null end))`,
 };
 
+type JsonbProjectionField = string | readonly [key: string, value: SQL];
+
+function jsonbField(source: SQL, key: string): SQL {
+  return sql`(${source}->${key}::text)`;
+}
+
+function jsonbPrimitiveField(source: SQL, key: string): SQL {
+  const value = jsonbField(source, key);
+  return sql`CASE WHEN jsonb_typeof(${value}) IN ('null', 'boolean', 'number', 'string')
+    THEN ${value} ELSE 'null'::jsonb END`;
+}
+
+/** Build a JSON object exclusively from the named fields, retaining present nulls. */
+function closedJsonbProjection(
+  source: SQL,
+  fields: readonly JsonbProjectionField[],
+  acceptedFields: readonly string[] = fields.map((field) =>
+    typeof field === "string" ? field : field[0]),
+): SQL<Record<string, unknown>> {
+  const projected = sql`(${sql.join(fields.map((field) => {
+    const key = typeof field === "string" ? field : field[0];
+    const value = typeof field === "string" ? jsonbPrimitiveField(source, key) : field[1];
+    return sql`CASE WHEN ${source} ? ${key}
+      THEN jsonb_build_object(${key}::text, ${value}) ELSE '{}'::jsonb END`;
+  }), sql` || `)})`;
+  const accepted = sql`ARRAY[${sql.join(
+    acceptedFields.map((key) => sql`${key}::text`),
+    sql`, `,
+  )}]::text[]`;
+  return sql<Record<string, unknown>>`CASE
+    WHEN jsonb_typeof(${source}) = 'object'
+      AND ${source} - ${accepted} = '{}'::jsonb
+    THEN ${projected}
+    ELSE 'null'::jsonb
+  END`;
+}
+
+const metadataSource = sql`${tasks.metadata}`;
+const executionSource = jsonbField(metadataSource, "execution");
+const preparationSource = jsonbField(metadataSource, "preparation");
+const interruptionSource = jsonbField(metadataSource, "lastInterruption");
+const researchSource = jsonbField(metadataSource, "deepResearch");
+const modelFundingSource = jsonbField(researchSource, "modelFunding");
+const fundingFields = ["kind", "providerRoute", "credentialId", "credentialRevision"] as const;
+const researchLanes = ["supervisor", "research", "summarization", "compression", "finalReport"] as const;
+const writerFields = [
+  "version", "taskRunId", "proposalId", "pendingWorkspaceOperationId",
+  "pendingWorkspaceClientMutationId", "pendingWorkspaceArtifactId",
+  "acceptedWorkspaceOperationId", "acceptedWorkspaceClientMutationId",
+  "acceptedWorkspaceArtifactId", "verificationRunId",
+] as const;
+
+const taskProtectedMutationMetadata = closedJsonbProjection(metadataSource, [
+  ["execution", closedJsonbProjection(executionSource, [
+    "version", "harnessId", "source", "collaborationMode", "harnessModelId",
+    ["outputContract", closedJsonbProjection(jsonbField(executionSource, "outputContract"), [
+      "version", "capabilityModelId", "catalogVersion", "contextTokens", "outputTokens",
+    ])],
+    ["readiness", closedJsonbProjection(jsonbField(executionSource, "readiness"), [
+      "relayId", "pairingGenerationRef", "capabilityRevision", "relaySessionId",
+      "desktopSessionId", "selectedProtocolVersion",
+    ])],
+    "profileRef", "catalogModelId", "selectedModel", "executionProfile",
+  ], ["version", "harnessId", "source", "collaborationMode", "harnessModelId",
+    "outputContract", "readiness", "workingDirectory", "profileRef", "catalogModelId",
+    "selectedModel", "executionProfile"])],
+  ["preparation", closedJsonbProjection(preparationSource, [
+    "stage", "probe", "filesObserved", "directoriesObserved", "activity",
+    ["contextRecovery", closedJsonbProjection(jsonbField(preparationSource, "contextRecovery"), [
+      "pendingInputs", "phase", "recoveredInputBytes", "retainedUnconsolidatedPages",
+    ])],
+    ["contextPage", closedJsonbProjection(jsonbField(preparationSource, "contextPage"), [
+      "startByte", "endByte", "totalBytes",
+    ])],
+    ["research", closedJsonbProjection(jsonbField(preparationSource, "research"), [
+      "unitsTotal", "unitsCompleted", "unitsPending", "filesTotal", "filesAssigned",
+    ])],
+    ["researchWork", closedJsonbProjection(jsonbField(preparationSource, "researchWork"), [
+      "role", "reviewDecision",
+    ], ["role", "subject", "reviewDecision"])],
+    "taskRunId", "updatedAt",
+  ])],
+  ["lastInterruption", closedJsonbProjection(interruptionSource, [
+    "code", "cause", "stoppedBy", "outcome", "observedAt", "taskRunId",
+    "graphThreadId", "checkpointId", "modelId", "attemptId", "timeoutMs", "elapsedMs",
+    "abortRequested", "visibleOutput", "partialState", "safeToFallback", "resumable",
+    "desktopExitCause", "resumeRequiresValidation",
+  ], ["code", "cause", "stoppedBy", "outcome", "observedAt", "taskRunId",
+    "graphThreadId", "checkpointId", "modelId", "attemptId", "timeoutMs", "elapsedMs",
+    "abortRequested", "visibleOutput", "partialState", "safeToFallback", "resumable",
+    "desktopExitCause", "toolName", "operation", "resumeRequiresValidation"])],
+  ["deepResearch", closedJsonbProjection(researchSource, [
+    "version",
+    ["modelPlan", closedJsonbProjection(jsonbField(researchSource, "modelPlan"), [
+      "version", "supervisorModel", "researchModel", "summarizationModel",
+      "compressionModel", "finalReportModel",
+    ])],
+    "invokingModelId",
+    ["preferenceRevisions", closedJsonbProjection(jsonbField(researchSource, "preferenceRevisions"), researchLanes)],
+    ["modelFunding", closedJsonbProjection(modelFundingSource, researchLanes.map((lane) => [
+      lane, closedJsonbProjection(jsonbField(modelFundingSource, lane), fundingFields),
+    ] as const))],
+    ["tavilyFunding", closedJsonbProjection(jsonbField(researchSource, "tavilyFunding"), fundingFields)],
+  ], ["version", "reportLanguage", "modelPlan", "invokingModelId",
+    "preferenceRevisions", "modelFunding", "tavilyFunding"])],
+  "mode", "publish", "bringBack", "ordinaryArtifactPeer", "expectedArtifactPeerActorId",
+  "artifactAwareAskPeer", "source",
+  ["liveMiniAppTaskDelegation", closedJsonbProjection(jsonbField(metadataSource, "liveMiniAppTaskDelegation"), [
+    "version", "appId",
+  ])],
+  ...(["writerReviewAwaiting", "writerReviewAcceptedReceipt"] as const).map((key) => {
+    const writerSource = jsonbField(metadataSource, key);
+    return [key, closedJsonbProjection(writerSource, [
+      ...writerFields,
+      ["acceptedResultRevision", closedJsonbProjection(jsonbField(writerSource, "acceptedResultRevision"), [
+        "kind", "revision", "sha256",
+      ])],
+    ])] as const;
+  }),
+], ["execution", "preparation", "lastInterruption", "deepResearch", "target", "mode",
+  "publish", "instructions", "bringBack", "ordinaryArtifactPeer",
+  "expectedArtifactPeerActorId", "artifactAwareAskPeer", "artifactRefs",
+  "artifactOperationId", "artifactId", "topic", "source", "liveMiniAppTaskDelegation",
+  "writerReviewAwaiting", "writerReviewAcceptedReceipt"]);
+
+const taskProtectedMutationProjection = {
+  ...getTableColumns(tasks),
+  prompt: sql<string>`''::text`,
+  expectedOutput: sql<string | null>`null::text`,
+  lastError: sql<string | null>`null::text`,
+  metadata: taskProtectedMutationMetadata,
+};
+
 export async function getTaskById(
   db: DirectDatabase,
   id: string,
@@ -249,6 +382,27 @@ export async function getTaskByIdWithMutationVersion(
       ...(options?.lifecycleOnly === true ? [eq(tasks.ownerId, options.ownerId)] : []),
       ...(options?.lifecycleOnly !== true && options?.ordinaryOnly === true
         ? [eq(tasks.contentRepresentation, "ordinary")] : [])))
+    .limit(1);
+  return row;
+}
+
+/**
+ * Read the exact Task mutation source without materializing its ordinary
+ * definition body. The owner fence and xmin token remain part of the same
+ * PostgreSQL statement used by protected publication CAS.
+ */
+export async function getProtectedTaskMutationSourceById(
+  db: DirectDatabase,
+  id: string,
+  ownerId: string,
+): Promise<(Task & { mutationVersion: string }) | undefined> {
+  const [row] = await db
+    .select({
+      ...taskProtectedMutationProjection,
+      mutationVersion: sql<string>`${tasks}.xmin::text`,
+    })
+    .from(tasks)
+    .where(and(eq(tasks.id, id), eq(tasks.ownerId, ownerId)))
     .limit(1);
   return row;
 }

@@ -16,6 +16,7 @@ import {
   type ClientProfileVaultAvailability,
   type InterruptedClientProfileResolution,
   type PublicClientProfile,
+  type RecoverExactStagedClientProfileInput,
   type StageClientProfileInput,
   type StagedClientProfileReceipt,
 } from "../client-vault/types.ts";
@@ -23,6 +24,9 @@ import {
   assertClientProfileCoordinates,
   assertStageInput,
   coordinatesKey,
+  sameExactClientProfileMaterial,
+  snapshotRecoverExactStagedClientProfileInput,
+  wipeRecoverExactStagedClientProfileInput,
 } from "../client-vault/validation.ts";
 
 const VAULT_FILE_NAME = "client-profile-vault.json";
@@ -500,6 +504,73 @@ export class EncryptedFileClientProfileVault implements ClientProfileVault {
     return resolution.action === "activate"
       ? this.activateProfile(coordinates, resolution.stageId)
       : this.abortStagedProfile(coordinates, resolution.stageId);
+  }
+
+  recoverExactStagedProfile(
+    input: RecoverExactStagedClientProfileInput,
+  ): Promise<boolean> {
+    const snapshot = snapshotRecoverExactStagedClientProfileInput(input);
+    let recovery: Promise<boolean>;
+    try {
+      recovery = this.#exclusive(async () => {
+        const key = this.#requiredKey();
+        const document = await readDocument(this.#path);
+        const activeId = recordId(snapshot.coordinates, "active");
+        const stagedId = recordId(snapshot.coordinates, "staged");
+        const active = document.records.find(
+          (record) => record.recordId === activeId,
+        );
+        const staged = document.records.find(
+          (record) => record.recordId === stagedId,
+        );
+        if (active === undefined || staged === undefined) return false;
+
+        const activePlaintext = open(key, active);
+        let stagedPlaintext: Uint8Array | undefined;
+        try {
+          stagedPlaintext = open(key, staged);
+          if (!sameExactClientProfileMaterial({
+            generation: active.generation,
+            profileBytes: activePlaintext,
+            publicState: active.publicState,
+          }, snapshot.expectedActive) || !sameExactClientProfileMaterial({
+            generation: staged.generation,
+            profileBytes: stagedPlaintext,
+            publicState: staged.publicState,
+          }, snapshot.candidate)) return false;
+
+          const recovered = seal(key, {
+            formatVersion: CLIENT_PROFILE_VAULT_FORMAT_VERSION,
+            recordId: activeId,
+            lifecycle: "active",
+            coordinates: cloneCoordinates(snapshot.coordinates),
+            generation: staged.generation,
+            publicState: { ...staged.publicState },
+          }, stagedPlaintext);
+          await writeDocument(this.#path, {
+            formatVersion: CLIENT_PROFILE_VAULT_FORMAT_VERSION,
+            records: [
+              ...document.records.filter((record) =>
+                record.recordId !== activeId && record.recordId !== stagedId
+              ),
+              recovered,
+            ],
+          });
+          return true;
+        } finally {
+          activePlaintext.fill(0);
+          stagedPlaintext?.fill(0);
+        }
+      });
+    } catch (error) {
+      wipeRecoverExactStagedClientProfileInput(snapshot);
+      return Promise.reject(
+        error instanceof Error ? error : new Error("vault recovery failed"),
+      );
+    }
+    return recovery.finally(() =>
+      wipeRecoverExactStagedClientProfileInput(snapshot)
+    );
   }
 
   withOpenProfile<T>(

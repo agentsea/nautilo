@@ -25,6 +25,7 @@ import {
   getOwnerAgentDisplayNamesByAgentId,
   getTaskById,
   getTaskByIdWithMutationVersion,
+  getProtectedTaskMutationSourceById,
   humanCryptoDevices,
   inArray,
   lte,
@@ -90,7 +91,9 @@ import {
 } from "@nautilo/runtime";
 import {
   classifyProtectedTaskMetadataV1,
+  parseProtectedTaskOperationalMetadataProjectionV1,
   reconstructProtectedTaskMetadataV1,
+  type ProtectedTaskOperationalMetadataProjectionV1,
   type ListTasksQuery,
   type TaskContentListV1,
   type TaskContentSummaryV1,
@@ -890,12 +893,10 @@ export function taskCreateInput(
   };
 }
 
-async function readCreatedTask(
-  db: DirectDatabase,
+function readCreatedTask(
+  current: Task | undefined,
   authority: ProtectedTaskRouteAuthority,
-  taskId: string,
-): Promise<Task> {
-  const current = await getTaskById(db, taskId);
+): Task {
   if (current === undefined || current.ownerId !== authority.userId
     || current.agentId !== authority.agentId) {
     throw new ProtectedTaskRouteError(404, "task_not_found", "Task not found");
@@ -910,9 +911,10 @@ export function taskUpdatePatch(
   current: Task,
   task: OperationalUpdate,
   payload: TaskDefinitionPayload | null,
+  operationalMetadata: ProtectedTaskOperationalMetadataProjectionV1 = metadataFor(current),
 ): Partial<NewTask> {
   const patch: Partial<NewTask> = {
-    metadata: metadataFor(current),
+    metadata: operationalMetadata,
     ...(payload === null ? {} : {
       prompt: payload.prompt,
       expectedOutput: payload.expectedOutput,
@@ -943,6 +945,15 @@ export function taskUpdatePatch(
 }
 
 type VersionedTask = Task & Readonly<{ mutationVersion: string }>;
+
+type SelectedTaskSource = Readonly<{
+  task: Task;
+  projected: boolean;
+}>;
+
+type SelectedMutationSource = SelectedTaskSource & Readonly<{
+  task: VersionedTask;
+}>;
 
 type VersionedTaskWithFallbackReceipt = VersionedTask & Readonly<{
   ordinaryFallbackOperationId: string;
@@ -1108,6 +1119,66 @@ export function createProductionProtectedTaskComposition(
       productAuthority,
       domainKeys,
     });
+
+  const readProjectedMutationSource = async (
+    db: DirectDatabase,
+    authority: ProtectedTaskRouteAuthority,
+    taskId: string,
+  ): Promise<SelectedMutationSource | undefined> => {
+    const task = await getProtectedTaskMutationSourceById(
+      db,
+      taskId,
+      authority.userId,
+    );
+    if (task === undefined) return undefined;
+    return { task, projected: true };
+  };
+
+  const readMutationSource = (
+    authority: ProtectedTaskRouteAuthority,
+    taskId: string,
+    db: DirectDatabase = dependencies.db,
+  ): Promise<SelectedMutationSource | undefined> => dependencies.owner.runMutation<SelectedMutationSource | undefined>({
+    ordinary: async () => {
+      const task = await getTaskByIdWithMutationVersion(db, taskId);
+      return task === undefined ? undefined : {
+        task,
+        projected: false,
+      };
+    },
+    protected: () => readProjectedMutationSource(db, authority, taskId),
+    dual: () => readProjectedMutationSource(db, authority, taskId),
+  });
+
+  const readTaskSource = (
+    authority: ProtectedTaskRouteAuthority,
+    taskId: string,
+    db: DirectDatabase = dependencies.db,
+  ): Promise<SelectedTaskSource | undefined> => dependencies.owner.runMutation<SelectedTaskSource | undefined>({
+    ordinary: async () => {
+      const task = await getTaskById(db, taskId);
+      return task === undefined ? undefined : { task, projected: false };
+    },
+    protected: () => readProjectedMutationSource(db, authority, taskId),
+    dual: () => readProjectedMutationSource(db, authority, taskId),
+  });
+
+  const operationalMetadataFor = (
+    source: SelectedTaskSource,
+  ): ProtectedTaskOperationalMetadataProjectionV1 => {
+    if (!source.projected) return metadataFor(source.task);
+    const operationalMetadata = parseProtectedTaskOperationalMetadataProjectionV1(
+      source.task.metadata,
+    );
+    if (operationalMetadata === null) {
+      throw new ProtectedTaskRouteError(
+        409,
+        "task_metadata_unsupported",
+        "Task metadata cannot be protected",
+      );
+    }
+    return operationalMetadata;
+  };
 
   const foregroundSignerTransport = async (userId: string) => {
     const product = await createHumanProductTransactionContext(
@@ -1406,10 +1477,11 @@ export function createProductionProtectedTaskComposition(
     let repairSource: TaskOrdinaryFallbackRepairSourceProofV1 | null = null;
     let repairTask: VersionedTask | undefined;
     if (request.operation === "update") {
-      const task = await getTaskByIdWithMutationVersion(dependencies.db, id);
-      if (task === undefined) {
+      const selected = await readMutationSource(authority, id);
+      if (selected === undefined) {
         throw new ProtectedTaskRouteError(404, "task_not_found", "Task not found");
       }
+      const { task } = selected;
       const resolved = resolveOwnedProtectedTaskAuthority(authority, task);
       if (resolved === null) {
         throw new ProtectedTaskRouteError(404, "task_not_found", "Task not found");
@@ -1515,23 +1587,38 @@ export function createProductionProtectedTaskComposition(
         : await dependencies.owner.mutate<string | undefined, string | undefined>({
           ordinary: () => Promise.resolve(undefined),
           protected: () => Promise.resolve(undefined),
-          dual: () => {
-            const classified = classifyProtectedTaskMetadataV1(sourceTask.metadata ?? {});
+          dual: async () => {
+            const exactSource = await getTaskByIdWithMutationVersion(
+              dependencies.db,
+              sourceTask.id,
+            );
+            if (exactSource === undefined
+              || exactSource.ownerId !== taskAuthority.userId
+              || exactSource.agentId !== taskAuthority.agentId
+              || exactSource.mutationVersion !== sourceTask.mutationVersion
+              || !sameFallbackRepairSource(fallbackRepairSource(exactSource), repairSource)) {
+              throw new ProtectedTaskRouteError(
+                409,
+                "task_changed",
+                "Task changed while the update was prepared",
+              );
+            }
+            const classified = classifyProtectedTaskMetadataV1(exactSource.metadata ?? {});
             if (classified.status !== "supported") {
               throw new ProtectedTaskRouteError(409, "task_metadata_unsupported",
                 "Task metadata cannot be protected");
             }
             const content = {
-              prompt: sourceTask.prompt,
-              expectedOutput: sourceTask.expectedOutput,
+              prompt: exactSource.prompt,
+              expectedOutput: exactSource.expectedOutput,
               protectedMetadata: classified.protectedContent,
             };
-            const bytes = encodeTaskDefinitionContent(sourceTask.lastError === null
+            const bytes = encodeTaskDefinitionContent(exactSource.lastError === null
               ? { formatVersion: 1, ...content }
               : { formatVersion: 2, ...content,
-                  retainedHistoricalError: sourceTask.lastError });
+                  retainedHistoricalError: exactSource.lastError });
             try {
-              return Promise.resolve(Buffer.from(bytes).toString("base64url"));
+              return Buffer.from(bytes).toString("base64url");
             } finally {
               bytes.fill(0);
             }
@@ -1624,7 +1711,7 @@ export function createProductionProtectedTaskComposition(
         handle: verifiedCryptoHandle,
         crypto: dependencies.crypto,
         resolveCurrentAuthority: async (coordinate) => {
-          const task = await getTaskById(dependencies.db, coordinate.taskId);
+          const task = (await readTaskSource(authority, coordinate.taskId))?.task;
           if (task === undefined || task.contentNamespaceId === null) return null;
           const taskAuthority = resolveOwnedProtectedTaskAuthority(authority, task);
           if (taskAuthority === null) return null;
@@ -1694,12 +1781,17 @@ export function createProductionProtectedTaskComposition(
     task: OperationalCreate,
     payload: TaskDefinitionPayload | null,
   ): Promise<Task> => {
-    const existing = await getTaskById(dependencies.db, taskId);
+    const existing = (await readTaskSource(authority, taskId))?.task;
     if (existing !== undefined) {
       if (existing.ownerId !== authority.userId || existing.agentId !== authority.agentId) {
         throw new ProtectedTaskRouteError(409, "task_identity_conflict", "Task identity conflicts");
       }
       return existing;
+    }
+    const [identity] = await dependencies.db.select({ id: tasks.id })
+      .from(tasks).where(eq(tasks.id, taskId)).limit(1);
+    if (identity !== undefined) {
+      throw new ProtectedTaskRouteError(409, "task_identity_conflict", "Task identity conflicts");
     }
     try {
       return await dependencies.db.transaction(async (transaction) => {
@@ -1725,7 +1817,11 @@ export function createProductionProtectedTaskComposition(
           ...task,
           ...(scopeId == null ? {} : { scopeId }),
         }, payload));
-        const created = await getTaskByIdWithMutationVersion(transactionDb, taskId);
+        const created = (await readMutationSource(
+          authority,
+          taskId,
+          transactionDb,
+        ))?.task;
         if (created === undefined) {
           throw new Error("Protected Task product disappeared");
         }
@@ -1767,11 +1863,12 @@ export function createProductionProtectedTaskComposition(
     task: OperationalUpdate,
     payload: TaskDefinitionPayload | null,
   ): Promise<Task> => {
-    const current = await getTaskByIdWithMutationVersion(dependencies.db, taskId);
-    if (current === undefined || current.ownerId !== authority.userId
-      || current.agentId !== authority.agentId) {
+    const selected = await readMutationSource(authority, taskId);
+    if (selected === undefined || selected.task.ownerId !== authority.userId
+      || selected.task.agentId !== authority.agentId) {
       throw new ProtectedTaskRouteError(404, "task_not_found", "Task not found");
     }
+    const { task: current } = selected;
     if (current.contentRevision === expectedContentRevision + 1
       && current.cryptoMappingState === "verified") return current;
     if (current.status !== "pending" && current.status !== "paused") {
@@ -1788,10 +1885,11 @@ export function createProductionProtectedTaskComposition(
         "Task changed while the update was prepared",
       );
     }
-    const patch = taskUpdatePatch(current, task, payload);
+    const operationalMetadata = operationalMetadataFor(selected);
+    const patch = taskUpdatePatch(current, task, payload, operationalMetadata);
     if (expectedFallbackRepairSource !== null && payload !== null) {
       const reconstructed = reconstructProtectedTaskMetadataV1(
-        metadataFor(current),
+        operationalMetadata,
         payload.protectedMetadata,
       );
       if (reconstructed.status !== "supported") {
@@ -1825,7 +1923,7 @@ export function createProductionProtectedTaskComposition(
       listProtectedTaskContentV1(input.authority.userId, input.query),
 
     async readDefinition(input) {
-      let task = await getTaskById(dependencies.db, input.taskId);
+      let task = (await readTaskSource(input.authority, input.taskId))?.task;
       if (task === undefined
         || task.ownerId !== input.authority.userId
         || task.requestorId !== input.authority.userId) {
@@ -1845,7 +1943,7 @@ export function createProductionProtectedTaskComposition(
           contentRevision: input.contentRevision,
         }, task.contentNamespaceId, task.cryptoObjectId);
         const refreshed = refreshedAccess === "unavailable" ? task
-          : await getTaskById(dependencies.db, input.taskId);
+          : (await readTaskSource(input.authority, input.taskId))?.task;
         if (refreshed === undefined
           || refreshed.ownerId !== input.authority.userId
           || refreshed.requestorId !== input.authority.userId
@@ -2755,10 +2853,9 @@ export function createProductionProtectedTaskComposition(
           "Task content mapping is pending",
         );
       }
-      const activated = await readCreatedTask(
-        dependencies.db,
+      const activated = readCreatedTask(
+        (await readTaskSource(authority, publication.product.id))?.task,
         authority,
-        publication.product.id,
       );
       if (activated.status === "pending" && activated.scheduleKind === "now") {
         dependencies.observer.kick();
@@ -2771,13 +2868,11 @@ export function createProductionProtectedTaskComposition(
     },
 
     async publishUpdate({ authority, taskId, prepared }) {
-      const ownedTask = await getTaskByIdWithMutationVersion(
-        dependencies.db,
-        taskId,
-      );
-      if (ownedTask === undefined) {
+      const ownedSource = await readMutationSource(authority, taskId);
+      if (ownedSource === undefined) {
         throw new ProtectedTaskRouteError(404, "task_not_found", "Task not found");
       }
+      const ownedTask = ownedSource.task;
       const taskAuthority = resolveOwnedProtectedTaskAuthority(authority, ownedTask);
       if (taskAuthority === null) {
         throw new ProtectedTaskRouteError(404, "task_not_found", "Task not found");
@@ -2803,14 +2898,12 @@ export function createProductionProtectedTaskComposition(
           resolveSignedAuthority(taskAuthority, request),
         lookupPreparedReplay: (request) => durable.lookupPreparedReplay(request),
       });
-      const current = await getTaskByIdWithMutationVersion(
-        dependencies.db,
-        taskId,
-      );
-      if (current === undefined || current.ownerId !== taskAuthority.userId
-        || current.agentId !== taskAuthority.agentId) {
+      const currentSource = await readMutationSource(taskAuthority, taskId);
+      if (currentSource === undefined || currentSource.task.ownerId !== taskAuthority.userId
+        || currentSource.task.agentId !== taskAuthority.agentId) {
         throw new ProtectedTaskRouteError(404, "task_not_found", "Task not found");
       }
+      const { task: current } = currentSource;
       if (current.mutationVersion !== ownedTask.mutationVersion
         || !sameFallbackRepairSource(fallbackRepairSource(current), repairSource)) {
         throw new ProtectedTaskRouteError(
@@ -2826,12 +2919,13 @@ export function createProductionProtectedTaskComposition(
           "Fallback Task repair requires dual publication",
         );
       }
+      const operationalMetadata = operationalMetadataFor(currentSource);
       const common = {
         owner: dependencies.owner,
         operationId: prepared.operationId,
         requestDigest: imported.requestDigest,
         authority: imported.authority,
-        operationalMetadata: metadataFor(current),
+        operationalMetadata,
         prepared: imported.prepared,
         ...(repairSource === null ? {} : {
           fallbackRepairSource: repairSource,
@@ -2887,7 +2981,7 @@ export function createProductionProtectedTaskComposition(
           "Task content mapping is pending",
         );
       }
-      const task = await getTaskById(dependencies.db, taskId);
+      const task = (await readTaskSource(taskAuthority, taskId))?.task;
       if (task === undefined) {
         throw new ProtectedTaskRouteError(404, "task_not_found", "Task not found");
       }

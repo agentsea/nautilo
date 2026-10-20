@@ -62,6 +62,8 @@ import {
   encryptionTransitionPolicy,
   eq,
   getEncryptionTransitionPolicy,
+  getProtectedTaskMutationSourceById,
+  getTaskByIdWithMutationVersion,
   getSharedDirectCryptoDb,
   getSharedDirectAgentDb,
   getSharedDirectDb,
@@ -120,6 +122,7 @@ import {
   type PostgresJsBridgeExecutor,
   type PostgresJsBridgeRow,
   type PostgresJsBridgeScalar,
+  type DirectDatabase,
 } from "@nautilo/db";
 import {
   persistJobWithDatabase,
@@ -301,7 +304,10 @@ import { CodexHarnessPreferenceStore } from
 import { CodexPersistenceAdapter } from
   "../../src/codex/persistence";
 import { createProductionProtectedTaskNativeExecutionContext } from "../../src/routes/protected-task-native-execution-context";
-import { classifyProtectedTaskMetadataV1 } from "@nautilo/types";
+import {
+  classifyProtectedTaskMetadataV1,
+  parseProtectedTaskOperationalMetadataProjectionV1,
+} from "@nautilo/types";
 import type { LocalExecutionDelegation } from "@nautilo/types";
 import {
   withTaskRuntimeExecutionEvidenceV1,
@@ -10824,6 +10830,157 @@ test("signed Task ordinary fallback serializes exact create replay and rejects s
         statusCode: 409,
         code: "task_ordinary_fallback_unavailable",
       });
+    }
+  } finally {
+    await base.cleanup();
+  }
+});
+
+test("protected Task mutation source excludes private columns and preserves current operational overlays", async () => {
+  const base = await createBaseFixture();
+  const canary = "private-task-source-must-not-leave-the-projected-query";
+  const execution = {
+    version: 1,
+    harnessId: "codex",
+    source: "genie",
+    collaborationMode: "work",
+    harnessModelId: "codex-model",
+    readiness: {
+      relayId: "relay",
+      pairingGenerationRef: "pairing",
+      capabilityRevision: 3,
+    },
+  };
+  const preparation = {
+    stage: "using_tools",
+    researchWork: { role: "investigator" },
+    taskRunId: "run-current-overlay",
+    updatedAt: "2026-10-20T09:00:00.000Z",
+  };
+  const interruption = {
+    code: "no_progress",
+    cause: "repeated_tool_failure",
+    stoppedBy: "no_progress_guard",
+    outcome: "errored",
+    observedAt: "2026-10-20T09:00:00.000Z",
+    taskRunId: "run-current-overlay",
+    graphThreadId: "thread-current-overlay",
+    checkpointId: null,
+    resumeRequiresValidation: true,
+  };
+  const researchLanes = ["supervisor", "research", "summarization", "compression", "finalReport"];
+  const research = {
+    version: 2,
+    modelPlan: {
+      version: 1,
+      supervisorModel: "model",
+      researchModel: "model",
+      summarizationModel: "model",
+      compressionModel: "model",
+      finalReportModel: "model",
+    },
+    invokingModelId: null,
+    preferenceRevisions: Object.fromEntries(researchLanes.map((lane) => [lane, 3])),
+    modelFunding: Object.fromEntries(researchLanes.map((lane) => [lane, {
+      kind: "personal", providerRoute: "openai", credentialId: base.userId, credentialRevision: 2,
+    }])),
+    tavilyFunding: { kind: "server", providerRoute: "tavily" },
+  };
+  try {
+    const context = await createHumanProductTransactionContext(base.userId, base.productDb);
+    for (const metadataCase of [
+      {
+        source: { target: canary, instructions: canary, mode: "update", publish: "branch" },
+        projected: { mode: "update", publish: "branch" },
+      },
+      {
+        source: {
+          execution: {
+            ...execution,
+            workingDirectory: canary,
+          },
+          preparation: {
+            ...preparation,
+            researchWork: { ...preparation.researchWork, subject: canary },
+          },
+          lastInterruption: {
+            ...interruption, toolName: "private_tool", operation: "read",
+          },
+        },
+        projected: { execution, preparation, lastInterruption: interruption },
+      },
+      {
+        source: { deepResearch: { ...research, reportLanguage: canary } },
+        projected: { deepResearch: research },
+      },
+    ]) {
+      const taskId = randomUUID();
+      base.taskIds.add(taskId);
+      await base.admin.insert(tasks).values({
+        id: taskId,
+        ownerId: base.userId,
+        requestorId: base.userId,
+        agentId: base.productAgentId,
+        prompt: canary,
+        expectedOutput: canary,
+        lastError: canary,
+        status: "paused",
+        scheduleKind: "now",
+        callingRoomId: base.roomId,
+        targetChat: "orphan",
+        useScope: false,
+        metadata: metadataCase.source,
+        ordinaryFallbackOperationId: randomUUID(),
+        ordinaryFallbackRequestDigest: base.crypto.hash(new TextEncoder().encode(taskId)),
+        ordinaryFallbackReason: "target_encryption_not_ready",
+        ordinaryFallbackPolicyRevision: base.policyRevision,
+        ordinaryFallbackCompletedAt: new Date(NOW),
+      });
+      await context.canonicalRunner.transaction(async (tx) => {
+        const transactionDb = tx as unknown as DirectDatabase;
+        const ordinary = await getTaskByIdWithMutationVersion(transactionDb, taskId);
+        const projected = await getProtectedTaskMutationSourceById(transactionDb, taskId, base.userId);
+        if (ordinary === undefined || projected === undefined) throw new Error("Task fixture disappeared");
+        expect(projected).toEqual({
+          ...ordinary,
+          prompt: "",
+          expectedOutput: null,
+          lastError: null,
+          metadata: metadataCase.projected,
+        });
+        expect(JSON.stringify(projected)).not.toContain(canary);
+        expect<unknown>(parseProtectedTaskOperationalMetadataProjectionV1(projected.metadata))
+          .toEqual(metadataCase.projected);
+        expect(ordinary).toMatchObject({
+          prompt: canary,
+          expectedOutput: canary,
+          lastError: canary,
+          metadata: metadataCase.source,
+        });
+        expect(await getProtectedTaskMutationSourceById(transactionDb, taskId, randomUUID())).toBeUndefined();
+      }, { isolationLevel: "read committed" });
+      for (const malformedMetadata of [
+        { execution: { ...execution, harnessModelId: { unknownPrivate: canary } } },
+        { execution: { ...execution, readiness: { ...execution.readiness, unknownPrivate: canary } } },
+        { execution: { ...execution, unknownPrivate: canary } },
+        { preparation: { ...preparation, researchWork: { ...preparation.researchWork, unknownPrivate: canary } } },
+        { lastInterruption: { ...interruption, unknownPrivate: canary } },
+        { unknownPrivate: canary },
+      ]) {
+        await base.admin.update(tasks).set({ metadata: malformedMetadata }).where(eq(tasks.id, taskId));
+        await context.canonicalRunner.transaction(async (tx) => {
+          const malformed = await getProtectedTaskMutationSourceById(tx as unknown as DirectDatabase, taskId, base.userId);
+          expect(malformed).toBeDefined();
+          expect(JSON.stringify(malformed)).not.toContain(canary);
+          expect(parseProtectedTaskOperationalMetadataProjectionV1(malformed?.metadata)).toBeNull();
+        }, { isolationLevel: "read committed" });
+      }
+      await base.admin.update(tasks).set({ metadata: {} }).where(eq(tasks.id, taskId));
+      await context.canonicalRunner.transaction(async (tx) => {
+        const absent = await getProtectedTaskMutationSourceById(tx as unknown as DirectDatabase, taskId, base.userId);
+        expect(absent?.metadata).toEqual({});
+        expect<unknown>(parseProtectedTaskOperationalMetadataProjectionV1(absent?.metadata)).toEqual({});
+      }, { isolationLevel: "read committed" });
     }
   } finally {
     await base.cleanup();

@@ -540,13 +540,13 @@ export function createHumanDeviceMembershipClient(input: Readonly<{
 
   async function recoverInterruptedStage(
     current: HumanDeviceMembershipStatusV1,
-  ): Promise<boolean> {
+  ): Promise<"none" | "resolved" | "deferred_exact_producer"> {
     const staged = (await input.vault.listPublicProfiles()).filter((entry) =>
       entry.lifecycle === "staged"
       && entry.coordinates.deviceId === input.coordinates.deviceId
       && entry.coordinates.profileId === input.coordinates.profileId
     );
-    if (staged.length === 0) return false;
+    if (staged.length === 0) return "none";
     if (staged.length !== 1 || staged[0]!.stageId === undefined) {
       throw new Error("Human-device staged profile state is ambiguous");
     }
@@ -572,7 +572,7 @@ export function createHumanDeviceMembershipClient(input: Readonly<{
       // The current-member path below deterministically reconstructs this
       // authority-only candidate. Vault staging accepts it only when every
       // byte matches the interrupted stage before activation.
-      return false;
+      return "none";
     }
     const knownStage = stageId.startsWith("human-device-initial:")
       || stageId.startsWith("human-device-join:")
@@ -582,11 +582,29 @@ export function createHumanDeviceMembershipClient(input: Readonly<{
       || stageId.startsWith("human-device-welcome:")
       || stageId.startsWith("human-device-catch-up:");
     if (!knownStage) {
-      throw new Error(conflictMessage);
+      if (!exactProfileCoordinates(staged[0]!.coordinates)
+        || current.membershipState !== "current" || current.head === null) {
+        throw new Error(conflictMessage);
+      }
+      const head = decodeHumanDeviceGroupHead(
+        decode(current.head.headBytesBase64url),
+      );
+      const activeIsCurrent = await withProfile(({ profile }) => {
+        const base = profile.baseProfile.baseProfile;
+        return Promise.resolve(
+          snapshotMatchesHead(profile, head)
+          && base.trustedDeviceRevision === current.deviceRevision
+          && base.trustedHostAuthorizationRevision === current.deviceRevision,
+        );
+      });
+      if (!activeIsCurrent || !await personalAuthorityReady(current)) {
+        throw new Error(conflictMessage);
+      }
+      return "deferred_exact_producer";
     }
     if (current.head === null) {
       await input.vault.abortStagedProfile(input.coordinates, stageId);
-      return true;
+      return "resolved";
     }
     const head = decodeHumanDeviceGroupHead(
       decode(current.head.headBytesBase64url),
@@ -609,7 +627,7 @@ export function createHumanDeviceMembershipClient(input: Readonly<{
     } else {
       await input.vault.abortStagedProfile(input.coordinates, stageId);
     }
-    return true;
+    return "resolved";
   }
 
   async function acknowledge(
@@ -1089,7 +1107,11 @@ export function createHumanDeviceMembershipClient(input: Readonly<{
 
   async function ensure(): Promise<HumanDeviceMembershipProgress> {
     let current = await status();
-    if (await recoverInterruptedStage(current)) current = await status();
+    const interrupted = await recoverInterruptedStage(current);
+    if (interrupted === "resolved") current = await status();
+    if (interrupted === "deferred_exact_producer") {
+      return Object.freeze({ status: "ready" as const });
+    }
     if (current.membershipState === "absent") {
       return Object.freeze({ status: "additional_required" as const });
     }

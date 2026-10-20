@@ -1,10 +1,11 @@
 import { expect, test } from "bun:test";
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, sql } from "drizzle-orm";
 import { TASK_FUNDING_FAILURE_CODES } from "@nautilo/types";
 import { QueryBuilder, type PgTable } from "drizzle-orm/pg-core";
 import type { DirectDatabase } from "../../src/config/direct-database";
 import {
   getLatestResumableTaskRun,
+  getProtectedTaskMutationSourceById,
   getTaskById,
   getTaskByIdWithMutationVersion,
   getTaskRuns,
@@ -106,6 +107,46 @@ test("protected mutation snapshot adds tuple identity without selecting Task bod
   expect(query.params.filter(value => value === ownerId)).toHaveLength(2);
 });
 
+test("protected mutation source selects every operational coordinate without ordinary content", async () => {
+  const { db, queries } = capturedDetailDb();
+  await getProtectedTaskMutationSourceById(db, ownerId, ownerId);
+  const query = queries[0]!;
+  const selection = query.sql.slice(0, query.sql.indexOf(" from "));
+  expect(selection).not.toContain('"prompt"');
+  expect(selection).not.toContain('"expected_output"');
+  expect(selection).not.toContain('"last_error"');
+  expect(selection).not.toMatch(/"tasks"\."metadata"(?:,|\s+as\s+"metadata")/u);
+  for (const protectedInputField of [
+    "workingDirectory", "subject", "toolName", "operation", "reportLanguage",
+  ]) expect(query.params.filter(value => value === protectedInputField)).toHaveLength(1);
+  expect(query.params).not.toContain("privateCanary");
+  for (const field of [
+    "execution", "harnessModelId", "readiness", "preparation", "researchWork",
+    "reviewDecision", "deepResearch", "modelPlan", "modelFunding", "tavilyFunding",
+    "credentialRevision", "writerReviewAcceptedReceipt", "acceptedResultRevision",
+    "sha256",
+  ]) expect(query.params).toContain(field);
+  expect(selection).toContain("jsonb_typeof");
+  for (const column of [
+    "target_chat_handle",
+    "funding_mode",
+    "local_execution_delegation",
+    "content_namespace_id",
+    "crypto_required_namespace_fingerprint",
+    "ordinary_fallback_operation_id",
+    "ordinary_fallback_request_digest",
+    "ordinary_fallback_reason",
+    "ordinary_fallback_policy_revision",
+    "ordinary_fallback_completed_at",
+    "updated_at",
+  ]) {
+    expect(selection).toContain(`"${column}"`);
+  }
+  expect(selection).toContain("xmin::text");
+  expect(query.sql).toContain('"tasks"."owner_id" =');
+  expect(query.params.filter(value => value === ownerId)).toHaveLength(2);
+});
+
 test("protected funding reads only the newest resumable Run coordinates", async () => {
   const paused = {
     id: "73000000-0000-4000-8000-000000000001",
@@ -139,10 +180,15 @@ test("ordinary detail query text and ordering remain the original full-row contr
   await getTaskById(db, ownerId);
   await getTaskRuns(db, ownerId);
   await getLatestResumableTaskRun(db, ownerId);
+  await getTaskByIdWithMutationVersion(db, ownerId);
   expect(queries[0]).toEqual(new QueryBuilder().select().from(tasks)
     .where(and(eq(tasks.id, ownerId))).limit(1).toSQL());
   expect(queries[1]).toEqual(new QueryBuilder().select().from(taskRuns)
     .where(eq(taskRuns.taskId, ownerId)).orderBy(asc(taskRuns.startedAt)).toSQL());
   expect(queries[2]).toEqual(new QueryBuilder().select().from(taskRuns)
     .where(eq(taskRuns.taskId, ownerId)).orderBy(desc(taskRuns.startedAt)).limit(1).toSQL());
+  expect(queries[3]).toEqual(new QueryBuilder().select({
+    ...getTableColumns(tasks),
+    mutationVersion: sql<string>`${tasks}.xmin::text`,
+  }).from(tasks).where(and(eq(tasks.id, ownerId))).limit(1).toSQL());
 });

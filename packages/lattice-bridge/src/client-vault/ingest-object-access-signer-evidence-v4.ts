@@ -19,6 +19,7 @@ import type {
   ClientProfileVault,
   PublicClientProfile,
 } from "./types.ts";
+import { recoverExactStagedClientProfile } from "./profile-v3.ts";
 
 const BASE64URL = /^[A-Za-z0-9_-]+$/u;
 
@@ -222,18 +223,30 @@ export async function ingestObjectAccessSignerEvidenceV4(input: Readonly<{
       if (currentBytes !== undefined && equalBytes(currentBytes, candidateBytes)) {
         return;
       }
-    } finally {
-      candidateBytes.fill(0);
-    }
-    await stageAndActivateClientDeviceProfileV4({
-      crypto: input.crypto,
-      vault: input.vault,
-      coordinates: input.coordinates,
-      stageId: input.createStageId(),
-      generation: publicProfile.generation + 1,
-      publicState: publicProfile.publicState,
-      candidate,
-    });
+      if (currentBytes !== undefined && await recoverExactStagedClientProfile({
+        vault: input.vault,
+        coordinates: input.coordinates,
+        expectedActive: {
+          generation: publicProfile.generation,
+          profileBytes: currentBytes,
+          publicState: publicProfile.publicState,
+        },
+        candidate: {
+          generation: publicProfile.generation + 1,
+          profileBytes: candidateBytes,
+          publicState: publicProfile.publicState,
+        },
+      })) return;
+      await stageAndActivateClientDeviceProfileV4({
+        crypto: input.crypto,
+        vault: input.vault,
+        coordinates: input.coordinates,
+        stageId: input.createStageId(),
+        generation: publicProfile.generation + 1,
+        publicState: publicProfile.publicState,
+        candidate,
+      });
+    } finally { candidateBytes.fill(0); }
   } finally {
     currentBytes?.fill(0);
     if (candidate) destroyOpenedClientDeviceProfileV4(candidate);

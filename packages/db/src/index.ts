@@ -625,6 +625,7 @@ export {
   createTask,
   getTaskById,
   getTaskByIdWithMutationVersion,
+  getProtectedTaskMutationSourceById,
   listTasksForOwner,
   listStoppableTasksForOwnerRoom,
   updateTask,

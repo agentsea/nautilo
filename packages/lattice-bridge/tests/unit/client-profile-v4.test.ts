@@ -211,6 +211,78 @@ describe("client profile v4 signer evidence", () => {
     state.v2Bytes.fill(0);
   });
 
+  test("recovers only the freshly reconstructed interrupted v4 anchor candidate", async () => {
+    const state = await fixture();
+    const profile = await createClientDeviceProfileV4Candidate({
+      crypto: state.crypto,
+      currentProfileBytes: state.v2Bytes,
+      expectedDeviceId: DEVICE,
+    });
+    const vault = new MemoryClientProfileVault();
+    await vault.unlock();
+    await stageAndActivateClientDeviceProfileV4({
+      crypto: state.crypto, vault, coordinates: COORDINATES,
+      stageId: "v4-anchor-base", generation: 1,
+      publicState: { clientKind: "browser", publicFingerprint: "45".repeat(32) },
+      candidate: profile,
+    });
+    const next = Object.freeze({ objectId: objectId("object-v4-interrupted"),
+      payloadHash: new Uint8Array(32).fill(5), accessRevision: accessRevision(0),
+      manifestHash: new Uint8Array(32).fill(6) });
+    const substituted = Object.freeze({ ...next,
+      payloadHash: new Uint8Array(32).fill(7) });
+    const activate = vault.activateProfile.bind(vault);
+    let interrupted = false;
+    vault.activateProfile = (coordinates, stageId) => {
+      if (!interrupted && stageId === "v4-anchor-interrupted") {
+        interrupted = true;
+        return Promise.reject(new Error("simulated v4 anchor interruption"));
+      }
+      return activate(coordinates, stageId);
+    };
+    const interruptionError = await createClientProfileObjectAccessAnchorPortV4({
+      crypto: state.crypto, vault, coordinates: COORDINATES,
+      createStageId: () => "v4-anchor-interrupted",
+    }).advance({ expected: null, next }).then(
+      () => null,
+      (error: unknown) => error,
+    );
+    expect(interruptionError).toHaveProperty(
+      "message", "simulated v4 anchor interruption",
+    );
+
+    vault.activateProfile = activate;
+    const substitutedOwner = createClientProfileObjectAccessAnchorPortV4({
+      crypto: state.crypto, vault, coordinates: COORDINATES,
+      createStageId: () => "v4-anchor-substituted",
+    });
+    expect(await substitutedOwner.advance({ expected: null, next: substituted })
+      .then(() => null, (error: unknown) => error)).toHaveProperty(
+        "message", "another client profile stage is already pending",
+      );
+    expect((await vault.listPublicProfiles()).filter((entry) =>
+      entry.lifecycle === "staged"
+    )).toHaveLength(1);
+
+    let replacementStageCalls = 0;
+    const recreatedOwner = createClientProfileObjectAccessAnchorPortV4({
+      crypto: state.crypto, vault, coordinates: COORDINATES,
+      createStageId: () => {
+        replacementStageCalls += 1;
+        return "v4-anchor-recreated-random";
+      },
+    });
+    expect(await recreatedOwner.advance({ expected: null, next })).toBeTrue();
+    expect(replacementStageCalls).toBe(0);
+    expect(await recreatedOwner.load(next.objectId)).toEqual(next);
+    expect((await vault.listPublicProfiles())).toHaveLength(1);
+    expect((await vault.listPublicProfiles())[0]?.generation).toBe(2);
+
+    destroyOpenedClientDeviceProfileV4(profile);
+    state.publicationBytes.fill(0);
+    state.v2Bytes.fill(0);
+  });
+
   test("stores one Human-device group snapshot outside the legacy Domain inventory", async () => {
     const state = await fixture();
     const profile = await createClientDeviceProfileV4Candidate({
@@ -413,6 +485,149 @@ describe("client profile v4 signer evidence", () => {
     expect((await vault.listPublicProfiles())[0]?.generation).toBe(2);
 
     state.publicationBytes.fill(0);
+    state.v2Bytes.fill(0);
+  });
+
+  test("preserves an interrupted randomized v2 migration it cannot reproduce", async () => {
+    const state = await fixture();
+    const vault = new MemoryClientProfileVault();
+    await vault.unlock();
+    await vault.stageProfile({
+      coordinates: COORDINATES,
+      stageId: "profile-v2-interrupted-base",
+      generation: 1,
+      profileBytes: state.v2Bytes,
+      publicState: {
+        clientKind: "browser",
+        publicFingerprint: "a9".repeat(32),
+      },
+    });
+    await vault.activateProfile(COORDINATES, "profile-v2-interrupted-base");
+    const evidenceBytesBase64url = Buffer.from(state.publicationBytes)
+      .toString("base64url");
+    let stage = 0;
+    const ingest = () => ingestObjectAccessSignerEvidenceV4({
+      crypto: state.crypto,
+      vault,
+      coordinates: COORDINATES,
+      evidence: [{ kind: "agent_runtime_publication", evidenceBytesBase64url }],
+      resolveTrustedIssuingDevicePublicKey: () =>
+        Promise.resolve(state.manager.publicKey.slice()),
+      createStageId: () => `profile-v2-interrupted:${++stage}`,
+    });
+    const activate = vault.activateProfile.bind(vault);
+    vault.activateProfile = (coordinates, stageId) =>
+      stageId === "profile-v2-interrupted:1"
+        ? Promise.reject(new Error("simulated v2 migration interruption"))
+        : activate(coordinates, stageId);
+    expect(await ingest().then(() => null, (error: unknown) => error))
+      .toHaveProperty("message", "simulated v2 migration interruption");
+    vault.activateProfile = activate;
+    expect(await ingest().then(() => null, (error: unknown) => error))
+      .toHaveProperty("message", "another client profile stage is already pending");
+    expect((await vault.listPublicProfiles()).map((entry) => ({
+      lifecycle: entry.lifecycle,
+      stageId: entry.stageId,
+      generation: entry.generation,
+    }))).toEqual([
+      { lifecycle: "active", stageId: undefined, generation: 1 },
+      { lifecycle: "staged", stageId: "profile-v2-interrupted:1", generation: 2 },
+    ]);
+
+    state.publicationBytes.fill(0);
+    state.v2Bytes.fill(0);
+  });
+
+  test("reconstructs verified evidence before recovering an interrupted v4 activation", async () => {
+    const state = await fixture();
+    const baseProfile = await createClientDeviceProfileV4Candidate({
+      crypto: state.crypto,
+      currentProfileBytes: state.v2Bytes,
+      expectedDeviceId: DEVICE,
+    });
+    const baseProfileBytes = encodeClientDeviceProfileV4(baseProfile);
+    const vault = new MemoryClientProfileVault();
+    await vault.unlock();
+    await vault.stageProfile({
+      coordinates: COORDINATES,
+      stageId: "profile-v4-transport-base",
+      generation: 1,
+      profileBytes: baseProfileBytes,
+      publicState: {
+        clientKind: "browser",
+        publicFingerprint: "ac".repeat(32),
+      },
+    });
+    await vault.activateProfile(COORDINATES, "profile-v4-transport-base");
+    const evidenceBytesBase64url = Buffer.from(state.publicationBytes)
+      .toString("base64url");
+    let stage = 0;
+    const ingest = (issuingKey = state.manager.publicKey) =>
+      ingestObjectAccessSignerEvidenceV4({
+      crypto: state.crypto,
+      vault,
+      coordinates: COORDINATES,
+      evidence: [{
+        kind: "agent_runtime_publication",
+        evidenceBytesBase64url,
+      }],
+      resolveTrustedIssuingDevicePublicKey: ({
+        humanId,
+        deviceId,
+        hostAuthorizationRevision,
+        trustedDeviceRevision,
+      }) => Promise.resolve(
+        humanId === "human-profile-v4-manager"
+          && deviceId === "device-profile-v4-manager"
+          && hostAuthorizationRevision === 4
+          && trustedDeviceRevision === 2
+          ? issuingKey.slice()
+          : null,
+      ),
+      createStageId: () => `profile-v4-transport:${++stage}`,
+    });
+    const activate = vault.activateProfile.bind(vault);
+    let interrupted = false;
+    vault.activateProfile = (coordinates, stageId) => {
+      if (!interrupted && stageId === "profile-v4-transport:1") {
+        interrupted = true;
+        return Promise.reject(new Error("simulated signer evidence interruption"));
+      }
+      return activate(coordinates, stageId);
+    };
+    await vault.lock();
+    expect(await ingest().then(() => null, (error: unknown) => error))
+      .toHaveProperty("message", "simulated signer evidence interruption");
+    expect((await vault.listPublicProfiles()).map((entry) => entry.lifecycle))
+      .toEqual(["active", "staged"]);
+    const substitutedKey = state.manager.publicKey.slice();
+    substitutedKey[0] = substitutedKey[0]! ^ 1;
+    expect(await ingest(substitutedKey).then(
+      () => null,
+      (error: unknown) => error,
+    )).toBeInstanceOf(Error);
+    expect((await vault.listPublicProfiles()).map((entry) => entry.lifecycle))
+      .toEqual(["active", "staged"]);
+    substitutedKey.fill(0);
+    vault.activateProfile = activate;
+    await ingest();
+    expect(stage).toBe(1);
+    expect((await vault.listPublicProfiles())[0]?.generation).toBe(2);
+    await vault.withOpenProfile(COORDINATES, async (profileBytes) => {
+      const opened = await authenticateClientDeviceProfileV4({
+        crypto: state.crypto,
+        profileBytes,
+        expectedDeviceId: DEVICE,
+      });
+      expect(opened.signerEvidence).toHaveLength(1);
+      destroyOpenedClientDeviceProfileV4(opened);
+    });
+    await ingest();
+    expect((await vault.listPublicProfiles())[0]?.generation).toBe(2);
+
+    state.publicationBytes.fill(0);
+    baseProfileBytes.fill(0);
+    destroyOpenedClientDeviceProfileV4(baseProfile);
     state.v2Bytes.fill(0);
   });
 

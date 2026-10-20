@@ -7,6 +7,7 @@ import {
   type ClientProfileVaultAvailability,
   type InterruptedClientProfileResolution,
   type PublicClientProfile,
+  type RecoverExactStagedClientProfileInput,
   type StageClientProfileInput,
   type StagedClientProfileReceipt,
 } from "../client-vault/types.ts";
@@ -14,6 +15,9 @@ import {
   assertClientProfileCoordinates,
   assertStageInput,
   coordinatesKey,
+  sameExactClientProfileMaterial,
+  snapshotRecoverExactStagedClientProfileInput,
+  wipeRecoverExactStagedClientProfileInput,
 } from "../client-vault/validation.ts";
 
 interface MemoryProfile {
@@ -177,6 +181,43 @@ export class MemoryClientProfileVault implements ClientProfileVault {
     return resolution.action === "activate"
       ? this.activateProfile(coordinates, resolution.stageId)
       : this.abortStagedProfile(coordinates, resolution.stageId);
+  }
+
+  recoverExactStagedProfile(
+    input: RecoverExactStagedClientProfileInput,
+  ): Promise<boolean> {
+    let snapshot: RecoverExactStagedClientProfileInput | undefined;
+    try {
+      snapshot = snapshotRecoverExactStagedClientProfileInput(input);
+      this.#assertUnlocked();
+      const slots = this.#profiles.get(coordinatesKey(snapshot.coordinates));
+      if (slots?.active === undefined || slots.staged === undefined) {
+        return Promise.resolve(false);
+      }
+      if (
+        !sameExactClientProfileMaterial(slots.active, snapshot.expectedActive)
+        || !sameExactClientProfileMaterial(slots.staged, snapshot.candidate)
+      ) return Promise.resolve(false);
+
+      slots.active.profileBytes.fill(0);
+      slots.active = cloneProfile({
+        coordinates: snapshot.coordinates,
+        generation: slots.staged.generation,
+        profileBytes: slots.staged.profileBytes,
+        publicState: slots.staged.publicState,
+      });
+      slots.staged.profileBytes.fill(0);
+      delete slots.staged;
+      return Promise.resolve(true);
+    } catch (error) {
+      return Promise.reject(
+        error instanceof Error ? error : new Error("vault recovery failed"),
+      );
+    } finally {
+      if (snapshot !== undefined) {
+        wipeRecoverExactStagedClientProfileInput(snapshot);
+      }
+    }
   }
 
   async withOpenProfile<T>(
@@ -415,11 +456,105 @@ export async function runClientProfileVaultConformance(
   );
   checks.push("interrupted-activation");
 
+  const recoverExact = vault.recoverExactStagedProfile?.bind(vault);
+  assert(recoverExact !== undefined, "supports exact staged recovery");
+  const successorPublicState = {
+    ...CONFORMANCE_PUBLIC_STATE,
+    publicFingerprint:
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  } as const;
+  const expectedActiveBytes = new Uint8Array([11]);
+  const candidateBytes = new Uint8Array([12, 13]);
+  await vault.stageProfile({
+    coordinates: CONFORMANCE_COORDINATES,
+    stageId: "stage_exact_recovery",
+    generation: 3,
+    profileBytes: candidateBytes,
+    publicState: successorPublicState,
+  });
+  const exactInput = {
+    coordinates: CONFORMANCE_COORDINATES,
+    expectedActive: {
+      generation: 2,
+      profileBytes: expectedActiveBytes,
+      publicState: CONFORMANCE_PUBLIC_STATE,
+    },
+    candidate: {
+      generation: 3,
+      profileBytes: candidateBytes,
+      publicState: successorPublicState,
+    },
+  } as const;
+  assert(!await recoverExact({
+    ...exactInput,
+    expectedActive: {
+      ...exactInput.expectedActive,
+      profileBytes: new Uint8Array([99]),
+    },
+  }), "refuses a same-generation active byte mismatch");
+  assert(!await recoverExact({
+    ...exactInput,
+    candidate: {
+      ...exactInput.candidate,
+      profileBytes: new Uint8Array([12, 99]),
+    },
+  }), "refuses a staged candidate byte mismatch");
+  assert(!await recoverExact({
+    ...exactInput,
+    expectedActive: {
+      ...exactInput.expectedActive,
+      publicState: successorPublicState,
+    },
+  }), "refuses an active public-state mismatch");
+  assert(!await recoverExact({
+    ...exactInput,
+    candidate: {
+      ...exactInput.candidate,
+      publicState: CONFORMANCE_PUBLIC_STATE,
+    },
+  }), "refuses a staged public-state mismatch");
+  let invalidGenerationRejected = false;
+  try {
+    await recoverExact({
+      ...exactInput,
+      candidate: { ...exactInput.candidate, generation: 4 },
+    });
+  } catch {
+    invalidGenerationRejected = true;
+  }
+  assert(invalidGenerationRejected, "rejects malformed recovery generations");
+  assert(await vault.withOpenProfile(
+    CONFORMANCE_COORDINATES,
+    (bytes) => bytes[0] === 11,
+  ), "recovery refusal preserves the active profile");
+  assert((await vault.listPublicProfiles()).length === 2,
+    "recovery refusal preserves the staged profile");
+  const absentCoordinates = {
+    ...CONFORMANCE_COORDINATES,
+    profileId: "profile_conformance_absent",
+  };
+  assert(!await recoverExact({ ...exactInput, coordinates: absentCoordinates }),
+    "returns false without active or staged records");
+  const recoveryResults = await Promise.all([
+    recoverExact(exactInput),
+    recoverExact(exactInput),
+  ]);
+  assert(recoveryResults.filter(Boolean).length === 1,
+    "only one concurrent exact recovery wins");
+  assert(!await recoverExact(exactInput), "returns false without a staged record");
+  assert(expectedActiveBytes[0] === 11 && candidateBytes[0] === 12,
+    "recovery does not mutate caller bytes");
+  assert(await vault.withOpenProfile(
+    CONFORMANCE_COORDINATES,
+    (bytes) => bytes[0] === 12 && bytes[1] === 13,
+  ), "exact recovery activates the staged candidate");
+  checks.push("exact-staged-recovery");
+
   await vault.rotateWrappingMaterial();
   assert(
     await vault.withOpenProfile(
       CONFORMANCE_COORDINATES,
-      (bytes) => bytes[0] === 11,
+      (bytes) => bytes[0] === 12,
     ),
     "wrapping-key rotation preserves profile",
   );
@@ -433,11 +568,22 @@ export async function runClientProfileVaultConformance(
     locked = true;
   }
   assert(locked, "locked vault cannot open");
+  let lockedRecoveryRejected = false;
+  try {
+    await recoverExact({
+      ...exactInput,
+      expectedActive: { ...exactInput.expectedActive, generation: 3 },
+      candidate: { ...exactInput.candidate, generation: 4 },
+    });
+  } catch {
+    lockedRecoveryRejected = true;
+  }
+  assert(lockedRecoveryRejected, "locked vault cannot recover");
   await vault.unlock();
   assert(
     await vault.withOpenProfile(
       CONFORMANCE_COORDINATES,
-      (bytes) => bytes[0] === 11,
+      (bytes) => bytes[0] === 12,
     ),
     "unlock restores access",
   );
