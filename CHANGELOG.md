@@ -14,6 +14,12 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   current-turn responses and successful tool actions, close completed requests
   briefly, and continue unfinished work or later Human input.
 
+- Messages exceeding PostgreSQL's full-text index size limit now save intact
+  and remain immediately searchable. These oversized messages use literal
+  word/prefix/path matching without stemming; ordinary indexed search is unchanged.
+  Session search summarizes a marked excerpt of an oversized match while retaining
+  its full source in conversation history.
+
 - OfficeCLI results containing emoji joiners or invisible layout controls
   are sanitized before instruction scanning instead of blocking the entire
   result. Original documents remain unchanged.
