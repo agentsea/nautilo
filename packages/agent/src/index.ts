@@ -1505,3 +1505,4 @@ export { MODEL_INPUT_EXPOSURE_METADATA_KEY, bindModelInputExposure, readModelInp
 export { readCurrentOrdinaryTranscriptExposureRows, projectCurrentOrdinaryTranscriptExposureRows, type CurrentOrdinaryTranscriptExposureRow } from "./store/session-store";
 
 export { memoryReviewFingerprint } from "./memory/memory-review-staging";
+export { resultReceipt, resultVersion } from "./tools/result-reader/result-window";

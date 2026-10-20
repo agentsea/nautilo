@@ -7,6 +7,11 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Oversized OfficeCLI results stay in conversation history while Genie receives
+  a compact receipt and can inspect, page through or search the retained output.
+  Task reads and reopened conversations keep these results within the model
+  request budget without discarding the original content.
+
 - Long-running conversations retain the current run's recent exchanges ahead
   of surrounding Room activity, keep accepted Human replies in order, and
   reserve Journal and recalled Records independently of older-history settings.

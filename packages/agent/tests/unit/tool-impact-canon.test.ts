@@ -41,6 +41,7 @@ const CANON: Record<string, CanonEntry> = {
   find_scope:         { impact: "read-only",   standardVerb: "auto" },
   add_memory_to_scope: { impact: "low",        standardVerb: "auto" },
   close_scope:        { impact: "low",         standardVerb: "auto" },
+  read_tool_result:   { impact: "read-only",   standardVerb: "auto" },
   task:               { impact: "low",         standardVerb: "auto" },
   // Phase 3 intent shortcuts (thin createTask wrappers). in_scope /
   // in_background are low (auto); in_private_namespace carries the

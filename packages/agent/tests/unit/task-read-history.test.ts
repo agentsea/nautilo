@@ -86,7 +86,10 @@ describe("task.read history recovery", () => {
   });
 
   test("response allocation uses actual remaining workspace and leaves room for the next model turn", () => {
-    expect(taskReadResponseByteBudget(4_000, [new HumanMessage("x".repeat(2_000))])).toBe(7_000);
+    const ascii = taskReadResponseByteBudget(4_000, [new HumanMessage("x".repeat(2_000))]);
+    expect(ascii).toBeGreaterThan(0);
+    expect(ascii).toBeLessThanOrEqual(1_000);
+    expect(taskReadResponseByteBudget(4_000, [new HumanMessage("é".repeat(2_000))])).toBe(0);
     expect(taskReadResponseByteBudget(400, [new HumanMessage("x".repeat(2_000))])).toBe(0);
   });
 

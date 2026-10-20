@@ -297,7 +297,7 @@ const OfficeCliSchema = z.object({
   start: z.number().int().optional(),
   end: z.number().int().optional(),
   maxLines: z.number().int().positive().optional(),
-  cols: z.string().optional(),
+  cols: z.string().optional().describe("Comma-separated Excel column letters, e.g. A,B,C. Ranges such as A:C are not supported."),
   page: z.string().optional(),
   browser: z.boolean().optional(),
   screenshotWidth: z.number().int().positive().optional(),
@@ -1475,9 +1475,9 @@ export function createOfficeCliTool(context?: unknown, deps: CreateOfficeCliTool
     name: "officecli",
     description: `Headless OfficeCLI reading, validation, authoring, and rendering for closed .docx, .xlsx, and .pptx files.
 
-To read a complete closed document, use command=view with mode=text and omit start, end, maxLines, and limit. The JSON returnedElements field is the exact number of emitted records; the vendor totalElements field may also count non-content OOXML structure. Use this tool for generate-from-scratch, closed-file edits, validation, and render/look/fix loops. It is NOT the interactive editor path: when a Writer/Spreadsheet/Slides mini-app is open, use an available app-specific interactive editor tool or close the editor first.
+Start with document structure or stats, then select useful text ranges or spreadsheet columns with start, end and cols. Large results are retained and may be replaced with a receipt: use read_tool_result to inspect, read or search that saved result, without repeating the original operation. Partial reads and search matches do not establish complete analysis. The JSON returnedElements field is the number of emitted records; totalElements may include non-content OOXML structure. Use this tool for closed-file reading, generation, editing and validation. When an office editor is open, use its interactive tool or close the editor first.
 
-Format is inferred from the file extension unless a command needs an explicit format. Prefer intent-level L1 commands first, then L2 object paths, then L3 raw/raw_set/add_part only when help shows the property or OOXML part you need. Use help for prop discovery. Use view screenshot or view issues to render, inspect, and fix.
+Format is inferred from the file extension unless a command needs an explicit format. Prefer intent-level L1 commands first, then L2 object paths, then L3 raw/raw_set/add_part only when help shows the property or OOXML part you need. Use help for prop discovery. Use view screenshot for visual inspection. view issues returns document diagnostics, not spreadsheet rows; request it only when diagnosing document problems.
 
 Workspace writes are zero-clobber when out differs from path (new artifact). To edit a closed workspace file in place, omit out or set out equal to path. Open editor sessions still lock out mutations. The commands batch array is capped at 50 operations per call; this does not limit document elements or read results.
 
