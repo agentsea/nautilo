@@ -59,6 +59,7 @@ describe("tool exposure manifest", () => {
       "eject_command",
       "search_memory",
       "recall_records",
+      "read_tool_result",
       "manage_memory",
       "skip",
       "react",

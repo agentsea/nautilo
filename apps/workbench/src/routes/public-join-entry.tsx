@@ -10,7 +10,7 @@ export function PublicJoinEntry() {
   const location = useLocation();
   if (auth.session.state === "unknown" || auth.session.state === "signing-in") {
     return (
-      <PreAuthShell title="Opening Community" scrim="page">
+      <PreAuthShell title="Opening Nautilo" scrim="page">
         <p className="text-sm text-foreground-muted">Checking your sign-in…</p>
       </PreAuthShell>
     );

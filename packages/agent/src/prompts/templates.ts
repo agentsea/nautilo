@@ -1087,7 +1087,11 @@ When exactly one other agent in the room is clearly the right responder and you 
 
 export const EXPLICITLY_SELECTED_PROMPT = `
 
-The user just explicitly selected you from a disambiguation picker to answer this message. Respond as yourself — do not defer to another assistant or stay silent, even if another participant shares your display name.
+The user just explicitly selected you from a disambiguation picker to handle the latest accepted Human request. Respond as yourself rather than deferring to another assistant, even if another participant shares your display name.
+
+When the narration contains "Completed progress in the current logical turn", your earlier assistant responses shown there with your name and handle were already delivered to the Humans. Successful tool results there are receipts for already executed actions. This is progress within the same turn, not a new conversation. Surrounding Room activity belongs to other Humans or executions and is not evidence of your own completion.
+
+If the latest request is already fulfilled and any required tools have succeeded, add only a brief closing remark. Do not repeat the full answer, give a recap of the same advice, or repeat a successful Memory save or other completed action. If unfinished work remains, you must continue that work using the results already present. If a later accepted Human input changes the request, you must continue the work required by that input.
 `;
 
 /**

@@ -20,10 +20,12 @@ import {
   backupManifestSchema,
   BUNDLE_INTEGRITY_FILES,
   ComposeDriver,
+  createRemoteFs,
   type BackupManifest,
   type ComposeDriverDeps,
   type ExecFn,
   type ExecResult,
+  type RemoteDeploymentManifest,
 } from "../../src/index.ts";
 import {
   atomicDbRestoreScript,
@@ -1605,7 +1607,7 @@ describe("restore full bundle", () => {
     ).toBe("# captured pre-upgrade template\n");
   });
 
-  test("remote full restore from a source-current target reconciles registry bundle identity", async () => {
+  function makeSourceCurrentRemoteRestoreFixture() {
     const remoteRoot = "/opt/nautilo-prod";
     const repoDigest = `ghcr.io/agentsea/nautilo-server@sha256:${"f".repeat(64)}`;
     const remoteProfile: ComposeDriverProfile = {
@@ -1617,7 +1619,7 @@ describe("restore full bundle", () => {
       instance_id: "prod",
       ssh: { host: "1.2.3.4", user: "root" },
     };
-    const deploymentManifest = {
+    let deploymentManifest: RemoteDeploymentManifest = {
       version: 2,
       instanceId: "prod",
       composeProjectName: "nautilo-prod",
@@ -1635,6 +1637,13 @@ describe("restore full bundle", () => {
     const exec = makeFakeExec((call) => {
       if (call.cmd === "cat" && call.args[0]?.endsWith("deployment-manifest.json")) {
         return { code: 0, stdout: JSON.stringify(deploymentManifest), stderr: "" };
+      }
+      const manifestWrite = decodeRemoteFileWrite(
+        call.args[1] ?? "",
+        `${remoteRoot}/deployment-manifest.json`,
+      );
+      if (manifestWrite !== undefined) {
+        deploymentManifest = JSON.parse(manifestWrite) as RemoteDeploymentManifest;
       }
       return { code: 0, stdout: "", stderr: "" };
     });
@@ -1662,13 +1671,46 @@ describe("restore full bundle", () => {
     ) as { image: { repoDigest?: string } };
     remoteBundleManifest.image.repoDigest = repoDigest;
     writeFileSync(join(bundlePath, "manifest.json"), JSON.stringify(remoteBundleManifest));
+    const operatorRoot = mktmp("remote-source-current-operator-");
+    const stagingRoot = mktmp("remote-source-current-staging-");
+    const remoteFs = createRemoteFs(remoteProfile, {
+      stagingRoot,
+      remoteInstanceRoot: remoteRoot,
+      exec: localExec.exec,
+    });
     const driver = new ComposeDriver(
       makeDeps([], {
         exec: exec.exec,
         localExec: localExec.exec,
+        fs: remoteFs,
+        resolveLocalInstanceRootDir: () => operatorRoot,
         resolveInstanceRootDir: () => remoteRoot,
       }),
     );
+
+    return {
+      bundlePath,
+      driver,
+      exec,
+      getDeploymentManifest: () => deploymentManifest,
+      localExec,
+      remoteProfile,
+      remoteRoot,
+      repoDigest,
+      stagingRoot,
+    };
+  }
+
+  test("non-stream remote full restore from a source-current target reconciles registry bundle identity", async () => {
+    const {
+      bundlePath,
+      driver,
+      exec,
+      getDeploymentManifest,
+      remoteProfile,
+      remoteRoot,
+      repoDigest,
+    } = makeSourceCurrentRemoteRestoreFixture();
 
     await driver.restore(remoteProfile, { fromPath: bundlePath, force: true, mode: "full" });
 
@@ -1687,6 +1729,10 @@ describe("restore full bundle", () => {
     expect(manifestWrite).toBeDefined();
     const reconciled = JSON.parse(manifestWrite!) as { image: { mode: string; reference: string } };
     expect(reconciled.image).toEqual({
+      mode: "registry",
+      reference: repoDigest,
+    });
+    expect(getDeploymentManifest().image).toEqual({
       mode: "registry",
       reference: repoDigest,
     });
@@ -1724,15 +1770,35 @@ describe("restore full bundle", () => {
         (script) => !script.includes("deploy.registry-overlay.yml"),
       ),
     ).toBe(true);
+  });
 
-    exec.calls.length = 0;
-    localExec.calls.length = 0;
+  test("streamed remote full restore from a source-current target reconciles registry bundle identity through local staging", async () => {
+    const {
+      bundlePath,
+      driver,
+      exec,
+      getDeploymentManifest,
+      localExec,
+      remoteProfile,
+      remoteRoot,
+      repoDigest,
+      stagingRoot,
+    } = makeSourceCurrentRemoteRestoreFixture();
+
     await driver.restore(remoteProfile, {
       fromPath: bundlePath,
       force: true,
       mode: "full",
       stream: true,
     });
+    expect(readFileSync(join(stagingRoot, "postgres-init.sh"), "utf8")).toBe("#!/bin/sh\n");
+    expect(
+      localExec.calls.some(
+        (call) =>
+          call.cmd === "rsync" &&
+          call.args.at(-1) === "root@1.2.3.4:/opt/nautilo-prod/",
+      ),
+    ).toBe(true);
     const streamedReconciliation = exec.calls.find((call) => {
       const script = call.args[1] ?? "";
       return (
@@ -1753,6 +1819,10 @@ describe("restore full bundle", () => {
         `${remoteRoot}/deploy.registry-overlay.yml`,
       ),
     ).toContain(repoDigest);
+    expect(getDeploymentManifest().image).toEqual({
+      mode: "registry",
+      reference: repoDigest,
+    });
   });
 
   test("remote full restore treats a synthetic local RepoDigest as a retained source tag", async () => {

@@ -1,12 +1,14 @@
 import {
   bolterConnectionObservationSchema, bolterNativeCommandSchema, bolterNativeResultSchema,
-  bolterReceivedMessageSchema,
+  bolterReceivedMessageSchema, bolterAttachmentPayloadSchema,
+  type BolterAttachmentPayload,
   type BolterConnectionObservation, type BolterNativeCommand, type BolterNativeResult, type BolterReceivedMessage,
 } from "@nautilo/types";
 import { RELAY_HOST_CONTROL_MAX_BYTES } from "./desktop-host-protocol";
 
 /** Finite adapter lane on the existing authenticated Desktop socket. */
 export const BOLTER_RELAY_PROTOCOL_VERSION = 30 as const;
+export const BOLTER_FILES_PROTOCOL_VERSION = 31 as const;
 /** Matches the existing private Host framing ceiling; provider limits remain independently qualified. */
 export const BOLTER_RELAY_MAX_FRAME_BYTES = RELAY_HOST_CONTROL_MAX_BYTES;
 export type RelayBolterScope = Readonly<{
@@ -29,7 +31,7 @@ export type RelayBolterBatch = Envelope & Readonly<{
 export type RelayBolterBatchAck = Envelope & Readonly<{
   type: "relay:bolter-batch-ack"; connectionId: string; generation: number; batchId: string; status: "accepted" | "blocked";
 }>;
-export type BolterAuthorizedContent = Readonly<{ chatId: string; threadRootId: string | null; content: string }>;
+export type BolterAuthorizedContent = Readonly<{ chatId: string; threadRootId: string | null; content: string; files?: readonly BolterAttachmentPayload[] }>;
 export type RelayBolterAuthorize = Envelope & Readonly<{
   type: "relay:bolter-authorize"; correlationId: string; outboxId: string;
 }>;
@@ -72,9 +74,11 @@ function parse(value: unknown): RelayBolterServerMessage | RelayBolterDesktopMes
       case "relay:bolter-authorized": {
         const content = value["content"];
         return exact(value, [...base, "correlationId", "outboxId", "content"]) && uuid(value["correlationId"]) && uuid(value["outboxId"])
-          && (content === null || record(content) && exact(content, ["chatId", "threadRootId", "content"])
+          && (content === null || record(content) && exact(content, ["chatId", "threadRootId", "content", ...(Object.hasOwn(content, "files") ? ["files"] : [])])
             && opaque(content["chatId"]) && (content["threadRootId"] === null || opaque(content["threadRootId"]))
-            && typeof content["content"] === "string" && content["content"].length > 0) ? value as RelayBolterAuthorized : null;
+            && typeof content["content"] === "string" && content["content"].length > 0
+            && (!Object.hasOwn(content, "files") || (value["scope"] as RelayBolterScope).selectedProtocolVersion >= BOLTER_FILES_PROTOCOL_VERSION
+              && Array.isArray(content["files"]) && content["files"].every(file => bolterAttachmentPayloadSchema.safeParse(file).success))) ? value as RelayBolterAuthorized : null;
       }
       case "relay:bolter-command":
         return exact(value, [...base, "correlationId", "command"]) && uuid(value["correlationId"]) && bolterNativeCommandSchema.safeParse(value["command"]).success ? value as RelayBolterCommand : null;

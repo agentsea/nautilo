@@ -82,6 +82,23 @@ function validateInjectedRoute(
   return route;
 }
 
+/**
+ * Only ordinary aggregator routes may broaden seller selection. Provider-bound
+ * privacy routes keep their original pin; a numeric privacy score alone does
+ * not prove another marketplace seller has the same data handling contract.
+ * Invocation owners separately fence privacy-constrained operations.
+ */
+export function canBroadenSurplusModelRoute(catalogModelId: string): boolean {
+  const entry = getActiveModelCatalogSync().catalog.entries.find((row) => row.id === catalogModelId);
+  if (!entry?.defaultEnabled) return false;
+  const privacyLabel = "label" in entry.privacy ? entry.privacy.label : undefined;
+  if (privacyLabel !== undefined && privacyLabel !== "standard") return false;
+  const workload = "workload" in entry ? entry.workload : "chat";
+  if (workload !== "chat" && workload !== "decision") return false;
+  return (entry.provider === "openrouter" && entry.routing === "openrouter")
+    || (entry.provider === "fireworks" && entry.routing === "fireworks");
+}
+
 export type SurplusChatServingStatus = "not-qualified" | "qualified-unavailable" | "available";
 
 export type SurplusChatServingAvailability =

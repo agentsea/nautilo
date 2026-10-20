@@ -135,12 +135,12 @@ describe("progressive tool exposure telemetry", () => {
     );
 
     // The core-growth gate includes all 21 embedded-browser tools.
-    // The static baseline is 48, including run_website_task, public browse_web and the connected-website reader
+    // The static baseline is 49, including retained tool-result retrieval, run_website_task, public browse_web and the connected-website reader
     // and its immediately available supervision and direct-control tools.
     // Computer Use core tools are supplied only by
     // the active signed catalogue, so this guard derives their count instead
     // of compiling a second operation list.
-    expect(coreOnly.coreTools).toBe(48 + activeComputerUseHostToolDefinitions().length);
+    expect(coreOnly.coreTools).toBe(49 + activeComputerUseHostToolDefinitions().length);
     expect(coreOnly.promptSchemas).toBe(coreOnly.providerSchemas);
     expect(filesystemPack.intentPackTools).toBeGreaterThan(0);
     expect(filesystemPack.activatedTools).toBe(filesystemPack.intentPackTools);

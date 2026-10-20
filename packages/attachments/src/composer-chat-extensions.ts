@@ -1,4 +1,4 @@
-import { AUDIO_EXTENSIONS, IMAGE_EXTENSIONS, TEXT_EXTENSIONS } from "./policy";
+import { AUDIO_EXTENSIONS, DOCUMENT_MIME_TYPES, IMAGE_EXTENSIONS, TEXT_EXTENSIONS } from "./policy";
 
 /**
  * File extensions the Workbench composer may queue for chat, matching the
@@ -46,3 +46,10 @@ export const IMAGE_HISTORY_NOTICE =
 export function imageAttachmentModelError(modelLabel: string): string {
   return `${modelLabel} can’t read the images attached to this message. Remove them or choose a model that supports images.`;
 }
+
+/** Workspace-aware composers store documents as Room-scoped artifacts. */
+export function workspaceDocumentMimeType(name: string): string | null {
+  return DOCUMENT_MIME_TYPES[extensionOfBasename(name)] ?? null;
+}
+
+export { DOCUMENT_EXTENSIONS as WORKSPACE_DOCUMENT_ATTACHMENT_EXTENSIONS } from "./policy";

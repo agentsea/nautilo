@@ -1,5 +1,5 @@
 import {
-  BOLTER_RELAY_PROTOCOL_VERSION, parseRelayBolterServerMessage, sameRelayBolterScope,
+  BOLTER_RELAY_PROTOCOL_VERSION, BOLTER_FILES_PROTOCOL_VERSION, parseRelayBolterServerMessage, sameRelayBolterScope,
   type RelayBolterAuthorized, type RelayBolterBatchAck, type RelayBolterCommand, type RelayBolterHostPort,
   type RelayBolterHostTransport, type RelayBolterScope,
 } from "@nautilo/relay";
@@ -12,7 +12,7 @@ export interface BolterNativeConnectionDriver {
   start(accept: (messages: readonly BolterReceivedMessage[], batchId: string) => Promise<boolean>,
     onObservation?: (observation: BolterConnectionObservation) => void): Promise<BolterConnectionObservation>;
   pause(): Promise<BolterConnectionObservation>;
-  prepareSend(): Promise<((content: NonNullable<RelayBolterAuthorized["content"]>) => Promise<BolterNativeResult>) | null>;
+  prepareSend(): Promise<((content: NonNullable<RelayBolterAuthorized["content"]>, reauthorize?: () => Promise<boolean>) => Promise<BolterNativeResult>) | null>;
   retire(): Promise<void>;
 }
 type Connection = { id: string; generation: number; active: boolean; driver: BolterNativeConnectionDriver };
@@ -36,10 +36,15 @@ export function createBolterNativeRelayPort(options: {
   let session: Session | null = null;
   let retirement = Promise.resolve();
   const current = (s: Session) => { try { return session === s && fence(); } catch { return false; } };
+  const projectedObservation = (s: Session, value: BolterConnectionObservation): BolterConnectionObservation => {
+    if (s.scope.selectedProtocolVersion >= BOLTER_FILES_PROTOCOL_VERSION) return value;
+    const { attachments: _attachments, ...legacy } = value;
+    return legacy;
+  };
   const observation = (s: Session, connection: Connection, value: BolterConnectionObservation) => {
     if (current(s) && connection.active && s.connections.get(connection.id)?.generation === connection.generation
       && s.generations.get(connection.id) === connection.generation) s.transport.send({ type: "relay:bolter-observation", version: BOLTER_RELAY_PROTOCOL_VERSION,
-      scope: s.scope, connectionId: connection.id, generation: connection.generation, observation: value });
+      scope: s.scope, connectionId: connection.id, generation: connection.generation, observation: projectedObservation(s, value) });
   };
   const disconnect = () => {
     const old = session; session = null;
@@ -137,16 +142,24 @@ export function createBolterNativeRelayPort(options: {
     const prepared = await value.driver.prepareSend();
     if (!prepared) return unavailable("qualification_required");
     if (!current(s) || !value.active) return unavailable("authority_changed");
-    let resolveAuthorization!: (content: RelayBolterAuthorized["content"]) => void;
-    const authorized = new Promise<RelayBolterAuthorized["content"]>(resolve => { resolveAuthorization = resolve; });
-    s.authorizations.set(message.correlationId, { connectionId: value.id, outboxId: command.outboxId, resolve: resolveAuthorization });
-    try {
+    const authorize = async () => {
+      if (!current(s) || !value.active) return null;
+      let resolveAuthorization!: (content: RelayBolterAuthorized["content"]) => void;
+      const authorized = new Promise<RelayBolterAuthorized["content"]>(resolve => { resolveAuthorization = resolve; });
+      s.authorizations.set(message.correlationId, { connectionId: value.id, outboxId: command.outboxId, resolve: resolveAuthorization });
       if (!s.transport.send({ type: "relay:bolter-authorize", version: BOLTER_RELAY_PROTOCOL_VERSION, scope: s.scope,
-        correlationId: message.correlationId, outboxId: command.outboxId })) return unavailable("desktop_offline");
+        correlationId: message.correlationId, outboxId: command.outboxId })) { s.authorizations.delete(message.correlationId); return null; }
       const content = await authorized;
+      return current(s) && value.active ? content : null;
+    };
+    try {
+      const content = await authorize();
       if (!content || !current(s) || !value.active) return unavailable("authority_changed");
-      // Native preparation already attested. This call must spawn synchronously before its first await.
-      return await prepared(content);
+      // Text spawns immediately. File preparation reauthorizes before every later dispatch.
+      return await prepared(content, async () => {
+        const fresh = await authorize();
+        return !!fresh && fresh.chatId === content.chatId && fresh.threadRootId === content.threadRootId && fresh.content === content.content;
+      });
     } catch { return { kind: "uncertain" }; }
     finally { s.authorizations.delete(message.correlationId); }
   }
@@ -184,14 +197,16 @@ export function createBolterNativeRelayPort(options: {
       }
       const result = await work.result;
       if (current(s)) s.transport.send({ type: "relay:bolter-result", version: BOLTER_RELAY_PROTOCOL_VERSION,
-        scope: s.scope, correlationId: parsed.correlationId, result });
+        scope: s.scope, correlationId: parsed.correlationId,
+        result: result.kind === "observation" ? { ...result, observation: projectedObservation(s, result.observation) } : result });
     },
     onAuthorized(message: RelayBolterAuthorized) {
       const s = session;
       if (!s || !current(s) || !sameRelayBolterScope(s.scope, message.scope)) return;
       const pending = s.authorizations.get(message.correlationId);
       if (!pending || pending.outboxId !== message.outboxId) return;
-      s.authorizations.delete(message.correlationId); pending.resolve(message.content ? Object.freeze({ ...message.content }) : null);
+      s.authorizations.delete(message.correlationId); pending.resolve(message.content ? Object.freeze({ ...message.content,
+        ...(message.content.files ? { files: Object.freeze(message.content.files.map(file => Object.freeze({ ...file }))) } : {}) }) : null);
     },
     onBatchAck(message: RelayBolterBatchAck) {
       const s = session;

@@ -7,6 +7,7 @@ import {
 } from "@nautilo/operator-secrets";
 import type { PaidServiceProvider } from "@nautilo/types";
 import { openMediaFunding, type MediaFundingDependencies } from "../../src/lib/media-funding";
+import { resolveSurplusPersonalDirectRecovery } from "../../src/lib/surplus-personal-recovery";
 import { resolveModelFunding, type ModelFundingDeps } from "../../src/lib/model-funding";
 import { bindAdmittedServiceFunding, runWithDurableServiceFunding, type ServiceFundingDeps } from "../../src/lib/service-funding";
 
@@ -46,6 +47,7 @@ function harness(kind: "personal" | "server") {
     resolveFunding: (input) => resolveModelFunding(input, modelDeps),
     bindFunding: (human, provider, binding) => bindAdmittedServiceFunding(human, provider, binding, serviceDeps),
     runFunding: (binding, intent, run) => runWithDurableServiceFunding(binding, intent, run, serviceDeps),
+    resolvePersonalRecovery: (input) => resolveSurplusPersonalDirectRecovery(input, modelDeps),
     findModel: async (input) => { lookups.push(input.apiKey); afterLookup(); return found; },
   };
   return { dependencies, rows, serverKeys, lookups,
@@ -111,6 +113,43 @@ describe("exact media marketplace funding", () => {
     expect(openMediaFunding("40000000-0000-4000-8000-000000000004", MODEL, "image", {
       prior: first.funding, transport: "direct",
     }, undefined, h.dependencies)).rejects.toThrow("funding_source_changed");
+  });
+
+  test("missing server direct uses the same model's personal key before a media reservation", async () => {
+    const h = harness("server"); h.setFound(false); h.serverKeys.delete("venice");
+    const admitted = await openMediaFunding(HUMAN, MODEL, "image", undefined, undefined, h.dependencies);
+    expect(admitted.modelId).toBe(MODEL);
+    expect(admitted.funding.binding).toMatchObject({ kind: "personal", providerRoute: "venice", credentialRevision: 1 });
+    expect(h.lookups).toEqual(["server-surplus"]);
+    expect(await admitted.runAttempt(async ({ apiKey }) => apiKey)).toBe("personal-venice");
+  });
+
+  test("a server Surplus key remains sufficient when the exact media route is found", async () => {
+    const h = harness("server"); h.serverKeys.delete("venice"); h.rows.clear();
+    const admitted = await openMediaFunding(HUMAN, MODEL, "image", undefined, undefined, h.dependencies);
+    expect(admitted.funding.binding.kind).toBe("server");
+    expect(await admitted.runAttempt(async ({ apiKey }) => apiKey)).toBe("server-surplus");
+  });
+
+  test("safe image refusal may bind personal direct when server direct is absent", async () => {
+    const h = harness("server"); h.serverKeys.delete("venice");
+    const first = await openMediaFunding(HUMAN, MODEL, "image", undefined, undefined, h.dependencies);
+    const direct = await openMediaFunding(HUMAN, MODEL, "image", {
+      prior: first.funding, transport: "direct", directOnly: true,
+    }, undefined, h.dependencies);
+    expect(first.funding.binding.kind).toBe("server");
+    expect(direct.funding.binding.kind).toBe("personal");
+    expect(await direct.runAttempt(async ({ apiKey }) => apiKey)).toBe("personal-venice");
+  });
+
+  test("no personal key or disabled personal policy leaves Surplus-only media failure explicit", async () => {
+    for (const disabled of [false, true]) {
+      const h = harness("server"); h.setFound(false); h.serverKeys.delete("venice");
+      if (disabled) h.disable(); else h.rows.delete("venice");
+      expect(openMediaFunding(HUMAN, MODEL, "image", undefined, undefined, h.dependencies)).rejects.toThrow(
+        disabled ? "personal_credentials_disabled" : "personal_credential_missing",
+      );
+    }
   });
 
   test("a replaced creating server key cannot be hidden by direct fallback", async () => {

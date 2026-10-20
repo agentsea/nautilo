@@ -232,6 +232,6 @@ export function BolterConnectionSection({ scopeKey, onCatalogueSummary, onRoomCr
       <div className="flex gap-2"><Button type="button" disabled={busy} onClick={() => setSelectedConnection(null)}>Cancel</Button>
         <Button type="submit" disabled={busy || !available || !chosen || !agentId || !name.trim() || !consent}>Create room</Button></div>
     </form> : null}
-    <p className="text-xs text-foreground-muted">Text only. Genie replies to incoming messages may leave Nautilo. Human messages require an explicit review and send. Protected content and attachments are unsupported.</p>
+    <p className="text-xs text-foreground-muted">Genie replies to incoming messages may leave Nautilo. Your messages and selected files are shared only when you send them with the Bolter composer. Review before sending is optional. Protected content is unsupported.</p>
   </section>;
 }

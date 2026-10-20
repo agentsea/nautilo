@@ -1,3 +1,4 @@
+import { syntheticFixtureEmail } from "../../../../dev/testing/synthetic-fixture-email";
 import { resolve, join } from "node:path";
 import { mkdtemp, writeFile, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -57,7 +58,7 @@ import { setupOwnerAppFixture, type AppFixture } from "./helpers/app-fixture";
 import { authedInject, withListeningServer } from "./helpers/request-helpers";
 
 const SCOPE_MSG =
-  "Artifact scope mode is not implemented yet; use namespace context or wait for M088 Phase 4.";
+  "Artifact scope mode is not implemented yet; use namespace context.";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -86,7 +87,7 @@ function hotLaneFriendlyText(marker: string): string {
   return `${Array.from(
     { length: 80 },
     (_, i) =>
-      `Line ${i + 1}: M180 checkpoint integration fixture ${marker} lorem ipsum dolor sit amet.`,
+      `Line ${i + 1}: checkpoint integration fixture ${marker} lorem ipsum dolor sit amet.`,
   ).join("\n")}\n`;
 }
 
@@ -139,7 +140,7 @@ function emptyWritablePolicyResolver(inner: PersonalPolicyResolver): PolicyResol
   };
 }
 
-/** M193 — readable envelope but empty mutable surface (subagent/scope analogue). */
+/** readable envelope but empty mutable surface (subagent/scope analogue). */
 function readOnlyMutablePolicyResolver(inner: PersonalPolicyResolver): PolicyResolver {
   return {
     resolveContext: async (channel, externalId, agentId, requestedRoomId) => {
@@ -394,7 +395,7 @@ async function seedTwoRoomTwoUserIsolation(
 
   const [nsPeer] = await fx.db
     .insert(namespaces)
-    .values({ scope: "private", label: "m088c-peer-ns" })
+    .values({ scope: "private", label: "workspace-peer-ns" })
     .returning({ id: namespaces.id });
   if (!nsPeer) throw new Error("nsPeer");
   const [roomPeer] = await fx.db
@@ -412,18 +413,18 @@ async function seedTwoRoomTwoUserIsolation(
   if (!roomPeer) throw new Error("roomPeer");
   await fx.db.update(rooms).set({ graphThreadId: `room:${roomPeer.id}` }).where(eq(rooms.id, roomPeer.id));
 
-  const peerHandle = `m088cp${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+  const peerHandle = `workspacep${randomUUID().replace(/-/g, "").slice(0, 16)}`;
   const [uPeer] = await fx.db
     .insert(users)
     .values({
-      name: "m088c-peer",
-      email: `m088c-peer-${Date.now()}@test.local`,
+      name: "workspace-peer",
+      email: syntheticFixtureEmail(),
       handle: peerHandle,
       externalId: randomUUID(),
     })
     .returning({ id: users.id });
   if (!uPeer) throw new Error("uPeer");
-  // M132 — profiles are agent-keyed; mint the peer's agent first.
+  // profiles are agent-keyed; mint the peer's agent first.
   const [peerAg] = await fx.db
     .insert(agents)
     .values({ handle: `ag-${peerHandle}` })
@@ -503,8 +504,8 @@ async function seedTwoRoomTwoUserIsolation(
     .where(eq(rooms.id, roomPeer.id));
 
   const t = Date.now();
-  const pathA = `m088c-isoA-${t}.md`;
-  const pathB = `m088c-isoB-${t}.md`;
+  const pathA = `workspace-isoA-${t}.md`;
+  const pathB = `workspace-isoB-${t}.md`;
   const rowA = await insertArtifact(
     {
       artifactId: `iso-${randomUUID()}`,
@@ -586,7 +587,7 @@ describe("workspace-artifacts isolation list and get-bytes", () => {
   let ctx: IsoSeed;
 
   beforeAll(async () => {
-    fx = await setupOwnerAppFixture({ suiteName: uniqueSuiteName("m088c-iso"), withDefaultAgentGraph: true });
+    fx = await setupOwnerAppFixture({ suiteName: uniqueSuiteName("workspace-iso"), withDefaultAgentGraph: true });
     ctx = await seedTwoRoomTwoUserIsolation(fx);
   });
 
@@ -626,14 +627,14 @@ describe("workspace-artifacts isolation list and get-bytes", () => {
   });
 });
 
-describe("M259 Guest Room and Artifact vertical slice", () => {
+describe("Guest Room and Artifact vertical slice", () => {
   let fx: AppFixture;
   let ctx: IsoSeed;
   let artifactFile: string;
 
   beforeAll(async () => {
     fx = await setupOwnerAppFixture({
-      suiteName: uniqueSuiteName("m259-guest"),
+      suiteName: uniqueSuiteName("guest-room-guest"),
       withDefaultAgentGraph: true,
     });
     ctx = await seedTwoRoomTwoUserIsolation(fx, {
@@ -641,7 +642,7 @@ describe("M259 Guest Room and Artifact vertical slice", () => {
       includePeerAgentInRoom: false,
       includeOwnerHumanInRoom: true,
     });
-    artifactFile = join(tmpdir(), `m259-${randomUUID()}.txt`);
+    artifactFile = join(tmpdir(), `guest-room-${randomUUID()}.txt`);
     await writeFile(artifactFile, "guest-readable\n", "utf8");
     await fx.db
       .update(artifacts)
@@ -656,11 +657,11 @@ describe("M259 Guest Room and Artifact vertical slice", () => {
       .values({
         ownerId: fx.ownerId,
         roomId: ctx.roomPeerId,
-        threadId: `m259:${randomUUID()}`,
+        threadId: `guest-room:${randomUUID()}`,
         channel: "workbench",
       })
       .returning({ id: sessions.id });
-    if (!session) throw new Error("M259 session");
+    if (!session) throw new Error("session");
     await fx.db.insert(sessionMessages).values({
       sessionId: session.id,
       role: "user",
@@ -745,18 +746,18 @@ describe("M259 Guest Room and Artifact vertical slice", () => {
       },
       {
         method: "PUT",
-        url: `/api/workspace/artifacts/${ctx.artPeer.id}/state/m259?roomId=${ctx.roomPeerId}`,
+        url: `/api/workspace/artifacts/${ctx.artPeer.id}/state/guest-room?roomId=${ctx.roomPeerId}`,
         payload: { value: { denied: false } },
       },
       {
         method: "POST",
         url: `/api/workspace/artifacts/${ctx.artPeer.id}/events?roomId=${ctx.roomPeerId}`,
-        payload: { topic: "m259", payload: { denied: false } },
+        payload: { topic: "guest-room", payload: { denied: false } },
       },
       {
         method: "POST",
         url: `/api/workspace/artifacts/${ctx.artPeer.id}/events/ping?roomId=${ctx.roomPeerId}`,
-        payload: { topic: "m259", payload: { denied: false } },
+        payload: { topic: "guest-room", payload: { denied: false } },
       },
       {
         method: "POST",
@@ -830,7 +831,7 @@ describe("workspace-artifacts room-scoped LIST", () => {
   let foreignNsId: string;
 
   beforeAll(async () => {
-    fx = await setupOwnerAppFixture({ suiteName: uniqueSuiteName("m088c-rs"), withDefaultAgentGraph: true });
+    fx = await setupOwnerAppFixture({ suiteName: uniqueSuiteName("workspace-rs"), withDefaultAgentGraph: true });
     bearer = await fx.mintOwnerBearer();
     const ag = fx.defaultAgentId;
     const ridA = fx.defaultRoomId;
@@ -840,7 +841,7 @@ describe("workspace-artifacts room-scoped LIST", () => {
 
     const [nsBrow] = await fx.db
       .insert(namespaces)
-      .values({ scope: "private", label: "m088c-rb-ns" })
+      .values({ scope: "private", label: "workspace-rb-ns" })
       .returning({ id: namespaces.id });
     if (!nsBrow) throw new Error("nsB");
     nsB = nsBrow.id;
@@ -859,7 +860,7 @@ describe("workspace-artifacts room-scoped LIST", () => {
     if (!roomB) throw new Error("roomB");
     roomBId = roomB.id;
     await fx.db.update(rooms).set({ graphThreadId: `room:${roomBId}` }).where(eq(rooms.id, roomBId));
-    // M227: room-scoped Human content reads must not depend on the preferred
+    // room-scoped Human content reads must not depend on the preferred
     // Agent mirror being a member of the Room.
     await fx.db.insert(roomMembers).values({
       roomId: roomBId,
@@ -868,8 +869,8 @@ describe("workspace-artifacts room-scoped LIST", () => {
     });
 
     const t = Date.now();
-    const pathA = `m088c-rsa-${t}.md`;
-    const pathB = `m088c-rsb-${t}.md`;
+    const pathA = `workspace-rsa-${t}.md`;
+    const pathB = `workspace-rsb-${t}.md`;
     const rowA = await insertArtifact(
       {
         artifactId: `rsa-${randomUUID()}`,
@@ -893,19 +894,19 @@ describe("workspace-artifacts room-scoped LIST", () => {
     artAId = rowA.id;
     artBId = rowB.id;
 
-    const foreignHandle = `m088c-fr${Date.now().toString(36).slice(-6)}`;
+    const foreignHandle = `workspace-fr${Date.now().toString(36).slice(-6)}`;
     const [uF] = await fx.db
       .insert(users)
       .values({
-        name: "m088c-fr",
-        email: `m088c-fr-${Date.now()}@test.local`,
+        name: "workspace-fr",
+        email: syntheticFixtureEmail(),
         handle: foreignHandle,
         externalId: randomUUID(),
       })
       .returning({ id: users.id });
     if (!uF) throw new Error("uF");
     foreignUserId = uF.id;
-    // M132 — profiles are agent-keyed; mint the foreign user's agent first.
+    // profiles are agent-keyed; mint the foreign user's agent first.
     const [frAg] = await fx.db
       .insert(agents)
       .values({ handle: `ag-${foreignHandle}` })
@@ -937,7 +938,7 @@ describe("workspace-artifacts room-scoped LIST", () => {
 
     const [nsF] = await fx.db
       .insert(namespaces)
-      .values({ scope: "private", label: "m088c-fr-ns" })
+      .values({ scope: "private", label: "workspace-fr-ns" })
       .returning({ id: namespaces.id });
     if (!nsF) throw new Error("nsF");
     foreignNsId = nsF.id;
@@ -1051,7 +1052,7 @@ describe("workspace-artifacts isolation SSE 16", () => {
   let baseUrl: string;
 
   beforeAll(async () => {
-    fx = await setupOwnerAppFixture({ suiteName: uniqueSuiteName("m088c-s16"), withDefaultAgentGraph: true });
+    fx = await setupOwnerAppFixture({ suiteName: uniqueSuiteName("workspace-s16"), withDefaultAgentGraph: true });
     ctx = await seedTwoRoomTwoUserIsolation(fx);
     baseUrl = (await fx.app.listen({ port: 0, host: "127.0.0.1" })).replace(/\/$/, "");
   });
@@ -1122,7 +1123,7 @@ describe("workspace-artifacts isolation SSE 18", () => {
   let ctx: IsoSeed;
 
   beforeAll(async () => {
-    fx = await setupOwnerAppFixture({ suiteName: uniqueSuiteName("m088c-s18"), withDefaultAgentGraph: true });
+    fx = await setupOwnerAppFixture({ suiteName: uniqueSuiteName("workspace-s18"), withDefaultAgentGraph: true });
     ctx = await seedTwoRoomTwoUserIsolation(fx);
   });
 
@@ -1160,8 +1161,8 @@ describe("workspace-artifacts shared graph (inject)", () => {
 
   beforeAll(async () => {
     prevArtifactsRoot = process.env["NAUTILO_ARTIFACTS_ROOT"];
-    process.env["NAUTILO_ARTIFACTS_ROOT"] = await mkdtemp(join(tmpdir(), "m088c-artroot-"));
-    fx = await setupOwnerAppFixture({ suiteName: uniqueSuiteName("m088c-main"), withDefaultAgentGraph: true });
+    process.env["NAUTILO_ARTIFACTS_ROOT"] = await mkdtemp(join(tmpdir(), "workspace-artroot-"));
+    fx = await setupOwnerAppFixture({ suiteName: uniqueSuiteName("workspace-main"), withDefaultAgentGraph: true });
     bearer = await fx.mintOwnerBearer();
     await ensureArtifactBaseline(fx.db);
   });
@@ -1188,11 +1189,11 @@ describe("workspace-artifacts shared graph (inject)", () => {
     if (!rid) throw new Error("graph");
     const ns = await namespaceIdForRoom(fx.db, rid);
     const root = process.env["NAUTILO_ARTIFACTS_ROOT"]!;
-    const externalId = `m180-save-${Date.now()}-${randomUUID().slice(0, 8)}`;
+    const externalId = `content-save-${Date.now()}-${randomUUID().slice(0, 8)}`;
     const absPath = join(root, externalId);
-    const content = opts?.content ?? "m180 original\n";
+    const content = opts?.content ?? "content original\n";
     await writeFile(absPath, content);
-    const path = opts?.path ?? `m180-save-${Date.now()}-${randomUUID().slice(0, 8)}.md`;
+    const path = opts?.path ?? `content-save-${Date.now()}-${randomUUID().slice(0, 8)}.md`;
     const row = await insertArtifact(
       {
         artifactId: externalId,
@@ -1226,7 +1227,7 @@ describe("workspace-artifacts shared graph (inject)", () => {
     if (!ownerRole) throw new Error("role");
     const [ag2] = await fx.db
       .insert(agents)
-      .values({ handle: `m088c-fam-ag-${Date.now().toString(36).slice(-6)}` })
+      .values({ handle: `workspace-fam-ag-${Date.now().toString(36).slice(-6)}` })
       .returning({ id: agents.id });
     if (!ag2) throw new Error("agent2");
     const [og2] = await fx.db
@@ -1234,12 +1235,12 @@ describe("workspace-artifacts shared graph (inject)", () => {
       .values({
         ownerId: fx.ownerId,
         type: "agent_ownership",
-        label: "m088c fam og",
+        label: "workspace fam og",
         trustPreset: "personal",
       })
       .returning({ id: groups.id });
     if (!og2) throw new Error("og2");
-    // M131: Group→Role via the group_roles junction.
+    // Group→Role via the group_roles junction.
     await fx.db
       .insert(groupRoles)
       .values({ groupId: og2.id, roleId: ownerRole.id })
@@ -1261,7 +1262,7 @@ describe("workspace-artifacts shared graph (inject)", () => {
     if (!agentActor2) throw new Error("aa2");
     const [nsFam] = await fx.db
       .insert(namespaces)
-      .values({ scope: "private", label: "m088c-family-ns" })
+      .values({ scope: "private", label: "workspace-family-ns" })
       .returning({ id: namespaces.id });
     if (!nsFam) throw new Error("nsFam");
     const [roomFam] = await fx.db
@@ -1285,19 +1286,19 @@ describe("workspace-artifacts shared graph (inject)", () => {
 
     const t = Date.now();
     const onlyP1 = await insertArtifact(
-      { artifactId: `e1-${t}`, path: `m088c-pr3-p1-${t}.md`, storageUri: "file:///tmp/x", size: 1 },
+      { artifactId: `e1-${t}`, path: `workspace-pr3-p1-${t}.md`, storageUri: "file:///tmp/x", size: 1 },
       dbForArtifactQueries(fx),
     );
     const onlyP2 = await insertArtifact(
-      { artifactId: `e2-${t}`, path: `m088c-pr3-p2-${t}.md`, storageUri: "file:///tmp/x", size: 1 },
+      { artifactId: `e2-${t}`, path: `workspace-pr3-p2-${t}.md`, storageUri: "file:///tmp/x", size: 1 },
       dbForArtifactQueries(fx),
     );
     const onlyF = await insertArtifact(
-      { artifactId: `e3-${t}`, path: `m088c-pr3-f-${t}.md`, storageUri: "file:///tmp/x", size: 1 },
+      { artifactId: `e3-${t}`, path: `workspace-pr3-f-${t}.md`, storageUri: "file:///tmp/x", size: 1 },
       dbForArtifactQueries(fx),
     );
     const shared = await insertArtifact(
-      { artifactId: `e4-${t}`, path: `m088c-pr3-sh-${t}.md`, storageUri: "file:///tmp/x", size: 1 },
+      { artifactId: `e4-${t}`, path: `workspace-pr3-sh-${t}.md`, storageUri: "file:///tmp/x", size: 1 },
       dbForArtifactQueries(fx),
     );
     await attachArtifactToNamespace({ artifactId: onlyP1.id, namespaceId: nsPrivate }, dbForArtifactQueries(fx));
@@ -1344,7 +1345,7 @@ describe("workspace-artifacts shared graph (inject)", () => {
     const row = await insertArtifact(
       {
         artifactId: `soft-${Date.now()}`,
-        path: `m088c-soft-${Date.now()}.md`,
+        path: `workspace-soft-${Date.now()}.md`,
         storageUri: "file:///tmp/x",
         size: 0,
       },
@@ -1365,7 +1366,7 @@ describe("workspace-artifacts shared graph (inject)", () => {
     expect(b.statusCode).toBe(404);
   });
 
-  test("5 M127 — artifact in a readable namespace is visible regardless of authoring agent", async () => {
+  test("5 artifact in a readable namespace is visible regardless of authoring agent", async () => {
     const agDefault = fx.defaultAgentId;
     const rid = fx.defaultRoomId;
     if (!agDefault || !rid) throw new Error("graph");
@@ -1378,7 +1379,7 @@ describe("workspace-artifacts shared graph (inject)", () => {
     if (!ownerRole) throw new Error("role");
     const [agOther] = await fx.db
       .insert(agents)
-      .values({ handle: `m088c-other-${Date.now().toString(36).slice(-6)}` })
+      .values({ handle: `workspace-other-${Date.now().toString(36).slice(-6)}` })
       .returning({ id: agents.id });
     if (!agOther) throw new Error("ago");
     const [og] = await fx.db
@@ -1386,12 +1387,12 @@ describe("workspace-artifacts shared graph (inject)", () => {
       .values({
         ownerId: fx.ownerId,
         type: "agent_ownership",
-        label: "m088c other og",
+        label: "workspace other og",
         trustPreset: "personal",
       })
       .returning({ id: groups.id });
     if (!og) throw new Error("og");
-    // M131: Group→Role via the group_roles junction.
+    // Group→Role via the group_roles junction.
     await fx.db
       .insert(groupRoles)
       .values({ groupId: og.id, roleId: ownerRole.id })
@@ -1419,18 +1420,18 @@ describe("workspace-artifacts shared graph (inject)", () => {
     const row = await insertArtifact(
       {
         artifactId: `other-${Date.now()}`,
-        path: `m088c-agent-other-${Date.now()}.md`,
+        path: `workspace-agent-other-${Date.now()}.md`,
         storageUri: "file:///tmp/x",
         size: 0,
       },
       dbForArtifactQueries(fx),
     );
     await attachArtifactToNamespace({ artifactId: row.id, namespaceId: ns }, dbForArtifactQueries(fx));
-    // M127 — Namespace is the only content-scope axis; artifacts no
+    // Namespace is the only content-scope axis; artifacts no
     // longer carry agent_id and the Path C policy no longer narrows by
     // agent. The artifact above was authored under a DIFFERENT agent but
     // attached to the owner's own room Namespace (`ns`), so the owner now
-    // sees it. (Pre-M127 this asserted cross-agent isolation — `false` /
+    // sees it. (Previously this asserted cross-agent isolation — `false` /
     // 404 — which the agent-narrowing trailer enforced before it was
     // removed.)
     const list = await authedInject(fx.app, { method: "GET", url: "/api/workspace/artifacts", bearer });
@@ -1453,7 +1454,7 @@ describe("workspace-artifacts shared graph (inject)", () => {
     await fx.db.delete(agents).where(eq(agents.id, agOther.id));
   });
 
-  test("M180 PUT content persists bytes, bumps row, and emits one changed event", async () => {
+  test("checkpoint PUT content persists bytes, bumps row, and emits one changed event", async () => {
     const seeded = await seedTextArtifactForSave();
     const captured: ServerEvent[] = [];
     const h = (e: ServerEvent) => {
@@ -1468,7 +1469,7 @@ describe("workspace-artifacts shared graph (inject)", () => {
     };
     eventBus.on(h);
     try {
-      const next = "m180 saved content\n";
+      const next = "content saved content\n";
       const res = await authedInject(fx.app, {
         method: "PUT",
         url: `/api/workspace/artifacts/${seeded.id}/content`,
@@ -1529,10 +1530,10 @@ describe("workspace-artifacts shared graph (inject)", () => {
     }
   });
 
-  test("M180 PUT content saves immediately after room-scoped create", async () => {
+  test("checkpoint PUT content saves immediately after room-scoped create", async () => {
     const roomId = fx.defaultRoomId;
     if (!roomId) throw new Error("graph");
-    const path = `m180-fresh-save-${Date.now()}-${randomUUID().slice(0, 8)}.md`;
+    const path = `content-fresh-save-${Date.now()}-${randomUUID().slice(0, 8)}.md`;
     const initial = "draft created by editor\n";
     const fd = new FormData();
     fd.set("file", new Blob([initial], { type: "text/markdown" }), "draft.md");
@@ -1606,7 +1607,7 @@ describe("workspace-artifacts shared graph (inject)", () => {
 
   test("PUT content saves invalid JSON text without HTTP JSON parsing", async () => {
     const seeded = await seedTextArtifactForSave({
-      path: `m180-json-${Date.now()}.json`,
+      path: `content-json-${Date.now()}.json`,
       content: "{\"valid\":true}\n",
       mimeType: "application/json",
     });
@@ -1636,10 +1637,10 @@ describe("workspace-artifacts shared graph (inject)", () => {
     expect(row?.size).toBe(Buffer.byteLength(next, "utf8"));
   });
 
-  test("M180 checkpoints record canonical user history for each requested checkpoint", async () => {
+  test("checkpoint checkpoints record canonical user history for each requested checkpoint", async () => {
     const pre = hotLaneFriendlyText("before");
-    const post1 = pre.replace("Line 40: M180", "Line 40: changed-once M180");
-    const post2 = post1.replace("Line 41: M180", "Line 41: changed-twice M180");
+    const post1 = pre.replace("Line 40: checkpoint", "Line 40: changed-once checkpoint");
+    const post2 = post1.replace("Line 41: checkpoint", "Line 41: changed-twice checkpoint");
     const seeded = await seedTextArtifactForSave({ content: pre });
 
     const first = await authedInject(fx.app, {
@@ -1708,8 +1709,8 @@ describe("workspace-artifacts shared graph (inject)", () => {
     expect(mutationsAfterSecond.every(({ checkpoint }) => checkpoint)).toBe(true);
   });
 
-  test("M180 stale revision or sha returns 409 and does not clobber bytes", async () => {
-    const seeded = await seedTextArtifactForSave({ content: "m180 conflict base\n" });
+  test("checkpoint stale revision or sha returns 409 and does not clobber bytes", async () => {
+    const seeded = await seedTextArtifactForSave({ content: "content conflict base\n" });
 
     const staleRevision = await authedInject(fx.app, {
       method: "PUT",
@@ -1727,7 +1728,7 @@ describe("workspace-artifacts shared graph (inject)", () => {
       error: "external_change",
       currentSha256: seeded.sha256,
     });
-    expect(await readCurrentArtifactBytes(fx.db, seeded.id)).toBe("m180 conflict base\n");
+    expect(await readCurrentArtifactBytes(fx.db, seeded.id)).toBe("content conflict base\n");
 
     const staleSha = await authedInject(fx.app, {
       method: "PUT",
@@ -1745,10 +1746,10 @@ describe("workspace-artifacts shared graph (inject)", () => {
       error: "external_change",
       currentSha256: seeded.sha256,
     });
-    expect(await readCurrentArtifactBytes(fx.db, seeded.id)).toBe("m180 conflict base\n");
+    expect(await readCurrentArtifactBytes(fx.db, seeded.id)).toBe("content conflict base\n");
   });
 
-  test("M180 PUT content rejects text over the save cap", async () => {
+  test("checkpoint PUT content rejects text over the save cap", async () => {
     const seeded = await seedTextArtifactForSave();
     const res = await authedInject(fx.app, {
       method: "PUT",
@@ -1762,7 +1763,7 @@ describe("workspace-artifacts shared graph (inject)", () => {
       },
     });
     expect(res.statusCode).toBe(413);
-    expect(await readCurrentArtifactBytes(fx.db, seeded.id)).toBe("m180 original\n");
+    expect(await readCurrentArtifactBytes(fx.db, seeded.id)).toBe("content original\n");
   });
 
   test("8 create rejects bad path", async () => {
@@ -1781,7 +1782,7 @@ describe("workspace-artifacts shared graph (inject)", () => {
     }
   });
 
-  test("8b create with bad path leaves no orphan file under artifactsRoot (M088C item 6)", async () => {
+  test("8b create with bad path leaves no orphan file under artifactsRoot (Workspace namespace item 6)", async () => {
     const root = process.env["NAUTILO_ARTIFACTS_ROOT"]!;
     const before = await readdir(root).catch(() => []);
     const fd = new FormData();
@@ -1800,15 +1801,15 @@ describe("workspace-artifacts shared graph (inject)", () => {
     expect(after.length).toBe(before.length);
   });
 
-  test("9b create with collision leaves no orphan file under artifactsRoot (M088C item 6)", async () => {
+  test("9b create with collision leaves no orphan file under artifactsRoot (Workspace namespace item 6)", async () => {
     const prevRoot = process.env["NAUTILO_ARTIFACTS_ROOT"];
-    const isolatedRoot = await mkdtemp(join(tmpdir(), "m088c-collision-root-"));
+    const isolatedRoot = await mkdtemp(join(tmpdir(), "workspace-collision-root-"));
     process.env["NAUTILO_ARTIFACTS_ROOT"] = isolatedRoot;
     const ag = fx.defaultAgentId;
     const rid = fx.defaultRoomId;
     if (!ag || !rid) throw new Error("graph");
     const ns = await namespaceIdForRoom(fx.db, rid);
-    const seededPath = `m088c-collision-${Date.now()}.md`;
+    const seededPath = `workspace-collision-${Date.now()}.md`;
     const row = await insertArtifact(
       {
         artifactId: `coll-${Date.now()}`,
@@ -1851,7 +1852,7 @@ describe("workspace-artifacts shared graph (inject)", () => {
     try {
       const fd = new FormData();
       fd.set("file", new Blob([Buffer.alloc(2 * 1024 * 1024)]), "big.bin");
-      fd.set("path", `m088c-big-${Date.now()}.bin`);
+      fd.set("path", `workspace-big-${Date.now()}.bin`);
       const res = await fx.app.inject({
         method: "POST",
         url: "/api/workspace/artifacts",
@@ -1873,7 +1874,7 @@ describe("workspace-artifacts shared graph (inject)", () => {
     const row = await insertArtifact(
       {
         artifactId: `rn-${Date.now()}`,
-        path: `m088c-rn-old-${Date.now()}.md`,
+        path: `workspace-rn-old-${Date.now()}.md`,
         storageUri: "file:///tmp/x",
         size: 0,
       },
@@ -1886,7 +1887,7 @@ describe("workspace-artifacts shared graph (inject)", () => {
     };
     eventBus.on(h);
     try {
-      const newPath = `m088c-rn-new-${Date.now()}.md`;
+      const newPath = `workspace-rn-new-${Date.now()}.md`;
       const patch = await authedInject(fx.app, {
         method: "PATCH",
         url: `/api/workspace/artifacts/${row.id}`,
@@ -1920,11 +1921,11 @@ describe("workspace-artifacts shared graph (inject)", () => {
     if (!ag || !rid) throw new Error("graph");
     const ns = await namespaceIdForRoom(fx.db, rid);
     const r1 = await insertArtifact(
-      { artifactId: `c1-${Date.now()}`, path: "m088c-col-a.md", storageUri: "file:///tmp/x", size: 0 },
+      { artifactId: `c1-${Date.now()}`, path: "workspace-col-a.md", storageUri: "file:///tmp/x", size: 0 },
       dbForArtifactQueries(fx),
     );
     const r2 = await insertArtifact(
-      { artifactId: `c2-${Date.now()}`, path: "m088c-col-b.md", storageUri: "file:///tmp/x", size: 0 },
+      { artifactId: `c2-${Date.now()}`, path: "workspace-col-b.md", storageUri: "file:///tmp/x", size: 0 },
       dbForArtifactQueries(fx),
     );
     await attachArtifactToNamespace({ artifactId: r1.id, namespaceId: ns }, dbForArtifactQueries(fx));
@@ -1933,7 +1934,7 @@ describe("workspace-artifacts shared graph (inject)", () => {
       method: "PATCH",
       url: `/api/workspace/artifacts/${r1.id}`,
       bearer,
-      payload: { newPath: "m088c-col-b.md" },
+      payload: { newPath: "workspace-col-b.md" },
     });
     expect(res.statusCode).toBe(409);
     await fx.db.delete(artifactNamespaces).where(eq(artifactNamespaces.artifactId, r1.id));
@@ -1948,7 +1949,7 @@ describe("workspace-artifacts shared graph (inject)", () => {
     if (!ag || !rid) throw new Error("graph");
     const [nsOther] = await fx.db
       .insert(namespaces)
-      .values({ scope: "private", label: "m088c-no-member" })
+      .values({ scope: "private", label: "workspace-no-member" })
       .returning({ id: namespaces.id });
     if (!nsOther) throw new Error("ns");
     const [roomOther] = await fx.db
@@ -1968,7 +1969,7 @@ describe("workspace-artifacts shared graph (inject)", () => {
     const row = await insertArtifact(
       {
         artifactId: `nm-${Date.now()}`,
-        path: `m088c-nomem-${Date.now()}.md`,
+        path: `workspace-nomem-${Date.now()}.md`,
         storageUri: "file:///tmp/x",
         size: 0,
       },
@@ -1979,7 +1980,7 @@ describe("workspace-artifacts shared graph (inject)", () => {
       method: "PATCH",
       url: `/api/workspace/artifacts/${row.id}`,
       bearer,
-      payload: { newPath: "m088c-nomem-renamed.md" },
+      payload: { newPath: "workspace-nomem-renamed.md" },
     });
     expect(res.statusCode).toBe(404);
     await fx.db.delete(artifactNamespaces).where(eq(artifactNamespaces.artifactId, row.id));
@@ -1996,7 +1997,7 @@ describe("workspace-artifacts shared graph (inject)", () => {
     const row = await insertArtifact(
       {
         artifactId: `del-${Date.now()}`,
-        path: `m088c-del-${Date.now()}.md`,
+        path: `workspace-del-${Date.now()}.md`,
         storageUri: "file:///tmp/x",
         size: 0,
       },
@@ -2039,7 +2040,7 @@ describe("workspace-artifacts shared graph (inject)", () => {
     const row = await insertArtifact(
       {
         artifactId: `r416-${Date.now()}`,
-        path: `m088c-416-${Date.now()}.bin`,
+        path: `workspace-416-${Date.now()}.bin`,
         storageUri: `file://${abs}`,
         size: 2000,
       },
@@ -2069,7 +2070,7 @@ describe("workspace-artifacts shared graph (inject)", () => {
     const rowR = await insertArtifact(
       {
         artifactId: `rng-${Date.now()}`,
-        path: `m088c-range-${Date.now()}.bin`,
+        path: `workspace-range-${Date.now()}.bin`,
         storageUri: `file://${absR}`,
         mimeType: "application/octet-stream",
         size: 2000,
@@ -2082,7 +2083,7 @@ describe("workspace-artifacts shared graph (inject)", () => {
     const rowP = await insertArtifact(
       {
         artifactId: `png-${Date.now()}`,
-        path: `m088c-mime-${Date.now()}.png`,
+        path: `workspace-mime-${Date.now()}.png`,
         storageUri: `file://${absP}`,
         mimeType: "image/png",
         size: 4,
@@ -2118,12 +2119,12 @@ describe("workspace-artifacts shared graph (inject)", () => {
   });
 });
 
-describe("workspace-artifacts pending events (D261 P6b)", () => {
+describe("workspace-artifacts pending events", () => {
   let fx: AppFixture;
   let bearer: string;
 
   beforeAll(async () => {
-    fx = await setupOwnerAppFixture({ suiteName: uniqueSuiteName("d261-p6b-events"), withDefaultAgentGraph: true });
+    fx = await setupOwnerAppFixture({ suiteName: uniqueSuiteName("artifact-event-p6b-events"), withDefaultAgentGraph: true });
     bearer = await fx.mintOwnerBearer();
     await ensureArtifactBaseline(fx.db);
   });
@@ -2145,7 +2146,7 @@ describe("workspace-artifacts pending events (D261 P6b)", () => {
     const row = await insertArtifact(
       {
         artifactId: externalId,
-        path: `d261-evt-${Date.now()}.html`,
+        path: `artifact-event-evt-${Date.now()}.html`,
         storageUri: "file:///tmp/x",
         size: 0,
       },
@@ -2309,7 +2310,7 @@ describe("workspace-artifacts pending events (D261 P6b)", () => {
     const row = await insertArtifact(
       {
         artifactId: externalId,
-        path: `d261-cap-${Date.now()}.html`,
+        path: `artifact-event-cap-${Date.now()}.html`,
         storageUri: "file:///tmp/x",
         size: 0,
       },
@@ -2403,7 +2404,7 @@ describe("workspace-artifacts pending events (D261 P6b)", () => {
     await teardownIsolationExtras(fx, ctx);
   });
 
-  test("plain emit enqueues and creates no task (M153 S1)", async () => {
+  test("plain emit enqueues and creates no task", async () => {
     const { internalId } = await seedArtifactForEvents();
     const ownerId = getBootstrapOwnerId();
     const [beforeRow] = await fx.db
@@ -2427,7 +2428,7 @@ describe("workspace-artifacts pending events (D261 P6b)", () => {
     expect(afterRow?.n).toBe(before);
   });
 
-  test("ping enqueues and creates one preset=ping task (M153 S2)", async () => {
+  test("ping enqueues and creates one preset=ping task", async () => {
     const { internalId, externalId } = await seedArtifactForEvents();
 
     const res = await authedInject(fx.app, {
@@ -2453,7 +2454,7 @@ describe("workspace-artifacts pending events (D261 P6b)", () => {
     await fx.db.delete(tasks).where(eq(tasks.id, pingRows[0]!.id));
   });
 
-  test("second ping coalesces to woke:false while still enqueuing (M153 S3)", async () => {
+  test("second ping coalesces to woke:false while still enqueuing", async () => {
     const { internalId, externalId } = await seedArtifactForEvents();
     const ownerId = getBootstrapOwnerId();
     const ag = fx.defaultAgentId;
@@ -2504,7 +2505,7 @@ describe("workspace-artifacts pending events (D261 P6b)", () => {
     await fx.db.delete(tasks).where(eq(tasks.id, seeded!.id));
   });
 
-  test("unauthorized ping rejects with no event and no task (M153 S5)", async () => {
+  test("unauthorized ping rejects with no event and no task", async () => {
     const ctx = await seedTwoRoomTwoUserIsolation(fx);
     const ag = fx.defaultAgentId;
     const ownerId = getBootstrapOwnerId();
@@ -2568,7 +2569,7 @@ describe("workspace-artifacts scope 501", () => {
 
   beforeAll(async () => {
     fx = await setupOwnerAppFixture({
-      suiteName: uniqueSuiteName("m088c-scope"),
+      suiteName: uniqueSuiteName("workspace-scope"),
       withDefaultAgentGraph: true,
       createAppExtras: {
         policyResolver: scopeEnvelopePolicyResolver(
@@ -2624,7 +2625,7 @@ describe("workspace-artifacts no writable namespace", () => {
 
   beforeAll(async () => {
     fx = await setupOwnerAppFixture({
-      suiteName: uniqueSuiteName("m088c-now"),
+      suiteName: uniqueSuiteName("workspace-now"),
       withDefaultAgentGraph: true,
       createAppExtras: {
         policyResolver: emptyWritablePolicyResolver(
@@ -2642,7 +2643,7 @@ describe("workspace-artifacts no writable namespace", () => {
   test("9 POST 403 when writableNamespaces empty", async () => {
     const fd = new FormData();
     fd.set("file", new Blob([Uint8Array.from([1, 2, 3])]), "a.bin");
-    fd.set("path", `m088c-now-${Date.now()}.md`);
+    fd.set("path", `workspace-now-${Date.now()}.md`);
     const res = await fx.app.inject({
       method: "POST",
       url: "/api/workspace/artifacts",
@@ -2656,9 +2657,9 @@ describe("workspace-artifacts no writable namespace", () => {
 describe("workspace-artifacts TCP multipart and SSE", () => {
   test("7 create happy path + disk + bus", async () => {
     const prevRoot = process.env["NAUTILO_ARTIFACTS_ROOT"];
-    const tmp = await mkdtemp(join(tmpdir(), "m088c-create-"));
+    const tmp = await mkdtemp(join(tmpdir(), "workspace-create-"));
     process.env["NAUTILO_ARTIFACTS_ROOT"] = tmp;
-    const fx = await setupOwnerAppFixture({ suiteName: uniqueSuiteName("m088c-tcp7"), withDefaultAgentGraph: true });
+    const fx = await setupOwnerAppFixture({ suiteName: uniqueSuiteName("workspace-tcp7"), withDefaultAgentGraph: true });
     const bearer = await fx.mintOwnerBearer();
     await ensureArtifactBaseline(fx.db);
     const ag = fx.defaultAgentId;
@@ -2670,9 +2671,9 @@ describe("workspace-artifacts TCP multipart and SSE", () => {
     eventBus.on(h);
     try {
       await withListeningServer(fx.app, async (base) => {
-        const path = `m088c-up-${Date.now()}.md`;
+        const path = `workspace-up-${Date.now()}.md`;
         const fd = new FormData();
-        fd.set("file", new Blob([new TextEncoder().encode("hello m088c")]), "doc.md");
+        fd.set("file", new Blob([new TextEncoder().encode("hello workspace")]), "doc.md");
         fd.set("path", path);
         const res = await fetch(`${base}/api/workspace/artifacts`, {
           method: "POST",
@@ -2696,7 +2697,7 @@ describe("workspace-artifacts TCP multipart and SSE", () => {
         expect(jn.length).toBe(1);
         const diskPath = join(tmp, dto.artifactId);
         const bytes = await readFile(diskPath);
-        expect(new TextDecoder().decode(bytes)).toBe("hello m088c");
+        expect(new TextDecoder().decode(bytes)).toBe("hello workspace");
         expect(bus.some((e) => e.type === "workspace.artifact.changed" && e.id === dto.id)).toBe(true);
       });
     } finally {
@@ -2708,18 +2709,18 @@ describe("workspace-artifacts TCP multipart and SSE", () => {
     }
   });
 
-  test("M180 blank TCP create can save first editor content", async () => {
+  test("checkpoint blank TCP create can save first editor content", async () => {
     const prevRoot = process.env["NAUTILO_ARTIFACTS_ROOT"];
-    const tmp = await mkdtemp(join(tmpdir(), "m180-blank-create-save-"));
+    const tmp = await mkdtemp(join(tmpdir(), "content-blank-create-save-"));
     process.env["NAUTILO_ARTIFACTS_ROOT"] = tmp;
-    const fx = await setupOwnerAppFixture({ suiteName: uniqueSuiteName("m180-tcp-blank-save"), withDefaultAgentGraph: true });
+    const fx = await setupOwnerAppFixture({ suiteName: uniqueSuiteName("content-tcp-blank-save"), withDefaultAgentGraph: true });
     const bearer = await fx.mintOwnerBearer();
     await ensureArtifactBaseline(fx.db);
     const roomId = fx.defaultRoomId;
     if (!roomId) throw new Error("graph");
     try {
       await withListeningServer(fx.app, async (base) => {
-        const path = `m180-blank-${Date.now()}-${randomUUID().slice(0, 8)}.md`;
+        const path = `content-blank-${Date.now()}-${randomUUID().slice(0, 8)}.md`;
         const fd = new FormData();
         fd.set("file", new Blob([""], { type: "text/markdown" }), "blank.md");
         fd.set("path", path);
@@ -2784,9 +2785,9 @@ describe("workspace-artifacts TCP multipart and SSE", () => {
 
   test("15 SSE fan-out on create", async () => {
     const prevRoot = process.env["NAUTILO_ARTIFACTS_ROOT"];
-    const tmp = await mkdtemp(join(tmpdir(), "m088c-sse15-"));
+    const tmp = await mkdtemp(join(tmpdir(), "workspace-sse15-"));
     process.env["NAUTILO_ARTIFACTS_ROOT"] = tmp;
-    const fx = await setupOwnerAppFixture({ suiteName: uniqueSuiteName("m088c-tcp15"), withDefaultAgentGraph: true });
+    const fx = await setupOwnerAppFixture({ suiteName: uniqueSuiteName("workspace-tcp15"), withDefaultAgentGraph: true });
     const bearer = await fx.mintOwnerBearer();
     await ensureArtifactBaseline(fx.db);
     try {
@@ -2796,7 +2797,7 @@ describe("workspace-artifacts TCP multipart and SSE", () => {
           { headers: { accept: "text/event-stream" } },
         );
         expect(sse.ok).toBe(true);
-        const path = `m088c-sse15-${Date.now()}.md`;
+        const path = `workspace-sse15-${Date.now()}.md`;
         await sleep(50);
         const post = (async () => {
           const fd = new FormData();
@@ -2828,7 +2829,7 @@ describe("workspace-artifacts TCP multipart and SSE", () => {
 
   test("17 SSE delete event reaches subscriber", async () => {
     const fx = await setupOwnerAppFixture({
-      suiteName: uniqueSuiteName("m088c-tcp17"),
+      suiteName: uniqueSuiteName("workspace-tcp17"),
       withDefaultAgentGraph: true,
     });
     const bearer = await fx.mintOwnerBearer();
@@ -2840,7 +2841,7 @@ describe("workspace-artifacts TCP multipart and SSE", () => {
     const row = await insertArtifact(
       {
         artifactId: `sse17-${Date.now()}`,
-        path: `m088c-sse17-${Date.now()}.md`,
+        path: `workspace-sse17-${Date.now()}.md`,
         storageUri: "file:///tmp/x",
         size: 0,
       },
@@ -2878,7 +2879,7 @@ describe("workspace-artifacts TCP multipart and SSE", () => {
   });
 });
 
-describe("workspace-artifacts M193 patch", () => {
+describe("workspace-artifacts patch", () => {
   let fx: AppFixture;
   let bearer: string;
   let baseUrl: string;
@@ -2886,8 +2887,8 @@ describe("workspace-artifacts M193 patch", () => {
 
   beforeAll(async () => {
     prevArtifactsRoot = process.env["NAUTILO_ARTIFACTS_ROOT"];
-    process.env["NAUTILO_ARTIFACTS_ROOT"] = await mkdtemp(join(tmpdir(), "m193-patch-root-"));
-    fx = await setupOwnerAppFixture({ suiteName: uniqueSuiteName("m193-patch"), withDefaultAgentGraph: true });
+    process.env["NAUTILO_ARTIFACTS_ROOT"] = await mkdtemp(join(tmpdir(), "patch-patch-root-"));
+    fx = await setupOwnerAppFixture({ suiteName: uniqueSuiteName("patch-patch"), withDefaultAgentGraph: true });
     bearer = await fx.mintOwnerBearer();
     await ensureArtifactBaseline(fx.db);
     baseUrl = (await fx.app.listen({ port: 0, host: "127.0.0.1" })).replace(/\/$/, "");
@@ -2912,10 +2913,10 @@ describe("workspace-artifacts M193 patch", () => {
     if (!rid) throw new Error("graph");
     const ns = await namespaceIdForRoom(fx.db, rid);
     const root = process.env["NAUTILO_ARTIFACTS_ROOT"]!;
-    const externalId = `m193-${Date.now()}-${randomUUID().slice(0, 8)}`;
+    const externalId = `patch-${Date.now()}-${randomUUID().slice(0, 8)}`;
     const absPath = join(root, externalId);
     await writeFile(absPath, content);
-    const path = `m193-${Date.now()}-${randomUUID().slice(0, 8)}${opts?.pathSuffix ?? ".md"}`;
+    const path = `patch-${Date.now()}-${randomUUID().slice(0, 8)}${opts?.pathSuffix ?? ".md"}`;
     const row = await insertArtifact(
       {
         artifactId: externalId,
@@ -2986,7 +2987,7 @@ describe("workspace-artifacts M193 patch", () => {
       await sse.body?.cancel();
   });
 
-  test("M193 exact-base patch success", async () => {
+  test("exact-base patch success", async () => {
     const original = "alpha\nbeta\ngamma\n";
     const seeded = await seedPatchableTextArtifact(original);
 
@@ -3020,7 +3021,7 @@ describe("workspace-artifacts M193 patch", () => {
     expect(await readCurrentArtifactBytes(fx.db, seeded.id)).toBe(expected);
   });
 
-  test("M193 stale non-overlap rebase success", async () => {
+  test("stale non-overlap rebase success", async () => {
     const original = "alpha\nbeta\ngamma\n";
     const seeded = await seedPatchableTextArtifact(original);
     const external = "alpha\nXXX\ngamma\n";
@@ -3060,7 +3061,7 @@ describe("workspace-artifacts M193 patch", () => {
     expect(await readCurrentArtifactBytes(fx.db, seeded.id)).toBe("alpha\nXXX\ngamma patched\n");
   });
 
-  test("M193 anchor_not_found conflict 409 shape", async () => {
+  test("anchor_not_found conflict 409 shape", async () => {
     const original = "hello world\n";
     const seeded = await seedPatchableTextArtifact(original);
 
@@ -3086,7 +3087,7 @@ describe("workspace-artifacts M193 patch", () => {
     expect(await readCurrentArtifactBytes(fx.db, seeded.id)).toBe(original);
   });
 
-  test("M193 anchor_ambiguous conflict 409 shape", async () => {
+  test("anchor_ambiguous conflict 409 shape", async () => {
     const original = "foo bar foo\n";
     const seeded = await seedPatchableTextArtifact(original);
 
@@ -3112,7 +3113,7 @@ describe("workspace-artifacts M193 patch", () => {
     expect(await readCurrentArtifactBytes(fx.db, seeded.id)).toBe(original);
   });
 
-  test("M193 binary artifact patch returns typed unsupported rejection", async () => {
+  test("binary artifact patch returns typed unsupported rejection", async () => {
     const original = "not actually png bytes\n";
     const seeded = await seedPatchableTextArtifact(original, {
       mimeType: "image/png",
@@ -3141,8 +3142,8 @@ describe("workspace-artifacts M193 patch", () => {
     expect(await readCurrentArtifactBytes(fx.db, seeded.id)).toBe(original);
   });
 
-  test("M193 oversized patch payload returns too_large", async () => {
-    const base = "m193 base\n";
+  test("oversized patch payload returns too_large", async () => {
+    const base = "patch base\n";
     const seeded = await seedPatchableTextArtifact(base);
 
     const res = await authedInject(fx.app, {
@@ -3169,12 +3170,12 @@ describe("workspace-artifacts M193 patch", () => {
 
 });
 
-describe("workspace-artifacts M193 patch namespace auth", () => {
+describe("workspace-artifacts patch namespace auth", () => {
   let fx: AppFixture;
   let ctx: IsoSeed;
 
   beforeAll(async () => {
-    fx = await setupOwnerAppFixture({ suiteName: uniqueSuiteName("m193-patch-auth"), withDefaultAgentGraph: true });
+    fx = await setupOwnerAppFixture({ suiteName: uniqueSuiteName("patch-patch-auth"), withDefaultAgentGraph: true });
     ctx = await seedTwoRoomTwoUserIsolation(fx);
   });
 
@@ -3183,7 +3184,7 @@ describe("workspace-artifacts M193 patch namespace auth", () => {
     await fx.cleanup();
   });
 
-  test("M193 invisible artifact patch returns 404", async () => {
+  test("invisible artifact patch returns 404", async () => {
     const res = await authedInject(fx.app, {
       method: "POST",
       url: `/api/workspace/artifacts/${ctx.artOwner.id}/patch`,
@@ -3203,7 +3204,7 @@ describe("workspace-artifacts M193 patch namespace auth", () => {
 
 });
 
-describe("workspace-artifacts M193 readable-not-mutable patch", () => {
+describe("workspace-artifacts readable-not-mutable patch", () => {
   let fx: AppFixture;
   let bearer: string;
   let prevArtifactsRoot: string | undefined;
@@ -3212,9 +3213,9 @@ describe("workspace-artifacts M193 readable-not-mutable patch", () => {
 
   beforeAll(async () => {
     prevArtifactsRoot = process.env["NAUTILO_ARTIFACTS_ROOT"];
-    process.env["NAUTILO_ARTIFACTS_ROOT"] = await mkdtemp(join(tmpdir(), "m193-readonly-patch-"));
+    process.env["NAUTILO_ARTIFACTS_ROOT"] = await mkdtemp(join(tmpdir(), "patch-readonly-patch-"));
     fx = await setupOwnerAppFixture({
-      suiteName: uniqueSuiteName("m193-readonly-patch"),
+      suiteName: uniqueSuiteName("patch-readonly-patch"),
       withDefaultAgentGraph: true,
       createAppExtras: {
         policyResolver: readOnlyMutablePolicyResolver(
@@ -3230,11 +3231,11 @@ describe("workspace-artifacts M193 readable-not-mutable patch", () => {
     const ns = await namespaceIdForRoom(fx.db, rid);
     const root = process.env["NAUTILO_ARTIFACTS_ROOT"];
     if (!root) throw new Error("NAUTILO_ARTIFACTS_ROOT missing");
-    const externalId = `m193-ro-${randomUUID().slice(0, 8)}`;
+    const externalId = `patch-ro-${randomUUID().slice(0, 8)}`;
     const absPath = join(root, externalId);
     const content = "readable only\n";
     await writeFile(absPath, content);
-    artifactPath = `m193-ro-${Date.now()}.md`;
+    artifactPath = `patch-ro-${Date.now()}.md`;
     const row = await insertArtifact(
       {
         artifactId: externalId,
@@ -3256,7 +3257,7 @@ describe("workspace-artifacts M193 readable-not-mutable patch", () => {
     else process.env["NAUTILO_ARTIFACTS_ROOT"] = prevArtifactsRoot;
   });
 
-  test("M193 readable-not-mutable patch returns 403", async () => {
+  test("readable-not-mutable patch returns 403", async () => {
     const list = await authedInject(fx.app, {
       method: "GET",
       url: `/api/workspace/artifacts/${artifactId}`,

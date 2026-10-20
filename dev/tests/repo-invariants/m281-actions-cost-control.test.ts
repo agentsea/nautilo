@@ -399,30 +399,36 @@ describe("M281 GitHub Actions cost controls", () => {
     expect(supply.on.schedule).toEqual([{ cron: "0 4 * * 1" }]);
   });
 
-  test("Windows validation covers its transitive workspaces and root build inputs", async () => {
+  test("Windows full qualification runs only nightly or manually", async () => {
     const windows = await workflow("windows-desktop.yml");
-    expect(Object.keys(windows.on).sort()).toEqual(["pull_request", "workflow_dispatch"]);
-    expect(eventConfig(windows.on.pull_request).branches).toEqual(["main"]);
-    const paths = eventPaths(windows.on.pull_request);
+    expect(Object.keys(windows.on).sort()).toEqual(["schedule", "workflow_dispatch"]);
+    expect(windows.on.schedule).toEqual([{ cron: "17 4 * * *" }]);
+
+    const steps = windows.jobs["windows-x64"]?.steps ?? [];
     for (const name of [
-      "@nautilo/desktop", "@nautilo/workbench", "@nautilo/server",
-      "@nautilo/dev-tools", "@nautilo/relay-bin", "@nautilo/server-bin",
+      "Verify pinned tools and native compiler",
+      "Install frozen dependencies",
+      "Install Writer development dependencies",
+      "Install Video development dependencies",
+      "Typecheck Writer",
+      "Typecheck Video",
+      "Build Writer",
+      "Build Video",
+      "Test Windows source contracts",
+      "Test repository invariants on Windows",
+      "Typecheck Desktop",
+      "Typecheck development tools",
+      "Typecheck database",
+      "Typecheck server",
+      "Build Windows Desktop installer",
+      "Verify packaged Relay Host launch",
+      "Smoke-test packaged Desktop boot",
     ]) {
-      expectPathsCover(paths, await workspacePathsFor(name));
+      const step = steps.find((candidate) => candidate.name === name);
+      expect(step, `Windows validation step must remain: ${name}`).toBeDefined();
+      expect(step?.if, `Windows validation step must be unconditional: ${name}`).toBeUndefined();
     }
-    expectPathsCover(paths, await firstPartyRuntimeWorkspacePaths());
-    for (const file of [
-      "package.json", "bun.lock", "bunfig.toml", ".bun-version", ".gitattributes", "turbo.json",
-      "tsconfig.base.json", "patches/dependency.patch",
-      "dev/scripts/install-first-party-apps.ts", "dev/scripts/windows-unit-gate.ts",
-      "dev/scripts/test-repo-invariants.ts",
-      "dev/tests/test-lifecycle-preload.ts",
-      "dev/scripts/fix-node-pty-perms.ts", "dev/scripts/prepare-board.ts",
-      "dev/scripts/prepare-sheets.ts", "dev/scripts/prepare-slides.ts",
-      "dev/scripts/vendor-agent-browser.ts", ".github/workflows/windows-desktop.yml",
-    ]) {
-      expect(paths.some((pattern) => new Bun.Glob(pattern).match(file)), `Windows workflow must cover ${file}`).toBe(true);
-    }
+    expect(steps.some((step) => step.id === "validation-scope")).toBe(false);
   });
 
   test("every Actions Bun cache is versioned and architecture-safe", async () => {
@@ -597,7 +603,7 @@ describe("M281 GitHub Actions cost controls", () => {
       const shallow = join(fixtureRoot, "shallow");
       await git(fixtureRoot, "init", "--bare", remote);
       await git(fixtureRoot, "init", seed);
-      await git(seed, "config", "user.email", "m281@example.invalid");
+      await git(seed, "config", "user.email", "fixture@example.invalid");
       await git(seed, "config", "user.name", "M281 fixture");
       writeFileSync(join(seed, "fixture.txt"), "base\n");
       await git(seed, "add", "fixture.txt");

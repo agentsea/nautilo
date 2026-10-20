@@ -717,7 +717,11 @@ export {
   type ImageProvider,
 } from "./config/image-models";
 export { listMediaGenerationModels, listOrderedMediaGenerationModels, getDefaultMediaGenerationModel } from "./config/media-generation-models";
-export type { MediaGenerationFamily, MediaGenerationModel } from "./config/media-generation-models";
+export type {
+  MediaGenerationFamily,
+  MediaGenerationModel,
+  ServerSurplusMediaAvailability,
+} from "./config/media-generation-models";
 export {
   generateImages,
   runFundedDirectImageAttempt,
@@ -1501,3 +1505,4 @@ export { MODEL_INPUT_EXPOSURE_METADATA_KEY, bindModelInputExposure, readModelInp
 export { readCurrentOrdinaryTranscriptExposureRows, projectCurrentOrdinaryTranscriptExposureRows, type CurrentOrdinaryTranscriptExposureRow } from "./store/session-store";
 
 export { memoryReviewFingerprint } from "./memory/memory-review-staging";
+export { resultReceipt, resultVersion } from "./tools/result-reader/result-window";

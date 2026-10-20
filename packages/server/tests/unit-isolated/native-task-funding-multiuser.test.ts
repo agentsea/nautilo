@@ -27,6 +27,7 @@ const actualTrust = await import("@nautilo/trust");
 
 let invocationAllowed = true;
 let sourceRoomLive = true;
+let fundingPreference: "personal_first" | "server_first" = "personal_first";
 const invocationInputs: Array<{ roomId?: string }> = [];
 const fundingInputs: Array<{ humanUserId: string; modelId: string; prior: unknown }> = [];
 const taskRows = new Map<string, Task>();
@@ -40,7 +41,7 @@ mock.module("@nautilo/agent", () => ({
 }));
 mock.module("@nautilo/db", () => ({
   ...actualDb,
-  getServerProviderPolicy: async () => ({ allowPersonalProviderKeys: true, fundingPreference: "personal_first" as const }),
+  getServerProviderPolicy: async () => ({ allowPersonalProviderKeys: true, fundingPreference }),
   getTaskById: async (_db: unknown, id: string) => taskRows.get(id),
   getTaskRunForTask: async (_db: unknown, taskId: string, runId: string) => {
     const run = runRows.get(runId);
@@ -94,8 +95,18 @@ class TestModelFundingError extends Error {
 }
 mock.module("../../src/lib/model-funding", () => ({
   ModelFundingError: TestModelFundingError,
-  resolveModelFunding: async (input: { humanUserId: string; modelId: string; priorDecision?: unknown }) => {
+  readModelFundingPolicy: async () => ({ allowPersonalProviderKeys: true, fundingPreference }),
+  resolveModelFunding: async (input: {
+    humanUserId: string;
+    modelId: string;
+    priorDecision?: unknown;
+    fundingKind?: "personal" | "server";
+  }) => {
     fundingInputs.push({ humanUserId: input.humanUserId, modelId: input.modelId, prior: input.priorDecision });
+    if (input.fundingKind === "personal") {
+      return { ...PERSONAL_BINDING, humanUserId: input.humanUserId, payerHumanId: input.humanUserId,
+        modelId: input.modelId, workload: "native_text_task" as const };
+    }
     if (input.priorDecision && typeof input.priorDecision === "object" && "providerRoute" in input.priorDecision && input.priorDecision.providerRoute === "openai-chatgpt") {
       return { ...input.priorDecision, modelId: input.modelId, humanUserId: input.humanUserId, payerHumanId: input.humanUserId, workload: "native_text_task" as const };
     }
@@ -105,7 +116,10 @@ mock.module("../../src/lib/model-funding", () => ({
       : { kind: "server" as const, providerRoute: "openrouter", humanUserId: input.humanUserId,
           modelId: input.modelId, workload: "native_text_task" as const };
   },
-  withAdmittedPersonalCredential: async () => { throw new Error("not used"); },
+  withAdmittedPersonalCredential: async (
+    _decision: unknown,
+    run: (credential: { apiKey: string }) => Promise<unknown>,
+  ) => run({ apiKey: "synthetic-personal-secret" }),
 }));
 
 const { nativeTaskFundingPort, isPersonalOnlyNativeTaskSelection } = await import("../../src/lib/native-task-funding");
@@ -168,6 +182,7 @@ function task(overrides: Partial<Task> = {}): Task {
 beforeEach(() => {
   invocationAllowed = true;
   sourceRoomLive = true;
+  fundingPreference = "personal_first";
   fundingInputs.length = 0;
   invocationInputs.length = 0;
   taskRows.clear();
@@ -244,6 +259,34 @@ describe("multi-user native Task funding", () => {
     invocationAllowed = false;
     await rejects(session.recheckAttempt(SERVER_MODEL), /invocation_access_withdrawn/);
     expect(fundingInputs.every(({ humanUserId }) => humanUserId === HUMAN_A)).toBeTrue();
+  });
+
+  test("a server-first native Task exposes bounded personal recovery", async () => {
+    fundingPreference = "server_first";
+    const candidate = task();
+    const run = {
+      id: PARENT_RUN_ID,
+      taskId: candidate.id,
+      status: "running",
+      modelId: SERVER_MODEL,
+      graphThreadId: "task-thread",
+      fundingBinding: { kind: "server", providerRoute: "openrouter" },
+      fundingPredecessorRunId: null,
+    } as TaskRun;
+    taskRows.set(candidate.id, candidate);
+    runRows.set(run.id, run);
+
+    const session = await nativeTaskFundingPort.openSession(candidate, run, SERVER_MODEL, false);
+    expect(session.allowUnpinnedSurplusRetry).toBe(true);
+    expect(session.openPersonalRecovery).toBeFunction();
+    const recovery = await session.openPersonalRecovery!(SERVER_MODEL);
+    expect(recovery.allowUnpinnedSurplusRetry).toBe(true);
+    expect(recovery.capabilityFunding).toBeUndefined();
+    expect(recovery.openPersonalRecovery).toBeUndefined();
+    expect(await recovery.runAttempt(SERVER_MODEL, async (attempt) => attempt)).toMatchObject({
+      usageFunding: { kind: "personal", providerRoute: "openrouter" },
+      personalCredential: { apiKey: "synthetic-personal-secret" },
+    });
   });
 
   test("an archived source Room blocks fresh and resumed paid attempts", async () => {

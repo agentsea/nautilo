@@ -1,10 +1,11 @@
+import { workspaceDocumentMimeType } from "@nautilo/attachments/composer-chat-extensions";
 /**
  * upload a composer attachment's bytes and patch the chip with the
  * resulting server `attachmentId`. Shared by every attach entry point
  * (paperclip now; drag-drop next) so there is ONE ingestion path.
  */
 import { apiClient } from "./api";
-import { uploadComposerPdf } from "./composer-pdf-upload";
+import { uploadComposerDocument } from "./composer-document-upload";
 import { updateAttachment } from "../adapters/composer-attachments-ref";
 
 function base64ToBytes(b64: string): Uint8Array {
@@ -21,10 +22,11 @@ async function uploadBlob(
   opts?: { roomId?: string | null },
 ): Promise<void> {
   try {
-    if (/\.pdf$/i.test(filename)) {
-      const workspaceArtifact = await uploadComposerPdf({ id, blob, filename, roomId: opts?.roomId },
+    const documentMime = workspaceDocumentMimeType(filename);
+    if (documentMime) {
+      const workspaceArtifact = await uploadComposerDocument({ id, blob, filename, roomId: opts?.roomId },
         (file, options) => apiClient.createWorkspaceArtifact(file, options));
-      updateAttachment(id, { status: "queued", errorReason: null, workspaceArtifact, mimeType: "application/pdf" });
+      updateAttachment(id, { status: "queued", errorReason: null, workspaceArtifact, mimeType: documentMime });
       return;
     }
     const res = await apiClient.uploadMessageAttachment(blob, filename, {
@@ -65,9 +67,10 @@ export async function uploadComposerAttachment(
 }
 
 /** Shared native-picker ingestion; each composer retains its own Room-bound queue. */
-export function uploadPickedAttachment(file: { name: string; base64: string }, opts?: { roomId?: string | null }) {
+export function uploadPickedAttachment(file: { name: string; base64: string }, opts?: { roomId?: string | null; purpose?: "bolter" }) {
   const bytes = base64ToBytes(file.base64);
   return apiClient.uploadMessageAttachment(new Blob([bytes.buffer as ArrayBuffer]), file.name, {
     ...(opts?.roomId ? { roomId: opts.roomId } : {}),
+    ...(opts?.purpose ? { purpose: opts.purpose } : {}),
   });
 }

@@ -15,6 +15,7 @@ import {
   ServerProviderCredentialsDeniedError,
   type ServerProviderCredentialOrigin,
 } from "@nautilo/trust";
+import { canBroadenSurplusModelRoute } from "./surplus-route";
 import { causalHumanForExecution } from "../runtime/causal-human-context";
 
 import { decisionStateSchema, decisionQuestionsSchema, type DecisionInput, type DecisionReceipt, type DecisionQuestion } from "./decision";
@@ -43,6 +44,8 @@ export interface DecisionDependencies {
   readonly assertCanUseServerProviderCredentials?: typeof assertCanUseServerProviderCredentials;
   /** Exact admitted wire. Omission preserves the historical direct-server path. */
   readonly providerRoute?: "direct" | "surplus";
+  /** Bound to the opaque funding attempt, never accepted from model input. */
+  readonly surplusProviderMode?: "any";
   /** Pure route seam for narrowed transport tests. */
   readonly surplusRoute?: QualifiedSurplusDecisionRoute;
   readonly runPersonalAttempt?: typeof runPersonalLlmAttempt;
@@ -163,8 +166,13 @@ async function requestDecisionsWithUsage<T>(
   const expectedFundingRoute = providerRoute === "surplus" ? "surplus" : providerName;
   const admittedMatchesContext = admitted !== null
     && admitted.providerRoute === providerRoute
+    && admitted.surplusProviderMode === deps.surplusProviderMode
     && ambient?.funding === admitted.usageFunding
     && admitted.usageFunding.providerRoute === expectedFundingRoute;
+  if (deps.surplusProviderMode === "any" && (providerRoute !== "surplus"
+    || !admittedMatchesContext || !canBroadenSurplusModelRoute(request.modelId))) {
+    throw new ChoiceRequestError("unsupported_model");
+  }
   const ambientIsPersonal = ambient?.funding?.kind === "personal";
   if (admitted !== null && !admittedMatchesContext) {
     throw new ChoiceRequestError("missing_credentials");
@@ -212,7 +220,7 @@ async function requestDecisionsWithUsage<T>(
       model: requestedProviderModelId,
       state: request.state,
       questions: request.questions,
-      ...(surplusRoute ? { provider: surplusRoute.providerPin } : {}),
+      ...(surplusRoute && deps.surplusProviderMode !== "any" ? { provider: surplusRoute.providerPin } : {}),
     });
   } catch {
     throw new ChoiceRequestError("invalid_request");
@@ -266,7 +274,9 @@ async function requestDecisionsWithUsage<T>(
     const responseModel = z.string().safeParse(envelope?.["model"]);
     const safeResponseModel = responseModel.success
       ? safeMetadataString(responseModel.data, apiKey) : undefined;
-    const provider = safeMetadataString(envelope?.["provider"], apiKey);
+    const provider = safeMetadataString(deps.surplusProviderMode === "any"
+      ? readSurplusWireReceipt(response.headers).providerFamily
+      : envelope?.["provider"], apiKey);
     const responseId = safeMetadataString(envelope?.["id"], apiKey);
     const acceptedSurplusModelIds = surplusRoute
       ? new Set([
@@ -282,7 +292,9 @@ async function requestDecisionsWithUsage<T>(
       && (acceptedSurplusModelIds === null
         ? isDocumentedOpenRouterModelIdentity
         : (acceptedSurplusModelIds.has(responseModel.data.toLowerCase())
-          && (provider === undefined || provider.toLowerCase() === surplusRoute?.providerPin)));
+          && (deps.surplusProviderMode === "any"
+            ? provider !== undefined
+            : provider === undefined || provider.toLowerCase() === surplusRoute?.providerPin)));
     const surplusCostMicro = providerRoute === "surplus"
       ? readSurplusWireReceipt(response.headers).buyerCostMicro
       : undefined;
@@ -322,6 +334,7 @@ async function requestDecisionsWithUsage<T>(
     try {
       return await (deps.runSurplusAttempt ?? invokeSurplusDecisionAttempt)({
         route: surplusRoute,
+        ...(deps.surplusProviderMode === undefined ? {} : { providerMode: deps.surplusProviderMode }),
         apiKey,
         body,
         signal: input.signal,
@@ -346,7 +359,10 @@ async function requestDecisionsWithUsage<T>(
       if (!fallback) throw error;
       // Explicit routes are owned by the funding session. Signal that session
       // so it can re-admit the same payer/model on its direct rail.
-      if (deps.providerRoute !== undefined) throw new SurplusDecisionDirectFallbackError();
+      if (deps.providerRoute !== undefined) {
+        if (error instanceof SurplusDecisionDirectFallbackError) throw error;
+        throw new SurplusDecisionDirectFallbackError();
+      }
       return requestDecisions(input, { ...deps, providerRoute: "direct" }, finalize);
     }
   }

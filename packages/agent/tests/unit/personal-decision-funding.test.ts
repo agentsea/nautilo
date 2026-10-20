@@ -129,6 +129,133 @@ describe("personal decision funding", () => {
     });
   });
 
+  test("server Surplus may recover through its explicit same-model personal authority", async () => {
+    const primaryBinding = { kind: "server", providerRoute: "surplus" } as const;
+    const observed: unknown[] = [];
+    let recoveries = 0;
+    const primary: import("../../src/runtime/foreground-chat-funding").ForegroundChatFundingSession = {
+      kind: "server",
+      async recheckAttempt() {},
+      async runAttempt(_modelId, callback, transport) {
+        if (transport === "direct") throw Object.assign(new Error("missing server route"), { code: "provider_credentials_missing" });
+        return callback({ usageFunding: { kind: "server", humanUserId: "human-1", providerRoute: "surplus" } });
+      },
+      async openPersonalDirectRecovery(modelId) {
+        expect(modelId).toBe(MODEL_ID);
+        recoveries++;
+        return {
+          kind: "personal",
+          async recheckAttempt() {},
+          async runAttempt(candidate, callback, transport) {
+            expect(candidate).toBe(MODEL_ID);
+            expect(transport).toBe("direct");
+            return callback({
+              usageFunding: { kind: "personal", humanUserId: "human-1", payerHumanId: "human-1", providerRoute: "openrouter", credentialId: CREDENTIAL_ID, credentialRevision: 3 },
+              personalCredential: { apiKey: "synthetic-direct" },
+            });
+          },
+        };
+      },
+    };
+    const prepared = { modelId: MODEL_ID, preferenceRevision: 7, binding: primaryBinding, fundingSession: primary };
+    const result = await runPreparedDecision(prepared, async (deps) => {
+      observed.push({ funding: getUsageContext()?.funding, key: deps.apiKey, route: deps.providerRoute });
+      if (deps.providerRoute === "surplus") throw new SurplusDecisionDirectFallbackError();
+      return "recovered";
+    });
+    expect(result).toBe("recovered");
+    expect(recoveries).toBe(1);
+    expect(prepared.binding).toBe(primaryBinding);
+    expect(observed).toEqual([
+      { funding: { kind: "server", humanUserId: "human-1", providerRoute: "surplus" }, key: undefined, route: "surplus" },
+      { funding: { kind: "personal", humanUserId: "human-1", payerHumanId: "human-1", providerRoute: "openrouter", credentialId: CREDENTIAL_ID, credentialRevision: 3 }, key: "synthetic-direct", route: "direct" },
+    ]);
+  });
+
+  test("server and personal decision sources each exhaust pinned, unpinned, then direct", async () => {
+    const binding = { kind: "server", providerRoute: "surplus" } as const;
+    const transports: string[] = [];
+    const stages: string[] = [];
+    const personal: import("../../src/runtime/foreground-chat-funding").ForegroundChatFundingSession = {
+      kind: "personal",
+      allowUnpinnedSurplusRetry: true,
+      async recheckAttempt() {},
+      async runAttempt(candidate, callback, requestedTransport) {
+        expect(candidate).toBe(MODEL_ID);
+        const transport = requestedTransport ?? "surplus";
+        transports.push(`personal:${requestedTransport ?? "default"}`);
+        return callback({
+          usageFunding: {
+            kind: "personal",
+            humanUserId: "human-1",
+            payerHumanId: "human-1",
+            providerRoute: transport === "surplus" ? "surplus" : "openrouter",
+            credentialId: CREDENTIAL_ID,
+            credentialRevision: 3,
+          },
+          personalCredential: { apiKey: `personal-${transport}-key` },
+        });
+      },
+    };
+    const primary: import("../../src/runtime/foreground-chat-funding").ForegroundChatFundingSession = {
+      kind: "server",
+      allowUnpinnedSurplusRetry: true,
+      async recheckAttempt() {},
+      async runAttempt(candidate, callback, transport = "direct") {
+        expect(candidate).toBe(MODEL_ID);
+        transports.push(`server:${transport}`);
+        return callback({
+          usageFunding: {
+            kind: "server",
+            humanUserId: "human-1",
+            providerRoute: transport === "surplus" ? "surplus" : "openrouter",
+          },
+        });
+      },
+      async openPersonalRecovery(modelId) {
+        expect(modelId).toBe(MODEL_ID);
+        return personal;
+      },
+    };
+    const prepared = {
+      modelId: MODEL_ID,
+      preferenceRevision: 7,
+      binding,
+      fundingSession: primary,
+    };
+
+    const result = await runPreparedDecision(prepared, async (deps) => {
+      const funding = deps.admittedFundingAttempt?.usageFunding;
+      if (!funding) throw new Error("missing admitted funding");
+      const stage = `${funding.kind}:${deps.providerRoute}:${deps.surplusProviderMode ?? "pinned"}`;
+      stages.push(stage);
+      if (deps.providerRoute === "surplus") {
+        throw new SurplusDecisionDirectFallbackError(deps.surplusProviderMode !== "any");
+      }
+      if (funding.kind === "server") throw new ChoiceRequestError("provider_error");
+      return "served-personally";
+    });
+
+    expect(result).toBe("served-personally");
+    expect(stages).toEqual([
+      "server:surplus:pinned",
+      "server:surplus:any",
+      "server:direct:pinned",
+      "personal:surplus:pinned",
+      "personal:surplus:any",
+      "personal:direct:pinned",
+    ]);
+    expect(transports).toEqual([
+      "server:surplus",
+      "server:surplus",
+      "server:direct",
+      "personal:default",
+      "personal:surplus",
+      "personal:direct",
+    ]);
+    expect(prepared).toMatchObject({ modelId: MODEL_ID, preferenceRevision: 7, binding });
+  });
+
   test("personal-only decision rows become runnable in discover_models", async () => {
     const binding = { kind: "personal", providerRoute: "openrouter", credentialId: CREDENTIAL_ID,
       credentialRevision: 3 } as const;
@@ -314,6 +441,114 @@ describe("personal decision funding", () => {
       actualCostUsd: 0.000321,
       inputTokens: 8,
       outputTokens: 2,
+    })]);
+  });
+
+  test("native unpinned attempts preserve the model and record the actual provider", async () => {
+    const route = resolveQualifiedSurplusDecisionRoute(MODEL_ID);
+    if (!route) throw new Error("expected route");
+    const begins: Array<Record<string, unknown>> = [];
+    const attachments: unknown[] = [];
+    const settlements: unknown[] = [];
+    let wireBody: Record<string, unknown> | undefined;
+    const result = await invokeSurplusDecisionAttempt({
+      route,
+      apiKey: "surplus-key",
+      providerMode: "any",
+      body: JSON.stringify({ model: route.surplusModelId, provider: route.providerPin, state: "evidence" }),
+      signal: new AbortController().signal,
+      funding: { kind: "server", humanUserId: "human-1", providerRoute: "surplus" },
+      fetchImpl: (async (_url, init) => {
+        if (typeof init?.body !== "string") throw new Error("expected string request body");
+        wireBody = JSON.parse(init.body) as Record<string, unknown>;
+        return Response.json({ ok: true }, { headers: {
+          "x-request-id": "request-unpinned",
+          "x-si-provider-family": "alternate-provider",
+        } });
+      }) as typeof fetch,
+      parse: async () => ({ finalize: () => "served", inputTokens: 8, outputTokens: 2 }),
+    }, {
+      begin: async (value) => { begins.push(value as unknown as Record<string, unknown>); },
+      attach: async (value) => { attachments.push(value); },
+      settle: async (value) => { settlements.push(value); },
+    });
+
+    expect(result).toBe("served");
+    expect(wireBody).toEqual({ model: route.surplusModelId, state: "evidence" });
+    expect(begins[0]).toMatchObject({
+      model: MODEL_ID,
+      provider: "openrouter",
+      metadata: {
+        catalogModelId: MODEL_ID,
+        surplusProviderPin: "openrouter",
+        surplusUnpinnedModel: true,
+      },
+    });
+    expect(attachments[0]).toMatchObject({ servingProvider: "alternate-provider" });
+    expect(settlements[0]).toMatchObject({ servingProvider: "alternate-provider", costState: "pending" });
+  });
+
+  test("only a pinned explicit no-seller decision refusal requests an unpinned retry", async () => {
+    const route = resolveQualifiedSurplusDecisionRoute(MODEL_ID);
+    if (!route) throw new Error("expected route");
+    const refuse = async (providerMode?: "any") => invokeSurplusDecisionAttempt({
+      route,
+      apiKey: "surplus-key",
+      ...(providerMode ? { providerMode } : {}),
+      body: JSON.stringify({ model: route.surplusModelId, provider: route.providerPin }),
+      signal: new AbortController().signal,
+      funding: { kind: "server", humanUserId: "human-1", providerRoute: "surplus" },
+      fetchImpl: (async () => Response.json({ error: { code: "no_sellers_for_model" } }, {
+        status: 404,
+        headers: { "x-si-marketplace-attempts": "0" },
+      })) as unknown as typeof fetch,
+      parse: async (response) => {
+        const payload: unknown = await response.json();
+        throw new SurplusDecisionHttpError(response.status, payload);
+      },
+    }, { begin: async () => {}, settle: async () => {} }).catch((error: unknown) => error);
+
+    const pinned = await refuse();
+    expect(pinned).toBeInstanceOf(SurplusDecisionDirectFallbackError);
+    expect((pinned as SurplusDecisionDirectFallbackError).retryUnpinned).toBe(true);
+    const unpinned = await refuse("any");
+    expect(unpinned).toBeInstanceOf(SurplusDecisionDirectFallbackError);
+    expect((unpinned as SurplusDecisionDirectFallbackError).retryUnpinned).toBe(false);
+    expect(new SurplusDecisionDirectFallbackError().retryUnpinned).toBe(false);
+  });
+
+  test("an unpinned decision requires actual serving-provider attribution", async () => {
+    const route = resolveQualifiedSurplusDecisionRoute(MODEL_ID);
+    if (!route) throw new Error("expected route");
+    let parsed = false;
+    const settlements: unknown[] = [];
+    const error = await invokeSurplusDecisionAttempt({
+      route,
+      apiKey: "surplus-key",
+      providerMode: "any",
+      body: JSON.stringify({ model: route.surplusModelId, provider: route.providerPin }),
+      signal: new AbortController().signal,
+      funding: { kind: "server", humanUserId: "human-1", providerRoute: "surplus" },
+      fetchImpl: (async () => Response.json({ ok: true }, {
+        headers: { "x-request-id": "request-without-provider" },
+      })) as unknown as typeof fetch,
+      parse: async () => {
+        parsed = true;
+        return { finalize: () => "must not escape", inputTokens: 8, outputTokens: 2 };
+      },
+    }, {
+      begin: async () => {},
+      attach: async () => {},
+      settle: async (value) => { settlements.push(value); },
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(SurplusOutcomeUnknownError);
+    expect(parsed).toBe(false);
+    expect(settlements).toEqual([expect.objectContaining({
+      providerRequestId: "request-without-provider",
+      outcome: "unknown",
+      costState: "pending",
+      failureCode: "outcome_unknown",
     })]);
   });
 
@@ -703,4 +938,31 @@ describe("personal decision funding", () => {
       else process.env["OPENROUTER_API_KEY"] = previous;
     }
   });
+  test("model-only decisions accept header serving evidence without an optional body provider", async () => {
+    const binding = { kind: "personal", providerRoute: "surplus", credentialId: CREDENTIAL_ID,
+      credentialRevision: 3 } as const;
+    await runWithCapabilityFundingSession(capability(binding), async () => {
+      const prepared = await prepareDecisionFunding(MODEL_ID);
+      if (!prepared) throw new Error("expected admission");
+      const admitted = { ...prepared, fundingSession: { ...prepared.fundingSession, allowUnpinnedSurplusRetry: true as const } };
+      const stages: unknown[] = [];
+      const result = await runPreparedDecision(admitted, funding => invokeDecision({
+        modelId: MODEL_ID, state: "synthetic", questions: question, signal: new AbortController().signal,
+      }, {
+        ...funding,
+        runSurplusAttempt: (async attempt => {
+          stages.push(attempt.providerMode ?? "pinned");
+          if (attempt.providerMode !== "any") throw new SurplusDecisionDirectFallbackError(true);
+          expect(JSON.parse(attempt.body)).not.toHaveProperty("provider");
+          const parsed = await attempt.parse(Response.json({
+            model: "jev-1.13", answers: answer, usage: { input_tokens: 2, output_tokens: 1 },
+          }, { headers: { "x-si-provider-family": "alternate-seller" } }));
+          return parsed.finalize();
+        }) as typeof invokeSurplusDecisionAttempt,
+      }));
+      expect(result.provider).toBe("alternate-seller");
+      expect(stages).toEqual(["pinned", "any"]);
+    });
+  });
+
 });

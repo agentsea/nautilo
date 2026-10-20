@@ -35,7 +35,7 @@ describe("provider key catalogue", () => {
     const tavily = PERSONAL_PROVIDER_KEY_CATALOGUE.find(({ id }) => id === "tavily");
     const browserUse = PERSONAL_PROVIDER_KEY_CATALOGUE.find(({ id }) => id === "browser-use");
     expect(surplus && personalProviderCapabilitySummary(surplus)).toBe(
-      "Eligible for personal chat and native text Tasks, Research, Decisions, qualified image generation and qualified video or music generation. Surplus Decisions also require a pilot-enabled account; saving a key does not grant that entitlement.",
+      "Eligible for personal chat, native text Tasks and supported image understanding, Research, Decisions, qualified image generation and qualified video or music generation. Surplus Decisions also require a pilot-enabled account; saving a key does not grant that entitlement.",
     );
     expect(tavily && personalProviderCapabilitySummary(tavily)).toBe("Eligible for Research.");
     expect(browserUse && personalProviderCapabilitySummary(browserUse)).toBe("Eligible for website browsing and actions.");
