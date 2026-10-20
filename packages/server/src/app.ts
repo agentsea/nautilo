@@ -40,7 +40,8 @@ import { createProtectedTaskExternalRequests } from "./routes/protected-task-ext
 import { createProtectedTaskExternalRequestAuthority } from "./routes/protected-task-external-request-authority";
 import { protectedTaskExternalRequestRoutes } from "./routes/protected-task-external-request-routes";
 import { createProtectedTaskClaudeExecution } from "./routes/protected-task-claude-execution";
-import { currentProtectedTaskForegroundCreationContext, type ProtectedTaskForegroundCreationContext } from "./routes/protected-task-foreground-creation-context";
+import { currentProtectedTaskForegroundCreationContext, readProtectedTaskForegroundCreationPolicy,
+  type ProtectedTaskForegroundCreationContext } from "./routes/protected-task-foreground-creation-context";
 import { protectedTaskForegroundCreationIdentity, protectedTaskForegroundCreationCandidateIdentity,
   protectedTaskForegroundUpdateIdentity } from "./routes/protected-task-foreground-creation-identity";
 import type { ProtectedTaskCreationPlanV1 } from "@nautilo/runtime";
@@ -1985,7 +1986,9 @@ export async function createApp(options?: CreateAppOptions) {
   // only existing ordinary ports; Shadow and Full can reach protected ports
   // only after the common policy owner has revalidated the durable revision.
   const taskContentPolicy = createLiveShadowDataOperationPolicyBinding(
-    () => getEncryptionTransitionPolicy(getServerDirectDb()),
+    () => readProtectedTaskForegroundCreationPolicy(
+      () => getEncryptionTransitionPolicy(getServerDirectDb()),
+    ),
   );
   const taskContentOwner = bindEncryptionDataOperationOwner({
     policy: taskContentPolicy,

@@ -43,6 +43,7 @@ import {
   backgroundCryptoAuthorizationDomainRequirements,
   backgroundCryptoAuthorizationNamespaceRequirements,
   backgroundCryptoAuthorizationRequests,
+  acquireEncryptionConsumptionFence,
   createDirectDb,
   createPostgresJsBridgeConnection,
   cryptoDomains,
@@ -82,6 +83,7 @@ import {
   and,
   inArray,
   listProtectedTaskCancellationOutputCandidates,
+  llmUsageEvents,
   or,
   jobs,
   memories,
@@ -3168,6 +3170,108 @@ describePostgres("sealed protected Task Memory object writer", () => {
       expect(nestedCheckouts).toBe(1);
     } finally {
       current = false;
+      await base.cleanup();
+    }
+  });
+
+  test("held Task authority permits usage attribution while excluding Task mutation", async () => {
+    const base = await createBaseFixture();
+    const rollback = new Error("Rollback lock compatibility probe");
+    type ProbeTx = Parameters<Parameters<typeof base.admin.transaction>[0]>[0];
+    const probe = async (use: (tx: ProbeTx) => Promise<unknown>) => {
+      try {
+        await base.admin.transaction(async tx => {
+          await tx.execute(sql`SET LOCAL lock_timeout = '1s'`);
+          await use(tx);
+          throw rollback;
+        });
+      } catch (error) {
+        if (error === rollback) return "applied";
+        let cause: unknown = error;
+        for (let depth = 0; depth < 4 && cause instanceof Error; depth += 1) {
+          const code = (cause as { code?: unknown }).code;
+          if (typeof code === "string") return code;
+          cause = cause.cause;
+        }
+        throw error;
+      }
+      throw new Error("Lock compatibility probe did not roll back");
+    };
+    try {
+      const scenario = await createScenario(base);
+      expect(await scenario.withAuthority(() => NOW + 5, ({ writer }) =>
+        withCurrentProtectedTaskMemoryAuthority(writer, async () => {
+          // Real FK checks take KEY SHARE on Room and Task. Neither this insert
+          // nor a blocked mutation may escape its rollback-only transaction.
+          expect(await probe(async tx => tx.insert(llmUsageEvents).values({
+            userId: base.userId, roomId: base.seedRoomId, taskId: scenario.taskId,
+            provider: "lock-probe", model: "lock-probe", callType: "subagent",
+          }))).toBe("applied");
+          expect(await probe(async tx => tx.update(tasks).set({ status: "paused" })
+            .where(eq(tasks.id, scenario.taskId)))).toBe("55P03");
+          expect(await probe(async tx => tx.delete(tasks)
+            .where(eq(tasks.id, scenario.taskId)))).toBe("55P03");
+          return true;
+        }),
+      )).toBe(true);
+      expect(await base.admin.select({ id: llmUsageEvents.id }).from(llmUsageEvents)
+        .where(eq(llmUsageEvents.taskId, scenario.taskId))).toEqual([]);
+    } finally {
+      await base.cleanup();
+    }
+  });
+
+  test("transcript admission locks Task before a Session can retain its Room", async () => {
+    const base = await createBaseFixture();
+    const reachedCryptoAdmission = new Error("Transcript admission reached crypto verification");
+    type TranscriptSegment = Parameters<ReturnType<
+      typeof createProtectedTaskNativeTranscriptPublisher
+    >>[0];
+    let contender: Promise<unknown> | undefined;
+    try {
+      const scenario = await createScenario(base);
+      const createTranscript = createProtectedTaskNativeTranscriptPublisher({
+        product: base.product,
+      }, {
+        verifyCryptoHandle: () => Promise.reject(reachedCryptoAdmission),
+      });
+      await base.product.canonicalRunner.transaction(async tx => {
+        await acquireEncryptionConsumptionFence(tx);
+        const [heldTask] = await tx.select({
+          id: tasks.id,
+          pid: sql<number>`pg_backend_pid()`,
+        }).from(tasks).where(eq(tasks.id, scenario.taskId))
+          .limit(1).for("no key update");
+        if (heldTask === undefined) throw new Error("Task lock fixture is unavailable");
+        contender = scenario.withAuthority(() => NOW + 5, ({ writer }) =>
+          Promise.resolve(createTranscript(Object.freeze({
+            occurrence: writer.occurrence,
+            record: writer.record,
+            request: writer.request,
+            current: writer,
+            policy: Object.freeze({
+              mode: "encrypted_only" as const,
+              shadowBehavior: "strict" as const,
+              revision: base.policyRevision,
+            }),
+            humanTurnId: `task-segment-turn:${scenario.taskRunId}:1`,
+            assertCurrentTaskAuthority: () => Promise.resolve(),
+            domains: Object.freeze([]),
+            signer: Object.freeze({}),
+            resolveHistoricalSignerPublicationManager: () => Promise.resolve(null),
+          }) as unknown as TranscriptSegment)));
+        void contender.catch(() => undefined);
+        await waitForBlockedContender(base, heldTask.pid,
+          "Transcript admission did not wait for the held Task");
+        const [heldRoom] = await tx.select({ id: rooms.id }).from(rooms)
+          .where(eq(rooms.id, base.roomId)).limit(1)
+          .for("update", { noWait: true });
+        expect(heldRoom?.id).toBe(base.roomId);
+      }, { isolationLevel: "read committed" });
+      if (contender === undefined) throw new Error("Transcript contender was not started");
+      await rejects(contender, cause => cause === reachedCryptoAdmission);
+    } finally {
+      await contender?.catch(() => undefined);
       await base.cleanup();
     }
   });

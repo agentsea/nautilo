@@ -1,5 +1,12 @@
-import { protectedTaskDefinitionSupportsPolicy } from "@nautilo/db";
-import { and, eq, rooms, sessions } from "@nautilo/db";
+import {
+  acquireEncryptionConsumptionFence,
+  and,
+  eq,
+  protectedTaskDefinitionSupportsPolicy,
+  rooms,
+  sessions,
+  tasks,
+} from "@nautilo/db";
 import {
   PostgresHumanDeviceSignerHistory,
   verifyCryptoPostgresHandle,
@@ -114,6 +121,14 @@ async function admitTranscript(
     contentNamespaceId: occurrence.task.contentNamespaceId,
   });
   return runner.transaction(async tx => {
+    const policy = await acquireEncryptionConsumptionFence(tx);
+    if (policy.mode !== input.policy.mode
+      || policy.revision !== input.policy.revision) {
+      throw new TypeError("Protected Task transcript policy changed");
+    }
+    const [task] = await tx.select({ id: tasks.id }).from(tasks)
+      .where(eq(tasks.id, occurrence.task.id)).limit(1).for("share");
+    if (task === undefined) return null;
     const selectRoom = (roomId: string) => tx.select({
       id: rooms.id,
       ownerId: rooms.ownerId,

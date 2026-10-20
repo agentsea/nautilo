@@ -3,7 +3,8 @@ import { parseProtectedTaskHermesSelection } from "./protected-task-hermes-selec
 import { parseProtectedTaskOpenCodeSelection } from "./protected-task-opencode-selection";
 import { AsyncLocalStorage } from "node:async_hooks";
 import {
-  acquireEncryptionPublicationFence, lockProtectedTaskForegroundCreationIdentity, eq, rooms,
+  acquireEncryptionPublicationFence, getEncryptionTransitionPolicy,
+  lockProtectedTaskForegroundCreationIdentity, eq, rooms,
   type PostgresJsBridgeConnection, type PostgresJsBridgeRow, type PostgresJsBridgeScalar,
 } from "@nautilo/db";
 import { ClassifiedDataOperationError, type RequesterPrivateNamespaceFactV1,
@@ -72,7 +73,8 @@ export function createProtectedTaskForegroundCreationOwner(input: Omit<Publicati
 }>) {
   type Loan = Readonly<{ taskId: string; transaction: ProductLoan["transaction"]; executor: ProductLoan["executor"];
     product: PostgresJsBridgeConnection; authority: DomainKeyV2LiveShadowCurrentAuthority;
-    assertCurrent(): Promise<void> }>;
+    assertCurrent(): Promise<void>;
+    readPolicy(): ReturnType<typeof getEncryptionTransitionPolicy> }>;
   const loans = new AsyncLocalStorage<Loan>();
   const taskAuthorizations = new AsyncLocalStorage<TaskDefinitionAuthorization>();
   let disposed = false;
@@ -261,6 +263,12 @@ export function createProtectedTaskForegroundCreationOwner(input: Omit<Publicati
   });
   const context: ProtectedTaskForegroundCreationContext = {
     admission, assertCurrent,
+    readHeldPolicy: async () => {
+      assertLive();
+      const loan = loans.getStore();
+      if (loan === undefined) return null;
+      return loan.readPolicy();
+    },
     withTaskDefinitionAuthorization: async request => {
       if (taskAuthorizations.getStore() !== undefined) {
         throw new TypeError("Protected Task definition authorization cannot nest");
@@ -319,9 +327,15 @@ export function createProtectedTaskForegroundCreationOwner(input: Omit<Publicati
         if (authority === null) unavailable();
         const scoped = authority;
         const revalidate = async () => { guard(); if (!await scoped.verifyCurrentPlan()) unavailable(); guard(); };
+        const readPolicy = async () => {
+          guard();
+          const policy = await getEncryptionTransitionPolicy(request.transaction);
+          guard();
+          return policy;
+        };
         await revalidate();
         return await loans.run({ taskId: request.taskId, transaction: request.transaction, executor: request.executor,
-          product, authority, assertCurrent: revalidate }, async () => {
+          product, authority, assertCurrent: revalidate, readPolicy }, async () => {
           const value = await request.use(); await revalidate(); return value;
         });
       } finally { active = false; authority?.destroy(); }

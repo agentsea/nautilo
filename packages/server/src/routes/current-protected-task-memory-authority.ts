@@ -508,7 +508,9 @@ async function withCurrentProtectedTaskMemoryAuthorityTransaction<Value>(
           targetChat: tasks.targetChat,
           targetRoomId: tasks.targetRoomId,
         }).from(tasks)
-          .where(eq(tasks.id, input.occurrence.task.id)).limit(1).for("update");
+          .where(eq(tasks.id, input.occurrence.task.id)).limit(1)
+          // Exclude Task edits/deletes while permitting FK-only usage accounting.
+          .for("no key update");
         const [run] = await tx.select({
           id: taskRuns.id,
           taskId: taskRuns.taskId,

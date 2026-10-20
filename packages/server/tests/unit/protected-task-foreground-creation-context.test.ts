@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { rejects } from "node:assert/strict";
 import {
   currentProtectedTaskForegroundCreationContext,
+  readProtectedTaskForegroundCreationPolicy,
   withProtectedTaskForegroundCreationContext,
   type ProtectedTaskForegroundCreationContext,
 } from "../../src/routes/protected-task-foreground-creation-context";
@@ -63,4 +64,69 @@ test("a proof awaiting source authority cannot resume after its foreground close
   release();
   if (pending === null) throw new Error("Pending foreground assertion missing");
   await rejects(pending, /foreground scope closed/u);
+});
+
+test("policy reads use only an active held source and otherwise use the supplied fallback", async () => {
+  const fallbackPolicy = Object.freeze({ mode: "plaintext_only" as const, shadowBehavior: "fallback" as const, revision: 1 });
+  const heldPolicy = Object.freeze({ mode: "encrypted_only" as const, shadowBehavior: "strict" as const, revision: 3 });
+  let fallbackReads = 0;
+  const fallback = () => { fallbackReads += 1; return Promise.resolve(fallbackPolicy); };
+  expect(await readProtectedTaskForegroundCreationPolicy(fallback)).toBe(fallbackPolicy);
+
+  const retained = await withProtectedTaskForegroundCreationContext<ProtectedTaskForegroundCreationContext>({
+    ...source(() => Promise.resolve()),
+    readHeldPolicy: () => Promise.resolve(heldPolicy),
+  }, async () => {
+    const active = currentProtectedTaskForegroundCreationContext();
+    if (active === null) throw new Error("Missing active policy reader");
+    expect(await readProtectedTaskForegroundCreationPolicy(fallback)).toBe(heldPolicy);
+    return active;
+  });
+  expect(fallbackReads).toBe(1);
+  const retainedRead = retained.readHeldPolicy;
+  if (retainedRead === undefined) throw new Error("Missing retained policy reader");
+  await rejects(retainedRead, /foreground scope closed/u);
+
+  let releaseEscapedRead!: () => void;
+  const escapedReadGate = new Promise<void>(resolve => { releaseEscapedRead = resolve; });
+  let escapedRead!: Promise<unknown>;
+  await withProtectedTaskForegroundCreationContext({
+    ...source(() => Promise.resolve()),
+    readHeldPolicy: () => Promise.resolve(heldPolicy),
+  }, () => {
+    escapedRead = (async () => {
+      await escapedReadGate;
+      return readProtectedTaskForegroundCreationPolicy(fallback);
+    })();
+    void escapedRead.catch(() => undefined);
+    return Promise.resolve();
+  });
+  releaseEscapedRead();
+  await rejects(escapedRead, /foreground scope closed/u);
+
+  let releasePendingFallback!: () => void;
+  const pendingFallbackGate = new Promise<void>(resolve => { releasePendingFallback = resolve; });
+  let pendingFallback!: Promise<unknown>;
+  await withProtectedTaskForegroundCreationContext(source(() => Promise.resolve()), () => {
+    pendingFallback = readProtectedTaskForegroundCreationPolicy(async () => {
+      await pendingFallbackGate;
+      return fallbackPolicy;
+    });
+    void pendingFallback.catch(() => undefined);
+    return Promise.resolve();
+  });
+  releasePendingFallback();
+  await rejects(pendingFallback, /foreground scope closed/u);
+
+  const integrityFailure = new Error("held policy integrity failure");
+  await withProtectedTaskForegroundCreationContext({
+    ...source(() => Promise.resolve()),
+    readHeldPolicy: () => Promise.reject(integrityFailure),
+  }, async () => {
+    await rejects(
+      () => readProtectedTaskForegroundCreationPolicy(fallback),
+      cause => cause === integrityFailure,
+    );
+  });
+  expect(fallbackReads).toBe(1);
 });

@@ -55,6 +55,87 @@ const TABLES_ADDED_SINCE_THE_PRIOR_MIGRATION_ASSERTION = [
   "public.task_terminal_message_crypto_staging_receipts",
 ] as const;
 
+/** Immutable Task migration bytes, including the merge-renumbered protected
+ * Task foundation and the appended signer and fallback migrations. */
+const IMMUTABLE_TASK_MIGRATION_MANIFEST = [
+  {
+    path: "0361_gifted_human_fly.sql",
+    sha256: "47d57497f2e98968dc30a9f25124c9ed9ec4e855e346c3d257cfa0d363f6f3a5",
+  },
+  {
+    path: "0362_funny_korg.sql",
+    sha256: "916d0fe2e5e1efcf9285fbd44e3c3286229c8007d2122f510fd7cf082ef3980b",
+  },
+  {
+    path: "0363_mean_mindworm.sql",
+    sha256: "36b24fdf1fb15ef7e7d2227f740dda24d530e229082a5e5581b6147499c7f3b8",
+  },
+  {
+    path: "0364_fearless_stingray.sql",
+    sha256: "f951ee929c4ef38ccd8ae975f54a4fd4c0aa5708fdb0c903057a61864845c822",
+  },
+  {
+    path: "0365_exotic_starjammers.sql",
+    sha256: "547baab01a27d6719a0d72fa54f023d7f9610e3e72934223085d3313748da35d",
+  },
+  {
+    path: "0366_famous_slayback.sql",
+    sha256: "8fbb1f69bf347c910018a90e1bb1914fb0ac2a1a57f0b0aa2857aa5da12fe636",
+  },
+  {
+    path: "0367_thin_nico_minoru.sql",
+    sha256: "572128250325efe66c209eb325cf5a7f1f61b754cb1c4d6d0f3914547b1a4f0a",
+  },
+  {
+    path: "0368_illegal_ken_ellis.sql",
+    sha256: "ef846cd58ffb43cfc01b5dab629e75b9dd5ec7b0618f31e38a6bb18b36f0e285",
+  },
+  {
+    path: "0369_hard_franklin_storm.sql",
+    sha256: "269451f9b609db46c67c071f28844dc2248fe7db694d215fe9dfa52474987f1f",
+  },
+  {
+    path: "0370_tranquil_justin_hammer.sql",
+    sha256: "ed18d20940f82db055d0a60f8623c2fd3691c76df4b5ca1818627324d654491b",
+  },
+  {
+    path: "0371_unknown_mattie_franklin.sql",
+    sha256: "6fe81689f591d4e8c367b8bd1b7db385b088788876410862ba1433da992cea83",
+  },
+  {
+    path: "0372_lame_la_nuit.sql",
+    sha256: "99c21f1b41e912baf71e3db8d2ed7e45a15ffef01aa3d95c20526a4f498e62ca",
+  },
+  {
+    path: "0373_abandoned_thundra.sql",
+    sha256: "e70023c5dcf4012c74d271e56b22b6f8b8dc25099df36215953aad4a775e3767",
+  },
+  {
+    path: "0374_strange_red_shift.sql",
+    sha256: "950d05509ccf6affa335753842e8f2f07a47ee5c1877577fadb8df48626b3f2b",
+  },
+  {
+    path: "0375_youthful_darkstar.sql",
+    sha256: "d8f0f95bbe7fa50fe0ae419fa943dae85aa56c94487631a594876f26a1b8c673",
+  },
+  {
+    path: "0376_brief_snowbird.sql",
+    sha256: "18d2b76404902c0e42215f9f8c92c7599cc79489133360e7ba5488afcc3a7fd6",
+  },
+  {
+    path: "0377_remarkable_shriek.sql",
+    sha256: "6160a08eafa1d24bcf77f9d52b8e3aba6da684a22c59c52302da8c1fce6e47e1",
+  },
+  {
+    path: "0378_daily_junta.sql",
+    sha256: "4f4304ee2091b5bb5a29fa23d094073109a17650d19b1d326bd89190705ed58d",
+  },
+  {
+    path: "0379_loud_beast.sql",
+    sha256: "5287a3fcc6e4c48cab14cd4a1c69951360469dfe1132ff2f756e2fe4aa3b7234",
+  },
+] as const;
+
 function temporaryMigrationTree(name: string): string {
   const directory = mkdtempSync(resolve(tmpdir(), `m220 ${name} `));
   temporaryDirectories.push(directory);
@@ -403,10 +484,10 @@ describe("migration inventory", () => {
     expect(inventory.migrations.every((migration) => !migration.path.startsWith("/")))
       .toBe(true);
     expect(inventory.migrations.at(-1)).toEqual({
-      index: 374,
-      tag: "0374_strange_red_shift",
-      path: "0374_strange_red_shift.sql",
-      sha256: "950d05509ccf6affa335753842e8f2f07a47ee5c1877577fadb8df48626b3f2b",
+      index: 379,
+      tag: "0379_loud_beast",
+      path: "0379_loud_beast.sql",
+      sha256: "5287a3fcc6e4c48cab14cd4a1c69951360469dfe1132ff2f756e2fe4aa3b7234",
     });
 
     const comparison = compareSchemaAndMigrationInventory(
@@ -420,6 +501,23 @@ describe("migration inventory", () => {
       missingInSchema: [],
       columnMismatches: [],
       constraintMismatches: [],
+    });
+  });
+
+  test("pins the immutable Task migration tail without a DB", () => {
+    const directory = resolve(import.meta.dir, "../../../db/src/migrations");
+    const inventory = inventoryMigrationTree(directory);
+
+    expect(IMMUTABLE_TASK_MIGRATION_MANIFEST).toHaveLength(19);
+    expect(inventory.migrations.slice(361, 380).map((migration) => ({
+      path: migration.path,
+      sha256: migration.sha256,
+    }))).toEqual([...IMMUTABLE_TASK_MIGRATION_MANIFEST]);
+    expect(inventory.migrations.at(-1)).toEqual({
+      index: 379,
+      tag: "0379_loud_beast",
+      path: "0379_loud_beast.sql",
+      sha256: "5287a3fcc6e4c48cab14cd4a1c69951360469dfe1132ff2f756e2fe4aa3b7234",
     });
   });
 

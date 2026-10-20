@@ -419,6 +419,60 @@ export const SUPERSEDED_TASK_PROTECTION_DTO_LOCATORS = new Set([
   "http:request_response:POST /api/tasks/:id/content-access-recovery"
 ]);
 
+const MESSAGE_BACKFILL_SOURCE_LOCATOR =
+  "http:request_response:POST /api/message-backfill/source";
+const MESSAGE_COORDINATE =
+  '{editRevision:number;logicalMessageKey:string;messageId:number;role:"assistant"|"system"|"tool"|"user";sessionId:string}';
+const PROTECTED_MESSAGE =
+  '{dtoVersion:2;projection:{authorAgentId?:string;createdAt:string;deliveredAt?:string;editRevision:number;editedAt?:string;lastReplyAt?:string;logicalMessageKey?:string;messageId:string;namespaceId:string;readAt?:string;replyCount?:number;replyToMessageId?:string;role:"assistant"|"system"|"tool"|"user";roomId:string;sessionId:string;sourceUserId?:string;subthreadRoomId?:string;summaryRevision?:number};protectedPayload?:{accessManifestBytesBase64url:string;cryptoObjectId:string;encryptedPayloadBytesBase64url:string;keyClass:"ai"|"human";namespaceEnvelopeBytesBase64url:string;payloadVersion:2;status:"encrypted"}|{cryptoObjectId?:string;reason:"corrupt"|"lost_key_material"|"missing_grant"|"removed"|"stale_grant"|"unauthorized"|"unsupported_version";status:"unavailable"}|{reason:"backfill_pending"|"shadow_pending";status:"pending"}}';
+const RETAINED_GENERATION =
+  '{accessRevision:number;audienceFingerprintBase64url:string;headDigestBase64url:string;namespaceGeneration:number;publicationDigestBase64url:string;publicationSetDigestBase64url:string}';
+const SELECTED_SOURCE =
+  '{authorAgentId?:string;logicalMessageKey?:string;role:"assistant"|"system"|"tool"|"user";sourceUserId?:string}';
+const LIVE_SHADOW_ORDINARY_RECORD_PREFIX =
+  `|{coordinate:${MESSAGE_COORDINATE};kind?:"live_shadow";ordinaryPayloadBytesBase64url:string;`;
+const TASK_RUNTIME_RECORDS =
+  `|{coordinate:${MESSAGE_COORDINATE};kind:"task_runtime";ordinaryPayloadBytesBase64url:string;protectedMessage:${PROTECTED_MESSAGE};retainedGeneration:${RETAINED_GENERATION};taskId:string;taskRunId:string}`
+  + `|{coordinate:${MESSAGE_COORDINATE};kind:"task_runtime";protectedMessage:${PROTECTED_MESSAGE};representationMode:"protected-only";retainedGeneration:${RETAINED_GENERATION};selectedSource:${SELECTED_SOURCE};taskId:string;taskRunId:string}`;
+
+/** Add only the two Task-runtime projection variants authorized by the
+ * message-backfill source contract. The repeated record union is present once
+ * in each ready response branch. */
+export function reviewedTaskMessageBackfillDtoReplacements(
+  declarations: readonly DtoDeclaration[],
+): readonly DtoDeclaration[] {
+  let found = 0;
+  const replaced = declarations.map((declaration) => {
+    if (declaration.locator !== MESSAGE_BACKFILL_SOURCE_LOCATOR) {
+      return declaration;
+    }
+    found += 1;
+    if (found > 1) {
+      throw new TypeError("Task message-backfill DTO predecessor is ambiguous");
+    }
+    let matches = 0;
+    const structuralSignatures = (declaration.structuralSignatures ?? []).map(
+      (signature) => {
+        matches += signature.split(LIVE_SHADOW_ORDINARY_RECORD_PREFIX).length - 1;
+        return signature.replaceAll(
+          LIVE_SHADOW_ORDINARY_RECORD_PREFIX,
+          `${TASK_RUNTIME_RECORDS}${LIVE_SHADOW_ORDINARY_RECORD_PREFIX}`,
+        );
+      },
+    );
+    if (matches !== 2) {
+      throw new TypeError(
+        `Task message-backfill DTO predecessor mismatch: expected 2, found ${matches}`,
+      );
+    }
+    return { ...declaration, structuralSignatures };
+  });
+  if (found !== 1) {
+    throw new TypeError("Task message-backfill DTO predecessor is missing");
+  }
+  return replaced;
+}
+
 const TASK_DEFINITION_AUTHORIZATION_RIPPLE_DTO_LOCATORS = new Set([
   "http:request_response:GET /api/tasks/pending-attention",
 ]);

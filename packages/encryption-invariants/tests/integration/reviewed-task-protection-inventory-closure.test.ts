@@ -5,6 +5,7 @@ import * as nautiloSchema from "@nautilo/db/schema";
 import { DTO_BASELINE_DECLARATIONS } from "../../baseline/dto-declarations";
 import {
   REVIEWED_TASK_PROTECTION_DATABASE_WRITER_LOCATORS,
+  SUPERSEDED_TASK_PROTECTION_DATABASE_WRITER_LOCATORS,
 } from "../../baseline/reviewed-task-protection-coverage";
 
 import {
@@ -65,12 +66,30 @@ describe("Task protection inventory closure", () => {
       tableExports,
     )).map(writer => writer.locator));
 
-    expect(REVIEWED_TASK_PROTECTION_DATABASE_WRITER_LOCATORS).toHaveLength(54);
+    expect(REVIEWED_TASK_PROTECTION_DATABASE_WRITER_LOCATORS).toHaveLength(67);
     expect(new Set(REVIEWED_TASK_PROTECTION_DATABASE_WRITER_LOCATORS).size)
-      .toBe(54);
+      .toBe(67);
     for (const locator of REVIEWED_TASK_PROTECTION_DATABASE_WRITER_LOCATORS) {
       expect(observed).toContain(locator);
     }
+    expect(SUPERSEDED_TASK_PROTECTION_DATABASE_WRITER_LOCATORS).toHaveLength(4);
+    expect(new Set(SUPERSEDED_TASK_PROTECTION_DATABASE_WRITER_LOCATORS).size)
+      .toBe(4);
+    for (const locator of SUPERSEDED_TASK_PROTECTION_DATABASE_WRITER_LOCATORS) {
+      expect(observed).not.toContain(locator);
+    }
+    expect(observed).toContain(
+      "packages/db/src/queries/tasks.ts#acceptProtectedTaskHumanContinuation:update:public.jobs:1",
+    );
+    expect(observed).toContain(
+      "packages/runtime/src/protected-execution/background-authorization/postgres-repository.ts##replaceUnclaimedAuthority:delete:public.background_crypto_authorization_domain_requirements:1",
+    );
+    expect(observed).toContain(
+      "packages/runtime/src/protected-execution/background-authorization/postgres-repository.ts##replaceUnclaimedAuthority:delete:public.background_crypto_authorization_namespace_requirements:1",
+    );
+    expect(observed).toContain(
+      "packages/runtime/src/protected-execution/background-authorization/postgres-repository.ts##replaceUnclaimedAuthority:update:public.background_crypto_authorization_requests:1",
+    );
   });
 
   test("binds each reviewed Task HTTP declaration to the exact current DTO", async () => {

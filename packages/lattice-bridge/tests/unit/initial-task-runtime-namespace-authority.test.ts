@@ -173,6 +173,10 @@ function fixture(
         stage = "recovery-use";
         rows = [{ current: true }];
       } else if (statement.includes('from "tasks"')) {
+        if (statement.includes('as "wide_bring_back"')) {
+          expect(statement).toContain("for no key update");
+          expect(statement).not.toContain("for update");
+        }
         stage = "task";
         rows = [{ id: TASK, owner_id: USER, requestor_id: USER,
           agent_id: AGENT, calling_room_id: ROOMS[0], schedule_kind: "now",

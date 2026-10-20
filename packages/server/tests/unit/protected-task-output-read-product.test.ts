@@ -250,7 +250,7 @@ test("loads mapped revision-one raw result from the durable genesis digest in ca
     roomId: ROOM, sessionId: SESSION,
   });
   expect(events).toEqual([
-    "share", "update", "update", "update", "share",
+    "share", "no key update", "update", "update", "share",
     "share", "share", "share",
   ]);
   expect(projections.flatMap(value => value ?? [])).not.toContain("prompt");

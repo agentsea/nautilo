@@ -4,10 +4,14 @@ import { bindEncryptionDataOperationOwner } from "@nautilo/lattice-bridge";
 import { LatticeCrypto, agentId, agentRuntimeGeneration } from "@nautilo/lattice-crypto";
 import type { DomainKeyV2LiveShadowCurrentAuthority } from "@nautilo/lattice-bridge/server";
 import { createAcceptedInvocationAuthority, type CanonicalTranscriptTx } from "@nautilo/trust";
-import { createAgentTurnTaskCreationProvenance } from "@nautilo/runtime";
+import { createAgentTurnTaskCreationProvenance,
+  createLiveShadowDataOperationPolicyBinding } from "@nautilo/runtime";
 import { tasks, type PostgresJsBridgeConnection, type PostgresJsBridgeExecutor } from "@nautilo/db";
 import { createProtectedTaskForegroundCreationOwner,
   type TaskDefinitionProductLoan } from "../../src/routes/protected-task-foreground-creation-owner";
+import { readProtectedTaskForegroundCreationPolicy,
+  withProtectedTaskForegroundCreationContext } from
+  "../../src/routes/protected-task-foreground-creation-context";
 import { createGrantedForegroundReadableNamespaceResolver } from
   "../../src/routes/live-shadow-message-composition";
 
@@ -97,7 +101,22 @@ test("Task creation rejects a foreground grant that omits its planned Namespace"
 
 function fixture() {
   const events: string[] = [];
-  let policy = { mode: "encrypted_only", revision: 3 };
+  const policyTimestamp = new Date(0);
+  let policy = {
+    mode: "encrypted_only",
+    shadowBehavior: "strict",
+    revision: 3,
+    shadowEncryptionStartedAt: policyTimestamp,
+    observationBoundsRevision: 1,
+    observationBucketWidthMs: 60 * 60 * 1_000,
+    observationRetentionMs: 30 * 24 * 60 * 60 * 1_000,
+    observationStorageLimitRows: 10_000,
+    observationLatencyUpperBoundsMs: [50, 100, 250, 500, 1_000, 2_500, 5_000, 10_000, 30_000],
+    observationBoundsConfiguredAt: policyTimestamp,
+    createdAt: policyTimestamp,
+    updatedAt: policyTimestamp,
+  };
+  let policyAfterNextRead: Readonly<Pick<typeof policy, "mode" | "revision">> | null = null;
   let authorized = true;
   let borrowed: PostgresJsBridgeConnection | null = null;
   let originalProofs = 0;
@@ -114,9 +133,17 @@ function fixture() {
       events.push(events.includes("policy-fence") ? "creation-identity-lock" : "policy-fence");
       return [];
     },
-    select: () => ({ from: (table: unknown) => ({ where: () => table === tasks
-      ? { for: () => ({ limit: async () => { events.push("task-lock"); return []; } }) }
-      : Promise.resolve([{ ...policy }]) }) }),
+    select: () => ({ from: (table: unknown) => ({ where: () => {
+      if (table === tasks) return { for: () => ({ limit: async () => { events.push("task-lock"); return []; } }) };
+      const rows = Promise.resolve([{ ...policy }]);
+      return Object.assign(rows, { limit: () => {
+        if (policyAfterNextRead !== null) {
+          policy = { ...policy, ...policyAfterNextRead };
+          policyAfterNextRead = null;
+        }
+        return rows;
+      } });
+    } }) }),
   } as unknown as CanonicalTranscriptTx;
   const executor: PostgresJsBridgeExecutor = { query: async () => { events.push("borrowed-query"); return []; } };
   const authority: DomainKeyV2LiveShadowCurrentAuthority = {
@@ -179,7 +206,11 @@ function fixture() {
     borrowedEntityDecision,
     taskProductLoans,
     probeCurrentProduct: () => probeCurrentProduct,
-    revoke: () => { authorized = false; }, setPolicy: (next: typeof policy) => { policy = next; } };
+    revoke: () => { authorized = false; },
+    changePolicyAfterNextRead: (next: Readonly<Pick<typeof policy, "mode" | "revision">>) => {
+      policyAfterNextRead = next;
+    },
+    setPolicy: (next: Readonly<Pick<typeof policy, "mode" | "revision">>) => { policy = { ...policy, ...next }; } };
 }
 
 test("creation loans fence policy before Room proof and use only the existing executor through return binding", async () => {
@@ -197,6 +228,50 @@ test("creation loans fence policy before Room proof and use only the existing ex
   expect(f.events.indexOf("return-binding")).toBeLessThan(f.events.lastIndexOf("current-proof"));
   expect(f.events.at(-1)).toBe("destroy");
   await rejects(f.borrowed()!.query("SELECT 1"), /foreground authority is unavailable/u);
+  f.dispose();
+});
+
+test("the shared Task owner resolves and revalidates policy on the held product transaction", async () => {
+  const f = fixture();
+  let fallbackReads = 0;
+  let releaseEscapedRead!: () => void;
+  const escapedReadGate = new Promise<void>(resolve => { releaseEscapedRead = resolve; });
+  let escapedRead: Promise<unknown> | null = null;
+  const sharedOwner = bindEncryptionDataOperationOwner({
+    policy: createLiveShadowDataOperationPolicyBinding(
+      () => readProtectedTaskForegroundCreationPolicy(async () => {
+        fallbackReads += 1;
+        return { mode: "plaintext_only", shadowBehavior: "fallback", revision: 1 };
+      }),
+    ),
+  });
+  await withProtectedTaskForegroundCreationContext(f.context, async () => {
+    await f.context.withProduct({
+      taskId: "11111111-1111-4111-8111-111111111111",
+      transaction: f.transaction,
+      executor: f.executor,
+      use: async () => {
+        escapedRead = (async () => {
+          await escapedReadGate;
+          return readProtectedTaskForegroundCreationPolicy(async () => {
+            fallbackReads += 1;
+            return { mode: "plaintext_only", shadowBehavior: "fallback", revision: 1 };
+          });
+        })();
+        void escapedRead.catch(() => undefined);
+        f.changePolicyAfterNextRead({ mode: "encrypted_only", revision: 4 });
+        await rejects(sharedOwner.runMutation({
+          ordinary: () => Promise.reject(new Error("Unexpected ordinary policy")),
+          dual: () => Promise.reject(new Error("Unexpected dual policy")),
+          protected: () => Promise.reject(new Error("Policy drift reached publication")),
+        }), /Protected Runtime policy changed/u);
+      },
+    });
+    releaseEscapedRead();
+    if (escapedRead === null) throw new Error("Missing escaped policy read");
+    await rejects(escapedRead, /foreground authority is unavailable/u);
+  });
+  expect(fallbackReads).toBe(0);
   f.dispose();
 });
 

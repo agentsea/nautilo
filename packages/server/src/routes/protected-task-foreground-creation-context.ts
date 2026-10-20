@@ -1,5 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { ClassifiedDataOperationError } from "@nautilo/lattice-bridge";
+import {
+  ClassifiedDataOperationError,
+  type StrictShadowEnforcementPolicy,
+} from "@nautilo/lattice-bridge";
 import type { CreateTaskDeps, ProtectedTaskCreationPlanV1 } from "@nautilo/runtime";
 import type { CanonicalTranscriptTx } from "@nautilo/trust";
 import type { PostgresJsBridgeExecutor } from "@nautilo/db";
@@ -19,6 +22,7 @@ export type ProtectedTaskForegroundCreationContext = Readonly<{
     request: Parameters<NonNullable<TaskToolRuntime["updateProtectedTask"]>>[0];
     preflight: ProtectedTaskForegroundUpdatePreflight }>):
     ReturnType<NonNullable<TaskToolRuntime["updateProtectedTask"]>>;
+  readHeldPolicy?(): Promise<StrictShadowEnforcementPolicy | null>;
   withTaskDefinitionAuthorization<Value>(input: Readonly<{
     taskId: string;
     taskExecutorAgentId: string;
@@ -73,6 +77,14 @@ export async function withProtectedTaskForegroundCreationContext<Value>(
       await assertCurrent();
       return result;
     },
+    ...(source.readHeldPolicy === undefined ? {} : {
+      readHeldPolicy: async () => {
+        if (!active) unavailable();
+        const result = await source.readHeldPolicy?.();
+        if (!active) unavailable();
+        return result ?? null;
+      },
+    }),
     withTaskDefinitionAuthorization: async input => {
       await assertCurrent();
       const result = await source.withTaskDefinitionAuthorization({
@@ -109,4 +121,18 @@ export async function withProtectedTaskForegroundCreationContext<Value>(
 export function currentProtectedTaskForegroundCreationContext(): ProtectedTaskForegroundCreationContext | null {
   const value = current.getStore();
   return value?.active() === true ? value.source : null;
+}
+
+export async function readProtectedTaskForegroundCreationPolicy(
+  fallback: () => Promise<StrictShadowEnforcementPolicy>,
+): Promise<StrictShadowEnforcementPolicy> {
+  const value = current.getStore();
+  if (value === undefined) return fallback();
+  if (!value.active()) unavailable();
+  const held = await value.source.readHeldPolicy?.();
+  if (!value.active()) unavailable();
+  if (held !== undefined && held !== null) return held;
+  const policy = await fallback();
+  if (!value.active()) unavailable();
+  return policy;
 }

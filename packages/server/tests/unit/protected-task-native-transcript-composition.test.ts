@@ -169,6 +169,7 @@ type SessionRow = Readonly<{
 }>;
 
 function canonicalRunnerFixture(options: Readonly<{
+  missingTask?: boolean;
   initialSession?: SessionRow;
   racedSession?: SessionRow;
   roomOwnerId?: string;
@@ -255,9 +256,9 @@ function canonicalRunnerFixture(options: Readonly<{
       return [options.racedSession ?? session];
     }
     if (table === encryptionTransitionPolicy) {
-      return [{ id: "server", mode: "shadow_encryption", revision: 4 }];
+      return [{ id: "server", mode: "shadow_encryption", shadowBehavior: "strict", revision: 4 }];
     }
-    if (table === tasks) return [{
+    if (table === tasks) return options.missingTask === true ? [] : [{
       id: ids.task,
       ownerId: ids.owner,
       requestorId: ids.requestor,
@@ -330,7 +331,10 @@ function canonicalRunnerFixture(options: Readonly<{
           const chain = {
             where() { return chain; },
             limit() { return chain; },
-            for() { return Promise.resolve(result); },
+            for(lock: string) {
+              if (table === tasks && projected) trace.push(`lock:tasks:${lock}`);
+              return Promise.resolve(result);
+            },
             then(
               onFulfilled: (value: readonly unknown[]) => unknown,
               onRejected?: (reason: unknown) => unknown,
@@ -363,6 +367,10 @@ function canonicalRunnerFixture(options: Readonly<{
           };
         },
       };
+    },
+    execute() {
+      trace.push("lock:policy");
+      return Promise.resolve([]);
     },
   };
   const runner = Object.freeze({
@@ -402,6 +410,10 @@ describe("protected Task native transcript composition", () => {
     expect(fixture.wasInserted()).toBe(true);
     expect(fixture.trace).toEqual([
       "transaction:begin",
+      "lock:policy",
+      "select:policy:projection",
+      "select:tasks:projection",
+      "lock:tasks:share",
       "select:rooms:projection",
       "select:rooms:projection",
       "select:sessions:projection",
@@ -417,6 +429,26 @@ describe("protected Task native transcript composition", () => {
       "select:rooms:projection",
       "select:rooms:projection",
       "select:sessions:projection",
+      "transaction:commit",
+    ]);
+  });
+
+  test("locks the Task before Room admission and refuses a missing Task without creating a Session", async () => {
+    const fixture = canonicalRunnerFixture({ missingTask: true });
+    const create = createProtectedTaskNativeTranscriptPublisher({
+      product: product(fixture.runner),
+    });
+    await Promise.resolve(expect(create(segment(
+      fixture.runner,
+      new AbortController().signal,
+    ))).rejects.toThrow("transcript Session is unavailable"));
+    expect(fixture.wasInserted()).toBe(false);
+    expect(fixture.trace).toEqual([
+      "transaction:begin",
+      "lock:policy",
+      "select:policy:projection",
+      "select:tasks:projection",
+      "lock:tasks:share",
       "transaction:commit",
     ]);
   });
@@ -502,6 +534,10 @@ describe("protected Task native transcript composition", () => {
     expect(fixture.wasInserted()).toBe(false);
     expect(fixture.trace).toEqual([
       "transaction:begin",
+      "lock:policy",
+      "select:policy:projection",
+      "select:tasks:projection",
+      "lock:tasks:share",
       "select:rooms:projection",
       "transaction:commit",
     ]);

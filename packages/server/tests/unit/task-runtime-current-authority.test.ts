@@ -796,6 +796,8 @@ describe("current protected Task Runtime authority adapter", () => {
     const admitted = await load(true);
     expect(admitted.facts?.nativeExecutionSupported).toBe(true);
     expect(admitted.facts?.opencodeExecutionSelection).toEqual(openCodeSelection);
+    expect(admitted.statement.sql).toContain("for no key update");
+    expect(admitted.statement.sql).not.toContain("for update");
     expect(admitted.statement.sql).toContain('as "opencode_execution_selection"');
     expect(Object.hasOwn(admitted.facts?.task ?? {}, "metadata")).toBe(false);
     expect(Object.hasOwn(admitted.facts?.task ?? {}, "preset")).toBe(false);

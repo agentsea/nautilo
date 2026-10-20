@@ -6,6 +6,7 @@ export const REVIEWED_TASK_RUNTIME_SIGNER_DTO_LOCATORS = [
   "http:request_response:GET /api/memory/brief",
   "http:request_response:GET /api/memory",
   "http:request_response:PATCH /api/memory/:id",
+  "http:request_response:POST /api/message-backfill/source",
   "http:request_response:POST /api/memory/protected-create",
   "http:request_response:POST /api/memory/search",
   "http:request_response:POST /api/protected/memories/:id/repair-plan",
@@ -18,7 +19,9 @@ const TASK_RUNTIME_SIGNER_EVIDENCE =
 
 /** A Task runtime signer certificate is signed public authorization evidence.
  * It adds no plaintext content or secret key bytes and grants no independent
- * execution or payer authority. Unrelated DTO shapes remain unchanged. */
+ * execution or payer authority. The message-backfill source binds the same
+ * evidence at its two exact signer-certificate positions. Unrelated DTO shapes
+ * remain unchanged. */
 export function reviewedTaskRuntimeSignerDtoReplacements(
   declarations: readonly DtoDeclaration[],
 ): readonly DtoDeclaration[] {
@@ -34,19 +37,23 @@ export function reviewedTaskRuntimeSignerDtoReplacements(
       );
     }
     found.add(declaration.locator);
+    const expectedMatches = declaration.locator ===
+        "http:request_response:POST /api/message-backfill/source"
+      ? 2
+      : 1;
     let matches = 0;
     const structuralSignatures = (declaration.structuralSignatures ?? []).map(
       (signature) => {
         matches += signature.split(PRIOR_SIGNER_EVIDENCE).length - 1;
-        return signature.replace(
+        return signature.replaceAll(
           PRIOR_SIGNER_EVIDENCE,
           `${PRIOR_SIGNER_EVIDENCE}|${TASK_RUNTIME_SIGNER_EVIDENCE}`,
         );
       },
     );
-    if (matches !== 1) {
+    if (matches !== expectedMatches) {
       throw new Error(
-        `Task runtime signer DTO predecessor mismatch for ${declaration.locator}: expected 1, found ${matches}`,
+        `Task runtime signer DTO predecessor mismatch for ${declaration.locator}: expected ${expectedMatches}, found ${matches}`,
       );
     }
     return { ...declaration, structuralSignatures };

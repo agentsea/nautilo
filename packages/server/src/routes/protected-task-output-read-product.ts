@@ -209,7 +209,9 @@ async function loadProductState(
     promptIsEmpty: eq(tasks.prompt, "").mapWith(Boolean),
     expectedOutputIsNull: isNull(tasks.expectedOutput).mapWith(Boolean),
     lastErrorIsNull: isNull(tasks.lastError).mapWith(Boolean),
-  }).from(tasks).where(eq(tasks.id, coordinates.taskId)).limit(2).for("update");
+  }).from(tasks).where(eq(tasks.id, coordinates.taskId)).limit(2)
+    // Exclude Task edits/deletes while permitting FK-only usage accounting.
+    .for("no key update");
   if (task === undefined || task.ownerId !== task.requesterUserId
     || task.contentNamespaceId === null || task.cryptoObjectId === null
     || task.cryptoMappingState !== "verified" || task.contentRevision < 1

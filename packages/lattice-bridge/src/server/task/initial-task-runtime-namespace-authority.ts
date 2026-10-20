@@ -341,7 +341,9 @@ async function withInitialTaskRuntimeProductAuthority<Value>(
         target_room_id: tasks.targetRoomId,
         wide_bring_back: sql<boolean>`(${tasks.metadata} -> 'bringBack') IS DISTINCT FROM 'false'::jsonb`
           .mapWith(Boolean).as("wide_bring_back"),
-      }).from(tasks).where(eq(tasks.id, request.taskId)).limit(2).for("update"));
+      }).from(tasks).where(eq(tasks.id, request.taskId)).limit(2)
+        // Exclude Task edits/deletes while permitting FK-only usage accounting.
+        .for("no key update"));
     const task = taskRows[0];
     if (taskRows.length !== 1 || task === undefined
       || task.id !== request.taskId

@@ -348,7 +348,9 @@ export async function loadCurrentProtectedTaskRuntimeLifecycleFacts(input: Reado
     deep_research_execution_selection: protectedTaskDeepResearchSelectionProjection(),
     repo_docs_selection: protectedTaskRepoDocsSelectionProjection(),
   }).from(tasks).where(eq(tasks.id, input.occurrence.task.id))
-    .limit(2).for("update"));
+    .limit(2)
+    // Exclude Task edits/deletes while permitting FK-only usage accounting.
+    .for("no key update"));
   if (taskRows.length !== 1) return null;
   const taskRow = taskRows[0]!;
   const task: CurrentTask = {

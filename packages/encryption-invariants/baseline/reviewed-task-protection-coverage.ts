@@ -255,6 +255,11 @@ const TASK_PROTECTION_DATABASE_LOCATORS = [
 
 /** Exact mechanically inventoried database writers added by Task protection. */
 export const REVIEWED_TASK_PROTECTION_DATABASE_WRITER_LOCATORS = [
+  "packages/db/src/queries/protected-task-cancellation-output.ts#prepareProtectedTaskCancellationOutput:insert:public.protected_task_run_output_bindings:1",
+  "packages/db/src/queries/protected-task-cancellation-output.ts#prepareProtectedTaskCancellationOutput:update:public.protected_task_run_output_bindings:1",
+  "packages/db/src/queries/protected-task-cancellation-output.ts#prepareProtectedTaskCancellationOutput:update:public.protected_task_run_output_bindings:2",
+  "packages/db/src/queries/protected-task-cancellation-output.ts#publishProtectedTaskCancellationProduct:update:public.task_runs:1",
+  "packages/db/src/queries/protected-task-cancellation-output.ts#settleProtectedTaskCancellationOutput:update:public.protected_task_run_output_bindings:1",
   "packages/db/src/queries/protected-task-checkpoint-pause.ts#finalizeProtectedTaskCheckpointPause:update:public.tasks:1",
   "packages/db/src/queries/protected-task-checkpoint-pause.ts#requestProtectedTaskCheckpointPause:update:public.tasks:1",
   "packages/db/src/queries/protected-task-checkpoint-pause.ts#resumeProtectedTaskCheckpointPause:update:public.tasks:1",
@@ -263,6 +268,7 @@ export const REVIEWED_TASK_PROTECTION_DATABASE_WRITER_LOCATORS = [
   "packages/db/src/queries/protected-task-output-wake.ts#insertOrAdoptProtectedTaskWakeJob:insert:public.jobs:1",
   "packages/db/src/queries/protected-task-output-wake.ts#insertOrAdoptProtectedTaskWakeJob:update:public.protected_task_run_output_bindings:1",
   "packages/db/src/queries/protected-task-output-wake.ts#settleProtectedTaskWakeJob:update:public.jobs:1",
+  "packages/db/src/queries/protected-task-parked-preexecution.ts#recoverUnstartedParkedProtectedTaskRun:update:public.jobs:2",
   "packages/db/src/queries/protected-task-running-recovery.ts#settleAbandonedProtectedTaskRun:update:public.jobs:1",
   "packages/db/src/queries/protected-task-running-recovery.ts#settleAbandonedProtectedTaskRun:update:public.task_runs:1",
   "packages/db/src/queries/protected-task-running-recovery.ts#settleAbandonedProtectedTaskRun:update:public.tasks:1",
@@ -287,6 +293,8 @@ export const REVIEWED_TASK_PROTECTION_DATABASE_WRITER_LOCATORS = [
   "packages/db/src/queries/task-content-backfill.ts#setHighWater:update:public.task_content_backfill_scans:2",
   "packages/db/src/queries/task-content-backfill.ts#setHighWater:update:public.task_content_backfill_scans:3",
   "packages/db/src/queries/task-content-backfill.ts#upsertFailure:insert:public.task_content_backfill_failures:1",
+  "packages/db/src/queries/tasks.ts#acceptProtectedTaskHumanContinuation:update:public.jobs:1",
+  "packages/db/src/queries/tasks.ts#sealProtectedTaskHumanApprovalPolicy:update:public.jobs:1",
   "packages/db/src/queries/tasks.ts#transitionProtectedTaskLifecycleStop:insert:public.task_runs:1",
   "packages/db/src/queries/tasks.ts#transitionProtectedTaskLifecycleStop:update:public.task_runs:1",
   "packages/db/src/queries/tasks.ts#transitionProtectedTaskLifecycleStop:update:public.tasks:1",
@@ -294,6 +302,7 @@ export const REVIEWED_TASK_PROTECTION_DATABASE_WRITER_LOCATORS = [
   "packages/lattice-bridge/src/server/memory/postgres-foreground-memory-publication.ts#persist:insert:public.foreground_memory_crypto_publication_receipts:1",
   "packages/lattice-bridge/src/server/task/postgres-task-content-product-store.ts##mapDefinition:update:public.tasks:2",
   "packages/lattice-bridge/src/server/task/postgres-task-content-product-store.ts##mapResult:update:public.task_runs:2",
+  "packages/lattice-bridge/src/server/task/postgres-task-cancellation-crypto-staging.ts#stageNativeTaskCancellationPublication:insert:public.task_cancellation_crypto_staging_receipts:1",
   "packages/lattice-bridge/src/server/task/postgres-task-historical-content-staging.ts#stageHistoricalTaskContentPublication:insert:public.task_historical_content_crypto_staging_receipts:1",
   "packages/lattice-bridge/src/server/task/postgres-task-run-result-message-staging.ts#stageNativeTaskRunResultMessagePublication:insert:public.task_terminal_message_crypto_staging_receipts:1",
   "packages/lattice-bridge/src/server/task/postgres-task-terminal-message-staging.ts#stageNativeTaskTerminalMessagePublication:insert:public.task_terminal_message_crypto_staging_receipts:1",
@@ -303,12 +312,25 @@ export const REVIEWED_TASK_PROTECTION_DATABASE_WRITER_LOCATORS = [
   "packages/runtime/src/protected-execution/background-authorization/postgres-repository.ts#renewParkedTaskWakeRecipient:delete:public.background_crypto_authorization_domain_requirements:1",
   "packages/runtime/src/protected-execution/background-authorization/postgres-repository.ts#renewParkedTaskWakeRecipient:delete:public.background_crypto_authorization_namespace_requirements:1",
   "packages/runtime/src/protected-execution/background-authorization/postgres-repository.ts#renewParkedTaskWakeRecipient:update:public.background_crypto_authorization_requests:1",
+  "packages/runtime/src/protected-execution/background-authorization/postgres-repository.ts##replaceUnclaimedAuthority:delete:public.background_crypto_authorization_domain_requirements:1",
+  "packages/runtime/src/protected-execution/background-authorization/postgres-repository.ts##replaceUnclaimedAuthority:delete:public.background_crypto_authorization_namespace_requirements:1",
+  "packages/runtime/src/protected-execution/background-authorization/postgres-repository.ts##replaceUnclaimedAuthority:update:public.background_crypto_authorization_requests:1",
   "packages/server/src/routes/protected-task-foreground-creation-publication.ts#use:insert:public.tasks:1",
   "packages/server/src/routes/protected-task-foreground-creation-publication.ts#use:insert:public.tasks:2",
   "packages/server/src/routes/task-ordinary-fallback-composition.ts#dual:update:public.tasks:1",
   "packages/server/src/routes/protected-task-output-read-product.ts#loadForegroundState:insert:public.sessions:1",
+  "packages/server/src/routes/protected-task-native-transcript-composition.ts#admitTranscript:insert:public.sessions:1",
   "packages/server/src/routes/protected-task-terminal-message-product.ts#refreshUnstagedProtectedTaskTerminalMessagePolicy:update:public.session_message_crypto_revisions:1",
   "packages/server/src/routes/protected-task-terminal-message-product.ts#resolveProtectedTaskTerminalMessageDestination:insert:public.sessions:1",
+] as const;
+
+/** Exact predecessor locators replaced by current Task continuation and shared
+ * background-authorization writers. */
+export const SUPERSEDED_TASK_PROTECTION_DATABASE_WRITER_LOCATORS = [
+  "packages/db/src/queries/tasks.ts#acceptProtectedTaskAwaitReply:update:public.jobs:1",
+  "packages/runtime/src/protected-execution/background-authorization/postgres-repository.ts#replaceUnclaimedTaskRuntimeAuthority:delete:public.background_crypto_authorization_domain_requirements:1",
+  "packages/runtime/src/protected-execution/background-authorization/postgres-repository.ts#replaceUnclaimedTaskRuntimeAuthority:delete:public.background_crypto_authorization_namespace_requirements:1",
+  "packages/runtime/src/protected-execution/background-authorization/postgres-repository.ts#replaceUnclaimedTaskRuntimeAuthority:update:public.background_crypto_authorization_requests:1",
 ] as const;
 const TASK_PROTECTION_BOUNDED_WIRE_LOCATORS = [
   "http:request_response:GET /api/protected/tasks",

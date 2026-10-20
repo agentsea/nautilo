@@ -43,6 +43,7 @@ import {
 import {
   REVIEWED_TASK_PROTECTION_DTO_DECLARATIONS,
   reviewedTaskDefinitionAuthorizationDtoReplacements,
+  reviewedTaskMessageBackfillDtoReplacements,
   SUPERSEDED_TASK_PROTECTION_DTO_LOCATORS,
 } from "./reviewed-task-protection-dto";
 import {
@@ -6240,7 +6241,8 @@ const PRE_MESSAGE_MODEL_INPUT_EXPOSURE_DTO_DECLARATIONS:
   readonly DtoDeclaration[] =
   reviewedTaskRuntimeSignerDtoReplacements(
     reviewedBolterRelayDtoReplacements(
-      reviewedExternalMessageAttributionDtoReplacements([
+      reviewedExternalMessageAttributionDtoReplacements(
+        reviewedTaskMessageBackfillDtoReplacements([
   ...PRE_MAIN_2026_10_13_DTO_DECLARATIONS.filter((entry) =>
     !SUPERSEDED_MAIN_2026_10_13_DTO_LOCATORS.has(entry.locator)
     && !SUPERSEDED_RELEASE_RECONCILIATION_DTO_LOCATORS.has(entry.locator)
@@ -6254,7 +6256,8 @@ const PRE_MESSAGE_MODEL_INPUT_EXPOSURE_DTO_DECLARATIONS:
   ...REVIEWED_RELEASE_RECONCILIATION_DTO_DECLARATIONS,
   ...BOLTER_HTTP_DECLARATIONS,
   ...CHATGPT_PLAN_DTO_DECLARATIONS,
-      ]),
+        ]),
+      ),
     ),
   );
 
