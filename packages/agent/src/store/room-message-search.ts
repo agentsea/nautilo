@@ -8,12 +8,13 @@ import {
 import { readTranscriptToolPresentation } from "./transcript-tool-result";
 import { sanitizeSerializedTranscriptToolCalls } from "./transcript-tool-arguments";
 import { withAgentTrustContext, rowsFromExecute as rowsFromTrustExecute } from "./trust-agent-db";
+import { messageSearchPredicate, MESSAGE_SEARCH_SNIPPET_MAX } from "./message-search-predicate";
 
 const ROOM_MESSAGE_SEARCH_DEFAULT_LIMIT = 20;
 const ROOM_MESSAGE_SEARCH_MAX_LIMIT = 50;
 const ROOM_MESSAGE_AROUND_DEFAULT_LIMIT = 100;
 const ROOM_MESSAGE_AROUND_MAX_LIMIT = 100;
-const ROOM_MESSAGE_SNIPPET_MAX = 280;
+const ROOM_MESSAGE_SNIPPET_MAX = MESSAGE_SEARCH_SNIPPET_MAX;
 
 export interface RoomMessageCursor {
   createdAt: Date;
@@ -367,7 +368,7 @@ export async function searchRoomMessages(args: {
   const rows = await queryVisibleHumanRoomMessages({
     ownerId: args.ownerId,
     roomId: args.roomId,
-    candidatePredicate: sql`AND sm.content_search @@ ${roomMessageSearchTsquery(args.mode, normalized.query)}
+    candidatePredicate: sql`AND ${messageSearchPredicate(roomMessageSearchTsquery(args.mode, normalized.query), normalized.query.wholeText, args.mode, args.ignoreCase)}
       ${args.ignoreCase === false ? roomMessageCasePredicate(args.mode, normalized.query) : sql``}`,
     boundaryPredicate: sql`${boundaries[0]} ${boundaries[1]}`,
     limit: limit + 1,
@@ -609,7 +610,7 @@ export async function searchChats(args: {
           AND (sm.metadata->>'originatedBy') IS DISTINCT FROM 'task' AND (sm.metadata->>'originatedBy') IS DISTINCT FROM 'connected_web_operation'
           AND sm.tool_name IS DISTINCT FROM 'react'
           AND sm.tool_name IS DISTINCT FROM 'skip'
-          AND sm.content_search @@ ${tsquery}
+          AND ${messageSearchPredicate(tsquery, normalized.query.wholeText, args.mode, args.ignoreCase)}
           ${casePredicate}
       ),
       scoped_messages AS (
@@ -943,8 +944,8 @@ export function roomMessageCasePredicate(
   const predicates = query.caseTerms.map((term) => {
     const escaped = escapePostgresRegex(term);
     const pattern = mode === "whole"
-      ? `(^|[^[:alnum:]_])${escaped}($|[^[:alnum:]_])`
-      : `(^|[^[:alnum:]_])${escaped}`;
+      ? `(^|[^[:alnum:]])${escaped}($|[^[:alnum:]])`
+      : `(^|[^[:alnum:]])${escaped}`;
     return sql`sm.content ~ ${pattern}`;
   });
   return predicates.length > 0 ? sql`AND ${sql.join(predicates, sql` AND `)}` : sql``;
@@ -1024,7 +1025,7 @@ function rowsFromExecute<TRow extends object>(
 
 /**
  * Executes a bounded Room-scoped FTS read over `session_messages.content`'s
- * generated `content_search` vector. Callers supply visibility and any joins,
+ * maintained `content_search` vector and literal overflow fallback. Callers supply visibility and any joins,
  * preventing Conductor-only routing rules from becoming transcript policy.
  */
 export async function queryRoomMessageContentIndex<TRow extends object>(
@@ -1049,7 +1050,7 @@ export async function queryRoomMessageContentIndex<TRow extends object>(
     INNER JOIN sessions s ON s.id = sm.session_id
     ${joins}
     WHERE s.room_id = ${args.roomId}
-      AND sm.content_search @@ ${tsquery}
+      AND ${messageSearchPredicate(tsquery, normalized.query.wholeText, args.mode)}
       ${args.visibilityPredicate}
     ORDER BY sm.created_at DESC, sm.id DESC
     LIMIT ${limit}
