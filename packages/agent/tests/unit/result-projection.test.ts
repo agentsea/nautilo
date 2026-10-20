@@ -28,6 +28,12 @@ describe("retained output presentation", () => {
     expect(await resolveRetainedResult(receipt.reference!, ctx)).toBe(source);
     expect(projectToolResults([projected], 10)[0]).toBe(projected);
   });
+  test("overflow presentation preserves an unsuccessful producer outcome", () => {
+    const failed = new ToolMessage({ name: "officecli", tool_call_id: "failed", content: source, status: "error" });
+    const projection = projectToolResults([failed], 2000)[0]!;
+    expect(parseReceipt(projection.content as string).outcome).toBe("error");
+    expect(failed.content).toBe(source);
+  });
   test("saved call reread after state reload uses the current execution authority", async () => {
     const lookup = spyOn(store, "readExecutionToolResult").mockResolvedValue({ content: source, toolName: "officecli" });
     try {

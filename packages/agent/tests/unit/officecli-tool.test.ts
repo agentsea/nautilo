@@ -793,7 +793,7 @@ describe("officecli tool", () => {
     expect(result.data.elements).toHaveLength(2);
   });
 
-  test("describes complete reads and scopes the batch cap accurately", () => {
+  test("describes bounded reads, retained-result recovery and the batch cap accurately", () => {
     const tool = createOfficeCliTool();
     const schema = tool.schema as unknown as {
       shape: {
@@ -808,8 +808,10 @@ describe("officecli tool", () => {
     };
     const add = schema.shape.commands.unwrap().element.options.find((option) => option.shape.command.value === "add");
 
-    expect(tool.description).toContain("use command=view with mode=text");
-    expect(tool.description).toContain("omit start, end, maxLines, and limit");
+    expect(tool.description).toContain("Start with document structure or stats");
+    expect(tool.description).toContain("read_tool_result");
+    expect(tool.description).toContain("without repeating the original operation");
+    expect(tool.description).toContain("view issues returns document diagnostics, not spreadsheet rows");
     expect(tool.description).toContain("returnedElements");
     expect(tool.description).toContain("does not limit document elements or read results");
     expect(tool.description).toContain('"type":"markdown"');

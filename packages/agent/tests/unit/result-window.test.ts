@@ -56,6 +56,17 @@ describe("retained result windows", () => {
     expect(end.complete).toBe(true);
   });
 
+  test("large diagnostic output supports bounded late search and structured selection", () => {
+    const source = JSON.stringify({ format: "xlsx", diagnostics: "layout warning\n".repeat(1_800_000), tail: { row: 18000, evidence: "late finding" } });
+    expect(Buffer.byteLength(source)).toBeGreaterThan(25_000_000);
+    const search = readResultWindow(source, { ...args(source, "search"), query: "late finding" }, 4096);
+    expect(Buffer.byteLength(search)).toBeLessThanOrEqual(4096);
+    expect(parsePage(search).text).toContain("late finding");
+    const selected = parsePage(readResultWindow(source, { ...args(source), path: ["tail"] }, 4096));
+    expect(selected.text).toBe(JSON.stringify({ row: 18000, evidence: "late finding" }));
+    expect(selected.complete).toBe(true);
+  });
+
   test("changed sources, mismatched selection and absent budget fail explicitly", () => {
     const source = "a".repeat(8000);
     const input = args(source);
