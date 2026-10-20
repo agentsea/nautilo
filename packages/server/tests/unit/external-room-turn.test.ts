@@ -75,6 +75,28 @@ test("system and self echoes are rejected, other agents require explicit address
   expect(prepareBolterExternalRoomTurn(context(), { ...message, senderType: "anima", addressed: true }).ok).toBe(true);
 });
 
+test("Human requests mentioning only another Bolter agent do not prepare a Genie turn", () => {
+  const content = "[@Builder](#mention-aid:22222222-2222-4222-8222-222222222222) Please update the sample page.";
+  for (const addressed of [false, true]) {
+    expect(prepareBolterExternalRoomTurn(context(), { ...message, content, addressed }))
+      .toEqual({ ok: false, reason: "not-addressed" });
+  }
+});
+
+test("mentions of the bound Bolter identity use provider IDs rather than display names", () => {
+  const ctx = context();
+  ctx.connection.providerAgentId = ctx.binding.providerAgentId = "11111111";
+  const self = "[@Renamed assistant](#mention-aid:11111111-1111-4111-8111-111111111111)";
+  const other = "[@Builder](#mention-aid:22222222-2222-4222-8222-222222222222)";
+  for (const content of [`${self} Please help.`, `${other} and ${self} Please help.`]) {
+    expect(prepareBolterExternalRoomTurn(ctx, { ...message, content }).ok).toBe(true);
+  }
+  expect(prepareBolterExternalRoomTurn(ctx, { ...message, senderType: "anima", content: `${self} Please help.` }))
+    .toEqual({ ok: false, reason: "not-addressed" });
+  expect(prepareBolterExternalRoomTurn(ctx, { ...message, content: other.replace("Builder", "Renamed assistant"), addressed: true }))
+    .toEqual({ ok: false, reason: "not-addressed" });
+});
+
 test("mode, generation, owner and exact Namespace are independent admission fences", () => {
   for (const mode of ["full_encryption", "shadow_encryption", "unknown"]) {
     expect(prepareBolterExternalRoomTurn({ ...context(), representationMode: mode }, message)).toEqual({ ok: false, reason: "unsupported-mode" });

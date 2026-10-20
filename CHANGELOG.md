@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Bolter messages explicitly mentioning only another agent no longer trigger
+  the linked Genie. Direct and shared mentions still reach the linked Genie,
+  and ordinary Human messages without agent mentions continue to work.
+
 - Oversized OfficeCLI results stay in conversation history while Genie receives
   a compact receipt and can inspect, page through or search the retained output.
   Task reads and reopened conversations keep these results within the model
