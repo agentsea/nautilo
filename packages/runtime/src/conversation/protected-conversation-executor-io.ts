@@ -435,6 +435,7 @@ export async function executeProtectedConversationTurn<Value>(
           readonly excludeMessageId: number;
           readonly excludeMessageIds?: readonly number[];
           readonly foregroundExecutionId?: string;
+          readonly acceptedHumanMessageIds?: readonly number[];
           readonly maximumContextCharacters: number;
           readonly recentConversationLimit?: number;
           readonly execute: (
@@ -469,6 +470,13 @@ export async function executeProtectedConversationTurn<Value>(
             !Number.isFinite(readInput.maximumContextCharacters)
             || readInput.maximumContextCharacters < 0
           ) throw new RangeError("protected transcript refresh envelope is out of bounds");
+          const pendingHumanIds = new Set(readInput.acceptedHumanMessageIds ?? []);
+          if ([...pendingHumanIds].some((id) =>
+            !Number.isSafeInteger(id)
+            || id <= readInput.excludeMessageId
+            || id > readInput.throughMessageIdInclusive
+            || excludedMessageIds.has(id)
+          )) throw new RangeError("protected transcript refresh Human anchor is out of bounds");
           if (!callbackLive) {
             return Object.freeze({
               status: "unavailable" as const,
@@ -499,11 +507,17 @@ export async function executeProtectedConversationTurn<Value>(
                 hit.messageId <= readInput.throughMessageIdInclusive
                 && !excludedMessageIds.has(hit.messageId));
               const timeline = [...page, ...newer];
-              const characters = currentCharacters + page.reduce((sum, hit) => sum + (
-                hit.messageId > readInput.excludeMessageId
-                  ? (assembleCompositeContextBlock({ messages: [hit], maxLines: 1 })?.length ?? 0) + 1
-                  : 0
-              ), 0);
+              let characters = currentCharacters;
+              for (const hit of page) {
+                if (hit.role === "user") pendingHumanIds.delete(hit.messageId);
+                const ownProgress = readInput.foregroundExecutionId === undefined
+                  || (hit.role !== "user"
+                    && hit.foregroundExecutionId === readInput.foregroundExecutionId
+                    && (hit.authorAgentId === undefined || hit.authorAgentId === input.agentId));
+                if (hit.messageId > readInput.excludeMessageId && ownProgress) {
+                  characters += (assembleCompositeContextBlock({ messages: [hit], maxLines: 1 })?.length ?? 0) + 1;
+                }
+              }
               const priorCount = timeline.reduce((count, hit) => count + (
                 hit.messageId < readInput.excludeMessageId
                 && (hit.role === "user" || (hit.role === "assistant" && hit.snippet?.trim())) ? 1 : 0
@@ -513,7 +527,12 @@ export async function executeProtectedConversationTurn<Value>(
               if (oldest !== undefined && (oldest.messageId === beforeMessageId || page.some((row) => newerIds.has(row.messageId)))) {
                 throw new Error("Protected foreground transcript page overlaps its previous cursor");
               }
-              if (freshHistory.length < input.limit || oldest === undefined || priorCount >= historicalLimit || characters >= envelope) {
+              if (
+                freshHistory.length < input.limit
+                || oldest === undefined
+                || priorCount >= historicalLimit
+                || (characters >= envelope && pendingHumanIds.size === 0)
+              ) {
                 return readInput.execute(recentConversationWindow(timeline, historicalLimit, readInput.excludeMessageId));
               }
               // Keep every enclosing authorization callback live until the

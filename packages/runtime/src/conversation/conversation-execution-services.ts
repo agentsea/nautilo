@@ -65,6 +65,8 @@ export interface ProtectedConversationExecutorTurnScope {
     readonly excludeMessageId: number;
     readonly excludeMessageIds?: readonly number[];
     readonly foregroundExecutionId?: string;
+    /** Accepted post-trigger Human rows needed to retain their chronology. */
+    readonly acceptedHumanMessageIds?: readonly number[];
     readonly maximumContextCharacters: number;
     readonly recentConversationLimit?: number;
     readonly execute: (

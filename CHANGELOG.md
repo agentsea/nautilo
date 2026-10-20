@@ -7,6 +7,13 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Long-running conversations retain the current run's recent exchanges ahead
+  of surrounding Room activity, keep accepted Human replies in order, and
+  reserve Journal and recalled Records independently of older-history settings.
+- Explicitly selected assistants are guided to recognize already-delivered
+  current-turn responses and successful tool actions, close completed requests
+  briefly, and continue unfinished work or later Human input.
+
 - Messages exceeding PostgreSQL's full-text index size limit now save intact
   and remain immediately searchable. These oversized messages use literal
   word/prefix/path matching without stemming; ordinary indexed search is unchanged.
