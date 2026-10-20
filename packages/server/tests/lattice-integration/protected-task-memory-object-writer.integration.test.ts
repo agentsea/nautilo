@@ -3029,6 +3029,76 @@ describePostgres("sealed protected Task Memory object writer", () => {
     }
   });
 
+  test("foreground Task revalidation borrows the product transaction holding private authority", async () => {
+    const base = await createBaseFixture();
+    const { loadTaskDefinitionAuthority } = await import(
+      "../../src/routes/live-shadow-message-composition"
+    );
+    type Snapshot = Awaited<ReturnType<typeof loadTaskDefinitionAuthority>>;
+    let pending: Promise<Snapshot> | undefined;
+    let contender: Promise<boolean | null> | undefined;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const wipe = (snapshot: Snapshot) => {
+      snapshot?.deviceSigningPublicKey.fill(0);
+      for (const value of Object.values(snapshot?.namespace ?? {})) {
+        if (value instanceof Uint8Array) value.fill(0);
+      }
+      for (const domain of snapshot?.domains ?? []) {
+        domain.participantDigest.fill(0);
+        domain.headDigest.fill(0);
+        domain.activeNamespaceBindingSetDigest.fill(0);
+      }
+    };
+    try {
+      const loaded = await base.product.canonicalRunner.transaction(async (transaction, executor) => {
+        const product: PostgresJsBridgeConnection = {
+          query: executor.query.bind(executor),
+          transaction: use => use(executor),
+          transactionOnce: use => use(executor),
+        };
+        return new PostgresNamespaceProductAuthority(product).withCurrentPrivateRoom({
+          subjectUserId: base.userId, subjectHumanId: base.humanActorId,
+          roomId: base.roomId, namespaceId: base.namespaceValue,
+          use: async () => {
+            const [backend] = await transaction.select({ pid: sql<number>`pg_backend_pid()` })
+              .from(rooms).where(eq(rooms.id, base.roomId)).limit(1);
+            if (backend === undefined) throw new Error("Missing held product transaction");
+            contender = new PostgresNamespaceProductAuthority(
+              canonicalProductConnection(base.product.canonicalRunner),
+            ).withCurrentPrivateRoom({
+              subjectUserId: base.userId, subjectHumanId: base.humanActorId,
+              roomId: base.roomId, namespaceId: base.namespaceValue,
+              use: () => Promise.resolve(true),
+            });
+            await waitForBlockedContender(base, backend.pid,
+              "Separate Task authority transaction did not contend on the held Room/Human lock");
+            pending = loadTaskDefinitionAuthority({
+              userId: base.userId, humanId: base.humanActorId,
+              deviceId: base.deviceId, clientActionSessionId: randomUUID(),
+              roomId: base.seedRoomId, agentId: base.productAgentId,
+            }, {
+              crypto: base.crypto, serverId: SERVER_SCOPE,
+              loadRuntimePolicy: () => getEncryptionTransitionPolicy(transaction),
+              currentProduct: { transaction, product },
+            });
+            return Promise.race([pending, new Promise<never>((_, reject) => {
+              timeout = setTimeout(() => reject(new Error("Task authority opened a nested product transaction")), 5_000);
+            })]);
+          },
+        });
+      }, { isolationLevel: "read committed" });
+      expect(loaded).not.toBeNull();
+      expect(loaded?.privateRoomId).toBe(base.roomId);
+      expect(loaded?.namespace.namespaceId).toBe(base.namespaceValue);
+      expect(await contender).toBe(true);
+    } finally {
+      if (timeout !== undefined) clearTimeout(timeout);
+      await contender?.catch(() => null);
+      if (pending !== undefined) wipe(await pending.catch(() => null));
+      await base.cleanup();
+    }
+  });
+
   test("concurrent protected projections retain shared Agent identity without lock upgrade", async () => {
     const base = await createBaseFixture({ connectedExecution: true });
     const peerUserId = randomUUID();

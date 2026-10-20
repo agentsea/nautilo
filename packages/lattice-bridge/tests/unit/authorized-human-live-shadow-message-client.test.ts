@@ -1234,6 +1234,7 @@ describe("authorized Human live Shadow Message client", () => {
     let ready = false;
     let publications = 0;
     let taskPublications = 0;
+    const taskRequests: unknown[] = [];
     const diagnostics: unknown[] = [];
     let diagnosticObserverThrows = false;
     let currentNow = NOW + 1;
@@ -1245,8 +1246,9 @@ describe("authorized Human live Shadow Message client", () => {
           return Promise.resolve({ responseVersion: 1 as const, status: "authorized" as const,
             invocationId: "runtime-invocation:m321" });
         },
-        authorizeTaskDefinition: (_roomId, authorizationId) => {
+        authorizeTaskDefinition: (_roomId, authorizationId, request) => {
           taskPublications += 1;
+          taskRequests.push(request);
           return Promise.resolve({ responseVersion: 1 as const, status: "authorized" as const,
             authorizationId });
         } },
@@ -1294,9 +1296,11 @@ describe("authorized Human live Shadow Message client", () => {
       crypto,
       { authorizationId: taskAuthorizationId, parentAgentSignerPublicKey },
     );
+    const parentSessionId = "30000000-0000-4000-8000-000000000298";
+    const browserSessionId = "task-browser-action-session";
     const taskPlan = createDomainForegroundAuthorizationPlan(crypto, {
       authorizationId: taskAuthorizationId, policyRevision: 1,
-      sessionId: "30000000-0000-4000-8000-000000000298",
+      sessionId: parentSessionId,
       roomId: "private-room:m321",
       subjectHumanId: humanId(COORDINATES.humanActorId),
       committerDeviceId: cryptoDeviceId(COORDINATES.deviceId),
@@ -1321,13 +1325,26 @@ describe("authorized Human live Shadow Message client", () => {
       workDescriptorDigestBase64url: base64url(workDescriptorDigest),
       parentAgentSignerPublicKeyBase64url:
         base64url(parentAgentSignerPublicKey),
-      clientActionSessionId: "30000000-0000-4000-8000-000000000298",
+      parentSessionId,
+      clientActionSessionId: browserSessionId,
       deadlineAt: NOW + 30_000, authorizationScheme: "runtime_foreground_v1" as const,
       authorizationPlanBytesBase64url: base64url(taskPlanBytes),
       recipientPublicKeyBase64url: base64url(recipient.publicKey),
     };
     expect(await client.authorizeSharedAgentExecution(taskEvent)).toBe(true);
     expect(taskPublications).toBe(1);
+    expect(taskRequests).toHaveLength(1);
+    expect(taskRequests[0]).toMatchObject({
+      operationId: taskAuthorizationId,
+      parentOperationId: taskEvent.parentOperationId,
+      clientActionSessionId: browserSessionId,
+    });
+    expect(await client.authorizeSharedAgentExecution({
+      ...taskEvent,
+      parentSessionId: "other-parent-session",
+    })).toBe(false);
+    expect(taskPublications).toBe(1);
+    expect(taskRequests).toHaveLength(1);
     expect(await client.authorizeSharedAgentExecution({
       ...taskEvent,
       targetContentRevision: 3,
@@ -1354,6 +1371,9 @@ describe("authorized Human live Shadow Message client", () => {
       { stage: "runtime_authorization", reason: "prepare_complete_prepared" },
       { stage: "runtime_authorization", reason: "request_started" },
       { stage: "runtime_authorization", reason: "request_authorized" },
+      { stage: "runtime_authorization", reason: "prepare_started" },
+      { stage: "runtime_authorization", reason: "prepare_complete_unavailable" },
+      { stage: "runtime_authorization", reason: "plan_stale" },
       { stage: "runtime_authorization", reason: "event_stale" },
       { stage: "runtime_authorization", reason: "prepare_started" },
       { stage: "runtime_authorization", reason: "prepare_complete_unavailable" },

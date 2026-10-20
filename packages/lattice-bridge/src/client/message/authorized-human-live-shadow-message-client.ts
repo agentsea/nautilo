@@ -1184,6 +1184,7 @@ export function createAuthorizedHumanLiveShadowMessageClient(
             authorizationPlanBytes,
             recipientPublicKey,
             browserSessionId: event.clientActionSessionId,
+            expectedPlanSessionId: event.parentSessionId,
             expectedAuthorizationId: event.authorizationId,
             expectedRecipientKeyId,
             now: input.now(),

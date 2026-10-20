@@ -19,6 +19,7 @@ const ROOM = "00000000-0000-4000-8000-000000000003";
 function appWith(input: Readonly<{
   composition: LiveShadowMessagePlanComposition;
   surface: string | null;
+  clientActionSessionId?: string;
   hasCapability?: (userId: string, capability: string) => Promise<boolean>;
 }>) {
   const app = Fastify();
@@ -34,7 +35,9 @@ function appWith(input: Readonly<{
   liveShadowMessageRoutes(app, {
     composition: input.composition,
     clientSessions: {
-      inspect: () => input.surface === null
+      inspect: request => input.surface === null
+          || (input.clientActionSessionId !== undefined
+            && request.clientActionSessionId !== input.clientActionSessionId)
         ? null
         : { initiatingClientSurface: input.surface },
     },
@@ -549,7 +552,8 @@ describe("live Shadow Message plan route", () => {
     let seen: unknown;
     let retainedPlan: Uint8Array | undefined;
     let retainedAuthorization: Uint8Array | undefined;
-    const app = appWith({ surface: "workbench.browser", composition: {
+    const app = appWith({ surface: "workbench.browser",
+      clientActionSessionId: "browser-session", composition: {
       plan: () => Promise.resolve({ status: "disabled", mode: "plaintext_only" }),
       verifyClient: () => Promise.resolve({ status: "conflict" }),
       admitTaskDefinitionAuthorization: (input) => {
@@ -580,6 +584,10 @@ describe("live Shadow Message plan route", () => {
         headers: { authorization: "Bearer ok" }, payload: { ...body, operationId: "" } })).statusCode).toBe(400);
       expect((await app.inject({ method: "POST", url: path,
         headers: { authorization: "Bearer ok" }, payload: { ...body, plaintext: "forbidden" } })).statusCode).toBe(400);
+      expect((await app.inject({ method: "POST", url: path,
+        headers: { authorization: "Bearer ok" },
+        payload: { ...body, clientActionSessionId: "00000000-0000-4000-8000-000000000005" },
+      })).statusCode).toBe(409);
       expect(seen).toBeUndefined();
       const response = await app.inject({ method: "POST", url: path,
         headers: { authorization: "Bearer ok" }, payload: body });

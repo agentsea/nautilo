@@ -2,7 +2,7 @@ import type { EncryptionDataOperationOwner } from "@nautilo/lattice-bridge";
 import { deriveTaskDefinitionForegroundRecipientKeyIdV1 } from
   "@nautilo/lattice-bridge";
 import { createProtectedTaskPendingAttention } from "./protected-task-pending-attention";
-import { createProtectedTaskForegroundCreationOwner } from "./protected-task-foreground-creation-owner";
+import { createProtectedTaskForegroundCreationOwner, type TaskDefinitionProductLoan } from "./protected-task-foreground-creation-owner";
 import { withProtectedTaskForegroundCreationContext } from "./protected-task-foreground-creation-context";
 import {
   and,
@@ -221,6 +221,7 @@ type TaskDefinitionAuthorizationRequiredEvent = Readonly<{
   userId: string;
   roomId: string;
   parentOperationId: string;
+  parentSessionId: string;
   authorizationId: string;
   taskId: string;
   operation: "create" | "update";
@@ -709,15 +710,17 @@ export async function loadTaskDefinitionAuthority(request: Readonly<{
   crypto: LatticeCrypto;
   serverId: string;
   loadRuntimePolicy(): Promise<StrictShadowEnforcementPolicy>;
+  currentProduct?: TaskDefinitionProductLoan | null;
 }>): Promise<TaskDefinitionAuthoritySnapshot | null> {
   const { crypto, serverId, loadRuntimePolicy } = context;
   const privateRoom = await createProtectedTaskRequesterPrivateRoomResolver(
-    getServerDirectDb(),
+    context.currentProduct?.transaction ?? getServerDirectDb(),
   )(request.userId, request.agentId, request.expectedNamespaceId);
   if (privateRoom === null) return null;
   const policy = await loadRuntimePolicy();
   if (policy.mode === "plaintext_only") return null;
-  const product = createPostgresJsBridgeConnection(getServerDirectDb());
+  const product = context.currentProduct?.product
+    ?? createPostgresJsBridgeConnection(getServerDirectDb());
   const currentRoom = await new PostgresNamespaceProductAuthority(product)
     .withCurrentPrivateRoom({
       subjectUserId: request.userId,
@@ -834,6 +837,7 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
     bytes: Uint8Array;
     deadlineAt: number;
     source: "turn" | "shared_execution" | "shared_resume";
+    clientActionSessionId: string;
   }>>();
   const activeAgentOperations = new Set<string>();
   const dispatches = new Map<string, Readonly<{
@@ -864,6 +868,7 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
     | Readonly<{
     kind: "task_definition";
     parentOperationId: string;
+    parentSessionId: string;
     snapshot: TaskDefinitionAuthoritySnapshot;
     planBytes: Uint8Array;
     recipientKeyId: string;
@@ -1205,6 +1210,7 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
       bytes: prepared.planBytes.slice(),
       deadlineAt: plan.deadlineAt,
       source: "turn",
+      clientActionSessionId: prepared.clientActionSessionId,
     }));
     return result;
   };
@@ -1638,6 +1644,7 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
             bytes: prepared.planBytes.slice(),
             deadlineAt: plan.deadlineAt,
             source: "shared_execution",
+            clientActionSessionId: prepared.clientActionSessionId,
           }));
           accepted = true;
           return Object.freeze({
@@ -2438,6 +2445,7 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
         source: result.executionKind === "resume"
           ? "shared_resume"
           : "shared_execution",
+        clientActionSessionId: input.clientActionSessionId,
       }));
     }
     return result;
@@ -2866,6 +2874,7 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
           source: executionKind === "resume"
             ? "shared_resume"
             : "shared_execution",
+          clientActionSessionId: input.clientActionSessionId,
         }));
         publishAcceptedSharedAuthorization(
           input.operationId,
@@ -3237,7 +3246,7 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
           current: {
             authorizationId: input.authorizationId,
             policyRevision: waiter.snapshot.policyRevision,
-            sessionId: input.clientActionSessionId,
+            sessionId: waiter.parentSessionId,
             roomId: waiter.snapshot.privateRoomId,
             subjectHumanId: humanId(input.actorId),
             committerDeviceId: cryptoDeviceId(waiter.snapshot.deviceId),
@@ -4921,7 +4930,12 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
                                   entities.signal.throwIfAborted();
                                 },
                                 authorizeTaskDefinition: async request => {
+                                  const clientActionSessionId =
+                                    retained.clientActionSessionId;
                                   if (input.publishTaskDefinitionAuthorizationRequired === undefined
+                                    || ("browserSessionId" in description
+                                      && description.browserSessionId
+                                        !== clientActionSessionId)
                                     || request.workDescriptorDigest.length !== 32) {
                                     throw new Error("Foreground Task definition authorization is unavailable");
                                   }
@@ -4958,7 +4972,7 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
                                     userId: authority!.causalHumanUserId,
                                     humanId: foregroundPlan.subjectHumanId,
                                     deviceId: foregroundPlan.committerDeviceId,
-                                    clientActionSessionId: foregroundPlan.sessionId,
+                                    clientActionSessionId,
                                     roomId: foregroundPlan.roomId,
                                     agentId: request.taskExecutorAgentId,
                                     ...(expectedNamespaceId === undefined
@@ -5018,7 +5032,7 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
                                   );
                                   const reservation = {
                                     operationId: authorizationId,
-                                    clientActionSessionId: foregroundPlan.sessionId,
+                                    clientActionSessionId,
                                     actorId: foregroundPlan.subjectHumanId,
                                     deadlineAt,
                                   };
@@ -5105,6 +5119,7 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
                                         Object.freeze({
                                           kind: "task_definition" as const,
                                           parentOperationId: foregroundPlan.operationId,
+                                          parentSessionId: foregroundPlan.sessionId,
                                           snapshot: retainedSnapshot,
                                           planBytes: planBytes!.slice(),
                                           recipientKeyId,
@@ -5122,6 +5137,7 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
                                           userId: authority!.causalHumanUserId,
                                           roomId: foregroundPlan.roomId,
                                           parentOperationId: foregroundPlan.operationId,
+                                          parentSessionId: foregroundPlan.sessionId,
                                           authorizationId,
                                           taskId: request.taskId,
                                           operation: request.operation,
@@ -5134,7 +5150,7 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
                                             Buffer.from(
                                               foregroundPlan.agentSignerPublicKey,
                                             ).toString("base64url"),
-                                          clientActionSessionId: foregroundPlan.sessionId,
+                                          clientActionSessionId,
                                           deadlineAt,
                                           authorizationScheme: "runtime_foreground_v1",
                                           authorizationPlanBytesBase64url:
@@ -5174,7 +5190,8 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
                                         entrypointId: input.entrypointId ?? "foreground.main",
                                         execute: async ({ entities: taskEntities }) => {
                                           const assertTaskCurrent = async () => {
-                                            const current = await loadTaskDefinitionAuthority({
+                                            const current = await request.withCurrentProduct(
+                                              currentProduct => loadTaskDefinitionAuthority({
                                               userId: snapshot.userId,
                                               humanId: snapshot.humanId,
                                               deviceId: snapshot.deviceId,
@@ -5183,7 +5200,12 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
                                               agentId: snapshot.agentId,
                                               expectedNamespaceId:
                                                 snapshot.namespace.namespaceId,
-                                            }, { crypto, serverId, loadRuntimePolicy });
+                                            }, { crypto, serverId, currentProduct,
+                                              loadRuntimePolicy: currentProduct === null
+                                                ? loadRuntimePolicy
+                                                : () => getEncryptionTransitionPolicy(currentProduct.transaction),
+                                            }),
+                                            );
                                             if (current === null) throw new Error("Foreground Task private authority changed");
                                             const matches = sameTaskDefinitionAuthoritySnapshot(snapshot, current);
                                             wipeTaskDefinitionAuthoritySnapshot(current);

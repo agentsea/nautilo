@@ -21,6 +21,10 @@ import { parseClaudeTaskExecutionMetadata } from "../claude/task-execution-route
 
 type Publication = Parameters<typeof createProtectedTaskForegroundCreationPublication>[0];
 type ProductLoan = Parameters<ProtectedTaskForegroundCreationContext["withProduct"]>[0];
+export type TaskDefinitionProductLoan = Readonly<{
+  transaction: ProductLoan["transaction"];
+  product: PostgresJsBridgeConnection;
+}>;
 type TaskDefinitionAuthorization = Readonly<{
   authority: TaskContentAuthorityV1;
   entities: ForegroundAgentEntityCryptoInvocation;
@@ -57,6 +61,9 @@ export function createProtectedTaskForegroundCreationOwner(input: Omit<Publicati
     targetContentRevision: number;
     operationId: string;
     workDescriptorDigest: Uint8Array;
+    withCurrentProduct<Value>(
+      use: (current: TaskDefinitionProductLoan | null) => Promise<Value>,
+    ): Promise<Value>;
     use(authorization: TaskDefinitionAuthorization): Promise<Value>;
   }>): Promise<Value>;
 }>) {
@@ -257,6 +264,16 @@ export function createProtectedTaskForegroundCreationOwner(input: Omit<Publicati
       }
       if (input.authorizeTaskDefinition === undefined) return request.use();
       return input.authorizeTaskDefinition({ ...request,
+        withCurrentProduct: async use => {
+          assertLive();
+          const loan = loans.getStore();
+          const value = await use(loan === undefined ? null : Object.freeze({
+            transaction: loan.transaction,
+            product: loan.product,
+          }));
+          assertLive();
+          return value;
+        },
         use: authorization => taskAuthorizations.run(authorization, request.use) });
     },
     publishProtected: async request => {

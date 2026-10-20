@@ -196,13 +196,15 @@ export function prepareVaultRuntimeForegroundAuthorization(input: Readonly<{
   sourceHumanPlanBytes?: Uint8Array;
   recipientPublicKey: Uint8Array;
   browserSessionId: string;
+  expectedPlanSessionId?: string;
   expectedAuthorizationId?: string;
   expectedRecipientKeyId?: string;
   now: number;
 }>): Promise<PrepareVaultRuntimeForegroundAuthorizationResult> {
   return prepareVaultRuntimeAuthorization({
     ...input,
-    expectedSessionId: input.browserSessionId,
+    expectedSessionId:
+      input.expectedPlanSessionId ?? input.browserSessionId,
   });
 }
 

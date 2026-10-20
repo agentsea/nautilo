@@ -121,6 +121,7 @@ const taskDefinitionAuthorizationRequiredSchema = z.strictObject({
   targetContentRevision: z.number().int().positive(),
   workDescriptorDigestBase64url: digest,
   parentAgentSignerPublicKeyBase64url: digest,
+  parentSessionId: portable,
   clientActionSessionId: portable,
   deadlineAt: z.number().int().nonnegative(),
   authorizationScheme: z.literal("runtime_foreground_v1"),

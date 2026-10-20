@@ -6,7 +6,8 @@ import type { DomainKeyV2LiveShadowCurrentAuthority } from "@nautilo/lattice-bri
 import { createAcceptedInvocationAuthority, type CanonicalTranscriptTx } from "@nautilo/trust";
 import { createAgentTurnTaskCreationProvenance } from "@nautilo/runtime";
 import { tasks, type PostgresJsBridgeConnection, type PostgresJsBridgeExecutor } from "@nautilo/db";
-import { createProtectedTaskForegroundCreationOwner } from "../../src/routes/protected-task-foreground-creation-owner";
+import { createProtectedTaskForegroundCreationOwner,
+  type TaskDefinitionProductLoan } from "../../src/routes/protected-task-foreground-creation-owner";
 import { createGrantedForegroundReadableNamespaceResolver } from
   "../../src/routes/live-shadow-message-composition";
 
@@ -100,6 +101,9 @@ function fixture() {
   let authorized = true;
   let borrowed: PostgresJsBridgeConnection | null = null;
   let originalProofs = 0;
+  let taskCurrentProofs = 0;
+  let probeCurrentProduct: (() => Promise<TaskDefinitionProductLoan | null>) | null = null;
+  const taskProductLoans: Array<TaskDefinitionProductLoan | null> = [];
   const controller = new AbortController();
   const transaction = {
     execute: async () => {
@@ -135,24 +139,34 @@ function fixture() {
     entities: { signal: controller.signal, use: async () => { throw new Error("No entity key expected"); },
       useCurrentSet: async () => { throw new Error("No entity key expected"); } },
     assertCurrentForeground: async () => { originalProofs += 1; },
-    authorizeTaskDefinition: input => input.use({
-      authority: {
-        authorityVersion: 1, kind: "requester_private_namespace", keyClass: "ai",
-        requesterHumanId: "actor", namespaceId: "namespace", domainId: "domain",
-        expectedAccessRevision: 1, expectedPolicyRevision: 3,
-      },
-      entities: { signal: controller.signal,
-        use: async () => { throw new Error("No Task entity key expected"); },
-        useCurrentSet: async () => { throw new Error("No Task entity key expected"); } },
-      publication: { operationId: input.operationId, grantId: input.operationId,
-        grantDigest: new Uint8Array(32), recipientKeyId: "task-recipient" },
-      resolveCurrentForegroundDefinitionAuthorization: async () => null,
-      assertCurrent: async () => {},
-    }),
+    authorizeTaskDefinition: async input => {
+      probeCurrentProduct = () => input.withCurrentProduct(current => Promise.resolve(current));
+      taskProductLoans.push(await probeCurrentProduct());
+      return input.use({
+        authority: {
+          authorityVersion: 1, kind: "requester_private_namespace", keyClass: "ai",
+          requesterHumanId: "actor", namespaceId: "namespace", domainId: "domain",
+          expectedAccessRevision: 1, expectedPolicyRevision: 3,
+        },
+        entities: { signal: controller.signal,
+          use: async () => { throw new Error("No Task entity key expected"); },
+          useCurrentSet: async () => { throw new Error("No Task entity key expected"); } },
+        publication: { operationId: input.operationId, grantId: input.operationId,
+          grantDigest: new Uint8Array(32), recipientKeyId: "task-recipient" },
+        resolveCurrentForegroundDefinitionAuthorization: async () => null,
+        assertCurrent: () => input.withCurrentProduct(async current => {
+          taskCurrentProofs += 1;
+          taskProductLoans.push(current);
+        }),
+      });
+    },
     createCurrentAuthority: async product => { borrowed = product; events.push("borrow-authority"); return authority; },
   });
   return { ...owner, transaction, executor, controller, events,
     borrowed: () => borrowed, originalProofs: () => originalProofs,
+    taskCurrentProofs: () => taskCurrentProofs,
+    taskProductLoans,
+    probeCurrentProduct: () => probeCurrentProduct,
     revoke: () => { authorized = false; }, setPolicy: (next: typeof policy) => { policy = next; } };
 }
 
@@ -172,6 +186,46 @@ test("creation loans fence policy before Room proof and use only the existing ex
   expect(f.events.at(-1)).toBe("destroy");
   await rejects(f.borrowed()!.query("SELECT 1"), /foreground authority is unavailable/u);
   f.dispose();
+});
+
+test("Task definition revalidation borrows only the active product loan", async () => {
+  const f = fixture();
+  await f.context.withTaskDefinitionAuthorization({
+    taskId: "11111111-1111-4111-8111-111111111111",
+    taskExecutorAgentId: "agent",
+    operation: "create",
+    targetContentRevision: 1,
+    operationId: "task-operation",
+    workDescriptorDigest: new Uint8Array(32),
+    use: async () => {
+      await f.context.withProduct({
+        taskId: "11111111-1111-4111-8111-111111111111",
+        transaction: f.transaction,
+        executor: f.executor,
+        use: () => f.context.assertCurrent(),
+      });
+      await f.context.assertCurrent();
+    },
+  });
+
+  const probe = f.probeCurrentProduct();
+  if (probe === null) throw new Error("Missing Task product loan probe");
+  expect(await probe()).toBeNull();
+  expect(f.taskCurrentProofs()).toBe(2);
+  expect(f.taskProductLoans).toHaveLength(3);
+  expect(f.taskProductLoans[0]).toBeNull();
+  const retained = f.taskProductLoans[1];
+  const borrowed = f.borrowed();
+  if (retained === undefined || retained === null || borrowed === null) {
+    throw new Error("Missing Task product loan");
+  }
+  expect(retained.transaction).toBe(f.transaction);
+  expect(retained.product).toBe(borrowed);
+  expect(f.taskProductLoans[2]).toBeNull();
+  await rejects(retained.product.transactionOnce(() => Promise.resolve(true)),
+    /foreground authority is unavailable/u);
+  f.dispose();
+  await rejects(probe(), /foreground authority is unavailable/u);
 });
 
 test("policy drift prevents even opening foreground product authority", async () => {
