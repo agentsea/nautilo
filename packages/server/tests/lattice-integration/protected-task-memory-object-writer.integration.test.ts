@@ -184,10 +184,15 @@ import {
   type TaskRuntimeExecutionEvidence,
 } from "@nautilo/lattice-crypto";
 import {
+  createTaskRuntimeSignerAuthorization,
+  decodeTaskRuntimeBackgroundAuthorizationRequestBase,
   decodeTaskRuntimeBackgroundAuthorizationRequestV1,
   destroyTaskRuntimeBackgroundAuthorizationRequestV1,
   createTaskRuntimeBackgroundAuthorizationRequestV1,
+  encodeTaskRuntimeBackgroundAuthorizationResponseV2,
   encodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  isTaskRuntimeBackgroundAuthorizationRequestV2Carrier,
+  isTaskRuntimeBackgroundAuthorizationRequestV3Carrier,
 } from "@nautilo/lattice-crypto/background";
 import {
   destroyDomainForegroundAuthorizationV2,
@@ -5571,11 +5576,12 @@ describePostgres("sealed protected Task Memory object writer", () => {
       ): Promise<void> => {
         const page = await service.list(subject, {});
         let selected: ReturnType<
-          typeof decodeTaskRuntimeBackgroundAuthorizationRequestV1
+          typeof decodeTaskRuntimeBackgroundAuthorizationRequestBase
         > = null;
         let selectedBytes: Uint8Array | null = null;
         for (const candidate of page.requests) {
-          const decoded = decodeTaskRuntimeBackgroundAuthorizationRequestV1(
+          const decoded = decodeTaskRuntimeBackgroundAuthorizationRequestBase(
+            base.crypto,
             candidate.requestBytes,
           );
           if (decoded?.requestId === expectedRequestId) {
@@ -5617,11 +5623,33 @@ describePostgres("sealed protected Task Memory object writer", () => {
             },
           );
           try {
-            responseBytes = serializeDomainForegroundAuthorizationV2(
+            const authorizationBytes = serializeDomainForegroundAuthorizationV2(
               authorization,
             );
-            expect(await service.respond(subject, { responseBytes }))
-              .toEqual({ status: "accepted" });
+            if (isTaskRuntimeBackgroundAuthorizationRequestV2Carrier(selectedBytes)
+              || isTaskRuntimeBackgroundAuthorizationRequestV3Carrier(selectedBytes)) {
+              let authorizationHash: Uint8Array | undefined;
+              let certificateBytes: Uint8Array | undefined;
+              try {
+                authorizationHash = base.crypto.hash(authorizationBytes);
+                certificateBytes = createTaskRuntimeSignerAuthorization(base.crypto, {
+                  requestBytes: selectedBytes, authorizationBytes,
+                  expectedAuthorizationPlanBytes: selected.authorizationPlanBytes,
+                  expectedAuthorizationHash: authorizationHash,
+                  issuerSigningPrivateKey: base.signingPrivateKey,
+                });
+                responseBytes = encodeTaskRuntimeBackgroundAuthorizationResponseV2({
+                  authorizationBytes, certificateBytes,
+                });
+              } finally {
+                authorizationBytes.fill(0);
+                authorizationHash?.fill(0);
+                certificateBytes?.fill(0);
+              }
+            } else {
+              responseBytes = authorizationBytes;
+            }
+            expect(await service.respond(subject, { responseBytes })).toEqual({ status: "accepted" });
           } finally {
             destroyDomainForegroundAuthorizationV2(authorization);
           }
