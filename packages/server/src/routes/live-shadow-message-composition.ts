@@ -5033,6 +5033,7 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
                                   const issuedAt = Date.now();
                                   const deadlineAt = Math.min(
                                     retained.deadlineAt,
+                                    description.expiresAt,
                                     issuedAt
                                       + DOMAIN_FOREGROUND_AUTHORIZATION_MAX_TTL_MS_V2,
                                   );

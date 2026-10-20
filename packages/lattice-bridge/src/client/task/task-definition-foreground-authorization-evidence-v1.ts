@@ -136,7 +136,9 @@ export function exactTaskDefinitionForegroundAgentSignerKeysV1(input: Readonly<{
           parentAgentSignerPublicKey: parent.agentSignerPublicKey,
         })
       || plan.issuedAt < parent.issuedAt
-      || plan.deadlineAt > parent.deadlineAt
+      // The Device-signed Task plan owns this historical grant's lifetime.
+      // The unsigned V4 deadline only admitted the parent Message request;
+      // publication checks containment in the accepted grant on the server.
       || plan.roomId !== input.privateRoomId
       || plan.recipientKind !== "runtime"
       || plan.recipientPrincipalId !== "nautilo_foreground_runtime"

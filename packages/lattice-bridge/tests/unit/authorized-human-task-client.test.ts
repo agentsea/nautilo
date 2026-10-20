@@ -58,6 +58,7 @@ function owner(
 const summary = {
   id: taskId,
   agentId,
+  status: "pending",
   content: {
     dtoVersion: 1,
     status: "protected",
@@ -631,6 +632,71 @@ describe("authorized Human Task client boundary", () => {
     expect(opened.content).toEqual({ status: "ordinary",
       prompt: "fallback source", expectedOutput: null, lastError: "waiting" });
     expect(events).toEqual(["plan", "ordinary"]);
+  });
+
+  test.each(["completed", "cancelled"] as const)(
+    "Strict Shadow leaves a %s unavailable Task immutable",
+    async status => {
+      const terminal = {
+        ...summary,
+        status,
+        content: {
+          dtoVersion: 1,
+          status: "unavailable",
+          reason: "device_not_ready",
+        },
+      } as TaskContentSummaryV1;
+      const events: string[] = [];
+      const error = await client({
+        mode: "shadow_encryption",
+        shadowBehavior: "strict",
+        plans: { async update() {
+          events.push("plan");
+          throw new Error("Terminal Task must not request an update plan");
+        } },
+        api: { async getTaskContentV1() {
+          events.push("ordinary");
+          throw new Error("Strict Shadow must not read ordinary Task content");
+        } },
+        content: { async prepareDualUpdate() {
+          events.push("prepare");
+          throw new Error("Terminal Task must not prepare a mutation");
+        } },
+        journal: { async putBeforeSend() {
+          events.push("journal");
+          throw new Error("Terminal Task must not journal a mutation");
+        } },
+      }).open(terminal).catch((cause: unknown) => cause);
+      expect(error).toBeInstanceOf(ClassifiedDataOperationError);
+      expect((error as ClassifiedDataOperationError).failureClass)
+        .toBe("key_waiting");
+      expect(events).toEqual([]);
+    },
+  );
+
+  test("Paused unavailable Tasks retain the authorized forward-repair path", async () => {
+    const paused = {
+      ...summary,
+      status: "paused",
+      content: {
+        dtoVersion: 1,
+        status: "unavailable",
+        reason: "device_not_ready",
+      },
+    } as TaskContentSummaryV1;
+    const events: string[] = [];
+    const error = await client({
+      mode: "shadow_encryption",
+      shadowBehavior: "strict",
+      plans: { async update() {
+        events.push("plan");
+        return publicationPlan("update");
+      } },
+    }).open(paused).catch((cause: unknown) => cause);
+    expect(error).toBeInstanceOf(ClassifiedDataOperationError);
+    expect((error as ClassifiedDataOperationError).failureClass)
+      .toBe("recoverable_availability");
+    expect(events).toEqual(["plan"]);
   });
 
   test.each(["fallback", "strict"] as const)(

@@ -54,6 +54,10 @@ export type ForegroundAgentAcceptedExecutionEvidence = Readonly<{
       namespaceId: string;
       domainId: string;
     }>[];
+    grantLifetime?: Readonly<{
+      issuedAt: number;
+      deadlineAt: number;
+    }>;
   }>;
 }>;
 
@@ -305,6 +309,10 @@ export function createPostgresForegroundAgentAcceptedExecutionEvidenceResolver(i
                   domainId: domain.domainId,
                 })),
               ),
+              grantLifetime: Object.freeze({
+                issuedAt: authorization.issuedAt,
+                deadlineAt: authorization.deadlineAt,
+              }),
             });
           }
         } finally {

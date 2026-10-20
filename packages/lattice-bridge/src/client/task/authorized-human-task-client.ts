@@ -567,44 +567,46 @@ export function createAuthorizedHumanTaskClientV1(input: Readonly<{
           task,
           definition: await openProtectedDefinition(task),
         }),
-        repair: { forward: async () => {
-          const operationId = input.createOperationId();
-          const operational = Object.freeze({});
-          const plan = checkedPlan(await input.plans.update({
-            operationId,
-            taskId,
-            current: task,
-            task: operational,
-          }), "update", operationId, taskId);
-          if (plan.ordinaryRepairPayloadBase64url === undefined) {
-            throw new ClassifiedDataOperationError(
-              "recoverable_availability",
-              "Protected Task has no authorized forward repair",
+        ...(task.status === "pending" || task.status === "paused" ? {
+          repair: { forward: async () => {
+            const operationId = input.createOperationId();
+            const operational = Object.freeze({});
+            const plan = checkedPlan(await input.plans.update({
+              operationId,
+              taskId,
+              current: task,
+              task: operational,
+            }), "update", operationId, taskId);
+            if (plan.ordinaryRepairPayloadBase64url === undefined) {
+              throw new ClassifiedDataOperationError(
+                "recoverable_availability",
+                "Protected Task has no authorized forward repair",
+              );
+            }
+            const source = decodeOrdinaryRepairPayload(
+              plan.ordinaryRepairPayloadBase64url,
             );
-          }
-          const source = decodeOrdinaryRepairPayload(
-            plan.ordinaryRepairPayloadBase64url,
-          );
-          const content = contentForUpdate(
-            source.payload,
-            source.retainedHistoricalError,
-          );
-          const request = await input.content.prepareDualUpdate({
-            plan,
-            payload: content,
-            task: operational,
-          });
-          checkedPrepared(request, plan);
-          const updated = await publishPrepared<TaskContentSummaryV1>({
-            kind: "task_update",
-            taskId,
-            request,
-          });
-          return Object.freeze({
-            task: updated,
-            definition: await openProtectedDefinition(updated),
-          });
-        } },
+            const content = contentForUpdate(
+              source.payload,
+              source.retainedHistoricalError,
+            );
+            const request = await input.content.prepareDualUpdate({
+              plan,
+              payload: content,
+              task: operational,
+            });
+            checkedPrepared(request, plan);
+            const updated = await publishPrepared<TaskContentSummaryV1>({
+              kind: "task_update",
+              taskId,
+              request,
+            });
+            return Object.freeze({
+              task: updated,
+              definition: await openProtectedDefinition(updated),
+            });
+          } },
+        } : {}),
         consumeOrdinary: (content) => Object.freeze({
           task,
           content: Object.freeze({

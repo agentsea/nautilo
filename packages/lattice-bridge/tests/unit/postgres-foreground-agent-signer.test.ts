@@ -31,6 +31,8 @@ const UUID = "10000000-0000-4000-8000-000000000001";
 const AUTHORITY_ROOM = "20000000-0000-4000-8000-000000000002";
 const TASK_DOMAIN = "domain:task-definition-private";
 const TASK_NAMESPACE = "30000000-0000-4000-8000-000000000003";
+const ACCEPTED_GRANT_ISSUED_AT = 1_700_000_010_000;
+const ACCEPTED_GRANT_DEADLINE_AT = 1_700_000_120_000;
 const hash = (marker: number) => new Uint8Array(32).fill(marker);
 
 class ScriptedConnection implements ConversationProductPostgresConnection {
@@ -155,8 +157,8 @@ function fixture() {
     recipientRuntimeGeneration: 0,
     recipientKeyId: "runtime-recipient-retained",
     operations: ["decrypt", "encrypt"],
-    issuedAt: plan.issuedAt,
-    deadlineAt: plan.deadlineAt,
+    issuedAt: unixTimestamp(ACCEPTED_GRANT_ISSUED_AT),
+    deadlineAt: unixTimestamp(ACCEPTED_GRANT_DEADLINE_AT),
     maximumSecretBytes: 4_096,
     domains: [{
       domainId: TASK_DOMAIN,
@@ -415,7 +417,7 @@ describe("retained foreground Agent signer", () => {
     }
   });
 
-  test("returns exact accepted plan evidence for portable Memory verification", async () => {
+  test("projects the exact accepted grant lifetime even when it outlives the V4 descriptor", async () => {
     const input = fixture();
     const connection = new ScriptedConnection([
       [{ current_user: "nautilo", session_user: "nautilo" }],
@@ -430,9 +432,14 @@ describe("retained foreground Agent signer", () => {
     expect(evidence?.signerPublicKey).toEqual(input.signer.publicKey);
     expect(evidence?.planBytes).toEqual(input.planBytes);
     expect(evidence?.planDigest).toEqual(input.planDigest);
+    expect(input.plan.deadlineAt).toBeLessThan(ACCEPTED_GRANT_DEADLINE_AT);
     expect(evidence?.acceptedAuthority).toEqual({
       subjectHumanId: input.plan.subjectHumanId,
       authorizedNamespaces: [{ namespaceId: TASK_NAMESPACE, domainId: TASK_DOMAIN }],
+      grantLifetime: {
+        issuedAt: ACCEPTED_GRANT_ISSUED_AT,
+        deadlineAt: ACCEPTED_GRANT_DEADLINE_AT,
+      },
     });
   });
 
@@ -444,6 +451,10 @@ describe("retained foreground Agent signer", () => {
       expect((await resolveEvidence(input, row))?.acceptedAuthority).toEqual({
         subjectHumanId: input.plan.subjectHumanId,
         authorizedNamespaces: [{ namespaceId: TASK_NAMESPACE, domainId: TASK_DOMAIN }],
+        grantLifetime: {
+          issuedAt: ACCEPTED_GRANT_ISSUED_AT,
+          deadlineAt: ACCEPTED_GRANT_DEADLINE_AT,
+        },
       });
       for (const invalid of [
         { ...row, invocation_authorization_session_reference: "another-session" },
@@ -452,6 +463,7 @@ describe("retained foreground Agent signer", () => {
         const evidence = await resolveEvidence(input, invalid);
         expect(evidence?.signerPublicKey).toEqual(input.signer.publicKey);
         expect(evidence?.acceptedAuthority).toBeUndefined();
+        expect(evidence?.acceptedAuthority?.grantLifetime).toBeUndefined();
       }
     });
   }
@@ -467,6 +479,10 @@ describe("retained foreground Agent signer", () => {
     expect(evidence?.acceptedAuthority).toEqual({
       subjectHumanId: input.plan.subjectHumanId,
       authorizedNamespaces: [{ namespaceId: TASK_NAMESPACE, domainId: TASK_DOMAIN }],
+      grantLifetime: {
+        issuedAt: ACCEPTED_GRANT_ISSUED_AT,
+        deadlineAt: ACCEPTED_GRANT_DEADLINE_AT,
+      },
     });
   });
 
@@ -505,6 +521,7 @@ describe("retained foreground Agent signer", () => {
       const evidence = await resolveEvidence(input, row);
       expect(evidence?.signerPublicKey).toEqual(input.signer.publicKey);
       expect(evidence?.acceptedAuthority).toBeUndefined();
+      expect(evidence?.acceptedAuthority?.grantLifetime).toBeUndefined();
     }
     const product = await verifyConversationProductPostgresHandle(
       new ScriptedConnection([
@@ -660,6 +677,10 @@ describe("retained foreground Agent signer", () => {
     expect(evidence?.acceptedAuthority).toEqual({
       subjectHumanId: input.plan.subjectHumanId,
       authorizedNamespaces: [{ namespaceId: TASK_NAMESPACE, domainId: TASK_DOMAIN }],
+      grantLifetime: {
+        issuedAt: input.plan.issuedAt,
+        deadlineAt: input.plan.deadlineAt,
+      },
     });
   });
 

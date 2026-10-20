@@ -281,6 +281,7 @@ describe("Task definition foreground authorization evidence", () => {
     const resolve = async (
       inputOverrides: ResolverCoordinates = {},
       parentOverrides: Partial<Parameters<typeof encodeLiveShadowMessagePlanV4>[0]> = {},
+      grantLifetime?: Readonly<{ issuedAt: number; deadlineAt: number }>,
     ) => {
       const acceptedPlanBytes = parentBytes(parentOverrides);
       const acceptedPlanDigest = crypto.hash(acceptedPlanBytes);
@@ -298,6 +299,13 @@ describe("Task definition foreground authorization evidence", () => {
           signerPublicKey: agentSigner.publicKey.slice(),
           planBytes: acceptedPlanBytes.slice(),
           planDigest: acceptedPlanDigest.slice(),
+          ...(grantLifetime === undefined ? {} : {
+            acceptedAuthority: {
+              subjectHumanId: "human",
+              authorizedNamespaces: [],
+              grantLifetime,
+            },
+          }),
         }),
         resolveHistoricalDeviceSigningPublicKey: () =>
           Promise.resolve(signer.publicKey.slice()),
@@ -316,6 +324,21 @@ describe("Task definition foreground authorization evidence", () => {
       }
     };
     expect(await resolve()).toEqual(agentSigner.publicKey);
+    // A Task may be created after the Message admission deadline, while its
+    // separately accepted foreground grant is still live.
+    expect(await resolve({}, { deadlineAt: unixTimestamp(950) }, {
+      issuedAt: 800, deadlineAt: 2_000,
+    })).toEqual(agentSigner.publicKey);
+    expect(await resolve({}, { deadlineAt: unixTimestamp(950) })).toBeNull();
+    expect(await resolve({}, {}, {
+      issuedAt: 800, deadlineAt: 1_999,
+    })).toBeNull();
+    expect(await resolve({}, {}, {
+      issuedAt: 1_001, deadlineAt: 2_100,
+    })).toBeNull();
+    expect(await resolve({}, { issuedAt: unixTimestamp(1_001) }, {
+      issuedAt: 800, deadlineAt: 2_100,
+    })).toBeNull();
     for (const [inputOverrides, parentOverrides] of [
       [{ taskId: "22222222-2222-4222-8222-222222222222" }, {}],
       [{ operation: "update" }, {}],

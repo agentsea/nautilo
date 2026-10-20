@@ -18,7 +18,12 @@ import {
   unixTimestamp,
 } from "@nautilo/lattice-crypto";
 import {
+  decodeLiveShadowMessagePlanV4,
+  decodeObjectAccessManifestV5,
   encodeLiveShadowMessagePlanV4,
+  parseDomainForegroundAuthorizationPlanV2,
+  parseDomainForegroundAuthorizationV2,
+  serializeDomainForegroundAuthorizationPlanV2,
   serializeDomainForegroundAuthorizationV2,
 } from "@nautilo/lattice-crypto/wire";
 import { seededRng } from "@nautilo/lattice-crypto/testing";
@@ -44,7 +49,7 @@ const DOMAIN_ID = "domain:private-task";
 const bytes = (fill: number) => new Uint8Array(32).fill(fill);
 const base64url = (value: Uint8Array) => Buffer.from(value).toString("base64url");
 
-async function fixture() {
+async function fixture(parentDeadlineAt = NOW + 29_000) {
   const crypto = new LatticeCrypto(seededRng(2_701_901), { now: () => NOW });
   const device = crypto.generateSigningKeyPair();
   const recipient = await crypto.generateEncryptionKeyPair();
@@ -106,7 +111,7 @@ async function fixture() {
     },
     attemptCoordinate: "attempt:shared-parent",
     issuedAt: unixTimestamp(NOW - 1_000),
-    deadlineAt: unixTimestamp(NOW + 29_000),
+    deadlineAt: unixTimestamp(parentDeadlineAt),
   });
   const domain = Object.freeze({
     domainId: DOMAIN_ID,
@@ -170,6 +175,7 @@ async function fixture() {
     crypto,
     device,
     signer,
+    runtime,
     parentBytes,
     authorizationBytes,
     genesisBytes: genesis.bytes,
@@ -189,7 +195,7 @@ async function fixture() {
 
 describe("Task definition retained foreground authorization", () => {
   test("authenticates the exact Device, parent execution, Task and private Domain", async () => {
-    const value = await fixture();
+    const value = await fixture(NOW - 500);
     const verify = (overrides: Partial<Parameters<
       typeof exactTaskDefinitionForegroundAgentSignerKeysV1
     >[0]> = {}) => exactTaskDefinitionForegroundAgentSignerKeysV1({
@@ -216,5 +222,49 @@ describe("Task definition retained foreground authorization", () => {
     expect(() => verify({
       resolveHistoricalDeviceSigningPublicKey: () => bytes(0xee),
     })).toThrow();
+
+    const substitutedParent = decodeLiveShadowMessagePlanV4(value.parentBytes);
+    const substitutedParentBytes = encodeLiveShadowMessagePlanV4({
+      ...substitutedParent,
+      agentSignerPublicKey: bytes(0xee),
+    });
+    expect(() => verify({ evidence: [{
+      kind: "foreground_agent_accepted_execution",
+      planBytesBase64url: base64url(substitutedParentBytes),
+      planDigestBase64url: base64url(value.crypto.hash(substitutedParentBytes)),
+    }, value.evidence[1]] })).toThrow("Task definition authorization binding is invalid");
+
+    const authorization = parseDomainForegroundAuthorizationV2(
+      value.authorizationBytes,
+    )!;
+    const signedPlan = parseDomainForegroundAuthorizationPlanV2(
+      authorization.planBytes,
+    )!;
+    const changedDeadlineBytes = serializeDomainForegroundAuthorizationV2({
+      ...authorization,
+      planBytes: serializeDomainForegroundAuthorizationPlanV2({
+        ...signedPlan, deadlineAt: unixTimestamp(NOW + 21_000),
+      }),
+    });
+    const originalGenesis = decodeObjectAccessManifestV5(value.genesisBytes);
+    const changedGenesis = createTaskDefinitionForegroundObjectAccessManifestV5(
+      value.crypto,
+      {
+        objectId: originalGenesis.objectId,
+        payloadHash: originalGenesis.payloadHash,
+        accessRevision: originalGenesis.accessRevision,
+        previousManifestHash: originalGenesis.previousManifestHash,
+        envelopeHashes: originalGenesis.envelopeHashes,
+        signer: originalGenesis.signer,
+        hostAuthorizationRevision: originalGenesis.hostAuthorizationRevision,
+        signerAuthorizationHash: value.crypto.hash(changedDeadlineBytes),
+      },
+      value.runtime,
+    );
+    expect(() => verify({ genesisManifestBytes: changedGenesis.bytes,
+      evidence: [value.evidence[0], {
+      kind: "task_definition_foreground_authorization",
+      evidenceBytesBase64url: base64url(changedDeadlineBytes),
+    }] })).toThrow("Task definition Device signature is invalid");
   });
 });

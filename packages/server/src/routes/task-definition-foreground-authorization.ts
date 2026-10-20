@@ -201,6 +201,9 @@ export function createTaskDefinitionForegroundAuthorizationResolver(input: Reado
       if (accepted === null) return null;
       try { parent = decodeLiveShadowMessagePlanV4(accepted.planBytes); }
       catch { return null; }
+      // The V4 deadline admits the Message request, not the whole foreground
+      // turn. Only authenticated retained grant facts may extend that window.
+      const grantLifetime = accepted.acceptedAuthority?.grantLifetime;
       if (!taskDefinitionForegroundAuthorizationIdMatches(input.crypto, {
         authorizationId: authorization.authorizationId,
         parentOperationId: parent.operationId,
@@ -224,7 +227,11 @@ export function createTaskDefinitionForegroundAuthorizationResolver(input: Reado
             parentAgentSignerPublicKey: parent.agentSignerPublicKey,
           })
         || plan.issuedAt < parent.issuedAt
-        || plan.deadlineAt > parent.deadlineAt) return null;
+        || (grantLifetime === undefined
+          ? plan.deadlineAt > parent.deadlineAt
+          : accepted.acceptedAuthority?.subjectHumanId !== input.humanId
+            || plan.issuedAt < grantLifetime.issuedAt
+            || plan.deadlineAt > grantLifetime.deadlineAt)) return null;
       if (!equal(parent.agentSignerPublicKey, accepted.signerPublicKey)) {
         return null;
       }
