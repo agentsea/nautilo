@@ -1,5 +1,5 @@
 import {
-  actors, asc, createPostgresJsBridgeConnection, eq,
+  actors, and, asc, createPostgresJsBridgeConnection, eq,
   getSharedDirectCryptoDb, roomMembers, rooms,
   type DirectDatabase, type PostgresJsBridgeConnection,
 } from "@nautilo/db";
@@ -149,8 +149,12 @@ async function exactDestinationAgent(
       actorId: actors.id,
       agentId: actors.agentId,
     }).from(roomMembers).innerJoin(actors, eq(actors.id, roomMembers.actorId))
-      .where(eq(roomMembers.roomId, intent.destinationRoomId)).limit(64));
-  return rows.filter(row => row.agent_id === intent.agentId).length === 1;
+      .where(and(
+        eq(roomMembers.roomId, intent.destinationRoomId),
+        eq(actors.kind, "agent"),
+        eq(actors.agentId, intent.agentId),
+      )).limit(2));
+  return rows.length === 1 && rows[0]?.agent_id === intent.agentId;
 }
 
 function exactRequirements(

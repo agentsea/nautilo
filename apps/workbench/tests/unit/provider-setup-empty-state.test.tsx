@@ -53,4 +53,34 @@ describe("provider setup empty state", () => {
     expect(html).not.toContain("Open Server Guide");
     expect(html).not.toContain("server.example");
   });
+
+  test("personal missing-key guidance distinguishes server-funding permission", () => {
+    const community = renderToStaticMarkup(
+      <ProviderSetupEmptyState
+        canManageProviders={false}
+        canUseServerKeys={false}
+        personalState="missing-key"
+      />,
+    );
+    expect(community).toContain("account currently requires its own provider key");
+    expect(community).toContain("ask an administrator for server-funded access");
+    expect(community).toContain('href="/settings#personal-provider-keys"');
+    expect(community).not.toContain('href="/admin#provider-credentials"');
+
+    const serverFunded = renderToStaticMarkup(
+      <ProviderSetupEmptyState
+        canManageProviders={false}
+        canUseServerKeys
+        personalState="missing-key"
+      />,
+    );
+    expect(serverFunded).toContain("Add one of your provider keys in Settings");
+    expect(serverFunded).not.toContain("account currently requires its own provider key");
+
+    const unknown = renderToStaticMarkup(
+      <ProviderSetupEmptyState canManageProviders={false} personalState="missing-key" />,
+    );
+    expect(unknown).toContain("Add one of your provider keys in Settings");
+    expect(unknown).not.toContain("account currently requires its own provider key");
+  });
 });

@@ -1,6 +1,6 @@
 {
-  "id": "2fccba2d-5d7e-4797-a523-e353c1a70916",
-  "prevId": "f32d340b-cd6d-4320-96cd-d390ba5e8daa",
+  "id": "f32d340b-cd6d-4320-96cd-d390ba5e8daa",
+  "prevId": "edbeec46-09a6-44ec-adf5-237c26329109",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -3453,11 +3453,7 @@
           "name": "content_search",
           "type": "tsvector",
           "primaryKey": false,
-          "notNull": false,
-          "generated": {
-            "as": "to_tsvector('english', content)",
-            "type": "stored"
-          }
+          "notNull": false
         },
         "created_at": {
           "name": "created_at",
@@ -3694,6 +3690,22 @@
           ],
           "isUnique": false,
           "where": "\"session_messages\".\"reply_to_message_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_session_messages_search_overflow": {
+          "name": "idx_session_messages_search_overflow",
+          "columns": [
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"session_messages\".\"content_search\" IS NULL AND \"session_messages\".\"content\" IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -4079,12 +4091,6 @@
           "primaryKey": false,
           "notNull": false
         },
-        "task_wake_operation_id": {
-          "name": "task_wake_operation_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "shadow_transcript_ordinal": {
           "name": "shadow_transcript_ordinal",
           "type": "integer",
@@ -4360,28 +4366,6 @@
         }
       },
       "indexes": {
-        "uq_session_message_crypto_revisions_task_wake_ordinal": {
-          "name": "uq_session_message_crypto_revisions_task_wake_ordinal",
-          "columns": [
-            {
-              "expression": "task_wake_operation_id",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            },
-            {
-              "expression": "shadow_transcript_ordinal",
-              "isExpression": false,
-              "asc": true,
-              "nulls": "last"
-            }
-          ],
-          "isUnique": true,
-          "where": "\"session_message_crypto_revisions\".\"task_wake_operation_id\" is not null",
-          "concurrently": false,
-          "method": "btree",
-          "with": {}
-        },
         "uq_session_message_crypto_revisions_shadow_ordinal": {
           "name": "uq_session_message_crypto_revisions_shadow_ordinal",
           "columns": [
@@ -4717,11 +4701,7 @@
         },
         "session_message_crypto_revisions_object_id_scheme": {
           "name": "session_message_crypto_revisions_object_id_scheme",
-          "value": "(\n          \"session_message_crypto_revisions\".\"object_id_scheme\" = 'message_v2'\n          and \"session_message_crypto_revisions\".\"shadow_operation_id\" is null\n          and \"session_message_crypto_revisions\".\"human_peer_shadow_operation_id\" is null\n          and \"session_message_crypto_revisions\".\"shared_agent_shadow_operation_id\" is null\n          and \"session_message_crypto_revisions\".\"shared_agent_shadow_execution_id\" is null\n          and \"session_message_crypto_revisions\".\"task_wake_operation_id\" is null\n          and \"session_message_crypto_revisions\".\"shadow_transcript_ordinal\" is null\n          and \"session_message_crypto_revisions\".\"shadow_reserved_created_at\" is null\n          and \"session_message_crypto_revisions\".\"shadow_stream_id\" is null\n          and \"session_message_crypto_revisions\".\"shadow_stream_start_digest\" is null\n          and \"session_message_crypto_revisions\".\"shadow_stream_terminal_digest\" is null\n          and \"session_message_crypto_revisions\".\"shadow_streamed_text_digest\" is null\n          and \"session_message_crypto_revisions\".\"shadow_durable_event_digest\" is null\n        ) or (\n          \"session_message_crypto_revisions\".\"object_id_scheme\" = 'human_message_edit_v1'\n          and \"session_message_crypto_revisions\".\"task_wake_operation_id\" is null\n          and \"session_message_crypto_revisions\".\"author_role\" = 'user'\n          and \"session_message_crypto_revisions\".\"edit_revision\" > 0\n          and \"session_message_crypto_revisions\".\"crypto_object_id\" ~ '^message-edit:v1:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}:[0-9a-f]{64}$'\n          and (\n            (\"session_message_crypto_revisions\".\"shadow_operation_id\" is not null\n              and \"session_message_crypto_revisions\".\"human_peer_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_execution_id\" is null)\n            or (\"session_message_crypto_revisions\".\"shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"human_peer_shadow_operation_id\" is not null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_execution_id\" is null)\n            or (\"session_message_crypto_revisions\".\"shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"human_peer_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_operation_id\" is not null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_execution_id\" is null)\n          )\n        ) or (\n          \"session_message_crypto_revisions\".\"object_id_scheme\" = 'live_shadow_v1'\n          and (\n            (\"session_message_crypto_revisions\".\"task_wake_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shadow_operation_id\" is not null\n              and \"session_message_crypto_revisions\".\"human_peer_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_execution_id\" is null)\n            or (\"session_message_crypto_revisions\".\"task_wake_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"human_peer_shadow_operation_id\" is not null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_execution_id\" is null)\n            or (\"session_message_crypto_revisions\".\"task_wake_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"human_peer_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_operation_id\" is not null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_execution_id\" is null)\n            or (\"session_message_crypto_revisions\".\"task_wake_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"human_peer_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_execution_id\" is not null)\n            or (\"session_message_crypto_revisions\".\"task_wake_operation_id\" is not null\n              and \"session_message_crypto_revisions\".\"shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"human_peer_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_execution_id\" is null)\n          )\n          and \"session_message_crypto_revisions\".\"shadow_transcript_ordinal\" > 0\n          and \"session_message_crypto_revisions\".\"shadow_reserved_created_at\" is not null\n        )"
-        },
-        "session_message_crypto_revisions_task_wake_shape": {
-          "name": "session_message_crypto_revisions_task_wake_shape",
-          "value": "\"session_message_crypto_revisions\".\"task_wake_operation_id\" is null or (\n          \"session_message_crypto_revisions\".\"object_id_scheme\" = 'live_shadow_v1'\n          and \"session_message_crypto_revisions\".\"key_class\" = 'ai'\n          and \"session_message_crypto_revisions\".\"author_role\" in ('assistant', 'tool')\n          and \"session_message_crypto_revisions\".\"edit_revision\" = 0\n          and \"session_message_crypto_revisions\".\"shadow_transcript_ordinal\" is not null\n          and \"session_message_crypto_revisions\".\"shadow_transcript_ordinal\" >= 2\n          and \"session_message_crypto_revisions\".\"task_wake_operation_id\" ~ '^task-run-delivery-wake:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'\n        )"
+          "value": "(\n          \"session_message_crypto_revisions\".\"object_id_scheme\" = 'message_v2'\n          and \"session_message_crypto_revisions\".\"shadow_operation_id\" is null\n          and \"session_message_crypto_revisions\".\"human_peer_shadow_operation_id\" is null\n          and \"session_message_crypto_revisions\".\"shared_agent_shadow_operation_id\" is null\n          and \"session_message_crypto_revisions\".\"shared_agent_shadow_execution_id\" is null\n          and \"session_message_crypto_revisions\".\"shadow_transcript_ordinal\" is null\n          and \"session_message_crypto_revisions\".\"shadow_reserved_created_at\" is null\n          and \"session_message_crypto_revisions\".\"shadow_stream_id\" is null\n          and \"session_message_crypto_revisions\".\"shadow_stream_start_digest\" is null\n          and \"session_message_crypto_revisions\".\"shadow_stream_terminal_digest\" is null\n          and \"session_message_crypto_revisions\".\"shadow_streamed_text_digest\" is null\n          and \"session_message_crypto_revisions\".\"shadow_durable_event_digest\" is null\n        ) or (\n          \"session_message_crypto_revisions\".\"object_id_scheme\" = 'human_message_edit_v1'\n          and \"session_message_crypto_revisions\".\"author_role\" = 'user'\n          and \"session_message_crypto_revisions\".\"edit_revision\" > 0\n          and \"session_message_crypto_revisions\".\"crypto_object_id\" ~ '^message-edit:v1:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}:[0-9a-f]{64}$'\n          and (\n            (\"session_message_crypto_revisions\".\"shadow_operation_id\" is not null\n              and \"session_message_crypto_revisions\".\"human_peer_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_execution_id\" is null)\n            or (\"session_message_crypto_revisions\".\"shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"human_peer_shadow_operation_id\" is not null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_execution_id\" is null)\n            or (\"session_message_crypto_revisions\".\"shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"human_peer_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_operation_id\" is not null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_execution_id\" is null)\n          )\n        ) or (\n          \"session_message_crypto_revisions\".\"object_id_scheme\" = 'live_shadow_v1'\n          and (\n            (\"session_message_crypto_revisions\".\"shadow_operation_id\" is not null\n              and \"session_message_crypto_revisions\".\"human_peer_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_execution_id\" is null)\n            or (\"session_message_crypto_revisions\".\"shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"human_peer_shadow_operation_id\" is not null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_execution_id\" is null)\n            or (\"session_message_crypto_revisions\".\"shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"human_peer_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_operation_id\" is not null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_execution_id\" is null)\n            or (\"session_message_crypto_revisions\".\"shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"human_peer_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_operation_id\" is null\n              and \"session_message_crypto_revisions\".\"shared_agent_shadow_execution_id\" is not null)\n          )\n          and \"session_message_crypto_revisions\".\"shadow_transcript_ordinal\" > 0\n          and \"session_message_crypto_revisions\".\"shadow_reserved_created_at\" is not null\n        )"
         },
         "session_message_crypto_revisions_human_peer_shape": {
           "name": "session_message_crypto_revisions_human_peer_shape",

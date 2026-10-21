@@ -53,6 +53,7 @@ import {
   serializeTranscriptToolCalls,
 } from "./transcript-tool-arguments";
 import { durableComputerResultText } from "../tools/computer/model-result-projector";
+import { messageSearchPredicate, sessionSearchContent } from "./message-search-predicate";
 
 /**
  * Scoped subagents use dedicated LangGraph `thread_id` values
@@ -483,6 +484,23 @@ export interface CurrentOrdinaryTranscriptExposureRow {
   readonly content: string;
   readonly metadata: unknown;
   readonly namespaceId: string;
+}
+
+/** Resolve a current execution's saved tool call without creating a second output store. */
+export async function readExecutionToolResult(input: {
+  ownerId: string; agentId: string; graphThreadId: string; callId: string;
+}): Promise<{ content: string; toolName: string | null } | null> {
+  if (!input.ownerId || !input.agentId || !input.graphThreadId || !input.callId) return null;
+  return withSerializableAgentTrustContext({ userId: input.ownerId, agentId: input.agentId }, async (tx) => {
+    const rows = await tx.select({ content: sessionMessages.content, toolName: sessionMessages.toolName })
+      .from(sessionMessages).innerJoin(sessions, eq(sessions.id, sessionMessages.sessionId))
+      .where(and(eq(sessions.ownerId, input.ownerId), eq(sessions.agentId, input.agentId),
+        eq(sessions.threadId, input.graphThreadId), eq(sessionMessages.role, "tool"),
+        sql`${sessionMessages.metadata}->'nautilo_tool_result'->>'toolCallId' = ${input.callId}`))
+      .limit(2); // Two rows suffice to reject an ambiguous call identity.
+    if (rows.length !== 1 || rows[0]!.content === null) return null;
+    return { content: rows[0]!.content, toolName: rows[0]!.toolName };
+  });
 }
 
 export function projectCurrentOrdinaryTranscriptExposureRows(
@@ -1439,11 +1457,13 @@ export interface SessionSearchResult {
   startedAt: Date;
   snippets: string[];
   summary: string;
+  /** Coordinates for complete messages represented only by partial excerpts. */
+  excerptSources?: { roomId: string | null; messageId: number }[];
 }
 
 type SessionSearchSummarySource = readonly [
   sessionId: string,
-  data: { title: string | null; startedAt: Date; snippets: readonly string[] },
+  data: { title: string | null; startedAt: Date; snippets: readonly string[]; excerptSources?: SessionSearchResult["excerptSources"] },
 ];
 
 export async function summarizeSessionSearchSources(
@@ -1481,6 +1501,7 @@ export async function summarizeSessionSearchSources(
       startedAt: data.startedAt,
       snippets: [...data.snippets],
       summary,
+      ...(data.excerptSources?.length ? { excerptSources: data.excerptSources } : {}),
     };
   }));
 }
@@ -1504,35 +1525,43 @@ export async function searchSessions(opts: {
       title: string | null;
       started_at: string;
       content: string;
+      message_id: number;
+      room_id: string | null;
+      overflow: boolean;
     }>(sql`
       SELECT
         s.id as session_id,
         s.title,
         s.started_at,
-        sm.content
+        ${sessionSearchContent(query)} AS content,
+        sm.id AS message_id,
+        s.room_id,
+        sm.content_search IS NULL AS overflow
       FROM session_messages sm
       INNER JOIN sessions s ON s.id = sm.session_id
       WHERE s.owner_id = ${ownerId}
         AND s.persona_id = ${personaId}
         AND s.thread_id NOT LIKE 'subagent:%'
         AND (${excludeThreadId ?? ""} = '' OR s.thread_id <> ${excludeThreadId ?? ""})
-        AND sm.content_search @@ plainto_tsquery('english', ${query})
+        AND ${messageSearchPredicate(sql`plainto_tsquery('english', ${query})`, query, "whole")}
       ORDER BY s.started_at DESC, sm.created_at DESC
       LIMIT ${limit * 8}
     `);
 
-    const map = new Map<string, { title: string | null; startedAt: Date; snippets: string[] }>();
+    const map = new Map<string, { title: string | null; startedAt: Date; snippets: string[]; excerptSources: NonNullable<SessionSearchResult["excerptSources"]> }>();
     for (const row of rows) {
       if (!map.has(row.session_id)) {
         map.set(row.session_id, {
           title: row.title,
           startedAt: new Date(row.started_at),
           snippets: [],
+          excerptSources: [],
         });
       }
       const entry = map.get(row.session_id)!;
       if (entry.snippets.length < 4) {
         entry.snippets.push(row.content);
+        if (row.overflow) entry.excerptSources.push({ roomId: row.room_id, messageId: Number(row.message_id) });
       }
     }
     return map;

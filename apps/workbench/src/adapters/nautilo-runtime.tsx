@@ -1,4 +1,4 @@
-import { workspaceAttachmentsForSend } from "../lib/composer-pdf-upload";
+import { workspaceAttachmentsForSend } from "../lib/composer-document-upload";
 import { CompanionVoiceContext } from "../companion/companion-voice";
 import {
   useState,
@@ -7535,7 +7535,7 @@ export function NautiloRuntimeProvider({
         for (const attachment of queuedAttachments) {
           if (attachment.workspaceArtifact && attachment.workspaceArtifact.roomId !== roomIdForSend) {
             updateAttachment(attachment.id, { status: "error",
-              errorReason: "This PDF belongs to another room. Remove it here and attach it in the intended room." });
+              errorReason: "This document belongs to another room. Remove it here and attach it in the intended room." });
           }
         }
         return false;

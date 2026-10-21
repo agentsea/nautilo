@@ -1,6 +1,6 @@
 {
-  "id": "56105ab7-b0db-463c-8c6e-bb1e515d4bf2",
-  "prevId": "2088f4ce-31ac-494f-a489-0a6d6e3b7fcf",
+  "id": "2088f4ce-31ac-494f-a489-0a6d6e3b7fcf",
+  "prevId": "0251be5f-067e-4010-942c-3bdf9e1c964c",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -3453,11 +3453,7 @@
           "name": "content_search",
           "type": "tsvector",
           "primaryKey": false,
-          "notNull": false,
-          "generated": {
-            "as": "to_tsvector('english', content)",
-            "type": "stored"
-          }
+          "notNull": false
         },
         "created_at": {
           "name": "created_at",
@@ -3694,6 +3690,22 @@
           ],
           "isUnique": false,
           "where": "\"session_messages\".\"reply_to_message_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_session_messages_search_overflow": {
+          "name": "idx_session_messages_search_overflow",
+          "columns": [
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"session_messages\".\"content_search\" IS NULL AND \"session_messages\".\"content\" IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -46801,161 +46813,6 @@
         }
       },
       "isRLSEnabled": false
-    },
-    "public.task_cancellation_crypto_staging_receipts": {
-      "name": "task_cancellation_crypto_staging_receipts",
-      "schema": "",
-      "columns": {
-        "request_id": {
-          "name": "request_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "recipient_generation": {
-          "name": "recipient_generation",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "claim_id": {
-          "name": "claim_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "authorization_digest": {
-          "name": "authorization_digest",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "stopped_intent_hash": {
-          "name": "stopped_intent_hash",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "policy_revision": {
-          "name": "policy_revision",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "authority_fingerprint": {
-          "name": "authority_fingerprint",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "crypto_object_id": {
-          "name": "crypto_object_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "genesis_manifest_hash": {
-          "name": "genesis_manifest_hash",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "staged_at": {
-          "name": "staged_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "task_cancel_staging_object_fk": {
-          "name": "task_cancel_staging_object_fk",
-          "tableFrom": "task_cancellation_crypto_staging_receipts",
-          "tableTo": "crypto_objects",
-          "columnsFrom": [
-            "crypto_object_id"
-          ],
-          "columnsTo": [
-            "object_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "uq_task_cancel_staging_object": {
-          "name": "uq_task_cancel_staging_object",
-          "nullsNotDistinct": false,
-          "columns": [
-            "crypto_object_id"
-          ]
-        }
-      },
-      "policies": {
-        "task_cancel_staging_crypto_sel": {
-          "name": "task_cancel_staging_crypto_sel",
-          "as": "PERMISSIVE",
-          "for": "SELECT",
-          "to": [
-            "nautilo_crypto"
-          ],
-          "using": "true"
-        },
-        "task_cancel_staging_crypto_ins": {
-          "name": "task_cancel_staging_crypto_ins",
-          "as": "PERMISSIVE",
-          "for": "INSERT",
-          "to": [
-            "nautilo_crypto"
-          ],
-          "withCheck": "true"
-        }
-      },
-      "checkConstraints": {
-        "task_cancel_staging_request_id_portable": {
-          "name": "task_cancel_staging_request_id_portable",
-          "value": "octet_length(\"task_cancellation_crypto_staging_receipts\".\"request_id\") between 1\n      and 128\n      and \"task_cancellation_crypto_staging_receipts\".\"request_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'"
-        },
-        "task_cancel_staging_generation_safe": {
-          "name": "task_cancel_staging_generation_safe",
-          "value": "\"task_cancellation_crypto_staging_receipts\".\"recipient_generation\" between 0 and 9007199254740991"
-        },
-        "task_cancel_staging_claim_id_portable": {
-          "name": "task_cancel_staging_claim_id_portable",
-          "value": "octet_length(\"task_cancellation_crypto_staging_receipts\".\"claim_id\") between 1\n      and 128\n      and \"task_cancellation_crypto_staging_receipts\".\"claim_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'"
-        },
-        "task_cancel_staging_authorization_digest_size": {
-          "name": "task_cancel_staging_authorization_digest_size",
-          "value": "octet_length(\"task_cancellation_crypto_staging_receipts\".\"authorization_digest\") = 32"
-        },
-        "task_cancel_staging_stopped_intent_hash_size": {
-          "name": "task_cancel_staging_stopped_intent_hash_size",
-          "value": "octet_length(\"task_cancellation_crypto_staging_receipts\".\"stopped_intent_hash\") = 32"
-        },
-        "task_cancel_staging_policy_revision_positive": {
-          "name": "task_cancel_staging_policy_revision_positive",
-          "value": "\"task_cancellation_crypto_staging_receipts\".\"policy_revision\" >= 1"
-        },
-        "task_cancel_staging_authority_fingerprint_size": {
-          "name": "task_cancel_staging_authority_fingerprint_size",
-          "value": "octet_length(\"task_cancellation_crypto_staging_receipts\".\"authority_fingerprint\") = 32"
-        },
-        "task_cancel_staging_object_id_portable": {
-          "name": "task_cancel_staging_object_id_portable",
-          "value": "octet_length(\"task_cancellation_crypto_staging_receipts\".\"crypto_object_id\") between 1\n      and 128\n      and \"task_cancellation_crypto_staging_receipts\".\"crypto_object_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'"
-        },
-        "task_cancel_staging_object_shape": {
-          "name": "task_cancel_staging_object_shape",
-          "value": "\"task_cancellation_crypto_staging_receipts\".\"crypto_object_id\" ~ '^task-run-result:v1:[0-9a-f]{64}$'"
-        },
-        "task_cancel_staging_genesis_manifest_hash_size": {
-          "name": "task_cancel_staging_genesis_manifest_hash_size",
-          "value": "octet_length(\"task_cancellation_crypto_staging_receipts\".\"genesis_manifest_hash\") = 32"
-        }
-      },
-      "isRLSEnabled": true
     }
   },
   "enums": {

@@ -1,6 +1,6 @@
 {
-  "id": "b7fcbfef-e86e-4d8d-8264-4c8abfa35609",
-  "prevId": "b5cf9b63-78e2-4d27-8cc4-e847d66f0668",
+  "id": "b5cf9b63-78e2-4d27-8cc4-e847d66f0668",
+  "prevId": "ce95df84-20e4-4e47-a0e2-29f21110cdd2",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -3453,11 +3453,7 @@
           "name": "content_search",
           "type": "tsvector",
           "primaryKey": false,
-          "notNull": false,
-          "generated": {
-            "as": "to_tsvector('english', content)",
-            "type": "stored"
-          }
+          "notNull": false
         },
         "created_at": {
           "name": "created_at",
@@ -3694,6 +3690,22 @@
           ],
           "isUnique": false,
           "where": "\"session_messages\".\"reply_to_message_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_session_messages_search_overflow": {
+          "name": "idx_session_messages_search_overflow",
+          "columns": [
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"session_messages\".\"content_search\" IS NULL AND \"session_messages\".\"content\" IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -29769,11 +29781,11 @@
         },
         "background_crypto_authorization_requests_terminal_reason": {
           "name": "background_crypto_authorization_requests_terminal_reason",
-          "value": "\"background_crypto_authorization_requests\".\"terminal_reason\" is null or \"background_crypto_authorization_requests\".\"terminal_reason\" in (\n        'malformed_request',\n        'integrity_failure',\n        'provider_outcome_unknown',\n        'policy_rejected',\n        'unsupported_subject',\n        'retry_limit_exhausted',\n        'recipient_generation_exhausted',\n        'cancelled',\n        'superseded'\n      )"
+          "value": "\"background_crypto_authorization_requests\".\"terminal_reason\" is null or \"background_crypto_authorization_requests\".\"terminal_reason\" in (\n        'malformed_request',\n        'integrity_failure',\n        'policy_rejected',\n        'unsupported_subject',\n        'retry_limit_exhausted',\n        'recipient_generation_exhausted',\n        'cancelled',\n        'superseded'\n      )"
         },
         "background_crypto_authorization_requests_terminal_coherent": {
           "name": "background_crypto_authorization_requests_terminal_coherent",
-          "value": "(\n        \"background_crypto_authorization_requests\".\"state\" = 'cancelled'\n        and \"background_crypto_authorization_requests\".\"terminal_reason\" in ('cancelled', 'superseded')\n        and \"background_crypto_authorization_requests\".\"finished_at\" is not null\n      ) or (\n        \"background_crypto_authorization_requests\".\"state\" = 'terminal_failure'\n        and \"background_crypto_authorization_requests\".\"terminal_reason\" in (\n          'malformed_request',\n          'integrity_failure',\n        'provider_outcome_unknown',\n          'policy_rejected',\n          'unsupported_subject',\n          'retry_limit_exhausted',\n          'recipient_generation_exhausted'\n        )\n        and \"background_crypto_authorization_requests\".\"finished_at\" is not null\n      ) or (\n        \"background_crypto_authorization_requests\".\"state\" = 'completed'\n        and \"background_crypto_authorization_requests\".\"terminal_reason\" is null\n        and \"background_crypto_authorization_requests\".\"finished_at\" is not null\n      ) or (\n        \"background_crypto_authorization_requests\".\"state\" not in (\n          'completed',\n          'cancelled',\n          'terminal_failure'\n        )\n        and \"background_crypto_authorization_requests\".\"terminal_reason\" is null\n        and \"background_crypto_authorization_requests\".\"finished_at\" is null\n      )"
+          "value": "(\n        \"background_crypto_authorization_requests\".\"state\" = 'cancelled'\n        and \"background_crypto_authorization_requests\".\"terminal_reason\" in ('cancelled', 'superseded')\n        and \"background_crypto_authorization_requests\".\"finished_at\" is not null\n      ) or (\n        \"background_crypto_authorization_requests\".\"state\" = 'terminal_failure'\n        and \"background_crypto_authorization_requests\".\"terminal_reason\" in (\n          'malformed_request',\n          'integrity_failure',\n          'policy_rejected',\n          'unsupported_subject',\n          'retry_limit_exhausted',\n          'recipient_generation_exhausted'\n        )\n        and \"background_crypto_authorization_requests\".\"finished_at\" is not null\n      ) or (\n        \"background_crypto_authorization_requests\".\"state\" = 'completed'\n        and \"background_crypto_authorization_requests\".\"terminal_reason\" is null\n        and \"background_crypto_authorization_requests\".\"finished_at\" is not null\n      ) or (\n        \"background_crypto_authorization_requests\".\"state\" not in (\n          'completed',\n          'cancelled',\n          'terminal_failure'\n        )\n        and \"background_crypto_authorization_requests\".\"terminal_reason\" is null\n        and \"background_crypto_authorization_requests\".\"finished_at\" is null\n      )"
         },
         "background_crypto_authorization_requests_time_order": {
           "name": "background_crypto_authorization_requests_time_order",

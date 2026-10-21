@@ -1,4 +1,5 @@
 import { getCurrentProtectedTaskProjectFilePort, matchesProtectedTaskProjectFilePort } from "../runtime/protected-task-project-file";
+import { withResultReader } from "./result-reader/result-projection";
 import { RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION } from "@nautilo/relay";
 import { isExternalRoomState, EXTERNAL_ROOM_TOOL_DENIAL } from "./external-room-policy";
 import { RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION } from "@nautilo/relay";
@@ -1303,10 +1304,12 @@ export function createNautiloToolInvocationSession(
           // model never needs to copy a long opaque cursor. Parallel reads
           // share the complete prepared request's remaining page workspace.
           taskReadMessages: state.messages,
+          resultReaderThreadId: state.langgraphThreadId || state.currentThreadId,
+          fullEncryptionOnly,
           taskReadPendingPages: state.taskReadPendingPages ?? [],
           taskReadMaxResponseBytes: state.taskReadPageBytes == null ? undefined : Math.floor(state.taskReadPageBytes / Math.max(1,
             [...state.messages].reverse().find((message) => AIMessage.isInstance(message))?.tool_calls?.filter((call) =>
-              call.name === "task" && call.args["command"] === "read").length ?? 0)),
+              call.name === "read_tool_result" || call.name === "task" && call.args["command"] === "read").length ?? 0)),
           relayCapabilities: state.relayCapabilities,
           // Focused-resource consumers such as ask_peer need the authoritative
           // per-turn manifest, not just the apply_patch router derived from it.
@@ -1314,7 +1317,7 @@ export function createNautiloToolInvocationSession(
           connectedAppProviderIds: state.connectedAppProviderIds ?? [],
           verifiedOrdinaryOrigin: state.verifiedOrdinaryOrigin,
           taskReportBackContinuation: state.taskReportBackContinuation,
-          toolWhitelist: state.toolWhitelist,
+          toolWhitelist: withResultReader(state.toolWhitelist),
           engagedSkills,
           activatedTools,
           activatedToolNames: activatedTools.snapshotNames(),
@@ -1365,7 +1368,7 @@ export function createNautiloToolInvocationSession(
         relayCapabilities: state.relayCapabilities ?? undefined,
         readableNamespaces: envelopeReadableNamespaces(state.memoryAccessEnvelope),
         activeModelCapabilities,
-        toolNameWhitelist: state.toolWhitelist,
+        toolNameWhitelist: withResultReader(state.toolWhitelist),
         activatedToolNames: activatedTools.snapshotNames(),
         fullEncryptionOnly,
       },
@@ -1506,7 +1509,7 @@ export function createNautiloToolInvocationSession(
               relayCapabilities: state.relayCapabilities ?? undefined,
               readableNamespaces: envelopeReadableNamespaces(state.memoryAccessEnvelope),
               activeModelCapabilities,
-              toolNameWhitelist: state.toolWhitelist,
+              toolNameWhitelist: withResultReader(state.toolWhitelist),
               activatedToolNames: runtimeConfig.nautilo_tool_exposure_mode === "progressive"
                 ? activatedTools.snapshotNames()
                 : [...activatedTools.snapshotNames(), tc.name],
@@ -2138,6 +2141,7 @@ export function createNautiloToolInvocationSession(
         // "success" because the read handler never calls
         // `fileToolError` on the success-content path.
         let taskReadError = false;
+        let resultReadError = false;
         let connectedBrowserError = false;
         let connectedBrowserFailure: string | undefined;
         if (tc.name === "control_connected_web_operation") {
@@ -2152,7 +2156,13 @@ export function createNautiloToolInvocationSession(
         if (tc.name === "task" && tc.args["command"] === "read") {
           try { taskReadError = isTaskReadErrorReceipt(JSON.parse(rawContent)); } catch { /* Not a typed Task read receipt. */ }
         }
-        if (fileStatus === "error" || projectionError !== null || relayToolError !== null || taskReadError || connectedBrowserError || ordinaryContentAccessErrors.has(toolCallId)) {
+        if (tc.name === "read_tool_result") {
+          try {
+            const receipt: unknown = JSON.parse(rawContent);
+            resultReadError = typeof receipt === "object" && receipt !== null && "kind" in receipt && receipt.kind === "error";
+          } catch { resultReadError = true; }
+        }
+        if (fileStatus === "error" || resultReadError || projectionError !== null || relayToolError !== null || taskReadError || connectedBrowserError || ordinaryContentAccessErrors.has(toolCallId)) {
           if (publishToolTelemetry) {
             emitAgentEvent(
               toolTracker.toolEnd(

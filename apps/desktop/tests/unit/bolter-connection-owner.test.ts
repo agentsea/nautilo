@@ -515,3 +515,46 @@ test("ignored events alone do not establish listening while a mixed connected ba
     await f.owner.retire(); await rm(path, { recursive: true, force: true });
   }
 });
+
+test("selected files use chat-scoped provider storage and one final send, with reauthorization before every dispatch", async () => {
+  const { createHash } = await import("node:crypto");
+  const body = Buffer.from("\ufeffSynthetic file\n");
+  for (const [filename, storageName] of [["brief.txt", "brief.txt"], ["Saturday résumé.txt", "Saturday-resume.txt"], ["行程.txt", "attachment.txt"]] as const) {
+    const file = { id: "10000000-0000-4000-8000-000000000001", filename, mimeType: "text/plain", sizeBytes: body.length,
+      sha256: createHash("sha256").update(body).digest("hex"), base64: body.toString("base64") };
+    for (const denyAfterUpload of [false, true]) {
+      const calls: BolterCliInvocation[] = [];
+      const owner = new BolterConnectionOwner({ scope, runtime, selection, qualification,
+        decoders: { ...decoders, fileCreated: raw => raw as { url: string } },
+        isCurrent: () => true, isBound: () => true, attest: async () => true,
+        spawn: plan => {
+          calls.push(plan); const child = fake();
+          queueMicrotask(() => {
+            child.value.stdout.write(JSON.stringify(plan.args[0] === "me" ? selection : plan.args[1] === "files_create_file"
+              ? { url: "https://bolter.chat/files/synthetic/brief.txt" } : { ...destination, messageId: "synthetic-reply" }));
+            child.finish();
+          }); return child.process;
+        },
+      });
+      try {
+        await owner.confirmIdentity();
+        const prepared = await owner.prepareSend();
+        let checks = 0;
+        const result = await prepared!.send(destination, "Synthetic message", [file], async () => ++checks !== 2 || !denyAfterUpload);
+        const uploads = calls.filter(call => call.args[1] === "files_create_file");
+        const sends = calls.filter(call => call.args[1] === "bolter_send_message");
+        expect(uploads).toHaveLength(1); expect(checks).toBe(2);
+        const upload = JSON.parse(uploads[0]!.stdin) as Record<string, string>;
+        expect(upload).toEqual({ path: `/nautilo/${file.id}/${storageName}`, mime_type: "text/plain", content: body.toString("utf8") });
+        expect(uploads[0]!.args.slice(-2)).toEqual(["--chat", destination.chatId]);
+        expect(uploads[0]!.args.join(" ")).not.toContain("Synthetic file");
+        expect(sends).toHaveLength(denyAfterUpload ? 0 : 1);
+        if (denyAfterUpload) expect(result.status).toBe("uncertain");
+        else {
+          expect(result.status).toBe("sent");
+          expect(JSON.parse(sends[0]!.stdin)).toEqual({ content: `Synthetic message\n\n- [${file.filename}](<https://bolter.chat/files/synthetic/brief.txt>)` });
+        }
+      } finally { await owner.retire(); }
+    }
+  }
+});

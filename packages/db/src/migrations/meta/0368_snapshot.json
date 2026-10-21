@@ -1,6 +1,6 @@
 {
-  "id": "b7910b78-76f7-4635-a496-30fd22d09a4e",
-  "prevId": "b7fcbfef-e86e-4d8d-8264-4c8abfa35609",
+  "id": "b7fcbfef-e86e-4d8d-8264-4c8abfa35609",
+  "prevId": "b5cf9b63-78e2-4d27-8cc4-e847d66f0668",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -3453,11 +3453,7 @@
           "name": "content_search",
           "type": "tsvector",
           "primaryKey": false,
-          "notNull": false,
-          "generated": {
-            "as": "to_tsvector('english', content)",
-            "type": "stored"
-          }
+          "notNull": false
         },
         "created_at": {
           "name": "created_at",
@@ -3694,6 +3690,22 @@
           ],
           "isUnique": false,
           "where": "\"session_messages\".\"reply_to_message_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_session_messages_search_overflow": {
+          "name": "idx_session_messages_search_overflow",
+          "columns": [
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"session_messages\".\"content_search\" IS NULL AND \"session_messages\".\"content\" IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -46991,12 +47003,6 @@
           "primaryKey": false,
           "notNull": true
         },
-        "raw_result_message_intent": {
-          "name": "raw_result_message_intent",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": false
-        },
         "accepted_policy_revision": {
           "name": "accepted_policy_revision",
           "type": "bigint",
@@ -47100,10 +47106,6 @@
         "task_terminal_message_staging_delivery_intent_hash_size": {
           "name": "task_terminal_message_staging_delivery_intent_hash_size",
           "value": "octet_length(\"task_terminal_message_crypto_staging_receipts\".\"delivery_intent_hash\") = 32"
-        },
-        "task_terminal_message_staging_raw_intent_object": {
-          "name": "task_terminal_message_staging_raw_intent_object",
-          "value": "\"task_terminal_message_crypto_staging_receipts\".\"raw_result_message_intent\" is null or jsonb_typeof(\"task_terminal_message_crypto_staging_receipts\".\"raw_result_message_intent\") = 'object'"
         },
         "task_terminal_message_staging_policy_revision_positive": {
           "name": "task_terminal_message_staging_policy_revision_positive",

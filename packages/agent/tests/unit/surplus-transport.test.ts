@@ -316,6 +316,52 @@ describe("Surplus wire boundary", () => {
     expect(requestBody).not.toHaveProperty("venice_parameters");
   });
 
+  test("same-model unpinned requests omit only the provider pin", async () => {
+    const route = {
+      ...VENICE_ROUTE,
+      catalogModelId: "openai:gpt-5.5",
+      providerPin: "openai" as const,
+    };
+    let requestBody: Record<string, unknown> | undefined;
+    const model = createSurplusChatModel({
+      route,
+      apiKey: "test-key",
+      providerMode: "any",
+      maxOutputTokens: 100,
+      onResponse: (receipt, status) => {
+        assertSuccessfulSurplusProviderReceipt(route, receipt, status, "any");
+      },
+      fetchImpl: (async (request: string | URL | Request, init?: RequestInit) => {
+        const rawBody = init?.body ?? (request instanceof Request ? await request.clone().text() : undefined);
+        requestBody = typeof rawBody === "string" ? JSON.parse(rawBody) as Record<string, unknown> : undefined;
+        const chunk = {
+          id: "chatcmpl-surplus-any",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: route.surplusModelId,
+          choices: [{ index: 0, delta: { role: "assistant", content: "OK" }, finish_reason: "stop" }],
+        };
+        return new Response(`data: ${JSON.stringify(chunk)}\n\ndata: [DONE]\n\n`, {
+          headers: {
+            "content-type": "text/event-stream",
+            "x-request-id": "request-any",
+            "x-si-provider-family": "alternate-provider",
+          },
+        });
+      }) as typeof fetch,
+    });
+
+    expect((await model.invoke([new HumanMessage("Reply OK")]) as AIMessage).content).toBe("OK");
+    expect(requestBody?.["model"]).toBe(route.surplusModelId);
+    expect(requestBody).not.toHaveProperty("provider");
+    expect(() => assertSuccessfulSurplusProviderReceipt(
+      route,
+      { truncated: false },
+      200,
+      "any",
+    )).toThrow(SurplusProviderRouteMismatchError);
+  });
+
   test("OpenRouter repeated terminal usage preserves one finish signal and actual charge", async () => {
     const route = QUALIFIED_OPENROUTER_ROUTE;
     const frames = [
@@ -487,6 +533,12 @@ describe("Surplus wire boundary", () => {
       VENICE_ROUTE,
       { truncated: false },
       404,
+    )).not.toThrow();
+    expect(() => assertSuccessfulSurplusProviderReceipt(
+      VENICE_ROUTE,
+      { providerFamily: "alternate-provider", truncated: false },
+      200,
+      "any",
     )).not.toThrow();
   });
 

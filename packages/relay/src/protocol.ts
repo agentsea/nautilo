@@ -169,9 +169,10 @@ import type {
  * from shadowing a built-in dispatch lane.
  */
 // v20 adds owner-private Claude permission detail; never sent to older peers.
-/** v30 also adds the finite owned Bolter adapter lane. */
-// v31 forwards SDK-observed Claude root-message boundaries.
-export const RELAY_PROTOCOL_VERSION = 31;
+/** v30 adds the owned Bolter lane. */
+// v31 adds selected-file publication revalidation.
+// v32 forwards SDK-observed Claude root-message boundaries.
+export const RELAY_PROTOCOL_VERSION = 32;
 /** Typed local-file may borrow only the exact captured Task project grant. */
 export const RELAY_TASK_PROJECT_FILE_PROTOCOL_VERSION = 30;
 /** Minimum admission contract after retiring legacy Agent shell execution. */

@@ -30,7 +30,7 @@ const REQUEST = `task-run-authorization:${RUN}`;
 const bytes = (fill: number) => new Uint8Array(32).fill(fill);
 const selection = { profileRef: "profile-1", catalogModelId: "claude-sonnet", selectedModel: "claude-sonnet-4" };
 const scope = { relayId: "relay-1", relaySessionId: "socket-1", desktopSessionId: "desktop-1",
-  pairingGenerationRef: "pairing-1", selectedProtocolVersion: 31, capabilityRevision: 3 };
+  pairingGenerationRef: "pairing-1", selectedProtocolVersion: 32, capabilityRevision: 3 };
 const attribution = { taskId:TASK,bindingId:RUN,bindingGeneration:JOB,roomId:ROOM,
   vendorSessionId:"provider-session",vendorTurnId:"provider-turn",vendorItemId:"provider-item" };
 const candidate: HarnessExecutionOutput = {kind:"assistant_completed",attribution,text:"protected answer"};
@@ -258,7 +258,7 @@ describe("protected Claude execution", () => {
 
   test("requires final-message boundary capability before definition disclosure", async () => {
     const f = await fixture();
-    f.control.admission = { ...selection, scope: { ...scope, selectedProtocolVersion: 30 } };
+    f.control.admission = { ...selection, scope: { ...scope, selectedProtocolVersion: 31 } };
     await withPrepared(f, async ({ prepared, grant }) => {
       await Promise.resolve(expect(prepared.openTransientInput(grant)).rejects.toBeInstanceOf(ProtectedTaskExecutionDidNotBeginError));
       expect(f.calls).not.toContain("definition");

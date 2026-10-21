@@ -1,10 +1,11 @@
 /**
- * MIME sniffing for multimodal file reads (D069). Used when `file` command
+ * MIME sniffing for multimodal file reads. Used when `file` command
  * reads workspace paths that are images or PDFs — extension-first, then
  * magic-byte fallback (OpenCode-style).
  */
 
 import * as path from "node:path";
+import { DOCUMENT_MIME_TYPES } from "./policy";
 
 const IMAGE_MIMES_FOR_MODEL_INPUT = new Set([
   "image/png",
@@ -19,7 +20,6 @@ const EXT_TO_MIME: Readonly<Record<string, string>> = {
   ".jpeg": "image/jpeg",
   ".gif": "image/gif",
   ".webp": "image/webp",
-  ".pdf": "application/pdf",
   ".txt": "text/plain",
   ".md": "text/markdown",
   ".json": "application/json",
@@ -32,12 +32,7 @@ const EXT_TO_MIME: Readonly<Record<string, string>> = {
   ".csv": "text/csv",
   ".xml": "application/xml",
   ".zip": "application/zip",
-  ".docx":
-    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  ".xlsx":
-    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  ".pptx":
-    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  ...DOCUMENT_MIME_TYPES,
 };
 
 export function isImageMimeForModelInput(mime: string): boolean {

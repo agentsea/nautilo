@@ -1,6 +1,6 @@
 {
-  "id": "79fd432f-829e-4446-91f9-2e20a75f0a8c",
-  "prevId": "1c285e0c-e0bb-4358-b54f-ca8beb788e61",
+  "id": "1c285e0c-e0bb-4358-b54f-ca8beb788e61",
+  "prevId": "2fccba2d-5d7e-4797-a523-e353c1a70916",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -3453,11 +3453,7 @@
           "name": "content_search",
           "type": "tsvector",
           "primaryKey": false,
-          "notNull": false,
-          "generated": {
-            "as": "to_tsvector('english', content)",
-            "type": "stored"
-          }
+          "notNull": false
         },
         "created_at": {
           "name": "created_at",
@@ -3694,6 +3690,22 @@
           ],
           "isUnique": false,
           "where": "\"session_messages\".\"reply_to_message_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_session_messages_search_overflow": {
+          "name": "idx_session_messages_search_overflow",
+          "columns": [
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"session_messages\".\"content_search\" IS NULL AND \"session_messages\".\"content\" IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -47619,344 +47631,6 @@
         "task_historical_staging_genesis_manifest_hash_size": {
           "name": "task_historical_staging_genesis_manifest_hash_size",
           "value": "octet_length(\"task_historical_content_crypto_staging_receipts\".\"genesis_manifest_hash\") = 32"
-        }
-      },
-      "isRLSEnabled": true
-    },
-    "public.protected_task_wake_continuation_receipts": {
-      "name": "protected_task_wake_continuation_receipts",
-      "schema": "",
-      "columns": {
-        "wake_job_id": {
-          "name": "wake_job_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "segment": {
-          "name": "segment",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "task_id": {
-          "name": "task_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "task_run_id": {
-          "name": "task_run_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "binding_id": {
-          "name": "binding_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "wake_operation_id": {
-          "name": "wake_operation_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "prior_recipient_generation": {
-          "name": "prior_recipient_generation",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "wake_authorization_request_id": {
-          "name": "wake_authorization_request_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "additional_authorization_request_id": {
-          "name": "additional_authorization_request_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "interrupt_id": {
-          "name": "interrupt_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "operation_id": {
-          "name": "operation_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "request_digest": {
-          "name": "request_digest",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "required_authority_digest": {
-          "name": "required_authority_digest",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "semantic_authority_requirements": {
-          "name": "semantic_authority_requirements",
-          "type": "jsonb",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "retained_source_namespace_ids": {
-          "name": "retained_source_namespace_ids",
-          "type": "uuid[]",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "source_envelope_digest": {
-          "name": "source_envelope_digest",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "initial_policy_revision": {
-          "name": "initial_policy_revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "initial_agent_authorization_revision": {
-          "name": "initial_agent_authorization_revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "destination_room_id": {
-          "name": "destination_room_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "destination_namespace_id": {
-          "name": "destination_namespace_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "destination_authority_digest": {
-          "name": "destination_authority_digest",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "checkpoint_thread_id": {
-          "name": "checkpoint_thread_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "checkpoint_contract": {
-          "name": "checkpoint_contract",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "expected_checkpoint_count": {
-          "name": "expected_checkpoint_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "checkpoint_ordered_digest": {
-          "name": "checkpoint_ordered_digest",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "expected_blob_count": {
-          "name": "expected_blob_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "blob_ordered_digest": {
-          "name": "blob_ordered_digest",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "expected_pending_write_count": {
-          "name": "expected_pending_write_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "pending_write_ordered_digest": {
-          "name": "pending_write_ordered_digest",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "sealed_at": {
-          "name": "sealed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "protected_task_wake_continuation_receipts_wake_job_id_jobs_id_fk": {
-          "name": "protected_task_wake_continuation_receipts_wake_job_id_jobs_id_fk",
-          "tableFrom": "protected_task_wake_continuation_receipts",
-          "tableTo": "jobs",
-          "columnsFrom": [
-            "wake_job_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "protected_task_wake_continuation_receipts_task_id_tasks_id_fk": {
-          "name": "protected_task_wake_continuation_receipts_task_id_tasks_id_fk",
-          "tableFrom": "protected_task_wake_continuation_receipts",
-          "tableTo": "tasks",
-          "columnsFrom": [
-            "task_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "protected_task_wake_continuation_receipts_task_run_id_task_runs_id_fk": {
-          "name": "protected_task_wake_continuation_receipts_task_run_id_task_runs_id_fk",
-          "tableFrom": "protected_task_wake_continuation_receipts",
-          "tableTo": "task_runs",
-          "columnsFrom": [
-            "task_run_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "protected_task_wake_continuation_binding_fk": {
-          "name": "protected_task_wake_continuation_binding_fk",
-          "tableFrom": "protected_task_wake_continuation_receipts",
-          "tableTo": "protected_task_run_output_bindings",
-          "columnsFrom": [
-            "task_run_id"
-          ],
-          "columnsTo": [
-            "task_run_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "protected_task_wake_continuation_destination_fk": {
-          "name": "protected_task_wake_continuation_destination_fk",
-          "tableFrom": "protected_task_wake_continuation_receipts",
-          "tableTo": "rooms",
-          "columnsFrom": [
-            "destination_room_id",
-            "destination_namespace_id"
-          ],
-          "columnsTo": [
-            "id",
-            "namespace_id"
-          ],
-          "onDelete": "restrict",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "protected_task_wake_continuation_receipts_pkey": {
-          "name": "protected_task_wake_continuation_receipts_pkey",
-          "columns": [
-            "wake_job_id",
-            "segment"
-          ]
-        }
-      },
-      "uniqueConstraints": {
-        "uq_protected_task_wake_continuation_authorization_generation": {
-          "name": "uq_protected_task_wake_continuation_authorization_generation",
-          "nullsNotDistinct": false,
-          "columns": [
-            "wake_authorization_request_id",
-            "prior_recipient_generation"
-          ]
-        },
-        "uq_protected_task_wake_continuation_interrupt": {
-          "name": "uq_protected_task_wake_continuation_interrupt",
-          "nullsNotDistinct": false,
-          "columns": [
-            "wake_job_id",
-            "interrupt_id"
-          ]
-        }
-      },
-      "policies": {
-        "protected_task_wake_continuation_receipts_product_select": {
-          "name": "protected_task_wake_continuation_receipts_product_select",
-          "as": "PERMISSIVE",
-          "for": "SELECT",
-          "to": [
-            "nautilo"
-          ],
-          "using": "true"
-        },
-        "protected_task_wake_continuation_receipts_product_insert": {
-          "name": "protected_task_wake_continuation_receipts_product_insert",
-          "as": "PERMISSIVE",
-          "for": "INSERT",
-          "to": [
-            "nautilo"
-          ],
-          "withCheck": "true"
-        }
-      },
-      "checkConstraints": {
-        "protected_task_wake_continuation_receipts_segment_positive": {
-          "name": "protected_task_wake_continuation_receipts_segment_positive",
-          "value": "\"protected_task_wake_continuation_receipts\".\"segment\" between 1 and 2147483647"
-        },
-        "protected_task_wake_continuation_receipts_generation_safe": {
-          "name": "protected_task_wake_continuation_receipts_generation_safe",
-          "value": "\"protected_task_wake_continuation_receipts\".\"prior_recipient_generation\" between 0 and 2147483646\n        and \"protected_task_wake_continuation_receipts\".\"segment\" = \"protected_task_wake_continuation_receipts\".\"prior_recipient_generation\" + 1"
-        },
-        "protected_task_wake_continuation_receipts_identity_shape": {
-          "name": "protected_task_wake_continuation_receipts_identity_shape",
-          "value": "\"protected_task_wake_continuation_receipts\".\"binding_id\" = 'task-run-output:' || \"protected_task_wake_continuation_receipts\".\"task_run_id\"::text\n        and \"protected_task_wake_continuation_receipts\".\"wake_operation_id\" = 'task-run-delivery-wake:' || \"protected_task_wake_continuation_receipts\".\"task_run_id\"::text\n        and \"protected_task_wake_continuation_receipts\".\"wake_authorization_request_id\" = 'task-wake-authorization:' || \"protected_task_wake_continuation_receipts\".\"wake_job_id\"::text"
-        },
-        "protected_task_wake_continuation_receipts_interrupt_shape": {
-          "name": "protected_task_wake_continuation_receipts_interrupt_shape",
-          "value": "\"protected_task_wake_continuation_receipts\".\"additional_authorization_request_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'\n        and \"protected_task_wake_continuation_receipts\".\"interrupt_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'\n        and \"protected_task_wake_continuation_receipts\".\"operation_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'\n        and \"protected_task_wake_continuation_receipts\".\"checkpoint_thread_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'"
-        },
-        "protected_task_wake_continuation_receipts_digest_sizes": {
-          "name": "protected_task_wake_continuation_receipts_digest_sizes",
-          "value": "octet_length(\"protected_task_wake_continuation_receipts\".\"request_digest\") = 32\n        and octet_length(\"protected_task_wake_continuation_receipts\".\"required_authority_digest\") = 32\n        and octet_length(\"protected_task_wake_continuation_receipts\".\"source_envelope_digest\") = 32\n        and octet_length(\"protected_task_wake_continuation_receipts\".\"destination_authority_digest\") = 32\n        and octet_length(\"protected_task_wake_continuation_receipts\".\"checkpoint_ordered_digest\") = 32\n        and octet_length(\"protected_task_wake_continuation_receipts\".\"blob_ordered_digest\") = 32\n        and octet_length(\"protected_task_wake_continuation_receipts\".\"pending_write_ordered_digest\") = 32"
-        },
-        "protected_task_wake_continuation_receipts_public_revision_positive": {
-          "name": "protected_task_wake_continuation_receipts_public_revision_positive",
-          "value": "\"protected_task_wake_continuation_receipts\".\"initial_policy_revision\" > 0\n        and \"protected_task_wake_continuation_receipts\".\"initial_agent_authorization_revision\" > 0"
-        },
-        "protected_task_wake_continuation_receipts_manifest_counts_safe": {
-          "name": "protected_task_wake_continuation_receipts_manifest_counts_safe",
-          "value": "\"protected_task_wake_continuation_receipts\".\"expected_checkpoint_count\" between 1 and 2147483647\n        and \"protected_task_wake_continuation_receipts\".\"expected_blob_count\" between 0 and 2147483647\n        and \"protected_task_wake_continuation_receipts\".\"expected_pending_write_count\" between 0 and 2147483647"
-        },
-        "protected_task_wake_continuation_receipts_authority_shape": {
-          "name": "protected_task_wake_continuation_receipts_authority_shape",
-          "value": "jsonb_typeof(\"protected_task_wake_continuation_receipts\".\"semantic_authority_requirements\") = 'array'\n        and cardinality(\"protected_task_wake_continuation_receipts\".\"retained_source_namespace_ids\") > 0\n        and array_position(\"protected_task_wake_continuation_receipts\".\"retained_source_namespace_ids\", null) is null"
         }
       },
       "isRLSEnabled": true

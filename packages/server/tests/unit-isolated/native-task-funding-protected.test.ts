@@ -87,6 +87,7 @@ currentRun = run();
 const actualAgent = await import("@nautilo/agent");
 const actualDb = await import("@nautilo/db");
 const actualTrust = await import("@nautilo/trust");
+const actualModelFunding = await import("../../src/lib/model-funding");
 
 mock.module("@nautilo/agent", () => ({
   ...actualAgent,
@@ -163,6 +164,7 @@ class TestModelFundingError extends Error {
   constructor(readonly code: string) { super(code); }
 }
 mock.module("../../src/lib/model-funding", () => ({
+  ...actualModelFunding,
   ModelFundingError: TestModelFundingError,
   resolveModelFunding: async (input: Record<string, unknown>) => {
     fundingRequests.push(input);

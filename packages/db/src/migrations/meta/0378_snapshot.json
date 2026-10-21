@@ -1,6 +1,6 @@
 {
-  "id": "20b0e107-eb55-4b00-a8fa-3152bb0474dd",
-  "prevId": "216de99f-20c2-443a-b351-b819694d50e5",
+  "id": "216de99f-20c2-443a-b351-b819694d50e5",
+  "prevId": "bf83f3ad-5bb6-4429-8b94-fb314e2f00ef",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -3453,11 +3453,7 @@
           "name": "content_search",
           "type": "tsvector",
           "primaryKey": false,
-          "notNull": false,
-          "generated": {
-            "as": "to_tsvector('english', content)",
-            "type": "stored"
-          }
+          "notNull": false
         },
         "created_at": {
           "name": "created_at",
@@ -3694,6 +3690,22 @@
           ],
           "isUnique": false,
           "where": "\"session_messages\".\"reply_to_message_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_session_messages_search_overflow": {
+          "name": "idx_session_messages_search_overflow",
+          "columns": [
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"session_messages\".\"content_search\" IS NULL AND \"session_messages\".\"content\" IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -14136,7 +14148,7 @@
           "primaryKey": false,
           "notNull": false,
           "generated": {
-            "as": "btrim(regexp_replace(replace(replace(lower(normalize(label, NFKC)), chr(775), ''), 'ς', 'σ'), '[[:space:][:punct:]]+', ' ', 'g'))",
+            "as": "btrim(regexp_replace(replace(replace(lower(normalize(label, NFKC)), chr(775), ''), '\u03c2', '\u03c3'), '[[:space:][:punct:]]+', ' ', 'g'))",
             "type": "stored"
           }
         },
@@ -16739,36 +16751,6 @@
           "notNull": true,
           "default": "'unmapped'"
         },
-        "ordinary_fallback_operation_id": {
-          "name": "ordinary_fallback_operation_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "ordinary_fallback_request_digest": {
-          "name": "ordinary_fallback_request_digest",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "ordinary_fallback_reason": {
-          "name": "ordinary_fallback_reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "ordinary_fallback_policy_revision": {
-          "name": "ordinary_fallback_policy_revision",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "ordinary_fallback_completed_at": {
-          "name": "ordinary_fallback_completed_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
         "created_at": {
           "name": "created_at",
           "type": "timestamp with time zone",
@@ -16987,10 +16969,6 @@
         "tasks_crypto_access_revision_nonnegative": {
           "name": "tasks_crypto_access_revision_nonnegative",
           "value": "\"tasks\".\"crypto_access_revision\" >= 0"
-        },
-        "tasks_ordinary_fallback_receipt_coherent": {
-          "name": "tasks_ordinary_fallback_receipt_coherent",
-          "value": "(\n      \"tasks\".\"ordinary_fallback_operation_id\" is null\n      and \"tasks\".\"ordinary_fallback_request_digest\" is null\n      and \"tasks\".\"ordinary_fallback_reason\" is null\n      and \"tasks\".\"ordinary_fallback_policy_revision\" is null\n      and \"tasks\".\"ordinary_fallback_completed_at\" is null\n    ) or (\n      \"tasks\".\"ordinary_fallback_operation_id\" is not null\n      and length(\"tasks\".\"ordinary_fallback_operation_id\") > 0\n      and \"tasks\".\"ordinary_fallback_request_digest\" is not null\n      and octet_length(\"tasks\".\"ordinary_fallback_request_digest\") = 32\n      and \"tasks\".\"ordinary_fallback_reason\" is not null\n      and \"tasks\".\"ordinary_fallback_reason\" = 'target_encryption_not_ready'\n      and \"tasks\".\"ordinary_fallback_policy_revision\" is not null\n      and \"tasks\".\"ordinary_fallback_policy_revision\" > 0\n      and \"tasks\".\"ordinary_fallback_completed_at\" is not null\n    )"
         },
         "tasks_protected_pause_intent_coherent": {
           "name": "tasks_protected_pause_intent_coherent",

@@ -1,6 +1,6 @@
 {
-  "id": "edbeec46-09a6-44ec-adf5-237c26329109",
-  "prevId": "b7910b78-76f7-4635-a496-30fd22d09a4e",
+  "id": "b7910b78-76f7-4635-a496-30fd22d09a4e",
+  "prevId": "b7fcbfef-e86e-4d8d-8264-4c8abfa35609",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -3453,11 +3453,7 @@
           "name": "content_search",
           "type": "tsvector",
           "primaryKey": false,
-          "notNull": false,
-          "generated": {
-            "as": "to_tsvector('english', content)",
-            "type": "stored"
-          }
+          "notNull": false
         },
         "created_at": {
           "name": "created_at",
@@ -3694,6 +3690,22 @@
           ],
           "isUnique": false,
           "where": "\"session_messages\".\"reply_to_message_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_session_messages_search_overflow": {
+          "name": "idx_session_messages_search_overflow",
+          "columns": [
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"session_messages\".\"content_search\" IS NULL AND \"session_messages\".\"content\" IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -16624,33 +16636,9 @@
           "primaryKey": false,
           "notNull": false
         },
-        "pause_request_id": {
-          "name": "pause_request_id",
-          "type": "uuid",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "pause_requested_at": {
-          "name": "pause_requested_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "pause_reason": {
-          "name": "pause_reason",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
         "last_error": {
           "name": "last_error",
           "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "local_execution_delegation": {
-          "name": "local_execution_delegation",
-          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         },
@@ -16724,6 +16712,12 @@
         "cancelled_at": {
           "name": "cancelled_at",
           "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "local_execution_delegation": {
+          "name": "local_execution_delegation",
+          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         }
@@ -16926,17 +16920,13 @@
           "name": "tasks_crypto_access_revision_nonnegative",
           "value": "\"tasks\".\"crypto_access_revision\" >= 0"
         },
-        "tasks_protected_pause_intent_coherent": {
-          "name": "tasks_protected_pause_intent_coherent",
-          "value": "(\n      \"tasks\".\"pause_request_id\" is null and \"tasks\".\"pause_requested_at\" is null and \"tasks\".\"pause_reason\" is null\n    ) or (\n      \"tasks\".\"content_representation\" in ('dual', 'protected')\n      and \"tasks\".\"pause_request_id\" is not null and \"tasks\".\"pause_requested_at\" is not null\n      and \"tasks\".\"pause_reason\" in ('manual_pause', 'time_limit')\n    )"
+        "tasks_crypto_mapping_coherent": {
+          "name": "tasks_crypto_mapping_coherent",
+          "value": "(\n      \"tasks\".\"content_representation\" = 'ordinary'\n      and \"tasks\".\"content_namespace_id\" is null\n      and \"tasks\".\"content_revision\" = 0\n      and \"tasks\".\"crypto_object_id\" is null\n      and \"tasks\".\"crypto_access_revision\" = 0\n      and \"tasks\".\"crypto_required_namespace_fingerprint\" is null\n      and \"tasks\".\"crypto_mapping_state\" = 'unmapped'\n    ) or (\n      \"tasks\".\"content_representation\" in ('dual', 'protected')\n      and \"tasks\".\"content_namespace_id\" is not null\n      and \"tasks\".\"content_revision\" > 0\n      and \"tasks\".\"crypto_object_id\" is not null\n      and \"tasks\".\"crypto_access_revision\" >= 0\n      and octet_length(\"tasks\".\"crypto_required_namespace_fingerprint\") = 32\n      and \"tasks\".\"crypto_mapping_state\" in ('verified', 'stale')\n      and (\"tasks\".\"content_representation\" <> 'protected' or (\n        \"tasks\".\"prompt\" = ''\n        and \"tasks\".\"expected_output\" is null\n        and \"tasks\".\"last_error\" is null\n      ))\n    )"
         },
         "tasks_protected_requester_owns_content": {
           "name": "tasks_protected_requester_owns_content",
           "value": "\"tasks\".\"content_representation\" = 'ordinary' or \"tasks\".\"owner_id\" = \"tasks\".\"requestor_id\""
-        },
-        "tasks_crypto_mapping_coherent": {
-          "name": "tasks_crypto_mapping_coherent",
-          "value": "(\n      \"tasks\".\"content_representation\" = 'ordinary'\n      and \"tasks\".\"content_namespace_id\" is null\n      and \"tasks\".\"content_revision\" = 0\n      and \"tasks\".\"crypto_object_id\" is null\n      and \"tasks\".\"crypto_access_revision\" = 0\n      and \"tasks\".\"crypto_required_namespace_fingerprint\" is null\n      and \"tasks\".\"crypto_mapping_state\" = 'unmapped'\n    ) or (\n      \"tasks\".\"content_representation\" in ('dual', 'protected')\n      and \"tasks\".\"content_namespace_id\" is not null\n      and \"tasks\".\"content_revision\" > 0\n      and \"tasks\".\"crypto_object_id\" is not null\n      and \"tasks\".\"crypto_access_revision\" >= 0\n      and octet_length(\"tasks\".\"crypto_required_namespace_fingerprint\") = 32\n      and \"tasks\".\"crypto_mapping_state\" in ('verified', 'stale')\n      and (\"tasks\".\"content_representation\" <> 'protected' or (\n        \"tasks\".\"prompt\" = ''\n        and \"tasks\".\"expected_output\" is null\n        and \"tasks\".\"last_error\" is null\n      ))\n    )"
         }
       },
       "isRLSEnabled": false

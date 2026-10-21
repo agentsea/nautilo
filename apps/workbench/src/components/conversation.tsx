@@ -1,5 +1,5 @@
 import type { AssistantModelSummary } from "@nautilo/api-client/browser";
-import { COMPOSER_CHAT_ATTACHMENT_EXTENSIONS, isComposerImageAttachment, IMAGE_ATTACHMENT_SELECTION_HINT, IMAGE_HISTORY_NOTICE,
+import { COMPOSER_CHAT_ATTACHMENT_EXTENSIONS, WORKSPACE_DOCUMENT_ATTACHMENT_EXTENSIONS, isComposerImageAttachment, IMAGE_ATTACHMENT_SELECTION_HINT, IMAGE_HISTORY_NOTICE,
   imageAttachmentModelError } from "@nautilo/attachments/composer-chat-extensions";
 import { hasVisibleAssistantContent } from "./conversation-visible-content";
 import { UserText } from "./conversation-message-text";
@@ -40,7 +40,7 @@ import {
 import type { Unstable_TriggerItem } from "@assistant-ui/core";
 import { useConversationLiveEdgeRecovery } from "../hooks/use-conversation-live-edge-recovery";
 import { MessageEditConflictError } from "@nautilo/api-client/browser";
-import { FileText, Mic, Paperclip, SendHorizontal, Loader2, Square, X } from "lucide-react";
+import { Mic, Paperclip, SendHorizontal, Loader2, Square, X } from "lucide-react";
 import { HumanMessageContent } from "./human-message-content";
 import {
   hasKnownHumanMessageAuthor,
@@ -62,6 +62,7 @@ import { applyComposerPostSubmit } from "./composer-post-submit";
 import { useProfile } from "../hooks/use-profile";
 import { AuthenticatedAvatar } from "./avatar/authenticated-image";
 import { MessageAttachmentImages } from "./message-attachment-images";
+import { MessageAttachmentFiles } from "./message-attachment-files";
 import { externalMessageAuthorLabel, MESSAGE_ATTACHMENTS_METADATA_KEY } from "../adapters/session-rehydrate";
 import {
   getMessageActionDescriptors,
@@ -211,7 +212,6 @@ import {
   newAttachmentId,
   removeAttachment,
   subscribeAttachments,
-  type ComposerAttachment,
 } from "../adapters/composer-attachments-ref";
 import {
   addFocusedResource,
@@ -222,7 +222,7 @@ import {
   restoreFocusedResources,
   subscribeFocusedResources,
 } from "../adapters/composer-focused-resources-ref";
-import { relativeFromWorkspace } from "./browser-column/cited-paths";
+import { ComposerAttachmentChips } from "./composer/ComposerAttachmentChips";
 import { useRoomNavigation } from "../contexts/room-navigation-context";
 import { useNotificationState } from "../notifications/notification-state-context";
 import {
@@ -1997,6 +1997,7 @@ function ConversationBody({
 
       {verified && activeRoomId ? <BolterMessageComposer
         key={`${activeRoomId}:${auth.viewerGeneration}:${auth.credentialGeneration}`}
+        viewerId={auth.viewer.sessionUserId}
         roomId={activeRoomId} scopeKey={`${auth.viewerGeneration}:${auth.credentialGeneration}`} /> : null}
 
       <div className={`border-t border-border bg-background ${railPadX} ${railNarrow ? "py-2" : "py-3"}`}>
@@ -2713,7 +2714,7 @@ function Composer({
         setAttachmentError(IMAGE_ATTACHMENT_SELECTION_HINT);
         continue;
       }
-      const pf = preflightComposerChatAttachment(file.name, { workspacePdf: true });
+      const pf = preflightComposerChatAttachment(file.name, { workspaceDocuments: true });
       if (!pf.ok) {
         skipped.push(pf.skip);
         continue;
@@ -2735,7 +2736,7 @@ function Composer({
       void uploadComposerBlob(id, file, file.name, { roomId: uploadRoomId });
     }
     if (skipped.length > 0) {
-      const { title, message } = formatComposerAttachmentSkipToast(skipped);
+      const { title, message } = formatComposerAttachmentSkipToast(skipped, { workspaceDocuments: true });
       toast.show({ variant: "warning", title, message });
     }
   }, [toast]);
@@ -2847,7 +2848,7 @@ function Composer({
         setAttachmentError(IMAGE_ATTACHMENT_SELECTION_HINT);
         continue;
       }
-      const pf = preflightComposerChatAttachment(file.name, { workspacePdf: true });
+      const pf = preflightComposerChatAttachment(file.name, { workspaceDocuments: true });
       if (!pf.ok) {
         skipped.push(pf.skip);
         continue;
@@ -2869,7 +2870,7 @@ function Composer({
       void uploadComposerAttachment(id, file, { roomId: pickerRoomId });
     }
     if (skipped.length > 0) {
-      const { title, message } = formatComposerAttachmentSkipToast(skipped);
+      const { title, message } = formatComposerAttachmentSkipToast(skipped, { workspaceDocuments: true });
       toast.show({ variant: "warning", title, message });
     }
   }, [toast]);
@@ -3063,7 +3064,7 @@ function Composer({
           </div>
         ) : null}
         {attachments.length > 0 && (
-          <AttachmentChipRow attachments={attachments} />
+          <ComposerAttachmentChips attachments={attachments} onRemove={removeAttachment} />
         )}
         {attachmentError && !imageSelectionRejected && (
           <div role="alert" className="text-[11px] text-error">
@@ -3121,7 +3122,7 @@ function Composer({
             ref={browserAttachmentInputRef}
             type="file"
             multiple
-            accept={imageInputUnsupported ? [...COMPOSER_CHAT_ATTACHMENT_EXTENSIONS]
+            accept={imageInputUnsupported ? [...COMPOSER_CHAT_ATTACHMENT_EXTENSIONS, ...WORKSPACE_DOCUMENT_ATTACHMENT_EXTENSIONS]
               .filter((extension) => !isComposerImageAttachment(`file${extension}`)).join(",") : undefined}
             hidden
             onChange={handleBrowserAttachmentChange}
@@ -3216,64 +3217,6 @@ function CommandSuggestionRow({
         </div>
       ) : null}
     </div>
-  );
-}
-
-/**
- * Cursor-style chip row rendered above the composer textarea when the
- * user has queued file attachments (drag-and-drop from the Files /
- * Workspace tree). Each chip is an icon + filename + remove button;
- * the file bytes are NOT read here — the runtime reads them at send
- * time, so what ends up in the model's context is always the latest
- * version on disk.
- */
-function AttachmentChipRow({
-  attachments,
-}: {
-  attachments: readonly ComposerAttachment[];
-}) {
-  return (
-    <div className="flex flex-wrap gap-1.5">
-      {attachments.map((att) => (
-        <AttachmentChip key={att.id} attachment={att} />
-      ))}
-    </div>
-  );
-}
-
-function AttachmentChip({ attachment }: { attachment: ComposerAttachment }) {
-  const relLabel = relativeFromWorkspace(attachment.rootPath, attachment.path);
-  const displayLabel = relLabel.length > 0 ? relLabel : attachment.name;
-  const isError = attachment.status === "error";
-  const statusLabel = isError
-    ? `rejected: ${attachment.errorReason ?? "not sent"}`
-    : attachment.status === "pending"
-      ? "pending"
-      : attachment.workspaceArtifact ? "ready — stored in this Room’s Workspace" : "ready";
-  return (
-    <span
-      className={`flex max-w-[16rem] items-center gap-1 rounded-md border px-2 py-0.5 text-[11px] ${
-        isError
-          ? "border-error/50 bg-error/10 text-foreground"
-          : "border-border bg-background text-foreground"
-      }`}
-      title={`${attachment.path}\n${statusLabel}`}
-      data-testid="composer-attachment"
-      data-path={attachment.path}
-      data-status={attachment.status ?? "queued"}
-    >
-      <FileText aria-hidden="true" className="h-3 w-3 shrink-0 text-foreground-muted" />
-      <span className="truncate">{displayLabel}</span>
-      <span className="shrink-0 text-foreground-muted">· {statusLabel}</span>
-      <button
-        type="button"
-        onClick={() => removeAttachment(attachment.id)}
-        aria-label={`Remove ${attachment.name}`}
-        className="flex h-4 w-4 shrink-0 items-center justify-center rounded text-foreground-muted hover:bg-[var(--primary-muted)] hover:text-foreground"
-      >
-        <X aria-hidden="true" className="h-3 w-3" />
-      </button>
-    </span>
   );
 }
 
@@ -4170,6 +4113,10 @@ function Message({
                     ? messageAttachmentRefs
                     : undefined
                 }
+                roomId={roomId}
+              />
+              <MessageAttachmentFiles
+                attachments={humanMessageVerification === undefined && !historyUnavailable ? messageAttachmentRefs : undefined}
                 roomId={roomId}
               />
               {editing ? (

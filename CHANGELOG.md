@@ -17,6 +17,50 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 - New encrypted Tasks can be read on their signing Device without previously
   imported signer history or legacy Namespace key caches. Concurrent encrypted
   Task reads no longer exhaust database connections while loading schedules or chats.
+
+- Background Tasks can save Workspace files using their authorized namespace
+  room while keeping their transcripts separate from the originating chat.
+
+- Bolter messages explicitly mentioning only another agent no longer trigger
+  the linked Genie. Direct and shared mentions still reach the linked Genie,
+  and ordinary Human messages without agent mentions continue to work.
+
+- Oversized OfficeCLI results stay in conversation history while Genie receives
+  a compact receipt and can inspect, page through or search the retained output.
+  Task reads and reopened conversations keep these results within the model
+  request budget without discarding the original content.
+
+- Long-running conversations retain the current run's recent exchanges ahead
+  of surrounding Room activity, keep accepted Human replies in order, and
+  reserve Journal and recalled Records independently of older-history settings.
+- Explicitly selected assistants are guided to recognize already-delivered
+  current-turn responses and successful tool actions, close completed requests
+  briefly, and continue unfinished work or later Human input.
+
+- Messages exceeding PostgreSQL's full-text index size limit now save intact
+  and remain immediately searchable. These oversized messages use literal
+  word/prefix/path matching without stemming; ordinary indexed search is unchanged.
+  Session search summarizes a marked excerpt of an oversized match while retaining
+  its full source in conversation history.
+
+- OfficeCLI results containing emoji joiners or invisible layout controls
+  are sanitized before instruction scanning instead of blocking the entire
+  result. Original documents remain unchanged.
+
+- Large Excel reads use indexed shared strings through OfficeCLI 1.0.157,
+  pinned together for Desktop and Server. Stopping a server OfficeCLI call
+  now cancels its child process before temporary files are cleaned up.
+
+- The Bolter composer folds away without losing its draft or selected files.
+  Review before sending is optional and remembered per Human and connection.
+  Delivery status refreshes automatically without clearing a newer draft.
+  Updated Desktop connections can share selected files through Bolter's
+  chat-scoped file storage, with file links included in the outgoing message.
+
+- Office files upload to Artifacts regardless of ZIP entry order. The Room
+  paperclip and file drop also accept Word, Excel and PowerPoint as Workspace
+  documents, with the same Room access checks as PDF attachments.
+
 - Windows x64 source builds produce a Desktop installer with bundled Bun and
   the private Relay Host for connecting to a Nautilo server.
   ACP-backed local agents remain unavailable on Windows until process-tree
@@ -1091,6 +1135,29 @@ store update, or Desktop/Host installation.
   editing behavior. The September 9 Mobile 0.2.0 tester refresh includes
   these fixes.
 - Hue bridge rediscovery and pairing recovery.
+
+- Surplus-only servers can select supported chat, helper and generation models
+  without direct-provider keys. Key settings highlight qualified capabilities
+  and link to the Surplus policy. Unanswered server Surplus calls can recover
+  through the initiating user's permitted personal direct key when no direct
+  server route exists, with separate cost records for each attempt. Accepted
+  media jobs retain their creating account.
+
+- Ordinary Surplus chat and Decision routes can retry the exact model with
+  another seller after a confirmed no-seller refusal. Server-first calls may
+  then try the initiating user's personal keys after server routes are exhausted;
+  personal-first calls stay personal. Privacy-constrained routes keep their
+  provider pin, and every attempt retains separate costs and serving-provider evidence.
+
+- Completing Genie customization for the first time opens the user's existing
+  Personal chat. If that chat cannot be opened, the wizard offers a retry;
+  canceling and later customization still return to the starting page.
+  Accounts without server-funding permission receive an explanation and a
+  personal-key setup link when they cannot fund chat.
+
+- Administrators can select any active, shareable server invitation for `/join`,
+  including Contributor and higher-role invitations. Normal invite limits,
+  destination validity and enrollment controls still apply.
 
 ## Component release records verified 2026-09-09
 

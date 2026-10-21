@@ -1,4 +1,5 @@
 import { getCurrentProtectedTaskProjectFilePort, matchesProtectedTaskProjectFilePort } from "../runtime/protected-task-project-file";
+import { withResultReader } from "../tools/result-reader/result-projection";
 import { isExternalRoomState, settleExternalRoomToolDenials } from "../tools/external-room-policy";
 import { bindDelegatedLocalExecution } from "../tools/local-execution/admission";
 import { getCurrentLocalExecutionDelegation, type DelegatedLocalExecutionPort } from "../runtime/local-execution-delegation";
@@ -596,7 +597,7 @@ export function createPostModelNode(
       toolPolicy: envelope?.toolPolicy,
       readableNamespaces: envelopeReadableNamespaces(envelope),
       activeModelCapabilities,
-      toolNameWhitelist: state.toolWhitelist,
+      toolNameWhitelist: withResultReader(state.toolWhitelist),
       activatedToolNames,
       // Pre-flight retains its relay-live-check defense model: dispatch
       // revalidates liveness immediately before execution.

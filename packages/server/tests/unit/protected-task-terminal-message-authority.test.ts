@@ -162,6 +162,8 @@ function accepted(
 }
 
 function fixture(options: Readonly<{
+  destinationOtherMemberCount?: number;
+  duplicateDestinationTarget?: boolean;
   removeDestinationTarget?: boolean;
   sourceAgentId?: string;
 }> = {}) {
@@ -184,12 +186,35 @@ function fixture(options: Readonly<{
       }
       if (sql.includes('from "room_members"')) {
         const destination = parameters?.includes(DESTINATION_ROOM) === true;
+        if (destination) {
+          const otherMembers = Array.from(
+            { length: options.destinationOtherMemberCount ?? 1 },
+            (_, index) => ({
+              actor_id: `other-agent-actor-${index}`,
+              agent_id: `other-agent-${index}`,
+            }),
+          );
+          const targetMembers = options.removeDestinationTarget
+            ? []
+            : Array.from(
+                { length: options.duplicateDestinationTarget ? 2 : 1 },
+                (_, index) => ({
+                  actor_id: `target-agent-actor-${index}`,
+                  agent_id: AGENT,
+                }),
+              );
+          const matches = parameters?.includes(AGENT) === true
+            ? targetMembers
+            : [...otherMembers, ...targetMembers];
+          const limit = parameters?.includes(2) === true
+            ? 2
+            : parameters?.includes(64) === true ? 64 : matches.length;
+          return matches.slice(0, limit) as unknown as readonly Row[];
+        }
         return [
           { id: HUMAN, kind: "user", owner_id: USER, agent_id: null },
           { id: "agent-actor", kind: "agent", owner_id: USER,
-            agent_id: destination && options.removeDestinationTarget
-              ? "other-agent"
-              : destination ? AGENT : options.sourceAgentId ?? AGENT },
+            agent_id: options.sourceAgentId ?? AGENT },
         ] as unknown as readonly Row[];
       }
       throw new Error(`Unexpected query: ${sql}`);
@@ -345,6 +370,46 @@ test("accepts a Human-owned private source whose Agent differs from the Task Age
 test("bound and accepted reject a removed target Agent even when another Agent remains", async () => {
   for (const phase of ["bound", "accepted"] as const) {
     const value = fixture({ removeDestinationTarget: true });
+    let used = false;
+    const result = phase === "bound"
+      ? await value.port.withBound({
+        intent, publicationPolicyRevision: POLICY, subject, request: request(),
+        admission: { headDigest: bytes(4) } as never,
+        namespaceRequirements, domainRequirements,
+        use: () => { used = true; },
+      })
+      : await value.port.withAccepted({
+        intent, publicationPolicyRevision: POLICY, subject,
+        accepted: accepted(), validateBeforeCommit: () => {},
+        use: () => { used = true; },
+      });
+    expect(result).toBeNull();
+    expect(used).toBe(false);
+  }
+});
+
+test("bound and accepted find the exact target Agent beyond unrelated Room members", async () => {
+  for (const phase of ["bound", "accepted"] as const) {
+    const value = fixture({ destinationOtherMemberCount: 65 });
+    const result = phase === "bound"
+      ? await value.port.withBound({
+        intent, publicationPolicyRevision: POLICY, subject, request: request(),
+        admission: { headDigest: bytes(4) } as never,
+        namespaceRequirements, domainRequirements,
+        use: () => "used",
+      })
+      : await value.port.withAccepted({
+        intent, publicationPolicyRevision: POLICY, subject,
+        accepted: accepted(), validateBeforeCommit: () => {},
+        use: () => "used",
+      });
+    expect(result).toBe("used");
+  }
+});
+
+test("bound and accepted reject duplicate exact target Agent memberships", async () => {
+  for (const phase of ["bound", "accepted"] as const) {
+    const value = fixture({ duplicateDestinationTarget: true });
     let used = false;
     const result = phase === "bound"
       ? await value.port.withBound({

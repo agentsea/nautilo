@@ -47,9 +47,9 @@ describe("ProviderKeyCoverage", () => {
     const rows = within(view.getByRole("table")).getAllByRole("row").slice(1);
 
     expect(rows.map((row) => within(row).getByRole("rowheader").textContent)).toEqual([
-      "Classification and scoring",
+      "Classification, scoring, and Decisions (Surplus pilot account required)",
       "Chat",
-      "Surplus marketplace key",
+      "Image understanding",
       "Embeddings",
       "Text-to-speech",
       "Speech-to-text",
@@ -63,15 +63,15 @@ describe("ProviderKeyCoverage", () => {
     expect(
       rows.map((row) => within(row).getAllByRole("cell")[0]?.textContent),
     ).toEqual([
-      "TypeSafeOpenRouterVenice",
-      "VeniceOpenRouterOpenAIAnthropicGooglexAIFireworksTogether AIOpenAI-compatible Gateway",
-      "Surplus Intelligence",
+      "TypeSafeOpenRouterVeniceSurplus Intelligence (qualified routes)",
+      "VeniceOpenRouterOpenAIAnthropicGooglexAIFireworksTogether AISurplus Intelligence (qualified routes)OpenAI-compatible Gateway",
+      "OpenAIAnthropicGoogleOpenRouterVeniceFireworksSurplus Intelligence (qualified models)",
       "VeniceOpenRouterOpenAI",
       "ElevenLabs",
       "ElevenLabsGroq",
-      "VeniceOpenRouterOpenAIGoogle",
-      "Venice",
-      "Venice",
+      "VeniceOpenRouterOpenAIGoogleSurplus Intelligence (generation only; qualified routes)",
+      "VeniceSurplus Intelligence (qualified routes)",
+      "VeniceSurplus Intelligence (qualified routes)",
       "Tavily",
       "Browser Use",
       "CloudConvert",
@@ -81,14 +81,14 @@ describe("ProviderKeyCoverage", () => {
     expect(view.getAllByLabelText(/no supporting API key configured$/u)).toHaveLength(12);
   });
 
-  test("TypeSafe covers classification and scoring without claiming chat", () => {
+  test("TypeSafe covers classification, scoring, and Decisions without claiming chat", () => {
     const view = render(<ProviderKeyCoverage keys={[report("typesafe", "TypeSafe", "verified")]} />);
-    expect(view.getByLabelText("Classification and scoring: supporting API key configured")).toBeTruthy();
+    expect(view.getByLabelText("Classification, scoring, and Decisions (Surplus pilot account required): supporting API key configured")).toBeTruthy();
     expect(view.getByLabelText("Chat: no supporting API key configured")).toBeTruthy();
     expect(view.getAllByLabelText(/supporting API key configured$/u).filter((element) => !element.getAttribute("aria-label")?.includes("no supporting"))).toHaveLength(1);
   });
 
-  test("maps image generation only to its four runtime providers", () => {
+  test("maps image generation to direct providers and qualified generation-only Surplus routes", () => {
     const view = render(
       <ProviderKeyCoverage
         keys={[
@@ -105,14 +105,51 @@ describe("ProviderKeyCoverage", () => {
 
     expect(imageRow).toBeDefined();
     expect(within(imageRow!).getByRole("cell").textContent).toBe(
-      "VeniceOpenRouterOpenAIGoogle",
+      "VeniceOpenRouterOpenAIGoogleSurplus Intelligence (generation only; qualified routes)",
     );
     for (const provider of ["Venice", "OpenRouter", "OpenAI", "Google"]) {
       expect(
         within(imageRow!).getByLabelText(`${provider}: API key configured`),
       ).toBeTruthy();
     }
+    expect(
+      within(imageRow!).getByLabelText(
+        "Surplus Intelligence (generation only; qualified routes): API key not configured",
+      ),
+    ).toBeTruthy();
     expect(within(imageRow!).queryByLabelText(/^Anthropic:/u)).toBeNull();
+  });
+
+  test("highlights only the implemented qualified Surplus families", () => {
+    const view = render(
+      <ProviderKeyCoverage keys={[report("surplus", "Surplus Intelligence", "verified")]} />,
+    );
+
+    for (const functionality of [
+      "Classification, scoring, and Decisions (Surplus pilot account required)",
+      "Chat",
+      "Image understanding",
+      "Image generation",
+      "Music generation",
+      "Video generation",
+    ]) {
+      expect(
+        view.getByLabelText(`${functionality}: supporting API key configured`),
+      ).toBeTruthy();
+    }
+    for (const functionality of [
+      "Embeddings",
+      "Text-to-speech",
+      "Speech-to-text",
+      "Web search",
+      "Browser use",
+      "Document conversion",
+    ]) {
+      expect(
+        view.getByLabelText(`${functionality}: no supporting API key configured`),
+      ).toBeTruthy();
+    }
+    expect(view.getByText(/Surplus rows require Prefer Surplus/u)).toBeTruthy();
   });
 
   test("maps Groq only to speech-to-text", () => {
@@ -144,8 +181,9 @@ describe("ProviderKeyCoverage", () => {
     const view = render(<ProviderKeyCoverage keys={keys} />);
 
     for (const functionality of [
-      "Classification and scoring",
+      "Classification, scoring, and Decisions (Surplus pilot account required)",
       "Chat",
+      "Image understanding",
       "Embeddings",
       "Text-to-speech",
       "Speech-to-text",
@@ -173,6 +211,8 @@ describe("ProviderKeyCoverage", () => {
       "Venice",
       "Venice",
       "OpenRouter",
+      "OpenRouter",
+      "Venice",
       "Venice",
       "OpenRouter",
       "ElevenLabs",
@@ -183,7 +223,7 @@ describe("ProviderKeyCoverage", () => {
       "Venice",
       "Tavily",
     ]);
-    expect(view.getAllByLabelText("OpenAI: API key not configured")).toHaveLength(3);
+    expect(view.getAllByLabelText("OpenAI: API key not configured")).toHaveLength(4);
     expect(view.getByText(/not service availability/u)).toBeTruthy();
     expect(view.getByText(/local alternatives are not evaluated/u)).toBeTruthy();
   });
@@ -204,7 +244,7 @@ describe("ProviderKeyCoverage", () => {
       <ProviderCredentialsEditor keyApi={keyApi} enabled viewerIsVerified />,
     );
     await flushUntil(
-      () => view.queryAllByLabelText("OpenAI: API key not configured").length === 3,
+      () => view.queryAllByLabelText("OpenAI: API key not configured").length === 4,
     );
 
     await act(async () => {
@@ -213,7 +253,7 @@ describe("ProviderKeyCoverage", () => {
       );
     });
     await flushUntil(
-      () => view.queryAllByLabelText("OpenAI: API key configured").length === 3,
+      () => view.queryAllByLabelText("OpenAI: API key configured").length === 4,
     );
 
     expect(keyApi.validateKeys).toHaveBeenCalledTimes(1);
@@ -245,7 +285,7 @@ describe("ProviderKeyCoverage", () => {
     );
     expect(loading.getByText("Loading key status…")).toBeTruthy();
     expect(loading.getByTestId("provider-key-coverage")).toBeTruthy();
-    expect(loading.getAllByLabelText("OpenAI: Checking coverage…")).toHaveLength(3);
+    expect(loading.getAllByLabelText("OpenAI: Checking coverage…")).toHaveLength(4);
     expect(loading.queryAllByLabelText("OpenAI: API key configured")).toHaveLength(0);
     expect(disabledApi.getKeySummary).toHaveBeenCalledTimes(1);
   });

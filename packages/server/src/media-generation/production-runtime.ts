@@ -570,16 +570,20 @@ export function createProductionMediaGenerationRuntime(
       return admitted.funding;
     } catch {
       // The market snapshot is part of fresh admission. If it has no healthy
-      // exact-model offer, retain the payer class and quote the same model
-      // directly before any approval-bound receipt is reserved.
+      // exact-model offer, quote the same model directly before any approval-
+      // bound receipt is reserved. The funding owner may explicitly admit
+      // the initiating Human's personal key if server direct is unavailable.
       const direct = await openFunding(actor.userId, modelId, family, {
         operation: "generate",
         prior: admitted.funding,
         transport: "direct",
       });
-      if (direct.modelId !== modelId || direct.family !== family || direct.funding.provider === "surplus" ||
+      const ownPersonalRecovery = admitted.funding.binding.kind === "server"
+        && direct.funding.binding.kind === "personal" && direct.funding.provider === "venice"
+        && direct.funding.binding.providerRoute === "venice";
+      if (direct.modelId !== modelId || direct.family !== family || direct.funding.provider !== "venice" ||
           direct.funding.humanUserId !== actor.userId ||
-          direct.funding.binding.kind !== admitted.funding.binding.kind) {
+          (direct.funding.binding.kind !== admitted.funding.binding.kind && !ownPersonalRecovery)) {
         throw new Error("marketplace media fallback changed the admitted request");
       }
       return direct.funding;

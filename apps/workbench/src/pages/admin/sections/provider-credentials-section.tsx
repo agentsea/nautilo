@@ -60,6 +60,10 @@ function statusPill(status: KeyReport["status"]) {
   }
 }
 
+function isConfiguredProviderKey(status: KeyReport["status"]): boolean {
+  return status === "present" || status === "verified";
+}
+
 export function ProviderCredentialsSection() {
   const auth = useAuth();
   const can = useCan();
@@ -259,6 +263,8 @@ export function ProviderCredentialsEditor({
         Validate all
       </Button>
     ) : null;
+  const surplusConfigured = state.kind === "ready"
+    && state.keys.some((key) => key.id === "surplus" && isConfiguredProviderKey(key.status));
 
   if (!enabled) {
     return (
@@ -305,6 +311,16 @@ export function ProviderCredentialsEditor({
               ? undefined
               : state.kind === "loading" ? "Checking coverage…" : "Coverage unavailable"}
           />
+          {surplusConfigured ? (
+            <p className="mb-5 rounded-md border border-border bg-background-element p-3 text-xs text-foreground-muted">
+              Surplus is configured. To use qualified Surplus routes for this server, enable{" "}
+              <a href="/admin#models" className="font-medium text-foreground underline">
+                Prefer Surplus in Models
+              </a>
+              . Availability depends on the signed model catalogue, and Decisions require a
+              pilot-enabled Surplus account.
+            </p>
+          ) : null}
           {providerRows.map(({ provider: k, report }) => {
             const editingValue = editing[k.id];
             const isEditing = editingValue !== undefined;

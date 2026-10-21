@@ -1,6 +1,6 @@
 {
-  "id": "ce95df84-20e4-4e47-a0e2-29f21110cdd2",
-  "prevId": "56105ab7-b0db-463c-8c6e-bb1e515d4bf2",
+  "id": "56105ab7-b0db-463c-8c6e-bb1e515d4bf2",
+  "prevId": "2088f4ce-31ac-494f-a489-0a6d6e3b7fcf",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -3453,11 +3453,7 @@
           "name": "content_search",
           "type": "tsvector",
           "primaryKey": false,
-          "notNull": false,
-          "generated": {
-            "as": "to_tsvector('english', content)",
-            "type": "stored"
-          }
+          "notNull": false
         },
         "created_at": {
           "name": "created_at",
@@ -3694,6 +3690,22 @@
           ],
           "isUnique": false,
           "where": "\"session_messages\".\"reply_to_message_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_session_messages_search_overflow": {
+          "name": "idx_session_messages_search_overflow",
+          "columns": [
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"session_messages\".\"content_search\" IS NULL AND \"session_messages\".\"content\" IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -29613,11 +29625,11 @@
         },
         "background_crypto_authorization_requests_work_kind": {
           "name": "background_crypto_authorization_requests_work_kind",
-          "value": "\"background_crypto_authorization_requests\".\"work_kind\" in (\n        'stenographer.extraction',\n        'stenographer.historical',\n        'stenographer.compaction',\n        'stenographer.rebuild',\n        'stenographer.publication_reconcile',\n        'stenographer.output_repair',\n        'reflection.authority_reproject',\n        'reflection.publication_reconcile',\n        'reflection.search_projection',\n        'reflection.organization',\n        'reflection.dependency_rewrite',\n        'memory.review',\n        'memory.exit_flush',\n        'task.dispatch',\n        'task.execute',\n        'task.await_reply_resume',\n        'task.approval_resume',\n        'task.cancel_result',\n        'task.deliver_message'\n      )"
+          "value": "\"background_crypto_authorization_requests\".\"work_kind\" in (\n        'stenographer.extraction',\n        'stenographer.historical',\n        'stenographer.compaction',\n        'stenographer.rebuild',\n        'stenographer.publication_reconcile',\n        'stenographer.output_repair',\n        'reflection.authority_reproject',\n        'reflection.publication_reconcile',\n        'reflection.search_projection',\n        'reflection.organization',\n        'reflection.dependency_rewrite',\n        'memory.review',\n        'memory.exit_flush',\n        'task.dispatch',\n        'task.execute',\n        'task.await_reply_resume',\n        'task.approval_resume',\n        'task.cancel_result'\n      )"
         },
         "background_crypto_authorization_requests_purpose": {
           "name": "background_crypto_authorization_requests_purpose",
-          "value": "\"background_crypto_authorization_requests\".\"purpose\" in (\n        'journal.extract',\n        'journal.compact',\n        'journal.rebuild',\n        'journal.reconcile',\n        'journal.repair',\n        'record.reproject',\n        'record.reconcile',\n        'record.search_projection',\n        'record.organize',\n        'record.dependency_rewrite',\n        'memory.review',\n        'memory.exit_flush',\n        'task.dispatch',\n        'task.execute',\n        'task.await_reply_resume',\n        'task.approval_resume',\n        'task.cancel_result',\n        'task.deliver_message'\n      )"
+          "value": "\"background_crypto_authorization_requests\".\"purpose\" in (\n        'journal.extract',\n        'journal.compact',\n        'journal.rebuild',\n        'journal.reconcile',\n        'journal.repair',\n        'record.reproject',\n        'record.reconcile',\n        'record.search_projection',\n        'record.organize',\n        'record.dependency_rewrite',\n        'memory.review',\n        'memory.exit_flush',\n        'task.dispatch',\n        'task.execute',\n        'task.await_reply_resume',\n        'task.approval_resume',\n        'task.cancel_result'\n      )"
         },
         "background_crypto_authorization_requests_work_purpose_coherent": {
           "name": "background_crypto_authorization_requests_work_purpose_coherent",
@@ -29637,7 +29649,7 @@
         },
         "background_crypto_authorization_requests_work_subject_coherent": {
           "name": "background_crypto_authorization_requests_work_subject_coherent",
-          "value": "(\n        (\"background_crypto_authorization_requests\".\"work_kind\" like 'stenographer.%' and \"background_crypto_authorization_requests\".\"processor_kind\" = 'stenographer'\n          or \"background_crypto_authorization_requests\".\"work_kind\" like 'reflection.%' and \"background_crypto_authorization_requests\".\"processor_kind\" = 'reflection')\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'processor'\n      ) or (\n        \"background_crypto_authorization_requests\".\"work_kind\" not like 'stenographer.%'\n        and \"background_crypto_authorization_requests\".\"work_kind\" not like 'reflection.%'\n        and \"background_crypto_authorization_requests\".\"work_kind\" not in ('task.cancel_result', 'task.deliver_message')\n        and (\"background_crypto_authorization_requests\".\"work_kind\" not like 'task.%'\n          or \"background_crypto_authorization_requests\".\"format_version\" in (1, 2))\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'agent'\n      ) or (\n        \"background_crypto_authorization_requests\".\"work_kind\" in (\n          'task.dispatch',\n          'task.execute',\n          'task.await_reply_resume',\n          'task.approval_resume',\n        'task.cancel_result',\n        'task.deliver_message'\n        )\n        and \"background_crypto_authorization_requests\".\"purpose\" = \"background_crypto_authorization_requests\".\"work_kind\"\n        and \"background_crypto_authorization_requests\".\"format_version\" = 3\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'runtime'\n      )"
+          "value": "(\n        (\"background_crypto_authorization_requests\".\"work_kind\" like 'stenographer.%' and \"background_crypto_authorization_requests\".\"processor_kind\" = 'stenographer'\n          or \"background_crypto_authorization_requests\".\"work_kind\" like 'reflection.%' and \"background_crypto_authorization_requests\".\"processor_kind\" = 'reflection')\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'processor'\n      ) or (\n        \"background_crypto_authorization_requests\".\"work_kind\" not like 'stenographer.%'\n        and \"background_crypto_authorization_requests\".\"work_kind\" not like 'reflection.%'\n        and \"background_crypto_authorization_requests\".\"work_kind\" <> 'task.cancel_result'\n        and (\"background_crypto_authorization_requests\".\"work_kind\" not like 'task.%'\n          or \"background_crypto_authorization_requests\".\"format_version\" in (1, 2))\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'agent'\n      ) or (\n        \"background_crypto_authorization_requests\".\"work_kind\" in (\n          'task.dispatch',\n          'task.execute',\n          'task.await_reply_resume',\n          'task.approval_resume',\n        'task.cancel_result'\n        )\n        and \"background_crypto_authorization_requests\".\"purpose\" = \"background_crypto_authorization_requests\".\"work_kind\"\n        and \"background_crypto_authorization_requests\".\"format_version\" = 3\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'runtime'\n      )"
         },
         "background_crypto_authorization_requests_processor_kind_portable": {
           "name": "background_crypto_authorization_requests_processor_kind_portable",
@@ -46953,175 +46965,6 @@
         "task_cancel_staging_genesis_manifest_hash_size": {
           "name": "task_cancel_staging_genesis_manifest_hash_size",
           "value": "octet_length(\"task_cancellation_crypto_staging_receipts\".\"genesis_manifest_hash\") = 32"
-        }
-      },
-      "isRLSEnabled": true
-    },
-    "public.task_terminal_message_crypto_staging_receipts": {
-      "name": "task_terminal_message_crypto_staging_receipts",
-      "schema": "",
-      "columns": {
-        "request_id": {
-          "name": "request_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "recipient_generation": {
-          "name": "recipient_generation",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "claim_id": {
-          "name": "claim_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "authorization_digest": {
-          "name": "authorization_digest",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "delivery_intent_hash": {
-          "name": "delivery_intent_hash",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "accepted_policy_revision": {
-          "name": "accepted_policy_revision",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "publication_policy_revision": {
-          "name": "publication_policy_revision",
-          "type": "bigint",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "authority_fingerprint": {
-          "name": "authority_fingerprint",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "crypto_object_id": {
-          "name": "crypto_object_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "genesis_manifest_hash": {
-          "name": "genesis_manifest_hash",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "staged_at": {
-          "name": "staged_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "task_terminal_message_staging_object_fk": {
-          "name": "task_terminal_message_staging_object_fk",
-          "tableFrom": "task_terminal_message_crypto_staging_receipts",
-          "tableTo": "crypto_objects",
-          "columnsFrom": [
-            "crypto_object_id"
-          ],
-          "columnsTo": [
-            "object_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "uq_task_terminal_message_staging_object": {
-          "name": "uq_task_terminal_message_staging_object",
-          "nullsNotDistinct": false,
-          "columns": [
-            "crypto_object_id"
-          ]
-        }
-      },
-      "policies": {
-        "task_terminal_message_staging_crypto_sel": {
-          "name": "task_terminal_message_staging_crypto_sel",
-          "as": "PERMISSIVE",
-          "for": "SELECT",
-          "to": [
-            "nautilo_crypto"
-          ],
-          "using": "true"
-        },
-        "task_terminal_message_staging_crypto_ins": {
-          "name": "task_terminal_message_staging_crypto_ins",
-          "as": "PERMISSIVE",
-          "for": "INSERT",
-          "to": [
-            "nautilo_crypto"
-          ],
-          "withCheck": "true"
-        }
-      },
-      "checkConstraints": {
-        "task_terminal_message_staging_request_id_portable": {
-          "name": "task_terminal_message_staging_request_id_portable",
-          "value": "octet_length(\"task_terminal_message_crypto_staging_receipts\".\"request_id\") between 1\n      and 128\n      and \"task_terminal_message_crypto_staging_receipts\".\"request_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'"
-        },
-        "task_terminal_message_staging_generation_safe": {
-          "name": "task_terminal_message_staging_generation_safe",
-          "value": "\"task_terminal_message_crypto_staging_receipts\".\"recipient_generation\" between 0 and 9007199254740991"
-        },
-        "task_terminal_message_staging_claim_id_portable": {
-          "name": "task_terminal_message_staging_claim_id_portable",
-          "value": "octet_length(\"task_terminal_message_crypto_staging_receipts\".\"claim_id\") between 1\n      and 128\n      and \"task_terminal_message_crypto_staging_receipts\".\"claim_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'"
-        },
-        "task_terminal_message_staging_authorization_digest_size": {
-          "name": "task_terminal_message_staging_authorization_digest_size",
-          "value": "octet_length(\"task_terminal_message_crypto_staging_receipts\".\"authorization_digest\") = 32"
-        },
-        "task_terminal_message_staging_delivery_intent_hash_size": {
-          "name": "task_terminal_message_staging_delivery_intent_hash_size",
-          "value": "octet_length(\"task_terminal_message_crypto_staging_receipts\".\"delivery_intent_hash\") = 32"
-        },
-        "task_terminal_message_staging_policy_revision_positive": {
-          "name": "task_terminal_message_staging_policy_revision_positive",
-          "value": "\"task_terminal_message_crypto_staging_receipts\".\"accepted_policy_revision\" >= 1 and \"task_terminal_message_crypto_staging_receipts\".\"publication_policy_revision\" >= \"task_terminal_message_crypto_staging_receipts\".\"accepted_policy_revision\""
-        },
-        "task_terminal_message_staging_accepted_policy_safe": {
-          "name": "task_terminal_message_staging_accepted_policy_safe",
-          "value": "\"task_terminal_message_crypto_staging_receipts\".\"accepted_policy_revision\" between 0 and 9007199254740991"
-        },
-        "task_terminal_message_staging_publication_policy_safe": {
-          "name": "task_terminal_message_staging_publication_policy_safe",
-          "value": "\"task_terminal_message_crypto_staging_receipts\".\"publication_policy_revision\" between 0 and 9007199254740991"
-        },
-        "task_terminal_message_staging_authority_fingerprint_size": {
-          "name": "task_terminal_message_staging_authority_fingerprint_size",
-          "value": "octet_length(\"task_terminal_message_crypto_staging_receipts\".\"authority_fingerprint\") = 32"
-        },
-        "task_terminal_message_staging_object_id_portable": {
-          "name": "task_terminal_message_staging_object_id_portable",
-          "value": "octet_length(\"task_terminal_message_crypto_staging_receipts\".\"crypto_object_id\") between 1\n      and 128\n      and \"task_terminal_message_crypto_staging_receipts\".\"crypto_object_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'"
-        },
-        "task_terminal_message_staging_object_shape": {
-          "name": "task_terminal_message_staging_object_shape",
-          "value": "\"task_terminal_message_crypto_staging_receipts\".\"crypto_object_id\" ~ '^message:v2:[0-9a-f]{64}$'"
-        },
-        "task_terminal_message_staging_genesis_manifest_hash_size": {
-          "name": "task_terminal_message_staging_genesis_manifest_hash_size",
-          "value": "octet_length(\"task_terminal_message_crypto_staging_receipts\".\"genesis_manifest_hash\") = 32"
         }
       },
       "isRLSEnabled": true

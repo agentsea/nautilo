@@ -1,6 +1,6 @@
 {
-  "id": "1c285e0c-e0bb-4358-b54f-ca8beb788e61",
-  "prevId": "2fccba2d-5d7e-4797-a523-e353c1a70916",
+  "id": "2fccba2d-5d7e-4797-a523-e353c1a70916",
+  "prevId": "f32d340b-cd6d-4320-96cd-d390ba5e8daa",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -3453,11 +3453,7 @@
           "name": "content_search",
           "type": "tsvector",
           "primaryKey": false,
-          "notNull": false,
-          "generated": {
-            "as": "to_tsvector('english', content)",
-            "type": "stored"
-          }
+          "notNull": false
         },
         "created_at": {
           "name": "created_at",
@@ -3694,6 +3690,22 @@
           ],
           "isUnique": false,
           "where": "\"session_messages\".\"reply_to_message_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_session_messages_search_overflow": {
+          "name": "idx_session_messages_search_overflow",
+          "columns": [
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"session_messages\".\"content_search\" IS NULL AND \"session_messages\".\"content\" IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -17760,7 +17772,7 @@
       "checkConstraints": {
         "task_definition_crypto_revisions_historical_repair": {
           "name": "task_definition_crypto_revisions_historical_repair",
-          "value": "\"task_definition_crypto_revisions\".\"historical_repair\" is null or ((\n      \"task_definition_crypto_revisions\".\"representation\" = 'dual' and \"task_definition_crypto_revisions\".\"content_revision\" = 1\n      and jsonb_typeof(\"task_definition_crypto_revisions\".\"historical_repair\") = 'object'\n      and \"task_definition_crypto_revisions\".\"historical_repair\" ?& ARRAY['version','claimId','publisherDeviceId','signedRequestDigest','sourceDigest','sourcePayloadHash','sourceRevision']\n      and (\n        (\"task_definition_crypto_revisions\".\"historical_repair\"->'version' = '1'::jsonb\n          and (\"task_definition_crypto_revisions\".\"historical_repair\" - ARRAY['version','claimId','publisherDeviceId','signedRequestDigest','sourceDigest','sourcePayloadHash','sourceRevision']) = '{}'::jsonb)\n        or (\"task_definition_crypto_revisions\".\"historical_repair\"->'version' = '2'::jsonb\n          and \"task_definition_crypto_revisions\".\"historical_repair\" ? 'genesisManifestHash'\n          and (\"task_definition_crypto_revisions\".\"historical_repair\" - ARRAY['version','claimId','publisherDeviceId','signedRequestDigest','sourceDigest','sourcePayloadHash','sourceRevision','genesisManifestHash']) = '{}'::jsonb\n          and jsonb_typeof(\"task_definition_crypto_revisions\".\"historical_repair\"->'genesisManifestHash') = 'string'\n          and \"task_definition_crypto_revisions\".\"historical_repair\"->>'genesisManifestHash' ~ '^[0-9a-f]{64}$')\n      )\n      and \"task_definition_crypto_revisions\".\"historical_repair\"->'sourceRevision' = '0'::jsonb\n      and jsonb_typeof(\"task_definition_crypto_revisions\".\"historical_repair\"->'claimId') = 'string'\n      and \"task_definition_crypto_revisions\".\"historical_repair\"->>'claimId' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'\n      and octet_length(\"task_definition_crypto_revisions\".\"historical_repair\"->>'publisherDeviceId') between 1 and 128\n      and jsonb_typeof(\"task_definition_crypto_revisions\".\"historical_repair\"->'publisherDeviceId') = 'string'\n      and \"task_definition_crypto_revisions\".\"historical_repair\"->>'publisherDeviceId' ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'\n      and jsonb_typeof(\"task_definition_crypto_revisions\".\"historical_repair\"->'signedRequestDigest') = 'string'\n      and \"task_definition_crypto_revisions\".\"historical_repair\"->>'signedRequestDigest' ~ '^[0-9a-f]{64}$'\n      and jsonb_typeof(\"task_definition_crypto_revisions\".\"historical_repair\"->'sourceDigest') = 'string'\n      and \"task_definition_crypto_revisions\".\"historical_repair\"->>'sourceDigest' ~ '^[0-9a-f]{64}$'\n      and jsonb_typeof(\"task_definition_crypto_revisions\".\"historical_repair\"->'sourcePayloadHash') = 'string'\n      and \"task_definition_crypto_revisions\".\"historical_repair\"->>'sourcePayloadHash' ~ '^[0-9a-f]{64}$'\n    ) is true)"
+          "value": "\"task_definition_crypto_revisions\".\"historical_repair\" is null or ((\n      \"task_definition_crypto_revisions\".\"representation\" = 'dual' and \"task_definition_crypto_revisions\".\"content_revision\" = 1\n      and jsonb_typeof(\"task_definition_crypto_revisions\".\"historical_repair\") = 'object'\n      and \"task_definition_crypto_revisions\".\"historical_repair\" ?& ARRAY['version','claimId','publisherDeviceId','signedRequestDigest','sourceDigest','sourcePayloadHash','sourceRevision']\n      and (\"task_definition_crypto_revisions\".\"historical_repair\" - ARRAY['version','claimId','publisherDeviceId','signedRequestDigest','sourceDigest','sourcePayloadHash','sourceRevision']) = '{}'::jsonb\n      and \"task_definition_crypto_revisions\".\"historical_repair\"->'version' = '1'::jsonb\n      and \"task_definition_crypto_revisions\".\"historical_repair\"->'sourceRevision' = '0'::jsonb\n      and jsonb_typeof(\"task_definition_crypto_revisions\".\"historical_repair\"->'claimId') = 'string'\n      and \"task_definition_crypto_revisions\".\"historical_repair\"->>'claimId' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'\n      and octet_length(\"task_definition_crypto_revisions\".\"historical_repair\"->>'publisherDeviceId') between 1 and 128\n      and jsonb_typeof(\"task_definition_crypto_revisions\".\"historical_repair\"->'publisherDeviceId') = 'string'\n      and \"task_definition_crypto_revisions\".\"historical_repair\"->>'publisherDeviceId' ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'\n      and jsonb_typeof(\"task_definition_crypto_revisions\".\"historical_repair\"->'signedRequestDigest') = 'string'\n      and \"task_definition_crypto_revisions\".\"historical_repair\"->>'signedRequestDigest' ~ '^[0-9a-f]{64}$'\n      and jsonb_typeof(\"task_definition_crypto_revisions\".\"historical_repair\"->'sourceDigest') = 'string'\n      and \"task_definition_crypto_revisions\".\"historical_repair\"->>'sourceDigest' ~ '^[0-9a-f]{64}$'\n      and jsonb_typeof(\"task_definition_crypto_revisions\".\"historical_repair\"->'sourcePayloadHash') = 'string'\n      and \"task_definition_crypto_revisions\".\"historical_repair\"->>'sourcePayloadHash' ~ '^[0-9a-f]{64}$'\n    ) is true)"
         },
         "task_definition_crypto_revisions_revision_positive": {
           "name": "task_definition_crypto_revisions_revision_positive",
@@ -17784,7 +17796,7 @@
         },
         "task_definition_crypto_revisions_object_shape": {
           "name": "task_definition_crypto_revisions_object_shape",
-          "value": "((\n      (\"task_definition_crypto_revisions\".\"historical_repair\" is null or \"task_definition_crypto_revisions\".\"historical_repair\"->'version' = '1'::jsonb)\n      and \"task_definition_crypto_revisions\".\"crypto_object_id\" ~ '^task-definition:v1:[0-9a-f]{64}$'\n    ) or (\n      \"task_definition_crypto_revisions\".\"historical_repair\"->'version' = '2'::jsonb\n      and \"task_definition_crypto_revisions\".\"crypto_object_id\" ~ '^task-historical:v1:[0-9a-f]{64}$'\n    )) is true"
+          "value": "\"task_definition_crypto_revisions\".\"crypto_object_id\" ~ '^task-definition:v1:[0-9a-f]{64}$'"
         },
         "task_definition_crypto_revisions_digest_sizes": {
           "name": "task_definition_crypto_revisions_digest_sizes",
@@ -18104,7 +18116,7 @@
       "checkConstraints": {
         "task_run_result_crypto_revisions_historical_repair": {
           "name": "task_run_result_crypto_revisions_historical_repair",
-          "value": "\"task_run_result_crypto_revisions\".\"historical_repair\" is null or ((\n      \"task_run_result_crypto_revisions\".\"representation\" = 'dual' and \"task_run_result_crypto_revisions\".\"result_revision\" = 1\n      and jsonb_typeof(\"task_run_result_crypto_revisions\".\"historical_repair\") = 'object'\n      and \"task_run_result_crypto_revisions\".\"historical_repair\" ?& ARRAY['version','claimId','publisherDeviceId','signedRequestDigest','sourceDigest','sourcePayloadHash','sourceRevision']\n      and (\n        (\"task_run_result_crypto_revisions\".\"historical_repair\"->'version' = '1'::jsonb\n          and (\"task_run_result_crypto_revisions\".\"historical_repair\" - ARRAY['version','claimId','publisherDeviceId','signedRequestDigest','sourceDigest','sourcePayloadHash','sourceRevision']) = '{}'::jsonb)\n        or (\"task_run_result_crypto_revisions\".\"historical_repair\"->'version' = '2'::jsonb\n          and \"task_run_result_crypto_revisions\".\"historical_repair\" ? 'genesisManifestHash'\n          and (\"task_run_result_crypto_revisions\".\"historical_repair\" - ARRAY['version','claimId','publisherDeviceId','signedRequestDigest','sourceDigest','sourcePayloadHash','sourceRevision','genesisManifestHash']) = '{}'::jsonb\n          and jsonb_typeof(\"task_run_result_crypto_revisions\".\"historical_repair\"->'genesisManifestHash') = 'string'\n          and \"task_run_result_crypto_revisions\".\"historical_repair\"->>'genesisManifestHash' ~ '^[0-9a-f]{64}$')\n      )\n      and \"task_run_result_crypto_revisions\".\"historical_repair\"->'sourceRevision' = '0'::jsonb\n      and jsonb_typeof(\"task_run_result_crypto_revisions\".\"historical_repair\"->'claimId') = 'string'\n      and \"task_run_result_crypto_revisions\".\"historical_repair\"->>'claimId' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'\n      and octet_length(\"task_run_result_crypto_revisions\".\"historical_repair\"->>'publisherDeviceId') between 1 and 128\n      and jsonb_typeof(\"task_run_result_crypto_revisions\".\"historical_repair\"->'publisherDeviceId') = 'string'\n      and \"task_run_result_crypto_revisions\".\"historical_repair\"->>'publisherDeviceId' ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'\n      and jsonb_typeof(\"task_run_result_crypto_revisions\".\"historical_repair\"->'signedRequestDigest') = 'string'\n      and \"task_run_result_crypto_revisions\".\"historical_repair\"->>'signedRequestDigest' ~ '^[0-9a-f]{64}$'\n      and jsonb_typeof(\"task_run_result_crypto_revisions\".\"historical_repair\"->'sourceDigest') = 'string'\n      and \"task_run_result_crypto_revisions\".\"historical_repair\"->>'sourceDigest' ~ '^[0-9a-f]{64}$'\n      and jsonb_typeof(\"task_run_result_crypto_revisions\".\"historical_repair\"->'sourcePayloadHash') = 'string'\n      and \"task_run_result_crypto_revisions\".\"historical_repair\"->>'sourcePayloadHash' ~ '^[0-9a-f]{64}$'\n    ) is true)"
+          "value": "\"task_run_result_crypto_revisions\".\"historical_repair\" is null or ((\n      \"task_run_result_crypto_revisions\".\"representation\" = 'dual' and \"task_run_result_crypto_revisions\".\"result_revision\" = 1\n      and jsonb_typeof(\"task_run_result_crypto_revisions\".\"historical_repair\") = 'object'\n      and \"task_run_result_crypto_revisions\".\"historical_repair\" ?& ARRAY['version','claimId','publisherDeviceId','signedRequestDigest','sourceDigest','sourcePayloadHash','sourceRevision']\n      and (\"task_run_result_crypto_revisions\".\"historical_repair\" - ARRAY['version','claimId','publisherDeviceId','signedRequestDigest','sourceDigest','sourcePayloadHash','sourceRevision']) = '{}'::jsonb\n      and \"task_run_result_crypto_revisions\".\"historical_repair\"->'version' = '1'::jsonb\n      and \"task_run_result_crypto_revisions\".\"historical_repair\"->'sourceRevision' = '0'::jsonb\n      and jsonb_typeof(\"task_run_result_crypto_revisions\".\"historical_repair\"->'claimId') = 'string'\n      and \"task_run_result_crypto_revisions\".\"historical_repair\"->>'claimId' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'\n      and octet_length(\"task_run_result_crypto_revisions\".\"historical_repair\"->>'publisherDeviceId') between 1 and 128\n      and jsonb_typeof(\"task_run_result_crypto_revisions\".\"historical_repair\"->'publisherDeviceId') = 'string'\n      and \"task_run_result_crypto_revisions\".\"historical_repair\"->>'publisherDeviceId' ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'\n      and jsonb_typeof(\"task_run_result_crypto_revisions\".\"historical_repair\"->'signedRequestDigest') = 'string'\n      and \"task_run_result_crypto_revisions\".\"historical_repair\"->>'signedRequestDigest' ~ '^[0-9a-f]{64}$'\n      and jsonb_typeof(\"task_run_result_crypto_revisions\".\"historical_repair\"->'sourceDigest') = 'string'\n      and \"task_run_result_crypto_revisions\".\"historical_repair\"->>'sourceDigest' ~ '^[0-9a-f]{64}$'\n      and jsonb_typeof(\"task_run_result_crypto_revisions\".\"historical_repair\"->'sourcePayloadHash') = 'string'\n      and \"task_run_result_crypto_revisions\".\"historical_repair\"->>'sourcePayloadHash' ~ '^[0-9a-f]{64}$'\n    ) is true)"
         },
         "task_run_result_crypto_revisions_revision_positive": {
           "name": "task_run_result_crypto_revisions_revision_positive",
@@ -18128,7 +18140,7 @@
         },
         "task_run_result_crypto_revisions_object_shape": {
           "name": "task_run_result_crypto_revisions_object_shape",
-          "value": "((\n      (\"task_run_result_crypto_revisions\".\"historical_repair\" is null or \"task_run_result_crypto_revisions\".\"historical_repair\"->'version' = '1'::jsonb)\n      and \"task_run_result_crypto_revisions\".\"crypto_object_id\" ~ '^task-run-result:v1:[0-9a-f]{64}$'\n    ) or (\n      \"task_run_result_crypto_revisions\".\"historical_repair\"->'version' = '2'::jsonb\n      and \"task_run_result_crypto_revisions\".\"crypto_object_id\" ~ '^task-historical:v1:[0-9a-f]{64}$'\n    )) is true"
+          "value": "\"task_run_result_crypto_revisions\".\"crypto_object_id\" ~ '^task-run-result:v1:[0-9a-f]{64}$'"
         },
         "task_run_result_crypto_revisions_digest_sizes": {
           "name": "task_run_result_crypto_revisions_digest_sizes",
@@ -47494,131 +47506,6 @@
         "task_content_backfill_scans_lease": {
           "name": "task_content_backfill_scans_lease",
           "value": "case when \"task_content_backfill_scans\".\"lease_token\" is null\n    then \"task_content_backfill_scans\".\"lease_device_id\" is null and \"task_content_backfill_scans\".\"lease_expires_at\" is null and \"task_content_backfill_scans\".\"claim\" is null\n    else \"task_content_backfill_scans\".\"lease_device_id\" is not null and \"task_content_backfill_scans\".\"lease_expires_at\" is not null and \"task_content_backfill_scans\".\"claim\" is not null end"
-        }
-      },
-      "isRLSEnabled": true
-    },
-    "public.task_historical_content_crypto_staging_receipts": {
-      "name": "task_historical_content_crypto_staging_receipts",
-      "schema": "",
-      "columns": {
-        "crypto_object_id": {
-          "name": "crypto_object_id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true
-        },
-        "operation_id": {
-          "name": "operation_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "signed_publication_request_bytes": {
-          "name": "signed_publication_request_bytes",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "signed_request_digest": {
-          "name": "signed_request_digest",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "authority_fingerprint": {
-          "name": "authority_fingerprint",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "genesis_manifest_hash": {
-          "name": "genesis_manifest_hash",
-          "type": "bytea",
-          "primaryKey": false,
-          "notNull": true
-        },
-        "staged_at": {
-          "name": "staged_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": true
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "task_historical_staging_object_fk": {
-          "name": "task_historical_staging_object_fk",
-          "tableFrom": "task_historical_content_crypto_staging_receipts",
-          "tableTo": "crypto_objects",
-          "columnsFrom": [
-            "crypto_object_id"
-          ],
-          "columnsTo": [
-            "object_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {
-        "uq_task_historical_staging_operation": {
-          "name": "uq_task_historical_staging_operation",
-          "nullsNotDistinct": false,
-          "columns": [
-            "operation_id"
-          ]
-        }
-      },
-      "policies": {
-        "task_historical_staging_crypto_sel": {
-          "name": "task_historical_staging_crypto_sel",
-          "as": "PERMISSIVE",
-          "for": "SELECT",
-          "to": [
-            "nautilo_crypto"
-          ],
-          "using": "true"
-        },
-        "task_historical_staging_crypto_ins": {
-          "name": "task_historical_staging_crypto_ins",
-          "as": "PERMISSIVE",
-          "for": "INSERT",
-          "to": [
-            "nautilo_crypto"
-          ],
-          "withCheck": "true"
-        }
-      },
-      "checkConstraints": {
-        "task_historical_staging_operation_portable": {
-          "name": "task_historical_staging_operation_portable",
-          "value": "octet_length(\"task_historical_content_crypto_staging_receipts\".\"operation_id\") between 1\n      and 128\n      and \"task_historical_content_crypto_staging_receipts\".\"operation_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'"
-        },
-        "task_historical_staging_object_portable": {
-          "name": "task_historical_staging_object_portable",
-          "value": "octet_length(\"task_historical_content_crypto_staging_receipts\".\"crypto_object_id\") between 1\n      and 128\n      and \"task_historical_content_crypto_staging_receipts\".\"crypto_object_id\" ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'"
-        },
-        "task_historical_staging_object_shape": {
-          "name": "task_historical_staging_object_shape",
-          "value": "\"task_historical_content_crypto_staging_receipts\".\"crypto_object_id\" ~ '^task-historical:v1:[0-9a-f]{64}$'"
-        },
-        "task_historical_staging_signed_request_size": {
-          "name": "task_historical_staging_signed_request_size",
-          "value": "octet_length(\"task_historical_content_crypto_staging_receipts\".\"signed_publication_request_bytes\") between 1\n      and 1048576"
-        },
-        "task_historical_staging_signed_request_digest_size": {
-          "name": "task_historical_staging_signed_request_digest_size",
-          "value": "octet_length(\"task_historical_content_crypto_staging_receipts\".\"signed_request_digest\") = 32"
-        },
-        "task_historical_staging_authority_fingerprint_size": {
-          "name": "task_historical_staging_authority_fingerprint_size",
-          "value": "octet_length(\"task_historical_content_crypto_staging_receipts\".\"authority_fingerprint\") = 32"
-        },
-        "task_historical_staging_genesis_manifest_hash_size": {
-          "name": "task_historical_staging_genesis_manifest_hash_size",
-          "value": "octet_length(\"task_historical_content_crypto_staging_receipts\".\"genesis_manifest_hash\") = 32"
         }
       },
       "isRLSEnabled": true

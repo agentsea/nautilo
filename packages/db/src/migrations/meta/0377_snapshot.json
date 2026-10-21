@@ -1,6 +1,6 @@
 {
-  "id": "216de99f-20c2-443a-b351-b819694d50e5",
-  "prevId": "bf83f3ad-5bb6-4429-8b94-fb314e2f00ef",
+  "id": "bf83f3ad-5bb6-4429-8b94-fb314e2f00ef",
+  "prevId": "3e847c81-1aab-49f4-b062-feb57aec2c40",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -3453,11 +3453,7 @@
           "name": "content_search",
           "type": "tsvector",
           "primaryKey": false,
-          "notNull": false,
-          "generated": {
-            "as": "to_tsvector('english', content)",
-            "type": "stored"
-          }
+          "notNull": false
         },
         "created_at": {
           "name": "created_at",
@@ -3694,6 +3690,22 @@
           ],
           "isUnique": false,
           "where": "\"session_messages\".\"reply_to_message_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_session_messages_search_overflow": {
+          "name": "idx_session_messages_search_overflow",
+          "columns": [
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"session_messages\".\"content_search\" IS NULL AND \"session_messages\".\"content\" IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -14136,7 +14148,7 @@
           "primaryKey": false,
           "notNull": false,
           "generated": {
-            "as": "btrim(regexp_replace(replace(replace(lower(normalize(label, NFKC)), chr(775), ''), 'ς', 'σ'), '[[:space:][:punct:]]+', ' ', 'g'))",
+            "as": "btrim(regexp_replace(replace(replace(lower(normalize(label, NFKC)), chr(775), ''), '\u03c2', '\u03c3'), '[[:space:][:punct:]]+', ' ', 'g'))",
             "type": "stored"
           }
         },
@@ -29779,7 +29791,7 @@
         },
         "background_crypto_authorization_requests_response_coherent": {
           "name": "background_crypto_authorization_requests_response_coherent",
-          "value": "(\n        \"background_crypto_authorization_requests\".\"accepted_response_kind\" is null\n        and \"background_crypto_authorization_requests\".\"accepted_response_hash\" is null\n        and \"background_crypto_authorization_requests\".\"accepted_response_bytes\" is null\n        and \"background_crypto_authorization_requests\".\"credential_id\" is null\n        and \"background_crypto_authorization_requests\".\"credential_hash\" is null\n        and \"background_crypto_authorization_requests\".\"issuing_human_id\" is null\n        and \"background_crypto_authorization_requests\".\"issuing_device_id\" is null\n        and \"background_crypto_authorization_requests\".\"issuing_device_authorization_revision\" is null\n        and \"background_crypto_authorization_requests\".\"issuer_signing_public_key_hash\" is null\n        and \"background_crypto_authorization_requests\".\"accepted_at\" is null\n        and \"background_crypto_authorization_requests\".\"authorization_expires_at\" is null\n      ) or (\n        \"background_crypto_authorization_requests\".\"accepted_response_kind\" = \"background_crypto_authorization_requests\".\"credential_subject_kind\"\n        and \"background_crypto_authorization_requests\".\"accepted_response_hash\" is not null\n        and \"background_crypto_authorization_requests\".\"accepted_response_bytes\" is not null\n        and octet_length(\"background_crypto_authorization_requests\".\"accepted_response_hash\")\n          = 32\n        and (\n          (\n            \"background_crypto_authorization_requests\".\"accepted_response_kind\" = 'processor'\n            and octet_length(\"background_crypto_authorization_requests\".\"accepted_response_bytes\") between 1\n              and 35669931\n          ) or (\n            \"background_crypto_authorization_requests\".\"accepted_response_kind\" = 'agent'\n            and octet_length(\"background_crypto_authorization_requests\".\"accepted_response_bytes\") between 1\n              and 16912384\n          ) or (\n            \"background_crypto_authorization_requests\".\"accepted_response_kind\" = 'runtime'\n            and octet_length(\"background_crypto_authorization_requests\".\"accepted_response_bytes\") between 1\n              and 16779343\n          )\n        )\n        and \"background_crypto_authorization_requests\".\"credential_id\" is not null\n        and \"background_crypto_authorization_requests\".\"credential_hash\" is not null\n        and octet_length(\"background_crypto_authorization_requests\".\"credential_hash\")\n          = 32\n        and \"background_crypto_authorization_requests\".\"issuing_human_id\" is not null\n        and \"background_crypto_authorization_requests\".\"issuing_device_id\" is not null\n        and \"background_crypto_authorization_requests\".\"issuing_device_authorization_revision\" is not null\n        and \"background_crypto_authorization_requests\".\"issuer_signing_public_key_hash\" is not null\n        and octet_length(\"background_crypto_authorization_requests\".\"issuer_signing_public_key_hash\")\n          = 32\n        and \"background_crypto_authorization_requests\".\"accepted_at\" is not null\n        and \"background_crypto_authorization_requests\".\"authorization_expires_at\" is not null\n      )"
+          "value": "(\n        \"background_crypto_authorization_requests\".\"accepted_response_kind\" is null\n        and \"background_crypto_authorization_requests\".\"accepted_response_hash\" is null\n        and \"background_crypto_authorization_requests\".\"accepted_response_bytes\" is null\n        and \"background_crypto_authorization_requests\".\"credential_id\" is null\n        and \"background_crypto_authorization_requests\".\"credential_hash\" is null\n        and \"background_crypto_authorization_requests\".\"issuing_human_id\" is null\n        and \"background_crypto_authorization_requests\".\"issuing_device_id\" is null\n        and \"background_crypto_authorization_requests\".\"issuing_device_authorization_revision\" is null\n        and \"background_crypto_authorization_requests\".\"issuer_signing_public_key_hash\" is null\n        and \"background_crypto_authorization_requests\".\"accepted_at\" is null\n        and \"background_crypto_authorization_requests\".\"authorization_expires_at\" is null\n      ) or (\n        \"background_crypto_authorization_requests\".\"accepted_response_kind\" = \"background_crypto_authorization_requests\".\"credential_subject_kind\"\n        and \"background_crypto_authorization_requests\".\"accepted_response_hash\" is not null\n        and \"background_crypto_authorization_requests\".\"accepted_response_bytes\" is not null\n        and octet_length(\"background_crypto_authorization_requests\".\"accepted_response_hash\")\n          = 32\n        and (\n          (\n            \"background_crypto_authorization_requests\".\"accepted_response_kind\" = 'processor'\n            and octet_length(\"background_crypto_authorization_requests\".\"accepted_response_bytes\") between 1\n              and 35669931\n          ) or (\n            \"background_crypto_authorization_requests\".\"accepted_response_kind\" = 'agent'\n            and octet_length(\"background_crypto_authorization_requests\".\"accepted_response_bytes\") between 1\n              and 16912384\n          ) or (\n            \"background_crypto_authorization_requests\".\"accepted_response_kind\" = 'runtime'\n            and octet_length(\"background_crypto_authorization_requests\".\"accepted_response_bytes\") between 1\n              and 30312875\n          )\n        )\n        and \"background_crypto_authorization_requests\".\"credential_id\" is not null\n        and \"background_crypto_authorization_requests\".\"credential_hash\" is not null\n        and octet_length(\"background_crypto_authorization_requests\".\"credential_hash\")\n          = 32\n        and \"background_crypto_authorization_requests\".\"issuing_human_id\" is not null\n        and \"background_crypto_authorization_requests\".\"issuing_device_id\" is not null\n        and \"background_crypto_authorization_requests\".\"issuing_device_authorization_revision\" is not null\n        and \"background_crypto_authorization_requests\".\"issuer_signing_public_key_hash\" is not null\n        and octet_length(\"background_crypto_authorization_requests\".\"issuer_signing_public_key_hash\")\n          = 32\n        and \"background_crypto_authorization_requests\".\"accepted_at\" is not null\n        and \"background_crypto_authorization_requests\".\"authorization_expires_at\" is not null\n      )"
         },
         "background_crypto_authorization_requests_authorization_ttl": {
           "name": "background_crypto_authorization_requests_authorization_ttl",
@@ -36880,7 +36892,7 @@
         },
         "object_crypto_access_manifests_signer_evidence_size": {
           "name": "object_crypto_access_manifests_signer_evidence_size",
-          "value": "\"object_crypto_access_manifests\".\"signer_evidence_bytes\" is null or (\n        octet_length(\"object_crypto_access_manifests\".\"signer_evidence_bytes\") between 1\n        and 2039\n      )"
+          "value": "\"object_crypto_access_manifests\".\"signer_evidence_bytes\" is null or (\n        octet_length(\"object_crypto_access_manifests\".\"signer_evidence_bytes\") between 1\n        and 13535571\n      )"
         }
       },
       "isRLSEnabled": true

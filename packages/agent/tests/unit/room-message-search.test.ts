@@ -69,14 +69,15 @@ describe("normalizeRoomMessageSearchQuery", () => {
 
 describe("queryRoomMessageContentIndex", () => {
   test("builds a parameterized original-case residual without replacing indexed FTS", () => {
-    const normalized = normalizeRoomMessageSearchQuery("Dark Stock");
+    const normalized = normalizeRoomMessageSearchQuery("Dark_Stock");
     if (!normalized.ok) throw new Error("expected valid query");
     const whole = sqlText(roomMessageCasePredicate("whole", normalized.query));
     const prefix = sqlText(roomMessageCasePredicate("prefix", normalized.query));
     expect(whole).toContain("sm.content ~");
     expect(whole).toContain("Dark");
     expect(whole).toContain("Stock");
-    expect(whole).toContain("[:alnum:]_");
+    expect(whole).toContain("(^|[^[:alnum:]])Dark($|[^[:alnum:]])");
+    expect(whole).toContain("(^|[^[:alnum:]])Stock($|[^[:alnum:]])");
     expect(prefix).toContain("Dark");
     expect(prefix).not.toContain("Dark($|");
   });
@@ -135,15 +136,15 @@ describe("queryRoomMessageContentIndex", () => {
   });
 
   test("preserves a safe slash-delimited path as one indexed prefix lexeme", async () => {
-    const absolute = normalizeRoomMessageSearchQuery("/Users/w");
+    const absolute = normalizeRoomMessageSearchQuery("/Path/to");
     if (!absolute.ok) throw new Error("expected valid path query");
-    expect(absolute.query.pathPrefix).toBe("/users/w");
-    expect(sqlText(roomMessageSearchTsquery("prefix", absolute.query))).toContain("'/users/w':*");
+    expect(absolute.query.pathPrefix).toBe("/path/to");
+    expect(sqlText(roomMessageSearchTsquery("prefix", absolute.query))).toContain("'/path/to':*");
 
-    const relative = normalizeRoomMessageSearchQuery("Users/w");
+    const relative = normalizeRoomMessageSearchQuery("Path/to");
     if (!relative.ok) throw new Error("expected valid path query");
     const relativeSql = sqlText(roomMessageSearchTsquery("prefix", relative.query));
-    expect(relativeSql).toContain("'users/w':* | '/users/w':*");
+    expect(relativeSql).toContain("'path/to':* | '/path/to':*");
   });
 
   test("returns validation errors without executing the database", async () => {

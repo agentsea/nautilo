@@ -1,6 +1,6 @@
 {
-  "id": "0251be5f-067e-4010-942c-3bdf9e1c964c",
-  "prevId": "77879243-aca6-435d-879b-2f5896088017",
+  "id": "77879243-aca6-435d-879b-2f5896088017",
+  "prevId": "36798dad-2049-4f2d-8186-02f14a8909dd",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -3453,11 +3453,7 @@
           "name": "content_search",
           "type": "tsvector",
           "primaryKey": false,
-          "notNull": false,
-          "generated": {
-            "as": "to_tsvector('english', content)",
-            "type": "stored"
-          }
+          "notNull": false
         },
         "created_at": {
           "name": "created_at",
@@ -3694,6 +3690,22 @@
           ],
           "isUnique": false,
           "where": "\"session_messages\".\"reply_to_message_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_session_messages_search_overflow": {
+          "name": "idx_session_messages_search_overflow",
+          "columns": [
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"session_messages\".\"content_search\" IS NULL AND \"session_messages\".\"content\" IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -16630,6 +16642,12 @@
           "primaryKey": false,
           "notNull": false
         },
+        "local_execution_delegation": {
+          "name": "local_execution_delegation",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "metadata": {
           "name": "metadata",
           "type": "jsonb",
@@ -16700,12 +16718,6 @@
         "cancelled_at": {
           "name": "cancelled_at",
           "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "local_execution_delegation": {
-          "name": "local_execution_delegation",
-          "type": "jsonb",
           "primaryKey": false,
           "notNull": false
         }
@@ -16911,10 +16923,6 @@
         "tasks_crypto_mapping_coherent": {
           "name": "tasks_crypto_mapping_coherent",
           "value": "(\n      \"tasks\".\"content_representation\" = 'ordinary'\n      and \"tasks\".\"content_namespace_id\" is null\n      and \"tasks\".\"content_revision\" = 0\n      and \"tasks\".\"crypto_object_id\" is null\n      and \"tasks\".\"crypto_access_revision\" = 0\n      and \"tasks\".\"crypto_required_namespace_fingerprint\" is null\n      and \"tasks\".\"crypto_mapping_state\" = 'unmapped'\n    ) or (\n      \"tasks\".\"content_representation\" in ('dual', 'protected')\n      and \"tasks\".\"content_namespace_id\" is not null\n      and \"tasks\".\"content_revision\" > 0\n      and \"tasks\".\"crypto_object_id\" is not null\n      and \"tasks\".\"crypto_access_revision\" >= 0\n      and octet_length(\"tasks\".\"crypto_required_namespace_fingerprint\") = 32\n      and \"tasks\".\"crypto_mapping_state\" in ('verified', 'stale')\n      and (\"tasks\".\"content_representation\" <> 'protected' or (\n        \"tasks\".\"prompt\" = ''\n        and \"tasks\".\"expected_output\" is null\n        and \"tasks\".\"last_error\" is null\n      ))\n    )"
-        },
-        "tasks_protected_requester_owns_content": {
-          "name": "tasks_protected_requester_owns_content",
-          "value": "\"tasks\".\"content_representation\" = 'ordinary' or \"tasks\".\"owner_id\" = \"tasks\".\"requestor_id\""
         }
       },
       "isRLSEnabled": false

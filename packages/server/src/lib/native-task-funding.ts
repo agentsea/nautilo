@@ -2,9 +2,11 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { chatGPTFundingRegistration } from "./chatgpt-plan/runtime";
 import { createCapabilityFundingSession, prepareCapabilityFundingSession } from "./capability-funding";
 import {
+  COMBO_SPECS,
   modelIdForCapabilityProjection, getProfileByAgentId, resolveTaskModel,
   validateExactTaskModelSelection, resolveRetainedModels, resolveCatalogModel,
-  type ForegroundChatFundingSession, isSupportedPersonalTool, readDeepResearchTaskMetadata,
+  type ForegroundChatFundingAttempt, type ForegroundChatFundingSession,
+  isSupportedPersonalTool, readDeepResearchTaskMetadata,
 } from "@nautilo/agent";
 import { and, eq, isNull, rooms, roomMembers, namespaces, sql, tasks, taskRuns, getServerProviderPolicy, getTaskById, getTaskRunForTask, getCachedServerModelConfigRow, recordTaskWakeFundingFailure, type TaskRun } from "@nautilo/db";
 import { assertCanInvokeAgent, findActorByOwnerId, getUserCapabilities } from "@nautilo/trust";
@@ -15,6 +17,10 @@ import { isOwnPrivateGenieRoom, usageFundingFor } from "./foreground-chat-fundin
 import { ModelFundingError, resolveModelFunding, withAdmittedPersonalCredential,
   type ModelFundingDecision } from "./model-funding";
 import { getServerDirectDb } from "./server-direct-db";
+import {
+  openServerFirstPersonalRecovery,
+  openSurplusPersonalDirectRecovery,
+} from "./surplus-personal-recovery";
 
 import { callerTaskModelEnvironment, callerTaskModelIds, personalOnlyTaskModelIds } from "./caller-task-model-context";
 import { protectedTaskRepoDocsSelectionProjection } from "../routes/protected-task-repo-docs-selection";
@@ -146,6 +152,19 @@ export async function withProtectedTaskFundingAuthority<T>(
     await assertCurrent();
     return result;
   });
+}
+
+export function nativeTaskAllowsUnpinnedSurplusRetry(
+  task: Pick<Candidate, "contentRepresentation" | "selectionProfile" | "selectionSpec">,
+): boolean {
+  if ((task.contentRepresentation ?? "ordinary") !== "ordinary") return false;
+  const profile = task.selectionProfile;
+  const effective = task.selectionSpec ?? (profile && profile !== "balanced"
+    ? COMBO_SPECS[profile]
+    : undefined);
+  return effective?.band !== "privacy"
+    && effective?.objective !== "privacy"
+    && effective?.absoluteFloors?.privacy === undefined;
 }
 
 const NATIVE_TASK_METADATA_KEYS = new Set([
@@ -680,15 +699,65 @@ async function openSession(task: FundingTaskSource, run: FundingRunSource,
     }
   };
   await resolveCandidate(modelId);
+  const allowUnpinnedSurplusRetry = nativeTaskAllowsUnpinnedSurplusRetry(task);
+  const fundingPolicy = admitted.kind === "server"
+    ? await getServerProviderPolicy(getServerDirectDb())
+    : null;
   let lastAttempt: ModelFundingDecision | undefined;
   return {
     kind: admitted.kind,
+    ...(allowUnpinnedSurplusRetry ? { allowUnpinnedSurplusRetry: true as const } : {}),
     capabilityFunding: await prepareCapabilityFundingSession(
       task.requestorId,
       async () => { await resolveCandidate(modelId); },
       admitted.kind,
       bindingFor(admitted),
+      allowUnpinnedSurplusRetry ? true : undefined,
     ),
+    ...(admitted.kind === "server" && admitted.providerRoute === "surplus" ? {
+      openPersonalDirectRecovery: async (candidate: string) => {
+        const recovery = await fundingBoundary(() => openSurplusPersonalDirectRecovery({
+          humanUserId: task.requestorId,
+          modelId: candidate,
+          workload: "native_text_task",
+          primaryDecision: admitted,
+          ...(allowUnpinnedSurplusRetry ? { allowUnpinnedSurplusRetry: true as const } : {}),
+          recheckPrimary: () => resolveCandidate(candidate),
+        }));
+        return {
+          ...recovery,
+          recheckAttempt: (recoveryModelId: string, transport?: "direct" | "surplus") =>
+            fundingBoundary(() => recovery.recheckAttempt(recoveryModelId, transport)),
+          async runAttempt<T>(recoveryModelId: string,
+            callback: (attempt: ForegroundChatFundingAttempt) => Promise<T>,
+            transport?: "direct" | "surplus") {
+            return fundingBoundary(() => recovery.runAttempt(recoveryModelId, callback, transport));
+          },
+        };
+      },
+    } : {}),
+    ...(admitted.kind === "server" && fundingPolicy?.fundingPreference === "server_first" ? {
+      openPersonalRecovery: async (candidate: string) => {
+        const recovery = await fundingBoundary(() => openServerFirstPersonalRecovery({
+          humanUserId: task.requestorId,
+          modelId: candidate,
+          workload: "native_text_task",
+          primaryDecision: admitted,
+          ...(allowUnpinnedSurplusRetry ? { allowUnpinnedSurplusRetry: true as const } : {}),
+          recheckPrimary: () => resolveCandidate(candidate),
+        }));
+        return {
+          ...recovery,
+          recheckAttempt: (recoveryModelId: string, transport?: "direct" | "surplus") =>
+            fundingBoundary(() => recovery.recheckAttempt(recoveryModelId, transport)),
+          async runAttempt<T>(recoveryModelId: string,
+            callback: (attempt: ForegroundChatFundingAttempt) => Promise<T>,
+            transport?: "direct" | "surplus") {
+            return fundingBoundary(() => recovery.runAttempt(recoveryModelId, callback, transport));
+          },
+        };
+      },
+    } : {}),
     async recheckAttempt(candidate, transport) {
       const current = await resolveCandidate(candidate, transport);
       if (transport && lastAttempt?.kind === "personal" && current.kind === "personal"

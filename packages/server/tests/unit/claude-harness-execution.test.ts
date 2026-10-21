@@ -905,7 +905,7 @@ function permutations<T>(values: readonly T[]): readonly (readonly T[])[] {
 // Exercise the production SDK projection, Desktop forwarding, wire parser and
 // Server completion together. Only the external SDK stream and local lease are
 // synthetic; no provider process, filesystem grant, or network is opened.
-for (const version of [18, 31]) {
+for (const version of [18, 31, 32]) {
   for (const texts of [["B"], ["A", "B"]]) {
     test(`SDK to harness protocol ${version}: ${texts.length} root messages preserve progress and final result`, async () => {
       const { ClaudeAgentSdkHost } = await import("../../../claude-agent-sdk-host/src/index");
@@ -957,7 +957,7 @@ for (const version of [18, 31]) {
         const actual = await outputs;
         expect(actual.filter(output => output.kind === "output_delta").map(output => output.text)).toEqual(texts);
         expect(actual.filter(output => output.kind === "assistant_completed")).toMatchObject([
-          { text: version >= 31 ? "B" : texts.join("") },
+          { text: version >= 32 ? "B" : texts.join("") },
         ]);
         expect(actual.at(-1)).toMatchObject({ kind: "terminal", status: "completed" });
       } finally { desktop.onDisconnected(); }
@@ -965,7 +965,7 @@ for (const version of [18, 31]) {
   }
 }
 
-test("capable harness rejects missing and late root boundaries without completing a result", async () => {
+test("v32 harness rejects missing and late root boundaries without completing a result", async () => {
   for (const events of [
     [{ kind: "output_delta", text: "unbounded origin" }],
     [{ kind: "output_message_started" }, { kind: "output_delta", text: "B" },
@@ -973,7 +973,7 @@ test("capable harness rejects missing and late root boundaries without completin
   ] satisfies RelayClaudeExecutionEvent[][]) {
     const fx = fixture();
     const { iterator, pending } = await begin(fx, admission({ claude: { ...admission().claude,
-      scope: { ...scope, selectedProtocolVersion: 31 } } }));
+      scope: { ...scope, selectedProtocolVersion: 32 } } }));
     for (const event of events) fx.fake.emit(event);
     const outputs = [await pending];
     for (;;) { const item = await iterator.next(); if (item.done) break; outputs.push(item.value); }

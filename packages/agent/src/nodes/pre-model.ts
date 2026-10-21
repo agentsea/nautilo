@@ -1,4 +1,5 @@
 import { isExternalRoomState, prepareExternalRoomTextContext } from "../tools/external-room-policy";
+import { projectToolResults, withResultReader } from "../tools/result-reader/result-projection";
 import { getCapabilityFundingSession } from "../runtime/capability-funding";
 import { personalToolReady } from "../runtime/personal-tool-readiness";
 import { getCurrentLocalExecutionDelegation } from "../runtime/local-execution-delegation";
@@ -696,7 +697,7 @@ export async function preModelNode(
         )
         .entries
         .filter((entry) =>
-          (!state.toolWhitelist || state.toolWhitelist.includes(entry.name)) &&
+          (!state.toolWhitelist || withResultReader(state.toolWhitelist)!.includes(entry.name)) &&
           !entry.requiredModelCapabilities?.some(
             (capability) => !activeModelCapabilities.includes(capability),
           ),
@@ -813,7 +814,7 @@ export async function preModelNode(
           activatedToolNames: selectedActivatedToolNamesForActor(state.actorRole, activatedToolNames),
           readableNamespaces: envelopeReadableNamespaces(state.memoryAccessEnvelope),
           activeModelCapabilities,
-          toolWhitelist: state.toolWhitelist,
+          toolWhitelist: withResultReader(state.toolWhitelist),
           trustedExecutionEntrypoint: state.trustedExecutionEntrypoint,
           verifiedOrdinaryOrigin: state.verifiedOrdinaryOrigin,
           taskReportBackContinuation: state.taskReportBackContinuation,
@@ -830,7 +831,7 @@ export async function preModelNode(
         activeModelCapabilities,
         toolNameWhitelist: personalFunding && personalTaskControls && !getCapabilityFundingSession()
           ? PERSONAL_TASK_CONTROL_TOOL_NAMES
-          : state.toolWhitelist,
+          : withResultReader(state.toolWhitelist),
         activatedToolNames: selectedActivatedToolNamesForActor(state.actorRole, activatedToolNames),
         fullEncryptionOnly,
         intentPackToolNames: [],
@@ -1247,7 +1248,8 @@ export async function preModelNode(
     researchContinuity,
   };
 
-  const processedHistory = processHistory(llmMessages, historyConfig);
+  const processedHistory = processHistory(tools.some((tool) => tool.name === "read_tool_result")
+    ? projectToolResults(llmMessages, Math.floor(historyConfig.maxMessageTokens / 2)) : llmMessages, historyConfig);
 
   if (processedHistory.windowing.researchReloadRequired) {
     compactionHint = new SystemMessage(

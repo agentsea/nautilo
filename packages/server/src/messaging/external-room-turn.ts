@@ -5,6 +5,7 @@ import { bolterBindingMatches, bolterReceiverMatches, type BolterBindingContext,
   type BolterRoomBinding, type BolterInboundInsert } from "@nautilo/db";
 import { assertAcceptedInvocationAuthoritySubject, getAcceptedInvocationAuthorityOrigin, restrictExternalRoomEnvelope,
   type AcceptedInvocationAuthority, type MemoryAccessEnvelope } from "@nautilo/trust";
+import { isBolterMessageAddressed } from "./bolter-addressing";
 
 const opaqueId = z.string().min(1).refine((value) => value.trim() === value && !/\s/u.test(value)
   && [...value].every((character) => character.charCodeAt(0) >= 32 && character.charCodeAt(0) !== 127));
@@ -81,7 +82,7 @@ export function prepareBolterExternalRoomTurn(context: ExternalRoomIntakeContext
   const message = parsed.data;
   if (message.chatId !== binding.chatId || (message.threadRootId ?? "") !== binding.threadId) return fail("destination-mismatch");
   if (message.senderType === "system" || message.senderId === binding.providerAgentId) return fail("echo");
-  if (message.senderType === "anima" && !message.addressed) return fail("not-addressed");
+  if (!isBolterMessageAddressed(message, binding.providerAgentId)) return fail("not-addressed");
   const originResult = externalMessageOriginSchema.safeParse({
     kind: "external_message", version: 1, provider: "bolter", origin: binding.origin,
     connectionId: connection.id, bindingId: binding.id, providerAgentId: binding.providerAgentId,

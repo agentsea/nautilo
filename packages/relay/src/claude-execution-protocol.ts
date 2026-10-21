@@ -8,7 +8,7 @@
 import { claudePermissionDetailSchema, type ClaudePermissionDetail } from "@nautilo/types";
 export { claudePermissionDetailSchema, type ClaudePermissionDetail } from "@nautilo/types";
 export const CLAUDE_EXECUTION_PROTOCOL_VERSION = 18 as const;
-export const CLAUDE_MESSAGE_BOUNDARY_PROTOCOL_VERSION = 31 as const;
+export const CLAUDE_MESSAGE_BOUNDARY_PROTOCOL_VERSION = 32 as const;
 export const CLAUDE_PERMISSION_DETAIL_PROTOCOL_VERSION = 20 as const;
 export const CLAUDE_EXECUTION_MAX_FRAME_BYTES = 128 * 1024;
 export const CLAUDE_EXECUTION_MAX_PROMPT_BYTES = 16 * 1024;

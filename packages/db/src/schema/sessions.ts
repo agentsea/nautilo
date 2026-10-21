@@ -100,10 +100,8 @@ export const sessionMessages = pgTable(
     cryptoObjectId: text("crypto_object_id").references(
       () => cryptoObjects.objectId,
     ),
-    contentSearch: tsvector("content_search").generatedAlwaysAs(
-      (): ReturnType<typeof sql> =>
-        sql`to_tsvector('english', content)`,
-    ),
+    /** Database-maintained; NULL with ordinary content selects literal overflow search. */
+    contentSearch: tsvector("content_search"),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -193,6 +191,9 @@ export const sessionMessages = pgTable(
       "gin",
       table.contentSearch,
     ),
+    // Allows the search OR to combine ordinary GIN hits with only overflow rows.
+    index("idx_session_messages_search_overflow").on(table.sessionId)
+      .where(sql`${table.contentSearch} IS NULL AND ${table.content} IS NOT NULL`),
     uniqueIndex("uq_session_messages_session_fingerprint")
       .on(table.sessionId, table.fingerprint)
       .where(sql`${table.fingerprint} IS NOT NULL`),

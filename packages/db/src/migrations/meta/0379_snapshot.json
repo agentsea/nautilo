@@ -1,6 +1,6 @@
 {
-  "id": "cc217b04-bcd9-44f5-9c44-36dbfbb5e84b",
-  "prevId": "20b0e107-eb55-4b00-a8fa-3152bb0474dd",
+  "id": "20b0e107-eb55-4b00-a8fa-3152bb0474dd",
+  "prevId": "216de99f-20c2-443a-b351-b819694d50e5",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -3453,11 +3453,7 @@
           "name": "content_search",
           "type": "tsvector",
           "primaryKey": false,
-          "notNull": false,
-          "generated": {
-            "as": "to_tsvector('english', content)",
-            "type": "stored"
-          }
+          "notNull": false
         },
         "created_at": {
           "name": "created_at",
@@ -3694,6 +3690,22 @@
           ],
           "isUnique": false,
           "where": "\"session_messages\".\"reply_to_message_id\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_session_messages_search_overflow": {
+          "name": "idx_session_messages_search_overflow",
+          "columns": [
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"session_messages\".\"content_search\" IS NULL AND \"session_messages\".\"content\" IS NOT NULL",
           "concurrently": false,
           "method": "btree",
           "with": {}
@@ -14136,7 +14148,7 @@
           "primaryKey": false,
           "notNull": false,
           "generated": {
-            "as": "btrim(regexp_replace(replace(replace(lower(normalize(label, NFKC)), chr(775), ''), 'ς', 'σ'), '[[:space:][:punct:]]+', ' ', 'g'))",
+            "as": "btrim(regexp_replace(replace(replace(lower(normalize(label, NFKC)), chr(775), ''), '\u03c2', '\u03c3'), '[[:space:][:punct:]]+', ' ', 'g'))",
             "type": "stored"
           }
         },
@@ -36914,7 +36926,7 @@
         },
         "object_crypto_access_manifests_signer_evidence_size": {
           "name": "object_crypto_access_manifests_signer_evidence_size",
-          "value": "\"object_crypto_access_manifests\".\"signer_evidence_bytes\" is null or (\n        octet_length(\"object_crypto_access_manifests\".\"signer_evidence_bytes\") between 1\n        and 3675\n      )"
+          "value": "\"object_crypto_access_manifests\".\"signer_evidence_bytes\" is null or (\n        octet_length(\"object_crypto_access_manifests\".\"signer_evidence_bytes\") between 1\n        and 2039\n      )"
         }
       },
       "isRLSEnabled": true

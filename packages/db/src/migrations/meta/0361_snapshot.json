@@ -1,5 +1,5 @@
 {
-  "id": "77879243-aca6-435d-879b-2f5896088017",
+  "id": "36798dad-2049-4f2d-8186-02f14a8909dd",
   "prevId": "87ca2b7f-be58-4d1d-8d3d-02157ee6a6c2",
   "version": "7",
   "dialect": "postgresql",
@@ -3453,11 +3453,7 @@
           "name": "content_search",
           "type": "tsvector",
           "primaryKey": false,
-          "notNull": false,
-          "generated": {
-            "as": "to_tsvector('english', content)",
-            "type": "stored"
-          }
+          "notNull": false
         },
         "created_at": {
           "name": "created_at",
@@ -3626,6 +3622,22 @@
           "isUnique": false,
           "concurrently": false,
           "method": "gin",
+          "with": {}
+        },
+        "idx_session_messages_search_overflow": {
+          "name": "idx_session_messages_search_overflow",
+          "columns": [
+            {
+              "expression": "session_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"session_messages\".\"content_search\" IS NULL AND \"session_messages\".\"content\" IS NOT NULL",
+          "concurrently": false,
+          "method": "btree",
           "with": {}
         },
         "uq_session_messages_session_fingerprint": {
@@ -14104,7 +14116,7 @@
           "primaryKey": false,
           "notNull": false,
           "generated": {
-            "as": "btrim(regexp_replace(replace(replace(lower(normalize(label, NFKC)), chr(775), ''), '\u03c2', '\u03c3'), '[[:space:][:punct:]]+', ' ', 'g'))",
+            "as": "btrim(regexp_replace(replace(replace(lower(normalize(label, NFKC)), chr(775), ''), 'ς', 'σ'), '[[:space:][:punct:]]+', ' ', 'g'))",
             "type": "stored"
           }
         },
@@ -29626,7 +29638,7 @@
         },
         "background_crypto_authorization_requests_work_subject_coherent": {
           "name": "background_crypto_authorization_requests_work_subject_coherent",
-          "value": "(\n        (\"background_crypto_authorization_requests\".\"work_kind\" like 'stenographer.%' and \"background_crypto_authorization_requests\".\"processor_kind\" = 'stenographer'\n          or \"background_crypto_authorization_requests\".\"work_kind\" like 'reflection.%' and \"background_crypto_authorization_requests\".\"processor_kind\" = 'reflection')\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'processor'\n      ) or (\n        \"background_crypto_authorization_requests\".\"work_kind\" not like 'stenographer.%'\n        and \"background_crypto_authorization_requests\".\"work_kind\" not like 'reflection.%'\n        and (\"background_crypto_authorization_requests\".\"work_kind\" not like 'task.%'\n          or \"background_crypto_authorization_requests\".\"format_version\" in (1, 2))\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'agent'\n      ) or (\n        \"background_crypto_authorization_requests\".\"work_kind\" in (\n          'task.dispatch',\n          'task.execute',\n          'task.await_reply_resume',\n          'task.approval_resume'\n        )\n        and \"background_crypto_authorization_requests\".\"purpose\" = \"background_crypto_authorization_requests\".\"work_kind\"\n        and \"background_crypto_authorization_requests\".\"format_version\" = 3\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'runtime'\n      )"
+          "value": "(\n        (\"background_crypto_authorization_requests\".\"work_kind\" like 'stenographer.%' and \"background_crypto_authorization_requests\".\"processor_kind\" = 'stenographer'\n          or \"background_crypto_authorization_requests\".\"work_kind\" like 'reflection.%' and \"background_crypto_authorization_requests\".\"processor_kind\" = 'reflection')\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'processor'\n      ) or (\n        \"background_crypto_authorization_requests\".\"work_kind\" not like 'stenographer.%'\n        and \"background_crypto_authorization_requests\".\"work_kind\" not like 'reflection.%'\n        and (\"background_crypto_authorization_requests\".\"work_kind\" not like 'task.%'\n          or \"background_crypto_authorization_requests\".\"format_version\" in (1, 2))\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'agent'\n      ) or (\n        \"background_crypto_authorization_requests\".\"work_kind\" in (\n          'task.dispatch',\n          'task.execute',\n          'task.await_reply_resume'\n        )\n        and \"background_crypto_authorization_requests\".\"purpose\" = \"background_crypto_authorization_requests\".\"work_kind\"\n        and \"background_crypto_authorization_requests\".\"format_version\" = 3\n        and \"background_crypto_authorization_requests\".\"credential_subject_kind\" = 'runtime'\n      )"
         },
         "background_crypto_authorization_requests_processor_kind_portable": {
           "name": "background_crypto_authorization_requests_processor_kind_portable",

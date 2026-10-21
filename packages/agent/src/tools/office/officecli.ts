@@ -297,7 +297,7 @@ const OfficeCliSchema = z.object({
   start: z.number().int().optional(),
   end: z.number().int().optional(),
   maxLines: z.number().int().positive().optional(),
-  cols: z.string().optional(),
+  cols: z.string().optional().describe("Comma-separated Excel column letters, e.g. A,B,C. Ranges such as A:C are not supported."),
   page: z.string().optional(),
   browser: z.boolean().optional(),
   screenshotWidth: z.number().int().positive().optional(),
@@ -355,7 +355,7 @@ export interface CreateOfficeCliToolDeps {
   readImagePixelSize?: typeof readImagePixelSize;
   getOfficeSessionManager?: () => SessionManagerWithProbe;
   /**
-   * M206 — relay registry accessor (legacy test seam; local zones use
+   * relay registry accessor (legacy test seam; local zones use
    * executeLocalOfficeOperation instead of fs byte transport).
    */
   getRelayRegistry?: () => ToolRelayRegistry | null;
@@ -436,7 +436,7 @@ function isWriteCommand(command: OfficeCliCommand): boolean {
 }
 
 /**
- * M206 — `current`/`absolute` zones dispatch one structured `kind:"office"`
+ * `current`/`absolute` zones dispatch one structured `kind:"office"`
  * local-file operation to the Electron relay. The server never stages local
  * OOXML bytes or runs OfficeCLI for these zones.
  */
@@ -518,14 +518,17 @@ function officeZoneContext(ctx: OfficeCliToolContext): { workspaceRoot: string; 
   return { workspaceRoot: ctx.workspacePath, currentFolder: ctx.currentFolder || null };
 }
 
-function makeRun(deps: CreateOfficeCliToolDeps): OfficeCreateRunFn | { error: string } {
+function makeRun(deps: CreateOfficeCliToolDeps, signal?: AbortSignal): OfficeCreateRunFn | { error: string } {
   if (deps.run) return deps.run;
   const resolver = deps.resolveOfficeCliPath ?? resolveVendoredOfficeCliOrNull;
   const binaryPath = resolver();
   if (!binaryPath) {
     return { error: "officecli binary not found for this platform. The bundled OfficeCLI binary is missing or not executable." };
   }
-  return (deps.makeOfficeCreateRun ?? makeOfficeCreateRun)({ binaryPath });
+  return (deps.makeOfficeCreateRun ?? makeOfficeCreateRun)({
+    binaryPath,
+    ...(signal !== undefined ? { signal } : {}),
+  });
 }
 
 function buildDispatchContext(ctx: OfficeCliToolContext, meta?: WorkspaceArtifactPatchMeta): DispatchContext {
@@ -1062,13 +1065,13 @@ async function applyGeneratedBytes(
   const sizeError = assertGeneratedSizeForFormat(bytes.byteLength, ext);
   if (sizeError) return error(sizeError);
 
-  // M206 — current/absolute writes are applied on the Electron relay via
+  // current/absolute writes are applied on the Electron relay via
   // structured local-file office dispatch (never server staging).
   if (isRelayZone(args.zone)) {
     return error("applyGeneratedBytes called for relay zone — use dispatchLocalOfficeCli");
   }
 
-  // D448: Workspace OfficeCLI candidates never use the legacy generic binary
+  // Workspace OfficeCLI candidates never use the legacy generic binary
   // committer. The server-installed port re-resolves current Room authority,
   // admits human leases, and commits exactly one binary coordinator plan.
   if (args.zone === "workspace") {
@@ -1472,15 +1475,17 @@ export function createOfficeCliTool(context?: unknown, deps: CreateOfficeCliTool
     name: "officecli",
     description: `Headless OfficeCLI reading, validation, authoring, and rendering for closed .docx, .xlsx, and .pptx files.
 
-To read a complete closed document, use command=view with mode=text and omit start, end, maxLines, and limit. The JSON returnedElements field is the exact number of emitted records; the vendor totalElements field may also count non-content OOXML structure. Use this tool for generate-from-scratch, closed-file edits, validation, and render/look/fix loops. It is NOT the interactive editor path: when a Writer/Spreadsheet/Slides mini-app is open, use an available app-specific interactive editor tool or close the editor first.
+Start with document structure or stats, then select useful text ranges or spreadsheet columns with start, end and cols. Large results are retained and may be replaced with a receipt: use read_tool_result to inspect, read or search that saved result, without repeating the original operation. Partial reads and search matches do not establish complete analysis. The JSON returnedElements field is the number of emitted records; totalElements may include non-content OOXML structure. Use this tool for closed-file reading, generation, editing and validation. When an office editor is open, use its interactive tool or close the editor first.
 
-Format is inferred from the file extension unless a command needs an explicit format. Prefer intent-level L1 commands first, then L2 object paths, then L3 raw/raw_set/add_part only when help shows the property or OOXML part you need. Use help for prop discovery. Use view screenshot or view issues to render, inspect, and fix.
+Format is inferred from the file extension unless a command needs an explicit format. Prefer intent-level L1 commands first, then L2 object paths, then L3 raw/raw_set/add_part only when help shows the property or OOXML part you need. Use help for prop discovery. Use view screenshot for visual inspection. view issues returns document diagnostics, not spreadsheet rows; request it only when diagnosing document problems.
 
 Workspace writes are zero-clobber when out differs from path (new artifact). To edit a closed workspace file in place, omit out or set out equal to path. Open editor sessions still lock out mutations. The commands batch array is capped at 50 operations per call; this does not limit document elements or read results.
 
 Help grammar: command=help with format, legacy type, or a .docx/.xlsx/.pptx path. Omit verb for create or general format help; help verbs are add, set, get, query, and remove, with optional element. One-call Markdown DOCX: {"command":"create","out":"report.docx","commands":[{"command":"add","parent":"/body","type":"markdown","props":{"markdown":"# Title\\n\\nBody text"}}]}. The markdown add element expands supported Markdown into native Word elements; it is not a convert format. Top-level data is merge-only.`,
     schema: OfficeCliSchema,
-    func: async (args: OfficeCliArgs) => {
+    func: async (args: OfficeCliArgs, _runManager, config) => {
+      const signal = config?.signal;
+      signal?.throwIfAborted();
       if (args.command === "create" && args.data !== undefined) {
         return error(OFFICECLI_CREATE_DATA_ERROR);
       }
@@ -1505,7 +1510,7 @@ Help grammar: command=help with format, legacy type, or a .docx/.xlsx/.pptx path
         return dispatchLocalOfficeCli(relayArgs, ctx, deps, { path: inputPath });
       }
 
-      const run = makeRun(deps);
+      const run = makeRun(deps, signal);
       if ("error" in run) return error(run.error);
 
       let facts: EnvelopeFacts | null = null;
@@ -1553,6 +1558,7 @@ Help grammar: command=help with format, legacy type, or a .docx/.xlsx/.pptx path
               ...(args.minimal !== undefined ? { minimal: args.minimal } : {}),
               ...(deps.tempDirRoot !== undefined ? { tempDirRoot: deps.tempDirRoot } : {}),
             });
+            signal?.throwIfAborted();
             return await applyGeneratedBytes(
               args,
               ctx,
@@ -1605,6 +1611,7 @@ Help grammar: command=help with format, legacy type, or a .docx/.xlsx/.pptx path
             });
           });
           if ("error" in bytes) return error(bytes.error);
+          signal?.throwIfAborted();
           return await applyGeneratedBytes(
             writeArgs,
             ctx,
