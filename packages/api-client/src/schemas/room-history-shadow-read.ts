@@ -2,7 +2,7 @@ import { z } from "zod";
 import { protectedMessageDtoV2Schema } from "@nautilo/types";
 import {
   HUMAN_HISTORY_READ_ACKNOWLEDGEMENT_MAX_RESULTS_V1,
-} from "@nautilo/lattice-crypto/wire";
+} from "@nautilo/lattice-crypto/wire-limits";
 import { MAX_TASK_RUNTIME_SIGNER_AUTHORIZATION_WIRE_BYTES_V1 } from
   "@nautilo/lattice-crypto/background";
 

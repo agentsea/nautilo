@@ -1,7 +1,7 @@
 import {
   HUMAN_HISTORY_READ_ACKNOWLEDGEMENT_MAX_RESULTS_V1,
-} from "@nautilo/lattice-crypto/wire";
-import { LATTICE_LIMITS } from "@nautilo/lattice-crypto/wire-limits";
+  LATTICE_LIMITS,
+} from "@nautilo/lattice-crypto/wire-limits";
 import { z } from "zod";
 
 import {

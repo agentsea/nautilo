@@ -1,6 +1,7 @@
-import { LATTICE_LIMITS } from "@nautilo/lattice-crypto/wire-limits";
-import { HUMAN_TASK_PUBLICATION_REQUEST_MAX_TTL_MS_V1 } from
-  "@nautilo/lattice-crypto/wire";
+import {
+  HUMAN_TASK_PUBLICATION_REQUEST_MAX_TTL_MS_V1,
+  LATTICE_LIMITS,
+} from "@nautilo/lattice-crypto/wire-limits";
 import { z } from "zod";
 import {
   taskOperationalCreateV1Schema,
