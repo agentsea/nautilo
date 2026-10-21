@@ -17,6 +17,7 @@ import {
 import type {
   AgentRuntimeKeyGeneration,
   LatticeCrypto,
+  TaskRuntimePublicationSigning,
 } from "@nautilo/lattice-crypto";
 
 /** Protect and reopen the exact authored Memories selected for one prompt. */
@@ -35,6 +36,7 @@ export function createForegroundMemoryHistoryRepairer(input: Readonly<{
     signerKeyId: string;
     signerPublicKey: Uint8Array;
     agentAuthorizationRevision: number;
+    taskRuntimeSigner?: TaskRuntimePublicationSigning;
     policyRevision?: number;
   }>;
   sourceRepresentationMode?: "ordinary-and-protected" | "protected-only";

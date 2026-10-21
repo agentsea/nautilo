@@ -47,10 +47,17 @@ function memoryHandoff(): NonNullable<
       replace: unavailable,
       setTier: unavailable,
     }),
-    access: Object.freeze({ change: unavailable }),
+    access: Object.freeze({
+      prepareApproval: unavailable,
+      restoreApproval: unavailable,
+      planChange: unavailable,
+      changeAuthorized: unavailable,
+    }),
     projection: Object.freeze({
       prepare: unavailable,
-      publish: unavailable,
+      restore: unavailable,
+      planPublication: unavailable,
+      publishAuthorized: unavailable,
     }),
     fullEncryptionOnly: false,
   });
@@ -139,6 +146,126 @@ async function expectRejected(
 }
 
 describe("protected Task native runner", () => {
+  test("admits repo docs only with the fixed file-only graph and process-local semantic port", async () => {
+    const base = fixture();
+    const executionPort = Object.freeze({
+      plan: async () => null,
+      execute: async () => { throw new Error("unused"); },
+      inspect: async () => ({ status: "absent" as const }),
+    });
+    const projectFilePort = Object.freeze({
+      taskId: TASK_ID,
+      taskRunId: RUN_ID,
+      agentId: AGENT_ID,
+      humanUserId: OWNER_ID,
+      relayId: "relay",
+      workspaceRoot: "/captured/project/nautilo-repo-docs/task-run-run",
+      dispatch: async () => ({ ok: false as const, message: "unused" }),
+    });
+    let captured: RunScopeSubagentOpts | undefined;
+    const result = await runProtectedTaskNativeSegment({
+      ...base.input,
+      mode: "repo_docs",
+      execution: {
+        ...base.input.execution,
+        toolWhitelist: ["file"],
+        protectedRepoDocs: {
+          selection: { target: "https://example.test/repo.git", mode: "auto", publish: "branch" },
+          executionPort,
+          createProjectFilePort: () => projectFilePort,
+        },
+      },
+    }, { runScopeSubagent: async options => {
+      captured = options;
+      return { status: "completed", threadId: GRAPH_THREAD_ID,
+        finalText: "internal", finalResponseText: "docs committed" };
+    } });
+    expect(result).toEqual({ formatVersion: 1, resultText: "docs committed", lastError: null });
+    expect(captured?.toolWhitelist).toEqual(["file"]);
+    expect(captured?.protectedRepoDocs?.executionPort).toBe(executionPort);
+    expect(captured?.protectedRepoDocs?.createProjectFilePort("workdir")).toBe(projectFilePort);
+    expect(base.input.transientInput).not.toHaveProperty("protectedRepoDocs");
+
+    for (const toolWhitelist of [undefined, [], ["file", "exec_command"]]) {
+      await expectRejected(runProtectedTaskNativeSegment({
+        ...base.input, mode: "repo_docs",
+        execution: { ...base.input.execution, ...(toolWhitelist === undefined ? {} : { toolWhitelist }),
+          protectedRepoDocs: { selection: { target: "repo", mode: "auto", publish: "branch" }, executionPort,
+            createProjectFilePort: () => projectFilePort } },
+      }), "exact supported segment");
+    }
+    await expectRejected(runProtectedTaskNativeSegment({
+      ...base.input,
+      mode: "repo_docs",
+      execution: {
+        ...base.input.execution,
+        toolWhitelist: ["file"],
+        protectedRepoDocs: {
+          selection: { target: "repo", mode: "auto", publish: "branch" },
+          executionPort,
+          createProjectFilePort: () => projectFilePort,
+        },
+        taskReportBackContinuation: {
+          status: "available", relayId: "relay", relaySessionId: "socket",
+          desktopSessionId: "desktop", pairingGeneration: "pairing",
+          currentFolder: "/captured/project", workspacePath: "",
+        },
+      },
+    }), "exact supported segment");
+  });
+  test("passes the exact delegated local execution port without serializing it", async () => {
+    const port = Object.freeze({ taskId: TASK_ID, taskRunId: RUN_ID,
+      signal: new AbortController().signal,
+      withAdmission: async <T>(_operation: "read", work: (value: never) => Promise<T>) => work({} as never) });
+    const base = fixture();
+    const scenario = fixture({ execution: { ...base.input.execution,
+      delegatedLocalExecutionPort: port } });
+    let captured: RunScopeSubagentOpts | undefined;
+    await runProtectedTaskNativeSegment(scenario.input, {
+      runScopeSubagent: async options => {
+        captured = options;
+        return { status: "completed", threadId: GRAPH_THREAD_ID,
+          finalText: "internal", finalResponseText: "complete" };
+      },
+    });
+    expect(captured?.delegatedLocalExecutionPort).toBe(port);
+    expect(scenario.input.transientInput).not.toHaveProperty("delegatedLocalExecutionPort");
+  });
+  test("passes process-local caller funding custody to the graph without copying it", async () => {
+    const fundingSession = Object.freeze({
+      kind: "personal" as const,
+      recheckAttempt: async () => {},
+      runAttempt: async <T>(
+        _modelId: string,
+        callback: (attempt: never) => Promise<T>,
+      ) => callback({} as never),
+    });
+    const base = fixture();
+    const scenario = fixture({
+      execution: {
+        ...base.input.execution,
+        foregroundChatFundingSession: fundingSession,
+      },
+    });
+    let captured: RunScopeSubagentOpts | undefined;
+    await runProtectedTaskNativeSegment(scenario.input, {
+      runScopeSubagent: async options => {
+        captured = options;
+        return {
+          status: "completed",
+          threadId: GRAPH_THREAD_ID,
+          finalText: "internal",
+          finalResponseText: "complete",
+        };
+      },
+    });
+
+    expect(captured?.foregroundChatFundingSession).toBe(fundingSession);
+    expect(scenario.input.transientInput).not.toHaveProperty(
+      "foregroundChatFundingSession",
+    );
+  });
+
   test("passes the exact protected Task authority and returns the canonical result without terminalizing", async () => {
     const scenario = fixture();
     let captured: RunScopeSubagentOpts | undefined;
@@ -245,6 +372,38 @@ describe("protected Task native runner", () => {
     expect(captured?.continueFromCheckpoint).toBeUndefined();
   });
 
+  test("passes one typed protected Human resume to the graph runner", async () => {
+    const protectedTaskHumanResume = Object.freeze({
+      kind: "approval" as const,
+      interruptId: "interrupt-exact",
+      requestId: "approval-exact",
+      verb: "once" as const,
+    });
+    const scenario = fixture({
+      execution: {
+        ...fixture().input.execution,
+        protectedTaskHumanResume,
+      },
+    });
+    let captured: RunScopeSubagentOpts | undefined;
+    await runProtectedTaskNativeSegment(scenario.input, {
+      runScopeSubagent: async options => {
+        captured = options;
+        return {
+          status: "completed",
+          threadId: GRAPH_THREAD_ID,
+          finalText: "internal transcript",
+          finalResponseText: "Protected result",
+        };
+      },
+    });
+
+    expect(captured?.protectedTaskHumanResume).toBe(protectedTaskHumanResume);
+    expect(captured?.resume).toBeUndefined();
+    expect(captured?.continueFromCheckpoint).toBeUndefined();
+    expect(captured?.subEnvelope).toBe(scenario.input.execution.subEnvelope);
+  });
+
   test("returns a protected error payload without ordinary report-back", async () => {
     const scenario = fixture();
     const result = await runProtectedTaskNativeSegment(scenario.input, {
@@ -323,6 +482,27 @@ describe("protected Task native runner", () => {
     expect(abortedResult).toEqual({ status: "aborted" });
     expect(calls).toBe(1);
     expect(aborted.published).toEqual([]);
+  });
+
+  test("passes through a cooperative checkpoint pause without publishing a result", async () => {
+    const controller = {
+      request: () => true,
+      currentRequestedReason: () => "manual_pause" as const,
+    };
+    const scenario = fixture({
+      protectedTaskCheckpointPauseController: controller,
+    });
+    const result = await runProtectedTaskNativeSegment(scenario.input, {
+      runScopeSubagent: async options => {
+        expect(options.protectedTaskCheckpointPauseController)
+          .toBe(controller);
+        return { status: "checkpoint_paused", threadId: GRAPH_THREAD_ID,
+          reason: "manual_pause" };
+      },
+    });
+    expect(result).toEqual({ status: "checkpoint_paused",
+      threadId: GRAPH_THREAD_ID, reason: "manual_pause" });
+    expect(scenario.published).toEqual([]);
   });
 
   test("extracts one detached pre-effect additional-authority continuation", async () => {
@@ -411,6 +591,14 @@ describe("protected Task native runner", () => {
     ["approval without request id", [
       { id: "interrupt-1", kind: "approval" as const },
     ]],
+    ["approval without categorical authority", [
+      { id: "interrupt-1", kind: "approval" as const,
+        requestId: "approval:1" },
+    ]],
+    ["approval with duplicated categorical authority", [
+      { id: "interrupt-1", kind: "approval" as const,
+        requestId: "approval:1", allowedVerbs: ["once", "once", "deny"] as const },
+    ]],
     ["prove-it with request id", [
       { id: "interrupt-1", kind: "prove_it" as const, requestId: "not-allowed" },
     ]],
@@ -465,6 +653,40 @@ describe("protected Task native runner", () => {
     }), "exact supported segment");
     expect(graphStarted).toBe(false);
     expect(conflicting.published).toEqual([]);
+
+    for (const conflictingContinuation of [
+      {
+        protectedTaskHumanResume: {
+          kind: "prove_it" as const,
+          interruptId: "interrupt-exact",
+          approved: true,
+        },
+        resume: { approved: true },
+      },
+      {
+        protectedTaskHumanResume: {
+          kind: "identity" as const,
+          interruptId: "interrupt-exact",
+          verified: true as const,
+        },
+        continueFromCheckpoint: true,
+      },
+    ]) {
+      const humanConflict = fixture({
+        execution: {
+          ...fixture().input.execution,
+          ...conflictingContinuation,
+        },
+      });
+      graphStarted = false;
+      await expectRejected(runProtectedTaskNativeSegment(humanConflict.input, {
+        runScopeSubagent: async () => {
+          graphStarted = true;
+          throw new Error("must not run");
+        },
+      }), "exact supported segment");
+      expect(graphStarted).toBe(false);
+    }
 
     const missingMemory = fixture({ memoryHandoff: undefined as never });
     await expectRejected(runProtectedTaskNativeSegment(missingMemory.input, {

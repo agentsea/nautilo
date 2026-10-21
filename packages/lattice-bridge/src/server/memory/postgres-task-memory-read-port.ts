@@ -117,6 +117,12 @@ export interface ProtectedTaskMemoryReadPort
     memoryIds: readonly string[];
     signal?: AbortSignal;
   }>): Promise<ProtectedMemoryResult<readonly ProtectedMemoryCandidate[]>>;
+
+  loadExactCandidates(input: Readonly<{
+    authority: ProtectedMemoryAuthority;
+    memoryIds: readonly string[];
+    signal?: AbortSignal;
+  }>): Promise<ProtectedMemoryResult<readonly AgentMemorySearchCandidate[]>>;
 }
 
 type ValidatedEmbedding = AgentMemoryEmbedding & Readonly<{
@@ -1028,11 +1034,32 @@ export class PostgresTaskMemoryReadPort implements ProtectedTaskMemoryReadPort {
     >;
   }
 
-  async loadExactProtectedSources(input: Readonly<{
-    authority: ProtectedMemoryAuthority;
-    memoryIds: readonly string[];
-    signal?: AbortSignal;
-  }>): Promise<ProtectedMemoryResult<readonly ProtectedMemoryCandidate[]>> {
+  async #loadExact(
+    input: Readonly<{
+      authority: ProtectedMemoryAuthority;
+      memoryIds: readonly string[];
+      signal?: AbortSignal;
+    }>,
+    fallback: false,
+  ): Promise<ProtectedMemoryResult<readonly ProtectedMemoryCandidate[]>>;
+  async #loadExact(
+    input: Readonly<{
+      authority: ProtectedMemoryAuthority;
+      memoryIds: readonly string[];
+      signal?: AbortSignal;
+    }>,
+    fallback: true,
+  ): Promise<ProtectedMemoryResult<readonly AgentMemorySearchCandidate[]>>;
+  async #loadExact(
+    input: Readonly<{
+      authority: ProtectedMemoryAuthority;
+      memoryIds: readonly string[];
+      signal?: AbortSignal;
+    }>,
+    fallback: boolean,
+  ): Promise<ProtectedMemoryResult<readonly (
+    ProtectedMemoryCandidate | AgentMemorySearchCandidate
+  )[]>> {
     const authority = this.#authority(input.authority);
     const memoryIds = canonicalIds(input.memoryIds, false);
     if (authority === null || memoryIds === null) {
@@ -1057,19 +1084,26 @@ export class PostgresTaskMemoryReadPort implements ProtectedTaskMemoryReadPort {
           memoryIds,
           limit: memoryIds.length,
           includeArchive: true,
-          fallback: false,
+          fallback,
         });
         if (rows === null || rows.length !== memoryIds.length) {
           return unavailable("stale_revision");
         }
-        const result: ProtectedMemoryCandidate[] = [];
+        const result: Array<
+          ProtectedMemoryCandidate | AgentMemorySearchCandidate
+        > = [];
         for (let index = 0; index < rows.length; index += 1) {
           const row = rows[index]!;
           if (row.memoryId !== memoryIds[index]) {
             return unavailable("integrity_failure");
           }
-          const candidate = toProtectedCandidate(inventory.get(row.memoryId)!, row);
-          if (candidate === null) return unavailable("stale_revision");
+          const current = inventory.get(row.memoryId)!;
+          const candidate = fallback
+            ? toSearchCandidate(current, row)
+            : toProtectedCandidate(current, row);
+          if (candidate === null || candidate === "excluded") {
+            return unavailable("stale_revision");
+          }
           result.push(candidate);
         }
         return Object.freeze({
@@ -1078,6 +1112,22 @@ export class PostgresTaskMemoryReadPort implements ProtectedTaskMemoryReadPort {
         });
       },
     });
+  }
+
+  loadExactProtectedSources(input: Readonly<{
+    authority: ProtectedMemoryAuthority;
+    memoryIds: readonly string[];
+    signal?: AbortSignal;
+  }>): Promise<ProtectedMemoryResult<readonly ProtectedMemoryCandidate[]>> {
+    return this.#loadExact(input, false);
+  }
+
+  loadExactCandidates(input: Readonly<{
+    authority: ProtectedMemoryAuthority;
+    memoryIds: readonly string[];
+    signal?: AbortSignal;
+  }>): Promise<ProtectedMemoryResult<readonly AgentMemorySearchCandidate[]>> {
+    return this.#loadExact(input, true);
   }
 
   async loadExactOrdinary(

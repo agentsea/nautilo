@@ -8,6 +8,14 @@ import type {
 const TASK_ID = "91000000-0000-4000-8000-000000000001";
 const TASK_RUN_ID = "91000000-0000-4000-8000-000000000003";
 const NAMESPACE_ID = "91000000-0000-4000-8000-000000000002";
+const readAuthority = {
+  sourceRoomId: NAMESPACE_ID, namespaceId: NAMESPACE_ID, currentGeneration: 0,
+  retainedGenerations: [{ generation: 0, accessRevision: 0,
+    headDigestBase64url: "A".repeat(43),
+    publicationDigestBase64url: "A".repeat(43),
+    publicationSetDigestBase64url: "A".repeat(43),
+    audienceFingerprintBase64url: "A".repeat(43) }],
+};
 const protectedSummary = {
   id: TASK_ID,
   parentTaskId: null,
@@ -66,7 +74,7 @@ describe("opt-in Task content API methods", () => {
         readVersion: 1, status: "ready", taskId: TASK_ID,
         objectId: protectedSummary.content.objectId,
         contentRevision: 1, cryptoAccessRevision: 0,
-        namespaceId: NAMESPACE_ID,
+        namespaceId: NAMESPACE_ID, readAuthority,
         encryptedPayloadBytesBase64url: "Y2lwaGVy",
         accessManifestBytesBase64url: "bWFuaWZlc3Q",
         accessManifestProofBytesBase64url: [],
@@ -80,7 +88,7 @@ describe("opt-in Task content API methods", () => {
         taskRunId: TASK_RUN_ID,
         objectId: `task-run-result:v1:${"a".repeat(64)}`,
         resultRevision: 1, cryptoAccessRevision: 0,
-        namespaceId: NAMESPACE_ID,
+        namespaceId: NAMESPACE_ID, readAuthority,
         encryptedPayloadBytesBase64url: "Y2lwaGVy",
         accessManifestBytesBase64url: "bWFuaWZlc3Q",
         accessManifestProofBytesBase64url: [],

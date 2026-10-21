@@ -14,10 +14,13 @@ import type {
   PreparedTaskContentCryptoRevisionV1,
   TaskContentPayloadV1,
   TaskContentRepository,
+  TaskOrdinaryFallbackRepairSourceProofV1,
 } from "../../src/task/task-content-repository.ts";
 import {
   deriveTaskContentCryptoObjectIdV1,
   fingerprintTaskContentAuthorityV1,
+  fingerprintTaskContentNamespaceV1,
+  prepareTaskOrdinaryFallbackRepairSourceProofV1,
   taskContentObjectTypeV1,
 } from "../../src/task/task-content-repository.ts";
 import {
@@ -94,8 +97,10 @@ function prepared(content: TaskContentPayloadV1): PreparedTaskContentCryptoRevis
   });
 }
 
-function authenticPreparedDefinition(): PreparedTaskContentCryptoRevisionV1 {
-  const coordinate = definition(1).coordinate;
+function authenticPreparedDefinition(
+  revision = 1,
+): PreparedTaskContentCryptoRevisionV1 {
+  const coordinate = definition(revision).coordinate;
   let seed = 1;
   const crypto = new LatticeCrypto({
     bytes: (length) => Uint8Array.from({ length }, () => (seed++ * 73) & 0xff),
@@ -104,7 +109,7 @@ function authenticPreparedDefinition(): PreparedTaskContentCryptoRevisionV1 {
   const identity = deriveTaskContentCryptoObjectIdV1(coordinate);
   const plaintext = encodeTaskPayloadV1({
     formatVersion: 1,
-    prompt: "definition-1",
+    prompt: `definition-${revision}`,
     expectedOutput: null,
     protectedMetadata: {},
   });
@@ -132,21 +137,23 @@ function authenticPreparedDefinition(): PreparedTaskContentCryptoRevisionV1 {
     committerSigningPublicKey: signer.publicKey,
     committerSigningPrivateKey: signer.privateKey,
   });
-  const revision = createPreparedHumanTaskContentCryptoRevisionV1({
+  const preparedRevision = createPreparedHumanTaskContentCryptoRevisionV1({
     signerKind: "human_device", coordinate, authority,
     object: encryptedObjectWriteRecord(payloadBytes), access,
   });
   signer.privateKey.fill(0);
-  return revision;
+  return preparedRevision;
 }
 
 class FakeProtectedRepository implements TaskContentRepository {
   readonly calls: string[] = [];
   reservation: "reserved" | "replayed" | "conflict" | "stale" = "reserved";
   failCompletion = false;
+  fallbackRepairSource: TaskOrdinaryFallbackRepairSourceProofV1 | undefined;
 
   async reserveRevision(input: Parameters<TaskContentRepository["reserveRevision"]>[0]) {
     this.calls.push(`reserve:${input.prepared.coordinate.kind}:${input.representation}`);
+    this.fallbackRepairSource = input.fallbackRepairSource;
     if (this.reservation === "conflict" || this.reservation === "stale") {
       return { status: this.reservation } as const;
     }
@@ -174,6 +181,13 @@ class FakeProtectedRepository implements TaskContentRepository {
   async reconcilePending(input: Parameters<TaskContentRepository["reconcilePending"]>[0]) {
     this.calls.push(`reconcile:${input.limit}`);
     return { outcomes: [] };
+  }
+
+  async reconcileCoordinate(
+    input: Parameters<TaskContentRepository["reconcileCoordinate"]>[0],
+  ) {
+    this.calls.push(`reconcile-coordinate:${input.operationId}`);
+    return "pending" as const;
   }
 }
 
@@ -337,6 +351,47 @@ describe("durable Task content repository composition", () => {
       "publish:adaptive:dual",
       "complete:definition",
     ]);
+  });
+
+  test("forwards the exact fallback repair source into the durable reservation", async () => {
+    const state = setup();
+    const fallbackRepairSource =
+      prepareTaskOrdinaryFallbackRepairSourceProofV1({
+        taskId: TASK_ID,
+        sourceMutationVersion: "7",
+        sourceUpdatedAt: new Date("2026-10-19T08:00:00.000Z"),
+        sourceContentRevision: 1,
+        sourceNamespaceId: NAMESPACE_ID,
+        sourceCryptoObjectId: deriveTaskContentCryptoObjectIdV1(
+          definition(1).coordinate,
+        ),
+        sourceCryptoAccessRevision: 0,
+        sourceRequiredNamespaceFingerprint:
+          fingerprintTaskContentNamespaceV1(NAMESPACE_ID),
+        fallbackOperationId: "task:fallback:1",
+        fallbackRequestDigest: new Uint8Array(32).fill(21),
+        fallbackReason: "target_encryption_not_ready",
+        fallbackPolicyRevision: 3,
+        fallbackCompletedAt: new Date("2026-10-19T07:59:00.000Z"),
+      });
+
+    await state.repository.publishPreparedProtectedOrDual({
+      owner: owner({ mode: "shadow_encryption", shadowBehavior: "strict" }),
+      operationId: "task:repair:2",
+      requestDigest: new Uint8Array(32).fill(22),
+      authority,
+      operationalMetadata: null,
+      prepared: authenticPreparedDefinition(2),
+      ordinaryContent: definition(2),
+      fallbackRepairSource,
+      publishProtectedProduct: async () => {
+        throw new Error("Protected publication unexpectedly selected");
+      },
+      publishDualProduct: async () => 2,
+    });
+
+    expect(state.protectedRepository.fallbackRepairSource)
+      .toBe(fallbackRepairSource);
   });
 
   test("rejects Plain and mismatched prepared coordinates before any effect", async () => {
@@ -552,9 +607,15 @@ describe("durable Task content repository composition", () => {
       leaseToken: "30000000-0000-4000-8000-000000000006",
       limit: 8,
     });
+    await state.repository.reconcileCoordinate({
+      coordinate: result(1).coordinate,
+      operationId: "task:result:retry",
+      leaseToken: "30000000-0000-4000-8000-000000000006",
+    });
     expect(state.calls.filter((call) => call === "reserve:run_result:protected"))
       .toHaveLength(2);
     expect(state.calls).toContain("reconcile:8");
+    expect(state.calls).toContain("reconcile-coordinate:task:result:retry");
   });
 
   test("fails closed on reservation CAS conflict and policy-selects reads", async () => {

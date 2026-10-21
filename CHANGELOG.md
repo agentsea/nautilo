@@ -7,6 +7,17 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Scheduled Tasks keep concurrent results on separate execution threads.
+  Finished encrypted schedules show no future runs and retain result history.
+- Encrypted Task creation, editing and repair use current Domain authority on
+  Devices without legacy key caches. Task attention and avatar reads respect
+  current content policy.
+- Encrypted schedules with invalid content verification remain locked while
+  other schedules stay visible.
+- New encrypted Tasks can be read on their signing Device without previously
+  imported signer history or legacy Namespace key caches. Concurrent encrypted
+  Task reads no longer exhaust database connections while loading schedules or chats.
+
 - Background Tasks can save Workspace files using their authorized namespace
   room while keeping their transcripts separate from the originating chat.
 

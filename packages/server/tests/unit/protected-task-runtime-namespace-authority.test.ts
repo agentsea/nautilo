@@ -216,7 +216,7 @@ test("copies and passes a fixed Scope inventory into the locked bridge owner", a
   expect(Object.isFrozen(captured?.scopeMemory?.readableNamespaceIds)).toBe(true);
 });
 
-test("admits a dual Task in Shadow and parks it after transition to Full", async () => {
+test("admits a retained dual Task in Shadow and Full without changing its definition", async () => {
   const value = occurrence("dual");
   let inspections = 0;
   const current = authority();
@@ -259,8 +259,11 @@ test("admits a dual Task in Shadow and parks it after transition to Full", async
     occurrence: value,
     predispatch: predispatch(value),
     namespaceIds: [CONTENT, READABLE],
-  })).rejects.toThrow("Namespace authority is unavailable"));
-  expect(inspections).toBe(1);
+  })).resolves.toEqual({
+    ...current,
+    policy: { mode: "encrypted_only", shadowBehavior: "strict", revision: 7 },
+  }));
+  expect(inspections).toBe(2);
 });
 
 test("fails closed when requester or canonical private Room discovery is missing", async () => {

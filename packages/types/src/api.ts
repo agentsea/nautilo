@@ -876,12 +876,31 @@ export interface CreateSubthreadResponse {
   subthreadRoomId: string;
 }
 
+/** Exact ordinary anchor returned by the thread-detail route. */
+export interface ThreadDetailAnchorDto extends ExternalMessageAttributionFields {
+  id: string;
+  logicalMessageKey: string;
+  role: string;
+  content: string;
+  toolCalls: string | null;
+  toolName: string | null;
+  createdAt: string;
+  editedAt: string | null;
+  editRevision: number;
+  replyToMessageId: number | null;
+  replyCount: number;
+  lastReplyAt: string | null;
+  summaryRevision: number;
+  sourceUserId?: string;
+  authorAgentId?: string;
+}
+
 /** one membership-gated payload sufficient to hydrate a thread drawer. */
 export interface ThreadDetailResponse {
   parentRoomId: string;
   subthreadRoomId: string;
   /** Canonical persisted parent message that anchors this child Room. */
-  anchor: RoomMessageDto;
+  anchor: ThreadDetailAnchorDto;
   /** Absolute snapshot; clients replace state only at a newer revision. */
   summary: {
     replyCount: number;
@@ -1075,6 +1094,10 @@ export interface RoomHistoryTerminalExecutionSummary {
 /** Row shape for `GET /api/rooms/:id/messages`. */
 export interface RoomMessageDto extends ExternalMessageAttributionFields {
   imageAssistance?: ImageAssistanceSummary;
+  /** Protected-read parity coordinate; omitted from ordinary-only responses. */
+  foregroundExecutionId?: string;
+  /** Opaque protected-read parity value; never an ordinary authorization source. */
+  modelInputExposure?: unknown;
   id: string;
   /** opaque client identity for one logical persisted message/turn. */
   logicalMessageKey?: string;

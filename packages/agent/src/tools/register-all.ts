@@ -479,6 +479,7 @@ export function registerAllTools(
     discoveryCategories: ["automation", "documents"],
     trustTier: "standard",
     impact: "destructive",
+    fullEncryptionSupport: "supported",
     exposure: "discoverable",
     requiredCapabilities: ["invoke_agents"],
     conditionalCapabilities: ["use_share_artifact"],

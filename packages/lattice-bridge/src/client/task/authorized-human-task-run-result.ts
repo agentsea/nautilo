@@ -4,8 +4,13 @@ import type {
 } from "@nautilo/api-client/browser";
 
 import {
+  deriveTaskHistoricalContentCryptoObjectIdV1,
+} from "../../task/task-historical-content-identity.ts";
+import {
   deriveTaskContentCryptoObjectIdV1,
 } from "../../task/task-content-repository.ts";
+import { parseTaskHistoricalRepairProvenanceV1 } from
+  "../../task/task-historical-repair-provenance.ts";
 import {
   decodeTaskRunResultPayloadV1,
   type TaskRunResultPayloadV1,
@@ -18,13 +23,15 @@ export type TaskRunResultReadBytesV1 = Readonly<{
   taskId: string;
   taskRunId: string;
   objectId: string;
-  resultRevision: 1;
-  cryptoAccessRevision: 0;
+  resultRevision: 1 | 2;
+  cryptoAccessRevision: number;
   namespaceId: string;
+  readAuthority: ProtectedTaskRunResultReadReadyEnvelopeV1["readAuthority"];
   encryptedPayloadBytes: Uint8Array;
   accessManifestBytes: Uint8Array;
   accessManifestProofBytes: readonly Uint8Array[];
   namespaceEnvelopeBytes: Uint8Array;
+  historicalRepair?: ProtectedTaskRunResultReadReadyEnvelopeV1["historicalRepair"];
   signerEvidence: ProtectedTaskRunResultReadReadyEnvelopeV1["signerEvidence"];
 }>;
 
@@ -73,6 +80,15 @@ function decodeCanonicalBase64url(value: string): Uint8Array {
   return bytes;
 }
 
+function decodeHexDigest(value: string): Uint8Array {
+  if (!/^[0-9a-f]{64}$/u.test(value)) {
+    throw new ClassifiedDataOperationError(
+      "integrity", "Protected Task historical result identity is invalid",
+    );
+  }
+  return Uint8Array.from(value.match(/../gu)!, byte => Number.parseInt(byte, 16));
+}
+
 /** Protected-only TaskRun result reader shared by Browser and Desktop. */
 export function createAuthorizedHumanTaskRunResultReaderV1(input: Readonly<{
   api: Pick<NautiloApiClient, "getProtectedTaskRunResultEnvelopeV1">;
@@ -84,21 +100,14 @@ export function createAuthorizedHumanTaskRunResultReaderV1(input: Readonly<{
       taskRunId: string;
       agentId: string;
     }>): Promise<HumanTaskRunResultReadV1> {
-      const expectedObjectId = deriveTaskContentCryptoObjectIdV1({
-        kind: "run_result",
-        taskId: request.taskId,
-        taskRunId: request.taskRunId,
-        contentRevision: 1,
-      });
       const response = await input.api.getProtectedTaskRunResultEnvelopeV1(
         request.taskId,
         request.taskRunId,
       );
-      if (response.readVersion !== 1
+      if ((response.resultRevision !== 1 && response.resultRevision !== 2)
+        || response.readVersion !== 1
         || response.taskId !== request.taskId
-        || response.taskRunId !== request.taskRunId
-        || response.objectId !== expectedObjectId
-        || response.resultRevision !== 1) {
+        || response.taskRunId !== request.taskRunId) {
         throw new ClassifiedDataOperationError(
           "integrity", "Protected Task result identity was substituted",
         );
@@ -109,9 +118,63 @@ export function createAuthorizedHumanTaskRunResultReaderV1(input: Readonly<{
       if (response.status === "unavailable") {
         return Object.freeze({ status: "unavailable", reason: response.reason });
       }
-      if (response.cryptoAccessRevision !== 0
-        || response.signerEvidence.length !== 1
-        || response.signerEvidence[0]?.kind !== "agent_runtime_publication") {
+      let historicalRepair = response.status === "ready"
+        ? response.historicalRepair : undefined;
+      if (historicalRepair !== undefined) {
+        try {
+          const parsed = parseTaskHistoricalRepairProvenanceV1(historicalRepair);
+          if (parsed.version !== 2) throw new TypeError("unsupported version");
+          historicalRepair = parsed;
+        } catch (cause) {
+          throw new ClassifiedDataOperationError(
+            "integrity", "Protected Task historical result identity is invalid",
+            { cause },
+          );
+        }
+      }
+      let expectedObjectId = deriveTaskContentCryptoObjectIdV1({
+        kind: "run_result",
+        taskId: request.taskId,
+        taskRunId: request.taskRunId,
+        contentRevision: response.resultRevision,
+      });
+      if (response.status === "ready" && historicalRepair !== undefined) {
+        expectedObjectId = deriveTaskHistoricalContentCryptoObjectIdV1({
+            coordinate: {
+              kind: "run_result",
+              taskId: request.taskId,
+              taskRunId: request.taskRunId,
+              contentRevision: response.resultRevision,
+            },
+            namespaceId: response.namespaceId,
+            sourceDigest: decodeHexDigest(historicalRepair.sourceDigest),
+          });
+      }
+      if (response.objectId !== expectedObjectId) {
+        throw new ClassifiedDataOperationError(
+          "integrity", "Protected Task result identity was substituted",
+        );
+      }
+      const agentEvidence = response.signerEvidence.filter(entry =>
+        entry.kind === "agent_runtime_publication"
+        || entry.kind === "foreground_agent_accepted_execution"
+        || entry.kind === "task_runtime_signer_certificate");
+      const humanEvidence = response.signerEvidence.filter(entry =>
+        entry.kind === "human_device");
+      if (response.accessManifestProofBytesBase64url.length
+          !== response.cryptoAccessRevision
+        || historicalRepair === undefined && (
+          agentEvidence.length !== 1
+          || agentEvidence.length + humanEvidence.length
+            !== response.signerEvidence.length
+        )
+        || historicalRepair !== undefined && (
+          response.resultRevision !== 1
+          || agentEvidence.length !== 0
+          || humanEvidence.length !== response.signerEvidence.length
+          || !humanEvidence.some(entry =>
+            entry.committerDeviceId === historicalRepair.publisherDeviceId)
+        )) {
         throw new ClassifiedDataOperationError(
           "integrity", "Protected Task result access evidence is invalid",
         );
@@ -128,14 +191,16 @@ export function createAuthorizedHumanTaskRunResultReaderV1(input: Readonly<{
           taskId: response.taskId,
           taskRunId: response.taskRunId,
           objectId: response.objectId,
-          resultRevision: 1,
-          cryptoAccessRevision: 0,
+          resultRevision: response.resultRevision,
+          cryptoAccessRevision: response.cryptoAccessRevision,
           namespaceId: response.namespaceId,
+          readAuthority: response.readAuthority,
           encryptedPayloadBytes: decode(response.encryptedPayloadBytesBase64url),
           accessManifestBytes: decode(response.accessManifestBytesBase64url),
           accessManifestProofBytes: response.accessManifestProofBytesBase64url
             .map(decode),
           namespaceEnvelopeBytes: decode(response.namespaceEnvelopeBytesBase64url),
+          ...(historicalRepair === undefined ? {} : { historicalRepair }),
           signerEvidence: response.signerEvidence,
         });
         const opened = await input.device.openExact({

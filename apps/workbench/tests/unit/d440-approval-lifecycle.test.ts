@@ -18,6 +18,7 @@ import {
   initialPendingApprovalPreviewQueue,
   settlePendingApprovalPreview,
   reconcilePendingApprovalPreviewSnapshot,
+  reconcilePendingApprovalPreviewSubset,
   shouldQueueApprovalAsk,
   reduceApprovalLifecycle,
   resolutionFromVerb,
@@ -113,6 +114,47 @@ describe("D440 approval lifecycle reducer", () => {
     expect(replaced.queue.active).toBe(second);
     expect(reconcilePendingApprovalPreviewSnapshot(active, [],
       (item) => item.approvalId).queue.active).toBeNull();
+  });
+  test("reconciles one preview source without clearing another", () => {
+    const room = { ...ask("room"), roomId: "room-1" };
+    const task = ask("task");
+    const nextTask = ask("task-next");
+    const queue = enqueuePendingApprovalPreviews(
+      initialPendingApprovalPreviewQueue<ApprovalAskPayload>(), [room, task],
+    );
+    const reconciled = reconcilePendingApprovalPreviewSubset(
+      queue,
+      [nextTask],
+      (item) => item.approvalId,
+      (item) => item.roomId === undefined,
+    );
+    expect(reconciled.retainedActive).toBeTrue();
+    expect(reconciled.queue).toEqual({ active: room, waiting: [nextTask] });
+
+    const clearedRoom = reconcilePendingApprovalPreviewSubset(
+      reconciled.queue,
+      [],
+      (item) => item.approvalId,
+      (item) => item.roomId !== undefined,
+    );
+    expect(clearedRoom.queue).toEqual({ active: nextTask, waiting: [] });
+  });
+  test("clears only recovered Task previews after a failed read", () => {
+    type Preview = Readonly<{ id: string; source: "room" | "task"; recovered: boolean }>;
+    const room: Preview = { id: "room", source: "room", recovered: true };
+    const recoveredTask: Preview = { id: "task-old", source: "task", recovered: true };
+    const liveTask: Preview = { id: "task-live", source: "task", recovered: false };
+    const queue = enqueuePendingApprovalPreviews(
+      initialPendingApprovalPreviewQueue<Preview>(),
+      [room, recoveredTask, liveTask],
+    );
+    const failedRead = reconcilePendingApprovalPreviewSubset(
+      queue,
+      [],
+      (item) => item.id,
+      (item) => item.source === "task" && item.recovered,
+    );
+    expect(failedRead.queue).toEqual({ active: room, waiting: [liveTask] });
   });
   test("reference previews retain the room captured with their approval", () => {
     const state = reduceApprovalLifecycle(initialApprovalLifecycleState(), { kind: "ask", payload: { ...ask("media-1"), roomId: "source-room" } });

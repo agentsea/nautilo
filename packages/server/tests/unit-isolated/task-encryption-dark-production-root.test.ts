@@ -1,8 +1,13 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { bindEncryptionDataOperationOwner } from "@nautilo/lattice-bridge";
+import { createLiveShadowDataOperationPolicyBinding } from "@nautilo/runtime";
 import ts from "typescript";
 
 const appSource = sourceFile("../../src/app.ts");
+const initialCompositionSource = sourceFile(
+  "../../src/routes/protected-task-runtime-initial-composition.ts",
+);
 
 function sourceFile(relativePath: string): ts.SourceFile {
   const path = new URL(relativePath, import.meta.url);
@@ -63,14 +68,6 @@ function propertyNamed(
     && identifierName(property.name) === name);
 }
 
-function propertyNames(object: ts.ObjectLiteralExpression): string[] {
-  return object.properties.flatMap((property) => {
-    if (property.name === undefined) return [];
-    const name = identifierName(property.name);
-    return name === null ? [] : [name];
-  });
-}
-
 function stringPropertyValues(root: ts.Node, name: string): string[] {
   return descendants(root, ts.isPropertyAssignment)
     .filter((property) => property.name !== undefined
@@ -99,23 +96,31 @@ function resolvedBoolean(
   return null;
 }
 
-describe("dark Task production composition", () => {
-  test("keeps the Task HTTP and tool owners fixed to ordinary content", () => {
-    const owner = variableNamed(appSource, "dormantTaskContentOwner");
+describe("live Task production composition", () => {
+  test("shares one live policy owner across ordinary and protected Task entry points", () => {
+    const owner = variableNamed(appSource, "taskContentOwner");
     expect(owner.initializer !== undefined && ts.isCallExpression(owner.initializer)).toBe(true);
     const ownerCall = owner.initializer as ts.CallExpression;
     expect(identifierName(ownerCall.expression)).toBe("bindEncryptionDataOperationOwner");
-    expect(stringPropertyValues(ownerCall, "mode")).toEqual(["plaintext_only"]);
-    expect(stringPropertyValues(ownerCall, "shadowBehavior")).toEqual(["fallback"]);
-    expect(descendants(ownerCall, ts.isCallExpression).some((call) =>
+    const ownerPolicy = propertyNamed(objectArgument(ownerCall, 0), "policy");
+    expect(ownerPolicy !== undefined && ts.isPropertyAssignment(ownerPolicy)).toBe(true);
+    expect((ownerPolicy as ts.PropertyAssignment).initializer.getText(appSource))
+      .toBe("taskContentPolicy");
+    const policy = variableNamed(appSource, "taskContentPolicy");
+    const policyBindings = descendants(policy, ts.isCallExpression).filter((call) =>
       identifierName(call.expression) === "createLiveShadowDataOperationPolicyBinding"
-    )).toBe(false);
+    );
+    expect(policyBindings).toHaveLength(1);
+    expect(descendants(policyBindings[0]!, ts.isIdentifier).map(identifier => identifier.text))
+      .toContain("getEncryptionTransitionPolicy");
+    expect(stringPropertyValues(ownerCall, "mode")).toEqual([]);
+    expect(stringPropertyValues(policy, "mode")).toEqual([]);
 
     const routes = objectArgument(callNamed(appSource, "tasksRoutes"), 1);
     const routeOwner = propertyNamed(routes, "contentOwner");
     expect(routeOwner !== undefined && ts.isPropertyAssignment(routeOwner)).toBe(true);
     expect((routeOwner as ts.PropertyAssignment).initializer.getText(appSource))
-      .toBe("dormantTaskContentOwner");
+      .toBe("taskContentOwner");
 
     const runtimeCalls = descendants(appSource, ts.isCallExpression)
       .filter((call) => identifierName(call.expression) === "setTaskToolRuntime")
@@ -128,52 +133,195 @@ describe("dark Task production composition", () => {
     const admissionCalls = descendants(legacyAdmission!, ts.isCallExpression)
       .filter((call) => ts.isPropertyAccessExpression(call.expression)
         && ts.isIdentifier(call.expression.expression)
-        && call.expression.expression.text === "dormantTaskContentOwner"
+        && call.expression.expression.text === "taskContentOwner"
         && call.expression.name.text === "runMutation");
     expect(admissionCalls).toHaveLength(1);
     const admissionBranches = objectArgument(admissionCalls[0]!, 0);
     expect(resolvedBoolean(propertyNamed(admissionBranches, "ordinary"))).toBe(true);
     expect(resolvedBoolean(propertyNamed(admissionBranches, "dual"))).toBe(false);
     expect(resolvedBoolean(propertyNamed(admissionBranches, "protected"))).toBe(false);
+
+    const liveMessages = objectArgument(
+      callNamed(appSource, "createProductionLiveShadowMessageComposition"),
+      0,
+    );
+    const messageTaskOwner = propertyNamed(liveMessages, "taskContentOwner");
+    expect(messageTaskOwner !== undefined && ts.isPropertyAssignment(messageTaskOwner)).toBe(true);
+    expect((messageTaskOwner as ts.PropertyAssignment).initializer.getText(appSource))
+      .toContain("taskContentOwner");
+    const replyAcceptance = propertyNamed(
+      liveMessages,
+      "onSharedAgentHumanPublished",
+    );
+    expect(replyAcceptance !== undefined).toBe(true);
+    const acceptanceCalls = descendants(replyAcceptance!, ts.isCallExpression)
+      .filter(call => identifierName(call.expression)
+        === "acceptPublishedProtectedTaskReply");
+    expect(acceptanceCalls).toHaveLength(1);
+    expect(acceptanceCalls[0]!.arguments.map(argument => argument.getText(appSource)))
+      .toEqual(["getServerDirectDb()", "message"]);
+    const acceptanceIdentifiers = descendants(replyAcceptance!, ts.isIdentifier)
+      .map(identifier => identifier.text);
+    expect(acceptanceIdentifiers).toContain("getTaskObserver");
+    expect(acceptanceIdentifiers).toContain("kick");
+    const acceptanceStatuses = descendants(replyAcceptance!, ts.isStringLiteral)
+      .map(value => value.text);
+    expect(acceptanceStatuses).toEqual(["accepted", "exact_replay"]);
+
+    const response = objectArgument(callNamed(appSource, "createProtectedTaskHumanResponse"), 0);
+    expect((propertyNamed(response, "owner") as ts.PropertyAssignment)
+      .initializer.getText(appSource)).toBe("taskContentOwner");
+
+    const protectedDependencies = variableNamed(
+      appSource,
+      "taskProtectedHttpDependencies",
+    );
+    expect(
+      protectedDependencies.initializer !== undefined
+        && ts.isObjectLiteralExpression(protectedDependencies.initializer),
+    ).toBe(true);
+    const protectedDependencyObject =
+      protectedDependencies.initializer as ts.ObjectLiteralExpression;
+    expect((propertyNamed(protectedDependencyObject, "owner") as ts.PropertyAssignment)
+      .initializer.getText(appSource)).toBe("taskContentOwner");
+
+    const protectedRoutes = callNamed(
+      appSource,
+      "createProductionProtectedTaskComposition",
+    );
+    expect(protectedRoutes.arguments[0]?.getText(appSource))
+      .toBe("taskProtectedHttpDependencies");
+    const fallbackRoutes = callNamed(appSource, "createTaskOrdinaryFallbackPorts");
+    expect(fallbackRoutes.arguments[0]?.getText(appSource))
+      .toBe("taskProtectedHttpDependencies");
   });
 
-  test("leaves protected routes, backfill, observer claims, and recipient binding unregistered", () => {
-    const forbiddenProductionBindings = [
-      "protectedTaskRoutes",
-      "createProductionProtectedTaskComposition",
-      "createProtectedTaskProductionWiring",
-      "taskContentBackfillRoutes",
-      "createProtectedTaskReplyReconciler",
-    ] as const;
+  test("mounts protected repair and occurrence recovery behind the live owner", () => {
     const identifiers = new Set(
       descendants(appSource, ts.isIdentifier).map((identifier) => identifier.text),
     );
-    for (const binding of forbiddenProductionBindings) {
-      expect(identifiers.has(binding), `${binding} must stay out of app composition`).toBe(false);
+    for (const binding of [
+      "taskContentBackfillRoutes",
+      "createProductionTaskContentBackfillComposition",
+      "createProductionProtectedTaskRuntimeInitialComposition",
+      "protectedTaskPendingAttentionRoutes",
+    ] as const) {
+      expect(identifiers.has(binding), `${binding} must be in app composition`).toBe(true);
     }
+
+    const backfill = callNamed(appSource, "createProductionTaskContentBackfillComposition");
+    const backfillOptions = objectArgument(backfill, 0);
+    const backfillOwner = propertyNamed(backfillOptions, "owner");
+    expect(backfillOwner !== undefined && ts.isPropertyAssignment(backfillOwner)).toBe(true);
+    expect((backfillOwner as ts.PropertyAssignment).initializer.getText(appSource))
+      .toBe("taskContentOwner");
+
+    const runtime = callNamed(
+      appSource,
+      "createProductionProtectedTaskRuntimeInitialComposition",
+    );
+    const runtimeOptions = objectArgument(runtime, 0);
+    expect((propertyNamed(runtimeOptions, "owner") as ts.PropertyAssignment)
+      .initializer.getText(appSource)).toBe("taskContentOwner");
+    expect((propertyNamed(runtimeOptions, "recipients") as ts.PropertyAssignment)
+      .initializer.getText(appSource)).toBe("taskRuntimeRecipients");
 
     const observerCreations = descendants(appSource, ts.isNewExpression)
       .filter((creation) => identifierName(creation.expression) === "TaskObserver");
     expect(observerCreations).toHaveLength(1);
     const observerOptions = observerCreations[0]?.arguments?.[0];
     expect(observerOptions !== undefined && ts.isObjectLiteralExpression(observerOptions)).toBe(true);
-    expect(propertyNames(observerOptions as ts.ObjectLiteralExpression)).not.toContain(
-      "protectedOccurrenceAdmission",
-    );
-    expect(propertyNames(observerOptions as ts.ObjectLiteralExpression)).not.toContain(
-      "protectedOccurrencePort",
-    );
+    const observerIdentifiers = descendants(observerOptions!, ts.isIdentifier)
+      .map((identifier) => identifier.text);
+    expect(observerIdentifiers).toContain("protectedOccurrencePort");
+    expect(observerIdentifiers).toContain("protectedOccurrenceRecoveryPort");
+
+    const occurrenceOwner = callNamed(appSource, "createTaskOccurrencePolicyPorts");
+    expect(occurrenceOwner.arguments[0]?.getText(appSource)).toBe("taskContentOwner");
+    expect(descendants(occurrenceOwner, ts.isIdentifier).map(identifier => identifier.text))
+      .toContain("initializeProtectedTaskRuntime");
+    expect(observerIdentifiers).toContain("ordinaryOccurrencePort");
+    expect(observerIdentifiers).toContain("taskOccurrencePolicy");
+    const observerMaintenance = propertyNamed(observerOptions as ts.ObjectLiteralExpression, "maintenanceGate");
+    expect(observerMaintenance !== undefined && ts.isShorthandPropertyAssignment(observerMaintenance)).toBeTrue();
+    expect(observerIdentifiers).not.toContain("strictBackgroundMaintenanceGate");
+
+    const mountedCapability = descendants(appSource, ts.isPropertyAssignment)
+      .filter(property => property.name !== undefined
+        && identifierName(property.name) === "assertCurrentMountedCapabilities");
+    expect(mountedCapability).toHaveLength(1);
+    const mountedIdentifiers = descendants(mountedCapability[0]!, ts.isIdentifier)
+      .map(identifier => identifier.text);
+    expect(mountedIdentifiers).toContain("initializeProtectedTaskRuntime");
+    expect(mountedIdentifiers).not.toContain("currentProtectedTaskRuntime");
 
     const background = objectArgument(
       callNamed(appSource, "createProductionBackgroundAuthorizationComposition"),
       0,
     );
-    expect(propertyNames(background)).not.toContain("taskRuntimeAdmission");
-    expect(propertyNames(background)).not.toContain("isTaskRecipientActive");
-    expect(propertyNames(background)).not.toContain("bindTaskRecipient");
+    const backgroundIdentifiers = descendants(background, ts.isIdentifier)
+      .map((identifier) => identifier.text);
+    expect(backgroundIdentifiers).toContain("isTaskRecipientActive");
+    expect(backgroundIdentifiers).toContain("bindTaskRecipient");
+    expect(backgroundIdentifiers).toContain("withTaskAuthority");
   });
 
-  test("does not register a Desktop Task backfill or repair channel", () => {
+  test("forwards authorization requests from every protected output preparation", () => {
+    for (const factory of [
+      "createProtectedTaskCancellationComposition",
+      "createProtectedTaskOutputReadComposition",
+      "terminalMessageComposition",
+      "createProtectedTaskRuntimeParkedPreparation",
+    ] as const) {
+      const options = objectArgument(
+        callNamed(initialCompositionSource, factory),
+        0,
+      );
+      const forwarded = propertyNamed(options, "authorizationRequested");
+      expect(
+        forwarded !== undefined && ts.isPropertyAssignment(forwarded),
+        `${factory} must forward authorizationRequested`,
+      ).toBe(true);
+      expect((forwarded as ts.PropertyAssignment).initializer.getText(
+        initialCompositionSource,
+      )).toBe("input.authorizationRequested");
+    }
+  });
+
+  test("Plain does not initialize protected work while Shadow and Full select it", async () => {
+    let mode: "plaintext_only" | "shadow_encryption" | "encrypted_only" =
+      "plaintext_only";
+    let revision = 1;
+    const readPolicy = mock(async () => ({
+      mode,
+      shadowBehavior: "fallback" as const,
+      revision,
+    }));
+    const initializeProtected = mock(async () => "protected-runtime");
+    const owner = bindEncryptionDataOperationOwner({
+      policy: createLiveShadowDataOperationPolicyBinding(readPolicy),
+    });
+    const selectRuntime = () => owner.runMutation({
+      ordinary: () => Promise.resolve(null),
+      dual: initializeProtected,
+      protected: initializeProtected,
+    });
+
+    expect(await selectRuntime()).toBeNull();
+    expect(initializeProtected).not.toHaveBeenCalled();
+
+    mode = "shadow_encryption";
+    revision += 1;
+    expect(await selectRuntime()).toBe("protected-runtime");
+
+    mode = "encrypted_only";
+    revision += 1;
+    expect(await selectRuntime()).toBe("protected-runtime");
+    expect(initializeProtected).toHaveBeenCalledTimes(2);
+    expect(readPolicy.mock.calls.length).toBeGreaterThanOrEqual(6);
+  });
+
+  test("registers the same Desktop Task repair channels in main and preload", () => {
     const desktopSources = [
       sourceFile("../../../../apps/desktop/electron/main.ts"),
       sourceFile("../../../../apps/desktop/electron/preload.ts"),
@@ -182,7 +330,14 @@ describe("dark Task production composition", () => {
       descendants(source, ts.isStringLiteral).map((literal) => literal.text)
     );
     expect(channels.filter((channel) =>
-      channel.startsWith("foregroundShadow:taskBackfill:")
-    )).toEqual([]);
+      channel.startsWith("foregroundShadow:taskContentBackfill:")
+    ).sort()).toEqual([
+      "foregroundShadow:taskContentBackfill:cancel",
+      "foregroundShadow:taskContentBackfill:cancel",
+      "foregroundShadow:taskContentBackfill:progress",
+      "foregroundShadow:taskContentBackfill:progress",
+      "foregroundShadow:taskContentBackfill:service",
+      "foregroundShadow:taskContentBackfill:service",
+    ]);
   });
 });

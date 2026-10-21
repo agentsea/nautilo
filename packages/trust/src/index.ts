@@ -29,6 +29,11 @@ export {
   envelopeWritableNamespaces,
 } from "./types";
 export {
+  findContentAccessNamespaceInTx,
+  resolveContentAccessNamespaceInTx,
+  type ImmutableContentAccessAudience,
+} from "./content-access-namespace";
+export {
   blockHuman,
   unblockHuman,
   listBlockedHumanUserIds,
@@ -790,3 +795,10 @@ export type { ContentAccessReceipt } from "./content-access-publication";
 export { getExternalRoomPolicy, restrictExternalRoomEnvelope, assertExternalRoomTextMode, assertExternalRoomSubject, externalRoomExecutionDependencies, type ExternalRoomExecutionDependencies, type ExternalRoomPolicy } from "./external-room-policy";
 
 export { insertPrivateRoomBundleTx } from "./queries";
+
+export {
+  readHumanTerminalSourceAuthority,
+  type HumanTerminalSourceAuthorityDatabase,
+  type HumanTerminalSourceAuthorityInput,
+  type HumanTerminalSourceAuthority,
+} from "./human-terminal-source-authority";

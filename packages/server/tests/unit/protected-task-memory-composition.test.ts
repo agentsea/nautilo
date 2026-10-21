@@ -210,6 +210,7 @@ function reader(
   return {
     searchProtectedCandidates: async () => success([]),
     searchCandidates: async () => success([]),
+    loadExactCandidates: async () => success([]),
     loadExactProtectedSources: async () => success([]),
     loadExactOrdinary: async () => success([]),
     ...overrides,

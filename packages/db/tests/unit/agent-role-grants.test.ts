@@ -117,6 +117,16 @@ describe("agent-role-grants SQL shape — public contract preserved", () => {
     );
   });
 
+  test("preserves the product-only Task wake receipt boundary after broad grants", () => {
+    expect(SENSITIVE_TABLES).toContain("protected_task_wake_continuation_receipts");
+    expect(sql).toContain("'protected_task_wake_continuation_receipts'");
+    expect(sql.indexOf("'protected_task_wake_continuation_receipts'")).toBeGreaterThan(
+      sql.indexOf(
+        "GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public",
+      ),
+    );
+  });
+
   test("creates users_public view with exactly the safe column subset", () => {
     expect(sql).toContain("CREATE OR REPLACE VIEW public.users_public AS SELECT");
     for (const col of USERS_PUBLIC_VIEW_COLUMNS) {

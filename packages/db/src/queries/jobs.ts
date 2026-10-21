@@ -1,5 +1,7 @@
 import { and, eq, inArray, isNull, isNotNull, or, sql } from "drizzle-orm";
 import { jobs } from "../schema/jobs";
+import { tasks } from "../schema/tasks";
+import { taskRuns } from "../schema/task-runs";
 import type { JobStatus } from "@nautilo/types";
 import { getSharedDirectDb } from "../config/direct-database";
 import {
@@ -275,6 +277,17 @@ export async function startProtectedTaskJobWithDatabase(
   const durableInput = { ...expectedReference };
   return database.transaction(async (tx) => {
     await acquireEncryptionPublicationFence(tx, publicationPolicy);
+    const [task] = await tx.select({ id: tasks.id, status: tasks.status,
+      representation: tasks.contentRepresentation, pauseRequestId: tasks.pauseRequestId,
+    }).from(tasks).where(eq(tasks.id, expectedReference.taskId)).limit(1).for("update");
+    if (!task || task.pauseRequestId != null
+      || task.representation !== "protected" && task.representation !== "dual"
+      || task.status !== "running" && task.status !== "pending") return "rejected";
+    const [run] = await tx.select({ id: taskRuns.id, taskId: taskRuns.taskId,
+      jobId: taskRuns.jobId, status: taskRuns.status,
+    }).from(taskRuns).where(and(eq(taskRuns.id, expectedReference.taskRunId),
+      eq(taskRuns.taskId, task.id))).limit(1).for("update");
+    if (!run || run.jobId !== jobId || run.status !== "running") return "rejected";
     const rows = await tx
       .update(jobs)
       .set({ status: "running", startedAt: new Date() })

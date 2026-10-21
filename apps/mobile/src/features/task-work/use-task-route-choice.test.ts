@@ -48,12 +48,13 @@ describe("plaintext-only Mobile Task routing", () => {
     expect(contentCalls).toBe(0);
   });
 
-  test("mixed stored Tasks fall back to lifecycle-safe list and detail only on the exact 409", async () => {
+  for (const code of ["task_content_requires_current_client", "task_content_unavailable"]) {
+  test(`legacy denial ${code} falls back to lifecycle-safe list and detail`, async () => {
     let listFallbacks = 0;
     let detailFallbacks = 0;
     const client = {
       listTasks: async () => {
-        throw new ApiError(409, "task_content_requires_current_client");
+        throw new ApiError(409, code);
       },
       listTaskContentV1: async () => {
         listFallbacks += 1;
@@ -62,7 +63,7 @@ describe("plaintext-only Mobile Task routing", () => {
         } }];
       },
       getTask: async () => {
-        throw new ApiError(409, "task_content_requires_current_client");
+        throw new ApiError(409, code);
       },
       getTaskContentV1: async () => {
         detailFallbacks += 1;
@@ -79,6 +80,7 @@ describe("plaintext-only Mobile Task routing", () => {
     expect(listFallbacks).toBe(1);
     expect(detailFallbacks).toBe(1);
   });
+  }
 
   test("other legacy failures do not probe content-v1", async () => {
     for (const error of [

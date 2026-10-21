@@ -43,8 +43,8 @@ describe("Desktop-filesystem-grant request protocol", () => {
     expect(parseRelayDesktopFilesystemGrantRequest({ ...REQUEST, requestedRoot })).toMatchObject({ ok: false });
   });
 
-  test("uses protocol v31 and parses the strict v1 reference envelope", () => {
-    expect(RELAY_PROTOCOL_VERSION).toBe(31);
+  test("uses protocol v32 and parses the strict v1 reference envelope", () => {
+    expect(RELAY_PROTOCOL_VERSION).toBe(32);
     expect(DESKTOP_FILESYSTEM_GRANT_REQUEST_PROTOCOL_VERSION).toBe(9);
     expect(CAPABILITY_UPDATE_PROTOCOL_VERSION).toBe(7);
     expect(parseRelayDesktopFilesystemGrantRequest(REQUEST)).toEqual({ ok: true, request: REQUEST });

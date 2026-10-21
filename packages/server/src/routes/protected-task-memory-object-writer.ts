@@ -3,8 +3,13 @@ import {
   humanCryptoDevices,
 } from "@nautilo/db";
 import {
+  hasTaskRuntimeTemporarySigner,
+  withTaskRuntimeTemporarySigner,
+} from "@nautilo/lattice-crypto";
+import {
   deriveMemoryCryptoObjectIdV1,
   MEMORY_OBJECT_TYPE,
+  readPreparedTaskRuntimeAgentObjectSnapshot,
   type PreparedTaskRuntimeAgentObject,
 } from "@nautilo/lattice-bridge";
 import {
@@ -63,6 +68,15 @@ export async function persistProtectedTaskMemoryObjectUnderHeld(
 ): Promise<"created" | "duplicate" | "stale"> {
   const binding = requireHeldProtectedTaskMemoryWriterAuthority(held);
   const objectId = objectIdFor(write);
+  const preparedSnapshot = readPreparedTaskRuntimeAgentObjectSnapshot(
+    write.prepared,
+    binding.evidence,
+  );
+  const certified = preparedSnapshot.access.signerEvidenceBytes !== undefined;
+  wipe(preparedSnapshot.object);
+  if (hasTaskRuntimeTemporarySigner(binding.evidence) !== certified) {
+    throw new TypeError("Task Memory signer evidence is not exact");
+  }
   await binding.assertCurrent();
   return persistTaskRuntimeAgentObject({
     crypto: binding.crypto,
@@ -73,6 +87,31 @@ export async function persistProtectedTaskMemoryObjectUnderHeld(
         || context.operationId !== write.operationId) return null;
       await binding.assertCurrent();
       const storage = new PostgresLatticeStorage(binding.restrictedHandle);
+      if (certified) {
+        return withTaskRuntimeTemporarySigner(
+          binding.evidence,
+          async temporary => {
+            const publicSigner = Object.freeze({
+              certificateBytes: temporary.certificateBytes.slice(),
+              issuerSigningPublicKey:
+                temporary.issuerSigningPublicKey.slice(),
+              requestHash: temporary.requestHash.slice(),
+              authorizationHash: temporary.authorizationHash.slice(),
+            });
+            try {
+              await binding.assertCurrent();
+              const status = await use({
+                storage,
+                temporarySigner: publicSigner,
+              });
+              await binding.assertCurrent();
+              return status;
+            } finally {
+              wipe(publicSigner);
+            }
+          },
+        );
+      }
       // Read immutable publication identity before taking the manager device
       // lock, then lock Runtime state and re-read publication.
       const publication = await storage.getAgentRuntimeSignerPublication(

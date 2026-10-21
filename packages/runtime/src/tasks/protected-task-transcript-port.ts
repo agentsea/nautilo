@@ -1,5 +1,8 @@
-import type { BaseMessage } from "@langchain/core/messages";
-import { computeMessageFingerprint } from "@nautilo/agent";
+import { ToolMessage, type BaseMessage } from "@langchain/core/messages";
+import {
+  computeMessageFingerprint,
+  readToolInvocationStatus,
+} from "@nautilo/agent";
 import type { MessagePayloadV2 } from "@nautilo/lattice-bridge";
 
 import { protectedAgentMessagePayload } from "../conversation/protected-conversation-executor-io";
@@ -89,7 +92,19 @@ export function createProtectedTaskTranscriptPort(input: Readonly<{
           input.signal.throwIfAborted();
           if (isTransientContext(message)) continue;
           const fingerprint = computeMessageFingerprint(message);
-          const payload = protectedAgentMessagePayload(message);
+          const basePayload = protectedAgentMessagePayload(message);
+          const toolCallId = basePayload.sensitiveMetadata?.["toolCallId"];
+          const toolStatus = ToolMessage.isInstance(message)
+              && typeof toolCallId === "string"
+              && toolCallId.length > 0
+            ? readToolInvocationStatus(message) : null;
+          const payload = toolStatus === null ? basePayload : {
+            ...basePayload,
+            sensitiveMetadata: {
+              ...(basePayload.sensitiveMetadata ?? {}),
+              toolStatus,
+            },
+          };
           await input.publish({
             identity,
             idempotencyKey: `task-transcript:${identity.taskRunId}:${fingerprint}`,

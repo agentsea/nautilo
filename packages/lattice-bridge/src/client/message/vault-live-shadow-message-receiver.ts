@@ -1448,6 +1448,7 @@ export function createVaultLiveShadowMessageReceiver(input: Readonly<{
       if (
         event.type === "message.shared_agent_authorization_required"
         || event.type === "message.runtime_invocation_authorization_required"
+        || event.type === "message.task_definition_authorization_required"
       ) {
         return Object.freeze({
           status: "failed" as const,

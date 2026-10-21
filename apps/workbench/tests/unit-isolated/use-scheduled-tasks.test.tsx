@@ -16,6 +16,9 @@ import {
 const controller = Object.freeze({});
 let lastSuccessfulAtMs: number | null = null;
 let ordinaryTasks: TaskSummary[] = [];
+let viewerGeneration = 1;
+let viewerId: string | null = "viewer-a";
+let actorId: string | null = "actor-a";
 interface Deferred<Value> {
   promise: Promise<Value>;
   resolve(value: Value): void;
@@ -33,21 +36,27 @@ function deferred<Value>(): Deferred<Value> {
 }
 
 let requests: Deferred<readonly ProtectedScheduledTaskProjection[]>[] = [];
+let historyRequests: Deferred<unknown>[] = [];
 const listProtected = mock(() => {
   const request = deferred<readonly ProtectedScheduledTaskProjection[]>();
   requests.push(request);
   return request.promise;
 });
 const createProtectedController = mock(() => controller);
+const readProtectedHistory = mock(() => {
+  const request = deferred<unknown>();
+  historyRequests.push(request);
+  return request.promise;
+});
 const refreshTasks = mock(async () => {});
 
 mock.module("../../src/hooks/use-auth", () => ({
   useAuth: () => ({
-    viewerGeneration: 1,
+    viewerGeneration,
     viewer: {
       isVerified: true,
-      sessionUserId: "viewer-a",
-      sessionActorId: "actor-a",
+      sessionUserId: viewerId,
+      sessionActorId: actorId,
     },
   }),
 }));
@@ -74,6 +83,7 @@ mock.module("../../src/lib/encryption-data-operation-policy", () => ({
 mock.module("../../src/lib/protected-human-task-controller", () => ({
   createWorkbenchProtectedHumanTaskController: createProtectedController,
   listProtectedScheduledTasks: listProtected,
+  readWorkbenchTaskForViewer: readProtectedHistory,
 }));
 
 const { useScheduledTasks } = await import(
@@ -92,6 +102,14 @@ function policyWrapper(mode: ConversationEncryptionPolicyMode) {
 
 const fullWrapper = policyWrapper("encrypted_only");
 const plainWrapper = policyWrapper("plaintext_only");
+let dynamicPolicyMode: ConversationEncryptionPolicyMode = "encrypted_only";
+function dynamicPolicyWrapper({ children }: { children: ReactNode }) {
+  return (
+    <ConversationEncryptionPolicyModeContext.Provider value={dynamicPolicyMode}>
+      {children}
+    </ConversationEncryptionPolicyModeContext.Provider>
+  );
+}
 
 function unavailableRow(id: string): ProtectedScheduledTaskProjection {
   return {
@@ -120,6 +138,7 @@ function openedRow(id: string): ProtectedScheduledTaskProjection {
     } as ProtectedScheduledTaskProjection["task"],
     prompt: "Private weekly digest",
     expectedOutput: null,
+    retainedHistoricalError: null,
   };
 }
 
@@ -128,8 +147,14 @@ describe("useScheduledTasks protected refresh", () => {
     reapplyHappyDomGlobals();
     lastSuccessfulAtMs = null;
     ordinaryTasks = [];
+    viewerGeneration = 1;
+    viewerId = "viewer-a";
+    actorId = "actor-a";
+    dynamicPolicyMode = "encrypted_only";
     requests = [];
+    historyRequests = [];
     listProtected.mockClear();
+    readProtectedHistory.mockClear();
     createProtectedController.mockClear();
     refreshTasks.mockClear();
   });
@@ -276,11 +301,96 @@ describe("useScheduledTasks protected refresh", () => {
     expect(view.result.current.protectedLoading).toBe(false);
     expect(createProtectedController).not.toHaveBeenCalled();
     expect(listProtected).not.toHaveBeenCalled();
+    expect(readProtectedHistory).not.toHaveBeenCalled();
 
     await act(async () => { await view.result.current.refresh(); });
     expect(refreshTasks).toHaveBeenCalledTimes(1);
     expect(view.result.current.tasks).toEqual([task]);
     expect(createProtectedController).not.toHaveBeenCalled();
     expect(listProtected).not.toHaveBeenCalled();
+    expect(readProtectedHistory).not.toHaveBeenCalled();
+  });
+
+  test("loads exact stored run metadata only when protected history is opened", async () => {
+    const view = renderHook(() => useScheduledTasks(), { wrapper: fullWrapper });
+    await waitFor(() => expect(listProtected).toHaveBeenCalledTimes(1));
+    requests[0]?.resolve([openedRow("scheduled-task")]);
+    await waitFor(() => expect(view.result.current.protectedTasks).toHaveLength(1));
+
+    act(() => view.result.current.openProtectedHistory("scheduled-task"));
+    expect(view.result.current.protectedHistory).toEqual({
+      taskId: "scheduled-task",
+      state: "loading",
+    });
+    expect(readProtectedHistory).toHaveBeenCalledWith({
+      owner: view.result.current.protectedOwner,
+      taskId: "scheduled-task",
+      protectedController: controller,
+    });
+
+    const runs = [{
+      id: "stored-run",
+      status: "completed",
+      modelId: null,
+      startedAt: "2026-10-08T10:00:00.000Z",
+      completedAt: "2026-10-08T10:01:00.000Z",
+      content: {
+        dtoVersion: 1,
+        status: "unavailable",
+        reason: "waiting_for_authorization",
+      },
+    }];
+    historyRequests[0]?.resolve({
+      representation: "protected",
+      opened: {},
+      runs,
+    });
+    await waitFor(() => expect(view.result.current.protectedHistory).toEqual({
+      taskId: "scheduled-task",
+      state: "ready",
+      runs,
+    }));
+  });
+
+  test("clears history and fences its late read when the viewer changes", async () => {
+    const view = renderHook(() => useScheduledTasks(), { wrapper: fullWrapper });
+    await waitFor(() => expect(listProtected).toHaveBeenCalledTimes(1));
+    act(() => view.result.current.openProtectedHistory("scheduled-task"));
+    expect(view.result.current.protectedHistory?.state).toBe("loading");
+
+    viewerGeneration = 2;
+    viewerId = "viewer-b";
+    actorId = "actor-b";
+    view.rerender();
+    expect(view.result.current.protectedHistory).toBeNull();
+
+    historyRequests[0]?.resolve({
+      representation: "protected",
+      opened: {},
+      runs: [{ id: "late-run" }],
+    });
+    await Promise.resolve();
+    expect(view.result.current.protectedHistory).toBeNull();
+  });
+
+  test("clears history and fences its late read when policy mode changes", async () => {
+    const view = renderHook(() => useScheduledTasks(), {
+      wrapper: dynamicPolicyWrapper,
+    });
+    await waitFor(() => expect(listProtected).toHaveBeenCalledTimes(1));
+    act(() => view.result.current.openProtectedHistory("scheduled-task"));
+    expect(view.result.current.protectedHistory?.state).toBe("loading");
+
+    dynamicPolicyMode = "plaintext_only";
+    view.rerender();
+    expect(view.result.current.protectedHistory).toBeNull();
+
+    historyRequests[0]?.resolve({
+      representation: "protected",
+      opened: {},
+      runs: [{ id: "late-run" }],
+    });
+    await Promise.resolve();
+    expect(view.result.current.protectedHistory).toBeNull();
   });
 });

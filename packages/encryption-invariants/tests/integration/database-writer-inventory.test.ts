@@ -74,6 +74,7 @@ describe("database writer inventory", () => {
     for (const locator of [
       "packages/agent/src/store/memory-store.ts#executeAtomicProjectionMemoryInTx:insert:public.memories:1",
       "packages/agent/src/store/memory-store.ts#executeAtomicProjectionMemoryInTx:insert:public.memory_namespaces:1",
+      "packages/lattice-bridge/src/server/memory/postgres-foreground-memory-publication.ts#persist:insert:public.foreground_memory_crypto_publication_receipts:1",
       "packages/server/src/lib/relay-token-store.ts#cleanupHistoricalForUser:update:public.relay_tokens:1",
       "packages/server/src/lib/relay-token-store.ts#revokeGroupedForUser:update:public.relay_tokens:1",
       "packages/server/src/acp/opencode-task-execution-composition.ts#linkJob:update:public.task_runs:1",
@@ -95,6 +96,43 @@ describe("database writer inventory", () => {
       ].filter((entry) => entry.locator.includes(":raw_sql:"))
         .map((entry) => entry.locator),
     })).toEqual({ ok: true, errors: [] });
+  });
+
+  test("finds a known crypto table inside a typed Drizzle builder passed to an execution wrapper", async () => {
+    const root = fixtureRoot(`
+      import { foregroundMemoryCryptoPublicationReceipts } from "@nautilo/db";
+
+      declare const cryptoTypedDb: {
+        insert(table: unknown): {
+          values(value: unknown): { onConflictDoNothing(): unknown };
+        };
+      };
+      declare function executeTypedCryptoQuery(
+        handle: unknown,
+        query: unknown,
+      ): Promise<unknown>;
+
+      export async function persist(handle: unknown) {
+        await executeTypedCryptoQuery(
+          handle,
+          cryptoTypedDb.insert(foregroundMemoryCryptoPublicationReceipts)
+            .values({ operationId: "operation-id" })
+            .onConflictDoNothing(),
+        );
+      }
+    `);
+
+    expect(await discoverDatabaseWriterInventory(root, {
+      foregroundMemoryCryptoPublicationReceipts:
+        "public.foreground_memory_crypto_publication_receipts",
+    })).toEqual([{
+      operation: "insert",
+      table: "public.foreground_memory_crypto_publication_receipts",
+      path: "packages/demo/src/writers.ts",
+      symbol: "persist",
+      locator:
+        "packages/demo/src/writers.ts#persist:insert:public.foreground_memory_crypto_publication_receipts:1",
+    }]);
   });
 
   test("finds endpoint-independent Drizzle insert/update/delete writers and ignores lookalikes", async () => {

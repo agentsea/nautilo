@@ -8,6 +8,8 @@ import {
   ENCRYPTION_TRANSITION_OBSERVATION_POLICY_V1,
   UnsupportedEncryptionTransitionStateError,
   compareAndSwapEncryptionTransitionPolicy,
+  compareAndSwapValidatedEncryptionTransitionPolicy,
+  type EncryptionTransitionCurrentValidation,
   consumeEncryptionTransitionObservationAdmission,
   getEncryptionTransitionPolicy,
   getSharedDirectCryptoDb,
@@ -57,6 +59,7 @@ import {
   "../lib/security-audit-log";
 import { decodeCanonicalBase64url } from "../lib/canonical-base64url";
 import { getServerDirectDb } from "../lib/server-direct-db";
+import { ProtectedTaskActivationReadinessError } from "./protected-task-activation-readiness";
 import { publishEncryptionPolicyChanged } from "../realtime/ws-publisher";
 
 function percent(verified: bigint, denominator: bigint): number | null {
@@ -404,6 +407,9 @@ export interface EncryptionTransitionRouteDeps {
   getDb?: typeof getServerDirectDb;
   getPolicy?: typeof getEncryptionTransitionPolicy;
   casPolicy?: typeof compareAndSwapEncryptionTransitionPolicy;
+  casValidatedPolicy?: typeof compareAndSwapValidatedEncryptionTransitionPolicy;
+  validateFullTransition?: (input: Parameters<EncryptionTransitionCurrentValidation>[0]
+    & Readonly<{ maintenanceOperationId: string; now: Date }>) => Promise<void>;
   getDashboard?: typeof readEncryptionTransitionDashboard;
   getObservationPressure?: typeof readEncryptionTransitionObservationPressure;
   getLiveTurnDashboard?: typeof readLiveShadowTurnDashboard;
@@ -602,7 +608,7 @@ export function encryptionTransitionRoutes(
           before.mode !== "encrypted_only") {
           if (!overrides.maintenanceController ||
             !overrides.getExecutableActivity ||
-            !overrides.flushPendingBroadcasts) {
+            !overrides.flushPendingBroadcasts || !overrides.validateFullTransition) {
             return unavailable(reply);
           }
           let draining: { operationId: string | null };
@@ -652,12 +658,18 @@ export function encryptionTransitionRoutes(
             expectedRevision: parsed.data.expectedRevision,
           },
         });
-        after = await casPolicy(db, {
+        const requested = {
           expectedRevision: parsed.data.expectedRevision,
           targetMode: parsed.data.targetMode,
           targetShadowBehavior: parsed.data.targetShadowBehavior,
           now: now(),
-        });
+        };
+        after = maintenanceOperationId === null ? await casPolicy(db, requested)
+          : await (overrides.casValidatedPolicy ?? compareAndSwapValidatedEncryptionTransitionPolicy)(
+            db, requested, async current => {
+              await overrides.validateFullTransition!({ ...current,
+                maintenanceOperationId: maintenanceOperationId!, now: now() });
+            });
         // The durable CAS is authoritative. Publish immediately so later
         // maintenance release, reconciliation, or dashboard failures cannot
         // hide a committed policy change from connected clients.
@@ -705,6 +717,9 @@ export function encryptionTransitionRoutes(
         strictShadowRuntimeHealthProjection(after.revision, boundaryHealth),
       ));
     } catch (error) {
+      if (error instanceof ProtectedTaskActivationReadinessError) {
+        return reply.code(409).send({ error: "task_encryption_not_ready", retryable: true });
+      }
       if (error instanceof EncryptionTransitionPolicyConflictError) {
         return reply.code(409).send({
           error: "stale_revision",

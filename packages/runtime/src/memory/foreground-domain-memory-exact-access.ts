@@ -11,8 +11,10 @@ import {
 } from "@nautilo/lattice-bridge";
 import {
   accessRevision,
+  assertTaskRuntimeTemporarySignerForPreparation,
   authorizationRevision,
   createCommonAgentObjectAccessManifest,
+  createTaskRuntimeCommonObjectAccessManifest,
   decryptObjectPayload,
   namespaceGeneration,
   namespaceId,
@@ -21,6 +23,8 @@ import {
   wrapObjectDekForNamespace,
   type AgentRuntimeKeyGeneration,
   type LatticeCrypto,
+  type TaskRuntimeExecutionEvidence,
+  type TaskRuntimeTemporarySigner,
 } from "@nautilo/lattice-crypto";
 import {
   type MemoryNativeNamespaceAccessEntryV1,
@@ -135,6 +139,8 @@ export function createForegroundDomainMemoryExactAccess(input: Readonly<{
   runtime: AgentRuntimeKeyGeneration;
   signerKeyId: string;
   agentAuthorizationRevision: number;
+  evidence?: TaskRuntimeExecutionEvidence;
+  temporarySigner?: TaskRuntimeTemporarySigner;
   read(request: Readonly<{
     objectId: string;
     expectedAccessRevision: number;
@@ -268,7 +274,27 @@ export function createForegroundDomainMemoryExactAccess(input: Readonly<{
             const targetEntries = ordered.map(({ authority }, index) =>
               entry(authority, input.crypto.hash(targetEnvelopeBytes[index]!))
             );
-            const next = createCommonAgentObjectAccessManifest(input.crypto, {
+            if ((input.evidence === undefined)
+              !== (input.temporarySigner === undefined)) {
+              throw new TypeError(
+                "Foreground Memory certified signer authority is incomplete",
+              );
+            }
+            const temporaryAuthority = input.evidence === undefined
+              ? null
+              : assertTaskRuntimeTemporarySignerForPreparation(
+                  input.crypto,
+                  input.evidence,
+                  input.runtime,
+                  input.temporarySigner!,
+                );
+            if (temporaryAuthority !== null
+              && temporaryAuthority.signerKeyId !== input.signerKeyId) {
+              throw new TypeError(
+                "Foreground Memory certified signer key was substituted",
+              );
+            }
+            const manifestInput = {
               objectId: objectId(request.objectId),
               payloadHash: durable.payloadHash,
               accessRevision: accessRevision(request.expectedAccessRevision + 1),
@@ -280,11 +306,33 @@ export function createForegroundDomainMemoryExactAccess(input: Readonly<{
                 runtimeGeneration: input.runtime.generation,
                 signerKeyId: input.signerKeyId,
               },
-              signerAuthorizationHash: null,
+              signerAuthorizationHash: temporaryAuthority?.certificateHash
+                ?? null,
               hostAuthorizationRevision: authorizationRevision(
-                input.agentAuthorizationRevision,
+                temporaryAuthority?.hostAuthorizationRevision
+                  ?? input.agentAuthorizationRevision,
               ),
-            }, input.runtime);
+            } as const;
+            const next = input.temporarySigner === undefined
+              ? createCommonAgentObjectAccessManifest(
+                  input.crypto,
+                  manifestInput,
+                  input.runtime,
+                )
+              : createTaskRuntimeCommonObjectAccessManifest(
+                  input.crypto,
+                  manifestInput,
+                  {
+                    runtime: input.temporarySigner.runtime,
+                    certificateBytes: input.temporarySigner.certificateBytes,
+                    issuerSigningPublicKey:
+                      input.temporarySigner.issuerSigningPublicKey,
+                    expectedRequestHash: input.temporarySigner.requestHash,
+                    expectedAuthorizationHash:
+                      input.temporarySigner.authorizationHash,
+                    now: input.crypto.clock.now(),
+                  },
+                );
             // V5 signs envelopes in hash order, independently of the canonical
             // Namespace ordering used for authority and product-set comparison.
             const envelopesByHash = new Map(targetEnvelopeBytes.map((bytes) =>
@@ -299,6 +347,10 @@ export function createForegroundDomainMemoryExactAccess(input: Readonly<{
               currentManifestHash: durable.accessManifestHash.slice(),
               nextManifestHash: next.hash.slice(),
               nextManifestBytes: next.bytes.slice(),
+              ...(input.temporarySigner === undefined ? {} : {
+                signerEvidenceBytes:
+                  input.temporarySigner.certificateBytes.slice(),
+              }),
               targetEnvelopeBytes: Object.freeze(next.manifest.envelopeHashes.map((hash) =>
                 envelopesByHash.get(bytesToHex(hash))!.slice())),
             });

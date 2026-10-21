@@ -11,6 +11,7 @@ import {
   assertProtectedTaskOperationalMetadataProjectionV1,
   classifyProtectedTaskMetadataV1,
   isProtectedTaskOperationalMetadataProjectionV1,
+  parseProtectedTaskOperationalMetadataProjectionV1,
   reconstructProtectedTaskMetadataV1,
   type ProtectedTaskMetadataClassificationV1,
   type ProtectedTaskMetadataProjectionV1,
@@ -146,6 +147,13 @@ describe("protected Task metadata v1", () => {
         artifactOperationId: "ask-peer-artifacts-v1:turn:peer:artifact-0",
       },
       {
+        ordinaryArtifactPeer: true,
+        expectedArtifactPeerActorId: "123e4567-e89b-42d3-a456-426614174000",
+        artifactAwareAskPeer: true,
+        artifactRefs: [artifactRef()],
+        artifactOperationId: "ask-peer-artifacts-v1:turn:peer:artifact-1",
+      },
+      {
         artifactId: "board/events",
         topic: "selection.changed",
         source: "artifact_ping",
@@ -235,6 +243,94 @@ describe("protected Task metadata v1", () => {
       expect(() => assertProtectedTaskOperationalMetadataProjectionV1(
         unclassified,
       )).toThrow("canonical classifier output");
+    }
+  });
+
+  test("restores every persisted operational projection without protected values", () => {
+    const inputs = [
+      { execution: codexExecution({ workingDirectory: "/private/repository" }) },
+      {
+        preparation: {
+          stage: "using_tools",
+          researchWork: { role: "investigator", subject: "Private subject" },
+          taskRunId: "run-1",
+          updatedAt: "2026-09-21T10:00:00.000Z",
+        },
+      },
+      {
+        lastInterruption: {
+          code: "no_progress",
+          cause: "repeated_tool_failure",
+          stoppedBy: "no_progress_guard",
+          outcome: "errored",
+          observedAt: "2026-09-21T10:01:00.000Z",
+          taskRunId: "run-1",
+          graphThreadId: "thread-1",
+          checkpointId: null,
+          toolName: "private_repository_lookup",
+          operation: "read",
+          resumeRequiresValidation: true,
+        },
+      },
+      {
+        deepResearch: {
+          version: 1,
+          reportLanguage: "Portuguese",
+          modelPlan: modelPlan(),
+          invokingModelId: null,
+        },
+      },
+      { target: "/private/repository", mode: "update", publish: "branch" },
+      { bringBack: false },
+      {
+        ordinaryArtifactPeer: true,
+        expectedArtifactPeerActorId: "123e4567-e89b-42d3-a456-426614174000",
+      },
+      {
+        artifactAwareAskPeer: true,
+        artifactRefs: [artifactRef()],
+        artifactOperationId: "ask-peer-artifacts-v1:turn:peer:artifact-0",
+      },
+      {
+        ordinaryArtifactPeer: true,
+        expectedArtifactPeerActorId: "123e4567-e89b-42d3-a456-426614174000",
+        artifactAwareAskPeer: true,
+        artifactRefs: [artifactRef()],
+        artifactOperationId: "ask-peer-artifacts-v1:turn:peer:artifact-2",
+      },
+      { artifactId: "board/events", topic: "selection.changed", source: "artifact_ping" },
+      { liveMiniAppTaskDelegation: { version: 1, appId: "mini-app" } },
+      {
+        writerReviewAwaiting: {
+          version: 1,
+          taskRunId: "run-1",
+          proposalId: "proposal-1",
+        },
+      },
+    ];
+
+    for (const input of inputs) {
+      const classified = supported(input);
+      const restored = parseProtectedTaskOperationalMetadataProjectionV1(
+        structuredClone(classified.operational),
+      );
+      expect(restored).toEqual(classified.operational);
+      expect(isProtectedTaskOperationalMetadataProjectionV1(restored)).toBe(true);
+    }
+  });
+
+  test("rejects malformed, protected, and unknown persisted operational projections", () => {
+    for (const input of [
+      { execution: { harnessId: "codex" } },
+      { deepResearch: { version: 1, modelPlan: { ...modelPlan(), privateCanary: "secret" }, invokingModelId: null } },
+      { execution: { ...codexExecution(), harnessModelId: { privateCanary: "secret" } } },
+      { mode: "update" },
+      { artifactAwareAskPeer: false },
+      { source: "artifact_ping", topic: "private" },
+      { target: "/private" },
+      { futureOperationalField: true },
+    ]) {
+      expect(parseProtectedTaskOperationalMetadataProjectionV1(input)).toBeNull();
     }
   });
 
@@ -603,5 +699,73 @@ describe("protected Task metadata v1", () => {
     const instructions = "Document the public behavior. ".repeat(4_000);
     const result = supported({ target, mode: "auto", publish: "pr", instructions });
     expect(result.protectedContent).toEqual({ target, instructions });
+  });
+});
+
+
+describe("protected Deep Research admitted funding metadata", () => {
+  const lanes = ["supervisor", "research", "summarization", "compression", "finalReport"] as const;
+  function admitted() {
+    return {
+      version: 2,
+      reportLanguage: "Portuguese",
+      modelPlan: modelPlan(),
+      invokingModelId: null,
+      preferenceRevisions: Object.fromEntries(lanes.map((lane, index) => [lane, index])),
+      modelFunding: Object.fromEntries(lanes.map((lane, index) => [lane, index % 2 === 0
+        ? { kind: "personal", providerRoute: "openai", credentialId: ACTOR_ID, credentialRevision: 1 }
+        : { kind: "server", providerRoute: "anthropic" }])),
+      tavilyFunding: { kind: "personal", providerRoute: "tavily", credentialId: ACTOR_ID, credentialRevision: 2 },
+    };
+  }
+
+  test("round-trips all five admitted lanes and Tavily without leaking language or sharing mutable inputs", () => {
+    const deepResearch = admitted();
+    const original = structuredClone(deepResearch);
+    const classified = supported({ deepResearch });
+    const { reportLanguage, ...operational } = original;
+    expect(jsonProjection(classified.operational)).toEqual({ deepResearch: operational });
+    expect(classified.protectedContent).toEqual({ deepResearch: { reportLanguage } });
+    expect(reconstructProtectedTaskMetadataV1(classified.operational, classified.protectedContent))
+      .toEqual({ status: "supported", version: 1, metadata: { deepResearch: original } });
+    deepResearch.preferenceRevisions["research"] = 99;
+    deepResearch.tavilyFunding.credentialRevision = 99;
+    expect(jsonProjection(classified.operational)).toEqual({ deepResearch: operational });
+    expect(isProtectedTaskOperationalMetadataProjectionV1(classified.operational)).toBe(true);
+  });
+
+  test.each([...lanes])("requires an exact valid %s funding lane and preference revision", lane => {
+    for (const replacement of [undefined, -1, 0.5, Number.MAX_SAFE_INTEGER + 1, "1"]) {
+      const input = admitted();
+      expect(classifyProtectedTaskMetadataV1({ deepResearch: {
+        ...input, preferenceRevisions: { ...input.preferenceRevisions, [lane]: replacement },
+      } }).status).toBe("unsupported");
+    }
+    for (const replacement of [undefined, null, { kind: "personal", providerRoute: "openai", credentialId: ACTOR_ID, credentialRevision: 0 },
+      { kind: "server", providerRoute: "openai", apiKey: "must-not-persist" },
+      { kind: "personal", providerRoute: "openai", credentialId: "wrong-id", credentialRevision: 1 }]) {
+      const input = admitted();
+      expect(classifyProtectedTaskMetadataV1({ deepResearch: {
+        ...input, modelFunding: { ...input.modelFunding, [lane]: replacement },
+      } }).status).toBe("unsupported");
+    }
+  });
+
+  test("rejects unknown, mixed-version, secret-bearing and misplaced funding fields", () => {
+    const input = admitted();
+    for (const deepResearch of [
+      { ...input, version: 1 }, { ...input, version: 3 }, { ...input, researchBrief: "private" },
+      { ...input, preferenceRevisions: { ...input.preferenceRevisions, extra: 1 } },
+      { ...input, modelFunding: { ...input.modelFunding, extra: input.tavilyFunding } },
+      { ...input, tavilyFunding: { ...input.tavilyFunding, apiKey: "must-not-persist" } },
+      { ...input, tavilyFunding: null }, { ...input, tavilyFunding: { kind: "server", providerRoute: "bad route" } },
+    ]) expect(classifyProtectedTaskMetadataV1({ deepResearch }).status).toBe("unsupported");
+    const classified = supported({ deepResearch: input });
+    expect(reconstructProtectedTaskMetadataV1(classified.operational, {
+      deepResearch: { reportLanguage: input.reportLanguage, modelFunding: input.modelFunding },
+    }).status).toBe("unsupported");
+    expect(reconstructProtectedTaskMetadataV1({ deepResearch: { ...input } }, classified.protectedContent).status)
+      .toBe("unsupported");
+    expect(reconstructProtectedTaskMetadataV1(classified.operational, {}).status).toBe("unsupported");
   });
 });

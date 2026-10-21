@@ -1,3 +1,5 @@
+import { setup as mappedHeadFixture, replanFixture } from "../../../lattice-bridge/tests/fixtures/human-task-mapped-content";
+import { refreshHumanMappedTaskContentAccessHead } from "@nautilo/lattice-bridge/server";
 import { createHash } from "node:crypto";
 
 import { expect, test } from "bun:test";
@@ -8,10 +10,11 @@ import {
   type DomainForegroundAuthorityEntry,
 } from "@nautilo/lattice-crypto";
 import {
-  decodeTaskRuntimeBackgroundAuthorizationRequestV1,
-  encodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  decodeTaskRuntimeBackgroundAuthorizationRequestV2,
+  encodeTaskRuntimeBackgroundAuthorizationRequestV2,
 } from "@nautilo/lattice-crypto/background";
 import {
+  agentRuntimeObjectSignerKeyIdV1,
   parseDomainForegroundAuthorizationPlanV2,
 } from "@nautilo/lattice-crypto/wire";
 import { deriveTaskContentCryptoObjectIdV1 } from "@nautilo/lattice-bridge";
@@ -27,6 +30,7 @@ import {
 import {
   createProtectedTaskRuntimeGrantPlanBuilder,
   createParkedTaskRuntimeRoutingValidator,
+  ProtectedTaskRuntimeGrantPlanUnavailableError,
   type ProtectedTaskRuntimeNamespaceAuthorityFact,
 } from "../../src/routes/protected-task-runtime-grant-plan";
 import {
@@ -54,6 +58,31 @@ const SOURCE_ROOM = "d0000000-0000-4000-8000-00000000000d";
 
 function bytes(fill: number): Uint8Array {
   return new Uint8Array(32).fill(fill);
+}
+
+function temporarySigner(crypto: LatticeCrypto) {
+  const signerPublicKey = bytes(31);
+  return Object.freeze({
+    agentId: AGENT,
+    runtimeGeneration: 0 as const,
+    signerKeyId: agentRuntimeObjectSignerKeyIdV1(crypto, signerPublicKey),
+    signerPublicKey,
+  });
+}
+
+function currentDevice() {
+  return {
+    userId: REQUESTOR,
+    humanActorId: HUMAN,
+    deviceId: DEVICE,
+    deviceGeneration: 2,
+    securityRevision: 3,
+    serverInstanceId: "server-instance",
+    lineageGeneration: 1,
+    epoch: 2,
+    headDigest: bytes(32),
+    signingPublicKey: bytes(33),
+  } as never;
 }
 
 function occurrence(
@@ -207,6 +236,7 @@ function outputPorts(namespaceId: string = CONTENT) {
         destinationRoomId: ROOM,
         destinationNamespaceId: namespaceId,
         resultOperationId: `task-run-result:${input.taskRunId}`,
+        resultRevision: 1,
         resultObjectId: deriveTaskContentCryptoObjectIdV1({
           kind: "run_result", taskId: input.taskId,
           taskRunId: input.taskRunId, contentRevision: 1,
@@ -310,6 +340,7 @@ test("builds an exact dark V3 plan from the predispatch Namespace inventory", as
   expect(plan.initialRecord.idempotencyKey)
     .toMatch(/^task-runtime-stable-v1:/u);
 
+  const requestCrypto = new LatticeCrypto();
   const recipient = plan.recipientAttempt({ record: plan.initialRecord, now: NOW });
   const attempt = Object.freeze({
     requestId: plan.initialRecord.snapshot.requestId,
@@ -318,19 +349,14 @@ test("builds an exact dark V3 plan from the predispatch Namespace inventory", as
     recipientKeyId: recipient.recipientKeyId,
     recipientPublicKey: new Uint8Array(65).fill(4),
     expiresAt: recipient.expiresAt,
+    signer: temporarySigner(requestCrypto),
   });
   const request = plan.buildRequest({
     record: plan.initialRecord,
     attempt,
     binding: { userId: REQUESTOR, humanActorId: HUMAN, deviceId: DEVICE },
     authority: {
-      device: {
-        userId: REQUESTOR,
-        humanActorId: HUMAN,
-        deviceId: DEVICE,
-        deviceGeneration: 2,
-        securityRevision: 3,
-      } as never,
+      device: currentDevice(),
       sourceRoomId: SOURCE_ROOM,
       policyRevision: 7,
       namespaceRequirements: plan.initialRecord.authoritySet.namespaceRequirements,
@@ -340,11 +366,22 @@ test("builds an exact dark V3 plan from the predispatch Namespace inventory", as
       ]),
     },
   });
-  expect(decodeTaskRuntimeBackgroundAuthorizationRequestV1(
-    encodeTaskRuntimeBackgroundAuthorizationRequestV1(request),
+  expect(request.formatVersion).toBe(2);
+  if (request.formatVersion === 2) {
+    expect(request.work.executionSegment).toBe(1);
+  }
+  expect(decodeTaskRuntimeBackgroundAuthorizationRequestV2(
+    requestCrypto,
+    encodeTaskRuntimeBackgroundAuthorizationRequestV2(
+      requestCrypto,
+      request as never,
+    ),
   )).not.toBeNull();
+  const baseRequest = request.formatVersion === 2
+    ? request.baseRequest
+    : request;
   const authorization = parseDomainForegroundAuthorizationPlanV2(
-    request.authorizationPlanBytes,
+    baseRequest.authorizationPlanBytes,
   );
   expect(authorization).toMatchObject({
     authorizationId: `task-run-authorization:${RUN}`,
@@ -355,12 +392,33 @@ test("builds an exact dark V3 plan from the predispatch Namespace inventory", as
   });
 });
 
+test("rejects an invalid canonical execution segment before request planning", async () => {
+  const value = occurrence();
+  const plan = await builder()(value);
+  expect(() => createProtectedTaskRuntimeRecipientRequestPlan({
+    crypto: new LatticeCrypto(),
+    occurrence: value,
+    executionIdentity: { executionSegment: 0 },
+    initialRecord: plan.initialRecord,
+    sourceRoomId: SOURCE_ROOM,
+    authority: {
+      policyRevision: plan.initialRecord.expectedPolicyRevision,
+      namespaces: plan.initialRecord.authoritySet.namespaceRequirements,
+      domains: plan.initialRecord.authoritySet.domainRequirements,
+    },
+    createdAt: NOW,
+    recipientTtlMs: 60_000,
+  })).toThrow("recipient occurrence is not exact");
+});
+
 test("shared recipient request planning preserves initial wire identity", async () => {
   const value = occurrence();
   const plan = await builder()(value);
+  const requestCrypto = new LatticeCrypto();
   const shared = createProtectedTaskRuntimeRecipientRequestPlan({
-    crypto: new LatticeCrypto(),
+    crypto: requestCrypto,
     occurrence: value,
+    executionIdentity: plan.stableIdentity,
     initialRecord: plan.initialRecord,
     sourceRoomId: SOURCE_ROOM,
     authority: {
@@ -389,15 +447,10 @@ test("shared recipient request planning preserves initial wire identity", async 
     recipientKeyId: sharedRecipient.recipientKeyId,
     recipientPublicKey: new Uint8Array(65).fill(4),
     expiresAt: sharedRecipient.expiresAt,
+    signer: temporarySigner(requestCrypto),
   });
   const current = {
-    device: {
-      userId: REQUESTOR,
-      humanActorId: HUMAN,
-      deviceId: DEVICE,
-      deviceGeneration: 2,
-      securityRevision: 3,
-    } as never,
+    device: currentDevice(),
     sourceRoomId: SOURCE_ROOM,
     policyRevision: 7,
     namespaceRequirements:
@@ -417,13 +470,108 @@ test("shared recipient request planning preserves initial wire identity", async 
     },
     authority: current,
   };
-  const originalBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV1(
-    plan.buildRequest(requestInput),
+  const originalRequest = plan.buildRequest(requestInput);
+  const sharedRequest = shared.buildRequest(requestInput);
+  expect(originalRequest.formatVersion).toBe(2);
+  expect(sharedRequest.formatVersion).toBe(2);
+  const originalBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV2(
+    requestCrypto,
+    originalRequest as never,
   );
-  const sharedBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV1(
-    shared.buildRequest(requestInput),
+  const sharedBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV2(
+    requestCrypto,
+    sharedRequest as never,
   );
   expect(sharedBytes).toEqual(originalBytes);
+});
+
+test.each(["task.approval_resume", "task.await_reply_resume"] as const)(
+  "shared recipient request planning pins %s to the durable record", async workKind => {
+  const value = occurrence();
+  const plan = await builder()(value);
+  const initialRecord = { ...plan.initialRecord, workKind, purpose: workKind };
+  const crypto = new LatticeCrypto();
+  const shared = createProtectedTaskRuntimeRecipientRequestPlan({
+    crypto,
+    occurrence: value,
+    executionIdentity: { executionSegment: 2 },
+    initialRecord,
+    sourceRoomId: SOURCE_ROOM,
+    authority: {
+      policyRevision: plan.initialRecord.expectedPolicyRevision,
+      namespaces: plan.initialRecord.authoritySet.namespaceRequirements,
+      domains: plan.initialRecord.authoritySet.domainRequirements,
+    },
+    createdAt: NOW,
+    recipientTtlMs: 60_000,
+  });
+  const sharedRecipient = shared.recipientAttempt({
+    record: initialRecord,
+    now: NOW,
+  });
+  expect(sharedRecipient.recipientKeyId)
+    .toBe(`task-runtime:${RUN}:0`);
+  const attempt = Object.freeze({
+    requestId: plan.initialRecord.snapshot.requestId,
+    workId: RUN,
+    recipientGeneration: 0,
+    recipientKeyId: sharedRecipient.recipientKeyId,
+    recipientPublicKey: new Uint8Array(65).fill(4),
+    expiresAt: sharedRecipient.expiresAt,
+    signer: temporarySigner(crypto),
+  });
+  const current = {
+    device: currentDevice(),
+    sourceRoomId: SOURCE_ROOM,
+    policyRevision: 7,
+    namespaceRequirements:
+      plan.initialRecord.authoritySet.namespaceRequirements,
+    domains: Object.freeze([
+      domain(DOMAIN_A, READABLE, 5, 9),
+      domain(DOMAIN_B, CONTENT, 6, 10),
+    ]),
+  };
+  const requestInput = {
+    record: initialRecord,
+    attempt,
+    binding: {
+      userId: REQUESTOR,
+      humanActorId: HUMAN,
+      deviceId: DEVICE,
+    },
+    authority: current,
+  };
+  const request = shared.buildRequest(requestInput);
+  expect(request.formatVersion).toBe(2);
+  const baseRequest = request.formatVersion === 2 ? request.baseRequest : request;
+  expect(baseRequest.workKind).toBe(workKind);
+  expect(baseRequest.workPurpose).toBe(workKind);
+  if (request.formatVersion === 2) {
+    expect(request.work.executionSegment).toBe(2);
+    expect(request.work.workIdentityHash).toEqual(initialRecord.workIdentityHash);
+    expect(request.work.resultObjectId).toBe(deriveTaskContentCryptoObjectIdV1({
+      kind: "run_result",
+      taskId: TASK,
+      taskRunId: RUN,
+      contentRevision: 1,
+    }));
+  }
+  for (const changed of [
+    { workKind: "task.execute" as const, purpose: workKind },
+    { workKind, purpose: "task.execute" as const },
+  ]) {
+    const record = { ...initialRecord, ...changed };
+    expect(() => shared.recipientAttempt({ record, now: NOW })).toThrow("record is not exact");
+    expect(() => shared.buildRequest({ ...requestInput, record })).toThrow("authority is not exact");
+    expect(() => createProtectedTaskRuntimeRecipientRequestPlan({
+      crypto: new LatticeCrypto(), occurrence: value,
+      executionIdentity: { executionSegment: 2 }, initialRecord: record,
+      sourceRoomId: SOURCE_ROOM, createdAt: NOW, recipientTtlMs: 60_000,
+      authority: { policyRevision: initialRecord.expectedPolicyRevision,
+        namespaces: initialRecord.authoritySet.namespaceRequirements,
+        domains: initialRecord.authoritySet.domainRequirements },
+    })).toThrow("plan is not exact");
+  }
 });
 
 test("shared recipient request planning rejects bad plans and stale domains", async () => {
@@ -437,6 +585,7 @@ test("shared recipient request planning rejects bad plans and stale domains", as
   expect(() => createProtectedTaskRuntimeRecipientRequestPlan({
     crypto: new LatticeCrypto(),
     occurrence: value,
+    executionIdentity: plan.stableIdentity,
     initialRecord: plan.initialRecord,
     sourceRoomId: SOURCE_ROOM,
     authority: {
@@ -455,6 +604,7 @@ test("shared recipient request planning rejects bad plans and stale domains", as
   const shared = createProtectedTaskRuntimeRecipientRequestPlan({
     crypto: new LatticeCrypto(),
     occurrence: value,
+    executionIdentity: plan.stableIdentity,
     initialRecord: plan.initialRecord,
     sourceRoomId: SOURCE_ROOM,
     authority: exactAuthority,
@@ -543,6 +693,7 @@ test("binds distinct per-occurrence executors and transient openers", async () =
   const secondExecutor = async function* () { yield* []; };
   const firstOpener = async () => ({ message: "first" });
   const secondOpener = async () => ({ message: "second" });
+  const firstPause = () => true;
   const prepared: string[] = [];
   const routingDigests = new Map<string, Uint8Array>();
   const build = createProtectedTaskRuntimeGrantPlanBuilder({
@@ -576,7 +727,11 @@ test("binds distinct per-occurrence executors and transient openers", async () =
       prepared.push(value.run.id);
       routingDigests.set(value.run.id, stableRoutingDigest.slice());
       return value.run.id === RUN
-        ? { executor: firstExecutor, openTransientInput: firstOpener }
+        ? {
+            executor: firstExecutor,
+            openTransientInput: firstOpener,
+            requestCheckpointPause: firstPause,
+          }
         : {
             executor: secondExecutor,
             openTransientInput: secondOpener,
@@ -603,10 +758,54 @@ test("binds distinct per-occurrence executors and transient openers", async () =
   expect(routingDigests.get(RUN)).not.toEqual(routingDigests.get(RUN_TWO));
   expect(firstPlan.executor).toBe(firstExecutor);
   expect(firstPlan.openTransientInput).toBe(firstOpener);
+  expect(firstPlan.requestCheckpointPause).toBe(firstPause);
   expect(firstPlan.modelAttribution).toBeUndefined();
   expect(secondPlan.executor).toBe(secondExecutor);
   expect(secondPlan.openTransientInput).toBe(secondOpener);
   expect(secondPlan.modelAttribution).toBe("external");
+  expect(secondPlan.requestCheckpointPause).toBeUndefined();
+});
+
+test("rejects substituted execution preparation fields and pause callbacks", async () => {
+  for (const prepared of [
+    {
+      executor: async function* () { yield* []; },
+      openTransientInput: async () => ({}),
+      requestCheckpointPause: undefined,
+    },
+    {
+      executor: async function* () { yield* []; },
+      openTransientInput: async () => ({}),
+      requestCheckpointPause: "not-a-function",
+    },
+    {
+      executor: async function* () { yield* []; },
+      openTransientInput: async () => ({}),
+      requestCheckpointPause: () => true,
+      unexpected: true,
+    },
+  ]) {
+    const build = createProtectedTaskRuntimeGrantPlanBuilder({
+      crypto: new LatticeCrypto(),
+      recipientTtlMs: 60_000,
+      now: () => NOW,
+      predispatch: async value => predispatch(value),
+      ...outputPorts(),
+      resolveNamespaceAuthority: async () => ({
+        sourceRoomId: SOURCE_ROOM,
+        sourceNamespaceId: CONTENT,
+        policy: memoryPolicy(),
+        facts: facts(),
+      }),
+      prepareExecution: async () => prepared as never,
+      startProtectedTaskRun: async () => ({ status: "started" }),
+      publishResult: async () => {},
+    });
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(build(occurrence())).rejects.toThrow(
+      "execution preparation is invalid",
+    );
+  }
 });
 
 test("commits the wide primary write target outside the stable request key", async () => {
@@ -748,10 +947,15 @@ test("keeps object access revision independent from Namespace access revision", 
     ...value,
     task: Object.freeze({ ...value.task, cryptoAccessRevision: 3 }),
   });
-  // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
-  await expect(builder()(substituted)).rejects.toThrow(
-    "definition coordinates are invalid",
-  );
+  const refreshed = await builder()(substituted);
+  expect(refreshed.stableIdentity.contentAccessRevision).toBe(3);
+  expect(refreshed.initialRecord.expectedNamespaceAccessRevision).toBe(3);
+  expect(refreshed.initialRecord.idempotencyKey).not.toBe(plan.initialRecord.idempotencyKey);
+  for (const cryptoAccessRevision of [-1, 0.5, Number.MAX_SAFE_INTEGER + 1]) {
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(builder()({ ...value, task: { ...value.task, cryptoAccessRevision } }))
+      .rejects.toThrow("definition coordinates are invalid");
+  }
 });
 
 test("includes the exact Scope origin and distinct output Namespaces", async () => {
@@ -1017,6 +1221,75 @@ test("requires concrete execution and publication sinks", () => {
   } as never)).toThrow("execution sink is unavailable");
 });
 
+test("classifies a rejected output binding as known plan unavailability", async () => {
+  const build = createProtectedTaskRuntimeGrantPlanBuilder({
+    crypto: new LatticeCrypto(),
+    recipientTtlMs: 60_000,
+    now: () => NOW,
+    predispatch: async value => predispatch(value),
+    ...outputPorts(),
+    acceptOutputBinding: async () => ({
+      status: "rejected" as const,
+      reason: "conflict" as const,
+    }),
+    resolveNamespaceAuthority: async () => ({
+      sourceRoomId: SOURCE_ROOM,
+      sourceNamespaceId: CONTENT,
+      policy: memoryPolicy(),
+      facts: facts(),
+    }),
+    prepareExecution: async () => ({
+      executor: async function* () { yield* []; },
+      openTransientInput: async () => ({}),
+    }),
+    startProtectedTaskRun: async () => ({ status: "started" as const }),
+    publishResult: async () => {},
+  });
+
+  await Promise.resolve(expect(build(occurrence())).rejects.toEqual(
+    expect.objectContaining({
+      name: "ProtectedTaskRuntimeGrantPlanUnavailableError",
+      reason: "conflict",
+    }),
+  ));
+});
+
+test("keeps an accepted output binding coordinate mismatch as an integrity error", async () => {
+  const ports = outputPorts();
+  const build = createProtectedTaskRuntimeGrantPlanBuilder({
+    crypto: new LatticeCrypto(),
+    recipientTtlMs: 60_000,
+    now: () => NOW,
+    predispatch: async value => predispatch(value),
+    ...ports,
+    acceptOutputBinding: async input => {
+      const output = await ports.acceptOutputBinding(input);
+      return {
+        ...output,
+        binding: { ...output.binding, resultObjectId: "substituted-result" },
+      };
+    },
+    resolveNamespaceAuthority: async () => ({
+      sourceRoomId: SOURCE_ROOM,
+      sourceNamespaceId: CONTENT,
+      policy: memoryPolicy(),
+      facts: facts(),
+    }),
+    prepareExecution: async () => ({
+      executor: async function* () { yield* []; },
+      openTransientInput: async () => ({}),
+    }),
+    startProtectedTaskRun: async () => ({ status: "started" as const }),
+    publishResult: async () => {},
+  });
+
+  const result = build(occurrence());
+  await Promise.resolve(expect(result).rejects.toBeInstanceOf(TypeError));
+  await Promise.resolve(expect(result).rejects.not.toBeInstanceOf(
+    ProtectedTaskRuntimeGrantPlanUnavailableError,
+  ));
+});
+
 test("validates parked routing from immutable evidence without a retained grant row", async () => {
   const plan = await builder()(occurrence());
   const output = (await outputPorts().acceptOutputBinding({
@@ -1209,4 +1482,36 @@ test("binds parked wide bring-back only when it changes the primary write Namesp
     ...noCallingRoomCurrent,
     wideBringBack: true,
   })).toBe(true);
+});
+
+
+test("checkpoint routing retains its old receipt while a genuine verified mapped descendant uses the fresh head", async () => {
+  const fixture = await mappedHeadFixture();
+  try {
+    await refreshHumanMappedTaskContentAccessHead({ ...fixture.input, withMappedHead: async held => {
+      const input = replanFixture(held);
+      const identity = input.stableIdentity;
+      const stableRoutingDigest = taskRuntimeStableRoutingDigest({ ...identity, contentAccessRevision: 0, widePrimaryWriteNamespaceId: null });
+      // This comparator consumes the already-proved closed checkpoint's routing fields only.
+      const expected = { occurrence: { task: { callingRoomId: null }, run: { id: identity.taskRunId } },
+        priorJob: { reference: { resultObjectId: "exact-result" } }, stableRoutingDigest,
+      } as unknown as Parameters<typeof createParkedTaskRuntimeRoutingValidator>[0]["expected"];
+      const output = { taskRunId: identity.taskRunId, bindingId: `task-run-output:${identity.taskRunId}`,
+        resultOperationId: `task-run-result:${identity.taskRunId}`, resultObjectId: "exact-result",
+        destinationRoomId: null, destinationNamespaceId: null, deliveryMode: "none",
+      } as Parameters<typeof createParkedTaskRuntimeRoutingValidator>[0]["output"];
+      const facts = { ...identity, startedAt: new Date(identity.startedAt),
+        requiredNamespaceFingerprint: Uint8Array.from(input.lifecycle.requiredNamespaceFingerprint), wideBringBack: false };
+      expect(createParkedTaskRuntimeRoutingValidator({ expected, output, widePrivateNamespaceId: null })(facts)).toBe(false);
+      const validate = createParkedTaskRuntimeRoutingValidator({ expected, output, widePrivateNamespaceId: null, accessLineage: input.lineage });
+      expect(validate(facts)).toBe(true);
+      expect(validate({ ...facts, contentAccessRevision: 2 })).toBe(false);
+      expect(validate({ ...facts, targetRoomId: "other-room" })).toBe(false);
+      expect(validate({ ...facts, taskRunId: "other-run" })).toBe(false);
+      expect(validate({ ...facts, requiredNamespaceFingerprint: new Uint8Array(32) })).toBe(false);
+      expect(createParkedTaskRuntimeRoutingValidator({ expected, output, widePrivateNamespaceId: null,
+        accessLineage: structuredClone(input.lineage) })(facts)).toBe(false);
+      expect("stableRoutingDigest" in expected ? expected.stableRoutingDigest : null).toEqual(stableRoutingDigest);
+    } });
+  } finally { fixture.cleanup(); }
 });

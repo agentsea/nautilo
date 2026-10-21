@@ -130,6 +130,8 @@ export const sessionMessageCryptoRevisions = pgTable(
     humanPeerShadowOperationId: text("human_peer_shadow_operation_id"),
     sharedAgentShadowOperationId: text("shared_agent_shadow_operation_id"),
     sharedAgentShadowExecutionId: text("shared_agent_shadow_execution_id"),
+    // Retained Room publication identity: Task/Run deletion must not delete Room history.
+    taskWakeOperationId: text("task_wake_operation_id"),
     shadowTranscriptOrdinal: integer("shadow_transcript_ordinal"),
     shadowReservedCreatedAt: timestamp("shadow_reserved_created_at", {
       withTimezone: true,
@@ -311,6 +313,9 @@ export const sessionMessageCryptoRevisions = pgTable(
         columns: [table.sharedAgentShadowExecutionId],
         foreignColumns: [conversationSharedAgentShadowExecutions.executionId],
       }).onDelete("cascade"),
+      uniqueIndex("uq_session_message_crypto_revisions_task_wake_ordinal")
+        .on(table.taskWakeOperationId, table.shadowTranscriptOrdinal)
+        .where(sql`${table.taskWakeOperationId} is not null`),
       unique("uq_session_message_crypto_revisions_coordinate").on(
         table.sessionId,
         table.messageId,
@@ -375,6 +380,7 @@ export const sessionMessageCryptoRevisions = pgTable(
           and ${table.humanPeerShadowOperationId} is null
           and ${table.sharedAgentShadowOperationId} is null
           and ${table.sharedAgentShadowExecutionId} is null
+          and ${table.taskWakeOperationId} is null
           and ${table.shadowTranscriptOrdinal} is null
           and ${table.shadowReservedCreatedAt} is null
           and ${table.shadowStreamId} is null
@@ -384,6 +390,7 @@ export const sessionMessageCryptoRevisions = pgTable(
           and ${table.shadowDurableEventDigest} is null
         ) or (
           ${table.objectIdScheme} = 'human_message_edit_v1'
+          and ${table.taskWakeOperationId} is null
           and ${table.authorRole} = 'user'
           and ${table.editRevision} > 0
           and ${table.cryptoObjectId} ~ '^message-edit:v1:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}:[0-9a-f]{64}$'
@@ -404,25 +411,46 @@ export const sessionMessageCryptoRevisions = pgTable(
         ) or (
           ${table.objectIdScheme} = 'live_shadow_v1'
           and (
-            (${table.shadowOperationId} is not null
+            (${table.taskWakeOperationId} is null
+              and ${table.shadowOperationId} is not null
               and ${table.humanPeerShadowOperationId} is null
               and ${table.sharedAgentShadowOperationId} is null
               and ${table.sharedAgentShadowExecutionId} is null)
-            or (${table.shadowOperationId} is null
+            or (${table.taskWakeOperationId} is null
+              and ${table.shadowOperationId} is null
               and ${table.humanPeerShadowOperationId} is not null
               and ${table.sharedAgentShadowOperationId} is null
               and ${table.sharedAgentShadowExecutionId} is null)
-            or (${table.shadowOperationId} is null
+            or (${table.taskWakeOperationId} is null
+              and ${table.shadowOperationId} is null
               and ${table.humanPeerShadowOperationId} is null
               and ${table.sharedAgentShadowOperationId} is not null
               and ${table.sharedAgentShadowExecutionId} is null)
-            or (${table.shadowOperationId} is null
+            or (${table.taskWakeOperationId} is null
+              and ${table.shadowOperationId} is null
               and ${table.humanPeerShadowOperationId} is null
               and ${table.sharedAgentShadowOperationId} is null
               and ${table.sharedAgentShadowExecutionId} is not null)
+            or (${table.taskWakeOperationId} is not null
+              and ${table.shadowOperationId} is null
+              and ${table.humanPeerShadowOperationId} is null
+              and ${table.sharedAgentShadowOperationId} is null
+              and ${table.sharedAgentShadowExecutionId} is null)
           )
           and ${table.shadowTranscriptOrdinal} > 0
           and ${table.shadowReservedCreatedAt} is not null
+        )`,
+      ),
+      check(
+        "session_message_crypto_revisions_task_wake_shape",
+        sql`${table.taskWakeOperationId} is null or (
+          ${table.objectIdScheme} = 'live_shadow_v1'
+          and ${table.keyClass} = 'ai'
+          and ${table.authorRole} in ('assistant', 'tool')
+          and ${table.editRevision} = 0
+          and ${table.shadowTranscriptOrdinal} is not null
+          and ${table.shadowTranscriptOrdinal} >= 2
+          and ${table.taskWakeOperationId} ~ '^task-run-delivery-wake:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
         )`,
       ),
       check(

@@ -59,6 +59,7 @@ export const taskDefinitionCryptoRevisions = pgTable(
     payloadVersion: smallint("payload_version").notNull().default(1),
     cryptoAccessRevision: integer("crypto_access_revision").notNull().default(0),
     requiredNamespaceFingerprint: bytea("required_namespace_fingerprint").notNull(),
+    historicalRepair: jsonb("historical_repair").$type<Readonly<Record<string, unknown>>>(),
     operationalMetadata: jsonb("operational_metadata")
       .$type<Record<string, unknown>>()
       .notNull()
@@ -91,12 +92,44 @@ export const taskDefinitionCryptoRevisions = pgTable(
     index("idx_task_definition_crypto_revisions_due")
       .on(table.disposition, table.nextAttemptAt, table.sequence, table.completion)
       .where(sql`${table.disposition} = 'active'`),
+    check("task_definition_crypto_revisions_historical_repair", sql`${table.historicalRepair} is null or ((
+      ${table.representation} = 'dual' and ${table.contentRevision} = 1
+      and jsonb_typeof(${table.historicalRepair}) = 'object'
+      and ${table.historicalRepair} ?& ARRAY['version','claimId','publisherDeviceId','signedRequestDigest','sourceDigest','sourcePayloadHash','sourceRevision']
+      and (
+        (${table.historicalRepair}->'version' = '1'::jsonb
+          and (${table.historicalRepair} - ARRAY['version','claimId','publisherDeviceId','signedRequestDigest','sourceDigest','sourcePayloadHash','sourceRevision']) = '{}'::jsonb)
+        or (${table.historicalRepair}->'version' = '2'::jsonb
+          and ${table.historicalRepair} ? 'genesisManifestHash'
+          and (${table.historicalRepair} - ARRAY['version','claimId','publisherDeviceId','signedRequestDigest','sourceDigest','sourcePayloadHash','sourceRevision','genesisManifestHash']) = '{}'::jsonb
+          and jsonb_typeof(${table.historicalRepair}->'genesisManifestHash') = 'string'
+          and ${table.historicalRepair}->>'genesisManifestHash' ~ '^[0-9a-f]{64}$')
+      )
+      and ${table.historicalRepair}->'sourceRevision' = '0'::jsonb
+      and jsonb_typeof(${table.historicalRepair}->'claimId') = 'string'
+      and ${table.historicalRepair}->>'claimId' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
+      and octet_length(${table.historicalRepair}->>'publisherDeviceId') between 1 and ${sql.raw(String(TASK_CRYPTO_PORTABLE_ID_BYTES))}
+      and jsonb_typeof(${table.historicalRepair}->'publisherDeviceId') = 'string'
+      and ${table.historicalRepair}->>'publisherDeviceId' ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'
+      and jsonb_typeof(${table.historicalRepair}->'signedRequestDigest') = 'string'
+      and ${table.historicalRepair}->>'signedRequestDigest' ~ '^[0-9a-f]{64}$'
+      and jsonb_typeof(${table.historicalRepair}->'sourceDigest') = 'string'
+      and ${table.historicalRepair}->>'sourceDigest' ~ '^[0-9a-f]{64}$'
+      and jsonb_typeof(${table.historicalRepair}->'sourcePayloadHash') = 'string'
+      and ${table.historicalRepair}->>'sourcePayloadHash' ~ '^[0-9a-f]{64}$'
+    ) is true)`),
     check("task_definition_crypto_revisions_revision_positive", sql`${table.contentRevision} > 0`),
     check("task_definition_crypto_revisions_payload_version", sql`${table.payloadVersion} = 1`),
     check("task_definition_crypto_revisions_access_revision", sql`${table.cryptoAccessRevision} = 0`),
     check("task_definition_crypto_revisions_namespace_authority", sql`${table.contentNamespaceId} = ${table.anchorNamespaceId}`),
     check("task_definition_crypto_revisions_operation_portable", sql`octet_length(${table.operationId}) between 1 and ${sql.raw(String(TASK_CRYPTO_PORTABLE_ID_BYTES))} and ${table.operationId} ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'`),
-    check("task_definition_crypto_revisions_object_shape", sql`${table.cryptoObjectId} ~ '^task-definition:v1:[0-9a-f]{64}$'`),
+    check("task_definition_crypto_revisions_object_shape", sql`((
+      (${table.historicalRepair} is null or ${table.historicalRepair}->'version' = '1'::jsonb)
+      and ${table.cryptoObjectId} ~ '^task-definition:v1:[0-9a-f]{64}$'
+    ) or (
+      ${table.historicalRepair}->'version' = '2'::jsonb
+      and ${table.cryptoObjectId} ~ '^task-historical:v1:[0-9a-f]{64}$'
+    )) is true`),
     check("task_definition_crypto_revisions_digest_sizes", sql`octet_length(${table.requestDigest}) = ${sql.raw(String(TASK_CRYPTO_DIGEST_BYTES))} and octet_length(${table.authorityFingerprint}) = ${sql.raw(String(TASK_CRYPTO_DIGEST_BYTES))} and octet_length(${table.requiredNamespaceFingerprint}) = ${sql.raw(String(TASK_CRYPTO_DIGEST_BYTES))}`),
     check("task_definition_crypto_revisions_retry_coherent", sql`${table.attemptCount} between 0 and ${sql.raw(String(TASK_CRYPTO_MAX_ATTEMPTS))} and (${table.leaseToken} is null) = (${table.leaseExpiresAt} is null)`),
     check("task_definition_crypto_revisions_lifecycle_coherent", sql`(

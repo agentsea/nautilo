@@ -90,7 +90,7 @@ function expectIncludes(actual: string[], expected: readonly string[]): void {
 
 describe("Wave 7 crypto delivery schema", () => {
   test("preserves the LatticeStorage subset and adds delivery tables", () => {
-    expect(LATTICE_STORAGE_TABLE_NAMES).toHaveLength(19);
+    expect(LATTICE_STORAGE_TABLE_NAMES).toHaveLength(23);
     expect(LATTICE_STORAGE_TABLES.map(getTableName)).toEqual([
       ...LATTICE_STORAGE_TABLE_NAMES,
     ]);
@@ -102,7 +102,7 @@ describe("Wave 7 crypto delivery schema", () => {
       ...LATTICE_STORAGE_TABLE_NAMES,
       ...WAVE_7_TABLE_NAMES,
     ]);
-    expect(CRYPTO_STORAGE_TABLES).toHaveLength(40);
+    expect(CRYPTO_STORAGE_TABLES).toHaveLength(44);
   });
 
   test("places write pauses on the canonical Domain and Namespace heads", () => {

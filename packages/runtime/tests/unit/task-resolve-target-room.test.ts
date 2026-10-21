@@ -31,6 +31,30 @@ const explodingDb = {
   },
 } as unknown as DirectDatabase;
 
+function existingNamespaceDb(roomId: string): DirectDatabase {
+  let selectCall = 0;
+  return {
+    select: () => {
+      const call = selectCall++ % 3;
+      const rows = call === 0
+        ? [{ id: "77777777-7777-7777-7777-777777777777" }]
+        : call === 1 ? [{ id: roomId }] : [];
+      const query = {
+        from: () => query,
+        innerJoin: () => query,
+        where: () => query,
+        orderBy: () => query,
+        limit: () => Promise.resolve(rows),
+        then: <TResult1 = typeof rows, TResult2 = never>(
+          onfulfilled?: ((value: typeof rows) => TResult1 | PromiseLike<TResult1>) | null,
+          onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+        ) => Promise.resolve(rows).then(onfulfilled, onrejected),
+      };
+      return query;
+    },
+  } as unknown as DirectDatabase;
+}
+
 describe("M142 — resolveTargetRoom", () => {
   test("caller-funded namespace work keeps the generic shared-Room resolver", async () => {
     const task = baseTask({ fundingMode: "caller", targetChat: "last_in_namespace",
@@ -41,7 +65,7 @@ describe("M142 — resolveTargetRoom", () => {
     /db should not be touched/);
   });
 
-  test("caller-funded schedule stays on its exact admitted source Room", async () => {
+  test("caller-funded schedule stays in its source Room with an isolated cold-run thread", async () => {
     const roomId = "44444444-4444-4444-4444-444444444444";
     const task = baseTask({
       preset: "schedule",
@@ -51,15 +75,54 @@ describe("M142 — resolveTargetRoom", () => {
       targetRoomId: roomId,
       targetUserIds: ["11111111-1111-1111-1111-111111111111"],
     });
-    expect(await resolveTargetRoom(task, { db: explodingDb })).toEqual({
-      roomId,
-      graphThreadId: `room:${roomId}:bot:22222222-2222-2222-2222-222222222222`,
+    const firstOccurrence = await resolveTargetRoom(task, { db: explodingDb });
+    const secondOccurrence = await resolveTargetRoom(
+      { ...task, targetRoomId: null },
+      { db: explodingDb },
+    );
+    const siblingTaskOccurrence = await resolveTargetRoom(
+      { ...task, id: "66666666-6666-6666-6666-666666666666" },
+      { db: explodingDb },
+    );
+
+    for (const occurrence of [firstOccurrence, secondOccurrence, siblingTaskOccurrence]) {
+      expect(occurrence.roomId).toBe(roomId);
+      expect(occurrence.graphThreadId).toStartWith(`subagent:room:${roomId}:`);
+    }
+    expect(new Set([
+      firstOccurrence.graphThreadId,
+      secondOccurrence.graphThreadId,
+      siblingTaskOccurrence.graphThreadId,
+    ]).size).toBe(3);
+  });
+
+  test("server-funded schedules keep namespace Room resolution but isolate cold runs", async () => {
+    const roomId = "44444444-4444-4444-4444-444444444444";
+    const task = baseTask({
+      preset: "schedule",
+      fundingMode: "legacy_server",
+      targetChat: "last_in_namespace",
+      callingRoomId: roomId,
+      targetRoomId: roomId,
+      targetUserIds: ["11111111-1111-1111-1111-111111111111"],
     });
-    expect(await resolveTargetRoom({ ...task, targetRoomId: null }, { db: explodingDb }))
-      .toEqual({
-        roomId,
-        graphThreadId: `room:${roomId}:bot:22222222-2222-2222-2222-222222222222`,
-      });
+    const db = existingNamespaceDb(roomId);
+    const firstOccurrence = await resolveTargetRoom(task, { db });
+    const secondOccurrence = await resolveTargetRoom(task, { db });
+    const siblingTaskOccurrence = await resolveTargetRoom(
+      { ...task, id: "66666666-6666-6666-6666-666666666666" },
+      { db },
+    );
+
+    for (const occurrence of [firstOccurrence, secondOccurrence, siblingTaskOccurrence]) {
+      expect(occurrence.roomId).toBe(roomId);
+      expect(occurrence.graphThreadId).toStartWith(`subagent:room:${roomId}:`);
+    }
+    expect(new Set([
+      firstOccurrence.graphThreadId,
+      secondOccurrence.graphThreadId,
+      siblingTaskOccurrence.graphThreadId,
+    ]).size).toBe(3);
   });
 
   test("orphan memoizes targetRoomId — reuses existing room, no new room", async () => {

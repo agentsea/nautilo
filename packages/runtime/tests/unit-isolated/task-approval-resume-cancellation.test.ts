@@ -1,6 +1,8 @@
 import { beforeEach, expect, mock, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import type { DirectDatabase, Task, TaskRun } from "@nautilo/db";
+import type { SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 import type { RuntimePolicyContext } from "@nautilo/trust";
 import type { StreamEventProcessor } from "@nautilo/agent";
 import { createAcceptedInvocationAuthority } from "@nautilo/trust";
@@ -27,6 +29,15 @@ const failure = mock(async (..._args: unknown[]) => {});
 const inspect = mock(async () => ({ reparked, finalText: "Late model completion" }));
 mock.module("@nautilo/db", () => ({ ...database,
   getTaskById: async () => task,
+  getTaskLifecycleState: async () => ({
+    id: task.id, ownerId: task.ownerId, requestorId: task.requestorId,
+    agentId: task.agentId, targetRoomId: task.targetRoomId, status: task.status,
+    contentRepresentation: task.contentRepresentation ?? "ordinary",
+    scheduleKind: task.scheduleKind, pauseRequestId: task.pauseRequestId ?? null,
+    pauseRequestedAt: task.pauseRequestedAt ?? null, pauseReason: task.pauseReason ?? null,
+    localExecutionRecaptureRequired: false, fundingOutcomeUncertain: false,
+    latestRunPaused: run.status === "paused",
+  }),
   transitionTaskLifecyclePaused: async () => {
     await beforePauseRunWrite?.();
     if (task.status === "completed" || task.status === "cancelled" || task.status === "errored") {
@@ -75,7 +86,10 @@ const db = { update: (table: unknown) => {
   return { set: (patch: Record<string, unknown>) => {
     expect(Object.keys(patch).sort()).toEqual(["lastError", "updatedAt"]);
     expect(patch["lastError"]).toBe("Paused by you. Research saved; Resume continues the audit.");
-    return { where: async (condition: unknown) => { expect(condition).toBeDefined(); } };
+    return { where: async (condition: unknown) => {
+      const compiled = new PgDialect().sqlToQuery(condition as SQL);
+      expect(compiled.params).toContain("ordinary");
+    } };
   } };
 } } as unknown as DirectDatabase;
 const authority = createAcceptedInvocationAuthority("owner");

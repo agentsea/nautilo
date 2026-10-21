@@ -3,6 +3,7 @@
  */
 
 import { createHash } from "node:crypto";
+import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import {
   LOCAL_FILE_EXECUTION_UNSUPPORTED,
@@ -170,6 +171,203 @@ function parseLocalFileRequest(req: RelayDispatchRequest): RelayLocalFileRequest
   return { operation: operation as RelayLocalFileRequest["operation"], allowedRoots: roots };
 }
 
+const TASK_PROJECT_READ_COMMANDS = new Set([
+  "list",
+  "read",
+  "media_read_chunk",
+  "stat",
+]);
+
+const TASK_PROJECT_MUTATION_COMMANDS = new Set([
+  "create",
+  "write",
+  "insert",
+  "str_replace",
+  "move",
+  "copy",
+  "delete",
+]);
+
+function pathHasGitMetadata(root: string, candidate: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative.split(path.sep).some((segment) => segment === ".git");
+}
+
+function strictlyContained(candidate: string, root: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative.length > 0 && !relative.startsWith(`..${path.sep}`) &&
+    relative !== ".." && !path.isAbsolute(relative);
+}
+
+async function canonicalizeTaskProjectCandidate(candidate: string): Promise<{
+  readonly canonical: string;
+  readonly targetIsSymlink: boolean;
+}> {
+  const missing: string[] = [];
+  let existing = candidate;
+  let targetIsSymlink = false;
+  while (true) {
+    try {
+      const stat = await fs.lstat(existing);
+      targetIsSymlink = existing === candidate && stat.isSymbolicLink();
+      const canonicalExisting = await fs.realpath(existing);
+      return {
+        canonical: path.join(canonicalExisting, ...missing.reverse()),
+        targetIsSymlink,
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      const parent = path.dirname(existing);
+      if (parent === existing) throw error;
+      missing.push(path.basename(existing));
+      existing = parent;
+    }
+  }
+}
+
+function resolveTaskProjectPath(
+  zone: unknown,
+  rawPath: unknown,
+  routing: ReturnType<typeof extractRouting>,
+): string | null {
+  if (routing === null || typeof rawPath !== "string" ||
+      (zone !== "current" && zone !== "absolute")) return null;
+  const resolved = resolveZonePath(zone, rawPath, routing);
+  return resolved.ok ? path.resolve(resolved.resolved) : null;
+}
+
+/**
+ * Reprove the narrow filesystem surface of a protected RepoDocs Task.
+ *
+ * This deliberately lives beside the concrete local-file operation parser:
+ * the Task grant selects one checkout, while this check removes Git control
+ * data from reads and confines writes to generated `openwiki` content.
+ */
+export async function validateTaskProjectFileRequest(
+  request: RelayDispatchRequest,
+  input: Readonly<{ projectRoot: string; relayId: string }>,
+): Promise<boolean> {
+  const parsed = parseLocalFileRequest(request);
+  if (parsed === null || request.localExecutionBinding?.version !== 4) return false;
+  const projectRoot = path.resolve(input.projectRoot);
+  const operation = parsed.operation;
+  const candidates: string[] = [];
+  let mutation = false;
+
+  if (operation.kind === "search") {
+    if (operation.command !== "glob" && operation.command !== "grep") return false;
+    if (operation.args.hidden === "include" || operation.args.includeIgnored === true) return false;
+    const searchExpression = operation.command === "glob"
+      ? operation.args.pattern
+      : operation.args.query;
+    if (typeof searchExpression === "string" && /(^|[\\/])\.git([\\/]|$)/.test(searchExpression)) {
+      return false;
+    }
+    const routing = extractRouting({ _routing: operation.routing });
+    if (routing === null) return false;
+    const resolved = resolveTaskProjectPath(
+      operation.zone,
+      operation.args.path,
+      routing,
+    );
+    if (resolved === null) return false;
+    candidates.push(resolved);
+  } else if (operation.kind === "file") {
+    const routing = extractRouting(operation.args);
+    if (TASK_PROJECT_READ_COMMANDS.has(operation.command)) {
+      mutation = false;
+    } else if (TASK_PROJECT_MUTATION_COMMANDS.has(operation.command)) {
+      mutation = true;
+    } else {
+      return false;
+    }
+    const source = resolveTaskProjectPath(
+      operation.zone,
+      operation.args["path"],
+      routing,
+    );
+    if (source === null) return false;
+    candidates.push(source);
+    if (operation.command === "move" || operation.command === "copy") {
+      const destination = resolveTaskProjectPath(
+        operation.args["destinationZone"] ?? operation.zone,
+        operation.args["destinationPath"],
+        routing,
+      );
+      if (destination === null) return false;
+      candidates.push(destination);
+    }
+  } else if (operation.kind === "history") {
+    const routing = extractRouting(operation.args);
+    if (operation.command === "pin_revision" || operation.command === "unpin_revision") {
+      // Revision references bind only relay + agent ownership. They carry no
+      // canonical path, so this boundary cannot prove that the referenced
+      // revision belongs to the captured Task checkout.
+      return false;
+    }
+    if (operation.command === "list_revisions") {
+      const filter = resolveTaskProjectPath(
+        operation.args["zone"],
+        operation.args["path"],
+        routing,
+      );
+      if (filter === null) return false;
+      candidates.push(filter);
+    } else if (operation.command === "undo" || operation.command === "redo") {
+      mutation = true;
+      const target = resolveTaskProjectPath(
+        operation.args["zone"],
+        operation.args["path"],
+        routing,
+      );
+      if (target === null) return false;
+      candidates.push(target);
+    } else {
+      return false;
+    }
+  } else {
+    return false;
+  }
+
+  const openwikiRoot = path.join(projectRoot, "openwiki");
+  let canonicalOpenwiki: string | null = null;
+  if (mutation) {
+    try {
+      const openwikiStat = await fs.lstat(openwikiRoot);
+      if (!openwikiStat.isDirectory() || openwikiStat.isSymbolicLink()) return false;
+      canonicalOpenwiki = await fs.realpath(openwikiRoot);
+      if (canonicalOpenwiki !== openwikiRoot) return false;
+    } catch {
+      return false;
+    }
+  }
+
+  for (const candidate of candidates) {
+    if (pathHasGitMetadata(projectRoot, candidate)) return false;
+    if (!mutation && candidate !== projectRoot && !strictlyContained(candidate, projectRoot)) {
+      return false;
+    }
+    if (mutation && (canonicalOpenwiki === null || !strictlyContained(candidate, openwikiRoot))) {
+      return false;
+    }
+    try {
+      const resolved = await canonicalizeTaskProjectCandidate(candidate);
+      if (pathHasGitMetadata(projectRoot, resolved.canonical)) return false;
+      if (!mutation) {
+        if (resolved.canonical !== projectRoot &&
+            !strictlyContained(resolved.canonical, projectRoot)) return false;
+      } else if (resolved.targetIsSymlink || resolved.canonical !== candidate ||
+          canonicalOpenwiki === null ||
+          !strictlyContained(resolved.canonical, canonicalOpenwiki)) {
+        return false;
+      }
+    } catch {
+      return false;
+    }
+  }
+  return true;
+}
+
 export interface LocalFileDispatchOptions {
   relayId: string;
   guard: WorkspaceGuard;
@@ -192,11 +390,12 @@ export interface LocalFileDispatchOptions {
   /** D448 canonical undo/redo commit into the process-scoped coordinator. */
   historyCommit?: LocalFileCommandContext["historyCommit"] | undefined;
   /**
-   * D418 — validated local authority for a `desktopFilesystemGrantRequest` dispatch.
+   * Validated local authority for a `desktopFilesystemGrantRequest` or exact
+   * delegated Task-project dispatch.
    * When present, its roots are the ONLY roots the guarded adapter may use;
    * the server-mirrored `parsed.allowedRoots` are never unioned in. When a
-   * dispatch carries a `desktopFilesystemGrantRequest` but this is absent, the
-   * dispatch fails closed.
+   * dispatch carries either authority envelope but this is absent, the dispatch
+   * fails closed.
    */
   desktopFilesystemAuthority?: { readonly roots: readonly string[] } | undefined;
   /** Existing per-dispatch Sandbox created by the relay envelope owner. */
@@ -208,6 +407,8 @@ export interface LocalFileDispatchOptions {
     | { readonly ok: true; readonly binaryPath: string; readonly version: string }
     | { readonly ok: false; readonly error: string }
     | undefined;
+  /** Fresh Task-project grant, checkout, and operation-policy reproof. */
+  taskProjectReauthorize?: (() => Promise<void>) | undefined;
 }
 
 export async function handleLocalFileDispatch(
@@ -287,12 +488,15 @@ export async function handleLocalFileDispatch(
     };
   }
 
-  // D418 — a dispatch carrying a desktop-filesystem-grant request is jailed to the
+  // An explicit Desktop grant or delegated Task-project binding is jailed to
   // locally validated authority ONLY. `parsed.allowedRoots` is an untrusted
-  // server mirror and must never widen local filesystem authority for this
-  // path. Baseline-only dispatches (no request) keep their preexisting union.
+  // server mirror and must never widen either path. Baseline-only dispatches
+  // keep their preexisting union.
   let allowedRoots: string[];
-  if (req.desktopFilesystemGrantRequest !== undefined) {
+  if (
+    req.desktopFilesystemGrantRequest !== undefined ||
+    req.localExecutionBinding?.version === 4
+  ) {
     if (!options.desktopFilesystemAuthority) {
       return {
         status: "error",
@@ -310,37 +514,42 @@ export async function handleLocalFileDispatch(
   // Native search is read-only and has no revision-journal side effects. It
   // reuses the guarded adapter + already-created request Sandbox directly.
   if (validatedOp.kind === "search") {
-    const searchResult =
-      !options.sandbox
-        ? {
-            ok: false as const,
-            command: validatedOp.command,
-            error: {
-              code: "SEARCH_UNAVAILABLE" as const,
-              message: "The authorized search sandbox is unavailable.",
-            },
-          }
-        : !options.ripgrepRuntime || !options.ripgrepRuntime.ok
-          ? {
-              ok: false as const,
-              command: validatedOp.command,
-              error: {
-                code: "SEARCH_UNAVAILABLE" as const,
-                message:
-                  options.ripgrepRuntime?.error ??
-                  "The packaged search runtime is unavailable.",
-              },
-            }
-        : await executeLocalSearchOperation(validatedOp, {
-            adapter,
-            allowedRoots,
-            routing,
-            sandbox: options.sandbox,
-            binaryPath: options.ripgrepRuntime.binaryPath,
-            engineVersion: options.ripgrepRuntime.version,
-            ...(options.signal ? { signal: options.signal } : {}),
-            ...(options.searchExecute ? { execute: options.searchExecute } : {}),
-          });
+    let searchResult;
+    if (!options.sandbox) {
+      searchResult = {
+        ok: false as const,
+        command: validatedOp.command,
+        error: {
+          code: "SEARCH_UNAVAILABLE" as const,
+          message: "The authorized search sandbox is unavailable.",
+        },
+      };
+    } else if (!options.ripgrepRuntime || !options.ripgrepRuntime.ok) {
+      searchResult = {
+        ok: false as const,
+        command: validatedOp.command,
+        error: {
+          code: "SEARCH_UNAVAILABLE" as const,
+          message:
+            options.ripgrepRuntime?.error ??
+            "The packaged search runtime is unavailable.",
+        },
+      };
+    } else {
+      if (options.taskProjectReauthorize !== undefined) {
+        await options.taskProjectReauthorize();
+      }
+      searchResult = await executeLocalSearchOperation(validatedOp, {
+        adapter,
+        allowedRoots,
+        routing,
+        sandbox: options.sandbox,
+        binaryPath: options.ripgrepRuntime.binaryPath,
+        engineVersion: options.ripgrepRuntime.version,
+        ...(options.signal ? { signal: options.signal } : {}),
+        ...(options.searchExecute ? { execute: options.searchExecute } : {}),
+      });
+    }
     const payload: RelayLocalFileResult = { ok: true, result: searchResult };
     return { status: "ok", result: payload };
   }
@@ -390,6 +599,13 @@ export async function handleLocalFileDispatch(
       : {}),
     ...(options.historyCommit ? { historyCommit: options.historyCommit } : {}),
   };
+
+  // Journal initialization and path canonicalization may await. Reprove the
+  // private Task authority immediately before the concrete operation begins;
+  // coordinator-backed mutations reprove once more at their commit boundary.
+  if (options.taskProjectReauthorize !== undefined) {
+    await options.taskProjectReauthorize();
+  }
 
   if (
     routing.mutationRetry === true &&

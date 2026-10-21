@@ -9,6 +9,7 @@ import {
   type TaskRun,
 } from "@nautilo/db";
 import { rejects } from "node:assert/strict";
+import { taskContentRevisionObjectIdV1 } from "@nautilo/lattice-bridge";
 import type {
   MemoryAccessEnvelope,
   PolicyResolver,
@@ -76,6 +77,9 @@ function task(overrides: Partial<Task> = {}): Task {
     lastFiredAt: null,
     fireLockId: null,
     fireLockedAt: null,
+    pauseRequestId: null,
+    pauseRequestedAt: null,
+    pauseReason: null,
     lastError: null,
     metadata: {},
     localExecutionDelegation: null,
@@ -87,6 +91,11 @@ function task(overrides: Partial<Task> = {}): Task {
     cryptoAccessRevision: 2,
     cryptoRequiredNamespaceFingerprint: fingerprint,
     cryptoMappingState: "verified",
+    ordinaryFallbackOperationId: null,
+    ordinaryFallbackRequestDigest: null,
+    ordinaryFallbackReason: null,
+    ordinaryFallbackPolicyRevision: null,
+    ordinaryFallbackCompletedAt: null,
     createdAt: startedAt,
     updatedAt: startedAt,
     cancelledAt: null,
@@ -479,11 +488,58 @@ describe("production protected Task predispatch composition", () => {
       `converge:${ids.peer}`,
       `memory:${ids.peer}`,
     ]);
-    expect(taskReads).toBe(3);
+    expect(taskReads).toBe(4);
     expect(plan.target).toEqual({
       roomId: ids.room,
       targetUserIds: [ids.requestor, ids.peer],
     });
+  });
+
+  test("keeps caller funding behind the later protected definition authority", async () => {
+    const current = task({
+      preset: "task",
+      targetChat: "orphan",
+      targetChatHandle: null,
+      targetRoomId: ids.room,
+      fundingMode: "caller",
+    });
+    let invocations = 0;
+    let serverFundingChecks = 0;
+    const plan = await createProductionProtectedTaskPredispatch({
+      db,
+      resolver,
+      convergeCreatedRoomCatalog: async () => {},
+      getTaskById: async () => current,
+      getTaskRunForTask: async () => run(),
+      assertCanInvokeAgent: async () => { invocations += 1; },
+      assertCanUseServerProviderCredentials: async () => {
+        serverFundingChecks += 1;
+      },
+      resolveTargetRoom: async () => ({
+        roomId: ids.room,
+        graphThreadId: "ignored-target-thread",
+      }),
+      findAgentOwnerPrivateRoom: async () => ({
+        roomId: ids.privateRoom,
+        namespaceId: ids.namespace,
+      }),
+      resolveTaskMemoryEnvelope: async () => ({
+        envelope: envelope(),
+        mode: "namespace",
+        authorityStatus: "exact",
+        provenance: "target_users_namespace",
+      }),
+    })(occurrence({
+      preset: "task",
+      targetChat: "orphan",
+      targetChatHandle: null,
+      targetRoomId: ids.room,
+      fundingMode: "caller",
+    }));
+
+    expect(plan.target.roomId).toBe(ids.room);
+    expect(invocations).toBe(1);
+    expect(serverFundingChecks).toBe(0);
   });
 
   test("rejects revoked and stale occurrences before authority or target work", async () => {
@@ -539,7 +595,7 @@ describe("production protected Task predispatch composition", () => {
         db,
         resolver,
         convergeCreatedRoomCatalog: async () => {},
-        getTaskById: async () => ++taskReads < 3 ? before : after,
+        getTaskById: async () => ++taskReads < 4 ? before : after,
         getTaskRunForTask: async () => run(),
         memoizeTaskExecutionCoordinates: async (_db, observed, patch) => {
           expect(observed).toBe(before);
@@ -563,7 +619,7 @@ describe("production protected Task predispatch composition", () => {
         },
       })(occurrence());
 
-      expect(taskReads).toBe(4);
+      expect(taskReads).toBe(5);
       expect(writes).toEqual([`${ids.task}:${ids.room}`]);
       expect(plan.target.roomId).toBe(ids.room);
     }
@@ -840,6 +896,69 @@ describe("production protected Task predispatch composition", () => {
     expect(memoryResolutions).toBe(1);
   });
 
+  test("pins a connected Scope to the requester-private protected source", async () => {
+    const current = task({
+      callingRoomId: ids.room,
+      targetChat: "last_in_namespace",
+      targetChatHandle: null,
+      targetRoomId: ids.room,
+      useScope: true,
+      scopeId: ids.scope,
+    });
+    let privateRoomReads = 0;
+    const plan = await createProductionProtectedTaskPredispatch({
+      db,
+      resolver,
+      convergeCreatedRoomCatalog: async () => {},
+      getTaskById: async () => current,
+      getTaskRunForTask: async () => run(),
+      assertCanInvokeAgent: async () => {},
+      assertCanUseServerProviderCredentials: async () => {},
+      validateMemoizedNamespaceTarget: async () => true,
+      findAgentOwnerPrivateRoom: async (userId, agentId, namespaceId) => {
+        privateRoomReads += 1;
+        expect([userId, agentId, namespaceId]).toEqual([
+          ids.requestor, ids.agent, ids.namespace,
+        ]);
+        return { roomId: ids.privateRoom, namespaceId: ids.namespace };
+      },
+      resolveTaskMemoryEnvelope: async input => {
+        expect(input.sessionRoomId).toBe(ids.privateRoom);
+        return {
+          envelope: {
+            memoryMode: "scope",
+            ownerId: ids.requestor,
+            actorId: ids.actor,
+            agentId: ids.agent,
+            roomId: ids.privateRoom,
+            scopeId: ids.scope,
+            originWritableNamespaceId: ids.namespace,
+            toolPolicy: {},
+          },
+          mode: "scope",
+          authorityStatus: "exact",
+          provenance: "scope_existing",
+        };
+      },
+    })(occurrence({
+      callingRoomId: ids.room,
+      targetChat: "last_in_namespace",
+      targetChatHandle: null,
+      targetRoomId: ids.room,
+      useScope: true,
+      scopeId: ids.scope,
+    }));
+
+    expect(privateRoomReads).toBe(1);
+    expect(plan.target.roomId).toBe(ids.room);
+    expect(plan.memory.envelope).toMatchObject({
+      memoryMode: "scope",
+      roomId: ids.privateRoom,
+      scopeId: ids.scope,
+      originWritableNamespaceId: ids.namespace,
+    });
+  });
+
   test("rejects an orphan Scope origin mismatch and post-resolution drift", async () => {
     const current = task({
       preset: "task",
@@ -889,7 +1008,7 @@ describe("production protected Task predispatch composition", () => {
       db,
       resolver,
       convergeCreatedRoomCatalog: async () => {},
-      getTaskById: async () => ++taskReads < 3
+      getTaskById: async () => ++taskReads < 4
         ? current
         : task({ ...current, status: "cancelled" }),
       getTaskRunForTask: async () => run(),
@@ -923,4 +1042,41 @@ describe("production protected Task predispatch composition", () => {
       "Memory resolution drifted",
     ));
   });
+});
+
+
+test("current predispatch retains closed historical identity without trusting stale observed coordinates", async () => {
+  const provenance = { version: 2, claimId: ids.run, publisherDeviceId: ids.peer,
+    signedRequestDigest: "a".repeat(64), sourceDigest: "b".repeat(64),
+    sourcePayloadHash: "c".repeat(64), sourceRevision: 0,
+    genesisManifestHash: "d".repeat(64) } as const;
+  const objectId = taskContentRevisionObjectIdV1({
+    coordinate: { kind: "definition", taskId: ids.task, contentRevision: 1 },
+    namespaceId: ids.namespace, historicalRepair: provenance,
+  });
+  const overrides: Partial<Task> = { contentRevision: 1, cryptoObjectId: objectId,
+    preset: "task", targetChat: "orphan", targetChatHandle: null,
+    targetRoomId: ids.room, fundingMode: "caller" };
+  const observed = occurrence(overrides);
+  const historical = { ...observed, task: { ...observed.task,
+    definitionHistoricalRepair: provenance } };
+  let current = task(overrides);
+  let effects = 0;
+  const predispatch = createProductionProtectedTaskPredispatch({
+    db, resolver, convergeCreatedRoomCatalog: async () => {},
+    getTaskById: async () => current, getTaskRunForTask: async () => run(),
+    assertCanInvokeAgent: async () => { effects += 1; },
+    assertCanUseServerProviderCredentials: async () => { effects += 1; },
+    resolveTargetRoom: async () => ({ roomId: ids.room, graphThreadId: "ignored" }),
+    findAgentOwnerPrivateRoom: async () => ({ roomId: ids.privateRoom, namespaceId: ids.namespace }),
+    resolveTaskMemoryEnvelope: async () => ({ envelope: envelope(), mode: "namespace",
+      authorityStatus: "exact", provenance: "target_users_namespace" }),
+  });
+  const plan = await predispatch(historical);
+  expect(plan.occurrence.task.definitionHistoricalRepair).toEqual(provenance);
+  expect(plan.occurrence.task.definitionHistoricalRepair).not.toBe(provenance);
+  const priorEffects = effects;
+  current = task({ ...overrides, cryptoObjectId: `task-historical:v1:${"e".repeat(64)}` });
+  await rejects(predispatch(historical));
+  expect(effects).toBe(priorEffects);
 });

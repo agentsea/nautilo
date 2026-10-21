@@ -36,6 +36,27 @@ describe("foreground Shadow main-process contract", () => {
     );
     expect(pendingAttention.indexOf("parseForegroundShadowPendingAttention(raw)"))
       .toBeLessThan(pendingAttention.indexOf("foregroundShadowControllerForSender(e)"));
+    const taskPendingAttention = handler(
+      "foregroundShadow:recoverTaskPendingAttention",
+      "foregroundShadow:recoverProtectedTaskExternalRequests",
+    );
+    expect(taskPendingAttention.indexOf("parseForegroundShadowTaskPendingAttention(raw)"))
+      .toBeLessThan(taskPendingAttention.indexOf("foregroundShadowControllerForSender(e)"));
+    const externalRecovery = handler(
+      "foregroundShadow:recoverProtectedTaskExternalRequests",
+      "foregroundShadow:respondProtectedTaskExternalRequest",
+    );
+    expect(externalRecovery.indexOf("boundedForegroundShadowValue("))
+      .toBeLessThan(externalRecovery.indexOf("foregroundShadowControllerForSender(e)"));
+    expect(externalRecovery).toContain('foregroundShadowString(value.requestId, "Request id", 512)');
+    const externalResponse = handler(
+      "foregroundShadow:respondProtectedTaskExternalRequest",
+      "foregroundShadow:edit",
+    );
+    expect(externalResponse.indexOf("codexRequestResponseSchema.safeParse("))
+      .toBeLessThan(externalResponse.indexOf("foregroundShadowControllerForSender(e)"));
+    expect(externalResponse.indexOf("codexPermissionSelectionResponseSchema.safeParse("))
+      .toBeLessThan(externalResponse.indexOf("foregroundShadowControllerForSender(e)"));
     const receive = handler("foregroundShadow:receive", "foregroundShadow:synchronizeRecipients");
     expect(receive.indexOf("parseLiveShadowMessageRealtimeEventV1(")).toBeLessThan(
       receive.indexOf("foregroundShadowControllerForSender(e)"),
@@ -125,4 +146,17 @@ describe("foreground Shadow main-process contract", () => {
     expect(cancel).toContain("bound.serverScope !== session.scope");
     expect(cancel).toContain("bound.controller.cancelMessageBackfill()");
   });
+});
+
+
+test("Task repair IPC is sender-bound and cancellation never creates profile custody", () => {
+  const service = handler("foregroundShadow:taskContentBackfill:service", "foregroundShadow:taskContentBackfill:cancel");
+  expect(service).toContain("foregroundShadowControllerForSender(e)");
+  expect(service).toContain("controller.serviceTaskContentBackfill()");
+  const cancel = handler("foregroundShadow:taskContentBackfill:cancel", "foregroundShadow:history:reconcile");
+  expect(cancel).toContain("resolveSessionFromSender(e)");
+  expect(cancel).toContain("bound.sender !== e.sender");
+  expect(cancel).toContain("bound.serverScope !== session.scope");
+  expect(cancel).toContain("bound.controller.cancelTaskContentBackfill()");
+  expect(cancel).not.toContain("foregroundShadowControllerForSender");
 });

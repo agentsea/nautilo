@@ -4,7 +4,7 @@ import { authorizeTaskApprovalResume } from "../../src/tasks/resume-task-approva
 import { AgentInvocationDeniedError, ServerProviderCredentialsDeniedError } from "@nautilo/trust";
 
 /**
- * M164 (MV3) — owner-only authorization for a Task approval resume. DB-free:
+ * Owner-only authorization for a Task approval resume. DB-free:
  * a fake `db` returns the parked task+run row (or nothing) so we can assert the
  * fail-closed posture (404 for not-found AND for another user's attempt) without
  * Postgres. The resume + finalization itself is graph-bound and lives in the
@@ -36,6 +36,7 @@ const task = (over: Partial<Task> = {}): Task =>
     targetRoomId: null,
     scheduleKind: "now",
     fundingMode: "legacy_server",
+    contentRepresentation: "ordinary",
     ...over,
   }) as unknown as Task;
 
@@ -50,7 +51,18 @@ const run = (over: Partial<TaskRun> = {}): TaskRun =>
     ...over,
   }) as unknown as TaskRun;
 
-describe("M164 authorizeTaskApprovalResume", () => {
+describe("authorizeTaskApprovalResume", () => {
+  test.each(["dual", "protected"] as const)("rejects %s content before legacy resume authority checks", async contentRepresentation => {
+    const result = await authorizeTaskApprovalResume(
+      { taskId: "task-1", threadId: "subagent:thread-1", sessionUserId: "owner-1" },
+      {
+        db: fakeDb({ task: task({ contentRepresentation }), run: run() }),
+        assertInvocation: async () => { throw new Error("protected Task reached legacy invocation"); },
+        assertServerFunding: async () => { throw new Error("protected Task reached legacy funding"); },
+      },
+    );
+    expect(result).toEqual({ ok: false, status: 404, error: "task_approval_not_found" });
+  });
   test("owner of an awaiting task+run is authorized", async () => {
     const res = await authorizeTaskApprovalResume(
       { taskId: "task-1", threadId: "subagent:thread-1", sessionUserId: "owner-1" },

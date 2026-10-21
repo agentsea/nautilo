@@ -10,8 +10,29 @@ import {
   freshForegroundActivationState,
   freshForegroundRecordContextEligible,
   freshForegroundTurnScopedGraphContext,
+  rethrowObservedProtectedTaskWakeAdditionalAuthorityFailure,
   shouldGraphAbortOnStreamTimeout,
 } from "../../src/executors/langgraph-executor";
+import { protectedTaskWakeParked } from
+  "../../src/tasks/protected-task-wake-execution-candidate";
+
+test("additional-authority interrupt failures cannot become wake completion", () => {
+  const refused = new Error("park refused");
+  const responseLost = new Error("park response lost after commit");
+  for (const error of [refused, responseLost, protectedTaskWakeParked()]) {
+    let caught: unknown;
+    try {
+      rethrowObservedProtectedTaskWakeAdditionalAuthorityFailure(true, error);
+    } catch (thrown) {
+      caught = thrown;
+    }
+    expect(caught).toBe(error);
+  }
+  expect(rethrowObservedProtectedTaskWakeAdditionalAuthorityFailure(
+    false,
+    new Error("ordinary getState failure"),
+  )).toBeUndefined();
+});
 
 describe("fresh foreground turn-scoped graph context", () => {
   test("preserves valid supplied context and explicitly clears omitted context", () => {

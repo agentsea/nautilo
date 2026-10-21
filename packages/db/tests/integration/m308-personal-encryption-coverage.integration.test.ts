@@ -392,8 +392,8 @@ describe("M308 personal encryption coverage on PostgreSQL", () => {
         expect(await readPersonalEncryptionCoverageFamily(tx, {
           family: "task", readableNamespaceIds: readable, userId: ids.userA,
         })).toEqual({
-          family: "task", measurement: "unsupported", accessible: 1n,
-          plaintextPresent: 1n,
+          family: "task", measurement: "measured", accessible: 1n,
+          plaintextPresent: 1n, encryptedCounterpart: 0n,
         });
 
         throw new RollbackFixture();

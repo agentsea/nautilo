@@ -26,9 +26,13 @@ import {
   type TaskRuntimeExecutionEvidenceInputV1,
 } from "../../../lattice-crypto/src/background/task-runtime-execution-evidence-v1.ts";
 import { deriveTaskContentCryptoObjectIdV1 } from "../../src/task/task-content-repository.ts";
+import { bindEncryptionDataOperationOwner } from
+  "../../src/transition/encryption-data-operation-owner.ts";
 import type { TaskRuntimeCheckpointCellCrypto } from "../../src/checkpoint/task-runtime-checkpoint-cell-crypto.ts";
 import {
   createNativeTaskRuntimeCheckpointCellCrypto,
+  createHumanTaskCheckpointCellReader,
+  type HumanTaskCheckpointReadInput,
   type NativeTaskRuntimeCheckpointCellCryptoInput,
 } from "../../src/server/task/native-task-runtime-checkpoint-cell-crypto.ts";
 
@@ -225,6 +229,22 @@ function fixture(adjust: Adjust = (_stage, rows) => rows) {
   const base = {
     restricted,
     crypto,
+    owner: bindEncryptionDataOperationOwner({
+      policy: {
+        resolve: async () => ({
+          policy: {
+            mode: "encrypted_only" as const,
+            shadowBehavior: "strict" as const,
+          },
+          revalidationToken: evidenceInput.policyRevision,
+        }),
+        revalidate: async expectedRevision => {
+          if (expectedRevision !== evidenceInput.policyRevision) {
+            throw new Error("Task checkpoint policy changed");
+          }
+        },
+      },
+    }),
     serverScope: SERVER,
     domains: [domain],
     signal: new AbortController().signal,
@@ -261,6 +281,7 @@ function fixture(adjust: Adjust = (_stage, rows) => rows) {
             identity: {
               ...base.identity,
               expectedAccessRevision: current.namespaceAccessRevision,
+              expectedPolicyRevision: evidenceInput.policyRevision,
             },
             evidence,
             ...overrides,
@@ -274,7 +295,12 @@ function fixture(adjust: Adjust = (_stage, rows) => rows) {
     run,
     stages,
     checks: () => productChecks,
-    rotate(nextAccessRevision = 0) {
+    reader: (overrides: Partial<HumanTaskCheckpointReadInput> = {}) => createHumanTaskCheckpointCellReader({
+      ...base, domains: [domain], deadlineAt: NOW + 1000,
+      identity: { ...base.identity, expectedAccessRevision: current.namespaceAccessRevision },
+      ...overrides,
+    }),
+    rotate(nextAccessRevision = 0, nextPolicyRevision = 3) {
       // Device-authority rotation advances the Namespace key without changing
       // product accessRevision (the concrete native replacement plan allows it).
       retained[1] = {
@@ -298,15 +324,17 @@ function fixture(adjust: Adjust = (_stage, rows) => rows) {
       };
       evidenceInput = {
         ...evidenceInput,
+        policyRevision: nextPolicyRevision,
         domainRequirements: [domainRequirement],
         namespaceRequirements: evidenceInput.namespaceRequirements.map(
-          (entry) => ({ ...entry, expectedAccessRevision: nextAccessRevision }),
+          (entry) => ({ ...entry, expectedAccessRevision: nextAccessRevision, expectedPolicyRevision: nextPolicyRevision }),
         ),
         result: {
           ...evidenceInput.result,
           namespace: {
             ...evidenceInput.result.namespace,
             expectedAccessRevision: nextAccessRevision,
+            expectedPolicyRevision: nextPolicyRevision,
           },
         },
       };
@@ -364,6 +392,20 @@ async function fails(operation: Promise<unknown>): Promise<void> {
     ),
   ).toBeInstanceOf(Error);
 }
+function plainOwner() {
+  return bindEncryptionDataOperationOwner({
+    policy: {
+      resolve: async () => ({
+        policy: {
+          mode: "plaintext_only" as const,
+          shadowBehavior: "fallback" as const,
+        },
+        revalidationToken: 3,
+      }),
+      revalidate: async () => undefined,
+    },
+  });
+}
 function change(
   stage: string,
   field: string,
@@ -374,6 +416,21 @@ function change(
 }
 
 describe("native Task checkpoint cell crypto", () => {
+  test("Plain refuses the native checkpoint operation before authority or SQL", async () => {
+    const value = fixture();
+    let executed = false;
+    await fails(value.run(cell => cell.crypto.executeAuthorizedOperation({
+      operation: "write",
+      scope: cell.scope,
+      execute: async () => {
+        executed = true;
+      },
+    }), { owner: plainOwner() }));
+    expect(executed).toBe(false);
+    expect(value.stages).toEqual([]);
+    expect(value.checks()).toBe(0);
+  });
+
   test("roundtrips a live cell and opens a retained generation under the current signed bundle", async () => {
     const value = fixture();
     const encrypted = await value.run(seal);
@@ -406,6 +463,27 @@ describe("native Task checkpoint cell crypto", () => {
     } finally {
       opened.fill(0);
     }
+  });
+
+  test("retained checkpoint AAD opens with fresh policy, access and key-generation authority", async () => {
+    const value = fixture();
+    const oldEvidence = value.evidenceInput;
+    const encrypted = await value.run(seal);
+    const checkpointAadBinding = { version: 1 as const, namespaceId: NAMESPACE,
+      domainId: DOMAIN, namespaceAccessRevision: 0, policyRevision: 3 };
+    value.rotate(1, 4);
+    await fails(value.run(cell => open(cell, encrypted)));
+    const opened = await value.run(cell => {
+      expect(cell.scope.expectedAccessRevision).toBe(1);
+      expect(cell.scope.expectedPolicyRevision).toBe(4);
+      return open(cell, encrypted);
+    }, { checkpointAadBinding });
+    try { expect(opened).toEqual(plaintext); } finally { opened.fill(0); }
+    const fresh = await value.run(seal, { checkpointAadBinding });
+    expect(new DataView(fresh.buffer).getBigUint64(4)).toBe(1n);
+    const freshOpened = await value.run(cell => open(cell, fresh), { checkpointAadBinding });
+    try { expect(freshOpened).toEqual(plaintext); } finally { freshOpened.fill(0); }
+    await fails(value.run(cell => open(cell, encrypted), { checkpointAadBinding }, oldEvidence));
   });
 
   test("expires during an active operation before its commit check", async () => {
@@ -613,5 +691,64 @@ describe("native Task checkpoint cell crypto", () => {
         domains: [{ ...value.base.domains[0]!, domainKey: bytes(9) }],
       }),
     );
+  });
+});
+
+
+describe("Human Task checkpoint reader", () => {
+  test("Plain refuses a Human checkpoint read before authority or SQL", async () => {
+    const value = fixture();
+    const reader = value.reader({ owner: plainOwner() });
+    let executed = false;
+    await fails(reader.crypto.executeAuthorizedOperation({
+      operation: "read",
+      scope: reader.scope,
+      execute: async () => {
+        executed = true;
+      },
+    }));
+    expect(executed).toBe(false);
+    expect(value.stages).toEqual([]);
+    expect(value.checks()).toBe(0);
+  });
+
+  test("opens Runtime-written cells after key rotation without execution evidence", async () => {
+    const f = fixture(); const ciphertext = await f.run(seal);
+    f.rotate();
+    const plaintextRead = await open(f.reader(), ciphertext);
+    try { expect(plaintextRead).toEqual(plaintext); } finally { plaintextRead.fill(0); }
+  });
+
+  test("rejects write/delete/cleanup before reading keys", async () => {
+    const f = fixture(); const reader = f.reader();
+    for (const operation of ["write", "delete", "cleanup"] as const) {
+      expect(() => reader.crypto.executeAuthorizedOperation({
+        operation, scope: reader.scope, execute: () => Promise.resolve(),
+      })).toThrow("cannot execute or mutate");
+    }
+    expect(f.stages).toEqual([]);
+  });
+
+  test("rejects expired, cancelled, stale and substituted read authority", async () => {
+    const f = fixture(); const ciphertext = await f.run(seal);
+    await fails(open(f.reader({ deadlineAt: NOW }), ciphertext));
+    const cancelled = new AbortController(); cancelled.abort();
+    await fails(open(f.reader({ signal: cancelled.signal }), ciphertext));
+    await fails(open(f.reader({ assertCurrentTaskAuthority: () => { throw new Error("stale"); } }), ciphertext));
+    await fails(open(f.reader({ identity: { ...f.base.identity, taskRunId: "other-run" } }), ciphertext));
+    const reader = f.reader();
+    expect(() => reader.crypto.executeAuthorizedOperation({ operation: "read",
+      scope: { ...reader.scope, logicalThreadId: "other-thread" }, execute: () => Promise.resolve(),
+    })).toThrow("cannot execute or mutate");
+  });
+
+  test("checks authority again before returning decrypted cells", async () => {
+    const f = fixture(); const ciphertext = await f.run(seal);
+    let checked = 0;
+    await fails(open(f.reader({ assertCurrentTaskAuthority: () => {
+      if (++checked > 1) throw new Error("authority changed");
+      return Promise.resolve();
+    } }), ciphertext));
+    expect(checked).toBeGreaterThan(1);
   });
 });

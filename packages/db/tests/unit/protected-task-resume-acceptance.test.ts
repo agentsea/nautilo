@@ -1,15 +1,18 @@
+import { assertApprovalSelectionsAreContentFree, projectApprovalRow, applyApprovalPatch, compileApprovalSelection } from "../fixtures/protected-approval-projection";
 import { describe, expect, test } from "bun:test";
 
 import type { DirectDatabase } from "../../src/config/direct-database";
 import {
-  acceptProtectedTaskAwaitReply,
-  type AcceptProtectedTaskAwaitReplyInput,
+  acceptProtectedTaskHumanContinuation,
+  protectedTaskHumanContinuationAcceptanceId,
+  type AcceptProtectedTaskHumanContinuationInput,
   type ProtectedTaskDurableJobReference,
 } from "../../src/queries/tasks";
 import { jobs, type Job } from "../../src/schema/jobs";
 import { sessionMessages } from "../../src/schema/sessions";
 import { taskRuns, type TaskRun } from "../../src/schema/task-runs";
 import { tasks, type Task } from "../../src/schema/tasks";
+import { actors } from "../../src/schema/trust";
 
 const ids = {
   task: "10000000-0000-4000-8000-000000000001",
@@ -17,6 +20,8 @@ const ids = {
   job: "30000000-0000-4000-8000-000000000003",
   requestor: "40000000-0000-4000-8000-000000000004",
   recipient: "50000000-0000-4000-8000-000000000005",
+  humanActor: "50000000-0000-4000-8000-000000000015",
+  requestorActor: "50000000-0000-4000-8000-000000000016",
   agent: "60000000-0000-4000-8000-000000000006",
   namespace: "70000000-0000-4000-8000-000000000007",
   room: "80000000-0000-4000-8000-000000000008",
@@ -30,7 +35,9 @@ const messageObjectId = "message:v2:accepted-reply";
 const parkedAt = new Date("2026-09-28T12:34:56.000Z");
 const acceptedAt = new Date("2026-09-28T12:35:00.000Z");
 const parkKey = "nautilo.protectedTaskRunPark.v1";
-const acceptanceKey = "nautilo.protectedTaskAwaitReplyAcceptance.v1";
+const acceptanceKey = "nautilo.protectedTaskHumanContinuationAcceptance.v1";
+const stableRoutingDigest = new Uint8Array(32).fill(7);
+const stableRoutingDigestText = Buffer.from(stableRoutingDigest).toString("base64url");
 
 function reference(): ProtectedTaskDurableJobReference {
   return {
@@ -52,11 +59,14 @@ function interrupts() {
   ];
 }
 
-function acceptance(overrides: Record<string, unknown> = {}) {
-  return {
-    acceptanceId: "await-reply-acceptance:1",
-    interruptId: "interrupt:reply",
-    message: {
+function acceptance(
+  overrides: Partial<AcceptProtectedTaskHumanContinuationInput["acceptance"]>
+    = {},
+) {
+  const base = {
+    acceptedBy: { userId: ids.recipient, humanActorId: ids.humanActor },
+    interrupt: { id: "interrupt:reply", kind: "await_reply" as const },
+    response: { kind: "await_reply" as const, message: {
       roomId: ids.room,
       sessionId: ids.session,
       messageId: "41",
@@ -64,10 +74,23 @@ function acceptance(overrides: Record<string, unknown> = {}) {
       cryptoObjectId: messageObjectId,
       namespaceId: ids.namespace,
       sourceUserId: ids.recipient,
-    },
+    } },
     acceptedAt,
-    ...overrides,
-  } as AcceptProtectedTaskAwaitReplyInput["acceptance"];
+  };
+  const value = { ...base, ...overrides };
+  return {
+    ...value,
+    acceptanceId: overrides.acceptanceId
+      ?? protectedTaskHumanContinuationAcceptanceId({
+      taskId: ids.task,
+      taskRunId: ids.run,
+      priorJobId: ids.job,
+      executionSegment: 1,
+      acceptedBy: value.acceptedBy,
+      interrupt: value.interrupt,
+      response: value.response,
+    }),
+  } as AcceptProtectedTaskHumanContinuationInput["acceptance"];
 }
 
 function parkReceipt(overrides: Record<string, unknown> = {}) {
@@ -84,6 +107,7 @@ function parkReceipt(overrides: Record<string, unknown> = {}) {
       { id: "interrupt:reply", kind: "await_reply" },
     ],
     parkedAt: parkedAt.toISOString(),
+    stableRoutingDigest: stableRoutingDigestText,
     ...overrides,
   };
 }
@@ -91,7 +115,7 @@ function parkReceipt(overrides: Record<string, unknown> = {}) {
 function acceptanceReceipt(overrides: Record<string, unknown> = {}) {
   return {
     version: 1,
-    acceptanceId: "await-reply-acceptance:1",
+    acceptanceId: acceptance().acceptanceId,
     taskId: ids.task,
     taskRunId: ids.run,
     jobId: ids.job,
@@ -99,16 +123,49 @@ function acceptanceReceipt(overrides: Record<string, unknown> = {}) {
     generation: 3,
     executionSegment: 1,
     nextExecutionSegment: 2,
-    interrupt: { id: "interrupt:reply", kind: "await_reply" },
-    message: acceptance().message,
+    acceptedBy: acceptance().acceptedBy,
+    interrupt: acceptance().interrupt,
+    response: acceptance().response,
     acceptedAt: acceptedAt.toISOString(),
     ...overrides,
   };
 }
 
+function categoricalAcceptance(
+  kind: "approval" | "prove_it" | "identity",
+): AcceptProtectedTaskHumanContinuationInput["acceptance"] {
+  const interrupt = kind === "approval"
+    ? { id: "interrupt:approval", kind, requestId: "approval:1" }
+    : { id: `interrupt:${kind}`, kind };
+  const response = kind === "approval"
+    ? { kind, verb: "deny" as const }
+    : kind === "prove_it"
+      ? { kind, approved: true }
+      : { kind };
+  const acceptedBy = {
+    userId: ids.requestor,
+    humanActorId: ids.requestorActor,
+  };
+  return {
+    acceptanceId: protectedTaskHumanContinuationAcceptanceId({
+      taskId: ids.task,
+      taskRunId: ids.run,
+      priorJobId: ids.job,
+      executionSegment: 1,
+      acceptedBy,
+      interrupt,
+      response,
+    }),
+    acceptedBy,
+    interrupt,
+    response,
+    acceptedAt,
+  };
+}
+
 function input(
-  overrides: Partial<AcceptProtectedTaskAwaitReplyInput> = {},
-): AcceptProtectedTaskAwaitReplyInput {
+  overrides: Partial<AcceptProtectedTaskHumanContinuationInput> = {},
+): AcceptProtectedTaskHumanContinuationInput {
   return {
     taskId: ids.task,
     taskRunId: ids.run,
@@ -118,6 +175,7 @@ function input(
     executionSegment: 1,
     interrupts: interrupts(),
     parkedAt,
+    stableRoutingDigest,
     priorJobReference: reference(),
     acceptance: acceptance(),
     ...overrides,
@@ -243,6 +301,9 @@ type FixtureOptions = Readonly<{
   run?: TaskRun | undefined;
   job?: Job | undefined;
   message?: MessageRow | undefined;
+  humanEnabled?: boolean;
+  humanUserId?: string;
+  humanActorId?: string;
   loseUpdate?: boolean;
 }>;
 
@@ -259,6 +320,7 @@ function harness(options: FixtureOptions = {}) {
   const messageRow = Object.prototype.hasOwnProperty.call(options, "message")
     ? options.message
     : message();
+  const selections: string[] = [];
   const locks: Array<{ table: unknown; kind: string }> = [];
   const writes: Array<Record<string, unknown>> = [];
 
@@ -267,18 +329,25 @@ function harness(options: FixtureOptions = {}) {
     if (table === taskRuns) return runRow ? [runRow] : [];
     if (table === jobs) return jobRow ? [jobRow] : [];
     if (table === sessionMessages) return messageRow ? [messageRow] : [];
+    if (table === actors) return [{
+      humanActorId: options.humanActorId ?? ids.humanActor,
+      userId: options.humanUserId ?? ids.recipient,
+      kind: "user",
+      disabledAt: options.humanEnabled === false ? parkedAt : null,
+    }];
     throw new Error("unexpected table");
   };
   const tx = {
-    select: (_selection?: unknown) => ({
+    select: (selection?: unknown) => ({
       from: (table: unknown) => {
+        if (selection !== undefined && [tasks, taskRuns, jobs].includes(table as typeof tasks)) selections.push(compileApprovalSelection(table, selection));
         const query = {
           innerJoin: (_joined: unknown, _condition: unknown) => query,
           where: (_condition: unknown) => query,
           limit: (_limit: number) => query,
           for: async (kind: string) => {
             locks.push({ table, kind });
-            return rows(table);
+            return rows(table).map(row => projectApprovalRow(table, row, selection));
           },
         };
         return query;
@@ -289,7 +358,7 @@ function harness(options: FixtureOptions = {}) {
         where: (_condition: unknown) => ({
           returning: async () => {
             if (table !== jobs) throw new Error("unexpected update table");
-            writes.push(patch);
+            writes.push(jobRow ? applyApprovalPatch(jobRow, patch) : patch);
             return options.loseUpdate || !jobRow ? [] : [{ ...jobRow, ...patch }];
           },
         }),
@@ -300,20 +369,74 @@ function harness(options: FixtureOptions = {}) {
     transaction: async <T>(operation: (value: typeof tx) => Promise<T>) =>
       operation(tx),
   } as unknown as DirectDatabase;
-  return { db, locks, writes };
+  return { db, locks, writes, selections };
 }
 
-describe("protected Task await-reply acceptance CAS", () => {
+describe("protected Task Human continuation acceptance CAS", () => {
+  test("derives stable identities from semantic fields instead of object insertion order", () => {
+    const expectedAwaitReply = acceptance().acceptanceId;
+    expect(protectedTaskHumanContinuationAcceptanceId({
+      taskId: ids.task,
+      taskRunId: ids.run,
+      priorJobId: ids.job,
+      executionSegment: 1,
+      acceptedBy: {
+        humanActorId: ids.humanActor,
+        userId: ids.recipient,
+      },
+      interrupt: {
+        kind: "await_reply",
+        id: "interrupt:reply",
+      },
+      response: {
+        message: {
+          sourceUserId: ids.recipient,
+          namespaceId: ids.namespace,
+          cryptoObjectId: messageObjectId,
+          editRevision: 2,
+          messageId: "41",
+          sessionId: ids.session,
+          roomId: ids.room,
+        },
+        kind: "await_reply",
+      },
+    })).toBe(expectedAwaitReply);
+
+    const approval = categoricalAcceptance("approval");
+    expect(protectedTaskHumanContinuationAcceptanceId({
+      taskId: ids.task,
+      taskRunId: ids.run,
+      priorJobId: ids.job,
+      executionSegment: 1,
+      acceptedBy: {
+        humanActorId: ids.requestorActor,
+        userId: ids.requestor,
+      },
+      interrupt: {
+        requestId: "approval:1",
+        kind: "approval",
+        id: "interrupt:approval",
+      },
+      response: {
+        verb: "deny",
+        kind: "approval",
+      },
+    })).toBe(approval.acceptanceId);
+  });
+
   test("locks Task, Run, and prior Job before accepting one protected Message", async () => {
     const fixture = harness();
 
-    expect(await acceptProtectedTaskAwaitReply(fixture.db, input())).toEqual({
+    expect(await acceptProtectedTaskHumanContinuation(fixture.db, input())).toEqual({
       status: "accepted",
+      acceptance: acceptance(),
     });
+    assertApprovalSelectionsAreContentFree(fixture.selections);
     expect(fixture.locks).toEqual([
       { table: tasks, kind: "update" },
       { table: taskRuns, kind: "update" },
       { table: jobs, kind: "update" },
+      { table: actors, kind: "share" },
       { table: sessionMessages, kind: "share" },
     ]);
     expect(fixture.writes).toEqual([{
@@ -336,25 +459,88 @@ describe("protected Task await-reply acceptance CAS", () => {
       message: undefined,
     });
 
-    expect(await acceptProtectedTaskAwaitReply(fixture.db, input())).toEqual({
+    expect(await acceptProtectedTaskHumanContinuation(fixture.db, input())).toEqual({
       status: "exact_replay",
+      acceptance: acceptance(),
     });
     expect(fixture.locks).toHaveLength(3);
     expect(fixture.writes).toEqual([]);
   });
 
+  test("returns the durable original timestamp when an HTTP retry arrives later", async () => {
+    const retried = acceptance({
+      acceptedAt: new Date("2026-09-28T12:36:00.000Z"),
+    });
+    const fixture = harness({
+      job: job({
+        metadata: {
+          [parkKey]: parkReceipt(),
+          [acceptanceKey]: acceptanceReceipt(),
+        },
+      }),
+      message: undefined,
+    });
+    expect(await acceptProtectedTaskHumanContinuation(fixture.db, input({
+      acceptance: retried,
+    }))).toEqual({ status: "exact_replay", acceptance: acceptance() });
+  });
+
+  test("accepts bounded approval, prove-it, and identity decisions without content", async () => {
+    for (const kind of ["approval", "prove_it", "identity"] as const) {
+      const decision = categoricalAcceptance(kind);
+      const fixture = harness({
+        humanUserId: ids.requestor,
+        humanActorId: ids.requestorActor,
+        job: job({
+          metadata: {
+            [parkKey]: parkReceipt({ interrupts: [decision.interrupt] }),
+          },
+        }),
+      });
+      expect(await acceptProtectedTaskHumanContinuation(fixture.db, input({
+        interrupts: [decision.interrupt],
+        acceptance: decision,
+      }))).toEqual({ status: "accepted", acceptance: decision });
+      expect(JSON.stringify(fixture.writes)).not.toContain("prompt");
+    }
+  });
+
+  test("rejects a disabled or swapped Human actor", async () => {
+    for (const fixture of [
+      harness({ humanEnabled: false }),
+      harness({ humanActorId: ids.requestorActor }),
+    ]) {
+      expect(await acceptProtectedTaskHumanContinuation(
+        fixture.db,
+        input(),
+      )).toEqual({ status: "rejected", reason: "stale" });
+    }
+  });
+
   test("accepts the requestor as the reply source without a target-user entry", async () => {
+    const baseResponse = acceptance().response;
+    if (baseResponse.kind !== "await_reply") throw new Error("invalid fixture");
+    const response = {
+      kind: "await_reply" as const,
+      message: {
+        ...baseResponse.message,
+        sourceUserId: ids.requestor,
+      },
+    };
     const requestorAcceptance = acceptance({
-      message: { ...acceptance().message, sourceUserId: ids.requestor },
+      acceptedBy: { userId: ids.requestor, humanActorId: ids.requestorActor },
+      response,
     });
     const fixture = harness({
       task: task({ targetUserIds: [] }),
       message: message({ sourceUserId: ids.requestor }),
+      humanUserId: ids.requestor,
+      humanActorId: ids.requestorActor,
     });
 
-    expect(await acceptProtectedTaskAwaitReply(fixture.db, input({
+    expect(await acceptProtectedTaskHumanContinuation(fixture.db, input({
       acceptance: requestorAcceptance,
-    }))).toEqual({ status: "accepted" });
+    }))).toEqual({ status: "accepted", acceptance: requestorAcceptance });
   });
 
   test("rejects a different reply after one acceptance won", async () => {
@@ -366,12 +552,19 @@ describe("protected Task await-reply acceptance CAS", () => {
         },
       }),
     });
+    const originalResponse = acceptance().response;
+    if (originalResponse.kind !== "await_reply") throw new Error("invalid fixture");
     const changed = acceptance({
-      acceptanceId: "await-reply-acceptance:2",
-      message: { ...acceptance().message, messageId: "42" },
+      response: {
+        kind: "await_reply",
+        message: {
+          ...originalResponse.message,
+          messageId: "42",
+        },
+      },
     });
 
-    expect(await acceptProtectedTaskAwaitReply(fixture.db, input({
+    expect(await acceptProtectedTaskHumanContinuation(fixture.db, input({
       acceptance: changed,
     }))).toEqual({ status: "rejected", reason: "conflict" });
     expect(fixture.writes).toEqual([]);
@@ -392,7 +585,7 @@ describe("protected Task await-reply acceptance CAS", () => {
 
     for (const options of cases) {
       const fixture = harness(options);
-      const result = await acceptProtectedTaskAwaitReply(fixture.db, input());
+      const result = await acceptProtectedTaskHumanContinuation(fixture.db, input());
       expect(result.status).toBe("rejected");
       if (result.status === "rejected") {
         expect(["stale", "conflict"]).toContain(result.reason);
@@ -415,7 +608,7 @@ describe("protected Task await-reply acceptance CAS", () => {
       message({ lifecycleDisposition: "stale_mapping" }),
     ]) {
       const fixture = harness({ message: changed });
-      expect(await acceptProtectedTaskAwaitReply(fixture.db, input())).toEqual({
+      expect(await acceptProtectedTaskHumanContinuation(fixture.db, input())).toEqual({
         status: "rejected",
         reason: "stale",
       });
@@ -424,7 +617,7 @@ describe("protected Task await-reply acceptance CAS", () => {
   });
 
   test("rejects an absent Message and malformed interrupt selection", async () => {
-    expect(await acceptProtectedTaskAwaitReply(
+    expect(await acceptProtectedTaskHumanContinuation(
       harness({ message: undefined }).db,
       input(),
     )).toEqual({ status: "rejected", reason: "not_found" });
@@ -436,15 +629,22 @@ describe("protected Task await-reply acceptance CAS", () => {
         throw new Error("transaction must stay closed");
       },
     } as unknown as DirectDatabase;
-    expect(acceptProtectedTaskAwaitReply(db, input({
-      acceptance: acceptance({ interruptId: "interrupt:approval" }),
+    expect(acceptProtectedTaskHumanContinuation(db, input({
+      acceptance: {
+        ...acceptance(),
+        interrupt: {
+          id: "interrupt:approval",
+          kind: "approval",
+          requestId: "approval:1",
+        },
+      },
     }))).rejects.toThrow("acceptance is malformed");
-    expect(acceptProtectedTaskAwaitReply(db, input({
+    expect(acceptProtectedTaskHumanContinuation(db, input({
       acceptance: acceptance({
         acceptedAt: new Date("2026-09-28T12:34:55.000Z"),
       }),
     }))).rejects.toThrow("acceptance is malformed");
-    expect(acceptProtectedTaskAwaitReply(db, input({
+    expect(acceptProtectedTaskHumanContinuation(db, input({
       acceptance: {
         ...acceptance(),
         hidden: "content",
@@ -454,10 +654,28 @@ describe("protected Task await-reply acceptance CAS", () => {
   });
 
   test("throws so the transaction rolls back when the Job CAS loses its row", () => {
-    expect(acceptProtectedTaskAwaitReply(
+    expect(acceptProtectedTaskHumanContinuation(
       harness({ loseUpdate: true }).db,
       input(),
     )).rejects.toThrow("acceptance lost its Job");
   });
 
+});
+
+
+test("categorical acceptance denies malformed or extended stored input before writing", async () => {
+  for (const stored of [null, { ...reference(), prompt: "private-canary" },
+    { ...reference(), taskId: { prompt: "private-canary" } }]) {
+    const fixture = harness({ job: job({ input: stored }) });
+    expect((await acceptProtectedTaskHumanContinuation(fixture.db, input())).status).toBe("rejected");
+    expect(fixture.writes).toEqual([]);
+  }
+});
+
+test("acceptance patches its receipt without replacing unrelated durable metadata", async () => {
+  const fixture = harness({ job: job({ metadata: { [parkKey]: parkReceipt(), unrelated: "private-canary" } }) });
+  expect((await acceptProtectedTaskHumanContinuation(fixture.db, input())).status).toBe("accepted");
+  expect(fixture.writes[0]).toEqual({ metadata: { [parkKey]: parkReceipt(),
+    unrelated: "private-canary", [acceptanceKey]: acceptanceReceipt() } });
+  assertApprovalSelectionsAreContentFree(fixture.selections);
 });

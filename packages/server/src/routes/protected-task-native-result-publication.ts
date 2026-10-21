@@ -6,6 +6,7 @@ import {
 import {
   ClassifiedDataOperationError,
   withProtectedTaskResultSigner,
+  withProtectedTaskTemporaryResultSigner,
   type EncryptionDataOperationOwner,
   type TaskContentAuthorityV1,
 } from "@nautilo/lattice-bridge";
@@ -20,12 +21,14 @@ import {
   type CryptoPostgresHandle,
 } from "@nautilo/lattice-bridge/server";
 import {
+  hasTaskRuntimeTemporarySigner,
   type DomainForegroundSecretEntry,
   type LatticeCrypto,
   type LatticeStorage,
 } from "@nautilo/lattice-crypto";
 import {
   decodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  decodeTaskRuntimeBackgroundAuthorizationRequestBase,
   destroyTaskRuntimeBackgroundAuthorizationRequestV1,
 } from "@nautilo/lattice-crypto/background";
 import {
@@ -54,7 +57,8 @@ type ProductContext = Readonly<{
 
 type ProtectedTaskJobReferenceV1 = TaskRuntimeGrantClaimPlan["reference"];
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
-const TASK_DEFINITION_OBJECT_ID = /^task-definition:v1:[0-9a-f]{64}$/u;
+// Lexical correlation only; current publication/execution validates the exact mapped definition ledger.
+const TASK_DEFINITION_OBJECT_ID = /^(?:task-definition|task-historical):v1:[0-9a-f]{64}$/u;
 const TASK_RUN_RESULT_OBJECT_ID = /^task-run-result:v1:[0-9a-f]{64}$/u;
 const PORTABLE_ID = /^[A-Za-z0-9][A-Za-z0-9._:@/-]*$/u;
 const SHA256_BASE64URL = /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/u;
@@ -72,7 +76,9 @@ export type ProtectedTaskNativeResultPublicationInput = Readonly<{
 }>;
 
 type Dependencies = Readonly<{
-  decodeRequest: typeof decodeTaskRuntimeBackgroundAuthorizationRequestV1;
+  hasTemporarySigner: typeof hasTaskRuntimeTemporarySigner;
+  withTemporarySigner: typeof withProtectedTaskTemporaryResultSigner;
+  decodeRequest(bytes: Uint8Array, crypto: LatticeCrypto): ReturnType<typeof decodeTaskRuntimeBackgroundAuthorizationRequestV1>;
   destroyRequest: typeof destroyTaskRuntimeBackgroundAuthorizationRequestV1;
   verifyCryptoHandle: typeof verifyCryptoPostgresHandle;
   createRepository: typeof createPostgresTaskContentRepositoryV1;
@@ -97,7 +103,9 @@ type Dependencies = Readonly<{
 }>;
 
 const productionDependencies: Dependencies = Object.freeze({
-  decodeRequest: decodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  hasTemporarySigner: hasTaskRuntimeTemporarySigner,
+  withTemporarySigner: withProtectedTaskTemporaryResultSigner,
+  decodeRequest: (bytes, crypto) => decodeTaskRuntimeBackgroundAuthorizationRequestBase(crypto, bytes),
   destroyRequest: destroyTaskRuntimeBackgroundAuthorizationRequestV1,
   verifyCryptoHandle: verifyCryptoPostgresHandle,
   createRepository: createPostgresTaskContentRepositoryV1,
@@ -242,7 +250,7 @@ export function createProtectedTaskNativeResultPublication(
       throw new TypeError("Protected Task result publication coordinates disagree");
     }
     const request = dependencies.decodeRequest(
-      descriptorBytes,
+      descriptorBytes, input.crypto,
     );
     if (request === null) {
       throw new TypeError("Protected Task result request is unavailable");
@@ -303,6 +311,26 @@ export function createProtectedTaskNativeResultPublication(
         domains: publication.domains,
         domainId: target.domainId,
       });
+      const prepared = dependencies.hasTemporarySigner(evidence)
+        ? await dependencies.withTemporarySigner({ evidence, domain, execute: signer =>
+          dependencies.prepare({
+            restricted: input.restricted,
+            serverScope: input.serverScope,
+            domains: publication.domains,
+            signal: publication.signal,
+            assertCurrentTaskAuthority,
+            crypto: input.crypto,
+            evidence,
+            payload: publication.payload,
+            authority,
+            createdAt: currentTime,
+            agentAuthorizationRevision: 0,
+            runtime: signer.runtime,
+            signerPublication: null,
+            temporarySigner: signer.temporarySigner,
+            resolveHistoricalSignerPublicationManager: () => null,
+          }) })
+        : await (async () => {
       const runtime = await storage.getAgentRuntimeAtomicState(
         occurrence.task.agentId,
       );
@@ -321,7 +349,7 @@ export function createProtectedTaskNativeResultPublication(
       } finally {
         destroyDetachedBytes(runtime);
       }
-      const prepared = await dependencies.withSignerHistory({
+      return dependencies.withSignerHistory({
         handle,
         crypto: input.crypto,
         agentId: occurrence.task.agentId,
@@ -370,6 +398,8 @@ export function createProtectedTaskNativeResultPublication(
           return signed.value;
         },
       });
+
+        })();
 
       // Runtime secrets and their historical-key callbacks are gone before any
       // product terminal CAS. Only the opaque signed preparation crosses here.

@@ -4,8 +4,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import postgres from "postgres";
 import { drizzle } from "drizzle-orm/postgres-js";
-import { migrate } from "drizzle-orm/postgres-js/migrator";
-import { withMigrationPrivilegeCompat } from "./migration-privilege-compat";
+import { migrateWithMigrationPrivilegeCompat } from "./migration-privilege-compat";
 import * as schema from "../schema/index";
 import { resolveInstance, resolvedInstanceChildEnv } from "@nautilo/config";
 import {
@@ -197,8 +196,7 @@ async function ensureDatabaseContainer(
   print(`Running migrations from ${migrationsFolder}...`);
   const migrationSql = postgres(direct, { max: 1, onnotice: () => {} });
   const migrationDb = drizzle(migrationSql, { schema });
-  await withMigrationPrivilegeCompat(migrationsFolder, (folder) =>
-    migrate(migrationDb, { migrationsFolder: folder }));
+  await migrateWithMigrationPrivilegeCompat(migrationDb, { migrationsFolder });
   await migrationSql.end();
   print("Migrations complete.");
 
@@ -266,8 +264,9 @@ async function runMigrations(directConnection: string): Promise<void> {
   const migrationSql = postgres(directConnection, { max: 1, onnotice: () => {} });
   const migrationDb = drizzle(migrationSql, { schema });
   try {
-    await withMigrationPrivilegeCompat(MIGRATIONS_FOLDER, (folder) =>
-      migrate(migrationDb, { migrationsFolder: folder }));
+    await migrateWithMigrationPrivilegeCompat(migrationDb, {
+      migrationsFolder: MIGRATIONS_FOLDER,
+    });
   } finally {
     await migrationSql.end();
   }

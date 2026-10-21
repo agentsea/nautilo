@@ -1,25 +1,32 @@
+import { parseProtectedTaskCheckpointAadBinding } from "@nautilo/db";
 import {
   createProtectedTaskAdditionalAuthorityResumeMapV1,
+  createProtectedTaskCheckpointPauseController,
   type RunScopeSubagentOpts,
+  type ProtectedTaskHumanResumeBindingV1,
 } from "@nautilo/agent";
-import type {
-  PostgresJsBridgeConnection,
-  SealAndParkProtectedTaskRunInput,
+import {
+  protectedTaskDefinitionSupportsPolicy,
+  type PostgresJsBridgeConnection,
+  type SealAndParkProtectedTaskHumanRunInput,
+  type SealAndParkProtectedTaskRunInput,
+  type SealAndParkProtectedTaskCheckpointRunInput,
 } from "@nautilo/db";
 import {
   ClassifiedDataOperationError,
-  withProtectedTaskResultSigner,
   type EncryptionDataOperationOwner,
   type ProtectedAgentMemoryEmbeddingPort,
   type ProtectedMemoryAuthority,
-  type ProtectedTaskResultSignerAuthority,
+  type ProtectedTaskExecutionSignerAuthority,
   type TaskRunResultPayloadV1,
   type TaskPayloadV1,
 } from "@nautilo/lattice-bridge";
 import {
-  PostgresLatticeStorage,
+  createPostgresForegroundAgentAcceptedExecutionEvidenceResolver,
   verifyCryptoPostgresHandle,
   withNativeProtectedTaskDefinitionV1,
+  withNativeTaskHumanReplyV1,
+  createNativeTaskHumanReplyReadTargetV1,
   type ConversationProductCanonicalTransactionRunner,
   type ConversationProductPostgresHandle,
 } from "@nautilo/lattice-bridge/server";
@@ -30,13 +37,14 @@ import {
   type TaskRuntimeExecutionEvidence,
 } from "@nautilo/lattice-crypto";
 import {
-  decodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  decodeTaskRuntimeBackgroundAuthorizationRequestBase,
   destroyTaskRuntimeBackgroundAuthorizationRequestV1,
   type TaskRuntimeBackgroundAuthorizationRequestV1,
 } from "@nautilo/lattice-crypto/background";
 import {
   createProtectedTaskFailurePayload,
   createProtectedTaskTranscriptPort,
+  ProtectedTaskExecutionDidNotBeginError,
   runProtectedTaskNativeSegment,
   withNativeProtectedTaskCheckpointManifest,
   assertProtectedTaskJobReferenceV1,
@@ -49,10 +57,16 @@ import {
   type RunProtectedTaskNativeSegmentInput,
   type TaskRuntimeGrantClaimPlan,
 } from "@nautilo/runtime";
+import type {
+  ProtectedRepoDocsExecutionPort,
+  ProtectedRepoDocsOpenedSelection,
+  ProtectedTaskProjectFilePort,
+} from "@nautilo/agent";
 import {
   isNamespaceMemoryEnvelope,
   isScopeMemoryEnvelope,
 } from "@nautilo/trust";
+import { log } from "@nautilo/logger";
 
 import {
   withCurrentProtectedTaskMemoryAuthority,
@@ -69,9 +83,16 @@ import type {
   ProtectedTaskRuntimeGrantPlanBuilderDependencies,
   ProtectedTaskRuntimeMemoryPolicy,
 } from "./protected-task-runtime-grant-plan";
+import { withProtectedTaskRuntimeSigner } from "./protected-task-runtime-signer";
+import { createProtectedTaskDefinitionForegroundAuthorizationResolver } from
+  "./protected-task-runtime-access-lineage";
+
+import { createProtectedTaskNativeReplyAuthorityResolver, createProtectedTaskHistoricalHumanReplySignerResolver } from "./protected-task-native-reply-authority";
+import { scheduleProtectedTaskCheckpointRefresh } from "./protected-task-checkpoint-refresh";
 import {
-  withProtectedTaskResultSignerHistory,
-} from "./protected-task-result-signer-history";
+  openProtectedTaskRepoDocsSelection,
+  type ProtectedTaskRepoDocsSelection,
+} from "./protected-task-repo-docs-selection";
 
 type PrepareExecution =
   ProtectedTaskRuntimeGrantPlanBuilderDependencies["prepareExecution"];
@@ -94,7 +115,13 @@ type FixedExecutionContext = Omit<
   | "actorRole"
   | "roomId"
   | "callingRoomId"
->;
+  | "protectedRepoDocs"
+> & Readonly<{
+  protectedRepoDocsExecutionPort?: ProtectedRepoDocsExecutionPort;
+  createProtectedRepoDocsProjectFilePort?: (
+    workDir: string,
+  ) => ProtectedTaskProjectFilePort;
+}>;
 
 export type ProtectedTaskNativeFixedMemorySegmentInput = Readonly<{
   restricted: PostgresJsBridgeConnection;
@@ -108,11 +135,24 @@ export type ProtectedTaskNativeFixedMemorySegmentInput = Readonly<{
   owner: EncryptionDataOperationOwner;
   embedding: ProtectedAgentMemoryEmbeddingPort;
   createDedicatedPool: DedicatedPoolFactory;
-  parkSegment(input: SealAndParkProtectedTaskRunInput): Promise<boolean>;
+  parkSegment(input: SealAndParkProtectedTaskRunInput
+    | SealAndParkProtectedTaskHumanRunInput
+    | SealAndParkProtectedTaskCheckpointRunInput): Promise<boolean>;
+  /**
+   * Fresh local-relay availability check at the last pre-effect boundary.
+   * A false result is deferred by the existing unstarted-segment recovery.
+   */
+  localExecutionReadyBeforeStart?(input: Readonly<{
+    occurrence: ProtectedTaskRunningOccurrence;
+    signal: AbortSignal;
+  }>): Promise<boolean>;
   resolveExecutionContext(input: Readonly<{
     occurrence: ProtectedTaskRunningOccurrence;
     predispatch: ProtectedTaskPredispatchPlan;
     protectedMetadata: TaskPayloadV1["protectedMetadata"];
+    repoDocs?: ProtectedRepoDocsOpenedSelection;
+    signal: AbortSignal;
+    assertCurrentTaskAuthority(): Promise<void>;
   }>): FixedExecutionContext | Promise<FixedExecutionContext>;
   /**
    * Construct one segment-local publisher while its Runtime signer and Domain
@@ -124,11 +164,12 @@ export type ProtectedTaskNativeFixedMemorySegmentInput = Readonly<{
     record: BackgroundAuthorizationTaskRuntimeRecordV3;
     request: TaskRuntimeBackgroundAuthorizationRequestV1;
     current: ProtectedTaskMemoryAuthorityInput;
+    policy: ProtectedTaskRuntimeMemoryPolicy;
     humanTurnId: string;
     assertCurrentTaskAuthority(): Promise<void>;
     /** Borrowed only while the current Runtime signer owner remains open. */
     domains: readonly DomainForegroundSecretEntry[];
-    signer: ProtectedTaskResultSignerAuthority;
+    signer: ProtectedTaskExecutionSignerAuthority;
     resolveHistoricalSignerPublicationManager:
       MemoryRepositoryInput["resolveHistoricalSignerPublicationManager"];
   }>): ProtectedTaskTranscriptMessagePublisher
@@ -142,14 +183,15 @@ type SignerUseInput = Readonly<{
   evidence: TaskRuntimeExecutionEvidence;
   domains: readonly DomainForegroundSecretEntry[];
   use(
-    signer: ProtectedTaskResultSignerAuthority,
+    signer: ProtectedTaskExecutionSignerAuthority,
     resolveHistoricalSignerPublicationManager:
       MemoryRepositoryInput["resolveHistoricalSignerPublicationManager"],
   ): Promise<unknown>;
 }>;
 
 type Dependencies = Readonly<{
-  decodeRequest: typeof decodeTaskRuntimeBackgroundAuthorizationRequestV1;
+  decodeRequest(bytes: Uint8Array, crypto: LatticeCrypto):
+    TaskRuntimeBackgroundAuthorizationRequestV1 | null;
   destroyRequest: typeof destroyTaskRuntimeBackgroundAuthorizationRequestV1;
   createDefinitionLoader:
     typeof createCurrentNativeProtectedTaskDefinitionOccurrenceLoader;
@@ -158,101 +200,24 @@ type Dependencies = Readonly<{
   withCheckpointSaver: typeof withNativeProtectedTaskCheckpointManifest;
   createTranscriptPort: typeof createProtectedTaskTranscriptPort;
   runSegment: typeof runProtectedTaskNativeSegment;
+  openReply: typeof withNativeTaskHumanReplyV1;
+  createReplyAuthority: typeof createProtectedTaskNativeReplyAuthorityResolver;
+  replyTarget: typeof createNativeTaskHumanReplyReadTargetV1;
+  verifyReplyHandle: typeof verifyCryptoPostgresHandle;
   withCurrentMemoryAuthority: typeof withCurrentProtectedTaskMemoryAuthority;
   withSigner<Value>(input: Omit<SignerUseInput, "use"> & Readonly<{
     use(
-      signer: ProtectedTaskResultSignerAuthority,
+      signer: ProtectedTaskExecutionSignerAuthority,
       resolveHistoricalSignerPublicationManager:
         MemoryRepositoryInput["resolveHistoricalSignerPublicationManager"],
     ): Promise<Value>;
   }>): Promise<Value>;
 }>;
 
-function wipeNested(value: unknown): void {
-  if (value instanceof Uint8Array) value.fill(0);
-  else if (typeof value === "object" && value !== null) {
-    for (const nested of Object.values(value)) wipeNested(nested);
-  }
-}
-
-async function withCurrentRuntimeSigner<Value>(input: Omit<
-  SignerUseInput,
-  "use"
-> & Readonly<{
-  use(
-    signer: ProtectedTaskResultSignerAuthority,
-    resolveHistoricalSignerPublicationManager:
-      MemoryRepositoryInput["resolveHistoricalSignerPublicationManager"],
-  ): Promise<Value>;
-}>): Promise<Value> {
-  assertAuthenticTaskRuntimeExecutionEvidence(input.evidence);
-  const domains = input.domains.filter(domain =>
-    domain.domainId === input.evidence.result.namespace.domainId
-  );
-  const domain = domains[0];
-  if (domains.length !== 1 || domain === undefined || domain.keyClass !== "ai") {
-    throw new ClassifiedDataOperationError(
-      "authority",
-      "Protected Task Memory result Domain is unavailable",
-    );
-  }
-  const handle = await verifyCryptoPostgresHandle(input.restricted);
-  const storage = new PostgresLatticeStorage(handle);
-  const state = await storage.getAgentRuntimeAtomicState(
-    input.evidence.result.signerAgentId,
-  );
-  let authorizationRevision: number;
-  let runtimeGeneration: number;
-  try {
-    if (state === null
-      || state.runtime.agentId !== input.evidence.result.signerAgentId) {
-      throw new ClassifiedDataOperationError(
-        "authority",
-        "Protected Task Memory Runtime signer is unavailable",
-      );
-    }
-    authorizationRevision = state.runtime.authorizationRevision;
-    runtimeGeneration = state.runtime.runtimeGeneration;
-  } finally {
-    wipeNested(state);
-  }
-  return withProtectedTaskResultSignerHistory({
-    handle,
-    crypto: input.crypto,
-    agentId: input.evidence.result.signerAgentId,
-    domainId: domain.domainId,
-    domainEpoch: domain.domainKeyGeneration,
-    expectedAgentAuthorizationRevision: authorizationRevision,
-    expectedRuntimeGeneration: runtimeGeneration,
-    use: async history => {
-      const opened = await withProtectedTaskResultSigner({
-        crypto: input.crypto,
-        storage,
-        evidence: input.evidence,
-        domain,
-        expectedAgentAuthorizationRevision: authorizationRevision,
-        resolveHistoricalRuntimeCommitter:
-          history.resolveHistoricalRuntimeCommitter,
-        resolveHistoricalSignerPublicationManager:
-          history.resolveHistoricalSignerPublicationManager,
-        execute: signer => input.use(
-          signer,
-          history.resolveHistoricalSignerPublicationManager,
-        ),
-      });
-      if (opened.status !== "executed") {
-        throw new ClassifiedDataOperationError(
-          "authority",
-          "Protected Task Memory Runtime signer is unavailable",
-        );
-      }
-      return opened.value;
-    },
-  });
-}
 
 const productionDependencies: Dependencies = Object.freeze({
-  decodeRequest: decodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  decodeRequest: (bytes, crypto) =>
+    decodeTaskRuntimeBackgroundAuthorizationRequestBase(crypto, bytes),
   destroyRequest: destroyTaskRuntimeBackgroundAuthorizationRequestV1,
   createDefinitionLoader:
     createCurrentNativeProtectedTaskDefinitionOccurrenceLoader,
@@ -261,11 +226,19 @@ const productionDependencies: Dependencies = Object.freeze({
   withCheckpointSaver: withNativeProtectedTaskCheckpointManifest,
   createTranscriptPort: createProtectedTaskTranscriptPort,
   runSegment: runProtectedTaskNativeSegment,
+  openReply: withNativeTaskHumanReplyV1,
+  createReplyAuthority: createProtectedTaskNativeReplyAuthorityResolver,
+  replyTarget: createNativeTaskHumanReplyReadTargetV1,
+  verifyReplyHandle: verifyCryptoPostgresHandle,
   withCurrentMemoryAuthority: withCurrentProtectedTaskMemoryAuthority,
-  withSigner: withCurrentRuntimeSigner,
+  withSigner: withProtectedTaskRuntimeSigner,
 });
 
 const TRANSIENT_SEGMENT = "protectedTaskNativeFixedMemorySegment";
+
+type ProtectedTaskFixedMemoryFailurePhase =
+  | "PTFMS001" | "PTFMS002" | "PTFMS003" | "PTFMS004"
+  | "PTFMS005" | "PTFMS006" | "PTFMS007";
 
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
   return left.length === right.length
@@ -341,6 +314,7 @@ function executablePolicyMode(
 function exactPreparation(input: Parameters<PrepareExecution>[0]): void {
   const {
     additionalAuthorityResume,
+    humanResume,
     occurrence,
     predispatch,
     policy,
@@ -360,24 +334,40 @@ function exactPreparation(input: Parameters<PrepareExecution>[0]): void {
       && policy.shadowBehavior !== "strict")
     || policy.revision !== reference.policyRevision
     || !executablePolicyMode(policy.mode)
-    || (policy.mode === "shadow_encryption"
-      ? occurrence.task.contentRepresentation !== "dual"
-      : policy.mode !== "encrypted_only"
-        || occurrence.task.contentRepresentation !== "protected")
+    || !protectedTaskDefinitionSupportsPolicy(
+      occurrence.task.contentRepresentation,
+      policy.mode,
+    )
     || reference.taskId !== occurrence.task.id
     || reference.taskRunId !== occurrence.run.id
     || reference.inputObjectId !== occurrence.task.cryptoObjectId
+    || reference.executionSegment > 1 && input.checkpointAadBinding === undefined
+    || input.checkpointAadBinding !== undefined && (
+      parseProtectedTaskCheckpointAadBinding(input.checkpointAadBinding) === null
+      || input.checkpointAadBinding.namespaceId !== occurrence.task.contentNamespaceId
+      || input.checkpointAadBinding.policyRevision > policy.revision
+      || reference.executionSegment === 1)
+    || input.checkpointResume !== undefined && input.checkpointResume !== true
     || (reference.executionSegment === 1
       ? reference.authorizationRequestId
           !== `task-run-authorization:${occurrence.run.id}`
         || "resumeContinuationFingerprint" in reference
         || "resumeAcceptanceId" in reference
         || additionalAuthorityResume !== undefined
-      : !("resumeContinuationFingerprint" in reference)
-        || "resumeAcceptanceId" in reference
-        || additionalAuthorityResume === undefined
-        || additionalAuthorityResume.authorizationRequestId
-          !== reference.authorizationRequestId)
+        || humanResume !== undefined
+        || input.checkpointResume !== undefined
+      : "resumeAcceptanceId" in reference
+        ? "resumeContinuationFingerprint" in reference
+          || additionalAuthorityResume !== undefined
+          || humanResume === undefined
+          || input.checkpointResume !== undefined
+        : !("resumeContinuationFingerprint" in reference)
+          || humanResume !== undefined
+          || (input.checkpointResume === true
+            ? additionalAuthorityResume !== undefined
+              || reference.authorizationRequestId !== `task-checkpoint-continuation:${occurrence.run.id}:${reference.executionSegment}:${reference.resumeContinuationFingerprint}`
+            : additionalAuthorityResume === undefined
+              || additionalAuthorityResume.authorizationRequestId !== reference.authorizationRequestId))
     || !(input.stableRoutingDigest instanceof Uint8Array)
     || input.stableRoutingDigest.length !== 32) {
     throw new TypeError("Protected Task fixed Memory preparation is not exact");
@@ -530,7 +520,7 @@ function memoryAuthority(input: Readonly<{
   }
   if (isNamespaceMemoryEnvelope(envelope)) {
     if (input.scopeMemory !== undefined
-      || envelope.writableNamespaces.length !== 1) {
+      || envelope.writableNamespaces.length === 0) {
       throw new TypeError("Protected Task fixed Namespace Memory is unavailable");
     }
     return Object.freeze({
@@ -656,8 +646,15 @@ function exactExecutionContext(
     || !Array.isArray(value.roomRoster)
     || value.toolWhitelist?.includes("security_scan") === true
     || value.resume !== undefined
+    || value.protectedTaskHumanResume !== undefined
     || value.continueFromCheckpoint === true
-    || value.awaitReply !== undefined) {
+    || value.awaitReply !== undefined
+    || (value.protectedRepoDocsExecutionPort !== undefined
+      && (typeof value.protectedRepoDocsExecutionPort.plan !== "function"
+        || typeof value.protectedRepoDocsExecutionPort.execute !== "function"
+        || typeof value.protectedRepoDocsExecutionPort.inspect !== "function"))
+    || (value.createProtectedRepoDocsProjectFilePort !== undefined
+      && typeof value.createProtectedRepoDocsProjectFilePort !== "function")) {
     throw new TypeError("Protected Task fixed Memory execution context is invalid");
   }
   return Object.freeze({
@@ -678,17 +675,24 @@ function exactExecutionContext(
   });
 }
 
-function assertNativeProtectedMetadata(
+function openFixedProtectedMetadata(
   metadata: TaskPayloadV1["protectedMetadata"],
-): void {
+  repoDocsSelection?: ProtectedTaskRepoDocsSelection,
+): ProtectedRepoDocsOpenedSelection | undefined {
   const allowed = new Set(["preparation", "lastInterruption"]);
-  if (Reflect.ownKeys(metadata).some(key =>
-    typeof key !== "string" || !allowed.has(key)
-  )) {
+  if (repoDocsSelection === undefined) {
+    if (!Reflect.ownKeys(metadata).some(key =>
+      typeof key !== "string" || !allowed.has(key)
+    )) return undefined;
     throw new TypeError(
       "Protected Task fixed Memory definition requires a specialized route",
     );
   }
+  const opened = openProtectedTaskRepoDocsSelection(repoDocsSelection, metadata);
+  if (opened === null) {
+    throw new TypeError("Protected repo docs definition changed");
+  }
+  return opened;
 }
 
 /**
@@ -698,6 +702,7 @@ function assertNativeProtectedMetadata(
 export function createProtectedTaskNativeFixedMemorySegment(
   input: ProtectedTaskNativeFixedMemorySegmentInput,
   overrides: Partial<Dependencies> = {},
+  options: Readonly<{ repoDocsSelection?: ProtectedTaskRepoDocsSelection }> = {},
 ): PrepareExecution {
   if (input.serverScope.trim().length === 0
     || input.product.handle.role !== "nautilo"
@@ -708,7 +713,9 @@ export function createProtectedTaskNativeFixedMemorySegment(
   const now = input.now ?? Date.now;
   const loadDefinition = dependencies.createDefinitionLoader(
     {},
-    { requireNativeExecution: true },
+    options.repoDocsSelection === undefined
+      ? { requireNativeExecution: true }
+      : { requireRepoDocsSelection: options.repoDocsSelection },
   );
 
   return preparation => {
@@ -718,6 +725,20 @@ export function createProtectedTaskNativeFixedMemorySegment(
     const policy = Object.freeze({ ...preparation.policy });
     const reference = Object.freeze({ ...preparation.reference });
     const stableRoutingDigest = preparation.stableRoutingDigest.slice();
+    const checkpointAadBinding = preparation.checkpointAadBinding === undefined
+      ? undefined : Object.freeze({ ...preparation.checkpointAadBinding });
+    const checkpointPauseController = createProtectedTaskCheckpointPauseController();
+    let checkpointPauseRequestId: string | null = null;
+    const requestCheckpointPause: NonNullable<TaskRuntimeGrantClaimPlan["requestCheckpointPause"]> = (reason, requestId) => {
+      if (reason !== "grant_refresh" && (typeof requestId !== "string"
+        || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(requestId))
+        || reason === "grant_refresh" && requestId !== undefined) return false;
+      if (!checkpointPauseController.request(reason)) return false;
+      checkpointPauseRequestId = requestId ?? null;
+      return true;
+    };
+    const humanResume = preparation.humanResume === undefined
+      ? undefined : frozenClone(preparation.humanResume);
     const additionalAuthorityResume = preparation.additionalAuthorityResume
       === undefined
       ? undefined
@@ -737,6 +758,7 @@ export function createProtectedTaskNativeFixedMemorySegment(
       throw new TypeError("Protected Task fixed Scope Memory identity is unavailable");
     }
 
+    const issuedSegmentTokens = new WeakSet<object>();
     const executor: TaskRuntimeGrantClaimPlan["executor"] = async function* (
       transientInput,
       jobId,
@@ -749,12 +771,16 @@ export function createProtectedTaskNativeFixedMemorySegment(
         throw new TypeError("Protected Task fixed Memory Job identity changed");
       }
       const token = exactExecutorInput(transientInput, occurrence, predispatch);
+      if (!issuedSegmentTokens.has(token)) {
+        throw new TypeError("Protected Task fixed Memory segment was reused or not issued");
+      }
+      issuedSegmentTokens.delete(token);
       await token.run(transientInput, jobId, jobSignal);
       yield* [];
     };
 
     const openTransientInput: TaskRuntimeGrantClaimPlan["openTransientInput"] =
-      grant => {
+      async grant => {
         if (grant.occurrence.run.status !== "running"
           || typeof grant.occurrence.run.jobId !== "string"
           || grant.occurrence.run.jobId.length === 0
@@ -771,6 +797,14 @@ export function createProtectedTaskNativeFixedMemorySegment(
           evidence: grant.evidence,
           signal: grant.signal,
         });
+        if (input.localExecutionReadyBeforeStart !== undefined
+          && !await input.localExecutionReadyBeforeStart({
+            occurrence: runningOccurrence,
+            signal: grant.signal,
+          })) {
+          throw new ProtectedTaskExecutionDidNotBeginError();
+        }
+        grant.signal.throwIfAborted();
         const subject = subjectFromRecord(runningOccurrence, grant.record);
         const authority = memoryAuthority({
           occurrence: runningOccurrence,
@@ -810,10 +844,14 @@ export function createProtectedTaskNativeFixedMemorySegment(
           if (descriptorBytes === null) {
             throw new TypeError("Protected Task fixed Memory request is unavailable");
           }
-          const request = dependencies.decodeRequest(descriptorBytes);
+          const request = dependencies.decodeRequest(descriptorBytes, input.crypto);
           if (request === null) {
             throw new TypeError("Protected Task fixed Memory request is unavailable");
           }
+          const closeRefresh = scheduleProtectedTaskCheckpointRefresh({
+            expiresAt: grant.evidence.expiresAt, signal,
+            requestPause: () => requestCheckpointPause("grant_refresh"),
+          }, { now, schedule: (callback, delayMs) => setTimeout(callback, delayMs), cancel: clearTimeout });
           try {
             exactRequest({ occurrence: runningOccurrence, reference,
               evidence: grant.evidence, request });
@@ -857,6 +895,7 @@ export function createProtectedTaskNativeFixedMemorySegment(
                 );
               }
             };
+            let failurePhase: ProtectedTaskFixedMemoryFailurePhase = "PTFMS001";
             const outcome = await Promise.resolve().then(() =>
               dependencies.openDefinition({
                 restricted: input.restricted,
@@ -866,27 +905,63 @@ export function createProtectedTaskNativeFixedMemorySegment(
                 domains: grant.domains,
                 signal,
                 loadCurrentOccurrence: () => loadDefinition(current),
+                resolveForegroundAgentAcceptedExecutionEvidence: principal =>
+                  createPostgresForegroundAgentAcceptedExecutionEvidenceResolver({
+                    product: input.product.handle,
+                    crypto: input.crypto,
+                    rejectInvalidSelectedEvidence: true,
+                  })(principal),
+                resolveTaskDefinitionForegroundAuthorization: async evidence => {
+                  const resolver = await createProtectedTaskDefinitionForegroundAuthorizationResolver({
+                    product: input.product,
+                    handle: await verifyCryptoPostgresHandle(input.restricted),
+                    crypto: input.crypto, requesterHumanId: subject.humanActorId,
+                    task: runningOccurrence.task,
+                  });
+                  return resolver === null ? null : resolver(evidence);
+                },
                 execute: async payload => {
-                  assertNativeProtectedMetadata(payload.protectedMetadata);
+                  const repoDocs = openFixedProtectedMetadata(
+                    payload.protectedMetadata,
+                    options.repoDocsSelection,
+                  );
+                  failurePhase = "PTFMS002";
                   const context = exactExecutionContext(
                     await input.resolveExecutionContext({
                       occurrence: runningOccurrence,
                       predispatch,
                       protectedMetadata: payload.protectedMetadata,
+                      ...(repoDocs === undefined ? {} : { repoDocs }),
+                      signal,
+                      assertCurrentTaskAuthority,
                     }),
                   );
+                  if ((repoDocs === undefined)
+                    !== (context.protectedRepoDocsExecutionPort === undefined)
+                    || (repoDocs === undefined)
+                    !== (context.createProtectedRepoDocsProjectFilePort === undefined)) {
+                    throw new TypeError("Protected repo docs execution port is unavailable");
+                  }
+                  const {
+                    protectedRepoDocsExecutionPort,
+                    createProtectedRepoDocsProjectFilePort,
+                    ...baseExecutionContext
+                  } = context;
                   const humanTurnId = runningOccurrence.run.id;
+                  failurePhase = "PTFMS003";
                   return dependencies.withSigner({
                     restricted: input.restricted,
                     crypto: input.crypto,
                     evidence: grant.evidence,
                     domains: grant.domains,
                     use: async (signer, history) => {
+                      failurePhase = "PTFMS004";
                       const publish = await input.createTranscriptPublisher({
                         occurrence: runningOccurrence,
                         record: grant.record,
                         request,
                         current,
+                        policy,
                         humanTurnId,
                         assertCurrentTaskAuthority,
                         domains: grant.domains,
@@ -920,6 +995,7 @@ export function createProtectedTaskNativeFixedMemorySegment(
                         );
                         return transcriptClose;
                       };
+                      failurePhase = "PTFMS005";
                       const segmentOutcome = await Promise.resolve().then(() =>
                         dependencies.withMemoryRepository({
                           authority,
@@ -932,9 +1008,12 @@ export function createProtectedTaskNativeFixedMemorySegment(
                           agentProduct: input.agentProduct,
                           owner: input.owner,
                           embedding: input.embedding,
-                          execute: repository => dependencies.withCheckpointSaver({
+                          execute: (repository, projection, access) => {
+                            failurePhase = "PTFMS006";
+                            return dependencies.withCheckpointSaver({
                             restricted: input.restricted,
                             crypto: input.crypto,
+                            owner: input.owner,
                             serverScope: input.serverScope,
                             evidence: grant.evidence,
                             identity: {
@@ -950,6 +1029,7 @@ export function createProtectedTaskNativeFixedMemorySegment(
                               expectedPolicyRevision: policy.revision,
                               graphThreadId: runningOccurrence.run.graphThreadId,
                             },
+                            ...(checkpointAadBinding === undefined ? {} : { checkpointAadBinding }),
                             domains: grant.domains,
                             signal,
                             now,
@@ -959,11 +1039,13 @@ export function createProtectedTaskNativeFixedMemorySegment(
                               const memoryHandoff: MemoryHandoff = Object.freeze({
                                 search: repository,
                                 repository,
+                                projection,
+                                access,
                                 fullEncryptionOnly:
                                   policy.mode === "encrypted_only",
                               });
                               const segment: RunProtectedTaskNativeSegmentInput = {
-                                mode: "native",
+                                mode: repoDocs === undefined ? "native" : "repo_docs",
                                 taskId: runningOccurrence.task.id,
                                 taskRunId: runningOccurrence.run.id,
                                 graphThreadId:
@@ -974,7 +1056,7 @@ export function createProtectedTaskNativeFixedMemorySegment(
                                 memoryHandoff,
                                 transientInput,
                                 execution: Object.freeze({
-                                  ...context,
+                                  ...baseExecutionContext,
                                   parentThreadId:
                                     runningOccurrence.task.callingRoomId === null
                                       ? `task:${runningOccurrence.task.id}`
@@ -984,6 +1066,14 @@ export function createProtectedTaskNativeFixedMemorySegment(
                                   causalHumanUserId:
                                     runningOccurrence.task.requestorId,
                                   brief: payload.prompt,
+                                  ...(repoDocs === undefined ? {} : {
+                                    protectedRepoDocs: Object.freeze({
+                                      selection: repoDocs,
+                                      executionPort: protectedRepoDocsExecutionPort!,
+                                      createProjectFilePort:
+                                        createProtectedRepoDocsProjectFilePort!,
+                                    }),
+                                  }),
                                   ...(payload.expectedOutput === null
                                     ? {}
                                     : { expectedOutput: payload.expectedOutput }),
@@ -993,6 +1083,7 @@ export function createProtectedTaskNativeFixedMemorySegment(
                                   ...(additionalAuthorityResume === undefined
                                     ? {}
                                     : { resume: additionalAuthorityResume }),
+
                                   ...(runningOccurrence.task.callingRoomId === null
                                     ? {}
                                     : {
@@ -1001,8 +1092,64 @@ export function createProtectedTaskNativeFixedMemorySegment(
                                       }),
                                 }),
                               };
+                              const runSegment = (binding?: ProtectedTaskHumanResumeBindingV1) => {
+                                failurePhase = "PTFMS007";
+                                return dependencies.runSegment({ ...segment,
+                                  protectedTaskCheckpointPauseController: checkpointPauseController,
+                                  execution: {
+                                  ...segment.execution,
+                                  ...(preparation.checkpointResume === true ? { continueFromCheckpoint: true } : {}),
+                                  ...(binding === undefined ? {} : { protectedTaskHumanResume: binding }),
+                                } });
+                              };
                               const segmentOutcome = await Promise.resolve()
-                                .then(() => dependencies.runSegment(segment))
+                                .then(async () => {
+                                  if (humanResume?.kind !== "await_reply") return runSegment(humanResume);
+                                  type SegmentResult = Awaited<ReturnType<typeof runSegment>>;
+                                  const resolved = await input.owner.read<never, SegmentResult, SegmentResult>({
+                                    ordinary: () => { throw new ClassifiedDataOperationError(
+                                      "authority", "Protected Task reply requires current encrypted authority",
+                                    ); },
+                                    protected: async () => {
+                                      const resolver = dependencies.createReplyAuthority({
+                                        policy,
+                                        occurrence: runningOccurrence, evidence: grant.evidence,
+                                        acceptedBy: humanResume.acceptedBy, message: humanResume.message,
+                                        runner: input.product.canonicalRunner, restricted: input.restricted,
+                                        signal, assertCurrentTaskAuthority,
+                                      });
+                                      const authority = await resolver.readCurrent();
+                                      if (authority === null) throw new ClassifiedDataOperationError(
+                                        "authority", "Protected Task reply authority is unavailable",
+                                      );
+                                      const handle = await dependencies.verifyReplyHandle(input.restricted);
+                                      return dependencies.openReply<SegmentResult>({
+                                        restricted: input.restricted, crypto: input.crypto,
+                                        serverScope: input.serverScope, evidence: grant.evidence,
+                                        domains: grant.domains, signal,
+                                        target: dependencies.replyTarget(authority),
+                                        resolveCurrentAuthority: () => resolver.readCurrent(),
+                                        resolveHistoricalHumanSigner:
+                                          createProtectedTaskHistoricalHumanReplySignerResolver(handle),
+                                        execute: (reply, assertCurrentReply) => {
+                                          if (reply.role !== "user" || typeof reply.content !== "string"
+                                            || reply.content.trim().length === 0
+                                            || reply.toolCalls !== undefined || reply.toolName !== undefined) {
+                                            throw new TypeError("Protected Task reply payload is invalid");
+                                          }
+                                          return assertCurrentReply().then(() => runSegment({
+                                            kind: "await_reply", interruptId: humanResume.interruptId,
+                                            reply: reply.content, fromUserId: humanResume.message.sourceUserId,
+                                          }));
+                                        },
+                                      });
+                                    },
+                                    consumeOrdinary: value => value,
+                                    consumeProtected: value => value,
+                                    classifyFailure: () => "integrity",
+                                  });
+                                  return resolved.value;
+                                })
                                 .then(
                                   value => ({ status: "fulfilled", value } as const),
                                   (error: unknown) =>
@@ -1014,7 +1161,8 @@ export function createProtectedTaskNativeFixedMemorySegment(
                               }
                               return segmentOutcome.value;
                             },
-                          }),
+                          });
+                          },
                         })).then(
                         value => ({ status: "fulfilled", value } as const),
                         (error: unknown) =>
@@ -1034,18 +1182,54 @@ export function createProtectedTaskNativeFixedMemorySegment(
             );
             if (outcome.status === "rejected") {
               signal.throwIfAborted();
-              await publication.publish(createProtectedTaskFailurePayload());
+              log(`[task-observer] protected fixed Memory segment rejected code=${failurePhase}`);
+              try {
+                await publication.publish(createProtectedTaskFailurePayload());
+              } catch (error) {
+                log(`[task-observer] protected fixed Memory failure publication rejected code=PTFMS008 source=${failurePhase}`);
+                throw error;
+              }
               return;
             }
             const terminalPayload = outcome.value.value;
             if ("status" in terminalPayload) {
+              if (terminalPayload.status === "checkpoint_paused") {
+                signal.throwIfAborted();
+                if (terminalPayload.threadId !== runningOccurrence.run.graphThreadId
+                  || terminalPayload.reason !== checkpointPauseController.currentRequestedReason()) {
+                  throw new TypeError("Protected Task checkpoint pause is not exact");
+                }
+                await publication.park(parkedAt => input.parkSegment(Object.freeze({
+                  park: Object.freeze({
+                    taskId: runningOccurrence.task.id, taskRunId: runningOccurrence.run.id,
+                    graphThreadId: runningOccurrence.run.graphThreadId, jobId,
+                    generation: grant.record.snapshot.recipientGeneration,
+                    executionSegment: reference.executionSegment,
+                    interrupts: Object.freeze([] as const), parkedAt: new Date(parkedAt), jobReference: reference,
+                    checkpointAadBinding: outcome.value.checkpointAadBinding,
+                  }),
+                  segment: Object.freeze({ route: "native_langgraph_v1" as const, checkpoint: outcome.value.manifest }),
+                  continuation: Object.freeze({ kind: "checkpoint_safe_v1" as const,
+                    reason: terminalPayload.reason, effectDisposition: "none_v1" as const }),
+                  pauseRequestId: checkpointPauseRequestId,
+                  stableRoutingDigest: Uint8Array.from(stableRoutingDigest),
+                })));
+                return;
+              }
               if (terminalPayload.status === "aborted") {
                 signal.throwIfAborted();
               }
-              if (terminalPayload.status === "interrupted"
-                && terminalPayload.additionalAuthority !== undefined) {
+              if (terminalPayload.status === "interrupted") {
                 signal.throwIfAborted();
                 const additionalAuthority = terminalPayload.additionalAuthority;
+                if (terminalPayload.threadId !== runningOccurrence.run.graphThreadId
+                  || terminalPayload.interruptCoordinates.length === 0
+                  || (additionalAuthority === undefined
+                    && terminalPayload.interruptCoordinates.some(
+                      coordinate => coordinate.kind === "additional_authority",
+                    ))) {
+                  throw new TypeError("Protected Task interruption is not exact");
+                }
                 await publication.park(parkedAt => {
                   if (!Number.isSafeInteger(parkedAt) || parkedAt < 0) {
                     throw new TypeError(
@@ -1063,15 +1247,18 @@ export function createProtectedTaskNativeFixedMemorySegment(
                       interrupts: terminalPayload.interruptCoordinates,
                       parkedAt: new Date(parkedAt),
                       jobReference: reference,
+                      checkpointAadBinding: outcome.value.checkpointAadBinding,
                     }),
                     segment: Object.freeze({
                       route: "native_langgraph_v1" as const,
                       checkpoint: outcome.value.manifest,
                     }),
-                    continuation: Object.freeze({
-                      ...additionalAuthority,
-                      stableRoutingDigest: stableRoutingDigest.slice(),
-                    }),
+                    ...(additionalAuthority === undefined
+                      ? { stableRoutingDigest: stableRoutingDigest.slice() }
+                      : { continuation: Object.freeze({
+                          ...additionalAuthority,
+                          stableRoutingDigest: stableRoutingDigest.slice(),
+                        }) }),
                   }));
                 });
                 return;
@@ -1083,13 +1270,15 @@ export function createProtectedTaskNativeFixedMemorySegment(
             signal.throwIfAborted();
             await publication.publish(terminalPayload);
           } finally {
+            closeRefresh();
             dependencies.destroyRequest(request);
           }
         };
         const token = Object.freeze({ run });
+        issuedSegmentTokens.add(token);
         return Promise.resolve(Object.freeze({ [TRANSIENT_SEGMENT]: token }));
       };
 
-    return Promise.resolve(Object.freeze({ executor, openTransientInput }));
+    return Promise.resolve(Object.freeze({ executor, openTransientInput, requestCheckpointPause }));
   };
 }

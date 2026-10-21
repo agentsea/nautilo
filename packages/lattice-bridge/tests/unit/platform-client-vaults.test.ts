@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -7,6 +7,54 @@ import {
   type ElectronSafeStoragePort,
 } from "../../src/client/electron/index.ts";
 import { runClientProfileVaultConformance } from "../../src/testing/index.ts";
+import { BrowserClientProfileVault } from "../../src/client/browser/index.ts";
+
+test("Browser lock stays safe when encrypted storage is unsupported", async () => {
+  const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  Object.defineProperty(globalThis, "navigator", { configurable: true, value: {} });
+  try {
+    const vault = new BrowserClientProfileVault();
+    await vault.lock();
+    expect(await vault.availability()).toEqual({ status: "locked" });
+  } finally {
+    if (originalNavigator === undefined) Reflect.deleteProperty(globalThis, "navigator");
+    else Object.defineProperty(globalThis, "navigator", originalNavigator);
+  }
+});
+
+test("Browser lock waits behind pending profile storage operations", async () => {
+  const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  let releaseOperation!: () => void;
+  const operationHeld = new Promise<void>((resolve) => { releaseOperation = resolve; });
+  let requestedExclusiveLock = false;
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: {
+      locks: {
+        request: (_name: string, options: { mode: string }, use: () => Promise<void>) => {
+          requestedExclusiveLock = options.mode === "exclusive";
+          return operationHeld.then(use);
+        },
+      },
+    },
+  });
+  try {
+    const vault = new BrowserClientProfileVault();
+    let finished = false;
+    const locking = vault.lock().then(() => { finished = true; });
+    await Promise.resolve();
+    expect(requestedExclusiveLock).toBe(true);
+    expect(finished).toBe(false);
+    releaseOperation();
+    await locking;
+    expect(finished).toBe(true);
+    expect(await vault.availability()).toEqual({ status: "locked" });
+  } finally {
+    releaseOperation();
+    if (originalNavigator === undefined) Reflect.deleteProperty(globalThis, "navigator");
+    else Object.defineProperty(globalThis, "navigator", originalNavigator);
+  }
+});
 
 function fakeSafeStorage(
   backend = "keychain",
@@ -33,7 +81,7 @@ describe("Electron client profile vault", () => {
         safeStorage: fakeSafeStorage(),
       });
       const report = await runClientProfileVaultConformance(() => vault);
-      expect(report.checks).toHaveLength(11);
+      expect(report.checks).toHaveLength(12);
 
       const persisted = await readFile(
         join(directory, "client-profile-vault.json"),
@@ -114,6 +162,56 @@ describe("Electron client profile vault", () => {
       expect(await loser.withOpenProfile(coordinates,
         (bytes) => new TextDecoder().decode(bytes)))
         .toBe(winningProfile);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects a corrupt staged recovery record without rewriting the vault", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "nautilo-electron-vault-"));
+    try {
+      const vault = createElectronClientProfileVault({
+        directory,
+        safeStorage: fakeSafeStorage(),
+      });
+      expect((await vault.unlock()).status).toBe("available");
+      const coordinates = {
+        serverScope: "https://nautilo.test",
+        userId: "10000000-0000-4000-8000-000000000001",
+        humanActorId: "20000000-0000-4000-8000-000000000001",
+        profileId: "profile_electron_recovery_corruption",
+        deviceId: "device_electron_recovery_corruption",
+        installationLineageDigest: "ab".repeat(32),
+      };
+      const publicState = {
+        clientKind: "electron" as const,
+        publicFingerprint: "cd".repeat(32),
+      };
+      const activeBytes = new TextEncoder().encode("active-profile");
+      const candidateBytes = new TextEncoder().encode("candidate-profile");
+      await vault.stageProfile({ coordinates, stageId: "active", generation: 1,
+        profileBytes: activeBytes, publicState });
+      await vault.activateProfile(coordinates, "active");
+      await vault.stageProfile({ coordinates, stageId: "candidate", generation: 2,
+        profileBytes: candidateBytes, publicState });
+
+      const path = join(directory, "client-profile-vault.json");
+      const document = JSON.parse(await readFile(path, "utf8")) as {
+        records: Array<{ lifecycle: string; ciphertextBase64: string }>;
+      };
+      const staged = document.records.find((record) => record.lifecycle === "staged")!;
+      staged.ciphertextBase64 = `${staged.ciphertextBase64[0] === "A" ? "B" : "A"}${staged.ciphertextBase64.slice(1)}`;
+      await writeFile(path, JSON.stringify(document));
+      const corruptDocument = await readFile(path, "utf8");
+
+      expect(vault.recoverExactStagedProfile!({
+        coordinates,
+        expectedActive: { generation: 1, profileBytes: activeBytes, publicState },
+        candidate: { generation: 2, profileBytes: candidateBytes, publicState },
+      })).rejects.toThrow();
+      expect(await readFile(path, "utf8")).toBe(corruptDocument);
+      expect(activeBytes).toEqual(new TextEncoder().encode("active-profile"));
+      expect(candidateBytes).toEqual(new TextEncoder().encode("candidate-profile"));
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

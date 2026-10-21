@@ -2,21 +2,39 @@ import { describe, expect, test } from "bun:test";
 import {
   LatticeCrypto,
   accessRevision,
+  agentId,
+  agentRuntimeGeneration,
   authorizationRevision,
+  createDomainForegroundAuthorizationPlan,
+  createTaskRuntimeBackgroundAuthorizationRequest,
+  createTaskRuntimeCommonObjectAccessManifest,
+  createTaskRuntimeSignerAuthorization,
   cryptoDeviceId,
+  deriveAgentRuntimeObjectSignerPublic,
+  encryptObjectPayload,
   humanId,
+  mintDomainForegroundAuthorization,
   namespaceGeneration,
   namespaceId,
   objectId as latticeObjectId,
   prepareHumanAiReadableLiveShadowMessageRequest,
   prepareHumanPeerLiveShadowMessageRequest,
+  wrapObjectDekForNamespace,
   unixTimestamp,
   encodeHumanAiReadableLiveShadowMessagePlan,
+  type AgentRuntimeKeyGeneration,
 } from "@nautilo/lattice-crypto";
 import {
   deriveHumanMessageEditCryptoObjectIdV1,
+  encodeTaskRuntimeBackgroundAuthorizationRequestV2,
+  encodeEncryptedPayloadV2,
   encodeHumanPeerLiveShadowMessagePlanV1,
+  encodeNamespaceObjectEnvelopeV2,
+  serializeDomainForegroundAuthorizationPlanV2,
+  serializeDomainForegroundAuthorizationV2,
 } from "@nautilo/lattice-crypto/wire";
+import { createTaskRuntimeBackgroundAuthorizationRequestV1 } from
+  "@nautilo/lattice-crypto/background";
 import { seededRng } from "@nautilo/lattice-crypto/testing";
 
 import {
@@ -90,6 +108,8 @@ const NAMESPACE = "27500000-0000-4000-8000-000000000002";
 const HUMAN = "27500000-0000-4000-8000-000000000003";
 const SESSION = "27500000-0000-4000-8000-000000000004";
 const ORIGINAL_AGENT = "27500000-0000-4000-8000-000000000009";
+const TASK = "27500000-0000-4000-8000-000000000010";
+const TASK_RUN = "27500000-0000-4000-8000-000000000011";
 const DEVICE = "device:m275:browser";
 const COORDINATES: ClientProfileCoordinates = Object.freeze({
   serverScope: "https://m275.test",
@@ -383,6 +403,7 @@ async function fixture(options: Readonly<{
           && request.trustedDeviceRevision === 4
           ? signing.publicKey.slice()
           : null,
+      resolveCurrentOwnDeviceGeneration: async () => 1,
       createProfileStageId: () => "stage:m275:signer",
       ...(onDiagnostic === undefined ? {} : { onDiagnostic }),
     });
@@ -409,6 +430,260 @@ async function fixture(options: Readonly<{
     signing,
     messageSigning,
     messageDeviceId,
+  };
+}
+
+async function taskRuntimeHistoryFixture(
+  representationMode: "ordinary-and-protected" | "protected-only",
+) {
+  const state = await fixture();
+  const runtime: AgentRuntimeKeyGeneration = Object.freeze({
+    agentId: agentId(ORIGINAL_AGENT),
+    keyClass: "runtime" as const,
+    generation: agentRuntimeGeneration(0),
+    key: new Uint8Array(32).fill(0x71),
+  });
+  const signer = deriveAgentRuntimeObjectSignerPublic(state.crypto, runtime);
+  const recipient = await state.crypto.deriveEncryptionKeyPair(
+    new Uint8Array(32).fill(0x72),
+  );
+  const domain = Object.freeze({
+    domainId: "domain:m275:task-runtime",
+    sourceNamespaceId: NAMESPACE,
+    participantDigest: new Uint8Array(32).fill(0x73),
+    participantCount: 1,
+    keyClass: "ai" as const,
+    domainKeyGeneration: 1,
+    authorizationRevision: authorizationRevision(1),
+    headDigest: new Uint8Array(32).fill(0x74),
+    activeNamespaceBindingSetDigest: new Uint8Array(32).fill(0x75),
+    activeNamespaceBindingCount: 1,
+  });
+  const plan = createDomainForegroundAuthorizationPlan(state.crypto, {
+    authorizationId: "history:m275:task-runtime-request",
+    policyRevision: 1,
+    sessionId: SESSION,
+    roomId: ROOM,
+    subjectHumanId: humanId(HUMAN),
+    committerDeviceId: cryptoDeviceId(DEVICE),
+    committerDeviceSigningGeneration: 1,
+    hostAuthorizationRevision: authorizationRevision(7),
+    recipientKind: "runtime",
+    recipientPrincipalId: "nautilo_task_runtime",
+    recipientAuthorizationRevision: authorizationRevision(0),
+    recipientRuntimeGeneration: 0,
+    recipientKeyId: "history:m275:task-runtime-recipient",
+    operations: ["decrypt", "encrypt"],
+    issuedAt: NOW - 1_000,
+    deadlineAt: NOW + 60_000,
+    maximumSecretBytes: 4_096,
+    domains: [domain],
+  });
+  const baseRequest = createTaskRuntimeBackgroundAuthorizationRequestV1({
+    requestId: plan.authorizationId,
+    workId: TASK_RUN,
+    workKind: "task.execute",
+    workPurpose: "task.execute",
+    recipientGeneration: 0,
+    episodeId: SESSION,
+    sourceRoomId: ROOM,
+    recipientKeyId: plan.recipientKeyId,
+    recipientPublicKey: recipient.publicKey,
+    authorizationPlan: plan,
+    issuedAt: NOW - 1_000,
+    deadlineAt: NOW + 60_000,
+  });
+  const resultObjectId = `task-run-result:v1:${Buffer.from(state.crypto.hash(
+    new TextEncoder().encode(
+      `nautilo/task-run-result-crypto-object/v1\n${TASK}\n${TASK_RUN}\n1`,
+    ),
+  )).toString("hex")}`;
+  const request = createTaskRuntimeBackgroundAuthorizationRequest(
+    state.crypto,
+    {
+      baseRequest,
+      work: {
+        taskId: TASK,
+        taskRunId: TASK_RUN,
+        inputObjectId: `task-definition:v1:${"b".repeat(64)}`,
+        resultObjectId,
+        executionSegment: 1,
+        workIdentityHash: new Uint8Array(32).fill(0x76),
+      },
+      signer: {
+        agentId: signer.principal.agentId,
+        runtimeGeneration: 0,
+        signerKeyId: signer.principal.signerKeyId,
+        signerPublicKey: signer.publicKey,
+      },
+      deviceGroupHead: {
+        serverInstanceId: "history:m275:server",
+        lineageGeneration: 1,
+        epoch: 1,
+        headDigest: new Uint8Array(32).fill(0x77),
+        signingPublicKeyHash: state.crypto.hash(state.signing.publicKey),
+      },
+      namespaceRequirements: [{
+        ordinal: 0,
+        namespaceId: NAMESPACE,
+        domainId: domain.domainId,
+        operations: ["decrypt", "encrypt"],
+        expectedAccessRevision: 2,
+        expectedPolicyRevision: 1,
+      }],
+    },
+  );
+  const authorization = await mintDomainForegroundAuthorization(state.crypto, {
+    plan,
+    domains: [{ ...domain, domainKey: new Uint8Array(32).fill(0x78) }],
+    committerDeviceSigningPrivateKey: state.signing.privateKey,
+    recipientEncryptionPublicKey: recipient.publicKey,
+  });
+    const requestBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV2(
+    state.crypto,
+    request,
+  );
+  const authorizationBytes = serializeDomainForegroundAuthorizationV2(
+    authorization,
+  );
+  const requestHash = state.crypto.hash(requestBytes);
+  const authorizationHash = state.crypto.hash(authorizationBytes);
+  const certificateBytes = createTaskRuntimeSignerAuthorization(state.crypto, {
+    requestBytes,
+    authorizationBytes,
+    expectedAuthorizationPlanBytes:
+      serializeDomainForegroundAuthorizationPlanV2(plan),
+    expectedAuthorizationHash: authorizationHash,
+    issuerSigningPrivateKey: state.signing.privateKey,
+  });
+  const payload: MessagePayloadV2 = Object.freeze({
+    role: "assistant",
+    content: `certified Task Runtime ${representationMode}`,
+  });
+  const messageId = representationMode === "ordinary-and-protected" ? 281 : 282;
+  const objectId = deriveMessageCryptoObjectIdV2({
+    sessionId: SESSION,
+    messageId,
+    revision: 0,
+  });
+  const plaintext = encodeMessagePayloadV2(payload);
+  const encrypted = encryptObjectPayload(state.crypto, {
+    objectId: latticeObjectId(objectId),
+    keyClass: "ai",
+    objectType: "conversation_message",
+    createdAt: unixTimestamp(NOW),
+  }, plaintext);
+  const envelope = wrapObjectDekForNamespace(
+    state.crypto,
+    state.retained.generationKey,
+    {
+      objectId: latticeObjectId(objectId),
+      namespaceId: namespaceId(NAMESPACE),
+      keyClass: "ai",
+      keyGeneration: namespaceGeneration(1),
+      bindingRevisionAtWrap: accessRevision(2),
+    },
+    encrypted.dek,
+  );
+  const payloadBytes = encodeEncryptedPayloadV2(encrypted.payload);
+  const envelopeBytes = encodeNamespaceObjectEnvelopeV2(envelope);
+  const manifest = createTaskRuntimeCommonObjectAccessManifest(
+    state.crypto,
+    {
+      objectId: latticeObjectId(objectId),
+      payloadHash: state.crypto.hash(payloadBytes),
+      accessRevision: accessRevision(0),
+      previousManifestHash: null,
+      envelopeHashes: [state.crypto.hash(envelopeBytes)],
+      signer: signer.principal,
+      signerAuthorizationHash: state.crypto.hash(certificateBytes),
+      hostAuthorizationRevision: authorizationRevision(7),
+    },
+    {
+      runtime,
+      certificateBytes,
+      issuerSigningPublicKey: state.signing.publicKey,
+      expectedRequestHash: requestHash,
+      expectedAuthorizationHash: authorizationHash,
+      now: NOW,
+    },
+  );
+  const logicalMessageKey = `logical:m275:${messageId}`;
+  const protectedMessage: ConversationProtectedMessageClientDtoV2 = {
+    dtoVersion: 2,
+    projection: {
+      messageId: String(messageId),
+      logicalMessageKey,
+      sessionId: SESSION,
+      roomId: ROOM,
+      namespaceId: NAMESPACE,
+      role: "assistant",
+      createdAt: new Date(NOW).toISOString(),
+      editRevision: 0,
+      authorAgentId: ORIGINAL_AGENT,
+    },
+    protectedPayload: {
+      status: "encrypted",
+      cryptoObjectId: objectId,
+      payloadVersion: 2,
+      keyClass: "ai",
+      encryptedPayloadBytesBase64url: b64(payloadBytes),
+      accessManifestBytesBase64url: b64(manifest.bytes),
+      namespaceEnvelopeBytesBase64url: b64(envelopeBytes),
+    },
+  };
+  const representation = representationMode === "protected-only"
+    ? {
+        representationMode,
+        selectedSource: {
+          role: "assistant" as const,
+          logicalMessageKey,
+          authorAgentId: ORIGINAL_AGENT,
+        },
+      }
+    : {
+        representationMode,
+        ordinaryPayloadBytesBase64url: b64(plaintext),
+        ordinarySibling: {
+          logicalMessageKey,
+          authorAgentId: ORIGINAL_AGENT,
+          payload,
+        },
+      };
+  const record: RoomHistoryShadowRecordTransportV1 = {
+    kind: "task_runtime",
+    taskId: TASK,
+    taskRunId: TASK_RUN,
+    sessionId: SESSION,
+    messageId: String(messageId),
+    editRevision: 0,
+    namespaceGeneration: 1,
+    namespaceAccessRevision: 2,
+    namespaceHeadDigestBase64url: b64(state.retained.headDigest),
+    namespacePublicationDigestBase64url: b64(
+      state.retained.publicationDigest,
+    ),
+    namespacePublicationSetDigestBase64url: b64(
+      state.retained.publicationSetDigest,
+    ),
+    namespaceAudienceFingerprintBase64url: b64(
+      state.retained.audienceFingerprint,
+    ),
+    protectedMessage,
+    ...representation,
+  };
+  return {
+    state,
+    payload,
+    record,
+    certificateBytes,
+    input: {
+      ...state.makeInput([record]),
+      signerEvidence: [{
+        kind: "task_runtime_signer_certificate" as const,
+        evidenceBytesBase64url: b64(certificateBytes),
+      }],
+    },
   };
 }
 
@@ -668,7 +943,14 @@ async function sharedExecutionFixture(role: "assistant" | "tool") {
   const messageId = 275 + ordinal;
   const payload: MessagePayloadV2 = {
     role, content: `shared ${role} durable ciphertext`,
-    ...(role === "tool" ? { sensitiveMetadata: { toolCallId: "history-tool-call" } } : {}),
+    sensitiveMetadata: {
+      ...(role === "tool" ? { toolCallId: "history-tool-call" } : {}),
+      foregroundExecutionId: "history:shared:execution",
+      nautilo_memory_model_exposure: {
+        version: 1,
+        status: "incomplete",
+      },
+    },
   };
   const objectId = deriveLiveShadowMessageCryptoObjectIdV1({
     operationId: execution.plan.operationId, sessionId: SESSION, messageId,
@@ -1506,6 +1788,73 @@ describe("M275 Browser Room-history Shadow reader", () => {
     const result = await state.reader.reconcile(state.input);
     expect(result.verifiedCount).toBe(1);
     expect(result.records[0]).toMatchObject({ status: "verified", payload: state.payload });
+  });
+
+  test.each(["foregroundExecutionId", "nautilo_memory_model_exposure"] as const)(
+    "rejects shared Tool ordinary sibling with substituted %s",
+    async (field) => {
+      const state = await sharedExecutionFixture("tool");
+      const sibling = state.record.ordinarySibling;
+      const metadata = sibling.payload.sensitiveMetadata!;
+      const record = {
+        ...state.record,
+        ordinarySibling: {
+          ...sibling,
+          payload: {
+            ...sibling.payload,
+            sensitiveMetadata: {
+              ...metadata,
+              [field]: field === "foregroundExecutionId"
+                ? "substituted:execution"
+                : { version: 1, status: "complete", dependencies: [] },
+            },
+          },
+        },
+      } as RoomHistoryShadowRecordTransportV1;
+      const result = await state.reader.reconcile({ ...state.input, records: [record] });
+      expect(result.verifiedCount).toBe(0);
+      expect(result.records[0]).toMatchObject({
+        status: "fallback",
+        reason: "integrity_failure",
+      });
+    },
+  );
+
+  test.each(["ordinary-and-protected", "protected-only"] as const)(
+    "opens certified Task Runtime history in %s mode",
+    async (representationMode) => {
+      const value = await taskRuntimeHistoryFixture(representationMode);
+      const result = await value.state.createReader().reconcile(value.input);
+      expect(result).toMatchObject({
+        eligibleCount: 1,
+        verifiedCount: 1,
+        records: [{
+          status: "verified",
+          verification: representationMode === "protected-only"
+            ? "signed_representation_authenticated"
+            : "independent_parity",
+          payload: value.payload,
+        }],
+      });
+    },
+  );
+
+  test("rejects substituted Task Runtime certificate proof", async () => {
+    const value = await taskRuntimeHistoryFixture("protected-only");
+    const substituted = value.certificateBytes.slice();
+    substituted[substituted.length - 1] = substituted.at(-1)! ^ 1;
+    const result = await value.state.createReader().reconcile({
+      ...value.input,
+      signerEvidence: [{
+        kind: "task_runtime_signer_certificate",
+        evidenceBytesBase64url: b64(substituted),
+      }],
+    });
+    expect(result.verifiedCount).toBe(0);
+    expect(result.records[0]).toMatchObject({
+      status: "fallback",
+      reason: "integrity_failure",
+    });
   });
 
   test.each(["missing", "duplicate", "digest", "room", "author", "generation"] as const)(

@@ -9,6 +9,7 @@ import {
 import {
   extractReplyToMessageId,
   parseTranscriptToolCalls,
+  projectRoomHistoryParityMetadata,
   projectRoomHistorySelectedMessageCoordinate,
   summarizeSessionSearchSources,
   visibleTranscriptContent,
@@ -146,6 +147,36 @@ describe("Room history selected coordinates", () => {
       role: "assistant",
       fingerprint: null,
     }).logicalMessageKey).toBe("row:43");
+  });
+});
+
+describe("Room history ordinary parity metadata", () => {
+  test("projects only assistant and Tool execution/exposure siblings", () => {
+    const exposure = { version: 1, status: "incomplete" };
+    const metadata = {
+      nautilo_foreground_execution_id: "foreground:one",
+      nautilo_memory_model_exposure: exposure,
+      privateDiagnostic: "not projected",
+    };
+    expect(projectRoomHistoryParityMetadata("assistant", metadata)).toEqual({
+      foregroundExecutionId: "foreground:one",
+      modelInputExposure: exposure,
+    });
+    expect(projectRoomHistoryParityMetadata("tool", metadata)).toEqual({
+      foregroundExecutionId: "foreground:one",
+      modelInputExposure: exposure,
+    });
+    expect(projectRoomHistoryParityMetadata("user", metadata)).toEqual({});
+  });
+
+  test("does not project malformed or absent execution coordinates", () => {
+    expect(projectRoomHistoryParityMetadata("assistant", {
+      nautilo_foreground_execution_id: "",
+    })).toEqual({});
+    expect(projectRoomHistoryParityMetadata("assistant", {
+      nautilo_memory_model_exposure: { version: 1, status: "complete", dependencies: [] },
+    })).toEqual({});
+    expect(projectRoomHistoryParityMetadata("assistant", null)).toEqual({});
   });
 });
 

@@ -38,6 +38,8 @@ import type {
   HumanEditLeaseStoreResult,
   LiveShadowMessageRealtimeEventV1,
   FullEncryptionMessageRealtimeContentEventV2,
+  CodexRequestEvent,
+  CodexRequestResponse,
   RegisterHumanEditLeaseRequest,
   ReleaseHumanEditLeaseRequest,
   RenewHumanEditLeaseRequest,
@@ -123,6 +125,10 @@ type ForegroundShadowHistoryReconcileInput = Readonly<{
     BrowserRoomHistoryShadowAcknowledgementInput,
     "result"
   >;
+}>;
+type TaskContentBackfillBatchResult = Readonly<{
+  state: "more" | "waiting" | "caught_up";
+  resumeAt: number | null;
 }>;
 type MessageBackfillBatchResult = Readonly<{
   state: "more" | "waiting" | "caught_up";
@@ -2038,6 +2044,34 @@ const foregroundShadowAPI = {
     "foregroundShadow:recoverRoomPendingAttention",
     input,
   ) as Promise<RoomPendingAttentionRecoveryResponse>,
+  recoverTaskPendingAttention: (input: Readonly<{
+    clientActionSessionId: string;
+  }>) => ipcRenderer.invoke(
+    "foregroundShadow:recoverTaskPendingAttention",
+    input,
+  ) as Promise<import("@nautilo/api-client").TaskPendingAttentionRecoveryResponse>,
+  recoverProtectedTaskExternalRequests: (input: Readonly<{
+    clientActionSessionId: string;
+    requestId?: string;
+  }>) => ipcRenderer.invoke(
+    "foregroundShadow:recoverProtectedTaskExternalRequests",
+    input,
+  ) as Promise<
+    | Readonly<{ status: "ready"; entries: readonly Readonly<{
+        event: CodexRequestEvent;
+        responseCapability: string;
+      }>[] }>
+    | Readonly<{ status: "unavailable"; entries: readonly [] }>
+  >,
+  respondProtectedTaskExternalRequest: (input: Readonly<{
+    clientActionSessionId: string;
+    requestId: string;
+    responseCapability: string;
+    response: CodexRequestResponse;
+  }>) => ipcRenderer.invoke(
+    "foregroundShadow:respondProtectedTaskExternalRequest",
+    input,
+  ) as Promise<Readonly<{ status: "responded" | "unavailable" }>>,
   memory: {
     list: (options?: Readonly<{
       cursor?: string; limit?: number; includeArchive?: boolean;
@@ -2115,6 +2149,15 @@ const foregroundShadowAPI = {
     ipcRenderer.invoke(
       "foregroundShadow:messageBackfill:cancel",
     ) as Promise<void>,
+  getTaskContentBackfillProgress: () => ipcRenderer.invoke(
+    "foregroundShadow:taskContentBackfill:progress",
+  ) as ReturnType<NautiloApiClient["getTaskContentBackfillProgress"]>,
+  serviceTaskContentBackfill: () => ipcRenderer.invoke(
+    "foregroundShadow:taskContentBackfill:service",
+  ) as Promise<TaskContentBackfillBatchResult>,
+  cancelTaskContentBackfill: () => ipcRenderer.invoke(
+    "foregroundShadow:taskContentBackfill:cancel",
+  ) as Promise<void>,
   onProtectedRoomAccessState: (
     listener: (state: ProtectedRoomAccessStateV2) => void,
   ) => {

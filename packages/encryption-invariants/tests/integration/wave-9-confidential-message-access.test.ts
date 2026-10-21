@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { readFileSync } from "node:fs";
 import { WAVE_0_FROZEN_BASELINE_DEBT } from "../../baseline/existing-debt";
 
 import { CRYPTO_STORAGE_BYTE_LIMITS } from "@nautilo/db";
@@ -41,6 +42,60 @@ function isExternalMessageRead(reference: { path: string; field: string; signatu
     && reviewed.field === reference.field && reviewed.signature === reference.signature);
 }
 
+type ReviewedReferenceHandoff = Readonly<{
+  path: string;
+  field: "content" | "toolCalls" | "metadata";
+  signature: string;
+  /** Total exact occurrences in current source. */
+  occurrences: number;
+  /** Later reviewed occurrences removed from the frozen Wave 9 budget. */
+  consume?: number;
+}>;
+
+const REVIEWED_LATER_REFERENCE_HANDOFFS = [
+  // Human-visible history added two authenticated presentation sidecars. The
+  // other two identical projections remain in the original Wave 9 budget.
+  { path: "packages/agent/src/store/session-store.ts", field: "metadata", signature: "metadata: sessionMessages.metadata,", occurrences: 4, consume: 2 },
+  // This SQL only decides whether an assistant row is a skip-only control row;
+  // it does not select or return the serialized tool calls.
+  { path: "packages/agent/src/store/session-store.ts", field: "toolCalls", signature: "WHEN pg_input_is_valid(${sessionMessages.toolCalls}, 'jsonb') THEN CASE", occurrences: 1 },
+  { path: "packages/agent/src/store/session-store.ts", field: "toolCalls", signature: "WHEN ${sessionMessages.toolCalls} IS JSON ARRAY THEN NOT (", occurrences: 1 },
+  { path: "packages/agent/src/store/session-store.ts", field: "toolCalls", signature: "jsonb_array_length((${sessionMessages.toolCalls})::jsonb) > 0", occurrences: 1 },
+  { path: "packages/agent/src/store/session-store.ts", field: "toolCalls", signature: "FROM jsonb_array_elements((${sessionMessages.toolCalls})::jsonb) AS transcript_call(value)", occurrences: 1 },
+  // The ordinary history reader's metadata projection and browser-control
+  // predicates remain behind the same protected foreground-history proxy.
+  { path: "packages/runtime/src/conductor/history-search.ts", field: "metadata", signature: "metadata: sessionMessages.metadata,", occurrences: 1 },
+  { path: "packages/runtime/src/conductor/history-search.ts", field: "metadata", signature: "sql`(${sessionMessages.metadata}->>'nautilo_browser_decision_observation') IS DISTINCT FROM 'true'`,", occurrences: 1 },
+  { path: "packages/runtime/src/conductor/history-search.ts", field: "metadata", signature: "sql`NOT (${sessionMessages.toolName} IN ('browser_snapshot', 'browser_screenshot') AND COALESCE(${sessionMessages.metadata}->'nautilo_tool_result'->>'toolCallId', '') LIKE 'browser-choice:%' AND ${sessionMessages.metadata}->'nautilo_tool_result'->>'toolStatus' = 'success')`,", occurrences: 2 },
+  // Task delivery coverage uses only SQL presence/null predicates.
+  { path: "packages/db/src/queries/task-run-message-associations.ts", field: "content", signature: "isNull(sessionMessages.content),", occurrences: 1 },
+  { path: "packages/db/src/queries/task-run-message-associations.ts", field: "toolCalls", signature: "isNull(sessionMessages.toolCalls),", occurrences: 1 },
+  { path: "packages/db/src/queries/task-run-message-associations.ts", field: "metadata", signature: "isNull(sessionMessages.metadata),", occurrences: 1 },
+  { path: "packages/server/src/routes/protected-task-output-read-product.ts", field: "content", signature: "contentIsNull: isNull(sessionMessages.content).mapWith(Boolean),", occurrences: 1 },
+  { path: "packages/server/src/routes/protected-task-output-read-product.ts", field: "toolCalls", signature: "toolCallsIsNull: isNull(sessionMessages.toolCalls).mapWith(Boolean),", occurrences: 1 },
+  { path: "packages/server/src/routes/protected-task-terminal-message-product.ts", field: "content", signature: "isNull(sessionMessages.content), isNull(sessionMessages.toolCalls), isNull(sessionMessages.toolName),", occurrences: 1 },
+  { path: "packages/server/src/routes/protected-task-terminal-message-product.ts", field: "toolCalls", signature: "isNull(sessionMessages.content), isNull(sessionMessages.toolCalls), isNull(sessionMessages.toolName),", occurrences: 1 },
+  // These two exact readers run only under current protected Task authority.
+  // The allocation reader authenticates the Shadow sibling by payload digest;
+  // the reply reader re-proves the accepted decrypt grant before and after.
+  { path: "packages/server/src/routes/protected-task-message-allocation.ts", field: "content", signature: "role: sessionMessages.role, content: sessionMessages.content,", occurrences: 1 },
+  { path: "packages/server/src/routes/protected-task-message-allocation.ts", field: "toolCalls", signature: "toolCalls: sessionMessages.toolCalls, toolName: sessionMessages.toolName,", occurrences: 1 },
+  { path: "packages/server/src/routes/protected-task-message-allocation.ts", field: "metadata", signature: "metadata: sessionMessages.metadata,", occurrences: 1 },
+  { path: "packages/server/src/routes/protected-task-native-reply-authority.ts", field: "content", signature: "content: sessionMessages.content,", occurrences: 1 },
+  { path: "packages/server/src/routes/protected-task-native-reply-authority.ts", field: "toolCalls", signature: "toolCalls: sessionMessages.toolCalls,", occurrences: 1 },
+  { path: "packages/server/src/routes/protected-task-native-reply-authority.ts", field: "metadata", signature: "metadata: sessionMessages.metadata,", occurrences: 1 },
+] as const satisfies readonly ReviewedReferenceHandoff[];
+
+const REVIEWED_HANDOFF_EVIDENCE = [
+  ["packages/agent/tests/integration/room-messages-cross-session.integration.test.ts", 'contentRepresentation: "structural"'],
+  ["packages/runtime/src/context/foreground-history.ts", "protectLiveShadowForegroundHistory("],
+  ["packages/db/tests/unit/task-run-message-associations.test.ts", 'toContain("session_messages.content is null")'],
+  ["packages/server/tests/unit/protected-task-run-result-message-allocation.test.ts", "Shadow rejects arbitrary ordinary content"],
+  ["packages/server/tests/unit/protected-task-native-reply-authority.test.ts", "expect(taskChecks).toBe(2)"],
+  ["packages/server/tests/unit/protected-task-output-read-product.test.ts", "proof rejects a changed invocation, transaction, or current digest"],
+  ["packages/server/src/routes/protected-task-terminal-message-product.ts", "The guard cannot escape the exact canonical authority-held transaction"],
+] as const;
+
 describe("Wave 9 confidential message direct-access closure", () => {
   it("pins exact external Message reads without expanding the original confidential budget", async () => {
     const references = await findConfidentialMessageColumnReferences(repositoryRoot);
@@ -81,16 +136,17 @@ describe("Wave 9 confidential message direct-access closure", () => {
     const routingPredicates = references.filter((reference) =>
       reference.field === "metadata" && reference.signature.includes("->>'originatedBy'")
     );
-    expect(routingPredicates).toHaveLength(14);
+    expect(routingPredicates).toHaveLength(15);
     expect(routingPredicates.every((reference) =>
       reference.signature === "sql`(${sessionMessages.metadata}->>'originatedBy') IS DISTINCT FROM 'task' AND (${sessionMessages.metadata}->>'originatedBy') IS DISTINCT FROM 'connected_web_operation'`,"
+      || reference.signature === "sql`(${sessionMessages.metadata}->>'originatedBy') IS DISTINCT FROM 'task' AND (${sessionMessages.metadata}->>'originatedBy') IS DISTINCT FROM 'connected_web_operation' AND (${sessionMessages.metadata}->>'originatedBy') IS DISTINCT FROM 'scheduled_task_internal'`,"
       || reference.signature === "${sessionMessages.metadata}->>'originatedBy'"
       || reference.signature === "and (${sessionMessages.metadata}->>'originatedBy')"
     )).toBe(true);
     const addedRoutingPredicates = {
       // One SQL predicate reads the originatedBy discriminator twice to exclude
       // Task and Connected Website rows; neither occurrence projects metadata.
-      "packages/agent/src/store/session-store.ts#metadata": 2,
+      "packages/agent/src/store/session-store.ts#metadata": 3,
       "packages/server/src/lib/subthread-root-affinity.ts#metadata": 1,
       // Full peer finalization selects only the SQL `content IS NULL`
       // predicate result; it never projects or materializes the body.
@@ -103,6 +159,22 @@ describe("Wave 9 confidential message direct-access closure", () => {
       const remaining = (counts.get(key) ?? 0) - count;
       if (remaining === 0) counts.delete(key);
       else counts.set(key, remaining);
+    }
+    for (const handoff of REVIEWED_LATER_REFERENCE_HANDOFFS) {
+      const exact = references.filter((reference) =>
+        reference.path === handoff.path
+        && reference.field === handoff.field
+        && reference.signature === handoff.signature
+      );
+      expect(exact).toHaveLength(handoff.occurrences);
+      const key = `${handoff.path}#${handoff.field}`;
+      const remaining = (counts.get(key) ?? 0)
+        - ("consume" in handoff ? handoff.consume : handoff.occurrences);
+      if (remaining === 0) counts.delete(key);
+      else counts.set(key, remaining);
+    }
+    for (const [path, anchor] of REVIEWED_HANDOFF_EVIDENCE) {
+      expect(readFileSync(resolve(repositoryRoot, path), "utf8")).toContain(anchor);
     }
     expect(Object.fromEntries([...counts].sort())).toEqual({
       "packages/agent/src/store/session-store.ts#content": 5,

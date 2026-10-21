@@ -359,3 +359,27 @@ async function* never<T>(): AsyncIterable<T> {
 }
 async function tick(): Promise<void> { await new Promise((resolve) => setTimeout(resolve, 0)); }
 async function waitFor(predicate: () => boolean): Promise<void> { for (let index = 0; index < 50; index += 1) { if (predicate()) return; await new Promise((resolve) => setTimeout(resolve, 0)); } throw new Error("timed out"); }
+
+
+test("forwards actual message boundaries only to v32 peers while preserving older ordinary progress", async () => {
+  for (const version of [18, 30, 31, 32]) {
+    const peer = { ...session, selectedProtocolVersion: version };
+    const events: RelayClaudeExecutionDesktopEvent[] = [];
+    const host = new ElectronClaudeExecutionHost({
+      currentFolder: () => ({ path: "/tmp", revision: 0 }),
+      leaseProvider: { acquire: async () => fakeLease() },
+      createHost: () => ({ launch: async () => handle([
+        { kind: "output_message_started" }, { kind: "output_delta", text: "A" },
+        { kind: "output_message_started" }, { kind: "output_delta", text: "B" },
+        { kind: "result", outcome: "succeeded" },
+        { kind: "settled", settlement: "eof", afterResult: true },
+      ]) }),
+    });
+    host.onRegistered(peer, { send: event => { events.push(event); return true; } });
+    host.onCommand({ ...start(), scope: peer });
+    await waitFor(() => events.some(event => event.event.kind === "settled"));
+    expect(events.filter(event => event.event.kind === "output_message_started")).toHaveLength(version >= 32 ? 2 : 0);
+    expect(events.flatMap(event => event.event.kind === "output_delta" ? [event.event.text] : [])).toEqual(["A", "B"]);
+    expect(events.at(-2)?.event).toEqual({ kind: "result", outcome: "success", text: null });
+  }
+});

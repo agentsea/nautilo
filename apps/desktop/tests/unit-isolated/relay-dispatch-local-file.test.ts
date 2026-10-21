@@ -1,5 +1,5 @@
 import { afterEach, beforeAll, describe, expect, mock, test } from "bun:test";
-import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createWorkspaceGuard, type RelayDispatchRequest, type RelaySandboxProfile } from "@nautilo/relay";
@@ -223,6 +223,200 @@ describe("createLocalFileHandlers", () => {
     });
     expect(result).toMatchObject({ handled: true, result: { status: "ok" } });
     expect(closed).toBe(0);
+  });
+
+  test("closes Task project authority exactly once after successful direct dispatch", async () => {
+    const workspace = root();
+    const target = join(workspace, "inside.txt");
+    writeFileSync(target, "inside");
+    let closed = 0;
+    let reauthorized = 0;
+    const family = handlers({
+      resolveTaskProjectFileAuthority: async () => ({
+        authority: { roots: [workspace] },
+        reauthorize: async () => { reauthorized += 1; },
+        openReadOnlySearchSandbox: async () => { throw new Error("not search"); },
+        close: async () => { closed += 1; },
+      }),
+    });
+    const result = await family.dispatchDirect({
+      request: request({
+        toolName: "local-file",
+        executionClass: "local-file",
+        localExecutionBinding: { version: 4 } as never,
+        args: {
+          operation: {
+            kind: "file",
+            command: "read",
+            zone: "absolute",
+            args: {
+              path: target,
+              _routing: {
+                ownerId: "owner",
+                agentId: "agent",
+                turnId: "turn",
+                currentFolder: null,
+                workspaceRoot: "",
+              },
+            },
+          },
+          allowedRoots: [workspace],
+        },
+      }),
+      guard: createWorkspaceGuard({ workspaceRoot: workspace }),
+      signal: undefined,
+      authority: undefined,
+      applyPatchPreparation: undefined,
+    });
+    expect(result).toMatchObject({ handled: true, result: { status: "ok" } });
+    expect(reauthorized).toBeGreaterThanOrEqual(3);
+    expect(closed).toBe(1);
+  });
+
+  test("closes Task authority after preflight failure without replacing that failure", async () => {
+    let closed = 0;
+    const family = handlers({
+      resolveTaskProjectFileAuthority: async () => ({
+        authority: { roots: ["/tmp"] },
+        reauthorize: async () => { throw new Error("revoked"); },
+        openReadOnlySearchSandbox: async () => { throw new Error("not search"); },
+        close: async () => {
+          closed += 1;
+          throw new Error("close failed");
+        },
+      }),
+    });
+    const result = await family.dispatchDirect({
+      request: request({
+        toolName: "local-file",
+        executionClass: "local-file",
+        localExecutionBinding: { version: 4 } as never,
+        args: { operation: { kind: "file", command: "read", args: {} } },
+      }),
+      guard: createWorkspaceGuard({ workspaceRoot: "/tmp" }),
+      signal: undefined,
+      authority: undefined,
+      applyPatchPreparation: undefined,
+    });
+    expect(result).toMatchObject({
+      handled: true,
+      result: { status: "error", errorCode: "TASK_PROJECT_FILE_AUTHORITY_UNAVAILABLE" },
+    });
+    expect(closed).toBe(1);
+  });
+
+  test("closes owned search resources and Task authority on search failure", async () => {
+    let authorityClosed = 0;
+    let sandboxClosed = 0;
+    const ownedSandbox = { close: async () => { sandboxClosed += 1; } } as unknown as Sandbox;
+    const family = handlers({
+      resolveTaskProjectFileAuthority: async () => ({
+        authority: { roots: ["/tmp"] },
+        reauthorize: async () => {},
+        openReadOnlySearchSandbox: async () => ({
+          sandbox: ownedSandbox,
+          close: async () => { sandboxClosed += 1; },
+        }),
+        close: async () => { authorityClosed += 1; },
+      }),
+    });
+    const result = await family.dispatchSandboxedSearch({
+      request: request({
+        toolName: "local-file",
+        executionClass: "local-file",
+        localExecutionBinding: { version: 4 } as never,
+        args: {
+          operation: {
+            kind: "search",
+            command: "glob",
+            args: { pattern: "*.ts" },
+            routing: { zone: "current", turnId: "turn", agentId: "agent" },
+          },
+          allowedRoots: ["/tmp"],
+        },
+      }),
+      guard: createWorkspaceGuard({ workspaceRoot: "/tmp" }),
+      signal: undefined,
+      authority: undefined,
+      sandbox: null,
+      getRipgrepRuntime: async () => ({ ok: false as const, error: "missing" }),
+    });
+    expect(result).toMatchObject({ handled: true, result: { status: "ok" } });
+    expect(sandboxClosed).toBe(1);
+    expect(authorityClosed).toBe(1);
+  });
+
+  test("closes Task authority when cancellation arrives after authority resolution", async () => {
+    const abort = new AbortController();
+    let authorityClosed = 0;
+    const family = handlers({
+      resolveTaskProjectFileAuthority: async () => ({
+        authority: { roots: ["/tmp"] },
+        reauthorize: async () => { abort.abort(); },
+        openReadOnlySearchSandbox: async () => { throw new Error("not search"); },
+        close: async () => { authorityClosed += 1; },
+      }),
+    });
+    const result = await family.dispatchDirect({
+      request: request({
+        toolName: "local-file",
+        executionClass: "local-file",
+        localExecutionBinding: { version: 4 } as never,
+        args: { operation: { kind: "file", command: "read", args: {} } },
+      }),
+      guard: createWorkspaceGuard({ workspaceRoot: "/tmp" }),
+      signal: abort.signal,
+      authority: undefined,
+      applyPatchPreparation: undefined,
+    });
+    expect(result).toMatchObject({
+      handled: true,
+      result: { status: "error", errorCode: "TASK_PROJECT_FILE_AUTHORITY_UNAVAILABLE" },
+    });
+    expect(authorityClosed).toBe(1);
+  });
+
+  test("does not resolve Task authority for a Plain local-file dispatch", async () => {
+    const workspace = root();
+    const target = join(workspace, "inside.txt");
+    writeFileSync(target, "inside");
+    let resolved = 0;
+    const family = handlers({
+      resolveTaskProjectFileAuthority: async () => {
+        resolved += 1;
+        return null;
+      },
+    });
+    const result = await family.dispatchDirect({
+      request: request({
+        toolName: "local-file",
+        executionClass: "local-file",
+        args: {
+          operation: {
+            kind: "file",
+            command: "read",
+            zone: "absolute",
+            args: {
+              path: target,
+              _routing: {
+                ownerId: "owner",
+                agentId: "agent",
+                turnId: "turn",
+                currentFolder: null,
+                workspaceRoot: "",
+              },
+            },
+          },
+          allowedRoots: [workspace],
+        },
+      }),
+      guard: createWorkspaceGuard({ workspaceRoot: workspace }),
+      signal: undefined,
+      authority: undefined,
+      applyPatchPreparation: undefined,
+    });
+    expect(result).toMatchObject({ handled: true, result: { status: "ok" } });
+    expect(resolved).toBe(0);
   });
 
   test("carries a successful apply_patch result through the extracted direct route", async () => {

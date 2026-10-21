@@ -87,6 +87,10 @@ export type DataOperationReadMetadataInput<Result> = Readonly<{
 
 export type DataOperationMutationInput<Plan, Result> = Readonly<{
   ordinary?: () => Promise<Plan>;
+  /** An adapter may record a classified Fallback intent through its own authorized publication port. */
+  ordinaryFallback?: (context: DataOperationPublicationContext & Readonly<{
+    failure: "recoverable_availability" | "key_waiting";
+  }>) => Promise<Plan>;
   protected?: () => Promise<Plan>;
   dual?: () => Promise<Plan>;
   publish(
@@ -299,19 +303,20 @@ export function bindEncryptionDataOperationOwner(
           await input.policy.revalidate(snapshot.revalidationToken);
           plan = await requiredPort(operation.dual)();
         } catch (error) {
-          if (
-            !representation.allowOrdinaryFallback ||
-            !fallbackEligible(classify(error))
-          ) {
-            throw error;
-          }
+          if (!representation.allowOrdinaryFallback) throw error;
+          const failure = classify(error);
+          if (!fallbackEligible(failure)) throw error;
           const current = await input.policy.resolve();
           const currentRepresentation =
             selectLiveEncryptionRepresentationPolicy(current.policy);
           if (!currentRepresentation.allowOrdinaryFallback) throw error;
           await input.policy.revalidate(current.revalidationToken);
           publicationToken = current.revalidationToken;
-          plan = await requiredPort(operation.ordinary)();
+          plan = operation.ordinaryFallback === undefined
+            ? await requiredPort(operation.ordinary)()
+            : await operation.ordinaryFallback(Object.freeze({
+                failure, revalidationToken: publicationToken,
+              }));
         }
       }
       await input.policy.revalidate(publicationToken);

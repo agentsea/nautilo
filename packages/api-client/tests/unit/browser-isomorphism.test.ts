@@ -20,7 +20,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 
 const PACKAGE_ROOT = join(import.meta.dirname, "../..");
@@ -110,4 +110,24 @@ describe("browser-isomorphism: client-loaded modules must not pull server-only d
       expect(offenders.length).toBe(0);
     });
   }
+
+  test("browser-loaded schemas do not import broad lattice-crypto barrels", () => {
+    const schemasRoot = join(PACKAGE_ROOT, "src/schemas");
+    const offenders = readdirSync(schemasRoot)
+      .filter((name) => name.endsWith(".ts"))
+      .flatMap((name) => {
+        const imports = extractImports(readFileSync(join(schemasRoot, name), "utf8"));
+        return imports
+          .filter((entry) =>
+            !entry.isTypeOnly
+            && (
+              entry.source === "@nautilo/lattice-crypto"
+              || entry.source === "@nautilo/lattice-crypto/wire"
+            )
+          )
+          .map((entry) => `${name}: ${entry.raw.trim()}`);
+      });
+
+    expect(offenders).toEqual([]);
+  });
 });

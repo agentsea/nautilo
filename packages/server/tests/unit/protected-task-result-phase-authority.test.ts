@@ -268,10 +268,11 @@ function dependencies(
   };
 }
 
-test("derives running result authority only from the current accepted grant", async () => {
+test.each(["task.execute", "task.approval_resume", "task.await_reply_resume"] as const)("derives running result authority only from the current accepted grant (%s)", async workKind => {
   const calls: string[] = [];
   const resolver = createProtectedTaskResultPhaseAuthorityResolver(
-    input(),
+    { ...input(), record: { ...record(), workKind, purpose: workKind },
+      request: { ...request(), workKind, workPurpose: workKind } },
     dependencies({ phase: "running", current: held(), calls }),
   );
 
@@ -421,6 +422,9 @@ test("rejects running Namespace, Human, operation, Domain, and policy drift", as
 test("rejects substituted occurrence, accepted record, request, or subject", () => {
   const base = input();
   const invalid: ProtectedTaskResultPhaseAuthorityInput[] = [
+    { ...base, record: { ...base.record, workKind: "task.dispatch", purpose: "task.dispatch" } },
+    { ...base, record: { ...base.record, workKind: "task.approval_resume", purpose: "task.await_reply_resume" } },
+    { ...base, request: { ...base.request, workKind: "task.approval_resume", workPurpose: "task.approval_resume" } },
     Object.freeze({
       ...base,
       coordinate: Object.freeze({

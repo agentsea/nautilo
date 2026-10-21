@@ -29,6 +29,11 @@ interface SourceRoom {
   readonly graphThreadId: string;
   readonly members: readonly { readonly kind: string; readonly agentId?: string | null; readonly actorId: string }[];
 }
+export type TaskLocalExecutionPublicSourceSnapshot = Readonly<{
+  humanActorId: string;
+  source: Readonly<{ id: string; graphThreadId: string }>;
+  calling: Readonly<{ id: string; graphThreadId: string; agentActorId: string }>;
+}>;
 export interface TaskLocalExecutionSourceAssertionDeps {
   readonly signal?: AbortSignal;
   readTask?(this: void, id: string): Promise<TaskLocalExecutionSourceRecord | undefined>;
@@ -56,17 +61,48 @@ const protectedDefinition = (task: TaskLocalExecutionSourceRecord) => ({ ...defi
   cryptoObjectId: task.cryptoObjectId, cryptoAccessRevision: task.cryptoAccessRevision,
   cryptoRequiredNamespaceFingerprint: task.cryptoRequiredNamespaceFingerprint, cryptoMappingState: task.cryptoMappingState });
 
+/** Shared public lineage check. Protected callers bracket this with their own
+ * current content authority instead of manufacturing an initial grant proof. */
+export async function assertCurrentTaskLocalExecutionPublicSource(
+  task: DelegatedTaskIdentity,
+  delegation: LocalExecutionDelegation,
+  deps: Pick<TaskLocalExecutionSourceAssertionDeps,
+    "signal" | "assertInvocation" | "getCapabilities" | "findHuman" | "findRoom" | "findRoomByThread"> = {},
+): Promise<TaskLocalExecutionPublicSourceSnapshot> {
+  const assertInvocation = deps.assertInvocation ?? assertCanInvokeAgent;
+  const getCapabilities = deps.getCapabilities ?? getUserCapabilities;
+  const findHuman = deps.findHuman ?? findActorByOwnerId;
+  const findRoom = deps.findRoom ?? getRoomDetailForMember;
+  const findRoomByThread = deps.findRoomByThread ?? findRoomIdByGraphThreadIdForUser;
+  deps.signal?.throwIfAborted();
+  if (delegation.humanUserId !== task.requestorId
+    || delegation.agentId !== task.agentId || !task.callingRoomId) throw unavailable();
+  await assertInvocation({ humanUserId: delegation.humanUserId, agentId: task.agentId,
+    roomId: task.callingRoomId, origin: "task_dispatch", taskId: task.id });
+  if (!(await getCapabilities(delegation.humanUserId)).includes("use_workstation")) throw unavailable();
+  const human = await findHuman(delegation.humanUserId);
+  if (!human) throw unavailable();
+  const source = await findRoom(delegation.sourceRoomId, human.id);
+  const calling = task.callingRoomId === delegation.sourceRoomId
+    ? source : await findRoom(task.callingRoomId, human.id);
+  const thread = roomGraphThreadFromLaneThread(delegation.sourceConversationId);
+  const agentActorId = calling?.members.find(member => member.kind === "agent"
+    && member.agentId === task.agentId)?.actorId;
+  if (!source || source.id !== delegation.sourceRoomId || source.graphThreadId !== thread
+    || await findRoomByThread(delegation.humanUserId, thread) !== source.id
+    || !calling || calling.id !== task.callingRoomId || !agentActorId) throw unavailable();
+  deps.signal?.throwIfAborted();
+  return Object.freeze({ humanActorId: human.id,
+    source: Object.freeze({ id: source.id, graphThreadId: source.graphThreadId }),
+    calling: Object.freeze({ id: calling.id, graphThreadId: calling.graphThreadId, agentActorId }) });
+}
+
 /** Operation-time source proof only. It neither starts protected Tasks nor
  * renews a recipient grant, and releases canonical locks before returning. */
 export function createTaskLocalExecutionSourceAssertion(deps: TaskLocalExecutionSourceAssertionDeps = {}):
   (task: DelegatedTaskIdentity) => Promise<void> {
   const readTask = deps.readTask ?? (id => getTaskById(getServerDirectDb(), id));
   const readPolicy = deps.readPolicy ?? (() => getEncryptionTransitionPolicy(getServerDirectDb()));
-  const assertInvocation = deps.assertInvocation ?? assertCanInvokeAgent;
-  const getCapabilities = deps.getCapabilities ?? getUserCapabilities;
-  const findHuman = deps.findHuman ?? findActorByOwnerId;
-  const findRoom = deps.findRoom ?? getRoomDetailForMember;
-  const findRoomByThread = deps.findRoomByThread ?? findRoomIdByGraphThreadIdForUser;
   const withAuthority = deps.withProtectedAuthority ?? withInitialTaskRuntimeRecipientAuthority;
   return async observed => {
     const task = structuredClone(observed);
@@ -78,22 +114,9 @@ export function createTaskLocalExecutionSourceAssertion(deps: TaskLocalExecution
       const policy = await readPolicy();
       const current = await readTask(task.id);
       if (!current || !same(definition(task), definition(current))) throw unavailable();
-      await assertInvocation({ humanUserId: delegation.humanUserId, agentId: task.agentId,
-        roomId: task.callingRoomId!, origin: "task_dispatch", taskId: task.id });
-      if (!(await getCapabilities(delegation.humanUserId)).includes("use_workstation")) throw unavailable();
-      const human = await findHuman(delegation.humanUserId);
-      if (!human) throw unavailable();
-      const source = await findRoom(delegation.sourceRoomId, human.id);
-      const calling = task.callingRoomId === delegation.sourceRoomId ? source : await findRoom(task.callingRoomId!, human.id);
-      const thread = roomGraphThreadFromLaneThread(delegation.sourceConversationId);
-      if (!source || source.id !== delegation.sourceRoomId || source.graphThreadId !== thread
-        || await findRoomByThread(delegation.humanUserId, thread) !== source.id
-        || !calling || calling.id !== task.callingRoomId
-        || !calling.members.some(member => member.kind === "agent" && member.agentId === task.agentId)) throw unavailable();
-      deps.signal?.throwIfAborted();
-      return { policy, current, human, source: { id: source.id, graphThreadId: source.graphThreadId },
-        calling: { id: calling.id, graphThreadId: calling.graphThreadId,
-          agentActorId: calling.members.find(member => member.kind === "agent" && member.agentId === task.agentId)!.actorId } };
+      const publicSource = await assertCurrentTaskLocalExecutionPublicSource(current, delegation, deps);
+      return { policy, current, human: { id: publicSource.humanActorId },
+        source: publicSource.source, calling: publicSource.calling };
     };
     const before = await inspect();
     if (before.current.contentRepresentation === "ordinary") {

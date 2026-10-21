@@ -19,7 +19,7 @@ export interface RoomHistoryAroundController {
   getSnapshot: () => RoomHistoryAroundState;
   subscribe: (listener: () => void) => () => void;
   setRoomId: (roomId: string | null) => void;
-  load: (messageId: string) => Promise<boolean>;
+  load: (messageId: string, options?: Readonly<{ targetOnly?: boolean }>) => Promise<boolean>;
   dispose: () => void;
 }
 
@@ -298,18 +298,24 @@ export function mountedRoomHistoryRefreshRequest(
  * Keeps existing message objects (including active streams and optimistic
  * rows) authoritative by stable id. The server's around page is chronological;
  * when it overlaps the mounted window, that overlap anchors the insertion.
- * With no overlap the historical page is prepended, leaving the live tail last.
+ * With no overlap a historical navigation page is prepended. An explicitly
+ * live notification may instead append its exact committed row after the tail.
  */
 export function mergeRoomMessagesAround(
   existing: readonly ThreadMessageLike[],
   restoredAround: readonly ThreadMessageLike[],
+  options: Readonly<{ appendWhenNoOverlap?: boolean }> = {},
 ): ThreadMessageLike[] {
   const reconciledExisting = reconcilePersistedToolRows(existing, restoredAround);
   const existingById = new Map(reconciledExisting.map((message) => [messageIdOf(message), message]));
   const aroundIds = new Set(restoredAround.map(messageIdOf));
   const anchored = restoredAround.map((message) => existingById.get(messageIdOf(message)) ?? message);
   const firstOverlap = reconciledExisting.findIndex((message) => aroundIds.has(messageIdOf(message)));
-  if (firstOverlap < 0) return [...anchored, ...reconciledExisting];
+  if (firstOverlap < 0) {
+    return options.appendWhenNoOverlap === true
+      ? [...reconciledExisting, ...anchored]
+      : [...anchored, ...reconciledExisting];
+  }
 
   let lastOverlap = firstOverlap;
   for (let index = reconciledExisting.length - 1; index >= firstOverlap; index -= 1) {
@@ -365,7 +371,7 @@ export function createRoomHistoryAroundController(args: {
   fetchPage: (options: RoomMessagesAroundOptions) => Promise<RoomMessagesAroundPage>;
   getActiveRoomId: () => string | null;
   isMessageLoaded: (messageId: string) => boolean;
-  onPage: (page: RoomMessagesAroundPage) => void;
+  onPage: (page: RoomMessagesAroundPage, options: Readonly<{ targetOnly: boolean }>) => void;
 }): RoomHistoryAroundController {
   let roomId: string | null = null;
   let generation = 0;
@@ -396,12 +402,13 @@ export function createRoomHistoryAroundController(args: {
       ranges = [];
       emit();
     },
-    load: (messageId) => {
+    load: (messageId, options = {}) => {
       const requestRoomId = roomId;
       if (!requestRoomId || !messageId || args.isMessageLoaded(messageId)) {
         return Promise.resolve(false);
       }
-      const key = `${requestRoomId}:${messageId}`;
+      const targetOnly = options.targetOnly === true;
+      const key = `${requestRoomId}:${messageId}:${targetOnly ? "target" : "around"}`;
       const existing = pending.get(key);
       if (existing && loadingMessageId === messageId) return existing.promise;
 
@@ -410,17 +417,29 @@ export function createRoomHistoryAroundController(args: {
       emit();
       const promise = (async (): Promise<boolean> => {
         try {
-          const page = await args.fetchPage({ roomId: requestRoomId, messageId });
+          const page = await args.fetchPage({
+            roomId: requestRoomId,
+            messageId,
+            ...(targetOnly ? { limit: 1 } : {}),
+          });
           if (!current(requestRoomId, requestGeneration)) return false;
-          args.onPage(page);
+          const selectedPage = targetOnly
+            ? {
+                ...page,
+                messages: page.messages.filter((message) => String(message.id) === messageId),
+                includedToolCallCompanion: false,
+              }
+            : page;
+          if (targetOnly && selectedPage.messages.length !== 1) return false;
+          args.onPage(selectedPage, { targetOnly });
           ranges = [
-            ...ranges.filter((range) => range.target.messageId !== page.target.messageId),
+            ...ranges.filter((range) => range.target.messageId !== selectedPage.target.messageId),
             {
-              target: page.target,
-              messageIds: page.messages.map((message) => message.id),
-              includedToolCallCompanion: page.includedToolCallCompanion,
-              hasOlder: page.hasOlder,
-              hasNewer: page.hasNewer,
+              target: selectedPage.target,
+              messageIds: selectedPage.messages.map((message) => message.id),
+              includedToolCallCompanion: selectedPage.includedToolCallCompanion,
+              hasOlder: selectedPage.hasOlder,
+              hasNewer: selectedPage.hasNewer,
             },
           ];
           return true;

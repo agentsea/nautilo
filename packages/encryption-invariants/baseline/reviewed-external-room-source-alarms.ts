@@ -44,19 +44,6 @@ export function reviewedExternalRoomSourceAlarms(reviews: readonly SourceAlarmRe
     },
     ...reviews.filter(review => review.locator !== REPLACED_DISPATCH).map((review): SourceAlarmReview => {
       const locator = externalRoomSourceAlarmLocator(review.locator);
-      if (review.locator === `${EXECUTOR}7ef703451e44cded:8`) {
-        return {
-          locator,
-          debtId: "debt.source-alarm.log.log_emitter.b9871e3dcd24e34b",
-          surface: "log",
-          owner: review.owner,
-          closure: "baseline_debt",
-          remediationState: "untriaged",
-          releaseImpact: "blocks_whole_product_claim",
-          reason: `${locator} is the unchanged token-count log-emitter alarm moved by one callsite ordinal; its logged numeric usage payload retains the existing untriaged plaintext diagnostic classification.`,
-          evidenceGap: `${locator} remains a log-emitter alarm without executable evidence establishing a product-wide encrypted logging boundary for token-count diagnostics.`,
-        };
-      }
       if (review.locator === `${EXECUTOR}7ef703451e44cded:6`
         || review.locator === `${EXECUTOR}7ef703451e44cded:7`) {
         return {

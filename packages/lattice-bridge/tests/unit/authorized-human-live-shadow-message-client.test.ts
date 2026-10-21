@@ -59,7 +59,7 @@ import {
 } from "@nautilo/lattice-crypto/wire";
 import { seededRng } from "@nautilo/lattice-crypto/testing";
 import { liveShadowMessageSendAttemptV1Schema } from "@nautilo/api-client/browser";
-import type { ServerEvent } from "@nautilo/types";
+import type { CodexRequestEvent, ServerEvent } from "@nautilo/types";
 
 import {
   createAuthorizedHumanLiveShadowMessageClient,
@@ -80,9 +80,20 @@ import { createClientDeviceProfileV4Candidate, destroyOpenedClientDeviceProfileV
   stageAndActivateClientDeviceProfileV4 } from "../../src/client-vault/profile-v4.ts";
 import type { PreparedMutationJournalVaultPort } from
   "../../src/client/memory/prepared-mutation-journal.ts";
+import {
+  deriveTaskDefinitionForegroundRecipientKeyIdV1,
+  taskDefinitionForegroundAuthorizationIdV1,
+} from
+  "../../src/task/task-definition-foreground-authorization-id-v1.ts";
 
 const NOW = 1_800_000_000_000;
 const ROOM = "40000000-0000-4000-8000-000000000282";
+const TASK = "50000000-0000-4000-8000-000000000282";
+const TASK_RUN = "60000000-0000-4000-8000-000000000282";
+const JOB = "70000000-0000-4000-8000-000000000282";
+const SOURCE_ROOM = "80000000-0000-4000-8000-000000000282";
+const EXTERNAL_CHALLENGE = "90000000-0000-4000-8000-000000000282";
+const RESPONSE_CAPABILITY = "a0000000-0000-4000-8000-000000000282";
 const COORDINATES: ClientProfileCoordinates = Object.freeze({
   serverScope: "https://m282.test",
   userId: "10000000-0000-4000-8000-000000000282",
@@ -205,6 +216,133 @@ function pendingAttentionPlanBytes(
   } finally {
     destroyDomainForegroundAuthorizationPlanV2(plan);
   }
+}
+
+async function populatedProfileVault(
+  crypto: LatticeCrypto,
+): Promise<MemoryClientProfileVault> {
+  const signing = crypto.generateSigningKeyPair();
+  const encryption = await crypto.generateEncryptionKeyPair();
+  const v2: OpenedClientDeviceProfileV2 = Object.freeze({
+    formatVersion: 2,
+    deviceId: COORDINATES.deviceId,
+    signingPublicKey: signing.publicKey,
+    signingPrivateKey: signing.privateKey,
+    encryptionPublicKey: encryption.publicKey,
+    encryptionPrivateKey: encryption.privateKey,
+    trustedDeviceRevision: 1,
+    trustedHostAuthorizationRevision: 1,
+    deliveryHighWatermark: 0,
+    keyringDeliveries: Object.freeze([]),
+  });
+  const v2Bytes = encodeClientDeviceProfileV2(v2);
+  const v3 = await createClientDeviceProfileV3Candidate({
+    crypto,
+    currentProfileBytes: v2Bytes,
+    expectedDeviceId: COORDINATES.deviceId,
+  });
+  const v3Bytes = encodeClientDeviceProfileV3(v3);
+  const v4 = await createClientDeviceProfileV4Candidate({
+    crypto,
+    currentProfileBytes: v3Bytes,
+    expectedDeviceId: COORDINATES.deviceId,
+  });
+  const vault = new MemoryClientProfileVault();
+  await vault.unlock();
+  await stageAndActivateClientDeviceProfileV4({
+    crypto,
+    vault,
+    coordinates: COORDINATES,
+    stageId: "stage:external-request",
+    generation: 1,
+    publicState: {
+      clientKind: "browser",
+      publicFingerprint: "95".repeat(32),
+    },
+    candidate: v4,
+  });
+  destroyOpenedClientDeviceProfileV4(v4);
+  destroyOpenedClientDeviceProfileV3(v3);
+  v2Bytes.fill(0);
+  v3Bytes.fill(0);
+  return vault;
+}
+
+function protectedTaskExternalRequestPlan(input: Readonly<{
+  crypto: LatticeCrypto;
+  recipientPublicKeyId?: string;
+  sourceRoomId?: string;
+  sessionId?: string;
+  deviceId?: string;
+  operations?: readonly ("decrypt" | "encrypt")[];
+  recipientPrincipalId?: string;
+  recipientAuthorizationRevision?: number;
+  recipientRuntimeGeneration?: number;
+  deadlineAt?: number;
+}>) {
+  const domain = Object.freeze({
+    domainId: "external-request-domain",
+    sourceNamespaceId: "external-request-namespace",
+    participantDigest: new Uint8Array(32).fill(0xa1),
+    participantCount: 1,
+    keyClass: "ai" as const,
+    domainKeyGeneration: 1,
+    authorizationRevision: authorizationRevision(1),
+    headDigest: new Uint8Array(32).fill(0xa2),
+    activeNamespaceBindingSetDigest: new Uint8Array(32).fill(0xa3),
+    activeNamespaceBindingCount: 1,
+  });
+  const plan = createDomainForegroundAuthorizationPlan(input.crypto, {
+    authorizationId: EXTERNAL_CHALLENGE,
+    policyRevision: 1,
+    sessionId: input.sessionId ?? "external-request-session",
+    roomId: input.sourceRoomId ?? SOURCE_ROOM,
+    subjectHumanId: humanId(COORDINATES.humanActorId),
+    committerDeviceId: cryptoDeviceId(input.deviceId ?? COORDINATES.deviceId),
+    committerDeviceSigningGeneration: 1,
+    hostAuthorizationRevision: authorizationRevision(1),
+    recipientKind: "runtime",
+    recipientPrincipalId: input.recipientPrincipalId
+      ?? "nautilo_foreground_runtime",
+    recipientAuthorizationRevision: authorizationRevision(
+      input.recipientAuthorizationRevision ?? 0,
+    ),
+    recipientRuntimeGeneration: input.recipientRuntimeGeneration ?? 0,
+    recipientKeyId: input.recipientPublicKeyId ?? "external-request-recipient",
+    operations: input.operations ?? ["decrypt"],
+    issuedAt: unixTimestamp(NOW),
+    deadlineAt: unixTimestamp(input.deadlineAt ?? NOW + 30_000),
+    maximumSecretBytes: 1024,
+    domains: Object.freeze([domain]),
+  });
+  try {
+    return Object.freeze({
+      bytes: serializeDomainForegroundAuthorizationPlanV2(plan),
+      domain,
+    });
+  } finally {
+    destroyDomainForegroundAuthorizationPlanV2(plan);
+  }
+}
+
+function protectedTaskExternalRequestEvent(
+  requestDeadlineAt = NOW + 30_000,
+): CodexRequestEvent {
+  return {
+    type: "codex.request",
+    ownerId: COORDINATES.userId,
+    requestId: "external-request-1",
+    taskId: TASK,
+    jobId: JOB,
+    roomId: ROOM,
+    expiresAt: new Date(requestDeadlineAt).toISOString(),
+    request: {
+      kind: "command_approval_required",
+      options: ["approve", "deny"],
+      reason: "host_local_only",
+      command: { detail: "host_local_only", actionKinds: ["read"] },
+    },
+  };
 }
 
 function pendingAttentionClient(
@@ -541,6 +679,372 @@ function fixture(
 }
 
 describe("authorized Human live Shadow Message client", () => {
+  test("opens and responds to one exact protected Task external request", async () => {
+    const crypto = new LatticeCrypto(seededRng(322_100), { now: () => NOW });
+    const vault = await populatedProfileVault(crypto);
+    const recipient = await crypto.generateEncryptionKeyPair();
+    const preparedPlan = protectedTaskExternalRequestPlan({ crypto });
+    const requestDeadlineAt = NOW + 5 * 60_000;
+    const event = protectedTaskExternalRequestEvent(requestDeadlineAt);
+    const calls: string[] = [];
+    const client = createAuthorizedHumanLiveShadowMessageClient({
+      api: pendingAttentionApi({
+        listProtectedTaskExternalRequests: async (request) => {
+          calls.push(`list:${request.authorizationDeviceId}`);
+          return { status: "ready", requests: [{
+            requestId: event.requestId,
+            taskId: TASK,
+            taskRunId: TASK_RUN,
+            jobId: JOB,
+            roomId: ROOM,
+            ownerId: COORDINATES.userId,
+            state: "available",
+          }, {
+            requestId: "unreadable-request",
+            taskId: "51000000-0000-4000-8000-000000000282",
+            taskRunId: "61000000-0000-4000-8000-000000000282",
+            jobId: "71000000-0000-4000-8000-000000000282",
+            roomId: "41000000-0000-4000-8000-000000000282",
+            ownerId: COORDINATES.userId,
+            state: "available",
+          }] };
+        },
+        planProtectedTaskExternalRequest: async (request) => {
+          calls.push(`plan:${request.requestId}`);
+          if (request.requestId !== event.requestId) {
+            throw new Error("unrelated request must not be planned");
+          }
+          return {
+            status: "authorization_required",
+            challengeId: EXTERNAL_CHALLENGE,
+            authorizationPlanBytesBase64url: base64url(preparedPlan.bytes),
+            recipientPublicKeyBase64url: base64url(recipient.publicKey),
+            deadlineAt: NOW + 30_000,
+            requestDeadlineAt,
+            roomId: SOURCE_ROOM,
+          };
+        },
+        readProtectedTaskExternalRequest: async (request) => {
+          calls.push(`read:${request.challengeId}`);
+          expect(request.authorizationBytesBase64url.length).toBeGreaterThan(32);
+          return {
+            status: "read",
+            event,
+            responseCapability: RESPONSE_CAPABILITY,
+          };
+        },
+        respondProtectedTaskExternalRequest: async (request) => {
+          calls.push(`respond:${request.requestId}`);
+          expect(request.authorizationDeviceId).toBe(COORDINATES.deviceId);
+          expect(request.responseCapability).toBe(RESPONSE_CAPABILITY);
+          expect(request.response).toEqual({
+            kind: "command_approval_required",
+            decision: "deny",
+          });
+          return { status: "responded" };
+        },
+      }),
+      crypto,
+      vault,
+      coordinates: COORDINATES,
+      journal: createPreparedMutationJournal({
+        vault: {} as PreparedMutationJournalVaultPort,
+        now: () => NOW,
+      }),
+      ensureJournalAvailable: () => Promise.resolve(false),
+      now: () => NOW + 1,
+      createIdempotencyKey: () => "unused",
+      normalizeContent: (content) => content,
+      domainForegroundAuthority: {
+        withOpenedAuthorizationDomains: async (request, use) => {
+          calls.push(`open:${request.sourceRoomId}`);
+          return {
+            status: "opened",
+            value: await use([Object.freeze({
+              ...preparedPlan.domain,
+              domainKey: new Uint8Array(32).fill(0xa4),
+            })]),
+          };
+        },
+        withOpenedTurnAuthority: () => Promise.reject(new Error("unused")),
+        withOpenedReusableTurnRoomKey: () => Promise.reject(new Error("unused")),
+      },
+    });
+
+    expect(await client.recoverProtectedTaskExternalRequests({
+      clientActionSessionId: "external-request-session",
+      requestId: event.requestId,
+    })).toEqual({
+      status: "ready",
+      entries: [{ event, responseCapability: RESPONSE_CAPABILITY }],
+    });
+    expect(await client.respondProtectedTaskExternalRequest({
+      clientActionSessionId: "external-request-session",
+      requestId: event.requestId,
+      responseCapability: RESPONSE_CAPABILITY,
+      response: { kind: "command_approval_required", decision: "deny" },
+    })).toEqual({ status: "responded" });
+    expect(calls).toEqual([
+      `list:${COORDINATES.deviceId}`,
+      "plan:external-request-1",
+      `open:${SOURCE_ROOM}`,
+      `read:${EXTERNAL_CHALLENGE}`,
+      "respond:external-request-1",
+    ]);
+    preparedPlan.bytes.fill(0);
+    recipient.privateKey.fill(0);
+  });
+
+  test.each([
+    ["device", { deviceId: "wrong-device" }],
+    ["room", { sourceRoomId: "b0000000-0000-4000-8000-000000000282" }],
+    ["operation", { operations: ["decrypt", "encrypt"] as const }],
+    ["principal", { recipientPrincipalId: "wrong-runtime" }],
+    ["authorization generation", { recipientAuthorizationRevision: 1 }],
+    ["runtime generation", { recipientRuntimeGeneration: 1 }],
+  ] as const)("rejects an external-request %s mismatch before opening keys", async (
+    _kind,
+    mismatch,
+  ) => {
+    const crypto = new LatticeCrypto(seededRng(322_101), { now: () => NOW });
+    const recipient = await crypto.generateEncryptionKeyPair();
+    const mismatchedPlan = protectedTaskExternalRequestPlan({
+      crypto,
+      ...mismatch,
+    });
+    let domainOpens = 0;
+    let reads = 0;
+    const client = pendingAttentionClient(pendingAttentionApi({
+      listProtectedTaskExternalRequests: async () => ({
+        status: "ready",
+        requests: [{ requestId: "external-request-1", taskId: TASK,
+          taskRunId: TASK_RUN, jobId: JOB, roomId: ROOM,
+          ownerId: COORDINATES.userId, state: "available" }],
+      }),
+      planProtectedTaskExternalRequest: async () => ({
+        status: "authorization_required",
+        challengeId: EXTERNAL_CHALLENGE,
+        authorizationPlanBytesBase64url: base64url(mismatchedPlan.bytes),
+        recipientPublicKeyBase64url: base64url(recipient.publicKey),
+        deadlineAt: NOW + 30_000,
+        requestDeadlineAt: NOW + 30_000,
+        roomId: SOURCE_ROOM,
+      }),
+      readProtectedTaskExternalRequest: async () => {
+        reads += 1;
+        throw new Error("must not read");
+      },
+    }), {
+      crypto,
+      domainForegroundAuthority: {
+        withOpenedAuthorizationDomains: () => {
+          domainOpens += 1;
+          return Promise.reject(new Error("must not open domains"));
+        },
+        withOpenedTurnAuthority: () => Promise.reject(new Error("unused")),
+        withOpenedReusableTurnRoomKey: () => Promise.reject(new Error("unused")),
+      },
+    });
+
+    expect(await client.recoverProtectedTaskExternalRequests({
+      clientActionSessionId: "external-request-session",
+    })).toEqual({ status: "unavailable", entries: [] });
+    expect(domainOpens).toBe(0);
+    expect(reads).toBe(0);
+    mismatchedPlan.bytes.fill(0);
+    recipient.privateKey.fill(0);
+  });
+
+  test.each([
+    ["short deadline after request deadline", NOW + 30_000, NOW + 29_999,
+      NOW + 29_999, 0],
+    ["unsafe request deadline", NOW + 30_000, Number.MAX_SAFE_INTEGER + 1,
+      NOW + 30_000, 0],
+    ["expired request deadline", NOW + 1, NOW + 1, NOW + 1, 0],
+    ["event deadline mismatch", NOW + 30_000, NOW + 60_000,
+      NOW + 60_001, 1],
+  ] as const)("rejects an external-request %s", async (
+    _kind,
+    deadlineAt,
+    requestDeadlineAt,
+    eventDeadlineAt,
+    expectedDomainOpens,
+  ) => {
+    const crypto = new LatticeCrypto(seededRng(322_102), { now: () => NOW });
+    const vault = await populatedProfileVault(crypto);
+    const recipient = await crypto.generateEncryptionKeyPair();
+    const preparedPlan = protectedTaskExternalRequestPlan({ crypto, deadlineAt });
+    const event = protectedTaskExternalRequestEvent(eventDeadlineAt);
+    let domainOpens = 0;
+    let reads = 0;
+    const client = createAuthorizedHumanLiveShadowMessageClient({
+      api: pendingAttentionApi({
+        listProtectedTaskExternalRequests: async () => ({
+          status: "ready",
+          requests: [{ requestId: event.requestId, taskId: TASK,
+            taskRunId: TASK_RUN, jobId: JOB, roomId: ROOM,
+            ownerId: COORDINATES.userId, state: "available" }],
+        }),
+        planProtectedTaskExternalRequest: async () => ({
+          status: "authorization_required",
+          challengeId: EXTERNAL_CHALLENGE,
+          authorizationPlanBytesBase64url: base64url(preparedPlan.bytes),
+          recipientPublicKeyBase64url: base64url(recipient.publicKey),
+          deadlineAt,
+          requestDeadlineAt,
+          roomId: SOURCE_ROOM,
+        }),
+        readProtectedTaskExternalRequest: async () => {
+          reads += 1;
+          return { status: "read", event, responseCapability: RESPONSE_CAPABILITY };
+        },
+      }),
+      crypto,
+      vault,
+      coordinates: COORDINATES,
+      journal: createPreparedMutationJournal({
+        vault: {} as PreparedMutationJournalVaultPort,
+        now: () => NOW,
+      }),
+      ensureJournalAvailable: () => Promise.resolve(false),
+      now: () => NOW + 1,
+      createIdempotencyKey: () => "unused",
+      normalizeContent: (content) => content,
+      domainForegroundAuthority: {
+        withOpenedAuthorizationDomains: async (_request, use) => {
+          domainOpens += 1;
+          return {
+            status: "opened",
+            value: await use([Object.freeze({
+              ...preparedPlan.domain,
+              domainKey: new Uint8Array(32).fill(0xa4),
+            })]),
+          };
+        },
+        withOpenedTurnAuthority: () => Promise.reject(new Error("unused")),
+        withOpenedReusableTurnRoomKey: () => Promise.reject(new Error("unused")),
+      },
+    });
+
+    expect(await client.recoverProtectedTaskExternalRequests({
+      clientActionSessionId: "external-request-session",
+    })).toEqual({ status: "unavailable", entries: [] });
+    expect(domainOpens).toBe(expectedDomainOpens);
+    expect(reads).toBe(expectedDomainOpens);
+    preparedPlan.bytes.fill(0);
+    recipient.privateKey.fill(0);
+  });
+
+  test("fails closed for missing APIs, stale frontend custody, and expired response", async () => {
+    const absent = pendingAttentionClient(pendingAttentionApi({}));
+    expect(await absent.recoverProtectedTaskExternalRequests({
+      clientActionSessionId: "external-request-session",
+    })).toEqual({ status: "unavailable", entries: [] });
+
+    let lists = 0;
+    const stale = pendingAttentionClient(pendingAttentionApi({
+      listProtectedTaskExternalRequests: async () => {
+        lists += 1;
+        return { status: "ready", requests: [] };
+      },
+    }));
+    expect(await stale.recoverProtectedTaskExternalRequests({
+      clientActionSessionId: "external-request-session",
+      isCurrent: () => false,
+    })).toEqual({ status: "unavailable", entries: [] });
+    expect(lists).toBe(0);
+
+    const expired = pendingAttentionClient(pendingAttentionApi({
+      respondProtectedTaskExternalRequest: async () => ({ status: "unavailable" }),
+    }));
+    expect(await expired.respondProtectedTaskExternalRequest({
+      clientActionSessionId: "external-request-session",
+      requestId: "external-request-1",
+      responseCapability: RESPONSE_CAPABILITY,
+      response: { kind: "command_approval_required", decision: "deny" },
+    })).toEqual({ status: "unavailable" });
+  });
+
+  test("exhausts opaque Task checkpoint pages without opening custody when empty", async () => {
+    const cursors: Array<string | undefined> = [];
+    let reads = 0;
+    let domainOpens = 0;
+    const client = pendingAttentionClient(pendingAttentionApi({
+      getTaskPendingAttention: (request) => {
+        cursors.push(request.cursor);
+        return Promise.resolve({
+          status: "ready" as const,
+          nextCursor: request.cursor === undefined ? "opaque-task-page-2" : null,
+        });
+      },
+      readTaskPendingAttention: () => {
+        reads += 1;
+        return Promise.reject(new Error("must not read"));
+      },
+    }), {
+      domainForegroundAuthority: {
+        withOpenedAuthorizationDomains: () => {
+          domainOpens += 1;
+          return Promise.reject(new Error("must not open domains"));
+        },
+        withOpenedTurnAuthority: () => Promise.reject(new Error("unused")),
+        withOpenedReusableTurnRoomKey: () => Promise.reject(new Error("unused")),
+      },
+    });
+
+    expect(await client.recoverTaskPendingAttention({
+      clientActionSessionId: "pending-session-1",
+    })).toEqual({ status: "ready", events: [] });
+    expect(cursors).toEqual([undefined, "opaque-task-page-2"]);
+    expect(reads).toBe(0);
+    expect(domainOpens).toBe(0);
+  });
+
+  test("rejects a Task pending read plan that grants encryption", async () => {
+    const crypto = new LatticeCrypto(seededRng(322_003));
+    const recipient = await crypto.generateEncryptionKeyPair();
+    const planBytes = pendingAttentionPlanBytes(crypto, ["decrypt", "encrypt"]);
+    let reads = 0;
+    let domainOpens = 0;
+    const client = pendingAttentionClient(pendingAttentionApi({
+      getTaskPendingAttention: () => Promise.resolve({
+        status: "ready" as const,
+        challenge: {
+          challengeId: "pending-challenge-1",
+          authorizationPlanBytesBase64url: base64url(planBytes),
+          recipientPublicKeyBase64url: base64url(recipient.publicKey),
+          deadlineAt: NOW + 30_000,
+          roomId: ROOM,
+          taskId: TASK,
+          taskRunId: TASK_RUN,
+        },
+        nextCursor: null,
+      }),
+      readTaskPendingAttention: () => {
+        reads += 1;
+        return Promise.reject(new Error("must not read"));
+      },
+    }), {
+      crypto,
+      domainForegroundAuthority: {
+        withOpenedAuthorizationDomains: () => {
+          domainOpens += 1;
+          return Promise.reject(new Error("must not open domains"));
+        },
+        withOpenedTurnAuthority: () => Promise.reject(new Error("unused")),
+        withOpenedReusableTurnRoomKey: () => Promise.reject(new Error("unused")),
+      },
+    });
+
+    expect(await client.recoverTaskPendingAttention({
+      clientActionSessionId: "pending-session-1",
+    })).toEqual({ status: "unavailable", events: [] });
+    expect(reads).toBe(0);
+    expect(domainOpens).toBe(0);
+    planBytes.fill(0);
+    recipient.privateKey.fill(0);
+  });
+
   test("recovers every ordinary pending page without an execution request", async () => {
     const cursors: Array<string | undefined> = [];
     let executionRequests = 0;
@@ -729,6 +1233,8 @@ describe("authorized Human live Shadow Message client", () => {
     };
     let ready = false;
     let publications = 0;
+    let taskPublications = 0;
+    const taskRequests: unknown[] = [];
     const diagnostics: unknown[] = [];
     let diagnosticObserverThrows = false;
     let currentNow = NOW + 1;
@@ -739,6 +1245,12 @@ describe("authorized Human live Shadow Message client", () => {
           publications += 1;
           return Promise.resolve({ responseVersion: 1 as const, status: "authorized" as const,
             invocationId: "runtime-invocation:m321" });
+        },
+        authorizeTaskDefinition: (_roomId, authorizationId, request) => {
+          taskPublications += 1;
+          taskRequests.push(request);
+          return Promise.resolve({ responseVersion: 1 as const, status: "authorized" as const,
+            authorizationId });
         } },
       crypto, vault, coordinates: COORDINATES,
       journal: createPreparedMutationJournal({ vault: {} as PreparedMutationJournalVaultPort,
@@ -767,6 +1279,83 @@ describe("authorized Human live Shadow Message client", () => {
     expect(authorized).toBe(true);
     expect(publications).toBe(1);
     diagnosticObserverThrows = false;
+
+    const workDescriptorDigest = new Uint8Array(32).fill(0x95);
+    const taskAuthorizationId = taskDefinitionForegroundAuthorizationIdV1(
+      crypto,
+      {
+        parentOperationId: "parent-operation:m321",
+        taskId: TASK,
+        operation: "update",
+        targetContentRevision: 2,
+        workDescriptorDigest,
+      },
+    );
+    const parentAgentSignerPublicKey = new Uint8Array(32).fill(0x96);
+    const taskRecipientKeyId = deriveTaskDefinitionForegroundRecipientKeyIdV1(
+      crypto,
+      { authorizationId: taskAuthorizationId, parentAgentSignerPublicKey },
+    );
+    const parentSessionId = "30000000-0000-4000-8000-000000000298";
+    const browserSessionId = "task-browser-action-session";
+    const taskPlan = createDomainForegroundAuthorizationPlan(crypto, {
+      authorizationId: taskAuthorizationId, policyRevision: 1,
+      sessionId: parentSessionId,
+      roomId: "private-room:m321",
+      subjectHumanId: humanId(COORDINATES.humanActorId),
+      committerDeviceId: cryptoDeviceId(COORDINATES.deviceId),
+      committerDeviceSigningGeneration: 1,
+      hostAuthorizationRevision: authorizationRevision(1), recipientKind: "runtime",
+      recipientPrincipalId: "nautilo_foreground_runtime",
+      recipientAuthorizationRevision: authorizationRevision(0),
+      recipientRuntimeGeneration: 0, recipientKeyId: taskRecipientKeyId,
+      operations: ["decrypt", "encrypt"], issuedAt: unixTimestamp(NOW),
+      deadlineAt: unixTimestamp(NOW + 30_000), maximumSecretBytes: 1024,
+      domains: Object.freeze([domain]),
+    });
+    const taskPlanBytes = serializeDomainForegroundAuthorizationPlanV2(taskPlan);
+    destroyDomainForegroundAuthorizationPlanV2(taskPlan);
+    const taskEvent = {
+      wireVersion: 1 as const,
+      type: "message.task_definition_authorization_required" as const,
+      laneKey: `room:${ROOM}`, userId: COORDINATES.userId, roomId: ROOM,
+      parentOperationId: "parent-operation:m321",
+      authorizationId: taskAuthorizationId,
+      taskId: TASK, operation: "update" as const, targetContentRevision: 2,
+      workDescriptorDigestBase64url: base64url(workDescriptorDigest),
+      parentAgentSignerPublicKeyBase64url:
+        base64url(parentAgentSignerPublicKey),
+      parentSessionId,
+      clientActionSessionId: browserSessionId,
+      deadlineAt: NOW + 30_000, authorizationScheme: "runtime_foreground_v1" as const,
+      authorizationPlanBytesBase64url: base64url(taskPlanBytes),
+      recipientPublicKeyBase64url: base64url(recipient.publicKey),
+    };
+    expect(await client.authorizeSharedAgentExecution(taskEvent)).toBe(true);
+    expect(taskPublications).toBe(1);
+    expect(taskRequests).toHaveLength(1);
+    expect(taskRequests[0]).toMatchObject({
+      operationId: taskAuthorizationId,
+      parentOperationId: taskEvent.parentOperationId,
+      clientActionSessionId: browserSessionId,
+    });
+    expect(await client.authorizeSharedAgentExecution({
+      ...taskEvent,
+      parentSessionId: "other-parent-session",
+    })).toBe(false);
+    expect(taskPublications).toBe(1);
+    expect(taskRequests).toHaveLength(1);
+    expect(await client.authorizeSharedAgentExecution({
+      ...taskEvent,
+      targetContentRevision: 3,
+    })).toBe(false);
+    expect(await client.authorizeSharedAgentExecution({
+      ...taskEvent,
+      parentAgentSignerPublicKeyBase64url:
+        base64url(new Uint8Array(32).fill(0x97)),
+    })).toBe(false);
+    expect(taskPublications).toBe(1);
+
     currentNow = NOW + 30_000;
     expect(await client.authorizeSharedAgentExecution(event)).toBe(false);
     expect(publications).toBe(1);
@@ -778,8 +1367,22 @@ describe("authorized Human live Shadow Message client", () => {
       { stage: "runtime_authorization", reason: "prepare_complete_prepared" },
       { stage: "runtime_authorization", reason: "request_started" },
       { stage: "runtime_authorization", reason: "request_authorized" },
+      { stage: "runtime_authorization", reason: "prepare_started" },
+      { stage: "runtime_authorization", reason: "prepare_complete_prepared" },
+      { stage: "runtime_authorization", reason: "request_started" },
+      { stage: "runtime_authorization", reason: "request_authorized" },
+      { stage: "runtime_authorization", reason: "prepare_started" },
+      { stage: "runtime_authorization", reason: "prepare_complete_unavailable" },
+      { stage: "runtime_authorization", reason: "plan_stale" },
+      { stage: "runtime_authorization", reason: "event_stale" },
+      { stage: "runtime_authorization", reason: "prepare_started" },
+      { stage: "runtime_authorization", reason: "prepare_complete_unavailable" },
+      { stage: "runtime_authorization", reason: "plan_stale" },
       { stage: "runtime_authorization", reason: "event_stale" },
     ]);
+    workDescriptorDigest.fill(0);
+    parentAgentSignerPublicKey.fill(0);
+    taskPlanBytes.fill(0);
     planBytes.fill(0);
     recipient.publicKey.fill(0);
     recipient.privateKey.fill(0);

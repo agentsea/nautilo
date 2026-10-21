@@ -184,6 +184,57 @@ describe("Task Memory-envelope resolution", () => {
     expect(result.envelope).not.toHaveProperty("originWritableNamespaceId");
   });
 
+  test("accepts an authorized legacy Namespace shape only with the exact protected Scope origin", async () => {
+    const explicit = namespaceEnvelope();
+    const { memoryMode: _legacyDiscriminator, ...legacy } = explicit;
+    const resolve = (protectedScopeOrigin?: Readonly<{
+      roomId: string;
+      namespaceId: string;
+    }>) => resolveTaskMemoryEnvelope(
+      {
+        task: makeTask({ useScope: true, scopeId: ids.scope }),
+        db,
+        resolver: policyResolver(async () => legacy),
+        laneKey: `task:${ids.task}`,
+        sessionRoomId: ids.room,
+        targetUserIds: [],
+        ...(protectedScopeOrigin === undefined ? {} : {
+          protectedScopeOrigin,
+        }),
+      },
+      dependencies(),
+    );
+
+    const ordinary = await resolve();
+    expect(ordinary).toMatchObject({
+      authorityStatus: "unresolved",
+      provenance: "scope_without_origin_namespace",
+    });
+
+    const protectedExact = await resolve({
+      roomId: ids.room,
+      namespaceId: ids.namespace,
+    });
+    expect(protectedExact).toMatchObject({
+      authorityStatus: "exact",
+      provenance: "scope_existing",
+      envelope: {
+        memoryMode: "scope",
+        roomId: ids.room,
+        originWritableNamespaceId: ids.namespace,
+      },
+    });
+
+    const crossed = await resolve({
+      roomId: ids.callingRoom,
+      namespaceId: ids.namespace,
+    });
+    expect(crossed).toMatchObject({
+      authorityStatus: "unresolved",
+      provenance: "scope_without_origin_namespace",
+    });
+  });
+
   test("derives exact namespace authority from the fresh target-user set", async () => {
     const targetCalls: Array<Record<string, unknown>> = [];
     const exactEnvelope = namespaceEnvelope({

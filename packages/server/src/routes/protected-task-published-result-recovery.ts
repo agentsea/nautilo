@@ -1,3 +1,4 @@
+import { isTaskExecutionWorkKind } from "@nautilo/runtime";
 import {
   and,
   eq,
@@ -42,8 +43,8 @@ export function isExactProtectedTaskPublishedResultRecord(
     && record.snapshot.namespaceId === proof.contentNamespaceId
     && record.snapshot.acceptedResponse?.issuingHumanId === proof.requesterHumanId
     && record.expectedPolicyRevision === reference.policyRevision
-    && record.workKind === "task.execute"
-    && record.purpose === "task.execute"
+    && isTaskExecutionWorkKind(record.workKind)
+    && record.purpose === record.workKind
     && record.processorAuthorizationRevision === null
     && record.authoritySet !== undefined
     && isTaskRuntimeStableIdempotencyKey(record.idempotencyKey, reference.taskRunId);

@@ -1,4 +1,6 @@
-import { and, domainKeyHeads, eq, type PostgresJsBridgeConnection } from "@nautilo/db";
+import { parseTaskHistoricalRepairProvenanceV1, type TaskHistoricalRepairProvenanceV1 } from "../../task/task-historical-repair-provenance.ts";
+import { captureForegroundTaskDefinitionAuthor, foregroundAgentAcceptedExecutionSigner, type ResolveForegroundAgentAcceptedExecutionEvidence } from "../message/postgres-foreground-agent-signer.ts";
+import { and, domainKeyHeads, eq, objectCryptoAccessManifests, type PostgresJsBridgeConnection } from "@nautilo/db";
 import {
   assertAuthenticTaskRuntimeExecutionEvidence,
   decryptObjectThroughNamespace,
@@ -9,13 +11,15 @@ import {
 import {
   decodeEncryptedPayloadV2,
   decodeNamespaceObjectEnvelopeV2,
+  decodeObjectAccessManifestV5,
 } from "@nautilo/lattice-crypto/wire";
+import { PostgresHumanDeviceSignerHistory } from "../storage/postgres-human-device-signer-history.ts";
 import type { ProtectedTaskDefinitionOccurrenceV1 } from "../../task/protected-task-definition-opener.ts";
 import {
-  deriveTaskContentCryptoObjectIdV1,
+  taskContentRevisionObjectIdV1,
   TASK_DEFINITION_OBJECT_TYPE_V1,
 } from "../../task/task-content-repository.ts";
-import { decodeTaskPayloadV1, type TaskPayloadV1 } from "../../task/task-payload-v1.ts";
+import { decodeTaskDefinitionContent, type TaskPayloadV1 } from "../../task/task-payload-v1.ts";
 import {
   PostgresDomainKeyAuthorityRepository,
   type DomainForegroundNamespaceAuthorityInspectionV2,
@@ -30,10 +34,13 @@ import {
 import {
   destroyVerifiedStoredObjectAccessManifestChainV5,
   verifyStoredObjectAccessManifestChainV5,
+  type ResolveTaskDefinitionForegroundAuthorization,
 } from "../storage/postgres-object-access-manifest-v5.ts";
 
 export type NativeProtectedTaskDefinitionOccurrenceV1 =
-  ProtectedTaskDefinitionOccurrenceV1 & Readonly<{
+  Omit<ProtectedTaskDefinitionOccurrenceV1, "cryptoAccessRevision"> & Readonly<{
+    cryptoAccessRevision: number;
+    definitionHistoricalRepair?: TaskHistoricalRepairProvenanceV1;
     taskRunId: string;
     sourceRoomId: string;
     agentId: string;
@@ -54,6 +61,7 @@ function sameOccurrence(
     && left.agentId === right.agentId
     && left.requesterHumanId === right.requesterHumanId
     && left.objectId === right.objectId
+    && JSON.stringify(left.definitionHistoricalRepair ?? null) === JSON.stringify(right.definitionHistoricalRepair ?? null)
     && left.contentRevision === right.contentRevision
     && left.cryptoAccessRevision === right.cryptoAccessRevision
     && left.namespaceId === right.namespaceId
@@ -84,10 +92,11 @@ function exactDomain(
     || result.namespace.operations.length !== 1
     || result.namespace.operations[0] !== "encrypt"
     || evidence.policyRevision !== occurrence.expectedPolicyRevision
-    || occurrence.objectId !== deriveTaskContentCryptoObjectIdV1({
-      kind: "definition", taskId: occurrence.taskId, contentRevision: occurrence.contentRevision,
+    || occurrence.objectId !== taskContentRevisionObjectIdV1({
+      coordinate: { kind: "definition", taskId: occurrence.taskId, contentRevision: occurrence.contentRevision },
+      namespaceId: occurrence.namespaceId, historicalRepair: occurrence.definitionHistoricalRepair ?? null,
     })
-    || occurrence.cryptoAccessRevision !== 0
+    || !Number.isSafeInteger(occurrence.cryptoAccessRevision) || occurrence.cryptoAccessRevision < 0
     || requirements.length !== 1 || requirement === undefined
     || requirement.domainId !== occurrence.domainId
     || requirement.expectedAccessRevision !== occurrence.expectedAccessRevision
@@ -153,6 +162,9 @@ export async function withNativeProtectedTaskDefinitionV1<Value>(input: Readonly
   evidence: TaskRuntimeExecutionEvidence;
   domains: readonly DomainForegroundSecretEntry[];
   signal: AbortSignal;
+  resolveForegroundAgentAcceptedExecutionEvidence?: ResolveForegroundAgentAcceptedExecutionEvidence | undefined;
+  resolveTaskDefinitionForegroundAuthorization?:
+    ResolveTaskDefinitionForegroundAuthorization | undefined;
   loadCurrentOccurrence(): Promise<NativeProtectedTaskDefinitionOccurrenceV1 | null>;
   execute(payload: TaskPayloadV1, assertCurrentOccurrence: () => Promise<void>): Value | PromiseLike<Value>;
 }>): Promise<Value> {
@@ -164,7 +176,9 @@ export async function withNativeProtectedTaskDefinitionV1<Value>(input: Readonly
   const loaded = await input.loadCurrentOccurrence();
   assertActive();
   if (loaded === null) throw new TypeError("Current native Task definition is unavailable");
-  const occurrence = Object.freeze({ ...loaded });
+  const occurrence = Object.freeze({ ...loaded, ...(loaded.definitionHistoricalRepair === undefined ? {} : {
+    definitionHistoricalRepair: parseTaskHistoricalRepairProvenanceV1(loaded.definitionHistoricalRepair),
+  }) });
   const domain = exactDomain(input.evidence, input.domains, occurrence);
   const handle = await verifyCryptoPostgresHandle(input.restricted);
   const storage = new PostgresLatticeStorage(handle);
@@ -238,7 +252,7 @@ export async function withNativeProtectedTaskDefinitionV1<Value>(input: Readonly
     if (storedObject === null || access === null
       || storedObject.objectId !== occurrence.objectId
       || access.head.objectId !== occurrence.objectId
-      || access.head.accessRevision !== 0
+      || access.head.accessRevision !== occurrence.cryptoAccessRevision
       || access.namespaceEnvelopes.length !== 1
       || access.namespaceEnvelopes[0]?.namespaceId !== occurrence.namespaceId) {
       throw new TypeError("Native Task definition ciphertext is incomplete");
@@ -264,17 +278,57 @@ export async function withNativeProtectedTaskDefinitionV1<Value>(input: Readonly
         || envelope.context.bindingRevisionAtWrap !== occurrence.expectedAccessRevision) {
         throw new TypeError("Native Task definition ciphertext coordinates are invalid");
       }
+      const author = captureForegroundTaskDefinitionAuthor({
+        resolveEvidence: input.resolveForegroundAgentAcceptedExecutionEvidence,
+        resolveTaskDefinitionForegroundAuthorization:
+          input.resolveTaskDefinitionForegroundAuthorization,
+        subjectHumanId: occurrence.requesterHumanId,
+        namespaceId: occurrence.namespaceId,
+        domainId: occurrence.domainId,
+      });
       const verified = await verifyStoredObjectAccessManifestChainV5({
         executor: handle, crypto: input.crypto, objectId: occurrence.objectId,
-        headAccessRevision: 0, expectedPayloadHash: payloadHash,
+        headAccessRevision: occurrence.cryptoAccessRevision, expectedPayloadHash: payloadHash,
         expectedHeadManifestHash: access.head.manifestHash,
-        resolveHistoricalAgentManagerAuthority: () => Promise.resolve(null),
+        resolveLiveShadowAgentSigner: foregroundAgentAcceptedExecutionSigner({ crypto: input.crypto,
+          resolveEvidence: author.resolveEvidence }),
+        resolveTaskDefinitionForegroundAuthorization:
+          author.resolveTaskDefinitionForegroundAuthorization,
+        resolveHistoricalAgentManagerAuthority: new PostgresHumanDeviceSignerHistory({ handle, crypto: input.crypto })
+          .resolveAgentRuntimeSignerManager,
       });
       try {
-        if (verified.headManifest.accessRevision !== 0
-          || verified.headManifest.previousManifestHash !== null
-          || verified.headManifest.signer.kind !== "human_device"
-          || verified.headManifest.signer.subjectHumanId !== occurrence.requesterHumanId
+        const rows = await executeTypedCryptoQuery(handle, cryptoTypedDb.select({
+          manifest_bytes: objectCryptoAccessManifests.manifestBytes,
+          manifest_hash: objectCryptoAccessManifests.manifestHash,
+        }).from(objectCryptoAccessManifests).where(and(
+          eq(objectCryptoAccessManifests.objectId, occurrence.objectId),
+          eq(objectCryptoAccessManifests.accessRevision, 0),
+        )).limit(2));
+        const row = rows[0];
+        if (rows.length !== 1 || row === undefined
+          || !(row.manifest_bytes instanceof Uint8Array) || !(row.manifest_hash instanceof Uint8Array)) {
+          throw new TypeError("Native Task definition genesis is unavailable");
+        }
+        const genesisBytes = Uint8Array.from(row.manifest_bytes);
+        owned.push(genesisBytes);
+        const genesis = decodeObjectAccessManifestV5(genesisBytes);
+        const genesisSignerMatches = genesis.signer.kind === "human_device"
+          ? genesis.signer.subjectHumanId === occurrence.requesterHumanId
+            && verified.genesisHumanId === occurrence.requesterHumanId
+          : genesis.signer.kind === "agent_runtime"
+            && (genesis.signer.agentId === occurrence.agentId
+              || author.authorizes(genesis.signer));
+        if (genesis.objectId !== occurrence.objectId || genesis.accessRevision !== 0
+          || genesis.previousManifestHash !== null || !genesisSignerMatches
+          || (occurrence.definitionHistoricalRepair != null && (genesis.signer.kind !== "human_device"
+            || genesis.signer.committerDeviceId !== occurrence.definitionHistoricalRepair.publisherDeviceId))
+          || !sameBytes(input.crypto.hash(genesisBytes), row.manifest_hash)
+          || (occurrence.definitionHistoricalRepair?.version === 2
+            && Buffer.from(row.manifest_hash).toString("hex") !== occurrence.definitionHistoricalRepair.genesisManifestHash)
+          || !sameBytes(genesis.payloadHash, payloadHash)
+          || (occurrence.cryptoAccessRevision === 0 && !sameBytes(genesisBytes, verified.headManifestBytes))
+          || verified.headManifest.accessRevision !== occurrence.cryptoAccessRevision
           || verified.headManifest.envelopeHashes.length !== 1
           || !sameBytes(verified.headManifest.envelopeHashes[0]!, envelopeHash)) {
           throw new TypeError("Native Task definition access manifest is invalid");
@@ -291,7 +345,7 @@ export async function withNativeProtectedTaskDefinitionV1<Value>(input: Readonly
           const plaintext = decryptObjectThroughNamespace(input.crypto, key, openedEnvelope, payload);
           if (plaintext === null) throw new TypeError("Native Task definition could not be opened");
           try {
-            const decoded = decodeTaskPayloadV1(plaintext);
+            const decoded = decodeTaskDefinitionContent(plaintext).payload;
             const value = await input.execute(decoded, assertCurrentOccurrence);
             await assertCurrentOccurrence();
             // Preserve a callback's legitimate null return distinctly from

@@ -130,6 +130,7 @@ export function SubagentCard({
   );
   const {
     taskId,
+    taskRunId,
     status,
     agentName,
     modelId,
@@ -143,7 +144,7 @@ export function SubagentCard({
   } = subagent;
   const elapsed = useElapsedLabel(subagent.startedAtMs, status);
   const { messages: transcriptMessages, loading: transcriptLoading, error: transcriptError } =
-    useSubagentTranscript(taskId, { enabled: expanded });
+    useSubagentTranscript(taskId, { enabled: expanded, taskRunId });
 
   const accent =
     status === "errored"
@@ -161,7 +162,11 @@ export function SubagentCard({
     ? taskFundingRecovery(subagent.fundingFailure)
     : null;
 
-  const openTranscript = () => drawer.open({ kind: "subagent-transcript", taskId });
+  const openTranscript = () => drawer.open({
+    kind: "subagent-transcript",
+    taskId,
+    ...(taskRunId === null ? {} : { taskRunId }),
+  });
 
   return (
     <div

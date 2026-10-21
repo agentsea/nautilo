@@ -25,6 +25,8 @@ import {
 } from "@nautilo/lattice-crypto";
 import {
   encodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  decodeTaskRuntimeBackgroundAuthorizationRequestBase,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV1,
   type TaskRuntimeBackgroundAuthorizationRequestV1,
 } from "@nautilo/lattice-crypto/background";
 import {
@@ -46,11 +48,16 @@ import {
   verifyCryptoPostgresHandle,
   withCurrentAcceptedTaskRuntimeAuthority,
   type ConversationProductCanonicalTransactionRunner,
+  type ConversationProductPostgresHandle,
   type CryptoPostgresHandle,
   type CurrentTaskRuntimeAuthority,
   type TaskRuntimeAuthoritySubject,
 } from "@nautilo/lattice-bridge/server";
-import type { CanonicalTranscriptTx } from "@nautilo/trust";
+import {
+  findContentAccessNamespaceInTx,
+  resolveContentAccessNamespaceInTx,
+  type CanonicalTranscriptTx,
+} from "@nautilo/trust";
 import {
   assertProtectedTaskJobReferenceV1,
   isCurrentProtectedTaskRunForGrant,
@@ -106,6 +113,8 @@ export type HeldProtectedTaskMemoryAuthority = Readonly<{
 export type HeldProtectedTaskMemoryWriterAuthority = Readonly<{
   crypto: LatticeCrypto;
   evidence: TaskRuntimeExecutionEvidence;
+  /** Borrowed from this held transaction; never acquire a nested product connection. */
+  productHandle: ConversationProductPostgresHandle;
   restricted: PostgresJsBridgeConnection;
   restrictedHandle: CryptoPostgresHandle;
   assertCurrent(): Promise<void>;
@@ -122,6 +131,7 @@ type HeldState = {
   restricted: PostgresJsBridgeConnection | null;
   restrictedHandle: CryptoPostgresHandle | null;
   product: PostgresJsBridgeConnection;
+  productHandle: ConversationProductPostgresHandle | null;
   transaction: CanonicalTranscriptTx;
 };
 
@@ -244,7 +254,7 @@ function assertInputBinding(
     || snapshot.recipientGeneration !== evidence.recipientGeneration
     || snapshot.recipient?.recipientKeyId !== evidence.recipientKeyId
     || snapshot.recipient.expiresAt !== evidence.recipientExpiresAt
-    || snapshot.acceptedResponse?.responseDigest
+    || snapshot.acceptedResponse?.credentialDigest
       !== bytesToHex(evidence.authorizationDigest)
     || record.expectedPolicyRevision !== evidence.policyRevision
     || request.requestId !== evidence.requestId
@@ -268,13 +278,18 @@ function assertInputBinding(
   ) throw new TaskMemoryAuthorityUnavailable();
 
   const bytes = encodeTaskRuntimeBackgroundAuthorizationRequestV1(request);
+  let acceptedBase: TaskRuntimeBackgroundAuthorizationRequestV1 | null = null;
+  let acceptedBytes: Uint8Array | undefined;
   try {
-    if (record.descriptorBytes === null
-      || !sameBytes(bytes, record.descriptorBytes)) {
-      throw new TaskMemoryAuthorityUnavailable();
-    }
+    if (record.descriptorBytes === null) throw new TaskMemoryAuthorityUnavailable();
+    acceptedBase = decodeTaskRuntimeBackgroundAuthorizationRequestBase(input.crypto, record.descriptorBytes);
+    if (acceptedBase === null) throw new TaskMemoryAuthorityUnavailable();
+    acceptedBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV1(acceptedBase);
+    if (!sameBytes(bytes, acceptedBytes)) throw new TaskMemoryAuthorityUnavailable();
   } finally {
     bytes.fill(0);
+    acceptedBytes?.fill(0);
+    if (acceptedBase !== null) destroyTaskRuntimeBackgroundAuthorizationRequestV1(acceptedBase);
   }
 }
 
@@ -415,12 +430,14 @@ export function requireHeldProtectedTaskMemoryWriterAuthority(
   held: HeldProtectedTaskMemoryAuthority,
 ): HeldProtectedTaskMemoryWriterAuthority {
   const state = stateFor(held);
-  if (state.restricted === null || state.restrictedHandle === null) {
+  if (state.restricted === null || state.restrictedHandle === null
+    || state.productHandle === null) {
     throw new TypeError("Task Memory restricted authority is unavailable");
   }
   return Object.freeze({
     crypto: state.input.crypto,
     evidence: state.input.evidence,
+    productHandle: state.productHandle,
     restricted: state.restricted,
     restrictedHandle: state.restrictedHandle,
     assertCurrent: () => assertHeldCurrent(held),
@@ -491,7 +508,9 @@ async function withCurrentProtectedTaskMemoryAuthorityTransaction<Value>(
           targetChat: tasks.targetChat,
           targetRoomId: tasks.targetRoomId,
         }).from(tasks)
-          .where(eq(tasks.id, input.occurrence.task.id)).limit(1).for("update");
+          .where(eq(tasks.id, input.occurrence.task.id)).limit(1)
+          // Exclude Task edits/deletes while permitting FK-only usage accounting.
+          .for("no key update");
         const [run] = await tx.select({
           id: taskRuns.id,
           taskId: taskRuns.taskId,
@@ -644,10 +663,15 @@ async function withCurrentProtectedTaskMemoryAuthorityTransaction<Value>(
               restricted: null,
               restrictedHandle: null,
               product,
+              productHandle: null,
               transaction: tx,
             };
             heldStates.set(held, state);
             try {
+              state.productHandle = await verifyConversationProductPostgresHandle(
+                guardedRestrictedConnection(held, product),
+              );
+              assertHeldCurrentSync(held);
               const restricted = guardedRestrictedConnection(
                 held,
                 currentRestricted,
@@ -686,6 +710,106 @@ export function withCurrentProtectedTaskMemoryAuthority<Value>(
     use,
     "read committed",
   );
+}
+
+/**
+ * Resolve or reserve one immutable Human access Namespace only after the
+ * protected Task has obtained consent. The reservation remains inside the
+ * accepted Task/policy transaction and deliberately creates no Memory edge.
+ */
+export async function resolveProtectedTaskContentAccessNamespace(
+  input: ProtectedTaskMemoryAuthorityInput,
+  audience: Readonly<{
+    requesterUserId: string;
+    requesterActorId: string;
+    humanActorIds: readonly string[];
+  }>,
+): Promise<Readonly<{
+  roomId: string;
+  namespaceId: string;
+  minted: boolean;
+}> | null> {
+  if (input.scopeMemory !== undefined
+    || audience.requesterUserId !== input.subject.userId
+    || audience.requesterActorId !== input.subject.humanActorId) return null;
+  return withCurrentProtectedTaskMemoryAuthority(input, async held => {
+    const state = stateFor(held);
+    await held.assertCurrent();
+    const resolved = await resolveContentAccessNamespaceInTx(
+      state.transaction,
+      {
+        requesterUserId: audience.requesterUserId,
+        requesterActorId: audience.requesterActorId,
+        humanActorIds: Object.freeze([...audience.humanActorIds]),
+      },
+    );
+    await held.assertCurrent();
+    return Object.freeze({ ...resolved });
+  });
+}
+
+/** Reopen an already-reserved exact Human access Namespace without minting. */
+export async function findProtectedTaskContentAccessNamespace(
+  input: ProtectedTaskMemoryAuthorityInput,
+  audience: Readonly<{
+    requesterUserId: string;
+    requesterActorId: string;
+    humanActorIds: readonly string[];
+  }>,
+): Promise<Readonly<{
+  roomId: string;
+  namespaceId: string;
+}> | null> {
+  if (input.scopeMemory !== undefined
+    || audience.requesterUserId !== input.subject.userId
+    || audience.requesterActorId !== input.subject.humanActorId) return null;
+  return withCurrentProtectedTaskMemoryAuthority(input, async held => {
+    const state = stateFor(held);
+    await held.assertCurrent();
+    const found = await findContentAccessNamespaceInTx(
+      state.transaction,
+      {
+        requesterUserId: audience.requesterUserId,
+        requesterActorId: audience.requesterActorId,
+        humanActorIds: Object.freeze([...audience.humanActorIds]),
+      },
+    );
+    await held.assertCurrent();
+    return found === null ? null : Object.freeze({ ...found });
+  });
+}
+
+/** Revalidate the exact immutable access audience while the final Task/policy
+ * transaction remains held. Identity SHARE locks prevent a concurrent disable
+ * from winning before the protected publication and product edge settle. */
+export async function assertHeldProtectedTaskContentAccessNamespace(
+  held: HeldProtectedTaskMemoryAuthority,
+  audience: Readonly<{
+    requesterUserId: string;
+    requesterActorId: string;
+    humanActorIds: readonly string[];
+  }>,
+  expected: Readonly<{ roomId: string; namespaceId: string }>,
+): Promise<boolean> {
+  const state = stateFor(held);
+  if (state.input.scopeMemory !== undefined
+    || audience.requesterUserId !== state.input.subject.userId
+    || audience.requesterActorId !== state.input.subject.humanActorId) {
+    return false;
+  }
+  await held.assertCurrent();
+  const current = await findContentAccessNamespaceInTx(
+    state.transaction,
+    {
+      requesterUserId: audience.requesterUserId,
+      requesterActorId: audience.requesterActorId,
+      humanActorIds: Object.freeze([...audience.humanActorIds]),
+    },
+  );
+  await held.assertCurrent();
+  return current !== null
+    && current.roomId === expected.roomId
+    && current.namespaceId === expected.namespaceId;
 }
 
 /** Resolve legacy provenance for the exact repair candidate under the live Task

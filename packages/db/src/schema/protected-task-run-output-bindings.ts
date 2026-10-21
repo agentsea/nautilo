@@ -29,6 +29,7 @@ export const protectedTaskRunOutputBindings = pgTable(
     }).notNull(),
     destinationRoomId: uuid("destination_room_id"),
     destinationNamespaceId: uuid("destination_namespace_id"),
+    resultRevision: integer("result_revision").notNull().default(1),
     resultOperationId: text("result_operation_id").notNull().unique(),
     resultObjectId: text("result_object_id").notNull().unique(),
     messageOperationId: text("message_operation_id").unique(),
@@ -63,7 +64,12 @@ export const protectedTaskRunOutputBindings = pgTable(
     check(
       "protected_task_run_output_bindings_result_identity_shape",
       sql`${table.bindingId} = 'task-run-output:' || ${table.taskRunId}::text
-        and ${table.resultOperationId} = 'task-run-result:' || ${table.taskRunId}::text
+        and (
+          (${table.resultRevision} = 1
+            and ${table.resultOperationId} = 'task-run-result:' || ${table.taskRunId}::text)
+          or (${table.resultRevision} = 2
+            and ${table.resultOperationId} = 'task-run-cancelled-result:' || ${table.taskRunId}::text)
+        )
         and ${table.resultObjectId} ~ '^task-run-result:v1:[0-9a-f]{64}$'`,
     ),
     check(

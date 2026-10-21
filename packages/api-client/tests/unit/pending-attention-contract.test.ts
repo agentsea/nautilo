@@ -2,15 +2,19 @@ import { describe, expect, test } from "bun:test";
 
 import {
   isRoomPendingAttentionEventForViewer,
+  isTaskPendingAttentionEventForViewer,
   NautiloApiClient,
   type NautiloApiFetch,
   type RoomPendingAttentionEvent,
+  type TaskPendingAttentionEvent,
 } from "../../src/client";
 
 const ROOM = "40000000-0000-4000-8000-000000000322";
 const HUMAN = "20000000-0000-4000-8000-000000000322";
 const AGENT = "30000000-0000-4000-8000-000000000322";
 const USER = "10000000-0000-4000-8000-000000000322";
+const TASK = "50000000-0000-4000-8000-000000000322";
+const RUN = "60000000-0000-4000-8000-000000000322";
 
 function approval(laneKey: string): RoomPendingAttentionEvent {
   return {
@@ -106,5 +110,80 @@ describe("pending attention HTTP contract", () => {
       rejected = true;
     }
     expect(rejected).toBeTrue();
+  });
+
+  test("posts exact Task page and one-use read coordinates", async () => {
+    const seen: Array<{ url: string; body: unknown }> = [];
+    const taskEvent: TaskPendingAttentionEvent = {
+      ...approval(`task:${TASK}`),
+      origin: "task" as const,
+      taskId: TASK,
+      taskRunId: RUN,
+      userId: USER,
+    };
+    const fetchImpl: NautiloApiFetch = async (target, init) => {
+      const url = typeof target === "string" ? target
+        : target instanceof URL ? target.href : target.url;
+      seen.push({
+        url,
+        body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
+      });
+      return url.endsWith("/read")
+        ? json({ status: "read", events: [taskEvent] })
+        : json({ status: "ready", nextCursor: "opaque-next" });
+    };
+    const client = new NautiloApiClient("https://nautilo.test", { fetchImpl });
+    expect(await client.getTaskPendingAttention({
+      clientActionSessionId: "action-session-322",
+      authorizationDeviceId: "device-322",
+      cursor: "opaque-current",
+    })).toEqual({ status: "ready", nextCursor: "opaque-next" });
+    expect(await client.readTaskPendingAttention({
+      clientActionSessionId: "action-session-322",
+      authorizationDeviceId: "device-322",
+      taskId: TASK,
+      taskRunId: RUN,
+      challengeId: "challenge-322",
+      authorizationBytesBase64url: "authorization-322",
+    })).toEqual({ status: "read", events: [taskEvent] });
+    expect(seen).toEqual([
+      {
+        url: "https://nautilo.test/api/tasks/pending-attention",
+        body: {
+          clientActionSessionId: "action-session-322",
+          authorizationDeviceId: "device-322",
+          cursor: "opaque-current",
+        },
+      },
+      {
+        url: "https://nautilo.test/api/tasks/pending-attention/read",
+        body: {
+          clientActionSessionId: "action-session-322",
+          authorizationDeviceId: "device-322",
+          taskId: TASK,
+          taskRunId: RUN,
+          challengeId: "challenge-322",
+          authorizationBytesBase64url: "authorization-322",
+        },
+      },
+    ]);
+  });
+
+  test("admits only an exact owner Task/run/lane event", () => {
+    const event: TaskPendingAttentionEvent = {
+      ...approval(`task:${TASK}`),
+      origin: "task" as const,
+      taskId: TASK,
+      taskRunId: RUN,
+      userId: USER,
+    };
+    const expected = { taskId: TASK, taskRunId: RUN, userId: USER };
+    expect(isTaskPendingAttentionEventForViewer(event, expected)).toBeTrue();
+    expect(isTaskPendingAttentionEventForViewer({ ...event, taskRunId: AGENT }, expected))
+      .toBeFalse();
+    expect(isTaskPendingAttentionEventForViewer({ ...event, userId: HUMAN }, expected))
+      .toBeFalse();
+    expect(isTaskPendingAttentionEventForViewer({ ...event, laneKey: `task:${AGENT}` }, expected))
+      .toBeFalse();
   });
 });

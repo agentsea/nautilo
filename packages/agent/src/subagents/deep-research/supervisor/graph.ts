@@ -80,7 +80,8 @@ function createSupervisorNode(cfg: Configuration) {
       const toolBoundModel: ChatModel<BaseMessageLike, unknown> = model.bindTools(tools);
 
       const response = await invokeWithRetry<BaseMessageLike, unknown>(toolBoundModel, messages, {
-        label: "supervisor.invoke",
+        ...(cfg.confidential ? { confidential: true as const } : {}),
+      label: "supervisor.invoke",
         attempts: 3,
         timeoutMs: 60000,
         ...(config?.signal ? { signal: config.signal } : {}),
@@ -91,7 +92,7 @@ function createSupervisorNode(cfg: Configuration) {
       return { supervisor_messages: [...supervisorMessages, admittedResponse] };
     } catch (e) {
       if (config?.signal?.aborted) throw e;
-      warn(`[supervisor] failed: ${getErrorMessage(e)}`);
+      if (!cfg.confidential) warn(`[supervisor] failed: ${getErrorMessage(e)}`);
       // Retries are exhausted. Returning unchanged messages lets the graph
       // proceed to final synthesis, even when no research was performed.
       // Reject without modifying accumulated state so the Task reports failure.

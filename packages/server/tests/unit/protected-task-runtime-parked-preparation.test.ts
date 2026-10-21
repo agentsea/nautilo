@@ -98,9 +98,12 @@ function fixture() {
   };
   const recipients = new TaskRuntimeRecipientRegistry(new LatticeCrypto());
   let held = false;
+  let notificationFails = false;
   const events: string[] = [];
+  const notifications: string[] = [];
   let captured: Parameters<NonNullable<Overrides["prepare"]>>[0] | undefined;
   const overrides: Overrides = {
+    readAccessLineage: async () => null,
     db: {} as NonNullable<Overrides["db"]>, now: () => NOW,
     discover: async () => expected, readOutput: async () => output,
     readPolicy: async () => ({ mode: "shadow_encryption", shadowBehavior: "strict", revision: 7 }),
@@ -132,8 +135,14 @@ function fixture() {
   };
   const run = (patch: Overrides = {}) => createProtectedTaskRuntimeParkedPreparation({
     resolver: {} as Parameters<typeof createProtectedTaskRuntimeParkedPreparation>[0]["resolver"], recipients,
+    authorizationRequested: async userId => {
+      expect(held).toBe(false);
+      notifications.push(userId);
+      if (notificationFails) throw new Error("notification unavailable");
+    },
   }, { ...overrides, ...patch })(expected.occurrence);
-  return { expected, output, plan, facts, events, run, overrides,
+  return { expected, output, plan, facts, events, notifications, run, overrides,
+    failNotification: () => { notificationFails = true; },
     captured: () => captured, isHeld: () => held, recipients };
 }
 
@@ -150,6 +159,7 @@ test("prepares current base plus exact semantic operations only inside held auth
       .toEqual([[CONTENT, ["decrypt", "encrypt"]], [BASE, ["decrypt", "encrypt"]], [ADDED, ["encrypt"]]]);
     expect(request.initialRecord.descriptorBytes).toBeNull();
     expect(request.initialRecord.acceptedMaterial).toBeNull();
+    expect(f.notifications).toEqual([USER]);
   } finally { f.recipients.close(); }
 });
 
@@ -164,6 +174,7 @@ test("never prepares fresh occurrences or Plain policy", async () => {
     expect(await prepare({ ...f.expected.occurrence, run: { ...f.expected.occurrence.run, jobId: null } }))
       .toEqual({ status: "inactive" });
     expect(f.events).toEqual([]);
+    expect(f.notifications).toEqual([]);
   } finally { f.recipients.close(); }
 });
 
@@ -178,6 +189,7 @@ test("changed routing or output cannot create a request or trigger a readiness w
     expect(failure).toBeInstanceOf(TypeError);
     expect(String(failure)).toContain("original routing evidence is unavailable");
     expect(f.captured()).toBeUndefined();
+    expect(f.notifications).toEqual([]);
   } finally { f.recipients.close(); }
 });
 
@@ -191,6 +203,7 @@ test("key readiness wakes only after held authority has unwound", async () => {
     } })).toEqual({ status: "awaiting_readiness" });
     expect(f.events).toEqual(["released", "wake"]);
     expect(f.captured()).toBeUndefined();
+    expect(f.notifications).toEqual([]);
   } finally { f.recipients.close(); }
 });
 
@@ -202,6 +215,7 @@ test("other post-routing authority failures remain inactive without a key wake",
       return null;
     } })).toEqual({ status: "inactive" });
     expect(f.events).toEqual([]);
+    expect(f.notifications).toEqual([]);
   } finally { f.recipients.close(); }
 });
 
@@ -213,6 +227,20 @@ test("held repository failure unwinds without publishing a readiness event", asy
     expect(failure).toBeInstanceOf(Error);
     expect(String(failure)).toContain("rollback");
     expect(f.events).toEqual(["validate", "repository", "released"]);
+    expect(f.notifications).toEqual([]);
+  } finally { f.recipients.close(); }
+});
+
+test("outer authority rollback suppresses a request notification after an inner mutation", async () => {
+  const f = fixture();
+  try {
+    const failure = await f.run({ withAuthority: async input => {
+      await f.overrides.withAuthority!(input);
+      throw new Error("outer rollback");
+    } }).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(String(failure)).toContain("outer rollback");
+    expect(f.notifications).toEqual([]);
   } finally { f.recipients.close(); }
 });
 
@@ -252,6 +280,7 @@ test("rotates an expired exact replay through the same held repository", async (
     expect(f.events).toEqual([
       "validate", "repository", "prepare", "get", "rotate", "released",
     ]);
+    expect(f.notifications).toEqual([USER]);
   } finally { f.recipients.close(); }
 });
 
@@ -275,6 +304,15 @@ test("a live exact replay remains exact and preserves recipient custody", async 
       },
     })).toEqual({ status: "exact_replay" });
     expect(f.recipients.size).toBe(0);
+    expect(f.notifications).toEqual([]);
+  } finally { f.recipients.close(); }
+});
+
+test("notification failure cannot change a committed preparation result", async () => {
+  const f = fixture(); f.failNotification();
+  try {
+    expect(await f.run()).toEqual({ status: "created" });
+    expect(f.notifications).toEqual([USER]);
   } finally { f.recipients.close(); }
 });
 
@@ -304,6 +342,7 @@ test.each(["created", "replaced"] as const)(
         prepare: async () => ({ status }),
         rotate: async () => { throw new Error("unexpected rotation"); },
       })).toEqual({ status });
+      expect(f.notifications).toEqual([USER]);
     } finally { f.recipients.close(); }
   },
 );

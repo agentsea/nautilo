@@ -9,11 +9,27 @@ import { unpauseTask } from "../../src/tasks/lifecycle";
 
 function fixture() {
   let task = { id: "task", ownerId: "owner", requestorId: "human", status: "paused", fundingMode: "legacy_server",
-    scheduleKind: "now", metadata: {}, contentRevision: 0, mutationVersion: "1", localExecutionDelegation: null, lastError: null } as Task & { mutationVersion: string };
+    scheduleKind: "now", metadata: {}, contentRepresentation: "ordinary", contentRevision: 0, mutationVersion: "1", localExecutionDelegation: null, lastError: null } as Task & { mutationVersion: string };
   let selects = 0; let updates = 0; let kicks = 0; let loseCAS = false; let predicate: SQL | undefined;
-  const db = { select: () => {
-    const chain = { from: () => chain, where: () => chain, orderBy: () => chain,
-      limit: async () => { selects++; return selects <= 2 ? [structuredClone(task)] : []; } };
+  const reads: Array<{ table: unknown; fields: string[] | null; predicate: SQL | undefined }> = [];
+  const db = { select: (projection?: Record<string, unknown>) => {
+    let table: unknown; let where: SQL | undefined;
+    const read = () => {
+      selects++;
+      reads.push({ table, fields: projection === undefined ? null : Object.keys(projection), predicate: where });
+      if (table !== tasks) return [];
+      const values: Record<string, unknown> = { ...structuredClone(task),
+        localExecutionRecaptureRequired: task.lastError === TASK_LOCAL_EXECUTION_RECREATE_TEXT,
+        fundingOutcomeUncertain: false, latestRunPaused: false };
+      return [projection === undefined ? values : Object.fromEntries(
+        Object.keys(projection).map((key) => [key, values[key]]))];
+    };
+    const chain = { from: (value: unknown) => { table = value; return chain; },
+      where: (value: SQL) => { where = value; return chain; }, orderBy: () => chain, limit: () => chain,
+      then: <TResult1 = unknown, TResult2 = never>(
+        fulfilled?: ((value: unknown[]) => TResult1 | PromiseLike<TResult1>) | null,
+        rejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+      ) => Promise.resolve(read()).then(fulfilled, rejected) };
     return chain;
   }, update: () => {
     const chain = { set: () => chain, where: (value: SQL) => { predicate = value; return chain; },
@@ -22,20 +38,28 @@ function fixture() {
   } } as unknown as DirectDatabase;
   return { deps: { db, jobManager: { abortJob: () => false }, observer: { kick: () => { kicks++; } } },
     setRepair: () => { task = { ...task, lastError: TASK_LOCAL_EXECUTION_RECREATE_TEXT }; },
-    loseCAS: () => { loseCAS = true; }, counts: () => ({ selects, updates, kicks }), predicate: () => predicate };
+    loseCAS: () => { loseCAS = true; }, counts: () => ({ selects, updates, kicks }), predicate: () => predicate, reads: () => reads };
 }
 
 test("Resume cannot turn edited delegated work into a cloud-only Task", async () => {
   const f = fixture(); f.setRepair();
   expect(await unpauseTask(f.deps, "task")).toEqual({ ok: false, status: "paused", message: TASK_LOCAL_EXECUTION_RECREATE_TEXT });
-  expect(f.counts()).toEqual({ selects: 1, updates: 0, kicks: 0 });
+  expect(f.counts()).toEqual({ selects: 2, updates: 0, kicks: 0 });
 });
 
 test("ordinary cloud Tasks retain Resume bound to the exact tuple version", async () => {
   const f = fixture(); expect(await unpauseTask(f.deps, "task")).toMatchObject({ ok: true, status: "pending" });
   const query = new PgDialect().sqlToQuery(f.predicate()!);
   expect(query.sql).toContain('xmin::text'); expect(query.params).toContain("1"); expect(query.params).toContain(TASK_LOCAL_EXECUTION_RECREATE_TEXT);
-  expect(f.counts()).toEqual({ selects: 3, updates: 1, kicks: 1 });
+  expect(f.counts()).toEqual({ selects: 4, updates: 1, kicks: 1 });
+  const taskReads = f.reads().filter((read) => read.table === tasks);
+  expect(taskReads[0]?.fields).not.toContain("prompt");
+  expect(taskReads[0]?.fields).toContain("localExecutionRecaptureRequired");
+  for (const read of taskReads.slice(1)) {
+    const selected = new PgDialect().sqlToQuery(read.predicate!);
+    expect(selected.sql).toContain('"content_representation"');
+    expect(selected.params).toContain("ordinary");
+  }
 });
 
 test("an edit winning while Resume awaits its checkpoint query prevents dispatch", async () => {

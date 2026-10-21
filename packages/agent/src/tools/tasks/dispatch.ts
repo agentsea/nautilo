@@ -31,6 +31,7 @@ import {
   type TaskToolCreateInput,
   type TaskToolHarnessCreateInput,
   type TaskToolHermesAcpHarnessCreateInput,
+  type TaskToolOpenCodeAcpHarnessCreateInput,
 } from "./task-tool-runtime";
 import { normalizeTaskToolWhitelist } from "../subagents/validate-subagent-whitelist";
 import { rejectNotYetWiredTaskParams } from "./validate";
@@ -229,8 +230,8 @@ export async function dispatchTaskCommand(
 ): Promise<string> {
   try {
     const staleArgs = args as unknown as { harness?: string; execution_profile?: unknown };
-    if (staleArgs.harness === "opencode-acp" || staleArgs.execution_profile !== undefined) {
-      return "OpenCode Tasks are temporarily unavailable while Nautilo completes reliability work. Use Codex, Hermes, or Nautilo Native instead.";
+    if (staleArgs.execution_profile !== undefined) {
+      return "Cannot create OpenCode task: execution profile is server-owned.";
     }
     if (
       args.command !== "create"
@@ -276,7 +277,16 @@ export async function dispatchTaskCommand(
           return "Cannot create task: 'prompt' is required for command 'create'.";
         }
         const rt = getTaskToolRuntime();
-        if (rt.canUseLegacyTaskContent && !await rt.canUseLegacyTaskContent()) {
+        const canUseLegacyTaskContent = rt.canUseLegacyTaskContent
+          ? await rt.canUseLegacyTaskContent()
+          : true;
+        const protectedTaskCreator = rt.createProtectedTask;
+        if (
+          !canUseLegacyTaskContent
+          && (args.harness !== undefined
+            ? !rt.createProtectedHarnessTask
+            : !protectedTaskCreator)
+        ) {
           return "Cannot create task: protected Task creation is not yet available from this Agent tool.";
         }
         if (
@@ -321,10 +331,11 @@ export async function dispatchTaskCommand(
           ) {
             return "Cannot create Claude Code task: scheduling, routing, scope, tools, delivery, and native model settings are server-owned.";
           }
-          if (rt.claudeCodeTasksEnabled !== true || !rt.createHarnessTask) {
+          if (rt.claudeCodeTasksEnabled !== true
+            || (canUseLegacyTaskContent ? !rt.createHarnessTask : !rt.createProtectedHarnessTask)) {
             return claudeCodeHarnessUnavailable();
           }
-          const created = await rt.createHarnessTask({
+          const request = {
             ownerId: ctx.ownerId,
             requestorId: ctx.causalHumanUserId,
             agentId: ctx.agentId,
@@ -332,7 +343,9 @@ export async function dispatchTaskCommand(
             callingRoomId: ctx.roomId,
             harness: "claude-code",
             ...(args.harness_model_id === undefined ? {} : { harnessModelId: args.harness_model_id }),
-          } satisfies TaskToolClaudeCodeHarnessCreateInput);
+          } satisfies TaskToolClaudeCodeHarnessCreateInput;
+          const created = canUseLegacyTaskContent ? await rt.createHarnessTask!(request)
+            : await rt.createProtectedHarnessTask!(request);
           if (created.execution !== "claude-code") return claudeCodeHarnessUnavailable();
           return JSON.stringify({
             taskId: created.taskId,
@@ -341,6 +354,58 @@ export async function dispatchTaskCommand(
             model: created.model,
             message:
               "The task was accepted for Claude Code; it will report back to this chat when done.",
+          });
+        }
+        if (args.harness === "opencode-acp") {
+          if (!ctx.roomId) {
+            return "Cannot create OpenCode task: a current Room is required.";
+          }
+          if (ctx.currentTaskId || args.parent_task_id !== undefined) {
+            return "Cannot create OpenCode task: it must be a root task.";
+          }
+          if (
+            args.expected_output !== undefined
+            || args.schedule_kind !== undefined
+            || args.run_at !== undefined
+            || args.cron !== undefined
+            || args.timezone !== undefined
+            || args.target_chat !== undefined
+            || args.target_users !== undefined
+            || args.use_scope !== undefined
+            || args.scope_id !== undefined
+            || args.tools !== undefined
+            || args.result_delivery !== undefined
+            || args.time_limit_seconds !== undefined
+            || args.model_selection_profile !== undefined
+            || args.model_selection_spec !== undefined
+            || args.model_id !== undefined
+            || args.collaboration_mode !== undefined
+            || args.harness_model_id !== undefined
+            || args.working_directory !== undefined
+          ) {
+            return "Cannot create OpenCode task: scheduling, routing, scope, tools, delivery, and model settings are server-owned.";
+          }
+          if (canUseLegacyTaskContent ? !rt.createHarnessTask : !rt.createProtectedHarnessTask) {
+            return "OpenCode is unavailable on a paired Nautilo desktop. Open Nautilo Desktop, finish OpenCode setup, then try again.";
+          }
+          const request: TaskToolOpenCodeAcpHarnessCreateInput = {
+            ownerId: ctx.ownerId,
+            requestorId: ctx.causalHumanUserId,
+            agentId: ctx.agentId,
+            prompt: args.prompt,
+            callingRoomId: ctx.roomId,
+            harness: "opencode-acp",
+            executionProfile: "autonomous",
+          };
+          const created = canUseLegacyTaskContent
+            ? await rt.createHarnessTask!(request)
+            : await rt.createProtectedHarnessTask!(request);
+          return JSON.stringify({
+            taskId: created.taskId,
+            status: created.status,
+            execution: created.execution,
+            message:
+              "The task was accepted for the selected external harness; it will report back to this chat when done.",
           });
         }
         if (args.harness === "codex" || args.harness === "hermes-acp") {
@@ -459,7 +524,7 @@ export async function dispatchTaskCommand(
           ...toolsFields,
         };
         if (args.harness === "codex" || args.harness === "hermes-acp") {
-          if (!rt.createHarnessTask) {
+          if (canUseLegacyTaskContent ? !rt.createHarnessTask : !rt.createProtectedHarnessTask) {
             return genieRecoveryResult("task", "Codex harness execution is unavailable on this server. Open Codex setup, connect Desktop, then try again.", { requirement: "desktop" });
           }
           if (args.harness === "hermes-acp") {
@@ -474,7 +539,8 @@ export async function dispatchTaskCommand(
                 : {}),
               harness: "hermes-acp",
             };
-            const created = await rt.createHarnessTask(hermesInput);
+            const created = canUseLegacyTaskContent ? await rt.createHarnessTask!(hermesInput)
+              : await rt.createProtectedHarnessTask!(hermesInput);
             return JSON.stringify({
               taskId: created.taskId,
               status: created.status,
@@ -489,7 +555,7 @@ export async function dispatchTaskCommand(
             selectionSpec: _selectionSpec,
             ...sealedInput
           } = input;
-          const created = await rt.createHarnessTask({
+          const request = {
             ...sealedInput,
             harness: "codex",
             collaborationMode: args.collaboration_mode ?? "work",
@@ -499,7 +565,9 @@ export async function dispatchTaskCommand(
             ...(args.working_directory !== undefined
               ? { workingDirectory: args.working_directory }
               : {}),
-          } satisfies TaskToolHarnessCreateInput);
+          } satisfies TaskToolHarnessCreateInput;
+          const created = canUseLegacyTaskContent ? await rt.createHarnessTask!(request)
+            : await rt.createProtectedHarnessTask!(request);
           return JSON.stringify({
             taskId: created.taskId,
             status: created.status,
@@ -509,7 +577,15 @@ export async function dispatchTaskCommand(
           });
         }
 
-        const { taskId, status } = await rt.createTask(input);
+        const created = canUseLegacyTaskContent
+          ? await rt.createTask(input)
+          : protectedTaskCreator
+            ? await protectedTaskCreator(input)
+            : null;
+        if (!created) {
+          return "Cannot create task: protected Task creation is not yet available from this Agent tool.";
+        }
+        const { taskId, status } = created;
         return JSON.stringify({
           taskId,
           status,
@@ -687,7 +763,51 @@ export async function dispatchTaskCommand(
         if (reject) return reject;
 
         const rt = getTaskToolRuntime();
-        const task = await getTaskByIdWithMutationVersion(rt.db, args.taskId);
+        const lifecycle = await getTaskById(rt.db, args.taskId, {
+          lifecycleOnly: true,
+          ownerId: ctx.ownerId,
+        });
+        if (!lifecycle) return "Task not found.";
+        if (lifecycle.contentRepresentation === "protected" || lifecycle.contentRepresentation === "dual") {
+          if (!rt.updateProtectedTask) {
+            return "Cannot update task: protected Task content requires an authorized client.";
+          }
+          const parsedRunAt = parseRunAt(args.run_at);
+          const toolsFields = args.tools === undefined ? {} : (() => {
+            const fields = toolsFieldsFromArgs(args.tools);
+            return { ...fields, toolsWhitelist: fields.toolsWhitelist ?? [] };
+          })();
+          const updated = await rt.updateProtectedTask({
+            taskId: lifecycle.id,
+            ownerId: ctx.ownerId,
+            requestorId: ctx.causalHumanUserId,
+            agentId: ctx.agentId,
+            callingRoomId: ctx.roomId,
+            ...(args.prompt !== undefined ? { prompt: args.prompt } : {}),
+            ...(args.expected_output !== undefined ? { expectedOutput: args.expected_output } : {}),
+            ...(args.schedule_kind !== undefined ? { scheduleKind: args.schedule_kind } : {}),
+            ...(parsedRunAt !== undefined ? { runAt: parsedRunAt } : {}),
+            ...(args.cron !== undefined ? { cron: args.cron } : {}),
+            ...(args.timezone !== undefined ? { timezone: args.timezone } : {}),
+            ...(args.target_chat !== undefined ? { targetChat: args.target_chat } : {}),
+            ...(args.result_delivery !== undefined ? { resultDelivery: args.result_delivery } : {}),
+            ...toolsFields,
+            ...(args.time_limit_seconds !== undefined ? { timeLimitSeconds: args.time_limit_seconds } : {}),
+            ...(args.model_selection_profile !== undefined ? { selectionProfile: args.model_selection_profile } : {}),
+            ...(args.model_selection_spec !== undefined ? { selectionSpec: args.model_selection_spec } : {}),
+            ...(args.model_id !== undefined ? { requestedModelId: args.model_id } : {}),
+          });
+          rt.onDefinitionChanged?.(updated);
+          return JSON.stringify({ task: {
+            id: updated.id,
+            status: updated.status,
+            scheduleKind: updated.scheduleKind,
+            targetChat: updated.targetChat,
+            nextFireAt: updated.nextFireAt,
+            resultDelivery: updated.resultDelivery,
+          } });
+        }
+        const task = await getTaskByIdWithMutationVersion(rt.db, args.taskId, { ordinaryOnly: true });
         if (!task || task.ownerId !== ctx.ownerId) {
           return "Task not found.";
         }
@@ -881,6 +1001,9 @@ export async function dispatchTaskCommand(
     }
     if (args.command === "create" && args.harness === "claude-code") {
       return claudeCodeHarnessUnavailable();
+    }
+    if (args.command === "create" && args.harness === "opencode-acp") {
+      return "OpenCode is unavailable on a paired Nautilo desktop. Open Nautilo Desktop, finish OpenCode setup, then try again.";
     }
     const codexGuidance = codexHarnessFailureGuidance(err);
     if (codexGuidance) return codexGuidance;

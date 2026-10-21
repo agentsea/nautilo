@@ -1,3 +1,4 @@
+import { isRelayTaskProjectFileDispatch } from "@nautilo/relay";
 import { createLocalExecutionDelegationAuthority, type LocalExecutionDelegationAuthorityOptions, type LocalExecutionDelegationConnection } from "./local-execution-delegation";
 import { parseRelayLocalExecutionDelegationCapture, type RelayLocalExecutionDelegationCapture, type RelayLocalExecutionBindingV4 } from "@nautilo/relay";
 import {
@@ -14,6 +15,8 @@ import { dispatchReadShellOutput } from "./relay-dispatch/read-shell-output";
 import { readFromCurrentLocalExecutionOwner } from "./local-execution-preview";
 import { LOCAL_EXECUTION_MAX_IDENTITIES } from "@nautilo/relay";
 import { LocalExecutionDispatch, localExecutionOwnerKey, type LocalExecutionViewRequest } from "./relay-dispatch/local-execution";
+import { validateTaskProjectFileRequest } from "./local-file-dispatch/index.ts";
+import { openTaskProjectDirectoryAnchor } from "./task-project-directory-anchor.ts";
 /**
  * Desktop Relay broker — supervises the standalone Relay Host child.
  *
@@ -91,6 +94,7 @@ import {
 } from "./relay-dispatch/current-folder.ts";
 import {
   deriveDesktopFilesystemAccessOperation,
+  deriveDesktopFilesystemAccessOperations,
   dispatchFilesystem,
   preflightApplyPatch,
   prepareDesktopFilesystemAuthority,
@@ -135,6 +139,7 @@ import {
 } from "./browser-research-read-executor.ts";
 import { BrowserResearchSearchExecutor } from "./browser-research-search-executor.ts";
 import type { BrowserResearchTargetManager } from "./browser-research-target-manager.ts";
+import type { NativeSearchExecutor } from "@nautilo/relay/native-search";
 import { probeDesktopRipgrep } from "./ripgrep-runtime.ts";
 import {
   desktopFilesystemGrantsFilePath,
@@ -2014,11 +2019,24 @@ export interface DispatchHandlerOptions {
     networkPolicy: RelayNetworkPolicy; authorityExpiresAt?: number; isCurrent(): boolean;
     developmentEnvironment?: LocalExecutionEnvironmentSource;
   }>) | undefined;
+  /** Current acknowledged socket/capability identity used only to classify an
+   * exact protocol-v30 delegated Task-project file dispatch. */
+  readonly taskProjectFileDispatchContext?: (() => Readonly<{
+    capabilities: RelayCapabilities;
+    protocolVersion: number;
+    userId: string;
+    relayId: string;
+    desktopSessionId: string | null;
+    pairingGeneration: string | null;
+    instanceId: string;
+  }> | null) | undefined;
   readonly localExecution?: LocalExecutionDispatch;
   readonly verifyHumanTerminal?: ((owner: HumanTerminalOwner) => Promise<boolean>) | undefined;
   readonly localExecutionHistoryReader?: StartRelayOptions["localExecutionHistoryReader"];
   readonly isProduction?: boolean;
   readonly createSandbox?: RelayDispatchSandboxFactory;
+  /** Unit seam for the fixed native-search process; production uses spawnSandboxed. */
+  readonly localFileSearchExecute?: NativeSearchExecutor | undefined;
   /** Test seam for the fixed-schema OpenHue handler. */
   readonly openHueExecutor?: OpenHueExecutor;
   /** Test seam for OpenHue binary resolution. */
@@ -2212,11 +2230,210 @@ export function makeDispatchHandler(
   const isSessionClosed = options.isSessionClosed ?? (() => false);
   const isProduction =
     options.isProduction ?? process.env["NODE_ENV"] === "production";
+  const resolveTaskProjectFileAuthority =
+    options.resolveLocalExecutionDelegation === undefined ||
+    options.taskProjectFileDispatchContext === undefined ||
+    options.protectedPathPolicy === undefined
+      ? undefined
+      : async (request: RelayDispatchRequest) => {
+          const binding = request.localExecutionBinding;
+          const context = options.taskProjectFileDispatchContext?.();
+          if (
+            binding?.version !== 4 ||
+            context === null ||
+            context === undefined ||
+            !isRelayTaskProjectFileDispatch({
+              request,
+              capabilities: context.capabilities,
+              protocolVersion: context.protocolVersion,
+              userId: context.userId,
+              relayId: context.relayId,
+              desktopSessionId: context.desktopSessionId,
+              pairingGeneration: context.pairingGeneration,
+              instanceId: context.instanceId,
+            })
+          ) return null;
+
+          const required = deriveDesktopFilesystemAccessOperations(request);
+          const expectedBindingOperation =
+            required !== null && required.every((operation) => operation === "read")
+              ? "read"
+              : "input";
+          if (
+            required === null ||
+            required.length === 0 ||
+            required.some((operation) => operation === "execute") ||
+            binding.operation !== expectedBindingOperation
+          ) return null;
+
+          const requestedRoots = request.args["allowedRoots"];
+          if (!Array.isArray(requestedRoots) || typeof requestedRoots[0] !== "string") return null;
+          const expectedRoot = requestedRoots[0];
+          const projectGrantId = binding.authority.delegation.projectGrantId;
+          const initial = await options.resolveLocalExecutionDelegation!(binding);
+          const projectRoot = path.join(
+            initial.root,
+            "nautilo-repo-docs",
+            `task-run-${binding.authority.taskRunId}`,
+          );
+          const sameStrings = (left: readonly string[], right: readonly string[]): boolean =>
+            left.length === right.length && left.every((value, index) => value === right[index]);
+          const normalizedAccess = [...initial.access].sort();
+          const normalizedGrantIds = [...initial.grantIds].sort();
+          const usable = (
+            authority: Awaited<ReturnType<NonNullable<DispatchHandlerOptions["resolveLocalExecutionDelegation"]>>>,
+          ): boolean =>
+            authority.root === initial.root &&
+            authority.isCurrent() &&
+            (authority.authorityExpiresAt ?? Infinity) > Date.now() &&
+            sameStrings([...authority.access].sort(), normalizedAccess) &&
+            sameStrings([...authority.grantIds].sort(), normalizedGrantIds) &&
+            authority.grantIds.filter((grantId) => grantId === projectGrantId).length === 1 &&
+            required.every((operation) => authority.access.includes(operation));
+          if (
+            expectedRoot !== projectRoot ||
+            !usable(initial) ||
+            !options.protectedPathPolicy!.check(projectRoot).allowed
+          ) return null;
+          const projectIdentity = await captureDesktopFilesystemGrantRootIdentity(projectRoot);
+          if (
+            !projectIdentity.ok ||
+            projectIdentity.canonicalRoot !== projectRoot
+          ) return null;
+
+          const projectAnchor = await openTaskProjectDirectoryAnchor(projectRoot);
+          if (projectAnchor === null) return null;
+          try {
+            if (
+              !(await validateTaskProjectFileRequest(request, {
+                projectRoot,
+                relayId: context.relayId,
+              })) ||
+              !(await projectAnchor.validate())
+            ) {
+              await projectAnchor.close();
+              return null;
+            }
+          } catch (error) {
+            await projectAnchor.close();
+            throw error;
+          }
+
+          const reauthorize = async (): Promise<void> => {
+            if (isSessionClosed()) throw new Error("TASK_PROJECT_FILE_AUTHORITY_UNAVAILABLE");
+            const freshContext = options.taskProjectFileDispatchContext?.();
+            if (
+              freshContext === null ||
+              freshContext === undefined ||
+              !isRelayTaskProjectFileDispatch({
+                request,
+                capabilities: freshContext.capabilities,
+                protocolVersion: freshContext.protocolVersion,
+                userId: freshContext.userId,
+                relayId: freshContext.relayId,
+                desktopSessionId: freshContext.desktopSessionId,
+                pairingGeneration: freshContext.pairingGeneration,
+                instanceId: freshContext.instanceId,
+              })
+            ) throw new Error("TASK_PROJECT_FILE_AUTHORITY_UNAVAILABLE");
+            const fresh = await options.resolveLocalExecutionDelegation!(binding);
+            const identity = await revalidateDesktopFilesystemGrantRootIdentity(
+              projectIdentity.filesystemIdentity,
+            );
+            if (
+              !usable(fresh) ||
+              !(await projectAnchor.validate()) ||
+              !identity.ok ||
+              identity.canonicalRoot !== projectRoot ||
+              !options.protectedPathPolicy!.check(projectRoot).allowed ||
+              !(await validateTaskProjectFileRequest(request, {
+                projectRoot,
+                relayId: freshContext.relayId,
+              }))
+            ) throw new Error("TASK_PROJECT_FILE_AUTHORITY_UNAVAILABLE");
+          };
+          const openReadOnlySearchSandbox = async () => {
+            await reauthorize();
+            const scratch = (options.createGuardedShellScratch ?? createGuardedShellScratch)();
+            let opened: Sandbox | null = null;
+            try {
+              const trustedToolsBin = options.trustedToolsBin ?? resolveToolsBin();
+              const envelope = buildShellBindingSandboxEnvelope({
+                workspace: scratch.workspace,
+                dataDir: initial.dataDir,
+                toolsBin: trustedToolsBin,
+                mode: "desktop-locked",
+                securityLevel: "paranoid",
+                failIfNoBackend: true,
+                config: { mode: "enabled", writablePaths: [], projectPaths: [], passthroughEnv: [] },
+              }, {
+                readOnlyRoots: [projectRoot],
+                writableRoots: [],
+              }, options.protectedPathPolicy, trustedToolsBin, scratch, { mode: "isolated" });
+              const prepared = await prepareLocalDispatchPolicy({
+                toolName: "local-file",
+                isProduction: true,
+                desktopFilesystemAuthority: {
+                  roots: [projectRoot],
+                  readOnlyRoots: [projectRoot],
+                  writableRoots: [],
+                },
+                revalidatedShellBinding: undefined,
+                shellNetworkPolicy: { mode: "isolated" },
+                requestHasShellBinding: false,
+                checkUnboundRunShell: () => Promise.resolve(undefined),
+                augmentEnvelope: () => Promise.resolve({
+                  ok: true as const,
+                  sandboxEnvelope: envelope,
+                  locallyAuthorizedWorkspace: undefined,
+                }),
+                revalidateWorkspaceBeforeOperation: async () => {
+                  await reauthorize();
+                  return undefined;
+                },
+                ...(options.createSandbox === undefined ? {} : { createSandbox: options.createSandbox }),
+              });
+              if (!prepared.ok) throw new Error("TASK_PROJECT_FILE_SANDBOX_UNAVAILABLE");
+              opened = prepared.policy.sandbox;
+              if (
+                opened === null ||
+                !opened.containmentActive() ||
+                ((envelope.config.protectedPaths?.length ?? 0) > 0 && !opened.protectedFileMaskSupported())
+              ) throw new Error("TASK_PROJECT_FILE_SANDBOX_UNAVAILABLE");
+              let closed = false;
+              return Object.freeze({
+                sandbox: opened,
+                close: async () => {
+                  if (closed) return;
+                  closed = true;
+                  try {
+                    await opened?.close();
+                  } finally {
+                    fsSync.rmSync(scratch.workspace, { recursive: true, force: true });
+                  }
+                },
+              });
+            } catch (error) {
+              await opened?.close().catch(() => {});
+              fsSync.rmSync(scratch.workspace, { recursive: true, force: true });
+              throw error;
+            }
+          };
+          return Object.freeze({
+            authority: Object.freeze({ roots: Object.freeze([projectRoot]) }),
+            reauthorize,
+            openReadOnlySearchSandbox,
+            close: () => projectAnchor.close(),
+          });
+        };
   const localFile = createLocalFileHandlers({
     relayId: options.relayId,
     baseRoots: baseGuard.roots,
     onFsChange: options.onFsChange,
     desktopFilesystemGrantAuthority: options.desktopFilesystemGrantAuthority,
+    ...(resolveTaskProjectFileAuthority === undefined
+      ? {}
+      : { resolveTaskProjectFileAuthority }),
     commitDesktopApplyPatch: options.commitDesktopApplyPatch,
     commitDesktopOfficeCli: options.commitDesktopOfficeCli,
     commitDesktopAgentContent: options.commitDesktopAgentContent,
@@ -2226,6 +2443,7 @@ export function makeDispatchHandler(
     getLocalWorkspacePath: options.getLocalWorkspacePath,
     protectedPathPolicy: options.protectedPathPolicy,
     officeRun: options.officeRun,
+    searchExecute: options.localFileSearchExecute,
     buildApplyPatchEnvelope: (input) => buildShellBindingSandboxEnvelope(
       input.base,
       { readOnlyRoots: [], writableRoots: [input.currentFolder] },
@@ -2847,6 +3065,19 @@ export function makeDispatchHandler(
         signal: requestSignal,
         guard: requestGuard,
       }) => {
+        if (request.localExecutionBinding?.version === 4) {
+          return await localFile.dispatchSandboxedSearch({
+            request,
+            guard: requestGuard,
+            signal: requestSignal,
+            authority: undefined,
+            sandbox: null,
+            getRipgrepRuntime: async () =>
+              await (options.probeRipgrep ?? probeDesktopRipgrep)({
+                isPackaged: await resolveElectronIsPackaged(),
+              }),
+          });
+        }
         const preparation = await getLocalDispatchPolicy();
         if (!preparation.ok) {
           return { handled: true, result: preparation.result };
@@ -3854,6 +4085,7 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
       ...((profileSnapshot === undefined && basicExecutionAuthority() === null) || process.platform === "win32" ? {} : {
         canExecuteLocal: true,
         canDelegateLocalExecution: options.localExecutionDelegation !== undefined,
+        canUseTaskProjectFiles: options.localExecutionDelegation !== undefined,
         localExecution: { version: 1 as const, generation: candidateSession.localExecution.host.hostGeneration,
           pipe: true as const, pty: true, localNetworkPolicy: true as const,
           capacity: LOCAL_EXECUTION_MAX_IDENTITIES },
@@ -3988,6 +4220,21 @@ export async function startRelay(options: StartRelayOptions): Promise<void> {
       basicExecutionAuthority,
       ...(captureLocalExecutionDelegation ? { captureLocalExecutionDelegation } : {}),
       ...(resolveLocalExecutionDelegation ? { resolveLocalExecutionDelegation } : {}),
+      taskProjectFileDispatchContext: () => {
+        const topology = candidateSession.client?.getDesktopTopology();
+        const capabilities = candidateSession.publisher?.getAcknowledgedCapabilities();
+        if (candidateSession.closed || topology === null || capabilities === null ||
+            topology === undefined || capabilities === undefined) return null;
+        return {
+          capabilities,
+          protocolVersion: topology.selectedProtocolVersion,
+          userId: options.userId,
+          relayId,
+          desktopSessionId: topology.desktopSessionId,
+          pairingGeneration: topology.pairingGeneration,
+          instanceId: desktopFilesystemGrantInstanceId,
+        };
+      },
       // apply_patch and profile-bound shells are explicitly Current-Folder
       // operations. Returning undefined preserves their fail-closed contract
       // instead of silently mutating/running in Genie Workspace.

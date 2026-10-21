@@ -8,6 +8,9 @@ import {
   REVIEWED_MAIN_2026_09_12_DATABASE_METADATA_ENTRIES,
 } from "../../baseline/reviewed-main-2026-09-12-database";
 import {
+  REVIEWED_TASK_PROTECTION_COVERAGE_ENTRIES,
+} from "../../baseline/reviewed-task-protection-coverage";
+import {
   inventoryDrizzleSchema,
 } from "../../src/node/schema-inventory";
 
@@ -20,6 +23,11 @@ const WAVE_10_TABLES = new Set([
 const MAPPING_COLUMNS = [
   "public.room_event_rollups.crypto_object_id",
   "public.room_events.crypto_object_id",
+] as const;
+
+const TASK_PROTECTION_COLUMNS_RETIRED_FROM_WAVE_10 = [
+  "public.background_crypto_authorization_requests.runtime_kind",
+  "public.background_crypto_authorization_requests.runtime_version",
 ] as const;
 
 const WRITER_LOCATORS = [
@@ -84,6 +92,19 @@ describe("Wave 10 reviewed coverage registry", () => {
       );
     expect(formatVersionEntries).toHaveLength(1);
     expect(formatVersionEntries[0]?.classification).toBe("bounded_metadata");
+    const taskProtectionEntries = REVIEWED_TASK_PROTECTION_COVERAGE_ENTRIES
+      .filter((entry) =>
+        TASK_PROTECTION_COLUMNS_RETIRED_FROM_WAVE_10.includes(
+          entry.locator as (typeof TASK_PROTECTION_COLUMNS_RETIRED_FROM_WAVE_10)[number],
+        )
+      );
+    expect(taskProtectionEntries.map((entry) => entry.locator)).toEqual([
+      ...TASK_PROTECTION_COLUMNS_RETIRED_FROM_WAVE_10,
+    ]);
+    expect(taskProtectionEntries.every((entry) =>
+      entry.surface === "db" && entry.classification === "bounded_metadata"
+    )).toBeTrue();
+    const delegatedLocators = new Set(TASK_PROTECTION_COLUMNS_RETIRED_FROM_WAVE_10);
     const declared = [
       ...REVIEWED_WAVE_10_COVERAGE_ENTRIES,
       ...formatVersionEntries,
@@ -92,7 +113,11 @@ describe("Wave 10 reviewed coverage registry", () => {
       .map((entry) => entry.locator)
       .sort();
 
-    expect(declared).toEqual(observed);
+    expect(declared).toEqual(observed.filter((locator) =>
+      !delegatedLocators.has(
+        locator as (typeof TASK_PROTECTION_COLUMNS_RETIRED_FROM_WAVE_10)[number],
+      )
+    ));
     expect(new Set(declared).size).toBe(declared.length);
     expect(declared).toHaveLength(112);
   });

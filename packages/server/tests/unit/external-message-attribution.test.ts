@@ -32,3 +32,30 @@ test("receipt-free durable external authorship remains unverified in the transcr
   expect(result).not.toHaveProperty("externalOrigin");
   expect(result.content).toBe("Outside content");
 });
+
+test("around serialization exposes parity siblings only for protected reads", () => {
+  const parity = {
+    ...row,
+    role: "assistant",
+    foregroundExecutionId: "foreground:one",
+    modelInputExposure: { version: 1, status: "incomplete" },
+  };
+  expect(serializeRoomMessageForAround(parity)).not.toHaveProperty(
+    "foregroundExecutionId",
+  );
+  expect(serializeRoomMessageForAround(parity)).not.toHaveProperty(
+    "modelInputExposure",
+  );
+  expect(serializeRoomMessageForAround(parity, {
+    includeProtectedParityMetadata: true,
+  })).toMatchObject({
+    foregroundExecutionId: "foreground:one",
+    modelInputExposure: { version: 1, status: "incomplete" },
+  });
+  expect(() => serializeRoomMessageForAround({
+    ...parity,
+    modelInputExposure: { version: 1, status: "complete", dependencies: "invalid" },
+  }, { includeProtectedParityMetadata: true })).toThrow(
+    "Room history model-input exposure metadata is invalid",
+  );
+});

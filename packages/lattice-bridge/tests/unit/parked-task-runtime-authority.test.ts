@@ -4,6 +4,7 @@ import { describe, expect, test } from "bun:test";
 import {
   canonicalProtectedTaskSemanticAuthorityRequirements,
   parseParkedProtectedTaskAdditionalAuthority,
+  parseParkedProtectedTaskCheckpointContinuation,
   protectedTaskSemanticAuthorityRequirementsDigest,
   type ParkedProtectedTaskAdditionalAuthority,
   type ParkedProtectedTaskAdditionalAuthorityJobRow,
@@ -21,7 +22,7 @@ import {
 } from "../../src/server/task/initial-task-runtime-namespace-authority.ts";
 import {
   copyParkedTaskRuntimeAuthority,
-  lockCurrentParkedTaskAdditionalAuthority,
+  lockCurrentParkedTaskAuthority,
   withParkedTaskRuntimeRestrictedAuthority,
 } from "../../src/server/task/parked-task-runtime-authority.ts";
 
@@ -257,7 +258,7 @@ describe("parked Task Runtime authority", () => {
   test("locks Task, Run and prior Job before re-reading immutable proof", async () => {
     const value = rows();
     const events: string[] = [];
-    const current = await lockCurrentParkedTaskAdditionalAuthority({
+    const current = await lockCurrentParkedTaskAuthority({
       transaction: transactionRows(value, events) as never,
       expected: descriptor(),
     });
@@ -274,7 +275,7 @@ describe("parked Task Runtime authority", () => {
 
   test("pins caller-owned bytes before the first lock await", async () => {
     const expected = descriptor();
-    const operation = lockCurrentParkedTaskAdditionalAuthority({
+    const operation = lockCurrentParkedTaskAuthority({
       transaction: transactionRows(rows(), []) as never,
       expected,
     });
@@ -301,7 +302,7 @@ describe("parked Task Runtime authority", () => {
         },
       },
     };
-    expect(await lockCurrentParkedTaskAdditionalAuthority({
+    expect(await lockCurrentParkedTaskAuthority({
       transaction: transactionRows(value, []) as never,
       expected: descriptor(),
     })).toBeNull();
@@ -319,7 +320,7 @@ describe("parked Task Runtime authority", () => {
         },
       },
     };
-    expect(await lockCurrentParkedTaskAdditionalAuthority({
+    expect(await lockCurrentParkedTaskAuthority({
       transaction: transactionRows(value, []) as never,
       expected: descriptor(),
     })).toBeNull();
@@ -336,7 +337,7 @@ describe("parked Task Runtime authority", () => {
     ];
     for (const currentCase of cases) {
       const events: string[] = [];
-      expect(await lockCurrentParkedTaskAdditionalAuthority({
+      expect(await lockCurrentParkedTaskAuthority({
         transaction: transactionRows(currentCase.value, events) as never,
         expected: descriptor(),
       }), currentCase.stage).toBeNull();
@@ -454,4 +455,58 @@ describe("parked Task Runtime authority", () => {
     expect(await escaped?.catch((error: unknown) => error))
       .toBeInstanceOf(TypeError);
   });
+});
+
+function checkpointRows() {
+  const value = rows();
+  return { ...value,
+    task: { ...value.task, pauseRequestId: null },
+    job: { ...value.job, parkReceipt: {
+      ...(value.job.parkReceipt as Record<string, unknown>), interrupts: [],
+      stableRoutingDigest: Buffer.from(digest(9)).toString("base64url"),
+    } },
+    proof: { segment: value.proof.segment, continuation: {
+      ...value.proof.continuation, kind: "checkpoint_safe_v1" as const,
+      reason: "grant_refresh" as const, effectDisposition: "none_v1" as const,
+      interruptId: null, operationId: null, requestDigest: null,
+      requiredAuthorityDigest: null, stableRoutingDigest: null,
+      semanticAuthorityRequirements: null,
+    } },
+  };
+}
+
+test("checkpoint authority uses its own immutable receipt and holds the canonical lock order", async () => {
+  const value = checkpointRows();
+  const expected = parseParkedProtectedTaskCheckpointContinuation(value);
+  expect(expected).not.toBeNull();
+  if (!expected) throw new Error("invalid checkpoint fixture");
+  const copy = copyParkedTaskRuntimeAuthority(expected);
+  expected.stableRoutingDigest.fill(0);
+  expect(copy.stableRoutingDigest).toEqual(digest(9));
+  const events: string[] = [];
+  expect(await lockCurrentParkedTaskAuthority({
+    transaction: transactionRows(value, events) as never, expected: copy,
+  })).toEqual(copy);
+  expect(events).toEqual(["task", "run", "job", "proof-run", "proof-segment", "proof-continuation"]);
+  expect(() => copyParkedTaskRuntimeAuthority({ ...copy,
+    proof: { ...copy.proof, continuation: { ...copy.proof.continuation, effectDisposition: "not_started_v1" } },
+  })).toThrow("descriptor is invalid");
+});
+
+test("checkpoint authority rejects a new pause, changed Job, receipt, or routing after discovery", async () => {
+  const expected = parseParkedProtectedTaskCheckpointContinuation(checkpointRows());
+  if (!expected) throw new Error("invalid checkpoint fixture");
+  const original = checkpointRows();
+  for (const value of [
+    { ...original, task: { ...original.task, pauseRequestId: TASK } },
+    { ...original, run: { ...original.run, jobId: TASK } },
+    { ...original, proof: { ...original.proof, segment: { ...original.proof.segment, checkpointDigest: digest(10) } } },
+    { ...original, job: { ...original.job, parkReceipt: { ...original.job.parkReceipt,
+      stableRoutingDigest: Buffer.from(digest(10)).toString("base64url"),
+    } } },
+  ]) {
+    expect(await lockCurrentParkedTaskAuthority({
+      transaction: transactionRows(value, []) as never, expected,
+    })).toBeNull();
+  }
 });

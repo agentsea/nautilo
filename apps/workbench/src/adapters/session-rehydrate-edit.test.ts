@@ -220,10 +220,13 @@ describe("restoreSessionMessages edit metadata", () => {
   });
 
   test("derives strict-codec assistant parity input from the actual ordinary row", () => {
+    const modelInputExposure = { version: 1, status: "incomplete" } as const;
     const sibling = roomHistoryShadowOrdinarySibling({
       id: "45",
       logicalMessageKey: "logical:45",
       role: "assistant",
+      foregroundExecutionId: "foreground:45",
+      modelInputExposure,
       content: "I will inspect it.",
       toolCalls: JSON.stringify([{
         id: "call:45",
@@ -244,9 +247,30 @@ describe("restoreSessionMessages edit metadata", () => {
           name: "inspect_open_design",
           args: { pageSize: 25, cursor: "page:2" },
         }],
+        sensitiveMetadata: {
+          foregroundExecutionId: "foreground:45",
+          nautilo_memory_model_exposure: modelInputExposure,
+        },
       },
     });
     expect(decodeMessagePayloadV2(encodeMessagePayloadV2(sibling!.payload))).toEqual(sibling!.payload);
+  });
+
+  test("rejects malformed ordinary parity metadata before protected reconciliation", () => {
+    expect(roomHistoryShadowOrdinarySibling({
+      id: "45",
+      role: "assistant",
+      content: "ordinary",
+      toolCalls: null,
+      foregroundExecutionId: "",
+    })).toBeNull();
+    expect(roomHistoryShadowOrdinarySibling({
+      id: "46",
+      role: "tool",
+      content: "ordinary",
+      toolName: "in_background",
+      modelInputExposure: { invalid: undefined },
+    })).toBeNull();
   });
 
   test("applies verified protected payloads before one ordinary restore pass", () => {

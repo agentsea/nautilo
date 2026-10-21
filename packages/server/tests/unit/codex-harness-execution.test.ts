@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import type { RelayCodexEventMessage, RelayCodexRequestMessage } from "@nautilo/relay";
+import type { RelayCodexClientMessage, RelayCodexEventMessage, RelayCodexRequestMessage,
+  RelayCodexServerMessage } from "@nautilo/relay";
 import {
   type HarnessExecutionAdmission,
   type HarnessRequestResponse,
@@ -22,6 +23,8 @@ import {
 } from "../../src/codex/execution-admission";
 import { createAcceptedInvocationAuthority } from "@nautilo/trust";
 import type { CodexDerivedBindingScope } from "../../src/codex/authority";
+import { CodexRequestBroker, CodexRequestSourcePartition,
+  type CodexRelayRequestSource } from "../../src/codex/request-broker";
 
 const scope: CodexRelayTurnScope = {
   relayId: "relay", relaySessionId: "relay-session", desktopSessionId: "desktop",
@@ -48,6 +51,21 @@ function createSource(): {
         return () => { listener = null; };
       },
       onCodexContextInvalidated() { return () => undefined; },
+    },
+    emit(message) { listener?.("relay", message); },
+  };
+}
+
+function createRequestSource(): {
+  source: CodexRelayRequestSource;
+  emit(message: RelayCodexClientMessage): void;
+} {
+  let listener: ((relayId: string, message: RelayCodexClientMessage) => void) | null = null;
+  return {
+    source: {
+      onCodexMessage(next) { listener = next; return () => { listener = null; }; },
+      onCodexContextInvalidated() { return () => undefined; },
+      sendCodex(_relayId: string, _message: RelayCodexServerMessage) { return { ok: true }; },
     },
     emit(message) { listener?.("relay", message); },
   };
@@ -111,6 +129,15 @@ function deferred(): { promise: Promise<void>; resolve(): void } {
   return { promise, resolve: () => resolve?.() };
 }
 
+function deferredValue<Value>(): {
+  promise: Promise<Value>;
+  resolve(value: Value): void;
+} {
+  let resolve: ((value: Value) => void) | null = null;
+  const promise = new Promise<Value>((next) => { resolve = next; });
+  return { promise, resolve: (value) => resolve?.(value) };
+}
+
 function sessions(started: ReturnType<typeof deferred>, calls: string[]): CodexBindingSessionPort {
   return {
     async openOrResume() {
@@ -136,6 +163,21 @@ function closedEvents(): CodexTurnEventSubscriptionPort {
         },
         terminalReceived: false,
         inactivityExpired: false,
+        close() {},
+      };
+    },
+  };
+}
+
+function inactiveEvents(): CodexTurnEventSubscriptionPort {
+  return {
+    subscribe(): CodexTurnEventSubscription {
+      return {
+        async *[Symbol.asyncIterator]() {
+          // The inactivity lease closed the authoritative event stream.
+        },
+        terminalReceived: false,
+        inactivityExpired: true,
         close() {},
       };
     },
@@ -437,6 +479,60 @@ describe("CodexHarnessExecution", () => {
     }]);
   });
 
+  test("claims the ordinary request scope before provider awaits and releases it on consumer close", async () => {
+    const upstream = createRequestSource();
+    const partition = new CodexRequestSourcePartition(upstream.source);
+    const requests = new CodexRequestBroker({ source: partition.ordinary,
+      now: () => Date.parse("2026-07-29T00:00:00.000Z") });
+    const earlyRequest = { ...commandRequest(), scope: { ...commandRequest().scope,
+      workspace: scope.workspace } } satisfies RelayCodexRequestMessage;
+    const calls: string[] = [];
+    const execution = new CodexHarnessExecution({
+      events: pendingEvents(), requests,
+      requestScopes: { claim: identity => partition.claimOrdinary(identity) },
+      sessions: {
+        async openOrResume() {
+          calls.push("open");
+          upstream.emit(earlyRequest);
+          return { id: "session" };
+        },
+        async startTurn() { calls.push("start"); return { scope }; },
+        async interruptTurn() { calls.push("interrupt"); },
+        async steerTurn() { calls.push("steer"); },
+      },
+    });
+    const iterator = execution.start(admission(new AbortController().signal))[Symbol.asyncIterator]();
+    expect(await iterator.next()).toMatchObject({
+      done: false, value: { kind: "command_approval_required", requestId: "request" },
+    });
+    expect(calls).toEqual(["open", "start"]);
+    expect(await iterator.return?.()).toMatchObject({ done: true });
+    upstream.emit({ ...commandRequest(), scope: { ...commandRequest().scope,
+      requestRef: "late", turnId: "late-turn" } });
+    expect(requests.hasLiveRequest("late", "owner")).toBeFalse();
+    requests.dispose();
+    partition.dispose();
+  });
+
+  test("releases an ordinary request scope when a pre-subscription provider await rejects", async () => {
+    const lifecycle: string[] = [];
+    const execution = new CodexHarnessExecution({
+      events: closedEvents(), requests: closedRequests(),
+      requestScopes: { claim: () => {
+        lifecycle.push("claim");
+        return { close() { lifecycle.push("release"); } };
+      } },
+      sessions: {
+        async openOrResume() { lifecycle.push("open"); throw new Error("open failed"); },
+        async startTurn() { throw new Error("must not start"); },
+        async interruptTurn() {}, async steerTurn() {},
+      },
+    });
+    const iterator = execution.start(admission(new AbortController().signal))[Symbol.asyncIterator]();
+    expect(await rejected(iterator.next())).toMatchObject({ message: "open failed" });
+    expect(lifecycle).toEqual(["claim", "open", "release"]);
+  });
+
   test("interrupts once on abort, suppresses a late relay event, and emits one interrupted terminal", async () => {
     const { source, emit } = createSource();
     const broker = new CodexTurnEventBroker({ source });
@@ -698,5 +794,267 @@ describe("CodexHarnessExecution", () => {
     expect(await iterator.next()).toMatchObject({ done: true });
     expect(calls).toEqual(["open"]);
     broker.dispose();
+  });
+
+  test("releases protected custody while session open is stalled without starting a late session", async () => {
+    const controller = new AbortController();
+    const openInvoked = deferred();
+    const opened = deferredValue<{ id: string }>();
+    const calls: string[] = [];
+    const execution = new CodexHarnessExecution({
+      abortStreamOnCancellation: true,
+      events: closedEvents(),
+      requests: closedRequests(),
+      sessions: {
+        async openOrResume() {
+          calls.push("open");
+          openInvoked.resolve();
+          return await opened.promise;
+        },
+        async startTurn() {
+          calls.push("start");
+          return { scope };
+        },
+        async interruptTurn() { calls.push("interrupt"); },
+        async steerTurn() { calls.push("steer"); },
+      },
+    });
+
+    const iterator = execution.start(admission(controller.signal))[Symbol.asyncIterator]();
+    const pending = iterator.next();
+    await openInvoked.promise;
+    controller.abort();
+    expect(await pending).toMatchObject({ done: true });
+
+    opened.resolve({ id: "late-session" });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(calls).toEqual(["open"]);
+  });
+
+  test("contains one exact late protected turn after a stalled start without retaining custody", async () => {
+    const controller = new AbortController();
+    const startInvoked = deferred();
+    const lateTurn = deferredValue<{ scope: CodexRelayTurnScope }>();
+    const interruptInvoked = deferred();
+    const interruptFinished = deferred();
+    const calls: string[] = [];
+    const execution = new CodexHarnessExecution({
+      abortStreamOnCancellation: true,
+      events: closedEvents(),
+      requests: closedRequests(),
+      sessions: {
+        async openOrResume() {
+          calls.push("open");
+          return { id: "session" };
+        },
+        async startTurn() {
+          calls.push("start");
+          startInvoked.resolve();
+          return await lateTurn.promise;
+        },
+        async interruptTurn(input) {
+          calls.push(`interrupt:${input.turn.scope.turnId}`);
+          interruptInvoked.resolve();
+          await interruptFinished.promise;
+        },
+        async steerTurn() { calls.push("steer"); },
+      },
+    });
+
+    const iterator = execution.start(admission(controller.signal))[Symbol.asyncIterator]();
+    const pending = iterator.next();
+    await startInvoked.promise;
+    controller.abort();
+    expect(await pending).toMatchObject({ done: true });
+
+    lateTurn.resolve({ scope });
+    await interruptInvoked.promise;
+    expect(calls).toEqual(["open", "start", "interrupt:turn"]);
+    interruptFinished.resolve();
+  });
+
+  test("releases a protected stream wait while exact interrupt containment remains unsettled", async () => {
+    const controller = new AbortController();
+    const started = deferred();
+    const interruptInvoked = deferred();
+    const interruptFinished = deferred();
+    const calls: string[] = [];
+    const base = sessions(started, calls);
+    const execution = new CodexHarnessExecution({
+      abortStreamOnCancellation: true,
+      events: pendingEvents(),
+      requests: pendingRequests(),
+      sessions: {
+        ...base,
+        async interruptTurn() {
+          calls.push("interrupt");
+          interruptInvoked.resolve();
+          await interruptFinished.promise;
+        },
+      },
+    });
+    const iterator = execution.start(admission(controller.signal))[Symbol.asyncIterator]();
+    const terminal = iterator.next();
+    await started.promise;
+    while (execution.activeTurnForTask({
+      taskId: "task",
+      ownerId: "owner",
+      roomId: "room",
+    }) === null) {
+      await Promise.resolve();
+    }
+
+    controller.abort();
+    await interruptInvoked.promise;
+    expect(await terminal).toMatchObject({
+      done: false,
+      value: { kind: "terminal", status: "failed", code: "process_lost" },
+    });
+    expect(await iterator.next()).toMatchObject({ done: true });
+    expect(calls).toEqual(["open", "start", "interrupt"]);
+    interruptFinished.resolve();
+  });
+
+  test("protected consumer return starts one interrupt and does not await rejection or containment", async () => {
+    for (const outcome of ["hanging", "rejected"] as const) {
+      const { source, emit } = createSource();
+      const broker = new CodexTurnEventBroker({ source });
+      const calls: string[] = [];
+      const started = deferred();
+      const base = sessions(started, calls);
+      const execution = new CodexHarnessExecution({
+        abortStreamOnCancellation: true,
+        events: broker,
+        requests: closedRequests(),
+        sessions: {
+          ...base,
+          async interruptTurn() {
+            calls.push("interrupt");
+            if (outcome === "rejected") throw new Error("interrupt failed");
+            await new Promise<void>(() => undefined);
+          },
+        },
+      });
+      const iterator = execution.start(admission(new AbortController().signal))[Symbol.asyncIterator]();
+      const first = iterator.next();
+      await started.promise;
+      emit(event({ kind: "message_delta", text: "partial", sequence: 1 }));
+      expect(await first).toMatchObject({
+        done: false,
+        value: { kind: "output_delta", text: "partial" },
+      });
+
+      expect(await iterator.return?.()).toMatchObject({ done: true });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(calls).toEqual(["open", "start", "interrupt"]);
+      broker.dispose();
+    }
+  });
+
+  test("protected authoritative completion does not send a redundant interrupt", async () => {
+    const { source, emit } = createSource();
+    const broker = new CodexTurnEventBroker({ source });
+    const calls: string[] = [];
+    const started = deferred();
+    const execution = new CodexHarnessExecution({
+      abortStreamOnCancellation: true,
+      events: broker,
+      requests: closedRequests(),
+      sessions: sessions(started, calls),
+    });
+    const iterator = execution.start(admission(new AbortController().signal))[Symbol.asyncIterator]();
+    const first = iterator.next();
+    await started.promise;
+    emit(event({
+      kind: "turn_completed", status: "completed", itemsView: "full",
+      assistantItems: [{ itemId: "final", text: "authoritative", phase: "final_answer" }],
+    }));
+    expect(await first).toMatchObject({
+      done: false,
+      value: { kind: "assistant_completed", text: "authoritative" },
+    });
+    expect(await iterator.next()).toMatchObject({
+      done: false,
+      value: { kind: "terminal", status: "completed" },
+    });
+    expect(await iterator.next()).toMatchObject({ done: true });
+    expect(calls).toEqual(["open", "start"]);
+    broker.dispose();
+  });
+
+  test("releases a protected inactivity containment wait when authorization expires", async () => {
+    const controller = new AbortController();
+    const started = deferred();
+    const interruptInvoked = deferred();
+    const interruptFinished = deferred();
+    const calls: string[] = [];
+    const base = sessions(started, calls);
+    const execution = new CodexHarnessExecution({
+      abortStreamOnCancellation: true,
+      events: inactiveEvents(),
+      requests: closedRequests(),
+      sessions: {
+        ...base,
+        async interruptTurn() {
+          calls.push("interrupt");
+          interruptInvoked.resolve();
+          await interruptFinished.promise;
+        },
+      },
+    });
+    const iterator = execution.start(admission(controller.signal))[Symbol.asyncIterator]();
+    const terminal = iterator.next();
+    await started.promise;
+    await interruptInvoked.promise;
+
+    controller.abort();
+    expect(await terminal).toMatchObject({
+      done: false,
+      value: { kind: "terminal", status: "failed", code: "process_lost" },
+    });
+    expect(calls).toEqual(["open", "start", "interrupt"]);
+    interruptFinished.resolve();
+  });
+
+  test("preserves the ordinary stalled-open wait until the provider operation settles", async () => {
+    const controller = new AbortController();
+    const openInvoked = deferred();
+    const opened = deferredValue<{ id: string }>();
+    const calls: string[] = [];
+    const execution = new CodexHarnessExecution({
+      events: closedEvents(),
+      requests: closedRequests(),
+      sessions: {
+        async openOrResume() {
+          calls.push("open");
+          openInvoked.resolve();
+          return await opened.promise;
+        },
+        async startTurn() {
+          calls.push("start");
+          return { scope };
+        },
+        async interruptTurn() { calls.push("interrupt"); },
+        async steerTurn() { calls.push("steer"); },
+      },
+    });
+    const iterator = execution.start(admission(controller.signal))[Symbol.asyncIterator]();
+    let settled = false;
+    const pending = iterator.next().then((result) => {
+      settled = true;
+      return result;
+    });
+    await openInvoked.promise;
+
+    controller.abort();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(settled).toBeFalse();
+
+    opened.resolve({ id: "ordinary-session" });
+    expect(await pending).toMatchObject({ done: true });
+    expect(calls).toEqual(["open"]);
   });
 });
