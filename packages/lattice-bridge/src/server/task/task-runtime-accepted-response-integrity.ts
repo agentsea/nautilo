@@ -1,5 +1,4 @@
 import {
-  decodeTaskRuntimeBackgroundAuthorizationResponse,
   hasTaskRuntimeTemporarySigner,
   withTaskRuntimeTemporarySigner,
   type LatticeCrypto,
@@ -7,6 +6,8 @@ import {
   type TaskRuntimeRunResultReadEvidence,
   type TaskRuntimeTerminalMessageEvidence,
 } from "@nautilo/lattice-crypto";
+import { decodeTaskRuntimeBackgroundAuthorizationResponseV2 } from
+  "@nautilo/lattice-crypto/wire";
 
 type PublicationEvidence =
   | TaskRuntimeCancellationResultEvidence
@@ -37,11 +38,11 @@ export async function taskRuntimeAcceptedResponseIsCurrent(input: Readonly<{
     }
     return await withTaskRuntimeTemporarySigner(input.evidence, signer => {
       let response: ReturnType<
-        typeof decodeTaskRuntimeBackgroundAuthorizationResponse
+        typeof decodeTaskRuntimeBackgroundAuthorizationResponseV2
       > | undefined;
       let authorizationHash: Uint8Array | undefined;
       try {
-        response = decodeTaskRuntimeBackgroundAuthorizationResponse(
+        response = decodeTaskRuntimeBackgroundAuthorizationResponseV2(
           input.acceptedResponseBytes,
         );
         authorizationHash = input.crypto.hash(response.authorizationBytes);

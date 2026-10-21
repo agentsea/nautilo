@@ -19,7 +19,7 @@ import {
   namespaceGeneration,
   namespaceId,
   objectId,
-  prepareHumanExistingTaskRepresentationPublicationRequestV1,
+  prepareHumanExistingTaskRepresentationPublicationRequest,
   prepareHumanObjectAccessManifestGenesisSet,
   unixTimestamp,
   wrapObjectDekForNamespace,
@@ -320,7 +320,7 @@ async function environment(kind: "definition" | "run_result" = "definition") {
       committerSigningPublicKey: signer.publicKey,
       committerSigningPrivateKey: signer.privateKey,
     });
-    const signed = prepareHumanExistingTaskRepresentationPublicationRequestV1(
+    const signed = prepareHumanExistingTaskRepresentationPublicationRequest(
       crypto,
       {
         kind,

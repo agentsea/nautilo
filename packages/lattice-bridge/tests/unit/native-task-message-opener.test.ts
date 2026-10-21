@@ -7,7 +7,6 @@ import {
   LatticeCrypto, accessRevision, agentId, authorizationRevision,
   cryptoDeviceId, cryptoDomainId, createDomainForegroundAuthorizationPlan,
   createTaskRuntimeBackgroundAuthorizationRequest,
-  encodeTaskRuntimeBackgroundAuthorizationRequest,
   createTaskRuntimeSignerAuthorization,
   domainNamespaceRetainedAuthoritySetDigest, humanId,
   mintDomainForegroundAuthorization,
@@ -21,6 +20,7 @@ import {
   DOMAIN_NAMESPACE_BUNDLE_FORMAT_VERSION_V2,
   DOMAIN_NAMESPACE_BUNDLE_INNER_PURPOSE_V2,
   encodeAgentRuntimeSignerPublicationV1,
+  encodeTaskRuntimeBackgroundAuthorizationRequestV2,
   serializeDomainForegroundAuthorizationPlanV2,
   serializeDomainForegroundAuthorizationV2,
 } from "@nautilo/lattice-crypto/wire";
@@ -349,7 +349,7 @@ async function fixture(
             namespaceRequirements: evidenceInput.namespaceRequirements,
           },
         );
-        const requestBytes = encodeTaskRuntimeBackgroundAuthorizationRequest(
+        const requestBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV2(
           crypto,
           request,
         );

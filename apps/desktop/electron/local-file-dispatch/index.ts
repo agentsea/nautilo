@@ -514,37 +514,40 @@ export async function handleLocalFileDispatch(
   // Native search is read-only and has no revision-journal side effects. It
   // reuses the guarded adapter + already-created request Sandbox directly.
   if (validatedOp.kind === "search") {
-    const searchResult =
-      !options.sandbox
-        ? {
-            ok: false as const,
-            command: validatedOp.command,
-            error: {
-              code: "SEARCH_UNAVAILABLE" as const,
-              message: "The authorized search sandbox is unavailable.",
-            },
-          }
-        : !options.ripgrepRuntime || !options.ripgrepRuntime.ok
-          ? {
-              ok: false as const,
-              command: validatedOp.command,
-              error: {
-                code: "SEARCH_UNAVAILABLE" as const,
-                message:
-                  options.ripgrepRuntime?.error ??
-                  "The packaged search runtime is unavailable.",
-              },
-            }
-        : await executeLocalSearchOperation(validatedOp, {
-            adapter,
-            allowedRoots,
-            routing,
-            sandbox: options.sandbox,
-            binaryPath: options.ripgrepRuntime.binaryPath,
-            engineVersion: options.ripgrepRuntime.version,
-            ...(options.signal ? { signal: options.signal } : {}),
-            ...(options.searchExecute ? { execute: options.searchExecute } : {}),
-          });
+    let searchResult;
+    if (!options.sandbox) {
+      searchResult = {
+        ok: false as const,
+        command: validatedOp.command,
+        error: {
+          code: "SEARCH_UNAVAILABLE" as const,
+          message: "The authorized search sandbox is unavailable.",
+        },
+      };
+    } else if (!options.ripgrepRuntime || !options.ripgrepRuntime.ok) {
+      searchResult = {
+        ok: false as const,
+        command: validatedOp.command,
+        error: {
+          code: "SEARCH_UNAVAILABLE" as const,
+          message:
+            options.ripgrepRuntime?.error ??
+            "The packaged search runtime is unavailable.",
+        },
+      };
+    } else {
+      await options.taskProjectReauthorize?.();
+      searchResult = await executeLocalSearchOperation(validatedOp, {
+        adapter,
+        allowedRoots,
+        routing,
+        sandbox: options.sandbox,
+        binaryPath: options.ripgrepRuntime.binaryPath,
+        engineVersion: options.ripgrepRuntime.version,
+        ...(options.signal ? { signal: options.signal } : {}),
+        ...(options.searchExecute ? { execute: options.searchExecute } : {}),
+      });
+    }
     const payload: RelayLocalFileResult = { ok: true, result: searchResult };
     return { status: "ok", result: payload };
   }

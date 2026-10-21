@@ -16,7 +16,6 @@ import {
   namespaceId,
   prepareAgentRuntimeInitialization,
   prepareDomainNamespaceBundle,
-  encodeTaskRuntimeBackgroundAuthorizationResponse,
   verifyCommonObjectAccessManifest,
   type TaskRuntimeTerminalMessageEvidence,
 } from "@nautilo/lattice-crypto";
@@ -26,6 +25,7 @@ import {
   decodeEncryptedPayloadV2,
   decodeNamespaceObjectEnvelopeV2,
   encodeAgentRuntimeSignerPublicationV1,
+  encodeTaskRuntimeBackgroundAuthorizationResponseV2,
 } from "@nautilo/lattice-crypto/wire";
 import {
   withTaskRuntimeTerminalMessageEvidenceV1,
@@ -624,7 +624,7 @@ describe("terminal Task Message crypto staging", () => {
       if (mutation === "certificate") {
         certificate[0] = certificate[0]! ^ 0xff;
       }
-      const responseBytes = encodeTaskRuntimeBackgroundAuthorizationResponse({
+      const responseBytes = encodeTaskRuntimeBackgroundAuthorizationResponseV2({
         authorizationBytes: inner,
         certificateBytes: certificate,
       });

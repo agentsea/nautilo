@@ -6,9 +6,9 @@ import {
   encryptedObjectWriteRecord,
   verifyHumanTaskPublicationRequest,
   verifyHumanTaskPublicationRequestExactReplay,
-  verifyHumanExistingTaskRepresentationPublicationRequestV1,
-  verifyHumanExistingTaskRepresentationPublicationRequestExactReplayV1,
-  type HumanExistingTaskRepresentationPublicationRequestV1,
+  verifyHumanExistingTaskRepresentationPublicationRequest,
+  verifyHumanExistingTaskRepresentationPublicationRequestExactReplay,
+  type HumanExistingTaskRepresentationPublicationRequest,
   type HumanTaskPublicationRequest,
   type LatticeCrypto,
   type LatticeStorage,
@@ -336,7 +336,7 @@ export function authenticatePreparedHumanTaskContentCryptoRevisionExactReplayV1(
 
 /** Mint an opaque Task revision prepared and signed by an Agent Runtime. */
 const historicalRequests = new WeakMap<PreparedTaskContentCryptoRevisionV1,
-  HumanExistingTaskRepresentationPublicationRequestV1>();
+  HumanExistingTaskRepresentationPublicationRequest>();
 
 export type AuthenticatePreparedHistoricalTaskContentInputV1 = Readonly<{
   crypto: LatticeCrypto;
@@ -354,7 +354,7 @@ export type AuthenticatePreparedHistoricalTaskContentInputV1 = Readonly<{
   envelopeBytes: Uint8Array;
   signedPublicationRequestBytes: Uint8Array;
   expectedSignedRequestDigest?: Uint8Array;
-  resolveCurrentAuthority(request: HumanExistingTaskRepresentationPublicationRequestV1):
+  resolveCurrentAuthority(request: HumanExistingTaskRepresentationPublicationRequest):
     Promise<Uint8Array | null>;
 }>;
 
@@ -400,7 +400,7 @@ export async function authenticatePreparedHistoricalTaskContentCryptoRevisionV1(
   const common = validateCommon(snapshot, legacyReplay ? snapshot.object.objectId : historicalObjectId);
   let publicKey: Uint8Array | undefined;
   try {
-    const resolveCurrentAuthority = async (request: HumanExistingTaskRepresentationPublicationRequestV1) => {
+    const resolveCurrentAuthority = async (request: HumanExistingTaskRepresentationPublicationRequest) => {
       if (request.kind !== expected.coordinate.kind
         || request.taskId !== expected.coordinate.taskId
         || request.entityId !== (expected.coordinate.kind === "definition"
@@ -428,10 +428,10 @@ export async function authenticatePreparedHistoricalTaskContentCryptoRevisionV1(
       return publicKey ?? null;
     };
     const request = replayDigest === undefined
-      ? await verifyHumanExistingTaskRepresentationPublicationRequestV1(input.crypto, {
+      ? await verifyHumanExistingTaskRepresentationPublicationRequest(input.crypto, {
         requestBytes: signedBytes, now: input.now, resolveCurrentAuthority,
       })
-      : await verifyHumanExistingTaskRepresentationPublicationRequestExactReplayV1(input.crypto, {
+      : await verifyHumanExistingTaskRepresentationPublicationRequestExactReplay(input.crypto, {
         requestBytes: signedBytes, expectedRequestDigest: replayDigest, resolveCurrentAuthority,
       });
     const signingBytes = objectAccessManifestSigningBytesV5({
@@ -460,7 +460,7 @@ export async function authenticatePreparedHistoricalTaskContentCryptoRevisionV1(
 /** The returned facts retain no private key and remain tied to the authentic prepared bytes. */
 export function readPreparedHistoricalTaskContentRequestV1(
   revision: PreparedTaskContentCryptoRevisionV1,
-): HumanExistingTaskRepresentationPublicationRequestV1 {
+): HumanExistingTaskRepresentationPublicationRequest {
   readPreparedTaskContentCryptoRevisionSnapshotV1(revision);
   const request = historicalRequests.get(revision);
   if (request === undefined) throw new TypeError("Task revision is not an authenticated historical repair");

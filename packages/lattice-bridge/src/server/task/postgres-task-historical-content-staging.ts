@@ -8,7 +8,7 @@ import {
   taskHistoricalContentCryptoStagingReceipts,
 } from "@nautilo/db";
 import type {
-  HumanExistingTaskRepresentationPublicationRequestV1,
+  HumanExistingTaskRepresentationPublicationRequest,
   LatticeCrypto,
 } from "@nautilo/lattice-crypto";
 import {
@@ -103,7 +103,7 @@ function exactAuthority(
 }
 
 function coordinateFromRequest(
-  request: HumanExistingTaskRepresentationPublicationRequestV1,
+  request: HumanExistingTaskRepresentationPublicationRequest,
 ): TaskContentCoordinateV1 {
   return request.kind === "definition"
     ? Object.freeze({
@@ -121,7 +121,7 @@ function coordinateFromRequest(
 
 function historicalAuthority(
   current: TaskContentAuthorityV1,
-  request: HumanExistingTaskRepresentationPublicationRequestV1,
+  request: HumanExistingTaskRepresentationPublicationRequest,
 ): TaskContentAuthorityV1 {
   return Object.freeze({
     ...current,
@@ -132,7 +132,7 @@ function historicalAuthority(
 
 function compatibleCurrentAuthority(
   current: TaskContentAuthorityV1,
-  request: HumanExistingTaskRepresentationPublicationRequestV1,
+  request: HumanExistingTaskRepresentationPublicationRequest,
 ): boolean {
   return current.requesterHumanId === request.subjectHumanId
     && current.namespaceId === request.namespaceId

@@ -29,7 +29,7 @@ import {
   prepareAgentObjectAccessManifestGenesisSet,
   prepareAgentRuntimeInitialization,
   prepareHumanObjectAccessManifestGenesisSet,
-  prepareHumanExistingTaskRepresentationPublicationRequestV1,
+  prepareHumanExistingTaskRepresentationPublicationRequest,
   unixTimestamp,
   wrapObjectDekForNamespace,
   openObjectDekForNamespace,
@@ -337,7 +337,7 @@ async function fixture(kind: "human" | "agent" | "historical" | "foreground",
       const digest = new Uint8Array(32).fill(13);
       const claimId = "60000000-0000-4000-8000-000000000001";
       const operationId = "historical-completion";
-      const signed = prepareHumanExistingTaskRepresentationPublicationRequestV1(encrypted.crypto, {
+      const signed = prepareHumanExistingTaskRepresentationPublicationRequest(encrypted.crypto, {
         kind: coordinate.kind, entityId: coordinate.kind === "definition" ? TASK_ID : coordinate.taskRunId, taskId: TASK_ID, claimId, operationId,
         cryptoObjectId: encrypted.objectIdentity, sourceDigest, sourcePayloadHash: digest, planDigest: digest,
         operationalFieldsDigest: digest, expectedContentRevision: 0, nextContentRevision: 1,

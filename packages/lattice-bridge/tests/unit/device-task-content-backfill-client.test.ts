@@ -7,7 +7,7 @@ import type {
 } from "@nautilo/api-client/browser";
 import {
   LatticeCrypto,
-  verifyHumanExistingTaskRepresentationPublicationRequestV1,
+  verifyHumanExistingTaskRepresentationPublicationRequest,
 } from "@nautilo/lattice-crypto";
 
 import {
@@ -461,7 +461,7 @@ describe("device Task content backfill client", () => {
     expect(result).toEqual({ state: "more", resumeAt: NOW });
     expect(upload).toBeDefined();
     const requestBytes = decodeBase64url(upload!.requestBytesBase64url);
-    const request = await verifyHumanExistingTaskRepresentationPublicationRequestV1(
+    const request = await verifyHumanExistingTaskRepresentationPublicationRequest(
       fixture.crypto,
       {
         requestBytes,
@@ -509,7 +509,7 @@ describe("device Task content backfill client", () => {
     expect(result).toEqual({ state: "more", resumeAt: NOW });
     expect(upload).toBeDefined();
     const requestBytes = decodeBase64url(upload!.requestBytesBase64url);
-    const request = await verifyHumanExistingTaskRepresentationPublicationRequestV1(
+    const request = await verifyHumanExistingTaskRepresentationPublicationRequest(
       fixture.crypto,
       { requestBytes, now: NOW, resolveCurrentAuthority: () =>
         Promise.resolve(fixture.signing.publicKey.slice()) },

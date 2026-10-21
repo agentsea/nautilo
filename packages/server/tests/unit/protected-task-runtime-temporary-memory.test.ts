@@ -9,7 +9,6 @@ import {
   createTaskRuntimeSignerAuthorization,
   cryptoDeviceId,
   decryptObjectPayload,
-  encodeTaskRuntimeBackgroundAuthorizationRequest,
   humanId,
   mintDomainForegroundAuthorization,
   namespaceGeneration,
@@ -24,6 +23,7 @@ import {
   agentRuntimeObjectSignerKeyIdV1,
   decodeEncryptedPayloadV2,
   decodeNamespaceObjectEnvelopeV2,
+  encodeTaskRuntimeBackgroundAuthorizationRequestV2,
   serializeDomainForegroundAuthorizationPlanV2,
   serializeDomainForegroundAuthorizationV2,
 } from "@nautilo/lattice-crypto/wire";
@@ -167,7 +167,7 @@ test.each([
     },
     namespaceRequirements: [namespaceRequirement],
   });
-  const requestBytes = encodeTaskRuntimeBackgroundAuthorizationRequest(
+  const requestBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV2(
     crypto,
     request,
   );

@@ -3,7 +3,6 @@ import type { PostgresJsBridgeConnection, PostgresJsBridgeRow } from "@nautilo/d
 import {
   LatticeCrypto, accessRevision, agentId, authorizationRevision, cryptoDeviceId, cryptoDomainId,
   decryptObjectThroughNamespace,
-  encodeTaskRuntimeBackgroundAuthorizationResponse,
   createDomainForegroundAuthorizationPlan, domainNamespaceRetainedAuthoritySetDigest,
   humanId, mintDomainForegroundAuthorization, namespaceGeneration, namespaceId,
   prepareAgentRuntimeInitialization, prepareDomainNamespaceBundle,
@@ -14,6 +13,7 @@ import {
 import {
   DOMAIN_NAMESPACE_BUNDLE_FORMAT_VERSION_V2, DOMAIN_NAMESPACE_BUNDLE_INNER_PURPOSE_V2,
   decodeEncryptedPayloadV2, decodeNamespaceObjectEnvelopeV2, encodeAgentRuntimeSignerPublicationV1,
+  encodeTaskRuntimeBackgroundAuthorizationResponseV2,
   serializeDomainForegroundAuthorizationV2,
 } from "@nautilo/lattice-crypto/wire";
 import { deriveTaskContentCryptoObjectIdV1, fingerprintTaskContentAuthorityV1, fingerprintTaskContentNamespaceV1, TaskCancellationPublicationPolicyUnavailableError } from "../../src/task/task-content-repository.ts";
@@ -532,7 +532,7 @@ test("stages a certified V3 cancellation response bound to its active signer", a
     },
     result: value.cancellationResult,
   }, async ({ evidence, signer, authorizationBytes, certificateBytes }) => {
-    const responseBytes = encodeTaskRuntimeBackgroundAuthorizationResponse({
+    const responseBytes = encodeTaskRuntimeBackgroundAuthorizationResponseV2({
       authorizationBytes,
       certificateBytes,
     });

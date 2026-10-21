@@ -7,7 +7,7 @@ import {
   agentRuntimeGeneration,
   authorizationRevision,
   createDomainForegroundAuthorizationPlan,
-  createTaskDefinitionForegroundObjectAccessManifestV5,
+  createTaskDefinitionForegroundObjectAccessManifest,
   cryptoDeviceId,
   deriveAgentRuntimeObjectSignerPublic,
   humanId,
@@ -157,7 +157,7 @@ async function fixture(parentDeadlineAt = NOW + 29_000) {
   const authorizationBytes = serializeDomainForegroundAuthorizationV2(
     authorization,
   );
-  const genesis = createTaskDefinitionForegroundObjectAccessManifestV5(
+  const genesis = createTaskDefinitionForegroundObjectAccessManifest(
     crypto,
     {
       objectId: objectId(`task-definition:v1:${"d".repeat(64)}`),
@@ -262,7 +262,7 @@ describe("Task definition retained foreground authorization", () => {
       }),
     });
     const originalGenesis = decodeObjectAccessManifestV5(value.genesisBytes);
-    const changedGenesis = createTaskDefinitionForegroundObjectAccessManifestV5(
+    const changedGenesis = createTaskDefinitionForegroundObjectAccessManifest(
       value.crypto,
       {
         objectId: originalGenesis.objectId,

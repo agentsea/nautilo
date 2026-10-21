@@ -435,6 +435,42 @@ test("creates a local read-only isolated sandbox for Task project search without
   expect(closed).toBe(1);
 });
 
+test("reproves Task project identity immediately before search execution", async () => {
+  let sandboxCreated = false;
+  let replaced = false;
+  let executed = 0;
+  const fakeSandbox = {
+    containmentActive: () => true,
+    protectedFileMaskSupported: () => true,
+    close: async () => {},
+  } as unknown as Sandbox;
+  const f = fixture({
+    createSandbox: async () => {
+      sandboxCreated = true;
+      return fakeSandbox;
+    },
+    onResolve(_call, projectRoot) {
+      if (!sandboxCreated || replaced) return;
+      replaced = true;
+      rmSync(projectRoot, { recursive: true, force: true });
+      mkdirSync(projectRoot, { recursive: true });
+      writeFileSync(join(projectRoot, "inside.txt"), "replacement");
+    },
+    probeRipgrep: async () => ({ ok: true, binaryPath: "/trusted/rg", version: "14.1.0" }),
+    searchExecute: async () => {
+      executed += 1;
+      return { exitCode: 0, stderr: "", timedOut: false, aborted: false, stoppedEarly: false };
+    },
+  });
+
+  expect(await f.handler(searchRequest(f.projectRoot))).toMatchObject({
+    status: "error",
+    errorCode: "TASK_PROJECT_FILE_AUTHORITY_UNAVAILABLE",
+  });
+  expect(replaced).toBe(true);
+  expect(executed).toBe(0);
+});
+
 test("accepts a current Development delegation but never exposes its profile roots", async () => {
   const development = binding("read", "development");
   const f = fixture({

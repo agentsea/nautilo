@@ -3,7 +3,7 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 import {
   LatticeCrypto, accessRevision, agentId, authorizationRevision, cryptoDeviceId, cryptoDomainId,
   createDomainForegroundAuthorizationPlan, createTaskRuntimeBackgroundAuthorizationRequest,
-  createTaskRuntimeSignerAuthorization, encodeTaskRuntimeBackgroundAuthorizationRequest,
+  createTaskRuntimeSignerAuthorization,
   domainNamespaceRetainedAuthoritySetDigest, humanId, namespaceGeneration, namespaceId,
   mintDomainForegroundAuthorization, prepareAgentRuntimeInitialization, prepareDomainNamespaceBundle,
   taskRuntimeBackgroundAuthorizationIssuer, TaskRuntimeRecipientRegistry,
@@ -11,6 +11,7 @@ import {
 } from "@nautilo/lattice-crypto";
 import {
   DOMAIN_NAMESPACE_BUNDLE_FORMAT_VERSION_V2, DOMAIN_NAMESPACE_BUNDLE_INNER_PURPOSE_V2,
+  encodeTaskRuntimeBackgroundAuthorizationRequestV2,
   encodeAgentRuntimeSignerPublicationV1,
   serializeDomainForegroundAuthorizationPlanV2,
   serializeDomainForegroundAuthorizationV2,
@@ -315,7 +316,7 @@ describe("native Task Message crypto completion", () => {
         namespaceRequirements,
       },
     );
-    const requestBytes = encodeTaskRuntimeBackgroundAuthorizationRequest(
+    const requestBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV2(
       value.crypto,
       request,
     );

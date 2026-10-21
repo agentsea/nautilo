@@ -24,7 +24,7 @@ import {
   prepareAgentRuntimeInitialization,
   prepareHumanObjectAccessManifestGenesisSet,
   prepareHumanTaskPublicationRequest,
-  prepareHumanExistingTaskRepresentationPublicationRequestV1,
+  prepareHumanExistingTaskRepresentationPublicationRequest,
   unixTimestamp,
   wrapObjectDekForNamespace,
   type GrantAuthoritySetAuthorization,
@@ -537,7 +537,7 @@ function historicalHttpFixture(coordinate: TaskContentCoordinateV1, legacy = fal
   const operationalFieldsDigest = new Uint8Array(32).fill(14);
   const claimId = "60000000-0000-4000-8000-000000000001";
   const operationId = "task-historical-repair-1";
-  const signed = prepareHumanExistingTaskRepresentationPublicationRequestV1(value.crypto, {
+  const signed = prepareHumanExistingTaskRepresentationPublicationRequest(value.crypto, {
     kind: coordinate.kind, entityId: coordinate.kind === "definition" ? TASK_ID : RUN_ID,
     taskId: TASK_ID, claimId, operationId, cryptoObjectId: value.objectIdentity,
     sourceDigest, sourcePayloadHash, planDigest, operationalFieldsDigest,

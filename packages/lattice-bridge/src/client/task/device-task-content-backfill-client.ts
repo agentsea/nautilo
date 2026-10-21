@@ -24,7 +24,7 @@ import {
   namespaceGeneration,
   namespaceId,
   objectId,
-  prepareHumanExistingTaskRepresentationPublicationRequestV1,
+  prepareHumanExistingTaskRepresentationPublicationRequest,
   prepareHumanObjectAccessManifestGenesisSet,
   unixTimestamp,
   wrapObjectDekForNamespace,
@@ -479,7 +479,7 @@ export function createDeviceTaskContentBackfillClient(input: Readonly<{
           if (deadlineAt <= issuedAt) {
             return fail("stale", "Task repair signing window expired");
           }
-          const signed = prepareHumanExistingTaskRepresentationPublicationRequestV1(
+          const signed = prepareHumanExistingTaskRepresentationPublicationRequest(
             input.crypto,
             {
               kind: plan.coordinate.kind,

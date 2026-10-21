@@ -16,9 +16,9 @@ git -c user.name='Contributor build' -c user.email='build@localhost.invalid' \
 export CI=true
 export TURBO_TELEMETRY_DISABLED=1
 export TURBO_CACHE=local:rw
-# One existing 5 GiB compiler heap fits the hosted runner's 8 GiB floor.
+# Typecheck serially with a 6 GiB heap on the 16 GiB hosted build runner.
 export TURBO_CONCURRENCY=1
-export NODE_OPTIONS=--max-old-space-size=5120
+export NODE_OPTIONS=--max-old-space-size=6144
 
 uname -sm
 node --version

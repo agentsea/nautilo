@@ -16,6 +16,7 @@ import { readFromCurrentLocalExecutionOwner } from "./local-execution-preview";
 import { LOCAL_EXECUTION_MAX_IDENTITIES } from "@nautilo/relay";
 import { LocalExecutionDispatch, localExecutionOwnerKey, type LocalExecutionViewRequest } from "./relay-dispatch/local-execution";
 import { validateTaskProjectFileRequest } from "./local-file-dispatch/index.ts";
+import { openTaskProjectDirectoryAnchor } from "./task-project-directory-anchor.ts";
 /**
  * Desktop Relay broker — supervises the standalone Relay Host child.
  *
@@ -2297,12 +2298,26 @@ export function makeDispatchHandler(
           const projectIdentity = await captureDesktopFilesystemGrantRootIdentity(projectRoot);
           if (
             !projectIdentity.ok ||
-            projectIdentity.canonicalRoot !== projectRoot ||
-            !(await validateTaskProjectFileRequest(request, {
-              projectRoot,
-              relayId: context.relayId,
-            }))
+            projectIdentity.canonicalRoot !== projectRoot
           ) return null;
+
+          const projectAnchor = await openTaskProjectDirectoryAnchor(projectRoot);
+          if (projectAnchor === null) return null;
+          try {
+            if (
+              !(await validateTaskProjectFileRequest(request, {
+                projectRoot,
+                relayId: context.relayId,
+              })) ||
+              !(await projectAnchor.validate())
+            ) {
+              await projectAnchor.close();
+              return null;
+            }
+          } catch (error) {
+            await projectAnchor.close();
+            throw error;
+          }
 
           const reauthorize = async (): Promise<void> => {
             if (isSessionClosed()) throw new Error("TASK_PROJECT_FILE_AUTHORITY_UNAVAILABLE");
@@ -2327,6 +2342,7 @@ export function makeDispatchHandler(
             );
             if (
               !usable(fresh) ||
+              !(await projectAnchor.validate()) ||
               !identity.ok ||
               identity.canonicalRoot !== projectRoot ||
               !options.protectedPathPolicy!.check(projectRoot).allowed ||
@@ -2407,6 +2423,7 @@ export function makeDispatchHandler(
             authority: Object.freeze({ roots: Object.freeze([projectRoot]) }),
             reauthorize,
             openReadOnlySearchSandbox,
+            close: () => projectAnchor.close(),
           });
         };
   const localFile = createLocalFileHandlers({

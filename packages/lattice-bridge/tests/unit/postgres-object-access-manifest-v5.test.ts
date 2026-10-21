@@ -5,7 +5,7 @@ import {
   createCommonAgentObjectAccessManifest,
   createCommonHumanObjectAccessManifest,
   createCommonProcessorObjectAccessManifest,
-  createTaskDefinitionForegroundObjectAccessManifestV5,
+  createTaskDefinitionForegroundObjectAccessManifest,
   deriveAgentRuntimeObjectSignerPublic,
   accessRevision,
   agentId,
@@ -148,7 +148,7 @@ describe("stored common-v5 object access history", () => {
     const payloadHash = hash(0x72);
     const authorizationBytes = new Uint8Array(3675).fill(0x73);
     const authorizationHash = crypto.hash(authorizationBytes);
-    const genesis = createTaskDefinitionForegroundObjectAccessManifestV5(
+    const genesis = createTaskDefinitionForegroundObjectAccessManifest(
       crypto,
       {
         objectId: targetObjectId,

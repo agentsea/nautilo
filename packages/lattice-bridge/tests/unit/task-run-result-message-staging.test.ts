@@ -12,7 +12,6 @@ import {
   cryptoDomainId,
   domainNamespaceRetainedAuthoritySetDigest,
   encryptObjectPayload,
-  encodeTaskRuntimeBackgroundAuthorizationResponse,
   humanId,
   namespaceGeneration,
   namespaceId,
@@ -27,6 +26,7 @@ import {
 import {
   DOMAIN_NAMESPACE_BUNDLE_FORMAT_VERSION_V2,
   DOMAIN_NAMESPACE_BUNDLE_INNER_PURPOSE_V2,
+  encodeTaskRuntimeBackgroundAuthorizationResponseV2,
   encodeAgentRuntimeSignerPublicationV1,
   encodeEncryptedPayloadV2,
   encodeNamespaceObjectEnvelopeV2,
@@ -614,7 +614,7 @@ describe("Task run result Message crypto staging", () => {
         && evidence.result.terminalStatus !== "errored") {
         throw new Error("Expected a raw revision-one terminal result");
       }
-      const responseBytes = encodeTaskRuntimeBackgroundAuthorizationResponse({
+      const responseBytes = encodeTaskRuntimeBackgroundAuthorizationResponseV2({
         authorizationBytes,
         certificateBytes,
       });

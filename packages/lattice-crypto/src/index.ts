@@ -12,46 +12,14 @@ export {
 } from "./crypto/index.ts";
 
 export {
-  MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V2
-    as MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES,
   createTaskRuntimeBackgroundAuthorizationRequestV2
     as createTaskRuntimeBackgroundAuthorizationRequest,
-  decodeTaskRuntimeBackgroundAuthorizationRequestV2
-    as decodeTaskRuntimeBackgroundAuthorizationRequest,
-  destroyTaskRuntimeBackgroundAuthorizationRequestV2
-    as destroyTaskRuntimeBackgroundAuthorizationRequest,
-  encodeTaskRuntimeBackgroundAuthorizationRequestV2
-    as encodeTaskRuntimeBackgroundAuthorizationRequest,
-  isTaskRuntimeBackgroundAuthorizationRequestV2Carrier
-    as isTaskRuntimeBackgroundAuthorizationRequestCarrier,
   taskRuntimeBackgroundAuthorizationIssuerV2
     as taskRuntimeBackgroundAuthorizationIssuer,
 } from "./background/task-runtime-request-v2.ts";
-export type {
-  TaskRuntimeBackgroundAuthorizationRequestV2
-    as TaskRuntimeBackgroundAuthorizationRequest,
-  TaskRuntimeDeviceGroupHeadV2 as TaskRuntimeDeviceGroupHead,
-  TaskRuntimeEphemeralSignerV2 as TaskRuntimeEphemeralSigner,
-  TaskRuntimeExecutionWorkBindingV2 as TaskRuntimeExecutionWorkBinding,
-} from "./background/task-runtime-request-v2.ts";
 export {
-  MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_BYTES_V2
-    as MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_BYTES,
-  MAX_TASK_RUNTIME_SIGNER_AUTHORIZATION_PROJECTION_WIRE_BYTES_V1
-    as MAX_TASK_RUNTIME_SIGNER_AUTHORIZATION_PROJECTION_WIRE_BYTES,
-  MAX_TASK_RUNTIME_SIGNER_AUTHORIZATION_WIRE_BYTES_V1
-    as MAX_TASK_RUNTIME_SIGNER_AUTHORIZATION_WIRE_BYTES,
-  TaskRuntimeSignerAuthorizationErrorV1
-    as TaskRuntimeSignerAuthorizationError,
   createTaskRuntimeSignerAuthorization,
-  decodeTaskRuntimeBackgroundAuthorizationResponseV2
-    as decodeTaskRuntimeBackgroundAuthorizationResponse,
-  decodeTaskRuntimeSignerAuthorizationProjection,
-  destroyTaskRuntimeSignerAuthorizationProjection,
-  destroyTaskRuntimeSignerAuthorization,
   destroyVerifiedTaskRuntimeSignerAuthorization,
-  encodeTaskRuntimeBackgroundAuthorizationResponseV2
-    as encodeTaskRuntimeBackgroundAuthorizationResponse,
   readTaskRuntimeSignerAuthorizationIssuer,
   verifyCurrentTaskRuntimeSignerAuthorization,
   verifyHistoricalTaskRuntimeSignerAuthorization,
@@ -59,6 +27,7 @@ export {
 export type {
   ResolveCurrentTaskRuntimeSignerAuthorizationIssuer,
   ResolveHistoricalTaskRuntimeSignerAuthorizationIssuer,
+  TaskRuntimeCertifiedBackgroundAuthorizationRequest,
   TaskRuntimeSignerAuthorizationIssuerContext,
   TaskRuntimeSignerAuthorizationProjection,
   TaskRuntimeSignerAuthorization,
@@ -469,7 +438,8 @@ export type {
   TaskRuntimeRecipientDeadlineHandleV1 as TaskRuntimeRecipientDeadlineHandle,
   TaskRuntimeRecipientDeadlineSchedulerV1 as TaskRuntimeRecipientDeadlineScheduler,
   TaskRuntimeRecipientOpenResultV1 as TaskRuntimeRecipientOpenResult,
-  TaskRuntimeCertifiedPublicationSigningInputV1,
+  TaskRuntimeCertifiedPublicationSigningInputV1
+    as TaskRuntimeCertifiedPublicationSigningInput,
   TaskRuntimeCertifiedSigningInputV1 as TaskRuntimeCertifiedSigningInput,
   TaskRuntimeTemporarySignerV1 as TaskRuntimeTemporarySigner,
 } from "./background/task-runtime-recipient-registry-v1.ts";
@@ -832,8 +802,6 @@ export {
   domainForegroundNamespaceBindingSetDigestV2
     as domainForegroundNamespaceBindingSetDigest,
   mintDomainForegroundAuthorizationV2 as mintDomainForegroundAuthorization,
-  verifyHistoricalDomainForegroundAuthorizationV2
-    as verifyHistoricalDomainForegroundAuthorization,
   withOpenedDomainForegroundAuthorizationV2
     as withOpenedDomainForegroundAuthorization,
 } from "./format/domain-foreground-authorization-v2.ts";
@@ -1248,6 +1216,10 @@ export {
 export type {
   CurrentTaskRuntimeAgentObjectAccessGenesisSetAuthorizationV1
     as CurrentTaskRuntimeAgentObjectAccessGenesisSetAuthorization,
+  CurrentTaskRuntimeAgentObjectAccessGenesisSetLegacyAuthorizationV1
+    as CurrentTaskRuntimeAgentObjectAccessGenesisSetLegacyAuthorization,
+  CurrentTaskRuntimeAgentObjectAccessGenesisSetTemporaryAuthorizationV1
+    as CurrentTaskRuntimeAgentObjectAccessGenesisSetTemporaryAuthorization,
   WithCurrentTaskRuntimeAgentObjectAccessGenesisSetAuthorizationV1
     as WithCurrentTaskRuntimeAgentObjectAccessGenesisSetAuthorization,
 } from "./object/task-runtime-agent-storage-coordinator-v1.ts";
@@ -1503,7 +1475,8 @@ export type {
 } from "./format/object-access-manifest-v3.ts";
 export {
   createAgentObjectAccessManifestV5 as createCommonAgentObjectAccessManifest,
-  createTaskDefinitionForegroundObjectAccessManifestV5,
+  createTaskDefinitionForegroundObjectAccessManifestV5
+    as createTaskDefinitionForegroundObjectAccessManifest,
   createHumanObjectAccessManifestV5 as createCommonHumanObjectAccessManifest,
   createCurrentProcessorObjectAccessManifestV5 as createCurrentCommonProcessorObjectAccessManifest,
   createTaskRuntimeObjectAccessManifestV5
@@ -1528,15 +1501,14 @@ export type {
     as CommonProcessorSignerAuthorizationEvidence,
   ResolveAgentRuntimeSignerPublicKeyV5
     as ResolveCommonAgentRuntimeSignerPublicKey,
-  ResolveTaskDefinitionForegroundAuthorizationSignerPublicKeyV5,
+  ResolveTaskDefinitionForegroundAuthorizationSignerPublicKeyV5
+    as ResolveTaskDefinitionForegroundAuthorizationSignerPublicKey,
   ResolveHistoricalHumanDeviceSigningPublicKeyV5
     as ResolveCommonHistoricalHumanDeviceSigningPublicKey,
   ResolveHistoricalProcessorIssuingDevicePublicKeyV5
     as ResolveCommonHistoricalProcessorIssuingDevicePublicKey,
   ResolveProcessorSignerAuthorizationBytesV5
     as ResolveCommonProcessorSignerAuthorizationBytes,
-  ResolveTaskRuntimeSignerAuthorizationBytesV5
-    as ResolveTaskRuntimeCommonSignerAuthorizationBytes,
   TrustedMinimumObjectAccessHeadV5 as TrustedMinimumCommonObjectAccessHead,
   VerifiedObjectAccessManifestV5 as VerifiedCommonObjectAccessManifest,
   VerifyObjectAccessManifestChainV5Input
@@ -1715,13 +1687,18 @@ export type {
 } from "./task/publication-request-v1.ts";
 
 export {
-  prepareHumanExistingTaskRepresentationPublicationRequestV1,
-  verifyHumanExistingTaskRepresentationPublicationRequestV1,
-  verifyHumanExistingTaskRepresentationPublicationRequestExactReplayV1,
+  prepareHumanExistingTaskRepresentationPublicationRequestV1
+    as prepareHumanExistingTaskRepresentationPublicationRequest,
+  verifyHumanExistingTaskRepresentationPublicationRequestV1
+    as verifyHumanExistingTaskRepresentationPublicationRequest,
+  verifyHumanExistingTaskRepresentationPublicationRequestExactReplayV1
+    as verifyHumanExistingTaskRepresentationPublicationRequestExactReplay,
 } from "./task/existing-representation-publication-request-v1.ts";
 export type {
-  HumanExistingTaskRepresentationPublicationRequestV1,
-  PrepareHumanExistingTaskRepresentationPublicationRequestInputV1,
+  HumanExistingTaskRepresentationPublicationRequestV1
+    as HumanExistingTaskRepresentationPublicationRequest,
+  PrepareHumanExistingTaskRepresentationPublicationRequestInputV1
+    as PrepareHumanExistingTaskRepresentationPublicationRequestInput,
 } from "./task/existing-representation-publication-request-v1.ts";
 
 export {
@@ -1734,6 +1711,7 @@ export type {
 } from "./background/task-runtime-run-result-read-evidence-v1.ts";
 export type {
   TaskRuntimeRunResultReadPartitionsV1 as TaskRuntimeRunResultReadPartitions,
+  TaskRuntimeTemporarySignerEvidenceV1 as TaskRuntimeTemporarySignerEvidence,
 } from "./background/task-runtime-recipient-registry-v1.ts";
 export {
   assertAuthenticTaskRuntimeWakeForegroundEvidenceV1 as assertAuthenticTaskRuntimeWakeForegroundEvidence,

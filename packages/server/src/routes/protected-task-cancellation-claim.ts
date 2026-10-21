@@ -4,7 +4,7 @@ import { isDeepStrictEqual } from "node:util";
 import type { PostgresJsBridgeConnection } from "@nautilo/db";
 import type {
   TaskRuntimeCancellationResultProof,
-  TaskRuntimeCertifiedPublicationSigningInputV1,
+  TaskRuntimeCertifiedPublicationSigningInput,
   TaskRuntimeRecipientRegistry,
 } from "@nautilo/lattice-crypto";
 import {
@@ -186,7 +186,7 @@ type PublicationPlan = TaskRuntimeRecipientRequestPlan<
   TaskRuntimeBackgroundAuthorizationRequestV3
 > & Readonly<{ sourceRoomId: string }>;
 type PublicationSigningBase = Omit<
-  TaskRuntimeCertifiedPublicationSigningInputV1,
+  TaskRuntimeCertifiedPublicationSigningInput,
   "expectedPublication"
 >;
 export type TaskPublicationClaimInput<Plan extends PublicationPlan> = Readonly<{

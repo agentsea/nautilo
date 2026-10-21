@@ -196,6 +196,8 @@ export interface TaskProjectFileAuthority {
     sandbox: Sandbox;
     close(): Promise<void>;
   }>>;
+  /** Release request-local resources retained to pin this directory incarnation. */
+  close(): Promise<void>;
 }
 
 export interface CreateLocalFileHandlersDeps {
@@ -376,6 +378,7 @@ export function createLocalFileHandlers(deps: CreateLocalFileHandlersDeps): Loca
         input.signal?.throwIfAborted();
       } catch {
         await ownedSearchSandbox?.close().catch(() => {});
+        await taskProject?.close().catch(() => {});
         return {
           status: "error",
           errorCode: "TASK_PROJECT_FILE_AUTHORITY_UNAVAILABLE",
@@ -470,6 +473,7 @@ export function createLocalFileHandlers(deps: CreateLocalFileHandlersDeps): Loca
       };
     } finally {
       await ownedSearchSandbox?.close().catch(() => {});
+      await taskProject?.close().catch(() => {});
     }
     if (result.status === "ok" && result.result && typeof result.result === "object") {
       const inner = result.result as { ok?: boolean; result?: unknown };

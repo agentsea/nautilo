@@ -166,8 +166,9 @@ export type TaskRuntimeSignerAuthorization =
   | TaskRuntimeSignerAuthorizationV1 | TaskRuntimeSignerAuthorizationV2;
 export type TaskRuntimeSignerAuthorizationProjection =
   | TaskRuntimeSignerAuthorizationProjectionV1 | TaskRuntimeSignerAuthorizationProjectionV2;
-type CertifiedRequest =
+export type TaskRuntimeCertifiedBackgroundAuthorizationRequest =
   | TaskRuntimeBackgroundAuthorizationRequestV2 | TaskRuntimeBackgroundAuthorizationRequestV3;
+type CertifiedRequest = TaskRuntimeCertifiedBackgroundAuthorizationRequest;
 export type TaskRuntimeSignerAuthorizationIssuerContext = Readonly<{
   issuer: BackgroundAuthorizationIssuerV2;
   projection: TaskRuntimeSignerAuthorizationProjection;
@@ -613,8 +614,9 @@ export function createTaskRuntimeSignerAuthorization(
       input.issuerSigningPrivateKey,
       V2_LIMITS.signingPrivateKeyBytes,
     );
+    const issuerPublicKey = ed25519.getPublicKey(privateKey);
     publicKey = ownedBytes(
-      ed25519.getPublicKey(privateKey),
+      issuerPublicKey,
       V2_LIMITS.signingPublicKeyBytes,
     );
     authorizationHash = assertGrantMatches(
@@ -904,7 +906,7 @@ export function decodeTaskRuntimeBackgroundAuthorizationResponseV2(
   }
 }
 
-export function destroyTaskRuntimeSignerAuthorization(
+function destroyTaskRuntimeSignerAuthorization(
   value: TaskRuntimeSignerAuthorization,
 ): void {
   value.projectionBytes.fill(0);

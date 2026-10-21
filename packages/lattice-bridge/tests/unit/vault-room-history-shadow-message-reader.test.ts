@@ -11,7 +11,6 @@ import {
   createTaskRuntimeSignerAuthorization,
   cryptoDeviceId,
   deriveAgentRuntimeObjectSignerPublic,
-  encodeTaskRuntimeBackgroundAuthorizationRequest,
   encryptObjectPayload,
   humanId,
   mintDomainForegroundAuthorization,
@@ -27,6 +26,7 @@ import {
 } from "@nautilo/lattice-crypto";
 import {
   deriveHumanMessageEditCryptoObjectIdV1,
+  encodeTaskRuntimeBackgroundAuthorizationRequestV2,
   encodeEncryptedPayloadV2,
   encodeHumanPeerLiveShadowMessagePlanV1,
   encodeNamespaceObjectEnvelopeV2,
@@ -539,7 +539,7 @@ async function taskRuntimeHistoryFixture(
     committerDeviceSigningPrivateKey: state.signing.privateKey,
     recipientEncryptionPublicKey: recipient.publicKey,
   });
-  const requestBytes = encodeTaskRuntimeBackgroundAuthorizationRequest(
+    const requestBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV2(
     state.crypto,
     request,
   );

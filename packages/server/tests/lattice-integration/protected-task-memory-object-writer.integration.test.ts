@@ -174,7 +174,7 @@ import {
   prepareDomainKeyRecipientAuthorization,
   prepareDomainKeyRecipientEnvelope,
   prepareDomainNamespaceBundle,
-  prepareHumanExistingTaskRepresentationPublicationRequestV1,
+  prepareHumanExistingTaskRepresentationPublicationRequest,
   prepareHumanObjectAccessManifestGenesisSet,
   prepareHumanTaskPublicationRequest,
   TaskRuntimeRecipientRegistry,
@@ -2541,7 +2541,7 @@ async function repairHistoricalTaskDefinition(base: BaseFixture, taskId: string,
     committerSigningPublicKey: base.currentDevice.signingPublicKey,
     committerSigningPrivateKey: base.signingPrivateKey,
   });
-  const signed = prepareHumanExistingTaskRepresentationPublicationRequestV1(base.crypto, {
+  const signed = prepareHumanExistingTaskRepresentationPublicationRequest(base.crypto, {
     kind: "definition", entityId: taskId, taskId, claimId: plan.claimId, operationId: plan.operationId,
     cryptoObjectId: plan.objectId, sourceDigest: Buffer.from(plan.sourceDigestBase64url, "base64url"),
     sourcePayloadHash: Buffer.from(plan.sourcePayloadHashBase64url, "base64url"),
