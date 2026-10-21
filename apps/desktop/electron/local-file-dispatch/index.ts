@@ -536,7 +536,9 @@ export async function handleLocalFileDispatch(
         },
       };
     } else {
-      await options.taskProjectReauthorize?.();
+      if (options.taskProjectReauthorize !== undefined) {
+        await options.taskProjectReauthorize();
+      }
       searchResult = await executeLocalSearchOperation(validatedOp, {
         adapter,
         allowedRoots,
@@ -601,7 +603,9 @@ export async function handleLocalFileDispatch(
   // Journal initialization and path canonicalization may await. Reprove the
   // private Task authority immediately before the concrete operation begins;
   // coordinator-backed mutations reprove once more at their commit boundary.
-  await options.taskProjectReauthorize?.();
+  if (options.taskProjectReauthorize !== undefined) {
+    await options.taskProjectReauthorize();
+  }
 
   if (
     routing.mutationRetry === true &&
