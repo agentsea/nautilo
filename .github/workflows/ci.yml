@@ -103,6 +103,7 @@ jobs:
 
       - name: Lint
         env:
+          NODE_OPTIONS: --max-old-space-size=6144
           # Ten concurrent type-aware ESLint processes exhaust the standard
           # runner's memory; the larger pool keeps Turbo's default of ten.
           TURBO_CONCURRENCY: ${{ github.event.pull_request.head.repo.id == github.event.repository.id && github.actor != 'dependabot[bot]' && vars.CI_LINUX_RUNNER && '10' || '3' }}
@@ -128,7 +129,7 @@ jobs:
     env:
       TURBO_TOKEN: ${{ github.event.pull_request.head.repo.id == github.event.repository.id && github.actor != 'dependabot[bot]' && secrets.TURBO_TOKEN || '' }}
       TURBO_TEAM: ${{ github.event.pull_request.head.repo.id == github.event.repository.id && github.actor != 'dependabot[bot]' && vars.TURBO_TEAM || '' }}
-      # Hosted runners have at least 8 GiB: run one 5 GiB compiler heap.
+      # Keep the 6 GiB compiler heap serial on the standard hosted runner.
       # A reviewed larger pool may opt into its measured parallelism.
       TURBO_CONCURRENCY: ${{ github.event.pull_request.head.repo.id == github.event.repository.id && github.actor != 'dependabot[bot]' && vars.CI_LINUX_RUNNER && vars.CI_TYPECHECK_CONCURRENCY || '1' }}
       TURBO_SCM_BASE: ${{ github.event.pull_request.base.sha }}
@@ -161,7 +162,7 @@ jobs:
         env:
           # The server graph exceeds Node's default ~4 GiB old-space ceiling.
           # Keep the larger heap scoped to compiler processes in this step.
-          NODE_OPTIONS: --max-old-space-size=5120
+          NODE_OPTIONS: --max-old-space-size=6144
         run: bash dev/scripts/ci-gates.sh typecheck
 
       - name: Mobile web export smoke
