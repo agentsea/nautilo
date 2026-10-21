@@ -14,6 +14,8 @@ import subprocess
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
+from types import SimpleNamespace
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -80,7 +82,7 @@ class BootstrapPolicyTests(unittest.TestCase):
             self.assertEqual(list(empty.iterdir()), [])
             expected_exports = {
                 "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "PIP_CERT",
-                "CURL_CA_BUNDLE", "GIT_SSL_CAINFO", "CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE",
+                "CURL_CA_BUNDLE", "GIT_SSL_CAINFO", "GIT_SSL_CAPATH", "CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE",
                 "AWS_CA_BUNDLE", "npm_config_cafile", "XDG_CONFIG_HOME",
             }
             if os.name == "nt":
@@ -89,6 +91,8 @@ class BootstrapPolicyTests(unittest.TestCase):
                 self.assertEqual(exports["GIT_CONFIG_KEY_0"], "http.schannelUseSSLCAInfo")
                 self.assertEqual(exports["GIT_CONFIG_VALUE_0"], "true")
             self.assertEqual(set(exports), expected_exports)
+            self.assertEqual(exports["CURL_CA_BUNDLE"], "")
+            self.assertEqual(exports["GIT_SSL_CAPATH"], empty)
             rendered = env.read_text()
             self.assertNotIn("NODE_OPTIONS", rendered)
             self.assertEqual((exports["XDG_CONFIG_HOME"] / ".bunfig.toml").read_text(),
@@ -130,6 +134,41 @@ class BootstrapPolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, fingerprint):
             namespace["qualify_bundle"](TEST_CERTIFICATE)
         self.assertEqual(inline_namespace()["BLOCKED"], BLOCKED)
+
+    def test_windows_native_repair_is_scoped_and_fail_closed(self):
+        required = {"GITHUB_ACTIONS": "true", "RUNNER_ENVIRONMENT": "github-hosted", "RUNNER_OS": "Windows"}
+        namespace = inline_namespace()
+        for key in required:
+            environment = {**required, key: "unexpected"}
+            namespace["os"] = SimpleNamespace(name="nt", environ=environment)
+            with mock.patch.object(namespace["subprocess"], "run") as run:
+                with self.assertRaisesRegex(RuntimeError, "ephemeral GitHub-hosted Windows"):
+                    namespace["restrict_windows_roots"]()
+                run.assert_not_called()
+        namespace["os"] = SimpleNamespace(name="posix", environ=required)
+        with self.assertRaises(RuntimeError):
+            namespace["restrict_windows_roots"]()
+        namespace["os"] = SimpleNamespace(name="nt", environ=required)
+        with mock.patch.object(namespace["subprocess"], "run") as run:
+            namespace["restrict_windows_roots"]()
+        self.assertEqual(run.call_count, 2)
+        powershell = run.call_args_list[0].args[0]
+        self.assertEqual(powershell[:5], ["pwsh", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command"])
+        script = powershell[-1]
+        self.assertIn("HashAlgorithmName]::SHA256", script)
+        self.assertNotIn(".Thumbprint", script)
+        self.assertNotIn(".Clear(", script)
+        self.assertIn("@('LocalMachine', 'CurrentUser')", script)
+        self.assertIn("@('Root', 'CA')", script)
+        self.assertIn("'Disallowed'", script)
+        self.assertLess(script.index("$store.Add("), script.index("$store.Remove("))
+        self.assertIn("$blocked -contains (Fingerprint $certificate)", script)
+        fresh_python = run.call_args_list[1].args[0]
+        self.assertIn("ssl.enum_certificates(name)", fresh_python[2])
+        self.assertEqual(set(json.loads(fresh_python[3])), BLOCKED)
+        for call in run.call_args_list:
+            self.assertTrue(call.kwargs["check"])
+            self.assertGreater(call.kwargs["timeout"], 0)
 
     def test_workflows_start_with_the_canonical_credential_free_step(self):
         self.assertNotIn("GITHUB_TOKEN", POLICY.INLINE_PROGRAM)

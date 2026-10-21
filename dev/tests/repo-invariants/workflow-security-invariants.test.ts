@@ -120,7 +120,7 @@ describe("GitHub Actions workflow security", () => {
     const container = source.slice(source.indexOf("docker run"), source.indexOf("2>&1 | tee"));
     expect(container).not.toMatch(/(?:--env-file|--privileged|--volume|\s-v\s)/);
     const exportedNames = [...container.matchAll(/--env ([A-Za-z_]+)/gu)].map((match) => match[1]);
-    expect(exportedNames).toEqual(["NODE_OPTIONS", "SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "GIT_SSL_CAINFO", "npm_config_cafile"]);
+    expect(exportedNames).toEqual(["NODE_OPTIONS", "SSL_CERT_FILE", "SSL_CERT_DIR", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "GIT_SSL_CAINFO", "GIT_SSL_CAPATH", "npm_config_cafile"]);
     expect(source).toContain("git archive HEAD");
   });
 });
