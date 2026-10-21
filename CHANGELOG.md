@@ -18,6 +18,11 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   imported signer history or legacy Namespace key caches. Concurrent encrypted
   Task reads no longer exhaust database connections while loading schedules or chats.
 
+- Desktop uses Electron 43.8.3, which rejects certificate chains containing
+  compromised eMudhra intermediate keys in its Chromium and Node.js networking.
+  Desktop requires macOS 12 (Monterey) or later; its package metadata now
+  declares that minimum. Separately bundled runtimes require their own updates.
+
 - Background Tasks can save Workspace files using their authorized namespace
   room while keeping their transcripts separate from the originating chat.
 
