@@ -1040,6 +1040,71 @@ function productConsumerImports(repoRoot: string): string[] {
 }
 
 const reviewedCryptoProductConsumerInventory = [
+  // Exact Task protocol bounds, accepted-authority verification and signer
+  // custody adapters. Content access remains with the canonical Bridge owners;
+  // test seams construct genuine evidence. Repeated references retain separate
+  // value/type declarations rather than widening the path allowlist.
+  "packages/api-client/src/schemas/room-history-shadow-read.ts -> @nautilo/lattice-crypto/background",
+  "packages/api-client/src/schemas/task-ordinary-fallback.ts -> @nautilo/lattice-crypto/wire",
+  "packages/api-client/src/schemas/task-ordinary-fallback.ts -> @nautilo/lattice-crypto/wire-limits",
+  "packages/api-client/tests/unit/task-ordinary-fallback-schema.test.ts -> @nautilo/lattice-crypto/wire-limits",
+  "packages/lattice-bridge/src/client/task-runtime-signer-evidence.ts -> @nautilo/lattice-crypto/background",
+  "packages/lattice-bridge/src/server/message/postgres-room-history-shadow-projection.ts -> @nautilo/lattice-crypto/background",
+  "packages/lattice-bridge/tests/fixtures/task-publication-signer.ts -> ../../../lattice-crypto/src/background/task-runtime-execution-evidence-v1.ts",
+  "packages/lattice-bridge/tests/fixtures/task-publication-signer.ts -> ../../../lattice-crypto/src/background/task-runtime-recipient-registry-v1.ts",
+  "packages/lattice-bridge/tests/fixtures/task-publication-signer.ts -> ../../../lattice-crypto/src/background/task-runtime-request-authority.ts",
+  "packages/lattice-bridge/tests/fixtures/task-publication-signer.ts -> ../../../lattice-crypto/src/background/task-runtime-request-v1.ts",
+  "packages/lattice-bridge/tests/fixtures/task-publication-signer.ts -> ../../../lattice-crypto/src/background/task-runtime-request-v3.ts",
+  "packages/lattice-bridge/tests/fixtures/task-publication-signer.ts -> ../../../lattice-crypto/src/background/task-runtime-run-result-read-evidence-v1.ts",
+  "packages/lattice-bridge/tests/fixtures/task-publication-signer.ts -> ../../../lattice-crypto/src/background/task-runtime-signer-authorization-v1.ts",
+  "packages/lattice-bridge/tests/fixtures/task-publication-signer.ts -> ../../../lattice-crypto/src/background/task-runtime-terminal-message-evidence-v1.ts",
+  "packages/lattice-bridge/tests/fixtures/task-publication-signer.ts -> ../../../lattice-crypto/src/background/task-runtime-wake-foreground-evidence-v1.ts",
+  "packages/lattice-bridge/tests/fixtures/task-publication-signer.ts -> ../../../lattice-crypto/src/format/domain-foreground-authorization-v2.ts",
+  "packages/lattice-bridge/tests/fixtures/task-publication-signer.ts -> ../../../lattice-crypto/src/v2-types/ids.ts",
+  "packages/lattice-bridge/tests/unit/native-task-message-opener.test.ts -> @nautilo/lattice-crypto/background",
+  "packages/lattice-bridge/tests/unit/postgres-agent-conversation-crypto-completion.test.ts -> ../../../lattice-crypto/tests/fixtures/task-publication-signer.ts",
+  "packages/lattice-bridge/tests/unit/postgres-native-task-message-completion.test.ts -> @nautilo/lattice-crypto/background",
+  "packages/lattice-bridge/tests/unit/postgres-task-publication-proof.test.ts -> ../../../lattice-crypto/tests/fixtures/task-publication-signer.ts",
+  "packages/lattice-bridge/tests/unit/postgres-task-runtime-signer-evidence.test.ts -> @nautilo/lattice-crypto/background",
+  "packages/lattice-bridge/tests/unit/protected-task-result-signer.test.ts -> ../../../lattice-crypto/tests/fixtures/task-publication-signer.ts",
+  "packages/lattice-bridge/tests/unit/task-runtime-accepted-response-integrity.test.ts -> @nautilo/lattice-crypto/background",
+  "packages/lattice-bridge/tests/unit/task-runtime-signer-evidence.test.ts -> @nautilo/lattice-crypto/background",
+  "packages/lattice-bridge/tests/unit/task-signer-wire-storage-parity.test.ts -> @nautilo/lattice-crypto/background",
+  "packages/lattice-bridge/tests/unit/vault-room-history-shadow-message-reader.test.ts -> @nautilo/lattice-crypto/background",
+  "packages/runtime/src/executors/langgraph-executor.ts -> @nautilo/lattice-crypto",
+  "packages/runtime/tests/unit/protected-task-wake-foreground-context.test.ts -> ../../../lattice-crypto/tests/fixtures/task-publication-signer.ts",
+  "packages/server/src/routes/live-shadow-message-composition.ts -> @nautilo/lattice-crypto",
+  "packages/server/src/routes/live-shadow-message-composition.ts -> @nautilo/lattice-crypto",
+  "packages/server/src/routes/protected-task-cancellation-plan.ts -> @nautilo/lattice-crypto/background",
+  "packages/server/src/routes/protected-task-checkpoint-aad-binding.ts -> @nautilo/lattice-crypto",
+  "packages/server/src/routes/protected-task-foreground-creation-owner.ts -> @nautilo/lattice-crypto",
+  "packages/server/src/routes/protected-task-foreground-update-publication.ts -> @nautilo/lattice-crypto",
+  "packages/server/src/routes/protected-task-memory-object-writer.ts -> @nautilo/lattice-crypto",
+  "packages/server/src/routes/protected-task-native-memory-repository.ts -> @nautilo/lattice-crypto/wire",
+  "packages/server/src/routes/protected-task-native-message-authority.ts -> @nautilo/lattice-crypto/wire",
+  "packages/server/src/routes/protected-task-output-read-plan.ts -> @nautilo/lattice-crypto/background",
+  "packages/server/src/routes/protected-task-terminal-message-plan.ts -> @nautilo/lattice-crypto/background",
+  "packages/server/src/routes/task-definition-foreground-authorization.ts -> @nautilo/lattice-crypto",
+  "packages/server/src/routes/task-definition-foreground-authorization.ts -> @nautilo/lattice-crypto/wire",
+  "packages/server/src/routes/task-ordinary-fallback-composition.ts -> @nautilo/lattice-crypto",
+  "packages/server/src/routes/task-ordinary-fallback-composition.ts -> @nautilo/lattice-crypto/wire",
+  "packages/server/src/routes/task-ordinary-fallback-routes.ts -> @nautilo/lattice-crypto/wire-limits",
+  "packages/server/src/routes/task-protected-routes.ts -> @nautilo/lattice-crypto/wire-limits",
+  "packages/server/tests/unit-isolated/protected-task-wake-foreground-services.test.ts -> ../../../lattice-crypto/tests/fixtures/task-publication-signer.ts",
+  "packages/server/tests/unit-isolated/task-ordinary-fallback-composition.test.ts -> @nautilo/lattice-crypto",
+  "packages/server/tests/unit-isolated/task-ordinary-fallback-routes.test.ts -> @nautilo/lattice-crypto/wire-limits",
+  "packages/server/tests/unit-isolated/task-protected-routes.test.ts -> @nautilo/lattice-crypto/wire-limits",
+  "packages/server/tests/unit/live-shadow-message-route.test.ts -> @nautilo/lattice-crypto",
+  "packages/server/tests/unit/protected-task-cancellation-device-authorization.test.ts -> @nautilo/lattice-crypto/background",
+  "packages/server/tests/unit/protected-task-foreground-update-publication.test.ts -> @nautilo/lattice-crypto",
+  "packages/server/tests/unit/protected-task-native-fixed-memory-segment.test.ts -> @nautilo/lattice-crypto/wire",
+  "packages/server/tests/unit/protected-task-output-read-authority.test.ts -> @nautilo/lattice-crypto/wire",
+  "packages/server/tests/unit/protected-task-runtime-temporary-memory.test.ts -> @nautilo/lattice-crypto",
+  "packages/server/tests/unit/protected-task-runtime-temporary-memory.test.ts -> @nautilo/lattice-crypto/background",
+  "packages/server/tests/unit/protected-task-runtime-temporary-memory.test.ts -> @nautilo/lattice-crypto/wire",
+  "packages/server/tests/unit/task-definition-foreground-authorization.test.ts -> @nautilo/lattice-crypto",
+  "packages/server/tests/unit/task-definition-foreground-authorization.test.ts -> @nautilo/lattice-crypto/wire",
+  "packages/server/tests/unit/task-runtime-current-authority.test.ts -> @nautilo/lattice-crypto/wire",
   // Shared foreground read custody creates a decrypt-only signed-device challenge,
   // opens its grant through core verification and borrows the ephemeral recipient
   // from Bridge. Exact device/session/Namespace snapshots are rechecked before
@@ -1578,7 +1643,6 @@ const reviewedCryptoProductConsumerInventory = [
   "packages/server/tests/unit/protected-task-cancellation-device-authorization.test.ts -> @nautilo/lattice-crypto",
   "packages/server/tests/unit/protected-task-cancellation-device-authorization.test.ts -> @nautilo/lattice-crypto/wire",
   "packages/server/tests/unit/protected-task-cancellation-plan.test.ts -> @nautilo/lattice-crypto",
-  "packages/server/tests/unit/protected-task-cancellation-plan.test.ts -> @nautilo/lattice-crypto/background",
   "packages/server/tests/unit/protected-task-cancellation-plan.test.ts -> @nautilo/lattice-crypto/wire",
   "packages/server/tests/unit/protected-task-cancellation-preparation.test.ts -> @nautilo/lattice-crypto",
   "packages/server/tests/unit/protected-task-cancellation-publication-recovery.test.ts -> @nautilo/lattice-crypto",
@@ -1607,7 +1671,6 @@ const reviewedCryptoProductConsumerInventory = [
   "packages/server/tests/unit/protected-task-terminal-message-claim.test.ts -> @nautilo/lattice-crypto/wire",
   "packages/server/tests/unit/protected-task-terminal-message-composition.test.ts -> @nautilo/lattice-crypto",
   "packages/server/tests/unit/protected-task-terminal-message-plan.test.ts -> @nautilo/lattice-crypto",
-  "packages/server/tests/unit/protected-task-terminal-message-plan.test.ts -> @nautilo/lattice-crypto/background",
   "packages/server/tests/unit/protected-task-terminal-message-plan.test.ts -> @nautilo/lattice-crypto/wire",
   "packages/server/tests/unit/protected-task-terminal-message-preparation.test.ts -> @nautilo/lattice-crypto",
   "packages/server/tests/unit/protected-task-terminal-message-publication.test.ts -> @nautilo/lattice-crypto",
@@ -1642,6 +1705,40 @@ function isLatticeBridgeTarget(value: string): boolean {
 }
 
 const reviewedBridgeProductConsumerInventory = [
+  // Exact Task publication/Fallback owners, authority/DTO types and genuine
+  // owner-backed fixtures. Policy dispatch remains inside the shared owners.
+  // Preserve separate value/type declarations in the reviewed multiset.
+  "apps/workbench/src/lib/protected-human-task-controller.test.ts -> @nautilo/lattice-bridge",
+  "apps/workbench/src/modes/rooms/subagents/ProtectedTaskRunResult.tsx -> @nautilo/lattice-bridge",
+  "apps/workbench/src/modes/rooms/subagents/tests/ProtectedTaskRunResult.test.tsx -> @nautilo/lattice-bridge",
+  "apps/workbench/src/pages/scheduled-tasks/ProtectedScheduledTaskCard.tsx -> @nautilo/lattice-bridge",
+  "apps/workbench/src/pages/scheduled-tasks/use-scheduled-tasks.ts -> @nautilo/lattice-bridge",
+  "apps/workbench/tests/unit-isolated/protected-scheduled-task-card.test.tsx -> @nautilo/lattice-bridge",
+  "apps/workbench/tests/unit/protected-human-task-controller.test.ts -> @nautilo/lattice-bridge",
+  "packages/runtime/src/conversation/live-shadow-agent-runtime-events.ts -> @nautilo/lattice-bridge/server",
+  "packages/runtime/tests/unit/protected-task-checkpoint-saver.test.ts -> @nautilo/lattice-bridge",
+  "packages/server/src/routes/live-shadow-message-composition.ts -> @nautilo/lattice-bridge",
+  "packages/server/src/routes/protected-task-foreground-creation-owner.ts -> @nautilo/lattice-bridge",
+  "packages/server/src/routes/protected-task-foreground-update-publication.ts -> @nautilo/lattice-bridge",
+  "packages/server/src/routes/protected-task-foreground-update-publication.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/src/routes/protected-task-runtime-recipient-request-plan.ts -> @nautilo/lattice-bridge",
+  "packages/server/src/routes/task-definition-foreground-authorization.ts -> @nautilo/lattice-bridge",
+  "packages/server/src/routes/task-definition-foreground-authorization.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/src/routes/task-ordinary-fallback-composition.ts -> @nautilo/lattice-bridge",
+  "packages/server/src/routes/task-ordinary-fallback-composition.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/tests/lattice-integration/protected-task-wake-foreground-admission.integration.test.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/tests/unit-isolated/task-approval-attention.test.ts -> @nautilo/lattice-bridge",
+  "packages/server/tests/unit-isolated/task-ordinary-fallback-composition.test.ts -> @nautilo/lattice-bridge",
+  "packages/server/tests/unit-isolated/task-ordinary-fallback-routes.test.ts -> @nautilo/lattice-bridge",
+  "packages/server/tests/unit-isolated/task-protected-composition.test.ts -> @nautilo/lattice-bridge/server",
+  "packages/server/tests/unit-isolated/task-protected-routes.test.ts -> @nautilo/lattice-bridge",
+  "packages/server/tests/unit/live-shadow-message-route.test.ts -> @nautilo/lattice-bridge",
+  "packages/server/tests/unit/protected-task-foreground-update-publication.test.ts -> @nautilo/lattice-bridge",
+  "packages/server/tests/unit/protected-task-foreground-update-publication.test.ts -> @nautilo/lattice-bridge",
+  "packages/server/tests/unit/protected-task-native-message-publication.test.ts -> ../../../lattice-bridge/src/server/message/postgres-live-shadow-client-verification",
+  "packages/server/tests/unit/protected-task-native-message-publication.test.ts -> @nautilo/lattice-bridge",
+  "packages/server/tests/unit/protected-task-runtime-temporary-memory.test.ts -> @nautilo/lattice-bridge",
+  "packages/server/tests/unit/task-definition-foreground-authorization.test.ts -> @nautilo/lattice-bridge",
   // Extracted signed foreground read custody uses Bridge's ephemeral recipient
   // registry/loan/destruction. External requests compose its current Namespace/
   // Domain inspection and DataOperationOwner; the registry imports only the
@@ -2129,7 +2226,6 @@ const reviewedBridgeProductConsumerInventory = [
   "packages/runtime/src/protected-execution/background-authorization/task-runtime-grant-claim.ts -> @nautilo/lattice-bridge",
   "packages/runtime/src/protected-execution/background-authorization/task-runtime-grant-claim.ts -> @nautilo/lattice-bridge/server",
   "packages/runtime/src/protected-execution/background-authorization/task-runtime-grant-claim.ts -> @nautilo/lattice-bridge/server",
-  "packages/runtime/src/tasks/protected-task-checkpoint-saver.ts -> @nautilo/lattice-bridge",
   "packages/runtime/src/tasks/protected-task-checkpoint-saver.ts -> @nautilo/lattice-bridge/server",
   "packages/runtime/src/tasks/protected-task-execution-candidate.ts -> @nautilo/lattice-bridge",
   "packages/runtime/src/tasks/protected-task-live-result-completion.ts -> @nautilo/lattice-bridge",
@@ -2469,6 +2565,8 @@ const allowedRuntimeRootProtectedExecutionModules = new Set([
 ]);
 
 const allowedProtectedExecutionProductionReferences = new Set([
+  // Public verifier-result type only; no additional runtime custody/export.
+  "packages/runtime/src/index.ts -> ./protected-execution/background-authorization/repository",
   "packages/runtime/src/memory/foreground-protected-agent-memory-session.ts -> ../protected-execution/foreground-authorization-session.ts",
   "packages/runtime/src/conversation/active-conversation-repository.ts -> ../protected-execution/foreground-authorization-session",
   "packages/runtime/src/conversation/conversation-composition.ts -> ../protected-execution/broker",
@@ -3541,9 +3639,18 @@ describe("Lattice-crypto current package governance", () => {
     );
 
     const mutationTargets = manifest.scopes.flatMap((scope) => scope.mutate);
-    expect(new Set(mutationTargets).size).toBe(136);
+    expect(new Set(mutationTargets).size).toBe(142);
     expect(mutationTargets).toContain("src/message/human-message-edit-v1.ts");
-    expect(eligibleTargets).toHaveLength(136);
+    expect(eligibleTargets).toHaveLength(142);
+    // Temporary Task signing adds six eligible modules to the exact inventory.
+    expect(mutationTargets).toEqual(expect.arrayContaining([
+      "src/background/task-runtime-request-authority.ts",
+      "src/background/task-runtime-request-v1.ts",
+      "src/background/task-runtime-request-v2.ts",
+      "src/background/task-runtime-request-v3.ts",
+      "src/background/task-runtime-signer-authorization-v1.ts",
+      "src/object/task-runtime-publication-signing.ts",
+    ]));
     expect(mutationTargets).toContain("src/message/human-ai-readable-live-shadow-core.ts");
     expect(mutationTargets).toContain("src/message/human-ai-readable-live-shadow-v2.ts");
     expect([...new Set(mutationTargets)].sort()).toEqual(eligibleTargets);

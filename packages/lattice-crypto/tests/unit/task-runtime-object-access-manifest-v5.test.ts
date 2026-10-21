@@ -2,23 +2,22 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 import { describe, expect, test } from "bun:test";
 
 import {
-  LatticeCrypto,
   accessRevision,
   agentId,
   agentRuntimeGeneration,
   authorizationRevision,
-  createCommonAgentObjectAccessManifest,
-  createCommonHumanObjectAccessManifest,
-  createTaskRuntimeCommonObjectAccessManifest,
   cryptoDeviceId,
-  deriveAgentRuntimeObjectSignerPublic,
   humanId,
   objectId,
-  verifyCommonObjectAccessManifest,
-  type AgentRuntimeKeyGeneration,
-  type CommonObjectAccessManifestUnsigned,
-} from "../../src/index.ts";
-import { seededRng } from "../../src/crypto/index.ts";
+} from "../../src/v2-types/ids.ts";
+import { LatticeCrypto, seededRng } from "../../src/crypto/index.ts";
+import {
+  deriveAgentRuntimeObjectSignerPublicV1
+    as deriveAgentRuntimeObjectSignerPublic,
+} from "../../src/agent-runtime/object-signer-v1.ts";
+import type {
+  AgentRuntimeGenerationV2 as AgentRuntimeKeyGeneration,
+} from "../../src/agent-runtime/types.ts";
 import {
   createTaskRuntimeBackgroundAuthorizationRequestV1,
   destroyTaskRuntimeBackgroundAuthorizationRequestV1,
@@ -39,7 +38,16 @@ import {
   serializeDomainForegroundAuthorizationV2,
 } from "../../src/format/domain-foreground-authorization-v2.ts";
 import {
+  createAgentObjectAccessManifestV5
+    as createCommonAgentObjectAccessManifest,
+  createHumanObjectAccessManifestV5
+    as createCommonHumanObjectAccessManifest,
+  createTaskRuntimeObjectAccessManifestV5
+    as createTaskRuntimeCommonObjectAccessManifest,
   encodeObjectAccessManifestV5,
+  verifyObjectAccessManifestV5 as verifyCommonObjectAccessManifest,
+  type ObjectAccessManifestUnsignedV5
+    as CommonObjectAccessManifestUnsigned,
   type ObjectAccessManifestV5,
 } from "../../src/format/object-access-manifest-v5.ts";
 
