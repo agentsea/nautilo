@@ -152,8 +152,9 @@ export async function runPersonalLlmAttempt<T>(input: {
   const funding = context?.funding;
   const isMemoryWork = context && ["memory_review", "room_stenographer", "room_reflection", "room_event_compaction"].includes(context.callType);
   const isServerImageAssistance = context?.callType === "image_assistance" && funding?.kind === "server";
+  const isSoulService = context?.callType === "soul" && funding?.kind === "service";
   if (!context || !funding || funding.providerRoute === "surplus"
-    || (funding.kind !== "personal" && !isMemoryWork && !isServerImageAssistance)) return input.invoke();
+    || (funding.kind !== "personal" && !isMemoryWork && !isServerImageAssistance && !isSoulService)) return input.invoke();
   const nonpersonalBegin = funding.kind === "service" ? deps.beginService : deps.beginServer;
   const persistSettlement = funding.kind === "personal" ? deps.settle
     : funding.kind === "service" ? deps.settleService : deps.settleServer;

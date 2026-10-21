@@ -1,12 +1,36 @@
-import { HumanMessage, SystemMessage } from "@langchain/core/messages";
+import {
+  AIMessage,
+  AIMessageChunk,
+  HumanMessage,
+  SystemMessage,
+  type BaseMessage,
+} from "@langchain/core/messages";
+import type { RunnableConfig } from "@langchain/core/runnables";
 import { fromRuntimeConfig } from "@nautilo/config";
+import { getCachedServerModelConfigRow } from "@nautilo/db";
 import { warn } from "@nautilo/logger";
 import { createUniversalModel } from "../providers/universal";
+import { hasStubModelForTests } from "../providers/stub-model-state";
 import { modelRouteProvider } from "../providers/model-route";
 import { resolveOpenRouterTransport } from "../providers/openrouter-transport";
+import { resolveProviderKey } from "../resolve-provider-key";
 import { runWithUsageContext } from "../usage/usage-context";
+import { runPersonalLlmAttempt } from "../usage/personal-llm-attempt";
 import { normalizeSoulFileInput, type SoulFileInput } from "./types";
 import { resolveModelRole } from "../config/model-role-resolution";
+import { modelHasRunnableCredentials } from "../chat/model-runtime-credentials";
+import {
+  invokeSurplusChatAttempt,
+  type SurplusChatAttemptResult,
+} from "../providers/surplus-attempt";
+import {
+  resolveSurplusChatServingAvailability,
+  SurplusDirectFallbackUnavailableError,
+  type QualifiedSurplusChatRoute,
+} from "../providers/surplus-route";
+import { SurplusOutcomeUnknownError } from "../providers/surplus-transport";
+import type { ChatModel } from "../providers/types";
+import { resolveCompletionBudget } from "../utils/chat-model-invocation";
 import {
   assertCanUseServerFundedOwnSoul,
   assertCanUseServerProviderCredentials,
@@ -273,6 +297,7 @@ function soulUsageProviderRoute(modelId: string): string {
 function soulUsageContext(
   modelId: string,
   authorization: SoulGenerationAuthorization,
+  providerRoute = soulUsageProviderRoute(modelId),
 ) {
   return {
     callType: "soul" as const,
@@ -280,12 +305,189 @@ function soulUsageContext(
     funding: {
       kind: "service" as const,
       humanUserId: authorization.humanUserId,
-      providerRoute: soulUsageProviderRoute(modelId),
+      providerRoute,
     },
     ...(authorization.agentId
       ? { metadata: { agentId: authorization.agentId, service: "soul_generation" } }
       : {}),
   };
+}
+
+type SoulMessages = readonly [SystemMessage, HumanMessage];
+
+interface ResolvedSoulInvocation {
+  readonly modelId: string;
+  readonly messages: SoulMessages;
+  readonly maxOutputTokens: number;
+  readonly surplusPolicyEnabled: boolean;
+  readonly surplusKey: string | null;
+  readonly surplusRoute: QualifiedSurplusChatRoute | null;
+}
+
+function sameSurplusRoute(
+  left: QualifiedSurplusChatRoute | null,
+  right: QualifiedSurplusChatRoute | null,
+): boolean {
+  if (left === null || right === null) return left === right;
+  return left.catalogModelId === right.catalogModelId
+    && left.surplusModelId === right.surplusModelId
+    && left.providerPin === right.providerPin
+    && left.supportsTools === right.supportsTools
+    && left.supportsVision === right.supportsVision
+    && left.supportsReasoning === right.supportsReasoning
+    && left.maxContextTokens === right.maxContextTokens
+    && left.maxOutputTokens === right.maxOutputTokens;
+}
+
+function currentSoulSurplusRoute(
+  modelId: string,
+  policyEnabled: boolean,
+  surplusKey: string | null,
+): QualifiedSurplusChatRoute | null {
+  const availability = resolveSurplusChatServingAvailability({
+    catalogModelId: modelId,
+    policyEnabled,
+    keyConfigured: surplusKey !== null,
+    fundingKind: "server",
+  });
+  return availability.status === "available" ? availability.route : null;
+}
+
+function assertSoulInvocationSnapshotCurrent(invocation: ResolvedSoulInvocation): void {
+  const policyEnabled = getCachedServerModelConfigRow()?.preferSurplus === true;
+  const surplusKey = resolveProviderKey("surplus");
+  const surplusRoute = currentSoulSurplusRoute(invocation.modelId, policyEnabled, surplusKey);
+  if (policyEnabled !== invocation.surplusPolicyEnabled
+    || surplusKey !== invocation.surplusKey
+    || !sameSurplusRoute(surplusRoute, invocation.surplusRoute)) {
+    throw new Error("Soul generation funding route changed before dispatch.");
+  }
+}
+
+async function resolveSoulInvocation(input: SoulFileInput): Promise<ResolvedSoulInvocation> {
+  const config = fromRuntimeConfig();
+  const configuredModelId = config.nautilo_soul_generator_model ?? config.nautilo_model;
+  const policyEnabled = getCachedServerModelConfigRow()?.preferSurplus === true;
+  const surplusKey = resolveProviderKey("surplus");
+  const modelId = resolveModelRole("systemTasks", {
+    ...(configuredModelId ? { configuredId: configuredModelId } : {}),
+    serverSurplus: {
+      policyEnabled,
+      keyConfigured: surplusKey !== null,
+    },
+  });
+  const surplusRoute = currentSoulSurplusRoute(modelId, policyEnabled, surplusKey);
+  const messages: SoulMessages = [
+    new SystemMessage(SOUL_FILE_SYSTEM_PROMPT),
+    new HumanMessage(buildSoulPrompt(input)),
+  ];
+  return {
+    modelId,
+    messages,
+    maxOutputTokens: await resolveCompletionBudget(modelId, [...messages]),
+    surplusPolicyEnabled: policyEnabled,
+    surplusKey,
+    surplusRoute,
+  };
+}
+
+async function runDirectSoulAttempt<T>(
+  modelId: string,
+  signal: AbortSignal,
+  authorization: SoulGenerationAuthorization,
+  invoke: () => Promise<T>,
+  hasObservedProviderWork?: () => boolean,
+): Promise<T> {
+  const context = soulUsageContext(modelId, authorization);
+  return runWithUsageContext(context, () => hasStubModelForTests()
+    ? invoke()
+    : runPersonalLlmAttempt({
+        modelId,
+        endpoint: "/v1/chat/completions",
+        signal,
+        ...(hasObservedProviderWork ? { hasObservedProviderWork } : {}),
+        invoke,
+      }));
+}
+
+async function invokeDirectSoul(
+  invocation: ResolvedSoulInvocation,
+  signal: AbortSignal,
+  authorization: SoulGenerationAuthorization,
+): Promise<AIMessage> {
+  await assertSoulServerFunding(authorization);
+  assertSoulInvocationSnapshotCurrent(invocation);
+  const model = await createUniversalModel(invocation.modelId, {
+    maxRetries: 0,
+    maxTokens: invocation.maxOutputTokens,
+  });
+  return await runDirectSoulAttempt(
+    invocation.modelId,
+    signal,
+    authorization,
+    async () => (await model.invoke([...invocation.messages], { signal })) as AIMessage,
+  );
+}
+
+async function invokeSurplusSoul(
+  invocation: ResolvedSoulInvocation & {
+    readonly surplusKey: string;
+    readonly surplusRoute: QualifiedSurplusChatRoute;
+  },
+  signal: AbortSignal,
+  authorization: SoulGenerationAuthorization,
+  hasDeliveredOutput: () => boolean,
+  invokeModel?: (
+    model: ChatModel<BaseMessage, AIMessage>,
+    messages: BaseMessage[],
+    config: RunnableConfig,
+  ) => Promise<AIMessage>,
+): Promise<SurplusChatAttemptResult> {
+  await assertSoulServerFunding(authorization);
+  assertSoulInvocationSnapshotCurrent(invocation);
+  const context = soulUsageContext(invocation.modelId, authorization, "surplus");
+  return await runWithUsageContext(context, () => invokeSurplusChatAttempt({
+    route: invocation.surplusRoute,
+    apiKey: invocation.surplusKey,
+    messages: [...invocation.messages],
+    tools: [],
+    config: { signal },
+    maxOutputTokens: invocation.maxOutputTokens,
+    funding: {
+      kind: "service",
+      humanUserId: authorization.humanUserId,
+      providerRoute: "surplus",
+    },
+    hasDeliveredOutput,
+    directFallbackPolicy: "pre_service_only",
+    validateResponse: (response) => {
+      if (!looksLikeSoulFile(extractMessageText(response.content).trim())) {
+        throw new Error("Soul generation returned incomplete markdown.");
+      }
+    },
+    invokeModel: invokeModel
+      ? (model, messages, config) => invokeModel(
+          model as ChatModel<BaseMessage, AIMessage>,
+          messages,
+          config,
+        )
+      : async (model, messages, config) => (await model.invoke(messages, config)) as AIMessage,
+  }));
+}
+
+function hasSurplusRoute(
+  invocation: ResolvedSoulInvocation,
+): invocation is ResolvedSoulInvocation & {
+  readonly surplusKey: string;
+  readonly surplusRoute: QualifiedSurplusChatRoute;
+} {
+  return invocation.surplusKey !== null && invocation.surplusRoute !== null;
+}
+
+function assertDirectSoulCredential(modelId: string): void {
+  if (!modelHasRunnableCredentials(modelId, process.env)) {
+    throw new SurplusDirectFallbackUnavailableError();
+  }
 }
 
 /**
@@ -323,6 +525,7 @@ function extractMessageText(content: unknown): string {
 
 function createGenerationAbortContext(externalSignal?: AbortSignal): {
   readonly signal: AbortSignal;
+  readonly abort: () => void;
   readonly dispose: () => void;
 } {
   const controller = new AbortController();
@@ -339,11 +542,170 @@ function createGenerationAbortContext(externalSignal?: AbortSignal): {
 
   return {
     signal: controller.signal,
+    abort,
     dispose: () => {
       clearTimeout(timeout);
       externalSignal?.removeEventListener("abort", abort);
     },
   };
+}
+
+interface SoulStreamRelayItem {
+  readonly text: string;
+  readonly release: () => void;
+}
+
+class SoulStreamRelay {
+  private readonly queued: SoulStreamRelayItem[] = [];
+  private waiter: (() => void) | undefined;
+  private finished = false;
+
+  async emit(text: string): Promise<void> {
+    if (!text) return;
+    await new Promise<void>((resolve) => {
+      this.queued.push({ text, release: resolve });
+      this.waiter?.();
+      this.waiter = undefined;
+    });
+  }
+
+  finish(): void {
+    this.finished = true;
+    this.waiter?.();
+    this.waiter = undefined;
+  }
+
+  cancel(): void {
+    this.finished = true;
+    for (const item of this.queued.splice(0)) item.release();
+    this.waiter?.();
+    this.waiter = undefined;
+  }
+
+  async next(): Promise<SoulStreamRelayItem | null> {
+    for (;;) {
+      const item = this.queued.shift();
+      if (item) return item;
+      if (this.finished) return null;
+      await new Promise<void>((resolve) => {
+        this.waiter = resolve;
+      });
+    }
+  }
+}
+
+function asAIMessageChunk(value: unknown): AIMessageChunk {
+  if (AIMessageChunk.isInstance(value)) return value;
+  const chunk = value && typeof value === "object"
+    ? value as Record<string, unknown>
+    : {};
+  const fields = {
+    content: chunk["content"] ?? "",
+    ...(chunk["additional_kwargs"] && typeof chunk["additional_kwargs"] === "object"
+      ? { additional_kwargs: chunk["additional_kwargs"] }
+      : {}),
+    ...(chunk["response_metadata"] && typeof chunk["response_metadata"] === "object"
+      ? { response_metadata: chunk["response_metadata"] }
+      : {}),
+    ...(chunk["usage_metadata"] && typeof chunk["usage_metadata"] === "object"
+      ? { usage_metadata: chunk["usage_metadata"] }
+      : {}),
+  };
+  return new AIMessageChunk(fields as never);
+}
+
+async function consumeSoulModelStream(
+  model: ChatModel<BaseMessage, unknown>,
+  messages: BaseMessage[],
+  config: RunnableConfig,
+  relay: SoulStreamRelay,
+  observeProviderWork?: () => void,
+): Promise<AIMessage> {
+  if (!model.stream) {
+    return (await model.invoke(messages, config as Record<string, unknown>)) as AIMessage;
+  }
+  const stream = await model.stream(messages, config as Record<string, unknown>);
+  let aggregate: AIMessageChunk | undefined;
+  for await (const rawChunk of stream) {
+    observeProviderWork?.();
+    const chunk = asAIMessageChunk(rawChunk);
+    aggregate = aggregate ? aggregate.concat(chunk) : chunk;
+    await relay.emit(extractMessageText(chunk.content));
+  }
+  return aggregate ?? new AIMessage({ content: "" });
+}
+
+async function* relaySoulAttempt<T>(
+  start: (relay: SoulStreamRelay) => Promise<T>,
+): AsyncGenerator<string, T> {
+  const relay = new SoulStreamRelay();
+  const attempt = start(relay);
+  void attempt.then(
+    () => relay.finish(),
+    () => relay.finish(),
+  );
+  try {
+    for (;;) {
+      const item = await relay.next();
+      if (!item) break;
+      item.release();
+      yield item.text;
+    }
+    return await attempt;
+  } finally {
+    relay.cancel();
+  }
+}
+
+async function invokeDirectSoulStream(
+  invocation: ResolvedSoulInvocation,
+  signal: AbortSignal,
+  authorization: SoulGenerationAuthorization,
+  relay: SoulStreamRelay,
+  fallback: string,
+): Promise<AIMessage> {
+  await assertSoulServerFunding(authorization);
+  assertSoulInvocationSnapshotCurrent(invocation);
+  const model = await createUniversalModel(invocation.modelId, {
+    maxRetries: 0,
+    maxTokens: invocation.maxOutputTokens,
+  });
+  let providerWorkObserved = false;
+  if (!model.stream) {
+    try {
+      const response = await runDirectSoulAttempt(
+        invocation.modelId,
+        signal,
+        authorization,
+        async () => (await model.invoke([...invocation.messages], { signal })) as AIMessage,
+      );
+      const content = extractMessageText(response.content).trim();
+      if (looksLikeSoulFile(content)) return response;
+      warn(
+        `[soul] LLM returned short/non-markdown content (${content.length} chars) for model ${invocation.modelId} — using fallback`,
+      );
+      return new AIMessage({ content: fallback });
+    } catch (error) {
+      if (error instanceof ServerProviderCredentialsDeniedError) throw error;
+      warnSoulGenerationFailure(invocation.modelId, signal, false);
+      return new AIMessage({ content: fallback });
+    }
+  }
+  return await runDirectSoulAttempt(
+    invocation.modelId,
+    signal,
+    authorization,
+    () => consumeSoulModelStream(
+      model as ChatModel<BaseMessage, unknown>,
+      [...invocation.messages],
+      { signal },
+      relay,
+      () => {
+        providerWorkObserved = true;
+      },
+    ),
+    () => providerWorkObserved,
+  );
 }
 
 export async function generateSoulFile(
@@ -357,22 +719,25 @@ export async function generateSoulFile(
   let modelId: string | undefined;
 
   try {
-    const config = fromRuntimeConfig();
-    const configuredModelId = config.nautilo_soul_generator_model ?? config.nautilo_model;
-    modelId = resolveModelRole("systemTasks", {
-      ...(configuredModelId ? { configuredId: configuredModelId } : {}),
-    });
-    const model = await createUniversalModel(modelId);
-    await assertSoulServerFunding(authorization);
-    const response = (await runWithUsageContext(soulUsageContext(modelId, authorization), () =>
-      model.invoke(
-        [
-          new SystemMessage(SOUL_FILE_SYSTEM_PROMPT),
-          new HumanMessage(buildSoulPrompt(normalized)),
-        ],
-        { signal: abortContext.signal },
-      ),
-    )) as { content: unknown };
+    const invocation = await resolveSoulInvocation(normalized);
+    modelId = invocation.modelId;
+    let response: AIMessage;
+    if (hasSurplusRoute(invocation)) {
+      const surplus = await invokeSurplusSoul(
+        invocation,
+        abortContext.signal,
+        authorization,
+        () => false,
+      );
+      if (surplus.kind === "served") {
+        response = surplus.response;
+      } else {
+        assertDirectSoulCredential(invocation.modelId);
+        response = await invokeDirectSoul(invocation, abortContext.signal, authorization);
+      }
+    } else {
+      response = await invokeDirectSoul(invocation, abortContext.signal, authorization);
+    }
 
     const content = extractMessageText(response.content).trim();
 
@@ -402,40 +767,78 @@ export async function* generateSoulFileStream(
   const fallback = generateSoulFileFallback(normalized);
   const abortContext = createGenerationAbortContext(externalSignal);
   let modelId: string | undefined;
+  let activeAttempt: AsyncGenerator<string, unknown> | undefined;
   yield { type: "started" };
 
   try {
-    const config = fromRuntimeConfig();
-    const configuredModelId = config.nautilo_soul_generator_model ?? config.nautilo_model;
-    modelId = resolveModelRole("systemTasks", {
-      ...(configuredModelId ? { configuredId: configuredModelId } : {}),
-    });
-    const model = await createUniversalModel(modelId);
-    if (!model.stream) {
-      const soulFile = await generateSoulFile(normalized, abortContext.signal, authorization);
-      yield { type: "completed", soulFile };
-      return;
+    const invocation = await resolveSoulInvocation(normalized);
+    modelId = invocation.modelId;
+    let content = "";
+    let deliveredOutput = false;
+
+    const streamAttempt = hasSurplusRoute(invocation)
+      ? relaySoulAttempt((relay) => invokeSurplusSoul(
+          invocation,
+          abortContext.signal,
+          authorization,
+          () => deliveredOutput,
+          (model, messages, config) => consumeSoulModelStream(model, messages, config, relay),
+        ))
+      : relaySoulAttempt((relay) => invokeDirectSoulStream(
+          invocation,
+          abortContext.signal,
+          authorization,
+          relay,
+          fallback,
+        ));
+    activeAttempt = streamAttempt;
+
+    let firstResult: AIMessage | SurplusChatAttemptResult;
+    for (;;) {
+      const next = await streamAttempt.next();
+      if (next.done) {
+        firstResult = next.value;
+        activeAttempt = undefined;
+        break;
+      }
+      deliveredOutput = true;
+      content += next.value;
+      yield { type: "delta", text: next.value };
     }
 
-    let content = "";
-    await assertSoulServerFunding(authorization);
-    const usageContext = soulUsageContext(modelId, authorization);
-    const stream = await runWithUsageContext(usageContext, () => model.stream!(
-      [
-        new SystemMessage(SOUL_FILE_SYSTEM_PROMPT),
-        new HumanMessage(buildSoulPrompt(normalized)),
-      ],
-      { signal: abortContext.signal },
-    ));
-    const iterator = stream[Symbol.asyncIterator]();
-    for (;;) {
-      const next = await runWithUsageContext(usageContext, () => iterator.next());
-      if (next.done) break;
-      const chunk = next.value;
-      const delta = extractMessageText((chunk as { content?: unknown }).content);
-      if (!delta) continue;
-      content += delta;
-      yield { type: "delta", text: delta };
+    if (hasSurplusRoute(invocation)) {
+      const surplus = firstResult as SurplusChatAttemptResult;
+      if (surplus.kind === "served" && !content) {
+        content = extractMessageText(surplus.response.content);
+      } else if (surplus.kind === "direct_fallback") {
+        if (deliveredOutput) throw new SurplusOutcomeUnknownError();
+        assertDirectSoulCredential(invocation.modelId);
+        const directAttempt = relaySoulAttempt((relay) => invokeDirectSoulStream(
+          invocation,
+          abortContext.signal,
+          authorization,
+          relay,
+          fallback,
+        ));
+        activeAttempt = directAttempt;
+        let directResponse: AIMessage | undefined;
+        for (;;) {
+          const next = await directAttempt.next();
+          if (next.done) {
+            directResponse = next.value;
+            activeAttempt = undefined;
+            break;
+          }
+          deliveredOutput = true;
+          content += next.value;
+          yield { type: "delta", text: next.value };
+        }
+        if (!content && directResponse) {
+          content = extractMessageText(directResponse.content);
+        }
+      }
+    } else if (!content) {
+      content = extractMessageText((firstResult as AIMessage).content);
     }
 
     const soulFile = content.trim();
@@ -457,6 +860,8 @@ export async function* generateSoulFileStream(
     warnSoulGenerationFailure(modelId, abortContext.signal, true);
     yield { type: "error", error: SOUL_GENERATION_FAILED_MESSAGE, fallback };
   } finally {
+    abortContext.abort();
+    await activeAttempt?.return(undefined);
     abortContext.dispose();
   }
 }

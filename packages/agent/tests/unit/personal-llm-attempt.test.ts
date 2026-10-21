@@ -255,6 +255,75 @@ describe("explicit nonpersonal Memory model attempts", () => {
   });
 });
 
+describe("Soul service direct attempts", () => {
+  const soulScope = <T>(fn: () => T, providerRoute = "openai") => runWithUsageContext({
+    callType: "soul", userId: funding.humanUserId,
+    funding: { kind: "service", humanUserId: funding.humanUserId, providerRoute },
+    metadata: { agentId: "synthetic-agent", service: "soul_generation" },
+  }, fn);
+
+  test("opens a service row before dispatch and retains actual zero without personal provenance", async () => {
+    const ordinary = harness();
+    const begun: BeginServiceLlmAttemptInput[] = [];
+    const settled: SettlePersonalLlmAttemptInput[] = [];
+    await soulScope(() => runPersonalLlmAttempt({ modelId, endpoint: "/v1/chat/completions", invoke: async () => {
+      expect(begun).toHaveLength(1);
+      expect(getUsageContext()?.trackedAttemptId).toBe(begun[0]!.id);
+      getUsageContext()?.onAttemptUsage?.({ inputTokens: 10, outputTokens: 4,
+        reasoningTokens: 0, cachedInputTokens: 0, cacheCreationTokens: 0, actualCostUsd: 0 });
+      return "generated Soul";
+    } }, { ...ordinary.deps,
+      beginService: async (row) => { begun.push(row); },
+      settleService: async (row) => { settled.push(row); },
+    }));
+    expect(ordinary.begun).toHaveLength(0);
+    expect(begun[0]).toMatchObject({ callType: "soul", userId: funding.humanUserId,
+      model: modelId, providerRoute: "openai", metadata: { agentId: "synthetic-agent" } });
+    expect(begun[0]).not.toHaveProperty("credentialId");
+    expect(settled).toHaveLength(1);
+    expect(settled[0]).toMatchObject({ outcome: "succeeded", costState: "actual", actualCostUsd: 0 });
+  });
+
+  test("cannot dispatch without its durable service owner", async () => {
+    const h = harness();
+    let calls = 0;
+    await Promise.resolve(expect(soulScope(() => runPersonalLlmAttempt({ modelId, endpoint: "/v1/chat/completions",
+      invoke: async () => { calls++; },
+    }, { ...h.deps, owner: () => null, beginService: async () => {}, settleService: async () => {} })))
+      .rejects.toBeInstanceOf(PersonalAttemptLedgerUnavailableError));
+    expect(calls).toBe(0);
+  });
+
+  test("retains cancellation with unknown cost without replaying a streamed direct call", async () => {
+    const h = harness();
+    const settled: SettlePersonalLlmAttemptInput[] = [];
+    const abort = new AbortController();
+    let calls = 0;
+    await Promise.resolve(expect(soulScope(() => runPersonalLlmAttempt({ modelId, endpoint: "/v1/chat/completions",
+      signal: abort.signal, hasObservedProviderWork: () => true, invoke: async () => {
+        calls++;
+        abort.abort();
+        throw new Error("synthetic stream closed");
+      },
+    }, { ...h.deps, beginService: async () => {}, settleService: async (row) => { settled.push(row); } })))
+      .rejects.toBeInstanceOf(PersonalAttemptInvocationError));
+    expect(calls).toBe(1);
+    expect(settled).toHaveLength(1);
+    expect(settled[0]).toMatchObject({ outcome: "cancelled", costState: "unknown" });
+    expect(settled[0]).not.toHaveProperty("actualCostUsd");
+  });
+
+  test("leaves Surplus Soul attempts to the existing marketplace ledger", async () => {
+    const h = harness();
+    let calls = 0;
+    await soulScope(() => runPersonalLlmAttempt({ modelId, endpoint: "/v1/chat/completions",
+      invoke: async () => { calls++; return "marketplace Soul"; },
+    }, { ...h.deps, owner: () => null }), "surplus");
+    expect(calls).toBe(1);
+    expect(h.begun).toHaveLength(0);
+  });
+});
+
 describe("server-funded image assistance attempts", () => {
   function imageHarness() {
     const begun: BeginServiceLlmAttemptInput[] = [];

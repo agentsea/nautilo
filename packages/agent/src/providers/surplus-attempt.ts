@@ -45,6 +45,8 @@ export interface SurplusChatAttemptInput {
   readonly hasDeliveredOutput: () => boolean;
   readonly invokeModel: InvokeModel;
   readonly validateResponse?: (response: AIMessage) => void;
+  /** Narrow service callers may retry direct only after a proven pre-service refusal. */
+  readonly directFallbackPolicy?: "pre_service_only";
 }
 
 export type SurplusChatAttemptResult =
@@ -464,7 +466,8 @@ export async function invokeSurplusChatAttempt(input: SurplusChatAttemptInput): 
       warn("[nautilo/surplus] attempt settlement failed", { failureCode: "attempt_settlement_failed" });
     }
     if (cancelled) throw input.config.signal?.reason ?? error;
-    if (disposition.directFallback) {
+    if (disposition.directFallback
+      && (input.directFallbackPolicy !== "pre_service_only" || disposition.outcome === "failed")) {
       return {
         kind: "direct_fallback",
         ...(input.providerMode !== "any" && disposition.failureCode === "no_sellers_for_model"

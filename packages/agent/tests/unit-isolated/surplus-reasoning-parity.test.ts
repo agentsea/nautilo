@@ -588,3 +588,57 @@ test("personal marketplace attempts retain exact credential provenance and actua
   expect(settleAttempt.mock.calls.at(-1)?.[0]).toMatchObject({ outcome: "succeeded", costState: "actual", actualCostUsd: 0.000047 });
   expect(JSON.stringify(beginAttempt.mock.calls.at(-1))).not.toContain("personal-surplus-only");
 });
+
+describe("strict service fallback policy", () => {
+  test("keeps a charged uncertain attempt unresolved instead of admitting direct replay", async () => {
+    await Promise.resolve(expect(invokeSurplusChatAttempt({
+      route: ROUTE, apiKey: "synthetic-service-key", messages: [new HumanMessage("Synthetic Soul")],
+      tools: [], config: {}, maxOutputTokens: 256,
+      funding: { kind: "service", providerRoute: "surplus", humanUserId: "user-1" },
+      directFallbackPolicy: "pre_service_only", hasDeliveredOutput: () => false,
+      invokeModel: async () => {
+        await observedResponse!({ requestId: "uncertain-soul", providerFamily: "openrouter",
+          buyerCostMicro: 17, truncated: false }, 200);
+        throw new Error("synthetic connection loss");
+      },
+    })).rejects.toBeInstanceOf(MockSurplusOutcomeUnknownError));
+    expect(beginAttempt).toHaveBeenCalledTimes(1);
+    expect(settleAttempt).toHaveBeenCalledTimes(1);
+    expect(settleAttempt.mock.calls[0]?.[0]).toMatchObject({
+      outcome: "unknown", costState: "actual", actualCostUsd: 0.000017,
+    });
+  });
+
+  test("retains same-model direct eligibility after a proven zero-attempt refusal", async () => {
+    const result = await invokeSurplusChatAttempt({
+      route: ROUTE, apiKey: "synthetic-service-key", messages: [new HumanMessage("Synthetic Soul")],
+      tools: [], config: {}, maxOutputTokens: 256,
+      funding: { kind: "service", providerRoute: "surplus", humanUserId: "user-1" },
+      directFallbackPolicy: "pre_service_only", hasDeliveredOutput: () => false,
+      invokeModel: async () => {
+        await observedResponse!({ requestId: "refused-soul", marketplaceAttempts: 0, truncated: false }, 404);
+        throw Object.assign(new Error("Synthetic no-seller refusal"), { code: "no_sellers_for_model" });
+      },
+    });
+    expect(result).toEqual({ kind: "direct_fallback", retryUnpinned: true });
+    expect(settleAttempt.mock.calls[0]?.[0]).toMatchObject({
+      outcome: "failed", costState: "pending", failureCode: "no_sellers_for_model",
+    });
+  });
+
+  test("does not admit direct replay for an incomplete successful envelope", async () => {
+    await Promise.resolve(expect(invokeSurplusChatAttempt({
+      route: ROUTE, apiKey: "synthetic-service-key", messages: [new HumanMessage("Synthetic Soul")],
+      tools: [], config: {}, maxOutputTokens: 256,
+      funding: { kind: "service", providerRoute: "surplus", humanUserId: "user-1" },
+      directFallbackPolicy: "pre_service_only", hasDeliveredOutput: () => false,
+      invokeModel: async () => {
+        await observedResponse!({ requestId: "incomplete-soul", providerFamily: "openrouter", truncated: false }, 200);
+        return new AIMessage("Soul without terminal metadata");
+      },
+    })).rejects.toBeInstanceOf(MockSurplusOutcomeUnknownError));
+    expect(settleAttempt.mock.calls[0]?.[0]).toMatchObject({
+      outcome: "interrupted", costState: "pending", failureCode: "incomplete_response",
+    });
+  });
+});

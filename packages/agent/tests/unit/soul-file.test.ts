@@ -1,12 +1,17 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { AIMessage, AIMessageChunk } from "@langchain/core/messages";
 import { setLogOutput } from "@nautilo/logger";
 import { setConfigOverrides } from "@nautilo/config";
+import * as db from "@nautilo/db";
 import { generateSoulFileFallback, normalizeSoulFileInput } from "../../src/index";
 import * as soulModule from "../../src/soul/generate-soul-file";
 import { __setStubModelForTests } from "../../src/providers/universal";
+import * as universalProvider from "../../src/providers/universal";
 import type { ChatModel } from "../../src/providers/types";
 import { ServerProviderCredentialsDeniedError } from "@nautilo/trust";
 import { getUsageContext } from "../../src/usage/usage-context";
+import * as surplusAttempt from "../../src/providers/surplus-attempt";
+import * as personalAttempt from "../../src/usage/personal-llm-attempt";
 
 const SOUL_AUTHORIZATION = {
   humanUserId: "user-1",
@@ -14,10 +19,13 @@ const SOUL_AUTHORIZATION = {
 } as const;
 
 let originalOpenRouterKey: string | undefined;
+let originalSurplusKey: string | undefined;
 
 beforeEach(() => {
   originalOpenRouterKey = process.env["OPENROUTER_API_KEY"];
+  originalSurplusKey = process.env["SURPLUS_API_KEY"];
   process.env["OPENROUTER_API_KEY"] = "test-openrouter-key";
+  delete process.env["SURPLUS_API_KEY"];
 });
 
 afterEach(() => {
@@ -28,6 +36,8 @@ afterEach(() => {
   delete process.env["NAUTILO_TEST_MODE"];
   if (originalOpenRouterKey === undefined) delete process.env["OPENROUTER_API_KEY"];
   else process.env["OPENROUTER_API_KEY"] = originalOpenRouterKey;
+  if (originalSurplusKey === undefined) delete process.env["SURPLUS_API_KEY"];
+  else process.env["SURPLUS_API_KEY"] = originalSurplusKey;
   setLogOutput("stderr");
 });
 
@@ -415,5 +425,414 @@ describe("streaming soul generation safety", () => {
       ServerProviderCredentialsDeniedError,
     ));
     expect(streamed).toBeFalse();
+  });
+});
+
+describe("Surplus-funded soul generation", () => {
+  const modelId = "openrouter:openai/gpt-5.6-sol";
+  const generatedSoul = [
+    "## Essence",
+    "A precise and distinctive generated identity with enough detail to be useful.",
+    "",
+    "## Tone",
+    "Warm, exact, and candid without becoming performative.",
+  ].join("\n");
+
+  function preferSurplus(enabled: boolean) {
+    return spyOn(db, "getCachedServerModelConfigRow").mockReturnValue({
+      preferSurplus: enabled,
+    } as NonNullable<ReturnType<typeof db.getCachedServerModelConfigRow>>);
+  }
+
+  test("uses the selected Surplus-only system-task model in non-streaming mode", async () => {
+    delete process.env["OPENROUTER_API_KEY"];
+    process.env["SURPLUS_API_KEY"] = "synthetic-surplus-key";
+    setConfigOverrides({ nautilo_soul_generator_model: modelId });
+    const configSpy = preferSurplus(true);
+    let observedContext: unknown;
+    const attemptSpy = spyOn(surplusAttempt, "invokeSurplusChatAttempt")
+      .mockImplementation(async (input) => {
+        observedContext = getUsageContext();
+        expect(input).toMatchObject({
+          route: { catalogModelId: modelId },
+          apiKey: "synthetic-surplus-key",
+          funding: { kind: "service", humanUserId: "user-1", providerRoute: "surplus" },
+          directFallbackPolicy: "pre_service_only",
+        });
+        const response = new AIMessage({
+          content: generatedSoul,
+          response_metadata: { finish_reason: "stop" },
+        });
+        expect(() => input.validateResponse?.(response)).not.toThrow();
+        return { kind: "served", response };
+      });
+
+    try {
+      expect(await soulModule.generateSoulFile(
+        { name: "Vex" }, undefined, SOUL_AUTHORIZATION,
+      )).toBe(generatedSoul);
+      expect(attemptSpy).toHaveBeenCalledTimes(1);
+      expect(observedContext).toMatchObject({
+        callType: "soul",
+        userId: "user-1",
+        funding: { kind: "service", humanUserId: "user-1", providerRoute: "surplus" },
+      });
+    } finally {
+      attemptSpy.mockRestore();
+      configSpy.mockRestore();
+    }
+  });
+
+  test("rejects malformed Surplus output inside the paid attempt boundary", async () => {
+    delete process.env["OPENROUTER_API_KEY"];
+    process.env["SURPLUS_API_KEY"] = "synthetic-surplus-key";
+    setConfigOverrides({ nautilo_soul_generator_model: modelId });
+    const configSpy = preferSurplus(true);
+    const attemptSpy = spyOn(surplusAttempt, "invokeSurplusChatAttempt")
+      .mockImplementation(async (input) => {
+        const malformed = new AIMessage({
+          content: "This is not a structured soul file.",
+          response_metadata: { finish_reason: "stop" },
+        });
+        input.validateResponse?.(malformed);
+        return { kind: "served", response: malformed };
+      });
+    const stderr = spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const result = await soulModule.generateSoulFile(
+        { name: "Vex" }, undefined, SOUL_AUTHORIZATION,
+      );
+      expect(result).toContain("# Vex — Soul File");
+      expect(attemptSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      stderr.mockRestore();
+      attemptSpy.mockRestore();
+      configSpy.mockRestore();
+    }
+  });
+
+  test("stops before dispatch when the Surplus policy or credential changes during authorization", async () => {
+    delete process.env["OPENROUTER_API_KEY"];
+    process.env["SURPLUS_API_KEY"] = "synthetic-surplus-key";
+    setConfigOverrides({ nautilo_soul_generator_model: modelId });
+    let policyEnabled = true;
+    const configSpy = spyOn(db, "getCachedServerModelConfigRow").mockImplementation(() => ({
+      preferSurplus: policyEnabled,
+    } as NonNullable<ReturnType<typeof db.getCachedServerModelConfigRow>>));
+    const attemptSpy = spyOn(surplusAttempt, "invokeSurplusChatAttempt");
+    const stderr = spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const policyChanged = await soulModule.generateSoulFile({ name: "Vex" }, undefined, {
+        humanUserId: "user-1",
+        assertServerProviderCredentials: async () => {
+          policyEnabled = false;
+        },
+      });
+      expect(policyChanged).toContain("# Vex — Soul File");
+      expect(attemptSpy).not.toHaveBeenCalled();
+
+      policyEnabled = true;
+      process.env["SURPLUS_API_KEY"] = "synthetic-surplus-key";
+      const credentialChanged = await soulModule.generateSoulFile({ name: "Vex" }, undefined, {
+        humanUserId: "user-1",
+        assertServerProviderCredentials: async () => {
+          process.env["SURPLUS_API_KEY"] = "replacement-surplus-key";
+        },
+      });
+      expect(credentialChanged).toContain("# Vex — Soul File");
+      expect(attemptSpy).not.toHaveBeenCalled();
+    } finally {
+      stderr.mockRestore();
+      attemptSpy.mockRestore();
+      configSpy.mockRestore();
+    }
+  });
+
+  test("streams Surplus deltas while retaining terminal metadata on the aggregate", async () => {
+    delete process.env["OPENROUTER_API_KEY"];
+    process.env["SURPLUS_API_KEY"] = "synthetic-surplus-key";
+    setConfigOverrides({ nautilo_soul_generator_model: modelId });
+    const configSpy = preferSurplus(true);
+    let aggregate: AIMessage | undefined;
+    const first = "## Essence\nA precise and distinctive generated identity ";
+    const second = "with enough detail to be useful.\n\n## Tone\nWarm, exact, and candid.";
+    const attemptSpy = spyOn(surplusAttempt, "invokeSurplusChatAttempt")
+      .mockImplementation(async (input) => {
+        aggregate = await input.invokeModel({
+          async invoke() {
+            throw new Error("streaming path must not call invoke");
+          },
+          async stream() {
+            return {
+              async *[Symbol.asyncIterator]() {
+                yield new AIMessageChunk({ content: first });
+                yield new AIMessageChunk({
+                  content: second,
+                  response_metadata: {
+                    finish_reason: "stop",
+                    usage: { prompt_tokens: 17, completion_tokens: 23, buyer_cost_micro: 41 },
+                  },
+                  usage_metadata: { input_tokens: 17, output_tokens: 23, total_tokens: 40 },
+                } as never);
+              },
+            };
+          },
+        } as never, input.messages, input.config);
+        return { kind: "served", response: aggregate };
+      });
+
+    try {
+      const events = [];
+      for await (const event of soulModule.generateSoulFileStream(
+        { name: "Vex" }, undefined, SOUL_AUTHORIZATION,
+      )) events.push(event);
+
+      expect(events).toEqual([
+        { type: "started" },
+        { type: "delta", text: first },
+        { type: "delta", text: second },
+        { type: "completed", soulFile: first + second },
+      ]);
+      expect(aggregate?.response_metadata).toMatchObject({
+        finish_reason: "stop",
+        usage: { buyer_cost_micro: 41 },
+      });
+      expect(aggregate?.usage_metadata).toMatchObject({
+        input_tokens: 17,
+        output_tokens: 23,
+        total_tokens: 40,
+      });
+    } finally {
+      attemptSpy.mockRestore();
+      configSpy.mockRestore();
+    }
+  });
+
+  test("keeps policy-off Soul generation on the direct service-funded path", async () => {
+    process.env["NAUTILO_TEST_MODE"] = "stub";
+    process.env["SURPLUS_API_KEY"] = "synthetic-surplus-key";
+    setConfigOverrides({ nautilo_soul_generator_model: modelId });
+    const configSpy = preferSurplus(false);
+    const attemptSpy = spyOn(surplusAttempt, "invokeSurplusChatAttempt");
+    let observedContext: unknown;
+    __setStubModelForTests({
+      async invoke() {
+        observedContext = getUsageContext();
+        return new AIMessage({ content: generatedSoul });
+      },
+    });
+
+    try {
+      expect(await soulModule.generateSoulFile(
+        { name: "Vex" }, undefined, SOUL_AUTHORIZATION,
+      )).toBe(generatedSoul);
+      expect(attemptSpy).not.toHaveBeenCalled();
+      expect(observedContext).toMatchObject({
+        callType: "soul",
+        funding: { kind: "service", providerRoute: "openrouter" },
+      });
+    } finally {
+      attemptSpy.mockRestore();
+      configSpy.mockRestore();
+    }
+  });
+
+  test("marks provider work observed when a direct stream emits before a 429", async () => {
+    setConfigOverrides({ nautilo_soul_generator_model: modelId });
+    const configSpy = preferSurplus(false);
+    const partial = "## Essence\nVisible direct-provider output.";
+    const providerError = Object.assign(new Error("late rate-limit response"), { status: 429 });
+    const modelSpy = spyOn(universalProvider, "createUniversalModel").mockResolvedValue({
+      async invoke() {
+        throw new Error("streaming path must not call invoke");
+      },
+      async stream() {
+        return {
+          async *[Symbol.asyncIterator]() {
+            yield new AIMessageChunk({ content: partial });
+            throw providerError;
+          },
+        };
+      },
+    });
+    let observedAtFailure = false;
+    let failureClassification: ReturnType<typeof personalAttempt.classifyPersonalAttemptFailure> | undefined;
+    const personalAttemptSpy = spyOn(personalAttempt, "runPersonalLlmAttempt")
+      .mockImplementation(async (input) => {
+        try {
+          return await input.invoke();
+        } catch (error) {
+          observedAtFailure = input.hasObservedProviderWork?.() === true;
+          failureClassification = personalAttempt.classifyPersonalAttemptFailure(
+            error,
+            false,
+            observedAtFailure,
+          );
+          throw error;
+        }
+      });
+    const stderr = spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const events = [];
+      for await (const event of soulModule.generateSoulFileStream(
+        { name: "Vex" }, undefined, SOUL_AUTHORIZATION,
+      )) events.push(event);
+      expect(events[0]).toEqual({ type: "started" });
+      expect(events[1]).toEqual({ type: "delta", text: partial });
+      expect(events[2]).toMatchObject({
+        type: "error",
+        error: soulModule.SOUL_GENERATION_FAILED_MESSAGE,
+      });
+      expect(observedAtFailure).toBeTrue();
+      expect(failureClassification).toEqual({
+        outcome: "unknown",
+        failureCode: "outcome_unknown",
+        disposition: "terminal_unknown",
+      });
+      expect(personalAttemptSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      stderr.mockRestore();
+      personalAttemptSpy.mockRestore();
+      modelSpy.mockRestore();
+      configSpy.mockRestore();
+    }
+  });
+
+  test("rechecks live authorization before a safe direct fallback", async () => {
+    process.env["NAUTILO_TEST_MODE"] = "stub";
+    process.env["SURPLUS_API_KEY"] = "synthetic-surplus-key";
+    setConfigOverrides({ nautilo_soul_generator_model: modelId });
+    const configSpy = preferSurplus(true);
+    const attemptSpy = spyOn(surplusAttempt, "invokeSurplusChatAttempt")
+      .mockResolvedValue({ kind: "direct_fallback" });
+    let directInvoked = false;
+    __setStubModelForTests({
+      async invoke() {
+        directInvoked = true;
+        return new AIMessage({ content: generatedSoul });
+      },
+    });
+    let checks = 0;
+
+    try {
+      await Promise.resolve(expect(soulModule.generateSoulFile({ name: "Vex" }, undefined, {
+        humanUserId: "user-1",
+        assertServerProviderCredentials: async (humanUserId, origin) => {
+          checks++;
+          if (checks > 1) throw new ServerProviderCredentialsDeniedError(humanUserId, origin);
+        },
+      })).rejects.toBeInstanceOf(ServerProviderCredentialsDeniedError));
+      expect(checks).toBe(2);
+      expect(directInvoked).toBeFalse();
+    } finally {
+      attemptSpy.mockRestore();
+      configSpy.mockRestore();
+    }
+  });
+
+  test("does not replay a streaming attempt after it delivered visible output", async () => {
+    process.env["NAUTILO_TEST_MODE"] = "stub";
+    process.env["SURPLUS_API_KEY"] = "synthetic-surplus-key";
+    setConfigOverrides({ nautilo_soul_generator_model: modelId });
+    const configSpy = preferSurplus(true);
+    let directInvoked = false;
+    __setStubModelForTests({
+      async invoke() {
+        directInvoked = true;
+        return new AIMessage({ content: generatedSoul });
+      },
+    });
+    const attemptSpy = spyOn(surplusAttempt, "invokeSurplusChatAttempt")
+      .mockImplementation(async (input) => {
+        await input.invokeModel({
+          async invoke() {
+            throw new Error("streaming path must not call invoke");
+          },
+          async stream() {
+            return {
+              async *[Symbol.asyncIterator]() {
+                yield new AIMessageChunk({ content: "## Essence\nVisible partial output." });
+              },
+            };
+          },
+        } as never, input.messages, input.config);
+        return { kind: "direct_fallback" };
+      });
+
+    try {
+      const events = [];
+      for await (const event of soulModule.generateSoulFileStream(
+        { name: "Vex" }, undefined, SOUL_AUTHORIZATION,
+      )) events.push(event);
+      expect(events[0]).toEqual({ type: "started" });
+      expect(events[1]).toEqual({ type: "delta", text: "## Essence\nVisible partial output." });
+      expect(events[2]).toMatchObject({
+        type: "error",
+        error: soulModule.SOUL_GENERATION_FAILED_MESSAGE,
+      });
+      expect(directInvoked).toBeFalse();
+      expect(attemptSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      attemptSpy.mockRestore();
+      configSpy.mockRestore();
+    }
+  });
+
+  test("aborts a Surplus stream when its consumer closes after visible output", async () => {
+    process.env["NAUTILO_TEST_MODE"] = "stub";
+    process.env["SURPLUS_API_KEY"] = "synthetic-surplus-key";
+    setConfigOverrides({ nautilo_soul_generator_model: modelId });
+    const configSpy = preferSurplus(true);
+    let directInvoked = false;
+    let providerSignal: AbortSignal | undefined;
+    __setStubModelForTests({
+      async invoke() {
+        directInvoked = true;
+        return new AIMessage({ content: generatedSoul });
+      },
+    });
+    const attemptSpy = spyOn(surplusAttempt, "invokeSurplusChatAttempt")
+      .mockImplementation(async (input) => {
+        providerSignal = input.config.signal;
+        await input.invokeModel({
+          async invoke() {
+            throw new Error("streaming path must not call invoke");
+          },
+          async stream() {
+            return {
+              async *[Symbol.asyncIterator]() {
+                yield new AIMessageChunk({ content: "## Essence\nVisible before close." });
+                await new Promise<void>((resolve) => {
+                  if (providerSignal?.aborted) resolve();
+                  else providerSignal?.addEventListener("abort", () => resolve(), { once: true });
+                });
+                throw new Error("cancelled provider stream");
+              },
+            };
+          },
+        } as never, input.messages, input.config);
+        throw new Error("expected cancellation");
+      });
+
+    try {
+      const stream = soulModule.generateSoulFileStream(
+        { name: "Vex" }, undefined, SOUL_AUTHORIZATION,
+      );
+      expect((await stream.next()).value).toEqual({ type: "started" });
+      expect((await stream.next()).value).toEqual({
+        type: "delta",
+        text: "## Essence\nVisible before close.",
+      });
+      await stream.return(undefined);
+      expect(providerSignal?.aborted).toBeTrue();
+      expect(directInvoked).toBeFalse();
+      expect(attemptSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      attemptSpy.mockRestore();
+      configSpy.mockRestore();
+    }
   });
 });
