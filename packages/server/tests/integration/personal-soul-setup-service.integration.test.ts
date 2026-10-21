@@ -441,9 +441,9 @@ describe.serial("personal-key own-Genie Soul setup service", () => {
         expect(request.authorization).toBe(`Bearer ${SURPLUS_KEY}`);
         expect(request.body).toMatchObject({
           model: "minimax/minimax-m3",
-          provider: "openrouter",
           stream: true,
         });
+        expect(request.body["provider"]).toBeUndefined();
       }
 
       const usage = await fx.db
@@ -487,7 +487,7 @@ describe.serial("personal-key own-Genie Soul setup service", () => {
     }
   });
 
-  test("recovers both Soul endpoints through other Surplus sellers and a later model without direct keys", async () => {
+  test("recovers both Soul endpoints using marketplace selection and later models without direct keys", async () => {
     const directKeyNames = [
       "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
       "VENICE_API_KEY", "GOOGLE_API_KEY", "TYPESAFE_API_KEY",
@@ -530,10 +530,13 @@ describe.serial("personal-key own-Genie Soul setup service", () => {
         }
         const attempts = surplusProviderRequests.slice(surplusRecoveryStart);
         expect(attempts).toHaveLength(3);
-        expect(attempts[0]?.body).toMatchObject({ model: "minimax/minimax-m3", provider: "openrouter" });
-        expect(attempts[1]?.body["model"]).toBe("minimax/minimax-m3");
-        expect(attempts[1]?.body["provider"]).toBeUndefined();
+        expect(attempts[0]?.body["model"]).toBe("minimax/minimax-m3");
+        expect(attempts[0]?.body["provider"]).toBeUndefined();
+        expect(attempts[1]?.body["model"]).toBe("minimax-m3-preview");
+        expect(attempts[1]?.body["provider"]).toBe("venice");
         expect(attempts[2]?.body["model"]).not.toBe("minimax/minimax-m3");
+        expect(attempts[2]?.body["model"]).not.toBe(attempts[1]?.body["model"]);
+        expect(attempts[2]?.body["provider"]).toBeUndefined();
         expect(attempts.every((attempt) => attempt.authorization === `Bearer ${SURPLUS_KEY}`)).toBe(true);
       }
 

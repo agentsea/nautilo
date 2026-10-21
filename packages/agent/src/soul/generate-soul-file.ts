@@ -328,6 +328,7 @@ interface ResolvedSoulInvocation {
   readonly surplusPolicyEnabled: boolean;
   readonly surplusKey: string | null;
   readonly surplusRoute: QualifiedSurplusChatRoute | null;
+  readonly broadeningAuthorityModelId?: string;
 }
 
 function sameSurplusRoute(
@@ -360,6 +361,10 @@ function currentSoulSurplusRoute(
 }
 
 function assertSoulInvocationSnapshotCurrent(invocation: ResolvedSoulInvocation): void {
+  if (invocation.broadeningAuthorityModelId !== undefined
+    && !canBroadenSurplusModelRoute(invocation.broadeningAuthorityModelId)) {
+    throw new Error("Soul generation marketplace eligibility changed before dispatch.");
+  }
   const policyEnabled = getCachedServerModelConfigRow()?.preferSurplus === true;
   const surplusKey = resolveProviderKey("surplus");
   const surplusRoute = currentSoulSurplusRoute(invocation.modelId, policyEnabled, surplusKey);
@@ -422,6 +427,7 @@ async function resolveSurplusSoulCandidate(
       surplusPolicyEnabled: primary.surplusPolicyEnabled,
       surplusKey: primary.surplusKey,
       surplusRoute,
+      broadeningAuthorityModelId: primary.modelId,
     };
   } catch {
     // A candidate that no longer satisfies the signed role, route, capability,
@@ -541,7 +547,12 @@ async function invokeSurplusSoul(
       providerRoute: "surplus",
     },
     hasDeliveredOutput,
-    assertStillAuthorized: () => assertSoulAttemptStillAuthorized(invocation, signal, authorization),
+    assertStillAuthorized: async () => {
+      await assertSoulAttemptStillAuthorized(invocation, signal, authorization);
+      if (providerMode === "any" && !canBroadenSurplusModelRoute(invocation.modelId)) {
+        throw new Error("Soul generation marketplace eligibility changed before dispatch.");
+      }
+    },
     directFallbackPolicy: "pre_service_only",
     validateResponse: (response) => {
       if (!looksLikeSoulFile(extractMessageText(response.content).trim())) {
@@ -602,6 +613,9 @@ async function invokeSoulWithSupplyFallback(
   const invocations: Array<ResolvedSoulInvocation | string> = [primary, ...candidateIds];
 
   for (const candidate of invocations) {
+    if (typeof candidate === "string" && !canBroadenSurplusModelRoute(primary.modelId)) {
+      throw new Error("Soul generation marketplace eligibility changed before dispatch.");
+    }
     const invocation = typeof candidate === "string"
       ? await resolveSurplusSoulCandidate(primary, candidate)
       : candidate;
@@ -609,21 +623,25 @@ async function invokeSoulWithSupplyFallback(
     execution.onModelSelected?.(invocation.modelId);
     signal.throwIfAborted();
 
-    const pinned = await invokeSurplusSoul(
+    // Ordinary aggregator routes can use the marketplace's available seller
+    // pool immediately when there is no matching direct server credential.
+    const providerMode = !modelHasRunnableCredentials(invocation.modelId, process.env)
+      && canBroadenSurplusModelRoute(invocation.modelId) ? "any" : undefined;
+    const first = await invokeSurplusSoul(
       invocation,
       signal,
       authorization,
       execution.hasDeliveredOutput,
-      undefined,
+      providerMode,
       execution.invokeSurplusModel,
     );
-    if (pinned.kind === "served") return pinned.response;
+    if (first.kind === "served") return first.response;
     signal.throwIfAborted();
     if (execution.hasDeliveredOutput() || execution.hasObservedProviderWork()) {
       throw new SurplusOutcomeUnknownError();
     }
 
-    if (!pinned.modelUnavailableBeforeService) {
+    if (!first.modelUnavailableBeforeService) {
       // Preserve the existing admitted same-model direct rail. This result
       // never authorizes the new unpinned or cross-model marketplace walk.
       assertDirectSoulCredential(invocation.modelId);
@@ -638,7 +656,7 @@ async function invokeSoulWithSupplyFallback(
     }
     if (!crossModelAllowed) throw new SurplusDirectFallbackUnavailableError();
 
-    if (canBroadenSurplusModelRoute(invocation.modelId)) {
+    if (providerMode !== "any" && canBroadenSurplusModelRoute(invocation.modelId)) {
       signal.throwIfAborted();
       const unpinned = await invokeSurplusSoul(
         invocation,

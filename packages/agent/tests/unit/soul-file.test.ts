@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { AIMessage, AIMessageChunk } from "@langchain/core/messages";
 import { setLogOutput } from "@nautilo/logger";
 import { candidatesForModelRole, setConfigOverrides } from "@nautilo/config";
-import type { ModelCatalog } from "@nautilo/types";
+import { ModelCatalogSchema } from "@nautilo/types";
 import * as db from "@nautilo/db";
 import { generateSoulFileFallback, normalizeSoulFileInput } from "../../src/index";
 import * as soulModule from "../../src/soul/generate-soul-file";
@@ -19,6 +19,8 @@ import {
   hydrateRuntimeModelCatalog,
   resetRuntimeModelCatalog,
 } from "../../src/config/model-catalog/runtime-catalog";
+
+type RuntimeModelCatalog = ReturnType<typeof getActiveModelCatalogSync>["catalog"];
 
 const SOUL_AUTHORIZATION = {
   humanUserId: "user-1",
@@ -42,7 +44,7 @@ function useSurplusOnlyCredentials(): void {
   process.env["SURPLUS_API_KEY"] = "synthetic-surplus-key";
 }
 
-async function installSoulTestCatalog(catalog: ModelCatalog): Promise<void> {
+async function installSoulTestCatalog(catalog: RuntimeModelCatalog): Promise<void> {
   configureRuntimeModelCatalog({
     loader: {
       get: async () => ({
@@ -508,13 +510,6 @@ describe("Surplus-funded soul generation", () => {
           modelId: input.route.catalogModelId,
           providerMode: input.providerMode,
         });
-        if (wires.length === 1) {
-          return {
-            kind: "direct_fallback",
-            retryUnpinned: true,
-            modelUnavailableBeforeService: true,
-          };
-        }
         return {
           kind: "served",
           response: new AIMessage({
@@ -529,7 +524,6 @@ describe("Surplus-funded soul generation", () => {
         { name: "Vex" }, undefined, SOUL_AUTHORIZATION,
       )).toBe(generatedSoul);
       expect(wires).toEqual([
-        { modelId: broadenableModelId, providerMode: undefined },
         { modelId: broadenableModelId, providerMode: "any" },
       ]);
       expect(directSpy).not.toHaveBeenCalled();
@@ -540,7 +534,198 @@ describe("Surplus-funded soul generation", () => {
     }
   });
 
-  test("streams from the next eligible Soul model after pinned and unpinned supply refusals", async () => {
+  test("retains a provider pin for a privacy-bound Surplus-only Soul model", async () => {
+    useSurplusOnlyCredentials();
+    const privacyBoundModelId = "venice:minimax-m3-preview";
+    setConfigOverrides({ nautilo_soul_generator_model: privacyBoundModelId });
+    const configSpy = preferSurplus(true);
+    const directSpy = spyOn(universalProvider, "createUniversalModel");
+    const wires: Array<{ modelId: string; providerMode: "any" | undefined }> = [];
+    const attemptSpy = spyOn(surplusAttempt, "invokeSurplusChatAttempt")
+      .mockImplementation(async (input) => {
+        wires.push({ modelId: input.route.catalogModelId, providerMode: input.providerMode });
+        return {
+          kind: "direct_fallback",
+          modelUnavailableBeforeService: true,
+        };
+      });
+    const stderr = spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      expect(await soulModule.generateSoulFile(
+        { name: "Vex" }, undefined, SOUL_AUTHORIZATION,
+      )).toContain("# Vex — Soul File");
+      expect(wires).toEqual([{ modelId: privacyBoundModelId, providerMode: undefined }]);
+      expect(directSpy).not.toHaveBeenCalled();
+    } finally {
+      stderr.mockRestore();
+      attemptSpy.mockRestore();
+      directSpy.mockRestore();
+      configSpy.mockRestore();
+    }
+  });
+
+  test("keeps a matching direct server credential on the pinned-first fallback path", async () => {
+    process.env["OPENROUTER_API_KEY"] = "synthetic-openrouter-key";
+    process.env["SURPLUS_API_KEY"] = "synthetic-surplus-key";
+    process.env["NAUTILO_TEST_MODE"] = "stub";
+    setConfigOverrides({ nautilo_soul_generator_model: broadenableModelId });
+    const configSpy = preferSurplus(true);
+    let directInvokes = 0;
+    __setStubModelForTests({
+      async invoke() {
+        directInvokes++;
+        return new AIMessage({ content: generatedSoul });
+      },
+    });
+    const modes: Array<"any" | undefined> = [];
+    const attemptSpy = spyOn(surplusAttempt, "invokeSurplusChatAttempt")
+      .mockImplementation(async (input) => {
+        modes.push(input.providerMode);
+        return {
+          kind: "direct_fallback",
+          retryUnpinned: true,
+          modelUnavailableBeforeService: true,
+        };
+      });
+
+    try {
+      expect(await soulModule.generateSoulFile(
+        { name: "Vex" }, undefined, SOUL_AUTHORIZATION,
+      )).toBe(generatedSoul);
+      expect(modes).toEqual([undefined]);
+      expect(directInvokes).toBe(1);
+    } finally {
+      attemptSpy.mockRestore();
+      configSpy.mockRestore();
+    }
+  });
+
+  test("blocks an unpinned wire when the signed privacy label tightens after admission", async () => {
+    const current = getActiveModelCatalogSync().catalog;
+    const primary = current.entries.find((entry) => entry.id === broadenableModelId);
+    if (!primary) throw new Error("Soul primary catalog fixture is missing");
+    useSurplusOnlyCredentials();
+    setConfigOverrides({ nautilo_soul_generator_model: broadenableModelId });
+    const configSpy = preferSurplus(true);
+    let providerInvokes = 0;
+    const attemptSpy = spyOn(surplusAttempt, "invokeSurplusChatAttempt")
+      .mockImplementation(async (input) => {
+        expect(input.providerMode).toBe("any");
+        await installSoulTestCatalog(ModelCatalogSchema.parse({
+          ...current,
+          catalogVersion: "2026.10.21.1",
+          entries: [{
+            ...primary,
+            privacy: { ...primary.privacy, label: "anonymized" },
+          }],
+        }));
+        await input.assertStillAuthorized?.();
+        providerInvokes++;
+        return { kind: "served", response: new AIMessage({ content: generatedSoul }) };
+      });
+    const stderr = spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      expect(await soulModule.generateSoulFile(
+        { name: "Vex" }, undefined, SOUL_AUTHORIZATION,
+      )).toContain("# Vex — Soul File");
+      expect(attemptSpy).toHaveBeenCalledTimes(1);
+      expect(providerInvokes).toBe(0);
+    } finally {
+      stderr.mockRestore();
+      attemptSpy.mockRestore();
+      configSpy.mockRestore();
+    }
+  });
+
+  test("stops before resolving another Soul candidate when the original primary privacy tightens", async () => {
+    const current = getActiveModelCatalogSync().catalog;
+    const primary = current.entries.find((entry) => entry.id === broadenableModelId);
+    if (!primary) throw new Error("Soul primary catalog fixture is missing");
+    useSurplusOnlyCredentials();
+    setConfigOverrides({ nautilo_soul_generator_model: broadenableModelId });
+    const configSpy = preferSurplus(true);
+    const wires: string[] = [];
+    const attemptSpy = spyOn(surplusAttempt, "invokeSurplusChatAttempt")
+      .mockImplementation(async (input) => {
+        wires.push(`${input.route.catalogModelId}|${input.providerMode ?? "pinned"}`);
+        await installSoulTestCatalog(ModelCatalogSchema.parse({
+          ...current,
+          catalogVersion: "2026.10.21.2",
+          entries: current.entries.map((entry) => entry.id === primary.id
+            ? { ...entry, privacy: { ...entry.privacy, label: "anonymized" as const } }
+            : entry),
+        }));
+        return {
+          kind: "direct_fallback",
+          modelUnavailableBeforeService: true,
+        };
+      });
+    const stderr = spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      expect(await soulModule.generateSoulFile(
+        { name: "Vex" }, undefined, SOUL_AUTHORIZATION,
+      )).toContain("# Vex — Soul File");
+      expect(wires).toEqual([`${broadenableModelId}|any`]);
+    } finally {
+      stderr.mockRestore();
+      attemptSpy.mockRestore();
+      configSpy.mockRestore();
+    }
+  });
+
+  test("blocks a pinned candidate wire when the original primary privacy tightens during admission", async () => {
+    const current = getActiveModelCatalogSync().catalog;
+    const primary = current.entries.find((entry) => entry.id === broadenableModelId);
+    if (!primary) throw new Error("Soul primary catalog fixture is missing");
+    useSurplusOnlyCredentials();
+    setConfigOverrides({ nautilo_soul_generator_model: broadenableModelId });
+    const configSpy = preferSurplus(true);
+    const wires: string[] = [];
+    let candidateProviderInvokes = 0;
+    const attemptSpy = spyOn(surplusAttempt, "invokeSurplusChatAttempt")
+      .mockImplementation(async (input) => {
+        wires.push(`${input.route.catalogModelId}|${input.providerMode ?? "pinned"}`);
+        if (input.route.catalogModelId === broadenableModelId) {
+          return {
+            kind: "direct_fallback",
+            modelUnavailableBeforeService: true,
+          };
+        }
+        expect(input.route.catalogModelId).toBe("venice:minimax-m3-preview");
+        expect(input.providerMode).toBeUndefined();
+        await installSoulTestCatalog(ModelCatalogSchema.parse({
+          ...current,
+          catalogVersion: "2026.10.21.3",
+          entries: current.entries.map((entry) => entry.id === primary.id
+            ? { ...entry, privacy: { ...entry.privacy, label: "anonymized" as const } }
+            : entry),
+        }));
+        await input.assertStillAuthorized?.();
+        candidateProviderInvokes++;
+        return { kind: "served", response: new AIMessage({ content: generatedSoul }) };
+      });
+    const stderr = spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      expect(await soulModule.generateSoulFile(
+        { name: "Vex" }, undefined, SOUL_AUTHORIZATION,
+      )).toContain("# Vex — Soul File");
+      expect(wires).toEqual([
+        `${broadenableModelId}|any`,
+        "venice:minimax-m3-preview|pinned",
+      ]);
+      expect(candidateProviderInvokes).toBe(0);
+    } finally {
+      stderr.mockRestore();
+      attemptSpy.mockRestore();
+      configSpy.mockRestore();
+    }
+  });
+
+  test("streams from the next eligible Soul model after marketplace-first supply refusals", async () => {
     useSurplusOnlyCredentials();
     setConfigOverrides({ nautilo_soul_generator_model: broadenableModelId });
     const configSpy = preferSurplus(true);
@@ -583,12 +768,12 @@ describe("Surplus-funded soul generation", () => {
         { name: "Vex" }, undefined, SOUL_AUTHORIZATION,
       )) events.push(event);
       expect(wires.slice(0, 2)).toEqual([
-        { modelId: broadenableModelId, providerMode: undefined },
         { modelId: broadenableModelId, providerMode: "any" },
+        { modelId: "venice:minimax-m3-preview", providerMode: undefined },
       ]);
       expect(wires[2]).toEqual({
-        modelId: "venice:minimax-m3-preview",
-        providerMode: undefined,
+        modelId: "openrouter:openai/gpt-5.6-luna",
+        providerMode: "any",
       });
       expect(events).toEqual([
         { type: "started" },
@@ -661,7 +846,7 @@ describe("Surplus-funded soul generation", () => {
       ...current,
       catalogVersion: "2026.10.21.soul-recovery",
       entries: [primary, disabled, unsupported, later],
-    } as ModelCatalog);
+    } as RuntimeModelCatalog);
     useSurplusOnlyCredentials();
     setConfigOverrides({ nautilo_soul_generator_model: broadenableModelId });
     const configSpy = preferSurplus(true);
@@ -684,7 +869,6 @@ describe("Surplus-funded soul generation", () => {
         { name: "Vex" }, undefined, SOUL_AUTHORIZATION,
       )).toBe(generatedSoul);
       expect(wires).toEqual([
-        { modelId: broadenableModelId, providerMode: undefined },
         { modelId: broadenableModelId, providerMode: "any" },
         { modelId: later.id, providerMode: undefined },
       ]);
@@ -705,7 +889,8 @@ describe("Surplus-funded soul generation", () => {
     const configSpy = preferSurplus(true);
     const directSpy = spyOn(universalProvider, "createUniversalModel");
     const attemptSpy = spyOn(surplusAttempt, "invokeSurplusChatAttempt")
-      .mockImplementation(async () => {
+      .mockImplementation(async (input) => {
+        expect(input.providerMode).toBe("any");
         if (outcome instanceof Error) throw outcome;
         return outcome;
       });

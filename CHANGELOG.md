@@ -13,7 +13,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   marketplace costs without replaying provider requests.
 
 - Soul generation supports a server Surplus key without a direct provider key,
-  including streamed customization previews and service cost tracking.
+  including streamed customization previews and service cost tracking. Eligible
+  Surplus-only requests let the marketplace choose an available seller and can
+  recover from confirmed supply refusals through other eligible models.
 
 - Background Tasks can save Workspace files using their authorized namespace
   room while keeping their transcripts separate from the originating chat.
