@@ -55,7 +55,7 @@ def git_tls(host):
                       "-c", "http.sslVerify=true", "ls-remote", "--heads", url])
     error = result.stderr.lower()
     if result.returncode and ("certificate" in error and any(
-            term in error for term in ("verify", "verification", "issuer", "untrusted", "revoked"))):
+            term in error for term in ("verify", "verification", "issuer", "untrusted", "revoked", "the certificate chain is incomplete"))):
         return "rejected"
     if result.returncode == 0 or any(term in error for term in ("repository not found", "not a git repository")):
         return "accepted"

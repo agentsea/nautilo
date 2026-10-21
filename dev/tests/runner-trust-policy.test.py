@@ -72,6 +72,22 @@ def configured_namespace(bundle=TEST_CERTIFICATE, name="etc/ssl/certs/ca-certifi
 
 
 class BootstrapPolicyTests(unittest.TestCase):
+    def test_git_certificate_errors_are_distinct_from_transport_failures(self):
+        spec = importlib.util.spec_from_file_location("runner_client_probe", ROOT / "dev/scripts/verify-runner-trust.py")
+        client = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(client)
+        for message in (
+            "schannel: the certificate chain is incomplete",
+            "SSL certificate problem: unable to get local issuer certificate",
+            "server certificate verification failed",
+        ):
+            with self.subTest(message=message), mock.patch.object(client, "command", return_value=SimpleNamespace(returncode=128, stderr=message)):
+                self.assertEqual(client.git_tls("example.invalid"), "rejected")
+        for message in ("Could not resolve host", "Connection reset by peer", "TLS handshake failed"):
+            with self.subTest(message=message), mock.patch.object(client, "command", return_value=SimpleNamespace(returncode=128, stderr=message)):
+                with self.assertRaisesRegex(RuntimeError, "Git transport failed"):
+                    client.git_tls("example.invalid")
+
     def test_prepares_exclusive_exports_without_node_options(self):
         namespace, payload = configured_namespace()
         with tempfile.TemporaryDirectory() as directory:
