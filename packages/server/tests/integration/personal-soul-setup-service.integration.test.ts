@@ -69,6 +69,7 @@ type Peer = Awaited<ReturnType<typeof seatPeerUser>>;
 let fx: AppFixture;
 let community: Peer;
 let surplusCommunity: Peer;
+let surplusRecoveryCommunity: Peer;
 let guest: Peer;
 let originalFetch: typeof fetch;
 let priorOpenRouterKey: string | undefined;
@@ -82,6 +83,7 @@ const surplusProviderRequests: Array<{
   body: Record<string, unknown>;
   requestId: string;
 }> = [];
+let surplusRecoveryStart: number | undefined;
 
 async function moveToCommunity(peer: Peer): Promise<void> {
   const [communityGroup] = await fx.db
@@ -149,6 +151,11 @@ beforeAll(async () => {
     groupType: "contributors",
   });
   await moveToCommunity(surplusCommunity);
+  surplusRecoveryCommunity = await seatPeerUser(fx.db, {
+    suiteName: "soulrecovery",
+    groupType: "contributors",
+  });
+  await moveToCommunity(surplusRecoveryCommunity);
   guest = await seatPeerUser(fx.db, {
     suiteName: "personalsoul",
     groupType: "guests",
@@ -180,6 +187,23 @@ beforeAll(async () => {
         body,
         requestId,
       });
+      if (surplusRecoveryStart !== undefined && requestIndex - surplusRecoveryStart < 2) {
+        const unavailable = requestIndex === surplusRecoveryStart;
+        return Response.json({
+          error: {
+            code: unavailable ? "no_healthy_sellers" : "no_sellers_for_model",
+            message: "Synthetic model supply refusal.",
+          },
+        }, {
+          status: unavailable ? 503 : 404,
+          headers: {
+            "x-request-id": requestId,
+            "x-si-provider-family": "unknown",
+            "x-si-marketplace-attempts": "0",
+            "x-si-truncated": "0",
+          },
+        });
+      }
       const midpoint = Math.floor(soulFile.length / 2);
       const buyerCostMicro = 321 + requestIndex;
       const chunks = [
@@ -187,21 +211,21 @@ beforeAll(async () => {
           id: `chatcmpl-${requestId}`,
           object: "chat.completion.chunk",
           created: 1,
-          model: "minimax/minimax-m3",
+          model: body["model"],
           choices: [{ index: 0, delta: { role: "assistant", content: soulFile.slice(0, midpoint) }, finish_reason: null }],
         },
         {
           id: `chatcmpl-${requestId}`,
           object: "chat.completion.chunk",
           created: 1,
-          model: "minimax/minimax-m3",
+          model: body["model"],
           choices: [{ index: 0, delta: { content: soulFile.slice(midpoint) }, finish_reason: null }],
         },
         {
           id: `chatcmpl-${requestId}`,
           object: "chat.completion.chunk",
           created: 1,
-          model: "minimax/minimax-m3",
+          model: body["model"],
           choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
           usage: {
             prompt_tokens: 18,
@@ -217,7 +241,7 @@ beforeAll(async () => {
           headers: {
             "content-type": "text/event-stream",
             "x-request-id": requestId,
-            "x-si-provider-family": "openrouter",
+            "x-si-provider-family": typeof body["provider"] === "string" ? body["provider"] : "openrouter",
             "x-si-marketplace-attempts": "1",
             "x-si-buyer-cost-micro": String(buyerCostMicro),
             "x-si-truncated": "0",
@@ -288,6 +312,7 @@ afterAll(async () => {
   await upsertServerProviderPolicy(fx.db, { allowPersonalProviderKeys: false });
   if (community) await removePeer(community);
   if (surplusCommunity) await removePeer(surplusCommunity);
+  if (surplusRecoveryCommunity) await removePeer(surplusRecoveryCommunity);
   if (guest) await removePeer(guest);
   await fx.cleanup();
 });
@@ -456,6 +481,99 @@ describe.serial("personal-key own-Genie Soul setup service", () => {
         method: "POST",
         url: "/api/admin/server-models",
         bearer: ownerBearer,
+        payload: { preferSurplus: priorPreferSurplus },
+      });
+      expect(restored.statusCode, restored.body).toBe(200);
+    }
+  });
+
+  test("recovers both Soul endpoints through other Surplus sellers and a later model without direct keys", async () => {
+    const directKeyNames = [
+      "OPENROUTER_API_KEY", "OPENAI_API_KEY", "ANTHROPIC_API_KEY",
+      "VENICE_API_KEY", "GOOGLE_API_KEY", "TYPESAFE_API_KEY",
+    ] as const;
+    const priorDirectKeys = directKeyNames.map((key) => [key, process.env[key]] as const);
+    const priorSurplus = process.env["SURPLUS_API_KEY"];
+    const ownerBearer = await fx.mintOwnerBearer();
+    const priorModels = await authedInject(fx.app, {
+      method: "GET", url: "/api/admin/server-models", bearer: ownerBearer,
+    });
+    expect(priorModels.statusCode, priorModels.body).toBe(200);
+    const priorPreferSurplus = priorModels.json<{ preferSurplus: boolean }>().preferSurplus;
+    const directBefore = providerRequests.length;
+    const requestsBefore = surplusProviderRequests.length;
+
+    try {
+      for (const key of directKeyNames) delete process.env[key];
+      process.env["SURPLUS_API_KEY"] = SURPLUS_KEY;
+      invalidateRuntimeConfigCache();
+      const enabled = await authedInject(fx.app, {
+        method: "POST", url: "/api/admin/server-models", bearer: ownerBearer,
+        payload: { preferSurplus: true },
+      });
+      expect(enabled.statusCode, enabled.body).toBe(200);
+
+      for (const stream of [false, true]) {
+        surplusRecoveryStart = surplusProviderRequests.length;
+        const response = await authedInject(fx.app, {
+          method: "POST",
+          url: stream ? "/api/profile/generate-soul/stream" : "/api/profile/generate-soul",
+          bearer: surplusRecoveryCommunity.bearer,
+          payload: { name: "Sable", personalityPrompt: "Patient, exact, and lightly playful." },
+        });
+        expect(response.statusCode, response.body).toBe(200);
+        if (stream) {
+          expect(response.body).toContain("event: soul.completed");
+          expect(response.body).not.toContain("event: soul.error");
+        } else {
+          expect(response.json<{ soulFile: string }>()).toEqual({ soulFile: SURPLUS_PREVIEW_SOUL });
+        }
+        const attempts = surplusProviderRequests.slice(surplusRecoveryStart);
+        expect(attempts).toHaveLength(3);
+        expect(attempts[0]?.body).toMatchObject({ model: "minimax/minimax-m3", provider: "openrouter" });
+        expect(attempts[1]?.body["model"]).toBe("minimax/minimax-m3");
+        expect(attempts[1]?.body["provider"]).toBeUndefined();
+        expect(attempts[2]?.body["model"]).not.toBe("minimax/minimax-m3");
+        expect(attempts.every((attempt) => attempt.authorization === `Bearer ${SURPLUS_KEY}`)).toBe(true);
+      }
+
+      expect(providerRequests).toHaveLength(directBefore);
+      const requests = surplusProviderRequests.slice(requestsBefore);
+      const usage = await fx.db.select().from(llmUsageEvents)
+        .where(eq(llmUsageEvents.userId, surplusRecoveryCommunity.userId));
+      expect(usage).toHaveLength(6);
+      expect(new Set(usage.map((row) => row.id)).size).toBe(6);
+      expect(usage.map((row) => row.providerRequestId).sort()).toEqual(
+        requests.map((request) => request.requestId).sort(),
+      );
+      expect(usage.filter((row) => row.attemptOutcome === "failed")).toHaveLength(4);
+      expect(usage.filter((row) => row.attemptOutcome === "succeeded")).toHaveLength(2);
+      for (const row of usage) {
+        expect(row).toMatchObject({ callType: "soul", fundingKind: "service", providerRoute: "surplus", payerHumanId: null });
+        expect(row.metadata?.["agentId"]).toBe(surplusRecoveryCommunity.agentId);
+        if (row.attemptOutcome === "failed") {
+          expect(row.costState).toBe("pending");
+          expect(row.actualCostUsd).toBeNull();
+        } else {
+          expect(row.costState).toBe("actual");
+          expect(row.actualCostUsd).not.toBeNull();
+          expect(row.model).not.toBe(SOUL_MODEL);
+        }
+      }
+      const admissions = await fx.db.select({ id: soulGenerationAttempts.id }).from(soulGenerationAttempts)
+        .where(eq(soulGenerationAttempts.humanUserId, surplusRecoveryCommunity.userId));
+      expect(admissions).toHaveLength(2);
+    } finally {
+      surplusRecoveryStart = undefined;
+      for (const [key, value] of priorDirectKeys) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+      if (priorSurplus === undefined) delete process.env["SURPLUS_API_KEY"];
+      else process.env["SURPLUS_API_KEY"] = priorSurplus;
+      invalidateRuntimeConfigCache();
+      const restored = await authedInject(fx.app, {
+        method: "POST", url: "/api/admin/server-models", bearer: ownerBearer,
         payload: { preferSurplus: priorPreferSurplus },
       });
       expect(restored.statusCode, restored.body).toBe(200);

@@ -45,13 +45,20 @@ export interface SurplusChatAttemptInput {
   readonly hasDeliveredOutput: () => boolean;
   readonly invokeModel: InvokeModel;
   readonly validateResponse?: (response: AIMessage) => void;
+  /** Optional live authority fence, evaluated after admission and immediately before provider work. */
+  readonly assertStillAuthorized?: () => void | Promise<void>;
   /** Narrow service callers may retry direct only after a proven pre-service refusal. */
   readonly directFallbackPolicy?: "pre_service_only";
 }
 
 export type SurplusChatAttemptResult =
   | Readonly<{ kind: "served"; response: AIMessage; requestId?: string }>
-  | Readonly<{ kind: "direct_fallback"; retryUnpinned?: true }>;
+  | Readonly<{
+      kind: "direct_fallback";
+      retryUnpinned?: true;
+      /** Exact-model supply was refused before any marketplace seller attempt. */
+      modelUnavailableBeforeService?: true;
+    }>;
 
 export class SurplusProviderRouteMismatchError extends Error {
   readonly code = "surplus_provider_route_mismatch" as const;
@@ -371,6 +378,8 @@ export async function invokeSurplusChatAttempt(input: SurplusChatAttemptInput): 
   let receipt: SurplusWireReceipt | undefined;
   let responseStatus: number | undefined;
   let terminalUsage: ReturnType<typeof readSurplusResponseUsage> | undefined;
+  let authorizationGuardEntered = false;
+  let invocationEntered = false;
   const onResponse = async (next: SurplusWireReceipt, status: number) => {
     receipt = next;
     responseStatus = status;
@@ -401,6 +410,12 @@ export async function invokeSurplusChatAttempt(input: SurplusChatAttemptInput): 
     });
     const bound = input.tools.length > 0 ? model.bindTools?.([...input.tools], input.toolBindingOptions) : model;
     if (!bound) throw new Error("The selected Surplus route cannot bind tools.");
+    if (input.assertStillAuthorized) {
+      authorizationGuardEntered = true;
+      await input.assertStillAuthorized();
+      input.config.signal?.throwIfAborted();
+    }
+    invocationEntered = true;
     const response = await input.invokeModel(
       bound as { invoke(messages: BaseMessage[], options?: RunnableConfig): Promise<unknown> },
       input.messages,
@@ -438,14 +453,23 @@ export async function invokeSurplusChatAttempt(input: SurplusChatAttemptInput): 
     };
   } catch (error) {
     const cancelled = input.config.signal?.aborted === true;
-    const disposition = classifySurplusFailedAttempt({
-      error,
-      cancelled,
-      responseStatus,
-      receipt,
-      deliveredOutput: input.hasDeliveredOutput(),
-      ...(terminalUsage === undefined ? {} : { terminalUsage }),
-    });
+    const guardRejectedBeforeInvocation = authorizationGuardEntered && !invocationEntered;
+    const disposition = guardRejectedBeforeInvocation
+      ? {
+          outcome: cancelled ? "cancelled" as const : "failed" as const,
+          costState: "actual" as const,
+          actualCostUsd: 0,
+          failureCode: cancelled ? "cancelled" as const : "authorization_changed" as const,
+          directFallback: false,
+        }
+      : classifySurplusFailedAttempt({
+          error,
+          cancelled,
+          responseStatus,
+          receipt,
+          deliveredOutput: input.hasDeliveredOutput(),
+          ...(terminalUsage === undefined ? {} : { terminalUsage }),
+        });
     try {
       await settleSurplusAttemptWithRetry({
         attemptId,
@@ -465,14 +489,20 @@ export async function invokeSurplusChatAttempt(input: SurplusChatAttemptInput): 
     } catch {
       warn("[nautilo/surplus] attempt settlement failed", { failureCode: "attempt_settlement_failed" });
     }
+    if (guardRejectedBeforeInvocation) throw error;
     if (cancelled) throw input.config.signal?.reason ?? error;
     if (disposition.directFallback
       && (input.directFallbackPolicy !== "pre_service_only" || disposition.outcome === "failed")) {
+      const modelUnavailableBeforeService = input.directFallbackPolicy === "pre_service_only"
+        && disposition.outcome === "failed"
+        && receipt?.marketplaceAttempts === 0
+        && (responseStatus === 404 || responseStatus === 503);
       return {
         kind: "direct_fallback",
         ...(input.providerMode !== "any" && disposition.failureCode === "no_sellers_for_model"
           ? { retryUnpinned: true as const }
           : {}),
+        ...(modelUnavailableBeforeService ? { modelUnavailableBeforeService: true as const } : {}),
       };
     }
     throw new SurplusOutcomeUnknownError();

@@ -6,7 +6,7 @@ import {
   type BaseMessage,
 } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
-import { fromRuntimeConfig } from "@nautilo/config";
+import { candidatesForModelRole, fromRuntimeConfig } from "@nautilo/config";
 import { getCachedServerModelConfigRow } from "@nautilo/db";
 import { warn } from "@nautilo/logger";
 import { createUniversalModel } from "../providers/universal";
@@ -18,12 +18,18 @@ import { runWithUsageContext } from "../usage/usage-context";
 import { runPersonalLlmAttempt } from "../usage/personal-llm-attempt";
 import { normalizeSoulFileInput, type SoulFileInput } from "./types";
 import { resolveModelRole } from "../config/model-role-resolution";
-import { modelHasRunnableCredentials } from "../chat/model-runtime-credentials";
+import {
+  captureModelRunnableCredentialSnapshot,
+  isModelRunnableCredentialSnapshotCurrent,
+  modelHasRunnableCredentials,
+  type ModelRunnableCredentialSnapshot,
+} from "../chat/model-runtime-credentials";
 import {
   invokeSurplusChatAttempt,
   type SurplusChatAttemptResult,
 } from "../providers/surplus-attempt";
 import {
+  canBroadenSurplusModelRoute,
   resolveSurplusChatServingAvailability,
   SurplusDirectFallbackUnavailableError,
   type QualifiedSurplusChatRoute,
@@ -391,12 +397,46 @@ async function resolveSoulInvocation(input: SoulFileInput): Promise<ResolvedSoul
   };
 }
 
+async function resolveSurplusSoulCandidate(
+  primary: ResolvedSoulInvocation,
+  candidateId: string,
+): Promise<ResolvedSoulInvocation | null> {
+  try {
+    const modelId = resolveModelRole("systemTasks", {
+      configuredId: candidateId,
+      serverSurplus: {
+        policyEnabled: primary.surplusPolicyEnabled,
+        keyConfigured: primary.surplusKey !== null,
+      },
+    });
+    const surplusRoute = currentSoulSurplusRoute(
+      modelId,
+      primary.surplusPolicyEnabled,
+      primary.surplusKey,
+    );
+    if (modelId !== candidateId || surplusRoute === null) return null;
+    return {
+      modelId,
+      messages: primary.messages,
+      maxOutputTokens: await resolveCompletionBudget(modelId, [...primary.messages]),
+      surplusPolicyEnabled: primary.surplusPolicyEnabled,
+      surplusKey: primary.surplusKey,
+      surplusRoute,
+    };
+  } catch {
+    // A candidate that no longer satisfies the signed role, route, capability,
+    // or context policy is not part of this finite marketplace walk.
+    return null;
+  }
+}
+
 async function runDirectSoulAttempt<T>(
   modelId: string,
   signal: AbortSignal,
   authorization: SoulGenerationAuthorization,
   invoke: () => Promise<T>,
   hasObservedProviderWork?: () => boolean,
+  assertStillAuthorized?: () => void | Promise<void>,
 ): Promise<T> {
   const context = soulUsageContext(modelId, authorization);
   return runWithUsageContext(context, () => hasStubModelForTests()
@@ -406,8 +446,43 @@ async function runDirectSoulAttempt<T>(
         endpoint: "/v1/chat/completions",
         signal,
         ...(hasObservedProviderWork ? { hasObservedProviderWork } : {}),
+        ...(assertStillAuthorized ? { assertStillAuthorized } : {}),
         invoke,
       }));
+}
+
+function captureDirectSoulCredentialSnapshot(modelId: string): ModelRunnableCredentialSnapshot | null {
+  if (hasStubModelForTests()) return null;
+  const snapshot = captureModelRunnableCredentialSnapshot(modelId, process.env);
+  if (!snapshot) throw new SurplusDirectFallbackUnavailableError();
+  return snapshot;
+}
+
+function assertDirectSoulCredentialSnapshotCurrent(
+  modelId: string,
+  snapshot: ModelRunnableCredentialSnapshot | null,
+): void {
+  if (hasStubModelForTests()) return;
+  if (!snapshot || snapshot.modelId !== modelId
+    || !isModelRunnableCredentialSnapshotCurrent(snapshot, process.env)) {
+    throw new Error("Soul generation direct credential changed before dispatch.");
+  }
+}
+
+async function assertSoulAttemptStillAuthorized(
+  invocation: ResolvedSoulInvocation,
+  signal: AbortSignal,
+  authorization: SoulGenerationAuthorization,
+  directCredentialSnapshot?: ModelRunnableCredentialSnapshot | null,
+): Promise<void> {
+  signal.throwIfAborted();
+  await assertSoulServerFunding(authorization);
+  signal.throwIfAborted();
+  assertSoulInvocationSnapshotCurrent(invocation);
+  if (directCredentialSnapshot !== undefined) {
+    assertDirectSoulCredentialSnapshotCurrent(invocation.modelId, directCredentialSnapshot);
+  }
+  signal.throwIfAborted();
 }
 
 async function invokeDirectSoul(
@@ -417,15 +492,20 @@ async function invokeDirectSoul(
 ): Promise<AIMessage> {
   await assertSoulServerFunding(authorization);
   assertSoulInvocationSnapshotCurrent(invocation);
+  const credentialBeforeConstruction = captureDirectSoulCredentialSnapshot(invocation.modelId);
   const model = await createUniversalModel(invocation.modelId, {
     maxRetries: 0,
     maxTokens: invocation.maxOutputTokens,
   });
+  assertDirectSoulCredentialSnapshotCurrent(invocation.modelId, credentialBeforeConstruction);
+  const credentialSnapshot = captureDirectSoulCredentialSnapshot(invocation.modelId);
   return await runDirectSoulAttempt(
     invocation.modelId,
     signal,
     authorization,
     async () => (await model.invoke([...invocation.messages], { signal })) as AIMessage,
+    undefined,
+    () => assertSoulAttemptStillAuthorized(invocation, signal, authorization, credentialSnapshot),
   );
 }
 
@@ -437,6 +517,7 @@ async function invokeSurplusSoul(
   signal: AbortSignal,
   authorization: SoulGenerationAuthorization,
   hasDeliveredOutput: () => boolean,
+  providerMode?: "any",
   invokeModel?: (
     model: ChatModel<BaseMessage, AIMessage>,
     messages: BaseMessage[],
@@ -447,6 +528,7 @@ async function invokeSurplusSoul(
   assertSoulInvocationSnapshotCurrent(invocation);
   const context = soulUsageContext(invocation.modelId, authorization, "surplus");
   return await runWithUsageContext(context, () => invokeSurplusChatAttempt({
+    ...(providerMode === undefined ? {} : { providerMode }),
     route: invocation.surplusRoute,
     apiKey: invocation.surplusKey,
     messages: [...invocation.messages],
@@ -459,6 +541,7 @@ async function invokeSurplusSoul(
       providerRoute: "surplus",
     },
     hasDeliveredOutput,
+    assertStillAuthorized: () => assertSoulAttemptStillAuthorized(invocation, signal, authorization),
     directFallbackPolicy: "pre_service_only",
     validateResponse: (response) => {
       if (!looksLikeSoulFile(extractMessageText(response.content).trim())) {
@@ -488,6 +571,99 @@ function assertDirectSoulCredential(modelId: string): void {
   if (!modelHasRunnableCredentials(modelId, process.env)) {
     throw new SurplusDirectFallbackUnavailableError();
   }
+}
+
+interface SoulAttemptExecution {
+  readonly hasDeliveredOutput: () => boolean;
+  readonly hasObservedProviderWork: () => boolean;
+  readonly invokeDirect: (invocation: ResolvedSoulInvocation) => Promise<AIMessage>;
+  readonly invokeSurplusModel?: (
+    model: ChatModel<BaseMessage, AIMessage>,
+    messages: BaseMessage[],
+    config: RunnableConfig,
+  ) => Promise<AIMessage>;
+  readonly onModelSelected?: (modelId: string) => void;
+}
+
+async function invokeSoulWithSupplyFallback(
+  primary: ResolvedSoulInvocation,
+  signal: AbortSignal,
+  authorization: SoulGenerationAuthorization,
+  execution: SoulAttemptExecution,
+): Promise<AIMessage> {
+  execution.onModelSelected?.(primary.modelId);
+  if (!hasSurplusRoute(primary)) return execution.invokeDirect(primary);
+
+  const crossModelAllowed = canBroadenSurplusModelRoute(primary.modelId);
+  const candidateIds = crossModelAllowed
+    ? [...new Set(candidatesForModelRole("systemTasks"))]
+        .filter((candidateId) => candidateId !== primary.modelId)
+    : [];
+  const invocations: Array<ResolvedSoulInvocation | string> = [primary, ...candidateIds];
+
+  for (const candidate of invocations) {
+    const invocation = typeof candidate === "string"
+      ? await resolveSurplusSoulCandidate(primary, candidate)
+      : candidate;
+    if (!invocation || !hasSurplusRoute(invocation)) continue;
+    execution.onModelSelected?.(invocation.modelId);
+    signal.throwIfAborted();
+
+    const pinned = await invokeSurplusSoul(
+      invocation,
+      signal,
+      authorization,
+      execution.hasDeliveredOutput,
+      undefined,
+      execution.invokeSurplusModel,
+    );
+    if (pinned.kind === "served") return pinned.response;
+    signal.throwIfAborted();
+    if (execution.hasDeliveredOutput() || execution.hasObservedProviderWork()) {
+      throw new SurplusOutcomeUnknownError();
+    }
+
+    if (!pinned.modelUnavailableBeforeService) {
+      // Preserve the existing admitted same-model direct rail. This result
+      // never authorizes the new unpinned or cross-model marketplace walk.
+      assertDirectSoulCredential(invocation.modelId);
+      return execution.invokeDirect(invocation);
+    }
+
+    // Preserve the established same-model direct fallback whenever its
+    // server credential exists. The marketplace walk fills only the gap where
+    // that direct rail is unavailable.
+    if (modelHasRunnableCredentials(invocation.modelId, process.env)) {
+      return execution.invokeDirect(invocation);
+    }
+    if (!crossModelAllowed) throw new SurplusDirectFallbackUnavailableError();
+
+    if (canBroadenSurplusModelRoute(invocation.modelId)) {
+      signal.throwIfAborted();
+      const unpinned = await invokeSurplusSoul(
+        invocation,
+        signal,
+        authorization,
+        execution.hasDeliveredOutput,
+        "any",
+        execution.invokeSurplusModel,
+      );
+      if (unpinned.kind === "served") return unpinned.response;
+      signal.throwIfAborted();
+      if (execution.hasDeliveredOutput() || execution.hasObservedProviderWork()) {
+        throw new SurplusOutcomeUnknownError();
+      }
+      if (!unpinned.modelUnavailableBeforeService) {
+        assertDirectSoulCredential(invocation.modelId);
+        return execution.invokeDirect(invocation);
+      }
+      if (modelHasRunnableCredentials(invocation.modelId, process.env)) {
+        return execution.invokeDirect(invocation);
+      }
+    }
+  }
+
+  throw new SurplusDirectFallbackUnavailableError();
 }
 
 /**
@@ -663,13 +839,17 @@ async function invokeDirectSoulStream(
   authorization: SoulGenerationAuthorization,
   relay: SoulStreamRelay,
   fallback: string,
+  observeAttemptProviderWork: () => void,
 ): Promise<AIMessage> {
   await assertSoulServerFunding(authorization);
   assertSoulInvocationSnapshotCurrent(invocation);
+  const credentialBeforeConstruction = captureDirectSoulCredentialSnapshot(invocation.modelId);
   const model = await createUniversalModel(invocation.modelId, {
     maxRetries: 0,
     maxTokens: invocation.maxOutputTokens,
   });
+  assertDirectSoulCredentialSnapshotCurrent(invocation.modelId, credentialBeforeConstruction);
+  const credentialSnapshot = captureDirectSoulCredentialSnapshot(invocation.modelId);
   let providerWorkObserved = false;
   if (!model.stream) {
     try {
@@ -678,6 +858,8 @@ async function invokeDirectSoulStream(
         signal,
         authorization,
         async () => (await model.invoke([...invocation.messages], { signal })) as AIMessage,
+        undefined,
+        () => assertSoulAttemptStillAuthorized(invocation, signal, authorization, credentialSnapshot),
       );
       const content = extractMessageText(response.content).trim();
       if (looksLikeSoulFile(content)) return response;
@@ -702,9 +884,11 @@ async function invokeDirectSoulStream(
       relay,
       () => {
         providerWorkObserved = true;
+        observeAttemptProviderWork();
       },
     ),
     () => providerWorkObserved,
+    () => assertSoulAttemptStillAuthorized(invocation, signal, authorization, credentialSnapshot),
   );
 }
 
@@ -721,23 +905,23 @@ export async function generateSoulFile(
   try {
     const invocation = await resolveSoulInvocation(normalized);
     modelId = invocation.modelId;
-    let response: AIMessage;
-    if (hasSurplusRoute(invocation)) {
-      const surplus = await invokeSurplusSoul(
-        invocation,
-        abortContext.signal,
-        authorization,
-        () => false,
-      );
-      if (surplus.kind === "served") {
-        response = surplus.response;
-      } else {
-        assertDirectSoulCredential(invocation.modelId);
-        response = await invokeDirectSoul(invocation, abortContext.signal, authorization);
-      }
-    } else {
-      response = await invokeDirectSoul(invocation, abortContext.signal, authorization);
-    }
+    const response = await invokeSoulWithSupplyFallback(
+      invocation,
+      abortContext.signal,
+      authorization,
+      {
+        hasDeliveredOutput: () => false,
+        hasObservedProviderWork: () => false,
+        invokeDirect: (selected) => invokeDirectSoul(
+          selected,
+          abortContext.signal,
+          authorization,
+        ),
+        onModelSelected: (selectedModelId) => {
+          modelId = selectedModelId;
+        },
+      },
+    );
 
     const content = extractMessageText(response.content).trim();
 
@@ -775,29 +959,41 @@ export async function* generateSoulFileStream(
     modelId = invocation.modelId;
     let content = "";
     let deliveredOutput = false;
+    let providerWorkObserved = false;
 
-    const streamAttempt = hasSurplusRoute(invocation)
-      ? relaySoulAttempt((relay) => invokeSurplusSoul(
-          invocation,
-          abortContext.signal,
-          authorization,
-          () => deliveredOutput,
-          (model, messages, config) => consumeSoulModelStream(model, messages, config, relay),
-        ))
-      : relaySoulAttempt((relay) => invokeDirectSoulStream(
-          invocation,
+    const streamAttempt = relaySoulAttempt((relay) => invokeSoulWithSupplyFallback(
+      invocation,
+      abortContext.signal,
+      authorization,
+      {
+        hasDeliveredOutput: () => deliveredOutput,
+        hasObservedProviderWork: () => providerWorkObserved,
+        invokeDirect: (selected) => invokeDirectSoulStream(
+          selected,
           abortContext.signal,
           authorization,
           relay,
           fallback,
-        ));
+          () => {
+            providerWorkObserved = true;
+          },
+        ),
+        invokeSurplusModel: (model, messages, config) =>
+          consumeSoulModelStream(model, messages, config, relay, () => {
+            providerWorkObserved = true;
+          }),
+        onModelSelected: (selectedModelId) => {
+          modelId = selectedModelId;
+        },
+      },
+    ));
     activeAttempt = streamAttempt;
 
-    let firstResult: AIMessage | SurplusChatAttemptResult;
+    let response: AIMessage;
     for (;;) {
       const next = await streamAttempt.next();
       if (next.done) {
-        firstResult = next.value;
+        response = next.value;
         activeAttempt = undefined;
         break;
       }
@@ -806,40 +1002,7 @@ export async function* generateSoulFileStream(
       yield { type: "delta", text: next.value };
     }
 
-    if (hasSurplusRoute(invocation)) {
-      const surplus = firstResult as SurplusChatAttemptResult;
-      if (surplus.kind === "served" && !content) {
-        content = extractMessageText(surplus.response.content);
-      } else if (surplus.kind === "direct_fallback") {
-        if (deliveredOutput) throw new SurplusOutcomeUnknownError();
-        assertDirectSoulCredential(invocation.modelId);
-        const directAttempt = relaySoulAttempt((relay) => invokeDirectSoulStream(
-          invocation,
-          abortContext.signal,
-          authorization,
-          relay,
-          fallback,
-        ));
-        activeAttempt = directAttempt;
-        let directResponse: AIMessage | undefined;
-        for (;;) {
-          const next = await directAttempt.next();
-          if (next.done) {
-            directResponse = next.value;
-            activeAttempt = undefined;
-            break;
-          }
-          deliveredOutput = true;
-          content += next.value;
-          yield { type: "delta", text: next.value };
-        }
-        if (!content && directResponse) {
-          content = extractMessageText(directResponse.content);
-        }
-      }
-    } else if (!content) {
-      content = extractMessageText((firstResult as AIMessage).content);
-    }
+    if (!content) content = extractMessageText(response.content);
 
     const soulFile = content.trim();
     if (looksLikeSoulFile(soulFile)) {

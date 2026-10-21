@@ -1,7 +1,8 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { AIMessage, AIMessageChunk } from "@langchain/core/messages";
 import { setLogOutput } from "@nautilo/logger";
-import { setConfigOverrides } from "@nautilo/config";
+import { candidatesForModelRole, setConfigOverrides } from "@nautilo/config";
+import type { ModelCatalog } from "@nautilo/types";
 import * as db from "@nautilo/db";
 import { generateSoulFileFallback, normalizeSoulFileInput } from "../../src/index";
 import * as soulModule from "../../src/soul/generate-soul-file";
@@ -12,6 +13,12 @@ import { ServerProviderCredentialsDeniedError } from "@nautilo/trust";
 import { getUsageContext } from "../../src/usage/usage-context";
 import * as surplusAttempt from "../../src/providers/surplus-attempt";
 import * as personalAttempt from "../../src/usage/personal-llm-attempt";
+import {
+  configureRuntimeModelCatalog,
+  getActiveModelCatalogSync,
+  hydrateRuntimeModelCatalog,
+  resetRuntimeModelCatalog,
+} from "../../src/config/model-catalog/runtime-catalog";
 
 const SOUL_AUTHORIZATION = {
   humanUserId: "user-1",
@@ -20,8 +27,46 @@ const SOUL_AUTHORIZATION = {
 
 let originalOpenRouterKey: string | undefined;
 let originalSurplusKey: string | undefined;
+const DIRECT_PROVIDER_ENV_KEYS = [
+  "OPENAI_API_KEY",
+  "OPENROUTER_API_KEY",
+  "ANTHROPIC_API_KEY",
+  "GOOGLE_API_KEY",
+  "VENICE_API_KEY",
+  "TYPESAFE_API_KEY",
+] as const;
+let originalDirectProviderKeys: Partial<Record<(typeof DIRECT_PROVIDER_ENV_KEYS)[number], string>>;
+
+function useSurplusOnlyCredentials(): void {
+  for (const key of DIRECT_PROVIDER_ENV_KEYS) delete process.env[key];
+  process.env["SURPLUS_API_KEY"] = "synthetic-surplus-key";
+}
+
+async function installSoulTestCatalog(catalog: ModelCatalog): Promise<void> {
+  configureRuntimeModelCatalog({
+    loader: {
+      get: async () => ({
+        catalog,
+        source: "remote-fresh",
+        stale: false,
+        fetchedAt: "2026-10-21T00:00:00.000Z",
+        originUrl: "https://catalog.invalid/soul-recovery.json",
+        reason: "",
+        catalogVersion: catalog.catalogVersion,
+      }),
+      refresh: async () => {},
+      clearCache: () => {},
+    },
+  });
+  await hydrateRuntimeModelCatalog();
+}
 
 beforeEach(() => {
+  originalDirectProviderKeys = {};
+  for (const key of DIRECT_PROVIDER_ENV_KEYS) {
+    const value = process.env[key];
+    if (value !== undefined) originalDirectProviderKeys[key] = value;
+  }
   originalOpenRouterKey = process.env["OPENROUTER_API_KEY"];
   originalSurplusKey = process.env["SURPLUS_API_KEY"];
   process.env["OPENROUTER_API_KEY"] = "test-openrouter-key";
@@ -29,6 +74,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  resetRuntimeModelCatalog();
   setConfigOverrides({});
   if (process.env["NAUTILO_TEST_MODE"] === "stub") {
     __setStubModelForTests(null);
@@ -36,6 +82,11 @@ afterEach(() => {
   delete process.env["NAUTILO_TEST_MODE"];
   if (originalOpenRouterKey === undefined) delete process.env["OPENROUTER_API_KEY"];
   else process.env["OPENROUTER_API_KEY"] = originalOpenRouterKey;
+  for (const key of DIRECT_PROVIDER_ENV_KEYS) {
+    const value = originalDirectProviderKeys[key];
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
   if (originalSurplusKey === undefined) delete process.env["SURPLUS_API_KEY"];
   else process.env["SURPLUS_API_KEY"] = originalSurplusKey;
   setLogOutput("stderr");
@@ -430,6 +481,7 @@ describe("streaming soul generation safety", () => {
 
 describe("Surplus-funded soul generation", () => {
   const modelId = "openrouter:openai/gpt-5.6-sol";
+  const broadenableModelId = "openrouter:minimax/minimax-m3";
   const generatedSoul = [
     "## Essence",
     "A precise and distinctive generated identity with enough detail to be useful.",
@@ -443,6 +495,350 @@ describe("Surplus-funded soul generation", () => {
       preferSurplus: enabled,
     } as NonNullable<ReturnType<typeof db.getCachedServerModelConfigRow>>);
   }
+
+  test("recovers a Surplus-only Soul on the same model without a provider pin", async () => {
+    useSurplusOnlyCredentials();
+    setConfigOverrides({ nautilo_soul_generator_model: broadenableModelId });
+    const configSpy = preferSurplus(true);
+    const directSpy = spyOn(universalProvider, "createUniversalModel");
+    const wires: Array<{ modelId: string; providerMode: "any" | undefined }> = [];
+    const attemptSpy = spyOn(surplusAttempt, "invokeSurplusChatAttempt")
+      .mockImplementation(async (input) => {
+        wires.push({
+          modelId: input.route.catalogModelId,
+          providerMode: input.providerMode,
+        });
+        if (wires.length === 1) {
+          return {
+            kind: "direct_fallback",
+            retryUnpinned: true,
+            modelUnavailableBeforeService: true,
+          };
+        }
+        return {
+          kind: "served",
+          response: new AIMessage({
+            content: generatedSoul,
+            response_metadata: { finish_reason: "stop" },
+          }),
+        };
+      });
+
+    try {
+      expect(await soulModule.generateSoulFile(
+        { name: "Vex" }, undefined, SOUL_AUTHORIZATION,
+      )).toBe(generatedSoul);
+      expect(wires).toEqual([
+        { modelId: broadenableModelId, providerMode: undefined },
+        { modelId: broadenableModelId, providerMode: "any" },
+      ]);
+      expect(directSpy).not.toHaveBeenCalled();
+    } finally {
+      attemptSpy.mockRestore();
+      directSpy.mockRestore();
+      configSpy.mockRestore();
+    }
+  });
+
+  test("streams from the next eligible Soul model after pinned and unpinned supply refusals", async () => {
+    useSurplusOnlyCredentials();
+    setConfigOverrides({ nautilo_soul_generator_model: broadenableModelId });
+    const configSpy = preferSurplus(true);
+    const directSpy = spyOn(universalProvider, "createUniversalModel");
+    const wires: Array<{ modelId: string; providerMode: "any" | undefined }> = [];
+    const first = "## Essence\nA precise and distinctive generated identity ";
+    const second = "with enough detail to be useful.\n\n## Tone\nWarm and candid.";
+    const attemptSpy = spyOn(surplusAttempt, "invokeSurplusChatAttempt")
+      .mockImplementation(async (input) => {
+        wires.push({ modelId: input.route.catalogModelId, providerMode: input.providerMode });
+        if (wires.length <= 2) {
+          return {
+            kind: "direct_fallback",
+            ...(input.providerMode === undefined ? { retryUnpinned: true as const } : {}),
+            modelUnavailableBeforeService: true,
+          };
+        }
+        const response = await input.invokeModel({
+          async invoke() {
+            throw new Error("streaming path must not call invoke");
+          },
+          async stream() {
+            return {
+              async *[Symbol.asyncIterator]() {
+                yield new AIMessageChunk({ content: first });
+                yield new AIMessageChunk({
+                  content: second,
+                  response_metadata: { finish_reason: "stop" },
+                });
+              },
+            };
+          },
+        } as never, input.messages, input.config);
+        return { kind: "served", response };
+      });
+
+    try {
+      const events = [];
+      for await (const event of soulModule.generateSoulFileStream(
+        { name: "Vex" }, undefined, SOUL_AUTHORIZATION,
+      )) events.push(event);
+      expect(wires.slice(0, 2)).toEqual([
+        { modelId: broadenableModelId, providerMode: undefined },
+        { modelId: broadenableModelId, providerMode: "any" },
+      ]);
+      expect(wires[2]).toEqual({
+        modelId: "venice:minimax-m3-preview",
+        providerMode: undefined,
+      });
+      expect(events).toEqual([
+        { type: "started" },
+        { type: "delta", text: first },
+        { type: "delta", text: second },
+        { type: "completed", soulFile: first + second },
+      ]);
+      expect(directSpy).not.toHaveBeenCalled();
+    } finally {
+      attemptSpy.mockRestore();
+      directSpy.mockRestore();
+      configSpy.mockRestore();
+    }
+  });
+
+  test("exhausts the finite deduplicated Soul candidate walk without using direct credentials", async () => {
+    useSurplusOnlyCredentials();
+    setConfigOverrides({ nautilo_soul_generator_model: broadenableModelId });
+    const configSpy = preferSurplus(true);
+    const directSpy = spyOn(universalProvider, "createUniversalModel");
+    const wires: string[] = [];
+    const attemptSpy = spyOn(surplusAttempt, "invokeSurplusChatAttempt")
+      .mockImplementation(async (input) => {
+        wires.push(`${input.route.catalogModelId}|${input.providerMode ?? "pinned"}`);
+        return {
+          kind: "direct_fallback",
+          ...(input.providerMode === undefined ? { retryUnpinned: true as const } : {}),
+          modelUnavailableBeforeService: true,
+        };
+      });
+    const stderr = spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const result = await soulModule.generateSoulFile(
+        { name: "Vex" }, undefined, SOUL_AUTHORIZATION,
+      );
+      expect(result).toContain("# Vex — Soul File");
+      expect(wires.length).toBeGreaterThan(2);
+      expect(new Set(wires).size).toBe(wires.length);
+      const finiteModelBound = new Set([
+        broadenableModelId,
+        ...candidatesForModelRole("systemTasks"),
+      ]).size;
+      expect(wires.length).toBeLessThanOrEqual(finiteModelBound * 2);
+      expect(directSpy).not.toHaveBeenCalled();
+    } finally {
+      stderr.mockRestore();
+      attemptSpy.mockRestore();
+      directSpy.mockRestore();
+      configSpy.mockRestore();
+    }
+  });
+
+  test("skips disabled and unsupported signed-catalog Soul candidates", async () => {
+    const current = getActiveModelCatalogSync().catalog;
+    const primary = current.entries.find((entry) => entry.id === broadenableModelId);
+    const disabledSource = current.entries.find((entry) => entry.id === "venice:minimax-m3-preview");
+    const unsupportedSource = current.entries.find((entry) => entry.id === "openrouter:openai/gpt-5.6-luna");
+    const later = current.entries.find((entry) => entry.id === "venice:openai-gpt-56-luna");
+    if (!primary || !disabledSource || !unsupportedSource || !later) {
+      throw new Error("Soul candidate catalog fixtures are missing");
+    }
+    const disabled = { ...disabledSource, defaultEnabled: false };
+    const unsupported = {
+      ...unsupportedSource,
+      provider: "typesafe",
+      routing: "typesafe" as const,
+    };
+    await installSoulTestCatalog({
+      ...current,
+      catalogVersion: "2026.10.21.soul-recovery",
+      entries: [primary, disabled, unsupported, later],
+    } as ModelCatalog);
+    useSurplusOnlyCredentials();
+    setConfigOverrides({ nautilo_soul_generator_model: broadenableModelId });
+    const configSpy = preferSurplus(true);
+    const wires: Array<{ modelId: string; providerMode: "any" | undefined }> = [];
+    const attemptSpy = spyOn(surplusAttempt, "invokeSurplusChatAttempt")
+      .mockImplementation(async (input) => {
+        wires.push({ modelId: input.route.catalogModelId, providerMode: input.providerMode });
+        if (input.route.catalogModelId === later.id) {
+          return { kind: "served", response: new AIMessage({ content: generatedSoul }) };
+        }
+        return {
+          kind: "direct_fallback",
+          ...(input.providerMode === undefined ? { retryUnpinned: true as const } : {}),
+          modelUnavailableBeforeService: true,
+        };
+      });
+
+    try {
+      expect(await soulModule.generateSoulFile(
+        { name: "Vex" }, undefined, SOUL_AUTHORIZATION,
+      )).toBe(generatedSoul);
+      expect(wires).toEqual([
+        { modelId: broadenableModelId, providerMode: undefined },
+        { modelId: broadenableModelId, providerMode: "any" },
+        { modelId: later.id, providerMode: undefined },
+      ]);
+    } finally {
+      attemptSpy.mockRestore();
+      configSpy.mockRestore();
+    }
+  });
+
+  test.each([
+    ["auth refusal", { kind: "direct_fallback" } as const],
+    ["payment refusal", { kind: "direct_fallback" } as const],
+    ["attempt-ledger refusal", { kind: "direct_fallback" } as const],
+    ["unknown outcome", new Error("synthetic unknown marketplace outcome")],
+  ])("does not walk to another Soul model after %s", async (_label, outcome) => {
+    useSurplusOnlyCredentials();
+    setConfigOverrides({ nautilo_soul_generator_model: broadenableModelId });
+    const configSpy = preferSurplus(true);
+    const directSpy = spyOn(universalProvider, "createUniversalModel");
+    const attemptSpy = spyOn(surplusAttempt, "invokeSurplusChatAttempt")
+      .mockImplementation(async () => {
+        if (outcome instanceof Error) throw outcome;
+        return outcome;
+      });
+    const stderr = spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      expect(await soulModule.generateSoulFile(
+        { name: "Vex" }, undefined, SOUL_AUTHORIZATION,
+      )).toContain("# Vex — Soul File");
+      expect(attemptSpy).toHaveBeenCalledTimes(1);
+      expect(directSpy).not.toHaveBeenCalled();
+    } finally {
+      stderr.mockRestore();
+      attemptSpy.mockRestore();
+      directSpy.mockRestore();
+      configSpy.mockRestore();
+    }
+  });
+
+  test("does not walk after malformed served output", async () => {
+    useSurplusOnlyCredentials();
+    setConfigOverrides({ nautilo_soul_generator_model: broadenableModelId });
+    const configSpy = preferSurplus(true);
+    const attemptSpy = spyOn(surplusAttempt, "invokeSurplusChatAttempt")
+      .mockResolvedValue({
+        kind: "served",
+        response: new AIMessage({ content: "not a soul file" }),
+      });
+    const stderr = spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      expect(await soulModule.generateSoulFile(
+        { name: "Vex" }, undefined, SOUL_AUTHORIZATION,
+      )).toContain("# Vex — Soul File");
+      expect(attemptSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      stderr.mockRestore();
+      attemptSpy.mockRestore();
+      configSpy.mockRestore();
+    }
+  });
+
+  test("does not walk after a stream observed metadata without visible text", async () => {
+    useSurplusOnlyCredentials();
+    setConfigOverrides({ nautilo_soul_generator_model: broadenableModelId });
+    const configSpy = preferSurplus(true);
+    const attemptSpy = spyOn(surplusAttempt, "invokeSurplusChatAttempt")
+      .mockImplementation(async (input) => {
+        await input.invokeModel({
+          async invoke() {
+            throw new Error("streaming path must not call invoke");
+          },
+          async stream() {
+            return {
+              async *[Symbol.asyncIterator]() {
+                yield new AIMessageChunk({
+                  content: "",
+                  response_metadata: { usage: { prompt_tokens: 7 } },
+                });
+              },
+            };
+          },
+        } as never, input.messages, input.config);
+        return {
+          kind: "direct_fallback",
+          retryUnpinned: true,
+          modelUnavailableBeforeService: true,
+        };
+      });
+    const stderr = spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const events = [];
+      for await (const event of soulModule.generateSoulFileStream(
+        { name: "Vex" }, undefined, SOUL_AUTHORIZATION,
+      )) events.push(event);
+      expect(events).toHaveLength(2);
+      expect(events[1]).toMatchObject({
+        type: "error",
+        error: soulModule.SOUL_GENERATION_FAILED_MESSAGE,
+      });
+      expect(attemptSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      stderr.mockRestore();
+      attemptSpy.mockRestore();
+      configSpy.mockRestore();
+    }
+  });
+
+  test.each(["policy", "key", "rbac"] as const)(
+    "stops before the next Soul wire when %s authority drifts between supply retries",
+    async (drift) => {
+      useSurplusOnlyCredentials();
+      setConfigOverrides({ nautilo_soul_generator_model: broadenableModelId });
+      let policyEnabled = true;
+      let deny = false;
+      const configSpy = spyOn(db, "getCachedServerModelConfigRow").mockImplementation(() => ({
+        preferSurplus: policyEnabled,
+      } as NonNullable<ReturnType<typeof db.getCachedServerModelConfigRow>>));
+      const attemptSpy = spyOn(surplusAttempt, "invokeSurplusChatAttempt")
+        .mockImplementation(async () => {
+          if (drift === "policy") policyEnabled = false;
+          if (drift === "key") process.env["SURPLUS_API_KEY"] = "replacement-surplus-key";
+          if (drift === "rbac") deny = true;
+          return {
+            kind: "direct_fallback",
+            retryUnpinned: true,
+            modelUnavailableBeforeService: true,
+          };
+        });
+      const authorization = {
+        humanUserId: "user-1",
+        assertServerProviderCredentials: async (humanUserId: string, origin?: string) => {
+          if (deny) throw new ServerProviderCredentialsDeniedError(humanUserId, origin);
+        },
+      };
+      const stderr = spyOn(console, "error").mockImplementation(() => {});
+
+      try {
+        const result = soulModule.generateSoulFile({ name: "Vex" }, undefined, authorization);
+        if (drift === "rbac") {
+          await Promise.resolve(expect(result).rejects.toBeInstanceOf(ServerProviderCredentialsDeniedError));
+        } else {
+          expect(await result).toContain("# Vex — Soul File");
+        }
+        expect(attemptSpy).toHaveBeenCalledTimes(1);
+      } finally {
+        stderr.mockRestore();
+        attemptSpy.mockRestore();
+        configSpy.mockRestore();
+      }
+    },
+  );
 
   test("uses the selected Surplus-only system-task model in non-streaming mode", async () => {
     delete process.env["OPENROUTER_API_KEY"];
@@ -635,6 +1031,41 @@ describe("Surplus-funded soul generation", () => {
       });
     } finally {
       attemptSpy.mockRestore();
+      configSpy.mockRestore();
+    }
+  });
+
+  test("does not dispatch direct Soul after its captured credential changes during model construction", async () => {
+    process.env["OPENROUTER_API_KEY"] = "captured-openrouter-key";
+    delete process.env["SURPLUS_API_KEY"];
+    setConfigOverrides({ nautilo_soul_generator_model: modelId });
+    const configSpy = preferSurplus(false);
+    let providerInvokes = 0;
+    const modelSpy = spyOn(universalProvider, "createUniversalModel")
+      .mockImplementation(async () => {
+        process.env["OPENROUTER_API_KEY"] = "replacement-openrouter-key";
+        return {
+          async invoke() {
+            providerInvokes++;
+            return new AIMessage({ content: generatedSoul });
+          },
+        };
+      });
+    const ownerSpy = spyOn(personalAttempt, "runPersonalLlmAttempt");
+    const stderr = spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const result = await soulModule.generateSoulFile(
+        { name: "Vex" }, undefined, SOUL_AUTHORIZATION,
+      );
+      expect(result).toContain("# Vex — Soul File");
+      expect(modelSpy).toHaveBeenCalledTimes(1);
+      expect(ownerSpy).not.toHaveBeenCalled();
+      expect(providerInvokes).toBe(0);
+    } finally {
+      stderr.mockRestore();
+      ownerSpy.mockRestore();
+      modelSpy.mockRestore();
       configSpy.mockRestore();
     }
   });

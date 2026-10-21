@@ -620,7 +620,9 @@ describe("strict service fallback policy", () => {
         throw Object.assign(new Error("Synthetic no-seller refusal"), { code: "no_sellers_for_model" });
       },
     });
-    expect(result).toEqual({ kind: "direct_fallback", retryUnpinned: true });
+    expect(result).toEqual({
+      kind: "direct_fallback", retryUnpinned: true, modelUnavailableBeforeService: true,
+    });
     expect(settleAttempt.mock.calls[0]?.[0]).toMatchObject({
       outcome: "failed", costState: "pending", failureCode: "no_sellers_for_model",
     });
