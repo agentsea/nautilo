@@ -3,7 +3,7 @@
 # Reproducible Nautilo derivative of OOMOL OpenConnector. The source
 # revision, upstream version, patch digest, and base-image digest are recorded
 # together in manifest.json and enforced by provenance.test.ts.
-ARG NODE_IMAGE=docker.io/library/node:24-alpine@sha256:44fce696f38ba8c987c4db89954051000bbd05ffd8d8659ba15ed4a8602e937f
+ARG NODE_IMAGE=docker.io/library/node:24.22.1-alpine3.23@sha256:4b00b6d1aa138805aace94cc2482808f2b4f01e5e9c9f8cdc0e217fd70600ef9
 
 FROM ${NODE_IMAGE} AS trust
 RUN apk add --no-cache --upgrade \

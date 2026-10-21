@@ -37,10 +37,12 @@ describe("OpenConnector derivative provenance", () => {
       upstreamVersion: "1.4.1",
       upstreamTag: "v1.4.1",
       license: "Apache-2.0",
-      localImage: "nautilo/openconnector:1.4.1-nautilo.3",
+      localImage: "nautilo/openconnector:1.4.1-nautilo.4",
     });
     expect(manifest.upstreamCommit).toMatch(/^[a-f0-9]{40}$/u);
-    expect(manifest.baseImage).toMatch(/@sha256:[a-f0-9]{64}$/u);
+    const base = /^docker\.io\/library\/node:(24\.\d+\.\d+)-alpine3\.23@sha256:[a-f0-9]{64}$/u.exec(manifest.baseImage);
+    expect(base).not.toBeNull();
+    expect(Bun.semver.satisfies(base?.[1] ?? "", ">=24.22.1 <25")).toBe(true);
     expect(dockerfile).toContain(`ARG OPENCONNECTOR_SOURCE_COMMIT=${manifest.upstreamCommit}`);
     expect(dockerfile).toContain(`ARG NODE_IMAGE=${manifest.baseImage}`);
   });

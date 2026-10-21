@@ -18,6 +18,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   imported signer history or legacy Namespace key caches. Concurrent encrypted
   Task reads no longer exhaust database connections while loading schedules or chats.
 
+- Node.js development and CLI requirements now start at 24.22.1. CI uses
+  patched Node.js releases, and the OpenConnector derivative uses Node.js
+  24.22.1 with its maintained CA bundle to reject compromised intermediate keys.
+
 - Desktop uses Electron 43.8.3, which rejects certificate chains containing
   compromised eMudhra intermediate keys in its Chromium and Node.js networking.
   Desktop requires macOS 12 (Monterey) or later; its package metadata now
