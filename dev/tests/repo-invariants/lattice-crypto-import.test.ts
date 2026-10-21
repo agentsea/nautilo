@@ -1045,7 +1045,6 @@ const reviewedCryptoProductConsumerInventory = [
   // test seams construct genuine evidence. Repeated references retain separate
   // value/type declarations rather than widening the path allowlist.
   "packages/api-client/src/schemas/room-history-shadow-read.ts -> @nautilo/lattice-crypto/background",
-  "packages/api-client/src/schemas/task-ordinary-fallback.ts -> @nautilo/lattice-crypto/wire",
   "packages/api-client/src/schemas/task-ordinary-fallback.ts -> @nautilo/lattice-crypto/wire-limits",
   "packages/api-client/tests/unit/task-ordinary-fallback-schema.test.ts -> @nautilo/lattice-crypto/wire-limits",
   "packages/lattice-bridge/src/client/task-runtime-signer-evidence.ts -> @nautilo/lattice-crypto/background",
@@ -1557,9 +1556,8 @@ const reviewedCryptoProductConsumerInventory = [
   // limit contracts. Runtime imports only authentic invocation-scoped evidence types;
   // cross-package tests use exact leaf fixtures to construct genuine cryptographic proof.
   // No production consumer below imports a lattice-crypto internal source path.
-  "packages/api-client/src/schemas/protected-task-transcript-read.ts -> @nautilo/lattice-crypto/wire",
   "packages/api-client/src/schemas/protected-task-transcript-read.ts -> @nautilo/lattice-crypto/wire-limits",
-  "packages/api-client/src/schemas/room-history-shadow-read.ts -> @nautilo/lattice-crypto/wire",
+  "packages/api-client/src/schemas/room-history-shadow-read.ts -> @nautilo/lattice-crypto/wire-limits",
   "packages/api-client/src/schemas/task-content-backfill.ts -> @nautilo/lattice-crypto/wire-limits",
   "packages/api-client/tests/unit/task-content-backfill-schema.test.ts -> @nautilo/lattice-crypto/wire-limits",
   "packages/lattice-bridge/tests/fixtures/task-run-result-message-fixture.ts -> ../../../lattice-crypto/src/background/task-runtime-run-result-read-evidence-v1.ts",
