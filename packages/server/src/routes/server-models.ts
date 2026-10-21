@@ -7,7 +7,6 @@ import {
   getEligibleModels,
   getProtectedMemoryEmbeddingConfiguration,
   getServerSpeechModel,
-  hasRunnableOpenRouterTransport,
   kickRuntimeModelCatalogRefresh,
   listMediaGenerationModels,
   listResolvedCatalogModels,
@@ -110,10 +109,13 @@ function embeddingModels() {
     const provider = id.split(":")[0] as "venice" | "openrouter" | "openai";
     const label = provider === "venice" ? "Venice" : provider === "openrouter" ? "OpenRouter" : "OpenAI";
     const modelId = id.slice(id.indexOf(":") + 1);
-    return { id, displayName: `${label} — ${modelId} (1,536 dimensions)`,
-      available: provider === "openrouter"
-        ? hasRunnableOpenRouterTransport()
-        : resolveProviderKey(provider) !== null };
+    let available = false;
+    try {
+      available = getProtectedMemoryEmbeddingConfiguration(id).dimensions === 1536;
+    } catch (error) {
+      if (!(error instanceof EmbeddingProviderError)) throw error;
+    }
+    return { id, displayName: `${label} — ${modelId} (1,536 dimensions)`, available };
   });
 }
 

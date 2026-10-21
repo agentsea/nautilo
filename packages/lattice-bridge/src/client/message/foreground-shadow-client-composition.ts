@@ -1,4 +1,5 @@
 import type { NautiloApiClient } from "@nautilo/api-client/browser";
+import type { MemoryEmbeddingDisclosureV2 } from "@nautilo/lattice-crypto/wire";
 import { createObservedHumanMemoryDeviceContent } from "../memory/observed-human-memory-device-content.ts";
 import type { DeviceAdmissionStatus } from "@nautilo/api-client/browser";
 import {
@@ -806,6 +807,7 @@ export type ForegroundHumanMemoryClientInput = Readonly<{
   createIdempotencyKey?: () => string;
   resolveDeviceAdmissionStatus: () => Promise<DeviceAdmissionStatus>;
   onProtectedRoomAccessState?: (state: ProtectedRoomAccessStateV2) => void;
+  resolveEmbeddingDisclosure?: () => MemoryEmbeddingDisclosureV2 | undefined;
 }>;
 
 /**
@@ -857,6 +859,9 @@ export function createForegroundHumanMemoryClient(
     owner: input.dataOperationOwner,
     api: createHumanMemoryProcessorTransport({
       api: input.api, crypto, subjectId: input.userId, now,
+      ...(input.resolveEmbeddingDisclosure === undefined ? {} : {
+        resolveEmbeddingDisclosure: input.resolveEmbeddingDisclosure,
+      }),
     }),
     content: createObservedHumanMemoryDeviceContent({
       crypto,

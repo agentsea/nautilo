@@ -25,6 +25,7 @@ import type {
 } from "@nautilo/api-client";
 import type { AtomicDocumentMutationEventBatch } from "@nautilo/document-mutations";
 import type { MessagePayloadV2 } from "@nautilo/lattice-bridge";
+import type { MemoryEmbeddingDisclosureV2 } from "@nautilo/lattice-crypto/wire";
 import type {
   BrowserRoomHistoryShadowAcknowledgementInput,
   HumanPeerLiveShadowReceiveResult,
@@ -2048,12 +2049,14 @@ const foregroundShadowAPI = {
     search: (options: Readonly<{
       q: string; mode: "text" | "semantic"; limit?: number;
       includeArchive?: boolean;
+      embeddingDisclosure?: MemoryEmbeddingDisclosureV2;
     }>) => ipcRenderer.invoke("foregroundShadow:memory:search", options),
     detail: (memoryId: string) => ipcRenderer.invoke(
       "foregroundShadow:memory:detail", { memoryId },
     ),
     update: (input: Readonly<{
       memoryId: string; type: string; content: string; importance: number;
+      requestedEmbedding?: MemoryEmbeddingDisclosureV2;
     }>) => ipcRenderer.invoke("foregroundShadow:memory:update", input),
     retryPendingMutations: () => ipcRenderer.invoke(
       "foregroundShadow:memory:retryPending",

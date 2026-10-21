@@ -70,6 +70,21 @@ describe("foreground Shadow main-process contract", () => {
     }
   });
 
+  test("strictly decodes the renderer-approved Memory disclosure before custody", () => {
+    const search = handler("foregroundShadow:memory:search", "foregroundShadow:memory:detail");
+    const update = handler("foregroundShadow:memory:update", "foregroundShadow:memory:retryPending");
+    for (const operation of [search, update]) {
+      expect(operation).toContain("assertMemoryEmbeddingDisclosureV2(");
+      expect(operation).toContain("decodeMemoryEmbeddingDisclosureV2(");
+      expect(operation).toContain("encodeMemoryEmbeddingDisclosureV2(");
+      expect(operation.indexOf("assertMemoryEmbeddingDisclosureV2(")).toBeLessThan(
+        operation.indexOf("foregroundShadowControllerForSender(e)"),
+      );
+    }
+    expect(search).toContain("embeddingDisclosure");
+    expect(update).toContain("requestedEmbedding");
+  });
+
   test("binds one controller to the active sender/session and disposes on lifecycle exits", () => {
     const factory = main.slice(
       main.indexOf("async function foregroundShadowControllerForSender("),

@@ -5,6 +5,7 @@ import type {
   AuthorizedHumanMemoryUnavailableReason,
 } from "@nautilo/lattice-bridge/client/browser";
 import type { ProtectedMemoryProjectionV1 } from "@nautilo/api-client/browser";
+import type { MemoryEmbeddingDisclosureV2 } from "@nautilo/api-client/browser";
 import { runWithCryptoAdmission } from "./crypto-admission-access";
 
 export type WorkbenchProtectedMemoryContent =
@@ -151,9 +152,10 @@ function createUnfencedWorkbenchProtectedHumanMemoryController(
       type: string;
       content: string;
       importance: number;
+    } & ({
       requestedProvider: "openai" | "openrouter" | "venice";
       requestedModel: string;
-    }>) {
+    } | { requestedEmbedding: MemoryEmbeddingDisclosureV2 })>) {
       let memory: WorkbenchProtectedMemory | undefined;
       const response = await client.update(input.memoryId, {
         payload: {
@@ -162,8 +164,10 @@ function createUnfencedWorkbenchProtectedHumanMemoryController(
           content: input.content,
         },
         importance: input.importance,
-        requestedProvider: input.requestedProvider,
-        requestedModel: input.requestedModel,
+        ...("requestedEmbedding" in input
+          ? { requestedEmbedding: input.requestedEmbedding }
+          : { requestedProvider: input.requestedProvider,
+            requestedModel: input.requestedModel }),
       }, (value) => {
         memory = protectedOpened(value);
       });

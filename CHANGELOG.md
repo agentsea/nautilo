@@ -7,6 +7,11 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Embeddings can use Surplus with an explicit Venice text-embedding-3-large
+  selection and Prefer Surplus enabled. Protected Memory shows and binds the
+  processing route before saving or searching, and usage receipts track
+  marketplace costs without replaying provider requests.
+
 - Soul generation supports a server Surplus key without a direct provider key,
   including streamed customization previews and service cost tracking.
 

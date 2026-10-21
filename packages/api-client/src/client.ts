@@ -46,8 +46,10 @@ import {
   type ProtectedMemoryRepairResponseV1,
 } from "./schemas/protected-memory-repair";
 import {
+  memoryProcessorRecipientV2Schema,
   memoryProcessorRecipientV1Schema,
   memoryProcessorSealedRequestV1Schema,
+  type MemoryProcessorRecipientV2,
   type MemoryProcessorRecipientV1,
   type MemoryProcessorSealedRequestV1,
 } from "./schemas/memory-processor-transport";
@@ -9828,6 +9830,15 @@ export class NautiloApiClient {
     });
   }
 
+  async getMemoryProcessorRecipientV2(): Promise<MemoryProcessorRecipientV2> {
+    return this.request({
+      path: "/api/memory/processor-recipient/v2",
+      auth: "session-fresh",
+      schema: memoryProcessorRecipientV2Schema,
+      defaultErrorPrefix: "GET /api/memory/processor-recipient/v2",
+    });
+  }
+
   async searchProtectedMemories(opts: {
     sealedQuery: MemoryProcessorSealedRequestV1;
     mode: "text" | "semantic";
@@ -9850,6 +9861,31 @@ export class NautiloApiClient {
       },
       schema: protectedMemorySearchRouteResponseV1Schema,
       defaultErrorPrefix: "POST /api/memory/search (protected)",
+    });
+  }
+
+  async searchProtectedMemoriesV2(opts: {
+    sealedQueryV2: MemoryProcessorSealedRequestV1;
+    mode: "text" | "semantic";
+    limit?: number;
+    includeArchive?: boolean;
+  }): Promise<
+    ProtectedMemorySearchResponseV1 | ProtectedMemoryUnavailableResponseV1
+  > {
+    return this.request({
+      method: "POST",
+      path: "/api/memory/search",
+      auth: "session-fresh",
+      body: {
+        sealedQueryV2: memoryProcessorSealedRequestV1Schema.parse(opts.sealedQueryV2),
+        mode: opts.mode,
+        ...(opts.limit === undefined ? {} : { limit: opts.limit }),
+        ...(opts.includeArchive === undefined
+          ? {}
+          : { includeArchive: opts.includeArchive }),
+      },
+      schema: protectedMemorySearchRouteResponseV1Schema,
+      defaultErrorPrefix: "POST /api/memory/search (protected V2)",
     });
   }
 

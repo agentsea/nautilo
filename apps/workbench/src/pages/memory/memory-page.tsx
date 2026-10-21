@@ -8,6 +8,8 @@ import {
 } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useNavigate, useParams } from "react-router-dom";
+import { ApiError } from "@nautilo/api-client/browser";
+import type { MemoryEmbeddingDisclosureV2 } from "@nautilo/lattice-crypto/wire";
 import { useAuth } from "../../hooks/use-auth";
 import { useCan } from "../../hooks/use-can";
 import { GuestPlaceholder } from "../settings/ui";
@@ -76,6 +78,65 @@ type DirectoryHuman = { userId: string; handle: string; displayName: string };
 
 /** Sentinel value for the "Just me" (private-only) option in the audience picker. */
 const PRIVATE_FILTER = "__private__";
+
+type MemoryEmbeddingApproval =
+  | Readonly<{ kind: "v2"; embedding: MemoryEmbeddingDisclosureV2 }>
+  | Readonly<{ kind: "v1"; embedding: Readonly<{
+    provider: "openai" | "openrouter" | "venice";
+    model: string;
+    dimensions: 1536;
+  }> }>;
+
+type MemoryEmbeddingApprovalState =
+  | Readonly<{ status: "inactive" }>
+  | Readonly<{ status: "loading" }>
+  | Readonly<{ status: "ready"; accountKey: string; approval: MemoryEmbeddingApproval }>
+  | Readonly<{ status: "error"; message: string }>;
+
+function embeddingProviderLabel(provider: "openai" | "openrouter" | "venice") {
+  if (provider === "openai") return "OpenAI";
+  if (provider === "openrouter") return "OpenRouter";
+  return "Venice";
+}
+
+function MemoryEmbeddingDisclosure({ state, onReload }: Readonly<{
+  state: MemoryEmbeddingApprovalState;
+  onReload: () => void;
+}>) {
+  if (state.status === "inactive") return null;
+  if (state.status === "loading") {
+    return <p className="text-xs text-foreground-muted">Preparing semantic indexing disclosure…</p>;
+  }
+  if (state.status === "error") {
+    return (
+      <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--error)]" role="alert">
+        <span>{state.message}</span>
+        <Button variant="secondary" onClick={onReload}>Reload disclosure</Button>
+      </div>
+    );
+  }
+  const canonical = state.approval.kind === "v2"
+    ? state.approval.embedding.canonicalSpace : state.approval.embedding;
+  const marketplace = state.approval.kind === "v2"
+    && state.approval.embedding.processingRoute.transport === "surplus_marketplace";
+  return (
+    <div className="rounded-md border border-border bg-background-panel px-3 py-2 text-xs text-foreground-muted">
+      <p>
+        Semantic index: {embeddingProviderLabel(canonical.provider)} — {canonical.model}
+        {` (${canonical.dimensions.toLocaleString()} dimensions).`}
+      </p>
+      <p className="mt-1">
+        {marketplace
+          ? "Semantic indexing sends this text through Surplus Intelligence, a marketplace seller, and that seller’s upstream model providers."
+          : `Semantic indexing sends this text directly to ${embeddingProviderLabel(canonical.provider)}.`}
+      </p>
+    </div>
+  );
+}
+
+function embeddingApprovalReady(state: MemoryEmbeddingApprovalState) {
+  return state.status === "inactive" || state.status === "ready";
+}
 import {
   loadAmbience,
   prefersReducedMotion,
@@ -476,6 +537,9 @@ function MemoryListView({
   onRefresh,
   onLoadMore,
   memoryReads,
+  embeddingApproval,
+  onReloadEmbeddingApproval,
+  onEmbeddingFailure,
 }: {
   items: MemoryListItem[];
   memoryMode: MemoryMode;
@@ -493,6 +557,9 @@ function MemoryListView({
   onRefresh: () => void;
   onLoadMore: () => void;
   memoryReads: WorkbenchMemoryReadOperations;
+  embeddingApproval: MemoryEmbeddingApprovalState;
+  onReloadEmbeddingApproval: () => void;
+  onEmbeddingFailure: (error: unknown) => void;
 }) {
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
@@ -597,6 +664,7 @@ function MemoryListView({
       setSearchResults([...(await memoryReads.search({ q, includeArchive: showArchived }))]);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+      onEmbeddingFailure(e);
     } finally {
       setSearching(false);
     }
@@ -701,6 +769,11 @@ function MemoryListView({
         </header>
       </div>
 
+      <MemoryEmbeddingDisclosure
+        state={embeddingApproval}
+        onReload={onReloadEmbeddingApproval}
+      />
+
       <div className="flex flex-wrap items-center gap-2">
         <div className="min-w-[12rem] flex-1">
           <TextInput
@@ -708,11 +781,13 @@ function MemoryListView({
             onChange={setQuery}
             placeholder="Search memories…"
             ariaLabel="Search memories"
+            disabled={!embeddingApprovalReady(embeddingApproval)}
           />
         </div>
         <Button
           variant="secondary"
           loading={searching}
+          disabled={!embeddingApprovalReady(embeddingApproval)}
           onClick={() => void runSearch()}
         >
           Search
@@ -913,6 +988,9 @@ function MemoryEditorView({
   operations,
   actions,
   ordinaryAccess,
+  embeddingApproval,
+  onReloadEmbeddingApproval,
+  onEmbeddingFailure,
 }: {
   initial: MemoryDetail;
   memoryMode: MemoryMode;
@@ -924,6 +1002,9 @@ function MemoryEditorView({
   operations: WorkbenchMemoryReadOperations;
   actions: MemoryActionPresentation;
   ordinaryAccess?: { context: MemoryDetailResponse["accessContext"] | null; onChanged: () => void; onAccessLost: (message: string) => void };
+  embeddingApproval: MemoryEmbeddingApprovalState;
+  onReloadEmbeddingApproval: () => void;
+  onEmbeddingFailure: (error: unknown) => void;
 }) {
   const navigate = useNavigate();
   const kind = rowKind(initial, memoryMode);
@@ -972,6 +1053,7 @@ function MemoryEditorView({
       onSaved();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+      onEmbeddingFailure(e);
     } finally {
       setSaving(false);
     }
@@ -1303,6 +1385,13 @@ function MemoryEditorView({
           </p>
         ) : null}
 
+        {canEdit && !readOnly ? (
+          <MemoryEmbeddingDisclosure
+            state={embeddingApproval}
+            onReload={onReloadEmbeddingApproval}
+          />
+        ) : null}
+
         <div className="flex flex-wrap justify-end gap-2">
           {canEdit && affordances.canArchive ? (
             <Button variant="secondary" loading={busy} onClick={() => void archive()}>
@@ -1346,7 +1435,9 @@ function MemoryEditorView({
             </Button>
           ) : null}
           {canEdit && !readOnly ? (
-            <Button variant="primary" loading={saving} onClick={() => void submit()}>
+            <Button variant="primary" loading={saving}
+              disabled={!embeddingApprovalReady(embeddingApproval)}
+              onClick={() => void submit()}>
               Save
             </Button>
           ) : null}
@@ -1375,6 +1466,63 @@ export function MemoryPage() {
   const memoryId = params.id;
 
   const canEdit = auth.viewer.isVerified && can("manage_memories");
+  const accountKey = `${auth.viewer.sessionUserId ?? ""}:${auth.viewer.sessionActorId ?? ""}`;
+  const requiresEmbeddingApproval = encryptionPolicyMode !== "plaintext_only";
+  const [embeddingApproval, setEmbeddingApproval] = useState<MemoryEmbeddingApprovalState>(
+    requiresEmbeddingApproval ? { status: "loading" } : { status: "inactive" },
+  );
+  const [embeddingApprovalReload, setEmbeddingApprovalReload] = useState(0);
+  const embeddingApprovalRef = useRef<MemoryEmbeddingApproval | null>(null);
+  const activeEmbeddingApproval: MemoryEmbeddingApprovalState =
+    embeddingApproval.status === "ready" && embeddingApproval.accountKey !== accountKey
+      ? { status: "loading" } : embeddingApproval;
+  embeddingApprovalRef.current = activeEmbeddingApproval.status === "ready"
+    ? activeEmbeddingApproval.approval : null;
+  const reloadEmbeddingApproval = useCallback(() => {
+    setEmbeddingApprovalReload((value) => value + 1);
+  }, []);
+  const noteEmbeddingFailure = useCallback((failure: unknown) => {
+    const message = failure instanceof Error ? failure.message : String(failure);
+    if (!/embedding disclosure changed|embedding policy changed|prepare.*again/iu.test(message)) {
+      return;
+    }
+    setEmbeddingApproval({ status: "error",
+      message: "The semantic indexing route changed. Reload the disclosure before trying again." });
+  }, []);
+
+  useEffect(() => {
+    if (!requiresEmbeddingApproval || !auth.viewer.isVerified) {
+      setEmbeddingApproval({ status: "inactive" });
+      return;
+    }
+    let cancelled = false;
+    setEmbeddingApproval({ status: "loading" });
+    void (async () => {
+      try {
+        let approval: MemoryEmbeddingApproval;
+        try {
+          const recipient = await apiClient.getMemoryProcessorRecipientV2();
+          if (recipient.embedding === undefined) {
+            throw new Error("Semantic indexing is unavailable");
+          }
+          approval = Object.freeze({ kind: "v2", embedding: recipient.embedding });
+        } catch (error) {
+          if (!(error instanceof ApiError) || error.status !== 404) throw error;
+          const recipient = await apiClient.getMemoryProcessorRecipient();
+          if (recipient.embedding === undefined) {
+            throw new Error("Semantic indexing is unavailable");
+          }
+          approval = Object.freeze({ kind: "v1", embedding: recipient.embedding });
+        }
+        if (!cancelled) setEmbeddingApproval({ status: "ready", accountKey, approval });
+      } catch (failure) {
+        if (!cancelled) setEmbeddingApproval({ status: "error",
+          message: failure instanceof Error ? failure.message : String(failure) });
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [auth.viewer.isVerified, accountKey, embeddingApprovalReload,
+    requiresEmbeddingApproval]);
   const dataOperationOwner = useMemo(() => createWorkbenchDataOperationOwner(), []);
   const protectedComposition = useMemo(() => {
     let controller: WorkbenchProtectedHumanMemoryController | undefined;
@@ -1419,6 +1567,10 @@ export function MemoryPage() {
         humanActorId: auth.viewer.sessionActorId,
         installationId,
         resolveDeviceAdmissionStatus: () => apiClient.deviceAdmission.status(),
+        resolveEmbeddingDisclosure: () => {
+          const approval = embeddingApprovalRef.current;
+          return approval?.kind === "v2" ? approval.embedding : undefined;
+        },
       }),
     );
     return controller;
@@ -1451,12 +1603,11 @@ export function MemoryPage() {
     },
     protected: protectedComposition.get,
     disposeProtected: protectedComposition.dispose,
-    resolveEmbedding: async () => {
-      const recipient = await apiClient.getMemoryProcessorRecipient();
-      if (recipient.embedding === undefined) {
-        throw new Error("Memory embedding is unavailable");
-      }
-      return recipient.embedding;
+    resolveEmbedding: () => {
+      const current = embeddingApprovalRef.current;
+      return current === null
+        ? Promise.reject(new Error("Reload the semantic indexing disclosure before trying again"))
+        : Promise.resolve(current.embedding);
     },
   }), [dataOperationOwner, protectedComposition]);
 
@@ -1480,7 +1631,6 @@ export function MemoryPage() {
   const [personFilter, setPersonFilter] = useState<string | null>(null);
   const [privateFilter, setPrivateFilter] = useState(false);
   const [total, setTotal] = useState<number | null>(null);
-  const accountKey = `${auth.viewer.sessionUserId ?? ""}:${auth.viewer.sessionActorId ?? ""}`;
   const contextAdmissionKey = `${accountKey}:${auth.viewerGeneration}:${memoryId ?? ""}`;
   const contextAdmissionKeyRef = useRef(contextAdmissionKey);
   contextAdmissionKeyRef.current = contextAdmissionKey;
@@ -1639,6 +1789,9 @@ export function MemoryPage() {
         onDeleted={() => void refreshList()}
         operations={memoryReads}
         actions={detailActions}
+        embeddingApproval={activeEmbeddingApproval}
+        onReloadEmbeddingApproval={reloadEmbeddingApproval}
+        onEmbeddingFailure={noteEmbeddingFailure}
         {...(encryptionPolicyMode === "plaintext_only"
           ? { ordinaryAccess: { context: detailAccessContext?.admissionKey === contextAdmissionKey
               && detailAccessContext.memoryId === detail.id ? detailAccessContext.context : null, onChanged: () => {
@@ -1676,6 +1829,9 @@ export function MemoryPage() {
       onRefresh={() => void refreshList()}
       onLoadMore={() => void refreshList(nextCursor ?? undefined)}
       memoryReads={memoryReads}
+      embeddingApproval={activeEmbeddingApproval}
+      onReloadEmbeddingApproval={reloadEmbeddingApproval}
+      onEmbeddingFailure={noteEmbeddingFailure}
     />
   );
 }

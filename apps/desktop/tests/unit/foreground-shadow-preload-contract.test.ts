@@ -73,4 +73,11 @@ describe("M300 foreground Shadow preload contract", () => {
       "DesktopForegroundShadowStoredMessage",
     );
   });
+
+  test("carries the displayed Memory embedding disclosure across the IPC surface", () => {
+    expect(preload).toContain("embeddingDisclosure?: MemoryEmbeddingDisclosureV2");
+    expect(preload).toContain("requestedEmbedding?: MemoryEmbeddingDisclosureV2");
+    expect(workbenchDesktop).toContain("embeddingDisclosure?: MemoryEmbeddingDisclosureV2");
+    expect(workbenchDesktop).toContain("requestedEmbedding?: MemoryEmbeddingDisclosureV2");
+  });
 });

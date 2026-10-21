@@ -1,3 +1,15 @@
+import type {
+  HumanMemoryContentEmbeddingRequestUnsignedV3,
+  HumanMemoryContentEmbeddingRequestV3,
+  PrepareHumanMemoryContentEmbeddingRequestInputV3,
+  CreatedHumanMemoryContentEmbeddingRequestV3,
+} from "./content-embedding-request-v3.ts";
+import {
+  assertMemoryEmbeddingDisclosureV2,
+  encodeMemoryEmbeddingDisclosureV2,
+  decodeMemoryEmbeddingDisclosureV2,
+  MAX_MEMORY_EMBEDDING_DISCLOSURE_WIRE_BYTES_V2,
+} from "./embedding-disclosure-v2.ts";
 import type { LatticeCrypto } from "../crypto/index.ts";
 import { compareUnsignedUtf8 } from "../domain/participants.ts";
 import {
@@ -110,6 +122,17 @@ export interface CreatedHumanMemoryContentEmbeddingRequestV2 {
   readonly bytes: Uint8Array;
 }
 
+type ContentUnsigned = HumanMemoryContentEmbeddingRequestUnsignedV2 | HumanMemoryContentEmbeddingRequestUnsignedV3;
+type ContentRequest = HumanMemoryContentEmbeddingRequestV2 | HumanMemoryContentEmbeddingRequestV3;
+type ContentInput = PrepareHumanMemoryContentEmbeddingRequestInputV2 | PrepareHumanMemoryContentEmbeddingRequestInputV3;
+type ContentCreated = CreatedHumanMemoryContentEmbeddingRequestV2 | CreatedHumanMemoryContentEmbeddingRequestV3;
+type ContentVersion = 2 | 3;
+
+function requestDomain(version: ContentVersion): string {
+  return version === 2 ? HUMAN_MEMORY_CONTENT_EMBEDDING_REQUEST_DOMAIN_V2
+    : "nautilo/lattice-crypto/human-memory-content-embedding-request/v3";
+}
+
 const UNSIGNED_FIELDS = Object.freeze([
   "formatVersion",
   "purpose",
@@ -134,7 +157,11 @@ const UNSIGNED_FIELDS = Object.freeze([
   "committerDeviceId",
   "hostAuthorizationRevision",
 ] as const);
-const SIGNED_FIELDS = Object.freeze([...UNSIGNED_FIELDS, "signature"]);
+const UNSIGNED_FIELDS_V3 = Object.freeze([
+  ...UNSIGNED_FIELDS.filter((field) => field !== "requestedProvider"
+    && field !== "requestedModel" && field !== "dimensions"),
+  "requestedEmbedding",
+]);
 const ENVELOPE_FIELDS = Object.freeze(["namespaceId", "envelopeHash"]);
 
 function assertObject(label: string, value: unknown): asserts value is object {
@@ -156,20 +183,28 @@ function assertExactFields(
   ) throw new TypeError(`${label} has an invalid field set`);
 }
 
-function assertUnsignedFields(value: object): void {
+function assertUnsignedFields(value: object, version: ContentVersion): void {
+  const fields = version === 2 ? UNSIGNED_FIELDS : UNSIGNED_FIELDS_V3;
   const actual = Object.keys(value).sort();
-  const withoutImportance = UNSIGNED_FIELDS.filter(
+  if (version === 3 && Reflect.ownKeys(value).length !== actual.length) {
+    throw new TypeError("Human Memory content-embedding request has an invalid field set");
+  }
+  const withoutImportance = fields.filter(
     (field) => field !== "importance",
   ).sort();
-  const withImportance = [...UNSIGNED_FIELDS].sort();
+  const withImportance = [...fields].sort();
   if (![withoutImportance, withImportance].some((expected) =>
     actual.length === expected.length
     && actual.every((field, index) => field === expected[index])
   )) throw new TypeError("Human Memory content-embedding request has an invalid field set");
 }
 
-function assertSignedFields(value: object): void {
+function assertSignedFields(value: object, version: ContentVersion): void {
+  const SIGNED_FIELDS = [...(version === 2 ? UNSIGNED_FIELDS : UNSIGNED_FIELDS_V3), "signature"];
   const actual = Object.keys(value).sort();
+  if (version === 3 && Reflect.ownKeys(value).length !== actual.length) {
+    throw new TypeError("Human Memory content-embedding request has an invalid field set");
+  }
   const withoutImportance = SIGNED_FIELDS.filter(
     (field) => field !== "importance",
   ).sort();
@@ -310,13 +345,13 @@ function assertImportance(value: unknown): asserts value is number | undefined {
 }
 
 function normalizeUnsigned(
-  value: HumanMemoryContentEmbeddingRequestUnsignedV2,
-): HumanMemoryContentEmbeddingRequestUnsignedV2 {
+  value: ContentUnsigned,
+  version: ContentVersion,
+): ContentUnsigned {
   assertObject("Human Memory content-embedding request", value);
-  assertUnsignedFields(value);
+  assertUnsignedFields(value, version);
   if (
-    value.formatVersion
-      !== HUMAN_MEMORY_CONTENT_EMBEDDING_REQUEST_FORMAT_VERSION_V2
+    value.formatVersion !== version
     || value.purpose !== HUMAN_MEMORY_CONTENT_EMBEDDING_REQUEST_PURPOSE_V2
   ) throw new TypeError("Human Memory content-embedding request kind is invalid");
   const subjectHumanId = humanId(value.subjectHumanId);
@@ -350,21 +385,19 @@ function normalizeUnsigned(
     assertType(value.type);
     assertContent(value.content);
     assertImportance(value.importance);
-    if (
-      value.requestedProvider !== "openai"
-      && value.requestedProvider !== "openrouter"
-      && value.requestedProvider !== "venice"
-    ) throw new TypeError("Memory content-embedding provider is unsupported");
-    assertPortableId(
-      "Memory content-embedding requested model",
-      value.requestedModel,
-    );
-    if (
-      value.dimensions
-        !== HUMAN_MEMORY_CONTENT_EMBEDDING_REQUEST_DIMENSIONS_V2
-      || value.processorContractVersion
-        !== HUMAN_MEMORY_CONTENT_EMBEDDING_PROCESSOR_CONTRACT_VERSION_V2
-    ) throw new TypeError("Memory content-embedding processor contract is invalid");
+    if (value.formatVersion === 3) {
+      assertMemoryEmbeddingDisclosureV2(value.requestedEmbedding);
+    } else {
+      if (value.requestedProvider !== "openai" && value.requestedProvider !== "openrouter"
+        && value.requestedProvider !== "venice") throw new TypeError("Memory content-embedding provider is unsupported");
+      assertPortableId("Memory content-embedding requested model", value.requestedModel);
+      if (value.dimensions !== HUMAN_MEMORY_CONTENT_EMBEDDING_REQUEST_DIMENSIONS_V2) {
+        throw new TypeError("Memory content-embedding processor contract is invalid");
+      }
+    }
+    if (value.processorContractVersion !== (version === 2 ? 1 : 2)) {
+      throw new TypeError("Memory content-embedding processor contract is invalid");
+    }
     const issuedAt = unixTimestamp(value.issuedAt);
     const deadlineAt = unixTimestamp(value.deadlineAt);
     if (
@@ -377,8 +410,7 @@ function normalizeUnsigned(
       value.hostAuthorizationRevision,
     );
     return Object.freeze({
-      formatVersion:
-        HUMAN_MEMORY_CONTENT_EMBEDDING_REQUEST_FORMAT_VERSION_V2,
+      formatVersion: version,
       purpose: HUMAN_MEMORY_CONTENT_EMBEDDING_REQUEST_PURPOSE_V2,
       subjectHumanId,
       requestId: value.requestId,
@@ -392,16 +424,16 @@ function normalizeUnsigned(
       type: value.type,
       content: value.content,
       ...(value.importance === undefined ? {} : { importance: value.importance }),
-      requestedProvider: value.requestedProvider,
-      requestedModel: value.requestedModel,
-      dimensions: HUMAN_MEMORY_CONTENT_EMBEDDING_REQUEST_DIMENSIONS_V2,
-      processorContractVersion:
-        HUMAN_MEMORY_CONTENT_EMBEDDING_PROCESSOR_CONTRACT_VERSION_V2,
+      ...(value.formatVersion === 3
+        ? { requestedEmbedding: decodeMemoryEmbeddingDisclosureV2(encodeMemoryEmbeddingDisclosureV2(value.requestedEmbedding)) }
+        : { requestedProvider: value.requestedProvider, requestedModel: value.requestedModel,
+          dimensions: HUMAN_MEMORY_CONTENT_EMBEDDING_REQUEST_DIMENSIONS_V2 }),
+      processorContractVersion: version === 2 ? 1 : 2,
       issuedAt,
       deadlineAt,
       committerDeviceId,
       hostAuthorizationRevision,
-    });
+    }) as ContentUnsigned;
   } catch (error) {
     wipeBytes(
       ciphertextPayloadHash,
@@ -413,12 +445,13 @@ function normalizeUnsigned(
 }
 
 function normalizeRequest(
-  value: HumanMemoryContentEmbeddingRequestV2,
-): HumanMemoryContentEmbeddingRequestV2 {
+  value: ContentRequest,
+  version: ContentVersion,
+): ContentRequest {
   assertObject("Human Memory content-embedding request", value);
-  assertSignedFields(value);
+  assertSignedFields(value, version);
   const { signature: rawSignature, ...rawUnsigned } = value;
-  const unsigned = normalizeUnsigned(rawUnsigned);
+  const unsigned = normalizeUnsigned(rawUnsigned, version);
   try {
     return Object.freeze({
       ...unsigned,
@@ -435,7 +468,7 @@ function normalizeRequest(
 }
 
 function destroyUnsigned(
-  value: HumanMemoryContentEmbeddingRequestUnsignedV2,
+  value: ContentUnsigned,
 ): void {
   wipeBytes(
     value.ciphertextPayloadHash,
@@ -444,17 +477,17 @@ function destroyUnsigned(
   );
 }
 
-function destroyRequest(value: HumanMemoryContentEmbeddingRequestV2): void {
+function destroyRequest(value: ContentRequest): void {
   destroyUnsigned(value);
   wipeBytes(value.signature);
 }
 
 function signingBytesFromNormalized(
-  value: HumanMemoryContentEmbeddingRequestUnsignedV2,
+  value: ContentUnsigned,
 ): Uint8Array {
   return concatV2(
-    frameText(HUMAN_MEMORY_CONTENT_EMBEDDING_REQUEST_DOMAIN_V2),
-    encodeU32(HUMAN_MEMORY_CONTENT_EMBEDDING_REQUEST_FORMAT_VERSION_V2),
+    frameText(requestDomain(value.formatVersion)),
+    encodeU32(value.formatVersion),
     frameText(value.purpose),
     frameText(value.subjectHumanId),
     frameText(value.requestId),
@@ -474,9 +507,9 @@ function signingBytesFromNormalized(
     encodeU32(value.importance === undefined ? 0 : 1),
     ...(value.importance === undefined
       ? [] : [frameText(String(value.importance))]),
-    frameText(value.requestedProvider),
-    frameText(value.requestedModel),
-    encodeU32(value.dimensions),
+    ...(value.formatVersion === 3
+      ? [frame(encodeMemoryEmbeddingDisclosureV2(value.requestedEmbedding))]
+      : [frameText(value.requestedProvider), frameText(value.requestedModel), encodeU32(value.dimensions)]),
     encodeU32(value.processorContractVersion),
     encodeU64(value.issuedAt),
     encodeU64(value.deadlineAt),
@@ -485,10 +518,11 @@ function signingBytesFromNormalized(
   );
 }
 
-export function humanMemoryContentEmbeddingRequestSigningBytesV2(
-  value: HumanMemoryContentEmbeddingRequestUnsignedV2,
+export function humanMemoryContentEmbeddingRequestSigningBytesForVersion(
+  value: ContentUnsigned,
+  version: ContentVersion,
 ): Uint8Array {
-  const normalized = normalizeUnsigned(value);
+  const normalized = normalizeUnsigned(value, version);
   try {
     return signingBytesFromNormalized(normalized);
   } finally {
@@ -496,10 +530,11 @@ export function humanMemoryContentEmbeddingRequestSigningBytesV2(
   }
 }
 
-export function encodeHumanMemoryContentEmbeddingRequestV2(
-  value: HumanMemoryContentEmbeddingRequestV2,
+export function encodeHumanMemoryContentEmbeddingRequestForVersion(
+  value: ContentRequest,
+  version: ContentVersion,
 ): Uint8Array {
-  const normalized = normalizeRequest(value);
+  const normalized = normalizeRequest(value, version);
   try {
     const bytes = concatV2(
       signingBytesFromNormalized(normalized),
@@ -524,9 +559,10 @@ function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
     && left.every((value, index) => value === right[index]);
 }
 
-export function decodeHumanMemoryContentEmbeddingRequestV2(
+export function decodeHumanMemoryContentEmbeddingRequestForVersion(
   bytes: Uint8Array,
-): HumanMemoryContentEmbeddingRequestV2 {
+  version: ContentVersion,
+): ContentRequest {
   if (!(bytes instanceof Uint8Array)) {
     throw new TypeError(
       "Human Memory content-embedding request bytes must be Uint8Array",
@@ -539,18 +575,18 @@ export function decodeHumanMemoryContentEmbeddingRequestV2(
       "Human Memory content-embedding request exceeds its wire limit",
     );
   }
-  const raw = decodeExact(bytes, (reader): HumanMemoryContentEmbeddingRequestV2 => {
+  const raw = decodeExact(bytes, (reader): ContentRequest => {
     const domain = reader.readText(
-      utf8V2(HUMAN_MEMORY_CONTENT_EMBEDDING_REQUEST_DOMAIN_V2).length,
+      utf8V2(requestDomain(version)).length,
     );
-    if (domain !== HUMAN_MEMORY_CONTENT_EMBEDDING_REQUEST_DOMAIN_V2) {
+    if (domain !== requestDomain(version)) {
       throw new CanonicalDecodingError(
         "Human Memory content-embedding request domain mismatch",
       );
     }
     const formatVersion = reader.readVersion(
-      HUMAN_MEMORY_CONTENT_EMBEDDING_REQUEST_FORMAT_VERSION_V2,
-    ) as typeof HUMAN_MEMORY_CONTENT_EMBEDDING_REQUEST_FORMAT_VERSION_V2;
+      version,
+    ) as ContentVersion;
     const purpose = reader.readText(
       utf8V2(HUMAN_MEMORY_CONTENT_EMBEDDING_REQUEST_PURPOSE_V2).length,
     ) as typeof HUMAN_MEMORY_CONTENT_EMBEDDING_REQUEST_PURPOSE_V2;
@@ -601,28 +637,24 @@ export function decodeHumanMemoryContentEmbeddingRequestV2(
         );
         return { importance };
       })(),
-      requestedProvider: (
-        reader.readText(V2_LIMITS.idBytes)
-      ) as HumanMemoryContentEmbeddingProviderV2,
-      requestedModel: reader.readText(V2_LIMITS.idBytes),
-      dimensions: (
-        reader.readU32()
-      ) as typeof HUMAN_MEMORY_CONTENT_EMBEDDING_REQUEST_DIMENSIONS_V2,
-      processorContractVersion: (
-        reader.readU32()
-      ) as typeof HUMAN_MEMORY_CONTENT_EMBEDDING_PROCESSOR_CONTRACT_VERSION_V2,
+      ...(version === 3
+        ? { requestedEmbedding: decodeMemoryEmbeddingDisclosureV2(reader.readFrame(MAX_MEMORY_EMBEDDING_DISCLOSURE_WIRE_BYTES_V2)) }
+        : { requestedProvider: reader.readText(V2_LIMITS.idBytes) as HumanMemoryContentEmbeddingProviderV2,
+          requestedModel: reader.readText(V2_LIMITS.idBytes),
+          dimensions: reader.readU32() as typeof HUMAN_MEMORY_CONTENT_EMBEDDING_REQUEST_DIMENSIONS_V2 }),
+      processorContractVersion: reader.readU32(),
       issuedAt: unixTimestamp(reader.readU64()),
       deadlineAt: unixTimestamp(reader.readU64()),
       committerDeviceId: cryptoDeviceId(reader.readText(V2_LIMITS.idBytes)),
       hostAuthorizationRevision: authorizationRevision(reader.readU64()),
       signature: reader.readFrame(V2_LIMITS.signatureBytes),
-    };
+    } as ContentRequest;
   });
-  let normalized: HumanMemoryContentEmbeddingRequestV2 | undefined;
+  let normalized: ContentRequest | undefined;
   let canonical: Uint8Array | undefined;
   try {
-    normalized = normalizeRequest(raw);
-    canonical = encodeHumanMemoryContentEmbeddingRequestV2(normalized);
+    normalized = normalizeRequest(raw, version);
+    canonical = encodeHumanMemoryContentEmbeddingRequestForVersion(normalized, version);
     if (!equalBytes(canonical, bytes)) {
       throw new CanonicalDecodingError(
         "Human Memory content-embedding request is noncanonical",
@@ -638,20 +670,24 @@ export function decodeHumanMemoryContentEmbeddingRequestV2(
   }
 }
 
-export function prepareHumanMemoryContentEmbeddingRequestV2(
+export function prepareHumanMemoryContentEmbeddingRequestForVersion(
   crypto: LatticeCrypto,
-  input: PrepareHumanMemoryContentEmbeddingRequestInputV2,
-): CreatedHumanMemoryContentEmbeddingRequestV2 {
+  input: ContentInput,
+  version: ContentVersion,
+): ContentCreated {
   const {
     committerSigningPublicKey: rawPublicKey,
     committerSigningPrivateKey: rawPrivateKey,
     ...rawUnsigned
   } = input;
+  if (version === 3 && (Object.hasOwn(rawUnsigned, "formatVersion") || Object.hasOwn(rawUnsigned, "purpose"))) {
+    throw new TypeError("Human Memory content-embedding preparation has an invalid field set");
+  }
   const unsigned = normalizeUnsigned({
     ...rawUnsigned,
-    formatVersion: HUMAN_MEMORY_CONTENT_EMBEDDING_REQUEST_FORMAT_VERSION_V2,
+    formatVersion: version,
     purpose: HUMAN_MEMORY_CONTENT_EMBEDDING_REQUEST_PURPOSE_V2,
-  });
+  } as ContentUnsigned, version);
   let publicKey: Uint8Array | undefined;
   let privateKey: Uint8Array | undefined;
   let signingBytes: Uint8Array | undefined;
@@ -678,30 +714,32 @@ export function prepareHumanMemoryContentEmbeddingRequestV2(
         "Human Memory content-embedding signing keys do not match",
       );
     }
-    const bytes = encodeHumanMemoryContentEmbeddingRequestV2({
+    const bytes = encodeHumanMemoryContentEmbeddingRequestForVersion({
       ...unsigned,
       signature,
-    });
+    }, version);
     return Object.freeze({
-      request: decodeHumanMemoryContentEmbeddingRequestV2(bytes),
+      request: decodeHumanMemoryContentEmbeddingRequestForVersion(bytes, version),
       bytes,
-    });
+    }) as ContentCreated;
   } finally {
     destroyUnsigned(unsigned);
     wipeBytes(publicKey, privateKey, signingBytes, signature);
   }
 }
 
-export function verifyHumanMemoryContentEmbeddingRequestV2(
+export function verifyHumanMemoryContentEmbeddingRequestForVersion(
   crypto: LatticeCrypto,
   input: Readonly<{
     readonly requestBytes: Uint8Array;
     readonly committerSigningPublicKey: Uint8Array;
     readonly now: UnixTimestamp;
   }>,
-): HumanMemoryContentEmbeddingRequestV2 {
-  const request = decodeHumanMemoryContentEmbeddingRequestV2(
+  version: ContentVersion,
+): ContentRequest {
+  const request = decodeHumanMemoryContentEmbeddingRequestForVersion(
     input.requestBytes,
+    version,
   );
   let publicKey: Uint8Array | undefined;
   let signingBytes: Uint8Array | undefined;
@@ -730,4 +768,23 @@ export function verifyHumanMemoryContentEmbeddingRequestV2(
     wipeBytes(publicKey, signingBytes);
     if (!verified) destroyRequest(request);
   }
+}
+
+// Legacy entry points always select V2; a new-version payload is never inferred.
+export function humanMemoryContentEmbeddingRequestSigningBytesV2(value: HumanMemoryContentEmbeddingRequestUnsignedV2): Uint8Array {
+  return humanMemoryContentEmbeddingRequestSigningBytesForVersion(value, 2);
+}
+export function encodeHumanMemoryContentEmbeddingRequestV2(value: HumanMemoryContentEmbeddingRequestV2): Uint8Array {
+  return encodeHumanMemoryContentEmbeddingRequestForVersion(value, 2);
+}
+export function decodeHumanMemoryContentEmbeddingRequestV2(bytes: Uint8Array): HumanMemoryContentEmbeddingRequestV2 {
+  return decodeHumanMemoryContentEmbeddingRequestForVersion(bytes, 2) as HumanMemoryContentEmbeddingRequestV2;
+}
+export function prepareHumanMemoryContentEmbeddingRequestV2(crypto: LatticeCrypto, input: PrepareHumanMemoryContentEmbeddingRequestInputV2): CreatedHumanMemoryContentEmbeddingRequestV2 {
+  return prepareHumanMemoryContentEmbeddingRequestForVersion(crypto, input, 2) as CreatedHumanMemoryContentEmbeddingRequestV2;
+}
+export function verifyHumanMemoryContentEmbeddingRequestV2(crypto: LatticeCrypto, input: Readonly<{
+  requestBytes: Uint8Array; committerSigningPublicKey: Uint8Array; now: UnixTimestamp;
+}>): HumanMemoryContentEmbeddingRequestV2 {
+  return verifyHumanMemoryContentEmbeddingRequestForVersion(crypto, input, 2) as HumanMemoryContentEmbeddingRequestV2;
 }

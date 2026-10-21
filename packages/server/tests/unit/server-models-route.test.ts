@@ -864,6 +864,7 @@ test("embedding selection distinguishes inheritance, automatic, and qualified cr
     expect(parseUpdateBodyForTests({ embeddingModel: "venice:text-embedding-qwen3-8b" })).toEqual({ ok: true, patch: { embeddingModel: "venice:text-embedding-qwen3-8b" } });
     expect(parseUpdateBodyForTests({ embeddingModel: "openrouter:qwen/qwen3-embedding-8b" })).toEqual({ ok: true, patch: { embeddingModel: "openrouter:qwen/qwen3-embedding-8b" } });
     expect(parseUpdateBodyForTests({ embeddingModel: "venice:text-embedding-3-small" })).toEqual({ ok: true, patch: { embeddingModel: "venice:text-embedding-3-small" } });
+    expect(parseUpdateBodyForTests({ embeddingModel: "venice:text-embedding-3-large" })).toEqual({ ok: true, patch: { embeddingModel: "venice:text-embedding-3-large" } });
     for (const embeddingModel of [false, "venice:bge-m3", KNOWN_MODEL, "text-embedding-3-small"]) {
       expect(parseUpdateBodyForTests({ embeddingModel }).ok).toBe(false);
     }
@@ -892,7 +893,7 @@ test("embedding GET reports actual runtime selection and pending state after a f
   expect(body.embeddingModels.map((entry) => entry.id)).toEqual([
     "venice:text-embedding-qwen3-8b", "openrouter:qwen/qwen3-embedding-8b",
     "venice:text-embedding-3-small", "openrouter:openai/text-embedding-3-small",
-    "openai:text-embedding-3-small",
+    "openai:text-embedding-3-small", "venice:text-embedding-3-large",
   ]);
   expect(body.embeddingModels.map((entry) => entry.displayName)).toEqual([
     "Venice — text-embedding-qwen3-8b (1,536 dimensions)",
@@ -900,6 +901,7 @@ test("embedding GET reports actual runtime selection and pending state after a f
     "Venice — text-embedding-3-small (1,536 dimensions)",
     "OpenRouter — openai/text-embedding-3-small (1,536 dimensions)",
     "OpenAI — text-embedding-3-small (1,536 dimensions)",
+    "Venice — text-embedding-3-large (1,536 dimensions)",
   ]);
   expect(refreshCount).toBe(1);
 });

@@ -33,6 +33,7 @@ const SUPPORTED_EMBEDDING_MODEL_IDS = new Set([
   "venice:text-embedding-3-small",
   "openrouter:openai/text-embedding-3-small",
   "openai:text-embedding-3-small",
+  "venice:text-embedding-3-large",
 ]);
 
 type SaveState = "idle" | "saving" | "saved" | { error: string };
@@ -666,6 +667,7 @@ export function ModelsSection() {
               </label>
               <p className="text-[11px] text-foreground-muted">
                 Creates vectors for semantic Memory search and Reflection. Server configuration inherits the operator setting. Automatic selects the first configured provider: Qwen3 Embedding 8B on Venice or OpenRouter, then text-embedding-3-small on OpenAI.
+                {" "}For Surplus, enable Prefer Surplus and select Venice — text-embedding-3-large explicitly.
               </p>
               <select
                 id="server-embedding-model"

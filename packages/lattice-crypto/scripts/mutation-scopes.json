@@ -312,10 +312,12 @@
       "tier": "critical",
       "mutate": [
         "src/memory/content-embedding-request-v1.ts",
+        "src/memory/content-embedding-request-v3.ts",
+        "src/memory/embedding-disclosure-v2.ts",
         "src/memory/deletion-v1.ts",
         "src/memory/exact-access-request-v1.ts"
       ],
-      "command": "bun test --bail=1 --timeout 60000 tests/unit/human-memory-content-embedding-request-v1.test.ts tests/unit/human-memory-deletion-v1.test.ts tests/unit/human-memory-exact-access-request-v1.test.ts tests/property/human-memory-content-embedding-request-v1.property.test.ts"
+      "command": "bun test --bail=1 --timeout 60000 tests/unit/human-memory-content-embedding-request-v1.test.ts tests/unit/human-memory-deletion-v1.test.ts tests/unit/human-memory-exact-access-request-v1.test.ts tests/property/human-memory-content-embedding-request-v1.property.test.ts tests/unit/human-memory-content-embedding-request-v3.test.ts tests/unit/memory-embedding-disclosure-v2.test.ts tests/property/human-memory-content-embedding-request-v3.property.test.ts"
     },
     {
       "name": "human-task-publication",

@@ -204,6 +204,9 @@ function mockDbModule(opts: {
     memoryEmbeddingCompatibilityCondition,
     beginServiceLlmAttempt: async () => { throw new Error("service attempt must not run in memory-store isolation"); },
     settleServiceLlmAttempt: async () => { throw new Error("service settlement must not run in memory-store isolation"); },
+    beginSurplusLlmAttempt: async () => { throw new Error("Surplus attempt must not run in memory-store isolation"); },
+    attachSurplusRequestReceipt: async () => { throw new Error("Surplus receipt must not run in memory-store isolation"); },
+    settleSurplusLlmAttempt: async () => { throw new Error("Surplus settlement must not run in memory-store isolation"); },
   }));
   return dbHandle;
 }

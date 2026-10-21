@@ -1,4 +1,8 @@
-import type { NautiloApiClient, ProtectedMemoryProjectionV1 } from "@nautilo/api-client";
+import { type NautiloApiClient, type ProtectedMemoryProjectionV1 } from "@nautilo/api-client";
+import {
+  sameMemoryEmbeddingDisclosureV2,
+  type MemoryEmbeddingDisclosureV2,
+} from "@nautilo/lattice-crypto/wire";
 import { bindEncryptionDataOperationOwner,
   ClassifiedDataOperationError } from "@nautilo/lattice-bridge";
 import {
@@ -591,18 +595,27 @@ export class ElectronForegroundShadowController {
     type: string;
     content: string;
     importance: number;
+    requestedEmbedding?: MemoryEmbeddingDisclosureV2;
   }>) {
     return this.#runMemory(async () => {
-      const recipient = await this.#api.getMemoryProcessorRecipient();
-      if (recipient.embedding === undefined) {
-        throw new TypeError("Memory embedding is unavailable");
+      const embedding = input.requestedEmbedding === undefined
+        ? (await this.#api.getMemoryProcessorRecipient()).embedding
+        : (await this.#api.getMemoryProcessorRecipientV2()).embedding;
+      if (embedding === undefined) throw new TypeError("Memory embedding is unavailable");
+      if (input.requestedEmbedding !== undefined
+        && (!("canonicalSpace" in embedding)
+          || !sameMemoryEmbeddingDisclosureV2(input.requestedEmbedding, embedding))) {
+        throw new TypeError(
+          "The Memory embedding disclosure changed. Reload it before trying again.",
+        );
       }
       let item: unknown;
       const receipt = await this.#humanMemory.update(input.memoryId, {
         payload: { formatVersion: 1, type: input.type, content: input.content },
         importance: input.importance,
-        requestedProvider: recipient.embedding.provider,
-        requestedModel: recipient.embedding.model,
+        ...("canonicalSpace" in embedding
+          ? { requestedEmbedding: input.requestedEmbedding! }
+          : { requestedProvider: embedding.provider, requestedModel: embedding.model }),
       }, (opened) => {
         item = protectedOpenedMemory(opened);
       });

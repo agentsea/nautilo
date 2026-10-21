@@ -680,7 +680,9 @@ export {
   type AuthorizedHumanMemoryReadResultV1,
   type AuthorizedHumanMemoryTestAuthority,
   type AuthorizedHumanMemoryUnavailableReason,
+  type AuthorizedHumanMemoryWriteIntent,
   type AuthorizedHumanMemoryWriteIntentV1,
+  type AuthorizedHumanMemoryWriteIntentV2,
 } from "../memory/authorized-human-memory-client.ts";
 export {
   createVaultAuthorizedHumanMemoryDeviceContentPort,

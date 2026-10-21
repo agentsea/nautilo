@@ -2,10 +2,64 @@ import { describe, expect, test } from "bun:test";
 import { LatticeCrypto } from "@nautilo/lattice-crypto";
 import {
   createForegroundMemoryProcessorRecipient,
+  decodeMemoryProcessorSearchQueryV2,
+  encodeMemoryProcessorSearchQueryV2,
   sealForegroundMemoryProcessorRequest,
+  sealForegroundMemoryProcessorSearchQueryV2,
 } from "../../src/memory/foreground-memory-processor-transport.ts";
 
 describe("foreground Memory processor carrier", () => {
+  const marketplace = Object.freeze({
+    contractVersion: 2 as const,
+    canonicalSpace: Object.freeze({ provider: "venice" as const,
+      model: "text-embedding-3-large", dimensions: 1536 as const }),
+    processingRoute: Object.freeze({
+      transport: "surplus_marketplace" as const,
+      marketplacePolicyVersion: "surplus-embedding-marketplace-v1" as const,
+      dataRecipientClasses: Object.freeze([
+        "surplus", "marketplace_seller", "seller_upstream_processor",
+      ] as const),
+    }),
+  });
+
+  test("V2 query codec authenticates the full marketplace disclosure", () => {
+    const encoded = encodeMemoryProcessorSearchQueryV2({
+      formatVersion: 2,
+      purpose: "memory.query_embedding",
+      query: "private orchid",
+      embeddingDisclosure: marketplace,
+    });
+    expect(decodeMemoryProcessorSearchQueryV2(encoded)).toEqual({
+      formatVersion: 2,
+      purpose: "memory.query_embedding",
+      query: "private orchid",
+      embeddingDisclosure: marketplace,
+    });
+    expect(() => decodeMemoryProcessorSearchQueryV2(encoded.replace(
+      "surplus-embedding-marketplace-v1", "changed-policy",
+    ))).toThrow();
+  });
+
+  test("V2 query carrier hides text and opens to the exact disclosed payload", async () => {
+    const crypto = new LatticeCrypto();
+    const recipient = await createForegroundMemoryProcessorRecipient({ crypto });
+    try {
+      const descriptor = { ...recipient.descriptor, formatVersion: 2 as const,
+        embedding: marketplace };
+      const sealed = await sealForegroundMemoryProcessorSearchQueryV2({
+        crypto, recipient: descriptor, subjectId: "human-a",
+        query: "private orchid", embeddingDisclosure: marketplace,
+      });
+      expect(JSON.stringify(sealed)).not.toContain("private orchid");
+      const opened = await recipient.open(sealed, {
+        purpose: "memory.query_embedding", subjectId: "human-a",
+      });
+      expect(opened).not.toBeNull();
+      expect(decodeMemoryProcessorSearchQueryV2(opened!)).toMatchObject({
+        query: "private orchid", embeddingDisclosure: marketplace,
+      });
+    } finally { recipient.dispose(); }
+  });
   test("actual wire ciphertext hides query and signed content, opens only for the exact subject/purpose", async () => {
     const crypto = new LatticeCrypto();
     const recipient = await createForegroundMemoryProcessorRecipient({ crypto });

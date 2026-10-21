@@ -39,3 +39,53 @@ describe("Human Memory configured embedding boundary", () => {
     expect(calls).toBe(0);
   });
 });
+
+describe("Human Memory marketplace disclosure boundary", () => {
+  const space = { provider: "venice" as const, model: "text-embedding-3-large", dimensions: 1536 as const };
+  const marketplace = { contractVersion: 2 as const, canonicalSpace: space,
+    processingRoute: { transport: "surplus_marketplace" as const,
+      marketplacePolicyVersion: "surplus-embedding-marketplace-v1" as const,
+      dataRecipientClasses: ["surplus", "marketplace_seller", "seller_upstream_processor"] as const } };
+  const currentRequest = { ...request, ...space, contractVersion: 2 as const,
+    embeddingDisclosure: marketplace };
+
+  test("legacy direct approval cannot enter the marketplace even when its model matches", async () => {
+    let calls = 0;
+    const instance = createHumanMemoryEmbeddingProcessor({
+      now: () => 1_100, configuration: () => space, disclosure: () => marketplace,
+      embed: async () => { calls++; throw new Error("must not disclose"); },
+    });
+    expect(await instance.processor.embed({ request: { ...request, ...space },
+      authenticatedSubjectId: request.subjectId })).toEqual({ status: "unavailable", reason: "provider_unavailable" });
+    expect(calls).toBe(0);
+  });
+
+  test("the exact marketplace disclosure reaches the canonical provider owner", async () => {
+    const calls: unknown[][] = [];
+    const instance = createHumanMemoryEmbeddingProcessor({
+      now: () => 1_100, configuration: () => space, disclosure: () => marketplace,
+      embed: async (...args) => {
+        calls.push(args);
+        return { provider: space.provider, canonicalModel: space.model, dimensions: 1536,
+          vector: new Array<number>(1536).fill(0.1), contractVersion: 1 };
+      },
+    });
+    expect(await instance.processor.embed({ request: currentRequest,
+      authenticatedSubjectId: request.subjectId })).toMatchObject({ status: "embedded",
+      embedding: { provider: "venice", canonicalModel: space.model, processorContractVersion: 1 } });
+    expect(calls).toEqual([[request.plaintext, undefined, { ...space, disclosure: marketplace }]]);
+  });
+
+  test("a prepared marketplace request cannot switch to direct during execution", async () => {
+    let calls = 0;
+    const instance = createHumanMemoryEmbeddingProcessor({
+      now: () => 1_100, configuration: () => space,
+      disclosure: () => ({ contractVersion: 2, canonicalSpace: space,
+        processingRoute: { transport: "direct" } }),
+      embed: async () => { calls++; throw new Error("must not disclose"); },
+    });
+    expect(await instance.processor.embed({ request: currentRequest,
+      authenticatedSubjectId: request.subjectId })).toEqual({ status: "unavailable", reason: "provider_unavailable" });
+    expect(calls).toBe(0);
+  });
+});

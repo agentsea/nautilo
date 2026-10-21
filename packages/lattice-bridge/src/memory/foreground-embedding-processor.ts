@@ -1,5 +1,11 @@
+import {
+  assertMemoryEmbeddingDisclosureV2,
+  type MemoryEmbeddingDisclosureV2,
+} from "@nautilo/lattice-crypto/wire";
+
 export const MEMORY_EMBEDDING_DIMENSIONS = 1536 as const;
 export const MEMORY_FOREGROUND_PROCESSOR_CONTRACT_VERSION = 1 as const;
+const MEMORY_FOREGROUND_DISCLOSURE_CONTRACT_VERSION = 2 as const;
 export const MEMORY_CONTENT_EMBEDDING_MAX_BYTES = 64 * 1024;
 export const MEMORY_QUERY_EMBEDDING_MAX_BYTES = 4 * 1024;
 export const MEMORY_FOREGROUND_PROCESSOR_MAX_DEADLINE_MS = 30_000;
@@ -9,8 +15,8 @@ export type MemoryEmbeddingPurpose =
   | "memory.query_embedding";
 
 export type MemoryForegroundEmbeddingRequest = Readonly<{
-  readonly contractVersion:
-    typeof MEMORY_FOREGROUND_PROCESSOR_CONTRACT_VERSION;
+  readonly contractVersion: 1 | 2;
+  readonly embeddingDisclosure?: MemoryEmbeddingDisclosureV2;
   readonly purpose: MemoryEmbeddingPurpose;
   readonly subjectId: string;
   readonly requestId: string;
@@ -65,6 +71,7 @@ export interface MemoryEmbeddingProviderPort {
     readonly requestedProvider: "openai" | "openrouter" | "venice";
     readonly requestedModel: string;
     readonly dimensions: typeof MEMORY_EMBEDDING_DIMENSIONS;
+    readonly embeddingDisclosure?: MemoryEmbeddingDisclosureV2;
     readonly signal?: AbortSignal;
   }>): Promise<Readonly<{
     readonly provider: "openai" | "openrouter" | "venice";
@@ -111,7 +118,22 @@ export function validateMemoryForegroundEmbeddingRequest(
 ): MemoryForegroundEmbeddingRequest {
   if (
     request.contractVersion !== MEMORY_FOREGROUND_PROCESSOR_CONTRACT_VERSION
+    && request.contractVersion !== MEMORY_FOREGROUND_DISCLOSURE_CONTRACT_VERSION
   ) invalid("Memory foreground processor contract version is unsupported");
+  if (request.contractVersion === MEMORY_FOREGROUND_DISCLOSURE_CONTRACT_VERSION) {
+    try {
+      assertMemoryEmbeddingDisclosureV2(request.embeddingDisclosure);
+    } catch {
+      invalid("Memory embedding disclosure binding is invalid");
+    }
+    const space = request.embeddingDisclosure.canonicalSpace;
+    if (space.provider !== request.provider || space.model !== request.model
+      || space.dimensions !== request.dimensions) {
+      invalid("Memory embedding disclosure disagrees with its canonical space");
+    }
+  } else if (request.embeddingDisclosure !== undefined) {
+    invalid("Legacy Memory embedding requests cannot carry a new disclosure binding");
+  }
   if (
     request.purpose !== "memory.content_embedding"
     && request.purpose !== "memory.query_embedding"
@@ -245,6 +267,8 @@ export function createMemoryForegroundEmbeddingProcessor(input: Readonly<{
           requestedProvider: request.provider,
           requestedModel: request.model,
           dimensions: request.dimensions,
+          ...(request.embeddingDisclosure === undefined ? {}
+            : { embeddingDisclosure: request.embeddingDisclosure }),
           ...(operation.signal === undefined
             ? {}
             : { signal: operation.signal }),
@@ -267,6 +291,8 @@ export function createMemoryForegroundEmbeddingProcessor(input: Readonly<{
       }
       if (
         embedded.provider !== request.provider
+        || (request.contractVersion === MEMORY_FOREGROUND_DISCLOSURE_CONTRACT_VERSION
+          && embedded.canonicalModel !== request.model)
         || embedded.dimensions !== MEMORY_EMBEDDING_DIMENSIONS
         || !validVector(embedded.vector, MEMORY_EMBEDDING_DIMENSIONS)
       ) return unavailable("incompatible_embedding");

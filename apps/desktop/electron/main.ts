@@ -1,4 +1,9 @@
 import { createChatGPTDesktopListener } from "./chatgpt-plan-loopback";
+import {
+  assertMemoryEmbeddingDisclosureV2,
+  decodeMemoryEmbeddingDisclosureV2,
+  encodeMemoryEmbeddingDisclosureV2,
+} from "@nautilo/lattice-crypto/wire";
 import "./instance-argv-bootstrap.ts";
 import { LOCAL_EXECUTION_MAX_IDENTITIES } from "@nautilo/relay";
 import { developmentProfileScope, projectAgentAccess, selectionForAgentAccess, selectionForReadyComponents } from "./agent-access";
@@ -8573,10 +8578,21 @@ ipcMain.handle("foregroundShadow:memory:list", async (e, raw: unknown) => {
 });
 
 ipcMain.handle("foregroundShadow:memory:search", async (e, raw: unknown) => {
-  const options = boundedForegroundShadowValue(raw, "Protected Memory search") as
-    Parameters<ElectronForegroundShadowController["memorySearch"]>[0];
+  const value = boundedForegroundShadowValue(raw, "Protected Memory search") as
+    Parameters<ElectronForegroundShadowController["memorySearch"]>[0] & {
+      embeddingDisclosure?: unknown;
+    };
+  let embeddingDisclosure;
+  if (value.embeddingDisclosure !== undefined) {
+    assertMemoryEmbeddingDisclosureV2(value.embeddingDisclosure);
+    embeddingDisclosure = decodeMemoryEmbeddingDisclosureV2(
+      encodeMemoryEmbeddingDisclosureV2(value.embeddingDisclosure),
+    );
+  }
+  const { embeddingDisclosure: _untrustedEmbedding, ...options } = value;
   const { controller } = await foregroundShadowControllerForSender(e);
-  return controller.memorySearch(options);
+  return controller.memorySearch({ ...options,
+    ...(embeddingDisclosure === undefined ? {} : { embeddingDisclosure }) });
 });
 
 ipcMain.handle("foregroundShadow:memory:detail", async (e, raw: unknown) => {
@@ -8590,12 +8606,21 @@ ipcMain.handle("foregroundShadow:memory:detail", async (e, raw: unknown) => {
 ipcMain.handle("foregroundShadow:memory:update", async (e, raw: unknown) => {
   const value = boundedForegroundShadowValue(raw, "Protected Memory update") as {
     memoryId?: unknown; type?: unknown; content?: unknown; importance?: unknown;
+    requestedEmbedding?: unknown;
   };
+  let requestedEmbedding;
+  if (value.requestedEmbedding !== undefined) {
+    assertMemoryEmbeddingDisclosureV2(value.requestedEmbedding);
+    requestedEmbedding = decodeMemoryEmbeddingDisclosureV2(
+      encodeMemoryEmbeddingDisclosureV2(value.requestedEmbedding),
+    );
+  }
   const input = Object.freeze({
     memoryId: foregroundShadowString(value.memoryId, "Memory id", 200),
     type: foregroundShadowString(value.type, "Memory type", 4_096),
     content: foregroundShadowString(value.content, "Memory content", 65_536),
     importance: value.importance,
+    ...(requestedEmbedding === undefined ? {} : { requestedEmbedding }),
   });
   if (typeof input.importance !== "number" || !Number.isFinite(input.importance)
     || input.importance < 0 || input.importance > 1) {
