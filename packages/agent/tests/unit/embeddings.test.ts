@@ -184,12 +184,31 @@ describe("memory embedding providers", () => {
     expect(error).toMatchObject({ code: "invalid_response", provider: "venice" });
   });
 
-  test("never widens Automatic, small, or Qwen selections to the large marketplace space", async () => {
+  test("uses qualified Surplus as Auto's fallback when no direct credential is runnable", async () => {
+    serverPreferSurplus = true;
+    process.env["SURPLUS_API_KEY"] = "surplus-secret";
+    setConfigOverrides({ nautilo_embedding_dims: 1_536 });
+    serverEmbeddingModel = "";
+
+    expect(getProtectedMemoryEmbeddingConfiguration()).toEqual({
+      provider: "venice", model: "text-embedding-3-large", dimensions: 1_536,
+    });
+    expect(getMemoryEmbeddingDisclosure()).toMatchObject({
+      canonicalSpace: {
+        provider: "venice", model: "text-embedding-3-large", dimensions: 1_536,
+      },
+      processingRoute: { transport: "surplus_marketplace" },
+    });
+    expect((await embedTexts(["memory"]))[0]).toHaveLength(1_536);
+    expect(surplusAttemptSpy).toHaveBeenCalledTimes(1);
+    expect(serviceAttemptSpy).not.toHaveBeenCalled();
+  });
+
+  test("never rewrites explicit small or Qwen selections to the large marketplace space", async () => {
     serverPreferSurplus = true;
     process.env["SURPLUS_API_KEY"] = "surplus-secret";
     setConfigOverrides({ nautilo_embedding_dims: 1_536 });
     for (const selection of [
-      "",
       "venice:text-embedding-3-small",
       "openrouter:qwen/qwen3-embedding-8b",
     ]) {
@@ -198,6 +217,83 @@ describe("memory embedding providers", () => {
       expect(error).toMatchObject({ code: "missing_credentials" });
     }
     expect(surplusAttemptSpy).not.toHaveBeenCalled();
+  });
+
+  test("distinguishes inherited explicit configuration from an explicit Auto override", async () => {
+    serverPreferSurplus = true;
+    process.env["SURPLUS_API_KEY"] = "surplus-secret";
+    setConfigOverrides({
+      nautilo_embedding_model: "openrouter:qwen/qwen3-embedding-8b",
+      nautilo_embedding_dims: 1_536,
+    });
+
+    serverEmbeddingModel = null;
+    expect(await embedTexts(["memory"]).catch((caught: unknown) => caught))
+      .toMatchObject({ code: "missing_credentials", provider: "openrouter" });
+    expect(surplusAttemptSpy).not.toHaveBeenCalled();
+
+    serverEmbeddingModel = "";
+    expect(getProtectedMemoryEmbeddingConfiguration()).toEqual({
+      provider: "venice", model: "text-embedding-3-large", dimensions: 1_536,
+    });
+    expect((await embedTexts(["memory"]))[0]).toHaveLength(1_536);
+    expect(surplusAttemptSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("Auto refuses Surplus without the complete policy, credential, and dimension admission", async () => {
+    serverEmbeddingModel = "";
+    process.env["SURPLUS_API_KEY"] = "surplus-secret";
+    setConfigOverrides({ nautilo_embedding_dims: 1_536 });
+    for (const configure of [
+      () => { serverPreferSurplus = false; process.env["SURPLUS_API_KEY"] = "surplus-secret"; },
+      () => { serverPreferSurplus = true; delete process.env["SURPLUS_API_KEY"]; },
+      () => {
+        serverPreferSurplus = true;
+        process.env["SURPLUS_API_KEY"] = "surplus-secret";
+        setConfigOverrides({ nautilo_embedding_dims: 3 });
+      },
+    ]) {
+      configure();
+      expect(await embedTexts(["memory"]).catch((caught: unknown) => caught))
+        .toMatchObject({ code: "missing_credentials" });
+    }
+    expect(surplusAttemptSpy).not.toHaveBeenCalled();
+  });
+
+  test("Auto does not retry a Surplus provider 503", async () => {
+    serverEmbeddingModel = "";
+    serverPreferSurplus = true;
+    process.env["SURPLUS_API_KEY"] = "surplus-secret";
+    setConfigOverrides({ nautilo_embedding_dims: 1_536 });
+    surplusAttemptSpy.mockRejectedValueOnce(new surplusEmbeddingAttempt.SurplusEmbeddingAttemptError(
+      "provider_unavailable", 503, true,
+    ));
+
+    expect(await embedTexts(["memory"]).catch((caught: unknown) => caught))
+      .toMatchObject({ code: "request_failed", status: 503, retryable: true });
+    expect(surplusAttemptSpy).toHaveBeenCalledTimes(1);
+    expect(serviceAttemptSpy).not.toHaveBeenCalled();
+  });
+
+  test("Auto rechecks its marketplace binding before dispatch", async () => {
+    serverEmbeddingModel = "";
+    serverPreferSurplus = true;
+    process.env["SURPLUS_API_KEY"] = "surplus-secret";
+    setConfigOverrides({ nautilo_embedding_dims: 1_536 });
+    let dispatches = 0;
+    surplusAttemptSpy.mockImplementationOnce(async (input) => {
+      delete process.env["SURPLUS_API_KEY"];
+      input.assertStillAuthorized();
+      dispatches += 1;
+      throw new Error("must not dispatch");
+    });
+
+    expect(await embedTexts(["memory"]).catch((caught: unknown) => caught)).toMatchObject({
+      code: "unsupported_provider",
+      message: "The approved embedding configuration changed. Prepare the Memory request again.",
+    });
+    expect(dispatches).toBe(0);
+    expect(serviceAttemptSpy).not.toHaveBeenCalled();
   });
 
   test("policy-off large remains an exact direct Venice request with dimensions", async () => {
@@ -408,6 +504,9 @@ describe("memory embedding providers", () => {
   });
 
   test("automatic selection uses Qwen3 8B on Venice and OpenRouter, then OpenAI small", () => {
+    serverEmbeddingModel = "";
+    serverPreferSurplus = true;
+    process.env["SURPLUS_API_KEY"] = "surplus-secret";
     setConfigOverrides({
       nautilo_embedding_model: "",
       nautilo_embedding_dims: 1536,
@@ -433,6 +532,7 @@ describe("memory embedding providers", () => {
       model: "text-embedding-qwen3-8b",
       dimensions: 1536,
     });
+    expect(surplusAttemptSpy).not.toHaveBeenCalled();
   });
 
   test("automatic OpenRouter dispatch requests Qwen3 8B at 1,536 dimensions", async () => {

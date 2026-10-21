@@ -14,6 +14,7 @@ import { resolveOpenRouterTransport } from "../providers/openrouter-transport";
 import {
   assertQualifiedSurplusEmbeddingResponseModel,
   getQualifiedSurplusEmbeddingRoute,
+  QUALIFIED_SURPLUS_EMBEDDING_CATALOG_MODEL_ID,
   type QualifiedSurplusEmbeddingRoute,
 } from "../providers/surplus-embedding-route";
 import {
@@ -287,17 +288,35 @@ function resolveEmbeddingExecution(model: string, dimensions: number): ResolvedE
   const trimmedModel = model.trim();
   const route = getQualifiedSurplusEmbeddingRoute(trimmedModel, dimensions);
   const surplusKey = resolveProviderKey("surplus", {});
-  if (route && getCachedServerModelConfigRow()?.preferSurplus === true && surplusKey) {
-    return {
-      provider: route.provider,
-      model: route.model,
-      endpoint: "https://api.surplusintelligence.ai/v1/embeddings",
-      apiKey: surplusKey,
-      transport: "surplus_marketplace",
-      surplusRoute: route,
-    };
+  const preferSurplus = getCachedServerModelConfigRow()?.preferSurplus === true;
+  const surplusExecution = (qualified: QualifiedSurplusEmbeddingRoute, apiKey: string) => ({
+    provider: qualified.provider,
+    model: qualified.model,
+    endpoint: "https://api.surplusintelligence.ai/v1/embeddings",
+    apiKey,
+    transport: "surplus_marketplace" as const,
+    surplusRoute: qualified,
+  });
+  if (route && preferSurplus && surplusKey) {
+    return surplusExecution(route, surplusKey);
   }
-  return resolveEmbeddingProvider(model);
+  if (trimmedModel) return resolveEmbeddingProvider(model);
+  try {
+    // Keep Automatic's established direct vector identity whenever any direct
+    // embedding credential is runnable, even when Surplus is preferred.
+    return resolveEmbeddingProvider(model);
+  } catch (error) {
+    if (!(error instanceof EmbeddingProviderError)
+      || error.code !== "missing_credentials") throw error;
+    const fallbackRoute = getQualifiedSurplusEmbeddingRoute(
+      QUALIFIED_SURPLUS_EMBEDDING_CATALOG_MODEL_ID,
+      dimensions,
+    );
+    if (fallbackRoute && preferSurplus && surplusKey) {
+      return surplusExecution(fallbackRoute, surplusKey);
+    }
+    throw error;
+  }
 }
 
 function disclosuresEqual(

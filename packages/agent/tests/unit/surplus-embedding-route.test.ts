@@ -3,11 +3,14 @@ import {
   assertQualifiedSurplusEmbeddingReceipt,
   assertQualifiedSurplusEmbeddingResponseModel,
   getQualifiedSurplusEmbeddingRoute,
+  QUALIFIED_SURPLUS_EMBEDDING_CATALOG_MODEL_ID,
   SurplusEmbeddingReceiptError,
 } from "../../src/providers/surplus-embedding-route";
 
 describe("qualified Surplus embedding route", () => {
   test("admits only the explicit Venice large 1536-dimensional space", () => {
+    expect(QUALIFIED_SURPLUS_EMBEDDING_CATALOG_MODEL_ID)
+      .toBe("venice:text-embedding-3-large");
     const route = getQualifiedSurplusEmbeddingRoute("venice:text-embedding-3-large", 1_536);
     expect(route).toMatchObject({
       provider: "venice",

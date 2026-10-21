@@ -3,7 +3,8 @@ import type { SurplusWireReceipt } from "./surplus-transport";
 export const SURPLUS_EMBEDDING_MARKETPLACE_POLICY_VERSION =
   "surplus-embedding-marketplace-v1" as const;
 
-const QUALIFIED_CATALOG_MODEL_ID = "venice:text-embedding-3-large";
+export const QUALIFIED_SURPLUS_EMBEDDING_CATALOG_MODEL_ID =
+  "venice:text-embedding-3-large" as const;
 const QUALIFIED_MODEL = "text-embedding-3-large";
 const QUALIFIED_DIMENSIONS = 1_536;
 const QUALIFIED_RECEIPT_MODEL = "venice-embed-1";
@@ -11,7 +12,7 @@ const KNOWN_SERVING_PROVIDERS = Object.freeze(["mordiem", "venice"] as const);
 const QUALIFIED_ADAPTED_PARAMETER = "safe_mode";
 
 export interface QualifiedSurplusEmbeddingRoute {
-  readonly catalogModelId: typeof QUALIFIED_CATALOG_MODEL_ID;
+  readonly catalogModelId: typeof QUALIFIED_SURPLUS_EMBEDDING_CATALOG_MODEL_ID;
   readonly provider: "venice";
   readonly model: typeof QUALIFIED_MODEL;
   readonly dimensions: typeof QUALIFIED_DIMENSIONS;
@@ -23,7 +24,7 @@ export interface QualifiedSurplusEmbeddingRoute {
 }
 
 const QUALIFIED_ROUTE: QualifiedSurplusEmbeddingRoute = Object.freeze({
-  catalogModelId: QUALIFIED_CATALOG_MODEL_ID,
+  catalogModelId: QUALIFIED_SURPLUS_EMBEDDING_CATALOG_MODEL_ID,
   provider: "venice",
   model: QUALIFIED_MODEL,
   dimensions: QUALIFIED_DIMENSIONS,
