@@ -222,9 +222,30 @@ jobs:
     timeout-minutes: 10
     steps:
       - *runner_trust
-      - uses: socketdev/action@937f824ec476dfd164d4a4d9995751427b0be143 # v1
+      - id: socket-firewall
+        uses: socketdev/action@937f824ec476dfd164d4a4d9995751427b0be143 # v1
         with:
           mode: firewall
+          firewall-version: "1.15.4"
+
+      - name: Verify the fixed Socket Firewall binary before execution
+        env:
+          SFW_BINARY: ${{ steps.socket-firewall.outputs.firewall-path-binary }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, os
+          from pathlib import Path
+          path = Path(os.environ["SFW_BINARY"])
+          if path.is_symlink() or not path.is_file():
+              raise SystemExit("Socket Firewall output is not a regular binary")
+          if path.stat().st_size != 137_170_112:
+              raise SystemExit("Socket Firewall binary size mismatch")
+          expected = "cf9f55b8343e1ef6e6dcccdb09b99c70c0430a22ed7d0079286eccddeaf72670"
+          with path.open("rb") as source:
+              actual = hashlib.file_digest(source, "sha256").hexdigest()
+          if actual != expected:
+              raise SystemExit("Socket Firewall binary hash mismatch")
+          PY
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -237,5 +258,28 @@ jobs:
           # shipped native Bun remains separately admitted by release policy.
           bun-version: "1.4.3"
 
+      - name: Test the scoped Socket Firewall trust wrapper
+        run: python3 .github/scripts/test_install_with_socket_trust.py
+
       - name: Guarded dependency install
-        run: sfw bun install --frozen-lockfile --ignore-scripts
+        run: >-
+          sfw python3 .github/scripts/install_with_socket_trust.py
+          --base-ca "$SSL_CERT_FILE" --
+          bun install --frozen-lockfile --ignore-scripts
+
+      - name: Verify Socket Firewall produced its guarded-install report
+        env:
+          SFW_REPORT: ${{ steps.socket-firewall.outputs.firewall-path-report }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          path = Path(os.environ["SFW_REPORT"])
+          if path.is_symlink() or not path.is_file():
+              raise SystemExit("Socket Firewall report is missing")
+          report = json.loads(path.read_text(encoding="utf-8"))
+          if not isinstance(report, dict) or set(report) != {"blocked", "parseFail"} or any(
+              report[key] is not None and not isinstance(report[key], list) for key in ("blocked", "parseFail")
+          ):
+              raise SystemExit("Socket Firewall report is malformed")
+          PY
