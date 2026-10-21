@@ -43,7 +43,8 @@ describe("official skill evaluation repository wiring", () => {
     });
     expect(workflow.permissions).toEqual({ contents: "read" });
     expect(workflow.env).toEqual({
-      BUN_VERSION: "1.3.11",
+      NODE_OPTIONS: "--use-openssl-ca",
+      BUN_VERSION: "1.4.3",
       PYTHON_VERSION: "3.13.7",
       UV_VERSION: "0.7.3",
     });

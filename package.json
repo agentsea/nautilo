@@ -59,7 +59,7 @@
     "office:status": "bun bin/nautilo-dev/src/index.ts office status",
     "oss": "exec bun bin/nautilo-local/src/oss-retired.ts",
     "reset-pin": "bun bin/nautilo-reset-pin/src/index.ts",
-    "lint:unused": "NODE_OPTIONS=--max-old-space-size=6144 NAUTILO_DRIZZLE_OFFLINE=1 knip --no-progress",
+    "lint:unused": "NAUTILO_DRIZZLE_OFFLINE=1 node --max-old-space-size=6144 node_modules/knip/bin/knip.js --no-progress",
     "ci:local": "bash dev/scripts/ci-local.sh",
     "setup": "lefthook install",
     "first-party-apps:install": "bun dev/scripts/install-first-party-apps.ts",
@@ -125,7 +125,7 @@
     "typescript": "5.9.3",
     "typescript-eslint": "8.50.0"
   },
-  "packageManager": "bun@1.3.11",
+  "packageManager": "bun@1.4.3",
   "workspaces": [
     "packages/*",
     "packages/first-party-apps/board",
@@ -136,7 +136,7 @@
   ],
   "engines": {
     "node": ">=24.22.1 <25",
-    "bun": "1.3.11"
+    "bun": "1.4.3"
   },
   "trustedDependencies": [
     "electron",

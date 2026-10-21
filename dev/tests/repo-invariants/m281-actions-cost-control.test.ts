@@ -247,16 +247,16 @@ describe("M281 GitHub Actions cost controls", () => {
     const lintSteps = ci.jobs.lint?.steps ?? [];
     const knip = lintSteps.find((step) => step.name === "Unused exports (knip)");
     const eslint = lintSteps.find((step) => step.name === "Lint");
-    expect(eslint?.env?.NODE_OPTIONS).toBe("--max-old-space-size=6144");
+    expect(eslint?.env?.NODE_OPTIONS).toBe("--use-openssl-ca --max-old-space-size=6144");
     expect(await source("dev/scripts/ci-gates.sh")).toContain(
       'export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=6144}"',
     );
 
     expect(knip?.run).toBe("bash dev/scripts/ci-gates.sh lint-unused");
     expect(knip?.env).toEqual({
-      NODE_OPTIONS: "--max-old-space-size=6144",
+      NODE_OPTIONS: "--use-openssl-ca --max-old-space-size=6144",
     });
-    expect(rootPackage.scripts["lint:unused"]).toContain(`NODE_OPTIONS=${knip?.env?.NODE_OPTIONS}`);
+    expect(rootPackage.scripts["lint:unused"]).toContain("node --max-old-space-size=6144 node_modules/knip/bin/knip.js");
     expect(ci.jobs.lint?.env?.NODE_OPTIONS).toBeUndefined();
   });
 
@@ -271,17 +271,19 @@ describe("M281 GitHub Actions cost controls", () => {
     expect(typecheckJob?.env?.NODE_OPTIONS).toBeUndefined();
     expect(typecheck?.run).toBe("bash dev/scripts/ci-gates.sh typecheck");
     expect(typecheck?.env).toEqual({
-      NODE_OPTIONS: "--max-old-space-size=6144",
+      NODE_OPTIONS: "--use-openssl-ca --max-old-space-size=6144",
     });
     expect(rootPackage.scripts.typecheck).toBe("bun dev/scripts/typecheck.ts");
     expect(typecheckEnvironment({})).toMatchObject({
-      NODE_OPTIONS: typecheck?.env?.NODE_OPTIONS,
+      NODE_OPTIONS: "--max-old-space-size=6144",
       TURBO_CONCURRENCY: "1",
     });
     expect(typecheckEnvironment({ TURBO_CONCURRENCY: "" }).TURBO_CONCURRENCY).toBe("1");
     expect(typecheckEnvironment({ TURBO_CONCURRENCY: "6", NODE_OPTIONS: "--max-old-space-size=1024" }))
-      .toMatchObject({ TURBO_CONCURRENCY: "6", NODE_OPTIONS: typecheck?.env?.NODE_OPTIONS });
-    expect(localGates).toContain(`export NODE_OPTIONS=${typecheck?.env?.NODE_OPTIONS}`);
+      .toMatchObject({ TURBO_CONCURRENCY: "6", NODE_OPTIONS: "--max-old-space-size=6144" });
+    expect(typecheckEnvironment({ NODE_OPTIONS: "--use-openssl-ca --max-old-space-size=1024" }).NODE_OPTIONS)
+      .toBe("--use-openssl-ca --max-old-space-size=6144");
+    expect(localGates).toContain('export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=6144}"');
     expect(localGates).toContain('export TURBO_CONCURRENCY="${TURBO_CONCURRENCY:-1}"');
   });
 
@@ -444,7 +446,7 @@ describe("M281 GitHub Actions cost controls", () => {
       if (!text.includes("~/.bun/install/cache")) continue;
       const parsed = await workflow(name);
       expect(parsed.env?.BUN_VERSION, `${name} must own its Bun version`).toBe(
-        "1.3.11",
+        "1.4.3",
       );
       for (const line of text.split("\n")) {
         if (line.includes("key:") && line.includes("-bun-")) {

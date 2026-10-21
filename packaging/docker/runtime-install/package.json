@@ -2,7 +2,7 @@
   "name": "@nautilo/runtime-install",
   "version": "0.0.0",
   "private": true,
-  "packageManager": "bun@1.3.11",
+  "packageManager": "bun@1.4.3",
   "workspaces": [
     "bin/nautilo-server",
     "packages/acp-host",

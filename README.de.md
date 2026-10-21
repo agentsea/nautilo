@@ -8,7 +8,7 @@ Bebilderte Anleitung für die lokale Einrichtung: [Englisch](https://nautilo.ai/
 
 Die Benutzeroberfläche von Nautilo ist derzeit auf Englisch. Die README und die Anleitung zur lokalen Einrichtung sind übersetzt; andere Dokumentation kann weiterhin auf Englisch sein.
 
-<!-- Translation source: README.md; SHA-256: 26173a3ad0a018d0dc2b01dbcc74d1665aac88bcc6e3d81cc6997a1116907d2f -->
+<!-- Translation source: README.md; SHA-256: 9a4d4ad7613a2fa8d902c92c6c68d4863714026caa43a5d16cff07c11478583c -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### KI wird mehrspielerfähig.
@@ -108,7 +108,7 @@ mit den Oberflächen der Anwendungen interagieren.
 
 ## Aus dem Quellcode entwickeln
 
-Das Repository legt **Bun 1.3.11** und **Node 24.22.1** als Versionen fest. Installiere
+Das Repository legt **Bun 1.4.3** und **Node 24.22.1** als Versionen fest. Installiere
 Docker für die lokale PostgreSQL- und Logto-Infrastruktur. Zur Vorbereitung von
 Desktop kann außerdem Rust für das native Hilfsprogramm erforderlich sein.
 
