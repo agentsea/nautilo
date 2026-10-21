@@ -46,6 +46,7 @@ const COVERAGE_ROWS = [
       ["venice", "Venice"],
       ["openrouter", "OpenRouter"],
       ["openai", "OpenAI"],
+      ["surplus", "Surplus Intelligence (Venice 3-large)"],
     ],
   },
   { functionality: "Text-to-speech", providers: [["elevenlabs", "ElevenLabs"]] },
@@ -105,7 +106,7 @@ export function ProviderKeyCoverage({
       </h3>
       <p className="mt-1 text-xs text-foreground-muted">
         Shows API key coverage, not service availability. Surplus rows require Prefer Surplus
-        and a matching qualified route in the signed catalogue. Additional configuration and
+        and a matching qualified model route. Additional configuration and
         local alternatives are not evaluated.
       </p>
 
