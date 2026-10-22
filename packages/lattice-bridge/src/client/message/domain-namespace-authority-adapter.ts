@@ -42,6 +42,7 @@ function current(authority: Authority) {
 function selectOpened(
   authority: Authority,
   keyClass: "human" | "ai",
+  domainId: string,
   opened: readonly OpenedDomainNamespaceGenerationV2[],
 ): readonly OpenedNamespaceGeneration[] | null {
   const result: OpenedNamespaceGeneration[] = [];
@@ -56,6 +57,7 @@ function selectOpened(
     if (entry === undefined) return null;
     result.push(Object.freeze({
       namespaceId: namespaceId(entry.namespaceId),
+      domainId,
       keyClass,
       accessRevision: accessRevision(entry.accessRevision),
       generation: namespaceGeneration(entry.generation),
@@ -111,8 +113,17 @@ export function createDomainNamespaceAuthorityAdapterV2(input: Readonly<{
         expectedCurrentGeneration: expectedCurrent.generation,
         expectedCurrentHeadDigest: expectedCurrent.headDigest,
         ...(request.signal === undefined ? {} : {signal: request.signal}),
-      }, async (entries) => {
-        const selected = selectOpened(authority, request.keyClass, entries);
+      }, async (entries, openedAuthority) => {
+        if (
+          openedAuthority.namespaceId !== authority.namespaceId
+          || openedAuthority.keyClass !== request.keyClass
+        ) return unavailable("authority_stale");
+        const selected = selectOpened(
+          authority,
+          request.keyClass,
+          openedAuthority.domainId,
+          entries,
+        );
         return selected === null
           ? unavailable("authority_stale")
           : visit(index + 1, [...accumulated, ...selected]);
@@ -192,8 +203,13 @@ export function createDomainNamespaceAuthorityAdapterV2(input: Readonly<{
         authority: request.authority,
       }, (entries) => use(Object.freeze(entries.map((entry) =>
         Object.freeze({
-          ...entry,
+          namespaceId: entry.namespaceId,
           keyClass: "ai" as const,
+          accessRevision: entry.accessRevision,
+          generation: entry.generation,
+          generationKey: entry.generationKey,
+          audienceFingerprint: entry.audienceFingerprint,
+          headDigest: entry.headDigest,
         }) satisfies NamespaceAgentGrantSecretEntry
       ))));
     },

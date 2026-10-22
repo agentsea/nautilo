@@ -8,6 +8,7 @@
 import { claudePermissionDetailSchema, type ClaudePermissionDetail } from "@nautilo/types";
 export { claudePermissionDetailSchema, type ClaudePermissionDetail } from "@nautilo/types";
 export const CLAUDE_EXECUTION_PROTOCOL_VERSION = 18 as const;
+export const CLAUDE_MESSAGE_BOUNDARY_PROTOCOL_VERSION = 32 as const;
 export const CLAUDE_PERMISSION_DETAIL_PROTOCOL_VERSION = 20 as const;
 export const CLAUDE_EXECUTION_MAX_FRAME_BYTES = 128 * 1024;
 export const CLAUDE_EXECUTION_MAX_PROMPT_BYTES = 16 * 1024;
@@ -77,6 +78,7 @@ export type RelayClaudeExecutionEvent =
     }>
   /** Display-only observation; it is never selected-model admission authority. */
   | Readonly<{ kind: "initialized"; claudeCodeVersion: string; servingModel: string }>
+  | Readonly<{ kind: "output_message_started" }>
   | Readonly<{ kind: "output_delta"; text: string }>
   | Readonly<{
       kind: "result";
@@ -179,6 +181,7 @@ export function parseRelayClaudeExecutionDesktopEvent(
     const event = parseEvent(record.event);
     if (scope === null || executionRef === null || event === null) return null;
     if (event.kind === "interaction" && event.interaction.kind === "permission" && event.interaction.detail !== undefined && scope.selectedProtocolVersion < CLAUDE_PERMISSION_DETAIL_PROTOCOL_VERSION) return null;
+    if (event.kind === "output_message_started" && scope.selectedProtocolVersion < CLAUDE_MESSAGE_BOUNDARY_PROTOCOL_VERSION) return null;
     const parsed = freeze<RelayClaudeExecutionDesktopEvent>({ type: "relay:claude-execution-event", scope, executionRef, event });
     return frameWithinLimit(parsed) ? parsed : null;
   } catch {
@@ -298,6 +301,9 @@ function parseEvent(value: unknown): RelayClaudeExecutionEvent | null {
     const claudeCodeVersion = record === null ? null : text(record.claudeCodeVersion, CLAUDE_EXECUTION_MAX_TEXT_BYTES);
     const servingModel = record === null ? null : text(record.servingModel, CLAUDE_EXECUTION_MAX_TEXT_BYTES);
     return claudeCodeVersion === null || servingModel === null ? null : freeze({ kind: "initialized", claudeCodeVersion, servingModel });
+  }
+  if (kind.kind === "output_message_started") {
+    return exactRecord(value, ["kind"]) === null ? null : freeze({ kind: "output_message_started" });
   }
   if (kind.kind === "output_delta") {
     const record = exactRecord(value, ["kind", "text"]);

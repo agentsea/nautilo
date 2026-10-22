@@ -32,6 +32,7 @@ const CRYPTO_APP_DENIED_TABLES = new Set([
   "background_crypto_authorization_domain_requirements",
   "background_crypto_authorization_namespace_requirements",
   "processor_crypto_signer_authorizations",
+  "task_cancellation_crypto_staging_receipts",
 ]);
 export type CryptoTablePrivilege = (typeof TABLE_PRIVILEGE_ORDER)[number];
 export const CRYPTO_IDENTITY_READ_COLUMNS = Object.freeze({

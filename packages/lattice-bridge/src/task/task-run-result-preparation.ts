@@ -34,6 +34,7 @@ export type PrepareTaskRuntimeRunResultInput = Readonly<{
   agentAuthorizationRevision: number;
   runtime: PrepareTaskRuntimeResultObjectInput["runtime"];
   signerPublication: PrepareTaskRuntimeResultObjectInput["signerPublication"];
+  temporarySigner?: PrepareTaskRuntimeResultObjectInput["temporarySigner"];
   resolveHistoricalSignerPublicationManager:
     PrepareTaskRuntimeResultObjectInput[
       "resolveHistoricalSignerPublicationManager"
@@ -77,6 +78,9 @@ export function prepareTaskRuntimeRunResult(
       agentAuthorizationRevision: input.agentAuthorizationRevision,
       runtime: input.runtime,
       signerPublication: input.signerPublication,
+      ...(input.temporarySigner === undefined ? {} : {
+        temporarySigner: input.temporarySigner,
+      }),
       resolveHistoricalSignerPublicationManager:
         input.resolveHistoricalSignerPublicationManager,
     });

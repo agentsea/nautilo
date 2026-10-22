@@ -96,7 +96,7 @@ type DurablePublication = Readonly<{
   hostAuthorizationRevision: number;
   signerEvidence: readonly (
     | Readonly<{
-      kind: "agent_runtime_publication" | "processor_authorization";
+      kind: "agent_runtime_publication" | "processor_authorization" | "task_runtime_signer_certificate";
       evidenceBytes: Uint8Array;
     }>
     | Readonly<{

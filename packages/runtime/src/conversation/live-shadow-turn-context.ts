@@ -19,6 +19,9 @@ import {
   type LiveShadowExecutionCapability,
   type ForegroundLiveShadowSessionExecutionCapability,
 } from "@nautilo/lattice-bridge/server";
+import {
+  assertAuthenticTaskRuntimeWakeForegroundEvidence,
+} from "@nautilo/lattice-crypto";
 
 import type { ForegroundTurnCandidate } from "../foreground-turn-lifecycle";
 import type { RoomJournalContext } from "../context/build-transcript-context";
@@ -32,10 +35,15 @@ import type {
   RecallRecordFreshness,
   RecallRecordsPort,
 } from "@nautilo/agent";
+import {
+  snapshotProtectedTaskWakeForegroundSource,
+  type ProtectedTaskWakeForegroundSource,
+} from "../tasks/protected-task-wake-foreground-context";
 
 export interface LiveShadowTurnContext {
   readonly operationId: string;
-  readonly capability: LiveShadowExecutionCapability;
+  readonly capability: LiveShadowExecutionCapability | null;
+  readonly taskWake?: ProtectedTaskWakeForegroundSource;
   readonly session: LiveShadowAgentTurnSession | null;
   readonly enforcementPolicy: StrictShadowEnforcementPolicy;
   readonly dataOperationPolicy?: DataOperationPolicyBinding;
@@ -361,6 +369,24 @@ export function getCurrentLiveShadowTurnContext():
   return storage.getStore();
 }
 
+/** Genuine request-local protected Task wake source, while its grant is live. */
+export function getCurrentProtectedTaskWakeForegroundContext():
+  ProtectedTaskWakeForegroundSource | undefined {
+  const context = storage.getStore();
+  if (context === undefined || context.taskWake === undefined) return undefined;
+  const wake = context.taskWake;
+  if (context.capability !== null
+    || context.operationId !== wake.evidence.invocation.operationId
+    || context.session === null
+    || context.session.authorizationSignal?.aborted
+    || (context.session.authorizationDeadlineAt !== undefined
+      && Date.now() >= context.session.authorizationDeadlineAt)) {
+    throw new TypeError("Protected Task wake foreground context is inactive");
+  }
+  assertAuthenticTaskRuntimeWakeForegroundEvidence(wake.evidence);
+  return wake;
+}
+
 function requireCurrentDataOperationPolicy(
   context: LiveShadowTurnContext,
 ): DataOperationPolicyBinding {
@@ -415,6 +441,57 @@ export function runWithLiveShadowTurnSession<Value>(input: Readonly<{
       ? {}
       : { observeBoundary: input.observeBoundary }),
   }), input.work);
+}
+
+/**
+ * Bind an authenticated Task result wake to the existing protected foreground
+ * storage. A wake has no Human publication capability or serialized authority.
+ */
+export async function runWithTaskWakeLiveShadowTurnSession<Value>(input: Readonly<{
+  source: ProtectedTaskWakeForegroundSource;
+  session: LiveShadowAgentTurnSession;
+  enforcementPolicy: StrictShadowEnforcementPolicy;
+  dataOperationPolicy: DataOperationPolicyBinding;
+  observeBoundary?: LiveShadowTurnContext["observeBoundary"];
+  work(): Promise<Value>;
+}>): Promise<Value> {
+  const source = snapshotProtectedTaskWakeForegroundSource(input.source);
+  if (input.enforcementPolicy.mode === "plaintext_only"
+    || input.enforcementPolicy.revision !== source.evidence.policyRevision
+    || input.session.authorizationSignal === undefined
+    || input.session.authorizationSignal.aborted
+    || input.session.authorizationDeadlineAt !== source.evidence.expiresAt
+    || Date.now() >= input.session.authorizationDeadlineAt
+    || input.session.checkpoint === undefined) {
+    throw new TypeError("Protected Task wake foreground policy is invalid");
+  }
+  assertAuthenticTaskRuntimeWakeForegroundEvidence(source.evidence);
+  const context: LiveShadowTurnContext = Object.freeze({
+    operationId: source.evidence.invocation.operationId,
+    capability: null,
+    taskWake: source,
+    session: input.session,
+    enforcementPolicy: input.enforcementPolicy,
+    dataOperationPolicy: input.dataOperationPolicy,
+    ...(input.observeBoundary === undefined
+      ? {} : { observeBoundary: input.observeBoundary }),
+  });
+  const assertCurrent = (): void => {
+    assertAuthenticTaskRuntimeWakeForegroundEvidence(source.evidence);
+    input.session.authorizationSignal?.throwIfAborted();
+    if (input.session.authorizationDeadlineAt !== undefined
+      && Date.now() >= input.session.authorizationDeadlineAt) {
+      throw new TypeError("Protected Task wake foreground context is inactive");
+    }
+  };
+  try {
+    const result = await storage.run(context, input.work);
+    assertCurrent();
+    return result;
+  } catch (error) {
+    assertCurrent();
+    throw error;
+  }
 }
 
 /**

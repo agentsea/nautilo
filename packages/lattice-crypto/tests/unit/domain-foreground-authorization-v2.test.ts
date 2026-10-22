@@ -12,6 +12,7 @@ import {
   serializeDomainForegroundAuthorizationPlanV2,
   serializeDomainForegroundAuthorizationV2,
   verifyDomainForegroundAuthorizationV2,
+  verifyHistoricalDomainForegroundAuthorizationV2,
   withOpenedDomainForegroundAuthorizationV2,
   type DomainForegroundAuthorityEntryV2,
   type DomainForegroundAuthorizationCurrentAuthorityV2,
@@ -80,7 +81,11 @@ function largePlan(
   });
 }
 
-async function fixture(kind: "agent" | "runtime" = "agent") {
+async function fixture(
+  kind: "agent" | "runtime" = "agent",
+  operations: readonly ["decrypt"] | readonly ["encrypt"]
+    | readonly ["decrypt", "encrypt"] = ["decrypt", "encrypt"],
+) {
   const crypto = new LatticeCrypto(seededRng(301_401), { now: () => NOW });
   const signer = crypto.generateSigningKeyPair();
   const recipient = await crypto.deriveEncryptionKeyPair(bytes(0x51));
@@ -119,7 +124,7 @@ async function fixture(kind: "agent" | "runtime" = "agent") {
     ),
     recipientRuntimeGeneration: kind === "agent" ? 3 : 0,
     recipientKeyId: "recipient-key:alpha",
-    operations: ["decrypt", "encrypt"],
+    operations,
     issuedAt: NOW,
     deadlineAt: NOW + 5 * 60_000,
     maximumSecretBytes: 256 * 1024,
@@ -168,6 +173,54 @@ async function fixture(kind: "agent" | "runtime" = "agent") {
 }
 
 describe("M301 V2 Domain foreground authorization", () => {
+  test("verifies exact historical public evidence after the live deadline", async () => {
+    const value = await fixture("runtime");
+    const authorizationBytes = serializeDomainForegroundAuthorizationV2(
+      value.authorization,
+    );
+    const planBytes = serializeDomainForegroundAuthorizationPlanV2(value.plan);
+    expect(verifyDomainForegroundAuthorizationV2(value.crypto, {
+      authorizationBytes,
+      now: value.plan.deadlineAt,
+      current: value.current,
+    })).toEqual({ status: "unavailable", reason: "expired" });
+    expect(verifyHistoricalDomainForegroundAuthorizationV2(value.crypto, {
+      authorizationBytes,
+      expectedPlanBytes: planBytes,
+      committerDeviceSigningPublicKey:
+        value.current.committerDeviceSigningPublicKey,
+    })).toEqual({ status: "verified" });
+
+    const changedPlan = planBytes.slice();
+    changedPlan[changedPlan.length - 1] =
+      changedPlan[changedPlan.length - 1]! ^ 1;
+    expect(verifyHistoricalDomainForegroundAuthorizationV2(value.crypto, {
+      authorizationBytes,
+      expectedPlanBytes: changedPlan,
+      committerDeviceSigningPublicKey:
+        value.current.committerDeviceSigningPublicKey,
+    })).toEqual({ status: "unavailable", reason: "invalid" });
+
+    const changedSignature = authorizationBytes.slice();
+    changedSignature[changedSignature.length - 1] =
+      changedSignature[changedSignature.length - 1]! ^ 1;
+    expect(verifyHistoricalDomainForegroundAuthorizationV2(value.crypto, {
+      authorizationBytes: changedSignature,
+      expectedPlanBytes: planBytes,
+      committerDeviceSigningPublicKey:
+        value.current.committerDeviceSigningPublicKey,
+    })).toEqual({ status: "unavailable", reason: "invalid" });
+
+    const changedKey = value.crypto.generateSigningKeyPair();
+    expect(verifyHistoricalDomainForegroundAuthorizationV2(value.crypto, {
+      authorizationBytes,
+      expectedPlanBytes: planBytes,
+      committerDeviceSigningPublicKey: changedKey.publicKey,
+    })).toEqual({ status: "unavailable", reason: "invalid" });
+    changedKey.privateKey.fill(0);
+    changedKey.publicKey.fill(0);
+  });
+
   test("verifies a signed Runtime grant without borrowing a recipient private key", async () => {
     const value = await fixture("runtime");
     const authorizationBytes = serializeDomainForegroundAuthorizationV2(
@@ -228,7 +281,7 @@ describe("M301 V2 Domain foreground authorization", () => {
           recipientEncryptionPrivateKey: recipient.privateKey },
         operation: (entries) => entries.length,
       })).toEqual({ status: "opened", value: 1 });
-      for (const operations of [[], ["encrypt"], ["decrypt", "decrypt"], ["encrypt", "decrypt"], ["decrypt", "unknown"]]) {
+      for (const operations of [[], ["decrypt", "decrypt"], ["encrypt", "decrypt"], ["decrypt", "unknown"]]) {
         expect(() => createDomainForegroundAuthorizationPlanV2(crypto, {
           ...value.plan, operations: operations as typeof plan.operations,
         })).toThrow();
@@ -241,6 +294,50 @@ describe("M301 V2 Domain foreground authorization", () => {
       destroyDomainForegroundAuthorizationPlanV2(unchanged);
       if (decoded !== null) destroyDomainForegroundAuthorizationPlanV2(decoded);
     }
+  });
+  test("requires an explicit publication boundary for encrypt-only plans", async () => {
+    const value = await fixture("runtime", ["encrypt"]);
+    const encodedPlan = serializeDomainForegroundAuthorizationPlanV2(
+      value.plan,
+    );
+    const decoded = parseDomainForegroundAuthorizationPlanV2(encodedPlan);
+    expect(decoded?.operations).toEqual(["encrypt"]);
+    const authorizationBytes = serializeDomainForegroundAuthorizationV2(
+      value.authorization,
+    );
+    const { recipientEncryptionPrivateKey: _privateKey, ...publicCurrent } =
+      value.current;
+    expect(verifyDomainForegroundAuthorizationV2(value.crypto, {
+      authorizationBytes,
+      now: NOW,
+      current: publicCurrent,
+    })).toEqual({ status: "unavailable", reason: "authority_stale" });
+    expect(verifyDomainForegroundAuthorizationV2(value.crypto, {
+      authorizationBytes,
+      now: NOW,
+      current: publicCurrent,
+      expectedOperations: ["encrypt"],
+    })).toEqual({ status: "verified" });
+    let defaultOperationStarted = false;
+    expect(await withOpenedDomainForegroundAuthorizationV2(value.crypto, {
+      authorizationBytes,
+      now: NOW,
+      current: value.current,
+      operation: () => { defaultOperationStarted = true; },
+    })).toEqual({ status: "unavailable", reason: "authority_stale" });
+    expect(defaultOperationStarted).toBe(false);
+    expect(await withOpenedDomainForegroundAuthorizationV2(value.crypto, {
+      authorizationBytes,
+      now: NOW,
+      current: value.current,
+      expectedOperations: ["encrypt"],
+      operation: entries => entries.length,
+    })).toEqual({ status: "opened", value: 1 });
+    authorizationBytes.fill(0);
+    if (decoded !== null) destroyDomainForegroundAuthorizationPlanV2(decoded);
+    destroyDomainForegroundAuthorizationV2(value.authorization);
+    destroyDomainForegroundAuthorizationPlanV2(value.plan);
+    encodedPlan.fill(0);
   });
   test("binds the same Namespace set independently of input order", () => {
     const crypto = new LatticeCrypto(seededRng(301_400));

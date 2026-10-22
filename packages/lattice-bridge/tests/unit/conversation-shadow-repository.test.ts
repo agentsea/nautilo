@@ -1507,3 +1507,40 @@ describe("message crypto object identity v2", () => {
     })).toThrow(/revision/i);
   });
 });
+
+test.each(["ready", "extra_parent", "missing_ordinal", "wrong_operation"] as const)(
+  "wake saga derives the exact Room object from its sole durable parent: %s", async (scenario) => {
+    const { harness, prepared } = await fixture();
+    const operationId = "task-run-delivery-wake:31300000-0000-4000-8000-000000000088";
+    const reserved = await harness.product.reserveLiveShadowAgent({ sessionId: SESSION_ALPHA, operationId,
+      transcriptOrdinal: 2, authorRole: "assistant", createdAt: 1_800_000_000_000,
+      requestDigest: new Uint8Array(32).fill(3), subthreadReplyClassification: "counted" });
+    if (reserved.status !== "reserved") throw new Error("Expected allocation");
+    const state = await harness.product.getRevision(reserved.allocation.messageId, 0);
+    if (state === null) throw new Error("Expected lifecycle");
+    let mutations = 0;
+    const product = new Proxy(harness.product, { get(target, property, receiver) {
+      if (property === "getRevision") return async () => ({ ...state, lifecycle: { ...state.lifecycle,
+        shadowOperationId: scenario === "extra_parent" ? operationId : null,
+        taskWakeOperationId: scenario === "wrong_operation" ? `${operationId}-substituted` : operationId,
+        shadowTranscriptOrdinal: scenario === "missing_ordinal" ? null : 2 } });
+      if (property === "markCryptoComplete" || property === "compareAndSwapCryptoMapping") {
+        return async () => { mutations += 1; return "applied" as const; };
+      }
+      const value = Reflect.get(target, property, receiver) as unknown;
+      return typeof value === "function" ? value.bind(target) as unknown : value;
+    } }) as ConversationProductStorePort;
+    const repository = createDormantConversationShadowRepository({ product, crypto: harness.crypto });
+    const completion = repository.completeRevision({ messageId: reserved.allocation.messageId,
+      expectedRevision: 0, parityStatus: "server_verified",
+      prepared: prepared(reserved.allocation, { role: "assistant", content: "wake answer" }) });
+    if (scenario === "ready") {
+      expect(await completion).toMatchObject({ status: "mapped", cryptoObjectId: reserved.allocation.cryptoObjectId });
+      expect(mutations).toBe(2);
+    } else {
+      expect(completion).rejects.toThrow();
+      await completion.catch(() => undefined);
+      expect(mutations).toBe(0);
+      expect(await harness.crypto.verify(reserved.allocation.cryptoObjectId)).toBeNull();
+    }
+  });

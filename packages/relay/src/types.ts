@@ -412,6 +412,8 @@ export type RelayCapabilities = {
   canExecuteLocal?: boolean | undefined;
   /** Static support for fresh Task-run admission against a durable project grant. */
   canDelegateLocalExecution?: boolean | undefined;
+  /** Exact Task project grant on typed local-file operations. */
+  canUseTaskProjectFiles?: boolean | undefined;
   canReadLocalExecutionHistory?: boolean | undefined;
   localExecution?: RelayLocalExecutionCapability | undefined;
   basicExecution?: RelayBasicExecutionCapability | undefined;

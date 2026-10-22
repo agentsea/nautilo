@@ -221,6 +221,7 @@ function input(): ProtectedTaskNativeMessageAuthorityInput {
       graphThreadId,
       sessionId: ids.session,
       sessionOwnerId: ids.owner,
+      executionRoomId: ids.room,
       roomId: ids.room,
       namespaceId: ids.namespace,
       contentNamespaceId: ids.contentNamespace,
@@ -228,12 +229,14 @@ function input(): ProtectedTaskNativeMessageAuthorityInput {
       requiredNamespaceFingerprint: digest(5),
       agentId: ids.agent,
       requestorId: ids.requestor,
+      requesterHumanId: ids.human,
       inputObjectId: currentOccurrence.task.cryptoObjectId,
       resultObjectId: value.result.objectId,
       authorizationRequestId: requestId,
       executionSegment: 1,
       policyRevision: 9,
       representation: "protected",
+      definitionRepresentation: "protected",
       authorizationExpiresAt: expiresAt,
       signal: abort.signal,
     }),
@@ -431,7 +434,8 @@ function productRows(
 function runner(rows: unknown[]): ConversationProductCanonicalTransactionRunner {
   const transaction: ConversationProductCanonicalTransactionRunner["transaction"] =
     async (use) => {
-      const remaining = [...rows];
+      // Publication checks fence policy before locking the aggregate.
+      const remaining = [rows[5], ...rows.slice(0, 5), ...rows.slice(6)];
       const tx = {
         select() {
           const row = remaining.shift();
@@ -467,6 +471,34 @@ function nonProductDependencies(): Partial<
 }
 
 describe("protected Task native Message current authority", () => {
+  test("binds the exact certified Runtime signer proof projection", async () => {
+    const certified = Object.freeze({
+      ...expected(),
+      runtimeGeneration: 0,
+      agentAuthorizationRevision: 0,
+      signerKeyId: `agent_runtime_signer_${"a".repeat(64)}`,
+      signerAuthorizationHash: hex(8),
+    });
+    const base = dependencies();
+    const resolve = createProtectedTaskNativeMessageAuthorityResolver(
+      input(),
+      {
+        ...base,
+        inspectSigner: () => Promise.resolve({
+          runtimeGeneration: certified.runtimeGeneration,
+          agentAuthorizationRevision: certified.agentAuthorizationRevision,
+          signerKeyId: certified.signerKeyId,
+          signerAuthorizationHash: certified.signerAuthorizationHash,
+        }),
+      },
+    );
+    expect(await resolve(certified)).toEqual(certified);
+    expect(await resolve({
+      ...certified,
+      signerAuthorizationHash: hex(9),
+    })).toBeNull();
+  });
+
   test("returns a detached exact projection when every authority is current", async () => {
     const resolve = createProtectedTaskNativeMessageAuthorityResolver(
       input(),
@@ -496,6 +528,55 @@ describe("protected Task native Message current authority", () => {
     expect(await stale(expected())).toBeNull();
   });
 
+  test("accepts the captured claimed snapshot only with current running product state", async () => {
+    const current = input();
+    const captured = {
+      ...current,
+      record: { ...current.record, snapshot: {
+        ...current.record.snapshot, state: "claimed" as const,
+      } },
+    };
+    const resolve = createProtectedTaskNativeMessageAuthorityResolver(
+      { ...captured, runner: runner(productRows()) },
+      nonProductDependencies(),
+    );
+    expect(await resolve(expected())).toEqual(expected());
+
+    for (const [index, status] of [[1, "cancelled"], [2, "queued"], [2, "completed"]] as const) {
+      const rows = productRows();
+      rows[index] = { ...(rows[index] as Record<string, unknown>), status };
+      const stale = createProtectedTaskNativeMessageAuthorityResolver(
+        { ...captured, runner: runner(rows) },
+        nonProductDependencies(),
+      );
+      expect(await stale(expected())).toBeNull();
+    }
+  });
+
+  test("captured claimed state does not bypass current grant or exact claim identity", async () => {
+    const current = input();
+    const captured = {
+      ...current,
+      record: { ...current.record, snapshot: {
+        ...current.record.snapshot, state: "claimed" as const,
+      } },
+    };
+    for (const grant of ["missing", "changed"] as const) {
+      expect(await createProtectedTaskNativeMessageAuthorityResolver(
+        captured, dependencies({ grant }),
+      )(expected())).toBeNull();
+    }
+    expect(await createProtectedTaskNativeMessageAuthorityResolver(
+      captured, dependencies(),
+    )({ ...expected(), claimId: "other-claim" })).toBeNull();
+    for (const state of ["grant_ready", "completed", "terminal_failure"] as const) {
+      expect(await createProtectedTaskNativeMessageAuthorityResolver({
+        ...captured,
+        record: { ...captured.record, snapshot: { ...captured.record.snapshot, state } },
+      }, dependencies())(expected())).toBeNull();
+    }
+  });
+
   test("accepts canonical Shadow lifecycle policy metadata", async () => {
     const current = input();
     const shadowInput = {
@@ -507,6 +588,7 @@ describe("protected Task native Message current authority", () => {
       productAuthority: {
         ...current.productAuthority,
         representation: "dual" as const,
+        definitionRepresentation: "dual" as const,
       },
     };
     const rows = productRows();
@@ -546,6 +628,16 @@ describe("protected Task native Message current authority", () => {
       dependencies(),
     );
     expect(await changedProduct(expected())).toBeNull();
+    expect(await createProtectedTaskNativeMessageAuthorityResolver(
+      {
+        ...current,
+        productAuthority: {
+          ...current.productAuthority,
+          requesterHumanId: ids.owner,
+        },
+      },
+      dependencies(),
+    )(expected())).toBeNull();
   });
 
   test("fails closed when product or accepted recipient authority changed", async () => {

@@ -1,3 +1,4 @@
+import { parseTaskHistoricalRepairProvenanceV1 } from "@nautilo/lattice-bridge";
 import { ProtectedTaskExecutionDidNotBeginError } from "../../tasks/protected-task-execution-candidate";
 import { createHash, randomUUID } from "node:crypto";
 
@@ -9,9 +10,19 @@ import {
 } from "@nautilo/lattice-crypto";
 import type { TaskRunResultPayloadV1 } from "@nautilo/lattice-bridge";
 import {
-  decodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  decodeTaskRuntimeBackgroundAuthorizationRequestBase,
+  decodeTaskRuntimeBackgroundAuthorizationRequestV2,
+  decodeTaskRuntimeBackgroundAuthorizationResponseV2,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV2,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV3,
   destroyTaskRuntimeBackgroundAuthorizationRequestV1,
+  encodeTaskRuntimeBackgroundAuthorizationRequestV2,
+  encodeTaskRuntimeBackgroundAuthorizationRequestV3,
   encodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  isTaskRuntimeBackgroundAuthorizationRequestV2Carrier,
+  type BackgroundAuthorizationIssuerV2,
+  type TaskRuntimeBackgroundAuthorizationRequestV2,
+  type TaskRuntimeBackgroundAuthorizationRequestV3,
   type TaskRuntimeBackgroundAuthorizationRequestV1,
 } from "@nautilo/lattice-crypto/background";
 import {
@@ -27,6 +38,7 @@ import type {
 } from "@nautilo/db";
 import {
   deriveTaskContentCryptoObjectIdV1,
+  taskContentRevisionObjectIdV1,
 } from "@nautilo/lattice-bridge";
 import type {
   CurrentTaskRuntimeAuthority,
@@ -38,6 +50,7 @@ import {
 
 import type { JobExecutor } from "../../job";
 import type {
+  ProtectedTaskCheckpointPauseReason,
   ProtectedTaskExecutionCandidate,
   ProtectedTaskExecutionStartResult,
   ProtectedTaskJobSchedulingFacts,
@@ -55,17 +68,17 @@ import type {
   ProtectedTaskRunningOccurrence,
 } from "../../tasks/task-observer";
 import {
-  BACKGROUND_AUTHORIZATION_MAX_CLAIM_LEASE_MS,
   BACKGROUND_AUTHORIZATION_MAX_IDENTIFIER_BYTES,
   advanceBackgroundAuthorizationGeneration,
   attachBackgroundAuthorizationRecipient,
-  claimBackgroundAuthorizationRequest,
+  claimTaskRuntimeBackgroundAuthorizationRequest,
   completeBackgroundAuthorizationRequest,
   failBackgroundAuthorizationRequest,
   markBackgroundAuthorizationRunning,
 } from "./lifecycle";
 import {
   TASK_RUNTIME_STABLE_IDEMPOTENCY_PREFIX,
+  isTaskExecutionWorkKind,
   parseBackgroundAuthorizationRecord,
   sameBackgroundAuthorizationRecord,
   type BackgroundAuthorizationRecord,
@@ -78,6 +91,7 @@ import { isExactCompletedTaskRuntimeSuccessor } from
 type HeldTaskRuntimeAuthority = Readonly<{
   foreground: DomainForegroundAuthorizationPublicCurrentAuthorityV2;
   namespaceRequirements: CurrentTaskRuntimeAuthority["namespaceRequirements"];
+  currentIssuer?: BackgroundAuthorizationIssuerV2;
 }>;
 
 type CurrentTaskRuntimeAuthorityPort = <Value>(input: Readonly<{
@@ -143,26 +157,39 @@ export type BindTaskRuntimeRecipientResult = Readonly<{
 }> | null;
 
 /** Exact request construction retained by both initial and parked Task owners. */
-export type TaskRuntimeRecipientRequestPlan = Readonly<{
+export type TaskRuntimeRecipientRequestPlan<
+  Request extends TaskRuntimeBackgroundAuthorizationRequestV1
+    | TaskRuntimeBackgroundAuthorizationRequestV2
+    | TaskRuntimeBackgroundAuthorizationRequestV3
+    = TaskRuntimeBackgroundAuthorizationRequestV1,
+> = Readonly<{
   initialRecord: BackgroundAuthorizationTaskRuntimeRecordV3;
   scopeMemory?: TaskScopeMemoryBinding;
   recipientAttempt(input: Readonly<{
     record: BackgroundAuthorizationTaskRuntimeRecordV3;
     now: number;
-  }>): Readonly<{ recipientKeyId: string; expiresAt: number }>;
+  }>): Readonly<{
+    recipientKeyId: string;
+    expiresAt: number;
+    signerAgentId?: string;
+  }>;
   buildRequest(input: Readonly<{
     record: BackgroundAuthorizationTaskRuntimeRecordV3;
     attempt: TaskRuntimeRecipientAttempt;
     binding: TaskRuntimeRecipientDeviceBinding;
     authority: TaskRuntimeRecipientCurrentAuthority;
-  }>): TaskRuntimeBackgroundAuthorizationRequestV1;
+  }>): Request;
 }>;
 
 export type AttachExactTaskRuntimeRecipientInput = Readonly<{
   occurrence: ProtectedTaskOccurrence;
   /** Durable row used by the caller to enter its current-authority owner. */
   selected: BackgroundAuthorizationTaskRuntimeRecordV3;
-  plan: TaskRuntimeRecipientRequestPlan;
+  plan: TaskRuntimeRecipientRequestPlan<
+    TaskRuntimeBackgroundAuthorizationRequestV1
+      | TaskRuntimeBackgroundAuthorizationRequestV2
+      | TaskRuntimeBackgroundAuthorizationRequestV3
+  >;
   binding: TaskRuntimeRecipientDeviceBinding;
   authority: TaskRuntimeRecipientCurrentAuthority;
   repository: Pick<BackgroundAuthorizationTaskRuntimeReplacementRepository,
@@ -184,7 +211,13 @@ export type RotateExpiredTaskRuntimeRecipientInput = Readonly<{
     "get" | "compareAndSwap">;
   recipients: TaskRuntimeRecipientRegistry;
   now: () => number;
+  authorizationRequested?: TaskRuntimeAuthorizationRequested;
 }>;
+
+export type TaskRuntimeAuthorizationRequested = (
+  occurrence: ProtectedTaskOccurrence,
+  record: BackgroundAuthorizationTaskRuntimeRecordV3,
+) => void | Promise<void>;
 
 type TaskRuntimeResultBinding = Readonly<{
   taskId: string;
@@ -222,6 +255,10 @@ export type TaskRuntimeGrantClaimPlan = Readonly<{
   executor: JobExecutor;
   scopeMemory?: TaskScopeMemoryBinding;
   modelAttribution?: "external";
+  requestCheckpointPause?(
+    reason: ProtectedTaskCheckpointPauseReason,
+    pauseRequestId?: string,
+  ): boolean;
   startProtectedTaskRun(
     input: StartProtectedTaskRunInput,
   ): Promise<StartProtectedTaskRunResult>;
@@ -229,13 +266,19 @@ export type TaskRuntimeGrantClaimPlan = Readonly<{
   recipientAttempt(input: Readonly<{
     record: BackgroundAuthorizationTaskRuntimeRecordV3;
     now: number;
-  }>): Readonly<{ recipientKeyId: string; expiresAt: number }>;
+  }>): Readonly<{
+    recipientKeyId: string;
+    expiresAt: number;
+    signerAgentId?: string;
+  }>;
   buildRequest(input: Readonly<{
     record: BackgroundAuthorizationTaskRuntimeRecordV3;
     attempt: TaskRuntimeRecipientAttempt;
     binding: TaskRuntimeRecipientDeviceBinding;
     authority: TaskRuntimeRecipientCurrentAuthority;
-  }>): TaskRuntimeBackgroundAuthorizationRequestV1;
+  }>):
+    | TaskRuntimeBackgroundAuthorizationRequestV1
+    | TaskRuntimeBackgroundAuthorizationRequestV2;
   openTransientInput(
     input: TaskRuntimeExecutionOpenInput,
   ): Promise<Record<string, unknown>>;
@@ -258,6 +301,10 @@ export type ParkedTaskRuntimeGrantClaimPlan = Readonly<{
   executor: JobExecutor;
   scopeMemory?: TaskScopeMemoryBinding;
   modelAttribution?: "external";
+  requestCheckpointPause?(
+    reason: ProtectedTaskCheckpointPauseReason,
+    pauseRequestId?: string,
+  ): boolean;
   persistJob(input: Readonly<{
     occurrence: ProtectedTaskOccurrence;
     claimed: BackgroundAuthorizationTaskRuntimeRecordV3;
@@ -288,6 +335,10 @@ export type TaskRuntimeGrantStableIdentity = Readonly<{
   taskRunId: string;
   executionSegment: number;
   resumeContinuationFingerprint: string | null;
+  /** Exact accepted Human response that authorizes this later segment. */
+  resumeAcceptanceId?: string;
+  /** Closed Runtime descriptor purpose for that Human response. */
+  resumeWorkKind?: "task.approval_resume" | "task.await_reply_resume";
   ownerId: string;
   requestorId: string;
   agentId: string;
@@ -363,19 +414,39 @@ export function taskRuntimeStableIdempotencyKey(
   identity: TaskRuntimeGrantStableIdentity,
 ): string {
   const fingerprint = identity.resumeContinuationFingerprint;
+  const acceptanceId = identity.resumeAcceptanceId;
+  const resumeWorkKind = identity.resumeWorkKind;
+  const initial = identity.executionSegment === 1
+    && fingerprint === null
+    && acceptanceId === undefined
+    && resumeWorkKind === undefined;
+  const additionalAuthority = identity.executionSegment > 1
+    && typeof fingerprint === "string"
+    && /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/u.test(fingerprint)
+    && acceptanceId === undefined
+    && resumeWorkKind === undefined;
+  const human = identity.executionSegment > 1
+    && fingerprint === null
+    && typeof acceptanceId === "string"
+    && acceptanceId.trim().length > 0
+    && (resumeWorkKind === "task.approval_resume"
+      || resumeWorkKind === "task.await_reply_resume");
   if (!Number.isSafeInteger(identity.executionSegment)
     || identity.executionSegment < 1
-    || (identity.executionSegment === 1
-      ? fingerprint !== null
-      : typeof fingerprint !== "string"
-        || !/^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/u.test(fingerprint))) {
+    || (!initial && !additionalAuthority && !human)) {
     throw new TypeError("Task Runtime execution segment identity is invalid");
   }
-  const initial = taskRuntimeStableRoutingTuple(identity);
+  const routing = taskRuntimeStableRoutingTuple(identity);
   const digest = createHash("sha256")
-    .update(JSON.stringify(identity.executionSegment === 1 ? initial : [
+    .update(JSON.stringify(initial ? routing : human ? [
+      "task-runtime-human-resume:v1",
+      routing,
+      identity.executionSegment,
+      acceptanceId,
+      resumeWorkKind,
+    ] : [
       "task-runtime-continuation:v1",
-      initial,
+      routing,
       identity.executionSegment,
       fingerprint,
     ]))
@@ -398,8 +469,28 @@ export interface TaskRuntimeGrantClaimDependencies {
   ): Promise<TaskRuntimeGrantClaimPlan> | TaskRuntimeGrantClaimPlan;
   withCurrentClaimAuthority: CurrentTaskRuntimeClaimAuthorityPort;
   withCurrentAuthority: CurrentTaskRuntimeAuthorityPort;
+  authorizationRequested?: TaskRuntimeAuthorizationRequested;
   now?: () => number;
   claimId?: () => string;
+}
+
+async function notifyTaskRuntimeAuthorizationRequested(
+  callback: TaskRuntimeAuthorizationRequested | undefined,
+  occurrence: ProtectedTaskOccurrence,
+  record: BackgroundAuthorizationTaskRuntimeRecordV3,
+): Promise<void> {
+  if (callback === undefined) return;
+  try {
+    await callback(
+      copyOccurrence(occurrence),
+      copyTaskRuntimeRecord(
+        record,
+        "Task Runtime authorization wake record is invalid",
+      ),
+    );
+  } catch {
+    // The durable request remains discoverable without the latency hint.
+  }
 }
 
 export interface ParkedTaskRuntimeGrantClaimDependencies {
@@ -530,22 +621,24 @@ function sameTaskScopeMemoryBinding(
 function exactOccurrenceRecord(
   occurrence: ProtectedTaskAuthorityOccurrence,
   record: BackgroundAuthorizationTaskRuntimeRecordV3,
+  expectedWorkKind?: "task.execute" | "task.approval_resume"
+    | "task.await_reply_resume",
 ): boolean {
   const contentRequirements = record.authoritySet.namespaceRequirements.filter(
     (requirement) =>
       requirement.namespaceId === occurrence.task.contentNamespaceId,
   );
   const content = contentRequirements[0];
-  return occurrence.task.cryptoAccessRevision === 0
-    && occurrence.task.cryptoObjectId === deriveTaskContentCryptoObjectIdV1({
-      kind: "definition",
-      taskId: occurrence.task.id,
-      contentRevision: occurrence.task.contentRevision,
+  return Number.isSafeInteger(occurrence.task.cryptoAccessRevision) && occurrence.task.cryptoAccessRevision >= 0
+    && occurrence.task.cryptoObjectId === taskContentRevisionObjectIdV1({
+      coordinate: { kind: "definition", taskId: occurrence.task.id, contentRevision: occurrence.task.contentRevision },
+      namespaceId: occurrence.task.contentNamespaceId, historicalRepair: occurrence.task.definitionHistoricalRepair == null ? null : parseTaskHistoricalRepairProvenanceV1(occurrence.task.definitionHistoricalRepair),
     })
     && record.snapshot.workId === occurrence.run.id
     && record.snapshot.namespaceId === occurrence.task.contentNamespaceId
-    && record.workKind === "task.execute"
-    && record.purpose === "task.execute"
+    && isTaskExecutionWorkKind(record.workKind)
+    && record.purpose === record.workKind
+    && (expectedWorkKind === undefined || record.workKind === expectedWorkKind)
     && record.processorAuthorizationRevision === null
     && record.expectedDomainEpoch !== null
     && contentRequirements.length === 1
@@ -564,9 +657,18 @@ function parkedStableIdentityMatchesOccurrence(
   identity: TaskRuntimeGrantStableIdentity,
 ): boolean {
   const canonicalTargetUserIds = [...identity.targetUserIds].sort();
+  const additionalAuthority = typeof identity.resumeContinuationFingerprint
+      === "string"
+    && identity.resumeAcceptanceId === undefined
+    && identity.resumeWorkKind === undefined;
+  const human = identity.resumeContinuationFingerprint === null
+    && typeof identity.resumeAcceptanceId === "string"
+    && identity.resumeAcceptanceId.trim().length > 0
+    && (identity.resumeWorkKind === "task.approval_resume"
+      || identity.resumeWorkKind === "task.await_reply_resume");
   return occurrence.run.jobId !== null
     && identity.executionSegment > 1
-    && identity.resumeContinuationFingerprint !== null
+    && (additionalAuthority || human)
     && identity.taskId === occurrence.task.id
     && identity.taskRunId === occurrence.run.id
     && identity.ownerId === occurrence.task.ownerId
@@ -604,7 +706,8 @@ function exactUnclaimedParkedInitialRecord(
   stableIdentity: TaskRuntimeGrantStableIdentity,
   initial: BackgroundAuthorizationTaskRuntimeRecordV3,
 ): boolean {
-  return exactOccurrenceRecord(occurrence, initial)
+  const workKind = stableIdentity.resumeWorkKind ?? "task.execute";
+  return exactOccurrenceRecord(occurrence, initial, workKind)
     && parkedStableIdentityMatchesOccurrence(occurrence, stableIdentity)
     && initial.idempotencyKey === taskRuntimeStableIdempotencyKey(stableIdentity)
     && initial.snapshot.state === "awaiting_recipient"
@@ -656,6 +759,8 @@ function stableIdentityMatchesOccurrence(
   // dedicated proof-consuming start plan before it can attach a recipient.
   return identity.executionSegment === 1
     && identity.resumeContinuationFingerprint === null
+    && identity.resumeAcceptanceId === undefined
+    && identity.resumeWorkKind === undefined
     && plan.reference.executionSegment === 1
     && !Object.hasOwn(plan.reference, "resumeAcceptanceId")
     && !Object.hasOwn(plan.reference, "resumeContinuationFingerprint")
@@ -786,7 +891,7 @@ function assertPlan(
   const outputDomain = outputDomains[0];
   if (
     !isTaskRuntimeRecord(initial)
-    || !exactOccurrenceRecord(occurrence, initial)
+    || !exactOccurrenceRecord(occurrence, initial, "task.execute")
     || !stableIdentityMatchesOccurrence(occurrence, plan)
     || (plan.stableIdentity.memoryMode === "scope"
       ? scopeMemory === undefined
@@ -870,6 +975,8 @@ function assertParkedPlan(
       requirement.domainId === outputNamespace.domainId
     ) ?? [];
   const outputDomain = outputDomains[0];
+  const humanResume = identity.resumeContinuationFingerprint === null;
+  const expectedWorkKind = identity.resumeWorkKind ?? "task.execute";
   if (
     !isTaskRuntimeRecord(initial)
     || !exactUnclaimedParkedInitialRecord(occurrence, identity, initial)
@@ -886,10 +993,16 @@ function assertParkedPlan(
     || plan.reference.authorizationRequestId !== initial.snapshot.requestId
     || plan.reference.policyRevision !== initial.expectedPolicyRevision
     || plan.reference.executionSegment !== identity.executionSegment
-    || !Object.hasOwn(plan.reference, "resumeContinuationFingerprint")
-    || Object.hasOwn(plan.reference, "resumeAcceptanceId")
-    || plan.reference.resumeContinuationFingerprint
-      !== identity.resumeContinuationFingerprint
+    || (humanResume
+      ? !Object.hasOwn(plan.reference, "resumeAcceptanceId")
+        || Object.hasOwn(plan.reference, "resumeContinuationFingerprint")
+        || plan.reference.resumeAcceptanceId !== identity.resumeAcceptanceId
+      : !Object.hasOwn(plan.reference, "resumeContinuationFingerprint")
+        || Object.hasOwn(plan.reference, "resumeAcceptanceId")
+        || plan.reference.resumeContinuationFingerprint
+          !== identity.resumeContinuationFingerprint)
+    || initial.workKind !== expectedWorkKind
+    || initial.purpose !== expectedWorkKind
     || plan.scheduling.ownerId !== occurrence.task.ownerId
     || plan.scheduling.requestorId !== occurrence.task.requestorId
     || plan.scheduling.agentId !== occurrence.task.agentId
@@ -1013,10 +1126,12 @@ function exactRequest(
   attempt: TaskRuntimeRecipientAttempt,
   request: TaskRuntimeBackgroundAuthorizationRequestV1,
 ): boolean {
-  return request.requestId === record.snapshot.requestId
+  return isTaskExecutionWorkKind(record.workKind)
+    && record.purpose === record.workKind
+    && request.requestId === record.snapshot.requestId
     && request.workId === record.snapshot.workId
-    && request.workKind === "task.execute"
-    && request.workPurpose === "task.execute"
+    && request.workKind === record.workKind
+    && request.workPurpose === record.purpose
     && request.recipientGeneration === record.snapshot.recipientGeneration
     && request.recipientGeneration === attempt.recipientGeneration
     && request.recipientKeyId === attempt.recipientKeyId
@@ -1108,6 +1223,9 @@ function copyOccurrence(
   return Object.freeze({
     task: Object.freeze({
       ...occurrence.task,
+      ...(occurrence.task.definitionHistoricalRepair == null ? {} : {
+        definitionHistoricalRepair: parseTaskHistoricalRepairProvenanceV1(occurrence.task.definitionHistoricalRepair),
+      }),
       cryptoRequiredNamespaceFingerprint:
         occurrence.task.cryptoRequiredNamespaceFingerprint.slice(),
     }),
@@ -1205,10 +1323,17 @@ export async function attachExactTaskRuntimeRecipient(
     recipientGeneration: durable.snapshot.recipientGeneration,
     recipientKeyId: recipient.recipientKeyId,
     expiresAt: recipient.expiresAt,
+    ...(recipient.signerAgentId === undefined ? {} : {
+      signerAgentId: recipient.signerAgentId,
+    }),
   });
   if (attempt.status !== "created") return null;
   let retain = false;
-  let request: TaskRuntimeBackgroundAuthorizationRequestV1 | null = null;
+  let request:
+    | TaskRuntimeBackgroundAuthorizationRequestV1
+    | TaskRuntimeBackgroundAuthorizationRequestV2
+    | TaskRuntimeBackgroundAuthorizationRequestV3
+    | null = null;
   try {
     request = buildRequest({
       record: durable,
@@ -1216,17 +1341,31 @@ export async function attachExactTaskRuntimeRecipient(
       binding,
       authority,
     });
+    const baseRequest = request.formatVersion === 2 || request.formatVersion === 3
+      ? request.baseRequest
+      : request;
     if (!exactBoundRequest({
       occurrence,
       record: durable,
       attempt: attempt.attempt,
       binding,
       authority,
-      request,
+      request: baseRequest,
       now,
     })) throw new TypeError("Task Runtime request was substituted");
-    const descriptorBytes =
-      encodeTaskRuntimeBackgroundAuthorizationRequestV1(request);
+    const requestCrypto = {
+      hash: (value: Uint8Array) => new Uint8Array(
+        createHash("sha256").update(value).digest(),
+      ),
+    };
+    const descriptorBytes = request.formatVersion === 2
+      ? encodeTaskRuntimeBackgroundAuthorizationRequestV2(
+        requestCrypto,
+        request,
+      )
+      : request.formatVersion === 3
+        ? encodeTaskRuntimeBackgroundAuthorizationRequestV3(requestCrypto, request)
+        : encodeTaskRuntimeBackgroundAuthorizationRequestV1(request);
     const descriptorDigest = createHash("sha256")
       .update(descriptorBytes)
       .digest("hex");
@@ -1276,7 +1415,15 @@ export async function attachExactTaskRuntimeRecipient(
       requestBytes: descriptorBytes.slice(),
     });
   } finally {
-    if (request !== null) destroyTaskRuntimeBackgroundAuthorizationRequestV1(request);
+    if (request !== null) {
+      if (request.formatVersion === 2) {
+        destroyTaskRuntimeBackgroundAuthorizationRequestV2(request);
+      } else if (request.formatVersion === 3) {
+        destroyTaskRuntimeBackgroundAuthorizationRequestV3(request);
+      } else {
+        destroyTaskRuntimeBackgroundAuthorizationRequestV1(request);
+      }
+    }
     if (!retain) {
       recipients.delete(
         durable.snapshot.requestId,
@@ -1366,6 +1513,11 @@ export async function rotateExpiredTaskRuntimeRecipient(
     loaded.snapshot.requestId,
     loaded.snapshot.recipientGeneration,
   );
+  await notifyTaskRuntimeAuthorizationRequested(
+    input.authorizationRequested,
+    occurrence,
+    rotated.record,
+  );
   return Object.freeze({ status: "rotated" as const });
 }
 
@@ -1386,7 +1538,12 @@ function requestFromRecord(
   record: BackgroundAuthorizationTaskRuntimeRecordV3,
 ): TaskRuntimeBackgroundAuthorizationRequestV1 | null {
   if (record.descriptorBytes === null) return null;
-  const request = decodeTaskRuntimeBackgroundAuthorizationRequestV1(
+  const request = decodeTaskRuntimeBackgroundAuthorizationRequestBase(
+    {
+      hash: value => new Uint8Array(
+        createHash("sha256").update(value).digest(),
+      ),
+    },
     record.descriptorBytes,
   );
   if (request === null) return null;
@@ -1449,6 +1606,21 @@ function destroyCurrentAuthority(
     domain.headDigest.fill(0);
     domain.activeNamespaceBindingSetDigest.fill(0);
   }
+}
+
+function copyCurrentIssuer(
+  issuer: BackgroundAuthorizationIssuerV2,
+): BackgroundAuthorizationIssuerV2 {
+  return Object.freeze({
+    ...issuer,
+    headDigest: issuer.headDigest.slice(),
+    signingPublicKeyHash: issuer.signingPublicKeyHash.slice(),
+  });
+}
+
+function destroyCurrentIssuer(issuer: BackgroundAuthorizationIssuerV2): void {
+  issuer.headDigest.fill(0);
+  issuer.signingPublicKeyHash.fill(0);
 }
 
 function staleClaimResult(
@@ -1595,6 +1767,10 @@ type TaskRuntimeExecutionCandidateInput = Readonly<{
   now: () => number;
   claimId: string;
   result: TaskRuntimeResultBinding;
+  requestCheckpointPause?(
+    reason: ProtectedTaskCheckpointPauseReason,
+    pauseRequestId?: string,
+  ): boolean;
   persistJob?(payload: PersistJobPayload): Promise<string>;
   recoverBeforeExecution?(): Promise<boolean>;
   start(jobId: string): Promise<ProtectedTaskExecutionStartResult>;
@@ -1615,6 +1791,54 @@ function executionTimestamp(
     throw new TypeError(message);
   }
   return timestamp;
+}
+
+async function failExpiredUnsettledTaskRuntimeExecution(input: Readonly<{
+  record: BackgroundAuthorizationTaskRuntimeRecordV3;
+  repository: Pick<
+    BackgroundAuthorizationTaskRuntimeReplacementRepository,
+    "get" | "compareAndSwap"
+  >;
+  now: () => number;
+}>): Promise<void> {
+  const claimExpiresAt = input.record.snapshot.claimExpiresAt;
+  const failedAt = input.now();
+  if (input.record.snapshot.state !== "running"
+    || claimExpiresAt === null
+    || !Number.isSafeInteger(failedAt)
+    || failedAt < claimExpiresAt) return;
+  const next: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+    ...input.record,
+    snapshot: failBackgroundAuthorizationRequest(
+      input.record.snapshot,
+      "provider_outcome_unknown",
+      failedAt,
+    ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+    finishedAt: failedAt,
+  };
+  try {
+    const failed = await input.repository.compareAndSwap({
+      expectedRequestRevision: input.record.snapshot.requestRevision,
+      next,
+    });
+    if (failed.status === "updated"
+      && !sameBackgroundAuthorizationRecord(failed.record, next)) {
+      throw new TypeError(
+        "Task Runtime expired execution failure was substituted",
+      );
+    }
+  } catch (error) {
+    const current = await input.repository.get(
+      input.record.snapshot.requestId,
+    );
+    if (current !== null && sameBackgroundAuthorizationRecord(current, next)) {
+      return;
+    }
+    // A concurrent terminal/park settlement owns its exact successor. It must
+    // never be replaced by the deadline cleanup after its product commit.
+    if (current !== null && current.snapshot.state !== "running") return;
+    throw error;
+  }
 }
 
 function createTaskRuntimeExecutionCandidate(
@@ -1679,8 +1903,23 @@ function createTaskRuntimeExecutionCandidate(
           return persistenceRecovery;
         },
       };
+  const requestCheckpointPause = input.requestCheckpointPause;
+  const checkpointPause = requestCheckpointPause === undefined
+    ? {}
+    : {
+        requestCheckpointPause(
+          reason: ProtectedTaskCheckpointPauseReason,
+          pauseRequestId?: string,
+        ): boolean {
+          if (released || (state !== "started" && state !== "running")) {
+            return false;
+          }
+          return requestCheckpointPause(reason, pauseRequestId);
+        },
+      };
   return Object.freeze({
     ...persisted,
+    ...checkpointPause,
     async start(jobId: string): Promise<StartProtectedTaskRunResult> {
       const expectedState = input.persistJob === undefined ? "ready" : "persisted";
       if (state !== expectedState) {
@@ -1789,13 +2028,48 @@ function createTaskRuntimeExecutionCandidate(
                     expectedPolicyRevision: requirement.expectedPolicyRevision,
                   })),
                 ),
+                ...(held.currentIssuer === undefined ? {} : {
+                  currentIssuer: copyCurrentIssuer(held.currentIssuer),
+                }),
               })
               : null,
           });
           if (authority === null) {
             throw new Error("Task Runtime authority is no longer current");
           }
+          let requestV2: TaskRuntimeBackgroundAuthorizationRequestV2 | null = null;
+          let responseV2: Readonly<{
+            authorizationBytes: Uint8Array;
+            certificateBytes: Uint8Array;
+          }> | null = null;
           try {
+            const descriptorBytes = current.descriptorBytes!;
+            if (isTaskRuntimeBackgroundAuthorizationRequestV2Carrier(
+              descriptorBytes,
+            )) {
+              requestV2 = decodeTaskRuntimeBackgroundAuthorizationRequestV2(
+                {
+                  hash: value => new Uint8Array(
+                    createHash("sha256").update(value).digest(),
+                  ),
+                },
+                descriptorBytes,
+              );
+              if (requestV2 === null || authority.currentIssuer === undefined) {
+                throw new Error(
+                  "Task Runtime certified authorization is unavailable",
+                );
+              }
+              try {
+                responseV2 = decodeTaskRuntimeBackgroundAuthorizationResponseV2(
+                  current.acceptedMaterial.responseBytes,
+                );
+              } catch {
+                throw new Error(
+                  "Task Runtime certified authorization is unavailable",
+                );
+              }
+            }
             const opened = await input.recipients.withOpenedGrant({
               requestId: request.requestId,
               workId: request.workId,
@@ -1803,10 +2077,19 @@ function createTaskRuntimeExecutionCandidate(
               recipientKeyId: request.recipientKeyId,
               claimId: input.claimId,
               claimExpiresAt: current.snapshot.claimExpiresAt,
-              authorizationBytes: current.acceptedMaterial.responseBytes,
+              authorizationBytes: responseV2?.authorizationBytes
+                ?? current.acceptedMaterial.responseBytes,
               current: authority.foreground,
               currentNamespaceRequirements: authority.namespaceRequirements,
               result: input.result,
+              ...(responseV2 === null ? {} : {
+                certifiedSigning: {
+                  expectedExecutionSegment: input.reference.executionSegment,
+                  requestBytes: descriptorBytes,
+                  certificateBytes: responseV2.certificateBytes,
+                  currentIssuer: authority.currentIssuer!,
+                },
+              }),
               operation: async (domains, signal, evidence) => {
                 const transientInput = await input.openTransientInput({
                   occurrence,
@@ -1962,6 +2245,17 @@ function createTaskRuntimeExecutionCandidate(
                   return result;
                 } catch (error) {
                   await Promise.allSettled(pendingSettlements);
+                  // Once work has begun, an elapsed grant cannot remain a
+                  // durable `running` claim that a restart might mistake for
+                  // live authority. A started settlement is left to its
+                  // product/recovery owner because its commit may be durable.
+                  if (settlementCalls === 0) {
+                    await failExpiredUnsettledTaskRuntimeExecution({
+                      record: storedRunning,
+                      repository: input.repository,
+                      now: input.now,
+                    });
+                  }
                   throw error;
                 } finally {
                   settlementOpen = false;
@@ -1973,7 +2267,15 @@ function createTaskRuntimeExecutionCandidate(
             }
             return opened.value;
           } finally {
+            if (requestV2 !== null) {
+              destroyTaskRuntimeBackgroundAuthorizationRequestV2(requestV2);
+            }
+            responseV2?.authorizationBytes.fill(0);
+            responseV2?.certificateBytes.fill(0);
             destroyCurrentAuthority(authority.foreground);
+            if (authority.currentIssuer !== undefined) {
+              destroyCurrentIssuer(authority.currentIssuer);
+            }
           }
         } finally {
           destroyTaskRuntimeBackgroundAuthorizationRequestV1(request);
@@ -2022,6 +2324,7 @@ class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
   }
 
   async #replaceChangedPreclaimPlan(
+    occurrence: ProtectedTaskOccurrence,
     current: BackgroundAuthorizationTaskRuntimeRecordV3,
     replacement: BackgroundAuthorizationTaskRuntimeRecordV3,
   ): Promise<ClaimProtectedTaskOccurrenceResult> {
@@ -2051,6 +2354,17 @@ class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
       current.snapshot.requestId,
       current.snapshot.recipientGeneration,
     );
+    if (!isTaskRuntimeRecord(replaced.record)
+      || !exactOccurrenceRecord(occurrence, replaced.record)
+      || !sameTaskRuntimeAuthorityPlan(replaced.record, replacement)
+      || replaced.record.snapshot.state !== "awaiting_recipient") {
+      throw new TypeError("Task Runtime authority replacement was substituted");
+    }
+    await notifyTaskRuntimeAuthorizationRequested(
+      this.dependencies.authorizationRequested,
+      occurrence,
+      replaced.record,
+    );
     return Object.freeze({ status: "awaiting_authorization" as const });
   }
 
@@ -2077,7 +2391,11 @@ class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
       || !exactOccurrenceRecord(input.occurrence, durable)
     ) throw new TypeError("Task Runtime durable record was substituted");
     if (!sameTaskRuntimeAuthorityPlan(durable, plan.initialRecord)) {
-      await this.#replaceChangedPreclaimPlan(durable, plan.initialRecord);
+      await this.#replaceChangedPreclaimPlan(
+        input.occurrence,
+        durable,
+        plan.initialRecord,
+      );
       return null;
     }
     if (
@@ -2145,19 +2463,31 @@ class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
     const existing = await this.dependencies.repository.get(
       plan.initialRecord.snapshot.requestId,
     );
-    const durable = existing ?? (await this.dependencies.repository.create(
-      plan.initialRecord,
-    )).record;
+    const created = existing === null
+      ? await this.dependencies.repository.create(plan.initialRecord)
+      : null;
+    const durable = existing ?? created!.record;
     if (!isTaskRuntimeRecord(durable)
       || !exactOccurrenceRecord(occurrence, durable)) {
       throw new TypeError("Task Runtime durable record was substituted");
     }
     if (!sameTaskRuntimeAuthorityPlan(durable, plan.initialRecord)) {
-      return this.#replaceChangedPreclaimPlan(durable, plan.initialRecord);
+      return this.#replaceChangedPreclaimPlan(
+        occurrence,
+        durable,
+        plan.initialRecord,
+      );
     }
     const current = durable;
 
     if (current.snapshot.state === "awaiting_recipient") {
+      if (created?.status === "created") {
+        await notifyTaskRuntimeAuthorizationRequested(
+          this.dependencies.authorizationRequested,
+          occurrence,
+          current,
+        );
+      }
       return Object.freeze({ status: "awaiting_authorization" as const });
     }
 
@@ -2170,6 +2500,9 @@ class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
         repository: this.dependencies.repository,
         recipients: this.dependencies.recipients,
         now: this.#now,
+        ...(this.dependencies.authorizationRequested === undefined ? {} : {
+          authorizationRequested: this.dependencies.authorizationRequested,
+        }),
       });
       if (rotation.status === "rotated" || rotation.status === "stale") {
         return Object.freeze({ status: "awaiting_authorization" as const });
@@ -2216,6 +2549,24 @@ class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
             current.snapshot.requestId,
             current.snapshot.recipientGeneration,
           );
+          if (!wasRunning) {
+            if (!isTaskRuntimeRecord(expired.record)
+              || !exactOccurrenceRecord(occurrence, expired.record)
+              || !sameTaskRuntimeAuthorityPlan(
+                expired.record,
+                plan.initialRecord,
+              )
+              || expired.record.snapshot.state !== "awaiting_recipient") {
+              throw new TypeError(
+                "Task Runtime expired claim rotation was substituted",
+              );
+            }
+            await notifyTaskRuntimeAuthorizationRequested(
+              this.dependencies.authorizationRequested,
+              occurrence,
+              expired.record,
+            );
+          }
           return Object.freeze({
             status: wasRunning ? "inactive" as const : "awaiting_authorization" as const,
           });
@@ -2247,7 +2598,6 @@ class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
             request.deadlineAt,
             recipient.expiresAt,
             acceptedMaterial.authorizationExpiresAt,
-            claimedAt + BACKGROUND_AUTHORIZATION_MAX_CLAIM_LEASE_MS,
           );
           if (
             !Number.isSafeInteger(claimedAt)
@@ -2260,12 +2610,16 @@ class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
           ) return null;
           const next: BackgroundAuthorizationTaskRuntimeRecordV3 = {
             ...current,
-            snapshot: claimBackgroundAuthorizationRequest(
+            snapshot: claimTaskRuntimeBackgroundAuthorizationRequest(
               current.snapshot,
-              claimId,
-              claimedAt,
-              claimExpiresAt,
-            ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+              {
+                claimId,
+                now: claimedAt,
+                requestDeadlineAt: request.deadlineAt,
+                authorizationExpiresAt:
+                  acceptedMaterial.authorizationExpiresAt,
+              },
+            ),
           };
           return repository.compareAndSwap({
             expectedRequestRevision: current.snapshot.requestRevision,
@@ -2317,6 +2671,9 @@ class TaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
                 return plan.deferBeforeExecution!(exact);
               },
             }),
+        ...(plan.requestCheckpointPause === undefined
+          ? {}
+          : { requestCheckpointPause: plan.requestCheckpointPause }),
         openTransientInput: plan.openTransientInput,
         publishResult: plan.publishResult,
       });
@@ -2415,7 +2772,6 @@ class ParkedTaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
             request.deadlineAt,
             recipient.expiresAt,
             acceptedMaterial.authorizationExpiresAt,
-            claimedAt + BACKGROUND_AUTHORIZATION_MAX_CLAIM_LEASE_MS,
           );
           if (!Number.isSafeInteger(claimedAt)
             || claimedAt < now
@@ -2426,12 +2782,16 @@ class ParkedTaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
             || !currentMatchesResult(result, loaded, authority)) return null;
           const next: BackgroundAuthorizationTaskRuntimeRecordV3 = {
             ...loaded,
-            snapshot: claimBackgroundAuthorizationRequest(
+            snapshot: claimTaskRuntimeBackgroundAuthorizationRequest(
               loaded.snapshot,
-              claimId,
-              claimedAt,
-              claimExpiresAt,
-            ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+              {
+                claimId,
+                now: claimedAt,
+                requestDeadlineAt: request.deadlineAt,
+                authorizationExpiresAt:
+                  acceptedMaterial.authorizationExpiresAt,
+              },
+            ),
           };
           return repository.compareAndSwap({
             expectedRequestRevision: loaded.snapshot.requestRevision,
@@ -2503,6 +2863,9 @@ class ParkedTaskRuntimeGrantClaim implements ProtectedTaskOccurrenceClaimPort {
                 return plan.deferBeforeExecution!(exact);
               },
             }),
+        ...(plan.requestCheckpointPause === undefined
+          ? {}
+          : { requestCheckpointPause: plan.requestCheckpointPause }),
         openTransientInput: plan.openTransientInput,
         publishResult: plan.publishResult,
       });

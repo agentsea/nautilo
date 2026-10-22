@@ -10,6 +10,7 @@ import type { ForegroundAgentMemoryNativeExactAccessPublication } from
   "../../memory/agent-memory-exact-access.ts";
 import {
   decodeNamespaceObjectEnvelopeV2,
+  decodeObjectAccessManifestV5,
   HUMAN_MEMORY_EXACT_ACCESS_REQUEST_MAX_ENTRIES_V2,
 } from "@nautilo/lattice-crypto/wire";
 
@@ -31,12 +32,17 @@ import {
   destroyVerifiedStoredObjectAccessManifestChainV5,
   verifyStoredObjectAccessManifestChainV5,
 } from "../storage/postgres-object-access-manifest-v5.ts";
+import {
+  destroyVerifiedStoredTaskRuntimeSignerEvidenceV1,
+  loadVerifiedTaskRuntimeSignerEvidenceV1,
+} from "../storage/postgres-task-runtime-signer-evidence.ts";
 
 type Head = Readonly<{
   payloadHash: Uint8Array;
   accessRevision: number;
   manifestHash: Uint8Array;
   manifestBytes: Uint8Array;
+  signerEvidenceBytes: Uint8Array | null;
   envelopeBytes: readonly Uint8Array[];
 }>;
 
@@ -55,6 +61,8 @@ async function readHead(
       access_revision: objectCryptoAccessHeads.accessRevision,
       manifest_hash: objectCryptoAccessHeads.manifestHash,
       manifest_bytes: objectCryptoAccessManifests.manifestBytes,
+      signer_evidence_bytes:
+        objectCryptoAccessManifests.signerEvidenceBytes,
     }).from(objectCryptoAccessHeads).innerJoin(objectCryptoAccessManifests, and(
       eq(objectCryptoAccessManifests.objectId, objectCryptoAccessHeads.objectId),
       eq(objectCryptoAccessManifests.accessRevision,
@@ -88,6 +96,8 @@ async function readHead(
     accessRevision: revision,
     manifestHash: Uint8Array.from(row.manifest_hash),
     manifestBytes: Uint8Array.from(row.manifest_bytes),
+    signerEvidenceBytes: row.signer_evidence_bytes === null
+      ? null : Uint8Array.from(row.signer_evidence_bytes),
     envelopeBytes: Object.freeze(envelopes.map((value) =>
       Uint8Array.from(value.envelope_bytes))),
   });
@@ -98,6 +108,10 @@ function targetMatches(head: Head, publication: ForegroundAgentMemoryNativeExact
     && same(head.payloadHash, publication.payloadHash)
     && same(head.manifestHash, publication.nextManifestHash)
     && same(head.manifestBytes, publication.nextManifestBytes)
+    && (head.signerEvidenceBytes === null
+      ? publication.signerEvidenceBytes === undefined
+      : publication.signerEvidenceBytes !== undefined
+        && same(head.signerEvidenceBytes, publication.signerEvidenceBytes))
     && head.envelopeBytes.length === publication.targetEnvelopeBytes.length
     && head.envelopeBytes.every((value, index) =>
       same(value, publication.targetEnvelopeBytes[index]!));
@@ -199,6 +213,38 @@ export async function persistForegroundAgentMemoryNativeExactAccess(input: Reado
         executor, entries: input.publication.targetEntries,
       })
     ) return "stale";
+    const decodedNext = decodeObjectAccessManifestV5(
+      input.publication.nextManifestBytes,
+    );
+    const signerEvidenceBytes = input.publication.signerEvidenceBytes;
+    if ((decodedNext.signerAuthorizationHash === null)
+      !== (signerEvidenceBytes === undefined)) {
+      throw new TypeError(
+        "Agent Memory exact-access signer evidence is missing or unexpected",
+      );
+    }
+    let taskSignerEvidence: Awaited<ReturnType<
+      typeof loadVerifiedTaskRuntimeSignerEvidenceV1
+    >> | undefined;
+    if (signerEvidenceBytes !== undefined) {
+      const evidenceHash = input.crypto.hash(signerEvidenceBytes);
+      try {
+        if (decodedNext.signerAuthorizationHash === null
+          || !same(evidenceHash, decodedNext.signerAuthorizationHash)) {
+          throw new TypeError(
+            "Agent Memory exact-access signer evidence is substituted",
+          );
+        }
+      } finally {
+        evidenceHash.fill(0);
+      }
+      taskSignerEvidence = await loadVerifiedTaskRuntimeSignerEvidenceV1(
+        executor,
+        input.crypto,
+        signerEvidenceBytes,
+      );
+    }
+    try {
     const verifiedNext = verifyCommonObjectAccessManifestChain(input.crypto, {
       manifestBytes: input.publication.nextManifestBytes,
       proof: [],
@@ -212,17 +258,54 @@ export async function persistForegroundAgentMemoryNativeExactAccess(input: Reado
       resolveAgentRuntimeSignerPublicKey: input.resolveCurrentAgentSigner,
       resolveProcessorSignerAuthorizationBytes: () => null,
       resolveHistoricalProcessorIssuingDevicePublicKey: () => null,
+      resolveTaskRuntimeSignerAuthorizationBytes: context =>
+        taskSignerEvidence !== undefined
+          && decodedNext.signer.kind === "agent_runtime"
+          && context.objectId === decodedNext.objectId
+          && context.signer.agentId === decodedNext.signer.agentId
+          && context.signer.runtimeGeneration
+            === decodedNext.signer.runtimeGeneration
+          && context.signer.signerKeyId === decodedNext.signer.signerKeyId
+          && decodedNext.signerAuthorizationHash !== null
+          && same(
+            context.authorizationHash,
+            decodedNext.signerAuthorizationHash,
+          )
+          ? signerEvidenceBytes! : null,
+      resolveHistoricalTaskRuntimeIssuer: context => {
+        const evidence = taskSignerEvidence;
+        if (evidence === undefined) return null;
+        const issuer = evidence.certificate.issuer;
+        return context.issuer.humanId === issuer.humanId
+            && context.issuer.deviceId === issuer.deviceId
+            && context.issuer.deviceGeneration === issuer.deviceGeneration
+            && context.issuer.serverInstanceId === issuer.serverInstanceId
+            && context.issuer.lineageGeneration === issuer.lineageGeneration
+            && context.issuer.epoch === issuer.epoch
+            && context.issuer.securityRevision === issuer.securityRevision
+            && same(context.issuer.headDigest, issuer.headDigest)
+            && same(
+              context.issuer.signingPublicKeyHash,
+              issuer.signingPublicKeyHash,
+            )
+          ? evidence.issuerPublicKey : null;
+      },
     });
-    if (
-      verifiedNext.manifest.accessRevision !== input.publication.nextAccessRevision
-      || verifiedNext.manifest.previousManifestHash === null
-      || !same(verifiedNext.manifest.previousManifestHash,
-        input.publication.currentManifestHash)
-      || !same(verifiedNext.manifestHash, input.publication.nextManifestHash)
-      || verifiedNext.manifest.envelopeHashes.length !== targetEnvelopes.length
-      || verifiedNext.manifest.envelopeHashes.some((hash, ordinal) =>
-        !same(hash, targetEnvelopes[ordinal]!.expected.envelopeHash))
-    ) return "stale";
+      if (
+        verifiedNext.manifest.accessRevision !== input.publication.nextAccessRevision
+        || verifiedNext.manifest.previousManifestHash === null
+        || !same(verifiedNext.manifest.previousManifestHash,
+          input.publication.currentManifestHash)
+        || !same(verifiedNext.manifestHash, input.publication.nextManifestHash)
+        || verifiedNext.manifest.envelopeHashes.length !== targetEnvelopes.length
+        || verifiedNext.manifest.envelopeHashes.some((hash, ordinal) =>
+          !same(hash, targetEnvelopes[ordinal]!.expected.envelopeHash))
+      ) return "stale";
+    } finally {
+      if (taskSignerEvidence !== undefined) {
+        destroyVerifiedStoredTaskRuntimeSignerEvidenceV1(taskSignerEvidence);
+      }
+    }
     await executeTypedCryptoQuery(executor,
       cryptoTypedDb.insert(objectCryptoAccessManifests).values({
         objectId: input.publication.objectId,
@@ -231,6 +314,7 @@ export async function persistForegroundAgentMemoryNativeExactAccess(input: Reado
         previousManifestHash: input.publication.currentManifestHash,
         payloadHash: input.publication.payloadHash,
         manifestBytes: input.publication.nextManifestBytes,
+        signerEvidenceBytes: input.publication.signerEvidenceBytes ?? null,
       }));
     for (const [ordinal, target] of targetEnvelopes.entries()) {
       await executeTypedCryptoQuery(executor,

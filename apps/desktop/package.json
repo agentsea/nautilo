@@ -99,7 +99,7 @@
     "@types/ws": "^8.18.1",
     "@nautilo/claude-agent-sdk-host": "workspace:*",
     "defuddle": "0.19.2",
-    "electron": "41.10.3",
+    "electron": "43.8.3",
     "electron-builder": "26.15.3",
     "esbuild": "0.28.2",
     "png2icons": "2.0.1",

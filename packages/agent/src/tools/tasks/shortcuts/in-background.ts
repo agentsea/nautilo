@@ -23,6 +23,10 @@ import {
   isBoundedPersonalNativeShortcutCreate,
   isPersonalOnlyNativeShortcutCreate,
 } from "../../../runtime/personal-task-controls";
+import {
+  createHarnessTaskForCurrentContentPolicy,
+  createTaskForCurrentContentPolicy,
+} from "../policy-aware-create";
 
 /**
  * M144 — `in_background` intent shortcut (generic, no scoping). A thin
@@ -141,7 +145,7 @@ export function createInBackgroundTool(context?: unknown) {
         ) {
           return "Cannot start Codex background task: tools, result_delivery, model_selection, and model_id are Native-only shortcut fields; omit them or use the advanced task tool for supported Codex controls.";
         }
-        if (!rt.createHarnessTask) {
+        if (!rt.createHarnessTask && !rt.createProtectedHarnessTask) {
           return genieRecoveryResult("in_background", "Codex harness execution is unavailable on this server. Open Codex setup, then try again.", { requirement: "desktop" });
         }
         const input: TaskToolHarnessCreateInput = {
@@ -162,7 +166,7 @@ export function createInBackgroundTool(context?: unknown) {
             : {}),
         };
         try {
-          const created = await rt.createHarnessTask(input);
+          const created = await createHarnessTaskForCurrentContentPolicy(rt, input);
           return JSON.stringify({
             taskId: created.taskId,
             status: created.status,
@@ -218,7 +222,7 @@ export function createInBackgroundTool(context?: unknown) {
         ...(args.model_id !== undefined ? { requestedModelId: args.model_id } : {}),
         ...toolsFields,
       };
-      const { taskId, status } = await rt.createTask(input);
+      const { taskId, status } = await createTaskForCurrentContentPolicy(rt, input);
       return JSON.stringify({
         taskId,
         status,

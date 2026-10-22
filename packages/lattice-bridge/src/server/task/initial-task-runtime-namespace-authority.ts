@@ -6,11 +6,12 @@ import {
   domainKeyHeads,
   eq,
   roomMembers,
+  moderationEffectiveHumanActorIdsSql,
+  protectedTaskRunWakeJobId,
   rooms,
   sql,
   tasks,
   type PostgresJsBridgeConnection,
-  type ParkedProtectedTaskAdditionalAuthority,
 } from "@nautilo/db";
 import {
   LATTICE_LIMITS,
@@ -21,6 +22,7 @@ import {
   PostgresDeviceAdmissionRepository,
   type CurrentDeviceAdmissionAuthority,
 } from "../device/postgres-device-admission-repository.ts";
+import { readableNamespacePolicyAllows } from "../delivery/namespace-readable-policy.ts";
 import { PostgresDomainKeyAuthorityRepository, type DomainForegroundNamespaceAuthorityInspectionV2 } from "../delivery/postgres-domain-key-authority.ts";
 import {
   inspectNamespaceProductAuthoritySnapshot,
@@ -51,12 +53,13 @@ import {
   copyParkedTaskRuntimeAuthority,
   copyParkedTaskRuntimeExpectedNamespaceParticipants,
   currentParkedTaskRuntimeRoutingFacts,
-  lockCurrentParkedTaskAdditionalAuthority,
+  lockCurrentParkedTaskAuthority,
   parkedTaskRuntimeNamespaceParticipantsMatch,
   withParkedTaskRuntimeRestrictedAuthority,
   type ParkedTaskRuntimeCurrentRoutingFacts,
   type ParkedTaskRuntimeExpectedNamespaceParticipants,
   type ParkedTaskRuntimeLockedRoutingTask,
+  type ParkedTaskRuntimeContinuation,
 } from "./parked-task-runtime-authority.ts";
 import type { CanonicalTranscriptTx } from "@nautilo/trust";
 
@@ -138,6 +141,66 @@ type InitialTaskRuntimeNamespaceInput = TaskNamespaceAuthorityCommonInput &
 export type TaskContentNamespaceAuthorityInput =
   TaskNamespaceAuthorityCommonInput;
 
+export type TaskDeliveryNamespaceAuthorityInput =
+  TaskNamespaceAuthorityCommonInput & Readonly<{
+    destinationRoomId: string;
+    destinationNamespaceId: string;
+  }>;
+
+type TaskTerminalProductProof = Readonly<{
+  validateCurrentTaskRun(
+    product: PostgresJsBridgeConnection,
+    transaction: CanonicalTranscriptTx,
+    task: LockedTaskRuntimeRoutingRow,
+  ): Promise<boolean>;
+}>;
+
+export type TaskOutputAdditionalMutationDestination = Readonly<{
+  roomId: string;
+  namespaceId: string;
+  /** Canonical sealed semantic requirement digest, never a source-read authority. */
+  semanticDigest: string;
+}>;
+
+export type TaskOutputNamespaceAuthorityInput = TaskDeliveryNamespaceAuthorityInput &
+  TaskTerminalProductProof & Readonly<{
+    workKind: "task.deliver_result" | "task.delivery_wake";
+    workId: string;
+    requestId: string;
+    taskRunId: string;
+    episodeId: string;
+    foregroundNamespaceIds: readonly string[];
+    projectionDestination?: Readonly<{ roomId: string; namespaceId: string }>;
+    /** Locks destination metadata without granting its Namespace or Domain. */
+    projectionPlanningOnly?: true;
+    additionalMutationDestination?: TaskOutputAdditionalMutationDestination;
+    validateCurrentAdditionalMutationDestination?(
+      product: PostgresJsBridgeConnection,
+      transaction: CanonicalTranscriptTx,
+      destination: TaskOutputAdditionalMutationDestination,
+    ): Promise<boolean>;
+    validateCurrentProjectionDestination?(
+      product: PostgresJsBridgeConnection,
+      transaction: CanonicalTranscriptTx,
+    ): Promise<boolean>;
+    /** Additional canonical Scope/invocation inventory validation, after Room locks. */
+    validateCurrentForeground(
+      product: PostgresJsBridgeConnection,
+      transaction: CanonicalTranscriptTx,
+      coordinates: Readonly<{ destinationRoomId: string; destinationNamespaceId: string;
+        foregroundNamespaceIds: readonly string[] }>,
+    ): Promise<boolean>;
+  }>;
+
+export type TaskOutputNamespaceAuthority = InitialTaskRuntimeNamespaceAuthority & Readonly<{
+  resultFact: InitialTaskRuntimeNamespaceFact;
+  foregroundFacts: readonly InitialTaskRuntimeNamespaceFact[];
+  additionalMutationFact?: Readonly<{
+    destination: TaskOutputAdditionalMutationDestination;
+    namespace: InitialTaskRuntimeNamespaceFact;
+  }>;
+}>;
+
 type TaskRuntimeProductAuthorityInput =
   | (InitialTaskRuntimeNamespaceInput & Readonly<{
       purpose: "initial_execution";
@@ -145,11 +208,36 @@ type TaskRuntimeProductAuthorityInput =
   | (TaskContentNamespaceAuthorityInput & Readonly<{
       purpose: "content_only";
       namespaceIds: readonly [string];
-    }>);
+    }>)
+  | (TaskDeliveryNamespaceAuthorityInput & Readonly<{
+      purpose: "terminal_delivery";
+      namespaceIds: readonly [string];
+    }>)
+  | (TaskOutputNamespaceAuthorityInput & Readonly<{ purpose: "output_result_read"; namespaceIds: readonly string[] }>);
 
 function sameIds(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length
     && left.every((entry, index) => entry === right[index]);
+}
+
+function snapshotTaskRuntimeProductAuthority(input: TaskRuntimeProductAuthorityInput): TaskRuntimeProductAuthorityInput {
+  if (input.purpose === "initial_execution") return Object.freeze({ ...input,
+    namespaceIds: Object.freeze([...input.namespaceIds]),
+    ...(input.scopeMemory === undefined ? {} : { scopeMemory: copyTaskScopeMemoryBinding(input.scopeMemory) }),
+  });
+  if (input.purpose === "output_result_read") return Object.freeze({ ...input,
+    namespaceIds: outputNamespaceIds(input),
+    foregroundNamespaceIds: Object.freeze([...input.foregroundNamespaceIds]),
+    ...(input.additionalMutationDestination === undefined ? {} : {
+      additionalMutationDestination: Object.freeze({ ...input.additionalMutationDestination }),
+    }),
+    ...(input.projectionDestination === undefined ? {} : {
+      projectionDestination: Object.freeze({ ...input.projectionDestination }),
+    }),
+  });
+  return Object.freeze({ ...input, namespaceIds: Object.freeze([
+    input.purpose === "terminal_delivery" ? input.destinationNamespaceId : input.contentNamespaceId,
+  ] as const) });
 }
 
 async function withInitialTaskRuntimeProductAuthority<Value>(
@@ -168,33 +256,59 @@ async function withInitialTaskRuntimeProductAuthority<Value>(
   ) => Promise<boolean>,
   expectedNamespaceParticipants?: ParkedTaskRuntimeExpectedNamespaceParticipants,
 ): Promise<Value | null> {
-  // Snapshot caller-owned coordinates before the first asynchronous boundary.
-  const scopeMemory = input.purpose !== "initial_execution"
-    || input.scopeMemory === undefined
-    ? undefined
-    : copyTaskScopeMemoryBinding(input.scopeMemory);
-  const request: TaskRuntimeProductAuthorityInput = input.purpose
-    === "initial_execution"
-    ? Object.freeze({ ...input,
-        namespaceIds: Object.freeze([...input.namespaceIds]),
-        ...(scopeMemory === undefined ? {} : { scopeMemory }),
-      })
-    : Object.freeze({ ...input,
-        namespaceIds: Object.freeze([input.contentNamespaceId] as const),
-      });
+  const request = snapshotTaskRuntimeProductAuthority(input);
   const coordinateIds = [request.taskId, request.requesterUserId,
     request.requesterHumanId, request.agentId, request.contentNamespaceId,
     request.sourceRoomId,
     ...(request.purpose === "initial_execution"
       ? [request.targetRoomId]
-      : [])];
+      : request.purpose === "terminal_delivery" || request.purpose === "output_result_read"
+        ? [request.destinationRoomId, request.destinationNamespaceId]
+        : [])];
+  if (request.purpose === "output_result_read" && (
+    !UUID.test(request.taskRunId) || !UUID.test(request.episodeId)
+    || request.workId !== (request.workKind === "task.deliver_result" ? request.taskRunId : protectedTaskRunWakeJobId(request.taskRunId))
+    || request.requestId !== (request.workKind === "task.deliver_result"
+      ? `task-run-delivery-result-authorization:${request.taskRunId}` : `task-wake-authorization:${request.workId}`)
+    || (request.workKind !== "task.deliver_result" && request.workKind !== "task.delivery_wake")
+    || typeof request.validateCurrentForeground !== "function" || typeof validateCurrentTaskRun !== "function"
+    || request.foregroundNamespaceIds.length < 1
+    || request.projectionDestination !== undefined && (
+      request.workKind !== "task.delivery_wake"
+      || !UUID.test(request.projectionDestination.roomId)
+      || !UUID.test(request.projectionDestination.namespaceId)
+      || (request.projectionPlanningOnly !== true && !request.foregroundNamespaceIds.includes(request.projectionDestination.namespaceId)
+        && (request.additionalMutationDestination?.namespaceId !== request.projectionDestination.namespaceId
+          || request.additionalMutationDestination.roomId !== request.projectionDestination.roomId))
+      || typeof request.validateCurrentProjectionDestination !== "function"
+    )
+    || request.projectionPlanningOnly !== undefined && (request.projectionPlanningOnly !== true
+      || request.projectionDestination === undefined || request.workKind !== "task.delivery_wake")
+    || request.additionalMutationDestination !== undefined && (
+      request.workKind !== "task.delivery_wake"
+      || !UUID.test(request.additionalMutationDestination.roomId)
+      || !UUID.test(request.additionalMutationDestination.namespaceId)
+      || !/^[0-9a-f]{64}$/u.test(request.additionalMutationDestination.semanticDigest)
+      || request.additionalMutationDestination.namespaceId === request.contentNamespaceId
+      || request.foregroundNamespaceIds.includes(request.additionalMutationDestination.namespaceId)
+      || typeof request.validateCurrentAdditionalMutationDestination !== "function"
+    )
+    || !request.foregroundNamespaceIds.includes(request.destinationNamespaceId)
+    || (request.workKind === "task.deliver_result" && request.foregroundNamespaceIds.length !== 1)
+    || request.foregroundNamespaceIds.some((id, index) => !UUID.test(id)
+      || index > 0 && request.foregroundNamespaceIds[index - 1]! >= id)
+  )) throw new TypeError("Task output authority coordinates are invalid");
   if (coordinateIds
     .some((value) => !UUID.test(value))
     || !Number.isSafeInteger(request.expectedPolicyRevision)
     || request.expectedPolicyRevision < 0
     || request.namespaceIds.length < 1
     || request.namespaceIds.length > LATTICE_LIMITS.agentGrantNamespaces
-    || !request.namespaceIds.includes(request.contentNamespaceId)
+    || (request.purpose === "terminal_delivery"
+      ? request.namespaceIds.length !== 1
+        || request.namespaceIds[0] !== request.destinationNamespaceId
+        || typeof validateCurrentTaskRun !== "function"
+      : !request.namespaceIds.includes(request.contentNamespaceId))
     || request.namespaceIds.some((value, index) => !UUID.test(value)
       || (index > 0 && request.namespaceIds[index - 1]! >= value))) {
     throw new TypeError("Initial Task Runtime authority coordinates are invalid");
@@ -227,7 +341,9 @@ async function withInitialTaskRuntimeProductAuthority<Value>(
         target_room_id: tasks.targetRoomId,
         wide_bring_back: sql<boolean>`(${tasks.metadata} -> 'bringBack') IS DISTINCT FROM 'false'::jsonb`
           .mapWith(Boolean).as("wide_bring_back"),
-      }).from(tasks).where(eq(tasks.id, request.taskId)).limit(2).for("update"));
+      }).from(tasks).where(eq(tasks.id, request.taskId)).limit(2)
+        // Exclude Task edits/deletes while permitting FK-only usage accounting.
+        .for("no key update"));
     const task = taskRows[0];
     if (taskRows.length !== 1 || task === undefined
       || task.id !== request.taskId
@@ -253,8 +369,8 @@ async function withInitialTaskRuntimeProductAuthority<Value>(
           : request.scopeMemory !== undefined))
       || (task.content_representation !== "protected"
         && task.content_representation !== "dual")) return null;
-    // Recipient binding starts before a signed request exists. Hold the exact
-    // awaiting TaskRun lock for the entire request-construction callback.
+    // The caller holds its exact Run/output proof for the entire Namespace
+    // callback, including recipient binding before a signed request exists.
     if (validateCurrentTaskRun !== undefined
       && !await validateCurrentTaskRun(
         product,
@@ -267,6 +383,20 @@ async function withInitialTaskRuntimeProductAuthority<Value>(
         subjectHumanId: request.requesterHumanId,
         sourceRoomId: request.sourceRoomId,
         namespaceIds: request.namespaceIds,
+        ...(request.purpose === "terminal_delivery" || request.purpose === "output_result_read" ? {
+          destinationRoom: {
+            roomId: request.destinationRoomId,
+            namespaceId: request.destinationNamespaceId,
+          },
+        } : {}),
+        ...(request.purpose !== "output_result_read" || request.projectionDestination === undefined ? {} : {
+          ...(request.projectionPlanningOnly === true
+            ? { planningDestinationRoom: request.projectionDestination }
+            : { additionalDestinationRoom: request.projectionDestination }),
+        }),
+        ...(request.purpose !== "output_result_read" || request.additionalMutationDestination === undefined ? {} : {
+          mutationDestinationRoom: request.additionalMutationDestination,
+        }),
         use: async (entries) => {
           // The shared owner already locked the source, subject and membership
           // rows and proved current moderation/readability for every target.
@@ -302,8 +432,7 @@ async function withInitialTaskRuntimeProductAuthority<Value>(
             || members.filter((member) => member.kind === "user"
               && member.id === request.requesterHumanId
               && member.owner_id === request.requesterUserId).length !== 1
-            || members.filter((member) => member.kind === "agent"
-              && member.agent_id === request.agentId).length !== 1) return null;
+            || members.filter((member) => member.kind === "agent").length !== 1) return null;
           if (entries.length !== request.namespaceIds.length) return null;
           const accessRevisions: number[] = [];
           for (const [index, entry] of entries.entries()) {
@@ -321,6 +450,54 @@ async function withInitialTaskRuntimeProductAuthority<Value>(
             } finally {
               snapshot.audienceFingerprint.fill(0);
             }
+          }
+          if (request.purpose === "terminal_delivery" || request.purpose === "output_result_read") {
+            // All membership rows are already locked. Check the exact Agent,
+            // not merely the presence of some Agent in this audience.
+            const destinationMembers = await executeTypedConversationProductQuery(
+              product,
+              conversationProductTypedDb.select({
+                actor_id: actors.id,
+                kind: actors.kind,
+                agent_id: actors.agentId,
+                owner_id: actors.ownerId,
+              }).from(roomMembers).innerJoin(actors, eq(actors.id, roomMembers.actorId))
+                .where(eq(roomMembers.roomId, request.destinationRoomId))
+                .orderBy(asc(actors.id)).for("share", { of: actors }),
+            );
+            if (destinationMembers.filter(member => member.kind === "user"
+              && member.id === request.requesterHumanId
+              && member.owner_id === request.requesterUserId).length !== 1
+              || destinationMembers.filter(member => member.kind === "agent"
+                && member.agent_id === request.agentId).length !== 1) return null;
+          }
+          if (request.purpose === "output_result_read") {
+            if (request.projectionDestination !== undefined) {
+              if (!await request.validateCurrentProjectionDestination!(product, tx)) return null;
+            }
+            const destinationRows = await executeTypedConversationProductQuery(product,
+              conversationProductTypedDb.select({
+                id: rooms.id,
+                effective_human_actor_ids: moderationEffectiveHumanActorIdsSql(sql`${rooms.humanActorIds}`, sql`${rooms.id}`)
+                  .as("effective_human_actor_ids"),
+              }).from(rooms).where(eq(rooms.id, request.destinationRoomId)).limit(2));
+            const destination = destinationRows[0];
+            const humans = destination?.effective_human_actor_ids;
+            if (destinationRows.length !== 1 || destination?.id !== request.destinationRoomId
+              || !Array.isArray(humans) || humans.length === 0
+              || !humans.includes(request.requesterHumanId)
+              || !await readableNamespacePolicyAllows(product, {
+                sourceRoomId: request.destinationRoomId, sourceHumanIds: humans,
+                namespaceIds: request.foregroundNamespaceIds,
+              })
+              || !await request.validateCurrentForeground(product, tx, {
+                destinationRoomId: request.destinationRoomId,
+                destinationNamespaceId: request.destinationNamespaceId,
+                foregroundNamespaceIds: request.foregroundNamespaceIds,
+              })) return null;
+            if (request.additionalMutationDestination !== undefined
+              && !await request.validateCurrentAdditionalMutationDestination!(product, tx,
+                request.additionalMutationDestination)) return null;
           }
           if (request.purpose === "initial_execution"
             && request.scopeMemory !== undefined) {
@@ -372,13 +549,26 @@ async function withInitialTaskRuntimeProductAuthority<Value>(
           return request.restricted.transactionOnce(async (restrictedTx) => {
             const restricted = inTransaction(restrictedTx);
             await verifyCryptoPostgresHandle(restricted);
-            return use(
+            const value = await use(
               restricted,
               accessRevisions,
               policy.revision,
               product,
               tx,
             );
+            if (request.purpose === "output_result_read"
+              && (!await request.validateCurrentTaskRun(product, tx, task as LockedTaskRuntimeRoutingRow)
+                || !await request.validateCurrentForeground(product, tx, {
+                  destinationRoomId: request.destinationRoomId,
+                  destinationNamespaceId: request.destinationNamespaceId,
+                  foregroundNamespaceIds: request.foregroundNamespaceIds,
+                })
+                || request.additionalMutationDestination !== undefined
+                  && !await request.validateCurrentAdditionalMutationDestination!(product, tx,
+                    request.additionalMutationDestination)
+                || request.projectionDestination !== undefined
+                  && !await request.validateCurrentProjectionDestination!(product, tx))) throw new Error("Task output product authority changed before commit");
+            return value;
           }, { isolationLevel: "read committed" });
         },
       });
@@ -401,19 +591,7 @@ async function withTaskRuntimeNamespaceAuthority<Value>(
   onNamespaceReadinessUnavailable?: (namespaceId: string) => void,
   expectedNamespaceParticipants?: ParkedTaskRuntimeExpectedNamespaceParticipants,
 ): Promise<Value | null> {
-  const request: TaskRuntimeProductAuthorityInput = input.purpose
-    === "initial_execution"
-    ? Object.freeze({
-        ...input,
-        namespaceIds: Object.freeze([...input.namespaceIds]),
-        ...(input.scopeMemory === undefined
-          ? {}
-          : { scopeMemory: copyTaskScopeMemoryBinding(input.scopeMemory) }),
-      })
-    : Object.freeze({
-        ...input,
-        namespaceIds: Object.freeze([input.contentNamespaceId] as const),
-      });
+  const request = snapshotTaskRuntimeProductAuthority(input);
   return withInitialTaskRuntimeProductAuthority(
     request,
     async (
@@ -483,7 +661,8 @@ async function withTaskRuntimeNamespaceAuthority<Value>(
           expectedDomainEpoch: authority.domainKeyGeneration,
           expectedAuthorizationRevision: authority.domainAuthorizationRevision,
         }));
-        const authority = Object.freeze({ sourceRoomId: request.sourceRoomId,
+        const authority = Object.freeze({ sourceRoomId: request.purpose === "terminal_delivery" || request.purpose === "output_result_read"
+          ? request.destinationRoomId : request.sourceRoomId,
           sourceNamespaceId: request.contentNamespaceId,
           facts: Object.freeze(facts) });
         return await use(authority, restricted, product, transaction);
@@ -561,6 +740,35 @@ export async function inspectTaskContentNamespaceAuthority(
   }));
 }
 
+/** Destination-only planning facts under the caller's exact terminal proof. */
+export async function inspectTaskDeliveryNamespaceAuthority(
+  input: TaskDeliveryNamespaceAuthorityInput & TaskTerminalProductProof,
+): Promise<InitialTaskRuntimeNamespaceAuthority | null> {
+  return withTaskDeliveryNamespaceAuthority({ ...input, use: authority => authority });
+}
+
+/** Holds private source provenance and current delivery authority together. */
+export async function withTaskDeliveryNamespaceAuthority<Value>(
+  input: TaskDeliveryNamespaceAuthorityInput & TaskTerminalProductProof & Readonly<{
+    use(
+      authority: InitialTaskRuntimeNamespaceAuthority,
+      product: PostgresJsBridgeConnection,
+      transaction: CanonicalTranscriptTx,
+      restricted: PostgresJsBridgeConnection,
+    ): Value | Promise<Value>;
+  }>,
+): Promise<Value | null> {
+  const { validateCurrentTaskRun, use, ...coordinates } = input;
+  if (typeof validateCurrentTaskRun !== "function" || typeof use !== "function") return null;
+  return withTaskRuntimeNamespaceAuthority(
+    Object.freeze({ ...coordinates, purpose: "terminal_delivery" as const,
+      namespaceIds: Object.freeze([coordinates.destinationNamespaceId] as const) }),
+    validateCurrentTaskRun,
+    (authority, restricted, product, transaction) =>
+      use(authority, product, transaction, restricted),
+  );
+}
+
 /**
  * Current requester-private Task content authority held with caller-supplied
  * exact product proof. Product mutations remain inside the same canonical
@@ -608,7 +816,7 @@ export async function withTaskContentNamespaceAuthority<Value>(
  */
 export async function withParkedTaskRuntimeNamespaceAuthority<Value>(
   input: InitialTaskRuntimeNamespaceInput & Readonly<{
-    expected: ParkedProtectedTaskAdditionalAuthority;
+    expected: ParkedTaskRuntimeContinuation;
     authorizationRequestId: string;
     validateCurrentRouting(
       facts: ParkedTaskRuntimeCurrentRoutingFacts,
@@ -666,7 +874,7 @@ export async function withParkedTaskRuntimeNamespaceAuthority<Value>(
       purpose: "initial_execution" as const,
     }),
     async (_product, transaction, task) => {
-      const current = await lockCurrentParkedTaskAdditionalAuthority({
+      const current = await lockCurrentParkedTaskAuthority({
         transaction,
         expected,
       });
@@ -719,7 +927,7 @@ function sameDevice(left: CurrentDeviceAdmissionAuthority, right: CurrentDeviceA
 
 /** Shared awaiting-phase authority pipeline for initial and parked requests. */
 async function withTaskRuntimeRecipientAuthority<Value>(
-  input: TaskRuntimeRecipientAuthorityInput,
+  input: Omit<TaskRuntimeRecipientAuthorityInput, "targetRoomId"> & Readonly<{ targetRoomId?: string }>,
   validateCurrentTaskRun: (
     product: PostgresJsBridgeConnection,
     transaction: CanonicalTranscriptTx,
@@ -728,10 +936,20 @@ async function withTaskRuntimeRecipientAuthority<Value>(
   use: (
     authority: InitialTaskRuntimeRecipientAuthority,
     restricted: PostgresJsBridgeConnection,
-    request: TaskRuntimeRecipientAuthorityInput,
+    request: Omit<TaskRuntimeRecipientAuthorityInput, "targetRoomId"> & Readonly<{ targetRoomId?: string }>,
+    product: PostgresJsBridgeConnection,
+    transaction: CanonicalTranscriptTx,
   ) => Value | Promise<Value>,
   expectedNamespaceParticipants?: ParkedTaskRuntimeExpectedNamespaceParticipants,
+  terminalPurpose?: Readonly<{ purpose: "content_only" }> | Readonly<{
+    purpose: "terminal_delivery";
+    destinationRoomId: string;
+    destinationNamespaceId: string;
+  }> | (TaskOutputNamespaceAuthorityInput & Readonly<{ purpose: "output_result_read" }>),
 ): Promise<Value | null> {
+  const terminal = terminalPurpose === undefined ? undefined : Object.freeze({ ...terminalPurpose });
+  const terminalNamespaceId = terminal?.purpose === "terminal_delivery"
+    ? terminal.destinationNamespaceId : input.contentNamespaceId;
   const namespaces = Object.freeze(input.namespaceRequirements.map((entry) => Object.freeze({
     ...entry, operations: Object.freeze([...entry.operations]),
   })));
@@ -744,12 +962,16 @@ async function withTaskRuntimeRecipientAuthority<Value>(
       : { scopeMemory: copyTaskScopeMemoryBinding(input.scopeMemory) }),
   });
   if (typeof validateCurrentTaskRun !== "function"
+    || (terminal !== undefined && terminal.purpose !== "output_result_read" && (namespaces.length !== 1 || domains.length !== 1
+      || namespaces[0]?.namespaceId !== terminalNamespaceId
+      || namespaces[0]?.operations.length !== 1
+      || namespaces[0]?.operations[0] !== "encrypt"))
     || request.deviceId.length === 0 || namespaces.length !== request.namespaceIds.length
     || namespaces.some((entry, index) => entry.ordinal !== index
       || entry.namespaceId !== request.namespaceIds[index]
       || !Number.isSafeInteger(entry.expectedAccessRevision) || entry.expectedAccessRevision < 0
       || entry.expectedPolicyRevision !== request.expectedPolicyRevision
-      || (entry.namespaceId === request.contentNamespaceId
+      || (terminal === undefined && entry.namespaceId === request.contentNamespaceId
         && (entry.operations.length !== 2 || entry.operations[0] !== "decrypt" || entry.operations[1] !== "encrypt"))
       || entry.operations.length < 1 || entry.operations.length > 2
       || entry.operations.some((operation, ordinal) => (operation !== "decrypt" && operation !== "encrypt")
@@ -764,10 +986,15 @@ async function withTaskRuntimeRecipientAuthority<Value>(
     throw new TypeError("Initial Task Runtime recipient requirements are invalid");
   }
   request.signal?.throwIfAborted();
-  return withInitialTaskRuntimeProductAuthority(Object.freeze({
-    ...request,
-    purpose: "initial_execution" as const,
-  }), async (restricted, accessRevisions, policyRevision) => {
+  const productInput: TaskRuntimeProductAuthorityInput = terminal?.purpose === "output_result_read"
+    ? Object.freeze({ ...request, ...terminal, namespaceIds: request.namespaceIds })
+    : terminal !== undefined
+    ? Object.freeze({ ...request, ...terminal,
+        namespaceIds: Object.freeze([terminalNamespaceId] as const) })
+    : Object.freeze({ ...request, purpose: "initial_execution" as const,
+        targetRoomId: request.targetRoomId! });
+  return withInitialTaskRuntimeProductAuthority(productInput,
+    async (restricted, accessRevisions, policyRevision, product, transaction) => {
     if (namespaces.some((entry, index) => entry.expectedAccessRevision !== accessRevisions[index])) return null;
     const subject = { userId: request.requesterUserId, humanActorId: request.requesterHumanId, deviceId: request.deviceId };
     const admission = new PostgresDeviceAdmissionRepository(await verifyCryptoPostgresHandle(restricted), request.crypto);
@@ -818,16 +1045,88 @@ async function withTaskRuntimeRecipientAuthority<Value>(
       retainDevice(lockedDevice);
       if (!sameDevice(device, lockedDevice)) return null;
       request.signal?.throwIfAborted();
-      const value = await use(Object.freeze({ sourceRoomId: request.sourceRoomId,
+      const value = await use(Object.freeze({ sourceRoomId: terminal?.purpose === "terminal_delivery" || terminal?.purpose === "output_result_read"
+        ? terminal.destinationRoomId : request.sourceRoomId,
         sourceNamespaceId: request.contentNamespaceId, device: Object.freeze(lockedDevice),
         domains: inspected.domains, namespaceRequirements: namespaces, policyRevision,
         ...(request.scopeMemory === undefined
           ? {}
-          : { scopeMemory: request.scopeMemory }) }), restricted, request);
+          : { scopeMemory: request.scopeMemory }) }), restricted, request, product, transaction);
       request.signal?.throwIfAborted();
       return value;
     } finally { for (const bytes of owned) bytes.fill(0); }
   }, validateCurrentTaskRun, expectedNamespaceParticipants);
+}
+
+/** Encrypt-only recipient authority for a stopped Task's fixed cancellation result. */
+export async function withTaskContentRecipientAuthority<Value>(
+  input: TaskContentNamespaceAuthorityInput & Readonly<{
+    deviceId: string;
+    namespaceRequirements: readonly TaskRuntimeNamespaceAuthorityRequirement[];
+    domainRequirements: readonly TaskRuntimeDomainAuthorityRequirement[];
+    signal?: AbortSignal;
+    validateCurrentTaskRun(
+      product: PostgresJsBridgeConnection,
+      transaction: CanonicalTranscriptTx,
+    ): Promise<boolean>;
+    use(
+      authority: InitialTaskRuntimeRecipientAuthority,
+      restricted: PostgresJsBridgeConnection,
+      product: PostgresJsBridgeConnection,
+      transaction: CanonicalTranscriptTx,
+    ): Value | Promise<Value>;
+    validateBeforeCommit?(): void | Promise<void>;
+  }>,
+): Promise<Value | null> {
+  const use = input.use;
+  const validate = input.validateCurrentTaskRun;
+  const beforeCommit = input.validateBeforeCommit;
+  return withTaskRuntimeRecipientAuthority(
+    { ...input, namespaceIds: [input.contentNamespaceId] },
+    (product, transaction) => validate(product, transaction),
+    async (authority, restricted, _request, product, transaction) => {
+      const result = await withParkedTaskRuntimeRestrictedAuthority(restricted,
+        scoped => Promise.resolve(use(authority, scoped, product, transaction)));
+      await beforeCommit?.();
+      return result;
+    },
+    undefined,
+    { purpose: "content_only" },
+  );
+}
+
+/** Current device/Domain custody for one encrypt-only delivery Namespace. */
+export async function withTaskDeliveryRecipientAuthority<Value>(
+  input: TaskDeliveryNamespaceAuthorityInput & TaskTerminalProductProof & Readonly<{
+    deviceId: string;
+    namespaceRequirements: readonly TaskRuntimeNamespaceAuthorityRequirement[];
+    domainRequirements: readonly TaskRuntimeDomainAuthorityRequirement[];
+    signal?: AbortSignal;
+    use(
+      authority: InitialTaskRuntimeRecipientAuthority,
+      restricted: PostgresJsBridgeConnection,
+      product: PostgresJsBridgeConnection,
+      transaction: CanonicalTranscriptTx,
+    ): Value | Promise<Value>;
+    validateBeforeCommit?(): void | Promise<void>;
+  }>,
+): Promise<Value | null> {
+  const { use, validateCurrentTaskRun, validateBeforeCommit } = input;
+  if (typeof use !== "function" || typeof validateCurrentTaskRun !== "function"
+    || validateBeforeCommit !== undefined && typeof validateBeforeCommit !== "function") return null;
+  return withTaskRuntimeRecipientAuthority(
+    { ...input, namespaceIds: [input.destinationNamespaceId] },
+    validateCurrentTaskRun,
+    async (authority, restricted, _request, product, transaction) => {
+      const result = await withParkedTaskRuntimeRestrictedAuthority(restricted,
+        scoped => Promise.resolve(use(authority, scoped, product, transaction)));
+      await validateBeforeCommit?.();
+      return result;
+    },
+    undefined,
+    { purpose: "terminal_delivery", destinationRoomId: input.destinationRoomId,
+      destinationNamespaceId: input.destinationNamespaceId },
+  );
 }
 
 export async function withInitialTaskRuntimeRecipientAuthority<Value>(
@@ -868,7 +1167,7 @@ export async function withInitialTaskRuntimeRecipientAuthority<Value>(
  */
 export async function withParkedTaskRuntimeRecipientAuthority<Value>(
   input: TaskRuntimeRecipientAuthorityInput & Readonly<{
-    expected: ParkedProtectedTaskAdditionalAuthority;
+    expected: ParkedTaskRuntimeContinuation;
     authorizationRequestId: string;
     validateCurrentRouting(
       facts: ParkedTaskRuntimeCurrentRoutingFacts,
@@ -907,7 +1206,7 @@ export async function withParkedTaskRuntimeRecipientAuthority<Value>(
   return withTaskRuntimeRecipientAuthority(
     input,
     async (_product, transaction, task) => {
-      const current = await lockCurrentParkedTaskAdditionalAuthority({
+      const current = await lockCurrentParkedTaskAuthority({
         transaction,
         expected,
       });
@@ -926,4 +1225,168 @@ export async function withParkedTaskRuntimeRecipientAuthority<Value>(
     ),
     expectedNamespaceParticipants,
   );
+}
+
+function outputNamespaceIds(input: TaskOutputNamespaceAuthorityInput): readonly string[] {
+  return Object.freeze([...new Set([input.contentNamespaceId, ...input.foregroundNamespaceIds,
+    ...(input.additionalMutationDestination === undefined ? [] : [input.additionalMutationDestination.namespaceId])])].sort());
+}
+
+function outputOperations(input: TaskOutputNamespaceAuthorityInput, namespaceId: string): readonly ("decrypt" | "encrypt")[] {
+  const foreground = input.foregroundNamespaceIds.includes(namespaceId);
+  return Object.freeze([
+    ...(namespaceId === input.contentNamespaceId || foreground && input.workKind === "task.delivery_wake" ? ["decrypt" as const] : []),
+    ...(foreground || input.additionalMutationDestination?.namespaceId === namespaceId ? ["encrypt" as const] : []),
+  ]);
+}
+
+function outputRequirementsMatch(
+  input: TaskOutputNamespaceAuthorityInput,
+  namespaces: readonly TaskRuntimeNamespaceAuthorityRequirement[],
+  accessRevisions?: readonly number[],
+): boolean {
+  const ids = outputNamespaceIds(input);
+  return namespaces.length === ids.length && namespaces.every((n, index) =>
+    n.ordinal === index && n.namespaceId === ids[index]
+    && n.expectedPolicyRevision === input.expectedPolicyRevision
+    && (accessRevisions === undefined || n.expectedAccessRevision === accessRevisions[index])
+    && sameIds(n.operations, outputOperations(input, n.namespaceId)));
+}
+
+function outputFacts(input: TaskOutputNamespaceAuthorityInput, authority: InitialTaskRuntimeNamespaceAuthority): TaskOutputNamespaceAuthority {
+  const resultFact = authority.facts.find(fact => fact.namespaceId === input.contentNamespaceId);
+  if (resultFact === undefined) throw new TypeError("Task output result Namespace is missing");
+  const mutation = input.additionalMutationDestination;
+  const mutationFact = mutation === undefined ? undefined : authority.facts.find(fact => fact.namespaceId === mutation.namespaceId);
+  if (mutation !== undefined && mutationFact === undefined) throw new TypeError("Task output mutation Namespace is missing");
+  return Object.freeze({ ...authority, resultFact,
+    ...(mutation === undefined || mutationFact === undefined ? {} : { additionalMutationFact: Object.freeze({
+      destination: Object.freeze({ ...mutation }), namespace: mutationFact,
+    }) }),
+    foregroundFacts: Object.freeze(authority.facts.filter(fact => input.foregroundNamespaceIds.includes(fact.namespaceId))) });
+}
+
+/** Current terminal result and independent destination/foreground planning facts. */
+export function inspectTaskOutputNamespaceAuthority(input: TaskOutputNamespaceAuthorityInput): Promise<TaskOutputNamespaceAuthority | null> {
+  return withTaskOutputNamespaceAuthority({ ...input, use: authority => authority });
+}
+
+export function withTaskOutputNamespaceAuthority<Value>(input: TaskOutputNamespaceAuthorityInput & Readonly<{
+  use(authority: TaskOutputNamespaceAuthority, product: PostgresJsBridgeConnection,
+    transaction: CanonicalTranscriptTx, restricted: PostgresJsBridgeConnection): Value | Promise<Value>;
+}>): Promise<Value | null> {
+  const request = Object.freeze({ ...input, foregroundNamespaceIds: Object.freeze([...input.foregroundNamespaceIds]),
+    ...(input.additionalMutationDestination === undefined ? {} : {
+      additionalMutationDestination: Object.freeze({ ...input.additionalMutationDestination }),
+    }),
+    ...(input.projectionDestination === undefined ? {} : { projectionDestination: Object.freeze({ ...input.projectionDestination }) }),
+  });
+  return withTaskRuntimeNamespaceAuthority({ ...request, purpose: "output_result_read",
+    namespaceIds: outputNamespaceIds(request) }, request.validateCurrentTaskRun,
+  (authority, restricted, product, transaction) => request.use(outputFacts(request, authority), product, transaction, restricted));
+}
+
+export type TaskOutputRecipientAuthority = InitialTaskRuntimeRecipientAuthority & Readonly<{
+  resultNamespaceRequirement: TaskRuntimeNamespaceAuthorityRequirement;
+  foregroundNamespaceRequirements: readonly TaskRuntimeNamespaceAuthorityRequirement[];
+}>;
+
+export function withTaskOutputRecipientAuthority<Value>(input: TaskOutputNamespaceAuthorityInput & Readonly<{
+  deviceId: string;
+  namespaceRequirements: readonly TaskRuntimeNamespaceAuthorityRequirement[];
+  domainRequirements: readonly TaskRuntimeDomainAuthorityRequirement[];
+  signal?: AbortSignal;
+  use(authority: TaskOutputRecipientAuthority, restricted: PostgresJsBridgeConnection,
+    product: PostgresJsBridgeConnection, transaction: CanonicalTranscriptTx): Value | Promise<Value>;
+  validateBeforeCommit?(): void | Promise<void>;
+}>): Promise<Value | null> {
+  const request = Object.freeze({ ...input, foregroundNamespaceIds: Object.freeze([...input.foregroundNamespaceIds]),
+    ...(input.additionalMutationDestination === undefined ? {} : {
+      additionalMutationDestination: Object.freeze({ ...input.additionalMutationDestination }),
+    }),
+    ...(input.projectionDestination === undefined ? {} : { projectionDestination: Object.freeze({ ...input.projectionDestination }) }),
+  });
+  if (!outputRequirementsMatch(request, request.namespaceRequirements)) {
+    throw new TypeError("Task output recipient partitions are invalid");
+  }
+  return withTaskRuntimeRecipientAuthority({ ...request, namespaceIds: outputNamespaceIds(request) },
+    request.validateCurrentTaskRun,
+    async (authority, restricted, _request, product, transaction) => {
+      const source = authority.namespaceRequirements.find(n => n.namespaceId === request.contentNamespaceId)!;
+      const current = Object.freeze({ ...authority,
+        resultNamespaceRequirement: Object.freeze({ ...source, operations: Object.freeze(["decrypt"] as const) }),
+        foregroundNamespaceRequirements: Object.freeze(authority.namespaceRequirements
+          .filter(n => request.foregroundNamespaceIds.includes(n.namespaceId))
+          .map(n => Object.freeze({ ...n, operations: Object.freeze(request.workKind === "task.deliver_result"
+            ? ["encrypt"] as const : ["decrypt", "encrypt"] as const) }))),
+      });
+      const value = await withParkedTaskRuntimeRestrictedAuthority(restricted,
+        scoped => Promise.resolve(request.use(current, scoped, product, transaction)));
+      await request.validateBeforeCommit?.();
+      return value;
+    }, undefined, { ...request, purpose: "output_result_read" });
+}
+
+declare const taskOutputProductAuthorityBrand: unique symbol;
+export type TaskOutputProductAuthority = Readonly<{ readonly [taskOutputProductAuthorityBrand]: true }>;
+type OutputProductContext = Readonly<{
+  input: TaskOutputNamespaceAuthorityInput;
+  product: PostgresJsBridgeConnection;
+  transaction: CanonicalTranscriptTx;
+  restricted: PostgresJsBridgeConnection;
+  accessRevisions: readonly number[];
+}>;
+const outputProductProofs = new WeakMap<object, OutputProductContext>();
+
+/** Product-only phase; no device, Namespace bundle or Domain locks precede use. */
+export function withTaskOutputProductAuthority<Value>(input: TaskOutputNamespaceAuthorityInput & Readonly<{
+  use(proof: TaskOutputProductAuthority, product: PostgresJsBridgeConnection,
+    transaction: CanonicalTranscriptTx, restricted: PostgresJsBridgeConnection): Promise<Value>;
+}>): Promise<Value | null> {
+  const request = Object.freeze({ ...input, foregroundNamespaceIds: Object.freeze([...input.foregroundNamespaceIds]),
+    ...(input.additionalMutationDestination === undefined ? {} : {
+      additionalMutationDestination: Object.freeze({ ...input.additionalMutationDestination }),
+    }),
+    ...(input.projectionDestination === undefined ? {} : { projectionDestination: Object.freeze({ ...input.projectionDestination }) }),
+  });
+  return withInitialTaskRuntimeProductAuthority({ ...request, purpose: "output_result_read",
+    namespaceIds: outputNamespaceIds(request) }, async (restricted, revisions, _policy, product, transaction) => {
+      const proof = Object.freeze({}) as TaskOutputProductAuthority;
+      const context = Object.freeze({ input: request, product, transaction, restricted,
+        accessRevisions: Object.freeze([...revisions]) });
+      outputProductProofs.set(proof, context);
+      try { return await request.use(proof, product, transaction, restricted); }
+      finally { outputProductProofs.delete(proof); }
+    }, request.validateCurrentTaskRun);
+}
+
+/** Internal common-verifier seam, deliberately absent from the server barrel. */
+export async function withTaskOutputProductAuthorityContext<Value>(proof: TaskOutputProductAuthority,
+  use: (context: OutputProductContext) => Promise<Value>): Promise<Value> {
+  const context = outputProductProofs.get(proof);
+  if (context === undefined) throw new TypeError("Task output product authority is not active");
+  const value = await use(context);
+  if (outputProductProofs.get(proof) !== context) throw new TypeError("Task output product authority is not active");
+  return value;
+}
+
+/** Internal exact admission check; a structural copy of a proof never qualifies. */
+export function assertTaskOutputProductAuthority(proof: TaskOutputProductAuthority, expected: Readonly<{
+  transaction: CanonicalTranscriptTx;
+  subject: Readonly<{ userId: string; humanActorId: string }>;
+  request: Readonly<{ requestId: string; workId: string; workKind: string; workPurpose: string; sourceRoomId: string; episodeId: string }>;
+  namespaces: readonly TaskRuntimeNamespaceAuthorityRequirement[];
+  policyRevision: number;
+}>): void {
+  const context = outputProductProofs.get(proof);
+  const actual = context?.input;
+  if (context === undefined || actual === undefined || context.transaction !== expected.transaction
+    || actual.requesterUserId !== expected.subject.userId || actual.requesterHumanId !== expected.subject.humanActorId
+    || actual.requestId !== expected.request.requestId || actual.workId !== expected.request.workId
+    || actual.workKind !== expected.request.workKind || expected.request.workPurpose !== actual.workKind
+    || actual.destinationRoomId !== expected.request.sourceRoomId || actual.episodeId !== expected.request.episodeId
+    || actual.expectedPolicyRevision !== expected.policyRevision
+    || !outputRequirementsMatch(actual, expected.namespaces, context.accessRevisions)) {
+    throw new TypeError("Task output product authority does not match the request");
+  }
 }

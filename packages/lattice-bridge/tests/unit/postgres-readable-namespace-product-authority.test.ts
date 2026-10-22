@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import assert from "node:assert/strict";
 import { accessRevision, humanId, namespaceId } from "@nautilo/lattice-crypto";
 import type {
   PostgresJsBridgeConnection,
@@ -19,6 +20,7 @@ const ROOM = "10000000-0000-4000-8000-000000000005";
 const NAMESPACE = "10000000-0000-4000-8000-000000000006";
 const OTHER_ROOM = "10000000-0000-4000-8000-000000000007";
 const OTHER_NAMESPACE = "10000000-0000-4000-8000-000000000008";
+const CHILD_ROOM = "10000000-0000-4000-8000-000000000000";
 const members = [HUMAN, PEER].map((actor_id) => ({ actor_id, kind: "user" }));
 const membersWithAgent = [...members, { actor_id: AGENT, kind: "agent" }];
 
@@ -29,6 +31,8 @@ function fixture(options: Readonly<{
   readablePolicyNamespaceIds?: readonly string[];
   setTargets?: readonly PostgresJsBridgeRow[];
   setTargetMembers?: readonly PostgresJsBridgeRow[];
+  destination?: PostgresJsBridgeRow;
+  destinations?: readonly PostgresJsBridgeRow[];
 }> = {}) {
   const row = {
     source_room_id: ROOM, source_access_allowed: true,
@@ -74,6 +78,12 @@ function fixture(options: Readonly<{
       }
       else if (statement.includes('order by "rooms"."parent_room_id" nulls first')) {
         result = parameters.flat().map((id) => ({ id: String(id) }));
+      } else if (statement.includes("destination_access_allowed")) {
+        result = options.destinations === undefined ? [{ id: CHILD_ROOM, namespace_id: NAMESPACE,
+          parent_room_id: ROOM, kind: "subthread", archived_at: null,
+          human_actor_ids: [HUMAN, PEER], effective_human_actor_ids: [HUMAN, PEER],
+          destination_access_allowed: true, ...options.destination }]
+          : options.destinations.filter(destination => parameters.includes(destination["id"]));
       } else if (statement.includes("m290_namespace_key_readable_actor")) result = [row];
       else if (statement.includes("m290_namespace_key_readable_rooms")) result = [row];
       else if (statement.includes("m290_namespace_key_source_members")) {
@@ -154,6 +164,135 @@ const coordinates = {
 };
 
 describe("Human-only Room Domain-key product authority", () => {
+  test("locks invocation and projection Rooms together before checking either audience", async () => {
+    const state = fixture({ sourceMembers: membersWithAgent,
+      setTargets: [
+        { room_id: ROOM, namespace_id: NAMESPACE, parent_room_id: null,
+          namespace_access_revision: 3, human_actor_ids: [HUMAN, PEER], effective_human_actor_ids: [HUMAN, PEER] },
+        { room_id: OTHER_ROOM, namespace_id: OTHER_NAMESPACE, parent_room_id: null,
+          namespace_access_revision: 4, human_actor_ids: [HUMAN, PEER], effective_human_actor_ids: [HUMAN, PEER] },
+      ],
+      destinations: [
+        { id: CHILD_ROOM, namespace_id: NAMESPACE, parent_room_id: ROOM, kind: "subthread",
+          archived_at: null, human_actor_ids: [HUMAN, PEER], effective_human_actor_ids: [HUMAN, PEER], destination_access_allowed: true },
+        { id: OTHER_ROOM, namespace_id: OTHER_NAMESPACE, parent_room_id: null, kind: "group",
+          archived_at: null, human_actor_ids: [HUMAN, PEER], effective_human_actor_ids: [HUMAN, PEER], destination_access_allowed: true },
+      ],
+      setTargetMembers: [ROOM, CHILD_ROOM, OTHER_ROOM].flatMap(room_id =>
+        membersWithAgent.map(member => ({ ...member, room_id }))),
+    });
+    expect(await state.authority.withCurrentReadableNamespaceSet({
+      subjectUserId: USER, subjectHumanId: HUMAN, sourceRoomId: ROOM,
+      namespaceIds: [NAMESPACE, OTHER_NAMESPACE],
+      destinationRoom: { roomId: CHILD_ROOM, namespaceId: NAMESPACE },
+      additionalDestinationRoom: { roomId: OTHER_ROOM, namespaceId: OTHER_NAMESPACE },
+      use: async entries => entries.map(entry => entry.namespaceId),
+    })).toEqual([namespaceId(NAMESPACE), namespaceId(OTHER_NAMESPACE)]);
+    const lockIndex = state.queries.findIndex(query => query.statement.includes('order by "rooms"."parent_room_id" nulls first'));
+    expect(state.queries[lockIndex]?.parameters.flat()).toEqual([CHILD_ROOM, ROOM, OTHER_ROOM]);
+    const destinationChecks = state.queries.map((query, index) => ({ query, index }))
+      .filter(value => value.query.statement.includes("destination_access_allowed"));
+    expect(destinationChecks).toHaveLength(2);
+    expect(destinationChecks.every(value => value.index > lockIndex)).toBe(true);
+    expect(state.queries.find(query => query.statement.includes("readable_set_target_members"))?.parameters.flat())
+      .toEqual([CHILD_ROOM, ROOM, OTHER_ROOM]);
+  });
+
+  for (const changed of [
+    { namespace_id: NAMESPACE },
+    { parent_room_id: ROOM },
+    { archived_at: new Date() },
+    { destination_access_allowed: false },
+    { effective_human_actor_ids: [PEER] },
+    { human_actor_ids: [HUMAN] },
+  ]) {
+    test(`refuses changed projection destination ${Object.keys(changed)[0]} before disclosure`, async () => {
+      const state = fixture({ sourceMembers: membersWithAgent,
+        setTargets: [
+          { room_id: ROOM, namespace_id: NAMESPACE, parent_room_id: null,
+            namespace_access_revision: 3, human_actor_ids: [HUMAN, PEER], effective_human_actor_ids: [HUMAN, PEER] },
+          { room_id: OTHER_ROOM, namespace_id: OTHER_NAMESPACE, parent_room_id: null,
+            namespace_access_revision: 4, human_actor_ids: [HUMAN, PEER], effective_human_actor_ids: [HUMAN, PEER] },
+        ],
+        destinations: [
+          { id: CHILD_ROOM, namespace_id: NAMESPACE, parent_room_id: ROOM, kind: "subthread",
+            archived_at: null, human_actor_ids: [HUMAN, PEER], effective_human_actor_ids: [HUMAN, PEER], destination_access_allowed: true },
+          { id: OTHER_ROOM, namespace_id: OTHER_NAMESPACE, parent_room_id: null, kind: "group",
+            archived_at: null, human_actor_ids: [HUMAN, PEER], effective_human_actor_ids: [HUMAN, PEER], destination_access_allowed: true,
+            ...changed },
+        ],
+        setTargetMembers: [ROOM, CHILD_ROOM, OTHER_ROOM].flatMap(room_id =>
+          membersWithAgent.map(member => ({ ...member, room_id }))),
+      });
+      let disclosed = false;
+      expect(await state.authority.withCurrentReadableNamespaceSet({
+        subjectUserId: USER, subjectHumanId: HUMAN, sourceRoomId: ROOM,
+        namespaceIds: [NAMESPACE, OTHER_NAMESPACE],
+        destinationRoom: { roomId: CHILD_ROOM, namespaceId: NAMESPACE },
+        additionalDestinationRoom: { roomId: OTHER_ROOM, namespaceId: OTHER_NAMESPACE },
+        use: async () => { disclosed = true; return "forbidden"; },
+      })).toBeNull();
+      expect(disclosed).toBe(false);
+      expect(state.transactionActive()).toBe(false);
+    });
+  }
+
+  test("refuses an additional Room outside the exact Namespace set before taking locks", async () => {
+    const state = fixture();
+    await assert.rejects(() => state.authority.withCurrentReadableNamespaceSet({
+      subjectUserId: USER, subjectHumanId: HUMAN, sourceRoomId: ROOM,
+      namespaceIds: [NAMESPACE], destinationRoom: { roomId: CHILD_ROOM, namespaceId: NAMESPACE },
+      additionalDestinationRoom: { roomId: OTHER_ROOM, namespaceId: OTHER_NAMESPACE },
+      use: async () => "forbidden",
+    }), /coordinates are invalid/);
+    expect(state.queries).toHaveLength(0);
+  });
+  test("locks an actual destination Subthread with its Namespace root before membership", async () => {
+    const state = fixture({ sourceMembers: membersWithAgent,
+      setTargetMembers: [ROOM, CHILD_ROOM].flatMap(room_id =>
+        membersWithAgent.map(member => ({ ...member, room_id }))) });
+    expect(await state.authority.withCurrentReadableNamespaceSet({
+      subjectUserId: USER, subjectHumanId: HUMAN, sourceRoomId: ROOM,
+      namespaceIds: [NAMESPACE], destinationRoom: { roomId: CHILD_ROOM, namespaceId: NAMESPACE },
+      use: async entries => {
+        expect(state.transactionActive()).toBe(true);
+        expect(entries.map(entry => entry.namespaceId)).toEqual([namespaceId(NAMESPACE)]);
+        return "held";
+      },
+    })).toBe("held");
+    const lockIndex = state.queries.findIndex(query => query.statement.includes('order by "rooms"."parent_room_id" nulls first'));
+    const lock = state.queries[lockIndex]!;
+    expect(lock.statement).toContain('order by "rooms"."parent_room_id" nulls first, "rooms"."id" asc');
+    expect(lock.parameters.flat()).toEqual([CHILD_ROOM, ROOM]);
+    const membersIndex = state.queries.findIndex(query => query.statement.includes("readable_set_source_members"));
+    expect(lockIndex).toBeLessThan(membersIndex);
+    const destinationIndex = state.queries.findIndex(query => query.statement.includes("destination_access_allowed"));
+    expect(destinationIndex).toBeGreaterThan(lockIndex);
+    expect(destinationIndex).toBeLessThan(membersIndex);
+    const membersQuery = state.queries.find(query => query.statement.includes("readable_set_target_members"));
+    expect(membersQuery?.parameters.flat()).toEqual([CHILD_ROOM, ROOM]);
+    expect(membersQuery?.statement).toContain("FOR UPDATE OF member");
+  });
+
+  for (const destination of [
+    { namespace_id: OTHER_NAMESPACE },
+    { parent_room_id: OTHER_ROOM },
+    { parent_room_id: null },
+    { kind: "group" },
+    { archived_at: new Date() },
+    { destination_access_allowed: false },
+  ]) {
+    test(`refuses destination drift ${Object.keys(destination)[0]}`, async () => {
+      const state = fixture({ sourceMembers: membersWithAgent, destination });
+      expect(await state.authority.withCurrentReadableNamespaceSet({
+        subjectUserId: USER, subjectHumanId: HUMAN, sourceRoomId: ROOM,
+        namespaceIds: [NAMESPACE], destinationRoom: { roomId: CHILD_ROOM, namespaceId: NAMESPACE },
+        use: async () => "forbidden",
+      })).toBeNull();
+      expect(state.statements.some(statement => statement.includes("readable_set_source_members"))).toBe(false);
+    });
+  }
+
   for (const kind of ["private", "group"]) {
     test(`permits own Human Namespace in a ${kind} Room without an Agent`, async () => {
       const state = fixture({ room: { source_kind: kind, target_kind: kind } });

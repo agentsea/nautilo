@@ -33,6 +33,7 @@ const EVENT_ROUTING = {
   // lane; the authorization request is additionally filtered to its issuer.
   "message.shared_agent_shadow": "scoped",
   "message.shared_agent_authorization_required": "scoped",
+    "message.task_definition_authorization_required": "scoped",
   "message.runtime_invocation_authorization_required": "scoped",
   "message.shared_agent_stream_start": "scoped",
   "message.shared_agent_stream_frame": "scoped",
@@ -129,6 +130,7 @@ const EVENT_ROUTING = {
   "task.awaiting_reply": "scoped",
   // owner-scoped mid-run progress for subagent activity cards.
   "task.progress": "scoped",
+  "task.external_request.changed": "scoped",
   // room-scoped in-thread working affordance (routed like message.tokens).
   "agent.progress": "scoped",
   // room-scoped, redacted Structured SSH activity projection.

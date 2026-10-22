@@ -44,6 +44,8 @@ import {
   type AtomicMemoryCryptoCompletionPort,
 } from "../../memory/memory-repository.ts";
 import { resolveRequiredMemoryNamespaceIds } from "../../memory/required-namespace-set.ts";
+import { commitMemoryMutationV1 } from "../../memory/memory-mutation-commitment.ts";
+import { encodeMemoryPayloadV1 } from "../../memory/memory-payload-v1.ts";
 import {
   memoryPayloadExposureToDurable,
   type MemoryPayloadV1,
@@ -71,6 +73,26 @@ const MAX_CANDIDATES = 64;
 const VECTOR_DIMENSIONS = 1536;
 const DEFAULT_DEDUP_THRESHOLD = 0.9;
 const encoder = new TextEncoder();
+
+declare const projectionReservationBrand: unique symbol;
+export interface VerifiedForegroundMemoryPublicationReservation {
+  readonly [projectionReservationBrand]: true;
+}
+type ProjectionReservation = Readonly<{
+  operationId: string; memoryId: string; contentRevision: number; cryptoObjectId: string;
+  agentId: string; reservationDigest: Uint8Array; requiredNamespaceFingerprint: Uint8Array;
+  namespaceIds: readonly string[]; plaintextDigest: Uint8Array; createdAt: number;
+}>;
+const projectionReservations = new WeakMap<VerifiedForegroundMemoryPublicationReservation, ProjectionReservation>();
+export function readVerifiedForegroundMemoryPublicationReservation(
+  proof: VerifiedForegroundMemoryPublicationReservation,
+): ProjectionReservation {
+  const value = projectionReservations.get(proof);
+  if (value === undefined) throw new TypeError("Memory publication reservation is not authentic");
+  return Object.freeze({ ...value, reservationDigest: Uint8Array.from(value.reservationDigest),
+    requiredNamespaceFingerprint: Uint8Array.from(value.requiredNamespaceFingerprint),
+    plaintextDigest: Uint8Array.from(value.plaintextDigest) });
+}
 
 export type ProtectedAgentBackgroundMemoryOutputPlanInput = Readonly<{
   action: "create" | "replace";
@@ -1435,6 +1457,64 @@ export class PostgresAgentMemoryProductPort
         }),
       });
     });
+  }
+
+  /** Immutable reservation provenance only; current write authority is separately required. */
+  async inspectFreshProjectionReservation(input: Readonly<{
+    authority: ProtectedMemoryAuthority; plan: ProtectedMemoryMutationPlan; payload: MemoryPayloadV1;
+  }>): Promise<VerifiedForegroundMemoryPublicationReservation | null> {
+    const authority = snapshotAuthority(input.authority);
+    const plan = Object.freeze({
+      ...input.plan,
+      requiredNamespaceIds: Object.freeze([...input.plan.requiredNamespaceIds]),
+      reservationDigest: Uint8Array.from(input.plan.reservationDigest),
+      mutationCommitment: Uint8Array.from(input.plan.mutationCommitment),
+    });
+    const required = canonicalIds(plan.requiredNamespaceIds);
+    const commitment = commitMemoryMutationV1({ kind: "save", payload: input.payload });
+    const plaintext = encodeMemoryPayloadV1(input.payload);
+    const plaintextDigest = sha256(plaintext);
+    plaintext.fill(0);
+    const expected = foregroundStableRequestDigest({ operationId: plan.operationId,
+      mutationKind: "save", authority, importance: plan.importance,
+      mutationCommitment: commitment });
+    if (plan.mutationKind !== "save" || plan.action !== "created"
+      || plan.contentRevision !== 1 || plan.cryptoAccessRevision !== 0
+      || plan.expectedPriorAccessRevision !== 0 || required === null || required.length !== 1
+      || !this.#authorityReadable(authority) || !authorityAllowsMutationSet(authority, required)
+      || !sameBytes(plan.mutationCommitment, commitment)
+      || !sameBytes(plan.reservationDigest, expected)
+      || plan.cryptoObjectId !== deriveMemoryCryptoObjectIdV1({ memoryId: plan.memoryId, contentRevision: 1 })) return null;
+    const fingerprint = fingerprintRequiredMemoryNamespaces(required);
+    const verified = await this.#transaction(authority, async transaction => {
+      if (!await this.#scopeOpenForMutation(transaction, authority)) return false;
+      const operation = await this.#existingOperation(transaction, plan.operationId);
+      if (operation === null || operation.completion !== "pending" || operation.operationType !== "update"
+        || operation.memoryId !== plan.memoryId || operation.resultContentRevision !== 1
+        || operation.expectedContentRevision !== 0 || operation.expectedAccessRevision !== 0
+        || operation.createdAt !== plan.createdAt || !sameBytes(operation.requestDigest, expected)
+        || operation.foregroundMutationKind !== "save" || operation.foregroundStableRequestDigest === null
+        || !sameBytes(operation.foregroundStableRequestDigest, expected)) return false;
+      const row = oneOrNull(await executeTypedConversationProductQuery(transaction,
+        conversationProductTypedDb.select({ crypto_object_id: memoryCryptoRevisions.cryptoObjectId,
+          allocation_request_digest: memoryCryptoRevisions.allocationRequestDigest,
+          required_namespace_fingerprint: memoryCryptoRevisions.requiredNamespaceFingerprint,
+          completion: memoryCryptoRevisions.completion, disposition: memoryCryptoRevisions.disposition,
+        }).from(memoryCryptoRevisions).where(and(eq(memoryCryptoRevisions.memoryId, plan.memoryId),
+          eq(memoryCryptoRevisions.contentRevision, 1))).limit(2)), "Fresh projection reservation");
+      return row !== null && rowString(row, "crypto_object_id") === plan.cryptoObjectId
+        && rowString(row, "completion") === "pending" && rowString(row, "disposition") === "active"
+        && sameBytes(rowBytes(row, "allocation_request_digest"), expected)
+        && sameBytes(rowBytes(row, "required_namespace_fingerprint"), fingerprint);
+    });
+    if (!verified) return null;
+    const proof = Object.freeze({}) as VerifiedForegroundMemoryPublicationReservation;
+    projectionReservations.set(proof, Object.freeze({ operationId: plan.operationId,
+      memoryId: plan.memoryId, contentRevision: 1, cryptoObjectId: plan.cryptoObjectId,
+      agentId: authority.agentId, reservationDigest: Uint8Array.from(expected),
+      requiredNamespaceFingerprint: Uint8Array.from(fingerprint), namespaceIds: Object.freeze([...required]),
+      plaintextDigest, createdAt: plan.createdAt }));
+    return proof;
   }
 
   async planProjectionCreate(input: Readonly<{

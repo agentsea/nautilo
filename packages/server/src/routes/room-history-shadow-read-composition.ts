@@ -14,6 +14,7 @@ import {
   unixTimestamp,
   verifyHumanHistoryReadAcknowledgement,
   type HumanHistoryReadAcknowledgement,
+  type LatticeStorage,
 } from "@nautilo/lattice-crypto";
 import {
   decodeHumanHistoryReadAcknowledgementV1,
@@ -26,6 +27,9 @@ import {
   createPostgresForegroundAgentSignerResolver,
   PostgresDomainKeyAuthorityRepository,
   PostgresLatticeStorage,
+  PostgresHumanDeviceSignerHistory,
+  authenticateHistoricalAgentRuntimeSignerPublication,
+  type ResolveHistoricalAgentRuntimeSignerManagerAuthority,
   PostgresNamespaceProductAuthority,
   resolveRoomHistoryReaderSigningPublicKey,
   publishHumanDeviceOrdinaryRepairV2,
@@ -122,6 +126,29 @@ function unavailableResponse(input: Readonly<{
   });
 }
 
+type WakeHistorySignerResolver = NonNullable<Parameters<
+  typeof createPostgresRoomHistoryShadowProjection
+>[0]["resolveTaskWakeAgentSigner"]>;
+
+/** Room history retains signed Runtime provenance independently of Task lifetime. */
+export function createTaskWakeHistorySignerResolver(input: Readonly<{
+  crypto: LatticeCrypto;
+  storage: Pick<LatticeStorage, "getAgentRuntimeSignerPublication">;
+  resolveHistoricalManagerAuthority: ResolveHistoricalAgentRuntimeSignerManagerAuthority;
+}>): WakeHistorySignerResolver {
+  return async principal => {
+    const publication = await input.storage.getAgentRuntimeSignerPublication(principal.agentId, principal.runtimeGeneration);
+    if (publication === null) return null;
+    const authenticated = await authenticateHistoricalAgentRuntimeSignerPublication({
+      crypto: input.crypto, publication, resolveHistoricalManagerAuthority: input.resolveHistoricalManagerAuthority,
+    });
+    return authenticated.agentId === principal.agentId
+      && authenticated.runtimeGeneration === principal.runtimeGeneration
+      && authenticated.signerKeyId === principal.signerKeyId
+      ? Uint8Array.from(authenticated.signerPublicKey) : null;
+  };
+}
+
 export function createProductionRoomHistoryShadowReadComposition(
   overrides: RoomHistoryShadowReadCompositionOverrides = {},
 ):
@@ -174,9 +201,13 @@ RoomHistoryShadowReadComposition {
         crypto,
         serverId,
       );
+      const storage = new PostgresLatticeStorage(restricted);
+      const signerHistory = new PostgresHumanDeviceSignerHistory({ handle: restricted, crypto });
       return createPostgresRoomHistoryShadowProjection({
         product,
-        crypto: new PostgresLatticeStorage(restricted),
+        crypto: storage,
+        resolveTaskWakeAgentSigner: createTaskWakeHistorySignerResolver({ crypto, storage,
+          resolveHistoricalManagerAuthority: signerHistory.resolveAgentRuntimeSignerManager }),
         resolveForegroundAgentSigner: createPostgresForegroundAgentSignerResolver({ product, crypto }),
         restricted: resolveRestrictedConnection(),
         resolveAuthority: createCurrentDomainKeyRoomHistoryAuthorityResolver({

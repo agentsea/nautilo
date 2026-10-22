@@ -78,7 +78,7 @@ function database(
 }
 
 describe("protected Task requester private Room resolver", () => {
-  test("ignores a group-shaped first result and selects the exact private Room", async () => {
+  test("selects the requester Human's exact private Room independently of the supplied Agent", async () => {
     const resolve = createProtectedTaskRequesterPrivateRoomResolver(database(
       [{ id: HUMAN }],
       [
@@ -156,7 +156,8 @@ describe("protected Task requester private Room resolver", () => {
     expect(having.sql).toContain('"actors"."kind" = \'agent\'');
     expect(having.sql).toContain('"actors"."kind" = \'user\'');
     expect(having.sql).toContain('cardinality("rooms"."human_actor_ids") = 1');
-    expect(having.params).toEqual(["agent-1", HUMAN, HUMAN]);
+    expect(having.params).toEqual([HUMAN, HUMAN]);
+    expect(having.params).not.toContain("agent-1");
 
     const order = observation.orderBy[0]!.map((clause) =>
       dialect.sqlToQuery(clause)

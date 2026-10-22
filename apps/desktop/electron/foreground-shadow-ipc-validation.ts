@@ -54,6 +54,26 @@ export function parseForegroundShadowPendingAttention(raw: unknown): Readonly<{
   });
 }
 
+/** Exact data-only input for owner-wide protected Task attention recovery. */
+export function parseForegroundShadowTaskPendingAttention(raw: unknown): Readonly<{
+  clientActionSessionId: string;
+}> {
+  const value = boundedForegroundShadowValue(
+    raw,
+    "Foreground Task pending attention",
+  ) as Record<string, unknown>;
+  if (Object.keys(value).some((key) => key !== "clientActionSessionId")) {
+    throw new TypeError("Foreground Task pending attention input is invalid.");
+  }
+  return Object.freeze({
+    clientActionSessionId: foregroundShadowString(
+      value["clientActionSessionId"],
+      "Client action Session id",
+      200,
+    ),
+  });
+}
+
 export function assertForegroundShadowHistoryShape(value: unknown): asserts value is {
   readerInput: { records: readonly unknown[] };
   acknowledgement: object;

@@ -26,6 +26,8 @@ export type NamespaceGenerationAuthority = Readonly<{
 /** Callback-borrowed Namespace secret. Callers must not retain its raw key. */
 export type OpenedNamespaceGeneration = Readonly<{
   namespaceId: ReturnType<typeof namespaceId>;
+  /** Authenticated native Domain coordinate when the backing authority has one. */
+  domainId?: string;
   keyClass: "ai" | "human";
   accessRevision: ReturnType<typeof accessRevision>;
   generation: ReturnType<typeof namespaceGeneration>;

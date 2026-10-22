@@ -19,6 +19,8 @@ const ROOM_ID = "40000000-0000-4000-8000-000000000004";
 const TASK_ID = "50000000-0000-4000-8000-000000000005";
 const RUN_ID = "60000000-0000-4000-8000-000000000006";
 const JOB_ID = "protected-quiescence-job";
+const PAUSE_REQUEST_ID = "70000000-0000-4000-8000-000000000007";
+const OTHER_PAUSE_REQUEST_ID = "71000000-0000-4000-8000-000000000007";
 const THREAD_ID = `subagent:${TASK_ID}:${RUN_ID}`;
 
 const publication = Object.freeze({
@@ -122,6 +124,130 @@ class DeferredReleaseLaneLock implements LaneLock {
 }
 
 describe("JobManager protected Task worker settlement", () => {
+  test("requests one exact checkpoint pause and waits for the existing settlement", async () => {
+    const laneLock = new DeferredReleaseLaneLock();
+    const executorEntered = Promise.withResolvers<void>();
+    const allowExecutorReturn = Promise.withResolvers<void>();
+    const workReturned = Promise.withResolvers<void>();
+    const allowCandidateClose = Promise.withResolvers<void>();
+    const requestedPauses: Array<readonly [string, string | undefined]> = [];
+    let signal: AbortSignal | null = null;
+    const getSignal = (): AbortSignal | null => signal;
+    const manager = new JobManager({
+      laneLock,
+      acceptanceSinks: acceptanceSinks(),
+      startProtectedTaskJob,
+      settleProtectedTaskJobTerminal,
+      persist: async () => JOB_ID,
+      updateStatus: async () => {},
+    });
+    const executionCandidate = candidate(
+      async () => {
+        workReturned.resolve();
+        await allowCandidateClose.promise;
+      },
+      Object.freeze({
+        publish: async () => {},
+        park: async () => {},
+        awaitSettled: async () => true,
+      }),
+    );
+    executionCandidate.requestCheckpointPause = (reason, pauseRequestId) => {
+      requestedPauses.push([reason, pauseRequestId]);
+      allowExecutorReturn.resolve();
+      return true;
+    };
+    await dispatchProtected(
+      manager,
+      async function* (_input, _jobId, _lane, activeSignal) {
+        signal = activeSignal;
+        executorEntered.resolve();
+        await allowExecutorReturn.promise;
+        yield* [];
+      },
+      executionCandidate,
+    );
+    await executorEntered.promise;
+
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(manager.requestProtectedTaskCheckpointPauseAndWait({
+      taskId: TASK_ID,
+      taskRunId: RUN_ID,
+      jobId: JOB_ID,
+      reason: "grant_refresh",
+      pauseRequestId: PAUSE_REQUEST_ID,
+    })).rejects.toThrow("request is invalid");
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(manager.requestProtectedTaskCheckpointPauseAndWait({
+      taskId: TASK_ID,
+      taskRunId: RUN_ID,
+      jobId: JOB_ID,
+      reason: "time_limit",
+      pauseRequestId: "not-a-uuid",
+    })).rejects.toThrow("request is invalid");
+    expect(await manager.requestProtectedTaskCheckpointPauseAndWait({
+      taskId: `${TASK_ID}-stale`,
+      taskRunId: RUN_ID,
+      jobId: JOB_ID,
+      reason: "manual_pause",
+      pauseRequestId: PAUSE_REQUEST_ID,
+    })).toEqual({ status: "unavailable" });
+    expect(await manager.requestProtectedTaskCheckpointPauseAndWait({
+      taskId: TASK_ID,
+      taskRunId: RUN_ID,
+      jobId: "unknown-owner-job",
+      reason: "manual_pause",
+      pauseRequestId: PAUSE_REQUEST_ID,
+    })).toEqual({ status: "unavailable" });
+
+    let firstResolved = false;
+    const first = manager.requestProtectedTaskCheckpointPauseAndWait({
+      taskId: TASK_ID,
+      taskRunId: RUN_ID,
+      jobId: JOB_ID,
+      reason: "manual_pause",
+      pauseRequestId: PAUSE_REQUEST_ID,
+    }).then((result) => {
+      firstResolved = true;
+      return result;
+    });
+    const repeated = manager.requestProtectedTaskCheckpointPauseAndWait({
+      taskId: TASK_ID,
+      taskRunId: RUN_ID,
+      jobId: JOB_ID,
+      reason: "manual_pause",
+      pauseRequestId: PAUSE_REQUEST_ID,
+    });
+    expect(await manager.requestProtectedTaskCheckpointPauseAndWait({
+      taskId: TASK_ID,
+      taskRunId: RUN_ID,
+      jobId: JOB_ID,
+      reason: "manual_pause",
+      pauseRequestId: OTHER_PAUSE_REQUEST_ID,
+    })).toEqual({ status: "unavailable" });
+    expect(requestedPauses).toEqual([["manual_pause", PAUSE_REQUEST_ID]]);
+    expect(getSignal()?.aborted).toBe(false);
+
+    await workReturned.promise;
+    expect(firstResolved).toBe(false);
+    allowCandidateClose.resolve();
+    await laneLock.releaseStarted.promise;
+    expect(firstResolved).toBe(false);
+    laneLock.allowRelease.resolve();
+
+    expect(await first).toEqual({ status: "settled" });
+    expect(await repeated).toEqual({ status: "settled" });
+    expect(manager.getAbortReason(JOB_ID)).toBeUndefined();
+    expect(manager.getJob(JOB_ID)).toBeUndefined();
+    expect(await manager.requestProtectedTaskCheckpointPauseAndWait({
+      taskId: TASK_ID,
+      taskRunId: RUN_ID,
+      jobId: JOB_ID,
+      reason: "manual_pause",
+      pauseRequestId: PAUSE_REQUEST_ID,
+    })).toEqual({ status: "unavailable" });
+  });
+
   test("registers before lifecycle start and a failed start does not poison the thread sequence", async () => {
     const startEntered = Promise.withResolvers<void>();
     const allowStartReturn = Promise.withResolvers<void>();
@@ -283,6 +409,12 @@ describe("JobManager protected Task worker settlement", () => {
       taskRunId: RUN_ID,
       jobId: "unknown-owner-job",
     })).toEqual({ status: "unavailable" });
+    expect(await manager.requestProtectedTaskCheckpointPauseAndWait({
+      taskId: TASK_ID,
+      taskRunId: RUN_ID,
+      jobId: JOB_ID,
+      reason: "time_limit",
+    })).toEqual({ status: "unavailable" });
     expect(manager.abortProtectedTaskRunAndWait({
       taskId: `${TASK_ID}-other`,
       taskRunId: RUN_ID,
@@ -382,6 +514,13 @@ describe("JobManager protected Task worker settlement", () => {
         contention: "serialize",
       },
     );
+
+    expect(await manager.requestProtectedTaskCheckpointPauseAndWait({
+      taskId: TASK_ID,
+      taskRunId: RUN_ID,
+      jobId: "plain-job",
+      reason: "manual_pause",
+    })).toEqual({ status: "unavailable" });
 
     await laneLock.releaseStarted.promise;
     await waitFor(() => manager.getJob("plain-job") === undefined);

@@ -1,7 +1,9 @@
 import { createHash } from "node:crypto";
-import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { readMigrationFiles, type MigrationConfig, type MigrationMeta } from "drizzle-orm/migrator";
+import { PgDialect } from "drizzle-orm/pg-core";
+import type { PostgresJsDatabase } from "drizzle-orm/postgres-js";
 
 const migrationName = "0300_flimsy_kingpin.sql";
 const committedHash = "62c2b2c8218262c8caa7b5164d745b64d1fbda96850a3442ec416785f1190669";
@@ -26,6 +28,24 @@ const bolterMigrations = {
     tables: ["bolter_explicit_shares"],
   },
 } as const;
+
+const taskWakeMigrationName = "0374_abandoned_thundra.sql";
+const taskWakeMigrationHash = "e70023c5dcf4012c74d271e56b22b6f8b8dc25099df36215953aad4a775e3767";
+const taskWakeTable = '"protected_task_wake_continuation_receipts"';
+const taskWakeTrigger = `CREATE TRIGGER "task_wake_continuation_immutable" BEFORE UPDATE ON ${taskWakeTable} FOR EACH ROW
+EXECUTE FUNCTION "public"."reject_task_wake_continuation_update"();`;
+const taskWakeTriggerGrant = `GRANT TRIGGER ON TABLE ${taskWakeTable} TO "nautilo";`;
+const taskWakeTriggerRevoke = `REVOKE TRIGGER ON TABLE ${taskWakeTable} FROM "nautilo";`;
+const foregroundMemoryMigrationName = "0375_strange_red_shift.sql";
+const foregroundMemoryMigrationHash = "950d05509ccf6affa335753842e8f2f07a47ee5c1877577fadb8df48626b3f2b";
+const foregroundMemoryTable = '"foreground_memory_crypto_publication_receipts"';
+const foregroundMemoryTrigger = `CREATE TRIGGER "foreground_memory_publication_immutable" BEFORE UPDATE ON ${foregroundMemoryTable} FOR EACH ROW
+EXECUTE FUNCTION "public"."reject_foreground_memory_publication_update"();`;
+const foregroundMemoryTriggerGrant = `GRANT TRIGGER ON TABLE ${foregroundMemoryTable} TO "nautilo";`;
+const foregroundMemoryTriggerRevoke = `REVOKE TRIGGER ON TABLE ${foregroundMemoryTable} FROM "nautilo";`;
+const foregroundMemoryFunction = '"public"."reject_foreground_memory_publication_update"()';
+const foregroundMemoryExecuteGrant = `GRANT EXECUTE ON FUNCTION ${foregroundMemoryFunction} TO "nautilo";`;
+const foregroundMemoryExecuteRevoke = `REVOKE EXECUTE ON FUNCTION ${foregroundMemoryFunction} FROM "nautilo";`;
 
 /** Retain immutable SQL and final ACLs; grant only while installing each guard. */
 export function repairBolterMigration(name: string, source: string): string {
@@ -60,7 +80,7 @@ export function repairBolterMigration(name: string, source: string): string {
 /**
  * The committed migration revokes TRIGGER before creating its own guards.
  * Its SQL file is immutable; apply this exact-hash compatibility correction
- * only to Drizzle's temporary input, never to the checked-in migration.
+ * only to Drizzle's in-memory statements, never to the checked-in migration.
  */
 export function repairModerationMigration(source: string): string {
   const hash = createHash("sha256").update(source).digest("hex");
@@ -78,32 +98,76 @@ export function repairModerationMigration(source: string): string {
     .replace(tableTrigger, `${tableTrigger}${breakpoint}${revoke}`);
 }
 
-/** Preserve the immutable migration tree; correct only exact known privilege defects. */
-export async function withMigrationPrivilegeCompat<T>(
-  migrationsFolder: string,
-  run: (folder: string) => Promise<T>,
-): Promise<T> {
-  const original = resolve(migrationsFolder);
-  const corrections = new Map<string, string>();
-  for (const name of [migrationName, ...Object.keys(bolterMigrations)]) {
-    const sourcePath = join(original, name);
-    if (!existsSync(sourcePath)) continue;
-    const source = readFileSync(sourcePath, "utf8");
-    corrections.set(name, name === migrationName
-      ? repairModerationMigration(source) : repairBolterMigration(name, source));
+/** Retain the Task migration and its final ACLs while installing its immutable-row guard. */
+export function repairTaskWakeMigration(source: string): string {
+  const hash = createHash("sha256").update(source).digest("hex");
+  if (hash !== taskWakeMigrationHash) {
+    throw new Error(`Refusing unknown ${taskWakeMigrationName} content (sha256=${hash})`);
   }
-  if (!corrections.size) return run(original);
-  const windows = process.platform === "win32";
-  const temporary = mkdtempSync(join(tmpdir(), "nautilo-migrations-"));
-  try {
-    for (const entry of readdirSync(original)) {
-      const destination = join(temporary, entry);
-      if (corrections.has(entry)) writeFileSync(destination, corrections.get(entry)!);
-      else if (windows) cpSync(join(original, entry), destination, { recursive: true, dereference: true });
-      else symlinkSync(join(original, entry), destination);
-    }
-    return await run(temporary);
-  } finally {
-    rmSync(temporary, { recursive: true, force: true });
+  if (!source.includes(taskWakeTrigger)
+    || source.indexOf(taskWakeTrigger) !== source.lastIndexOf(taskWakeTrigger)
+    || !source.includes(`REVOKE ALL PRIVILEGES ON TABLE ${taskWakeTable} FROM PUBLIC, "nautilo", "nautilo_agent", "nautilo_crypto";--> statement-breakpoint`)
+    || !source.includes(`GRANT SELECT, INSERT ON TABLE ${taskWakeTable} TO "nautilo";--> statement-breakpoint`)) {
+    throw new Error(`Refusing unexpected ${taskWakeMigrationName} statement layout`);
   }
+  return source.replace(
+    taskWakeTrigger,
+    `${taskWakeTriggerGrant}${breakpoint}${taskWakeTrigger}${breakpoint}${taskWakeTriggerRevoke}`,
+  );
+}
+
+/** Retain the foreground Memory migration and its final ACLs while installing its guard. */
+export function repairForegroundMemoryMigration(source: string): string {
+  const hash = createHash("sha256").update(source).digest("hex");
+  if (hash !== foregroundMemoryMigrationHash) {
+    throw new Error(`Refusing unknown ${foregroundMemoryMigrationName} content (sha256=${hash})`);
+  }
+  if (!source.includes(foregroundMemoryTrigger)
+    || source.indexOf(foregroundMemoryTrigger) !== source.lastIndexOf(foregroundMemoryTrigger)
+    || !source.includes(`REVOKE ALL PRIVILEGES ON TABLE ${foregroundMemoryTable} FROM PUBLIC, "nautilo", "nautilo_agent", "nautilo_crypto";--> statement-breakpoint`)
+    || !source.includes(`GRANT SELECT, INSERT ON TABLE ${foregroundMemoryTable} TO "nautilo_crypto";${breakpoint}`)) {
+    throw new Error(`Refusing unexpected ${foregroundMemoryMigrationName} statement layout`);
+  }
+  return source.replace(
+    foregroundMemoryTrigger,
+    `${foregroundMemoryTriggerGrant}${breakpoint}${foregroundMemoryExecuteGrant}${breakpoint}${foregroundMemoryTrigger}${breakpoint}${foregroundMemoryExecuteRevoke}${breakpoint}${foregroundMemoryTriggerRevoke}`,
+  );
+}
+
+function repairKnownMigration(name: string, source: string): string {
+  if (name === migrationName) return repairModerationMigration(source);
+  if (name === taskWakeMigrationName) return repairTaskWakeMigration(source);
+  if (name === foregroundMemoryMigrationName) return repairForegroundMemoryMigration(source);
+  return repairBolterMigration(name, source);
+}
+
+/** Correct exact known SQL statements while retaining Drizzle's canonical ledger metadata. */
+export function readMigrationFilesWithPrivilegeCompat(config: MigrationConfig): MigrationMeta[] {
+  const migrations = readMigrationFiles(config);
+  const journal = JSON.parse(
+    readFileSync(join(config.migrationsFolder, "meta", "_journal.json"), "utf8"),
+  ) as { entries: { tag: string }[] };
+  if (journal.entries.length !== migrations.length) {
+    throw new Error("Migration journal and canonical metadata length mismatch");
+  }
+  return migrations.map((migration, index) => {
+    const name = `${journal.entries[index]!.tag}.sql`;
+    if (name !== migrationName
+      && name !== taskWakeMigrationName
+      && name !== foregroundMemoryMigrationName
+      && !Object.hasOwn(bolterMigrations, name)) return migration;
+    const source = migration.sql.join("--> statement-breakpoint");
+    const corrected = repairKnownMigration(name, source);
+    return { ...migration, sql: corrected.split("--> statement-breakpoint") };
+  });
+}
+
+/** Apply exact compatibility SQL with the canonical file hashes in Drizzle's ledger. */
+export async function migrateWithMigrationPrivilegeCompat<TSchema extends Record<string, unknown>>(
+  db: PostgresJsDatabase<TSchema>,
+  config: MigrationConfig,
+): Promise<void> {
+  const migrations = readMigrationFilesWithPrivilegeCompat(config);
+  const session = db._.session as unknown as Parameters<PgDialect["migrate"]>[1];
+  await new PgDialect().migrate(migrations, session, config);
 }

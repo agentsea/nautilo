@@ -8,21 +8,36 @@ import {
   updateJobStatusWithDatabase,
 } from "../../src/queries/jobs";
 
+import { tasks } from "../../src/schema/tasks";
+import { taskRuns } from "../../src/schema/task-runs";
+
 function fixture(
   mode = "encrypted_only",
   revision = 7,
   startRows: readonly Readonly<{ id: string }>[] = [{ id: "job-1" }],
+  pauseRequestId: string | null = null,
 ) {
   const calls: string[] = [];
   let jobUpdateWhere: SQL | undefined;
   const tx = {
     execute: async () => { calls.push("policy-lock"); return []; },
-    select: () => ({
-      from: () => ({ where: async () => {
-        calls.push("policy-read");
-        return [{ mode, revision }];
-      } }),
-    }),
+    select: () => ({ from: (table: unknown) => {
+      const rows = () => table === tasks ? [{
+        id: protectedTaskReference.taskId, status: "running", representation: "protected", pauseRequestId,
+      }] : table === taskRuns ? [{
+        id: protectedTaskReference.taskRunId, taskId: protectedTaskReference.taskId,
+        jobId: "job-1", status: "running",
+      }] : [{ mode, revision }];
+      const query = {
+        where: (_predicate: unknown) => query,
+        limit: (_limit: number) => query,
+        for: async () => { calls.push(table === tasks ? "task-lock" : "run-lock"); return rows(); },
+        then: (resolve: (value: unknown[]) => unknown) => {
+          calls.push("policy-read"); return Promise.resolve(rows()).then(resolve);
+        },
+      };
+      return query;
+    } }),
     insert: () => ({ values: () => ({ returning: async () => {
       calls.push("job-insert"); return [{ id: "job-1" }];
     } }) }),
@@ -146,7 +161,7 @@ describe("Job publication fence", () => {
       policy,
     )).toBe("started");
     expect(started.calls).toEqual([
-      "transaction", "policy-lock", "policy-read", "job-update",
+      "transaction", "policy-lock", "policy-read", "task-lock", "run-lock", "job-update",
     ]);
     const predicate = new PgDialect().sqlToQuery(started.jobUpdateWhere!);
     expect(predicate.sql).toBe(
@@ -168,7 +183,7 @@ describe("Job publication fence", () => {
       policy,
     )).toBe("rejected");
     expect(rejected.calls).toEqual([
-      "transaction", "policy-lock", "policy-read", "job-update",
+      "transaction", "policy-lock", "policy-read", "task-lock", "run-lock", "job-update",
     ]);
   });
 
@@ -197,4 +212,11 @@ describe("Job publication fence", () => {
       expect(calls).toEqual([]);
     }
   });
+});
+
+
+test("pending cooperative pause wins between Run linkage and queued Job start", async () => {
+  const paused = fixture("encrypted_only", 7, [{ id: "job-1" }], "pause-request");
+  expect(await startProtectedTaskJobWithDatabase(paused.database, "job-1", protectedTaskReference, policy)).toBe("rejected");
+  expect(paused.calls).toEqual(["transaction", "policy-lock", "policy-read", "task-lock"]);
 });

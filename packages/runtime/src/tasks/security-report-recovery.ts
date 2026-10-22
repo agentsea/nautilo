@@ -224,7 +224,8 @@ export async function resumeReconnectedSecurityResearch(db: DirectDatabase, batc
 /** An explicit Human pause disables automatic reconnect without discarding the saved failure. */
 export async function holdSecurityResearchDesktop(db: DirectDatabase, taskId: string): Promise<void> {
   await db.update(tasks).set({ lastError: "Paused by you. Research saved; Resume continues the audit.", updatedAt: new Date() })
-    .where(and(eq(tasks.id, taskId), eq(tasks.status, "paused"), eq(tasks.lastError, DESKTOP_WAIT_TEXT)));
+    .where(and(eq(tasks.id, taskId), eq(tasks.contentRepresentation, "ordinary"),
+      eq(tasks.status, "paused"), eq(tasks.lastError, DESKTOP_WAIT_TEXT)));
 }
 
 /** Keep a termination's mechanism and checkpoint even after a later successful recovery. */

@@ -39,7 +39,7 @@ Versions are release pins, not upstream-latest claims.
 
 | Component | Exact version or revision | Canonical source | License | Shipped scope |
 | --- | --- | --- | --- | --- |
-| [Electron](https://github.com/electron/electron) | 41.10.3 | Electron | MIT | Desktop shell (and its Chromium/Node.js runtime components). |
+| [Electron](https://github.com/electron/electron) | 43.8.3 | Electron | MIT | Desktop shell (and its Chromium/Node.js runtime components). |
 | [Bun](https://github.com/oven-sh/bun) | 1.3.11 | Bun | MIT | Desktop: both macOS architectures are vendored under `Contents/Resources/bun`. |
 | [Bun](https://github.com/oven-sh/bun) | 1.3.14 | Bun | MIT | Server image base, digest-pinned in `packaging/docker/Dockerfile`. |
 | [OpenAI Codex app-server](https://github.com/openai/codex) | 0.146.0 (`rust-v0.146.0`) | OpenAI Codex | Apache-2.0 | Desktop external Codex runtime package. |

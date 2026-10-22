@@ -1,11 +1,16 @@
+import { protectedTaskDefinitionSupportsPolicy } from "@nautilo/db";
 import { createHash } from "node:crypto";
 import {
-  discoverParkedProtectedTaskAdditionalAuthority, getEncryptionTransitionPolicy,
+  discoverParkedProtectedTaskAdditionalAuthority, discoverAcceptedParkedProtectedTaskHumanContinuation,
+  discoverParkedProtectedTaskCheckpointContinuation,
+  getEncryptionTransitionPolicy,
   getProtectedTaskRunOutputBinding,
   type DirectDatabase, type ParkedProtectedTaskAdditionalAuthority,
+  type ParkedProtectedTaskCheckpointContinuation,
+  type ParkedProtectedTaskHumanContinuation,
   type ProtectedTaskRunOutputBinding,
 } from "@nautilo/db";
-import type { ParkedTaskRuntimeCurrentRoutingFacts } from "@nautilo/lattice-bridge/server";
+import type { ParkedTaskRuntimeCurrentRoutingFacts, VerifiedTaskDefinitionAccessLineage } from "@nautilo/lattice-bridge/server";
 import {
   createBackgroundAuthorizationTaskRuntimeRequestV3, taskRuntimeStableIdempotencyKey,
   type BackgroundAuthorizationTaskRuntimeRecordV3, type TaskRuntimeGrantStableIdentity,
@@ -21,10 +26,31 @@ import {
   type ParkedProtectedTaskRuntimeMemoryPlan,
 } from "./protected-task-runtime-parked-memory-plan";
 
+export type ParkedProtectedTaskContinuation =
+  | ParkedProtectedTaskAdditionalAuthority
+  | ParkedProtectedTaskCheckpointContinuation
+  | ParkedProtectedTaskHumanContinuation;
+
+export async function discoverParkedProtectedTaskContinuation(
+  db: DirectDatabase,
+  input: Readonly<{ taskRunId: string }>,
+): Promise<ParkedProtectedTaskContinuation | null> {
+  return await discoverParkedProtectedTaskAdditionalAuthority(db, input)
+    ?? await discoverParkedProtectedTaskCheckpointContinuation(db, input)
+    ?? await discoverAcceptedParkedProtectedTaskHumanContinuation(db, input);
+}
+
+function isCheckpointContinuation(
+  expected: ParkedProtectedTaskContinuation,
+): expected is ParkedProtectedTaskCheckpointContinuation {
+  return !("acceptance" in expected) && "stableRoutingDigest" in expected;
+}
+
 export type ParkedTaskRuntimePlanDependencies = Readonly<{
   db: DirectDatabase;
   resolveMemory: ReturnType<typeof createProtectedTaskRuntimeParkedMemoryPlanResolver>;
-  discover: typeof discoverParkedProtectedTaskAdditionalAuthority;
+  discover: typeof discoverParkedProtectedTaskContinuation;
+  readAccessLineage?(expected: ParkedProtectedTaskContinuation, requesterHumanId: string): Promise<VerifiedTaskDefinitionAccessLineage | null>;
   readOutput: typeof getProtectedTaskRunOutputBinding;
   readPolicy: (db: DirectDatabase) => Promise<Pick<Awaited<ReturnType<
     typeof getEncryptionTransitionPolicy
@@ -32,7 +58,7 @@ export type ParkedTaskRuntimePlanDependencies = Readonly<{
 }>;
 
 export type ParkedTaskRuntimeAuthorizationPlan = Readonly<{
-  expected: ParkedProtectedTaskAdditionalAuthority;
+  expected: ParkedProtectedTaskContinuation;
   output: ProtectedTaskRunOutputBinding;
   policy: Awaited<ReturnType<ParkedTaskRuntimePlanDependencies["readPolicy"]>>;
   memory: ParkedProtectedTaskRuntimeMemoryPlan;
@@ -59,7 +85,7 @@ function sameRoutingPlan(
 
 /** Union semantic operations with the freshly resolved base, never old grant inventory. */
 function namespaceInventory(
-  expected: ParkedProtectedTaskAdditionalAuthority,
+  expected: ParkedProtectedTaskContinuation,
   plan: ParkedProtectedTaskRuntimeMemoryPlan,
 ) {
   const base = protectedTaskRuntimeNamespaceInventory({
@@ -73,10 +99,18 @@ function namespaceInventory(
   for (const namespaceId of base.namespaceIds) {
     operations.set(namespaceId, new Set(base.operations(namespaceId)));
   }
-  for (const requirement of expected.proof.continuation.semanticAuthorityRequirements) {
+  for (const requirement of "acceptance" in expected
+    || isCheckpointContinuation(expected)
+    ? [] : expected.proof.continuation.semanticAuthorityRequirements) {
     const current = operations.get(requirement.namespaceId) ?? new Set<"decrypt" | "encrypt">();
     for (const operation of requirement.operations) current.add(operation);
     operations.set(requirement.namespaceId, current);
+  }
+  if ("acceptance" in expected && expected.acceptance.response.kind === "await_reply") {
+    const namespaceId = expected.acceptance.response.message.namespaceId;
+    const current = operations.get(namespaceId) ?? new Set<"decrypt" | "encrypt">();
+    current.add("decrypt");
+    operations.set(namespaceId, current);
   }
   return Object.freeze({
     namespaceIds: Object.freeze([...operations.keys()].sort()),
@@ -108,9 +142,7 @@ export function createParkedTaskRuntimeAuthorizationPlanResolver(
     const expected = structuredClone(discovered);
     const policy = Object.freeze({ ...await readPolicy(db) });
     if (policy.mode === "plaintext_only"
-      || (policy.mode === "shadow_encryption"
-        ? expected.occurrence.task.contentRepresentation !== "dual"
-        : expected.occurrence.task.contentRepresentation !== "protected")) return null;
+      || !protectedTaskDefinitionSupportsPolicy(expected.occurrence.task.contentRepresentation, policy.mode)) return null;
     const loadedOutput = await readOutput(db, expected.occurrence.run.id);
     if (loadedOutput === undefined) return null;
     const output = structuredClone(loadedOutput);
@@ -118,8 +150,10 @@ export function createParkedTaskRuntimeAuthorizationPlanResolver(
     if (discoveredPlan === null) return null;
     const memory = structuredClone(discoveredPlan);
     const inventory = namespaceInventory(expected, memory);
+    const accessLineage = await dependencies.readAccessLineage?.(expected, memory.routing.requesterHumanId);
     const validateRouting = createParkedTaskRuntimeRoutingValidator({
       expected, output, widePrivateNamespaceId: memory.routing.widePrivateNamespaceId,
+      ...(accessLineage == null ? {} : { accessLineage }),
     });
     return Object.freeze({ expected, output, policy, memory, inventory,
       validateCurrentRouting: (facts: ParkedTaskRuntimeCurrentRoutingFacts) =>
@@ -143,12 +177,21 @@ export function createParkedTaskRuntimeAuthorizationRecord(
   const authority = canonicalProtectedTaskRuntimeAuthority({ occurrence, inventory, facts: currentFacts });
   const content = authority.namespaces.find(value => value.namespaceId === occurrence.task.contentNamespaceId)!;
   const contentDomain = authority.domains.find(value => value.domainId === content.domainId)!;
+  const workKind = "acceptance" in expected
+    ? expected.acceptance.response.kind === "await_reply"
+      ? "task.await_reply_resume" as const : "task.approval_resume" as const
+    : "task.execute" as const;
   const stableIdentity: TaskRuntimeGrantStableIdentity = Object.freeze({
     ...facts, startedAt: facts.startedAt.getTime(),
     requiredNamespaceFingerprint: Buffer.from(facts.requiredNamespaceFingerprint).toString("base64url"),
     outputRoomId: output.destinationRoomId, outputNamespaceId: output.destinationNamespaceId,
     executionSegment: expected.nextExecutionSegment,
-    resumeContinuationFingerprint: expected.continuationFingerprint,
+    ...("acceptance" in expected
+      ? { resumeContinuationFingerprint: null,
+          resumeAcceptanceId: expected.acceptance.acceptanceId,
+          resumeWorkKind: expected.acceptance.response.kind === "await_reply"
+            ? "task.await_reply_resume" as const : "task.approval_resume" as const }
+      : { resumeContinuationFingerprint: expected.continuationFingerprint }),
   });
   const scopeWorkIdentity = JSON.stringify({
       taskId: occurrence.task.id, taskRunId: occurrence.run.id,
@@ -166,7 +209,9 @@ export function createParkedTaskRuntimeAuthorizationRecord(
           ? output.destinationNamespaceId : plan.routing.widePrivateNamespaceId } : {}),
       namespaces: authority.namespaces, domains: authority.domains,
       executionSegment: expected.nextExecutionSegment,
-      resumeContinuationFingerprint: expected.continuationFingerprint,
+      ...("acceptance" in expected
+      ? { resumeAcceptanceId: expected.acceptance.acceptanceId }
+      : { resumeContinuationFingerprint: expected.continuationFingerprint }),
     });
   const initialRecord: BackgroundAuthorizationTaskRuntimeRecordV3 = Object.freeze({
     snapshot: createBackgroundAuthorizationTaskRuntimeRequestV3({
@@ -175,7 +220,7 @@ export function createParkedTaskRuntimeAuthorizationRecord(
     }),
     idempotencyKey: taskRuntimeStableIdempotencyKey(stableIdentity),
     workIdentityHash: createHash("sha256").update(scopeWorkIdentity).digest(),
-    workKind: "task.execute", purpose: "task.execute", domainId: content.domainId,
+    workKind, purpose: workKind, domainId: content.domainId,
     processorAuthorizationRevision: null, expectedDomainEpoch: contentDomain.expectedEpoch,
     expectedNamespaceAccessRevision: content.expectedAccessRevision,
     expectedPolicyRevision: authority.policyRevision,

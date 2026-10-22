@@ -12,6 +12,7 @@ import {
 } from "@nautilo/claude-agent-sdk-host";
 import {
   CLAUDE_EXECUTION_PROTOCOL_VERSION,
+  CLAUDE_MESSAGE_BOUNDARY_PROTOCOL_VERSION,
   CLAUDE_PERMISSION_DETAIL_PROTOCOL_VERSION,
   parseRelayClaudeExecutionDesktopEvent,
   type RelayClaudeExecutionCommand,
@@ -218,6 +219,8 @@ export class ElectronClaudeExecutionHost implements RelayClaudeExecutionHostPort
     try {
       for await (const observation of handle.observations) {
         if (!this.#isCurrent(active) || !(await this.#validateLease(active.lease))) break;
+        // Older ordinary peers retain their established progress/result contract.
+        if (observation.kind === "output_message_started" && active.session.selectedProtocolVersion < CLAUDE_MESSAGE_BOUNDARY_PROTOCOL_VERSION) continue;
         const event = eventFor(observation);
         if (event === null || !(await this.#emit(active, event))) break;
         if (event.kind === "settled") active.settled = true;
@@ -473,6 +476,7 @@ function decisionFor(pending: PendingInteraction, response: RelayClaudeExecution
 }
 
 function eventFor(observation: ClaudeExecutionObservation): RelayClaudeExecutionDesktopEvent["event"] | null {
+  if (observation.kind === "output_message_started") return observation;
   if (observation.kind === "activity") return { kind: "activity", activity: observation.activity, state: observation.state, ...(observation.toolName === undefined ? {} : { toolName: observation.toolName }) };
   if (observation.kind === "initialized") return { kind: "initialized", claudeCodeVersion: observation.claudeCodeVersion, servingModel: observation.model };
   if (observation.kind === "output_delta") return { kind: "output_delta", text: observation.text };

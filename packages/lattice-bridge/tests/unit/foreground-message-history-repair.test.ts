@@ -537,7 +537,7 @@ describe("foreground Message history repair", () => {
     const lifecycle = {sessionId: SESSION_ID, roomId: ROOM_ID, messageId: 41, revision: 0, keyClass: "ai", authorRole: role,
       sequence: 1, appendIdempotencyKey: "repair-41", terminalOperationId: null, terminalOperationType: null,
       terminalExpectedRevision: null, terminalRequestDigest: null, objectIdScheme: "message_v2", shadowOperationId: null,
-      humanPeerShadowOperationId: null, sharedAgentShadowOperationId: null, sharedAgentShadowExecutionId: null,
+      humanPeerShadowOperationId: null, sharedAgentShadowOperationId: null, sharedAgentShadowExecutionId: null, taskWakeOperationId: null,
       shadowTranscriptOrdinal: null, cryptoObjectId, namespaceIdAtAllocation: NAMESPACE_ID, completion: "pending", disposition: "active",
       parityStatus: "pending", failureCode: null, attemptCount: 0, nextAttemptAt: new Date(), leaseToken: null,
       leaseExpiresAt: null, allocationRequestDigest: new Uint8Array(32), repairIdentityDigest: new Uint8Array(32),

@@ -28,9 +28,16 @@ import type {
 } from "../storage/agent-runtime-signer-history.ts";
 import {
   cryptoTypedDb, executeTypedCryptoQuery,
+  PostgresLatticeStorage,
   readCryptoStorageInteger, verifyCryptoPostgresHandle,
   withVerifiedCryptoPostgresTransaction, type CryptoPostgresExecutor,
+  type CryptoPostgresHandle,
 } from "../storage/postgres-lattice-storage.ts";
+import {
+  readVerifiedStoredConversationCryptoRevision,
+  type HistoricalHumanObjectAccessGenesisSignerAuthority,
+  type HistoricalHumanObjectAccessGenesisSignerContext,
+} from "../storage/postgres-conversation-crypto-completion.ts";
 import {
   destroyVerifiedStoredObjectAccessManifestChainV5,
   verifyStoredObjectAccessManifestChainV5,
@@ -59,6 +66,38 @@ export type NativeTaskMessageReadAuthorityV1 = Readonly<{
   expectedPolicyRevision: number;
 }>;
 
+export type NativeTaskHumanReplyReadAuthorityV1 = Readonly<{
+  mode: "shadow_encryption" | "encrypted_only";
+  taskId: string;
+  taskRunId: string;
+  /** Source Room committed by the exact Task Runtime grant. */
+  sourceRoomId: string;
+  roomId: string;
+  sessionId: string;
+  messageId: number;
+  revision: number;
+  sourceUserId: string;
+  sourceHumanActorId: string;
+  agentId: string;
+  createdAt: number;
+  objectId: string;
+  cryptoAccessRevision: number;
+  namespaceId: string;
+  domainId: string;
+  expectedAccessRevision: number;
+  expectedPolicyRevision: number;
+}>;
+
+/** Historical Human-v2 signer resolution pinned to the accepted Human actor. */
+export type ResolveNativeTaskHumanReplyHistoricalSigner = (
+  input: Readonly<{
+    sourceHumanActorId: string;
+    context: HistoricalHumanObjectAccessGenesisSignerContext;
+  }>,
+) => HistoricalHumanObjectAccessGenesisSignerAuthority | null | Promise<
+  HistoricalHumanObjectAccessGenesisSignerAuthority | null
+>;
+
 declare const nativeTaskMessageReadTargetBrand: unique symbol;
 
 /** V5-only read target. It cannot be passed to the V2/V3 conversation reader. */
@@ -71,6 +110,30 @@ const readTargets = new WeakMap<
   NativeTaskMessageReadTargetV1,
   NativeTaskMessageReadAuthorityV1
 >();
+
+declare const nativeTaskHumanReplyReadTargetBrand: unique symbol;
+
+export type NativeTaskHumanReplyReadTargetV1 = Readonly<{
+  purpose: "native-task-human-reply-read-v1";
+  readonly [nativeTaskHumanReplyReadTargetBrand]: true;
+}>;
+
+const humanReplyReadTargets = new WeakMap<
+  NativeTaskHumanReplyReadTargetV1,
+  NativeTaskHumanReplyReadAuthorityV1
+>();
+
+type NativeTaskMessageAudience = Pick<
+  NativeTaskMessageReadAuthorityV1,
+  | "taskId"
+  | "taskRunId"
+  | "sourceRoomId"
+  | "agentId"
+  | "namespaceId"
+  | "domainId"
+  | "expectedAccessRevision"
+  | "expectedPolicyRevision"
+>;
 
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
   return left.length === right.length
@@ -126,7 +189,7 @@ function sameNamespaceAuthority(
 function exactDomain(
   evidence: TaskRuntimeExecutionEvidence,
   domains: readonly DomainForegroundSecretEntry[],
-  target: NativeTaskMessageReadAuthorityV1,
+  target: NativeTaskMessageAudience,
 ): DomainForegroundSecretEntry {
   const requirements = evidence.namespaceRequirements.filter(
     (entry) => entry.namespaceId === target.namespaceId,
@@ -166,12 +229,35 @@ function exactDomain(
   return openedDomain;
 }
 
+function sameHumanReplyReadAuthority(
+  left: NativeTaskHumanReplyReadAuthorityV1,
+  right: NativeTaskHumanReplyReadAuthorityV1,
+): boolean {
+  const fields = Object.keys(left) as (
+    keyof NativeTaskHumanReplyReadAuthorityV1
+  )[];
+  return Object.keys(right).length === fields.length
+    && fields.every((field) => left[field] === right[field]);
+}
+
 function readTarget(
   target: NativeTaskMessageReadTargetV1,
 ): NativeTaskMessageReadAuthorityV1 {
   const authority = readTargets.get(target);
   if (authority === undefined) {
     throw new TypeError("Native Task Message read target was not created by the bridge");
+  }
+  return authority;
+}
+
+function humanReplyReadTarget(
+  target: NativeTaskHumanReplyReadTargetV1,
+): NativeTaskHumanReplyReadAuthorityV1 {
+  const authority = humanReplyReadTargets.get(target);
+  if (authority === undefined) {
+    throw new TypeError(
+      "Native Task Human reply read target was not created by the bridge",
+    );
   }
   return authority;
 }
@@ -208,17 +294,77 @@ export function createNativeTaskMessageReadTargetV1(
   return target;
 }
 
+/** Creates a nominal V5 Human reply target for one accepted Message revision. */
+export function createNativeTaskHumanReplyReadTargetV1(
+  input: NativeTaskHumanReplyReadAuthorityV1,
+): NativeTaskHumanReplyReadTargetV1 {
+  const authority = Object.freeze({ ...input });
+  for (const field of [
+    "taskId", "taskRunId", "sourceRoomId", "roomId", "sessionId",
+    "sourceUserId", "sourceHumanActorId", "agentId", "namespaceId",
+    "domainId",
+  ] as const) {
+    assertConversationDurableKey(
+      `Native Task Human reply ${field}`,
+      authority[field],
+    );
+  }
+  if ((authority.mode !== "shadow_encryption"
+      && authority.mode !== "encrypted_only")
+    || authority.objectId.length < 1
+    || !Number.isSafeInteger(authority.messageId)
+    || authority.messageId < 1
+    || !Number.isSafeInteger(authority.revision)
+    || authority.revision < 0
+    || !Number.isSafeInteger(authority.cryptoAccessRevision)
+    || authority.cryptoAccessRevision < 0
+    || !Number.isSafeInteger(authority.createdAt)
+    || authority.createdAt < 0
+    || !Number.isSafeInteger(authority.expectedAccessRevision)
+    || authority.expectedAccessRevision < 0
+    || !Number.isSafeInteger(authority.expectedPolicyRevision)
+    || authority.expectedPolicyRevision < 1) {
+    throw new TypeError("Native Task Human reply read target is invalid");
+  }
+  const target = Object.freeze({
+    purpose: "native-task-human-reply-read-v1",
+  }) as NativeTaskHumanReplyReadTargetV1;
+  humanReplyReadTargets.set(target, authority);
+  return target;
+}
+
 type StoredMessage = Readonly<{
   payloadBytes: Uint8Array;
   envelopeBytes: Uint8Array;
 }>;
 
+type StoredMessageSigner =
+  | Readonly<{
+      kind: "agent_runtime";
+      agentId: string;
+      resolveHistoricalAgentSignerAuthority:
+        ResolveHistoricalAgentRuntimeSignerManagerAuthority;
+    }>
+  | Readonly<{
+      kind: "human_object";
+      subjectHumanId: string;
+      resolveHistoricalHumanSigner:
+        ResolveNativeTaskHumanReplyHistoricalSigner;
+    }>;
+
+type StoredMessageTarget = Readonly<{
+  objectId: string;
+  cryptoAccessRevision: number;
+  namespaceId: string;
+  expectedAccessRevision: number;
+  createdAt: number;
+}>;
+
 async function readVerifiedMessage(
   executor: CryptoPostgresExecutor,
   crypto: LatticeCrypto,
-  target: NativeTaskMessageReadAuthorityV1,
-  resolveHistoricalAgentSignerAuthority:
-    ResolveHistoricalAgentRuntimeSignerManagerAuthority,
+  target: StoredMessageTarget,
+  signer: StoredMessageSigner,
 ): Promise<StoredMessage> {
   const objects = await executeTypedCryptoQuery(executor, cryptoTypedDb.select({
     object_id: cryptoObjects.objectId,
@@ -308,12 +454,15 @@ async function readVerifiedMessage(
         || manifest.objectId !== target.objectId
         || manifest.accessRevision !== target.cryptoAccessRevision
         || manifest.previousManifestHash !== null
-        || manifest.signerAuthorizationHash !== null
         || !sameBytes(manifest.payloadHash, payloadHash)
         || manifest.envelopeHashes.length !== 1
         || !sameBytes(manifest.envelopeHashes[0]!, envelopeHash)
-        || manifest.signer.kind !== "agent_runtime"
-        || manifest.signer.agentId !== target.agentId) {
+        || (signer.kind === "agent_runtime"
+          ? manifest.signer.kind !== "agent_runtime"
+            || manifest.signer.agentId !== signer.agentId
+          : manifest.signer.kind !== "human_device"
+            || manifest.signer.subjectHumanId !== signer.subjectHumanId
+            || manifest.signerAuthorizationHash !== null)) {
         throw new TypeError("Native Task Message ciphertext coordinates were substituted");
       }
       const verified = await verifyStoredObjectAccessManifestChainV5({
@@ -323,30 +472,45 @@ async function readVerifiedMessage(
         headAccessRevision: target.cryptoAccessRevision,
         expectedPayloadHash: payloadHash,
         expectedHeadManifestHash: headManifestHash,
-        resolveHistoricalAgentManagerAuthority:
-          resolveHistoricalAgentSignerAuthority,
+        resolveHistoricalAgentManagerAuthority: signer.kind === "agent_runtime"
+          ? signer.resolveHistoricalAgentSignerAuthority
+          : () => Promise.resolve(null),
         resolveHistoricalHumanDeviceSigningPublicKey:
           () => Promise.resolve(null),
       });
       try {
-        const signer = verified.headManifest.signer;
-        const publications = verified.signerEvidence.filter(
-          (entry) => entry.kind === "agent_runtime_publication",
-        );
-        if (signer.kind !== "agent_runtime"
-          || signer.agentId !== target.agentId
-          || publications.length !== 1) {
-          throw new TypeError("Native Task Message historical signer is invalid");
-        }
-        const publication = decodeAgentRuntimeSignerPublicationV1(
-          publications[0]!.evidenceBytes,
-        );
-        if (publication.agentId !== signer.agentId
-          || publication.runtimeGeneration !== signer.runtimeGeneration
-          || publication.signerKeyId !== signer.signerKeyId
-          || publication.authorizationRevision
-            !== verified.headManifest.hostAuthorizationRevision) {
-          throw new TypeError("Native Task Message signer publication was substituted");
+        const verifiedSigner = verified.headManifest.signer;
+        if (signer.kind === "agent_runtime") {
+          const publications = verified.signerEvidence.filter(
+            (entry) => entry.kind === "agent_runtime_publication",
+          );
+          const taskCertificates = verified.signerEvidence.filter(
+            (entry) => entry.kind === "task_runtime_signer_certificate",
+          );
+          if (verifiedSigner.kind !== "agent_runtime"
+            || verifiedSigner.agentId !== signer.agentId
+            || (verified.headManifest.signerAuthorizationHash === null
+              ? publications.length !== 1 || taskCertificates.length !== 0
+              : publications.length !== 0 || taskCertificates.length !== 1)) {
+            throw new TypeError(
+              "Native Task Message historical signer is invalid",
+            );
+          }
+          if (verified.headManifest.signerAuthorizationHash === null) {
+            const publication = decodeAgentRuntimeSignerPublicationV1(
+              publications[0]!.evidenceBytes,
+            );
+            if (publication.agentId !== verifiedSigner.agentId
+              || publication.runtimeGeneration
+                !== verifiedSigner.runtimeGeneration
+              || publication.signerKeyId !== verifiedSigner.signerKeyId
+              || publication.authorizationRevision
+                !== verified.headManifest.hostAuthorizationRevision) {
+              throw new TypeError(
+                "Native Task Message signer publication was substituted",
+              );
+            }
+          }
         }
       } finally {
         destroyVerifiedStoredObjectAccessManifestChainV5(verified);
@@ -364,31 +528,93 @@ async function readVerifiedMessage(
   }
 }
 
-/**
- * Opens one genesis V5 Task transcript Message under the live background
- * Task grant. The namespace key remains inside the bridge callback and every
- * product, grant, Domain, Namespace, ciphertext and historical-signer fact is
- * checked before plaintext is lent to `execute`.
- */
-export async function withNativeTaskMessageV1<Value>(input: Readonly<{
+async function readVerifiedHumanReply(
+  executor: CryptoPostgresHandle,
+  crypto: LatticeCrypto,
+  target: StoredMessageTarget & Readonly<{ sourceHumanActorId: string }>,
+  resolveHistoricalHumanSigner: Extract<
+    StoredMessageSigner,
+    { kind: "human_object" }
+  >["resolveHistoricalHumanSigner"],
+): Promise<StoredMessage> {
+  const verified = await readVerifiedStoredConversationCryptoRevision({
+    crypto,
+    storage: new PostgresLatticeStorage(executor),
+    objectId: target.objectId,
+    resolveHistoricalSigner: context => resolveHistoricalHumanSigner({
+      sourceHumanActorId: target.sourceHumanActorId,
+      context,
+    }),
+  });
+  if (verified === null) {
+    throw new TypeError("Native Task Human reply historical signer is invalid");
+  }
+  try {
+    const payload = decodeEncryptedPayloadV2(verified.payloadBytes);
+    const envelope = decodeNamespaceObjectEnvelopeV2(
+      verified.namespaceEnvelopeBytes,
+    );
+    try {
+      if (verified.revision.objectId !== target.objectId
+        || verified.revision.namespaceId !== target.namespaceId
+        || verified.revision.objectType !== CONVERSATION_MESSAGE_OBJECT_TYPE
+        || verified.revision.payloadVersion !== 2
+        || verified.revision.keyClass !== "ai"
+        || payload.context.objectId !== target.objectId
+        || payload.context.objectType !== CONVERSATION_MESSAGE_OBJECT_TYPE
+        || payload.context.keyClass !== "ai"
+        || payload.context.createdAt !== target.createdAt
+        || envelope.context.objectId !== target.objectId
+        || envelope.context.namespaceId !== target.namespaceId
+        || envelope.context.keyClass !== "ai"
+        || envelope.context.bindingRevisionAtWrap
+          !== target.expectedAccessRevision) {
+        throw new TypeError(
+          "Native Task Human reply ciphertext coordinates were substituted",
+        );
+      }
+      return Object.freeze({
+        payloadBytes: verified.payloadBytes.slice(),
+        envelopeBytes: verified.namespaceEnvelopeBytes.slice(),
+      });
+    } finally {
+      payload.ciphertext.fill(0);
+      envelope.wrappedDek.fill(0);
+    }
+  } finally {
+    verified.payloadBytes.fill(0);
+    verified.objectAccessManifestBytes.fill(0);
+    verified.namespaceEnvelopeBytes.fill(0);
+  }
+}
+
+type NativeTaskOpenMessageAuthority =
+  | NativeTaskMessageReadAuthorityV1
+  | NativeTaskHumanReplyReadAuthorityV1;
+
+async function withNativeTaskMessagePayload<Value>(input: Readonly<{
   restricted: PostgresJsBridgeConnection;
   crypto: LatticeCrypto;
   serverScope: string;
   evidence: TaskRuntimeExecutionEvidence;
   domains: readonly DomainForegroundSecretEntry[];
   signal: AbortSignal;
-  target: NativeTaskMessageReadTargetV1;
+  target: NativeTaskOpenMessageAuthority;
+  role: MessagePayloadV2["role"];
+  signer: StoredMessageSigner;
   resolveCurrentAuthority(
-    expected: NativeTaskMessageReadAuthorityV1,
-  ): Promise<NativeTaskMessageReadAuthorityV1 | null>;
-  resolveHistoricalAgentSignerAuthority:
-    ResolveHistoricalAgentRuntimeSignerManagerAuthority;
+    expected: NativeTaskOpenMessageAuthority,
+  ): Promise<NativeTaskOpenMessageAuthority | null>;
+  sameCurrent(
+    expected: NativeTaskOpenMessageAuthority,
+    current: NativeTaskOpenMessageAuthority,
+  ): boolean;
   execute(
     payload: MessagePayloadV2,
     assertCurrentAuthority: () => Promise<void>,
   ): Value | PromiseLike<Value>;
 }>): Promise<Value> {
-  const target = readTarget(input.target);
+  const target = input.target;
   const assertActive = (): void => {
     input.signal.throwIfAborted();
     assertAuthenticTaskRuntimeExecutionEvidence(input.evidence);
@@ -439,7 +665,7 @@ export async function withNativeTaskMessageV1<Value>(input: Readonly<{
     assertActive();
     const current = await input.resolveCurrentAuthority(target);
     assertActive();
-    if (current === null || !sameReadAuthority(target, current)) {
+    if (current === null || !input.sameCurrent(target, current)) {
       throw new TypeError("Native Task Message product authority changed");
     }
     const currentNamespace = await repository.inspectForegroundNamespaceAuthority({
@@ -468,15 +694,18 @@ export async function withNativeTaskMessageV1<Value>(input: Readonly<{
       throw new TypeError("Native Task Message Namespace grant was substituted");
     }
     await assertCurrentAuthority();
-    stored = await withVerifiedCryptoPostgresTransaction(
-      handle,
-      (executor) => readVerifiedMessage(
-        executor,
-        input.crypto,
-        target,
-        input.resolveHistoricalAgentSignerAuthority,
-      ),
-    );
+    stored = input.signer.kind === "human_object"
+      ? await readVerifiedHumanReply(handle, input.crypto, {
+          ...target,
+          sourceHumanActorId: input.signer.subjectHumanId,
+        }, input.signer.resolveHistoricalHumanSigner)
+      : await withVerifiedCryptoPostgresTransaction(handle, executor =>
+          readVerifiedMessage(
+            executor,
+            input.crypto,
+            target,
+            input.signer,
+          ));
     await assertCurrentAuthority();
     const payload = decodeEncryptedPayloadV2(stored.payloadBytes);
     const envelope = decodeNamespaceObjectEnvelopeV2(stored.envelopeBytes);
@@ -499,7 +728,7 @@ export async function withNativeTaskMessageV1<Value>(input: Readonly<{
           }
           try {
             const decoded = decodeMessagePayloadV2(plaintext);
-            if (decoded.role !== target.role) {
+            if (decoded.role !== input.role) {
               throw new TypeError("Native Task Message role was substituted");
             }
             await assertCurrentAuthority();
@@ -524,4 +753,100 @@ export async function withNativeTaskMessageV1<Value>(input: Readonly<{
     stored?.envelopeBytes.fill(0);
     destroyNamespaceAuthority(namespace);
   }
+}
+
+/**
+ * Opens one genesis V5 Task transcript Message under the live background
+ * Task grant. The namespace key remains inside the bridge callback and every
+ * product, grant, Domain, Namespace, ciphertext and historical-signer fact is
+ * checked before plaintext is lent to `execute`.
+ */
+export async function withNativeTaskMessageV1<Value>(input: Readonly<{
+  restricted: PostgresJsBridgeConnection;
+  crypto: LatticeCrypto;
+  serverScope: string;
+  evidence: TaskRuntimeExecutionEvidence;
+  domains: readonly DomainForegroundSecretEntry[];
+  signal: AbortSignal;
+  target: NativeTaskMessageReadTargetV1;
+  resolveCurrentAuthority(
+    expected: NativeTaskMessageReadAuthorityV1,
+  ): Promise<NativeTaskMessageReadAuthorityV1 | null>;
+  resolveHistoricalAgentSignerAuthority:
+    ResolveHistoricalAgentRuntimeSignerManagerAuthority;
+  execute(
+    payload: MessagePayloadV2,
+    assertCurrentAuthority: () => Promise<void>,
+  ): Value | PromiseLike<Value>;
+}>): Promise<Value> {
+  const target = readTarget(input.target);
+  return withNativeTaskMessagePayload({
+    ...input,
+    target,
+    role: target.role,
+    signer: Object.freeze({
+      kind: "agent_runtime" as const,
+      agentId: target.agentId,
+      resolveHistoricalAgentSignerAuthority:
+        input.resolveHistoricalAgentSignerAuthority,
+    }),
+    resolveCurrentAuthority: expected =>
+      input.resolveCurrentAuthority(expected as NativeTaskMessageReadAuthorityV1),
+    sameCurrent: (expected, current) => sameReadAuthority(
+      expected as NativeTaskMessageReadAuthorityV1,
+      current as NativeTaskMessageReadAuthorityV1,
+    ),
+  });
+}
+
+/**
+ * Opens one accepted Human reply revision under the live background Task
+ * grant. Plaintext exists only inside `execute`, while exact Message product,
+ * grant, Namespace, Domain and historical device authority remain current.
+ */
+export async function withNativeTaskHumanReplyV1<Value>(input: Readonly<{
+  restricted: PostgresJsBridgeConnection;
+  crypto: LatticeCrypto;
+  serverScope: string;
+  evidence: TaskRuntimeExecutionEvidence;
+  domains: readonly DomainForegroundSecretEntry[];
+  signal: AbortSignal;
+  target: NativeTaskHumanReplyReadTargetV1;
+  resolveCurrentAuthority(
+    expected: NativeTaskHumanReplyReadAuthorityV1,
+  ): Promise<NativeTaskHumanReplyReadAuthorityV1 | null>;
+  resolveHistoricalHumanSigner:
+    ResolveNativeTaskHumanReplyHistoricalSigner;
+  execute(
+    payload: MessagePayloadV2 & Readonly<{ role: "user" }>,
+    assertCurrentAuthority: () => Promise<void>,
+  ): Value | PromiseLike<Value>;
+}>): Promise<Value> {
+  const target = humanReplyReadTarget(input.target);
+  return withNativeTaskMessagePayload({
+    ...input,
+    target,
+    role: "user",
+    signer: Object.freeze({
+      kind: "human_object" as const,
+      subjectHumanId: target.sourceHumanActorId,
+      resolveHistoricalHumanSigner: input.resolveHistoricalHumanSigner,
+    }),
+    resolveCurrentAuthority: expected => input.resolveCurrentAuthority(
+      expected as NativeTaskHumanReplyReadAuthorityV1,
+    ),
+    sameCurrent: (expected, current) => sameHumanReplyReadAuthority(
+      expected as NativeTaskHumanReplyReadAuthorityV1,
+      current as NativeTaskHumanReplyReadAuthorityV1,
+    ),
+    execute: (payload, assertCurrentAuthority) => {
+      if (payload.role !== "user") {
+        throw new TypeError("Native Task Human reply role was substituted");
+      }
+      return input.execute(
+        payload as MessagePayloadV2 & Readonly<{ role: "user" }>,
+        assertCurrentAuthority,
+      );
+    },
+  });
 }

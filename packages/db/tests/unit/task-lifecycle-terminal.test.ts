@@ -106,20 +106,31 @@ function job(overrides: Partial<Job> = {}): Job {
 
 type HarnessOptions = Readonly<{
   task?: Task;
-  run?: TaskRun;
+  run?: TaskRun | null;
   job?: Job;
   newerRun?: TaskRun;
 }>;
 
 function harness(options: HarnessOptions = {}) {
   let taskRow = options.task ?? task();
-  let runRow = options.run ?? run();
+  let runRow = options.run === null ? null : options.run ?? run();
   let jobRow = options.job ?? job();
   const transactions: string[] = [];
   const locks: unknown[] = [];
   const writes: Array<{ table: unknown; patch: Record<string, unknown> }> = [];
   const updatePredicates: Array<{ table: unknown; predicate: SQL }> = [];
+  const reads: Array<{ table: unknown; projection: Record<string, unknown> | undefined; predicate: SQL }> = [];
 
+  const writerPending = (row: Record<string, unknown>) => {
+    const metadata = row["metadata"] as Record<string, unknown> | undefined;
+    const marker = metadata?.["writerReviewAwaiting"] as Record<string, unknown> | undefined;
+    return marker?.["version"] === 1 && typeof marker["pendingWorkspaceOperationId"] === "string"
+      && typeof marker["pendingWorkspaceClientMutationId"] === "string";
+  };
+  const project = (row: Record<string, unknown>, projection?: Record<string, unknown>) => projection === undefined ? row
+    : Object.fromEntries(Object.keys(projection).map(key => [key,
+      key === "requiresLocalRecapture" ? row["localExecutionDelegation"] === null && row["lastError"] === "Project access was removed by a Task edit. Recreate this Task from its original chat on the intended Mac."
+        : key === "writerReviewPending" ? writerPending(row) : row[key]]));
   const tx = {
     select: (projection?: Record<string, unknown>) => ({
       from: (table: unknown) => {
@@ -127,6 +138,7 @@ function harness(options: HarnessOptions = {}) {
         const query = {
           where: (value: SQL) => {
             predicate = value;
+            reads.push({ table, projection, predicate: value });
             return query;
           },
           orderBy: () => query,
@@ -138,13 +150,12 @@ function harness(options: HarnessOptions = {}) {
             }
             return query;
           },
+          then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve(table === tasks ? [project(taskRow, projection)] : []).then(resolve),
           for: async (kind: string) => {
             locks.push({ table, kind, predicate, projection });
-            if (table === tasks) return [taskRow];
+            if (table === tasks) return [project(taskRow, projection)];
             if (table === taskRuns) {
-              return projection === undefined
-                ? [runRow]
-                : [{ id: runRow.id, jobId: runRow.jobId }];
+              return runRow === null ? [] : [project(runRow, projection)];
             }
             if (table === jobs) {
               return [{
@@ -167,19 +178,29 @@ function harness(options: HarnessOptions = {}) {
         return query;
       },
     }),
+    insert: (table: unknown) => ({
+      values: (values: Record<string, unknown>) => ({
+        returning: async (projection?: Record<string, unknown>) => {
+          if (table !== taskRuns || runRow !== null) throw new Error("unexpected insert");
+          writes.push({ table, patch: values });
+          runRow = run({ ...values, jobId: null } as Partial<TaskRun>);
+          return [project(runRow, projection)];
+        },
+      }),
+    }),
     update: (table: unknown) => ({
       set: (patch: Record<string, unknown>) => ({
         where: (predicate: SQL) => ({
-          returning: async () => {
+          returning: async (projection?: Record<string, unknown>) => {
             updatePredicates.push({ table, predicate });
             writes.push({ table, patch });
             if (table === tasks) {
               taskRow = { ...taskRow, ...patch } as Task;
-              return [taskRow];
+              return [project(taskRow, projection)];
             }
             if (table === taskRuns) {
               runRow = { ...runRow, ...patch } as TaskRun;
-              return [runRow];
+              return [project(runRow, projection)];
             }
             if (table === jobs) {
               jobRow = { ...jobRow, ...patch } as Job;
@@ -197,7 +218,7 @@ function harness(options: HarnessOptions = {}) {
       return operation(tx);
     },
   } as unknown as DirectDatabase;
-  return { db, locks, transactions, updatePredicates, writes };
+  return { db, locks, transactions, updatePredicates, writes, reads };
 }
 
 const terminalInput = {
@@ -272,7 +293,7 @@ describe("exact Task invocation terminal transition", () => {
     });
     expect(fixture.writes[1]).toEqual({
       table: taskRuns,
-      patch: { status: "cancelled" },
+      patch: { status: "cancelled", completedAt: terminalInput.taskPatch.cancelledAt },
     });
     expect(fixture.writes[2]?.table).toBe(tasks);
     expect(fixture.writes[2]?.patch["status"]).toBe("cancelled");
@@ -564,4 +585,130 @@ describe("exact Task invocation terminal transition", () => {
     expect(fixture.transactions).toEqual([]);
     expect(fixture.writes).toEqual([]);
   });
+});
+
+
+describe("protected cancellation history", () => {
+  test("pre-dispatch Stop creates one terminal history receipt without a Job", async () => {
+    const fixture = harness({ task: task({ status: "pending" }), run: null });
+    const result = await transitionTaskLifecycleTerminal(fixture.db, broadTerminalInput);
+    expect(result.transitioned).toBe(true);
+    expect(result.protectedRun).toMatchObject({ status: "cancelled", jobId: null });
+    expect(fixture.writes.find(write => write.table === taskRuns)?.patch).toMatchObject({
+      completedAt: broadTerminalInput.taskPatch.cancelledAt,
+      startedAt: broadTerminalInput.taskPatch.cancelledAt });
+    expect(result.protectedRun).not.toHaveProperty("resultText");
+    expect(result.protectedRun).not.toHaveProperty("lastError");
+    expect(fixture.writes.some(write => write.table === jobs)).toBe(false);
+    await transitionTaskLifecycleTerminal(fixture.db, broadTerminalInput);
+    expect(fixture.writes.filter(write => write.table === taskRuns)).toHaveLength(1);
+  });
+
+  test("Plain pre-dispatch Stop retains its existing no-occurrence behavior", async () => {
+    const fixture = harness({ task: task({ status: "pending", contentRepresentation: "ordinary" }), run: null });
+    const result = await transitionTaskLifecycleTerminal(fixture.db, broadTerminalInput);
+    expect(result.protectedRun).toBeUndefined();
+    expect(fixture.writes.map(write => write.table)).toEqual([tasks]);
+  });
+
+  test("completed Task cannot acquire a cancellation history receipt", async () => {
+    const fixture = harness({ task: task({ status: "completed" }), run: null });
+    const result = await transitionTaskLifecycleTerminal(fixture.db, broadTerminalInput);
+    expect(result.transitioned).toBe(false);
+    expect(fixture.writes).toHaveLength(0);
+  });
+
+  test.each(["running", "awaiting", "paused"] as const)("%s occurrence retains its identity and records the Stop timestamp", async status => {
+    const fixture = harness({ task: task({ status }), run: run({ status, jobId: null }) });
+    const result = await transitionTaskLifecycleTerminal(fixture.db, broadTerminalInput);
+    expect(result.protectedRun).toMatchObject({ id: ids.run, status: "cancelled" });
+    expect(fixture.writes.find(write => write.table === taskRuns)?.patch["completedAt"]).toEqual(broadTerminalInput.taskPatch.cancelledAt);
+    expect(fixture.writes.filter(write => write.table === taskRuns)).toHaveLength(1);
+  });
+});
+
+
+test("protected Stop clears cooperative pause intent under the same Task lock", async () => {
+  const fixture = harness({ task: task({ status: "paused", pauseRequestId: ids.run,
+    pauseReason: "manual_pause", pauseRequestedAt: new Date("2026-10-08T09:00:00Z") }), run: run({ status: "awaiting", jobId: null }) });
+  expect((await transitionTaskLifecycleTerminal(fixture.db, broadTerminalInput)).transitioned).toBe(true);
+  expect(fixture.writes.find(write => write.table === tasks)?.patch).toMatchObject({
+    status: "cancelled", pauseRequestId: null, pauseRequestedAt: null, pauseReason: null,
+  });
+});
+
+
+test("Shadow Stop selects and returns no Task definition or Run result siblings", async () => {
+  const fixture = harness({ task: task({ contentRepresentation: "dual", prompt: "private prompt",
+    expectedOutput: "private objective", lastError: "private failure" }),
+    run: run({ resultText: "private result", lastError: "private run failure" }) });
+  const result = await transitionTaskLifecycleTerminal(fixture.db, terminalInput);
+  expect(result.outcome).toBe("transitioned");
+  expect(result.task).toBeUndefined(); expect(result.run).toBeUndefined();
+  expect(Object.keys(result.protectedTask!).sort()).toEqual([
+    "contentRepresentation", "id", "ownerId", "pauseReason", "pauseRequestId", "pauseRequestedAt", "requestorId", "status",
+  ]);
+  expect(Object.keys(result.protectedRun!).sort()).toEqual(["id", "jobId", "status", "taskId"]);
+  for (const read of fixture.reads.filter(value => value.table === tasks || value.table === taskRuns)) {
+    expect(read.projection).toBeDefined();
+    for (const key of ["prompt", "expectedOutput", "toolsWhitelist", "selectionSpec", "metadata", "resultText", "lastError"]) {
+      expect(read.projection).not.toHaveProperty(key);
+    }
+  }
+  expect(JSON.stringify(result)).not.toContain("private");
+});
+
+test.each(["completed", "errored"] as const)("ordinary %s finalizer racing conversion refuses before Run read or write", async status => {
+  const fixture = harness({ task: task({ contentRepresentation: "dual", prompt: "retained Shadow" }) });
+  const result = await transitionTaskLifecycleTerminal(fixture.db, {
+    taskId: ids.task, runId: ids.run, taskStatus: status, runStatus: status,
+    runPatch: { resultText: "stale ordinary output" },
+  });
+  expect(result).toMatchObject({ outcome: "authority_changed", transitioned: false, task: undefined, run: undefined });
+  expect(fixture.writes).toEqual([]);
+  expect(fixture.reads).toHaveLength(1);
+  expect(fixture.reads[0]?.projection).not.toHaveProperty("prompt");
+});
+
+test("ordinary Stop hydration remains full and is SQL fenced after the structural lock", async () => {
+  const ordinary = task({ contentRepresentation: "ordinary", prompt: "ordinary prompt" });
+  const fixture = harness({ task: ordinary, run: run({ jobId: null, resultText: "ordinary result" }) });
+  const result = await transitionTaskLifecycleTerminal(fixture.db, broadTerminalInput);
+  expect(result.task?.prompt).toBe("ordinary prompt");
+  expect(result.run?.resultText).toBe("ordinary result");
+  expect(result.protectedTask).toBeUndefined(); expect(result.protectedRun).toBeUndefined();
+  expect(fixture.reads[0]?.projection).toBeDefined();
+  for (const read of fixture.reads.filter(value => value.projection === undefined)) {
+    const query = new PgDialect().sqlToQuery(read.predicate);
+    expect(query.params).toContain("ordinary");
+    expect(query.sql).toContain(read.table === tasks ? '"content_representation"' : '"result_representation"');
+  }
+});
+
+test("protected Stop refuses stale ordinary cancellation text and recapture writes", async () => {
+  const fixture = harness();
+  expect((await transitionTaskLifecycleTerminal(fixture.db, {
+    ...terminalInput, runPatch: { resultText: "ordinary cancellation" },
+  })).outcome).toBe("authority_changed");
+  expect(fixture.writes).toEqual([]);
+  const recapture = harness({ task: task({ contentRepresentation: "dual", localExecutionDelegation: null,
+    lastError: "Project access was removed by a Task edit. Recreate this Task from its original chat on the intended Mac." }) });
+  expect((await transitionTaskLifecycleTerminal(recapture.db, terminalInput)).outcome).toBe("authority_changed");
+  expect(recapture.writes).toEqual([]);
+});
+
+
+test("protected Stop retains the Writer reservation fence without reading its metadata", async () => {
+  const fixture = harness({ task: task({ contentRepresentation: "dual", metadata: {
+    writerReviewAwaiting: { version: 1,
+      pendingWorkspaceOperationId: "reserved-operation", pendingWorkspaceClientMutationId: "reserved-mutation" },
+    unrelatedPrivateField: "not returned",
+  } }) });
+  const result = await transitionTaskLifecycleTerminal(fixture.db, { ...broadTerminalInput,
+    blockPendingWriterWorkspaceAcceptance: true });
+  expect(result.outcome).toBe("writer_review_pending");
+  expect(fixture.writes).toEqual([]);
+  expect(fixture.reads).toHaveLength(1);
+  expect(fixture.reads[0]?.projection).not.toHaveProperty("metadata");
+  expect(result.protectedTask).not.toHaveProperty("metadata");
 });

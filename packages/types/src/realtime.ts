@@ -2207,6 +2207,18 @@ export interface TaskStatusEvent {
   ownerId: string;
 }
 
+/** Content-free hint; request contents require fresh device/Namespace admission. */
+export interface TaskExternalRequestChangedEvent {
+  type: "task.external_request.changed";
+  ownerId: string;
+  requestId: string;
+  taskId: string;
+  taskRunId: string;
+  jobId: string;
+  roomId: string;
+  state: "available" | "unavailable";
+}
+
 /**
  *  (Task Phase 7a) — a task run parked on a human reply (`await_human_reply`
  * interrupt). Owner-scoped: `inferDeliveryScope` routes `task.*` to the
@@ -2468,6 +2480,7 @@ export type ServerEvent =
   | TaskCompletedEvent
   | TaskErroredEvent
   | TaskStatusEvent
+  | TaskExternalRequestChangedEvent
   | TaskAwaitingReplyEvent
   | TaskProgressEvent
   | AgentProgressEvent

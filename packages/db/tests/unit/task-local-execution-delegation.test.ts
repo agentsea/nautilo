@@ -101,6 +101,9 @@ function makeTask(): Task { return {
     lastFiredAt: null,
     fireLockId: null,
     fireLockedAt: null,
+    pauseRequestId: null,
+    pauseRequestedAt: null,
+    pauseReason: null,
     lastError: null,
     metadata: {},
     localExecutionDelegation: null,
@@ -111,6 +114,11 @@ function makeTask(): Task { return {
     cryptoAccessRevision: 0,
     cryptoRequiredNamespaceFingerprint: null,
     cryptoMappingState: "unmapped",
+    ordinaryFallbackOperationId: null,
+    ordinaryFallbackRequestDigest: null,
+    ordinaryFallbackReason: null,
+    ordinaryFallbackPolicyRevision: null,
+    ordinaryFallbackCompletedAt: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     cancelledAt: null,
@@ -133,11 +141,15 @@ function offlineFixture() {
   let missRun = false;
   let selection = 0;
   const db = { transaction: async (work: (tx: DirectDatabase) => Promise<unknown>) => { selection = 0; return work(db as unknown as DirectDatabase); },
-    select: () => { let table: unknown; let ordered = false; const chain = {
+    select: (projection?: Record<string, unknown>) => { let table: unknown; let ordered = false;
+      const project = (row: Record<string, unknown>) => projection === undefined ? row
+        : Object.fromEntries(Object.keys(projection).map(key => [key, row[key]]));
+      const chain = {
       from(value: unknown) { table = value; return chain; },
       where(value: SQL) { predicates.push(value); return chain; }, orderBy() { ordered = true; return chain; }, limit() { return chain; },
+      then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve(table === tasks && !missTask ? [project(structuredClone(task))] : []).then(resolve),
       for: async () => { selection++;
-        if (table === tasks) return missTask ? [] : [structuredClone(task)];
+        if (table === tasks) return missTask ? [] : [project(structuredClone(task))];
         if (ordered) return [{ ...run, id: latest }];
         return missRun ? [] : [structuredClone(run)];
       },
@@ -206,6 +218,26 @@ test("explicit Pause disables auto reconnect but preserves the original Run for 
   f.setTask({ status: "pending", fireLockId: "explicit-resume" });
   expect(await claimTaskLocalExecutionOfflineRun(f.db, { task: f.task(), run: f.run(), fireLockId: "explicit-resume" }))
     .toMatchObject({ id: "run", status: "running" });
+});
+test("legacy Pause refuses protected and dual Tasks under the locked parent row", async () => {
+  for (const contentRepresentation of ["protected", "dual"] as const) {
+    const f = offlineFixture();
+    f.setTask({ contentRepresentation });
+    const beforeTask = f.task();
+    const beforeRun = f.run();
+    expect(await transitionTaskLifecyclePaused(f.db, beforeTask.id)).toEqual({
+      task: undefined,
+      protectedTask: { id: beforeTask.id, ownerId: beforeTask.ownerId, requestorId: beforeTask.requestorId,
+        status: beforeTask.status, contentRepresentation, pauseRequestId: beforeTask.pauseRequestId,
+        pauseRequestedAt: beforeTask.pauseRequestedAt, pauseReason: beforeTask.pauseReason },
+      run: undefined,
+      transitioned: false,
+      outcome: "protected_checkpoint_required",
+    });
+    expect(f.task()).toEqual(beforeTask);
+    expect(f.run()).toEqual(beforeRun);
+    expect(f.writes).toEqual([]);
+  }
 });
 test("definition edits and newer occurrences cannot rearm or reclaim the old Run", async () => {
   for (const kind of ["edit", "newer"] as const) {
@@ -377,11 +409,14 @@ test("approval attention candidates do not broaden ordinary Task management list
   const management = new PgDialect().sqlToQuery(predicate!);
   expect(management.sql).toContain('"tasks"."owner_id" =');
   expect(management.sql).not.toContain('"tasks"."requestor_id" =');
+  expect(management.sql).toContain('"tasks"."content_representation" =');
+  expect(management.params).toContain("ordinary");
   await listAwaitingTaskRunsForOwner(db, "viewer", { approvalRecipient: true });
   const attention = new PgDialect().sqlToQuery(predicate!);
   expect(attention.sql).toContain('"tasks"."local_execution_delegation" is null');
   expect(attention.sql).toContain('"tasks"."local_execution_delegation" is not null');
   expect(attention.sql).toContain('"tasks"."requestor_id" =');
   expect(attention.params).toContain("viewer");
+  expect(attention.params).toContain("ordinary");
   expect(attention.params).toContain("awaiting");
 });

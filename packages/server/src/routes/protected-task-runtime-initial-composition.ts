@@ -1,4 +1,11 @@
 import { log } from "@nautilo/logger";
+import { createProtectedTaskCancellationComposition } from "./protected-task-cancellation-composition";
+import { createProtectedTaskTerminalMessageComposition } from "./protected-task-terminal-message-composition";
+import { createProtectedTaskRunningRecovery } from "./protected-task-running-recovery";
+import { createProtectedTaskOutputReadComposition } from "./protected-task-output-read-composition";
+import { createProtectedTaskWakeForegroundComposition } from "./protected-task-wake-foreground-composition";
+import { createProtectedTaskWakeForegroundServices } from "./protected-task-wake-foreground-services";
+import { inspectProtectedTaskLocalExecutionReadiness } from "./protected-task-local-execution";
 import { createDedicatedEncryptedCheckpointPool } from "@nautilo/agent";
 import { createProtectedTaskRuntimeParkedContinuation } from "./protected-task-runtime-parked-continuation";
 import { createProtectedTaskParkedAuthorizationSettlement } from "./protected-task-parked-authorization-settlement";
@@ -23,13 +30,18 @@ import {
   acceptProtectedTaskRunOutputBinding,
   createPostgresJsBridgeConnection,
   getSharedDirectCryptoDb,
+  listProtectedTaskWakeExecutionCandidates,
+  type ProtectedTaskWakeDiscoveryCursor,
   rooms,
   startProtectedTaskRun,
   taskRuns,
   tasks,
+  protectedTaskDefinitionHistoricalRepairProjection,
   type DirectDatabase,
   type PostgresJsBridgeConnection,
   type ProtectedTaskRunOutputRecoveryCursor,
+  type ProtectedTaskCancellationOutputDiscoveryCursor,
+  type ProtectedTaskRunningRecoveryCursor,
 } from "@nautilo/db";
 import {
   LatticeCrypto,
@@ -43,6 +55,7 @@ import type {
   EncryptionDataOperationOwner,
   ProtectedAgentMemoryEmbeddingPort,
 } from "@nautilo/lattice-bridge";
+import { parseTaskHistoricalRepairProvenanceV1 } from "@nautilo/lattice-bridge";
 import { verifyCryptoPostgresHandle } from "@nautilo/lattice-bridge/server";
 import {
   createProtectedTaskOccurrenceCoordinator,
@@ -80,6 +93,13 @@ import {
 } from "./task-runtime-current-authority";
 import type { createProductionBackgroundAuthorizationComposition } from
   "./background-authorization-composition";
+import { createProtectedTaskWakeForegroundAdmission } from "./protected-task-wake-foreground-admission";
+import { createProtectedTaskCheckpointPauseRecovery } from "./protected-task-checkpoint-pause-recovery";
+import { createProtectedTaskRuntimeMappedHeadReplan } from "./protected-task-runtime-mapped-head-replan";
+import { createProtectedTaskExecutionPreparation } from "./protected-task-execution-preparation";
+import type { ProductionProtectedTaskNativeExecution } from
+  "./protected-task-native-execution-composition";
+import type { ProtectedTaskCheckpointPauseRecoveryCursor } from "@nautilo/db";
 
 type DeviceHooks = Required<Pick<NonNullable<Parameters<
   typeof createProductionBackgroundAuthorizationComposition
@@ -94,18 +114,23 @@ export type ProductionProtectedTaskRuntimeInitialCompositionInput = Readonly<{
   recipients: TaskRuntimeRecipientRegistry;
   jobManager: ProtectedTaskOccurrenceJobManager;
   kick(): void;
+  authorizationRequested?(requestorUserId: string): void | Promise<void>;
   restricted?: PostgresJsBridgeConnection;
   crypto?: LatticeCrypto;
   serverScope?: string;
   embedding?: ProtectedAgentMemoryEmbeddingPort;
   createDedicatedPool?: ProtectedTaskNativeFixedMemorySegmentInput["createDedicatedPool"];
   now?: () => number;
+  prepareExternalExecution?: Pick<Parameters<typeof createProtectedTaskExecutionPreparation>[0], "claude" | "codex" | "hermes" | "opencode" | "deepResearch">;
+  wakeForeground?: Pick<Parameters<typeof createProtectedTaskWakeForegroundComposition>[0],
+    "jobManager" | "executor" | "onDiagnostic"> & Readonly<{ wakeEffectRecovery(): void }>;
 }>;
 
 export type ProductionProtectedTaskRuntimeInitialComposition = Readonly<
   DeviceHooks & {
     coordinator: ProtectedTaskOccurrenceCoordinator;
     wakeProtectedTask(): void;
+    close(): Promise<void>;
   }
 >;
 
@@ -113,13 +138,34 @@ type Dependencies = Readonly<{
   productContext: typeof createHumanProductTransactionContext;
   nativeExecution: typeof createProductionProtectedTaskNativeExecution;
   unmappedResultRecovery: typeof createProtectedTaskUnmappedResultRecovery;
+  terminalMessageComposition: typeof createProtectedTaskTerminalMessageComposition;
+  localExecutionReadiness: typeof inspectProtectedTaskLocalExecutionReadiness;
+  grantClaim: typeof createTaskRuntimeGrantClaim;
 }>;
 
 const productionDependencies: Dependencies = Object.freeze({
   productContext: createHumanProductTransactionContext,
   nativeExecution: createProductionProtectedTaskNativeExecution,
   unmappedResultRecovery: createProtectedTaskUnmappedResultRecovery,
+  terminalMessageComposition: createProtectedTaskTerminalMessageComposition,
+  localExecutionReadiness: inspectProtectedTaskLocalExecutionReadiness,
+  grantClaim: createTaskRuntimeGrantClaim,
 });
+
+export function createProtectedTaskRuntimeInitialExecutionPreparation(
+  db: DirectDatabase,
+  nativeExecution: ProductionProtectedTaskNativeExecution,
+  external?: ProductionProtectedTaskRuntimeInitialCompositionInput[
+    "prepareExternalExecution"
+  ],
+) {
+  return createProtectedTaskExecutionPreparation({
+    db,
+    native: nativeExecution.prepareExecution,
+    ...(external === undefined ? {} : external),
+    repoDocs: nativeExecution.prepareRepoDocsExecution,
+  });
+}
 
 function projectOccurrence(
   row: Readonly<{
@@ -134,6 +180,7 @@ function projectOccurrence(
       contentNamespaceId: string | null;
       contentRevision: number;
       cryptoObjectId: string | null;
+      definitionHistoricalRepair?: Readonly<Record<string, unknown>> | null;
       cryptoAccessRevision: number;
       cryptoRequiredNamespaceFingerprint: Uint8Array | null;
       cryptoMappingState: string;
@@ -191,6 +238,9 @@ function projectOccurrence(
       contentNamespaceId: task.contentNamespaceId,
       contentRevision: task.contentRevision,
       cryptoObjectId: task.cryptoObjectId,
+      ...(task.definitionHistoricalRepair == null ? {} : {
+        definitionHistoricalRepair: parseTaskHistoricalRepairProvenanceV1(task.definitionHistoricalRepair),
+      }),
       cryptoAccessRevision: task.cryptoAccessRevision,
       cryptoRequiredNamespaceFingerprint:
         new Uint8Array(task.cryptoRequiredNamespaceFingerprint),
@@ -225,6 +275,7 @@ export async function loadInitialProtectedTaskOccurrence(
       contentNamespaceId: tasks.contentNamespaceId,
       contentRevision: tasks.contentRevision,
       cryptoObjectId: tasks.cryptoObjectId,
+      definitionHistoricalRepair: protectedTaskDefinitionHistoricalRepairProjection,
       cryptoAccessRevision: tasks.cryptoAccessRevision,
       cryptoRequiredNamespaceFingerprint:
         tasks.cryptoRequiredNamespaceFingerprint,
@@ -291,6 +342,68 @@ export async function createProductionProtectedTaskRuntimeInitialComposition(
     db: input.db, repository, recipients: input.recipients, now,
   });
   let cancellationCursor: ProtectedTaskCancellationRecoveryCursor | undefined;
+  const cancellationOutput = createProtectedTaskCancellationComposition({
+    db: input.db, restricted, crypto, owner: input.owner, serverScope,
+    recipients: input.recipients,
+    authorizationRequested: input.authorizationRequested,
+    recipientTtlMs: TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS, now,
+  });
+  let cancellationOutputCursor: ProtectedTaskCancellationOutputDiscoveryCursor | undefined;
+  const outputRead = createProtectedTaskOutputReadComposition({
+    db: input.db, restricted, crypto, owner: input.owner, serverScope,
+    recipients: input.recipients,
+    authorizationRequested: input.authorizationRequested,
+    recipientTtlMs: TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS, now,
+    canonicalWakeForegroundAdmission: createProtectedTaskWakeForegroundAdmission({
+      db: input.db, resolver: input.resolver,
+    }),
+    ...(input.wakeForeground === undefined ? {} : {
+      createWakePublication: authority => createProtectedTaskWakeForegroundComposition({
+        ...input.wakeForeground!, restricted, crypto, owner: input.owner, serverScope,
+        resolver: input.resolver, authority,
+        createProtectedServices: operation => createProtectedTaskWakeForegroundServices({ ...operation,
+          crypto, restricted, serverScope, wakeEffectRecovery: input.wakeForeground!.wakeEffectRecovery,
+          ...(input.embedding === undefined ? {} : { embedding: input.embedding }) }),
+      }),
+    }),
+  });
+  let wakeCursor: ProtectedTaskWakeDiscoveryCursor | undefined;
+  let closed = false;
+  const activeWakes = new Map<string, Readonly<{ controller: AbortController; completion: Promise<void> }>>();
+  const observeWakes = async (limit: number) => {
+    if (closed || input.wakeForeground === undefined || limit <= activeWakes.size) return;
+    const observe = async () => {
+      const page = await listProtectedTaskWakeExecutionCandidates(input.db, {
+        limit: limit - activeWakes.size,
+        throughTime: wakeCursor?.throughTime ?? new Date(now()),
+        ...(wakeCursor === undefined ? {} : { cursor: wakeCursor }),
+      });
+      wakeCursor = page.next ?? undefined;
+      for (const candidate of page.candidates) {
+        if (closed || candidate.state !== "awaiting_authority" || activeWakes.has(candidate.jobId)) continue;
+        const controller = new AbortController();
+        // Keep the claim and all grant custody owned until the adopted Job drains.
+        // Reuse the observer's existing pass budget to bound process-local owners.
+        const completion = outputRead.executeWake({ taskId: candidate.taskId, taskRunId: candidate.taskRunId }, controller.signal)
+          .then(() => undefined, error => {
+            input.wakeForeground?.onDiagnostic?.("agent_input", error);
+            if (!closed) log("[task-observer] protected wake deferred code=PROTECTED_WAKE_RETRY");
+          }).finally(() => {
+            if (activeWakes.get(candidate.jobId)?.controller === controller) activeWakes.delete(candidate.jobId);
+          });
+        activeWakes.set(candidate.jobId, { controller, completion });
+      }
+    };
+    await input.owner.runMutation({ ordinary: () => Promise.resolve(), protected: observe, dual: observe });
+  };
+  const terminalMessageOutput = dependencies.terminalMessageComposition({
+    db: input.db, restricted, crypto, owner: input.owner, serverScope,
+    recipients: input.recipients,
+    authorizationRequested: input.authorizationRequested,
+    recipientTtlMs: TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS, now,
+    deliverResult: outputRead.deliverResult,
+  });
+  let terminalMessageOutputCursor: ProtectedTaskRunOutputRecoveryCursor | undefined;
   const unmapped = dependencies.unmappedResultRecovery({
     db: input.db,
     restricted,
@@ -308,6 +421,15 @@ export async function createProductionProtectedTaskRuntimeInitialComposition(
     now,
   });
   let publishedCursor: ProtectedTaskRunOutputRecoveryCursor | undefined;
+  const checkpointPauses = createProtectedTaskCheckpointPauseRecovery({ db: input.db });
+  let checkpointPauseCursor: ProtectedTaskCheckpointPauseRecoveryCursor | undefined;
+  const abandoned = createProtectedTaskRunningRecovery({
+    db: input.db, repository, recipients: input.recipients, now,
+  });
+  let abandonedCursor: Readonly<{
+    through: ProtectedTaskRunningRecoveryCursor;
+    after: ProtectedTaskRunningRecoveryCursor;
+  }> | undefined;
   const predispatch = createProductionProtectedTaskPredispatch({
     db: input.db,
     resolver: input.resolver,
@@ -325,6 +447,11 @@ export async function createProductionProtectedTaskRuntimeInitialComposition(
       : { createDedicatedPool: input.createDedicatedPool }),
     ...(input.now === undefined ? {} : { now }),
   });
+  const prepareExecution = createProtectedTaskRuntimeInitialExecutionPreparation(
+    input.db,
+    nativeExecution,
+    input.prepareExternalExecution,
+  );
   const plan = createProtectedTaskRuntimeGrantPlanBuilder({
     crypto,
     recipientTtlMs: TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS,
@@ -351,7 +478,7 @@ export async function createProductionProtectedTaskRuntimeInitialComposition(
     },
     acceptOutputBinding: value =>
       acceptProtectedTaskRunOutputBinding(input.db, value),
-    prepareExecution: nativeExecution.prepareExecution,
+    prepareExecution,
     startProtectedTaskRun: value => startProtectedTaskRun(input.db, value),
     deferBeforeExecution: value => recovery.recover(value, { immediate: true }),
     publishResult: nativeExecution.publishResult,
@@ -416,18 +543,20 @@ export async function createProductionProtectedTaskRuntimeInitialComposition(
       destroyDomainForegroundAuthorizationPlanV2(parsed);
     }
   };
-  const claim = createTaskRuntimeGrantClaim({
+  const claim = dependencies.grantClaim({
     repository,
     recipients: input.recipients,
     plan,
     withCurrentAuthority,
     withCurrentClaimAuthority,
+    authorizationRequested: occurrence =>
+      input.authorizationRequested?.(occurrence.task.requestorId),
     now,
   });
   const parked = createProtectedTaskRuntimeParkedContinuation({
     db: input.db, restricted, crypto, serverScope, resolver: input.resolver,
     recipients: input.recipients, repository, withCurrentAuthority,
-    prepareExecution: nativeExecution.prepareExecution,
+    prepareExecution,
     publishResult: nativeExecution.publishResult,
     createDedicatedPool: input.createDedicatedPool ?? createDedicatedEncryptedCheckpointPool,
     recoverUnstarted: parkedRecovery,
@@ -439,6 +568,7 @@ export async function createProductionProtectedTaskRuntimeInitialComposition(
   });
   const prepareParked = createProtectedTaskRuntimeParkedPreparation({
     resolver: input.resolver, recipients: input.recipients,
+    authorizationRequested: input.authorizationRequested,
   }, { db: input.db, crypto, serverScope, now,
     restricted: () => restricted, productContext: dependencies.productContext });
   const recipientAuthority = createProtectedTaskRuntimeRecipientAuthorityPort({
@@ -454,6 +584,9 @@ export async function createProductionProtectedTaskRuntimeInitialComposition(
     resolveOccurrence: coordinates =>
       loadInitialProtectedTaskOccurrence(input.db, coordinates),
     withRecipientAuthority: recipientAuthority,
+    mappedHeadReplan: createProtectedTaskRuntimeMappedHeadReplan({
+      db: input.db, crypto, serverScope, recipients: input.recipients, now,
+    }),
     now,
   });
   const parkedHooks = createProtectedTaskRuntimeParkedDeviceAuthorization({
@@ -465,6 +598,12 @@ export async function createProductionProtectedTaskRuntimeInitialComposition(
   const coordinator = createProtectedTaskOccurrenceCoordinator({
     authorization: {
       prepareOrClaimExact: async occurrence => {
+        const localExecution = await dependencies.localExecutionReadiness({
+          db: input.db, occurrence,
+        });
+        if (localExecution.status === "waiting") {
+          return Object.freeze({ status: "awaiting_authorization" as const });
+        }
         if (occurrence.run.jobId === null) return claim.prepareOrClaimExact(occurrence);
         const settled = await parkedSettlement.settle(occurrence);
         if (settled !== "settled") {
@@ -477,6 +616,7 @@ export async function createProductionProtectedTaskRuntimeInitialComposition(
       },
     },
     recoverBeforeObservation: async limit => {
+      await observeWakes(limit);
       const cancelled = await cancellation.recoverPage({
         limit,
         ...(cancellationCursor === undefined ? {} : { after: cancellationCursor }),
@@ -484,6 +624,20 @@ export async function createProductionProtectedTaskRuntimeInitialComposition(
       cancellationCursor = cancelled.next;
       if (cancelled.failures > 0) {
         log("[task-observer] protected cancellation recovery deferred code=PROTECTED_STOP_RECOVERY_RETRY");
+      }
+      const stoppedOutputs = await cancellationOutput.recoverPage({
+        limit, ...(cancellationOutputCursor === undefined ? {} : { after: cancellationOutputCursor }),
+      });
+      cancellationOutputCursor = stoppedOutputs.next;
+      if (stoppedOutputs.failures > 0) {
+        log("[task-observer] protected cancellation output deferred code=PROTECTED_STOP_OUTPUT_RETRY");
+      }
+      const terminalMessages = await terminalMessageOutput.recoverPage({
+        limit, ...(terminalMessageOutputCursor === undefined ? {} : { after: terminalMessageOutputCursor }),
+      });
+      terminalMessageOutputCursor = terminalMessages.next;
+      if (terminalMessages.failures > 0) {
+        log("[task-observer] protected terminal delivery deferred code=PROTECTED_TERMINAL_DELIVERY_RETRY");
       }
       const publications = await published.recoverPage({
         limit,
@@ -493,6 +647,13 @@ export async function createProductionProtectedTaskRuntimeInitialComposition(
       if (publications.failures > 0) {
         log("[task-observer] protected result settlement deferred code=PROTECTED_RESULT_SETTLEMENT_RETRY");
       }
+      const abandonedRuns = await abandoned.recoverPage({
+        limit, ...(abandonedCursor === undefined ? {} : abandonedCursor),
+      });
+      abandonedCursor = abandonedRuns.next;
+      if (abandonedRuns.failures > 0) {
+        log("[task-observer] protected abandoned execution deferred code=PROTECTED_RUNNING_RECOVERY_RETRY");
+      }
       const page = await recovery.recoverPage({
         limit, ...(recoveryCursor === undefined ? {} : { after: recoveryCursor }),
       });
@@ -500,18 +661,37 @@ export async function createProductionProtectedTaskRuntimeInitialComposition(
       if (page.failures > 0) {
         log("[task-observer] protected pre-execution recovery deferred code=PROTECTED_START_RECOVERY_RETRY");
       }
+      const pauses = await checkpointPauses.recoverPage({
+        limit, ...(checkpointPauseCursor === undefined ? {} : { after: checkpointPauseCursor }),
+      });
+      checkpointPauseCursor = pauses.next ?? undefined;
+      if (pauses.failures > 0) {
+        log("[task-observer] protected checkpoint pause deferred code=PROTECTED_PAUSE_RECOVERY_RETRY");
+      }
     },
     jobManager: input.jobManager,
     kick: input.kick,
   });
+  const deviceHooks = (record: Parameters<DeviceHooks["isTaskRecipientActive"]>[0]) =>
+    record.workKind === "task.deliver_result" || record.workKind === "task.delivery_wake" ? outputRead
+      : record.workKind === "task.deliver_message" ? terminalMessageOutput
+      : record.workKind === "task.cancel_result" ? cancellationOutput
+      : isInitialRequest(record) ? hooks : parkedHooks;
   return Object.freeze({
     coordinator,
-    bindTaskRecipient: operation => (isInitialRequest(operation.record) ? hooks : parkedHooks)
+    bindTaskRecipient: operation => deviceHooks(operation.record)
       .bindTaskRecipient(operation),
-    withTaskAuthority: operation => (isInitialRequest(operation.record) ? hooks : parkedHooks)
+    withTaskAuthority: operation => deviceHooks(operation.record)
       .withTaskAuthority(operation),
-    isTaskRecipientActive: record => (isInitialRequest(record) ? hooks : parkedHooks)
+    isTaskRecipientActive: record => deviceHooks(record)
       .isTaskRecipientActive(record),
     wakeProtectedTask: () => coordinator.authorizationAccepted(),
+    close: async () => {
+      closed = true;
+      const current = [...activeWakes.values()];
+      for (const operation of current) operation.controller.abort();
+      await Promise.allSettled(current.map(operation => operation.completion));
+      activeWakes.clear();
+    },
   });
 }

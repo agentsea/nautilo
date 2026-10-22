@@ -5,7 +5,7 @@ export function typecheckEnvironment(environment: Record<string, string | undefi
   return {
     ...environment,
     TURBO_CONCURRENCY: environment["TURBO_CONCURRENCY"] || "1",
-    NODE_OPTIONS: "--max-old-space-size=5120",
+    NODE_OPTIONS: "--max-old-space-size=6144",
   };
 }
 

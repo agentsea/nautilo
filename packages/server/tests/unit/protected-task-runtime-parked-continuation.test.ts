@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
 
-import type { ParkedProtectedTaskAdditionalAuthority } from "@nautilo/db";
+import type {
+  ParkedProtectedTaskAdditionalAuthority,
+  ParkedProtectedTaskCheckpointContinuation,
+} from "@nautilo/db";
 import {
   LatticeCrypto,
   authorizationRevision,
@@ -46,8 +49,10 @@ const REQUEST = "task-run-authorization:v2:parked-continuation";
 const INPUT = `task-definition:v1:${"a".repeat(64)}`;
 const RESULT = `task-run-result:v1:${"b".repeat(64)}`;
 const FINGERPRINT = Buffer.alloc(32, 5).toString("base64url");
+const CHECKPOINT_REQUEST =
+  `task-checkpoint-continuation:${RUN}:2:${FINGERPRINT}`;
 
-async function descriptor() {
+async function descriptor(requestId = REQUEST) {
   const crypto = new LatticeCrypto();
   const recipient = await crypto.generateEncryptionKeyPair();
   const domain: DomainForegroundAuthorityEntry = {
@@ -63,7 +68,7 @@ async function descriptor() {
     activeNamespaceBindingCount: 1,
   };
   const plan = createDomainForegroundAuthorizationPlan(crypto, {
-    authorizationId: REQUEST, policyRevision: 7, sessionId: "episode:parked",
+    authorizationId: requestId, policyRevision: 7, sessionId: "episode:parked",
     roomId: SOURCE, subjectHumanId: humanId(HUMAN),
     committerDeviceId: cryptoDeviceId("device:parked"),
     committerDeviceSigningGeneration: 2,
@@ -75,7 +80,7 @@ async function descriptor() {
     deadlineAt: NOW + 60_000, maximumSecretBytes: 4_096, domains: [domain],
   });
   const request = createTaskRuntimeBackgroundAuthorizationRequestV1({
-    requestId: REQUEST, workId: RUN, workKind: "task.execute",
+    requestId, workId: RUN, workKind: "task.execute",
     workPurpose: "task.execute", recipientGeneration: 1,
     episodeId: plan.sessionId, sourceRoomId: SOURCE,
     recipientKeyId: plan.recipientKeyId, recipientPublicKey: recipient.publicKey,
@@ -85,7 +90,10 @@ async function descriptor() {
   return encodeTaskRuntimeBackgroundAuthorizationRequestV1(request);
 }
 
-async function fixture() {
+async function fixture(
+  executionExtension: Readonly<Record<string, unknown>> = {},
+  kind: "additional" | "checkpoint" = "additional",
+) {
   const occurrence: ProtectedTaskOccurrence = {
     task: { id: TASK, ownerId: USER, requestorId: USER, agentId: AGENT,
       callingRoomId: SOURCE, scheduleKind: "now",
@@ -96,10 +104,15 @@ async function fixture() {
       graphThreadId: "task-thread", status: "awaiting",
       startedAt: new Date(NOW - 1_000) },
   };
-  const expected = {
+  const additional = {
     occurrence,
-    priorJob: { id: PRIOR_JOB, generation: 3, interrupts: [{ id: "interrupt:1" }],
-      parkedAt: new Date(NOW - 500), reference: { resultObjectId: RESULT } },
+    priorJob: { checkpointAadBinding: { version: 1, namespaceId: CONTENT, domainId: DOMAIN, namespaceAccessRevision: 0, policyRevision: 7 }, id: PRIOR_JOB, generation: 3, interrupts: [{ id: "interrupt:1" }],
+      parkedAt: new Date(NOW - 500), reference: {
+        kind: "protected_task_run_v1", taskId: TASK, taskRunId: RUN,
+        inputObjectId: INPUT, resultObjectId: RESULT,
+        authorizationRequestId: "task-run-authorization:v2:segment-1",
+        policyRevision: 7, executionSegment: 1,
+      } },
     proof: {
       continuation: { interruptId: "interrupt:1", operationId: "operation:1",
         requestDigest: new Uint8Array(32).fill(1),
@@ -117,6 +130,41 @@ async function fixture() {
     continuationFingerprint: FINGERPRINT,
     nextExecutionSegment: 2,
   } as unknown as ParkedProtectedTaskAdditionalAuthority;
+  const checkpoint = {
+    ...additional,
+    priorJob: { ...additional.priorJob, interrupts: Object.freeze([]) },
+    proof: {
+      segment: {
+        taskRunId: RUN, executionSegment: 1, jobId: PRIOR_JOB,
+        route: "native_langgraph_v1" as const,
+        transcriptContract: "protected_message_associations_v1" as const,
+        expectedTranscriptAssociationCount: 0,
+        transcriptAssociationDigest: new Uint8Array(32).fill(5),
+        checkpointContract: "encrypted_langgraph_v1" as const,
+        expectedCheckpointCount: 2,
+        checkpointDigest: new Uint8Array(32).fill(6),
+        expectedCheckpointBlobCount: 3,
+        checkpointBlobDigest: new Uint8Array(32).fill(7),
+        expectedPendingWriteCount: 1,
+        pendingWriteDigest: new Uint8Array(32).fill(8),
+        sealedAt: new Date(NOW - 500),
+      },
+      continuation: {
+        taskRunId: RUN, executionSegment: 1, jobId: PRIOR_JOB,
+        kind: "checkpoint_safe_v1" as const,
+        reason: "manual_pause" as const,
+        effectDisposition: "none_v1" as const,
+        interruptId: null, operationId: null, requestDigest: null,
+        requiredAuthorityDigest: null, stableRoutingDigest: null,
+        semanticAuthorityRequirements: null,
+        sealedAt: new Date(NOW - 500),
+      },
+    },
+    stableRoutingDigest: new Uint8Array(32).fill(3),
+    authorizationRequestId: CHECKPOINT_REQUEST,
+  } satisfies ParkedProtectedTaskCheckpointContinuation;
+  const expected = kind === "checkpoint" ? checkpoint : additional;
+  const authorizationRequestId = expected.authorizationRequestId;
   const memory: ParkedProtectedTaskRuntimeMemoryPlan = {
     routing: { taskId: TASK, taskRunId: RUN, requesterUserId: USER,
       requesterHumanId: HUMAN, agentId: AGENT, sourceRoomId: SOURCE,
@@ -141,7 +189,7 @@ async function fixture() {
     validateCurrentRouting: (_facts: ParkedTaskRuntimeCurrentRoutingFacts) => true,
   }) as unknown as ParkedTaskRuntimeAuthorizationPlan;
   const initialRecord = {
-    snapshot: { formatVersion: 3, requestId: REQUEST, workId: RUN,
+    snapshot: { formatVersion: 3, requestId: authorizationRequestId, workId: RUN,
       state: "awaiting_recipient", requestRevision: 0 },
     idempotencyKey: "task-runtime-stable-v1:fixture",
     descriptorBytes: null,
@@ -153,7 +201,7 @@ async function fixture() {
   const selected = { ...initialRecord,
     snapshot: { ...initialRecord.snapshot, state: "grant_ready" as const,
       requestRevision: 2 },
-    descriptorBytes: await descriptor(),
+    descriptorBytes: await descriptor(authorizationRequestId),
   } as BackgroundAuthorizationTaskRuntimeRecordV3;
   const events: string[] = [];
   let ownerHeld = false;
@@ -184,16 +232,25 @@ async function fixture() {
     recipients: {} as never, repository: repository as never,
     withCurrentAuthority: async () => null,
     prepareExecution: async value => {
-      expect(value.additionalAuthorityResume).toEqual({
-        interruptId: "interrupt:1", authorizationRequestId: REQUEST,
-        effectDisposition: "not_started_v1", operationId: "operation:1",
-        requestDigest: new Uint8Array(32).fill(1),
-        requiredAuthorityDigest: new Uint8Array(32).fill(2),
-      });
+      if (kind === "checkpoint") {
+        expect(value).toMatchObject({ checkpointResume: true });
+        expect(value.additionalAuthorityResume).toBeUndefined();
+        expect(value.humanResume).toBeUndefined();
+      } else {
+        expect(value.additionalAuthorityResume).toEqual({
+          interruptId: "interrupt:1", authorizationRequestId: REQUEST,
+          effectDisposition: "not_started_v1", operationId: "operation:1",
+          requestDigest: new Uint8Array(32).fill(1),
+          requiredAuthorityDigest: new Uint8Array(32).fill(2),
+        });
+        expect(Reflect.has(value, "checkpointResume")).toBe(false);
+      }
       return ({
-      executor: async function* () { yield* []; },
-      openTransientInput: async () => ({ message: "opened" }),
-    }); },
+        executor: async function* () { yield* []; },
+        openTransientInput: async () => ({ message: "opened" }),
+        ...executionExtension,
+      }) as never;
+    },
     publishResult: async () => {},
     createDedicatedPool: (() => {
       throw new Error("unused pool factory");
@@ -222,12 +279,26 @@ async function fixture() {
       }
     },
     start: async (_db, value) => {
+      expect(kind).toBe("additional");
       expect(ownerHeld).toBe(false);
       expect(poolOpen).toBe(false);
       events.push("db-start");
       expect(value.taskRunId).toBe(RUN);
       expect(value.priorJobId).toBe(PRIOR_JOB);
       expect(value.jobId).toBe(NEW_JOB);
+      expect(value.jobReference.resumeContinuationFingerprint).toBe(FINGERPRINT);
+      return { status: "started" as const };
+    },
+    startCheckpoint: async (_db, value) => {
+      expect(kind).toBe("checkpoint");
+      expect(ownerHeld).toBe(false);
+      expect(poolOpen).toBe(false);
+      events.push("db-start");
+      expect(value).toMatchObject({
+        taskId: TASK, taskRunId: RUN, priorJobId: PRIOR_JOB, jobId: NEW_JOB,
+        interrupts: [], continuationFingerprint: FINGERPRINT,
+      });
+      expect(value.stableRoutingDigest).toEqual(new Uint8Array(32).fill(3));
       expect(value.jobReference.resumeContinuationFingerprint).toBe(FINGERPRINT);
       return { status: "started" as const };
     },
@@ -242,6 +313,26 @@ test("returns no plan and creates no Job when the prepared grant is missing", as
   expect(await f.composition.plan(f.occurrence)).toBeNull();
   expect(f.events).toEqual([]);
   expect(typeof f.composition.prepareOrClaimExact).toBe("function");
+});
+
+test("starts a closed checkpoint continuation without replaying semantic input", async () => {
+  const f = await fixture({}, "checkpoint");
+  const plan = await f.composition.plan(f.occurrence);
+  if (plan === null) throw new Error("checkpoint continuation plan missing");
+  expect(plan.reference).toMatchObject({
+    authorizationRequestId: CHECKPOINT_REQUEST,
+    executionSegment: 2,
+    resumeContinuationFingerprint: FINGERPRINT,
+  });
+  const claimed = { ...f.selected, snapshot: { ...f.selected.snapshot,
+    state: "claimed" as const, claimId: "claim:checkpoint" } };
+  expect(await plan.start({ occurrence: f.occurrence, claimed,
+    claimId: "claim:checkpoint", jobId: NEW_JOB, reference: plan.reference } as
+    ParkedTaskRuntimeExecutionStartInput)).toEqual({ status: "started" });
+  expect(f.events).toEqual([
+    "owner", "owner-close", "owner", "pool", "pool-close", "owner-close",
+    "db-start",
+  ]);
 });
 
 test("closes the held owner and fresh manifest pool before starting a new Job", async () => {
@@ -261,6 +352,25 @@ test("closes the held owner and fresh manifest pool before starting a new Job", 
     "owner", "owner-close", "owner", "pool", "pool-close", "owner-close",
     "db-start",
   ]);
+});
+
+test("pins an optional checkpoint pause callback and rejects preparation extras", async () => {
+  const requestCheckpointPause = () => true;
+  const f = await fixture({ requestCheckpointPause });
+  const plan = await f.composition.plan(f.occurrence);
+  expect(plan?.requestCheckpointPause).toBe(requestCheckpointPause);
+
+  for (const extension of [
+    { requestCheckpointPause: undefined },
+    { requestCheckpointPause: "not-a-function" },
+    { requestCheckpointPause, unexpected: true },
+  ]) {
+    const invalid = await fixture(extension);
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(invalid.composition.plan(invalid.occurrence)).rejects.toThrow(
+      "execution preparation is invalid",
+    );
+  }
 });
 
 test.each([

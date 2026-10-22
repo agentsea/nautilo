@@ -20,6 +20,7 @@ import {
   sealNamespaceKeyring,
 } from "@nautilo/lattice-crypto";
 import {
+  agentRuntimeObjectSignerKeyIdV1,
   encodeAgentRuntimeSignerPublicationV1,
   serializeGrantV2,
   serializeNamespaceBindingV2,
@@ -29,6 +30,7 @@ import {
 } from "@nautilo/lattice-crypto/wire";
 import {
   prepareAgentConversationCryptoRevision,
+  prepareDeviceWrappedLiveShadowAgentConversationCryptoRevisionWithDek,
 } from "../../src/message/agent-conversation-crypto.ts";
 import {
   readPreparedConversationCryptoRevisionSnapshot,
@@ -50,6 +52,12 @@ import type {
   DatabaseRow,
   DatabaseScalar,
 } from "../../src/server/storage/postgres-record-codecs.ts";
+import {
+  PUBLICATION_NAMESPACE,
+  PUBLICATION_NOW,
+  publicationBytes,
+  withPublicationSigner,
+} from "../../../lattice-crypto/tests/fixtures/task-publication-signer.ts";
 
 type StoredObject = Readonly<{
   objectId: string;
@@ -64,6 +72,7 @@ type StoredAccess = Readonly<{
   previousManifestHash: Uint8Array | null;
   payloadHash: Uint8Array;
   manifestBytes: Uint8Array;
+  signerEvidenceBytes: Uint8Array | null;
   envelopes: readonly Readonly<{
     namespaceId: string;
     envelopeHash: Uint8Array;
@@ -82,6 +91,20 @@ type AgentAuthorityRows = Readonly<{
   domain: DatabaseRow & Readonly<{ participants: string[] }>;
   runtime: AgentRuntimeAtomicStorageWireV2;
   signer: DatabaseRow;
+}>;
+
+type CertifiedAuthorityRows = Readonly<{
+  domainId: string;
+  domainKeyGeneration: number;
+  domainAuthorizationRevision: number;
+  domainHeadDigest: Uint8Array;
+  namespaceAccessRevision: number;
+  namespaceKeyGeneration: number;
+  namespaceHeadDigest: Uint8Array;
+  issuerDeviceId: string;
+  issuerHumanId: string;
+  issuerDeviceGeneration: number;
+  issuerSigningPublicKey: Uint8Array;
 }>;
 
 function cloneBytes(value: Uint8Array): Uint8Array {
@@ -110,6 +133,8 @@ function cloneState(state: DurableState): DurableState {
           state.access.previousManifestHash?.slice() ?? null,
         payloadHash: cloneBytes(state.access.payloadHash),
         manifestBytes: cloneBytes(state.access.manifestBytes),
+        signerEvidenceBytes:
+          state.access.signerEvidenceBytes?.slice() ?? null,
         envelopes: state.access.envelopes.map((envelope) => ({
           ...envelope,
           envelopeHash: cloneBytes(envelope.envelopeHash),
@@ -125,7 +150,10 @@ class AgentCryptoConnection implements CryptoPostgresConnection {
   loseNextCommitResponse = false;
   signerAvailable = true;
 
-  constructor(readonly authority: AgentAuthorityRows) {}
+  constructor(
+    readonly authority: AgentAuthorityRows | null,
+    readonly certifiedAuthority: CertifiedAuthorityRows | null = null,
+  ) {}
 
   query<Row extends DatabaseRow = DatabaseRow>(
     statement: string,
@@ -193,15 +221,20 @@ class AgentCryptoConnection implements CryptoPostgresConnection {
           })) as unknown as Row[];
         }
         if (normalized.includes("from crypto_grants")) {
-          return [this.authority.grant] as Row[];
+          return this.authority === null ? [] : [this.authority.grant] as Row[];
         }
         if (normalized.includes("from namespace_crypto_heads")) {
-          return [this.authority.namespace] as Row[];
+          return this.authority === null
+            ? []
+            : [this.authority.namespace] as Row[];
         }
         if (normalized.includes("from crypto_domains")) {
-          return [this.authority.domain] as unknown as Row[];
+          return this.authority === null
+            ? []
+            : [this.authority.domain] as unknown as Row[];
         }
         if (normalized.includes("from agent_crypto_runtime_states")) {
+          if (this.authority === null) return [];
           const state = this.authority.runtime;
           return [{
             agent_id: state.runtime.agentId,
@@ -215,6 +248,7 @@ class AgentCryptoConnection implements CryptoPostgresConnection {
         if (normalized.includes(
           "from agent_crypto_runtime_config_objects",
         )) {
+          if (this.authority === null) return [];
           return this.authority.runtime.configObjects.map((record) => ({
             agent_id: record.agentId,
             object_id: record.objectId,
@@ -227,6 +261,7 @@ class AgentCryptoConnection implements CryptoPostgresConnection {
         if (normalized.includes(
           "from agent_crypto_runtime_domain_envelopes",
         )) {
+          if (this.authority === null) return [];
           return this.authority.runtime.domainEnvelopes.map((record) => ({
             agent_id: record.agentId,
             domain_id: record.domainId,
@@ -240,6 +275,7 @@ class AgentCryptoConnection implements CryptoPostgresConnection {
           })) as unknown as Row[];
         }
         if (normalized.includes("from agent_crypto_runtime_challenges")) {
+          if (this.authority === null) return [];
           return this.authority.runtime.challengeConsumptions.map(
             (record) => ({
               challenge_hash: cloneBytes(record.challengeHash),
@@ -250,7 +286,56 @@ class AgentCryptoConnection implements CryptoPostgresConnection {
         if (
           normalized.includes("from agent_crypto_runtime_signers")
         ) {
-          return (this.signerAvailable ? [this.authority.signer] : []) as Row[];
+          return (this.signerAvailable && this.authority !== null
+            ? [this.authority.signer]
+            : []) as Row[];
+        }
+        if (normalized.includes("from domain_key_heads")) {
+          const authority = this.certifiedAuthority;
+          return (authority === null ? [] : [{
+            domain_key_generation: authority.domainKeyGeneration,
+            authorization_revision: authority.domainAuthorizationRevision,
+            head_digest: authority.domainHeadDigest,
+            participant_digest: publicationBytes(0x61),
+            participant_count: 1,
+          }]) as unknown as Row[];
+        }
+        if (normalized.includes("from namespace_domain_key_heads")) {
+          const authority = this.certifiedAuthority;
+          return (authority === null ? [] : [{
+            domain_id: authority.domainId,
+            domain_key_generation: authority.domainKeyGeneration,
+            domain_authorization_revision:
+              authority.domainAuthorizationRevision,
+            domain_head_digest: authority.domainHeadDigest,
+            namespace_current_generation: authority.namespaceKeyGeneration,
+            namespace_access_revision: authority.namespaceAccessRevision,
+            retained_authority_set_digest: authority.namespaceHeadDigest,
+            state: "active",
+          }]) as unknown as Row[];
+        }
+        if (normalized.includes("from human_crypto_devices")) {
+          const authority = this.certifiedAuthority;
+          return (authority === null ? [] : [{
+            device_id: authority.issuerDeviceId,
+            human_id: authority.issuerHumanId,
+            device_generation: authority.issuerDeviceGeneration,
+            signing_public_key: authority.issuerSigningPublicKey,
+            state: "revoked",
+          }]) as unknown as Row[];
+        }
+        if (normalized.includes("from object_crypto_access_manifests")) {
+          return (working.access === null ? [] : [{
+            object_id: working.access.objectId,
+            access_revision: working.access.accessRevision,
+            manifest_hash: cloneBytes(working.access.manifestHash),
+            previous_manifest_hash:
+              working.access.previousManifestHash?.slice() ?? null,
+            payload_hash: cloneBytes(working.access.payloadHash),
+            manifest_bytes: cloneBytes(working.access.manifestBytes),
+            signer_evidence_bytes:
+              working.access.signerEvidenceBytes?.slice() ?? null,
+          }]) as unknown as Row[];
         }
         if (normalized.includes(
           "insert into object_crypto_access_manifests",
@@ -263,6 +348,8 @@ class AgentCryptoConnection implements CryptoPostgresConnection {
               (parameters[3] as Uint8Array | null)?.slice() ?? null,
             payloadHash: cloneBytes(parameters[4] as Uint8Array),
             manifestBytes: cloneBytes(parameters[5] as Uint8Array),
+            signerEvidenceBytes:
+              (parameters[6] as Uint8Array | null)?.slice() ?? null,
           };
           return [];
         }
@@ -548,6 +635,101 @@ async function fixture() {
   };
 }
 
+async function withCertifiedFixture<Value>(
+  use: (state: Readonly<{
+    agentId: string;
+    adapter: ReturnType<typeof createPostgresConversationCryptoCompletion>;
+    connection: AgentCryptoConnection;
+    crypto: LatticeCrypto;
+    revision: ReturnType<
+      typeof prepareDeviceWrappedLiveShadowAgentConversationCryptoRevisionWithDek
+    >;
+    signerCertificateBytes: Uint8Array;
+  }>) => Value | Promise<Value>,
+): Promise<Value> {
+  return withPublicationSigner(async ({ crypto, signer, evidence, domain }) => {
+    const namespaceHeadDigest = publicationBytes(0x44);
+    const connection = new AgentCryptoConnection(null, {
+      domainId: domain.domainId,
+      domainKeyGeneration: domain.domainKeyGeneration,
+      domainAuthorizationRevision: domain.authorizationRevision,
+      domainHeadDigest: domain.headDigest,
+      namespaceAccessRevision: 4,
+      namespaceKeyGeneration: 3,
+      namespaceHeadDigest,
+      issuerDeviceId: signer.issuer.deviceId,
+      issuerHumanId: signer.issuer.humanId,
+      issuerDeviceGeneration: signer.issuer.deviceGeneration,
+      issuerSigningPublicKey: signer.issuerSigningPublicKey,
+    });
+    const handle = await verifyCryptoPostgresHandle(connection);
+    const revision =
+      prepareDeviceWrappedLiveShadowAgentConversationCryptoRevisionWithDek({
+        crypto,
+        objectId: "conversation-message-certified-task-wake",
+        payload: {
+          role: "assistant",
+          content: "certified temporary Runtime response",
+        },
+        createdAt: PUBLICATION_NOW,
+        objectDek: publicationBytes(0x43),
+        namespace: {
+          namespaceId: PUBLICATION_NAMESPACE,
+          accessRevision: 4,
+          keyGeneration: 3,
+          headDigest: namespaceHeadDigest,
+          publicationDigest: namespaceHeadDigest,
+          publicationSetDigest: namespaceHeadDigest,
+          audienceFingerprint: namespaceHeadDigest,
+          aiKey: publicationBytes(0x42),
+        },
+        operationId: evidence.invocation.operationId,
+        grant: {
+          grantId: evidence.requestId,
+          grantHash: evidence.authorizationDigest,
+          recipientKeyId: evidence.recipientKeyId,
+        },
+        runtime: signer.runtime,
+        signerKeyId: agentRuntimeObjectSignerKeyIdV1(
+          crypto,
+          signer.signerPublicKey,
+        ),
+        signerPublicKey: signer.signerPublicKey,
+        agentAuthorizationRevision: 0,
+        taskRuntimeSigner: { evidence, signer },
+        resolveCurrentAuthorization: context => ({
+          context,
+          grantAuthorized: true,
+          namespaceAuthorized: true,
+          agentAuthorized: true,
+          hostAllowsOperation: true,
+          signerPublicKey: signer.signerPublicKey,
+          currentRuntime: {
+            agentId: signer.runtime.agentId,
+            runtimeGeneration: signer.runtime.generation,
+            authorizationRevision: authorizationRevision(0),
+          },
+        }),
+      });
+    const adapter = createPostgresConversationCryptoCompletion({
+      handle,
+      crypto,
+      commonManifestExpectedAgentId: evidence.signerAgentId,
+      resolveCurrentWriteAuthorization: () => null,
+      resolveHistoricalSigner: () => null,
+      resolveHistoricalAgentSignerAuthority: () => null,
+    });
+    return use({
+      agentId: evidence.signerAgentId,
+      adapter,
+      connection,
+      crypto,
+      revision,
+      signerCertificateBytes: signer.certificateBytes,
+    });
+  });
+}
+
 describe("Postgres Agent conversation crypto completion", () => {
   test("atomically creates v3 object access and replays it through retained signer history", async () => {
     const state = await fixture();
@@ -632,5 +814,113 @@ describe("Postgres Agent conversation crypto completion", () => {
     state.connection.signerAvailable = false;
     expect(state.adapter.verify(state.revision.objectId)).rejects
       .toBeInstanceOf(AgentRuntimeSignerHistoryInvalidError);
+  });
+
+  test("creates, replays, and verifies a certified common-v5 temporary Runtime Message", async () => {
+    await withCertifiedFixture(async state => {
+      expect(await state.adapter.complete(state.revision)).toBe("created");
+      expect(state.connection.state.access?.signerEvidenceBytes).toEqual(
+        state.signerCertificateBytes,
+      );
+      expect(await state.adapter.complete(state.revision)).toBe("duplicate");
+      expect(await state.adapter.verify(state.revision.objectId)).toMatchObject({
+        objectId: state.revision.objectId,
+        namespaceId: PUBLICATION_NAMESPACE,
+        keyClass: "ai",
+      });
+      expect(state.connection.statements.every(statement =>
+        !statement.includes("agent_crypto_runtime_signers")
+      )).toBe(true);
+
+      const substitutedIdentity = createPostgresConversationCryptoCompletion({
+        handle: await verifyCryptoPostgresHandle(state.connection),
+        crypto: state.crypto,
+        commonManifestExpectedAgentId: `${state.agentId}:substituted`,
+        resolveCurrentWriteAuthorization: () => null,
+        resolveHistoricalSigner: () => null,
+        resolveHistoricalAgentSignerAuthority: () => null,
+      });
+      expect(substitutedIdentity.verify(state.revision.objectId)).rejects
+        .toThrow("genesis does not match its Session Agent");
+      expect(substitutedIdentity.complete(state.revision)).rejects
+        .toBeInstanceOf(ConversationCryptoCompletionConflictError);
+
+      const missingIdentity = createPostgresConversationCryptoCompletion({
+        handle: await verifyCryptoPostgresHandle(state.connection),
+        crypto: state.crypto,
+        resolveCurrentWriteAuthorization: () => null,
+        resolveHistoricalSigner: () => null,
+        resolveHistoricalAgentSignerAuthority: () => null,
+      });
+      expect(missingIdentity.verify(state.revision.objectId)).rejects
+        .toThrow("signer authority is unavailable");
+    });
+  });
+
+  test("rejects missing or substituted trusted common-v5 Agent identity", async () => {
+    await withCertifiedFixture(async state => {
+      const missing = createPostgresConversationCryptoCompletion({
+        handle: await verifyCryptoPostgresHandle(state.connection),
+        crypto: state.crypto,
+        resolveCurrentWriteAuthorization: () => null,
+        resolveHistoricalSigner: () => null,
+        resolveHistoricalAgentSignerAuthority: () => null,
+      });
+      expect(missing.complete(state.revision)).rejects.toBeInstanceOf(
+        ConversationCryptoCompletionConflictError,
+      );
+      expect(state.connection.state.object).toBeNull();
+
+      const substituted = createPostgresConversationCryptoCompletion({
+        handle: await verifyCryptoPostgresHandle(state.connection),
+        crypto: state.crypto,
+        commonManifestExpectedAgentId: `${state.agentId}:substituted`,
+        resolveCurrentWriteAuthorization: () => null,
+        resolveHistoricalSigner: () => null,
+        resolveHistoricalAgentSignerAuthority: () => null,
+      });
+      expect(substituted.complete(state.revision)).rejects.toBeInstanceOf(
+        ConversationCryptoCompletionConflictError,
+      );
+      expect(state.connection.state.object).toBeNull();
+    });
+  });
+
+  test("rejects corrupted common-v5 payload and substituted certificate history", async () => {
+    await withCertifiedFixture(async state => {
+      expect(await state.adapter.complete(state.revision)).toBe("created");
+      const object = state.connection.state.object;
+      if (object === null) throw new Error("expected certified object");
+      const corruptedPayload = object.payloadBytes.slice();
+      corruptedPayload[corruptedPayload.length - 1] =
+        corruptedPayload[corruptedPayload.length - 1]! ^ 1;
+      state.connection.state = {
+        ...state.connection.state,
+        object: { ...object, payloadBytes: corruptedPayload },
+      };
+      expect(state.adapter.verify(state.revision.objectId)).rejects.toThrow();
+
+      state.connection.state = {
+        ...state.connection.state,
+        object,
+      };
+      const access = state.connection.state.access;
+      if (access === null || access.signerEvidenceBytes === null) {
+        throw new Error("expected certified access");
+      }
+      const substitutedCertificate = access.signerEvidenceBytes.slice();
+      substitutedCertificate[substitutedCertificate.length - 1] =
+        substitutedCertificate[substitutedCertificate.length - 1]! ^ 1;
+      state.connection.state = {
+        ...state.connection.state,
+        access: {
+          ...access,
+          signerEvidenceBytes: substitutedCertificate,
+        },
+      };
+      expect(state.adapter.verify(state.revision.objectId)).rejects.toThrow(
+        "evidence is unavailable or substituted",
+      );
+    });
   });
 });

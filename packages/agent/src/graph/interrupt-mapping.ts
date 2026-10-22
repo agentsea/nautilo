@@ -1,5 +1,6 @@
 import {
   isMediaGenerationApproval,
+  type ApprovalReplyVerb,
   type ServerEvent,
   type StructuredSshApproval,
 } from "@nautilo/types";
@@ -106,7 +107,7 @@ export function interruptValueToServerEvent(
         | "network-egress-denied"
         | "tier-bump") ?? "destructive-tool";
     const allowedVerbs =
-      (value["allowedVerbs"] as Array<"once" | "room" | "always" | "deny">) ??
+      (value["allowedVerbs"] as ApprovalReplyVerb[] | undefined) ??
       ["once", "room", "always", "deny"];
     const scopeInfo = Array.isArray(value["scopeInfo"])
       ? (value["scopeInfo"] as Array<{
@@ -231,6 +232,50 @@ export function isRetiredBrokerApprovalInterrupt(value: Record<string, unknown>)
     : [];
   return value["github"] !== undefined
     || tools.some(tool => tool["name"] === "local_github" || tool["name"] === "local_git");
+}
+
+const APPROVAL_REPLY_VERBS = Object.freeze([
+  "once", "room", "always", "deny",
+] as const satisfies readonly ApprovalReplyVerb[]);
+
+/** Canonical categorical approval authority derived from the authenticated
+ * checkpoint value. This is shared by public event projection and protected
+ * durable coordinates so policy cannot drift between display and acceptance. */
+export function protectedTaskApprovalAllowedVerbs(
+  value: Record<string, unknown>,
+): ApprovalReplyVerb[] {
+  if (value["type"] !== "approval_ask") {
+    throw new TypeError("Protected Task approval interrupt is malformed");
+  }
+  const approvalId = value["approvalId"];
+  if (typeof approvalId !== "string" || approvalId.trim().length === 0) {
+    throw new TypeError("Protected Task approval interrupt is malformed");
+  }
+  if (isRetiredBrokerApprovalInterrupt(value)
+    || approvalId.startsWith("github-publish:")) return ["deny"];
+  if (value["structuredSsh"] !== undefined) {
+    if (!isStructuredSshApproval(value["structuredSsh"])) {
+      throw new TypeError("Protected Task approval interrupt is malformed");
+    }
+    return ["once", "deny"];
+  }
+  if (value["mediaGeneration"] !== undefined) {
+    if (!isMediaGenerationApproval(value["mediaGeneration"])) {
+      throw new TypeError("Protected Task approval interrupt is malformed");
+    }
+    return ["once", "deny"];
+  }
+  const raw = value["allowedVerbs"] ?? APPROVAL_REPLY_VERBS;
+  if (!Array.isArray(raw)) {
+    throw new TypeError("Protected Task approval interrupt is malformed");
+  }
+  const supplied = new Set(raw);
+  if (supplied.size !== raw.length
+    || raw.some(verb => !APPROVAL_REPLY_VERBS.includes(verb as ApprovalReplyVerb))
+    || !supplied.has("deny")) {
+    throw new TypeError("Protected Task approval interrupt is malformed");
+  }
+  return APPROVAL_REPLY_VERBS.filter(verb => supplied.has(verb));
 }
 
 function connectedWebAuthenticationIntervention(value: unknown): Extract<ServerEvent, { type: "connected_web.action_attention" }>['intervention'] | null {
@@ -483,6 +528,7 @@ export type ProtectedTaskInterruptCoordinate = Readonly<{
   id: string;
   kind: Exclude<ProtectedTaskInterruptKind, "additional_authority">;
   requestId?: string;
+  allowedVerbs?: readonly ApprovalReplyVerb[];
 }> | ProtectedTaskAdditionalAuthorityInterruptCoordinate;
 
 function protectedAdditionalAuthorityCoordinate(
@@ -596,7 +642,8 @@ export function protectedTaskInterruptCoordinates(
         if (requestId === undefined) {
           throw new TypeError("Protected Task approval interrupt requires a request id");
         }
-        coordinate = Object.freeze({ id, kind: "approval", requestId });
+        coordinate = Object.freeze({ id, kind: "approval", requestId,
+          allowedVerbs: Object.freeze(protectedTaskApprovalAllowedVerbs(record)) });
       } else if (type === "prove_it_challenge") {
         coordinate = Object.freeze({ id, kind: "prove_it" });
       } else if (type === "identity_challenge") {

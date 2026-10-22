@@ -46,6 +46,13 @@ describe("tool catalog registration", () => {
       .toBe("supported");
   });
 
+  test("keeps Artifact-free peer contact available in Full", () => {
+    expect(catalog.get("ask_peer")?.fullEncryptionSupport).toBe("supported");
+    expect(catalog.getFiltered(undefined, undefined, {
+      context: { fullEncryptionOnly: true },
+    }).entries.map((entry) => entry.name)).toContain("ask_peer");
+  });
+
   test("live office tools are absent when office is disabled but officecli remains", () => {
     expect(catalog.get("office")).toBeUndefined();
     expect(catalog.get("edit_doc")).toBeUndefined();

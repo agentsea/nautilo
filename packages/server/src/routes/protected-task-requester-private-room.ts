@@ -51,14 +51,16 @@ function exactCandidate(
 }
 
 /**
- * Resolve only the canonical requester+Agent private Room used by protected
- * Task content. Existing Tasks pin their durable Namespace; creation chooses
- * the legacy private Room first, then the oldest stable private candidate.
+ * Resolve only the canonical requester-Human private Room used by protected
+ * Task content. Its exact private topology still contains one Agent, but that
+ * Agent is routing state rather than content custody. Existing Tasks pin their
+ * durable Namespace; creation chooses the legacy private Room first, then the
+ * oldest stable private candidate.
  */
 export function createProtectedTaskRequesterPrivateRoomResolver(
-  db: DirectDatabase,
+  db: Pick<DirectDatabase, "select">,
 ): ProtectedTaskRequesterPrivateRoomResolver {
-  return async (userId, agentId, expectedNamespaceId) => {
+  return async (userId, _agentId, expectedNamespaceId) => {
     const humans = await db.select({ id: actors.id }).from(actors).where(and(
       eq(actors.ownerId, userId),
       eq(actors.kind, "user"),
@@ -79,7 +81,7 @@ export function createProtectedTaskRequesterPrivateRoomResolver(
         where ${actors.kind} = 'user' and ${actors.id} = ${human.id}
       )::int`,
       agentCount: sql<number>`count(*) filter (
-        where ${actors.kind} = 'agent' and ${actors.agentId} = ${agentId}
+        where ${actors.kind} = 'agent'
       )::int`,
     }).from(rooms)
       .innerJoin(roomMembers, eq(roomMembers.roomId, rooms.id))
@@ -104,7 +106,7 @@ export function createProtectedTaskRequesterPrivateRoomResolver(
       .having(sql`
         count(*) = 2
         and count(*) filter (
-          where ${actors.kind} = 'agent' and ${actors.agentId} = ${agentId}
+          where ${actors.kind} = 'agent'
         ) = 1
         and count(*) filter (
           where ${actors.kind} = 'user' and ${actors.id} = ${human.id}

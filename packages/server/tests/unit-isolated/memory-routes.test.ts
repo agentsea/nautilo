@@ -166,6 +166,7 @@ mock.module("../../../agent/src/store/memory-store", () => ({
   executeAtomicProjectionMemory: async () => {
     throw new Error("executeAtomicProjectionMemory must not run in memory route tests");
   },
+  fingerprintProjectionAudience: () => "test-projection-audience",
   fingerprintProjectionReadableAuthority: () => "test-projection-readable-authority",
 }));
 

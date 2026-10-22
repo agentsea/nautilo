@@ -1,14 +1,19 @@
 import { describe, expect, test } from "bun:test";
 
 import type { DirectDatabase } from "../../src/config/direct-database";
+import { finalizeProtectedTaskCheckpointPause } from "../../src/queries/protected-task-checkpoint-pause";
 import { protectedTaskSemanticAuthorityRequirementsDigest } from
   "../../src/queries/protected-task-execution-receipts";
 import {
   parkProtectedTaskRun,
+  sealAndParkProtectedTaskCheckpointRun,
+  type SealAndParkProtectedTaskCheckpointRunInput,
+  sealAndParkProtectedTaskHumanRun,
   sealAndParkProtectedTaskRun,
   type ParkProtectedTaskRunInput,
   type ProtectedTaskDurableJobReference,
   type SealAndParkProtectedTaskRunInput,
+  type SealAndParkProtectedTaskHumanRunInput,
 } from "../../src/queries/tasks";
 import { jobs, type Job } from "../../src/schema/jobs";
 import {
@@ -117,6 +122,22 @@ function input(
   };
 }
 
+function humanInput(): SealAndParkProtectedTaskHumanRunInput {
+  const additional = input();
+  return {
+    park: {
+      ...additional.park,
+      interrupts: [{
+        id: "interrupt:approval:1",
+        kind: "approval",
+        requestId: "approval:1",
+      }],
+    },
+    segment: additional.segment,
+    stableRoutingDigest: digest(9),
+  };
+}
+
 function task(overrides: Partial<Task> = {}): Task {
   return {
     id: ids.task,
@@ -209,7 +230,13 @@ function harness(options: HarnessOptions = {}) {
   const locks: Array<{ table: unknown; kind: string }> = [];
   const attemptedInserts: unknown[] = [];
 
-  const rows = (table: unknown): unknown[] => {
+  const rows = (table: unknown, projection?: unknown): unknown[] => {
+    if (projection !== null && typeof projection === "object") {
+      if (table === taskRuns && "resultTextIsNull" in projection) return [{ ...runRow,
+        resultTextIsNull: runRow.resultText === null, lastErrorIsNull: runRow.lastError === null }];
+      if (table === jobs && "resultIsNull" in projection) return [{ ...jobRow,
+        resultIsNull: jobRow.result === null, messageIsNull: jobRow.message === null }];
+    }
     if (table === tasks) return [taskRow];
     if (table === taskRuns) return [runRow];
     if (table === jobs) return [jobRow];
@@ -218,25 +245,25 @@ function harness(options: HarnessOptions = {}) {
     if (table === protectedTaskContinuationReceipts) return continuations;
     throw new Error("unexpected table");
   };
-  const queryFor = (table: unknown) => {
+  const queryFor = (table: unknown, projection?: unknown) => {
     const query = {
       where: (_condition: unknown) => query,
       orderBy: (_order: unknown) => query,
       limit: (_limit: number) => query,
       for: async (kind: string) => {
         locks.push({ table, kind });
-        return rows(table);
+        return rows(table, projection);
       },
       then: (
         resolve: (value: unknown[]) => unknown,
         reject: (reason: unknown) => unknown,
-      ) => Promise.resolve(rows(table)).then(resolve, reject),
+      ) => Promise.resolve(rows(table, projection)).then(resolve, reject),
     };
     return query;
   };
   const tx = {
-    select: (_projection?: unknown) => ({
-      from: (table: unknown) => queryFor(table),
+    select: (projection?: unknown) => ({
+      from: (table: unknown) => queryFor(table, projection),
     }),
     insert: (table: unknown) => ({
       values: (value: ProtectedTaskExecutionSegmentReceipt
@@ -317,6 +344,37 @@ function harness(options: HarnessOptions = {}) {
 }
 
 describe("protected Task execution seal-and-park owner", () => {
+  test("seals a Human segment and park without an authority receipt", async () => {
+    const fixture = harness();
+    expect(await sealAndParkProtectedTaskHumanRun(
+      fixture.db,
+      humanInput(),
+    )).toEqual({ status: "parked" });
+    expect(fixture.state().segments).toHaveLength(1);
+    expect(fixture.state().continuations).toEqual([]);
+    expect(fixture.state().jobRow.metadata).toEqual({
+      "nautilo.protectedTaskRunPark.v1": {
+        version: 1,
+        taskId: ids.task,
+        taskRunId: ids.run,
+        jobId: ids.job,
+        graphThreadId,
+        generation: 3,
+        executionSegment: 1,
+        interrupts: [{
+          id: "interrupt:approval:1",
+          kind: "approval",
+          requestId: "approval:1",
+        }],
+        parkedAt: parkedAt.toISOString(),
+        stableRoutingDigest: Buffer.from(digest(9)).toString("base64url"),
+      },
+    });
+    expect(await sealAndParkProtectedTaskHumanRun(
+      fixture.db,
+      humanInput(),
+    )).toEqual({ status: "exact_replay" });
+  });
   test("locks the exact lifecycle chain before sealing and parks atomically", async () => {
     const fixture = harness();
 
@@ -505,4 +563,88 @@ describe("protected Task execution seal-and-park owner", () => {
     expect(fixture.state().continuations[0]?.semanticAuthorityRequirements)
       .toEqual(semanticAuthorityRequirements);
   });
+});
+
+
+function checkpointInput(reason: "manual_pause" | "time_limit" | "grant_refresh" = "manual_pause"): SealAndParkProtectedTaskCheckpointRunInput {
+  return { park: { ...parkInput(), interrupts: [] }, segment: input().segment,
+    continuation: { kind: "checkpoint_safe_v1", reason, effectDisposition: "none_v1" },
+    pauseRequestId: reason === "grant_refresh" ? null : ids.session, stableRoutingDigest: digest(9) };
+}
+
+describe("cooperative checkpoint seal and park", () => {
+  test("seals and replays the original checkpoint AAD without permitting substitution", async () => {
+    const fixture = harness();
+    const binding = { version: 1 as const, namespaceId: ids.namespace, domainId: ids.owner,
+      namespaceAccessRevision: 2, policyRevision: reference().policyRevision };
+    const request = checkpointInput("grant_refresh");
+    const bound = { ...request, park: { ...request.park, checkpointAadBinding: binding } };
+    expect(await sealAndParkProtectedTaskCheckpointRun(fixture.db, bound)).toEqual({ status: "parked" });
+    expect(fixture.state().jobRow.metadata["nautilo.protectedTaskRunPark.v1"])
+      .toMatchObject({ checkpointAadBinding: binding });
+    expect(await sealAndParkProtectedTaskCheckpointRun(fixture.db, bound)).toEqual({ status: "exact_replay" });
+    const changed = { ...bound, park: { ...bound.park, checkpointAadBinding: { ...binding, namespaceAccessRevision: 3 } } };
+    expect(await sealAndParkProtectedTaskCheckpointRun(fixture.db, changed)).toMatchObject({ status: "rejected" });
+    expect(fixture.state().jobRow.metadata["nautilo.protectedTaskRunPark.v1"])
+      .toMatchObject({ checkpointAadBinding: binding });
+    const wrongNamespace = harness();
+    expect(await sealAndParkProtectedTaskCheckpointRun(wrongNamespace.db,
+      { ...bound, park: { ...bound.park, checkpointAadBinding: { ...binding, namespaceId: ids.owner } } }))
+      .toMatchObject({ status: "rejected" });
+    expect(wrongNamespace.state().segments).toEqual([]);
+  });
+
+  test("pairs empty park metadata with physical and checkpoint-safe receipts atomically", async () => {
+    const fixture = harness({ task: task({ pauseRequestId: ids.session,
+      pauseReason: "manual_pause", pauseRequestedAt: new Date(parkedAt.getTime() - 1) }) });
+    expect(await sealAndParkProtectedTaskCheckpointRun(fixture.db, checkpointInput())).toEqual({ status: "parked" });
+    expect(fixture.state().segments).toHaveLength(1);
+    expect(fixture.state().continuations[0]).toMatchObject({ kind: "checkpoint_safe_v1", reason: "manual_pause", effectDisposition: "none_v1", stableRoutingDigest: null });
+    expect(fixture.state().jobRow.metadata["nautilo.protectedTaskRunPark.v1"]).toMatchObject({ interrupts: [], stableRoutingDigest: Buffer.from(digest(9)).toString("base64url") });
+    expect(fixture.locks.slice(0, 3)).toEqual([{ table: tasks, kind: "update" }, { table: taskRuns, kind: "update" }, { table: jobs, kind: "update" }]);
+    expect(await sealAndParkProtectedTaskCheckpointRun(fixture.db, checkpointInput())).toEqual({ status: "exact_replay" });
+    expect(await finalizeProtectedTaskCheckpointPause(fixture.db, { taskId: ids.task, pauseRequestId: ids.session })).toBe("paused");
+    expect(fixture.state().taskRow.status).toBe("paused");
+    expect(await sealAndParkProtectedTaskCheckpointRun(fixture.db, checkpointInput())).toEqual({ status: "exact_replay" });
+  });
+  test("manual checkpoint requires its exact request and reason", async () => {
+    for (const candidate of [checkpointInput("time_limit"), { ...checkpointInput(), pauseRequestId: ids.task }]) {
+      const fixture = harness({ task: task({ pauseRequestId: ids.session, pauseReason: "manual_pause", pauseRequestedAt: parkedAt }) });
+      expect(await sealAndParkProtectedTaskCheckpointRun(fixture.db, candidate)).toEqual({ status: "rejected", stage: "park", reason: "stale" });
+      expect(fixture.state().segments).toEqual([]);
+      expect(fixture.state().continuations).toEqual([]);
+      expect(fixture.state().runRow.status).toBe("running");
+    }
+  });
+  test("grant refresh is allowed without pause and ordinary empty park remains invalid", async () => {
+    const fixture = harness();
+    expect(await sealAndParkProtectedTaskCheckpointRun(fixture.db, checkpointInput("grant_refresh"))).toEqual({ status: "parked" });
+    expect(parkProtectedTaskRun(fixture.db, checkpointInput().park)).rejects.toThrow("malformed");
+    expect(sealAndParkProtectedTaskHumanRun(fixture.db, { ...humanInput(), park: checkpointInput().park })).rejects.toThrow("malformed");
+  });
+  test("late park rejection rolls back both immutable receipts", async () => {
+    const fixture = harness({ job: job({ status: "cancelled" }) });
+    expect(await sealAndParkProtectedTaskCheckpointRun(fixture.db, checkpointInput("grant_refresh"))).toEqual({ status: "rejected", stage: "park", reason: "stale" });
+    expect(fixture.state().segments).toEqual([]);
+    expect(fixture.state().continuations).toEqual([]);
+  });
+});
+
+
+test("existing Human park can settle pause only while its physical proof remains exact", async () => {
+  const fixture = harness({ task: task({ pauseRequestId: ids.session, pauseReason: "manual_pause", pauseRequestedAt: parkedAt }) });
+  expect(await sealAndParkProtectedTaskHumanRun(fixture.db, humanInput())).toEqual({ status: "parked" });
+  expect(await finalizeProtectedTaskCheckpointPause(fixture.db, { taskId: ids.task, pauseRequestId: ids.session })).toBe("paused");
+  fixture.state().segments[0]!.expectedCheckpointCount = 0;
+  expect(await finalizeProtectedTaskCheckpointPause(fixture.db, { taskId: ids.task, pauseRequestId: ids.session })).toBe("pending");
+});
+
+
+test("manual pause arriving after refresh request preserves a genuine safe park", async () => {
+  const fixture = harness({ task: task({ pauseRequestId: ids.session,
+    pauseReason: "manual_pause", pauseRequestedAt: parkedAt }) });
+  expect(await sealAndParkProtectedTaskCheckpointRun(fixture.db, checkpointInput("grant_refresh"))).toEqual({ status: "parked" });
+  expect(fixture.state().taskRow.pauseRequestId).toBe(ids.session);
+  expect(fixture.state().continuations[0]?.reason).toBe("grant_refresh");
+  expect(await finalizeProtectedTaskCheckpointPause(fixture.db, { taskId: ids.task, pauseRequestId: ids.session })).toBe("paused");
 });

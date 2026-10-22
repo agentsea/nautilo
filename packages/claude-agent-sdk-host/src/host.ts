@@ -181,6 +181,10 @@ export class ClaudeAgentSdkHost {
         }
         for (const observation of projected) {
           if (observation.kind === "output_message_started") {
+            if (active.resultSeen || active.closed || !active.observations.push(observation)) {
+              settlement = "rejected";
+              break;
+            }
             active.outputParts.length = 0;
             continue;
           }

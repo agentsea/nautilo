@@ -1,4 +1,8 @@
+import type { ProtectedTaskCheckpointAadBinding } from "@nautilo/db";
+import { protectedTaskDefinitionSupportsPolicy } from "@nautilo/db";
+import { parseTaskHistoricalRepairProvenanceV1 } from "@nautilo/lattice-bridge";
 import { createHash, timingSafeEqual } from "node:crypto";
+import type { ProtectedTaskHumanResumeBindingV1 } from "@nautilo/agent";
 
 import {
   type LatticeCrypto,
@@ -6,9 +10,11 @@ import {
 import {
   DOMAIN_FOREGROUND_AUTHORIZATION_MAX_TTL_MS_V2,
 } from "@nautilo/lattice-crypto/wire";
-import { deriveTaskContentCryptoObjectIdV1 } from "@nautilo/lattice-bridge";
+import { deriveTaskContentCryptoObjectIdV1, taskContentRevisionObjectIdV1 } from "@nautilo/lattice-bridge";
 import {
   copyTaskScopeMemoryBinding,
+  readVerifiedTaskDefinitionAccessLineage,
+  type VerifiedTaskDefinitionAccessLineage,
   type ParkedTaskRuntimeCurrentRoutingFacts,
   type TaskScopeMemoryBinding,
 } from "@nautilo/lattice-bridge/server";
@@ -17,7 +23,10 @@ import type {
   AcceptProtectedTaskRunOutputBindingResult,
   ProtectedTaskRunOutputDestination,
   ParkedProtectedTaskAdditionalAuthority,
+  ParkedProtectedTaskCheckpointContinuation,
+  ParkedProtectedTaskHumanContinuation,
   ProtectedTaskRunOutputBinding,
+  ProtectedTaskHumanContinuationAcceptance,
 } from "@nautilo/db";
 import {
   createBackgroundAuthorizationTaskRuntimeRequestV3,
@@ -41,15 +50,21 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 
 /** Compare locked routing with durable park evidence, independently of old grants. */
 export function createParkedTaskRuntimeRoutingValidator(input: Readonly<{
-  expected: ParkedProtectedTaskAdditionalAuthority;
+  expected: ParkedProtectedTaskAdditionalAuthority
+    | ParkedProtectedTaskCheckpointContinuation
+    | ParkedProtectedTaskHumanContinuation;
   output: ProtectedTaskRunOutputBinding;
   /** Current canonical Wide envelope's private write target, not content custody. */
   widePrivateNamespaceId: string | null;
+  accessLineage?: VerifiedTaskDefinitionAccessLineage;
 }>): (facts: ParkedTaskRuntimeCurrentRoutingFacts) => boolean {
   const { expected, output } = input;
   const widePrivateNamespaceId = input.widePrivateNamespaceId;
   const taskRunId = expected.occurrence.run.id;
-  const storedDigest = expected.proof.continuation.stableRoutingDigest;
+  const storedDigest = "acceptance" in expected
+    || "stableRoutingDigest" in expected
+    ? expected.stableRoutingDigest
+    : expected.proof.continuation.stableRoutingDigest;
   if (!(storedDigest instanceof Uint8Array) || storedDigest.length !== 32
     || (widePrivateNamespaceId !== null && !UUID.test(widePrivateNamespaceId))
     || output.taskRunId !== taskRunId
@@ -75,23 +90,37 @@ export function createParkedTaskRuntimeRoutingValidator(input: Readonly<{
         ? outputNamespaceId
         : widePrivateNamespaceId
       : null;
-    const current = taskRuntimeStableRoutingDigest({
+    const identity = {
       ...facts,
       startedAt: facts.startedAt.getTime(),
-      requiredNamespaceFingerprint: Buffer.from(
-        facts.requiredNamespaceFingerprint,
-      ).toString("base64url"),
-      outputRoomId,
-      outputNamespaceId,
-      widePrimaryWriteNamespaceId,
-    });
+      requiredNamespaceFingerprint: Buffer.from(facts.requiredNamespaceFingerprint).toString("base64url"),
+      outputRoomId, outputNamespaceId, widePrimaryWriteNamespaceId,
+    };
+    let revisions: readonly number[];
     try {
-      return timingSafeEqual(digest, current);
-    } finally {
-      current.fill(0);
+      revisions = input.accessLineage === undefined ? [facts.contentAccessRevision]
+        : readVerifiedTaskDefinitionAccessLineage(input.accessLineage, facts);
+    } catch { return false; }
+    let matches = 0;
+    for (const contentAccessRevision of revisions) {
+      const candidate = taskRuntimeStableRoutingDigest({ ...identity, contentAccessRevision });
+      try { if (timingSafeEqual(digest, candidate)) matches += 1; }
+      finally { candidate.fill(0); }
     }
+    return matches === 1;
   };
 }
+
+/** Reply text is opened only inside the fresh segment grant, never preparation. */
+export type ProtectedTaskHumanResumePreparation =
+  | Exclude<ProtectedTaskHumanResumeBindingV1, { kind: "await_reply" }>
+  | Readonly<{
+      kind: "await_reply";
+      interruptId: string;
+      acceptedBy: ProtectedTaskHumanContinuationAcceptance["acceptedBy"];
+      message: Extract<ProtectedTaskHumanContinuationAcceptance["response"],
+        { kind: "await_reply" }>["message"];
+    }>;
 
 export type ProtectedTaskRuntimeNamespaceAuthorityFact = Readonly<{
   namespaceId: string;
@@ -104,6 +133,18 @@ export type ProtectedTaskRuntimeNamespaceAuthorityFact = Readonly<{
 
 export type ProtectedTaskRuntimeMemoryPolicy =
   CurrentProtectedTaskMemoryPolicy;
+
+export class ProtectedTaskRuntimeGrantPlanUnavailableError extends Error {
+  constructor(
+    readonly reason: Extract<
+      AcceptProtectedTaskRunOutputBindingResult,
+      { status: "rejected" }
+    >["reason"],
+  ) {
+    super("Protected Task grant plan is unavailable");
+    this.name = "ProtectedTaskRuntimeGrantPlanUnavailableError";
+  }
+}
 
 export type ProtectedTaskRuntimeGrantPlanBuilderDependencies = Readonly<{
   crypto: Pick<LatticeCrypto, "hash">;
@@ -143,12 +184,20 @@ export type ProtectedTaskRuntimeGrantPlanBuilderDependencies = Readonly<{
     stableRoutingDigest: Uint8Array;
     /** Exact pending interrupt and immutable pre-effect proof for a parked run. */
     additionalAuthorityResume?: ProtectedTaskNativeAdditionalAuthorityResume;
+    humanResume?: ProtectedTaskHumanResumePreparation;
+    /** Closed physical-checkpoint continuation; carries no semantic input. */
+    checkpointResume?: true;
+    /** Original ciphertext AAD copied from the exact sealed prior park. */
+    checkpointAadBinding?: ProtectedTaskCheckpointAadBinding;
     scopeMemory?: TaskScopeMemoryBinding;
     /** Exact committed preimage; retained only for fixed Scope execution admission. */
     scopeWorkIdentity?: string;
   }>): Promise<Readonly<{
     executor: TaskRuntimeGrantClaimPlan["executor"];
     openTransientInput: TaskRuntimeGrantClaimPlan["openTransientInput"];
+    requestCheckpointPause?: NonNullable<
+      TaskRuntimeGrantClaimPlan["requestCheckpointPause"]
+    >;
     modelAttribution?: "external";
   }>>;
   startProtectedTaskRun: TaskRuntimeGrantClaimPlan["startProtectedTaskRun"];
@@ -176,6 +225,8 @@ export function sameProtectedTaskRuntimeOccurrence(
     && left.task.contentNamespaceId === right.task.contentNamespaceId
     && left.task.contentRevision === right.task.contentRevision
     && left.task.cryptoObjectId === right.task.cryptoObjectId
+    && JSON.stringify(left.task.definitionHistoricalRepair == null ? null : parseTaskHistoricalRepairProvenanceV1(left.task.definitionHistoricalRepair))
+      === JSON.stringify(right.task.definitionHistoricalRepair == null ? null : parseTaskHistoricalRepairProvenanceV1(right.task.definitionHistoricalRepair))
     && left.task.cryptoAccessRevision === right.task.cryptoAccessRevision
     && sameBytes(
       left.task.cryptoRequiredNamespaceFingerprint,
@@ -341,12 +392,9 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
   }
 
   return async occurrence => {
-    if (occurrence.task.cryptoAccessRevision !== 0
-      || occurrence.task.cryptoObjectId !== deriveTaskContentCryptoObjectIdV1({
-        kind: "definition",
-        taskId: occurrence.task.id,
-        contentRevision: occurrence.task.contentRevision,
-      })) {
+    if (!Number.isSafeInteger(occurrence.task.cryptoAccessRevision) || occurrence.task.cryptoAccessRevision < 0
+      || occurrence.task.cryptoObjectId !== taskContentRevisionObjectIdV1({ coordinate: { kind: "definition", taskId: occurrence.task.id, contentRevision: occurrence.task.contentRevision },
+      namespaceId: occurrence.task.contentNamespaceId, historicalRepair: occurrence.task.definitionHistoricalRepair == null ? null : parseTaskHistoricalRepairProvenanceV1(occurrence.task.definitionHistoricalRepair) })) {
       throw new TypeError("Protected Task definition coordinates are invalid");
     }
     const prepared = await dependencies.predispatch(occurrence);
@@ -435,11 +483,7 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
       || !Number.isSafeInteger(resolvedAuthority.policy.revision)
       || (resolvedAuthority.policy.shadowBehavior !== "fallback"
         && resolvedAuthority.policy.shadowBehavior !== "strict")
-      || (resolvedAuthority.policy.mode === "shadow_encryption"
-        ? occurrence.task.contentRepresentation !== "dual"
-        : resolvedAuthority.policy.mode === "encrypted_only"
-          ? occurrence.task.contentRepresentation !== "protected"
-          : true)) {
+      || !protectedTaskDefinitionSupportsPolicy(occurrence.task.contentRepresentation, resolvedAuthority.policy.mode)) {
       throw new TypeError("Protected Task source Room authority is unavailable");
     }
     const authority = canonicalProtectedTaskRuntimeAuthority({
@@ -472,8 +516,10 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
       acceptedAt: new Date(createdAt),
       destination: outputDestination,
     });
-    if (output.status === "rejected"
-      || output.binding.taskRunId !== occurrence.run.id
+    if (output.status === "rejected") {
+      throw new ProtectedTaskRuntimeGrantPlanUnavailableError(output.reason);
+    }
+    if (output.binding.taskRunId !== occurrence.run.id
       || output.binding.bindingId !== `task-run-output:${occurrence.run.id}`
       || (outputDestination === null
         ? output.binding.deliveryMode !== "none"
@@ -606,9 +652,14 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
       ? Object.keys(execution).sort().join(",")
       : "";
     if ((executionKeys !== "executor,openTransientInput"
-        && executionKeys !== "executor,modelAttribution,openTransientInput")
+        && executionKeys !== "executor,modelAttribution,openTransientInput"
+        && executionKeys !== "executor,openTransientInput,requestCheckpointPause"
+        && executionKeys
+          !== "executor,modelAttribution,openTransientInput,requestCheckpointPause")
       || typeof execution.executor !== "function"
       || typeof execution.openTransientInput !== "function"
+      || (Object.hasOwn(execution, "requestCheckpointPause")
+        && typeof execution.requestCheckpointPause !== "function")
       || (execution.modelAttribution !== undefined
         && execution.modelAttribution !== "external")) {
       throw new TypeError("Protected Task execution preparation is invalid");
@@ -622,6 +673,7 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
     const recipientRequest = createProtectedTaskRuntimeRecipientRequestPlan({
       crypto: dependencies.crypto,
       occurrence,
+      executionIdentity: stableIdentity,
       initialRecord,
       sourceRoomId: resolvedAuthority.sourceRoomId,
       authority,
@@ -643,6 +695,9 @@ export function createProtectedTaskRuntimeGrantPlanBuilder(
       ...recipientRequest,
       openTransientInput: execution.openTransientInput,
       publishResult: dependencies.publishResult,
+      ...(execution.requestCheckpointPause === undefined
+        ? {}
+        : { requestCheckpointPause: execution.requestCheckpointPause }),
       ...(execution.modelAttribution === undefined
         ? {}
         : { modelAttribution: execution.modelAttribution }),

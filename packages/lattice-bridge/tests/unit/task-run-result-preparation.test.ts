@@ -9,24 +9,38 @@ import {
   cryptoDeviceId,
   cryptoDomainId,
   decryptObjectThroughNamespace,
+  deriveAgentRuntimeObjectSignerPublic,
   domainEpoch,
+  encryptObjectPayload,
   humanId,
   namespaceBindingHash,
+  namespaceGeneration,
   namespaceId,
+  objectId,
   openNamespaceKeyring,
   prepareAgentRuntimeInitialization,
+  prepareHumanObjectAccessManifestGenesisSet,
   sealNamespaceKeyring,
   verifyNamespaceBindingProof,
   withTaskRuntimeCheckpointNamespace,
+  wrapObjectDekForNamespace,
   type Rng,
   type TrustedMinimumObjectAccessHead,
+  unixTimestamp,
 } from "@nautilo/lattice-crypto";
 import {
   decodeEncryptedPayloadV2,
+  decodeLiveShadowMessagePlanV4,
   decodeNamespaceObjectEnvelopeV2,
   encodeAgentRuntimeSignerPublicationV1,
+  encodeEncryptedPayloadV2,
+  encodeLiveShadowMessagePlanV4,
+  encodeNamespaceObjectEnvelopeV2,
 } from "@nautilo/lattice-crypto/wire";
-import type { NautiloApiClient } from "@nautilo/api-client/browser";
+import type {
+  NautiloApiClient,
+  ProtectedTaskRunResultReadEnvelopeV1,
+} from "@nautilo/api-client/browser";
 
 import {
   encodeClientDeviceProfileV2,
@@ -38,10 +52,15 @@ import {
   encodeClientDeviceProfileV3,
 } from "../../src/client-vault/profile-v3.ts";
 import {
+  addClientSharedHumanDomainSignerEvidenceV4,
   createClientDeviceProfileV4Candidate,
   destroyOpenedClientDeviceProfileV4,
   encodeClientDeviceProfileV4,
 } from "../../src/client-vault/profile-v4.ts";
+import {
+  createSharedHumanDomainTrustAcceptanceV1,
+  encodeSharedHumanDomainTrustAcceptanceV1,
+} from "../../src/delivery/shared-human-domain-trust.ts";
 import type { ClientProfileCoordinates } from
   "../../src/client-vault/types.ts";
 import { MemoryClientProfileVault } from
@@ -67,13 +86,14 @@ import {
 } from "../../src/task/task-content-prepared-revision.ts";
 import {
   deriveTaskContentCryptoObjectIdV1,
+  TASK_RUN_RESULT_OBJECT_TYPE_V1,
 } from "../../src/task/task-content-repository.ts";
+import { deriveTaskHistoricalContentCryptoObjectIdV1 } from
+  "../../src/task/task-historical-content-identity.ts";
 import {
   decodeTaskRunResultPayloadV1,
+  encodeTaskRunResultPayloadV1,
 } from "../../src/task/task-payload-v1.ts";
-import {
-  createTaskRuntimeCheckpointCellCrypto,
-} from "../../src/checkpoint/task-runtime-checkpoint-cell-crypto.ts";
 import {
   prepareTaskRuntimeRunResult,
   taskRuntimePreparedResultDigestV1,
@@ -92,6 +112,22 @@ const AGENT_AUTHORIZATION_REVISION = 7;
 
 function bytes(value: number): Uint8Array {
   return new Uint8Array(32).fill(value);
+}
+
+function taskReadAuthority() {
+  return {
+    sourceRoomId: RUN_ID,
+    namespaceId: NAMESPACE_ID,
+    currentGeneration: 0,
+    retainedGenerations: [{
+      generation: 0,
+      accessRevision: ACCESS_REVISION,
+      headDigestBase64url: Buffer.from(bytes(0x71)).toString("base64url"),
+      publicationDigestBase64url: Buffer.from(bytes(0x72)).toString("base64url"),
+      publicationSetDigestBase64url: Buffer.from(bytes(0x73)).toString("base64url"),
+      audienceFingerprintBase64url: Buffer.from(bytes(0x74)).toString("base64url"),
+    }],
+  };
 }
 
 function seededRng(seed: number): Rng {
@@ -351,7 +387,7 @@ describe("Task Runtime result preparation", () => {
     for (const generation of keyring.generations) generation.key.fill(0);
   });
 
-  test("a Browser-compatible Human vault opens the exact Agent result and rejects substitution", async () => {
+  test.each([false, true])("canonical Namespace authority opens an exact result with an empty legacy keyring (peer device: %s)", async (peerDevice) => {
     const scenario = await setup(0x345);
     const prepared = await withTaskRuntimeExecutionEvidenceV1({
       evidence: scenario.evidence,
@@ -361,7 +397,8 @@ describe("Task Runtime result preparation", () => {
         prepareTaskRuntimeRunResult(prepareInput(scenario, evidence)),
     });
     const snapshot = readPreparedTaskContentCryptoRevisionSnapshotV1(prepared);
-    const deviceId = "task-result-manager";
+    const deviceId = peerDevice ? "task-result-reader" : "task-result-manager";
+    const signing = peerDevice ? scenario.crypto.generateSigningKeyPair() : scenario.manager;
     const coordinates: ClientProfileCoordinates = Object.freeze({
       serverScope: "https://nautilo.test",
       userId: REQUESTER_ID,
@@ -381,26 +418,18 @@ describe("Task Runtime result preparation", () => {
     const profile: OpenedClientDeviceProfileV2 = Object.freeze({
       formatVersion: 2,
       deviceId,
-      signingPublicKey: scenario.manager.publicKey,
-      signingPrivateKey: scenario.manager.privateKey,
+      signingPublicKey: signing.publicKey,
+      signingPrivateKey: signing.privateKey,
       encryptionPublicKey: encryption.publicKey,
       encryptionPrivateKey: encryption.privateKey,
       trustedDeviceRevision: 2,
       trustedHostAuthorizationRevision: 5,
       deliveryHighWatermark: 1,
-      keyringDeliveries: Object.freeze([Object.freeze({
-        deliverySequence: 1,
-        operationId: "task-result-keyring",
-        namespaceId: NAMESPACE_ID,
-        keyClass: "ai" as const,
-        domainId: DOMAIN_ID,
-        domainEpoch: 4,
-        accessRevision: ACCESS_REVISION,
-        bindingHash: scenario.trustedHead.bindingHash,
-        currentGeneration: keyring.currentGeneration,
-        generations: keyring.generations,
-      })]),
+      keyringDeliveries: Object.freeze([]),
     });
+    const authorityKey = Uint8Array.from(
+      keyring.generations.find(entry => entry.generation === 0)!.key,
+    );
     const v2Bytes = encodeClientDeviceProfileV2(profile);
     const v3 = await createClientDeviceProfileV3Candidate({
       crypto: scenario.crypto,
@@ -413,7 +442,121 @@ describe("Task Runtime result preparation", () => {
       currentProfileBytes: v3Bytes,
       expectedDeviceId: deviceId,
     });
-    const profileBytes = encodeClientDeviceProfileV4(v4);
+    let retained = v4;
+    if (peerDevice) {
+      const devices = [{ humanId: REQUESTER_ID, deviceId, deviceGeneration: 1,
+        signingPublicKey: signing.publicKey }, {
+        humanId: REQUESTER_ID, deviceId: "task-result-manager", deviceGeneration: 1,
+        signingPublicKey: scenario.manager.publicKey,
+      }];
+      const accepted = createSharedHumanDomainTrustAcceptanceV1({
+        crypto: scenario.crypto, domainId: DOMAIN_ID, domainEpoch: 4,
+        participantDigest: bytes(0x45), targetSubmissionDigest: bytes(0x46), devices,
+        acceptedByHumanId: REQUESTER_ID, acceptedByDeviceId: deviceId,
+        acceptedAt: NOW, acceptingSigningPrivateKey: signing.privateKey,
+      });
+      const acceptanceBytes = encodeSharedHumanDomainTrustAcceptanceV1(accepted.acceptance);
+      retained = await addClientSharedHumanDomainSignerEvidenceV4({
+        crypto: scenario.crypto, profile: v4, acceptanceBytes, devices,
+      });
+      acceptanceBytes.fill(0);
+      accepted.devices.forEach(device => device.signingPublicKey.fill(0));
+    }
+    const profileBytes = encodeClientDeviceProfileV4(retained);
+    const historicalSourceDigest = bytes(0x74);
+    const historicalObjectId = deriveTaskHistoricalContentCryptoObjectIdV1({
+      coordinate: scenario.coordinate,
+      namespaceId: NAMESPACE_ID,
+      sourceDigest: historicalSourceDigest,
+    });
+    const historicalPlaintext = encodeTaskRunResultPayloadV1({
+      formatVersion: 1,
+      resultText: "Historical Task result",
+      lastError: null,
+    });
+    const historicalEncrypted = encryptObjectPayload(scenario.crypto, {
+      objectId: objectId(historicalObjectId),
+      objectType: TASK_RUN_RESULT_OBJECT_TYPE_V1,
+      keyClass: "ai",
+      createdAt: unixTimestamp(NOW),
+    }, historicalPlaintext);
+    historicalPlaintext.fill(0);
+    const historicalPayloadBytes = encodeEncryptedPayloadV2(
+      historicalEncrypted.payload,
+    );
+    const currentGeneration = keyring.generations.find(entry =>
+      entry.generation === keyring.currentGeneration);
+    if (currentGeneration === undefined) throw new Error("current key missing");
+    const historicalEnvelopeBytes = encodeNamespaceObjectEnvelopeV2(
+      wrapObjectDekForNamespace(
+        scenario.crypto,
+        currentGeneration.key,
+        {
+          objectId: objectId(historicalObjectId),
+          namespaceId: namespaceId(NAMESPACE_ID),
+          keyClass: "ai",
+          keyGeneration: namespaceGeneration(currentGeneration.generation),
+          bindingRevisionAtWrap: accessRevision(ACCESS_REVISION),
+        },
+        historicalEncrypted.dek,
+      ),
+    );
+    historicalEncrypted.dek.fill(0);
+    const historicalAccess = prepareHumanObjectAccessManifestGenesisSet(
+      scenario.crypto,
+      {
+        objectId: historicalObjectId,
+        payloadHash: scenario.crypto.hash(historicalPayloadBytes),
+        envelopeBytes: [historicalEnvelopeBytes],
+        sourceAuthorized: true,
+        targetAuthorized: true,
+        subjectHumanId: REQUESTER_ID,
+        committerDeviceId: "task-result-manager",
+        hostAuthorizationRevision: 2,
+        committerSigningPublicKey: scenario.manager.publicKey,
+        committerSigningPrivateKey: scenario.manager.privateKey,
+      },
+    );
+    const historicalRepair = Object.freeze({
+      version: 2 as const,
+      claimId: "70000000-0000-4000-8000-000000000001",
+      publisherDeviceId: "task-result-manager",
+      signedRequestDigest: "11".repeat(32),
+      sourceDigest: Buffer.from(historicalSourceDigest).toString("hex"),
+      sourcePayloadHash: "22".repeat(32),
+      sourceRevision: 0 as const,
+      genesisManifestHash: Buffer.from(
+        scenario.crypto.hash(historicalAccess.manifestBytes),
+      ).toString("hex"),
+    });
+    const historicalResultEnvelope = Object.freeze({
+      readVersion: 1 as const,
+      status: "ready" as const,
+      taskId: TASK_ID,
+      taskRunId: RUN_ID,
+      objectId: historicalObjectId,
+      resultRevision: 1 as const,
+      cryptoAccessRevision: 0 as const,
+      namespaceId: NAMESPACE_ID,
+      readAuthority: taskReadAuthority(),
+      encryptedPayloadBytesBase64url:
+        Buffer.from(historicalPayloadBytes).toString("base64url"),
+      accessManifestBytesBase64url:
+        Buffer.from(historicalAccess.manifestBytes).toString("base64url"),
+      accessManifestProofBytesBase64url: [] as [],
+      namespaceEnvelopeBytesBase64url:
+        Buffer.from(historicalEnvelopeBytes).toString("base64url"),
+      historicalRepair,
+      signerEvidence: [Object.freeze({
+        kind: "human_device" as const,
+        subjectHumanId: REQUESTER_ID,
+        committerDeviceId: historicalRepair.publisherDeviceId,
+        hostAuthorizationRevision: 2,
+        signingPublicKeyBase64url:
+          Buffer.from(scenario.manager.publicKey).toString("base64url"),
+      })],
+    });
+    if (retained !== v4) destroyOpenedClientDeviceProfileV4(retained);
     destroyOpenedClientDeviceProfileV4(v4);
     destroyOpenedClientDeviceProfileV3(v3);
     v2Bytes.fill(0);
@@ -440,6 +583,7 @@ describe("Task Runtime result preparation", () => {
       resultRevision: 1 as const,
       cryptoAccessRevision: 0 as const,
       namespaceId: NAMESPACE_ID,
+      readAuthority: taskReadAuthority(),
       encryptedPayloadBytesBase64url: Buffer.from(
         snapshot.object.payloadBytes.ciphertext,
       ).toString("base64url"),
@@ -459,7 +603,66 @@ describe("Task Runtime result preparation", () => {
         ).toString("base64url"),
       }],
     };
-    let response = resultEnvelope;
+    const resultSigner = deriveAgentRuntimeObjectSignerPublic(
+      scenario.crypto,
+      scenario.initialized.runtime,
+    );
+    const foregroundPlanBytes = encodeLiveShadowMessagePlanV4({
+      formatVersion: 4,
+      purpose: "message.live_shadow_plan",
+      operationId: "task-result-accepted-execution",
+      policyRevision: POLICY_REVISION,
+      sessionId: TASK_ID,
+      roomId: RUN_ID,
+      humanMessageId: 1,
+      revision: 0,
+      createdAt: unixTimestamp(NOW),
+      subjectHumanId: humanId(REQUESTER_ID),
+      committerDeviceId: cryptoDeviceId(deviceId),
+      committerDeviceSigningKeyGeneration: 1,
+      hostAuthorizationRevision: authorizationRevision(2),
+      recipientAgentId: agentId(AGENT_ID),
+      agentAuthorizationRevision: authorizationRevision(4),
+      agentRuntimeGeneration: scenario.initialized.runtime.generation,
+      agentSignerKeyId: resultSigner.principal.signerKeyId,
+      agentSignerPublicKey: Uint8Array.from(resultSigner.publicKey),
+      namespaceId: namespaceId(NAMESPACE_ID),
+      namespaceAccessRevision: accessRevision(ACCESS_REVISION),
+      namespaceKeyGeneration: namespaceGeneration(0),
+      namespaceHeadDigest: new Uint8Array(32).fill(0x71),
+      namespacePublicationDigest: new Uint8Array(32).fill(0x72),
+      namespacePublicationSetDigest: new Uint8Array(32).fill(0x73),
+      namespaceAudienceFingerprint: new Uint8Array(32).fill(0x74),
+      grantDomainId: DOMAIN_ID,
+      grantDomainParticipantDigest: new Uint8Array(32).fill(0x75),
+      grantDomainKeyGeneration: 1,
+      grantDomainHeadDigest: new Uint8Array(32).fill(0x76),
+      grantDomainPublicationDigest: new Uint8Array(32).fill(0x77),
+      grantDomainAuthorizationRevision: authorizationRevision(2),
+      namespaceBundleGrantDomainAuthorizationRevision: authorizationRevision(2),
+      namespaceBundleRevision: 1,
+      namespaceBundleDigest: new Uint8Array(32).fill(0x78),
+      authorization: {
+        disposition: "authorization_reusable",
+        sessionReference: "task-result-accepted-session",
+        authorizationDigest: new Uint8Array(32).fill(0x79),
+      },
+      attemptCoordinate: "task-result-accepted-attempt",
+      issuedAt: unixTimestamp(NOW),
+      deadlineAt: unixTimestamp(NOW + 30_000),
+    });
+    const foregroundEvidence = {
+      kind: "foreground_agent_accepted_execution" as const,
+      planBytesBase64url: Buffer.from(foregroundPlanBytes).toString("base64url"),
+      planDigestBase64url: Buffer.from(
+        scenario.crypto.hash(foregroundPlanBytes),
+      ).toString("base64url"),
+    };
+    const foregroundResultEnvelope = {
+      ...resultEnvelope,
+      signerEvidence: [foregroundEvidence],
+    };
+    let response: ProtectedTaskRunResultReadEnvelopeV1 = foregroundResultEnvelope;
     const api = {
       getProtectedTaskRunResultEnvelopeV1: () => Promise.resolve(response),
     } as Pick<NautiloApiClient, "getProtectedTaskRunResultEnvelopeV1">;
@@ -477,8 +680,33 @@ describe("Task Runtime result preparation", () => {
           deviceGeneration: 1,
           expiresAt: NOW + 60_000,
         }),
-        resolveTrustedIssuingDevicePublicKey: () =>
-          Promise.resolve(scenario.manager.publicKey),
+        namespaceAuthority: {
+          ensure: () => Promise.resolve({ status: "ready" as const }),
+          synchronizeRecipients: () => Promise.resolve({ status: "ready" as const }),
+          withOpenedAiGenerations: () => Promise.resolve({
+            status: "unavailable" as const, reason: "unused",
+          }),
+          withOpenedGenerations: async <Value>(request: Parameters<NonNullable<
+            import("../../src/client/message/namespace-authority-client.ts")
+              .NamespaceAuthorityClient["withOpenedGenerations"]
+          >>[0], use: (
+            entries: readonly import("../../src/client/message/namespace-authority-client.ts")
+              .OpenedNamespaceGeneration[],
+          ) => Promise<Value> | Value) => ({
+            status: "opened" as const,
+            value: await use(request.authority.flatMap(authority =>
+              authority.retainedGenerations.map(entry => ({
+                namespaceId: namespaceId(authority.namespaceId),
+                keyClass: "ai" as const,
+                accessRevision: accessRevision(entry.accessRevision),
+                generation: namespaceGeneration(entry.generation),
+                generationKey: authorityKey,
+                audienceFingerprint: entry.audienceFingerprint,
+                headDigest: entry.headDigest,
+              }))
+            )),
+          }),
+        },
         createStageId: () => "stage:signer",
         accessAnchors: {
           load: (id) => Promise.resolve(anchors.get(id) ?? null),
@@ -508,6 +736,77 @@ describe("Task Runtime result preparation", () => {
         lastError: null,
       },
     });
+    const decodedForegroundPlan = decodeLiveShadowMessagePlanV4(
+      foregroundPlanBytes,
+    );
+    const wrongGenerationBytes = encodeLiveShadowMessagePlanV4({
+      ...decodedForegroundPlan,
+      agentRuntimeGeneration:
+        decodedForegroundPlan.agentRuntimeGeneration + 1,
+    });
+    const wrongDigest = scenario.crypto.hash(foregroundPlanBytes);
+    wrongDigest[0] = wrongDigest[0]! ^ 1;
+    for (const signerEvidence of [
+      [{
+        ...foregroundEvidence,
+        planDigestBase64url: Buffer.from(wrongDigest).toString("base64url"),
+      }],
+      [{
+        ...foregroundEvidence,
+        planBytesBase64url: Buffer.from(wrongGenerationBytes).toString("base64url"),
+        planDigestBase64url: Buffer.from(
+          scenario.crypto.hash(wrongGenerationBytes),
+        ).toString("base64url"),
+      }],
+      [foregroundEvidence, foregroundEvidence],
+    ]) {
+      response = { ...foregroundResultEnvelope, signerEvidence };
+      await reader.read(request).then(
+        () => { throw new Error("substituted foreground result proof was accepted"); },
+        error => expect(error).toBeInstanceOf(ClassifiedDataOperationError),
+      );
+    }
+    wrongDigest.fill(0);
+    wrongGenerationBytes.fill(0);
+    decodedForegroundPlan.agentSignerPublicKey.fill(0);
+    decodedForegroundPlan.namespaceHeadDigest.fill(0);
+    decodedForegroundPlan.namespacePublicationDigest.fill(0);
+    decodedForegroundPlan.namespacePublicationSetDigest.fill(0);
+    decodedForegroundPlan.namespaceAudienceFingerprint.fill(0);
+    decodedForegroundPlan.grantDomainParticipantDigest.fill(0);
+    decodedForegroundPlan.grantDomainHeadDigest.fill(0);
+    decodedForegroundPlan.grantDomainPublicationDigest.fill(0);
+    decodedForegroundPlan.namespaceBundleDigest.fill(0);
+    if (decodedForegroundPlan.authorization.disposition
+      === "authorization_reusable") {
+      decodedForegroundPlan.authorization.authorizationDigest.fill(0);
+    }
+    response = resultEnvelope;
+    expect(await reader.read(request)).toMatchObject({
+      status: "ready",
+      payload: { resultText: "Protected Task result" },
+    });
+    response = historicalResultEnvelope;
+    expect(await reader.read(request)).toEqual({
+      status: "ready",
+      payload: {
+        formatVersion: 1,
+        resultText: "Historical Task result",
+        lastError: null,
+      },
+    });
+    response = {
+      ...historicalResultEnvelope,
+      historicalRepair: {
+        ...historicalRepair,
+        genesisManifestHash: "ff".repeat(32),
+      },
+    };
+    await reader.read(request).then(
+      () => { throw new Error("wrong historical genesis was accepted"); },
+      error => expect(error).toBeInstanceOf(ClassifiedDataOperationError),
+    );
+    response = resultEnvelope;
     response = {
       ...resultEnvelope,
       namespaceId: "40000000-0000-4000-8000-000000000099",
@@ -526,6 +825,25 @@ describe("Task Runtime result preparation", () => {
       );
       response = resultEnvelope;
     }
+    response = {
+      ...resultEnvelope,
+      objectId: deriveTaskContentCryptoObjectIdV1({
+        kind: "run_result",
+        taskId: TASK_ID,
+        taskRunId: RUN_ID,
+        contentRevision: 2,
+      }),
+      resultRevision: 2,
+    };
+    await reader.read(request).then(
+      () => { throw new Error("revision-substituted ciphertext was accepted"); },
+      (error: unknown) => {
+        expect(error).toBeInstanceOf(ClassifiedDataOperationError);
+        if (!(error instanceof ClassifiedDataOperationError)) return;
+        expect(error.failureClass).toBe("integrity");
+      },
+    );
+    response = resultEnvelope;
     const wrongSubject = createAuthorizedHumanTaskRunResultReaderV1({
       api,
       device: createVaultHumanTaskRunResultReaderV1({
@@ -693,73 +1011,4 @@ describe("Task Runtime checkpoint Namespace authority", () => {
     expect(opened).toBe(false);
   });
 
-  test("seals and opens the exact Task graph cell through Task authority", async () => {
-    const scenario = await setup();
-    const controller = new AbortController();
-    const graphThreadId = `subagent:task:${TASK_ID}:${RUN_ID}`;
-    const coordinate = Object.freeze({
-      kind: "channel" as const,
-      threadId: graphThreadId,
-      checkpointNs: "root",
-      channel: "messages",
-      version: "1",
-    });
-    const plaintext = new TextEncoder().encode("private graph state");
-    let checks = 0;
-    const opened = await withTaskRuntimeExecutionEvidenceV1({
-      evidence: scenario.evidence,
-      signal: controller.signal,
-      now: () => NOW,
-      execute: async evidence => {
-        const cell = createTaskRuntimeCheckpointCellCrypto({
-          crypto: scenario.crypto,
-          evidence,
-          identity: {
-            taskId: TASK_ID,
-            taskRunId: RUN_ID,
-            graphThreadId,
-            sourceRoomId: scenario.evidence.sourceRoomId,
-            namespaceId: NAMESPACE_ID,
-            domainId: DOMAIN_ID,
-            expectedAccessRevision: ACCESS_REVISION,
-            expectedPolicyRevision: POLICY_REVISION,
-          },
-          namespace: prepareInput(scenario, evidence).namespace,
-          signal: controller.signal,
-          now: () => NOW,
-          assertCurrentTaskAuthority: async () => { checks += 1; },
-        });
-        const ciphertext = await cell.crypto.executeAuthorizedOperation({
-          operation: "write",
-          scope: cell.scope,
-          execute: async context => {
-            const sealed = await cell.crypto.seal({
-              scope: cell.scope,
-              coordinate,
-              plaintext,
-              signal: context.signal,
-            });
-            await context.assertCommitAllowed();
-            return sealed;
-          },
-        });
-        const result = await cell.crypto.executeAuthorizedOperation({
-          operation: "read",
-          scope: cell.scope,
-          execute: context => cell.crypto.open({
-            scope: cell.scope,
-            coordinate,
-            ciphertext,
-            signal: context.signal,
-          }),
-        });
-        expect(ciphertext).not.toEqual(plaintext);
-        return result;
-      },
-    });
-    expect(opened).toEqual(plaintext);
-    expect(checks).toBe(3);
-    opened.fill(0);
-    plaintext.fill(0);
-  });
 });

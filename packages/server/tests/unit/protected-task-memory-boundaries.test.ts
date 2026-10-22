@@ -132,8 +132,11 @@ describe("protected Task Memory boundaries", () => {
         },
       } as ProtectedTaskMemoryAuthorityInput,
     }))).toThrow("authority is unavailable");
-    expect(() => createProtectedTaskMemoryBoundaries(input({
+    expect(createProtectedTaskMemoryBoundaries(input({
       current: current("dual"),
+    })).policy.mode).toBe("encrypted_only");
+    expect(() => createProtectedTaskMemoryBoundaries(input({
+      policy: { mode: "shadow_encryption", shadowBehavior: "strict", revision: 7 },
     }))).toThrow("authority is unavailable");
 
     const shadowPayload = Object.freeze({

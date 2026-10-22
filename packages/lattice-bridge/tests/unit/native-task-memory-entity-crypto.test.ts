@@ -1,3 +1,4 @@
+import { withWakeEvidence } from "../fixtures/task-wake-foreground-evidence.ts";
 import { describe, expect, test } from "bun:test";
 import type { PostgresJsBridgeConnection } from "@nautilo/db";
 import {
@@ -20,6 +21,7 @@ import type {
 } from "../../src/server/delivery/postgres-domain-key-authority.ts";
 import {
   withNativeTaskMemoryEntityCrypto,
+  withNativeTaskWakeForegroundEntityCrypto,
 } from "../../src/server/task/native-task-memory-entity-crypto.ts";
 
 const NOW = 1_920_000_000_000;
@@ -577,4 +579,95 @@ describe("native Task Memory entity crypto", () => {
     expect(domain.domainKey[0]).toBe(4);
     expect(domain.headDigest[0]).toBe(2);
   });
+});
+
+
+test("execution evidence cannot acquire wake foreground Namespace custody", async () => {
+  const f = fixture();
+  await failure(withTaskRuntimeExecutionEvidenceV1({ evidence: evidenceInput,
+    signal: f.controller.signal, now: () => NOW,
+    execute: evidence => withNativeTaskWakeForegroundEntityCrypto({
+      restricted: f.restricted, crypto: new LatticeCrypto(), serverScope: "https://nautilo.example",
+      evidence: evidence as never, domains: [domain], signal: f.controller.signal,
+      assertCurrentTaskAuthority: async () => { throw new Error("must not check"); },
+      execute: async () => { throw new Error("must not execute"); },
+    }, f.namespaceKeys),
+  }));
+  expect(f.opened).toBe(0);
+});
+
+
+test("wake lends foreground Namespace only even when result shares its Domain; closes and wipes key copies", async () => {
+  const f = fixture(); let escaped: AgentEntityCryptoInvocation | undefined;
+  const result = await withWakeEvidence({ now: NOW, domain, namespaceId: NAMESPACE_B,
+    accessRevision: 11, policyRevision: 3, signerAgentId: "wake-agent",
+    execute: evidence => withNativeTaskWakeForegroundEntityCrypto({
+      restricted: f.restricted, crypto: new LatticeCrypto(), serverScope: "https://nautilo.example",
+      evidence, domains: [domain], signal: f.controller.signal,
+      assertCurrentTaskAuthority: async () => {}, execute: async entities => {
+        escaped = entities;
+        expect(await entities.useCurrentSet({ operations: ["decrypt"], namespaceIds: ["private-result"],
+          execute: () => "not allowed" })).toEqual({ status: "unavailable", reason: "content_unavailable" });
+        expect(await entities.useCurrentSet({ operations: ["encrypt"], namespaceIds: [NAMESPACE_A],
+          execute: () => "not allowed" })).toEqual({ status: "unavailable", reason: "content_unavailable" });
+        return entities.useCurrentSet({ operations: ["decrypt", "encrypt"], namespaceIds: [NAMESPACE_B],
+          execute: ([loan]) => { expect(loan!.namespaceKey.some(b => b !== 0)).toBe(true); return 42; } });
+      },
+    }, f.namespaceKeys),
+  });
+  expect(result).toEqual({ status: "executed", value: 42 });
+  expect(f.keyCopies.every(key => key.every(b => b === 0))).toBe(true);
+  expect(domain.domainKey.some(b => b !== 0)).toBe(true);
+  await failure(escaped!.useCurrentSet({ operations: ["encrypt"], namespaceIds: [NAMESPACE_B], execute: () => 1 }));
+});
+
+test.each(["namespace", "domain", "current", "read-proof", "forgery"])("wake entity custody rejects %s substitution", async reason => {
+  const f = fixture(); let effects = 0;
+  await withWakeEvidence({ now: NOW, domain, namespaceId: NAMESPACE_B,
+    accessRevision: 11, policyRevision: 3, signerAgentId: "wake-agent",
+    execute: async (evidence, read) => {
+      const input = { restricted: f.restricted, crypto: new LatticeCrypto(), serverScope: "https://nautilo.example",
+        evidence: reason === "read-proof" ? read as never : reason === "forgery" ? { ...evidence } : evidence,
+        domains: [domain], signal: f.controller.signal,
+        assertCurrentTaskAuthority: async () => { if (reason === "current") throw new Error("revoked"); },
+        execute: async (entities: AgentEntityCryptoInvocation) => {
+          if (reason === "namespace") f.changeNamespace(NAMESPACE_B, { accessRevision: 12 });
+          if (reason === "domain") f.changeDomain();
+          return entities.useCurrentSet({ operations: ["encrypt"], namespaceIds: [NAMESPACE_B],
+            execute: () => { effects += 1; } });
+        } };
+      if (["read-proof", "forgery", "current"].includes(reason)) {
+        await failure(withNativeTaskWakeForegroundEntityCrypto(input, f.namespaceKeys));
+      } else {
+        expect((await withNativeTaskWakeForegroundEntityCrypto(input, f.namespaceKeys)).status).toBe("unavailable");
+      }
+    },
+  });
+  expect(effects).toBe(0);
+});
+
+
+test("wake mutation destination permits encryption and categorically refuses read loans", async () => {
+  const f = fixture();
+  await withWakeEvidence({ now: NOW, domain, namespaceId: NAMESPACE_B,
+    accessRevision: 11, policyRevision: 3, signerAgentId: "wake-agent",
+    additionalMutationDestination: { roomId: "projection-room", semanticDigest: "a".repeat(64),
+      namespace: { ordinal: 0, namespaceId: NAMESPACE_A, domainId: DOMAIN_ID,
+        operations: ["encrypt"], expectedAccessRevision: 7, expectedPolicyRevision: 3 } },
+    execute: evidence => withNativeTaskWakeForegroundEntityCrypto({
+      restricted: f.restricted, crypto: new LatticeCrypto(), serverScope: "https://nautilo.example",
+      evidence, domains: [domain], signal: f.controller.signal, assertCurrentTaskAuthority: async () => {},
+      execute: async entities => {
+        for (const operations of [["decrypt"] as const, ["decrypt", "encrypt"] as const]) {
+          expect(await entities.useCurrentSet({ operations, namespaceIds: [NAMESPACE_A],
+            execute: () => { throw new Error("extra destination read"); } }))
+            .toEqual({ status: "unavailable", reason: "content_unavailable" });
+        }
+        expect(await entities.useCurrentSet({ operations: ["encrypt"], namespaceIds: [NAMESPACE_A],
+          execute: ([loan]) => { expect(loan!.namespaceKey.some(b => b !== 0)).toBe(true); return "encrypted"; } }))
+          .toEqual({ status: "executed", value: "encrypted" });
+      },
+    }, f.namespaceKeys),
+  });
+  expect(f.keyCopies.every(key => key.every(b => b === 0))).toBe(true);
 });

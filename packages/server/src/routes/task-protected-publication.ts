@@ -10,8 +10,8 @@ import {
 import {
   authenticatePreparedHumanTaskContentCryptoRevisionExactReplayV1,
   authenticatePreparedHumanTaskContentCryptoRevisionV1,
-  decodeTaskPayloadV1,
-  encodeTaskPayloadV1,
+  decodeTaskDefinitionContent,
+  encodeTaskDefinitionContent,
   fingerprintTaskDualPublicationFieldsV1,
   fingerprintTaskOperationalFieldsV1,
   type PreparedTaskContentCryptoRevisionV1,
@@ -215,8 +215,21 @@ export async function importProtectedTaskPublicationV1(input: Readonly<{
         prepared.ordinaryPayloadBytesBase64url,
       );
       try {
-        const payload = decodeTaskPayloadV1(submitted);
-        canonicalOrdinaryPayloadBytes = encodeTaskPayloadV1(payload);
+        const content = decodeTaskDefinitionContent(submitted);
+        if (content.retainedHistoricalError !== null && prepared.operation === "create") {
+          throw new TypeError("New Task definitions cannot contain a historical error snapshot");
+        }
+        canonicalOrdinaryPayloadBytes = encodeTaskDefinitionContent(
+          content.retainedHistoricalError === null
+            ? content.payload
+            : {
+                formatVersion: 2,
+                prompt: content.payload.prompt,
+                expectedOutput: content.payload.expectedOutput,
+                protectedMetadata: content.payload.protectedMetadata,
+                retainedHistoricalError: content.retainedHistoricalError,
+              },
+        );
         if (!sameBytes(submitted, canonicalOrdinaryPayloadBytes)) {
           throw new TypeError("Ordinary Task payload is not canonical");
         }
@@ -226,7 +239,7 @@ export async function importProtectedTaskPublicationV1(input: Readonly<{
             taskId: prepared.taskId,
             contentRevision: prepared.nextContentRevision,
           }),
-          payload,
+          payload: content.payload,
         });
       } finally {
         submitted.fill(0);

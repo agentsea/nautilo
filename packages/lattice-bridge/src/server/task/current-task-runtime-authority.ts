@@ -1,9 +1,12 @@
 import {
   acquireEncryptionConsumptionFence,
   acquireEncryptionPublicationFence,
+  and,
+  eq,
+  isNull,
+  rooms,
   exactParkedProtectedTaskJobReference,
   persistJobInTransaction,
-  type ParkedProtectedTaskAdditionalAuthority,
   type PersistJobPayload,
   type PostgresJsBridgeConnection,
   type ProtectedTaskDurableJobReference,
@@ -13,6 +16,7 @@ import {
   type LatticeCrypto,
 } from "@nautilo/lattice-crypto";
 import {
+  decodeTaskRuntimeBackgroundAuthorizationRequestBase,
   decodeTaskRuntimeBackgroundAuthorizationRequestV1,
   destroyTaskRuntimeBackgroundAuthorizationRequestV1,
   encodeTaskRuntimeBackgroundAuthorizationRequestV1,
@@ -46,6 +50,10 @@ import type {
   ConversationProductCanonicalTransactionRunner,
 } from "../message/postgres-conversation-product-store.ts";
 import {
+  conversationProductTypedDb,
+  executeTypedConversationProductQuery,
+} from "../message/postgres-conversation-product-store.ts";
+import {
   verifyCryptoPostgresHandle,
 } from "../storage/postgres-lattice-storage.ts";
 import {
@@ -53,18 +61,25 @@ import {
   copyParkedTaskRuntimeExpectedNamespaceParticipants,
   currentParkedTaskRuntimeRoutingFacts,
   exactCurrentParkedTaskScopeMemory,
-  lockCurrentParkedTaskAdditionalAuthorityWithRouting,
+  lockCurrentParkedTaskAuthorityWithRouting,
   parkedTaskRuntimeNamespaceParticipantsMatch,
   parkedTaskRuntimeScopeBindingMatches,
   withParkedTaskRuntimeRestrictedAuthority,
   type ParkedTaskRuntimeCurrentRoutingFacts,
   type ParkedTaskRuntimeExpectedNamespaceParticipants,
   type ParkedTaskRuntimeLockedRoutingTask,
+  type ParkedTaskRuntimeContinuation,
 } from "./parked-task-runtime-authority.ts";
 import {
   copyTaskScopeMemoryBinding,
   type TaskScopeMemoryBinding,
 } from "./task-scope-memory-metadata.ts";
+
+import {
+  assertTaskOutputProductAuthority,
+  withTaskOutputProductAuthorityContext,
+  type TaskOutputProductAuthority,
+} from "./initial-task-runtime-namespace-authority.ts";
 
 export type TaskRuntimeNamespaceAuthorityRequirement = Readonly<{
   ordinal: number;
@@ -160,6 +175,114 @@ function inTransaction(
   };
 }
 
+/** A signed child destination keeps its own membership fence under its Namespace root. */
+async function taskRuntimeReadableSource(
+  product: PostgresJsBridgeConnection,
+  request: TaskRuntimeBackgroundAuthorizationRequestV1,
+  requirements: readonly TaskRuntimeNamespaceAuthorityRequirement[],
+): Promise<Readonly<{
+  sourceRoomId: string;
+  destinationRoom?: Readonly<{ roomId: string; namespaceId: string }>;
+}> | null> {
+  // Result reads and foreground wakes require their dedicated product owner
+  // to prove the private-result and Room partitions independently.
+  if (request.workKind === "task.deliver_result" || request.workKind === "task.delivery_wake") {
+    return null;
+  }
+  if (request.workKind !== "task.deliver_message") {
+    return { sourceRoomId: request.sourceRoomId };
+  }
+  const requirement = requirements[0];
+  if (requirements.length !== 1 || requirement === undefined
+    || requirement.operations.length !== 1
+    || requirement.operations[0] !== "encrypt") return null;
+  const [destination] = await executeTypedConversationProductQuery(product,
+    conversationProductTypedDb.select({
+      id: rooms.id, namespaceId: rooms.namespaceId, parentRoomId: rooms.parentRoomId,
+    }).from(rooms).where(eq(rooms.id, request.sourceRoomId)).limit(1));
+  if (destination === undefined || destination.namespace_id !== requirement.namespaceId) return null;
+  const roots = await executeTypedConversationProductQuery(product,
+    conversationProductTypedDb.select({ id: rooms.id }).from(rooms).where(and(
+      eq(rooms.namespaceId, requirement.namespaceId), isNull(rooms.parentRoomId),
+    )).limit(2));
+  const root = roots[0];
+  if (roots.length !== 1 || root === undefined
+    || (destination.id !== root.id && destination.parent_room_id !== root.id)) return null;
+  // These reads only select the lock plan. The canonical owner re-locks and
+  // rechecks the root, actual destination, and both materialized rosters.
+  return { sourceRoomId: root.id,
+    destinationRoom: { roomId: destination.id, namespaceId: requirement.namespaceId } };
+}
+
+async function outputCryptoNamespacesMatch(input: Readonly<{
+  restricted: PostgresJsBridgeConnection; crypto: LatticeCrypto; serverScope: string;
+  namespaces: readonly TaskRuntimeNamespaceAuthorityRequirement[];
+  domains: readonly DomainForegroundAuthorityEntry[];
+}>): Promise<boolean> {
+  const repository = new PostgresDomainKeyAuthorityRepository(input.restricted, input.crypto, input.serverScope);
+  // All these Namespaces are already held by the preceding native inspector;
+  // this re-read cannot acquire a new Namespace after its Domain locks.
+  for (const requirement of input.namespaces) {
+    const current = await repository.inspectForegroundNamespaceAuthority({ namespaceId: requirement.namespaceId, keyClass: "ai" });
+    if (current.status !== "ready") return false;
+    try {
+      const domain = input.domains.find(d => d.domainId === requirement.domainId);
+      if (domain === undefined || current.namespaceId !== requirement.namespaceId
+        || current.namespaceAccessRevision !== requirement.expectedAccessRevision
+        || current.domainId !== domain.domainId
+        || current.domainKeyGeneration !== domain.domainKeyGeneration
+        || current.domainAuthorizationRevision !== domain.authorizationRevision
+        || !sameBytes(current.domainHeadDigest, domain.headDigest)) return false;
+    } finally {
+      current.namespaceHeadDigest.fill(0); current.namespacePublicationDigest.fill(0);
+      current.namespacePublicationSetDigest.fill(0); current.namespaceAudienceFingerprint.fill(0);
+      current.domainHeadDigest.fill(0); current.bundleDigest.fill(0);
+    }
+  }
+  return true;
+}
+
+async function withCurrentProductNamespaces<Value>(input: Readonly<{
+  product: PostgresJsBridgeConnection;
+  transaction: CanonicalTranscriptTx;
+  request: TaskRuntimeBackgroundAuthorizationRequestV1;
+  subject: TaskRuntimeAuthoritySubject;
+  namespaces: readonly TaskRuntimeNamespaceAuthorityRequirement[];
+  policyRevision: number;
+  output?: TaskOutputProductAuthority;
+  expectedNamespaceParticipants?: ParkedTaskRuntimeExpectedNamespaceParticipants;
+  use(): Promise<Value | null>;
+}>): Promise<Value | null> {
+  if (input.output !== undefined) {
+    const expected = { transaction: input.transaction, subject: input.subject,
+      request: input.request, namespaces: input.namespaces, policyRevision: input.policyRevision };
+    assertTaskOutputProductAuthority(input.output, expected);
+    const value = await input.use();
+    assertTaskOutputProductAuthority(input.output, expected);
+    return value;
+  }
+  const source = await taskRuntimeReadableSource(input.product, input.request, input.namespaces);
+  if (source === null) return null;
+  return new PostgresNamespaceProductAuthority(input.product).withCurrentReadableNamespaceSet({
+    subjectUserId: input.subject.userId, subjectHumanId: input.subject.humanActorId,
+    ...source, namespaceIds: input.namespaces.map(n => n.namespaceId),
+    use: async entries => {
+      if (entries.length !== input.namespaces.length) return null;
+      for (const [index, entry] of entries.entries()) {
+        const requirement = input.namespaces[index];
+        const current = inspectNamespaceProductAuthoritySnapshot(entry.authority);
+        try {
+          if (requirement === undefined || entry.namespaceId !== requirement.namespaceId
+            || current.accessRevision !== requirement.expectedAccessRevision
+            || !parkedTaskRuntimeNamespaceParticipantsMatch(entry.namespaceId,
+              current.participantHumanIds, input.expectedNamespaceParticipants)) return null;
+        } finally { current.audienceFingerprint.fill(0); }
+      }
+      return input.use();
+    },
+  });
+}
+
 function copyNamespaceRequirements(
   requirements: readonly TaskRuntimeNamespaceAuthorityRequirement[],
 ): readonly TaskRuntimeNamespaceAuthorityRequirement[] {
@@ -242,9 +365,19 @@ function matchesCurrentTaskRuntimeAuthorityWithoutAdmission(input: Readonly<{
     && plan.recipientKind === "runtime"
     && plan.recipientPrincipalId === "nautilo_task_runtime"
     && plan.recipientAuthorizationRevision === 0
-    && plan.operations.length === 2
-    && plan.operations[0] === "decrypt"
-    && plan.operations[1] === "encrypt"
+    && (["task.cancel_result", "task.deliver_message"].includes(request.workKind)
+      || ["task.cancel_result", "task.deliver_message"].includes(request.workPurpose)
+      ? ["task.cancel_result", "task.deliver_message"].includes(request.workKind)
+        && request.workPurpose === request.workKind
+        && plan.operations.length === 1
+        && plan.operations[0] === "encrypt"
+        && namespaces.length === 1
+        && domainRequirements.length === 1
+        && namespaces[0]!.operations.length === 1
+        && namespaces[0]!.operations[0] === "encrypt"
+      : plan.operations.length === 2
+        && plan.operations[0] === "decrypt"
+        && plan.operations[1] === "encrypt")
     && requirementsAreCanonical(namespaces, domainRequirements)
     && namespaces.every((requirement) =>
       requirement.expectedPolicyRevision === input.policyRevision
@@ -326,7 +459,7 @@ function acceptedRecordMatchesRequest(input: Readonly<{
  * all three lock lifetimes and must use the supplied connections for the
  * response verification and durable acceptance CAS.
  */
-export async function withCurrentTaskRuntimeAuthority<Value>(input: Readonly<{
+type CurrentTaskRuntimeAuthorityInput<Value> = Readonly<{
   runner: ConversationProductCanonicalTransactionRunner;
   restricted: PostgresJsBridgeConnection;
   crypto: LatticeCrypto;
@@ -336,6 +469,7 @@ export async function withCurrentTaskRuntimeAuthority<Value>(input: Readonly<{
   request: TaskRuntimeBackgroundAuthorizationRequestV1;
   namespaceRequirements: readonly TaskRuntimeNamespaceAuthorityRequirement[];
   domainRequirements: readonly TaskRuntimeDomainAuthorityRequirement[];
+  validateCurrentProduct?(product: PostgresJsBridgeConnection, transaction: CanonicalTranscriptTx): boolean | Promise<boolean>;
   now(): number;
   signal?: AbortSignal;
   use(
@@ -343,7 +477,12 @@ export async function withCurrentTaskRuntimeAuthority<Value>(input: Readonly<{
     product: PostgresJsBridgeConnection,
     restricted: PostgresJsBridgeConnection,
   ): Promise<Value>;
-}>): Promise<Value | null> {
+}>;
+
+async function withCurrentTaskRuntimeAuthorityInternal<Value>(
+  input: CurrentTaskRuntimeAuthorityInput<Value>,
+  output?: Readonly<{ proof: TaskOutputProductAuthority; transaction: CanonicalTranscriptTx; product: PostgresJsBridgeConnection }>,
+): Promise<Value | null> {
   const encodedRequest = encodeTaskRuntimeBackgroundAuthorizationRequestV1(
     input.request,
   );
@@ -372,36 +511,21 @@ export async function withCurrentTaskRuntimeAuthority<Value>(input: Readonly<{
       throw new TypeError("Task Runtime authority requirements are invalid");
     }
     input.signal?.throwIfAborted();
-    return await input.runner.transaction(async (tx, executor) => {
+    const run = output === undefined ? input.runner.transaction.bind(input.runner)
+      : <Result>(use: (tx: CanonicalTranscriptTx, executor: PostgresJsBridgeConnection) => Promise<Result>) => use(output.transaction, output.product);
+    return await run(async (tx, executor) => {
       const policy = await acquireEncryptionConsumptionFence(tx);
       if (policy.mode === "plaintext_only"
         || policy.revision !== plan.policyRevision
         || namespaces.some((requirement) =>
           requirement.expectedPolicyRevision !== policy.revision)) return null;
       const product = inTransaction(executor);
-      return new PostgresNamespaceProductAuthority(product)
-        .withCurrentReadableNamespaceSet({
-          subjectUserId: input.subject.userId,
-          subjectHumanId: input.subject.humanActorId,
-          sourceRoomId: request.sourceRoomId,
-          namespaceIds: namespaces.map((requirement) =>
-            requirement.namespaceId),
-          use: async (entries) => {
-            if (entries.length !== namespaces.length) return null;
-            for (const [index, entry] of entries.entries()) {
-              const requirement = namespaces[index];
-              const current = inspectNamespaceProductAuthoritySnapshot(
-                entry.authority,
-              );
-              try {
-                if (requirement === undefined
-                  || entry.namespaceId !== requirement.namespaceId
-                  || current.accessRevision
-                    !== requirement.expectedAccessRevision) return null;
-              } finally {
-                current.audienceFingerprint.fill(0);
-              }
-            }
+      if (input.validateCurrentProduct !== undefined
+        && !await input.validateCurrentProduct(product, tx)) return null;
+      return withCurrentProductNamespaces({ product, transaction: tx, request,
+        subject: input.subject, namespaces, policyRevision: policy.revision,
+        ...(output === undefined ? {} : { output: output.proof }),
+        use: async () => {
             input.signal?.throwIfAborted();
             return input.restricted.transactionOnce(async (restrictedTx) => {
               const restricted = inTransaction(restrictedTx);
@@ -418,6 +542,8 @@ export async function withCurrentTaskRuntimeAuthority<Value>(input: Readonly<{
               });
               if (inspected.status !== "ready") return null;
               for (const domain of inspected.domains) retainBytes(domain, owned);
+              if (output !== undefined && !await outputCryptoNamespacesMatch({ restricted,
+                crypto: input.crypto, serverScope: input.serverScope, namespaces, domains: inspected.domains })) return null;
               // The native inspector has now locked the device/group projection,
               // Namespaces, and Domains. Read group security authority only after
               // those locks; its securityRevision is a distinct counter from the
@@ -475,6 +601,20 @@ export async function withCurrentTaskRuntimeAuthority<Value>(input: Readonly<{
   }
 }
 
+export function withCurrentTaskRuntimeAuthority<Value>(input: CurrentTaskRuntimeAuthorityInput<Value>): Promise<Value | null> {
+  return withCurrentTaskRuntimeAuthorityInternal(input);
+}
+
+export function withCurrentTaskOutputRuntimeAuthority<Value>(input:
+  Omit<CurrentTaskRuntimeAuthorityInput<Value>, "runner" | "restricted"> & Readonly<{ productAuthority: TaskOutputProductAuthority }>,
+): Promise<Value | null> {
+  return withTaskOutputProductAuthorityContext(input.productAuthority, context =>
+    withCurrentTaskRuntimeAuthorityInternal({ ...input, runner: context.input.runner, restricted: context.restricted,
+      use: (authority, product, restricted) => withParkedTaskRuntimeRestrictedAuthority(restricted,
+        scoped => input.use(authority, product, scoped)),
+    }, { proof: input.productAuthority, transaction: context.transaction, product: context.product }));
+}
+
 type CurrentAcceptedTaskRuntimeAuthorityInput = Readonly<{
     runner: ConversationProductCanonicalTransactionRunner;
     restricted: PostgresJsBridgeConnection;
@@ -487,7 +627,7 @@ type CurrentAcceptedTaskRuntimeAuthorityInput = Readonly<{
 }>;
 
 function parkedContinuationJobReference(input: Readonly<{
-  expected: ParkedProtectedTaskAdditionalAuthority;
+  expected: ParkedTaskRuntimeContinuation;
   policyRevision: number;
 }>): ProtectedTaskDurableJobReference {
   return Object.freeze({
@@ -499,13 +639,15 @@ function parkedContinuationJobReference(input: Readonly<{
     authorizationRequestId: input.expected.authorizationRequestId,
     policyRevision: input.policyRevision,
     executionSegment: input.expected.nextExecutionSegment,
-    resumeContinuationFingerprint: input.expected.continuationFingerprint,
+    ...("acceptance" in input.expected
+      ? { resumeAcceptanceId: input.expected.acceptance.acceptanceId }
+      : { resumeContinuationFingerprint: input.expected.continuationFingerprint }),
   });
 }
 
 function exactParkedContinuationJobPayload(input: Readonly<{
   payload: PersistJobPayload;
-  expected: ParkedProtectedTaskAdditionalAuthority;
+  expected: ParkedTaskRuntimeContinuation;
   expectedReference: ProtectedTaskDurableJobReference;
   targetRoomId: string;
   policyRevision: number;
@@ -530,7 +672,7 @@ function exactParkedContinuationJobPayload(input: Readonly<{
 
 async function withParkedTaskRuntimeJobPersistence<Value>(input: Readonly<{
   transaction: CanonicalTranscriptTx;
-  expected: ParkedProtectedTaskAdditionalAuthority;
+  expected: ParkedTaskRuntimeContinuation;
   targetRoomId: string;
   policyRevision: number;
   use(persistence: ParkedTaskRuntimeJobPersistence): Promise<Value>;
@@ -618,6 +760,7 @@ type CurrentAcceptedTaskRuntimeAuthorityUse<Value> =
     scopedRestricted: false;
     validateCurrentProduct(
       product: PostgresJsBridgeConnection,
+      transaction: CanonicalTranscriptTx,
     ): boolean | Promise<boolean>;
     use(
       authority: CurrentTaskRuntimeAuthority,
@@ -630,17 +773,19 @@ type CurrentAcceptedTaskRuntimeAuthorityUse<Value> =
     scopedRestricted: true;
     validateCurrentProduct(
       product: PostgresJsBridgeConnection,
+      transaction: CanonicalTranscriptTx,
     ): boolean | Promise<boolean>;
     validateBeforeCommit(): void | Promise<void>;
     use(
       authority: CurrentTaskRuntimeAuthority,
       product: PostgresJsBridgeConnection,
       restricted: PostgresJsBridgeConnection,
+      transaction: CanonicalTranscriptTx,
     ): Promise<Value>;
   }>
   | Readonly<{
     kind: "parked";
-    expected: ParkedProtectedTaskAdditionalAuthority;
+    expected: ParkedTaskRuntimeContinuation;
     targetRoomId: string;
     scopeMemory?: TaskScopeMemoryBinding;
     expectedNamespaceParticipants?: ParkedTaskRuntimeExpectedNamespaceParticipants;
@@ -657,6 +802,7 @@ type CurrentAcceptedTaskRuntimeAuthorityUse<Value> =
 async function withCurrentAcceptedTaskRuntimeAuthorityInternal<Value>(
   input: CurrentAcceptedTaskRuntimeAuthorityInput,
   authorityUse: CurrentAcceptedTaskRuntimeAuthorityUse<Value>,
+  output?: Readonly<{ proof: TaskOutputProductAuthority; transaction: CanonicalTranscriptTx; product: PostgresJsBridgeConnection }>,
 ): Promise<Value | null> {
   const descriptorBytes = Uint8Array.from(input.accepted.descriptorBytes);
   const authorizationBytes = Uint8Array.from(input.accepted.authorizationBytes);
@@ -681,7 +827,8 @@ async function withCurrentAcceptedTaskRuntimeAuthorityInternal<Value>(
   const authorizationDigestBytes = input.crypto.hash(authorizationBytes);
   const authorizationDigest = hex(authorizationDigestBytes);
   authorizationDigestBytes.fill(0);
-  const request = decodeTaskRuntimeBackgroundAuthorizationRequestV1(
+  const request = decodeTaskRuntimeBackgroundAuthorizationRequestBase(
+    input.crypto,
     descriptorBytes,
   );
   if (request === null) {
@@ -727,7 +874,9 @@ async function withCurrentAcceptedTaskRuntimeAuthorityInternal<Value>(
       throw new TypeError("Accepted Task Runtime record is inconsistent");
     }
     input.signal?.throwIfAborted();
-    return await input.runner.transaction(async (tx, executor) => {
+    const run = output === undefined ? input.runner.transaction.bind(input.runner)
+      : <Result>(use: (tx: CanonicalTranscriptTx, executor: PostgresJsBridgeConnection) => Promise<Result>) => use(output.transaction, output.product);
+    return await run(async (tx, executor) => {
       const policy = await acquireEncryptionConsumptionFence(tx);
       if (policy.mode === "plaintext_only"
         || policy.revision !== plan.policyRevision
@@ -738,7 +887,7 @@ async function withCurrentAcceptedTaskRuntimeAuthorityInternal<Value>(
           requirement.expectedPolicyRevision !== policy.revision)) return null;
       let parkedTask: ParkedTaskRuntimeLockedRoutingTask | undefined;
       if (authorityUse.kind === "parked") {
-        const locked = await lockCurrentParkedTaskAdditionalAuthorityWithRouting({
+        const locked = await lockCurrentParkedTaskAuthorityWithRouting({
           transaction: tx,
           expected: authorityUse.expected,
         });
@@ -762,36 +911,13 @@ async function withCurrentAcceptedTaskRuntimeAuthorityInternal<Value>(
       }
       const product = inTransaction(executor);
       if (authorityUse.kind === "current"
-        && !await authorityUse.validateCurrentProduct(product)) return null;
-      return new PostgresNamespaceProductAuthority(product)
-        .withCurrentReadableNamespaceSet({
-          subjectUserId: input.subject.userId,
-          subjectHumanId: input.subject.humanActorId,
-          sourceRoomId: request.sourceRoomId,
-          namespaceIds: namespaces.map((requirement) =>
-            requirement.namespaceId),
-          use: async (entries) => {
-            if (entries.length !== namespaces.length) return null;
-            for (const [index, entry] of entries.entries()) {
-              const requirement = namespaces[index];
-              const current = inspectNamespaceProductAuthoritySnapshot(
-                entry.authority,
-              );
-              try {
-                if (requirement === undefined
-                  || entry.namespaceId !== requirement.namespaceId
-                  || current.accessRevision
-                    !== requirement.expectedAccessRevision
-                  || authorityUse.kind === "parked"
-                    && !parkedTaskRuntimeNamespaceParticipantsMatch(
-                      entry.namespaceId,
-                      current.participantHumanIds,
-                      authorityUse.expectedNamespaceParticipants,
-                    )) return null;
-              } finally {
-                current.audienceFingerprint.fill(0);
-              }
-            }
+        && !await authorityUse.validateCurrentProduct(product, tx)) return null;
+      return withCurrentProductNamespaces({ product, transaction: tx, request,
+        subject: input.subject, namespaces, policyRevision: policy.revision,
+        ...(output === undefined ? {} : { output: output.proof }),
+        ...(authorityUse.kind === "parked" && authorityUse.expectedNamespaceParticipants !== undefined
+          ? { expectedNamespaceParticipants: authorityUse.expectedNamespaceParticipants } : {}),
+        use: async () => {
             if (authorityUse.kind === "parked"
               && (parkedTask === undefined
                 || !await exactCurrentParkedTaskScopeMemory({
@@ -817,6 +943,8 @@ async function withCurrentAcceptedTaskRuntimeAuthorityInternal<Value>(
               });
               if (inspected.status !== "ready") return null;
               for (const domain of inspected.domains) retainBytes(domain, owned);
+              if (output !== undefined && !await outputCryptoNamespacesMatch({ restricted,
+                crypto: input.crypto, serverScope: input.serverScope, namespaces, domains: inspected.domains })) return null;
               // The signed Task plan and accepted issuer bind group
               // securityRevision. The inspector reports a separate device-row
               // projection revision, so acquire its locks before reading the
@@ -863,6 +991,9 @@ async function withCurrentAcceptedTaskRuntimeAuthorityInternal<Value>(
                 {
                   authorizationBytes,
                   now: input.now(),
+                  expectedOperations: ["task.cancel_result", "task.deliver_message"].includes(request.workKind)
+                    && request.workPurpose === request.workKind
+                    ? ["encrypt"] : ["decrypt", "encrypt"],
                   current: {
                     authorizationId: plan.authorizationId,
                     policyRevision: policy.revision,
@@ -901,12 +1032,18 @@ async function withCurrentAcceptedTaskRuntimeAuthorityInternal<Value>(
                 result = authorityUse.scopedRestricted
                   ? await withParkedTaskRuntimeRestrictedAuthority(
                     restricted,
-                    scoped => authorityUse.use(authority, product, scoped),
+                    async scoped => {
+                      const current = await authorityUse.use(
+                        authority,
+                        product,
+                        scoped,
+                        tx,
+                      );
+                      await authorityUse.validateBeforeCommit();
+                      return current;
+                    },
                   )
                   : await authorityUse.use(authority, product, restricted);
-                if (authorityUse.scopedRestricted) {
-                  await authorityUse.validateBeforeCommit();
-                }
               } else {
                 result = await withParkedTaskRuntimeRestrictedAuthority(
                   restricted,
@@ -957,6 +1094,7 @@ export async function withCurrentAcceptedTaskRuntimeAuthority<Value>(
   input: CurrentAcceptedTaskRuntimeAuthorityInput & Readonly<{
     validateCurrentProduct(
       product: PostgresJsBridgeConnection,
+      transaction: CanonicalTranscriptTx,
     ): boolean | Promise<boolean>;
     use(
       authority: CurrentTaskRuntimeAuthority,
@@ -986,11 +1124,13 @@ export async function withCurrentAcceptedTaskRuntimeClaimAuthority<Value>(
   input: CurrentAcceptedTaskRuntimeAuthorityInput & Readonly<{
     validateCurrentProduct(
       product: PostgresJsBridgeConnection,
+      transaction: CanonicalTranscriptTx,
     ): boolean | Promise<boolean>;
     use(
       authority: CurrentTaskRuntimeAuthority,
       product: PostgresJsBridgeConnection,
       restricted: PostgresJsBridgeConnection,
+      transaction: CanonicalTranscriptTx,
     ): Promise<Value>;
     validateBeforeCommit(): void | Promise<void>;
   }>,
@@ -1000,10 +1140,11 @@ export async function withCurrentAcceptedTaskRuntimeClaimAuthority<Value>(
     scopedRestricted: true,
     validateCurrentProduct: input.validateCurrentProduct,
     validateBeforeCommit: input.validateBeforeCommit,
-    use: (authority, product, restricted) => input.use(
+    use: (authority, product, restricted, transaction) => input.use(
       authority,
       product,
       restricted,
+      transaction,
     ),
   });
 }
@@ -1015,7 +1156,7 @@ export async function withCurrentAcceptedTaskRuntimeClaimAuthority<Value>(
  */
 export async function withCurrentAcceptedParkedTaskRuntimeAuthority<Value>(
   input: CurrentAcceptedTaskRuntimeAuthorityInput & Readonly<{
-    expected: ParkedProtectedTaskAdditionalAuthority;
+    expected: ParkedTaskRuntimeContinuation;
     targetRoomId: string;
     scopeMemory?: TaskScopeMemoryBinding;
     expectedNamespaceParticipants?: ParkedTaskRuntimeExpectedNamespaceParticipants;
@@ -1049,13 +1190,17 @@ export async function withCurrentAcceptedParkedTaskRuntimeAuthority<Value>(
   const namespaceIds = input.accepted.namespaceRequirements.map(
     requirement => requirement.namespaceId,
   );
+  const workKind = "acceptance" in expected
+    ? expected.acceptance.response.kind === "await_reply"
+      ? "task.await_reply_resume" : "task.approval_resume"
+    : "task.execute";
   if (typeof use !== "function" || typeof validateCurrentRouting !== "function"
     || expectedNamespaceParticipants?.some(value =>
       !namespaceIds.includes(value.namespaceId)) === true
     || input.accepted.requestId !== expected.authorizationRequestId
     || input.accepted.workId !== expected.occurrence.run.id
-    || input.accepted.workKind !== "task.execute"
-    || input.accepted.workPurpose !== "task.execute"
+    || input.accepted.workKind !== workKind
+    || input.accepted.workPurpose !== workKind
     || subject.userId !== expected.occurrence.task.requestorId
     || !input.accepted.namespaceRequirements.some(requirement =>
       requirement.namespaceId
@@ -1076,4 +1221,18 @@ export async function withCurrentAcceptedParkedTaskRuntimeAuthority<Value>(
       persistence,
     ),
   });
+}
+
+/** Accepted closed output custody retains the same held product proof and claim fence. */
+export function withCurrentAcceptedTaskOutputRuntimeClaimAuthority<Value>(input:
+  Omit<Parameters<typeof withCurrentAcceptedTaskRuntimeClaimAuthority<Value>>[0], "runner" | "restricted"> &
+  Readonly<{ productAuthority: TaskOutputProductAuthority }>,
+): Promise<Value | null> {
+  return withTaskOutputProductAuthorityContext(input.productAuthority, context =>
+    withCurrentAcceptedTaskRuntimeAuthorityInternal({ ...input, runner: context.input.runner, restricted: context.restricted }, {
+      kind: "current", scopedRestricted: true,
+      validateCurrentProduct: input.validateCurrentProduct,
+      validateBeforeCommit: input.validateBeforeCommit,
+      use: input.use,
+    }, { proof: input.productAuthority, transaction: context.transaction, product: context.product }));
 }

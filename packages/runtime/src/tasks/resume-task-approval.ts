@@ -114,6 +114,9 @@ export async function authorizeTaskApprovalResume(
   const db = deps.db ?? getSharedDirectDb();
   const found = await findAwaitingTaskRunForApproval(db, args.taskId, args.threadId);
   if (!found) return { ok: false, status: 404, error: "task_approval_not_found" };
+  if (found.task.contentRepresentation !== "ordinary") {
+    return { ok: false, status: 404, error: "task_approval_not_found" };
+  }
   if (taskApprovalRecipient(found.task) !== args.sessionUserId) {
     return { ok: false, status: 404, error: "task_approval_not_found" };
   }

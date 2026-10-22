@@ -1,15 +1,26 @@
+import { assertApprovalSelectionsAreContentFree, projectApprovalRow, applyApprovalPatch, compileApprovalSelection } from "../fixtures/protected-approval-projection";
+import { encryptionTransitionPolicy } from "../../src/schema/encryption-transition";
+import { protectedTaskRunOutputBindings } from "../../src/schema/protected-task-run-output-bindings";
+import { createHash } from "node:crypto";
 import { describe, expect, test } from "bun:test";
 
 import type { DirectDatabase } from "../../src/config/direct-database";
 import {
   startProtectedTaskRun,
-  startParkedProtectedTaskRunSegment,
+  protectedTaskHumanContinuationAcceptanceId,
+  startParkedProtectedTaskHumanRunSegment,
   type ProtectedTaskDurableJobReference,
-  type StartParkedProtectedTaskRunSegmentInput,
+  type StartParkedProtectedTaskHumanRunSegmentInput,
 } from "../../src/queries/tasks";
 import { jobs, type Job } from "../../src/schema/jobs";
 import { taskRuns, type TaskRun } from "../../src/schema/task-runs";
 import { tasks, type Task } from "../../src/schema/tasks";
+import { actors } from "../../src/schema/trust";
+import { sessionMessages } from "../../src/schema/sessions";
+import { protectedTaskExecutionSegmentReceipts } from
+  "../../src/schema/protected-task-execution-segment-receipts";
+import { taskRunMessageAssociations } from
+  "../../src/schema/task-run-message-associations";
 
 const ids = {
   task: "10000000-0000-4000-8000-000000000001",
@@ -22,6 +33,7 @@ const ids = {
   room: "70000000-0000-4000-8000-000000000007",
   session: "80000000-0000-4000-8000-000000000008",
   sourceUser: "90000000-0000-4000-8000-000000000009",
+  humanActor: "90000000-0000-4000-8000-000000000019",
 };
 const graphThreadId = `subagent:${ids.task}:${ids.run}`;
 const definitionObjectId = `task-definition:v1:${"a".repeat(64)}`;
@@ -31,9 +43,41 @@ const fingerprint = new Uint8Array(Array.from({ length: 32 }, (_, index) => inde
 const parkedAt = new Date("2026-09-28T12:34:56.000Z");
 const receiptKey = "nautilo.protectedTaskRunPark.v1";
 const terminalReceiptKey = "nautilo.protectedTaskRunTerminal.v1";
-const acceptanceReceiptKey = "nautilo.protectedTaskAwaitReplyAcceptance.v1";
+const acceptanceReceiptKey = "nautilo.protectedTaskHumanContinuationAcceptance.v1";
 const acceptedAt = new Date("2026-09-28T12:35:00.000Z");
-const acceptanceId = "await-reply-acceptance:1";
+const stableRoutingDigest = new Uint8Array(32).fill(8);
+const digest = (seed: number) => new Uint8Array(32).fill(seed);
+const checkpointManifest = {
+  contract: "encrypted_langgraph_v1" as const,
+  expectedCheckpointCount: 2,
+  checkpointOrderedDigest: digest(1),
+  expectedBlobCount: 1,
+  blobOrderedDigest: digest(2),
+  expectedPendingWriteCount: 0,
+  pendingWriteOrderedDigest: digest(3),
+};
+const transcriptDigest = new Uint8Array(createHash("sha256").update(
+  JSON.stringify([
+    "protected-task-transcript-manifest:v1",
+    ids.task,
+    ids.run,
+    graphThreadId,
+    0,
+  ]) + "\n",
+  "utf8",
+).digest());
+
+function acceptanceId(): string {
+  return protectedTaskHumanContinuationAcceptanceId({
+    taskId: ids.task,
+    taskRunId: ids.run,
+    priorJobId: ids.priorJob,
+    executionSegment: 1,
+    acceptedBy: { userId: ids.sourceUser, humanActorId: ids.humanActor },
+    interrupt: { id: "interrupt:z", kind: "await_reply" },
+    response: { kind: "await_reply", message: acceptanceMessage() },
+  });
+}
 
 function priorReference(
   overrides: Partial<ProtectedTaskDurableJobReference> = {},
@@ -58,16 +102,13 @@ function nextReference(
     ...priorReference(),
     authorizationRequestId: `task-run-authorization:${ids.run}:segment:2`,
     executionSegment: 2,
-    resumeAcceptanceId: acceptanceId,
+    resumeAcceptanceId: acceptanceId(),
     ...overrides,
   };
 }
 
-function acceptance() {
+function acceptanceMessage() {
   return {
-    acceptanceId,
-    interruptId: "interrupt:z",
-    message: {
       roomId: ids.room,
       sessionId: ids.session,
       messageId: "41",
@@ -75,7 +116,31 @@ function acceptance() {
       cryptoObjectId: "message:v2:accepted",
       namespaceId: ids.namespace,
       sourceUserId: ids.sourceUser,
-    },
+  };
+}
+
+function currentMessage(overrides: Record<string, unknown> = {}) {
+  return {
+    ...acceptanceMessage(),
+    role: "user",
+    lifecycleNamespaceId: ids.namespace,
+    lifecycleRoomId: ids.room,
+    lifecycleCryptoObjectId: "message:v2:accepted",
+    lifecycleKeyClass: "ai",
+    lifecycleAuthorRole: "user",
+    lifecyclePayloadVersion: 2,
+    lifecycleCompletion: "complete",
+    lifecycleDisposition: "mapped",
+    ...overrides,
+  };
+}
+
+function acceptance() {
+  return {
+    acceptanceId: acceptanceId(),
+    acceptedBy: { userId: ids.sourceUser, humanActorId: ids.humanActor },
+    interrupt: { id: "interrupt:z", kind: "await_reply" as const },
+    response: { kind: "await_reply" as const, message: acceptanceMessage() },
     acceptedAt,
   } as const;
 }
@@ -83,7 +148,7 @@ function acceptance() {
 function acceptanceReceipt(overrides: Record<string, unknown> = {}) {
   return {
     version: 1,
-    acceptanceId,
+    acceptanceId: acceptanceId(),
     taskId: ids.task,
     taskRunId: ids.run,
     jobId: ids.priorJob,
@@ -91,8 +156,9 @@ function acceptanceReceipt(overrides: Record<string, unknown> = {}) {
     generation: 3,
     executionSegment: 1,
     nextExecutionSegment: 2,
-    interrupt: { id: "interrupt:z", kind: "await_reply" },
-    message: acceptance().message,
+    acceptedBy: acceptance().acceptedBy,
+    interrupt: acceptance().interrupt,
+    response: acceptance().response,
     acceptedAt: acceptedAt.toISOString(),
     ...overrides,
   };
@@ -119,13 +185,14 @@ function receipt(overrides: Record<string, unknown> = {}) {
       { id: "interrupt:z", kind: "await_reply" },
     ],
     parkedAt: parkedAt.toISOString(),
+    stableRoutingDigest: Buffer.from(stableRoutingDigest).toString("base64url"),
     ...overrides,
   };
 }
 
 function input(
-  overrides: Partial<StartParkedProtectedTaskRunSegmentInput> = {},
-): StartParkedProtectedTaskRunSegmentInput {
+  overrides: Partial<StartParkedProtectedTaskHumanRunSegmentInput> = {},
+): StartParkedProtectedTaskHumanRunSegmentInput {
   return {
     taskId: ids.task,
     taskRunId: ids.run,
@@ -135,12 +202,14 @@ function input(
     generation: 3,
     interrupts: interrupts(),
     parkedAt,
+    stableRoutingDigest,
     contentRepresentation: "protected",
     contentNamespaceId: ids.namespace,
     contentRevision: 4,
     cryptoObjectId: definitionObjectId,
     cryptoAccessRevision: 6,
     cryptoRequiredNamespaceFingerprint: fingerprint,
+    checkpointManifest,
     priorJobReference: priorReference(),
     jobReference: nextReference(),
     acceptance: acceptance(),
@@ -242,11 +311,38 @@ function nextJob(overrides: Partial<Job> = {}): Job {
   };
 }
 
+function segmentReceipt(overrides: Record<string, unknown> = {}) {
+  return {
+    taskRunId: ids.run,
+    executionSegment: 1,
+    jobId: ids.priorJob,
+    route: "native_langgraph_v1",
+    transcriptContract: "protected_message_associations_v1",
+    expectedTranscriptAssociationCount: 0,
+    transcriptAssociationDigest: transcriptDigest,
+    checkpointContract: checkpointManifest.contract,
+    expectedCheckpointCount: checkpointManifest.expectedCheckpointCount,
+    checkpointDigest: checkpointManifest.checkpointOrderedDigest,
+    expectedCheckpointBlobCount: checkpointManifest.expectedBlobCount,
+    checkpointBlobDigest: checkpointManifest.blobOrderedDigest,
+    expectedPendingWriteCount: checkpointManifest.expectedPendingWriteCount,
+    pendingWriteDigest: checkpointManifest.pendingWriteOrderedDigest,
+    sealedAt: parkedAt,
+    ...overrides,
+  };
+}
+
 type FixtureOptions = Readonly<{
   task?: Task | undefined;
   run?: TaskRun | undefined;
   priorJob?: Job | undefined;
   nextJob?: Job | undefined;
+  segment?: ReturnType<typeof segmentReceipt> | undefined;
+  transcriptRows?: readonly Record<string, unknown>[];
+  message?: ReturnType<typeof currentMessage> | undefined;
+  humanEnabled?: boolean;
+  policy?: { mode: string; revision: number };
+  binding?: Record<string, unknown>;
   loseRunUpdate?: boolean;
   loseTaskUpdate?: boolean;
 }>;
@@ -264,29 +360,72 @@ function harness(options: FixtureOptions = {}) {
   const nextJobRow = Object.prototype.hasOwnProperty.call(options, "nextJob")
     ? options.nextJob
     : nextJob();
+  const segmentRow = Object.prototype.hasOwnProperty.call(options, "segment")
+    ? options.segment
+    : segmentReceipt();
+  const messageRow = Object.prototype.hasOwnProperty.call(options, "message")
+    ? options.message
+    : currentMessage();
   let jobRead = 0;
+  const selections: string[] = [];
   const locks: Array<{ table: unknown; kind: string }> = [];
   const writes: Array<{ table: unknown; patch: Record<string, unknown> }> = [];
 
-  const rows = (table: unknown): unknown[] => {
+  const rows = (table: unknown, locked: boolean): unknown[] => {
+    if (table === encryptionTransitionPolicy) return [options.policy ?? { mode: "encrypted_only", revision: 9 }];
+    if (table === protectedTaskRunOutputBindings) return [options.binding ?? {
+      bindingId: `task-run-output:${ids.run}`, resultRevision: 1,
+      resultObjectId, resultOperationId: `task-run-result:${ids.run}`, acceptedPolicyRevision: 9,
+      resultTerminalAt: null, resultAttachedAt: null, messageId: null, messagePublishedAt: null,
+      wakeJobId: null, wakeScheduledAt: null, completedAt: null,
+    }];
     if (table === tasks) return taskRow ? [taskRow] : [];
     if (table === taskRuns) return runRow ? [runRow] : [];
     if (table === jobs) {
+      if (!locked) throw new Error("unexpected unlocked Job read");
       const row = jobRead % 2 === 0 ? priorJobRow : nextJobRow;
       jobRead += 1;
       return row ? [row] : [];
     }
+    if (table === protectedTaskExecutionSegmentReceipts) {
+      return segmentRow ? [segmentRow] : [];
+    }
+    if (table === taskRunMessageAssociations) {
+      return [...(options.transcriptRows ?? [])];
+    }
+    if (table === sessionMessages) return messageRow ? [messageRow] : [];
+    if (table === actors) return [{
+      humanActorId: ids.humanActor,
+      userId: ids.sourceUser,
+      kind: "user",
+      disabledAt: options.humanEnabled === false ? parkedAt : null,
+    }];
     throw new Error("unexpected table");
   };
   const tx = {
-    select: () => ({
+    select: (selection?: unknown) => ({
       from: (table: unknown) => {
+        if (selection !== undefined && [tasks, taskRuns, jobs].includes(table as typeof tasks)) selections.push(compileApprovalSelection(table, selection));
+        let limitValue: number | undefined;
         const query = {
+          innerJoin: (_joined: unknown, _condition: unknown) => query,
           where: (_condition: unknown) => query,
-          limit: (_limit: number) => query,
+          orderBy: (_order: unknown) => query,
+          limit: (limit: number) => {
+            limitValue = limit;
+            return query;
+          },
           for: async (kind: string) => {
             locks.push({ table, kind });
-            return rows(table);
+            return rows(table, true).map(row => projectApprovalRow(table, row, selection));
+          },
+          then: <TResult1 = unknown[]>(
+            resolve: (value: unknown[]) => TResult1 | PromiseLike<TResult1>,
+          ) => {
+            const selectedRows = rows(table, false);
+            return Promise.resolve(limitValue === undefined
+              ? selectedRows
+              : selectedRows.slice(0, limitValue)).then(resolve);
           },
         };
         return query;
@@ -296,7 +435,8 @@ function harness(options: FixtureOptions = {}) {
       set: (patch: Record<string, unknown>) => ({
         where: (_condition: unknown) => ({
           returning: async () => {
-            writes.push({ table, patch });
+            writes.push({ table, patch: table === jobs && priorJobRow
+              ? applyApprovalPatch(priorJobRow, patch) : patch });
             if (table === taskRuns) {
               if (options.loseRunUpdate || !runRow) return [];
               runRow = { ...runRow, ...patch } as TaskRun;
@@ -318,7 +458,7 @@ function harness(options: FixtureOptions = {}) {
     transaction: async <T>(operation: (value: typeof tx) => Promise<T>) =>
       operation(tx),
   } as unknown as DirectDatabase;
-  return { db, locks, writes };
+  return { db, locks, writes, selections };
 }
 
 async function expectRejected(
@@ -336,17 +476,40 @@ async function expectRejected(
 }
 
 describe("protected TaskRun parked-segment start CAS", () => {
+  test("re-admits a dual Human park under fresh Full policy without changing retained provenance", async () => {
+    const reference = nextReference({ policyRevision: 10 });
+    const fixture = harness({ task: task({ contentRepresentation: "dual", prompt: "retained sibling" }),
+      nextJob: nextJob({ input: reference }), policy: { mode: "encrypted_only", revision: 10 } });
+    expect(await startParkedProtectedTaskHumanRunSegment(fixture.db,
+      input({ contentRepresentation: "dual", jobReference: reference }))).toEqual({ status: "started" });
+    expect(fixture.locks[0]).toEqual({ table: encryptionTransitionPolicy, kind: "share" });
+    expect(fixture.writes.every(write => !("prompt" in write.patch) && !("contentRepresentation" in write.patch))).toBe(true);
+    for (const policy of [{ mode: "plaintext_only", revision: 10 },
+      { mode: "shadow_encryption", revision: 10 }, { mode: "encrypted_only", revision: 11 }]) {
+      const denied = harness({ nextJob: nextJob({ input: reference }), policy });
+      expect(await startParkedProtectedTaskHumanRunSegment(denied.db, input({ jobReference: reference })))
+        .toEqual({ status: "rejected", reason: "stale" });
+      expect(denied.writes).toEqual([]);
+      expect(denied.locks).toEqual([{ table: encryptionTransitionPolicy, kind: "share" }]);
+    }
+  });
+
   test("locks the aggregate in order, consumes acceptance, and swaps the Job", async () => {
     const fixture = harness();
 
-    expect(await startParkedProtectedTaskRunSegment(fixture.db, input())).toEqual({
+    expect(await startParkedProtectedTaskHumanRunSegment(fixture.db, input())).toEqual({
       status: "started",
     });
+    assertApprovalSelectionsAreContentFree(fixture.selections);
     expect(fixture.locks).toEqual([
+      { table: encryptionTransitionPolicy, kind: "share" },
       { table: tasks, kind: "update" },
       { table: taskRuns, kind: "update" },
       { table: jobs, kind: "update" },
       { table: jobs, kind: "update" },
+      { table: protectedTaskRunOutputBindings, kind: "share" },
+      { table: actors, kind: "share" },
+      { table: sessionMessages, kind: "share" },
     ]);
     expect(fixture.writes).toHaveLength(3);
     expect(fixture.writes[0]).toEqual({
@@ -379,7 +542,7 @@ describe("protected TaskRun parked-segment start CAS", () => {
       }),
     });
 
-    expect(await startParkedProtectedTaskRunSegment(fixture.db, input({
+    expect(await startParkedProtectedTaskHumanRunSegment(fixture.db, input({
       generation: 0,
     }))).toEqual({ status: "started" });
   });
@@ -402,7 +565,7 @@ describe("protected TaskRun parked-segment start CAS", () => {
       }),
     });
 
-    expect(await startParkedProtectedTaskRunSegment(fixture.db, input())).toEqual({
+    expect(await startParkedProtectedTaskHumanRunSegment(fixture.db, input())).toEqual({
       status: "exact_replay",
     });
     expect(fixture.writes).toEqual([]);
@@ -413,7 +576,7 @@ describe("protected TaskRun parked-segment start CAS", () => {
       task: task({ scheduleKind: "cron", status: "pending" }),
     });
 
-    expect(await startParkedProtectedTaskRunSegment(fixture.db, input())).toEqual({
+    expect(await startParkedProtectedTaskHumanRunSegment(fixture.db, input())).toEqual({
       status: "started",
     });
     expect(fixture.writes).toEqual([
@@ -442,7 +605,7 @@ describe("protected TaskRun parked-segment start CAS", () => {
       const fixture = harness({
         priorJob: priorJob({ metadata: { [receiptKey]: changed } }),
       });
-      expect(await startParkedProtectedTaskRunSegment(fixture.db, input())).toEqual({
+      expect(await startParkedProtectedTaskHumanRunSegment(fixture.db, input())).toEqual({
         status: "rejected",
         reason: "conflict",
       });
@@ -461,9 +624,25 @@ describe("protected TaskRun parked-segment start CAS", () => {
       const metadata: Record<string, unknown> = { [receiptKey]: receipt() };
       if (changed !== undefined) metadata[acceptanceReceiptKey] = changed;
       const fixture = harness({ priorJob: priorJob({ metadata }) });
-      expect(await startParkedProtectedTaskRunSegment(fixture.db, input())).toEqual({
+      expect(await startParkedProtectedTaskHumanRunSegment(fixture.db, input())).toEqual({
         status: "rejected",
         reason: "conflict",
+      });
+      expect(fixture.writes).toEqual([]);
+    }
+  });
+
+  test("rechecks the accepted reply Message before starting", async () => {
+    for (const message of [
+      undefined,
+      currentMessage({ editRevision: 3 }),
+      currentMessage({ sourceUserId: ids.owner }),
+      currentMessage({ lifecycleDisposition: "pending" }),
+    ]) {
+      const fixture = harness({ message });
+      expect(await startParkedProtectedTaskHumanRunSegment(fixture.db, input())).toEqual({
+        status: "rejected",
+        reason: "stale",
       });
       expect(fixture.writes).toEqual([]);
     }
@@ -492,7 +671,7 @@ describe("protected TaskRun parked-segment start CAS", () => {
 
     for (const options of cases) {
       const fixture = harness(options);
-      expect(await startParkedProtectedTaskRunSegment(fixture.db, input())).toEqual({
+      expect(await startParkedProtectedTaskHumanRunSegment(fixture.db, input())).toEqual({
         status: "rejected",
         reason: "stale",
       });
@@ -508,7 +687,7 @@ describe("protected TaskRun parked-segment start CAS", () => {
       { nextJob: undefined },
     ] satisfies FixtureOptions[]) {
       const fixture = harness(options);
-      expect(await startParkedProtectedTaskRunSegment(fixture.db, input())).toEqual({
+      expect(await startParkedProtectedTaskHumanRunSegment(fixture.db, input())).toEqual({
         status: "rejected",
         reason: "not_found",
       });
@@ -557,36 +736,36 @@ describe("protected TaskRun parked-segment start CAS", () => {
       },
     } as unknown as DirectDatabase;
 
-    await expectRejected(startParkedProtectedTaskRunSegment(db, input({
+    await expectRejected(startParkedProtectedTaskHumanRunSegment(db, input({
       jobReference: nextReference({ executionSegment: 1 }),
     })), "binding is malformed");
-    await expectRejected(startParkedProtectedTaskRunSegment(db, input({
+    await expectRejected(startParkedProtectedTaskHumanRunSegment(db, input({
       jobReference: nextReference({ executionSegment: 3 }),
     })), "binding is malformed");
-    await expectRejected(startParkedProtectedTaskRunSegment(db, input({
+    await expectRejected(startParkedProtectedTaskHumanRunSegment(db, input({
       jobReference: nextReference({
         authorizationRequestId: priorReference().authorizationRequestId,
       }),
     })), "binding is malformed");
-    await expectRejected(startParkedProtectedTaskRunSegment(db, input({
+    await expectRejected(startParkedProtectedTaskHumanRunSegment(db, input({
       jobReference: priorReference({
         authorizationRequestId: `task-run-authorization:${ids.run}:segment:2`,
         executionSegment: 2,
       }),
     })), "binding is malformed");
-    await expectRejected(startParkedProtectedTaskRunSegment(db, input({
+    await expectRejected(startParkedProtectedTaskHumanRunSegment(db, input({
       jobReference: nextReference({ resumeAcceptanceId: "other-acceptance" }),
     })), "binding is malformed");
-    await expectRejected(startParkedProtectedTaskRunSegment(db, input({
+    await expectRejected(startParkedProtectedTaskHumanRunSegment(db, input({
       jobReference: {
         ...nextReference(),
         resumeContinuationFingerprint: "A".repeat(43),
       },
     })), "binding is malformed");
-    await expectRejected(startParkedProtectedTaskRunSegment(db, input({
+    await expectRejected(startParkedProtectedTaskHumanRunSegment(db, input({
       priorJobReference: priorReference({ executionSegment: 0 }),
     })), "binding is malformed");
-    await expectRejected(startParkedProtectedTaskRunSegment(db, input({
+    await expectRejected(startParkedProtectedTaskHumanRunSegment(db, input({
       priorJobReference: priorReference({
         executionSegment: Number.MAX_SAFE_INTEGER,
       }),
@@ -598,11 +777,11 @@ describe("protected TaskRun parked-segment start CAS", () => {
   });
 
   test("throws to roll back if either locked write loses its row", () => {
-    expect(startParkedProtectedTaskRunSegment(
+    expect(startParkedProtectedTaskHumanRunSegment(
       harness({ loseRunUpdate: true }).db,
       input(),
     )).rejects.toThrow("lost its TaskRun");
-    expect(startParkedProtectedTaskRunSegment(
+    expect(startParkedProtectedTaskHumanRunSegment(
       harness({ loseTaskUpdate: true }).db,
       input(),
     )).rejects.toThrow("lost its Task");

@@ -3,6 +3,7 @@ import { AIMessage, ToolMessage } from "@langchain/core/messages";
 import type { NautiloState } from "../../src/agent/state";
 import { createProjectionPreflightNode } from "../../src/nodes/projection-preflight";
 import type { ProjectionPreflightResult, ProjectionSnapshot } from "../../src/tools/memory/projection-sharing";
+import type { ProtectedAgentMemoryAccessPort } from "@nautilo/lattice-bridge";
 
 const snapshot: ProjectionSnapshot = {
   toolCallId: "valid-project",
@@ -80,6 +81,78 @@ describe("projection preflight mixed batches", () => {
     expect(result.projectionRoomChoices).toHaveLength(50);
     expect(result.projectionRoomChoices?.[0]?.token).toBe("choice-10");
     expect(result.projectionRoomChoices?.at(-1)?.token).toBe("choice-59");
+  });
+
+  test("turns a duplicate protected access ID into one tool failure before approval", async () => {
+    let prepares = 0;
+    const accessPort = {
+      prepareApproval: async () => {
+        prepares += 1;
+        throw new Error("duplicate identity must not be prepared");
+      },
+      restoreApproval: async () => ({
+        status: "unavailable" as const,
+        reason: "authorization_required" as const,
+      }),
+      change: async () => ({
+        status: "unavailable" as const,
+        reason: "authorization_required" as const,
+      }),
+    } satisfies ProtectedAgentMemoryAccessPort;
+    const node = createProjectionPreflightNode(undefined, {
+      protectedMemoryAccessPortForState: () => accessPort,
+    });
+    const duplicateId = "duplicate-share";
+    const result = await node({
+      taskRun: true,
+      subagentRun: true,
+      trustedExecutionEntrypoint: "background.task",
+      currentTaskId: "task-1",
+      currentTaskRunId: "run-1",
+      currentThreadId: "thread-1",
+      langgraphThreadId: "thread-1",
+      userId: "owner-1",
+      causalHumanUserId: "owner-1",
+      agentId: "agent-1",
+      memoryAccessEnvelope: {
+        ownerId: "owner-1",
+        actorId: "actor-1",
+        agentId: "agent-1",
+        roomId: "room-1",
+        readableNamespaces: ["namespace-1"],
+        mutableNamespaces: ["namespace-1"],
+        writableNamespaces: ["namespace-1"],
+        toolPolicy: {},
+      },
+      messages: [new AIMessage({
+        content: "",
+        tool_calls: [
+          {
+            id: duplicateId,
+            name: "share_memory",
+            args: {
+              memory_id: "memory-1",
+              target_handle: "alice",
+              sensitivity: "normal",
+            },
+          },
+          {
+            id: duplicateId,
+            name: "run_shell",
+            args: { command: "true" },
+          },
+        ],
+      })],
+      projectionRoomChoices: [],
+    } as unknown as NautiloState);
+
+    expect(prepares).toBe(0);
+    expect(result.protectedMemoryAccessSnapshots).toEqual([]);
+    expect(result.projectionRejectedToolCallIds).toEqual([duplicateId]);
+    const output = result.messages?.at(-1);
+    expect(ToolMessage.isInstance(output)).toBe(true);
+    expect((output as ToolMessage).tool_call_id).toBe(duplicateId);
+    expect((output as ToolMessage).status).toBe("error");
   });
 });
 

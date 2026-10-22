@@ -45,6 +45,8 @@ import type { ClientProfileCoordinates } from
 
 const NOW = 1_800_000_000_000;
 const EPISODE_ID = "task-runtime-episode-1";
+const PARENT_SESSION_ID = "30000000-0000-4000-8000-000000000907";
+const BROWSER_SESSION_ID = "task-browser-action-session-1";
 const SOURCE_ROOM_ID = "task-runtime-source-room-1";
 const DEVICE_ID = "task-runtime-device-1";
 const HUMAN_ID = "20000000-0000-4000-8000-000000000907";
@@ -238,6 +240,47 @@ describe("vault Task Runtime authorization", () => {
     }
     foregroundBytes.fill(0);
     taskBytes.fill(0);
+    recipient.publicKey.fill(0);
+    recipient.privateKey.fill(0);
+  });
+
+  test("uses an explicit parent plan session without changing the Browser session", async () => {
+    const { crypto, vault, recipient } = await fixture();
+    const bytes = planBytes(crypto, { sessionId: PARENT_SESSION_ID });
+    let opens = 0;
+    const authority = domainAuthority(true, () => { opens += 1; });
+    const prepared = await prepareVaultRuntimeForegroundAuthorization({
+      crypto,
+      vault,
+      coordinates: COORDINATES,
+      domainForegroundAuthority: authority,
+      authorizationPlanBytes: bytes,
+      recipientPublicKey: recipient.publicKey,
+      browserSessionId: BROWSER_SESSION_ID,
+      expectedPlanSessionId: PARENT_SESSION_ID,
+      now: NOW + 1,
+    });
+    expect(prepared.status).toBe("prepared");
+    expect(opens).toBe(1);
+    if (prepared.status === "prepared") {
+      prepared.authorizationBytes.fill(0);
+      prepared.authorizationDigest.fill(0);
+    }
+
+    opens = 0;
+    expect(await prepareVaultRuntimeForegroundAuthorization({
+      crypto,
+      vault,
+      coordinates: COORDINATES,
+      domainForegroundAuthority: authority,
+      authorizationPlanBytes: bytes,
+      recipientPublicKey: recipient.publicKey,
+      browserSessionId: BROWSER_SESSION_ID,
+      expectedPlanSessionId: "other-parent-session",
+      now: NOW + 1,
+    })).toEqual({ status: "unavailable", reason: "plan_stale" });
+    expect(opens).toBe(0);
+    bytes.fill(0);
     recipient.publicKey.fill(0);
     recipient.privateKey.fill(0);
   });

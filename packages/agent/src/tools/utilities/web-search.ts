@@ -859,6 +859,8 @@ export interface RunWebSearchToolDependencies {
   readonly createDuckDuckGoSearchFetcher?: (
     options: NonNullable<Parameters<typeof buildDuckDuckGoSearchFetcher>[0]>,
   ) => ReturnType<typeof buildDuckDuckGoSearchFetcher>;
+  /** Test seam for the exact page-reader options passed after search admission. */
+  readonly createPageFetcher?: typeof buildAutoReadWebpageFetcher;
   /** Short deterministic deadline seam for unit tests; production is 300 seconds. */
   readonly turnTimeoutMs?: number;
   readonly now?: () => number;
@@ -1078,11 +1080,12 @@ Returns: A concise synthesis, cited sources, and bounded source-reading coverage
         maxContentLength: effectiveMaxPageContentLength,
         timeoutMs: config.nautilo_read_webpage_timeout_ms,
       };
-      const readWebpage = buildAutoReadWebpageFetcher({
+      const readWebpage = (dependencies.createPageFetcher ?? buildAutoReadWebpageFetcher)({
         ...pageOptions,
         provider: config.nautilo_search_provider,
         browserResearchExecutionPort: context?.["browserResearchExecutionPort"] as BrowserResearchExecutionPort | undefined,
         recordProviderCost,
+        ...(context?.["confidential"] === true ? { confidential: true } : {}),
         ...(capabilityFunding
           ? { runTavilyAttempt: capabilityServiceAttemptRunner(capabilityFunding, context, "extract") }
           : { beforeTavilyDispatch: () => requireServerFunding("web_search_tavily_extract") }),
@@ -1195,6 +1198,7 @@ Returns: A concise synthesis, cited sources, and bounded source-reading coverage
               { callbacks: [], signal: controller.signal },
               { fundingHumanUserId: capabilityFunding.humanUserId,
                 fundingSession: admitted.fundingSession, reasoningOutput: false,
+                ...(context?.["confidential"] === true ? { confidential: true } : {}),
                 modelFallbackMode: "none", sameModelRetryMode: "none", isolatedProgress: true }));
           return result.response;
         }

@@ -1,4 +1,7 @@
 import { REVIEWED_PAID_SERVICE_FUNDING_SOURCE_ALARMS, SUPERSEDED_PAID_SERVICE_FUNDING_SOURCE_ALARM_LOCATORS } from "../../baseline/reviewed-paid-service-funding-source-alarms";
+import { CHATGPT_PLAN_SOURCE_ALARMS } from "../../baseline/reviewed-chatgpt-plan-coverage";
+import { BOLTER_NATIVE_STORAGE_ALARMS } from "../../baseline/reviewed-bolter-native-storage";
+import { BOLTER_PLAINTEXT_SOURCE_ALARMS } from "../../baseline/reviewed-bolter-plaintext-carriers";
 import { reviewedExternalRoomSourceAlarms } from "../../baseline/reviewed-external-room-source-alarms";
 import {
   REVIEWED_TASK_FOUNDATION_SOURCE_ALARMS,
@@ -15,6 +18,18 @@ import {
   SUPERSEDED_MAIN_2026_09_17_SOURCE_ALARM_LOCATORS,
 } from "../../baseline/reviewed-main-2026-09-17-source-alarms";
 import { REVIEWED_TASK_RESEARCH_SOURCE_ALARMS } from "../../baseline/reviewed-task-research-continuity";
+import {
+  REVIEWED_MAIN_2026_10_13_SOURCE_ALARMS,
+  SUPERSEDED_MAIN_2026_10_13_SOURCE_ALARM_LOCATORS,
+} from "../../baseline/reviewed-main-2026-10-13-source-alarms";
+import {
+  REVIEWED_PROTECTED_TASK_PROVIDER_SOURCE_ALARMS,
+  SUPERSEDED_PROTECTED_TASK_PROVIDER_SOURCE_ALARM_LOCATORS,
+} from "../../baseline/reviewed-protected-task-provider-source-alarms";
+import {
+  REVIEWED_RELEASE_RECONCILIATION_SOURCE_ALARMS,
+  SUPERSEDED_RELEASE_RECONCILIATION_SOURCE_ALARM_LOCATORS,
+} from "../../baseline/reviewed-release-reconciliation-source-alarms";
 import {
   REVIEWED_TRUSTED_DEVELOPMENT_ENVIRONMENT_SOURCE_ALARMS,
   SUPERSEDED_TRUSTED_DEVELOPMENT_ENVIRONMENT_SOURCE_ALARM_LOCATORS,
@@ -344,6 +359,8 @@ describe("source alarm review closure", () => {
       ...REVIEWED_M303_SOURCE_ALARMS,
     ];
     expect(CURRENT_SOURCE_ALARM_REVIEWS).toEqual(reviewedExternalRoomSourceAlarms([
+      ...BOLTER_PLAINTEXT_SOURCE_ALARMS,
+      ...BOLTER_NATIVE_STORAGE_ALARMS,
       ...[
         ...beforeRelayDispatch.filter((review) =>
           !SUPERSEDED_MAIN_2026_09_03_SOURCE_ALARM_LOCATORS.has(review.locator)
@@ -362,6 +379,7 @@ describe("source alarm review closure", () => {
       .concat(REVIEWED_M318_SOURCE_ALARMS)
       .concat(REVIEWED_M321_SOURCE_ALARMS)
       .concat(REVIEWED_TASK_RESEARCH_SOURCE_ALARMS)
+      .concat(CHATGPT_PLAN_SOURCE_ALARMS)
       .filter((review) =>
         !SUPERSEDED_MAIN_2026_09_09_DOCUMENTMEDIA_SOURCE_LOCATORS.has(review.locator)
         && !SUPERSEDED_MAIN_2026_09_09_MESSAGEBACKFILL_SOURCE_LOCATORS.has(review.locator)
@@ -383,7 +401,19 @@ describe("source alarm review closure", () => {
       .filter((review) => !SUPERSEDED_PAID_SERVICE_FUNDING_SOURCE_ALARM_LOCATORS.has(review.locator))
       .concat(REVIEWED_PAID_SERVICE_FUNDING_SOURCE_ALARMS)
       .filter((review) => !SUPERSEDED_TRUSTED_DEVELOPMENT_ENVIRONMENT_SOURCE_ALARM_LOCATORS.has(review.locator))
-      .concat(REVIEWED_TRUSTED_DEVELOPMENT_ENVIRONMENT_SOURCE_ALARMS)));
+      .concat(REVIEWED_TRUSTED_DEVELOPMENT_ENVIRONMENT_SOURCE_ALARMS)
+      .filter((review) =>
+        !SUPERSEDED_MAIN_2026_10_13_SOURCE_ALARM_LOCATORS.has(review.locator)
+      )
+      .concat(REVIEWED_MAIN_2026_10_13_SOURCE_ALARMS)
+      .filter((review) =>
+        !SUPERSEDED_PROTECTED_TASK_PROVIDER_SOURCE_ALARM_LOCATORS.has(review.locator)
+      )
+      .concat(REVIEWED_PROTECTED_TASK_PROVIDER_SOURCE_ALARMS)
+      .filter((review) =>
+        !SUPERSEDED_RELEASE_RECONCILIATION_SOURCE_ALARM_LOCATORS.has(review.locator)
+      )
+      .concat(REVIEWED_RELEASE_RECONCILIATION_SOURCE_ALARMS)));
   });
 
   test("maps every exact baseline alarm to owned, release-blocking closure", () => {

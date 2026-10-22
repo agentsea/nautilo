@@ -171,6 +171,7 @@
     },
     "packages/server": {
       "entry": [
+        "tests/lattice-integration/**/*.test.ts",
         "tests/unit/**/*.test.ts",
         "tests/unit-isolated/**/*.test.ts",
         "tests/integration/**/*.test.ts",

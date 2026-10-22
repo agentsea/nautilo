@@ -1,5 +1,8 @@
 import type { DirectDatabase } from "@nautilo/db";
-import type { AcceptedInvocationAuthority } from "@nautilo/trust";
+import {
+  assertAcceptedInvocationAuthoritySubject,
+  type AcceptedInvocationAuthority,
+} from "@nautilo/trust";
 import {
   TASK_CONTENT_AUTHORITY_RESOLVER_VERSION_V1,
   encodeTaskPayloadV1,
@@ -121,7 +124,8 @@ export function assertTaskCreationProvenance(
 
 export type TaskCreationAdmissionResult<Prepared = never> =
   | Readonly<{ kind: "ordinary"; candidate: TaskCreateInput }>
-  | Readonly<{ kind: "protected"; prepared: Prepared }>
+  | Readonly<{ kind: "protected"; prepared: Prepared;
+      canonicalTaskIdentity?: Readonly<{ ownerId: string; requestorId: string; agentId: string }> }>
   | Readonly<{
       kind: "unavailable";
       reason:
@@ -190,6 +194,11 @@ export interface ProtectedTaskCreationAuthorityPortsV1 {
 }
 
 export type ProtectedTaskCreationPlanV1 = Readonly<{
+  canonicalTaskIdentity: Readonly<{
+    ownerId: string;
+    requestorId: string;
+    agentId: string;
+  }>;
   authority: TaskContentAuthorityV1;
   shape: TaskExecutionDeliveryShapeV1;
   payload: TaskPayloadV1;
@@ -228,6 +237,11 @@ export function createProtectedTaskCreationAdmissionV1(
       input: TaskCreationAdmissionInput,
     ): Promise<TaskCreationAdmissionResult<ProtectedTaskCreationPlanV1>> {
       const { candidate, provenance } = input;
+      assertTaskCreationProvenance(provenance, candidate.ownerId);
+      assertAcceptedInvocationAuthoritySubject(
+        input.invocationAuthority,
+        candidate.requestorId,
+      );
       if (isNestedTaskCreation(candidate, provenance)) {
         return Object.freeze({
           kind: "unavailable" as const,
@@ -253,10 +267,7 @@ export function createProtectedTaskCreationAdmissionV1(
           reason: "task_shape_unsupported" as const,
         });
       }
-      if (
-        candidate.ownerId !== candidate.requestorId
-        || candidate.lastError != null
-      ) {
+      if (candidate.lastError != null) {
         return Object.freeze({
           kind: "unavailable" as const,
           reason: "task_shape_unsupported" as const,
@@ -280,11 +291,14 @@ export function createProtectedTaskCreationAdmissionV1(
           reason: "task_shape_unsupported" as const,
         });
       }
-      const resolutionInput = Object.freeze({
-        db: input.db,
-        ownerId: candidate.ownerId,
+      const canonicalTaskIdentity = Object.freeze({
+        ownerId: candidate.requestorId,
         requestorId: candidate.requestorId,
         agentId: candidate.agentId,
+      });
+      const resolutionInput = Object.freeze({
+        db: input.db,
+        ...canonicalTaskIdentity,
         preset: candidate.preset ?? "task",
         callingRoomId: candidate.callingRoomId ?? null,
         targetChat: candidate.targetChat ?? "orphan",
@@ -306,9 +320,15 @@ export function createProtectedTaskCreationAdmissionV1(
       }
       const requesterPrivateNamespace =
         await ports.resolveRequesterPrivateNamespace(resolutionInput);
+      if (requesterPrivateNamespace.status === "unavailable") {
+        return Object.freeze({
+          kind: "unavailable" as const,
+          reason: "content_namespace_unavailable" as const,
+        });
+      }
       const authority = resolveTaskContentAuthorityV1({
         resolverVersion: TASK_CONTENT_AUTHORITY_RESOLVER_VERSION_V1,
-        requesterHumanId: candidate.requestorId,
+        requesterHumanId: requesterPrivateNamespace.subjectHumanId,
         requesterPrivateNamespace,
         shape: shape.shape,
       });
@@ -335,7 +355,9 @@ export function createProtectedTaskCreationAdmissionV1(
       }
       return Object.freeze({
         kind: "protected" as const,
+        canonicalTaskIdentity,
         prepared: Object.freeze({
+          canonicalTaskIdentity,
           authority: authority.authority,
           shape: shape.shape,
           payload,

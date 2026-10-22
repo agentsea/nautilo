@@ -12,6 +12,7 @@ import {
   threadRoomReducer,
   type ThreadRoomAction,
   type ThreadRoomControllerState,
+  type ThreadRoomDetail,
   type ThreadRoomIdResolver,
 } from "./thread-room-controller";
 import { useRoomMessageOperations, useThreadRoomEventRouter } from "../../../adapters/runtime-contexts";
@@ -74,7 +75,7 @@ async function loadThreadDetail(
   subthreadRoomId: string,
   parentRoomId: string,
   anchorMessageId: number,
-): Promise<ThreadDetailResponse> {
+): Promise<ThreadRoomDetail> {
   try {
     return await api.getThreadDetail(subthreadRoomId);
   } catch (cause) {

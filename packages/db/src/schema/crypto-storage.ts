@@ -7,6 +7,7 @@ import {
   foreignKey,
   index,
   integer,
+  jsonb,
   pgPolicy,
   pgRole,
   pgTable,
@@ -39,6 +40,13 @@ export const CRYPTO_STORAGE_BYTE_LIMITS = Object.freeze({
   objectAccessEnvelope: 1_048_576,
   agentRuntimeDomainEnvelope: 1_048_576,
   agentRuntimeSignerPublication: 1_024,
+  // Exact public Task signer-certificate wire maximum; bridge parity tests
+  // bind this durable copy to the structurally derived crypto codec bound.
+  taskRuntimeSignerEvidence: 2_039,
+  // Existing V2 grant restricted to one private Task Domain. Server parity
+  // coverage derives the complete canonical wire bound from its fields.
+  taskDefinitionForegroundAuthorizationEvidence: 3_675,
+  historicalTaskPublicationRequest: 1_048_576,
   signingPublicKey: 32,
   wrappedDekMinimum: 40,
   wrappedDekMaximum: 4_096,
@@ -72,7 +80,9 @@ export const BACKGROUND_AUTHORIZATION_BYTE_LIMITS = Object.freeze({
   descriptor: 16_457_643,
   processorResponse: 35_669_931,
   agentResponse: 16 * 1_024 * 1_024 + 128 * 1_024 + 4 * 1_024,
-  runtimeResponse: 16 * 1_024 * 1_024,
+  legacyRuntimeResponse: 16 * 1_024 * 1_024,
+  // Domain grant plus the public Task signer certificate in Response V2.
+  runtimeResponse: 16_779_343,
   response: 35_669_931,
   recipientPublicKey: 65,
   signingPublicKey: 32,
@@ -117,6 +127,10 @@ export const LATTICE_STORAGE_TABLE_NAMES = Object.freeze([
   "background_crypto_authorization_domain_requirements",
   "background_crypto_authorization_namespace_requirements",
   "processor_crypto_signer_authorizations",
+  "task_cancellation_crypto_staging_receipts",
+  "task_terminal_message_crypto_staging_receipts",
+  "task_historical_content_crypto_staging_receipts",
+  "foreground_memory_crypto_publication_receipts",
 ] as const);
 
 export const CRYPTO_DELIVERY_TABLE_NAMES = Object.freeze([
@@ -254,6 +268,13 @@ export const CRYPTO_STORAGE_TABLE_PRIVILEGES = Object.freeze({
     "SELECT",
     "INSERT",
   ]),
+  task_cancellation_crypto_staging_receipts: Object.freeze([
+    "SELECT",
+    "INSERT",
+  ]),
+  task_terminal_message_crypto_staging_receipts: Object.freeze(["SELECT", "INSERT"]),
+  task_historical_content_crypto_staging_receipts: Object.freeze(["SELECT", "INSERT"]),
+  foreground_memory_crypto_publication_receipts: Object.freeze(["SELECT", "INSERT"]),
   human_crypto_custodies: Object.freeze(["SELECT", "INSERT", "UPDATE"]),
   human_crypto_devices: Object.freeze(["SELECT", "INSERT", "UPDATE"]),
   human_crypto_device_group_heads: Object.freeze([
@@ -712,6 +733,191 @@ export const cryptoObjects = pgTable(
   ],
 ).enableRLS();
 
+export const taskCancellationCryptoStagingReceipts = pgTable(
+  "task_cancellation_crypto_staging_receipts",
+  {
+    requestId: text("request_id").primaryKey(),
+    recipientGeneration: bigint("recipient_generation", {
+      mode: "number",
+    }).notNull(),
+    claimId: text("claim_id").notNull(),
+    authorizationDigest: bytea("authorization_digest").notNull(),
+    stoppedIntentHash: bytea("stopped_intent_hash").notNull(),
+    policyRevision: bigint("policy_revision", { mode: "number" }).notNull(),
+    authorityFingerprint: bytea("authority_fingerprint").notNull(),
+    cryptoObjectId: text("crypto_object_id").notNull(),
+    genesisManifestHash: bytea("genesis_manifest_hash").notNull(),
+    stagedAt: timestamp("staged_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    unique("uq_task_cancel_staging_object").on(table.cryptoObjectId),
+    foreignKey({
+      columns: [table.cryptoObjectId],
+      foreignColumns: [cryptoObjects.objectId],
+      name: "task_cancel_staging_object_fk",
+    }).onDelete("cascade"),
+    portableId("task_cancel_staging_request_id_portable", table.requestId),
+    safeCounter(
+      "task_cancel_staging_generation_safe",
+      table.recipientGeneration,
+    ),
+    portableId("task_cancel_staging_claim_id_portable", table.claimId),
+    exactBytes(
+      "task_cancel_staging_authorization_digest_size",
+      table.authorizationDigest,
+      CRYPTO_STORAGE_BYTE_LIMITS.hash,
+    ),
+    exactBytes(
+      "task_cancel_staging_stopped_intent_hash_size",
+      table.stoppedIntentHash,
+      CRYPTO_STORAGE_BYTE_LIMITS.hash,
+    ),
+    check(
+      "task_cancel_staging_policy_revision_positive",
+      sql`${table.policyRevision} >= 1`,
+    ),
+    exactBytes(
+      "task_cancel_staging_authority_fingerprint_size",
+      table.authorityFingerprint,
+      CRYPTO_STORAGE_BYTE_LIMITS.hash,
+    ),
+    portableId(
+      "task_cancel_staging_object_id_portable",
+      table.cryptoObjectId,
+    ),
+    check(
+      "task_cancel_staging_object_shape",
+      sql`${table.cryptoObjectId} ~ '^task-run-result:v1:[0-9a-f]{64}$'`,
+    ),
+    exactBytes(
+      "task_cancel_staging_genesis_manifest_hash_size",
+      table.genesisManifestHash,
+      CRYPTO_STORAGE_BYTE_LIMITS.hash,
+    ),
+    ...appendOnlyPolicies("task_cancel_staging"),
+  ],
+).enableRLS();
+
+export type TaskCancellationCryptoStagingReceipt =
+  typeof taskCancellationCryptoStagingReceipts.$inferSelect;
+export type NewTaskCancellationCryptoStagingReceipt =
+  typeof taskCancellationCryptoStagingReceipts.$inferInsert;
+
+/** Signed public metadata only; randomized ciphertext lives in canonical crypto storage. */
+export const taskHistoricalContentCryptoStagingReceipts = pgTable(
+  "task_historical_content_crypto_staging_receipts",
+  {
+    cryptoObjectId: text("crypto_object_id").primaryKey(),
+    operationId: text("operation_id").notNull(),
+    signedPublicationRequestBytes: bytea("signed_publication_request_bytes").notNull(),
+    signedRequestDigest: bytea("signed_request_digest").notNull(),
+    authorityFingerprint: bytea("authority_fingerprint").notNull(),
+    genesisManifestHash: bytea("genesis_manifest_hash").notNull(),
+    stagedAt: timestamp("staged_at", { withTimezone: true }).notNull(),
+  },
+  table => [
+    unique("uq_task_historical_staging_operation").on(table.operationId),
+    foreignKey({
+      columns: [table.cryptoObjectId], foreignColumns: [cryptoObjects.objectId],
+      name: "task_historical_staging_object_fk",
+    }).onDelete("cascade"),
+    portableId("task_historical_staging_operation_portable", table.operationId),
+    portableId("task_historical_staging_object_portable", table.cryptoObjectId),
+    check("task_historical_staging_object_shape",
+      sql`${table.cryptoObjectId} ~ '^task-historical:v1:[0-9a-f]{64}$'`),
+    boundedBytes("task_historical_staging_signed_request_size", table.signedPublicationRequestBytes,
+      CRYPTO_STORAGE_BYTE_LIMITS.historicalTaskPublicationRequest, 1),
+    exactBytes("task_historical_staging_signed_request_digest_size", table.signedRequestDigest,
+      CRYPTO_STORAGE_BYTE_LIMITS.hash),
+    exactBytes("task_historical_staging_authority_fingerprint_size", table.authorityFingerprint,
+      CRYPTO_STORAGE_BYTE_LIMITS.hash),
+    exactBytes("task_historical_staging_genesis_manifest_hash_size", table.genesisManifestHash,
+      CRYPTO_STORAGE_BYTE_LIMITS.hash),
+    ...appendOnlyPolicies("task_historical_staging"),
+  ],
+).enableRLS();
+
+export type TaskHistoricalContentCryptoStagingReceipt =
+  typeof taskHistoricalContentCryptoStagingReceipts.$inferSelect;
+
+export const taskTerminalMessageCryptoStagingReceipts = pgTable(
+  "task_terminal_message_crypto_staging_receipts",
+  {
+    requestId: text("request_id").primaryKey(),
+    recipientGeneration: bigint("recipient_generation", {
+      mode: "number",
+    }).notNull(),
+    claimId: text("claim_id").notNull(),
+    authorizationDigest: bytea("authorization_digest").notNull(),
+    deliveryIntentHash: bytea("delivery_intent_hash").notNull(),
+    rawResultMessageIntent: jsonb("raw_result_message_intent").$type<Readonly<Record<string, unknown>>>(),
+    acceptedPolicyRevision: bigint("accepted_policy_revision", { mode: "number" }).notNull(),
+    publicationPolicyRevision: bigint("publication_policy_revision", { mode: "number" }).notNull(),
+    authorityFingerprint: bytea("authority_fingerprint").notNull(),
+    cryptoObjectId: text("crypto_object_id").notNull(),
+    genesisManifestHash: bytea("genesis_manifest_hash").notNull(),
+    stagedAt: timestamp("staged_at", { withTimezone: true }).notNull(),
+  },
+  (table) => [
+    unique("uq_task_terminal_message_staging_object").on(table.cryptoObjectId),
+    foreignKey({
+      columns: [table.cryptoObjectId],
+      foreignColumns: [cryptoObjects.objectId],
+      name: "task_terminal_message_staging_object_fk",
+    }).onDelete("cascade"),
+    portableId("task_terminal_message_staging_request_id_portable", table.requestId),
+    safeCounter(
+      "task_terminal_message_staging_generation_safe",
+      table.recipientGeneration,
+    ),
+    portableId("task_terminal_message_staging_claim_id_portable", table.claimId),
+    exactBytes(
+      "task_terminal_message_staging_authorization_digest_size",
+      table.authorizationDigest,
+      CRYPTO_STORAGE_BYTE_LIMITS.hash,
+    ),
+    exactBytes(
+      "task_terminal_message_staging_delivery_intent_hash_size",
+      table.deliveryIntentHash,
+      CRYPTO_STORAGE_BYTE_LIMITS.hash,
+    ),
+    check(
+      "task_terminal_message_staging_raw_intent_object",
+      sql`${table.rawResultMessageIntent} is null or jsonb_typeof(${table.rawResultMessageIntent}) = 'object'`,
+    ),
+    check(
+      "task_terminal_message_staging_policy_revision_positive",
+      sql`${table.acceptedPolicyRevision} >= 1 and ${table.publicationPolicyRevision} >= ${table.acceptedPolicyRevision}`,
+    ),
+    safeCounter("task_terminal_message_staging_accepted_policy_safe", table.acceptedPolicyRevision),
+    safeCounter("task_terminal_message_staging_publication_policy_safe", table.publicationPolicyRevision),
+    exactBytes(
+      "task_terminal_message_staging_authority_fingerprint_size",
+      table.authorityFingerprint,
+      CRYPTO_STORAGE_BYTE_LIMITS.hash,
+    ),
+    portableId(
+      "task_terminal_message_staging_object_id_portable",
+      table.cryptoObjectId,
+    ),
+    check(
+      "task_terminal_message_staging_object_shape",
+      sql`${table.cryptoObjectId} ~ '^message:v2:[0-9a-f]{64}$'`,
+    ),
+    exactBytes(
+      "task_terminal_message_staging_genesis_manifest_hash_size",
+      table.genesisManifestHash,
+      CRYPTO_STORAGE_BYTE_LIMITS.hash,
+    ),
+    ...appendOnlyPolicies("task_terminal_message_staging"),
+  ],
+).enableRLS();
+
+export type TaskTerminalMessageCryptoStagingReceipt =
+  typeof taskTerminalMessageCryptoStagingReceipts.$inferSelect;
+export type NewTaskTerminalMessageCryptoStagingReceipt =
+  typeof taskTerminalMessageCryptoStagingReceipts.$inferInsert;
+
 export const objectCryptoAccessManifests = pgTable(
   "object_crypto_access_manifests",
   {
@@ -721,6 +927,7 @@ export const objectCryptoAccessManifests = pgTable(
     previousManifestHash: bytea("previous_manifest_hash"),
     payloadHash: bytea("payload_hash").notNull(),
     manifestBytes: bytea("manifest_bytes").notNull(),
+    signerEvidenceBytes: bytea("signer_evidence_bytes"),
   },
   (table) => [
     primaryKey({ columns: [table.objectId, table.accessRevision] }),
@@ -782,6 +989,16 @@ export const objectCryptoAccessManifests = pgTable(
       table.manifestBytes,
       CRYPTO_STORAGE_BYTE_LIMITS.objectAccessManifest,
       1,
+    ),
+    check(
+      "object_crypto_access_manifests_signer_evidence_size",
+      sql`${table.signerEvidenceBytes} is null or (
+        octet_length(${table.signerEvidenceBytes}) between 1
+        and ${sql.raw(String(Math.max(
+          CRYPTO_STORAGE_BYTE_LIMITS.taskRuntimeSignerEvidence,
+          CRYPTO_STORAGE_BYTE_LIMITS.taskDefinitionForegroundAuthorizationEvidence,
+        )))}
+      )`,
     ),
     ...appendOnlyPolicies("object_crypto_access_manifests"),
   ],
@@ -1408,7 +1625,11 @@ export const backgroundCryptoAuthorizationRequests = pgTable(
         'task.dispatch',
         'task.execute',
         'task.await_reply_resume',
-        'task.approval_resume'
+        'task.approval_resume',
+        'task.cancel_result',
+        'task.deliver_message',
+        'task.deliver_result',
+        'task.delivery_wake'
       )`,
     ),
     check(
@@ -1429,7 +1650,11 @@ export const backgroundCryptoAuthorizationRequests = pgTable(
         'task.dispatch',
         'task.execute',
         'task.await_reply_resume',
-        'task.approval_resume'
+        'task.approval_resume',
+        'task.cancel_result',
+        'task.deliver_message',
+        'task.deliver_result',
+        'task.delivery_wake'
       )`,
     ),
     check(
@@ -1534,6 +1759,7 @@ export const backgroundCryptoAuthorizationRequests = pgTable(
       ) or (
         ${table.workKind} not like 'stenographer.%'
         and ${table.workKind} not like 'reflection.%'
+        and ${table.workKind} not in ('task.cancel_result', 'task.deliver_message', 'task.deliver_result', 'task.delivery_wake')
         and (${table.workKind} not like 'task.%'
           or ${table.formatVersion} in (1, 2))
         and ${table.credentialSubjectKind} = 'agent'
@@ -1541,7 +1767,12 @@ export const backgroundCryptoAuthorizationRequests = pgTable(
         ${table.workKind} in (
           'task.dispatch',
           'task.execute',
-          'task.await_reply_resume'
+          'task.await_reply_resume',
+          'task.approval_resume',
+        'task.cancel_result',
+        'task.deliver_message',
+        'task.deliver_result',
+        'task.delivery_wake'
         )
         and ${table.purpose} = ${table.workKind}
         and ${table.formatVersion} = 3
@@ -1887,6 +2118,7 @@ export const backgroundCryptoAuthorizationRequests = pgTable(
       sql`${table.terminalReason} is null or ${table.terminalReason} in (
         'malformed_request',
         'integrity_failure',
+        'provider_outcome_unknown',
         'policy_rejected',
         'unsupported_subject',
         'retry_limit_exhausted',
@@ -1906,6 +2138,7 @@ export const backgroundCryptoAuthorizationRequests = pgTable(
         and ${table.terminalReason} in (
           'malformed_request',
           'integrity_failure',
+        'provider_outcome_unknown',
           'policy_rejected',
           'unsupported_subject',
           'retry_limit_exhausted',
@@ -5140,6 +5373,48 @@ export const cryptoOperationOutbox = pgTable(
   ],
 ).enableRLS();
 
+/** Links an exact reserved Memory mutation to its independently committed ciphertext. */
+export const foregroundMemoryCryptoPublicationReceipts = pgTable(
+  "foreground_memory_crypto_publication_receipts",
+  {
+    operationId: text("operation_id").primaryKey(),
+    cryptoObjectId: text("crypto_object_id").notNull()
+      .unique("uq_foreground_memory_publication_object"),
+    memoryId: uuid("memory_id").notNull(),
+    contentRevision: integer("content_revision").notNull(),
+    agentId: uuid("agent_id").notNull(),
+    reservationDigest: bytea("reservation_digest").notNull(),
+    requiredNamespaceFingerprint: bytea("required_namespace_fingerprint").notNull(),
+    genesisManifestHash: bytea("genesis_manifest_hash").notNull(),
+    stagedAt: timestamp("staged_at", { withTimezone: true }).notNull(),
+  },
+  table => [
+    foreignKey({
+      name: "foreground_memory_publication_object_fk",
+      columns: [table.cryptoObjectId],
+      foreignColumns: [cryptoObjects.objectId],
+    }).onDelete("cascade"),
+    check("foreground_memory_publication_operation_portable",
+      sql`${table.operationId} ~ '^[A-Za-z0-9][A-Za-z0-9._:@/-]*$'`),
+    check("foreground_memory_publication_object_shape",
+      sql`${table.cryptoObjectId} ~ '^memory:v1:[0-9a-f]{64}$'`),
+    check("foreground_memory_publication_revision_positive", sql`${table.contentRevision} > 0`),
+    check("foreground_memory_publication_digest_sizes",
+      sql`octet_length(${table.reservationDigest}) = 32
+        and octet_length(${table.requiredNamespaceFingerprint}) = 32
+        and octet_length(${table.genesisManifestHash}) = 32`),
+    pgPolicy("foreground_memory_publication_crypto_select", {
+      for: "select", to: nautiloCryptoRole, using: sql`true`,
+    }),
+    pgPolicy("foreground_memory_publication_crypto_insert", {
+      for: "insert", to: nautiloCryptoRole, withCheck: sql`true`,
+    }),
+  ],
+).enableRLS();
+
+export type ForegroundMemoryCryptoPublicationReceipt =
+  typeof foregroundMemoryCryptoPublicationReceipts.$inferSelect;
+
 export const LATTICE_STORAGE_TABLES = Object.freeze([
   cryptoDomains,
   cryptoDomainProviderHeads,
@@ -5160,6 +5435,10 @@ export const LATTICE_STORAGE_TABLES = Object.freeze([
   backgroundCryptoAuthorizationDomainRequirements,
   backgroundCryptoAuthorizationNamespaceRequirements,
   processorCryptoSignerAuthorizations,
+  taskCancellationCryptoStagingReceipts,
+  taskTerminalMessageCryptoStagingReceipts,
+  taskHistoricalContentCryptoStagingReceipts,
+  foregroundMemoryCryptoPublicationReceipts,
 ] as const);
 
 export const CRYPTO_DELIVERY_TABLES = Object.freeze([

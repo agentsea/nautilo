@@ -128,7 +128,10 @@ describe("Room history Shadow-read HTTP contract", () => {
         ? target
         : target instanceof URL ? target.href : target.url;
       return json({
-        messages: [],
+        messages: [{ id: "27", role: "assistant", content: "ordinary",
+          createdAt: "2026-08-23T11:59:00.000Z",
+          foregroundExecutionId: "foreground:27",
+          modelInputExposure: { version: 1, status: "incomplete" } }],
         pageInfo: { hasMoreBefore: false, oldestCursor: null },
         shadowEncryption: readySidecar(),
       });
@@ -151,6 +154,10 @@ describe("Room history Shadow-read HTTP contract", () => {
     expect(seen).toContain("shadowReadRequestKey=history-page%3Aone");
     expect(seen).toContain("shadowReadDeviceId=device%3Abrowser");
     expect(page.shadowEncryption?.status).toBe("ready");
+    expect(page.messages[0]).toMatchObject({
+      foregroundExecutionId: "foreground:27",
+      modelInputExposure: { version: 1, status: "incomplete" },
+    });
   });
 
   test("opts protected around reads into metadata while ordinary history URLs stay unchanged", async () => {
@@ -295,6 +302,46 @@ describe("Room history Shadow-read HTTP contract", () => {
       ...value,
       signerEvidence: [evidence],
     }).success).toBeTrue();
+  });
+
+  test("accepts protected-only Task Runtime records with bounded signer evidence", () => {
+    const value = readySidecar();
+    const selected = {
+      ...value.selectedCoordinates[0],
+      role: "assistant" as const,
+    };
+    const protectedMessage = {
+      ...value.records[0].protectedMessage,
+      projection: {
+        ...value.records[0].protectedMessage.projection,
+        role: "assistant" as const,
+      },
+    };
+    const record = {
+      kind: "task_runtime" as const,
+      taskId: "43000000-0000-4000-8000-000000000275",
+      taskRunId: "44000000-0000-4000-8000-000000000275",
+      coordinate: selected,
+      representationMode: "protected-only" as const,
+      selectedSource: { role: "assistant" as const },
+      retainedGeneration: value.records[0].retainedGeneration,
+      protectedMessage,
+    };
+    expect(roomHistoryShadowReadResponseV1Schema.safeParse({
+      ...value,
+      selectedCoordinates: [selected],
+      records: [record],
+      signerEvidence: [{ kind: "task_runtime_signer_certificate",
+        evidenceBytesBase64url: "Y2VydA" }],
+    }).success).toBeTrue();
+    const { taskRunId: _taskRunId, ...withoutTaskRun } = record;
+    expect(roomHistoryShadowReadResponseV1Schema.safeParse({
+      ...value, selectedCoordinates: [selected], records: [withoutTaskRun],
+    }).success).toBeFalse();
+    expect(roomHistoryShadowReadResponseV1Schema.safeParse({
+      ...value, selectedCoordinates: [selected], records: [{ ...record,
+        ordinaryPayloadBytesBase64url: "e30" }],
+    }).success).toBeFalse();
   });
 
   test("preserves mixed-class authorities as one combined ready sidecar", () => {

@@ -1,6 +1,10 @@
 import { ProtectedTaskExecutionDidNotBeginError } from "../../src/tasks/protected-task-execution-candidate";
 import { describe, expect, test } from "bun:test";
 import type { PersistJobPayload } from "@nautilo/db";
+import {
+  createAcceptedInvocationAuthority,
+  getAcceptedInvocationAuthorityOrigin,
+} from "@nautilo/trust";
 import type { JobStatus, ServerEvent } from "@nautilo/types";
 
 import { eventBus } from "../../src/event-bus";
@@ -105,6 +109,80 @@ function acceptanceSinks(
 }
 
 describe("JobManager protected Task execution", () => {
+  test("binds protected invocation authority to the exact Task origin", async () => {
+    const persisted: PersistJobPayload[] = [];
+    let ineligible = 0;
+    const jm = new JobManager({
+      laneLock: new InMemoryLaneLock(),
+      acceptanceSinks: acceptanceSinks([]),
+      startProtectedTaskJob,
+      settleProtectedTaskJobTerminal,
+      persist: async (payload) => {
+        persisted.push(payload);
+        return `protected-origin-${persisted.length}`;
+      },
+      updateStatus: async () => {},
+    });
+    const candidate: ProtectedTaskExecutionCandidate = {
+      start: async () => ({ status: "started" }),
+      run: work => work({}, new AbortController().signal, publication),
+      onIneligible: () => { ineligible += 1; },
+    };
+    const authority = createAcceptedInvocationAuthority(REQUESTOR_ID);
+
+    const admitted = await jm.createProtectedTaskJob({
+      scheduling: scheduling("subagent:protected-origin"),
+      reference: reference(),
+      executor: async function* () { yield* []; },
+      candidate,
+    }, undefined, authority);
+
+    const admittedInvocationAuthority = admitted.invocationAcceptanceAuthority;
+    if (admittedInvocationAuthority === undefined) {
+      throw new Error("Protected Task Job did not retain invocation authority");
+    }
+    expect(admittedInvocationAuthority).toBe(authority);
+    expect(getAcceptedInvocationAuthorityOrigin(
+      admittedInvocationAuthority,
+    )).toEqual({ originTaskId: TASK_ID });
+    await waitFor(() => persisted.length === 1);
+    expect(persisted[0]?.input).toEqual(reference());
+    expect(JSON.stringify(persisted[0])).not.toContain("protected-origin");
+
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(jm.createProtectedTaskJob({
+      scheduling: scheduling("subagent:protected-origin-task-mismatch"),
+      reference: reference(),
+      executor: async function* () { yield* []; },
+      candidate,
+    }, undefined, createAcceptedInvocationAuthority(REQUESTOR_ID, {
+      originTaskId: "different-task",
+    }))).rejects.toThrow(
+      "Accepted invocation authority origin does not match protected Task",
+    );
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(jm.createProtectedTaskJob({
+      scheduling: scheduling("subagent:protected-origin-human-mismatch"),
+      reference: reference(),
+      executor: async function* () { yield* []; },
+      candidate,
+    }, undefined, createAcceptedInvocationAuthority("different-human")))
+      .rejects.toThrow("Accepted invocation authority subject mismatch");
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(jm.createProtectedTaskJob({
+      scheduling: scheduling("subagent:protected-origin-room-mismatch"),
+      reference: reference(),
+      executor: async function* () { yield* []; },
+      candidate,
+    }, undefined, createAcceptedInvocationAuthority(REQUESTOR_ID, {
+      originRoomId: ROOM_ID,
+    }))).rejects.toThrow(
+      "Accepted invocation authority origin does not match protected Task",
+    );
+    expect(persisted).toHaveLength(1);
+    expect(ineligible).toBe(3);
+  });
+
   test("uses the paired parked persistence capability before the existing start", async () => {
     const order: string[] = [];
     const persisted: PersistJobPayload[] = [];

@@ -1,4 +1,4 @@
-import { beforeEach, expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, spyOn, test } from "bun:test";
 import type { Configuration } from "../../src/subagents/deep-research/shared/config";
 import type { AgentState } from "../../src/subagents/deep-research/agent/state";
 
@@ -42,4 +42,18 @@ test("context rejection retains the cause without retrying on shortened findings
   expect((error as Error).cause).toBe(cause);
   expect(invoke).toHaveBeenCalledTimes(1);
   expect(state.notes).toEqual(["A sourced finding"]);
+});
+
+
+test("confidential report synthesis does not log provider error content", async () => {
+  const marker = "PRIVATE_FINAL_REPORT_PROVIDER_MARKER";
+  invoke = mock(async () => { throw new Error(marker); });
+  const logger = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const failure = await createFinalReportGenerationNode({ ...cfg, confidential: true })(state)
+      .catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toContain("Deep Research final report generation failed");
+    expect(JSON.stringify(logger.mock.calls)).not.toContain(marker);
+  } finally { logger.mockRestore(); }
 });

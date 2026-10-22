@@ -12,11 +12,16 @@ import {
   type TaskRuntimeExecutionDomainAuthorityV1,
   type TaskRuntimeExecutionEvidenceV1,
 } from "../background/task-runtime-execution-evidence-v1.ts";
+import type { TaskRuntimeTemporarySignerV1 } from
+  "../background/task-runtime-recipient-registry-v1.ts";
 import type { LatticeCrypto } from "../crypto/index.ts";
 import {
   createAgentObjectAccessManifestV5,
+  createTaskRuntimeObjectAccessManifestV5,
   type ObjectAccessManifestV5,
 } from "../format/object-access-manifest-v5.ts";
+import { assertTaskRuntimeTemporarySignerForPreparationV1 } from
+  "./task-runtime-result-preparation-v1.ts";
 import {
   decodeNamespaceObjectEnvelopeV2,
   encodeNamespaceObjectEnvelopeV2,
@@ -88,7 +93,8 @@ export interface PrepareTaskRuntimeAgentObjectAccessManifestGenesisSetInputV1 {
   readonly namespaces: readonly DeviceWrappedAgentNamespaceAuthorityV1[];
   readonly agentAuthorizationRevision: number;
   readonly runtime: AgentRuntimeGenerationV2;
-  readonly signerPublication: AgentRuntimeSignerPublicationV1;
+  readonly signerPublication: AgentRuntimeSignerPublicationV1 | null;
+  readonly temporarySigner?: TaskRuntimeTemporarySignerV1;
   readonly resolveHistoricalSignerPublicationManager:
     ResolveHistoricalAgentRuntimeSignerPublicationManagerV1;
 }
@@ -100,6 +106,7 @@ export interface PreparedTaskRuntimeAgentObjectAccessManifestGenesisSetV1 {
   readonly envelopeBytes: readonly Uint8Array[];
   readonly authority:
     TaskRuntimeAgentObjectAccessGenesisSetAuthorityContextV1;
+  readonly signerEvidenceBytes?: Uint8Array;
 }
 
 type PreparedSnapshot = Readonly<{
@@ -108,6 +115,7 @@ type PreparedSnapshot = Readonly<{
   manifestHash: Uint8Array;
   envelopeBytes: readonly Uint8Array[];
   authorityFingerprint: string;
+  signerEvidenceBytes: Uint8Array | null;
 }>;
 
 const preparedSnapshots = new WeakMap<object, PreparedSnapshot>();
@@ -448,28 +456,56 @@ export function prepareTaskRuntimeAgentObjectAccessManifestGenesisSetV1(
     const agentAuthorization = authorizationRevision(
       input.agentAuthorizationRevision,
     );
-    if (
-      evidence.result.taskRunId !== evidence.workId
+    const temporary = input.temporarySigner;
+    if (evidence.result.taskRunId !== evidence.workId
       || input.runtime.agentId !== evidence.result.signerAgentId
-      || input.signerPublication.agentId !== evidence.result.signerAgentId
-      || input.signerPublication.authorizationRevision !== agentAuthorization
-      || !agentRuntimeSignerPublicationMatchesRuntimeV1(
+      || (input.signerPublication === null) === (temporary === undefined)) {
+      throw new TypeError("Task Runtime Agent signer authority was substituted");
+    }
+    let signerRuntime = input.runtime;
+    let signerKeyId: string;
+    let signerAuthorizationHash: Uint8Array | null = null;
+    let hostAuthorizationRevision: number = agentAuthorization;
+    let signerEvidenceBytes: Uint8Array | null = null;
+    if (temporary === undefined) {
+      const publication = input.signerPublication!;
+      if (publication.agentId !== evidence.result.signerAgentId
+        || publication.authorizationRevision !== agentAuthorization
+        || !agentRuntimeSignerPublicationMatchesRuntimeV1(
+          crypto,
+          input.runtime,
+          publication,
+        )
+        || !verifyHistoricalAgentRuntimeSignerPublicationV1({
+          crypto,
+          publication,
+          resolveHistoricalManagerAuthority:
+            input.resolveHistoricalSignerPublicationManager,
+        })) throw new TypeError("Task Runtime Agent signer authority was substituted");
+      signerKeyId = publication.signerKeyId;
+    } else {
+      if (input.agentAuthorizationRevision !== 0) {
+        throw new TypeError(
+          "Temporary Task Runtime Agent authorization revision must be zero",
+        );
+      }
+      const authority = assertTaskRuntimeTemporarySignerForPreparationV1(
         crypto,
+        evidence,
         input.runtime,
-        input.signerPublication,
-      )
-      || !verifyHistoricalAgentRuntimeSignerPublicationV1({
-        crypto,
-        publication: input.signerPublication,
-        resolveHistoricalManagerAuthority:
-          input.resolveHistoricalSignerPublicationManager,
-      })
-    ) throw new TypeError("Task Runtime Agent signer authority was substituted");
+        temporary,
+      );
+      signerRuntime = temporary.runtime;
+      signerKeyId = authority.signerKeyId;
+      signerAuthorizationHash = authority.certificateHash;
+      hostAuthorizationRevision = authority.hostAuthorizationRevision;
+      signerEvidenceBytes = temporary.certificateBytes.slice();
+    }
     const payloadHash = exactHash(
       "Task Runtime Agent payload hash",
       input.payloadHash,
     );
-    const created = createAgentObjectAccessManifestV5(crypto, {
+    const manifestInput = {
       objectId: targetObjectId,
       payloadHash,
       accessRevision: accessRevision(0),
@@ -477,13 +513,25 @@ export function prepareTaskRuntimeAgentObjectAccessManifestGenesisSetV1(
       envelopeHashes: envelopeEntries.map((entry) => entry.context.envelopeHash),
       signer: {
         kind: "agent_runtime",
-        agentId: input.runtime.agentId,
-        runtimeGeneration: input.runtime.generation,
-        signerKeyId: input.signerPublication.signerKeyId,
+        agentId: signerRuntime.agentId,
+        runtimeGeneration: signerRuntime.generation,
+        signerKeyId,
       },
-      signerAuthorizationHash: null,
-      hostAuthorizationRevision: agentAuthorization,
-    }, input.runtime);
+      signerAuthorizationHash,
+      hostAuthorizationRevision: authorizationRevision(
+        hostAuthorizationRevision,
+      ),
+    } as const;
+    const created = temporary === undefined
+      ? createAgentObjectAccessManifestV5(crypto, manifestInput, signerRuntime)
+      : createTaskRuntimeObjectAccessManifestV5(crypto, manifestInput, {
+        runtime: signerRuntime,
+        certificateBytes: temporary.certificateBytes,
+        issuerSigningPublicKey: temporary.issuerSigningPublicKey,
+        expectedRequestHash: temporary.requestHash,
+        expectedAuthorizationHash: temporary.authorizationHash,
+        now: crypto.clock.now(),
+      });
     assertAuthenticTaskRuntimeExecutionEvidenceV1(evidence);
     const authority =
       cloneTaskRuntimeAgentObjectAccessGenesisSetAuthorityContextV1({
@@ -512,9 +560,9 @@ export function prepareTaskRuntimeAgentObjectAccessManifestGenesisSetV1(
         namespaces: selected.namespaces,
         domains: selected.domains,
         agentAuthorizationRevision: agentAuthorization,
-        agentId: input.runtime.agentId,
-        runtimeGeneration: input.runtime.generation,
-        signerKeyId: input.signerPublication.signerKeyId,
+        agentId: signerRuntime.agentId,
+        runtimeGeneration: signerRuntime.generation,
+        signerKeyId,
       });
     const prepared = Object.freeze({
       manifest: created.manifest,
@@ -522,6 +570,9 @@ export function prepareTaskRuntimeAgentObjectAccessManifestGenesisSetV1(
       manifestHash: created.hash,
       envelopeBytes: Object.freeze(envelopeEntries.map((entry) => entry.bytes)),
       authority,
+      ...(signerEvidenceBytes === null ? {} : {
+        signerEvidenceBytes: signerEvidenceBytes.slice(),
+      }),
     });
     preparedSnapshots.set(prepared, Object.freeze({
       evidence,
@@ -531,7 +582,10 @@ export function prepareTaskRuntimeAgentObjectAccessManifestGenesisSetV1(
         prepared.envelopeBytes.map(copyOwnedBytesV2),
       ),
       authorityFingerprint: authorityFingerprint(authority),
+      signerEvidenceBytes: signerEvidenceBytes?.slice() ?? null,
     }));
+    signerAuthorizationHash?.fill(0);
+    signerEvidenceBytes?.fill(0);
     return prepared;
   } catch (cause) {
     envelopeEntries.forEach((entry) => entry.bytes.fill(0));
@@ -566,6 +620,13 @@ export function assertAuthenticPreparedTaskRuntimeAgentObjectAccessManifestGenes
     || snapshot.envelopeBytes.some((entry, index) =>
       !equalBytes(entry, prepared.envelopeBytes[index]!)
     )
+    || (snapshot.signerEvidenceBytes === null)
+      !== (prepared.signerEvidenceBytes === undefined)
+    || (snapshot.signerEvidenceBytes !== null
+      && !equalBytes(
+        snapshot.signerEvidenceBytes,
+        prepared.signerEvidenceBytes!,
+      ))
     || snapshot.authorityFingerprint !== authorityFingerprint(prepared.authority)
   ) throw new TypeError(
     "Task Runtime Agent set persistence requires authentic preparation",

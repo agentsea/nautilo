@@ -15,6 +15,8 @@ import {
   ENABLE_STRICT_SHADOW_CONFIRMATION,
   USE_FALLBACK_SHADOW_CONFIRMATION,
 } from "@nautilo/api-client";
+import { ProtectedTaskActivationReadinessError } from "../../src/routes/protected-task-activation-readiness";
+
 import {
   encryptionTransitionRoutes,
   type EncryptionTransitionRouteDeps,
@@ -54,6 +56,12 @@ function routeHarness(deps: EncryptionTransitionRouteDeps) {
       claimedTasks: 0,
     }),
     flushPendingBroadcasts: async () => undefined,
+    validateFullTransition: async () => undefined,
+    casValidatedPolicy: async (db, requested, validate) => {
+      const current = await deps.getPolicy!(db);
+      await validate({ transaction: {} as never, current, requested });
+      return deps.casPolicy!(db, requested);
+    },
     reconcileObservationAdmissions: async () => 0,
     reconcileHistoryReadAdmissions: async () => 0,
     getLiveTurnDashboard: async () => liveTurns,
@@ -577,6 +585,36 @@ describe("M274 Admin encryption transition route", () => {
     } })).toMatchObject({ status: 200, body: { policy: { mode: "encrypted_only", revision: 3 } } });
     expect(inputs).toHaveLength(1);
     expect(events).toHaveLength(1);
+  });
+
+  test("Full readiness uses the owning drain and held current-policy transaction before CAS", async () => {
+    const events: string[] = [];
+    const transaction = {} as never;
+    const current = { ...policy, mode: "shadow_encryption" as const };
+    const call = routeHarness({
+      getCapabilities: async () => ["manage_server_settings"], getDb: () => ({}) as never,
+      getPolicy: async () => current,
+      maintenanceController: { enterDraining: async () => ({ operationId: "owned-drain" }),
+        complete: async id => { expect(id).toBe("owned-drain"); events.push("released"); } },
+      auditEvent: () => { events.push("audit"); },
+      casValidatedPolicy: async (_db, requested, validate) => {
+        events.push("exclusive-policy-fence");
+        await validate({ transaction, current, requested });
+        events.push("cas");
+        throw new Error("Blocked readiness must not reach CAS");
+      },
+      validateFullTransition: async input => {
+        expect(input.transaction).toBe(transaction);
+        expect(input.current).toBe(current);
+        expect(input.maintenanceOperationId).toBe("owned-drain");
+        events.push("readiness");
+        throw new ProtectedTaskActivationReadinessError("product_not_ready");
+      },
+    });
+    expect(await call("POST", { ...request, body: { requestVersion: 2, expectedRevision: 2,
+      targetMode: "encrypted_only", targetShadowBehavior: "strict", confirmation: ENABLE_FULL_ENCRYPTION_CONFIRMATION,
+    } })).toEqual({ status: 409, body: { error: "task_encryption_not_ready", retryable: true } });
+    expect(events).toEqual(["audit", "exclusive-policy-fence", "readiness", "released"]);
   });
 
   test("Full entry rejects every busy work class without cancelling and releases the drain", async () => {

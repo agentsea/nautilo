@@ -14,14 +14,20 @@ import {
   parseProtectedMessageDtoV2,
   type LiveShadowMessageRealtimeEventV1,
 } from "@nautilo/types";
+import { parseModelInputExposureMetadataV1 } from "@nautilo/reflection/payload";
 
-import { encodeMessagePayloadV2 } from "../../message/message-payload-v2.ts";
+import {
+  encodeMessagePayloadV2,
+  type CanonicalJsonValue,
+} from "../../message/message-payload-v2.ts";
 import { fullEncryptionDurableEventDigestV2, liveShadowDurableEventDigestV1 } from
   "../../message/live-shadow-realtime-evidence.ts";
 import type { PublishedHumanMessageRecoveryResult } from
   "./postgres-published-human-message-recovery.ts";
 
 const MAX_TRANSCRIPT = 256;
+const MODEL_INPUT_EXPOSURE_METADATA_KEY =
+  "nautilo_memory_model_exposure" as const;
 
 export type LiveShadowClientVerificationResult =
   | Readonly<{ status: "verified" | "replayed"; operationId: string }>
@@ -244,6 +250,7 @@ function destroyVerification(
 export function encodeLiveShadowOrdinaryPayloadV2(
   row: PostgresJsBridgeRow,
   toolCallId: string | null,
+  toolStatus: "success" | "error" | null = null,
 ): Uint8Array {
   const role = text(row, "role");
   if (
@@ -281,9 +288,48 @@ export function encodeLiveShadowOrdinaryPayloadV2(
   const metadata: unknown = metadataJson === null ? null : JSON.parse(metadataJson);
   const imageAssistance = role === "assistant" && metadata && typeof metadata === "object"
     ? parseImageAssistanceSummary((metadata as Record<string, unknown>)["nautilo_image_assistance"]) : undefined;
+  const modelInputExposure = (role === "assistant" || role === "tool")
+      && metadata !== null
+      && typeof metadata === "object"
+      && !Array.isArray(metadata)
+    ? (metadata as Record<string, unknown>)[MODEL_INPUT_EXPOSURE_METADATA_KEY]
+    : undefined;
+  const parsedModelInputExposure = modelInputExposure === undefined
+    ? undefined
+    : parseModelInputExposureMetadataV1(modelInputExposure);
+  if (modelInputExposure !== undefined && parsedModelInputExposure === null) {
+    throw new TypeError("Live Shadow model-input exposure metadata is invalid");
+  }
+  const rawForegroundExecutionId = (role === "assistant" || role === "tool")
+      && metadata !== null
+      && typeof metadata === "object"
+      && !Array.isArray(metadata)
+    ? (metadata as Record<string, unknown>)["nautilo_foreground_execution_id"]
+    : undefined;
+  if (
+    rawForegroundExecutionId !== undefined
+    && (typeof rawForegroundExecutionId !== "string" || rawForegroundExecutionId.length === 0)
+  ) {
+    throw new TypeError("Live Shadow foreground execution identity is invalid");
+  }
+  const sensitiveMetadata = {
+    ...(imageAssistance ? { imageAssistance: { ...imageAssistance } } : {}),
+    ...(parsedModelInputExposure === undefined
+      ? {}
+      : {
+        [MODEL_INPUT_EXPOSURE_METADATA_KEY]:
+          parsedModelInputExposure as CanonicalJsonValue,
+      }),
+    ...(rawForegroundExecutionId === undefined
+      ? {}
+      : { foregroundExecutionId: rawForegroundExecutionId }),
+    ...(role !== "tool" || toolCallId === null ? {} : { toolCallId }),
+    ...(role !== "tool" || toolCallId === null || toolStatus === null
+      ? {} : { toolStatus }),
+  };
   return encodeMessagePayloadV2({
     role,
-    ...(imageAssistance ? { sensitiveMetadata: { imageAssistance: { ...imageAssistance } } } : {}),
+    ...(Object.keys(sensitiveMetadata).length === 0 ? {} : { sensitiveMetadata }),
     // An Assistant tool-call Message canonically has empty textual content.
     // Empty is distinct from a missing/non-string product value.
     content: stringValue(row, "content"),
@@ -293,9 +339,6 @@ export function encodeLiveShadowOrdinaryPayloadV2(
     ...(nullableText(row, "tool_name") === null
       ? {}
       : { toolName: nullableText(row, "tool_name")! }),
-    ...(role !== "tool" || toolCallId === null
-      ? {}
-      : { sensitiveMetadata: { toolCallId } }),
   });
 }
 

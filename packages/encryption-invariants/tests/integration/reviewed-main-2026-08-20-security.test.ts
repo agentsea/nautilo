@@ -23,6 +23,12 @@ import {
   REVIEWED_MAIN_2026_09_12_DTO_REPLACEMENTS,
   SUPERSEDED_MAIN_2026_09_12_DTO_LOCATORS,
 } from "../../baseline/reviewed-main-2026-09-12-dto";
+import {
+  REVIEWED_MAIN_2026_10_13_DTO_REPLACEMENTS,
+  SUPERSEDED_MAIN_2026_10_13_DTO_LOCATORS,
+} from "../../baseline/reviewed-main-2026-10-13-dto";
+import { SUPERSEDED_PAID_SERVICE_FUNDING_DTO_LOCATORS } from
+  "../../baseline/reviewed-paid-service-funding-dto";
 import { SUPERSEDED_MAIN_2026_08_31_SOURCE_ALARM_LOCATORS } from "../../baseline/reviewed-main-2026-08-31-source-alarms";
 import { SUPERSEDED_M300_SOURCE_ALARM_LOCATORS } from "../../baseline/reviewed-m300-source-alarms";
 import { SUPERSEDED_M300_DTO_LOCATORS } from "../../baseline/reviewed-m300-dto";
@@ -77,6 +83,20 @@ describe("reviewed main 2026-08-20 encryption inventory", () => {
   test("accepts only the reviewed DTO schemas for current arbitrary leaves", () => {
     expect(REVIEWED_MAIN_2026_08_20_DTO_DECLARATIONS).toHaveLength(37);
     for (const declaration of REVIEWED_MAIN_2026_08_20_DTO_DECLARATIONS) {
+      if (SUPERSEDED_MAIN_2026_10_13_DTO_LOCATORS.has(declaration.locator)) {
+        expect(DTO_BASELINE_DECLARATIONS.filter((candidate) =>
+          candidate.locator === declaration.locator
+        )).toEqual(REVIEWED_MAIN_2026_10_13_DTO_REPLACEMENTS.filter(
+          (candidate) => candidate.locator === declaration.locator,
+        ));
+        continue;
+      }
+      if (SUPERSEDED_PAID_SERVICE_FUNDING_DTO_LOCATORS.has(declaration.locator)) {
+        expect(DTO_BASELINE_DECLARATIONS.filter((candidate) =>
+          candidate.locator === declaration.locator
+        )).toHaveLength(1);
+        continue;
+      }
       if (SUPERSEDED_MAIN_2026_09_12_DTO_LOCATORS.has(declaration.locator)) {
         expect(DTO_BASELINE_DECLARATIONS.filter((candidate) => candidate.locator === declaration.locator))
           .toEqual(REVIEWED_MAIN_2026_09_12_DTO_REPLACEMENTS.filter((candidate) => candidate.locator === declaration.locator));

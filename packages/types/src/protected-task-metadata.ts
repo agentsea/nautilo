@@ -1,5 +1,6 @@
 import { parseLiveDocumentVersion } from "./api";
 import { readTaskPreparation } from "./task-presentation";
+import { parseTaskFundingBinding } from "./task-funding";
 
 export const PROTECTED_TASK_METADATA_VERSION = 1 as const;
 
@@ -383,12 +384,16 @@ function classifyPreparation(
 
 function classifyDeepResearch(
   value: unknown,
-): { operational: MutableJsonRecord; protectedContent: MutableJsonRecord } | Unsupported {
+  operationalOnly = false,
+): { operational: MutableJsonRecord; protectedContent?: MutableJsonRecord } | Unsupported {
   const candidate = record(value);
   if (!candidate) return unsupported("malformed_field", "$.deepResearch");
-  const keys = ["version", "reportLanguage", "modelPlan", "invokingModelId"];
+  const reportLanguage = candidate["reportLanguage"];
+  const keys = ["version", ...(operationalOnly ? [] : ["reportLanguage"]), "modelPlan", "invokingModelId",
+    ...(candidate["version"] === 2 ? ["preferenceRevisions", "modelFunding", "tavilyFunding"] : [])];
   if (unknownKeys(candidate, new Set(keys))) return unsupported("unknown_field", "$.deepResearch");
-  if (!exactKeys(candidate, keys) || candidate["version"] !== 1 || !nonEmptyString(candidate["reportLanguage"])
+  if (!exactKeys(candidate, keys) || (candidate["version"] !== 1 && candidate["version"] !== 2)
+    || (!operationalOnly && !nonEmptyString(reportLanguage))
     || !(candidate["invokingModelId"] === null || boundedUtf8(candidate["invokingModelId"], PROTECTED_TASK_EXECUTION_OPAQUE_ID_MAX_UTF8_BYTES_V1))) {
     return unsupported("malformed_field", "$.deepResearch");
   }
@@ -410,14 +415,50 @@ function classifyDeepResearch(
   )) {
     return unsupported("malformed_field", "$.deepResearch.modelPlan");
   }
-  return {
-    operational: { version: 1, modelPlan: cloneRecord(plan), invokingModelId: candidate["invokingModelId"] },
-    protectedContent: { reportLanguage: candidate["reportLanguage"] },
+  const operational: MutableJsonRecord = {
+    version: candidate["version"], modelPlan: cloneRecord(plan), invokingModelId: candidate["invokingModelId"],
   };
+  if (candidate["version"] === 2) {
+    const lanes = ["supervisor", "research", "summarization", "compression", "finalReport"] as const;
+    const revisions = candidate["preferenceRevisions"];
+    const funding = candidate["modelFunding"];
+    if (!exactKeys(revisions, lanes)) {
+      const fields = record(revisions);
+      return unsupported(fields && unknownKeys(fields, new Set(lanes)) ? "unknown_field" : "malformed_field", "$.deepResearch.preferenceRevisions");
+    }
+    if (!exactKeys(funding, lanes)) {
+      const fields = record(funding);
+      return unsupported(fields && unknownKeys(fields, new Set(lanes)) ? "unknown_field" : "malformed_field", "$.deepResearch.modelFunding");
+    }
+    if (lanes.some(lane => !nonNegativeSafeInteger(revisions[lane]))) {
+      return unsupported("malformed_field", "$.deepResearch.preferenceRevisions");
+    }
+    const modelFunding: MutableJsonRecord = {};
+    for (const lane of lanes) {
+      try {
+        modelFunding[lane] = { ...parseTaskFundingBinding(funding[lane]) };
+      } catch {
+        return unsupported("malformed_field", `$.deepResearch.modelFunding.${lane}`);
+      }
+    }
+    try {
+      operational["tavilyFunding"] = { ...parseTaskFundingBinding(candidate["tavilyFunding"]) };
+    } catch {
+      return unsupported("malformed_field", "$.deepResearch.tavilyFunding");
+    }
+    operational["preferenceRevisions"] = cloneRecord(revisions);
+    operational["modelFunding"] = modelFunding;
+  }
+  if (operationalOnly) return { operational };
+  if (!nonEmptyString(reportLanguage)) {
+    return unsupported("malformed_field", "$.deepResearch");
+  }
+  return { operational, protectedContent: { reportLanguage } };
 }
 
 function classifyLastInterruption(
   value: unknown,
+  operationalOnly = false,
 ): { operational: MutableJsonRecord; protectedContent?: MutableJsonRecord } | Unsupported {
   const candidate = record(value);
   if (!candidate) return unsupported("malformed_field", "$.lastInterruption");
@@ -461,27 +502,37 @@ function classifyLastInterruption(
     return { operational: cloneRecord(candidate)! };
   }
   if (candidate["code"] === "no_progress") {
-    if (!exactKeys(candidate, [...common, ...noProgress])
+    const toolName = candidate["toolName"];
+    const operation = candidate["operation"];
+    const expected = operationalOnly
+      ? [...common, "resumeRequiresValidation"]
+      : [...common, ...noProgress];
+    if (!exactKeys(candidate, expected)
       || candidate["cause"] !== "repeated_tool_failure" || candidate["stoppedBy"] !== "no_progress_guard"
       || candidate["outcome"] !== "errored" || candidate["resumeRequiresValidation"] !== true
-      || typeof candidate["toolName"] !== "string" || !/^[a-z0-9_]{1,64}$/u.test(candidate["toolName"])
-      || typeof candidate["operation"] !== "string"
-      || !["", "start", "status", "results", "record", "finding", "cancel", "context",
+      || (!operationalOnly && (typeof toolName !== "string"
+        || !/^[a-z0-9_]{1,64}$/u.test(toolName)))
+      || (!operationalOnly && (typeof operation !== "string"
+        || !["", "start", "status", "results", "record", "finding", "cancel", "context",
         "list", "read", "grep", "stat", "write", "insert", "str_replace", "move", "copy", "delete",
         "undo", "undo_turn", "redo", "list_revisions", "pin_revision", "unpin_revision", "list_blocks",
         "read_block", "replace_block", "insert_block", "move_block", "rewrite_block", "create", "view",
         "get", "query", "set", "add", "remove", "swap", "validate", "dump", "merge", "batch", "raw",
-        "raw_set", "add_part", "open", "save", "close", "refresh", "help"].includes(candidate["operation"])) {
+        "raw_set", "add_part", "open", "save", "close", "refresh", "help"].includes(operation)))) {
       return unsupported("malformed_field", "$.lastInterruption");
     }
     const operational = cloneRecord(candidate)!;
+    if (operationalOnly) return { operational };
+    if (typeof toolName !== "string" || typeof operation !== "string") {
+      return unsupported("malformed_field", "$.lastInterruption");
+    }
     delete operational["toolName"];
     delete operational["operation"];
     return {
       operational,
       protectedContent: {
-        toolName: candidate["toolName"],
-        operation: candidate["operation"],
+        toolName,
+        operation,
       },
     };
   }
@@ -616,7 +667,9 @@ export function classifyProtectedTaskMetadataV1(
     const classified = classifyDeepResearch(metadata["deepResearch"]);
     if (isUnsupported(classified)) return classified;
     operational["deepResearch"] = classified.operational;
-    protectedContent["deepResearch"] = classified.protectedContent;
+    if (classified.protectedContent) {
+      protectedContent["deepResearch"] = classified.protectedContent;
+    }
   }
 
   const repoKeys = ["target", "mode", "publish", "instructions"];
@@ -699,6 +752,95 @@ export function classifyProtectedTaskMetadataV1(
     protectedContent: deepFreeze(protectedContent),
   };
   return Object.freeze(result);
+}
+
+/** Validate and restore the nominal brand on a persisted operational-only projection. */
+export function parseProtectedTaskOperationalMetadataProjectionV1(
+  input: unknown,
+): ProtectedTaskOperationalMetadataProjectionV1 | null {
+  const operational = cloneRecord(input);
+  if (!operational || unknownKeys(operational, OPERATIONAL_TOP_LEVEL_KEYS)) return null;
+
+  const intentCount = [
+    Object.hasOwn(operational, "execution"),
+    Object.hasOwn(operational, "deepResearch"),
+    Object.hasOwn(operational, "mode") || Object.hasOwn(operational, "publish"),
+    Object.hasOwn(operational, "bringBack"),
+    Object.hasOwn(operational, "ordinaryArtifactPeer")
+      || Object.hasOwn(operational, "expectedArtifactPeerActorId")
+      || Object.hasOwn(operational, "artifactAwareAskPeer"),
+    Object.hasOwn(operational, "source"),
+  ].filter(Boolean).length;
+  if (intentCount > 1) return null;
+
+  const validated: MutableJsonRecord = {};
+  for (const [key, classifier] of [
+    ["execution", classifyExecution],
+    ["preparation", classifyPreparation],
+  ] as const) {
+    if (!Object.hasOwn(operational, key)) continue;
+    const classified = classifier(operational[key]);
+    if (isUnsupported(classified)) return null;
+    validated[key] = classified.operational;
+  }
+  if (Object.hasOwn(operational, "lastInterruption")) {
+    const classified = classifyLastInterruption(operational["lastInterruption"], true);
+    if (isUnsupported(classified)) return null;
+    validated["lastInterruption"] = classified.operational;
+  }
+  if (Object.hasOwn(operational, "deepResearch")) {
+    const classified = classifyDeepResearch(operational["deepResearch"], true);
+    if (isUnsupported(classified)) return null;
+    validated["deepResearch"] = classified.operational;
+  }
+
+  if (Object.hasOwn(operational, "mode") || Object.hasOwn(operational, "publish")) {
+    const mode = operational["mode"];
+    const publish = operational["publish"];
+    if (!Object.hasOwn(operational, "mode") || !Object.hasOwn(operational, "publish")
+      || typeof mode !== "string" || !["init", "update", "auto"].includes(mode)
+      || typeof publish !== "string" || !["branch", "push", "pr"].includes(publish)) return null;
+    validated["mode"] = mode;
+    validated["publish"] = publish;
+  }
+  if (Object.hasOwn(operational, "bringBack")) {
+    if (typeof operational["bringBack"] !== "boolean") return null;
+    validated["bringBack"] = operational["bringBack"];
+  }
+  if (Object.hasOwn(operational, "ordinaryArtifactPeer")
+    || Object.hasOwn(operational, "expectedArtifactPeerActorId")) {
+    if (operational["ordinaryArtifactPeer"] !== true
+      || typeof operational["expectedArtifactPeerActorId"] !== "string"
+      || !UUID_RE.test(operational["expectedArtifactPeerActorId"])) return null;
+    validated["ordinaryArtifactPeer"] = true;
+    validated["expectedArtifactPeerActorId"] = operational["expectedArtifactPeerActorId"];
+  }
+  if (Object.hasOwn(operational, "artifactAwareAskPeer")) {
+    if (operational["artifactAwareAskPeer"] !== true) return null;
+    validated["artifactAwareAskPeer"] = true;
+  }
+  if (Object.hasOwn(operational, "source")) {
+    if (operational["source"] !== "artifact_ping") return null;
+    validated["source"] = "artifact_ping";
+  }
+  if (Object.hasOwn(operational, "liveMiniAppTaskDelegation")) {
+    const value = operational["liveMiniAppTaskDelegation"];
+    if (!exactKeys(value, ["version", "appId"]) || value["version"] !== 1
+      || !nonEmptyString(value["appId"])
+      || value["appId"].length > PROTECTED_TASK_LIVE_MINI_APP_ID_MAX_CHARS_V1) return null;
+    validated["liveMiniAppTaskDelegation"] = cloneRecord(value)!;
+  }
+  if (Object.hasOwn(operational, "writerReviewAwaiting")
+    && Object.hasOwn(operational, "writerReviewAcceptedReceipt")) return null;
+  for (const [key, accepted] of [["writerReviewAwaiting", false], ["writerReviewAcceptedReceipt", true]] as const) {
+    if (!Object.hasOwn(operational, key)) continue;
+    const marker = classifyWriterMarker(operational[key], accepted);
+    if (isUnsupported(marker)) return null;
+    validated[key] = marker;
+  }
+  return jsonEquals(validated, operational)
+    ? brandOperationalMetadataProjectionV1(validated)
+    : null;
 }
 
 const OPERATIONAL_TOP_LEVEL_KEYS = new Set([

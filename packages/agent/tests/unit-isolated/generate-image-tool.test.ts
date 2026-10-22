@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import * as db from "@nautilo/db";
 import type { NamespaceMemoryEnvelope } from "@nautilo/trust";
 import * as trust from "@nautilo/trust";
+import * as logger from "@nautilo/logger";
 import * as trustAgentDb from "../../src/store/trust-agent-db";
 import { setWorkspaceArtifactCreatedSink } from "../../src/tools/file/artifact-store";
 
@@ -83,6 +84,22 @@ afterEach(() => {
 });
 
 describe("generate_image tool", () => {
+  test("provider diagnostics stay out of server logs while Plain tool errors remain unchanged", async () => {
+    const marker = "private-provider-diagnostic-canary";
+    const warnings = spyOn(logger, "warn").mockImplementation(() => {});
+    restores.push(() => warnings.mockRestore());
+    mock.module("../../src/image-gen/index.ts", () => ({
+      generateImages: mock(async () => { throw new Error(marker); }),
+    }));
+    process.env["VENICE_API_KEY"] = "vk-test";
+    const existing = spyOn(db, "findArtifactByPathForNamespaces").mockResolvedValue(null);
+    restores.push(() => existing.mockRestore());
+    const { createGenerateImageTool } = await import("../../src/tools/media/generate-image");
+    const tool = createGenerateImageTool({ memoryAccessEnvelope: mkEnvelope(), causalHumanUserId: CAUSAL_HUMAN_USER_ID });
+    expect(await tool.invoke({ prompt: "provider failure fixture" })).toBe(`Error: ${marker}`);
+    expect(warnings).toHaveBeenCalledWith("[generate_image] failed code=IMAGE_PROVIDER_FAILED");
+    expect(JSON.stringify(warnings.mock.calls)).not.toContain(marker);
+  });
   test("denies before image provider dispatch when the initiating Human lacks server funding", async () => {
     const generate = mock(async () => ({
       bytes: [Buffer.from("must-not-run")],

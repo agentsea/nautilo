@@ -1,11 +1,23 @@
 import {createPostgresJsBridgeConnection, getSharedDirectCryptoDb,
   type PostgresJsBridgeConnection} from "@nautilo/db";
 import {LatticeCrypto} from "@nautilo/lattice-crypto";
-import {decodeAnyBackgroundProcessorWorkDescriptorV2, decodeTaskRuntimeBackgroundAuthorizationRequestV1,
-  destroyTaskRuntimeBackgroundAuthorizationRequestV1, inspectBackgroundAuthorizationResponseV2,
+import {decodeAnyBackgroundProcessorWorkDescriptorV2, decodeTaskRuntimeBackgroundAuthorizationRequestBase,
+  decodeTaskRuntimeBackgroundAuthorizationResponseV2,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV1,
+  destroyVerifiedTaskRuntimeSignerAuthorization,
+  inspectBackgroundAuthorizationResponseV2,
+  isTaskRuntimeBackgroundAuthorizationRequestV2Carrier,
+  isTaskRuntimeBackgroundAuthorizationRequestV3Carrier,
+  verifyCurrentTaskRuntimeSignerAuthorization,
   verifyBackgroundAuthorizationResponseV2, MAX_ANY_BACKGROUND_PROCESSOR_WORK_DESCRIPTOR_WIRE_BYTES_V2,
-  MAX_BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_BYTES_V2, MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V1,
+  MAX_BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_BYTES_V2,
+  MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V1,
+  MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V2,
+  MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V3,
+  MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_BYTES_V2,
   type BackgroundAuthorizationIssuerV2,
+  type TaskRuntimeBackgroundAuthorizationRequestV2,
+  type TaskRuntimeBackgroundAuthorizationRequestV3,
   type AnyBackgroundProcessorWorkDescriptorV2} from "@nautilo/lattice-crypto/background";
 import {destroyDomainForegroundAuthorizationPlanV2, destroyDomainForegroundAuthorizationV2,
   parseDomainForegroundAuthorizationPlanV2, parseDomainForegroundAuthorizationV2,
@@ -61,6 +73,51 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
 
+function sameTaskRuntimeIssuer(
+  left: BackgroundAuthorizationIssuerV2,
+  right: BackgroundAuthorizationIssuerV2,
+): boolean {
+  return left.humanId === right.humanId
+    && left.deviceId === right.deviceId
+    && left.deviceGeneration === right.deviceGeneration
+    && left.serverInstanceId === right.serverInstanceId
+    && left.lineageGeneration === right.lineageGeneration
+    && left.epoch === right.epoch
+    && left.securityRevision === right.securityRevision
+    && sameBytes(left.headDigest, right.headDigest)
+    && sameBytes(left.signingPublicKeyHash, right.signingPublicKeyHash);
+}
+
+function exactCertifiedTaskRuntimeRequest(
+  request: TaskRuntimeBackgroundAuthorizationRequestV2
+    | TaskRuntimeBackgroundAuthorizationRequestV3,
+  record: BackgroundAuthorizationTaskRuntimeRecordV3,
+): boolean {
+  const expected = record.authoritySet.namespaceRequirements;
+  const exactWork = request.formatVersion === 2
+    ? request.work.taskRunId === record.snapshot.workId
+    : request.work.kind === record.workKind
+      && request.work.kind === record.purpose
+      && (request.work.kind === "task.delivery_wake"
+        ? request.work.jobId === record.snapshot.workId
+        : request.work.taskRunId === record.snapshot.workId);
+  return exactWork
+    && sameBytes(request.work.workIdentityHash, record.workIdentityHash)
+    && request.namespaceRequirements.length === expected.length
+    && request.namespaceRequirements.every((actual, index) => {
+      const requirement = expected[index];
+      return requirement !== undefined
+        && actual.ordinal === requirement.ordinal
+        && actual.namespaceId === requirement.namespaceId
+        && actual.domainId === requirement.domainId
+        && actual.expectedAccessRevision === requirement.expectedAccessRevision
+        && actual.expectedPolicyRevision === requirement.expectedPolicyRevision
+        && actual.operations.length === requirement.operations.length
+        && actual.operations.every((operation, operationIndex) =>
+          operation === requirement.operations[operationIndex]);
+    });
+}
+
 function isTaskRuntimeRecord(record: BackgroundAuthorizationRecord):
   record is BackgroundAuthorizationTaskRuntimeRecordV3 {
   return record.snapshot.formatVersion === 3
@@ -75,7 +132,7 @@ type WithCurrentTaskAuthority = <Value>(input: Readonly<{
   admission: StenographerRequestAdmission;
   restricted: PostgresJsBridgeConnection;
   record: BackgroundAuthorizationTaskRuntimeRecordV3;
-  use(request: NonNullable<ReturnType<typeof decodeTaskRuntimeBackgroundAuthorizationRequestV1>>,
+  use(request: NonNullable<ReturnType<typeof decodeTaskRuntimeBackgroundAuthorizationRequestBase>>,
     plan: DomainForegroundAuthorizationPlanV2,
     domains: DomainForegroundAuthorizationPlanV2["domains"],
     device: CurrentDeviceAdmissionAuthority,
@@ -158,7 +215,10 @@ export function createProductionBackgroundAuthorizationComposition(dependencies:
     if (!(dependencies.isTaskRecipientActive?.(input.record) ?? false)) return null;
     const descriptorBytes = input.record.descriptorBytes;
     if (descriptorBytes === null) return null;
-    const request = decodeTaskRuntimeBackgroundAuthorizationRequestV1(descriptorBytes);
+    const request = decodeTaskRuntimeBackgroundAuthorizationRequestBase(
+      crypto,
+      descriptorBytes,
+    );
     if (request === null) return null;
     const plan = parseDomainForegroundAuthorizationPlanV2(request.authorizationPlanBytes);
     if (plan === null) {
@@ -215,11 +275,16 @@ export function createProductionBackgroundAuthorizationComposition(dependencies:
 
   return {
     limits: {requestBytes: Math.max(MAX_ANY_BACKGROUND_PROCESSOR_WORK_DESCRIPTOR_WIRE_BYTES_V2,
-        MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V1),
+        MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V1,
+        MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V2,
+        MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V3),
       requestPageBytes: Math.max(MAX_ANY_BACKGROUND_PROCESSOR_WORK_DESCRIPTOR_WIRE_BYTES_V2,
-        MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V1), maximumRequests: BACKGROUND_AUTHORIZATION_REPOSITORY_MAX_BATCH,
+        MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V1,
+        MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V2,
+        MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V3), maximumRequests: BACKGROUND_AUTHORIZATION_REPOSITORY_MAX_BATCH,
       responseBytes: Math.max(MAX_BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_BYTES_V2,
-        DOMAIN_FOREGROUND_AUTHORIZATION_MAX_WIRE_BYTES_V2), continuationCharacters: cursorCharacters},
+        DOMAIN_FOREGROUND_AUTHORIZATION_MAX_WIRE_BYTES_V2,
+        MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_BYTES_V2), continuationCharacters: cursorCharacters},
     async list(subject, input) {
       const admission = admitted(subject);
       const startedAt = now();
@@ -259,7 +324,9 @@ export function createProductionBackgroundAuthorizationComposition(dependencies:
           let stopped = false;
           let totalRequestBytes = 0;
           const maximumPageBytes = Math.max(MAX_ANY_BACKGROUND_PROCESSOR_WORK_DESCRIPTOR_WIRE_BYTES_V2,
-            MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V1);
+            MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V1,
+            MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V2,
+            MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V3);
           for (const candidate of candidates) {
             const coordinate = recordCursor(candidate.record);
             if (frontier !== null && compareAwaitingCursor(coordinate, frontier) > 0) break;
@@ -355,7 +422,28 @@ export function createProductionBackgroundAuthorizationComposition(dependencies:
     async respond(subject, input) {
       const admission = admitted(subject);
       const responseBytes = Uint8Array.from(input.responseBytes);
-      const taskResponse = parseDomainForegroundAuthorizationV2(responseBytes);
+      let taskWrapper: Readonly<{
+        authorizationBytes: Uint8Array;
+        certificateBytes: Uint8Array;
+      }> | null = null;
+      try {
+        taskWrapper = decodeTaskRuntimeBackgroundAuthorizationResponseV2(
+          responseBytes,
+        );
+      } catch {
+        taskWrapper = null;
+      }
+      const taskAuthorizationBytes = taskWrapper?.authorizationBytes
+        ?? responseBytes;
+      const taskResponse = parseDomainForegroundAuthorizationV2(
+        taskAuthorizationBytes,
+      );
+      if (taskWrapper !== null && taskResponse === null) {
+        taskWrapper.authorizationBytes.fill(0);
+        taskWrapper.certificateBytes.fill(0);
+        responseBytes.fill(0);
+        throw new BackgroundAuthorizationDeviceServiceError("malformed");
+      }
       if (taskResponse !== null) {
         try {
           const restricted = connection();
@@ -363,11 +451,17 @@ export function createProductionBackgroundAuthorizationComposition(dependencies:
           if (record === null || !isTaskRuntimeRecord(record)) return {status: "stale"};
           const accepted = await withTaskAuthority({subject, admission, restricted, record,
             use: async (request, plan, domains, currentDeviceAuthority, restrictedInTx) => {
-              if (!sameBytes(taskResponse.planBytes, request.authorizationPlanBytes)) {
+              const certified = isTaskRuntimeBackgroundAuthorizationRequestV2Carrier(record.descriptorBytes!)
+                || isTaskRuntimeBackgroundAuthorizationRequestV3Carrier(record.descriptorBytes!);
+              if ((taskWrapper !== null) !== certified
+                || !sameBytes(taskResponse.planBytes, request.authorizationPlanBytes)) {
                 throw new BackgroundAuthorizationDeviceServiceError("malformed");
               }
               const verified = verifyDomainForegroundAuthorizationV2(crypto, {
-                authorizationBytes: responseBytes,
+                ...(["task.cancel_result", "task.deliver_message"].includes(request.workKind)
+                  && request.workPurpose === request.workKind
+                  ? { expectedOperations: ["encrypt"] as const } : {}),
+                authorizationBytes: taskAuthorizationBytes,
                 now: now(),
                 current: {
                   authorizationId: plan.authorizationId,
@@ -395,13 +489,67 @@ export function createProductionBackgroundAuthorizationComposition(dependencies:
                 }
                 return {status: "stale" as const};
               }
-              const responseHash = crypto.hash(responseBytes);
               const descriptorHash = crypto.hash(record.descriptorBytes!);
+              const responseHash = crypto.hash(responseBytes);
+              const authorizationHash = crypto.hash(taskAuthorizationBytes);
               const issuerSigningPublicKeyHash = crypto.hash(currentDeviceAuthority.signingPublicKey);
+              const currentIssuer = issuerFromDevice(crypto, currentDeviceAuthority);
+              let signerAuthorization: Awaited<ReturnType<
+                typeof verifyCurrentTaskRuntimeSignerAuthorization
+              >> | undefined;
               try {
+                if (taskWrapper !== null) {
+                  try {
+                    signerAuthorization =
+                      await verifyCurrentTaskRuntimeSignerAuthorization(
+                        crypto,
+                        {
+                          certificateBytes: taskWrapper.certificateBytes,
+                          requestBytes: record.descriptorBytes!,
+                          expectedRequestHash: descriptorHash,
+                          expectedAuthorizationHash: authorizationHash,
+                          now: now(),
+                          resolveCurrentIssuer: context =>
+                            sameTaskRuntimeIssuer(context.issuer, currentIssuer)
+                              ? currentDeviceAuthority.signingPublicKey
+                              : null,
+                        },
+                      );
+                  } catch {
+                    throw new BackgroundAuthorizationDeviceServiceError(
+                      "malformed",
+                    );
+                  }
+                  const base = signerAuthorization.request.baseRequest;
+                  if (!sameTaskRuntimeIssuer(
+                      signerAuthorization.issuer,
+                      currentIssuer,
+                    )
+                    || !exactCertifiedTaskRuntimeRequest(
+                      signerAuthorization.request,
+                      record,
+                    )
+                    || base.requestId !== request.requestId
+                    || base.workId !== request.workId
+                    || base.workKind !== request.workKind
+                    || base.workPurpose !== request.workPurpose
+                    || base.recipientGeneration !== request.recipientGeneration
+                    || base.recipientKeyId !== request.recipientKeyId
+                    || !sameBytes(base.recipientPublicKey, request.recipientPublicKey)
+                    || !sameBytes(
+                      base.authorizationPlanBytes,
+                      request.authorizationPlanBytes,
+                    )
+                    || base.issuedAt !== request.issuedAt
+                    || base.deadlineAt !== request.deadlineAt) {
+                    throw new BackgroundAuthorizationDeviceServiceError(
+                      "malformed",
+                    );
+                  }
+                }
                 const result = await (await repository(restrictedInTx)).acceptVerifiedResponse({
-                  response: {
-                    formatVersion: 3,
+                  response: taskWrapper === null ? {
+                    formatVersion: 3 as const,
                     kind: "runtime",
                     requestId: request.requestId,
                     descriptorHash,
@@ -416,7 +564,32 @@ export function createProductionBackgroundAuthorizationComposition(dependencies:
                     responseBytes: Uint8Array.from(responseBytes),
                     responseHash,
                     authorizationId: taskResponse.authorizationId,
-                    authorizationHash: Uint8Array.from(responseHash),
+                    authorizationHash: Uint8Array.from(authorizationHash),
+                    issuingHumanId: subject.humanActorId,
+                    issuingDeviceId: currentDeviceAuthority.deviceId,
+                    issuingDeviceAuthorizationRevision: currentDeviceAuthority.securityRevision,
+                    issuerSigningPublicKeyHash,
+                    issuedAt: plan.issuedAt,
+                    expiresAt: plan.deadlineAt,
+                  } : {
+                    formatVersion: 4 as const,
+                    kind: "runtime" as const,
+                    requestId: request.requestId,
+                    descriptorHash,
+                    descriptorBytes: Uint8Array.from(record.descriptorBytes!),
+                    recipientGeneration: request.recipientGeneration,
+                    recipientKeyId: request.recipientKeyId,
+                    recipientPublicKey: Uint8Array.from(request.recipientPublicKey),
+                    workId: request.workId,
+                    workKind: request.workKind,
+                    purpose: request.workPurpose,
+                    authoritySet: record.authoritySet,
+                    responseBytes: Uint8Array.from(responseBytes),
+                    responseHash,
+                    authorizationId: taskResponse.authorizationId,
+                    authorizationHash: Uint8Array.from(authorizationHash),
+                    authorizationBytes: Uint8Array.from(taskAuthorizationBytes),
+                    certificateBytes: Uint8Array.from(taskWrapper.certificateBytes),
                     issuingHumanId: subject.humanActorId,
                     issuingDeviceId: currentDeviceAuthority.deviceId,
                     issuingDeviceAuthorizationRevision: currentDeviceAuthority.securityRevision,
@@ -427,15 +600,24 @@ export function createProductionBackgroundAuthorizationComposition(dependencies:
                 });
                 return {status: result.status === "lost" ? "stale" as const : result.status};
               } finally {
+                if (signerAuthorization !== undefined) {
+                  destroyVerifiedTaskRuntimeSignerAuthorization(
+                    signerAuthorization,
+                  );
+                }
                 responseHash.fill(0);
+                authorizationHash.fill(0);
                 descriptorHash.fill(0);
                 issuerSigningPublicKeyHash.fill(0);
+                destroyBytes(currentIssuer);
               }
             }});
           if (accepted?.status === "accepted") dependencies.wakeProtectedTask?.();
           return accepted ?? {status: "stale"};
         } finally {
           destroyDomainForegroundAuthorizationV2(taskResponse);
+          taskWrapper?.authorizationBytes.fill(0);
+          taskWrapper?.certificateBytes.fill(0);
           responseBytes.fill(0);
         }
       }

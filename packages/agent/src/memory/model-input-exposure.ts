@@ -1,7 +1,9 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import {
+  parseModelInputExposureMetadataV1,
   normalizeRecordModelExposureDependenciesV1,
   RECORD_PAYLOAD_V1_LIMITS,
+  type ModelInputExposureMetadataV1,
   type RecordPayloadModelExposureDependencyV1,
 } from "@nautilo/reflection/payload";
 import type {
@@ -18,7 +20,6 @@ export type ModelInputExposure =
     }>
   | Readonly<{ readonly status: "incomplete" }>;
 
-const VERSION = 1 as const;
 const exposures = new WeakMap<object, ModelInputExposure>();
 const producerExposures = new WeakMap<object, ModelInputExposure>();
 export interface AuthoredMemoryBriefExposure {
@@ -30,20 +31,6 @@ const authoredExposureStorage = new AsyncLocalStorage<Readonly<{
   memoryBrief?: AuthoredMemoryBriefExposure;
 }>>();
 const encoder = new TextEncoder();
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function exactFields(
-  value: Record<string, unknown>,
-  fields: readonly string[],
-): boolean {
-  const actual = Object.keys(value).sort();
-  const expected = [...fields].sort();
-  return actual.length === expected.length
-    && actual.every((field, index) => field === expected[index]);
-}
 
 function wireDependency(
   dependency: DurableModelExposureDependency,
@@ -183,15 +170,11 @@ export function unionModelInputExposures(
   ));
 }
 
-type ModelInputExposureMetadata =
-  | Readonly<{ version: 1; status: "incomplete" }>
-  | Readonly<{ version: 1; status: "complete"; dependencies: readonly RecordPayloadModelExposureDependencyV1[] }>;
-
-function encodedExposure(exposure: ModelInputExposure): ModelInputExposureMetadata {
+function encodedExposure(exposure: ModelInputExposure): ModelInputExposureMetadataV1 {
   return exposure.status === "incomplete"
-    ? { version: VERSION, status: "incomplete" }
+    ? { version: 1, status: "incomplete" }
     : {
-        version: VERSION,
+        version: 1,
         status: "complete",
         dependencies: exposure.dependencies.map(wireDependency),
       };
@@ -200,7 +183,7 @@ function encodedExposure(exposure: ModelInputExposure): ModelInputExposureMetada
 /** Return durable JSON only for a live object carrying trusted evidence. */
 export function encodeModelInputExposureForMetadata(
   target: object,
-): ModelInputExposureMetadata | undefined {
+): ModelInputExposureMetadataV1 | undefined {
   const exposure = exposures.get(target);
   return exposure === undefined ? undefined : encodedExposure(exposure);
 }
@@ -208,41 +191,20 @@ export function encodeModelInputExposureForMetadata(
 /** Persist an explicit incomplete marker when no trusted producer bound one. */
 export function modelInputExposureMetadataForPersistence(
   target: object,
-): ModelInputExposureMetadata {
+): ModelInputExposureMetadataV1 {
   return encodedExposure(
     exposures.get(target) ?? Object.freeze({ status: "incomplete" }),
   );
 }
 
 function parsePersistedExposure(value: unknown): ModelInputExposure | null {
-  if (!isRecord(value) || value["version"] !== VERSION) return null;
-  if (value["status"] === "incomplete") {
-    return exactFields(value, ["version", "status"])
-      ? Object.freeze({ status: "incomplete" })
-      : null;
-  }
-  if (
-    value["status"] !== "complete"
-    || !exactFields(value, ["version", "status", "dependencies"])
-    || !Array.isArray(value["dependencies"])
-  ) return null;
-  try {
-    const serialized = JSON.stringify(value);
-    if (
-      encoder.encode(serialized).byteLength
-      > RECORD_PAYLOAD_V1_LIMITS.payloadBytes
-    ) return null;
-    return Object.freeze({
-      status: "complete" as const,
-      dependencies: Object.freeze(
-        normalizeRecordModelExposureDependenciesV1(
-          value["dependencies"],
-        ).map(durableDependency),
-      ),
-    });
-  } catch {
-    return null;
-  }
+  const parsed = parseModelInputExposureMetadataV1(value);
+  return parsed === null ? null : parsed.status === "incomplete"
+    ? Object.freeze({ status: "incomplete" })
+    : Object.freeze({
+        status: "complete" as const,
+        dependencies: Object.freeze(parsed.dependencies.map(durableDependency)),
+      });
 }
 
 /**

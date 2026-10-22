@@ -1,5 +1,6 @@
+import { parseTaskHistoricalRepairProvenanceV1 } from "@nautilo/lattice-bridge";
 import {
-  deriveTaskContentCryptoObjectIdV1,
+  taskContentRevisionObjectIdV1,
 } from "@nautilo/lattice-bridge";
 import type {
   NativeProtectedTaskDefinitionOccurrenceV1,
@@ -10,6 +11,10 @@ import {
   type CurrentProtectedTaskRuntimeAuthorityPort,
 } from "./task-runtime-current-authority";
 import type { ProtectedTaskRunningOccurrence } from "@nautilo/runtime";
+import {
+  sameProtectedTaskRepoDocsSelection,
+  type ProtectedTaskRepoDocsSelection,
+} from "./protected-task-repo-docs-selection";
 
 export type LoadCurrentNativeProtectedTaskDefinitionOccurrenceInput = Readonly<
   Omit<
@@ -24,6 +29,7 @@ type Dependencies = Readonly<{
 
 type Options = Readonly<{
   requireNativeExecution?: true;
+  requireRepoDocsSelection?: ProtectedTaskRepoDocsSelection;
 }>;
 
 const productionDependencies: Dependencies = Object.freeze({
@@ -41,13 +47,11 @@ function hasExactDefinitionCoordinates(
     && occurrence.run.jobId.length > 0
     && occurrence.run.taskId === occurrence.task.id
     && occurrence.task.contentRevision >= 1
-    && occurrence.task.cryptoAccessRevision === 0
+    && Number.isSafeInteger(occurrence.task.cryptoAccessRevision)
+    && occurrence.task.cryptoAccessRevision >= 0
     && occurrence.task.cryptoRequiredNamespaceFingerprint.length === 32
-    && occurrence.task.cryptoObjectId === deriveTaskContentCryptoObjectIdV1({
-      kind: "definition",
-      taskId: occurrence.task.id,
-      contentRevision: occurrence.task.contentRevision,
-    })
+    && occurrence.task.cryptoObjectId === taskContentRevisionObjectIdV1({ coordinate: { kind: "definition", taskId: occurrence.task.id, contentRevision: occurrence.task.contentRevision },
+      namespaceId: occurrence.task.contentNamespaceId, historicalRepair: occurrence.task.definitionHistoricalRepair == null ? null : parseTaskHistoricalRepairProvenanceV1(occurrence.task.definitionHistoricalRepair) })
     && record.snapshot.workId === occurrence.run.id
     && request.workId === occurrence.run.id
     && request.sourceRoomId.length > 0;
@@ -71,6 +75,8 @@ export function createCurrentNativeProtectedTaskDefinitionOccurrenceLoader(
     ?? productionDependencies.withCurrentAuthority;
 
   return async input => {
+    if (options.requireNativeExecution === true
+      && options.requireRepoDocsSelection !== undefined) return null;
     if (!hasExactDefinitionCoordinates(input)) return null;
     const { occurrence, request } = input;
     return withCurrentAuthority({
@@ -78,6 +84,11 @@ export function createCurrentNativeProtectedTaskDefinitionOccurrenceLoader(
       use: current => {
         if (options.requireNativeExecution === true
           && current.nativeExecutionSupported !== true) return null;
+        if (options.requireRepoDocsSelection !== undefined
+          && !sameProtectedTaskRepoDocsSelection(
+            current.repoDocsSelection,
+            options.requireRepoDocsSelection,
+          )) return null;
         const matching = current.namespaceRequirements.filter(requirement =>
           requirement.namespaceId === occurrence.task.contentNamespaceId
         );
@@ -119,8 +130,11 @@ export function createCurrentNativeProtectedTaskDefinitionOccurrenceLoader(
           agentId: occurrence.task.agentId,
           requesterHumanId: current.foreground.subjectHumanId,
           objectId: occurrence.task.cryptoObjectId,
+          ...(occurrence.task.definitionHistoricalRepair == null ? {} : {
+            definitionHistoricalRepair: parseTaskHistoricalRepairProvenanceV1(occurrence.task.definitionHistoricalRepair),
+          }),
           contentRevision: occurrence.task.contentRevision,
-          cryptoAccessRevision: 0,
+          cryptoAccessRevision: occurrence.task.cryptoAccessRevision,
           namespaceId: definition.namespaceId,
           domainId: definition.domainId,
           expectedAccessRevision: definition.expectedAccessRevision,

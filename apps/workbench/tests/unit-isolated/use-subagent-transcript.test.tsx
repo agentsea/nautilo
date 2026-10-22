@@ -10,6 +10,10 @@ import {
   ConversationEncryptionPolicyModeContext,
   RunningSubagentsContext,
 } from "../../src/adapters/runtime-contexts";
+import {
+  resetCryptoAdmissionAccess,
+  setCryptoAdmissionAccessState,
+} from "../../src/lib/crypto-admission-access";
 
 const actualAuth = await import("../../src/hooks/use-auth");
 mock.module("../../src/hooks/use-auth", () => ({
@@ -23,6 +27,14 @@ const { useSubagentTranscript } = await import("../../src/modes/rooms/subagents/
 
 beforeEach(() => {
   reapplyHappyDomGlobals();
+  resetCryptoAdmissionAccess();
+  // The production subtree mounts only after the admission gate has opened
+  // this same Plain policy for the canonical data-operation owner.
+  setCryptoAdmissionAccessState({
+    status: "open",
+    identity: "viewer-a:device:test",
+    policy: { mode: "plaintext_only", shadowBehavior: "fallback" },
+  });
 });
 
 const getTask = mock(async (_taskId: string): Promise<TaskDetail> => ({
@@ -105,6 +117,7 @@ describe("useSubagentTranscript", () => {
   afterAll(() => {
     apiClient.getTask = originalGetTask;
     mock.module("../../src/hooks/use-auth", () => actualAuth);
+    resetCryptoAdmissionAccess();
     reapplyHappyDomGlobals();
   });
 

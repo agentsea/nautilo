@@ -9,6 +9,7 @@ export interface RetryOptions {
   timeoutMs?: number;
   label?: string;
   signal?: AbortSignal;
+  confidential?: true;
 }
 
 export async function invokeWithRetry<M extends BaseMessageLike, R>(
@@ -50,8 +51,10 @@ export async function invokeWithRetry<M extends BaseMessageLike, R>(
         await Promise.race([waitForRetryDelay(i + 1, strategy), cancelled]);
         continue;
       }
-      const brief = formatErrorBrief(e);
-      warn(`[${label}] aborting after attempt ${i + 1}/${attempts} (${classified.category}): ${brief}`);
+      if (!opts?.confidential) {
+        const brief = formatErrorBrief(e);
+        warn(`[${label}] aborting after attempt ${i + 1}/${attempts} (${classified.category}): ${brief}`);
+      }
       break;
     } finally {
       if (onAbort) opts?.signal?.removeEventListener("abort", onAbort);
