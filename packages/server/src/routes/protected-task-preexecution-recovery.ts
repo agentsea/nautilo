@@ -7,6 +7,8 @@ import {
   type ProtectedTaskPreexecutionRecoveryCursor,
   type StartProtectedTaskRunInput,
   type StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput,
+  type StartParkedProtectedTaskHumanRunSegmentInput,
+  type StartParkedProtectedTaskCheckpointSegmentInput,
 } from "@nautilo/db";
 import {
   isTaskRuntimeStableIdempotencyKey,
@@ -15,6 +17,11 @@ import {
   type BackgroundAuthorizationTaskRuntimeRecordV3,
 } from "@nautilo/runtime";
 import { deriveTaskContentCryptoObjectIdV1 } from "@nautilo/lattice-bridge";
+
+type RecoveryStart = StartProtectedTaskRunInput
+  | StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput
+  | StartParkedProtectedTaskHumanRunSegmentInput
+  | StartParkedProtectedTaskCheckpointSegmentInput;
 
 type AuthorizationRepository = Pick<BackgroundAuthorizationTaskRuntimeDeferralRepository,
   "get" | "deferUnstartedTaskRuntimeRequest">;
@@ -61,7 +68,8 @@ function exactInput(input: StartProtectedTaskRunInput): boolean {
     && input.contentNamespaceId.length > 0
     && Number.isSafeInteger(input.contentRevision)
     && input.contentRevision >= 1
-    && input.cryptoAccessRevision === 0
+    && Number.isSafeInteger(input.cryptoAccessRevision)
+    && input.cryptoAccessRevision >= 0
     && input.cryptoRequiredNamespaceFingerprint instanceof Uint8Array
     && input.cryptoRequiredNamespaceFingerprint.length === 32
     && reference.kind === "protected_task_run_v1"
@@ -77,26 +85,37 @@ function exactInput(input: StartProtectedTaskRunInput): boolean {
     && reference.resumeAcceptanceId === undefined
     && reference.resumeContinuationFingerprint === undefined)) return false;
   try {
+    // Cleanup correlation only: the DB reset rechecks the captured current
+    // Task/Run/Binding/Job, pristine output, and absence of execution receipts.
     return reference.resultObjectId === deriveTaskContentCryptoObjectIdV1({
       kind: "run_result",
       taskId: input.taskId,
       taskRunId: input.taskRunId,
       contentRevision: 1,
     })
-      && input.cryptoObjectId === deriveTaskContentCryptoObjectIdV1({
-      kind: "definition",
-      taskId: input.taskId,
-      contentRevision: input.contentRevision,
-    });
+      && (input.cryptoObjectId === deriveTaskContentCryptoObjectIdV1({
+        kind: "definition", taskId: input.taskId, contentRevision: input.contentRevision,
+      }) || (input.contentRevision === 1
+        && /^task-historical:v1:[0-9a-f]{64}$/u.test(input.cryptoObjectId)));
   } catch {
     return false;
   }
 }
 
 function exactTaskRuntimeRecord(
-  input: StartProtectedTaskRunInput,
+  input: RecoveryStart,
   record: BackgroundAuthorizationRecord,
 ): record is BackgroundAuthorizationTaskRuntimeRecordV3 {
+  const human = "acceptance" in input;
+  const workKind = human
+    ? input.acceptance.response.kind === "await_reply" ? "task.await_reply_resume" : "task.approval_resume"
+    : "task.execute";
+  if (human
+    ? input.jobReference.resumeAcceptanceId !== input.acceptance.acceptanceId
+      || input.jobReference.authorizationRequestId !== input.acceptance.acceptanceId
+      || input.jobReference.resumeContinuationFingerprint !== undefined
+      || input.jobReference.executionSegment < 2
+    : input.jobReference.resumeAcceptanceId !== undefined) return false;
   if (record.snapshot.formatVersion !== 3
     || record.snapshot.credentialSubject.kind !== "runtime"
     || record.snapshot.credentialSubject.runtimeKind !== "task"
@@ -119,8 +138,8 @@ function exactTaskRuntimeRecord(
       record.idempotencyKey,
       input.taskRunId,
     )
-    && record.workKind === "task.execute"
-    && record.purpose === "task.execute"
+    && record.workKind === workKind
+    && record.purpose === workKind
     && record.processorAuthorizationRevision === null
     && record.expectedPolicyRevision === input.jobReference.policyRevision
     && record.expectedDomainEpoch !== null
@@ -190,7 +209,7 @@ function activeGrantExpired(
 
 /** Shared metadata-only classification for initial and continuation recovery. */
 export function classifyProtectedTaskPreexecutionAuthorization(
-  start: StartProtectedTaskRunInput,
+  start: RecoveryStart,
   record: BackgroundAuthorizationRecord,
   now: number,
 ): "active" | "expired" | "deferred" | null {
@@ -205,7 +224,9 @@ export function createProtectedTaskPreexecutionRecovery(input: Readonly<{
   repository: AuthorizationRepository;
   now?: () => number;
   dependencies?: Partial<Dependencies>;
-  recoverParked?(start: StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput,
+  recoverParked?(start: StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput
+    | StartParkedProtectedTaskHumanRunSegmentInput
+    | StartParkedProtectedTaskCheckpointSegmentInput,
     options: Readonly<{ immediate: boolean }>): Promise<Readonly<{
       cancelled: boolean; reset: boolean; failed: boolean;
     }>>;
@@ -348,7 +369,7 @@ export function createProtectedTaskPreexecutionRecovery(input: Readonly<{
       for (const candidate of page.candidates) {
         try {
           const recoveryOptions = { immediate: candidate.jobStatus === "cancelled" };
-          const result = candidate.route === "parked_additional_authority"
+          const result = (candidate.route === "parked_additional_authority" || candidate.route === "parked_human" || candidate.route === "parked_checkpoint")
             ? await input.recoverParked?.(candidate.input, recoveryOptions)
             : await recoverDetailed(candidate.input, recoveryOptions);
           if (result === undefined) continue;

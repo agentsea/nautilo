@@ -144,6 +144,7 @@ const CRYPTO_TABLES = {
       "object_id",
       "payload_hash",
       "previous_manifest_hash",
+      "signer_evidence_bytes",
     ],
     protectedColumns: [],
   },

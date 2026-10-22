@@ -219,6 +219,102 @@ describe("around-message history controller", () => {
     });
   });
 
+  test("targeted notification reads and merges only the exact committed Message", async () => {
+    const canonical = text("1", "existing canonical prompt");
+    const optimistic = text("optimistic-human", "optimistic prompt");
+    const liveTail = text("live-tail", "live tail");
+    let mounted: ThreadMessageLike[] = [canonical, optimistic, liveTail];
+    const requests: unknown[] = [];
+    const controller = createRoomHistoryAroundController({
+      fetchPage: async (request) => {
+        requests.push(request);
+        return aroundPage("7");
+      },
+      getActiveRoomId: () => "room-a",
+      isMessageLoaded: () => false,
+      onPage: (page, options) => {
+        mounted = mergeRoomMessagesAround(mounted, restoreSessionMessages(page.messages), {
+          appendWhenNoOverlap: options.targetOnly,
+        });
+      },
+    });
+    controller.setRoomId("room-a");
+
+    expect(await controller.load("7", { targetOnly: true })).toBe(true);
+    expect(requests).toEqual([{ roomId: "room-a", messageId: "7", limit: 1 }]);
+    expect(mounted.map((message) => String(message.id))).toEqual([
+      "1", "optimistic-human", "live-tail", "7",
+    ]);
+    expect(mounted[0]).toBe(canonical);
+    expect(mounted[1]).toBe(optimistic);
+    expect(mounted[2]).toBe(liveTail);
+    expect(await controller.load("7", { targetOnly: true })).toBe(true);
+    expect(mounted.map((message) => String(message.id))).toEqual([
+      "1", "optimistic-human", "live-tail", "7",
+    ]);
+    expect(controller.getSnapshot().ranges).toEqual([{
+      target: { createdAt: "2026-01-01T00:00:06.000Z", messageId: "7" },
+      messageIds: ["7"],
+      includedToolCallCompanion: false,
+      hasOlder: true,
+      hasNewer: true,
+    }]);
+  });
+
+  test("default around loads retain the neighboring page", async () => {
+    const requests: unknown[] = [];
+    const optimistic = text("optimistic-human", "optimistic prompt");
+    let mounted: ThreadMessageLike[] = [optimistic];
+    const controller = createRoomHistoryAroundController({
+      fetchPage: async (request) => {
+        requests.push(request);
+        return aroundPage("7");
+      },
+      getActiveRoomId: () => "room-a",
+      isMessageLoaded: () => false,
+      onPage: (page, options) => {
+        mounted = mergeRoomMessagesAround(mounted, restoreSessionMessages(page.messages), {
+          appendWhenNoOverlap: options.targetOnly,
+        });
+      },
+    });
+    controller.setRoomId("room-a");
+
+    expect(await controller.load("7")).toBe(true);
+    expect(requests).toEqual([{ roomId: "room-a", messageId: "7" }]);
+    expect(mounted.map((message) => String(message.id))).toEqual(["5", "7", "optimistic-human"]);
+    expect(mounted[2]).toBe(optimistic);
+  });
+
+  test("targeted loads reject missing targets and late Room responses without rendering", async () => {
+    let activeRoom = "room-a";
+    const pages: RoomMessagesAroundPage[] = [];
+    const controller = createRoomHistoryAroundController({
+      fetchPage: async () => ({ ...aroundPage("7"), messages: aroundPage("7").messages.slice(0, 1) }),
+      getActiveRoomId: () => activeRoom,
+      isMessageLoaded: () => false,
+      onPage: (page) => pages.push(page),
+    });
+    controller.setRoomId("room-a");
+    expect(await controller.load("7", { targetOnly: true })).toBe(false);
+    expect(pages).toHaveLength(0);
+
+    const pending = deferred<RoomMessagesAroundPage>();
+    const switched = createRoomHistoryAroundController({
+      fetchPage: async () => pending.promise,
+      getActiveRoomId: () => activeRoom,
+      isMessageLoaded: () => false,
+      onPage: (page) => pages.push(page),
+    });
+    switched.setRoomId("room-a");
+    const load = switched.load("7", { targetOnly: true });
+    activeRoom = "room-b";
+    switched.setRoomId("room-b");
+    pending.resolve(aroundPage("7"));
+    expect(await load).toBe(false);
+    expect(pages).toHaveLength(0);
+  });
+
   test("late Room responses cannot merge after a switch", async () => {
     let activeRoom = "room-a";
     const pending = deferred<RoomMessagesAroundPage>();

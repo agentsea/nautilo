@@ -213,6 +213,7 @@ let invokeChatModelWithFallback: (
     /** strict / no-chain mode suppresses every cross-model hop. */
     modelFallbackMode?: "agent_chain" | "none";
     sameModelRetryMode?: "none" | "short";
+    confidential?: true;
     providerTimeoutMs?: number;
     firstProgressTimeoutMs?: number;
     preparedStableSystemPrefixLength?: number;
@@ -281,6 +282,26 @@ describe("invokeChatModelWithFallback (chain)", () => {
     _resetAgentTurnContextsForTests();
     _setFirstTokenTimeoutMsForTests(undefined);
   });
+
+  for (const confidential of [false, true]) {
+    test(`confidential invocation closes server-funded diagnostics and health reason (${confidential})`, async () => {
+      const marker = "PRIVATE_RESEARCH_PROVIDER_MARKER";
+      const cause = Object.assign(new Error(`rate limit ${marker}`), { status: 429 });
+      const logger = spyOn(console, "error").mockImplementation(() => {});
+      const model: AuraModel = { invoke: async () => { throw cause; }, bindTools: () => model };
+      createUniversalModelMock.mockResolvedValue(model);
+      try {
+        const failure = await invokeChatModelWithFallback(messages, tools, A, "user-1", "agent-1", null,
+          undefined, { modelFallbackMode: "none", sameModelRetryMode: "none",
+            ...(confidential ? { confidential: true } : {}) }).catch((error: unknown) => error);
+        expect(failure).toBe(cause);
+        expect(JSON.stringify(logger.mock.calls).includes(marker)).toBe(!confidential);
+        expect(markModelInvokeFailureMock).toHaveBeenCalledWith(A,
+          confidential ? classifyError(cause).category : classifyError(cause).message);
+        expect(createUniversalModelMock).toHaveBeenCalledTimes(1);
+      } finally { logger.mockRestore(); }
+    });
+  }
 
   test("content-private server funding preserves failure classification without logging or caching provider text", async () => {
     const privateFailure = Object.assign(new Error("PRIVATE_EXTERNAL_TEXT rejected by provider"), { status: 503 });

@@ -46,7 +46,12 @@ async function fixture(
   work:
     | "task.dispatch"
     | "task.execute"
-    | "task.await_reply_resume" = "task.execute",
+    | "task.await_reply_resume"
+    | "task.approval_resume"
+    | "task.cancel_result"
+    | "task.deliver_message"
+    | "task.deliver_result"
+    | "task.delivery_wake" = "task.execute",
 ) {
   const crypto = new LatticeCrypto(seededRng(807_503), { now: () => NOW });
   const recipient = await crypto.deriveEncryptionKeyPair(bytes(0x51));
@@ -64,7 +69,9 @@ async function fixture(
     recipientAuthorizationRevision: authorizationRevision(0),
     recipientRuntimeGeneration: GENERATION,
     recipientKeyId: "recipient:key1",
-    operations: ["decrypt", "encrypt"],
+    operations: ["task.cancel_result", "task.deliver_message"].includes(work)
+      ? ["encrypt"]
+      : ["decrypt", "encrypt"],
     issuedAt: NOW,
     deadlineAt: NOW + 5 * 60_000,
     maximumSecretBytes: 1024,
@@ -105,6 +112,11 @@ describe("Task Runtime background authorization request v1", () => {
     "task.dispatch",
     "task.execute",
     "task.await_reply_resume",
+    "task.approval_resume",
+    "task.cancel_result",
+    "task.deliver_message",
+    "task.deliver_result",
+    "task.delivery_wake",
   ] as const)(
     "round-trips canonical %s requests",
     async (work) => {
@@ -163,13 +175,38 @@ describe("Task Runtime background authorization request v1", () => {
     }
   });
 
-  test("rejects unknown or crossed work types and malformed recipient keys", async () => {
+  test("rejects every crossed work-purpose pair", async () => {
     const value = await fixture();
     try {
-      expect(() => encodeTaskRuntimeBackgroundAuthorizationRequestV1({
-        ...value.request,
-        workPurpose: "task.dispatch",
-      })).toThrow("work kind and purpose disagree");
+      const workTypes = [
+        "task.dispatch",
+        "task.execute",
+        "task.await_reply_resume",
+        "task.approval_resume",
+        "task.cancel_result",
+        "task.deliver_message",
+        "task.deliver_result",
+        "task.delivery_wake",
+      ] as const;
+      for (const workKind of workTypes) {
+        for (const workPurpose of workTypes) {
+          if (workPurpose === workKind) continue;
+          expect(() => encodeTaskRuntimeBackgroundAuthorizationRequestV1({
+            ...value.request,
+            workKind,
+            workPurpose,
+          })).toThrow("work kind and purpose disagree");
+        }
+      }
+    } finally {
+      destroyTaskRuntimeBackgroundAuthorizationRequestV1(value.request);
+      destroyDomainForegroundAuthorizationPlanV2(value.plan);
+    }
+  });
+
+  test("rejects unknown work types and malformed recipient keys", async () => {
+    const value = await fixture();
+    try {
       expect(() => encodeTaskRuntimeBackgroundAuthorizationRequestV1({
         ...value.request,
         workKind: "task.unknown" as "task.execute",
@@ -178,6 +215,46 @@ describe("Task Runtime background authorization request v1", () => {
         ...value.request,
         recipientPublicKey: value.request.recipientPublicKey.slice(1),
       })).toThrow("must be exactly 65 bytes");
+    } finally {
+      destroyTaskRuntimeBackgroundAuthorizationRequestV1(value.request);
+      destroyDomainForegroundAuthorizationPlanV2(value.plan);
+    }
+  });
+
+  test.each([
+    "task.dispatch",
+    "task.execute",
+    "task.await_reply_resume",
+    "task.approval_resume",
+    "task.deliver_result",
+    "task.delivery_wake",
+  ] as const)("keeps %s requests bound to decrypt and encrypt", async (work) => {
+    const value = await fixture(work);
+    const encryptOnly = createDomainForegroundAuthorizationPlanV2(
+      new LatticeCrypto(seededRng(807_504), { now: () => NOW }),
+      { ...value.plan, operations: ["encrypt"] },
+    );
+    try {
+      expect(() => createTaskRuntimeBackgroundAuthorizationRequestV1({
+        ...value.request,
+        authorizationPlan: encryptOnly,
+      })).toThrow("authorization plan");
+    } finally {
+      destroyDomainForegroundAuthorizationPlanV2(encryptOnly);
+      destroyTaskRuntimeBackgroundAuthorizationRequestV1(value.request);
+      destroyDomainForegroundAuthorizationPlanV2(value.plan);
+    }
+  });
+
+  test("rejects decrypt authority for cancellation-result publication", async () => {
+    const value = await fixture();
+    try {
+      expect(() => createTaskRuntimeBackgroundAuthorizationRequestV1({
+        ...value.request,
+        workKind: "task.cancel_result",
+        workPurpose: "task.cancel_result",
+        authorizationPlan: value.plan,
+      })).toThrow("authorization plan");
     } finally {
       destroyTaskRuntimeBackgroundAuthorizationRequestV1(value.request);
       destroyDomainForegroundAuthorizationPlanV2(value.plan);

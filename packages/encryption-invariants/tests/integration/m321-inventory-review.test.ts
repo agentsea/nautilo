@@ -11,8 +11,8 @@ import {
 } from "../../baseline/reviewed-m321-dto";
 import { REVIEWED_MAIN_2026_09_12_DTO_REPLACEMENTS } from
   "../../baseline/reviewed-main-2026-09-12-dto";
-import { REVIEWED_M322_DTO_REPLACEMENTS } from
-  "../../baseline/reviewed-m322-dto";
+import { REVIEWED_MAIN_2026_10_13_DTO_REPLACEMENTS } from
+  "../../baseline/reviewed-main-2026-10-13-dto";
 import { REVIEWED_MAIN_2026_08_29_SOURCE_ALARMS } from
   "../../baseline/reviewed-main-2026-08-29-source-alarms";
 import { REVIEWED_M321_SOURCE_ALARMS } from
@@ -33,7 +33,7 @@ describe("M321 inventory review", () => {
     expect(september12Replacements.map((entry) => entry.locator)).toEqual([
       "http:request_response:GET /api/memory/:id",
     ]);
-    const protectedHistoryReplacements = REVIEWED_M322_DTO_REPLACEMENTS
+    const protectedHistoryReplacements = REVIEWED_MAIN_2026_10_13_DTO_REPLACEMENTS
       .filter((entry) => SUPERSEDED_M321_DTO_LOCATORS.has(entry.locator));
     expect(protectedHistoryReplacements.map((entry) => entry.locator)).toEqual([
       "http:request_response:GET /api/rooms/:id/messages/:messageId/around",

@@ -12,8 +12,11 @@ import {
   domainForegroundNamespaceBindingSetDigest,
 } from "@nautilo/lattice-crypto";
 import {
-  decodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  decodeTaskRuntimeBackgroundAuthorizationRequestV2,
+  decodeTaskRuntimeBackgroundAuthorizationRequestBase,
   destroyTaskRuntimeBackgroundAuthorizationRequestV1,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV2,
+  isTaskRuntimeBackgroundAuthorizationRequestV2Carrier,
 } from "@nautilo/lattice-crypto/background";
 import type {
   InitialTaskRuntimeRecipientAuthority,
@@ -81,7 +84,9 @@ function cloneRecord(
   return structuredClone(value);
 }
 
-async function resolvedFixture(): Promise<Readonly<{
+async function resolvedFixture(
+  resumeKind?: "approval" | "await_reply",
+): Promise<Readonly<{
   resolved: ParkedTaskRuntimeAuthorizationPlan;
   routing: ParkedTaskRuntimeCurrentRoutingFacts;
 }>> {
@@ -108,6 +113,16 @@ async function resolvedFixture(): Promise<Readonly<{
     contentAccessRevision: 0,
     requiredNamespaceFingerprint: bytes(1),
   };
+  const stableRoutingDigest = taskRuntimeStableRoutingDigest({
+    ...routing,
+    startedAt: NOW,
+    requiredNamespaceFingerprint: Buffer.from(
+      routing.requiredNamespaceFingerprint,
+    ).toString("base64url"),
+    outputRoomId: SOURCE,
+    outputNamespaceId: CONTENT,
+    widePrimaryWriteNamespaceId: null,
+  });
   const expected = {
     occurrence: {
       task: {
@@ -137,22 +152,34 @@ async function resolvedFixture(): Promise<Readonly<{
     priorJob: { reference: { resultObjectId: RESULT } },
     proof: {
       continuation: {
-        stableRoutingDigest: taskRuntimeStableRoutingDigest({
-          ...routing,
-          startedAt: NOW,
-          requiredNamespaceFingerprint: Buffer.from(
-            routing.requiredNamespaceFingerprint,
-          ).toString("base64url"),
-          outputRoomId: SOURCE,
-          outputNamespaceId: CONTENT,
-          widePrimaryWriteNamespaceId: null,
-        }),
+        stableRoutingDigest,
         semanticAuthorityRequirements: [],
       },
     },
     authorizationRequestId: REQUEST,
     continuationFingerprint: Buffer.from(bytes(2)).toString("base64url"),
     nextExecutionSegment: 2,
+    ...(resumeKind === undefined ? {} : {
+      segment: { executionSegment: 1 },
+      stableRoutingDigest,
+      acceptance: {
+        acceptanceId: REQUEST,
+        acceptedBy: { userId: USER, humanActorId: HUMAN },
+        interrupt: { id: "human-interrupt", kind: resumeKind },
+        acceptedAt: new Date(NOW - 1),
+        response: resumeKind === "approval"
+          ? { kind: "approval", verb: "once" }
+          : { kind: "await_reply", message: {
+              roomId: SOURCE,
+              sessionId: "parked-reply-session",
+              messageId: "parked-reply-message",
+              editRevision: 0,
+              cryptoObjectId: `message:v2:${"b".repeat(64)}`,
+              namespaceId: CONTENT,
+              sourceUserId: USER,
+            } },
+      },
+    }),
   } as unknown as ParkedProtectedTaskAdditionalAuthority;
   const output = {
     taskRunId: RUN,
@@ -226,8 +253,8 @@ async function resolvedFixture(): Promise<Readonly<{
 
 type Fixture = Awaited<ReturnType<typeof fixture>>;
 
-async function fixture() {
-  const { resolved, routing } = await resolvedFixture();
+async function fixture(resumeKind?: "approval" | "await_reply") {
+  const { resolved, routing } = await resolvedFixture(resumeKind);
   const crypto = new LatticeCrypto();
   const signing = crypto.generateSigningKeyPair();
   const recipients = new TaskRuntimeRecipientRegistry(crypto, {
@@ -346,6 +373,7 @@ async function fixture() {
   });
   const restricted = { query: async () => [] } as never;
   const overrides: Overrides = {
+    mappedHeadReplan: async () => "unchanged",
     db: {} as DirectDatabase,
     crypto,
     serverScope: "https://server.test",
@@ -399,6 +427,7 @@ async function fixture() {
     signing.publicKey.fill(0);
   };
   return {
+    crypto,
     resolved,
     routing,
     canonical,
@@ -439,7 +468,11 @@ test("binds the exact parked request through the held repository", async () => {
   const f = await fixture();
   try {
     const { hooks, bound } = await bind(f);
-    const request = decodeTaskRuntimeBackgroundAuthorizationRequestV1(
+    expect(isTaskRuntimeBackgroundAuthorizationRequestV2Carrier(
+      bound.requestBytes,
+    )).toBe(true);
+    const request = decodeTaskRuntimeBackgroundAuthorizationRequestBase(
+      f.crypto,
       bound.requestBytes,
     );
     expect(request).not.toBeNull();
@@ -452,6 +485,14 @@ test("binds the exact parked request through the held repository", async () => {
     expect(bound.record.snapshot.state).toBe("awaiting_device");
     expect(bound.record.descriptorBytes).toEqual(bound.requestBytes);
     expect(hooks.isTaskRecipientActive(bound.record)).toBe(true);
+    const certified = decodeTaskRuntimeBackgroundAuthorizationRequestV2(
+      f.crypto,
+      bound.requestBytes,
+    );
+    expect(certified?.work.executionSegment).toBe(2);
+    if (certified !== null) {
+      destroyTaskRuntimeBackgroundAuthorizationRequestV2(certified);
+    }
     expect(f.counts()).toEqual({
       productCalls: 1,
       ownerCalls: 1,
@@ -466,6 +507,40 @@ test("binds the exact parked request through the held repository", async () => {
     f.close();
   }
 });
+
+test.each(["approval", "await_reply"] as const)(
+  "binds a certified %s resume with its canonical segment and result coordinate",
+  async resumeKind => {
+    const f = await fixture(resumeKind);
+    try {
+      const { bound } = await bind(f);
+      const request = decodeTaskRuntimeBackgroundAuthorizationRequestV2(
+        f.crypto,
+        bound.requestBytes,
+      );
+      expect(request).not.toBeNull();
+      expect(request?.baseRequest.workKind).toBe(
+        resumeKind === "approval"
+          ? "task.approval_resume"
+          : "task.await_reply_resume",
+      );
+      expect(request?.baseRequest.workPurpose).toBe(
+        request?.baseRequest.workKind,
+      );
+      expect(request?.work).toMatchObject({
+        taskId: TASK,
+        taskRunId: RUN,
+        executionSegment: 2,
+        resultObjectId: RESULT,
+      });
+      if (request !== null) {
+        destroyTaskRuntimeBackgroundAuthorizationRequestV2(request);
+      }
+    } finally {
+      f.close();
+    }
+  },
+);
 
 test("keeps decoded authority live through the awaited callback and destroys it after", async () => {
   const f = await fixture();

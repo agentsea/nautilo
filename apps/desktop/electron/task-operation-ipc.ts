@@ -1,4 +1,5 @@
 import {
+  protectedTaskTranscriptReadRequestV1Schema,
   taskContentSummaryV1Schema,
   taskOperationalCreateV1Schema,
   taskOperationalUpdateV1Schema,
@@ -41,6 +42,22 @@ const taskOperationRequestV1Schema = z.discriminatedUnion("operation", [
     version: z.literal(1),
     operation: z.literal("open"),
     task: taskContentSummaryV1Schema,
+  }).strict(),
+  z.object({
+    version: z.literal(1),
+    operation: z.literal("open_result"),
+    taskId: z.uuid().refine((value) => value === value.toLowerCase()),
+    taskRunId: z.uuid().refine((value) => value === value.toLowerCase()),
+    agentId: z.uuid().refine((value) => value === value.toLowerCase()),
+  }).strict(),
+  z.object({
+    version: z.literal(1),
+    operation: z.literal("open_transcript"),
+    taskId: z.uuid().refine((value) => value === value.toLowerCase()),
+    taskRunId: z.uuid().refine((value) => value === value.toLowerCase()),
+    agentId: protectedTaskTranscriptReadRequestV1Schema.shape.agentId,
+    cursor: protectedTaskTranscriptReadRequestV1Schema.shape.cursor,
+    limit: protectedTaskTranscriptReadRequestV1Schema.shape.limit,
   }).strict(),
   z.object({
     version: z.literal(1),

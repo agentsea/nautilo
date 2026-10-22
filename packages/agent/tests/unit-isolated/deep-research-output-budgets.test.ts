@@ -8,7 +8,7 @@ import { runWithUsageContext } from "../../src/usage/usage-context";
 const MODEL = "openrouter:moonshotai/kimi-k3";
 const factoryCalls: Array<{ modelId: string; options: Record<string, unknown> }> = [];
 const boundToolOptions: Array<Record<string, unknown> | undefined> = [];
-let scenario: "router" | "researcher" | "compression-cancel" | "agent" = "router";
+let scenario: "router" | "researcher" | "compression-cancel" | "agent" | "researcher-fail" = "router";
 let compressionSignal: AbortSignal | undefined;
 let compressionStarted: Promise<void>;
 let markCompressionStarted: () => void;
@@ -17,6 +17,7 @@ function modelFor(maxTokens: unknown): ChatModel {
   const model: ChatModel = {
     bindTools: (_tools, options) => { boundToolOptions.push(options); return model; },
     async invoke(_messages, config?: RunnableConfig) {
+      if (scenario === "researcher-fail") throw Object.assign(new Error("PRIVATE_RESEARCHER_ERROR_MARKER"), { status: 400 });
       if ((scenario === "researcher" || scenario === "compression-cancel") && maxTokens === 1_111) {
         return new AIMessage({
           content: "",
@@ -248,3 +249,17 @@ test("uncapped generative roles use the model allowance while compression keeps 
   await withServerFunding(() => createModel(id, cfg, { messages: [{ role: "user", content: "x".repeat(1_000_000 * 4) }] }));
   expect(factoryCalls.at(-1)?.options["maxTokens"]).toBe(1_050_000 - 1_000_000 - 4096);
 });
+
+
+for (const confidential of [false, true]) {
+  test(`researcher and compression diagnostics honor confidential configuration (${confidential})`, async () => {
+    scenario = "researcher-fail";
+    const logger = spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await withServerFunding(() => createResearcherGraph({ ...configuration,
+        ...(confidential ? { confidential: true } : {}),
+      }).invoke({ research_topic: "private research", research_brief: "private brief", raw_notes: ["private note"] }));
+      expect(JSON.stringify(logger.mock.calls).includes("PRIVATE_RESEARCHER_ERROR_MARKER")).toBe(!confidential);
+    } finally { logger.mockRestore(); }
+  });
+}

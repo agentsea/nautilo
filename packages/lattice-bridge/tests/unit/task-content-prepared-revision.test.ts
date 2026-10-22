@@ -24,6 +24,7 @@ import {
   prepareAgentRuntimeInitialization,
   prepareHumanObjectAccessManifestGenesisSet,
   prepareHumanTaskPublicationRequest,
+  prepareHumanExistingTaskRepresentationPublicationRequest,
   unixTimestamp,
   wrapObjectDekForNamespace,
   type GrantAuthoritySetAuthorization,
@@ -40,6 +41,8 @@ import {
   createPreparedAgentTaskContentCryptoRevisionV1,
   createPreparedHumanTaskContentCryptoRevisionV1,
   authenticatePreparedHumanTaskContentCryptoRevisionV1,
+  authenticatePreparedHistoricalTaskContentCryptoRevisionV1,
+  readPreparedHistoricalTaskContentRequestV1,
   readPreparedTaskContentCryptoRevisionSnapshotV1,
 } from "../../src/task/task-content-prepared-revision.ts";
 import {
@@ -51,6 +54,10 @@ import {
   encodeTaskPayloadV1,
   encodeTaskRunResultPayloadV1,
 } from "../../src/task/task-payload-v1.ts";
+import { deriveTaskHistoricalContentCryptoObjectIdV1 } from "../../src/task/task-historical-content-identity.ts";
+import { parseTaskHistoricalRepairProvenanceV1,
+  preparedTaskHistoricalRepairProvenanceV1 } from
+  "../../src/task/task-historical-repair-provenance.ts";
 
 const NOW = 1_820_000_000_000;
 const HUMAN_ID = "30000000-0000-4000-8000-000000000001";
@@ -110,9 +117,8 @@ function encodedContent(coordinate: TaskContentCoordinateV1): Uint8Array {
     });
 }
 
-function encrypt(coordinate: TaskContentCoordinateV1, seed: number) {
+function encrypt(coordinate: TaskContentCoordinateV1, seed: number, objectIdentity = deriveTaskContentCryptoObjectIdV1(coordinate)) {
   const crypto = new LatticeCrypto(seededRng(seed), { now: () => NOW });
-  const objectIdentity = deriveTaskContentCryptoObjectIdV1(coordinate);
   const plaintext = encodedContent(coordinate);
   const encrypted = encryptObjectPayload(crypto, {
     objectId: objectId(objectIdentity),
@@ -509,4 +515,148 @@ describe("Human Task HTTP preparation import", () => {
     expect(readPreparedTaskContentCryptoRevisionSnapshotV1(revision).object.payloadBytes.ciphertext)
       .toEqual(original);
   });
+});
+
+
+function historicalHttpFixture(coordinate: TaskContentCoordinateV1, legacy = false) {
+  const sourceDigest = new Uint8Array(32).fill(12);
+  const encrypted = encrypt(coordinate, 92, legacy ? deriveTaskContentCryptoObjectIdV1(coordinate)
+    : deriveTaskHistoricalContentCryptoObjectIdV1({ coordinate, sourceDigest, namespaceId: NAMESPACE_ID }));
+  const signer = encrypted.crypto.generateSigningKeyPair();
+  const access = prepareHumanObjectAccessManifestGenesisSet(encrypted.crypto, {
+    objectId: encrypted.objectIdentity, payloadHash: encrypted.crypto.hash(encrypted.payloadBytes),
+    envelopeBytes: [encrypted.envelopeBytes], sourceAuthorized: true, targetAuthorized: true,
+    subjectHumanId: HUMAN_ID, committerDeviceId: "human-device.1", hostAuthorizationRevision: 7,
+    committerSigningPublicKey: signer.publicKey, committerSigningPrivateKey: signer.privateKey,
+  });
+  const value = { ...encrypted, signer, access };
+  const sourcePayload = encodedContent(coordinate);
+  const sourcePayloadHash = value.crypto.hash(sourcePayload);
+  sourcePayload.fill(0);
+  const planDigest = new Uint8Array(32).fill(13);
+  const operationalFieldsDigest = new Uint8Array(32).fill(14);
+  const claimId = "60000000-0000-4000-8000-000000000001";
+  const operationId = "task-historical-repair-1";
+  const signed = prepareHumanExistingTaskRepresentationPublicationRequest(value.crypto, {
+    kind: coordinate.kind, entityId: coordinate.kind === "definition" ? TASK_ID : RUN_ID,
+    taskId: TASK_ID, claimId, operationId, cryptoObjectId: value.objectIdentity,
+    sourceDigest, sourcePayloadHash, planDigest, operationalFieldsDigest,
+    expectedContentRevision: 0, nextContentRevision: 1,
+    expectedCryptoAccessRevision: 0, resultCryptoAccessRevision: 0,
+    subjectHumanId: HUMAN_ID, committerDeviceId: "human-device.1", hostAuthorizationRevision: 7,
+    namespaceId: NAMESPACE_ID, domainId: DOMAIN_ID,
+    expectedNamespaceAccessRevision: authority.expectedAccessRevision,
+    expectedPolicyRevision: authority.expectedPolicyRevision,
+    bindingHash: new Uint8Array(32).fill(15), keyGeneration: 4,
+    payloadHash: value.crypto.hash(value.payloadBytes),
+    manifestHash: value.crypto.hash(value.access.manifestBytes),
+    envelopeHash: value.crypto.hash(value.envelopeBytes),
+    issuedAt: NOW, deadlineAt: NOW + 30_000,
+    committerSigningPublicKey: value.signer.publicKey,
+    committerSigningPrivateKey: value.signer.privateKey,
+  });
+  return { value, signed, input: {
+    crypto: value.crypto, now: NOW, operationId, claimId, coordinate, authority,
+    sourceDigest, sourcePayloadHash, planDigest, operationalFieldsDigest,
+    payloadBytes: value.payloadBytes, manifestBytes: value.access.manifestBytes,
+    envelopeBytes: value.envelopeBytes, signedPublicationRequestBytes: signed.bytes,
+    resolveCurrentAuthority: async () => value.signer.publicKey,
+  } };
+}
+
+describe("authenticated historical Task representation", () => {
+  test.each([definition, result])("imports exact source-bound %j bytes without a Runtime grant", async coordinate => {
+    const { input } = historicalHttpFixture(coordinate);
+    const prepared = await authenticatePreparedHistoricalTaskContentCryptoRevisionV1(input);
+    expect(prepared.coordinate).toEqual(coordinate);
+    const request = readPreparedHistoricalTaskContentRequestV1(prepared);
+    expect(request.sourceDigest).toEqual(input.sourceDigest);
+    expect(request.sourcePayloadHash).toEqual(input.sourcePayloadHash);
+    const provenance = preparedTaskHistoricalRepairProvenanceV1(prepared);
+    expect(provenance).toMatchObject({ version: 2,
+      genesisManifestHash: Buffer.from(input.crypto.hash(input.manifestBytes)).toString("hex") });
+    expect(provenance.signedRequestDigest).toBe(Buffer.from(
+      input.crypto.hash(input.signedPublicationRequestBytes),
+    ).toString("hex"));
+    expect(provenance.sourceDigest).toBe(Buffer.from(input.sourceDigest).toString("hex"));
+    expect(provenance.publisherDeviceId).toBe("human-device.1");
+    expect(parseTaskHistoricalRepairProvenanceV1(JSON.parse(JSON.stringify(provenance))))
+      .toEqual(provenance);
+    for (const invalid of [
+      { ...provenance, sourceDigest: null }, { ...provenance, sourceRevision: 1 },
+      { ...provenance, plaintext: "must never enter a receipt" },
+      Object.defineProperty({ ...provenance }, "claimId", { get() { throw new Error("getter read"); } }),
+    ]) expect(() => parseTaskHistoricalRepairProvenanceV1(invalid)).toThrow(TypeError);
+    request.sourceDigest.fill(0);
+    input.payloadBytes.fill(0);
+    input.sourceDigest.fill(0);
+    expect(readPreparedHistoricalTaskContentRequestV1(prepared).sourceDigest).toEqual(new Uint8Array(32).fill(12));
+    expect(() => readPreparedHistoricalTaskContentRequestV1({ ...prepared })).toThrow("foreign or changed");
+  });
+
+  test("ordinary prepared genesis cannot stand in for historical source attestation", () => {
+    const { prepared } = prepareHuman(definition);
+    expect(() => readPreparedHistoricalTaskContentRequestV1(prepared)).toThrow("authenticated historical");
+    expect(() => preparedTaskHistoricalRepairProvenanceV1(prepared)).toThrow("authenticated historical");
+  });
+
+  test("rejects source, claim, coordinate and ciphertext substitutions", async () => {
+    for (const patch of [
+      { sourceDigest: new Uint8Array(32) },
+      { sourcePayloadHash: new Uint8Array(32) },
+      { claimId: "60000000-0000-4000-8000-000000000002" },
+      { operationId: "other-repair" },
+      { coordinate: { ...result, taskRunId: "20000000-0000-4000-8000-000000000002" } },
+      { planDigest: new Uint8Array(32) },
+    ]) {
+      const { input } = historicalHttpFixture(result);
+      await rejects(authenticatePreparedHistoricalTaskContentCryptoRevisionV1({ ...input, ...patch }));
+    }
+  });
+
+  test("expired publication requires the exact durable signed receipt and current device", async () => {
+    const { input, value, signed } = historicalHttpFixture(result);
+    await rejects(authenticatePreparedHistoricalTaskContentCryptoRevisionV1({ ...input, now: NOW + 30_000 }), /currently valid/u);
+    const prepared = await authenticatePreparedHistoricalTaskContentCryptoRevisionV1({
+      ...input, now: NOW + 30_000, expectedSignedRequestDigest: value.crypto.hash(signed.bytes),
+    });
+    expect(prepared.coordinate).toEqual(result);
+    await rejects(authenticatePreparedHistoricalTaskContentCryptoRevisionV1({
+      ...input, expectedSignedRequestDigest: value.crypto.hash(signed.bytes),
+      resolveCurrentAuthority: async () => null,
+    }), /authority/u);
+    await rejects(authenticatePreparedHistoricalTaskContentCryptoRevisionV1({
+      ...input, expectedSignedRequestDigest: new Uint8Array(32),
+    }), /durable request digest/u);
+  });
+
+  test("owns source and encrypted bytes across the current-authority await", async () => {
+    const { input, value } = historicalHttpFixture(definition);
+    const prepared = await authenticatePreparedHistoricalTaskContentCryptoRevisionV1({
+      ...input, resolveCurrentAuthority: async request => {
+        request.sourceDigest.fill(0); input.sourceDigest.fill(0);
+        input.sourcePayloadHash.fill(0); input.payloadBytes.fill(0);
+        input.manifestBytes.fill(0); input.envelopeBytes.fill(0);
+        return value.signer.publicKey;
+      },
+    });
+    expect(readPreparedHistoricalTaskContentRequestV1(prepared).sourceDigest).toEqual(new Uint8Array(32).fill(12));
+    expect(() => readPreparedTaskContentCryptoRevisionSnapshotV1(prepared)).not.toThrow();
+  });
+});
+
+
+test("legacy historical identity is admitted only by an exact durable signed replay", async () => {
+  const { input, value, signed } = historicalHttpFixture(definition, true);
+  await rejects(authenticatePreparedHistoricalTaskContentCryptoRevisionV1(input), /coordinates disagree/u);
+  const prepared = await authenticatePreparedHistoricalTaskContentCryptoRevisionV1({ ...input,
+    expectedSignedRequestDigest: value.crypto.hash(signed.bytes) });
+  expect(prepared.objectId).toBe(deriveTaskContentCryptoObjectIdV1(definition));
+  expect(preparedTaskHistoricalRepairProvenanceV1(prepared).version).toBe(1);
+});
+
+test("generic Human preparation cannot import a source-versioned historical object", () => {
+  const { value } = historicalHttpFixture(definition);
+  expect(() => createPreparedHumanTaskContentCryptoRevisionV1({ signerKind: "human_device", coordinate: definition,
+    authority, object: value.object, access: value.access })).toThrow("coordinates disagree");
 });

@@ -267,7 +267,7 @@ export function createProtectedTaskRuntimeParkedMemoryPlanResolver(
     ProtectedTaskRuntimeParkedMemoryPlanResolverDependencies
   > = {},
 ): (input: Readonly<{
-  expected: ParkedProtectedTaskAdditionalAuthority;
+  expected: Pick<ParkedProtectedTaskAdditionalAuthority, "occurrence" | "priorJob">;
   output: ProtectedTaskRunOutputBinding;
 }>) => Promise<ParkedProtectedTaskRuntimeMemoryPlan | null> {
   const db = overrides.db ?? getServerDirectDb();

@@ -14,6 +14,13 @@ type Manifest = {
   license: string;
   nautiloPatchSha256: string;
   baseImage: string;
+  tlsTrust: {
+    caCertificatesPackage: string;
+    opensslPackageVersion: string;
+    bundlePath: string;
+    bundleSha256: string;
+    emptyCertificateDirectory: string;
+  };
   localImage: string;
 };
 
@@ -30,12 +37,58 @@ describe("OpenConnector derivative provenance", () => {
       upstreamVersion: "1.4.1",
       upstreamTag: "v1.4.1",
       license: "Apache-2.0",
-      localImage: "nautilo/openconnector:1.4.1-nautilo.2",
+      localImage: "nautilo/openconnector:1.4.1-nautilo.4",
     });
     expect(manifest.upstreamCommit).toMatch(/^[a-f0-9]{40}$/u);
-    expect(manifest.baseImage).toMatch(/@sha256:[a-f0-9]{64}$/u);
+    const base = /^docker\.io\/library\/node:(24\.\d+\.\d+)-alpine3\.23@sha256:[a-f0-9]{64}$/u.exec(manifest.baseImage);
+    expect(base).not.toBeNull();
+    expect(Bun.semver.satisfies(base?.[1] ?? "", ">=24.22.1 <25")).toBe(true);
     expect(dockerfile).toContain(`ARG OPENCONNECTOR_SOURCE_COMMIT=${manifest.upstreamCommit}`);
     expect(dockerfile).toContain(`ARG NODE_IMAGE=${manifest.baseImage}`);
+  });
+
+  test("every network-using stage inherits the verified exclusive CA bundle", () => {
+    const instructions = dockerfile.replace(/\\\r?\n/gu, " ").split(/\r?\n/u);
+    const stages = instructions.flatMap((line) => {
+      const match = /^FROM (\S+) AS (\S+)$/u.exec(line);
+      return match ? [[match[1], match[2]]] : [];
+    });
+    expect(stages).toEqual([
+      ["${NODE_IMAGE}", "trust"],
+      ["trust", "source"],
+      ["source", "build"],
+      ["trust", "runtime"],
+    ]);
+    expect(manifest.tlsTrust).toEqual({
+      caCertificatesPackage: "alpine:20261020-r0",
+      opensslPackageVersion: "3.5.9-r0",
+      bundlePath: "/etc/ssl/certs/ca-certificates.crt",
+      bundleSha256: "5961c0a3c65459931c023e0075c09733f09aea4ca439cb85bc4a08bb4f3f568b",
+      emptyCertificateDirectory: "/etc/ssl/nautilo-empty-certs",
+    });
+    const trustInstructions = instructions.slice(
+      instructions.indexOf("FROM ${NODE_IMAGE} AS trust") + 1,
+      instructions.indexOf("FROM trust AS source"),
+    );
+    const installation = trustInstructions.find((line) => line.startsWith("RUN apk add "));
+    expect(installation).toContain(`ca-certificates=${manifest.tlsTrust.caCertificatesPackage.split(":")[1]}`);
+    expect(installation).toContain(`libcrypto3=${manifest.tlsTrust.opensslPackageVersion}`);
+    expect(installation).toContain(`libssl3=${manifest.tlsTrust.opensslPackageVersion}`);
+    expect(installation).toContain(`echo '${manifest.tlsTrust.bundleSha256}  ${manifest.tlsTrust.bundlePath}' | sha256sum -c -`);
+    expect(installation).toContain(`mkdir -p ${manifest.tlsTrust.emptyCertificateDirectory}`);
+    expect(dockerfile).not.toContain("--allow-untrusted");
+
+    const environment = new Map(instructions
+      .filter((line) => line.startsWith("ENV "))
+      .flatMap((line) => line.slice(4).trim().split(/\s+/u))
+      .map((assignment): [string, string] => {
+        const separator = assignment.indexOf("=");
+        return [assignment.slice(0, separator), assignment.slice(separator + 1)];
+      }));
+    expect(environment.get("NODE_OPTIONS")).toBe("--use-openssl-ca");
+    expect(environment.get("SSL_CERT_FILE")).toBe(manifest.tlsTrust.bundlePath);
+    expect(environment.get("SSL_CERT_DIR")).toBe(manifest.tlsTrust.emptyCertificateDirectory);
+    expect(environment.get("NAUTILO_CA_BUNDLE_SHA256")).toBe(manifest.tlsTrust.bundleSha256);
   });
 
   test("binds the reviewed Nautilo patch by digest", () => {
@@ -83,7 +136,13 @@ describe("OpenConnector derivative provenance", () => {
 
   test("is owned by the loopback-only, restartable Compose service", () => {
     const compose = readFileSync(join(root, "../../infra/compose/nautilo.yml"), "utf8");
-    expect(compose).toContain(`image: ${manifest.localImage}`);
+    const configuration = Bun.YAML.parse(compose) as {
+      services: { openconnector: { image: string; environment: Record<string, string> } };
+    };
+    expect(configuration.services.openconnector.image).toBe(manifest.localImage);
+    for (const key of ["NODE_OPTIONS", "SSL_CERT_FILE", "SSL_CERT_DIR"]) {
+      expect(configuration.services.openconnector.environment[key]).toBeUndefined();
+    }
     expect(compose).toContain('"127.0.0.1:${NAUTILO_OPENCONNECTOR_PORT:-3010}:3000"');
     expect(compose).toContain("OOMOL_CONNECT_ENCRYPTION_KEY_FILE: /run/nautilo/openconnector-encryption.key");
     expect(compose).toContain("restart: unless-stopped");

@@ -1,5 +1,18 @@
 import { runWithLocalExecutionDelegation, type DelegatedLocalExecutionPort } from "../../runtime/local-execution-delegation";
 import {
+  runWithProtectedTaskProjectFilePort,
+  type ProtectedTaskProjectFilePort,
+} from "../../runtime/protected-task-project-file";
+import path from "node:path";
+import {
+  createProtectedRepoDocsCheckpoint,
+  createProtectedRepoDocsRequest,
+  runProtectedRepoDocsOperation,
+  type ProtectedRepoDocsCheckpointV1,
+  type ProtectedRepoDocsExecutionPort,
+  type ProtectedRepoDocsOpenedSelection,
+} from "../../runtime/protected-repo-docs";
+import {
   HumanMessage,
   AIMessage,
   SystemMessage,
@@ -22,6 +35,10 @@ import {
 } from "../../graph/execution-policy";
 import {
   createProtectedTaskNodeSettlementScope,
+  isProtectedTaskCheckpointPauseInterruption,
+  type ProtectedTaskCheckpointPauseController,
+  type ProtectedTaskCheckpointPauseInterruption,
+  type ProtectedTaskCheckpointPauseReason,
 } from "../../graph/protected-task-node-settlement-scope";
 import {
   createProtectedTaskMemoryGraphDeps,
@@ -65,6 +82,169 @@ import {
   protectedTaskInterruptCoordinates,
   type ProtectedTaskInterruptCoordinate,
 } from "../../graph/interrupt-mapping";
+import {
+  createProtectedTaskHumanResumeCommandV1,
+  type ProtectedTaskHumanResumeBindingV1,
+} from "../../graph/protected-task-human-resume";
+import type { ProtectedAgentMemoryAccessPort } from "@nautilo/lattice-bridge";
+import {
+  beginProtectedMemoryAccessPreviewBatch,
+  bindDeniedProtectedMemoryAccessSnapshot,
+  restoreProtectedMemoryAccessSnapshot,
+  type ProtectedMemoryAccessSnapshot,
+} from "../../tools/memory/protected-task-access-sharing";
+
+function objectRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function exactPendingInterruptValue(
+  checkpoint: Readonly<{ tasks?: readonly unknown[] }> | undefined,
+  interruptId: string,
+): Record<string, unknown> {
+  const matches: Record<string, unknown>[] = [];
+  for (const candidateTask of checkpoint?.tasks ?? []) {
+    const interrupts = objectRecord(candidateTask)?.["interrupts"];
+    if (!Array.isArray(interrupts)) continue;
+    for (const candidate of interrupts) {
+      const interrupt = objectRecord(candidate);
+      if (interrupt?.["id"] !== interruptId) continue;
+      const value = objectRecord(interrupt["value"]);
+      if (value !== undefined) matches.push(value);
+    }
+  }
+  if (matches.length !== 1) {
+    throw new TypeError(
+      "Protected Task Memory resume requires one exact pending interrupt",
+    );
+  }
+  return matches[0]!;
+}
+
+type ProtectedAccessResumeObligation = Readonly<{
+  toolCallId: string;
+  deniedPreview?: unknown;
+}>;
+
+function protectedAccessResumeObligations(
+  checkpoint: Readonly<{ tasks?: readonly unknown[] }> | undefined,
+  binding: ProtectedTaskHumanResumeBindingV1,
+): readonly ProtectedAccessResumeObligation[] {
+  if (binding.kind === "await_reply") return [];
+  const value = exactPendingInterruptValue(checkpoint, binding.interruptId);
+  const obligations: ProtectedAccessResumeObligation[] = [];
+  if (binding.kind === "identity") {
+    const tools = value["protectedMemoryTools"];
+    if (tools === undefined) return [];
+    if (!Array.isArray(tools)) {
+      throw new TypeError("Protected Task Memory identity checkpoint is invalid");
+    }
+    for (const candidate of tools) {
+      const tool = objectRecord(candidate);
+      if (tool?.["mode"] !== "attach"
+        || typeof tool["toolCallId"] !== "string"
+        || tool["toolCallId"].length === 0) continue;
+      obligations.push({ toolCallId: tool["toolCallId"] });
+    }
+  } else {
+    const tools = value["tools"];
+    if (!Array.isArray(tools)) {
+      throw new TypeError("Protected Task Memory approval checkpoint is invalid");
+    }
+    for (const candidate of tools) {
+      const tool = objectRecord(candidate);
+      const preview = objectRecord(tool?.["shareMemoryPreview"]);
+      if (tool?.["name"] !== "share_memory"
+        || typeof tool["id"] !== "string"
+        || tool["id"].length === 0
+        || typeof preview?.["protectedApprovalDigest"] !== "string"
+        || preview["protectedApprovalDigest"].length === 0) continue;
+      obligations.push({
+        toolCallId: tool["id"],
+        ...(binding.kind === "approval" && binding.verb === "deny"
+          || binding.kind === "prove_it" && binding.approved === false
+          ? { deniedPreview: preview }
+          : {}),
+      });
+    }
+  }
+  const ids = obligations.map(obligation => obligation.toolCallId);
+  if (new Set(ids).size !== ids.length) {
+    throw new TypeError("Protected Task Memory resume checkpoint is ambiguous");
+  }
+  return obligations;
+}
+
+async function restoreProtectedTaskAccessForHumanResume(
+  checkpoint: Readonly<{
+    values?: unknown;
+    tasks?: readonly unknown[];
+  }> | undefined,
+  binding: ProtectedTaskHumanResumeBindingV1,
+  currentState: NautiloState,
+  accessPortForState: ((state: NautiloState) =>
+    ProtectedAgentMemoryAccessPort | undefined) | undefined,
+): Promise<void> {
+  const obligations = protectedAccessResumeObligations(checkpoint, binding);
+  if (obligations.length === 0) return;
+  const messages = objectRecord(checkpoint?.values)?.["messages"];
+  const currentMessage = Array.isArray(messages)
+    ? [...(messages as unknown[])].reverse().map(objectRecord).find(message =>
+        Array.isArray(message?.["tool_calls"])
+      )
+    : undefined;
+  const calls = Array.isArray(currentMessage?.["tool_calls"])
+    ? currentMessage["tool_calls"] as unknown[]
+    : [];
+  const snapshots = objectRecord(checkpoint?.values)?.[
+    "protectedMemoryAccessSnapshots"
+  ];
+  if (!Array.isArray(snapshots)) {
+    throw new TypeError("Protected Task Memory access checkpoint is unavailable");
+  }
+  const port = accessPortForState?.(currentState);
+  if (port === undefined
+    || (obligations.some(obligation => obligation.deniedPreview === undefined)
+      && port.restoreApproval === undefined)) {
+    throw new TypeError(
+      "Protected Task Memory access resume requires fresh authorized custody",
+    );
+  }
+  beginProtectedMemoryAccessPreviewBatch(port);
+  for (const obligation of obligations) {
+    const matchingCalls = calls.filter(candidate =>
+      objectRecord(candidate)?.["id"] === obligation.toolCallId
+    );
+    const matchingSnapshots = snapshots.filter(candidate =>
+      objectRecord(candidate)?.["toolCallId"] === obligation.toolCallId
+    );
+    if (matchingCalls.length !== 1 || matchingSnapshots.length !== 1) {
+      throw new TypeError("Protected Task Memory access checkpoint is incomplete");
+    }
+    const call = matchingCalls[0] as Parameters<
+      typeof restoreProtectedMemoryAccessSnapshot
+    >[1];
+    const snapshot = matchingSnapshots[0] as ProtectedMemoryAccessSnapshot;
+    if (obligation.deniedPreview !== undefined) {
+      bindDeniedProtectedMemoryAccessSnapshot(
+        currentState,
+        call,
+        snapshot,
+        obligation.deniedPreview,
+        port,
+      );
+    } else {
+      await restoreProtectedMemoryAccessSnapshot(
+        currentState,
+        call,
+        snapshot,
+        port,
+      );
+    }
+  }
+}
 
 function extractPersistedMessagesFromChainEnd(ev: unknown): BaseMessage[] {
   if (!ev || typeof ev !== "object") return [];
@@ -562,6 +742,12 @@ export function formatSubagentTranscriptForParent(messages: BaseMessage[]): stri
 
 export type RunScopeSubagentOpts = {
   delegatedLocalExecutionPort?: DelegatedLocalExecutionPort;
+  /** Fixed protected repo-docs wrapper; process-local execution authority is never checkpointed. */
+  protectedRepoDocs?: Readonly<{
+    selection: ProtectedRepoDocsOpenedSelection;
+    executionPort: ProtectedRepoDocsExecutionPort;
+    createProjectFilePort(workDir: string): ProtectedTaskProjectFilePort;
+  }>;
   parentThreadId: string;
   parentTurnId: string;
   parentOwnerId: string;
@@ -656,6 +842,9 @@ export type RunScopeSubagentOpts = {
    * Task/TaskRun grant before supplying it here.
    */
   taskRunCheckpointSaver?: EncryptedCheckpointSaver;
+  /** Cooperative protected-only stop at the next persisted node boundary. */
+  protectedTaskCheckpointPauseController?:
+    ProtectedTaskCheckpointPauseController;
   /**
    * Protected Message publication for an exact TaskRun transcript. Required
    * with `taskRunCheckpointSaver`; ordinary transcript rows and Room events
@@ -666,6 +855,8 @@ export type RunScopeSubagentOpts = {
   protectedTaskMemoryHandoff?: ProtectedTaskMemoryGraphHandoff;
   /** Resume payload after a bridged interrupt (same shape as HTTP resume) */
   resume?: unknown;
+  /** Exact Human continuation for one protected Task checkpoint interrupt. */
+  protectedTaskHumanResume?: ProtectedTaskHumanResumeBindingV1;
   /** When resuming, reuse the same subagent thread */
   subagentThreadId?: string;
   /**
@@ -791,6 +982,11 @@ export type RunScopeSubagentResult =
       interrupt: Record<string, unknown>;
       /** Content-free durable resume coordinates; protected Task runs only. */
       interruptCoordinates?: readonly ProtectedTaskInterruptCoordinate[];
+    }
+  | {
+      status: "checkpoint_paused";
+      threadId: string;
+      reason: ProtectedTaskCheckpointPauseReason;
     };
 
 /** Missing or mismatched task provenance remains null rather than becoming main. */
@@ -836,6 +1032,18 @@ async function runScopeSubagentUntilPauseInternal(
     );
   }
   if (
+    opts.protectedTaskHumanResume !== undefined
+    && (
+      opts.taskRunCheckpointSaver === undefined
+      || opts.resume !== undefined
+      || opts.continueFromCheckpoint === true
+    )
+  ) {
+    throw new TypeError(
+      "Protected Task Human resume requires one exact Task-run continuation mode",
+    );
+  }
+  if (
     opts.invocationCheckpointSaver !== undefined
     && !(opts.invocationCheckpointSaver instanceof EncryptedCheckpointSaver)
   ) {
@@ -865,6 +1073,14 @@ async function runScopeSubagentUntilPauseInternal(
   ) {
     throw new TypeError(
       "Protected transcript publication requires Task-run checkpoint authority",
+    );
+  }
+  if (
+    opts.protectedTaskCheckpointPauseController !== undefined
+    && opts.taskRunCheckpointSaver === undefined
+  ) {
+    throw new TypeError(
+      "Checkpoint pause requires protected Task checkpoint authority",
     );
   }
   if (opts.taskRun && opts.invocationCheckpointSaver !== undefined) {
@@ -906,14 +1122,35 @@ async function runScopeSubagentUntilPauseInternal(
     ? createResearchNoteDraft(opts.signal) : undefined;
   const nodeSettlement = opts.taskRunCheckpointSaver === undefined
     ? undefined
-    : createProtectedTaskNodeSettlementScope(opts.signal);
+    : createProtectedTaskNodeSettlementScope(
+        opts.signal,
+        opts.protectedTaskCheckpointPauseController,
+      );
 
+  let checkpointPause:
+    | ProtectedTaskCheckpointPauseInterruption
+    | undefined;
   try {
+    const protectedTaskMemoryGraphDeps = createProtectedTaskMemoryGraphDeps({
+      taskId: opts.currentTaskId ?? "",
+      taskRunId: opts.currentTaskRunId ?? "",
+      graphThreadId: opts.subagentThreadId ?? "",
+      ownerId: opts.parentOwnerId,
+      causalHumanUserId: opts.causalHumanUserId ?? "",
+      agentId: opts.subEnvelope.agentId,
+      roomId: opts.roomId,
+      callingRoomId: opts.callingRoomId ?? "",
+      turnId: opts.parentTurnId,
+      approvalLaneKey: opts.approvalLaneKey ?? opts.subagentThreadId ?? "",
+      actorRole: opts.actorRole,
+      envelope: opts.subEnvelope,
+    }, opts.protectedTaskMemoryHandoff);
     const graph = createNautiloGraph(
       checkpointSaver,
       policyResolver,
       {
         ...defaultPostModelDeps,
+        ...(opts.protectedTaskTranscriptPort === undefined ? {} : { confidential: true as const }),
         ...(opts.delegatedLocalExecutionPort
           ? {
             delegatedLocalExecutionPortForState:
@@ -924,20 +1161,7 @@ async function runScopeSubagentUntilPauseInternal(
         ...(opts.foregroundChatFundingSession === undefined
           ? {}
           : { foregroundChatFundingSession: opts.foregroundChatFundingSession }),
-        ...createProtectedTaskMemoryGraphDeps({
-          taskId: opts.currentTaskId ?? "",
-          taskRunId: opts.currentTaskRunId ?? "",
-          graphThreadId: opts.subagentThreadId ?? "",
-          ownerId: opts.parentOwnerId,
-          causalHumanUserId: opts.causalHumanUserId ?? "",
-          agentId: opts.subEnvelope.agentId,
-          roomId: opts.roomId,
-          callingRoomId: opts.callingRoomId ?? "",
-          turnId: opts.parentTurnId,
-          approvalLaneKey: opts.approvalLaneKey ?? opts.subagentThreadId ?? "",
-          actorRole: opts.actorRole,
-          envelope: opts.subEnvelope,
-        }, opts.protectedTaskMemoryHandoff),
+        ...protectedTaskMemoryGraphDeps,
         ...(nodeSettlement === undefined
           ? {}
           : { protectedTaskNodeSettlementScope: nodeSettlement }),
@@ -1058,31 +1282,139 @@ async function runScopeSubagentUntilPauseInternal(
     callbacks: [],
   };
 
-  // Three stream-entry modes:
-  // • continueFromCheckpoint → a `null` input resumes the parked checkpoint on
+  let repoDocsCheckpoint: ProtectedRepoDocsCheckpointV1 | null = null;
+  let repoDocsProjectFilePort: ProtectedTaskProjectFilePort | undefined;
+  if (opts.protectedRepoDocs !== undefined) {
+    if (opts.taskRunCheckpointSaver === undefined
+      || opts.taskRun !== true
+      || opts.currentTaskRunId === undefined) {
+      throw new TypeError("Protected repo docs requires exact Task checkpoint authority");
+    }
+    const snapshot = await graph.getState({ configurable: { thread_id: subThreadId } }) as {
+      values?: { protectedRepoDocsCheckpoint?: ProtectedRepoDocsCheckpointV1 | null };
+    } | undefined;
+    repoDocsCheckpoint = snapshot?.values?.protectedRepoDocsCheckpoint ?? null;
+    const expected = createProtectedRepoDocsCheckpoint({
+      taskRunId: opts.currentTaskRunId,
+      selection: opts.protectedRepoDocs.selection,
+      modelId: opts.modelId,
+    });
+    if (repoDocsCheckpoint === null) {
+      repoDocsCheckpoint = expected;
+      await graph.updateState(
+        { configurable: { thread_id: subThreadId } },
+        {
+          ...graphInput,
+          // The prepared repository brief is not available until the clone
+          // receipt is confirmed. Seed no model input before that effect.
+          messages: [],
+          protectedRepoDocsCheckpoint: repoDocsCheckpoint,
+        },
+        "__start__",
+      );
+    } else if (
+      repoDocsCheckpoint.version !== expected.version
+      || repoDocsCheckpoint.taskRunId !== expected.taskRunId
+      || repoDocsCheckpoint.relativeWorkspacePath !== expected.relativeWorkspacePath
+      || repoDocsCheckpoint.branch !== expected.branch
+      || repoDocsCheckpoint.target !== expected.target
+      || repoDocsCheckpoint.mode !== expected.mode
+      || repoDocsCheckpoint.modelId !== expected.modelId
+      || repoDocsCheckpoint.publish !== expected.publish
+      || repoDocsCheckpoint.instructions !== expected.instructions
+      || typeof repoDocsCheckpoint.preparedGraphInputApplied !== "boolean"
+    ) {
+      throw new TypeError("Protected repo docs checkpoint identity changed");
+    }
+    const store = {
+      read: () => Promise.resolve(repoDocsCheckpoint),
+      write: async (checkpoint: ProtectedRepoDocsCheckpointV1) => {
+        await graph.updateState(
+          { configurable: { thread_id: subThreadId } },
+          { protectedRepoDocsCheckpoint: checkpoint },
+        );
+        repoDocsCheckpoint = checkpoint;
+      },
+    };
+    const prepared = await runProtectedRepoDocsOperation({
+      checkpoint: repoDocsCheckpoint,
+      request: createProtectedRepoDocsRequest(repoDocsCheckpoint, "prepare"),
+      port: opts.protectedRepoDocs.executionPort,
+      store,
+      signal: opts.signal ?? new AbortController().signal,
+    });
+    if (prepared.result.kind !== "prepared"
+      || prepared.result.relativeWorkspacePath !== repoDocsCheckpoint.relativeWorkspacePath
+      || prepared.result.branch !== repoDocsCheckpoint.branch) {
+      throw new TypeError("Protected repo docs prepared workspace changed");
+    }
+    repoDocsCheckpoint = prepared.checkpoint;
+    const workspace = prepared.result.workDir;
+    if (!path.isAbsolute(workspace)) {
+      throw new TypeError("Protected repo docs workspace is not absolute");
+    }
+    const projectFilePort = opts.protectedRepoDocs.createProjectFilePort(workspace);
+    if (projectFilePort.taskId !== opts.currentTaskId
+      || projectFilePort.taskRunId !== opts.currentTaskRunId
+      || projectFilePort.agentId !== opts.subEnvelope.agentId
+      || projectFilePort.humanUserId !== opts.causalHumanUserId
+      || projectFilePort.workspaceRoot !== workspace
+      || projectFilePort.relayId.trim().length === 0
+      || typeof projectFilePort.dispatch !== "function") {
+      throw new TypeError("Protected repo docs project file authority changed");
+    }
+    repoDocsProjectFilePort = projectFilePort;
+    if (!repoDocsCheckpoint.preparedGraphInputApplied) {
+      repoDocsCheckpoint = Object.freeze({
+        ...repoDocsCheckpoint,
+        preparedGraphInputApplied: true,
+      });
+      await graph.updateState(
+        { configurable: { thread_id: subThreadId } },
+        {
+          protectedRepoDocsCheckpoint: repoDocsCheckpoint,
+          currentFolder: workspace,
+          workspacePath: workspace,
+          messages: [new HumanMessage(prepared.result.brief)],
+        },
+      );
+    }
+  }
+
+  // Five stream-entry modes:
+  // • protected repo docs → `null` starts or resumes only after its trusted
+  //   prepared brief and operation receipt are already in the checkpoint.
+  // • continueFromCheckpoint → `null` input resumes the parked checkpoint on
   // the reused thread (an unpause after a pause abort; no interrupt reply,
   // no fresh brief). A narrowly-scoped Command may repair the missing
   // exec/write lifecycle companion in a legacy explicit whitelist. A
   // revalidated security Task may also refresh its socket binding.
+  // • protectedTaskHumanResume → an exact interrupt-keyed protected reply plus
+  //   replacement authority state reconstructed from the fresh segment grant,
+  //   plus the same narrow lifecycle repair when authorized.
   // • resume defined → an interrupt reply `Command` (approval / await), with
   // the same narrow legacy lifecycle repair when authorized.
   // • else → a cold start with the freshly-built brief `graphInput`.
   //
   // INVARIANT (the related invariants): this is the ONLY place `graphInput.messages` is
   // constructed, and the cold-start branch builds it from exactly the brief —
-  // NEVER from checkpoint/transcript history. The two resume branches stream a
-  // `null` / `Command` and re-inject no messages. `classifyTurnKind` maps both
-  // resume branches to `"resume"`; the subagent path keeps the parked
+  // NEVER from checkpoint/transcript history. Continuation branches stream a
+  // `null` / `Command` and re-inject no messages. `classifyTurnKind` maps them
+  // to `"resume"`; the subagent path keeps the parked
   // checkpoint (spec decision 10.2.3) and has no foreground-style "read history
   // + concat" seam to rebuild. Do not turn any branch into a rebuilt
   // `messages` array — that would be a behavior change ( §7).
-  let streamInput = opts.continueFromCheckpoint
+  let streamInput: unknown = opts.protectedRepoDocs !== undefined
+    ? null
+    : opts.continueFromCheckpoint
     ? null
     : opts.resume !== undefined
       ? new Command({ resume: opts.resume })
       : graphInput;
   const mayRepairLegacyExecLifecycle = (
-    opts.continueFromCheckpoint || opts.resume !== undefined
+    opts.continueFromCheckpoint
+    || opts.protectedTaskHumanResume !== undefined
+    || opts.resume !== undefined
   ) && opts.toolWhitelist?.includes("exec_command") === true
     && opts.toolWhitelist.includes("write_stdin");
   const continuationToRefresh = opts.continueFromCheckpoint
@@ -1090,13 +1422,59 @@ async function runScopeSubagentUntilPauseInternal(
     && opts.toolWhitelist?.includes("security_scan")
     ? opts.taskReportBackContinuation
     : undefined;
-  const saved = mayRepairLegacyExecLifecycle || continuationToRefresh
+  const saved = opts.protectedTaskHumanResume !== undefined
+    || mayRepairLegacyExecLifecycle
+    || continuationToRefresh
     ? await graph.getState({ configurable: { thread_id: subThreadId } })
     : undefined;
   const lifecycleUpdate = mayRepairLegacyExecLifecycle
     ? legacyExecLifecycleResumeUpdate(saved?.values ?? {}, opts.toolWhitelist)
     : undefined;
-  if (lifecycleUpdate) {
+  if (opts.protectedTaskHumanResume !== undefined) {
+    const protectedResumeCommand = createProtectedTaskHumanResumeCommandV1(
+      saved,
+      opts.protectedTaskHumanResume,
+      {
+        taskId: opts.currentTaskId ?? "",
+        taskRunId: opts.currentTaskRunId ?? "",
+        graphThreadId: subThreadId,
+        ownerId: opts.parentOwnerId,
+        causalHumanUserId: opts.causalHumanUserId ?? "",
+        agentId: opts.subEnvelope.agentId,
+        roomId: opts.roomId,
+        callingRoomId: opts.callingRoomId ?? "",
+        actorRole: opts.actorRole,
+        approvalLaneKey: opts.approvalLaneKey ?? subThreadId,
+        memoryAccessEnvelope: opts.subEnvelope,
+        relayCapabilities: opts.relayCapabilities,
+      },
+    );
+    if (!protectedResumeCommand.update
+      || Array.isArray(protectedResumeCommand.update)) {
+      throw new TypeError(
+        "Protected Task Human resume requires a state-object authority update",
+      );
+    }
+    await restoreProtectedTaskAccessForHumanResume(
+      saved,
+      opts.protectedTaskHumanResume,
+      {
+        ...(saved?.values as NautiloState),
+        ...protectedResumeCommand.update,
+      },
+      "protectedMemoryAccessPortForState" in protectedTaskMemoryGraphDeps
+        ? protectedTaskMemoryGraphDeps.protectedMemoryAccessPortForState
+        : undefined,
+    );
+    if (lifecycleUpdate) {
+      streamInput = new Command({
+        resume: protectedResumeCommand.resume,
+        update: { ...protectedResumeCommand.update, ...lifecycleUpdate },
+      });
+    } else {
+      streamInput = protectedResumeCommand;
+    }
+  } else if (lifecycleUpdate) {
     streamInput = opts.resume !== undefined
       ? new Command({ resume: opts.resume, update: lifecycleUpdate })
       : new Command({ update: lifecycleUpdate });
@@ -1134,9 +1512,7 @@ async function runScopeSubagentUntilPauseInternal(
       : null;
 
   try {
-    const eventStream = graph.streamEvents(streamInput, streamConfig);
-    for await (const ev of eventStream) {
-      if (opts.signal?.aborted) break;
+    const consumeEvent = async (ev: unknown): Promise<void> => {
       metrics.noteStreamEvent(ev);
       // Report only into this subagent's canonical slot. A group turn can run
       // several agents concurrently, so a bare parent turn ID is unsafe.
@@ -1151,7 +1527,7 @@ async function runScopeSubagentUntilPauseInternal(
       const progressDetail = extractTaskProgressFromStreamEvent(ev);
       if (progressDetail) progressTap?.noteToolProgress(progressDetail);
       const batch = extractPersistedMessagesFromChainEnd(ev);
-      if (batch.length === 0) continue;
+      if (batch.length === 0) return;
       const assistantMessageKey = tokenStream?.completeMessage();
       if (opts.protectedTaskTranscriptPort !== undefined) {
         await publishProtectedTaskTranscriptBatch(
@@ -1189,26 +1565,83 @@ async function runScopeSubagentUntilPauseInternal(
           },
         );
       }
-    }
+    };
+    const consumeEvents = async () => {
+      const eventStream = graph.streamEvents(streamInput, streamConfig);
+      let consumerFailed = false;
+      let consumerFailure: Error | undefined;
+      try {
+        for await (const ev of eventStream) {
+          if (opts.signal?.aborted) {
+            if (nodeSettlement === undefined) break;
+            continue;
+          }
+          if (consumerFailed) continue;
+          if (nodeSettlement === undefined) {
+            await consumeEvent(ev);
+            continue;
+          }
+          try {
+            await consumeEvent(ev);
+          } catch (error) {
+            const retainedFailure = error instanceof Error
+              ? error
+              : new Error("Protected Task stream consumer failed", {
+                  cause: error,
+                });
+            // Do not throw out of LangChain's event iterator: its private
+            // abort race can settle while the graph scheduler is still
+            // advancing. Fence future node admissions, stop event effects,
+            // and keep this consumer attached until the graph observes it.
+            consumerFailed = true;
+            consumerFailure = retainedFailure;
+            nodeSettlement.fail(retainedFailure);
+          }
+        }
+      } catch (error) {
+        if (consumerFailed && opts.signal?.aborted !== true) {
+          throw consumerFailure!;
+        }
+        throw error;
+      }
+      if (consumerFailed) throw consumerFailure!;
+    };
+    if (repoDocsProjectFilePort === undefined) await consumeEvents();
+    else await runWithProtectedTaskProjectFilePort(
+      repoDocsProjectFilePort,
+      consumeEvents,
+    );
     progressTap?.flush();
     log(`[scope-subagent] stream complete thread=${subThreadId} ${metrics.formatLogToken()}`);
   } catch (err) {
-    // surface the typed internal graph-budget outcome distinctly
-    // in telemetry . The user-safe sentence is produced by
-    // `toFriendlyError` at the runtime job-loop catch site when the
-    // subagent error propagates up to a foreground / fork job.
-    const budgetOutcome = toGraphBudgetOutcome(err, executionPolicy.recursionLimit);
-    if (budgetOutcome) {
-      log(
-        `[scope-subagent] graph budget exceeded thread=${subThreadId} ` +
-          `outcome=${budgetOutcome.kind} recursionLimit=${budgetOutcome.recursionLimit} ${metrics.formatLogToken()}`,
-      );
+    if (
+      isProtectedTaskCheckpointPauseInterruption(err)
+      && opts.protectedTaskCheckpointPauseController !== undefined
+      && opts.protectedTaskCheckpointPauseController.currentRequestedReason()
+        === err.reason
+    ) {
+      checkpointPause = err;
     } else {
-      log(
-        `[scope-subagent] stream error: ${scopeSubagentStreamErrorDetail(err, opts.protectedTaskTranscriptPort !== undefined)} thread=${subThreadId} ${metrics.formatLogToken()}`,
+      // surface the typed internal graph-budget outcome distinctly
+      // in telemetry . The user-safe sentence is produced by
+      // `toFriendlyError` at the runtime job-loop catch site when the
+      // subagent error propagates up to a foreground / fork job.
+      const budgetOutcome = toGraphBudgetOutcome(
+        err,
+        executionPolicy.recursionLimit,
       );
+      if (budgetOutcome) {
+        log(
+          `[scope-subagent] graph budget exceeded thread=${subThreadId} ` +
+            `outcome=${budgetOutcome.kind} recursionLimit=${budgetOutcome.recursionLimit} ${metrics.formatLogToken()}`,
+        );
+      } else {
+        log(
+          `[scope-subagent] stream error: ${scopeSubagentStreamErrorDetail(err, opts.protectedTaskTranscriptPort !== undefined)} thread=${subThreadId} ${metrics.formatLogToken()}`,
+        );
+      }
+      throw err;
     }
-    throw err;
   } finally {
     progressTap?.dispose();
     if (nodeSettlement === undefined) researchNoteDraft?.dispose();
@@ -1234,6 +1667,8 @@ async function runScopeSubagentUntilPauseInternal(
     | {
         values?: { messages?: BaseMessage[] };
         tasks?: Array<Record<string, unknown>>;
+        next?: readonly string[];
+        config?: { configurable?: Record<string, unknown> };
       }
     | undefined;
 
@@ -1253,16 +1688,90 @@ async function runScopeSubagentUntilPauseInternal(
     return { status: "interrupted", threadId: subThreadId, interrupt };
   }
 
+  if (checkpointPause !== undefined) {
+    if (opts.signal?.aborted === true) {
+      if (opts.signal.reason instanceof Error) throw opts.signal.reason;
+      throw new Error("Protected Task authorization was revoked", {
+        cause: opts.signal.reason,
+      });
+    }
+    const checkpointId = postState?.config?.configurable?.["checkpoint_id"];
+    if (
+      opts.protectedTaskCheckpointPauseController
+        ?.currentRequestedReason() !== checkpointPause.reason
+      || typeof checkpointId !== "string"
+      || checkpointId.length === 0
+      || !Array.isArray(postState?.next)
+      || postState.next.length === 0
+      || !postState.next.every(node =>
+        typeof node === "string" && node.length > 0)
+    ) {
+      throw new Error(
+        "Protected Task checkpoint pause has no resumable checkpoint",
+      );
+    }
+    return {
+      status: "checkpoint_paused",
+      threadId: subThreadId,
+      reason: checkpointPause.reason,
+    };
+  }
+
   const messages = postState?.values?.messages ?? [];
   const transcript = formatSubagentTranscriptForParent(messages);
   const finalResponseText =
     lastAssistantPlainText(messages) ||
     "(subagent completed with no text)";
+  let protectedRepoDocsResult: string | null = null;
+  if (opts.protectedRepoDocs !== undefined && repoDocsCheckpoint !== null) {
+    const store = {
+      read: () => Promise.resolve(repoDocsCheckpoint),
+      write: async (checkpoint: ProtectedRepoDocsCheckpointV1) => {
+        await graph.updateState(
+          { configurable: { thread_id: subThreadId } },
+          { protectedRepoDocsCheckpoint: checkpoint },
+        );
+        repoDocsCheckpoint = checkpoint;
+      },
+    };
+    const committed = await runProtectedRepoDocsOperation({
+      checkpoint: repoDocsCheckpoint,
+      request: createProtectedRepoDocsRequest(repoDocsCheckpoint, "commit"),
+      port: opts.protectedRepoDocs.executionPort,
+      store,
+      signal: opts.signal ?? new AbortController().signal,
+    });
+    repoDocsCheckpoint = committed.checkpoint;
+    if (committed.result.kind !== "committed"
+      && committed.result.kind !== "no_changes") {
+      throw new TypeError("Protected repo docs commit result changed");
+    }
+    if (committed.result.kind === "no_changes") {
+      protectedRepoDocsResult = "The repository documentation is already current; no files were committed.";
+    } else if (repoDocsCheckpoint.publish === "branch") {
+      protectedRepoDocsResult = `Documentation committed on branch ${repoDocsCheckpoint.branch} at ${committed.result.commitOid}.`;
+    } else {
+      const published = await runProtectedRepoDocsOperation({
+        checkpoint: repoDocsCheckpoint,
+        request: createProtectedRepoDocsRequest(repoDocsCheckpoint, "publish"),
+        port: opts.protectedRepoDocs.executionPort,
+        store,
+        signal: opts.signal ?? new AbortController().signal,
+      });
+      repoDocsCheckpoint = published.checkpoint;
+      if (published.result.kind !== "published") {
+        throw new TypeError("Protected repo docs publication result changed");
+      }
+      protectedRepoDocsResult = published.result.instruction === null
+        ? `Documentation published from branch ${repoDocsCheckpoint.branch} at ${published.result.commitOid}.`
+        : `Documentation published from branch ${repoDocsCheckpoint.branch} at ${published.result.commitOid}. ${published.result.instruction}`;
+    }
+  }
   return {
     status: "completed",
     threadId: subThreadId,
-    finalText: transcript || finalResponseText,
-    finalResponseText,
+    finalText: protectedRepoDocsResult ?? (transcript || finalResponseText),
+    finalResponseText: protectedRepoDocsResult ?? finalResponseText,
     securityReportState: securityReportReadiness(messages),
     securityResearchAppendix: securityResearchAppendix(messages),
   };

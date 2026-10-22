@@ -144,8 +144,16 @@ const task = {
   cryptoAccessRevision: 0,
   cryptoRequiredNamespaceFingerprint: null,
   cryptoMappingState: "unmapped",
+  ordinaryFallbackOperationId: null,
+  ordinaryFallbackRequestDigest: null,
+  ordinaryFallbackReason: null,
+  ordinaryFallbackPolicyRevision: null,
+  ordinaryFallbackCompletedAt: null,
   createdAt: new Date(),
   updatedAt: new Date(),
+  pauseRequestId: null,
+  pauseRequestedAt: null,
+  pauseReason: null,
   cancelledAt: null,
 } satisfies Task;
 const run = {
@@ -466,6 +474,32 @@ test("offline approval preserves the exact pending interrupt and requires a fres
   sourceAllowed = false;
   expect(await authorizeTaskApprovalResume(args, deps)).toMatchObject({ ok: false, status: 403, code: "task_local_execution_authority_unavailable" });
   expect(transitions).toEqual([]);
+});
+
+
+test("legacy approval authorization rejects protected representations before authority effects", async () => {
+  const { authorizeTaskApprovalResume } = await import("./resume-task-approval");
+  const assertInvocation = mock(async () => {});
+  const assertServerFunding = mock(async () => {});
+  const resolveLocalExecution = mock(async (): Promise<DelegatedLocalExecutionPort | undefined> => undefined);
+  const args = { taskId: task.id, threadId: run.graphThreadId,
+    sessionUserId: task.requestorId };
+  for (const contentRepresentation of ["dual", "protected"] as const) {
+    findAwaitingTaskRunForApproval.mockImplementationOnce(async () => ({
+      task: { ...task, contentRepresentation }, run,
+    }));
+    expect(await authorizeTaskApprovalResume(args, {
+      assertInvocation, assertServerFunding, resolveLocalExecution,
+    })).toEqual({ ok: false, status: 404, error: "task_approval_not_found" });
+  }
+  expect(assertInvocation).not.toHaveBeenCalled();
+  expect(assertServerFunding).not.toHaveBeenCalled();
+  expect(resolveLocalExecution).not.toHaveBeenCalled();
+
+  findAwaitingTaskRunForApproval.mockImplementationOnce(async () => ({ task, run }));
+  expect(await authorizeTaskApprovalResume({ ...args, sessionUserId: task.ownerId }, {
+    assertInvocation, assertServerFunding, resolveLocalExecution,
+  })).toMatchObject({ ok: true, task: { id: task.id }, run: { id: run.id } });
 });
 
 

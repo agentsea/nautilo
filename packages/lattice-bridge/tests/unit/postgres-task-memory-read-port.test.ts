@@ -313,6 +313,211 @@ describe("PostgresTaskMemoryReadPort", () => {
     connection.assertExhausted();
   });
 
+  test("loads an exact ordered representation union without ordinary bodies", async () => {
+    const dual = verifiedRow({
+      memoryId: MEMORY_A,
+      requiredNamespaceIds: [NAMESPACE_A, NAMESPACE_B],
+      ordinary: true,
+      distance: 0,
+    });
+    const ordinary = unmappedRow(MEMORY_B, 0);
+    const protectedOnly = verifiedRow({
+      memoryId: MEMORY_C,
+      requiredNamespaceIds: [NAMESPACE_A],
+      ordinary: false,
+      distance: 0,
+    });
+    const connection = new ScriptedConnection([
+      [{ current_user: "nautilo", session_user: "nautilo" }],
+      [identity],
+      [dual, ordinary, protectedOnly],
+      [
+        { memory_id: MEMORY_A, namespace_id: NAMESPACE_A },
+        { memory_id: MEMORY_A, namespace_id: NAMESPACE_B },
+        { memory_id: MEMORY_B, namespace_id: NAMESPACE_A },
+        { memory_id: MEMORY_C, namespace_id: NAMESPACE_A },
+      ],
+      [dual, ordinary, protectedOnly],
+    ]);
+    const boundaries: ProtectedMemoryAuthority[] = [];
+    const port = await createPort(connection, {
+      mode: "namespace",
+      authority: namespaceAuthority,
+    }, boundaries);
+
+    const result = await port.loadExactCandidates({
+      authority: namespaceAuthority,
+      memoryIds: [MEMORY_A, MEMORY_B, MEMORY_C],
+    });
+
+    expect(result.status).toBe("success");
+    if (result.status !== "success") throw new Error(result.reason);
+    expect(result.value.map(candidate => ({
+      memoryId: candidate.memoryId,
+      representation: candidate.representation,
+      cryptoObjectId: candidate.cryptoObjectId,
+      requiredNamespaceIds: candidate.requiredNamespaceIds,
+    }))).toEqual([
+      {
+        memoryId: MEMORY_A,
+        representation: "dual",
+        cryptoObjectId: dual.crypto_object_id,
+        requiredNamespaceIds: [NAMESPACE_A, NAMESPACE_B],
+      },
+      {
+        memoryId: MEMORY_B,
+        representation: "ordinary_only",
+        cryptoObjectId: null,
+        requiredNamespaceIds: [NAMESPACE_A],
+      },
+      {
+        memoryId: MEMORY_C,
+        representation: "protected_only",
+        cryptoObjectId: protectedOnly.crypto_object_id,
+        requiredNamespaceIds: [NAMESPACE_A],
+      },
+    ]);
+    expect(result.value.every(candidate =>
+      !("type" in candidate) && !("content" in candidate)
+    )).toBe(true);
+    expect(boundaries).toEqual([namespaceAuthority]);
+    expect(connection.isolationLevels).toEqual(["serializable"]);
+    connection.assertExhausted();
+  });
+
+  test("preserves protected-only exact reads while excluding ordinary-only rows", async () => {
+    const protectedOnly = verifiedRow({
+      memoryId: MEMORY_A,
+      requiredNamespaceIds: [NAMESPACE_A],
+      ordinary: false,
+      distance: 0,
+    });
+    const protectedConnection = new ScriptedConnection([
+      [{ current_user: "nautilo", session_user: "nautilo" }],
+      [identity],
+      [protectedOnly],
+      [{ memory_id: MEMORY_A, namespace_id: NAMESPACE_A }],
+      [protectedOnly],
+    ]);
+    const protectedPort = await createPort(protectedConnection, {
+      mode: "namespace",
+      authority: namespaceAuthority,
+    });
+    const protectedResult = await protectedPort.loadExactProtectedSources({
+      authority: namespaceAuthority,
+      memoryIds: [MEMORY_A],
+    });
+    expect(protectedResult).toEqual({
+      status: "success",
+      value: [expect.objectContaining({
+        memoryId: MEMORY_A,
+        cryptoObjectId: protectedOnly.crypto_object_id,
+      })],
+    });
+    if (protectedResult.status === "success") {
+      expect("representation" in protectedResult.value[0]!).toBe(false);
+    }
+    protectedConnection.assertExhausted();
+
+    const ordinary = unmappedRow(MEMORY_A, 0);
+    const ordinaryConnection = new ScriptedConnection([
+      [{ current_user: "nautilo", session_user: "nautilo" }],
+      [identity],
+      [ordinary],
+      [{ memory_id: MEMORY_A, namespace_id: NAMESPACE_A }],
+      [],
+    ]);
+    const ordinaryPort = await createPort(ordinaryConnection, {
+      mode: "namespace",
+      authority: namespaceAuthority,
+    });
+    expect(await ordinaryPort.loadExactProtectedSources({
+      authority: namespaceAuthority,
+      memoryIds: [MEMORY_A],
+    })).toEqual({ status: "unavailable", reason: "stale_revision" });
+    ordinaryConnection.assertExhausted();
+  });
+
+  test("fails exact candidate admission before reading for foreign or noncanonical identity", async () => {
+    const connection = new ScriptedConnection([[
+      { current_user: "nautilo", session_user: "nautilo" },
+    ]]);
+    const port = await createPort(connection, {
+      mode: "namespace",
+      authority: namespaceAuthority,
+    });
+    const foreignAuthority = Object.freeze({
+      ...namespaceAuthority,
+      subjectUserId: "10000000-0000-4000-8000-000000000099",
+    });
+    for (const input of [
+      { authority: foreignAuthority, memoryIds: [MEMORY_A] },
+      { authority: namespaceAuthority, memoryIds: [MEMORY_A, MEMORY_A] },
+      { authority: namespaceAuthority, memoryIds: [MEMORY_B, MEMORY_A] },
+    ]) {
+      expect(await port.loadExactCandidates(input)).toEqual({
+        status: "unavailable",
+        reason: "authorization_required",
+      });
+    }
+    expect(connection.queries).toHaveLength(1);
+    connection.assertExhausted();
+  });
+
+  test("fails an exact candidate read when database identity or rows are stale", async () => {
+    const wrongIdentityConnection = new ScriptedConnection([
+      [{ current_user: "nautilo", session_user: "nautilo" }],
+      [{ ...identity, current_agent_id: "10000000-0000-4000-8000-000000000099" }],
+    ]);
+    const wrongIdentityPort = await createPort(wrongIdentityConnection, {
+      mode: "namespace",
+      authority: namespaceAuthority,
+    });
+    expect(await wrongIdentityPort.loadExactCandidates({
+      authority: namespaceAuthority,
+      memoryIds: [MEMORY_A],
+    })).toEqual({ status: "unavailable", reason: "authorization_required" });
+    wrongIdentityConnection.assertExhausted();
+
+    const selected = verifiedRow({
+      memoryId: MEMORY_A,
+      requiredNamespaceIds: [NAMESPACE_A],
+      ordinary: true,
+      distance: 0,
+    });
+    const staleConnection = new ScriptedConnection([
+      [{ current_user: "nautilo", session_user: "nautilo" }],
+      [identity],
+      [selected],
+      [{ memory_id: MEMORY_A, namespace_id: NAMESPACE_A }],
+      [],
+    ]);
+    const stalePort = await createPort(staleConnection, {
+      mode: "namespace",
+      authority: namespaceAuthority,
+    });
+    expect(await stalePort.loadExactCandidates({
+      authority: namespaceAuthority,
+      memoryIds: [MEMORY_A],
+    })).toEqual({ status: "unavailable", reason: "stale_revision" });
+    staleConnection.assertExhausted();
+
+    const missingConnection = new ScriptedConnection([
+      [{ current_user: "nautilo", session_user: "nautilo" }],
+      [identity],
+      [],
+    ]);
+    const missingPort = await createPort(missingConnection, {
+      mode: "namespace",
+      authority: namespaceAuthority,
+    });
+    expect(await missingPort.loadExactCandidates({
+      authority: namespaceAuthority,
+      memoryIds: [MEMORY_A],
+    })).toEqual({ status: "unavailable", reason: "authorization_required" });
+    missingConnection.assertExhausted();
+  });
+
   test("locks parent Memories without locking their Namespace edge rows", async () => {
     const ranked = verifiedRow({
       memoryId: MEMORY_A,
@@ -592,6 +797,90 @@ describe("PostgresTaskMemoryReadPort", () => {
       representation: "dual",
       readNamespaceId: NAMESPACE_A,
       requiredNamespaceIds: required,
+    });
+    connection.assertExhausted();
+  });
+
+  test("loads exact Scope candidates under the fixed Task identity", async () => {
+    const required = [NAMESPACE_A, NAMESPACE_B, NAMESPACE_C];
+    const ranked = verifiedRow({
+      memoryId: MEMORY_A,
+      requiredNamespaceIds: required,
+      ordinary: true,
+      distance: 0,
+    });
+    const connection = new ScriptedConnection([
+      [{ current_user: "nautilo", session_user: "nautilo" }],
+      [identity],
+      [identity],
+      [{
+        id: TASK_ID,
+        requestor_id: USER_ID,
+        agent_id: AGENT_ID,
+        use_scope: true,
+        scope_id: SCOPE_ID,
+      }],
+      [{
+        id: SCOPE_ID,
+        parent_agent_id: AGENT_ID,
+        speaker_user_id: USER_ID,
+        lifecycle_state: "open",
+        revision: 0,
+      }],
+      [{ id: ROOM_ID, namespace_id: NAMESPACE_A }],
+      [{
+        id: MEMORY_A,
+        origin: "seed",
+        content_revision: 1,
+        crypto_object_id: ranked.crypto_object_id,
+        crypto_access_revision: 0,
+        crypto_mapping_state: "verified",
+        crypto_required_namespace_fingerprint:
+          fingerprintRequiredMemoryNamespaces(required),
+        scope_origin_namespace_id: NAMESPACE_C,
+      }],
+      [
+        { memory_id: MEMORY_A, namespace_id: NAMESPACE_A },
+        { memory_id: MEMORY_A, namespace_id: NAMESPACE_B },
+      ],
+      [
+        { memory_id: MEMORY_A, scope_id: SCOPE_ID, origin: "seed" },
+        { memory_id: MEMORY_A, scope_id: FOREIGN_SCOPE_ID, origin: "scope" },
+      ],
+      [ranked],
+    ]);
+    const port = await createPort(connection, {
+      mode: "scope",
+      authority: scopeAuthority,
+      coordinates: {
+        taskId: TASK_ID,
+        requesterUserId: USER_ID,
+        agentId: AGENT_ID,
+        scopeId: SCOPE_ID,
+        memoryRoomId: ROOM_ID,
+        originWritableNamespaceId: NAMESPACE_A,
+      },
+      readableNamespaceIds: [NAMESPACE_A],
+    });
+
+    expect(await port.loadExactCandidates({
+      authority: Object.freeze({
+        ...scopeAuthority,
+        scopeId: FOREIGN_SCOPE_ID,
+      }),
+      memoryIds: [MEMORY_A],
+    })).toEqual({ status: "unavailable", reason: "authorization_required" });
+    expect(await port.loadExactCandidates({
+      authority: scopeAuthority,
+      memoryIds: [MEMORY_A],
+    })).toEqual({
+      status: "success",
+      value: [expect.objectContaining({
+        memoryId: MEMORY_A,
+        representation: "dual",
+        readNamespaceId: NAMESPACE_A,
+        requiredNamespaceIds: required,
+      })],
     });
     connection.assertExhausted();
   });

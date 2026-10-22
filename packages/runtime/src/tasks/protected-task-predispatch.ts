@@ -1,3 +1,4 @@
+import { parseTaskHistoricalRepairProvenanceV1, taskContentRevisionObjectIdV1 } from "@nautilo/lattice-bridge";
 import type { Task, TaskRun } from "@nautilo/db";
 import type { MemoryAccessEnvelope } from "@nautilo/trust";
 
@@ -38,7 +39,7 @@ export type ProtectedTaskPredispatchTaskFacts = Readonly<Pick<Task,
   | "cryptoAccessRevision"
   | "cryptoRequiredNamespaceFingerprint"
   | "cryptoMappingState"
->>;
+>> & Readonly<{ definitionHistoricalRepair?: Readonly<Record<string, unknown>> | null }>;
 
 /** Closed, pre-execution TaskRun state accepted before authorization claim. */
 export type ProtectedTaskPredispatchRunFacts = Readonly<Pick<TaskRun,
@@ -67,6 +68,18 @@ export type ProtectedTaskPredispatchTarget = Readonly<{
   targetUserIds: readonly string[];
 }>;
 
+/** Canonical protected source pinned before a Scope envelope is accepted. */
+export type ProtectedTaskPredispatchScopeOrigin = Readonly<{
+  roomId: string;
+  namespaceId: string;
+}>;
+
+export type ProtectedTaskPredispatchMemoryResolution =
+  TaskEnvelopeResolution & Readonly<{
+    /** Required for Scope mode and absent for every other Memory mode. */
+    scopeOrigin?: ProtectedTaskPredispatchScopeOrigin;
+  }>;
+
 export interface ProtectedTaskPredispatchPorts {
   /** Revalidates current RBAC and provider-funding authority without mutation. */
   assertCurrentAuthority(input: Readonly<{
@@ -91,7 +104,7 @@ export interface ProtectedTaskPredispatchPorts {
     laneKey: string;
     sessionRoomId: string;
     targetUserIds: readonly string[];
-  }>): Promise<TaskEnvelopeResolution>;
+  }>): Promise<ProtectedTaskPredispatchMemoryResolution>;
 }
 
 export type ProtectedTaskPredispatchPlan = Readonly<{
@@ -161,7 +174,12 @@ function assertOccurrence(
     || !Number.isSafeInteger(task.contentRevision)
     || task.contentRevision < 1
     || typeof task.cryptoObjectId !== "string"
-    || !TASK_DEFINITION_OBJECT_ID.test(task.cryptoObjectId)
+    || (task.definitionHistoricalRepair == null
+      ? !TASK_DEFINITION_OBJECT_ID.test(task.cryptoObjectId)
+      : task.cryptoObjectId !== taskContentRevisionObjectIdV1({
+          coordinate: { kind: "definition", taskId: task.id, contentRevision: task.contentRevision },
+          namespaceId: task.contentNamespaceId, historicalRepair: parseTaskHistoricalRepairProvenanceV1(task.definitionHistoricalRepair),
+        }))
     || !Number.isSafeInteger(task.cryptoAccessRevision)
     || task.cryptoAccessRevision < 0
     || !(fingerprint instanceof Uint8Array)
@@ -231,10 +249,11 @@ function copyEnvelope(envelope: MemoryAccessEnvelope): MemoryAccessEnvelope {
 
 function exactMemory(
   task: ProtectedTaskPredispatchTaskFacts,
-  resolved: TaskEnvelopeResolution,
+  resolved: ProtectedTaskPredispatchMemoryResolution,
 ): TaskEnvelopeResolution {
   const expectedMode = expectedEnvelopeMode(task);
   const envelope = resolved.envelope;
+  const scopeOrigin = resolved.scopeOrigin;
   if (
     resolved.authorityStatus !== "exact"
     || resolved.mode !== expectedMode
@@ -246,7 +265,13 @@ function exactMemory(
           || envelope.scopeId !== task.scopeId
           || !("originWritableNamespaceId" in envelope)
           || !uuid(envelope.originWritableNamespaceId)
+          || scopeOrigin === undefined
+          || !uuid(scopeOrigin.roomId)
+          || !uuid(scopeOrigin.namespaceId)
+          || envelope.roomId !== scopeOrigin.roomId
+          || envelope.originWritableNamespaceId !== scopeOrigin.namespaceId
         : envelope.memoryMode === "scope"
+          || scopeOrigin !== undefined
           || envelope.readableNamespaces.length === 0
           || envelope.writableNamespaces.length === 0
           || !uniqueUuids(envelope.readableNamespaces)
@@ -257,7 +282,9 @@ function exactMemory(
     throw new TypeError("Protected Task Memory authority is not exact");
   }
   return Object.freeze({
-    ...resolved,
+    mode: resolved.mode,
+    authorityStatus: resolved.authorityStatus,
+    provenance: resolved.provenance,
     envelope: copyEnvelope(envelope),
   });
 }
@@ -306,6 +333,9 @@ export async function planProtectedTaskPredispatch(input: Readonly<{
       contentNamespaceId: task.contentNamespaceId,
       contentRevision: task.contentRevision,
       cryptoObjectId: task.cryptoObjectId,
+      ...(task.definitionHistoricalRepair == null ? {} : {
+        definitionHistoricalRepair: parseTaskHistoricalRepairProvenanceV1(task.definitionHistoricalRepair),
+      }),
       cryptoAccessRevision: task.cryptoAccessRevision,
       cryptoRequiredNamespaceFingerprint:
         new Uint8Array(task.cryptoRequiredNamespaceFingerprint),

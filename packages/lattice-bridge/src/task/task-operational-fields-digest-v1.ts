@@ -3,10 +3,19 @@ import {
   taskOperationalUpdateV1Schema,
 } from "@nautilo/api-client/browser";
 import { sha256 } from "@noble/hashes/sha2.js";
-import { decodeTaskPayloadV1 } from "./task-payload-v1.ts";
+import {
+  assertProtectedTaskOperationalMetadataProjectionV1,
+  type ProtectedTaskOperationalMetadataProjectionV1,
+} from "@nautilo/types";
+import {
+  decodeTaskDefinitionContent,
+  decodeTaskPayloadV1,
+} from "./task-payload-v1.ts";
 
 const DOMAIN = "nautilo/task-operational-fields/v1\n";
-const DUAL_DOMAIN = new TextEncoder().encode(
+const OPERATIONAL_METADATA_DOMAIN = "nautilo/task-operational-metadata/v1\n";
+const encoder = new TextEncoder();
+const DUAL_DOMAIN = encoder.encode(
   "nautilo/task-dual-publication-fields/v1\0",
 );
 
@@ -70,7 +79,7 @@ export function encodeTaskOperationalFieldsV1(
   const parsed = operation === "create"
     ? taskOperationalCreateV1Schema.parse(value)
     : taskOperationalUpdateV1Schema.parse(value);
-  return new TextEncoder().encode(`${DOMAIN}${canonicalJson(parsed)}`);
+  return encoder.encode(`${DOMAIN}${canonicalJson(parsed)}`);
 }
 
 export function fingerprintTaskOperationalFieldsV1(
@@ -78,6 +87,19 @@ export function fingerprintTaskOperationalFieldsV1(
   value: unknown,
 ): Uint8Array {
   return sha256(encodeTaskOperationalFieldsV1(operation, value));
+}
+
+/** Commit only the canonical plaintext-safe projection emitted by the classifier. */
+export function fingerprintTaskOperationalMetadataV1(
+  value: ProtectedTaskOperationalMetadataProjectionV1,
+): Uint8Array {
+  assertProtectedTaskOperationalMetadataProjectionV1(value);
+  const bytes = encoder.encode(`${OPERATIONAL_METADATA_DOMAIN}${canonicalJson(value)}`);
+  try {
+    return sha256(bytes);
+  } finally {
+    bytes.fill(0);
+  }
 }
 
 /** Authenticates both Shadow siblings with one domain-separated commitment. */
@@ -89,7 +111,11 @@ export function fingerprintTaskDualPublicationFieldsV1(
   if (!(canonicalOrdinaryPayloadBytes instanceof Uint8Array)) {
     throw new TypeError("Dual Task ordinary payload bytes must be Uint8Array");
   }
-  decodeTaskPayloadV1(canonicalOrdinaryPayloadBytes);
+  if (operation === "create") {
+    decodeTaskPayloadV1(canonicalOrdinaryPayloadBytes);
+  } else {
+    decodeTaskDefinitionContent(canonicalOrdinaryPayloadBytes);
+  }
   const operationalBytes = encodeTaskOperationalFieldsV1(
     operation,
     operationalFields,

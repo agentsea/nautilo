@@ -542,6 +542,7 @@ describe("PostgreSQL current processor reconciliation input", () => {
         ),
         genesisHumanId: null,
         headSignerPublicKey: new Uint8Array(32),
+        taskDefinitionForegroundAuthorizationEvidence: [],
         signerEvidence: [],
       });
     }).verify({ objectId: OBJECT_ID, signal: new AbortController().signal });

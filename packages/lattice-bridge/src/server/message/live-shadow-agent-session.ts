@@ -1,5 +1,10 @@
+import type { TaskRuntimePublicationSigning } from "@nautilo/lattice-crypto";
+import { parseModelInputExposureMetadataV1 } from "@nautilo/reflection/payload";
 import {
   accessRevision,
+  assertAuthenticTaskRuntimeWakeForegroundEvidence,
+  deriveAgentRuntimeObjectSignerPublic,
+  type TaskRuntimeWakeForegroundEvidence,
   decryptObjectPayload,
   namespaceGeneration,
   namespaceId,
@@ -67,6 +72,10 @@ import type { ProtectedCheckpointCellCrypto } from
   "../../checkpoint/protected-checkpoint-cell-crypto.ts";
 
 const ZERO_HASH = new Uint8Array(32);
+const MODEL_INPUT_EXPOSURE_METADATA_KEY =
+  "nautilo_memory_model_exposure" as const;
+
+class InvalidModelInputExposureMetadataError extends TypeError {}
 
 declare const reservationBrand: unique symbol;
 export type LiveShadowAgentMessageReservation = Readonly<{
@@ -268,7 +277,14 @@ function withOrdinaryPublication(
  * Namespace and Runtime secret copies remain owned by this object and are
  * destroyed with every per-Message DEK when the Job scope closes.
  */
-export function createLiveShadowAgentTurnSession(input: Readonly<{
+export type LiveShadowAgentPublicationCoordinates = Pick<ForegroundSessionLiveShadowMessagePlan,
+  "agentAuthorizationRevision" | "agentSignerKeyId" | "agentSignerPublicKey"
+  | "deadlineAt" | "hostAuthorizationRevision" | "namespaceAudienceFingerprint"
+  | "namespaceHeadDigest" | "namespaceId" | "namespacePublicationDigest"
+  | "namespacePublicationSetDigest" | "operationId" | "policyRevision"
+  | "recipientAgentId" | "roomId" | "sessionId">;
+
+type LiveShadowAgentTurnSessionInput = Readonly<{
   crypto: LatticeCrypto;
   plan: ForegroundSessionLiveShadowMessagePlan;
   /** Retained from the current policy whose revision is bound by the plan. */
@@ -289,6 +305,7 @@ export function createLiveShadowAgentTurnSession(input: Readonly<{
     aiKey: Uint8Array;
   }>;
   runtime: AgentRuntimeKeyGeneration;
+  taskRuntimeSigner?: TaskRuntimePublicationSigning;
   grantId: string;
   grantDigest: Uint8Array;
   /** Exact expiry of the retained foreground authorization, not the request plan. */
@@ -320,7 +337,93 @@ export function createLiveShadowAgentTurnSession(input: Readonly<{
     reason: LiveShadowAgentSessionFailureReason,
   ) => void;
   now?: () => number;
-}>): LiveShadowAgentTurnSession {
+}>;
+
+export function createLiveShadowAgentTurnSession(
+  input: LiveShadowAgentTurnSessionInput,
+): LiveShadowAgentTurnSession {
+  return createAgentTurnSession(input, input.sharedAgentExecution === true
+    ? encodeLiveShadowMessagePlanV4(input.plan) : null);
+}
+
+export type TaskWakeForegroundTranscriptPorts = Pick<LiveShadowAgentTurnSessionInput,
+  "product" | "conversation" | "resolveCurrentDeviceWrappedAgentObjectAuthorization">;
+
+export type TaskWakeForegroundTranscriptAuthority = <Value>(
+  use: (ports: TaskWakeForegroundTranscriptPorts) => Promise<Value>,
+) => Promise<Value>;
+
+export type TaskWakeForegroundAgentTurnSessionInput = Omit<LiveShadowAgentTurnSessionInput,
+  "plan" | "sharedAgentExecution" | "authorizationDeadlineAt" | "authorizationSignal" | "representationMode"
+  | "causalHumanUserId" | "causalHumanTurnId" | keyof TaskWakeForegroundTranscriptPorts> & Readonly<{
+  /** Re-enter the current wake owner and return only after its transaction commits. */
+  withCurrentTranscriptAuthority: TaskWakeForegroundTranscriptAuthority;
+  publication: LiveShadowAgentPublicationCoordinates;
+  evidence: TaskRuntimeWakeForegroundEvidence;
+  representationMode: "shadow_encryption" | "full_encryption";
+  authorizationSignal: AbortSignal;
+}>;
+
+/** A wake has no synthetic Human Message or V4 Human publication plan. */
+export function createTaskWakeForegroundAgentTurnSession(
+  input: TaskWakeForegroundAgentTurnSessionInput,
+): LiveShadowAgentTurnSession {
+  const evidence = input.evidence;
+  const publication = Object.freeze({ ...input.publication,
+    agentSignerPublicKey: Uint8Array.from(input.publication.agentSignerPublicKey),
+    namespaceHeadDigest: Uint8Array.from(input.publication.namespaceHeadDigest),
+    namespacePublicationDigest: Uint8Array.from(input.publication.namespacePublicationDigest),
+    namespacePublicationSetDigest: Uint8Array.from(input.publication.namespacePublicationSetDigest),
+    namespaceAudienceFingerprint: Uint8Array.from(input.publication.namespaceAudienceFingerprint),
+  });
+  const assertScope = (): void => {
+    assertAuthenticTaskRuntimeWakeForegroundEvidence(evidence);
+    input.authorizationSignal.throwIfAborted();
+    const namespace = evidence.namespaceRequirements.find(n => n.namespaceId === publication.namespaceId);
+    const signer = deriveAgentRuntimeObjectSignerPublic(input.crypto, input.runtime);
+    if ((input.representationMode !== "shadow_encryption" && input.representationMode !== "full_encryption")
+      || publication.operationId !== evidence.invocation.operationId
+      || publication.roomId !== evidence.sourceRoomId || publication.sessionId !== evidence.episodeId
+      || publication.policyRevision !== evidence.policyRevision
+      || publication.hostAuthorizationRevision !== evidence.hostAuthorizationRevision
+      || publication.deadlineAt !== evidence.expiresAt
+      || publication.recipientAgentId !== evidence.signerAgentId
+      || input.runtime.agentId !== evidence.signerAgentId
+      || publication.agentSignerKeyId !== signer.principal.signerKeyId
+      || !equal(publication.agentSignerPublicKey, signer.publicKey)
+      || input.grantId !== evidence.requestId
+      || input.recipientKeyId !== evidence.recipientKeyId
+      || !equal(input.grantDigest, evidence.authorizationDigest)
+      || namespace === undefined || !namespace.operations.includes("encrypt")
+      || input.namespace.namespaceId !== namespace.namespaceId
+      || input.namespace.accessRevision !== namespace.expectedAccessRevision
+      || !equal(input.namespace.headDigest, publication.namespaceHeadDigest)
+      || !equal(input.namespace.publicationDigest, publication.namespacePublicationDigest)
+      || !equal(input.namespace.publicationSetDigest, publication.namespacePublicationSetDigest)
+      || !equal(input.namespace.audienceFingerprint, publication.namespaceAudienceFingerprint)) {
+      throw new TypeError("Task wake foreground publication authority is invalid");
+    }
+  };
+  assertScope();
+  return createAgentTurnSession({ ...input, plan: publication,
+    causalHumanUserId: null, causalHumanTurnId: null,
+    authorizationDeadlineAt: evidence.expiresAt }, null, assertScope);
+}
+
+function createAgentTurnSession(
+  input: Omit<LiveShadowAgentTurnSessionInput, "plan" | "sharedAgentExecution"
+    | "causalHumanUserId" | "causalHumanTurnId" | keyof TaskWakeForegroundTranscriptPorts> & Readonly<{
+    plan: LiveShadowAgentPublicationCoordinates;
+    causalHumanUserId: string | null;
+    causalHumanTurnId?: string | null;
+  }> & (TaskWakeForegroundTranscriptPorts | Readonly<{
+    withCurrentTranscriptAuthority: TaskWakeForegroundTranscriptAuthority;
+  }>),
+  sharedAgentPlanBytes: Uint8Array | null,
+  assertScope?: () => void,
+): LiveShadowAgentTurnSession {
+  const wake = "withCurrentTranscriptAuthority" in input;
+
   const states = new WeakMap<object, ReservationState>();
   const ownedStates = new Set<ReservationState>();
   const now = input.now ?? Date.now;
@@ -332,9 +435,6 @@ export function createLiveShadowAgentTurnSession(input: Readonly<{
   let currentAssistant: ReservationState | null = null;
   let terminalFailure: ReturnType<typeof unavailable> | null = null;
   let destroyed = false;
-  const sharedAgentPlanBytes = input.sharedAgentExecution === true
-    ? encodeLiveShadowMessagePlanV4(input.plan)
-    : null;
 
   const fail = (
     stage: LiveShadowAgentSessionFailureStage,
@@ -349,6 +449,10 @@ export function createLiveShadowAgentTurnSession(input: Readonly<{
 
   const active = <Value>(): LiveShadowAgentSessionResult<Value> | null => {
     if (destroyed) return unavailable("agent_input", "protected_unavailable");
+    try { assertScope?.(); } catch {
+      fail("agent_input", "protected_unavailable");
+      return terminalFailure as LiveShadowAgentSessionResult<Value>;
+    }
     if (now() >= authorizationDeadlineAt) {
       fail("agent_input", "deadline_expired");
       return terminalFailure as LiveShadowAgentSessionResult<Value>;
@@ -358,6 +462,44 @@ export function createLiveShadowAgentTurnSession(input: Readonly<{
       return terminalFailure as LiveShadowAgentSessionResult<Value>;
     }
     return terminalFailure as LiveShadowAgentSessionResult<Value> | null;
+  };
+
+  const assertCurrentSink = () => {
+    if (active() !== null) throw new Error("Task wake transcript authority is unavailable");
+  };
+  const withTranscriptAuthority: TaskWakeForegroundTranscriptAuthority = async use => {
+    if (!wake) return use(input);
+    assertCurrentSink();
+    let accepting = true;
+    let invoked = false;
+    let result;
+    try {
+      result = await input.withCurrentTranscriptAuthority(async ports => {
+        if (!accepting || invoked) throw new TypeError("Task wake transcript callback is closed");
+        invoked = true;
+        let live = true;
+        const assertLive = () => {
+          if (!live) throw new TypeError("Task wake transcript authority is closed");
+          assertCurrentSink();
+        };
+        try {
+          assertLive();
+          const value = await use({ ...ports,
+            resolveCurrentDeviceWrappedAgentObjectAuthorization: async context => {
+              assertLive();
+              const decision = await ports.resolveCurrentDeviceWrappedAgentObjectAuthorization(context);
+              assertLive();
+              return decision;
+            },
+          });
+          assertLive();
+          return value;
+        } finally { live = false; }
+      });
+    } finally { accepting = false; }
+    if (!invoked) throw new TypeError("Task wake transcript authority was not entered");
+    assertCurrentSink();
+    return result;
   };
 
   const reserve = async (
@@ -371,7 +513,8 @@ export function createLiveShadowAgentTurnSession(input: Readonly<{
     const reservationDigest = input.crypto.hash(new TextEncoder().encode(
       `${input.plan.operationId}\n${input.plan.sessionId}\n${transcriptOrdinal}\n${authorRole}\n${createdAt}`,
     ));
-    const reserved = await input.product.reserveLiveShadowAgent({
+    assertScope?.();
+    const reserved = await withTranscriptAuthority(ports => ports.product.reserveLiveShadowAgent({
       publicationPolicy: {
         expectedRevision: input.plan.policyRevision,
         representation: full ? "protected_only" : "ordinary_and_protected",
@@ -384,7 +527,8 @@ export function createLiveShadowAgentTurnSession(input: Readonly<{
       requestDigest: reservationDigest,
       subthreadReplyClassification:
         authorRole === "assistant" ? "counted" : "excluded",
-    });
+    }));
+    assertScope?.();
     if (reserved.status !== "reserved" && reserved.status !== "replayed") {
       reservationDigest.fill(0);
       fail("durable_transcript", "integrity_failure");
@@ -439,6 +583,17 @@ export function createLiveShadowAgentTurnSession(input: Readonly<{
     return Object.freeze({ status: "protected" as const, value: state });
   };
 
+  const scoped = <Args extends unknown[], Result>(
+    operation: (...args: Args) => Promise<Result>,
+  ): ((...args: Args) => Promise<Result>) => assertScope === undefined ? operation : async (...args) => {
+    if (destroyed) throw new TypeError("Task wake foreground session is closed");
+    assertScope();
+    const result = await operation(...args);
+    assertScope();
+    if (destroyed) throw new TypeError("Task wake foreground session is closed");
+    return result;
+  };
+
   const publicSession: LiveShadowAgentTurnSession = Object.freeze({
     representationMode,
     authorizationDeadlineAt,
@@ -454,28 +609,28 @@ export function createLiveShadowAgentTurnSession(input: Readonly<{
         : sharedAgentPlanBytes.slice(),
     ...(input.protectForegroundHistory === undefined
       ? {}
-      : { protectForegroundHistory: input.protectForegroundHistory }),
+      : { protectForegroundHistory: scoped(input.protectForegroundHistory) }),
     ...(input.protectForegroundJournal === undefined
       ? {}
-      : { protectForegroundJournal: input.protectForegroundJournal }),
+      : { protectForegroundJournal: scoped(input.protectForegroundJournal) }),
     ...(input.protectForegroundRecords === undefined
       ? {}
-      : { protectForegroundRecords: input.protectForegroundRecords }),
+      : { protectForegroundRecords: scoped(input.protectForegroundRecords) }),
     ...(input.protectForegroundMemories === undefined
       ? {}
-      : { protectForegroundMemories: input.protectForegroundMemories }),
+      : { protectForegroundMemories: scoped(input.protectForegroundMemories) }),
     ...(input.createForegroundMemoryRepository === undefined
       ? {}
       : {
         createForegroundMemoryRepository:
-          input.createForegroundMemoryRepository,
+          scoped(input.createForegroundMemoryRepository),
       }),
     ...(input.createForegroundMemoryAccessPort === undefined
       ? {}
-      : { createForegroundMemoryAccessPort: input.createForegroundMemoryAccessPort }),
+      : { createForegroundMemoryAccessPort: scoped(input.createForegroundMemoryAccessPort) }),
     ...(input.createForegroundMemoryProjectionPort === undefined
       ? {}
-      : { createForegroundMemoryProjectionPort: input.createForegroundMemoryProjectionPort }),
+      : { createForegroundMemoryProjectionPort: scoped(input.createForegroundMemoryProjectionPort) }),
     async reserveAssistantStream(request: Readonly<{
       assistantMessageKey: string;
       createdAt: number;
@@ -777,259 +932,310 @@ export function createLiveShadowAgentTurnSession(input: Readonly<{
       }
       let prepared;
       let ordinaryPersisted = false;
+      const pendingPublication: { value: LiveShadowAgentPublishedMessage | null } = { value: null };
       try {
-        const commonPrepared = {
-          crypto: input.crypto,
-          objectId: state.allocation.cryptoObjectId,
-          payload: request.payload,
-          createdAt: state.createdAt,
-          objectDek: state.objectDek,
-          namespaceEnvelopeBytes: state.envelopeBytes,
-          namespace: input.namespace,
-          grant: {
-            grantId: input.grantId,
-            grantHash: input.grantDigest,
-            useStatus: "reusable",
-          },
-          runtime: input.runtime,
-          agentAuthorizationRevision:
-            input.plan.agentAuthorizationRevision,
-          signerKeyId: input.plan.agentSignerKeyId,
-          signerPublicKey: input.plan.agentSignerPublicKey,
-        } as const;
-        prepared = prepareDeviceWrappedLiveShadowAgentConversationCryptoRevisionWithDek({
-              ...commonPrepared,
-              operationId: input.plan.operationId,
+        const result = await withTranscriptAuthority(async ports => {
+          const publish = async (): Promise<LiveShadowAgentSessionResult<LiveShadowAgentPublishedMessage>> => {
+            const commonPrepared = {
+              crypto: input.crypto,
+              objectId: state.allocation.cryptoObjectId,
+              payload: request.payload,
+              createdAt: state.createdAt,
+              objectDek: state.objectDek,
+              namespaceEnvelopeBytes: state.envelopeBytes,
+              namespace: input.namespace,
               grant: {
                 grantId: input.grantId,
                 grantHash: input.grantDigest,
-                recipientKeyId: input.recipientKeyId!,
+                useStatus: "reusable",
               },
-              namespace: {
-                namespaceId: input.namespace.namespaceId,
-                accessRevision: input.namespace.accessRevision,
-                keyGeneration: input.namespace.keyGeneration,
-                headDigest: input.plan.namespaceHeadDigest,
-                publicationDigest: input.plan.namespacePublicationDigest,
-                publicationSetDigest:
-                  input.plan.namespacePublicationSetDigest,
-                audienceFingerprint:
-                  input.plan.namespaceAudienceFingerprint,
-                aiKey: input.namespace.aiKey,
+              runtime: input.runtime,
+              ...(input.taskRuntimeSigner === undefined ? {} : { taskRuntimeSigner: input.taskRuntimeSigner }),
+              agentAuthorizationRevision:
+                input.plan.agentAuthorizationRevision,
+              signerKeyId: input.plan.agentSignerKeyId,
+              signerPublicKey: input.plan.agentSignerPublicKey,
+            } as const;
+            prepared = prepareDeviceWrappedLiveShadowAgentConversationCryptoRevisionWithDek({
+                  ...commonPrepared,
+                  operationId: input.plan.operationId,
+                  grant: {
+                    grantId: input.grantId,
+                    grantHash: input.grantDigest,
+                    recipientKeyId: input.recipientKeyId!,
+                  },
+                  namespace: {
+                    namespaceId: input.namespace.namespaceId,
+                    accessRevision: input.namespace.accessRevision,
+                    keyGeneration: input.namespace.keyGeneration,
+                    headDigest: input.plan.namespaceHeadDigest,
+                    publicationDigest: input.plan.namespacePublicationDigest,
+                    publicationSetDigest:
+                      input.plan.namespacePublicationSetDigest,
+                    audienceFingerprint:
+                      input.plan.namespaceAudienceFingerprint,
+                    aiKey: input.namespace.aiKey,
+                  },
+                  resolveCurrentAuthorization:
+                    ports.resolveCurrentDeviceWrappedAgentObjectAuthorization,
+                });
+            const snapshot = readPreparedConversationCryptoRevisionSnapshot(
+              prepared,
+            );
+            if (
+              snapshot.kind !== "agent-v3-device-wrapped-live-shadow"
+            ) {
+              throw new TypeError("Live Shadow Agent revision kind is invalid");
+            }
+            const encrypted = decodeEncryptedPayloadV2(
+              snapshot.value.object.payloadBytes.ciphertext,
+            );
+            const opened = decryptObjectPayload(
+              input.crypto,
+              state.objectDek,
+              encrypted,
+            );
+            encrypted.ciphertext.fill(0);
+            if (opened === null || !equal(opened, ordinaryPayloadBytes)) {
+              opened?.fill(0);
+              fail(request.stage, "parity_mismatch");
+              return terminalFailure!;
+            }
+            const openedPayload = decodeMessagePayloadV2(opened);
+            opened.fill(0);
+            assertScope?.();
+            const published = await ports.product.publishReservedLiveShadowAgent({
+              sessionId: input.plan.sessionId,
+              idempotencyKey:
+                `live-agent:${input.plan.operationId}:${state.token.transcriptOrdinal}`,
+              content: full ? null : request.payload.content,
+              publicationPolicy: {
+                expectedRevision: input.plan.policyRevision,
+                representation: full ? "protected_only" : "ordinary_and_protected",
               },
-              resolveCurrentAuthorization:
-                input.resolveCurrentDeviceWrappedAgentObjectAuthorization,
+              keyClass: "ai",
+              authorRole: state.token.authorRole,
+              toolCalls: full || request.payload.toolCalls === undefined
+                ? null
+                : JSON.stringify(request.payload.toolCalls),
+              toolName: full ? null : request.payload.toolName ?? null,
+              fingerprint:
+                `live-agent:${input.plan.operationId}:${state.token.transcriptOrdinal}`,
+              humanTurnId: null,
+              transcriptOrigin: "main",
+              parentThreadId: null,
+              scopeId: null,
+              metadata: full ? null : (() => {
+                const metadata: Record<string, unknown> = {};
+                const imageAssistance = request.payload.role === "assistant"
+                  ? parseImageAssistanceSummary(request.payload.sensitiveMetadata?.["imageAssistance"]) : undefined;
+                if (imageAssistance) metadata["nautilo_image_assistance"] = imageAssistance;
+                const modelInputExposure = request.payload.sensitiveMetadata?.[
+                  MODEL_INPUT_EXPOSURE_METADATA_KEY
+                ];
+                // The protected payload is the canonical Agent-produced value
+                // already covered by this publication's ciphertext/signature
+                // checks. Persist only this named parity sibling; callers do
+                // not get a generic sensitive-metadata projection.
+                if (modelInputExposure !== undefined) {
+                  const parsed = parseModelInputExposureMetadataV1(modelInputExposure);
+                  if (parsed === null) {
+                    throw new InvalidModelInputExposureMetadataError(
+                      "Live Shadow model-input exposure metadata is invalid",
+                    );
+                  }
+                  metadata[MODEL_INPUT_EXPOSURE_METADATA_KEY] = parsed;
+                }
+                const foregroundExecutionId = request.payload.sensitiveMetadata?.["foregroundExecutionId"];
+                if (foregroundExecutionId !== undefined) {
+                  if (typeof foregroundExecutionId !== "string" || foregroundExecutionId.length === 0) {
+                    throw new TypeError("Live Shadow foreground execution identity is invalid");
+                  }
+                  metadata["nautilo_foreground_execution_id"] = foregroundExecutionId;
+                }
+                const toolCallId = request.payload.role === "tool" ? request.payload.sensitiveMetadata?.["toolCallId"] : undefined;
+                if (typeof toolCallId === "string") metadata["nautilo_tool_result"] = { toolCallId };
+                return Object.keys(metadata).length === 0 ? null : metadata;
+              })(),
+              subthreadRoomId: null,
+              replyToMessageId: null,
+              notificationContext: {
+                mentionedHumanUserIds: [],
+                // Product user identity is resolved independently from current
+                // product + device authority; it is never inferred from the
+                // cryptographic Human actor coordinate.
+                causalHumanUserId: input.causalHumanUserId,
+                causalHumanTurnId:
+                  input.causalHumanUserId === null ? null : input.causalHumanTurnId ?? input.plan.operationId,
+              },
+              structuralProjection: {
+                notificationEligibility:
+                  state.token.authorRole === "assistant" ? "eligible" : "excluded",
+                subthreadReplyClassification:
+                  state.token.authorRole === "assistant" ? "counted" : "excluded",
+              },
+              operationId: input.plan.operationId,
+              transcriptOrdinal: state.token.transcriptOrdinal,
+              reservedMessageId: state.allocation.messageId,
+              reservedCreatedAt: state.createdAt,
+              cryptoObjectId: state.allocation.cryptoObjectId,
+              reservationDigest: state.reservationDigest,
             });
-        const snapshot = readPreparedConversationCryptoRevisionSnapshot(
-          prepared,
-        );
-        if (
-          snapshot.kind !== "agent-v3-device-wrapped-live-shadow"
-        ) {
-          throw new TypeError("Live Shadow Agent revision kind is invalid");
-        }
-        const encrypted = decodeEncryptedPayloadV2(
-          snapshot.value.object.payloadBytes.ciphertext,
-        );
-        const opened = decryptObjectPayload(
-          input.crypto,
-          state.objectDek,
-          encrypted,
-        );
-        encrypted.ciphertext.fill(0);
-        if (opened === null || !equal(opened, ordinaryPayloadBytes)) {
-          opened?.fill(0);
-          fail(request.stage, "parity_mismatch");
-          return terminalFailure!;
-        }
-        const openedPayload = decodeMessagePayloadV2(opened);
-        opened.fill(0);
-        const published = await input.product.publishReservedLiveShadowAgent({
-          sessionId: input.plan.sessionId,
-          idempotencyKey:
-            `live-agent:${input.plan.operationId}:${state.token.transcriptOrdinal}`,
-          content: full ? null : request.payload.content,
-          publicationPolicy: {
-            expectedRevision: input.plan.policyRevision,
-            representation: full ? "protected_only" : "ordinary_and_protected",
-          },
-          keyClass: "ai",
-          authorRole: state.token.authorRole,
-          toolCalls: full || request.payload.toolCalls === undefined
-            ? null
-            : JSON.stringify(request.payload.toolCalls),
-          toolName: full ? null : request.payload.toolName ?? null,
-          fingerprint:
-            `live-agent:${input.plan.operationId}:${state.token.transcriptOrdinal}`,
-          humanTurnId: null,
-          transcriptOrigin: "main",
-          parentThreadId: null,
-          scopeId: null,
-          metadata: full ? null : (() => {
-            const imageAssistance = request.payload.role === "assistant"
-              ? parseImageAssistanceSummary(request.payload.sensitiveMetadata?.["imageAssistance"]) : undefined;
-            if (imageAssistance) return { nautilo_image_assistance: imageAssistance };
-            const toolCallId = request.payload.role === "tool" ? request.payload.sensitiveMetadata?.["toolCallId"] : undefined;
-            return typeof toolCallId === "string" ? { nautilo_tool_result: { toolCallId } } : null;
-          })(),
-          subthreadRoomId: null,
-          replyToMessageId: null,
-          notificationContext: {
-            mentionedHumanUserIds: [],
-            // Product user identity is resolved independently from current
-            // product + device authority; it is never inferred from the
-            // cryptographic Human actor coordinate.
-            causalHumanUserId: input.causalHumanUserId,
-            causalHumanTurnId:
-              input.causalHumanTurnId ?? input.plan.operationId,
-          },
-          structuralProjection: {
-            notificationEligibility:
-              state.token.authorRole === "assistant" ? "eligible" : "excluded",
-            subthreadReplyClassification:
-              state.token.authorRole === "assistant" ? "counted" : "excluded",
-          },
-          operationId: input.plan.operationId,
-          transcriptOrdinal: state.token.transcriptOrdinal,
-          reservedMessageId: state.allocation.messageId,
-          reservedCreatedAt: state.createdAt,
-          cryptoObjectId: state.allocation.cryptoObjectId,
-          reservationDigest: state.reservationDigest,
+            assertScope?.();
+            if (published.status === "conflict") {
+              fail("durable_transcript", "integrity_failure");
+              return terminalFailure!;
+            }
+            ordinaryPersisted = !full;
+            assertScope?.();
+            const completed = await ports.conversation.completeRevision({
+              messageId: state.allocation.messageId,
+              expectedRevision: 0,
+              parityStatus: full ? "server_authenticated" : "server_verified",
+              prepared,
+            });
+            assertScope?.();
+            if (completed.status === "orphaned") {
+              fail("durable_transcript", "integrity_failure");
+              return full ? terminalFailure! : withOrdinaryPublication(terminalFailure!, {
+                reservation: state.token,
+                createdAt: new Date(state.createdAt).toISOString(),
+                payload: request.payload,
+                assistantMessageKey: state.assistantMessageKey,
+              });
+            }
+            const value = snapshot.value;
+            const dto = parseProtectedMessageDtoV2({
+              dtoVersion: 2,
+              projection: {
+                messageId: String(state.allocation.messageId),
+                sessionId: input.plan.sessionId,
+                roomId: input.plan.roomId,
+                namespaceId: input.plan.namespaceId,
+                role: state.token.authorRole,
+                createdAt: new Date(state.createdAt).toISOString(),
+                editRevision: 0,
+                authorAgentId: input.plan.recipientAgentId,
+              },
+              protectedPayload: {
+                status: "encrypted",
+                cryptoObjectId: state.allocation.cryptoObjectId,
+                payloadVersion: 2,
+                keyClass: "ai",
+                encryptedPayloadBytesBase64url: base64url(
+                  value.object.payloadBytes.ciphertext,
+                ),
+                accessManifestBytesBase64url: base64url(
+                  value.access.manifestBytes,
+                ),
+                namespaceEnvelopeBytesBase64url: base64url(
+                  value.access.envelopeBytes[0],
+                ),
+              },
+            });
+            const digestInput = {
+              operationId: input.plan.operationId,
+              policyRevision: input.plan.policyRevision,
+              transcriptOrdinal: state.token.transcriptOrdinal,
+              protectedMessage: dto,
+            };
+            const durableEventDigest = full ? fullEncryptionDurableEventDigestV2(
+              input.crypto, digestInput,
+            ) : liveShadowDurableEventDigestV1(
+              input.crypto,
+              {
+                ...digestInput,
+                ordinaryPayloadBytes,
+              },
+            );
+            const streamEvidence = state.startBytes === null
+              ? null
+              : state.streamStartDigest !== null
+                  && state.terminalFrameDigest !== null
+                  && state.terminalStreamedTextDigest !== null
+                ? Object.freeze({
+                  streamId:
+                    `live-stream:${input.plan.operationId}:${state.token.transcriptOrdinal}`,
+                  startDigest: state.streamStartDigest.slice(),
+                  terminalDigest: state.terminalFrameDigest.slice(),
+                  streamedTextDigest: state.terminalStreamedTextDigest.slice(),
+                })
+                : undefined;
+            if (streamEvidence === undefined) {
+              durableEventDigest.fill(0);
+              fail("durable_transcript", "integrity_failure");
+              return full ? terminalFailure! : withOrdinaryPublication(terminalFailure!, {
+                reservation: state.token,
+                createdAt: new Date(state.createdAt).toISOString(),
+                payload: request.payload,
+                assistantMessageKey: state.assistantMessageKey,
+              });
+            }
+            assertScope?.();
+            const evidence = await ports.product.recordLiveShadowAgentEvidence({
+              publicationPolicy: {
+                expectedRevision: input.plan.policyRevision,
+                representation: full ? "protected_only" : "ordinary_and_protected",
+              },
+              sessionId: input.plan.sessionId,
+              operationId: input.plan.operationId,
+              messageId: state.allocation.messageId,
+              transcriptOrdinal: state.token.transcriptOrdinal,
+              durableEventDigest,
+              streamEvidence,
+              finalTurnMessage: request.payload.role === "assistant"
+                && (request.payload.toolCalls?.length ?? 0) === 0,
+              now: now(),
+            });
+            assertScope?.();
+            if (evidence === "conflict") {
+              durableEventDigest.fill(0);
+              streamEvidence?.startDigest.fill(0);
+              streamEvidence?.terminalDigest.fill(0);
+              streamEvidence?.streamedTextDigest.fill(0);
+              fail("durable_transcript", "integrity_failure");
+              return full ? terminalFailure! : withOrdinaryPublication(terminalFailure!, {
+                reservation: state.token,
+                createdAt: new Date(state.createdAt).toISOString(),
+                payload: request.payload,
+                assistantMessageKey: state.assistantMessageKey,
+              });
+            }
+            const publication = Object.freeze({
+              representationMode,
+              reservation: state.token,
+              policyRevision: input.plan.policyRevision,
+              ordinaryPayloadBytes: ordinaryPayloadBytes.slice(),
+              openedPayload,
+              protectedMessage: dto,
+              durableEventDigest,
+              streamEvidence,
+            });
+            pendingPublication.value = publication;
+            return Object.freeze({ status: "protected" as const, value: publication });
+          };
+          const result = await publish();
+          if (wake && result.status !== "protected") {
+            throw new Error("Task wake transcript publication was not completed");
+          }
+          return result;
         });
-        if (published.status === "conflict") {
-          fail("durable_transcript", "integrity_failure");
-          return terminalFailure!;
+        if (result.status === "protected") {
+          state.published = result.value;
+          if (currentAssistant === state) currentAssistant = null;
         }
-        ordinaryPersisted = !full;
-        const completed = await input.conversation.completeRevision({
-          messageId: state.allocation.messageId,
-          expectedRevision: 0,
-          parityStatus: full ? "server_authenticated" : "server_verified",
-          prepared,
-        });
-        if (completed.status === "orphaned") {
-          fail("durable_transcript", "integrity_failure");
-          return full ? terminalFailure! : withOrdinaryPublication(terminalFailure!, {
-            reservation: state.token,
-            createdAt: new Date(state.createdAt).toISOString(),
-            payload: request.payload,
-            assistantMessageKey: state.assistantMessageKey,
-          });
-        }
-        const value = snapshot.value;
-        const dto = parseProtectedMessageDtoV2({
-          dtoVersion: 2,
-          projection: {
-            messageId: String(state.allocation.messageId),
-            sessionId: input.plan.sessionId,
-            roomId: input.plan.roomId,
-            namespaceId: input.plan.namespaceId,
-            role: state.token.authorRole,
-            createdAt: new Date(state.createdAt).toISOString(),
-            editRevision: 0,
-            authorAgentId: input.plan.recipientAgentId,
-          },
-          protectedPayload: {
-            status: "encrypted",
-            cryptoObjectId: state.allocation.cryptoObjectId,
-            payloadVersion: 2,
-            keyClass: "ai",
-            encryptedPayloadBytesBase64url: base64url(
-              value.object.payloadBytes.ciphertext,
-            ),
-            accessManifestBytesBase64url: base64url(
-              value.access.manifestBytes,
-            ),
-            namespaceEnvelopeBytesBase64url: base64url(
-              value.access.envelopeBytes[0],
-            ),
-          },
-        });
-        const digestInput = {
-          operationId: input.plan.operationId,
-          policyRevision: input.plan.policyRevision,
-          transcriptOrdinal: state.token.transcriptOrdinal,
-          protectedMessage: dto,
-        };
-        const durableEventDigest = full ? fullEncryptionDurableEventDigestV2(
-          input.crypto, digestInput,
-        ) : liveShadowDurableEventDigestV1(
-          input.crypto,
-          {
-            ...digestInput,
-            ordinaryPayloadBytes,
-          },
-        );
-        const streamEvidence = state.startBytes === null
-          ? null
-          : state.streamStartDigest !== null
-              && state.terminalFrameDigest !== null
-              && state.terminalStreamedTextDigest !== null
-            ? Object.freeze({
-              streamId:
-                `live-stream:${input.plan.operationId}:${state.token.transcriptOrdinal}`,
-              startDigest: state.streamStartDigest.slice(),
-              terminalDigest: state.terminalFrameDigest.slice(),
-              streamedTextDigest: state.terminalStreamedTextDigest.slice(),
-            })
-            : undefined;
-        if (streamEvidence === undefined) {
-          durableEventDigest.fill(0);
-          fail("durable_transcript", "integrity_failure");
-          return full ? terminalFailure! : withOrdinaryPublication(terminalFailure!, {
-            reservation: state.token,
-            createdAt: new Date(state.createdAt).toISOString(),
-            payload: request.payload,
-            assistantMessageKey: state.assistantMessageKey,
-          });
-        }
-        const evidence = await input.product.recordLiveShadowAgentEvidence({
-          publicationPolicy: {
-            expectedRevision: input.plan.policyRevision,
-            representation: full ? "protected_only" : "ordinary_and_protected",
-          },
-          sessionId: input.plan.sessionId,
-          operationId: input.plan.operationId,
-          messageId: state.allocation.messageId,
-          transcriptOrdinal: state.token.transcriptOrdinal,
-          durableEventDigest,
-          streamEvidence,
-          finalTurnMessage: request.payload.role === "assistant"
-            && (request.payload.toolCalls?.length ?? 0) === 0,
-          now: now(),
-        });
-        if (evidence === "conflict") {
-          durableEventDigest.fill(0);
-          streamEvidence?.startDigest.fill(0);
-          streamEvidence?.terminalDigest.fill(0);
-          streamEvidence?.streamedTextDigest.fill(0);
-          fail("durable_transcript", "integrity_failure");
-          return full ? terminalFailure! : withOrdinaryPublication(terminalFailure!, {
-            reservation: state.token,
-            createdAt: new Date(state.createdAt).toISOString(),
-            payload: request.payload,
-            assistantMessageKey: state.assistantMessageKey,
-          });
-        }
-        state.published = Object.freeze({
-          representationMode,
-          reservation: state.token,
-          policyRevision: input.plan.policyRevision,
-          ordinaryPayloadBytes: ordinaryPayloadBytes.slice(),
-          openedPayload,
-          protectedMessage: dto,
-          durableEventDigest,
-          streamEvidence,
-        });
-        if (currentAssistant === state) currentAssistant = null;
-        return Object.freeze({
-          status: "protected" as const,
-          value: state.published,
-        });
+        return result;
       } catch (error) {
+        pendingPublication.value?.ordinaryPayloadBytes.fill(0);
+        pendingPublication.value?.durableEventDigest.fill(0);
+        pendingPublication.value?.streamEvidence?.startDigest.fill(0);
+        pendingPublication.value?.streamEvidence?.terminalDigest.fill(0);
+        pendingPublication.value?.streamEvidence?.streamedTextDigest.fill(0);
         input.onDiagnostic?.(request.stage, error);
-        fail(request.stage, "protected_unavailable");
-        return ordinaryPersisted
+        fail(request.stage, error instanceof InvalidModelInputExposureMetadataError
+          ? "integrity_failure"
+          : "protected_unavailable");
+        return !wake && ordinaryPersisted
           ? withOrdinaryPublication(terminalFailure!, {
             reservation: state.token,
             createdAt: new Date(state.createdAt).toISOString(),

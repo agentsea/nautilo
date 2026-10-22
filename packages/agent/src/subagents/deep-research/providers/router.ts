@@ -126,6 +126,7 @@ export async function createModel(
             modelFallbackMode: "none",
             sameModelRetryMode: "none",
             isolatedProgress: true,
+            ...(cfg.confidential ? { confidential: true as const } : {}),
             ...(options?.maxTokens === undefined ? {} : { maxOutputTokens: options.maxTokens }),
             ...(options?.useOpenAIResponsesApi === undefined
               ? {} : { useOpenAIResponsesApi: options.useOpenAIResponsesApi }),

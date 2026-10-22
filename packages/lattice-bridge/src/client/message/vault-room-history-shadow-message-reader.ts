@@ -6,6 +6,7 @@ import {
   verifyHumanAiReadableLiveShadowMessageRequestExactReplay,
   verifyForegroundSessionHumanLiveShadowMessageRequestExactReplay,
   verifyAgentObjectAccessManifest,
+  verifyCommonObjectAccessManifestChain,
   verifyObjectAccessManifestChain,
   type LatticeCrypto,
   decodeHumanAiReadableLiveShadowMessagePlan,
@@ -20,6 +21,7 @@ import {
   decodeEncryptedPayloadV2,
   decodeNamespaceObjectEnvelopeV2,
   decodeObjectAccessManifestV2OrV3,
+  decodeObjectAccessManifestV5,
   agentRuntimeObjectSignerKeyIdV1,
   parseHumanMessageEditCryptoObjectIdV1,
 } from "@nautilo/lattice-crypto/wire";
@@ -56,6 +58,10 @@ import { deriveLiveShadowMessageCryptoObjectIdV1, deriveMessageCryptoObjectIdV2,
   "../../message/conversation-repository.ts";
 import type { ExistingMessageRepairEvidence, ExistingMessageRetainedGeneration } from
   "../../message/existing-message-repair-evidence.ts";
+import {
+  withTaskRuntimeSignerEvidenceResolversV1,
+  type TaskRuntimeSignerCertificateEvidenceTransportV1,
+} from "../task-runtime-signer-evidence.ts";
 
 const BASE64URL = /^[A-Za-z0-9_-]+$/u;
 const MAX_HISTORY_ROWS = 50;
@@ -178,6 +184,25 @@ interface RoomHistoryLiveRecordCoordinates {
 export type RoomHistoryLiveShadowRecordTransportV1 = RoomHistoryLiveRecordCoordinates
   & RoomHistoryReadRepresentation;
 
+export type RoomHistoryTaskRuntimeRecordTransportV1 = Readonly<{
+  readonly kind: "task_runtime";
+  readonly taskId: string;
+  readonly taskRunId: string;
+  readonly shadowOperationId?: never;
+  readonly shadowOperationFamily?: never;
+  readonly shadowTranscriptOrdinal?: never;
+  readonly sessionId: string;
+  readonly messageId: string;
+  readonly editRevision: number;
+  readonly namespaceGeneration: number;
+  readonly namespaceAccessRevision: number;
+  readonly namespaceHeadDigestBase64url: string;
+  readonly namespacePublicationDigestBase64url: string;
+  readonly namespacePublicationSetDigestBase64url: string;
+  readonly namespaceAudienceFingerprintBase64url: string;
+  readonly protectedMessage: ConversationProtectedMessageClientDtoV2;
+}> & RoomHistoryReadRepresentation;
+
 interface RoomHistoryExistingRepresentationCoordinates {
   readonly kind: "existing_representation";
   readonly sessionId: string;
@@ -231,11 +256,13 @@ export type RoomHistoryHumanEditedRepresentationRecordTransportV1 =
 
 export type RoomHistoryShadowRecordTransportV1 =
   | RoomHistoryLiveShadowRecordTransportV1
+  | RoomHistoryTaskRuntimeRecordTransportV1
   | RoomHistoryExistingRepresentationRecordTransportV1
   | RoomHistoryHumanEditedRepresentationRecordTransportV1;
 
 export type RoomHistoryShadowSignerEvidenceTransportV1 =
   | ObjectAccessSignerEvidenceTransportV1
+  | TaskRuntimeSignerCertificateEvidenceTransportV1
   | Readonly<{
     readonly kind: "human_ai_readable_live_shadow_request_v1"
       | "human_ai_readable_live_shadow_request_v2";
@@ -506,8 +533,42 @@ function ordinarySiblingMatches(
   }
   if (ordinary.role !== sibling.payload.role) return false;
   if (ordinary.role === "tool") {
-    return ordinary.content === sibling.payload.content
-      && ordinary.toolName === sibling.payload.toolName;
+    const {
+      toolCallId: _protectedToolCallId,
+      ...protectedParityMetadata
+    } = ordinary.sensitiveMetadata ?? {};
+    const {
+      toolCallId: _ordinaryToolCallId,
+      ...ordinaryParityMetadata
+    } = sibling.payload.sensitiveMetadata ?? {};
+    const comparable: MessagePayloadV2 = Object.freeze({
+      role: "tool",
+      content: ordinary.content,
+      ...(ordinary.toolName === undefined ? {} : { toolName: ordinary.toolName }),
+      ...(Object.keys(protectedParityMetadata).length === 0
+        ? {}
+        : { sensitiveMetadata: protectedParityMetadata }),
+    });
+    let ordinaryBytes: Uint8Array | undefined;
+    let siblingBytes: Uint8Array | undefined;
+    try {
+      ordinaryBytes = encodeMessagePayloadV2(comparable);
+      siblingBytes = encodeMessagePayloadV2(Object.freeze({
+        role: "tool",
+        content: sibling.payload.content,
+        ...(sibling.payload.toolName === undefined
+          ? {}
+          : { toolName: sibling.payload.toolName }),
+        ...(Object.keys(ordinaryParityMetadata).length === 0
+          ? {}
+          : { sensitiveMetadata: ordinaryParityMetadata }),
+      }));
+      return equalBytes(ordinaryBytes, siblingBytes);
+    } catch {
+      return false;
+    } finally {
+      wipe([ordinaryBytes, siblingBytes]);
+    }
   }
   let ordinaryBytes: Uint8Array | undefined;
   let siblingBytes: Uint8Array | undefined;
@@ -1233,6 +1294,8 @@ export function createVaultRoomHistoryShadowMessageReader(input: Readonly<{
   coordinates: ClientProfileCoordinates;
   authority: RetainedRoomAuthorityClient;
   namespaceAuthority: NamespaceAuthorityClient;
+  /** Locally authenticated admission generation; never derived from history DTOs. */
+  resolveCurrentOwnDeviceGeneration?: () => Promise<number | null>;
   resolveTrustedDeviceSigningPublicKey:
     ResolveTrustedDeviceSigningPublicKey;
   createProfileStageId: () => string;
@@ -1327,8 +1390,23 @@ export function createVaultRoomHistoryShadowMessageReader(input: Readonly<{
         && evidence.kind !== "human_peer_live_shadow_request_v1"
         && evidence.kind !== "human_ai_readable_live_shadow_request_v1"
         && evidence.kind !== "human_ai_readable_live_shadow_request_v2"
-        && evidence.kind !== "shared_agent_execution_plan_v4",
+        && evidence.kind !== "shared_agent_execution_plan_v4"
+        && evidence.kind !== "task_runtime_signer_certificate",
     );
+    const taskCertificates = request.signerEvidence.filter(
+      (evidence): evidence is TaskRuntimeSignerCertificateEvidenceTransportV1 =>
+        evidence.kind === "task_runtime_signer_certificate",
+    );
+    let ownDeviceGeneration: number | undefined;
+    if (taskCertificates.length > 0
+      && input.resolveCurrentOwnDeviceGeneration !== undefined) {
+      try {
+        const resolved = await input.resolveCurrentOwnDeviceGeneration();
+        if (resolved !== null) ownDeviceGeneration = resolved;
+      } catch {
+        return finish(allFallback(request.records, "signer_evidence_unavailable"));
+      }
+    }
     if (legacySignerEvidence.length > 0) {
       try {
         await ingestObjectAccessSignerEvidenceV4({
@@ -1826,17 +1904,25 @@ export function createVaultRoomHistoryShadowMessageReader(input: Readonly<{
                       throw new TypeError("Shared execution history binding disagrees");
                     }
                   }
-                  if (
-                    authorRole === null
-                    || deriveLiveShadowMessageCryptoObjectIdV1({
+                  const expectedObjectId = record.kind === "task_runtime"
+                    ? deriveMessageCryptoObjectIdV2({
+                      sessionId: record.sessionId,
+                      messageId: Number(record.messageId),
+                      revision: record.editRevision,
+                    })
+                    : authorRole === null ? null
+                    : deriveLiveShadowMessageCryptoObjectIdV1({
                       operationId: record.shadowOperationId,
                       sessionId: record.sessionId,
                       messageId: Number(record.messageId),
                       revision: record.editRevision,
                       transcriptOrdinal: record.shadowTranscriptOrdinal,
                       authorRole,
-                    }) !== protectedPayload.cryptoObjectId
-                  ) throw new TypeError("Room history live Shadow identity disagrees");
+                    });
+                  if (expectedObjectId === null
+                    || expectedObjectId !== protectedPayload.cryptoObjectId) {
+                    throw new TypeError("Room history protected identity disagrees");
+                  }
 
                   const encryptedPayload = decodeEncryptedPayloadV2(
                     encryptedBytes,
@@ -1844,9 +1930,15 @@ export function createVaultRoomHistoryShadowMessageReader(input: Readonly<{
                   const envelope = decodeNamespaceObjectEnvelopeV2(
                     envelopeBytes,
                   );
-                  const decodedManifest = decodeObjectAccessManifestV2OrV3(
-                    manifestBytes,
-                  );
+                  let decodedManifest:
+                    | ReturnType<typeof decodeObjectAccessManifestV2OrV3>
+                    | ReturnType<typeof decodeObjectAccessManifestV5>;
+                  try { decodedManifest = decodeObjectAccessManifestV5(manifestBytes); }
+                  catch {
+                    decodedManifest = decodeObjectAccessManifestV2OrV3(
+                      manifestBytes,
+                    );
+                  }
                   try {
                     if (decodedManifest.formatVersion === 2) {
                       const base = profile.baseProfile.baseProfile;
@@ -1892,6 +1984,55 @@ export function createVaultRoomHistoryShadowMessageReader(input: Readonly<{
                           manifestHash.fill(0);
                         }
                       })()
+                      : decodedManifest.formatVersion === 5
+                      ? withTaskRuntimeSignerEvidenceResolversV1({
+                        crypto: input.crypto,
+                        profile,
+                        subjectHumanId: input.coordinates.humanActorId,
+                        ...(ownDeviceGeneration === undefined
+                          ? {} : { ownDeviceGeneration }),
+                        ...(record.kind === "task_runtime" ? {
+                          expectedWork: { taskId: record.taskId,
+                            taskRunId: record.taskRunId },
+                        } : {}),
+                        evidence: taskCertificates,
+                        operation: taskResolvers => {
+                          const manifestHash = input.crypto.hash(manifestBytes!);
+                          try {
+                            return withClientObjectAccessSignerResolversV4({
+                              crypto: input.crypto,
+                              profile,
+                              operation: resolvers =>
+                                verifyCommonObjectAccessManifestChain(
+                                  input.crypto,
+                                  {
+                                    manifestBytes: manifestBytes!,
+                                    proof: [],
+                                    trustedMinimumHead: {
+                                      objectId: objectId(decodedManifest.objectId),
+                                      payloadHash: decodedManifest.payloadHash,
+                                      accessRevision: accessRevision(0),
+                                      manifestHash,
+                                    },
+                                    resolveHistoricalHumanDeviceSigningPublicKey:
+                                      context =>
+                                        resolvers.resolveHistoricalHumanDeviceSigningPublicKey({
+                                          humanId: context.subjectHumanId,
+                                          deviceId: context.committerDeviceId,
+                                        }),
+                                    resolveAgentRuntimeSignerPublicKey:
+                                      resolvers.resolveAgentRuntimeSignerPublicKey,
+                                    resolveProcessorSignerAuthorizationBytes:
+                                      resolvers.resolveProcessorSignerAuthorizationBytes,
+                                    resolveHistoricalProcessorIssuingDevicePublicKey:
+                                      resolvers.resolveHistoricalProcessorIssuingDevicePublicKey,
+                                    ...taskResolvers,
+                                  },
+                                ),
+                            });
+                          } finally { manifestHash.fill(0); }
+                        },
+                      })
                       : withClientObjectAccessSignerResolversV4({
                         crypto: input.crypto,
                         profile,
@@ -1901,7 +2042,7 @@ export function createVaultRoomHistoryShadowMessageReader(input: Readonly<{
                           // A different evidence family cannot replace the signer
                           // committed by this selected shared execution's plan.
                           const liveSigner = sharedPlan === undefined
-                            ? liveSigners.get(record.shadowOperationId)
+                            ? liveSigners.get(record.shadowOperationId ?? "")
                             : {
                               agentId: sharedPlan.recipientAgentId,
                               runtimeGeneration: sharedPlan.agentRuntimeGeneration,
@@ -1972,8 +2113,11 @@ export function createVaultRoomHistoryShadowMessageReader(input: Readonly<{
                         || verified.manifest.accessRevision !== 0
                       ) throw new TypeError("Room history protected bytes disagree");
                       if (
-                        decodedManifest.formatVersion === 3
+                        (decodedManifest.formatVersion === 3
+                          || decodedManifest.formatVersion === 5)
                         && (
+                          decodedManifest.signer.kind !== "agent_runtime"
+                          ||
                           dto.projection.authorAgentId
                             !== decodedManifest.signer.agentId
                           || (dto.projection.role !== "assistant"
@@ -2046,7 +2190,7 @@ export function createVaultRoomHistoryShadowMessageReader(input: Readonly<{
                       }
                       if (protectedOnly && decodedManifest.formatVersion === 2) {
                         const commitment = humanPlaintextCommitments.get(
-                          record.shadowOperationId,
+                          record.shadowOperationId ?? "",
                         );
                         if (commitment === undefined) {
                           results.push(fallback(record, "signer_evidence_unavailable"));
@@ -2089,6 +2233,9 @@ export function createVaultRoomHistoryShadowMessageReader(input: Readonly<{
                     decodedManifest.payloadHash.fill(0);
                     decodedManifest.previousManifestHash?.fill(0);
                     decodedManifest.envelopeHashes.forEach((hash) => hash.fill(0));
+                    if (decodedManifest.formatVersion === 5) {
+                      decodedManifest.signerAuthorizationHash?.fill(0);
+                    }
                     decodedManifest.signature.fill(0);
                     encryptedPayload.ciphertext.fill(0);
                     envelope.wrappedDek.fill(0);

@@ -41,8 +41,8 @@ describe("actual repository coverage inventory", () => {
       errors: [],
     });
     expect(inventory.observations.length).toBeGreaterThan(1_000);
-    expect(inventory.schema.objects.filter((item) => item.kind === "table")).toHaveLength(206);
-    expect(inventory.schema.columns).toHaveLength(2_775);
+    expect(inventory.schema.objects.filter((item) => item.kind === "table")).toHaveLength(232);
+    expect(inventory.schema.columns).toHaveLength(3_188);
     expect(inventory.observations.filter((item) =>
       item.surface === "db" && item.locator === "public.session_messages"
     ).map(({ id, surface, locator }) => ({ id, surface, locator }))).toEqual([{
@@ -50,7 +50,7 @@ describe("actual repository coverage inventory", () => {
       surface: "db",
       locator: "public.session_messages",
     }]);
-    expect(inventory.dto).toHaveLength(820);
+    expect(inventory.dto).toHaveLength(882);
     expect(inventory.source.observations).toHaveLength(52);
     expect(inventory.source.alarms.length).toBeGreaterThan(2_000);
     expect(inventory.source.alarmReviews.errors).toEqual([]);
@@ -105,7 +105,7 @@ describe("actual repository coverage inventory", () => {
 
   test("a new observation fails closed instead of entering the baseline automatically", async () => {
     const inventory = actualInventory;
-    expect(verifyRepositoryInventory({
+    const result = verifyRepositoryInventory({
       ...inventory,
       observations: [
         ...inventory.observations,
@@ -115,10 +115,15 @@ describe("actual repository coverage inventory", () => {
           locator: "fixture:new-secret",
         },
       ],
-    }, BASELINE_REGISTRY)).toEqual({
-      ok: false,
-      errors: ["unknown coverage observation: wire:fixture:new-secret"],
-    });
+    }, BASELINE_REGISTRY);
+    // The independent complete-inventory test above still requires zero drift.
+    // Here prove this mutation adds exactly its own failure, even when another
+    // reviewed candidate boundary is currently blocking the complete gate.
+    expect(result.ok).toBe(false);
+    expect([...result.errors].sort()).toEqual([
+      ...verifyRepositoryInventory(inventory, BASELINE_REGISTRY).errors,
+      "unknown coverage observation: wire:fixture:new-secret",
+    ].sort());
   });
 
   test("adding untriaged debt cannot grandfather a new repository observation", () => {
@@ -145,14 +150,13 @@ describe("actual repository coverage inventory", () => {
       debt: [...BASELINE_REGISTRY.debt, newDebt],
     });
 
-    expect(result).toEqual({
-      ok: false,
-      errors: [
+    expect(result.ok).toBe(false);
+    expect([...result.errors].sort()).toEqual([
+        ...verifyRepositoryInventory(actualInventory, BASELINE_REGISTRY).errors,
         "unfrozen baseline debt declaration: "
           + "debt.wire.fixture.new-secret:wire:fixture:new-secret",
         "unknown coverage observation: wire:fixture:new-secret",
-      ],
-    });
+    ].sort());
   });
 
   test("the committed initial debt snapshot is count-and-fingerprint locked", () => {
@@ -326,17 +330,17 @@ describe("actual repository coverage inventory", () => {
       "langchain.checkpoints",
     ]);
 
-    expect(verifyRepositoryInventory({
+    const result = verifyRepositoryInventory({
       ...inventory,
       externalDatabaseErrors: [
         "external database dependency version drift: expected @langchain/langgraph-checkpoint-postgres 1.0.1, received 1.0.2",
       ],
-    }, BASELINE_REGISTRY)).toEqual({
-      ok: false,
-      errors: [
+    }, BASELINE_REGISTRY);
+    expect(result.ok).toBe(false);
+    expect([...result.errors].sort()).toEqual([
+        ...verifyRepositoryInventory(inventory, BASELINE_REGISTRY).errors,
         "external database dependency version drift: expected @langchain/langgraph-checkpoint-postgres 1.0.1, received 1.0.2",
-      ],
-    });
+    ].sort());
   });
 
   test("the initial debt remains exact while later reviewed decisions are separate", () => {

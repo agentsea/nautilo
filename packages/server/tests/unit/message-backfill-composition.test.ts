@@ -46,7 +46,7 @@ function fixture(keyClass: "human" | "ai" = "human") {
   const lifecycle = {sessionId: id(2), roomId: id(3), messageId: 42, revision: 0, keyClass, authorRole: "system", sequence: 1,
     appendIdempotencyKey: "repair-42", terminalOperationId: null, terminalOperationType: null, terminalExpectedRevision: null,
     terminalRequestDigest: null, objectIdScheme: "message_v2", shadowOperationId: null, humanPeerShadowOperationId: null,
-    sharedAgentShadowOperationId: null, sharedAgentShadowExecutionId: null, shadowTranscriptOrdinal: null,
+    sharedAgentShadowOperationId: null, sharedAgentShadowExecutionId: null, taskWakeOperationId: null, shadowTranscriptOrdinal: null,
     cryptoObjectId: claim.cryptoObjectId, namespaceIdAtAllocation: id(4), completion: "pending", disposition: "active",
     parityStatus: "pending", failureCode: null, attemptCount: 0, nextAttemptAt: new Date(), leaseToken: null, leaseExpiresAt: null,
     allocationRequestDigest: crypto.hash(bytes), repairIdentityDigest: head, representationMode: "shadow_encryption", publicationPolicyRevision: 5};

@@ -17,6 +17,10 @@ const SCOPE_ID = "scope-1";
 const SCOPE_ROOM_ID = "scope-room-1";
 const ORIGIN_NAMESPACE_ID = "namespace-origin-1";
 const TURN_ID = "turn-1";
+const PROJECTION_REQUIREMENTS = Object.freeze([Object.freeze({
+  namespaceId: "550e8400-e29b-41d4-a716-446655440000",
+  operations: Object.freeze(["encrypt" as const]),
+})]);
 
 const unavailable = async () => Object.freeze({
   status: "unavailable" as const,
@@ -37,10 +41,35 @@ function handoff(
       replace: unavailable,
       setTier: unavailable,
     }),
-    access: Object.freeze({ change: unavailable }),
+    access: Object.freeze({
+      prepareApproval: unavailable,
+      restoreApproval: unavailable,
+      planChange: async () => ({
+        status: "success" as const,
+        value: Object.freeze({
+          planVersion: 1 as const,
+          kind: "current_v1" as const,
+          operationId: "access-operation",
+          requestDigest: new Uint8Array(32).fill(2),
+          semanticAuthorityRequirements: PROJECTION_REQUIREMENTS,
+        }),
+      }),
+      changeAuthorized: unavailable,
+    }),
     projection: Object.freeze({
       prepare: unavailable,
-      publish: unavailable,
+      restore: unavailable,
+      planPublication: async () => ({
+        status: "success" as const,
+        value: Object.freeze({
+          planVersion: 1 as const,
+          kind: "current_v1" as const,
+          operationId: "projection-operation",
+          requestDigest: new Uint8Array(32).fill(1),
+          semanticAuthorityRequirements: PROJECTION_REQUIREMENTS,
+        }),
+      }),
+      publishAuthorized: unavailable,
     }),
     fullEncryptionOnly,
   });
@@ -156,10 +185,15 @@ describe("protected Task Memory graph handoff", () => {
         .toBe(expectedHandoff.search);
       expect(deps.protectedMemoryRepositoryForState?.(current))
         .toBe(expectedHandoff.repository);
-      expect(deps.protectedMemoryAccessPortForState?.(current))
-        .toBe(expectedHandoff.access);
-      expect(deps.protectedMemoryProjectionPortForState?.(current))
-        .toBe(expectedHandoff.projection);
+      const access = deps.protectedMemoryAccessPortForState?.(current);
+      expect(access).toBeDefined();
+      expect(access).not.toBe(expectedHandoff.access);
+      expect(typeof access?.change).toBe("function");
+      expect(typeof access?.restoreApproval).toBe("function");
+      const projection = deps.protectedMemoryProjectionPortForState?.(current);
+      expect(projection).toBeDefined();
+      expect(projection).not.toBe(expectedHandoff.projection);
+      expect(typeof projection?.publish).toBe("function");
       expect(deps.fullEncryptionOnlyForState?.(current))
         .toBe(fullEncryptionOnly);
     }
@@ -202,7 +236,14 @@ describe("protected Task Memory graph handoff", () => {
       const resolver = field === "access"
         ? deps.protectedMemoryAccessPortForState
         : deps.protectedMemoryProjectionPortForState;
-      expect(resolver?.(current)).toBe(expectedPort);
+      const resolved = resolver?.(current);
+      if (field === "access") {
+        expect(resolved).not.toBe(expectedPort);
+        expect("change" in (resolved ?? {})).toBe(true);
+      } else {
+        expect(resolved).not.toBe(expectedPort);
+        expect("publish" in (resolved ?? {})).toBe(true);
+      }
       expect(absentField in deps).toBe(false);
     }
   });
@@ -222,10 +263,14 @@ describe("protected Task Memory graph handoff", () => {
     expect(deps.protectedMemorySearchForState?.(current)).toBe(original.search);
     expect(deps.protectedMemoryRepositoryForState?.(current))
       .toBe(original.repository);
-    expect(deps.protectedMemoryAccessPortForState?.(current))
-      .toBe(original.access);
-    expect(deps.protectedMemoryProjectionPortForState?.(current))
-      .toBe(original.projection);
+    const access = deps.protectedMemoryAccessPortForState?.(current);
+    expect(access).toBeDefined();
+    expect(access).not.toBe(original.access);
+    expect(access).not.toBe(replacement.access);
+    const projection = deps.protectedMemoryProjectionPortForState?.(current);
+    expect(projection).toBeDefined();
+    expect(projection).not.toBe(original.projection);
+    expect(projection).not.toBe(replacement.projection);
     expect(deps.fullEncryptionOnlyForState?.(current)).toBe(false);
   });
 

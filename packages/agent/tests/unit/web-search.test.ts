@@ -67,6 +67,44 @@ describe("web-search", () => {
     expect(tool.description).toContain("successful recovery details are internal");
   });
 
+  test("forwards trusted confidentiality to automatic webpage reads without a model argument", async () => {
+    const captured: unknown[] = [];
+    for (const confidential of [true, false] as const) {
+      const tool = createRunWebSearchTool({
+        causalHumanUserId: "human-web-search",
+        ...(confidential ? { confidential: true } : {}),
+      }, {
+        assertCanUseServerProviderCredentials: async () => {},
+        getRuntimeConfig: () => toolRuntimeConfig({
+          nautilo_search_provider: "tavily",
+          nautilo_search_trusted_domains: [],
+          nautilo_web_search_model: "openai:gpt-5.6-sol",
+        }),
+        createSearchFetcher: () => async (query) => ({
+          provider: "tavily",
+          query,
+          items: [],
+        }),
+        createPageFetcher: (options) => {
+          captured.push(options);
+          return async (url) => ({
+            url,
+            status: 200,
+            content: "trusted page",
+            preview: "trusted page",
+            contentLength: 12,
+            totalContentLength: 12,
+            truncated: false,
+          });
+        },
+      });
+      await tool.invoke({ query: "confidential propagation" });
+    }
+
+    expect(captured[0]).toMatchObject({ confidential: true });
+    expect(captured[1]).not.toHaveProperty("confidential");
+  });
+
   test("personal synthesis admission projects trusted Task identity over stale ambient metadata", async () => {
     let captured: UsageContext | undefined;
     const capability: CapabilityFundingSession = {

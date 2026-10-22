@@ -1,6 +1,7 @@
 import {
   runScopeSubagentUntilPause,
   type ProtectedTaskAdditionalAuthorityResumeBindingV1,
+  type ProtectedTaskHumanResumeBindingV1,
   type RunScopeSubagentOpts,
   type RunScopeSubagentResult,
 } from "@nautilo/agent";
@@ -10,6 +11,12 @@ import {
   type ProtectedTaskSemanticAuthorityRequirements,
 } from "@nautilo/db";
 import type { TaskRunResultPayloadV1 } from "@nautilo/lattice-bridge";
+import type { ApprovalReplyVerb } from "@nautilo/types";
+import type {
+  ProtectedRepoDocsExecutionPort,
+  ProtectedRepoDocsOpenedSelection,
+  ProtectedTaskProjectFilePort,
+} from "@nautilo/agent";
 
 type TaskRunCheckpointSaver = NonNullable<
   RunScopeSubagentOpts["taskRunCheckpointSaver"]
@@ -54,6 +61,7 @@ export type ProtectedTaskNativeExecution = Readonly<{
   focusedResources?: RunScopeSubagentOpts["focusedResources"];
   relayCapabilities?: RunScopeSubagentOpts["relayCapabilities"];
   resume?: unknown;
+  protectedTaskHumanResume?: ProtectedTaskHumanResumeBindingV1;
   continueFromCheckpoint?: boolean;
   awaitReply?: Readonly<{
     roomId: string;
@@ -61,6 +69,17 @@ export type ProtectedTaskNativeExecution = Readonly<{
     ownerId: string;
   }>;
   modelFallbackMode?: RunScopeSubagentOpts["modelFallbackMode"];
+  /** Process-local caller-funding custody; never serialized or checkpointed. */
+  foregroundChatFundingSession?:
+    RunScopeSubagentOpts["foregroundChatFundingSession"];
+  /** Grant-bound delegated local execution authority; process-local and nonserializable. */
+  delegatedLocalExecutionPort?: RunScopeSubagentOpts["delegatedLocalExecutionPort"];
+  taskReportBackContinuation?: RunScopeSubagentOpts["taskReportBackContinuation"];
+  protectedRepoDocs?: Readonly<{
+    selection: ProtectedRepoDocsOpenedSelection;
+    executionPort: ProtectedRepoDocsExecutionPort;
+    createProjectFilePort(workDir: string): ProtectedTaskProjectFilePort;
+  }>;
 }>;
 
 export type RunProtectedTaskNativeSegmentInput = Readonly<{
@@ -73,6 +92,9 @@ export type RunProtectedTaskNativeSegmentInput = Readonly<{
   transcriptPort: ProtectedTaskTranscriptPort;
   /** Process-local Memory authority opened by this protected Task grant. */
   memoryHandoff: ProtectedTaskMemoryHandoff;
+  /** Cooperative stop at the next durable protected graph checkpoint. */
+  protectedTaskCheckpointPauseController?:
+    RunScopeSubagentOpts["protectedTaskCheckpointPauseController"];
   /** One-shot input opened by ProtectedTaskExecutionCandidate.run. */
   transientInput: Record<string, unknown>;
   execution: ProtectedTaskNativeExecution;
@@ -93,6 +115,9 @@ export type ProtectedTaskNativeSegmentResult =
       interruptCoordinates: readonly ProtectedTaskNativeInterruptCoordinate[];
       additionalAuthority: ProtectedTaskNativeAdditionalAuthorityContinuation;
     }>
+  | Extract<RunScopeSubagentResult, Readonly<{
+      status: "checkpoint_paused";
+    }>>
   | Readonly<{ status: "aborted" }>;
 
 export type ProtectedTaskNativeInterruptCoordinate = Readonly<{
@@ -100,6 +125,7 @@ export type ProtectedTaskNativeInterruptCoordinate = Readonly<{
   kind: "approval" | "prove_it" | "identity" | "await_reply"
     | "additional_authority";
   requestId?: string;
+  allowedVerbs?: readonly ApprovalReplyVerb[];
 }>;
 
 export type ProtectedTaskNativeAdditionalAuthorityContinuation = Readonly<{
@@ -130,7 +156,7 @@ const productionDependencies: ProtectedTaskNativeRunnerDependencies =
 
 function exactIdentity(input: RunProtectedTaskNativeSegmentInput): void {
   if (
-    input.mode !== "native"
+    (input.mode !== "native" && input.mode !== "repo_docs")
     || typeof input.taskId !== "string"
     || input.taskId.length === 0
     || typeof input.taskRunId !== "string"
@@ -143,6 +169,15 @@ function exactIdentity(input: RunProtectedTaskNativeSegmentInput): void {
     || typeof input.memoryHandoff !== "object"
     || input.memoryHandoff === null
     || input.execution.toolWhitelist?.includes("security_scan") === true
+    || (input.mode === "native" && input.execution.protectedRepoDocs !== undefined)
+    || (input.mode === "repo_docs" && (
+      input.execution.protectedRepoDocs === undefined
+      || input.execution.taskReportBackContinuation !== undefined
+      || input.execution.toolWhitelist === undefined
+      || input.execution.toolWhitelist.length !== 1
+      || input.execution.toolWhitelist[0] !== "file"
+      || typeof input.execution.protectedRepoDocs.createProjectFilePort !== "function"
+    ))
     || input.transientInput["taskId"] !== input.taskId
     || input.transientInput["currentTaskId"] !== input.taskId
     || input.transientInput["taskRunId"] !== input.taskRunId
@@ -151,6 +186,13 @@ function exactIdentity(input: RunProtectedTaskNativeSegmentInput): void {
     || (
       input.execution.continueFromCheckpoint === true
       && input.execution.resume !== undefined
+    )
+    || (
+      input.execution.protectedTaskHumanResume !== undefined
+      && (
+        input.execution.continueFromCheckpoint === true
+        || input.execution.resume !== undefined
+      )
     )
   ) {
     throw new TypeError(
@@ -255,6 +297,7 @@ function exactInterruptCoordinates(
     const id = coordinate["id"];
     const kind = coordinate["kind"];
     const requestId = coordinate["requestId"];
+    const allowedVerbs = coordinate["allowedVerbs"];
     if (
       typeof id !== "string"
       || id.trim().length === 0
@@ -273,6 +316,15 @@ function exactInterruptCoordinates(
       || (kind === "approval" && requestId === undefined)
       || ((kind === "prove_it" || kind === "await_reply") && requestId !== undefined)
       || (kind === "additional_authority" && requestId === undefined)
+      || (allowedVerbs !== undefined && kind !== "approval")
+      || (kind === "approval" && (
+        !Array.isArray(allowedVerbs)
+        || allowedVerbs.length === 0
+        || !allowedVerbs.includes("deny")
+        || new Set(allowedVerbs).size !== allowedVerbs.length
+        || allowedVerbs.some(verb =>
+          verb !== "once" && verb !== "room" && verb !== "always" && verb !== "deny")
+      ))
     ) {
       throw new TypeError("Protected native Task interruption has invalid coordinates");
     }
@@ -282,15 +334,27 @@ function exactInterruptCoordinates(
       }
       additionalAuthority = exactAdditionalAuthority(coordinate, id);
     } else if (Object.keys(coordinate).some((key) =>
-      key !== "id" && key !== "kind" && key !== "requestId"
+      key !== "id" && key !== "kind" && key !== "requestId" && key !== "allowedVerbs"
     )) {
       throw new TypeError("Protected native Task interruption has invalid coordinates");
     }
     seenIds.add(id);
+    const copiedAllowedVerbs = Array.isArray(allowedVerbs)
+      ? Object.freeze(allowedVerbs.map(verb => {
+          if (verb === "once") return "once";
+          if (verb === "room") return "room";
+          if (verb === "always") return "always";
+          if (verb === "deny") return "deny";
+          throw new TypeError("Protected native Task interruption has invalid coordinates");
+        }))
+      : undefined;
     coordinates.push(Object.freeze({
       id,
       kind,
       ...(requestId === undefined ? {} : { requestId }),
+      ...(copiedAllowedVerbs === undefined ? {} : {
+        allowedVerbs: copiedAllowedVerbs satisfies readonly ApprovalReplyVerb[],
+      }),
     }));
   }
   coordinates.sort((left, right) => left.id < right.id ? -1 : left.id > right.id ? 1 : 0);
@@ -341,6 +405,9 @@ function runnerOptions(
       ? {}
       : { relayCapabilities: execution.relayCapabilities }),
     ...(execution.resume === undefined ? {} : { resume: execution.resume }),
+    ...(execution.protectedTaskHumanResume === undefined
+      ? {}
+      : { protectedTaskHumanResume: execution.protectedTaskHumanResume }),
     ...(execution.continueFromCheckpoint === true
       ? { continueFromCheckpoint: true }
       : {}),
@@ -357,6 +424,21 @@ function runnerOptions(
     ...(execution.modelFallbackMode === undefined
       ? {}
       : { modelFallbackMode: execution.modelFallbackMode }),
+    ...(execution.foregroundChatFundingSession === undefined
+      ? {}
+      : {
+          foregroundChatFundingSession:
+            execution.foregroundChatFundingSession,
+        }),
+    ...(execution.delegatedLocalExecutionPort === undefined
+      ? {}
+      : { delegatedLocalExecutionPort: execution.delegatedLocalExecutionPort }),
+    ...(execution.taskReportBackContinuation === undefined
+      ? {}
+      : { taskReportBackContinuation: execution.taskReportBackContinuation }),
+    ...(execution.protectedRepoDocs === undefined
+      ? {}
+      : { protectedRepoDocs: execution.protectedRepoDocs }),
     taskRun: true,
     trustedExecutionEntrypoint: "background.task",
     currentTaskId: input.taskId,
@@ -366,6 +448,12 @@ function runnerOptions(
     taskRunCheckpointSaver: input.checkpointSaver,
     protectedTaskTranscriptPort: input.transcriptPort,
     protectedTaskMemoryHandoff: input.memoryHandoff,
+    ...(input.protectedTaskCheckpointPauseController === undefined
+      ? {}
+      : {
+          protectedTaskCheckpointPauseController:
+            input.protectedTaskCheckpointPauseController,
+        }),
     signal: input.signal,
   };
 }
@@ -396,6 +484,13 @@ export async function runProtectedTaskNativeSegment(
   if (input.signal.aborted) return Object.freeze({ status: "aborted" });
   if (result.threadId !== input.graphThreadId) {
     return createProtectedTaskFailurePayload();
+  }
+  if (result.status === "checkpoint_paused") {
+    return Object.freeze({
+      status: "checkpoint_paused" as const,
+      threadId: result.threadId,
+      reason: result.reason,
+    });
   }
   if (result.status === "interrupted") {
     const interruption = exactInterruptCoordinates(

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { protectedTaskSemanticAuthorityRequirementsDigest } from "@nautilo/db";
 
-import { protectedTaskInterruptCoordinates } from
+import { interruptValueToServerEvent, protectedTaskInterruptCoordinates } from
   "../../src/graph/interrupt-mapping";
 
 const NAMESPACE = "10000000-0000-4000-8000-000000000001";
@@ -11,6 +11,53 @@ function state(value: Record<string, unknown>) {
 }
 
 describe("protected Task interrupt mapping", () => {
+  test("keeps the ordinary approval event mapper backward compatible", () => {
+    expect(interruptValueToServerEvent({
+      type: "approval_ask", tools: [], allowedVerbs: ["deny", "once"],
+    }, "thread", "lane")).toMatchObject({
+      type: "approval.ask", approvalId: "thread:lane",
+      allowedVerbs: ["deny", "once"],
+    });
+    expect(interruptValueToServerEvent({
+      type: "approval_ask", approvalId: "approval:1", tools: [],
+      structuredSsh: {},
+    }, "thread", "lane")).toBeNull();
+    expect(interruptValueToServerEvent({
+      type: "approval_ask", approvalId: "approval:1", tools: [],
+      mediaGeneration: {},
+    }, "thread", "lane")).toBeNull();
+  });
+
+  test("seals exact categorical approval verbs and retires historical broker requests", () => {
+    expect(protectedTaskInterruptCoordinates(state({
+      type: "approval_ask", approvalId: "approval:1",
+      allowedVerbs: ["once", "room", "deny"], tools: [],
+    }))).toEqual([{ id: "interrupt-1", kind: "approval",
+      requestId: "approval:1", allowedVerbs: ["once", "room", "deny"] }]);
+    expect(protectedTaskInterruptCoordinates(state({
+      type: "approval_ask", approvalId: "github-publish:old",
+      allowedVerbs: ["once", "always", "deny"], tools: [],
+    }))).toEqual([{ id: "interrupt-1", kind: "approval",
+      requestId: "github-publish:old", allowedVerbs: ["deny"] }]);
+    expect(protectedTaskInterruptCoordinates(state({
+      type: "approval_ask", approvalId: "approval:2",
+      allowedVerbs: ["once", "always", "deny"],
+      tools: [{ name: "local_git", args: {} }],
+    }))).toEqual([{ id: "interrupt-1", kind: "approval",
+      requestId: "approval:2", allowedVerbs: ["deny"] }]);
+  });
+
+  test("rejects malformed categorical approval authority", () => {
+    expect(() => protectedTaskInterruptCoordinates(state({
+      type: "approval_ask", approvalId: "approval:1",
+      allowedVerbs: ["once", "once", "deny"], tools: [],
+    }))).toThrow("approval interrupt is malformed");
+    expect(() => protectedTaskInterruptCoordinates(state({
+      type: "approval_ask", approvalId: "approval:1",
+      allowedVerbs: ["once"], tools: [],
+    }))).toThrow("approval interrupt is malformed");
+  });
+
   test("extracts a detached additional-authority continuation coordinate", () => {
     const requestDigest = new Uint8Array(32).fill(1);
     const semanticAuthorityRequirements = [{

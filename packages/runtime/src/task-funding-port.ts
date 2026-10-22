@@ -9,6 +9,8 @@ import { TASK_FUNDING_FAILURE_CODES, type TaskFundingBinding, type TaskFundingFa
 import type { TaskCreateInput } from "./tasks/create-task";
 import type { TaskCreationProvenance } from "./tasks/task-creation-admission";
 import { getTaskRunDb } from "./tasks/task-runtime-context";
+import { getCurrentProtectedTaskWakeForegroundContext } from
+  "./conversation/live-shadow-turn-context";
 
 export class TaskFundingError extends Error {
   constructor(readonly code: TaskFundingFailureCode) {
@@ -36,11 +38,39 @@ export interface TaskFundingAdmission {
   readonly binding: TaskFundingBinding;
 }
 
+/**
+ * The operational Task definition needed to select and retain caller funding.
+ * Protected callers can provide this closed projection without materializing
+ * the Task prompt, expected output, or error columns.
+ */
+export type TaskFundingTaskSource = Readonly<Omit<Pick<Task,
+  | "id" | "ownerId" | "requestorId" | "agentId" | "preset"
+  | "callingRoomId" | "targetChat" | "targetChatHandle" | "targetRoomId"
+  | "targetUserIds" | "resultDelivery" | "useScope" | "scopeId" | "toolsMode"
+  | "toolsWhitelist" | "awaitResponse" | "selectionProfile"
+  | "selectionSpec" | "requestedModelId" | "parentTaskId" | "depth"
+  | "fundingMode" | "metadata" | "contentRepresentation"
+  | "contentNamespaceId" | "contentRevision" | "cryptoObjectId"
+  | "cryptoAccessRevision" | "cryptoRequiredNamespaceFingerprint"
+  | "cryptoMappingState"
+>, "targetUserIds" | "toolsWhitelist" | "cryptoRequiredNamespaceFingerprint">> & Readonly<{
+  targetUserIds: readonly string[];
+  toolsWhitelist: readonly string[];
+  cryptoRequiredNamespaceFingerprint: Uint8Array | null;
+}>;
+
+/** The operational Run coordinates needed by caller funding. */
+export type TaskFundingRunSource = Readonly<Pick<TaskRun,
+  | "id" | "taskId" | "jobId" | "graphThreadId" | "status" | "modelId"
+  | "fundingBinding" | "fundingPredecessorRunId"
+>>;
+
 /** Server composition owns live funding policy and custody; Runtime owns Task identity. */
 export interface TaskFundingPort {
   prepareCreation(input: TaskCreateInput, provenance: TaskCreationProvenance): Promise<boolean | TaskFundingAdmission>;
-  admit(task: Task, priorRun?: TaskRun): Promise<TaskFundingAdmission>;
-  openSession(task: Task, run: TaskRun, modelId: string, wake: boolean): Promise<ForegroundChatFundingSession>;
+  admit(task: TaskFundingTaskSource, priorRun?: TaskFundingRunSource): Promise<TaskFundingAdmission>;
+  openSession(task: TaskFundingTaskSource, run: TaskFundingRunSource,
+    modelId: string, wake: boolean): Promise<ForegroundChatFundingSession>;
 }
 
 let installedPort: TaskFundingPort | undefined;
@@ -62,8 +92,8 @@ export async function prepareTaskCreationFunding(
 }
 
 export async function assertTaskFundingAdmission(
-  task: Task,
-  priorRun?: TaskRun,
+  task: TaskFundingTaskSource,
+  priorRun?: TaskFundingRunSource,
 ): Promise<TaskFundingAdmission | null> {
   if ((task.fundingMode ?? "legacy_server") === "legacy_server") return null;
   if (task.fundingMode !== "caller" || !installedPort) throw new TaskFundingError("funding_source_changed");
@@ -72,8 +102,8 @@ export async function assertTaskFundingAdmission(
 
 /** A serialized Job/TaskRun is consistency data, never an invocation authority. */
 export async function openTaskFundingSession(input: Readonly<{
-  task: Task;
-  run: TaskRun;
+  task: TaskFundingTaskSource;
+  run: TaskFundingRunSource;
   authority: AcceptedInvocationAuthority | undefined;
   requestorId: string;
   modelId: string;
@@ -106,6 +136,28 @@ export async function openTaskWakeFundingSessionForInvocation(input: Readonly<{
   roomId: string;
   agentId: string;
 }>): Promise<ForegroundChatFundingSession | null> {
+  const wake = getCurrentProtectedTaskWakeForegroundContext();
+  if (wake !== undefined) {
+    const scheduling = wake.scheduling;
+    if (input.authority === undefined) {
+      throw new TaskFundingError("funding_source_changed");
+    }
+    assertAcceptedInvocationAuthoritySubject(input.authority, scheduling.requestorId);
+    if (input.causalHumanUserId !== null
+      || input.roomId !== scheduling.roomId || input.agentId !== scheduling.agentId
+      || input.jobInput["ownerId"] !== scheduling.ownerId
+      || input.jobInput["requestorId"] !== scheduling.requestorId
+      || input.jobInput["graphThreadId"] !== scheduling.graphThreadId
+      || input.jobInput["threadId"] !== scheduling.graphThreadId
+      || input.jobInput["turnId"] !== wake.evidence.invocation.operationId
+      || getAcceptedInvocationAuthorityOrigin(input.authority).originTaskId
+        !== scheduling.taskId
+      || wake.fundingSession?.admission !== undefined
+        && wake.fundingSession.admission.modelId !== input.modelId) {
+      throw new TaskFundingError("funding_source_changed");
+    }
+    return wake.fundingSession;
+  }
   const metadata = input.jobInput["metadata"] as Record<string, unknown> | undefined;
   if (metadata?.["originatedBy"] !== "task") return null;
   const taskId = metadata["taskId"];

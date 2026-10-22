@@ -46,6 +46,8 @@ type DurableBacking = {
 
 function setup(options: Readonly<{
   failPersist?: boolean;
+  encryptOnly?: boolean;
+  tamperStored?: "payload" | "envelope" | "coordinate" | "access" | "namespace" | "wrapper";
   authorityUnavailable?: boolean;
   backing?: DurableBacking;
 }> = {}) {
@@ -72,6 +74,7 @@ function setup(options: Readonly<{
     namespaceAudienceFingerprint: new Uint8Array(32).fill(0x57),
   });
   let uses = 0;
+  const requestedOperations: string[][] = [];
   const backing = options.backing ?? {
     value: null,
     persistCount: 0,
@@ -86,6 +89,7 @@ function setup(options: Readonly<{
       signal: new AbortController().signal,
       useCurrentSet: async (request) => {
         uses += 1;
+        requestedOperations.push([...request.operations]);
         if (options.authorityUnavailable === true) return {
           status: "unavailable" as const,
           reason: "authorization_unavailable" as const,
@@ -95,7 +99,8 @@ function setup(options: Readonly<{
       },
       use: async (request) => {
         uses += 1;
-        if (options.authorityUnavailable === true) return {
+        requestedOperations.push([...request.operations]);
+        if (options.authorityUnavailable === true || options.encryptOnly === true) return {
           status: "unavailable" as const,
           reason: "authorization_unavailable" as const,
         };
@@ -132,11 +137,21 @@ function setup(options: Readonly<{
           });
         })),
       });
+      if (options.tamperStored === "payload") backing.value.payloadBytes[0] = backing.value.payloadBytes[0]! ^ 1;
+      if (options.tamperStored === "envelope") backing.value.namespaceEnvelopes[0]!.envelopeBytes[0] = backing.value.namespaceEnvelopes[0]!.envelopeBytes[0]! ^ 1;
+      if (options.tamperStored === "coordinate") backing.value = { ...backing.value, objectId: "substituted" };
+      if (options.tamperStored === "access") backing.value = { ...backing.value, accessRevision: 1 };
+      if (options.tamperStored === "namespace" || options.tamperStored === "wrapper") {
+        backing.value = { ...backing.value, namespaceEnvelopes: [{ ...backing.value.namespaceEnvelopes[0]!,
+          ...(options.tamperStored === "namespace" ? { namespaceId: "substituted" } : { bindingRevisionAtWrap: 99 }),
+        }] };
+      }
       return "created";
     },
     read: (request) => Promise.resolve(
       backing.value === null
-        || request.expectedAccessRevision !== backing.value.accessRevision
+        || request.expectedAccessRevision !== undefined
+          && request.expectedAccessRevision !== backing.value.accessRevision
         ? null
         : Object.freeze({
           ...backing.value,
@@ -150,6 +165,7 @@ function setup(options: Readonly<{
   return {
     factory,
     uses: () => uses,
+    requestedOperations,
     backing,
     setAccessRevision(value: number) {
       if (backing.value === null) throw new Error("Missing durable object");
@@ -300,6 +316,40 @@ describe("foreground Domain Memory crypto session", () => {
       },
     })).toEqual({ status: "success", value: "published" });
   });
+
+  test("fresh output needs only encrypt and refuses an existing collision without decrypt", async () => {
+    const state = setup({ encryptOnly: true });
+    const request = {
+      entrypointId: "foreground.main", agentId: AGENT_ID, authority: productAuthority,
+      plan: plan(), content: { kind: "complete", payload: { formatVersion: 1,
+        type: "preference", content: "The Human prefers bounded changes." } },
+    } as const;
+    const prepared = await state.factory.session.prepare(request);
+    expect(prepared.status).toBe("success");
+    if (prepared.status !== "success") throw new Error(prepared.reason);
+    expect(state.requestedOperations).toEqual([["encrypt"]]);
+    expect(state.factory.readPreparedPayload(prepared.value)).toEqual(request.content.payload);
+    expect(await state.factory.completion.complete(prepared.value)).toBe("duplicate");
+    expect(state.backing.value?.payloadBytes.some(byte => byte !== 0)).toBe(true);
+    const replay = setup({ encryptOnly: true, backing: state.backing });
+    expect(await replay.factory.session.prepare(request)).toEqual({
+      status: "unavailable", reason: "authorization_required",
+    });
+    expect(state.backing.persistCount).toBe(1);
+    expect(replay.requestedOperations).toEqual([["decrypt"]]);
+  });
+
+  test.each(["payload", "envelope", "coordinate", "access", "namespace", "wrapper"] as const)(
+    "fresh output rejects substituted stored %s before minting completion", async tamperStored => {
+      const state = setup({ encryptOnly: true, tamperStored });
+      expect(await state.factory.session.prepare({
+        entrypointId: "foreground.main", agentId: AGENT_ID, authority: productAuthority,
+        plan: plan(), content: { kind: "complete", payload: { formatVersion: 1,
+          type: "preference", content: "The Human prefers bounded changes." } },
+      })).toEqual({ status: "unavailable", reason: "integrity_failure" });
+      expect(state.requestedOperations).toEqual([["encrypt"]]);
+    },
+  );
 
   test("prepares, persists and authenticates a payload before minting completion", async () => {
     const state = setup();

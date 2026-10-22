@@ -1,4 +1,6 @@
 import { describe, test, expect } from "bun:test";
+import type { SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 import type { AIMessage } from "@langchain/core/messages";
 import { appendTranscriptMessages } from "@nautilo/agent";
 import { tasks, taskRuns, type DirectDatabase, type Task } from "@nautilo/db";
@@ -34,6 +36,14 @@ interface SetCall {
   payload: Record<string, unknown>;
 }
 
+function projectRow(row: object, projection?: Record<string, unknown>): object {
+  if (projection === undefined) return { ...row };
+  const values = row as Record<string, unknown>;
+  return Object.fromEntries(Object.keys(projection).map((key) => [key,
+    key === "requiresLocalRecapture" || key === "writerReviewPending" ? false : values[key],
+  ]));
+}
+
 function fakeDb(
   taskRow: Task | undefined,
   runStatus = "running",
@@ -44,14 +54,17 @@ function fakeDb(
 ): {
   db: DirectDatabase;
   setCalls: SetCall[];
+  reads: Array<{ table: SetCall["table"]; fields: string[] | null; predicate: SQL }>;
 } {
   const setCalls: SetCall[] = [];
+  const reads: Array<{ table: SetCall["table"]; fields: string[] | null; predicate: SQL }> = [];
   const runRow = {
     id: "run-1",
     taskId: "task-1",
     graphThreadId: "subagent:task:unit",
     status: runStatus,
     jobId: null,
+    resultRepresentation: "ordinary",
     resultText: runResultText,
     lastError: runLastError,
   };
@@ -65,16 +78,14 @@ function fakeDb(
         setCalls.push({ table: tableName(t), payload });
         return {
           where: () => ({
-            returning: async () => [
-              t === tasks
-                ? { ...taskRow, ...payload }
-                : { ...runRow, ...payload },
-            ],
+            returning: async (projection?: Record<string, unknown>) => [projectRow(
+              t === tasks ? { ...taskRow, ...payload } : { ...runRow, ...payload }, projection,
+            )],
           }),
         };
       },
     }),
-    select: () => ({
+    select: (projection?: Record<string, unknown>) => ({
       from: (t: unknown) => {
         let ordered = false;
         const rows = t === tasks
@@ -82,17 +93,26 @@ function fakeDb(
           : hasRun
             ? [runRow]
             : [];
+        const read = () => (ordered && newerRunId ? [{ ...runRow, id: newerRunId }] : rows)
+          .map((row) => projectRow(row, projection));
         const query = {
-          where: () => query,
+          where: (predicate: SQL) => {
+            reads.push({ table: tableName(t), fields: projection === undefined ? null : Object.keys(projection), predicate });
+            return query;
+          },
           orderBy: () => { ordered = true; return query; },
           limit: () => query,
-          for: async () => ordered && newerRunId ? [{ ...runRow, id: newerRunId }] : rows,
+          for: async () => read(),
+          then: <TResult1 = unknown, TResult2 = never>(
+            fulfilled?: ((value: unknown[]) => TResult1 | PromiseLike<TResult1>) | null,
+            rejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+          ) => Promise.resolve(read()).then(fulfilled, rejected),
         };
         return query;
       },
     }),
   };
-  return { db: db as unknown as DirectDatabase, setCalls };
+  return { db: db as unknown as DirectDatabase, setCalls, reads };
 }
 
 const baseTask = (over: Partial<Task> = {}): Task =>
@@ -102,6 +122,7 @@ const baseTask = (over: Partial<Task> = {}): Task =>
     requestorId: "owner-1",
     agentId: "agent-1",
     prompt: "do the thing",
+    contentRepresentation: "ordinary",
     callingRoomId: null,
     resultDelivery: "wake",
     scheduleKind: "now",
@@ -124,7 +145,7 @@ describe("report-back finalizer (silent + event routing)", () => {
   });
 
   test("completion (non-cron, silent): run + task marked completed, task.completed owner-scoped", async () => {
-    const { db, setCalls } = fakeDb(baseTask());
+    const { db, setCalls, reads } = fakeDb(baseTask());
     const events: ServerEvent[] = [];
     await reportBackTaskCompletion(
       { db, emit: (e) => events.push(e) },
@@ -135,6 +156,16 @@ describe("report-back finalizer (silent + event routing)", () => {
         resultText: "result text",
       },
     );
+
+    expect(reads[0]?.fields).not.toContain("prompt");
+    expect(reads[0]?.fields).not.toContain("lastError");
+    for (const table of ["tasks", "task_runs"] as const) {
+      const hydration = reads.find((read) => read.table === table && read.fields === null);
+      expect(hydration).toBeDefined();
+      const query = new PgDialect().sqlToQuery(hydration!.predicate);
+      expect(query.sql).toContain(table === "tasks" ? '"content_representation"' : '"result_representation"');
+      expect(query.params).toContain("ordinary");
+    }
 
     // run row → completed (with resultText), task row → completed.
     const runStatus = setCalls.find((c) => c.table === "task_runs");

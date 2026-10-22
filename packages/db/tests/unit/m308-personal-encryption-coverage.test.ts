@@ -121,13 +121,26 @@ describe("M308 personal encryption coverage aggregates", () => {
     });
   });
 
-  test("returns truthful owner-only Task counts without fabricated protection", async () => {
+  test("measures owned Task definitions and content-bearing terminal results", async () => {
     const db = {
       execute: async (statement: Parameters<PgDialect["sqlToQuery"]>[0]) => {
         const query = new PgDialect().sqlToQuery(statement);
-        expect(query.sql).toContain("task.owner_id = $1");
-        expect(query.params).toEqual([USER_ID]);
-        return [{ accessible: "34", plaintext_present: "34" }];
+        const normalized = query.sql.toLowerCase();
+        expect(normalized).toContain("task.owner_id = $1");
+        expect(normalized).toContain("task.owner_id = $2");
+        expect(normalized).toContain("run.status in ('completed', 'errored', 'cancelled')");
+        expect(normalized).toContain("ordinary_content_present or mapped_task_run_id is not null");
+        expect(normalized).toContain("revision.crypto_access_revision <= task.crypto_access_revision");
+        expect(normalized).toContain("revision.crypto_access_revision <= run.result_crypto_access_revision");
+        expect(normalized).toContain("revision.disposition = 'mapped'");
+        expect(normalized).not.toContain("jobs");
+        expect(normalized).not.toContain("session_messages");
+        expect(query.params).toEqual([USER_ID, USER_ID]);
+        return [{
+          accessible: "41",
+          plaintext_present: "34",
+          encrypted_counterpart: "9",
+        }];
       },
     } as unknown as Parameters<typeof readPersonalEncryptionCoverageFamily>[0];
     expect(await readPersonalEncryptionCoverageFamily(db, {
@@ -136,10 +149,21 @@ describe("M308 personal encryption coverage aggregates", () => {
       userId: USER_ID,
     })).toEqual({
       family: "task",
-      measurement: "unsupported",
-      accessible: 34n,
+      measurement: "measured",
+      accessible: 41n,
       plaintextPresent: 34n,
+      encryptedCounterpart: 9n,
     });
+  });
+
+  test("uses representation flags and immutable coordinates without returning Task bodies", () => {
+    const task = render("task").sql;
+    expect(task).toContain("task.content_representation");
+    expect(task).toContain("run.result_representation");
+    expect(task).toContain("revision.required_namespace_fingerprint");
+    expect(task).toContain("revision.completion = 'complete'");
+    expect(task).not.toMatch(/select[^;]*task\.prompt/u);
+    expect(task).not.toMatch(/select[^;]*task\.expected_output/u);
   });
 
   test("rejects missing or malformed aggregates instead of turning them into zero", () => {

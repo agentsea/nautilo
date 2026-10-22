@@ -65,11 +65,13 @@ export {
 export {
   installTaskFundingPort,
   uninstallTaskFundingPort,
-  assertTaskFundingAdmission,
+  assertTaskFundingAdmission, openTaskFundingSession,
   TaskFundingError,
   taskFundingFailureCode,
   type TaskFundingPort,
   type TaskFundingAdmission,
+  type TaskFundingRunSource,
+  type TaskFundingTaskSource,
 } from "./task-funding-port";
 export {
   installDurableToolResultLifecycleObserver,
@@ -149,8 +151,13 @@ export {
   createLiveShadowDataOperationPolicyBinding,
   getCurrentLiveShadowTurnContext,
   runWithLiveShadowTurnSession,
+  runWithTaskWakeLiveShadowTurnSession,
   type LiveShadowTurnContext,
 } from "./conversation/live-shadow-turn-context";
+export {
+  projectLiveShadowPublishedMessageEvent,
+} from "./conversation/live-shadow-agent-runtime-events";
+export type { ProtectedTaskWakeForegroundSource } from "./tasks/protected-task-wake-foreground-context";
 export {
   requiresEncryptedForegroundCheckpoint,
   readProtectedPendingInterruptEvents,
@@ -187,6 +194,8 @@ export {
 export {
   jobManager,
   JobManager,
+  type ProtectedTaskCheckpointPauseRequest,
+  type ProtectedTaskCheckpointPauseResult,
   getCurrentAcceptedWorkAuthority,
   getCurrentAcceptedInvocationAuthority,
   runWithAcceptedInvocationAuthority,
@@ -375,12 +384,24 @@ export {
   type ProtectedTaskOccurrenceJobManager,
   type ParkedProtectedTaskOccurrenceCoordinatorDeps,
 } from "./tasks/protected-task-occurrence-coordinator";
-export type {
-  ProtectedTaskExecutionCandidate,
-  ProtectedTaskExecutionSettlement,
-  ProtectedTaskExecutionStartResult,
-  ProtectedTaskJobSchedulingFacts,
+export {
+  ProtectedTaskExecutionDidNotBeginError,
+  type ProtectedTaskExecutionCandidate,
+  type ProtectedTaskCheckpointPauseReason,
+  type ProtectedTaskExecutionSettlement,
+  type ProtectedTaskExecutionStartResult,
+  type ProtectedTaskJobSchedulingFacts,
 } from "./tasks/protected-task-execution-candidate";
+export type {
+  ProtectedTaskWakeExecutionCandidate,
+  ProtectedTaskWakeSettlementResult,
+  ProtectedTaskWakeExecutionCustody,
+  ProtectedTaskWakeParkRequest,
+  ProtectedTaskWakeCheckpointBinding,
+  ProtectedTaskWakeParkResult,
+  AdoptProtectedTaskWakeJobInput,
+  AdoptProtectedTaskWakeJobResult,
+} from "./tasks/protected-task-wake-execution-candidate";
 export {
   createProtectedTaskFailurePayload,
   runProtectedTaskNativeSegment,
@@ -413,7 +434,6 @@ export type {
   ProtectedTaskRunTerminalPort,
 } from "./tasks/protected-task-result-publication";
 export {
-  withProtectedTaskCheckpointSaver,
   withNativeProtectedTaskCheckpointSaver,
   withNativeProtectedTaskCheckpointManifest,
   readProtectedTaskCheckpointPhysicalManifest,
@@ -434,7 +454,18 @@ export {
   type HumanRoomMember,
 } from "./tasks/resolve-target-room";
 export { resolveTaskMemoryEnvelope } from "./tasks/resolve-task-memory-envelope";
-export { createTask, computeNextFireAt, type TaskCreateInput, type CreateTaskDeps } from "./tasks/create-task";
+export {
+  createTask,
+  prepareTaskCreation,
+  computeNextFireAt,
+  type TaskCreateInput,
+  type CreateTaskDeps,
+  type TaskCreationResult,
+  type ProtectedTaskCreateCandidate,
+  type PreparedTaskCreation,
+  type PreparedTaskCreationDeps,
+  type PrepareTaskCreationDeps,
+} from "./tasks/create-task";
 export {
   TaskCreationUnavailableError,
   assertTaskCreationProvenance,
@@ -714,6 +745,9 @@ export {
   type ForegroundAuthorizationView,
 } from "./protected-execution/foreground-authorization-session";
 export * from "./protected-execution/background-authorization";
+export type {
+  BackgroundAuthorizationVerifiedRuntimeResponseV4,
+} from "./protected-execution/background-authorization/repository";
 export {
   createForegroundProtectedAgentMemoryAccessPort,
   createForegroundProtectedAgentMemoryExactAccessPort,
@@ -760,6 +794,7 @@ export { foregroundHumanTerminalAdmissionPort } from "./conversation/human-termi
 export { createDelegatedLocalExecutionPort, readTaskLocalExecutionLineage, type TaskLocalExecutionSource, type DelegatedTaskIdentity } from "./tasks/local-execution-delegation";
 
 export { setTaskLocalExecutionSourceComposition, resolveTaskLocalExecutionPort, isTaskLocalExecutionTargetAvailable, isTaskLocalExecutionOfflineSourceReady } from "./tasks/local-execution-delegation";
+export { streamDeepResearchReport, type DeepResearchReportStream } from "./executors/deep-research-executor";
 
 export { getCurrentExternalRoomExecution, type ExternalRoomExecutionContext, type ExternalRoomExecutionCandidate, type ExternalRoomJobReference } from "./external-room-execution";
 

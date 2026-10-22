@@ -62,7 +62,7 @@ function normalizedSql(value: string): string {
 }
 
 describe("M241 background authorization durable schema", () => {
-  test("admits await-reply resume only as an exact Runtime V3 Task pair", () => {
+  test("admits Task resume work only as exact Runtime V3 pairs", () => {
     const workKindSql = checkSql(
       backgroundCryptoAuthorizationRequests,
       "background_crypto_authorization_requests_work_kind",
@@ -77,9 +77,18 @@ describe("M241 background authorization durable schema", () => {
     ));
 
     expect(workKindSql).toContain("'task.await_reply_resume'");
+    expect(workKindSql).toContain("'task.approval_resume'");
+    expect(workKindSql).toContain("'task.cancel_result'");
+    expect(workKindSql).toContain("'task.deliver_message'");
+    expect(purposeSql).toContain("'task.deliver_message'");
+    for (const work of ["task.deliver_result", "task.delivery_wake"]) {
+      expect(workKindSql).toContain(`'${work}'`);
+      expect(purposeSql).toContain(`'${work}'`);
+    }
     expect(purposeSql).toContain("'task.await_reply_resume'");
+    expect(purposeSql).toContain("'task.approval_resume'");
     expect(workSubjectSql).toContain(
-      '"background_crypto_authorization_requests"."work_kind" in ( \'task.dispatch\', \'task.execute\', \'task.await_reply_resume\' ) and "background_crypto_authorization_requests"."purpose" = "background_crypto_authorization_requests"."work_kind" and "background_crypto_authorization_requests"."format_version" = 3 and "background_crypto_authorization_requests"."credential_subject_kind" = \'runtime\'',
+      '"background_crypto_authorization_requests"."work_kind" in ( \'task.dispatch\', \'task.execute\', \'task.await_reply_resume\', \'task.approval_resume\', \'task.cancel_result\', \'task.deliver_message\', \'task.deliver_result\', \'task.delivery_wake\' ) and "background_crypto_authorization_requests"."purpose" = "background_crypto_authorization_requests"."work_kind" and "background_crypto_authorization_requests"."format_version" = 3 and "background_crypto_authorization_requests"."credential_subject_kind" = \'runtime\'',
     );
   });
 
@@ -119,7 +128,8 @@ describe("M241 background authorization durable schema", () => {
       descriptor: 16_457_643,
       processorResponse: 35_669_931,
       agentResponse: 16_912_384,
-      runtimeResponse: 16_777_216,
+      legacyRuntimeResponse: 16_777_216,
+      runtimeResponse: 16_779_343,
       response: 35_669_931,
       recipientPublicKey: 65,
       signingPublicKey: 32,
@@ -143,17 +153,25 @@ describe("M241 background authorization durable schema", () => {
 
   test("adds one mutable request ledger and append-only signer evidence to crypto storage", () => {
     expect(LATTICE_STORAGE_ADAPTER_TABLE_NAMES).toHaveLength(15);
-    expect(LATTICE_STORAGE_TABLE_NAMES.slice(-4)).toEqual([
+    expect(LATTICE_STORAGE_TABLE_NAMES.slice(-8)).toEqual([
       "background_crypto_authorization_requests",
       "background_crypto_authorization_domain_requirements",
       "background_crypto_authorization_namespace_requirements",
       "processor_crypto_signer_authorizations",
+      "task_cancellation_crypto_staging_receipts",
+      "task_terminal_message_crypto_staging_receipts",
+      "task_historical_content_crypto_staging_receipts",
+      "foreground_memory_crypto_publication_receipts",
     ]);
-    expect(LATTICE_STORAGE_TABLES.slice(-4).map(getTableName)).toEqual([
+    expect(LATTICE_STORAGE_TABLES.slice(-8).map(getTableName)).toEqual([
       "background_crypto_authorization_requests",
       "background_crypto_authorization_domain_requirements",
       "background_crypto_authorization_namespace_requirements",
       "processor_crypto_signer_authorizations",
+      "task_cancellation_crypto_staging_receipts",
+      "task_terminal_message_crypto_staging_receipts",
+      "task_historical_content_crypto_staging_receipts",
+      "foreground_memory_crypto_publication_receipts",
     ]);
     expect(
       CRYPTO_STORAGE_TABLE_PRIVILEGES
@@ -513,4 +531,14 @@ describe("M241 background authorization durable schema", () => {
       /"state" = 'quarantined'[\s\S]*?"attached_at" is null[\s\S]*?"tombstone_requested_at" is null[\s\S]*?"tombstoned_at" is null/,
     );
   });
+});
+
+
+test("expired running custody can record an uncertain provider outcome without granting retry", () => {
+  const config = getTableConfig(backgroundCryptoAuthorizationRequests);
+  const reason = config.checks.find(check => check.name === "background_crypto_authorization_requests_terminal_reason");
+  const coherent = config.checks.find(check => check.name === "background_crypto_authorization_requests_terminal_coherent");
+  const dialect = new PgDialect();
+  expect(dialect.sqlToQuery(reason!.value).sql).toContain("provider_outcome_unknown");
+  expect(dialect.sqlToQuery(coherent!.value).sql).toContain("provider_outcome_unknown");
 });

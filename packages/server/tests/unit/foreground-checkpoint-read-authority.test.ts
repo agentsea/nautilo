@@ -12,7 +12,9 @@ import { createProtectedCheckpointCellCrypto } from "@nautilo/lattice-bridge";
 import { LiveShadowRecipientRegistry, LIVE_SHADOW_RECIPIENTS_PER_CLIENT_SESSION,
   withProtectedInvocationRecipientPrivateKey } from "@nautilo/lattice-bridge/server";
 import {
+  createCheckpointReadAuthority,
   createForegroundCheckpointReadAuthority,
+  type CheckpointReadSnapshot,
   type ForegroundCheckpointReadBinding,
   type ForegroundCheckpointReadLocator,
   type ForegroundCheckpointReadSnapshot,
@@ -120,7 +122,8 @@ function fixture(beforeResolve?: () => Promise<void>) {
     authorizationBytes: authorizationBytes ?? await sign(challenge), execute,
   });
   return {
-    crypto, snapshot, recipients, service, plan, sign, read, returnedSnapshots, borrowedKeys,
+    crypto, signer, snapshot, recipients, service, plan, sign, read,
+    returnedSnapshots, borrowedKeys,
     revoke: () => { available = false; },
     drift: () => { revision++; },
     expire: () => { clock += 300_000; },
@@ -129,6 +132,178 @@ function fixture(beforeResolve?: () => Promise<void>) {
 }
 
 describe("fresh foreground checkpoint read authority", () => {
+  test("generic broker detaches Task locators and enforces one-use authority custody", async () => {
+    const f = fixture();
+    const suppliedLocator = {
+      namespaceId: locator.namespaceId,
+      topLevelRoomId: locator.topLevelRoomId,
+      checkpointThreadId: locator.checkpointThreadId,
+      task: {
+        taskId: "task-1",
+        taskRunId: "task-run-1",
+        agentId: "agent-1",
+      },
+      cell: {
+        checkpointNs: "task-attention",
+        checkpointId: "attention-1",
+        channel: "__interrupt__",
+      },
+    };
+    const expectedLocator = structuredClone(suppliedLocator);
+    const returned: CheckpointReadSnapshot[] = [];
+    const borrowed: Uint8Array[] = [];
+    let strategyCalls = 0;
+    let policyRevision = f.snapshot.policyRevision;
+    const broker = createCheckpointReadAuthority<typeof suppliedLocator, string>({
+      crypto: f.crypto,
+      recipients: f.recipients,
+      now: f.now,
+      resolveCurrent: async (actualBinding, actualLocator) => {
+        expect(actualBinding).toEqual(binding);
+        expect(actualLocator).toEqual(expectedLocator);
+        expect("entrypointId" in actualLocator).toBe(false);
+        expect("reviewTurnId" in actualLocator).toBe(false);
+        const value: CheckpointReadSnapshot = {
+          policyRevision,
+          committerDeviceId: f.snapshot.committerDeviceId,
+          committerDeviceSigningKeyGeneration:
+            f.snapshot.committerDeviceSigningKeyGeneration,
+          committerDeviceSigningPublicKey:
+            f.snapshot.committerDeviceSigningPublicKey.slice(),
+          hostAuthorizationRevision: f.snapshot.hostAuthorizationRevision,
+          namespaceAuthority: structuredClone(f.snapshot.room),
+          domains: structuredClone(f.snapshot.domains),
+        };
+        returned.push(value);
+        return value;
+      },
+      withCheckpoint: async (context, use) => {
+        strategyCalls += 1;
+        expect(context.locator).toEqual(expectedLocator);
+        expect(context.domains).toHaveLength(1);
+        expect(context.domains[0]!.domainKey.some((value) => value !== 0)).toBe(true);
+        borrowed.push(context.domains[0]!.domainKey);
+        await context.assertCurrentAuthority();
+        return use("exact checkpoint");
+      },
+    });
+    const pendingChallenge = broker.plan({
+      binding,
+      locator: suppliedLocator,
+      deadlineAt: f.now() + 300_000,
+    });
+    suppliedLocator.task.taskRunId = "externally-mutated-run";
+    suppliedLocator.cell.checkpointId = "externally-mutated-checkpoint";
+    const challenge = await pendingChallenge;
+    if (challenge.status !== "authorization_required") {
+      throw new Error("generic plan unavailable");
+    }
+    const plan = async (deadlineAt = f.now() + 300_000) => {
+      const result = await broker.plan({
+        binding,
+        locator: structuredClone(expectedLocator),
+        deadlineAt,
+      });
+      if (result.status !== "authorization_required") {
+        throw new Error("generic plan unavailable");
+      }
+      return result;
+    };
+    const sign = async (value: Awaited<ReturnType<typeof plan>>) => {
+      const decoded = parseDomainForegroundAuthorizationPlanV2(
+        value.authorizationPlanBytes,
+      );
+      if (decoded === null) throw new Error("generic plan invalid");
+      try {
+        const authorization = await mintDomainForegroundAuthorization(f.crypto, {
+          plan: decoded,
+          domains: f.snapshot.domains.map((domain) => ({
+            ...domain,
+            domainKey: bytes(20),
+          })),
+          committerDeviceSigningPrivateKey: f.signer.privateKey,
+          recipientEncryptionPublicKey: value.recipientPublicKey,
+        });
+        try { return serializeDomainForegroundAuthorizationV2(authorization); }
+        finally { destroyDomainForegroundAuthorizationV2(authorization); }
+      } finally {
+        destroyDomainForegroundAuthorizationPlanV2(decoded);
+      }
+    };
+    const authorizationBytes = await sign(challenge);
+    expect(await broker.read({
+      binding,
+      challengeId: challenge.challengeId,
+      authorizationBytes,
+      execute: async (checkpoint, actualLocator) => {
+        expect(checkpoint).toBe("exact checkpoint");
+        expect(actualLocator).toEqual(expectedLocator);
+        return "read";
+      },
+    })).toEqual({ status: "read", value: "read" });
+    expect(await broker.read({
+      binding,
+      challengeId: challenge.challengeId,
+      authorizationBytes,
+      execute: async () => "replayed",
+    })).toEqual({ status: "unavailable" });
+
+    const cancelled = await plan();
+    const cancelledAuthorization = await sign(cancelled);
+    broker.cancelForHuman(binding.humanActorId);
+    expect(await broker.read({
+      binding,
+      challengeId: cancelled.challengeId,
+      authorizationBytes: cancelledAuthorization,
+      execute: async () => "cancelled plaintext",
+    })).toEqual({ status: "unavailable" });
+
+    const expired = await plan(f.now() + 1);
+    const expiredAuthorization = await sign(expired);
+    f.expire();
+    expect(await broker.read({
+      binding,
+      challengeId: expired.challengeId,
+      authorizationBytes: expiredAuthorization,
+      execute: async () => "expired plaintext",
+    })).toEqual({ status: "unavailable" });
+
+    const changed = await plan();
+    const changedAuthorization = await sign(changed);
+    expect(await broker.read({
+      binding,
+      challengeId: changed.challengeId,
+      authorizationBytes: changedAuthorization,
+      execute: async () => {
+        policyRevision += 1;
+        return "stale plaintext";
+      },
+    })).toEqual({ status: "unavailable" });
+
+    const failed = await plan();
+    const failedAuthorization = await sign(failed);
+    expect(broker.read({
+      binding,
+      challengeId: failed.challengeId,
+      authorizationBytes: failedAuthorization,
+      execute: async () => { throw new Error("storage unavailable"); },
+    })).rejects.toThrow("storage unavailable");
+    expect(await broker.read({
+      binding,
+      challengeId: failed.challengeId,
+      authorizationBytes: failedAuthorization,
+      execute: async () => "replayed failure",
+    })).toEqual({ status: "unavailable" });
+    expect(strategyCalls).toBe(3);
+    expect(f.recipients.size()).toBe(0);
+    expect(borrowed.every((key) => key.every((value) => value === 0))).toBe(true);
+    expect(returned.every((snapshot) =>
+      snapshot.committerDeviceSigningPublicKey.every((value) => value === 0)
+    )).toBe(true);
+    broker.close();
+    f.service.close();
+  });
+
   test("prunes expired stalled lookup controllers before re-admission and removes cancelled active entries immediately", async () => {
     const release = Promise.withResolvers<void>();
     const firstEntered = Promise.withResolvers<void>();

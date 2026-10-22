@@ -20,6 +20,7 @@ import {
 import type {
   AgentRuntimeKeyGeneration,
   LatticeCrypto,
+  TaskRuntimePublicationSigning,
 } from "@nautilo/lattice-crypto";
 import { decodeRecordPayloadV1, encodeRecordPayloadV1 } from "@nautilo/reflection-bridge";
 import {decodeDurableRecordEnvelope, assertStenographerRecordPayloadBinding} from "@nautilo/reflection-bridge/server";
@@ -131,6 +132,7 @@ export function createForegroundJournalHistoryRepairer(input: Readonly<{
     signerKeyId: string;
     signerPublicKey: Uint8Array;
     agentAuthorizationRevision: number;
+    taskRuntimeSigner?: TaskRuntimePublicationSigning;
     policyRevision?: number;
   }>;
   selection: ForegroundJournalSelectionPort;

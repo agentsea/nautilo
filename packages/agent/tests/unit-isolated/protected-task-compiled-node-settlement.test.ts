@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, expect, mock, test } from "bun:test";
 import { AIMessage, HumanMessage } from "@langchain/core/messages";
 import { DynamicStructuredTool } from "@langchain/core/tools";
+import { Annotation, END, START, StateGraph } from "@langchain/langgraph";
 import { ToolCatalog, clearToolCatalog, initToolCatalog } from "@nautilo/catalog";
 import type { ChatModel } from "../../src/providers/types";
 import { z } from "zod";
@@ -173,4 +174,124 @@ test("compiled graph retains a deferred tool node through abort", async () => {
   await draining;
   await graphRun;
   expect(drained).toBe(true);
+});
+
+test("real graph observes a fenced consumer failure before its next node effect", async () => {
+  const schema = Annotation.Root({ value: Annotation<number>() });
+  const settlement = createSettlementScope();
+  const consumerFailure = new Error("protected transcript publication failed");
+  const unhandled: unknown[] = [];
+  const onUnhandled = (error: unknown) => {
+    unhandled.push(error);
+  };
+  process.on("unhandledRejection", onUnhandled);
+  let secondNodeStarted = false;
+  try {
+    const graph = new StateGraph(schema)
+      .addNode("first", () => settlement.run(
+        "agent",
+        () => ({ value: 1 }),
+      ))
+      .addNode("second", () => settlement.run("post_model", () => {
+        secondNodeStarted = true;
+        return { value: 2 };
+      }))
+      .addEdge(START, "first")
+      .addEdge("first", "second")
+      .addEdge("second", END)
+      .compile();
+    let observed: unknown;
+    try {
+      for await (const event of graph.streamEvents(
+        { value: 0 },
+        { version: "v2", callbacks: [] },
+      )) {
+        if (event.event === "on_chain_end" && event.name === "first") {
+          settlement.fail(consumerFailure);
+        }
+      }
+    } catch (error) {
+      observed = error;
+    }
+    await settlement.closeAndWait();
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    expect(observed).toBe(consumerFailure);
+    expect(secondNodeStarted).toBe(false);
+    expect(unhandled).toEqual([]);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});
+
+test("real event stream abort drains an admitted node without a later effect", async () => {
+  const schema = Annotation.Root({ value: Annotation<number>() });
+  const authorization = new AbortController();
+  const settlement = createSettlementScope(authorization.signal);
+  const admittedStarted = Promise.withResolvers<void>();
+  const releaseAdmitted = Promise.withResolvers<void>();
+  const unhandled: unknown[] = [];
+  const onUnhandled = (error: unknown) => {
+    unhandled.push(error);
+  };
+  process.on("unhandledRejection", onUnhandled);
+  let postAbortEventEffects = 0;
+  let laterNodeStarted = false;
+  try {
+    const graph = new StateGraph(schema)
+      .addNode("admitted", () => settlement.run("agent", async () => {
+        admittedStarted.resolve();
+        await releaseAdmitted.promise;
+        return { value: 1 };
+      }))
+      .addNode("later", () => settlement.run("post_model", () => {
+        laterNodeStarted = true;
+        return { value: 2 };
+      }))
+      .addEdge(START, "admitted")
+      .addEdge("admitted", "later")
+      .addEdge("later", END)
+      .compile();
+    const streamResult = (async () => {
+      try {
+        for await (const _event of graph.streamEvents(
+          { value: 0 },
+          {
+            version: "v2",
+            callbacks: [],
+            signal: authorization.signal,
+          },
+        )) {
+          if (authorization.signal.aborted) continue;
+          postAbortEventEffects += 1;
+        }
+        return null;
+      } catch (error) {
+        return error;
+      }
+    })();
+
+    await admittedStarted.promise;
+    authorization.abort(new Error("authorization revoked"));
+    const eventEffectsAtAbort = postAbortEventEffects;
+    const draining = settlement.closeAndWait();
+    let drained = false;
+    void draining.then(() => {
+      drained = true;
+    });
+    await Promise.resolve();
+    expect(drained).toBe(false);
+
+    releaseAdmitted.resolve();
+    await streamResult;
+    await draining;
+    await new Promise(resolve => setTimeout(resolve, 10));
+
+    expect(postAbortEventEffects).toBe(eventEffectsAtAbort);
+    expect(laterNodeStarted).toBe(false);
+    expect(unhandled).toEqual([]);
+  } finally {
+    releaseAdmitted.resolve();
+    process.off("unhandledRejection", onUnhandled);
+  }
 });

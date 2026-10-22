@@ -6,7 +6,8 @@ import type {
 } from "@nautilo/relay";
 import type { HarnessRequestResponse } from "@nautilo/runtime";
 import { createAcceptedInvocationAuthority } from "@nautilo/trust";
-import { CodexRequestBroker, type CodexRelayRequestSource } from "../../src/codex/request-broker";
+import { codexRequestScopePartitionIdentity, CodexRequestBroker, CodexRequestSourcePartition,
+  type CodexRelayRequestSource } from "../../src/codex/request-broker";
 import type { CodexRelayTurnScope } from "../../src/codex/turn-event-broker";
 
 const scope: CodexRelayTurnScope = {
@@ -55,6 +56,8 @@ function createSource(): {
 function request(input: {
   readonly requestRef?: string;
   readonly taskId?: string;
+  readonly jobId?: string;
+  readonly bindingGeneration?: number;
   readonly turnId?: string;
   readonly workspaceFingerprint?: string;
   readonly expiresAt?: string;
@@ -64,6 +67,8 @@ function request(input: {
     scope: {
       ...scope,
       taskId: input.taskId ?? scope.taskId,
+      jobId: input.jobId ?? scope.jobId,
+      bindingGeneration: input.bindingGeneration ?? scope.bindingGeneration,
       turnId: input.turnId ?? scope.turnId,
       selectedProtocolVersion: 8,
       workspace: {
@@ -117,6 +122,88 @@ function userInputResponse(): HarnessRequestResponse {
 }
 
 describe("CodexRequestBroker", () => {
+  test("partitions protected requests before buffering and retires only the exact Task Job scope", async () => {
+    const upstream = createSource();
+    const partition = new CodexRequestSourcePartition(upstream.source);
+    const ordinary = new CodexRequestBroker({ source: partition.ordinary });
+    const protectedBroker = new CodexRequestBroker({ source: partition.protected });
+    const protection = partition.protect({ relayId: scope.relayId, bindingId: scope.bindingId,
+      bindingGeneration: scope.bindingGeneration, taskId: scope.taskId, jobId: scope.jobId });
+    const ordinarySubscription = ordinary.subscribe(scope, "ordinary-owner");
+    const protectedSubscription = protectedBroker.subscribe(scope, "protected-owner");
+
+    upstream.emit(request({ requestRef: "wrong-generation", bindingGeneration: 7 }));
+    expect(ordinary.hasLiveRequest("wrong-generation", "ordinary-owner")).toBeFalse();
+    expect(protectedBroker.hasLiveRequest("wrong-generation", "protected-owner")).toBeFalse();
+    expect(() => codexRequestScopePartitionIdentity({ relayId: "relay", bindingId: "binding",
+      bindingGeneration: "06", taskId: "task", jobId: "job" })).toThrow("binding generation");
+
+    // The request can arrive before the protected provider has started
+    // consuming; the partition was installed before any broker saw it.
+    upstream.emit(request());
+    expect(await protectedSubscription[Symbol.asyncIterator]().next()).toMatchObject({
+      done: false, value: { scope: { requestRef: "request", taskId: "task", jobId: "job" } },
+    });
+    expect(protectedBroker.hasLiveRequest("request", "protected-owner")).toBeTrue();
+    expect(ordinary.hasLiveRequest("request", "ordinary-owner")).toBeFalse();
+
+    upstream.emit(request({ requestRef: "unknown-private", turnId: "unknown-turn" }));
+    protectedSubscription.close();
+    protection.close();
+    expect(protectedBroker.hasLiveRequest("request", "protected-owner")).toBeFalse();
+    expect(() => protectedBroker.subscribe({ ...scope, turnId: "unknown-turn" }, "protected-owner"))
+      .toThrow(expect.objectContaining({ code: "stale_scope" }));
+    upstream.emit(request({ requestRef: "late-private", turnId: "late-turn" }));
+    expect(ordinary.hasLiveRequest("late-private", "ordinary-owner")).toBeFalse();
+    expect(protectedBroker.hasLiveRequest("late-private", "protected-owner")).toBeFalse();
+
+    const retryProtection = partition.protect({ relayId: scope.relayId, bindingId: scope.bindingId,
+      bindingGeneration: scope.bindingGeneration, taskId: scope.taskId, jobId: scope.jobId });
+    const retryScope = { ...scope, turnId: "retry-turn" };
+    const retrySubscription = protectedBroker.subscribe(retryScope, "protected-owner");
+    upstream.emit(request({ requestRef: "retry-private", turnId: "retry-turn" }));
+    expect(await retrySubscription[Symbol.asyncIterator]().next()).toMatchObject({
+      done: false, value: { scope: { requestRef: "retry-private", jobId: "job" } },
+    });
+    retrySubscription.close();
+    retryProtection.close();
+
+    const ordinaryScope = { ...scope, jobId: "later-ordinary-job", turnId: "ordinary-turn" };
+    const ordinaryProtection = partition.claimOrdinary({ relayId: scope.relayId,
+      bindingId: scope.bindingId, bindingGeneration: scope.bindingGeneration,
+      taskId: scope.taskId, jobId: "later-ordinary-job" });
+    const laterOrdinary = ordinary.subscribe(ordinaryScope, "ordinary-owner");
+    upstream.emit(request({ requestRef: "ordinary-request", jobId: "later-ordinary-job",
+      turnId: "ordinary-turn" }));
+    expect(await laterOrdinary[Symbol.asyncIterator]().next()).toMatchObject({
+      done: false, value: { scope: { requestRef: "ordinary-request", taskId: "task",
+        jobId: "later-ordinary-job" } },
+    });
+
+    ordinarySubscription.close();
+    laterOrdinary.close();
+    ordinaryProtection.close();
+
+    const invalidatedIdentity = { relayId: scope.relayId, bindingId: scope.bindingId,
+      bindingGeneration: scope.bindingGeneration, taskId: scope.taskId, jobId: "reconnected-job" };
+    const staleLease = partition.protect(invalidatedIdentity);
+    upstream.invalidate(scope.relayId);
+    const freshLease = partition.protect(invalidatedIdentity);
+    staleLease.close();
+    const freshScope = { ...scope, jobId: "reconnected-job", turnId: "fresh-turn" };
+    const freshSubscription = protectedBroker.subscribe(freshScope, "protected-owner");
+    upstream.emit(request({ requestRef: "fresh-private", jobId: "reconnected-job",
+      turnId: "fresh-turn" }));
+    expect(await freshSubscription[Symbol.asyncIterator]().next()).toMatchObject({
+      done: false, value: { scope: { requestRef: "fresh-private" } },
+    });
+    freshSubscription.close();
+    freshLease.close();
+    ordinary.dispose();
+    protectedBroker.dispose();
+    partition.dispose();
+  });
+
   test("proves live user-input membership only for the exact active owner and stream", () => {
     const { source, emit } = createSource();
     const broker = new CodexRequestBroker({ source });

@@ -159,7 +159,7 @@ export interface VerifiedMemoryCryptoRevision
    * to the caller for wiping.
    */
   readonly accessSignerEvidence?: readonly Readonly<{
-    kind: "agent_runtime_publication" | "processor_authorization";
+    kind: "agent_runtime_publication" | "processor_authorization" | "task_runtime_signer_certificate";
     evidenceBytes: Uint8Array;
   }>[];
 }

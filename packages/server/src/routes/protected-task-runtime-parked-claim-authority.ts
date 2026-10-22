@@ -1,6 +1,7 @@
 import type { DirectDatabase, PersistJobPayload, PostgresJsBridgeConnection } from "@nautilo/db";
 import type { LatticeCrypto } from "@nautilo/lattice-crypto";
 import {
+  decodeTaskRuntimeBackgroundAuthorizationRequestBase,
   encodeTaskRuntimeBackgroundAuthorizationRequestV1,
   destroyTaskRuntimeBackgroundAuthorizationRequestV1,
   type TaskRuntimeBackgroundAuthorizationRequestV1,
@@ -16,7 +17,7 @@ import {
   type ParkedTaskRuntimeCurrentRoutingFacts,
 } from "@nautilo/lattice-bridge/server";
 import {
-  BACKGROUND_AUTHORIZATION_MAX_CLAIM_LEASE_MS,
+  TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS,
   PostgresBackgroundAuthorizationRepository,
   sameBackgroundAuthorizationRecord,
   sameTaskRuntimeAuthorityPlan,
@@ -90,10 +91,22 @@ export function createProtectedTaskRuntimeParkedClaimAuthority(input: Readonly<{
       operation.request.authorizationPlanBytes,
     );
     let requestBytes: Uint8Array | null = null;
+    let acceptedRequest: TaskRuntimeBackgroundAuthorizationRequestV1 | null = null;
+    let acceptedRequestBytes: Uint8Array | null = null;
     try {
       requestBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV1(operation.request);
+      acceptedRequest = selected.descriptorBytes === null ? null
+        : decodeTaskRuntimeBackgroundAuthorizationRequestBase(
+          input.crypto,
+          selected.descriptorBytes,
+        );
+      acceptedRequestBytes = acceptedRequest === null ? null
+        : encodeTaskRuntimeBackgroundAuthorizationRequestV1(acceptedRequest);
       if (plan === null || selected.descriptorBytes === null
-        || !Buffer.from(requestBytes).equals(Buffer.from(selected.descriptorBytes))) return null;
+        || acceptedRequestBytes === null
+        || !Buffer.from(requestBytes).equals(
+          Buffer.from(acceptedRequestBytes),
+        )) return null;
       const resolved = await input.resolvePlan({
         taskRunId: occurrence.run.id,
         authorizationRequestId: selected.snapshot.requestId,
@@ -166,6 +179,10 @@ export function createProtectedTaskRuntimeParkedClaimAuthority(input: Readonly<{
       });
     } finally {
       requestBytes?.fill(0);
+      acceptedRequestBytes?.fill(0);
+      if (acceptedRequest !== null) {
+        destroyTaskRuntimeBackgroundAuthorizationRequestV1(acceptedRequest);
+      }
       if (plan !== null) destroyDomainForegroundAuthorizationPlanV2(plan);
       destroyAcceptedTaskRuntimeRecord(accepted);
     }
@@ -184,8 +201,9 @@ export function createProtectedTaskRuntimeParkedClaimAuthority(input: Readonly<{
       if (!Number.isSafeInteger(now) || now < operation.request.issuedAt
         || recipient === null || material === null) return null;
       const expiresAt = Math.min(operation.request.deadlineAt, recipient.expiresAt,
-        material.authorizationExpiresAt, now + BACKGROUND_AUTHORIZATION_MAX_CLAIM_LEASE_MS);
-      if (now >= expiresAt) return null;
+        material.authorizationExpiresAt);
+      if (now >= expiresAt
+        || expiresAt - now > TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS) return null;
       const publicAuthority = copyProtectedTaskRuntimeAuthority(held.current, false);
       try {
         const value = await operation.use(publicAuthority, held.repository, now, expiresAt);

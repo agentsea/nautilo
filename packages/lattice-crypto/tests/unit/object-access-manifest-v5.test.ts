@@ -11,15 +11,34 @@ import {
   createProcessorObjectSignerPublicV1,
 } from "../../src/background/processor-object-signer-v1.ts";
 import {
+  createTaskRuntimeBackgroundAuthorizationRequestV1,
+} from "../../src/background/task-runtime-request-v1.ts";
+import {
+  createTaskRuntimeBackgroundAuthorizationRequestV3,
+  encodeTaskRuntimeBackgroundAuthorizationRequestV3,
+  type TaskRuntimePublicationWorkBindingV3,
+} from "../../src/background/task-runtime-request-v3.ts";
+import {
+  createTaskRuntimeSignerAuthorizationV2,
+} from "../../src/background/task-runtime-signer-authorization-v1.ts";
+import {
   createProcessorSignerAuthorizationV1,
   PROCESSOR_SIGNER_AUTHORIZATION_FORMAT_VERSION_V1,
   type ProcessorSignerAuthorizationUnsignedV1,
 } from "../../src/background/processor-signer-authorization-v1.ts";
 import { LatticeCrypto, seededRng } from "../../src/crypto/index.ts";
 import {
+  createDomainForegroundAuthorizationPlanV2,
+  mintDomainForegroundAuthorizationV2,
+  serializeDomainForegroundAuthorizationPlanV2,
+  serializeDomainForegroundAuthorizationV2,
+} from "../../src/format/domain-foreground-authorization-v2.ts";
+import {
   createAgentObjectAccessManifestV5,
   createHumanObjectAccessManifestV5,
   createProcessorObjectAccessManifestV5,
+  createTaskDefinitionForegroundObjectAccessManifestV5,
+  createTaskRuntimeObjectAccessManifestV5,
   decodeObjectAccessManifestV5,
   encodeObjectAccessManifestV5,
   OBJECT_ACCESS_MANIFEST_DOMAIN_V5,
@@ -51,6 +70,141 @@ function runtime(): AgentRuntimeGenerationV2 {
     keyClass: "runtime",
     generation: agentRuntimeGeneration(4),
     key: hash(0x44),
+  };
+}
+
+const TASK_ID = "11111111-1111-4111-8111-111111111111";
+const TASK_RUN_ID = "22222222-2222-4222-8222-222222222222";
+const TASK_JOB_ID = "33333333-3333-4333-8333-333333333333";
+const TASK_MESSAGE_ID = `message:v2:${"a".repeat(64)}`;
+
+async function taskSignerFixture(
+  kind: TaskRuntimePublicationWorkBindingV3["kind"],
+) {
+  const now = 1_801_200_000_000;
+  const crypto = new LatticeCrypto(seededRng(2_634), { now: () => now });
+  const issuer = crypto.generateSigningKeyPair();
+  const recipient = await crypto.deriveEncryptionKeyPair(hash(0x91));
+  const taskRuntime: AgentRuntimeGenerationV2 = {
+    agentId: agentId("agent-task-publication"),
+    keyClass: "runtime",
+    generation: agentRuntimeGeneration(0),
+    key: hash(0x92),
+  };
+  const signer = deriveAgentRuntimeObjectSignerPublicV1(crypto, taskRuntime);
+  const operations = kind === "task.cancel_result"
+      || kind === "task.deliver_message"
+    ? ["encrypt"] as const
+    : ["decrypt", "encrypt"] as const;
+  const domain = {
+    domainId: "domain:task-publication",
+    sourceNamespaceId: "namespace:task-publication",
+    participantDigest: hash(0x93),
+    participantCount: 2,
+    keyClass: "ai" as const,
+    domainKeyGeneration: 3,
+    authorizationRevision: authorizationRevision(4),
+    headDigest: hash(0x94),
+    activeNamespaceBindingSetDigest: hash(0x95),
+    activeNamespaceBindingCount: 1,
+  };
+  const plan = createDomainForegroundAuthorizationPlanV2(crypto, {
+    authorizationId: `request:${kind}`,
+    policyRevision: 7,
+    sessionId: "episode:task-publication",
+    roomId: "room:task-publication",
+    subjectHumanId: humanId("human-task-publication"),
+    committerDeviceId: cryptoDeviceId("device-task-publication"),
+    committerDeviceSigningGeneration: 2,
+    hostAuthorizationRevision: authorizationRevision(6),
+    recipientKind: "runtime",
+    recipientPrincipalId: "nautilo_task_runtime",
+    recipientAuthorizationRevision: authorizationRevision(0),
+    recipientRuntimeGeneration: 0,
+    recipientKeyId: "recipient:task-publication",
+    operations,
+    issuedAt: now,
+    deadlineAt: now + 60_000,
+    maximumSecretBytes: 2_048,
+    domains: [domain],
+  });
+  const baseRequest = createTaskRuntimeBackgroundAuthorizationRequestV1({
+    requestId: `request:${kind}`,
+    workId: kind === "task.delivery_wake" ? TASK_JOB_ID : TASK_RUN_ID,
+    workKind: kind,
+    workPurpose: kind,
+    recipientGeneration: 0,
+    episodeId: "episode:task-publication",
+    sourceRoomId: "room:task-publication",
+    recipientKeyId: "recipient:task-publication",
+    recipientPublicKey: recipient.publicKey,
+    authorizationPlan: plan,
+    issuedAt: now,
+    deadlineAt: now + 60_000,
+  });
+  const commonWork = {
+    taskId: TASK_ID,
+    taskRunId: TASK_RUN_ID,
+    workIdentityHash: hash(0x96),
+  };
+  const work: TaskRuntimePublicationWorkBindingV3 =
+    kind === "task.cancel_result"
+      ? { ...commonWork, kind, contentRevision: 2 }
+      : kind === "task.deliver_message"
+        ? { ...commonWork, kind, contentRevision: 2,
+          messageObjectId: TASK_MESSAGE_ID }
+        : kind === "task.deliver_result"
+          ? { ...commonWork, kind, contentRevision: 1 }
+          : { ...commonWork, kind, contentRevision: 1, jobId: TASK_JOB_ID };
+  const request = createTaskRuntimeBackgroundAuthorizationRequestV3(crypto, {
+    baseRequest,
+    work,
+    signer: {
+      agentId: signer.principal.agentId,
+      runtimeGeneration: 0,
+      signerKeyId: signer.principal.signerKeyId,
+      signerPublicKey: signer.publicKey,
+    },
+    deviceGroupHead: {
+      serverInstanceId: "server:task-publication",
+      lineageGeneration: 1,
+      epoch: 5,
+      headDigest: hash(0x97),
+      signingPublicKeyHash: crypto.hash(issuer.publicKey),
+    },
+    namespaceRequirements: [{
+      ordinal: 0,
+      namespaceId: "namespace:task-publication",
+      domainId: "domain:task-publication",
+      operations,
+      expectedAccessRevision: 4,
+      expectedPolicyRevision: 7,
+    }],
+  });
+  const authorization = await mintDomainForegroundAuthorizationV2(crypto, {
+    plan,
+    domains: [{ ...domain, domainKey: hash(0x98) }],
+    committerDeviceSigningPrivateKey: issuer.privateKey,
+    recipientEncryptionPublicKey: recipient.publicKey,
+  });
+  const requestBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV3(
+    crypto, request,
+  );
+  const authorizationBytes = serializeDomainForegroundAuthorizationV2(
+    authorization,
+  );
+  const authorizationHash = crypto.hash(authorizationBytes);
+  const certificateBytes = createTaskRuntimeSignerAuthorizationV2(crypto, {
+    requestBytes,
+    authorizationBytes,
+    expectedAuthorizationPlanBytes:
+      serializeDomainForegroundAuthorizationPlanV2(plan),
+    expectedAuthorizationHash: authorizationHash,
+    issuerSigningPrivateKey: issuer.privateKey,
+  });
+  return {
+    crypto, issuer, taskRuntime, signer, requestBytes, authorizationHash,
+    certificateBytes, now,
   };
 }
 
@@ -311,6 +465,116 @@ describe("ObjectAccessManifestV5", () => {
       resolveProcessorSignerAuthorizationBytes: () => authorization.bytes,
       resolveHistoricalProcessorIssuingDevicePublicKey: () => issuer.publicKey,
     })).toThrow("signature is invalid");
+  });
+
+  test("enforces fixed publication outputs and retains dynamic effect ownership", async () => {
+    for (const kind of [
+      "task.cancel_result",
+      "task.deliver_message",
+      "task.deliver_result",
+      "task.delivery_wake",
+    ] as const) {
+      const fixture = await taskSignerFixture(kind);
+      const cancelledResultId = `task-run-result:v1:${bytesToHex(
+        fixture.crypto.hash(new TextEncoder().encode(
+          `nautilo/task-run-result-crypto-object/v1\n${TASK_ID}\n${TASK_RUN_ID}\n2`,
+        )),
+      )}`;
+      const expectedObjectId = kind === "task.cancel_result"
+        ? cancelledResultId
+        : kind === "task.deliver_message"
+          ? TASK_MESSAGE_ID
+          : `memory:v2:${(kind === "task.deliver_result" ? "b" : "c").repeat(64)}`;
+      const create = (candidateObjectId: string) =>
+        createTaskRuntimeObjectAccessManifestV5(fixture.crypto, {
+          objectId: objectId(candidateObjectId),
+          payloadHash: hash(0xa1),
+          accessRevision: accessRevision(0),
+          previousManifestHash: null,
+          envelopeHashes: [],
+          signer: fixture.signer.principal,
+          signerAuthorizationHash: fixture.crypto.hash(fixture.certificateBytes),
+          hostAuthorizationRevision: authorizationRevision(6),
+        }, {
+          runtime: fixture.taskRuntime,
+          certificateBytes: fixture.certificateBytes,
+          issuerSigningPublicKey: fixture.issuer.publicKey,
+          expectedRequestHash: fixture.crypto.hash(fixture.requestBytes),
+          expectedAuthorizationHash: fixture.authorizationHash,
+          now: fixture.now + 1,
+        });
+      const created = create(expectedObjectId);
+      const verified = verifyObjectAccessManifestV5(fixture.crypto, {
+        manifestBytes: created.bytes,
+        resolveHistoricalHumanDeviceSigningPublicKey: () => null,
+        resolveAgentRuntimeSignerPublicKey: () => null,
+        resolveProcessorSignerAuthorizationBytes: () => null,
+        resolveHistoricalProcessorIssuingDevicePublicKey: () => null,
+        resolveTaskRuntimeSignerAuthorizationBytes: () =>
+          fixture.certificateBytes,
+        resolveHistoricalTaskRuntimeIssuer: () => fixture.issuer.publicKey,
+      });
+      expect(verified.manifest.objectId).toBe(objectId(expectedObjectId));
+
+      if (kind === "task.cancel_result" || kind === "task.deliver_message") {
+        expect(() => create(`memory:v2:${"d".repeat(64)}`))
+          .toThrow("disagrees with its certified Runtime signer");
+      }
+    }
+  });
+
+  test("verifies Task-definition foreground evidence only through its explicit resolver", () => {
+    const crypto = new LatticeCrypto(seededRng(2_635));
+    const agentRuntime = runtime();
+    const signer = deriveAgentRuntimeObjectSignerPublicV1(crypto, agentRuntime);
+    const authorizationBytes = new Uint8Array(128).fill(0x71);
+    const created = createTaskDefinitionForegroundObjectAccessManifestV5(
+      crypto,
+      {
+        objectId: objectId(`task-definition:v1:${"a".repeat(64)}`),
+        payloadHash: hash(0x72),
+        accessRevision: accessRevision(0),
+        previousManifestHash: null,
+        envelopeHashes: [hash(0x73)],
+        signer: signer.principal,
+        signerAuthorizationHash: crypto.hash(authorizationBytes),
+        hostAuthorizationRevision: authorizationRevision(9),
+      },
+      agentRuntime,
+    );
+    const base = {
+      manifestBytes: created.bytes,
+      resolveHistoricalHumanDeviceSigningPublicKey: () => null,
+      resolveAgentRuntimeSignerPublicKey: () => null,
+      resolveProcessorSignerAuthorizationBytes: () => null,
+      resolveHistoricalProcessorIssuingDevicePublicKey: () => null,
+    };
+    expect(() => verifyObjectAccessManifestV5(crypto, base))
+      .toThrow("Task definition foreground authorization resolver is required");
+    const verified = verifyObjectAccessManifestV5(crypto, {
+      ...base,
+      resolveTaskDefinitionForegroundAuthorizationSignerPublicKey: evidence => {
+        expect(evidence.authorizationHash).toEqual(crypto.hash(authorizationBytes));
+        return signer.publicKey.slice();
+      },
+    });
+    expect(verified.manifest.objectId).toBe(created.manifest.objectId);
+    expect(() => createTaskDefinitionForegroundObjectAccessManifestV5(
+      crypto,
+      {
+        objectId: objectId(`memory:v2:${"b".repeat(64)}`),
+        payloadHash: created.manifest.payloadHash,
+        accessRevision: created.manifest.accessRevision,
+        previousManifestHash: created.manifest.previousManifestHash,
+        envelopeHashes: created.manifest.envelopeHashes,
+        signer: created.manifest.signer,
+        signerAuthorizationHash:
+          created.manifest.signerAuthorizationHash,
+        hostAuthorizationRevision:
+          created.manifest.hostAuthorizationRevision,
+      },
+      agentRuntime,
+    )).toThrow("Task definition manifest requires");
   });
 
   test("rejects unknown signers, altered signatures, and authorization misuse", () => {

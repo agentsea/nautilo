@@ -108,7 +108,7 @@ describe("native Task Message preparation", () => {
     expect(manifest.payloadHash).toEqual(value.crypto.hash(snapshot.object.payloadBytes.ciphertext));
     expect(() => verifyCommonObjectAccessManifest(value.crypto, { manifestBytes: snapshot.manifestBytes,
       resolveHistoricalHumanDeviceSigningPublicKey: () => null,
-      resolveAgentRuntimeSignerPublicKey: () => value.base.signerPublication.signerPublicKey,
+      resolveAgentRuntimeSignerPublicKey: () => value.base.signerPublication!.signerPublicKey,
       resolveProcessorSignerAuthorizationBytes: () => null,
       resolveHistoricalProcessorIssuingDevicePublicKey: () => null,
     })).not.toThrow();

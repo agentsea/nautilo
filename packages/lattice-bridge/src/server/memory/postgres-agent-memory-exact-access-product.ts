@@ -302,6 +302,33 @@ function receiptMatches(
     && exactIds(receipt.targetNamespaceIds, plan.targetNamespaceIds);
 }
 
+function nativeRecoveryInputValid(input: Readonly<{
+  authority: Extract<ProtectedMemoryAuthority, { mode: "namespace" }>;
+  plan: ForegroundAgentMemoryNativeExactAccessPlan;
+  head: Readonly<{ objectId: string; accessRevision: number;
+    namespaceIds: readonly string[]; manifestHash: Uint8Array }>;
+}>): boolean {
+  const { authority, plan, head } = input;
+  return plan.productMutation.kind === "grant_namespace"
+    && authority.readableNamespaceIds.includes(plan.anchorNamespaceId)
+    && (authority.mutableNamespaceIds.includes(
+      plan.productMutation.namespaceId,
+    ) || authority.writableNamespaceId === plan.productMutation.namespaceId)
+    && exactIds(plan.addedNamespaceIds,
+      [plan.productMutation.namespaceId])
+    && plan.removedNamespaceIds.length === 0
+    && exactIds([
+      ...plan.currentNamespaceIds,
+      plan.productMutation.namespaceId,
+    ].sort(), plan.targetNamespaceIds)
+    && plan.nextCryptoAccessRevision
+      === plan.expectedCryptoAccessRevision + 1
+    && head.objectId === plan.cryptoObjectId
+    && head.accessRevision === plan.nextCryptoAccessRevision
+    && head.manifestHash.length === 32
+    && exactIds(head.namespaceIds, plan.targetNamespaceIds);
+}
+
 export class PostgresAgentMemoryExactAccessProduct {
   readonly #handle: ConversationProductPostgresHandle;
   readonly #readableNamespaceIds: readonly string[];
@@ -309,6 +336,7 @@ export class PostgresAgentMemoryExactAccessProduct {
   readonly #resolveGrantUserNamespace: ResolveAgentMemoryGrantUserNamespace;
   readonly #resolveCryptoAuthority:
     ResolveAgentMemoryExactAccessAuthority | undefined;
+  readonly #assertCurrentAuthority: (() => Promise<void>) | undefined;
 
   constructor(input: Readonly<{
     handle: ConversationProductPostgresHandle;
@@ -316,6 +344,7 @@ export class PostgresAgentMemoryExactAccessProduct {
     crypto?: AgentMemoryExactAccessCryptoCompletionPort;
     resolveGrantUserNamespace: ResolveAgentMemoryGrantUserNamespace;
     resolveCryptoAuthority?: ResolveAgentMemoryExactAccessAuthority;
+    assertCurrentAuthority?: () => Promise<void>;
   }>) {
     assertVerifiedConversationProductPostgresHandle(input.handle);
     if (input.handle.role !== "nautilo_agent") {
@@ -326,6 +355,7 @@ export class PostgresAgentMemoryExactAccessProduct {
     this.#crypto = input.crypto;
     this.#resolveGrantUserNamespace = input.resolveGrantUserNamespace;
     this.#resolveCryptoAuthority = input.resolveCryptoAuthority;
+    this.#assertCurrentAuthority = input.assertCurrentAuthority;
   }
 
   #transaction<Value>(
@@ -334,7 +364,10 @@ export class PostgresAgentMemoryExactAccessProduct {
   ): Promise<Value> {
     return this.#handle.transaction(async (tx) => {
       await assertIdentity(tx, authority);
-      return execute(tx);
+      await this.#assertCurrentAuthority?.();
+      const result = await execute(tx);
+      await this.#assertCurrentAuthority?.();
+      return result;
     }, { isolationLevel: "serializable" });
   }
 
@@ -884,19 +917,11 @@ export class PostgresAgentMemoryExactAccessProduct {
   }>): Promise<boolean> {
     const { plan, head } = input;
     if (!authorityReadable(input.authority, this.#readableNamespaceIds)
-      || plan.productMutation.kind !== "grant_namespace"
-      || !input.authority.readableNamespaceIds.includes(plan.anchorNamespaceId)
-      || (!input.authority.mutableNamespaceIds.includes(plan.productMutation.namespaceId)
-        && input.authority.writableNamespaceId !== plan.productMutation.namespaceId)
-      || !exactIds(plan.addedNamespaceIds, [plan.productMutation.namespaceId])
-      || plan.removedNamespaceIds.length !== 0
-      || !exactIds([...plan.currentNamespaceIds, plan.productMutation.namespaceId].sort(),
-        plan.targetNamespaceIds)
-      || plan.nextCryptoAccessRevision !== plan.expectedCryptoAccessRevision + 1
-      || head.objectId !== plan.cryptoObjectId
-      || head.accessRevision !== plan.nextCryptoAccessRevision
-      || head.manifestHash.length !== 32
-      || !exactIds(head.namespaceIds, plan.targetNamespaceIds)) return false;
+      || !nativeRecoveryInputValid({
+        authority: input.authority,
+        plan,
+        head,
+      })) return false;
     const authority = input.authority;
     return this.#transaction(authority, async (tx) => {
       const operations = await executeTypedConversationProductQuery(tx,
@@ -930,6 +955,164 @@ export class PostgresAgentMemoryExactAccessProduct {
         anchorNamespaceId,
       }, rowBytes(operation, "request_digest"));
       return true;
+    });
+  }
+
+  async #inspectNativeRecovery(
+    tx: ConversationProductPostgresTransaction,
+    plan: ForegroundAgentMemoryNativeExactAccessPlan,
+    lock: "share" | "update",
+  ): Promise<ProtectedMemoryResult<Readonly<{
+    state: "pending" | "complete";
+    digest: Uint8Array;
+  }>>> {
+    const operations = await executeTypedConversationProductQuery(
+      tx,
+      conversationProductTypedDb.select({
+        operation_id: memoryCryptoOperations.operationId,
+        memory_id: memoryCryptoOperations.memoryId,
+        operation_type: memoryCryptoOperations.operationType,
+        anchor_namespace_id: memoryCryptoOperations.anchorNamespaceId,
+        expected_content_revision:
+          memoryCryptoOperations.expectedContentRevision,
+        expected_access_revision:
+          memoryCryptoOperations.expectedAccessRevision,
+        result_access_revision: memoryCryptoOperations.resultAccessRevision,
+        request_digest: memoryCryptoOperations.requestDigest,
+        target_required_namespace_fingerprint:
+          memoryCryptoOperations.targetRequiredNamespaceFingerprint,
+        completion: memoryCryptoOperations.completion,
+        disposition: memoryCryptoOperations.disposition,
+      }).from(memoryCryptoOperations).where(eq(
+        memoryCryptoOperations.operationId,
+        plan.operationId,
+      )).limit(2).for(lock),
+    );
+    if (operations.length === 0) return unavailable("stale_revision");
+    if (operations.length !== 1) {
+      throw new Error(
+        "Agent Memory native exact-access recovery operation is not unique",
+      );
+    }
+    const operation = operations[0]!;
+    const completion = rowString(operation, "completion");
+    const disposition = rowString(operation, "disposition");
+    const state = completion === "pending" && disposition === "active"
+      ? "pending" as const
+      : completion === "complete" && disposition === "complete"
+        ? "complete" as const
+        : null;
+    const digest = rowBytes(operation, "request_digest");
+    if (rowString(operation, "memory_id") !== plan.memoryId
+      || rowString(operation, "operation_type") !== "access"
+      || rowString(operation, "anchor_namespace_id")
+        !== plan.anchorNamespaceId
+      || rowCounter(operation, "expected_content_revision")
+        !== plan.expectedContentRevision
+      || rowCounter(operation, "expected_access_revision")
+        !== plan.expectedCryptoAccessRevision
+      || rowCounter(operation, "result_access_revision")
+        !== plan.nextCryptoAccessRevision
+      || !bytesEqual(rowBytes(operation,
+        "target_required_namespace_fingerprint"),
+      plan.targetRequiredNamespaceFingerprint)
+      || digest.length !== 32
+      || state === null) {
+      throw new Error("Agent Memory native exact-access recovery conflicts");
+    }
+    const product = await loadProduct(tx, plan.memoryId);
+    if (product.scopeOriginCount !== 0
+      || product.contentRevision !== plan.expectedContentRevision
+      || product.objectId !== plan.cryptoObjectId
+      || (state === "pending"
+        ? product.accessRevision !== plan.expectedCryptoAccessRevision
+          || !exactIds(product.namespaceIds, plan.currentNamespaceIds)
+          || !bytesEqual(product.fingerprint,
+            plan.currentRequiredNamespaceFingerprint)
+        : product.accessRevision !== plan.nextCryptoAccessRevision
+          || !exactIds(product.namespaceIds, plan.targetNamespaceIds)
+          || !bytesEqual(product.fingerprint,
+            plan.targetRequiredNamespaceFingerprint))) {
+      digest.fill(0);
+      return unavailable("stale_revision");
+    }
+    return Object.freeze({ status: "success" as const,
+      value: Object.freeze({ state, digest }) });
+  }
+
+  /** Classify the exact durable native grant selected by a sealed approval.
+   * This is deliberately read-only so approval planning and preview restore
+   * cannot complete a previously interrupted product mutation. */
+  async inspectNativeCommitted(input: Readonly<{
+    authority: ProtectedMemoryAuthority;
+    plan: ForegroundAgentMemoryNativeExactAccessPlan;
+    head: Readonly<{ objectId: string; accessRevision: number;
+      namespaceIds: readonly string[]; manifestHash: Uint8Array }>;
+  }>): Promise<ProtectedMemoryResult<Readonly<{
+    status: "pending" | "complete";
+    memoryId: string;
+  }>>> {
+    if (!authorityReadable(input.authority, this.#readableNamespaceIds)
+      || !nativeRecoveryInputValid({
+        authority: input.authority,
+        plan: input.plan,
+        head: input.head,
+      })) return unavailable("authorization_required");
+    const authority = input.authority;
+    return this.#transaction(authority, async tx => {
+      const inspected = await this.#inspectNativeRecovery(
+        tx,
+        input.plan,
+        "share",
+      );
+      if (inspected.status === "unavailable") return inspected;
+      inspected.value.digest.fill(0);
+      return Object.freeze({ status: "success" as const,
+        value: Object.freeze({ status: inspected.value.state,
+          memoryId: input.plan.memoryId }) });
+    });
+  }
+
+  /** Recover the exact durable native grant selected by a sealed approval.
+   * Unlike the generic scanner-oriented reconciler, this path never guesses
+   * among matching pending receipts: the caller supplies the original stable
+   * operation ID and an authenticated N+1 crypto head. */
+  async recoverNativeCommitted(input: Readonly<{
+    authority: ProtectedMemoryAuthority;
+    plan: ForegroundAgentMemoryNativeExactAccessPlan;
+    head: Readonly<{ objectId: string; accessRevision: number;
+      namespaceIds: readonly string[]; manifestHash: Uint8Array }>;
+  }>): Promise<ProtectedMemoryResult<Readonly<{
+    status: "updated" | "replayed";
+    memoryId: string;
+  }>>> {
+    const { plan, head } = input;
+    if (!authorityReadable(input.authority, this.#readableNamespaceIds)
+      || !nativeRecoveryInputValid({
+        authority: input.authority,
+        plan,
+        head,
+      })) {
+      return unavailable("authorization_required");
+    }
+    const authority = input.authority;
+    return this.#transaction(authority, async tx => {
+      const inspected = await this.#inspectNativeRecovery(tx, plan, "update");
+      if (inspected.status === "unavailable") return inspected;
+      let recovered: "updated" | "replayed";
+      try {
+        recovered = await this.#commitProduct(
+          tx,
+          authority,
+          plan,
+          inspected.value.digest,
+        );
+      } finally {
+        inspected.value.digest.fill(0);
+      }
+      return Object.freeze({ status: "success" as const,
+        value: Object.freeze({ status: recovered,
+          memoryId: plan.memoryId }) });
     });
   }
 

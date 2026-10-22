@@ -40,3 +40,35 @@ export function createProtectedTaskHistoricalHumanDeviceSigningKeyResolver(
       : null;
   };
 }
+
+/** Resolve the exact Device generation named by retained Task-only V2 proof. */
+export function createProtectedTaskHistoricalForegroundAuthorizationDeviceSigningKeyResolver(
+  handle: CryptoPostgresHandle,
+) {
+  return async (context: Readonly<{
+    humanId: string;
+    deviceId: string;
+    deviceGeneration: number;
+    hostAuthorizationRevision: number;
+  }>): Promise<Uint8Array | null> => {
+    const rows = await executeTypedCryptoQuery(
+      handle,
+      cryptoTypedDb.select({
+        signing_public_key: humanCryptoDevices.signingPublicKey,
+        revision: humanCryptoDevices.revision,
+      }).from(humanCryptoDevices).where(and(
+        eq(humanCryptoDevices.deviceId, context.deviceId),
+        eq(humanCryptoDevices.humanId, context.humanId),
+        eq(humanCryptoDevices.deviceGeneration, context.deviceGeneration),
+        inArray(humanCryptoDevices.state, ["active", "revoked"]),
+      )).limit(2),
+    );
+    const row = rows[0];
+    return rows.length === 1
+        && row !== undefined
+        && row.revision >= context.hostAuthorizationRevision
+        && row.signing_public_key instanceof Uint8Array
+      ? row.signing_public_key.slice()
+      : null;
+  };
+}

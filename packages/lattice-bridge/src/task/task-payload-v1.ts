@@ -12,6 +12,7 @@ import {
 } from "../message/message-payload-v2.ts";
 
 export const TASK_PAYLOAD_FORMAT_VERSION_V1 = 1 as const;
+export const TASK_DEFINITION_CONTENT_FORMAT_VERSION_V2 = 2 as const;
 export const TASK_RUN_RESULT_PAYLOAD_FORMAT_VERSION_V1 = 1 as const;
 export const TASK_PAYLOAD_MAX_WIRE_BYTES_V1 = LATTICE_LIMITS.plaintextBytes;
 export const TASK_RUN_RESULT_PAYLOAD_MAX_WIRE_BYTES_V1 =
@@ -56,6 +57,25 @@ export type TaskPayloadV1 = Readonly<{
   expectedOutput: string | null;
   /** Exact `protectedContent` projection returned by the metadata classifier. */
   protectedMetadata: TaskProtectedMetadataContentV1;
+}>;
+
+/**
+ * Authenticated Task definition content carrying a read-only display snapshot
+ * from an ordinary historical Task. The snapshot is never lifecycle authority.
+ */
+export type TaskDefinitionContentV2 = Readonly<{
+  formatVersion: typeof TASK_DEFINITION_CONTENT_FORMAT_VERSION_V2;
+  prompt: string;
+  expectedOutput: string | null;
+  protectedMetadata: TaskProtectedMetadataContentV1;
+  retainedHistoricalError: string;
+}>;
+
+export type TaskDefinitionContent = TaskPayloadV1 | TaskDefinitionContentV2;
+
+export type DecodedTaskDefinitionContent = Readonly<{
+  payload: TaskPayloadV1;
+  retainedHistoricalError: string | null;
 }>;
 
 export type TaskRunResultPayloadV1 = Readonly<{
@@ -298,6 +318,54 @@ function normalizeTaskPayloadV1(value: unknown): TaskPayloadV1 {
   });
 }
 
+function normalizeTaskDefinitionContentV2(
+  value: unknown,
+): TaskDefinitionContentV2 {
+  if (!ownRecord(value)) {
+    throw new TypeError("Task definition content must be an object");
+  }
+  assertExactFields("Task definition content", value, [
+    "formatVersion", "prompt", "expectedOutput", "protectedMetadata",
+    "retainedHistoricalError",
+  ]);
+  if (value["formatVersion"] !== TASK_DEFINITION_CONTENT_FORMAT_VERSION_V2) {
+    throw new TypeError("Task definition content format version is unsupported");
+  }
+  const budget: JsonBudget = { nodes: 0, aggregateUtf8Bytes: 0 };
+  const prompt = boundedText(
+    "Task definition content prompt",
+    value["prompt"],
+    TASK_PAYLOAD_MAX_TEXT_BYTES_V1,
+    { nullable: false, allowEmpty: false },
+    budget,
+  );
+  const expectedOutput = boundedText(
+    "Task definition content expected output",
+    value["expectedOutput"],
+    TASK_PAYLOAD_MAX_TEXT_BYTES_V1,
+    { nullable: true, allowEmpty: true },
+    budget,
+  );
+  const protectedMetadata = normalizeProtectedMetadata(
+    value["protectedMetadata"],
+    budget,
+  );
+  const retainedHistoricalError = boundedText(
+    "Task definition retained historical error",
+    value["retainedHistoricalError"],
+    TASK_PAYLOAD_MAX_TEXT_BYTES_V1,
+    { nullable: false, allowEmpty: true },
+    budget,
+  );
+  return Object.freeze({
+    formatVersion: TASK_DEFINITION_CONTENT_FORMAT_VERSION_V2,
+    prompt: prompt!,
+    expectedOutput,
+    protectedMetadata,
+    retainedHistoricalError: retainedHistoricalError!,
+  });
+}
+
 function normalizeTaskRunResultPayloadV1(
   value: unknown,
 ): TaskRunResultPayloadV1 {
@@ -421,6 +489,77 @@ export function decodeTaskPayloadV1(bytes: Uint8Array): TaskPayloadV1 {
       throw new TypeError("Task payload bytes are not canonical");
     }
     return normalized;
+  } finally {
+    canonical.fill(0);
+  }
+}
+
+export function encodeTaskDefinitionContentV2(
+  content: TaskDefinitionContentV2,
+): Uint8Array {
+  const normalized = normalizeTaskDefinitionContentV2(content);
+  const bytes = encoder.encode(
+    `{"formatVersion":${normalized.formatVersion},` +
+      `"prompt":${JSON.stringify(normalized.prompt)},` +
+      `"expectedOutput":${JSON.stringify(normalized.expectedOutput)},` +
+      `"protectedMetadata":${canonicalJson(normalized.protectedMetadata)},` +
+      `"retainedHistoricalError":${JSON.stringify(normalized.retainedHistoricalError)}}`,
+  );
+  assertWireLimit(
+    "Task definition content",
+    bytes,
+    TASK_PAYLOAD_MAX_WIRE_BYTES_V1,
+  );
+  return bytes;
+}
+
+export function encodeTaskDefinitionContent(
+  content: TaskDefinitionContent,
+): Uint8Array {
+  return content.formatVersion === TASK_PAYLOAD_FORMAT_VERSION_V1
+    ? encodeTaskPayloadV1(content)
+    : encodeTaskDefinitionContentV2(content);
+}
+
+/** Decode either canonical V1 content or canonical V2 display-snapshot content. */
+export function decodeTaskDefinitionContent(
+  bytes: Uint8Array,
+): DecodedTaskDefinitionContent {
+  const value = decodeJson(
+    "Task definition content",
+    bytes,
+    TASK_PAYLOAD_MAX_WIRE_BYTES_V1,
+  );
+  if (!ownRecord(value)) {
+    throw new TypeError("Task definition content must be an object");
+  }
+  if (value["formatVersion"] === TASK_PAYLOAD_FORMAT_VERSION_V1) {
+    const payload = normalizeTaskPayloadV1(value);
+    const canonical = encodeTaskPayloadV1(payload);
+    try {
+      if (!equalBytes(bytes, canonical)) {
+        throw new TypeError("Task definition content bytes are not canonical");
+      }
+      return Object.freeze({ payload, retainedHistoricalError: null });
+    } finally {
+      canonical.fill(0);
+    }
+  }
+  const content = normalizeTaskDefinitionContentV2(value);
+  const canonical = encodeTaskDefinitionContentV2(content);
+  try {
+    if (!equalBytes(bytes, canonical)) {
+      throw new TypeError("Task definition content bytes are not canonical");
+    }
+    return Object.freeze({
+      payload: Object.freeze({
+        formatVersion: TASK_PAYLOAD_FORMAT_VERSION_V1,
+        prompt: content.prompt,
+        expectedOutput: content.expectedOutput,
+        protectedMetadata: content.protectedMetadata,
+      }),
+      retainedHistoricalError: content.retainedHistoricalError,
+    });
   } finally {
     canonical.fill(0);
   }

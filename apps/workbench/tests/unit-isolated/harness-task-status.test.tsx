@@ -5,6 +5,7 @@ import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 const contexts = await import("../../src/adapters/runtime-contexts");
 const taskContext = await import("../../src/contexts/task-state/task-state-context");
 const api = await import("../../src/lib/api");
+const cryptoAdmission = await import("../../src/lib/crypto-admission-access");
 const { ApiError } = await import("@nautilo/api-client/browser");
 let research: { unitsCompleted: number; unitsTotal: number } | undefined;
 let canonicalStatus: string | undefined;
@@ -34,7 +35,11 @@ mock.module("../../src/adapters/runtime-contexts", () => ({ ...contexts,
 mock.module("../../src/hooks/use-auth", () => ({
   useAuth: () => ({
     viewerGeneration: 1,
-    viewer: { isVerified: true, sessionUserId: "task-owner" },
+    viewer: {
+      isVerified: true,
+      sessionUserId: "task-owner",
+      sessionActorId: null,
+    },
   }),
 }));
 mock.module("../../src/contexts/task-state/task-state-context", () => ({ ...taskContext,
@@ -51,7 +56,22 @@ mock.module("../../src/contexts/task-state/task-state-context", () => ({ ...task
 }));
 mock.module("../../src/lib/api", () => ({ ...api,
   apiClient: {
-    getTaskContentV1: async () => ({ task: { id: "task" }, definition: { status: "ordinary" } }),
+    getTaskContentV1: async () => ({
+      task: {
+        id: "task",
+        status: durableStatus,
+        agentId: null,
+        fundingFailure: durableFundingFailure,
+      },
+      definition: {
+        dtoVersion: 1,
+        status: "ordinary",
+        prompt: "Saved source bytes",
+        expectedOutput: null,
+        lastError: null,
+      },
+      runs: [],
+    }),
     getTask: async () => ({
       task: { status: durableStatus, fundingFailure: durableFundingFailure },
       runs: durableFundingSource || durableFundingFailure ? [{
@@ -77,6 +97,12 @@ function card() { return <Card toolName="in_background" toolCallId="dispatch" ar
   result={{ taskId: "task", execution: "native", status: "pending", message: "The task is running in the background." }} />; }
 beforeEach(() => {
   reapplyHappyDomGlobals();
+  cryptoAdmission.resetCryptoAdmissionAccess();
+  cryptoAdmission.setCryptoAdmissionAccessState({
+    status: "open",
+    identity: "task-owner:device:test",
+    policy: { mode: "shadow_encryption", shadowBehavior: "fallback" },
+  });
   research = undefined;
   canonicalStatus = "paused";
   overlayStatus = "running";
@@ -97,7 +123,10 @@ beforeEach(() => {
     taskId: "task", status: "running", message: "Task resumed",
   }));
 });
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  cryptoAdmission.resetCryptoAdmissionAccess();
+});
 
 test("canonical pause and awaiting reply override stale working overlays while preserving Stop and history", async () => {
   for (const status of ["paused", "awaiting"]) {

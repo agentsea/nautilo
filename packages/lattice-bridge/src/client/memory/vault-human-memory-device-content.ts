@@ -20,11 +20,9 @@ import {
   decodeEncryptedPayloadV2,
   decodeNamespaceObjectEnvelopeV2,
   decodeObjectAccessManifestV5,
-  decodeLiveShadowMessagePlanV4,
   encodeEncryptedPayloadV2,
   encodeNamespaceObjectEnvelopeV2,
   encodeObjectAccessManifestV5,
-  encodeLiveShadowMessagePlanV4,
 } from "@nautilo/lattice-crypto/wire";
 
 import {
@@ -59,6 +57,15 @@ import { protectedMemoryOrdinaryFallbackCreatePlanV1Schema,
   protectedMemoryRepairPlanV1Schema } from "@nautilo/api-client/browser";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { AuthorizedHumanMemoryUnavailableError } from "./authorized-human-memory-client.ts";
+import {
+  withTaskRuntimeSignerEvidenceResolversV1,
+  type TaskRuntimeSignerCertificateEvidenceTransportV1,
+} from "../task-runtime-signer-evidence.ts";
+import {
+  exactForegroundAgentSignerKeysV1,
+  foregroundAgentSignerPrincipalKeyV1,
+  type ForegroundAgentAcceptedExecutionEvidenceTransportV1,
+} from "../foreground-agent-accepted-execution.ts";
 import { prepareHumanMemoryOrdinaryFallbackRequestV1 } from
   "../../memory/human-memory-ordinary-fallback-request.ts";
 import type {
@@ -118,42 +125,6 @@ type EvidenceIssuer = Extract<
 >["accessSignerEvidence"][number] & {
   kind: "evidence_issuer_human_device";
 };
-type ForegroundAgentEvidence = Extract<
-  ProtectedMemoryDtoV1["protectedPayload"],
-  { status: "encrypted" }
->["accessSignerEvidence"][number] & {
-  kind: "foreground_agent_accepted_execution";
-};
-
-function foregroundSignerKey(input: Readonly<{
-  agentId: string;
-  runtimeGeneration: number;
-  signerKeyId: string;
-}>): string {
-  return `${input.agentId}\0${input.runtimeGeneration}\0${input.signerKeyId}`;
-}
-
-function wipeForegroundPlan(
-  plan: ReturnType<typeof decodeLiveShadowMessagePlanV4>,
-): void {
-  plan.agentSignerPublicKey.fill(0);
-  plan.namespaceHeadDigest.fill(0);
-  plan.namespacePublicationDigest.fill(0);
-  plan.namespacePublicationSetDigest.fill(0);
-  plan.namespaceAudienceFingerprint.fill(0);
-  plan.grantDomainParticipantDigest.fill(0);
-  plan.grantDomainHeadDigest.fill(0);
-  plan.grantDomainPublicationDigest.fill(0);
-  plan.namespaceBundleDigest.fill(0);
-  if (plan.authorization.disposition === "authorization_required") {
-    plan.authorization.authorizationPlanBytes.fill(0);
-    plan.authorization.authorizationPlanDigest.fill(0);
-    plan.authorization.recipientPublicKey.fill(0);
-  } else {
-    plan.authorization.authorizationDigest.fill(0);
-  }
-}
-
 function wipeDecodedManifest(
   manifest: ReturnType<typeof decodeObjectAccessManifestV5>,
 ): void {
@@ -162,72 +133,6 @@ function wipeDecodedManifest(
   manifest.envelopeHashes.forEach((hash) => hash.fill(0));
   manifest.signerAuthorizationHash?.fill(0);
   manifest.signature.fill(0);
-}
-
-function exactForegroundAgentSignerKeys(
-  crypto: LatticeCrypto,
-  dto: ProtectedMemoryDtoV1,
-  chain: readonly Uint8Array[],
-): Map<string, Uint8Array> {
-  const keys = new Map<string, Uint8Array>();
-  if (dto.protectedPayload.status !== "encrypted") return keys;
-  try {
-    for (const entry of dto.protectedPayload.accessSignerEvidence) {
-      if (entry.kind !== "foreground_agent_accepted_execution") continue;
-      const planBytes = fromBase64url(
-        "Protected Human Memory accepted Agent plan",
-        entry.planBytesBase64url,
-      );
-      const planDigest = fromBase64url(
-        "Protected Human Memory accepted Agent plan digest",
-        entry.planDigestBase64url,
-      );
-      let plan: ReturnType<typeof decodeLiveShadowMessagePlanV4> | undefined;
-      try {
-        plan = decodeLiveShadowMessagePlanV4(planBytes);
-        if (
-          planDigest.length !== 32
-          || !equalBytes(crypto.hash(planBytes), planDigest)
-          || !equalBytes(encodeLiveShadowMessagePlanV4(plan), planBytes)
-        ) throw new TypeError("Protected Human Memory accepted Agent plan is invalid");
-        const key = foregroundSignerKey({
-          agentId: plan.recipientAgentId,
-          runtimeGeneration: plan.agentRuntimeGeneration,
-          signerKeyId: plan.agentSignerKeyId,
-        });
-        if (keys.has(key)) throw new TypeError(
-          "Protected Human Memory accepted Agent signer evidence collided",
-        );
-        keys.set(key, plan.agentSignerPublicKey.slice());
-      } finally {
-        planBytes.fill(0);
-        planDigest.fill(0);
-        if (plan !== undefined) wipeForegroundPlan(plan);
-      }
-    }
-    const required = new Set<string>();
-    for (const bytes of chain) {
-      const manifest = decodeObjectAccessManifestV5(bytes);
-      try {
-        if (manifest.signer.kind === "agent_runtime") required.add(
-          foregroundSignerKey({
-            agentId: manifest.signer.agentId,
-            runtimeGeneration: manifest.signer.runtimeGeneration,
-            signerKeyId: manifest.signer.signerKeyId,
-          }),
-        );
-      } finally {
-        wipeDecodedManifest(manifest);
-      }
-    }
-    if ([...keys.keys()].some((key) => !required.has(key))) {
-      throw new TypeError("Protected Human Memory accepted Agent evidence is extraneous");
-    }
-    return keys;
-  } catch (error) {
-    keys.forEach((key) => key.fill(0));
-    throw error;
-  }
 }
 
 function humanSignerEvidenceKey(input: Readonly<{
@@ -679,6 +584,12 @@ async function authenticateAndOpen(
   verifiedProof: readonly Uint8Array[];
 }>> {
   const exact = exactEncryptedAccess(dto);
+  const admission = await input.resolveDeviceAdmissionStatus();
+  if (admission.status !== "admitted"
+    || admission.deviceId !== input.coordinates.deviceId
+    || admission.expiresAt <= input.now()) {
+    throw new AuthorizedHumanMemoryUnavailableError("authorization_required");
+  }
   let canonicalPayload: Uint8Array | undefined;
   let canonicalManifest: Uint8Array | undefined;
   try {
@@ -752,14 +663,29 @@ async function authenticateAndOpen(
     try {
       publicKeys = exactHumanSignerKeys(dto,
         [...exact.proofBytes, exact.manifestBytes]);
-      foregroundKeys = exactForegroundAgentSignerKeys(input.crypto, dto,
-        [...exact.proofBytes, exact.manifestBytes]);
+      foregroundKeys = exactForegroundAgentSignerKeysV1({
+        crypto: input.crypto,
+        evidence: dto.protectedPayload.accessSignerEvidence,
+        manifestBytes: [...exact.proofBytes, exact.manifestBytes],
+      });
     } catch {
       throw new AuthorizedHumanMemoryUnavailableError("integrity_failure");
     }
     try {
+      const taskCertificates = dto.protectedPayload.accessSignerEvidence.filter(
+        (entry): entry is TaskRuntimeSignerCertificateEvidenceTransportV1 =>
+          entry.kind === "task_runtime_signer_certificate",
+      );
       const verify = (signerResolvers: ClientObjectAccessSignerResolversV4) =>
-        verifyCommonObjectAccessManifestChain(input.crypto, {
+        withTaskRuntimeSignerEvidenceResolversV1({
+          crypto: input.crypto,
+          profile: profileV4,
+          subjectHumanId: input.subjectHumanId,
+          ownDeviceGeneration: admission.deviceGeneration,
+          evidence: taskCertificates,
+          operation: taskResolvers => verifyCommonObjectAccessManifestChain(
+            input.crypto,
+            {
           manifestBytes: exact.manifestBytes,
           proof,
           trustedMinimumHead: anchor,
@@ -770,13 +696,18 @@ async function authenticateAndOpen(
               hostAuthorizationRevision: context.hostAuthorizationRevision,
             })) ?? null,
           resolveAgentRuntimeSignerPublicKey:
-            (principal) => foregroundKeys.get(foregroundSignerKey(principal))
+            (principal) => foregroundKeys.get(
+              foregroundAgentSignerPrincipalKeyV1(principal),
+            )
               ?.slice()
               ?? signerResolvers.resolveAgentRuntimeSignerPublicKey(principal),
           resolveProcessorSignerAuthorizationBytes:
             signerResolvers.resolveProcessorSignerAuthorizationBytes,
           resolveHistoricalProcessorIssuingDevicePublicKey:
             signerResolvers.resolveHistoricalProcessorIssuingDevicePublicKey,
+          ...taskResolvers,
+            },
+          ),
         });
       let verified: ReturnType<typeof verify>;
       try {
@@ -1327,10 +1258,13 @@ export function createVaultAuthorizedHumanMemoryDeviceContentPort(
     if (dto.protectedPayload.status !== "encrypted") return Promise.resolve();
     const generalEvidence = dto.protectedPayload.accessSignerEvidence.filter(
       (entry): entry is Exclude<typeof entry,
-        HumanSignerEvidence | EvidenceIssuer | ForegroundAgentEvidence> =>
+        HumanSignerEvidence | EvidenceIssuer
+          | ForegroundAgentAcceptedExecutionEvidenceTransportV1
+          | TaskRuntimeSignerCertificateEvidenceTransportV1> =>
         entry.kind !== "human_device"
         && entry.kind !== "evidence_issuer_human_device"
-        && entry.kind !== "foreground_agent_accepted_execution",
+        && entry.kind !== "foreground_agent_accepted_execution"
+        && entry.kind !== "task_runtime_signer_certificate",
     );
     const issuerEvidence = dto.protectedPayload.accessSignerEvidence.filter(
       (entry): entry is EvidenceIssuer =>
@@ -1342,11 +1276,13 @@ export function createVaultAuthorizedHumanMemoryDeviceContentPort(
       coordinates: dependencies.coordinates,
       evidence: generalEvidence,
       resolveTrustedIssuingDevicePublicKey: ({
+        humanId,
         deviceId,
         hostAuthorizationRevision,
       }) => {
         const matches = issuerEvidence.filter((entry) =>
-          entry.deviceId === deviceId
+          entry.subjectHumanId === humanId
+          && entry.deviceId === deviceId
           && entry.hostAuthorizationRevision === hostAuthorizationRevision
         );
         if (matches.length !== 1) return Promise.resolve(null);

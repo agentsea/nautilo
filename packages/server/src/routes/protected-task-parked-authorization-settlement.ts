@@ -8,13 +8,16 @@ import {
   sameParkedProtectedTaskAdditionalAuthority,
   taskRuns,
   tasks,
-  discoverParkedProtectedTaskAdditionalAuthority,
+  lockParkedProtectedTaskHumanContinuation,
+  lockParkedProtectedTaskCheckpointContinuation,
+  sameParkedProtectedTaskCheckpointContinuation,
+  sameParkedProtectedTaskHumanContinuation,
   type DirectDatabase,
-  type ParkedProtectedTaskAdditionalAuthority,
 } from "@nautilo/db";
 import type { TaskRuntimeRecipientRegistry } from "@nautilo/lattice-crypto";
 import {
   completeBackgroundAuthorizationRequest,
+  isTaskExecutionWorkKind,
   isExactCompletedTaskRuntimeSuccessor,
   isTaskRuntimeStableIdempotencyKey,
   parseBackgroundAuthorizationRecord,
@@ -25,13 +28,17 @@ import {
   type ProtectedTaskOccurrence,
 } from "@nautilo/runtime";
 
+import { discoverParkedProtectedTaskContinuation, type ParkedProtectedTaskContinuation } from "./protected-task-runtime-parked-plan";
+
 export type ProtectedTaskParkedAuthorizationSettlementStatus =
   | "settled"
   | "inactive"
   | "pending";
 
 type Dependencies = Readonly<{
-  discover: typeof discoverParkedProtectedTaskAdditionalAuthority;
+  discover: typeof discoverParkedProtectedTaskContinuation;
+  lockHuman: typeof lockParkedProtectedTaskHumanContinuation;
+  lockCheckpoint: typeof lockParkedProtectedTaskCheckpointContinuation;
   read: typeof readParkedProtectedTaskAdditionalAuthority;
 }>;
 
@@ -69,7 +76,7 @@ function sameOccurrence(
 
 function exactPriorGrant(
   record: BackgroundAuthorizationTaskRuntimeRecordV3,
-  expected: ParkedProtectedTaskAdditionalAuthority,
+  expected: ParkedProtectedTaskContinuation,
 ): boolean {
   const reference = expected.priorJob.reference;
   return record.snapshot.formatVersion === 3
@@ -82,8 +89,8 @@ function exactPriorGrant(
     && record.snapshot.namespaceId
       === expected.occurrence.task.contentNamespaceId
     && record.expectedPolicyRevision === reference.policyRevision
-    && record.workKind === "task.execute"
-    && record.purpose === "task.execute"
+    && isTaskExecutionWorkKind(record.workKind)
+    && record.purpose === record.workKind
     && record.processorAuthorizationRevision === null
     && record.authoritySet !== undefined
     && isTaskRuntimeStableIdempotencyKey(
@@ -103,7 +110,9 @@ export function createProtectedTaskParkedAuthorizationSettlement(input: Readonly
   recipients: Pick<TaskRuntimeRecipientRegistry, "delete">;
 }>, overrides: Partial<Dependencies> = {}) {
   const dependencies: Dependencies = {
-    discover: discoverParkedProtectedTaskAdditionalAuthority,
+    discover: discoverParkedProtectedTaskContinuation,
+    lockHuman: lockParkedProtectedTaskHumanContinuation,
+    lockCheckpoint: lockParkedProtectedTaskCheckpointContinuation,
     read: readParkedProtectedTaskAdditionalAuthority,
     ...overrides,
   };
@@ -124,32 +133,46 @@ export function createProtectedTaskParkedAuthorizationSettlement(input: Readonly
       generation: number;
     }> | undefined;
     const status = await input.db.transaction(async tx => {
-      const taskRows = await tx.select(parkedTaskAdditionalAuthorityTaskProjection)
-        .from(tasks)
-        .where(eq(tasks.id, expected.occurrence.task.id))
-        .limit(2)
-        .for("update");
-      if (taskRows.length !== 1) return "inactive" as const;
-      const runRows = await tx.select(parkedTaskAdditionalAuthorityRunProjection)
-        .from(taskRuns)
-        .where(eq(taskRuns.id, expected.occurrence.run.id))
-        .limit(2)
-        .for("update");
-      if (runRows.length !== 1) return "inactive" as const;
-      const jobRows = await tx.select(parkedTaskAdditionalAuthorityJobProjection)
-        .from(jobs)
-        .where(eq(jobs.id, expected.priorJob.id))
-        .limit(2)
-        .for("update");
-      if (jobRows.length !== 1) return "inactive" as const;
+      if ("acceptance" in expected) {
+        const held = await dependencies.lockHuman(tx, expected);
+        if (held === null
+          || !sameParkedProtectedTaskHumanContinuation(held.current, expected)) {
+          return "inactive" as const;
+        }
+      } else if ("stableRoutingDigest" in expected) {
+        const held = await dependencies.lockCheckpoint(tx, expected);
+        if (held === null
+          || !sameParkedProtectedTaskCheckpointContinuation(held.current, expected)) {
+          return "inactive" as const;
+        }
+      } else {
+        const taskRows = await tx.select(parkedTaskAdditionalAuthorityTaskProjection)
+          .from(tasks)
+          .where(eq(tasks.id, expected.occurrence.task.id))
+          .limit(2)
+          .for("update");
+        if (taskRows.length !== 1) return "inactive" as const;
+        const runRows = await tx.select(parkedTaskAdditionalAuthorityRunProjection)
+          .from(taskRuns)
+          .where(eq(taskRuns.id, expected.occurrence.run.id))
+          .limit(2)
+          .for("update");
+        if (runRows.length !== 1) return "inactive" as const;
+        const jobRows = await tx.select(parkedTaskAdditionalAuthorityJobProjection)
+          .from(jobs)
+          .where(eq(jobs.id, expected.priorJob.id))
+          .limit(2)
+          .for("update");
+        if (jobRows.length !== 1) return "inactive" as const;
 
-      const current = await dependencies.read(tx, {
-        taskRunId: expected.occurrence.run.id,
-        authorizationRequestId: expected.authorizationRequestId,
-      });
-      if (current === null
-        || !sameParkedProtectedTaskAdditionalAuthority(current, expected)) {
-        return "inactive" as const;
+        const current = await dependencies.read(tx, {
+          taskRunId: expected.occurrence.run.id,
+          authorizationRequestId: expected.authorizationRequestId,
+        });
+        if (current === null
+          || !sameParkedProtectedTaskAdditionalAuthority(current, expected)) {
+          return "inactive" as const;
+        }
       }
 
       const raw = await input.repository.get(

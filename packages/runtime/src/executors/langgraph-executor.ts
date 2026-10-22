@@ -10,7 +10,8 @@ import {
   type ProtectedAgentMemoryRepository,
   type StrictShadowEnforcementPolicy,
 } from "@nautilo/lattice-bridge";
-import { AIMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
+import { AIMessage, SystemMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
+import { Command } from "@langchain/langgraph";
 import {
   buildForegroundUserHumanMessage,
   hasContentPrivateModelDiagnostics,
@@ -28,6 +29,7 @@ import {
   loadForegroundModelControlSnapshot,
   foregroundModelControlPlanFromSnapshot,
   collectPendingInterruptEvents,
+  createProtectedTaskAdditionalAuthorityResumeMapV1,
   interruptValueToServerEvent,
   maybeSummarizeImagesWithVisionFallback,
   modelSupportsInput,
@@ -53,6 +55,7 @@ import {
   GraphExecutionMetrics,
   toGraphBudgetOutcome,
   type NautiloGraphDeps,
+  protectedTaskInterruptCoordinates,
   parseTaskReportBackContinuation,
   classifyModelStreamProgress,
   modelAttemptIdFromStreamEvent,
@@ -80,6 +83,7 @@ import {
   buildProtectedRoomHybridContext,
 } from "../context/build-transcript-context";
 import type { MemoryAccessEnvelope, RoomParticipant } from "@nautilo/trust";
+import { hasTaskRuntimeTemporarySigner } from "@nautilo/lattice-crypto";
 import {
   envelopeReadableNamespaces,
   getRoomWithAccess,
@@ -120,11 +124,20 @@ import { admitFreshComputerUseRoot } from "./computer-use-root-admission";
 import {
   enforceLiveShadowForegroundHistoryBoundary,
   getCurrentLiveShadowTurnContext,
+  getCurrentProtectedTaskWakeForegroundContext,
   protectLiveShadowForegroundMemories,
   protectLiveShadowForegroundRecordContext,
   protectLiveShadowForegroundRecordRecall,
 } from
   "../conversation/live-shadow-turn-context";
+import {
+  getCurrentProtectedTaskWakeExecutionCustody,
+  protectedTaskWakeCheckpointThreadId,
+} from "../tasks/protected-task-wake-foreground-context";
+import { protectedTaskWakeParked } from
+  "../tasks/protected-task-wake-execution-candidate";
+import { sealProtectedTaskWakeCheckpointManifest } from
+  "../tasks/protected-task-wake-checkpoint-manifest";
 import { prepareForegroundEncryptedContext } from
   "../conversation/foreground-context-preparation";
 import { stageProtectedPromptMemoryBrief } from
@@ -137,6 +150,7 @@ import {
 } from
   "../conversation/live-shadow-checkpoint-saver";
 import {
+  filterDurableOnlyLiveShadowEvents,
   protectLiveShadowAssistantToken,
   publishLiveShadowRuntimeMessages,
 } from "../conversation/live-shadow-agent-runtime-events";
@@ -157,6 +171,11 @@ import { getCurrentAcceptedInvocationAuthority } from "../job-manager";
 import { getCurrentExternalRoomExecution } from "../external-room-execution";
 import { formatExternalMessageForModel } from "../conductor/external-message-attribution";
 import { openTaskWakeFundingSessionForInvocation } from "../task-funding-port";
+import {
+  assertProtectedTaskWakeForegroundJobInput,
+  type ProtectedTaskWakeForegroundSource,
+} from
+  "../tasks/protected-task-wake-foreground-context";
 import {
   assertForegroundChatFundingWorkloadSupported,
   openConnectedWebOperationWakeFundingSessionForInvocation,
@@ -219,11 +238,15 @@ export async function resolveForegroundProtectedMemoryGraphDeps(input: Readonly<
   policy: StrictShadowEnforcementPolicy | undefined;
   normalForeground: boolean;
 }>): Promise<NautiloGraphDeps> {
+  // Wake result text enters the foreground graph under invocation-local custody.
+  // Keep diagnostic redaction out of serialized state and ordinary foreground turns.
+  const confidentialDeps = getCurrentProtectedTaskWakeForegroundContext() === undefined
+    ? {} : { confidential: true as const };
   const repository = await resolveForegroundProtectedMemoryRepository(input);
   const envelope = input.envelope;
   const fullEncryptionOnlyForState = () => input.policy?.mode === "encrypted_only";
   if (repository === undefined || envelope === null || isScopeMemoryEnvelope(envelope)) {
-    return { fullEncryptionOnlyForState };
+    return { fullEncryptionOnlyForState, ...confidentialDeps };
   }
   const access = await input.session?.createForegroundMemoryAccessPort?.(envelope);
   const projection = await input.session?.createForegroundMemoryProjectionPort?.(envelope);
@@ -243,6 +266,7 @@ export async function resolveForegroundProtectedMemoryGraphDeps(input: Readonly<
   };
   return {
     fullEncryptionOnlyForState,
+    ...confidentialDeps,
     protectedMemoryRepositoryForState: (state) => { assertInvocation(state); return repository; },
     ...(access === undefined ? {} : {
       protectedMemoryAccessPortForState: (state: Parameters<typeof assertInvocation>[0]) => { assertInvocation(state); return access; },
@@ -300,6 +324,41 @@ export function freshForegroundActivationState(input: Record<string, unknown>): 
     researchContextPageBytes: null,
     researchContinuationRequired: false,
   };
+}
+
+export function freshProtectedTaskWakeForegroundActivationState():
+  ReturnType<typeof freshForegroundActivationState> {
+  return {
+    ...freshForegroundActivationState({}),
+    trustedExecutionEntrypoint: "foreground.task_report_back",
+    suppressToolLifecycleEvents: true,
+  };
+}
+
+/** Certified Task signers publish only through the retained V5 durable proof. */
+function certifiedTaskWakeUsesDurableOnlyOutput(
+  source: ProtectedTaskWakeForegroundSource | undefined,
+): boolean {
+  return source !== undefined
+    && hasTaskRuntimeTemporarySigner(source.evidence);
+}
+
+/** A wake contributes no Human message and never puts result bytes in System. */
+export function protectedTaskWakeForegroundMessages(
+  source: ProtectedTaskWakeForegroundSource,
+): BaseMessage[] {
+  return [
+    ...(source.resultMessagePublished
+      ? []
+      : [new AIMessage({
+        id: `task-result:${source.evidence.invocation.operationId}`,
+        content: source.result.resultText ?? source.result.lastError!,
+      })]),
+    new SystemMessage({
+      content: "Continue the Room conversation using the authenticated Task outcome. Do not restart the Task.",
+      additional_kwargs: { nautilo_task_wake_continuation: true },
+    }),
+  ];
 }
 
 /** Only explicitly admitted native foreground executions may rebuild context. */
@@ -535,21 +594,45 @@ export async function* langgraphExecutor(
   const externalExecution = await externalRoomExecutionInput(input);
   input = externalExecution.input;
   const externalContext = externalExecution.externalContext;
-  const ownerId = typeof input["ownerId"] === "string" ? input["ownerId"] : "";
+  const taskWake = getCurrentProtectedTaskWakeForegroundContext();
+  if (taskWake !== undefined) {
+    if (externalTurn !== undefined || externalContext
+      || protectedServices !== undefined || protectedTurn !== undefined) {
+      throw new TypeError("Protected Task wake cannot borrow a Human turn scope");
+    }
+    assertProtectedTaskWakeForegroundJobInput({
+      source: taskWake,
+      jobInput: input,
+      jobId: _jobId,
+      laneKey,
+    });
+  }
+  const durableOnlyTaskWakeOutput =
+    certifiedTaskWakeUsesDurableOnlyOutput(taskWake);
+  const ownerId = taskWake?.scheduling.requestorId
+    ?? (typeof input["ownerId"] === "string" ? input["ownerId"] : "");
   const transcriptOwnerId =
-    typeof input["transcriptOwnerId"] === "string" && input["transcriptOwnerId"]
+    taskWake?.scheduling.sessionOwnerId
+    ?? (typeof input["transcriptOwnerId"] === "string" && input["transcriptOwnerId"]
       ? input["transcriptOwnerId"]
-      : ownerId;
-  const message = typeof input["message"] === "string" ? input["message"] : "";
+      : ownerId);
+  const message = taskWake === undefined && typeof input["message"] === "string"
+    ? input["message"] : "";
   const attachmentTextBlocks = parseStringArray(input["attachmentTextBlocks"]);
   const multimodalImages = parseMultimodalImagesFromJobInput(input["multimodalImages"]);
   // retained attachment ids to link to this turn's human row (stamped in
   // persistMessages once the human fingerprint is known).
   const retainedAttachmentIds = parseStringArray(input["retainedAttachmentIds"]);
-  const threadId = typeof input["threadId"] === "string" ? input["threadId"] : (laneKey ?? "default");
-  const effectiveLaneKey = laneKey ?? "app:default";
-  const memoryAccessEnvelope = (input["memoryAccessEnvelope"] as MemoryAccessEnvelope | undefined) ?? null;
-  const actorRole = typeof input["actorRole"] === "string" ? input["actorRole"] : "owner";
+  const threadId = taskWake?.scheduling.graphThreadId
+    ?? (typeof input["threadId"] === "string" ? input["threadId"] : (laneKey ?? "default"));
+  const checkpointThreadId = taskWake === undefined
+    ? threadId
+    : protectedTaskWakeCheckpointThreadId(taskWake.scheduling.jobId);
+  const effectiveLaneKey = taskWake?.scheduling.laneKey ?? laneKey ?? "app:default";
+  const memoryAccessEnvelope = taskWake?.memoryAccessEnvelope
+    ?? (input["memoryAccessEnvelope"] as MemoryAccessEnvelope | undefined) ?? null;
+  const actorRole = taskWake?.actorRole
+    ?? (typeof input["actorRole"] === "string" ? input["actorRole"] : "owner");
   // agentId flows through every turn. The caller (chat
   // route) populates it from the envelope, which got it from
   // resolveContext. Background jobs / older callers that don't thread
@@ -560,8 +643,8 @@ export async function* langgraphExecutor(
     typeof input["agentId"] === "string" && input["agentId"]
       ? input["agentId"]
       : "";
-  const agentId =
-    agentIdFromInput || memoryAccessEnvelope?.agentId || "";
+  const agentId = taskWake?.scheduling.agentId
+    ?? (agentIdFromInput || memoryAccessEnvelope?.agentId || "");
   if (!agentId) {
     throw new Error(
       "langgraph-executor: agentId required (input.agentId or memoryAccessEnvelope.agentId)",
@@ -572,20 +655,24 @@ export async function* langgraphExecutor(
   // captured above in effectiveLaneKey). roomId is carried into state
   // for pre_model / memory store. Defensive fallbacks for background
   // jobs and older test fixtures that don't thread room context.
-  const roomId =
-    (typeof input["roomId"] === "string" && input["roomId"])
+  const roomId = taskWake?.scheduling.roomId
+    ?? ((typeof input["roomId"] === "string" && input["roomId"])
       ? input["roomId"]
-      : memoryAccessEnvelope?.roomId ?? "";
+      : memoryAccessEnvelope?.roomId ?? "");
   // the server supplies the canonical child Room id on Subthread
   // wakes. Keep it separate from `roomId` so plain room turns cannot
   // accidentally participate in a parent root summary.
   const subthreadRoomId =
-    typeof input["subthreadRoomId"] === "string" && input["subthreadRoomId"]
+    taskWake?.subthread !== null && taskWake?.subthread !== undefined
+      ? taskWake.scheduling.roomId
+      : typeof input["subthreadRoomId"] === "string" && input["subthreadRoomId"]
       ? input["subthreadRoomId"]
       : "";
-  const roomRoster: RoomParticipant[] = Array.isArray(input["roomRoster"])
-    ? (input["roomRoster"] as RoomParticipant[])
-    : [];
+  const roomRoster: RoomParticipant[] = taskWake !== undefined
+    ? [...taskWake.roomRoster]
+    : (Array.isArray(input["roomRoster"])
+      ? (input["roomRoster"] as RoomParticipant[])
+      : []);
 
   // PR B — populate turnId on graph state so the checkpoint
   // carries it across HTTP-request boundaries. Resume handlers
@@ -595,9 +682,11 @@ export async function* langgraphExecutor(
   // whole multi-request turn grep-correlates on a single id.
   // Empty default = legacy/background callers that didn't thread
   // one in; logger's ALS prefix degrades to no-prefix cleanly.
-  const turnId = typeof input["turnId"] === "string" ? input["turnId"] : "";
-  const causalHumanUserId =
-    typeof input["causalHumanUserId"] === "string" && input["causalHumanUserId"]
+  const turnId = taskWake?.evidence.invocation.operationId
+    ?? (typeof input["turnId"] === "string" ? input["turnId"] : "");
+  const causalHumanUserId = taskWake !== undefined
+    ? null
+    : typeof input["causalHumanUserId"] === "string" && input["causalHumanUserId"]
       ? input["causalHumanUserId"]
       : null;
   const mentionedHumanUserIds = parseStringArray(input["mentionedHumanUserIds"]);
@@ -682,7 +771,7 @@ export async function* langgraphExecutor(
     attachmentTextBlocks.some((s) => s.trim().length > 0) ||
     multimodalImages.length > 0;
 
-  if (!hasPayload) {
+  if (!hasPayload && taskWake === undefined) {
     throw new Error("Empty message");
   }
 
@@ -700,7 +789,9 @@ export async function* langgraphExecutor(
   // for the turn even if the server-wide singleton is later replaced; the
   // resolver reference itself is shared. When no resolver was installed the
   // field is `undefined` and post-model Pass 2 behavior is unchanged.
-  const foregroundActivationState = freshForegroundActivationState(input);
+  const foregroundActivationState = taskWake === undefined
+    ? freshForegroundActivationState(input)
+    : freshProtectedTaskWakeForegroundActivationState();
   const trustedExecutionEntrypoint = foregroundActivationState.trustedExecutionEntrypoint;
   const foregroundContextRefreshEligible = !externalContext && foregroundContextRefreshEligibleForActivation({
     roomId,
@@ -939,11 +1030,13 @@ export async function* langgraphExecutor(
   // Group and subthread wakes fire against an already-persisted human row;
   // `currentMessageId` excludes it so the triggering message isn't duplicated.
   const subthreadParentRoomId =
-    typeof input["subthreadParentRoomId"] === "string" ? input["subthreadParentRoomId"] : "";
+    taskWake?.subthread?.parentRoomId
+    ?? (typeof input["subthreadParentRoomId"] === "string" ? input["subthreadParentRoomId"] : "");
   const subthreadAnchorMessageId =
-    typeof input["subthreadAnchorMessageId"] === "number"
+    taskWake?.subthread?.anchorMessageId
+    ?? (typeof input["subthreadAnchorMessageId"] === "number"
       ? input["subthreadAnchorMessageId"]
-      : undefined;
+      : undefined);
   const currentMessageId =
     typeof input["currentMessageId"] === "number" ? input["currentMessageId"] : undefined;
 
@@ -1021,14 +1114,17 @@ export async function* langgraphExecutor(
   // Context repair must finish before any model is invoked. Image summaries
   // use the model too, so they deliberately run after Message, Journal,
   // Reflection, and Memory context has passed the Strict gate above.
-  const userMessageForTranscript = buildForegroundUserHumanMessage({
-    userText: message, attachmentTextBlocks, multimodalImages, modelId,
-    suppressImageDropNote: true, replyToMessageId,
-  });
-  const canonicalCurrentHumanBody = typeof userMessageForTranscript.content === "string"
+  const userMessageForTranscript = taskWake === undefined
+    ? buildForegroundUserHumanMessage({
+      userText: message, attachmentTextBlocks, multimodalImages, modelId,
+      suppressImageDropNote: true, replyToMessageId,
+    })
+    : null;
+  const canonicalCurrentHumanBody = typeof userMessageForTranscript?.content === "string"
     ? userMessageForTranscript.content
     : null;
-  const plainCurrentHumanInput = currentNamespaceId !== undefined
+  const plainCurrentHumanInput = taskWake === undefined
+    && currentNamespaceId !== undefined
     && causalHumanUserId !== null
     && externalTurn === null
     && attachmentTextBlocks.length === 0
@@ -1073,7 +1169,8 @@ export async function* langgraphExecutor(
     input["metadata"] && typeof input["metadata"] === "object"
       ? (input["metadata"] as Record<string, unknown>)
       : undefined;
-  const isTaskOriginated = inputMetadata?.["originatedBy"] === "task";
+  const isTaskOriginated = taskWake !== undefined
+    || inputMetadata?.["originatedBy"] === "task";
 
   const foregroundContextReceipts = new ForegroundContextReceipts(currentMessageId);
 
@@ -1174,12 +1271,12 @@ export async function* langgraphExecutor(
   // skip persisting the human row when it already exists (the bot is
   // waking against an already-delivered message). The model still sees it via
   // `graphInput.messages`; only the duplicate transcript row + event are avoided.
-  if (protectedTurn !== undefined && !humanAlreadyPersisted) {
+  if (taskWake === undefined && protectedTurn !== undefined && !humanAlreadyPersisted) {
     throw new TypeError(
       "Protected Human input must be coordinate-first persisted before Agent execution",
     );
   }
-  if (!humanAlreadyPersisted && protectedTurn === undefined) {
+  if (taskWake === undefined && !humanAlreadyPersisted && protectedTurn === undefined) {
     // stamp turn_id on this turn's retained attachments when the human
     // row is persisted (only on the human persist call, which carries the ids).
     const humanPersistOpts = {
@@ -1199,7 +1296,7 @@ export async function* langgraphExecutor(
     await persistMessages(
       langgraphThreadId,
       transcriptOwnerId,
-      [userMessageForTranscript],
+      [userMessageForTranscript!],
       savedFingerprints,
       isTaskOriginated || supervisionMetadata !== undefined
         ? { ...humanPersistOpts, metadata: supervisionMetadata ?? inputMetadata!, suppressUserMessageEvents: true }
@@ -1248,22 +1345,28 @@ export async function* langgraphExecutor(
   // transcript (`session_messages`, shown in the UI) must stay clean — hence
   // a separate un-prefixed copy below. When no prefix is set (group rooms /
   // guests) both are the same object, so behavior is byte-for-byte unchanged.
-  const userMessage = buildForegroundUserHumanMessage({
-    ...userMessageArgs,
-    serverTimePrefixIso,
-  });
-  bindModelInputExposure(userMessage, projectNeutralCurrentHumanMessageExposure({
-    sourceExposure: currentHumanExposure,
-    canonicalBody: canonicalCurrentHumanBody ?? "",
-    actualModelBody: userMessage.content,
-    ...(serverTimePrefixIso === undefined ? {} : { serverTimePrefixIso }),
-  }));
+  const userMessage = taskWake === undefined
+    ? buildForegroundUserHumanMessage({
+      ...userMessageArgs,
+      serverTimePrefixIso,
+    })
+    : null;
+  if (userMessage !== null) {
+    bindModelInputExposure(userMessage, projectNeutralCurrentHumanMessageExposure({
+      sourceExposure: currentHumanExposure,
+      canonicalBody: canonicalCurrentHumanBody ?? "",
+      actualModelBody: userMessage.content,
+      ...(serverTimePrefixIso === undefined ? {} : { serverTimePrefixIso }),
+    }));
+  }
 
 
   // the full transcript subsumes the old transient peer-diff /
   // subthread context block (deleted in ); only the live turn message is
   // appended to the rebuilt history.
-  const newTurnMessages: BaseMessage[] = [userMessage];
+  const newTurnMessages: BaseMessage[] = taskWake === undefined
+    ? [userMessage!]
+    : protectedTaskWakeForegroundMessages(taskWake);
 
   const { suppressToolLifecycleEvents } = foregroundActivationState;
 
@@ -1427,13 +1530,13 @@ export async function* langgraphExecutor(
     : checkpointSaverForConversationExecution(
       protectedServices,
       {
-        logicalThreadId: threadId,
+        logicalThreadId: checkpointThreadId,
         kind: "foreground.main",
         authorization: protectedServices.authorization,
       },
     );
   const encryptedLiveShadowCheckpointRequired =
-    requiresEncryptedForegroundCheckpoint(
+    taskWake !== undefined || requiresEncryptedForegroundCheckpoint(
       liveShadowContext?.enforcementPolicy,
     );
   if (
@@ -1457,16 +1560,16 @@ export async function* langgraphExecutor(
       && encryptedLiveShadowCheckpointRequired
       && liveShadowContext?.session?.checkpoint !== undefined
       ? createLiveShadowCheckpointSaver({
-          logicalThreadId: threadId,
+          logicalThreadId: checkpointThreadId,
           checkpoint: liveShadowContext.session.checkpoint,
         })
       : null;
-  if (liveShadowCheckpointSaver !== null) {
+  if (liveShadowCheckpointSaver !== null && taskWake?.continuation === undefined) {
     // A fresh turn rebuilds its state from product storage. Removing the prior
     // encrypted graph state also guarantees this invocation needs only the
     // current Namespace generation supplied by the entity gateway.
     try {
-      await liveShadowCheckpointSaver.deleteThread(threadId);
+      await liveShadowCheckpointSaver.deleteThread(checkpointThreadId);
     } catch (error) {
       await disposeProtectedCheckpointSaver({
         saver: liveShadowCheckpointSaver,
@@ -1500,7 +1603,7 @@ export async function* langgraphExecutor(
   }
 
   const streamConfig: Record<string, unknown> = {
-    configurable: { thread_id: langgraphThreadId },
+    configurable: { thread_id: checkpointThreadId },
     signal,
     recursionLimit: executionPolicy.recursionLimit,
     version: "v2",
@@ -1534,9 +1637,16 @@ export async function* langgraphExecutor(
 
   let memoryReviewRecorded = supervisionMetadata !== undefined;
   try {
+    const streamInput = taskWake?.continuation === undefined
+      ? graphInput
+      : new Command({
+          resume: createProtectedTaskAdditionalAuthorityResumeMapV1(
+            taskWake.continuation.resume,
+          ),
+        });
     const eventStream = iterateWithAuthoredModelInputExposure(
       authoredModelInputExposure,
-      streamForegroundGraph(graph, graphInput, streamConfig, {
+      streamForegroundGraph(graph, streamInput, streamConfig, {
         signal,
         ...(foregroundContextRefreshEligible ? {
           rebuildForegroundContext: createForegroundContextRebuilder({
@@ -1574,6 +1684,7 @@ export async function* langgraphExecutor(
         if (liveShadowRuntime !== undefined) {
           const protectedStream = await protectLiveShadowAssistantToken({
             ...(foregroundContextRefreshEligible ? { foregroundExecutionId } : {}),
+            ...(durableOnlyTaskWakeOutput ? { durableOnly: true as const } : {}),
             runtime: liveShadowRuntime,
             operationId: liveShadowContext!.operationId,
             laneKey: effectiveLaneKey,
@@ -1644,7 +1755,10 @@ export async function* langgraphExecutor(
     }
 
     tokenBatcher.completeMessage();
-    for (const event of tokenBatcher.drain()) {
+    for (const event of filterDurableOnlyLiveShadowEvents(
+      tokenBatcher.drain(),
+      durableOnlyTaskWakeOutput,
+    )) {
       yield event;
     }
 
@@ -1660,9 +1774,57 @@ export async function* langgraphExecutor(
     // Unknown checkpoint state remains incomplete, never reviewed as success.
     let memoryReviewState: "completed" | "awaiting" | "pending" = "pending";
     // Check for pending interrupts (identity challenge, prove_it, or approval_ask)
+    let additionalAuthorityObserved = false;
     try {
-      const postState = await graph.getState({ configurable: { thread_id: langgraphThreadId } });
+      const postState = await graph.getState({
+        configurable: { thread_id: checkpointThreadId },
+      });
       memoryReviewState = memoryReviewCompletionState(postState);
+      const protectedCoordinates = taskWake === undefined
+        ? Object.freeze([])
+        : protectedTaskInterruptCoordinates(
+            postState as { tasks?: Array<Record<string, unknown>> } | undefined,
+          );
+      const additionalCoordinates = protectedCoordinates.filter(
+        coordinate => coordinate.kind === "additional_authority",
+      );
+      if (additionalCoordinates.length > 0) {
+        additionalAuthorityObserved = true;
+        if (taskWake === undefined
+          || additionalCoordinates.length !== 1
+          || protectedCoordinates.length !== 1
+          || encryptedCheckpointSaver === null) {
+          throw new TypeError(
+            "Protected Task wake additional-authority checkpoint is ambiguous",
+          );
+        }
+        const custody = getCurrentProtectedTaskWakeExecutionCustody();
+        if (custody === undefined) {
+          throw new TypeError("Protected Task wake park custody is unavailable");
+        }
+        const coordinate = additionalCoordinates[0]!;
+        const checkpoint = await sealProtectedTaskWakeCheckpointManifest({
+          saver: encryptedCheckpointSaver,
+          checkpointThreadId,
+        });
+        const parked = await custody.park({
+          interruptId: coordinate.id,
+          additionalAuthorizationRequestId: coordinate.requestId,
+          effectDisposition: coordinate.effectDisposition,
+          operationId: coordinate.operationId,
+          requestDigest: coordinate.requestDigest,
+          requiredAuthorityDigest: coordinate.requiredAuthorityDigest,
+          semanticAuthorityRequirements:
+            coordinate.semanticAuthorityRequirements,
+          checkpointBinding: taskWake.checkpointBinding,
+          checkpointThreadId,
+          checkpoint,
+        });
+        if (parked.status === "stale") {
+          throw new Error("Protected Task wake continuation park was rejected");
+        }
+        throw protectedTaskWakeParked();
+      }
       const hasAnyPendingInterrupt = (
         (postState as Record<string, unknown> | undefined)?.["tasks"] as
           Array<Record<string, unknown>> | undefined
@@ -1685,6 +1847,10 @@ export async function* langgraphExecutor(
         yield event;
       }
     } catch (e) {
+      rethrowObservedProtectedTaskWakeAdditionalAuthorityFailure(
+        additionalAuthorityObserved,
+        e,
+      );
       if (externalTurn) throw e;
       log(hasContentPrivateModelDiagnostics()
         ? "[nautilo/executor] Error checking interrupt state"
@@ -1743,7 +1909,10 @@ export async function* langgraphExecutor(
 
     const errorSkipSuppressed = fallbackSuppressedForTurn(turnId);
     tokenBatcher.completeMessage();
-    const drained = tokenBatcher.drain();
+    const drained = filterDurableOnlyLiveShadowEvents(
+      tokenBatcher.drain(),
+      durableOnlyTaskWakeOutput,
+    );
     if (!errorSkipSuppressed) {
       for (const event of drained) yield event;
     }
@@ -1775,6 +1944,14 @@ export async function* langgraphExecutor(
       });
     }
   }
+}
+
+/** Additional-authority state is durable work, so every failure stays fatal. */
+export function rethrowObservedProtectedTaskWakeAdditionalAuthorityFailure(
+  observed: boolean,
+  error: unknown,
+): void {
+  if (observed) throw error;
 }
 
 

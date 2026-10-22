@@ -1,3 +1,4 @@
+import type { TaskRuntimeMappedHeadReplacementInput } from "./task-runtime-mapped-head-replan";
 import {
   assertVerifiedCryptoPostgresHandle,
   cryptoTypedDb,
@@ -42,6 +43,18 @@ import {
   assertBackgroundAuthorizationCasSuccessor,
   buildDeferredUnstartedTaskRuntimeRequest,
   buildUnclaimedTaskRuntimeAuthorityReplacement,
+  buildUnclaimedTaskMappedHeadAuthorityReplacement,
+  buildUnclaimedTaskCancellationAuthorityReplacement,
+  buildUnclaimedTaskTerminalMessageAuthorityReplacement,
+  buildUnclaimedTaskOutputReadAuthorityReplacement,
+  buildParkedTaskWakeAuthorityReplacement,
+  rotateExpiredParkedTaskWakeRecipient,
+  type BackgroundAuthorizationTaskOutputReadReplacementRepository,
+  type BackgroundAuthorizationTaskWakeParkRepository,
+  type BackgroundAuthorizationTaskWakeParkResult,
+  type BackgroundAuthorizationTaskWakeRecipientRenewalResult,
+  type BackgroundAuthorizationTaskCancellationReplacementRepository,
+  type BackgroundAuthorizationTaskTerminalMessageReplacementRepository,
   assertUnstartedProcessorSupersession,
   isExactProcessorSupersessionCancellation,
   sameProcessorSupersessionPlan,
@@ -50,6 +63,7 @@ import {
   buildAcceptedBackgroundAuthorizationResponse,
   isBackgroundAuthorizationResponseReplay,
   parseBackgroundAuthorizationRecord,
+  planTaskRuntimeExecutionAuthoritySettlement,
   parseProcessorSignerAuthorizationEvidence,
   sameBackgroundAuthorizationRecord,
   sameProcessorSignerAuthorizationEvidence,
@@ -71,6 +85,8 @@ import {
   type BackgroundAuthorizationTaskRuntimeCancellationCursor,
   type BackgroundAuthorizationTaskRuntimeCancellationDiscoveryRepository,
   type BackgroundAuthorizationTaskRuntimeCancellationPage,
+  type BackgroundAuthorizationTaskRuntimeCancellationSettlementRepository,
+  type BackgroundAuthorizationTaskRuntimeExecutionSettlementResult,
   type BackgroundAuthorizationTaskRuntimeReplacementRepository,
   type BackgroundAuthorizationTaskRuntimeReplacementResult,
   type BackgroundAuthorizationVerifiedDeviceResponse,
@@ -584,7 +600,12 @@ function rowToEvidence(row: Row): ProcessorSignerAuthorizationEvidence {
 export class PostgresBackgroundAuthorizationRepository
   implements BackgroundAuthorizationTaskRuntimeReplacementRepository,
     BackgroundAuthorizationTaskRuntimeDeferralRepository,
-    BackgroundAuthorizationTaskRuntimeCancellationDiscoveryRepository {
+    BackgroundAuthorizationTaskRuntimeCancellationDiscoveryRepository,
+    BackgroundAuthorizationTaskRuntimeCancellationSettlementRepository,
+    BackgroundAuthorizationTaskCancellationReplacementRepository,
+    BackgroundAuthorizationTaskTerminalMessageReplacementRepository,
+    BackgroundAuthorizationTaskOutputReadReplacementRepository,
+    BackgroundAuthorizationTaskWakeParkRepository {
   constructor(private readonly handle: CryptoPostgresHandle) {
     assertVerifiedCryptoPostgresHandle(handle);
   }
@@ -831,11 +852,260 @@ export class PostgresBackgroundAuthorizationRepository
     return rows[0] === undefined ? null : this.#recordFromRow(rows[0] as Row);
   }
 
+  replaceUnclaimedTaskMappedHeadAuthority(input: TaskRuntimeMappedHeadReplacementInput): Promise<BackgroundAuthorizationTaskRuntimeReplacementResult> {
+    return this.#replaceUnclaimedAuthority(input, checked => buildUnclaimedTaskMappedHeadAuthorityReplacement({ ...input, ...checked }));
+  }
+
   replaceUnclaimedTaskRuntimeAuthority(input: Readonly<{
     expected: BackgroundAuthorizationTaskRuntimeRecordV3;
     replacement: BackgroundAuthorizationTaskRuntimeRecordV3;
     now: number;
   }>): Promise<BackgroundAuthorizationTaskRuntimeReplacementResult> {
+    return this.#replaceUnclaimedAuthority(input, buildUnclaimedTaskRuntimeAuthorityReplacement);
+  }
+
+  replaceUnclaimedTaskCancellationAuthority(input: Readonly<{
+    expected: BackgroundAuthorizationTaskRuntimeRecordV3;
+    replacement: BackgroundAuthorizationTaskRuntimeRecordV3;
+    now: number;
+  }>): Promise<BackgroundAuthorizationTaskRuntimeReplacementResult> {
+    return this.#replaceUnclaimedAuthority(input, buildUnclaimedTaskCancellationAuthorityReplacement);
+  }
+
+  replaceUnclaimedTaskTerminalMessageAuthority(input: Readonly<{
+    expected: BackgroundAuthorizationTaskRuntimeRecordV3;
+    replacement: BackgroundAuthorizationTaskRuntimeRecordV3;
+    now: number;
+  }>): Promise<BackgroundAuthorizationTaskRuntimeReplacementResult> {
+    return this.#replaceUnclaimedAuthority(
+      input,
+      buildUnclaimedTaskTerminalMessageAuthorityReplacement,
+    );
+  }
+
+  replaceUnclaimedTaskOutputReadAuthority(input: Readonly<{
+    expected: BackgroundAuthorizationTaskRuntimeRecordV3;
+    replacement: BackgroundAuthorizationTaskRuntimeRecordV3;
+    now: number;
+  }>): Promise<BackgroundAuthorizationTaskRuntimeReplacementResult> {
+    return this.#replaceUnclaimedAuthority(input, buildUnclaimedTaskOutputReadAuthorityReplacement);
+  }
+
+  parkTaskWakeForAdditionalAuthority(
+    input: Parameters<BackgroundAuthorizationTaskWakeParkRepository[
+      "parkTaskWakeForAdditionalAuthority"
+    ]>[0],
+  ): Promise<BackgroundAuthorizationTaskWakeParkResult> {
+    const expected = parseBackgroundAuthorizationRecord(input.expected) as
+      BackgroundAuthorizationTaskRuntimeRecordV3;
+    return withVerifiedCryptoPostgresTransaction<
+      BackgroundAuthorizationTaskWakeParkResult
+    >(this.handle, async handle => {
+      await input.proof.assertCurrent();
+      const next = buildParkedTaskWakeAuthorityReplacement(input);
+      const table = backgroundCryptoAuthorizationRequests;
+      const rows = await executeTypedCryptoQuery(
+        handle,
+        cryptoTypedDb.select().from(table)
+          .where(eq(table.requestId, expected.snapshot.requestId))
+          .limit(2).for("update"),
+      );
+      const row = rows[0] as Row | undefined;
+      const repository = new PostgresBackgroundAuthorizationRepository(handle);
+      const current = row === undefined
+        ? null : await repository.#recordFromRow(row);
+      if (current !== null && sameBackgroundAuthorizationRecord(current, next)) {
+        await input.proof.assertCurrent();
+        return {
+          status: "exact_replay",
+          record: current as BackgroundAuthorizationTaskRuntimeRecordV3,
+        };
+      }
+      if (rows.length !== 1 || row === undefined || current === null
+        || !sameBackgroundAuthorizationRecord(current, expected)
+        || row["transform_commit_claim_id"] !== null
+        || row["transform_commit_descriptor_hash"] !== null
+        || row["transform_commit_recipient_generation"] !== null
+        || row["transform_commit_output_count"] !== null
+        || row["transform_committed_at"] !== null) {
+        return { status: "stale", current };
+      }
+      const values = requestValues(next);
+      const updated = await executeTypedCryptoQuery(
+        handle,
+        cryptoTypedDb.update(table).set({
+          workIdentityHash: values.workIdentityHash,
+          idempotencyKey: values.idempotencyKey,
+          domainId: values.domainId,
+          expectedDomainEpoch: values.expectedDomainEpoch,
+          expectedNamespaceAccessRevision:
+            values.expectedNamespaceAccessRevision,
+          expectedPolicyRevision: values.expectedPolicyRevision,
+          recipientGeneration: values.recipientGeneration,
+          descriptorHash: values.descriptorHash,
+          descriptorBytes: values.descriptorBytes,
+          recipientKeyId: values.recipientKeyId,
+          recipientPublicKey: values.recipientPublicKey,
+          recipientExpiresAt: values.recipientExpiresAt,
+          acceptedResponseKind: values.acceptedResponseKind,
+          acceptedResponseHash: values.acceptedResponseHash,
+          acceptedResponseBytes: values.acceptedResponseBytes,
+          credentialId: values.credentialId,
+          credentialHash: values.credentialHash,
+          issuingHumanId: values.issuingHumanId,
+          issuingDeviceId: values.issuingDeviceId,
+          issuingDeviceAuthorizationRevision:
+            values.issuingDeviceAuthorizationRevision,
+          issuerSigningPublicKeyHash: values.issuerSigningPublicKeyHash,
+          acceptedAt: values.acceptedAt,
+          authorizationExpiresAt: values.authorizationExpiresAt,
+          requestRevision: values.requestRevision,
+          state: values.state,
+          claimId: values.claimId,
+          claimExpiresAt: values.claimExpiresAt,
+          retryCount: values.retryCount,
+          lastRetryReason: values.lastRetryReason,
+          nextAttemptAt: values.nextAttemptAt,
+          updatedAt: values.updatedAt,
+        }).where(and(
+          eq(table.requestId, expected.snapshot.requestId),
+          eq(table.requestRevision, expected.snapshot.requestRevision),
+        )).returning(),
+      );
+      if (updated.length !== 1) {
+        return {
+          status: "stale",
+          current: await repository.get(expected.snapshot.requestId),
+        };
+      }
+      await executeTypedCryptoQuery(
+        handle,
+        cryptoTypedDb.delete(backgroundCryptoAuthorizationNamespaceRequirements)
+          .where(eq(
+            backgroundCryptoAuthorizationNamespaceRequirements.requestId,
+            expected.snapshot.requestId,
+          )),
+      );
+      await executeTypedCryptoQuery(
+        handle,
+        cryptoTypedDb.delete(backgroundCryptoAuthorizationDomainRequirements)
+          .where(eq(
+            backgroundCryptoAuthorizationDomainRequirements.requestId,
+            expected.snapshot.requestId,
+          )),
+      );
+      await repository.#insertAuthoritySet(next);
+      await input.proof.assertCurrent();
+      return {
+        status: "parked",
+        record: await repository.#recordFromRow(updated[0] as Row) as
+          BackgroundAuthorizationTaskRuntimeRecordV3,
+      };
+    });
+  }
+
+  renewParkedTaskWakeRecipient(
+    input: Parameters<BackgroundAuthorizationTaskWakeParkRepository[
+      "renewParkedTaskWakeRecipient"
+    ]>[0],
+  ): Promise<BackgroundAuthorizationTaskWakeRecipientRenewalResult> {
+    const expected = parseBackgroundAuthorizationRecord(input.expected) as
+      BackgroundAuthorizationTaskRuntimeRecordV3;
+    return withVerifiedCryptoPostgresTransaction<
+      BackgroundAuthorizationTaskWakeRecipientRenewalResult
+    >(this.handle, async handle => {
+      await input.proof.assertCurrent();
+      const table = backgroundCryptoAuthorizationRequests;
+      const rows = await executeTypedCryptoQuery(
+        handle,
+        cryptoTypedDb.select().from(table)
+          .where(eq(table.requestId, expected.snapshot.requestId))
+          .limit(2).for("update"),
+      );
+      const row = rows[0] as Row | undefined;
+      const repository = new PostgresBackgroundAuthorizationRepository(handle);
+      const current = row === undefined
+        ? null : await repository.#recordFromRow(row);
+      if (rows.length !== 1 || row === undefined || current === null
+        || !sameBackgroundAuthorizationRecord(current, expected)
+        || row["transform_commit_claim_id"] !== null
+        || row["transform_commit_descriptor_hash"] !== null
+        || row["transform_commit_recipient_generation"] !== null
+        || row["transform_commit_output_count"] !== null
+        || row["transform_committed_at"] !== null) {
+        return { status: "stale", current };
+      }
+      const renewal = rotateExpiredParkedTaskWakeRecipient(input);
+      if (renewal.status !== "rotated") {
+        await input.proof.assertCurrent();
+        return renewal;
+      }
+      const values = requestValues(renewal.record);
+      const updated = await executeTypedCryptoQuery(
+        handle,
+        cryptoTypedDb.update(table).set({
+          workIdentityHash: values.workIdentityHash,
+          domainId: values.domainId,
+          expectedDomainEpoch: values.expectedDomainEpoch,
+          expectedNamespaceAccessRevision: values.expectedNamespaceAccessRevision,
+          expectedPolicyRevision: values.expectedPolicyRevision,
+          recipientGeneration: values.recipientGeneration,
+          descriptorHash: values.descriptorHash,
+          descriptorBytes: values.descriptorBytes,
+          recipientKeyId: values.recipientKeyId,
+          recipientPublicKey: values.recipientPublicKey,
+          recipientExpiresAt: values.recipientExpiresAt,
+          acceptedResponseKind: values.acceptedResponseKind,
+          acceptedResponseHash: values.acceptedResponseHash,
+          acceptedResponseBytes: values.acceptedResponseBytes,
+          credentialId: values.credentialId,
+          credentialHash: values.credentialHash,
+          issuingHumanId: values.issuingHumanId,
+          issuingDeviceId: values.issuingDeviceId,
+          issuingDeviceAuthorizationRevision:
+            values.issuingDeviceAuthorizationRevision,
+          issuerSigningPublicKeyHash: values.issuerSigningPublicKeyHash,
+          acceptedAt: values.acceptedAt,
+          authorizationExpiresAt: values.authorizationExpiresAt,
+          requestRevision: values.requestRevision,
+          state: values.state,
+          claimId: values.claimId,
+          claimExpiresAt: values.claimExpiresAt,
+          retryCount: values.retryCount,
+          lastRetryReason: values.lastRetryReason,
+          nextAttemptAt: values.nextAttemptAt,
+          updatedAt: values.updatedAt,
+        }).where(and(
+          eq(table.requestId, expected.snapshot.requestId),
+          eq(table.requestRevision, expected.snapshot.requestRevision),
+        )).returning(),
+      );
+      if (updated.length !== 1) {
+        return {
+          status: "stale",
+          current: await repository.get(expected.snapshot.requestId),
+        };
+      }
+      if (JSON.stringify(expected.authoritySet) !== JSON.stringify(renewal.record.authoritySet)) {
+        await executeTypedCryptoQuery(handle, cryptoTypedDb.delete(backgroundCryptoAuthorizationNamespaceRequirements)
+          .where(eq(backgroundCryptoAuthorizationNamespaceRequirements.requestId, expected.snapshot.requestId)));
+        await executeTypedCryptoQuery(handle, cryptoTypedDb.delete(backgroundCryptoAuthorizationDomainRequirements)
+          .where(eq(backgroundCryptoAuthorizationDomainRequirements.requestId, expected.snapshot.requestId)));
+        await repository.#insertAuthoritySet(renewal.record);
+      }
+      await input.proof.assertCurrent();
+      return {
+        ...renewal,
+        record: await repository.#recordFromRow(updated[0] as Row) as
+          BackgroundAuthorizationTaskRuntimeRecordV3,
+      };
+    });
+  }
+
+  #replaceUnclaimedAuthority(
+    input: Parameters<typeof buildUnclaimedTaskRuntimeAuthorityReplacement>[0],
+    build: typeof buildUnclaimedTaskRuntimeAuthorityReplacement,
+  ): Promise<BackgroundAuthorizationTaskRuntimeReplacementResult> {
     const expected = parseBackgroundAuthorizationRecord(input.expected);
     const replacement = parseBackgroundAuthorizationRecord(input.replacement);
     return withVerifiedCryptoPostgresTransaction<
@@ -864,7 +1134,7 @@ export class PostgresBackgroundAuthorizationRepository
         || row.transform_commit_output_count !== null
         || row.transform_committed_at !== null
       ) return { status: "stale", current };
-      const next = buildUnclaimedTaskRuntimeAuthorityReplacement({
+      const next = build({
         expected: expected as BackgroundAuthorizationTaskRuntimeRecordV3,
         replacement: replacement as BackgroundAuthorizationTaskRuntimeRecordV3,
         now: input.now,
@@ -874,6 +1144,7 @@ export class PostgresBackgroundAuthorizationRepository
         handle,
         cryptoTypedDb.update(table).set({
           workIdentityHash: values.workIdentityHash,
+          idempotencyKey: values.idempotencyKey,
           domainId: values.domainId,
           expectedDomainEpoch: values.expectedDomainEpoch,
           expectedNamespaceAccessRevision:
@@ -1623,8 +1894,8 @@ export class PostgresBackgroundAuthorizationRepository
         eq(table.credentialSubjectKind, "runtime"),
         eq(table.runtimeKind, "task"),
         eq(table.runtimeVersion, 1),
-        eq(table.workKind, "task.execute"),
-        eq(table.purpose, "task.execute"),
+        inArray(table.workKind, ["task.execute", "task.approval_resume", "task.await_reply_resume"]),
+        eq(table.purpose, table.workKind),
         isNull(table.processorAuthorizationRevision),
         or(
           inArray(table.state, [
@@ -1665,6 +1936,50 @@ export class PostgresBackgroundAuthorizationRepository
       continuation: rawRows.length === input.limit && lastRow !== undefined
         ? taskRuntimeCancellationCursorFromRow(lastRow)
         : null,
+    });
+  }
+
+  async settleTaskRuntimeExecutionAuthorities(input: Readonly<{
+    readonly workId: string;
+    readonly namespaceId: string;
+    readonly now: number;
+  }>): Promise<BackgroundAuthorizationTaskRuntimeExecutionSettlementResult> {
+    // Validate even the zero-row case before opening the transaction.
+    planTaskRuntimeExecutionAuthoritySettlement({ ...input, records: [] });
+    return withVerifiedCryptoPostgresTransaction(this.handle, async handle => {
+      const table = backgroundCryptoAuthorizationRequests;
+      const rows = await executeTypedCryptoQuery(
+        handle,
+        cryptoTypedDb.select().from(table).where(and(
+          eq(table.workId, input.workId),
+          inArray(table.workKind, [
+            "task.execute",
+            "task.dispatch",
+            "task.approval_resume",
+            "task.await_reply_resume",
+          ]),
+        )).orderBy(asc(table.requestId)).for("update"),
+      );
+      const repository = new PostgresBackgroundAuthorizationRepository(handle);
+      const records = await repository.#recordsFromRows(rows as readonly Row[]);
+      const plan = planTaskRuntimeExecutionAuthoritySettlement({
+        ...input,
+        records,
+      });
+      if (plan.result.status === "conflict") return plan.result;
+      for (const next of plan.updates) {
+        const updated = await repository.compareAndSwapInternal({
+          expectedRequestRevision: next.snapshot.requestRevision - 1,
+          next,
+        }, false);
+        if (updated.status !== "updated") {
+          // Rows are locked and fully validated before the first mutation. A
+          // lost CAS indicates an integrity failure; throwing rolls back every
+          // transition instead of returning a partially settled inventory.
+          throw new Error("Task Runtime authority changed during settlement");
+        }
+      }
+      return plan.result;
     });
   }
 

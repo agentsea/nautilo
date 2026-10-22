@@ -23,6 +23,17 @@ const writerSession = {
   instructions: "Use Writer tools.",
 };
 
+test("Task effect provenance uses only the exact checkpointed turn and genuine tool call", () => {
+  const source = state({ turnId: "turn", roomId: "room", promptTimeReference: { turnId: "turn", nowMs: 1_800_000_000_000 } });
+  expect(taskCreationInvocationProvenanceForState(source, "call")?.effect).toEqual({
+    turnId: "turn", toolCallId: "call", timeReferenceMs: 1_800_000_000_000,
+  });
+  expect(taskCreationInvocationProvenanceForState(source)?.effect).toBeUndefined();
+  expect(taskCreationInvocationProvenanceForState({ ...source, promptTimeReference: { turnId: "old", nowMs: 1 } }, "call")?.effect).toBeUndefined();
+  expect(taskCreationInvocationProvenanceForState({ ...source, promptTimeReference: null }, "call")?.effect).toBeUndefined();
+  expect(taskCreationInvocationProvenanceForState({ ...source, promptTimeReference: { turnId: "turn", nowMs: Infinity } }, "call")?.effect).toBeUndefined();
+});
+
 function state(overrides: Record<string, unknown> = {}): NautiloState {
   return {
     userId: "human-1",

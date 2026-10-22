@@ -241,11 +241,16 @@ describe("M281 GitHub Actions cost controls", () => {
     expect(ciText).not.toContain("Save Turbo cache");
   });
 
-  test("gives Knip enough heap without broadening every lint subprocess", async () => {
+  test("scopes lint and Knip heaps to their qualification steps", async () => {
     const ci = await workflow("ci.yml");
     const rootPackage = JSON.parse(await source("package.json")) as { scripts: Record<string, string> };
     const lintSteps = ci.jobs.lint?.steps ?? [];
     const knip = lintSteps.find((step) => step.name === "Unused exports (knip)");
+    const eslint = lintSteps.find((step) => step.name === "Lint");
+    expect(eslint?.env?.NODE_OPTIONS).toBe("--max-old-space-size=6144");
+    expect(await source("dev/scripts/ci-gates.sh")).toContain(
+      'export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=6144}"',
+    );
 
     expect(knip?.run).toBe("bash dev/scripts/ci-gates.sh lint-unused");
     expect(knip?.env).toEqual({
@@ -266,7 +271,7 @@ describe("M281 GitHub Actions cost controls", () => {
     expect(typecheckJob?.env?.NODE_OPTIONS).toBeUndefined();
     expect(typecheck?.run).toBe("bash dev/scripts/ci-gates.sh typecheck");
     expect(typecheck?.env).toEqual({
-      NODE_OPTIONS: "--max-old-space-size=5120",
+      NODE_OPTIONS: "--max-old-space-size=6144",
     });
     expect(rootPackage.scripts.typecheck).toBe("bun dev/scripts/typecheck.ts");
     expect(typecheckEnvironment({})).toMatchObject({

@@ -41,9 +41,12 @@ import {
   "./protected-task-output-binding-identities";
 import {
   PROTECTED_TASK_RUN_PARK_RECEIPT_METADATA_KEY,
+  PROTECTED_TASK_HUMAN_ACCEPTANCE_METADATA_KEY,
   PROTECTED_TASK_RUN_TERMINAL_RECEIPT_METADATA_KEY,
   type ProtectedTaskDurableJobReference,
   type StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput,
+  type StartParkedProtectedTaskHumanRunSegmentInput,
+  type StartParkedProtectedTaskCheckpointSegmentInput,
   type StartProtectedTaskRunInput,
 } from "./tasks";
 
@@ -70,6 +73,20 @@ export type ProtectedTaskPreexecutionRecoveryCandidate =
       jobStatus: "queued" | "cancelled";
       lifecycle: "linked" | "parked";
       cursor: ProtectedTaskPreexecutionRecoveryCursor;
+    }>
+  | Readonly<{
+      route: "parked_checkpoint";
+      input: StartParkedProtectedTaskCheckpointSegmentInput;
+      jobStatus: "queued" | "cancelled";
+      lifecycle: "linked" | "parked";
+      cursor: ProtectedTaskPreexecutionRecoveryCursor;
+    }>
+  | Readonly<{
+      route: "parked_human";
+      input: StartParkedProtectedTaskHumanRunSegmentInput;
+      jobStatus: "queued" | "cancelled";
+      lifecycle: "linked" | "parked";
+      cursor: ProtectedTaskPreexecutionRecoveryCursor;
     }>;
 
 export type ProtectedTaskPreexecutionRecoveryPage = Readonly<{
@@ -80,6 +97,8 @@ export type ProtectedTaskPreexecutionRecoveryPage = Readonly<{
 
 const taskProjection = Object.freeze({
   id: tasks.id,
+  ownerId: tasks.ownerId,
+  agentId: tasks.agentId,
   requestorId: tasks.requestorId,
   callingRoomId: tasks.callingRoomId,
   resultDelivery: tasks.resultDelivery,
@@ -108,6 +127,7 @@ const runProjection = Object.freeze({
   jobId: taskRuns.jobId,
   graphThreadId: taskRuns.graphThreadId,
   status: taskRuns.status,
+  startedAt: taskRuns.startedAt,
   modelId: taskRuns.modelId,
   fundingPristine: and(
     isNull(taskRuns.fundingBinding),
@@ -158,6 +178,8 @@ const priorJobProjection = Object.freeze({
   completedAt: priorJobs.completedAt,
   parkReceipt:
     sql<unknown>`${priorJobs.metadata} -> ${PROTECTED_TASK_RUN_PARK_RECEIPT_METADATA_KEY}`,
+  humanAcceptanceReceipt:
+    sql<unknown>`${priorJobs.metadata} -> ${PROTECTED_TASK_HUMAN_ACCEPTANCE_METADATA_KEY}`,
   pristine: and(
     isNull(priorJobs.result),
     isNull(priorJobs.message),
@@ -578,13 +600,29 @@ export async function listUnstartedProtectedTaskRunRecoveryCandidates(
         segment: row.segment,
         continuation: row.continuation,
       } as ParkedProtectedTaskRecoveryCandidateRow);
-      if (parked !== null) candidates.push({
-        route: "parked_additional_authority",
-        input: parked.input,
-        jobStatus: row.job.status,
-        lifecycle: parked.lifecycle,
-        cursor,
-      });
+      if (parked !== null) {
+        if ("acceptance" in parked.input) candidates.push({
+          route: "parked_human",
+          input: parked.input,
+          jobStatus: row.job.status,
+          lifecycle: parked.lifecycle,
+          cursor,
+        });
+        else if ("continuationFingerprint" in parked.input) candidates.push({
+          route: "parked_checkpoint",
+          input: parked.input,
+          jobStatus: row.job.status,
+          lifecycle: parked.lifecycle,
+          cursor,
+        });
+        else candidates.push({
+          route: "parked_additional_authority",
+          input: parked.input,
+          jobStatus: row.job.status,
+          lifecycle: parked.lifecycle,
+          cursor,
+        });
+      }
       continue;
     }
     if (row.run.status !== "running" || row.run.jobId !== row.job.id

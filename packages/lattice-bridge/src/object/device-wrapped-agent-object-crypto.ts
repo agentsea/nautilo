@@ -1,3 +1,4 @@
+import { sha256 } from "@noble/hashes/sha2.js";
 import {
   accessRevision,
   encryptedObjectWriteRecord,
@@ -10,6 +11,7 @@ import {
   wrapObjectDekForNamespace,
   type AgentRuntimeKeyGeneration,
   type LatticeCrypto,
+  type TaskRuntimePublicationSigning,
   type PreparedDeviceWrappedAgentObjectAccessManifestGenesisSet,
 } from "@nautilo/lattice-crypto";
 import {
@@ -42,6 +44,22 @@ type Snapshot = Readonly<{
   access: PreparedDeviceWrappedAgentObjectAccessManifestGenesisSet;
 }>;
 
+const plaintextDigests = new WeakMap<PreparedDeviceWrappedAgentObject, Uint8Array>();
+
+/** Compare only bytes actually encrypted by this owner; never accept a caller digest. */
+export function assertPreparedDeviceWrappedAgentObjectPlaintext(
+  prepared: PreparedDeviceWrappedAgentObject, plaintext: Uint8Array,
+): void {
+  const expected = plaintextDigests.get(prepared);
+  const actual = sha256(plaintext);
+  try {
+    if (expected === undefined || expected.length !== actual.length
+      || !expected.every((byte, index) => byte === actual[index])) {
+      throw new TypeError("Prepared Agent object plaintext changed");
+    }
+  } finally { actual.fill(0); }
+}
+
 const snapshots = new WeakMap<PreparedDeviceWrappedAgentObject, Snapshot>();
 
 export function readPreparedDeviceWrappedAgentObjectSnapshot(
@@ -72,6 +90,8 @@ export function prepareDeviceWrappedAgentObject(input: Readonly<{
   signerKeyId: string;
   signerPublicKey: Uint8Array;
   agentAuthorizationRevision: number;
+  taskRuntimeSigner?: TaskRuntimePublicationSigning;
+  taskDefinitionForegroundAuthorizationBytes?: Uint8Array | undefined;
 }>): PreparedDeviceWrappedAgentObject {
   if (
     input.namespaceSet.length < 1
@@ -131,12 +151,18 @@ export function prepareDeviceWrappedAgentObject(input: Readonly<{
         runtime: input.runtime,
         signerKeyId: input.signerKeyId,
         signerPublicKey: input.signerPublicKey,
+        ...(input.taskRuntimeSigner === undefined ? {} : { taskRuntimeSigner: input.taskRuntimeSigner }),
+        ...(input.taskDefinitionForegroundAuthorizationBytes === undefined ? {} : {
+          taskDefinitionForegroundAuthorizationBytes:
+            input.taskDefinitionForegroundAuthorizationBytes,
+        }),
       },
     );
     const prepared = Object.freeze({
       objectId: input.objectId,
       objectType: input.objectType,
     });
+    plaintextDigests.set(prepared, sha256(plaintext));
     snapshots.set(prepared, Object.freeze({
       object: encryptedObjectWriteRecord(payloadBytes),
       access,

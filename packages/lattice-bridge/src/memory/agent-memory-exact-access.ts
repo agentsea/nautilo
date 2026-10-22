@@ -79,6 +79,7 @@ export type ForegroundAgentMemoryNativeExactAccessPublication = Readonly<{
   currentManifestHash: Uint8Array;
   nextManifestHash: Uint8Array;
   nextManifestBytes: Uint8Array;
+  signerEvidenceBytes?: Uint8Array;
   targetEnvelopeBytes: readonly Uint8Array[];
 }>;
 
@@ -211,6 +212,9 @@ export function foregroundAgentMemoryNativeExactAccessDigest(
       currentManifestHash: hex(publication.currentManifestHash),
       nextManifestHash: hex(publication.nextManifestHash),
       nextManifestBytes: hex(publication.nextManifestBytes),
+      ...(publication.signerEvidenceBytes === undefined ? {} : {
+        signerEvidenceBytes: hex(publication.signerEvidenceBytes),
+      }),
       targetEnvelopeBytes: publication.targetEnvelopeBytes.map(hex),
       currentEntries: entries(publication.currentEntries),
       targetEntries: entries(publication.targetEntries),

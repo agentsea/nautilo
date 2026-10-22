@@ -145,14 +145,14 @@ async function fixture() {
     recipientAuthorizationRevision: authorizationRevision(0),
     recipientRuntimeGeneration: 1, recipientKeyId: "recipient:parked",
     operations: ["decrypt", "encrypt"], issuedAt: NOW,
-    deadlineAt: NOW + 60_000, maximumSecretBytes: 4_096, domains: [domain],
+    deadlineAt: NOW + 4 * 60_000, maximumSecretBytes: 4_096, domains: [domain],
   });
   const request = createTaskRuntimeBackgroundAuthorizationRequestV1({
     requestId: REQUEST, workId: RUN, workKind: "task.execute",
     workPurpose: "task.execute", recipientGeneration: 1,
     episodeId: plan.sessionId, sourceRoomId: SOURCE,
     recipientKeyId: plan.recipientKeyId, recipientPublicKey: recipient.publicKey,
-    authorizationPlan: plan, issuedAt: NOW, deadlineAt: NOW + 60_000,
+    authorizationPlan: plan, issuedAt: NOW, deadlineAt: plan.deadlineAt,
   });
   const descriptorBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV1(request);
   const selected = {
@@ -161,7 +161,7 @@ async function fixture() {
       requestRevision: 2, updatedAt: NOW + 1, descriptorDigest: "11".repeat(32),
       recipientGeneration: 1, recipient: { recipientKeyId: plan.recipientKeyId,
         recipientPublicKey: Buffer.from(recipient.publicKey).toString("base64url"),
-        expiresAt: NOW + 60_000 },
+        expiresAt: plan.deadlineAt },
       acceptedResponse: { kind: "runtime" as const,
         responseDigest: "22".repeat(32), credentialDigest: "22".repeat(32),
         issuingHumanId: HUMAN, issuingDeviceId: plan.committerDeviceId,
@@ -171,7 +171,7 @@ async function fixture() {
       credentialId: REQUEST,
       issuingDeviceAuthorizationRevision: plan.hostAuthorizationRevision,
       issuerSigningPublicKeyHash: crypto.hash(signing.publicKey),
-      authorizationExpiresAt: NOW + 60_000 },
+      authorizationExpiresAt: NOW + 3 * 60_000 },
   } as BackgroundAuthorizationTaskRuntimeRecordV3;
   const current: CurrentTaskRuntimeAuthority = {
     device: { userId: USER, humanActorId: HUMAN,
@@ -229,13 +229,25 @@ test("lends only the exact selected canonical record through the held repository
   expect(callbackHeld).toBe(true);
   expect(held).toBe(false);
   expect(repositoryReads).toBe(1);
+  const expectedClaimExpiresAt =
+    f.selected.acceptedMaterial?.authorizationExpiresAt;
+  if (expectedClaimExpiresAt === undefined) {
+    throw new Error("accepted Task authorization expiry missing");
+  }
+  expect(await adapter.claim({ occurrence: f.occurrence, record: f.selected,
+    request: f.request, now: () => NOW + 2,
+    use: (_authority, _repository, claimedAt, claimExpiresAt) => {
+      expect(claimedAt).toBe(NOW + 2);
+      expect(claimExpiresAt).toBe(expectedClaimExpiresAt);
+      return "claimed";
+    } })).toBe("claimed");
   f.signing.privateKey.fill(0);
 });
 
 test("rejects expired requests and claims without entering the caller use", async () => {
   const f = await fixture();
   let useCalls = 0;
-  let clock = NOW + 60_000;
+  let clock = f.request.deadlineAt;
   const adapter = createProtectedTaskRuntimeParkedClaimAuthority({
     db: {} as never, restricted: {} as never, crypto: f.crypto,
     serverScope: "https://server.example", resolvePlan: async () => f.resolved,
@@ -251,7 +263,7 @@ test("rejects expired requests and claims without entering the caller use", asyn
     repository: async () => ({ get: async () => f.selected }) as never,
   });
   expect(await adapter.claim({ occurrence: f.occurrence, record: f.selected,
-    request: f.request, now: () => NOW + 60_000,
+    request: f.request, now: () => f.request.deadlineAt,
     use: () => { useCalls += 1; return "claimed"; } })).toBeNull();
   clock = NOW + 3;
   const claimed = { ...f.selected, snapshot: { ...f.selected.snapshot,

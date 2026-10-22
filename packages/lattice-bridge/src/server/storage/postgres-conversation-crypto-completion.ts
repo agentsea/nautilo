@@ -1,3 +1,4 @@
+import { and, eq, objectCryptoAccessManifests } from "@nautilo/db";
 import {
   persistPreparedAgentObjectAccessManifestGenesis,
   persistPreparedDeviceWrappedLiveShadowAgentObjectAccessManifestGenesis,
@@ -13,6 +14,8 @@ import {
   decodeNamespaceObjectEnvelopeV2,
   decodeObjectAccessManifestV2,
   decodeObjectAccessManifestV2OrV3,
+  decodeObjectAccessStorageManifestV5,
+  decodeObjectAccessManifestV5,
   objectAccessManifestSigningBytesV2,
 } from "@nautilo/lattice-crypto/wire";
 import {
@@ -35,9 +38,13 @@ import {
 import {
   PostgresLatticeStorage,
   assertVerifiedCryptoPostgresHandle,
+  cryptoTypedDb,
+  executeTypedCryptoQuery,
   withVerifiedCryptoPostgresTransaction,
   type CryptoPostgresHandle,
 } from "./postgres-lattice-storage.ts";
+
+import { verifyStoredObjectAccessManifestChainV5, destroyVerifiedStoredObjectAccessManifestChainV5 } from "./postgres-object-access-manifest-v5.ts";
 
 const DIFFERENT_OBJECT_PAYLOAD =
   "Encrypted object is already initialized with different payload bytes";
@@ -184,6 +191,7 @@ function conflict(message: string, cause?: unknown): never {
 }
 
 export interface VerifiedStoredConversationCryptoRead {
+  readonly authenticatedPublisher?: Readonly<{ kind: "foreground_runtime"; id: string }>;
   readonly revision: VerifiedConversationCryptoRevision;
   readonly payloadBytes: Uint8Array;
   readonly objectAccessManifestBytes: Uint8Array;
@@ -215,6 +223,7 @@ export async function readVerifiedStoredConversationCryptoRevision(input: {
     ResolveHistoricalHumanObjectAccessGenesisSigner;
   readonly resolveHistoricalAgentSignerAuthority?:
     ResolveHistoricalAgentRuntimeSignerManagerAuthority | undefined;
+  readonly commonManifest?: Readonly<{ handle: CryptoPostgresHandle; expectedAgentId: string }>;
   readonly resolveLiveShadowAgentSigner?: ((principal: Readonly<{
     agentId: string;
     runtimeGeneration: number;
@@ -234,9 +243,7 @@ export async function readVerifiedStoredConversationCryptoRevision(input: {
   if (object === null || access === null) return null;
 
   const payload = decodeEncryptedPayloadV2(object.payloadBytes);
-  const manifest = decodeObjectAccessManifestV2OrV3(
-    access.head.manifestBytes,
-  );
+  const manifest = decodeObjectAccessStorageManifestV5(access.head.manifestBytes);
   if (access.namespaceEnvelopes.length !== 1) {
     throw new Error(
       "Conversation crypto revision must have exactly one Namespace envelope",
@@ -285,7 +292,49 @@ export async function readVerifiedStoredConversationCryptoRevision(input: {
       "Conversation crypto payload and envelope key class disagree",
     );
   }
-  if (manifest.formatVersion === 2) {
+  let authenticatedPublisher: VerifiedStoredConversationCryptoRead["authenticatedPublisher"];
+  if (manifest.formatVersion === 5) {
+    const common = input.commonManifest;
+    if (common === undefined || !common.expectedAgentId
+      || input.resolveHistoricalAgentSignerAuthority === undefined
+      || payload.context.keyClass !== "ai") {
+      throw new AgentRuntimeSignerHistoryInvalidError("Common Message signer authority is unavailable");
+    }
+    assertVerifiedCryptoPostgresHandle(common.handle);
+    if (manifest.accessRevision !== access.head.accessRevision
+      || !bytesEqual(input.crypto.hash(access.head.manifestBytes), access.head.manifestHash)) {
+      throw new Error("Common Message access head disagrees");
+    }
+    const verified = await verifyStoredObjectAccessManifestChainV5({
+      executor: common.handle, crypto: input.crypto, objectId: input.objectId,
+      headAccessRevision: access.head.accessRevision,
+      expectedPayloadHash: input.crypto.hash(object.payloadBytes), expectedHeadManifestHash: access.head.manifestHash,
+      resolveHistoricalAgentManagerAuthority: input.resolveHistoricalAgentSignerAuthority,
+    });
+    try {
+      const rows = await executeTypedCryptoQuery(common.handle, cryptoTypedDb.select({
+        manifest_bytes: objectCryptoAccessManifests.manifestBytes,
+        manifest_hash: objectCryptoAccessManifests.manifestHash,
+      }).from(objectCryptoAccessManifests).where(and(
+        eq(objectCryptoAccessManifests.objectId, input.objectId), eq(objectCryptoAccessManifests.accessRevision, 0),
+      )).limit(2));
+      const row = rows[0];
+      if (rows.length !== 1 || row === undefined || !(row.manifest_bytes instanceof Uint8Array)
+        || !(row.manifest_hash instanceof Uint8Array)) throw new Error("Common Message genesis is unavailable");
+      const genesisBytes = Uint8Array.from(row.manifest_bytes);
+      try {
+        const genesis = decodeObjectAccessManifestV5(genesisBytes);
+        if (genesis.objectId !== input.objectId || genesis.accessRevision !== 0 || genesis.previousManifestHash !== null
+          || genesis.signer.kind !== "agent_runtime" || genesis.signer.agentId !== common.expectedAgentId
+          || !bytesEqual(genesis.payloadHash, manifest.payloadHash)
+          || !bytesEqual(input.crypto.hash(genesisBytes), row.manifest_hash)
+          || (manifest.accessRevision === 0 && !bytesEqual(genesisBytes, verified.headManifestBytes))) {
+          throw new AgentRuntimeSignerHistoryInvalidError("Common Message genesis does not match its Session Agent");
+        }
+        authenticatedPublisher = Object.freeze({ kind: "foreground_runtime", id: genesis.signer.signerKeyId });
+      } finally { genesisBytes.fill(0); }
+    } finally { destroyVerifiedStoredObjectAccessManifestChainV5(verified); }
+  } else if (manifest.formatVersion === 2) {
     if (!await authenticStoredGenesis({
       crypto: input.crypto,
       manifest,
@@ -372,6 +421,7 @@ export async function readVerifiedStoredConversationCryptoRevision(input: {
   }
 
   return Object.freeze({
+    ...(authenticatedPublisher === undefined ? {} : { authenticatedPublisher }),
     revision: Object.freeze({
       objectId: input.objectId,
       namespaceId: envelope.context.namespaceId,
@@ -379,15 +429,19 @@ export async function readVerifiedStoredConversationCryptoRevision(input: {
       payloadVersion: CONVERSATION_MESSAGE_PAYLOAD_VERSION,
       keyClass: payload.context.keyClass as ConversationMessageKeyClass,
     }),
-    payloadBytes: object.payloadBytes.slice(),
-    objectAccessManifestBytes: access.head.manifestBytes.slice(),
-    namespaceEnvelopeBytes: storedEnvelope.envelopeBytes.slice(),
+    payloadBytes: Uint8Array.from(object.payloadBytes),
+    objectAccessManifestBytes: Uint8Array.from(access.head.manifestBytes),
+    namespaceEnvelopeBytes: Uint8Array.from(storedEnvelope.envelopeBytes),
   });
 }
 
 async function verifyStoredConversationRevision(input: {
   readonly crypto: LatticeCrypto;
   readonly storage: LatticeStorage;
+  readonly commonManifest?: Readonly<{
+    handle: CryptoPostgresHandle;
+    expectedAgentId: string;
+  }>;
   readonly objectId: string;
   readonly expected?: PreparedConversationCryptoRevisionSnapshot;
   readonly resolveHistoricalSigner:
@@ -452,6 +506,8 @@ async function verifyStoredConversationRevision(input: {
 export function createPostgresConversationCryptoCompletion(input: {
   readonly handle: CryptoPostgresHandle;
   readonly crypto: LatticeCrypto;
+  /** Trusted Session Agent identity for common-v5 Message verification. */
+  readonly commonManifestExpectedAgentId?: string;
   readonly resolveCurrentWriteAuthorization:
     ResolveCurrentObjectAccessGenesisAuthorization;
   readonly resolveHistoricalSigner:
@@ -475,6 +531,14 @@ export function createPostgresConversationCryptoCompletion(input: {
       "Conversation crypto completion historical signer resolver is required",
     );
   }
+  if (
+    input.commonManifestExpectedAgentId !== undefined
+    && input.commonManifestExpectedAgentId.length === 0
+  ) {
+    throw new TypeError(
+      "Conversation crypto completion common-v5 Agent identity is invalid",
+    );
+  }
 
   return Object.freeze({
     async complete(
@@ -483,6 +547,22 @@ export function createPostgresConversationCryptoCompletion(input: {
       const snapshot =
         readPreparedConversationCryptoRevisionSnapshot(revision);
       const value = snapshot.value;
+      const preparedCommonAgentId =
+          snapshot.kind === "agent-v3-device-wrapped-live-shadow"
+          && snapshot.value.access.signerEvidence !== undefined
+        ? snapshot.value.access.authority.agentId
+        : null;
+      if (
+        preparedCommonAgentId !== null
+        && (
+          input.commonManifestExpectedAgentId === undefined
+          || preparedCommonAgentId !== input.commonManifestExpectedAgentId
+        )
+      ) {
+        conflict(
+          "Conversation crypto completion common-v5 Agent identity is unavailable or conflicts with trusted authority",
+        );
+      }
       return withVerifiedCryptoPostgresTransaction(
         input.handle,
         async (scopedHandle) => {
@@ -490,6 +570,12 @@ export function createPostgresConversationCryptoCompletion(input: {
           const replay = await verifyStoredConversationRevision({
             crypto: input.crypto,
             storage,
+            ...(input.commonManifestExpectedAgentId === undefined ? {} : {
+              commonManifest: {
+                handle: scopedHandle,
+                expectedAgentId: input.commonManifestExpectedAgentId,
+              },
+            }),
             objectId: value.objectId,
             expected: snapshot,
             resolveHistoricalSigner: input.resolveHistoricalSigner,
@@ -542,6 +628,12 @@ export function createPostgresConversationCryptoCompletion(input: {
           const verified = await verifyStoredConversationRevision({
             crypto: input.crypto,
             storage,
+            ...(input.commonManifestExpectedAgentId === undefined ? {} : {
+              commonManifest: {
+                handle: scopedHandle,
+                expectedAgentId: input.commonManifestExpectedAgentId,
+              },
+            }),
             objectId: value.objectId,
             expected: snapshot,
             resolveHistoricalSigner: input.resolveHistoricalSigner,
@@ -567,6 +659,12 @@ export function createPostgresConversationCryptoCompletion(input: {
           verifyStoredConversationRevision({
             crypto: input.crypto,
             storage: new PostgresLatticeStorage(scopedHandle),
+            ...(input.commonManifestExpectedAgentId === undefined ? {} : {
+              commonManifest: {
+                handle: scopedHandle,
+                expectedAgentId: input.commonManifestExpectedAgentId,
+              },
+            }),
             objectId,
             resolveHistoricalSigner: input.resolveHistoricalSigner,
             resolveHistoricalAgentSignerAuthority:

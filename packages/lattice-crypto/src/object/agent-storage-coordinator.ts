@@ -1,3 +1,4 @@
+import { verifyHistoricalTaskRuntimeSignerAuthorization, destroyVerifiedTaskRuntimeSignerAuthorization } from "../background/task-runtime-signer-authorization-v1.ts";
 import type { LatticeCrypto } from "../crypto/index.ts";
 import {
   encodeObjectAccessManifestV3,
@@ -173,6 +174,7 @@ function cloneDeviceWrappedContext(
 ): DeviceWrappedLiveShadowAgentObjectAccessGenesisAuthorityContextV1 {
   return Object.freeze({
     ...value,
+    ...(value.signerAuthorizationHash === undefined ? {} : { signerAuthorizationHash: value.signerAuthorizationHash.slice() }),
     payloadHash: copyOwnedBytesV2(value.payloadHash),
     envelope: Object.freeze({
       ...value.envelope,
@@ -193,7 +195,9 @@ function deviceWrappedContextsEqual(
   left: DeviceWrappedLiveShadowAgentObjectAccessGenesisAuthorityContextV1,
   right: DeviceWrappedLiveShadowAgentObjectAccessGenesisAuthorityContextV1,
 ): boolean {
-  return left.purpose === right.purpose
+  return (left.signerAuthorizationHash === undefined ? right.signerAuthorizationHash === undefined
+    : right.signerAuthorizationHash !== undefined && bytesEqual(left.signerAuthorizationHash, right.signerAuthorizationHash))
+    && left.purpose === right.purpose
     && left.objectId === right.objectId
     && bytesEqual(left.payloadHash, right.payloadHash)
     && left.envelope.objectId === right.envelope.objectId
@@ -430,7 +434,9 @@ export async function persistPreparedDeviceWrappedLiveShadowAgentObjectAccessMan
   );
   if (
     !bytesEqual(
-      encodeObjectAccessManifestV3(input.prepared.manifest),
+      input.prepared.manifest.formatVersion === 5
+        ? encodeObjectAccessManifestV5(input.prepared.manifest)
+        : encodeObjectAccessManifestV3(input.prepared.manifest),
       input.prepared.manifestBytes,
     )
     || !bytesEqual(input.prepared.manifestHash, intended.head.manifestHash)
@@ -479,7 +485,9 @@ export async function persistPreparedDeviceWrappedLiveShadowAgentObjectAccessMan
     || decision.signerPublicKey.length !== V2_LIMITS.signingPublicKeyBytes
   ) return "stale";
   try {
-    verifyAgentObjectAccessManifestV3(input.crypto, {
+    if (input.prepared.signerEvidence !== undefined) {
+      verifyTaskPublicationPreparedManifest(input.crypto, input.prepared, context, decision.signerPublicKey);
+    } else verifyAgentObjectAccessManifestV3(input.crypto, {
       manifestBytes: input.prepared.manifestBytes,
       resolveSignerPublicKey: (principal) =>
         principal.agentId === context.agentId
@@ -498,6 +506,7 @@ export async function persistPreparedDeviceWrappedLiveShadowAgentObjectAccessMan
         intended,
         authorization: {
           kind: "device-wrapped-live-shadow-agent-genesis",
+          ...(input.prepared.signerEvidence === undefined ? {} : { signerEvidence: input.prepared.signerEvidence }),
           context,
           signerPublicKey: decision.signerPublicKey,
           signerPublicKeyHash: input.crypto.hash(decision.signerPublicKey),
@@ -593,7 +602,25 @@ export async function persistPreparedDeviceWrappedAgentObjectAccessManifestGenes
     || decision.signerPublicKey.length !== V2_LIMITS.signingPublicKeyBytes
   ) return "stale";
   try {
-    verifyObjectAccessManifestV5(input.crypto, {
+    if (input.prepared.signerEvidence !== undefined) {
+      verifyTaskPublicationPreparedManifest(input.crypto, input.prepared, context, decision.signerPublicKey);
+    } else if (input.prepared.signerEvidenceBytes !== undefined) {
+      verifyObjectAccessManifestV5(input.crypto, {
+        manifestBytes: input.prepared.manifestBytes,
+        resolveHistoricalHumanDeviceSigningPublicKey: () => null,
+        resolveAgentRuntimeSignerPublicKey: () => null,
+        resolveProcessorSignerAuthorizationBytes: () => null,
+        resolveHistoricalProcessorIssuingDevicePublicKey: () => null,
+        resolveTaskDefinitionForegroundAuthorizationSignerPublicKey:
+          evidence => evidence.objectId === context.objectId
+              && context.signerAuthorizationHash !== undefined
+              && bytesEqual(
+                evidence.authorizationHash,
+                context.signerAuthorizationHash,
+              )
+            ? decision.signerPublicKey.slice() : null,
+      });
+    } else verifyObjectAccessManifestV5(input.crypto, {
       manifestBytes: input.prepared.manifestBytes,
       resolveHistoricalHumanDeviceSigningPublicKey: () => null,
       resolveAgentRuntimeSignerPublicKey: (principal) =>
@@ -615,6 +642,10 @@ export async function persistPreparedDeviceWrappedAgentObjectAccessManifestGenes
         intended,
         authorization: {
           kind: "device-wrapped-live-shadow-agent-genesis-set",
+          ...(input.prepared.signerEvidence === undefined ? {} : { signerEvidence: input.prepared.signerEvidence }),
+          ...(input.prepared.signerEvidenceBytes === undefined ? {} : {
+            signerEvidenceBytes: input.prepared.signerEvidenceBytes,
+          }),
           context,
           signerPublicKey: decision.signerPublicKey,
           signerPublicKeyHash: input.crypto.hash(decision.signerPublicKey),
@@ -630,4 +661,40 @@ export async function persistPreparedDeviceWrappedAgentObjectAccessManifestGenes
   } catch (cause) {
     throw new ObjectAccessPersistenceOutcomeUnknownV2(cause);
   }
+}
+
+function verifyTaskPublicationPreparedManifest(
+  crypto: LatticeCrypto,
+  prepared: PreparedDeviceWrappedLiveShadowAgentObjectAccessManifestGenesisV1 | PreparedDeviceWrappedAgentObjectAccessManifestGenesisSetV1,
+  context: DeviceWrappedLiveShadowAgentObjectAccessGenesisAuthorityContextV1 | DeviceWrappedAgentObjectAccessGenesisSetAuthorityContextV1,
+  currentSignerPublicKey: Uint8Array,
+): void {
+  const evidence = prepared.signerEvidence;
+  if (evidence === undefined || context.signerAuthorizationHash === undefined
+    || !bytesEqual(crypto.hash(evidence.certificateBytes), context.signerAuthorizationHash)) {
+    throw new TypeError("Task publication public signer proof is not exact");
+  }
+  const verified = verifyHistoricalTaskRuntimeSignerAuthorization(crypto, {
+    certificateBytes: evidence.certificateBytes,
+    resolveHistoricalIssuer: () => evidence.issuerSigningPublicKey,
+  });
+  try {
+    if (verified.projection.formatVersion !== 2 || verified.projection.work.kind !== "task.delivery_wake"
+      || !bytesEqual(verified.projection.signer.signerPublicKey, currentSignerPublicKey)
+      || verified.projection.request.requestId !== context.grantId
+      || verified.projection.request.recipientKeyId !== context.recipientKeyId
+      || !bytesEqual(verified.projection.request.authorizationHash, context.grantHash)
+      || verified.issuer.securityRevision !== evidence.hostAuthorizationRevision) {
+      throw new TypeError("Task publication public signer proof scope disagrees");
+    }
+    verifyObjectAccessManifestV5(crypto, {
+      manifestBytes: prepared.manifestBytes,
+      resolveHistoricalHumanDeviceSigningPublicKey: () => null,
+      resolveAgentRuntimeSignerPublicKey: () => null,
+      resolveProcessorSignerAuthorizationBytes: () => null,
+      resolveHistoricalProcessorIssuingDevicePublicKey: () => null,
+      resolveTaskRuntimeSignerAuthorizationBytes: value => bytesEqual(value.authorizationHash, verified.certificateHash) ? evidence.certificateBytes : null,
+      resolveHistoricalTaskRuntimeIssuer: () => evidence.issuerSigningPublicKey,
+    });
+  } finally { destroyVerifiedTaskRuntimeSignerAuthorization(verified); }
 }

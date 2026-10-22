@@ -65,6 +65,7 @@ describe("M237 message crypto lifecycle schema", () => {
       "human_peer_shadow_operation_id",
       "shared_agent_shadow_operation_id",
       "shared_agent_shadow_execution_id",
+      "task_wake_operation_id",
       "shadow_transcript_ordinal",
       "shadow_reserved_created_at",
       "shadow_stream_id",

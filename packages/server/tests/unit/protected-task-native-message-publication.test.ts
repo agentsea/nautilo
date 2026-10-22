@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { ToolMessage } from "@langchain/core/messages";
 
 import type {
   ConversationProductCanonicalTransactionRunner,
@@ -8,6 +9,14 @@ import type {
   NativeTaskMessageReadAuthorityV1,
   PreparedNativeTaskMessage,
 } from "@nautilo/lattice-bridge/server";
+import {
+  encodeMessagePayloadV2,
+  type ConversationProductAppendInput,
+} from "@nautilo/lattice-bridge";
+import { protectedAgentMessagePayload } from "@nautilo/runtime";
+import {
+  encodeLiveShadowOrdinaryPayloadV2,
+} from "../../../lattice-bridge/src/server/message/postgres-live-shadow-client-verification";
 
 import {
   createProtectedTaskNativeMessagePublication,
@@ -22,8 +31,10 @@ const ids = Object.freeze({
   job: "30000000-0000-4000-8000-000000000003",
   owner: "40000000-0000-4000-8000-000000000004",
   requestor: "50000000-0000-4000-8000-000000000005",
+  human: "51000000-0000-4000-8000-000000000005",
   agent: "60000000-0000-4000-8000-000000000006",
   room: "70000000-0000-4000-8000-000000000007",
+  transcriptRoom: "71000000-0000-4000-8000-000000000007",
   namespace: "80000000-0000-4000-8000-000000000008",
   contentNamespace: "90000000-0000-4000-8000-000000000009",
   session: "a0000000-0000-4000-8000-00000000000a",
@@ -34,6 +45,7 @@ const fingerprint = "fp:v1:exact-message";
 function input(
   representation: "dual" | "protected",
   signal: AbortSignal,
+  separateTranscriptRoom: boolean = false,
 ): ProtectedTaskNativeMessagePublicationInput {
   const productAuthority = Object.freeze({
     taskId: ids.task,
@@ -43,19 +55,23 @@ function input(
     graphThreadId,
     sessionId: ids.session,
     sessionOwnerId: ids.owner,
-    roomId: ids.room,
-    namespaceId: ids.namespace,
+    executionRoomId: ids.room,
+    roomId: separateTranscriptRoom ? ids.transcriptRoom : ids.room,
+    namespaceId: separateTranscriptRoom
+      ? ids.contentNamespace : ids.namespace,
     contentNamespaceId: ids.contentNamespace,
     contentRevision: 1,
     requiredNamespaceFingerprint: new Uint8Array(32).fill(1),
     agentId: ids.agent,
     requestorId: ids.requestor,
+    requesterHumanId: ids.human,
     inputObjectId: `task-definition:v1:${"a".repeat(64)}`,
     resultObjectId: `task-run-result:v1:${"b".repeat(64)}`,
     authorizationRequestId: `task-run-authorization:${ids.run}`,
     executionSegment: 1,
     policyRevision: 4,
     representation,
+    definitionRepresentation: representation,
     authorizationExpiresAt: NOW + 60_000,
     signal,
   });
@@ -91,7 +107,7 @@ function input(
       subject: {} as ProtectedTaskNativeMessagePublicationInput["authority"]["subject"],
       evidence: {
         namespaceRequirements: [{
-          namespaceId: ids.namespace,
+          namespaceId: productAuthority.namespaceId,
           expectedPolicyRevision: 4,
           operations: ["decrypt", "encrypt"],
         }],
@@ -116,7 +132,10 @@ function input(
   };
 }
 
-function request(signal: AbortSignal): ProtectedTaskNativeMessagePublicationRequest {
+function request(
+  signal: AbortSignal,
+  role: "assistant" | "tool" = "assistant",
+): ProtectedTaskNativeMessagePublicationRequest {
   return Object.freeze({
     identity: Object.freeze({
       taskId: ids.task,
@@ -128,11 +147,35 @@ function request(signal: AbortSignal): ProtectedTaskNativeMessagePublicationRequ
     }),
     idempotencyKey: `task-transcript:${ids.run}:${fingerprint}`,
     fingerprint,
-    payload: Object.freeze({
+    payload: role === "assistant" ? Object.freeze({
       role: "assistant" as const,
       content: "confidential Task output",
       toolCalls: Object.freeze([{ name: "search", args: { query: "private" } }]),
       toolName: "search",
+      sensitiveMetadata: Object.freeze({
+        imageAssistance: Object.freeze({
+          status: "completed" as const,
+          modelId: "vision-model",
+          modelDisplayName: "Vision Model",
+          attachmentIds: Object.freeze(["attachment-1"]),
+        }),
+        nautilo_memory_model_exposure: Object.freeze({
+          version: 1,
+          status: "incomplete" as const,
+        }),
+      }),
+    }) : Object.freeze({
+      role: "tool" as const,
+      content: "confidential Task tool result",
+      toolName: "search",
+      sensitiveMetadata: Object.freeze({
+        toolCallId: "call-native-task-1",
+        toolStatus: "success" as const,
+        nautilo_memory_model_exposure: Object.freeze({
+          version: 1,
+          status: "incomplete" as const,
+        }),
+      }),
     }),
     signal,
   });
@@ -147,23 +190,32 @@ function harness(
     openerError?: boolean;
     staleDuringRecovery?: boolean;
   }> = {},
+  separateTranscriptRoom: boolean = false,
+  role: "assistant" | "tool" = "assistant",
 ) {
   const controller = new AbortController();
-  const source = input(representation, controller.signal);
+  const source = input(
+    representation,
+    controller.signal,
+    separateTranscriptRoom,
+  );
+  const transcriptRoomId = source.authority.productAuthority.roomId;
+  const transcriptNamespaceId = source.authority.productAuthority.namespaceId;
   const calls: string[] = [];
-  let appended: Record<string, unknown> | null = null;
+  let appended: ConversationProductAppendInput | null = null;
   let marked: Record<string, unknown> | null = null;
   let mapped: Record<string, unknown> | null = null;
   let authorityChecks = 0;
   let readAuthority: Record<string, unknown> | null = null;
+  let preparedCoordinates: Record<string, unknown> | null = null;
   const lifecycle = {
     sessionId: ids.session,
     messageId: 17,
     revision: 0,
-    roomId: ids.room,
-    namespaceIdAtAllocation: ids.namespace,
+    roomId: transcriptRoomId,
+    namespaceIdAtAllocation: transcriptNamespaceId,
     keyClass: "ai",
-    authorRole: "assistant",
+    authorRole: role,
     cryptoObjectId: "message:v2:exact",
     objectIdScheme: "message_v2",
     representationMode: representation === "protected"
@@ -186,7 +238,7 @@ function harness(
       return {
         appendAllocated: async value => {
           calls.push("append");
-          appended = value as unknown as Record<string, unknown>;
+          appended = value;
           return {
             status: replay === "mapped" ? "replayed" : "allocated",
             lifecycle,
@@ -218,12 +270,13 @@ function harness(
     },
     prepare: async value => {
       calls.push("prepare");
+      preparedCoordinates = value.coordinates as unknown as Record<string, unknown>;
       const expected = {
         ...value.coordinates,
         mode: value.mode,
         createdAt: value.createdAt,
         sourceRoomId: ids.room,
-        namespaceId: ids.namespace,
+        namespaceId: transcriptNamespaceId,
         namespaceAccessRevision: 3,
         domainId: ids.contentNamespace,
         policyRevision: 4,
@@ -236,18 +289,19 @@ function harness(
       complete: async () => {
         calls.push("complete");
         const expected = {
-          ...request(controller.signal).identity,
+          ...request(controller.signal, role).identity,
           sessionId: ids.session,
           messageId: 17,
           revision: 0,
           objectId: lifecycle.cryptoObjectId,
-          role: "assistant",
+          role,
           mode: representation === "protected"
             ? "encrypted_only"
             : "shadow_encryption",
           createdAt: NOW,
           sourceRoomId: ids.room,
-          namespaceId: ids.namespace,
+          roomId: transcriptRoomId,
+          namespaceId: transcriptNamespaceId,
           namespaceAccessRevision: 3,
           domainId: ids.contentNamespace,
           policyRevision: 4,
@@ -271,7 +325,7 @@ function harness(
         throw new Error("current authority unavailable");
       }
       return value.execute({
-        ...request(controller.signal).payload,
+        ...request(controller.signal, role).payload,
         content: recovery.openedContent ?? "confidential Task output",
       }, async () => {
         calls.push("open-authority");
@@ -291,6 +345,7 @@ function harness(
     marked: () => marked,
     mapped: () => mapped,
     readAuthority: () => readAuthority,
+    preparedCoordinates: () => preparedCoordinates,
   };
 }
 
@@ -326,6 +381,16 @@ describe("protected Task native Message publication", () => {
     });
   });
 
+  test("keeps graph execution identity separate from orphan transcript crypto coordinates", async () => {
+    const value = harness("protected", "pending", {}, true);
+    await value.publisher(request(value.controller.signal));
+    expect(value.preparedCoordinates()).toMatchObject({
+      roomId: ids.transcriptRoom,
+    });
+    expect(value.source.authority.productAuthority.namespaceId)
+      .toBe(ids.contentNamespace);
+  });
+
   test("preserves the ordinary sibling only for dual publication", async () => {
     const value = harness("dual");
     await value.publisher(request(value.controller.signal));
@@ -334,12 +399,115 @@ describe("protected Task native Message publication", () => {
       content: "confidential Task output",
       toolCalls: JSON.stringify([{ name: "search", args: { query: "private" } }]),
       toolName: "search",
+      metadata: {
+        nautilo_image_assistance: {
+          status: "completed",
+          modelId: "vision-model",
+          modelDisplayName: "Vision Model",
+          attachmentIds: ["attachment-1"],
+        },
+        nautilo_memory_model_exposure: { version: 1, status: "incomplete" },
+      },
       publicationPolicy: {
         expectedRevision: 4,
         representation: "ordinary_and_protected",
       },
     });
     expect(value.marked()).toMatchObject({ parityStatus: "server_verified" });
+    expect(value.appended()?.["metadata"]).toEqual({
+      nautilo_image_assistance: {
+        status: "completed",
+        modelId: "vision-model",
+        modelDisplayName: "Vision Model",
+        attachmentIds: ["attachment-1"],
+      },
+      nautilo_memory_model_exposure: { version: 1, status: "incomplete" },
+    });
+    const appended = value.appended();
+    if (appended === null) throw new Error("Expected native Message publication");
+    expect(encodeLiveShadowOrdinaryPayloadV2({
+      role: appended.authorRole,
+      content: appended.content,
+      tool_calls: appended.toolCalls,
+      tool_name: appended.toolName,
+      metadata_json: JSON.stringify(appended.metadata),
+    }, null)).toEqual(encodeMessagePayloadV2(request(
+      value.controller.signal,
+    ).payload));
+  });
+
+  test("rejects malformed present model-input exposure before dual persistence", async () => {
+    const value = harness("dual");
+    const original = request(value.controller.signal);
+    expect(value.publisher({
+      ...original,
+      payload: {
+        ...original.payload,
+        sensitiveMetadata: {
+          ...original.payload.sensitiveMetadata,
+          nautilo_memory_model_exposure: {
+            version: 1,
+            status: "complete",
+            dependencies: "invalid",
+          },
+        },
+      },
+    })).rejects.toThrow("Protected Task model-input exposure metadata is invalid");
+    expect(value.appended()).toBeNull();
+  });
+
+  test("projects only canonical Tool parity metadata in Shadow mode", async () => {
+    const value = harness("dual", "pending", {}, false, "tool");
+    await value.publisher(request(value.controller.signal, "tool"));
+
+    expect(value.appended()).toMatchObject({
+      content: "confidential Task tool result",
+      toolName: "search",
+      metadata: {
+        nautilo_tool_result: {
+          toolCallId: "call-native-task-1", toolStatus: "success",
+        },
+        nautilo_memory_model_exposure: { version: 1, status: "incomplete" },
+      },
+    });
+    expect(value.appended()?.["metadata"]).toEqual({
+      nautilo_tool_result: {
+        toolCallId: "call-native-task-1", toolStatus: "success",
+      },
+      nautilo_memory_model_exposure: { version: 1, status: "incomplete" },
+    });
+    const appended = value.appended();
+    if (appended === null) throw new Error("Expected native Tool publication");
+    expect(encodeLiveShadowOrdinaryPayloadV2({
+      role: appended.authorRole,
+      content: appended.content,
+      tool_calls: appended.toolCalls,
+      tool_name: appended.toolName,
+      metadata_json: JSON.stringify(appended.metadata),
+    }, "call-native-task-1", "success")).toEqual(encodeMessagePayloadV2(request(
+      value.controller.signal,
+      "tool",
+    ).payload));
+  });
+
+  test("keeps foreground Tool parity unchanged when ordinary metadata has status", () => {
+    const source = new ToolMessage({
+      content: "foreground output", tool_call_id: "call-foreground-1",
+      name: "search",
+      additional_kwargs: { nautilo_tool_status: "success" },
+    });
+    const payload = protectedAgentMessagePayload(source);
+    expect(payload.sensitiveMetadata).toEqual({
+      toolCallId: "call-foreground-1",
+    });
+    expect(encodeLiveShadowOrdinaryPayloadV2({
+      role: "tool", content: "foreground output", tool_calls: null,
+      tool_name: "search", metadata_json: JSON.stringify({
+        nautilo_tool_result: {
+          toolCallId: "call-foreground-1", toolStatus: "success",
+        },
+      }),
+    }, "call-foreground-1")).toEqual(encodeMessagePayloadV2(payload));
   });
 
   test("accepts an exact mapped replay without re-encrypting random bytes", async () => {

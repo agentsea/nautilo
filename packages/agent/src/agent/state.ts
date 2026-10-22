@@ -24,6 +24,7 @@ import {
 import type { ActivatedToolLease } from "../tools/meta/activated-tools-handle";
 import type { ModelFallbackMode } from "../utils/chat-model-invocation";
 import type { ProjectionRoomChoice, ProjectionSnapshot } from "../tools/memory/projection-sharing";
+import type { ProtectedMemoryAccessSnapshot } from "../tools/memory/protected-task-access-sharing";
 import type { OrdinaryContentAccessBinding } from "../runtime/ordinary-content-access";
 import {
   parseComputerUseInvocationBindings,
@@ -257,6 +258,11 @@ export const NautiloStateAnnotation = Annotation.Root({
     reducer: (_, update) => update,
     default: () => ({}),
   }),
+  /** Encrypted operational receipts for the fixed protected repo-docs wrapper. */
+  protectedRepoDocsCheckpoint: Annotation<import("../runtime/protected-repo-docs").ProtectedRepoDocsCheckpointV1 | null>({
+    reducer: (_, update) => update,
+    default: () => null,
+  }),
   fullMacInvocationBindings: Annotation<Readonly<Record<string, { activationId: string | null; relayId: string; desktopSessionId: string; pairingGeneration: string; humanUserId: string; agentId: string; roomId: string; conversationId: string }>>>({
     reducer: (_, update) => update,
     default: () => ({}),
@@ -297,6 +303,12 @@ export const NautiloStateAnnotation = Annotation.Root({
   /** private, short-lived server snapshot that binds a project-mode
    * share to its exact content, readable evidence and resolved audience. */
   projectionSnapshots: Annotation<ProjectionSnapshot[]>({
+    reducer: (_, update) => update,
+    default: () => [],
+  }),
+
+  /** Authenticated ciphertext reference for a protected Task attach approval. */
+  protectedMemoryAccessSnapshots: Annotation<ProtectedMemoryAccessSnapshot[]>({
     reducer: (_, update) => update,
     default: () => [],
   }),
@@ -991,6 +1003,7 @@ export type NautiloState = Omit<
   | "humanTerminalInvocationBindings"
   | "fullMacInvocationBindings"
   | "delegatedLocalExecutionBindings"
+  | "protectedRepoDocsCheckpoint"
   | "ordinaryContentAccessBindings" | "ordinaryContentAccessRejectedToolCallIds"
   | "autoApprove"
   | "requiredHostRelays"
@@ -1000,7 +1013,7 @@ export type NautiloState = Omit<
   | "activationIntentAppliedForTurnId"
   | "browserDecision"
   | "noProgressStreaks" | "noProgressPendingCorrection" | "noProgressPendingStop"
-  | "projectionSnapshots" | "projectionRoomChoices" | "projectionRejectedToolCallIds" | "modelRejectedToolCallIds" | "researchContinuationRequired"
+  | "projectionSnapshots" | "protectedMemoryAccessSnapshots" | "projectionRoomChoices" | "projectionRejectedToolCallIds" | "modelRejectedToolCallIds" | "researchContinuationRequired"
   | "identityEnrollmentToolCallIds"
   | "foregroundFundingSnapshot"
   | "approvalLaneKey"
@@ -1061,6 +1074,8 @@ export type NautiloState = Omit<
   /** per-call admission metadata; an absent/malformed map is empty. */
   computerUseInvocationBindings?: Readonly<Record<string, ComputerUseInvocationBinding>>;
   delegatedLocalExecutionBindings?: Readonly<Record<string, import("@nautilo/relay").RelayLocalExecutionBindingV4>>;
+  /** Absent on ordinary and legacy checkpoints. */
+  protectedRepoDocsCheckpoint?: import("../runtime/protected-repo-docs").ProtectedRepoDocsCheckpointV1 | null;
   fullMacInvocationBindings?: Readonly<Record<string, { activationId: string | null; relayId: string; desktopSessionId: string; pairingGeneration: string; humanUserId: string; agentId: string; roomId: string; conversationId: string }>>;
   humanTerminalInvocationBindings?: Readonly<Record<string, RelayHumanTerminalBinding>>;
   ordinaryContentAccessBindings?: Readonly<Record<string, OrdinaryContentAccessBinding>>;
@@ -1113,6 +1128,7 @@ export type NautiloState = Omit<
   noProgressPendingStop?: import("../graph/no-progress").NoProgressKey | null;
   /** optional for pre-feature checkpoint fixtures; graph channels default these safely. */
   projectionSnapshots?: ProjectionSnapshot[];
+  protectedMemoryAccessSnapshots?: ProtectedMemoryAccessSnapshot[];
   projectionRoomChoices?: ProjectionRoomChoice[];
   projectionRejectedToolCallIds?: string[];
   modelRejectedToolCallIds?: string[];

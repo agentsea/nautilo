@@ -26,6 +26,10 @@ const coordinate = Object.freeze({
   taskRunId: RUN,
   contentRevision: 1,
 });
+const cancelledCoordinate = Object.freeze({
+  ...coordinate,
+  contentRevision: 2,
+});
 
 function snapshot(
   adjust: Readonly<{
@@ -105,6 +109,74 @@ describe("protected TaskRun result inspection", () => {
       },
     });
     expect({ inspections, opened }).toEqual({ inspections: 2, opened: 1 });
+  });
+
+  test("opens only the revision-2 protected result for cancelled history", async () => {
+    const current = snapshot({ run: {
+      status: "cancelled",
+      resultRevision: 2,
+      resultCryptoObjectId:
+        deriveTaskContentCryptoObjectIdV1(cancelledCoordinate),
+    } });
+    let opened = 0;
+    const inspect = createProtectedTaskRunResultInspectionAdapter({
+      inspectCurrent: async () => current,
+      openProtected: async (received) => {
+        opened += 1;
+        expect(received).toEqual(cancelledCoordinate);
+        return Object.freeze({
+          coordinate: cancelledCoordinate,
+          payload: Object.freeze({
+            formatVersion: 1 as const,
+            resultText: "Task cancelled after saving its final state.",
+            lastError: null,
+          }),
+        });
+      },
+    });
+
+    expect(await inspect(request)).toMatchObject({
+      status: "ready",
+      payload: {
+        resultText: "Task cancelled after saving its final state.",
+      },
+    });
+    expect(opened).toBe(1);
+  });
+
+  test("rejects status, revision, and revision-2 object mismatches before decrypt", async () => {
+    let opened = 0;
+    const invalid = [
+      snapshot({ run: { status: "cancelled", resultRevision: 1 } }),
+      snapshot({ run: { status: "completed", resultRevision: 2 } }),
+      snapshot({ run: {
+        status: "cancelled",
+        resultRevision: 2,
+        resultCryptoObjectId: deriveTaskContentCryptoObjectIdV1(coordinate),
+      } }),
+      snapshot({ run: {
+        status: "cancelled",
+        resultRevision: 3,
+        resultCryptoObjectId: deriveTaskContentCryptoObjectIdV1({
+          ...coordinate,
+          contentRevision: 3,
+        }),
+      } }),
+    ];
+    for (const current of invalid) {
+      const inspect = createProtectedTaskRunResultInspectionAdapter({
+        inspectCurrent: async () => current,
+        openProtected: async () => {
+          opened += 1;
+          throw new Error("must not decrypt");
+        },
+      });
+      expect(await inspect(request)).toMatchObject({
+        status: "unavailable",
+        reason: "integrity_failure",
+      });
+    }
+    expect(opened).toBe(0);
   });
 
   test("reports a pristine in-flight result as waiting without an ordinary read", async () => {

@@ -33,6 +33,7 @@ import {
   verifyConversationProductPostgresHandle,
   type ConversationProductDatabaseRow,
   type ConversationProductCanonicalTransactionConnection,
+  type ConversationProductPublicationGuard,
   type ConversationProductPostgresConnection,
   type ConversationProductPostgresExecutor,
   type ConversationProductPostgresIsolationLevel,
@@ -2181,6 +2182,71 @@ test("Runtime allocation waiting on a Room leaves its Message available to the R
       expect(rows).toEqual([{id: message.id}]);
     });
     expect(await pending).toMatchObject({status: "allocated"});
+  } finally {
+    if (pending !== undefined) await Promise.allSettled([pending]);
+    await client.end();
+  }
+});
+
+test("guarded append acquires its authority dependency before the canonical Room write", async () => {
+  const fixture = await createFixture();
+  const client = sqlClient(agentUrl, 1);
+  const db = drizzle(admin);
+  let reachedPreparation!: () => void;
+  const preparationStarted = new Promise<void>(resolve => {
+    reachedPreparation = resolve;
+  });
+  let postAllocationChecks = 0;
+  let pending: ReturnType<PostgresConversationProductStore["appendAllocated"]>
+    | undefined;
+  try {
+    const context = {
+      userId: fixture.requesterId,
+      agentId: fixture.agentId,
+    };
+    const handle = await verifyConversationProductPostgresHandle(
+      connection(client, context),
+    );
+    const guard: ConversationProductPublicationGuard = {
+      prepareAppendPublication: async transaction => {
+        reachedPreparation();
+        await transaction.select({ id: sessions.id }).from(sessions)
+          .where(eq(sessions.id, fixture.sessionId)).limit(1).for("update");
+      },
+      assertPublicationAllowed: async () => {
+        postAllocationChecks += 1;
+      },
+    };
+    const store = new PostgresConversationProductStore(
+      handle,
+      bindConversationProductCanonicalTransactionRunner(
+        handle,
+        canonicalConnection(client, context),
+      ),
+      guard,
+    );
+
+    await db.transaction(async locked => {
+      await locked.select({ id: sessions.id }).from(sessions)
+        .where(eq(sessions.id, fixture.sessionId)).for("update");
+      pending = store.appendAllocated({
+        ...canonicalAppendFacts,
+        sessionId: fixture.sessionId,
+        idempotencyKey: `guard-order:${randomUUID()}`,
+        content: "authority before Room",
+        keyClass: "ai",
+        authorRole: "assistant",
+        requestDigest: digest(0xe8),
+      });
+      void pending.catch(() => undefined);
+      await preparationStarted;
+      expect(await locked.select({ id: rooms.id }).from(rooms)
+        .where(eq(rooms.id, fixture.roomId)).for("update", { noWait: true }))
+        .toEqual([{ id: fixture.roomId }]);
+    });
+
+    expect(await pending).toMatchObject({ status: "allocated" });
+    expect(postAllocationChecks).toBe(1);
   } finally {
     if (pending !== undefined) await Promise.allSettled([pending]);
     await client.end();

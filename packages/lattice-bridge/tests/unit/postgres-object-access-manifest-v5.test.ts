@@ -5,6 +5,7 @@ import {
   createCommonAgentObjectAccessManifest,
   createCommonHumanObjectAccessManifest,
   createCommonProcessorObjectAccessManifest,
+  createTaskDefinitionForegroundObjectAccessManifest,
   deriveAgentRuntimeObjectSignerPublic,
   accessRevision,
   agentId,
@@ -131,6 +132,91 @@ describe("stored common-v5 object access history", () => {
       }
     });
   }
+
+  test("authenticates retained Task-definition foreground evidence through its exact resolver", async () => {
+    const crypto = new LatticeCrypto(seededRng(2_630_504));
+    const runtime = {
+      agentId: agentId("agent-task-definition-foreground"),
+      keyClass: "runtime" as const,
+      generation: agentRuntimeGeneration(0),
+      key: hash(0x71),
+    };
+    const signer = deriveAgentRuntimeObjectSignerPublic(crypto, runtime);
+    const targetObjectId = objectId(
+      `task-definition:v1:${"d".repeat(64)}`,
+    );
+    const payloadHash = hash(0x72);
+    const authorizationBytes = new Uint8Array(3675).fill(0x73);
+    const authorizationHash = crypto.hash(authorizationBytes);
+    const genesis = createTaskDefinitionForegroundObjectAccessManifest(
+      crypto,
+      {
+        objectId: targetObjectId,
+        payloadHash,
+        accessRevision: accessRevision(0),
+        previousManifestHash: null,
+        envelopeHashes: [hash(0x74)],
+        signer: signer.principal,
+        signerAuthorizationHash: authorizationHash,
+        hostAuthorizationRevision: authorizationRevision(0),
+      },
+      runtime,
+    );
+    const executor: CryptoPostgresExecutor = {
+      query: <Row extends DatabaseRow = DatabaseRow>(statement: string) => {
+        if (!normalizedSql(statement).includes(
+          "from object_crypto_access_manifests",
+        )) throw new Error(`Unexpected Task evidence SQL: ${statement}`);
+        return Promise.resolve([{
+          object_id: targetObjectId,
+          access_revision: 0,
+          manifest_hash: genesis.hash,
+          previous_manifest_hash: null,
+          payload_hash: payloadHash,
+          manifest_bytes: genesis.bytes,
+          signer_evidence_bytes: authorizationBytes,
+        }] as unknown as readonly Row[]);
+      },
+    };
+    let resolved = 0;
+    const verified = await verifyStoredObjectAccessManifestChainV5({
+      executor,
+      crypto,
+      objectId: targetObjectId,
+      headAccessRevision: 0,
+      expectedPayloadHash: payloadHash,
+      expectedHeadManifestHash: genesis.hash,
+      resolveHistoricalAgentManagerAuthority: () => null,
+      resolveTaskDefinitionForegroundAuthorization: async (evidence) => {
+        resolved += 1;
+        expect(evidence.principal).toEqual({
+          agentId: signer.principal.agentId,
+          runtimeGeneration: signer.principal.runtimeGeneration,
+          signerKeyId: signer.principal.signerKeyId,
+        });
+        expect(evidence.objectId).toBe(targetObjectId);
+        expect(evidence.authorizationHash).toEqual(authorizationHash);
+        expect(evidence.authorizationBytes).toEqual(authorizationBytes);
+        return signer.publicKey.slice();
+      },
+    });
+    expect(resolved).toBe(1);
+    expect(verified.headSignerPublicKey).toEqual(signer.publicKey);
+    expect(verified.signerEvidence).toEqual([]);
+    expect(verifyStoredObjectAccessManifestChainV5({
+      executor,
+      crypto,
+      objectId: targetObjectId,
+      headAccessRevision: 0,
+      expectedPayloadHash: payloadHash,
+      expectedHeadManifestHash: genesis.hash,
+      resolveHistoricalAgentManagerAuthority: () => null,
+      resolveTaskDefinitionForegroundAuthorization: () =>
+        Promise.resolve(null),
+    })).rejects.toThrow(
+      "Task definition foreground authorization is invalid",
+    );
+  });
 
   test("authenticates Human -> Agent -> processor -> Human after restart", async () => {
     const crypto = new LatticeCrypto(seededRng(2_630_501));

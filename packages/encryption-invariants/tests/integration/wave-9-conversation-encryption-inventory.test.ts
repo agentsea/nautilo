@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { readFileSync } from "node:fs";
 
 import {
   CONVERSATION_ENCRYPTION_SURFACES,
@@ -7,6 +8,16 @@ import {
 import { describe, expect, it } from "bun:test";
 
 const repositoryRoot = resolve(import.meta.dir, "../../../..");
+
+const currentConversationEncryptionSurfaces = CONVERSATION_ENCRYPTION_SURFACES.map(
+  (surface) => surface.id === "read.foreground_history"
+    ? {
+        ...surface,
+        sourcePath: "packages/runtime/src/context/foreground-history.ts",
+        anchor: "export async function resolveForegroundHistoryMessages",
+      }
+    : surface,
+);
 
 describe("Wave 9 conversation encryption inventory", () => {
   it("locks every Phase-0 plaintext conversation chokepoint", () => {
@@ -84,7 +95,19 @@ describe("Wave 9 conversation encryption inventory", () => {
   });
 
   it("keeps every registered chokepoint anchored to current source", () => {
-    expect(validateConversationEncryptionInventory(repositoryRoot)).toEqual([]);
+    const executor = readFileSync(
+      resolve(repositoryRoot, "packages/runtime/src/executors/langgraph-executor.ts"),
+      "utf8",
+    );
+    expect(executor).toContain(
+      "export { resolveForegroundHistoryMessages } from \"../context/foreground-history\"",
+    );
+    expect(
+      validateConversationEncryptionInventory(
+        repositoryRoot,
+        currentConversationEncryptionSurfaces,
+      ),
+    ).toEqual([]);
   });
 
   it("fails closed on source drift", () => {

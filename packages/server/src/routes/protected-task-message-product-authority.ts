@@ -1,3 +1,4 @@
+import { protectedTaskDefinitionSupportsPolicy } from "@nautilo/db";
 import {
   and,
   encryptionTransitionPolicy,
@@ -23,6 +24,13 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 const PORTABLE_ID = /^[A-Za-z0-9][A-Za-z0-9._:@/-]*$/u;
 const SHA256_BASE64URL = /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/u;
 const encoder = new TextEncoder();
+type ConversationProductAppendPreparationGuardInput = Omit<
+  Extract<
+    ConversationProductPublicationGuardInput,
+    Readonly<{ action: "appendAllocated" }>
+  >,
+  "messageId"
+>;
 
 export type ProtectedTaskMessageProductAuthority = Readonly<{
   taskId: string;
@@ -32,6 +40,7 @@ export type ProtectedTaskMessageProductAuthority = Readonly<{
   graphThreadId: string;
   sessionId: string;
   sessionOwnerId: string;
+  executionRoomId: string;
   roomId: string;
   namespaceId: string;
   contentNamespaceId: string;
@@ -39,6 +48,7 @@ export type ProtectedTaskMessageProductAuthority = Readonly<{
   requiredNamespaceFingerprint: Uint8Array;
   agentId: string;
   requestorId: string;
+  requesterHumanId: string;
   inputObjectId: string;
   resultObjectId: string;
   authorizationRequestId: string;
@@ -46,6 +56,7 @@ export type ProtectedTaskMessageProductAuthority = Readonly<{
   resumeAcceptanceId?: string;
   resumeContinuationFingerprint?: string;
   policyRevision: number;
+  definitionRepresentation: "dual" | "protected";
   representation: "dual" | "protected";
   authorizationExpiresAt: number;
   signal: AbortSignal;
@@ -81,7 +92,8 @@ function exactJobReference(
 }
 
 function exactAppend(
-  input: ConversationProductPublicationGuardInput,
+  input: ConversationProductPublicationGuardInput
+    | ConversationProductAppendPreparationGuardInput,
   expected: ProtectedTaskMessageProductAuthority,
 ): boolean {
   if (input.action !== "appendAllocated") return true;
@@ -146,9 +158,13 @@ export function createProtectedTaskMessageProductGuard(
   );
   if ([expected.taskId, expected.taskRunId, expected.jobId,
     expected.taskOwnerId, expected.sessionId,
-    expected.sessionOwnerId, expected.roomId, expected.namespaceId,
+    expected.sessionOwnerId, expected.executionRoomId, expected.roomId,
+    expected.namespaceId,
     expected.contentNamespaceId,
-    expected.agentId, expected.requestorId].some((value) => !UUID.test(value))
+    expected.agentId, expected.requestorId,
+    expected.requesterHumanId].some((value) => !UUID.test(value))
+    || !["dual", "protected"].includes(expected.representation)
+    || !["dual", "protected"].includes(expected.definitionRepresentation)
     || expected.graphThreadId.length === 0
     || !Number.isSafeInteger(expected.contentRevision)
     || expected.contentRevision < 1
@@ -180,6 +196,49 @@ export function createProtectedTaskMessageProductGuard(
     requiredNamespaceFingerprint: expected.requiredNamespaceFingerprint.slice(),
   });
   return Object.freeze({
+    async prepareAppendPublication(
+      tx: CanonicalTranscriptTx,
+      input: ConversationProductAppendPreparationGuardInput,
+    ): Promise<void> {
+      asserted.signal.throwIfAborted();
+      if (now() >= asserted.authorizationExpiresAt
+        || input.sessionId !== asserted.sessionId
+        || input.revision !== 0
+        || !exactAppend(input, asserted)) reject();
+
+      const [policy] = await tx.select({ id: encryptionTransitionPolicy.id })
+        .from(encryptionTransitionPolicy)
+        .where(eq(encryptionTransitionPolicy.id, "server"))
+        .limit(1).for("share");
+      const [task] = await tx.select({ id: tasks.id }).from(tasks)
+        .where(eq(tasks.id, asserted.taskId)).limit(1).for("share");
+      const [run] = await tx.select({ id: taskRuns.id }).from(taskRuns)
+        .where(and(
+          eq(taskRuns.id, asserted.taskRunId),
+          eq(taskRuns.taskId, asserted.taskId),
+        )).limit(1).for("share");
+      const [job] = await tx.select({ id: jobs.id }).from(jobs)
+        .where(eq(jobs.id, asserted.jobId)).limit(1).for("share");
+      if (!policy || !task || !run || !job) reject();
+
+      // The Task lifecycle precedes both transcript write rows. Lock Session
+      // before Rooms so concurrent protected appends cannot deadlock while
+      // upgrading the Session message-count write after Room serialization.
+      const [session] = await tx.select({ id: sessions.id }).from(sessions)
+        .where(eq(sessions.id, asserted.sessionId)).limit(1).for("update");
+      if (!session) reject();
+      const roomIds = [...new Set([
+        asserted.roomId,
+        asserted.executionRoomId,
+      ])].sort();
+      for (const roomId of roomIds) {
+        const [room] = await tx.select({ id: rooms.id }).from(rooms)
+          .where(eq(rooms.id, roomId)).limit(1).for("update");
+        if (!room) reject();
+      }
+      asserted.signal.throwIfAborted();
+      if (now() >= asserted.authorizationExpiresAt) reject();
+    },
     async assertPublicationAllowed(
       tx: CanonicalTranscriptTx,
       input: ConversationProductPublicationGuardInput,
@@ -189,6 +248,11 @@ export function createProtectedTaskMessageProductGuard(
         || input.sessionId !== asserted.sessionId
         || input.revision !== 0
         || !exactAppend(input, asserted)) reject();
+
+      const [policy] = await tx.select().from(encryptionTransitionPolicy)
+        .where(eq(encryptionTransitionPolicy.id, "server"))
+        .limit(1).for("share");
+      if (!policy) reject();
 
       const [task] = await tx.select().from(tasks)
         .where(eq(tasks.id, asserted.taskId)).limit(1).for("share");
@@ -204,19 +268,27 @@ export function createProtectedTaskMessageProductGuard(
       const [session] = await tx.select().from(sessions)
         .where(eq(sessions.id, asserted.sessionId)).limit(1).for("share");
       if (!session) reject();
-      const [room] = await tx.select().from(rooms)
-        .where(eq(rooms.id, asserted.roomId)).limit(1).for("share");
-      if (!room) reject();
-      const [policy] = await tx.select().from(encryptionTransitionPolicy)
-        .where(eq(encryptionTransitionPolicy.id, "server"))
-        .limit(1).for("share");
-      if (!policy) reject();
+      const roomIds = [...new Set([
+        asserted.roomId,
+        asserted.executionRoomId,
+      ])].sort();
+      const lockedRooms: (typeof rooms.$inferSelect)[] = [];
+      for (const roomId of roomIds) {
+        const [locked] = await tx.select().from(rooms)
+          .where(eq(rooms.id, roomId)).limit(1).for("share");
+        if (!locked) reject();
+        lockedRooms.push(locked);
+      }
+      const room = lockedRooms.find(value => value.id === asserted.roomId);
+      const executionRoom = lockedRooms.find(value =>
+        value.id === asserted.executionRoomId);
+      if (!room || !executionRoom) reject();
 
       if (task.ownerId !== asserted.taskOwnerId
         || task.requestorId !== asserted.requestorId
         || task.agentId !== asserted.agentId
-        || task.targetRoomId !== asserted.roomId
-        || task.contentRepresentation !== asserted.representation
+        || task.targetRoomId !== asserted.executionRoomId
+        || task.contentRepresentation !== asserted.definitionRepresentation
         || task.contentNamespaceId !== asserted.contentNamespaceId
         || task.contentRevision !== asserted.contentRevision
         || task.cryptoRequiredNamespaceFingerprint?.length !== 32
@@ -246,6 +318,22 @@ export function createProtectedTaskMessageProductGuard(
         || session.threadId !== asserted.graphThreadId
         || session.roomId !== asserted.roomId
         || room.namespaceId !== asserted.namespaceId
+        || (asserted.executionRoomId !== asserted.roomId && (
+          asserted.namespaceId !== asserted.contentNamespaceId
+          || room.ownerId !== asserted.requestorId
+          || room.type !== "private"
+          || room.kind !== "private"
+          || room.parentRoomId !== null
+          || room.archivedAt !== null
+          || room.humanActorIds.length !== 1
+          || room.humanActorIds[0] !== asserted.requesterHumanId
+          || executionRoom.ownerId !== asserted.taskOwnerId
+          || executionRoom.type !== "private"
+          || executionRoom.kind !== "task"
+          || executionRoom.archivedAt !== null
+          || executionRoom.humanActorIds.length !== 0
+        ))
+        || !protectedTaskDefinitionSupportsPolicy(task.contentRepresentation, policy.mode)
         || policy.revision !== asserted.policyRevision
         || policy.mode !== (asserted.representation === "dual"
           ? "shadow_encryption"

@@ -12,8 +12,8 @@ import {
   domainForegroundNamespaceBindingSetDigest,
 } from "@nautilo/lattice-crypto";
 import {
-  destroyTaskRuntimeBackgroundAuthorizationRequestV1,
-  encodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV2,
+  encodeTaskRuntimeBackgroundAuthorizationRequestV2,
 } from "@nautilo/lattice-crypto/background";
 import { deriveTaskContentCryptoObjectIdV1 } from "@nautilo/lattice-bridge";
 import type {
@@ -267,9 +267,9 @@ const binding = Object.freeze({
   deviceId: DEVICE,
 });
 
-test("lends exact awaiting recipient authority to the Runtime callback", async () => {
+test.each(["task.execute", "task.approval_resume", "task.await_reply_resume"] as const)("lends exact awaiting recipient authority to the Runtime callback (%s)", async workKind => {
   const value = occurrence();
-  const durable = record(value);
+  const durable = { ...record(value), workKind, purpose: workKind };
   let inspected:
     | Parameters<
         ProtectedTaskRuntimeRecipientAuthorityDependencies["withAuthority"]
@@ -540,6 +540,8 @@ test("rejects non-awaiting and substituted durable records before lattice use", 
   const value = occurrence();
   const current = record(value);
   for (const changed of [
+    { ...current, workKind: "task.dispatch", purpose: "task.dispatch" },
+    { ...current, workKind: "task.approval_resume", purpose: "task.await_reply_resume" },
     Object.freeze({
       ...current,
       snapshot: Object.freeze({ ...current.snapshot, state: "grant_ready" }),
@@ -679,6 +681,7 @@ test("lends exact bound authority without manufacturing an awaiting record", asy
   const requestPlan = createProtectedTaskRuntimeRecipientRequestPlan({
     crypto,
     occurrence: value,
+    executionIdentity: { executionSegment: 1 },
     initialRecord: initial,
     sourceRoomId: SOURCE_ROOM,
     authority: {
@@ -698,12 +701,23 @@ test("lends exact bound authority without manufacturing an awaiting record", asy
       recipientKeyId,
       recipientPublicKey: keyPair.publicKey,
       expiresAt,
+      signer: {
+        agentId: AGENT,
+        runtimeGeneration: 0,
+        signerPublicKey: bytes(23),
+        signerKeyId: `agent_runtime_signer_${Buffer.from(
+          crypto.hash(bytes(23)),
+        ).toString("hex")}`,
+      },
     },
     binding,
     authority: boundAuthority,
   });
+  if (request.formatVersion !== 2) {
+    throw new TypeError("Initial Task request did not use V2");
+  }
   const descriptorBytes =
-    encodeTaskRuntimeBackgroundAuthorizationRequestV1(request);
+    encodeTaskRuntimeBackgroundAuthorizationRequestV2(crypto, request);
   const bound = {
     ...initial,
     snapshot: {
@@ -780,7 +794,7 @@ test("lends exact bound authority without manufacturing an awaiting record", asy
     })).rejects.toThrow("expired before commit");
     expect(scopedOperationsDrained).toBe(true);
   } finally {
-    destroyTaskRuntimeBackgroundAuthorizationRequestV1(request);
+    destroyTaskRuntimeBackgroundAuthorizationRequestV2(request);
     descriptorBytes.fill(0);
     keyPair.privateKey.fill(0);
     keyPair.publicKey.fill(0);

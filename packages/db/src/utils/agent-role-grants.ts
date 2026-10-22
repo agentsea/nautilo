@@ -33,6 +33,7 @@ export const SENSITIVE_TABLES = [
   "task_run_message_associations",
   "protected_task_execution_segment_receipts",
   "protected_task_continuation_receipts",
+  "protected_task_wake_continuation_receipts",
   "group_moderation_scopes",
   "moderation_subjects",
   "moderation_restrictions",

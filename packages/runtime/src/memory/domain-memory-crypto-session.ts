@@ -36,6 +36,9 @@ export type DomainMemoryObjectProtectionRequest<Value> = Readonly<{
 }>;
 
 export interface DomainMemoryObjectProtector {
+  publishFresh?<Value>(request: DomainMemoryObjectProtectionRequest<Value> & Readonly<{
+    source: AgentObjectProtectionSource & Readonly<{ existingObjectId: null; plaintextBytes: Uint8Array }>;
+  }>): Promise<AgentObjectProtectionResult<Value>>;
   protect<Value>(request: DomainMemoryObjectProtectionRequest<Value>): Promise<
     AgentObjectProtectionResult<Value>
   >;
@@ -356,7 +359,10 @@ export function createDomainMemoryCryptoSession(input: Readonly<{
       if (payload === null) return unavailable("integrity_failure");
       const plaintextBytes = encodeMemoryPayloadV1(payload);
       try {
-        const result = await input.objects.protect({
+        const publish = content.kind === "complete" && input.objects.publishFresh !== undefined
+          ? input.objects.publishFresh.bind(input.objects)
+          : input.objects.protect.bind(input.objects);
+        const result = await publish({
           memoryId: plan.memoryId,
           contentRevision: plan.contentRevision,
           operationId: prepareOperationId,

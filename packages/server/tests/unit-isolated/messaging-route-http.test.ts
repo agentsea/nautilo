@@ -15,6 +15,14 @@
  */
 import { afterAll, beforeAll, describe, expect, mock, spyOn, test } from "bun:test";
 import Fastify, { type FastifyInstance } from "fastify";
+import { HumanMessage } from "@langchain/core/messages";
+import type { ToolCall } from "@langchain/core/messages/tool";
+import {
+  ToolCatalog,
+  clearToolCatalog,
+  getToolCatalog,
+  initToolCatalog,
+} from "@nautilo/catalog";
 import type { RoomDetailPayload } from "@nautilo/trust";
 import {
   accessRevision,
@@ -155,13 +163,24 @@ import {
   type MaintenanceGate,
   type RoomMemberView,
 } from "@nautilo/runtime";
-import { setRelayRegistry } from "@nautilo/agent";
+import {
+  MAX_SUBAGENT_DEPTH,
+  preModelNode,
+  registerAllTools,
+  setRelayRegistry,
+  taskCreationInvocationProvenanceForState,
+  type NautiloState,
+} from "@nautilo/agent";
 import { LiveShadowRecipientRegistry } from "@nautilo/lattice-bridge/server";
+import { freshForegroundActivationState } from "../../../runtime/src/executors/langgraph-executor";
+import { normalizeAdmittedToolCalls } from "../../../agent/src/nodes/tools";
 import {
   installProductionLiveShadowMessageComposition,
   uninstallProductionLiveShadowMessageComposition,
   type ProductionLiveShadowMessageComposition,
 } from "../../src/routes/live-shadow-message-composition";
+import { protectedTaskForegroundCreationCandidateIdentity } from
+  "../../src/routes/protected-task-foreground-creation-identity";
 import { createRequestLocalConductorInvoker } from "../../src/messaging/dispatch";
 
 bootstrapTestDbInstance();
@@ -172,6 +191,7 @@ const BOOTSTRAP_AGENT_ID = "c3333333-3333-4333-8333-333333333333";
 const CUSTOM_AGENT_ID = "44444444-4444-4444-8444-444444444444";
 const SENDER_USER_ID = "e5555555-5555-4555-8555-555555555555";
 const SENDER_ACTOR_ID = "f6666666-6666-4666-8666-666666666666";
+let priorToolCatalog: ToolCatalog | null = null;
 
 function fullForegroundPlan(operationId: string, sessionId: string): Uint8Array {
   const crypto = new LatticeCrypto(seededRng(318_111));
@@ -656,12 +676,74 @@ function jobLaneKeyFromLastCall(mocks: TestMocks): string {
   return callArgs![2] as string;
 }
 
+function preModelStateFromForegroundJobInput(
+  input: Record<string, unknown>,
+): NautiloState {
+  const activation = freshForegroundActivationState(input);
+  const text = (key: string): string => typeof input[key] === "string" ? input[key] : "";
+  return {
+    messages: [new HumanMessage(text("message"))],
+    threadId: 0,
+    langgraphThreadId: text("graphThreadId"),
+    model: null,
+    userId: text("ownerId"),
+    personaId: "owner",
+    voiceMode: false,
+    source: "api",
+    assistantName: "Genie",
+    soulFile: "",
+    memoryBrief: "",
+    memoryDelta: "",
+    currentThreadId: text("graphThreadId"),
+    preparedMessages: [],
+    toolNames: [],
+    approvedToolCalls: [],
+    pendingApproval: [],
+    memoryAccessEnvelope: null,
+    actorRole: input["actorRole"] === "owner" ? "owner" : "guest",
+    agentId: text("agentId"),
+    roomId: text("roomId"),
+    roomRoster: [],
+    approvalDenied: false,
+    turnId: text("turnId"),
+    causalHumanUserId: text("causalHumanUserId"),
+    explicitlySelected: input["explicitlySelected"] === true,
+    currentFolder: "",
+    currentFolderRelayId: "",
+    workspacePath: "",
+    activeMiniApp: null,
+    artifactRefs: [],
+    userTimezone: "UTC",
+    previousUserMessageAt: null,
+    securityAuditClientMeta: null,
+    toolWhitelist: undefined,
+    activatedToolNames: [],
+    relayCapabilities: undefined,
+    subagentMaxDepth: MAX_SUBAGENT_DEPTH,
+    skills: [],
+    engagedSkillNames: [],
+    awaitResponse: false,
+    awaitRoomId: "",
+    awaitFromUserIds: [],
+    awaitTaskId: "",
+    awaitTaskRunId: "",
+    awaitOwnerId: "",
+    ...activation,
+  };
+}
+
 beforeAll(() => {
   setBootstrapDefaultAgentId(BOOTSTRAP_AGENT_ID);
+  priorToolCatalog = getToolCatalog();
+  const catalog = new ToolCatalog();
+  registerAllTools(catalog);
+  initToolCatalog(catalog);
 });
 
 afterAll(() => {
   setBootstrapDefaultAgentId(ORIGINAL_BOOTSTRAP_AGENT);
+  if (priorToolCatalog === null) clearToolCatalog();
+  else initToolCatalog(priorToolCatalog);
   mock.restore();
 });
 
@@ -1083,7 +1165,10 @@ describe("POST /api/rooms/:roomId/messages agent-mediated routing", () => {
       expect(response.statusCode).toBe(202);
       expect(response.json()).toMatchObject({ accepted: true, jobId: "job-b1-test" });
       expect(mocks.createForegroundJob).toHaveBeenCalledTimes(1);
-      expect(jobInputFromLastCall(mocks)).not.toHaveProperty("verifiedOrdinaryOrigin");
+      const input = jobInputFromLastCall(mocks);
+      expect(input).not.toHaveProperty("verifiedOrdinaryOrigin");
+      expect(input).not.toHaveProperty("humanAlreadyPersisted");
+      expect(input["explicitlySelected"]).toBe(false);
     } finally {
       await app.close();
     }
@@ -1418,7 +1503,7 @@ describe("POST /api/rooms/:roomId/messages agent-mediated routing", () => {
     const app = await makeMessagingApp(
       mocks,
       { ownerId: SENDER_USER_ID, agentId: CUSTOM_AGENT_ID, roomId: R1_ID },
-      { actorRole: "guest", laneKey: `room:${R1_ID}`, graphThreadId: `room:${R1_ID}` },
+      { actorRole: "owner", laneKey: `room:${R1_ID}`, graphThreadId: `room:${R1_ID}` },
     );
     const operationId = "shared_agent_operation_m298_direct";
     const executionId = "10000000-0000-4000-8000-000000000298";
@@ -1610,7 +1695,8 @@ describe("POST /api/rooms/:roomId/messages agent-mediated routing", () => {
         agentId: CUSTOM_AGENT_ID,
       }));
       expect(mocks.createForegroundJob).toHaveBeenCalledTimes(1);
-      expect(jobInputFromLastCall(mocks)).toMatchObject({
+      const directInput = jobInputFromLastCall(mocks);
+      expect(directInput).toMatchObject({
         message: "Protected direct hello",
         // Transcript causality remains the admitted Human operation. The
         // distinct Agent execution id is held only by the opaque protected
@@ -1618,7 +1704,67 @@ describe("POST /api/rooms/:roomId/messages agent-mediated routing", () => {
         turnId: operationId,
         humanAlreadyPersisted: true,
         currentMessageId: 73,
+        explicitlySelected: true,
       });
+      const activated = freshForegroundActivationState(directInput);
+      expect(activated.trustedExecutionEntrypoint).toBe("foreground.main");
+
+      const directPreModelState = preModelStateFromForegroundJobInput(directInput);
+      const directPreModelPatch = await preModelNode(directPreModelState);
+      const normalized = normalizeAdmittedToolCalls([{
+        id: "task-call:protected-direct",
+        name: "schedule",
+        args: { message: "Protected reminder" },
+        type: "tool_call",
+      } satisfies ToolCall]);
+      expect(normalized).toHaveLength(1);
+      const invocation = taskCreationInvocationProvenanceForState(
+        { ...directPreModelState, ...directPreModelPatch } as NautiloState,
+        normalized[0]!.callId,
+      );
+      expect(invocation).toMatchObject({
+        ownerId: SENDER_USER_ID,
+        roomId: R1_ID,
+        entrypoint: "foreground.main",
+        effect: {
+          turnId: operationId,
+          toolCallId: "task-call:protected-direct",
+        },
+      });
+      const identity = protectedTaskForegroundCreationCandidateIdentity({
+        invocation,
+        candidate: {
+          ownerId: SENDER_USER_ID,
+          requestorId: SENDER_USER_ID,
+          agentId: CUSTOM_AGENT_ID,
+          callingRoomId: R1_ID,
+          prompt: "Protected reminder",
+          preset: "schedule",
+        },
+      });
+      expect(identity.operationId).toMatch(/^task-foreground-effect:/u);
+
+      const inferredInput = { ...directInput };
+      delete inferredInput["explicitlySelected"];
+      const inferredPreModelState = preModelStateFromForegroundJobInput(inferredInput);
+      expect(inferredPreModelState.trustedExecutionEntrypoint).toBeNull();
+      const inferredPreModelPatch = await preModelNode(inferredPreModelState);
+      const inferredInvocation = taskCreationInvocationProvenanceForState(
+        { ...inferredPreModelState, ...inferredPreModelPatch } as NautiloState,
+        normalized[0]!.callId,
+      );
+      expect(inferredInvocation).toBeNull();
+      expect(() => protectedTaskForegroundCreationCandidateIdentity({
+        invocation: inferredInvocation,
+        candidate: {
+          ownerId: SENDER_USER_ID,
+          requestorId: SENDER_USER_ID,
+          agentId: CUSTOM_AGENT_ID,
+          callingRoomId: R1_ID,
+          prompt: "Protected reminder",
+          preset: "schedule",
+        },
+      })).toThrow("trusted checkpointed tool effect");
       const createJobCall = mocks.createForegroundJob.mock.calls.at(-1) as
         | unknown[]
         | undefined;

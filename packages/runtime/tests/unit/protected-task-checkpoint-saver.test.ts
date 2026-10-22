@@ -3,15 +3,14 @@ import { describe, expect, test } from "bun:test";
 import { EncryptedCheckpointSaver } from "@nautilo/agent";
 import type { CreateEncryptedCheckpointSaverOptions } from "@nautilo/agent";
 import { LatticeCrypto } from "@nautilo/lattice-crypto";
+import { bindEncryptionDataOperationOwner } from "@nautilo/lattice-bridge";
 
 import {
   readProtectedTaskCheckpointPhysicalManifest,
   withNativeProtectedTaskCheckpointManifest,
   withNativeProtectedTaskCheckpointSaver,
-  withProtectedTaskCheckpointSaver,
 } from "../../src/tasks/protected-task-checkpoint-saver";
 
-type Input = Parameters<typeof withProtectedTaskCheckpointSaver>[0];
 type NativeInput = Parameters<typeof withNativeProtectedTaskCheckpointSaver>[0];
 type NativeManifestInput = Parameters<
   typeof withNativeProtectedTaskCheckpointManifest
@@ -23,6 +22,18 @@ function fixture() {
   let poolCalls = 0;
   const input = {
     crypto: new LatticeCrypto(),
+    owner: bindEncryptionDataOperationOwner({
+      policy: {
+        resolve: async () => ({
+          policy: {
+            mode: "encrypted_only" as const,
+            shadowBehavior: "strict" as const,
+          },
+          revalidationToken: 7,
+        }),
+        revalidate: async () => undefined,
+      },
+    }),
     evidence: {},
     identity: {
       taskId: "10000000-0000-4000-8000-000000000001",
@@ -35,6 +46,9 @@ function fixture() {
       expectedPolicyRevision: 7,
     },
     namespace: {},
+    restricted: {},
+    serverScope: "http://localhost:3001",
+    domains: [],
     signal: new AbortController().signal,
     now: () => 1_800_000_000_000,
     assertCurrentTaskAuthority: async () => undefined,
@@ -50,7 +64,7 @@ function fixture() {
       } as unknown as DedicatedPool;
     },
     execute: async (_saver: EncryptedCheckpointSaver) => "finished",
-  } as Input;
+  } as unknown as NativeInput;
   return {
     input,
     closeCalls: () => closeCalls,
@@ -59,60 +73,6 @@ function fixture() {
 }
 
 describe("protected Task checkpoint saver ownership", () => {
-  test("closes the exact dedicated pool after a successful segment", async () => {
-    const scenario = fixture();
-    const result = await withProtectedTaskCheckpointSaver({
-      ...scenario.input,
-      execute: async (saver) => {
-        expect(saver).toBeInstanceOf(EncryptedCheckpointSaver);
-        return "completed";
-      },
-    });
-    expect(result).toBe("completed");
-    expect(scenario.poolCalls()).toBe(1);
-    expect(scenario.closeCalls()).toBe(1);
-  });
-
-  test("closes the dedicated pool and preserves execution failure", async () => {
-    const scenario = fixture();
-    const failure = new Error("graph failed");
-    const caught = await withProtectedTaskCheckpointSaver({
-      ...scenario.input,
-      execute: async () => {
-        throw failure;
-      },
-    }).then(
-      () => null,
-      (error: unknown) => error,
-    );
-    expect(caught).toBe(failure);
-    expect(scenario.poolCalls()).toBe(1);
-    expect(scenario.closeCalls()).toBe(1);
-  });
-
-  test("refuses to share a checkpoint pool across Task-run segments", async () => {
-    const scenario = fixture();
-    const pool = scenario.input.createDedicatedPool();
-    await withProtectedTaskCheckpointSaver({
-      ...scenario.input,
-      createDedicatedPool: () => pool,
-    });
-    let entered = false;
-    const failure = await withProtectedTaskCheckpointSaver({
-      ...scenario.input,
-      createDedicatedPool: () => pool,
-      execute: async () => {
-        entered = true;
-      },
-    }).then(
-      () => null,
-      (error: unknown) => error,
-    );
-    expect(failure).toBeInstanceOf(TypeError);
-    expect(entered).toBe(false);
-    expect(scenario.closeCalls()).toBe(1);
-  });
-
   test("native cells use a fresh Task-run saver and close its pool", async () => {
     const scenario = fixture();
     const native = {

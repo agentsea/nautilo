@@ -1,3 +1,4 @@
+import type { TaskRuntimePublicationSignerEvidence } from "./task-runtime-publication-signing.ts";
 import type {
   ObjectAccessManifestStorageHeadV2,
   ObjectAccessStorageStateV2,
@@ -68,6 +69,7 @@ export interface DeviceWrappedLiveShadowAgentObjectAccessGenesisAuthorizationExp
     DeviceWrappedLiveShadowAgentObjectAccessGenesisAuthorityContextV1;
   readonly signerPublicKey: Uint8Array;
   readonly signerPublicKeyHash: Uint8Array;
+  readonly signerEvidence?: TaskRuntimePublicationSignerEvidence;
 }
 
 export interface DeviceWrappedAgentObjectAccessGenesisSetAuthorizationExpectationV1 {
@@ -76,6 +78,8 @@ export interface DeviceWrappedAgentObjectAccessGenesisSetAuthorizationExpectatio
     DeviceWrappedAgentObjectAccessGenesisSetAuthorityContextV1;
   readonly signerPublicKey: Uint8Array;
   readonly signerPublicKeyHash: Uint8Array;
+  readonly signerEvidence?: TaskRuntimePublicationSignerEvidence;
+  readonly signerEvidenceBytes?: Uint8Array;
 }
 
 export interface TaskRuntimeAgentObjectAccessGenesisSetAuthorizationExpectationV1 {
@@ -88,6 +92,13 @@ export interface TaskRuntimeAgentObjectAccessGenesisSetAuthorizationExpectationV
   readonly managerSigningPublicKeyHash: Uint8Array;
 }
 
+export interface TaskRuntimeTemporaryAgentObjectAccessGenesisSetAuthorizationExpectationV1 {
+  readonly kind: "task-runtime-temporary-agent-genesis-set";
+  readonly context:
+    TaskRuntimeAgentObjectAccessGenesisSetAuthorityContextV1;
+  readonly signerEvidenceBytes: Uint8Array;
+}
+
 export type ObjectAccessAuthorizationExpectationV2 =
   | ObjectAccessGenesisAuthorizationExpectationV2
   | HumanObjectAccessGenesisAuthorizationExpectationV5
@@ -95,7 +106,8 @@ export type ObjectAccessAuthorizationExpectationV2 =
   | AgentObjectAccessGenesisAuthorizationExpectationV3
   | DeviceWrappedLiveShadowAgentObjectAccessGenesisAuthorizationExpectationV1
   | DeviceWrappedAgentObjectAccessGenesisSetAuthorizationExpectationV1
-  | TaskRuntimeAgentObjectAccessGenesisSetAuthorizationExpectationV1;
+  | TaskRuntimeAgentObjectAccessGenesisSetAuthorizationExpectationV1
+  | TaskRuntimeTemporaryAgentObjectAccessGenesisSetAuthorizationExpectationV1;
 
 /**
  * Process-local proof that one object-access state write passed fresh host

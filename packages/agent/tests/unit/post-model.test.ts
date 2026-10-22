@@ -1,3 +1,4 @@
+import { runWithProtectedTaskProjectFilePort, type ProtectedTaskProjectFilePort } from "../../src/runtime/protected-task-project-file";
 import { afterEach, describe, test, expect, spyOn } from "bun:test";
 import { AIMessage, HumanMessage, ToolMessage } from "@langchain/core/messages";
 import { DynamicStructuredTool } from "@langchain/core/tools";
@@ -1922,5 +1923,32 @@ describe("verified ordinary-origin host resolution precedes approval", () => {
     }
     expect(interrupted).toBe(true);
     expect(overrideCalls).toBe(0);
+  });
+});
+
+
+describe("protected project file host admission", () => {
+  test("pins only the private Task dispatcher and rejects a foreign Run without ordinary lookup", async () => {
+    const catalog = new ToolCatalog();
+    registerAllTools(catalog); initToolCatalog(catalog);
+    setOrdinaryHostResolver({ resolve: () => { throw new Error("Ordinary host lookup must not run"); } });
+    const port: ProtectedTaskProjectFilePort = { taskId: "task", taskRunId: "run", agentId: "agent", humanUserId: "human",
+      relayId: "captured-relay", workspaceRoot: "/project/child", dispatch: () => { throw new Error("Post-model must not dispatch"); } };
+    const state = makeState([new AIMessage({ content: "", tool_calls: [
+      { id: "project-file", name: "file", args: { command: "read", zone: "current", path: "README.md" } },
+    ] })]);
+    Object.assign(state, { taskRun: true, currentTaskId: "task", currentTaskRunId: "run", agentId: "agent",
+      causalHumanUserId: "human", trustedExecutionEntrypoint: "background.task", activatedToolNames: ["file"],
+      verifiedOrdinaryOrigin: null, currentFolder: "/project/child", workspacePath: "/project/child" });
+    await runWithProtectedTaskProjectFilePort(port, async () => {
+      const admitted = await createPostModelNode(makeMockResolver({ file: { type: "read_only" } }), NO_MATCH)(state);
+      expect(admitted.requiredHostRelays).toEqual({ "project-file": "captured-relay" });
+      expect(admitted.approvedToolCalls).toHaveLength(1);
+      state.currentTaskRunId = "foreign-run";
+      const denied = await createPostModelNode(makeMockResolver({ file: { type: "read_only" } }), NO_MATCH)(state);
+      expect(denied.approvedToolCalls).toEqual([]);
+      expect(denied.requiredHostRelays).toEqual({});
+      expect(denied.approvalDenied).toBe(true);
+    });
   });
 });

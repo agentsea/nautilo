@@ -20,6 +20,9 @@ const AGENT = "22222222-2222-4222-8222-222222222222";
 const ROOM = "33333333-3333-4333-8333-333333333333";
 const TASK = "44444444-4444-4444-8444-444444444444";
 const RUN = "55555555-5555-4555-8555-555555555555";
+const FOREIGN_OWNER = "66666666-6666-4666-8666-666666666666";
+const OTHER_HUMAN = "77777777-7777-4777-8777-777777777777";
+const REQUESTER_USER = "88888888-8888-4888-8888-888888888888";
 const DB = {} as DirectDatabase;
 
 function candidate(overrides: Partial<TaskCreateInput> = {}): TaskCreateInput {
@@ -86,15 +89,23 @@ function ports(
 
 describe("Task creation admission", () => {
   test("Plain returns the exact ordinary candidate without classification", async () => {
-    const ordinary = candidate({ metadata: { unknownFutureField: "preserved" } });
-    const result = await getPlaintextTaskCreationAdmission().admit(
-      admissionInput(ordinary),
-    );
+    const ordinary = candidate({
+      ownerId: FOREIGN_OWNER,
+      metadata: { unknownFutureField: "preserved" },
+    });
+    const provenance = createHumanApiTaskCreationProvenance({
+      ownerId: FOREIGN_OWNER,
+    });
+    const input = admissionInput(ordinary, provenance);
+    const result = await getPlaintextTaskCreationAdmission().admit(input);
 
     expect(result.kind).toBe("ordinary");
     if (result.kind !== "ordinary") throw new Error("ordinary fixture rejected");
     expect(result.candidate).toBe(ordinary);
+    expect(result.candidate.ownerId).toBe(FOREIGN_OWNER);
     expect(result.candidate.metadata).toEqual({ unknownFutureField: "preserved" });
+    expect(input.provenance).toBe(provenance);
+    expect(input.provenance.ownerId).toBe(FOREIGN_OWNER);
   });
 
   test("prepares one root authority while separating protected metadata", async () => {
@@ -116,7 +127,13 @@ describe("Task creation admission", () => {
 
     expect(result).toEqual({
       kind: "protected",
+      canonicalTaskIdentity: { ownerId: HUMAN, requestorId: HUMAN, agentId: AGENT },
       prepared: {
+        canonicalTaskIdentity: {
+          ownerId: HUMAN,
+          requestorId: HUMAN,
+          agentId: AGENT,
+        },
         authority: {
           authorityVersion: 1,
           kind: "requester_private_namespace",
@@ -154,6 +171,152 @@ describe("Task creation admission", () => {
     expect(dependencies.lastInput()).not.toHaveProperty("prompt");
     expect(dependencies.lastInput()).not.toHaveProperty("expectedOutput");
     expect(dependencies.lastInput()).not.toHaveProperty("metadata");
+  });
+
+  test("binds content authority to the resolved Human actor while retaining the requester User identity", async () => {
+    const dependencies = ports();
+    const original = candidate({ ownerId: REQUESTER_USER, requestorId: REQUESTER_USER });
+    const provenance = createHumanApiTaskCreationProvenance({ ownerId: REQUESTER_USER });
+    const result = await createProtectedTaskCreationAdmissionV1(dependencies).admit({
+      db: DB,
+      candidate: original,
+      provenance,
+      invocationAuthority: createAcceptedInvocationAuthority(REQUESTER_USER),
+    });
+
+    expect(result.kind).toBe("protected");
+    if (result.kind !== "protected") throw new Error("canonical identity fixture rejected");
+    expect(result.prepared.canonicalTaskIdentity).toEqual({
+      ownerId: REQUESTER_USER,
+      requestorId: REQUESTER_USER,
+      agentId: AGENT,
+    });
+    expect(result.prepared.authority.requesterHumanId).toBe(HUMAN);
+    expect(dependencies.lastInput()).toMatchObject({
+      ownerId: REQUESTER_USER,
+      requestorId: REQUESTER_USER,
+    });
+  });
+
+  test.each(["foreground.main", "foreground.fork"] as const)(
+    "authenticates a foreign-owned Genie %s origin before assigning the protected Task to its requester",
+    async (entrypoint) => {
+      const dependencies = ports();
+      const admission = createProtectedTaskCreationAdmissionV1(dependencies);
+      const originalMetadata = {};
+      const original = candidate({
+        ownerId: FOREIGN_OWNER,
+        requestorId: HUMAN,
+        agentId: AGENT,
+        metadata: originalMetadata,
+      });
+      const originalSnapshot = {
+        ...original,
+        metadata: { ...originalMetadata },
+      };
+      const provenance = createAgentTurnTaskCreationProvenance({
+        ownerId: FOREIGN_OWNER,
+        invocation: {
+          ownerId: FOREIGN_OWNER,
+          roomId: ROOM,
+          entrypoint,
+        },
+      });
+
+      const result = await admission.admit({
+        ...admissionInput(original, provenance),
+        invocationAuthority: createAcceptedInvocationAuthority(HUMAN),
+      });
+
+      expect(result.kind).toBe("protected");
+      if (result.kind !== "protected") {
+        throw new Error("foreign-owned Genie root fixture rejected");
+      }
+      expect(result.prepared.canonicalTaskIdentity).toEqual({
+        ownerId: HUMAN,
+        requestorId: HUMAN,
+        agentId: AGENT,
+      });
+      expect(result.prepared.authority).toMatchObject({
+        requesterHumanId: HUMAN,
+      });
+      expect(dependencies.lastInput()).toMatchObject({
+        ownerId: HUMAN,
+        requestorId: HUMAN,
+        agentId: AGENT,
+        provenance,
+      });
+      expect(dependencies.lastInput()?.provenance).toBe(provenance);
+      expect(provenance.ownerId).toBe(FOREIGN_OWNER);
+      expect(original).toEqual(originalSnapshot);
+      expect(original.ownerId).toBe(FOREIGN_OWNER);
+      expect(original.requestorId).toBe(HUMAN);
+      expect(original.metadata).toBe(originalMetadata);
+    },
+  );
+
+  test("rejects a requester without matching accepted invocation authority before resolution", async () => {
+    const dependencies = ports();
+    const original = candidate({ ownerId: FOREIGN_OWNER });
+    const provenance = createAgentTurnTaskCreationProvenance({
+      ownerId: FOREIGN_OWNER,
+      invocation: {
+        ownerId: FOREIGN_OWNER,
+        roomId: ROOM,
+        entrypoint: "foreground.main",
+      },
+    });
+
+    expect(
+      createProtectedTaskCreationAdmissionV1(dependencies).admit({
+        ...admissionInput(original, provenance),
+        invocationAuthority: createAcceptedInvocationAuthority(OTHER_HUMAN),
+      }),
+    ).rejects.toThrow("Accepted invocation authority subject mismatch");
+    expect(dependencies.calls).toEqual({ shape: 0, namespace: 0 });
+    expect(original.ownerId).toBe(FOREIGN_OWNER);
+  });
+
+  test("rejects foreign-owner provenance that does not authenticate the original candidate owner", async () => {
+    const dependencies = ports();
+    const original = candidate({ ownerId: FOREIGN_OWNER });
+    const wrongProvenance = createAgentTurnTaskCreationProvenance({
+      ownerId: OTHER_HUMAN,
+      invocation: {
+        ownerId: OTHER_HUMAN,
+        roomId: ROOM,
+        entrypoint: "foreground.main",
+      },
+    });
+
+    expect(
+      createProtectedTaskCreationAdmissionV1(dependencies).admit(
+        admissionInput(original, wrongProvenance),
+      ),
+    ).rejects.toThrow("Task creation requires server-authored provenance");
+    expect(dependencies.calls).toEqual({ shape: 0, namespace: 0 });
+    expect(original.ownerId).toBe(FOREIGN_OWNER);
+  });
+
+  test("rejects a forged foreign-owner provenance before resolution", async () => {
+    const dependencies = ports();
+    const original = candidate({ ownerId: FOREIGN_OWNER });
+    const forgedProvenance = Object.freeze({
+      kind: "agent_turn" as const,
+      ownerId: FOREIGN_OWNER,
+      roomId: ROOM,
+      entrypoint: "foreground.main" as const,
+      parentTaskId: null,
+      parentTaskRunId: null,
+    });
+
+    expect(
+      createProtectedTaskCreationAdmissionV1(dependencies).admit({
+        ...admissionInput(original),
+        provenance: forgedProvenance,
+      }),
+    ).rejects.toThrow("Task creation requires server-authored provenance");
+    expect(dependencies.calls).toEqual({ shape: 0, namespace: 0 });
   });
 
   test("accepts the ordinary empty metadata shape for protected roots", async () => {

@@ -13,6 +13,20 @@ export interface ImmutableContentAccessAudience {
   readonly humanActorIds: readonly string[];
 }
 
+type ContentAccessNamespace = Readonly<{
+  roomId: string;
+  namespaceId: string;
+}>;
+
+export function resolveContentAccessNamespaceInTx(
+  tx: InviteSeedTx,
+  input: ImmutableContentAccessAudience,
+): Promise<ContentAccessNamespace & Readonly<{ minted: boolean }>>;
+export function resolveContentAccessNamespaceInTx(
+  tx: InviteSeedTx,
+  input: ImmutableContentAccessAudience,
+  mode: "find",
+): Promise<ContentAccessNamespace | null>;
 /**
  * Persistence primitive, not authorization. The caller must authorize the
  * object/operation and fence its policy and invoking audience on this same
@@ -26,13 +40,16 @@ export interface ImmutableContentAccessAudience {
 export async function resolveContentAccessNamespaceInTx(
   tx: InviteSeedTx,
   input: ImmutableContentAccessAudience,
-): Promise<{ roomId: string; namespaceId: string; minted: boolean }> {
+  mode: "find" | "resolve" = "resolve",
+): Promise<(ContentAccessNamespace & Readonly<{ minted?: boolean }>) | null> {
   const audience = [...new Set(input.humanActorIds)].sort();
   if (!audience.length || !audience.includes(input.requesterActorId)) {
     throw new Error("Content access audience must contain its requester");
   }
   const lockKey = `content-access:human-set:${JSON.stringify(audience)}`;
-  await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`);
+  await tx.execute(
+    sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`,
+  );
 
   // Lock identities through publication. A disabled or nonlocal target is
   // never admitted merely because an old Room still contains its actor ID.
@@ -41,30 +58,33 @@ export async function resolveContentAccessNamespaceInTx(
     .where(and(inArray(actors.id, audience), eq(actors.kind, "user"),
       isNull(users.disabledAt), isNull(users.server)))
     .orderBy(asc(actors.id)).for("share");
-  if (humans.length !== audience.length || !humans.some((human) =>
-    human.actorId === input.requesterActorId && human.userId === input.requesterUserId)) {
+  if (humans.length !== audience.length || !humans.some(human =>
+    human.actorId === input.requesterActorId
+      && human.userId === input.requesterUserId)) {
     throw new Error("Content access audience is no longer available");
   }
 
   // Historical duplicates are preserved. Select one deterministically, and
-  // verify canonical membership rather than trusting only its denormalization.
-  // Opaque historical thread keys are deliberately not interpreted here.
-  const [candidate] = await tx.select({ roomId: rooms.id, namespaceId: rooms.namespaceId })
+  // verify canonical membership rather than trusting only denormalization.
+  const [candidate] = await tx.select({ roomId: rooms.id,
+    namespaceId: rooms.namespaceId })
     .from(rooms).where(and(eq(rooms.kind, "access"),
       eq(rooms.humanActorIds, audience),
       privateNamespaceBoundarySql(rooms.namespaceId)))
     .orderBy(asc(rooms.createdAt), asc(rooms.id)).limit(1);
-  if (candidate) {
+  if (candidate !== undefined) {
     const members = await tx.select({ actorId: roomMembers.actorId })
       .from(roomMembers).where(eq(roomMembers.roomId, candidate.roomId))
       .orderBy(asc(roomMembers.actorId));
-    if (members.length === audience.length && members.every((member, i) => member.actorId === audience[i])) {
-      return { ...candidate, minted: false };
+    if (members.length !== audience.length || !members.every((member, index) =>
+      member.actorId === audience[index])) {
+      throw new Error("Content access Room membership is inconsistent");
     }
-    // A corrupt membership projection is not permission to mint another
-    // authority container or silently select a different audience.
-    throw new Error("Content access Room membership is inconsistent");
+    return mode === "find"
+      ? Object.freeze(candidate)
+      : Object.freeze({ ...candidate, minted: false });
   }
+  if (mode === "find") return null;
 
   const roomId = randomUUID();
   const { namespaceId } = await insertPrivateRoomBundleTx(tx, {
@@ -76,8 +96,16 @@ export async function resolveContentAccessNamespaceInTx(
     humanActorIds: audience,
     roomKind: "access",
     roomType: "shared",
-    memberRows: audience.map((actorId) => ({ actorId,
+    memberRows: audience.map(actorId => ({ actorId,
       roomRole: actorId === input.requesterActorId ? "admin" : "member" })),
   });
-  return { roomId, namespaceId, minted: true };
+  return Object.freeze({ roomId, namespaceId, minted: true });
+}
+
+/** Read the canonical immutable access Namespace without creating one. */
+export function findContentAccessNamespaceInTx(
+  tx: InviteSeedTx,
+  input: ImmutableContentAccessAudience,
+): Promise<ContentAccessNamespace | null> {
+  return resolveContentAccessNamespaceInTx(tx, input, "find");
 }
