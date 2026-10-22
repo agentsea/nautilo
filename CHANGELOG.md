@@ -7,6 +7,11 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Surplus-only chat can use available sellers for eligible ordinary models,
+  preserves streamed tool calls, and respects qualified marketplace output
+  limits. Missing recovery keys retain the original marketplace failure;
+  pre-routing error traces no longer become pending cost receipts.
+
 - Embeddings can use Surplus with an explicit Venice text-embedding-3-large
   selection and Prefer Surplus enabled. Protected Memory shows and binds the
   processing route before saving or searching, and usage receipts track

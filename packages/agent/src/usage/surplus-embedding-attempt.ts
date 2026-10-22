@@ -13,6 +13,12 @@ import {
   surplusReceiptTelemetry,
 } from "../providers/surplus-reconciliation";
 import { readSurplusWireReceipt, type SurplusWireReceipt } from "../providers/surplus-transport";
+import {
+  provenPreRoutingSurplusTrace,
+  readBoundedSurplusErrorBody,
+  safeSurplusErrorDiagnostics,
+  surplusErrorTelemetry,
+} from "../providers/surplus-error";
 import { getUsageContext, normalizeUsageRoomId } from "./usage-context";
 
 const SURPLUS_EMBEDDINGS_URL = "https://api.surplusintelligence.ai/v1/embeddings";
@@ -31,6 +37,7 @@ export class SurplusEmbeddingAttemptError extends Error {
       | "outcome_unknown",
     readonly status?: number,
     readonly retryable = false,
+    readonly vendorCode?: string,
   ) {
     super(failureCode === "provider_unavailable"
       ? "Surplus is temporarily unavailable for embeddings. Retry shortly."
@@ -150,6 +157,8 @@ export async function invokeSurplusEmbeddingAttempt<T>(
   let wireDispatched = false;
   let responseObserved = false;
   let evidence: SurplusEmbeddingUsageEvidence = {};
+  let receiptAttached = false;
+  let errorBodyRequestId: string | undefined;
   try {
     input.assertStillAuthorized();
     input.signal?.throwIfAborted();
@@ -178,7 +187,7 @@ export async function invokeSurplusEmbeddingAttempt<T>(
     responseObserved = true;
     responseStatus = response.status;
     receipt = readSurplusWireReceipt(response.headers);
-    if (receipt.requestId) {
+    if (receipt.requestId && response.ok) {
       try {
         await resolvedDeps.attach({
           attemptId,
@@ -187,6 +196,7 @@ export async function invokeSurplusEmbeddingAttempt<T>(
           endpoint: "/v1/embeddings",
           metadata: surplusReceiptTelemetry(receipt),
         });
+        receiptAttached = true;
       } catch {
         warn("[nautilo/surplus] embedding receipt persistence failed", {
           failureCode: "request_receipt_failed",
@@ -195,11 +205,22 @@ export async function invokeSurplusEmbeddingAttempt<T>(
     }
     assertQualifiedSurplusEmbeddingReceipt(input.route, receipt, response.status);
     if (!response.ok) {
+      let diagnostics: Awaited<ReturnType<typeof readBoundedSurplusErrorBody>> = {};
+      try {
+        // This response is terminal and will not be parsed elsewhere. Reading
+        // it directly avoids tee cancellation waiting on an unread clone.
+        diagnostics = await readBoundedSurplusErrorBody(response.body?.getReader());
+      } catch {
+        // Diagnostics are optional. Preserve the provider failure when the
+        // runtime cannot read the error response.
+      }
+      errorBodyRequestId = diagnostics.requestId;
       await response.body?.cancel();
       throw new SurplusEmbeddingAttemptError(
         "provider_unavailable",
         response.status,
         response.status === 429 || response.status >= 500,
+        diagnostics.vendorCode,
       );
     }
     let value: unknown;
@@ -239,6 +260,17 @@ export async function invokeSurplusEmbeddingAttempt<T>(
     const cancelled = input.signal?.aborted === true;
     const cost = receiptCostUsd(receipt);
     const knownPreWireZero = !wireDispatched;
+    const matchingBodyRequestId = errorBodyRequestId !== undefined
+      && (receipt?.requestId === undefined || receipt.requestId === errorBodyRequestId)
+      ? errorBodyRequestId
+      : undefined;
+    const trace = provenPreRoutingSurplusTrace({
+      error,
+      responseStatus,
+      receipt,
+      ...(matchingBodyRequestId === undefined ? {} : { requestId: matchingBodyRequestId }),
+    });
+    const safeDiagnostics = safeSurplusErrorDiagnostics(error, responseStatus);
     const failureCode = cancelled
       ? "cancelled"
       : !wireDispatched
@@ -248,15 +280,39 @@ export async function invokeSurplusEmbeddingAttempt<T>(
         : responseObserved
           ? "invalid_response"
           : "outcome_unknown";
+    if (!trace && receipt?.requestId && !receiptAttached) {
+      try {
+        await resolvedDeps.attach({
+          attemptId,
+          providerRequestId: receipt.requestId,
+          ...(receipt.providerFamily ? { servingProvider: receipt.providerFamily.toLowerCase() } : {}),
+          endpoint: "/v1/embeddings",
+          metadata: {
+            ...surplusReceiptTelemetry(receipt),
+            ...surplusErrorTelemetry(safeDiagnostics),
+          },
+        });
+        receiptAttached = true;
+      } catch {
+        warn("[nautilo/surplus] embedding receipt persistence failed", {
+          failureCode: "request_receipt_failed",
+        });
+      }
+    }
     try {
       await settleWithRetry(resolvedDeps.settle, {
         attemptId,
-        ...(receipt?.requestId ? { providerRequestId: receipt.requestId } : {}),
-        ...(receipt ? { metadata: surplusReceiptTelemetry(receipt) } : {}),
+        ...(!trace && receipt?.requestId ? { providerRequestId: receipt.requestId } : {}),
+        ...(!receipt && Object.keys(safeDiagnostics).length === 0 ? {} : {
+          metadata: {
+            ...(receipt ? surplusReceiptTelemetry(receipt) : {}),
+            ...surplusErrorTelemetry(trace ?? safeDiagnostics),
+          },
+        }),
         outcome: cancelled ? "cancelled" : responseObserved || !wireDispatched ? "failed" : "unknown",
-        costState: knownPreWireZero || cost !== undefined
+        costState: knownPreWireZero || trace || cost !== undefined
           ? "actual" : receipt?.requestId ? "pending" : "unknown",
-        ...(knownPreWireZero ? { actualCostUsd: 0 }
+        ...(knownPreWireZero || trace ? { actualCostUsd: 0 }
           : cost === undefined ? {} : { actualCostUsd: cost }),
         ...(evidence.inputTokens === undefined ? {} : { inputTokens: evidence.inputTokens }),
         ...(evidence.totalTokens === undefined ? {} : { totalTokens: evidence.totalTokens }),

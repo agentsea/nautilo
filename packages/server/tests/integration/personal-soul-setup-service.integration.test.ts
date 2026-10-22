@@ -4,7 +4,9 @@ import { installPersonalLlmAttemptOwner } from "@nautilo/agent";
 import {
   actors,
   agents,
+  beginSurplusLlmAttempt,
   channelIdentities,
+  classifySurplusLlmAttemptRecovery,
   consumePersonalSoulAttempt,
   credentials,
   eq,
@@ -14,6 +16,7 @@ import {
   PERSONAL_SOUL_WINDOW_MS,
   profiles,
   soulGenerationAttempts,
+  settleSurplusLlmAttempt,
   SoulGenerationRateLimitError,
   upsertServerProviderPolicy,
   users,
@@ -318,6 +321,47 @@ afterAll(async () => {
 });
 
 describe.serial("personal-key own-Genie Soul setup service", () => {
+  test("receipt recovery preserves inference diagnostics in the durable attempt", async () => {
+    const attemptId = randomUUID();
+    try {
+      await beginSurplusLlmAttempt({
+        id: attemptId, userId: fx.ownerId, callType: "soul", provider: "openrouter",
+        model: SOUL_MODEL, endpoint: "/v1/chat/completions", fundingKind: "service",
+        metadata: { syntheticReceiptRecovery: true },
+      });
+      await settleSurplusLlmAttempt({
+        attemptId, outcome: "unknown", costState: "pending",
+        providerRequestId: `synthetic-receipt-${attemptId}`, failureCode: "outcome_unknown",
+        metadata: { surplusErrorCode: "upstream_unavailable", surplusResponseStatus: 503 },
+      });
+      const [before] = await fx.db.select().from(llmUsageEvents).where(eq(llmUsageEvents.id, attemptId));
+      expect(before).toBeDefined();
+      expect(await classifySurplusLlmAttemptRecovery({
+        attemptId, expectedUpdatedAt: before!.updatedAt,
+        recoveryState: "retryable", failureCode: "receipt_not_found",
+      })).toBe(true);
+      const [after] = await fx.db.select().from(llmUsageEvents).where(eq(llmUsageEvents.id, attemptId));
+      expect(after).toMatchObject({
+        attemptOutcome: "unknown", costState: "pending", actualCostUsd: null,
+        failureCode: "outcome_unknown", recoveryState: "retryable",
+        metadata: { syntheticReceiptRecovery: true, surplusErrorCode: "upstream_unavailable",
+          surplusResponseStatus: 503, surplusReceiptRecoveryFailureCode: "receipt_not_found" },
+      });
+      await settleSurplusLlmAttempt({ attemptId, outcome: "unknown", costState: "actual", actualCostUsd: 0.0001,
+        failureCode: "outcome_unknown" });
+      expect(await classifySurplusLlmAttemptRecovery({
+        attemptId, expectedUpdatedAt: after!.updatedAt,
+        recoveryState: "blocked_repair", failureCode: "receipt_binding_invalid",
+      })).toBe(false);
+      const [settled] = await fx.db.select().from(llmUsageEvents).where(eq(llmUsageEvents.id, attemptId));
+      expect(settled?.failureCode).toBe("outcome_unknown");
+      expect(settled?.actualCostUsd).toBe("0.00010000");
+      expect(settled?.recoveryState).toBeNull();
+    } finally {
+      await fx.db.delete(llmUsageEvents).where(eq(llmUsageEvents.id, attemptId));
+    }
+  });
+
   test("admits a personal-only Community Human through both endpoints and records server-funded Soul usage", async () => {
     await upsertServerProviderPolicy(fx.db, { allowPersonalProviderKeys: true });
     const requestsBefore = providerRequests.length;
@@ -546,7 +590,7 @@ describe.serial("personal-key own-Genie Soul setup service", () => {
         .where(eq(llmUsageEvents.userId, surplusRecoveryCommunity.userId));
       expect(usage).toHaveLength(6);
       expect(new Set(usage.map((row) => row.id)).size).toBe(6);
-      expect(usage.map((row) => row.providerRequestId).sort()).toEqual(
+      expect(usage.map((row) => row.providerRequestId ?? row.metadata?.["surplusTraceId"]).sort()).toEqual(
         requests.map((request) => request.requestId).sort(),
       );
       expect(usage.filter((row) => row.attemptOutcome === "failed")).toHaveLength(4);
@@ -555,8 +599,13 @@ describe.serial("personal-key own-Genie Soul setup service", () => {
         expect(row).toMatchObject({ callType: "soul", fundingKind: "service", providerRoute: "surplus", payerHumanId: null });
         expect(row.metadata?.["agentId"]).toBe(surplusRecoveryCommunity.agentId);
         if (row.attemptOutcome === "failed") {
-          expect(row.costState).toBe("pending");
-          expect(row.actualCostUsd).toBeNull();
+          expect(row.providerRequestId).toBeNull();
+          expect(row.metadata?.["surplusTraceId"]).toBeString();
+          expect(["no_healthy_sellers", "no_sellers_for_model"]
+            .some((code) => code === row.metadata?.["surplusErrorCode"])).toBe(true);
+          expect(row.costState).toBe("actual");
+          expect(row.actualCostUsd).toBe("0.00000000");
+          expect(row.recoveryState).toBeNull();
         } else {
           expect(row.costState).toBe("actual");
           expect(row.actualCostUsd).not.toBeNull();

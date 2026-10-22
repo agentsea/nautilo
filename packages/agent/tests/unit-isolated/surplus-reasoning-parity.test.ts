@@ -3,7 +3,7 @@
  * this suite replaces them with content-free receipts and must not leak those
  * module mocks into the shared unit-test process.
  */
-import { AIMessage, HumanMessage } from "@langchain/core/messages";
+import { AIMessage, AIMessageChunk, HumanMessage } from "@langchain/core/messages";
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 
 const createModelInputs: Record<string, unknown>[] = [];
@@ -42,9 +42,11 @@ const {
   surplusReasoningModelKwargs,
 } = await import("../../src/providers/factory");
 const {
+  assertCompleteSurplusResponse,
   canUseQualifiedSurplusChatRoute,
   invokeSurplusChatAttempt,
 } = await import("../../src/providers/surplus-attempt");
+const { SurplusMarketplaceAttemptError } = await import("../../src/providers/surplus-error");
 const { runWithUsageContext } = await import("../../src/usage/usage-context");
 
 const MODEL_ID = "openrouter:openai/gpt-5.6-sol";
@@ -68,6 +70,22 @@ beforeEach(() => {
 });
 
 describe("Surplus reasoning parity", () => {
+  test("requires an actual AI message even when a generic value carries terminal text", () => {
+    const receipt = { truncated: false };
+    for (const generic of [
+      null,
+      undefined,
+      { content: "plausible text", response_metadata: { finish_reason: "stop" } },
+      new HumanMessage({ content: "plausible text" }),
+    ]) {
+      expect(() => assertCompleteSurplusResponse(receipt, generic)).toThrow();
+    }
+    expect(() => assertCompleteSurplusResponse(receipt, new AIMessageChunk({
+      content: "real streamed text",
+      response_metadata: { finish_reason: "stop" },
+    }))).not.toThrow();
+  });
+
   test("forwards only trimmed opaque UUID session state", () => {
     expect(openRouterSessionModelKwargs(
       " 22222222-2222-4222-8222-222222222222 ",
@@ -390,7 +408,13 @@ describe("Surplus reasoning parity", () => {
       },
     });
 
-    expect(await attempt).toEqual({ kind: "direct_fallback" });
+    const result = await attempt;
+    expect(result).toMatchObject({
+      kind: "direct_fallback",
+      failure: { code: "surplus_marketplace_attempt_failed" },
+    });
+    if (result.kind !== "direct_fallback") throw new Error("expected direct fallback");
+    expect(result.failure).toBeInstanceOf(SurplusMarketplaceAttemptError);
     expect(inferenceCalls).toBe(1);
     expect(beginAttempt).toHaveBeenCalledTimes(1);
     expect(settleAttempt).toHaveBeenCalledTimes(2);
@@ -423,7 +447,12 @@ describe("Surplus reasoning parity", () => {
       },
     });
 
-    expect(result).toEqual({ kind: "direct_fallback" });
+    expect(result).toMatchObject({
+      kind: "direct_fallback",
+      failure: { code: "surplus_marketplace_attempt_failed" },
+    });
+    if (result.kind !== "direct_fallback") throw new Error("expected direct fallback");
+    expect(result.failure).toBeInstanceOf(SurplusMarketplaceAttemptError);
     expect(settleAttempt.mock.calls[0]?.[0]).toMatchObject({
       outcome: "unknown",
       costState: "actual",
@@ -469,14 +498,35 @@ describe("Surplus reasoning parity", () => {
     };
 
     expect(await run({ status: 404, code: "no_sellers_for_model", marketplaceAttempts: 0 }))
-      .toEqual({ kind: "direct_fallback", retryUnpinned: true });
+      .toMatchObject({
+        kind: "direct_fallback",
+        retryUnpinned: true,
+        failure: {
+          code: "surplus_marketplace_attempt_failed",
+          vendorCode: "no_sellers_for_model",
+          status: 404,
+          traceId: "refusal-request",
+        },
+      });
     expect(await run({ providerMode: "any", status: 404, code: "no_sellers_for_model", marketplaceAttempts: 0 }))
-      .toEqual({ kind: "direct_fallback" });
+      .toMatchObject({
+        kind: "direct_fallback",
+        failure: { code: "surplus_marketplace_attempt_failed", traceId: "refusal-request" },
+      });
     expect(await run({ status: 404, code: "no_sellers_for_model", marketplaceAttempts: 1 }))
-      .toEqual({ kind: "direct_fallback" });
+      .toMatchObject({
+        kind: "direct_fallback",
+        failure: { code: "surplus_marketplace_attempt_failed", vendorCode: "no_sellers_for_model", status: 404 },
+      });
     expect(await run({ status: 401, code: "invalid_api_key" }))
-      .toEqual({ kind: "direct_fallback" });
-    expect(await run({ code: "timeout" })).toEqual({ kind: "direct_fallback" });
+      .toMatchObject({
+        kind: "direct_fallback",
+        failure: { code: "surplus_marketplace_attempt_failed", vendorCode: "invalid_api_key", status: 401 },
+      });
+    expect(await run({ code: "timeout" })).toMatchObject({
+      kind: "direct_fallback",
+      failure: { code: "surplus_marketplace_attempt_failed", vendorCode: "timeout" },
+    });
     const delivered = await run({
       status: 404,
       code: "no_sellers_for_model",
@@ -620,12 +670,21 @@ describe("strict service fallback policy", () => {
         throw Object.assign(new Error("Synthetic no-seller refusal"), { code: "no_sellers_for_model" });
       },
     });
-    expect(result).toEqual({
-      kind: "direct_fallback", retryUnpinned: true, modelUnavailableBeforeService: true,
+    expect(result).toMatchObject({
+      kind: "direct_fallback",
+      retryUnpinned: true,
+      modelUnavailableBeforeService: true,
+      failure: {
+        code: "surplus_marketplace_attempt_failed",
+        vendorCode: "no_sellers_for_model",
+        status: 404,
+        traceId: "refused-soul",
+      },
     });
     expect(settleAttempt.mock.calls[0]?.[0]).toMatchObject({
-      outcome: "failed", costState: "pending", failureCode: "no_sellers_for_model",
+      outcome: "failed", costState: "actual", actualCostUsd: 0, failureCode: "no_sellers_for_model",
     });
+    expect(settleAttempt.mock.calls[0]?.[0]).not.toHaveProperty("providerRequestId");
   });
 
   test("does not admit direct replay for an incomplete successful envelope", async () => {

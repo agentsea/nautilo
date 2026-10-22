@@ -160,11 +160,15 @@ export function validateExactTaskModelSelection(
         message: `Model "${requestedModelId}" is not qualified for tool-using Tasks through Surplus. Pick a directly configured model or a qualified tool-capable route.`,
       };
     }
-    if (row.maxOutputTokens !== null && surplus.route.maxOutputTokens < row.maxOutputTokens) {
+    // Invocation intersects the ordinary catalog budget with this qualified
+    // transport ceiling. A lower Surplus maximum remains executable as long
+    // as the route leaves context for input; the direct catalog limit stays
+    // available when its own provider credential is used.
+    if (surplus.route.maxContextTokens <= surplus.route.maxOutputTokens) {
       return {
         code: "capability_mismatch",
         modelId: requestedModelId,
-        message: `Model "${requestedModelId}" requires an output budget above its qualified Surplus route. Configure its original provider or pick another exact model.`,
+        message: `Model "${requestedModelId}" has no input context available within its qualified Surplus output budget. Configure its original provider or pick another exact model.`,
       };
     }
   }

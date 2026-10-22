@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import type { ModelCatalog } from "@nautilo/types";
+import { ModelCatalogSchema, type ModelCatalog } from "@nautilo/types";
 import {
   configureRuntimeModelCatalog,
   getActiveModelCatalogSync,
@@ -34,6 +34,60 @@ async function installCatalog(catalog: ModelCatalog): Promise<void> {
 afterEach(() => resetRuntimeModelCatalog());
 
 describe("catalog-derived Surplus chat routes", () => {
+  test("bounds only exact qualified Surplus Sonnet identifiers without changing signed direct limits", () => {
+    const catalog = getActiveModelCatalogSync().catalog;
+    const catalogModelId = "openrouter:anthropic/claude-sonnet-4.6";
+    const signedSonnet = catalog.entries.find((entry) => entry.id === catalogModelId);
+    const unrelated = catalog.entries.find((entry) => entry.id === "openrouter:minimax/minimax-m3");
+    if (!signedSonnet?.limits || !unrelated?.limits) throw new Error("Surplus route fixtures are missing limits");
+
+    expect(signedSonnet.limits.outputTokens).toBe(128_000);
+    expect(resolveQualifiedSurplusChatRoute(catalogModelId)?.maxOutputTokens).toBe(64_000);
+    expect(resolveQualifiedSurplusChatRoute(unrelated.id)?.maxOutputTokens)
+      .toBe(unrelated.limits.outputTokens);
+    expect(resolveQualifiedSurplusChatRoute("anthropic:claude-sonnet-4-6")?.maxOutputTokens)
+      .toBe(128_000);
+    expect(resolveQualifiedSurplusChatRoute("venice:claude-sonnet-4-6")?.maxOutputTokens)
+      .toBe(128_000);
+  });
+
+  test("an injected route cannot bypass the signed route's qualified ceiling", () => {
+    const catalogModelId = "openrouter:anthropic/claude-sonnet-4.6";
+    const route = resolveQualifiedSurplusChatRoute(catalogModelId);
+    if (!route) throw new Error("Qualified Sonnet route fixture is missing");
+
+    expect(resolveQualifiedSurplusChatRoute(catalogModelId, [{
+      ...route,
+      maxOutputTokens: 128_000,
+    }])?.maxOutputTokens).toBe(64_000);
+    expect(resolveQualifiedSurplusChatRoute(catalogModelId, [{
+      ...route,
+      surplusModelId: "claude-sonnet-4.6",
+      maxOutputTokens: 128_000,
+    }])?.maxOutputTokens).toBe(64_000);
+    expect(resolveQualifiedSurplusChatRoute(catalogModelId, [{
+      ...route,
+      surplusModelId: "injected-unqualified-model-id",
+      maxOutputTokens: 128_000,
+    }])?.maxOutputTokens).toBe(64_000);
+  });
+
+  test("a signed Sonnet limit below the qualified Surplus ceiling stays authoritative", async () => {
+    const current = getActiveModelCatalogSync().catalog;
+    const catalogModelId = "openrouter:anthropic/claude-sonnet-4.6";
+    const source = current.entries.find((entry) => entry.id === catalogModelId);
+    if (!source) throw new Error("OpenRouter Sonnet fixture is missing");
+    const narrowed = { ...source, limits: { ...source.limits, outputTokens: 32_000 } };
+    await installCatalog(ModelCatalogSchema.parse({
+      ...current,
+      catalogVersion: "2026.10.22.1",
+      entries: [narrowed],
+    }));
+
+    expect(getActiveModelCatalogSync().catalog.entries[0]?.limits?.outputTokens).toBe(32_000);
+    expect(resolveQualifiedSurplusChatRoute(catalogModelId)?.maxOutputTokens).toBe(32_000);
+  });
+
   test("a newly signed supported-provider row is immediately routable with catalog capabilities", async () => {
     const current = getActiveModelCatalogSync().catalog;
     const source = current.entries.find((entry) => entry.id === "openai:gpt-5.6-sol");
@@ -130,11 +184,13 @@ describe("catalog-derived Surplus chat routes", () => {
 
 describe("marketplace provider broadening", () => {
   test("ordinary aggregator rows allow exact-model seller recovery", () => {
+    expect(canBroadenSurplusModelRoute("openrouter:anthropic/claude-sonnet-4.6")).toBe(true);
     expect(canBroadenSurplusModelRoute("openrouter:minimax/minimax-m3")).toBe(true);
     expect(canBroadenSurplusModelRoute("openrouter:typesafe/jev-1.13")).toBe(true);
     expect(canBroadenSurplusModelRoute("fireworks:accounts/fireworks/models/kimi-k3")).toBe(true);
   });
   test("provider-bound privacy routes and unknown models retain their pin", () => {
+    expect(canBroadenSurplusModelRoute("venice:claude-sonnet-4-6")).toBe(false);
     for (const row of getActiveModelCatalogSync().catalog.entries.filter(row => row.provider === "venice")) {
       expect(canBroadenSurplusModelRoute(row.id)).toBe(false);
     }

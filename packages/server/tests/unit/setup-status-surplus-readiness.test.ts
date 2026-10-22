@@ -31,6 +31,17 @@ const FULL_BUDGET_REASONING_ROUTE: QualifiedSurplusChatRoute = {
   maxOutputTokens: 131_072,
 };
 
+const QUALIFIED_SONNET_ROUTE: QualifiedSurplusChatRoute = {
+  catalogModelId: "openrouter:anthropic/claude-sonnet-4.6",
+  surplusModelId: "anthropic/claude-sonnet-4.6",
+  providerPin: "openrouter",
+  supportsTools: true,
+  supportsVision: true,
+  supportsReasoning: true,
+  maxContextTokens: 1_000_000,
+  maxOutputTokens: 64_000,
+};
+
 const CLAIMED_AUTHENTICATED = {
   directProviderReady: false,
   authenticated: true,
@@ -59,13 +70,13 @@ describe("Surplus setup readiness", () => {
     })).toBe(false);
   });
 
-  test("does not treat the limited non-reasoning pilot as ordinary Room readiness", () => {
+  test("accepts a qualified lower output budget when it leaves input context", () => {
     const deps = {
       getPreferSurplus: () => true,
       getSurplusKeyConfigured: () => true,
       getQualifiedSurplusChatRoutes: () => [QUALIFIED_TOOL_ROUTE],
     };
-    expect(computeSetupHasLlm(CLAIMED_AUTHENTICATED, deps)).toBe(false);
+    expect(computeSetupHasLlm(CLAIMED_AUTHENTICATED, deps)).toBe(true);
   });
 
   test("accepts a signed non-reasoning route with tools and the full default budget", () => {
@@ -96,6 +107,14 @@ describe("Surplus setup readiness", () => {
     expect(computeSetupHasLlm(CLAIMED_AUTHENTICATED, deps)).toBe(true);
   });
 
+  test("accepts the exact Sonnet route at its qualified Surplus output budget", () => {
+    expect(computeSetupHasLlm(CLAIMED_AUTHENTICATED, {
+      getPreferSurplus: () => true,
+      getSurplusKeyConfigured: () => true,
+      getQualifiedSurplusChatRoutes: () => [QUALIFIED_SONNET_ROUTE],
+    })).toBe(true);
+  });
+
   test("rejects a tool-unsupported route even when its budget fits", () => {
     expect(computeSetupHasLlm(CLAIMED_AUTHENTICATED, {
       getPreferSurplus: () => true,
@@ -103,6 +122,17 @@ describe("Surplus setup readiness", () => {
       getQualifiedSurplusChatRoutes: () => [{
         ...NON_REASONING_TOOL_ROUTE,
         supportsTools: false,
+      }],
+    })).toBe(false);
+  });
+
+  test("rejects a route whose output budget leaves no input context", () => {
+    expect(computeSetupHasLlm(CLAIMED_AUTHENTICATED, {
+      getPreferSurplus: () => true,
+      getSurplusKeyConfigured: () => true,
+      getQualifiedSurplusChatRoutes: () => [{
+        ...NON_REASONING_TOOL_ROUTE,
+        maxContextTokens: NON_REASONING_TOOL_ROUTE.maxOutputTokens,
       }],
     })).toBe(false);
   });

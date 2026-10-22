@@ -69,7 +69,7 @@ interface SetupLlmReadinessInput {
  * Setup readiness describes a server-funded foreground agent path. A Surplus
  * key is only credential presence; it becomes readiness when server policy is
  * enabled and a released chat route passes the central serving resolver for
- * the ordinary agent defaults: tools and the signed maximum output.
+ * the ordinary agent defaults: tools and an executable qualified output cap.
  * Request-specific context and vision gates still run at invocation time.
  */
 export function computeSetupHasLlm(
@@ -98,13 +98,10 @@ export function computeSetupHasLlm(
     });
     if (availability.status !== "available" || !availability.route.supportsTools) return false;
 
-    const signedMaxOutputTokens = entry.limits?.outputTokens;
-    if (typeof signedMaxOutputTokens !== "number"
-      || !Number.isSafeInteger(signedMaxOutputTokens)
-      || signedMaxOutputTokens < 1) return false;
-    if (availability.route.maxOutputTokens < signedMaxOutputTokens) return false;
-    // Leave room for at least one prompt token at the signed default output.
-    if (availability.route.maxContextTokens <= signedMaxOutputTokens) return false;
+    // Invocation clamps the catalog budget to the qualified route maximum.
+    // Readiness therefore needs room for input at that actual wire ceiling,
+    // rather than equality with the direct provider's signed maximum.
+    if (availability.route.maxContextTokens <= availability.route.maxOutputTokens) return false;
     return true;
   });
 }

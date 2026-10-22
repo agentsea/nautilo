@@ -32,6 +32,28 @@ const SURPLUS_PROVIDER_PINS = Object.freeze({
   venice: "venice",
 } satisfies Readonly<Record<string, SurplusProviderPin>>);
 
+/**
+ * Surplus-specific output ceilings qualified from the marketplace's public
+ * model metadata. Keep this keyed to exact accepted wire identifiers: the
+ * direct providers' signed-catalog ceilings describe different transports.
+ *
+ * On 2026-10-22, the alias request below resolved to canonical
+ * `claude-sonnet-4.6` with `top_provider.max_completion_tokens = 64_000`:
+ * https://api.surplusintelligence.ai/v1/models/anthropic%2Fclaude-sonnet-4.6
+ */
+const QUALIFIED_SURPLUS_MAX_OUTPUT_TOKENS = Object.freeze({
+  "anthropic/claude-sonnet-4.6": 64_000,
+  "claude-sonnet-4.6": 64_000,
+} satisfies Readonly<Record<string, number>>);
+
+function qualifiedSurplusMaxOutputTokens(
+  surplusModelId: string,
+  signedCatalogMaxOutputTokens: number,
+): number {
+  const qualifiedLimit = QUALIFIED_SURPLUS_MAX_OUTPUT_TOKENS[surplusModelId as keyof typeof QUALIFIED_SURPLUS_MAX_OUTPUT_TOKENS];
+  return Math.min(signedCatalogMaxOutputTokens, qualifiedLimit ?? signedCatalogMaxOutputTokens);
+}
+
 function providerPinForCatalogEntry(entry: ModelCatalogEntry): SurplusProviderPin | null {
   return SURPLUS_PROVIDER_PINS[entry.provider as keyof typeof SURPLUS_PROVIDER_PINS] ?? null;
 }
@@ -63,7 +85,7 @@ function deriveRoute(entry: ModelCatalogEntry): QualifiedSurplusChatRoute | null
     supportsVision: entry.modalities?.input?.includes("image") === true,
     supportsReasoning: entry.features?.reasoning === true,
     maxContextTokens: maxContextTokens!,
-    maxOutputTokens: maxOutputTokens!,
+    maxOutputTokens: qualifiedSurplusMaxOutputTokens(surplusModelId, maxOutputTokens!),
   });
 }
 
@@ -79,7 +101,15 @@ function validateInjectedRoute(
   if (!route.surplusModelId.trim()) return null;
   if (entry.limits?.contextTokens && route.maxContextTokens > entry.limits.contextTokens) return null;
   if (entry.limits?.outputTokens && route.maxOutputTokens > entry.limits.outputTokens) return null;
-  return route;
+  const separator = entry.id.indexOf(":");
+  const signedSurplusModelId = separator < 1 ? "" : entry.id.slice(separator + 1);
+  const maxOutputTokens = qualifiedSurplusMaxOutputTokens(
+    signedSurplusModelId,
+    qualifiedSurplusMaxOutputTokens(route.surplusModelId, route.maxOutputTokens),
+  );
+  return maxOutputTokens === route.maxOutputTokens
+    ? route
+    : Object.freeze({ ...route, maxOutputTokens });
 }
 
 /**

@@ -197,6 +197,46 @@ describe("Surplus embedding durable attempt", () => {
     });
   });
 
+  test("keeps a documented zero-attempt routing trace out of financial receipt recovery", async () => {
+    const events: string[] = [];
+    const settlements: unknown[] = [];
+    const traceId = "trace-no-healthy-1";
+    const error = await invokeSurplusEmbeddingAttempt({
+      route, apiKey: "surplus-key", texts: ["x"], assertStillAuthorized: () => {},
+      fetchImpl: (async () => Response.json({
+        error: { code: "no_healthy_sellers", message: "discarded" },
+        request_id: traceId,
+      }, {
+        status: 503,
+        headers: {
+          "x-request-id": traceId,
+          "x-si-marketplace-attempts": "0",
+        },
+      })) as unknown as typeof fetch,
+      parseResponse: () => { throw new Error("must not parse"); },
+    }, deps(events, settlements)).catch((caught: unknown) => caught);
+
+    expect(error).toMatchObject({
+      name: "SurplusEmbeddingAttemptError",
+      failureCode: "provider_unavailable",
+      vendorCode: "no_healthy_sellers",
+    });
+    expect(events).not.toContain("attach");
+    expect(settlements[0]).toMatchObject({
+      outcome: "failed",
+      costState: "actual",
+      actualCostUsd: 0,
+      failureCode: "provider_unavailable",
+      metadata: {
+        surplusErrorCode: "no_healthy_sellers",
+        surplusResponseStatus: 503,
+        surplusTraceId: traceId,
+        surplusMarketplaceAttempts: 0,
+      },
+    });
+    expect(settlements[0]).not.toHaveProperty("providerRequestId");
+  });
+
   test("fails closed on an unqualified response adaptation without replay", async () => {
     let requests = 0;
     let parsed = false;

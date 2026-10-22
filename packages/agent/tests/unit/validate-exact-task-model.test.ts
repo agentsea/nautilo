@@ -257,6 +257,18 @@ describe("validateExactTaskModelSelection — qualified server-funded exact Task
     })).toBeNull();
   });
 
+  test("admits the derived Sonnet route at its lower qualified Surplus output budget", () => {
+    expect(validateExactTaskModelSelection({
+      requestedModelId: "openrouter:anthropic/claude-sonnet-4.6",
+      env: NO_ENV,
+      toolsMode: "auto",
+      surplus: {
+        policyEnabled: true,
+        keyConfigured: true,
+      },
+    })).toBeNull();
+  });
+
   test("admits a qualified tool-free exact pin without the original provider credential", () => {
     expect(validateExactTaskModelSelection({
       requestedModelId: SURPLUS_ONLY_MODEL,
@@ -329,7 +341,7 @@ describe("validateExactTaskModelSelection — qualified server-funded exact Task
     })?.code).toBe("capability_mismatch");
   });
 
-  test("rejects a route narrower than the signed Task output budget", () => {
+  test("admits a qualified route narrower than the signed direct output budget", () => {
     expect(validateExactTaskModelSelection({
       requestedModelId: SURPLUS_ONLY_MODEL,
       env: NO_ENV,
@@ -338,6 +350,22 @@ describe("validateExactTaskModelSelection — qualified server-funded exact Task
         policyEnabled: true,
         keyConfigured: true,
         routes: [{ ...QUALIFIED_SURPLUS_ROUTE, maxOutputTokens: 8_000 }],
+      },
+    })).toBeNull();
+  });
+
+  test("rejects a qualified route with no remaining input context", () => {
+    expect(validateExactTaskModelSelection({
+      requestedModelId: SURPLUS_ONLY_MODEL,
+      env: NO_ENV,
+      toolsMode: "none",
+      surplus: {
+        policyEnabled: true,
+        keyConfigured: true,
+        routes: [{
+          ...QUALIFIED_SURPLUS_ROUTE,
+          maxContextTokens: QUALIFIED_SURPLUS_ROUTE.maxOutputTokens,
+        }],
       },
     })?.code).toBe("capability_mismatch");
   });

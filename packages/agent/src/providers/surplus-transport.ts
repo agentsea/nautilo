@@ -1,5 +1,8 @@
 import type { ChatGenerationChunk } from "@langchain/core/outputs";
-import { ChatOpenAI } from "@langchain/openai";
+import {
+  ChatOpenAI,
+  type convertCompletionsDeltaToBaseMessageChunk,
+} from "@langchain/openai";
 import type { ChatModel, ReasoningEffort } from "./types";
 import type { QualifiedSurplusChatRoute } from "./surplus-route";
 import { OpenRouterReasoningCompletions } from "./openrouter-reasoning";
@@ -210,8 +213,27 @@ function projectSurplusStreamChunk(
   return terminalReason;
 }
 
+type CompletionDeltaConversion = Parameters<
+  typeof convertCompletionsDeltaToBaseMessageChunk
+>[0];
+
 /** Preserve terminal metadata for every non-Venice OpenAI-compatible pin. */
 class SurplusOpenAICompatibleCompletions extends OpenRouterReasoningCompletions {
+  protected override _convertCompletionsDeltaToBaseMessageChunk(
+    delta: CompletionDeltaConversion["delta"],
+    rawResponse: CompletionDeltaConversion["rawResponse"],
+    defaultRole?: CompletionDeltaConversion["defaultRole"],
+  ) {
+    // A chat-completion choice is assistant output, but Surplus sellers may
+    // omit delta.role from every streamed frame. Explicit roles still win in
+    // LangChain's converter; this supplies only its otherwise-missing default.
+    return super._convertCompletionsDeltaToBaseMessageChunk(
+      delta,
+      rawResponse,
+      defaultRole ?? "assistant",
+    );
+  }
+
   override async *_streamResponseChunks(
     ...args: Parameters<OpenRouterReasoningCompletions["_streamResponseChunks"]>
   ) {
@@ -224,7 +246,7 @@ class SurplusOpenAICompatibleCompletions extends OpenRouterReasoningCompletions 
 }
 
 /** Surplus may repeat the terminal choice when attaching its final usage receipt. */
-class SurplusOpenRouterCompletions extends OpenRouterReasoningCompletions {
+class SurplusOpenRouterCompletions extends SurplusOpenAICompatibleCompletions {
   override invocationParams(
     ...args: Parameters<OpenRouterReasoningCompletions["invocationParams"]>
   ) {
@@ -236,18 +258,6 @@ class SurplusOpenRouterCompletions extends OpenRouterReasoningCompletions {
       delete params.max_completion_tokens;
     }
     return params;
-  }
-
-  override async *_streamResponseChunks(
-    ...args: Parameters<OpenRouterReasoningCompletions["_streamResponseChunks"]>
-  ) {
-    // State belongs to this stream, so concurrent invocations cannot share a
-    // terminal marker. Keep the SDK's final usage chunk and all reasoning.
-    let terminalReason: string | undefined;
-    for await (const chunk of super._streamResponseChunks(...args)) {
-      terminalReason = projectSurplusStreamChunk(chunk, terminalReason);
-      yield chunk;
-    }
   }
 }
 
