@@ -23,6 +23,7 @@ import {
   namespaces,
   roomMembers,
   rooms,
+  serverAdmission,
   sessions,
   sessionMessages,
   users,
@@ -432,6 +433,7 @@ describe("readable Namespace product lock order", () => {
     try {
       await adminDb.transaction(async (tx) => {
         await tx.insert(users).values({ id: userId, name: "M320 lock-order user" });
+        await tx.insert(serverAdmission).values({ userId, admitted: true });
         await tx.insert(agents).values({ id: agentId, handle: `m320-lock-${agentId}` });
         await tx.insert(actors).values([
           { id: humanId, ownerId: userId, displayName: "M320 Human",
@@ -516,6 +518,7 @@ describe("readable Namespace product lock order", () => {
     try {
       await adminDb.transaction(async (tx) => {
         await tx.insert(users).values({ id: userId, name: "M317 lock-order user" });
+        await tx.insert(serverAdmission).values({ userId, admitted: true });
         await tx.insert(agents).values({ id: agentId, handle: `m317-lock-${agentId}` });
         await tx.insert(actors).values([
           { id: humanId, ownerId: userId, displayName: "M317 Human",
@@ -690,6 +693,7 @@ describe("readable Namespace product lock order", () => {
     try {
       await adminDb.transaction(async (tx) => {
         await tx.insert(users).values({ id: userId, name: "M318 lock-order user" });
+        await tx.insert(serverAdmission).values({ userId, admitted: true });
         await tx.insert(agents).values({ id: agentId, handle: `m318-lock-${agentId}` });
         await tx.insert(actors).values([
           { id: humanId, ownerId: userId, displayName: "M318 Human",
@@ -832,6 +836,11 @@ describe("readable Namespace product lock order", () => {
           { id: subjectUserId, name: "M322 access source subject" },
           { id: peerUserId, name: "M322 access target peer" },
           { id: sourceOnlyUserId, name: "M322 access source-only peer" },
+        ]);
+        await tx.insert(serverAdmission).values([
+          { userId: subjectUserId, admitted: true },
+          { userId: peerUserId, admitted: true },
+          { userId: sourceOnlyUserId, admitted: true },
         ]);
         await tx.insert(agents).values({
           id: agentId,
@@ -1016,6 +1025,10 @@ describe("readable Namespace product lock order", () => {
           await tx.insert(users).values([
             { id: subjectUserId, name: "M314 lock-order subject" },
             { id: peerUserId, name: "M314 lock-order peer" },
+          ]);
+          await tx.insert(serverAdmission).values([
+            { userId: subjectUserId, admitted: true },
+            { userId: peerUserId, admitted: true },
           ]);
           await tx.insert(actors).values([
             { id: subjectHumanId, ownerId: subjectUserId,
