@@ -393,7 +393,7 @@ async function openSession(task: Task, run: TaskRun, modelId: string, wake: bool
       throw error;
     }
   };
-  await resolveCandidate(modelId);
+  const initialDecision = await resolveCandidate(modelId);
   const allowUnpinnedSurplusRetry = nativeTaskAllowsUnpinnedSurplusRetry(task);
   const fundingPolicy = admitted.kind === "server"
     ? await getServerProviderPolicy(getServerDirectDb())
@@ -402,7 +402,7 @@ async function openSession(task: Task, run: TaskRun, modelId: string, wake: bool
   return {
     kind: admitted.kind,
     ...(admitted.kind === "server" ? {
-      admission: { modelId: admitted.modelId, binding: bindingFor(admitted) },
+      admission: { modelId: initialDecision.modelId, binding: bindingFor(initialDecision) },
     } : {}),
     ...(allowUnpinnedSurplusRetry ? { allowUnpinnedSurplusRetry: true as const } : {}),
     capabilityFunding: await prepareCapabilityFundingSession(

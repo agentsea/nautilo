@@ -118,7 +118,10 @@ mock.module("../../src/lib/model-funding", () => ({
     return input.modelId === PERSONAL_MODEL
       ? { ...PERSONAL_BINDING, humanUserId: input.humanUserId, payerHumanId: input.humanUserId,
           modelId: input.modelId, workload: "native_text_task" as const }
-      : { kind: "server" as const, providerRoute: "openrouter", humanUserId: input.humanUserId,
+      : { kind: "server" as const, providerRoute: input.priorDecision
+          && typeof input.priorDecision === "object" && "providerRoute" in input.priorDecision
+          && input.priorDecision.providerRoute === "surplus" ? "surplus"
+          : input.modelId.startsWith("venice:") ? "venice" : "openrouter", humanUserId: input.humanUserId,
           modelId: input.modelId, workload: "native_text_task" as const };
   },
   withAdmittedPersonalCredential: async (
@@ -290,6 +293,32 @@ describe("multi-user native Task funding", () => {
       modelId: SERVER_MODEL,
       binding: { kind: "server", providerRoute: "surplus" },
     });
+  });
+
+  test("a report-back wake snapshots its resolved Room model while retaining the original payer", async () => {
+    const wakeModel = "venice:wake-model";
+    const candidate = task({ status: "completed" });
+    const run = {
+      id: PARENT_RUN_ID, taskId: candidate.id, status: "completed",
+      modelId: SERVER_MODEL, graphThreadId: "task-thread",
+      fundingBinding: { kind: "server", providerRoute: "openrouter" },
+      fundingPredecessorRunId: null,
+    } as TaskRun;
+    taskRows.set(candidate.id, candidate);
+    runRows.set(run.id, run);
+
+    const session = await nativeTaskFundingPort.openSession(candidate, run, wakeModel, true);
+
+    expect(session.admission).toEqual({
+      modelId: wakeModel, binding: { kind: "server", providerRoute: "venice" },
+    });
+    expect(await session.runAttempt(wakeModel, async (attempt) => attempt.usageFunding))
+      .toMatchObject({ kind: "server", providerRoute: "venice" });
+    expect(fundingInputs).toHaveLength(2);
+    for (const input of fundingInputs) {
+      expect(input).toMatchObject({ humanUserId: HUMAN_A, modelId: wakeModel,
+        prior: { kind: "server", modelId: SERVER_MODEL, providerRoute: "openrouter" } });
+    }
   });
 
   test("a restored direct server admission crosses the real agent-node hydration boundary", async () => {
