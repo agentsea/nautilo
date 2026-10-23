@@ -7,6 +7,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Web Genie customization now loads the default shell avatar correctly instead
+  of showing a missing-image error and requiring a replacement.
+
 - Surplus-only chat can use available sellers for eligible ordinary models,
   preserves streamed tool calls, and respects qualified marketplace output
   limits. Missing recovery keys retain the original marketplace failure;
