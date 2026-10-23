@@ -43,6 +43,8 @@ import { deriveHumanMessageEditCryptoObjectIdV1 } from "@nautilo/lattice-crypto/
 import { deriveLiveShadowMessageCryptoObjectIdV1 } from "../../src/message/conversation-repository.ts";
 import type { CanonicalTranscriptTx } from "@nautilo/trust";
 import { fingerprintNamespaceGenerationAudience, humanId } from "@nautilo/lattice-crypto";
+import { withDisposableFixtureCleanup } from
+  "../../scripts/disposable-postgres-cleanup";
 
 type SqlClient = postgres.Sql;
 type SqlExecutor = Pick<SqlClient, "unsafe">;
@@ -326,7 +328,7 @@ async function createFixture(): Promise<ProductFixture> {
 }
 
 async function cleanupFixture(fixture: ProductFixture): Promise<void> {
-  await admin.begin(async (transaction) => {
+  await withDisposableFixtureCleanup(admin, async (transaction) => {
     await transaction.unsafe(
       `DELETE FROM session_messages WHERE session_id = $1`,
       [fixture.sessionId],
@@ -383,11 +385,16 @@ afterEach(async () => {
   for (const fixture of fixtures.splice(0)) {
     await cleanupFixture(fixture);
   }
-  for (const objectId of cryptoObjects) {
-    await admin.unsafe(
-      `DELETE FROM crypto_objects WHERE object_id = $1`,
-      [objectId],
-    );
+  if (cryptoObjects.size > 0) {
+    await withDisposableFixtureCleanup(admin, async (transaction) => {
+      const cleanup = drizzle(transaction, { schema });
+      for (const objectId of cryptoObjects) {
+        await cleanup.delete(cryptoObjectsTable).where(eq(
+          cryptoObjectsTable.objectId,
+          objectId,
+        ));
+      }
+    });
   }
   cryptoObjects.clear();
 });
@@ -688,7 +695,7 @@ describe("Postgres conversation product store", () => {
         revision: sql`${encryptionTransitionPolicy.revision} + 1`,
         updatedAt: sql`CURRENT_TIMESTAMP`,
       }).where(eq(encryptionTransitionPolicy.id, "server"));
-      await admin.begin(async (transaction) => {
+      await withDisposableFixtureCleanup(admin, async (transaction) => {
         await transaction.unsafe(
           `DELETE FROM session_messages WHERE session_id = $1`,
           [sourceSessionId],

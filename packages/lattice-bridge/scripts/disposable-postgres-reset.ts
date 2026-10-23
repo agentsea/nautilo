@@ -73,7 +73,7 @@ function dockerOutput(args: readonly string[], input?: string): string {
   return result.stdout.trim();
 }
 
-export function resetDisposablePostgresDatabase(
+export function verifyDisposablePostgresAuthority(
   urls: DisposableResetUrls,
   env: NodeJS.ProcessEnv = process.env,
 ): void {
@@ -104,6 +104,14 @@ export function resetDisposablePostgresDatabase(
   if (!mapping.endsWith(`:${authority.port}`)) {
     throw new Error("Disposable Postgres reset port does not match authority");
   }
+}
+
+export function resetDisposablePostgresDatabase(
+  urls: DisposableResetUrls,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  verifyDisposablePostgresAuthority(urls, env);
+  const authority = readDisposableResetAuthority(urls, env);
 
   dockerOutput([
     "exec",

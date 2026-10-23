@@ -25,6 +25,8 @@ import {
   executeTypedConversationProductQuery,
   verifyConversationProductPostgresHandle,
 } from "../../src/server/message/postgres-conversation-product-store.ts";
+import { withDisposableFixtureCleanup } from
+  "../../scripts/disposable-postgres-cleanup";
 
 type SqlClient = postgres.Sql;
 type SqlExecutor = Pick<SqlClient, "unsafe">;
@@ -331,7 +333,7 @@ async function createFixture(options: Readonly<{
 }
 
 async function cleanupFixture(fixture: Fixture): Promise<void> {
-  await admin.begin(async (transaction) => {
+  await withDisposableFixtureCleanup(admin, async (transaction) => {
     await transaction.unsafe(
       `DELETE FROM session_messages WHERE session_id = $1`,
       [fixture.sessionId],
