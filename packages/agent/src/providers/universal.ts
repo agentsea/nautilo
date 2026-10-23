@@ -418,6 +418,14 @@ async function createUniversalModelInternal(
   const factoryOpts: CreateModelOptions = { modelId: id };
   // The durable personal attempt owner accounts for each retry before the wire.
   if (personalCredential) factoryOpts.maxRetries = 0;
+  if (!personalCredential && cleanOptions["maxRetries"] !== undefined) {
+    const maxRetries = cleanOptions["maxRetries"];
+    if (typeof maxRetries !== "number" || !Number.isSafeInteger(maxRetries) || maxRetries < 0) {
+      throw new Error("Provider retry count must be a nonnegative integer.");
+    }
+    factoryOpts.maxRetries = maxRetries;
+  }
+  delete cleanOptions["maxRetries"];
   if (usageCallbacks) factoryOpts.callbacks = usageCallbacks;
   const apiKey = personalCredential?.apiKey ?? cleanOptions["apiKey"] as string | undefined;
   const baseUrl = (cleanOptions["baseUrl"] ?? cleanOptions["baseURL"]) as string | undefined;
@@ -529,7 +537,7 @@ async function createUniversalModelInternal(
         usageCallbacks,
         personalCredential,
       );
-      if (personalCredential) orOpts.maxRetries = 0;
+      if (factoryOpts.maxRetries !== undefined) orOpts.maxRetries = factoryOpts.maxRetries;
       if (resolvedMaxTokens !== undefined) orOpts.maxTokens = resolvedMaxTokens;
       if (resolvedTimeoutMs !== undefined) orOpts.timeoutMs = resolvedTimeoutMs;
       orOpts.reasoningOutput = reasoningOutput;
@@ -541,6 +549,7 @@ async function createUniversalModelInternal(
     }
     case "gateway": {
       const gateway = buildGatewayCreateModelOptions(id, cleanOptions, usageCallbacks);
+      if (factoryOpts.maxRetries !== undefined) gateway.options.maxRetries = factoryOpts.maxRetries;
       if (resolvedMaxTokens !== undefined) gateway.options.maxTokens = resolvedMaxTokens;
       if (resolvedTimeoutMs !== undefined) gateway.options.timeoutMs = resolvedTimeoutMs;
       gateway.options.reasoningOutput = reasoningOutput;

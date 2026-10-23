@@ -62,6 +62,7 @@
     "@nautilo/config": "workspace:*",
     "@nautilo/instance-discovery": "workspace:*",
     "@nautilo/lattice-bridge": "workspace:*",
+    "@nautilo/lattice-crypto": "workspace:*",
     "@nautilo/logger": "workspace:*",
     "@nautilo/mcp-client": "workspace:*",
     "@nautilo/relay": "workspace:*",

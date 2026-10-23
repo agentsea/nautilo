@@ -65,6 +65,9 @@ function mockRuntime(execute: (query: unknown) => Promise<{ rows: unknown[] }>):
     normalizeUsageRoomId: (roomId: string | null | undefined) =>
       typeof roomId === "string" && roomId.trim().length > 0 ? roomId : null,
   }));
+  mock.module("../../src/store/embeddings", () => ({
+    embedTextWithProvenance: async () => embedding,
+  }));
   mock.module("@nautilo/db", () => ({
     agentDb: handle,
     getCachedServerModelConfigRow: () => null,

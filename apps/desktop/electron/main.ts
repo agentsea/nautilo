@@ -1,4 +1,9 @@
 import { createChatGPTDesktopListener } from "./chatgpt-plan-loopback";
+import {
+  assertMemoryEmbeddingDisclosureV2,
+  decodeMemoryEmbeddingDisclosureV2,
+  encodeMemoryEmbeddingDisclosureV2,
+} from "@nautilo/lattice-crypto/wire";
 import "./instance-argv-bootstrap.ts";
 import { LOCAL_EXECUTION_MAX_IDENTITIES } from "@nautilo/relay";
 import { developmentProfileScope, projectAgentAccess, selectionForAgentAccess, selectionForReadyComponents } from "./agent-access";
@@ -8601,10 +8606,21 @@ ipcMain.handle("foregroundShadow:memory:list", async (e, raw: unknown) => {
 });
 
 ipcMain.handle("foregroundShadow:memory:search", async (e, raw: unknown) => {
-  const options = boundedForegroundShadowValue(raw, "Protected Memory search") as
-    Parameters<ElectronForegroundShadowController["memorySearch"]>[0];
+  const value = boundedForegroundShadowValue(raw, "Protected Memory search") as
+    Parameters<ElectronForegroundShadowController["memorySearch"]>[0] & {
+      embeddingDisclosure?: unknown;
+    };
+  let embeddingDisclosure;
+  if (value.embeddingDisclosure !== undefined) {
+    assertMemoryEmbeddingDisclosureV2(value.embeddingDisclosure);
+    embeddingDisclosure = decodeMemoryEmbeddingDisclosureV2(
+      encodeMemoryEmbeddingDisclosureV2(value.embeddingDisclosure),
+    );
+  }
+  const { embeddingDisclosure: _untrustedEmbedding, ...options } = value;
   const { controller } = await foregroundShadowControllerForSender(e);
-  return controller.memorySearch(options);
+  return controller.memorySearch({ ...options,
+    ...(embeddingDisclosure === undefined ? {} : { embeddingDisclosure }) });
 });
 
 ipcMain.handle("foregroundShadow:memory:detail", async (e, raw: unknown) => {
@@ -8618,12 +8634,21 @@ ipcMain.handle("foregroundShadow:memory:detail", async (e, raw: unknown) => {
 ipcMain.handle("foregroundShadow:memory:update", async (e, raw: unknown) => {
   const value = boundedForegroundShadowValue(raw, "Protected Memory update") as {
     memoryId?: unknown; type?: unknown; content?: unknown; importance?: unknown;
+    requestedEmbedding?: unknown;
   };
+  let requestedEmbedding;
+  if (value.requestedEmbedding !== undefined) {
+    assertMemoryEmbeddingDisclosureV2(value.requestedEmbedding);
+    requestedEmbedding = decodeMemoryEmbeddingDisclosureV2(
+      encodeMemoryEmbeddingDisclosureV2(value.requestedEmbedding),
+    );
+  }
   const input = Object.freeze({
     memoryId: foregroundShadowString(value.memoryId, "Memory id", 200),
     type: foregroundShadowString(value.type, "Memory type", 4_096),
     content: foregroundShadowString(value.content, "Memory content", 65_536),
     importance: value.importance,
+    ...(requestedEmbedding === undefined ? {} : { requestedEmbedding }),
   });
   if (typeof input.importance !== "number" || !Number.isFinite(input.importance)
     || input.importance < 0 || input.importance > 1) {
@@ -15003,26 +15028,8 @@ function showOnboardingWizard(
             "POST /api/profile/generate-soul/stream returned no final soul file",
           );
         }
-        // First-run onboarding must never hold its final save screen open for
-        // model latency. The renderer is allowed to close as soon as the
-        // ordinary profile write finishes, so Desktop durably commits the soul
-        // from this detached main-process request when generation completes.
-        // A final profile write that omits `soulFile` preserves this result no
-        // matter which request wins the insert/update race.
-        const persistResp = await fetch(`${serverUrl}/api/profile`, {
-          method: "PUT",
-          headers,
-          body: JSON.stringify({ soulFile: finalSoulFile }),
-        });
-        if (!persistResp.ok) {
-          console.warn(
-            `[onboarding:soul] generated in ${Date.now() - generationStartedAt}ms but background persistence failed: ${persistResp.status}`,
-          );
-        } else {
-          console.log(
-            `[onboarding:soul] generated and persisted in ${Date.now() - generationStartedAt}ms`,
-          );
-        }
+        // Generation is a preview. The shared wizard waits for this result and
+        // commits it in the final profile write, just as the web adapter does.
         return ipcOk({ soulFile: finalSoulFile });
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err);

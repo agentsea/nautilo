@@ -33,6 +33,7 @@ const SUPPORTED_EMBEDDING_MODEL_IDS = new Set([
   "venice:text-embedding-3-small",
   "openrouter:openai/text-embedding-3-small",
   "openai:text-embedding-3-small",
+  "venice:text-embedding-3-large",
 ]);
 
 type SaveState = "idle" | "saving" | "saved" | { error: string };
@@ -665,7 +666,7 @@ export function ModelsSection() {
                 Embedding model
               </label>
               <p className="text-[11px] text-foreground-muted">
-                Creates vectors for semantic Memory search and Reflection. Server configuration inherits the operator setting. Automatic selects the first configured provider: Qwen3 Embedding 8B on Venice or OpenRouter, then text-embedding-3-small on OpenAI.
+                Creates vectors for semantic Memory search and Reflection. Server configuration inherits the operator setting. Automatic keeps the first configured direct provider: Qwen3 Embedding 8B on Venice or OpenRouter, then text-embedding-3-small on OpenAI. If no direct embedding credential is ready, Prefer Surplus can use the qualified Venice text-embedding-3-large route.
               </p>
               <select
                 id="server-embedding-model"
@@ -680,7 +681,7 @@ export function ModelsSection() {
                 })}
               >
                 <option value={SERVER_EMBEDDING_CONFIGURATION}>Server configuration</option>
-                <option value="">Automatic — Venice → OpenRouter → OpenAI</option>
+                <option value="">Automatic — Venice → OpenRouter → OpenAI → Surplus fallback</option>
                 {draft.embeddingModel !== null && draft.embeddingModel !== "" &&
                 !supportedEmbeddingModels.some((model) => model.id === draft.embeddingModel) ? (
                   <option value={draft.embeddingModel} disabled>

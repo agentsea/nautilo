@@ -96,7 +96,8 @@ function toSnapshot(profile: AgentProfileFull, avatarUrl: string | null): Profil
 }
 
 function onboardingAvatarUrl(avatar: AvatarRef): string | null {
-  return avatar.kind === "preset"
+  // The shell is rendered by the authenticated avatar route, not a preset file.
+  return avatar.kind === "preset" && avatar.id !== "shell"
     ? `/api/onboarding/images/avatars/${encodeURIComponent(avatar.id)}.webp`
     : null;
 }

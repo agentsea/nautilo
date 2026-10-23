@@ -1,12 +1,24 @@
 import {
+  memoryEmbeddingDisclosureV2Schema,
   memoryProcessorRecipientV1Schema,
+  memoryProcessorRecipientV2Schema,
   memoryProcessorSealedRequestV1Schema,
+  type MemoryEmbeddingDisclosureV2,
   type MemoryProcessorRecipientV1,
+  type MemoryProcessorRecipientV2,
   type MemoryProcessorRequestPurposeV1,
   type MemoryProcessorSealedRequestV1,
 } from "@nautilo/api-client/browser";
 import { LatticeCrypto } from "@nautilo/lattice-crypto";
-import { MEMORY_FOREGROUND_PROCESSOR_MAX_DEADLINE_MS } from
+import {
+  assertMemoryEmbeddingDisclosureV2,
+  decodeMemoryEmbeddingDisclosureV2,
+  encodeMemoryEmbeddingDisclosureV2,
+} from "@nautilo/lattice-crypto/wire";
+import {
+  MEMORY_FOREGROUND_PROCESSOR_MAX_DEADLINE_MS,
+  MEMORY_QUERY_EMBEDDING_MAX_BYTES,
+} from
   "./foreground-embedding-processor.ts";
 
 function encode(bytes: Uint8Array): string {
@@ -28,22 +40,80 @@ type RequestBinding = Readonly<{
   subjectId: string;
 }>;
 
-/** Seal at send time: a prepared mutation journal never owns a server key. */
-export async function sealForegroundMemoryProcessorRequest(input: RequestBinding & Readonly<{
+export type MemoryProcessorSearchQueryV2 = Readonly<{
+  formatVersion: 2;
+  purpose: "memory.query_embedding";
+  query: string;
+  embeddingDisclosure: MemoryEmbeddingDisclosureV2;
+}>;
+
+export function encodeMemoryProcessorSearchQueryV2(
+  value: MemoryProcessorSearchQueryV2,
+): string {
+  if (value.formatVersion !== 2 || value.purpose !== "memory.query_embedding"
+    || typeof value.query !== "string" || value.query.trim().length === 0
+    || new TextEncoder().encode(value.query).length > MEMORY_QUERY_EMBEDDING_MAX_BYTES) {
+    throw new TypeError("Memory processor search query V2 is invalid");
+  }
+  assertMemoryEmbeddingDisclosureV2(value.embeddingDisclosure);
+  return JSON.stringify({
+    formatVersion: 2,
+    purpose: "memory.query_embedding",
+    query: value.query,
+    embeddingDisclosure: value.embeddingDisclosure,
+  });
+}
+
+export function decodeMemoryProcessorSearchQueryV2(
+  encoded: string,
+): MemoryProcessorSearchQueryV2 {
+  if (typeof encoded !== "string") {
+    throw new TypeError("Memory processor search query V2 is invalid");
+  }
+  const value: unknown = JSON.parse(encoded);
+  if (typeof value !== "object" || value === null || Array.isArray(value)
+    || Object.keys(value).sort().join(",")
+      !== "embeddingDisclosure,formatVersion,purpose,query") {
+    throw new TypeError("Memory processor search query V2 is invalid");
+  }
+  const body = value as Record<string, unknown>;
+  if (body["formatVersion"] !== 2 || body["purpose"] !== "memory.query_embedding"
+    || typeof body["query"] !== "string" || body["query"].trim().length === 0
+    || new TextEncoder().encode(body["query"]).length > MEMORY_QUERY_EMBEDDING_MAX_BYTES) {
+    throw new TypeError("Memory processor search query V2 is invalid");
+  }
+  assertMemoryEmbeddingDisclosureV2(body["embeddingDisclosure"]);
+  const disclosureBytes = encodeMemoryEmbeddingDisclosureV2(
+    memoryEmbeddingDisclosureV2Schema.parse(body["embeddingDisclosure"]),
+  );
+  try {
+    const normalized = Object.freeze({
+      formatVersion: 2 as const,
+      purpose: "memory.query_embedding" as const,
+      query: body["query"],
+      embeddingDisclosure: decodeMemoryEmbeddingDisclosureV2(disclosureBytes),
+    });
+    if (encodeMemoryProcessorSearchQueryV2(normalized) !== encoded) {
+      throw new TypeError("Memory processor search query V2 is noncanonical");
+    }
+    return normalized;
+  } finally { disclosureBytes.fill(0); }
+}
+
+async function sealRequest(input: RequestBinding & Readonly<{
   crypto: LatticeCrypto;
-  recipient: MemoryProcessorRecipientV1;
+  recipient: MemoryProcessorRecipientV1 | MemoryProcessorRecipientV2;
   payload: string;
   now?: () => number;
 }>): Promise<MemoryProcessorSealedRequestV1> {
-  const recipient = memoryProcessorRecipientV1Schema.parse(input.recipient);
-  const publicKey = decode(recipient.publicKeyBase64url);
-  if (encode(input.crypto.hash(publicKey)) !== recipient.recipientId) {
+  const publicKey = decode(input.recipient.publicKeyBase64url);
+  if (encode(input.crypto.hash(publicKey)) !== input.recipient.recipientId) {
     throw new TypeError("Memory processor recipient fingerprint mismatch");
   }
   const issuedAt = (input.now ?? Date.now)();
   const plaintext = new TextEncoder().encode(JSON.stringify({
     formatVersion: 1,
-    recipientId: recipient.recipientId,
+    recipientId: input.recipient.recipientId,
     purpose: input.purpose,
     subjectId: input.subjectId,
     issuedAt,
@@ -53,12 +123,54 @@ export async function sealForegroundMemoryProcessorRequest(input: RequestBinding
   try {
     return Object.freeze({
       formatVersion: 1,
-      recipientId: recipient.recipientId,
+      recipientId: input.recipient.recipientId,
       ciphertextBase64url: encode(await input.crypto.sealTo(publicKey, plaintext)),
     });
   } finally {
     plaintext.fill(0);
   }
+}
+
+/** Seal at send time: a prepared mutation journal never owns a server key. */
+export async function sealForegroundMemoryProcessorRequest(input: RequestBinding & Readonly<{
+  crypto: LatticeCrypto;
+  recipient: MemoryProcessorRecipientV1;
+  payload: string;
+  now?: () => number;
+}>): Promise<MemoryProcessorSealedRequestV1> {
+  const recipient = memoryProcessorRecipientV1Schema.parse(input.recipient);
+  return sealRequest({ ...input, recipient });
+}
+
+export async function sealForegroundMemoryProcessorRequestV2(
+  input: RequestBinding & Readonly<{
+    crypto: LatticeCrypto;
+    recipient: MemoryProcessorRecipientV2;
+    payload: string;
+    now?: () => number;
+  }>,
+): Promise<MemoryProcessorSealedRequestV1> {
+  const recipient = memoryProcessorRecipientV2Schema.parse(input.recipient);
+  return sealRequest({ ...input, recipient });
+}
+
+export async function sealForegroundMemoryProcessorSearchQueryV2(
+  input: Omit<Parameters<typeof sealForegroundMemoryProcessorRequestV2>[0],
+    "purpose" | "payload"> & Readonly<{
+      query: string;
+      embeddingDisclosure: MemoryEmbeddingDisclosureV2;
+    }>,
+): Promise<MemoryProcessorSealedRequestV1> {
+  return sealForegroundMemoryProcessorRequestV2({
+    ...input,
+    purpose: "memory.query_embedding",
+    payload: encodeMemoryProcessorSearchQueryV2({
+      formatVersion: 2,
+      purpose: "memory.query_embedding",
+      query: input.query,
+      embeddingDisclosure: input.embeddingDisclosure,
+    }),
+  });
 }
 
 /**

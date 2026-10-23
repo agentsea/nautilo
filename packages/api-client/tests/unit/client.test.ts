@@ -148,22 +148,81 @@ describe("NautiloApiClient", () => {
     }
   });
 
-  test("caller-model client accepts only the secret-free effective funding projection", async () => {
+  test("caller-model client accepts Surplus limits while retaining responses without limits", async () => {
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async () => Response.json([{
-      id: "openai:gpt-5",
-      displayName: "GPT-5",
-      provider: "openai",
+    globalThis.fetch = (async () => Response.json([
+      {
+        id: "openrouter:moonshotai/kimi-k3",
+        displayName: "Kimi K3",
+        provider: "openrouter",
+        priority: 1,
+        enabled: true,
+        costCoefficient: 1,
+        availability: "selectable",
+        fundingSource: "personal",
+        fundingProviderRoute: "surplus",
+        imageInput: "direct",
+        capabilities: {
+          tools: true,
+          vision: true,
+          reasoning: true,
+          e2ee: false,
+          webSearch: false,
+        },
+        limits: { contextTokens: 1_000_000, outputTokens: 131_072 },
+      },
+      {
+        id: "openai:gpt-5",
+        displayName: "GPT-5",
+        provider: "openai",
+        priority: 2,
+        enabled: true,
+        costCoefficient: 1,
+        availability: "selectable",
+        fundingSource: "server",
+      },
+    ])) as unknown as typeof fetch;
+    try {
+      const [surplusModel, directModel] = await new NautiloApiClient("http://127.0.0.1:3001").getCallerModels();
+      expect(surplusModel).toMatchObject({
+        fundingSource: "personal",
+        fundingProviderRoute: "surplus",
+        limits: { contextTokens: 1_000_000, outputTokens: 131_072 },
+      });
+      expect(directModel?.limits).toBeUndefined();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("caller-model client rejects malformed limits and unknown fields", async () => {
+    const originalFetch = globalThis.fetch;
+    const baseModel = {
+      id: "openrouter:moonshotai/kimi-k3",
+      displayName: "Kimi K3",
+      provider: "openrouter",
       priority: 1,
       enabled: true,
       costCoefficient: 1,
       availability: "selectable",
       fundingSource: "personal",
       fundingProviderRoute: "surplus",
-    }])) as unknown as typeof fetch;
+    };
+    const invalidModels = [
+      { ...baseModel, limits: { contextTokens: 0, outputTokens: 131_072 } },
+      { ...baseModel, limits: { contextTokens: 1_000_000, outputTokens: 131_072.5 } },
+      { ...baseModel, limits: { contextTokens: 1_000_000 } },
+      { ...baseModel, limits: { contextTokens: 1_000_000, outputTokens: 131_072, providerLimit: true } },
+      { ...baseModel, credentialId: "server-only-authority" },
+    ];
     try {
-      const [model] = await new NautiloApiClient("http://127.0.0.1:3001").getCallerModels();
-      expect(model).toMatchObject({ fundingSource: "personal", fundingProviderRoute: "surplus" });
+      for (const model of invalidModels) {
+        globalThis.fetch = (async () => Response.json([model])) as unknown as typeof fetch;
+        const error = await new NautiloApiClient("http://127.0.0.1:3001")
+          .getCallerModels()
+          .catch((cause: unknown) => cause);
+        expect(error).toBeInstanceOf(Error);
+      }
     } finally {
       globalThis.fetch = originalFetch;
     }

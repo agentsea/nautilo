@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, mock, test } from "bun:test";
 import type { Task, TaskRun } from "@nautilo/db";
 
 const HUMAN = "11111111-1111-4111-8111-111111111111";
@@ -29,6 +29,7 @@ let returnPersonalForServer = false;
 let failServerFundingAt = Number.POSITIVE_INFINITY;
 let fundingRequests: Array<Record<string, unknown>> = [];
 let fundingDecisions: Array<Record<string, unknown>> = [];
+let serverProviderRoutes: readonly string[] = ["anthropic"];
 
 function task(overrides: Partial<Task> = {}): Task {
   return {
@@ -173,7 +174,11 @@ mock.module("../../src/lib/model-funding", () => ({
       throw new TestModelFundingError("server_credentials_forbidden");
     }
     const decision = input["fundingKind"] === "server" && !returnPersonalForServer
-      ? { kind: "server" as const, providerRoute: "anthropic",
+      ? { kind: "server" as const,
+          providerRoute: serverProviderRoutes[Math.min(
+            fundingDecisions.length,
+            serverProviderRoutes.length - 1,
+          )] ?? "anthropic",
           humanUserId: input["humanUserId"], modelId: input["modelId"],
           workload: input["workload"] }
       : { ...binding, humanUserId: HUMAN, payerHumanId: HUMAN,
@@ -202,6 +207,7 @@ const {
 } = await import("../../src/lib/native-task-funding");
 
 afterAll(() => { mock.restore(); });
+afterEach(() => { serverProviderRoutes = ["anthropic"]; });
 
 describe("protected native Task funding", () => {
   test("requires live protected authority and retains it around credential custody", async () => {
@@ -391,7 +397,7 @@ describe("protected native Task funding", () => {
     }
   });
 
-  test("opens a server-pinned legacy wake without caller-only shape or custody", async () => {
+  test("opens a direct server-pinned legacy wake without caller-only shape or custody", async () => {
     currentTask = task({
       ownerId: PEER,
       fundingMode: "legacy_server",
@@ -408,6 +414,7 @@ describe("protected native Task funding", () => {
     });
     fundingRequests = [];
     fundingDecisions = [];
+    serverProviderRoutes = ["surplus", "anthropic"];
     legacyTaskProjectionKeys = [];
     providerAttempts = 0;
     let authorityChecks = 0;
@@ -423,6 +430,8 @@ describe("protected native Task funding", () => {
     });
     expect(session).not.toBeNull();
     expect(session!.kind).toBe("server");
+    expect(session!.admission).toBeUndefined();
+    expect(session!.admittedTransport).toBe("direct");
     expect(session!.capabilityFunding).toBeUndefined();
     expect(await session!.runAttempt(MODEL, async attempt => attempt.usageFunding))
       .toEqual({ kind: "server", providerRoute: "anthropic" });
@@ -456,6 +465,43 @@ describe("protected native Task funding", () => {
       (error: unknown) => (error as Error).message,
     )).toBe("protected_authority_revoked");
     expect(fundingRequests).toHaveLength(4);
+  });
+
+  test("opens a Surplus server-pinned legacy wake with the same live server policy", async () => {
+    currentTask = task({ fundingMode: "legacy_server" });
+    currentRun = run({ status: "completed", fundingBinding: null });
+    fundingRequests = [];
+    fundingDecisions = [];
+    serverProviderRoutes = ["anthropic", "surplus"];
+    let authorityChecks = 0;
+    let current = true;
+    const session = await openProtectedTaskWakeFundingSession({
+      taskSource: currentTask,
+      runSource: currentRun,
+      modelId: MODEL,
+      assertCurrent: async () => {
+        authorityChecks += 1;
+        if (!current) throw new Error("protected_authority_revoked");
+      },
+    });
+
+    expect(session).not.toBeNull();
+    expect(session!.admission).toBeUndefined();
+    expect(session!.admittedTransport).toBe("surplus");
+    expect(fundingRequests).toHaveLength(2);
+    expect(fundingRequests.every(request => request["fundingKind"] === "server"
+      && request["workload"] === "native_text_task"
+      && request["humanUserId"] === HUMAN)).toBeTrue();
+    expect(fundingRequests[0]?.["priorDecision"]).toBeUndefined();
+    expect(fundingRequests[1]?.["priorDecision"]).toBe(fundingDecisions[0]);
+    expect(authorityChecks).toBeGreaterThanOrEqual(4);
+
+    current = false;
+    expect(await session!.recheckAttempt(MODEL).then(
+      () => null,
+      (error: unknown) => (error as Error).message,
+    )).toBe("protected_authority_revoked");
+    expect(fundingRequests).toHaveLength(2);
   });
 
   test("fences legacy funding coordinates and rejects a non-server resolution", async () => {

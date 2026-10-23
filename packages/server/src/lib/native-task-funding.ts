@@ -698,7 +698,7 @@ async function openSession(task: FundingTaskSource, run: FundingRunSource,
       throw error;
     }
   };
-  await resolveCandidate(modelId);
+  const initialDecision = await resolveCandidate(modelId);
   const allowUnpinnedSurplusRetry = nativeTaskAllowsUnpinnedSurplusRetry(task);
   const fundingPolicy = admitted.kind === "server"
     ? await getServerProviderPolicy(getServerDirectDb())
@@ -706,6 +706,9 @@ async function openSession(task: FundingTaskSource, run: FundingRunSource,
   let lastAttempt: ModelFundingDecision | undefined;
   return {
     kind: admitted.kind,
+    ...(admitted.kind === "server" ? {
+      admittedTransport: initialDecision.providerRoute === "surplus" ? "surplus" as const : "direct" as const,
+    } : {}),
     ...(allowUnpinnedSurplusRetry ? { allowUnpinnedSurplusRetry: true as const } : {}),
     capabilityFunding: await prepareCapabilityFundingSession(
       task.requestorId,
@@ -887,9 +890,12 @@ export async function openProtectedTaskWakeFundingSession(input: Readonly<{
       ) => fundingBoundary(
         () => resolveCandidateUnchecked(candidateModelId, transport),
       );
-      await resolveCandidate(modelId);
+      const initialDecision = await resolveCandidate(modelId);
       return {
         kind: "server",
+        admittedTransport: initialDecision.providerRoute === "surplus"
+          ? "surplus" as const
+          : "direct" as const,
         async recheckAttempt(candidate, transport) {
           await resolveCandidate(candidate, transport);
         },

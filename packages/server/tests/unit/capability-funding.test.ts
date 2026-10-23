@@ -1,4 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { installSurplusCatalogFixture } from "../../../agent/tests/helpers/surplus-catalog-fixture";
+import { resetSurplusModelCatalog } from "../../../agent/src/providers/surplus-catalog";
 import { resolveCatalogModel } from "@nautilo/agent";
 import type { PersonalProviderCredentialRecord, PersonalProviderId } from "@nautilo/db";
 import {
@@ -18,6 +20,8 @@ const DECISION_MODEL = "openrouter:typesafe/jev-1.13";
 const RESEARCH_MODEL = "openrouter:anthropic/claude-sonnet-4.6";
 const VISION_MODEL = "anthropic:claude-sonnet-4-6";
 const SUBSCRIPTION_VISION_MODEL = "openai:gpt-5.6-luna";
+beforeEach(installSurplusCatalogFixture);
+afterEach(resetSurplusModelCatalog);
 
 function credential(
   provider: PersonalProviderId,

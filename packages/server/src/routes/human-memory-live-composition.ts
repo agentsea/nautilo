@@ -61,6 +61,7 @@ async function assembleHumanMemoryRequest(input: AssemblyRequest): Promise<Prote
   const services = await createHumanMemoryRequestServices(input);
   const exact = createHumanMemoryExactAccessServices({ ...input, services });
   const embedding = services.embedding.descriptor();
+  const embeddingDisclosure = services.embedding.descriptorV2();
   const ports = createHumanMemoryProtectedRoutePortsFromTrustedPorts({
     target: input.authority,
     now: Date.now,
@@ -79,7 +80,9 @@ async function assembleHumanMemoryRequest(input: AssemblyRequest): Promise<Prote
     resolveNamespaceAuthority: services.resolveNamespaceAuthority,
   });
   const mutations = withHumanMemoryMutationEffects({
-    ports: { ...ports, embeddingConfiguration: embedding },
+    ports: { ...ports, embeddingDisclosure,
+      ...(embeddingDisclosure.processingRoute.transport === "direct"
+        ? { embeddingConfiguration: embedding } : {}) },
     deliver: ({ authority, operationId, memoryId }) => deliverCommittedHumanMemoryEffect({
       canonicalRunner: services.context.canonicalRunner,
       publication: services.publication,

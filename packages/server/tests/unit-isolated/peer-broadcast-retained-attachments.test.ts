@@ -41,7 +41,8 @@ mock.module("@nautilo/agent", () => ({
     };
   }),
   buildForegroundUserHumanMessage: mock(() => ({})),
-  getDefaultModel: mock(() => ({ id: "model:test" })),
+  getDefaultModel: mock(() => { throw new Error("peer broadcast must not require a runnable model"); }),
+  modelIdForCapabilityProjection: mock(() => "model:test"),
 }));
 
 mock.module("@nautilo/db", () => ({
@@ -51,6 +52,7 @@ mock.module("@nautilo/db", () => ({
       values: () => ({ onConflictDoNothing: async () => undefined }),
     }),
   },
+  getCachedServerModelConfigRow: mock(() => null),
   getSessionMessageFingerprintById: mock(async () => {
     calls.push("fingerprint");
     return fingerprint;

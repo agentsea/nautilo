@@ -400,6 +400,7 @@ export { preModelNode } from "./nodes/pre-model";
 export {
   agentNode,
   getDefaultForegroundAgentModelId,
+  hydrateForegroundAgentModelCatalog,
   resolveForegroundAgentModelId,
 } from "./nodes/agent";
 export {
@@ -623,6 +624,7 @@ export {
   getActiveModelCatalogProvenance,
 } from "./config/resolved-catalog";
 export {
+  hydrateSurplusChatCatalog,
   resolveQualifiedSurplusChatRoute,
   resolveSurplusChatServingAvailability,
   type QualifiedSurplusChatRoute,
@@ -1241,6 +1243,7 @@ export {
   type EmbeddingProvider,
   type EmbeddingWithProvenanceV1,
   getProtectedMemoryEmbeddingConfiguration,
+  getMemoryEmbeddingDisclosure,
 } from "./store/embeddings";
 export {
   computeMessageFingerprint,
@@ -1530,6 +1533,11 @@ export { OrdinaryContentAccessRetryRequiredError } from "./runtime/ordinary-cont
 
 export { listSpeechModels, getServerSpeechModel, resolveFundedSpeechModel, estimateSpeechCostUsd, type SpeechModel } from "./config/speech-models";
 export { surplusCredentialFingerprint, fetchSurplusSettlement } from "./providers/surplus-reconciliation";
+export {
+  getQualifiedSurplusEmbeddingRoute,
+  SURPLUS_EMBEDDING_MARKETPLACE_POLICY_VERSION,
+  type QualifiedSurplusEmbeddingRoute,
+} from "./providers/surplus-embedding-route";
 
 export { deriveSurplusMediaModelId, findSurplusMediaModel, type SurplusMediaFamily, type SurplusMediaRequirements } from "./providers/surplus-media-route";
 

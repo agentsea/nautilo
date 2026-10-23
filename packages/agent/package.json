@@ -43,6 +43,7 @@
     "@nautilo/db": "workspace:*",
     "@nautilo/fonts": "workspace:*",
     "@nautilo/lattice-bridge": "workspace:*",
+    "@nautilo/lattice-crypto": "workspace:*",
     "@nautilo/loffice": "workspace:*",
     "@nautilo/logger": "workspace:*",
     "@nautilo/message-invariants": "workspace:*",

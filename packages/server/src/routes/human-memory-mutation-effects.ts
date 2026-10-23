@@ -36,6 +36,9 @@ export function withHumanMemoryMutationEffects(input: Readonly<{
     ...(input.ports.embeddingConfiguration === undefined ? {} : {
       embeddingConfiguration: input.ports.embeddingConfiguration,
     }),
+    ...(input.ports.embeddingDisclosure === undefined ? {} : {
+      embeddingDisclosure: input.ports.embeddingDisclosure,
+    }),
     planCreate: input.ports.planCreate.bind(input.ports),
     list: input.ports.list.bind(input.ports),
     detail: input.ports.detail.bind(input.ports),

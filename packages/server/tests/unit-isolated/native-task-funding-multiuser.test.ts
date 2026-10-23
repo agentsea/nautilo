@@ -1,5 +1,7 @@
-import { afterAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { rejects } from "node:assert/strict";
+import { AIMessage, HumanMessage } from "@langchain/core/messages";
+import { ToolCatalog, clearToolCatalog, initToolCatalog } from "@nautilo/catalog";
 import type { Task, TaskRun } from "@nautilo/db";
 
 const HUMAN_A = "11111111-1111-4111-8111-111111111111";
@@ -14,6 +16,7 @@ const PARENT_ID = "66666666-6666-4666-8666-666666666666";
 const PARENT_RUN_ID = "77777777-7777-4777-8777-777777777777";
 const SERVER_MODEL = "openrouter:server-model";
 const PERSONAL_MODEL = "openrouter:personal-model";
+const DIRECT_AGENT_MODEL = "openrouter:openai/gpt-5.6-sol";
 const PERSONAL_BINDING = {
   kind: "personal" as const,
   providerRoute: "openrouter",
@@ -24,6 +27,8 @@ const PERSONAL_BINDING = {
 const actualAgent = await import("@nautilo/agent");
 const actualDb = await import("@nautilo/db");
 const actualTrust = await import("@nautilo/trust");
+const actualSurplusRoute = await import("../../../agent/src/providers/surplus-route");
+const actualChatInvocation = await import("../../../agent/src/utils/chat-model-invocation");
 
 let invocationAllowed = true;
 let sourceRoomLive = true;
@@ -113,7 +118,10 @@ mock.module("../../src/lib/model-funding", () => ({
     return input.modelId === PERSONAL_MODEL
       ? { ...PERSONAL_BINDING, humanUserId: input.humanUserId, payerHumanId: input.humanUserId,
           modelId: input.modelId, workload: "native_text_task" as const }
-      : { kind: "server" as const, providerRoute: "openrouter", humanUserId: input.humanUserId,
+      : { kind: "server" as const, providerRoute: input.priorDecision
+          && typeof input.priorDecision === "object" && "providerRoute" in input.priorDecision
+          && input.priorDecision.providerRoute === "surplus" ? "surplus"
+          : input.modelId.startsWith("venice:") ? "venice" : "openrouter", humanUserId: input.humanUserId,
           modelId: input.modelId, workload: "native_text_task" as const };
   },
   withAdmittedPersonalCredential: async (
@@ -264,9 +272,151 @@ describe("multi-user native Task funding", () => {
     taskRows.set(candidate.id, candidate);
     runRows.set(run.id, run);
     const session = await nativeTaskFundingPort.openSession(candidate, run, SERVER_MODEL, false);
+    expect(session.admittedTransport).toBe("direct");
+    expect(session.admission).toBeUndefined();
     invocationAllowed = false;
     await rejects(session.recheckAttempt(SERVER_MODEL), /invocation_access_withdrawn/);
     expect(fundingInputs.every(({ humanUserId }) => humanUserId === HUMAN_A)).toBeTrue();
+  });
+
+  test("restored server Surplus sessions expose transport without a foreground snapshot", async () => {
+    const candidate = task();
+    const run = {
+      id: PARENT_RUN_ID,
+      taskId: candidate.id,
+      status: "running",
+      modelId: SERVER_MODEL,
+      graphThreadId: "task-thread",
+      fundingBinding: { kind: "server", providerRoute: "surplus" },
+      fundingPredecessorRunId: null,
+    } as TaskRun;
+    taskRows.set(candidate.id, candidate);
+    runRows.set(run.id, run);
+
+    const session = await nativeTaskFundingPort.openSession(candidate, run, SERVER_MODEL, false);
+
+    expect(session.admittedTransport).toBe("surplus");
+    expect(session.admission).toBeUndefined();
+  });
+
+  test("a foreign Genie's report-back wake retains its native funding and resume boundary", async () => {
+    const wakeModel = "venice:wake-model";
+    const candidate = task({ status: "completed" });
+    const run = {
+      id: PARENT_RUN_ID, taskId: candidate.id, status: "completed",
+      modelId: SERVER_MODEL, graphThreadId: "task-thread",
+      fundingBinding: { kind: "server", providerRoute: "openrouter" },
+      fundingPredecessorRunId: null,
+    } as TaskRun;
+    taskRows.set(candidate.id, candidate);
+    runRows.set(run.id, run);
+
+    const session = await nativeTaskFundingPort.openSession(candidate, run, wakeModel, true);
+
+    // This fixture's Genie is absent from the calling Room. A foreground
+    // snapshot would route approval resume through a stricter Room-member gate.
+    expect(session.admission).toBeUndefined();
+    expect(session.admittedTransport).toBe("direct");
+    expect(await session.runAttempt(wakeModel, async (attempt) => attempt.usageFunding))
+      .toMatchObject({ kind: "server", providerRoute: "venice" });
+    expect(fundingInputs).toHaveLength(2);
+    for (const input of fundingInputs) {
+      expect(input).toMatchObject({ humanUserId: HUMAN_A, modelId: wakeModel,
+        prior: { kind: "server", modelId: SERVER_MODEL, providerRoute: "openrouter" } });
+    }
+  });
+
+  test("a restored direct server admission crosses the real agent-node hydration boundary", async () => {
+    const candidate = task({ requestedModelId: DIRECT_AGENT_MODEL });
+    const run = {
+      id: PARENT_RUN_ID,
+      taskId: candidate.id,
+      status: "running",
+      modelId: DIRECT_AGENT_MODEL,
+      graphThreadId: "task-thread",
+      fundingBinding: { kind: "server", providerRoute: "openrouter" },
+      fundingPredecessorRunId: null,
+    } as TaskRun;
+    taskRows.set(candidate.id, candidate);
+    runRows.set(run.id, run);
+    const session = await nativeTaskFundingPort.openSession(candidate, run, DIRECT_AGENT_MODEL, false);
+    const hydrate = spyOn(actualSurplusRoute, "hydrateSurplusChatCatalog").mockImplementation(async () => {
+      throw new Error("unexpected Surplus catalogue discovery");
+    });
+    const invoke = spyOn(actualChatInvocation, "invokeChatModelWithFallback").mockResolvedValue({
+      response: new AIMessage("Direct provider completed the request."),
+      modelUsed: DIRECT_AGENT_MODEL,
+    });
+    const config = spyOn(actualDb, "getCachedServerModelConfigRow").mockReturnValue({
+      preferSurplus: true,
+    } as ReturnType<typeof actualDb.getCachedServerModelConfigRow>);
+    const previousOpenRouterKey = process.env["OPENROUTER_API_KEY"];
+    const previousSurplusKey = process.env["SURPLUS_API_KEY"];
+    process.env["OPENROUTER_API_KEY"] = "synthetic-direct-key";
+    process.env["SURPLUS_API_KEY"] = "synthetic-surplus-key";
+    initToolCatalog(new ToolCatalog());
+    const prompt = new HumanMessage("Complete this restored direct-provider task.");
+
+    try {
+      const result = await actualAgent.agentNode({
+        model: DIRECT_AGENT_MODEL,
+        subagentDepth: 1,
+        taskRun: true,
+        trustedExecutionEntrypoint: "background.task",
+        modelFallbackMode: "none",
+        preparedMessages: [prompt],
+        messages: [prompt],
+        userId: HUMAN_A,
+        causalHumanUserId: HUMAN_A,
+        agentId: AGENT,
+        roomId: null,
+        turnId: "restored-direct-admission-turn",
+        actorRole: "owner",
+        memoryAccessEnvelope: null,
+        toolWhitelist: [],
+        activatedToolNames: [],
+        activatedToolLeases: [],
+        currentThreadId: "restored-direct-admission-thread",
+        currentFolder: "",
+        workspacePath: "",
+      } as unknown as Parameters<typeof actualAgent.agentNode>[0],
+      undefined, undefined, false, undefined, undefined, session);
+
+      expect(result.model).toBe(DIRECT_AGENT_MODEL);
+      expect(hydrate).not.toHaveBeenCalled();
+      expect(invoke).toHaveBeenCalledTimes(1);
+      expect(invoke.mock.calls[0]?.[7]).toMatchObject({ fundingSession: session });
+    } finally {
+      clearToolCatalog();
+      config.mockRestore();
+      invoke.mockRestore();
+      hydrate.mockRestore();
+      if (previousOpenRouterKey === undefined) delete process.env["OPENROUTER_API_KEY"];
+      else process.env["OPENROUTER_API_KEY"] = previousOpenRouterKey;
+      if (previousSurplusKey === undefined) delete process.env["SURPLUS_API_KEY"];
+      else process.env["SURPLUS_API_KEY"] = previousSurplusKey;
+    }
+  });
+
+  test("restored personal sessions do not gain native admission capabilities", async () => {
+    const candidate = task({ requestedModelId: PERSONAL_MODEL });
+    const run = {
+      id: PARENT_RUN_ID,
+      taskId: candidate.id,
+      status: "running",
+      modelId: PERSONAL_MODEL,
+      graphThreadId: "task-thread",
+      fundingBinding: PERSONAL_BINDING,
+      fundingPredecessorRunId: null,
+    } as TaskRun;
+    taskRows.set(candidate.id, candidate);
+    runRows.set(run.id, run);
+
+    const session = await nativeTaskFundingPort.openSession(candidate, run, PERSONAL_MODEL, false);
+
+    expect(session.kind).toBe("personal");
+    expect(session.admission).toBeUndefined();
+    expect(session.admittedTransport).toBeUndefined();
   });
 
   test("a server-first native Task exposes bounded personal recovery", async () => {

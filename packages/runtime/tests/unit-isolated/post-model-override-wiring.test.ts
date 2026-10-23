@@ -24,6 +24,8 @@ import * as externalRoomContext from "../../src/executors/external-room-context"
 
 let capturedDeps: unknown = undefined;
 let capturedPolicyResolver: unknown = undefined;
+let foregroundCatalogHydrated = true;
+let foregroundCatalogHydrationCalls = 0;
 type ModelSnapshotFixture = {
   roomSelection: { modelId: string } | null;
   agentSelection: { modelId: string } | null;
@@ -37,7 +39,7 @@ const modelSnapshot: ModelSnapshotFixture = {
   turnModelId: null,
 };
 let captureGraphInput = false;
-let profileDefaultModel = "test:chat";
+let profileDefaultModel: string | null = "test:chat";
 let snapshotsToLoad: ModelSnapshotFixture[] = [];
 const snapshotLoads: Array<[string, string, string | null]> = [];
 const capturedGraphInputs: Record<string, unknown>[] = [];
@@ -77,6 +79,15 @@ mock.module("@nautilo/agent", () => ({
   // graph. Keep this wiring test hermetic by supplying the catalog coordinate
   // it now reaches on the way to the mocked graph boundary.
   getDefaultModel: () => ({ id: "test:chat" }),
+  getDefaultForegroundAgentModelId: () => {
+    if (!foregroundCatalogHydrated) throw new Error("expired-foreground-model-catalog");
+    return "test:auto";
+  },
+  hydrateForegroundAgentModelCatalog: async () => {
+    foregroundCatalogHydrationCalls += 1;
+    await Promise.resolve();
+    foregroundCatalogHydrated = true;
+  },
   getAgentExecutionConfigById: async () => ({
     soulFile: null,
     name: "Test Agent",
@@ -148,6 +159,8 @@ afterEach(() => {
   capturedPolicyResolver = undefined;
   captureGraphInput = false;
   profileDefaultModel = "test:chat";
+  foregroundCatalogHydrated = true;
+  foregroundCatalogHydrationCalls = 0;
   snapshotsToLoad = [];
   snapshotLoads.length = 0;
   capturedGraphInputs.length = 0;
@@ -263,6 +276,20 @@ describe("langgraphExecutor — Full Workstation override resolver wiring", () =
 });
 
 describe("foreground model-control snapshot ingress", () => {
+  test("main and fork await catalog hydration before resolving an expired automatic default", async () => {
+    captureGraphInput = true;
+    profileDefaultModel = null;
+
+    foregroundCatalogHydrated = false;
+    await driveExecutorOnce();
+    expect(capturedGraphInputs.at(-1)?.["model"]).toBe("test:auto");
+
+    foregroundCatalogHydrated = false;
+    await driveForkOnce({});
+    expect(capturedGraphInputs.at(-1)?.["model"]).toBe("test:auto");
+    expect(foregroundCatalogHydrationCalls).toBe(2);
+  });
+
   test("main and fork preserve an explicit turn model above Room and profile choices", async () => {
     captureGraphInput = true;
     profileDefaultModel = "unknown:unavailable-profile-default";
@@ -288,6 +315,7 @@ describe("foreground model-control snapshot ingress", () => {
     expect(capturedGraphInputs.map((input) => input["foregroundModelControlSnapshot"]))
       .toEqual([snapshot, snapshot]);
     expect(resolvedModelIds).toEqual([explicitModel, explicitModel]);
+    expect(foregroundCatalogHydrationCalls).toBe(0);
   });
 
   test("main and fork load a fresh Room snapshot without evaluating an unavailable profile default", async () => {
@@ -317,5 +345,6 @@ describe("foreground model-control snapshot ingress", () => {
     expect(capturedGraphInputs.map((input) => input["foregroundModelControlSnapshot"]))
       .toEqual([firstSnapshot, secondSnapshot, firstSnapshot, secondSnapshot]);
     expect(resolvedModelIds).not.toContain(profileDefaultModel);
+    expect(foregroundCatalogHydrationCalls).toBe(0);
   });
 });

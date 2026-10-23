@@ -160,13 +160,7 @@ export function validateExactTaskModelSelection(
         message: `Model "${requestedModelId}" is not qualified for tool-using Tasks through Surplus. Pick a directly configured model or a qualified tool-capable route.`,
       };
     }
-    if (row.maxOutputTokens !== null && surplus.route.maxOutputTokens < row.maxOutputTokens) {
-      return {
-        code: "capability_mismatch",
-        modelId: requestedModelId,
-        message: `Model "${requestedModelId}" requires an output budget above its qualified Surplus route. Configure its original provider or pick another exact model.`,
-      };
-    }
+
   }
   switch (row.availability) {
     case "selectable":

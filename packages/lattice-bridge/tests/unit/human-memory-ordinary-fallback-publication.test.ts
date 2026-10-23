@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { LatticeCrypto } from "@nautilo/lattice-crypto";
 
-import { prepareHumanMemoryOrdinaryFallbackRequestV1,
+import { prepareHumanMemoryOrdinaryFallbackRequestV2,
+  prepareHumanMemoryOrdinaryFallbackRequestV1,
   createHumanMemoryOrdinaryFallbackReplayAdmissionV1 } from
   "../../src/memory/human-memory-ordinary-fallback-request.ts";
 import { publishHumanMemoryOrdinaryFallbackIntent } from
@@ -18,10 +19,16 @@ const NAMESPACE = "81000000-0000-4000-8000-000000000010";
 const authority: HumanMemoryProductAuthority = Object.freeze({ userId: "user-1",
   mutableNamespaceIds: [NAMESPACE], writableNamespaceIds: [NAMESPACE] });
 
-function fixture() {
+const marketplaceDisclosure = { contractVersion: 2, canonicalSpace: {
+  provider: "venice", model: "text-embedding-3-large", dimensions: 1536 },
+  processingRoute: { transport: "surplus_marketplace",
+    marketplacePolicyVersion: "surplus-embedding-marketplace-v1",
+    dataRecipientClasses: ["surplus", "marketplace_seller", "seller_upstream_processor"] } } as const;
+
+function fixture(marketplace = false) {
   const crypto = new LatticeCrypto();
   const signer = crypto.generateSigningKeyPair();
-  const signed = prepareHumanMemoryOrdinaryFallbackRequestV1(crypto, {
+  const legacyInput = {
     formatVersion: 1, purpose: "memory.ordinary_fallback.update",
     reason: "target_encryption_not_ready", operationId: "operation-1",
     memoryId: MEMORY, expectedContentRevision: 2, nextContentRevision: 3,
@@ -33,7 +40,14 @@ function fixture() {
     hostAuthorizationRevision: 3, planIssuedAt: null, planDeadlineAt: null,
     issuedAt: 1_000, deadlineAt: 31_000,
     signingPrivateKey: signer.privateKey,
-  });
+  } as const;
+  const { formatVersion: _version, requestedProvider: _provider,
+    requestedModel: _model, dimensions: _dimensions, processorContractVersion: _contract,
+    ...coordinates } = legacyInput;
+  const signed = marketplace
+    ? prepareHumanMemoryOrdinaryFallbackRequestV2(crypto, { ...coordinates,
+      formatVersion: 2, requestedEmbedding: marketplaceDisclosure, processorContractVersion: 2 })
+    : prepareHumanMemoryOrdinaryFallbackRequestV1(crypto, legacyInput);
   return { crypto, signer, submitted: { requestVersion: 1 as const,
     publicationKind: "ordinary_fallback" as const,
     reason: "target_encryption_not_ready" as const, memoryId: MEMORY,
@@ -163,4 +177,36 @@ describe("Human Memory ordinary fallback publication", () => {
     })).rejects.toThrow("opaque storage cancellation");
     expect(order).toEqual(["admit", "embed"]);
   });
+});
+
+
+test("ordinary fallback publishes the exact signed marketplace disclosure while retaining result provenance V1", async () => {
+  const value = fixture(true); const order: string[] = [];
+  const result = await publishHumanMemoryOrdinaryFallbackIntent({ ...value,
+    now: () => 2_000, expectedHumanId: "human-1",
+    expectedPurpose: "memory.ordinary_fallback.update", authority,
+    product: { lookupOrdinaryFallback: async () => null,
+      admitOrdinaryFallback: async ({ authenticated }) => {
+        order.push("admit");
+        expect(authenticated.request).toMatchObject({ formatVersion: 2,
+          requestedEmbedding: marketplaceDisclosure });
+        return { authenticated, expectedAccessRevision: 1 }; },
+      publishOrdinaryFallbackIntent: async ({ embedding }) => {
+        order.push("publish");
+        expect(embedding).toMatchObject({ provider: "venice",
+          canonicalModel: "text-embedding-3-large", processorContractVersion: 1 });
+        return projection(); } },
+    resolveHistoricalDeviceAuthority: async () => ({
+      committerSigningPublicKey: value.signer.publicKey }),
+    foregroundEmbeddingProcessor: { embed: async ({ request }) => {
+      order.push("embed");
+      expect(request).toMatchObject({ contractVersion: 2,
+        embeddingDisclosure: marketplaceDisclosure, provider: "venice",
+        model: "text-embedding-3-large", dimensions: 1536 });
+      return { status: "embedded", embedding: { provider: "venice",
+        canonicalModel: "text-embedding-3-large", dimensions: 1536,
+        processorContractVersion: 1, vector: new Array<number>(1536).fill(0.25) } }; } },
+  });
+  expect(result).toMatchObject({ status: "ordinary_fallback", contentRevision: 3 });
+  expect(order).toEqual(["admit", "embed", "publish"]);
 });

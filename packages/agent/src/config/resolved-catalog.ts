@@ -545,7 +545,18 @@ export function resolveServerFundedForegroundCatalogModel(
     ...(input.routes === undefined ? {} : { routes: input.routes }),
   });
   if (surplus.status !== "available") return direct;
-  const selectable = { ...direct, availability: "selectable" as const };
+  const selectable = {
+    ...direct,
+    availability: "selectable" as const,
+    contextTokens: surplus.route.maxContextTokens,
+    maxOutputTokens: surplus.route.maxOutputTokens,
+    input: direct.input.filter((modality) => modality !== "image" || surplus.route.supportsVision),
+    features: {
+      ...direct.features,
+      tools: surplus.route.supportsTools,
+      reasoning: surplus.route.supportsReasoning,
+    },
+  };
   delete selectable.unavailableReason;
   return selectable;
 }
