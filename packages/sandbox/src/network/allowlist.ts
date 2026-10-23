@@ -59,7 +59,12 @@ export function normalizeHost(input: string): string | null {
   if (trimmed.length === 0) return null;
   const ip = parseStrictIpLiteral(trimmed);
   if (ip !== null) return ip.toString();
-  const ascii = domainToASCII(trimmed.toLowerCase());
+  const domain = trimmed.toLowerCase();
+  const ascii = domainToASCII(domain);
+  // IP admission uses the original spelling. IDNA can also canonicalize
+  // legacy or encoded IPv4 forms; retain their domain identity so that
+  // normalization cannot grant them IP-literal or CIDR permissions.
+  if (parseStrictIpLiteral(ascii) !== null) return domain;
   return ascii.length > 0 ? ascii : null;
 }
 

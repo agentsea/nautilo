@@ -8,6 +8,7 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 ## [Unreleased]
 
 - Update TOML parsing to reject malformed input without excessive processing.
+- Preserve strict IP matching in network allowlists during hostname normalization.
 - Genie can change access to encrypted Memory across Domains whose
   authorization histories have advanced independently.
 - Bundled Bun and contributor tooling use Bun 1.4.4 with updated certificate
