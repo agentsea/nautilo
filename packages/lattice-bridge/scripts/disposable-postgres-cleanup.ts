@@ -6,7 +6,11 @@ import {
 } from "./disposable-postgres-reset";
 
 const cleanupPrivileges = [
+  ["agent_crypto_runtime_signers", "UPDATE"],
+  ["agent_crypto_runtime_signers", "SELECT"],
   ["protected_task_wake_continuation_receipts", "UPDATE"],
+  ["protected_task_wake_continuation_receipts", "SELECT"],
+  ["protected_task_wake_continuation_receipts", "DELETE"],
   ["task_cancellation_crypto_staging_receipts", "SELECT"],
   ["task_cancellation_crypto_staging_receipts", "DELETE"],
   ["task_terminal_message_crypto_staging_receipts", "SELECT"],

@@ -3,7 +3,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import postgres from "postgres";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { eq } from "drizzle-orm";
-import { cryptoObjects, namespaces, rooms, users } from "@nautilo/db";
+import { agentCryptoRuntimeStates, agents, cryptoObjects, namespaces, rooms, tasks, users } from "@nautilo/db";
 import { readDisposableCleanupUrls, withDisposableFixtureCleanup } from "../../scripts/disposable-postgres-cleanup";
 import { verifyDisposablePostgresAuthority } from "../../scripts/disposable-postgres-reset";
 
@@ -20,7 +20,8 @@ async function aclSnapshot() {
   return await admin`
     SELECT relation.relname, relation.relacl::text, relation.relrowsecurity, relation.relforcerowsecurity
       FROM pg_class relation
-     WHERE relation.oid IN ('public.protected_task_wake_continuation_receipts'::regclass,
+     WHERE relation.oid IN ('public.agent_crypto_runtime_signers'::regclass,
+       'public.protected_task_wake_continuation_receipts'::regclass,
        'public.task_cancellation_crypto_staging_receipts'::regclass,
        'public.task_terminal_message_crypto_staging_receipts'::regclass,
        'public.task_historical_content_crypto_staging_receipts'::regclass,
@@ -37,7 +38,18 @@ test("administrative fixture cleanup preserves restricted receipt ACLs and RLS",
     type: "private", label: "Cleanup regression", graphThreadId: `cleanup:${randomUUID()}` }).returning();
   const objectId = `cleanup:${randomUUID()}`;
   await db.insert(cryptoObjects).values({ objectId, payloadHash: Buffer.alloc(32), payloadBytes: Buffer.from([1]) });
+  const [agent] = await db.insert(agents).values({ handle: `cleanup-${randomUUID()}` }).returning();
+  const [task] = await db.insert(tasks).values({ ownerId: user!.id, requestorId: user!.id,
+    agentId: agent!.id, prompt: "Cleanup regression" }).returning();
+  await db.insert(agentCryptoRuntimeStates).values({ agentId: agent!.id,
+    authorizationRevision: 1, runtimeGeneration: 0, configObjectCount: 1,
+    configInventoryDigest: Buffer.alloc(32) });
   const before = await aclSnapshot();
+  const runtimeFailure = await db.delete(agentCryptoRuntimeStates)
+    .where(eq(agentCryptoRuntimeStates.agentId, agent!.id)).catch((error: unknown) => error);
+  expect(runtimeFailure).toBeInstanceOf(Error);
+  const taskFailure = await db.delete(tasks).where(eq(tasks.id, task!.id)).catch((error: unknown) => error);
+  expect(taskFailure).toBeInstanceOf(Error);
   const originalFailure = await db.delete(rooms).where(eq(rooms.id, room!.id)).catch((error: unknown) => error);
   expect(originalFailure).toBeInstanceOf(Error);
   const cryptoFailure = await db.delete(cryptoObjects).where(eq(cryptoObjects.objectId, objectId)).catch((error: unknown) => error);
@@ -53,12 +65,16 @@ test("administrative fixture cleanup preserves restricted receipt ACLs and RLS",
       await observer.end();
     }
     const cleanup = drizzle(transaction);
+    await cleanup.delete(tasks).where(eq(tasks.id, task!.id));
+    await cleanup.delete(agentCryptoRuntimeStates).where(eq(agentCryptoRuntimeStates.agentId, agent!.id));
+    await cleanup.delete(agents).where(eq(agents.id, agent!.id));
     await cleanup.delete(rooms).where(eq(rooms.id, room!.id));
     await cleanup.delete(namespaces).where(eq(namespaces.id, namespace!.id));
     await cleanup.delete(users).where(eq(users.id, user!.id));
     await cleanup.delete(cryptoObjects).where(eq(cryptoObjects.objectId, objectId));
   });
   expect(await aclSnapshot()).toEqual(before);
+  expect(await db.select().from(tasks).where(eq(tasks.id, task!.id))).toHaveLength(0);
   expect(await db.select().from(rooms).where(eq(rooms.id, room!.id))).toHaveLength(0);
   expect(await db.select().from(cryptoObjects).where(eq(cryptoObjects.objectId, objectId))).toHaveLength(0);
 });
