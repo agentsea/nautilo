@@ -4651,7 +4651,7 @@
 
     "negotiator": ["negotiator@1.0.0", "", {}, "sha512-8Ofs/AUQh8MaEcrlq5xOX0CQ9ypTF5dl78mjlMNfOK08fzpgTHQRQPBxcPlEtIw0yRpws+Zo/3r+5WRby7u3Gg=="],
 
-    "node-abi": ["node-abi@4.28.0", "", { "dependencies": { "semver": "^7.6.3" } }, "sha512-Qfp5XZL1cJDOabOT8H5gnqMTmM4NjvYzHp4I/Kt/Sl76OVkOBBHRFlPspGV0hYvMoqQsypFjT/Yp7Km0beXW9g=="],
+    "node-abi": ["node-abi@4.39.0", "", { "dependencies": { "semver": "^7.6.3" } }, "sha512-pULjI3qsVrn6K5DZz5tCpX2dL8IKM9/xBMRz29hBko8UFXZ/C3QxRMl/Z7wKaQwaxPmYU+7UPKbDf7EO+ASvfA=="],
 
     "node-addon-api": ["node-addon-api@8.7.0", "", {}, "sha512-9MdFxmkKaOYVTV+XVRG8ArDwwQ77XIgIPyKASB1k3JPq3M8fGQQQE3YpMOrKm6g//Ktx8ivZr8xo1Qmtqub+GA=="],
 
