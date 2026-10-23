@@ -48,7 +48,7 @@ assertions; the binary-backed integration lane has 13 files, 311 tests, and
 1,586 assertions. All 341 tests and 1,692 assertions pass, as do all 27
 provider/scenario runs.
 
-Canonical verification uses the repository-pinned Bun 1.4.4:
+Canonical verification uses the repository-pinned Bun 1.3.11:
 
 ```text
 bun run --cwd packages/lattice-crypto provenance:verify

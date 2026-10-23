@@ -236,6 +236,9 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile --ignore-scripts
 
+      - name: Build Writer dependencies before first-party installation
+        run: bun run writer:prepare
+
       - name: Install first-party app dependencies
         run: bun run first-party-apps:install
 
