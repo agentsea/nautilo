@@ -7,6 +7,8 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Invite room pickers now list only public rooms and exclude external rooms.
+
 - Web Genie customization now loads the default shell avatar correctly instead
   of showing a missing-image error and requiring a replacement.
 
