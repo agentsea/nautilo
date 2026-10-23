@@ -25,6 +25,8 @@ import {
 } from "../../src/runtime/foreground-chat-funding";
 import type { RecoverPreparedContext } from "../../src/utils/chat-model-invocation";
 import type { ResolvedFallbackPolicy } from "../../src/utils/resolve-fallback-policy";
+import { installSurplusCatalogFixture } from "../helpers/surplus-catalog-fixture";
+import { resetSurplusModelCatalog } from "../../src/providers/surplus-catalog";
 import { setAgentEventSink } from "../../src/runtime-hooks";
 import { getOrCreateAgentTurnContextByKey, turnContextKey, _resetAgentTurnContextsForTests } from "../../src/runtime/turn-context";
 import { ProviderTimeoutError } from "../../src/providers/errors";
@@ -124,6 +126,7 @@ const priorProviderKeys = Object.fromEntries(
     .map((key) => [key, process.env[key]]),
 );
 const priorFetch = globalThis.fetch;
+beforeEach(installSurplusCatalogFixture);
 
 test("resolves each candidate's policy with explicit temporary or caller provenance", () => {
   const legacy = resolveModelAttemptPolicy(A);
@@ -245,6 +248,7 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
+  resetSurplusModelCatalog();
   uninstallPersonalAttemptOwner?.();
   resetRuntimeModelCatalog();
   setAgentEventSink(null);

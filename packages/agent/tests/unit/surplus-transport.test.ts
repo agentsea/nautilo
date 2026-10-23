@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { AIMessage, HumanMessage } from "@langchain/core/messages";
 import {
   createSurplusChatModel,
@@ -10,6 +10,7 @@ import {
   resolveQualifiedSurplusChatRoute,
   resolveSurplusChatServingAvailability,
 } from "../../src/providers/surplus-route";
+import { resetSurplusModelCatalog } from "../../src/providers/surplus-catalog";
 import {
   assertCompleteSurplusResponse,
   assertSuccessfulSurplusProviderReceipt,
@@ -21,6 +22,7 @@ import {
   SurplusProviderRouteMismatchError,
 } from "../../src/providers/surplus-attempt";
 import { createManageConnectedWebOperationTool } from "../../src/tools/connected-web-accounts/manage-connected-web-operation";
+import { installSurplusCatalogFixture } from "../helpers/surplus-catalog-fixture";
 
 const VENICE_ROUTE = {
   catalogModelId: "venice:openai-gpt-55",
@@ -43,6 +45,9 @@ const QUALIFIED_OPENROUTER_ROUTE = {
   maxContextTokens: 1_050_000,
   maxOutputTokens: 128_000,
 };
+
+beforeEach(installSurplusCatalogFixture);
+afterEach(resetSurplusModelCatalog);
 
 describe("Surplus wire boundary", () => {
   test("retains real zero cost and omits absent cost", () => {
@@ -395,7 +400,7 @@ describe("Surplus wire boundary", () => {
   });
 
   test("qualified OpenRouter vision preserves text and image_url on the SDK wire", async () => {
-    const route = resolveQualifiedSurplusChatRoute("openrouter:google/gemini-3.1-flash-lite-preview");
+    const route = resolveQualifiedSurplusChatRoute(QUALIFIED_OPENROUTER_ROUTE.catalogModelId);
     if (!route) throw new Error("Expected the signed vision route to remain qualified");
     const personalFunding = {
       kind: "personal" as const,
@@ -406,7 +411,7 @@ describe("Surplus wire boundary", () => {
       credentialRevision: 1,
     };
     expect(route).toMatchObject({
-      surplusModelId: "google/gemini-3.1-flash-lite-preview",
+      surplusModelId: "gpt-5.6-sol",
       providerPin: "openrouter",
       supportsVision: true,
     });
@@ -903,11 +908,11 @@ describe("qualified Surplus route selection", () => {
     expect(resolveQualifiedSurplusChatRoute(QUALIFIED_OPENROUTER_ROUTE.catalogModelId))
       .toMatchObject({
         catalogModelId: QUALIFIED_OPENROUTER_ROUTE.catalogModelId,
-        surplusModelId: "openai/gpt-5.6-sol",
+        surplusModelId: "gpt-5.6-sol",
         providerPin: "openrouter",
       });
-    expect(resolveQualifiedSurplusChatRoute("venice:openai-gpt-55")).not.toBeNull();
-    expect(resolveQualifiedSurplusChatRoute("openrouter:openai/gpt-5.6-terra")).not.toBeNull();
+    expect(resolveQualifiedSurplusChatRoute("venice:minimax-m3-preview")).not.toBeNull();
+    expect(resolveQualifiedSurplusChatRoute("openrouter:anthropic/claude-sonnet-4.6")).not.toBeNull();
     expect(resolveQualifiedSurplusChatRoute("openai:gpt-5.6-sol")).not.toBeNull();
   });
 

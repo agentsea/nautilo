@@ -2,8 +2,11 @@ import {
   foregroundModelControlPlanFromSnapshot,
   getAgentExecutionConfigById,
   getDefaultForegroundAgentModelId,
+  hydrateSurplusChatCatalog,
   loadForegroundModelControlSnapshot,
+  resolveProviderKey,
 } from "@nautilo/agent";
+import { getCachedServerModelConfigRow } from "@nautilo/db";
 import { resolveModelFunding } from "./model-funding";
 
 export interface ForegroundChatPreflightDeps {
@@ -11,6 +14,9 @@ export interface ForegroundChatPreflightDeps {
   getExecutionConfig: typeof getAgentExecutionConfigById;
   defaultForegroundModelId: typeof getDefaultForegroundAgentModelId;
   resolveFunding: typeof resolveModelFunding;
+  hydrateSurplusChatCatalog?: typeof hydrateSurplusChatCatalog;
+  getPreferSurplus?: () => boolean;
+  getSurplusKeyConfigured?: () => boolean;
 }
 
 /** @internal Stable production wiring, exported for an identity-level unit assertion. */
@@ -19,6 +25,9 @@ export const DEFAULT_FOREGROUND_CHAT_PREFLIGHT_DEPS = Object.freeze({
   getExecutionConfig: getAgentExecutionConfigById,
   defaultForegroundModelId: getDefaultForegroundAgentModelId,
   resolveFunding: resolveModelFunding,
+  hydrateSurplusChatCatalog,
+  getPreferSurplus: () => getCachedServerModelConfigRow()?.preferSurplus === true,
+  getSurplusKeyConfigured: () => resolveProviderKey("surplus") !== null,
 }) satisfies ForegroundChatPreflightDeps;
 
 /** Project the executor's selected model before auxiliary work can spend.
@@ -34,6 +43,18 @@ export async function resolveForegroundChatPreflightModelId(
 ) {
   const snapshot = await deps.loadSnapshot(input.roomId, input.agentId, input.turnModelId);
   const profile = await deps.getExecutionConfig(input.agentId).catch(() => null);
+  if (!input.turnModelId && !snapshot.roomSelection?.modelId
+    && !snapshot.agentSelection?.modelId && !profile?.defaultModel
+    && deps.getPreferSurplus?.() === true
+    && deps.getSurplusKeyConfigured?.() === true
+    && deps.hydrateSurplusChatCatalog) {
+    try {
+      await deps.hydrateSurplusChatCatalog();
+    } catch {
+      // The synchronous default resolver remains fail-closed on the last
+      // verified map and can still select a directly credentialed model.
+    }
+  }
   const plan = foregroundModelControlPlanFromSnapshot(snapshot, () =>
     input.turnModelId || profile?.defaultModel || deps.defaultForegroundModelId(),
   );

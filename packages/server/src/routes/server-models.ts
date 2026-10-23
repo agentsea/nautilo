@@ -7,6 +7,7 @@ import {
   getEligibleModels,
   getProtectedMemoryEmbeddingConfiguration,
   getServerSpeechModel,
+  hydrateSurplusChatCatalog,
   kickRuntimeModelCatalogRefresh,
   listMediaGenerationModels,
   listResolvedCatalogModels,
@@ -544,6 +545,7 @@ export interface ServerModelsRouteDeps {
   getEffectiveMediaModel?: typeof effectiveMediaGenerationModel;
   getEffectiveSpeechModel?: () => string | null;
   getSurplusKeyConfigured?: () => boolean;
+  hydrateSurplusChatCatalog?: typeof hydrateSurplusChatCatalog;
   /** Pure offline seam; production derives routes from the signed catalogue. */
   getQualifiedSurplusChatRoutes?: () => readonly QualifiedSurplusChatRoute[];
 }
@@ -564,10 +566,21 @@ export function serverModelsRoutes(
   const listMediaModels = overrides.listMediaModels ?? mediaGenerationModels;
   const listVisionModels = overrides.listImageUnderstandingModels ?? imageUnderstandingModels;
   const getEffectiveMediaModel = overrides.getEffectiveMediaModel ?? effectiveMediaGenerationModel;
+  const getSurplusKeyConfigured = overrides.getSurplusKeyConfigured
+    ?? (() => resolveProviderKey("surplus") !== null);
+  const getQualifiedSurplusChatRoutes = overrides.getQualifiedSurplusChatRoutes;
+  const hydrateSurplusProjection = async (policyEnabled: boolean, keyConfigured: boolean) => {
+    if (!policyEnabled || !keyConfigured || getQualifiedSurplusChatRoutes) return;
+    try {
+      await (overrides.hydrateSurplusChatCatalog ?? hydrateSurplusChatCatalog)();
+    } catch {
+      // Keep administration reachable; the sync projection remains fail-closed
+      // on the last verified discovery snapshot.
+    }
+  };
   const wire = (config: ResolvedServerModelConfig) => {
-    const keyConfigured = (overrides.getSurplusKeyConfigured
-      ?? (() => resolveProviderKey("surplus") !== null))();
-    const routes = overrides.getQualifiedSurplusChatRoutes?.();
+    const keyConfigured = getSurplusKeyConfigured();
+    const routes = getQualifiedSurplusChatRoutes?.();
     const surplus = resolveSurplusChatServingAvailability({
       policyEnabled: config.preferSurplus,
       keyConfigured,
@@ -611,10 +624,15 @@ export function serverModelsRoutes(
     if (!(await viewerHasCapability(userId, "read_server_settings", getCapabilities))) {
       return reply.code(403).send({ error: "admin only" });
     }
+    await hydrateSurplusProjection(
+      getCachedServerModelConfigRow()?.preferSurplus === true,
+      getSurplusKeyConfigured(),
+    );
     const config = await getConfig(getDb(), getDefaults());
     // Retry reconciliation on reload; report the actual runtime snapshot even
     // when refresh retains stale state after a database failure.
     await refreshConfigCache(true);
+    await hydrateSurplusProjection(config.preferSurplus, getSurplusKeyConfigured());
     return reply.send(wire(config));
   });
 
@@ -626,14 +644,21 @@ export function serverModelsRoutes(
     }
 
     const db = getDb();
+    const bodyPolicy = (request.body as Record<string, unknown> | null)?.["preferSurplus"];
+    await hydrateSurplusProjection(
+      typeof bodyPolicy === "boolean"
+        ? bodyPolicy
+        : getCachedServerModelConfigRow()?.preferSurplus === true,
+      getSurplusKeyConfigured(),
+    );
     const defaults = getDefaults();
     const before = await getConfig(db, defaults);
     const requestedPolicy = typeof (request.body as Record<string, unknown> | null)?.["preferSurplus"] === "boolean"
       ? (request.body as Record<string, boolean>)["preferSurplus"]!
       : before.preferSurplus;
-    const keyConfigured = (overrides.getSurplusKeyConfigured
-      ?? (() => resolveProviderKey("surplus") !== null))();
-    const routes = overrides.getQualifiedSurplusChatRoutes?.();
+    const keyConfigured = getSurplusKeyConfigured();
+    const routes = getQualifiedSurplusChatRoutes?.();
+    await hydrateSurplusProjection(requestedPolicy, keyConfigured);
     const parsed = parseUpdateBody(request.body, listMediaModels, {
       policyEnabled: requestedPolicy,
       keyConfigured,

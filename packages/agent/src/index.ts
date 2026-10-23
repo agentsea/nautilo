@@ -348,6 +348,7 @@ export { preModelNode } from "./nodes/pre-model";
 export {
   agentNode,
   getDefaultForegroundAgentModelId,
+  hydrateForegroundAgentModelCatalog,
   resolveForegroundAgentModelId,
 } from "./nodes/agent";
 export {
@@ -570,6 +571,7 @@ export {
   getActiveModelCatalogProvenance,
 } from "./config/resolved-catalog";
 export {
+  hydrateSurplusChatCatalog,
   resolveQualifiedSurplusChatRoute,
   resolveSurplusChatServingAvailability,
   type QualifiedSurplusChatRoute,

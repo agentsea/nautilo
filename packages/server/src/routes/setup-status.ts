@@ -14,6 +14,7 @@ import {
 import {
   getActiveModelCatalogSync,
   getProfile,
+  hydrateSurplusChatCatalog,
   resolveProviderKey,
   resolveSurplusChatServingAvailability,
   type QualifiedSurplusChatRoute,
@@ -57,6 +58,7 @@ export interface SetupStatusRouteDeps {
   readonly getQualifiedSurplusChatRoutes?: () => readonly QualifiedSurplusChatRoute[];
   readonly getPreferSurplus?: () => boolean;
   readonly getSurplusKeyConfigured?: () => boolean;
+  readonly hydrateSurplusChatCatalog?: typeof hydrateSurplusChatCatalog;
 }
 
 interface SetupLlmReadinessInput {
@@ -69,7 +71,7 @@ interface SetupLlmReadinessInput {
  * Setup readiness describes a server-funded foreground agent path. A Surplus
  * key is only credential presence; it becomes readiness when server policy is
  * enabled and a released chat route passes the central serving resolver for
- * the ordinary agent defaults: tools and an executable qualified output cap.
+ * the ordinary agent defaults: tools and a valid positive route context.
  * Request-specific context and vision gates still run at invocation time.
  */
 export function computeSetupHasLlm(
@@ -96,14 +98,29 @@ export function computeSetupHasLlm(
       fundingKind: "server",
       ...(routes === undefined ? {} : { routes }),
     });
-    if (availability.status !== "available" || !availability.route.supportsTools) return false;
-
-    // Invocation clamps the catalog budget to the qualified route maximum.
-    // Readiness therefore needs room for input at that actual wire ceiling,
-    // rather than equality with the direct provider's signed maximum.
-    if (availability.route.maxContextTokens <= availability.route.maxOutputTokens) return false;
-    return true;
+    return availability.status === "available"
+      && availability.route.supportsTools
+      && availability.route.maxContextTokens > 0;
   });
+}
+
+/** Await discovery before the synchronous setup projection reads its map. */
+export async function hydrateSetupSurplusReadiness(
+  input: SetupLlmReadinessInput,
+  deps: SetupStatusRouteDeps = {},
+): Promise<void> {
+  if (input.directProviderReady || !input.authenticated || !input.claimed
+    || deps.getQualifiedSurplusChatRoutes) return;
+  const policyEnabled = (deps.getPreferSurplus
+    ?? (() => getCachedServerModelConfigRow()?.preferSurplus === true))();
+  const keyConfigured = (deps.getSurplusKeyConfigured
+    ?? (() => resolveProviderKey("surplus") !== null))();
+  if (!policyEnabled || !keyConfigured) return;
+  try {
+    await (deps.hydrateSurplusChatCatalog ?? hydrateSurplusChatCatalog)();
+  } catch {
+    // Setup remains available and reports the last verified, fail-closed state.
+  }
 }
 
 function managedByCloudFromInstance(): boolean {
@@ -287,11 +304,13 @@ async function deriveSetupStateCore(args: {
     // policy, then compose server serving readiness here without exposing or
     // returning provider records (which carry masked-value metadata).
     const { summary } = await check();
-    hasLlm = computeSetupHasLlm({
+    const readinessInput = {
       directProviderReady: summary.hasLlm,
       authenticated: true,
       claimed: hasA,
-    }, args.deps ?? {});
+    } as const;
+    await hydrateSetupSurplusReadiness(readinessInput, args.deps ?? {});
+    hasLlm = computeSetupHasLlm(readinessInput, args.deps ?? {});
     hasVoice = summary.hasVoice;
     hasSearch = summary.hasSearch;
     hasConversion = summary.hasConversion;

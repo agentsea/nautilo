@@ -2,6 +2,7 @@ import type { PersonalProviderCredential } from "@nautilo/agent";
 import { chatGPTFundingModels, chatGPTFundingRegistration, chatGPTSessionStore, type ChatGPTFundingRegistration } from "./chatgpt-plan/runtime";
 import {
   DEFAULT_PROVIDER_TIMEOUT_MS,
+  hydrateSurplusChatCatalog,
   modelHasRunnableCredentials,
   resolveCatalogModel,
   resolveSurplusDecisionServingAvailability,
@@ -110,6 +111,10 @@ export interface ModelFundingDeps {
     transport?: "direct" | "surplus",
   ) => string | null;
   personalSurplusRoute?: (modelId: string, workload?: ModelFundingWorkload) => boolean;
+  /** Async discovery boundary; omitted by pure/offline tests. */
+  hydrateSurplusChatCatalog?: typeof hydrateSurplusChatCatalog;
+  getPreferSurplus?: () => boolean;
+  getServerSurplusKeyConfigured?: () => boolean;
   readCustody: () => Promise<PersonalProviderCustody>;
   decrypt: typeof decryptPersonalProviderCredential;
   getSubscription?: (userId: string, id?: string) => Promise<ChatGPTFundingRegistration | null>;
@@ -193,6 +198,9 @@ const DEFAULT_DEPS: ModelFundingDeps = {
     policyEnabled: getCachedServerModelConfigRow()?.preferSurplus === true,
     keyConfigured: true, fundingKind: "personal",
   }).status === "available",
+  hydrateSurplusChatCatalog,
+  getPreferSurplus: () => getCachedServerModelConfigRow()?.preferSurplus === true,
+  getServerSurplusKeyConfigured: () => resolveProviderKey("surplus") !== null,
   readCustody: readPersonalProviderCustody,
   decrypt: decryptPersonalProviderCredential,
 };
@@ -288,6 +296,27 @@ export async function resolveModelFunding(
     throw new ModelFundingError("personal_credentials_forbidden");
   }
 
+  const surplusPolicyEnabled = !input.directOnly && input.transport !== "direct"
+    && (deps.getPreferSurplus?.() ?? true);
+  const hydrateSurplus = async (keyConfigured: boolean): Promise<void> => {
+    if (!surplusPolicyEnabled || !keyConfigured || !deps.hydrateSurplusChatCatalog) return;
+    try {
+      await deps.hydrateSurplusChatCatalog({ catalogModelIds: [input.modelId] });
+    } catch {
+      // Discovery failure is fail-closed for Surplus. Direct routes remain
+      // usable and the sync resolver below observes only the last verified map.
+    }
+  };
+  const serverRoute = async (
+    transport: "direct" | "surplus" | undefined = input.directOnly ? "direct" : input.transport,
+  ) => {
+    await hydrateSurplus(deps.getServerSurplusKeyConfigured?.() === true);
+    const route = deps.serverRoute(input.modelId, input.workload, transport);
+    // Only image-capable signed routes may receive the helper's image envelope.
+    return input.workload === "image_assistance" && route === "surplus"
+      && resolveQualifiedSurplusChatRoute(input.modelId)?.supportsVision !== true ? null : route;
+  };
+
   // Explicit subscription selection pins a registration, including its failed
   // state. It must never degrade into API-key or server-funded inference.
   const pinnedSubscription = prior?.kind === "personal" && prior.providerRoute === "openai-chatgpt";
@@ -319,15 +348,9 @@ export async function resolveModelFunding(
 
   // Priority applies only to fresh admissions. An eligible server-first route
   // needs neither a personal row lookup nor access to personal key custody.
-  const serverRoute = (transport: "direct" | "surplus" | undefined = input.directOnly ? "direct" : input.transport) => {
-    const route = deps.serverRoute(input.modelId, input.workload, transport);
-    // Only image-capable signed routes may receive the helper's image envelope.
-    return input.workload === "image_assistance" && route === "surplus"
-      && resolveQualifiedSurplusChatRoute(input.modelId)?.supportsVision !== true ? null : route;
-  };
   if (!prior && input.fundingKind !== "personal" && policy.fundingPreference === "server_first"
     && caps.includes("use_server_provider_credentials")) {
-    const route = serverRoute();
+    const route = await serverRoute();
     if (route) {
       return {
         kind: "server", humanUserId: input.humanUserId,
@@ -352,14 +375,23 @@ export async function resolveModelFunding(
 
   // Switch-off and admitted server operations never inspect personal rows.
   if (personalAllowed && provider && prior?.kind !== "server" && input.fundingKind !== "server") {
-    const surplusEligible = !input.directOnly && input.transport !== "direct"
-      && deps.personalSurplusRoute?.(input.modelId, input.workload) === true;
-    const surplusCredential = surplusEligible
+    // Production discovers before consulting the sync route map. Pure test
+    // dependencies without the policy/discovery seam retain their explicit
+    // route-first behavior and never acquire a network dependency.
+    const explicitSurplusEligibility = deps.getPreferSurplus === undefined
+      ? !input.directOnly && input.transport !== "direct"
+        && deps.personalSurplusRoute?.(input.modelId, input.workload) === true
+      : surplusPolicyEnabled;
+    const surplusCredential = explicitSurplusEligibility
       ? prior?.kind === "personal" && prior.providerRoute === "surplus"
         ? priorCredential : await deps.getCredential(input.humanUserId, "surplus")
       : null;
-    const selectedProvider = surplusCredential ? "surplus" : provider;
-    const credential = surplusCredential ?? (input.transport === "surplus" ? null
+    await hydrateSurplus(surplusCredential !== null);
+    const surplusEligible = surplusCredential !== null
+      && (deps.getPreferSurplus === undefined || deps.personalSurplusRoute?.(input.modelId, input.workload) === true);
+    const qualifiedSurplusCredential = surplusEligible ? surplusCredential : null;
+    const selectedProvider = qualifiedSurplusCredential ? "surplus" : provider;
+    const credential = qualifiedSurplusCredential ?? (input.transport === "surplus" ? null
       : prior?.kind === "personal" && prior.providerRoute === provider
         ? priorCredential : await deps.getCredential(input.humanUserId, provider));
     if (credential) {
@@ -407,7 +439,7 @@ export async function resolveModelFunding(
     throw new ModelFundingError("funding_source_changed");
   }
   const requestedServerTransport = input.transport ?? (input.directOnly ? "direct" : pinnedServerTransport);
-  const route = serverRoute(requestedServerTransport);
+  const route = await serverRoute(requestedServerTransport);
   if (!route) throw new ModelFundingError("provider_credentials_missing");
   if (requestedServerTransport === "surplus" && route !== "surplus") {
     throw new ModelFundingError("funding_source_changed");
@@ -493,6 +525,8 @@ export async function withAdmittedPersonalCredential<T>(
 
 /** Request-local readiness projection; subscription discovery can refresh tokens but never runs inference. Never use these dependencies to dispatch. */
 export async function createModelFundingSnapshot(humanUserId: string) {
+  const preferSurplus = DEFAULT_DEPS.getPreferSurplus?.() === true;
+  const serverSurplusKeyConfigured = DEFAULT_DEPS.getServerSurplusKeyConfigured?.() === true;
   const [policy, capabilities, credentials] = await Promise.all([
     DEFAULT_DEPS.getPolicy(), DEFAULT_DEPS.getCapabilities(humanUserId),
     listPersonalProviderCredentials(getServerDirectDb(), humanUserId),
@@ -515,6 +549,8 @@ export async function createModelFundingSnapshot(humanUserId: string) {
       return value;
     },
     getPolicy: () => Promise.resolve(policy),
+    getPreferSurplus: () => preferSurplus,
+    getServerSurplusKeyConfigured: () => serverSurplusKeyConfigured,
     getCapabilities: (human) => Promise.resolve(human === humanUserId ? capabilities : []),
     getCredential: (human, provider) => Promise.resolve(
       human === humanUserId ? credentials.find((row) => row.provider === provider) ?? null : null,

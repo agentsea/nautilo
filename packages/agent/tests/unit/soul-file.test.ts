@@ -19,6 +19,10 @@ import {
   hydrateRuntimeModelCatalog,
   resetRuntimeModelCatalog,
 } from "../../src/config/model-catalog/runtime-catalog";
+import {
+  configureSurplusModelCatalog,
+  resetSurplusModelCatalog,
+} from "../../src/providers/surplus-catalog";
 
 type RuntimeModelCatalog = ReturnType<typeof getActiveModelCatalogSync>["catalog"];
 
@@ -44,6 +48,65 @@ function useSurplusOnlyCredentials(): void {
   process.env["SURPLUS_API_KEY"] = "synthetic-surplus-key";
 }
 
+function activeSurplusTestRows(): Array<Record<string, unknown>> {
+  const rows = new Map<string, Record<string, unknown>>();
+  for (const entry of getActiveModelCatalogSync().catalog.entries) {
+    const separator = entry.id.indexOf(":");
+    const id = separator < 1 ? "" : entry.id.slice(separator + 1);
+    const contextTokens = entry.limits?.contextTokens;
+    const outputTokens = entry.limits?.outputTokens;
+    if (!id || !contextTokens || !outputTokens || rows.has(id)) continue;
+    const supportsTools = entry.features?.tools === true;
+    const supportsVision = entry.modalities?.input?.includes("image") === true;
+    const supportsReasoning = entry.features?.reasoning === true;
+    rows.set(id, {
+      id,
+      context_length: contextTokens,
+      architecture: {
+        input_modalities: supportsVision ? ["text", "image"] : ["text"],
+        output_modalities: ["text"],
+      },
+      top_provider: {
+        context_length: contextTokens,
+        max_completion_tokens: outputTokens,
+      },
+      supported_parameters: supportsTools ? ["max_tokens", "tools"] : ["max_tokens"],
+      supported_features: [
+        "streaming",
+        ...(supportsTools ? ["tools"] : []),
+        ...(supportsVision ? ["vision"] : []),
+        ...(supportsReasoning ? ["reasoning"] : []),
+      ],
+    });
+  }
+  return [...rows.values()];
+}
+
+function installSurplusDiscoveryFixture(
+  rowsForRequest: () => Array<Record<string, unknown>> = activeSurplusTestRows,
+  observeRequest?: (url: string) => void,
+): void {
+  configureSurplusModelCatalog({
+    fetchImpl: (async (input) => {
+      const url = typeof input === "string"
+        ? input
+        : input instanceof URL
+          ? input.href
+          : input.url;
+      observeRequest?.(url);
+      const rows = rowsForRequest();
+      if (url === "https://api.surplusintelligence.ai/v1/models") {
+        return new Response(JSON.stringify({ data: rows }), { status: 200 });
+      }
+      const requestedId = decodeURIComponent(url.slice(url.lastIndexOf("/") + 1));
+      const row = rows.find((candidate) => candidate["id"] === requestedId);
+      return row
+        ? new Response(JSON.stringify(row), { status: 200 })
+        : new Response("", { status: 404 });
+    }) as typeof fetch,
+  });
+}
+
 async function installSoulTestCatalog(catalog: RuntimeModelCatalog): Promise<void> {
   configureRuntimeModelCatalog({
     loader: {
@@ -64,6 +127,7 @@ async function installSoulTestCatalog(catalog: RuntimeModelCatalog): Promise<voi
 }
 
 beforeEach(() => {
+  installSurplusDiscoveryFixture();
   originalDirectProviderKeys = {};
   for (const key of DIRECT_PROVIDER_ENV_KEYS) {
     const value = process.env[key];
@@ -76,6 +140,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  resetSurplusModelCatalog();
   resetRuntimeModelCatalog();
   setConfigOverrides({});
   if (process.env["NAUTILO_TEST_MODE"] === "stub") {
@@ -497,6 +562,202 @@ describe("Surplus-funded soul generation", () => {
       preferSurplus: enabled,
     } as NonNullable<ReturnType<typeof db.getCachedServerModelConfigRow>>);
   }
+
+  test("hydrates marketplace routes before automatic Soul model resolution", async () => {
+    useSurplusOnlyCredentials();
+    setConfigOverrides({
+      nautilo_soul_generator_model: null,
+      nautilo_model: "",
+    });
+    const configSpy = preferSurplus(true);
+    const requests: string[] = [];
+    installSurplusDiscoveryFixture(activeSurplusTestRows, (url) => requests.push(url));
+    let selectedModelId: string | undefined;
+    const attemptSpy = spyOn(surplusAttempt, "invokeSurplusChatAttempt")
+      .mockImplementation(async (input) => {
+        selectedModelId = input.route.catalogModelId;
+        return {
+          kind: "served",
+          response: new AIMessage({
+            content: generatedSoul,
+            response_metadata: { finish_reason: "stop" },
+          }),
+        };
+      });
+
+    try {
+      expect(await soulModule.generateSoulFile(
+        { name: "Vex" }, undefined, SOUL_AUTHORIZATION,
+      )).toBe(generatedSoul);
+      expect(requests[0]).toBe("https://api.surplusintelligence.ai/v1/models");
+      expect(selectedModelId).toBe(candidatesForModelRole("systemTasks")[0]);
+    } finally {
+      attemptSpy.mockRestore();
+      configSpy.mockRestore();
+    }
+  });
+
+  test("uses discovered marketplace output limits without lowering direct fallback limits", async () => {
+    process.env["NAUTILO_TEST_MODE"] = "stub";
+    process.env["OPENROUTER_API_KEY"] = "synthetic-openrouter-key";
+    process.env["SURPLUS_API_KEY"] = "synthetic-surplus-key";
+    setConfigOverrides({ nautilo_soul_generator_model: modelId });
+    const configSpy = preferSurplus(true);
+    installSurplusDiscoveryFixture(() => activeSurplusTestRows().map((row) => row["id"] === "openai/gpt-5.6-sol"
+      ? {
+          ...row,
+          context_length: 1_000_000,
+          top_provider: { context_length: 1_000_000, max_completion_tokens: 321 },
+        }
+      : row));
+    let marketplaceBudget: number | undefined;
+    __setStubModelForTests({
+      async invoke() {
+        return new AIMessage({ content: generatedSoul });
+      },
+    });
+    const directSpy = spyOn(universalProvider, "createUniversalModel");
+    const attemptSpy = spyOn(surplusAttempt, "invokeSurplusChatAttempt")
+      .mockImplementation(async (input) => {
+        marketplaceBudget = input.maxOutputTokens;
+        return { kind: "direct_fallback", modelUnavailableBeforeService: true };
+      });
+
+    try {
+      expect(await soulModule.generateSoulFile(
+        { name: "Vex" }, undefined, SOUL_AUTHORIZATION,
+      )).toBe(generatedSoul);
+      expect(marketplaceBudget).toBe(321);
+      const directOptions = directSpy.mock.calls[0]?.[1];
+      expect(directOptions?.["maxTokens"]).toBeGreaterThan(321);
+    } finally {
+      attemptSpy.mockRestore();
+      directSpy.mockRestore();
+      configSpy.mockRestore();
+    }
+  });
+
+  test("rejects a Soul request that cannot fit the discovered marketplace context", async () => {
+    useSurplusOnlyCredentials();
+    setConfigOverrides({ nautilo_soul_generator_model: modelId });
+    const configSpy = preferSurplus(true);
+    installSurplusDiscoveryFixture(() => activeSurplusTestRows().map((row) => row["id"] === "openai/gpt-5.6-sol"
+      ? {
+          ...row,
+          context_length: 1,
+          top_provider: { context_length: 1, max_completion_tokens: 1 },
+        }
+      : row));
+    const attemptSpy = spyOn(surplusAttempt, "invokeSurplusChatAttempt");
+    const stderr = spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      expect(await soulModule.generateSoulFile(
+        { name: "Vex" }, undefined, SOUL_AUTHORIZATION,
+      )).toContain("# Vex — Soul File");
+      expect(attemptSpy).not.toHaveBeenCalled();
+    } finally {
+      stderr.mockRestore();
+      attemptSpy.mockRestore();
+      configSpy.mockRestore();
+    }
+  });
+
+  test("uses the original direct budget when the discovered marketplace context cannot fit Soul", async () => {
+    process.env["NAUTILO_TEST_MODE"] = "stub";
+    process.env["OPENROUTER_API_KEY"] = "synthetic-openrouter-key";
+    process.env["SURPLUS_API_KEY"] = "synthetic-surplus-key";
+    setConfigOverrides({ nautilo_soul_generator_model: modelId });
+    const configSpy = preferSurplus(true);
+    installSurplusDiscoveryFixture(() => activeSurplusTestRows().map((row) => row["id"] === "openai/gpt-5.6-sol"
+      ? {
+          ...row,
+          context_length: 1,
+          top_provider: { context_length: 1, max_completion_tokens: 1 },
+        }
+      : row));
+    __setStubModelForTests({
+      async invoke() {
+        return new AIMessage({ content: generatedSoul });
+      },
+    });
+    const directSpy = spyOn(universalProvider, "createUniversalModel");
+    const attemptSpy = spyOn(surplusAttempt, "invokeSurplusChatAttempt");
+
+    try {
+      expect(await soulModule.generateSoulFile(
+        { name: "Vex" }, undefined, SOUL_AUTHORIZATION,
+      )).toBe(generatedSoul);
+      expect(attemptSpy).not.toHaveBeenCalled();
+      expect(directSpy.mock.calls[0]?.[1]?.["maxTokens"]).toBeGreaterThan(1);
+    } finally {
+      attemptSpy.mockRestore();
+      directSpy.mockRestore();
+      configSpy.mockRestore();
+    }
+  });
+
+  test("force-refreshes discovery after a proven model refusal without replaying that model", async () => {
+    useSurplusOnlyCredentials();
+    setConfigOverrides({ nautilo_soul_generator_model: broadenableModelId });
+    const configSpy = preferSurplus(true);
+    const listRequests: string[] = [];
+    installSurplusDiscoveryFixture(activeSurplusTestRows, (url) => {
+      if (url === "https://api.surplusintelligence.ai/v1/models") listRequests.push(url);
+    });
+    const wires: string[] = [];
+    const attemptSpy = spyOn(surplusAttempt, "invokeSurplusChatAttempt")
+      .mockImplementation(async (input) => {
+        wires.push(input.route.catalogModelId);
+        if (wires.length === 1) {
+          return { kind: "direct_fallback", modelUnavailableBeforeService: true };
+        }
+        return {
+          kind: "served",
+          response: new AIMessage({
+            content: generatedSoul,
+            response_metadata: { finish_reason: "stop" },
+          }),
+        };
+      });
+
+    try {
+      expect(await soulModule.generateSoulFile(
+        { name: "Vex" }, undefined, SOUL_AUTHORIZATION,
+      )).toBe(generatedSoul);
+      expect(wires[0]).toBe(broadenableModelId);
+      expect(wires[1]).not.toBe(broadenableModelId);
+      expect(listRequests).toHaveLength(2);
+    } finally {
+      attemptSpy.mockRestore();
+      configSpy.mockRestore();
+    }
+  });
+
+  test("does not refresh discovery after an unproven marketplace refusal", async () => {
+    useSurplusOnlyCredentials();
+    setConfigOverrides({ nautilo_soul_generator_model: broadenableModelId });
+    const configSpy = preferSurplus(true);
+    const listRequests: string[] = [];
+    installSurplusDiscoveryFixture(activeSurplusTestRows, (url) => {
+      if (url === "https://api.surplusintelligence.ai/v1/models") listRequests.push(url);
+    });
+    const attemptSpy = spyOn(surplusAttempt, "invokeSurplusChatAttempt")
+      .mockResolvedValue({ kind: "direct_fallback" });
+    const stderr = spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      expect(await soulModule.generateSoulFile(
+        { name: "Vex" }, undefined, SOUL_AUTHORIZATION,
+      )).toContain("# Vex — Soul File");
+      expect(attemptSpy).toHaveBeenCalledTimes(1);
+      expect(listRequests).toHaveLength(1);
+    } finally {
+      stderr.mockRestore();
+      attemptSpy.mockRestore();
+      configSpy.mockRestore();
+    }
+  });
 
   test("recovers a Surplus-only Soul on the same model without a provider pin", async () => {
     useSurplusOnlyCredentials();

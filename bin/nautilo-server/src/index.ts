@@ -150,6 +150,7 @@ import {
   seedDefaultAgent,
   seedDefaultRoom,
   findDefaultAgentForOwner,
+  getCachedServerModelConfigRow,
 } from "@nautilo/db";
 import {
   createApp,
@@ -171,11 +172,13 @@ import {
 } from "./shutdown-pools";
 import {
   configureRuntimeComputerUseContractCatalogue,
+  hydrateSurplusChatCatalog,
   hydrateModelCapabilitiesCache,
   hydrateRuntimeComputerUseContractCatalogue,
   hydrateRuntimeModelCatalog,
   reconcileComputerUseHostTools,
   registerAllTools,
+  resolveProviderKey,
   setupCheckpointSaver,
   startRuntimeComputerUseContractCatalogueRefreshLoop,
   startRuntimeModelCatalogRefreshLoop,
@@ -696,6 +699,15 @@ async function start() {
     hostname: tlsIdentityHost,
     port,
   });
+  if (getCachedServerModelConfigRow()?.preferSurplus === true
+    && resolveProviderKey("surplus") !== null) {
+    try {
+      await hydrateSurplusChatCatalog();
+      log("[server] Surplus chat discovery hydrated");
+    } catch (err) {
+      warn(`[server] Surplus chat discovery unavailable; routes remain fail-closed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
   await app.listen({ port, host });
   markReady("listening");
   const mediaGenerationWorkerAvailable = !TEST_MODE_ONLY && installProductionMediaGenerationWorker();

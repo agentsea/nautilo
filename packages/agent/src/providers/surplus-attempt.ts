@@ -12,6 +12,7 @@ import { warn } from "@nautilo/logger";
 import { getUsageContext, normalizeUsageRoomId, type UsageFundingProvenance } from "../usage/usage-context";
 import { modelRouteProvider } from "./model-route";
 import type { QualifiedSurplusChatRoute } from "./surplus-route";
+import { invalidateSurplusModelCatalog } from "./surplus-catalog";
 import type { ReasoningEffort } from "./types";
 import { surplusAttemptBinding, surplusReceiptTelemetry } from "./surplus-reconciliation";
 import {
@@ -130,7 +131,8 @@ export function canUseQualifiedSurplusChatRoute(input: {
   if (input.needsVision && !route.supportsVision) return false;
   if (input.requiresTools && !route.supportsTools) return false;
   if (input.reasoningRequested && !route.supportsReasoning) return false;
-  if (input.maxOutputTokens > route.maxOutputTokens) return false;
+  if (!Number.isSafeInteger(input.maxOutputTokens) || input.maxOutputTokens < 1
+    || input.maxOutputTokens > route.maxOutputTokens) return false;
   return input.estimatedInputTokens + input.maxOutputTokens <= route.maxContextTokens;
 }
 
@@ -487,6 +489,11 @@ export async function invokeSurplusChatAttempt(input: SurplusChatAttemptInput): 
         });
     const safeDiagnostics = safeSurplusErrorDiagnostics(error, responseStatus);
     const trace = provenPreRoutingSurplusTrace({ error, responseStatus, receipt });
+    if (trace?.vendorCode === "no_sellers_for_model" || error instanceof SurplusAdaptedParametersError) {
+      // Refresh metadata for the next admission; this never replays a request
+      // whose output or billing may already have occurred.
+      invalidateSurplusModelCatalog();
+    }
     const failure = new SurplusMarketplaceAttemptError(trace ?? safeDiagnostics);
     if (!trace && receipt?.requestId && !receiptAttached) {
       try {

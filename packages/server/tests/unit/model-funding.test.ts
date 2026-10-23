@@ -228,6 +228,61 @@ describe("trusted model funding", () => {
     })).toBe("venice");
   });
 
+  test("hydrates the requested model before synchronous server-route admission", async () => {
+    const h = harness();
+    const calls: string[] = [];
+    h.capabilities.set(ALICE, ["use_server_provider_credentials"]);
+    h.setFundingPreference("server_first");
+    h.deps.getPreferSurplus = () => true;
+    h.deps.getServerSurplusKeyConfigured = () => true;
+    h.deps.hydrateSurplusChatCatalog = async (input) => {
+      calls.push(`hydrate:${input?.catalogModelIds?.join(",")}`);
+    };
+    h.deps.serverRoute = () => { calls.push("route"); return "surplus"; };
+
+    expect(await resolveModelFunding(request(ALICE), h.deps)).toMatchObject({
+      kind: "server", providerRoute: "surplus",
+    });
+    expect(calls).toEqual([`hydrate:${MODEL}`, "route"]);
+  });
+
+  test("does not hydrate Surplus when policy or server credentials are absent", async () => {
+    const h = harness();
+    let hydrations = 0;
+    h.capabilities.set(ALICE, ["use_server_provider_credentials"]);
+    h.setFundingPreference("server_first");
+    h.deps.getPreferSurplus = () => false;
+    h.deps.getServerSurplusKeyConfigured = () => true;
+    h.deps.hydrateSurplusChatCatalog = async () => { hydrations += 1; };
+    expect((await resolveModelFunding(request(ALICE), h.deps)).kind).toBe("server");
+    h.deps.getPreferSurplus = () => true;
+    h.deps.getServerSurplusKeyConfigured = () => false;
+    expect((await resolveModelFunding(request(ALICE), h.deps)).kind).toBe("server");
+    expect(hydrations).toBe(0);
+  });
+
+  test("hydrates once for a personal Surplus credential when the server key is absent", async () => {
+    const h = harness();
+    let hydrations = 0;
+    h.capabilities.set(ALICE, ["use_personal_provider_credentials"]);
+    h.rows.set(`${ALICE}:surplus`, row(ALICE, "surplus"));
+    h.deps.getPreferSurplus = () => true;
+    h.deps.getServerSurplusKeyConfigured = () => false;
+    h.deps.hydrateSurplusChatCatalog = async (input) => {
+      expect(input?.catalogModelIds).toEqual([MODEL]);
+      hydrations += 1;
+    };
+    h.deps.personalSurplusRoute = () => {
+      expect(hydrations).toBe(1);
+      return true;
+    };
+
+    expect(await resolveModelFunding(request(ALICE), h.deps)).toMatchObject({
+      kind: "personal", providerRoute: "surplus",
+    });
+    expect(hydrations).toBe(1);
+  });
+
   test("native text Tasks admit independently and pin their own source", async () => {
     const h = harness();
     h.capabilities.set(ALICE, ["use_server_provider_credentials", "use_personal_provider_credentials"]);

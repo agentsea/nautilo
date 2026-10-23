@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Surplus model selection and requests now use its live catalogue for confirmed
+  model names, capabilities, reasoning parameters, and token limits. Auto skips
+  unconfirmed routes, and chat and Soul share the same marketplace budget.
+
 - Onboarding waits for an in-progress Soul before saving the final profile,
   and automatic foreground chat selection supports Surplus-only servers.
 

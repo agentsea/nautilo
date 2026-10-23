@@ -1734,6 +1734,14 @@ export const assistantModelSummarySchema = z
       })
       .strict()
       .optional(),
+    /** Effective request limits after intersecting catalog policy with the serving route. */
+    limits: z
+      .object({
+        contextTokens: z.number().int().positive(),
+        outputTokens: z.number().int().positive(),
+      })
+      .strict()
+      .optional(),
     controls: z
       .object({
         reasoning: z

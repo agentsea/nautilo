@@ -1,7 +1,13 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { buildForegroundModelControlPlan } from "../../src/config/foreground-model-controls";
 import { resolveModelRole } from "../../src/config/model-role-resolution";
 import { resolveForegroundAgentModelId } from "../../src/nodes/agent";
+
+import { installSurplusCatalogFixture } from "../helpers/surplus-catalog-fixture";
+import { resetSurplusModelCatalog } from "../../src/providers/surplus-catalog";
+
+beforeEach(installSurplusCatalogFixture);
+afterEach(resetSurplusModelCatalog);
 
 const MODEL_ID = "openrouter:openai/gpt-5.6-sol";
 const ROUTE = {

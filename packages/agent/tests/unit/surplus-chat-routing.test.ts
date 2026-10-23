@@ -1,5 +1,7 @@
-import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { AIMessage, HumanMessage } from "@langchain/core/messages";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
+import { AIMessage, HumanMessage, type BaseMessage } from "@langchain/core/messages";
+import { DynamicStructuredTool, type StructuredTool } from "@langchain/core/tools";
+import { z } from "zod";
 import * as db from "@nautilo/db";
 import * as credentials from "../../src/chat/model-runtime-credentials";
 import * as eligible from "../../src/config/eligible-models";
@@ -7,13 +9,49 @@ import * as keys from "../../src/resolve-provider-key";
 import * as surplusAttempt from "../../src/providers/surplus-attempt";
 import * as surplusRoutes from "../../src/providers/surplus-route";
 import * as universal from "../../src/providers/universal";
+import { getActiveModelCatalogSync } from "../../src/config/model-catalog/runtime-catalog";
 import { PersonalDirectFundingUnavailableError, type ForegroundChatFundingSession } from "../../src/runtime/foreground-chat-funding";
-import { invokeChatModelWithFallback } from "../../src/utils/chat-model-invocation";
+import {
+  estimateBoundToolTokens,
+  invokeChatModelWithFallback,
+} from "../../src/utils/chat-model-invocation";
+import { estimateTokenCount } from "../../src/utils/history-manager";
+import {
+  configureSurplusModelCatalog,
+  resetSurplusModelCatalog,
+} from "../../src/providers/surplus-catalog";
+import { installSurplusCatalogFixture } from "../helpers/surplus-catalog-fixture";
 
 const MODEL = "openrouter:anthropic/claude-sonnet-4.6";
+const KIMI_MODEL = "openrouter:moonshotai/kimi-k3";
 const reply = new AIMessage({ content: "Synthetic answer", response_metadata: { finish_reason: "stop" } });
 const restore: (() => void)[] = [];
-afterEach(() => { for (const undo of restore.splice(0).reverse()) undo(); });
+beforeEach(async () => installSurplusCatalogFixture());
+afterEach(() => {
+  for (const undo of restore.splice(0).reverse()) undo();
+  resetSurplusModelCatalog();
+});
+
+async function installKimiDiscovery(contextTokens: number, maxOutputTokens: number, reasoningKnob = true): Promise<void> {
+  const row = {
+    id: "kimi-k3",
+    context_length: contextTokens,
+    top_provider: { context_length: contextTokens, max_completion_tokens: maxOutputTokens },
+    architecture: { input_modalities: ["text", "image"], output_modalities: ["text"] },
+    supported_parameters: ["max_tokens", "tools", "tool_choice", ...(reasoningKnob ? ["reasoning"] : [])],
+    supported_features: ["tools", "reasoning", "streaming", "vision"],
+  };
+  configureSurplusModelCatalog({
+    fetchImpl: (async (input: Parameters<typeof fetch>[0]) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      if (url.pathname === "/v1/models") return Response.json({ data: [row] });
+      return decodeURIComponent(url.pathname.slice("/v1/models/".length)) === "moonshotai/kimi-k3"
+        ? Response.json(row)
+        : Response.json({ error: { code: "model_not_found" } }, { status: 404 });
+    }) as unknown as typeof fetch,
+  });
+  await surplusRoutes.hydrateSurplusChatCatalog({ catalogModelIds: [KIMI_MODEL] });
+}
 
 function harness(options: {
   directKey?: boolean;
@@ -67,8 +105,13 @@ function harness(options: {
       async openPersonalRecovery() { throw options.recoveryError ?? new PersonalDirectFundingUnavailableError(); },
     } : {}),
   };
-  const invoke = (model = MODEL, maxOutputTokens?: number) => invokeChatModelWithFallback(
-    [new HumanMessage("Synthetic routing check")], [], model, "", null, "synthetic-route", {},
+  const invoke = (
+    model = MODEL,
+    maxOutputTokens?: number,
+    messages: BaseMessage[] = [new HumanMessage("Synthetic routing check")],
+    tools: StructuredTool[] = [],
+  ) => invokeChatModelWithFallback(
+    messages, tools, model, "", null, "synthetic-route", {},
     { fundingSession: session, modelFallbackMode: "none", sameModelRetryMode: "none", ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }) },
   );
   return { attempts, direct, invoke, rechecks, admissions };
@@ -88,6 +131,58 @@ describe("Surplus chat request envelope and recovery", () => {
     const h = harness();
     await h.invoke(MODEL, 1_024);
     expect(h.attempts[0]?.maxOutputTokens).toBe(1_024);
+  });
+
+  test("uses Kimi's discovered marketplace output limit instead of its signed direct limit", async () => {
+    const signed = getActiveModelCatalogSync().catalog.entries.find((entry) => entry.id === KIMI_MODEL);
+    expect(signed?.limits?.outputTokens).toBe(1_048_576);
+    const h = harness();
+    await h.invoke(KIMI_MODEL);
+    expect(h.attempts[0]?.route).toMatchObject({
+      catalogModelId: KIMI_MODEL,
+      maxOutputTokens: 131_072,
+    });
+    expect(h.attempts[0]?.maxOutputTokens).toBe(131_072);
+  });
+
+  test("clamps marketplace output to discovered context after messages, tools, and safety margin", async () => {
+    const contextTokens = 6_000;
+    await installKimiDiscovery(contextTokens, 131_072);
+    const messages = [new HumanMessage("Context-sensitive marketplace request")];
+    const tool = new DynamicStructuredTool({
+      name: "catalog_probe",
+      description: "Read a bounded catalog record. ".repeat(40),
+      schema: z.object({ recordId: z.string(), includeDetails: z.boolean().optional() }),
+      func: async () => "unused",
+    });
+    const h = harness();
+    await h.invoke(KIMI_MODEL, undefined, messages, [tool]);
+    const attempt = h.attempts[0];
+    if (!attempt) throw new Error("expected a marketplace attempt");
+    const estimatedInput = estimateTokenCount(attempt.messages) + estimateBoundToolTokens([tool]);
+    expect(attempt.route.maxContextTokens).toBe(contextTokens);
+    expect(attempt.maxOutputTokens).toBe(contextTokens - estimatedInput - 4_096);
+  });
+
+  test.each([0, -1])("rejects a marketplace request with %d remaining output tokens before the wire", async (remaining) => {
+    const messages = [new HumanMessage("abcd")];
+    const estimatedInput = estimateTokenCount(messages);
+    await installKimiDiscovery(estimatedInput + 4_096 + remaining, 131_072);
+    const h = harness();
+    await Promise.resolve(expect(h.invoke(KIMI_MODEL, undefined, messages)).rejects.toBeInstanceOf(Error));
+    expect(h.attempts).toHaveLength(0);
+  });
+
+  test("implicit reasoning visibility does not require an unadvertised effort knob", async () => {
+    const signed = getActiveModelCatalogSync().catalog.entries.find((entry) => entry.id === KIMI_MODEL);
+    expect(signed && "controls" in signed && signed.controls?.reasoning).toBeFalsy();
+    await installKimiDiscovery(1_000_000, 131_072, false);
+    const h = harness();
+    expect((await h.invoke(KIMI_MODEL)).response).toBe(reply);
+    expect(h.attempts).toHaveLength(1);
+    expect(h.attempts[0]?.route.supportsReasoning).toBe(false);
+    expect(h.attempts[0]?.reasoningEffort).toBeUndefined();
+    expect(h.direct).not.toHaveBeenCalled();
   });
 
   test("a matching server direct credential retains the pinned first attempt", async () => {

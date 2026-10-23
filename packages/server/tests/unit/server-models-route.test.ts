@@ -397,7 +397,7 @@ describe("server-models route authorization, partial writes, and audit", () => {
       .toEqual({ status: 403, body: { error: "admin only" } });
   });
 
-  test("projects signed chat models across supported providers through Surplus only while policy and key are enabled", async () => {
+  test("keeps signed chat models unavailable until vendor discovery confirms exact routes", async () => {
     const directCredentialKeys = [
       "ANTHROPIC_API_KEY",
       "OPENAI_API_KEY",
@@ -425,6 +425,7 @@ describe("server-models route authorization, partial writes, and audit", () => {
           listMediaModels,
           getEffectiveMediaModel: () => null,
           getSurplusKeyConfigured: () => surplusKeyConfigured,
+          getQualifiedSurplusChatRoutes: () => [],
         });
         const response = await call("GET", { ...requestBase, sessionUserId: "viewer" });
         expect(response.status).toBe(200);
@@ -438,7 +439,7 @@ describe("server-models route authorization, partial writes, and audit", () => {
       const enabled = await read(true);
       expect(enabled).toMatchObject({
         preferSurplus: true,
-        surplus: { keyConfigured: true, policyEnabled: true, chatStatus: "available" },
+        surplus: { keyConfigured: true, policyEnabled: true, chatStatus: "not-qualified" },
       });
       for (const id of [
         "anthropic:claude-sonnet-4-6",
@@ -449,7 +450,7 @@ describe("server-models route authorization, partial writes, and audit", () => {
         "venice:kimi-k3",
       ]) {
         expect(enabled.catalogModels.find((model) => model.id === id), id)
-          .toMatchObject({ availability: "selectable" });
+          .toMatchObject({ availability: "missing_credentials" });
       }
       expect(enabled.catalogModels.find((model) => model.id === "openrouter:typesafe/jev-1.13"))
         .toMatchObject({ availability: "selectable" });
@@ -474,7 +475,7 @@ describe("server-models route authorization, partial writes, and audit", () => {
       const disabled = await read(false);
       expect(disabled).toMatchObject({
         preferSurplus: false,
-        surplus: { keyConfigured: true, policyEnabled: false, chatStatus: "qualified-unavailable" },
+        surplus: { keyConfigured: true, policyEnabled: false, chatStatus: "not-qualified" },
       });
       for (const id of [
         "anthropic:claude-sonnet-4-6",
@@ -495,7 +496,7 @@ describe("server-models route authorization, partial writes, and audit", () => {
       const missingKey = await read(true, false);
       expect(missingKey).toMatchObject({
         preferSurplus: true,
-        surplus: { keyConfigured: false, policyEnabled: true, chatStatus: "qualified-unavailable" },
+        surplus: { keyConfigured: false, policyEnabled: true, chatStatus: "not-qualified" },
       });
       for (const id of [
         "anthropic:claude-sonnet-4-6",
@@ -543,6 +544,26 @@ describe("server-models route authorization, partial writes, and audit", () => {
     expect(body.surplus.chatStatus).toBe("available");
     expect(body.catalogModels.find((model) => model.id === QUALIFIED_SURPLUS_ROUTE.catalogModelId))
       .toMatchObject({ availability: "selectable" });
+  });
+
+  test("awaits discovery before constructing an enabled Surplus projection", async () => {
+    const calls: string[] = [];
+    const call = routeHarness({
+      getCapabilities: async () => ["read_server_settings"],
+      getDb: () => ({}) as never,
+      getConfig: async () => ({ ...modelConfig, preferSurplus: true }),
+      refreshConfigCache: async () => null,
+      getEffectiveEmbeddingModel: () => null,
+      getActiveEmbeddingSelection: () => null,
+      listMediaModels,
+      getEffectiveMediaModel: () => null,
+      getSurplusKeyConfigured: () => true,
+      hydrateSurplusChatCatalog: async () => { calls.push("hydrate"); },
+      listImageUnderstandingModels: () => { calls.push("project"); return []; },
+    });
+    expect((await call("GET", { ...requestBase, sessionUserId: "viewer" })).status).toBe(200);
+    expect(calls.filter((call) => call === "hydrate").length).toBeGreaterThanOrEqual(1);
+    expect(calls.indexOf("hydrate")).toBeLessThan(calls.indexOf("project"));
   });
 
   test("catalog inventory includes decision models and live missing-credential reasons without admitting them for chat", async () => {

@@ -77,4 +77,22 @@ describe("foreground auxiliary preflight model selection", () => {
     expect(defaultReads).toBe(1);
     expect(result).toMatchObject({ kind: "server", providerRoute: "surplus" });
   });
+
+  test("hydrates Surplus before resolving an automatic default", async () => {
+    const calls: string[] = [];
+    await resolveForegroundChatPreflightFunding({
+      humanUserId: "caller", roomId: "private-room", agentId: "own-genie", turnModelId: null,
+    }, {
+      loadSnapshot: async () => ({ roomSelection: null, agentSelection: null,
+        serverReasoningPolicy: null, turnModelId: null }),
+      getExecutionConfig: async (agentId) => ({ profileId: "profile", userId: "caller", agentId,
+        name: "Genie", defaultModel: null, soulFile: null, soulRevision: 0 }),
+      getPreferSurplus: () => true,
+      getSurplusKeyConfigured: () => true,
+      hydrateSurplusChatCatalog: async () => { calls.push("hydrate"); },
+      defaultForegroundModelId: () => { calls.push("default"); return "openai:default"; },
+      resolveFunding: async (input) => ({ ...input, kind: "server", providerRoute: "surplus" }),
+    });
+    expect(calls).toEqual(["hydrate", "default"]);
+  });
 });

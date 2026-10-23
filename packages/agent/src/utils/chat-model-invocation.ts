@@ -25,9 +25,11 @@ import { modelHasRunnableCredentials } from "../chat/model-runtime-credentials";
 import { createUniversalModel } from "../providers/universal";
 import { resolveProviderKey } from "../resolve-provider-key";
 import {
+  hydrateSurplusChatCatalog,
   resolveSurplusChatServingAvailability,
   canBroadenSurplusModelRoute,
   SurplusDirectFallbackUnavailableError,
+  type QualifiedSurplusChatRoute,
 } from "../providers/surplus-route";
 import { canUseQualifiedSurplusChatRoute, invokeSurplusChatAttempt } from "../providers/surplus-attempt";
 import { SurplusOutcomeUnknownError } from "../providers/surplus-transport";
@@ -429,6 +431,17 @@ export async function resolveCompletionBudget(modelId: string, messages: BaseMes
     );
   }
   return resolved;
+}
+
+/** The same marketplace context/output intersection serves chat and Soul. */
+export function resolveSurplusCompletionBudget(
+  route: QualifiedSurplusChatRoute,
+  maxOutputTokens: number,
+  messages: BaseMessage[],
+  tools: readonly StructuredTool[] = [],
+): number {
+  return Math.min(maxOutputTokens, route.maxOutputTokens,
+    preparedMessageBudget(route.maxContextTokens, tools) - estimateTokenCount(messages));
 }
 
 /** One Agent-owned supervisor guards this actual provider invocation. */
@@ -1085,16 +1098,25 @@ export async function invokeChatModelWithFallback(
             kickServerModelConfigRefresh();
             const surplusKey = usageFunding.kind === "personal"
               ? personalCredential?.apiKey ?? null : resolveProviderKey("surplus");
+            const surplusPolicyEnabled = attemptFundingSession
+              ? usageFunding.providerRoute === "surplus"
+              : getCachedServerModelConfigRow()?.preferSurplus === true;
+            if (surplusPolicyEnabled && surplusKey !== null) {
+              await hydrateSurplusChatCatalog({ catalogModelIds: [currentModelId],
+                ...(llmCallConfig.signal ? { signal: llmCallConfig.signal } : {}),
+              });
+              assertNotCancelled();
+            }
             const surplus = resolveSurplusChatServingAvailability({
               catalogModelId: currentModelId,
-              policyEnabled: attemptFundingSession ? usageFunding.providerRoute === "surplus" : getCachedServerModelConfigRow()?.preferSurplus === true,
+              policyEnabled: surplusPolicyEnabled,
               keyConfigured: surplusKey !== null,
             });
-            const catalogEntry = getActiveModelCatalogSync().catalog.entries.find((entry) => entry.id === currentModelId);
             // Provider-specific ceilings only lower this marketplace attempt;
             // direct recovery retains the selected model's signed budget.
+            const estimatedSurplusInput = estimateTokenCount(attemptMessages) + estimateBoundToolTokens(tools);
             const surplusMaxTokens = surplus.route
-              ? Math.min(maxTokens, surplus.route.maxOutputTokens)
+              ? resolveSurplusCompletionBudget(surplus.route, maxTokens, attemptMessages, tools)
               : maxTokens;
             if (surplus.status === "available" && surplusKey !== null
               && canUseQualifiedSurplusChatRoute({
@@ -1104,11 +1126,13 @@ export async function invokeChatModelWithFallback(
                 hasSurplusCredential: true,
                 needsVision,
                 requiresTools,
-                reasoningRequested: requestedReasoningEffort !== undefined
-                  || (catalogEntry?.features?.reasoning === true && reasoningOutput),
+                // Visibility alone is not an effort override. Models without
+                // an advertised knob may retain their provider default; the
+                // transport omits unsupported implicit settings.
+                reasoningRequested: requestedReasoningEffort !== undefined,
                 hasRequestChangingServingProfile: serving !== undefined
                   && (serving.effectiveModelId !== serving.canonicalModelId || serving.requestModelKwargs !== undefined),
-                estimatedInputTokens: estimateTokenCount(attemptMessages) + estimateBoundToolTokens(tools),
+                estimatedInputTokens: estimatedSurplusInput,
                 maxOutputTokens: surplusMaxTokens,
               })) {
               surplusAttemptedForModel = true;

@@ -30,13 +30,17 @@ import {
 } from "../providers/surplus-attempt";
 import {
   canBroadenSurplusModelRoute,
+  hydrateSurplusChatCatalog,
   resolveSurplusChatServingAvailability,
   SurplusDirectFallbackUnavailableError,
   type QualifiedSurplusChatRoute,
 } from "../providers/surplus-route";
 import { SurplusOutcomeUnknownError } from "../providers/surplus-transport";
 import type { ChatModel } from "../providers/types";
-import { resolveCompletionBudget } from "../utils/chat-model-invocation";
+import {
+  resolveCompletionBudget,
+  resolveSurplusCompletionBudget,
+} from "../utils/chat-model-invocation";
 import {
   assertCanUseServerFundedOwnSoul,
   assertCanUseServerProviderCredentials,
@@ -324,11 +328,32 @@ type SoulMessages = readonly [SystemMessage, HumanMessage];
 interface ResolvedSoulInvocation {
   readonly modelId: string;
   readonly messages: SoulMessages;
+  /** The selected direct provider's signed limit; marketplace discovery never changes it. */
   readonly maxOutputTokens: number;
+  /** The discovered marketplace limit after output and context intersection. */
+  readonly surplusMaxOutputTokens: number | null;
   readonly surplusPolicyEnabled: boolean;
   readonly surplusKey: string | null;
   readonly surplusRoute: QualifiedSurplusChatRoute | null;
   readonly broadeningAuthorityModelId?: string;
+}
+
+async function resolveSoulOutputBudgets(
+  modelId: string,
+  messages: SoulMessages,
+  surplusRoute: QualifiedSurplusChatRoute | null,
+): Promise<Pick<ResolvedSoulInvocation, "maxOutputTokens" | "surplusMaxOutputTokens">> {
+  const maxOutputTokens = await resolveCompletionBudget(modelId, [...messages]);
+  if (!surplusRoute) return { maxOutputTokens, surplusMaxOutputTokens: null };
+  const surplusMaxOutputTokens = resolveSurplusCompletionBudget(
+    surplusRoute,
+    maxOutputTokens,
+    [...messages],
+  );
+  return {
+    maxOutputTokens,
+    surplusMaxOutputTokens: surplusMaxOutputTokens > 0 ? surplusMaxOutputTokens : null,
+  };
 }
 
 function sameSurplusRoute(
@@ -342,6 +367,7 @@ function sameSurplusRoute(
     && left.supportsTools === right.supportsTools
     && left.supportsVision === right.supportsVision
     && left.supportsReasoning === right.supportsReasoning
+    && left.supportedParameters?.join(",") === right.supportedParameters?.join(",")
     && left.maxContextTokens === right.maxContextTokens
     && left.maxOutputTokens === right.maxOutputTokens;
 }
@@ -375,11 +401,16 @@ function assertSoulInvocationSnapshotCurrent(invocation: ResolvedSoulInvocation)
   }
 }
 
-async function resolveSoulInvocation(input: SoulFileInput): Promise<ResolvedSoulInvocation> {
+async function resolveSoulInvocation(input: SoulFileInput, signal: AbortSignal): Promise<ResolvedSoulInvocation> {
   const config = fromRuntimeConfig();
   const configuredModelId = config.nautilo_soul_generator_model ?? config.nautilo_model;
   const policyEnabled = getCachedServerModelConfigRow()?.preferSurplus === true;
   const surplusKey = resolveProviderKey("surplus");
+  if (policyEnabled && surplusKey !== null) {
+    await hydrateSurplusChatCatalog({ signal,
+      ...(configuredModelId ? { catalogModelIds: [configuredModelId] } : {}),
+    });
+  }
   const modelId = resolveModelRole("systemTasks", {
     ...(configuredModelId ? { configuredId: configuredModelId } : {}),
     serverSurplus: {
@@ -392,10 +423,11 @@ async function resolveSoulInvocation(input: SoulFileInput): Promise<ResolvedSoul
     new SystemMessage(SOUL_FILE_SYSTEM_PROMPT),
     new HumanMessage(buildSoulPrompt(input)),
   ];
+  const budgets = await resolveSoulOutputBudgets(modelId, messages, surplusRoute);
   return {
     modelId,
     messages,
-    maxOutputTokens: await resolveCompletionBudget(modelId, [...messages]),
+    ...budgets,
     surplusPolicyEnabled: policyEnabled,
     surplusKey,
     surplusRoute,
@@ -405,8 +437,10 @@ async function resolveSoulInvocation(input: SoulFileInput): Promise<ResolvedSoul
 async function resolveSurplusSoulCandidate(
   primary: ResolvedSoulInvocation,
   candidateId: string,
+  signal: AbortSignal,
 ): Promise<ResolvedSoulInvocation | null> {
   try {
+    await hydrateSurplusChatCatalog({ catalogModelIds: [candidateId], signal });
     const modelId = resolveModelRole("systemTasks", {
       configuredId: candidateId,
       serverSurplus: {
@@ -420,10 +454,11 @@ async function resolveSurplusSoulCandidate(
       primary.surplusKey,
     );
     if (modelId !== candidateId || surplusRoute === null) return null;
+    const budgets = await resolveSoulOutputBudgets(modelId, primary.messages, surplusRoute);
     return {
       modelId,
       messages: primary.messages,
-      maxOutputTokens: await resolveCompletionBudget(modelId, [...primary.messages]),
+      ...budgets,
       surplusPolicyEnabled: primary.surplusPolicyEnabled,
       surplusKey: primary.surplusKey,
       surplusRoute,
@@ -519,6 +554,7 @@ async function invokeSurplusSoul(
   invocation: ResolvedSoulInvocation & {
     readonly surplusKey: string;
     readonly surplusRoute: QualifiedSurplusChatRoute;
+    readonly surplusMaxOutputTokens: number;
   },
   signal: AbortSignal,
   authorization: SoulGenerationAuthorization,
@@ -540,7 +576,7 @@ async function invokeSurplusSoul(
     messages: [...invocation.messages],
     tools: [],
     config: { signal },
-    maxOutputTokens: invocation.maxOutputTokens,
+    maxOutputTokens: invocation.surplusMaxOutputTokens,
     funding: {
       kind: "service",
       humanUserId: authorization.humanUserId,
@@ -574,8 +610,11 @@ function hasSurplusRoute(
 ): invocation is ResolvedSoulInvocation & {
   readonly surplusKey: string;
   readonly surplusRoute: QualifiedSurplusChatRoute;
+  readonly surplusMaxOutputTokens: number;
 } {
-  return invocation.surplusKey !== null && invocation.surplusRoute !== null;
+  return invocation.surplusKey !== null
+    && invocation.surplusRoute !== null
+    && invocation.surplusMaxOutputTokens !== null;
 }
 
 function assertDirectSoulCredential(modelId: string): void {
@@ -594,6 +633,27 @@ interface SoulAttemptExecution {
     config: RunnableConfig,
   ) => Promise<AIMessage>;
   readonly onModelSelected?: (modelId: string) => void;
+}
+
+async function refreshRejectedSurplusSoulModel(modelId: string, signal: AbortSignal): Promise<void> {
+  try {
+    await hydrateSurplusChatCatalog({ catalogModelIds: [modelId], force: true, signal });
+  } catch {
+    // Discovery is advisory after a proven pre-service refusal. Preserve the
+    // current result while allowing a later invocation to use refreshed facts.
+  }
+}
+
+async function invokeDirectSoulAfterMarketplaceRefusal(
+  invocation: ResolvedSoulInvocation,
+  execution: SoulAttemptExecution,
+  signal: AbortSignal,
+): Promise<AIMessage> {
+  try {
+    return await execution.invokeDirect(invocation);
+  } finally {
+    await refreshRejectedSurplusSoulModel(invocation.modelId, signal);
+  }
 }
 
 async function invokeSoulWithSupplyFallback(
@@ -617,7 +677,7 @@ async function invokeSoulWithSupplyFallback(
       throw new Error("Soul generation marketplace eligibility changed before dispatch.");
     }
     const invocation = typeof candidate === "string"
-      ? await resolveSurplusSoulCandidate(primary, candidate)
+      ? await resolveSurplusSoulCandidate(primary, candidate, signal)
       : candidate;
     if (!invocation || !hasSurplusRoute(invocation)) continue;
     execution.onModelSelected?.(invocation.modelId);
@@ -652,9 +712,12 @@ async function invokeSoulWithSupplyFallback(
     // server credential exists. The marketplace walk fills only the gap where
     // that direct rail is unavailable.
     if (modelHasRunnableCredentials(invocation.modelId, process.env)) {
-      return execution.invokeDirect(invocation);
+      return invokeDirectSoulAfterMarketplaceRefusal(invocation, execution, signal);
     }
-    if (!crossModelAllowed) throw new SurplusDirectFallbackUnavailableError();
+    if (!crossModelAllowed) {
+      await refreshRejectedSurplusSoulModel(invocation.modelId, signal);
+      throw new SurplusDirectFallbackUnavailableError();
+    }
 
     if (providerMode !== "any" && canBroadenSurplusModelRoute(invocation.modelId)) {
       signal.throwIfAborted();
@@ -676,9 +739,10 @@ async function invokeSoulWithSupplyFallback(
         return execution.invokeDirect(invocation);
       }
       if (modelHasRunnableCredentials(invocation.modelId, process.env)) {
-        return execution.invokeDirect(invocation);
+        return invokeDirectSoulAfterMarketplaceRefusal(invocation, execution, signal);
       }
     }
+    await refreshRejectedSurplusSoulModel(invocation.modelId, signal);
   }
 
   throw new SurplusDirectFallbackUnavailableError();
@@ -921,7 +985,7 @@ export async function generateSoulFile(
   let modelId: string | undefined;
 
   try {
-    const invocation = await resolveSoulInvocation(normalized);
+    const invocation = await resolveSoulInvocation(normalized, abortContext.signal);
     modelId = invocation.modelId;
     const response = await invokeSoulWithSupplyFallback(
       invocation,
@@ -973,7 +1037,7 @@ export async function* generateSoulFileStream(
   yield { type: "started" };
 
   try {
-    const invocation = await resolveSoulInvocation(normalized);
+    const invocation = await resolveSoulInvocation(normalized, abortContext.signal);
     modelId = invocation.modelId;
     let content = "";
     let deliveredOutput = false;

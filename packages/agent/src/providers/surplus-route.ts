@@ -1,5 +1,6 @@
 import type { ModelCatalogEntry } from "@nautilo/types";
 import { getActiveModelCatalogSync } from "../config/model-catalog/runtime-catalog";
+import { getSurplusModelMetadataSync, hydrateSurplusModelCatalog } from "./surplus-catalog";
 
 export type SurplusProviderPin =
   | "anthropic"
@@ -20,6 +21,8 @@ export interface QualifiedSurplusChatRoute {
   readonly supportsReasoning: boolean;
   readonly maxContextTokens: number;
   readonly maxOutputTokens: number;
+  /** Vendor-advertised request knobs; omitted only by the offline route seam. */
+  readonly supportedParameters?: readonly string[];
 }
 
 const SURPLUS_PROVIDER_PINS = Object.freeze({
@@ -31,28 +34,6 @@ const SURPLUS_PROVIDER_PINS = Object.freeze({
   together: "together",
   venice: "venice",
 } satisfies Readonly<Record<string, SurplusProviderPin>>);
-
-/**
- * Surplus-specific output ceilings qualified from the marketplace's public
- * model metadata. Keep this keyed to exact accepted wire identifiers: the
- * direct providers' signed-catalog ceilings describe different transports.
- *
- * On 2026-10-22, the alias request below resolved to canonical
- * `claude-sonnet-4.6` with `top_provider.max_completion_tokens = 64_000`:
- * https://api.surplusintelligence.ai/v1/models/anthropic%2Fclaude-sonnet-4.6
- */
-const QUALIFIED_SURPLUS_MAX_OUTPUT_TOKENS = Object.freeze({
-  "anthropic/claude-sonnet-4.6": 64_000,
-  "claude-sonnet-4.6": 64_000,
-} satisfies Readonly<Record<string, number>>);
-
-function qualifiedSurplusMaxOutputTokens(
-  surplusModelId: string,
-  signedCatalogMaxOutputTokens: number,
-): number {
-  const qualifiedLimit = QUALIFIED_SURPLUS_MAX_OUTPUT_TOKENS[surplusModelId as keyof typeof QUALIFIED_SURPLUS_MAX_OUTPUT_TOKENS];
-  return Math.min(signedCatalogMaxOutputTokens, qualifiedLimit ?? signedCatalogMaxOutputTokens);
-}
 
 function providerPinForCatalogEntry(entry: ModelCatalogEntry): SurplusProviderPin | null {
   return SURPLUS_PROVIDER_PINS[entry.provider as keyof typeof SURPLUS_PROVIDER_PINS] ?? null;
@@ -77,16 +58,42 @@ function deriveRoute(entry: ModelCatalogEntry): QualifiedSurplusChatRoute | null
   if (!providerPin || !surplusModelId || !isEligibleSignedChatEntry(entry)
     || !Number.isSafeInteger(maxContextTokens) || !Number.isSafeInteger(maxOutputTokens)
     || (maxContextTokens ?? 0) < 1 || (maxOutputTokens ?? 0) < 1) return null;
+  const discovered = getSurplusModelMetadataSync(surplusModelId);
+  if (!discovered?.supportsStreaming) return null;
+  // These signed controls synthesize an effort even without a Human override.
+  // Do not advertise a route that cannot carry that required request intent.
+  if ("controls" in entry && entry.controls?.reasoning && !discovered.supportsReasoning) return null;
   return Object.freeze({
     catalogModelId: entry.id,
-    surplusModelId,
+    surplusModelId: discovered.id,
     providerPin,
-    supportsTools: entry.features?.tools === true,
-    supportsVision: entry.modalities?.input?.includes("image") === true,
-    supportsReasoning: entry.features?.reasoning === true,
-    maxContextTokens: maxContextTokens!,
-    maxOutputTokens: qualifiedSurplusMaxOutputTokens(surplusModelId, maxOutputTokens!),
+    supportsTools: entry.features?.tools === true && discovered.supportsTools,
+    supportsVision: entry.modalities?.input?.includes("image") === true && discovered.supportsVision,
+    supportsReasoning: entry.features?.reasoning === true && discovered.supportsReasoning,
+    maxContextTokens: Math.min(maxContextTokens!, discovered.contextTokens),
+    maxOutputTokens: Math.min(maxOutputTokens!, discovered.maxOutputTokens, maxContextTokens!),
+    supportedParameters: discovered.supportedParameters,
   });
+}
+
+/** Refresh transport facts only for signed, policy-eligible chat identities. */
+export async function hydrateSurplusChatCatalog(input: {
+  readonly catalogModelIds?: readonly string[];
+  readonly force?: boolean;
+  readonly signal?: AbortSignal;
+} = {}): Promise<void> {
+  input.signal?.throwIfAborted();
+  const selected = input.catalogModelIds === undefined ? null : new Set(input.catalogModelIds);
+  const requestedIds = getActiveModelCatalogSync().catalog.entries
+    .filter((entry) => (!selected || selected.has(entry.id))
+      && isEligibleSignedChatEntry(entry) && providerPinForCatalogEntry(entry) !== null)
+    .map((entry) => entry.id.slice(entry.id.indexOf(":") + 1));
+  if (!requestedIds.length) return;
+  await hydrateSurplusModelCatalog([...new Set(requestedIds)], {
+    ...(input.force === undefined ? {} : { force: input.force }),
+    ...(input.signal === undefined ? {} : { signal: input.signal }),
+  });
+  input.signal?.throwIfAborted();
 }
 
 function validateInjectedRoute(
@@ -101,15 +108,10 @@ function validateInjectedRoute(
   if (!route.surplusModelId.trim()) return null;
   if (entry.limits?.contextTokens && route.maxContextTokens > entry.limits.contextTokens) return null;
   if (entry.limits?.outputTokens && route.maxOutputTokens > entry.limits.outputTokens) return null;
-  const separator = entry.id.indexOf(":");
-  const signedSurplusModelId = separator < 1 ? "" : entry.id.slice(separator + 1);
-  const maxOutputTokens = qualifiedSurplusMaxOutputTokens(
-    signedSurplusModelId,
-    qualifiedSurplusMaxOutputTokens(route.surplusModelId, route.maxOutputTokens),
-  );
-  return maxOutputTokens === route.maxOutputTokens
-    ? route
-    : Object.freeze({ ...route, maxOutputTokens });
+  if (route.supportsTools && entry.features?.tools !== true) return null;
+  if (route.supportsVision && entry.modalities?.input?.includes("image") !== true) return null;
+  if (route.supportsReasoning && entry.features?.reasoning !== true) return null;
+  return route;
 }
 
 /**
