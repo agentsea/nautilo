@@ -52,7 +52,7 @@ describe("official skill evaluation repository wiring", () => {
     expect(job).toBeDefined();
     if (!job) throw new Error("official skill evaluation job is missing");
     expect(job).toMatchObject({
-      "runs-on": "ubuntu-latest",
+      "runs-on": "ubuntu-24.04",
       "timeout-minutes": 20,
     });
     expect(job.steps).toContainEqual({
