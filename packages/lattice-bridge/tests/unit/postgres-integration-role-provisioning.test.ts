@@ -1,10 +1,12 @@
 import { describe, expect, spyOn, test } from "bun:test";
 import { resolve } from "node:path";
 import { PgDialect } from "drizzle-orm/pg-core";
+import { resolveCryptoDatabaseConnectionString } from "@nautilo/db";
 import { buildEventFeedReaderRoleSql } from "../../../db/src/utils/event-feed-role";
 import { readMigrationFilesWithPrivilegeCompat } from "../../../db/src/utils/migration-privilege-compat";
 import {
   buildDisposableTemplateSql,
+  buildDisposablePostgresTestEnv,
   buildDisposableInstanceIdentitySql,
   migrateDisposablePostgres,
   provisionDisposableInstanceIdentity,
@@ -31,6 +33,36 @@ const disposableAuthority = Object.freeze({
 });
 
 describe("disposable Postgres migration role provisioning", () => {
+  test("binds the runtime crypto connection to the exact fixture instead of inherited state", () => {
+    const inherited = {
+      ...disposableAuthority,
+      DB_CRYPTO_CONNECTION_STRING: "postgres://nautilo_crypto:outside@qa.example.com:55433/nautilo",
+    };
+    const env = buildDisposablePostgresTestEnv(disposableUrls, inherited);
+
+    expect(resolveCryptoDatabaseConnectionString(env)).toBe(disposableUrls.crypto);
+    expect(env["LATTICE_BRIDGE_TEST_ADMIN_DATABASE_URL"]).toBe(disposableUrls.admin);
+    expect(env["LATTICE_BRIDGE_TEST_APP_DATABASE_URL"]).toBe(disposableUrls.app);
+    expect(env["LATTICE_BRIDGE_TEST_AGENT_DATABASE_URL"]).toBe(disposableUrls.agent);
+    expect(env["LATTICE_BRIDGE_TEST_DATABASE_URL"]).toBe(disposableUrls.crypto);
+    expect(env[DISPOSABLE_RESET_TOKEN_ENV]).toBe(disposableAuthority[DISPOSABLE_RESET_TOKEN_ENV]);
+    expect(inherited["DB_CRYPTO_CONNECTION_STRING"]).toContain("qa.example.com");
+  });
+
+  test("supplies the runtime crypto connection when none was inherited", () => {
+    const env = buildDisposablePostgresTestEnv(disposableUrls, disposableAuthority);
+    expect(resolveCryptoDatabaseConnectionString(env)).toBe(disposableUrls.crypto);
+  });
+
+  test("refuses to build a child environment outside the disposable fixture authority", () => {
+    expect(() => buildDisposablePostgresTestEnv(disposableUrls, {}))
+      .toThrow("container authority is missing");
+    expect(() => buildDisposablePostgresTestEnv({
+      ...disposableUrls,
+      crypto: disposableUrls.app,
+    }, disposableAuthority)).toThrow("crypto database URL is outside");
+  });
+
   test("routes canonical privilege-compatible migrations through the Drizzle session", async () => {
     // Intercept only the SQL execution boundary; read and repair real migrations.
     const migrate = spyOn(PgDialect.prototype, "migrate").mockResolvedValue();

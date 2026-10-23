@@ -17,6 +17,7 @@ import {
   DISPOSABLE_RESET_PORT_ENV,
   DISPOSABLE_RESET_TOKEN_ENV,
   DISPOSABLE_TEMPLATE_DATABASE,
+  readDisposableResetAuthority,
   resetDisposablePostgresDatabase,
   type DisposableResetUrls,
 } from "./disposable-postgres-reset";
@@ -44,6 +45,21 @@ const credentials = Object.freeze({
   agent: ephemeralPassword(),
   crypto: ephemeralPassword(),
 });
+
+export function buildDisposablePostgresTestEnv(
+  urls: DisposableResetUrls,
+  env: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+  readDisposableResetAuthority(urls, env);
+  return {
+    ...env,
+    DB_CRYPTO_CONNECTION_STRING: urls.crypto,
+    LATTICE_BRIDGE_TEST_ADMIN_DATABASE_URL: urls.admin,
+    LATTICE_BRIDGE_TEST_DATABASE_URL: urls.crypto,
+    LATTICE_BRIDGE_TEST_APP_DATABASE_URL: urls.app,
+    LATTICE_BRIDGE_TEST_AGENT_DATABASE_URL: urls.agent,
+  };
+}
 
 export async function migrateDisposablePostgres(
   migrationUrl: string,
@@ -464,16 +480,12 @@ async function main(): Promise<number> {
       agent: databaseUrl("nautilo_agent", credentials.agent, port),
       crypto: databaseUrl("nautilo_crypto", credentials.crypto, port),
     });
-    const testEnv: NodeJS.ProcessEnv = {
+    const testEnv = buildDisposablePostgresTestEnv(urls, {
       ...process.env,
-      LATTICE_BRIDGE_TEST_ADMIN_DATABASE_URL: urls.admin,
-      LATTICE_BRIDGE_TEST_DATABASE_URL: urls.crypto,
-      LATTICE_BRIDGE_TEST_APP_DATABASE_URL: urls.app,
-      LATTICE_BRIDGE_TEST_AGENT_DATABASE_URL: urls.agent,
       [DISPOSABLE_RESET_CONTAINER_ENV]: CONTAINER_NAME,
       [DISPOSABLE_RESET_TOKEN_ENV]: resetToken,
       [DISPOSABLE_RESET_PORT_ENV]: port,
-    };
+    });
     const result = spawnSync(
       "bun",
       [
