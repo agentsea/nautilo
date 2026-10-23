@@ -618,6 +618,8 @@ test("invocation admission and authority mint sites stay mechanically inventorie
     "packages/server/src/messaging/bolter-controller.ts",
     // Durable adoption and hydration recheck current sponsor, Room and Genie access.
     "packages/server/src/messaging/external-room-execution.ts",
+    // Private operator configuration fixes the sponsor and Genie; status rechecks access.
+    "packages/server/src/messaging/magent-operator.ts",
     "packages/trust/src/action-capability-admission.ts",
     // Human Terminal and Task capture use the same transaction-capable source owner.
     "packages/trust/src/human-terminal-source-authority.ts",
@@ -650,6 +652,9 @@ test("invocation admission and authority mint sites stay mechanically inventorie
     // Receipt-bound queued work supplies the sponsor; current admission is
     // rechecked before execution, without treating the external sender as Human.
     "packages/server/src/messaging/external-room-execution.ts",
+    // The operator capability fixes the sponsor and fresh Room; ordinary intake
+    // still rechecks current invocation authority before committing work.
+    "packages/server/src/messaging/magent-operator.ts",
     "packages/server/src/routes/auth.ts",
     "packages/server/src/routes/chat.ts",
     "packages/server/src/routes/codex-requests.ts",

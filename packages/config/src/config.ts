@@ -449,6 +449,8 @@ const runtimeConnectedAppsSchema = {
 } satisfies z.ZodRawShape;
 
 export const NautiloConfigSchema = z.object({
+  /** Private operator configuration; absent disables the Unix transport. */
+  nautilo_magent_config_file: z.string().min(1).optional(),
   ...runtimeModelSchema,
   ...runtimeHistorySchema,
   ...runtimeMemorySchema,
@@ -1068,6 +1070,7 @@ export function fromRuntimeConfig(runtime?: NautiloConfigOverrides): NautiloConf
 
   const env = process.env;
   const configObject = {
+    nautilo_magent_config_file: source?.nautilo_magent_config_file ?? env["NAUTILO_MAGENT_CONFIG_FILE"],
     ...readModelsFromEnv(source, env),
     ...readHistoryFromEnv(source, env),
     ...readMemoryFromEnv(source, env),

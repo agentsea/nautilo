@@ -4,6 +4,7 @@ import { inspectDatabaseDumpTables, type TableRowCount } from "./snapshots";
 export const BOLTER_RESTORE_AUTHORITY_TABLES = [
   "public.bolter_connections",
   "public.bolter_room_bindings",
+  "public.external_operator_sessions",
   "public.bolter_inbox_receipts",
   "public.bolter_explicit_shares",
   "public.bolter_outbox",

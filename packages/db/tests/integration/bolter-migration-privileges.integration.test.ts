@@ -3,6 +3,7 @@
  * NAUTILO_TEST_BOLTER_MIGRATIONS=1 bun test --timeout 60000 packages/db/tests/integration/bolter-migration-privileges.integration.test.ts
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { verifyMagentLifecycle } from "./helpers/magent-lifecycle";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -56,7 +57,7 @@ function createBaselineMigrations(): string {
 
 describe.skipIf(process.env["NAUTILO_TEST_BOLTER_MIGRATIONS"] !== "1")("packaged Bolter migration privileges", () => {
   beforeAll(async () => {
-    const created = docker(["run", "-d", "--pull=never", "-p", "127.0.0.1::5432", "--name", `nautilo-bolter-migrations-${owner}`, "--label", `${label}=${owner}`, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-e", "POSTGRES_DB=nautilo", image]);
+    const created = docker(["run", "-d", "--pull=never", "--tmpfs", "/var/lib/postgresql/data", "-p", "127.0.0.1::5432", "--name", `nautilo-bolter-migrations-${owner}`, "--label", `${label}=${owner}`, "-e", "POSTGRES_HOST_AUTH_METHOD=trust", "-e", "POSTGRES_DB=nautilo", image]);
     if (created.exitCode !== 0) throw new Error(created.stderr.toString());
     container = created.stdout.toString().trim();
     // Same isolated-fixture readiness bound as the existing legacy-grants suite.
@@ -137,4 +138,8 @@ describe.skipIf(process.env["NAUTILO_TEST_BOLTER_MIGRATIONS"] !== "1")("packaged
     expect(sql("SELECT has_column_privilege('nautilo', 'public.bolter_room_bindings', 'user_id', 'REFERENCES'), has_column_privilege('nautilo', 'public.bolter_room_bindings', 'id', 'REFERENCES')")).toBe("f|f");
     expect(sql("SELECT has_table_privilege('nautilo_agent', 'public.bolter_connections', 'SELECT'), has_table_privilege('nautilo_agent', 'public.bolter_connections', 'INSERT'), has_table_privilege('nautilo_agent', 'public.bolter_connections', 'UPDATE'), has_table_privilege('nautilo_agent', 'public.bolter_connections', 'DELETE')")).toBe("t|t|t|f");
   });
+  test("mAgent operator receipts, canonical replies, restart claims and cancellation preserve authority", async () => {
+    await verifyMagentLifecycle(port);
+  });
+
 });
