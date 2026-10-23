@@ -14900,26 +14900,8 @@ function showOnboardingWizard(
             "POST /api/profile/generate-soul/stream returned no final soul file",
           );
         }
-        // First-run onboarding must never hold its final save screen open for
-        // model latency. The renderer is allowed to close as soon as the
-        // ordinary profile write finishes, so Desktop durably commits the soul
-        // from this detached main-process request when generation completes.
-        // A final profile write that omits `soulFile` preserves this result no
-        // matter which request wins the insert/update race.
-        const persistResp = await fetch(`${serverUrl}/api/profile`, {
-          method: "PUT",
-          headers,
-          body: JSON.stringify({ soulFile: finalSoulFile }),
-        });
-        if (!persistResp.ok) {
-          console.warn(
-            `[onboarding:soul] generated in ${Date.now() - generationStartedAt}ms but background persistence failed: ${persistResp.status}`,
-          );
-        } else {
-          console.log(
-            `[onboarding:soul] generated and persisted in ${Date.now() - generationStartedAt}ms`,
-          );
-        }
+        // Generation is a preview. The shared wizard waits for this result and
+        // commits it in the final profile write, just as the web adapter does.
         return ipcOk({ soulFile: finalSoulFile });
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err);

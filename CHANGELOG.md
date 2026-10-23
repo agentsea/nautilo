@@ -7,6 +7,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Onboarding waits for an in-progress Soul before saving the final profile,
+  and automatic foreground chat selection supports Surplus-only servers.
+
 - Invite room pickers now list only public rooms and exclude external rooms.
 
 - Web Genie customization now loads the default shell avatar correctly instead

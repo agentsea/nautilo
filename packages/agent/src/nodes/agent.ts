@@ -46,11 +46,7 @@ import {
 import { getActiveModelCatalogSync } from "../config/model-catalog/runtime-catalog";
 import { getModelById } from "../config/assistant-models";
 import { ModelUnavailableError } from "../config/eligible-models";
-import { resolveProviderKey } from "../resolve-provider-key";
-import {
-  resolveSurplusChatServingAvailability,
-  type QualifiedSurplusChatRoute,
-} from "../providers/surplus-route";
+import type { QualifiedSurplusChatRoute } from "../providers/surplus-route";
 import { hasStubModelForTests } from "../providers/stub-model-state";
 import { getCurrentInitiatingClientSurface } from "../runtime/initiating-client-surface-context";
 import { effectiveLiveMiniAppSessionForState } from "../runtime/live-mini-app-execution-context";
@@ -104,24 +100,15 @@ export function resolveForegroundAgentModelId(
   },
 ): string {
   if (input.fundingKind === "personal") return resolvePersonalForegroundModelId(configuredModelId);
-  try {
-    return resolveModelRole("chat", {
-      ...(configuredModelId ? { configuredId: configuredModelId } : {}),
-      ...(input.env === undefined ? {} : { env: input.env }),
-    });
-  } catch (error) {
-    const modelId = configuredModelId?.trim();
-    if (!modelId || !(error instanceof ModelUnavailableError) || error.availability !== "missing-key") throw error;
-    const surplus = resolveSurplusChatServingAvailability({
-      catalogModelId: modelId,
-      policyEnabled: input.policyEnabled ?? getCachedServerModelConfigRow()?.preferSurplus === true,
-      keyConfigured: input.keyConfigured ?? resolveProviderKey("surplus") !== null,
-      fundingKind: "server",
+  return resolveModelRole("chat", {
+    ...(configuredModelId ? { configuredId: configuredModelId } : {}),
+    ...(input.env === undefined ? {} : { env: input.env }),
+    serverSurplus: {
+      ...(input.policyEnabled === undefined ? {} : { policyEnabled: input.policyEnabled }),
+      ...(input.keyConfigured === undefined ? {} : { keyConfigured: input.keyConfigured }),
       ...(input.routes === undefined ? {} : { routes: input.routes }),
-    });
-    if (surplus.status !== "available" || !surplus.route.supportsTools) throw error;
-    return modelId;
-  }
+    },
+  });
 }
 
 /** Foreground executor fallback that honors the server default without widening background roles. */

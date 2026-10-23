@@ -23,6 +23,25 @@ const surplusOnly = {
 };
 
 describe("foreground agent model selection", () => {
+  test("automatic foreground chat can select a qualified server Surplus route", () => {
+    const automaticRoute = {
+      ...ROUTE,
+      catalogModelId: "openrouter:minimax/minimax-m3",
+      surplusModelId: "minimax/minimax-m3",
+      maxContextTokens: 1_000,
+      maxOutputTokens: 100,
+    };
+    const automatic = { ...surplusOnly, routes: [automaticRoute] };
+    expect(resolveForegroundAgentModelId(undefined, automatic)).toBe(automaticRoute.catalogModelId);
+    expect(() => resolveForegroundAgentModelId(undefined, { ...automatic, policyEnabled: false })).toThrow();
+    expect(() => resolveForegroundAgentModelId(undefined, { ...automatic, keyConfigured: false })).toThrow();
+    expect(() => resolveForegroundAgentModelId(undefined, { ...automatic, routes: [] })).toThrow();
+    expect(() => resolveForegroundAgentModelId(undefined, {
+      ...automatic,
+      routes: [{ ...automaticRoute, supportsTools: false }],
+    })).toThrow();
+  });
+
   test("a selected foreground model reaches the agent node without a direct credential", () => {
     const plan = buildForegroundModelControlPlan(
       { modelId: MODEL_ID },

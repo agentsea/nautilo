@@ -120,13 +120,13 @@ afterEach(async () => {
   await Promise.all(apps.splice(0).map((app) => app.close()));
 });
 
-describe.each(routes)("GET %s", (url: (typeof routes)[number]) => {
+describe.each([...routes])("GET %s", (url: (typeof routes)[number]) => {
   test("lists only the caller's internal public Rooms for self-service", async () => {
     capabilities = ["create_invites"];
     const response = await (await makeApp(CALLER_ID)).inject({ method: "GET", url });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({
+    expect(response.json<{ rooms: Array<{ roomId: string; label: string; type: string }> }>()).toEqual({
       rooms: [{ roomId: "open-own", label: "Own public Room", type: "shared" }],
     });
     expect(compiledPredicates).toHaveLength(1);
@@ -138,7 +138,7 @@ describe.each(routes)("GET %s", (url: (typeof routes)[number]) => {
     const response = await (await makeApp(CALLER_ID)).inject({ method: "GET", url });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({
+    expect(response.json<{ rooms: Array<{ roomId: string; label: string; type: string }> }>()).toEqual({
       rooms: [
         { roomId: "open-own", label: "Own public Room", type: "shared" },
         { roomId: "open-other", label: "Other public Room", type: "shared" },
@@ -153,9 +153,9 @@ describe.each(routes)("GET %s", (url: (typeof routes)[number]) => {
     const forbidden = await (await makeApp(CALLER_ID)).inject({ method: "GET", url });
 
     expect(unauthenticated.statusCode).toBe(401);
-    expect(unauthenticated.json()).toEqual({ error: "Unauthorized" });
+    expect(unauthenticated.json<{ error: string }>()).toEqual({ error: "Unauthorized" });
     expect(forbidden.statusCode).toBe(403);
-    expect(forbidden.json()).toEqual({ error: "forbidden" });
+    expect(forbidden.json<{ error: string }>()).toEqual({ error: "forbidden" });
     expect(db.select).not.toHaveBeenCalled();
   });
 });
