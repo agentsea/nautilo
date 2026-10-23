@@ -160,7 +160,7 @@ async function main(): Promise<void> {
   const baseImages = args.baseImages === undefined
     ? [{
         role: "bun-build-and-runtime",
-        identity: "docker.io/oven/bun@sha256:e10577f0db68676a7024391c6e5cb4b879ebd17188ab750cf10024a6d700e5c4",
+        identity: "docker.io/oven/bun@sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d",
       }]
     : JSON.parse(readFileSync(args.baseImages, "utf8")) as RuntimeImageBaseIdentity[];
   const manifest: RuntimeImageEvidenceManifestV1 = {

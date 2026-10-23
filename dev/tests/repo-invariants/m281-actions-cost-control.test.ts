@@ -13,6 +13,7 @@ type Workflow = {
   env?: Record<string, string>;
   on: Record<string, unknown>;
   jobs: Record<string, {
+    name?: string;
     "runs-on"?: string;
     env?: Record<string, string>;
     needs?: string | string[];
@@ -43,7 +44,7 @@ function eventConfig(value: unknown): Record<string, unknown> {
 }
 
 function eventPaths(value: unknown): string[] {
-  return (eventConfig(value).paths ?? []) as string[];
+  return (eventConfig(value)["paths"] ?? []) as string[];
 }
 
 const gitLocalEnvironmentNames = [
@@ -227,8 +228,8 @@ describe("M281 GitHub Actions cost controls", () => {
     const ciText = await source(".github/workflows/ci.yml");
 
     expect(Object.keys(ci.on)).toEqual(["pull_request"]);
-    expect(ci.on.pull_request).toEqual({ branches: ["main"] });
-    expect(ci.jobs.ci?.needs).toEqual(["lint", "typecheck", "test", "db-migration-integration"]);
+    expect(ci.on["pull_request"]).toEqual({ branches: ["main"] });
+    expect(ci.jobs["ci"]?.needs).toEqual(["lint", "typecheck", "test", "db-migration-integration"]);
     expect(ciText.match(/name: CI/g)?.length).toBe(2);
     for (const job of ["prepare-bun-cache", "lint", "typecheck", "test"]) {
       expect(ci.jobs[job]?.["runs-on"]).toBe("${{ github.event.pull_request.head.repo.id == github.event.repository.id && github.actor != 'dependabot[bot]' && vars.CI_LINUX_RUNNER || 'ubuntu-24.04' }}");
@@ -244,10 +245,10 @@ describe("M281 GitHub Actions cost controls", () => {
   test("scopes lint and Knip heaps to their qualification steps", async () => {
     const ci = await workflow("ci.yml");
     const rootPackage = JSON.parse(await source("package.json")) as { scripts: Record<string, string> };
-    const lintSteps = ci.jobs.lint?.steps ?? [];
+    const lintSteps = ci.jobs["lint"]?.steps ?? [];
     const knip = lintSteps.find((step) => step.name === "Unused exports (knip)");
     const eslint = lintSteps.find((step) => step.name === "Lint");
-    expect(eslint?.env?.NODE_OPTIONS).toBe("--max-old-space-size=6144");
+    expect(eslint?.env?.["NODE_OPTIONS"]).toBe("--max-old-space-size=6144");
     expect(await source("dev/scripts/ci-gates.sh")).toContain(
       'export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=6144}"',
     );
@@ -256,32 +257,32 @@ describe("M281 GitHub Actions cost controls", () => {
     expect(knip?.env).toEqual({
       NODE_OPTIONS: "--max-old-space-size=6144",
     });
-    expect(rootPackage.scripts["lint:unused"]).toContain(`NODE_OPTIONS=${knip?.env?.NODE_OPTIONS}`);
-    expect(ci.jobs.lint?.env?.NODE_OPTIONS).toBeUndefined();
+    expect(rootPackage.scripts["lint:unused"]).toContain(`NODE_OPTIONS=${knip?.env?.["NODE_OPTIONS"]}`);
+    expect(ci.jobs["lint"]?.env?.["NODE_OPTIONS"]).toBeUndefined();
   });
 
   test("bounds typecheck heap with optional larger-runner concurrency", async () => {
     const ci = await workflow("ci.yml");
     const rootPackage = JSON.parse(await source("package.json")) as { scripts: Record<string, string> };
     const localGates = await source("dev/scripts/ci-gates.sh");
-    const typecheckJob = ci.jobs.typecheck;
+    const typecheckJob = ci.jobs["typecheck"];
     const typecheck = typecheckJob?.steps?.find((step) => step.name === "Typecheck");
 
-    expect(typecheckJob?.env?.TURBO_CONCURRENCY).toBe("${{ github.event.pull_request.head.repo.id == github.event.repository.id && github.actor != 'dependabot[bot]' && vars.CI_LINUX_RUNNER && vars.CI_TYPECHECK_CONCURRENCY || '1' }}");
-    expect(typecheckJob?.env?.NODE_OPTIONS).toBeUndefined();
+    expect(typecheckJob?.env?.["TURBO_CONCURRENCY"]).toBe("${{ github.event.pull_request.head.repo.id == github.event.repository.id && github.actor != 'dependabot[bot]' && vars.CI_LINUX_RUNNER && vars.CI_TYPECHECK_CONCURRENCY || '1' }}");
+    expect(typecheckJob?.env?.["NODE_OPTIONS"]).toBeUndefined();
     expect(typecheck?.run).toBe("bash dev/scripts/ci-gates.sh typecheck");
     expect(typecheck?.env).toEqual({
       NODE_OPTIONS: "--max-old-space-size=6144",
     });
-    expect(rootPackage.scripts.typecheck).toBe("bun dev/scripts/typecheck.ts");
+    expect(rootPackage.scripts["typecheck"]).toBe("bun dev/scripts/typecheck.ts");
     expect(typecheckEnvironment({})).toMatchObject({
-      NODE_OPTIONS: typecheck?.env?.NODE_OPTIONS,
+      NODE_OPTIONS: typecheck?.env?.["NODE_OPTIONS"],
       TURBO_CONCURRENCY: "1",
     });
-    expect(typecheckEnvironment({ TURBO_CONCURRENCY: "" }).TURBO_CONCURRENCY).toBe("1");
+    expect(typecheckEnvironment({ TURBO_CONCURRENCY: "" })["TURBO_CONCURRENCY"]).toBe("1");
     expect(typecheckEnvironment({ TURBO_CONCURRENCY: "6", NODE_OPTIONS: "--max-old-space-size=1024" }))
-      .toMatchObject({ TURBO_CONCURRENCY: "6", NODE_OPTIONS: typecheck?.env?.NODE_OPTIONS });
-    expect(localGates).toContain(`export NODE_OPTIONS=${typecheck?.env?.NODE_OPTIONS}`);
+      .toMatchObject({ TURBO_CONCURRENCY: "6", NODE_OPTIONS: typecheck?.env?.["NODE_OPTIONS"] });
+    expect(localGates).toContain(`export NODE_OPTIONS=${typecheck?.env?.["NODE_OPTIONS"]}`);
     expect(localGates).toContain('export TURBO_CONCURRENCY="${TURBO_CONCURRENCY:-1}"');
   });
 
@@ -290,7 +291,7 @@ describe("M281 GitHub Actions cost controls", () => {
     const desktopText = await source(".github/workflows/desktop-smoke.yml");
     const job = desktop.jobs["desktop-smoke"];
 
-    expect(job?.env?.TURBO_SCM_BASE).toBe(
+    expect(job?.env?.["TURBO_SCM_BASE"]).toBe(
       "${{ github.event.pull_request.base.sha || github.sha }}",
     );
     expect(desktopText).toContain("fetch-depth: 2");
@@ -347,7 +348,7 @@ describe("M281 GitHub Actions cost controls", () => {
       "pull_request",
       "workflow_dispatch",
     ]);
-    const desktopPaths = eventPaths(desktop.on.pull_request);
+    const desktopPaths = eventPaths(desktop.on["pull_request"]);
     expectPathsCover(
       desktopPaths,
       await workspacePathsFor("@nautilo/desktop"),
@@ -359,9 +360,9 @@ describe("M281 GitHub Actions cost controls", () => {
     expect(desktopPaths).toContain("dev/scripts/install-first-party-apps.ts");
 
     expect(Object.keys(lattice.on).sort()).toEqual(["push", "workflow_dispatch"]);
-    expect(eventConfig(lattice.on.push).branches).toEqual(["main"]);
+    expect(eventConfig(lattice.on["push"])["branches"]).toEqual(["main"]);
     expectPathsCover(
-      eventPaths(lattice.on.push),
+      eventPaths(lattice.on["push"]),
       await workspacePathsFor("@nautilo/lattice-crypto"),
     );
     expect(Object.keys(lattice.jobs).sort()).toEqual([
@@ -374,13 +375,13 @@ describe("M281 GitHub Actions cost controls", () => {
       "pull_request",
       "workflow_dispatch",
     ]);
-    expect(eventConfig(latticePr.on.pull_request).branches).toEqual(["main"]);
+    expect(eventConfig(latticePr.on["pull_request"])["branches"]).toEqual(["main"]);
     expectPathsCover(
-      eventPaths(latticePr.on.pull_request),
+      eventPaths(latticePr.on["pull_request"]),
       await workspacePathsFor("@nautilo/lattice-crypto"),
     );
     expect(Object.keys(latticePr.jobs)).toEqual(["integration"]);
-    expect(latticePr.jobs.integration?.name).toBe(
+    expect(latticePr.jobs["integration"]?.name).toBe(
       "Lattice integration and scenarios",
     );
 
@@ -389,7 +390,7 @@ describe("M281 GitHub Actions cost controls", () => {
       "schedule",
       "workflow_dispatch",
     ]);
-    const supplyPaths = eventPaths(supply.on.pull_request);
+    const supplyPaths = eventPaths(supply.on["pull_request"]);
     for (const required of [
       "**/package.json",
       "bun.lock",
@@ -401,13 +402,13 @@ describe("M281 GitHub Actions cost controls", () => {
     ]) {
       expect(supplyPaths).toContain(required);
     }
-    expect(supply.on.schedule).toEqual([{ cron: "0 4 * * 1" }]);
+    expect(supply.on["schedule"]).toEqual([{ cron: "0 4 * * 1" }]);
   });
 
   test("Windows full qualification runs only nightly or manually", async () => {
     const windows = await workflow("windows-desktop.yml");
     expect(Object.keys(windows.on).sort()).toEqual(["schedule", "workflow_dispatch"]);
-    expect(windows.on.schedule).toEqual([{ cron: "17 4 * * *" }]);
+    expect(windows.on["schedule"]).toEqual([{ cron: "17 4 * * *" }]);
 
     const steps = windows.jobs["windows-x64"]?.steps ?? [];
     for (const name of [
@@ -443,8 +444,8 @@ describe("M281 GitHub Actions cost controls", () => {
       const text = await source(`.github/workflows/${name}`);
       if (!text.includes("~/.bun/install/cache")) continue;
       const parsed = await workflow(name);
-      expect(parsed.env?.BUN_VERSION, `${name} must own its Bun version`).toBe(
-        "1.3.11",
+      expect(parsed.env?.["BUN_VERSION"], `${name} must own its Bun version`).toBe(
+        "1.4.4",
       );
       for (const line of text.split("\n")) {
         if (line.includes("key:") && line.includes("-bun-")) {
@@ -540,7 +541,7 @@ describe("M281 GitHub Actions cost controls", () => {
         `${JSON.stringify({
           name: "m281-transit-fixture",
           private: true,
-          packageManager: "bun@1.3.11",
+          packageManager: "bun@1.4.4",
           workspaces: ["packages/*"],
         })}\n`,
       );

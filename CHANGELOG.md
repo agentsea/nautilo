@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Development, CI, Desktop's bundled Bun and server Docker builds use Bun
+  1.4.4 with updated certificate trust. Sandbox allowlists reject ambiguous
+  numeric IPv4 spellings before URL normalization can make them match IP rules.
+
 - Scheduled Tasks keep concurrent results on separate execution threads.
   Finished encrypted schedules show no future runs and retain result history.
 - Encrypted Task creation, editing and repair use current Domain authority on

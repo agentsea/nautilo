@@ -290,7 +290,7 @@ describe("Dockerfile stage shape", () => {
   test("runtime dependency stage consumes the generated production projection", () => {
     const runtimeDeps = byName.get("runtime-deps");
     expect(runtimeDeps?.from).toBe(
-      "oven/bun:1.3.14@sha256:e10577f0db68676a7024391c6e5cb4b879ebd17188ab750cf10024a6d700e5c4",
+      "oven/bun:1.4.4@sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d",
     );
     expect(runtimeDeps!.body).toContain("COPY packaging/docker/runtime-install/ ./");
     expect(runtimeDeps!.body).toContain("--production");

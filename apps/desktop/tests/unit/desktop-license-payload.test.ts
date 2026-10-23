@@ -23,7 +23,7 @@ function validResources(): string {
   const root = temporaryRoot();
   mkdirSync(join(root, "legal"));
   writeFileSync(join(root, "legal/THIRD_PARTY_NOTICES.md"), canonicalNotice);
-  vendorPinnedBunLicense("1.3.11", join(root, "bun"));
+  vendorPinnedBunLicense("1.4.4", join(root, "bun"));
   return root;
 }
 
@@ -86,7 +86,7 @@ describe("Desktop license payload", () => {
       mkdirSync(dirname(binary), { recursive: true });
       writeFileSync(binary, "cached binary fixture");
       truncateSync(binary, 1_000_000);
-      recordBunRuntimeCache(binary, "1.3.11");
+      recordBunRuntimeCache(binary, "1.4.4");
     }
     writeFileSync(join(vendor, "LICENSE-bun.txt"), "old stub");
     const before = binaries.map((binary) => readFileSync(binary));
@@ -114,7 +114,7 @@ describe("Desktop license payload", () => {
     };
     const configuration = yaml.load(readFileSync(join(desktopRoot, "electron-builder.yml"), "utf8"));
     const { root, desktop } = copiedSource();
-    vendorPinnedBunLicense("1.3.11", join(desktop, "vendor/bun"));
+    vendorPinnedBunLicense("1.4.4", join(desktop, "vendor/bun"));
     mkdirSync(join(desktop, "dist"));
     writeFileSync(join(desktop, "dist/main.js"), "// application fixture\n");
     writeFileSync(join(desktop, "dist/internal.md"), "excluded application Markdown");

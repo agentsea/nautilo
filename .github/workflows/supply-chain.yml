@@ -91,7 +91,7 @@ jobs:
           # Pinned to match every other workflow + the committed bun.lock
           # (lockfileVersion 1 / configVersion 0). `latest` here drifts the
           # lockfile format and breaks `--frozen-lockfile` on Bun bumps.
-          bun-version: "1.3.11"
+          bun-version: "1.4.4"
 
       - name: Guarded dependency install
         run: sfw bun install --frozen-lockfile --ignore-scripts

@@ -17,10 +17,8 @@
  * version and recorded hash, the binaries are reused. Each binary has its own
  * cache record. The exact bundled license is always checked.
  *
- * Bun versioning: pinned to match the dev toolchain (`bun --version`
- * at the time this was written was 1.3.11). Kept in sync manually; a
- * future refinement is to read it from package.json#engines.bun or
- * a root-level .bun-version file.
+ * Bun versioning: BUN_VERSION is the Desktop bundle's explicit runtime pin.
+ * Keep it aligned with package.json#engines.bun and the root .bun-version.
  *
  * Supported platforms in this cut:
  *   - macOS arm64 (Apple Silicon)
@@ -43,7 +41,7 @@ import { isBunRuntimeCached, recordBunRuntimeCache } from "./bun-vendor-cache";
 // Configuration
 // ---------------------------------------------------------------------------
 
-const BUN_VERSION = "1.3.11";
+const BUN_VERSION = "1.4.4";
 
 /**
  * Map: electron-builder arch identifier -> Bun release asset stem.

@@ -10,7 +10,7 @@ function source(path: string): string {
 }
 
 const bunBase =
-  "oven/bun:1.3.14@sha256:e10577f0db68676a7024391c6e5cb4b879ebd17188ab750cf10024a6d700e5c4";
+  "oven/bun:1.4.4@sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d";
 const bunBaseMatch = /^oven\/bun:(\d+\.\d+\.\d+)@sha256:([a-f0-9]{64})$/.exec(
   bunBase,
 );
@@ -39,10 +39,22 @@ describe("D490 release supply-chain pins", () => {
       const match = bunBaseReference.exec(line.slice("FROM ".length));
       expect(match).not.toBeNull();
       expect(match?.[1]).toBe(bunVersion);
-      expect(match?.[1]?.split(".").map(Number)).toEqual([1, 3, 14]);
+      expect(match?.[1]?.split(".").map(Number)).toEqual([1, 4, 4]);
       expect(match?.[2]).toBe(bunDigest);
     }
     expect(dockerfile).not.toMatch(/^FROM\s+oven\/bun:[^@\s]+(?:\s|$)/m);
+
+    const bootstrapDockerfile = source("packaging/docker/Dockerfile.bootstrap");
+    expect(bootstrapDockerfile.match(/^FROM\s+oven\/bun:[^\s]+/gm)).toEqual([
+      `FROM ${bunBase}`,
+    ]);
+    const bootstrapBaseImages = JSON.parse(
+      source("packaging/docker/bootstrap-base-images.json"),
+    ) as Array<{ role: string; identity: string }>;
+    expect(bootstrapBaseImages).toContainEqual({
+      role: "builder",
+      identity: `docker.io/oven/bun@sha256:${bunDigest}`,
+    });
   });
 
   test("keeps retained base evidence aligned with the Dockerfile Bun pin", () => {

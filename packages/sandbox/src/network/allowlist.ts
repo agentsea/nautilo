@@ -59,8 +59,13 @@ export function normalizeHost(input: string): string | null {
   if (trimmed.length === 0) return null;
   const ip = parseStrictIpLiteral(trimmed);
   if (ip !== null) return ip.toString();
+  // Legacy IPv4 spellings and URL-escaped bytes are not DNS names. Reject them
+  // before URL/IDNA conversion, whose numeric-host handling varies by runtime.
+  if (ipaddr.IPv4.isValid(trimmed) || trimmed.includes("%")) return null;
   const ascii = domainToASCII(trimmed.toLowerCase());
-  return ascii.length > 0 ? ascii : null;
+  // IDNA conversion must not turn Unicode digits or separators into an IP
+  // spelling accepted by a domain or CIDR rule, including legacy IPv4 forms.
+  return ascii.length > 0 && !ipaddr.isValid(ascii) ? ascii : null;
 }
 
 function ruleMatchesHost(rule: NetworkAllowRule, host: string): boolean {
