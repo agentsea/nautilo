@@ -10,7 +10,7 @@ import { workAcceptances } from "../schema/work-acceptances";
 import { sessions, sessionMessages } from "../schema/sessions";
 import { bolterAttachmentDescriptorSchema, parseExternalMessageOrigin, type BolterAttachmentDescriptor, type ExternalMessageOrigin } from "@nautilo/types";
 import { messageAttachments } from "../schema/message-attachments";
-import { bolterConnections, bolterRoomBindings, bolterInboxReceipts, bolterOutbox, bolterExplicitShares, type BolterConnection, type BolterRoomBinding, type BolterInboxReceipt } from "../schema/bolter-bridge";
+import { bolterConnections, bolterRoomBindings, bolterInboxReceipts, bolterOutbox, bolterExplicitShares, externalOperatorSessions, type BolterConnection, type BolterRoomBinding, type BolterInboxReceipt } from "../schema/bolter-bridge";
 
 export type BolterBridgeDatabase = ReturnType<typeof getSharedDirectAgentDb>;
 export type BolterFactoryDatabase = ReturnType<typeof getSharedDirectDb>;
@@ -20,15 +20,17 @@ export interface BolterOwnerContext { readonly userId: string }
 export interface BolterReceiverContext extends BolterOwnerContext {
   readonly connectionId: string;
   readonly connectionGeneration: number;
-  readonly relayId: string;
-  readonly desktopSessionId: string;
-  readonly pairingGenerationRef: string;
+  readonly transportKind?: "desktop-relay" | "operator-unix";
+  readonly operatorBindingId?: string | null;
+  readonly relayId: string | null;
+  readonly desktopSessionId: string | null;
+  readonly pairingGenerationRef: string | null;
 }
 export interface BolterBindingContext extends BolterReceiverContext {
   readonly bindingId: string;
   readonly bindingRevision: number;
 }
-export type BolterConnectionInsert = Pick<BolterConnection, "relayId" | "desktopSessionId" | "pairingGenerationRef" | "homeHandle" | "origin" | "providerAgentId" | "identityFingerprint"> & { readonly id?: string };
+export type BolterConnectionInsert = Pick<BolterConnection, "origin" | "providerAgentId" | "identityFingerprint"> & { readonly id?: string; readonly relayId: string; readonly desktopSessionId: string; readonly pairingGenerationRef: string; readonly homeHandle: string };
 export type BolterBindingInsert = Pick<BolterRoomBinding, "roomId" | "namespaceId" | "agentId" | "chatId" | "threadId"> & { readonly id?: string; readonly modelSponsorshipAccepted?: boolean };
 export interface BolterInboundInsert {
   readonly providerMessageId: string;
@@ -104,6 +106,8 @@ function scoped<T>(db: BolterBridgeDatabase | BolterFactoryDatabase, ctx: Bolter
 
 export function bolterReceiverMatches(connection: BolterConnection, ctx: BolterReceiverContext): boolean {
   return connection.userId === ctx.userId && connection.id === ctx.connectionId && connection.generation === ctx.connectionGeneration
+    && (connection.transportKind ?? "desktop-relay") === (ctx.transportKind ?? "desktop-relay")
+    && (connection.operatorBindingId ?? null) === (ctx.operatorBindingId ?? null)
     && connection.relayId === ctx.relayId && connection.desktopSessionId === ctx.desktopSessionId
     && connection.pairingGenerationRef === ctx.pairingGenerationRef && connection.enabled && connection.revokedAt === null;
 }
@@ -134,18 +138,80 @@ export function listBolterConnectionsWith(db: BolterBridgeDatabase, ctx: BolterO
 export function getBolterConnectionWith(db: BolterBridgeDatabase, ctx: BolterOwnerContext, connectionId: string) {
   return scoped(db, ctx, async tx => (await tx.select().from(bolterConnections).where(and(eq(bolterConnections.userId, ctx.userId), eq(bolterConnections.id, connectionId))).limit(1))[0] ?? null);
 }
+type DesktopBolterConnection = BolterConnection & { provider: "bolter"; transportKind: "desktop-relay";
+  operatorBindingId: null; relayId: string; desktopSessionId: string; pairingGenerationRef: string; homeHandle: string };
+function desktopConnection(row: BolterConnection): DesktopBolterConnection {
+  if (row.provider !== "bolter" || row.transportKind !== "desktop-relay" || row.operatorBindingId !== null
+    || !row.relayId || !row.desktopSessionId || !row.pairingGenerationRef || !row.homeHandle) throw new BolterBridgeIdentityConflictError();
+  return row as DesktopBolterConnection;
+}
 export function createBolterConnectionWith(db: BolterBridgeDatabase, ctx: BolterOwnerContext, input: BolterConnectionInsert) {
   const origin = canonicalBolterOrigin(input.origin);
   for (const value of [input.relayId, input.desktopSessionId, input.pairingGenerationRef, input.providerAgentId, input.homeHandle]) opaque(value);
   if ((input.homeHandle.includes("/") || input.homeHandle.includes("\\")) || input.homeHandle.includes("..")) throw new TypeError("Bolter home handle must not be a path");
   fingerprint(input.identityFingerprint);
   return scoped(db, ctx, async tx => {
-    const [row] = await tx.insert(bolterConnections).values({ ...input, origin, userId: ctx.userId }).onConflictDoNothing({ target: [bolterConnections.userId, bolterConnections.relayId, bolterConnections.homeHandle] }).returning();
-    if (row) return row;
+    const [row] = await tx.insert(bolterConnections).values({ ...input, origin, userId: ctx.userId, provider: "bolter", transportKind: "desktop-relay", operatorBindingId: null }).onConflictDoNothing({ target: [bolterConnections.userId, bolterConnections.relayId, bolterConnections.homeHandle] }).returning();
+    if (row) return desktopConnection(row);
     const [existing] = await tx.select().from(bolterConnections).where(and(eq(bolterConnections.userId, ctx.userId), eq(bolterConnections.relayId, input.relayId), eq(bolterConnections.homeHandle, input.homeHandle))).for("update");
     if (!existing || existing.origin !== origin || existing.providerAgentId !== input.providerAgentId || existing.identityFingerprint !== input.identityFingerprint
       || existing.desktopSessionId !== input.desktopSessionId || existing.pairingGenerationRef !== input.pairingGenerationRef || existing.revokedAt !== null) throw new BolterBridgeIdentityConflictError();
+    return desktopConnection(existing);
+  });
+}
+
+/** A single operator capability is bound to immutable external routing and sponsor identity. */
+export function createMagentOperatorConnectionWith(db: BolterBridgeDatabase, ctx: BolterOwnerContext,
+  input: { operatorBindingId: string; origin: string; providerAgentId: string; identityFingerprint: string }) {
+  fingerprint(input.identityFingerprint);
+  return scoped(db, ctx, async tx => {
+    const [created] = await tx.insert(bolterConnections).values({ id: input.operatorBindingId, userId: ctx.userId,
+      ...input, provider: "magent", transportKind: "operator-unix", relayId: null, desktopSessionId: null,
+      pairingGenerationRef: null, homeHandle: null }).onConflictDoNothing({ target: bolterConnections.id }).returning();
+    if (created) return created;
+    const [existing] = await tx.select().from(bolterConnections).where(and(eq(bolterConnections.id, input.operatorBindingId),
+      eq(bolterConnections.userId, ctx.userId))).for("update");
+    if (!existing || existing.provider !== "magent" || existing.transportKind !== "operator-unix"
+      || existing.operatorBindingId !== input.operatorBindingId || existing.origin !== input.origin
+      || existing.providerAgentId !== input.providerAgentId || existing.identityFingerprint !== input.identityFingerprint) {
+      throw new BolterBridgeIdentityConflictError();
+    }
     return existing;
+  });
+}
+
+/** Metadata-only recovery view; no transcript content is released here. */
+export function getMagentReceiptStatusWith(db: BolterBridgeDatabase, ctx: BolterBindingContext, receiptId: string) {
+  return scoped(db, ctx, async tx => {
+    const [row] = await tx.select({ receipt: bolterInboxReceipts, job: jobs, publication: bolterOutbox })
+      .from(bolterInboxReceipts).leftJoin(jobs, and(eq(jobs.id, bolterInboxReceipts.jobId), eq(jobs.ownerId, ctx.userId)))
+      .leftJoin(bolterOutbox, and(eq(bolterOutbox.sourceInboxId, bolterInboxReceipts.id), eq(bolterOutbox.userId, ctx.userId)))
+      .where(and(eq(bolterInboxReceipts.userId, ctx.userId), eq(bolterInboxReceipts.bindingId, ctx.bindingId),
+        eq(bolterInboxReceipts.id, receiptId))).limit(1);
+    if (!row) return null;
+    const reference = parseExternalRoomJobReference(row.job?.input);
+    if (!reference || reference.receiptId !== receiptId || reference.bindingId !== ctx.bindingId) return null;
+    return { receiptId, state: row.receipt.state === "cancelled" || row.receipt.state === "quarantined" ? "cancelled"
+      : row.job?.status === "completed" ? "completed" : ["failed", "timed_out"].includes(row.job?.status ?? "") ? "failed"
+        : row.job?.status === "cancelled" ? "cancelled" : "pending",
+      ...(row.publication ? { outboxId: row.publication.id, publicationState: row.publication.state } : {}) };
+  });
+}
+
+/** Fence publication and durable execution before the service aborts its local executor. */
+export function cancelMagentReceiptWith(db: BolterBridgeDatabase, ctx: BolterBindingContext, receiptId: string) {
+  return scoped(db, ctx, async tx => {
+    const binding = await lockBinding(tx, ctx);
+    if (!binding || binding.provider !== "magent") return null;
+    const [receipt] = await tx.select().from(bolterInboxReceipts).where(and(eq(bolterInboxReceipts.id, receiptId),
+      eq(bolterInboxReceipts.userId, ctx.userId), eq(bolterInboxReceipts.bindingId, binding.id))).for("update");
+    if (!receipt) return null;
+    await settleFencedJobs(tx, ctx.userId, [binding.id], receipt.id);
+    if (receipt.state === "pending" || receipt.state === "accepted") await tx.update(bolterInboxReceipts)
+      .set({ state: "cancelled", updatedAt: new Date() }).where(eq(bolterInboxReceipts.id, receipt.id));
+    await tx.update(bolterOutbox).set({ state: sql`CASE WHEN ${bolterOutbox.state} = 'publishing' THEN 'uncertain' ELSE 'cancelled' END`, updatedAt: new Date() })
+      .where(and(eq(bolterOutbox.userId, ctx.userId), eq(bolterOutbox.sourceInboxId, receipt.id), inArray(bolterOutbox.state, ["pending", "publishing"])));
+    return { jobId: receipt.jobId };
   });
 }
 
@@ -181,18 +247,19 @@ export function createFreshBolterBindingWith(db: BolterFactoryDatabase, ctx: Bol
     opaque(input.chatId);
     if (hasControlCharacter(input.threadId)) throw new TypeError("Invalid Bolter thread identity");
     const { modelSponsorshipAccepted, ...routing } = input;
-    const [binding] = await tx.insert(bolterRoomBindings).values({ ...routing, modelSponsorshipAcceptedAt: modelSponsorshipAccepted === true ? new Date() : null, userId: ctx.userId, connectionId: connection.id, origin: connection.origin, providerAgentId: connection.providerAgentId }).returning();
+    const [binding] = await tx.insert(bolterRoomBindings).values({ ...routing, modelSponsorshipAcceptedAt: modelSponsorshipAccepted === true ? new Date() : null, userId: ctx.userId, connectionId: connection.id, provider: connection.provider, origin: connection.origin, providerAgentId: connection.providerAgentId }).returning();
     if (!binding) throw new BolterBridgeAuthorityError();
     return binding;
   });
 }
 
 async function fenceDeliveries(tx: BolterBridgeTransaction, userId: string, bindingIds: string[]) {
-  if (!bindingIds.length) return;
-  await settleFencedJobs(tx, userId, bindingIds);
+  if (!bindingIds.length) return [];
+  const cancelledJobIds = await settleFencedJobs(tx, userId, bindingIds);
   await tx.update(bolterInboxReceipts).set({ state: "cancelled", updatedAt: new Date() }).where(and(eq(bolterInboxReceipts.userId, userId), inArray(bolterInboxReceipts.bindingId, bindingIds), inArray(bolterInboxReceipts.state, ["pending", "accepted"])));
   await tx.update(bolterOutbox).set({ state: "cancelled", updatedAt: new Date() }).where(and(eq(bolterOutbox.userId, userId), inArray(bolterOutbox.bindingId, bindingIds), eq(bolterOutbox.state, "pending")));
   await tx.update(bolterOutbox).set({ state: "uncertain", updatedAt: new Date() }).where(and(eq(bolterOutbox.userId, userId), inArray(bolterOutbox.bindingId, bindingIds), eq(bolterOutbox.state, "publishing")));
+  return cancelledJobIds;
 }
 
 /** Binding locks are held by callers; accepted ledger rows lock before Jobs. */
@@ -212,12 +279,13 @@ async function settleFencedJobs(tx: BolterBridgeTransaction, userId: string, bin
     FROM public.jobs j JOIN public.bolter_inbox_receipts i ON i.job_id = j.id
       JOIN public.bolter_room_bindings b ON b.id = i.binding_id
     WHERE a.kind = 'foreground' AND a.status = 'accepted' AND a.job_id IS NULL AND ${exactReference}`);
-  await tx.execute(sql`UPDATE public.jobs j
+  const cancelled = await tx.execute(sql`UPDATE public.jobs j
     SET status = 'cancelled', completed_at = now(), message = 'authority_withdrawn'
     FROM public.bolter_inbox_receipts i JOIN public.bolter_room_bindings b ON b.id = i.binding_id,
       public.work_acceptances a
     WHERE i.job_id = j.id AND a.kind = 'foreground'
-      AND (a.job_id IS NULL OR a.job_id = j.id) AND ${exactReference}`);
+      AND (a.job_id IS NULL OR a.job_id = j.id) AND ${exactReference} RETURNING j.id`);
+  return Array.from(cancelled).map(row => String(row["id"]));
 }
 /** Trusted account-deletion authority supplies its already canonical deleted Genie IDs.
  * Call before touching Sessions or deleting provenance; retained claims are untouched.
@@ -260,18 +328,27 @@ export function setBolterBindingStateWith(db: BolterBridgeDatabase, ctx: BolterB
   return updateBolterBindingStateWith(db, ctx, { bindingId: ctx.bindingId, expectedRevision: ctx.bindingRevision, state });
 }
 /** Owner controls remain available after membership or receiver authority changes. */
-export function updateBolterBindingStateWith(db: BolterBridgeDatabase, ctx: BolterOwnerContext, input: { bindingId: string; expectedRevision: number; state: "active" | "paused" | "revoked" }) {
+export async function updateBolterBindingStateWith(db: BolterBridgeDatabase, ctx: BolterOwnerContext, input: { bindingId: string; expectedRevision: number; state: "active" | "paused" | "revoked" }) {
+  return (await updateExternalBindingStateWith(db, ctx, input))?.binding ?? null;
+}
+export function withdrawMagentBindingWith(db: BolterBridgeDatabase, ctx: BolterOwnerContext,
+  input: { bindingId: string; expectedRevision: number; state: "paused" | "revoked" }) {
+  return updateExternalBindingStateWith(db, ctx, input, "magent");
+}
+function updateExternalBindingStateWith(db: BolterBridgeDatabase, ctx: BolterOwnerContext,
+  input: { bindingId: string; expectedRevision: number; state: "active" | "paused" | "revoked" }, provider?: "magent") {
   return scoped(db, ctx, async tx => {
     // Resolve without a lock, then retain the universal connection-before-binding lock order.
     const [candidate] = await tx.select().from(bolterRoomBindings).where(and(eq(bolterRoomBindings.userId, ctx.userId), eq(bolterRoomBindings.id, input.bindingId))).limit(1);
     if (!candidate) return null;
     const [connection] = await tx.select().from(bolterConnections).where(and(eq(bolterConnections.userId, ctx.userId), eq(bolterConnections.id, candidate.connectionId))).for("update");
     const [binding] = await tx.select().from(bolterRoomBindings).where(and(eq(bolterRoomBindings.userId, ctx.userId), eq(bolterRoomBindings.id, input.bindingId))).for("update");
-    if (!connection || !binding || binding.revision !== input.expectedRevision || binding.state === "revoked") return null;
+    if (!connection || !binding || binding.revision !== input.expectedRevision || binding.state === "revoked"
+      || (provider && binding.provider !== provider)) return null;
     if (input.state === "active" && (!connection.enabled || connection.revokedAt !== null)) return null;
     const [updated] = await tx.update(bolterRoomBindings).set({ state: input.state, revision: binding.revision + 1, updatedAt: new Date() }).where(eq(bolterRoomBindings.id, binding.id)).returning();
-    await fenceDeliveries(tx, ctx.userId, [binding.id]);
-    return updated ?? null;
+    const cancelledJobIds = await fenceDeliveries(tx, ctx.userId, [binding.id]);
+    return updated ? { binding: updated, cancelledJobIds } : null;
   });
 }
 
@@ -290,12 +367,21 @@ export function rotateBolterReceiverWith(db: BolterBridgeDatabase, ctx: BolterOw
 
 /** Canonical insertion and dedup receipt commit atomically; do not perform network work in persist. */
 export function acceptBolterInboundWith(db: BolterBridgeDatabase, ctx: BolterBindingContext, input: BolterInboundInsert,
-  persist: (tx: BolterBridgeTransaction, binding: BolterRoomBinding, receiptId: string) => Promise<BolterCanonicalInbound>): Promise<BolterInboundAcceptance> {
+  persist: (tx: BolterBridgeTransaction, binding: BolterRoomBinding, receiptId: string) => Promise<BolterCanonicalInbound>,
+  operatorSessionId?: string): Promise<BolterInboundAcceptance> {
   opaque(input.providerMessageId); opaque(input.externalSenderId); fingerprint(input.fingerprint);
   return scoped(db, ctx, async tx => {
     await externalPlaintextFence(tx);
     const binding = await lockBinding(tx, ctx);
     if (!binding || binding.modelSponsorshipAcceptedAt === null) return { status: "unavailable" };
+    if (binding.provider === "magent") {
+      if (!operatorSessionId) return { status: "unavailable" };
+      opaque(operatorSessionId);
+      const [session] = await tx.select().from(externalOperatorSessions).where(and(
+        eq(externalOperatorSessions.userId, ctx.userId), eq(externalOperatorSessions.bindingId, binding.id))).limit(1);
+      if (session && session.sessionId !== operatorSessionId) return { status: "unavailable" };
+      if (!session) await tx.insert(externalOperatorSessions).values({ userId: ctx.userId, bindingId: binding.id, sessionId: operatorSessionId });
+    }
     const [existing] = await tx.select().from(bolterInboxReceipts).where(and(eq(bolterInboxReceipts.userId, ctx.userId), eq(bolterInboxReceipts.bindingId, ctx.bindingId), eq(bolterInboxReceipts.providerMessageId, input.providerMessageId))).for("update");
     if (existing) {
       if (existing.fingerprint !== input.fingerprint || existing.externalSenderId !== input.externalSenderId) {
@@ -449,7 +535,7 @@ export async function getBolterCanonicalAttributionsWith(
       && row.ownerId === ctx.userId && binding.userId === ctx.userId && row.roomId === binding.roomId
       && row.agentId === binding.agentId && row.humanTurnId === receipt.turnId
       && origin.connectionId === binding.connectionId && origin.bindingId === binding.id
-      && origin.origin === binding.origin && origin.providerAgentId === binding.providerAgentId
+      && origin.provider === (binding.provider ?? "bolter") && origin.origin === binding.origin && origin.providerAgentId === binding.providerAgentId
       && origin.chatId === binding.chatId && (origin.threadRootId ?? "") === binding.threadId
       && origin.messageId === receipt.providerMessageId && origin.senderId === receipt.externalSenderId;
     result.set(receipt.sessionMessageId, valid ? { status: "verified", origin } : { status: "unverified" });
@@ -517,7 +603,8 @@ async function lockBolterExecution(tx: BolterBridgeTransaction, ctx: BolterOwner
   const [connection] = await tx.select().from(bolterConnections).where(and(eq(bolterConnections.id, candidate.connectionId), eq(bolterConnections.userId, ctx.userId))).for("update");
   const [binding] = await tx.select().from(bolterRoomBindings).where(and(eq(bolterRoomBindings.id, reference.bindingId), eq(bolterRoomBindings.userId, ctx.userId))).for("update");
   if (!connection || !binding || binding.connectionId !== connection.id || binding.roomId !== reference.roomId || binding.agentId !== reference.agentId) return null;
-  const receiverContext: BolterBindingContext = { userId: ctx.userId, connectionId: connection.id, relayId: connection.relayId,
+  const receiverContext: BolterBindingContext = { userId: ctx.userId, connectionId: connection.id,
+    transportKind: connection.transportKind, operatorBindingId: connection.operatorBindingId, relayId: connection.relayId,
     desktopSessionId: connection.desktopSessionId, pairingGenerationRef: connection.pairingGenerationRef,
     connectionGeneration: reference.connectionGeneration, bindingId: binding.id, bindingRevision: reference.bindingRevision };
   if (current && (!bolterReceiverMatches(connection, receiverContext) || !bolterBindingMatches(binding, receiverContext)
@@ -695,12 +782,17 @@ export const startBolterExecution = (ctx: BolterOwnerContext, input: Parameters<
 export const settleBolterExecution = (ctx: BolterOwnerContext, input: Parameters<typeof settleBolterExecutionWith>[2]) => settleBolterExecutionWith(getSharedDirectAgentDb(), ctx, input);
 export const completeBolterExecution = (ctx: BolterOwnerContext, input: BolterExecutionInput, persist: Parameters<typeof completeBolterExecutionWith>[3]) => completeBolterExecutionWith(getSharedDirectAgentDb(), ctx, input, persist);
 export const listRecoverableBolterExecutions = (ctx: BolterOwnerContext) => listRecoverableBolterExecutionsWith(getSharedDirectAgentDb(), ctx);
-export function claimBolterOutboxWith(db: BolterBridgeDatabase, ctx: BolterBindingContext, outboxId: string) {
+export function claimBolterOutboxWith(db: BolterBridgeDatabase, ctx: BolterBindingContext, outboxId: string, claimToken?: string) {
   return scoped(db, ctx, async tx => {
     await externalPlaintextFence(tx);
     if (!await lockBinding(tx, ctx)) return null;
-    const [row] = await tx.update(bolterOutbox).set({ state: "publishing", claimToken: randomUUID(), updatedAt: new Date() }).where(and(eq(bolterOutbox.userId, ctx.userId), eq(bolterOutbox.bindingId, ctx.bindingId), eq(bolterOutbox.id, outboxId), eq(bolterOutbox.bindingRevision, ctx.bindingRevision), eq(bolterOutbox.connectionGeneration, ctx.connectionGeneration), eq(bolterOutbox.state, "pending"))).returning();
-    return row ?? null;
+    const [row] = await tx.update(bolterOutbox).set({ state: "publishing", claimToken: claimToken ?? randomUUID(), updatedAt: new Date() }).where(and(eq(bolterOutbox.userId, ctx.userId), eq(bolterOutbox.bindingId, ctx.bindingId), eq(bolterOutbox.id, outboxId), eq(bolterOutbox.bindingRevision, ctx.bindingRevision), eq(bolterOutbox.connectionGeneration, ctx.connectionGeneration), eq(bolterOutbox.state, "pending"))).returning();
+    if (row) return row;
+    if (!claimToken) return null;
+    return (await tx.select().from(bolterOutbox).where(and(eq(bolterOutbox.userId, ctx.userId),
+      eq(bolterOutbox.bindingId, ctx.bindingId), eq(bolterOutbox.id, outboxId), eq(bolterOutbox.claimToken, claimToken),
+      eq(bolterOutbox.state, "publishing"), eq(bolterOutbox.bindingRevision, ctx.bindingRevision),
+      eq(bolterOutbox.connectionGeneration, ctx.connectionGeneration))).limit(1))[0] ?? null;
   });
 }
 /** A sender must recheck the same claim immediately before provider dispatch. */
@@ -732,7 +824,7 @@ export function loadBolterPublicationContentWith(db: BolterBridgeDatabase, ctx: 
   return scoped(db, ctx, async tx => {
     await externalPlaintextFence(tx);
     const binding = await lockBinding(tx, ctx);
-    if (!binding || !binding.modelSponsorshipAcceptedAt || binding.origin !== "https://bolter.chat") return null;
+    if (!binding || !binding.modelSponsorshipAcceptedAt) return null;
     const predicate = and(eq(bolterOutbox.userId, ctx.userId), eq(bolterOutbox.bindingId, ctx.bindingId),
       eq(bolterOutbox.id, input.outboxId), eq(bolterOutbox.claimToken, input.claimToken),
       eq(bolterOutbox.state, "publishing"), eq(bolterOutbox.bindingRevision, ctx.bindingRevision),
@@ -740,6 +832,7 @@ export function loadBolterPublicationContentWith(db: BolterBridgeDatabase, ctx: 
     const [candidate] = await tx.select().from(bolterOutbox).where(predicate).limit(1);
     if (!candidate || (candidate.sourceInboxId !== null) === (candidate.explicitShareId !== null)) return null;
     if (candidate.explicitShareId !== null) {
+      if ((binding.provider ?? "bolter") !== "bolter") return null;
       const [share] = await tx.select().from(bolterExplicitShares).where(and(
         eq(bolterExplicitShares.id, candidate.explicitShareId), eq(bolterExplicitShares.userId, ctx.userId),
         eq(bolterExplicitShares.bindingId, binding.id), eq(bolterExplicitShares.bindingRevision, ctx.bindingRevision),
@@ -798,7 +891,7 @@ export function loadBolterPublicationContentWith(db: BolterBridgeDatabase, ctx: 
         isNull(sessionMessages.toolCalls), isNull(sessionMessages.toolName),
         eq(sessionMessages.replyToMessageId, execution.receipt.sessionMessageId!),
         sql`${sessionMessages.metadata}->'externalFinalReply' = ${JSON.stringify({
-          kind: "bolter_final_reply_v1", receiptId: reference.receiptId, jobId: work.jobId,
+          kind: hydrated.origin.provider === "bolter" ? "bolter_final_reply_v1" : "external_room_final_reply_v1", receiptId: reference.receiptId, jobId: work.jobId,
           turnId: reference.turnId, acceptanceId: reference.acceptanceId,
         })}::jsonb`)).limit(1);
     if (!message || typeof message.content !== "string" || !message.content.trim()) return null;
@@ -813,6 +906,11 @@ export function loadBolterPublicationContentWith(db: BolterBridgeDatabase, ctx: 
 export function settleBolterOutboxWith(db: BolterBridgeDatabase, ctx: BolterBindingContext, input: { outboxId: string; claimToken: string } & ({ state: "published"; providerMessageId: string } | { state: "uncertain" | "cancelled" })) {
   if (input.state === "published") opaque(input.providerMessageId);
   return scoped(db, ctx, async tx => {
+    // Repeated acknowledgement reveals no content and cannot resurrect a cancelled claim.
+    const [existing] = await tx.select().from(bolterOutbox).where(and(eq(bolterOutbox.userId, ctx.userId),
+      eq(bolterOutbox.bindingId, ctx.bindingId), eq(bolterOutbox.id, input.outboxId), eq(bolterOutbox.claimToken, input.claimToken),
+      eq(bolterOutbox.bindingRevision, ctx.bindingRevision), eq(bolterOutbox.connectionGeneration, ctx.connectionGeneration))).limit(1);
+    if (existing?.state === input.state && existing.providerMessageId === (input.state === "published" ? input.providerMessageId : null)) return existing;
     // Lost authority cannot claim success. Recovery retains uncertainty.
     if (!await lockBinding(tx, ctx)) return null;
     const [row] = await tx.update(bolterOutbox).set({ state: input.state, providerMessageId: input.state === "published" ? input.providerMessageId : null, updatedAt: new Date() }).where(and(eq(bolterOutbox.userId, ctx.userId), eq(bolterOutbox.bindingId, ctx.bindingId), eq(bolterOutbox.id, input.outboxId), eq(bolterOutbox.claimToken, input.claimToken), eq(bolterOutbox.state, "publishing"), eq(bolterOutbox.bindingRevision, ctx.bindingRevision), eq(bolterOutbox.connectionGeneration, ctx.connectionGeneration))).returning();

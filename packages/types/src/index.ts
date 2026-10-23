@@ -1,3 +1,4 @@
+export * from "./magent-transport";
 export * from "./external-message-origin";
 export * from "./human-presence";
 export * from "./image-assistance-admission";

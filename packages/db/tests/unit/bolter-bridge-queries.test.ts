@@ -13,8 +13,8 @@ const A = "66666666-6666-4666-8666-666666666666";
 const I = "77777777-7777-4777-8777-777777777777";
 const now = new Date("2026-01-01T00:00:00Z");
 const ctx: BolterBindingContext = { userId: U, connectionId: C, connectionGeneration: 3, relayId: "relay", desktopSessionId: "desktop", pairingGenerationRef: "pairing", bindingId: B, bindingRevision: 2 };
-const connection: BolterConnection = { id: C, userId: U, relayId: ctx.relayId, desktopSessionId: ctx.desktopSessionId, pairingGenerationRef: ctx.pairingGenerationRef, homeHandle: "home-handle", origin: "https://example.test", providerAgentId: "abc12345", identityFingerprint: "a".repeat(64), generation: 3, revision: 2, enabled: true, revokedAt: null, createdAt: now, updatedAt: now };
-const binding: BolterRoomBinding = { id: B, userId: U, connectionId: C, roomId: R, namespaceId: N, agentId: A, origin: connection.origin, providerAgentId: connection.providerAgentId, chatId: "abc12345", threadId: "", revision: 2, modelSponsorshipAcceptedAt: now, state: "active", createdAt: now, updatedAt: now };
+const connection: BolterConnection = { provider: "bolter", transportKind: "desktop-relay", operatorBindingId: null, id: C, userId: U, relayId: ctx.relayId, desktopSessionId: ctx.desktopSessionId, pairingGenerationRef: ctx.pairingGenerationRef, homeHandle: "home-handle", origin: "https://example.test", providerAgentId: "abc12345", identityFingerprint: "a".repeat(64), generation: 3, revision: 2, enabled: true, revokedAt: null, createdAt: now, updatedAt: now };
+const binding: BolterRoomBinding = { provider: "bolter", id: B, userId: U, connectionId: C, roomId: R, namespaceId: N, agentId: A, origin: connection.origin, providerAgentId: connection.providerAgentId, chatId: "abc12345", threadId: "", revision: 2, modelSponsorshipAcceptedAt: now, state: "active", createdAt: now, updatedAt: now };
 const receipt: BolterInboxReceipt = { id: I, userId: U, bindingId: B, bindingRevision: 2, connectionGeneration: 3, providerMessageId: "message", fingerprint: "b".repeat(64), externalSenderId: "outside-speaker", sessionMessageId: 91, turnId: "external-turn", jobId: null, state: "accepted", createdAt: now, updatedAt: now };
 const inbound = { providerMessageId: receipt.providerMessageId, fingerprint: receipt.fingerprint, externalSenderId: receipt.externalSenderId };
 type Step = { op: "select" | "insert" | "update"; table: string; rows: unknown[] };
@@ -58,7 +58,7 @@ describe("Bolter qualified identity and durable transactions", () => {
     for (const origin of ["http://example.test", "https://fixture@example.com", "https://example.test/path", "https://example.test?token=fixture", "https://example.test/#fixture"]) expect(() => canonicalBolterOrigin(origin)).toThrow();
     expect(canonicalBolterOrigin("https://EXAMPLE.test:443/")).toBe("https://example.test");
     const fake = database([]);
-    expect(() => createBolterConnectionWith(fake.db, ctx, { ...connection, homeHandle: "/private/home" })).toThrow();
+    expect(() => createBolterConnectionWith(fake.db, ctx, { ...connection, relayId: "relay", desktopSessionId: "desktop", pairingGenerationRef: "pairing", homeHandle: "/private/home" })).toThrow();
     expect(fake.transactions()).toBe(0);
   });
 
@@ -169,4 +169,57 @@ describe("Bolter qualified identity and durable transactions", () => {
     expect(recovery.calls[2]?.values?.['state']).toBe("uncertain");
     expect(new PgDialect().sqlToQuery(recovery.calls[2]!.predicate!).params).toContain("publishing");
   });
+});
+
+test("operator identity cannot be replayed as Desktop or through another operator binding", () => {
+  const operator = { ...connection, provider: "magent" as const, transportKind: "operator-unix" as const,
+    operatorBindingId: I, relayId: null, desktopSessionId: null, pairingGenerationRef: null, homeHandle: null };
+  const receiver = { ...ctx, transportKind: "operator-unix" as const, operatorBindingId: I,
+    relayId: null, desktopSessionId: null, pairingGenerationRef: null };
+  expect(bolterReceiverMatches(operator, receiver)).toBe(true);
+  expect(bolterReceiverMatches(operator, ctx)).toBe(false);
+  expect(bolterReceiverMatches(operator, { ...receiver, operatorBindingId: B })).toBe(false);
+  expect(bolterReceiverMatches(operator, { ...receiver, connectionGeneration: 4 })).toBe(false);
+});
+
+test("lost claim responses can recover only the same exact persisted claim", async () => {
+  const fake = database([...authority(), { op: "update", table: "bolter_outbox", rows: [] },
+    { op: "select", table: "bolter_outbox", rows: [{ id: I, state: "publishing", claimToken: A }] }]);
+  expect(await claimBolterOutboxWith(fake.db, ctx, I, A)).toMatchObject({ id: I, state: "publishing", claimToken: A });
+  const retry = new PgDialect().sqlToQuery(fake.calls.at(-1)!.predicate!);
+  for (const value of [U, B, I, A, "publishing", 2, 3]) expect(retry.params).toContain(value);
+  expect(fake.calls[2]!.values?.["claimToken"]).toBe(A);
+  expect(fake.remaining()).toBe(0);
+});
+
+test("operator connection insertion carries no forged Desktop credentials and pins its immutable fingerprint", async () => {
+  const { createMagentOperatorConnectionWith } = await import("../../src/queries/bolter-bridge");
+  const input = { operatorBindingId: I, origin: "http://127.0.0.1:8080", providerAgentId: "external-agent", identityFingerprint: "b".repeat(64) };
+  const fake = database([{ op: "insert", table: "bolter_connections", rows: [{ id: I }] }]);
+  await createMagentOperatorConnectionWith(fake.db, ctx, input);
+  expect(fake.calls[0]!.values).toEqual({ ...input, id: I, userId: U, provider: "magent", transportKind: "operator-unix",
+    relayId: null, desktopSessionId: null, pairingGenerationRef: null, homeHandle: null });
+  const changed = database([{ op: "insert", table: "bolter_connections", rows: [] }, { op: "select", table: "bolter_connections",
+    rows: [{ ...connection, ...input, id: I, provider: "magent", transportKind: "operator-unix", identityFingerprint: "c".repeat(64) }] }]);
+  await Promise.resolve(expect(createMagentOperatorConnectionWith(changed.db, ctx, input)).rejects.toThrow("conflicts"));
+});
+
+test("cancelling an operator receipt durably fences its exact job and ambiguous publication", async () => {
+  const { cancelMagentReceiptWith } = await import("../../src/queries/bolter-bridge");
+  const operator = { ...connection, provider: "magent", transportKind: "operator-unix", operatorBindingId: I,
+    relayId: null, desktopSessionId: null, pairingGenerationRef: null, homeHandle: null };
+  const receiver = { ...ctx, transportKind: "operator-unix" as const, operatorBindingId: I,
+    relayId: null, desktopSessionId: null, pairingGenerationRef: null };
+  const fake = database([{ op: "select", table: "bolter_connections", rows: [operator] },
+    { op: "select", table: "bolter_room_bindings", rows: [{ ...binding, provider: "magent" }] },
+    { op: "select", table: "bolter_inbox_receipts", rows: [{ ...receipt, jobId: A }] },
+    { op: "update", table: "bolter_inbox_receipts", rows: [] }, { op: "update", table: "bolter_outbox", rows: [] }]);
+  expect(await cancelMagentReceiptWith(fake.db, receiver, I)).toEqual({ jobId: A });
+  expect(fake.calls[3]!.values?.["state"]).toBe("cancelled");
+  const state = new PgDialect().sqlToQuery(fake.calls[4]!.values?.["state"] as SQL).sql;
+  expect(state).toContain("'publishing' THEN 'uncertain' ELSE 'cancelled'");
+  const where = new PgDialect().sqlToQuery(fake.calls[4]!.predicate!).params;
+  expect(where).toContain(I);
+  expect(where).toContain(U);
+  expect(fake.remaining()).toBe(0);
 });
