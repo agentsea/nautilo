@@ -1,3 +1,4 @@
+import { canonicalWakeRecord, wakeReceipt, withWakeProof, WAKE_DESTINATION } from "../fixtures/task-wake-continuation";
 import { createHash } from "node:crypto";
 import { describe, expect, test } from "bun:test";
 import type {
@@ -27,10 +28,12 @@ import { DOMAIN_FOREGROUND_AUTHORIZATION_MAX_WIRE_BYTES_V2 } from
 import { BACKGROUND_AUTHORIZATION_BYTE_LIMITS } from "@nautilo/db/schema";
 import {
   createBackgroundAuthorizationResponseV2,
+  encodeTaskRuntimeBackgroundAuthorizationResponseV2,
   encodeBackgroundWorkDescriptorV2,
   MAX_ANY_BACKGROUND_PROCESSOR_WORK_DESCRIPTOR_WIRE_BYTES_V2,
   MAX_BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_BYTES_V2,
   MAX_BACKGROUND_WORK_DESCRIPTOR_WIRE_BYTES_V2,
+  MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_BYTES_V2,
   verifyBackgroundAuthorizationResponseV2,
 } from "@nautilo/lattice-crypto/background";
 import {
@@ -41,13 +44,19 @@ import {
   InMemoryBackgroundAuthorizationRepository,
   buildDeferredUnstartedTaskRuntimeRequest,
   buildUnclaimedTaskRuntimeAuthorityReplacement,
+  buildUnclaimedTaskCancellationAuthorityReplacement,
+  buildUnclaimedTaskTerminalMessageAuthorityReplacement,
+  buildUnclaimedTaskOutputReadAuthorityReplacement,
+  buildParkedTaskWakeAuthorityReplacement,
   buildAcceptedBackgroundAuthorizationResponse,
   assertBackgroundAuthorizationCasSuccessor,
   parseBackgroundAuthorizationRecord,
+  isTaskExecutionWorkKind,
   type BackgroundAuthorizationRecord,
   type BackgroundAuthorizationAgentRecordV2,
   type BackgroundAuthorizationTaskRuntimeRecordV3,
   type BackgroundAuthorizationVerifiedRuntimeResponseV3,
+  type BackgroundAuthorizationVerifiedRuntimeResponseV4,
 } from "../../src/protected-execution/background-authorization/repository";
 
 const START = 1_700_000_000_000;
@@ -107,6 +116,31 @@ function taskRuntimeRecordV3(): BackgroundAuthorizationTaskRuntimeRecordV3 {
   };
 }
 
+function taskRuntimePublicationRecordV3(
+  workKind: "task.cancel_result" | "task.deliver_message"
+    | "task.deliver_result" | "task.delivery_wake",
+): BackgroundAuthorizationTaskRuntimeRecordV3 {
+  const record = taskRuntimeRecordV3();
+  return {
+    ...record,
+    workKind,
+    purpose: workKind,
+    idempotencyKey: `task-publication:${workKind}:${record.snapshot.workId}`,
+    authoritySet: {
+      ...record.authoritySet,
+      namespaceRequirements: record.authoritySet.namespaceRequirements.map(
+        requirement => ({
+          ...requirement,
+          operations: workKind === "task.cancel_result"
+              || workKind === "task.deliver_message"
+            ? ["encrypt"] as const
+            : requirement.operations,
+        }),
+      ),
+    },
+  };
+}
+
 function taskRuntimeAwaitingRecipientV3():
   BackgroundAuthorizationTaskRuntimeRecordV3 {
   const record = taskRuntimeRecordV3();
@@ -141,6 +175,30 @@ function relabelTaskRuntimeRecord(
     workIdentityHash: new Uint8Array(32).fill(ordinal),
     idempotencyKey: `task-runtime-stable-v1:${workId}:${String.fromCharCode(96 + ordinal).repeat(43)}`,
     finishedAt: terminal ? updatedAt : null,
+  };
+}
+
+function settlementTaskRuntimeRecord(
+  ordinal: number,
+  workKind:
+    | "task.execute"
+    | "task.dispatch"
+    | "task.approval_resume"
+    | "task.await_reply_resume"
+    | "task.cancel_result",
+  record = taskRuntimeRecordV3(),
+): BackgroundAuthorizationTaskRuntimeRecordV3 {
+  return {
+    ...record,
+    snapshot: {
+      ...record.snapshot,
+      requestId: `task_runtime_settlement_${ordinal}`,
+    },
+    workIdentityHash: new Uint8Array(32).fill(ordinal),
+    idempotencyKey:
+      `task-runtime-stable-v1:${record.snapshot.workId}:${String.fromCharCode(96 + ordinal).repeat(43)}`,
+    workKind,
+    purpose: workKind,
   };
 }
 
@@ -181,6 +239,29 @@ function verifiedTaskRuntimeResponseV3(
     issuerSigningPublicKeyHash: new Uint8Array(32).fill(0x44),
     issuedAt: START,
     expiresAt: record.snapshot.recipient!.expiresAt,
+  };
+}
+
+function verifiedTaskRuntimeResponseV4(
+  record: BackgroundAuthorizationTaskRuntimeRecordV3,
+): BackgroundAuthorizationVerifiedRuntimeResponseV4 {
+  const authorizationBytes = new Uint8Array([0x51, 0x52, 0x53, 0x54]);
+  const certificateBytes = new Uint8Array([0x61, 0x62, 0x63]);
+  const responseBytes = encodeTaskRuntimeBackgroundAuthorizationResponseV2({
+    authorizationBytes,
+    certificateBytes,
+  });
+  return {
+    ...verifiedTaskRuntimeResponseV3(record),
+    formatVersion: 4,
+    responseBytes,
+    responseHash: Uint8Array.from(Buffer.from(digest(responseBytes), "hex")),
+    authorizationBytes,
+    authorizationHash: Uint8Array.from(Buffer.from(
+      digest(authorizationBytes),
+      "hex",
+    )),
+    certificateBytes,
   };
 }
 
@@ -529,6 +610,16 @@ function verifiedAgentResponseV2(
 }
 
 describe("background authorization repository contract", () => {
+  test.each(["task.deliver_result", "task.delivery_wake"] as const)(
+    "%s requires exact Runtime V3 custody and cannot become execution authority", workKind => {
+      const record = { ...taskRuntimeRecordV3(), workKind, purpose: workKind };
+      expect(parseBackgroundAuthorizationRecord(record)).toMatchObject({ workKind, purpose: workKind });
+      expect(isTaskExecutionWorkKind(workKind)).toBe(false);
+      expect(() => parseBackgroundAuthorizationRecord({ ...record, purpose: "task.execute" })).toThrow();
+      expect(() => parseBackgroundAuthorizationRecord({ ...initialAgentRecordV2(), workKind, purpose: workKind }))
+        .toThrow("Runtime custody");
+    },
+  );
   test("accepts only an exact verified v3 Task Runtime response", async () => {
     const record = taskRuntimeRecordV3();
     expect(parseBackgroundAuthorizationRecord({
@@ -547,13 +638,34 @@ describe("background authorization repository contract", () => {
       workKind: "task.await_reply_resume",
       purpose: "task.await_reply_resume",
     });
-    expect(() => parseBackgroundAuthorizationRecord({
+    expect(parseBackgroundAuthorizationRecord({
       ...record,
       workKind: "task.approval_resume",
       purpose: "task.approval_resume",
-    })).toThrow(
-      "Task Runtime authorization requires an exact Task work purpose",
-    );
+    })).toMatchObject({
+      workKind: "task.approval_resume",
+      purpose: "task.approval_resume",
+    });
+    const cancellation = {
+      ...record, workKind: "task.cancel_result" as const, purpose: "task.cancel_result" as const,
+      authoritySet: { ...record.authoritySet, namespaceRequirements:
+        record.authoritySet.namespaceRequirements.map(value => ({ ...value, operations: ["encrypt"] as const })) },
+    };
+    expect(parseBackgroundAuthorizationRecord(cancellation)).toMatchObject({
+      workKind: "task.cancel_result", purpose: "task.cancel_result",
+    });
+    expect(isTaskExecutionWorkKind("task.cancel_result")).toBe(false);
+    const delivery = { ...cancellation, workKind: "task.deliver_message" as const, purpose: "task.deliver_message" as const };
+    expect(parseBackgroundAuthorizationRecord(delivery)).toMatchObject({ workKind: "task.deliver_message", purpose: "task.deliver_message" });
+    expect(isTaskExecutionWorkKind("task.deliver_message")).toBe(false);
+    expect(() => parseBackgroundAuthorizationRecord({ ...delivery, authoritySet: record.authoritySet })).toThrow("write-only");
+    expect(() => parseBackgroundAuthorizationRecord({ ...delivery, purpose: "task.execute" })).toThrow();
+    expect(() => parseBackgroundAuthorizationRecord({ ...cancellation,
+      authoritySet: record.authoritySet,
+    })).toThrow("write-only");
+    expect(() => parseBackgroundAuthorizationRecord({ ...cancellation,
+      purpose: "task.execute",
+    })).toThrow();
     const repository = new InMemoryBackgroundAuthorizationRepository();
     expect((await repository.create(record)).status).toBe("created");
 
@@ -607,8 +719,127 @@ describe("background authorization repository contract", () => {
     )).toThrow("does not match current durable authorization");
   });
 
-  test("gives exactly one winner to Task inventory replacement versus claim", async () => {
-    const waiting = taskRuntimeRecordV3();
+  test.each(["task.execute", "task.approval_resume", "task.await_reply_resume"] as const)(
+    "accepts an exact verified v4 %s response with split durable digests", async workKind => {
+    const record = { ...taskRuntimeRecordV3(), workKind, purpose: workKind };
+    const response = verifiedTaskRuntimeResponseV4(record);
+    const expectedResponseBytes = response.responseBytes.slice();
+    const repository = new InMemoryBackgroundAuthorizationRepository();
+    expect((await repository.create(record)).status).toBe("created");
+
+    const accepted = await repository.acceptVerifiedResponse({
+      response,
+      acceptedAt: START + 2,
+    });
+    expect(accepted.status).toBe("accepted");
+    if (accepted.status !== "accepted") throw new Error("expected acceptance");
+    expect(accepted.record.snapshot.acceptedResponse).toMatchObject({
+      responseDigest: digest(response.responseBytes),
+      credentialDigest: digest(response.authorizationBytes),
+    });
+    expect(accepted.record.snapshot.acceptedResponse?.responseDigest)
+      .not.toBe(accepted.record.snapshot.acceptedResponse?.credentialDigest);
+    expect(accepted.record.acceptedMaterial?.responseBytes)
+      .toEqual(expectedResponseBytes);
+    expect(accepted.record.acceptedMaterial?.responseBytes)
+      .not.toBe(response.responseBytes);
+    expect((await repository.acceptVerifiedResponse({
+      response,
+      acceptedAt: START + 3,
+    })).status).toBe("duplicate");
+
+    response.responseBytes.fill(0);
+    response.authorizationBytes.fill(0);
+    response.certificateBytes.fill(0);
+    expect(accepted.record.acceptedMaterial?.responseBytes)
+      .toEqual(expectedResponseBytes);
+    expect(parseBackgroundAuthorizationRecord(accepted.record).acceptedMaterial
+      ?.responseBytes).toEqual(expectedResponseBytes);
+  });
+
+  test.each([
+    "task.cancel_result",
+    "task.deliver_message",
+    "task.deliver_result",
+    "task.delivery_wake",
+  ] as const)(
+    "accepts and round-trips an exact verified v4 %s publication response",
+    async workKind => {
+      const record = taskRuntimePublicationRecordV3(workKind);
+      const response = verifiedTaskRuntimeResponseV4(record);
+      const expectedResponseBytes = response.responseBytes.slice();
+      const repository = new InMemoryBackgroundAuthorizationRepository();
+      expect((await repository.create(record)).status).toBe("created");
+
+      const accepted = await repository.acceptVerifiedResponse({
+        response,
+        acceptedAt: START + 2,
+      });
+      expect(accepted.status).toBe("accepted");
+      if (accepted.status !== "accepted") throw new Error("expected acceptance");
+      expect(accepted.record).toMatchObject({ workKind, purpose: workKind });
+      expect(accepted.record.snapshot.acceptedResponse).toMatchObject({
+        responseDigest: digest(response.responseBytes),
+        credentialDigest: digest(response.authorizationBytes),
+      });
+      expect(accepted.record.acceptedMaterial?.responseBytes)
+        .toEqual(expectedResponseBytes);
+      expect(parseBackgroundAuthorizationRecord(accepted.record).acceptedMaterial
+        ?.responseBytes).toEqual(expectedResponseBytes);
+      expect((await repository.acceptVerifiedResponse({
+        response,
+        acceptedAt: START + 3,
+      })).status).toBe("duplicate");
+    },
+  );
+
+  test("rejects mismatched or stale verified v4 Task execute responses", () => {
+    const record = taskRuntimeRecordV3();
+    const response = verifiedTaskRuntimeResponseV4(record);
+    const alternateAuthorization = new Uint8Array([0x71]);
+    const alternateCertificate = new Uint8Array([0x72]);
+    const alternateWrapper = encodeTaskRuntimeBackgroundAuthorizationResponseV2({
+      authorizationBytes: alternateAuthorization,
+      certificateBytes: response.certificateBytes,
+    });
+    const reject = (
+      candidate: BackgroundAuthorizationVerifiedRuntimeResponseV4,
+      acceptedAt = START + 2,
+      candidateRecord = record,
+    ) => expect(() => buildAcceptedBackgroundAuthorizationResponse(
+      candidateRecord,
+      candidate,
+      acceptedAt,
+    )).toThrow("does not match current durable authorization");
+
+    reject({
+      ...response,
+      responseBytes: alternateWrapper,
+      responseHash: Uint8Array.from(Buffer.from(digest(alternateWrapper), "hex")),
+    });
+    reject({ ...response, authorizationBytes: alternateAuthorization });
+    reject({ ...response, certificateBytes: alternateCertificate });
+    reject({ ...response, responseHash: new Uint8Array(32).fill(0x73) });
+    reject({ ...response, authorizationHash: new Uint8Array(32).fill(0x74) });
+    reject({ ...response, descriptorBytes: new Uint8Array([0x75]) });
+    reject(response, response.expiresAt);
+
+    reject({ ...response, workKind: "task.approval_resume", purpose: "task.approval_resume" });
+    reject({ ...response, purpose: "task.approval_resume" });
+    for (const workKind of ["task.dispatch"] as const) {
+      const excluded = {
+        ...record,
+        workKind,
+        purpose: workKind,
+      };
+      expect(parseBackgroundAuthorizationRecord(excluded).workKind).toBe(workKind);
+      reject(verifiedTaskRuntimeResponseV4(excluded), START + 2, excluded);
+    }
+  });
+
+  test.each(["task.execute", "task.approval_resume", "task.await_reply_resume"] as const)(
+    "gives exactly one winner to Task inventory replacement versus claim (%s)", async workKind => {
+    const waiting = { ...taskRuntimeRecordV3(), workKind, purpose: workKind };
     const response = verifiedTaskRuntimeResponseV3(waiting);
     const replacement: BackgroundAuthorizationTaskRuntimeRecordV3 = {
       ...waiting,
@@ -708,8 +939,9 @@ describe("background authorization repository contract", () => {
     })).status).toBe("stale");
   });
 
-  test("defers an exact unstarted Task request once without spending its retry budget", async () => {
-    const waiting = taskRuntimeRecordV3();
+  test.each(["task.execute", "task.approval_resume", "task.await_reply_resume"] as const)(
+    "defers an exact unstarted Task request once without spending its retry budget (%s)", async workKind => {
+    const waiting = { ...taskRuntimeRecordV3(), workKind, purpose: workKind };
     const accepted = buildAcceptedBackgroundAuthorizationResponse(
       waiting,
       verifiedTaskRuntimeResponseV3(waiting),
@@ -846,7 +1078,7 @@ describe("background authorization repository contract", () => {
     )).toThrow("Invalid background work kind/purpose");
   });
 
-  test("keeps durable Reflection carrier limits in parity without widening legacy descriptors", () => {
+  test("keeps durable carrier limits in parity without widening legacy formats", () => {
     expect(Number(BACKGROUND_AUTHORIZATION_BYTE_LIMITS.descriptor)).toBe(
       MAX_ANY_BACKGROUND_PROCESSOR_WORK_DESCRIPTOR_WIRE_BYTES_V2,
     );
@@ -856,10 +1088,13 @@ describe("background authorization repository contract", () => {
     expect(Number(BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_LIMITS.processor)).toBe(
       MAX_BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_BYTES_V2,
     );
-    expect(BACKGROUND_AUTHORIZATION_BYTE_LIMITS.runtimeResponse).toBe(
-      DOMAIN_FOREGROUND_AUTHORIZATION_MAX_WIRE_BYTES_V2,
+    expect(Number(BACKGROUND_AUTHORIZATION_BYTE_LIMITS.runtimeResponse)).toBe(
+      MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_BYTES_V2,
     );
-    expect(BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_LIMITS.runtime).toBe(
+    expect(Number(BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_LIMITS.runtime)).toBe(
+      MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_BYTES_V2,
+    );
+    expect(BACKGROUND_AUTHORIZATION_BYTE_LIMITS.legacyRuntimeResponse).toBe(
       DOMAIN_FOREGROUND_AUTHORIZATION_MAX_WIRE_BYTES_V2,
     );
     expect(BACKGROUND_AUTHORIZATION_BYTE_LIMITS.legacyDescriptor).toBe(
@@ -1591,9 +1826,10 @@ describe("background authorization repository contract", () => {
     })).rejects.toThrow("cursor exceeds watermark");
   });
 
-  test("Task Runtime cancellation discovery includes active and explicitly cancelled records only", async () => {
-    const awaitingRecipient = taskRuntimeAwaitingRecipientV3();
-    const awaitingDevice = taskRuntimeRecordV3();
+  test.each(["task.execute", "task.approval_resume", "task.await_reply_resume"] as const)(
+    "Task Runtime cancellation discovery includes active and explicitly cancelled records only (%s)", async workKind => {
+    const awaitingRecipient = { ...taskRuntimeAwaitingRecipientV3(), workKind, purpose: workKind };
+    const awaitingDevice = { ...taskRuntimeRecordV3(), workKind, purpose: workKind };
     const grantReady = buildAcceptedBackgroundAuthorizationResponse(
       awaitingDevice,
       verifiedTaskRuntimeResponseV3(awaitingDevice),
@@ -1722,6 +1958,149 @@ describe("background authorization repository contract", () => {
     );
     expect(failure).toBeInstanceOf(TypeError);
     expect((failure as Error).message).toContain("page limit");
+  });
+
+  test("settles every prior Task Runtime execution authority and replays terminal inventory", async () => {
+    const repository = new InMemoryBackgroundAuthorizationRepository();
+    const kinds = [
+      "task.execute",
+      "task.dispatch",
+      "task.approval_resume",
+      "task.await_reply_resume",
+    ] as const;
+    const records = kinds.map((kind, index) =>
+      settlementTaskRuntimeRecord(index + 1, kind)
+    );
+    const completedSource = settlementTaskRuntimeRecord(
+      5,
+      "task.execute",
+    );
+    const completed = {
+      ...completedSource,
+      snapshot: completeBackgroundAuthorizationRequest(
+        markBackgroundAuthorizationRunning(
+          claimBackgroundAuthorizationRequest(
+            buildAcceptedBackgroundAuthorizationResponse(
+              completedSource,
+              verifiedTaskRuntimeResponseV3(completedSource),
+              START + 2,
+            ).next.snapshot,
+            "task_runtime_settlement_claim",
+            START + 3,
+            START + 30_000,
+          ),
+          START + 4,
+        ),
+        START + 5,
+      ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+      acceptedMaterial: buildAcceptedBackgroundAuthorizationResponse(
+        completedSource,
+        verifiedTaskRuntimeResponseV3(completedSource),
+        START + 2,
+      ).next.acceptedMaterial,
+      finishedAt: START + 5,
+    } satisfies BackgroundAuthorizationTaskRuntimeRecordV3;
+    for (const record of [...records, completed]) await repository.create(record);
+
+    const settled = await repository.settleTaskRuntimeExecutionAuthorities({
+      workId: records[0]!.snapshot.workId,
+      namespaceId: records[0]!.snapshot.namespaceId,
+      now: START + 10,
+    });
+    expect(settled).toEqual({
+      status: "settled",
+      transitioned: 4,
+      alreadyTerminal: 1,
+      recipients: [1, 2, 3, 4, 5].map((ordinal) => ({
+        requestId: `task_runtime_settlement_${ordinal}`,
+        recipientGeneration: 0,
+      })),
+    });
+    for (const record of records) {
+      expect((await repository.get(record.snapshot.requestId))?.snapshot)
+        .toMatchObject({ state: "cancelled", terminalReason: "cancelled" });
+    }
+    expect(await repository.settleTaskRuntimeExecutionAuthorities({
+      workId: records[0]!.snapshot.workId,
+      namespaceId: records[0]!.snapshot.namespaceId,
+      now: START + 11,
+    })).toEqual({
+      status: "settled",
+      transitioned: 0,
+      alreadyTerminal: 5,
+      recipients: settled.recipients,
+    });
+  });
+
+  test("settlement accepts zero prior requests and leaves cancellation publication untouched", async () => {
+    const repository = new InMemoryBackgroundAuthorizationRepository();
+    const base = settlementTaskRuntimeRecord(1, "task.execute");
+    expect(await repository.settleTaskRuntimeExecutionAuthorities({
+      workId: base.snapshot.workId,
+      namespaceId: base.snapshot.namespaceId,
+      now: START + 1,
+    })).toEqual({
+      status: "settled",
+      transitioned: 0,
+      alreadyTerminal: 0,
+      recipients: [],
+    });
+    const cancellation = {
+      ...settlementTaskRuntimeRecord(2, "task.cancel_result"),
+      authoritySet: {
+        ...base.authoritySet,
+        namespaceRequirements: base.authoritySet.namespaceRequirements.map(
+          (requirement) => ({ ...requirement, operations: ["encrypt"] as const }),
+        ),
+      },
+    } satisfies BackgroundAuthorizationTaskRuntimeRecordV3;
+    await repository.create(cancellation);
+    await repository.settleTaskRuntimeExecutionAuthorities({
+      workId: base.snapshot.workId,
+      namespaceId: base.snapshot.namespaceId,
+      now: START + 2,
+    });
+    expect(await repository.get(cancellation.snapshot.requestId)).toEqual(
+      cancellation,
+    );
+  });
+
+  test("settlement rejects a conflicting Namespace atomically", async () => {
+    const repository = new InMemoryBackgroundAuthorizationRepository();
+    const valid = settlementTaskRuntimeRecord(1, "task.execute");
+    const conflictBase = settlementTaskRuntimeRecord(
+      2,
+      "task.approval_resume",
+    );
+    const conflict = {
+      ...conflictBase,
+      snapshot: {
+        ...conflictBase.snapshot,
+        namespaceId: "task_runtime_namespace_conflict",
+      },
+      domainId: "task_runtime_domain_conflict",
+      authoritySet: {
+        namespaceRequirements: [{
+          ...conflictBase.authoritySet.namespaceRequirements[0]!,
+          namespaceId: "task_runtime_namespace_conflict",
+          domainId: "task_runtime_domain_conflict",
+        }],
+        domainRequirements: [{
+          ...conflictBase.authoritySet.domainRequirements[0]!,
+          domainId: "task_runtime_domain_conflict",
+        }],
+      },
+    } satisfies BackgroundAuthorizationTaskRuntimeRecordV3;
+    await repository.create(valid);
+    await repository.create(conflict);
+
+    expect(await repository.settleTaskRuntimeExecutionAuthorities({
+      workId: valid.snapshot.workId,
+      namespaceId: valid.snapshot.namespaceId,
+      now: START + 10,
+    })).toEqual({ status: "conflict", recipients: [] });
+    expect(await repository.get(valid.snapshot.requestId)).toEqual(valid);
+    expect(await repository.get(conflict.snapshot.requestId)).toEqual(conflict);
   });
 
   test("terminal pruning honors the 30-day boundary and 256-row cap", async () => {
@@ -1971,4 +2350,731 @@ describe("background authorization repository contract", () => {
       record: { snapshot: { formatVersion: 2, credentialSubject: {kind: "processor"}, state: "grant_ready" } },
     });
   });
+});
+
+
+function cancellationReplacementFixture(): BackgroundAuthorizationTaskRuntimeRecordV3 {
+  const initial = taskRuntimeAwaitingRecipientV3();
+  return {
+    ...initial,
+    snapshot: { ...initial.snapshot,
+      requestId: `task-run-cancellation-result-authorization:${initial.snapshot.workId}` },
+    idempotencyKey: `task-cancellation:${"a".repeat(64)}`,
+    workKind: "task.cancel_result", purpose: "task.cancel_result",
+    authoritySet: { ...initial.authoritySet, namespaceRequirements:
+      initial.authoritySet.namespaceRequirements.map(value => ({ ...value, operations: ["encrypt"] })) },
+  };
+}
+
+function terminalMessageReplacementFixture():
+BackgroundAuthorizationTaskRuntimeRecordV3 {
+  const initial = taskRuntimeAwaitingRecipientV3();
+  return {
+    ...initial,
+    snapshot: {
+      ...initial.snapshot,
+      requestId:
+        `task-run-delivery-message-authorization:${initial.snapshot.workId}`,
+    },
+    idempotencyKey: `task-delivery-message:${"d".repeat(64)}`,
+    workKind: "task.deliver_message",
+    purpose: "task.deliver_message",
+    authoritySet: {
+      ...initial.authoritySet,
+      namespaceRequirements: initial.authoritySet.namespaceRequirements.map(
+        value => ({ ...value, operations: ["encrypt"] }),
+      ),
+    },
+  };
+}
+
+function refreshedCancellationPlan(initial: BackgroundAuthorizationTaskRuntimeRecordV3): BackgroundAuthorizationTaskRuntimeRecordV3 {
+  return { ...initial, workIdentityHash: new Uint8Array(32).fill(0x79),
+    expectedDomainEpoch: initial.expectedDomainEpoch + 1,
+    authoritySet: { ...initial.authoritySet, domainRequirements:
+      initial.authoritySet.domainRequirements.map(value => ({ ...value,
+        expectedEpoch: value.expectedEpoch + 1, expectedAuthorizationRevision: value.expectedAuthorizationRevision + 1 })) } };
+}
+
+function cancellationPlanAtPolicy(
+  initial: BackgroundAuthorizationTaskRuntimeRecordV3,
+  policyRevision: number,
+): BackgroundAuthorizationTaskRuntimeRecordV3 {
+  const refreshed = refreshedCancellationPlan(initial);
+  return { ...refreshed, expectedPolicyRevision: policyRevision,
+    authoritySet: { ...refreshed.authoritySet, namespaceRequirements:
+      refreshed.authoritySet.namespaceRequirements.map(value => ({ ...value,
+        expectedPolicyRevision: policyRevision })) } };
+}
+
+test.each(["awaiting_recipient", "awaiting_device", "grant_ready"] as const)(
+  "replaces only the exact unclaimed cancellation authority from %s", async state => {
+    const initial = cancellationReplacementFixture();
+    let expected = initial;
+    if (state !== "awaiting_recipient") {
+      const descriptorBytes = new Uint8Array([1, 2, 3]);
+      expected = { ...initial, descriptorBytes,
+        snapshot: attachBackgroundAuthorizationRecipient(initial.snapshot, {
+          recipientGeneration: 0, recipientKeyId: "cancellation-recipient",
+          recipientPublicKey: RECIPIENT_PUBLIC_KEY, descriptorDigest: digest(descriptorBytes),
+          expiresAt: START + 60_000, now: START + 1,
+        }) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"] };
+    }
+    const repository = new InMemoryBackgroundAuthorizationRepository();
+    await repository.create(expected);
+    if (state === "grant_ready") {
+      const result = await repository.acceptVerifiedResponse({
+        response: verifiedTaskRuntimeResponseV3(expected), acceptedAt: START + 2,
+      });
+      if (result.status !== "accepted") throw new Error("expected cancellation response");
+      expected = result.record as BackgroundAuthorizationTaskRuntimeRecordV3;
+    }
+    const replacement = refreshedCancellationPlan(initial);
+    const next = buildUnclaimedTaskCancellationAuthorityReplacement({ expected, replacement, now: START + 3 });
+    expect(repository.compareAndSwap({ expectedRequestRevision: expected.snapshot.requestRevision, next }))
+      .rejects.toThrow();
+    expect(await repository.replaceUnclaimedTaskCancellationAuthority({ expected, replacement, now: START + 3 }))
+      .toEqual({ status: "replaced", record: next });
+    expect(next.snapshot).toMatchObject({ state: "awaiting_recipient", recipientGeneration: 1,
+      requestRevision: expected.snapshot.requestRevision + 1, recipient: null, acceptedResponse: null });
+    expect(next.descriptorBytes).toBeNull();
+    expect(next.acceptedMaterial).toBeNull();
+    expect(next.expectedDomainEpoch).toBe(replacement.expectedDomainEpoch);
+    expect(await repository.replaceUnclaimedTaskCancellationAuthority({ expected, replacement, now: START + 4 }))
+      .toMatchObject({ status: "stale" });
+    expect(() => buildUnclaimedTaskRuntimeAuthorityReplacement({ expected, replacement, now: START + 3 })).toThrow();
+  });
+
+test("cancellation replacement permits only monotonic policy drift", () => {
+  const expected = cancellationReplacementFixture();
+  const replacement = cancellationPlanAtPolicy(expected, expected.expectedPolicyRevision + 1);
+  const next = buildUnclaimedTaskCancellationAuthorityReplacement({ expected, replacement, now: START + 4 });
+  expect(next.expectedPolicyRevision).toBe(expected.expectedPolicyRevision + 1);
+  expect(next.authoritySet.namespaceRequirements[0]?.expectedPolicyRevision)
+    .toBe(expected.expectedPolicyRevision + 1);
+  expect(() => buildUnclaimedTaskCancellationAuthorityReplacement({ expected,
+    replacement: cancellationPlanAtPolicy(expected, expected.expectedPolicyRevision - 1),
+    now: START + 4 })).toThrow();
+});
+
+test("cancellation replacement refuses execution, identity drift, and claimed work", () => {
+  const expected = cancellationReplacementFixture();
+  const replacement = refreshedCancellationPlan(expected);
+  const reject = (old: BackgroundAuthorizationTaskRuntimeRecordV3, next: BackgroundAuthorizationTaskRuntimeRecordV3) =>
+    expect(() => buildUnclaimedTaskCancellationAuthorityReplacement({ expected: old, replacement: next, now: START + 4 })).toThrow();
+  reject(taskRuntimeAwaitingRecipientV3(), replacement);
+  reject(expected, taskRuntimeAwaitingRecipientV3());
+  reject(expected, { ...replacement, idempotencyKey: `task-cancellation:${"b".repeat(64)}` });
+  reject({ ...expected, idempotencyKey: "task-cancellation:invalid" }, { ...replacement, idempotencyKey: "task-cancellation:invalid" });
+  reject(expected, { ...replacement, snapshot: { ...replacement.snapshot, workId: "other-run" } });
+  reject(expected, { ...replacement, snapshot: { ...replacement.snapshot, namespaceId: "other-namespace" } });
+  reject(expected, { ...replacement, expectedPolicyRevision: replacement.expectedPolicyRevision + 1 });
+  reject(expected, { ...replacement, snapshot: { ...replacement.snapshot, recipientGeneration: 1 } });
+  const descriptorBytes = new Uint8Array([1, 2, 3]);
+  const waiting: BackgroundAuthorizationTaskRuntimeRecordV3 = { ...expected, descriptorBytes,
+    snapshot: attachBackgroundAuthorizationRecipient(expected.snapshot, {
+      recipientGeneration: 0, recipientKeyId: "cancel-recipient", recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+      descriptorDigest: digest(descriptorBytes), expiresAt: START + 60_000, now: START + 1,
+    }) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"] };
+  const ready = buildAcceptedBackgroundAuthorizationResponse(waiting, verifiedTaskRuntimeResponseV3(waiting), START + 2).next;
+  if (ready.snapshot.formatVersion !== 3) throw new Error("expected runtime");
+  const claimed = { ...ready, snapshot: claimBackgroundAuthorizationRequest(ready.snapshot,
+    "cancel-claim", START + 3, START + 30_000) } as BackgroundAuthorizationTaskRuntimeRecordV3;
+  reject(claimed, replacement);
+  reject({ ...claimed, snapshot: markBackgroundAuthorizationRunning(claimed.snapshot, START + 4) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"] }, replacement);
+});
+
+test.each(["awaiting_recipient", "awaiting_device", "grant_ready"] as const)(
+  "replaces only exact unclaimed terminal Message authority from %s",
+  async state => {
+    const initial = terminalMessageReplacementFixture();
+    let expected = initial;
+    if (state !== "awaiting_recipient") {
+      const descriptorBytes = new Uint8Array([4, 5, 6]);
+      expected = {
+        ...initial,
+        descriptorBytes,
+        snapshot: attachBackgroundAuthorizationRecipient(initial.snapshot, {
+          recipientGeneration: 0,
+          recipientKeyId: "terminal-message-recipient",
+          recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+          descriptorDigest: digest(descriptorBytes),
+          expiresAt: START + 60_000,
+          now: START + 1,
+        }) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+      };
+    }
+    const repository = new InMemoryBackgroundAuthorizationRepository();
+    await repository.create(expected);
+    if (state === "grant_ready") {
+      const result = await repository.acceptVerifiedResponse({
+        response: verifiedTaskRuntimeResponseV3(expected),
+        acceptedAt: START + 2,
+      });
+      if (result.status !== "accepted") {
+        throw new Error("expected terminal Message response");
+      }
+      expected = result.record as BackgroundAuthorizationTaskRuntimeRecordV3;
+    }
+    const replacement = cancellationPlanAtPolicy(
+      initial,
+      initial.expectedPolicyRevision + 1,
+    );
+    const next = buildUnclaimedTaskTerminalMessageAuthorityReplacement({
+      expected,
+      replacement,
+      now: START + 3,
+    });
+    expect(repository.compareAndSwap({
+      expectedRequestRevision: expected.snapshot.requestRevision,
+      next,
+    })).rejects.toThrow();
+    expect(await repository.replaceUnclaimedTaskTerminalMessageAuthority({
+      expected,
+      replacement,
+      now: START + 3,
+    })).toEqual({ status: "replaced", record: next });
+    expect(next.snapshot).toMatchObject({
+      state: "awaiting_recipient",
+      recipientGeneration: 1,
+      requestRevision: expected.snapshot.requestRevision + 1,
+      recipient: null,
+      acceptedResponse: null,
+    });
+    expect(next.descriptorBytes).toBeNull();
+    expect(next.acceptedMaterial).toBeNull();
+    expect(next.expectedPolicyRevision)
+      .toBe(initial.expectedPolicyRevision + 1);
+    expect(next.snapshot.requestId).toBe(initial.snapshot.requestId);
+    expect(next.snapshot.workId).toBe(initial.snapshot.workId);
+    expect(next.snapshot.namespaceId).toBe(initial.snapshot.namespaceId);
+    expect(next.idempotencyKey).toBe(initial.idempotencyKey);
+  },
+);
+
+test("terminal Message replacement rejects other families and identity drift", () => {
+  const expected = terminalMessageReplacementFixture();
+  const replacement = cancellationPlanAtPolicy(
+    expected,
+    expected.expectedPolicyRevision + 1,
+  );
+  const reject = (
+    old: BackgroundAuthorizationTaskRuntimeRecordV3,
+    next: BackgroundAuthorizationTaskRuntimeRecordV3,
+  ) => expect(() => buildUnclaimedTaskTerminalMessageAuthorityReplacement({
+    expected: old,
+    replacement: next,
+    now: START + 4,
+  })).toThrow();
+
+  reject(cancellationReplacementFixture(), replacement);
+  reject(expected, cancellationPlanAtPolicy(
+    cancellationReplacementFixture(),
+    expected.expectedPolicyRevision + 1,
+  ));
+  reject(expected, {
+    ...replacement,
+    idempotencyKey: `task-delivery-message:${"e".repeat(64)}`,
+  });
+  reject(expected, {
+    ...replacement,
+    snapshot: { ...replacement.snapshot, requestId:
+      `task-run-delivery-message-authorization:other-run` },
+  });
+  reject(expected, {
+    ...replacement,
+    snapshot: { ...replacement.snapshot, workId: "other-run" },
+  });
+  reject(expected, {
+    ...replacement,
+    snapshot: { ...replacement.snapshot, namespaceId: "other-namespace" },
+  });
+  reject(expected, {
+    ...replacement,
+    expectedPolicyRevision: expected.expectedPolicyRevision - 1,
+    authoritySet: {
+      ...replacement.authoritySet,
+      namespaceRequirements: replacement.authoritySet.namespaceRequirements
+        .map(value => ({ ...value,
+          expectedPolicyRevision: expected.expectedPolicyRevision - 1 })),
+    },
+  });
+  expect(() => buildUnclaimedTaskCancellationAuthorityReplacement({
+    expected,
+    replacement,
+    now: START + 4,
+  })).toThrow();
+  expect(() => buildUnclaimedTaskRuntimeAuthorityReplacement({
+    expected,
+    replacement,
+    now: START + 4,
+  })).toThrow();
+});
+
+test("terminal Message replacement rejects claimed, running, and completed work", () => {
+  const initial = terminalMessageReplacementFixture();
+  const descriptorBytes = new Uint8Array([7, 8, 9]);
+  const waiting: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+    ...initial,
+    descriptorBytes,
+    snapshot: attachBackgroundAuthorizationRecipient(initial.snapshot, {
+      recipientGeneration: 0,
+      recipientKeyId: "terminal-message-recipient",
+      recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+      descriptorDigest: digest(descriptorBytes),
+      expiresAt: START + 60_000,
+      now: START + 1,
+    }) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+  };
+  const ready = buildAcceptedBackgroundAuthorizationResponse(
+    waiting,
+    verifiedTaskRuntimeResponseV3(waiting),
+    START + 2,
+  ).next as BackgroundAuthorizationTaskRuntimeRecordV3;
+  const claimed = {
+    ...ready,
+    snapshot: claimBackgroundAuthorizationRequest(
+      ready.snapshot,
+      "terminal-message-claim",
+      START + 3,
+      START + 30_000,
+    ),
+  } as BackgroundAuthorizationTaskRuntimeRecordV3;
+  const running = {
+    ...claimed,
+    snapshot: markBackgroundAuthorizationRunning(
+      claimed.snapshot,
+      START + 4,
+    ),
+  } as BackgroundAuthorizationTaskRuntimeRecordV3;
+  const completed = {
+    ...running,
+    snapshot: completeBackgroundAuthorizationRequest(
+      running.snapshot,
+      START + 5,
+    ),
+    finishedAt: START + 5,
+  } as BackgroundAuthorizationTaskRuntimeRecordV3;
+  const replacement = cancellationPlanAtPolicy(
+    initial,
+    initial.expectedPolicyRevision + 1,
+  );
+  for (const record of [claimed, running, completed]) {
+    expect(() => buildUnclaimedTaskTerminalMessageAuthorityReplacement({
+      expected: record,
+      replacement,
+      now: START + 6,
+    })).toThrow();
+  }
+});
+
+
+function outputReadReplacementFixture(wake = false, merged = false): BackgroundAuthorizationTaskRuntimeRecordV3 {
+  const initial = taskRuntimeAwaitingRecipientV3();
+  const workId = "10000000-0000-4000-8000-000000000101";
+  const primary = initial.authoritySet.namespaceRequirements[0]!;
+  const namespaces = merged ? [{ ...primary, operations: ["decrypt", "encrypt"] as const }]
+    : [{ ...primary, ordinal: 0, namespaceId: "a_foreground_namespace",
+      operations: wake ? ["decrypt", "encrypt"] as const : ["encrypt"] as const },
+    { ...primary, ordinal: 1, operations: ["decrypt"] as const }];
+  return { ...initial,
+    snapshot: { ...initial.snapshot, workId, requestId: wake
+      ? `task-wake-authorization:${workId}` : `task-run-delivery-result-authorization:${workId}` },
+    idempotencyKey: `task-output-read:${"e".repeat(64)}`,
+    workKind: wake ? "task.delivery_wake" : "task.deliver_result",
+    purpose: wake ? "task.delivery_wake" : "task.deliver_result",
+    authoritySet: { ...initial.authoritySet, namespaceRequirements: namespaces },
+  };
+}
+
+async function outputReadAtState(wake: boolean, state: "awaiting_recipient" | "awaiting_device" | "grant_ready", merged = false, canonical = false) {
+  const initial = canonical ? canonicalWakeRecord(outputReadReplacementFixture(wake, merged)) : outputReadReplacementFixture(wake, merged);
+  let expected = initial;
+  if (state !== "awaiting_recipient") {
+    const descriptorBytes = new Uint8Array([3, 4, 5]);
+    expected = { ...initial, descriptorBytes,
+      snapshot: attachBackgroundAuthorizationRecipient(initial.snapshot, {
+        recipientGeneration: 0, recipientKeyId: "output-read-recipient", recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+        descriptorDigest: digest(descriptorBytes), expiresAt: START + 60_000, now: START + 1,
+      }) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"] };
+  }
+  const repository = new InMemoryBackgroundAuthorizationRepository();
+  await repository.create(expected);
+  if (state === "grant_ready") {
+    const accepted = await repository.acceptVerifiedResponse({ response: verifiedTaskRuntimeResponseV3(expected), acceptedAt: START + 2 });
+    if (accepted.status !== "accepted") throw new Error("Expected output read grant");
+    expected = accepted.record as BackgroundAuthorizationTaskRuntimeRecordV3;
+  }
+  return { initial, expected, repository };
+}
+
+for (const wake of [false, true]) {
+  test.each(["awaiting_recipient", "awaiting_device", "grant_ready"] as const)(
+    `${wake ? "wake" : "raw result"} authority refresh replaces only unclaimed %s`, async state => {
+      const { initial, expected, repository } = await outputReadAtState(wake, state);
+      const replacement = cancellationPlanAtPolicy(initial, initial.expectedPolicyRevision + 1);
+      const next = buildUnclaimedTaskOutputReadAuthorityReplacement({ expected, replacement, now: START + 3 });
+      expect(next.snapshot).toMatchObject({ state: "awaiting_recipient", requestId: expected.snapshot.requestId,
+        workId: expected.snapshot.workId, namespaceId: expected.snapshot.namespaceId,
+        recipientGeneration: expected.snapshot.recipientGeneration + 1, requestRevision: expected.snapshot.requestRevision + 1,
+        recipient: null, acceptedResponse: null, claimId: null, claimExpiresAt: null });
+      expect(next.expectedPolicyRevision).toBe(initial.expectedPolicyRevision + 1);
+      expect(next.expectedDomainEpoch).toBe(initial.expectedDomainEpoch + 1);
+      expect(next.descriptorBytes).toBeNull(); expect(next.acceptedMaterial).toBeNull(); expect(next.finishedAt).toBeNull();
+      expect(await repository.replaceUnclaimedTaskOutputReadAuthority({ expected, replacement, now: START + 3 }))
+        .toEqual({ status: "replaced", record: next });
+      expect(await repository.replaceUnclaimedTaskOutputReadAuthority({ expected, replacement, now: START + 4 }))
+        .toMatchObject({ status: "stale", current: next });
+      expect(() => buildUnclaimedTaskRuntimeAuthorityReplacement({ expected, replacement, now: START + 3 })).toThrow();
+      expect(() => buildUnclaimedTaskCancellationAuthorityReplacement({ expected, replacement, now: START + 3 })).toThrow();
+      expect(() => buildUnclaimedTaskTerminalMessageAuthorityReplacement({ expected, replacement, now: START + 3 })).toThrow();
+    });
+
+  test(`${wake ? "wake" : "raw"} shared primary foreground role is explicit and can retain current policy`, () => {
+    const expected = outputReadReplacementFixture(wake, true);
+    const replacement = refreshedCancellationPlan(expected);
+    const next = buildUnclaimedTaskOutputReadAuthorityReplacement({ expected, replacement, now: START + 2 });
+    expect(next.expectedPolicyRevision).toBe(expected.expectedPolicyRevision);
+    expect(next.authoritySet.namespaceRequirements).toHaveLength(1);
+    expect(next.authoritySet.namespaceRequirements[0]?.operations).toEqual(["decrypt", "encrypt"]);
+    expect(next.authoritySet.domainRequirements).toHaveLength(1);
+  });
+
+  test(`${wake ? "wake" : "raw"} replacement cannot race past a winning claim or become ordinary CAS`, async () => {
+    const f = await outputReadAtState(wake, "grant_ready");
+    const replacement = cancellationPlanAtPolicy(f.initial, f.initial.expectedPolicyRevision + 1);
+    const claimed = { ...f.expected, snapshot: claimBackgroundAuthorizationRequest(f.expected.snapshot,
+      "output-read-claim", START + 3, START + 30_000) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"] };
+    expect((await f.repository.compareAndSwap({ expectedRequestRevision: f.expected.snapshot.requestRevision, next: claimed })).status).toBe("updated");
+    expect(await f.repository.replaceUnclaimedTaskOutputReadAuthority({ expected: f.expected, replacement, now: START + 4 }))
+      .toMatchObject({ status: "stale", current: { snapshot: { state: "claimed" } } });
+    expect(() => buildUnclaimedTaskOutputReadAuthorityReplacement({ expected: claimed, replacement, now: START + 4 })).toThrow();
+    const running = { ...claimed, snapshot: markBackgroundAuthorizationRunning(claimed.snapshot, START + 4) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"] };
+    expect(() => buildUnclaimedTaskOutputReadAuthorityReplacement({ expected: running, replacement, now: START + 5 })).toThrow();
+    const completed = { ...running, snapshot: completeBackgroundAuthorizationRequest(running.snapshot, START + 5) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"], finishedAt: START + 5 };
+    expect(() => buildUnclaimedTaskOutputReadAuthorityReplacement({ expected: completed, replacement, now: START + 6 })).toThrow();
+    const reconciliation = { ...running, snapshot: markBackgroundAuthorizationPublicationReconciliation(running.snapshot, START + 5) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"] };
+    expect(() => buildUnclaimedTaskOutputReadAuthorityReplacement({ expected: reconciliation, replacement, now: START + 6 })).toThrow();
+    const fresh = await outputReadAtState(wake, "grant_ready");
+    const replaced = await fresh.repository.replaceUnclaimedTaskOutputReadAuthority({ expected: fresh.expected, replacement, now: START + 3 });
+    expect(replaced.status).toBe("replaced");
+    expect((await fresh.repository.compareAndSwap({ expectedRequestRevision: fresh.expected.snapshot.requestRevision,
+      next: { ...fresh.expected, snapshot: claimBackgroundAuthorizationRequest(fresh.expected.snapshot,
+        "losing-output-read-claim", START + 3, START + 30_000) } })).status).toBe("stale");
+    const forged = buildUnclaimedTaskOutputReadAuthorityReplacement({ expected: f.initial, replacement, now: START + 3 });
+    const ordinary = new InMemoryBackgroundAuthorizationRepository(); await ordinary.create(f.initial);
+    expect(await ordinary.compareAndSwap({ expectedRequestRevision: f.initial.snapshot.requestRevision, next: forged })
+      .catch((error: unknown) => error)).toBeInstanceOf(Error);
+  });
+}
+
+test("result-read replacement rejects identity, policy rollback, anchors and unsupported partitions", () => {
+  for (const wake of [false, true]) {
+    const expected = outputReadReplacementFixture(wake);
+    const replacement = refreshedCancellationPlan(expected);
+    const reject = (next: BackgroundAuthorizationTaskRuntimeRecordV3, old = expected) =>
+      expect(() => buildUnclaimedTaskOutputReadAuthorityReplacement({ expected: old, replacement: next, now: START + 5 })).toThrow();
+    reject(cancellationPlanAtPolicy(expected, expected.expectedPolicyRevision - 1));
+    reject({ ...replacement, workKind: wake ? "task.deliver_result" : "task.delivery_wake", purpose: wake ? "task.deliver_result" : "task.delivery_wake" });
+    reject({ ...replacement, idempotencyKey: `task-output-read:${"f".repeat(64)}` });
+    reject({ ...replacement, idempotencyKey: "task-output-read:invalid" }, { ...expected, idempotencyKey: "task-output-read:invalid" });
+    reject({ ...replacement, snapshot: { ...replacement.snapshot, requestId: "other-request" } });
+    reject({ ...replacement, snapshot: { ...replacement.snapshot, workId: "other-work" } });
+    reject({ ...replacement, snapshot: { ...replacement.snapshot, namespaceId: "a_foreground_namespace" } });
+    reject({ ...replacement, snapshot: { ...replacement.snapshot, recipientGeneration: 1 } });
+    reject({ ...replacement, descriptorBytes: new Uint8Array([1]) });
+    reject({ ...replacement, expectedNamespaceAccessRevision: replacement.expectedNamespaceAccessRevision + 1 });
+    reject({ ...replacement, expectedDomainEpoch: replacement.expectedDomainEpoch + 1 });
+    reject({ ...replacement, authoritySet: { ...replacement.authoritySet, domainRequirements: [] } });
+    const replaceOperations = (index: number, operations: readonly ("decrypt" | "encrypt")[]) => ({ ...replacement,
+      authoritySet: { ...replacement.authoritySet, namespaceRequirements: replacement.authoritySet.namespaceRequirements.map((n, i) =>
+        i === index ? { ...n, operations } : n) } });
+    reject(replaceOperations(1, ["encrypt"]));
+    reject(replaceOperations(0, []));
+    reject(replaceOperations(0, ["decrypt"]));
+    reject(replaceOperations(0, ["decrypt", "encrypt", "encrypt"]));
+    reject(replaceOperations(0, wake ? ["encrypt"] : ["decrypt", "encrypt"]));
+    reject({ ...replacement, authoritySet: { ...replacement.authoritySet, namespaceRequirements:
+      replacement.authoritySet.namespaceRequirements.map((n, i) => i === 0 ? { ...n, expectedPolicyRevision: n.expectedPolicyRevision + 1 } : n) } });
+    if (!wake) reject({ ...replacement, authoritySet: { ...replacement.authoritySet, namespaceRequirements: [
+      ...replacement.authoritySet.namespaceRequirements,
+      { ...replacement.authoritySet.namespaceRequirements[0]!, ordinal: 2, namespaceId: "z_extra_namespace" },
+    ] } });
+    reject(replacement, taskRuntimeAwaitingRecipientV3());
+    reject(replacement, terminalMessageReplacementFixture());
+    reject(replacement, cancellationReplacementFixture());
+  }
+});
+
+async function wakeParkFixture(merged = false) {
+  const fixture = await outputReadAtState(true, "grant_ready", merged, true);
+  const claimed = {
+    ...fixture.expected,
+    snapshot: claimBackgroundAuthorizationRequest(
+      fixture.expected.snapshot,
+      "wake-claim",
+      START + 3,
+      START + 30_000,
+    ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+  };
+  expect((await fixture.repository.compareAndSwap({
+    expectedRequestRevision: fixture.expected.snapshot.requestRevision,
+    next: claimed,
+  })).status).toBe("updated");
+  const running = {
+    ...claimed,
+    snapshot: markBackgroundAuthorizationRunning(
+      claimed.snapshot,
+      START + 4,
+    ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+  };
+  expect((await fixture.repository.compareAndSwap({
+    expectedRequestRevision: claimed.snapshot.requestRevision,
+    next: running,
+  })).status).toBe("updated");
+  const destinationNamespaceId = WAKE_DESTINATION;
+  const base = cancellationPlanAtPolicy(
+    fixture.initial,
+    fixture.initial.expectedPolicyRevision + 1,
+  );
+  const template = base.authoritySet.namespaceRequirements.at(-1)!;
+  const replacement = {
+    ...base,
+    authoritySet: {
+      ...base.authoritySet,
+      namespaceRequirements: [
+        ...base.authoritySet.namespaceRequirements,
+        {
+          ...template,
+          ordinal: base.authoritySet.namespaceRequirements.length,
+          namespaceId: destinationNamespaceId,
+          operations: ["encrypt"] as const,
+        },
+      ],
+    },
+  } as BackgroundAuthorizationTaskRuntimeRecordV3;
+  const receipt = wakeReceipt(running);
+  return { ...fixture, running, replacement, receipt };
+}
+
+describe("parked Task wake authority", () => {
+  test.each([false, true])(
+    "rotates the exact running grant and supports merged primary foreground=%s",
+    async merged => {
+      const fixture = await wakeParkFixture(merged);
+      await withWakeProof(fixture.receipt, async proof => {
+      const next = buildParkedTaskWakeAuthorityReplacement({
+        expected: fixture.running,
+        replacement: fixture.replacement,
+        proof,
+        now: START + 5,
+      });
+      expect(next.snapshot).toMatchObject({
+        state: "awaiting_recipient",
+        recipientGeneration: fixture.receipt.segment,
+        recipient: null,
+        acceptedResponse: null,
+        claimId: null,
+      });
+      expect(next.acceptedMaterial).toBeNull();
+      expect(next.authoritySet.namespaceRequirements.at(-1)).toMatchObject({
+        namespaceId: fixture.receipt.destinationNamespaceId,
+        operations: ["encrypt"],
+      });
+      expect(await fixture.repository.parkTaskWakeForAdditionalAuthority({
+        expected: fixture.running,
+        replacement: fixture.replacement,
+        proof,
+        now: START + 5,
+      })).toEqual({ status: "parked", record: next });
+      expect(await fixture.repository.parkTaskWakeForAdditionalAuthority({
+        expected: fixture.running,
+        replacement: fixture.replacement,
+        proof,
+        now: START + 5,
+      })).toEqual({ status: "exact_replay", record: next });
+      });
+    },
+  );
+
+  test("rejects destination widening, generation substitution, and proof expiry", async () => {
+    const fixture = await wakeParkFixture();
+    await withWakeProof(fixture.receipt, async proof => {
+    const destination = fixture.replacement.authoritySet.namespaceRequirements.at(-1)!;
+    expect(() => buildParkedTaskWakeAuthorityReplacement({
+      expected: fixture.running,
+      replacement: {
+        ...fixture.replacement,
+        authoritySet: {
+          ...fixture.replacement.authoritySet,
+          namespaceRequirements: fixture.replacement.authoritySet.namespaceRequirements
+            .map((value, index, values) => index === values.length - 1
+              ? { ...value, operations: ["decrypt", "encrypt"] }
+              : value),
+        },
+      },
+      proof,
+      now: START + 5,
+    })).toThrow("changed authority");
+    expect(() => buildParkedTaskWakeAuthorityReplacement({
+      expected: fixture.running,
+      replacement: fixture.replacement,
+      proof: { ...proof, receipt: { ...fixture.receipt,
+        priorRecipientGeneration: fixture.receipt.priorRecipientGeneration + 1 } },
+      now: START + 5,
+    })).toThrow();
+    expect(destination.operations).toEqual(["encrypt"]);
+    });
+    const escaped = await withWakeProof(fixture.receipt, proof => proof);
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- Bun asynchronous assertion typing
+    await expect(fixture.repository.parkTaskWakeForAdditionalAuthority({
+      expected: fixture.running, replacement: fixture.replacement, proof: escaped, now: START + 5,
+    })).rejects.toThrow("not current");
+    expect(await fixture.repository.get(fixture.running.snapshot.requestId)).toEqual(fixture.running);
+  });
+
+  test("renews only an expired pre-start recipient under the latest parked proof", async () => {
+    const fixture = await wakeParkFixture();
+    await withWakeProof(fixture.receipt, async proof => {
+    const parked = await fixture.repository.parkTaskWakeForAdditionalAuthority({
+      expected: fixture.running,
+      replacement: fixture.replacement,
+      proof,
+      now: START + 5,
+    });
+    if (parked.status !== "parked") throw new Error("park fixture failed");
+    const descriptorBytes = new Uint8Array([8, 9, 10]);
+    const awaitingDevice: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+      ...parked.record,
+      snapshot: attachBackgroundAuthorizationRecipient(
+        parked.record.snapshot,
+        {
+          recipientGeneration: parked.record.snapshot.recipientGeneration,
+          recipientKeyId: "renewal-recipient",
+          recipientPublicKey: RECIPIENT_PUBLIC_KEY,
+          descriptorDigest: digest(descriptorBytes),
+          expiresAt: START + 10,
+          now: START + 6,
+        },
+      ) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+      descriptorBytes,
+    };
+    expect((await fixture.repository.compareAndSwap({
+      expectedRequestRevision: parked.record.snapshot.requestRevision,
+      next: awaitingDevice,
+    })).status).toBe("updated");
+    expect(await fixture.repository.renewParkedTaskWakeRecipient({
+      expected: awaitingDevice,
+      proof,
+      now: START + 9,
+    })).toEqual({ status: "not_due", record: awaitingDevice });
+    const renewed = await fixture.repository.renewParkedTaskWakeRecipient({
+      expected: awaitingDevice,
+      proof,
+      now: START + 10,
+    });
+    expect(renewed).toMatchObject({
+      status: "rotated",
+      releasedRecipientGeneration: fixture.receipt.segment,
+      record: {
+        snapshot: {
+          state: "awaiting_recipient",
+          recipientGeneration: fixture.receipt.segment + 1,
+          recipient: null,
+          acceptedResponse: null,
+          lastRetryReason: "attempt_expired",
+        },
+        descriptorBytes: null,
+        acceptedMaterial: null,
+      },
+    });
+    const current = await fixture.repository.get(
+      fixture.running.snapshot.requestId,
+    );
+    expect(current).toEqual(renewed.status === "rotated"
+      ? renewed.record : null);
+    });
+  });
+});
+
+test("genuine queued wake receipt permits current policy and Domain refresh without broadening its partition", async () => {
+  const f = await wakeParkFixture();
+  await withWakeProof(f.receipt, async proof => {
+    const parked = await f.repository.parkTaskWakeForAdditionalAuthority({ expected: f.running,
+      replacement: f.replacement, proof, now: START + 5 });
+    if (parked.status !== "parked") throw new Error("park fixture failed");
+    const replacement = cancellationPlanAtPolicy(f.replacement, f.replacement.expectedPolicyRevision + 1);
+    const renewed = await f.repository.renewParkedTaskWakeRecipient({ expected: parked.record, replacement,
+      proof, now: START + 6 });
+    expect(renewed.status).toBe("rotated");
+    if (renewed.status !== "rotated") throw new Error("renew fixture failed");
+    expect(renewed.record.snapshot.recipientGeneration).toBe(parked.record.snapshot.recipientGeneration + 1);
+    expect(renewed.record.expectedPolicyRevision).toBe(replacement.expectedPolicyRevision);
+    expect(renewed.record.expectedDomainEpoch).toBe(replacement.expectedDomainEpoch);
+    expect(renewed.record.authoritySet.namespaceRequirements.at(-1)?.operations).toEqual(["encrypt"]);
+    expect(renewed.record.idempotencyKey).toBe(f.running.idempotencyKey);
+    expect(await f.repository.renewParkedTaskWakeRecipient({ expected: renewed.record, replacement,
+      proof, now: START + 7 })).toMatchObject({ status: "inactive", record: renewed.record });
+    for (const bad of [
+      cancellationPlanAtPolicy(f.replacement, f.receipt.initialPolicyRevision),
+      { ...replacement, authoritySet: { ...replacement.authoritySet,
+        namespaceRequirements: replacement.authoritySet.namespaceRequirements.map(n =>
+          n.namespaceId === f.receipt.destinationNamespaceId ? { ...n, operations: ["decrypt", "encrypt"] as const } : n) } },
+      { ...replacement, snapshot: { ...replacement.snapshot, namespaceId: f.receipt.destinationNamespaceId } },
+    ]) {
+      const result = await Promise.allSettled([f.repository.renewParkedTaskWakeRecipient({
+        expected: renewed.record, replacement: bad, proof, now: START + 8 })]);
+      expect(result[0]?.status).toBe("rejected");
+      expect(await f.repository.get(f.running.snapshot.requestId)).toEqual(renewed.record);
+    }
+  });
+});
+
+test("a second park replaces the prior sealed destination only through authentic continuation lineage", async () => {
+  const f = await wakeParkFixture();
+  const first = await withWakeProof(f.receipt, proof => f.repository.parkTaskWakeForAdditionalAuthority({
+    expected: f.running, replacement: f.replacement, proof, now: START + 5 }));
+  if (first.status !== "parked") throw new Error("Expected first park");
+  // A queued policy refresh advances generation without changing immutable receipt lineage.
+  const refreshedPlan = cancellationPlanAtPolicy(f.replacement, f.replacement.expectedPolicyRevision + 1);
+  const renewed = await withWakeProof(f.receipt, proof => f.repository.renewParkedTaskWakeRecipient({
+    expected: first.record, replacement: refreshedPlan, proof, now: START + 5 }));
+  if (renewed.status !== "rotated") throw new Error("Expected queued authority refresh");
+  const descriptorBytes = new Uint8Array([5, 6, 7]);
+  const waiting: BackgroundAuthorizationTaskRuntimeRecordV3 = { ...renewed.record, descriptorBytes,
+    snapshot: attachBackgroundAuthorizationRecipient(renewed.record.snapshot, {
+      recipientGeneration: renewed.record.snapshot.recipientGeneration, recipientKeyId: "second-wake-recipient",
+      recipientPublicKey: RECIPIENT_PUBLIC_KEY, descriptorDigest: digest(descriptorBytes),
+      expiresAt: START + 60_000, now: START + 6,
+    }) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"] };
+  expect((await f.repository.compareAndSwap({ expectedRequestRevision: renewed.record.snapshot.requestRevision,
+    next: waiting })).status).toBe("updated");
+  const accepted = await f.repository.acceptVerifiedResponse({ response: verifiedTaskRuntimeResponseV3(waiting), acceptedAt: START + 7 });
+  if (accepted.status !== "accepted") throw new Error("Expected second grant");
+  const claimed = { ...accepted.record, snapshot: claimBackgroundAuthorizationRequest(accepted.record.snapshot,
+    "second-wake-claim", START + 8, START + 30_000) } as BackgroundAuthorizationTaskRuntimeRecordV3;
+  expect((await f.repository.compareAndSwap({ expectedRequestRevision: accepted.record.snapshot.requestRevision, next: claimed })).status).toBe("updated");
+  const running = { ...claimed, snapshot: markBackgroundAuthorizationRunning(claimed.snapshot, START + 9) } as BackgroundAuthorizationTaskRuntimeRecordV3;
+  expect((await f.repository.compareAndSwap({ expectedRequestRevision: claimed.snapshot.requestRevision, next: running })).status).toBe("updated");
+  const destination = "e0000000-0000-4000-8000-000000000001";
+  const receipt = { ...wakeReceipt(running, destination), initialPolicyRevision: f.receipt.initialPolicyRevision };
+  const replacement: BackgroundAuthorizationTaskRuntimeRecordV3 = { ...refreshedPlan,
+    workIdentityHash: new Uint8Array(32).fill(0x81),
+    authoritySet: { ...refreshedPlan.authoritySet, namespaceRequirements: refreshedPlan.authoritySet.namespaceRequirements
+      .map(n => n.namespaceId === WAKE_DESTINATION ? { ...n, namespaceId: destination } : n) } };
+  await withWakeProof(receipt, proof => {
+    expect(() => buildParkedTaskWakeAuthorityReplacement({ expected: running, replacement, proof, now: START + 10 }))
+      .toThrow("changed authority");
+  });
+  await withWakeProof(receipt, async proof => {
+    const next = buildParkedTaskWakeAuthorityReplacement({ expected: running, replacement, proof, now: START + 10 });
+    expect(next.snapshot.recipientGeneration).toBe(receipt.segment);
+    expect(next.idempotencyKey).toBe(f.running.idempotencyKey);
+    expect(next.authoritySet.namespaceRequirements.at(-1)?.namespaceId).toBe(destination);
+    expect(next.authoritySet.namespaceRequirements.some(n => n.namespaceId === WAKE_DESTINATION)).toBe(false);
+    expect(() => buildParkedTaskWakeAuthorityReplacement({ expected: running, replacement,
+      proof: { ...proof }, now: START + 10 })).toThrow("not current");
+    expect(await f.repository.parkTaskWakeForAdditionalAuthority({ expected: running, replacement, proof, now: START + 10 }))
+      .toEqual({ status: "parked", record: next });
+  }, f.receipt);
 });

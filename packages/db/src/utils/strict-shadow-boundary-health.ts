@@ -1,4 +1,4 @@
-import { asc, eq, lt, sql } from "drizzle-orm";
+import { and, asc, eq, lt, sql } from "drizzle-orm";
 
 import type { Database } from "../config/database";
 import {
@@ -140,4 +140,27 @@ export async function readStrictShadowBoundaryHealth(
   return db.select().from(encryptionTransitionBoundaryHealth).where(
     eq(encryptionTransitionBoundaryHealth.policyRevision, policyRevision),
   ).orderBy(asc(encryptionTransitionBoundaryHealth.boundaryId));
+}
+
+/**
+ * Retire the exact pre-protected-Task gate signal after the current protected
+ * observer has completed an idle scan in the same policy epoch. No other
+ * boundary, state, reason, or policy revision is eligible for this cleanup.
+ */
+export async function retireLegacyUnsupportedTaskObserverHealth(
+  db: Pick<Database, "delete">,
+  policyRevision: number,
+): Promise<void> {
+  if (!Number.isSafeInteger(policyRevision) || policyRevision < 1) {
+    throw new TypeError("Strict Shadow policy revision must be positive");
+  }
+  await db.delete(encryptionTransitionBoundaryHealth).where(and(
+    eq(encryptionTransitionBoundaryHealth.policyRevision, policyRevision),
+    eq(encryptionTransitionBoundaryHealth.boundaryId, "background.task.observer"),
+    eq(encryptionTransitionBoundaryHealth.family, "task"),
+    eq(encryptionTransitionBoundaryHealth.operation, "process"),
+    eq(encryptionTransitionBoundaryHealth.actorClass, "background"),
+    eq(encryptionTransitionBoundaryHealth.state, "unsupported"),
+    eq(encryptionTransitionBoundaryHealth.reason, "unsupported_operation"),
+  ));
 }

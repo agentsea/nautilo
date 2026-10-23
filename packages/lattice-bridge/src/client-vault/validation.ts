@@ -2,6 +2,7 @@ import {
   CLIENT_PROFILE_VAULT_MAX_BYTES,
   type ClientProfileCoordinates,
   type ClientProfilePublicState,
+  type RecoverExactStagedClientProfileInput,
   type StageClientProfileInput,
 } from "./types.ts";
 
@@ -73,4 +74,67 @@ export function assertStageInput(input: StageClientProfileInput): void {
   ) {
     throw new TypeError("vault stage input is invalid");
   }
+}
+
+export function snapshotRecoverExactStagedClientProfileInput(
+  input: RecoverExactStagedClientProfileInput,
+): RecoverExactStagedClientProfileInput {
+  const snapshot = {
+    coordinates: { ...input.coordinates },
+    expectedActive: {
+      generation: input.expectedActive.generation,
+      profileBytes: input.expectedActive.profileBytes.slice(),
+      publicState: { ...input.expectedActive.publicState },
+    },
+    candidate: {
+      generation: input.candidate.generation,
+      profileBytes: input.candidate.profileBytes.slice(),
+      publicState: { ...input.candidate.publicState },
+    },
+  };
+  try {
+    assertStageInput({
+      coordinates: snapshot.coordinates,
+      stageId: "recovery_expected_active",
+      ...snapshot.expectedActive,
+    });
+    assertStageInput({
+      coordinates: snapshot.coordinates,
+      stageId: "recovery_candidate",
+      ...snapshot.candidate,
+    });
+    if (snapshot.candidate.generation !== snapshot.expectedActive.generation + 1) {
+      throw new TypeError("vault recovery generations are invalid");
+    }
+  } catch (error) {
+    wipeRecoverExactStagedClientProfileInput(snapshot);
+    throw error;
+  }
+  return snapshot;
+}
+
+export function wipeRecoverExactStagedClientProfileInput(
+  input: RecoverExactStagedClientProfileInput,
+): void {
+  input.expectedActive.profileBytes.fill(0);
+  input.candidate.profileBytes.fill(0);
+}
+
+export function sameExactClientProfileMaterial(
+  left: Readonly<{
+    generation: number;
+    profileBytes: Uint8Array;
+    publicState: ClientProfilePublicState;
+  }>,
+  right: Readonly<{
+    generation: number;
+    profileBytes: Uint8Array;
+    publicState: ClientProfilePublicState;
+  }>,
+): boolean {
+  return left.generation === right.generation
+    && left.profileBytes.length === right.profileBytes.length
+    && left.profileBytes.every((byte, index) => byte === right.profileBytes[index])
+    && left.publicState.clientKind === right.publicState.clientKind
+    && left.publicState.publicFingerprint === right.publicState.publicFingerprint;
 }

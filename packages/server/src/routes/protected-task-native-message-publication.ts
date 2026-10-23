@@ -25,6 +25,10 @@ import {
 } from "@nautilo/lattice-bridge/server";
 
 import {
+  parseImageAssistanceSummary,
+} from "@nautilo/types";
+import { parseModelInputExposureMetadataV1 } from "@nautilo/reflection/payload";
+import {
   createProtectedTaskMessageProductGuard,
 } from "./protected-task-message-product-authority";
 import {
@@ -99,6 +103,7 @@ export type ProtectedTaskNativeMessagePublicationInput = Readonly<{
     | "namespace"
     | "runtime"
     | "signerPublication"
+    | "temporarySigner"
     | "agentAuthorizationRevision"
     | "resolveHistoricalSignerPublicationManager"
   >;
@@ -176,6 +181,49 @@ function reject(message: string): never {
   throw new TypeError(message);
 }
 
+const MODEL_INPUT_EXPOSURE_METADATA_KEY =
+  "nautilo_memory_model_exposure" as const;
+
+/** Mirror only the named ordinary siblings covered by native Shadow parity. */
+function nativeShadowMetadata(
+  payload: MessagePayloadV2,
+): Readonly<Record<string, unknown>> | null {
+  const metadata: Record<string, unknown> = {};
+  if (payload.role === "assistant") {
+    const imageAssistance = parseImageAssistanceSummary(
+      payload.sensitiveMetadata?.["imageAssistance"],
+    );
+    if (imageAssistance !== undefined) {
+      metadata["nautilo_image_assistance"] = imageAssistance;
+    }
+  }
+  if (payload.role === "assistant" || payload.role === "tool") {
+    const modelInputExposure = payload.sensitiveMetadata?.[
+      MODEL_INPUT_EXPOSURE_METADATA_KEY
+    ];
+    if (modelInputExposure !== undefined) {
+      const parsed = parseModelInputExposureMetadataV1(modelInputExposure);
+      if (parsed === null) {
+        throw new TypeError("Protected Task model-input exposure metadata is invalid");
+      }
+      metadata[MODEL_INPUT_EXPOSURE_METADATA_KEY] = parsed;
+    }
+  }
+  if (payload.role === "tool") {
+    const toolCallId = payload.sensitiveMetadata?.["toolCallId"];
+    if (typeof toolCallId === "string") {
+      const toolStatus = payload.sensitiveMetadata?.["toolStatus"];
+      metadata["nautilo_tool_result"] = {
+        toolCallId,
+        ...(toolStatus === "success" || toolStatus === "error"
+          ? { toolStatus }
+          : {}),
+      };
+    }
+  }
+  return Object.keys(metadata).length === 0 ? null : metadata;
+}
+
 /**
  * Build a dark publisher for one exact protected Task execution segment.
  * Plain Tasks cannot enter this adapter. In Full mode only structural product
@@ -218,7 +266,8 @@ export function createProtectedTaskNativeMessagePublication(
       || request.identity.taskId !== authority.occurrence.task.id
       || request.identity.taskRunId !== authority.occurrence.run.id
       || request.identity.graphThreadId !== authority.occurrence.run.graphThreadId
-      || request.identity.roomId !== authority.productAuthority.roomId
+      || request.identity.roomId
+        !== authority.productAuthority.executionRoomId
       || request.identity.humanTurnId !== input.humanTurnId
       || request.identity.agentId !== authority.occurrence.task.agentId
       || request.payload.role === "user"
@@ -268,7 +317,7 @@ export function createProtectedTaskNativeMessagePublication(
         transcriptOrigin: "subagent",
         parentThreadId: null,
         scopeId: null,
-        metadata: null,
+        metadata: full ? null : nativeShadowMetadata(payload),
         subthreadRoomId: null,
         replyToMessageId: null,
         notificationContext: {
@@ -307,7 +356,7 @@ export function createProtectedTaskNativeMessagePublication(
         revision: allocation.lifecycle.revision,
         taskId: request.identity.taskId,
         taskRunId: request.identity.taskRunId,
-        roomId: request.identity.roomId,
+        roomId: authority.productAuthority.roomId,
         graphThreadId: request.identity.graphThreadId,
         humanTurnId: request.identity.humanTurnId,
         agentId: request.identity.agentId,

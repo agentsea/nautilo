@@ -936,6 +936,7 @@ export type CodexRequestLifecycleSourceAction =
   | { readonly kind: "clear_job"; readonly jobId: string }
   | { readonly kind: "clear_task"; readonly taskId: string }
   | { readonly kind: "submit_start"; readonly requestId: string }
+  | { readonly kind: "submit_cancelled"; readonly requestId: string }
   | { readonly kind: "submit_failed"; readonly requestId: string; readonly message: string }
   | { readonly kind: "submit_accepted"; readonly requestId: string }
   | { readonly kind: "mark_unavailable"; readonly requestId: string }
@@ -944,6 +945,7 @@ export type CodexRequestLifecycleSourceAction =
 export type CodexRequestLifecycleAction =
   | CodexRequestLifecycleSourceAction
   | { readonly kind: "reset_owner" }
+  | { readonly kind: "forget_content"; readonly requestIds: readonly string[] }
   | {
     readonly kind: "hydrate_room";
     readonly roomId: string;
@@ -1100,6 +1102,10 @@ function applyCodexRequestLifecycleSourceAction(
         submittingRequestId: action.requestId,
         errors: { ...state.errors, [action.requestId]: "" },
       };
+    case "submit_cancelled":
+      return state.submittingRequestId === action.requestId
+        ? { ...state, submittingRequestId: null }
+        : state;
     case "submit_failed":
       if (!state.byId[action.requestId]) return state;
       return {
@@ -1194,6 +1200,7 @@ export function reduceCodexRequestLifecycle(
     return next;
   }
   if (action.kind === "reset_owner") return initialCodexRequestLifecycleState();
+  if (action.kind === "forget_content") return withoutCodexRequest(state, new Set(action.requestIds));
   return applyCodexRequestLifecycleSourceAction(state, action);
 }
 

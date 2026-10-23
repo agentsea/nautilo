@@ -1,12 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import type {
   DualTaskPreparedCreateRequestV1,
+  DualTaskPreparedUpdateRequestV1,
   ProtectedTaskPreparedCreateRequestV1,
+  ProtectedTaskPreparedUpdateRequestV1,
   ProtectedTaskPublicationPlanV1,
 } from "@nautilo/api-client";
 import {
   bindEncryptionDataOperationOwner,
   deriveTaskContentCryptoObjectIdV1,
+  encodeTaskDefinitionContentV2,
   encodeTaskPayloadV1,
   fingerprintTaskDualPublicationFieldsV1,
   fingerprintTaskOperationalFieldsV1,
@@ -57,17 +60,25 @@ function noncanonicalBase64urlAlias(value: string): string {
 function fixture(
   representation: "protected" | "dual" = "protected",
   prompt = "ciphertext only",
+  operation: "create" | "update" = "create",
+  retainedHistoricalError: string | null = null,
 ) {
   let seed = 1;
   const crypto = new LatticeCrypto({
     bytes: (length) => Uint8Array.from({ length }, () => (seed++ * 31) & 0xff),
   }, { now: () => NOW });
   const signer = crypto.generateSigningKeyPair();
+  const expectedContentRevision = operation === "create" ? 0 : 1;
+  const nextContentRevision = expectedContentRevision + 1;
+  const operationId = `task:${operation}:authenticated`;
   const coordinate = Object.freeze({ kind: "definition" as const,
-    taskId: TASK, contentRevision: 1 });
+    taskId: TASK, contentRevision: nextContentRevision });
   const cryptoObjectId = deriveTaskContentCryptoObjectIdV1(coordinate);
-  const plaintext = encodeTaskPayloadV1({ formatVersion: 1,
-    prompt, expectedOutput: null, protectedMetadata: {} });
+  const plaintext = retainedHistoricalError === null
+    ? encodeTaskPayloadV1({ formatVersion: 1,
+        prompt, expectedOutput: null, protectedMetadata: {} })
+    : encodeTaskDefinitionContentV2({ formatVersion: 2,
+        prompt, expectedOutput: null, protectedMetadata: {}, retainedHistoricalError });
   const encrypted = encryptObjectPayload(crypto, {
     objectId: objectId(cryptoObjectId), keyClass: "ai",
     objectType: taskContentObjectTypeV1(coordinate), createdAt: unixTimestamp(NOW),
@@ -92,13 +103,13 @@ function fixture(
   });
   const task = {};
   const operationalFieldsDigest = representation === "dual"
-    ? fingerprintTaskDualPublicationFieldsV1("create", task, plaintext)
-    : fingerprintTaskOperationalFieldsV1("create", task);
+    ? fingerprintTaskDualPublicationFieldsV1(operation, task, plaintext)
+    : fingerprintTaskOperationalFieldsV1(operation, task);
   const planDigest = new Uint8Array(32).fill(8);
   const bindingHash = new Uint8Array(32).fill(9);
   const signed = prepareHumanTaskPublicationRequest(crypto, {
-    operation: "create", operationId: "task:create:authenticated", taskId: TASK,
-    cryptoObjectId, expectedContentRevision: 0, nextContentRevision: 1,
+    operation, operationId, taskId: TASK,
+    cryptoObjectId, expectedContentRevision, nextContentRevision,
     expectedCryptoAccessRevision: 0, resultCryptoAccessRevision: 0,
     planDigest, operationalFieldsDigest, subjectHumanId: HUMAN,
     committerDeviceId: "device:publication", hostAuthorizationRevision: 7,
@@ -110,17 +121,17 @@ function fixture(
     committerSigningPrivateKey: signer.privateKey,
   });
   const plan: ProtectedTaskPublicationPlanV1 = {
-    planVersion: 1, operation: "create", operationId: "task:create:authenticated",
-    taskId: TASK, expectedContentRevision: 0, nextContentRevision: 1,
+    planVersion: 1, operation, operationId,
+    taskId: TASK, expectedContentRevision, nextContentRevision,
     expectedCryptoAccessRevision: 0, planDigestBase64url: b64(planDigest),
     authority: { requesterHumanId: HUMAN, sourceRoomId: ROOM,
       namespaceId: NAMESPACE, domainId: DOMAIN, expectedAccessRevision: 0,
       expectedPolicyRevision: 1, bindingHashBase64url: b64(bindingHash), keyGeneration: 1 },
   };
-  const protectedPrepared: ProtectedTaskPreparedCreateRequestV1 = {
-    requestVersion: 1 as const, operation: "create" as const,
+  const preparedBase = {
+    requestVersion: 1 as const,
     operationId: plan.operationId, planDigestBase64url: plan.planDigestBase64url,
-    taskId: TASK, expectedContentRevision: 0 as const, nextContentRevision: 1 as const,
+    taskId: TASK,
     expectedCryptoAccessRevision: 0 as const, resultCryptoAccessRevision: 0 as const,
     cryptoObjectId, payloadVersion: 1 as const, requiredNamespaceIds: [NAMESPACE] as [string],
     encryptedPayloadBytesBase64url: b64(payloadBytes),
@@ -129,7 +140,21 @@ function fixture(
       envelopeBytesBase64url: b64(envelopeBytes) }] as [{ namespaceId: string; envelopeBytesBase64url: string }],
     signedPublicationRequestBytesBase64url: b64(signed.bytes), task,
   };
-  const prepared: ProtectedTaskPreparedCreateRequestV1 | DualTaskPreparedCreateRequestV1 =
+  const protectedPrepared = operation === "create"
+    ? {
+        ...preparedBase,
+        operation: "create" as const,
+        expectedContentRevision: 0 as const,
+        nextContentRevision: 1 as const,
+      } satisfies ProtectedTaskPreparedCreateRequestV1
+    : {
+        ...preparedBase,
+        operation: "update" as const,
+        expectedContentRevision: 1,
+        nextContentRevision: 2,
+      } satisfies ProtectedTaskPreparedUpdateRequestV1;
+  const prepared: ProtectedTaskPreparedCreateRequestV1 | ProtectedTaskPreparedUpdateRequestV1
+    | DualTaskPreparedCreateRequestV1 | DualTaskPreparedUpdateRequestV1 =
     representation === "dual"
       ? { ...protectedPrepared, representation: "dual", ordinaryPayloadBytesBase64url: b64(plaintext) }
       : protectedPrepared;
@@ -141,6 +166,14 @@ function dualFixture(prompt = "ciphertext only") {
   const state = fixture("dual", prompt);
   if (!("representation" in state.prepared)) {
     throw new Error("Expected dual fixture");
+  }
+  return { ...state, prepared: state.prepared };
+}
+
+function dualUpdateFixture(retainedHistoricalError: string) {
+  const state = fixture("dual", "updated ciphertext", "update", retainedHistoricalError);
+  if (!("representation" in state.prepared) || state.prepared.operation !== "update") {
+    throw new Error("Expected dual update fixture");
   }
   return { ...state, prepared: state.prepared };
 }
@@ -178,6 +211,7 @@ class ReplayRepository implements TaskContentRepository {
       cryptoObjectId: input.prepared.objectId };
   }
   async reconcilePending() { return { outcomes: [] }; }
+  async reconcileCoordinate() { return "pending" as const; }
 }
 
 describe("authenticated protected Task HTTP publication", () => {
@@ -297,6 +331,7 @@ describe("authenticated protected Task HTTP publication", () => {
       crypto: state.crypto, now: NOW, plan: state.plan, prepared: state.prepared,
       resolveCurrentAuthority: async () => state.signer.publicKey,
     });
+    expect(imported).not.toHaveProperty("retainedHistoricalError");
     expect(imported).toMatchObject({
       representation: "dual",
       ordinaryContent: {
@@ -373,6 +408,30 @@ describe("authenticated protected Task HTTP publication", () => {
     expect(protectedRepository.calls).toEqual([
       "reserve:task:create:authenticated", "complete:1",
     ]);
+  });
+
+  test("imports an exact V2 dual update without copying its historical error to product fields", async () => {
+    const state = dualUpdateFixture("Provider unavailable before repair");
+    const imported = await importProtectedTaskPublicationV1({
+      crypto: state.crypto,
+      now: NOW,
+      plan: state.plan,
+      prepared: state.prepared,
+      resolveCurrentAuthority: async () => state.signer.publicKey,
+    });
+    expect(imported).not.toHaveProperty("retainedHistoricalError");
+    expect(imported).toMatchObject({
+      representation: "dual",
+      ordinaryContent: {
+        coordinate: { kind: "definition", taskId: TASK, contentRevision: 2 },
+        payload: {
+          formatVersion: 1,
+          prompt: "updated ciphertext",
+          expectedOutput: null,
+        },
+      },
+    });
+
   });
 
   test("replays an exact dual body and conflicts a different valid body", async () => {

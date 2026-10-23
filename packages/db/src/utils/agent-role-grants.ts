@@ -33,6 +33,7 @@ export const SENSITIVE_TABLES = [
   "task_run_message_associations",
   "protected_task_execution_segment_receipts",
   "protected_task_continuation_receipts",
+  "protected_task_wake_continuation_receipts",
   "group_moderation_scopes",
   "moderation_subjects",
   "moderation_restrictions",
@@ -379,6 +380,11 @@ BEGIN
       GRANT DELETE ON TABLE public.bolter_outbox, public.bolter_inbox_receipts,
         public.bolter_room_bindings, public.bolter_connections TO nautilo;
     END IF;
+  END IF;
+  IF to_regclass('public.external_operator_sessions') IS NOT NULL THEN
+    REVOKE ALL ON TABLE public.external_operator_sessions FROM PUBLIC, nautilo, nautilo_agent, nautilo_crypto;
+    GRANT SELECT, INSERT ON TABLE public.external_operator_sessions TO nautilo_agent;
+    GRANT SELECT(user_id,binding_id), UPDATE(binding_id), DELETE ON TABLE public.external_operator_sessions TO nautilo;
   END IF;
   IF to_regclass('public.bolter_explicit_shares') IS NOT NULL THEN
     REVOKE ALL ON TABLE public.bolter_explicit_shares FROM PUBLIC, nautilo, nautilo_agent, nautilo_crypto;

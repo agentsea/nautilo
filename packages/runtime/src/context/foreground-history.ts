@@ -173,6 +173,7 @@ export async function buildForegroundHistoryMessages(
       };
   const authorizedDeps: BuildTranscriptContextDeps = {
     ...effectiveDeps,
+    ordinaryResultReferences: liveShadowContext?.session == null && depsOverride === undefined,
     ...(effectiveDeps.readOrdinaryModelExposure !== undefined
       ? {}
       : depsOverride === undefined && liveShadowContext?.session == null
@@ -205,6 +206,13 @@ export async function buildForegroundHistoryMessages(
         const pages: RoomHistoryHit[] = [];
         const currentEnvelope = args.maximumContextCharacters!;
         let currentCharacters = 0;
+        const pendingAcceptedHumanMessageIds = new Set(
+          (args.acceptedHumanMessages ?? [])
+            .map((entry) => entry.messageId)
+            .filter((messageId) =>
+              messageId > scope.excludeMessageId!
+              && messageId <= scope.throughMessageIdInclusive!),
+        );
         let fixedPrefix: RoomHistoryHit[] = [];
         let before:
           | Readonly<{ orderTimestamp: string; messageId: number }>
@@ -232,13 +240,28 @@ export async function buildForegroundHistoryMessages(
           const admittedPage = committedTimelineHits(authorizedPage, scope);
           pages.unshift(...admittedPage);
           for (const hit of admittedPage) {
-            if (hit.messageId > scope.excludeMessageId) {
+            if (hit.role === "user") pendingAcceptedHumanMessageIds.delete(hit.messageId);
+            const countsTowardCurrentEnvelope =
+              scope.foregroundExecutionId === undefined
+                ? hit.messageId > scope.excludeMessageId
+                : hit.messageId > scope.excludeMessageId
+                  && hit.role !== "user"
+                  && hit.foregroundExecutionId === scope.foregroundExecutionId
+                  && (
+                    scope.agentId === undefined
+                    || hit.authorAgentId === undefined
+                    || hit.authorAgentId === scope.agentId
+                  );
+            if (countsTowardCurrentEnvelope) {
               currentCharacters += (assembleCompositeContextBlock({ messages: [hit], maxLines: 1 })?.length ?? 0) + 1;
             }
           }
           const prior = pages.filter((hit) => hit.messageId < scope.excludeMessageId!);
           if (
-            currentCharacters >= currentEnvelope
+            (
+              currentCharacters >= currentEnvelope
+              && pendingAcceptedHumanMessageIds.size === 0
+            )
             || conversationalAnchorCount(prior) >= limit
             || source.page.length === 0
             || source.nextBefore === undefined

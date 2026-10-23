@@ -107,6 +107,7 @@ import { createEjectCommandTool } from "./commands/eject-command";
 import { createExecuteArtifactTool } from "./execute-artifact/execute-artifact";
 import { createOfficeTool, createEditDocTool } from "./office/office";
 import { createOfficeCliTool } from "./office/officecli";
+import { createReadToolResult } from "./result-reader/read-tool-result";
 import { createTranscribeAudioTool } from "./audio/transcribe-audio";
 import { createConvertTool } from "./convert/convert-tool";
 import { createGenerateImageTool } from "./media/generate-image";
@@ -478,6 +479,7 @@ export function registerAllTools(
     discoveryCategories: ["automation", "documents"],
     trustTier: "standard",
     impact: "destructive",
+    fullEncryptionSupport: "supported",
     exposure: "discoverable",
     requiredCapabilities: ["invoke_agents"],
     conditionalCapabilities: ["use_share_artifact"],
@@ -1163,8 +1165,18 @@ export function registerAllTools(
       requiresApproval: false,
       requiredCapabilities: ["use_project_content"],
       resultScanPolicy: "on-suspicious",
+      // Document text can contain benign emoji joiners and layout controls.
+      // Sanitize returned text before injection scanning; source files stay intact.
+      scanInvisibleUnicode: "strip",
     });
   }
+
+  register({
+    name: "read_tool_result", factory: (ctx) => createReadToolResult(ctx),
+    category: "documents", executor: "cloud", trustTier: "standard", impact: "read-only",
+    exposure: "core", tags: ["result", "read", "search"], requiresApproval: false,
+    requiredCapabilities: ["use_project_content"], resultScanPolicy: "on-suspicious", scanInvisibleUnicode: "strip",
+  });
 
   // --- Config / onboarding ---
   register({

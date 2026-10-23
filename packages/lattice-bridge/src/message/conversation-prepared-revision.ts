@@ -12,6 +12,7 @@ import {
   decodeNamespaceObjectEnvelopeV2,
   decodeObjectAccessManifestV2,
   decodeObjectAccessManifestV3,
+  decodeObjectAccessManifestV5,
 } from "@nautilo/lattice-crypto/wire";
 import type {
   PreparedConversationCryptoRevision,
@@ -155,9 +156,10 @@ function createPreparedAgentConversationCryptoRevisionWithKind(
   const payload = decodeEncryptedPayloadV2(
     input.object.payloadBytes.ciphertext,
   );
-  const manifest = decodeObjectAccessManifestV3(
-    input.access.manifestBytes,
-  );
+  const manifest = "signerEvidence" in input.access && input.access.signerEvidence !== undefined
+    ? decodeObjectAccessManifestV5(input.access.manifestBytes)
+    : decodeObjectAccessManifestV3(input.access.manifestBytes);
+  if (manifest.signer.kind !== "agent_runtime") throw new TypeError("Prepared Agent signer kind is invalid");
   if (
     input.objectId !== input.object.objectId
     || input.objectId !== payload.context.objectId

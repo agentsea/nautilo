@@ -1,6 +1,16 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import Fastify, { type FastifyInstance } from "fastify";
 import { NautiloApiClient, type NautiloApiFetch } from "@nautilo/api-client";
+import {
+  encodeTaskPayloadV1,
+  TASK_PAYLOAD_MAX_TEXT_BYTES_V1,
+} from "@nautilo/lattice-bridge";
+import {
+  LATTICE_LIMITS,
+  MAX_ENCRYPTED_PAYLOAD_WIRE_BYTES_V2,
+  MAX_NAMESPACE_OBJECT_ENVELOPE_WIRE_BYTES_V2,
+  MAX_OBJECT_ACCESS_MANIFEST_WIRE_BYTES_V5,
+} from "@nautilo/lattice-crypto/wire-limits";
 import type {
   DualTaskPreparedCreateRequestV1,
   DualTaskPreparedUpdateRequestV1,
@@ -30,6 +40,13 @@ const DOMAIN = "task-domain:one";
 const HASH = "A".repeat(43);
 const OBJECT = `task:v1:${TASK}:1`;
 const RESULT_OBJECT = `task-run-result:v1:${"a".repeat(64)}`;
+const bearer = { authorization: "Bearer test-session" } as const;
+const readAuthority = {
+  sourceRoomId: ROOM, namespaceId: NAMESPACE, currentGeneration: 0,
+  retainedGenerations: [{ generation: 0, accessRevision: 0,
+    headDigestBase64url: HASH, publicationDigestBase64url: HASH,
+    publicationSetDigestBase64url: HASH, audienceFingerprintBase64url: HASH }],
+};
 
 const authority: ProtectedTaskRouteAuthority = Object.freeze({
   userId: HUMAN, subjectHumanId: HUMAN, actorId: ACTOR, agentId: AGENT,
@@ -66,6 +83,38 @@ function dualPreparedCreate(): DualTaskPreparedCreateRequestV1 {
   };
 }
 
+function maximumPreparedCreate(dual: boolean) {
+  const prepared = {
+    ...preparedCreate(),
+    encryptedPayloadBytesBase64url: "A".repeat(Math.ceil(
+      MAX_ENCRYPTED_PAYLOAD_WIRE_BYTES_V2 * 4 / 3,
+    )),
+    accessManifestBytesBase64url: "A".repeat(Math.ceil(
+      MAX_OBJECT_ACCESS_MANIFEST_WIRE_BYTES_V5 * 4 / 3,
+    )),
+    namespaceEnvelopes: [{
+      namespaceId: NAMESPACE,
+      envelopeBytesBase64url: "A".repeat(Math.ceil(
+        MAX_NAMESPACE_OBJECT_ENVELOPE_WIRE_BYTES_V2 * 4 / 3,
+      )),
+    }],
+    signedPublicationRequestBytesBase64url: "A".repeat(Math.ceil(
+      LATTICE_LIMITS.plaintextBytes * 4 / 3,
+    )),
+  };
+  if (!dual) return prepared;
+  const content = encodeTaskPayloadV1({
+    formatVersion: 1,
+    prompt: "x".repeat(TASK_PAYLOAD_MAX_TEXT_BYTES_V1),
+    expectedOutput: null,
+    protectedMetadata: {},
+  });
+  try {
+    return { ...prepared, representation: "dual" as const,
+      ordinaryPayloadBytesBase64url: Buffer.from(content).toString("base64url") };
+  } finally { content.fill(0); }
+}
+
 const apps: FastifyInstance[] = [];
 afterEach(async () => Promise.all(apps.splice(0).map((app) => app.close())));
 
@@ -78,11 +127,13 @@ function fixture(overrides: Partial<ProtectedTaskRoutePorts> = {}) {
       return {
         readVersion: 1, status: "ready", taskId: input.taskId, objectId: input.objectId,
         contentRevision: input.contentRevision,
-        cryptoAccessRevision: 0,
-        namespaceId: NAMESPACE,
+        cryptoAccessRevision: input.cryptoAccessRevision,
+        namespaceId: NAMESPACE, readAuthority,
         encryptedPayloadBytesBase64url: "Y2lwaGVy",
         accessManifestBytesBase64url: "bWFuaWZlc3Q",
-        accessManifestProofBytesBase64url: [],
+        accessManifestProofBytesBase64url: Array.from(
+          { length: input.cryptoAccessRevision }, () => "YQ",
+        ),
         namespaceEnvelopeBytesBase64url: "ZW52ZWxvcGU",
         signerEvidence: [{ kind: "human_device", subjectHumanId: HUMAN,
           committerDeviceId: "device:one", hostAuthorizationRevision: 1,
@@ -94,7 +145,7 @@ function fixture(overrides: Partial<ProtectedTaskRoutePorts> = {}) {
       return {
         readVersion: 1, status: "ready", taskId: input.taskId,
         taskRunId: input.taskRunId, objectId: RESULT_OBJECT,
-        resultRevision: 1, cryptoAccessRevision: 0, namespaceId: NAMESPACE,
+        resultRevision: 1, cryptoAccessRevision: 0, namespaceId: NAMESPACE, readAuthority,
         encryptedPayloadBytesBase64url: "Y2lwaGVy",
         accessManifestBytesBase64url: "bWFuaWZlc3Q",
         accessManifestProofBytesBase64url: [],
@@ -231,7 +282,7 @@ describe("protected Task routes", () => {
     const state = fixture({
       readDefinition: async () => ({
         readVersion: 1, status: "ready", taskId: TASK, objectId: "substituted", contentRevision: 1,
-        cryptoAccessRevision: 0, namespaceId: NAMESPACE,
+        cryptoAccessRevision: 0, namespaceId: NAMESPACE, readAuthority,
         encryptedPayloadBytesBase64url: "YQ", accessManifestBytesBase64url: "YQ",
         accessManifestProofBytesBase64url: [], namespaceEnvelopeBytesBase64url: "YQ",
         signerEvidence: [],
@@ -239,6 +290,7 @@ describe("protected Task routes", () => {
     });
     expect((await state.app.inject({ method: "POST",
       url: "/api/protected/tasks/publication",
+      headers: bearer,
       payload: { ...preparedCreate(), plaintext: "secret" } })).statusCode).toBe(400);
     const substituted = await state.app.inject({ method: "GET",
       url: `/api/protected/tasks/${TASK}/definition?objectId=${encodeURIComponent(OBJECT)}&contentRevision=1&cryptoAccessRevision=0` });
@@ -281,22 +333,18 @@ describe("protected Task routes", () => {
     expect(response.body).not.toContain("must-not-serialize");
   });
 
-  test("returns typed unavailable without consulting the genesis reader", async () => {
+  test("forwards a dynamic access head to the protected reader", async () => {
     const state = fixture();
     const result = await state.client.getProtectedTaskDefinitionEnvelopeV1(TASK, {
       ...summary.content,
       cryptoAccessRevision: 1,
     });
-    expect(result).toEqual({
-      readVersion: 1,
-      status: "unavailable",
-      taskId: TASK,
-      objectId: OBJECT,
-      contentRevision: 1,
-      cryptoAccessRevision: 1,
-      reason: "unsupported_crypto_access_revision",
+    expect(result).toMatchObject({
+      status: "ready", taskId: TASK, objectId: OBJECT,
+      contentRevision: 1, cryptoAccessRevision: 1,
+      accessManifestProofBytesBase64url: ["YQ"],
     });
-    expect(state.calls).toHaveLength(0);
+    expect(state.calls).toHaveLength(1);
   });
 
   test("returns waiting and unavailable TaskRun result states without plaintext", async () => {
@@ -360,6 +408,15 @@ describe("protected Task routes", () => {
       expect(response.headers["cache-control"]).toBe("private, no-store");
       expect(response.headers.vary).toBe("Authorization");
     }
+    const plan = await state.app.inject({
+      method: "POST", url: `/api/protected/tasks/${TASK}/publication-plan`,
+      headers: bearer,
+      payload: { requestVersion: 1, operation: "update",
+        operationId: "task:repair:private-plan", task: {} },
+    });
+    expect(plan.statusCode).toBe(200);
+    expect(plan.headers["cache-control"]).toBe("private, no-store");
+    expect(plan.headers.vary).toBe("Authorization");
   });
 
   test("maps closed production failures without leaking ciphertext", async () => {
@@ -375,6 +432,7 @@ describe("protected Task routes", () => {
     const response = await state.app.inject({
       method: "POST",
       url: "/api/protected/tasks/publication-plan",
+      headers: bearer,
       payload: {
         requestVersion: 1,
         operation: "create",
@@ -388,5 +446,47 @@ describe("protected Task routes", () => {
       message: "Task authority is unavailable",
     });
     expect(response.body).not.toContain("cipher");
+  });
+
+  test("admits maximum protected and dual create and update publications", async () => {
+    const state = fixture();
+    for (const dual of [false, true]) {
+      const create = maximumPreparedCreate(dual);
+      expect((await state.app.inject({ method: "POST",
+        url: "/api/protected/tasks/publication", headers: bearer,
+        payload: create })).statusCode).toBe(201);
+      expect((await state.app.inject({ method: "PATCH",
+        url: `/api/protected/tasks/${TASK}/publication`, headers: bearer,
+        payload: { ...create, operation: "update",
+          expectedContentRevision: 1, nextContentRevision: 2 } })).statusCode)
+        .toBe(200);
+    }
+    expect(state.calls).toHaveLength(4);
+  });
+
+  test("admits maximum operational publication plans", async () => {
+    const state = fixture();
+    const empty = JSON.stringify({ cron: "" }).length;
+    const task = { cron: "x".repeat(LATTICE_LIMITS.plaintextBytes - empty) };
+    expect(JSON.stringify(task)).toHaveLength(LATTICE_LIMITS.plaintextBytes);
+    for (const request of [
+      { url: "/api/protected/tasks/publication-plan",
+        payload: { requestVersion: 1, operation: "create",
+          operationId: "task:create:maximum-plan", task } },
+      { url: `/api/protected/tasks/${TASK}/publication-plan`,
+        payload: { requestVersion: 1, operation: "update",
+          operationId: "task:update:maximum-plan", task } },
+    ]) expect((await state.app.inject({ method: "POST", headers: bearer,
+      ...request })).statusCode).toBe(200);
+    expect(state.calls).toHaveLength(2);
+  });
+
+  test("rejects a missing bearer before parsing a large publication or calling ports", async () => {
+    const state = fixture();
+    const response = await state.app.inject({ method: "POST",
+      url: "/api/protected/tasks/publication",
+      payload: maximumPreparedCreate(true) });
+    expect(response.statusCode).toBe(401);
+    expect(state.calls).toEqual([]);
   });
 });

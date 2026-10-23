@@ -31,3 +31,13 @@ describe("finite Bolter wire", () => {
     expect(projectRelayCapabilitiesForProtocol({ profile: "headless", bolter: capability } as never, 30).bolter).toBeUndefined();
   });
 });
+
+test("file bytes require the new negotiated peer and reject metadata or path overrides", () => {
+  const file = { id: "10000000-0000-4000-8000-000000000001", filename: "brief.txt", mimeType: "text/plain", sizeBytes: 0, sha256: "a".repeat(64), base64: "" };
+  const frame = { type: "relay:bolter-authorized", version: 30, scope: { ...scope, selectedProtocolVersion: 31 },
+    correlationId: command.correlationId, outboxId: command.command.connectionId,
+    content: { chatId: "fixture-chat", threadRootId: null, content: "Fixture text", files: [file] } };
+  expect(parseRelayBolterServerMessage(frame)).not.toBeNull();
+  expect(parseRelayBolterServerMessage({ ...frame, scope })).toBeNull();
+  expect(parseRelayBolterServerMessage({ ...frame, content: { ...frame.content, files: [{ ...file, storageUri: "file:///path/to/foreign" }] } })).toBeNull();
+});

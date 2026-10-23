@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MAX_CHAT_ATTACHMENTS_PER_MESSAGE } from "./api";
 
 export const BOLTER_ORIGIN = "https://bolter.chat" as const;
 const opaqueId = z.string().min(1).refine(value => value.trim() === value && !/\s/u.test(value)
@@ -33,7 +34,7 @@ export type BolterConversationChoice = z.infer<typeof bolterConversationChoiceSc
 export const bolterRoomLinkSummarySchema = z.object({
   id: z.uuid(), revision, roomId: z.uuid(), roomName: z.string(), agentId: z.uuid(), connectionId: z.uuid(),
   conversationLabel: z.string(), chatId: opaqueId, threadRootId: opaqueId.nullable(),
-  providerAgentId: opaqueId, identityLabel: z.string(), canManage: z.boolean(), canSend: z.boolean(), status: z.enum(["active", "paused", "revoked"]), receiver: bolterReceiverStateSchema,
+  providerAgentId: opaqueId, identityLabel: z.string(), canManage: z.boolean(), canSend: z.boolean(), canAttach: z.boolean().optional(), status: z.enum(["active", "paused", "revoked"]), receiver: bolterReceiverStateSchema,
   outboundPolicy: z.literal("causal_replies_and_reviewed_messages"),
   delivery: z.object({ pending: z.number().int().nonnegative(), uncertain: z.number().int().nonnegative() }).strict(),
   reason: bolterStatusReasonSchema.optional(),
@@ -67,7 +68,17 @@ export const bolterCreateRoomRequestSchema = z.object({
 export const bolterBindingUpdateSchema = z.object({ expectedRevision: revision, state: z.enum(["active", "paused", "revoked"]) }).strict();
 export const bolterReviewedMessageRequestSchema = z.object({
   expectedRevision: revision, requestId: z.uuid(), content: z.string().min(1),
+  attachmentIds: z.array(z.uuid()).max(MAX_CHAT_ATTACHMENTS_PER_MESSAGE).refine(ids => new Set(ids).size === ids.length).optional(),
 }).strict();
+/** Exact file selection covered by the explicit share fingerprint. */
+export const bolterAttachmentDescriptorSchema = z.object({
+  id: z.uuid(), filename: z.string().min(1), mimeType: z.string().min(1),
+  sizeBytes: z.number().int().nonnegative(), sha256: z.string().regex(/^[a-f0-9]{64}$/u),
+}).strict();
+export type BolterAttachmentDescriptor = z.infer<typeof bolterAttachmentDescriptorSchema>;
+/** Private Relay data; file bytes never enter ordinary model tool arguments. */
+export const bolterAttachmentPayloadSchema = bolterAttachmentDescriptorSchema.extend({ base64: z.string() }).strict();
+export type BolterAttachmentPayload = z.infer<typeof bolterAttachmentPayloadSchema>;
 export const bolterReviewedMessageResponseSchema = z.object({
   messageId: z.number().int().positive(), outboxId: z.uuid(), state: bolterDeliveryStateSchema,
 }).strict();
@@ -84,6 +95,8 @@ export type BolterReviewedMessageRequest = z.infer<typeof bolterReviewedMessageR
 export type BolterReviewedMessageResponse = z.infer<typeof bolterReviewedMessageResponseSchema>;
 export type BolterConversationsResponse = z.infer<typeof bolterConversationsResponseSchema>;
 export type BolterDeliverySummary = z.infer<typeof bolterDeliverySummarySchema>;
+export const bolterDeliverySelectionSchema = z.object({ outboxId: z.uuid().optional(), requestId: z.uuid().optional() }).strict();
+export type BolterDeliverySelection = z.infer<typeof bolterDeliverySelectionSchema>;
 export const bolterCreateRoomResponseSchema = z.object({ roomId: z.uuid(), link: bolterRoomLinkSummarySchema }).strict();
 export const bolterRoomLinkResponseSchema = z.object({ link: bolterRoomLinkSummarySchema.nullable() }).strict();
 export const bolterDeliveriesResponseSchema = z.object({ deliveries: z.array(bolterDeliverySummarySchema) }).strict();
@@ -97,6 +110,7 @@ export const bolterConnectionObservationSchema = z.object({
   authentication: z.enum(["unknown", "required", "pending", "confirmed"]),
   identity: z.object({ providerAgentId: opaqueId, label: z.string(), identityFingerprint: z.string().regex(/^[0-9a-f]{64}$/u) }).strict().nullable(),
   receiver: bolterReceiverStateSchema,
+  attachments: z.boolean().optional(),
   reason: bolterStatusReasonSchema.optional(),
 }).strict().superRefine((value, context) => {
   if ((value.authentication === "confirmed" && (value.runtime !== "qualified" || !value.identity))

@@ -7,6 +7,13 @@
   "upstreamCommit": "1bfdc0343057303d2993bcff44d0d5821ea658fd",
   "license": "Apache-2.0",
   "nautiloPatchSha256": "e07f03b4c49065e6d070f2b7e65ffa9569eb862ea073e81dce3b22097e7e2002",
-  "baseImage": "docker.io/library/node:24-alpine@sha256:e67514e5d0f6c46656005e1b693b2ec9d52e80b641307de684d4a015ba7a4eaf",
-  "localImage": "nautilo/openconnector:1.4.1-nautilo.2"
+  "baseImage": "docker.io/library/node:24.22.1-alpine3.23@sha256:4b00b6d1aa138805aace94cc2482808f2b4f01e5e9c9f8cdc0e217fd70600ef9",
+  "tlsTrust": {
+    "caCertificatesPackage": "alpine:20261020-r0",
+    "opensslPackageVersion": "3.5.9-r0",
+    "bundlePath": "/etc/ssl/certs/ca-certificates.crt",
+    "bundleSha256": "5961c0a3c65459931c023e0075c09733f09aea4ca439cb85bc4a08bb4f3f568b",
+    "emptyCertificateDirectory": "/etc/ssl/nautilo-empty-certs"
+  },
+  "localImage": "nautilo/openconnector:1.4.1-nautilo.4"
 }

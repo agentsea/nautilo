@@ -13,6 +13,9 @@ import {
   sanitizeAttachmentMetadataLine,
   type AttachmentEnvelope,
 } from "@nautilo/attachments";
+import { workspaceDocumentMimeType } from "@nautilo/attachments/composer-chat-extensions";
+import { classifyArtifactUpload, isOoxmlArtifactName } from "@nautilo/attachments/artifact-upload-policy";
+import { validateOfficeUploadPackage } from "../lib/office-upload-package";
 import {
   cancelPendingMessageAttachment,
   findRetainedMessageAttachmentForNamespaces,
@@ -132,7 +135,14 @@ export function messageAttachmentRoutes(
       bytes,
       ...(data.mimetype ? { claimedMime: data.mimetype } : {}),
     };
-    const classification = await classifyAttachment(envelope);
+    let classification = await classifyAttachment(envelope);
+    const documentMime = workspaceDocumentMimeType(filename);
+    const shareDocument = (request.query as { purpose?: unknown }).purpose === "bolter" && !!documentMime;
+    // Sharing an inert file needs storage admission, not model text extraction.
+    // Ordinary composer uploads retain their existing extraction contract.
+    if (shareDocument && classification.decision === "reject" && classification.code === "document_extraction_unavailable") {
+      classification = { decision: "accept", kind: "document", normalizedMime: documentMime, warnings: [] };
+    }
     if (classification.decision !== "accept") {
       const metadata = metadataBlockForClassification(envelope, classification);
       return sendUploadError(reply, 400, "attachment_rejected", {
@@ -145,6 +155,14 @@ export function messageAttachmentRoutes(
     try {
       await mkdir(dirname(filePath), { recursive: true });
       await writeFile(filePath, bytes);
+      if (shareDocument) {
+        const gate = classifyArtifactUpload({ filename, headBytes: bytes.subarray(0, ATTACHMENT_POLICY.maxSniffBytes),
+          ooxmlPackageValidated: isOoxmlArtifactName(filename) && await validateOfficeUploadPackage(filePath, filename) });
+        if (!gate.ok) {
+          await rm(filePath, { force: true });
+          return sendUploadError(reply, 400, "attachment_rejected", { code: gate.code });
+        }
+      }
       const row = await deps.insertPending({
         id,
         namespaceId,
@@ -170,7 +188,7 @@ export function messageAttachmentRoutes(
     }
   });
 
-  // D391 — authed byte route for retained attachments (images + audio).
+  // Authenticated byte route for retained attachments.
   // Streams the blob with `Content-Type` from `mime_type`, gated by the
   // same namespace-readability check the history read uses (mirror of the
   // retained-by-id read at queries/message-attachments.ts). Type-agnostic:
@@ -244,10 +262,9 @@ export function messageAttachmentRoutes(
       }
       return reply.send({ ok: true });
     }
-    // D391 R8 — retained path: namespace-gated delete + blob cleanup (no
+    // Retained path: namespace-gated delete + blob cleanup (no
     // orphans). Lets an owner remove a durable attachment; the broader
-    // message-delete -> attachment cascade is wired separately (deferred to
-    // the message-delete path, which is not in this stack's owned set).
+    // message-delete -> attachment cascade is separate from this route.
     const env = request.memoryEnvelope;
     const readable = env ? envelopeReadableNamespaces(env) : [];
     const retainedRow = await deps.markRetainedDeleted({

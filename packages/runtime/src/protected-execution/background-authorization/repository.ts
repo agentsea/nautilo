@@ -1,4 +1,7 @@
+import { assertTaskRuntimeMappedHeadReplacement, type TaskRuntimeMappedHeadReplacementInput } from "./task-runtime-mapped-head-replan";
 import { createHash } from "node:crypto";
+import { assertVerifiedProtectedTaskWakeContinuation, type VerifiedProtectedTaskWakeContinuation,
+  type ProtectedTaskWakeContinuationReceipt } from "@nautilo/db";
 import {
   BACKGROUND_AUTHORIZATION_BYTE_LIMITS,
   BACKGROUND_AUTHORIZATION_COLLECTION_LIMITS,
@@ -10,10 +13,13 @@ import type {
   VerifiedAgentBackgroundAuthorizationDeviceResponseV2,
 } from "@nautilo/lattice-bridge";
 import {
+  decodeTaskRuntimeBackgroundAuthorizationResponseV2,
   decodeBackgroundAuthorizationResponseV2,
+  encodeTaskRuntimeBackgroundAuthorizationResponseV2,
   encodeBackgroundWorkDescriptorV2,
   inspectBackgroundAuthorizationResponseV2,
   backgroundProcessorNamespaceRequirementsV2,
+  MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_BYTES_V2,
   type VerifiedBackgroundAuthorizationV2,
 } from "@nautilo/lattice-crypto/background";
 import {
@@ -53,6 +59,10 @@ export const BACKGROUND_AUTHORIZATION_WORK_KINDS = Object.freeze([
   "task.execute",
   "task.await_reply_resume",
   "task.approval_resume",
+  "task.cancel_result",
+  "task.deliver_message",
+  "task.deliver_result",
+  "task.delivery_wake",
 ] as const);
 
 export const TASK_RUNTIME_STABLE_IDEMPOTENCY_PREFIX =
@@ -89,6 +99,10 @@ export const BACKGROUND_AUTHORIZATION_PURPOSES = Object.freeze([
   "task.execute",
   "task.await_reply_resume",
   "task.approval_resume",
+  "task.cancel_result",
+  "task.deliver_message",
+  "task.deliver_result",
+  "task.delivery_wake",
 ] as const);
 
 export type BackgroundAuthorizationPurpose =
@@ -138,11 +152,20 @@ export type BackgroundAuthorizationVerifiedRuntimeResponseV3 = Readonly<{
   readonly expiresAt: number;
 }>;
 
+export type BackgroundAuthorizationVerifiedRuntimeResponseV4 = Readonly<
+  Omit<BackgroundAuthorizationVerifiedRuntimeResponseV3, "formatVersion"> & {
+    readonly formatVersion: 4;
+    readonly authorizationBytes: Uint8Array;
+    readonly certificateBytes: Uint8Array;
+  }
+>;
+
 export type BackgroundAuthorizationVerifiedDeviceResponse =
   | VerifiedBackgroundAuthorizationDeviceResponse
   | VerifiedAgentBackgroundAuthorizationDeviceResponseV2
   | BackgroundAuthorizationVerifiedProcessorResponseV2
-  | BackgroundAuthorizationVerifiedRuntimeResponseV3;
+  | BackgroundAuthorizationVerifiedRuntimeResponseV3
+  | BackgroundAuthorizationVerifiedRuntimeResponseV4;
 
 type BackgroundAuthorizationRecordFields = Readonly<{
   readonly workIdentityHash: Uint8Array;
@@ -382,6 +405,24 @@ export type BackgroundAuthorizationTaskRuntimeCancellationPage = Readonly<{
     BackgroundAuthorizationTaskRuntimeCancellationCursor | null;
 }>;
 
+export type BackgroundAuthorizationTaskRuntimeSettledRecipient = Readonly<{
+  readonly requestId: string;
+  readonly recipientGeneration: number;
+}>;
+
+export type BackgroundAuthorizationTaskRuntimeExecutionSettlementResult =
+  | Readonly<{
+    readonly status: "settled";
+    readonly transitioned: number;
+    readonly alreadyTerminal: number;
+    readonly recipients:
+      readonly BackgroundAuthorizationTaskRuntimeSettledRecipient[];
+  }>
+  | Readonly<{
+    readonly status: "conflict";
+    readonly recipients: readonly [];
+  }>;
+
 export type BackgroundAuthorizationSupersedeResult =
   | Readonly<{status: "superseded" | "existing"; record: BackgroundAuthorizationRecord}>
   | Readonly<{status: "stale"; current: BackgroundAuthorizationRecord | null}>;
@@ -405,6 +446,31 @@ export type BackgroundAuthorizationTaskRuntimeDeferralResult =
     status: "stale";
     current: BackgroundAuthorizationRecord | null;
   }>;
+
+export type BackgroundAuthorizationTaskWakeParkResult =
+  | Readonly<{
+      status: "parked" | "exact_replay";
+      record: BackgroundAuthorizationTaskRuntimeRecordV3;
+    }>
+  | Readonly<{
+      status: "stale";
+      current: BackgroundAuthorizationRecord | null;
+    }>;
+
+export type BackgroundAuthorizationTaskWakeRecipientRenewalResult =
+  | Readonly<{
+      status: "rotated";
+      record: BackgroundAuthorizationTaskRuntimeRecordV3;
+      releasedRecipientGeneration: number;
+    }>
+  | Readonly<{
+      status: "not_due" | "inactive";
+      record: BackgroundAuthorizationTaskRuntimeRecordV3;
+    }>
+  | Readonly<{
+      status: "stale";
+      current: BackgroundAuthorizationRecord | null;
+    }>;
 
 export interface BackgroundAuthorizationRepository {
   /** Product owner holds current policy, exact source and live lease before this atomic handoff. */
@@ -467,6 +533,58 @@ export interface BackgroundAuthorizationTaskRuntimeReplacementRepository
   }>): Promise<BackgroundAuthorizationTaskRuntimeReplacementResult>;
 }
 
+/** A mapped-head repair can rotate only a request that has no accepted grant. */
+export interface BackgroundAuthorizationTaskMappedHeadReplacementRepository extends BackgroundAuthorizationRepository {
+  replaceUnclaimedTaskMappedHeadAuthority(input: TaskRuntimeMappedHeadReplacementInput): Promise<BackgroundAuthorizationTaskRuntimeReplacementResult>;
+}
+
+/** Caller holds stopped Task/Run locks and proves no result reservation exists. */
+export interface BackgroundAuthorizationTaskCancellationReplacementRepository
+  extends BackgroundAuthorizationRepository {
+  replaceUnclaimedTaskCancellationAuthority(input: Readonly<{
+    expected: BackgroundAuthorizationTaskRuntimeRecordV3;
+    replacement: BackgroundAuthorizationTaskRuntimeRecordV3;
+    now: number;
+  }>): Promise<BackgroundAuthorizationTaskRuntimeReplacementResult>;
+}
+
+/** Caller holds the terminal Message allocation and current destination policy. */
+export interface BackgroundAuthorizationTaskTerminalMessageReplacementRepository
+  extends BackgroundAuthorizationRepository {
+  replaceUnclaimedTaskTerminalMessageAuthority(input: Readonly<{
+    expected: BackgroundAuthorizationTaskRuntimeRecordV3;
+    replacement: BackgroundAuthorizationTaskRuntimeRecordV3;
+    now: number;
+  }>): Promise<BackgroundAuthorizationTaskRuntimeReplacementResult>;
+}
+
+/** Caller holds current closed output authority and proves no publication/effects began. */
+export interface BackgroundAuthorizationTaskOutputReadReplacementRepository
+  extends BackgroundAuthorizationRepository {
+  replaceUnclaimedTaskOutputReadAuthority(input: Readonly<{
+    expected: BackgroundAuthorizationTaskRuntimeRecordV3;
+    replacement: BackgroundAuthorizationTaskRuntimeRecordV3;
+    now: number;
+  }>): Promise<BackgroundAuthorizationTaskRuntimeReplacementResult>;
+}
+
+/** Exact durable park proof is live for the full accepted-grant rotation. */
+export interface BackgroundAuthorizationTaskWakeParkRepository
+  extends BackgroundAuthorizationRepository {
+  parkTaskWakeForAdditionalAuthority(input: Readonly<{
+    expected: BackgroundAuthorizationTaskRuntimeRecordV3;
+    replacement: BackgroundAuthorizationTaskRuntimeRecordV3;
+    proof: VerifiedProtectedTaskWakeContinuation;
+    now: number;
+  }>): Promise<BackgroundAuthorizationTaskWakeParkResult>;
+  renewParkedTaskWakeRecipient(input: Readonly<{
+    expected: BackgroundAuthorizationTaskRuntimeRecordV3;
+    replacement?: BackgroundAuthorizationTaskRuntimeRecordV3;
+    proof: VerifiedProtectedTaskWakeContinuation;
+    now: number;
+  }>): Promise<BackgroundAuthorizationTaskWakeRecipientRenewalResult>;
+}
+
 /**
  * Narrow recovery owner for an unstarted Task Runtime execution. Callers must
  * first prove that the exact durable Job was cancelled and never entered
@@ -487,6 +605,23 @@ export interface BackgroundAuthorizationTaskRuntimeCancellationDiscoveryReposito
     readonly after?: BackgroundAuthorizationTaskRuntimeCancellationCursor;
     readonly limit: number;
   }>): Promise<BackgroundAuthorizationTaskRuntimeCancellationPage>;
+}
+
+/**
+ * Cancels every prior Task execution authority for one stopped TaskRun. The
+ * caller must hold the stopped Task and TaskRun product locks for the entire
+ * repository transaction; this operation never establishes that product fact
+ * and never creates replacement authority. A caller retaining a prior
+ * jobAuthorizationRequestId must also require that exact id in `recipients`;
+ * an empty result is sufficient only when no prior request id was recorded.
+ */
+export interface BackgroundAuthorizationTaskRuntimeCancellationSettlementRepository
+  extends BackgroundAuthorizationRepository {
+  settleTaskRuntimeExecutionAuthorities(input: Readonly<{
+    readonly workId: string;
+    readonly namespaceId: string;
+    readonly now: number;
+  }>): Promise<BackgroundAuthorizationTaskRuntimeExecutionSettlementResult>;
 }
 
 export type BackgroundAuthorizationRepositoryConflictReason =
@@ -724,10 +859,10 @@ export function isBackgroundAuthorizationResponseReplay(
   record: BackgroundAuthorizationRecord,
   response: BackgroundAuthorizationVerifiedDeviceResponse,
 ): boolean {
-  const credentialHash = isRuntimeV3Response(response)
+  const credentialHash = isRuntimeResponse(response)
     ? response.authorizationHash
     : response.credentialHash;
-  const credentialId = isRuntimeV3Response(response)
+  const credentialId = isRuntimeResponse(response)
     ? response.authorizationId
     : response.credentialId;
   return record.snapshot.acceptedResponse?.responseDigest
@@ -966,6 +1101,10 @@ export function parseBackgroundAuthorizationRecord(
   ) {
     throw new TypeError("Invalid background work kind/purpose");
   }
+  if (["task.cancel_result", "task.deliver_message", "task.deliver_result", "task.delivery_wake"].includes(value.workKind)
+    && (snapshot.formatVersion !== 3 || snapshot.credentialSubject.kind !== "runtime")) {
+    throw new TypeError("Terminal Task publication requires Task Runtime custody");
+  }
   if (
     snapshot.credentialSubject.kind === "runtime"
     && (
@@ -973,6 +1112,11 @@ export function parseBackgroundAuthorizationRecord(
         value.workKind !== "task.dispatch"
         && value.workKind !== "task.execute"
         && value.workKind !== "task.await_reply_resume"
+        && value.workKind !== "task.approval_resume"
+        && value.workKind !== "task.cancel_result"
+        && value.workKind !== "task.deliver_message"
+        && value.workKind !== "task.deliver_result"
+        && value.workKind !== "task.delivery_wake"
       )
       || value.purpose !== value.workKind
     )
@@ -1162,6 +1306,13 @@ export function parseBackgroundAuthorizationRecord(
       expectedPolicyRevision: value.expectedPolicyRevision,
     }, protectedSubject.kind),
   });
+  if (value.workKind === "task.cancel_result" || value.workKind === "task.deliver_message") {
+    const namespaces = parsed.authoritySet.namespaceRequirements;
+    if (namespaces.length !== 1 || parsed.authoritySet.domainRequirements.length !== 1
+      || namespaces[0]!.operations.length !== 1 || namespaces[0]!.operations[0] !== "encrypt") {
+      throw new TypeError("Terminal Task publication requires one write-only Namespace");
+    }
+  }
   return parsed as BackgroundAuthorizationRecord;
 }
 
@@ -1312,6 +1463,20 @@ function isRuntimeV3Response(
     && response.kind === "runtime";
 }
 
+function isRuntimeV4Response(
+  response: BackgroundAuthorizationVerifiedDeviceResponse,
+): response is BackgroundAuthorizationVerifiedRuntimeResponseV4 {
+  return "formatVersion" in response && response.formatVersion === 4
+    && response.kind === "runtime";
+}
+
+function isRuntimeResponse(
+  response: BackgroundAuthorizationVerifiedDeviceResponse,
+): response is BackgroundAuthorizationVerifiedRuntimeResponseV3
+  | BackgroundAuthorizationVerifiedRuntimeResponseV4 {
+  return isRuntimeV3Response(response) || isRuntimeV4Response(response);
+}
+
 function assertSupportedVerifiedResponse(
   response: BackgroundAuthorizationVerifiedDeviceResponse,
 ): void {
@@ -1324,11 +1489,13 @@ function assertSupportedVerifiedResponse(
       (
         formatVersion !== 2
         && formatVersion !== 3
+        && formatVersion !== 4
       )
       || (
         !isAgentV2Response(response)
         && !isProcessorV2Response(response)
         && !isRuntimeV3Response(response)
+        && !isRuntimeV4Response(response)
       )
     )
   ) {
@@ -1341,7 +1508,7 @@ function verifiedResponseAuthorityMatches(
   response: BackgroundAuthorizationVerifiedDeviceResponse,
 ): boolean {
   if (isProcessorV2Response(response)) return false;
-  if (isRuntimeV3Response(response)) {
+  if (isRuntimeResponse(response)) {
     return current.snapshot.formatVersion === 3
       && current.snapshot.credentialSubject.kind === "runtime"
       && current.authoritySet !== undefined
@@ -1387,6 +1554,136 @@ function verifiedResponseAuthorityMatches(
     && response.policyRevision === current.expectedPolicyRevision;
 }
 
+function buildAcceptedBackgroundRuntimeAuthorizationResponseV4(
+  current: BackgroundAuthorizationRecord,
+  response: BackgroundAuthorizationVerifiedRuntimeResponseV4,
+  acceptedAt: number,
+): Readonly<{
+  readonly next: BackgroundAuthorizationRecord;
+  readonly signerEvidence: null;
+}> {
+  const recipient = current.snapshot.recipient;
+  if (
+    response.responseBytes.length
+      > MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_BYTES_V2
+  ) {
+    throw new TypeError(
+      "Verified Runtime response does not match current durable authorization",
+    );
+  }
+
+  let decoded:
+    | Readonly<{
+      readonly authorizationBytes: Uint8Array;
+      readonly certificateBytes: Uint8Array;
+    }>
+    | undefined;
+  let canonical: Uint8Array | undefined;
+  try {
+    decoded = decodeTaskRuntimeBackgroundAuthorizationResponseV2(
+      response.responseBytes,
+    );
+    canonical = encodeTaskRuntimeBackgroundAuthorizationResponseV2(decoded);
+    if (
+      current.snapshot.formatVersion !== 3
+      || current.snapshot.credentialSubject.kind !== "runtime"
+      || current.snapshot.credentialSubject.runtimeKind !== "task"
+      || current.snapshot.credentialSubject.runtimeVersion !== 1
+      || current.authoritySet === undefined
+      || current.descriptorBytes === null
+      || current.snapshot.descriptorDigest === null
+      || response.requestId !== current.snapshot.requestId
+      || response.recipientGeneration !== current.snapshot.recipientGeneration
+      || response.workId !== current.snapshot.workId
+      || response.workKind !== current.workKind
+      || response.purpose !== current.purpose
+      || !isTaskExecutionWorkKind(response.workKind)
+        && !isTaskPublicationWorkKind(response.workKind)
+      || !verifiedResponseAuthorityMatches(current, response)
+      || response.recipientKeyId !== recipient?.recipientKeyId
+      || Buffer.from(response.recipientPublicKey).toString("base64url")
+        !== recipient.recipientPublicKey
+      || response.issuedAt > acceptedAt
+      || response.expiresAt !== recipient.expiresAt
+      || response.expiresAt <= acceptedAt
+      || response.expiresAt - response.issuedAt > PRODUCT_AUTHORIZATION_TTL_MS
+      || response.expiresAt - acceptedAt > PRODUCT_AUTHORIZATION_TTL_MS
+      || !equalBytes(response.responseBytes, canonical)
+      || !equalBytes(response.authorizationBytes, decoded.authorizationBytes)
+      || !equalBytes(response.certificateBytes, decoded.certificateBytes)
+      || !equalBytes(response.descriptorBytes, current.descriptorBytes)
+      || hexBytes(response.descriptorHash) !== current.snapshot.descriptorDigest
+      || !digestMatches(
+        response.descriptorBytes,
+        current.snapshot.descriptorDigest,
+      )
+      || hexBytes(response.responseHash) !== digestHex(response.responseBytes)
+      || hexBytes(response.authorizationHash)
+        !== digestHex(response.authorizationBytes)
+    ) {
+      throw new TypeError(
+        "Verified Runtime response does not match current durable authorization",
+      );
+    }
+    portable("Runtime authorization id", response.authorizationId);
+    portable("Runtime authorization Human id", response.issuingHumanId);
+    portable("Runtime authorization device id", response.issuingDeviceId);
+    counter(
+      "Runtime authorization device revision",
+      response.issuingDeviceAuthorizationRevision,
+    );
+    exactBytes(
+      "Runtime authorization issuer key hash",
+      response.issuerSigningPublicKeyHash,
+      BACKGROUND_AUTHORIZATION_BYTE_LIMITS.hash,
+    );
+
+    const nextSnapshot = markBackgroundAuthorizationGrantReady(
+      current.snapshot,
+      {
+        kind: "runtime",
+        requestId: response.requestId,
+        descriptorDigest: hexBytes(response.descriptorHash),
+        recipientKeyId: response.recipientKeyId,
+        recipientPublicKey: Buffer.from(response.recipientPublicKey).toString(
+          "base64url",
+        ),
+        expiresAt: response.expiresAt,
+        responseDigest: hexBytes(response.responseHash),
+        credentialDigest: hexBytes(response.authorizationHash),
+        issuingHumanId: response.issuingHumanId,
+        issuingDeviceId: response.issuingDeviceId,
+        recipientGeneration: response.recipientGeneration,
+        now: acceptedAt,
+      },
+    );
+    return Object.freeze({
+      next: parseBackgroundAuthorizationRecord({
+        ...current,
+        snapshot: nextSnapshot,
+        acceptedMaterial: {
+          responseBytes: response.responseBytes,
+          credentialId: response.authorizationId,
+          issuingDeviceAuthorizationRevision:
+            response.issuingDeviceAuthorizationRevision,
+          issuerSigningPublicKeyHash: response.issuerSigningPublicKeyHash,
+          authorizationExpiresAt: response.expiresAt,
+        },
+      }),
+      signerEvidence: null,
+    });
+  } catch (error) {
+    if (error instanceof TypeError) throw error;
+    throw new TypeError(
+      "Verified Runtime response does not match current durable authorization",
+    );
+  } finally {
+    decoded?.authorizationBytes.fill(0);
+    decoded?.certificateBytes.fill(0);
+    canonical?.fill(0);
+  }
+}
+
 export function backgroundAuthorizationVerifiedResponseRequestId(
   response: BackgroundAuthorizationVerifiedDeviceResponse,
 ): string {
@@ -1429,7 +1726,7 @@ function buildAcceptedBackgroundRuntimeAuthorizationResponseV3(
     || response.expiresAt - response.issuedAt > PRODUCT_AUTHORIZATION_TTL_MS
     || response.expiresAt - acceptedAt > PRODUCT_AUTHORIZATION_TTL_MS
     || response.responseBytes.length
-      > BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_LIMITS.runtime
+      > BACKGROUND_AUTHORIZATION_BYTE_LIMITS.legacyRuntimeResponse
     || !equalBytes(response.descriptorBytes, current.descriptorBytes)
     || hexBytes(response.descriptorHash) !== current.snapshot.descriptorDigest
     || !digestMatches(response.descriptorBytes, current.snapshot.descriptorDigest)
@@ -1665,6 +1962,13 @@ export function buildAcceptedBackgroundAuthorizationResponse(
   }
   if (isRuntimeV3Response(response)) {
     return buildAcceptedBackgroundRuntimeAuthorizationResponseV3(
+      current,
+      response,
+      acceptedAt,
+    );
+  }
+  if (isRuntimeV4Response(response)) {
+    return buildAcceptedBackgroundRuntimeAuthorizationResponseV4(
       current,
       response,
       acceptedAt,
@@ -2224,6 +2528,20 @@ function validateTaskRuntimeCancellationPageInput(input: Readonly<{
   return limit;
 }
 
+export function isTaskExecutionWorkKind(value: BackgroundAuthorizationRecord["workKind"]): boolean {
+  return value === "task.execute" || value === "task.approval_resume"
+    || value === "task.await_reply_resume";
+}
+
+function isTaskPublicationWorkKind(
+  value: BackgroundAuthorizationRecord["workKind"],
+): boolean {
+  return value === "task.cancel_result"
+    || value === "task.deliver_message"
+    || value === "task.deliver_result"
+    || value === "task.delivery_wake";
+}
+
 function isTaskRuntimeCancellationCandidate(
   record: BackgroundAuthorizationRecord,
 ): record is BackgroundAuthorizationTaskRuntimeRecordV3 {
@@ -2232,8 +2550,8 @@ function isTaskRuntimeCancellationCandidate(
     && snapshot.credentialSubject.kind === "runtime"
     && snapshot.credentialSubject.runtimeKind === "task"
     && snapshot.credentialSubject.runtimeVersion === 1
-    && record.workKind === "task.execute"
-    && record.purpose === "task.execute"
+    && isTaskExecutionWorkKind(record.workKind)
+    && record.purpose === record.workKind
     && record.processorAuthorizationRevision === null
     && (
       [
@@ -2349,6 +2667,145 @@ function exactTaskRuntimeAuthorityAnchor(
     && domain.expectedEpoch === record.expectedDomainEpoch;
 }
 
+const TASK_RUNTIME_EXECUTION_SETTLEMENT_WORK_KINDS = new Set<
+  BackgroundAuthorizationWorkKind
+>([
+  "task.execute",
+  "task.dispatch",
+  "task.approval_resume",
+  "task.await_reply_resume",
+]);
+
+const TASK_RUNTIME_EXECUTION_SETTLEMENT_ACTIVE_STATES = new Set([
+  "awaiting_recipient",
+  "awaiting_device",
+  "grant_ready",
+  "claimed",
+  "running",
+  "publication_reconciliation",
+]);
+
+function taskRuntimeExecutionSettlementAuthorityAnchor(
+  record: BackgroundAuthorizationTaskRuntimeRecordV3,
+): boolean {
+  const namespaces = record.authoritySet.namespaceRequirements.filter(
+    (requirement) => requirement.namespaceId === record.snapshot.namespaceId,
+  );
+  const namespace = namespaces[0];
+  const domains = namespace === undefined
+    ? []
+    : record.authoritySet.domainRequirements.filter(
+      (requirement) => requirement.domainId === namespace.domainId,
+    );
+  const domain = domains[0];
+  return namespaces.length === 1
+    && namespace !== undefined
+    && namespace.domainId === record.domainId
+    && namespace.operations.length === 2
+    && namespace.operations[0] === "decrypt"
+    && namespace.operations[1] === "encrypt"
+    && namespace.expectedAccessRevision
+      === record.expectedNamespaceAccessRevision
+    && namespace.expectedPolicyRevision === record.expectedPolicyRevision
+    && domains.length === 1
+    && domain !== undefined
+    && domain.expectedEpoch === record.expectedDomainEpoch;
+}
+
+export type BackgroundAuthorizationTaskRuntimeExecutionSettlementPlan =
+  Readonly<{
+    readonly result:
+      BackgroundAuthorizationTaskRuntimeExecutionSettlementResult;
+    readonly updates:
+      readonly BackgroundAuthorizationTaskRuntimeRecordV3[];
+  }>;
+
+function taskRuntimeExecutionSettlementConflict():
+  BackgroundAuthorizationTaskRuntimeExecutionSettlementPlan {
+  const recipients: readonly [] = Object.freeze([]);
+  const updates: readonly BackgroundAuthorizationTaskRuntimeRecordV3[] =
+    Object.freeze([]);
+  return Object.freeze({
+    result: Object.freeze({
+      status: "conflict",
+      recipients,
+    }),
+    updates,
+  });
+}
+
+/** Shared prevalidation keeps in-memory and Postgres settlement identical. */
+export function planTaskRuntimeExecutionAuthoritySettlement(input: Readonly<{
+  readonly records: readonly BackgroundAuthorizationRecord[];
+  readonly workId: string;
+  readonly namespaceId: string;
+  readonly now: number;
+}>): BackgroundAuthorizationTaskRuntimeExecutionSettlementPlan {
+  portable("Task Runtime settlement work id", input.workId);
+  portable("Task Runtime settlement Namespace id", input.namespaceId);
+  timestamp("Task Runtime settlement time", input.now);
+  const records = input.records.map(parseBackgroundAuthorizationRecord)
+    .sort((left, right) =>
+      left.snapshot.requestId.localeCompare(right.snapshot.requestId)
+    );
+  const recipients: BackgroundAuthorizationTaskRuntimeSettledRecipient[] = [];
+  const updates: BackgroundAuthorizationTaskRuntimeRecordV3[] = [];
+  let alreadyTerminal = 0;
+  for (const record of records) {
+    const snapshot = record.snapshot;
+    if (
+      snapshot.formatVersion !== 3
+      || snapshot.credentialSubject.kind !== "runtime"
+      || snapshot.credentialSubject.runtimeKind !== "task"
+      || snapshot.credentialSubject.runtimeVersion !== 1
+      || snapshot.workId !== input.workId
+      || snapshot.namespaceId !== input.namespaceId
+      || !TASK_RUNTIME_EXECUTION_SETTLEMENT_WORK_KINDS.has(record.workKind)
+      || record.purpose !== record.workKind
+      || record.processorAuthorizationRevision !== null
+      || record.authoritySet === undefined
+      || !taskRuntimeExecutionSettlementAuthorityAnchor(
+        record as BackgroundAuthorizationTaskRuntimeRecordV3,
+      )
+    ) {
+      return taskRuntimeExecutionSettlementConflict();
+    }
+    recipients.push(Object.freeze({
+      requestId: snapshot.requestId,
+      recipientGeneration: snapshot.recipientGeneration,
+    }));
+    if (TERMINAL_STATES.has(snapshot.state)) {
+      alreadyTerminal += 1;
+      continue;
+    }
+    if (!TASK_RUNTIME_EXECUTION_SETTLEMENT_ACTIVE_STATES.has(snapshot.state)) {
+      return taskRuntimeExecutionSettlementConflict();
+    }
+    try {
+      updates.push(parseBackgroundAuthorizationRecord({
+        ...record,
+        snapshot: cancelBackgroundAuthorizationRequest(
+          snapshot,
+          "cancelled",
+          input.now,
+        ),
+        finishedAt: input.now,
+      }) as BackgroundAuthorizationTaskRuntimeRecordV3);
+    } catch {
+      return taskRuntimeExecutionSettlementConflict();
+    }
+  }
+  return Object.freeze({
+    result: Object.freeze({
+      status: "settled",
+      transitioned: updates.length,
+      alreadyTerminal,
+      recipients: Object.freeze(recipients),
+    }),
+    updates: Object.freeze(updates),
+  });
+}
+
 /**
  * Build the sole legal successor for a changed, unclaimed Task Runtime
  * inventory. Stable work identity stays bound by request/work/idempotency;
@@ -2359,6 +2816,351 @@ export function buildUnclaimedTaskRuntimeAuthorityReplacement(input: Readonly<{
   replacement: BackgroundAuthorizationTaskRuntimeRecordV3;
   now: number;
 }>): BackgroundAuthorizationTaskRuntimeRecordV3 {
+  return buildUnclaimedTaskAuthorityReplacement(input, "execution");
+}
+
+/** Requires a live canonical Human inspection and an exact historical stable preimage. */
+export function buildUnclaimedTaskMappedHeadAuthorityReplacement(input: TaskRuntimeMappedHeadReplacementInput): BackgroundAuthorizationTaskRuntimeRecordV3 {
+  assertTaskRuntimeMappedHeadReplacement(input);
+  return buildUnclaimedTaskAuthorityReplacement(input, "mapped_head");
+}
+
+/** Monotonic policy refresh for the single encrypt-only cancellation Namespace. */
+export function buildUnclaimedTaskCancellationAuthorityReplacement(input: Readonly<{
+  expected: BackgroundAuthorizationTaskRuntimeRecordV3;
+  replacement: BackgroundAuthorizationTaskRuntimeRecordV3;
+  now: number;
+}>): BackgroundAuthorizationTaskRuntimeRecordV3 {
+  return buildUnclaimedTaskAuthorityReplacement(input, "cancellation");
+}
+
+/** Monotonic policy refresh for one unclaimed terminal Message publication. */
+export function buildUnclaimedTaskTerminalMessageAuthorityReplacement(input: Readonly<{
+  expected: BackgroundAuthorizationTaskRuntimeRecordV3;
+  replacement: BackgroundAuthorizationTaskRuntimeRecordV3;
+  now: number;
+}>): BackgroundAuthorizationTaskRuntimeRecordV3 {
+  return buildUnclaimedTaskAuthorityReplacement(input, "terminal_message");
+}
+
+/** Fresh result-read authority only; historical staged bytes and running work stay immutable. */
+export function buildUnclaimedTaskOutputReadAuthorityReplacement(input: Readonly<{
+  expected: BackgroundAuthorizationTaskRuntimeRecordV3;
+  replacement: BackgroundAuthorizationTaskRuntimeRecordV3;
+  now: number;
+}>): BackgroundAuthorizationTaskRuntimeRecordV3 {
+  return buildUnclaimedTaskAuthorityReplacement(input, "output_read");
+}
+
+function exactTaskOutputReadAuthorityAnchor(record: BackgroundAuthorizationTaskRuntimeRecordV3): boolean {
+  const raw = record.workKind === "task.deliver_result";
+  const wake = record.workKind === "task.delivery_wake";
+  const namespaces = record.authoritySet.namespaceRequirements;
+  const primary = namespaces.find(n => n.namespaceId === record.snapshot.namespaceId);
+  const domain = record.authoritySet.domainRequirements.find(d => d.domainId === record.domainId);
+  const foreground = namespaces.filter(n => n.operations.includes("encrypt"));
+  return (raw || wake) && record.purpose === record.workKind
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(record.snapshot.workId)
+    && record.snapshot.requestId === (raw
+      ? `task-run-delivery-result-authorization:${record.snapshot.workId}`
+      : `task-wake-authorization:${record.snapshot.workId}`)
+    && /^task-output-read:[0-9a-f]{64}$/u.test(record.idempotencyKey)
+    && primary !== undefined && domain !== undefined
+    && primary.domainId === record.domainId
+    && primary.operations.includes("decrypt")
+    && primary.expectedAccessRevision === record.expectedNamespaceAccessRevision
+    && primary.expectedPolicyRevision === record.expectedPolicyRevision
+    && domain.expectedEpoch === record.expectedDomainEpoch
+    && record.expectedPolicyRevision >= 1
+    && record.authoritySet.domainRequirements.every(d => d.expectedEpoch >= 1)
+    && (raw ? foreground.length === 1 : foreground.length > 0)
+    && namespaces.every(n => n.expectedPolicyRevision === record.expectedPolicyRevision
+      && (n.namespaceId === record.snapshot.namespaceId
+        ? n.operations.join(",") === "decrypt" || n.operations.join(",") === "decrypt,encrypt"
+        : n.operations.join(",") === (raw ? "encrypt" : "decrypt,encrypt")));
+}
+
+function exactParkedWakeReplacementAuthority(input: Readonly<{
+  current: BackgroundAuthorizationTaskRuntimeRecordV3;
+  replacement: BackgroundAuthorizationTaskRuntimeRecordV3;
+  proof: VerifiedProtectedTaskWakeContinuation;
+}>): boolean {
+  const { current, replacement, proof } = input;
+  const receipt = proof.receipt;
+  const prior = proof.priorReceipt;
+  const retained = receipt.retainedSourceNamespaceIds;
+  const expectedCurrentIds = [...new Set([current.snapshot.namespaceId, ...retained])].sort();
+  const initialAuthority = exactTaskOutputReadAuthorityAnchor(current)
+    && current.authoritySet.namespaceRequirements.map(n => n.namespaceId).sort().join(",") === expectedCurrentIds.join(",")
+    && retained.every(id => current.authoritySet.namespaceRequirements.find(n => n.namespaceId === id)
+      ?.operations.join(",") === "decrypt,encrypt");
+  return (prior === null ? initialAuthority : exactParkedWakeCurrentAuthority(current, prior))
+    && current.workKind === "task.delivery_wake"
+    && current.snapshot.requestId === receipt.wakeAuthorizationRequestId
+    && current.snapshot.workId === receipt.wakeJobId
+    && current.snapshot.recipientGeneration === receipt.priorRecipientGeneration
+    && current.expectedPolicyRevision >= receipt.initialPolicyRevision
+    && replacement.expectedPolicyRevision >= current.expectedPolicyRevision
+    && exactParkedWakeCurrentAuthority(replacement, receipt, false);
+}
+
+function exactParkedWakeCurrentAuthority(
+  record: BackgroundAuthorizationTaskRuntimeRecordV3,
+  receipt: ProtectedTaskWakeContinuationReceipt,
+  requireGeneration = true,
+): boolean {
+  const retained = [...receipt.retainedSourceNamespaceIds].sort();
+  const requirements = record.authoritySet.namespaceRequirements;
+  const expectedIds = [...new Set([
+    record.snapshot.namespaceId,
+    ...retained,
+    receipt.destinationNamespaceId,
+  ])].sort();
+  const actualIds = requirements.map(requirement => requirement.namespaceId)
+    .sort();
+  const primary = requirements.find(requirement =>
+    requirement.namespaceId === record.snapshot.namespaceId);
+  const destination = requirements.find(requirement =>
+    requirement.namespaceId === receipt.destinationNamespaceId);
+  const primaryDomain = record.authoritySet.domainRequirements.find(domain =>
+    domain.domainId === record.domainId);
+  return record.workKind === "task.delivery_wake"
+    && record.purpose === "task.delivery_wake"
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(record.snapshot.workId)
+    && /^task-output-read:[0-9a-f]{64}$/u.test(record.idempotencyKey)
+    && record.snapshot.requestId === receipt.wakeAuthorizationRequestId
+    && record.snapshot.workId === receipt.wakeJobId
+    && (!requireGeneration || record.snapshot.recipientGeneration >= receipt.segment)
+    && record.expectedPolicyRevision >= receipt.initialPolicyRevision
+    && actualIds.join(",") === expectedIds.join(",")
+    && primary !== undefined
+    && primary.operations.includes("decrypt")
+    && primary.domainId === record.domainId
+    && primary.expectedAccessRevision
+      === record.expectedNamespaceAccessRevision
+    && primary.expectedPolicyRevision === record.expectedPolicyRevision
+    && primaryDomain?.expectedEpoch === record.expectedDomainEpoch
+    && requirements.every(requirement =>
+      requirement.expectedPolicyRevision === record.expectedPolicyRevision
+      && requirement.operations.join(",") === (retained.includes(requirement.namespaceId)
+        ? "decrypt,encrypt" : requirement.namespaceId === record.snapshot.namespaceId ? "decrypt" : "encrypt")
+      && record.authoritySet.domainRequirements.some(domain =>
+        domain.domainId === requirement.domainId))
+    && record.authoritySet.domainRequirements.every(domain => domain.expectedEpoch >= 1
+      && requirements.some(requirement => requirement.domainId === domain.domainId))
+    && receipt.destinationNamespaceId !== record.snapshot.namespaceId
+    && !retained.includes(receipt.destinationNamespaceId)
+    && destination?.operations.join(",") === "encrypt"
+    && retained.every(namespaceId => requirements.find(requirement =>
+      requirement.namespaceId === namespaceId)
+      ?.operations.join(",") === "decrypt,encrypt");
+}
+
+export function rotateExpiredParkedTaskWakeRecipient(input: Readonly<{
+  expected: BackgroundAuthorizationTaskRuntimeRecordV3;
+  replacement?: BackgroundAuthorizationTaskRuntimeRecordV3;
+  proof: VerifiedProtectedTaskWakeContinuation;
+  now: number;
+}>): Exclude<
+  BackgroundAuthorizationTaskWakeRecipientRenewalResult,
+  Readonly<{ status: "stale"; current: BackgroundAuthorizationRecord | null }>
+> {
+  assertVerifiedProtectedTaskWakeContinuation(input.proof);
+  timestamp("Parked Task wake recipient renewal time", input.now);
+  const parsed = parseBackgroundAuthorizationRecord(input.expected);
+  if (parsed.snapshot.formatVersion !== 3
+    || parsed.snapshot.credentialSubject.kind !== "runtime"
+    || parsed.snapshot.credentialSubject.runtimeKind !== "task"
+    || parsed.snapshot.credentialSubject.runtimeVersion !== 1
+    || parsed.authoritySet === undefined) {
+    throw new TypeError("Parked Task wake renewal requires V3 Task custody");
+  }
+  const expected = parsed as BackgroundAuthorizationTaskRuntimeRecordV3;
+  if (!exactParkedWakeCurrentAuthority(expected, input.proof.receipt)
+    || expected.finishedAt !== null
+    || expected.snapshot.claimId !== null
+    || expected.snapshot.claimExpiresAt !== null) {
+    throw new TypeError("Parked Task wake renewal changed authority");
+  }
+  if (input.replacement !== undefined) {
+    const next = buildUnclaimedTaskAuthorityReplacement({ expected, replacement: input.replacement,
+      now: input.now }, "parked_wake", input.proof);
+    if (!equalBytes(expected.workIdentityHash, next.workIdentityHash) || !sameAuthoritySet(expected, next)) {
+      return Object.freeze({ status: "rotated" as const, record: next,
+        releasedRecipientGeneration: expected.snapshot.recipientGeneration });
+    }
+  }
+  if (expected.snapshot.state !== "awaiting_device"
+    && expected.snapshot.state !== "grant_ready") {
+    return Object.freeze({ status: "inactive" as const, record: expected });
+  }
+  const recipient = expected.snapshot.recipient;
+  if (recipient === null) {
+    return Object.freeze({ status: "inactive" as const, record: expected });
+  }
+  if (input.now < recipient.expiresAt) {
+    return Object.freeze({ status: "not_due" as const, record: expected });
+  }
+  const next = parseBackgroundAuthorizationRecord({
+    ...expected,
+    snapshot: advanceBackgroundAuthorizationGeneration(expected.snapshot, {
+      reason: "attempt_expired",
+      now: input.now,
+      nextAttemptAt: input.now,
+    }),
+    descriptorBytes: null,
+    acceptedMaterial: null,
+  }) as BackgroundAuthorizationTaskRuntimeRecordV3;
+  if (!exactParkedWakeCurrentAuthority(next, input.proof.receipt)
+    || next.snapshot.recipientGeneration
+      !== expected.snapshot.recipientGeneration + 1
+    || next.snapshot.state !== "awaiting_recipient"
+    || next.snapshot.recipient !== null
+    || next.snapshot.acceptedResponse !== null
+    || next.snapshot.lastRetryReason !== "attempt_expired") {
+    throw new TypeError("Parked Task wake renewal successor is invalid");
+  }
+  return Object.freeze({
+    status: "rotated" as const,
+    record: next,
+    releasedRecipientGeneration: expected.snapshot.recipientGeneration,
+  });
+}
+
+export function buildParkedTaskWakeAuthorityReplacement(input: Readonly<{
+  expected: BackgroundAuthorizationTaskRuntimeRecordV3;
+  replacement: BackgroundAuthorizationTaskRuntimeRecordV3;
+  proof: VerifiedProtectedTaskWakeContinuation;
+  now: number;
+}>): BackgroundAuthorizationTaskRuntimeRecordV3 {
+  assertVerifiedProtectedTaskWakeContinuation(input.proof);
+  timestamp("Parked Task wake authority replacement time", input.now);
+  const expected = parseBackgroundAuthorizationRecord(input.expected);
+  const replacement = parseBackgroundAuthorizationRecord(input.replacement);
+  if (expected.snapshot.formatVersion !== 3
+    || expected.snapshot.credentialSubject.kind !== "runtime"
+    || expected.snapshot.credentialSubject.runtimeKind !== "task"
+    || expected.snapshot.credentialSubject.runtimeVersion !== 1
+    || expected.authoritySet === undefined
+    || replacement.snapshot.formatVersion !== 3
+    || replacement.snapshot.credentialSubject.kind !== "runtime"
+    || replacement.snapshot.credentialSubject.runtimeKind !== "task"
+    || replacement.snapshot.credentialSubject.runtimeVersion !== 1
+    || replacement.authoritySet === undefined) {
+    throw new TypeError("Parked Task wake replacement requires V3 Task records");
+  }
+  const current = expected as BackgroundAuthorizationTaskRuntimeRecordV3;
+  const nextPlan = replacement as BackgroundAuthorizationTaskRuntimeRecordV3;
+  const receipt = input.proof.receipt;
+  if (current.snapshot.state !== "running"
+    || current.snapshot.claimId === null
+    || current.snapshot.recipient === null
+    || current.snapshot.acceptedResponse === null
+    || current.acceptedMaterial === null
+    || current.finishedAt !== null
+    || nextPlan.snapshot.state !== "awaiting_recipient"
+    || nextPlan.snapshot.recipientGeneration !== 0
+    || nextPlan.snapshot.recipient !== null
+    || nextPlan.snapshot.acceptedResponse !== null
+    || nextPlan.snapshot.claimId !== null
+    || nextPlan.snapshot.claimExpiresAt !== null
+    || nextPlan.snapshot.requestRevision !== 0
+    || nextPlan.snapshot.retryCount !== 0
+    || nextPlan.snapshot.lastRetryReason !== null
+    || nextPlan.snapshot.nextAttemptAt !== null
+    || nextPlan.descriptorBytes !== null
+    || nextPlan.acceptedMaterial !== null
+    || nextPlan.finishedAt !== null
+    || current.snapshot.requestId !== nextPlan.snapshot.requestId
+    || current.snapshot.workId !== nextPlan.snapshot.workId
+    || current.snapshot.namespaceId !== nextPlan.snapshot.namespaceId
+    || JSON.stringify(current.snapshot.credentialSubject)
+      !== JSON.stringify(nextPlan.snapshot.credentialSubject)
+    || current.idempotencyKey !== nextPlan.idempotencyKey
+    || current.purpose !== "task.delivery_wake"
+    || nextPlan.purpose !== "task.delivery_wake"
+    || current.processorAuthorizationRevision !== null
+    || nextPlan.processorAuthorizationRevision !== null
+    || receipt.segment !== receipt.priorRecipientGeneration + 1
+    || !exactParkedWakeReplacementAuthority({
+      current,
+      replacement: nextPlan,
+      proof: input.proof,
+    })) {
+    throw new TypeError("Parked Task wake replacement changed authority");
+  }
+  const snapshot = deferUnstartedTaskRuntimeRequestSnapshot(
+    current.snapshot,
+    input.now,
+  );
+  if (snapshot.recipientGeneration !== receipt.segment) {
+    throw new TypeError("Parked Task wake generation changed");
+  }
+  return parseBackgroundAuthorizationRecord({
+    ...nextPlan,
+    snapshot,
+    descriptorBytes: null,
+    acceptedMaterial: null,
+    finishedAt: null,
+  }) as BackgroundAuthorizationTaskRuntimeRecordV3;
+}
+
+function exactTaskCancellationAuthorityAnchor(record: BackgroundAuthorizationTaskRuntimeRecordV3): boolean {
+  const namespace = record.authoritySet.namespaceRequirements[0];
+  const domain = record.authoritySet.domainRequirements[0];
+  return record.workKind === "task.cancel_result" && record.purpose === "task.cancel_result"
+    && record.snapshot.requestId === `task-run-cancellation-result-authorization:${record.snapshot.workId}`
+    && /^task-cancellation:[0-9a-f]{64}$/u.test(record.idempotencyKey)
+    && record.authoritySet.namespaceRequirements.length === 1
+    && record.authoritySet.domainRequirements.length === 1
+    && namespace !== undefined && domain !== undefined
+    && namespace.ordinal === 0 && domain.ordinal === 0
+    && namespace.namespaceId === record.snapshot.namespaceId
+    && namespace.domainId === record.domainId && domain.domainId === record.domainId
+    && namespace.operations.length === 1 && namespace.operations[0] === "encrypt"
+    && namespace.expectedAccessRevision === record.expectedNamespaceAccessRevision
+    && namespace.expectedPolicyRevision === record.expectedPolicyRevision
+    && domain.expectedEpoch === record.expectedDomainEpoch;
+}
+
+function exactTaskTerminalMessageAuthorityAnchor(
+  record: BackgroundAuthorizationTaskRuntimeRecordV3,
+): boolean {
+  const namespace = record.authoritySet.namespaceRequirements[0];
+  const domain = record.authoritySet.domainRequirements[0];
+  return record.workKind === "task.deliver_message"
+    && record.purpose === "task.deliver_message"
+    && record.snapshot.requestId
+      === `task-run-delivery-message-authorization:${record.snapshot.workId}`
+    && /^task-delivery-message:[0-9a-f]{64}$/u.test(record.idempotencyKey)
+    && record.authoritySet.namespaceRequirements.length === 1
+    && record.authoritySet.domainRequirements.length === 1
+    && namespace !== undefined && domain !== undefined
+    && namespace.ordinal === 0 && domain.ordinal === 0
+    && namespace.namespaceId === record.snapshot.namespaceId
+    && namespace.domainId === record.domainId
+    && domain.domainId === record.domainId
+    && namespace.operations.length === 1
+    && namespace.operations[0] === "encrypt"
+    && namespace.expectedAccessRevision
+      === record.expectedNamespaceAccessRevision
+    && namespace.expectedPolicyRevision === record.expectedPolicyRevision
+    && domain.expectedEpoch === record.expectedDomainEpoch;
+}
+
+type TaskAuthorityReplacementKind =
+  | "execution"
+  | "mapped_head"
+  | "cancellation"
+  | "terminal_message"
+  | "output_read"
+  | "parked_wake";
+
+function buildUnclaimedTaskAuthorityReplacement(input: Readonly<{
+  expected: BackgroundAuthorizationTaskRuntimeRecordV3;
+  replacement: BackgroundAuthorizationTaskRuntimeRecordV3;
+  now: number;
+}>, kind: TaskAuthorityReplacementKind, wakeProof?: VerifiedProtectedTaskWakeContinuation): BackgroundAuthorizationTaskRuntimeRecordV3 {
   timestamp("Task Runtime authority replacement time", input.now);
   const expected = parseBackgroundAuthorizationRecord(input.expected);
   const replacement = parseBackgroundAuthorizationRecord(input.replacement);
@@ -2398,19 +3200,35 @@ export function buildUnclaimedTaskRuntimeAuthorityReplacement(input: Readonly<{
     || current.snapshot.namespaceId !== nextPlan.snapshot.namespaceId
     || JSON.stringify(current.snapshot.credentialSubject)
       !== JSON.stringify(nextPlan.snapshot.credentialSubject)
-    || current.idempotencyKey !== nextPlan.idempotencyKey
-    || !isTaskRuntimeStableIdempotencyKey(
-      current.idempotencyKey,
-      current.snapshot.workId,
-    )
-    || current.workKind !== "task.execute"
+    || (kind !== "mapped_head" && current.idempotencyKey !== nextPlan.idempotencyKey)
+    || (kind === "cancellation"
+      ? current.expectedPolicyRevision > nextPlan.expectedPolicyRevision
+        || !exactTaskCancellationAuthorityAnchor(current)
+        || !exactTaskCancellationAuthorityAnchor(nextPlan)
+      : kind === "terminal_message"
+        ? current.expectedPolicyRevision > nextPlan.expectedPolicyRevision
+          || !exactTaskTerminalMessageAuthorityAnchor(current)
+          || !exactTaskTerminalMessageAuthorityAnchor(nextPlan)
+        : kind === "parked_wake"
+          ? wakeProof === undefined || current.expectedPolicyRevision > nextPlan.expectedPolicyRevision
+            || !exactParkedWakeCurrentAuthority(current, wakeProof.receipt)
+            || !exactParkedWakeCurrentAuthority(nextPlan, wakeProof.receipt, false)
+          : kind === "output_read"
+          ? current.expectedPolicyRevision > nextPlan.expectedPolicyRevision
+            || !exactTaskOutputReadAuthorityAnchor(current)
+            || !exactTaskOutputReadAuthorityAnchor(nextPlan)
+          : !isTaskRuntimeStableIdempotencyKey(
+          current.idempotencyKey,
+          current.snapshot.workId,
+        )
+          || !isTaskExecutionWorkKind(current.workKind)
+          || !exactTaskRuntimeAuthorityAnchor(current)
+          || !exactTaskRuntimeAuthorityAnchor(nextPlan))
     || nextPlan.workKind !== current.workKind
-    || current.purpose !== "task.execute"
+    || current.purpose !== current.workKind
     || nextPlan.purpose !== current.purpose
     || current.processorAuthorizationRevision !== null
     || nextPlan.processorAuthorizationRevision !== null
-    || !exactTaskRuntimeAuthorityAnchor(current)
-    || !exactTaskRuntimeAuthorityAnchor(nextPlan)
   ) {
     throw new TypeError(
       "Task Runtime authority replacement changed stable work identity",
@@ -2449,8 +3267,8 @@ export function buildDeferredUnstartedTaskRuntimeRequest(input: Readonly<{
   }
   const expected = parsed as BackgroundAuthorizationTaskRuntimeRecordV3;
   if (
-    expected.workKind !== "task.execute"
-    || expected.purpose !== "task.execute"
+    !isTaskExecutionWorkKind(expected.workKind)
+    || expected.purpose !== expected.workKind
     || expected.processorAuthorizationRevision !== null
     || expected.finishedAt !== null
     || !isTaskRuntimeStableIdempotencyKey(
@@ -2479,7 +3297,12 @@ export function buildDeferredUnstartedTaskRuntimeRequest(input: Readonly<{
 export class InMemoryBackgroundAuthorizationRepository
   implements BackgroundAuthorizationTaskRuntimeReplacementRepository,
     BackgroundAuthorizationTaskRuntimeDeferralRepository,
-    BackgroundAuthorizationTaskRuntimeCancellationDiscoveryRepository {
+    BackgroundAuthorizationTaskRuntimeCancellationDiscoveryRepository,
+    BackgroundAuthorizationTaskRuntimeCancellationSettlementRepository,
+    BackgroundAuthorizationTaskCancellationReplacementRepository,
+    BackgroundAuthorizationTaskTerminalMessageReplacementRepository,
+    BackgroundAuthorizationTaskOutputReadReplacementRepository,
+    BackgroundAuthorizationTaskWakeParkRepository {
   readonly #records = new Map<string, BackgroundAuthorizationRecord>();
   readonly #evidence = new Map<string, ProcessorSignerAuthorizationEvidence>();
 
@@ -2591,11 +3414,115 @@ export class InMemoryBackgroundAuthorizationRepository
     return record === undefined ? null : parseBackgroundAuthorizationRecord(record);
   }
 
+  async replaceUnclaimedTaskMappedHeadAuthority(input: TaskRuntimeMappedHeadReplacementInput): Promise<BackgroundAuthorizationTaskRuntimeReplacementResult> {
+    return this.#replaceUnclaimedAuthority(input, checked => buildUnclaimedTaskMappedHeadAuthorityReplacement({ ...input, ...checked }));
+  }
+
   async replaceUnclaimedTaskRuntimeAuthority(input: Readonly<{
     expected: BackgroundAuthorizationTaskRuntimeRecordV3;
     replacement: BackgroundAuthorizationTaskRuntimeRecordV3;
     now: number;
   }>): Promise<BackgroundAuthorizationTaskRuntimeReplacementResult> {
+    return this.#replaceUnclaimedAuthority(input, buildUnclaimedTaskRuntimeAuthorityReplacement);
+  }
+
+  async replaceUnclaimedTaskCancellationAuthority(input: Readonly<{
+    expected: BackgroundAuthorizationTaskRuntimeRecordV3;
+    replacement: BackgroundAuthorizationTaskRuntimeRecordV3;
+    now: number;
+  }>): Promise<BackgroundAuthorizationTaskRuntimeReplacementResult> {
+    return this.#replaceUnclaimedAuthority(input, buildUnclaimedTaskCancellationAuthorityReplacement);
+  }
+
+  async replaceUnclaimedTaskTerminalMessageAuthority(input: Readonly<{
+    expected: BackgroundAuthorizationTaskRuntimeRecordV3;
+    replacement: BackgroundAuthorizationTaskRuntimeRecordV3;
+    now: number;
+  }>): Promise<BackgroundAuthorizationTaskRuntimeReplacementResult> {
+    return this.#replaceUnclaimedAuthority(
+      input,
+      buildUnclaimedTaskTerminalMessageAuthorityReplacement,
+    );
+  }
+
+  async replaceUnclaimedTaskOutputReadAuthority(input: Readonly<{
+    expected: BackgroundAuthorizationTaskRuntimeRecordV3;
+    replacement: BackgroundAuthorizationTaskRuntimeRecordV3;
+    now: number;
+  }>): Promise<BackgroundAuthorizationTaskRuntimeReplacementResult> {
+    return this.#replaceUnclaimedAuthority(input, buildUnclaimedTaskOutputReadAuthorityReplacement);
+  }
+
+  async parkTaskWakeForAdditionalAuthority(input: Readonly<{
+    expected: BackgroundAuthorizationTaskRuntimeRecordV3;
+    replacement: BackgroundAuthorizationTaskRuntimeRecordV3;
+    proof: VerifiedProtectedTaskWakeContinuation;
+    now: number;
+  }>): Promise<BackgroundAuthorizationTaskWakeParkResult> {
+    await input.proof.assertCurrent();
+    const expected = parseBackgroundAuthorizationRecord(input.expected) as
+      BackgroundAuthorizationTaskRuntimeRecordV3;
+    const next = buildParkedTaskWakeAuthorityReplacement(input);
+    const current = this.#records.get(expected.snapshot.requestId) ?? null;
+    if (current !== null && sameBackgroundAuthorizationRecord(current, next)) {
+      await input.proof.assertCurrent();
+      return { status: "exact_replay", record: next };
+    }
+    if (current === null || !sameBackgroundAuthorizationRecord(current, expected)) {
+      return {
+        status: "stale",
+        current: current === null ? null : parseBackgroundAuthorizationRecord(current),
+      };
+    }
+    this.#records.set(next.snapshot.requestId, next);
+    try {
+      await input.proof.assertCurrent();
+    } catch (error) {
+      this.#records.set(expected.snapshot.requestId, expected);
+      throw error;
+    }
+    return { status: "parked", record: next };
+  }
+
+  async renewParkedTaskWakeRecipient(input: Readonly<{
+    expected: BackgroundAuthorizationTaskRuntimeRecordV3;
+    replacement?: BackgroundAuthorizationTaskRuntimeRecordV3;
+    proof: VerifiedProtectedTaskWakeContinuation;
+    now: number;
+  }>): Promise<BackgroundAuthorizationTaskWakeRecipientRenewalResult> {
+    await input.proof.assertCurrent();
+    const expected = parseBackgroundAuthorizationRecord(input.expected) as
+      BackgroundAuthorizationTaskRuntimeRecordV3;
+    const current = this.#records.get(expected.snapshot.requestId) ?? null;
+    if (current === null || !sameBackgroundAuthorizationRecord(
+      current,
+      expected,
+    )) {
+      return {
+        status: "stale",
+        current: current === null
+          ? null : parseBackgroundAuthorizationRecord(current),
+      };
+    }
+    const renewal = rotateExpiredParkedTaskWakeRecipient(input);
+    if (renewal.status !== "rotated") {
+      await input.proof.assertCurrent();
+      return renewal;
+    }
+    this.#records.set(expected.snapshot.requestId, renewal.record);
+    try {
+      await input.proof.assertCurrent();
+    } catch (error) {
+      this.#records.set(expected.snapshot.requestId, expected);
+      throw error;
+    }
+    return renewal;
+  }
+
+  async #replaceUnclaimedAuthority(
+    input: Parameters<typeof buildUnclaimedTaskRuntimeAuthorityReplacement>[0],
+    build: typeof buildUnclaimedTaskRuntimeAuthorityReplacement,
+  ): Promise<BackgroundAuthorizationTaskRuntimeReplacementResult> {
     await Promise.resolve();
     const expected = parseBackgroundAuthorizationRecord(input.expected);
     const current = this.#records.get(expected.snapshot.requestId) ?? null;
@@ -2607,10 +3534,10 @@ export class InMemoryBackgroundAuthorizationRepository
           : parseBackgroundAuthorizationRecord(current),
       };
     }
-    const next = buildUnclaimedTaskRuntimeAuthorityReplacement(input);
+    const next = build(input);
     const collision = [...this.#records.values()].find((record) =>
       record.snapshot.requestId !== next.snapshot.requestId
-      && equalBytes(record.workIdentityHash, next.workIdentityHash)
+      && (equalBytes(record.workIdentityHash, next.workIdentityHash) || record.idempotencyKey === next.idempotencyKey)
     );
     if (collision !== undefined) {
       throw new BackgroundAuthorizationRepositoryConflictError(
@@ -2870,6 +3797,27 @@ export class InMemoryBackgroundAuthorizationRepository
         })
         : null,
     });
+  }
+
+  async settleTaskRuntimeExecutionAuthorities(input: Readonly<{
+    readonly workId: string;
+    readonly namespaceId: string;
+    readonly now: number;
+  }>): Promise<BackgroundAuthorizationTaskRuntimeExecutionSettlementResult> {
+    await Promise.resolve();
+    const records = [...this.#records.values()].filter((record) =>
+      record.snapshot.workId === input.workId
+      && TASK_RUNTIME_EXECUTION_SETTLEMENT_WORK_KINDS.has(record.workKind)
+    );
+    const plan = planTaskRuntimeExecutionAuthoritySettlement({
+      ...input,
+      records,
+    });
+    if (plan.result.status === "conflict") return plan.result;
+    for (const next of plan.updates) {
+      this.#records.set(next.snapshot.requestId, next);
+    }
+    return plan.result;
   }
 
   async pruneTerminal(input: Readonly<{

@@ -17,6 +17,7 @@ import {
 import { validateTaskModelSelectionForCreate } from "../selection-validation";
 import { grantArtifactExactUserAccess } from "../../file/share-artifact";
 import { normalizeTaskToolWhitelist } from "../../subagents/validate-subagent-whitelist";
+import { createTaskForCurrentContentPolicy } from "../policy-aware-create";
 import { getCapabilityFundingSession } from "../../../runtime/capability-funding";
 import {
   isBoundedPersonalNativeShortcutCreate,
@@ -74,7 +75,7 @@ const askPeerSchema = z.object({
   model_id: modelIdParam,
 });
 
-const personalAskPeerSchema = askPeerSchema.omit({
+const artifactFreeAskPeerSchema = askPeerSchema.omit({
   include_focused_artifacts: true,
   artifact_ids: true,
   sensitivity: true,
@@ -87,6 +88,9 @@ const ASK_PEER_DESCRIPTION =
 
 const PERSONAL_ASK_PEER_DESCRIPTION =
   "Start a plain DM subagent that asks any local server PERSON something and brings their reply back here. Put the EXACT text to send in `message_to_peer`; it is delivered verbatim. Artifact handoff is unavailable for caller-funded peer Tasks. The subagent waits for the peer's human reply, then reports back to this chat.";
+
+const PROTECTED_ASK_PEER_DESCRIPTION =
+  "Start a protected DM subagent that asks any local server PERSON something and brings their reply back here. Put the EXACT text to send in `message_to_peer`; it is delivered verbatim. Artifact handoff is unavailable while Full encryption is active. The subagent waits for the peer's human reply, then reports back to this chat.";
 
 function focusedWorkspaceArtifactIds(
   resources: readonly ResolvedFocusedResource[],
@@ -136,14 +140,17 @@ export function createAskPeerTool(context?: unknown) {
   const capabilityFunding = getCapabilityFundingSession();
   const personalParent = trustedContext?.["personalTaskControls"] === true
     || capabilityFunding !== undefined && capabilityFunding.parentFundingKind !== "server";
+  const fullEncryptionOnly = trustedContext?.["fullEncryptionOnly"] === true;
   const personalOnlyTaskModelIds = Array.isArray(trustedContext?.["personalOnlyTaskModelIds"])
     ? trustedContext["personalOnlyTaskModelIds"] as string[]
     : undefined;
-  const schema = personalParent ? personalAskPeerSchema : askPeerSchema;
+  const schema = personalParent || fullEncryptionOnly ? artifactFreeAskPeerSchema : askPeerSchema;
 
   return new DynamicStructuredTool({
     name: "ask_peer",
-    description: personalParent ? PERSONAL_ASK_PEER_DESCRIPTION : ASK_PEER_DESCRIPTION,
+    description: personalParent
+      ? PERSONAL_ASK_PEER_DESCRIPTION
+      : fullEncryptionOnly ? PROTECTED_ASK_PEER_DESCRIPTION : ASK_PEER_DESCRIPTION,
     schema,
     func: async (rawArgs) => {
       const args = rawArgs as AskPeerArgs;
@@ -217,6 +224,15 @@ export function createAskPeerTool(context?: unknown) {
       const sharedArtifacts: ChatArtifactRef[] = [];
       let expectedArtifactPeerActorId: string | undefined;
       if (requestedArtifactIds.length > 0) {
+        const canUseLegacyTaskContent = rt.canUseLegacyTaskContent
+          ? await rt.canUseLegacyTaskContent()
+          : true;
+        if (!canUseLegacyTaskContent) {
+          return JSON.stringify({
+            status: "not_contacted",
+            message: "Artifact handoff is unavailable while protected Task content is active. The peer was not contacted and no access was shared.",
+          });
+        }
         const shareAccess = ctx.memoryAccessEnvelope?.toolPolicy["share_artifact"];
         if (shareAccess === undefined || shareAccess === "forbidden" || shareAccess === "read_only") {
           return JSON.stringify({
@@ -324,7 +340,7 @@ export function createAskPeerTool(context?: unknown) {
       };
       let created: Awaited<ReturnType<typeof rt.createTask>>;
       try {
-        created = await rt.createTask(input);
+        created = await createTaskForCurrentContentPolicy(rt, input);
       } catch (error) {
         if (sharedArtifacts.length === 0) throw error;
         return JSON.stringify({

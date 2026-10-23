@@ -21,6 +21,8 @@ import {
   withProtectedCurrentNamespaceKeyring,
   type ProtectedNamespaceKeyringMaterial,
 } from "../invocation/protected-namespace-keyring.ts";
+import type { EncryptionDataOperationOwner } from
+  "../transition/encryption-data-operation-owner.ts";
 
 const CHECKPOINT_CELL_KEY_DOMAIN =
   "nautilo/lattice-crypto/checkpoint-cell-key/v1";
@@ -74,6 +76,14 @@ export type ProtectedCheckpointCellCoordinate =
       index: number;
       channel: string;
     }>;
+
+/** Public ciphertext binding only; never selects current authorization or keys. */
+export type ProtectedCheckpointAadBinding = Readonly<{
+  namespaceId: string;
+  domainId: string;
+  namespaceAccessRevision: number;
+  policyRevision: number;
+}>;
 
 export type ProtectedCheckpointInvocationScope = Readonly<{
   logicalThreadId: string;
@@ -185,6 +195,61 @@ export interface ProtectedCheckpointCellCrypto {
     ciphertext: Uint8Array;
     signal: AbortSignal;
   }>): Promise<Uint8Array>;
+}
+
+/**
+ * Route one complete checkpoint operation through the shared representation
+ * owner while retaining the existing authority, cell and storage protocol.
+ * The selected closure is executed only from consume/publish, so an operation
+ * failure cannot be mistaken for a failed protected preparation and replayed.
+ */
+export function bindProtectedCheckpointCellDataOperationOwner(input: Readonly<{
+  owner: EncryptionDataOperationOwner;
+  crypto: ProtectedCheckpointCellCrypto;
+}>): ProtectedCheckpointCellCrypto {
+  const prepare = <Value>(operation: Readonly<{
+    operation: ProtectedCheckpointAuthorizationOperation;
+    scope: ProtectedCheckpointInvocationScope;
+    execute(
+      context: ProtectedCheckpointAuthorizedOperationContext,
+    ): Promise<Value>;
+  }>) => Promise.resolve(Object.freeze({
+    execute: () => input.crypto.executeAuthorizedOperation(operation),
+  }));
+
+  return Object.freeze({
+    async executeAuthorizedOperation<Value>(operation: Readonly<{
+      operation: ProtectedCheckpointAuthorizationOperation;
+      scope: ProtectedCheckpointInvocationScope;
+      execute(
+        context: ProtectedCheckpointAuthorizedOperationContext,
+      ): Promise<Value>;
+    }>): Promise<Value> {
+      if (operation.operation === "read") {
+        const selected = await input.owner.read<
+          never,
+          Readonly<{ execute(): Promise<Value> }>,
+          Value
+        >({
+          protected: () => prepare(operation),
+          consumeOrdinary: value => value,
+          consumeProtected: prepared => prepared.execute(),
+        });
+        return selected.value;
+      }
+      return input.owner.mutate({
+        protected: () => prepare(operation),
+        dual: () => prepare(operation),
+        publish: prepared => prepared.execute(),
+      });
+    },
+    seal: (
+      operation: Parameters<ProtectedCheckpointCellCrypto["seal"]>[0],
+    ) => input.crypto.seal(operation),
+    open: (
+      operation: Parameters<ProtectedCheckpointCellCrypto["open"]>[0],
+    ) => input.crypto.open(operation),
+  });
 }
 
 export type ProtectedCheckpointCryptoErrorCode =
@@ -382,13 +447,14 @@ function cellAad(
   domainId: string,
   generation: number,
   coordinate: ProtectedCheckpointCellCoordinate,
+  retained?: ProtectedCheckpointAadBinding,
 ): Uint8Array {
   return textEncoder.encode(JSON.stringify([
     CHECKPOINT_CELL_AAD_DOMAIN,
-    scope.namespaceId,
-    domainId,
-    scope.expectedAccessRevision,
-    scope.expectedPolicyRevision,
+    retained?.namespaceId ?? scope.namespaceId,
+    retained?.domainId ?? domainId,
+    retained?.namespaceAccessRevision ?? scope.expectedAccessRevision,
+    retained?.policyRevision ?? scope.expectedPolicyRevision,
     generation,
     ...canonicalCoordinate(coordinate),
   ]));
@@ -514,12 +580,23 @@ export function createProtectedCheckpointCellCrypto(input: Readonly<{
   authority: ProtectedCheckpointCellAuthorityPort;
   domainId: string;
   entrypointId: ProtectedCheckpointEntrypointId;
+  /** Authenticated parked ciphertext metadata, independent of the current scope. */
+  aadBinding?: ProtectedCheckpointAadBinding;
 }>): ProtectedCheckpointCellCrypto {
   if (!portableText(input.domainId)) {
     throw new ProtectedCheckpointCryptoError(
       "scope_invalid",
       "protected checkpoint Domain id is invalid",
     );
+  }
+  const aadBinding = input.aadBinding === undefined ? undefined
+    : Object.freeze({ ...input.aadBinding });
+  if (aadBinding !== undefined && (!portableText(aadBinding.namespaceId)
+    || !portableText(aadBinding.domainId)
+    || !Number.isSafeInteger(aadBinding.namespaceAccessRevision)
+    || aadBinding.namespaceAccessRevision < 0
+    || !Number.isSafeInteger(aadBinding.policyRevision) || aadBinding.policyRevision < 1)) {
+    throw new ProtectedCheckpointCryptoError("scope_invalid", "checkpoint ciphertext binding is invalid");
   }
   const active = new WeakMap<AbortSignal, ActiveCellOperation>();
 
@@ -528,6 +605,11 @@ export function createProtectedCheckpointCellCrypto(input: Readonly<{
     signal: AbortSignal,
     expected: "read" | "write",
   ): ActiveCellOperation {
+    if (aadBinding !== undefined && (aadBinding.namespaceId !== scope.namespaceId
+      || aadBinding.namespaceAccessRevision > scope.expectedAccessRevision
+      || aadBinding.policyRevision > scope.expectedPolicyRevision)) {
+      throw new ProtectedCheckpointCryptoError("scope_invalid", "checkpoint ciphertext binding changed Namespace or moved backwards");
+    }
     const operation = active.get(signal);
     if (operation === undefined) {
       throw new ProtectedCheckpointCryptoError(
@@ -671,6 +753,7 @@ export function createProtectedCheckpointCellCrypto(input: Readonly<{
           operation.material.domainId,
           generation,
           request.coordinate,
+          aadBinding,
         );
         body = input.crypto.aeadSeal(key, request.plaintext, aad);
         assertActiveContext(operation.context);
@@ -712,6 +795,7 @@ export function createProtectedCheckpointCellCrypto(input: Readonly<{
           operation.material.domainId,
           cell.generation,
           request.coordinate,
+          aadBinding,
         );
         const plaintext = input.crypto.aeadOpen(key, cell.body, aad);
         if (plaintext === null) {

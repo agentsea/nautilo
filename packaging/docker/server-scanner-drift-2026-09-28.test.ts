@@ -14,7 +14,7 @@ const readJson = (path: string): unknown => JSON.parse(readFileSync(join(import.
 const fixture = readJson("fixtures/server-scanner-drift-2026-09-28.json") as {
   architectures: Record<Architecture, FindingTuple[]>;
 };
-const source = readJson("server-vulnerability-exceptions.input.json") as Pick<VulnerabilityPolicyV1, "exceptions">;
+const source = readJson("fixtures/server-policy-before-security-renewal-2026-10-23.json") as Pick<VulnerabilityPolicyV1, "exceptions">;
 const architectures: Architecture[] = ["linux/amd64", "linux/arm64"];
 const expected: FindingTuple[] = [
   ["grype", "CVE-2026-88372", "libsndfile1", "1.2.2-2+deb13u1", "high", false],

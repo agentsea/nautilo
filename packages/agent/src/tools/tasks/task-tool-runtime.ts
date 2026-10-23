@@ -79,6 +79,36 @@ export interface TaskToolCreateInput {
   requestedModelId?: string | null;
 }
 
+/** Content and operational changes admitted by the server for one current
+ * protected native root Task. This carries invocation identity only; the live
+ * foreground owner remains the sole source of encryption authority. */
+export interface TaskToolProtectedUpdateInput {
+  readonly taskId: string;
+  readonly ownerId: string;
+  readonly requestorId: string;
+  readonly agentId: string;
+  readonly callingRoomId: string;
+  readonly prompt?: string;
+  readonly expectedOutput?: string;
+  readonly scheduleKind?: "now" | "one_shot" | "cron";
+  readonly runAt?: Date;
+  readonly cron?: string;
+  readonly timezone?: string;
+  readonly targetChat?: "orphan" | "last_in_namespace" | "new_in_namespace";
+  readonly resultDelivery?: "wake" | "raw" | "raw_and_wake";
+  readonly toolsMode?: "auto" | "none" | "whitelist";
+  readonly toolsWhitelist?: readonly string[];
+  readonly timeLimitSeconds?: number;
+  readonly selectionProfile?: SelectionProfile;
+  readonly selectionSpec?: ComboSpec;
+  readonly requestedModelId?: string | null;
+}
+
+export type TaskToolProtectedUpdateResult = Readonly<Pick<Task,
+  "id" | "ownerId" | "status" | "scheduleKind" | "targetChat" |
+  "nextFireAt" | "resultDelivery"
+>>;
+
 /** A deliberate provider-neutral external execution selection. Native task
  * creation stays on {@link TaskToolRuntime.createTask}; this narrow shape is
  * routed through the server, which alone authors sealed execution metadata. */
@@ -124,8 +154,7 @@ export interface TaskToolClaudeCodeHarnessCreateInput {
   readonly harnessModelId?: string;
 }
 
-/** Dormant OpenCode ACP admission seam. The public task schema and dispatcher
- * do not expose this provider until the activation vertical is composed. */
+/** OpenCode ACP creates only the autonomous shape accepted by its mounted executor. */
 export interface TaskToolOpenCodeAcpHarnessCreateInput {
   readonly ownerId: string;
   readonly requestorId: string;
@@ -133,7 +162,7 @@ export interface TaskToolOpenCodeAcpHarnessCreateInput {
   readonly prompt: string;
   readonly callingRoomId: string | null;
   readonly harness: "opencode-acp";
-  readonly executionProfile: "interactive" | "autonomous" | "plan";
+  readonly executionProfile: "autonomous";
 }
 
 export type TaskToolHarnessCreateInput =
@@ -273,10 +302,29 @@ export interface TaskToolRuntime {
     input: TaskToolCreateInput,
   ): Promise<{ taskId: string; status: string; nextFireAt?: Date | undefined }>;
   /**
+   * Server-owned protected publication for the same native Task intent.
+   * The server supplies the trusted foreground authority and device custody;
+   * this seam carries no authority material and remains optional until that
+   * production path is composed.
+  */
+  createProtectedTask?(
+    this: void,
+    input: TaskToolCreateInput,
+  ): Promise<{ taskId: string; status: string; nextFireAt?: Date | undefined }>;
+  /** Server-owned protected update under the current foreground Lattice grant. */
+  updateProtectedTask?(
+    this: void,
+    input: TaskToolProtectedUpdateInput,
+  ): Promise<TaskToolProtectedUpdateResult>;
+  /**
    * Server-owned harness admission. Optional during bootstrap/test
    * wiring so legacy Native task callers retain their established seam.
    */
   createHarnessTask?(
+    input: TaskToolHarnessCreateInput,
+  ): Promise<TaskToolHarnessCreateResult>;
+  /** Protected creation borrows the current foreground Lattice owner. */
+  createProtectedHarnessTask?(
     input: TaskToolHarnessCreateInput,
   ): Promise<TaskToolHarnessCreateResult>;
   listHarnessModels?(input: {

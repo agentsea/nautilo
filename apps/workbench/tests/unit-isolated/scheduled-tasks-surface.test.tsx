@@ -6,6 +6,8 @@ import type { ScheduledTasksState } from
   "../../src/pages/scheduled-tasks/use-scheduled-tasks";
 
 const refresh = mock(async () => {});
+const openProtectedHistory = mock(() => {});
+const closeProtectedHistory = mock(() => {});
 
 function ordinaryTask(id: string): TaskSummary {
   return {
@@ -27,10 +29,16 @@ const baseState: ScheduledTasksState = {
   protectedTasks: [],
   protectedLoading: false,
   protectedError: null,
+  protectedController: undefined,
+  protectedMode: "plaintext_only",
+  protectedScopeKey: "plain-scope",
+  protectedHistory: null,
   loading: false,
   error: null,
   busyIds: new Set<string>(),
   refresh,
+  openProtectedHistory,
+  closeProtectedHistory,
   disable: () => {},
   enable: () => {},
   remove: () => {},
@@ -51,6 +59,8 @@ describe("ScheduledTasksSurface protected refresh failures", () => {
     reapplyHappyDomGlobals();
     cleanup();
     refresh.mockClear();
+    openProtectedHistory.mockClear();
+    closeProtectedHistory.mockClear();
     scheduledState = baseState;
   });
 

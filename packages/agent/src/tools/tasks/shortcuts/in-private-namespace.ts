@@ -13,6 +13,7 @@ import {
   type ShortcutContext,
 } from "./shortcut-context";
 import { validateTaskModelSelectionForCreate } from "../selection-validation";
+import { createTaskForCurrentContentPolicy } from "../policy-aware-create";
 import { getCapabilityFundingSession } from "../../../runtime/capability-funding";
 
 /**
@@ -93,7 +94,7 @@ export function createInPrivateNamespaceTool(context?: unknown) {
           : {}),
         ...(args.model_id !== undefined ? { requestedModelId: args.model_id } : {}),
       };
-      const { taskId, status } = await rt.createTask(input);
+      const { taskId, status } = await createTaskForCurrentContentPolicy(rt, input);
       return JSON.stringify({
         taskId,
         status,

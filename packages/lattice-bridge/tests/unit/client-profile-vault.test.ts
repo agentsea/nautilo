@@ -29,6 +29,7 @@ describe("shared client profile vault", () => {
       "public-enumeration",
       "abort-preserves-active",
       "interrupted-activation",
+      "exact-staged-recovery",
       "wrapping-key-rotation",
       "lock-and-unlock",
       "forget",

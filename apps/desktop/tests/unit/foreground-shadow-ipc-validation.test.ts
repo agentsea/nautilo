@@ -6,6 +6,7 @@ import {
   foregroundShadowString,
   parseForegroundShadowEdit,
   parseForegroundShadowPendingAttention,
+  parseForegroundShadowTaskPendingAttention,
 } from "../../electron/foreground-shadow-ipc-validation";
 
 describe("Desktop foreground Shadow IPC validation", () => {
@@ -56,6 +57,13 @@ describe("Desktop foreground Shadow IPC validation", () => {
       ...valid,
       clientActionSessionId: "",
     })).toThrow("Session id is invalid");
+
+    const taskValid = { clientActionSessionId: "session-1" };
+    expect(parseForegroundShadowTaskPendingAttention(taskValid)).toEqual(taskValid);
+    expect(() => parseForegroundShadowTaskPendingAttention({
+      ...taskValid,
+      taskId: "renderer-selected-task",
+    })).toThrow("input is invalid");
   });
 
   test("admits only a bounded history page with acknowledgement metadata", () => {

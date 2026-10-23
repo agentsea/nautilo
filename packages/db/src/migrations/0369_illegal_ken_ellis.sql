@@ -1,0 +1,2 @@
+ALTER TABLE "task_terminal_message_crypto_staging_receipts" ADD COLUMN "raw_result_message_intent" jsonb;--> statement-breakpoint
+ALTER TABLE "task_terminal_message_crypto_staging_receipts" ADD CONSTRAINT "task_terminal_message_staging_raw_intent_object" CHECK ("task_terminal_message_crypto_staging_receipts"."raw_result_message_intent" is null or jsonb_typeof("task_terminal_message_crypto_staging_receipts"."raw_result_message_intent") = 'object');

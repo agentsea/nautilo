@@ -12,6 +12,8 @@ type Common = Pick<OpenMemoryOperationInput, "ports" | "budget" | "commitmentKey
   db: DirectDatabase;
   resolveServiceModel(): string;
   assertAvailable(): Promise<void>;
+  /** Pure injection seam for funding-boundary tests. */
+  createInvoker?: typeof createRoomSideModelInvoker;
 };
 
 export type ProtectedStenographerFundingClaim =
@@ -148,7 +150,7 @@ export function createStenographerMemoryFunding(input: Common) {
     return {
       modelId: admitted.modelId,
       assertCurrent: () => admitted.assertCurrent(),
-      invoke: createRoomSideModelInvoker({ modelId: admitted.modelId,
+      invoke: (input.createInvoker ?? createRoomSideModelInvoker)({ modelId: admitted.modelId,
         ...(admitted.humanUserId === null ? {} : { userId: admitted.humanUserId }),
         roomId: claim.roomId, laneKey: `room:${claim.roomId}:${stage}`, operationId: operationKey,
         callType: stage === "extraction" ? "room_stenographer" : "room_event_compaction",
@@ -156,7 +158,12 @@ export function createStenographerMemoryFunding(input: Common) {
           modelFallbackMode: "none",
           sameModelRetryMode: "none",
         },
-        ...(admitted.fundingSession === undefined ? {} : { fundingSession: admitted.fundingSession }),
+        ...(!protectedEvidence ? { allowUnpinnedSurplusRetry: true as const } : {}),
+        ...(admitted.fundingSession === undefined ? {} : {
+          fundingSession: protectedEvidence
+            ? admitted.fundingSession
+            : Object.freeze({ ...admitted.fundingSession, allowUnpinnedSurplusRetry: true as const }),
+        }),
         assertCurrent: () => admitted.assertCurrent(),
       }),
     };

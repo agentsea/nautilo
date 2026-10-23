@@ -182,7 +182,7 @@ function requiresDirectImageTransport(
   }
 }
 
-function assertSamePayerDirectFallback(
+function assertAdmittedDirectFallback(
   prior: AdmittedCapabilityMedia,
   direct: AdmittedCapabilityMedia,
   model: ImageModelConfig,
@@ -190,8 +190,10 @@ function assertSamePayerDirectFallback(
   if (direct.modelId !== model.id || direct.family !== "image") {
     throw new Error("The direct image fallback changed the selected model.");
   }
+  const ownPersonalRecovery = prior.funding.provider === "surplus"
+    && prior.funding.binding.kind === "server" && direct.funding.binding.kind === "personal";
   if (direct.funding.humanUserId !== prior.funding.humanUserId
-    || direct.funding.binding.kind !== prior.funding.binding.kind) {
+    || (direct.funding.binding.kind !== prior.funding.binding.kind && !ownPersonalRecovery)) {
     throw new Error("The direct image fallback changed the admitted payer.");
   }
   if (direct.funding.provider !== model.provider
@@ -450,7 +452,7 @@ When telling the user where the images are, ALWAYS use the exact 'path' value ve
                 transport: "direct",
                 prior: funded.funding,
               });
-              assertSamePayerDirectFallback(funded, direct, modelEntry);
+              assertAdmittedDirectFallback(funded, direct, modelEntry);
               actualProvider = direct.funding.provider;
               result = await runFundedDirectAttempt(direct);
             }
@@ -470,7 +472,7 @@ When telling the user where the images are, ALWAYS use the exact 'path' value ve
       } catch (err) {
         if (err instanceof ServerProviderCredentialsDeniedError) throw err;
         const msg = err instanceof Error ? err.message : String(err);
-        warn(`[generate_image] failed: ${msg}`);
+        warn("[generate_image] failed code=IMAGE_PROVIDER_FAILED");
         return `Error: ${msg}`;
       }
 
@@ -488,9 +490,9 @@ When telling the user where the images are, ALWAYS use the exact 'path' value ve
           targetNamespaceId,
           ...(deps.publication === undefined ? {} : { deps: deps.publication }),
         });
-      } catch (error) {
+      } catch {
         try {
-          warn(`[generate_image] unexpected publication failure after generation: ${error instanceof Error ? error.message : String(error)}`);
+          warn("[generate_image] unexpected publication failure after generation code=IMAGE_PUBLICATION_FAILED");
         } catch {
           // Diagnostics must not replace the paid provider result.
         }

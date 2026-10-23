@@ -69,7 +69,7 @@ function historyRecords(source: ProtectedSource): readonly RoomHistoryShadowReco
   const ordinaryBytes = source.ordinaryPayloadBytesBase64url === null ? null : bytes(source.ordinaryPayloadBytesBase64url);
   try {
     const payload = ordinaryBytes === null ? null : decodePayload(ordinaryBytes);
-    return source.history.records.map(record => {
+    return source.history.records.filter(record => record.kind !== "task_runtime").map(record => {
       const projection = record.protectedMessage.projection;
       const projectionSource = { role: projection.role,
         ...(projection.logicalMessageKey === undefined ? {} : { logicalMessageKey: projection.logicalMessageKey }),
@@ -149,7 +149,9 @@ export function createDeviceMessageBackfillClient(input: Readonly<{
           messageId: claim.coordinate.messageId, revision: claim.coordinate.revision}} : {})};
   };
   const withProfile = async <Value>(use: (profile: Awaited<ReturnType<typeof authenticateClientDeviceProfileV4>>) => Value | Promise<Value>) => {
-    if ((await input.vault.availability()).status !== "available") fail("key_waiting");
+    let availability = await input.vault.availability();
+    if (availability.status === "locked") availability = await input.vault.unlock();
+    if (availability.status !== "available") fail("key_waiting");
     return input.vault.withOpenProfile(input.coordinates, async profileBytes => {
       const profile = await authenticateClientDeviceProfileV4({ crypto: input.crypto, profileBytes,
         expectedDeviceId: input.coordinates.deviceId });
@@ -379,8 +381,20 @@ export function createDeviceMessageBackfillClient(input: Readonly<{
         }
         if (claim === undefined || failure === "cancelled") return waiting();
         const outcome = observedFailure ?? (failure === "integrity" ? "integrity_failure" : failure === "unsupported" ? "unsupported" : "waiting_for_authority");
-        const acknowledged = await acknowledge(claim, outcome, { sourceDigestBase64url: null, manifestDigestBase64url: null }, signal);
-        return afterAcknowledgement(claim, acknowledged, outcome);
+        try {
+          const acknowledged = await acknowledge(claim, outcome, { sourceDigestBase64url: null, manifestDigestBase64url: null }, signal);
+          return afterAcknowledgement(claim, acknowledged, outcome);
+        } catch (acknowledgementError) {
+          if (signal.aborted) return waiting();
+          const acknowledgementFailure = classifyDataOperationFailure(
+            acknowledgementError,
+          );
+          if (acknowledgementFailure === "key_waiting"
+            || acknowledgementFailure === "recoverable_availability") {
+            return retryStale(claim);
+          }
+          throw acknowledgementError;
+        }
       }
     },
   });

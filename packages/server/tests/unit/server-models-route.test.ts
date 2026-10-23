@@ -114,7 +114,7 @@ const modelConfig: ResolvedServerModelConfig = {
 };
 
 describe("server-models parseUpdateBody — reasoningOutput", () => {
-  test("Surplus-only admission is limited to foreground model settings", () => {
+  test("Surplus-only admission covers implemented server-funded chat roles", () => {
     const previous = process.env["VENICE_API_KEY"];
     try {
       delete process.env["VENICE_API_KEY"];
@@ -129,13 +129,52 @@ describe("server-models parseUpdateBody — reasoningOutput", () => {
         .toEqual({ ok: true, patch: { fallbackChain: [QUALIFIED_SURPLUS_ROUTE.catalogModelId] } });
       for (const field of ["conductorModel", "stenographerModel", "reflectionModel", "memoryReviewModel"] as const) {
         const result = parseUpdateBodyForTests({ [field]: QUALIFIED_SURPLUS_ROUTE.catalogModelId }, undefined, surplus);
-        expect(result.ok).toBe(false);
-        if (!result.ok) expect(result.error).toContain("credential");
+        expect(result.ok).toBe(true);
       }
     } finally {
       if (previous === undefined) delete process.env["VENICE_API_KEY"];
       else process.env["VENICE_API_KEY"] = previous;
     }
+  });
+
+  test("Surplus-only Memory Review still requires a tool-capable signed route", () => {
+    const previous = process.env["VENICE_API_KEY"];
+    try {
+      delete process.env["VENICE_API_KEY"];
+      const surplus = {
+        policyEnabled: true,
+        keyConfigured: true,
+        routes: [{ ...QUALIFIED_SURPLUS_ROUTE, supportsTools: false }],
+      };
+      expect(parseUpdateBodyForTests({ conductorModel: QUALIFIED_SURPLUS_ROUTE.catalogModelId }, undefined, surplus))
+        .toEqual({ ok: true, patch: { conductorModel: QUALIFIED_SURPLUS_ROUTE.catalogModelId } });
+      const memory = parseUpdateBodyForTests({ memoryReviewModel: QUALIFIED_SURPLUS_ROUTE.catalogModelId }, undefined, surplus);
+      expect(memory.ok).toBe(false);
+      if (!memory.ok) expect(memory.error).toContain("credential");
+    } finally {
+      if (previous === undefined) delete process.env["VENICE_API_KEY"];
+      else process.env["VENICE_API_KEY"] = previous;
+    }
+  });
+
+  test("media selection accepts only policy-enabled, credential-backed Surplus eligibility", () => {
+    const projectedMedia = (
+      kind: keyof typeof MEDIA_MODELS,
+      surplus?: { readonly policyEnabled: boolean; readonly keyConfigured: boolean },
+    ) => MEDIA_MODELS[kind].map((model) => ({
+      ...model,
+      available: model.available || Boolean(surplus?.policyEnabled && surplus.keyConfigured),
+    }));
+    const id = "venice:minimax-h3-enhanced-text-to-video";
+    expect(parseUpdateBodyForTests({ videoModel: id }, projectedMedia, {
+      policyEnabled: true,
+      keyConfigured: true,
+    })).toEqual({ ok: true, patch: { videoModel: id } });
+    const disabled = parseUpdateBodyForTests({ videoModel: id }, projectedMedia, {
+      policyEnabled: false,
+      keyConfigured: true,
+    });
+    expect(disabled.ok).toBe(false);
   });
 
   test("can disable Surplus with retained defaults and chain when the original key is absent", async () => {
@@ -413,9 +452,24 @@ describe("server-models route authorization, partial writes, and audit", () => {
           .toMatchObject({ availability: "selectable" });
       }
       expect(enabled.catalogModels.find((model) => model.id === "openrouter:typesafe/jev-1.13"))
-        .toMatchObject({ availability: "missing_credentials" });
+        .toMatchObject({ availability: "selectable" });
       expect(enabled.catalogModels.find((model) => model.id === "venice:gpt-image-2"))
+        .toMatchObject({ availability: "selectable" });
+      expect(enabled.catalogModels.find((model) => model.id === "venice:seedance-2-5-text-to-video-basic"))
+        .toMatchObject({ availability: "selectable" });
+      expect(enabled.catalogModels.find((model) => model.id === "venice:minimax-music-v26"))
+        .toMatchObject({ availability: "selectable" });
+      expect(enabled.catalogModels.find((model) => model.id === "venice:sonilo-v1-1-music"))
         .toMatchObject({ availability: "missing_credentials" });
+      for (const id of [
+        "openrouter:typesafe/jev-1.13",
+        "venice:gpt-image-2",
+        "venice:seedance-2-5-text-to-video-basic",
+        "venice:minimax-music-v26",
+      ]) {
+        expect(enabled.catalogModels.find((model) => model.id === id), id)
+          .toMatchObject({ directAvailability: "missing_credentials" });
+      }
 
       const disabled = await read(false);
       expect(disabled).toMatchObject({
@@ -429,6 +483,10 @@ describe("server-models route authorization, partial writes, and audit", () => {
         "fireworks:accounts/fireworks/models/deepseek-v4p1-flash",
         "openrouter:moonshotai/kimi-k2.6",
         "venice:kimi-k3",
+        "openrouter:typesafe/jev-1.13",
+        "venice:gpt-image-2",
+        "venice:seedance-2-5-text-to-video-basic",
+        "venice:minimax-music-v26",
       ]) {
         expect(disabled.catalogModels.find((model) => model.id === id), id)
           .toMatchObject({ availability: "missing_credentials" });
@@ -446,6 +504,10 @@ describe("server-models route authorization, partial writes, and audit", () => {
         "fireworks:accounts/fireworks/models/deepseek-v4p1-flash",
         "openrouter:moonshotai/kimi-k2.6",
         "venice:kimi-k3",
+        "openrouter:typesafe/jev-1.13",
+        "venice:gpt-image-2",
+        "venice:seedance-2-5-text-to-video-basic",
+        "venice:minimax-music-v26",
       ]) {
         expect(missingKey.catalogModels.find((model) => model.id === id), id)
           .toMatchObject({ availability: "missing_credentials" });

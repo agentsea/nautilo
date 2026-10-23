@@ -39,13 +39,28 @@ import {
   type TaskRuntimeAgentObjectAccessGenesisSetAuthorityContextV1,
 } from "./task-runtime-agent-access-manifest-set-v1.ts";
 
-export interface CurrentTaskRuntimeAgentObjectAccessGenesisSetAuthorizationV1 {
+export interface CurrentTaskRuntimeAgentObjectAccessGenesisSetLegacyAuthorizationV1 {
   /** Transaction-bound storage supplied by the current-authority owner. */
   readonly storage: ObjectAccessStateCasStorageV2;
   readonly currentRuntime: AgentRuntimeRotationStateV2;
   readonly signerPublication: AgentRuntimeSignerPublicationV1;
   readonly currentManagerSigningPublicKey: Uint8Array;
 }
+
+export interface CurrentTaskRuntimeAgentObjectAccessGenesisSetTemporaryAuthorizationV1 {
+  /** Transaction-bound storage supplied by the current-authority owner. */
+  readonly storage: ObjectAccessStateCasStorageV2;
+  readonly temporarySigner: Readonly<{
+    readonly certificateBytes: Uint8Array;
+    readonly issuerSigningPublicKey: Uint8Array;
+    readonly requestHash: Uint8Array;
+    readonly authorizationHash: Uint8Array;
+  }>;
+}
+
+export type CurrentTaskRuntimeAgentObjectAccessGenesisSetAuthorizationV1 =
+  | CurrentTaskRuntimeAgentObjectAccessGenesisSetLegacyAuthorizationV1
+  | CurrentTaskRuntimeAgentObjectAccessGenesisSetTemporaryAuthorizationV1;
 
 /**
  * Hold current product and crypto authority around the supplied callback.
@@ -102,7 +117,7 @@ function assertActiveEvidence(
 function currentSignerIsExact(
   crypto: LatticeCrypto,
   context: TaskRuntimeAgentObjectAccessGenesisSetAuthorityContextV1,
-  current: CurrentTaskRuntimeAgentObjectAccessGenesisSetAuthorizationV1,
+  current: CurrentTaskRuntimeAgentObjectAccessGenesisSetLegacyAuthorizationV1,
 ): boolean {
   return agentId(current.currentRuntime.agentId) === context.agentId
     && authorizationRevision(current.currentRuntime.authorizationRevision)
@@ -150,6 +165,44 @@ function manifestUsesCurrentSigner(
           : null,
       resolveProcessorSignerAuthorizationBytes: () => null,
       resolveHistoricalProcessorIssuingDevicePublicKey: () => null,
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function manifestUsesTemporarySigner(
+  crypto: LatticeCrypto,
+  context: TaskRuntimeAgentObjectAccessGenesisSetAuthorityContextV1,
+  prepared: PreparedTaskRuntimeAgentObjectAccessManifestGenesisSetV1,
+  temporary: CurrentTaskRuntimeAgentObjectAccessGenesisSetTemporaryAuthorizationV1["temporarySigner"],
+): boolean {
+  const evidenceBytes = prepared.signerEvidenceBytes;
+  if (evidenceBytes === undefined
+    || !equalBytes(evidenceBytes, temporary.certificateBytes)) return false;
+  try {
+    verifyObjectAccessManifestV5(crypto, {
+      manifestBytes: prepared.manifestBytes,
+      resolveHistoricalHumanDeviceSigningPublicKey: () => null,
+      resolveAgentRuntimeSignerPublicKey: () => null,
+      resolveProcessorSignerAuthorizationBytes: () => null,
+      resolveHistoricalProcessorIssuingDevicePublicKey: () => null,
+      resolveTaskRuntimeSignerAuthorizationBytes: (evidence) =>
+        evidence.signer.agentId === context.agentId
+          && evidence.signer.runtimeGeneration === context.runtimeGeneration
+          && evidence.signer.signerKeyId === context.signerKeyId
+          ? evidenceBytes : null,
+      resolveHistoricalTaskRuntimeIssuer: signerContext =>
+        equalBytes(
+          signerContext.projection.request.requestHash,
+          temporary.requestHash,
+        )
+          && equalBytes(
+            signerContext.projection.request.authorizationHash,
+            temporary.authorizationHash,
+          )
+          ? temporary.issuerSigningPublicKey : null,
     });
     return true;
   } catch {
@@ -221,14 +274,7 @@ export async function persistPreparedTaskRuntimeAgentObjectAccessManifestGenesis
           completedResult = "stale";
           return completedResult;
         };
-        if (
-          !exactFields(current, [
-            "storage",
-            "currentRuntime",
-            "signerPublication",
-            "currentManagerSigningPublicKey",
-          ])
-          || typeof current.storage?.getObject !== "function"
+        if (typeof current?.storage?.getObject !== "function"
           || typeof current.storage?.compareAndSwapObjectAccessState
             !== "function"
         ) return stale();
@@ -247,39 +293,67 @@ export async function persistPreparedTaskRuntimeAgentObjectAccessManifestGenesis
         const payloadHash = input.crypto.hash(persistedObject.payloadBytes);
         const payloadMatches = equalBytes(payloadHash, context.payloadHash);
         payloadHash.fill(0);
-        if (
-          !payloadMatches
-          || !currentSignerIsExact(input.crypto, context, current)
-          || !manifestUsesCurrentSigner(
-            input.crypto,
-            context,
-            input.prepared,
-            current.signerPublication,
-          )
-        ) return stale();
+        if (!payloadMatches) return stale();
+
+        const temporary = "temporarySigner" in current;
+        if (temporary
+          ? !exactFields(current, ["storage", "temporarySigner"])
+            || !exactFields(current.temporarySigner, [
+              "certificateBytes",
+              "issuerSigningPublicKey",
+              "requestHash",
+              "authorizationHash",
+            ])
+            || !manifestUsesTemporarySigner(
+              input.crypto,
+              context,
+              input.prepared,
+              current.temporarySigner,
+            )
+          : input.prepared.signerEvidenceBytes !== undefined
+            || !exactFields(current, [
+              "storage",
+              "currentRuntime",
+              "signerPublication",
+              "currentManagerSigningPublicKey",
+            ])
+            || !currentSignerIsExact(input.crypto, context, current)
+            || !manifestUsesCurrentSigner(
+              input.crypto,
+              context,
+              input.prepared,
+              current.signerPublication,
+            )) return stale();
 
         let publicationBytes: Uint8Array | null = null;
         try {
           assertActiveEvidence(input.evidence, context);
-          publicationBytes = encodeAgentRuntimeSignerPublicationV1(
-            current.signerPublication,
-          );
+          if (!("temporarySigner" in current)) {
+            publicationBytes = encodeAgentRuntimeSignerPublicationV1(
+              current.signerPublication,
+            );
+          }
+          const authorization = "temporarySigner" in current ? {
+            kind: "task-runtime-temporary-agent-genesis-set" as const,
+            context,
+            signerEvidenceBytes: input.prepared.signerEvidenceBytes!,
+          } : {
+            kind: "task-runtime-agent-genesis-set" as const,
+            context,
+            signerPublication: current.signerPublication,
+            signerPublicationHash: input.crypto.hash(publicationBytes!),
+            signerPublicKeyHash: input.crypto.hash(
+              current.signerPublication.signerPublicKey,
+            ),
+            managerSigningPublicKeyHash: input.crypto.hash(
+              current.currentManagerSigningPublicKey,
+            ),
+          };
           const status = await current.storage.compareAndSwapObjectAccessState(
             authorizeObjectAccessWriteV2({
               expected: null,
               intended,
-              authorization: {
-                kind: "task-runtime-agent-genesis-set",
-                context,
-                signerPublication: current.signerPublication,
-                signerPublicationHash: input.crypto.hash(publicationBytes),
-                signerPublicKeyHash: input.crypto.hash(
-                  current.signerPublication.signerPublicKey,
-                ),
-                managerSigningPublicKeyHash: input.crypto.hash(
-                  current.currentManagerSigningPublicKey,
-                ),
-              },
+              authorization,
             }),
           );
           if (!providerOpen) {

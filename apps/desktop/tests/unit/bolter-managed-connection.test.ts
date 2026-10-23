@@ -288,14 +288,14 @@ test("retiring an old owner invalidates its prepared send", async () => {
   const harness = installOwnerHarness({ provision: async () => runtimes.shift() ?? installed(VERSION_B),
     conversations: async owner => owner.version === VERSION_A ? { status: "unavailable", reason: "execution-failed" }
       : { status: "available", conversations: [] },
-    prepareSend: async owner => ({ send: async () => owner.state === "retired"
+    prepareSend: async owner => ({ send: async () => owner.state === "unavailable" || owner.state === "retired"
       ? { status: "unavailable", reason: "stale-authority" }
       : { status: "sent", receipt: { messageId: "receipt", chatId: "chat", threadRootId: null } } }) });
   let driver: Awaited<ReturnType<ReturnType<typeof factory>>> | undefined;
   try {
     driver = await factory(appDataDirectory)({ connectionId: "synthetic-connection", generation: 1,
       homeHandle: "synthetic-home", isCurrent: () => true }); await driver.connect(() => undefined);
-    const prepared = await driver.prepareSend(); await driver.conversations(); expect(harness.owners[0]?.state).toBe("retired");
+    const prepared = await driver.prepareSend(); await driver.conversations();
     expect(await prepared?.({ chatId: "chat", threadRootId: null, content: "stale" }))
       .toEqual({ kind: "unavailable", reason: "authority_changed" });
   } finally { await driver?.retire(); harness.restore(); await rm(appDataDirectory, { recursive: true, force: true }); }

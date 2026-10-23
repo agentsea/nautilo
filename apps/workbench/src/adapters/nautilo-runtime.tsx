@@ -1,4 +1,4 @@
-import { workspaceAttachmentsForSend } from "../lib/composer-pdf-upload";
+import { workspaceAttachmentsForSend } from "../lib/composer-document-upload";
 import { CompanionVoiceContext } from "../companion/companion-voice";
 import {
   useState,
@@ -20,6 +20,7 @@ import {
 } from "@assistant-ui/react";
 import {
   isProtectedMessageRealtimeEventV2,
+  isLiveShadowForegroundAuthorizationRequestV1,
   normalizeHumanMessageText,
   GENIE_APPLICATION_BRIDGE_VERSION_V1,
   type ChatUploadedAttachmentRef,
@@ -40,7 +41,10 @@ import {
 import type {
   MessageBackfillUrgentSelection,
   RoomPendingAttentionRecoveryResponse,
+  TaskPendingAttentionRecoveryResponse,
 } from "@nautilo/api-client/browser";
+import { respondFreshProtectedTaskExternalRequest, type ProtectedTaskExternalRequestClient } from "./protected-task-external-request-response";
+import { recoverCurrentProtectedTaskExternalRequests } from "./protected-task-external-request-recovery";
 import { resumeRealtimeAfterAdmission } from "./admission-realtime-resume";
 import { PinDialog } from "../components/pin-dialog";
 import { mergeFocusedResourcesForSend } from "./focused-resource-send";
@@ -132,6 +136,11 @@ import {
   createDesktopMessageBackfillSchedulerClient,
   type PrioritizedHistoryRefreshResult,
 } from "./message-backfill-scheduler";
+import {
+  createDesktopTaskContentBackfillSchedulerClient,
+  createWorkbenchTaskContentBackfillScheduler,
+  type WorkbenchTaskContentBackfillReadinessPort,
+} from "./task-content-backfill-scheduler";
 import { restoreRoomReadOutcome } from "./room-read-outcome";
 import { createVisibilityGate, shouldHandleVisibility } from "./ws-visibility-gate";
 import { observeWorkbenchHumanActivity } from "./human-activity";
@@ -196,6 +205,7 @@ import {
   deriveBrowserCryptoDeviceId,
   createBrowserRoomHistoryShadowMessageReader,
   createBrowserMessageBackfillClient,
+  createBrowserTaskContentBackfillClient,
   type ProtectedRoomAccessStateV2,
 } from
   "@nautilo/lattice-bridge/client/browser";
@@ -206,7 +216,10 @@ import {
   isProtectedTopLevelRoomKind,
   type MessagePayloadV2,
 } from "@nautilo/lattice-bridge";
-import { projectLiveShadowMessageResult } from
+import {
+  projectLiveShadowMessageResult,
+  resolveLiveShadowMessageDisplayAction,
+} from
   "./live-shadow-message-projection";
 import { sendOrdinaryRoomMessage } from "../lib/ordinary-room-message";
 import {
@@ -306,7 +319,7 @@ import {
   initialApprovalLifecycleState,
   initialPendingApprovalPreviewQueue,
   reduceApprovalLifecycle,
-  reconcilePendingApprovalPreviewSnapshot,
+  reconcilePendingApprovalPreviewSubset,
   resolutionFromVerb,
   settlePendingApprovalPreview,
   shouldQueueApprovalAsk,
@@ -336,6 +349,16 @@ type QueuedPendingAttentionPreview = Readonly<{
   event: PendingAttentionPreviewEvent;
   recovered: boolean;
 }>;
+
+function isQueuedTaskPendingAttention(item: QueuedPendingAttentionPreview): boolean {
+  return isTaskPendingAttentionPreviewEvent(item.event);
+}
+
+function isRecoveredQueuedTaskPendingAttention(
+  item: QueuedPendingAttentionPreview,
+): boolean {
+  return item.recovered && isQueuedTaskPendingAttention(item);
+}
 
 function pendingAttentionPreviewKey(event: PendingAttentionPreviewEvent): string {
   if (event.type === "approval.ask") return `approval:${event.approvalId}`;
@@ -379,13 +402,61 @@ export function isTaskPendingAttentionPreviewEvent(
     && (event.origin === "task" || event.laneKey.startsWith("task:"));
 }
 
+function isTaskAttentionLifecycleEvent(event: ServerEvent): boolean {
+  if (isTaskPendingAttentionPreviewEvent(event)) return true;
+  if (event.type !== "approval.resolved") return false;
+  return ("origin" in event && event.origin === "task")
+    || ("laneKey" in event && typeof event.laneKey === "string"
+      && event.laneKey.startsWith("task:"));
+}
+
+export function taskPendingAttentionRecoveryTrigger(event: ServerEvent): boolean {
+  if (event.type === "task.status" || event.type === "task.completed"
+    || event.type === "task.errored") return true;
+  return event.type === "job.status"
+    && (event.status === "completed" || event.status === "failed"
+      || event.status === "cancelled" || event.status === "timed_out")
+    && event.laneKey?.startsWith("task:") === true;
+}
+
+export function roomHydrationShouldClearPendingAttentionUi(
+  active: ServerEvent | null,
+): boolean {
+  return active === null || !isTaskPendingAttentionPreviewEvent(active);
+}
+
 export function pendingAttentionPreviewIngress(
   event: ServerEvent,
   changesActiveRoomPendingAttention: boolean,
 ): "not-preview" | "direct" | "enqueue" | "drop" {
   if (!isPendingAttentionPreviewEvent(event)) return "not-preview";
-  if (isTaskPendingAttentionPreviewEvent(event)) return "direct";
+  if (isTaskPendingAttentionPreviewEvent(event)) return "enqueue";
   return changesActiveRoomPendingAttention ? "enqueue" : "drop";
+}
+
+export function recoverDesktopTaskPendingAttention(
+  desktopForegroundShadow: Pick<DesktopForegroundShadowAPI, "recoverTaskPendingAttention">,
+  input: Readonly<{
+    clientActionSessionId: string;
+    signal?: AbortSignal;
+    isCurrent?: () => boolean;
+  }>,
+  runWithAdmission: <T>(operation: () => Promise<T>) => Promise<T> = runWithCryptoAdmission,
+): Promise<TaskPendingAttentionRecoveryResponse> {
+  if (input.signal?.aborted || input.isCurrent?.() === false) {
+    return Promise.resolve({ status: "unavailable", events: [] });
+  }
+  if (desktopForegroundShadow.recoverTaskPendingAttention === undefined) {
+    return Promise.resolve({ status: "unavailable", events: [] });
+  }
+  return runWithAdmission(async () => {
+    const result = await desktopForegroundShadow.recoverTaskPendingAttention!({
+      clientActionSessionId: input.clientActionSessionId,
+    });
+    return input.signal?.aborted || input.isCurrent?.() === false
+      ? { status: "unavailable" as const, events: [] }
+      : result;
+  });
 }
 
 export function recoverDesktopRoomPendingAttention(
@@ -1857,6 +1928,39 @@ export function NautiloRuntimeProvider({
           signal?: AbortSignal;
           isCurrent?: () => boolean;
         }>) => recoverDesktopRoomPendingAttention(desktopForegroundShadow, input),
+        recoverTaskPendingAttention: (input: Readonly<{
+          clientActionSessionId: string;
+          signal?: AbortSignal;
+          isCurrent?: () => boolean;
+        }>) => recoverDesktopTaskPendingAttention(desktopForegroundShadow, input),
+        recoverProtectedTaskExternalRequests: (input: Parameters<
+          ProtectedTaskExternalRequestClient["recoverProtectedTaskExternalRequests"]
+        >[0]) => runWithCryptoAdmission(async () => {
+          if (input.signal?.aborted || !input.isCurrent()
+            || desktopForegroundShadow.recoverProtectedTaskExternalRequests === undefined) {
+            return { status: "unavailable" as const, entries: [] as const };
+          }
+          const result = await desktopForegroundShadow.recoverProtectedTaskExternalRequests({
+            clientActionSessionId: input.clientActionSessionId,
+            ...(input.requestId === undefined ? {} : { requestId: input.requestId }),
+          });
+          return input.signal?.aborted || !input.isCurrent()
+            ? { status: "unavailable" as const, entries: [] as const } : result;
+        }),
+        respondProtectedTaskExternalRequest: (input: Parameters<
+          ProtectedTaskExternalRequestClient["respondProtectedTaskExternalRequest"]
+        >[0]) => runWithCryptoAdmission(async () => {
+          if (input.signal?.aborted || !input.isCurrent()
+            || desktopForegroundShadow.respondProtectedTaskExternalRequest === undefined) {
+            return { status: "unavailable" as const };
+          }
+          const result = await desktopForegroundShadow.respondProtectedTaskExternalRequest({
+            clientActionSessionId: input.clientActionSessionId,
+            requestId: input.requestId, responseCapability: input.responseCapability, response: input.response,
+          });
+          return input.signal?.aborted || !input.isCurrent()
+            ? { status: "unavailable" as const } : result;
+        }),
         completePending: () => Promise.resolve(true),
         synchronizeHumanPeerRecipients: (roomId: string, namespaceId: string) =>
           runWithCryptoAdmission(() => desktopForegroundShadow.synchronizeRecipients(roomId, namespaceId)),
@@ -2146,6 +2250,9 @@ export function NautiloRuntimeProvider({
     };
   }, [liveShadowMessageReceiver]);
   const messageBackfillSchedulerRef = useRef<ReturnType<typeof createWorkbenchMessageBackfillScheduler> | null>(null);
+  const taskContentBackfillSchedulerRef = useRef<ReturnType<
+    typeof createWorkbenchTaskContentBackfillScheduler
+  > | null>(null);
   const recipientSyncSchedulerRef = useRef<ReturnType<
     typeof createDomainKeyRecipientSyncScheduler
   > | null>(null);
@@ -2176,6 +2283,71 @@ export function NautiloRuntimeProvider({
       dataOperationOwner: createWorkbenchDataOperationOwner(), onProtectedRoomAccessState: observeProtectedRoomAccess});
   }, [auth.viewer.isVerified, auth.viewer.sessionUserId, auth.viewer.sessionActorId,
     desktopForegroundShadow, desktopForegroundShadowDeviceId, observeProtectedRoomAccess]);
+  const taskContentBackfill = useMemo(() => {
+    if (shadowPolicyMode !== "shadow_encryption"
+      || !auth.viewer.isVerified
+      || auth.viewer.sessionUserId === null
+      || auth.viewer.sessionActorId === null) return undefined;
+    if (isDesktop) {
+      if (desktopForegroundShadow === undefined
+        || desktopForegroundShadowDeviceId === null
+        || desktopForegroundShadow.getTaskContentBackfillProgress === undefined
+        || desktopForegroundShadow.serviceTaskContentBackfill === undefined
+        || desktopForegroundShadow.cancelTaskContentBackfill === undefined) return undefined;
+      const readiness: WorkbenchTaskContentBackfillReadinessPort = {
+        async readTaskProtectionActive({ signal }) {
+          if (signal.aborted) return false;
+          const progress = await runWithCryptoAdmission(
+            () => desktopForegroundShadow.getTaskContentBackfillProgress!(),
+          );
+          return !signal.aborted && progress.status === "ready";
+        },
+      };
+      return Object.freeze({
+        client: createDesktopTaskContentBackfillSchedulerClient({
+          service: () => runWithCryptoAdmission(
+            () => desktopForegroundShadow.serviceTaskContentBackfill!(),
+          ),
+          cancel: () => desktopForegroundShadow.cancelTaskContentBackfill!(),
+        }),
+        readiness,
+      });
+    }
+    if (typeof window === "undefined") return undefined;
+    const installationId = readOrCreateBrowserCryptoInstallationId({
+      serverScope: window.location.origin,
+      userId: auth.viewer.sessionUserId,
+      humanActorId: auth.viewer.sessionActorId,
+    });
+    if (installationId === null) return undefined;
+    return Object.freeze({
+      client: createBrowserTaskContentBackfillClient({
+        api: apiClient,
+        serverScope: window.location.origin,
+        userId: auth.viewer.sessionUserId,
+        humanActorId: auth.viewer.sessionActorId,
+        installationId,
+        dataOperationOwner: createWorkbenchDataOperationOwner(),
+        resolveDeviceAdmissionStatus: () => apiClient.deviceAdmission.status(),
+        onProtectedRoomAccessState: observeProtectedRoomAccess,
+      }),
+      readiness: {
+        async readTaskProtectionActive({ signal }) {
+          if (signal.aborted) return false;
+          const progress = await apiClient.getTaskContentBackfillProgress({ signal });
+          return !signal.aborted && progress.status === "ready";
+        },
+      } satisfies WorkbenchTaskContentBackfillReadinessPort,
+    });
+  }, [
+    auth.viewer.isVerified,
+    auth.viewer.sessionActorId,
+    auth.viewer.sessionUserId,
+    desktopForegroundShadow,
+    desktopForegroundShadowDeviceId,
+    observeProtectedRoomAccess,
+    shadowPolicyMode,
+  ]);
   const localExecutionHistoryScopeRef = useRef(0);
   const roomHistoryShadowReadAdapter = useMemo<
     RoomHistoryShadowReadAdapter | undefined
@@ -2537,8 +2709,12 @@ export function NautiloRuntimeProvider({
     setOrdinaryContentAccessRecoveryGeneration] = useState(0);
   const [clientActionSessionGeneration, setClientActionSessionGeneration] =
     useState(0);
+  const [taskPendingAttentionRecoveryTriggerGeneration,
+    setTaskPendingAttentionRecoveryTriggerGeneration] = useState(0);
   const pendingAttentionLiveSequenceRef = useRef(0);
   const pendingAttentionRecoveryGenerationRef = useRef(0);
+  const taskPendingAttentionLiveSequenceRef = useRef(0);
+  const taskPendingAttentionRecoveryGenerationRef = useRef(0);
   const pendingAttentionReplayRef = useRef(false);
   const pendingAttentionUiScopeGenerationRef = useRef(0);
   const pendingAttentionPreviewQueueRef = useRef<PendingApprovalPreviewQueue<QueuedPendingAttentionPreview>>(
@@ -2832,6 +3008,15 @@ export function NautiloRuntimeProvider({
     undefined,
     initialCodexRequestLifecycleState,
   );
+  // Only renderer memory holds opened provider questions. No response capability
+  // is cached; every explicit answer obtains a fresh signed read first.
+  const protectedExternalRequestIdsRef = useRef(new Set<string>());
+  const protectedExternalRequestGenerationRef = useRef(0);
+  const protectedExternalRequestRecoveryGenerationRef = useRef(0);
+  const [protectedExternalRequestRecoveryTrigger, refreshProtectedExternalRequests] = useReducer(
+    (value: number) => value + 1, 0,
+  );
+  const protectedExternalRequestScopeRef = useRef<(() => boolean) | null>(null);
   const codexRequestLifecycleRef = useRef(codexRequestLifecycle);
   useEffect(() => {
     codexRequestLifecycleRef.current = codexRequestLifecycle;
@@ -2872,12 +3057,17 @@ export function NautiloRuntimeProvider({
         hydration.arrivals.push({ sequence, action });
       }
     }
+    codexRequestLifecycleRef.current = reduceCodexRequestLifecycle(codexRequestLifecycleRef.current, action);
     dispatchCodexRequestLifecycle(action);
   }, []);
-  const codexRequestState = useMemo(
-    () => selectCodexRequestsForRoom(codexRequestLifecycle, activeRoomId, auth.viewer.sessionUserId),
-    [activeRoomId, auth.viewer.sessionUserId, codexRequestLifecycle],
-  );
+  const codexRequestState = useMemo(() => {
+    const state = selectCodexRequestsForRoom(codexRequestLifecycle, activeRoomId, auth.viewer.sessionUserId);
+    return protectedExternalRequestScopeRef.current?.() === true ? state : {
+      ...state,
+      requests: state.requests.filter(view => !protectedExternalRequestIdsRef.current.has(view.event.requestId)),
+    };
+  }, [activeRoomId, auth.viewer.sessionUserId, auth.viewerGeneration,
+    clientActionSessionGeneration, codexRequestLifecycle, admissionResumeGeneration, shadowPolicyMode, wsState]);
 
   //  Ephemeral, renderer-session Auto-Approve mode. Keep it
   // across route remounts and maintenance reloads, but bind it to the exact
@@ -3232,13 +3422,26 @@ export function NautiloRuntimeProvider({
   const roomHistoryAroundControllerRef = useRef<RoomHistoryAroundController | null>(null);
   if (!roomHistoryAroundControllerRef.current) {
     roomHistoryAroundControllerRef.current = createRoomHistoryAroundController({
-      fetchPage: (options) => roomMessageOperationsRef.current.readRoomMessagesAround(options),
+      fetchPage: async (options) => {
+        const viewerKey = viewerKeyRef.current;
+        const viewerGeneration = viewerGenerationRef.current;
+        const admissionGeneration = getCryptoAdmissionSnapshot().generation;
+        const page = await roomMessageOperationsRef.current.readRoomMessagesAround(options);
+        if (
+          viewerKeyRef.current !== viewerKey
+          || viewerGenerationRef.current !== viewerGeneration
+          || !isCryptoAdmissionGenerationCurrent(admissionGeneration)
+        ) throw new Error("Room history access changed while the request was in flight.");
+        return page;
+      },
       getActiveRoomId: () => activeRoomIdRef.current,
       isMessageLoaded: (messageId) =>
         messagesRef.current.some((message) => String(message.id) === messageId),
-      onPage: (page) => {
+      onPage: (page, options) => {
         const restored = restoreSessionMessages(page.messages);
-        messagesRef.current = mergeRoomMessagesAround(messagesRef.current, restored);
+        messagesRef.current = mergeRoomMessagesAround(messagesRef.current, restored, {
+          appendWhenNoOverlap: options.targetOnly,
+        });
         flush();
         drainMountedBackfillPriorityRef.current();
       },
@@ -3755,10 +3958,7 @@ export function NautiloRuntimeProvider({
         }
       }
 
-      if (
-        event.type === "message.shared_agent_authorization_required"
-        || event.type === "message.runtime_invocation_authorization_required"
-      ) {
+      if (isLiveShadowForegroundAuthorizationRequestV1(event)) {
         if (liveShadowMessageClient === undefined) return;
         liveShadowAuthorizationQueueRef.current =
           liveShadowAuthorizationQueueRef.current
@@ -3767,9 +3967,9 @@ export function NautiloRuntimeProvider({
             const authorized = await liveShadowMessageClient
               .authorizeSharedAgentExecution(event);
             if (!authorized && import.meta.env.DEV) {
-              const coordinate = "invocationId" in event
-                ? event.invocationId
-                : event.executionId;
+              const coordinate = "authorizationId" in event
+                ? event.authorizationId
+                : "invocationId" in event ? event.invocationId : event.executionId;
               console.warn(
                 `[live-shadow] Foreground Runtime ${coordinate} authorization was unavailable`,
               );
@@ -3897,10 +4097,18 @@ export function NautiloRuntimeProvider({
                 `[live-shadow] Foreground client rejected ${event.type} at ${result.checkpoint}`,
               );
             }
-            for (const projected of projectLiveShadowMessageResult({
+            const display = resolveLiveShadowMessageDisplayAction({
               event,
               result,
-            })) {
+              activeRoomId: activeRoomIdRef.current,
+            });
+            if (display.kind === "history_refresh") {
+              if (!sameReceivingViewer()) return;
+              await roomHistoryAroundController.load(display.messageId, { targetOnly: true });
+              if (!sameReceivingViewer()) return;
+              return;
+            }
+            for (const projected of display.events) {
               if (result.status !== "failed") protectedProjectedEventsRef.current.add(projected);
               projectedLiveShadowEventRef.current(projected);
             }
@@ -5266,7 +5474,9 @@ export function NautiloRuntimeProvider({
             event.localMcpInstall !== undefined || event.structuredSsh !== undefined ||
             mediaGeneration !== null);
           const askPayload: ApprovalAskPayload = {
-            ...(activeRoomIdRef.current ? { roomId: activeRoomIdRef.current } : {}),
+            ...(!isTaskPendingAttentionPreviewEvent(event) && activeRoomIdRef.current
+              ? { roomId: activeRoomIdRef.current }
+              : {}),
             approvalId: event.approvalId,
             threadId: event.threadId,
             laneKey: event.laneKey,
@@ -5316,10 +5526,14 @@ export function NautiloRuntimeProvider({
               structuredSshHostTrust: event.structuredSsh?.hostTrust,
             })
           ) {
-            pendingAttentionLiveSequenceRef.current += 1;
+            if (isTaskPendingAttentionPreviewEvent(event)) {
+              taskPendingAttentionLiveSequenceRef.current += 1;
+            } else {
+              pendingAttentionLiveSequenceRef.current += 1;
+            }
             dispatchCurrentApprovalLifecycle({ kind: "ask", payload: askPayload, silent: true });
             const previewKey = pendingAttentionPreviewKey(event);
-            const roomId = activeRoomIdRef.current;
+            const roomId = askPayload.roomId ?? null;
             const viewerGeneration = viewerGenerationRef.current;
             const scopeGeneration = pendingAttentionUiScopeGenerationRef.current;
             const isCurrentSubmission = () => isPendingAttentionSubmissionCurrent({
@@ -5330,7 +5544,7 @@ export function NautiloRuntimeProvider({
               currentKey: approvalLifecycleRef.current.pending === null
                 ? null
                 : `approval:${approvalLifecycleRef.current.pending.approvalId}`,
-              currentRoomId: activeRoomIdRef.current,
+              currentRoomId: approvalLifecycleRef.current.pending?.roomId ?? null,
               currentViewerGeneration: viewerGenerationRef.current,
               currentScopeGeneration: pendingAttentionUiScopeGenerationRef.current,
             });
@@ -5371,6 +5585,18 @@ export function NautiloRuntimeProvider({
           }
 
           dispatchCurrentApprovalLifecycle({ kind: "ask", payload: askPayload });
+          break;
+        }
+
+        case "task.external_request.changed": {
+          if (isCodexOwner(event.ownerId, viewerKeyRef.current)) {
+            ++protectedExternalRequestRecoveryGenerationRef.current;
+            if (event.state === "unavailable") {
+              dispatchTrackedCodexRequestLifecycle({ kind: "resolved", requestId: event.requestId });
+              protectedExternalRequestIdsRef.current.delete(event.requestId);
+            }
+            refreshProtectedExternalRequests();
+          }
           break;
         }
 
@@ -5572,6 +5798,7 @@ export function NautiloRuntimeProvider({
       sharedAgentOutputLiveShadowReceiver,
       liveShadowMessageClient,
       roomHistoryShadowReadAdapter,
+      roomHistoryAroundController,
       roomMessageOperations,
       applyConnectedWebActionAttention,
       applyConnectedWebActionResumeFailed,
@@ -5630,16 +5857,20 @@ export function NautiloRuntimeProvider({
     [showRecoveredPendingAttentionPreview],
   );
   enqueuePendingAttentionPreviewRef.current = enqueueRecoveredPendingAttentionPreviews;
-  const reconcileCanonicalPendingAttentionPreviews = useCallback(
-    (events: readonly PendingAttentionPreviewEvent[]): void => {
+  const reconcilePendingAttentionPreviewSource = useCallback(
+    (
+      events: readonly PendingAttentionPreviewEvent[],
+      belongsToSource: (item: QueuedPendingAttentionPreview) => boolean,
+    ): void => {
       const canonical = events
         .filter((event) => event.type !== "approval.ask"
           || shouldQueueApprovalAsk(approvalLifecycleRef.current, event.approvalId))
         .map((event) => ({ key: pendingAttentionPreviewKey(event), event, recovered: true }));
-      const reconciled = reconcilePendingApprovalPreviewSnapshot(
+      const reconciled = reconcilePendingApprovalPreviewSubset(
         pendingAttentionPreviewQueueRef.current,
         canonical,
         (item) => item.key,
+        belongsToSource,
       );
       pendingAttentionPreviewQueueRef.current = reconciled.queue;
       if (reconciled.retainedActive) return;
@@ -5676,9 +5907,21 @@ export function NautiloRuntimeProvider({
     }
   };
   useEffect(() => {
-    pendingAttentionUiScopeGenerationRef.current += 1;
-    pendingAttentionPreviewQueueRef.current = initialPendingApprovalPreviewQueue();
-  }, [activeRoomId, auth.viewerGeneration, viewerKey]);
+    reconcilePendingAttentionPreviewSource(
+      [],
+      (item) => !isTaskPendingAttentionPreviewEvent(item.event),
+    );
+  }, [activeRoomId, reconcilePendingAttentionPreviewSource]);
+  useEffect(() => {
+    reconcilePendingAttentionPreviewSource([], () => true);
+  }, [
+    auth.viewerGeneration,
+    clientActionSessionGeneration,
+    reconcilePendingAttentionPreviewSource,
+    serverOrigin,
+    shadowPolicyMode,
+    viewerKey,
+  ]);
 
   // socket-local automatic actions are consumed before the
   // normal ServerEvent router. Their action IDs live only for this mounted
@@ -5749,7 +5992,8 @@ export function NautiloRuntimeProvider({
       const event = codexRequestLifecycleRef.current.byId[requestId];
       return event?.ownerId === viewerKey &&
         event.roomId === activeRoomId &&
-        event.request.kind === "user_input_required";
+        event.request.kind === "user_input_required"
+        && !protectedExternalRequestIdsRef.current.has(requestId);
     });
     const hydration: NonNullable<typeof codexRequestHydrationRef.current> = {
       generation: ++codexRequestHydrationGenerationRef.current,
@@ -5839,6 +6083,9 @@ export function NautiloRuntimeProvider({
         voicePlayerRef.current?.handleStreamEvent(event);
       },
       onEvent: (event) => {
+        if (taskPendingAttentionRecoveryTrigger(event)) {
+          setTaskPendingAttentionRecoveryTriggerGeneration((generation) => generation + 1);
+        }
         const changesActivePendingAttention = changesPendingAttention(event, {
           roomId: activeRoomIdRef.current,
           userId: viewerKeyRef.current,
@@ -5848,17 +6095,13 @@ export function NautiloRuntimeProvider({
         if (changesActivePendingAttention) {
           pendingAttentionLiveSequenceRef.current += 1;
         }
+        if (isTaskAttentionLifecycleEvent(event)) {
+          taskPendingAttentionLiveSequenceRef.current += 1;
+        }
         const previewIngress = pendingAttentionPreviewIngress(
           event,
           changesActivePendingAttention,
         );
-        if (previewIngress === "direct") {
-          // Preserve 's owner-scoped Task/subagent attention path. These
-          // prompts have task lanes rather than Room lanes and are intentionally
-          // excluded from the Room-bound durable checkpoint queue below.
-          handleWsEventRef.current(event as PendingAttentionPreviewEvent);
-          return;
-        }
         if (previewIngress === "enqueue") {
           enqueuePendingAttentionPreviewRef.current(
             [event as PendingAttentionPreviewEvent],
@@ -6022,11 +6265,15 @@ export function NautiloRuntimeProvider({
       clearAgentStreamingVisibleOutput();
       lastStreamLaneKeyRef.current = null;
       setIsRunning(hasLiveJobForActiveRoom());
-      setShowPinDialog(false);
-      setShowApprovalDialog(false);
-      dispatchCurrentApprovalLifecycle({ kind: "hide" });
-      approvalAskThreadIdRef.current = null;
-      approvalAskLaneKeyRef.current = null;
+      if (roomHydrationShouldClearPendingAttentionUi(
+        pendingAttentionPreviewQueueRef.current.active?.event ?? null,
+      )) {
+        setShowPinDialog(false);
+        setShowApprovalDialog(false);
+        dispatchCurrentApprovalLifecycle({ kind: "hide" });
+        approvalAskThreadIdRef.current = null;
+        approvalAskLaneKeyRef.current = null;
+      }
     }
 
     const cached = backgroundRefresh
@@ -6360,8 +6607,9 @@ export function NautiloRuntimeProvider({
         // Keep existing previews; an unavailable read is not an empty set.
         return;
       }
-      reconcileCanonicalPendingAttentionPreviews(
+      reconcilePendingAttentionPreviewSource(
         result.events.filter(isPendingAttentionPreviewEvent),
+        (item) => !isTaskPendingAttentionPreviewEvent(item.event),
       );
     })().catch(() => {
       // Preserve existing previews on a failed background read. The next
@@ -6381,7 +6629,7 @@ export function NautiloRuntimeProvider({
     authState,
     clientActionSessionGeneration,
     desktopForegroundShadow,
-    reconcileCanonicalPendingAttentionPreviews,
+    reconcilePendingAttentionPreviewSource,
     liveShadowMessageClient,
     pendingAttentionAuthorizationDeviceId,
     roomInitialHydrationState,
@@ -6389,6 +6637,195 @@ export function NautiloRuntimeProvider({
     viewerKey,
     wsState,
   ]);
+
+  // Task attention is owner-scoped and independent of the active Room. The
+  // same foreground custody opens each exact durable TaskRun checkpoint; live
+  // events fence the snapshot so recovery cannot overwrite a newer prompt.
+  useEffect(() => {
+    const clientActionSessionId = currentClientActionSessionIdForResume();
+    if (authState !== "signed-in" || !auth.viewer.isVerified
+      || !viewerKey || !auth.viewer.sessionActorId
+      || wsState !== "open" || !clientActionSessionId
+      || !isCryptoAdmissionAllowed()) return;
+    const protectedMode = shadowPolicyMode === "shadow_encryption"
+      || shadowPolicyMode === "encrypted_only";
+    if (protectedMode && (liveShadowMessageClient === undefined
+      || pendingAttentionAuthorizationDeviceId === null)) return;
+
+    const controller = new AbortController();
+    const recoveryGeneration = ++taskPendingAttentionRecoveryGenerationRef.current;
+    const liveSequenceAtStart = taskPendingAttentionLiveSequenceRef.current;
+    const admissionGeneration = getCryptoAdmissionSnapshot().generation;
+    const viewerGeneration = auth.viewerGeneration;
+    const humanActorId = auth.viewer.sessionActorId;
+    const origin = serverOrigin;
+    const policyMode = shadowPolicyMode;
+    const scopeIsCurrent = (): boolean => !controller.signal.aborted
+      && taskPendingAttentionRecoveryGenerationRef.current === recoveryGeneration
+      && isCryptoAdmissionGenerationCurrent(admissionGeneration)
+      && viewerKeyRef.current === viewerKey
+      && viewerGenerationRef.current === viewerGeneration
+      && humanActorIdRef.current === humanActorId
+      && serverOriginRef.current === origin
+      && shadowPolicyModeRef.current === policyMode
+      && wsStateRef.current === "open"
+      && currentClientActionSessionIdForResume() === clientActionSessionId;
+    const isCurrent = (): boolean => scopeIsCurrent()
+      && taskPendingAttentionLiveSequenceRef.current === liveSequenceAtStart;
+    const clearRecoveredTaskPreviews = (): void => {
+      if (!isCurrent()) return;
+      reconcilePendingAttentionPreviewSource(
+        [],
+        isRecoveredQueuedTaskPendingAttention,
+      );
+    };
+
+    void (async () => {
+      const result = protectedMode
+        ? await liveShadowMessageClient!.recoverTaskPendingAttention({
+            clientActionSessionId,
+            signal: controller.signal,
+            isCurrent,
+          })
+        : {
+            status: "ready" as const,
+            events: (await apiClient.listPendingTaskAttention()).filter(
+              (event): event is PendingAttentionPreviewEvent =>
+                isTaskPendingAttentionPreviewEvent(event)
+                && event.userId === viewerKey,
+            ),
+          };
+      if (!isCurrent()) return;
+      if (result.status !== "ready") {
+        clearRecoveredTaskPreviews();
+        return;
+      }
+      reconcilePendingAttentionPreviewSource(
+        result.events.filter(isPendingAttentionPreviewEvent),
+        isQueuedTaskPendingAttention,
+      );
+    })().catch(clearRecoveredTaskPreviews);
+
+    return () => {
+      controller.abort();
+      if (taskPendingAttentionRecoveryGenerationRef.current === recoveryGeneration) {
+        taskPendingAttentionRecoveryGenerationRef.current += 1;
+      }
+    };
+  }, [
+    auth.viewer.isVerified,
+    auth.viewer.sessionActorId,
+    auth.viewerGeneration,
+    authState,
+    clientActionSessionGeneration,
+    liveShadowMessageClient,
+    pendingAttentionAuthorizationDeviceId,
+    reconcilePendingAttentionPreviewSource,
+    serverOrigin,
+    shadowPolicyMode,
+    taskPendingAttentionRecoveryTriggerGeneration,
+    viewerKey,
+    wsState,
+  ]);
+
+  useEffect(() => {
+    const forget = () => {
+      ++protectedExternalRequestGenerationRef.current;
+      protectedExternalRequestScopeRef.current = null;
+      const requestIds = [...protectedExternalRequestIdsRef.current];
+      if (requestIds.length !== 0) {
+        const action = { kind: "forget_content" as const, requestIds };
+        codexRequestLifecycleRef.current = reduceCodexRequestLifecycle(codexRequestLifecycleRef.current, action);
+        dispatchCodexRequestLifecycle(action);
+      }
+      protectedExternalRequestIdsRef.current.clear();
+    };
+    return subscribeCryptoAdmissionAccess(() => {
+      if (!isCryptoAdmissionAllowed()) forget();
+    });
+  }, []);
+
+  useEffect(() => {
+    // This scope owns disclosure lifetime. Refresh attempts below may fail
+    // without revoking already admitted content from the same custody scope.
+    const generation = ++protectedExternalRequestGenerationRef.current;
+    const sessionId = currentClientActionSessionIdForResume();
+    const protectedMode = shadowPolicyMode === "shadow_encryption" || shadowPolicyMode === "encrypted_only";
+    const admissionGeneration = getCryptoAdmissionSnapshot().generation;
+    const viewerGeneration = auth.viewerGeneration;
+    const humanActorId = auth.viewer.sessionActorId;
+    const scopeIsCurrent = (): boolean => protectedExternalRequestGenerationRef.current === generation
+      && isCryptoAdmissionGenerationCurrent(admissionGeneration)
+      && viewerKeyRef.current === viewerKey && viewerGenerationRef.current === viewerGeneration
+      && humanActorIdRef.current === humanActorId && serverOriginRef.current === serverOrigin
+      && shadowPolicyModeRef.current === shadowPolicyMode && wsStateRef.current === "open"
+      && currentClientActionSessionIdForResume() === sessionId;
+    const forget = () => {
+      protectedExternalRequestScopeRef.current = null;
+      const requestIds = [...protectedExternalRequestIdsRef.current];
+      if (requestIds.length !== 0) {
+        const action = { kind: "forget_content" as const, requestIds };
+        codexRequestLifecycleRef.current = reduceCodexRequestLifecycle(codexRequestLifecycleRef.current, action);
+        dispatchCodexRequestLifecycle(action);
+      }
+      protectedExternalRequestIdsRef.current.clear();
+    };
+    if (!protectedMode || authState !== "signed-in" || !auth.viewer.isVerified || !viewerKey
+      || !humanActorId || !sessionId || wsState !== "open" || !isCryptoAdmissionAllowed()
+      || liveShadowMessageClient === undefined || pendingAttentionAuthorizationDeviceId === null) {
+      forget(); return;
+    }
+    protectedExternalRequestScopeRef.current = scopeIsCurrent;
+    return () => {
+      forget();
+      if (protectedExternalRequestGenerationRef.current === generation) ++protectedExternalRequestGenerationRef.current;
+    };
+  }, [auth.viewer.isVerified, auth.viewer.sessionActorId, auth.viewerGeneration, authState,
+    admissionResumeGeneration, clientActionSessionGeneration, liveShadowMessageClient,
+    pendingAttentionAuthorizationDeviceId, serverOrigin, shadowPolicyMode, viewerKey, wsState]);
+
+  useEffect(() => {
+    // A changed hint invalidates only the in-flight list attempt. The exact
+    // ready list reconciles content; unavailable is not an empty snapshot.
+    const controller = new AbortController();
+    const generation = ++protectedExternalRequestRecoveryGenerationRef.current;
+    const sessionId = currentClientActionSessionIdForResume();
+    const currentScope = protectedExternalRequestScopeRef.current;
+    const isCurrent = (): boolean => !controller.signal.aborted
+      && protectedExternalRequestRecoveryGenerationRef.current === generation
+      && protectedExternalRequestScopeRef.current === currentScope
+      && currentScope?.() === true;
+    if (currentScope === null || !sessionId || liveShadowMessageClient === undefined) return;
+
+    void recoverCurrentProtectedTaskExternalRequests({
+      client: liveShadowMessageClient,
+      clientActionSessionId: sessionId,
+      signal: controller.signal,
+      isCurrent,
+      previousRequestIds: new Set(protectedExternalRequestIdsRef.current),
+      dispatch: action => {
+        if (action.kind === "arm") {
+          dispatchTrackedCodexRequestLifecycle(action);
+          return;
+        }
+        codexRequestLifecycleRef.current = reduceCodexRequestLifecycle(codexRequestLifecycleRef.current, action);
+        dispatchCodexRequestLifecycle(action);
+      },
+    }).then(currentIds => {
+      if (isCurrent() && currentIds !== null) {
+        protectedExternalRequestIdsRef.current = new Set(currentIds);
+      }
+    }).catch(() => { /* An unavailable read is not an empty provider snapshot. */ });
+    return () => {
+      controller.abort();
+      if (protectedExternalRequestRecoveryGenerationRef.current === generation) {
+        ++protectedExternalRequestRecoveryGenerationRef.current;
+      }
+    };
+  }, [auth.viewer.isVerified, auth.viewer.sessionActorId, auth.viewerGeneration, authState,
+    admissionResumeGeneration, clientActionSessionGeneration, liveShadowMessageClient,
+    pendingAttentionAuthorizationDeviceId, protectedExternalRequestRecoveryTrigger, serverOrigin,
+    shadowPolicyMode, viewerKey, wsState, dispatchTrackedCodexRequestLifecycle]);
 
   useEffect(() => {
     const recipientSync = createDomainKeyRecipientSyncScheduler({
@@ -6609,6 +7046,49 @@ export function NautiloRuntimeProvider({
     if (admissionReady && wsState === "open") scheduler?.notify();
   }, [messageBackfillClient, admissionReady, admissionResumeGeneration,
     shadowPolicyMode, wsState, isRunning]);
+  useEffect(() => {
+    if (taskContentBackfill === undefined) return;
+    const scheduler = createWorkbenchTaskContentBackfillScheduler({
+      client: taskContentBackfill.client,
+      readiness: taskContentBackfill.readiness,
+      visibility: document,
+      clock: {
+        now: Date.now,
+        schedule(callback, delayMs) {
+          const timer = setTimeout(callback, delayMs);
+          return () => clearTimeout(timer);
+        },
+      },
+      errorResumeAt: () => Date.now() + 30_000,
+    });
+    taskContentBackfillSchedulerRef.current = scheduler;
+    const hint = () => scheduler.notify();
+    window.addEventListener("nautilo:admission-resumed", hint);
+    window.addEventListener("nautilo:room-members-changed", hint);
+    window.addEventListener("online", hint);
+    return () => {
+      if (taskContentBackfillSchedulerRef.current === scheduler) {
+        taskContentBackfillSchedulerRef.current = null;
+      }
+      window.removeEventListener("nautilo:admission-resumed", hint);
+      window.removeEventListener("nautilo:room-members-changed", hint);
+      window.removeEventListener("online", hint);
+      scheduler.dispose();
+    };
+  }, [taskContentBackfill]);
+  useEffect(() => {
+    const scheduler = taskContentBackfillSchedulerRef.current;
+    scheduler?.setForegroundBusy(isRunning);
+    scheduler?.setReady(admissionReady && wsState === "open");
+    if (admissionReady && wsState === "open") scheduler?.notify();
+  }, [
+    taskContentBackfill,
+    admissionReady,
+    admissionResumeGeneration,
+    shadowPolicyMode,
+    wsState,
+    isRunning,
+  ]);
 
   // reconcile-on-reconnect.
   //
@@ -7055,7 +7535,7 @@ export function NautiloRuntimeProvider({
         for (const attachment of queuedAttachments) {
           if (attachment.workspaceArtifact && attachment.workspaceArtifact.roomId !== roomIdForSend) {
             updateAttachment(attachment.id, { status: "error",
-              errorReason: "This PDF belongs to another room. Remove it here and attach it in the intended room." });
+              errorReason: "This document belongs to another room. Remove it here and attach it in the intended room." });
           }
         }
         return false;
@@ -7600,7 +8080,8 @@ export function NautiloRuntimeProvider({
   const submitPin = useCallback(async (pin: string) => {
     const threadId = challengeThreadIdRef.current;
     const previewKey = challengePreviewKeyRef.current;
-    const roomId = activeRoomIdRef.current;
+    const taskScoped = challengeLaneKeyRef.current?.startsWith("task:") === true;
+    const roomId = taskScoped ? null : activeRoomIdRef.current;
     const viewerGeneration = viewerGenerationRef.current;
     const scopeGeneration = pendingAttentionUiScopeGenerationRef.current;
     const isCurrentSubmission = () => isPendingAttentionSubmissionCurrent({
@@ -7609,11 +8090,15 @@ export function NautiloRuntimeProvider({
       capturedViewerGeneration: viewerGeneration,
       capturedScopeGeneration: scopeGeneration,
       currentKey: challengePreviewKeyRef.current,
-      currentRoomId: activeRoomIdRef.current,
+      currentRoomId: challengeLaneKeyRef.current?.startsWith("task:") === true
+        ? null
+        : activeRoomIdRef.current,
       currentViewerGeneration: viewerGenerationRef.current,
       currentScopeGeneration: pendingAttentionUiScopeGenerationRef.current,
     });
     if (!threadId) return;
+    if (taskScoped) taskPendingAttentionLiveSequenceRef.current += 1;
+    else pendingAttentionLiveSequenceRef.current += 1;
     setPinError(undefined);
 
     if (challengeModeRef.current === "enrollPin") {
@@ -7860,7 +8345,8 @@ export function NautiloRuntimeProvider({
   const submitProveIt = useCallback(async (pin: string) => {
     const threadId = approvalThreadIdRef.current;
     const previewKey = approvalPreviewKeyRef.current;
-    const roomId = activeRoomIdRef.current;
+    const taskScoped = approvalLaneKeyRef.current?.startsWith("task:") === true;
+    const roomId = taskScoped ? null : activeRoomIdRef.current;
     const viewerGeneration = viewerGenerationRef.current;
     const scopeGeneration = pendingAttentionUiScopeGenerationRef.current;
     const isCurrentSubmission = () => isPendingAttentionSubmissionCurrent({
@@ -7869,12 +8355,15 @@ export function NautiloRuntimeProvider({
       capturedViewerGeneration: viewerGeneration,
       capturedScopeGeneration: scopeGeneration,
       currentKey: approvalPreviewKeyRef.current,
-      currentRoomId: activeRoomIdRef.current,
+      currentRoomId: approvalLaneKeyRef.current?.startsWith("task:") === true
+        ? null
+        : activeRoomIdRef.current,
       currentViewerGeneration: viewerGenerationRef.current,
       currentScopeGeneration: pendingAttentionUiScopeGenerationRef.current,
     });
     if (!threadId) return;
-    pendingAttentionLiveSequenceRef.current += 1;
+    if (taskScoped) taskPendingAttentionLiveSequenceRef.current += 1;
+    else pendingAttentionLiveSequenceRef.current += 1;
     setApprovalError(undefined);
     try {
       await apiClient.proveItAndResume(
@@ -7919,7 +8408,8 @@ export function NautiloRuntimeProvider({
   const denyProveIt = useCallback(async () => {
     const threadId = approvalThreadIdRef.current;
     const previewKey = approvalPreviewKeyRef.current;
-    const roomId = activeRoomIdRef.current;
+    const taskScoped = approvalLaneKeyRef.current?.startsWith("task:") === true;
+    const roomId = taskScoped ? null : activeRoomIdRef.current;
     const viewerGeneration = viewerGenerationRef.current;
     const scopeGeneration = pendingAttentionUiScopeGenerationRef.current;
     const isCurrentSubmission = () => isPendingAttentionSubmissionCurrent({
@@ -7928,7 +8418,9 @@ export function NautiloRuntimeProvider({
       capturedViewerGeneration: viewerGeneration,
       capturedScopeGeneration: scopeGeneration,
       currentKey: approvalPreviewKeyRef.current,
-      currentRoomId: activeRoomIdRef.current,
+      currentRoomId: approvalLaneKeyRef.current?.startsWith("task:") === true
+        ? null
+        : activeRoomIdRef.current,
       currentViewerGeneration: viewerGenerationRef.current,
       currentScopeGeneration: pendingAttentionUiScopeGenerationRef.current,
     });
@@ -7936,7 +8428,8 @@ export function NautiloRuntimeProvider({
       setShowApprovalDialog(false);
       return;
     }
-    pendingAttentionLiveSequenceRef.current += 1;
+    if (taskScoped) taskPendingAttentionLiveSequenceRef.current += 1;
+    else pendingAttentionLiveSequenceRef.current += 1;
     setApprovalError(undefined);
     try {
       await apiClient.denyProveIt(
@@ -7991,7 +8484,8 @@ export function NautiloRuntimeProvider({
       const threadId = approvalAskThreadIdRef.current;
       const approvalId = approvalAskState.approvalId;
       const previewKey = approvalId === null ? null : `approval:${approvalId}`;
-      const roomId = activeRoomIdRef.current;
+      const taskScoped = approvalAskLaneKeyRef.current?.startsWith("task:") === true;
+      const roomId = approvalAskState.roomId ?? null;
       const viewerGeneration = viewerGenerationRef.current;
       const scopeGeneration = pendingAttentionUiScopeGenerationRef.current;
       const isCurrentSubmission = () => isPendingAttentionSubmissionCurrent({
@@ -8002,7 +8496,7 @@ export function NautiloRuntimeProvider({
         currentKey: approvalLifecycleRef.current.pending === null
           ? null
           : `approval:${approvalLifecycleRef.current.pending.approvalId}`,
-        currentRoomId: activeRoomIdRef.current,
+        currentRoomId: approvalLifecycleRef.current.pending?.roomId ?? null,
         currentViewerGeneration: viewerGenerationRef.current,
         currentScopeGeneration: pendingAttentionUiScopeGenerationRef.current,
       });
@@ -8021,7 +8515,8 @@ export function NautiloRuntimeProvider({
         });
         return;
       }
-      pendingAttentionLiveSequenceRef.current += 1;
+      if (taskScoped) taskPendingAttentionLiveSequenceRef.current += 1;
+      else pendingAttentionLiveSequenceRef.current += 1;
       dispatchCurrentApprovalLifecycle({ kind: "submitStart" });
       try {
         await apiClient.approvalReply(
@@ -8069,6 +8564,7 @@ export function NautiloRuntimeProvider({
     },
     [
       approvalAskState.approvalId,
+      approvalAskState.roomId,
       approvalAskState.localMcpInstall,
       approvalAskState.mediaGeneration,
       approvalAskState.requiresExplicitReview,
@@ -8094,6 +8590,33 @@ export function NautiloRuntimeProvider({
         pending.ownerId !== viewerKeyRef.current ||
         pending.roomId !== activeRoomIdRef.current
       ) return;
+      if (protectedExternalRequestIdsRef.current.has(requestId)) {
+        const sessionId = currentClientActionSessionIdForResume();
+        const currentScope = protectedExternalRequestScopeRef.current;
+        const isCurrent = () => currentScope !== null && currentScope()
+          && protectedExternalRequestScopeRef.current === currentScope
+          && activeRoomIdRef.current === pending.roomId;
+        if (liveShadowMessageClient === undefined || !sessionId || !isCurrent()) return;
+        dispatchTrackedCodexRequestLifecycle({ kind: "submit_start", requestId });
+        const outcome = await respondFreshProtectedTaskExternalRequest({
+          client: liveShadowMessageClient, clientActionSessionId: sessionId,
+          expectedEvent: pending, response, isCurrent,
+        });
+        if (!isCurrent()) {
+          dispatchTrackedCodexRequestLifecycle({ kind: "submit_cancelled", requestId });
+          return;
+        }
+        if (outcome === "responded") {
+          dispatchTrackedCodexRequestLifecycle({ kind: "submit_accepted", requestId });
+          protectedExternalRequestIdsRef.current.delete(requestId);
+        } else {
+          dispatchTrackedCodexRequestLifecycle({ kind: "submit_failed", requestId,
+            message: outcome === "not_sent" ? "Could not authorize this response. Try again."
+              : "The response was not confirmed. Checking the task connection." });
+          refreshProtectedExternalRequests();
+        }
+        return;
+      }
       dispatchTrackedCodexRequestLifecycle({ kind: "submit_start", requestId });
       try {
         const receipt = await apiClient.codex.respondRequest(requestId, response);
@@ -8125,7 +8648,7 @@ export function NautiloRuntimeProvider({
         }
       }
     },
-    [dispatchTrackedCodexRequestLifecycle],
+    [dispatchTrackedCodexRequestLifecycle, liveShadowMessageClient],
   );
 
   const dismissCodexRequest = useCallback((requestId: string) => {

@@ -56,8 +56,8 @@ const RESULT: RelayLocalApplyPatchResult = {
 };
 
 describe("Relay apply-patch operation protocol", () => {
-  test("advertises v30 while retaining the v4 local-file execution class", () => {
-    expect(RELAY_PROTOCOL_VERSION).toBe(30);
+  test("advertises v32 while retaining the v4 local-file execution class", () => {
+    expect(RELAY_PROTOCOL_VERSION).toBe(32);
     expect(APPLY_PATCH_PROTOCOL_VERSION).toBe(9);
     expect(RELAY_LOCAL_APPLY_PATCH_VERSION).toBe(1);
 

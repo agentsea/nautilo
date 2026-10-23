@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { LATTICE_LIMITS } from "@nautilo/lattice-crypto/wire-limits";
+import {
+  LATTICE_LIMITS,
+  MAX_ENCRYPTED_PAYLOAD_WIRE_BYTES_V2,
+  MAX_NAMESPACE_OBJECT_ENVELOPE_WIRE_BYTES_V2,
+} from "@nautilo/lattice-crypto/wire-limits";
 import { TASK_FUNDING_FAILURE_CODES } from "@nautilo/types";
 
 import {
@@ -9,6 +13,7 @@ import {
   protectedTaskPreparedPublicationRequestV1Schema,
   protectedTaskPreparedUpdateRequestV1Schema,
   protectedTaskPublicationPlanRequestV1Schema,
+  protectedTaskPublicationPlanV1Schema,
   protectedTaskDefinitionReadEnvelopeV1Schema,
   protectedTaskRunResultReadEnvelopeV1Schema,
   protectedTaskContentListV1Schema,
@@ -23,6 +28,29 @@ import {
 const TASK_ID = "91000000-0000-4000-8000-000000000001";
 const NAMESPACE_ID = "91000000-0000-4000-8000-000000000002";
 const TASK_RUN_ID = "91000000-0000-4000-8000-000000000003";
+const readAuthority = {
+  sourceRoomId: "91000000-0000-4000-8000-000000000005",
+  namespaceId: NAMESPACE_ID,
+  currentGeneration: 2,
+  retainedGenerations: [1, 2].map(generation => ({
+    generation,
+    accessRevision: generation,
+    headDigestBase64url: "A".repeat(43),
+    publicationDigestBase64url: "A".repeat(43),
+    publicationSetDigestBase64url: "A".repeat(43),
+    audienceFingerprintBase64url: "A".repeat(43),
+  })),
+};
+const historicalRepair = Object.freeze({
+  version: 2 as const,
+  claimId: "91000000-0000-4000-8000-000000000004",
+  publisherDeviceId: "historical-device.1",
+  signedRequestDigest: "11".repeat(32),
+  sourceDigest: "22".repeat(32),
+  sourcePayloadHash: "33".repeat(32),
+  sourceRevision: 0 as const,
+  genesisManifestHash: "44".repeat(32),
+});
 
 function createRequest(): ProtectedTaskPreparedCreateRequestV1 {
   return {
@@ -50,6 +78,27 @@ function createRequest(): ProtectedTaskPreparedCreateRequestV1 {
 }
 
 describe("protected Task prepared publication schema", () => {
+  test("admits bounded repair source bytes only for an existing update plan", () => {
+    const plan = {
+      planVersion: 1, operation: "update", operationId: "task:repair:source",
+      taskId: TASK_ID, expectedContentRevision: 1, nextContentRevision: 2,
+      expectedCryptoAccessRevision: 0, planDigestBase64url: "A".repeat(43),
+      authority: {
+        requesterHumanId: TASK_ID, sourceRoomId: TASK_RUN_ID, namespaceId: NAMESPACE_ID,
+        domainId: "domain:private", expectedAccessRevision: 1, expectedPolicyRevision: 1,
+        bindingHashBase64url: "A".repeat(43), keyGeneration: 1,
+      },
+    } as const;
+    expect(protectedTaskPublicationPlanV1Schema.parse(plan)).toEqual(plan);
+    const repair = { ...plan, ordinaryRepairPayloadBase64url: "c291cmNl" };
+    expect(protectedTaskPublicationPlanV1Schema.parse(repair)).toEqual(repair);
+    for (const invalid of [
+      { ...repair, operation: "create", expectedContentRevision: 0, nextContentRevision: 1 },
+      { ...repair, expectedContentRevision: 0, nextContentRevision: 1 },
+      { ...repair, ordinaryRepairPayloadBase64url: "c291cmNl=" },
+      { ...repair, ordinaryRepairPayloadBase64url: "A".repeat(Math.ceil(LATTICE_LIMITS.plaintextBytes * 4 / 3) + 4) },
+    ]) expect(() => protectedTaskPublicationPlanV1Schema.parse(invalid)).toThrow();
+  });
   test("accepts exact create and adjacent update coordinates", () => {
     const create = createRequest();
     expect(protectedTaskPreparedPublicationRequestV1Schema.parse(create)).toEqual(create);
@@ -91,12 +140,12 @@ describe("protected Task prepared publication schema", () => {
     })).toThrow();
   });
 
-  test("uses the lattice ciphertext bound without truncation", () => {
+  test("uses the exact encrypted-payload and Namespace-envelope codec bounds", () => {
     const maximumEncodedLength = Math.ceil(
-      LATTICE_LIMITS.ciphertextBytes * 4 / 3,
+      MAX_ENCRYPTED_PAYLOAD_WIRE_BYTES_V2 * 4 / 3,
     );
     const create = createRequest();
-    for (const length of [maximumEncodedLength - 1, maximumEncodedLength]) {
+    for (const length of [maximumEncodedLength - 2, maximumEncodedLength]) {
       expect(protectedTaskPreparedCreateRequestV1Schema.parse({
         ...create,
         encryptedPayloadBytesBase64url: "A".repeat(length),
@@ -105,6 +154,25 @@ describe("protected Task prepared publication schema", () => {
     expect(() => protectedTaskPreparedCreateRequestV1Schema.parse({
       ...create,
       encryptedPayloadBytesBase64url: "A".repeat(maximumEncodedLength + 1),
+    })).toThrow();
+
+    const maximumEnvelopeEncodedLength = Math.ceil(
+      MAX_NAMESPACE_OBJECT_ENVELOPE_WIRE_BYTES_V2 * 4 / 3,
+    );
+    expect(protectedTaskPreparedCreateRequestV1Schema.parse({
+      ...create,
+      namespaceEnvelopes: [{
+        ...create.namespaceEnvelopes[0],
+        envelopeBytesBase64url: "A".repeat(maximumEnvelopeEncodedLength),
+      }],
+    }).namespaceEnvelopes[0].envelopeBytesBase64url)
+      .toHaveLength(maximumEnvelopeEncodedLength);
+    expect(() => protectedTaskPreparedCreateRequestV1Schema.parse({
+      ...create,
+      namespaceEnvelopes: [{
+        ...create.namespaceEnvelopes[0],
+        envelopeBytesBase64url: "A".repeat(maximumEnvelopeEncodedLength + 1),
+      }],
     })).toThrow();
   });
 
@@ -137,6 +205,7 @@ describe("protected Task prepared publication schema", () => {
       resultRevision: 1 as const,
       cryptoAccessRevision: 0 as const,
       namespaceId: NAMESPACE_ID,
+      readAuthority,
       encryptedPayloadBytesBase64url: "Y2lwaGVy",
       accessManifestBytesBase64url: "bWFuaWZlc3Q",
       accessManifestProofBytesBase64url: [] as [],
@@ -147,6 +216,87 @@ describe("protected Task prepared publication schema", () => {
       }],
     };
     expect(protectedTaskRunResultReadEnvelopeV1Schema.parse(ready)).toEqual(ready);
+    const maximumEncodedPayloadLength = Math.ceil(
+      MAX_ENCRYPTED_PAYLOAD_WIRE_BYTES_V2 * 4 / 3,
+    );
+    const maximumReady = protectedTaskRunResultReadEnvelopeV1Schema.parse({
+      ...ready,
+      encryptedPayloadBytesBase64url: "A".repeat(maximumEncodedPayloadLength),
+    });
+    if (maximumReady.status !== "ready") throw new Error("Expected ready Task result");
+    expect(maximumReady.encryptedPayloadBytesBase64url).toHaveLength(maximumEncodedPayloadLength);
+    expect(() => protectedTaskRunResultReadEnvelopeV1Schema.parse({
+      ...ready,
+      encryptedPayloadBytesBase64url: "A".repeat(maximumEncodedPayloadLength + 1),
+    })).toThrow();
+    expect(() => protectedTaskRunResultReadEnvelopeV1Schema.parse({
+      ...ready, readAuthority: undefined,
+    })).toThrow();
+    expect(() => protectedTaskRunResultReadEnvelopeV1Schema.parse({
+      ...ready, readAuthority: { ...readAuthority, namespaceId: TASK_ID },
+    })).toThrow();
+    const foreground = {
+      ...ready,
+      signerEvidence: [{
+        kind: "foreground_agent_accepted_execution" as const,
+        planBytesBase64url: "cGxhbg",
+        planDigestBase64url: "A".repeat(43),
+      }],
+    };
+    expect(protectedTaskRunResultReadEnvelopeV1Schema.parse(foreground))
+      .toEqual(foreground);
+    const certified = {
+      ...ready,
+      signerEvidence: [{
+        kind: "task_runtime_signer_certificate" as const,
+        evidenceBytesBase64url: "Y2VydGlmaWNhdGU",
+      }],
+    };
+    expect(protectedTaskRunResultReadEnvelopeV1Schema.parse(certified))
+      .toEqual(certified);
+    const historical = {
+      ...ready,
+      accessManifestProofBytesBase64url: [] as [],
+      historicalRepair,
+      signerEvidence: [{
+        kind: "human_device" as const,
+        subjectHumanId: TASK_ID,
+        committerDeviceId: historicalRepair.publisherDeviceId,
+        hostAuthorizationRevision: 3,
+        signingPublicKeyBase64url: "A".repeat(43),
+      }],
+    };
+    expect(protectedTaskRunResultReadEnvelopeV1Schema.parse(historical))
+      .toEqual(historical);
+    expect(() => protectedTaskRunResultReadEnvelopeV1Schema.parse({
+      ...historical,
+      signerEvidence: ready.signerEvidence,
+    })).toThrow();
+    expect(() => protectedTaskRunResultReadEnvelopeV1Schema.parse({
+      ...historical,
+      signerEvidence: foreground.signerEvidence,
+    })).toThrow();
+    expect(() => protectedTaskRunResultReadEnvelopeV1Schema.parse({
+      ...historical,
+      signerEvidence: certified.signerEvidence,
+    })).toThrow();
+    expect(() => protectedTaskRunResultReadEnvelopeV1Schema.parse({
+      ...historical,
+      historicalRepair: { ...historicalRepair, sourceRevision: 1 },
+    })).toThrow();
+    expect(() => protectedTaskRunResultReadEnvelopeV1Schema.parse({
+      readVersion: 1, status: "waiting", taskId: TASK_ID,
+      taskRunId: TASK_RUN_ID, objectId: historical.objectId,
+      resultRevision: 1, cryptoAccessRevision: 0,
+      reason: "result_not_mapped", historicalRepair,
+    })).toThrow();
+    const cancelled = { ...ready, resultRevision: 2 as const };
+    expect(protectedTaskRunResultReadEnvelopeV1Schema.parse(cancelled))
+      .toEqual(cancelled);
+    expect(() => protectedTaskRunResultReadEnvelopeV1Schema.parse({
+      ...ready,
+      resultRevision: 3,
+    })).toThrow();
     expect(() => protectedTaskRunResultReadEnvelopeV1Schema.parse({
       ...ready,
       resultText: "plaintext must not cross",
@@ -427,7 +577,7 @@ describe("Task content v1 response schemas", () => {
     })).toThrow();
   });
 
-  test("keeps protected lists and definition reads ciphertext-only and genesis-only", () => {
+  test("keeps protected lists and definition access histories ciphertext-only", () => {
     expect(protectedTaskContentListV1Schema.parse([protectedSummary])).toHaveLength(1);
     expect(() => protectedTaskContentListV1Schema.parse([{
       ...protectedSummary,
@@ -443,16 +593,113 @@ describe("Task content v1 response schemas", () => {
       contentRevision: 1,
       cryptoAccessRevision: 0,
       namespaceId: NAMESPACE_ID,
+      readAuthority,
       encryptedPayloadBytesBase64url: "Y2lwaGVy",
       accessManifestBytesBase64url: "bWFuaWZlc3Q",
       accessManifestProofBytesBase64url: [],
       namespaceEnvelopeBytesBase64url: "ZW52ZWxvcGU",
-      signerEvidence: [],
+      signerEvidence: [{
+        kind: "human_device",
+        subjectHumanId: TASK_ID,
+        committerDeviceId: historicalRepair.publisherDeviceId,
+        hostAuthorizationRevision: 3,
+        signingPublicKeyBase64url: "A".repeat(43),
+      }],
     } as const;
     expect(protectedTaskDefinitionReadEnvelopeV1Schema.parse(ready).status).toBe("ready");
+    const maximumEncodedPayloadLength = Math.ceil(
+      MAX_ENCRYPTED_PAYLOAD_WIRE_BYTES_V2 * 4 / 3,
+    );
+    const maximumReady = protectedTaskDefinitionReadEnvelopeV1Schema.parse({
+      ...ready,
+      encryptedPayloadBytesBase64url: "A".repeat(maximumEncodedPayloadLength),
+    });
+    if (maximumReady.status !== "ready") throw new Error("Expected ready Task definition");
+    expect(maximumReady.encryptedPayloadBytesBase64url).toHaveLength(maximumEncodedPayloadLength);
     expect(() => protectedTaskDefinitionReadEnvelopeV1Schema.parse({
-      ...ready, cryptoAccessRevision: 1,
+      ...ready,
+      encryptedPayloadBytesBase64url: "A".repeat(maximumEncodedPayloadLength + 1),
     })).toThrow();
+    expect(() => protectedTaskDefinitionReadEnvelopeV1Schema.parse({
+      ...ready,
+      signerEvidence: [{ kind: "task_runtime_signer_certificate",
+        evidenceBytesBase64url: "Y2VydGlmaWNhdGU" }],
+    })).toThrow();
+    const taskAuthorizationEvidence = {
+      kind: "task_definition_foreground_authorization" as const,
+      evidenceBytesBase64url: "YXV0aG9yaXphdGlvbg",
+    };
+    const foregroundParentEvidence = {
+      kind: "foreground_agent_accepted_execution" as const,
+      planBytesBase64url: "cGFyZW50",
+      planDigestBase64url: "A".repeat(43),
+    };
+    expect(protectedTaskDefinitionReadEnvelopeV1Schema.parse({
+      ...ready,
+      signerEvidence: [foregroundParentEvidence, taskAuthorizationEvidence],
+    }).status).toBe("ready");
+    expect(() => protectedTaskDefinitionReadEnvelopeV1Schema.parse({
+      ...ready,
+      signerEvidence: [taskAuthorizationEvidence],
+    })).toThrow();
+    expect(() => protectedTaskRunResultReadEnvelopeV1Schema.parse({
+      readVersion: 1,
+      status: "ready",
+      taskId: TASK_ID,
+      taskRunId: TASK_RUN_ID,
+      objectId: protectedSummary.content.objectId,
+      resultRevision: 1,
+      cryptoAccessRevision: 0,
+      namespaceId: NAMESPACE_ID,
+      readAuthority,
+      encryptedPayloadBytesBase64url: "Y2lwaGVy",
+      accessManifestBytesBase64url: "bWFuaWZlc3Q",
+      accessManifestProofBytesBase64url: [],
+      namespaceEnvelopeBytesBase64url: "ZW52ZWxvcGU",
+      signerEvidence: [foregroundParentEvidence, taskAuthorizationEvidence],
+    })).toThrow();
+    for (const authority of [
+      undefined,
+      { ...readAuthority, namespaceId: TASK_ID },
+      { ...readAuthority, currentGeneration: 3 },
+      { ...readAuthority, retainedGenerations: [...readAuthority.retainedGenerations].reverse() },
+      { ...readAuthority, retainedGenerations: [...readAuthority.retainedGenerations, readAuthority.retainedGenerations[1]] },
+    ]) {
+      expect(() => protectedTaskDefinitionReadEnvelopeV1Schema.parse({
+        ...ready, readAuthority: authority,
+      })).toThrow();
+    }
+    const historical = {
+      ...ready,
+      accessManifestProofBytesBase64url: [] as [],
+      historicalRepair,
+      signerEvidence: [{
+        kind: "human_device" as const,
+        subjectHumanId: TASK_ID,
+        committerDeviceId: historicalRepair.publisherDeviceId,
+        hostAuthorizationRevision: 3,
+        signingPublicKeyBase64url: "A".repeat(43),
+      }],
+    };
+    expect(protectedTaskDefinitionReadEnvelopeV1Schema.parse(historical))
+      .toEqual(historical);
+    expect(() => protectedTaskDefinitionReadEnvelopeV1Schema.parse({
+      ...historical,
+      historicalRepair: { ...historicalRepair, genesisManifestHash: "g".repeat(64) },
+    })).toThrow();
+    expect(protectedTaskDefinitionReadEnvelopeV1Schema.parse({
+      ...ready,
+      cryptoAccessRevision: 1,
+      accessManifestProofBytesBase64url: ["YQ"],
+    }).cryptoAccessRevision).toBe(1);
+    expect(protectedTaskDefinitionReadEnvelopeV1Schema.parse({
+      ...ready,
+      cryptoAccessRevision: 257,
+      accessManifestProofBytesBase64url: Array.from(
+        { length: 257 },
+        () => "YQ",
+      ),
+    }).cryptoAccessRevision).toBe(257);
     expect(() => protectedTaskDefinitionReadEnvelopeV1Schema.parse({
       ...ready, accessManifestProofBytesBase64url: ["YQ"],
     })).toThrow();

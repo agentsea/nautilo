@@ -1,6 +1,7 @@
-import type { TaskRuntimeRecipientRegistry } from "@nautilo/lattice-crypto";
+import type { ProtectedTaskRuntimeMappedHeadReplan } from "./protected-task-runtime-mapped-head-replan";
+import { LatticeCrypto, type TaskRuntimeRecipientRegistry } from "@nautilo/lattice-crypto";
 import {
-  decodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  decodeTaskRuntimeBackgroundAuthorizationRequestBase,
   destroyTaskRuntimeBackgroundAuthorizationRequestV1,
 } from "@nautilo/lattice-crypto/background";
 import {
@@ -25,6 +26,8 @@ import type { createProductionBackgroundAuthorizationComposition } from
 import type {
   ProtectedTaskRuntimeRecipientAuthorityPort,
 } from "./protected-task-runtime-recipient-authority";
+import { ProtectedTaskRuntimeGrantPlanUnavailableError } from
+  "./protected-task-runtime-grant-plan";
 
 type DeviceHooks = Required<Pick<NonNullable<Parameters<
   typeof createProductionBackgroundAuthorizationComposition
@@ -45,13 +48,16 @@ type InitialClaim = Readonly<{
 export type ProtectedTaskRuntimeInitialDeviceAuthorizationInput = Readonly<{
   recipients: TaskRuntimeRecipientRegistry;
   claim: InitialClaim;
-  plan(occurrence: ProtectedTaskOccurrence): Promise<TaskRuntimeGrantClaimPlan>;
+  plan(
+    occurrence: ProtectedTaskOccurrence,
+  ): Promise<TaskRuntimeGrantClaimPlan | null>;
   resolveOccurrence(input: Readonly<{
     taskRunId: string;
     authorizationRequestId: string;
   }>): Promise<ProtectedTaskOccurrence | null>;
   /** Canonical native authority owner, supporting awaiting and bound phases. */
   withRecipientAuthority: ProtectedTaskRuntimeRecipientAuthorityPort;
+  mappedHeadReplan?: ProtectedTaskRuntimeMappedHeadReplan;
   now?: () => number;
 }>;
 
@@ -101,6 +107,20 @@ export function createProtectedTaskRuntimeInitialDeviceAuthorization(
 ): DeviceHooks {
   const now = input.now ?? Date.now;
   const recipients = input.recipients;
+  const crypto = new LatticeCrypto();
+
+  const resolvePlan = async (
+    occurrence: ProtectedTaskOccurrence,
+  ): Promise<TaskRuntimeGrantClaimPlan | null> => {
+    try {
+      return await input.plan(occurrence);
+    } catch (error) {
+      if (error instanceof ProtectedTaskRuntimeGrantPlanUnavailableError) {
+        return null;
+      }
+      throw error;
+    }
+  };
 
   const isTaskRecipientActive: DeviceHooks["isTaskRecipientActive"] = record => {
     const recipient = record.snapshot.recipient;
@@ -124,20 +144,40 @@ export function createProtectedTaskRuntimeInitialDeviceAuthorization(
       authorizationRequestId: record.snapshot.requestId,
     });
     if (occurrence === null || occurrence.run.jobId !== null) return null;
-    const plan = await input.plan(occurrence);
+    const plan = await resolvePlan(occurrence);
+    if (plan === null) return null;
     return exactInitialPlan(occurrence, record, plan)
       ? Object.freeze({ occurrence, plan })
       : null;
   };
 
+  const replanMappedHead = async (operation: Parameters<DeviceHooks["bindTaskRecipient"]>[0]
+    | Parameters<DeviceHooks["withTaskAuthority"]>[0]): Promise<boolean> => {
+    if (input.mappedHeadReplan === undefined || !["awaiting_recipient", "awaiting_device"].includes(operation.record.snapshot.state)) return true;
+    const coordinates = { taskRunId: operation.record.snapshot.workId, authorizationRequestId: operation.record.snapshot.requestId };
+    const occurrence = await input.resolveOccurrence(coordinates);
+    if (occurrence === null || occurrence.run.jobId !== null) return false;
+    return await input.mappedHeadReplan({ occurrence, record: operation.record, admission: operation.admission,
+      restricted: operation.restricted, resolvePlan: async () => {
+        const current = await input.resolveOccurrence(coordinates);
+        if (current === null || current.run.jobId !== null) return null;
+        const plan = await resolvePlan(current);
+        if (plan === null) return null;
+        return { occurrence: current, initialRecord: plan.initialRecord, stableIdentity: plan.stableIdentity };
+      } }) === "unchanged";
+  };
+
   return Object.freeze({
     isTaskRecipientActive,
     bindTaskRecipient: async operation => {
+      operation = { ...operation, subject: structuredClone(operation.subject), admission: structuredClone(operation.admission),
+        record: structuredClone(operation.record), device: structuredClone(operation.device) };
       if (!matchesStenographerRequestAdmission(
         operation.admission,
         operation.device,
         now(),
       )) return null;
+      if (!await replanMappedHead(operation)) return null;
       const resolved = await resolveInitial(operation.record);
       if (resolved === null
         || operation.record.snapshot.state !== "awaiting_recipient") return null;
@@ -153,6 +193,9 @@ export function createProtectedTaskRuntimeInitialDeviceAuthorization(
       });
     },
     withTaskAuthority: async operation => {
+      operation = { ...operation, subject: structuredClone(operation.subject), admission: structuredClone(operation.admission),
+        record: structuredClone(operation.record) };
+      if (!await replanMappedHead(operation)) return null;
       const resolved = await resolveInitial(operation.record);
       if (resolved === null
         || !isTaskRecipientActive(operation.record)
@@ -191,7 +234,8 @@ export function createProtectedTaskRuntimeInitialDeviceAuthorization(
           )) return null;
           const descriptor = operation.record.descriptorBytes;
           if (descriptor === null) return null;
-          const request = decodeTaskRuntimeBackgroundAuthorizationRequestV1(
+          const request = decodeTaskRuntimeBackgroundAuthorizationRequestBase(
+            crypto,
             descriptor,
           );
           if (request === null) return null;

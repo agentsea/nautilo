@@ -1,3 +1,4 @@
+import { runWithProtectedTaskProjectFilePort, type ProtectedTaskProjectFilePort } from "../../src/runtime/protected-task-project-file";
 import { setConfigOverrides } from "@nautilo/config";
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
@@ -68,6 +69,8 @@ import { getRequiredOrdinaryHostContext } from "../../src/runtime/ordinary-host-
 import { getTaskCreationInvocationProvenance } from
   "../../src/runtime/task-creation-return-context";
 import { describeResearchContextIndex, describeResearchContextMessage } from "../../src/tools/security/research-context";
+import { setTaskToolRuntime, type TaskToolCreateInput } from "../../src/tools/tasks/task-tool-runtime";
+import * as shareArtifact from "../../src/tools/file/share-artifact";
 
 let initialOpenRouterKey: string | undefined;
 beforeEach(() => { initialOpenRouterKey = process.env["OPENROUTER_API_KEY"]; });
@@ -79,6 +82,7 @@ afterEach(() => {
   setAgentEventSink(null);
   setRelayRegistry(null);
   setOrdinaryHostResolver(null);
+  setTaskToolRuntime(null);
   resetConnectedWebAccountReadToolRuntimeForTests();
   delete defaultPostModelDeps.resolveUncontainedHostCommandsDispatch;
   clearToolCatalog();
@@ -1441,6 +1445,108 @@ describe("structured SSH uncertain dispatch outcome", () => {
 });
 
 describe("Nautilo tool invocation service", () => {
+  test("re-resolves Full ask_peer with a strict Artifact-free schema and the selected Task creator", async () => {
+    const catalog = new ToolCatalog();
+    registerAllTools(catalog);
+    initToolCatalog(catalog);
+    const ordinary: TaskToolCreateInput[] = [];
+    const protectedCreates: TaskToolCreateInput[] = [];
+    const grant = spyOn(shareArtifact, "grantArtifactExactUserAccess");
+    try {
+      setTaskToolRuntime({
+        db: {} as never,
+        canUseLegacyTaskContent: async () => false,
+        createTask: async input => {
+          ordinary.push(input);
+          return { taskId: "ordinary-peer", status: "pending" };
+        },
+        createProtectedTask: async input => {
+          protectedCreates.push(input);
+          return { taskId: "protected-peer", status: "pending" };
+        },
+        computeNextFireAt: () => new Date(),
+        pauseTask: async () => ({ ok: true, status: "paused", message: "" }),
+        unpauseTask: async () => ({ ok: true, status: "pending", message: "" }),
+        stopTask: async () => ({ ok: true, status: "cancelled", message: "" }),
+      });
+      const invocationState = state({
+        causalHumanUserId: "owner",
+        activatedToolNames: ["ask_peer"],
+        memoryAccessEnvelope: {
+          memoryMode: "namespace",
+          ownerId: "owner",
+          actorId: "owner-actor",
+          agentId: "agent",
+          roomId: "room",
+          readableNamespaces: ["namespace"],
+          mutableNamespaces: ["namespace"],
+          writableNamespaces: ["namespace"],
+          toolPolicy: { ask_peer: "allow", share_artifact: "allow" },
+        },
+      });
+      const full = createNautiloToolInvocationSession(createServerToolInvocationContext(
+        invocationState,
+        () => ({ status: "allowed" }),
+        { fullEncryptionOnly: true },
+      ));
+
+      const rejected = await full.invoke(call("ask_peer", {
+        peer_handle: "alex",
+        message_to_peer: "Review this.",
+        artifact_ids: ["artifact-1"],
+      }));
+      expect(rejected.status).toBe("error");
+      expect(grant).not.toHaveBeenCalled();
+      expect(ordinary).toEqual([]);
+      expect(protectedCreates).toEqual([]);
+
+      const accepted = await full.invoke(call("ask_peer", {
+        peer_handle: "alex",
+        message_to_peer: "Are you free?",
+      }));
+      expect(accepted.status).toBe("success");
+      expect(ordinary).toEqual([]);
+      expect(protectedCreates).toHaveLength(1);
+      expect(protectedCreates[0]).toMatchObject({
+        preset: "ask_peer",
+        targetChat: "last_dm",
+        targetChatHandle: "@alex",
+        awaitResponse: true,
+      });
+
+      setTaskToolRuntime({
+        db: {} as never,
+        canUseLegacyTaskContent: async () => true,
+        createTask: async input => {
+          ordinary.push(input);
+          return { taskId: "ordinary-peer", status: "pending" };
+        },
+        createProtectedTask: async input => {
+          protectedCreates.push(input);
+          return { taskId: "unexpected-protected", status: "pending" };
+        },
+        computeNextFireAt: () => new Date(),
+        pauseTask: async () => ({ ok: true, status: "paused", message: "" }),
+        unpauseTask: async () => ({ ok: true, status: "pending", message: "" }),
+        stopTask: async () => ({ ok: true, status: "cancelled", message: "" }),
+      });
+      const plain = createNautiloToolInvocationSession(createServerToolInvocationContext(
+        { ...invocationState, turnId: "plain-turn" },
+        () => ({ status: "allowed" }),
+        { fullEncryptionOnly: false },
+      ));
+      const plainResult = await plain.invoke({ ...call("ask_peer", {
+        peer_handle: "alex",
+        message_to_peer: "Are you free?",
+      }), callId: "call-ask-peer-plain" });
+      expect(plainResult.status).toBe("success");
+      expect(ordinary).toHaveLength(1);
+      expect(protectedCreates).toHaveLength(1);
+    } finally {
+      grant.mockRestore();
+    }
+  });
+
   test("keeps delegated visual observations text-only while ordinary screenshots retain pixels", async () => {
     const catalog = new ToolCatalog();
     registerAllTools(catalog);
@@ -3181,4 +3287,33 @@ test("canonical status agrees with command denial and preserves successful Error
   expect(successReceipt.additional_kwargs["nautilo_tool_status"]).toBe("success");
   expect(successReceipt.content).toBe("Error: this is successfully retrieved source text");
   expect(success.noProgressStreaks?.size).toBe(0);
+});
+
+
+describe("protected Task project file invocation", () => {
+  test("matches exact current Task identity and pin without fabricated foreground origin", async () => {
+    let invoked = 0;
+    register("file", async () => { invoked += 1; return JSON.stringify(getRequiredOrdinaryHostContext()); });
+    setOrdinaryHostResolver({ resolve: () => { throw new Error("Ordinary host lookup must not run"); } });
+    const port: ProtectedTaskProjectFilePort = { taskId: "task", taskRunId: "run", agentId: "agent", humanUserId: "owner",
+      relayId: "captured-relay", workspaceRoot: "/project/child", dispatch: () => { throw new Error("Fixture tool does not dispatch"); } };
+    const current = state({ taskRun: true, trustedExecutionEntrypoint: "background.task", currentTaskId: "task", currentTaskRunId: "run",
+      causalHumanUserId: "owner", requiredHostRelays: { "call-file": "captured-relay" }, verifiedOrdinaryOrigin: null });
+    const invoke = () => createNautiloToolInvocationSession(createServerToolInvocationContext(current, () => ({ status: "allowed" })))
+      .invoke(call("file", { command: "read", zone: "current", path: "README.md" }));
+    await runWithProtectedTaskProjectFilePort(port, async () => {
+      const allowed = await invoke();
+      expect(allowed.status).toBe("success");
+      expect(allowed.content).toContain('"workspaceRoot":"/project/child"');
+      expect(allowed.content).toContain('"relayId":"captured-relay"');
+      current.currentTaskRunId = "foreign";
+      expect((await invoke()).status).toBe("error");
+      current.currentTaskRunId = "run";
+      current.requiredHostRelays = { "call-file": "other-relay" };
+      expect((await invoke()).status).toBe("error");
+      current.requiredHostRelays = {};
+      expect((await invoke()).status).toBe("error");
+    });
+    expect(invoked).toBe(1);
+  });
 });

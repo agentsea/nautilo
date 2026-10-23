@@ -30,6 +30,78 @@ const unavailable = () =>
   );
 
 describe("encryption data operation owner", () => {
+  test("Plain keeps its ordinary callback and never prepares a Fallback receipt", async () => {
+    let fallbackCalled = false;
+    const value = await owner({ policy: { mode: "plaintext_only",
+      shadowBehavior: "fallback" }, revalidationToken: 11 }, []).mutate({
+      ordinary: async (...args: readonly unknown[]) => {
+        expect(args).toEqual([]);
+        return "ordinary";
+      },
+      ordinaryFallback: async () => {
+        fallbackCalled = true;
+        return "fallback";
+      },
+      publish: async plan => plan,
+    });
+    expect(value).toBe("ordinary");
+    expect(fallbackCalled).toBe(false);
+  });
+
+  test.each(["recoverable_availability", "key_waiting"] as const)(
+    "prepares a classified receipt only after current Fallback revalidation: %s",
+    async failure => {
+      const calls: string[] = [];
+      let revision = 10;
+      const bound = bindEncryptionDataOperationOwner({ policy: {
+        resolve: async () => ({ policy: { mode: "shadow_encryption",
+          shadowBehavior: "fallback" }, revalidationToken: ++revision }),
+        revalidate: async token => { calls.push(`revalidate:${String(token)}`); },
+      } });
+      const value = await bound.mutate({
+        ordinary: async () => { throw new Error("Receipt bypassed"); },
+        dual: async () => {
+          calls.push("dual");
+          throw new ClassifiedDataOperationError(failure, "keys pending");
+        },
+        ordinaryFallback: async context => {
+          expect(Object.isFrozen(context)).toBe(true);
+          expect(context).toEqual({ failure, revalidationToken: 12 });
+          calls.push("receipt");
+          return "signed-intent";
+        },
+        publish: async (plan, context) => {
+          expect(context.revalidationToken).toBe(12);
+          calls.push("publish");
+          return plan;
+        },
+      });
+      expect(value).toBe("signed-intent");
+      expect(calls).toEqual(["revalidate:11", "dual", "revalidate:12",
+        "receipt", "revalidate:12", "publish"]);
+    },
+  );
+
+  test.each([
+    ["shadow_encryption", "strict", "recoverable_availability"],
+    ["encrypted_only", "fallback", "recoverable_availability"],
+    ["shadow_encryption", "fallback", "integrity"],
+    ["shadow_encryption", "fallback", "authority"],
+    ["shadow_encryption", "fallback", "unsupported"],
+  ] as const)("never prepares a receipt for %s/%s/%s", async (mode, shadowBehavior, failure) => {
+    const expected = new ClassifiedDataOperationError(failure, "blocked");
+    let ordinaryCalled = false;
+    const reject = () => Promise.reject(expected);
+    const fallback = async () => { ordinaryCalled = true; return "ordinary"; };
+    const error = await owner({ policy: { mode, shadowBehavior },
+      revalidationToken: 11 }, []).mutate({
+      ordinary: fallback, ordinaryFallback: fallback, dual: reject,
+      protected: reject, publish: async plan => plan,
+    }).catch((caught: unknown) => caught);
+    expect(error).toBe(expected);
+    expect(ordinaryCalled).toBe(false);
+  });
+
   test("diagnostic classification does not expose arbitrary error names or messages", () => {
     const error = new Error("private message body");
     error.name = "private body copied into an error name";

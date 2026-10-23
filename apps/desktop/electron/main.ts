@@ -277,6 +277,7 @@ import {
   foregroundShadowString,
   parseForegroundShadowEdit,
   parseForegroundShadowPendingAttention,
+  parseForegroundShadowTaskPendingAttention,
 } from "./foreground-shadow-ipc-validation.ts";
 import {
   parseTaskOperationRequestV1,
@@ -425,6 +426,9 @@ import {
   normalizeHumanMessageText,
   normalizeVideoExportSettings,
   normalizeRemoteOrdinaryRequestBody,
+  codexPermissionSelectionResponseSchema,
+  codexRequestResponseSchema,
+  isLiveShadowForegroundAuthorizationRequestV1,
   parseLiveShadowMessageRealtimeEventV1,
   parseFullEncryptionMessageRealtimeContentEventV2,
   parseVoiceFundingRecovery,
@@ -8542,6 +8546,30 @@ ipcMain.handle("foregroundShadow:task:operateV1", async (e, raw: unknown) => {
         operation: "open" as const,
         data: await controller.taskOpen(request.task),
       });
+    case "open_result":
+      return Object.freeze({
+        version: 1 as const,
+        status: "ready" as const,
+        operation: "open_result" as const,
+        data: await controller.taskOpenResult({
+          taskId: request.taskId,
+          taskRunId: request.taskRunId,
+          agentId: request.agentId,
+        }),
+      });
+    case "open_transcript":
+      return Object.freeze({
+        version: 1 as const,
+        status: "ready" as const,
+        operation: "open_transcript" as const,
+        data: await controller.taskOpenTranscript({
+          taskId: request.taskId,
+          taskRunId: request.taskRunId,
+          agentId: request.agentId,
+          ...(request.cursor === undefined ? {} : { cursor: request.cursor }),
+          ...(request.limit === undefined ? {} : { limit: request.limit }),
+        }),
+      });
     case "create":
       return Object.freeze({
         version: 1 as const,
@@ -8701,6 +8729,88 @@ ipcMain.handle("foregroundShadow:recoverRoomPendingAttention", async (e, raw: un
   return controller.recoverRoomPendingAttention(input);
 });
 
+ipcMain.handle("foregroundShadow:recoverTaskPendingAttention", async (e, raw: unknown) => {
+  const input = parseForegroundShadowTaskPendingAttention(raw);
+  const { controller } = await foregroundShadowControllerForSender(e);
+  return controller.recoverTaskPendingAttention(input);
+});
+
+ipcMain.handle(
+  "foregroundShadow:recoverProtectedTaskExternalRequests",
+  async (e, raw: unknown) => {
+    const value = boundedForegroundShadowValue(
+      raw,
+      "Protected Task external request recovery",
+    ) as { clientActionSessionId?: unknown; requestId?: unknown };
+    const clientActionSessionId = foregroundShadowString(
+      value.clientActionSessionId,
+      "Client action session id",
+      200,
+    );
+    const requestId = value.requestId === undefined ? undefined
+      : foregroundShadowString(value.requestId, "Request id", 512);
+    if (Object.keys(value).some((key) => key !== "clientActionSessionId" && key !== "requestId")) {
+      throw new TypeError("Protected Task external request recovery is invalid");
+    }
+    const { controller } = await foregroundShadowControllerForSender(e);
+    return controller.recoverProtectedTaskExternalRequests({
+      clientActionSessionId,
+      ...(requestId === undefined ? {} : { requestId }),
+    });
+  },
+);
+
+ipcMain.handle(
+  "foregroundShadow:respondProtectedTaskExternalRequest",
+  async (e, raw: unknown) => {
+    const value = boundedForegroundShadowValue(
+      raw,
+      "Protected Task external request response",
+    ) as {
+      clientActionSessionId?: unknown;
+      requestId?: unknown;
+      responseCapability?: unknown;
+      response?: unknown;
+    };
+    if (Object.keys(value).some((key) => ![
+      "clientActionSessionId",
+      "requestId",
+      "responseCapability",
+      "response",
+    ].includes(key))) {
+      throw new TypeError("Protected Task external request response is invalid");
+    }
+    const clientActionSessionId = foregroundShadowString(
+      value.clientActionSessionId,
+      "Client action session id",
+      200,
+    );
+    const requestId = foregroundShadowString(value.requestId, "Request id", 512);
+    const responseCapability = foregroundShadowString(
+      value.responseCapability,
+      "Response capability",
+      200,
+    );
+    const standardResponse = codexRequestResponseSchema.safeParse(value.response);
+    const selectionResponse = codexPermissionSelectionResponseSchema.safeParse(
+      value.response,
+    );
+    const response = standardResponse.success
+      ? standardResponse.data
+      : selectionResponse.success ? selectionResponse.data : null;
+    if (response === null) {
+      throw new TypeError("Protected Task external request response is invalid");
+    }
+    const { controller } = await foregroundShadowControllerForSender(e);
+    return controller.respondProtectedTaskExternalRequest({
+      clientActionSessionId,
+      requestId,
+      responseCapability,
+      response,
+    });
+  },
+);
+
 ipcMain.handle("foregroundShadow:edit", async (e, raw: unknown) => {
   const { roomId, messageId, body } = parseForegroundShadowEdit(raw);
   const { controller } = await foregroundShadowControllerForSender(e);
@@ -8715,10 +8825,9 @@ ipcMain.handle("foregroundShadow:authorize", async (e, raw: unknown) => {
   const event = parseLiveShadowMessageRealtimeEventV1(
     value?.event,
   );
-  if (
-    event.type !== "message.shared_agent_authorization_required"
-    && event.type !== "message.runtime_invocation_authorization_required"
-  ) throw new Error("Foreground Shadow authorization kind is unsupported.");
+  if (!isLiveShadowForegroundAuthorizationRequestV1(event)) {
+    throw new Error("Foreground Shadow authorization kind is unsupported.");
+  }
   const { controller } = await foregroundShadowControllerForSender(e);
   return controller.authorizeSharedAgentExecution(event);
 });
@@ -8878,6 +8987,25 @@ ipcMain.handle("foregroundShadow:messageBackfill:cancel", async (e) => {
   const bound = await pending;
   if (bound.sender !== e.sender || bound.serverScope !== session.scope) return;
   bound.controller.cancelMessageBackfill();
+});
+
+ipcMain.handle("foregroundShadow:taskContentBackfill:progress", async (e) => {
+  const { controller } = await foregroundShadowControllerForSender(e);
+  return controller.getTaskContentBackfillProgress();
+});
+
+ipcMain.handle("foregroundShadow:taskContentBackfill:service", async (e) => {
+  const { controller } = await foregroundShadowControllerForSender(e);
+  return controller.serviceTaskContentBackfill();
+});
+
+ipcMain.handle("foregroundShadow:taskContentBackfill:cancel", async (e) => {
+  const session = resolveSessionFromSender(e);
+  const pending = foregroundShadowControllers.get(e.sender.id);
+  if (pending === undefined) return;
+  const bound = await pending;
+  if (bound.sender !== e.sender || bound.serverScope !== session.scope) return;
+  bound.controller.cancelTaskContentBackfill();
 });
 
 ipcMain.handle("foregroundShadow:history:reconcile", async (e, raw: unknown) => {

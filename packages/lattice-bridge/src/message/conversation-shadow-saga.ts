@@ -87,6 +87,7 @@ function expectedObjectId(
       || lifecycle.humanPeerShadowOperationId !== null
       || lifecycle.sharedAgentShadowOperationId !== null
       || lifecycle.sharedAgentShadowExecutionId !== null
+      || lifecycle.taskWakeOperationId !== null
       || lifecycle.shadowTranscriptOrdinal !== null
     ) throw new Error("Legacy Message lifecycle carries live coordinates");
     return deriveMessageCryptoObjectIdV2(lifecycle);
@@ -110,18 +111,23 @@ function expectedObjectId(
   const operationId = lifecycle.shadowOperationId
     ?? lifecycle.humanPeerShadowOperationId
     ?? lifecycle.sharedAgentShadowOperationId
-    ?? lifecycle.sharedAgentShadowExecutionId;
+    ?? lifecycle.sharedAgentShadowExecutionId
+    ?? lifecycle.taskWakeOperationId;
   const parentCount = [
     lifecycle.shadowOperationId,
     lifecycle.humanPeerShadowOperationId,
     lifecycle.sharedAgentShadowOperationId,
     lifecycle.sharedAgentShadowExecutionId,
+    lifecycle.taskWakeOperationId,
   ].filter((value) => value !== null).length;
   if (
     lifecycle.objectIdScheme !== "live_shadow_v1"
     || operationId === null
     || parentCount !== 1
     || lifecycle.shadowTranscriptOrdinal === null
+    || lifecycle.taskWakeOperationId !== null && (lifecycle.revision !== 0
+      || lifecycle.keyClass !== "ai" || !["assistant", "tool"].includes(lifecycle.authorRole)
+      || lifecycle.shadowTranscriptOrdinal < 2)
   ) throw new Error("Live Message lifecycle lacks its exact turn coordinates");
   return deriveLiveShadowMessageCryptoObjectIdV1({
     operationId,

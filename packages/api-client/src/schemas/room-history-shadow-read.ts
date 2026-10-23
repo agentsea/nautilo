@@ -1,12 +1,14 @@
 import { z } from "zod";
 import { protectedMessageDtoV2Schema } from "@nautilo/types";
+import {
+  HUMAN_HISTORY_READ_ACKNOWLEDGEMENT_MAX_RESULTS_V1,
+} from "@nautilo/lattice-crypto/wire-limits";
+import { MAX_TASK_RUNTIME_SIGNER_AUTHORIZATION_WIRE_BYTES_V1 } from
+  "@nautilo/lattice-crypto/background";
 
 import {
   protectedObjectAccessSignerEvidenceSetV1Schema,
 } from "./protected-object-access";
-
-// Mirrors the signed Human history acknowledgement wire's exact result bound.
-const HUMAN_HISTORY_READ_ACKNOWLEDGEMENT_MAX_RESULTS_V1 = 50;
 
 const portableId = z.string().min(1).max(128)
   .regex(/^[A-Za-z0-9][A-Za-z0-9._:@/-]*$/u);
@@ -23,6 +25,12 @@ const sha256 = base64url.length(43);
 
 const roomHistoryShadowSignerEvidenceV1Schema = z.discriminatedUnion("kind", [
   protectedObjectAccessSignerEvidenceSetV1Schema.element,
+  z.object({
+    kind: z.literal("task_runtime_signer_certificate"),
+    evidenceBytesBase64url: base64url.max(Math.ceil(
+      MAX_TASK_RUNTIME_SIGNER_AUTHORIZATION_WIRE_BYTES_V1 * 4 / 3,
+    )),
+  }).strict(),
   z.object({
     kind: z.enum(["human_ai_readable_live_shadow_request_v1", "human_ai_readable_live_shadow_request_v2"]),
     operationId: portableId,
@@ -136,6 +144,16 @@ const roomHistoryShadowSelectedSourceV1Schema = z.object({
   message: "Unverified external authorship cannot identify a local author",
 });
 
+const roomHistoryTaskRuntimeRecordV1Schema = z.object({
+  kind: z.literal("task_runtime"),
+  taskId: canonicalUuid,
+  taskRunId: canonicalUuid,
+  coordinate: roomHistoryShadowSelectedCoordinateV1Schema,
+  ordinaryPayloadBytesBase64url: base64url,
+  retainedGeneration: roomHistoryRetainedGenerationSchema,
+  protectedMessage: protectedMessageDtoV2Schema,
+}).strict();
+
 const roomHistoryTerminalExecutionSummarySchema = z.object({
   messageId: positiveCounter,
   executionId: portableId,
@@ -145,6 +163,13 @@ const roomHistoryTerminalExecutionSummarySchema = z.object({
 export const roomHistoryShadowRecordV1Schema = z.union([
   roomHistoryLiveShadowRecordV1Schema,
   roomHistoryLiveShadowRecordV1Schema.omit({ ordinaryPayloadBytesBase64url: true }).extend({
+    representationMode: z.literal("protected-only"),
+    selectedSource: roomHistoryShadowSelectedSourceV1Schema,
+  }).strict(),
+  roomHistoryTaskRuntimeRecordV1Schema,
+  roomHistoryTaskRuntimeRecordV1Schema.omit({
+    ordinaryPayloadBytesBase64url: true,
+  }).extend({
     representationMode: z.literal("protected-only"),
     selectedSource: roomHistoryShadowSelectedSourceV1Schema,
   }).strict(),
@@ -235,7 +260,7 @@ export const roomHistoryShadowRecordV1Schema = z.union([
   }).strict(),
 ]);
 
-const ready = z.object({
+export const roomHistoryShadowReadReadyResponseV1Schema = z.object({
   responseVersion: z.literal(1),
   status: z.literal("ready"),
   operationId: portableId,
@@ -333,7 +358,7 @@ export const roomHistoryShadowReadResponseV1Schema = z.discriminatedUnion(
       eligibleCount: z.literal(0),
     }).strict(),
     unavailable,
-    ready,
+    roomHistoryShadowReadReadyResponseV1Schema,
   ],
 );
 
@@ -429,6 +454,9 @@ export type RoomHistoryShadowRecordV1 = z.infer<
 >;
 export type RoomHistoryShadowReadResponseV1 = z.infer<
   typeof roomHistoryShadowReadResponseV1Schema
+>;
+export type RoomHistoryShadowReadReadyResponseV1 = z.infer<
+  typeof roomHistoryShadowReadReadyResponseV1Schema
 >;
 export type RoomHistoryShadowReadAcknowledgementRequestV1 = z.infer<
   typeof roomHistoryShadowReadAcknowledgementRequestV1Schema

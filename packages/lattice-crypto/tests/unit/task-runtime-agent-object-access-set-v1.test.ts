@@ -670,6 +670,8 @@ describe("Task Runtime Agent native object access set", () => {
           payloadBytes: fixture.payloadBytes,
         }));
         for (const malformed of [
+          null,
+          undefined,
           { ...exact, unexpected: true },
           { ...exact, storage: { ...exact.storage, getObject: undefined } },
           {

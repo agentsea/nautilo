@@ -6,9 +6,11 @@ import {
 } from "@nautilo/db";
 import {
   assertAuthenticTaskRuntimeExecutionEvidence,
+  assertAuthenticTaskRuntimeWakeForegroundEvidence,
   type DomainForegroundSecretEntry,
   type LatticeCrypto,
   type TaskRuntimeExecutionEvidence,
+  type TaskRuntimeWakeForegroundEvidence,
 } from "@nautilo/lattice-crypto";
 
 import type {
@@ -187,6 +189,29 @@ export async function withNativeTaskMemoryEntityCrypto<Value>(
   input: NativeTaskMemoryEntityCryptoInput<Value>,
   namespaceKeys?: NamespaceKeys,
 ): Promise<Value> {
+  return withNativeTaskEntityCrypto(input, () =>
+    assertAuthenticTaskRuntimeExecutionEvidence(input.evidence), namespaceKeys);
+}
+
+export type NativeTaskWakeForegroundEntityCryptoInput<Value> =
+  Omit<NativeTaskMemoryEntityCryptoInput<Value>, "evidence"> & Readonly<{
+    evidence: TaskRuntimeWakeForegroundEvidence;
+  }>;
+
+/** Lend only the independently admitted foreground Namespace partition. */
+export async function withNativeTaskWakeForegroundEntityCrypto<Value>(
+  input: NativeTaskWakeForegroundEntityCryptoInput<Value>,
+  namespaceKeys?: NamespaceKeys,
+): Promise<Value> {
+  return withNativeTaskEntityCrypto(input, () =>
+    assertAuthenticTaskRuntimeWakeForegroundEvidence(input.evidence), namespaceKeys);
+}
+
+async function withNativeTaskEntityCrypto<Value>(
+  input: NativeTaskMemoryEntityCryptoInput<Value> | NativeTaskWakeForegroundEntityCryptoInput<Value>,
+  assertAuthenticEvidence: () => void,
+  namespaceKeys?: NamespaceKeys,
+): Promise<Value> {
   if (
     !(input.signal instanceof AbortSignal)
     || typeof input.assertCurrentTaskAuthority !== "function"
@@ -194,7 +219,7 @@ export async function withNativeTaskMemoryEntityCrypto<Value>(
   ) throw new TypeError("Native Task Memory invocation is invalid");
 
   const evidence = input.evidence;
-  assertAuthenticTaskRuntimeExecutionEvidence(evidence);
+  assertAuthenticEvidence();
 
   const ownedPublicSnapshots: Uint8Array[] = [];
   const domains = new Map<string, BorrowedDomain>();
@@ -228,8 +253,8 @@ export async function withNativeTaskMemoryEntityCrypto<Value>(
           "Task Memory Domain custody disagrees with execution evidence",
         );
       }
-      const participantDigest = source.participantDigest.slice();
-      const headDigest = source.headDigest.slice();
+      const participantDigest = Uint8Array.from(source.participantDigest);
+      const headDigest = Uint8Array.from(source.headDigest);
       ownedPublicSnapshots.push(participantDigest, headDigest);
       domains.set(source.domainId, Object.freeze({
         domainId: source.domainId,
@@ -248,15 +273,18 @@ export async function withNativeTaskMemoryEntityCrypto<Value>(
     throw error;
   }
 
+  const admittedNamespaces = [...evidence.namespaceRequirements,
+    ...(evidence.purpose === "task.runtime.wake_foreground" && evidence.additionalMutationDestination !== undefined
+      ? [evidence.additionalMutationDestination.namespace] : [])];
   const namespaceRequirements = new Map(
-    evidence.namespaceRequirements.map((requirement) => [
+    admittedNamespaces.map((requirement) => [
       requirement.namespaceId,
       requirement,
     ]),
   );
   if (
-    namespaceRequirements.size !== evidence.namespaceRequirements.length
-    || evidence.namespaceRequirements.some((requirement) =>
+    namespaceRequirements.size !== admittedNamespaces.length
+    || admittedNamespaces.some((requirement) =>
       requirement.expectedPolicyRevision !== evidence.policyRevision
       || !domains.has(requirement.domainId)
     )
@@ -279,7 +307,7 @@ export async function withNativeTaskMemoryEntityCrypto<Value>(
     }
     try {
       controller.signal.throwIfAborted();
-      assertAuthenticTaskRuntimeExecutionEvidence(evidence);
+      assertAuthenticEvidence();
     } catch (error) {
       throw authorityFailure(error);
     }

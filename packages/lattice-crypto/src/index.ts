@@ -10,6 +10,31 @@ export {
   systemClock,
   systemRng,
 } from "./crypto/index.ts";
+
+export {
+  createTaskRuntimeBackgroundAuthorizationRequestV2
+    as createTaskRuntimeBackgroundAuthorizationRequest,
+  taskRuntimeBackgroundAuthorizationIssuerV2
+    as taskRuntimeBackgroundAuthorizationIssuer,
+} from "./background/task-runtime-request-v2.ts";
+export {
+  createTaskRuntimeSignerAuthorization,
+  destroyVerifiedTaskRuntimeSignerAuthorization,
+  readTaskRuntimeSignerAuthorizationIssuer,
+  verifyCurrentTaskRuntimeSignerAuthorization,
+  verifyHistoricalTaskRuntimeSignerAuthorization,
+} from "./background/task-runtime-signer-authorization-v1.ts";
+export type {
+  ResolveCurrentTaskRuntimeSignerAuthorizationIssuer,
+  ResolveHistoricalTaskRuntimeSignerAuthorizationIssuer,
+  TaskRuntimeCertifiedBackgroundAuthorizationRequest,
+  TaskRuntimeSignerAuthorizationIssuerContext,
+  TaskRuntimeSignerAuthorizationProjection,
+  TaskRuntimeSignerAuthorization,
+  VerifiedCurrentTaskRuntimeSignerAuthorization,
+  VerifiedHistoricalTaskRuntimeSignerAuthorization,
+  VerifiedTaskRuntimeSignerAuthorization,
+} from "./background/task-runtime-signer-authorization-v1.ts";
 export type {
   Clock,
   KeyPair,
@@ -395,15 +420,33 @@ export {
     as ProcessorTransformRecipientRegistry,
 } from "./background/one-run-processor-transform-v1.ts";
 export {
+  assertAuthenticTaskRuntimeCancellationResultEvidenceV1
+    as assertAuthenticTaskRuntimeCancellationResultEvidence,
+  assertAuthenticTaskRuntimeTerminalMessageEvidenceV1
+    as assertAuthenticTaskRuntimeTerminalMessageEvidence,
+  hasTaskRuntimeTemporarySignerV1 as hasTaskRuntimeTemporarySigner,
   TaskRuntimeRecipientRegistryV1 as TaskRuntimeRecipientRegistry,
+  withTaskRuntimeTemporarySignerV1 as withTaskRuntimeTemporarySigner,
 } from "./background/task-runtime-recipient-registry-v1.ts";
 export type {
+  TaskRuntimeCancellationResultEvidenceV1
+    as TaskRuntimeCancellationResultEvidence,
+  TaskRuntimeCancellationResultProofV1
+    as TaskRuntimeCancellationResultProof,
   TaskRuntimeRecipientAttemptV1 as TaskRuntimeRecipientAttempt,
   TaskRuntimeRecipientCreationResultV1 as TaskRuntimeRecipientCreationResult,
   TaskRuntimeRecipientDeadlineHandleV1 as TaskRuntimeRecipientDeadlineHandle,
   TaskRuntimeRecipientDeadlineSchedulerV1 as TaskRuntimeRecipientDeadlineScheduler,
   TaskRuntimeRecipientOpenResultV1 as TaskRuntimeRecipientOpenResult,
+  TaskRuntimeCertifiedPublicationSigningInputV1
+    as TaskRuntimeCertifiedPublicationSigningInput,
+  TaskRuntimeCertifiedSigningInputV1 as TaskRuntimeCertifiedSigningInput,
+  TaskRuntimeTemporarySignerV1 as TaskRuntimeTemporarySigner,
 } from "./background/task-runtime-recipient-registry-v1.ts";
+export type {
+  TaskRuntimeTerminalMessageEvidenceV1 as TaskRuntimeTerminalMessageEvidence,
+  TaskRuntimeTerminalMessageProofV1 as TaskRuntimeTerminalMessageProof,
+} from "./background/task-runtime-terminal-message-evidence-v1.ts";
 export type {
   TaskRuntimeExecutionDomainAuthorityV1 as TaskRuntimeExecutionDomainAuthority,
   TaskRuntimeExecutionEvidenceV1 as TaskRuntimeExecutionEvidence,
@@ -976,6 +1019,8 @@ export {
 export {
   prepareDeviceWrappedAgentObjectAccessManifestGenesisSetV1
     as prepareDeviceWrappedAgentObjectAccessManifestGenesisSet,
+  assertAuthenticPreparedDeviceWrappedAgentObjectAccessManifestGenesisSetV1
+    as assertAuthenticPreparedDeviceWrappedAgentObjectAccessManifestGenesisSet,
 } from "./object/device-wrapped-agent-access-manifest-set-v1.ts";
 export {
   assertAuthenticPreparedTaskRuntimeAgentObjectAccessManifestGenesisSetV1
@@ -1100,12 +1145,16 @@ export {
   assertAuthenticPreparedTaskRuntimeResultObjectV1
     as assertAuthenticPreparedTaskRuntimeResultObject,
   prepareTaskRuntimeResultObjectV1 as prepareTaskRuntimeResultObject,
+  prepareNativeTaskRuntimeCancellationResultObjectV1
+    as prepareNativeTaskRuntimeCancellationResultObject,
   prepareNativeTaskRuntimeResultObjectV1 as prepareNativeTaskRuntimeResultObject,
 } from "./object/task-runtime-result-preparation-v1.ts";
 export type {
   PreparedTaskRuntimeResultObjectV1 as PreparedTaskRuntimeResultObject,
   PrepareTaskRuntimeResultObjectV1Input as PrepareTaskRuntimeResultObjectInput,
   PrepareNativeTaskRuntimeResultObjectV1Input as PrepareNativeTaskRuntimeResultObjectInput,
+  PrepareNativeTaskRuntimeCancellationResultObjectV1Input
+    as PrepareNativeTaskRuntimeCancellationResultObjectInput,
   TaskRuntimeResultNamespaceSourceV1 as TaskRuntimeResultNamespaceSource,
   TaskRuntimeResultObjectAuthorityV1 as TaskRuntimeResultObjectAuthority,
 } from "./object/task-runtime-result-preparation-v1.ts";
@@ -1167,6 +1216,10 @@ export {
 export type {
   CurrentTaskRuntimeAgentObjectAccessGenesisSetAuthorizationV1
     as CurrentTaskRuntimeAgentObjectAccessGenesisSetAuthorization,
+  CurrentTaskRuntimeAgentObjectAccessGenesisSetLegacyAuthorizationV1
+    as CurrentTaskRuntimeAgentObjectAccessGenesisSetLegacyAuthorization,
+  CurrentTaskRuntimeAgentObjectAccessGenesisSetTemporaryAuthorizationV1
+    as CurrentTaskRuntimeAgentObjectAccessGenesisSetTemporaryAuthorization,
   WithCurrentTaskRuntimeAgentObjectAccessGenesisSetAuthorizationV1
     as WithCurrentTaskRuntimeAgentObjectAccessGenesisSetAuthorization,
 } from "./object/task-runtime-agent-storage-coordinator-v1.ts";
@@ -1422,8 +1475,12 @@ export type {
 } from "./format/object-access-manifest-v3.ts";
 export {
   createAgentObjectAccessManifestV5 as createCommonAgentObjectAccessManifest,
+  createTaskDefinitionForegroundObjectAccessManifestV5
+    as createTaskDefinitionForegroundObjectAccessManifest,
   createHumanObjectAccessManifestV5 as createCommonHumanObjectAccessManifest,
   createCurrentProcessorObjectAccessManifestV5 as createCurrentCommonProcessorObjectAccessManifest,
+  createTaskRuntimeObjectAccessManifestV5
+    as createTaskRuntimeCommonObjectAccessManifest,
   createProcessorObjectAccessManifestV5
     as createCommonProcessorObjectAccessManifest,
   verifyObjectAccessManifestChainV5 as verifyCommonObjectAccessManifestChain,
@@ -1444,6 +1501,8 @@ export type {
     as CommonProcessorSignerAuthorizationEvidence,
   ResolveAgentRuntimeSignerPublicKeyV5
     as ResolveCommonAgentRuntimeSignerPublicKey,
+  ResolveTaskDefinitionForegroundAuthorizationSignerPublicKeyV5
+    as ResolveTaskDefinitionForegroundAuthorizationSignerPublicKey,
   ResolveHistoricalHumanDeviceSigningPublicKeyV5
     as ResolveCommonHistoricalHumanDeviceSigningPublicKey,
   ResolveHistoricalProcessorIssuingDevicePublicKeyV5
@@ -1626,3 +1685,41 @@ export type {
   HumanTaskPublicationRequestV1 as HumanTaskPublicationRequest,
   PrepareHumanTaskPublicationRequestInputV1 as PrepareHumanTaskPublicationRequestInput,
 } from "./task/publication-request-v1.ts";
+
+export {
+  prepareHumanExistingTaskRepresentationPublicationRequestV1
+    as prepareHumanExistingTaskRepresentationPublicationRequest,
+  verifyHumanExistingTaskRepresentationPublicationRequestV1
+    as verifyHumanExistingTaskRepresentationPublicationRequest,
+  verifyHumanExistingTaskRepresentationPublicationRequestExactReplayV1
+    as verifyHumanExistingTaskRepresentationPublicationRequestExactReplay,
+} from "./task/existing-representation-publication-request-v1.ts";
+export type {
+  HumanExistingTaskRepresentationPublicationRequestV1
+    as HumanExistingTaskRepresentationPublicationRequest,
+  PrepareHumanExistingTaskRepresentationPublicationRequestInputV1
+    as PrepareHumanExistingTaskRepresentationPublicationRequestInput,
+} from "./task/existing-representation-publication-request-v1.ts";
+
+export {
+  assertAuthenticTaskRuntimeRunResultReadEvidenceV1 as assertAuthenticTaskRuntimeRunResultReadEvidence,
+} from "./background/task-runtime-run-result-read-evidence-v1.ts";
+export type {
+  TaskRuntimeRunResultReadEvidenceV1 as TaskRuntimeRunResultReadEvidence,
+  TaskRuntimeRunResultReadProofV1 as TaskRuntimeRunResultReadProof,
+  TaskRuntimeRunResultReadInvocationV1 as TaskRuntimeRunResultReadInvocation,
+} from "./background/task-runtime-run-result-read-evidence-v1.ts";
+export type {
+  TaskRuntimeRunResultReadPartitionsV1 as TaskRuntimeRunResultReadPartitions,
+  TaskRuntimeTemporarySignerEvidenceV1 as TaskRuntimeTemporarySignerEvidence,
+} from "./background/task-runtime-recipient-registry-v1.ts";
+export {
+  assertAuthenticTaskRuntimeWakeForegroundEvidenceV1 as assertAuthenticTaskRuntimeWakeForegroundEvidence,
+} from "./background/task-runtime-wake-foreground-evidence-v1.ts";
+export type {
+  TaskRuntimeWakeForegroundEvidenceV1 as TaskRuntimeWakeForegroundEvidence,
+} from "./background/task-runtime-wake-foreground-evidence-v1.ts";
+
+export { assertTaskRuntimeTemporarySignerForPreparationV1 as assertTaskRuntimeTemporarySignerForPreparation } from "./object/task-runtime-result-preparation-v1.ts";
+
+export type { TaskRuntimePublicationSigning } from "./object/task-runtime-publication-signing.ts";

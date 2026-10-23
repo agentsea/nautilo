@@ -79,7 +79,10 @@ const ConfigurationSchema = z.object({
   mcp_prompt: z.string().optional().nullable().default(null),
 });
 
-export type Configuration = z.infer<typeof ConfigurationSchema>;
+export type Configuration = z.infer<typeof ConfigurationSchema> & Readonly<{
+  /** Trusted execution-owner option; never populated from runtime environment configuration. */
+  confidential?: true;
+}>;
 
 
 function envGet(environment: NodeJS.ProcessEnv, key: string): string | undefined {

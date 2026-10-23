@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { LatticeCrypto } from "@nautilo/lattice-crypto";
+import { protectedTaskSemanticAuthorityRequirementsDigest } from "@nautilo/db";
 import type {
   ForegroundAgentEntityCryptoInvocation,
   ForegroundAgentEntityNamespaceAuthority,
@@ -53,6 +54,8 @@ let now = 1_800_000_000_000;
 let sourceRevision = 7;
 let destinationStale: string | null = null;
 let targetPublishCalls = 0;
+let embeddingCalls = 0;
+let encryptionCalls = 0;
 let effectCalls = 0;
 let effectCompleted = 0;
 let wakeRecoveryCalls = 0;
@@ -67,6 +70,13 @@ let capturedEffectBeforeLocks:
   | ((input: { transaction: unknown; authority: ProtectedMemoryAuthority; mutation: boolean }) => Promise<void>)
   | null = null;
 const committedOperations = new Set<string>();
+const reservedOperations = new Map<string, Record<string, unknown>>();
+const currentProjectionCalls: Readonly<{
+  destination: unknown;
+  authority: ProtectedMemoryAuthority;
+  mutation: boolean;
+}>[] = [];
+let projectionAuthorized = true;
 
 function sourceCandidate() {
   return Object.freeze({
@@ -116,44 +126,97 @@ class FakeAgentMemoryProductPort {
     }
   }
 
-  async loadExactProjectionSources(input: { memoryIds: readonly string[] }) {
-    return input.memoryIds.length === 1 && input.memoryIds[0] === SOURCE_MEMORY_ID
-      ? { status: "success" as const, value: [sourceCandidate()] }
-      : { status: "unavailable" as const, reason: "authorization_required" as const };
+  async #current<Value>(authority: ProtectedMemoryAuthority, mutation: boolean,
+    use: () => Promise<Value>): Promise<Value> {
+    const publication = this.options["publication"] as {
+      withCurrentPublication?: (input: Readonly<{
+        authority: ProtectedMemoryAuthority;
+        mutation: boolean;
+        use(assertCurrent: () => Promise<void>): Promise<unknown>;
+      }>) => Promise<unknown>;
+    };
+    if (publication.withCurrentPublication === undefined) return use();
+    let value: Value | undefined;
+    await publication.withCurrentPublication({ authority, mutation,
+      use: async assertCurrent => {
+        await assertCurrent();
+        value = await use();
+        return Object.freeze({ value });
+      } });
+    if (value === undefined) throw new Error("fixture publication did not run");
+    return value;
   }
 
+  async loadExactProjectionSources(input: { authority: ProtectedMemoryAuthority;
+    memoryIds: readonly string[] }) {
+    return this.#current(input.authority, false, async () =>
+      input.memoryIds.length === 1 && input.memoryIds[0] === SOURCE_MEMORY_ID
+        ? { status: "success" as const, value: [sourceCandidate()] }
+        : { status: "unavailable" as const,
+            reason: "authorization_required" as const });
+  }
+
+  async replayCompleted(input: Record<string, unknown>) {
+    const authority = input["authority"] as ProtectedMemoryAuthority;
+    return this.#current(authority, false, async () => {
+      await capturedPublicationBeforeLocks?.({ transaction: fakeTransaction(),
+        authority, mutation: false });
+      const operationId = input["operationId"] as string;
+      if (!committedOperations.has(operationId)) return {
+        status: "success" as const, value: null,
+      };
+      const reserved = reservedOperations.get(operationId)!;
+      if (JSON.stringify(reserved["mutationCommitment"]) !== JSON.stringify(input["mutationCommitment"])
+        || JSON.stringify(reserved["authority"]) !== JSON.stringify(authority)) return {
+        status: "unavailable" as const, reason: "authorization_required" as const,
+      };
+      return { status: "success" as const,
+        value: { mutationKind: "save" as const, memoryId: PROJECTED_MEMORY_ID,
+          action: "created" as const } };
+    });
+  }
+
+  async inspectFreshProjectionReservation() { return Object.freeze({}); }
+
   async planProjectionCreate(input: Record<string, unknown>) {
-    capturedPlanInput = input;
-    return {
-      status: "success" as const,
-      value: Object.freeze({
-        operationId: input["operationId"],
-        memoryId: PROJECTED_MEMORY_ID,
-      }),
-    };
+    return this.#current(input["authority"] as ProtectedMemoryAuthority,
+      true, async () => {
+        capturedPlanInput = input;
+        reservedOperations.set(input["operationId"] as string, input);
+        return {
+          status: "success" as const,
+          value: Object.freeze({
+            operationId: input["operationId"],
+            memoryId: PROJECTED_MEMORY_ID,
+          }),
+        };
+      });
   }
 
   async publishPrepared(input: Record<string, unknown>) {
-    targetPublishCalls += 1;
     const authority = input["authority"] as ProtectedMemoryAuthority;
-    await capturedPublicationBeforeLocks?.({
-      transaction: fakeTransaction(),
-      authority,
-      mutation: true,
+    return this.#current(authority, true, async () => {
+      targetPublishCalls += 1;
+      await capturedPublicationBeforeLocks?.({
+        transaction: fakeTransaction(),
+        authority,
+        mutation: true,
+      });
+      const operationId = (input["plan"] as { operationId: string }).operationId;
+      const replayed = committedOperations.has(operationId);
+      committedOperations.add(operationId);
+      return {
+        status: "success" as const,
+        value: replayed ? "replayed" as const : "inserted" as const,
+      };
     });
-    const operationId = (input["plan"] as { operationId: string }).operationId;
-    const replayed = committedOperations.has(operationId);
-    committedOperations.add(operationId);
-    return {
-      status: "success" as const,
-      value: replayed ? "replayed" as const : "inserted" as const,
-    };
   }
 }
 
 mock.module("@nautilo/agent", () => ({
   ...realAgent,
   embedTextWithProvenance: async (content: string) => {
+    embeddingCalls += 1;
     if (expireDuringEmbedding) now += 10 * 60 * 1_000 + 1;
     return {
       vector: new Array(1536).fill(0.01),
@@ -176,6 +239,10 @@ mock.module("@nautilo/agent", () => ({
 mock.module("@nautilo/lattice-bridge/server", () => ({
   ...realBridgeServer,
   PostgresAgentMemoryProductPort: FakeAgentMemoryProductPort,
+  bindConversationProductCanonicalTransactionRunner: (
+    _handle: unknown,
+    connection: { transaction: unknown },
+  ) => ({ role: "nautilo_agent", transaction: connection.transaction }),
 }));
 
 mock.module("@nautilo/trust", () => ({
@@ -240,8 +307,12 @@ mock.module("@nautilo/runtime", () => ({
   }),
 }));
 
-const { createForegroundMemoryProjectionPort } = await import(
+const { createForegroundMemoryProjectionPort,
+  createForegroundProtectedTaskMemoryProjection } = await import(
   "../../src/routes/foreground-memory-repository.ts"
+);
+const { protectedTaskProjectionDestinationAuthorityDigest } = await import(
+  "../../src/routes/protected-task-memory-projection-plan.ts"
 );
 
 function namespaceAuthority(
@@ -340,6 +411,7 @@ function domain() {
         };
       },
       async prepare(input: { content: unknown }) {
+        encryptionCalls += 1;
         capturedPreparedContent = input.content;
         return { status: "success" as const, value: Object.freeze({}) };
       },
@@ -350,8 +422,17 @@ function domain() {
   };
 }
 
-async function port() {
+async function port(held = false) {
+  type Input = Parameters<typeof createForegroundMemoryProjectionPort>[0];
+  const withCurrentPublication: NonNullable<Input["withCurrentPublication"]> =
+    request => request.use(() => Promise.resolve());
+  const withCurrentProjection: NonNullable<Input["withCurrentProjection"]> = async request => {
+    currentProjectionCalls.push({ destination: request.destination,
+      authority: request.targetAuthority, mutation: request.mutation });
+    return projectionAuthorized ? request.use(() => Promise.resolve()) : null;
+  };
   return createForegroundMemoryProjectionPort({
+    publication: { forReservation: () => ({ recover: async () => null, persist: async () => "created" as const }) },
     envelope,
     policy: {
       mode: "encrypted_only",
@@ -360,6 +441,53 @@ async function port() {
     },
     domain: domain() as never,
     wakeEffectRecovery() { wakeRecoveryCalls += 1; },
+    ...(held ? {
+      withCurrentPublication,
+      withCurrentProjection,
+    } : {}),
+  });
+}
+
+const sourceRequirements = Object.freeze([
+  Object.freeze({ namespaceId: SOURCE_NS, operations: ["decrypt"] as const }),
+]);
+const fullProjectionRequirements = Object.freeze([
+  ...sourceRequirements,
+  Object.freeze({ namespaceId: DESTINATION_NS, operations: ["encrypt"] as const }),
+]);
+
+async function protectedHandoff(continuedAdditionalAuthority?: Readonly<{
+  authorizationRequestId: string;
+  effectDisposition: "not_started_v1";
+  operationId: string;
+  requestDigest: Uint8Array;
+  requiredAuthorityDigest: Uint8Array;
+}>) {
+  type Input = Parameters<typeof createForegroundProtectedTaskMemoryProjection>[0];
+  const withCurrentPublication: NonNullable<Input["withCurrentPublication"]> =
+    request => request.use(() => Promise.resolve());
+  const withCurrentProjection: Input["withCurrentProjection"] = request =>
+    projectionAuthorized ? request.use(() => Promise.resolve()) : Promise.resolve(null);
+  return createForegroundProtectedTaskMemoryProjection({
+    publication: { forReservation: () => ({ recover: async () => null, persist: async () => "created" as const }) },
+    envelope,
+    policy: { mode: "encrypted_only", shadowBehavior: "strict", revision: 4 },
+    domain: domain() as never,
+    wakeEffectRecovery() { wakeRecoveryCalls += 1; },
+    withCurrentPublication,
+    withCurrentProjection,
+    withCurrentSource: use => use(() => Promise.resolve()),
+    planDestination: request => Promise.resolve(projectionAuthorized ? {
+      destinationAuthorityDigest:
+        protectedTaskProjectionDestinationAuthorityDigest(request.destination),
+    } : null),
+    task: { taskId: "task-1", taskRunId: "run-1", graphThreadId: "thread-1" },
+    originalCapsuleBinding: { policyRevision: 4, agentAuthorizationRevision: 12 },
+    currentSemanticAuthorityRequirements: continuedAdditionalAuthority === undefined
+      ? sourceRequirements : fullProjectionRequirements,
+    ...(continuedAdditionalAuthority === undefined ? {} : {
+      continuedAdditionalAuthority,
+    }),
   });
 }
 
@@ -387,6 +515,8 @@ beforeEach(() => {
   sourceRevision = 7;
   destinationStale = null;
   targetPublishCalls = 0;
+  embeddingCalls = 0;
+  encryptionCalls = 0;
   effectCalls = 0;
   effectCompleted = 0;
   wakeRecoveryCalls = 0;
@@ -397,6 +527,9 @@ beforeEach(() => {
   capturedPublicationBeforeLocks = null;
   capturedEffectBeforeLocks = null;
   committedOperations.clear();
+  reservedOperations.clear();
+  currentProjectionCalls.length = 0;
+  projectionAuthorized = true;
   spyOn(Date, "now").mockImplementation(() => now);
 });
 
@@ -415,6 +548,49 @@ async function copiedReference() {
 }
 
 describe("foreground Memory projection production resume", () => {
+  test("uses the held destination owner for a current-grant target without Room locks in Agent callbacks", async () => {
+    destinationStale = "destination_membership_changed";
+    const current = await port(true);
+    const prepared = await current.prepare(prepareInput);
+    expect(prepared.status).toBe("success");
+    if (prepared.status !== "success" || prepared.value.kind !== "prepared") {
+      throw new Error("fixture projection was not prepared");
+    }
+    expect(await current.publish({ authority,
+      reference: prepared.value.reference })).toMatchObject({
+        status: "success",
+        value: { status: "created", memoryId: PROJECTED_MEMORY_ID },
+      });
+    expect(currentProjectionCalls.map(value => value.mutation)).toEqual([
+      false, false, false, false, true, true, true, false,
+    ]);
+    expect(currentProjectionCalls.map(value => value.destination)).toEqual(
+      new Array(currentProjectionCalls.length).fill(destination),
+    );
+    expect(currentProjectionCalls.every(value =>
+      value.authority.mode === "namespace"
+      && value.authority.readableNamespaceIds.length === 1
+      && value.authority.readableNamespaceIds[0] === DESTINATION_NS
+      && value.authority.mutableNamespaceIds.length === 1
+      && value.authority.mutableNamespaceIds[0] === DESTINATION_NS
+      && value.authority.writableNamespaceId === DESTINATION_NS)).toBeTrue();
+    expect(capturedPublicationBeforeLocks).toBeUndefined();
+    expect(effectCompleted).toBe(1);
+  });
+
+  test("rejects an out-of-grant destination before target planning or mutation", async () => {
+    projectionAuthorized = false;
+    const current = await port(true);
+    expect(await current.prepare(prepareInput)).toEqual({
+      status: "unavailable",
+      reason: "authorization_required",
+    });
+    expect(capturedPlanInput).toBeNull();
+    expect(targetPublishCalls).toBe(0);
+    expect(effectCalls).toBe(0);
+    expect(currentProjectionCalls).toHaveLength(1);
+  });
+
   test("restores and idempotently publishes the exact checkpointed plan under fresh custody", async () => {
     const reference = await copiedReference();
     const serialized = JSON.stringify(reference);
@@ -456,7 +632,193 @@ describe("foreground Memory projection production resume", () => {
       status: "success",
       value: { status: "replayed", memoryId: PROJECTED_MEMORY_ID },
     });
-    expect(targetPublishCalls).toBe(2);
+    expect(targetPublishCalls).toBe(1);
+    expect(embeddingCalls).toBe(1);
+    expect(encryptionCalls).toBe(1);
+  });
+
+  test("replays a committed operation in fresh custody without provider or encryption, and rejects drift", async () => {
+    const reference = await copiedReference();
+    const first = await port();
+    expect(await first.publish({ authority, reference })).toMatchObject({
+      status: "success", value: { status: "created" },
+    });
+    const restarted = await port();
+    expect(await restarted.publish({ authority, reference })).toMatchObject({
+      status: "success", value: { status: "replayed" },
+    });
+    expect(embeddingCalls).toBe(1);
+    expect(encryptionCalls).toBe(1);
+    expect(targetPublishCalls).toBe(1);
+
+    sourceRevision += 1;
+    expect(await restarted.publish({ authority, reference })).toMatchObject({ status: "unavailable" });
+    sourceRevision -= 1;
+    destinationStale = "destination_membership_changed";
+    expect(await restarted.publish({ authority, reference })).toMatchObject({ status: "unavailable" });
+    destinationStale = null;
+    const changed = await restarted.prepare({ ...prepareInput, proposedContent: "Different proposal" });
+    if (changed.status !== "success" || changed.value.kind !== "prepared") throw new Error("fixture preparation failed");
+    expect(await restarted.publish({ authority, reference: changed.value.reference })).toMatchObject({
+      status: "unavailable", reason: "authorization_required",
+    });
+    expect(embeddingCalls).toBe(1);
+    expect(encryptionCalls).toBe(1);
+    expect(targetPublishCalls).toBe(1);
+  });
+
+  test("continues an exact protected additional-authority projection after its UI expiry", async () => {
+    const initial = await protectedHandoff();
+    const prepared = await initial.prepare(prepareInput);
+    expect(prepared.status).toBe("success");
+    if (prepared.status !== "success" || prepared.value.kind !== "prepared") {
+      throw new Error("fixture protected projection was not prepared");
+    }
+    const reference = prepared.value.reference;
+    const planned = await initial.planPublication({ authority, reference });
+    expect(planned.status).toBe("success");
+    if (planned.status !== "success" || planned.value.kind !== "additional_authority_v1") {
+      throw new Error("fixture projection did not require additional authority");
+    }
+    const plan = planned.value;
+    const requiredAuthorityDigest =
+      protectedTaskSemanticAuthorityRequirementsDigest(
+        plan.semanticAuthorityRequirements,
+      );
+    const continuation = Object.freeze({
+      authorizationRequestId: plan.authorizationRequestId,
+      effectDisposition: "not_started_v1" as const,
+      operationId: plan.operationId,
+      requestDigest: Uint8Array.from(plan.requestDigest),
+      requiredAuthorityDigest: Uint8Array.from(requiredAuthorityDigest),
+    });
+    requiredAuthorityDigest.fill(0);
+
+    now = reference.expiresAt + 1;
+    expect(await initial.restore({ authority, reference })).toEqual({
+      status: "unavailable",
+      reason: "authorization_required",
+    });
+
+    const resumed = await protectedHandoff(continuation);
+    expect(await resumed.restore({ authority, reference })).toMatchObject({
+      status: "success",
+      value: { proposedContent: prepareInput.proposedContent },
+    });
+    expect(await resumed.planPublication({ authority, reference })).toEqual({
+      status: "success",
+      value: plan,
+    });
+    const authorization = Object.freeze({
+      kind: "additional_authority_v1" as const,
+      plan,
+      acknowledgement: Object.freeze({
+        type: "protected_task_additional_authority_granted_v1" as const,
+        ...continuation,
+      }),
+    });
+    expect(await resumed.publishAuthorized({ authority, reference,
+      authorization })).toMatchObject({
+        status: "success",
+        value: { status: "created", memoryId: PROJECTED_MEMORY_ID },
+      });
+    expect(await resumed.publishAuthorized({ authority, reference,
+      authorization })).toMatchObject({
+        status: "success",
+        value: { status: "replayed", memoryId: PROJECTED_MEMORY_ID },
+      });
+    expect(targetPublishCalls).toBe(1);
+    expect(embeddingCalls).toBe(1);
+    expect(encryptionCalls).toBe(1);
+  });
+
+  test("does not bypass expiry for substituted protected continuation coordinates", async () => {
+    const initial = await protectedHandoff();
+    const prepared = await initial.prepare(prepareInput);
+    if (prepared.status !== "success" || prepared.value.kind !== "prepared") {
+      throw new Error("fixture protected projection was not prepared");
+    }
+    const reference = prepared.value.reference;
+    const planned = await initial.planPublication({ authority, reference });
+    if (planned.status !== "success" || planned.value.kind !== "additional_authority_v1") {
+      throw new Error("fixture projection did not require additional authority");
+    }
+    const plan = planned.value;
+    const requiredAuthorityDigest =
+      protectedTaskSemanticAuthorityRequirementsDigest(
+        plan.semanticAuthorityRequirements,
+      );
+    const exact = Object.freeze({
+      authorizationRequestId: plan.authorizationRequestId,
+      effectDisposition: "not_started_v1" as const,
+      operationId: plan.operationId,
+      requestDigest: Uint8Array.from(plan.requestDigest),
+      requiredAuthorityDigest: Uint8Array.from(requiredAuthorityDigest),
+    });
+    requiredAuthorityDigest.fill(0);
+    now = reference.expiresAt + 1;
+
+    const substitutions = [
+      { ...exact, authorizationRequestId: `${exact.authorizationRequestId}:other` },
+      { ...exact, operationId: `${exact.operationId}:other` },
+      { ...exact, requestDigest: new Uint8Array(32).fill(0xaa) },
+      { ...exact, requiredAuthorityDigest: new Uint8Array(32).fill(0xbb) },
+    ];
+    for (const substituted of substitutions) {
+      const resumed = await protectedHandoff(Object.freeze(substituted));
+      expect(await resumed.restore({ authority, reference })).toEqual({
+        status: "unavailable",
+        reason: "authorization_required",
+      });
+    }
+    const exactResume = await protectedHandoff(exact);
+    expect(await exactResume.restore({ authority, reference: Object.freeze({
+      ...reference,
+      toolCallId: `${reference.toolCallId}:substituted`,
+    }) })).toEqual({
+      status: "unavailable",
+      reason: "authorization_required",
+    });
+    expect(targetPublishCalls).toBe(0);
+  });
+
+  test("revalidates protected source and destination after continued expiry", async () => {
+    const initial = await protectedHandoff();
+    const prepared = await initial.prepare(prepareInput);
+    if (prepared.status !== "success" || prepared.value.kind !== "prepared") {
+      throw new Error("fixture protected projection was not prepared");
+    }
+    const reference = prepared.value.reference;
+    const planned = await initial.planPublication({ authority, reference });
+    if (planned.status !== "success" || planned.value.kind !== "additional_authority_v1") {
+      throw new Error("fixture projection did not require additional authority");
+    }
+    const requiredAuthorityDigest =
+      protectedTaskSemanticAuthorityRequirementsDigest(
+        planned.value.semanticAuthorityRequirements,
+      );
+    const resumed = await protectedHandoff(Object.freeze({
+      authorizationRequestId: planned.value.authorizationRequestId,
+      effectDisposition: "not_started_v1" as const,
+      operationId: planned.value.operationId,
+      requestDigest: Uint8Array.from(planned.value.requestDigest),
+      requiredAuthorityDigest: Uint8Array.from(requiredAuthorityDigest),
+    }));
+    requiredAuthorityDigest.fill(0);
+    now = reference.expiresAt + 1;
+
+    sourceRevision += 1;
+    expect(await resumed.restore({ authority, reference })).toEqual({
+      status: "unavailable",
+      reason: "authorization_required",
+    });
+    sourceRevision -= 1;
+    projectionAuthorized = false;
+    expect(await resumed.planPublication({ authority, reference })).toEqual({
+      status: "unavailable",
+      reason: "authorization_required",
+    });
+    expect(targetPublishCalls).toBe(0);
   });
 
   test("rejects changed source revision and destination before publication", async () => {

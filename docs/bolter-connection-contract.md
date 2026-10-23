@@ -29,9 +29,21 @@ must address the receiving identity to start work; self echoes and system
 messages do not start work. Unknown destinations do not fall back to another room.
 
 Genie publication uses the canonical final reply to the admitted external
-message. Human sharing uses the separate Review & send composer, which displays
-the exact destination and text before authorization. Ordinary local discussion,
+message. Human sharing uses a separate foldaway composer that keeps the destination
+and posting identity visible. Review before sending is enabled by default and
+remembered per Human and connection. Turning it off skips the final preview; it
+does not change authorization or the private context boundary. Review is a Human
+confirmation, not sensitive-data scanning or redaction. Ordinary local discussion,
 tool output, and earlier private history are not automatically mirrored.
+
+Files selected through this composer have their own queue. Paperclip, file drop,
+and clipboard files use the existing Room-scoped upload capability and file chips.
+Uploads remain private to Nautilo until the Human sends. Text, images, audio, PDF,
+and validated Office documents use the existing file admission policies. Document
+sharing stores inert bytes; it does not enable document extraction in the ordinary
+message upload path. The share fingerprint covers file order, names, MIME types,
+byte counts, and checksums. Acceptance retains the selected blobs in the same
+transaction as the canonical Human message and outbox.
 
 ## Delivery and recovery
 
@@ -49,11 +61,25 @@ Creating the linked room refreshes the Human's live room subscriptions and
 catalogue before the receiver starts, so the open Desktop can receive its first
 message and completion updates without reconnecting.
 
-Only exact, currently authorized text is released for sending. Ambiguous provider
+Only exact, currently authorized text and explicitly selected files are released
+for sending. File uploads use the connected chat's Bolter file area, without public
+access grants. Storage filenames use compatible ASCII names; Nautilo and the
+outgoing link labels retain the original filenames. The provider's returned URLs
+become links in one outgoing message.
+Each upload and the final message revalidate the same immutable publication claim;
+connection retirement prevents subsequent native dispatch. A failed partial upload
+may leave files in Bolter without a posted message. Ambiguous provider
 results remain uncertain and are not automatically retried. Check the external
 conversation before deciding whether another message is appropriate. Pause and
-disconnect prevent new dispatch admissions; they cannot recall text already
+disconnect prevent new dispatch admissions; they cannot recall content already
 released to the provider. Disconnect does not delete the remote agent or chat.
+Removing a Nautilo attachment does not delete a copy already stored in Bolter.
+Delivery settlement invalidates the owner-scoped UI state. The composer checks its
+exact outbox or request identity automatically and never clears a newer draft when
+an earlier receipt arrives. Unknown HTTP outcomes retain the same request for
+explicit recovery; they do not create a replacement send.
+Status reads select the current receipt rather than transferring delivery history;
+connection counters aggregate only pending and uncertain outbox states.
 
 Sign-in status refreshes while its operation is pending. Leaving and returning
 to Connections may require Connect Bolter to recover a still-pending server
@@ -65,7 +91,10 @@ use their durable server identity and sealed Desktop recovery descriptor.
 ## Supported boundaries
 
 The implementation selects the latest macOS ARM64 or x64 CLI through Bolter's
-fixed HTTPS download endpoint and supports text-only messages. The endpoint must
+fixed HTTPS download endpoint. Incoming messages remain text-only. Outgoing file
+sharing requires negotiated Relay protocol v31 and the Desktop's file-sharing
+observation. Older peers retain text sharing and do not advertise attachment
+support. The endpoint must
 resolve to an exact version on Bolter's CDN. Acquired bytes have a private local
 size/hash receipt and their architecture and reported version are verified before
 activation. Acquisition trusts Bolter's HTTPS endpoints; a local receipt detects
@@ -79,7 +108,7 @@ and retire the old receiver before another process can use that home.
 Pause and disconnection cancel their pending acquisition without interrupting a
 shared download still needed by another current connection.
 Response parsers accept additive metadata while validating the fields used for
-identity, routing, text and receipts. Unsupported media remains unavailable. The conversation picker lists main timelines; it does not
+identity, routing, text and receipts. Unsupported incoming media remains unavailable. The conversation picker lists main timelines; it does not
 enumerate threads. The transport preserves exact thread bindings and receipts
 when such a binding exists. Unknown provider events, including `profile_requested`,
 are ignored and logged locally by event kind without their text or payload. They
@@ -119,8 +148,8 @@ claims, and database backups do not replace Desktop credential custody.
 - `packages/server/src/messaging/bolter-controller.ts`: Human-owned connection
   management, exact room routing, current policy, and canonical execution admission.
 - `packages/db/src/queries/bolter-bridge.ts`: durable bindings and delivery state.
-- `packages/server/src/messaging/bolter-publication.ts`: canonical reply loading
-  and one-shot publication authorization.
+- `packages/server/src/messaging/bolter-publication.ts`: canonical reply loading,
+  one-shot content release and immutable claim revalidation during file sharing.
 
 Unit and application fixtures do not prove provider or installed behavior.
 Installed acceptance must include the real sign-in UI, OS encryption, signed

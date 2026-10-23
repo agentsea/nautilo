@@ -1,11 +1,11 @@
 import {
   recoverUnstartedParkedProtectedTaskRun,
   recoverUnstartedParkedProtectedTaskClaim,
-  discoverParkedProtectedTaskAdditionalAuthority,
   type DirectDatabase,
-  type ParkedProtectedTaskAdditionalAuthority,
   type ProtectedTaskDurableJobReference,
   type StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput,
+  type StartParkedProtectedTaskHumanRunSegmentInput,
+  type StartParkedProtectedTaskCheckpointSegmentInput,
 } from "@nautilo/db";
 import {
   sameTaskRuntimeAuthorityPlan,
@@ -17,6 +17,15 @@ import {
 import { sameProtectedTaskRuntimeOccurrence } from "./protected-task-runtime-grant-plan";
 import { classifyProtectedTaskPreexecutionAuthorization } from "./protected-task-preexecution-recovery";
 
+import {
+  discoverParkedProtectedTaskContinuation,
+  type ParkedProtectedTaskContinuation,
+} from "./protected-task-runtime-parked-plan";
+
+type ParkedStartInput = StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput
+  | StartParkedProtectedTaskHumanRunSegmentInput
+  | StartParkedProtectedTaskCheckpointSegmentInput;
+
 /** The DB owner invokes grant deferral only after durable non-execution proof. */
 export function createProtectedTaskParkedPreexecutionRecovery(input: Readonly<{
   db: DirectDatabase;
@@ -25,10 +34,10 @@ export function createProtectedTaskParkedPreexecutionRecovery(input: Readonly<{
   now(): number;
 }>, recover = recoverUnstartedParkedProtectedTaskRun, overrides: Partial<{
   recoverClaim: typeof recoverUnstartedParkedProtectedTaskClaim;
-  discover: typeof discoverParkedProtectedTaskAdditionalAuthority;
+  discover: typeof discoverParkedProtectedTaskContinuation;
 }> = {}) {
   const recoverClaim = overrides.recoverClaim ?? recoverUnstartedParkedProtectedTaskClaim;
-  const discover = overrides.discover ?? discoverParkedProtectedTaskAdditionalAuthority;
+  const discover = overrides.discover ?? discoverParkedProtectedTaskContinuation;
   const deferExactClaim = async (expected: BackgroundAuthorizationTaskRuntimeRecordV3) => {
     const current = await input.repository.get(expected.snapshot.requestId);
     if (current === null || current.snapshot.formatVersion !== 3
@@ -59,7 +68,7 @@ export function createProtectedTaskParkedPreexecutionRecovery(input: Readonly<{
     return deferred.status === "deferred" || deferred.status === "exact_replay";
   };
   const recoverImmediate = async (
-    start: StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput,
+    start: ParkedStartInput,
     claimed: BackgroundAuthorizationTaskRuntimeRecordV3,
   ): Promise<boolean> => {
     const expected = structuredClone(claimed);
@@ -77,7 +86,7 @@ export function createProtectedTaskParkedPreexecutionRecovery(input: Readonly<{
     return result.status !== "stale";
   };
   const recoverDiscovered = async (
-    start: StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput,
+    start: ParkedStartInput,
     options: Readonly<{ immediate: boolean }>,
   ): Promise<Readonly<{ cancelled: boolean; reset: boolean; failed: boolean }>> => {
     const pinned = structuredClone(start);
@@ -108,7 +117,7 @@ export function createProtectedTaskParkedPreexecutionRecovery(input: Readonly<{
   };
   const recoverClaimImmediate = async (
     supplied: Readonly<{
-      expected: ParkedProtectedTaskAdditionalAuthority;
+      expected: ParkedProtectedTaskContinuation;
       jobReference: ProtectedTaskDurableJobReference;
     }>,
     claimed: BackgroundAuthorizationTaskRuntimeRecordV3,
@@ -142,7 +151,9 @@ export function createProtectedTaskParkedPreexecutionRecovery(input: Readonly<{
       authorizationRequestId: expected.authorizationRequestId,
       policyRevision: selected.expectedPolicyRevision,
       executionSegment: expected.nextExecutionSegment,
-      resumeContinuationFingerprint: expected.continuationFingerprint,
+      ...("acceptance" in expected
+        ? { resumeAcceptanceId: expected.acceptance.acceptanceId }
+        : { resumeContinuationFingerprint: expected.continuationFingerprint }),
     };
     return recoverClaimImmediate({ expected, jobReference },
       selected as BackgroundAuthorizationTaskRuntimeRecordV3);

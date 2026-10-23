@@ -21,7 +21,7 @@ import {
 import { type MessageNewEvent } from "@nautilo/types";
 import { createReceiptRecoveryPump } from "../lib/receipt-recovery";
 import { getServerDirectDb } from "../lib/server-direct-db";
-import { prepareBolterExternalRoomTurn, externalRoomTurnMatchesLockedBinding } from "./external-room-turn";
+import { prepareBolterExternalRoomTurn, prepareMagentExternalRoomTurn, externalRoomTurnMatchesLockedBinding } from "./external-room-turn";
 
 function emitCommittedMessage(event: MessageNewEvent): void {
   try { eventBus.emit(event); }
@@ -125,7 +125,7 @@ export function createExternalRoomExecutionService(options: {
                     agentId: input.reference.agentId, roomId: input.reference.roomId, title: "External conversation" },
                   rows: [transcriptRow({ role: "assistant", content: finalText, fingerprint: fp,
                     humanTurnId: null, replyToMessageId: execution.receipt.sessionMessageId,
-                    metadata: { externalFinalReply: { kind: "bolter_final_reply_v1", receiptId: input.reference.receiptId,
+                    metadata: { externalFinalReply: { kind: origin.provider === "bolter" ? "bolter_final_reply_v1" : "external_room_final_reply_v1", receiptId: input.reference.receiptId,
                       jobId: input.jobId, turnId: input.reference.turnId, acceptanceId: input.reference.acceptanceId } } })],
                   notificationContext: { causalHumanUserId: null, causalHumanTurnId: null, mentionedHumanUserIds: [] },
                 });
@@ -163,7 +163,7 @@ export function createExternalRoomExecutionService(options: {
   }
 
   const service = {
-    async accept(input: { receiver: BolterBindingContext; invocationAuthority: AcceptedInvocationAuthority }, raw: unknown) {
+    async accept(input: { receiver: BolterBindingContext; invocationAuthority: AcceptedInvocationAuthority; operatorSessionId?: string }, raw: unknown) {
       if (closed) throw new Error("external_room_execution_closed");
       await getMaintenanceGate().assertAcceptingNewWork();
       const receiver = input.receiver;
@@ -173,7 +173,8 @@ export function createExternalRoomExecutionService(options: {
       ]);
       if (!connection || !binding || !binding.modelSponsorshipAcceptedAt) throw new Error("external_room_sponsorship_unavailable");
       const { envelope } = await sponsorEnvelope(receiver.userId, binding.roomId, binding.agentId);
-      const prepared = prepareBolterExternalRoomTurn({ receiver, connection, binding, memoryEnvelope: envelope,
+      const prepare = connection.provider === "magent" ? prepareMagentExternalRoomTurn : prepareBolterExternalRoomTurn;
+      const prepared = prepare({ receiver, connection, binding, memoryEnvelope: envelope,
         representationMode: "plaintext_only", invocationAuthority: input.invocationAuthority }, raw);
       if (!prepared.ok) return prepared;
       const turn = prepared.turn;
@@ -201,7 +202,7 @@ export function createExternalRoomExecutionService(options: {
         event = { type: "message.new", laneKey: `room:${locked.roomId}`, messageId: row.id, role: "user",
           content: turn.literalText, externalOrigin: turn.origin, ...(row.createdAt ? { createdAt: row.createdAt } : {}) };
         return { sessionMessageId: Number(row.id), turnId, jobId };
-      });
+      }, input.operatorSessionId);
       if (accepted.status === "unavailable") return { ok: false as const, reason: "stale-binding" as const };
       if (accepted.status === "quarantined") return { ok: false as const, reason: "identity-conflict" as const };
       let dispatch: "not-needed" | "adopted" | "active" | "ineligible" | "ownership-unproven" | "pending-recovery" = "not-needed";

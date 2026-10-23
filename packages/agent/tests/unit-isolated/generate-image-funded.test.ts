@@ -222,7 +222,7 @@ describe("generate_image request-local media funding", () => {
     }]);
   });
 
-  test("falls back once to the exact same model and payer after a definitive no-seller refusal", async () => {
+  test.each(["personal", "server"] as const)("%s Surplus falls back once to the same model through admitted personal direct funding after a no-seller refusal", async (primaryKind) => {
     stubArtifactPersistence();
     stubSurplusLedger();
     const directAdmissions: unknown[] = [];
@@ -249,12 +249,9 @@ describe("generate_image request-local media funding", () => {
     const surplusFunding = {
       humanUserId: HUMAN_ID,
       provider: "surplus" as const,
-      binding: {
-        kind: "personal" as const,
-        providerRoute: "surplus",
-        credentialId: CREDENTIAL_ID,
-        credentialRevision: 7,
-      },
+      binding: primaryKind === "server"
+        ? { kind: "server" as const, providerRoute: "surplus" }
+        : { kind: "personal" as const, providerRoute: "surplus", credentialId: CREDENTIAL_ID, credentialRevision: 7 },
       credentialFingerprint: "a".repeat(64),
     };
     let openMediaCalls = 0;
@@ -278,14 +275,9 @@ describe("generate_image request-local media funding", () => {
             funding: surplusFunding,
             runAttempt: (run) => run({
               apiKey: "request-local-surplus-key",
-              usageFunding: {
-                kind: "personal",
-                humanUserId: HUMAN_ID,
-                payerHumanId: HUMAN_ID,
-                providerRoute: "surplus",
-                credentialId: CREDENTIAL_ID,
-                credentialRevision: 7,
-              },
+              usageFunding: primaryKind === "server"
+                ? { kind: "server", humanUserId: HUMAN_ID, providerRoute: "surplus" }
+                : { kind: "personal", humanUserId: HUMAN_ID, payerHumanId: HUMAN_ID, providerRoute: "surplus", credentialId: CREDENTIAL_ID, credentialRevision: 7 },
             }),
           };
         }

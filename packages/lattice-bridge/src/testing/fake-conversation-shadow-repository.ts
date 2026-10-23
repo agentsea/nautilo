@@ -394,6 +394,7 @@ export class FakeConversationProductStore
       humanPeerShadowOperationId: null,
       sharedAgentShadowOperationId: null,
       sharedAgentShadowExecutionId: null,
+      taskWakeOperationId: null,
       shadowTranscriptOrdinal: input.transcriptOrdinal,
       shadowReservedCreatedAt: new Date(input.createdAt),
       shadowStreamId: null,
@@ -624,6 +625,7 @@ export class FakeConversationProductStore
       sharedAgentShadowOperationId:
         input.sharedAgentLiveShadow?.operationId ?? null,
       sharedAgentShadowExecutionId: null,
+      taskWakeOperationId: null,
       shadowTranscriptOrdinal: liveCoordinate?.transcriptOrdinal ?? null,
       shadowReservedCreatedAt: liveCoordinate === undefined
         ? null

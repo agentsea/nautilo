@@ -1,3 +1,4 @@
+import { protectedTaskDefinitionSupportsPolicy } from "../utils/encryption-transition-queries";
 import {
   and,
   asc,
@@ -21,12 +22,16 @@ import { rooms } from "../schema/rooms";
 import { sessionMessageCryptoRevisions } from
   "../schema/session-message-crypto-revisions";
 import { sessionMessages, sessions } from "../schema/sessions";
+import { taskRunMessageAssociations } from
+  "../schema/task-run-message-associations";
 import { taskRuns } from "../schema/task-runs";
 import { taskRunResultCryptoRevisions } from
   "../schema/task-run-result-crypto-revisions";
 import { tasks } from "../schema/tasks";
 import { PROTECTED_TASK_RUN_TERMINAL_RECEIPT_METADATA_KEY } from "./tasks";
 import {
+  protectedTaskRunCancelledResultObjectId,
+  protectedTaskRunCancelledResultOperationId,
   protectedTaskRunMessageOperationId,
   protectedTaskRunOutputBindingId,
   protectedTaskRunResultObjectId,
@@ -34,6 +39,8 @@ import {
   protectedTaskRunWakeJobId,
   protectedTaskRunWakeOperationId,
 } from "./protected-task-output-binding-identities";
+import { PROTECTED_TASK_CANCELLED_RESULT } from
+  "./protected-task-cancellation-output";
 
 const CANONICAL_UUID =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
@@ -138,6 +145,7 @@ function exactBinding(
     && binding.deliveryMode === deliveryMode
     && binding.destinationRoomId === (input.destination?.roomId ?? null)
     && binding.destinationNamespaceId === (input.destination?.namespaceId ?? null)
+    && binding.resultRevision === 1
     && binding.resultOperationId
       === protectedTaskRunResultOperationId(input.taskRunId)
     && binding.resultObjectId
@@ -158,6 +166,10 @@ export async function acceptProtectedTaskRunOutputBinding(
 ): Promise<AcceptProtectedTaskRunOutputBindingResult> {
   assertAcceptanceInput(input);
   return db.transaction(async (tx) => {
+    const [policy] = await tx.select().from(encryptionTransitionPolicy)
+      .where(eq(encryptionTransitionPolicy.id, "server"))
+      .limit(1).for("share");
+
     const [task] = await tx.select().from(tasks).where(eq(tasks.id, input.taskId))
       .limit(1).for("update");
     if (!task) return rejected("not_found");
@@ -166,15 +178,10 @@ export async function acceptProtectedTaskRunOutputBinding(
       eq(taskRuns.taskId, input.taskId),
     )).limit(1).for("update");
     if (!run) return rejected("not_found");
-    const [policy] = await tx.select().from(encryptionTransitionPolicy)
-      .where(eq(encryptionTransitionPolicy.id, "server"))
-      .limit(1).for("share");
     if (
       !policy
       || policy.revision !== input.requiredPolicyRevision
-      || policy.mode !== (task.contentRepresentation === "dual"
-        ? "shadow_encryption"
-        : "encrypted_only")
+      || !protectedTaskDefinitionSupportsPolicy(task.contentRepresentation, policy.mode)
     ) return rejected("authority_changed");
 
     const deliveryMode = task.callingRoomId === null
@@ -250,6 +257,7 @@ export async function acceptProtectedTaskRunOutputBinding(
       deliveryMode,
       destinationRoomId: input.destination?.roomId ?? null,
       destinationNamespaceId: input.destination?.namespaceId ?? null,
+      resultRevision: 1,
       resultOperationId: protectedTaskRunResultOperationId(run.id),
       resultObjectId: protectedTaskRunResultObjectId(task.id, run.id),
       messageOperationId: deliveryMode === "raw"
@@ -292,15 +300,36 @@ function exactTerminalResult(
     : task.callingRoomId === binding.destinationRoomId
       && task.resultDelivery === binding.deliveryMode
       && binding.destinationNamespaceId !== null;
+  const exactNormalResult =
+    (run.status === "completed" || run.status === "errored")
+    && run.resultRevision === 1
+    && binding.resultRevision === 1
+    && binding.resultOperationId === protectedTaskRunResultOperationId(run.id)
+    && run.resultCryptoObjectId === binding.resultObjectId;
+  const exactCancellationResult = task.status === "cancelled"
+    && task.cancelledAt !== null
+    && run.status === "cancelled"
+    && run.completedAt?.getTime() === task.cancelledAt.getTime()
+    && run.resultRevision === 2
+    && binding.resultRevision === 2
+    && binding.resultOperationId
+      === protectedTaskRunCancelledResultOperationId(run.id)
+    && binding.resultObjectId
+      === protectedTaskRunCancelledResultObjectId(task.id, run.id)
+    && run.resultCryptoObjectId === binding.resultObjectId
+    && run.lastError === null
+    && (run.resultRepresentation === "protected"
+      ? run.resultText === null
+      : run.resultText === PROTECTED_TASK_CANCELLED_RESULT);
   return (task.contentRepresentation === "protected"
       || task.contentRepresentation === "dual")
-    && run.resultRepresentation === task.contentRepresentation
+    && (run.resultRepresentation === "dual" || run.resultRepresentation === "protected")
+    && protectedTaskDefinitionSupportsPolicy(task.contentRepresentation,
+      run.resultRepresentation === "protected" ? "encrypted_only" : "shadow_encryption")
     && exactDestination
-    && (run.status === "completed" || run.status === "errored")
     && run.completedAt !== null
-    && run.resultRevision === 1
-    && run.resultCryptoObjectId === binding.resultObjectId
-    && run.resultCryptoMappingState === "verified";
+    && run.resultCryptoMappingState === "verified"
+    && (exactNormalResult || exactCancellationResult);
 }
 
 /**
@@ -309,7 +338,7 @@ function exactTerminalResult(
  * terminal receipt alone.
  */
 export async function recordProtectedTaskRunResultAttached(
-  db: DirectDatabase,
+  db: Pick<DirectDatabase, "transaction">,
   input: Readonly<{ taskId: string; taskRunId: string }>,
 ): Promise<RecordProtectedTaskRunOutputReceiptResult> {
   if (
@@ -353,7 +382,7 @@ export async function recordProtectedTaskRunResultAttached(
 }
 
 export async function recordProtectedTaskRunMessagePublished(
-  db: DirectDatabase,
+  db: Pick<DirectDatabase, "transaction">,
   input: Readonly<{ taskId: string; taskRunId: string; messageId: number }>,
 ): Promise<RecordProtectedTaskRunOutputReceiptResult> {
   if (
@@ -403,13 +432,41 @@ export async function recordProtectedTaskRunMessagePublished(
         eq(sessionMessageCryptoRevisions.messageId, message.id),
         eq(sessionMessageCryptoRevisions.editRevision, message.editRevision),
       )).limit(1).for("share");
-    const expectedMode = task.contentRepresentation === "dual"
-      ? "shadow_encryption"
-      : "full_encryption";
+    // Task/Run locks retain this append-only receipt; unique publication keys
+    // serialize insertion without requiring UPDATE privileges on receipts.
+    const [association] = await tx.select().from(taskRunMessageAssociations)
+      .where(and(
+        eq(taskRunMessageAssociations.taskRunId, input.taskRunId),
+        eq(taskRunMessageAssociations.sessionId, message.sessionId),
+        eq(taskRunMessageAssociations.messageId, message.id),
+        eq(
+          taskRunMessageAssociations.publishedRevision,
+          message.editRevision,
+        ),
+        eq(taskRunMessageAssociations.kind, "raw_delivery"),
+        eq(
+          taskRunMessageAssociations.publicationKey,
+          binding.messageOperationId,
+        ),
+      )).limit(1);
+    // This immutable receipt is inserted inside the canonical Message
+    // transaction only after its producer proves that the Session belongs to
+    // the destination Room owner. Re-reading mutable Room ownership here
+    // would invert canonical publication locks and reject valid old Messages
+    // after a later Room ownership transfer.
+    const expectedMode = revision?.representationMode;
+    // Retained result bytes may be dual while a later current-policy writer
+    // publishes a protected-only Message. Its immutable lifecycle is the write proof.
     if (
       !session
-      || session.ownerId !== task.requestorId
+      || !association
       || session.agentId !== task.agentId
+      || association.taskRunId !== input.taskRunId
+      || association.sessionId !== message.sessionId
+      || association.messageId !== message.id
+      || association.publishedRevision !== message.editRevision
+      || association.kind !== "raw_delivery"
+      || association.publicationKey !== binding.messageOperationId
       || !revision
       || message.role !== "assistant"
       || message.cryptoObjectId === null
@@ -417,8 +474,17 @@ export async function recordProtectedTaskRunMessagePublished(
       || revision.roomId !== binding.destinationRoomId
       || revision.namespaceIdAtAllocation !== binding.destinationNamespaceId
       || revision.appendIdempotencyKey !== binding.messageOperationId
-      || revision.representationMode !== expectedMode
-      || revision.publicationPolicyRevision !== binding.acceptedPolicyRevision
+      || expectedMode !== "shadow_encryption" && expectedMode !== "full_encryption"
+      || !protectedTaskDefinitionSupportsPolicy(run.resultRepresentation,
+        expectedMode === "full_encryption" ? "encrypted_only" : "shadow_encryption")
+      // The result's accepted revision remains immutable provenance. A fresh
+      // destination grant can publish later under the same compatible mode;
+      // the canonical raw-delivery association proves that publication.
+      || (expectedMode === "full_encryption"
+        ? !Number.isSafeInteger(revision.publicationPolicyRevision)
+          || revision.publicationPolicyRevision === null
+          || revision.publicationPolicyRevision < binding.acceptedPolicyRevision
+        : revision.publicationPolicyRevision !== null)
       || revision.payloadVersion !== 2
       || revision.keyClass !== "ai"
       || revision.authorRole !== "assistant"

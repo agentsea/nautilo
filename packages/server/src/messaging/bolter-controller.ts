@@ -1,17 +1,20 @@
 import { convergeHumanRoomCatalogs, publishBolterStateChanged } from "../realtime/ws-publisher";
 import { warn } from "@nautilo/logger";
 import { createReceiptRecoveryPump } from "../lib/receipt-recovery";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { ATTACHMENT_POLICY } from "@nautilo/attachments";
+import { BOLTER_FILES_PROTOCOL_VERSION } from "@nautilo/relay";
 import {
   BOLTER_ORIGIN, bolterConnectionObservationSchema, type BolterConnectionObservation, type BolterConnectionSummary,
   type BolterConnectionsResponse, type BolterConversationsResponse, type BolterOperationResponse, type BolterNativeCommand, type BolterRoomLinkSummary,
-  type BolterCreateRoomRequest, type BolterReviewedMessageRequest, type BolterStatusReason,
+  type BolterAttachmentDescriptor, type BolterCreateRoomRequest, type BolterReviewedMessageRequest, type BolterStatusReason, type BolterDeliverySelection,
 } from "@nautilo/types";
 import {
   getSharedDirectAgentDb, getSharedDirectDb, listBolterConnectionsWith, getBolterConnectionWith,
   createBolterConnectionWith, rotateBolterReceiverWith, listBolterBindingsWith, getBolterBindingWith,
   createFreshBolterBindingWith, resolveBolterBindingWith, setBolterConnectionStateWith, updateBolterBindingStateWith,
-  listBolterOutboxWith, listBolterDeliverySummariesWith, acceptBolterReviewedShareWith, rooms, eq,
+  listBolterOutboxWith, listBolterDeliverySummariesWith, getBolterDeliveryCountsWith, acceptBolterReviewedShareWith, rooms, eq,
+  loadBolterShareAttachmentsWith, retainBolterShareAttachmentsInTx, bolterReviewedTextFingerprint,
   type BolterConnection, type BolterRoomBinding, type BolterBindingContext, type BolterReceiverContext,
 } from "@nautilo/db";
 import {
@@ -20,6 +23,8 @@ import {
 } from "@nautilo/trust";
 import { eventBus, type InMemoryRelayRegistry } from "@nautilo/runtime";
 import { createDatabaseBolterPublicationService } from "./bolter-publication";
+import { readBolterAttachmentBytes } from "./bolter-attachments";
+import { isBolterMessageAddressed } from "./bolter-addressing";
 import type { createExternalRoomExecutionService } from "./external-room-execution";
 
 type Registry = Pick<InMemoryRelayRegistry, "getBolterSession" | "listBolterSessions" | "requestBolterCommand" | "onBolterObservation" | "onBolterBatch" | "onBolterContext">;
@@ -40,12 +45,18 @@ export function createBolterController(options: { relay: Registry; execution: Ex
   const productDb = getSharedDirectDb();
   const lifetime = new AbortController();
   const observations = new Map<string, { scope: Scope; generation: number; value: BolterConnectionObservation }>();
+  const conversationLabels = new Map<string, ReadonlyMap<string, string>>();
+  const conversationKey = (chatId: string, threadRootId: string | null) => JSON.stringify([chatId, threadRootId]);
+  function cacheConversations(id: string, conversations: readonly { chatId: string; threadRootId: string | null; label: string }[]) {
+    conversationLabels.set(id, new Map(conversations.map(item => [conversationKey(item.chatId, item.threadRootId), item.label])));
+  }
   function remember(id: string, entry: { scope: Scope; generation: number; value: BolterConnectionObservation }) {
     const previous = observations.get(id);
     observations.set(id, entry);
     if (!previous || !sameScope(previous.scope, entry.scope) || previous.generation !== entry.generation
       || previous.value.receiver !== entry.value.receiver || previous.value.reason !== entry.value.reason
       || previous.value.authentication !== entry.value.authentication
+      || previous.value.attachments !== entry.value.attachments
       || previous.value.identity?.label !== entry.value.identity?.label
       || previous.value.identity?.providerAgentId !== entry.value.identity?.providerAgentId
       || previous.value.identity?.identityFingerprint !== entry.value.identity?.identityFingerprint) {
@@ -53,6 +64,7 @@ export function createBolterController(options: { relay: Registry; execution: Ex
     }
   }
   function forget(id: string) {
+    conversationLabels.delete(id);
     const previous = observations.get(id);
     if (observations.delete(id) && previous) publishBolterStateChanged(previous.scope.userId);
   }
@@ -72,7 +84,7 @@ export function createBolterController(options: { relay: Registry; execution: Ex
   async function requireMode() { if (!await mode()) throw new BolterControlError("mode_unsupported"); }
   async function connection(userId: string, id: string) {
     const row = await getBolterConnectionWith(db, { userId }, id);
-    if (!row) throw new BolterControlError("not_found");
+    if (!row || row.transportKind === "operator-unix" || row.relayId === null) throw new BolterControlError("not_found");
     return row;
   }
   function receiver(row: BolterConnection, scope: Scope): BolterReceiverContext {
@@ -93,7 +105,7 @@ export function createBolterController(options: { relay: Registry; execution: Ex
     const entry = live(row);
     const supported = await mode();
     return { id: row.id, revision: row.revision, displayName: "Bolter", identity: { providerAgentId: row.providerAgentId, label: entry?.value.identity?.label ?? "Bolter identity" },
-      device: { relayId: row.relayId, label: "Desktop" }, status: row.revokedAt ? "revoked" : !row.enabled ? "paused" : !supported ? "qualification_required" : entry ? "connected" : "offline",
+      device: { relayId: row.relayId!, label: "Desktop" }, status: row.revokedAt ? "revoked" : !row.enabled ? "paused" : !supported ? "qualification_required" : entry ? "connected" : "offline",
       receiver: entry?.value.receiver ?? "stopped", canCreateRoom: supported && row.enabled && !row.revokedAt && entry !== null,
       ...(!supported ? { reason: "mode_unsupported" as const } : !entry ? { reason: "desktop_offline" as const }
         : entry.value.reason ? { reason: entry.value.reason } : {}) };
@@ -148,14 +160,24 @@ export function createBolterController(options: { relay: Registry; execution: Ex
       const entry = observations.get(request.receiver.connectionId);
       if (!entry || !active(entry.scope)) return { status: "unavailable" };
       try {
+        let released: { chatId: string; threadRootId: string | null; content: string } | null = null;
         const result = await options.relay.requestBolterCommand({ relayId: entry.scope.relayId, userId: entry.scope.userId,
           command: { action: "send", connectionId: request.receiver.connectionId,
             generation: request.receiver.connectionGeneration, outboxId: request.claim.outboxId,
             bindingId: request.receiver.bindingId, bindingRevision: request.receiver.bindingRevision }, signal: lifetime.signal,
           authorize: async () => {
             if (!active(entry.scope)) return null;
+            if (released) return await request.reauthorize() && active(entry.scope) ? released : null;
             const text = await request.authorize();
-            return text && active(entry.scope) ? { chatId: text.chatId, threadRootId: text.threadRootId, content: text.content } : null;
+            if (!text || !active(entry.scope) || (text.files?.length && !entry.value.attachments)) return null;
+            const files = text.files?.length ? await Promise.all(text.files.map(async file => ({
+              id: file.id, filename: file.filename, mimeType: file.mimeType, sizeBytes: file.sizeBytes, sha256: file.sha256,
+              base64: (await readBolterAttachmentBytes(file)).toString("base64"),
+            }))) : undefined;
+            if (files && (!await request.reauthorize() || !active(entry.scope))) return null;
+            released = { chatId: text.chatId, threadRootId: text.threadRootId, content: text.content };
+            return active(entry.scope) ? { ...released,
+              ...(files ? { files } : {}) } : null;
           },
         });
         return result.kind === "sent" ? { status: "sent", receipt: result.receipt }
@@ -170,7 +192,10 @@ export function createBolterController(options: { relay: Registry; execution: Ex
       while (publicationRequested.delete(ctx.bindingId)) {
         for (const item of await listBolterOutboxWith(db, ctx, ctx.bindingId)) {
           if (lifetime.signal.aborted) return;
-          if (item.state === "pending") await publisher.publish(ctx, item.id);
+          if (item.state === "pending") {
+            await publisher.publish(ctx, item.id);
+            publishBolterStateChanged(ctx.userId);
+          }
         }
       }
     })();
@@ -188,20 +213,23 @@ export function createBolterController(options: { relay: Registry; execution: Ex
   async function linkSummary(binding: BolterRoomBinding): Promise<BolterRoomLinkSummary> {
     const row = await connection(binding.userId, binding.connectionId);
     const detail = await summary(row);
-    const deliveries = await listBolterOutboxWith(db, { userId: binding.userId }, binding.id);
+    const delivery = await getBolterDeliveryCountsWith(db, { userId: binding.userId }, binding.id);
     const [room] = await productDb.select({ label: rooms.label }).from(rooms).where(eq(rooms.id, binding.roomId)).limit(1);
     return { id: binding.id, revision: binding.revision, roomId: binding.roomId, roomName: room?.label ?? "Bolter Room",
-      agentId: binding.agentId, connectionId: row.id, conversationLabel: binding.chatId, chatId: binding.chatId,
+      agentId: binding.agentId, connectionId: row.id,
+      conversationLabel: conversationLabels.get(row.id)?.get(conversationKey(binding.chatId, binding.threadId || null))
+        ?? conversationLabels.get(row.id)?.get(conversationKey(binding.chatId, null)) ?? binding.chatId, chatId: binding.chatId,
       threadRootId: binding.threadId || null, providerAgentId: row.providerAgentId, identityLabel: detail.identity?.label ?? "Bolter identity",
       status: binding.state, receiver: detail.receiver, outboundPolicy: "causal_replies_and_reviewed_messages",
       canManage: true, canSend: detail.canCreateRoom && binding.state === "active",
-      delivery: { pending: deliveries.filter(item => item.state === "pending" || item.state === "publishing").length,
-        uncertain: deliveries.filter(item => item.state === "uncertain").length }, ...(detail.reason ? { reason: detail.reason } : {}) };
+      canAttach: detail.canCreateRoom && binding.state === "active" && observations.get(row.id)?.value.attachments === true
+        && (observations.get(row.id)?.scope.selectedProtocolVersion ?? 0) >= BOLTER_FILES_PROTOCOL_VERSION,
+      delivery, ...(detail.reason ? { reason: detail.reason } : {}) };
   }
   async function checkConnection(userId: string, id: string) {
       await requireMode(); let row = await connection(userId, id);
       if (row.revokedAt || !row.enabled) return summary(row);
-      const scope = options.relay.getBolterSession(row.relayId, userId);
+      const scope = row.relayId ? options.relay.getBolterSession(row.relayId, userId) : null;
       if (!scope) return summary(row);
       const result = await command(scope, { action: "check", connectionId: id, generation: row.generation });
       if (result.kind !== "observation") { forget(id); return summary(row); }
@@ -213,6 +241,11 @@ export function createBolterController(options: { relay: Registry; execution: Ex
           if (!rotated) throw new BolterControlError("authority_changed"); row = rotated;
         }
         await observe(userId, id, row.generation, scope, result.observation);
+        const conversations = await command(scope, { action: "list_conversations", connectionId: id, generation: row.generation });
+        if (conversations.kind === "conversations" && active(scope)) {
+          cacheConversations(id, conversations.conversations);
+          publishBolterStateChanged(userId);
+        }
         const bindings = (await listBolterBindingsWith(db, { userId }, id)).filter(binding => binding.state === "active");
         if (bindings.length) await startReceiver(row, scope);
         for (const binding of bindings) {
@@ -260,7 +293,7 @@ export function createBolterController(options: { relay: Registry; execution: Ex
         const ctx = receiver(row, entry.scope);
         for (const item of message.messages) {
           if (!active(entry.scope)) return "blocked";
-          if (item.senderType === "system" || item.senderId === row.providerAgentId || (item.senderType === "anima" && !item.addressed)) continue;
+          if (item.senderType === "system" || item.senderId === row.providerAgentId || !isBolterMessageAddressed(item, row.providerAgentId)) continue;
           if (item.truncated || !item.content.trim()) {
             remember(row.id, { ...entry, value: { ...entry.value, reason: "unsupported_content" } });
             return "blocked";
@@ -300,7 +333,7 @@ export function createBolterController(options: { relay: Registry; execution: Ex
     async connections(userId: string): Promise<BolterConnectionsResponse> {
       const supported = await mode();
       const sessions = options.relay.listBolterSessions(userId);
-      const connections = await Promise.all((await listBolterConnectionsWith(db, { userId })).map(summary));
+      const connections = await Promise.all((await listBolterConnectionsWith(db, { userId })).filter(row => row.transportKind !== "operator-unix").map(summary));
       return { connections, desktops: sessions.map(scope => ({ relayId: scope.relayId, label: "Desktop" })), availability: { state: !supported ? "mode_unsupported" : !sessions.length ? "desktop_required"
         : "available" } };
     },
@@ -338,9 +371,10 @@ export function createBolterController(options: { relay: Registry; execution: Ex
     },
     check: checkConnection,
     async updateConnection(userId: string, id: string, expectedRevision: number, enabled: boolean, revoke = false) {
+      await connection(userId, id);
       const row = await setBolterConnectionStateWith(db, { userId }, { connectionId: id, expectedRevision, enabled, ...(revoke ? { revoke: true } : {}) });
-      if (!row) throw new BolterControlError("authority_changed");
-      const scope = options.relay.getBolterSession(row.relayId, userId);
+      if (!row || row.transportKind === "operator-unix") throw new BolterControlError("authority_changed");
+      const scope = row.relayId ? options.relay.getBolterSession(row.relayId, userId) : null;
       forget(id);
       if (scope && (!enabled || revoke)) await command(scope, { action: revoke ? "revoke" : "pause", connectionId: id, generation: row.generation }).catch(() => undefined);
       publishBolterStateChanged(userId);
@@ -352,6 +386,7 @@ export function createBolterController(options: { relay: Registry; execution: Ex
       if (!entry) return { status: "unavailable" as const, conversations: [], reason: "desktop_offline" as const };
       const result = await command(entry.scope, { action: "list_conversations", connectionId: id, generation: row.generation });
       if (result.kind !== "conversations") return { status: "unavailable" as const, conversations: [], reason: "qualification_required" as const };
+      cacheConversations(id, result.conversations);
       for (const [key, choice] of choices) if (choice.userId === userId && choice.connectionId === id) choices.delete(key);
       return { status: "available" as const, conversations: result.conversations.map(item => {
         const choiceId = randomUUID(); choices.set(choiceId, { ...item, userId, connectionId: id, revision: row.revision, scope: entry.scope });
@@ -383,10 +418,12 @@ export function createBolterController(options: { relay: Registry; execution: Ex
       return { links: await Promise.all((await listBolterBindingsWith(db, { userId }, id)).map(linkSummary)) };
     },
     async room(userId: string, roomId: string) {
-      const binding = (await listBolterBindingsWith(db, { userId })).find(item => item.roomId === roomId);
+      const binding = (await listBolterBindingsWith(db, { userId })).find(item => item.roomId === roomId && item.provider !== "magent");
       return { link: binding ? await linkSummary(binding) : null };
     },
     async updateBinding(userId: string, id: string, expectedRevision: number, state: "active" | "paused" | "revoked") {
+      const existing = await getBolterBindingWith(db, { userId }, id);
+      if (!existing || existing.provider === "magent") throw new BolterControlError("not_found");
       const row = await updateBolterBindingStateWith(db, { userId }, { bindingId: id, expectedRevision, state });
       if (!row) throw new BolterControlError("authority_changed");
       publishBolterStateChanged(userId);
@@ -396,15 +433,33 @@ export function createBolterController(options: { relay: Registry; execution: Ex
     async sendReviewed(userId: string, id: string, input: BolterReviewedMessageRequest) {
       await requireMode(); const { binding, ctx } = await bindingContext(userId, id);
       if (input.expectedRevision !== binding.revision || binding.state !== "active") throw new BolterControlError("authority_changed");
+      const actor = input.attachmentIds?.length ? await findActorByOwnerId(userId) : null;
+      const attachments: BolterAttachmentDescriptor[] = [];
+      if (input.attachmentIds?.length) {
+        if (!actor || observations.get(ctx.connectionId)?.value.attachments !== true
+          || (observations.get(ctx.connectionId)?.scope.selectedProtocolVersion ?? 0) < BOLTER_FILES_PROTOCOL_VERSION) throw new BolterControlError("unsupported_content");
+        const rows = await loadBolterShareAttachmentsWith(db, ctx, { attachmentIds: input.attachmentIds, uploaderActorId: actor.id });
+        if (rows.reduce((total, row) => total + row.sizeBytes, 0) > ATTACHMENT_POLICY.maxAcceptedBytesPerMessage) throw new BolterControlError("unsupported_content");
+        for (const row of rows) {
+          const bytes = await readBolterAttachmentBytes(row);
+          attachments.push({ id: row.id, filename: row.filename, mimeType: row.mimeType, sizeBytes: row.sizeBytes,
+            sha256: createHash("sha256").update(bytes).digest("hex") });
+        }
+        const fingerprint = bolterReviewedTextFingerprint(id, input.requestId, input.content, attachments);
+        if (rows.some(row => row.status === "retained" && row.turnId !== fingerprint)) throw new BolterControlError("conflict");
+      }
       let inserted = false;
-      const outbox = await acceptBolterReviewedShareWith(db, ctx, input, async (tx, share) => {
+      const outbox = await acceptBolterReviewedShareWith(db, ctx, { ...input, attachments }, async (tx, share) => {
+        if (attachments.length) await retainBolterShareAttachmentsInTx(tx, { attachments, uploaderActorId: actor!.id,
+          namespaceId: binding.namespaceId, fingerprint: share.fingerprint });
         const [room] = await tx.select({ threadId: rooms.graphThreadId }).from(rooms).where(eq(rooms.id, binding.roomId)).limit(1);
         if (!room) throw new BolterControlError("not_found");
         const turnId = randomUUID();
         const appended = await appendCanonicalTranscriptRowsInTx(tx, { session: { threadId: room.threadId, ownerId: userId,
           personaId: "owner", agentId: binding.agentId, roomId: binding.roomId, title: "Bolter conversation" },
           rows: [{ role: "user", content: input.content, fingerprint: share.fingerprint, humanTurnId: turnId,
-            metadata: { bolterReviewedShare: { shareId: share.shareId, requestId: input.requestId } }, replyToMessageId: null,
+            metadata: { bolterReviewedShare: { shareId: share.shareId, requestId: input.requestId },
+              ...(attachments.length ? { bolterAttachments: attachments } : {}) }, replyToMessageId: null,
             toolCalls: null, toolName: null, transcriptOrigin: "main", parentThreadId: null, scopeId: null, subthreadRoomId: null }],
           notificationContext: { causalHumanUserId: null, causalHumanTurnId: null, mentionedHumanUserIds: [] } });
         const message = appended.insertedRows[0];
@@ -412,13 +467,14 @@ export function createBolterController(options: { relay: Registry; execution: Ex
         inserted = true;
         return Number(message.id);
       });
-      try { if (inserted) eventBus.emit({ type: "message.new", laneKey: `room:${binding.roomId}`, messageId: String(outbox.sessionMessageId), role: "user", content: input.content, sourceUserId: userId, senderUserId: userId }); } catch { /* Canonical commit is authoritative. */ }
+      try { if (inserted) eventBus.emit({ type: "message.new", laneKey: `room:${binding.roomId}`, messageId: String(outbox.sessionMessageId), role: "user", content: input.content, sourceUserId: userId, senderUserId: userId,
+        ...(attachments.length ? { attachments: attachments.map(file => ({ attachmentId: file.id, filename: file.filename, mimeType: file.mimeType, sizeBytes: file.sizeBytes })) } : {}) }); } catch { /* Canonical commit is authoritative. */ }
       void publishPending(ctx).catch(() => { warn("[bolter] publication remains pending"); });
       return { messageId: outbox.sessionMessageId, outboxId: outbox.id, state: outbox.state };
     },
-    async deliveries(userId: string, id: string) {
+    async deliveries(userId: string, id: string, selection?: BolterDeliverySelection) {
       if (!await getBolterBindingWith(db, { userId }, id)) throw new BolterControlError("not_found");
-      return { deliveries: (await listBolterDeliverySummariesWith(db, { userId }, id)).map(item => ({ ...item, createdAt: item.createdAt.toISOString() })) };
+      return { deliveries: (await listBolterDeliverySummariesWith(db, { userId }, id, selection)).map(item => ({ ...item, createdAt: item.createdAt.toISOString() })) };
     },
     publishPending,
     wakePublications: publicationRecovery.wake,

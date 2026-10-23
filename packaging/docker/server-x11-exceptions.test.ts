@@ -15,7 +15,7 @@ const findingTuples: ["grype", string, string, string, "high", false][] = [
   ["grype", "CVE-2026-88806", "libx11-xcb1", "2:1.8.12-1", "high", false],
   ["grype", "CVE-2026-88807", "libxrender1", "1:0.9.12-1", "high", false],
 ];
-const source = readJson("server-vulnerability-exceptions.input.json") as Pick<VulnerabilityPolicyV1, "exceptions">;
+const source = readJson("fixtures/server-policy-before-security-renewal-2026-10-23.json") as Pick<VulnerabilityPolicyV1, "exceptions">;
 const imageDigest = `sha256:${"a".repeat(64)}`;
 
 function evaluate(architecture: "linux/amd64" | "linux/arm64", fixVersions: string[] = [], packageVersion?: string) {

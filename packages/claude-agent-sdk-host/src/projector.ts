@@ -50,9 +50,6 @@ export function projectSupportedModels(models: readonly ModelInfo[]): readonly R
 /** Unknown messages are ignored. A malformed relevant message returns null. */
 export type ProjectedClaudeExecutionObservation =
   | Exclude<ClaudeExecutionObservation, Readonly<{ kind: "result"; outcome: "succeeded" }>>
-  /** Internal boundary used to validate the SDK result against only the final
-   * root assistant message. It is never relayed as a public observation. */
-  | Readonly<{ kind: "output_message_started" }>
   | Readonly<{ kind: "result"; outcome: "succeeded"; candidate: string }>;
 
 export function projectClaudeExecutionMessage(message: unknown): readonly ProjectedClaudeExecutionObservation[] | null {
@@ -90,7 +87,10 @@ export function projectClaudeExecutionMessage(message: unknown): readonly Projec
     // not part of result.result.
     if (own(message, "parent_tool_use_id") !== null) return frozen([]);
     const event = own(message, "event");
-    if (own(event, "type") === "message_start") return frozen([{ kind: "output_message_started" }]);
+    if (own(event, "type") === "message_start") {
+      return own(own(event, "message"), "role") === "assistant"
+        ? frozen([{ kind: "output_message_started" }]) : null;
+    }
     if (own(event, "type") !== "content_block_delta") return frozen([]);
     const delta = own(event, "delta");
     if (own(delta, "type") !== "text_delta") return frozen([]);

@@ -107,10 +107,13 @@ describe("Room history data adapter", () => {
 
   test.each(["strict", "fallback"] as const)("authenticates helper coordinates before hiding them under %s", async (shadowBehavior) => {
     const summary = { status: "completed" as const, modelId: "model-a", modelDisplayName: "Model A", attachmentIds: ["image-a"] };
+    const exposure = { version: 1, status: "incomplete" } as const;
+    const parity = { foregroundExecutionId: "foreground:helper-pair",
+      nautilo_memory_model_exposure: exposure } as const;
     const payloads = [
-      { role: "assistant" as const, content: "", toolCalls: [{ id: "image-assistance:digest", name: "image_assistance", args: {} }] },
-      { role: "tool" as const, content: JSON.stringify({ ...summary, inputDigest: "digest", observations: "Retained private image evidence" }), toolName: "image_assistance", sensitiveMetadata: { toolCallId: "image-assistance:digest", toolStatus: "success" } },
-      { role: "assistant" as const, content: "The invoice total is 123.45.", sensitiveMetadata: { imageAssistance: summary } },
+      { role: "assistant" as const, content: "", toolCalls: [{ id: "image-assistance:digest", name: "image_assistance", args: {} }], sensitiveMetadata: parity },
+      { role: "tool" as const, content: JSON.stringify({ ...summary, inputDigest: "digest", observations: "Retained private image evidence" }), toolName: "image_assistance", sensitiveMetadata: { toolCallId: "image-assistance:digest", toolStatus: "success", ...parity } },
+      { role: "assistant" as const, content: "The invoice total is 123.45.", sensitiveMetadata: { imageAssistance: summary, ...parity } },
     ];
     const messages = payloads.map((payload, index) => ({
       id: String(27 + index), sessionId: SESSION_ID, role: payload.role,
@@ -118,6 +121,8 @@ describe("Room history data adapter", () => {
       ...(payload.role === "tool" ? { toolName: payload.toolName } : {}),
       ...(payload.role === "assistant" ? { toolCalls: JSON.stringify(payload.toolCalls ?? []) } : {}),
       ...(index === 2 ? { imageAssistance: summary } : {}),
+      foregroundExecutionId: parity.foregroundExecutionId,
+      modelInputExposure: exposure,
     }));
     const coordinates = messages.map((message) => ({
       sessionId: SESSION_ID, messageId: Number(message.id), editRevision: 0,
@@ -158,6 +163,8 @@ describe("Room history data adapter", () => {
         expect(acknowledgement.eligibleRecords).toHaveLength(3);
         expect(readerInput.records[0]?.ordinarySibling?.payload).toEqual(payloads[0]);
         expect(readerInput.records[2]?.ordinarySibling?.payload).toEqual(payloads[2]);
+        expect(readerInput.records[1]?.ordinarySibling?.payload.sensitiveMetadata)
+          .toEqual(parity);
         return shadowBehavior === "strict" ? {
           records: messages.map((message, index) => ({ sessionId: SESSION_ID, messageId: message.id,
             editRevision: 0, status: "verified" as const, verification: "signed_representation_authenticated" as const,

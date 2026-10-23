@@ -1,14 +1,19 @@
 import {
   assertAuthenticPreparedAgentObjectAccessManifestGenesisSet,
+  assertAuthenticPreparedDeviceWrappedAgentObjectAccessManifestGenesisSet,
   assertAuthenticPreparedHumanObjectAccessManifestGenesisSet,
   assertAuthenticPreparedTaskRuntimeResultObject,
   encryptedObjectWriteRecord,
   verifyHumanTaskPublicationRequest,
   verifyHumanTaskPublicationRequestExactReplay,
+  verifyHumanExistingTaskRepresentationPublicationRequest,
+  verifyHumanExistingTaskRepresentationPublicationRequestExactReplay,
+  type HumanExistingTaskRepresentationPublicationRequest,
   type HumanTaskPublicationRequest,
   type LatticeCrypto,
   type LatticeStorage,
   type PreparedAgentObjectAccessManifestGenesisSet,
+  type PreparedDeviceWrappedAgentObjectAccessManifestGenesisSet,
   type PreparedHumanObjectAccessManifestGenesisSet,
   type PreparedTaskRuntimeResultObject,
 } from "@nautilo/lattice-crypto";
@@ -20,6 +25,12 @@ import {
 } from "@nautilo/lattice-crypto/wire";
 import { sha256 } from "@noble/hashes/sha2.js";
 
+import {
+  readPreparedDeviceWrappedAgentObjectSnapshot,
+  type PreparedDeviceWrappedAgentObject,
+} from "../object/device-wrapped-agent-object-crypto.ts";
+
+import { deriveTaskHistoricalContentCryptoObjectIdV1 } from "./task-historical-content-identity.ts";
 import type { TaskContentAuthorityV1 } from "./task-content-authority-v1.ts";
 import {
   TASK_CONTENT_PAYLOAD_VERSION_V1,
@@ -56,10 +67,19 @@ export type TaskRuntimeResultContentCryptoRevisionSnapshotV1 =
     access: PreparedTaskRuntimeResultObject["access"];
   }>;
 
+export type ForegroundTaskDefinitionCryptoRevisionSnapshotV1 =
+  CommonTaskContentCryptoRevisionSnapshotV1 & Readonly<{
+    signerKind: "agent_runtime";
+    publicationFamily: "foreground_definition";
+    foregroundPrepared: PreparedDeviceWrappedAgentObject;
+    access: PreparedDeviceWrappedAgentObjectAccessManifestGenesisSet;
+  }>;
+
 export type TaskContentCryptoRevisionSnapshotV1 =
   | HumanTaskContentCryptoRevisionSnapshotV1
   | AgentTaskContentCryptoRevisionSnapshotV1
-  | TaskRuntimeResultContentCryptoRevisionSnapshotV1;
+  | TaskRuntimeResultContentCryptoRevisionSnapshotV1
+  | ForegroundTaskDefinitionCryptoRevisionSnapshotV1;
 
 const snapshots = new WeakMap<
   PreparedTaskContentCryptoRevisionV1,
@@ -68,6 +88,7 @@ const snapshots = new WeakMap<
     sealedPayloadHash: Uint8Array;
     sealedManifestHash: Uint8Array;
     sealedEnvelopeHash: Uint8Array;
+    sealedSignerEvidenceHash: Uint8Array | null;
   }>
 >();
 
@@ -76,8 +97,8 @@ function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
     && left.every((value, index) => value === right[index]);
 }
 
-function validateCommon(input: TaskContentCryptoRevisionSnapshotV1) {
-  const objectId = deriveTaskContentCryptoObjectIdV1(input.coordinate);
+function validateCommon(input: TaskContentCryptoRevisionSnapshotV1,
+  objectId = deriveTaskContentCryptoObjectIdV1(input.coordinate)) {
   const objectType = taskContentObjectTypeV1(input.coordinate);
   const authorityFingerprint = fingerprintTaskContentAuthorityV1(
     input.authority,
@@ -127,6 +148,10 @@ function seal(
     namespaceId: input.authority.namespaceId,
     authorityFingerprint: common.authorityFingerprint,
   });
+  const signerEvidenceBytes = "signerEvidenceBytes" in input.access
+    && input.access.signerEvidenceBytes instanceof Uint8Array
+    ? input.access.signerEvidenceBytes
+    : null;
   snapshots.set(revision, Object.freeze({
     ...input,
     coordinate,
@@ -135,6 +160,9 @@ function seal(
     sealedPayloadHash: sha256(input.object.payloadBytes.ciphertext),
     sealedManifestHash: sha256(input.access.manifestBytes),
     sealedEnvelopeHash: sha256(input.access.envelopeBytes[0]),
+    sealedSignerEvidenceHash: signerEvidenceBytes === null
+      ? null
+      : sha256(signerEvidenceBytes),
   }));
   return revision;
 }
@@ -307,6 +335,148 @@ export function authenticatePreparedHumanTaskContentCryptoRevisionExactReplayV1(
 }
 
 /** Mint an opaque Task revision prepared and signed by an Agent Runtime. */
+const historicalRequests = new WeakMap<PreparedTaskContentCryptoRevisionV1,
+  HumanExistingTaskRepresentationPublicationRequest>();
+
+export type AuthenticatePreparedHistoricalTaskContentInputV1 = Readonly<{
+  crypto: LatticeCrypto;
+  now: number;
+  operationId: string;
+  claimId: string;
+  coordinate: TaskContentCoordinateV1;
+  authority: TaskContentAuthorityV1;
+  sourceDigest: Uint8Array;
+  sourcePayloadHash: Uint8Array;
+  planDigest: Uint8Array;
+  operationalFieldsDigest: Uint8Array;
+  payloadBytes: Uint8Array;
+  manifestBytes: Uint8Array;
+  envelopeBytes: Uint8Array;
+  signedPublicationRequestBytes: Uint8Array;
+  expectedSignedRequestDigest?: Uint8Array;
+  resolveCurrentAuthority(request: HumanExistingTaskRepresentationPublicationRequest):
+    Promise<Uint8Array | null>;
+}>;
+
+/** Import only an exact source-bound device repair; ordinary Task publishers cannot mint it. */
+export async function authenticatePreparedHistoricalTaskContentCryptoRevisionV1(
+  input: AuthenticatePreparedHistoricalTaskContentInputV1,
+): Promise<PreparedTaskContentCryptoRevisionV1> {
+  const copyDigest = (value: Uint8Array): Uint8Array => {
+    if (!(value instanceof Uint8Array) || value.length !== 32) {
+      throw new TypeError("Historical Task source digest is invalid");
+    }
+    return Uint8Array.from(value);
+  };
+  const expected = Object.freeze({
+    coordinate: Object.freeze({ ...input.coordinate }),
+    authority: Object.freeze({ ...input.authority }),
+    operationId: input.operationId, claimId: input.claimId,
+    sourceDigest: copyDigest(input.sourceDigest),
+    sourcePayloadHash: copyDigest(input.sourcePayloadHash),
+    planDigest: copyDigest(input.planDigest),
+    operationalFieldsDigest: copyDigest(input.operationalFieldsDigest),
+  });
+  const payloadBytes = Uint8Array.from(input.payloadBytes);
+  const manifestBytes = Uint8Array.from(input.manifestBytes);
+  const envelopeBytes = Uint8Array.from(input.envelopeBytes);
+  const signedBytes = Uint8Array.from(input.signedPublicationRequestBytes);
+  const replayDigest = input.expectedSignedRequestDigest === undefined
+    ? undefined : copyDigest(input.expectedSignedRequestDigest);
+  const manifest = decodeObjectAccessManifestV5(manifestBytes);
+  const envelope = decodeNamespaceObjectEnvelopeV2(envelopeBytes);
+  const snapshot: HumanTaskContentCryptoRevisionSnapshotV1 = Object.freeze({
+    signerKind: "human_device", coordinate: expected.coordinate,
+    authority: expected.authority, object: encryptedObjectWriteRecord(payloadBytes),
+    access: Object.freeze({ manifest, manifestBytes,
+      manifestHash: input.crypto.hash(manifestBytes), envelopeBytes: Object.freeze([envelopeBytes]) }),
+  });
+  const historicalObjectId = deriveTaskHistoricalContentCryptoObjectIdV1({
+    coordinate: expected.coordinate, sourceDigest: expected.sourceDigest, namespaceId: expected.authority.namespaceId,
+  });
+  // A durable exact-replay digest is the only route for already-published legacy identities.
+  const legacyReplay = replayDigest !== undefined
+    && snapshot.object.objectId === deriveTaskContentCryptoObjectIdV1(expected.coordinate);
+  const common = validateCommon(snapshot, legacyReplay ? snapshot.object.objectId : historicalObjectId);
+  let publicKey: Uint8Array | undefined;
+  try {
+    const resolveCurrentAuthority = async (request: HumanExistingTaskRepresentationPublicationRequest) => {
+      if (request.kind !== expected.coordinate.kind
+        || request.taskId !== expected.coordinate.taskId
+        || request.entityId !== (expected.coordinate.kind === "definition"
+          ? expected.coordinate.taskId : expected.coordinate.taskRunId)
+        || expected.coordinate.contentRevision !== 1
+        || request.operationId !== expected.operationId || request.claimId !== expected.claimId
+        || request.cryptoObjectId !== common.objectId
+        || request.subjectHumanId !== expected.authority.requesterHumanId
+        || request.namespaceId !== expected.authority.namespaceId
+        || request.domainId !== expected.authority.domainId
+        || request.expectedNamespaceAccessRevision !== expected.authority.expectedAccessRevision
+        || request.expectedPolicyRevision !== expected.authority.expectedPolicyRevision
+        || request.keyGeneration !== envelope.context.keyGeneration
+        || !sameBytes(request.sourceDigest, expected.sourceDigest)
+        || !sameBytes(request.sourcePayloadHash, expected.sourcePayloadHash)
+        || !sameBytes(request.planDigest, expected.planDigest)
+        || !sameBytes(request.operationalFieldsDigest, expected.operationalFieldsDigest)
+        || !sameBytes(request.payloadHash, input.crypto.hash(payloadBytes))
+        || !sameBytes(request.manifestHash, input.crypto.hash(manifestBytes))
+        || !sameBytes(request.envelopeHash, input.crypto.hash(envelopeBytes))) {
+        throw new TypeError("Historical Task publication coordinates disagree");
+      }
+      const resolved = await input.resolveCurrentAuthority(request);
+      publicKey = resolved === null ? undefined : Uint8Array.from(resolved);
+      return publicKey ?? null;
+    };
+    const request = replayDigest === undefined
+      ? await verifyHumanExistingTaskRepresentationPublicationRequest(input.crypto, {
+        requestBytes: signedBytes, now: input.now, resolveCurrentAuthority,
+      })
+      : await verifyHumanExistingTaskRepresentationPublicationRequestExactReplay(input.crypto, {
+        requestBytes: signedBytes, expectedRequestDigest: replayDigest, resolveCurrentAuthority,
+      });
+    const signingBytes = objectAccessManifestSigningBytesV5({
+      objectId: manifest.objectId, payloadHash: manifest.payloadHash,
+      accessRevision: manifest.accessRevision, previousManifestHash: manifest.previousManifestHash,
+      envelopeHashes: manifest.envelopeHashes, signer: manifest.signer,
+      signerAuthorizationHash: manifest.signerAuthorizationHash,
+      hostAuthorizationRevision: manifest.hostAuthorizationRevision,
+    });
+    try {
+      if (manifest.previousManifestHash !== null || manifest.signerAuthorizationHash !== null
+        || manifest.signer.kind !== "human_device"
+        || manifest.signer.subjectHumanId !== expected.authority.requesterHumanId
+        || manifest.signer.committerDeviceId !== request.committerDeviceId
+        || manifest.hostAuthorizationRevision !== request.hostAuthorizationRevision
+        || publicKey === undefined || !input.crypto.verify(publicKey, signingBytes, manifest.signature)) {
+        throw new TypeError("Historical Task access manifest signature is invalid");
+      }
+    } finally { signingBytes.fill(0); }
+    const revision = seal(snapshot, common);
+    historicalRequests.set(revision, request);
+    return revision;
+  } finally { publicKey?.fill(0); signedBytes.fill(0); replayDigest?.fill(0); }
+}
+
+/** The returned facts retain no private key and remain tied to the authentic prepared bytes. */
+export function readPreparedHistoricalTaskContentRequestV1(
+  revision: PreparedTaskContentCryptoRevisionV1,
+): HumanExistingTaskRepresentationPublicationRequest {
+  readPreparedTaskContentCryptoRevisionSnapshotV1(revision);
+  const request = historicalRequests.get(revision);
+  if (request === undefined) throw new TypeError("Task revision is not an authenticated historical repair");
+  return Object.freeze({ ...request,
+    sourceDigest: Uint8Array.from(request.sourceDigest),
+    sourcePayloadHash: Uint8Array.from(request.sourcePayloadHash),
+    planDigest: Uint8Array.from(request.planDigest),
+    operationalFieldsDigest: Uint8Array.from(request.operationalFieldsDigest),
+    bindingHash: Uint8Array.from(request.bindingHash),
+    payloadHash: Uint8Array.from(request.payloadHash),
+    manifestHash: Uint8Array.from(request.manifestHash),
+    envelopeHash: Uint8Array.from(request.envelopeHash),
+    signature: Uint8Array.from(request.signature),
+  });
+}
+
 export function createPreparedAgentTaskContentCryptoRevisionV1(
   input: AgentTaskContentCryptoRevisionSnapshotV1,
 ): PreparedTaskContentCryptoRevisionV1 {
@@ -352,6 +522,38 @@ export function createPreparedAgentTaskContentCryptoRevisionV1(
   return seal(input, common);
 }
 
+/** Preserve the foreground device-wrapped family; never manufacture execution evidence. */
+export function createPreparedForegroundTaskDefinitionCryptoRevisionV1(input: Readonly<{
+  coordinate: TaskDefinitionContentCoordinateV1;
+  authority: TaskContentAuthorityV1;
+  prepared: PreparedDeviceWrappedAgentObject;
+}>): PreparedTaskContentCryptoRevisionV1 {
+  if (input.coordinate.kind !== "definition"
+    || !Number.isSafeInteger(input.coordinate.contentRevision)
+    || input.coordinate.contentRevision < 1) {
+    throw new TypeError("Foreground Task definition revision is invalid");
+  }
+  const prepared = readPreparedDeviceWrappedAgentObjectSnapshot(input.prepared);
+  assertAuthenticPreparedDeviceWrappedAgentObjectAccessManifestGenesisSet(prepared.access);
+  const snapshot: ForegroundTaskDefinitionCryptoRevisionSnapshotV1 = {
+    coordinate: input.coordinate, authority: input.authority,
+    signerKind: "agent_runtime", publicationFamily: "foreground_definition",
+    foregroundPrepared: input.prepared, object: prepared.object, access: prepared.access,
+  };
+  const common = validateCommon(snapshot);
+  const context = prepared.access.authority;
+  const namespace = context.namespaces[0];
+  if (context.objectId !== common.objectId || context.namespaces.length !== 1
+    || namespace === undefined || namespace.namespaceId !== input.authority.namespaceId
+    || namespace.domainId !== input.authority.domainId
+    || namespace.accessRevision !== input.authority.expectedAccessRevision
+    || !sameBytes(context.payloadHash, common.manifest.payloadHash)
+    || common.manifest.signer.kind !== "agent_runtime") {
+    throw new TypeError("Foreground Task definition authority disagrees");
+  }
+  return seal(snapshot, common);
+}
+
 /** Mint an opaque Task result revision from live Task Runtime evidence. */
 export function createPreparedTaskRuntimeResultContentCryptoRevisionV1(
   input: Readonly<{
@@ -377,15 +579,21 @@ export function createPreparedTaskRuntimeResultContentCryptoRevisionV1(
   if (
     input.coordinate.taskId !== preparedAuthority.taskId
     || input.coordinate.taskRunId !== preparedAuthority.taskRunId
-    || input.coordinate.contentRevision !== 1
+    || input.coordinate.contentRevision !== preparedAuthority.contentRevision
     || common.objectId !== preparedAuthority.objectId
     || common.manifest.signer.kind !== "agent_runtime"
     || common.manifest.signer.agentId !== preparedAuthority.agentId
     || common.manifest.signer.runtimeGeneration
       !== preparedAuthority.runtimeGeneration
     || common.manifest.signer.signerKeyId !== preparedAuthority.signerKeyId
-    || common.manifest.hostAuthorizationRevision
-      !== preparedAuthority.agentAuthorizationRevision
+    || (input.prepared.access.signerEvidenceBytes === undefined
+      ? common.manifest.hostAuthorizationRevision
+        !== preparedAuthority.agentAuthorizationRevision
+      : common.manifest.signerAuthorizationHash === null
+        || !sameBytes(
+          common.manifest.signerAuthorizationHash,
+          sha256(input.prepared.access.signerEvidenceBytes),
+        ))
     || input.authority.namespaceId
       !== preparedAuthority.namespace.namespaceId
     || input.authority.domainId !== preparedAuthority.namespace.domainId
@@ -405,6 +613,11 @@ export function readPreparedTaskContentCryptoRevisionSnapshotV1(
   revision: PreparedTaskContentCryptoRevisionV1,
 ): TaskContentCryptoRevisionSnapshotV1 {
   const snapshot = snapshots.get(revision);
+  const signerEvidenceBytes = snapshot !== undefined
+    && "signerEvidenceBytes" in snapshot.access
+    && snapshot.access.signerEvidenceBytes instanceof Uint8Array
+    ? snapshot.access.signerEvidenceBytes
+    : null;
   if (
     snapshot === undefined
     || !sameTaskContentCoordinateV1(snapshot.coordinate, revision.coordinate)
@@ -422,10 +635,20 @@ export function readPreparedTaskContentCryptoRevisionSnapshotV1(
       sha256(snapshot.access.envelopeBytes[0]),
       snapshot.sealedEnvelopeHash,
     )
+    || (snapshot.sealedSignerEvidenceHash === null)
+      !== (signerEvidenceBytes === null)
+    || (snapshot.sealedSignerEvidenceHash !== null
+      && !sameBytes(
+        sha256(signerEvidenceBytes!),
+        snapshot.sealedSignerEvidenceHash,
+      ))
   ) {
     throw new TypeError(
       "Task content crypto revision is foreign or changed after preparation",
     );
+  }
+  if ("publicationFamily" in snapshot && snapshot.publicationFamily === "foreground_definition") {
+    assertAuthenticPreparedDeviceWrappedAgentObjectAccessManifestGenesisSet(snapshot.access);
   }
   return snapshot as TaskContentCryptoRevisionSnapshotV1;
 }

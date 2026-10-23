@@ -14,12 +14,17 @@ import {
 
 type CasStatus = "applied" | "duplicate" | "stale";
 
+type WithTaskRuntimeAgentObjectPersistenceStorage<Authority> =
+  Authority extends CurrentTaskRuntimeAgentObjectAccessGenesisSetAuthorization
+    ? Omit<Authority, "storage"> & Readonly<{
+      storage: Authority["storage"] & Pick<LatticeStorage, "putObject">;
+    }>
+    : never;
+
 export type TaskRuntimeAgentObjectPersistenceAuthority =
-  Omit<CurrentTaskRuntimeAgentObjectAccessGenesisSetAuthorization, "storage">
-  & Readonly<{
-    storage: CurrentTaskRuntimeAgentObjectAccessGenesisSetAuthorization["storage"]
-      & Pick<LatticeStorage, "putObject">;
-  }>;
+  WithTaskRuntimeAgentObjectPersistenceStorage<
+    CurrentTaskRuntimeAgentObjectAccessGenesisSetAuthorization
+  >;
 
 export type WithTaskRuntimeAgentObjectPersistenceAuthority = (
   context: TaskRuntimeAgentObjectAccessGenesisSetAuthorityContext,

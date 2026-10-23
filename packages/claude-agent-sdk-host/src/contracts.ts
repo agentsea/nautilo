@@ -54,7 +54,9 @@ export interface ClaudeDiscoveryRequest {
 export type ClaudeExecutionObservation =
   | Readonly<{ kind: "activity"; activity: "setup" | "hook" | "tool"; state: "started" | "progress" | "completed" | "requested"; toolName?: string }>
   | Readonly<{ kind: "initialized"; model: string; claudeCodeVersion: string }>
-  /** Lossless root-assistant stream; the result event proves it is complete. */
+  /** SDK-observed boundary; only the final root message is the successful result. */
+  | Readonly<{ kind: "output_message_started" }>
+  /** Lossless root-assistant progress stream. */
   | Readonly<{ kind: "output_delta"; text: string }>
   | Readonly<{ kind: "result"; outcome: "succeeded" }>
   | Readonly<{ kind: "result"; outcome: "failed" | "interrupted" }>

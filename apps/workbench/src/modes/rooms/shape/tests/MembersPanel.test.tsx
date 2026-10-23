@@ -358,7 +358,7 @@ describe("MembersPanel — room management", () => {
     fireEvent.click(view.getByRole("button", { name: "Add 2 members" }));
 
     await waitFor(() => expect(addRoomMember).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(view.queryByTestId("add-member-picker")).toBeNull());
+    await waitFor(() => expect(view.queryByTestId("add-member-picker") === null).toBe(true));
     expect(onMembershipChanged).toHaveBeenCalledTimes(1);
     expect(addRoomMember).toHaveBeenCalledWith("r1", {
       kind: "user",
@@ -421,7 +421,7 @@ describe("MembersPanel — room management", () => {
 
     failingMemberKeys.clear();
     fireEvent.click(view.getByRole("button", { name: "Retry 1" }));
-    await waitFor(() => expect(view.queryByTestId("add-member-picker")).toBeNull());
+    await waitFor(() => expect(view.queryByTestId("add-member-picker") === null).toBe(true));
     expect(addRoomMember).toHaveBeenCalledTimes(3);
     expect(onMembershipChanged).toHaveBeenCalledTimes(2);
     view.unmount();

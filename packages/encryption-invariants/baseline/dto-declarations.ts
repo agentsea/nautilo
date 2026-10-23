@@ -1,6 +1,12 @@
 import { CHATGPT_PLAN_DTO_DECLARATIONS } from "./reviewed-chatgpt-plan-coverage";
 import { BOLTER_HTTP_DECLARATIONS } from "./reviewed-bolter-http";
 import { reviewedBolterRelayDtoReplacements } from "./reviewed-bolter-relay-dto";
+import {
+  reviewedTaskRuntimeSignerDtoReplacements,
+} from "./reviewed-task-runtime-signer-dto";
+import {
+  reviewedMessageModelInputExposureDtoReplacements,
+} from "./reviewed-message-model-input-exposure-dto";
 import { reviewedTaskResearchDtoReplacements, SUPERSEDED_TASK_RESEARCH_DTO_LOCATORS } from "./reviewed-task-research-dto";
 import {
   REVIEWED_MAIN_2026_09_12_DTO_REPLACEMENTS,
@@ -34,6 +40,21 @@ import {
   reviewedPaidServiceFundingDtoReplacements,
   SUPERSEDED_PAID_SERVICE_FUNDING_DTO_LOCATORS,
 } from "./reviewed-paid-service-funding-dto";
+import {
+  REVIEWED_TASK_PROTECTION_DTO_DECLARATIONS,
+  reviewedTaskDefinitionAuthorizationDtoReplacements,
+  reviewedTaskMessageBackfillDtoReplacements,
+  SUPERSEDED_TASK_PROTECTION_DTO_LOCATORS,
+} from "./reviewed-task-protection-dto";
+import {
+  REVIEWED_MAIN_2026_10_13_DTO_REPLACEMENTS,
+  REVIEWED_MAIN_2026_10_13_NEW_DTO_DECLARATIONS,
+  SUPERSEDED_MAIN_2026_10_13_DTO_LOCATORS,
+} from "./reviewed-main-2026-10-13-dto";
+import {
+  REVIEWED_RELEASE_RECONCILIATION_DTO_DECLARATIONS,
+  SUPERSEDED_RELEASE_RECONCILIATION_DTO_LOCATORS,
+} from "./reviewed-release-reconciliation-dto";
 import { REVIEWED_LANDING_DTO_DECLARATIONS, SUPERSEDED_LANDING_DTO_LOCATORS } from "./reviewed-main-2026-09-05-landing-dto";
 import { REVIEWED_OWNED_PHOTO_LIBRARY_DTO_DECLARATIONS } from "./reviewed-owned-photo-library-dto";
 import {
@@ -6202,14 +6223,47 @@ const PRE_IMAGE_ASSISTANCE_DTO_DECLARATIONS: readonly DtoDeclaration[] = [
 const PRE_PAID_SERVICE_FUNDING_DTO_DECLARATIONS: readonly DtoDeclaration[] =
   reviewedImageAssistanceDtoReplacements(PRE_IMAGE_ASSISTANCE_DTO_DECLARATIONS);
 
-export const DTO_BASELINE_DECLARATIONS: readonly DtoDeclaration[] = reviewedBolterRelayDtoReplacements(reviewedExternalMessageAttributionDtoReplacements([
+const PRE_MAIN_2026_10_13_DTO_DECLARATIONS: readonly DtoDeclaration[] = [
   ...PRE_PAID_SERVICE_FUNDING_DTO_DECLARATIONS.filter((entry) =>
     !SUPERSEDED_PAID_SERVICE_FUNDING_DTO_LOCATORS.has(entry.locator)
+    && !SUPERSEDED_TASK_PROTECTION_DTO_LOCATORS.has(entry.locator)
   ),
   ...reviewedPaidServiceFundingDtoReplacements(
     PRE_PAID_SERVICE_FUNDING_DTO_DECLARATIONS,
+  ).filter((entry) =>
+    !SUPERSEDED_TASK_PROTECTION_DTO_LOCATORS.has(entry.locator)
   ),
   ...REVIEWED_PUBLIC_JOIN_AVAILABILITY_DTO_DECLARATIONS,
+  ...REVIEWED_TASK_PROTECTION_DTO_DECLARATIONS,
+];
+
+const PRE_MESSAGE_MODEL_INPUT_EXPOSURE_DTO_DECLARATIONS:
+  readonly DtoDeclaration[] =
+  reviewedTaskRuntimeSignerDtoReplacements(
+    reviewedBolterRelayDtoReplacements(
+      reviewedExternalMessageAttributionDtoReplacements(
+        reviewedTaskMessageBackfillDtoReplacements([
+  ...PRE_MAIN_2026_10_13_DTO_DECLARATIONS.filter((entry) =>
+    !SUPERSEDED_MAIN_2026_10_13_DTO_LOCATORS.has(entry.locator)
+    && !SUPERSEDED_RELEASE_RECONCILIATION_DTO_LOCATORS.has(entry.locator)
+  ),
+  ...REVIEWED_MAIN_2026_10_13_DTO_REPLACEMENTS.filter((entry) =>
+    !SUPERSEDED_RELEASE_RECONCILIATION_DTO_LOCATORS.has(entry.locator)
+  ),
+  ...REVIEWED_MAIN_2026_10_13_NEW_DTO_DECLARATIONS.filter((entry) =>
+    !SUPERSEDED_RELEASE_RECONCILIATION_DTO_LOCATORS.has(entry.locator)
+  ),
+  ...REVIEWED_RELEASE_RECONCILIATION_DTO_DECLARATIONS,
   ...BOLTER_HTTP_DECLARATIONS,
   ...CHATGPT_PLAN_DTO_DECLARATIONS,
-]));
+        ]),
+      ),
+    ),
+  );
+
+export const DTO_BASELINE_DECLARATIONS: readonly DtoDeclaration[] =
+  reviewedTaskDefinitionAuthorizationDtoReplacements(
+    reviewedMessageModelInputExposureDtoReplacements(
+      PRE_MESSAGE_MODEL_INPUT_EXPOSURE_DTO_DECLARATIONS,
+    ),
+  );

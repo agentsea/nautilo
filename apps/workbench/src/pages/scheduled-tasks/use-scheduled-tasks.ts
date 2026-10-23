@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError } from "@nautilo/api-client/browser";
 import { classifyDataOperationFailure } from "@nautilo/lattice-bridge";
-import type { TaskSummary } from "@nautilo/types";
+import type { EncryptionDataOperationOwner } from "@nautilo/lattice-bridge";
+import type { TaskRunSummaryV1, TaskSummary } from "@nautilo/types";
 import { useTaskState } from "../../contexts/task-state/task-state-context";
 import { filterScheduledTasks } from "./scheduled-tasks-view-model";
 import { useAuth } from "../../hooks/use-auth";
@@ -12,12 +13,23 @@ import { createWorkbenchDataOperationOwner } from
 import {
   createWorkbenchProtectedHumanTaskController,
   listProtectedScheduledTasks,
+  readWorkbenchTaskForViewer,
   type ProtectedScheduledTaskProjection,
+  type WorkbenchProtectedHumanTaskController,
 } from "../../lib/protected-human-task-controller";
 import { taskContentViewerScopeKey } from
   "../../modes/rooms/subagents/task-content-viewer-scope";
 
 export type ProtectedScheduledTaskRow = ProtectedScheduledTaskProjection;
+
+export type ProtectedScheduledTaskHistory =
+  | Readonly<{ taskId: string; state: "loading" }>
+  | Readonly<{ taskId: string; state: "error"; message: string }>
+  | Readonly<{
+      taskId: string;
+      state: "ready";
+      runs: readonly TaskRunSummaryV1[];
+    }>;
 
 function isDormantProtectedTaskRoute(error: unknown): boolean {
   if (error === null || typeof error !== "object" || !("status" in error)) return false;
@@ -48,11 +60,17 @@ export interface ScheduledTasksState {
   protectedTasks: readonly ProtectedScheduledTaskRow[];
   protectedLoading: boolean;
   protectedError: string | null;
+  protectedController: WorkbenchProtectedHumanTaskController | undefined;
+  protectedOwner: EncryptionDataOperationOwner;
+  protectedScopeKey: string;
+  protectedHistory: ProtectedScheduledTaskHistory | null;
   loading: boolean;
   error: string | null;
   /** Task ids with an in-flight lifecycle action (disable their controls). */
   busyIds: ReadonlySet<string>;
   refresh: () => Promise<void>;
+  openProtectedHistory: (taskId: string) => void;
+  closeProtectedHistory: (taskId: string) => void;
   disable: (taskId: string) => void;
   enable: (taskId: string) => void;
   remove: (taskId: string) => void;
@@ -108,6 +126,13 @@ export function useScheduledTasks(enabled = true): ScheduledTasksState {
   }>>({ scopeKey: protectedScopeKey, rows: [], loading: false, error: null });
   const [protectedRefreshGeneration, setProtectedRefreshGeneration] = useState(0);
   const dormantProtectedRouteScopeRef = useRef<string | null>(null);
+  const protectedHistoryGenerationRef = useRef(0);
+  const protectedScopeKeyRef = useRef(protectedScopeKey);
+  protectedScopeKeyRef.current = protectedScopeKey;
+  const [protectedHistoryState, setProtectedHistoryState] = useState<Readonly<{
+    scopeKey: string;
+    history: ProtectedScheduledTaskHistory;
+  }> | null>(null);
 
   const refresh = useCallback(async (): Promise<void> => {
     setProtectedRefreshGeneration((generation) => generation + 1);
@@ -166,6 +191,60 @@ export function useScheduledTasks(enabled = true): ScheduledTasksState {
   }, [enabled, lastSuccessfulAtMs, protectedController,
     protectedRefreshGeneration, protectedScopeKey]);
 
+  useEffect(() => {
+    protectedHistoryGenerationRef.current += 1;
+    setProtectedHistoryState(null);
+  }, [protectedScopeKey]);
+
+  const openProtectedHistory = useCallback((taskId: string): void => {
+    const generation = ++protectedHistoryGenerationRef.current;
+    const scopeKey = protectedScopeKey;
+    setProtectedHistoryState({
+      scopeKey,
+      history: { taskId, state: "loading" },
+    });
+    void readWorkbenchTaskForViewer({
+      owner: protectedOwner,
+      taskId,
+      protectedController,
+    }).then((read) => {
+      if (generation !== protectedHistoryGenerationRef.current
+        || protectedScopeKeyRef.current !== scopeKey) return;
+      if (read.representation !== "protected") {
+        setProtectedHistoryState({
+          scopeKey,
+          history: {
+            taskId,
+            state: "error",
+            message: "Protected run history is unavailable.",
+          },
+        });
+        return;
+      }
+      setProtectedHistoryState({
+        scopeKey,
+        history: { taskId, state: "ready", runs: read.runs },
+      });
+    }).catch((cause: unknown) => {
+      if (generation !== protectedHistoryGenerationRef.current
+        || protectedScopeKeyRef.current !== scopeKey) return;
+      setProtectedHistoryState({
+        scopeKey,
+        history: {
+          taskId,
+          state: "error",
+          message: cause instanceof Error ? cause.message : String(cause),
+        },
+      });
+    });
+  }, [protectedController, protectedOwner, protectedScopeKey]);
+
+  const closeProtectedHistory = useCallback((taskId: string): void => {
+    protectedHistoryGenerationRef.current += 1;
+    setProtectedHistoryState((previous) => previous?.scopeKey === protectedScopeKey
+      && previous.history.taskId === taskId ? null : previous);
+  }, [protectedScopeKey]);
+
   const tasks = useMemo(
     () => filterScheduledTasks(allTasks),
     [allTasks],
@@ -192,10 +271,17 @@ export function useScheduledTasks(enabled = true): ScheduledTasksState {
       ? protectedState.loading : false,
     protectedError: protectedState.scopeKey === protectedScopeKey
       ? protectedState.error : null,
+    protectedController,
+    protectedOwner,
+    protectedScopeKey,
+    protectedHistory: protectedHistoryState?.scopeKey === protectedScopeKey
+      ? protectedHistoryState.history : null,
     loading,
     error,
     busyIds,
     refresh,
+    openProtectedHistory,
+    closeProtectedHistory,
     disable,
     enable,
     remove,

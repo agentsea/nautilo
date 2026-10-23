@@ -39,9 +39,9 @@ Versions are release pins, not upstream-latest claims.
 
 | Component | Exact version or revision | Canonical source | License | Shipped scope |
 | --- | --- | --- | --- | --- |
-| [Electron](https://github.com/electron/electron) | 41.10.3 | Electron | MIT | Desktop shell (and its Chromium/Node.js runtime components). |
-| [Bun](https://github.com/oven-sh/bun) | 1.3.11 | Bun | MIT | Desktop: both macOS architectures are vendored under `Contents/Resources/bun`. |
-| [Bun](https://github.com/oven-sh/bun) | 1.3.14 | Bun | MIT | Server image base, digest-pinned in `packaging/docker/Dockerfile`. |
+| [Electron](https://github.com/electron/electron) | 43.8.3 | Electron | MIT | Desktop shell (and its Chromium/Node.js runtime components). |
+| [Bun](https://github.com/oven-sh/bun) | 1.4.4 | Bun | MIT | Desktop: both macOS architectures are vendored under `Contents/Resources/bun`. |
+| [Bun](https://github.com/oven-sh/bun) | 1.4.4 | Bun | MIT | Server image base, digest-pinned in `packaging/docker/Dockerfile`. |
 | [OpenAI Codex app-server](https://github.com/openai/codex) | 0.146.0 (`rust-v0.146.0`) | OpenAI Codex | Apache-2.0 | Desktop external Codex runtime package. |
 | [OpenAI Codex apply-patch extraction](https://github.com/openai/codex/tree/3389fa554e953d07a12a34f5681aae46f17958f8) | 3389fa554e953d07a12a34f5681aae46f17958f8 | OpenAI Codex | Apache-2.0 | Server and desktop `nautilo-apply-patch` runtime; Nautilo-modified extracted source. |
 | [OOMOL OpenConnector](https://github.com/oomol-lab/open-connector) | 1.4.1 (`1bfdc0343057303d2993bcff44d0d5821ea658fd`) | OOMOL | Apache-2.0 | Compose-managed connected-app runtime; Nautilo-modified derivative source. |
@@ -52,7 +52,7 @@ Versions are release pins, not upstream-latest claims.
 | [FFmpeg](https://github.com/ispysoftware/agentdvr-ffmpeg-build) | 9.0.1 | FFmpeg / iSpy Connect | LGPL-3.0-or-later | Desktop macOS arm64/x64; GPL/nonfree disabled. Exact source, build scripts and licenses are included. |
 | [OpenSSL](https://openssl.org/) | 3.5.7 | OpenSSL Project | Apache-2.0 | Statically included in the Desktop FFmpeg libraries; source and license included. |
 | [OpenHue CLI](https://github.com/openhue/openhue-cli) | 0.24 | OpenHue | Apache-2.0 | Desktop vendored CLI. |
-| [OfficeCLI](https://github.com/iOfficeAI/OfficeCLI) | 1.0.148 | iOfficeAI | Apache-2.0 | Desktop macOS and Server macOS/Linux document-processing binaries; both manifests pin the same release and identical macOS artifacts. |
+| [OfficeCLI](https://github.com/iOfficeAI/OfficeCLI) | 1.0.157 | iOfficeAI | Apache-2.0 | Desktop macOS and Server macOS/Linux document-processing binaries; both manifests pin the same release and identical macOS artifacts. |
 | [ripgrep](https://github.com/BurntSushi/ripgrep) | 15.1.0 | BurntSushi | MIT OR Unlicense | Desktop vendored `rg` binary (macOS arm64/x64). |
 | [OpenMLS](https://github.com/openmls/openmls) | 0.8.1, commit `47dbedecad0c1fd8eb5368d582250ebfcc1e1ce6` | OpenMLS | MIT | Vendored `openmls_wasm_bg.wasm` used by the server lattice-crypto runtime. |
 | [Silurus OOXML](https://github.com/yukiyokotani/office-open-xml-viewer) | 0.75.2 | Yuki Yokotani | MIT | Workbench and mobile OOXML parser assets. |
@@ -75,7 +75,7 @@ Versions are release pins, not upstream-latest claims.
 
 ### Desktop Bun notices
 
-The Desktop package retains Bun 1.3.11's exact upstream notice under
+The Desktop package retains Bun 1.4.4's exact upstream notice under
 `Contents/Resources/bun/LICENSE-bun.txt`. Its source revision and SHA-256 are
 recorded in `apps/desktop/licenses/bun/manifest.json`. Bun's own MIT declaration
 does not describe every linked component: that upstream notice also identifies
@@ -183,7 +183,7 @@ upstream material in addition to this index.
 ## Container operating-system and image closure
 
 The final Nautilo server image is based on
-[oven/bun:1.3.14](https://hub.docker.com/r/oven/bun), pinned by immutable
+[oven/bun:1.4.4](https://hub.docker.com/r/oven/bun), pinned by immutable
 digest in `packaging/docker/Dockerfile`. It installs `tini`, `ca-certificates`,
 `chromium-headless-shell`, `tar`, the current `libicuNN` selected from the
 base distribution, and PostgreSQL client binaries (17, plus copied 16

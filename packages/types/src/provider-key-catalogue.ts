@@ -74,7 +74,7 @@ export const PERSONAL_PROVIDER_KEY_CATALOGUE: readonly PersonalProviderKeyCatalo
   .map((entry) => ({
     ...entry,
     purpose: entry.id === "surplus"
-      ? "Marketplace serving for qualified personal chat, research and generated-media routes; decisions require a pilot-enabled Surplus account"
+      ? "Marketplace serving for qualified personal chat, image understanding, research and generated-media routes; decisions require a pilot-enabled Surplus account"
       : entry.id === "openai"
         ? "OpenAI text and image models; embeddings remain server-managed"
         : entry.purpose,
@@ -92,7 +92,7 @@ export const PERSONAL_PROVIDER_KEY_CATALOGUE: readonly PersonalProviderKeyCatalo
   }));
 
 const PERSONAL_PROVIDER_CAPABILITY_LABELS: Record<PersonalProviderCapability, string> = {
-  chat: "personal chat and native text Tasks",
+  chat: "personal chat, native text Tasks and supported image understanding",
   research: "Research",
   decision: "Decisions",
   browsing: "website browsing and actions",

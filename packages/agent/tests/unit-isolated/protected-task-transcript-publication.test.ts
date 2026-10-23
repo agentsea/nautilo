@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { AIMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
 import type { MemoryAccessEnvelope } from "@nautilo/trust";
 import {
@@ -13,6 +14,12 @@ let emittedEvents: unknown[] = [];
 let streamEvents: unknown[] = [];
 let finalMessages: BaseMessage[] = [];
 let finalTasks: Array<Record<string, unknown>> = [];
+let graphValues: Record<string, unknown> = {};
+let graphUpdates: Readonly<Record<string, unknown>>[] = [];
+let activeProjectFilePort: unknown;
+let getCurrentProtectedTaskProjectFilePort: typeof import(
+  "../../src/runtime/protected-task-project-file"
+)["getCurrentProtectedTaskProjectFilePort"];
 
 let runScopeSubagentUntilPause: (
   opts: import("../../src/subagents/scope-subagent/run").RunScopeSubagentOpts,
@@ -54,17 +61,28 @@ beforeAll(async () => {
       graphCreateCalls += 1;
       return {
         streamEvents: async function* () {
+          activeProjectFilePort = getCurrentProtectedTaskProjectFilePort?.();
           for (const event of streamEvents) yield event;
         },
         getState: async () => ({
-          values: { messages: finalMessages },
+          values: { ...graphValues, messages: finalMessages },
           tasks: finalTasks,
         }),
+        updateState: async (
+          _config: unknown,
+          update: Record<string, unknown>,
+        ) => {
+          graphUpdates.push(update);
+          graphValues = { ...graphValues, ...update };
+        },
       };
     },
   }));
 
   ({ runScopeSubagentUntilPause } = await import("../../src/subagents/scope-subagent/run"));
+  ({ getCurrentProtectedTaskProjectFilePort } = await import(
+    "../../src/runtime/protected-task-project-file"
+  ));
 });
 
 afterAll(() => {
@@ -78,6 +96,9 @@ beforeEach(() => {
   streamEvents = [];
   finalMessages = [new AIMessage("done")];
   finalTasks = [];
+  graphValues = {};
+  graphUpdates = [];
+  activeProjectFilePort = undefined;
 });
 
 const subEnvelope: MemoryAccessEnvelope = {
@@ -162,7 +183,7 @@ describe("protected Task transcript publication", () => {
       ],
     }];
 
-    const result = await runScopeSubagentUntilPause({
+    const interruptOpts = {
       ...baseOpts,
       taskRun: true,
       trustedExecutionEntrypoint: "background.task",
@@ -171,7 +192,8 @@ describe("protected Task transcript publication", () => {
       subagentThreadId: "subagent:parent-thread:protected",
       taskRunCheckpointSaver: encryptedSaver(),
       protectedTaskTranscriptPort: { publishBatch: async () => {} },
-    });
+    } satisfies import("../../src/subagents/scope-subagent/run").RunScopeSubagentOpts;
+    const result = await runScopeSubagentUntilPause(interruptOpts);
 
     expect(result).toEqual({
       status: "interrupted",
@@ -181,7 +203,8 @@ describe("protected Task transcript publication", () => {
         { id: "interrupt-a", kind: "await_reply" },
         { id: "interrupt-b", kind: "prove_it" },
         { id: "interrupt-m", kind: "identity", requestId: "challenge-opaque" },
-        { id: "interrupt-z", kind: "approval", requestId: "approval-opaque" },
+        { id: "interrupt-z", kind: "approval", requestId: "approval-opaque",
+          allowedVerbs: ["once", "room", "always", "deny"] },
       ],
     });
     if (result.status !== "interrupted") throw new Error("expected interruption");
@@ -381,5 +404,137 @@ describe("protected Task transcript publication", () => {
       type: "message.new",
       content: "ordinary body",
     }));
+  });
+
+  test("opens project file custody only after authenticated repo preparation", async () => {
+    const taskId = "10000000-0000-4000-8000-000000000001";
+    const taskRunId = "20000000-0000-4000-8000-000000000002";
+    const workDir = `/captured/project/nautilo-repo-docs/task-run-${taskRunId}`;
+    const sourceHead = "a".repeat(40);
+    let factoryCalls = 0;
+    const plan = (request: import("../../src/runtime/protected-repo-docs").ProtectedRepoDocsExecutionRequest) => ({
+      requestDigest: createHash("sha256").update(JSON.stringify(request), "utf8").digest("hex"),
+      relayBinding: {
+        version: 4 as const,
+        generation: `generation:${request.kind}`,
+        invocationId: request.operationId,
+        executionId: `execution:${request.kind}`,
+        operation: "start" as const,
+        owner: {
+          instanceId: "",
+          humanUserId: "owner-1",
+          agentId: "agent-1",
+          runId: taskRunId,
+          conversationId: "conversation",
+          relayId: "relay",
+          desktopSessionId: "desktop",
+          pairingGeneration: "pairing",
+          serverBindingId: "server-binding",
+          profileId: null,
+          profileRevision: null,
+          grantIds: ["project-grant"],
+          grantRevision: 1,
+          protectedPolicyVersion: 1,
+        },
+        authority: {
+          kind: "delegated" as const,
+          taskId,
+          taskRunId,
+          roomId: "room-1",
+          delegation: {
+            version: 1 as const,
+            humanUserId: "owner-1",
+            agentId: "agent-1",
+            sourceRoomId: "room-1",
+            sourceConversationId: "conversation",
+            rootTaskId: taskId,
+            target: {
+              instanceId: "",
+              relayId: "relay",
+              pairingGeneration: "pairing",
+              serverOrigin: "https://server.example.test",
+              serverFingerprint: "fingerprint",
+            },
+            projectGrantId: "project-grant",
+            ceiling: "basic" as const,
+            profile: null,
+          },
+        },
+      },
+    });
+    const repoOpts = {
+      ...baseOpts,
+      causalHumanUserId: "owner-1",
+      taskRun: true,
+      trustedExecutionEntrypoint: "background.task",
+      currentTaskId: taskId,
+      currentTaskRunId: taskRunId,
+      subagentThreadId: "subagent:parent-thread:protected",
+      taskRunCheckpointSaver: encryptedSaver(),
+      protectedTaskTranscriptPort: { publishBatch: async () => {} },
+      protectedRepoDocs: {
+        selection: {
+          target: "https://example.test/repository.git",
+          mode: "auto",
+          publish: "branch",
+        },
+        executionPort: {
+          plan: async request => plan(request),
+          execute: async ({ request }) => request.kind === "prepare"
+            ? {
+                kind: "prepared" as const,
+                relativeWorkspacePath: `nautilo-repo-docs/task-run-${taskRunId}`,
+                workDir,
+                branch: `nautilo/repo-docs/${taskRunId}`,
+                sourceHead,
+                resolvedMode: "init" as const,
+                brief: "Generate repository documentation.",
+              }
+            : {
+                kind: "no_changes" as const,
+                sourceHead,
+                commitOid: null,
+                changedFileCount: 0,
+              },
+          inspect: async () => ({ status: "absent" as const }),
+        },
+        createProjectFilePort: workspaceRoot => {
+          factoryCalls += 1;
+          return {
+            taskId,
+            taskRunId,
+            agentId: "agent-1",
+            humanUserId: "owner-1",
+            relayId: "relay",
+            workspaceRoot,
+            dispatch: async () => ({ ok: false, message: "unused" }),
+          };
+        },
+      },
+    } satisfies import("../../src/subagents/scope-subagent/run").RunScopeSubagentOpts;
+    const result = await runScopeSubagentUntilPause(repoOpts);
+    expect(factoryCalls).toBe(1);
+    expect(graphUpdates[0]?.["messages"]).toEqual([]);
+    expect((graphValues["messages"] as BaseMessage[])[0]?.content).toBe(
+      "Generate repository documentation.",
+    );
+    expect(activeProjectFilePort).toMatchObject({
+      taskId,
+      taskRunId,
+      workspaceRoot: workDir,
+    });
+    expect(getCurrentProtectedTaskProjectFilePort()).toBeNull();
+    expect(result).toMatchObject({
+      status: "completed",
+      finalResponseText: "The repository documentation is already current; no files were committed.",
+    });
+    const preparedInputUpdates = graphUpdates.filter(update =>
+      Array.isArray(update["messages"]) && update["messages"].length > 0
+    ).length;
+    await runScopeSubagentUntilPause(repoOpts);
+    expect(factoryCalls).toBe(2);
+    expect(graphUpdates.filter(update =>
+      Array.isArray(update["messages"]) && update["messages"].length > 0
+    )).toHaveLength(preparedInputUpdates);
   });
 });

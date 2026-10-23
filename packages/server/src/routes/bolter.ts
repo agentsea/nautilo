@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import { z } from "zod";
 import {
   bolterConnectRequestSchema, bolterConnectionUpdateSchema, bolterRevisionRequestSchema,
-  bolterCreateRoomRequestSchema, bolterBindingUpdateSchema, bolterReviewedMessageRequestSchema,
+  bolterCreateRoomRequestSchema, bolterBindingUpdateSchema, bolterReviewedMessageRequestSchema, bolterDeliverySelectionSchema,
 } from "@nautilo/types";
 import { BolterControlError, type BolterController } from "../messaging/bolter-controller";
 import { BolterBridgeAuthorityError, BolterBridgeIdentityConflictError } from "@nautilo/db";
@@ -117,6 +117,8 @@ export function bolterRoutes(app: FastifyInstance, controller: BolterController)
     const userId = owner(request, reply); if (!userId) return;
     const params = z.object({ id: z.uuid() }).strict().safeParse(request.params);
     if (!params.success) return reply.code(400).send({ code: "invalid_request" });
-    try { return await controller.deliveries(userId, params.data.id); } catch (error) { return failure(reply, error); }
+    const query = bolterDeliverySelectionSchema.safeParse(request.query);
+    if (!query.success) return reply.code(400).send({ code: "invalid_request" });
+    try { return await controller.deliveries(userId, params.data.id, query.data); } catch (error) { return failure(reply, error); }
   });
 }

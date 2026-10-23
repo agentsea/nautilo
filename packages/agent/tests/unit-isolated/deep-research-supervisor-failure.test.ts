@@ -1,4 +1,4 @@
-import { beforeEach, expect, mock, test } from "bun:test";
+import { beforeEach, expect, mock, spyOn, test } from "bun:test";
 import type { Configuration } from "../../src/subagents/deep-research/shared/config";
 
 const cause = new Error("supervisor.invoke attempt 3/3 timed out after 60000ms");
@@ -36,3 +36,17 @@ for (const notes of [[], ["A previously collected sourced finding"]]) {
     expect(finalInvoke).not.toHaveBeenCalled();
   });
 }
+
+
+test("confidential configuration reaches the supervisor without logging provider details", async () => {
+  const logger = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const failure = await createDeepResearchGraph(undefined, { ...cfg, confidential: true }).invoke({
+      messages: [{ role: "user", content: "private research" }], research_brief: "private research",
+      notes: [], report_language: "English",
+    }).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toBe("Deep Research supervisor failed");
+    expect(JSON.stringify(logger.mock.calls)).not.toContain(cause.message);
+  } finally { logger.mockRestore(); }
+});

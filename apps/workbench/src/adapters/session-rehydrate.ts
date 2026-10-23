@@ -6,6 +6,8 @@ import {
 } from "@nautilo/api-client/browser";
 import {
   ClassifiedDataOperationError,
+  decodeMessagePayloadV2,
+  encodeMessagePayloadV2,
   type CanonicalJsonValue,
   type CanonicalToolCallV2,
   type DataOperationFailureClass,
@@ -360,6 +362,10 @@ export interface StoredSessionMessageDto extends ExternalMessageAttributionField
   artifacts?: MessageArtifactOpenRef[];
   attachments?: MessageAttachmentRef[];
   imageAssistance?: ImageAssistanceSummary;
+  /** Protected-read parity coordinate, omitted from ordinary-only responses. */
+  foregroundExecutionId?: string;
+  /** Opaque until the canonical protected-message codec admits it for parity. */
+  modelInputExposure?: unknown;
   workcardContinuation?: AdvancedVideoWorkcardContinuation;
   /** Protected-history-only terminal outcomes mapped to this Human input. */
   terminalExecutions?: readonly RoomHistoryTerminalExecutionSummary[];
@@ -517,6 +523,46 @@ export interface RoomHistoryShadowOrdinarySibling {
   readonly payload: MessagePayloadV2;
 }
 
+const MODEL_INPUT_EXPOSURE_METADATA_KEY =
+  "nautilo_memory_model_exposure" as const;
+
+function canonicalOrdinarySiblingPayload(candidate: unknown): MessagePayloadV2 | null {
+  let bytes: Uint8Array | undefined;
+  try {
+    // This is the sole runtime admission for opaque HTTP parity metadata.
+    // It checks the complete MessagePayloadV2 JSON shape and limits without
+    // treating the ordinary value as model-input authority.
+    bytes = encodeMessagePayloadV2(candidate as MessagePayloadV2);
+    return decodeMessagePayloadV2(bytes);
+  } catch {
+    return null;
+  } finally {
+    bytes?.fill(0);
+  }
+}
+
+function ordinaryParityMetadata(
+  message: StoredSessionMessageDto,
+  initial: Readonly<Record<string, unknown>> = {},
+): Readonly<Record<string, unknown>> | null {
+  const rawExecutionId: unknown = message.foregroundExecutionId;
+  if (
+    rawExecutionId !== undefined
+    && (typeof rawExecutionId !== "string" || rawExecutionId.length === 0)
+  ) return null;
+  return {
+    ...initial,
+    ...(rawExecutionId === undefined
+      ? {}
+      : { foregroundExecutionId: rawExecutionId }),
+    ...(message.modelInputExposure === undefined
+      ? {}
+      : {
+        [MODEL_INPUT_EXPOSURE_METADATA_KEY]: message.modelInputExposure,
+      }),
+  };
+}
+
 /**
  * Derive parity input from the actual ordinary response row, independently of
  * the additive Shadow sidecar. This prevents server-supplied parity bytes from
@@ -532,21 +578,35 @@ export function roomHistoryShadowOrdinarySibling(
     const toolCalls = parseCanonicalToolCalls(message.toolCalls);
     if (toolCalls === null) return null;
     const imageAssistance = parseImageAssistanceSummary(message.imageAssistance);
-    payload = Object.freeze({
+    const sensitiveMetadata = ordinaryParityMetadata(message,
+      imageAssistance ? { imageAssistance: { ...imageAssistance } } : {});
+    if (sensitiveMetadata === null) return null;
+    const canonical = canonicalOrdinarySiblingPayload({
       role: "assistant",
       content: message.content,
       ...(toolCalls.length === 0 ? {} : { toolCalls }),
-      ...(imageAssistance ? { sensitiveMetadata: { imageAssistance: { ...imageAssistance } } } : {}),
+      ...(Object.keys(sensitiveMetadata).length === 0
+        ? {}
+        : { sensitiveMetadata }),
     });
+    if (canonical === null) return null;
+    payload = canonical;
   } else if (message.role === "tool") {
     const toolName = message.toolName
       ?? toolNameFromSessionsDisplayLine(message.displayContent);
     if (toolName === undefined) return null;
-    payload = Object.freeze({
+    const sensitiveMetadata = ordinaryParityMetadata(message);
+    if (sensitiveMetadata === null) return null;
+    const canonical = canonicalOrdinarySiblingPayload({
       role: "tool",
       content: message.content,
       toolName,
+      ...(Object.keys(sensitiveMetadata).length === 0
+        ? {}
+        : { sensitiveMetadata }),
     });
+    if (canonical === null) return null;
+    payload = canonical;
   } else if (message.role === "system") {
     payload = Object.freeze({ role: "system", content: message.content });
   } else {

@@ -40,7 +40,10 @@ function fixture(mode: "shadow_encryption" | "full_encryption") {
     } as never,
     causalHumanUserId: "stream-publication-human",
     product: {
-      reserveLiveShadowAgent: async (request: { transcriptOrdinal: number }) => {
+      reserveLiveShadowAgent: async (request: {
+        transcriptOrdinal: number;
+        authorRole: "assistant" | "tool";
+      }) => {
         state.ordinals.push(request.transcriptOrdinal);
         return {
           status: "reserved",
@@ -48,7 +51,7 @@ function fixture(mode: "shadow_encryption" | "full_encryption") {
             status: "allocated", messageId: 501, revision: 0,
             roomId: "20000000-0000-4000-8000-000000000001",
             namespaceId: "30000000-0000-4000-8000-000000000001",
-            keyClass: "ai", authorRole: "assistant",
+            keyClass: "ai", authorRole: request.authorRole,
             cryptoObjectId: "message:stream-publication",
           },
           createdAt: NOW,
@@ -183,12 +186,53 @@ for (const mode of ["shadow_encryption", "full_encryption"] as const) {
   });
 }
 
+test("malformed present exposure is integrity failure only when writing its ordinary sibling", async () => {
+  const payload = {
+    role: "assistant" as const,
+    content: "Result",
+    sensitiveMetadata: {
+      nautilo_memory_model_exposure: {
+        version: 1,
+        status: "complete",
+        dependencies: "invalid",
+      },
+    },
+  };
+  const shadow = fixture("shadow_encryption");
+  try {
+    const result = await shadow.session.publishMessage({
+      payload,
+      stage: "assistant_message",
+    });
+    expect(result).toMatchObject({
+      status: "ordinary_fallback",
+      reason: "integrity_failure",
+    });
+    expect(shadow.state.writes).toEqual([]);
+  } finally {
+    shadow.session.destroy();
+  }
+
+  const full = fixture("full_encryption");
+  try {
+    expect(await full.session.publishMessage({
+      payload,
+      stage: "assistant_message",
+    })).toMatchObject({ status: "protected" });
+  } finally {
+    full.session.destroy();
+  }
+});
+
 
 for (const mode of ["shadow_encryption", "full_encryption"] as const) {
   test(`${mode} keeps image attribution parity while protecting ordinary metadata`, async () => {
     const { session, state } = fixture(mode);
     const imageAssistance = { status: "completed", modelId: "vision-a", modelDisplayName: "Vision A", attachmentIds: ["image-a"] };
-    const payload = { role: "assistant" as const, content: "Total 123.45", sensitiveMetadata: { imageAssistance } };
+    const modelInputExposure = { version: 1, status: "complete", dependencies: [] } as const;
+    const payload = { role: "assistant" as const, content: "Total 123.45",
+      sensitiveMetadata: { imageAssistance, foregroundExecutionId: "turn-image-a",
+        nautilo_memory_model_exposure: modelInputExposure } };
     try {
       const result = await session.publishMessage({ payload, stage: "assistant_message" });
       expect(result.status).toBe("protected");
@@ -198,11 +242,43 @@ for (const mode of ["shadow_encryption", "full_encryption"] as const) {
         expect(published["metadata"]).toBeNull();
         expect(published["content"]).toBeNull();
       } else {
-        expect(published["metadata"]).toEqual({ nautilo_image_assistance: imageAssistance });
+        expect(published["metadata"]).toEqual({
+          nautilo_image_assistance: imageAssistance,
+          nautilo_foreground_execution_id: "turn-image-a",
+          nautilo_memory_model_exposure: modelInputExposure,
+        });
         expect(encodeLiveShadowOrdinaryPayloadV2({
           role: "assistant", content: String(published["content"]), tool_calls: null, tool_name: null,
           metadata_json: JSON.stringify(published["metadata"]),
         }, null)).toEqual(encodeMessagePayloadV2(payload));
+      }
+    } finally { session.destroy(); }
+  });
+
+  test(`${mode} keeps Tool identity and foreground execution parity together`, async () => {
+    const { session, state } = fixture(mode);
+    const payload = { role: "tool" as const, content: JSON.stringify({
+      taskId: "task-background-1", status: "pending", execution: "native",
+      message: "The task is running in the background; it will report back to this chat when done.",
+    }), toolName: "in_background",
+      sensitiveMetadata: { toolCallId: "call-background-1", foregroundExecutionId: "turn-background-1" } };
+    try {
+      const result = await session.publishMessage({ payload, stage: "tool_result" });
+      expect(result.status).toBe("protected");
+      expect(state.publications).toHaveLength(1);
+      const published = state.publications[0]!;
+      if (mode === "full_encryption") {
+        expect(published["metadata"]).toBeNull();
+        expect(published["content"]).toBeNull();
+      } else {
+        expect(published["metadata"]).toEqual({
+          nautilo_foreground_execution_id: "turn-background-1",
+          nautilo_tool_result: { toolCallId: "call-background-1" },
+        });
+        expect(encodeLiveShadowOrdinaryPayloadV2({
+          role: "tool", content: String(published["content"]), tool_calls: null,
+          tool_name: "in_background", metadata_json: JSON.stringify(published["metadata"]),
+        }, "call-background-1")).toEqual(encodeMessagePayloadV2(payload));
       }
     } finally { session.destroy(); }
   });

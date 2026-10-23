@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.34] - 2026-10-23
+
+### Security
+
+- Standalone CLI builds use Bun 1.4.4 with updated certificate trust.
+
 ## [0.1.33] - 2026-09-15
 
 ### Fixed

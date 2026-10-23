@@ -1,5 +1,6 @@
 import {
   extensionOfBasename,
+  workspaceDocumentMimeType,
   isComposerChatAttachmentPathAllowed,
 } from "@nautilo/attachments/composer-chat-extensions";
 
@@ -24,13 +25,13 @@ export function sanitizeComposerAttachmentBasenameForUi(name: string): string {
  * Cheap client-side gate before queueing a composer chip. The server attachment gate
  * remains authoritative (magic bytes, MIME, zone, size).
  */
-export function preflightComposerChatAttachment(pathOrName: string, options?: { workspacePdf?: boolean }): ComposerChatAttachmentPreflight {
+export function preflightComposerChatAttachment(pathOrName: string, options?: { workspaceDocuments?: boolean }): ComposerChatAttachmentPreflight {
   const basename = pathOrName.split(/[/\\]/).pop() ?? pathOrName;
   const ext = extensionOfBasename(pathOrName);
   if (ext === "") {
     return { ok: false, skip: { basename, reason: "no_extension" } };
   }
-  if (!(options?.workspacePdf && ext === ".pdf") && !isComposerChatAttachmentPathAllowed(pathOrName)) {
+  if (!(options?.workspaceDocuments && workspaceDocumentMimeType(pathOrName) !== null) && !isComposerChatAttachmentPathAllowed(pathOrName)) {
     return { ok: false, skip: { basename, reason: "unsupported_type" } };
   }
   return { ok: true };
@@ -40,12 +41,15 @@ const SUPPORTED_HINT =
   "Supported types: text (markdown, code, data files), images (PNG, JPEG, GIF, WebP), and audio (MP3, WAV, M4A, OGG, FLAC, OPUS, WebM).";
 
 /** User-facing copy for Workbench toasts when files are skipped before send. */
-export function formatComposerAttachmentSkipToast(skipped: readonly ComposerChatAttachmentSkip[]): {
+export function formatComposerAttachmentSkipToast(skipped: readonly ComposerChatAttachmentSkip[], options?: { workspaceDocuments?: boolean }): {
   title: string;
   message: string;
 } {
+  const supportedHint = options?.workspaceDocuments
+    ? `${SUPPORTED_HINT} Documents: PDF, Word (DOCX), Excel (XLSX), PowerPoint (PPTX).`
+    : SUPPORTED_HINT;
   if (skipped.length === 0) {
-    return { title: "Unsupported attachment", message: SUPPORTED_HINT };
+    return { title: "Unsupported attachment", message: supportedHint };
   }
   if (skipped.length === 1) {
     const s = skipped[0];
@@ -54,17 +58,17 @@ export function formatComposerAttachmentSkipToast(skipped: readonly ComposerChat
     if (s.reason === "no_extension") {
       return {
         title,
-        message: `Can't attach "${safe}" — the filename has no extension, so we can't tell what type it is.\n\n${SUPPORTED_HINT}`,
+        message: `Can't attach "${safe}" — the filename has no extension, so we can't tell what type it is.\n\n${supportedHint}`,
       };
     }
     return {
       title,
-      message: `"${safe}" isn't a supported attachment type.\n\n${SUPPORTED_HINT}`,
+      message: `"${safe}" isn't a supported attachment type.\n\n${supportedHint}`,
     };
   }
   const names = skipped.map((s) => sanitizeComposerAttachmentBasenameForUi(s.basename)).join(", ");
   return {
     title: "Unsupported attachments",
-    message: `Skipped ${skipped.length} files: ${names}.\n\n${SUPPORTED_HINT}`,
+    message: `Skipped ${skipped.length} files: ${names}.\n\n${supportedHint}`,
   };
 }

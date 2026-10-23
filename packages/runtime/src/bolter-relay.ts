@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
-  BOLTER_RELAY_PROTOCOL_VERSION, parseRelayBolterDesktopMessage, parseRelayBolterServerMessage, sameRelayBolterScope,
+  BOLTER_RELAY_PROTOCOL_VERSION, BOLTER_FILES_PROTOCOL_VERSION, parseRelayBolterDesktopMessage, parseRelayBolterServerMessage, sameRelayBolterScope,
   type RelayBolterScope, type RelayBolterCommand, type RelayBolterDesktopMessage, type RelayBolterServerMessage,
   type RelayBolterObservation, type RelayBolterBatch, type BolterAuthorizedContent,
 } from "@nautilo/relay";
@@ -10,7 +10,7 @@ export type BolterRelaySession = RelayBolterScope & Readonly<{ userId: string }>
 export type BolterObservationListener = (input: { userId: string; message: RelayBolterObservation }) => void;
 export type BolterBatchListener = (input: { userId: string; message: RelayBolterBatch }) => Promise<"accepted" | "blocked">;
 export type BolterContextListener = (relayId: string, userId: string, session: BolterRelaySession | null) => void;
-type Pending = { authorize?: (() => Promise<BolterAuthorizedContent | null>) | undefined; authorizationUsed: boolean; session: BolterRelaySession; command: RelayBolterCommand; resolve(result: BolterNativeResult): void; reject(error: Error): void; cleanup(): void };
+type Pending = { authorize?: (() => Promise<BolterAuthorizedContent | null>) | undefined; authorizationUsed: boolean; authorizing?: boolean; session: BolterRelaySession; command: RelayBolterCommand; resolve(result: BolterNativeResult): void; reject(error: Error): void; cleanup(): void };
 
 /** Socket correlation only. Durable inbox/outbox and authority stay in the server bridge. */
 export class BolterRelayTransport {
@@ -87,17 +87,20 @@ export class BolterRelayTransport {
     const message = structuredClone(parsed);
     if (message.type === "relay:bolter-authorize") {
       const pending = this.pending.get(message.correlationId);
-      if (!pending || pending.authorizationUsed || !pending.authorize || pending.command.command.action !== "send"
+      if (!pending || pending.authorizing || (pending.authorizationUsed && session.selectedProtocolVersion < BOLTER_FILES_PROTOCOL_VERSION) || !pending.authorize || pending.command.command.action !== "send"
         || pending.command.command.outboxId !== message.outboxId || pending.session.userId !== input.userId
         || !sameRelayBolterScope(pending.session, session)) return { ok: false, error: "BOLTER_AUTHORIZATION_STALE" };
       pending.authorizationUsed = true;
+      pending.authorizing = true;
       let content: BolterAuthorizedContent | null = null;
       try { content = await pending.authorize(); } catch { /* deny disclosure */ }
+      finally { pending.authorizing = false; }
       const current = this.session(input.relayId, input.userId);
       if (this.pending.get(message.correlationId) !== pending || !current || !sameRelayBolterScope(session, current)) return { ok: false, error: "BOLTER_CONTEXT_STALE" };
       const response = parseRelayBolterServerMessage({ type: "relay:bolter-authorized", version: BOLTER_RELAY_PROTOCOL_VERSION,
         scope: message.scope, correlationId: message.correlationId, outboxId: message.outboxId,
-        content: content ? { chatId: content.chatId, threadRootId: content.threadRootId, content: content.content } : null });
+        content: content ? { chatId: content.chatId, threadRootId: content.threadRootId, content: content.content,
+          ...(content.files ? { files: content.files } : {}) } : null });
       try {
         if (!response) {
           // A denied oversized disclosure still releases the waiting native preparation.

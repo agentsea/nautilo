@@ -53,7 +53,8 @@ let cleanupShouldThrow: boolean;
 
 let runnerResult:
   | { status: "completed"; threadId: string; finalText: string; finalResponseText: string; securityReportState?: "completed" | "partial" | null; securityResearchAppendix?: string | null }
-  | { status: "interrupted"; threadId: string; interrupt: Record<string, unknown> };
+  | { status: "interrupted"; threadId: string; interrupt: Record<string, unknown> }
+  | { status: "checkpoint_paused"; threadId: string; reason: "manual_pause" };
 
 afterAll(() => {
   _setTaskRunExecutorRunnerForTests(null);
@@ -96,6 +97,14 @@ afterEach(() => {
 /** Fake db supporting both ordinary status writes and the serialized terminal
  *  transaction used by report-back. Records `task_runs` `completed` sets into
  *  `eventLog` so the test can assert report-back commits BEFORE cleanup. */
+function projectRow(row: object, projection?: Record<string, unknown>): object {
+  if (projection === undefined) return { ...row };
+  const values = row as Record<string, unknown>;
+  return Object.fromEntries(Object.keys(projection).map((key) => [key,
+    key === "requiresLocalRecapture" || key === "writerReviewPending" ? false : values[key],
+  ]));
+}
+
 function fakeDb(taskRow: Task | undefined = baseTask()): DirectDatabase {
   const tableName = (t: unknown): "tasks" | "task_runs" | "other" =>
     t === tasks ? "tasks" : t === taskRuns ? "task_runs" : "other";
@@ -108,6 +117,7 @@ function fakeDb(taskRow: Task | undefined = baseTask()): DirectDatabase {
     modelId: "openai:stub",
     fundingBinding: null,
     fundingPredecessorRunId: null,
+    resultRepresentation: "ordinary",
     resultText: null,
   };
   const db: Record<string, unknown> = {
@@ -120,16 +130,17 @@ function fakeDb(taskRow: Task | undefined = baseTask()): DirectDatabase {
         }
         return {
           where: () => ({
-            returning: async () => [
-              t === tasks ? { ...taskRow, ...payload } : { ...runRow, ...payload },
-            ],
+            returning: async (projection?: Record<string, unknown>) => [projectRow(
+              t === tasks ? { ...taskRow, ...payload } : { ...runRow, ...payload }, projection,
+            )],
           }),
         };
       },
     }),
-    select: () => ({
+    select: (projection?: Record<string, unknown>) => ({
       from: (t: unknown) => {
-        const rows = t === tasks ? (taskRow ? [taskRow] : []) : [runRow];
+        const rows = (t === tasks ? (taskRow ? [taskRow] : []) : [runRow])
+          .map((row) => projectRow(row, projection));
         const query = {
           innerJoin: () => query,
           where: () => query,
@@ -155,6 +166,7 @@ function baseTask(over: Partial<Task> = {}): Task {
     requestorId: "owner-1",
     agentId: "agent-1",
     prompt: "do the thing",
+    contentRepresentation: "ordinary",
     callingRoomId: null,
     resultDelivery: "wake",
     scheduleKind: "now",
@@ -328,6 +340,28 @@ describe("taskRunExecutor — Stack 208 P1 terminal thread cleanup", () => {
     expect(threw).toBeInstanceOf(Error);
     expect(threw?.message).toBe("runner exploded");
 
+    expect(cleanupCalls).toHaveLength(0);
+    expect(eventLog).not.toContain("reportBackCompletion");
+  });
+
+  it("rejects an impossible protected checkpoint pause in the legacy executor", async () => {
+    runnerResult = {
+      status: "checkpoint_paused",
+      threadId: "subagent:room:r1:bot:a1:run-1",
+      reason: "manual_pause",
+    };
+
+    const failure = await drain(taskRunExecutor(
+      baseInput(),
+      "job-1",
+      "task:task-1",
+      new AbortController().signal,
+    )).catch((error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toBe(
+      "Legacy Task runner cannot accept a protected checkpoint pause",
+    );
     expect(cleanupCalls).toHaveLength(0);
     expect(eventLog).not.toContain("reportBackCompletion");
   });

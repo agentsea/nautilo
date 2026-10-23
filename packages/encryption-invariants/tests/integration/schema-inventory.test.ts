@@ -15,7 +15,42 @@ describe("Drizzle schema inventory", () => {
   test("enumerates the actual Nautilo tables, columns, and existing view without a DB", () => {
     const inventory = inventoryDrizzleSchema(nautiloSchema);
 
-    expect(inventory.objects.filter((object) => object.kind === "table")).toHaveLength(206);
+    const tableLocators = inventory.objects
+      .filter((object) => object.kind === "table")
+      .map((object) => object.locator);
+    expect(tableLocators).toHaveLength(232);
+    const reviewedAddedTableLocators = [
+      "public.conversion_operations",
+      "public.foreground_memory_crypto_publication_receipts",
+      "public.group_moderation_scopes",
+      "public.message_deletion_receipts",
+      "public.moderation_actions",
+      "public.moderation_restrictions",
+      "public.moderation_subjects",
+      "public.personal_capability_preferences",
+      "public.personal_provider_credentials",
+      "public.protected_task_continuation_receipts",
+      "public.protected_task_execution_segment_receipts",
+      "public.protected_task_run_output_bindings",
+      "public.protected_task_wake_continuation_receipts",
+      "public.server_admission",
+      "public.server_moderation_policy",
+      "public.server_provider_policy",
+      "public.server_public_join",
+      "public.soul_generation_attempts",
+      "public.task_cancellation_crypto_staging_receipts",
+      "public.task_content_backfill_failures",
+      "public.task_content_backfill_scans",
+      "public.task_definition_crypto_revisions",
+      "public.task_historical_content_crypto_staging_receipts",
+      "public.task_run_message_associations",
+      "public.task_run_result_crypto_revisions",
+      "public.task_terminal_message_crypto_staging_receipts",
+    ] as const;
+    expect(reviewedAddedTableLocators).toHaveLength(26);
+    for (const locator of reviewedAddedTableLocators) {
+      expect(tableLocators).toContain(locator);
+    }
     expect(inventory.objects.filter((object) => object.kind === "view")).toEqual([
       {
         id: "db.public.users_public",
@@ -28,9 +63,9 @@ describe("Drizzle schema inventory", () => {
         isExisting: true,
       },
     ]);
-    expect(inventory.columns.filter((column) => column.kind === "table")).toHaveLength(2769);
+    expect(inventory.columns.filter((column) => column.kind === "table")).toHaveLength(3182);
     expect(inventory.columns.filter((column) => column.kind === "view")).toHaveLength(6);
-    expect(inventory.constraints).toHaveLength(778);
+    expect(inventory.constraints).toHaveLength(890);
 
     expect(inventory.columns).toContainEqual({
       id: "db.public.session_messages.content",

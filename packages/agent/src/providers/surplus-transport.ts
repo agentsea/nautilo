@@ -168,6 +168,8 @@ export function createSurplusObservedFetch(
 export interface CreateSurplusChatModelInput {
   readonly route: QualifiedSurplusChatRoute;
   readonly apiKey: string;
+  /** Omit the catalogue provider pin while preserving the exact qualified model. */
+  readonly providerMode?: "any";
   readonly maxOutputTokens: number;
   readonly reasoningEffort?: ReasoningEffort;
   readonly reasoningOutput?: boolean;
@@ -259,7 +261,7 @@ export function createSurplusChatModel(input: CreateSurplusChatModelInput): Chat
   if (input.maxOutputTokens > input.route.maxOutputTokens) {
     throw new Error("Surplus output budget exceeds the qualified route limit.");
   }
-  const isVenice = input.route.providerPin === "venice";
+  const isVenice = input.providerMode !== "any" && input.route.providerPin === "venice";
   const base = {
     model: input.route.surplusModelId,
     apiKey,
@@ -268,7 +270,7 @@ export function createSurplusChatModel(input: CreateSurplusChatModelInput): Chat
     streaming: true,
     streamUsage: true,
     modelKwargs: {
-      provider: input.route.providerPin,
+      ...(input.providerMode === "any" ? {} : { provider: input.route.providerPin }),
       ...surplusReasoningModelKwargs({
         modelId: input.route.catalogModelId,
         ...(input.reasoningEffort === undefined ? {} : { reasoningEffort: input.reasoningEffort }),

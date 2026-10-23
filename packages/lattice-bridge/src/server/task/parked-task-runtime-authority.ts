@@ -1,10 +1,16 @@
 import {
   copyParkedProtectedTaskAdditionalAuthority,
+  copyParkedProtectedTaskHumanContinuation,
+  copyParkedProtectedTaskCheckpointContinuation,
   eq,
   lockParkedProtectedTaskAdditionalAuthority,
+  lockParkedProtectedTaskHumanContinuation,
+  lockParkedProtectedTaskCheckpointContinuation,
   rooms,
   type LockedParkedProtectedTaskAdditionalAuthorityTaskRow,
   type ParkedProtectedTaskAdditionalAuthority,
+  type ParkedProtectedTaskHumanContinuation,
+  type ParkedProtectedTaskCheckpointContinuation,
   type PostgresJsBridgeConnection,
   type PostgresJsBridgeExecutor,
   type PostgresJsBridgeRow,
@@ -20,6 +26,11 @@ import {
 } from "./task-scope-memory-metadata.ts";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+
+export type ParkedTaskRuntimeContinuation =
+  | ParkedProtectedTaskAdditionalAuthority
+  | ParkedProtectedTaskHumanContinuation
+  | ParkedProtectedTaskCheckpointContinuation;
 
 export type ParkedTaskRuntimeCurrentRoutingFacts = Readonly<{
   taskId: string;
@@ -128,7 +139,7 @@ export function currentParkedTaskRuntimeRoutingFacts(input: Readonly<{
   sourceRoomId: string;
   targetRoomId: string;
   task: ParkedTaskRuntimeLockedRoutingTask;
-  current: ParkedProtectedTaskAdditionalAuthority;
+  current: ParkedTaskRuntimeContinuation;
 }>): ParkedTaskRuntimeCurrentRoutingFacts | null {
   const { task, current } = input;
   const occurrence = current.occurrence;
@@ -396,9 +407,25 @@ export async function withParkedTaskRuntimeRestrictedAuthority<Value>(
 
 export function copyParkedTaskRuntimeAuthority(
   expected: ParkedProtectedTaskAdditionalAuthority,
-): ParkedProtectedTaskAdditionalAuthority {
+): ParkedProtectedTaskAdditionalAuthority;
+export function copyParkedTaskRuntimeAuthority(
+  expected: ParkedProtectedTaskHumanContinuation,
+): ParkedProtectedTaskHumanContinuation;
+export function copyParkedTaskRuntimeAuthority(
+  expected: ParkedProtectedTaskCheckpointContinuation,
+): ParkedProtectedTaskCheckpointContinuation;
+export function copyParkedTaskRuntimeAuthority(
+  expected: ParkedTaskRuntimeContinuation,
+): ParkedTaskRuntimeContinuation;
+export function copyParkedTaskRuntimeAuthority(
+  expected: ParkedTaskRuntimeContinuation,
+): ParkedTaskRuntimeContinuation {
   try {
-    return copyParkedProtectedTaskAdditionalAuthority(expected);
+    return "acceptance" in expected
+      ? copyParkedProtectedTaskHumanContinuation(expected)
+      : "stableRoutingDigest" in expected
+        ? copyParkedProtectedTaskCheckpointContinuation(expected)
+        : copyParkedProtectedTaskAdditionalAuthority(expected);
   } catch (error) {
     throw new TypeError(
       "Parked Task Runtime authority descriptor is invalid",
@@ -408,24 +435,25 @@ export function copyParkedTaskRuntimeAuthority(
 }
 
 /**
- * Re-read one discovered additional-authority continuation while holding the
+ * Re-read one discovered continuation while holding the
  * canonical product lifecycle locks. Call this only after the global policy
  * fence and before acquiring any Namespace or restricted crypto lock.
  */
-export async function lockCurrentParkedTaskAdditionalAuthorityWithRouting(
+export async function lockCurrentParkedTaskAuthorityWithRouting(
   input: Readonly<{
   transaction: ParkedTaskAuthorityTransaction;
-  expected: ParkedProtectedTaskAdditionalAuthority;
+  expected: ParkedTaskRuntimeContinuation;
 }>,
 ): Promise<Readonly<{
-  current: ParkedProtectedTaskAdditionalAuthority;
+  current: ParkedTaskRuntimeContinuation;
   task: LockedParkedProtectedTaskAdditionalAuthorityTaskRow
     & ParkedTaskRuntimeLockedRoutingTask;
 }> | null> {
-  const locked = await lockParkedProtectedTaskAdditionalAuthority(
-    input.transaction,
-    input.expected,
-  );
+  const locked = "acceptance" in input.expected
+    ? await lockParkedProtectedTaskHumanContinuation(input.transaction, input.expected)
+    : "stableRoutingDigest" in input.expected
+      ? await lockParkedProtectedTaskCheckpointContinuation(input.transaction, input.expected)
+      : await lockParkedProtectedTaskAdditionalAuthority(input.transaction, input.expected);
   return locked === null
     ? null
     : Object.freeze({
@@ -435,10 +463,10 @@ export async function lockCurrentParkedTaskAdditionalAuthorityWithRouting(
       });
 }
 
-export async function lockCurrentParkedTaskAdditionalAuthority(input: Readonly<{
+export async function lockCurrentParkedTaskAuthority(input: Readonly<{
   transaction: ParkedTaskAuthorityTransaction;
-  expected: ParkedProtectedTaskAdditionalAuthority;
-}>): Promise<ParkedProtectedTaskAdditionalAuthority | null> {
-  return (await lockCurrentParkedTaskAdditionalAuthorityWithRouting(input))
+  expected: ParkedTaskRuntimeContinuation;
+}>): Promise<ParkedTaskRuntimeContinuation | null> {
+  return (await lockCurrentParkedTaskAuthorityWithRouting(input))
     ?.current ?? null;
 }

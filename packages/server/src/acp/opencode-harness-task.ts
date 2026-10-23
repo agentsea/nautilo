@@ -13,7 +13,7 @@ export const OPENCODE_ACP_HARNESS_TASK_EXECUTION_DESCRIPTOR = Object.freeze({
   source: "genie" as const,
 });
 
-export type OpenCodeAcpExecutionProfile = "interactive" | "autonomous" | "plan";
+export type OpenCodeAcpExecutionProfile = "autonomous";
 export type OpenCodeAcpHarnessTaskFailureCode =
   | "ACP_HARNESS_UNAVAILABLE"
   | "ACP_SOURCE_FORBIDDEN"
@@ -78,8 +78,7 @@ export interface CreateOpenCodeAcpHarnessTaskResult {
   readonly execution: "opencode-acp";
 }
 
-/** Admission only. Execution, ACP prompts, permission exchange, and process
- * containment remain unavailable until the compatibility vertical lands. */
+/** Admit the autonomous shape accepted by the mounted OpenCode executor. */
 export async function createOpenCodeAcpHarnessTask(
   deps: OpenCodeAcpHarnessTaskDeps,
   input: CreateOpenCodeAcpHarnessTaskInput,
@@ -263,7 +262,7 @@ function isSafeOpaqueId(value: string): boolean {
 }
 
 function isExecutionProfile(value: unknown): value is OpenCodeAcpExecutionProfile {
-  return value === "interactive" || value === "autonomous" || value === "plan";
+  return value === "autonomous";
 }
 
 type UnknownRecord = Record<string, unknown>;

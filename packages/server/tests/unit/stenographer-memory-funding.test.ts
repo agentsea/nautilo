@@ -2,7 +2,7 @@ import { describe, expect, spyOn, test } from "bun:test";
 import { MemoryProviderOutcomeUnknownError, type CapabilityFundingSession } from "@nautilo/agent";
 import type { DirectDatabase } from "@nautilo/db";
 import type { DurableModelExposureDependency, DurableRecordEnvelope } from "@nautilo/reflection/durable";
-import { compactionModelExposureDependencies, type CompactionClaim } from "@nautilo/runtime";
+import { compactionModelExposureDependencies, createRoomSideModelInvoker, type CompactionClaim } from "@nautilo/runtime";
 import type { MemoryOperationBinding } from "@nautilo/types";
 
 import * as capabilityFunding from "../../src/lib/capability-funding";
@@ -51,7 +51,7 @@ function database(replayRows: readonly Record<string, unknown>[]) {
   return { db, updates, remaining: () => results.length };
 }
 
-function funding(db: DirectDatabase) {
+function funding(db: DirectDatabase, createInvoker?: typeof createRoomSideModelInvoker) {
   return createStenographerMemoryFunding({
     db,
     ports: {
@@ -63,6 +63,7 @@ function funding(db: DirectDatabase) {
     commitmentKey: new Uint8Array(32).fill(7),
     resolveServiceModel: () => "service:model",
     assertAvailable: () => Promise.resolve(),
+    ...(createInvoker === undefined ? {} : { createInvoker }),
   });
 }
 
@@ -260,6 +261,7 @@ describe("ordinary Stenographer Memory funding", () => {
       capabilityFunding,
       "createCapabilityFundingSession",
     ).mockImplementation(session);
+    const invocations: Array<Parameters<typeof createRoomSideModelInvoker>[0]> = [];
     try {
       const runtime = createStenographerMemoryFunding({
         db: state.db,
@@ -284,6 +286,10 @@ describe("ordinary Stenographer Memory funding", () => {
         commitmentKey: new Uint8Array(32).fill(11),
         resolveServiceModel: () => "openai:service",
         assertAvailable: () => Promise.resolve(),
+        createInvoker: (options) => {
+          invocations.push(options);
+          return async () => "unused";
+        },
       });
 
       const admitted = await runtime.admitCompactionModel(claim, dependencies);
@@ -302,6 +308,10 @@ describe("ordinary Stenographer Memory funding", () => {
       expect(openedRoles).toEqual(["memorySummarization"]);
       expect(openedPriors).toEqual([undefined, personalFunding]);
       expect(new Set(readRecords).size).toBe(80);
+      expect(invocations[0]).toMatchObject({
+        allowUnpinnedSurplusRetry: true,
+        fundingSession: { allowUnpinnedSurplusRetry: true },
+      });
 
       const reopened = await runtime.admitCompactionModel(claim, dependencies);
       expect(reopened.modelId).toBe(admitted.modelId);
@@ -335,9 +345,13 @@ describe("ordinary Stenographer Memory funding", () => {
 describe("protected Stenographer Memory funding", () => {
   test("admits a durable binding when the exact operation has no wire evidence", async () => {
     const state = database([]);
+    const invocations: Array<Parameters<typeof createRoomSideModelInvoker>[0]> = [];
     const admitted = await runWithProtectedMemoryEvidence(
       protectedEvidence,
-      () => funding(state.db).admitProtectedExtractionModel({
+      () => funding(state.db, (options) => {
+        invocations.push(options);
+        return async () => "unused";
+      }).admitProtectedExtractionModel({
         kind: "extraction",
         sourceBatchId: BATCH,
         roomId: ROOM,
@@ -349,6 +363,7 @@ describe("protected Stenographer Memory funding", () => {
     expect(admitted.modelId).toBe("service:model");
     expect(state.updates).toHaveLength(1);
     expect(state.remaining()).toBe(0);
+    expect(invocations[0]).not.toHaveProperty("allowUnpinnedSurplusRetry");
   });
 
   test("quarantines an exact protected operation with prior wire evidence", async () => {

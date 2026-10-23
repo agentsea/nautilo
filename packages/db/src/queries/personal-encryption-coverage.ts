@@ -16,13 +16,14 @@ export type PersonalEncryptionCoverageFamily =
 
 export type PersonalEncryptionCoverageFamilyResult =
   | Readonly<{
-      family: Exclude<PersonalEncryptionCoverageFamily, "task">;
+      family: PersonalEncryptionCoverageFamily;
       measurement: "measured";
       accessible: bigint;
       plaintextPresent: bigint;
       encryptedCounterpart: bigint;
     }>
   | Readonly<{
+      /** Retained for injected or older family providers during activation. */
       family: "task";
       measurement: "unsupported";
       accessible: bigint;
@@ -305,12 +306,94 @@ export function buildPersonalEncryptionCoverageQuery(input: Readonly<{
            AND event.status = 'active'`;
     case "task":
       return sql`
-        SELECT count(DISTINCT task.id)::text AS accessible,
-               count(DISTINCT task.id) FILTER (
-                 WHERE task.prompt IS NOT NULL
-               )::text AS plaintext_present
-          FROM tasks task
-         WHERE task.owner_id = ${input.userId}`;
+        WITH owned_definition AS (
+          SELECT task.id,
+                 task.content_representation,
+                 task.content_namespace_id,
+                 task.content_revision,
+                 task.crypto_object_id,
+                 task.crypto_access_revision,
+                 task.crypto_required_namespace_fingerprint,
+                 task.crypto_mapping_state,
+                 revision.task_id AS mapped_task_id
+            FROM tasks task
+            LEFT JOIN task_definition_crypto_revisions revision
+              ON revision.task_id = task.id
+             AND revision.content_namespace_id = task.content_namespace_id
+             AND revision.content_revision = task.content_revision
+             AND revision.crypto_object_id = task.crypto_object_id
+             AND revision.required_namespace_fingerprint =
+                   task.crypto_required_namespace_fingerprint
+             AND revision.representation = task.content_representation
+             AND revision.payload_version = 1
+             AND revision.crypto_access_revision <= task.crypto_access_revision
+             AND revision.completion = 'complete'
+             AND revision.disposition = 'mapped'
+             AND revision.failure_code IS NULL
+             AND revision.crypto_completed_at IS NOT NULL
+           WHERE task.owner_id = ${input.userId}
+        ),
+        owned_result AS (
+          SELECT run.id,
+                 run.result_representation,
+                 run.result_text IS NOT NULL OR run.last_error IS NOT NULL
+                   AS ordinary_content_present,
+                 revision.task_run_id AS mapped_task_run_id
+            FROM task_runs run
+            JOIN tasks task ON task.id = run.task_id
+            LEFT JOIN task_run_result_crypto_revisions revision
+              ON revision.task_id = run.task_id
+             AND revision.task_run_id = run.id
+             AND revision.content_namespace_id = run.result_content_namespace_id
+             AND revision.result_revision = run.result_revision
+             AND revision.crypto_object_id = run.result_crypto_object_id
+             AND revision.required_namespace_fingerprint =
+                   run.result_crypto_required_namespace_fingerprint
+             AND revision.representation = run.result_representation
+             AND revision.payload_version = 1
+             AND revision.crypto_access_revision <= run.result_crypto_access_revision
+             AND revision.completion = 'complete'
+             AND revision.disposition = 'mapped'
+             AND revision.failure_code IS NULL
+             AND revision.crypto_completed_at IS NOT NULL
+           WHERE task.owner_id = ${input.userId}
+             AND run.status IN ('completed', 'errored', 'cancelled')
+             AND run.completed_at IS NOT NULL
+        ),
+        definition_coverage AS (
+          SELECT count(*)::bigint AS accessible,
+                 count(*) FILTER (
+                   WHERE content_representation IN ('ordinary', 'dual')
+                 )::bigint AS plaintext_present,
+                 count(*) FILTER (
+                   WHERE mapped_task_id IS NOT NULL
+                     AND content_representation IN ('dual', 'protected')
+                     AND crypto_mapping_state = 'verified'
+                 )::bigint AS encrypted_counterpart
+            FROM owned_definition
+        ),
+        result_coverage AS (
+          SELECT count(*) FILTER (
+                   WHERE ordinary_content_present OR mapped_task_run_id IS NOT NULL
+                 )::bigint AS accessible,
+                 count(*) FILTER (
+                   WHERE ordinary_content_present
+                     AND result_representation IN ('ordinary', 'dual')
+                 )::bigint AS plaintext_present,
+                 count(*) FILTER (
+                   WHERE mapped_task_run_id IS NOT NULL
+                     AND result_representation IN ('dual', 'protected')
+                 )::bigint AS encrypted_counterpart
+            FROM owned_result
+        )
+        SELECT (definition_coverage.accessible + result_coverage.accessible)::text
+                 AS accessible,
+               (definition_coverage.plaintext_present
+                 + result_coverage.plaintext_present)::text AS plaintext_present,
+               (definition_coverage.encrypted_counterpart
+                 + result_coverage.encrypted_counterpart)::text
+                 AS encrypted_counterpart
+          FROM definition_coverage, result_coverage`;
   }
 }
 
@@ -345,14 +428,6 @@ export async function readPersonalEncryptionCoverageFamily(
     throw new Error(
       `Invalid personal encryption coverage aggregate: ${input.family} plaintext exceeds accessible`,
     );
-  }
-  if (input.family === "task") {
-    return Object.freeze({
-      family: "task",
-      measurement: "unsupported",
-      accessible,
-      plaintextPresent,
-    });
   }
   const encryptedCounterpart = count(
     row.encrypted_counterpart,

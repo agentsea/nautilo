@@ -25,7 +25,11 @@ import type {
   PostgresJsBridgeExecutor,
   PostgresJsBridgeRow,
 } from "@nautilo/db";
-import { decodeMessagePayloadV2 } from
+import {
+  decodeMessagePayloadV2,
+  encodeMessagePayloadV2,
+  type MessagePayloadV2,
+} from
   "../../src/message/message-payload-v2.ts";
 import {
   verifyConversationProductPostgresHandle,
@@ -48,16 +52,22 @@ import {
 import { PostgresDomainKeyAuthorityRepository } from
   "../../src/server/delivery/postgres-domain-key-authority.ts";
 import { sharedHistoryExecution } from "../fixtures/room-history-shared-execution.ts";
-import { deriveMessageCryptoObjectIdV2 } from "../../src/message/conversation-repository.ts";
+import { withCertifiedWakePublicationSigner } from
+  "../fixtures/task-publication-signer.ts";
+import { deriveLiveShadowMessageCryptoObjectIdV1, deriveMessageCryptoObjectIdV2 } from "../../src/message/conversation-repository.ts";
+import { deriveTaskContentCryptoObjectIdV1 } from
+  "../../src/task/task-content-repository.ts";
 import {
   DOMAIN_NAMESPACE_BUNDLE_FORMAT_VERSION_V2,
   DOMAIN_NAMESPACE_BUNDLE_INNER_PURPOSE_V2,
+  agentRuntimeObjectSignerKeyIdV1,
   deriveHumanMessageEditCryptoObjectIdV1,
+  encodeObjectAccessManifestV5,
 } from "@nautilo/lattice-crypto/wire";
 import { prepareHumanExistingMessageRepresentationCryptoRevision,
   prepareHumanPeerLiveShadowCryptoRevision } from
   "../../src/message/human-existing-message-representation-crypto.ts";
-import { prepareForegroundRuntimeExistingMessageCryptoRevision } from
+import { prepareDeviceWrappedLiveShadowAgentConversationCryptoRevisionWithDek, prepareForegroundRuntimeExistingMessageCryptoRevision } from
   "../../src/message/agent-conversation-crypto.ts";
 import { readPreparedConversationCryptoRevision, readPreparedConversationCryptoRevisionSnapshot } from
   "../../src/message/conversation-prepared-revision.ts";
@@ -311,7 +321,7 @@ async function subject(
   scheme: "agent" | "human" = "agent",
   repair?: Readonly<{ manifestBytes: Uint8Array; signerPublicKey: Uint8Array | null }>,
   edited?: Readonly<{ payloadBytes: Uint8Array; manifestBytes: Uint8Array;
-    envelopeBytes: Uint8Array; signerPublicKey: Uint8Array; retainedAvailable?: boolean; runtimeRetained?: boolean; sourceRoomId?: string }>,
+    envelopeBytes: Uint8Array; signerPublicKey: Uint8Array; retainedAvailable?: boolean; runtimeRetained?: boolean; wakeSignerAvailable?: boolean; sourceRoomId?: string }>,
   historicalSigner?: Readonly<{
     publicKey: Uint8Array;
     headDigestBase64url: string;
@@ -328,6 +338,7 @@ async function subject(
   const project = createPostgresRoomHistoryShadowProjection({
     product,
     ...(repair === undefined ? {} : { resolveForegroundAgentSigner: () => repair.signerPublicKey?.slice() ?? null }),
+    ...(edited?.runtimeRetained === undefined || edited.wakeSignerAvailable === false ? {} : { resolveTaskWakeAgentSigner: () => repair?.signerPublicKey?.slice() ?? null }),
     ...(restricted === undefined ? {} : { restricted }),
     resolveAuthority: async () => scheme === "agent"
       ? ({ status: "ready" as const, authority: {...authority, roomId: edited?.sourceRoomId ?? authority.roomId} })
@@ -1257,6 +1268,7 @@ describe("M275 selected Room-history Shadow projection", () => {
         human_peer_shadow_operation_id: null,
         shared_agent_shadow_operation_id: operationId,
         shared_agent_shadow_execution_id: null,
+    task_wake_operation_id: null,
         shared_session_id: SESSION_ID,
         shared_message_id: 26,
         shared_object_id: OBJECT_ID,
@@ -2148,5 +2160,620 @@ describe("M275 selected Room-history Shadow projection", () => {
     });
     expect(connection.queries).toHaveLength(2);
     expect(cryptoReads).toBe(0);
+  });
+});
+
+
+describe("Room-owned Task wake history", () => {
+  test("transports a genuine certified wake without permanent signer lookup", async () => {
+    const crypto = new LatticeCrypto(seededRng(913_278));
+    const now = crypto.clock.now();
+    const taskId = "43000000-0000-4000-8000-000000000274";
+    const taskRunId = "31300000-0000-4000-8000-000000000087";
+    const jobDigest = sha256(new TextEncoder().encode(
+      `nautilo/protected-task-run-wake-job/v1\n${taskRunId}`,
+    )).slice(0, 16);
+    jobDigest[6] = (jobDigest[6]! & 0x0f) | 0x50;
+    jobDigest[8] = (jobDigest[8]! & 0x3f) | 0x80;
+    const jobHex = Buffer.from(jobDigest).toString("hex");
+    const jobId = `${jobHex.slice(0, 8)}-${jobHex.slice(8, 12)}-${jobHex.slice(12, 16)}-${jobHex.slice(16, 20)}-${jobHex.slice(20)}`;
+    const operationId = `task-run-delivery-wake:${taskRunId}`;
+    const resultObjectId = deriveTaskContentCryptoObjectIdV1({
+      kind: "run_result", taskId, taskRunId, contentRevision: 1,
+    });
+    const domainId = "wake-domain";
+    const requirement = Object.freeze({ namespaceId: NAMESPACE_ID,
+      domainId, ordinal: 0, operations: ["decrypt", "encrypt"] as const,
+      expectedAccessRevision: 4, expectedPolicyRevision: 3 });
+    const domain = Object.freeze({ domainId, sourceNamespaceId: NAMESPACE_ID,
+      participantDigest: new Uint8Array(32).fill(0x41), participantCount: 1,
+      keyClass: "ai" as const, domainKeyGeneration: 1,
+      authorizationRevision: authorizationRevision(2),
+      headDigest: new Uint8Array(32).fill(0x42),
+      activeNamespaceBindingSetDigest: new Uint8Array(32).fill(0x43),
+      activeNamespaceBindingCount: 1,
+      domainKey: new Uint8Array(32).fill(0x44) });
+    const result = Object.freeze({ taskId, taskRunId,
+      terminalStatus: "completed" as const, contentRevision: 1 as const,
+      objectId: resultObjectId, cryptoAccessRevision: 0,
+      genesisManifestHash: new Uint8Array(32).fill(0x45),
+      signerAgentId: USER_ID,
+      namespace: Object.freeze({ namespaceId: NAMESPACE_ID, domainId,
+        operations: ["decrypt"] as const, expectedAccessRevision: 4,
+        expectedPolicyRevision: 3 }) });
+    const invocation = Object.freeze({ kind: "wake" as const,
+      bindingId: `task-run-output:${taskRunId}`, operationId, roomId: ROOM_ID,
+      sessionId: SESSION_ID, jobId,
+      reference: Object.freeze({ kind: "protected_task_delivery_v1" as const,
+        taskId, taskRunId, bindingId: `task-run-output:${taskRunId}`,
+        resultObjectId,
+        wakeOperationId: operationId }) });
+    await withCertifiedWakePublicationSigner({ crypto, now,
+      deviceSigner: crypto.generateSigningKeyPair(),
+      requestId: `task-wake-authorization:${jobId}`, sessionId: SESSION_ID,
+      roomId: ROOM_ID, requesterHumanId: HUMAN_ID, signerAgentId: USER_ID,
+      policyRevision: 3, domains: [domain],
+      namespaceRequirements: [requirement],
+      foregroundNamespaceRequirements: [requirement], result, invocation,
+      work: { kind: "task.delivery_wake", taskId, taskRunId,
+        contentRevision: 1, jobId,
+        workIdentityHash: new Uint8Array(32).fill(0x46) },
+    }, async ({ evidence, signer, authorizationBytes, certificateBytes }) => {
+      const id = deriveLiveShadowMessageCryptoObjectIdV1({ operationId,
+        sessionId: SESSION_ID, messageId: 28, revision: 0,
+        transcriptOrdinal: 2, authorRole: "assistant" });
+      const prepared = prepareDeviceWrappedLiveShadowAgentConversationCryptoRevisionWithDek({
+        crypto, objectId: id,
+        payload: { role: "assistant", content: "Certified wake" },
+        createdAt: now, objectDek: new Uint8Array(32).fill(0x63),
+        namespace: { namespaceId: NAMESPACE_ID, accessRevision: 4,
+          keyGeneration: 1, headDigest: DIGEST_BYTES,
+          publicationDigest: DIGEST_BYTES,
+          publicationSetDigest: DIGEST_BYTES,
+          audienceFingerprint: DIGEST_BYTES,
+          aiKey: new Uint8Array(32).fill(0x31) },
+        operationId,
+        grant: { grantId: evidence.requestId,
+          grantHash: crypto.hash(authorizationBytes),
+          recipientKeyId: evidence.recipientKeyId },
+        runtime: signer.runtime,
+        signerKeyId: agentRuntimeObjectSignerKeyIdV1(
+          crypto, signer.signerPublicKey,
+        ),
+        signerPublicKey: signer.signerPublicKey,
+        agentAuthorizationRevision: 0,
+        taskRuntimeSigner: { evidence, signer },
+        resolveCurrentAuthorization: () => null,
+      });
+      const snapshot = readPreparedConversationCryptoRevisionSnapshot(prepared).value;
+      const restricted = connection(async statement => {
+        if (!statement.includes('from "object_crypto_access_manifests"')) {
+          throw new Error(`Unexpected permanent signer lookup: ${statement}`);
+        }
+        return [{ object_id: id,
+          signer_evidence_bytes: certificateBytes }];
+      });
+      const { project } = await subject([[productRow(0, 28, {
+        role: "assistant", author_role: "assistant", author_agent_id: USER_ID,
+        content: null, fingerprint: null, source_user_id: USER_ID,
+        source_human_id: null, crypto_object_id: id, lifecycle_object_id: id,
+        shadow_operation_id: null, human_peer_shadow_operation_id: null,
+        shared_agent_shadow_operation_id: null,
+        shared_agent_shadow_execution_id: null,
+        task_wake_operation_id: operationId, shadow_transcript_ordinal: 2,
+        completion: "complete", disposition: "mapped",
+        parity_status: "server_authenticated",
+        turn_room_id: null, turn_namespace_id: null,
+        namespace_generation: null, turn_namespace_access_revision: null,
+        namespace_head_digest: null, namespace_publication_digest: null,
+        namespace_publication_set_digest: null,
+        namespace_audience_fingerprint: null, agent_signer_key_id: null,
+      })]], restricted, "agent", undefined, {
+        payloadBytes: snapshot.object.payloadBytes.ciphertext,
+        manifestBytes: snapshot.access.manifestBytes,
+        envelopeBytes: snapshot.access.envelopeBytes[0],
+        signerPublicKey: signer.signerPublicKey,
+        runtimeRetained: true, wakeSignerAvailable: false,
+      });
+      const projected = await project({ subjectUserId: USER_ID,
+        subjectHumanId: HUMAN_ID, readerDeviceId: DEVICE_ID, roomId: ROOM_ID,
+        selectedCoordinates: [coordinate(28, {
+          role: "assistant", logicalMessageKey: "row:28",
+        })], representationMode: "protected-only" });
+      expect(projected).toMatchObject({ status: "ready",
+        signerEvidence: [{ kind: "task_runtime_signer_certificate",
+          evidenceBytesBase64url: Buffer.from(certificateBytes)
+            .toString("base64url") }] });
+    });
+  });
+
+  test.each(["ready", "retained_missing", "signer_missing", "v4_only", "wrong_agent", "wrong_object", "ordinal_missing"] as const)(
+    "uses signed retained provenance without the originating Task or Job: %s", async (scenario) => {
+      const crypto = new LatticeCrypto(seededRng(913_279));
+      const operationId = "task-run-delivery-wake:31300000-0000-4000-8000-000000000088";
+      const execution = sharedHistoryExecution(crypto, { operationId, sessionId: SESSION_ID,
+        roomId: ROOM_ID, namespaceId: NAMESPACE_ID, humanId: HUMAN_ID, deviceId: DEVICE_ID,
+        agentId: USER_ID, createdAt: 1_800_000_000_000, generation: 2, accessRevision: 5,
+        headDigest: DIGEST_BYTES, publicationDigest: DIGEST_BYTES,
+        publicationSetDigest: DIGEST_BYTES, audienceFingerprint: DIGEST_BYTES });
+      const id = deriveLiveShadowMessageCryptoObjectIdV1({ operationId, sessionId: SESSION_ID,
+        messageId: 28, revision: 0, transcriptOrdinal: 2, authorRole: "assistant" });
+      const prepared = prepareDeviceWrappedLiveShadowAgentConversationCryptoRevisionWithDek({ crypto,
+        objectId: id, payload: { role: "assistant", content: "Room wake response" },
+        createdAt: 1_800_000_000_000, objectDek: new Uint8Array(32).fill(0x63),
+        namespace: { namespaceId: NAMESPACE_ID, accessRevision: 5, keyGeneration: 2,
+          headDigest: DIGEST_BYTES, publicationDigest: DIGEST_BYTES,
+          publicationSetDigest: DIGEST_BYTES, audienceFingerprint: DIGEST_BYTES,
+          aiKey: new Uint8Array(32).fill(0x31) }, operationId,
+        grant: { grantId: "wake-grant", grantHash: DIGEST_BYTES, recipientKeyId: "wake-recipient" },
+        runtime: execution.runtime, signerKeyId: execution.signer.principal.signerKeyId,
+        signerPublicKey: execution.signer.publicKey, agentAuthorizationRevision: 9,
+        resolveCurrentAuthorization: () => null });
+      const snapshot = readPreparedConversationCryptoRevisionSnapshot(prepared).value;
+      const { project, connection } = await subject([[productRow(0, 28, {
+        role: "assistant", author_role: "assistant", author_agent_id: scenario === "wrong_agent" ? HUMAN_ID : USER_ID,
+        content: null, fingerprint: null, source_user_id: USER_ID, source_human_id: null,
+        crypto_object_id: scenario === "wrong_object" ? OBJECT_ID : id, lifecycle_object_id: id,
+        shadow_operation_id: null, human_peer_shadow_operation_id: null,
+        shared_agent_shadow_operation_id: null, shared_agent_shadow_execution_id: null,
+        task_wake_operation_id: operationId, shadow_transcript_ordinal: scenario === "ordinal_missing" ? null : 2,
+        completion: "complete", disposition: "mapped", parity_status: "server_authenticated",
+        turn_room_id: null, turn_namespace_id: null, namespace_generation: null,
+        turn_namespace_access_revision: null, namespace_head_digest: null,
+        namespace_publication_digest: null, namespace_publication_set_digest: null,
+        namespace_audience_fingerprint: null, agent_signer_key_id: null,
+      })]], undefined, "agent", { manifestBytes: snapshot.access.manifestBytes,
+        signerPublicKey: scenario === "signer_missing" ? null : execution.signer.publicKey }, {
+        payloadBytes: snapshot.object.payloadBytes.ciphertext, manifestBytes: snapshot.access.manifestBytes,
+        envelopeBytes: snapshot.access.envelopeBytes[0], signerPublicKey: execution.signer.publicKey,
+        runtimeRetained: scenario !== "retained_missing", wakeSignerAvailable: scenario !== "v4_only",
+      });
+      const result = await project({ subjectUserId: USER_ID, subjectHumanId: HUMAN_ID, readerDeviceId: DEVICE_ID,
+        roomId: ROOM_ID, selectedCoordinates: [coordinate(28, { role: "assistant", logicalMessageKey: "row:28" })],
+        representationMode: "protected-only" });
+      expect(result).toMatchObject(scenario === "ready" ? { status: "ready", records: [{
+        shadowOperationId: operationId, shadowTranscriptOrdinal: 2, representationMode: "protected-only",
+      }] } : scenario === "ordinal_missing" ? { status: "ineligible" } : { status: "unavailable", reason: "projection_corrupt" });
+      if (result.status === "ready") {
+        expect(result.records[0]).not.toHaveProperty("ordinaryPayloadBytesBase64url");
+        expect(result.records[0]).not.toHaveProperty("shadowOperationFamily");
+      }
+      expect(connection.queries.every(query => !/\b(?:tasks|task_runs|jobs|protected_task_run_output_bindings)\b/.test(query.statement))).toBe(true);
+    });
+});
+
+describe("native Task transcript history", () => {
+  const TASK_ID = "43000000-0000-4000-8000-000000000275";
+  const TASK_RUN_ID = "31300000-0000-4000-8000-000000000089";
+
+  async function nativeFixture(
+    representationMode: "ordinary-and-protected" | "protected-only",
+    substituteProof = false,
+    lifecycle: Readonly<{
+      representationMode: "shadow_encryption" | "full_encryption";
+      parityStatus: "server_verified" | "server_authenticated";
+      publicationPolicyRevision: number | null;
+    }> = {
+      representationMode: "shadow_encryption",
+      parityStatus: "server_verified",
+      publicationPolicyRevision: null,
+    },
+    message: Readonly<{
+      payload: MessagePayloadV2;
+      metadataJson: string | null;
+    }> = {
+      payload: { role: "assistant", content: "Native Task transcript" },
+      metadataJson: null,
+    },
+    publicationFamily: "transcript" | "raw_delivery" = "transcript",
+    certified = true,
+    associationOverrides: Record<string, unknown> = {},
+  ) {
+    const crypto = new LatticeCrypto(seededRng(913_280));
+    const operationId = "native-task-transcript-test";
+    const execution = sharedHistoryExecution(crypto, { operationId,
+      sessionId: SESSION_ID, roomId: ROOM_ID, namespaceId: NAMESPACE_ID,
+      humanId: HUMAN_ID, deviceId: DEVICE_ID, agentId: USER_ID,
+      createdAt: 1_800_000_000_000, generation: 1, accessRevision: 4,
+      headDigest: DIGEST_BYTES, publicationDigest: DIGEST_BYTES,
+      publicationSetDigest: DIGEST_BYTES,
+      audienceFingerprint: DIGEST_BYTES });
+    const nativeObjectId = deriveMessageCryptoObjectIdV2({
+      sessionId: SESSION_ID, messageId: 28, revision: 0,
+    });
+    const prepared = prepareDeviceWrappedLiveShadowAgentConversationCryptoRevisionWithDek({
+      crypto, objectId: nativeObjectId,
+      payload: message.payload,
+      createdAt: 1_800_000_000_000,
+      objectDek: new Uint8Array(32).fill(0x63),
+      namespace: { namespaceId: NAMESPACE_ID, accessRevision: 4,
+        keyGeneration: 1, headDigest: DIGEST_BYTES,
+        publicationDigest: DIGEST_BYTES,
+        publicationSetDigest: DIGEST_BYTES,
+        audienceFingerprint: DIGEST_BYTES,
+        aiKey: new Uint8Array(32).fill(0x31) }, operationId,
+      grant: { grantId: "native-task-grant", grantHash: DIGEST_BYTES,
+        recipientKeyId: "native-task-recipient" },
+      runtime: execution.runtime,
+      signerKeyId: execution.signer.principal.signerKeyId,
+      signerPublicKey: execution.signer.publicKey,
+      agentAuthorizationRevision: 9,
+      resolveCurrentAuthorization: () => null,
+    });
+    const snapshot = readPreparedConversationCryptoRevisionSnapshot(prepared).value;
+    const certificateBytes = new Uint8Array([7, 8, 9]);
+    const authorizationHash = crypto.hash(certificateBytes);
+    const manifestBytes = encodeObjectAccessManifestV5({
+      formatVersion: 5, objectId: objectId(nativeObjectId),
+      payloadHash: crypto.hash(snapshot.object.payloadBytes.ciphertext),
+      accessRevision: accessRevision(0), previousManifestHash: null,
+      envelopeHashes: [crypto.hash(snapshot.access.envelopeBytes[0])],
+      signer: execution.signer.principal,
+      signerAuthorizationHash: certified ? authorizationHash : null,
+      hostAuthorizationRevision: authorizationRevision(9),
+      signature: new Uint8Array(64).fill(0x71),
+    });
+    const publicationKey = publicationFamily === "transcript"
+      ? `task-transcript:${TASK_RUN_ID}:fp:v1:one`
+      : `task-run-delivery-message:${TASK_RUN_ID}`;
+    const candidate = productRow(0, 28, {
+      role: message.payload.role, author_role: message.payload.role,
+      author_agent_id: USER_ID,
+      content: representationMode === "protected-only" ? null
+        : message.payload.content,
+      tool_calls: message.payload.toolCalls === undefined
+        ? null : JSON.stringify(message.payload.toolCalls),
+      tool_name: message.payload.toolName ?? null,
+      metadata_json: message.metadataJson,
+      source_user_id: USER_ID, source_human_id: null,
+      crypto_object_id: nativeObjectId, lifecycle_object_id: nativeObjectId,
+      object_id_scheme: "message_v2", transcript_origin: "subagent",
+      append_idempotency_key: publicationKey,
+      session_thread_id: publicationFamily === "transcript"
+        ? "task:one" : "room:destination",
+      shadow_operation_id: null, human_peer_shadow_operation_id: null,
+      shared_agent_shadow_operation_id: null,
+      shared_agent_shadow_execution_id: null, task_wake_operation_id: null,
+      completion: "complete", disposition: "mapped",
+      representation_mode: lifecycle.representationMode,
+      publication_policy_revision: lifecycle.publicationPolicyRevision,
+      parity_status: lifecycle.parityStatus, repair_identity_digest: null,
+    });
+    const restricted = connection(async statement => {
+      if (certified) {
+        if (!statement.includes('from "object_crypto_access_manifests"')) {
+          throw new Error(`Unexpected restricted query: ${statement}`);
+        }
+        return [{ object_id: nativeObjectId,
+          signer_evidence_bytes: substituteProof
+            ? new Uint8Array([7, 8, 10]) : certificateBytes }];
+      }
+      if (!statement.includes("agent_crypto_runtime_signers")) {
+        throw new Error(`Unexpected restricted query: ${statement}`);
+      }
+      return [{ signer_key_id: execution.signer.principal.signerKeyId,
+        publication_bytes: new Uint8Array([3, 2, 1]) }];
+    });
+    const value = await subject([[candidate], [{ task_run_id: TASK_RUN_ID,
+      session_id: SESSION_ID, message_id: 28, published_revision: 0,
+      association_kind: publicationFamily, publication_key: publicationKey,
+      task_id: TASK_ID, graph_thread_id: "task:one",
+      ...associationOverrides }]], restricted,
+    "agent", undefined, {
+      payloadBytes: snapshot.object.payloadBytes.ciphertext,
+      manifestBytes, envelopeBytes: snapshot.access.envelopeBytes[0],
+      signerPublicKey: execution.signer.publicKey, runtimeRetained: true,
+    });
+    return { ...value, certificateBytes, payload: message.payload };
+  }
+
+  test.each(["ordinary-and-protected", "protected-only"] as const)(
+    "projects exact Task provenance and certificate in %s mode", async (mode) => {
+      const value = await nativeFixture(mode);
+      const result = await value.project({ subjectUserId: USER_ID,
+        subjectHumanId: HUMAN_ID, readerDeviceId: DEVICE_ID, roomId: ROOM_ID,
+        selectedCoordinates: [coordinate(28, {
+          role: "assistant", logicalMessageKey: "row:28",
+        })],
+        representationMode: mode });
+      expect(result).toMatchObject({ status: "ready", records: [{
+        kind: "task_runtime", taskId: TASK_ID, taskRunId: TASK_RUN_ID,
+      }], signerEvidence: [{ kind: "task_runtime_signer_certificate",
+        evidenceBytesBase64url: Buffer.from(value.certificateBytes)
+          .toString("base64url") }] });
+      if (result.status !== "ready") throw new Error("Expected ready history");
+      if (mode === "protected-only") {
+        expect(result.records[0]).toHaveProperty(
+          "representationMode", "protected-only",
+        );
+        expect(result.records[0]).not.toHaveProperty(
+          "ordinaryPayloadBytesBase64url",
+        );
+        expect(value.connection.queries[1]!.statement)
+          .not.toContain("sm.content AS content");
+      } else {
+        expect(result.records[0]).toHaveProperty(
+          "ordinaryPayloadBytesBase64url",
+        );
+      }
+    },
+  );
+
+  test.each([
+    ["normal raw", "Native raw Task result"],
+    ["terminal", "Native terminal Task result"],
+  ] as const)(
+    "projects exact certified %s delivery without equating Task and destination threads",
+    async (_kind, content) => {
+      const value = await nativeFixture(
+        "protected-only", false, undefined,
+        { payload: { role: "assistant", content }, metadataJson: null },
+        "raw_delivery",
+      );
+      const result = await value.project({ subjectUserId: USER_ID,
+        subjectHumanId: HUMAN_ID, readerDeviceId: DEVICE_ID, roomId: ROOM_ID,
+        selectedCoordinates: [coordinate(28, {
+          role: "assistant", logicalMessageKey: "row:28",
+        })], representationMode: "protected-only" });
+      expect(result).toMatchObject({ status: "ready", records: [{
+        kind: "task_runtime", taskId: TASK_ID, taskRunId: TASK_RUN_ID,
+      }], signerEvidence: [{ kind: "task_runtime_signer_certificate" }] });
+    },
+  );
+
+  test("preserves permanent-signer raw delivery history", async () => {
+    const value = await nativeFixture(
+      "protected-only", false, undefined,
+      { payload: { role: "assistant", content: "Legacy raw result" },
+        metadataJson: null },
+      "raw_delivery", false,
+    );
+    const result = await value.project({ subjectUserId: USER_ID,
+      subjectHumanId: HUMAN_ID, readerDeviceId: DEVICE_ID, roomId: ROOM_ID,
+      selectedCoordinates: [coordinate(28, {
+        role: "assistant", logicalMessageKey: "row:28",
+      })], representationMode: "protected-only" });
+    expect(result).toMatchObject({ status: "ready", records: [{
+      kind: "task_runtime", taskId: TASK_ID, taskRunId: TASK_RUN_ID,
+    }], signerEvidence: [{ kind: "agent_runtime_publication" }] });
+  });
+
+  test.each([
+    ["wrong association", { association_kind: "transcript" }],
+    ["wrong publication", { publication_key: "task-run-delivery-message:31300000-0000-4000-8000-000000000090" }],
+    ["wrong run", { task_run_id: "31300000-0000-4000-8000-000000000090" }],
+    ["wrong revision", { published_revision: 1 }],
+  ] as const)("rejects raw delivery with %s", async (_scenario, association) => {
+    const value = await nativeFixture(
+      "protected-only", false, undefined,
+      { payload: { role: "assistant", content: "Raw result" },
+        metadataJson: null },
+      "raw_delivery", true, association,
+    );
+    expect(await value.project({ subjectUserId: USER_ID,
+      subjectHumanId: HUMAN_ID, readerDeviceId: DEVICE_ID, roomId: ROOM_ID,
+      selectedCoordinates: [coordinate(28, {
+        role: "assistant", logicalMessageKey: "row:28",
+      })], representationMode: "protected-only" })).toEqual({
+      status: "unavailable", reason: "projection_corrupt",
+      selectedCount: 1, eligibleCount: 1,
+    });
+  });
+
+  test("rejects evidence bytes that disagree with the V5 proof hash", async () => {
+    const value = await nativeFixture("protected-only", true);
+    let rejected = false;
+    try {
+      await value.project({ subjectUserId: USER_ID,
+        subjectHumanId: HUMAN_ID, readerDeviceId: DEVICE_ID, roomId: ROOM_ID,
+        selectedCoordinates: [coordinate(28, {
+          role: "assistant", logicalMessageKey: "row:28",
+        })], representationMode: "protected-only" });
+    } catch { rejected = true; }
+    expect(rejected).toBeTrue();
+  });
+
+  test("reconstructs exact native Assistant and Tool ordinary payload bytes", async () => {
+    const exposure = { version: 1, status: "incomplete" } as const;
+    const toolCallId = "call-native-task-1";
+    const fixtures = [
+      await nativeFixture("ordinary-and-protected", false, undefined, {
+        payload: {
+          role: "assistant", content: "",
+          toolCalls: [{ id: toolCallId, name: "remember", args: {} }],
+          sensitiveMetadata: { nautilo_memory_model_exposure: exposure },
+        },
+        metadataJson: JSON.stringify({
+          nautilo_memory_model_exposure: exposure,
+        }),
+      }),
+      await nativeFixture("ordinary-and-protected", false, undefined, {
+        payload: {
+          role: "tool", content: "Saved", toolName: "remember",
+          sensitiveMetadata: {
+            toolCallId, toolStatus: "success",
+            nautilo_memory_model_exposure: exposure,
+          },
+        },
+        metadataJson: JSON.stringify({
+          nautilo_memory_model_exposure: exposure,
+          nautilo_tool_result: { toolCallId, toolStatus: "success" },
+        }),
+      }),
+    ];
+
+    for (const value of fixtures) {
+      const result = await value.project({ subjectUserId: USER_ID,
+        subjectHumanId: HUMAN_ID, readerDeviceId: DEVICE_ID, roomId: ROOM_ID,
+        selectedCoordinates: [coordinate(28, {
+          role: value.payload.role, logicalMessageKey: "row:28",
+        })], representationMode: "ordinary-and-protected" });
+      if (result.status !== "ready") throw new Error("Expected ready history");
+      const record = result.records[0];
+      if (record === undefined
+        || record.representationMode === "protected-only"
+        || !("ordinaryPayloadBytesBase64url" in record)
+        || typeof record.ordinaryPayloadBytesBase64url !== "string") {
+        throw new Error("Expected ordinary native Task transcript");
+      }
+      const actual = new Uint8Array(Buffer.from(
+        record.ordinaryPayloadBytesBase64url, "base64url",
+      ));
+      const expected = encodeMessagePayloadV2(value.payload);
+      try { expect([...actual]).toEqual([...expected]); } finally {
+        actual.fill(0);
+        expected.fill(0);
+      }
+    }
+  });
+
+  test("rejects malformed present native transcript exposure metadata", async () => {
+    const value = await nativeFixture("ordinary-and-protected", false, undefined, {
+      payload: {
+        role: "assistant",
+        content: "Malformed exposure",
+        sensitiveMetadata: {
+          nautilo_memory_model_exposure: { version: 1, status: "incomplete" },
+        },
+      },
+      metadataJson: JSON.stringify({
+        nautilo_memory_model_exposure: {
+          version: 1,
+          status: "incomplete",
+          unexpected: true,
+        },
+      }),
+    });
+
+    expect(await value.project({
+      subjectUserId: USER_ID,
+      subjectHumanId: HUMAN_ID,
+      readerDeviceId: DEVICE_ID,
+      roomId: ROOM_ID,
+      selectedCoordinates: [coordinate(28, {
+        role: "assistant",
+        logicalMessageKey: "row:28",
+      })],
+      representationMode: "ordinary-and-protected",
+    })).toEqual({
+      status: "unavailable",
+      reason: "projection_corrupt",
+      selectedCount: 1,
+      eligibleCount: 1,
+    });
+  });
+
+  test("withholds native Tool ordinary payloads without canonical correlation", async () => {
+    for (const metadataJson of [null, JSON.stringify({
+      nautilo_tool_result: { toolCallId: "", untrusted: true },
+    })]) {
+      const value = await nativeFixture(
+        "ordinary-and-protected", false, undefined, {
+          payload: { role: "tool", content: "Saved", toolName: "remember",
+            sensitiveMetadata: { toolCallId: "call-native-task-1" } },
+          metadataJson,
+        },
+      );
+      expect(await value.project({ subjectUserId: USER_ID,
+        subjectHumanId: HUMAN_ID, readerDeviceId: DEVICE_ID, roomId: ROOM_ID,
+        selectedCoordinates: [coordinate(28, {
+          role: "tool", logicalMessageKey: "row:28",
+        })], representationMode: "ordinary-and-protected" })).toEqual({
+        status: "unavailable", reason: "projection_corrupt",
+        selectedCount: 1, eligibleCount: 1,
+      });
+    }
+  });
+
+  test("projects only mode-coherent native Task transcript lifecycles", async () => {
+    const full = await nativeFixture("protected-only", false, {
+      representationMode: "full_encryption",
+      parityStatus: "server_authenticated",
+      publicationPolicyRevision: 7,
+    });
+    expect(await full.project({ subjectUserId: USER_ID,
+      subjectHumanId: HUMAN_ID, readerDeviceId: DEVICE_ID, roomId: ROOM_ID,
+      selectedCoordinates: [coordinate(28, {
+        role: "assistant", logicalMessageKey: "row:28",
+      })], representationMode: "protected-only" })).toMatchObject({
+      status: "ready", records: [{ kind: "task_runtime" }],
+    });
+
+    const fullWithOrdinary = await nativeFixture("ordinary-and-protected", false, {
+      representationMode: "full_encryption",
+      parityStatus: "server_authenticated",
+      publicationPolicyRevision: 7,
+    });
+    expect(await fullWithOrdinary.project({ subjectUserId: USER_ID,
+      subjectHumanId: HUMAN_ID, readerDeviceId: DEVICE_ID, roomId: ROOM_ID,
+      selectedCoordinates: [coordinate(28, {
+        role: "assistant", logicalMessageKey: "row:28",
+      })], representationMode: "ordinary-and-protected" })).toEqual({
+      status: "ineligible", selectedCount: 1, eligibleCount: 0,
+    });
+
+    for (const lifecycle of [
+      { representationMode: "shadow_encryption" as const,
+        parityStatus: "server_authenticated" as const,
+        publicationPolicyRevision: null },
+      { representationMode: "full_encryption" as const,
+        parityStatus: "server_verified" as const,
+        publicationPolicyRevision: 7 },
+      { representationMode: "full_encryption" as const,
+        parityStatus: "server_authenticated" as const,
+        publicationPolicyRevision: null },
+    ]) {
+      const value = await nativeFixture("protected-only", false, lifecycle);
+      expect(await value.project({ subjectUserId: USER_ID,
+        subjectHumanId: HUMAN_ID, readerDeviceId: DEVICE_ID, roomId: ROOM_ID,
+        selectedCoordinates: [coordinate(28, {
+          role: "assistant", logicalMessageKey: "row:28",
+        })], representationMode: "protected-only" })).toEqual({
+        status: "ineligible", selectedCount: 1, eligibleCount: 0,
+      });
+    }
+  });
+
+  test("requires the exact TaskRun association before ciphertext access", async () => {
+    const taskRunId = TASK_RUN_ID;
+    const nativeObjectId = deriveMessageCryptoObjectIdV2({
+      sessionId: SESSION_ID, messageId: 28, revision: 0,
+    });
+    const candidate = productRow(0, 28, {
+      role: "assistant", author_role: "assistant", author_agent_id: USER_ID,
+      content: null, source_user_id: USER_ID, source_human_id: null,
+      crypto_object_id: nativeObjectId, lifecycle_object_id: nativeObjectId,
+      object_id_scheme: "message_v2", transcript_origin: "subagent",
+      append_idempotency_key: `task-transcript:${taskRunId}:fp:v1:one`,
+      session_thread_id: "task:one",
+      shadow_operation_id: null, human_peer_shadow_operation_id: null,
+      shared_agent_shadow_operation_id: null,
+      shared_agent_shadow_execution_id: null, task_wake_operation_id: null,
+      completion: "complete", disposition: "mapped",
+      representation_mode: "full_encryption", publication_policy_revision: 7,
+      parity_status: "server_authenticated", repair_identity_digest: null,
+    });
+    const { project, connection, cryptoReads } = await subject([
+      [candidate],
+      [{ task_run_id: taskRunId,
+        session_id: "41000000-0000-4000-8000-000000000276",
+        message_id: 28, published_revision: 0,
+        association_kind: "transcript",
+        publication_key: `task-transcript:${taskRunId}:fp:v1:one`,
+        task_id: "43000000-0000-4000-8000-000000000275",
+        graph_thread_id: "task:one" }],
+    ]);
+    expect(await project({ subjectUserId: USER_ID,
+      subjectHumanId: HUMAN_ID, readerDeviceId: DEVICE_ID, roomId: ROOM_ID,
+      selectedCoordinates: [coordinate(28, {
+        role: "assistant", logicalMessageKey: "row:28",
+      })], representationMode: "protected-only" })).toEqual({
+      status: "unavailable", reason: "projection_corrupt",
+      selectedCount: 1, eligibleCount: 1,
+    });
+    expect(connection.queries.some(query =>
+      query.statement.includes('from "task_run_message_associations"')
+    )).toBeTrue();
+    expect(cryptoReads).toEqual([]);
   });
 });

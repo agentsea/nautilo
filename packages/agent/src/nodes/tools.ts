@@ -174,6 +174,7 @@ type DelegatedLocalExecutionPort = import("../runtime/local-execution-delegation
 type LocalExecutionHistoryPort = import("../tools/local-execution/history").LocalExecutionHistoryPort;
 
 type ProtectedToolComposition = Readonly<{
+  confidential?: true;
   delegatedLocalExecutionPort?: DelegatedLocalExecutionPort | undefined;
   localExecutionHistoryPort?: LocalExecutionHistoryPort | undefined;
   humanTerminalAdmissionPort?: HumanTerminalAdmissionPort | undefined;
@@ -442,6 +443,9 @@ async function invokeToolCall(
       ...(protectedComposition.fullEncryptionOnly === true
         ? { fullEncryptionOnly: true }
         : {}),
+      ...(protectedComposition.confidential === true
+        ? { confidential: true }
+        : {}),
       ...(protectedComposition.personalTaskControls === true && !getCapabilityFundingSession()
         ? { personalTaskControls: true }
         : {}),
@@ -658,6 +662,8 @@ export async function toolsNode(
  * already-bound capability into the existing admission session.
  */
 export function createToolsNode(input: Readonly<{
+  /** Trusted graph-owner privacy policy; never read from graph state or tool arguments. */
+  confidential?: true;
   personalFunding?: boolean;
   personalTaskControls?: boolean;
   personalTaskRunnableModelIds?: readonly string[];
@@ -689,6 +695,7 @@ export function createToolsNode(input: Readonly<{
       && (capabilityFunding === undefined || capabilityFunding.parentFundingKind === "server")
     ) {
       return executeToolsNode(state, config, {
+        ...(input.confidential === true ? { confidential: true } : {}),
         personalFunding: true,
         ...(input.personalTaskControls === true
           ? { personalTaskControls: true }
@@ -711,6 +718,7 @@ export function createToolsNode(input: Readonly<{
     const projection = input.protectedMemoryProjectionPortForState?.(state);
     const fullEncryptionOnly = input.fullEncryptionOnlyForState?.(state) === true;
     return executeToolsNode(state, config, {
+      ...(input.confidential === true ? { confidential: true } : {}),
       ...(input.personalFunding === true ? { personalFunding: true } : {}),
       delegatedLocalExecutionPort: input.delegatedLocalExecutionPortForState
         ? input.delegatedLocalExecutionPortForState(state) : getCurrentLocalExecutionDelegation(),

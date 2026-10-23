@@ -79,12 +79,13 @@ export const IMAGE_EXTENSIONS = new Set([
   ".webp",
 ]);
 
-export const DOCUMENT_EXTENSIONS = new Set([
-  ".pdf",
-  ".docx",
-  ".xlsx",
-  ".pptx",
-]);
+export const DOCUMENT_MIME_TYPES: Readonly<Record<string, string>> = {
+  ".pdf": "application/pdf",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+};
+export const DOCUMENT_EXTENSIONS = new Set(Object.keys(DOCUMENT_MIME_TYPES));
 
 export const ARCHIVE_EXTENSIONS = new Set([
   ".zip",

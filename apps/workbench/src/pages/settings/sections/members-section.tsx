@@ -133,8 +133,7 @@ function inviteRoleLabel(inv: InviteSummary): string {
 function isPublicJoinEligible(inv: InviteSummary): boolean {
   return inv.kind === "server"
     && inv.codeAvailable
-    && isActiveInvite(inv)
-    && (inv.targetRoleSlug === "community" || inv.targetRoleSlug === "guest");
+    && isActiveInvite(inv);
 }
 
 function ttlIndexToExpiresAt(idx: number): string | null {
@@ -707,7 +706,7 @@ export function InviteManagement({
           {canManagePublicJoin ? (
             <SubSectionCard
               title="Public /join invite"
-              description="Choose the active Community or Guest invite used by the server's canonical /join address."
+              description="Choose an active shareable server invite used by the server's canonical /join address."
               actions={publicJoin?.inviteId ? (
                 <Button
                   variant="secondary"
@@ -740,7 +739,7 @@ export function InviteManagement({
                   </a>
                   {publicJoinEligibleInvites.length === 0 ? (
                     <p className="text-xs text-foreground-muted">
-                      Create an active Community or Guest invite to make /join available.
+                      Create an active shareable server invite to make /join available.
                     </p>
                   ) : null}
                 </div>

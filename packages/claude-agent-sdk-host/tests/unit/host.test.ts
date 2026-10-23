@@ -253,6 +253,7 @@ describe("Claude Agent SDK host execution adapter", () => {
     expect((await observations.next()).value).toMatchObject({ kind: "initialized" });
     const steering = handle.steer("Change direction");
     releaseResult.resolve();
+    expect((await observations.next()).value).toEqual({ kind: "output_message_started" });
     expect((await observations.next()).value).toEqual({ kind: "output_delta", text: "redirected" });
     expect((await observations.next()).value).toEqual({ kind: "result", outcome: "succeeded" });
     expect((await observations.next()).value).toEqual({ kind: "settled", settlement: "eof", afterResult: true });
@@ -345,11 +346,24 @@ describe("Claude Agent SDK host execution adapter", () => {
       ]),
     }).launch(request());
     expect(await collect(handle.observations)).toEqual([
+      { kind: "output_message_started" },
       { kind: "output_delta", text: "I will use a tool." },
       { kind: "activity", activity: "tool", state: "requested", toolName: "Bash" },
+      { kind: "output_message_started" },
       { kind: "output_delta", text: "Redirected work complete." },
       { kind: "result", outcome: "succeeded" },
       { kind: "settled", settlement: "eof", afterResult: true },
+    ]);
+  });
+
+  test("rejects a root-message boundary after the SDK result", async () => {
+    const handle = await createHost({ query: () => fakeQuery([
+      messageStart(), partial("answer"), success("answer"), messageStart(),
+    ]) }).launch(request());
+    expect(await collect(handle.observations)).toEqual([
+      { kind: "output_message_started" }, { kind: "output_delta", text: "answer" },
+      { kind: "result", outcome: "succeeded" },
+      { kind: "settled", settlement: "rejected", afterResult: true },
     ]);
   });
 

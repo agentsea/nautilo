@@ -13,7 +13,7 @@ runtime entrypoints use the compiled bundles without a workspace install.
 
 The standalone design fixture remains separate from the canonical app:
 
-From the repository root (Bun 1.3.11):
+From the repository root (Bun 1.4.4):
 
 ```sh
 bun install --frozen-lockfile

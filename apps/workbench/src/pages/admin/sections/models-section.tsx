@@ -350,18 +350,9 @@ export function ModelsSection() {
     [utilityModels],
   );
 
-  const directCatalog = useMemo(
-    () => new Map(config?.catalogModels?.map((model) => [model.id, model]) ?? []),
-    [config?.catalogModels],
-  );
-  const isDirectlyAvailable = (model: AssistantModelSummary) =>
-    isSelectableModel(model) && (directCatalog.get(model.id)?.directAvailability ?? "selectable") === "selectable";
-  const backgroundUtilityModels = selectableUtilityModels.filter(isDirectlyAvailable);
-  const memoryReviewModels = selectableModels.filter(isDirectlyAvailable);
-
   const conductorOptions = (() => {
-    const recommended = backgroundUtilityModels.filter((m) => RECOMMENDED_CONDUCTOR_IDS.has(m.id));
-    const rest = backgroundUtilityModels.filter((m) => !RECOMMENDED_CONDUCTOR_IDS.has(m.id));
+    const recommended = selectableUtilityModels.filter((m) => RECOMMENDED_CONDUCTOR_IDS.has(m.id));
+    const rest = selectableUtilityModels.filter((m) => !RECOMMENDED_CONDUCTOR_IDS.has(m.id));
     return { recommended, rest };
   })();
 
@@ -396,17 +387,12 @@ export function ModelsSection() {
   );
   const modelsForPurpose = (purpose: "chat-tools" | "chat") =>
     purpose === "chat-tools" ? models : utilityModels;
-  const unavailableRow = (id: string, purpose: "chat-tools" | "chat" = "chat-tools", background = false) => {
+  const unavailableRow = (id: string, purpose: "chat-tools" | "chat" = "chat-tools") => {
     const row = modelsForPurpose(purpose).find((model) => model.id === id);
-    if (!row) return null;
-    if (!isSelectableModel(row)) return row;
-    const direct = directCatalog.get(id);
-    return background && direct?.directAvailability && direct.directAvailability !== "selectable"
-      ? { ...row, unavailableReason: direct.directUnavailableReason ?? "The original provider is not configured for this background role." }
-      : null;
+    return row && !isSelectableModel(row) ? row : null;
   };
-  const unavailableReason = (id: string, purpose: "chat-tools" | "chat" = "chat-tools", background = false) =>
-    unavailableRow(id, purpose, background)?.unavailableReason ?? "This model is not runnable now.";
+  const unavailableReason = (id: string, purpose: "chat-tools" | "chat" = "chat-tools") =>
+    unavailableRow(id, purpose)?.unavailableReason ?? "This model is not runnable now.";
 
   const dirty =
     config !== null &&
@@ -540,7 +526,7 @@ export function ModelsSection() {
                     Prefer Surplus
                   </label>
                   <p className="mt-1 text-[11px] text-foreground-muted">
-                    For supported text calls, try Surplus Intelligence first using the admitted server or personal key, then eligible direct providers and the model fallback chain within that funding source. Surplus and its selected seller receive request content, and actual pricing varies by offer.
+                    For supported models, try Surplus Intelligence before the matching direct provider. Surplus can be the only configured provider. For ordinary marketplace routes, a confirmed no-seller refusal retries the same model without a provider pin, then tries its original provider. Server-first funding can then try your permitted personal keys in the same order; personal-first stays personal. Each attempt has separate costs. Accepted media jobs keep their creating account. Surplus and its selected seller receive request content, and actual pricing varies by offer.
                   </p>
                 </div>
                 <input
@@ -619,7 +605,7 @@ export function ModelsSection() {
                 onChange={(e) => patch({ conductorModel: e.target.value })}
               >
                 <option value="">— Automatic auxiliary model —</option>
-                {unavailableRow(draft.conductorModel, "chat", true) ? (
+                {unavailableRow(draft.conductorModel, "chat") ? (
                   <option value={draft.conductorModel} disabled>
                     {modelLabel(utilityModels, draft.conductorModel)} (Unavailable)
                   </option>
@@ -641,9 +627,9 @@ export function ModelsSection() {
                   ))}
                 </optgroup>
               </select>
-              {unavailableRow(draft.conductorModel, "chat", true) ? (
+              {unavailableRow(draft.conductorModel, "chat") ? (
                 <p className="text-[11px] text-[var(--warning)]">
-                  {unavailableReason(draft.conductorModel, "chat", true)}
+                  {unavailableReason(draft.conductorModel, "chat")}
                 </p>
               ) : null}
             </div>
@@ -660,16 +646,16 @@ export function ModelsSection() {
                 value={draft.memoryReviewModel ?? ""} disabled={!canManage}
                 onChange={(e) => patch({ memoryReviewModel: e.target.value || null })}>
                 <option value="">— Inherit Conductor model —</option>
-                {unavailableRow(draft.memoryReviewModel ?? "", "chat-tools", true) ? (
+                {unavailableRow(draft.memoryReviewModel ?? "", "chat-tools") ? (
                   <option value={draft.memoryReviewModel ?? ""} disabled>
                     {modelLabel(models, draft.memoryReviewModel ?? "")} (Unavailable)
                   </option>
                 ) : null}
-                {memoryReviewModels.map((m) => <option key={m.id} value={m.id}>{m.displayName}</option>)}
+                {selectableModels.map((m) => <option key={m.id} value={m.id}>{m.displayName}</option>)}
               </select>
-              {unavailableRow(draft.memoryReviewModel ?? "", "chat-tools", true) ? (
+              {unavailableRow(draft.memoryReviewModel ?? "", "chat-tools") ? (
                 <p className="text-[11px] text-[var(--warning)]">
-                  {unavailableReason(draft.memoryReviewModel ?? "", "chat-tools", true)}
+                  {unavailableReason(draft.memoryReviewModel ?? "", "chat-tools")}
                 </p>
               ) : null}
             </div>
@@ -744,20 +730,20 @@ export function ModelsSection() {
                 onChange={(e) => patch({ stenographerModel: e.target.value })}
               >
                 <option value="">— Inherit Conductor model —</option>
-                {unavailableRow(draft.stenographerModel, "chat", true) ? (
+                {unavailableRow(draft.stenographerModel, "chat") ? (
                   <option value={draft.stenographerModel} disabled>
                     {modelLabel(utilityModels, draft.stenographerModel)} (Unavailable)
                   </option>
                 ) : null}
-                {backgroundUtilityModels.map((m) => (
+                {selectableUtilityModels.map((m) => (
                   <option key={m.id} value={m.id}>
                     {m.displayName}
                   </option>
                 ))}
               </select>
-              {unavailableRow(draft.stenographerModel, "chat", true) ? (
+              {unavailableRow(draft.stenographerModel, "chat") ? (
                 <p className="text-[11px] text-[var(--warning)]">
-                  {unavailableReason(draft.stenographerModel, "chat", true)}
+                  {unavailableReason(draft.stenographerModel, "chat")}
                 </p>
               ) : null}
             </div>
@@ -783,20 +769,20 @@ export function ModelsSection() {
                 onChange={(e) => patch({ reflectionModel: e.target.value })}
               >
                 <option value="">— Inherit Stenographer model —</option>
-                {unavailableRow(draft.reflectionModel, "chat", true) ? (
+                {unavailableRow(draft.reflectionModel, "chat") ? (
                   <option value={draft.reflectionModel} disabled>
                     {modelLabel(utilityModels, draft.reflectionModel)} (Unavailable)
                   </option>
                 ) : null}
-                {backgroundUtilityModels.map((m) => (
+                {selectableUtilityModels.map((m) => (
                   <option key={m.id} value={m.id}>
                     {m.displayName}
                   </option>
                 ))}
               </select>
-              {unavailableRow(draft.reflectionModel, "chat", true) ? (
+              {unavailableRow(draft.reflectionModel, "chat") ? (
                 <p className="text-[11px] text-[var(--warning)]">
-                  {unavailableReason(draft.reflectionModel, "chat", true)}
+                  {unavailableReason(draft.reflectionModel, "chat")}
                 </p>
               ) : null}
             </div>

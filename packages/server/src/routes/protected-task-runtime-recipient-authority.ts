@@ -1,3 +1,6 @@
+import { parseTaskHistoricalRepairProvenanceV1 } from "@nautilo/lattice-bridge";
+import { validateCurrentTaskDefinitionIdentity } from "./protected-task-runtime-definition-identity";
+import { isTaskExecutionWorkKind } from "@nautilo/runtime";
 import {
   and,
   createPostgresJsBridgeConnection,
@@ -11,9 +14,9 @@ import {
   type TaskRun,
 } from "@nautilo/db";
 import { LatticeCrypto } from "@nautilo/lattice-crypto";
-import { deriveTaskContentCryptoObjectIdV1 } from "@nautilo/lattice-bridge";
+import { taskContentRevisionObjectIdV1 } from "@nautilo/lattice-bridge";
 import {
-  decodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  decodeTaskRuntimeBackgroundAuthorizationRequestBase,
   destroyTaskRuntimeBackgroundAuthorizationRequestV1,
 } from "@nautilo/lattice-crypto/background";
 import {
@@ -209,8 +212,8 @@ function exactAuthorityRecord(
     record.snapshot.credentialSubject.runtimeVersion === 1 &&
     record.snapshot.workId === occurrence.run.id &&
     record.snapshot.namespaceId === occurrence.task.contentNamespaceId &&
-    record.workKind === "task.execute" &&
-    record.purpose === "task.execute" &&
+    isTaskExecutionWorkKind(record.workKind) &&
+    record.purpose === record.workKind &&
     record.processorAuthorizationRevision === null &&
     record.expectedDomainEpoch !== null &&
     Number.isSafeInteger(record.expectedDomainEpoch) &&
@@ -218,13 +221,10 @@ function exactAuthorityRecord(
     Number.isSafeInteger(record.expectedPolicyRevision) &&
     record.expectedPolicyRevision > 0 &&
     record.finishedAt === null &&
-    occurrence.task.cryptoAccessRevision === 0 &&
+    Number.isSafeInteger(occurrence.task.cryptoAccessRevision) && occurrence.task.cryptoAccessRevision >= 0 &&
     occurrence.task.cryptoObjectId ===
-      deriveTaskContentCryptoObjectIdV1({
-        kind: "definition",
-        taskId: occurrence.task.id,
-        contentRevision: occurrence.task.contentRevision,
-      }) &&
+      taskContentRevisionObjectIdV1({ coordinate: { kind: "definition", taskId: occurrence.task.id, contentRevision: occurrence.task.contentRevision },
+      namespaceId: occurrence.task.contentNamespaceId, historicalRepair: occurrence.task.definitionHistoricalRepair == null ? null : parseTaskHistoricalRepairProvenanceV1(occurrence.task.definitionHistoricalRepair) }) &&
     namespaces.length > 0 &&
     namespaces.every(
       (requirement, index) =>
@@ -315,7 +315,10 @@ function exactBoundRecord(
     === record.snapshot.descriptorDigest;
   digest.fill(0);
   if (!exactDigest) return false;
-  const request = decodeTaskRuntimeBackgroundAuthorizationRequestV1(descriptor);
+  const request = decodeTaskRuntimeBackgroundAuthorizationRequestBase(
+    crypto,
+    descriptor,
+  );
   if (request === null) return false;
   try {
     return request.requestId === record.snapshot.requestId
@@ -467,7 +470,8 @@ async function validateLockedCurrentTaskRun(
       runRow.result_crypto_required_namespace_fingerprint,
     resultCryptoMappingState: runRow.result_crypto_mapping_state,
   };
-  return isCurrentProtectedTaskRunForGrant({
+  return await validateCurrentTaskDefinitionIdentity({ product: input.product, task: input.occurrence.task })
+    && isCurrentProtectedTaskRunForGrant({
     occurrence: input.occurrence,
     task,
     run,

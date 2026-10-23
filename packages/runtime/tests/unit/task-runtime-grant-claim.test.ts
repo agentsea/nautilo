@@ -14,10 +14,20 @@ import {
 } from "@nautilo/lattice-crypto";
 import {
   createTaskRuntimeBackgroundAuthorizationRequestV1,
+  createTaskRuntimeBackgroundAuthorizationRequestV2,
+  createTaskRuntimeSignerAuthorizationV1,
+  decodeTaskRuntimeBackgroundAuthorizationRequestBase,
+  decodeTaskRuntimeBackgroundAuthorizationRequestV2,
+  decodeTaskRuntimeBackgroundAuthorizationResponseV2,
   decodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  encodeTaskRuntimeBackgroundAuthorizationResponseV2,
+  isTaskRuntimeBackgroundAuthorizationRequestV2Carrier,
+  withTaskRuntimeTemporarySignerV1,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV2,
   destroyTaskRuntimeBackgroundAuthorizationRequestV1,
 } from "@nautilo/lattice-crypto/background";
 import {
+  agentRuntimeObjectSignerKeyIdV1,
   destroyDomainForegroundAuthorizationPlanV2,
   parseDomainForegroundAuthorizationPlanV2,
   serializeDomainForegroundAuthorizationV2,
@@ -25,11 +35,12 @@ import {
   type DomainForegroundAuthorizationPublicCurrentAuthorityV2,
 } from "@nautilo/lattice-crypto/wire";
 import type { PersistJobPayload, StartProtectedTaskRunInput } from "@nautilo/db";
-import { deriveTaskContentCryptoObjectIdV1 } from "@nautilo/lattice-bridge";
+import { deriveTaskContentCryptoObjectIdV1, taskContentRevisionObjectIdV1 } from "@nautilo/lattice-bridge";
 import type { TaskScopeMemoryBinding } from "@nautilo/lattice-bridge/server";
 
 import type { JobExecutor } from "../../src/job";
 import {
+  cancelBackgroundAuthorizationRequest,
   completeBackgroundAuthorizationRequest,
   createBackgroundAuthorizationTaskRuntimeRequestV3,
 } from "../../src/protected-execution/background-authorization/lifecycle";
@@ -71,6 +82,7 @@ const OPEN_ROOM = "40000000-0000-4000-8000-000000000024";
 const TASK = "50000000-0000-4000-8000-000000000005";
 const RUN = "60000000-0000-4000-8000-000000000006";
 const JOB = "61000000-0000-4000-8000-000000000006";
+const PAUSE_REQUEST = "62000000-0000-4000-8000-000000000006";
 const NAMESPACE = "70000000-0000-4000-8000-000000000007";
 const SCOPE = "80000000-0000-4000-8000-000000000008";
 const MEMORY_ROOM = "90000000-0000-4000-8000-000000000009";
@@ -263,6 +275,31 @@ function parkedPreparation() {
   return { occurrence: parkedOccurrence, stableIdentity: stable, initialRecord: initial };
 }
 
+function humanParkedPreparation(
+  resumeWorkKind: "task.approval_resume" | "task.await_reply_resume",
+  resumeAcceptanceId = "human-acceptance-exact",
+  executionSegment = 2,
+) {
+  const parked = parkedPreparation();
+  const stableIdentity = Object.freeze({
+    ...parked.stableIdentity,
+    executionSegment,
+    resumeContinuationFingerprint: null,
+    resumeAcceptanceId,
+    resumeWorkKind,
+  });
+  return Object.freeze({
+    occurrence: parked.occurrence,
+    stableIdentity,
+    initialRecord: Object.freeze({
+      ...parked.initialRecord,
+      idempotencyKey: taskRuntimeStableIdempotencyKey(stableIdentity),
+      workKind: resumeWorkKind,
+      purpose: resumeWorkKind,
+    }),
+  });
+}
+
 function parkedPersistPayload(
   reference: ParkedTaskRuntimeGrantClaimPlan["reference"],
 ): PersistJobPayload {
@@ -341,7 +378,12 @@ type CompletionCas = (
   repository: InMemoryBackgroundAuthorizationRepository,
 ) => Promise<BackgroundAuthorizationCasResult>;
 
-async function fixture() {
+async function fixture(
+  requestWorkKind: "task.execute" | "task.approval_resume" | "task.await_reply_resume" = "task.execute",
+  authorizationLifetimeMs = 60_000,
+  certifiedSigner = false,
+  certifiedExecutionSegment = 1,
+) {
   const crypto = new LatticeCrypto();
   const signing = crypto.generateSigningKeyPair();
   const repository = new InMemoryBackgroundAuthorizationRepository();
@@ -367,6 +409,17 @@ async function fixture() {
     humanActorId: REQUESTOR,
     deviceId: "task-runtime-device",
   });
+  const currentIssuer = Object.freeze({
+    humanId: REQUESTOR,
+    deviceId: "task-runtime-device",
+    deviceGeneration: 2,
+    serverInstanceId: "task-runtime-server",
+    lineageGeneration: 1,
+    epoch: 1,
+    securityRevision: 6,
+    headDigest: bytes(6),
+    signingPublicKeyHash: digest(signing.publicKey),
+  });
   let currentAuthority: DomainForegroundAuthorizationPublicCurrentAuthorityV2
     | null = null;
   let provenSourceRoomId = ROOM;
@@ -387,11 +440,19 @@ async function fixture() {
   let substitutePlan: ((plan: TaskRuntimeGrantClaimPlan) =>
     TaskRuntimeGrantClaimPlan) | null = null;
   let completionCas: CompletionCas | null = null;
+  let failureCas: CompletionCas | null = null;
   const startInputs: StartProtectedTaskRunInput[] = [];
   const publishedResults: string[] = [];
   const openedOccurrences: ProtectedTaskRunningOccurrence[] = [];
+  const certifiedSignerLoans: string[] = [];
   const publishedOccurrences: ProtectedTaskRunningOccurrence[] = [];
   const authorityOccurrences: ProtectedTaskAuthorityOccurrence[] = [];
+  const authorizationRequests: Array<Readonly<{
+    requestorId: string;
+    requestId: string;
+    recipientGeneration: number;
+  }>> = [];
+  let authorizationRequestFailure = false;
   let startResult: "started" | "stale" = "started";
   const trackedRepository: BackgroundAuthorizationTaskRuntimeReplacementRepository = {
     create: (record) => repository.create(record),
@@ -419,6 +480,11 @@ async function fixture() {
       }
       if (input.next.snapshot.state === "completed" && completionCas !== null) {
         return completionCas(input, repository);
+      }
+      if (input.next.snapshot.state === "terminal_failure"
+        && input.next.snapshot.terminalReason === "provider_outcome_unknown"
+        && failureCas !== null) {
+        return failureCas(input, repository);
       }
       return repository.compareAndSwap(input);
     },
@@ -455,7 +521,7 @@ async function fixture() {
       kind: "protected_task_run_v1",
       taskId: TASK,
       taskRunId: RUN,
-      inputObjectId: INPUT_OBJECT,
+      inputObjectId: value.task.cryptoObjectId,
       resultObjectId: RESULT_OBJECT,
       authorizationRequestId: REQUEST,
       policyRevision: 7,
@@ -476,7 +542,8 @@ async function fixture() {
     },
     recipientAttempt: () => ({
       recipientKeyId: "task-runtime-recipient",
-      expiresAt: NOW + 60_000,
+      expiresAt: NOW + authorizationLifetimeMs,
+      ...(certifiedSigner ? { signerAgentId: AGENT } : {}),
     }),
     buildRequest: ({ attempt, binding: currentBinding, authority }) => {
       builtRecipientKeys.push(Buffer.from(attempt.recipientPublicKey)
@@ -523,11 +590,11 @@ async function fixture() {
         recipientAuthorized: true,
         domains: grantPlan.domains,
       };
-      return createTaskRuntimeBackgroundAuthorizationRequestV1({
+      const baseRequest = createTaskRuntimeBackgroundAuthorizationRequestV1({
         requestId: REQUEST,
         workId: RUN,
-        workKind: "task.execute",
-        workPurpose: "task.execute",
+        workKind: requestWorkKind,
+        workPurpose: requestWorkKind,
         recipientGeneration: attempt.recipientGeneration,
         episodeId: grantPlan.sessionId,
         sourceRoomId: authority.sourceRoomId,
@@ -537,6 +604,26 @@ async function fixture() {
         issuedAt: NOW,
         deadlineAt: attempt.expiresAt,
       });
+      if (!certifiedSigner) return baseRequest;
+      const temporary = attempt.signer;
+      if (temporary === undefined) {
+        throw new Error("temporary signer unavailable");
+      }
+      try {
+        return createTaskRuntimeBackgroundAuthorizationRequestV2(crypto, {
+          baseRequest,
+          work: {taskId: TASK, taskRunId: RUN, inputObjectId: INPUT_OBJECT,
+            resultObjectId: RESULT_OBJECT, executionSegment: certifiedExecutionSegment,
+            workIdentityHash: initialRecord().workIdentityHash},
+          signer: temporary,
+          deviceGroupHead: {serverInstanceId: "task-runtime-server",
+            lineageGeneration: 1, epoch: 1, headDigest: bytes(6),
+            signingPublicKeyHash: digest(signing.publicKey)},
+          namespaceRequirements: authority.namespaceRequirements,
+        });
+      } finally {
+        destroyTaskRuntimeBackgroundAuthorizationRequestV1(baseRequest);
+      }
     },
     openTransientInput: async ({ occurrence: currentOccurrence, reference,
       domains, evidence, signal }) => {
@@ -549,6 +636,14 @@ async function fixture() {
       expect(evidence.result.taskRunId).toBe(RUN);
       expect(reference.taskRunId).toBe(RUN);
       expect(evidence.namespaceRequirements).toEqual(currentNamespaceRequirements);
+      if (certifiedSigner) {
+        await withTaskRuntimeTemporarySignerV1(evidence, temporary => {
+          certifiedSignerLoans.push(agentRuntimeObjectSignerKeyIdV1(
+            crypto,
+            temporary.signerPublicKey,
+          ));
+        });
+      }
       return { message: SENTINEL };
     },
     publishResult: async ({ occurrence: currentOccurrence, reference, payload,
@@ -584,7 +679,7 @@ async function fixture() {
           return await use({
             foreground: borrowed,
             namespaceRequirements: currentNamespaceRequirements,
-          }, heldClaimRepository, claimedAt, NOW + 60_000);
+          }, heldClaimRepository, claimedAt, NOW + authorizationLifetimeMs);
         } finally {
           destroyAuthority(borrowed);
           authorityLocksHeld = false;
@@ -599,10 +694,21 @@ async function fixture() {
           return await use({
             foreground: borrowed,
             namespaceRequirements: currentNamespaceRequirements,
+            ...(certifiedSigner ? { currentIssuer } : {}),
           });
         } finally {
           destroyAuthority(borrowed);
           authorityLocksHeld = false;
+        }
+      },
+      authorizationRequested: async (currentOccurrence, record) => {
+        authorizationRequests.push(Object.freeze({
+          requestorId: currentOccurrence.task.requestorId,
+          requestId: record.snapshot.requestId,
+          recipientGeneration: record.snapshot.recipientGeneration,
+        }));
+        if (authorizationRequestFailure) {
+          throw new Error("synthetic authorization wake failure");
         }
       },
     });
@@ -653,6 +759,7 @@ async function fixture() {
     createCoordinator,
     binding,
     recipientAuthority,
+    currentIssuer,
     bindRecipient,
     builtRecipientKeys,
     plan,
@@ -665,8 +772,10 @@ async function fixture() {
     startInputs,
     publishedResults,
     openedOccurrences,
+    certifiedSignerLoans,
     publishedOccurrences,
     authorityOccurrences,
+    authorizationRequests,
     setStartResult: (value: "started" | "stale") => { startResult = value; },
     setClock: (value: number) => { clock = value; },
     setBeforeClaimAuthorityUse: (value: (() => void) | null) => {
@@ -685,6 +794,10 @@ async function fixture() {
     },
     setSubstituteGet: (value: typeof substituteGet) => { substituteGet = value; },
     setCompletionCas: (value: CompletionCas | null) => { completionCas = value; },
+    setFailureCas: (value: CompletionCas | null) => { failureCas = value; },
+    setAuthorizationRequestFailure: (value: boolean) => {
+      authorizationRequestFailure = value;
+    },
   };
 }
 
@@ -694,7 +807,8 @@ async function acceptGrant(value: Fixture): Promise<void> {
     || record.snapshot.recipient === null || record.authoritySet === undefined) {
     throw new Error("prepared Task Runtime record is unavailable");
   }
-  const request = decodeTaskRuntimeBackgroundAuthorizationRequestV1(
+  const request = decodeTaskRuntimeBackgroundAuthorizationRequestBase(
+    value.crypto,
     record.descriptorBytes,
   );
   const plan = value.getPlan();
@@ -705,12 +819,36 @@ async function acceptGrant(value: Fixture): Promise<void> {
     committerDeviceSigningPrivateKey: value.signing.privateKey,
     recipientEncryptionPublicKey: request.recipientPublicKey,
   });
-  const responseBytes = serializeDomainForegroundAuthorizationV2(authorization);
+  const authorizationBytes = serializeDomainForegroundAuthorizationV2(
+    authorization,
+  );
+  const requestV2 = isTaskRuntimeBackgroundAuthorizationRequestV2Carrier(
+    record.descriptorBytes,
+  ) ? decodeTaskRuntimeBackgroundAuthorizationRequestV2(
+      value.crypto,
+      record.descriptorBytes,
+    ) : null;
+  let certificateBytes: Uint8Array | undefined;
+  let responseBytes = authorizationBytes;
+  if (requestV2 !== null) {
+    certificateBytes = createTaskRuntimeSignerAuthorizationV1(value.crypto, {
+      requestBytes: record.descriptorBytes,
+      authorizationBytes,
+      expectedAuthorizationPlanBytes: request.authorizationPlanBytes,
+      expectedAuthorizationHash: digest(authorizationBytes),
+      issuerSigningPrivateKey: value.signing.privateKey,
+    });
+    responseBytes = encodeTaskRuntimeBackgroundAuthorizationResponseV2({
+      authorizationBytes,
+      certificateBytes,
+    });
+  }
   const responseHash = digest(responseBytes);
+  const authorizationHash = digest(authorizationBytes);
   const accepted = await value.trackedRepository.acceptVerifiedResponse({
     acceptedAt: NOW + 2,
-    response: {
-      formatVersion: 3,
+    response: requestV2 === null ? {
+      formatVersion: 3 as const,
       kind: "runtime",
       requestId: REQUEST,
       descriptorHash: digest(record.descriptorBytes),
@@ -719,22 +857,50 @@ async function acceptGrant(value: Fixture): Promise<void> {
       recipientKeyId: request.recipientKeyId,
       recipientPublicKey: request.recipientPublicKey,
       workId: RUN,
-      workKind: "task.execute",
-      purpose: "task.execute",
+      workKind: record.workKind,
+      purpose: record.purpose,
       authoritySet: record.authoritySet as BackgroundAuthorizationTaskRuntimeRecordV3["authoritySet"],
       responseBytes,
       responseHash,
       authorizationId: REQUEST,
-      authorizationHash: responseHash.slice(),
+      authorizationHash,
       issuingHumanId: REQUESTOR,
       issuingDeviceId: "task-runtime-device",
       issuingDeviceAuthorizationRevision: 6,
       issuerSigningPublicKeyHash: digest(value.signing.publicKey),
       issuedAt: NOW,
-      expiresAt: NOW + 60_000,
+      expiresAt: plan.deadlineAt,
+    } : {
+      formatVersion: 4 as const,
+      kind: "runtime" as const,
+      requestId: REQUEST,
+      descriptorHash: digest(record.descriptorBytes),
+      descriptorBytes: record.descriptorBytes,
+      recipientGeneration: request.recipientGeneration,
+      recipientKeyId: request.recipientKeyId,
+      recipientPublicKey: request.recipientPublicKey,
+      workId: RUN,
+      workKind: record.workKind,
+      purpose: record.purpose,
+      authoritySet: record.authoritySet as BackgroundAuthorizationTaskRuntimeRecordV3["authoritySet"],
+      responseBytes,
+      responseHash,
+      authorizationId: REQUEST,
+      authorizationHash,
+      authorizationBytes,
+      certificateBytes: certificateBytes!,
+      issuingHumanId: REQUESTOR,
+      issuingDeviceId: "task-runtime-device",
+      issuingDeviceAuthorizationRevision: 6,
+      issuerSigningPublicKeyHash: digest(value.signing.publicKey),
+      issuedAt: NOW,
+      expiresAt: plan.deadlineAt,
     },
   });
   expect(accepted.status).toBe("accepted");
+  if (requestV2 !== null) {
+    destroyTaskRuntimeBackgroundAuthorizationRequestV2(requestV2);
+  }
   value.setClock(NOW + 3);
 }
 
@@ -746,10 +912,26 @@ async function prepareAndBind(value: Fixture): Promise<void> {
 }
 
 async function parkedClaimFixture(
-  options: Readonly<{ scopeWithSemanticExtra?: boolean }> = {},
+  options: Readonly<{
+    scopeWithSemanticExtra?: boolean;
+    certifiedSigner?: boolean;
+    certifiedExecutionSegment?: number;
+    humanResumeWorkKind?: "task.approval_resume" | "task.await_reply_resume";
+    requestWorkKind?: "task.execute" | "task.approval_resume" | "task.await_reply_resume";
+    requestCheckpointPause?: NonNullable<
+      ParkedTaskRuntimeGrantClaimPlan["requestCheckpointPause"]
+    >;
+  }> = {},
 ) {
-  const value = await fixture();
-  const discovered = parkedPreparation();
+  const value = await fixture(
+    options.requestWorkKind ?? options.humanResumeWorkKind,
+    60_000,
+    options.certifiedSigner ?? false,
+    options.certifiedExecutionSegment ?? 2,
+  );
+  const discovered = options.humanResumeWorkKind === undefined
+    ? parkedPreparation()
+    : humanParkedPreparation(options.humanResumeWorkKind);
   const base = value.plan(discovered.occurrence);
   const parkedScope = options.scopeWithSemanticExtra
     ? scopeBinding([SCOPE_ORIGIN])
@@ -821,7 +1003,10 @@ async function parkedClaimFixture(
     recipients: value.recipients,
     now: () => NOW,
   });
-  if (attached === null) throw new Error("parked recipient was not attached");
+  if (attached === null) {
+    value.recipients.close();
+    throw new Error("parked recipient was not attached");
+  }
   attached.requestBytes.fill(0);
   await acceptGrant(value);
 
@@ -837,7 +1022,10 @@ async function parkedClaimFixture(
   let deferrals = 0;
   let clock = NOW + 3;
   const fingerprint = prepared.stableIdentity.resumeContinuationFingerprint;
-  if (fingerprint === null) throw new Error("parked fingerprint missing");
+  const acceptanceId = prepared.stableIdentity.resumeAcceptanceId;
+  if (fingerprint === null && acceptanceId === undefined) {
+    throw new Error("parked continuation identity missing");
+  }
   const plan: ParkedTaskRuntimeGrantClaimPlan = Object.freeze({
     stableIdentity: prepared.stableIdentity,
     initialRecord: prepared.initialRecord,
@@ -850,10 +1038,15 @@ async function parkedClaimFixture(
       authorizationRequestId: REQUEST,
       policyRevision: 7,
       executionSegment: 2,
-      resumeContinuationFingerprint: fingerprint,
+      ...(fingerprint === null
+        ? { resumeAcceptanceId: acceptanceId! }
+        : { resumeContinuationFingerprint: fingerprint }),
     }),
     scheduling: base.scheduling,
     executor: base.executor,
+    ...(options.requestCheckpointPause === undefined
+      ? {}
+      : { requestCheckpointPause: options.requestCheckpointPause }),
     ...(parkedScope === undefined ? {} : { scopeMemory: parkedScope }),
     persistJob: async input => {
       persistenceInputs.push(input);
@@ -909,6 +1102,7 @@ async function parkedClaimFixture(
         return await use({
           foreground: borrowed,
           namespaceRequirements: currentNamespaces,
+          ...(options.certifiedSigner ? { currentIssuer: value.currentIssuer } : {}),
         });
       } finally {
         destroyAuthority(borrowed);
@@ -941,6 +1135,105 @@ describe("parked Task Runtime authority preparation", () => {
     expect(await prepareUnclaimedParkedTaskRuntimeAuthority({
       ...input, repository, recipients, now: () => NOW,
     })).toEqual({ status: "exact_replay" });
+  });
+
+  test("opens a certified parked segment against the exact running Job reference", async () => {
+    const value = await parkedClaimFixture({ certifiedSigner: true });
+    const claimed = await value.coordinator.prepareOrClaimExact(
+      value.prepared.occurrence,
+    );
+    if (claimed.status !== "claimed") throw new Error("parked grant not claimed");
+    const candidate = claimed.dispatch.candidate;
+    const jobId = "certified-parked-segment-job";
+    value.setPersistedJobId(jobId);
+    expect(value.plan.reference.executionSegment).toBe(2);
+    expect(await candidate.persistJob?.(parkedPersistPayload(value.plan.reference)))
+      .toBe(jobId);
+    expect(await candidate.start(jobId)).toEqual({ status: "started" });
+    await candidate.run(async (_input, _signal, settlement) => {
+      await settlement.publish({
+        formatVersion: 1,
+        resultText: "certified parked result",
+        lastError: null,
+      });
+    });
+    expect(value.certifiedSignerLoans).toHaveLength(1);
+    expect(value.openedOccurrences).toHaveLength(1);
+    expect(value.publishedResults).toEqual(["certified parked result"]);
+    expect((await value.repository.get(REQUEST))?.snapshot.state).toBe("completed");
+    expect(value.recipients.size).toBe(0);
+  });
+
+  test.each([
+    undefined,
+    "task.approval_resume",
+    "task.await_reply_resume",
+  ] as const)("rejects a certificate for another segment before transient input or running effects (%s)", async humanResumeWorkKind => {
+    const value = await parkedClaimFixture({
+      certifiedSigner: true,
+      certifiedExecutionSegment: 1,
+      ...(humanResumeWorkKind === undefined ? {} : { humanResumeWorkKind }),
+    });
+    const claimed = await value.coordinator.prepareOrClaimExact(
+      value.prepared.occurrence,
+    );
+    if (claimed.status !== "claimed") throw new Error("parked grant not claimed");
+    const candidate = claimed.dispatch.candidate;
+    const jobId = "mismatched-certified-segment-job";
+    value.setPersistedJobId(jobId);
+    expect(await candidate.persistJob?.(parkedPersistPayload(value.plan.reference)))
+      .toBe(jobId);
+    expect(await candidate.start(jobId)).toEqual({ status: "started" });
+    let workCalls = 0;
+    const error = await candidate.run(async () => { workCalls += 1; })
+      .catch((failure: unknown) => failure);
+    expect(error).toBeInstanceOf(ProtectedTaskExecutionDidNotBeginError);
+    expect(value.openedOccurrences).toHaveLength(0);
+    expect(value.certifiedSignerLoans).toHaveLength(0);
+    expect(value.publishedResults).toEqual([]);
+    expect(workCalls).toBe(0);
+    expect((await value.repository.get(REQUEST))?.snapshot.state).toBe("claimed");
+    expect(value.recipients.size).toBe(0);
+  });
+
+  test.each([
+    "task.approval_resume",
+    "task.await_reply_resume",
+  ] as const)("creates and exactly replays a Human %s request", async resumeWorkKind => {
+    const input = humanParkedPreparation(resumeWorkKind);
+    const repository = new InMemoryBackgroundAuthorizationRepository();
+    const recipients = new TaskRuntimeRecipientRegistry(new LatticeCrypto());
+    expect(await prepareUnclaimedParkedTaskRuntimeAuthority({
+      ...input, repository, recipients, now: () => NOW,
+    })).toEqual({ status: "created" });
+    expect(await prepareUnclaimedParkedTaskRuntimeAuthority({
+      ...input, repository, recipients, now: () => NOW,
+    })).toEqual({ status: "exact_replay" });
+  });
+
+  test("rejects changed Human acceptance or segment for an existing request", async () => {
+    const exact = humanParkedPreparation("task.approval_resume");
+    const repository = new InMemoryBackgroundAuthorizationRepository();
+    const recipients = new TaskRuntimeRecipientRegistry(new LatticeCrypto());
+    expect(await prepareUnclaimedParkedTaskRuntimeAuthority({
+      ...exact, repository, recipients, now: () => NOW,
+    })).toEqual({ status: "created" });
+    for (const changed of [
+      humanParkedPreparation(
+        "task.approval_resume",
+        "human-acceptance-changed",
+      ),
+      humanParkedPreparation(
+        "task.approval_resume",
+        "human-acceptance-exact",
+        3,
+      ),
+    ]) {
+      // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+      await expect(prepareUnclaimedParkedTaskRuntimeAuthority({
+        ...changed, repository, recipients, now: () => NOW,
+      })).rejects.toThrow("durable record was substituted");
+    }
   });
 
   test("replaces changed preclaim authority and clears only the winning recipient generation", async () => {
@@ -1053,6 +1346,43 @@ describe("parked Task Runtime authority preparation", () => {
 });
 
 describe("parked Task Runtime grant claim", () => {
+  test("forwards a checkpoint pause only after the exact continuation starts", async () => {
+    const pauses: Array<readonly [string, string | undefined]> = [];
+    const value = await parkedClaimFixture({
+      requestCheckpointPause: (reason, pauseRequestId) => {
+        pauses.push([reason, pauseRequestId]);
+        return true;
+      },
+    });
+    const claimed = await value.coordinator.prepareOrClaimExact(
+      value.prepared.occurrence,
+    );
+    if (claimed.status !== "claimed") throw new Error("parked grant not claimed");
+    const candidate = claimed.dispatch.candidate;
+    expect(candidate.requestCheckpointPause?.("manual_pause", PAUSE_REQUEST))
+      .toBe(false);
+    const newJobId = "parked-continuation-job";
+    expect(await candidate.persistJob?.(parkedPersistPayload(value.plan.reference)))
+      .toBe(newJobId);
+    expect(candidate.requestCheckpointPause?.("manual_pause", PAUSE_REQUEST))
+      .toBe(false);
+    expect(await candidate.start(newJobId)).toEqual({ status: "started" });
+    expect(candidate.requestCheckpointPause?.("manual_pause", PAUSE_REQUEST))
+      .toBe(true);
+    expect(pauses).toEqual([["manual_pause", PAUSE_REQUEST]]);
+
+    await candidate.run(async (_input, _signal, settlement) => {
+      await settlement.publish({
+        formatVersion: 1,
+        resultText: "parked continuation result",
+        lastError: null,
+      });
+    });
+    expect(candidate.requestCheckpointPause?.("manual_pause", PAUSE_REQUEST))
+      .toBe(false);
+    expect(pauses).toEqual([["manual_pause", PAUSE_REQUEST]]);
+  });
+
   test("waits for authorization when no parked plan is available", async () => {
     const value = await parkedClaimFixture();
     const coordinator = createParkedTaskRuntimeGrantClaim({
@@ -1119,6 +1449,54 @@ describe("parked Task Runtime grant claim", () => {
     expect((await value.repository.get(REQUEST))?.snapshot.state).toBe("completed");
     expect(value.openedOccurrences[0]?.run.jobId).toBe(newJobId);
     expect(value.recipients.size).toBe(0);
+  });
+
+  test.each([
+    ["task.approval_resume", false],
+    ["task.await_reply_resume", false],
+    ["task.approval_resume", true],
+    ["task.await_reply_resume", true],
+  ] as const)("claims an exact Human %s segment and preserves its acceptance identity (certified signer %s)", async (resumeWorkKind, certifiedSigner) => {
+    const value = await parkedClaimFixture({
+      humanResumeWorkKind: resumeWorkKind,
+      certifiedSigner,
+    });
+    const claimed = await value.coordinator.prepareOrClaimExact(
+      value.prepared.occurrence,
+    );
+    if (claimed.status !== "claimed") throw new Error("Human grant not claimed");
+    expect(claimed.dispatch.reference).toMatchObject({
+      executionSegment: 2,
+      resumeAcceptanceId: "human-acceptance-exact",
+    });
+    expect("resumeContinuationFingerprint" in claimed.dispatch.reference)
+      .toBe(false);
+    expect(value.plan.initialRecord).toMatchObject({
+      workKind: resumeWorkKind,
+      purpose: resumeWorkKind,
+    });
+    const nextJobId = "parked-continuation-job";
+    expect(await claimed.dispatch.candidate.persistJob?.(parkedPersistPayload(value.plan.reference))).toBe(nextJobId);
+    expect(await claimed.dispatch.candidate.start(nextJobId)).toEqual({ status: "started" });
+    await claimed.dispatch.candidate.run(async (input, _signal, settlement) => {
+      expect(input).toEqual({ message: SENTINEL });
+      await settlement.publish({ formatVersion: 1, resultText: "Human continuation completed", lastError: null });
+    });
+    expect(value.publishedResults).toEqual(["Human continuation completed"]);
+    expect(value.certifiedSignerLoans).toHaveLength(certifiedSigner ? 1 : 0);
+    expect(value.openedOccurrences).toHaveLength(1);
+    expect((await value.repository.get(REQUEST))?.snapshot.state).toBe("completed");
+    expect(value.recipients.size).toBe(0);
+  });
+
+  test.each([false, true])("rejects a different work kind before attaching a Human continuation grant (certified signer %s)", async certifiedSigner => {
+    const error = await parkedClaimFixture({
+      humanResumeWorkKind: "task.approval_resume",
+      requestWorkKind: "task.await_reply_resume",
+      certifiedSigner,
+    }).then(() => null, (reason: unknown) => reason);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe("Task Runtime request was substituted");
   });
 
   test("lets only one parked claimant win the held grant CAS", async () => {
@@ -1401,6 +1779,88 @@ describe("exact Task Runtime recipient kernels", () => {
 });
 
 describe("Task Runtime grant claim", () => {
+  test("wakes the requestor once after fresh durable preparation and binds the exact recipient", async () => {
+    const value = await fixture();
+
+    expect(await value.coordinator.prepareOrClaimExact(occurrence()))
+      .toEqual({ status: "awaiting_authorization" });
+    expect(value.authorizationRequests).toEqual([{
+      requestorId: REQUESTOR,
+      requestId: REQUEST,
+      recipientGeneration: 0,
+    }]);
+
+    expect(await value.coordinator.prepareOrClaimExact(occurrence()))
+      .toEqual({ status: "awaiting_authorization" });
+    expect(value.authorizationRequests).toHaveLength(1);
+
+    const bound = await value.bindRecipient();
+    expect(bound?.record.snapshot).toMatchObject({
+      requestId: REQUEST,
+      state: "awaiting_device",
+      recipientGeneration: 0,
+    });
+    expect(value.authorizationRequests).toHaveLength(1);
+    value.recipients.close();
+  });
+
+  test("retains a fresh durable grant when its authorization wake fails", async () => {
+    const value = await fixture();
+    value.setAuthorizationRequestFailure(true);
+
+    expect(await value.coordinator.prepareOrClaimExact(occurrence()))
+      .toEqual({ status: "awaiting_authorization" });
+    expect(value.authorizationRequests).toHaveLength(1);
+    expect(await value.repository.get(REQUEST)).toMatchObject({
+      snapshot: {
+        requestId: REQUEST,
+        state: "awaiting_recipient",
+        recipientGeneration: 0,
+      },
+      descriptorBytes: null,
+    });
+
+    expect(await value.bindRecipient()).not.toBeNull();
+    expect((await value.repository.get(REQUEST))?.snapshot.state)
+      .toBe("awaiting_device");
+    value.recipients.close();
+  });
+
+  test("forwards a checkpoint pause only while the exact execution is live", async () => {
+    const pauses: Array<readonly [string, string | undefined]> = [];
+    const value = await fixture();
+    value.setSubstitutePlan(plan => Object.freeze({
+      ...plan,
+      requestCheckpointPause: (reason, pauseRequestId) => {
+        pauses.push([reason, pauseRequestId]);
+        return true;
+      },
+    }));
+    await prepareAndBind(value);
+    await acceptGrant(value);
+    const claimed = await value.coordinator.prepareOrClaimExact(occurrence());
+    if (claimed.status !== "claimed") throw new Error("grant not claimed");
+    const candidate = claimed.dispatch.candidate;
+    expect(candidate.requestCheckpointPause?.("manual_pause", PAUSE_REQUEST))
+      .toBe(false);
+    expect(await candidate.start("protected-job-pause"))
+      .toEqual({ status: "started" });
+    expect(candidate.requestCheckpointPause?.("manual_pause", PAUSE_REQUEST))
+      .toBe(true);
+    expect(pauses).toEqual([["manual_pause", PAUSE_REQUEST]]);
+
+    await candidate.run(async (_input, _signal, settlement) => {
+      await settlement.publish({
+        formatVersion: 1,
+        resultText: "protected result",
+        lastError: null,
+      });
+    });
+    expect(candidate.requestCheckpointPause?.("manual_pause", PAUSE_REQUEST))
+      .toBe(false);
+    expect(pauses).toEqual([["manual_pause", PAUSE_REQUEST]]);
+  });
+
   test("preserves the durable initial request key and isolates continuation segments", () => {
     const identity = stableIdentity();
     const initial = taskRuntimeStableIdempotencyKey(identity);
@@ -1419,6 +1879,26 @@ describe("Task Runtime grant claim", () => {
       ...continuation,
       resumeContinuationFingerprint: Buffer.from(bytes(24)).toString("base64url"),
     })).not.toBe(resumed);
+    const approvalResume = taskRuntimeStableIdempotencyKey({
+      ...identity,
+      executionSegment: 2,
+      resumeAcceptanceId: "human-acceptance-exact",
+      resumeWorkKind: "task.approval_resume",
+    });
+    expect(approvalResume).not.toBe(initial);
+    expect(approvalResume).not.toBe(resumed);
+    expect(taskRuntimeStableIdempotencyKey({
+      ...identity,
+      executionSegment: 2,
+      resumeAcceptanceId: "human-acceptance-changed",
+      resumeWorkKind: "task.approval_resume",
+    })).not.toBe(approvalResume);
+    expect(taskRuntimeStableIdempotencyKey({
+      ...identity,
+      executionSegment: 2,
+      resumeAcceptanceId: "human-acceptance-exact",
+      resumeWorkKind: "task.await_reply_resume",
+    })).not.toBe(approvalResume);
   });
 
   test("retains the routing commitment across segments without temporary grant state", () => {
@@ -1466,6 +1946,24 @@ describe("Task Runtime grant claim", () => {
       { executionSegment: 1, resumeContinuationFingerprint: "A".repeat(43) },
       { executionSegment: 2, resumeContinuationFingerprint: null },
       { executionSegment: 2, resumeContinuationFingerprint: "A".repeat(42) + "B" },
+      {
+        executionSegment: 2,
+        resumeContinuationFingerprint: Buffer.from(bytes(23)).toString("base64url"),
+        resumeAcceptanceId: "mixed",
+        resumeWorkKind: "task.approval_resume" as const,
+      },
+      { executionSegment: 2, resumeContinuationFingerprint: null, resumeAcceptanceId: "missing-kind" },
+      {
+        executionSegment: 2,
+        resumeContinuationFingerprint: null,
+        resumeWorkKind: "task.approval_resume" as const,
+      },
+      {
+        executionSegment: 1,
+        resumeContinuationFingerprint: null,
+        resumeAcceptanceId: "initial-cannot-resume",
+        resumeWorkKind: "task.approval_resume" as const,
+      },
     ]) {
       expect(() => taskRuntimeStableIdempotencyKey({ ...stableIdentity(), ...binding }))
         .toThrow("execution segment identity is invalid");
@@ -1587,6 +2085,8 @@ describe("Task Runtime grant claim", () => {
       .toEqual(namespaceRequirements);
     expect(value.recipients.size).toBe(0);
     expect(value.replacementCasCount()).toBe(1);
+    expect(value.authorizationRequests.map(request =>
+      request.recipientGeneration)).toEqual([0, 1]);
 
     const rebound = await value.bindRecipient();
     expect(rebound?.record.snapshot.recipientGeneration).toBe(1);
@@ -1836,11 +2336,14 @@ describe("Task Runtime grant claim", () => {
     expect(durable?.snapshot.lastRetryReason).toBe("attempt_expired");
     expect(value.recipients.size).toBe(0);
     expect(value.recipientRotationCasCount()).toBe(1);
+    expect(value.authorizationRequests.map(request =>
+      request.recipientGeneration)).toEqual([0, 1]);
     expect(await value.coordinator.prepareOrClaimExact(occurrence()))
       .toEqual({ status: "awaiting_authorization" });
     expect((await value.repository.get(REQUEST))?.snapshot.recipientGeneration)
       .toBe(1);
     expect(value.recipientRotationCasCount()).toBe(1);
+    expect(value.authorizationRequests).toHaveLength(2);
   });
 
   test("claims one accepted grant and opens transient input only inside a one-use candidate", async () => {
@@ -1948,6 +2451,50 @@ describe("Task Runtime grant claim", () => {
     expect(completed?.snapshot.claimExpiresAt).toBeNull();
     expect(completed?.finishedAt).toBe(NOW + 10);
     expect(JSON.stringify(completed)).not.toContain(SENTINEL);
+  });
+
+  test("claims a Task authorization beyond the generic two-minute lease", async () => {
+    const taskAuthorizationLifetimeMs = 4 * 60_000;
+    const value = await fixture("task.execute", taskAuthorizationLifetimeMs);
+    await prepareAndBind(value);
+    await acceptGrant(value);
+
+    const result = await value.coordinator.prepareOrClaimExact(occurrence());
+    expect(result.status).toBe("claimed");
+    expect((await value.repository.get(REQUEST))?.snapshot.claimExpiresAt)
+      .toBe(NOW + taskAuthorizationLifetimeMs);
+    value.recipients.close();
+  });
+
+  test("opens a certified initial Task grant and lends its temporary signer only during execution", async () => {
+    const value = await fixture("task.execute", 60_000, true);
+    await prepareAndBind(value);
+    const bound = await value.repository.get(REQUEST);
+    expect(bound?.descriptorBytes).not.toBeNull();
+    expect(isTaskRuntimeBackgroundAuthorizationRequestV2Carrier(
+      bound!.descriptorBytes!,
+    )).toBe(true);
+    await acceptGrant(value);
+    const granted = await value.repository.get(REQUEST);
+    expect(() => decodeTaskRuntimeBackgroundAuthorizationResponseV2(
+      granted!.acceptedMaterial!.responseBytes,
+    )).not.toThrow();
+
+    const result = await value.coordinator.prepareOrClaimExact(occurrence());
+    if (result.status !== "claimed") throw new Error("grant not claimed");
+    expect(await result.dispatch.candidate.start("protected-certified-job"))
+      .toEqual({ status: "started" });
+    await result.dispatch.candidate.run(async (_input, _signal, settlement) => {
+      await settlement.publish({
+        formatVersion: 1,
+        resultText: "certified result",
+        lastError: null,
+      });
+    });
+    expect(value.certifiedSignerLoans).toHaveLength(1);
+    expect(value.certifiedSignerLoans[0])
+      .toMatch(/^agent_runtime_signer_[0-9a-f]{64}$/u);
+    expect(value.recipients.size).toBe(0);
   });
 
   test("adopts an exact completed successor written by recovery", async () => {
@@ -2252,6 +2799,166 @@ describe("Task Runtime grant claim", () => {
     expect(value.recipients.size).toBe(0);
   });
 
+  test("an execution that fails at its deadline records an uncertain outcome", async () => {
+    const value = await fixture();
+    await prepareAndBind(value);
+    await acceptGrant(value);
+    const claimed = await value.coordinator.prepareOrClaimExact(occurrence());
+    if (claimed.status !== "claimed") throw new Error("grant not claimed");
+    expect(await claimed.dispatch.candidate.start("protected-job-expired"))
+      .toEqual({ status: "started" });
+
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(claimed.dispatch.candidate.run(async () => {
+      value.setClock(NOW + 60_000);
+      throw new Error("provider call crossed its grant deadline");
+    })).rejects.toThrow("provider call crossed its grant deadline");
+
+    const terminal = await value.repository.get(REQUEST);
+    expect(terminal?.snapshot.state).toBe("terminal_failure");
+    expect(terminal?.snapshot.terminalReason).toBe("provider_outcome_unknown");
+    expect(terminal?.finishedAt).toBe(NOW + 60_000);
+    expect(terminal?.snapshot.retryCount).toBe(0);
+    expect(value.publishedResults).toEqual([]);
+    expect(value.recipients.size).toBe(0);
+    expect(await value.coordinator.prepareOrClaimExact(occurrence()))
+      .toEqual({ status: "inactive" });
+    expect(value.claimCasCount()).toBe(1);
+  });
+
+  test("adopts an exact expired-execution failure after the CAS response is lost", async () => {
+    const value = await fixture();
+    await prepareAndBind(value);
+    await acceptGrant(value);
+    const claimed = await value.coordinator.prepareOrClaimExact(occurrence());
+    if (claimed.status !== "claimed") throw new Error("grant not claimed");
+    expect(await claimed.dispatch.candidate.start("protected-job-expired-lost"))
+      .toEqual({ status: "started" });
+    value.setFailureCas(async (input, repository) => {
+      expect(await repository.compareAndSwap(input))
+        .toMatchObject({ status: "updated" });
+      throw new Error("failure response lost");
+    });
+
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(claimed.dispatch.candidate.run(async () => {
+      value.setClock(NOW + 60_000);
+      throw new Error("expired provider outcome");
+    })).rejects.toThrow("expired provider outcome");
+    expect(await value.repository.get(REQUEST)).toMatchObject({
+      finishedAt: NOW + 60_000,
+      snapshot: {
+        state: "terminal_failure",
+        terminalReason: "provider_outcome_unknown",
+      },
+    });
+  });
+
+  test("an ordinary abort before the deadline does not claim expiry", async () => {
+    const value = await fixture();
+    await prepareAndBind(value);
+    await acceptGrant(value);
+    const claimed = await value.coordinator.prepareOrClaimExact(occurrence());
+    if (claimed.status !== "claimed") throw new Error("grant not claimed");
+    expect(await claimed.dispatch.candidate.start("protected-job-aborted"))
+      .toEqual({ status: "started" });
+
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(claimed.dispatch.candidate.run(async (_input, signal) => {
+      value.recipients.delete(REQUEST, 0);
+      signal.throwIfAborted();
+    })).rejects.toThrow();
+    expect((await value.repository.get(REQUEST))?.snapshot.state).toBe("running");
+    expect((await value.repository.get(REQUEST))?.finishedAt).toBeNull();
+  });
+
+  test.each(["completed", "cancelled"] as const)(
+    "does not overwrite a concurrent %s successor at the deadline",
+    async successor => {
+      const value = await fixture();
+      await prepareAndBind(value);
+      await acceptGrant(value);
+      const claimed = await value.coordinator.prepareOrClaimExact(occurrence());
+      if (claimed.status !== "claimed") throw new Error("grant not claimed");
+      expect(await claimed.dispatch.candidate.start(
+        `protected-job-expired-${successor}`,
+      )).toEqual({ status: "started" });
+
+      // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+      await expect(claimed.dispatch.candidate.run(async () => {
+        const running = requiredTaskRuntimeRecord(
+          await value.repository.get(REQUEST),
+        );
+        const finishedAt = NOW + 59_999;
+        const next: BackgroundAuthorizationTaskRuntimeRecordV3 = {
+          ...running,
+          snapshot: (successor === "completed"
+            ? completeBackgroundAuthorizationRequest(running.snapshot, finishedAt)
+            : cancelBackgroundAuthorizationRequest(
+              running.snapshot,
+              "cancelled",
+              finishedAt,
+            )) as BackgroundAuthorizationTaskRuntimeRecordV3["snapshot"],
+          finishedAt,
+        };
+        expect(await value.repository.compareAndSwap({
+          expectedRequestRevision: running.snapshot.requestRevision,
+          next,
+        })).toMatchObject({ status: "updated" });
+        value.setClock(NOW + 60_000);
+        throw new Error(`concurrent ${successor}`);
+      })).rejects.toThrow(`concurrent ${successor}`);
+      expect(await value.repository.get(REQUEST)).toMatchObject({
+        finishedAt: NOW + 59_999,
+        snapshot: { state: successor },
+      });
+    },
+  );
+
+  test("a park committed at the deadline is completed rather than failed", async () => {
+    const value = await fixture();
+    await prepareAndBind(value);
+    await acceptGrant(value);
+    const claimed = await value.coordinator.prepareOrClaimExact(occurrence());
+    if (claimed.status !== "claimed") throw new Error("grant not claimed");
+    expect(await claimed.dispatch.candidate.start("protected-job-park-deadline"))
+      .toEqual({ status: "started" });
+
+    await claimed.dispatch.candidate.run(async (_input, _signal, settlement) => {
+      value.setClock(NOW + 60_000);
+      await settlement.park(async parkedAt => parkedAt === NOW + 60_000);
+    });
+    expect(await value.repository.get(REQUEST)).toMatchObject({
+      finishedAt: NOW + 60_000,
+      snapshot: { state: "completed" },
+    });
+  });
+
+  test("a started publication is not overwritten by deadline cleanup", async () => {
+    const value = await fixture();
+    await prepareAndBind(value);
+    await acceptGrant(value);
+    const claimed = await value.coordinator.prepareOrClaimExact(occurrence());
+    if (claimed.status !== "claimed") throw new Error("grant not claimed");
+    expect(await claimed.dispatch.candidate.start("protected-job-publish-deadline"))
+      .toEqual({ status: "started" });
+
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(claimed.dispatch.candidate.run(
+      async (_input, _signal, settlement) => {
+        await settlement.publish({
+          formatVersion: 1,
+          resultText: "durable result",
+          lastError: null,
+        });
+        value.setClock(NOW + 60_000);
+        throw new Error("post-publication deadline");
+      },
+    )).rejects.toThrow("post-publication deadline");
+    expect(value.publishedResults).toEqual(["durable result"]);
+    expect((await value.repository.get(REQUEST))?.snapshot.state).toBe("running");
+  });
+
   test("a no-publication interrupt stays nonterminal and cannot redispatch", async () => {
     const value = await fixture();
     await prepareAndBind(value);
@@ -2524,6 +3231,22 @@ describe("Task Runtime grant claim", () => {
     }
   });
 
+  test("plans source-versioned historical definitions using closed provenance and exact object identity", async () => {
+    const value = await fixture();
+    const original = occurrence();
+    const provenance = { version: 2, claimId: original.run.id, publisherDeviceId: "history-device",
+      signedRequestDigest: "a".repeat(64), sourceDigest: "b".repeat(64), sourcePayloadHash: "c".repeat(64),
+      sourceRevision: 0, genesisManifestHash: "d".repeat(64) } as const;
+    const historical: ProtectedTaskOccurrence = { ...original, task: { ...original.task, contentRevision: 1,
+      definitionHistoricalRepair: provenance, cryptoObjectId: taskContentRevisionObjectIdV1({
+        coordinate: { kind: "definition", taskId: original.task.id, contentRevision: 1 },
+        namespaceId: original.task.contentNamespaceId, historicalRepair: provenance }) } };
+    expect(await value.coordinator.prepareOrClaimExact(historical)).toEqual({ status: "awaiting_authorization" });
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(value.coordinator.prepareOrClaimExact({ ...historical, task: { ...historical.task,
+      definitionHistoricalRepair: { ...provenance, sourceDigest: "e".repeat(64) } } })).rejects.toThrow();
+  });
+
   test("keeps the definition object revision separate from Namespace authority", async () => {
     const value = await fixture();
     expect(occurrence().task.cryptoAccessRevision).toBe(0);
@@ -2536,10 +3259,13 @@ describe("Task Runtime grant claim", () => {
       }),
     });
 
+    expect(await value.coordinator.prepareOrClaimExact(substituted)).toEqual({ status: "awaiting_authorization" });
+    const record = requiredTaskRuntimeRecord(await value.repository.get(REQUEST));
+    expect(record.expectedNamespaceAccessRevision).toBe(3);
+    expect(record.idempotencyKey).toBe(taskRuntimeStableIdempotencyKey(value.plan(substituted).stableIdentity));
+    // A later caller cannot substitute the old captured head into this exact request.
     // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
-    await expect(value.coordinator.prepareOrClaimExact(substituted))
-      .rejects.toThrow("disagrees with its occurrence");
-    expect(await value.repository.get(REQUEST)).toBeNull();
+    await expect(value.coordinator.prepareOrClaimExact(occurrence())).rejects.toThrow();
   });
 
   test("rejects stale proven output Namespace facts before the durable claim", async () => {

@@ -31,7 +31,6 @@ import {
   type DirectDatabase,
   type NewTask,
   type Task,
-  type TaskRun,
 } from "@nautilo/db";
 import { parseTaskFundingBinding, type TaskFundingBinding } from "@nautilo/types";
 
@@ -41,6 +40,8 @@ import {
   uninstallTaskFundingPort,
   type TaskFundingAdmission,
   type TaskFundingPort,
+  type TaskFundingRunSource,
+  type TaskFundingTaskSource,
 } from "../../src/task-funding-port";
 import {
   dispatchTaskRun,
@@ -59,7 +60,8 @@ import { closeAgentDb, setupAgentTestEnv } from "./agent-helpers";
 let db: DirectDatabase;
 let userId: string;
 let agentId: string;
-let admit: (task: Task, priorRun?: TaskRun) => Promise<TaskFundingAdmission>;
+let admit: (task: TaskFundingTaskSource,
+  priorRun?: TaskFundingRunSource) => Promise<TaskFundingAdmission>;
 let admissionCalls: Array<{ taskId: string; priorRunId: string | null }> = [];
 let serverFundingChecks = 0;
 

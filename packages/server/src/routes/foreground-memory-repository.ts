@@ -1,4 +1,5 @@
 import {
+  assertProtectedTaskAdditionalAuthorityResumeAcknowledgementV1,
   commitForegroundMemoryOrdinaryFallback,
   createResumableProtectedAgentMemoryProjectionPort,
   embedTextWithProvenance,
@@ -7,8 +8,11 @@ import {
   MemoryMutationAuthorityError,
   protectedMemoryAuthorityFromEnvelope,
 } from "@nautilo/agent";
-import { inArray, memories, memoryNamespaces } from "@nautilo/db";
-import { randomUUID } from "node:crypto";
+import { inArray, memories, memoryNamespaces,
+  protectedTaskSemanticAuthorityRequirementsDigest,
+  type ProtectedTaskSemanticAuthorityRequirements } from "@nautilo/db";
+import { createHash, randomUUID } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { z } from "zod";
 import { createForegroundMemoryProjectionCapsule } from "./foreground-memory-projection-capsule";
 import {
@@ -20,13 +24,21 @@ import {
   MEMORY_OBJECT_TYPE,
   bindEncryptionDataOperationOwner,
   selectLiveEncryptionRepresentationPolicy,
+  type ProtectedAgentMemoryRepository,
+  type ProtectedAgentMemoryEmbeddingPort,
+  type ProtectedMemoryAuthority,
 } from "@nautilo/lattice-bridge";
 import {
+  type createPostgresForegroundMemoryPublication,
   attachPostgresForegroundMemoryRepair,
   loadPostgresForegroundMemoryRepairSources,
   PostgresAgentMemoryProductPort,
   PostgresAgentMemoryExactAccessProduct,
+  bindConversationProductCanonicalTransactionRunner,
   persistForegroundAgentMemoryNativeExactAccess,
+  type AgentMemoryPublicationBoundary,
+  type ConversationProductCanonicalTransactionConnection,
+  type ConversationProductPostgresExecutor,
   type PostgresDomainKeyAuthorityRepository,
   validatePostgresForegroundMemoryRepairSource,
 } from "@nautilo/lattice-bridge/server";
@@ -44,11 +56,14 @@ import {
   resolveAuthorizedRoomName,
   userHasCapability,
   isScopeMemoryEnvelope,
+  type CanonicalTranscriptTx,
   type MemoryAccessEnvelope,
 } from "@nautilo/trust";
 import type {
   ProtectedAgentMemoryAccessPort,
   ProtectedAgentMemoryProjectionPort,
+  ProtectedTaskMemoryProjectionHandoff,
+  ProtectedTaskProjectionAuthorityPlan,
 } from "@nautilo/agent";
 import { createForegroundProductTransactionContext } from "./foreground-message-product-store";
 import { createForegroundMemoryPublicationAuthority } from "./foreground-memory-publication-authority";
@@ -56,6 +71,54 @@ import {
   deliverCommittedForegroundMemoryEffect,
   withForegroundMemoryEffectReceipts,
 } from "./foreground-memory-effect-receipts";
+import {
+  createProtectedTaskProjectionAuthorityPlan,
+  deserializeProtectedTaskProjectionAuthorityPlan,
+  protectedTaskProjectionDestinationAuthorityDigest,
+  sameProtectedTaskProjectionAuthorityPlan,
+  semanticAuthorityCovers,
+  serializeProtectedTaskProjectionAuthorityPlan,
+  type SerializedProtectedTaskProjectionAuthorityPlan,
+} from "./protected-task-memory-projection-plan";
+
+type ForegroundMemoryProductContext = Awaited<
+  ReturnType<typeof createForegroundProductTransactionContext>
+>;
+
+/** Fresh callback-scoped Agent product/crypto owner for one exact-access
+ * operation. The assertion must remain backed by the calling authority owner. */
+export type ForegroundMemoryCurrentExactAccess = Readonly<{
+  productContext: ForegroundMemoryProductContext;
+  assertCurrentAuthority(): Promise<void>;
+  exact: Readonly<{
+    handle: Parameters<typeof persistForegroundAgentMemoryNativeExactAccess>[0]["handle"];
+    resolveHistoricalAgentSignerAuthority: Parameters<
+      typeof persistForegroundAgentMemoryNativeExactAccess
+    >[0]["resolveHistoricalAgentSignerAuthority"];
+    resolveLiveShadowAgentSigner: Parameters<
+      typeof persistForegroundAgentMemoryNativeExactAccess
+    >[0]["resolveLiveShadowAgentSigner"];
+    resolveCurrentAgentSigner: Parameters<
+      typeof persistForegroundAgentMemoryNativeExactAccess
+    >[0]["resolveCurrentAgentSigner"];
+    namespaceKeys: Pick<PostgresDomainKeyAuthorityRepository,
+      "inspectNamespaceGenerationAuthorityMetadata">;
+    read: (request: Readonly<{
+      objectId: string;
+      expectedAccessRevision: number;
+      expectedNamespaceIds: readonly string[];
+    }>) => Promise<ForegroundDomainMemoryAccessHead | null>;
+  }>;
+}>;
+
+export type ForegroundMemoryCurrentExactAccessOwner = <Value>(
+  use: (current: ForegroundMemoryCurrentExactAccess) => Promise<Value>,
+) => Promise<Value | null>;
+
+const authorityUnavailable = () => Object.freeze({
+  status: "unavailable" as const,
+  reason: "authorization_required" as const,
+});
 
 /** Resolve only the authenticated native descriptors named by the verified
  * ciphertext envelope inventory. Product authorization happens before this
@@ -128,7 +191,7 @@ export async function createForegroundMemoryAccessPort(
     resolveGrantUserNamespace: ConstructorParameters<
       typeof PostgresAgentMemoryExactAccessProduct
     >[0]["resolveGrantUserNamespace"];
-    exact: Readonly<{
+    exact?: Readonly<{
       handle: Parameters<
         typeof persistForegroundAgentMemoryNativeExactAccess
       >[0]["handle"];
@@ -146,25 +209,63 @@ export async function createForegroundMemoryAccessPort(
         "inspectNamespaceGenerationAuthorityMetadata"
       >;
     }>;
+    withCurrentExactAccess?: ForegroundMemoryCurrentExactAccessOwner;
   }>,
 ): Promise<ProtectedAgentMemoryAccessPort> {
   if (
     isScopeMemoryEnvelope(input.envelope) ||
     input.envelope.ownerId !== input.domain.subjectUserId ||
-    input.envelope.agentId !== input.domain.agentId
+    input.envelope.agentId !== input.domain.agentId ||
+    input.exact === undefined && input.withCurrentExactAccess === undefined
   ) {
     throw new TypeError("Foreground Memory access identity is unavailable");
   }
-  const authority = await createForegroundProductTransactionContext({
-    userId: input.envelope.ownerId,
-    agentId: input.envelope.agentId,
-  });
   const readableNamespaceIds = [...input.envelope.readableNamespaces].sort();
-  const product = new PostgresAgentMemoryExactAccessProduct({
-    handle: authority.handle,
+  const fixed = input.withCurrentExactAccess === undefined
+    ? await createForegroundProductTransactionContext({
+        userId: input.envelope.ownerId,
+        agentId: input.envelope.agentId,
+      })
+    : null;
+  const currentStore = input.withCurrentExactAccess === undefined
+    ? null
+    : new AsyncLocalStorage<ForegroundMemoryCurrentExactAccess>();
+  const exactProduct = (current?: ForegroundMemoryCurrentExactAccess) =>
+    new PostgresAgentMemoryExactAccessProduct({
+    handle: fixed?.handle ?? current!.productContext.handle,
     readableNamespaceIds,
     resolveGrantUserNamespace: input.resolveGrantUserNamespace,
+    ...(current === undefined ? {} : {
+      assertCurrentAuthority: current.assertCurrentAuthority,
+    }),
   });
+  const withCurrent = async <Value, Fallback>(
+    use: (current?: ForegroundMemoryCurrentExactAccess) => Promise<Value>,
+    unavailable: Fallback,
+  ): Promise<Value | Fallback> => {
+    if (input.withCurrentExactAccess === undefined) return use();
+    const retained = currentStore?.getStore();
+    if (retained !== undefined) return use(retained);
+    return await input.withCurrentExactAccess((current) =>
+      currentStore!.run(current, () => use(current)))
+      ?? unavailable;
+  };
+  const product: Pick<PostgresAgentMemoryExactAccessProduct,
+    "planNativeChange" | "commitNativePrepared" | "reconcileNativeCommitted"> = {
+    planNativeChange: (request) => withCurrent(
+      (current) => exactProduct(current).planNativeChange(request),
+      authorityUnavailable(),
+    ),
+    commitNativePrepared: (request) => withCurrent(
+      (current) => exactProduct(current).commitNativePrepared(request),
+      authorityUnavailable(),
+    ),
+    reconcileNativeCommitted: (request) =>
+      withCurrent(
+        (current) => exactProduct(current).reconcileNativeCommitted(request),
+        false,
+      ),
+  };
   const crypto = createForegroundDomainMemoryExactAccess({
     crypto: input.domain.crypto,
     entities: input.domain.entities,
@@ -172,29 +273,31 @@ export async function createForegroundMemoryAccessPort(
     signerKeyId: input.domain.publication.signerKeyId,
     agentAuthorizationRevision:
       input.domain.publication.agentAuthorizationRevision,
-    read: async (request) => {
-      const value = await input.domain.read({
-        ...request,
-        expectedObjectType: MEMORY_OBJECT_TYPE,
-      });
-      return value;
-    },
+    read: (request) => withCurrent(
+      (current) => (current?.exact.read ?? input.domain.read)({
+          ...request,
+          expectedObjectType: MEMORY_OBJECT_TYPE,
+        }),
+      null,
+    ),
   });
   return createForegroundDomainProtectedAgentMemoryAccessPort({
     subjectUserId: input.domain.subjectUserId,
     agentId: input.domain.agentId,
     crypto,
     product,
-    persist: (publication) =>
-      persistForegroundAgentMemoryNativeExactAccess({
-        handle: input.exact.handle,
-        crypto: input.domain.crypto,
-        publication,
-        resolveHistoricalAgentSignerAuthority:
-          input.exact.resolveHistoricalAgentSignerAuthority,
-        resolveLiveShadowAgentSigner: input.exact.resolveLiveShadowAgentSigner,
-        resolveCurrentAgentSigner: input.exact.resolveCurrentAgentSigner,
-      }),
+    persist: (publication) => withCurrent(async (current) => {
+      const exact = current?.exact ?? input.exact!;
+      return persistForegroundAgentMemoryNativeExactAccess({
+          handle: exact.handle,
+          crypto: input.domain.crypto,
+          publication,
+          resolveHistoricalAgentSignerAuthority:
+            exact.resolveHistoricalAgentSignerAuthority,
+          resolveLiveShadowAgentSigner: exact.resolveLiveShadowAgentSigner,
+          resolveCurrentAgentSigner: exact.resolveCurrentAgentSigner,
+        });
+      }, "stale"),
   });
 }
 
@@ -214,23 +317,97 @@ const projectionContinuationSchema = z.object({
     sources: z.array(z.object({ memoryId: z.string(), contentRevision: z.number().int().nonnegative(),
       cryptoAccessRevision: z.number().int().nonnegative(), cryptoObjectId: z.string(),
       requiredNamespaceIds: z.array(z.string()), payloadDigest: z.string() }).strict()),
+    proposalDigest: z.string().regex(/^[0-9a-f]{64}$/u).optional(),
+    effectDigest: z.string().regex(/^[0-9a-f]{64}$/u).optional(),
+    publicationAuthority: z.object({ planVersion: z.literal(1),
+      kind: z.enum(["current_v1", "additional_authority_v1"]),
+      operationId: z.string(), requestDigest: z.string().regex(/^[0-9a-f]{64}$/u),
+      semanticAuthorityRequirements: z.array(z.object({ namespaceId: z.string(),
+        operations: z.array(z.enum(["decrypt", "encrypt"])) }).strict()),
+      authorizationRequestId: z.string().optional(),
+      effectDisposition: z.literal("not_started_v1").optional() }).strict().optional(),
+    destinationAuthorityDigest: z.string().regex(/^[0-9a-f]{64}$/u).optional(),
   }).strict(),
 }).strict();
 type ProtectedProjectionState = z.infer<typeof projectionContinuationSchema>["state"];
 type ProtectedProjectionSource = ProtectedProjectionState["sources"][number];
 
+export type ForegroundMemoryProjectionDestination =
+  ProtectedProjectionState["destination"];
+
+/** Callback-scoped current Human owner for a destination already present in
+ * the immutable foreground grant. Agent transactions reached through `use`
+ * lock Memory rows only while this owner retains the Room authority facts. */
+export type ForegroundMemoryCurrentProjectionOwner = <Value>(
+  input: Readonly<{
+    destination: ForegroundMemoryProjectionDestination;
+    targetAuthority: ProtectedMemoryAuthority;
+    mutation: boolean;
+    use(assertCurrent: () => Promise<void>): Promise<Value>;
+  }>,
+) => Promise<Value | null>;
+
+export type ForegroundProtectedTaskProjectionSourceOwner = <Value>(
+  use: (assertCurrent: () => Promise<void>) => Promise<Value>,
+) => Promise<Value | null>;
+
+export type ForegroundProtectedTaskProjectionDestinationPlanner = (
+  input: Readonly<{
+    destination: ForegroundMemoryProjectionDestination;
+    targetAuthority: ProtectedMemoryAuthority;
+  }>,
+) => Promise<Readonly<{ destinationAuthorityDigest: Uint8Array }> | null>;
+
+type ForegroundMemoryProjectionInput = Readonly<{
+  publication: ReturnType<typeof createPostgresForegroundMemoryPublication>;
+  envelope: MemoryAccessEnvelope;
+  policy: Parameters<typeof createForegroundMemoryPublicationAuthority>[0]["policy"];
+  domain: Parameters<typeof createForegroundDomainMemoryCryptoSession>[0];
+  wakeEffectRecovery: () => void;
+  withCurrentPublication?: NonNullable<AgentMemoryPublicationBoundary["withCurrentPublication"]>;
+  withCurrentProjection?: ForegroundMemoryCurrentProjectionOwner;
+}>;
+
+export type ForegroundProtectedTaskMemoryProjectionInput =
+  ForegroundMemoryProjectionInput & Readonly<{
+    task: Readonly<{ taskId: string; taskRunId: string; graphThreadId: string }>;
+    originalCapsuleBinding: Readonly<{ policyRevision: number; agentAuthorizationRevision: number }>;
+    currentSemanticAuthorityRequirements: ProtectedTaskSemanticAuthorityRequirements;
+    continuedAdditionalAuthority?: Readonly<{
+      authorizationRequestId: string;
+      effectDisposition: "not_started_v1";
+      operationId: string;
+      requestDigest: Uint8Array;
+      requiredAuthorityDigest: Uint8Array;
+    }>;
+    withCurrentSource: ForegroundProtectedTaskProjectionSourceOwner;
+    planDestination: ForegroundProtectedTaskProjectionDestinationPlanner;
+    withCurrentProjection: ForegroundMemoryCurrentProjectionOwner;
+    onAdditionalAuthority?(
+      plan: Extract<ProtectedTaskProjectionAuthorityPlan, { kind: "additional_authority_v1" }>,
+      destination: Readonly<{ destinationRoomId: string; namespaceId: string;
+        destinationAuthorityDigest: Uint8Array }>,
+    ): void | Promise<void>;
+  }>;
+
+type ProtectedAssembly = Readonly<{
+  input: ForegroundProtectedTaskMemoryProjectionInput;
+}>;
+
 /** Fresh authorized assembly. The existing checkpoint retains only encrypted
  * exact preparation; no plaintext proposal or old live custody survives here. */
-export async function createForegroundMemoryProjectionPort(
-  input: Readonly<{
-    envelope: MemoryAccessEnvelope;
-    policy: Parameters<
-      typeof createForegroundMemoryPublicationAuthority
-    >[0]["policy"];
-    domain: Parameters<typeof createForegroundDomainMemoryCryptoSession>[0];
-    wakeEffectRecovery: () => void;
-  }>,
-): Promise<ProtectedAgentMemoryProjectionPort> {
+async function createForegroundMemoryProjectionAssembly(
+  input: ForegroundMemoryProjectionInput,
+  protectedAssembly?: ProtectedAssembly,
+): Promise<Readonly<{ port: ProtectedAgentMemoryProjectionPort;
+  openProtected(reference: Parameters<ProtectedAgentMemoryProjectionPort["publish"]>[0]["reference"]):
+    Promise<Readonly<{ state: ProtectedProjectionState;
+      plan: ProtectedTaskProjectionAuthorityPlan; destinationAuthorityDigest: Uint8Array }> | null>;
+  withContinuedReference<Value>(
+    reference: Parameters<ProtectedAgentMemoryProjectionPort["publish"]>[0]["reference"],
+    use: () => Promise<Value>,
+  ): Promise<Value>;
+}>> {
   if (
     isScopeMemoryEnvelope(input.envelope) ||
     input.envelope.actorId === null ||
@@ -240,6 +417,14 @@ export async function createForegroundMemoryProjectionPort(
     throw new TypeError("Foreground Memory projection identity is unavailable");
   }
   const requesterActorId = input.envelope.actorId;
+  type ProjectionReference = Parameters<ProtectedAgentMemoryProjectionPort["publish"]>[0]["reference"];
+  const continuedReference = new AsyncLocalStorage<ProjectionReference>();
+  const projectionNow = () => {
+    const reference = continuedReference.getStore();
+    return reference === undefined
+      ? Date.now()
+      : Math.min(Date.now(), reference.expiresAt - 1);
+  };
   const checkpointNamespaceId = input.envelope.writableNamespaces[0];
   if (!checkpointNamespaceId || input.envelope.writableNamespaces.length !== 1) {
     throw new TypeError("Foreground Memory projection Namespace is unavailable");
@@ -247,8 +432,11 @@ export async function createForegroundMemoryProjectionPort(
   const capsule = createForegroundMemoryProjectionCapsule({
     crypto: input.domain.crypto, entities: input.domain.entities,
     namespaceId: checkpointNamespaceId, envelope: input.envelope,
-    policyRevision: input.policy.revision,
-    agentAuthorizationRevision: input.domain.publication.agentAuthorizationRevision,
+    policyRevision: protectedAssembly?.input.originalCapsuleBinding.policyRevision
+      ?? input.policy.revision,
+    agentAuthorizationRevision:
+      protectedAssembly?.input.originalCapsuleBinding.agentAuthorizationRevision
+      ?? input.domain.publication.agentAuthorizationRevision,
   });
   const sourceAuthority = protectedMemoryAuthorityFromEnvelope(input.envelope);
   if (sourceAuthority === null) {
@@ -268,18 +456,31 @@ export async function createForegroundMemoryProjectionPort(
     envelope: input.envelope,
     policy: input.policy,
   });
+  const publication = (
+    held: NonNullable<
+      AgentMemoryPublicationBoundary["withCurrentPublication"]
+    > | undefined,
+  ): AgentMemoryPublicationBoundary =>
+    basePublication.representation === "protected_only"
+      ? held === undefined
+        ? { ...basePublication, representation: "protected_only" }
+        : { representation: "protected_only", withCurrentPublication: held }
+      : held === undefined
+        ? {
+            ...basePublication,
+            representation: "ordinary_and_protected",
+            readPreparedPayload: domain.readPreparedPayload,
+          }
+        : {
+            representation: "ordinary_and_protected",
+            readPreparedPayload: domain.readPreparedPayload,
+            withCurrentPublication: held,
+          };
   const sourceProduct = new PostgresAgentMemoryProductPort({
     ...context,
     readableNamespaceIds,
     cryptoCompletion: domain.completion,
-    publication:
-      basePublication.representation === "protected_only"
-        ? { ...basePublication, representation: "protected_only" }
-        : {
-            ...basePublication,
-            representation: "ordinary_and_protected",
-            readPreparedPayload: domain.readPreparedPayload,
-          },
+    publication: publication(input.withCurrentPublication),
   });
   const choices = new Map<
     string,
@@ -290,7 +491,7 @@ export async function createForegroundMemoryProjectionPort(
       expiresAt: number;
     }>
   >();
-  const openSources = async (
+  const openSourcesUnowned = async (
     authority: Parameters<
       ProtectedAgentMemoryProjectionPort["prepare"]
     >[0]["authority"],
@@ -343,13 +544,103 @@ export async function createForegroundMemoryProjectionPort(
     }
     return sources;
   };
-  return createResumableProtectedAgentMemoryProjectionPort<ProtectedProjectionState>({
-    now: Date.now,
+  const openSources = async (
+    authority: Parameters<ProtectedAgentMemoryProjectionPort["prepare"]>[0]["authority"],
+    memoryIds: readonly string[],
+  ) => {
+    if (protectedAssembly === undefined) return openSourcesUnowned(authority, memoryIds);
+    return protectedAssembly.input.withCurrentSource(async assertCurrent => {
+      await assertCurrent();
+      const opened = await openSourcesUnowned(authority, memoryIds);
+      await assertCurrent();
+      return opened;
+    });
+  };
+  const targetAuthority = (
+    destination: ForegroundMemoryProjectionDestination,
+  ): ProtectedMemoryAuthority => Object.freeze({
+    mode: "namespace" as const,
+    subjectUserId: input.domain.subjectUserId,
+    agentId: input.domain.agentId,
+    readableNamespaceIds: Object.freeze([destination.namespaceId]),
+    mutableNamespaceIds: Object.freeze([destination.namespaceId]),
+    writableNamespaceId: destination.namespaceId,
+  });
+  const sameTargetAuthority = (
+    candidate: ProtectedMemoryAuthority,
+    expected: ProtectedMemoryAuthority,
+  ) => candidate.mode === "namespace" && expected.mode === "namespace"
+    && candidate.subjectUserId === expected.subjectUserId
+    && candidate.agentId === expected.agentId
+    && candidate.writableNamespaceId === expected.writableNamespaceId
+    && candidate.readableNamespaceIds.length === 1
+    && candidate.readableNamespaceIds[0] === expected.readableNamespaceIds[0]
+    && candidate.mutableNamespaceIds.length === 1
+    && candidate.mutableNamespaceIds[0] === expected.mutableNamespaceIds[0];
+  const withProjection = async <Value>(
+    destination: ForegroundMemoryProjectionDestination,
+    authority: ProtectedMemoryAuthority,
+    mutation: boolean,
+    use: (assertCurrent: () => Promise<void>) => Promise<Value>,
+  ): Promise<Value | null> => {
+    if (input.withCurrentProjection === undefined) return null;
+    return input.withCurrentProjection({
+      destination,
+      targetAuthority: authority,
+      mutation,
+      use: async assertCurrent => {
+        if (!sameTargetAuthority(authority, targetAuthority(destination))) {
+          throw new TypeError("Foreground Memory projection target changed");
+        }
+        await assertCurrent();
+        const value = await use(async () => {
+          if (!sameTargetAuthority(authority, targetAuthority(destination))) {
+            throw new TypeError("Foreground Memory projection target changed");
+          }
+          await assertCurrent();
+        });
+        await assertCurrent();
+        return value;
+      },
+    });
+  };
+  const port = createResumableProtectedAgentMemoryProjectionPort<ProtectedProjectionState>({
+    now: projectionNow,
     createReferenceId: randomUUID,
     ttlMs: 10 * 60 * 1_000,
     requesterUserId: input.envelope.ownerId, requesterActorId,
     agentId: input.envelope.agentId,
-    seal: ({ reference, prepared, state }) => capsule.seal(reference, { prepared, state }),
+    async seal({ reference, prepared, state }) {
+      if (protectedAssembly === undefined) return capsule.seal(reference, { prepared, state });
+      if (state.proposalDigest === undefined || state.effectDigest === undefined) {
+        throw new TypeError("Protected foreground projection preparation is incomplete");
+      }
+      const expectedDestinationDigest = protectedTaskProjectionDestinationAuthorityDigest(
+        state.destination,
+      );
+      const planned = await protectedAssembly.input.planDestination({
+        destination: state.destination,
+        targetAuthority: targetAuthority(state.destination),
+      });
+      if (planned === null || planned.destinationAuthorityDigest.length !== 32
+        || !planned.destinationAuthorityDigest.every((entry, index) =>
+          entry === expectedDestinationDigest[index])) {
+        throw new TypeError("Protected foreground projection destination changed");
+      }
+      const plan = createProtectedTaskProjectionAuthorityPlan({
+        ...protectedAssembly.input.task,
+        reference,
+        operationId: prepared.operationId,
+        sources: state.sources,
+        destination: state.destination,
+        proposalDigest: state.proposalDigest,
+        effectDigest: state.effectDigest,
+        availableAuthority: protectedAssembly.input.currentSemanticAuthorityRequirements,
+      });
+      return capsule.seal(reference, { prepared, state: { ...state,
+        publicationAuthority: serializeProtectedTaskProjectionAuthorityPlan(plan),
+        destinationAuthorityDigest: Buffer.from(expectedDestinationDigest).toString("hex") } });
+    },
     async open(reference) {
       const decoded = projectionContinuationSchema.safeParse(await capsule.open(reference));
       if (!decoded.success) return null;
@@ -362,6 +653,28 @@ export async function createForegroundMemoryProjectionPort(
       if (reopened === null || JSON.stringify(reopened) !== JSON.stringify(snapshot.sources)) {
         return { status: "unavailable", reason: "stale_revision" };
       }
+      const preview = { proposedContent: prepared.proposedContent,
+        roomLabel: snapshot.destination.label, roomKind: snapshot.destination.kind,
+        memberCount: snapshot.destination.memberCount };
+      if (protectedAssembly !== undefined) {
+        const planned = await protectedAssembly.input.planDestination({
+          destination: snapshot.destination,
+          targetAuthority: targetAuthority(snapshot.destination),
+        });
+        const expected = protectedTaskProjectionDestinationAuthorityDigest(snapshot.destination);
+        return planned !== null && planned.destinationAuthorityDigest.length === 32
+          && planned.destinationAuthorityDigest.every((entry, index) => entry === expected[index])
+          ? { status: "success", value: preview }
+          : { status: "unavailable", reason: "authorization_required" };
+      }
+      if (input.withCurrentProjection !== undefined) {
+        const current = await withProjection(snapshot.destination,
+          targetAuthority(snapshot.destination), false,
+          () => Promise.resolve(preview));
+        return current === null
+          ? { status: "unavailable", reason: "authorization_required" }
+          : { status: "success", value: current };
+      }
       const stale = await context.canonicalRunner.transaction((transaction) =>
         lockAtomicProjectionDestinationAuthority(transaction, {
           roomId: snapshot.destination.roomId, namespaceId: snapshot.destination.namespaceId,
@@ -369,10 +682,9 @@ export async function createForegroundMemoryProjectionPort(
           requesterActorId, userId: input.envelope.ownerId,
           audienceFingerprint: snapshot.destination.audienceFingerprint,
         }), { isolationLevel: "serializable" });
-      if (stale !== null) return { status: "unavailable", reason: "stale_revision" };
-      return { status: "success", value: { proposedContent: prepared.proposedContent,
-        roomLabel: snapshot.destination.label, roomKind: snapshot.destination.kind,
-        memberCount: snapshot.destination.memberCount } };
+      return stale === null
+        ? { status: "success", value: preview }
+        : { status: "unavailable", reason: "stale_revision" };
     },
     async prepare(request) {
       const sources = await openSources(
@@ -445,11 +757,43 @@ export async function createForegroundMemoryProjectionPort(
           status: "unavailable" as const,
           reason: "authorization_required" as const,
         };
+      if (protectedAssembly !== undefined) {
+        const planned = await protectedAssembly.input.planDestination({
+          destination: resolution.destination,
+          targetAuthority: targetAuthority(resolution.destination),
+        });
+        const expected = protectedTaskProjectionDestinationAuthorityDigest(resolution.destination);
+        if (planned === null || planned.destinationAuthorityDigest.length !== 32
+          || !planned.destinationAuthorityDigest.every((entry, index) => entry === expected[index])) {
+          return { status: "unavailable" as const, reason: "authorization_required" as const };
+        }
+      } else if (input.withCurrentProjection !== undefined) {
+        const current = await withProjection(
+          resolution.destination,
+          targetAuthority(resolution.destination),
+          false,
+          () => Promise.resolve(true),
+        );
+        if (current === null) return {
+          status: "unavailable" as const,
+          reason: "authorization_required" as const,
+        };
+      }
       return {
         status: "success" as const,
         value: {
           kind: "prepared" as const,
-          state: { destination: resolution.destination, sources },
+          state: { destination: resolution.destination, sources,
+            ...(protectedAssembly === undefined ? {} : {
+              proposalDigest: Buffer.from(new Uint8Array(createHash("sha256")
+                .update(JSON.stringify([
+                  "nautilo/protected-task-memory-projection-request/v1",
+                  "proposal", request.proposedContent,
+                ])).digest())).toString("hex"),
+              effectDigest: Buffer.from(commitMemoryMutationV1({ kind: "save",
+                payload: { formatVersion: 1, type: "fact",
+                  content: request.proposedContent } })).toString("hex"),
+            }) },
           preview: {
           proposedContent: request.proposedContent,
           roomLabel: resolution.destination.label,
@@ -479,44 +823,18 @@ export async function createForegroundMemoryProjectionPort(
           status: "unavailable" as const,
           reason: "stale_revision" as const,
         };
-      const embedding = await embedTextWithProvenance(
-        prepared.proposedContent,
-        input.domain.entities.signal,
-      );
-      if (embedding.dimensions !== MEMORY_EMBEDDING_DIMENSIONS)
-        return {
+      const projectionAuthority = targetAuthority(snapshot.destination);
+      if (input.withCurrentProjection !== undefined) {
+        const current = await withProjection(snapshot.destination,
+          projectionAuthority, false, () => Promise.resolve(true));
+        if (current === null) return {
           status: "unavailable" as const,
-          reason: "embedding_unavailable" as const,
+          reason: "authorization_required" as const,
         };
-      const targetAuthority = Object.freeze({
-        mode: "namespace" as const,
-        subjectUserId: input.domain.subjectUserId,
-        agentId: input.domain.agentId,
-        readableNamespaceIds: Object.freeze([snapshot.destination.namespaceId]),
-        mutableNamespaceIds: Object.freeze([snapshot.destination.namespaceId]),
-        writableNamespaceId: snapshot.destination.namespaceId,
-      });
-      const projectionBeforeLocks: Parameters<
-        typeof deliverCommittedForegroundMemoryEffect
-      >[0]["beforeLocks"] = async ({ transaction }) => {
-        await basePublication.beforeLocks({
-          transaction,
-          authority: sourceAuthority,
-          mutation: false,
-        });
-        const stale = await lockAtomicProjectionDestinationAuthority(
-          transaction,
-          {
-            roomId: snapshot.destination.roomId,
-            namespaceId: snapshot.destination.namespaceId,
-            roomLabel: snapshot.destination.label,
-            roomKind: snapshot.destination.kind,
-            requesterActorId,
-            userId: input.envelope.ownerId,
-            audienceFingerprint: snapshot.destination.audienceFingerprint,
-          },
-        );
-        if (stale !== null) throw new Error(`Projection ${stale}`);
+      }
+      const lockProjectionSources = async (
+        transaction: CanonicalTranscriptTx,
+      ) => {
         const rows = await transaction
           .select({
             id: memories.id,
@@ -566,34 +884,111 @@ export async function createForegroundMemoryProjectionPort(
           throw new Error("Projection source authority changed");
         }
       };
-      const beforePublication: typeof projectionBeforeLocks = async (request) => {
-        if (Date.now() >= reference.expiresAt) throw new Error("Projection approval expired");
-        await projectionBeforeLocks(request);
-        if (Date.now() >= reference.expiresAt) throw new Error("Projection approval expired");
+      const projectionBeforeLocks: Parameters<
+        typeof deliverCommittedForegroundMemoryEffect
+      >[0]["beforeLocks"] = async ({ transaction }) => {
+        await basePublication.beforeLocks({
+          transaction,
+          authority: sourceAuthority,
+          mutation: false,
+        });
+        const stale = await lockAtomicProjectionDestinationAuthority(
+          transaction,
+          {
+            roomId: snapshot.destination.roomId,
+            namespaceId: snapshot.destination.namespaceId,
+            roomLabel: snapshot.destination.label,
+            roomKind: snapshot.destination.kind,
+            requesterActorId,
+            userId: input.envelope.ownerId,
+            audienceFingerprint: snapshot.destination.audienceFingerprint,
+          },
+        );
+        if (stale !== null) throw new Error(`Projection ${stale}`);
+        await lockProjectionSources(transaction);
       };
+      const beforePublication: typeof projectionBeforeLocks = async (request) => {
+        if (projectionNow() >= reference.expiresAt) throw new Error("Projection approval expired");
+        await projectionBeforeLocks(request);
+        if (projectionNow() >= reference.expiresAt) throw new Error("Projection approval expired");
+      };
+      const heldPublication: NonNullable<
+        AgentMemoryPublicationBoundary["withCurrentPublication"]
+      > | undefined = input.withCurrentProjection === undefined
+        ? undefined
+        : async request => {
+            if (!sameTargetAuthority(request.authority, projectionAuthority)) {
+              throw new TypeError("Foreground Memory projection target changed");
+            }
+            let completed: Awaited<ReturnType<typeof request.use>> | null = null;
+            try {
+              const current = await withProjection(snapshot.destination,
+                projectionAuthority, request.mutation, async assertCurrent => {
+                  if (projectionNow() >= reference.expiresAt) {
+                    throw new Error("Projection approval expired");
+                  }
+                  const receipt = await request.use(async () => {
+                    await assertCurrent();
+                    if (projectionNow() >= reference.expiresAt) {
+                      throw new Error("Projection approval expired");
+                    }
+                  });
+                  completed = receipt;
+                  return receipt;
+                });
+              if (current !== null) return current;
+              if (request.mutation && completed !== null) return completed;
+              throw new TypeError(
+                "Foreground Memory projection authority is unavailable",
+              );
+            } catch (error) {
+              if (request.mutation && completed !== null) return completed;
+              throw error;
+            }
+          };
+      const lockedConnection: ConversationProductCanonicalTransactionConnection =
+        Object.freeze({
+          transaction: <Result>(
+            use: (
+              transaction: CanonicalTranscriptTx,
+              executor: ConversationProductPostgresExecutor,
+            ) => Promise<Result>,
+            options: Parameters<
+              ConversationProductCanonicalTransactionConnection["transaction"]
+            >[1],
+          ): Promise<Result> => context.canonicalRunner.transaction(
+            async (transaction, executor) => {
+              await lockProjectionSources(transaction);
+              return use(transaction, executor);
+            },
+            options,
+          ),
+        });
+      const productContext = input.withCurrentProjection === undefined
+        ? context
+        : {
+            ...context,
+            canonicalRunner: bindConversationProductCanonicalTransactionRunner(
+              context.handle,
+              lockedConnection,
+            ),
+          };
+      let publicationDomain = domain;
       const targetProduct = new PostgresAgentMemoryProductPort({
-        ...context,
+        ...productContext,
         readableNamespaceIds: [snapshot.destination.namespaceId],
-        cryptoCompletion: domain.completion,
-        publication:
-          basePublication.representation === "protected_only"
-            ? {
-                representation: "protected_only",
-                beforeLocks: beforePublication,
-              }
-            : {
-                representation: "ordinary_and_protected",
-                readPreparedPayload: domain.readPreparedPayload,
-                beforeLocks: beforePublication,
-              },
+        cryptoCompletion: { complete: revision => publicationDomain.completion.complete(revision) },
+        publication: heldPublication === undefined
+          ? basePublication.representation === "protected_only"
+            ? { representation: "protected_only", beforeLocks: beforePublication }
+            : { representation: "ordinary_and_protected",
+                readPreparedPayload: revision => publicationDomain.readPreparedPayload(revision),
+                beforeLocks: beforePublication }
+          : basePublication.representation === "protected_only"
+            ? { representation: "protected_only", withCurrentPublication: heldPublication }
+            : { representation: "ordinary_and_protected", withCurrentPublication: heldPublication,
+                readPreparedPayload: revision => publicationDomain.readPreparedPayload(revision) },
       });
-      const provenance = {
-        vector: embedding.vector,
-        provider: embedding.provider,
-        canonicalModel: embedding.canonicalModel,
-        dimensions: MEMORY_EMBEDDING_DIMENSIONS,
-        contractVersion: embedding.contractVersion,
-      } as const;
       const commitment = commitMemoryMutationV1({
         kind: "save",
         payload: {
@@ -602,28 +997,96 @@ export async function createForegroundMemoryProjectionPort(
           content: prepared.proposedContent,
         },
       });
+      const deliverEffect = async (memoryId: string) => {
+        try {
+          const deliver = (beforeLocks: Parameters<
+            typeof deliverCommittedForegroundMemoryEffect
+          >[0]["beforeLocks"]) => deliverCommittedForegroundMemoryEffect({
+            canonicalRunner: context.canonicalRunner,
+            beforeLocks,
+            authority: projectionAuthority,
+            operationId: prepared.operationId,
+            memoryId,
+          });
+          const effect = input.withCurrentProjection === undefined
+            ? await deliver(projectionBeforeLocks)
+            : await withProjection(snapshot.destination, projectionAuthority,
+                false, assertCurrent => deliver(async () => assertCurrent()));
+          if (effect === null || effect === "pending") input.wakeEffectRecovery();
+        } catch { input.wakeEffectRecovery(); }
+      };
+      // The committed product receipt already binds this exact proposal. Replay
+      // it before acquiring new ciphertext or invoking an embedding provider.
+      const replay = await targetProduct.replayCompleted({
+        operationId: prepared.operationId,
+        authority: projectionAuthority,
+        mutationKind: "save",
+        importance: 0.8,
+        mutationCommitment: commitment,
+      });
+      if (replay.status === "unavailable") return replay;
+      if (replay.value !== null) {
+        await deliverEffect(replay.value.memoryId);
+        return { status: "success" as const, value: {
+          status: "replayed" as const,
+          memoryId: replay.value.memoryId,
+          roomLabel: snapshot.destination.label,
+        } };
+      }
+      const embedding = await embedTextWithProvenance(
+        prepared.proposedContent,
+        input.domain.entities.signal,
+      );
+      if (embedding.dimensions !== MEMORY_EMBEDDING_DIMENSIONS)
+        return {
+          status: "unavailable" as const,
+          reason: "embedding_unavailable" as const,
+        };
+      const provenance = {
+        vector: embedding.vector,
+        provider: embedding.provider,
+        canonicalModel: embedding.canonicalModel,
+        dimensions: MEMORY_EMBEDDING_DIMENSIONS,
+        contractVersion: embedding.contractVersion,
+      } as const;
       const plan = await targetProduct.planProjectionCreate({
         operationId: prepared.operationId,
-        authority: targetAuthority,
+        authority: projectionAuthority,
         embedding: provenance,
         importance: 0.8,
         mutationCommitment: commitment,
       });
       if (plan.status === "unavailable") return plan;
-      const encrypted = await domain.session.prepare({
-        entrypointId: input.domain.entrypointId,
-        agentId: input.domain.agentId,
-        authority: targetAuthority,
-        plan: plan.value,
-        content: {
-          kind: "complete",
-          payload: {
-            formatVersion: 1,
-            type: "fact",
-            content: prepared.proposedContent,
-          },
-        },
+      const reservation = await targetProduct.inspectFreshProjectionReservation({
+        authority: projectionAuthority, plan: plan.value,
+        payload: { formatVersion: 1, type: "fact", content: prepared.proposedContent },
       });
+      if (reservation === null) return authorityUnavailable();
+      publicationDomain = createForegroundDomainMemoryCryptoSession({
+        ...input.domain, freshPublication: input.publication.forReservation(reservation),
+      });
+      const prepareEncrypted = () => publicationDomain.session.prepare({
+          entrypointId: input.domain.entrypointId,
+          agentId: input.domain.agentId,
+          authority: projectionAuthority,
+          plan: plan.value,
+          content: {
+            kind: "complete" as const,
+            payload: {
+              formatVersion: 1 as const,
+              type: "fact",
+              content: prepared.proposedContent,
+            },
+          },
+        });
+      const encrypted = input.withCurrentProjection === undefined
+        ? await prepareEncrypted()
+        : await withProjection(snapshot.destination, projectionAuthority,
+            true, prepareEncrypted);
+      if (encrypted === null) return {
+        status: "unavailable" as const,
+        reason: "authorization_required" as const,
+      };
       if (encrypted.status === "unavailable") return encrypted;
       const sourceNamespaceIds = [
         ...new Set(
@@ -634,15 +1097,15 @@ export async function createForegroundMemoryProjectionPort(
         operations: ["decrypt"],
         namespaceIds: sourceNamespaceIds,
         execute: () =>
-          domain.session.authorizeCommit({
+          publicationDomain.session.authorizeCommit({
             entrypointId: input.domain.entrypointId,
             agentId: input.domain.agentId,
-            authority: targetAuthority,
+            authority: projectionAuthority,
             target: plan.value,
             operation: "publish",
             commit: () =>
               targetProduct.publishPrepared({
-                authority: targetAuthority,
+                authority: projectionAuthority,
                 plan: plan.value,
                 prepared: encrypted.value,
                 embedding: provenance,
@@ -675,19 +1138,147 @@ export async function createForegroundMemoryProjectionPort(
           roomLabel: snapshot.destination.label,
         },
       };
-      try {
-        const effect = await deliverCommittedForegroundMemoryEffect({
-          canonicalRunner: context.canonicalRunner,
-          beforeLocks: projectionBeforeLocks,
-          authority: targetAuthority,
-          operationId: prepared.operationId,
-          memoryId: plan.value.memoryId,
-        });
-        if (effect === "pending") input.wakeEffectRecovery();
-      } catch {
-        input.wakeEffectRecovery();
-      }
+      await deliverEffect(plan.value.memoryId);
       return result;
+    },
+  });
+  const openProtected = async (
+    reference: Parameters<ProtectedAgentMemoryProjectionPort["publish"]>[0]["reference"],
+  ) => {
+    const decoded = projectionContinuationSchema.safeParse(await capsule.open(reference));
+    const state = decoded.success ? decoded.data.state : null;
+    if (state === null || state.publicationAuthority === undefined
+      || state.destinationAuthorityDigest === undefined) return null;
+    let plan: ProtectedTaskProjectionAuthorityPlan;
+    try {
+      plan = deserializeProtectedTaskProjectionAuthorityPlan(
+        state.publicationAuthority as SerializedProtectedTaskProjectionAuthorityPlan,
+      );
+    } catch { return null; }
+    return Object.freeze({ state, plan,
+      destinationAuthorityDigest: new Uint8Array(Buffer.from(
+        state.destinationAuthorityDigest, "hex")) });
+  };
+  return Object.freeze({ port, openProtected,
+    withContinuedReference: <Value>(reference: ProjectionReference,
+      use: () => Promise<Value>) => continuedReference.run(reference, use),
+  });
+}
+
+export async function createForegroundMemoryProjectionPort(
+  input: ForegroundMemoryProjectionInput,
+): Promise<ProtectedAgentMemoryProjectionPort> {
+  return (await createForegroundMemoryProjectionAssembly(input)).port;
+}
+
+/** Protected wake adapter. Its sealed foreground capsule fixes the original
+ * authority decision; a later grant may satisfy it but cannot turn an
+ * additional-authority preparation into a current-authority publication. */
+export async function createForegroundProtectedTaskMemoryProjection(
+  input: ForegroundProtectedTaskMemoryProjectionInput,
+): Promise<ProtectedTaskMemoryProjectionHandoff> {
+  const assembly = await createForegroundMemoryProjectionAssembly(input, { input });
+  const sameBytes = (left: Uint8Array, right: Uint8Array) =>
+    left.length === right.length
+    && left.every((entry, index) => entry === right[index]);
+  const continuedPlan = (plan: ProtectedTaskProjectionAuthorityPlan) => {
+    const continuation = input.continuedAdditionalAuthority;
+    if (continuation === undefined || plan.kind !== "additional_authority_v1"
+      || continuation.effectDisposition !== "not_started_v1"
+      || plan.authorizationRequestId !== continuation.authorizationRequestId
+      || plan.operationId !== continuation.operationId
+      || !sameBytes(plan.requestDigest, continuation.requestDigest)) return false;
+    const required = protectedTaskSemanticAuthorityRequirementsDigest(
+      plan.semanticAuthorityRequirements,
+    );
+    try { return sameBytes(required, continuation.requiredAuthorityDigest); }
+    finally { required.fill(0); }
+  };
+  const recover = async (
+    authority: ProtectedMemoryAuthority,
+    reference: Parameters<ProtectedAgentMemoryProjectionPort["publish"]>[0]["reference"],
+  ) => {
+    const opened = await assembly.openProtected(reference);
+    if (opened === null || opened.state.proposalDigest === undefined
+      || opened.state.effectDigest === undefined) return null;
+    const continued = input.continuedAdditionalAuthority !== undefined;
+    if (continued && !continuedPlan(opened.plan)) return null;
+    const restore = () => assembly.port.restore!({ authority, reference });
+    const restored = continued
+      ? await assembly.withContinuedReference(reference, restore)
+      : await restore();
+    if (restored.status === "unavailable") return null;
+    const rederived = createProtectedTaskProjectionAuthorityPlan({
+      ...input.task, reference,
+      operationId: opened.plan.operationId,
+      sources: opened.state.sources,
+      destination: opened.state.destination,
+      proposalDigest: opened.state.proposalDigest,
+      effectDigest: opened.state.effectDigest,
+      // Re-derivation must preserve the sealed kind. Supplying its own exact
+      // requirements here prevents a fresh wider grant from rewriting it.
+      availableAuthority: opened.plan.kind === "current_v1"
+        ? opened.plan.semanticAuthorityRequirements : Object.freeze([]),
+    });
+    if (!sameProtectedTaskProjectionAuthorityPlan(opened.plan, rederived)) return null;
+    const expectedDigest = protectedTaskProjectionDestinationAuthorityDigest(opened.state.destination);
+    const planned = await input.planDestination({ destination: opened.state.destination,
+      targetAuthority: Object.freeze({ mode: "namespace" as const,
+        subjectUserId: input.domain.subjectUserId, agentId: input.domain.agentId,
+        readableNamespaceIds: Object.freeze([opened.state.destination.namespaceId]),
+        mutableNamespaceIds: Object.freeze([opened.state.destination.namespaceId]),
+        writableNamespaceId: opened.state.destination.namespaceId }) });
+    if (planned === null || expectedDigest.length !== opened.destinationAuthorityDigest.length
+      || !expectedDigest.every((entry, index) => entry === opened.destinationAuthorityDigest[index])
+      || !expectedDigest.every((entry, index) => entry === planned.destinationAuthorityDigest[index])) return null;
+    return Object.freeze({ ...opened, destinationAuthorityDigest: expectedDigest,
+      restored, continued });
+  };
+  return Object.freeze({
+    prepare: request => assembly.port.prepare(request),
+    async restore({ authority, reference }) {
+      const opened = await recover(authority, reference);
+      return opened?.restored ?? authorityUnavailable();
+    },
+    async planPublication({ authority, reference }) {
+      const opened = await recover(authority, reference);
+      if (opened === null) return authorityUnavailable();
+      if (opened.plan.kind === "additional_authority_v1") {
+        await input.onAdditionalAuthority?.(Object.freeze({ ...opened.plan,
+          requestDigest: Uint8Array.from(opened.plan.requestDigest),
+          semanticAuthorityRequirements: opened.plan.semanticAuthorityRequirements }),
+        Object.freeze({ destinationRoomId: opened.state.destination.roomId,
+          namespaceId: opened.state.destination.namespaceId,
+          destinationAuthorityDigest: Uint8Array.from(opened.destinationAuthorityDigest) }));
+      }
+      return Object.freeze({ status: "success" as const, value: opened.plan });
+    },
+    async publishAuthorized({ authority, reference, authorization }) {
+      const opened = await recover(authority, reference);
+      if (opened === null || authorization.kind !== opened.plan.kind
+        || !sameProtectedTaskProjectionAuthorityPlan(authorization.plan, opened.plan)
+        || !semanticAuthorityCovers(input.currentSemanticAuthorityRequirements,
+          opened.plan.semanticAuthorityRequirements)) return authorityUnavailable();
+      if (authorization.kind === "additional_authority_v1") {
+        if (opened.plan.kind !== "additional_authority_v1") return authorityUnavailable();
+        const requiredAuthorityDigest = protectedTaskSemanticAuthorityRequirementsDigest(
+          opened.plan.semanticAuthorityRequirements,
+        );
+        try {
+          assertProtectedTaskAdditionalAuthorityResumeAcknowledgementV1(
+            authorization.acknowledgement, {
+              authorizationRequestId: opened.plan.authorizationRequestId,
+              effectDisposition: "not_started_v1", operationId: opened.plan.operationId,
+              requestDigest: opened.plan.requestDigest, requiredAuthorityDigest,
+            },
+          );
+        } catch { return authorityUnavailable(); }
+        finally { requiredAuthorityDigest.fill(0); }
+      }
+      const publish = () => assembly.port.publish({ authority, reference });
+      return opened.continued
+        ? assembly.withContinuedReference(reference, publish)
+        : publish();
     },
   });
 }
@@ -708,8 +1299,15 @@ export async function createForegroundMemoryRepository(
         revision: number;
       }>
     >;
+    /** A trusted current owner wraps each genuine Agent product transaction. */
+    withCurrentPublication?: NonNullable<
+      Extract<AgentMemoryPublicationBoundary, {
+        withCurrentPublication: unknown;
+      }>["withCurrentPublication"]
+    >;
+    embedding?: ProtectedAgentMemoryEmbeddingPort;
   }>,
-) {
+): Promise<ProtectedAgentMemoryRepository> {
   if (
     isScopeMemoryEnvelope(input.envelope) ||
     input.envelope.ownerId !== input.domain.subjectUserId ||
@@ -728,15 +1326,21 @@ export async function createForegroundMemoryRepository(
   });
   const domain = createForegroundDomainMemoryCryptoSession(input.domain);
   const readableNamespaceIds = [...input.envelope.readableNamespaces].sort();
+  const productAuthority = input.withCurrentPublication === undefined
+    ? publication
+    : Object.freeze({
+        representation: publication.representation,
+        withCurrentPublication: input.withCurrentPublication,
+      });
   const product = new PostgresAgentMemoryProductPort({
     ...authority,
     readableNamespaceIds,
     cryptoCompletion: domain.completion,
     publication:
-      publication.representation === "protected_only"
-        ? { ...publication, representation: "protected_only" }
+      productAuthority.representation === "protected_only"
+        ? { ...productAuthority, representation: "protected_only" }
         : {
-            ...publication,
+            ...productAuthority,
             representation: "ordinary_and_protected",
             readPreparedPayload: domain.readPreparedPayload,
           },
@@ -996,7 +1600,7 @@ export async function createForegroundMemoryRepository(
         throw error;
       }
     },
-    embedding: {
+    embedding: input.embedding ?? {
       embed: async ({ plaintext, signal }) => {
         signal?.throwIfAborted();
         try {

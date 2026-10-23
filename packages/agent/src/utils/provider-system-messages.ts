@@ -1,4 +1,4 @@
-import { SystemMessage, type BaseMessage } from "@langchain/core/messages";
+import { HumanMessage, SystemMessage, type BaseMessage } from "@langchain/core/messages";
 import { modelRouteProvider } from "../providers/model-route";
 
 function flattenContentToString(content: unknown): string {
@@ -42,6 +42,14 @@ export function collapseNonLeadingSystemMessages(messages: BaseMessage[]): {
     if (message instanceof SystemMessage) {
       const text = flattenContentToString(message.content).trim();
       if (text) extraSystemText.push(text);
+      if (message.additional_kwargs["nautilo_task_wake_continuation"] === true) {
+        // Provider-only continuation control; canonical wake attribution and
+        // the Room transcript stay Agent-only.
+        next.push(new HumanMessage({
+          content: "Continue from the authenticated Task outcome.",
+          additional_kwargs: { nautilo_transient_context: true },
+        }));
+      }
       continue;
     }
     next.push(message);

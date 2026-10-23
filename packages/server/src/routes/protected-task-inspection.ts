@@ -233,11 +233,19 @@ export function createProtectedTaskRunResultInspectionAdapter(
       return unavailable("unsupported_crypto_access_revision");
     }
 
+    const terminalResultRevision = before.run.status === "cancelled"
+      ? before.run.resultRevision === 2 ? 2 as const : null
+      : before.run.status === "completed" || before.run.status === "errored"
+      ? before.run.resultRevision === 1 ? 1 as const : null
+      : null;
+    if (terminalResultRevision === null) {
+      return unavailable("integrity_failure");
+    }
     const coordinate = Object.freeze({
       kind: "run_result" as const,
       taskId: request.taskId,
       taskRunId: request.taskRunId,
-      contentRevision: 1,
+      contentRevision: terminalResultRevision,
     });
     let expectedObjectId: string;
     let expectedDefinitionObjectId: string;
@@ -267,9 +275,7 @@ export function createProtectedTaskRunResultInspectionAdapter(
         before.task.cryptoRequiredNamespaceFingerprint,
         before.run.resultCryptoRequiredNamespaceFingerprint,
       )
-      || before.run.resultCryptoMappingState !== "verified"
-      || (before.run.status !== "completed"
-        && before.run.status !== "errored")) {
+      || before.run.resultCryptoMappingState !== "verified") {
       return unavailable("integrity_failure");
     }
 

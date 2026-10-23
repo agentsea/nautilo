@@ -98,86 +98,9 @@ export function detectExecutableOrArchiveMagic(headBytes: Uint8Array): "executab
   return null;
 }
 
-/**
- * Extensions that name OOXML packages (ECMA-376 / ISO/IEC 29500).
- * Despite the .docx/.xlsx/.pptx extension these files are physically ZIP
- * archives, so they trip {@link detectExecutableOrArchiveMagic}'s archive
- * branch and need an explicit carve-out.
- */
-const OOXML_EXTENSIONS: ReadonlySet<string> = new Set([".docx", ".xlsx", ".pptx"]);
-
-/**
- * Per-part marker file required at the start of every OOXML package. Per
- * ECMA-376 §10.1.1, `[Content_Types].xml` is the first part in the package
- * and therefore appears near the very start of the ZIP stream — its local
- * file header sits at byte 0 and the filename bytes follow the 30-byte
- * local-file header, so the marker is reachable within a small sniff window.
- */
-const OOXML_MARKER = new TextEncoder().encode("[Content_Types].xml");
-
-function containsSubarray(hay: Uint8Array, needle: Uint8Array): boolean {
-  if (needle.length === 0) {
-    return true;
-  }
-  if (hay.length < needle.length) {
-    return false;
-  }
-  outer: for (let i = 0; i <= hay.length - needle.length; i++) {
-    for (let j = 0; j < needle.length; j++) {
-      if (hay[i + j] !== needle[j]) {
-        continue outer;
-      }
-    }
-    return true;
-  }
-  return false;
-}
-
-/**
- * Conservative carve-out for OOXML office files (.docx/.xlsx/.pptx), which
- * are physically ZIP archives but should be accepted as workspace artifacts
- * when their content actually looks like an OOXML package.
- *
- * Required signals, all three:
- *   1. Extension is one of `.docx` / `.xlsx` / `.pptx`.
- *   2. The sniffed prefix starts with the ZIP local-file-header magic
- *      `PK\x03\x04`. Empty-archive signatures (`PK\x05\x06` / `PK\x07\x08`)
- *      are not valid leading bytes for a real OOXML file and are rejected.
- *   3. The sniffed prefix contains the `[Content_Types].xml` marker, which
- *      is the first filename inside every OOXML package.
- *
- * RISK / sniff-window sizing: {@link ATTACHMENT_POLICY.maxSniffBytes} is
- * 64 KiB. The first ZIP local-file header (30 bytes) plus the
- * `[Content_Types].xml` filename (19 bytes) lands within the first ~50
- * bytes of a compliant package, so 64 KiB is comfortably enough for
- * well-formed OOXML files produced by Word/Excel/PowerPoint and most
- * libraries. We do NOT accept extension-only proof: a `.docx` whose head
- * bytes look like a plain ZIP without the marker is rejected as
- * `archive_magic`. If a real OOXML producer ever places enough data before
- * the `[Content_Types].xml` entry that the marker falls outside the 64 KiB
- * sniff window, the upload will be wrongly rejected; that case is a tracked
- * follow-up for the server route to do a deeper sniff / full central
- * directory check rather than a prefix-only sniff.
- */
-export function isLikelyOoxmlZip(filename: string, headBytes: Uint8Array): boolean {
-  const ext = extensionOfArtifactName(filename);
-  if (!OOXML_EXTENSIONS.has(ext)) {
-    return false;
-  }
-  if (headBytes.length < 4) {
-    return false;
-  }
-  if (
-    !(
-      headBytes[0] === 0x50 &&
-      headBytes[1] === 0x4b &&
-      headBytes[2] === 0x03 &&
-      headBytes[3] === 0x04
-    )
-  ) {
-    return false;
-  }
-  return containsSubarray(headBytes, OOXML_MARKER);
+/** OOXML needs complete ZIP metadata validation by the upload owner. */
+export function isOoxmlArtifactName(filename: string): boolean {
+  return [".docx", ".xlsx", ".pptx"].includes(extensionOfArtifactName(filename));
 }
 
 /**
@@ -214,9 +137,12 @@ export function isLikelyIsoBmffMp4(headBytes: Uint8Array): boolean {
 export function classifyArtifactUpload({
   filename,
   headBytes,
+  ooxmlPackageValidated = false,
 }: {
   filename: string;
   headBytes: Uint8Array;
+  /** Set only after the server validates the uploaded file’s ZIP directory. */
+  ooxmlPackageValidated?: boolean;
 }): { ok: true } | { ok: false; reason: string; code: string } {
   const magic = detectExecutableOrArchiveMagic(headBytes);
   if (magic === "executable") {
@@ -227,8 +153,9 @@ export function classifyArtifactUpload({
     };
   }
   if (magic === "archive") {
-    if (isLikelyOoxmlZip(filename, headBytes)) {
-      return { ok: true };
+    if (isOoxmlArtifactName(filename)) {
+      return ooxmlPackageValidated ? { ok: true }
+        : { ok: false, reason: "Office document package is invalid or unsupported", code: "invalid_office_package" };
     }
     return {
       ok: false,
@@ -244,6 +171,9 @@ export function classifyArtifactUpload({
     };
   }
   const ext = extensionOfArtifactName(filename);
+  if (isOoxmlArtifactName(filename)) {
+    return { ok: false, reason: "Office document package is invalid or unsupported", code: "invalid_office_package" };
+  }
   if (ext === ".pdf" && new TextDecoder().decode(headBytes.subarray(0, 5)) !== "%PDF-") {
     return { ok: false, reason: "PDF artifact missing PDF header", code: "pdf_header_missing" };
   }

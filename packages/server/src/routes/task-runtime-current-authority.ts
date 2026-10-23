@@ -1,7 +1,20 @@
+import { parseProtectedTaskOpenCodeSelection, protectedTaskOpenCodeSelectionProjection, type ProtectedTaskOpenCodeSelection } from "./protected-task-opencode-selection";
+import { parseProtectedTaskDeepResearchSelection, protectedTaskDeepResearchSelectionProjection, type ProtectedTaskDeepResearchSelection } from "./protected-task-deep-research-selection";
+import { parseProtectedTaskCodexSelection, protectedTaskCodexSelectionProjection, type ProtectedTaskCodexSelection } from "./protected-task-codex-selection";
+import { parseProtectedTaskHermesSelection, protectedTaskHermesSelectionProjection, type ProtectedTaskHermesSelection } from "./protected-task-hermes-selection";
+import { parseProtectedTaskRepoDocsSelection, protectedTaskRepoDocsSelectionProjection, type ProtectedTaskRepoDocsSelection } from "./protected-task-repo-docs-selection";
+import { validateCurrentTaskDefinitionIdentity } from "./protected-task-runtime-definition-identity";
+import {
+  parseProtectedTaskClaudeSelection,
+  protectedTaskClaudeSelectionProjection,
+  type ProtectedTaskClaudeSelection,
+} from "./protected-task-claude-selection";
 import { and, eq, inArray, sql } from "drizzle-orm";
+import { createHash } from "node:crypto";
 
 import {
   actors,
+  PROTECTED_TASK_PRESETS,
   rooms,
   roomMembers,
   taskRuns,
@@ -12,7 +25,13 @@ import {
 } from "@nautilo/db";
 import type { LatticeCrypto } from "@nautilo/lattice-crypto";
 import {
+  decodeTaskRuntimeBackgroundAuthorizationRequestBase,
+  decodeTaskRuntimeBackgroundAuthorizationResponseV2,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV1,
   encodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  isTaskRuntimeBackgroundAuthorizationRequestV2Carrier,
+  isTaskRuntimeBackgroundAuthorizationRequestV3Carrier,
+  type BackgroundAuthorizationIssuerV2,
   type TaskRuntimeBackgroundAuthorizationRequestV1,
 } from "@nautilo/lattice-crypto/background";
 import type {
@@ -31,7 +50,7 @@ import {
 } from "@nautilo/lattice-bridge/server";
 import {
   isCurrentProtectedTaskRunForGrant,
-  BACKGROUND_AUTHORIZATION_MAX_CLAIM_LEASE_MS,
+  TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS,
   PostgresBackgroundAuthorizationRepository,
   type BackgroundAuthorizationTaskRuntimeRecordV3,
   type BackgroundAuthorizationTaskRuntimeReplacementRepository,
@@ -58,6 +77,13 @@ export type CurrentProtectedTaskRuntimeLifecycleFacts = Readonly<{
   run: CurrentRun;
   /** Content-free result of inspecting the locked Task's execution route. */
   nativeExecutionSupported: boolean;
+  /** Closed operational selection; never the complete Task metadata. */
+  claudeExecutionSelection?: ProtectedTaskClaudeSelection | null;
+  codexExecutionSelection?: ProtectedTaskCodexSelection | null;
+  hermesExecutionSelection?: ProtectedTaskHermesSelection | null;
+  opencodeExecutionSelection?: ProtectedTaskOpenCodeSelection | null;
+  deepResearchExecutionSelection?: ProtectedTaskDeepResearchSelection | null;
+  repoDocsSelection?: ProtectedTaskRepoDocsSelection | null;
 }>;
 
 type CurrentRequesterPrivateRoomFacts = Readonly<{
@@ -84,17 +110,16 @@ type WithAcceptedClaimAuthority =
 export type HeldProtectedTaskRuntimeAuthority = Readonly<{
   foreground: DomainForegroundAuthorizationPublicCurrentAuthorityV2;
   namespaceRequirements: CurrentTaskRuntimeAuthority["namespaceRequirements"];
+  currentIssuer?: BackgroundAuthorizationIssuerV2;
   /** Absent on legacy/test adapters; native execution must treat absence as false. */
   nativeExecutionSupported?: boolean;
+  claudeExecutionSelection?: ProtectedTaskClaudeSelection | null;
+  codexExecutionSelection?: ProtectedTaskCodexSelection | null;
+  hermesExecutionSelection?: ProtectedTaskHermesSelection | null;
+  opencodeExecutionSelection?: ProtectedTaskOpenCodeSelection | null;
+  deepResearchExecutionSelection?: ProtectedTaskDeepResearchSelection | null;
+  repoDocsSelection?: ProtectedTaskRepoDocsSelection | null;
 }>;
-
-const NATIVE_TASK_PRESETS: readonly Task["preset"][] = [
-  "task",
-  "in_scope",
-  "in_private_namespace",
-  "in_background",
-  "schedule",
-];
 
 export type CurrentProtectedTaskRuntimeAuthorityPort = <Value>(input: Readonly<{
   runner: ConversationProductCanonicalTransactionRunner;
@@ -152,7 +177,18 @@ export function acceptedTaskRuntimeRecord(
     || response.kind !== "runtime"
     || recipient === null
     || material === null) return null;
-  return Object.freeze({
+  let wrappedResponse: Readonly<{
+    authorizationBytes: Uint8Array;
+    certificateBytes: Uint8Array;
+  }> | undefined;
+  try {
+    if (isTaskRuntimeBackgroundAuthorizationRequestV2Carrier(record.descriptorBytes)
+      || isTaskRuntimeBackgroundAuthorizationRequestV3Carrier(record.descriptorBytes)) {
+      wrappedResponse = decodeTaskRuntimeBackgroundAuthorizationResponseV2(
+        material.responseBytes,
+      );
+    }
+    return Object.freeze({
     descriptorBytes: Uint8Array.from(record.descriptorBytes),
     descriptorDigest: snapshot.descriptorDigest,
     requestId: snapshot.requestId,
@@ -166,8 +202,10 @@ export function acceptedTaskRuntimeRecord(
     namespaceRequirements: record.authoritySet.namespaceRequirements,
     domainRequirements: record.authoritySet.domainRequirements,
     authorizationId: material.credentialId,
-    authorizationBytes: Uint8Array.from(material.responseBytes),
-    authorizationDigest: response.responseDigest,
+    authorizationBytes: Uint8Array.from(
+      wrappedResponse?.authorizationBytes ?? material.responseBytes,
+    ),
+    authorizationDigest: response.credentialDigest,
     authorizationExpiresAt: material.authorizationExpiresAt,
     issuingHumanId: response.issuingHumanId,
     issuingDeviceId: response.issuingDeviceId,
@@ -175,7 +213,13 @@ export function acceptedTaskRuntimeRecord(
       material.issuingDeviceAuthorizationRevision,
     issuerSigningPublicKeyHash:
       Uint8Array.from(material.issuerSigningPublicKeyHash),
-  });
+    });
+  } catch {
+    return null;
+  } finally {
+    wrappedResponse?.authorizationBytes.fill(0);
+    wrappedResponse?.certificateBytes.fill(0);
+  }
 }
 
 export function destroyAcceptedTaskRuntimeRecord(
@@ -189,8 +233,17 @@ export function destroyAcceptedTaskRuntimeRecord(
 export function copyProtectedTaskRuntimeAuthority(
   authority: CurrentTaskRuntimeAuthority,
   nativeExecutionSupported: boolean,
+  claudeExecutionSelection?: ProtectedTaskClaudeSelection | null,
+  codexExecutionSelection?: ProtectedTaskCodexSelection | null,
+  hermesExecutionSelection?: ProtectedTaskHermesSelection | null,
+  deepResearchExecutionSelection?: ProtectedTaskDeepResearchSelection | null,
+  repoDocsSelection?: ProtectedTaskRepoDocsSelection | null,
+  opencodeExecutionSelection?: ProtectedTaskOpenCodeSelection | null,
 ): HeldProtectedTaskRuntimeAuthority {
   const plan = authority.plan;
+  const signingPublicKeyHash = new Uint8Array(
+    createHash("sha256").update(authority.device.signingPublicKey).digest(),
+  );
   return Object.freeze({
     foreground: Object.freeze({
       authorizationId: plan.authorizationId,
@@ -225,7 +278,27 @@ export function copyProtectedTaskRuntimeAuthority(
         operations: Object.freeze([...requirement.operations]),
       })),
     ),
+    currentIssuer: Object.freeze({
+      humanId: authority.device.humanActorId,
+      deviceId: authority.device.deviceId,
+      deviceGeneration: authority.device.deviceGeneration,
+      serverInstanceId: authority.device.serverInstanceId,
+      lineageGeneration: authority.device.lineageGeneration,
+      epoch: authority.device.epoch,
+      securityRevision: authority.device.securityRevision,
+      headDigest: Uint8Array.from(authority.device.headDigest),
+      signingPublicKeyHash,
+    }),
     nativeExecutionSupported,
+    ...(claudeExecutionSelection === undefined ? {} : {
+      claudeExecutionSelection: claudeExecutionSelection === null ? null
+        : Object.freeze({ ...claudeExecutionSelection }),
+    }),
+    ...(codexExecutionSelection === undefined ? {} : { codexExecutionSelection: parseProtectedTaskCodexSelection(codexExecutionSelection) }),
+    ...(opencodeExecutionSelection === undefined ? {} : { opencodeExecutionSelection: parseProtectedTaskOpenCodeSelection(opencodeExecutionSelection) }),
+    ...(hermesExecutionSelection === undefined ? {} : { hermesExecutionSelection: parseProtectedTaskHermesSelection(hermesExecutionSelection) }),
+    ...(deepResearchExecutionSelection === undefined ? {} : { deepResearchExecutionSelection: parseProtectedTaskDeepResearchSelection(deepResearchExecutionSelection) }),
+    ...(repoDocsSelection === undefined ? {} : { repoDocsSelection: parseProtectedTaskRepoDocsSelection(repoDocsSelection) }),
   });
 }
 
@@ -236,6 +309,8 @@ export function destroyProtectedTaskRuntimeAuthority(authority: HeldProtectedTas
     domain.headDigest.fill(0);
     domain.activeNamespaceBindingSetDigest.fill(0);
   }
+  authority.currentIssuer?.headDigest.fill(0);
+  authority.currentIssuer?.signingPublicKeyHash.fill(0);
 }
 
 export async function loadCurrentProtectedTaskRuntimeLifecycleFacts(input: Readonly<{
@@ -260,14 +335,22 @@ export async function loadCurrentProtectedTaskRuntimeLifecycleFacts(input: Reado
     crypto_mapping_state: tasks.cryptoMappingState,
     native_execution_supported: sql<boolean>`case
       when jsonb_typeof(${tasks.metadata}) = 'object' then coalesce(
-        ${inArray(tasks.preset, NATIVE_TASK_PRESETS)}
+        ${inArray(tasks.preset, PROTECTED_TASK_PRESETS)}
         and (${tasks.metadata} - 'preparation' - 'lastInterruption') = '{}'::jsonb,
         false
       )
       else false
     end`.as("native_execution_supported"),
+    claude_execution_selection: protectedTaskClaudeSelectionProjection(),
+    codex_execution_selection: protectedTaskCodexSelectionProjection(),
+    hermes_execution_selection: protectedTaskHermesSelectionProjection(),
+    opencode_execution_selection: protectedTaskOpenCodeSelectionProjection(),
+    deep_research_execution_selection: protectedTaskDeepResearchSelectionProjection(),
+    repo_docs_selection: protectedTaskRepoDocsSelectionProjection(),
   }).from(tasks).where(eq(tasks.id, input.occurrence.task.id))
-    .limit(2).for("update"));
+    .limit(2)
+    // Exclude Task edits/deletes while permitting FK-only usage accounting.
+    .for("no key update"));
   if (taskRows.length !== 1) return null;
   const taskRow = taskRows[0]!;
   const task: CurrentTask = {
@@ -326,10 +409,18 @@ export async function loadCurrentProtectedTaskRuntimeLifecycleFacts(input: Reado
         : Uint8Array.from(runRow.result_crypto_required_namespace_fingerprint),
     resultCryptoMappingState: runRow.result_crypto_mapping_state,
   };
+  if (input.occurrence.task.definitionHistoricalRepair != null
+    && !await validateCurrentTaskDefinitionIdentity({ product: input.product, task: input.occurrence.task })) return null;
   return Object.freeze({
     task: Object.freeze(task),
     run: Object.freeze(run),
     nativeExecutionSupported: taskRow.native_execution_supported === true,
+    claudeExecutionSelection: parseProtectedTaskClaudeSelection(taskRow.claude_execution_selection),
+    codexExecutionSelection: parseProtectedTaskCodexSelection(taskRow.codex_execution_selection),
+    hermesExecutionSelection: parseProtectedTaskHermesSelection(taskRow.hermes_execution_selection),
+    opencodeExecutionSelection: parseProtectedTaskOpenCodeSelection(taskRow.opencode_execution_selection),
+    deepResearchExecutionSelection: parseProtectedTaskDeepResearchSelection(taskRow.deep_research_execution_selection),
+    repoDocsSelection: parseProtectedTaskRepoDocsSelection(taskRow.repo_docs_selection),
   });
 }
 
@@ -369,8 +460,7 @@ export async function loadCurrentProtectedTaskRuntimeRequesterRoomFacts(
     if (memberRows.length !== 2
       || memberRows.filter((member) => member.kind === "user"
         && member.id === humanActorId).length !== 1
-      || memberRows.filter((member) => member.kind === "agent"
-        && member.agent_id === task.agentId).length !== 1) return null;
+      || memberRows.filter((member) => member.kind === "agent").length !== 1) return null;
     requesterPrivateRoom = Object.freeze({
       roomId: room.id,
       namespaceId: room.namespace_id,
@@ -403,17 +493,35 @@ async function withLockedCurrentProtectedTaskRuntimeAuthority<Value>(
 ): Promise<Value | null> {
   const accepted = acceptedTaskRuntimeRecord(input.record);
   if (accepted === null || input.record.descriptorBytes === null) return null;
-  let requestBytes: Uint8Array;
+  let expectedRequestBytes: Uint8Array | undefined;
+  let descriptorRequestBytes: Uint8Array | undefined;
+  let descriptorRequest: TaskRuntimeBackgroundAuthorizationRequestV1 | null = null;
   try {
-    requestBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV1(
+    expectedRequestBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV1(
       input.request,
     );
+    descriptorRequest = decodeTaskRuntimeBackgroundAuthorizationRequestBase(
+      input.crypto,
+      input.record.descriptorBytes,
+    );
+    if (descriptorRequest !== null) {
+      descriptorRequestBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV1(
+        descriptorRequest,
+      );
+    }
   } catch {
     destroyAcceptedTaskRuntimeRecord(accepted);
     return null;
+  } finally {
+    if (descriptorRequest !== null) {
+      destroyTaskRuntimeBackgroundAuthorizationRequestV1(descriptorRequest);
+    }
   }
-  const exactRequest = sameBytes(requestBytes, input.record.descriptorBytes);
-  requestBytes.fill(0);
+  const exactRequest = expectedRequestBytes !== undefined
+    && descriptorRequestBytes !== undefined
+    && sameBytes(expectedRequestBytes, descriptorRequestBytes);
+  expectedRequestBytes?.fill(0);
+  descriptorRequestBytes?.fill(0);
   if (!exactRequest) {
     destroyAcceptedTaskRuntimeRecord(accepted);
     return null;
@@ -503,7 +611,10 @@ export function createCurrentProtectedTaskRuntimeAuthorityPort(
       phase,
       dependencies,
       (authority, facts) =>
-        copyProtectedTaskRuntimeAuthority(authority, facts.nativeExecutionSupported),
+        copyProtectedTaskRuntimeAuthority(authority, facts.nativeExecutionSupported,
+          facts.claudeExecutionSelection, facts.codexExecutionSelection,
+          facts.hermesExecutionSelection, facts.deepResearchExecutionSelection,
+          facts.repoDocsSelection, facts.opencodeExecutionSelection),
     );
     if (held === null) return null;
     try {
@@ -553,11 +664,15 @@ export function createCurrentProtectedTaskRuntimeClaimAuthorityPort(
           input.request.deadlineAt,
           recipient.expiresAt,
           material.authorizationExpiresAt,
-          claimedAt + BACKGROUND_AUTHORIZATION_MAX_CLAIM_LEASE_MS,
         );
+        if (claimExpiresAt - claimedAt
+          > TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS) return null;
         const held = copyProtectedTaskRuntimeAuthority(
           authority,
           facts.nativeExecutionSupported,
+          facts.claudeExecutionSelection, facts.codexExecutionSelection,
+          facts.hermesExecutionSelection, facts.deepResearchExecutionSelection,
+          facts.repoDocsSelection, facts.opencodeExecutionSelection,
         );
         try {
           const value = await input.use(

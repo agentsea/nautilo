@@ -163,6 +163,7 @@ export async function lockAtomicProjectionDestinationAuthority(
     | "userId"
     | "audienceFingerprint"
   >,
+  options: Readonly<{ actorIdentityLock?: "share" }> = {},
 ): Promise<Exclude<
   ProjectionStaleReason,
   | "expired"
@@ -192,12 +193,20 @@ export async function lockAtomicProjectionDestinationAuthority(
   );
   if (actorRows.length !== 1) return "requester_actor_changed";
   type LockedMember = { actorId: string; actorKind: string; ownerId: string };
+  // Protected Task owners already share-lock the admitted Agent identity.
+  // Keep that strength while fencing membership writes; upgrading a common
+  // Agent across disjoint Rooms would deadlock simultaneous projections.
+  // SHARE still excludes actor edits/deletion. Ordinary callers retain their
+  // existing UPDATE protocol.
+  const memberLocks = options.actorIdentityLock === "share"
+    ? sql`FOR UPDATE OF rm FOR SHARE OF a`
+    : sql`FOR UPDATE OF rm, a`;
   const members = rowsFromExecute(
     await handle.execute<LockedMember>(sql`
     SELECT rm.actor_id AS "actorId", a.kind AS "actorKind", a.owner_id AS "ownerId"
     FROM room_members rm INNER JOIN actors a ON a.id = rm.actor_id
     WHERE rm.room_id = ${input.roomId}::uuid
-    ORDER BY a.kind, a.owner_id, rm.actor_id FOR UPDATE OF rm, a
+    ORDER BY a.kind, a.owner_id, rm.actor_id ${memberLocks}
   `),
   );
   const inventory = members
@@ -467,7 +476,7 @@ export function fingerprintProjectionReadableAuthority(
     .digest("hex");
 }
 
-function fingerprintProjectionAudience(
+export function fingerprintProjectionAudience(
   roomId: string,
   membershipRows: string,
 ): string {

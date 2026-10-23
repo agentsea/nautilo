@@ -1,3 +1,4 @@
+import { projectToolResults } from "../tools/result-reader/result-projection";
 import { isExternalRoomState, prepareExternalRoomTextContext } from "../tools/external-room-policy";
 import { getCapabilityFundingSession } from "../runtime/capability-funding";
 import { personalToolReady } from "../runtime/personal-tool-readiness";
@@ -8,7 +9,7 @@ import {
 export { buildForegroundModelControlPlan } from "../config/foreground-model-controls";
 import { projectSecurityResearchConsolidationTools } from "../tools/security/security-scan";
 import { budgetResearchContext, captureResearchContextPresentation, isResearchPreEvictionConsolidating } from "../tools/security/research-context-rollover";
-import { taskReadResponseByteBudget, estimateTokenCount } from "../utils/history-manager";
+import { processHistory, taskReadResponseByteBudget, estimateTokenCount } from "../utils/history-manager";
 import type { HumanMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
 import type { NautiloState } from "../agent/state";
@@ -148,6 +149,7 @@ export async function agentNode(
   optionalResearchDraft?: HumanMessage,
   ordinaryContentAccessForState?: OrdinaryContentAccessForState,
   foregroundChatFundingSession?: ForegroundChatFundingSession,
+  confidential?: true,
 ): Promise<Partial<NautiloState>> {
   if (isExternalRoomState(state)) state = { ...state, ...await prepareExternalRoomTextContext(state) };
   const config = fromRuntimeConfig();
@@ -394,6 +396,7 @@ export async function agentNode(
         fallbackLaneKey,
         invocationConfig,
         {
+          ...(confidential === true ? { confidential: true as const } : {}),
           fundingHumanUserId: state.causalHumanUserId ?? "",
           reasoningOverrides,
           useOpenAIResponsesApi: true,
@@ -425,6 +428,14 @@ export async function agentNode(
             };
             actualPreparedMessages = recovered.messages;
             return recovered.messages;
+          } } : invocationTools.some((tool) => tool.name === "read_tool_result") ? { recoverContext: ({ messages, maxMessageTokens, estimatedMessageTokens }: {
+            messages: NautiloState["preparedMessages"]; maxMessageTokens: number; estimatedMessageTokens: number;
+          }) => {
+            const budget = Math.floor(Math.min(maxMessageTokens, estimatedMessageTokens) / 2);
+            actualPreparedMessages = processHistory(projectToolResults(messages, budget), {
+              maxMessageTokens: budget, validationEnabled: false, pruningEnabled: false,
+            }).messages;
+            return actualPreparedMessages;
           } } : {}),
           ...(resolveForegroundControls === undefined ? {} : { resolveForegroundControls }),
         },

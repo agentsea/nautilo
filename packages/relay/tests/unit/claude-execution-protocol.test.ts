@@ -3,6 +3,8 @@ import {
   CLAUDE_EXECUTION_MAX_FRAME_BYTES,
   CLAUDE_EXECUTION_MAX_OUTPUT_DELTA_BYTES,
   CLAUDE_EXECUTION_PROTOCOL_VERSION,
+  CLAUDE_MESSAGE_BOUNDARY_PROTOCOL_VERSION,
+  RELAY_PROTOCOL_VERSION,
   parseRelayClaudeExecutionCommand,
   parseRelayClaudeExecutionDesktopEvent,
   parseRelayClaudeExecutionJsonFrame,
@@ -151,4 +153,29 @@ describe("D452 Claude execution v18 protocol", () => {
     expect(parseRelayClaudeExecutionJsonFrame(raw, "server").ok).toBe(false);
     expect(parseRelayClaudeExecutionJsonFrame(JSON.stringify(command), "client").ok).toBe(false);
   });
+});
+
+
+test("root-message boundaries require protocol 32 while ordinary Claude output remains compatible", () => {
+  expect(RELAY_PROTOCOL_VERSION).toBe(32);
+  expect(CLAUDE_MESSAGE_BOUNDARY_PROTOCOL_VERSION).toBe(32);
+  const boundary = event({ kind: "output_message_started" });
+  expect(parseRelayClaudeExecutionDesktopEvent(boundary)).toBeNull();
+  expect(parseRelayClaudeExecutionDesktopEvent({
+    ...boundary,
+    scope: { ...scope, selectedProtocolVersion: 31 },
+  })).toBeNull();
+  const ordinaryV31 = {
+    ...event({ kind: "output_delta", text: "ordinary output" }),
+    scope: { ...scope, selectedProtocolVersion: 31 },
+  };
+  expect(parseRelayClaudeExecutionDesktopEvent(ordinaryV31)?.event).toEqual({
+    kind: "output_delta",
+    text: "ordinary output",
+  });
+  const current = { ...boundary, scope: { ...scope, selectedProtocolVersion: 32 } };
+  expect(parseRelayClaudeExecutionDesktopEvent(current)?.event).toEqual({ kind: "output_message_started" });
+  for (const extra of [{ text: "replacement" }, { offset: 1 }, { messageId: "invented" }]) {
+    expect(parseRelayClaudeExecutionDesktopEvent({ ...current, event: { kind: "output_message_started", ...extra } })).toBeNull();
+  }
 });
