@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Server Docker builds require Chromium 156.0.8078.47 or later from Debian
+  13 security updates on both AMD64 and ARM64, and no longer waive findings
+  for the older Chromium packages.
+
 - Development, CI, Desktop's bundled Bun and server Docker builds use Bun
   1.4.4 with updated certificate trust. Sandbox allowlists reject ambiguous
   numeric IPv4 spellings before URL normalization can make them match IP rules.

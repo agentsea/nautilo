@@ -1,0 +1,26 @@
+{
+  "exceptions": [
+    {
+      "scanner": "grype",
+      "advisoryId": "CVE-2026-5435",
+      "packageName": "libc6",
+      "installedVersion": "2.41-12+deb13u4",
+      "severity": "high",
+      "owner": "Nautilo release engineering",
+      "reviewedAt": "2026-09-17T00:00:00Z",
+      "expiresAt": "2026-11-15T00:00:00Z",
+      "rationale": "Reviewed 2026-09-17 in packaging/docker/evidence/server-vulnerability-disposition-2026-09-17.md; explicit risk acceptance renews only this exact tuple through November 15. Trixie remains open/no-DSA minor. No call path to the deprecated DNS packet-printing/debug APIs was found; the normal resolver is not the affected path. Remove at the first supported trixie glibc containing the 2.43-3 fix or equivalent backport, or corrected scanner applicability."
+    },
+    {
+      "scanner": "grype",
+      "advisoryId": "CVE-2026-19499",
+      "packageName": "libc6",
+      "installedVersion": "2.41-12+deb13u4",
+      "severity": "high",
+      "owner": "Nautilo release engineering",
+      "reviewedAt": "2026-10-03T15:15:00Z",
+      "expiresAt": "2026-10-23T00:00:00Z",
+      "rationale": "Reviewed 2026-10-03: https://security-tracker.debian.org/tracker/CVE-2026-19499 still marks the installed Debian 13 package vulnerable. A fix in another Debian release is not a supported target update. Native dependencies remain present and indirect reachability is not dismissed. Remove this exact tuple at the first supported trixie fixed build or corrected applicability; reassess by expiry."
+    }
+  ]
+}
