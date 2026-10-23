@@ -8,8 +8,12 @@ Modification dates: 2026-09-06 through 2026-09-13. Original-file hashes are in s
 - Date-only strings (`YYYY-MM-DD`) are read as local calendar dates in the
   formula date functions instead of UTC midnight, so DAY, WEEKDAY, EDATE,
   DATEVALUE, NETWORKDAYS, WORKDAY and DATE() round trips no longer move back a
-  day west of UTC. Holiday sets, YEARFRAC and WEEKNUM count local calendar days;
-  `test/formula/date-timezone.test.ts` runs them in zones either side of UTC.
+  day west of UTC. Holiday sets, NETWORKDAYS and WEEKNUM count local calendar
+  days, also across a daylight saving change at midnight. YEARFRAC 30/360 reads
+  date-only values by calendar day and timestamps by their UTC day as before;
+  financial day counts round only between date-only values, so timestamps keep
+  their time of day. `test/formula/date-timezone.test.ts` runs them in zones
+  either side of UTC.
 
 ## Native Board surface — 2026-09-13
 
