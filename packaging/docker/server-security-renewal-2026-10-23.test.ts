@@ -15,7 +15,11 @@ type Architecture = "linux/amd64" | "linux/arm64";
 const read = (path: string): PolicySource => JSON.parse(readFileSync(join(import.meta.dir, path), "utf8")) as PolicySource;
 const beforeServer = read("fixtures/server-policy-before-security-renewal-2026-10-23.json");
 const beforeBootstrap = read("fixtures/bootstrap-policy-before-security-renewal-2026-10-23.json");
-const currentServer = read("server-vulnerability-exceptions.input.json");
+// This historical renewal covers only the advisories present in its before-policy.
+// Later conditional decisions have their own current-policy expiry tests.
+const renewalAdvisories = new Set(beforeServer.exceptions.map(decision => decision.advisoryId));
+const currentServer: PolicySource = { exceptions: read("server-vulnerability-exceptions.input.json").exceptions
+  .filter(decision => renewalAdvisories.has(decision.advisoryId)) };
 const currentBootstrap = read("bootstrap-vulnerability-policy.input.json");
 
 function decisionKey(decision: VulnerabilityPolicyExceptionV1): string {
