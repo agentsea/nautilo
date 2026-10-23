@@ -135,6 +135,10 @@
     {
       "path": "packages/reflection-bridge/scripts/run-postgres-integration.ts",
       "reason": "Explicit disposable PostgreSQL integration runner for the dormant M257 Record repository; requires a test-looking URL and closes its bounded pool."
+    },
+    {
+      "path": "packages/lattice-bridge/scripts/run-postgres-integration.ts",
+      "reason": "Disposable PostgreSQL integration runner; migrates its own ephemeral container as the restricted app role through one owned connection, closed on success and failure."
     }
   ]
 }

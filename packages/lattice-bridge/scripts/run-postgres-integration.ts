@@ -1,12 +1,16 @@
 import { randomBytes } from "node:crypto";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import postgres from "postgres";
+import type { MigrationConfig } from "drizzle-orm/migrator";
+import { drizzle } from "drizzle-orm/postgres-js";
 import {
   CRYPTO_STORAGE_TABLE_NAMES,
   buildCryptoRoleReconcilePsqlScript,
   buildFullCryptoTablePrivilegeReconcileSql,
 } from "@nautilo/db";
 import { buildEventFeedReaderRoleSql } from "../../db/src/utils/event-feed-role";
+import { migrateWithMigrationPrivilegeCompat } from "../../db/src/utils/migration-privilege-compat";
 import {
   DISPOSABLE_RESET_CONTAINER_ENV,
   DISPOSABLE_RESET_LABEL,
@@ -40,6 +44,23 @@ const credentials = Object.freeze({
   agent: ephemeralPassword(),
   crypto: ephemeralPassword(),
 });
+
+export async function migrateDisposablePostgres(
+  migrationUrl: string,
+  migrate: (
+    db: ReturnType<typeof drizzle>,
+    config: MigrationConfig,
+  ) => Promise<void> = migrateWithMigrationPrivilegeCompat,
+): Promise<void> {
+  const client = postgres(migrationUrl, { max: 1, onnotice: () => {} });
+  try {
+    await migrate(drizzle(client), {
+      migrationsFolder: resolve(REPO_ROOT, "packages/db/src/migrations"),
+    });
+  } finally {
+    await client.end();
+  }
+}
 
 function run(
   command: string,
@@ -416,17 +437,7 @@ async function main(): Promise<number> {
       credentials.nautilo,
       port,
     );
-    run(
-      "bun",
-      ["run", "--cwd", "packages/db", "db:migrate"],
-      {
-        env: {
-          ...process.env,
-          DB_CONNECTION_STRING: migrationUrl,
-        },
-        stdio: "inherit",
-      },
-    );
+    await migrateDisposablePostgres(migrationUrl);
     psql("nautilo", buildFullCryptoTablePrivilegeReconcileSql());
     provisionDisposableInstanceIdentity(psql);
 

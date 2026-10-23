@@ -1,8 +1,12 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
+import { resolve } from "node:path";
+import { PgDialect } from "drizzle-orm/pg-core";
 import { buildEventFeedReaderRoleSql } from "../../../db/src/utils/event-feed-role";
+import { readMigrationFilesWithPrivilegeCompat } from "../../../db/src/utils/migration-privilege-compat";
 import {
   buildDisposableTemplateSql,
   buildDisposableInstanceIdentitySql,
+  migrateDisposablePostgres,
   provisionDisposableInstanceIdentity,
   provisionPrivilegedMigrationRoles,
 } from "../../scripts/run-postgres-integration";
@@ -27,6 +31,60 @@ const disposableAuthority = Object.freeze({
 });
 
 describe("disposable Postgres migration role provisioning", () => {
+  test("routes canonical privilege-compatible migrations through the Drizzle session", async () => {
+    // Intercept only the SQL execution boundary; read and repair real migrations.
+    const migrate = spyOn(PgDialect.prototype, "migrate").mockResolvedValue();
+    const config = {
+      migrationsFolder: resolve(import.meta.dir, "../../../db/src/migrations"),
+    };
+    try {
+      await migrateDisposablePostgres(disposableUrls.app);
+
+      expect(migrate).toHaveBeenCalledTimes(1);
+      const [migrations, , actualConfig] = migrate.mock.calls[0]!;
+      expect(actualConfig).toEqual(config);
+      expect(migrations).toEqual(readMigrationFilesWithPrivilegeCompat(config));
+    } finally {
+      migrate.mockRestore();
+    }
+  });
+
+  test("uses the explicit app connection and awaits its close after migration", async () => {
+    const events: string[] = [];
+    await migrateDisposablePostgres(disposableUrls.app, async (db) => {
+      expect(db.$client.options.user).toBe("nautilo");
+      expect(db.$client.options.database).toBe("nautilo");
+      expect(db.$client.options.host).toEqual(["127.0.0.1"]);
+      expect(db.$client.options.port).toEqual([55432]);
+      expect(db.$client.options.max).toBe(1);
+      const close = db.$client.end.bind(db.$client);
+      spyOn(db.$client, "end").mockImplementation(async () => {
+        events.push("close");
+        await close();
+        events.push("closed");
+      });
+      events.push("migrated");
+    });
+    events.push("complete");
+    expect(events).toEqual(["migrated", "close", "closed", "complete"]);
+  });
+
+  test("closes its connection before propagating a migration failure", async () => {
+    const failure = new Error("migration failed");
+    const events: string[] = [];
+    const migration = migrateDisposablePostgres(disposableUrls.app, async (db) => {
+      const close = db.$client.end.bind(db.$client);
+      spyOn(db.$client, "end").mockImplementation(async () => {
+        await close();
+        events.push("closed");
+      });
+      throw failure;
+    });
+
+    expect(await migration.catch((error: unknown) => error)).toBe(failure);
+    expect(events).toEqual(["closed"]);
+  });
+
   test("uses the canonical cluster-admin role contract before app migrations", () => {
     const calls: Array<{ database: string; script: string }> = [];
 
