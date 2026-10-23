@@ -99,6 +99,7 @@ describe("M241 generated migration authority finalizer", () => {
       "bun scripts/finalize-chatgpt-registrations.ts",
       "bun scripts/finalize-message-search.ts",
       "bun scripts/finalize-task-cancellation-staging.ts",
+      "bun scripts/finalize-magent-transport.ts",
     ]);
   });
 });
