@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "bun:test";
 import { readMigrationFiles } from "drizzle-orm/migrator";
 import { readMigrationFilesWithPrivilegeCompat, repairForegroundMemoryMigration } from "../../src/utils/migration-privilege-compat";
@@ -39,7 +40,7 @@ describe("foreground Memory migration trigger privileges", () => {
     expect(() => repairForegroundMemoryMigration(source.replace(trigger, `${trigger}\n${trigger}`)))
       .toThrow("Refusing unknown");
 
-    const config = { migrationsFolder: directory.pathname };
+    const config = { migrationsFolder: fileURLToPath(directory) };
     const canonical = readMigrationFiles(config);
     const metadata = readMigrationFilesWithPrivilegeCompat(config);
     const index = canonical.findIndex(({ hash }) => hash === createHash("sha256").update(source).digest("hex"));
