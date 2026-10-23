@@ -120,7 +120,7 @@
     "happy-dom": "20.11.6",
     "knip": "5.88.1",
     "lefthook": "2.1.5",
-    "smol-toml": "1.8.0",
+    "smol-toml": "1.9.1",
     "turbo": "2.10.11",
     "typescript": "5.9.3",
     "typescript-eslint": "8.50.0"

@@ -280,7 +280,7 @@ function captureHarness(options: { bytes?: Uint8Array; result?: (path: string) =
   return { supervisor, child, opened: () => opened, unlinked: () => unlinked, requests };
 }
 
-describe("D516 embedded Cua supervisor", () => {
+describe("embedded Cua supervisor", () => {
   test("contains literal private CFBundle identifiers without rejecting real numeric or underscore segments", () => {
     const atBoundary = `com.${"a".repeat(2044)}`;
     const overBoundary = `com.${"a".repeat(2045)}`;
@@ -799,14 +799,14 @@ describe("D516 embedded Cua supervisor", () => {
     const supervisor = new CuaSupervisor({
       binaryPath: "/Applications/Nautilo.app/Contents/Resources/cua-driver",
       runtimeDir: "/private/runtime",
-      userHomePath: "/Users/tester",
+      userHomePath: "/path/to/home",
       expectedUid: 501,
       hostBundleId: "com.example.cua-host-fixture",
       randomBytes: () => new Uint8Array(24).fill(7),
       filesystem: {
         async lstat(path) {
           if (path === "/private/runtime") return { kind: "directory", mode: 0o700, uid: 501, device: 1n, inode: 2n };
-          if (path === "/Users/tester") return { kind: "directory", mode: 0o700, uid: 501, device: 1n, inode: 4n };
+          if (path === "/path/to/home") return { kind: "directory", mode: 0o700, uid: 501, device: 1n, inode: 4n };
           return socketCreated ? { kind: "socket", mode: 0o600, uid: 501, device: 1n, inode: 3n } : null;
         },
         async unlink() {},
@@ -836,7 +836,7 @@ describe("D516 embedded Cua supervisor", () => {
       options: {
         env: {
           PATH: "/usr/bin:/bin:/usr/sbin:/sbin",
-          HOME: "/Users/tester",
+          HOME: "/path/to/home",
           CUA_DRIVER_EMBEDDED: "1", CUA_DRIVER_HOST_BUNDLE_ID: "com.example.cua-host-fixture",
           CUA_DRIVER_PARENT_LIVENESS_STDIN: "1", CUA_DRIVER_RS_TELEMETRY_ENABLED: "false", CUA_DRIVER_RS_UPDATE_CHECK: "false",
         }, shell: false, stdio: ["pipe", "ignore", "ignore"],
@@ -2069,7 +2069,12 @@ describe("D516 embedded Cua supervisor", () => {
     const root = await mkdtemp(join(tmpdir(), "nautilo-cua-supervisor-"));
     const socketPath = join(root, "driver.sock");
     const exercise = async (write: (socket: net.Socket) => void, matcher: RegExp) => {
-      const server = net.createServer(write);
+      const server = net.createServer((socket) => {
+        // Consume the request so an unread peer buffer cannot hold the test
+        // server open after the transport rejects and destroys its connection.
+        socket.resume();
+        write(socket);
+      });
       await new Promise<void>((resolve, reject) => server.listen(socketPath, resolve).once("error", reject));
       try {
         await expect(cuaLineTransport(socketPath, { method: "metadata" })).rejects.toThrow(matcher);
