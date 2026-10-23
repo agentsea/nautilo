@@ -401,6 +401,9 @@ async function openSession(task: Task, run: TaskRun, modelId: string, wake: bool
   let lastAttempt: ModelFundingDecision | undefined;
   return {
     kind: admitted.kind,
+    ...(admitted.kind === "server" ? {
+      admission: { modelId: admitted.modelId, binding: bindingFor(admitted) },
+    } : {}),
     ...(allowUnpinnedSurplusRetry ? { allowUnpinnedSurplusRetry: true as const } : {}),
     capabilityFunding: await prepareCapabilityFundingSession(
       task.requestorId,
