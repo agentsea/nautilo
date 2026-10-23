@@ -9,6 +9,8 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 - Genie can change access to encrypted Memory across Domains whose
   authorization histories have advanced independently.
+- Bundled Bun and contributor tooling use Bun 1.4.4 with updated certificate
+  trust. macOS Desktop downloads verify the official runtime archive checksums.
 
 - Scheduled Tasks keep concurrent results on separate execution threads.
   Finished encrypted schedules show no future runs and retain result history.

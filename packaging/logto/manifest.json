@@ -1,0 +1,48 @@
+{
+  "schemaVersion": 1,
+  "component": "logto",
+  "upstreamRepository": "https://github.com/logto-io/logto",
+  "upstreamVersion": "1.38.0",
+  "license": "MPL-2.0",
+  "upstreamImage": "ghcr.io/logto-io/logto@sha256:aa4c428b70d9dd8eac23b6eeb3826a02d5fe0283b5dd774589b9b9760e0c6e9f",
+  "upstreamManifests": {
+    "amd64": "sha256:6e59afa8abddb1d960782b02aec80f1bbe1a01c32e3fb87ce1a3541377f14fcc",
+    "arm64": "sha256:38310986218bebf17c939dbb5bc1cdcbf7a24650decace2e6ad04adaa976cb0c"
+  },
+  "nodeImage": "docker.io/library/node@sha256:206878a60dc7014193f418ab9259b6110c15fbd514b3044a267be706509944e4",
+  "nodeVersion": "22.23.4",
+  "nodeManifests": {
+    "amd64": "sha256:f717c0ddc1137fc3859992963e168af40902fdbb87c1a90cf73e63b89f320016",
+    "arm64": "sha256:e68233b2ddf5cd18c41c878f161d5a9cb7c7baaedab5de99bd05d08dc3eed90e"
+  },
+  "tlsTrust": {
+    "caCertificatesPackage": "alpine:20261020-r0",
+    "repository": "https://dl-cdn.alpinelinux.org/alpine/v3.23/main",
+    "apk": {
+      "amd64": {
+        "repositoryArchitecture": "x86_64",
+        "sha256": "a4c5de1bf37652cd98cbe71aec209512ae0508a964961957a6c9650f795e46c4"
+      },
+      "arm64": {
+        "repositoryArchitecture": "aarch64",
+        "sha256": "bdf6033710a251d8239f63236eacf40c84afdf8f7b25bb58d69a2c75202350e7"
+      }
+    },
+    "bundlePath": "/etc/ssl/certs/ca-certificates.crt",
+    "bundleSha256": "5961c0a3c65459931c023e0075c09733f09aea4ca439cb85bc4a08bb4f3f568b",
+    "emptyCertificateDirectory": "/etc/ssl/nautilo-empty-certs",
+    "signatureVerification": "apk verifies the package against the unchanged upstream Alpine keyring"
+  },
+  "upstreamRuntime": {
+    "workingDirectory": "/etc/logto",
+    "entrypoint": [
+      "npm",
+      "run"
+    ],
+    "command": [
+      "start"
+    ],
+    "port": 3001
+  },
+  "localImage": "nautilo/logto:1.38.0-nautilo.1"
+}
