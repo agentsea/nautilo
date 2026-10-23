@@ -136,16 +136,33 @@ export function canUseQualifiedSurplusChatRoute(input: {
   return input.estimatedInputTokens + input.maxOutputTokens <= route.maxContextTokens;
 }
 
-function hasUnsupportedSurplusAdaptation(adaptedParameters: string | undefined): boolean {
+type SurplusAdaptationKind = "none" | "benign" | "output_ceiling" | "unsupported";
+
+function surplusAdaptationKind(adaptedParameters: string | undefined): SurplusAdaptationKind {
   const adapted = adaptedParameters?.trim();
-  // Surplus may choose a cache bucket and overwrite stream_options with
-  // include_usage:true for metering, which our adapter already requests.
-  // Neither changes inference semantics. Reject every other adaptation,
-  // including malformed lists and mixtures with inference-changing settings.
-  return Boolean(adapted && adapted.split(",").some((parameter) => {
-    const name = parameter.trim();
-    return name !== "prompt_cache_key" && name !== "stream_options";
-  }));
+  if (!adapted) return "none";
+  const parameters = adapted.split(",").map((parameter) => parameter.trim());
+  if (parameters.some((parameter) => !parameter)
+    || new Set(parameters).size !== parameters.length) return "unsupported";
+  let outputCeilingAdapted = false;
+  for (const parameter of parameters) {
+    // Surplus may choose a cache bucket and overwrite stream_options with
+    // include_usage:true for metering, which our adapter already requests.
+    if (parameter === "prompt_cache_key" || parameter === "stream_options") continue;
+    // The receipt names the parameter but not how it changed. Defer these two
+    // ceiling aliases until the completed response can prove that the actual
+    // result stayed within the caller's original budget.
+    if (parameter === "max_tokens" || parameter === "max_completion_tokens") {
+      outputCeilingAdapted = true;
+      continue;
+    }
+    return "unsupported";
+  }
+  return outputCeilingAdapted ? "output_ceiling" : "benign";
+}
+
+function hasUnsupportedSurplusAdaptation(adaptedParameters: string | undefined): boolean {
+  return surplusAdaptationKind(adaptedParameters) === "unsupported";
 }
 
 /** A successful marketplace response must preserve the provider and inference settings. */
@@ -177,12 +194,26 @@ const TERMINAL_FINISH_REASONS = new Set([
 export function assertCompleteSurplusResponse(
   receipt: SurplusWireReceipt | undefined,
   response: unknown,
+  maxOutputTokens?: number,
 ): void {
   if (!AIMessage.isInstance(response)) throw new SurplusIncompleteResponseError();
   const message = response;
   const finishReason = record(message.response_metadata)?.["finish_reason"];
   if (receipt?.truncated || typeof finishReason !== "string" || !TERMINAL_FINISH_REASONS.has(finishReason)) {
     throw new SurplusIncompleteResponseError();
+  }
+  const adaptation = surplusAdaptationKind(receipt?.adaptedParameters);
+  if (adaptation === "unsupported") throw new SurplusAdaptedParametersError();
+  if (adaptation === "output_ceiling") {
+    if (typeof maxOutputTokens !== "number" || !Number.isSafeInteger(maxOutputTokens) || maxOutputTokens < 1
+      || finishReason === "length") throw new SurplusAdaptedParametersError();
+    // LangChain can synthesize a normalized zero while merging absent usage
+    // fields. Require the raw terminal completion count emitted by Surplus.
+    const rawUsage = record(record(message.response_metadata)?.["usage"]);
+    const actualOutputTokens = count(rawUsage?.["completion_tokens"]);
+    if (actualOutputTokens === undefined || actualOutputTokens > maxOutputTokens) {
+      throw new SurplusAdaptedParametersError();
+    }
   }
   // A provider-enforced content filter is a valid terminal answer even when it
   // deliberately carries no text. Every other successful terminal must give
@@ -238,7 +269,8 @@ export function classifySurplusFailedAttempt(input: {
     ? "cancelled" as const
     : input.receipt?.truncated === true
       ? "truncated_response" as const
-      : hasUnsupportedSurplusAdaptation(input.receipt?.adaptedParameters) || input.error instanceof SurplusAdaptedParametersError
+      : ["output_ceiling", "unsupported"].includes(surplusAdaptationKind(input.receipt?.adaptedParameters))
+        || input.error instanceof SurplusAdaptedParametersError
         ? "adapted_parameters" as const
         : input.error instanceof SurplusProviderRouteMismatchError
           ? "provider_route_mismatch" as const
@@ -439,7 +471,7 @@ export async function invokeSurplusChatAttempt(input: SurplusChatAttemptInput): 
       input.config,
     );
     terminalUsage = readSurplusResponseUsage(response);
-    assertCompleteSurplusResponse(receipt, response);
+    assertCompleteSurplusResponse(receipt, response, input.maxOutputTokens);
     input.validateResponse?.(response);
     const usage = terminalUsage;
     const costMicro = usage.buyerCostMicro ?? receipt?.buyerCostMicro;

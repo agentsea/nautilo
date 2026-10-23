@@ -10,6 +10,8 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 - Surplus model selection and requests now use its live catalogue for confirmed
   model names, capabilities, reasoning parameters, and token limits. Auto skips
   unconfirmed routes, and chat and Soul share the same marketplace budget.
+  Responses with an adapted output ceiling are accepted when they finish
+  naturally and reported output stays within the original request budget.
 
 - Onboarding waits for an in-progress Soul before saving the final profile,
   and automatic foreground chat selection supports Surplus-only servers.
