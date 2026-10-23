@@ -402,7 +402,7 @@ async function openSession(task: Task, run: TaskRun, modelId: string, wake: bool
   return {
     kind: admitted.kind,
     ...(admitted.kind === "server" ? {
-      admission: { modelId: initialDecision.modelId, binding: bindingFor(initialDecision) },
+      admittedTransport: initialDecision.providerRoute === "surplus" ? "surplus" as const : "direct" as const,
     } : {}),
     ...(allowUnpinnedSurplusRetry ? { allowUnpinnedSurplusRetry: true as const } : {}),
     capabilityFunding: await prepareCapabilityFundingSession(

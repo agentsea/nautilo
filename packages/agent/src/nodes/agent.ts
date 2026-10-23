@@ -148,9 +148,11 @@ export async function agentNode(
   if (isExternalRoomState(state)) state = { ...state, ...await prepareExternalRoomTextContext(state) };
   const config = fromRuntimeConfig();
   const configuredModelId = state.model || config.nautilo_model;
+  const admittedTransport = foregroundChatFundingSession?.admittedTransport
+    ?? (foregroundChatFundingSession?.admission === undefined ? undefined
+      : foregroundChatFundingSession.admission.binding.providerRoute === "surplus" ? "surplus" : "direct");
   if (!hasStubModelForTests() && foregroundChatFundingSession?.kind !== "personal"
-    && (foregroundChatFundingSession?.admission === undefined
-      || foregroundChatFundingSession.admission.binding.providerRoute === "surplus")
+    && admittedTransport !== "direct"
     && getCachedServerModelConfigRow()?.preferSurplus === true && resolveProviderKey("surplus") !== null) {
     await hydrateSurplusChatCatalog({
       ...(configuredModelId ? { catalogModelIds: [configuredModelId] } : {}),

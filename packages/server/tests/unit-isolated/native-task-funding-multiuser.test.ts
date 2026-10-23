@@ -264,16 +264,14 @@ describe("multi-user native Task funding", () => {
     taskRows.set(candidate.id, candidate);
     runRows.set(run.id, run);
     const session = await nativeTaskFundingPort.openSession(candidate, run, SERVER_MODEL, false);
-    expect(session.admission).toEqual({
-      modelId: SERVER_MODEL,
-      binding: { kind: "server", providerRoute: "openrouter" },
-    });
+    expect(session.admittedTransport).toBe("direct");
+    expect(session.admission).toBeUndefined();
     invocationAllowed = false;
     await rejects(session.recheckAttempt(SERVER_MODEL), /invocation_access_withdrawn/);
     expect(fundingInputs.every(({ humanUserId }) => humanUserId === HUMAN_A)).toBeTrue();
   });
 
-  test("restored server Surplus sessions expose their exact admission snapshot", async () => {
+  test("restored server Surplus sessions expose transport without a foreground snapshot", async () => {
     const candidate = task();
     const run = {
       id: PARENT_RUN_ID,
@@ -289,13 +287,11 @@ describe("multi-user native Task funding", () => {
 
     const session = await nativeTaskFundingPort.openSession(candidate, run, SERVER_MODEL, false);
 
-    expect(session.admission).toEqual({
-      modelId: SERVER_MODEL,
-      binding: { kind: "server", providerRoute: "surplus" },
-    });
+    expect(session.admittedTransport).toBe("surplus");
+    expect(session.admission).toBeUndefined();
   });
 
-  test("a report-back wake snapshots its resolved Room model while retaining the original payer", async () => {
+  test("a foreign Genie's report-back wake retains its native funding and resume boundary", async () => {
     const wakeModel = "venice:wake-model";
     const candidate = task({ status: "completed" });
     const run = {
@@ -309,9 +305,10 @@ describe("multi-user native Task funding", () => {
 
     const session = await nativeTaskFundingPort.openSession(candidate, run, wakeModel, true);
 
-    expect(session.admission).toEqual({
-      modelId: wakeModel, binding: { kind: "server", providerRoute: "venice" },
-    });
+    // This fixture's Genie is absent from the calling Room. A foreground
+    // snapshot would route approval resume through a stricter Room-member gate.
+    expect(session.admission).toBeUndefined();
+    expect(session.admittedTransport).toBe("direct");
     expect(await session.runAttempt(wakeModel, async (attempt) => attempt.usageFunding))
       .toMatchObject({ kind: "server", providerRoute: "venice" });
     expect(fundingInputs).toHaveLength(2);
@@ -411,6 +408,7 @@ describe("multi-user native Task funding", () => {
 
     expect(session.kind).toBe("personal");
     expect(session.admission).toBeUndefined();
+    expect(session.admittedTransport).toBeUndefined();
   });
 
   test("a server-first native Task exposes bounded personal recovery", async () => {
