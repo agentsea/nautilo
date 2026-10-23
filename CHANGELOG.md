@@ -39,6 +39,8 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   including streamed customization previews and service cost tracking. Eligible
   Surplus-only requests let the marketplace choose an available seller and can
   recover from confirmed supply refusals through other eligible models.
+- Update shipped MCP SDK dependencies to 1.32.0. MCP HTTP transports remain
+  outbound clients; contributor MCP servers use stdio.
 
 - Operators can connect a selected Genie to mAgent through a private Unix socket,
   with a fresh external-context Room and a fixed sponsor and sender identity.

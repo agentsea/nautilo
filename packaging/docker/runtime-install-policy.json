@@ -20,7 +20,7 @@
     {
       "kind": "root-override",
       "name": "@modelcontextprotocol/sdk",
-      "reason": "Keep all shipped MCP transports on the supported patched 1.31.0 SDK release."
+      "reason": "Keep all shipped MCP transports on SDK 1.32.0; HTTP server input validation remains a separate transport requirement."
     },
     {
       "kind": "root-override",

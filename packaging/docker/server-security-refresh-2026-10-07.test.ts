@@ -61,14 +61,15 @@ describe("patched runtime libraries and supported Chromium availability", () => 
   });
   test("ships supported patches without package exceptions", () => {
     for (const path of ["../../packages/mcp-client/package.json","../../packages/claude-agent-sdk-host/package.json"])
-      expect(read(path).dependencies["@modelcontextprotocol/sdk"]).toBe("1.31.0");
+      expect(read(path).dependencies["@modelcontextprotocol/sdk"]).toBe("1.32.0");
     for (const path of ["../../packages/server/package.json","../../apps/desktop/package.json"])
       expect(read(path).dependencies.sharp).toBe("0.35.5");
     for (const path of ["../../bun.lock","runtime-install/bun.lock"]) {
       const lock = readFileSync(join(import.meta.dir,path),"utf8");
-      expect(lock).toContain("@modelcontextprotocol/sdk@1.31.0");
+      expect(lock).toContain("@modelcontextprotocol/sdk@1.32.0");
       expect(lock).toContain("sharp@0.35.5");
       expect(lock).not.toContain("@modelcontextprotocol/sdk@1.30.0");
+      expect(lock).not.toContain("@modelcontextprotocol/sdk@1.31.0");
       expect(lock).not.toContain("sharp@0.35.4");
     }
     expect(current.exceptions.some(e => ["sharp","@modelcontextprotocol/sdk"].includes(e.packageName))).toBe(false);
