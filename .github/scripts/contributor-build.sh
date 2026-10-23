@@ -30,5 +30,6 @@ bun install --frozen-lockfile
 sha256sum --check /tmp/contributor-lock.sha256
 bun run test:invariants
 bun x turbo run build --filter=@nautilo/workbench... --filter=@nautilo/cli...
+bun x turbo run test:integration --filter=@nautilo/office-sheets
 bun run --cwd packages/server typecheck
 find apps/workbench/dist apps/cli/dist -type f -print0 | sort -z | xargs -0 sha256sum
