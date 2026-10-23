@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "bun:test";
 import { readMigrationFiles } from "drizzle-orm/migrator";
 import { repairBolterMigration, readMigrationFilesWithPrivilegeCompat } from "../../src/utils/migration-privilege-compat";
@@ -61,7 +62,7 @@ describe("Bolter least-privilege migration compatibility", () => {
   }
 
   test("corrected metadata retains canonical hashes and unrelated statements", () => {
-    const config = { migrationsFolder: directory.pathname };
+    const config = { migrationsFolder: fileURLToPath(directory) };
     const canonical = readMigrationFiles(config);
     const corrected = readMigrationFilesWithPrivilegeCompat(config);
     const journal = JSON.parse(readFileSync(new URL("meta/_journal.json", directory), "utf8")) as {

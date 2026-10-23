@@ -14,7 +14,7 @@ not been accepted.
 - Windows x64 and native PowerShell 7. PowerShell 7 is also required at runtime
   for Windows ownership and ACL checks on private files, CLI sessions, and
   instance locks.
-- Bun **1.4.4**, matching `.bun-version`, and Node **24.x**. Check both exact
+- Bun **1.4.4**, matching `.bun-version`, and Node **24.22.1**. Check both exact
   versions before running repository scripts.
 - Docker Desktop with the Linux engine running. `docker version` must show both
   Client and Server, and `docker compose version` must work. Docker Desktop's

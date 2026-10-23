@@ -19,7 +19,7 @@
         "happy-dom": "20.11.6",
         "knip": "5.88.1",
         "lefthook": "2.1.5",
-        "smol-toml": "1.8.0",
+        "smol-toml": "1.9.1",
         "turbo": "2.10.11",
         "typescript": "5.9.3",
         "typescript-eslint": "8.50.0",
@@ -27,7 +27,7 @@
     },
     "apps/cli": {
       "name": "@nautilo/cli",
-      "version": "0.1.33",
+      "version": "0.1.34",
       "bin": {
         "nautilo": "./dist/index.js",
       },
@@ -53,7 +53,7 @@
         "dotenv": "16.6.1",
         "drizzle-orm": "0.45.2",
         "postgres": "3.4.7",
-        "smol-toml": "1.8.0",
+        "smol-toml": "1.9.1",
         "yargs": "18.0.0",
         "zod": "4.3.6",
       },
@@ -98,7 +98,7 @@
         "react": "19.2.5",
         "react-dom": "19.2.5",
         "sharp": "0.35.5",
-        "smol-toml": "1.8.0",
+        "smol-toml": "1.9.1",
         "turndown": "7.2.4",
         "ws": "8.21.2",
       },
@@ -311,7 +311,7 @@
         "@nautilo/trust": "workspace:*",
         "@nautilo/types": "workspace:*",
         "postgres": "3.4.7",
-        "smol-toml": "1.8.0",
+        "smol-toml": "1.9.1",
       },
       "devDependencies": {
         "@logto/cli": "1.38.0",
@@ -709,7 +709,7 @@
     },
     "packages/computer-use-host": {
       "name": "@nautilo/computer-use-host",
-      "version": "0.1.23",
+      "version": "0.1.33",
       "dependencies": {
         "@nautilo/computer-use-contracts": "workspace:*",
         "@nautilo/computer-use-host-protocol": "workspace:*",
@@ -752,7 +752,7 @@
         "@nautilo/logger": "workspace:*",
         "@nautilo/types": "workspace:*",
         "dotenv": "16.6.1",
-        "smol-toml": "1.8.0",
+        "smol-toml": "1.9.1",
         "zod": "4.3.6",
       },
       "devDependencies": {
@@ -785,7 +785,7 @@
       "dependencies": {
         "@nautilo/api-client": "workspace:*",
         "@nautilo/config-guard": "workspace:*",
-        "smol-toml": "1.8.0",
+        "smol-toml": "1.9.1",
         "zod": "4.3.6",
       },
       "devDependencies": {
@@ -909,7 +909,7 @@
       "dependencies": {
         "@nautilo/config": "workspace:*",
         "bonjour-service": "1.3.0",
-        "smol-toml": "1.8.0",
+        "smol-toml": "1.9.1",
       },
       "devDependencies": {
         "@types/node": "24.10.4",
@@ -5163,7 +5163,7 @@
 
     "slugify": ["slugify@1.6.9", "", {}, "sha512-vZ7rfeehZui7wQs438JXBckYLkIIdfHOXsaVEUMyS5fHo1483l1bMdo0EDSWYclY0yZKFOipDy4KHuKs6ssvdg=="],
 
-    "smol-toml": ["smol-toml@1.8.0", "", {}, "sha512-kCZr2V3ch9i00x8zXRhjUNVcjG9ijES5dDudkXvUVCT5QlJNQWElSJdZqyPemffHoLNUYwOcou0Fy+ojN0uHSQ=="],
+    "smol-toml": ["smol-toml@1.9.1", "", {}, "sha512-j7WyPdf0CJoutMzMoPLF/bVXHtKZIT9Rb4eGeEbWw8X2t5oirjPgpL+OpaENZrILYaXqYwnVH+qgUwVbl+pUJQ=="],
 
     "socket.io-client": ["socket.io-client@4.8.3", "", { "dependencies": { "@socket.io/component-emitter": "~3.1.0", "debug": "~4.4.1", "engine.io-client": "~6.6.1", "socket.io-parser": "~4.2.4" } }, "sha512-uP0bpjWrjQmUt5DTHq9RuoCBdFJF10cdX9X+a368j/Ft0wmaVgxlrjvK3kjvgCODOMMOz9lcaRzxmso0bTWZ/g=="],
 
@@ -6480,8 +6480,6 @@
     "jsdom/whatwg-mimetype": ["whatwg-mimetype@5.0.0", "", {}, "sha512-sXcNcHOC51uPGF0P/D4NVtrkjSU2fNsm9iog4ZvZJsL3rjoDAzXZhkm2MWt1y+PUdggKAYVoMAIYcs78wJ51Cw=="],
 
     "kdbxweb/fflate": ["fflate@0.7.4", "", {}, "sha512-5u2V/CDW15QM1XbbgS+0DfPxVB+jUKhWEKuuFuHncbk3tEEqzmoXL+2KyOFuKGqOnmdIy0/davWF1CkuwtibCw=="],
-
-    "knip/smol-toml": ["smol-toml@1.6.1", "", {}, "sha512-dWUG8F5sIIARXih1DTaQAX4SsiTXhInKf1buxdY9DIg4ZYPZK5nGM1VRIYmEbDbsHt7USo99xSLFu5Q1IqTmsg=="],
 
     "light-my-request/cookie": ["cookie@1.1.1", "", {}, "sha512-ei8Aos7ja0weRpFzJnEA9UHJ/7XQmqglbRwnf2ATjcB9Wq874VKH9kfjjirM6UhU2/E5fFYadylyhFldcqSidQ=="],
 

@@ -1,18 +1,23 @@
 import { randomBytes } from "node:crypto";
 import { resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import postgres from "postgres";
+import type { MigrationConfig } from "drizzle-orm/migrator";
+import { drizzle } from "drizzle-orm/postgres-js";
 import {
   CRYPTO_STORAGE_TABLE_NAMES,
   buildCryptoRoleReconcilePsqlScript,
   buildFullCryptoTablePrivilegeReconcileSql,
 } from "@nautilo/db";
 import { buildEventFeedReaderRoleSql } from "../../db/src/utils/event-feed-role";
+import { migrateWithMigrationPrivilegeCompat } from "../../db/src/utils/migration-privilege-compat";
 import {
   DISPOSABLE_RESET_CONTAINER_ENV,
   DISPOSABLE_RESET_LABEL,
   DISPOSABLE_RESET_PORT_ENV,
   DISPOSABLE_RESET_TOKEN_ENV,
   DISPOSABLE_TEMPLATE_DATABASE,
+  readDisposableResetAuthority,
   resetDisposablePostgresDatabase,
   type DisposableResetUrls,
 } from "./disposable-postgres-reset";
@@ -40,6 +45,38 @@ const credentials = Object.freeze({
   agent: ephemeralPassword(),
   crypto: ephemeralPassword(),
 });
+
+export function buildDisposablePostgresTestEnv(
+  urls: DisposableResetUrls,
+  env: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+  readDisposableResetAuthority(urls, env);
+  return {
+    ...env,
+    DB_CRYPTO_CONNECTION_STRING: urls.crypto,
+    LATTICE_BRIDGE_TEST_ADMIN_DATABASE_URL: urls.admin,
+    LATTICE_BRIDGE_TEST_DATABASE_URL: urls.crypto,
+    LATTICE_BRIDGE_TEST_APP_DATABASE_URL: urls.app,
+    LATTICE_BRIDGE_TEST_AGENT_DATABASE_URL: urls.agent,
+  };
+}
+
+export async function migrateDisposablePostgres(
+  migrationUrl: string,
+  migrate: (
+    db: ReturnType<typeof drizzle>,
+    config: MigrationConfig,
+  ) => Promise<void> = migrateWithMigrationPrivilegeCompat,
+): Promise<void> {
+  const client = postgres(migrationUrl, { max: 1, onnotice: () => {} });
+  try {
+    await migrate(drizzle(client), {
+      migrationsFolder: resolve(REPO_ROOT, "packages/db/src/migrations"),
+    });
+  } finally {
+    await client.end();
+  }
+}
 
 function run(
   command: string,
@@ -416,17 +453,7 @@ async function main(): Promise<number> {
       credentials.nautilo,
       port,
     );
-    run(
-      "bun",
-      ["run", "--cwd", "packages/db", "db:migrate"],
-      {
-        env: {
-          ...process.env,
-          DB_CONNECTION_STRING: migrationUrl,
-        },
-        stdio: "inherit",
-      },
-    );
+    await migrateDisposablePostgres(migrationUrl);
     psql("nautilo", buildFullCryptoTablePrivilegeReconcileSql());
     provisionDisposableInstanceIdentity(psql);
 
@@ -453,16 +480,12 @@ async function main(): Promise<number> {
       agent: databaseUrl("nautilo_agent", credentials.agent, port),
       crypto: databaseUrl("nautilo_crypto", credentials.crypto, port),
     });
-    const testEnv: NodeJS.ProcessEnv = {
+    const testEnv = buildDisposablePostgresTestEnv(urls, {
       ...process.env,
-      LATTICE_BRIDGE_TEST_ADMIN_DATABASE_URL: urls.admin,
-      LATTICE_BRIDGE_TEST_DATABASE_URL: urls.crypto,
-      LATTICE_BRIDGE_TEST_APP_DATABASE_URL: urls.app,
-      LATTICE_BRIDGE_TEST_AGENT_DATABASE_URL: urls.agent,
       [DISPOSABLE_RESET_CONTAINER_ENV]: CONTAINER_NAME,
       [DISPOSABLE_RESET_TOKEN_ENV]: resetToken,
       [DISPOSABLE_RESET_PORT_ENV]: port,
-    };
+    });
     const result = spawnSync(
       "bun",
       [

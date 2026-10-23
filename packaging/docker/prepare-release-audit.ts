@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-/** Prepare one native architecture candidate's digest-bound D490 audit inputs. */
+/** Prepare one native architecture candidate's digest-bound release audit inputs. */
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -204,7 +204,7 @@ async function main(): Promise<void> {
   writeJson(join(args.outputDirectory, "manifest.json"), manifest);
   writeJson(join(args.outputDirectory, "vulnerability-policy.json"), vulnerabilityPolicy);
   writeJson(join(args.outputDirectory, "disclosure-policy.json"), disclosurePolicy);
-  process.stdout.write(`[d490:prepare-release-audit] image=${args.image} architecture=${args.architecture}\n`);
+  process.stdout.write(`[prepare-release-audit] image=${args.image} architecture=${args.architecture}\n`);
 }
 
 if (import.meta.main) await main();

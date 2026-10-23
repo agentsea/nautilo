@@ -21,7 +21,7 @@ if (bunBaseMatch === null) {
 
 const [, bunVersion, bunDigest] = bunBaseMatch;
 
-describe("D490 release supply-chain pins", () => {
+describe("Release supply-chain pins", () => {
   test("uses one explicit immutable multi-architecture Bun base identity", () => {
     const dockerfile = source("packaging/docker/Dockerfile");
     const bunFromLines = dockerfile.match(/^FROM\s+oven\/bun:[^\s]+/gm) ?? [];

@@ -45,24 +45,6 @@ describe("createDnsResolver", () => {
     expect(thrown).toBeInstanceOf(DnsResolutionError);
   });
 
-  test("rejects legacy and IDNA numeric hosts before DNS lookup", async () => {
-    let calls = 0;
-    const resolver = createDnsResolver({ lookup: async () => {
-      calls++;
-      return ["192.168.1.42"];
-    } });
-    for (const host of ["0xc0a8012a", "3232235818", "192.168.298", "１９２.１６８.１.４２"]) {
-      let thrown: unknown;
-      try {
-        await resolver.resolve(host);
-      } catch (error) {
-        thrown = error;
-      }
-      expect(thrown).toBeInstanceOf(DnsResolutionError);
-    }
-    expect(calls).toBe(0);
-  });
-
   test("invalid host throws DnsResolutionError", async () => {
     const resolver = createDnsResolver();
     let thrown: unknown;

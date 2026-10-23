@@ -137,6 +137,7 @@ async function openProtectedAgentRuntime(input: Readonly<{
   storage: Pick<LatticeStorage, "getAgentRuntimeAtomicState">;
   opened: OpenedGrantDomain;
   agentId: AgentId;
+  expectedRuntimeAuthorizationRevision: number;
   resolveHistoricalCommitter: HistoricalAgentRuntimeCommitterResolverV1;
 }>) {
   return openProtectedAgentRuntimeFromDomainRoot({
@@ -149,6 +150,7 @@ async function openProtectedAgentRuntime(input: Readonly<{
       domainRoot: input.opened.aiRoot,
     },
     agentId: input.agentId,
+    expectedRuntimeAuthorizationRevision: input.expectedRuntimeAuthorizationRevision,
     resolveHistoricalCommitter: input.resolveHistoricalCommitter,
   });
 }
@@ -164,6 +166,7 @@ export async function withProtectedAgentRuntimeGeneration<Value>(
     storage: Pick<LatticeStorage, "getAgentRuntimeAtomicState">;
     opened: OpenedGrantDomain;
     agentId: AgentId;
+    expectedRuntimeAuthorizationRevision: number;
     resolveHistoricalCommitter: HistoricalAgentRuntimeCommitterResolverV1;
     execute(
       runtime: AgentRuntimeKeyGeneration,
@@ -204,7 +207,11 @@ export async function withProtectedAgentRuntimeConfiguration<Value>(
     ) => Value | PromiseLike<Value>;
   }>,
 ): Promise<ProtectedAgentRuntimeResult<Value>> {
-  const opened = await openProtectedAgentRuntime(input);
+  // This legacy configuration path admits one shared authorization revision.
+  const opened = await openProtectedAgentRuntime({
+    ...input,
+    expectedRuntimeAuthorizationRevision: input.opened.agentAuthorizationRevision,
+  });
   if (opened === null) return unavailable("runtime_unavailable");
   const { runtime, stored } = opened;
 

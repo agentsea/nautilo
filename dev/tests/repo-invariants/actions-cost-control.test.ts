@@ -13,8 +13,8 @@ type Workflow = {
   env?: Record<string, string>;
   on: Record<string, unknown>;
   jobs: Record<string, {
-    name?: string;
     "runs-on"?: string;
+    name?: string;
     env?: Record<string, string>;
     needs?: string | string[];
     steps?: Array<{
@@ -77,7 +77,7 @@ async function spawnText(
   args: string[],
   options: { cwd?: string } = {},
 ): Promise<{ status: number; stdout: string; stderr: string }> {
-  const captureRoot = mkdtempSync(join(tmpdir(), "m281-subprocess-"));
+  const captureRoot = mkdtempSync(join(tmpdir(), "actions-cost-subprocess-"));
   const stdoutPath = join(captureRoot, "stdout.txt");
   const stderrPath = join(captureRoot, "stderr.txt");
   try {
@@ -222,7 +222,7 @@ function expectPathsCover(paths: string[], requiredPaths: string[]): void {
   }
 }
 
-describe("M281 GitHub Actions cost controls", () => {
+describe("GitHub Actions cost controls", () => {
   test("ordinary CI is PR-only, preserves CI aggregation, and uses exact bounded history", async () => {
     const ci = await workflow("ci.yml");
     const ciText = await source(".github/workflows/ci.yml");
@@ -248,16 +248,16 @@ describe("M281 GitHub Actions cost controls", () => {
     const lintSteps = ci.jobs["lint"]?.steps ?? [];
     const knip = lintSteps.find((step) => step.name === "Unused exports (knip)");
     const eslint = lintSteps.find((step) => step.name === "Lint");
-    expect(eslint?.env?.["NODE_OPTIONS"]).toBe("--max-old-space-size=6144");
+    expect(eslint?.env?.["NODE_OPTIONS"]).toBe("--use-openssl-ca --max-old-space-size=6144");
     expect(await source("dev/scripts/ci-gates.sh")).toContain(
       'export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=6144}"',
     );
 
     expect(knip?.run).toBe("bash dev/scripts/ci-gates.sh lint-unused");
     expect(knip?.env).toEqual({
-      NODE_OPTIONS: "--max-old-space-size=6144",
+      NODE_OPTIONS: "--use-openssl-ca --max-old-space-size=6144",
     });
-    expect(rootPackage.scripts["lint:unused"]).toContain(`NODE_OPTIONS=${knip?.env?.["NODE_OPTIONS"]}`);
+    expect(rootPackage.scripts["lint:unused"]).toContain("node --max-old-space-size=6144 node_modules/knip/bin/knip.js");
     expect(ci.jobs["lint"]?.env?.["NODE_OPTIONS"]).toBeUndefined();
   });
 
@@ -272,17 +272,19 @@ describe("M281 GitHub Actions cost controls", () => {
     expect(typecheckJob?.env?.["NODE_OPTIONS"]).toBeUndefined();
     expect(typecheck?.run).toBe("bash dev/scripts/ci-gates.sh typecheck");
     expect(typecheck?.env).toEqual({
-      NODE_OPTIONS: "--max-old-space-size=6144",
+      NODE_OPTIONS: "--use-openssl-ca --max-old-space-size=6144",
     });
     expect(rootPackage.scripts["typecheck"]).toBe("bun dev/scripts/typecheck.ts");
     expect(typecheckEnvironment({})).toMatchObject({
-      NODE_OPTIONS: typecheck?.env?.["NODE_OPTIONS"],
+      NODE_OPTIONS: "--max-old-space-size=6144",
       TURBO_CONCURRENCY: "1",
     });
-    expect(typecheckEnvironment({ TURBO_CONCURRENCY: "" })["TURBO_CONCURRENCY"]).toBe("1");
+    expect(typecheckEnvironment({ TURBO_CONCURRENCY: "" }).TURBO_CONCURRENCY).toBe("1");
     expect(typecheckEnvironment({ TURBO_CONCURRENCY: "6", NODE_OPTIONS: "--max-old-space-size=1024" }))
-      .toMatchObject({ TURBO_CONCURRENCY: "6", NODE_OPTIONS: typecheck?.env?.["NODE_OPTIONS"] });
-    expect(localGates).toContain(`export NODE_OPTIONS=${typecheck?.env?.["NODE_OPTIONS"]}`);
+      .toMatchObject({ TURBO_CONCURRENCY: "6", NODE_OPTIONS: "--max-old-space-size=6144" });
+    expect(typecheckEnvironment({ NODE_OPTIONS: "--use-openssl-ca --max-old-space-size=1024" }).NODE_OPTIONS)
+      .toBe("--use-openssl-ca --max-old-space-size=6144");
+    expect(localGates).toContain('export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=6144}"');
     expect(localGates).toContain('export TURBO_CONCURRENCY="${TURBO_CONCURRENCY:-1}"');
   });
 
@@ -533,13 +535,13 @@ describe("M281 GitHub Actions cost controls", () => {
   });
 
   test("an upstream source change invalidates a downstream unit-test hash", async () => {
-    const fixtureRoot = mkdtempSync(join(tmpdir(), "m281-transit-hash-"));
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "actions-cost-transit-hash-"));
     try {
       writeFixture(
         fixtureRoot,
         "package.json",
         `${JSON.stringify({
-          name: "m281-transit-fixture",
+          name: "actions-cost-transit-fixture",
           private: true,
           packageManager: "bun@1.4.4",
           workspaces: ["packages/*"],
@@ -602,7 +604,7 @@ describe("M281 GitHub Actions cost controls", () => {
     expect(helper).not.toContain("HEAD^");
     expect(helper).not.toContain("origin/main");
 
-    const fixtureRoot = mkdtempSync(join(tmpdir(), "m281-exact-base-"));
+    const fixtureRoot = mkdtempSync(join(tmpdir(), "actions-cost-exact-base-"));
     try {
       const remote = join(fixtureRoot, "remote.git");
       const seed = join(fixtureRoot, "seed");
@@ -610,7 +612,7 @@ describe("M281 GitHub Actions cost controls", () => {
       await git(fixtureRoot, "init", "--bare", remote);
       await git(fixtureRoot, "init", seed);
       await git(seed, "config", "user.email", "fixture@example.invalid");
-      await git(seed, "config", "user.name", "M281 fixture");
+      await git(seed, "config", "user.name", "Actions cost fixture");
       writeFileSync(join(seed, "fixture.txt"), "base\n");
       await git(seed, "add", "fixture.txt");
       await git(seed, "commit", "-m", "base");

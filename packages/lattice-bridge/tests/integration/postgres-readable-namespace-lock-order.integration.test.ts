@@ -23,6 +23,7 @@ import {
   namespaces,
   roomMembers,
   rooms,
+  serverAdmission,
   sessions,
   sessionMessages,
   users,
@@ -49,6 +50,8 @@ import {
 } from "../../src/memory/memory-repository.ts";
 import { PostgresNamespaceProductAuthority } from
   "../../src/server/delivery/postgres-namespace-product-authority";
+import { withDisposableFixtureCleanup } from
+  "../../scripts/disposable-postgres-cleanup";
 
 function required(name: string): string {
   const value = process.env[name];
@@ -397,12 +400,15 @@ describe("readable Namespace product lock order", () => {
         readPromise ?? Promise.resolve(),
         detachPromise ?? Promise.resolve(),
       ]);
-      await adminDb.delete(memories).where(eq(memories.id, memoryId));
-      await adminDb.delete(namespaces).where(eq(namespaces.id, namespaceId));
-      await adminDb.delete(cryptoObjects).where(eq(
-        cryptoObjects.objectId,
-        cryptoObjectId,
-      ));
+      await withDisposableFixtureCleanup(admin, async (transaction) => {
+        const cleanupDb = drizzle(transaction, { schema });
+        await cleanupDb.delete(memories).where(eq(memories.id, memoryId));
+        await cleanupDb.delete(namespaces).where(eq(namespaces.id, namespaceId));
+        await cleanupDb.delete(cryptoObjects).where(eq(
+          cryptoObjects.objectId,
+          cryptoObjectId,
+        ));
+      });
       fingerprint.fill(0);
     }
   });
@@ -427,6 +433,7 @@ describe("readable Namespace product lock order", () => {
     try {
       await adminDb.transaction(async (tx) => {
         await tx.insert(users).values({ id: userId, name: "M320 lock-order user" });
+        await tx.insert(serverAdmission).values({ userId, admitted: true });
         await tx.insert(agents).values({ id: agentId, handle: `m320-lock-${agentId}` });
         await tx.insert(actors).values([
           { id: humanId, ownerId: userId, displayName: "M320 Human",
@@ -479,11 +486,14 @@ describe("readable Namespace product lock order", () => {
         memoryPromise ?? Promise.resolve(),
         humanAiPromise ?? Promise.resolve(null),
       ]);
-      await adminDb.delete(rooms).where(eq(rooms.id, roomId));
-      await adminDb.delete(namespaces).where(eq(namespaces.id, namespaceId));
-      await adminDb.delete(actors).where(inArray(actors.id, [humanId, agentActorId]));
-      await adminDb.delete(agents).where(eq(agents.id, agentId));
-      await adminDb.delete(users).where(eq(users.id, userId));
+      await withDisposableFixtureCleanup(admin, async (transaction) => {
+        const cleanupDb = drizzle(transaction, { schema });
+        await cleanupDb.delete(rooms).where(eq(rooms.id, roomId));
+        await cleanupDb.delete(namespaces).where(eq(namespaces.id, namespaceId));
+        await cleanupDb.delete(actors).where(inArray(actors.id, [humanId, agentActorId]));
+        await cleanupDb.delete(agents).where(eq(agents.id, agentId));
+        await cleanupDb.delete(users).where(eq(users.id, userId));
+      });
     }
   });
 
@@ -508,6 +518,7 @@ describe("readable Namespace product lock order", () => {
     try {
       await adminDb.transaction(async (tx) => {
         await tx.insert(users).values({ id: userId, name: "M317 lock-order user" });
+        await tx.insert(serverAdmission).values({ userId, admitted: true });
         await tx.insert(agents).values({ id: agentId, handle: `m317-lock-${agentId}` });
         await tx.insert(actors).values([
           { id: humanId, ownerId: userId, displayName: "M317 Human",
@@ -649,11 +660,14 @@ describe("readable Namespace product lock order", () => {
         canonicalPromise ?? Promise.resolve(null),
         stenographerPromise ?? Promise.resolve(null),
       ]);
-      await adminDb.delete(rooms).where(eq(rooms.id, roomId));
-      await adminDb.delete(namespaces).where(eq(namespaces.id, namespaceId));
-      await adminDb.delete(actors).where(inArray(actors.id, [humanId, agentActorId]));
-      await adminDb.delete(agents).where(eq(agents.id, agentId));
-      await adminDb.delete(users).where(eq(users.id, userId));
+      await withDisposableFixtureCleanup(admin, async (transaction) => {
+        const cleanupDb = drizzle(transaction, { schema });
+        await cleanupDb.delete(rooms).where(eq(rooms.id, roomId));
+        await cleanupDb.delete(namespaces).where(eq(namespaces.id, namespaceId));
+        await cleanupDb.delete(actors).where(inArray(actors.id, [humanId, agentActorId]));
+        await cleanupDb.delete(agents).where(eq(agents.id, agentId));
+        await cleanupDb.delete(users).where(eq(users.id, userId));
+      });
     }
   });
 
@@ -679,6 +693,7 @@ describe("readable Namespace product lock order", () => {
     try {
       await adminDb.transaction(async (tx) => {
         await tx.insert(users).values({ id: userId, name: "M318 lock-order user" });
+        await tx.insert(serverAdmission).values({ userId, admitted: true });
         await tx.insert(agents).values({ id: agentId, handle: `m318-lock-${agentId}` });
         await tx.insert(actors).values([
           { id: humanId, ownerId: userId, displayName: "M318 Human",
@@ -790,12 +805,15 @@ describe("readable Namespace product lock order", () => {
         singlePromise ?? Promise.resolve(null),
         setPromise ?? Promise.resolve(null),
       ]);
-      await adminDb.delete(rooms).where(inArray(rooms.id, [sourceRoomId, targetRoomId]));
-      await adminDb.delete(namespaces).where(inArray(namespaces.id,
-        [sourceNamespaceId, targetNamespaceId]));
-      await adminDb.delete(actors).where(inArray(actors.id, [humanId, agentActorId]));
-      await adminDb.delete(agents).where(inArray(agents.id, [agentId]));
-      await adminDb.delete(users).where(inArray(users.id, [userId]));
+      await withDisposableFixtureCleanup(admin, async (transaction) => {
+        const cleanupDb = drizzle(transaction, { schema });
+        await cleanupDb.delete(rooms).where(inArray(rooms.id, [sourceRoomId, targetRoomId]));
+        await cleanupDb.delete(namespaces).where(inArray(namespaces.id,
+          [sourceNamespaceId, targetNamespaceId]));
+        await cleanupDb.delete(actors).where(inArray(actors.id, [humanId, agentActorId]));
+        await cleanupDb.delete(agents).where(inArray(agents.id, [agentId]));
+        await cleanupDb.delete(users).where(inArray(users.id, [userId]));
+      });
     }
   });
 
@@ -818,6 +836,11 @@ describe("readable Namespace product lock order", () => {
           { id: subjectUserId, name: "M322 access source subject" },
           { id: peerUserId, name: "M322 access target peer" },
           { id: sourceOnlyUserId, name: "M322 access source-only peer" },
+        ]);
+        await tx.insert(serverAdmission).values([
+          { userId: subjectUserId, admitted: true },
+          { userId: peerUserId, admitted: true },
+          { userId: sourceOnlyUserId, admitted: true },
         ]);
         await tx.insert(agents).values({
           id: agentId,
@@ -899,14 +922,17 @@ describe("readable Namespace product lock order", () => {
       });
       await expectReadable(false);
     } finally {
-      await adminDb.delete(rooms).where(inArray(rooms.id, [sourceRoomId, targetRoomId]));
-      await adminDb.delete(namespaces).where(inArray(namespaces.id,
-        [sourceNamespaceId, targetNamespaceId]));
-      await adminDb.delete(actors).where(inArray(actors.id,
-        [subjectHumanId, peerHumanId, sourceOnlyHumanId, agentActorId]));
-      await adminDb.delete(agents).where(eq(agents.id, agentId));
-      await adminDb.delete(users).where(inArray(users.id,
-        [subjectUserId, peerUserId, sourceOnlyUserId]));
+      await withDisposableFixtureCleanup(admin, async (transaction) => {
+        const cleanupDb = drizzle(transaction, { schema });
+        await cleanupDb.delete(rooms).where(inArray(rooms.id, [sourceRoomId, targetRoomId]));
+        await cleanupDb.delete(namespaces).where(inArray(namespaces.id,
+          [sourceNamespaceId, targetNamespaceId]));
+        await cleanupDb.delete(actors).where(inArray(actors.id,
+          [subjectHumanId, peerHumanId, sourceOnlyHumanId, agentActorId]));
+        await cleanupDb.delete(agents).where(eq(agents.id, agentId));
+        await cleanupDb.delete(users).where(inArray(users.id,
+          [subjectUserId, peerUserId, sourceOnlyUserId]));
+      });
     }
   });
 
@@ -999,6 +1025,10 @@ describe("readable Namespace product lock order", () => {
           await tx.insert(users).values([
             { id: subjectUserId, name: "M314 lock-order subject" },
             { id: peerUserId, name: "M314 lock-order peer" },
+          ]);
+          await tx.insert(serverAdmission).values([
+            { userId: subjectUserId, admitted: true },
+            { userId: peerUserId, admitted: true },
           ]);
           await tx.insert(actors).values([
             { id: subjectHumanId, ownerId: subjectUserId,
@@ -1105,13 +1135,16 @@ describe("readable Namespace product lock order", () => {
           membershipPromise ?? Promise.resolve(),
           authorityPromise ?? Promise.resolve(null),
         ]);
-        await adminDb.delete(rooms).where(eq(rooms.id, childRoomId));
-        await adminDb.delete(sessionMessages).where(eq(sessionMessages.sessionId, sessionId));
-        await adminDb.delete(sessions).where(eq(sessions.id, sessionId));
-        await adminDb.delete(rooms).where(eq(rooms.id, parentRoomId));
-        await adminDb.delete(namespaces).where(eq(namespaces.id, namespaceId));
-        await adminDb.delete(actors).where(inArray(actors.id, [subjectHumanId, peerHumanId]));
-        await adminDb.delete(users).where(inArray(users.id, [subjectUserId, peerUserId]));
+        await withDisposableFixtureCleanup(admin, async (transaction) => {
+          const cleanupDb = drizzle(transaction, { schema });
+          await cleanupDb.delete(rooms).where(eq(rooms.id, childRoomId));
+          await cleanupDb.delete(sessionMessages).where(eq(sessionMessages.sessionId, sessionId));
+          await cleanupDb.delete(sessions).where(eq(sessions.id, sessionId));
+          await cleanupDb.delete(rooms).where(eq(rooms.id, parentRoomId));
+          await cleanupDb.delete(namespaces).where(eq(namespaces.id, namespaceId));
+          await cleanupDb.delete(actors).where(inArray(actors.id, [subjectHumanId, peerHumanId]));
+          await cleanupDb.delete(users).where(inArray(users.id, [subjectUserId, peerUserId]));
+        });
       }
     });
   }

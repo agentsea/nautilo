@@ -59,13 +59,13 @@ export function normalizeHost(input: string): string | null {
   if (trimmed.length === 0) return null;
   const ip = parseStrictIpLiteral(trimmed);
   if (ip !== null) return ip.toString();
-  // Legacy IPv4 spellings and URL-escaped bytes are not DNS names. Reject them
-  // before URL/IDNA conversion, whose numeric-host handling varies by runtime.
-  if (ipaddr.IPv4.isValid(trimmed) || trimmed.includes("%")) return null;
-  const ascii = domainToASCII(trimmed.toLowerCase());
-  // IDNA conversion must not turn Unicode digits or separators into an IP
-  // spelling accepted by a domain or CIDR rule, including legacy IPv4 forms.
-  return ascii.length > 0 && !ipaddr.isValid(ascii) ? ascii : null;
+  const domain = trimmed.toLowerCase();
+  const ascii = domainToASCII(domain);
+  // IP admission uses the original spelling. IDNA can also canonicalize
+  // legacy or encoded IPv4 forms; retain their domain identity so that
+  // normalization cannot grant them IP-literal or CIDR permissions.
+  if (parseStrictIpLiteral(ascii) !== null) return domain;
+  return ascii.length > 0 ? ascii : null;
 }
 
 function ruleMatchesHost(rule: NetworkAllowRule, host: string): boolean {

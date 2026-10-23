@@ -98,6 +98,19 @@ describe("Desktop license payload", () => {
     expect(binaries.map((binary) => readFileSync(binary))).toEqual(before);
   });
 
+  test.skipIf(process.platform === "win32")("rejects an altered runtime archive before replacing an existing binary", () => {
+    const { root, desktop } = copiedSource();
+    const binary = join(desktop, "vendor/bun/arm64/bun");
+    mkdirSync(dirname(binary), { recursive: true });
+    writeFileSync(binary, "existing runtime");
+    writeFileSync(join(root, "altered-download.ts"), 'globalThis.fetch = async () => new Response("altered archive");\n');
+    const result = spawnSync(process.execPath, ["--preload", join(root, "altered-download.ts"), join(desktop, "scripts/vendor-bun.ts")], { cwd: root, env: {}, encoding: "utf8" });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("pinned upstream SHA-256");
+    expect(readFileSync(binary, "utf8")).toBe("existing runtime");
+    expect(existsSync(join(desktop, "vendor/bun/.tmp/arm64/bun-darwin-aarch64.zip"))).toBe(false);
+  });
+
   test("electron-builder copies both notices despite the application Markdown exclusion", async () => {
     // Use the pinned packager's real matcher and copy implementation without
     // downloading Electron, building native tools, or invoking signing hooks.

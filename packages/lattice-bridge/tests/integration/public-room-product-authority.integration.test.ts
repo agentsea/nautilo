@@ -8,6 +8,7 @@ import {
   namespaces,
   roomMembers,
   rooms,
+  serverAdmission,
   sessionMessages,
   sessions,
   users,
@@ -22,6 +23,8 @@ import {
   PostgresNamespaceProductAuthority,
   type NamespaceProductAuthoritySnapshot,
 } from "../../src/server/delivery/postgres-namespace-product-authority.ts";
+import { withDisposableFixtureCleanup } from
+  "../../scripts/disposable-postgres-cleanup";
 
 bootstrapTestDbInstance();
 
@@ -153,6 +156,10 @@ async function createFixture(): Promise<Fixture> {
     await database.insert(users).values(userIds.map((id, index) => ({
       id,
       name: `M314 product authority Human ${index}`,
+    })));
+    await database.insert(serverAdmission).values(userIds.map((userId) => ({
+      userId,
+      admitted: true,
     })));
     await database.insert(agents).values({
       id: agentId,
@@ -318,7 +325,8 @@ async function createFixture(): Promise<Fixture> {
 }
 
 async function destroyFixture(fixture: Fixture): Promise<void> {
-  await adminDatabase.transaction(async (database) => {
+  await withDisposableFixtureCleanup(adminClient, async (transaction) => {
+    const database = drizzle(transaction);
     await database.delete(rooms).where(eq(rooms.id, fixture.roomIds.openSubthread));
     await database.delete(sessionMessages)
       .where(eq(sessionMessages.sessionId, fixture.sessionId));
@@ -647,6 +655,12 @@ describe("M314 public Room product authority", () => {
               id,
               name: `M314 capacity Human ${offset + index}`,
             })));
+          await database.insert(serverAdmission).values(
+            userIds.slice(offset, offset + chunkSize).map((userId) => ({
+              userId,
+              admitted: true,
+            })),
+          );
           await database.insert(actors).values(
             humanIds.slice(offset, offset + chunkSize).map((id, index) => ({
               id,
@@ -690,14 +704,17 @@ describe("M314 public Room product authority", () => {
         use: async (handle) => inspect(handle).participantHumanIds.length,
       })).toBe(4_097);
     } finally {
-      await adminDatabase.delete(rooms).where(eq(rooms.id, roomId));
-      await adminDatabase.delete(namespaces).where(eq(namespaces.id, namespaceId));
-      for (let offset = 0; offset < userIds.length; offset += chunkSize) {
-        await adminDatabase.delete(users).where(inArray(
-          users.id,
-          userIds.slice(offset, offset + chunkSize),
-        ));
-      }
+      await withDisposableFixtureCleanup(adminClient, async (transaction) => {
+        const database = drizzle(transaction);
+        await database.delete(rooms).where(eq(rooms.id, roomId));
+        await database.delete(namespaces).where(eq(namespaces.id, namespaceId));
+        for (let offset = 0; offset < userIds.length; offset += chunkSize) {
+          await database.delete(users).where(inArray(
+            users.id,
+            userIds.slice(offset, offset + chunkSize),
+          ));
+        }
+      });
     }
   });
 });
