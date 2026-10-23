@@ -6,6 +6,7 @@ import {
   type ExternalMessageAttributionFields,
   type ProveItChallengeEvent,
   type ServerEvent,
+  type RoomMessageDto,
   type ThreadDetailResponse,
 } from "@nautilo/types";
 import type { ThreadMessageLike } from "@assistant-ui/react";
@@ -81,14 +82,19 @@ export interface ThreadReadState {
   requestedForRoomId: string | null;
 }
 
+/** Local view also accepts an authenticated protected anchor or moderation tombstone. */
+export type ThreadRoomDetail = Omit<ThreadDetailResponse, "anchor"> & Readonly<{
+  anchor: RoomMessageDto;
+}>;
+
 export interface ThreadRoomControllerState {
   roomId: string | null;
   parentRoomId: string | null;
   phase: "closed" | "hydrating" | "ready" | "error";
   visible: boolean;
   connected: boolean;
-  detail: ThreadDetailResponse | null;
-  anchor: ThreadDetailResponse["anchor"] | null;
+  detail: ThreadRoomDetail | null;
+  anchor: ThreadRoomDetail["anchor"] | null;
   messages: readonly ThreadRoomMessage[];
   /** Canonical ordered Assistant UI projection for the child transcript. */
   runtimeMessages: readonly ThreadMessageLike[];
@@ -148,7 +154,7 @@ export type ThreadRoomAction =
   | {
       type: "hydrated";
       roomId: string;
-      detail: ThreadDetailResponse;
+      detail: ThreadRoomDetail;
       messages: readonly ThreadRoomMessage[];
       runtimeMessages: readonly ThreadMessageLike[];
       activeJobIds: readonly string[];

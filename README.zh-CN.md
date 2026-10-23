@@ -8,7 +8,7 @@
 
 Nautilo 的界面目前为英语。README 和本地安装指南已提供翻译，其他文档可能仍为英文。
 
-<!-- Translation source: README.md; SHA-256: d9e81d8a699a01fa1836ec768028a4e0c464d4420524b9cae4d0f48686dd855b -->
+<!-- Translation source: README.md; SHA-256: 70b9d8b55da933e1da5c68d0656f5c2e4ac61690fd958de91b9be5268859f07a -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### AI，进入多人模式。
@@ -99,7 +99,7 @@ https://github.com/user-attachments/assets/79a6c37f-ea01-4e95-afd5-85d4b9b55e0d
 
 ## 从源码开发
 
-仓库固定使用 **Bun 1.3.11** 和 **Node 24.x**。安装 Docker，以运行本地 PostgreSQL 和 Logto 基础设施。准备桌面端环境时，还可能需要 Rust 来构建原生辅助程序。
+仓库固定使用 **Bun 1.4.4** 和 **Node 24.22.1**。安装 Docker，以运行本地 PostgreSQL 和 Logto 基础设施。准备桌面端环境时，还可能需要 Rust 来构建原生辅助程序。
 
 ```bash
 git clone https://github.com/agentsea/nautilo.git

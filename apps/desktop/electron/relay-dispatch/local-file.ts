@@ -2,6 +2,7 @@ import * as fsp from "node:fs/promises";
 import * as path from "node:path";
 
 import type { OfficeCreateRunFn } from "@nautilo/config/officecli";
+import type { NativeSearchExecutor } from "@nautilo/relay/native-search";
 import type { ProtectedPathPolicy } from "@nautilo/security";
 import type { Sandbox } from "@nautilo/sandbox";
 import type {
@@ -186,11 +187,27 @@ export interface LocalFileHandlers {
   }): Promise<DesktopDispatchDecision>;
 }
 
+export interface TaskProjectFileAuthority {
+  readonly authority: DesktopFilesystemAuthority;
+  /** Reprove the exact delegated grant and project-directory identity. */
+  reauthorize(structural?: boolean): Promise<void>;
+  /** Create one locally derived, read-only sandbox for a fixed grep/glob. */
+  openReadOnlySearchSandbox(): Promise<Readonly<{
+    sandbox: Sandbox;
+    close(): Promise<void>;
+  }>>;
+  /** Release request-local resources retained to pin this directory incarnation. */
+  close(): Promise<void>;
+}
+
 export interface CreateLocalFileHandlersDeps {
   readonly relayId?: string | undefined;
   readonly baseRoots: readonly string[];
   readonly onFsChange?: ((event: RelayFsChangeEvent) => void) | undefined;
   readonly desktopFilesystemGrantAuthority?: DesktopFilesystemGrantAuthorityResolver | undefined;
+  readonly resolveTaskProjectFileAuthority?: ((
+    request: RelayDispatchRequest,
+  ) => Promise<TaskProjectFileAuthority | null>) | undefined;
   readonly commitDesktopApplyPatch?: CommitDesktopApplyPatch | undefined;
   readonly commitDesktopOfficeCli?: CommitDesktopOfficeCli | undefined;
   readonly commitDesktopAgentContent?: CommitDesktopAgentContent | undefined;
@@ -203,6 +220,7 @@ export interface CreateLocalFileHandlersDeps {
   readonly getLocalWorkspacePath?: (() => string | undefined) | undefined;
   readonly protectedPathPolicy?: ProtectedPathPolicy | undefined;
   readonly officeRun?: OfficeCreateRunFn | undefined;
+  readonly searchExecute?: NativeSearchExecutor | undefined;
   readonly buildApplyPatchEnvelope: (input: {
     readonly base: RelaySandboxProfile;
     readonly currentFolder: string;
@@ -340,63 +358,123 @@ export function createLocalFileHandlers(deps: CreateLocalFileHandlersDeps): Loca
   }): Promise<RelayDispatchResult> => {
     const relayId = deps.relayId;
     if (!relayId) return { status: "error", error: "local-file dispatch requires relayId" };
-    const result = await handleLocalFileDispatch(input.request, {
-      relayId,
-      guard: input.guard,
-      ...(deps.onFsChange === undefined ? {} : { onFsChange: deps.onFsChange }),
-      ...(input.authority === undefined
-        ? {}
-        : { desktopFilesystemAuthority: input.authority }),
-      ...(input.sandbox === undefined ? {} : { sandbox: input.sandbox }),
-      ...(input.signal === undefined ? {} : { signal: input.signal }),
-      ...(input.ripgrepRuntime === undefined ? {} : { ripgrepRuntime: input.ripgrepRuntime }),
-      ...(deps.officeRun === undefined ? {} : { officeRun: deps.officeRun }),
-      ...(deps.commitDesktopOfficeCli === undefined
-        ? {}
-        : {
-            officeCliCommit: async (coordinatorInput) => await deps.commitDesktopOfficeCli!({
-              ...coordinatorInput,
-              reauthorize: () => reauthorize(
-                input.request,
-                "Desktop Filesystem Grant request rejected at OfficeCLI commit",
+    let taskProject: TaskProjectFileAuthority | null = null;
+    let ownedSearchSandbox: Awaited<ReturnType<TaskProjectFileAuthority["openReadOnlySearchSandbox"]>> | null = null;
+    if (input.request.localExecutionBinding?.version === 4) {
+      try {
+        input.signal?.throwIfAborted();
+        taskProject = await deps.resolveTaskProjectFileAuthority?.(input.request) ?? null;
+        if (taskProject === null) {
+          return {
+            status: "error",
+            errorCode: "TASK_PROJECT_FILE_AUTHORITY_UNAVAILABLE",
+            error: "Task project file authority is unavailable",
+          };
+        }
+        await taskProject.reauthorize();
+        if (isLocalFileSearch(input.request) && input.sandbox === undefined) {
+          ownedSearchSandbox = await taskProject.openReadOnlySearchSandbox();
+        }
+        input.signal?.throwIfAborted();
+      } catch {
+        await ownedSearchSandbox?.close().catch(() => {});
+        await taskProject?.close().catch(() => {});
+        return {
+          status: "error",
+          errorCode: "TASK_PROJECT_FILE_AUTHORITY_UNAVAILABLE",
+          error: "Task project file authority is unavailable",
+        };
+      }
+    }
+    const reauthorizeLocalFile = async (
+      message: string,
+      structural = false,
+    ): Promise<void> => {
+      input.signal?.throwIfAborted();
+      if (taskProject !== null) await taskProject.reauthorize(structural);
+      else await reauthorize(input.request, message, structural);
+      input.signal?.throwIfAborted();
+    };
+    const filesystemAuthority = taskProject?.authority ?? input.authority;
+    let result: RelayDispatchResult;
+    try {
+      result = await handleLocalFileDispatch(input.request, {
+        relayId,
+        guard: input.guard,
+        ...(deps.onFsChange === undefined ? {} : { onFsChange: deps.onFsChange }),
+        ...(filesystemAuthority === undefined
+          ? {}
+          : { desktopFilesystemAuthority: filesystemAuthority }),
+        ...((input.sandbox ?? ownedSearchSandbox?.sandbox) === undefined
+          ? {}
+          : { sandbox: input.sandbox ?? ownedSearchSandbox!.sandbox }),
+        ...(input.signal === undefined ? {} : { signal: input.signal }),
+        ...(input.ripgrepRuntime === undefined ? {} : { ripgrepRuntime: input.ripgrepRuntime }),
+        ...(taskProject === null
+          ? {}
+          : {
+              taskProjectReauthorize: () => reauthorizeLocalFile(
+                "Task project file authority changed before operation",
               ),
             }),
-          }),
-      ...(deps.commitDesktopAgentContent === undefined
-        ? {}
-        : {
-            agentContentCommit: async (coordinatorInput) => await deps.commitDesktopAgentContent!({
-              ...coordinatorInput,
-              reauthorize: () => reauthorize(
-                input.request,
-                "Desktop Filesystem Grant request rejected at local file-tool commit",
-              ),
+        ...(deps.searchExecute === undefined ? {} : { searchExecute: deps.searchExecute }),
+        ...(deps.officeRun === undefined ? {} : { officeRun: deps.officeRun }),
+        ...(deps.commitDesktopOfficeCli === undefined
+          ? {}
+          : {
+              officeCliCommit: async (coordinatorInput) => await deps.commitDesktopOfficeCli!({
+                ...coordinatorInput,
+                reauthorize: () => reauthorizeLocalFile(
+                  "Desktop Filesystem Grant request rejected at OfficeCLI commit",
+                ),
+              }),
             }),
-          }),
-      ...(deps.commitDesktopAgentStructural === undefined
-        ? {}
-        : {
-            structuralCommit: async (coordinatorInput) => await deps.commitDesktopAgentStructural!({
-              ...coordinatorInput,
-              reauthorize: () => reauthorize(
-                input.request,
-                "Desktop Filesystem Grant request rejected at structural file-tool commit",
-                true,
-              ),
+        ...(deps.commitDesktopAgentContent === undefined
+          ? {}
+          : {
+              agentContentCommit: async (coordinatorInput) => await deps.commitDesktopAgentContent!({
+                ...coordinatorInput,
+                reauthorize: () => reauthorizeLocalFile(
+                  "Desktop Filesystem Grant request rejected at local file-tool commit",
+                ),
+              }),
             }),
-          }),
-      ...(deps.commitDesktopHistoryRestore === undefined
-        ? {}
-        : {
-            historyCommit: async (coordinatorInput) => await deps.commitDesktopHistoryRestore!({
-              ...coordinatorInput,
-              reauthorize: () => reauthorize(
-                input.request,
-                "Desktop Filesystem Grant request rejected at history commit",
-              ),
+        ...(deps.commitDesktopAgentStructural === undefined
+          ? {}
+          : {
+              structuralCommit: async (coordinatorInput) => await deps.commitDesktopAgentStructural!({
+                ...coordinatorInput,
+                reauthorize: () => reauthorizeLocalFile(
+                  "Desktop Filesystem Grant request rejected at structural file-tool commit",
+                  true,
+                ),
+              }),
             }),
-          }),
-    });
+        ...(deps.commitDesktopHistoryRestore === undefined
+          ? {}
+          : {
+              historyCommit: async (coordinatorInput) => await deps.commitDesktopHistoryRestore!({
+                ...coordinatorInput,
+                reauthorize: () => reauthorizeLocalFile(
+                  "Desktop Filesystem Grant request rejected at history commit",
+                ),
+              }),
+            }),
+      });
+      if (taskProject !== null) {
+        await reauthorizeLocalFile("Task project file authority changed after operation");
+      }
+    } catch (error) {
+      if (taskProject === null) throw error;
+      return {
+        status: "error",
+        errorCode: "TASK_PROJECT_FILE_AUTHORITY_UNAVAILABLE",
+        error: "Task project file authority is unavailable",
+      };
+    } finally {
+      await ownedSearchSandbox?.close().catch(() => {});
+      await taskProject?.close().catch(() => {});
+    }
     if (result.status === "ok" && result.result && typeof result.result === "object") {
       const inner = result.result as { ok?: boolean; result?: unknown };
       if (inner.ok === true && inner.result && typeof inner.result === "object") {
@@ -420,6 +498,12 @@ export function createLocalFileHandlers(deps: CreateLocalFileHandlersDeps): Loca
       }
       const result = input.applyPatchPreparation === undefined
         ? await dispatchOrdinary(input)
+        : input.request.localExecutionBinding?.version === 4
+          ? {
+              status: "error" as const,
+              errorCode: "TASK_PROJECT_FILE_AUTHORITY_UNAVAILABLE",
+              error: "Task project file authority is unavailable",
+            }
         : await dispatchApplyPatch({
             request: input.request,
             preparation: input.applyPatchPreparation,

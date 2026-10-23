@@ -55,6 +55,20 @@ export interface StagedClientProfileReceipt {
   readonly generation: number;
 }
 
+export interface RecoverExactStagedClientProfileInput {
+  readonly coordinates: ClientProfileCoordinates;
+  readonly expectedActive: {
+    readonly generation: number;
+    readonly profileBytes: Uint8Array;
+    readonly publicState: ClientProfilePublicState;
+  };
+  readonly candidate: {
+    readonly generation: number;
+    readonly profileBytes: Uint8Array;
+    readonly publicState: ClientProfilePublicState;
+  };
+}
+
 export interface InterruptedClientProfileResolution {
   readonly stageId: string;
   readonly action: "activate" | "abort";
@@ -79,6 +93,10 @@ export interface ClientProfileVault {
     coordinates: ClientProfileCoordinates,
     resolution: InterruptedClientProfileResolution,
   ): Promise<void>;
+  /** Atomically activates only an exact staged successor of an exact active base. */
+  recoverExactStagedProfile?(
+    input: RecoverExactStagedClientProfileInput,
+  ): Promise<boolean>;
   withOpenProfile<T>(
     coordinates: ClientProfileCoordinates,
     operation: (profileBytes: Uint8Array) => Promise<T> | T,

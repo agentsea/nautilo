@@ -123,12 +123,26 @@ describe("D490 generated runtime install projection", () => {
   test("server and packaged Desktop Nano ID inputs stay on their reviewed boundaries", () => {
     const runtime = nanoIdResolutions(readFileSync(join(RUNTIME_INSTALL_DIR, "bun.lock"), "utf8"));
     const root = nanoIdResolutions(readFileSync(join(ROOT_DIR, "bun.lock"), "utf8"));
-    const devOnly = root.filter(({ key }) => key === "@withtyped/server/nanoid");
-    const packaged = root.filter(({ key }) => key !== "@withtyped/server/nanoid");
+    // The excluded nautilo-dev Logto closure may retain more than one lockfile
+    // placement for the same transitive Nano ID release.
+    const devOnlyKeys = new Set([
+      "@withtyped/server/nanoid",
+      "@logto/connector-kit/@withtyped/server/nanoid",
+      "@logto/cli/@logto/schemas/@withtyped/server/nanoid",
+    ]);
+    const devOnly = root.filter(({ key }) => devOnlyKeys.has(key));
+    const packaged = root.filter(({ key }) => !devOnlyKeys.has(key));
 
     expect(runtime).toEqual([{ key: "nanoid", version: "5.1.16" }]);
     expect(runtime.filter(({ version }) => isAffectedNanoId(version))).toEqual([]);
     expect(packaged.filter(({ version }) => isAffectedNanoId(version))).toEqual([]);
-    expect(devOnly).toEqual([{ key: "@withtyped/server/nanoid", version: "4.0.2" }]);
+    expect(devOnly).toEqual([
+      { key: "@withtyped/server/nanoid", version: "4.0.2" },
+      { key: "@logto/connector-kit/@withtyped/server/nanoid", version: "4.0.2" },
+      {
+        key: "@logto/cli/@logto/schemas/@withtyped/server/nanoid",
+        version: "4.0.2",
+      },
+    ]);
   });
 });

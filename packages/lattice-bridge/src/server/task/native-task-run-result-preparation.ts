@@ -1,9 +1,15 @@
 import {
-  and, domainKeyHeads, eq, humanCryptoDevices, namespaceDomainKeyBindings, namespaceDomainKeyHeads,
+  PROTECTED_TASK_CANCELLED_RESULT, and, domainKeyHeads, eq, humanCryptoDevices, namespaceDomainKeyBindings, namespaceDomainKeyHeads,
   type PostgresJsBridgeConnection,
 } from "@nautilo/db";
 import {
   accessRevision, assertAuthenticTaskRuntimeExecutionEvidence, authorizationRevision,
+  assertAuthenticTaskRuntimeCancellationResultEvidence, prepareNativeTaskRuntimeCancellationResultObject,
+  assertAuthenticTaskRuntimeTerminalMessageEvidence,
+  assertAuthenticTaskRuntimeRunResultReadEvidence,
+  type TaskRuntimeRunResultReadEvidence,
+  type TaskRuntimeCancellationResultEvidence,
+  type TaskRuntimeTerminalMessageEvidence,
   cryptoDomainId, namespaceGeneration, namespaceId, prepareNativeTaskRuntimeResultObject,
   type DomainForegroundSecretEntry,
 } from "@nautilo/lattice-crypto";
@@ -45,6 +51,17 @@ function destroyAuthority(authority: DomainForegroundNamespaceAuthorityInspectio
     authority.domainHeadDigest, authority.bundleDigest]) bytes.fill(0);
 }
 
+function copyNamespaceAuthority(value: DomainForegroundNamespaceAuthorityInspectionV2): DomainForegroundNamespaceAuthorityInspectionV2 {
+  return { ...value,
+    namespaceHeadDigest: Uint8Array.from(value.namespaceHeadDigest),
+    namespacePublicationDigest: Uint8Array.from(value.namespacePublicationDigest),
+    namespacePublicationSetDigest: Uint8Array.from(value.namespacePublicationSetDigest),
+    namespaceAudienceFingerprint: Uint8Array.from(value.namespaceAudienceFingerprint),
+    domainHeadDigest: Uint8Array.from(value.domainHeadDigest),
+    bundleDigest: Uint8Array.from(value.bundleDigest),
+  };
+}
+
 function sameAuthority(left: DomainForegroundNamespaceAuthorityInspectionV2, right: DomainForegroundNamespaceAuthorityInspectionV2): boolean {
   return left.namespaceId === right.namespaceId
     && left.namespaceAccessRevision === right.namespaceAccessRevision
@@ -70,25 +87,111 @@ export type NativeTaskNamespaceSourceInput = Readonly<{
   assertCurrentTaskAuthority(): Promise<void>;
 }>;
 
+type ResultEvidence = PrepareNativeTaskRuntimeRunResultInput["evidence"]
+  | TaskRuntimeCancellationResultEvidence;
+type NamespaceEvidence = ResultEvidence | TaskRuntimeTerminalMessageEvidence
+  | TaskRuntimeRunResultReadEvidence;
+
+function assertNamespaceEvidence(evidence: NamespaceEvidence): void {
+  if (evidence.purpose === "task.runtime.cancellation_result") {
+    assertAuthenticTaskRuntimeCancellationResultEvidence(evidence);
+  } else if (evidence.purpose === "task.runtime.terminal_message") {
+    assertAuthenticTaskRuntimeTerminalMessageEvidence(evidence);
+  } else if (evidence.purpose === "task.runtime.run_result_read") {
+    assertAuthenticTaskRuntimeRunResultReadEvidence(evidence);
+  } else {
+    assertAuthenticTaskRuntimeExecutionEvidence(evidence);
+  }
+}
+
+function assertResultEvidence(evidence: ResultEvidence): void {
+  assertNamespaceEvidence(evidence);
+}
+
 /** Hold one exact live Task Namespace bundle only for the supplied callback. */
 export async function withNativeTaskNamespaceSource<Value>(
   input: NativeTaskNamespaceSourceInput,
   use: (source: NativeTaskNamespaceSource) => Promise<Value>,
 ): Promise<Value> {
+  assertAuthenticTaskRuntimeExecutionEvidence(input.evidence);
+  return withNativeResultNamespaceSource(input, use);
+}
+
+export type NativeTaskTerminalMessageNamespaceSourceInput = Omit<
+  NativeTaskNamespaceSourceInput,
+  "evidence" | "namespaceId" | "requiredOperations"
+> & Readonly<{ evidence: TaskRuntimeTerminalMessageEvidence }>;
+
+/** Hold only the destination Namespace named by authentic terminal evidence. */
+export async function withNativeTaskTerminalMessageNamespaceSource<Value>(
+  input: NativeTaskTerminalMessageNamespaceSourceInput,
+  use: (source: NativeTaskNamespaceSource) => Promise<Value>,
+): Promise<Value> {
+  assertAuthenticTaskRuntimeTerminalMessageEvidence(input.evidence);
+  return withNativeResultNamespaceSource({
+    ...input,
+    namespaceId: input.evidence.message.namespaceId,
+    requiredOperations: ["encrypt"],
+  }, use);
+}
+
+export type NativeTaskRunResultMessageNamespaceSourceInput = Omit<
+  NativeTaskNamespaceSourceInput, "evidence" | "namespaceId" | "requiredOperations"
+> & Readonly<{ evidence: TaskRuntimeRunResultReadEvidence }>;
+
+/** Only the independently granted raw Message write partition can open this bundle. */
+export async function withNativeTaskRunResultMessageNamespaceSource<Value>(
+  input: NativeTaskRunResultMessageNamespaceSourceInput,
+  use: (source: NativeTaskNamespaceSource) => Promise<Value>,
+): Promise<Value> {
+  assertAuthenticTaskRuntimeRunResultReadEvidence(input.evidence);
+  const write = input.evidence.messageWrite;
+  if (write === undefined || write === null) throw new TypeError("Task result read has no Message write authority");
+  return withNativeResultNamespaceSource({ ...input,
+    namespaceId: write.namespace.namespaceId, requiredOperations: ["encrypt"],
+  }, use);
+}
+
+async function withNativeResultNamespaceSource<Value>(
+  input: Omit<NativeTaskNamespaceSourceInput, "evidence"> & Readonly<{ evidence: NamespaceEvidence }>,
+  use: (source: NativeTaskNamespaceSource) => Promise<Value>,
+): Promise<Value> {
+  if (input.evidence.purpose === "task.runtime.cancellation_result"
+    && (input.requiredOperations.length !== 1 || input.requiredOperations[0] !== "encrypt"
+      || input.namespaceId !== input.evidence.result.namespace.namespaceId)) {
+    throw new TypeError("Cancellation custody can only publish its result Namespace");
+  }
+  if (input.evidence.purpose === "task.runtime.terminal_message"
+    && (input.requiredOperations.length !== 1
+      || input.requiredOperations[0] !== "encrypt"
+      || input.namespaceId !== input.evidence.message.namespaceId)) {
+    throw new TypeError("Terminal Message custody can only publish its destination Namespace");
+  }
   const assertActive = (): void => {
     input.signal.throwIfAborted();
-    assertAuthenticTaskRuntimeExecutionEvidence(input.evidence);
+    assertNamespaceEvidence(input.evidence);
   };
   assertActive();
-  const requirements = input.evidence.namespaceRequirements.filter(entry =>
+  const write = input.evidence.purpose === "task.runtime.run_result_read"
+    ? input.evidence.messageWrite : undefined;
+  if (input.evidence.purpose === "task.runtime.run_result_read"
+    && (write === undefined || write === null || input.namespaceId !== write.namespace.namespaceId
+      || input.requiredOperations.length !== 1 || input.requiredOperations[0] !== "encrypt")) {
+    throw new TypeError("Task result read custody can only publish its independently granted Message Namespace");
+  }
+  const namespaceRequirements = input.evidence.purpose === "task.runtime.run_result_read"
+    ? [write!.namespace] : input.evidence.namespaceRequirements;
+  const requirements = namespaceRequirements.filter(entry =>
     entry.namespaceId === input.namespaceId);
   const requirement = requirements[0];
   if (requirements.length !== 1 || requirement === undefined
     || input.requiredOperations.some(operation =>
-      !requirement.operations.includes(operation))) {
+      !requirement.operations.some(granted => granted === operation))) {
     throw new TypeError("Native Task Namespace grant is unavailable");
   }
-  const domainRequirements = input.evidence.domainRequirements.filter(entry =>
+  const grantedDomains = input.evidence.purpose === "task.runtime.run_result_read"
+    ? [write!.domain] : input.evidence.domainRequirements;
+  const domainRequirements = grantedDomains.filter(entry =>
     entry.domainId === requirement.domainId);
   const domainRequirement = domainRequirements[0];
   const domains = input.domains.filter(entry =>
@@ -123,7 +226,7 @@ export async function withNativeTaskNamespaceSource<Value>(
     if (inspected.status !== "ready") {
       throw new TypeError("Native Task Namespace is unavailable");
     }
-    namespace = inspected;
+    namespace = copyNamespaceAuthority(inspected);
     if (namespace.namespaceId !== input.namespaceId
       || namespace.namespaceAccessRevision
         !== requirement.expectedAccessRevision
@@ -193,8 +296,8 @@ export async function withNativeTaskNamespaceSource<Value>(
       || !sameBytes(row.binding_digest, namespace.bundleDigest)) {
       throw new TypeError("Native Task Namespace binding is unavailable");
     }
-    const bindingBytes = row.binding_bytes.slice();
-    const signingKey = row.signing_public_key.slice();
+    const bindingBytes = Uint8Array.from(row.binding_bytes);
+    const signingKey = Uint8Array.from(row.signing_public_key);
     owned.push(bindingBytes, signingKey);
     const source: NativeTaskNamespaceSource = {
       bindingBytes,
@@ -224,13 +327,14 @@ export async function withNativeTaskNamespaceSource<Value>(
     const value = await use(source);
     await input.assertCurrentTaskAuthority();
     assertActive();
-    const current = await repository.inspectForegroundNamespaceAuthority({
+    const reinspection = await repository.inspectForegroundNamespaceAuthority({
       namespaceId: input.namespaceId,
       keyClass: "ai",
     });
-    if (current.status !== "ready") {
+    if (reinspection.status !== "ready") {
       throw new TypeError("Native Task Namespace is unavailable");
     }
+    const current = copyNamespaceAuthority(reinspection);
     try {
       if (!sameAuthority(namespace, current)) {
         throw new TypeError("Native Task Namespace authority changed");
@@ -251,9 +355,31 @@ export async function withNativeTaskNamespaceSource<Value>(
 export async function prepareNativeTaskRuntimeRunResult(
   input: PrepareNativeTaskRuntimeRunResultInput,
 ): Promise<PreparedTaskContentCryptoRevisionV1> {
+  assertAuthenticTaskRuntimeExecutionEvidence(input.evidence);
+  return prepareNativeResult(input);
+}
+
+export type PrepareNativeTaskRuntimeCancelledRunResultInput =
+  Omit<PrepareNativeTaskRuntimeRunResultInput, "evidence" | "payload"> & Readonly<{
+    evidence: TaskRuntimeCancellationResultEvidence;
+  }>;
+
+/** Prepare the fixed cancellation receipt without opening the Task definition. */
+export async function prepareNativeTaskRuntimeCancelledRunResult(
+  input: PrepareNativeTaskRuntimeCancelledRunResultInput,
+): Promise<PreparedTaskContentCryptoRevisionV1> {
+  assertAuthenticTaskRuntimeCancellationResultEvidence(input.evidence);
+  return prepareNativeResult({ ...input,
+    payload: { formatVersion: 1, resultText: PROTECTED_TASK_CANCELLED_RESULT, lastError: null },
+  });
+}
+
+async function prepareNativeResult(
+  input: Omit<PrepareNativeTaskRuntimeRunResultInput, "evidence"> & Readonly<{ evidence: ResultEvidence }>,
+): Promise<PreparedTaskContentCryptoRevisionV1> {
   const assertActive = (): void => {
     input.signal.throwIfAborted();
-    assertAuthenticTaskRuntimeExecutionEvidence(input.evidence);
+    assertResultEvidence(input.evidence);
   };
   assertActive();
   const evidence = input.evidence;
@@ -285,7 +411,7 @@ export async function prepareNativeTaskRuntimeRunResult(
   // Canonicalize and own the output before the first asynchronous boundary.
   const plaintext = encodeTaskRunResultPayloadV1(input.payload);
   try {
-    return await withNativeTaskNamespaceSource({
+    return await withNativeResultNamespaceSource({
       restricted: input.restricted,
       crypto: input.crypto,
       serverScope: input.serverScope,
@@ -297,21 +423,23 @@ export async function prepareNativeTaskRuntimeRunResult(
       assertCurrentTaskAuthority: input.assertCurrentTaskAuthority,
     }, async namespace => {
       assertActive();
-      const prepared = await prepareNativeTaskRuntimeResultObject(
-        input.crypto,
-        {
-          evidence,
+      const common = {
           plaintext,
           objectType: TASK_RUN_RESULT_OBJECT_TYPE_V1,
           createdAt: input.createdAt,
           agentAuthorizationRevision: input.agentAuthorizationRevision,
           runtime: input.runtime,
           signerPublication: input.signerPublication,
+          ...(input.temporarySigner === undefined ? {} : {
+            temporarySigner: input.temporarySigner,
+          }),
           resolveHistoricalSignerPublicationManager:
             input.resolveHistoricalSignerPublicationManager,
           namespace,
-        },
-      );
+      };
+      const prepared = evidence.purpose === "task.runtime.cancellation_result"
+        ? await prepareNativeTaskRuntimeCancellationResultObject(input.crypto, { ...common, evidence })
+        : await prepareNativeTaskRuntimeResultObject(input.crypto, { ...common, evidence });
       return createPreparedTaskRuntimeResultContentCryptoRevisionV1({
         coordinate,
         authority,

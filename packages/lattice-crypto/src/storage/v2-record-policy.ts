@@ -60,9 +60,16 @@ import {
 import type {
   ObjectAccessAuthorizationExpectationV2,
 } from "../object/authorized-write.ts";
-import type {
+import {
+  MAX_TASK_RUNTIME_SIGNER_AUTHORIZATION_WIRE_BYTES_V1,
+} from "../background/task-runtime-signer-authorization-v1.ts";
+import {
+  TASK_DEFINITION_FOREGROUND_AUTHORIZATION_MAX_EVIDENCE_BYTES_V1,
+  type
   DeviceWrappedAgentEnvelopeAuthorityV1,
+  type
   DeviceWrappedAgentNamespaceAuthorityV1,
+  type
   DeviceWrappedAgentObjectAccessGenesisSetAuthorityContextV1,
 } from "../object/device-wrapped-agent-access-manifest-set-v1.ts";
 import type {
@@ -812,18 +819,23 @@ export function assertObjectAccessAuthorizationExpectation(
     }
     return;
   }
-  if (expectation.kind === "task-runtime-agent-genesis-set") {
+  if (expectation.kind === "task-runtime-agent-genesis-set"
+    || expectation.kind === "task-runtime-temporary-agent-genesis-set") {
+    const temporary = expectation.kind
+      === "task-runtime-temporary-agent-genesis-set";
     assertExactFields(
       "Task Runtime Agent object access set authorization expectation",
       expectation,
-      [
-        "kind",
-        "context",
-        "signerPublication",
-        "signerPublicationHash",
-        "signerPublicKeyHash",
-        "managerSigningPublicKeyHash",
-      ],
+      temporary
+        ? ["kind", "context", "signerEvidenceBytes"]
+        : [
+            "kind",
+            "context",
+            "signerPublication",
+            "signerPublicationHash",
+            "signerPublicKeyHash",
+            "managerSigningPublicKeyHash",
+          ],
     );
     const context = expectation.context;
     assertExactFields(
@@ -1036,6 +1048,19 @@ export function assertObjectAccessAuthorizationExpectation(
         || !equalBytes(namespace.domainHeadDigest, domain.headDigest);
       })
     ) throw new TypeError("Task Runtime Agent Domain set is not exact");
+    if (temporary) {
+      if (
+        context.agentAuthorizationRevision !== 0
+        || context.runtimeGeneration !== 0
+        || !(expectation.signerEvidenceBytes instanceof Uint8Array)
+        || expectation.signerEvidenceBytes.length < 1
+        || expectation.signerEvidenceBytes.length
+          > MAX_TASK_RUNTIME_SIGNER_AUTHORIZATION_WIRE_BYTES_V1
+      ) throw new TypeError(
+        "Temporary Task Runtime Agent signer expectation is invalid",
+      );
+      return;
+    }
     const publication = decodeAgentRuntimeSignerPublicationV1(
       encodeAgentRuntimeSignerPublicationV1(expectation.signerPublication),
     );
@@ -1076,9 +1101,47 @@ export function assertObjectAccessAuthorizationExpectation(
     assertExactFields(
       "Device-wrapped Agent object access set authorization expectation",
       expectation,
-      ["kind", "context", "signerPublicKey", "signerPublicKeyHash"],
+      ["kind", "context", "signerPublicKey", "signerPublicKeyHash",
+        ...(expectation.signerEvidence === undefined ? [] : ["signerEvidence"]),
+        ...(expectation.signerEvidenceBytes === undefined
+          ? [] : ["signerEvidenceBytes"])],
     );
     const context = expectation.context;
+    if (expectation.signerEvidence !== undefined
+      && expectation.signerEvidenceBytes !== undefined) {
+      throw new TypeError("Task publication signer proof is ambiguous");
+    }
+    if (expectation.signerEvidence !== undefined) {
+      const proof = expectation.signerEvidence;
+      assertExactFields("Task publication signer proof", proof,
+        ["certificateBytes", "issuerSigningPublicKey", "hostAuthorizationRevision"]);
+      assertU64Counter("Task publication host revision", proof.hostAuthorizationRevision);
+      assertHash("Task publication issuer key", proof.issuerSigningPublicKey);
+      assertHash("Task publication certificate hash", context.signerAuthorizationHash);
+      if (!(proof.certificateBytes instanceof Uint8Array) || proof.certificateBytes.length < 1
+        || proof.certificateBytes.length > MAX_TASK_RUNTIME_SIGNER_AUTHORIZATION_WIRE_BYTES_V1
+        || context.agentAuthorizationRevision !== 0 || context.runtimeGeneration !== 0
+        || !equalBytes(sha256(proof.certificateBytes), context.signerAuthorizationHash)) {
+        throw new TypeError("Task publication signer proof is invalid");
+      }
+    }
+    if (expectation.signerEvidenceBytes !== undefined) {
+      const proof = expectation.signerEvidenceBytes;
+      assertHash(
+        "Task definition foreground authorization hash",
+        context.signerAuthorizationHash,
+      );
+      if (proof.length < 1
+        || proof.length
+          > TASK_DEFINITION_FOREGROUND_AUTHORIZATION_MAX_EVIDENCE_BYTES_V1
+        || context.agentAuthorizationRevision !== 0
+        || !equalBytes(sha256(proof), context.signerAuthorizationHash)) {
+        throw new TypeError(
+          "Task definition foreground authorization proof is invalid",
+        );
+      }
+    }
+
     assertExactFields(
       "Device-wrapped Agent object access set authorization context",
       context,
@@ -1096,6 +1159,9 @@ export function assertObjectAccessAuthorizationExpectation(
         "agentId",
         "runtimeGeneration",
         "signerKeyId",
+        ...(expectation.signerEvidence === undefined
+            && expectation.signerEvidenceBytes === undefined
+          ? [] : ["signerAuthorizationHash"]),
       ],
     );
     if (
@@ -1246,9 +1312,25 @@ export function assertObjectAccessAuthorizationExpectation(
     assertExactFields(
       "Device-wrapped Agent object access authorization expectation",
       expectation,
-      ["kind", "context", "signerPublicKey", "signerPublicKeyHash"],
+      ["kind", "context", "signerPublicKey", "signerPublicKeyHash",
+        ...(expectation.signerEvidence === undefined ? [] : ["signerEvidence"])],
     );
     const context = expectation.context;
+    if (expectation.signerEvidence !== undefined) {
+      const proof = expectation.signerEvidence;
+      assertExactFields("Task publication signer proof", proof,
+        ["certificateBytes", "issuerSigningPublicKey", "hostAuthorizationRevision"]);
+      assertU64Counter("Task publication host revision", proof.hostAuthorizationRevision);
+      assertHash("Task publication issuer key", proof.issuerSigningPublicKey);
+      assertHash("Task publication certificate hash", context.signerAuthorizationHash);
+      if (!(proof.certificateBytes instanceof Uint8Array) || proof.certificateBytes.length < 1
+        || proof.certificateBytes.length > MAX_TASK_RUNTIME_SIGNER_AUTHORIZATION_WIRE_BYTES_V1
+        || context.agentAuthorizationRevision !== 0 || context.runtimeGeneration !== 0
+        || !equalBytes(sha256(proof.certificateBytes), context.signerAuthorizationHash)) {
+        throw new TypeError("Task publication signer proof is invalid");
+      }
+    }
+
     assertExactFields(
       "Device-wrapped Agent object access authorization context",
       context,
@@ -1271,6 +1353,7 @@ export function assertObjectAccessAuthorizationExpectation(
         "agentId",
         "runtimeGeneration",
         "signerKeyId",
+        ...(expectation.signerEvidence === undefined ? [] : ["signerAuthorizationHash"]),
       ],
     );
     if (

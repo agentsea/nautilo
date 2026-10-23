@@ -141,8 +141,8 @@ async function custody(
 }
 
 describe("protected Task cancellation recovery", () => {
-  test("cancels canonical active authority only inside accepted product proof", async () => {
-    const record = runningRecord();
+  test.each(["task.execute", "task.approval_resume", "task.await_reply_resume"] as const)("cancels canonical active authority only inside accepted product proof (%s)", async workKind => {
+    const record = { ...runningRecord(), workKind, purpose: workKind };
     const repository = new InMemoryBackgroundAuthorizationRepository();
     await repository.create(record);
     const recipients = await custody(record);

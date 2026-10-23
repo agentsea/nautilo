@@ -861,6 +861,8 @@ export async function invokeChatModelWithFallback(
     firstProgressTimeoutMs?: number;
     /** Concurrent tool-free advice uses a local supervisor, never the auditor's ambient turn sink. */
     isolatedProgress?: boolean;
+    /** Trusted confidential execution: omit provider details from diagnostics. */
+    confidential?: true;
     /** server resolver, called afresh for every candidate attempt. */
     resolveForegroundControls?: ResolveForegroundModelControls;
     /** content-free boundary used to project cache metadata per attempt. */
@@ -883,7 +885,8 @@ export async function invokeChatModelWithFallback(
   const strictNoChain = isStrictNoChain(invokeOptions?.modelFallbackMode);
   const fundingSession = invokeOptions?.fundingSession;
   const personalFunding = fundingSession?.kind === "personal";
-  const contentPrivateDiagnostics = hasContentPrivateModelDiagnostics()
+  const contentPrivateDiagnostics = invokeOptions?.confidential === true
+    || hasContentPrivateModelDiagnostics()
     || fundingSession?.contentPrivateDiagnostics === true;
   const admittedPersonalNativeVision = personalFunding
     && fundingSession.workload === undefined

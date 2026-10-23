@@ -172,6 +172,7 @@ describe("M231 nautilo_crypto role contract", () => {
         "background_crypto_authorization_domain_requirements",
         "background_crypto_authorization_namespace_requirements",
         "processor_crypto_signer_authorizations",
+        "task_cancellation_crypto_staging_receipts",
       ].includes(table)
         ? "PUBLIC, nautilo, nautilo_agent"
         : "PUBLIC, nautilo_agent";

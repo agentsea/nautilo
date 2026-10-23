@@ -2,7 +2,6 @@ import {
   createForegroundAgentObjectRepairer,
   type AgentObjectProtectionResult,
   type AgentObjectProtectionSource,
-  type AgentObjectProtector,
   type AtomicMemoryCryptoCompletionPort,
   type ForegroundAgentEntityCryptoInvocation,
   type MemoryPayloadV1,
@@ -11,11 +10,12 @@ import {
   type ProtectedAgentMemoryCryptoSessionPort,
   type VerifiedForegroundAgentObject,
 } from "@nautilo/lattice-bridge";
-import type { AgentRuntimeKeyGeneration, LatticeCrypto } from
+import type { AgentRuntimeKeyGeneration, LatticeCrypto, TaskRuntimePublicationSigning } from
   "@nautilo/lattice-crypto";
 
 import { createDomainMemoryCryptoSession } from
   "./domain-memory-crypto-session";
+import type { DomainMemoryObjectProtector } from "./domain-memory-crypto-session";
 
 type EntrypointId = Parameters<
   ProtectedAgentMemoryCryptoSessionPort["openMany"]
@@ -41,7 +41,9 @@ export function createForegroundDomainMemoryCryptoSession(input: Readonly<{
     signerKeyId: string;
     signerPublicKey: Uint8Array;
     agentAuthorizationRevision: number;
+    taskRuntimeSigner?: TaskRuntimePublicationSigning;
   }>;
+  freshPublication?: Parameters<typeof createForegroundAgentObjectRepairer>[0]["freshPublication"];
   persist(prepared: PreparedDeviceWrappedAgentObject): Promise<
     "created" | "duplicate" | "stale"
   >;
@@ -57,17 +59,11 @@ export function createForegroundDomainMemoryCryptoSession(input: Readonly<{
   /** Transient verified bytes for the policy-permitted ordinary Shadow sibling. */
   readPreparedPayload(revision: PreparedMemoryCryptoRevision): MemoryPayloadV1;
 }> {
-  const objects: AgentObjectProtector = Object.freeze({
-    protect: <Value>(request: Readonly<{
-      operationId: string;
-      source: AgentObjectProtectionSource;
-      decode(plaintextBytes: Uint8Array): Value;
-    }>): Promise<AgentObjectProtectionResult<Value>> =>
-      createForegroundAgentObjectRepairer({
+  const repairer = (operationId: string) => createForegroundAgentObjectRepairer({
         crypto: input.crypto,
         entities: input.entities,
         publication: {
-          operationId: request.operationId,
+          operationId,
           grantId: input.publication.grantId,
           grantDigest: input.publication.grantDigest,
           recipientKeyId: input.publication.recipientKeyId,
@@ -76,13 +72,28 @@ export function createForegroundDomainMemoryCryptoSession(input: Readonly<{
           signerPublicKey: input.publication.signerPublicKey,
           agentAuthorizationRevision:
             input.publication.agentAuthorizationRevision,
+          ...(input.publication.taskRuntimeSigner === undefined ? {} : {
+            taskRuntimeSigner: input.publication.taskRuntimeSigner,
+          }),
         },
+        ...(input.freshPublication === undefined ? {} : { freshPublication: input.freshPublication }),
         persist: input.persist,
         read: input.read,
-      }).protect<Value>({
-        source: request.source,
-        decode: request.decode,
-      }),
+      });
+  const objects: DomainMemoryObjectProtector = Object.freeze({
+    protect: <Value>(request: Readonly<{
+      operationId: string;
+      source: AgentObjectProtectionSource;
+      decode(plaintextBytes: Uint8Array): Value;
+    }>): Promise<AgentObjectProtectionResult<Value>> => repairer(request.operationId).protect(request),
+    publishFresh: <Value>(request: Readonly<{
+      operationId: string;
+      source: AgentObjectProtectionSource & Readonly<{
+        existingObjectId: null; plaintextBytes: Uint8Array;
+      }>;
+      decode(plaintextBytes: Uint8Array): Value;
+    }>): Promise<AgentObjectProtectionResult<Value>> =>
+      repairer(request.operationId).publishFresh(request),
   });
 
   return createDomainMemoryCryptoSession({

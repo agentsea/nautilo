@@ -225,10 +225,13 @@ function operations(
   const result = [...new Set(values)].sort(compareUnsignedUtf8);
   if (
     result.length !== values.length
-    || result[0] !== "decrypt"
-    || (result.length === 2 && result[1] !== "encrypt")
+    || (result.length === 1
+      ? result[0] !== "decrypt" && result[0] !== "encrypt"
+      : result[0] !== "decrypt" || result[1] !== "encrypt")
     || result.some((value, index) => value !== values[index])
-  ) throw new TypeError("Foreground operations must be decrypt or decrypt, encrypt");
+  ) throw new TypeError(
+    "Foreground operations must be decrypt, encrypt, or decrypt and encrypt",
+  );
   return Object.freeze(result);
 }
 
@@ -1003,7 +1006,10 @@ export function verifyDomainForegroundAuthorizationV2(
     authorizationBytes: Uint8Array;
     now: number;
     current: DomainForegroundAuthorizationPublicCurrentAuthorityV2;
-    expectedOperations?: readonly ["decrypt"] | readonly ["decrypt", "encrypt"];
+    expectedOperations?:
+      | readonly ["decrypt"]
+      | readonly ["encrypt"]
+      | readonly ["decrypt", "encrypt"];
   }>,
 ): VerifyDomainForegroundAuthorizationResultV2 {
   const authorization = parseDomainForegroundAuthorizationV2(
@@ -1068,15 +1074,84 @@ export function verifyDomainForegroundAuthorizationV2(
   }
 }
 
+/**
+ * Verify retained public evidence after its live deadline. Exact plan bytes
+ * are supplied by the Task-specific proof consumer; this function grants no
+ * current authority and never opens the encrypted Domain secret.
+ */
+export function verifyHistoricalDomainForegroundAuthorizationV2(
+  crypto: LatticeCrypto,
+  input: Readonly<{
+    authorizationBytes: Uint8Array;
+    expectedPlanBytes: Uint8Array;
+    committerDeviceSigningPublicKey: Uint8Array;
+  }>,
+): Readonly<{ status: "verified" }>
+  | Readonly<{ status: "unavailable"; reason: "invalid" }> {
+  const authorization = parseDomainForegroundAuthorizationV2(
+    input.authorizationBytes,
+  );
+  if (authorization === null) {
+    return Object.freeze({ status: "unavailable", reason: "invalid" });
+  }
+  let plan: DomainForegroundAuthorizationPlanV2 | null = null;
+  let signing: Uint8Array | undefined;
+  try {
+    plan = parseDomainForegroundAuthorizationPlanV2(authorization.planBytes);
+    if (plan === null || !same(authorization.planBytes, input.expectedPlanBytes)) {
+      return Object.freeze({ status: "unavailable", reason: "invalid" });
+    }
+    const planDigest = crypto.hash(authorization.planBytes);
+    const ciphertextDigest = crypto.hash(authorization.encryptedSecret);
+    const authorityDigest = domainForegroundAuthoritySetDigestV2(
+      crypto,
+      plan.domains,
+    );
+    const valid = same(planDigest, authorization.planDigest)
+      && same(ciphertextDigest, authorization.encryptedSecretDigest)
+      && same(authorityDigest, plan.domainAuthoritySetDigest)
+      && authorization.authorizationId === plan.authorizationId
+      && authorization.domainCount === plan.domainCount;
+    planDigest.fill(0);
+    ciphertextDigest.fill(0);
+    authorityDigest.fill(0);
+    if (!valid) {
+      return Object.freeze({ status: "unavailable", reason: "invalid" });
+    }
+    assertBytes(
+      "Foreground signing public key",
+      input.committerDeviceSigningPublicKey,
+      V2_LIMITS.signingPublicKeyBytes,
+    );
+    signing = signingBytes(authorization);
+    return crypto.verify(
+      input.committerDeviceSigningPublicKey,
+      signing,
+      authorization.signature,
+    )
+      ? Object.freeze({ status: "verified" })
+      : Object.freeze({ status: "unavailable", reason: "invalid" });
+  } catch {
+    return Object.freeze({ status: "unavailable", reason: "invalid" });
+  } finally {
+    signing?.fill(0);
+    if (plan !== null) destroyDomainForegroundAuthorizationPlanV2(plan);
+    destroyDomainForegroundAuthorizationV2(authorization);
+  }
+}
+
 export async function withOpenedDomainForegroundAuthorizationV2<Value>(
   crypto: LatticeCrypto,
   input: Readonly<{
     authorizationBytes: Uint8Array;
     now: number;
     current: DomainForegroundAuthorizationCurrentAuthorityV2;
-    /** Existing execution callers require both operations. Read-only consumers
-     * must opt in explicitly and retain their decrypt-only callback boundary. */
-    expectedOperations?: readonly ["decrypt"] | readonly ["decrypt", "encrypt"];
+    /** Existing execution callers require both operations. Single-operation
+     * consumers must opt in explicitly and retain their narrower callback. */
+    expectedOperations?:
+      | readonly ["decrypt"]
+      | readonly ["encrypt"]
+      | readonly ["decrypt", "encrypt"];
     operation(domains: readonly DomainForegroundSecretEntryV2[]):
       Value | PromiseLike<Value>;
   }>,

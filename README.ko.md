@@ -8,7 +8,7 @@
 
 Nautilo의 인터페이스는 현재 영어입니다. README와 로컬 설치 가이드는 번역되어 있으며, 다른 문서는 영어일 수 있습니다.
 
-<!-- Translation source: README.md; SHA-256: d9e81d8a699a01fa1836ec768028a4e0c464d4420524b9cae4d0f48686dd855b -->
+<!-- Translation source: README.md; SHA-256: 70b9d8b55da933e1da5c68d0656f5c2e4ac61690fd958de91b9be5268859f07a -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### AI가 멀티플레이어가 됩니다.
@@ -99,7 +99,7 @@ Genie를 만나 나에게 맞게 꾸미고, 첫 문서를 함께 만들어 보�
 
 ## 소스에서 개발하기
 
-저장소는 **Bun 1.3.11**과 **Node 24.x**를 사용하도록 지정합니다. 로컬 PostgreSQL과 Logto 인프라를 위해 Docker를 설치하세요. Desktop 준비에는 네이티브 헬퍼용 Rust가 필요할 수도 있습니다.
+저장소는 **Bun 1.4.4**과 **Node 24.22.1**를 사용하도록 지정합니다. 로컬 PostgreSQL과 Logto 인프라를 위해 Docker를 설치하세요. Desktop 준비에는 네이티브 헬퍼용 Rust가 필요할 수도 있습니다.
 
 ```bash
 git clone https://github.com/agentsea/nautilo.git

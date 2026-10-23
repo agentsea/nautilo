@@ -144,6 +144,7 @@ export async function agentNode(
   optionalResearchDraft?: HumanMessage,
   ordinaryContentAccessForState?: OrdinaryContentAccessForState,
   foregroundChatFundingSession?: ForegroundChatFundingSession,
+  confidential?: true,
 ): Promise<Partial<NautiloState>> {
   if (isExternalRoomState(state)) state = { ...state, ...await prepareExternalRoomTextContext(state) };
   const config = fromRuntimeConfig();
@@ -402,6 +403,7 @@ export async function agentNode(
         fallbackLaneKey,
         invocationConfig,
         {
+          ...(confidential === true ? { confidential: true as const } : {}),
           fundingHumanUserId: state.causalHumanUserId ?? "",
           reasoningOverrides,
           useOpenAIResponsesApi: true,

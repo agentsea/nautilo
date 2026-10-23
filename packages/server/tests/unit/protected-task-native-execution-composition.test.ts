@@ -18,9 +18,11 @@ function setup() {
   type Product = Awaited<ReturnType<NonNullable<Overrides["productContext"]>>>;
   const products: Product[] = [];
   const segments: Parameters<NonNullable<Overrides["segment"]>>[0][] = [];
+  const segmentOptions: Parameters<NonNullable<Overrides["segment"]>>[2][] = [];
   const results: Parameters<NonNullable<Overrides["result"]>>[0][] = [];
   const publications: Publication[] = [];
   const parks: unknown[] = [];
+  const humanParks: unknown[] = [];
   const context = async () => { throw new Error("not executed by preparation"); };
   const overrides: Overrides = {
     productContext: async (userId, db) => {
@@ -36,8 +38,9 @@ function setup() {
     },
     executionContext: () => context,
     transcriptPublisher: () => async () => { throw new Error("not executed by preparation"); },
-    segment: segment => {
+    segment: (segment, _overrides, options) => {
       segments.push(segment);
+      segmentOptions.push(options);
       return async () => ({
         executor: async function* () { yield* []; },
         openTransientInput: async () => ({}),
@@ -47,13 +50,18 @@ function setup() {
       results.push(options);
       return async publication => { publications.push(publication); };
     },
+    sealAndParkHuman: async (db, park) => {
+      expect(db).toBe(input.db);
+      humanParks.push(park);
+      return { status: "parked" as const };
+    },
     sealAndPark: async (db, park) => {
       expect(db).toBe(input.db);
       parks.push(park);
       return { status: "parked" as const };
     },
   };
-  return { input, identities, products, segments, results, publications, parks, context, overrides };
+  return { input, identities, products, segments, segmentOptions, results, publications, parks, humanParks, context, overrides };
 }
 
 function preparation(requestorId: string, agentId: string): Preparation {
@@ -74,6 +82,24 @@ describe("native protected Task execution composition", () => {
     expect(f.segments[0]!.owner).toBe(f.input.owner);
     expect(f.segments[0]!.createDedicatedPool).toBe(f.input.createDedicatedPool!);
     expect(f.publications).toEqual([]);
+  });
+
+  test("binds repo docs to the same native authority while sealing its operational selection", async () => {
+    const f = setup();
+    const execution = createProductionProtectedTaskNativeExecution(f.input, f.overrides);
+    const selection = { mode: "auto" as const, publish: "pr" as const };
+    const prepared = preparation("requester-a", "agent-a");
+
+    await execution.prepareRepoDocsExecution(selection, prepared);
+
+    expect(f.identities).toEqual(["requester-a", "requester-a/agent-a"]);
+    expect(f.segments).toHaveLength(1);
+    expect(f.segments[0]!.product).toBe(f.products[0]!);
+    expect(f.segments[0]!.owner).toBe(f.input.owner);
+    expect(f.segments[0]!.resolveExecutionContext).toBe(f.context);
+    expect(f.segmentOptions).toEqual([{ repoDocsSelection: selection }]);
+    expect(f.segmentOptions[0]!.repoDocsSelection).not.toBe(selection);
+    expect(Object.isFrozen(f.segmentOptions[0]!.repoDocsSelection)).toBe(true);
   });
 
   test("binds initial result publication to the granted occurrence and passes custody without retaining it", async () => {
@@ -116,6 +142,45 @@ describe("native protected Task execution composition", () => {
     expect(f.publications).toEqual([]);
   });
 
+  test("rechecks the exact local target at the pre-effect boundary and permits a later reconnect", async () => {
+    const f = setup();
+    const checks: unknown[] = [];
+    let available = false;
+    const execution = createProductionProtectedTaskNativeExecution(f.input, {
+      ...f.overrides,
+      localReadiness: async request => {
+        checks.push(request);
+        return available ? { status: "ready" } : { status: "waiting" };
+      },
+    });
+    await execution.prepareExecution(preparation("requester-a", "agent-a"));
+    const recheck = f.segments[0]!.localExecutionReadyBeforeStart;
+    if (recheck === undefined) throw new Error("local readiness was not wired");
+    const occurrence = { task: { id: "task-a" }, run: { id: "run-a" } } as never;
+    const signal = new AbortController().signal;
+    expect(await recheck({ occurrence, signal })).toBe(false);
+    available = true;
+    expect(await recheck({ occurrence, signal })).toBe(true);
+    expect(checks).toEqual([{ db: f.input.db, occurrence, signal }, {
+      db: f.input.db, occurrence, signal,
+    }]);
+  });
+
+  test("does not classify a local source denial as an offline wait", async () => {
+    const f = setup();
+    const execution = createProductionProtectedTaskNativeExecution(f.input, {
+      ...f.overrides,
+      localReadiness: async () => { throw new Error("local_source_revoked"); },
+    });
+    await execution.prepareExecution(preparation("requester-a", "agent-a"));
+    const recheck = f.segments[0]!.localExecutionReadyBeforeStart;
+    if (recheck === undefined) throw new Error("local readiness was not wired");
+    await Promise.resolve(expect(recheck({ occurrence: {} as never,
+      signal: new AbortController().signal })).rejects.toThrow(
+      "local_source_revoked",
+    ));
+  });
+
   test("adapts the fixed segment park callback to one atomic database seal", async () => {
     const f = setup();
     const execution = createProductionProtectedTaskNativeExecution(f.input, f.overrides);
@@ -123,6 +188,16 @@ describe("native protected Task execution composition", () => {
     const park = { park: {}, segment: {}, continuation: {} } as never;
     expect(await f.segments[0]!.parkSegment(park)).toBe(true);
     expect(f.parks).toEqual([park]);
+  });
+
+  test("seals a Human park without fabricating additional authority", async () => {
+    const f = setup();
+    const execution = createProductionProtectedTaskNativeExecution(f.input, f.overrides);
+    await execution.prepareExecution(preparation("requester-a", "agent-a"));
+    const park = { park: {}, segment: {}, stableRoutingDigest: new Uint8Array(32) } as never;
+    expect(await f.segments[0]!.parkSegment(park)).toBe(true);
+    expect(f.humanParks).toEqual([park]);
+    expect(f.parks).toEqual([]);
   });
 
   test("publishes a continued segment with its exact admitted reference", async () => {

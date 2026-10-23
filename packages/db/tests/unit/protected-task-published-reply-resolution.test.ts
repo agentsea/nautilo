@@ -15,6 +15,7 @@ const ids = {
   job: "30000000-0000-4000-8000-000000000003",
   requestor: "40000000-0000-4000-8000-000000000004",
   sourceUser: "50000000-0000-4000-8000-000000000005",
+  humanActor: "50000000-0000-4000-8000-000000000015",
   agent: "60000000-0000-4000-8000-000000000006",
   namespace: "70000000-0000-4000-8000-000000000007",
   room: "80000000-0000-4000-8000-000000000008",
@@ -30,6 +31,7 @@ const messageObjectId = "message:v2:published-reply";
 const parkedAt = new Date("2026-09-28T12:34:56.000Z");
 const publishedAt = new Date("2026-09-28T12:35:00.000Z");
 const parkKey = "nautilo.protectedTaskRunPark.v1";
+const stableRoutingDigest = new Uint8Array(32).fill(4);
 
 function reference(): ProtectedTaskDurableJobReference {
   return {
@@ -58,6 +60,7 @@ function parkReceipt(overrides: Record<string, unknown> = {}) {
       { id: "interrupt:reply", kind: "await_reply" },
     ],
     parkedAt: parkedAt.toISOString(),
+    stableRoutingDigest: Buffer.from(stableRoutingDigest).toString("base64url"),
     ...overrides,
   };
 }
@@ -157,7 +160,16 @@ function candidate(receipt = parkReceipt()) {
 }
 
 function database(responses: readonly (readonly unknown[])[]): DirectDatabase {
-  const pending = [...responses];
+  const pending = [
+    responses[0] ?? [],
+    [{
+      humanActorId: ids.humanActor,
+      userId: ids.sourceUser,
+      kind: "user",
+      disabledAt: null,
+    }],
+    ...responses.slice(1),
+  ];
   return {
     select() {
       const rows = pending.shift();
@@ -198,18 +210,25 @@ describe("resolvePublishedProtectedTaskAwaitReply", () => {
           { id: "interrupt:reply", kind: "await_reply" },
         ],
         parkedAt,
+        stableRoutingDigest,
         priorJobReference: reference(),
         acceptance: {
-          acceptanceId: operationId,
-          interruptId: "interrupt:reply",
-          message: {
-            roomId: ids.room,
-            sessionId: ids.session,
-            messageId: String(messageId),
-            editRevision: 2,
-            cryptoObjectId: messageObjectId,
-            namespaceId: ids.namespace,
-            sourceUserId: ids.sourceUser,
+          acceptedBy: {
+            userId: ids.sourceUser,
+            humanActorId: ids.humanActor,
+          },
+          interrupt: { id: "interrupt:reply", kind: "await_reply" },
+          response: {
+            kind: "await_reply",
+            message: {
+              roomId: ids.room,
+              sessionId: ids.session,
+              messageId: String(messageId),
+              editRevision: 2,
+              cryptoObjectId: messageObjectId,
+              namespaceId: ids.namespace,
+              sourceUserId: ids.sourceUser,
+            },
           },
           acceptedAt: publishedAt,
         },

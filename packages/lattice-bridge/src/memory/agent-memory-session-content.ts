@@ -93,7 +93,7 @@ export type VerifiedAgentMemoryCryptoRevisionContent = Readonly<{
   readonly accessManifestSignerIssuingPublicKey?: Uint8Array;
   readonly requiredNamespaceIds: readonly string[];
   readonly accessSignerEvidence?: readonly Readonly<{
-    kind: "agent_runtime_publication" | "processor_authorization";
+    kind: "agent_runtime_publication" | "processor_authorization" | "task_runtime_signer_certificate";
     evidenceBytes: Uint8Array;
   }>[];
   readonly payloadBytes: Uint8Array;
@@ -776,6 +776,8 @@ export function createProtectedAgentMemorySessionContentPort(input: Readonly<{
           crypto: input.crypto,
           storage: input.storage,
           opened: openedRuntime,
+          expectedRuntimeAuthorizationRevision:
+            session.material.runtimeAuthorizationRevision,
           agentId: agentId(request.agentId),
           resolveHistoricalCommitter:
             input.resolveHistoricalRuntimeCommitter,

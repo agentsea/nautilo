@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "bun:test";
-import { repairBolterMigration, withMigrationPrivilegeCompat } from "../../src/utils/migration-privilege-compat";
+import { readMigrationFiles } from "drizzle-orm/migrator";
+import { repairBolterMigration, readMigrationFilesWithPrivilegeCompat } from "../../src/utils/migration-privilege-compat";
 
 const directory = new URL("../../src/migrations/", import.meta.url);
 const cases = [
@@ -60,29 +61,24 @@ describe("Bolter least-privilege migration compatibility", () => {
     });
   }
 
-  test("temporary inputs preserve the journal and unrelated files, then clean up on failure", async () => {
-    let temporary = "";
-    let failure: unknown;
-    try {
-      await withMigrationPrivilegeCompat(fileURLToPath(directory), async (folder) => {
-      temporary = folder;
-      for (const [file] of cases) {
-        expect(readFileSync(`${folder}/${file}`, "utf8"))
-          .toBe(repairBolterMigration(file, readFileSync(new URL(file, directory), "utf8")));
-      }
-      for (const file of ["meta/_journal.json", "0342_stale_vermin.sql"]) {
-        expect(readFileSync(`${folder}/${file}`, "utf8"))
-          .toBe(readFileSync(new URL(file, directory), "utf8"));
-      }
-      throw new Error("synthetic migration failure");
-      });
-    } catch (error) {
-      failure = error;
+  test("corrected metadata retains canonical hashes and unrelated statements", () => {
+    const config = { migrationsFolder: fileURLToPath(directory) };
+    const canonical = readMigrationFiles(config);
+    const corrected = readMigrationFilesWithPrivilegeCompat(config);
+    const journal = JSON.parse(readFileSync(new URL("meta/_journal.json", directory), "utf8")) as {
+      entries: { tag: string }[];
+    };
+    for (const [file] of cases) {
+      const index = journal.entries.findIndex(({ tag }) => `${tag}.sql` === file);
+      expect(index).toBeGreaterThan(-1);
+      expect(corrected[index]!.hash).toBe(canonical[index]!.hash);
+      expect(corrected[index]!.folderMillis).toBe(canonical[index]!.folderMillis);
+      expect(corrected[index]!.bps).toBe(canonical[index]!.bps);
+      expect(corrected[index]!.sql.join("--> statement-breakpoint"))
+        .toBe(repairBolterMigration(file, readFileSync(new URL(file, directory), "utf8")));
     }
-    expect(failure).toBeInstanceOf(Error);
-    expect((failure as Error).message).toBe("synthetic migration failure");
-    expect(temporary).not.toBe("");
-    expect(existsSync(temporary)).toBe(false);
+    const unrelated = journal.entries.findIndex(({ tag }) => tag === "0342_stale_vermin");
+    expect(corrected[unrelated]).toEqual(canonical[unrelated]);
     expect(() => repairBolterMigration("unknown.sql", "SELECT 1;")).toThrow("Unknown migration");
   });
 });

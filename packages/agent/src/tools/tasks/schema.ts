@@ -159,13 +159,13 @@ export function createTaskToolSchema(
   // back.
   harness: z
     .enum(options.claudeCode
-      ? ["native", "codex", "hermes-acp", "claude-code"]
-      : ["native", "codex", "hermes-acp"])
+      ? ["native", "codex", "hermes-acp", "opencode-acp", "claude-code"]
+      : ["native", "codex", "hermes-acp", "opencode-acp"])
     .optional()
     .describe(
       options.claudeCode
-        ? "Optional execution preference. Omit (or use 'native') for Nautilo's normal task executor. Use 'codex', 'hermes-acp', or 'claude-code' only when the user explicitly asks for that harness; it never falls back."
-        : "Optional execution preference. Omit (or use 'native') for Nautilo's normal task executor. Use 'codex' or 'hermes-acp' only when the user explicitly asks for that harness; it never falls back.",
+        ? "Optional execution preference. Omit (or use 'native') for Nautilo's normal task executor. Use 'codex', 'hermes-acp', 'opencode-acp', or 'claude-code' only when the user explicitly asks for that harness; it never falls back."
+        : "Optional execution preference. Omit (or use 'native') for Nautilo's normal task executor. Use 'codex', 'hermes-acp', or 'opencode-acp' only when the user explicitly asks for that harness; it never falls back.",
     ),
   collaboration_mode: z
     .enum(["work", "plan"])

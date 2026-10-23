@@ -261,7 +261,7 @@ async function fixture(keyClass: "human" | "ai" = "human", role: MessagePayloadV
       },
     },
   });
-  return { client, calls, acks, claim, controller, makeProtected, seenUrgencies, transportSignals,
+  return { client, calls, acks, claim, controller, makeProtected, seenUrgencies, transportSignals, vault,
     setReturnedGeneration(value: Partial<typeof generation>) {returnedGenerationOverride = value;},
     setPolicy(value: LiveShadowEncryptionTransitionPolicy) { policy = value; },
     setMissingOrdinary() { missingOrdinary = true; claim.action = "restore"; },
@@ -297,6 +297,42 @@ test.each(["human", "ai"] as const)("real crypto and history reader converge uno
     expect(value.acks[0]!.sourceDigestBase64url).not.toBeNull();
     expect(value.acks[0]!.manifestDigestBase64url).not.toBeNull();
   }
+});
+
+test("a populated locked vault unlocks and completes service and acknowledgement", async () => {
+  const value = await fixture();
+  await value.vault.lock();
+  const unlock = value.vault.unlock.bind(value.vault);
+  let unlocks = 0;
+  value.vault.unlock = () => {
+    unlocks += 1;
+    return unlock();
+  };
+
+  expect(await value.client.runBatch({signal: value.controller.signal})).toMatchObject({
+    state: "caught_up",
+    reconciled: true,
+  });
+  expect(unlocks).toBe(1);
+  expect(value.calls).toEqual(["next", "source", "keys", "publish", "source", "keys", "ack"]);
+});
+
+test("lost profile storage defers without attempting unlock or acknowledgement", async () => {
+  const value = await fixture();
+  let unlocks = 0;
+  value.vault.availability = () => Promise.resolve({ status: "storage_lost" });
+  value.vault.unlock = () => {
+    unlocks += 1;
+    return Promise.resolve({ status: "available" });
+  };
+
+  expect(await value.client.runBatch({signal: value.controller.signal})).toEqual({
+    state: "waiting",
+    resumeAt: value.claim.expiresAt,
+  });
+  expect(unlocks).toBe(0);
+  expect(value.acks).toHaveLength(0);
+  expect(value.calls).toEqual(["next", "source", "keys"]);
 });
 
 test.each(["plaintext_only", "encrypted_only"] as const)("owner forbids all backfill transports in %s", async mode => {

@@ -53,6 +53,7 @@ describe("protected TaskRun output binding identities", () => {
       "delivery_mode",
       "destination_room_id",
       "destination_namespace_id",
+      "result_revision",
       "result_operation_id",
       "result_object_id",
       "message_operation_id",
@@ -70,6 +71,8 @@ describe("protected TaskRun output binding identities", () => {
     const sql = checks();
     expect(sql).toContain("delivery_mode");
     expect(sql).toContain("raw_and_wake");
+    expect(sql).toContain("result_revision");
+    expect(sql).toContain("task-run-cancelled-result:");
     expect(sql).toContain("result_attached_at");
     expect(sql).toContain("message_published_at");
     expect(sql).toContain("wake_scheduled_at");

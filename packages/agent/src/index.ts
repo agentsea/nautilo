@@ -51,6 +51,11 @@ export {
 
 // Graph
 export {
+  createProtectedTaskCheckpointPauseController,
+  type ProtectedTaskCheckpointPauseController,
+  type ProtectedTaskCheckpointPauseReason,
+} from "./graph/protected-task-node-settlement-scope";
+export {
   createNautiloGraph,
   type NautiloGraphDeps,
 } from "./agent/graph";
@@ -96,6 +101,32 @@ export {
   type EncryptedCheckpointSaverQuiescence,
 } from "./checkpoints/encrypted-checkpoint-saver";
 export {
+  type ProtectedRepoDocsCheckpointV1,
+  type ProtectedRepoDocsCommandKind,
+  type ProtectedRepoDocsConfirmedReceiptV1,
+  type ProtectedRepoDocsExecutionPlan,
+  type ProtectedRepoDocsExecutionPort,
+  type ProtectedRepoDocsExecutionRequest,
+  type ProtectedRepoDocsExecutionResult,
+  type ProtectedRepoDocsInspection,
+  type ProtectedRepoDocsMode,
+  type ProtectedRepoDocsOperationReceiptV1,
+  type ProtectedRepoDocsOpenedSelection,
+  type ProtectedRepoDocsPendingReceiptV1,
+  type ProtectedRepoDocsPublish,
+  type ProtectedRepoDocsCheckpointStore,
+  ProtectedRepoDocsOutcomeUnknownError,
+  createProtectedRepoDocsCheckpoint,
+  createProtectedRepoDocsRequest,
+  runProtectedRepoDocsOperation,
+} from "./runtime/protected-repo-docs";
+export {
+  bindDelegatedLocalExecution,
+  localExecutionId,
+  localExecutionOwnerKey,
+  sameLocalExecutionCaller,
+} from "./tools/local-execution/admission";
+export {
   readEncryptedCheckpointPhysicalManifest,
   type EncryptedCheckpointManifestPool,
   type EncryptedCheckpointPhysicalManifest,
@@ -122,6 +153,10 @@ export {
 export {
   interruptValueToServerEvent,
   collectPendingInterruptEvents,
+  protectedTaskInterruptCoordinates,
+  protectedTaskApprovalAllowedVerbs,
+  type ProtectedTaskAdditionalAuthorityInterruptCoordinate,
+  type ProtectedTaskInterruptCoordinate,
 } from "./graph/interrupt-mapping";
 export {
   PROTECTED_TASK_ADDITIONAL_AUTHORITY_GRANTED_V1,
@@ -130,6 +165,23 @@ export {
   type ProtectedTaskAdditionalAuthorityResumeAcknowledgementV1,
   type ProtectedTaskAdditionalAuthorityResumeBindingV1,
 } from "./graph/protected-task-additional-authority-resume";
+export {
+  createProtectedTaskMemoryAccessPort,
+  type ProtectedTaskMemoryAccessAuthorization,
+  type ProtectedTaskMemoryAccessAuthorityPlan,
+  type ProtectedTaskMemoryAccessHandoff,
+} from "./tools/memory/protected-task-access-authority";
+export {
+  createProtectedTaskMemoryProjectionPort,
+  type ProtectedTaskMemoryProjectionHandoff,
+  type ProtectedTaskProjectionAuthorityPlan,
+  type ProtectedTaskProjectionPublicationAuthorization,
+} from "./tools/memory/protected-task-projection-authority";
+export {
+  createProtectedTaskHumanResumeCommandV1,
+  type ProtectedTaskHumanResumeBindingV1,
+  type ProtectedTaskHumanResumeContextV1,
+} from "./graph/protected-task-human-resume";
 export { readPendingInterruptEventsForThread } from "./graph/pending-interrupts";
 export { resumeGraphWithConnectedWebAction } from "./graph/resume-connected-web-action";
 export {
@@ -385,6 +437,7 @@ export type {
 } from "./nodes/tools";
 export {
   createNautiloToolInvocationSession,
+  readToolInvocationStatus,
 } from "./tools/invocation-service";
 export type {
   InvocationAuthorityResolution,
@@ -1137,6 +1190,7 @@ export {
   encodeMemoryListCursor,
   decodeMemoryListCursor,
   lockAtomicProjectionDestinationAuthority,
+  fingerprintProjectionAudience,
   setMemoryAuditSink,
   assertNamespaceWriteAccess,
   attachMemoryToNamespace,
@@ -1500,6 +1554,12 @@ export { readForegroundFundingForThread } from "./graph/turn-id";
 export type { LocalExecutionHistoryPort, LocalExecutionHistoryReference } from "./tools/local-execution/history";
 
 export { runWithLocalExecutionDelegation, getCurrentLocalExecutionDelegation, type DelegatedLocalExecutionPort, type DelegatedLocalExecutionAdmission, type DelegatedLocalExecutionOperation } from "./runtime/local-execution-delegation";
+export {
+  getCurrentProtectedTaskProjectFilePort,
+  matchesProtectedTaskProjectFilePort,
+  runWithProtectedTaskProjectFilePort,
+  type ProtectedTaskProjectFilePort,
+} from "./runtime/protected-task-project-file";
 
 export { installConversionRuntime, uninstallConversionRuntime, type ConversionRuntime, type CloudConversionExecutionRequest, type CloudConversionExecutionResult, type CloudConversionRecoveryRequest, type CloudConversionSourceBinding, type CloudConversionDestinationBinding } from "./tools/convert/conversion-runtime";
 

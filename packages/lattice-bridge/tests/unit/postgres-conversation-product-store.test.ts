@@ -278,6 +278,7 @@ function lifecycleRow(
     human_peer_shadow_operation_id: null,
     shared_agent_shadow_operation_id: null,
     shared_agent_shadow_execution_id: null,
+    task_wake_operation_id: null,
     shadow_transcript_ordinal: null,
     shadow_reserved_created_at: null,
     shadow_stream_id: null,
@@ -2820,4 +2821,13 @@ test.each(["fallback", "failed"])("terminal shared execution fences reserved pub
   })).toEqual({ status: "conflict" });
   setup.canonical.assertExhausted();
   expect(setup.canonical.events).toEqual(["execute", "select", "select", "select"]);
+});
+
+
+test("wake lifecycle decoding rejects a missing ordinal", async () => {
+  const setup = await storeWithResults([[{ ...lifecycleRow({ object_id_scheme: "live_shadow_v1",
+    task_wake_operation_id: "task-run-delivery-wake:31300000-0000-4000-8000-000000000088",
+    author_role: "assistant", shadow_transcript_ordinal: null,
+  }), current_message_id: 11 }]]);
+  expect(setup.store.getRevision(11, 0)).rejects.toThrow();
 });

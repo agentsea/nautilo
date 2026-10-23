@@ -31,6 +31,13 @@ import {
   assertProtectedTaskJobReferenceV1,
   type ProtectedTaskJobReferenceV1,
 } from "./tasks/protected-task-job-reference";
+import {
+  isProtectedTaskWakeParked,
+  snapshotProtectedTaskWakeAdoption,
+  type AdoptProtectedTaskWakeJobInput,
+} from "./tasks/protected-task-wake-execution-candidate";
+import { runWithProtectedTaskWakeExecutionCustody } from
+  "./tasks/protected-task-wake-foreground-context";
 
 const FOREGROUND_CONTEXT_PREPARATION_FALLBACK_RETRY_WINDOW_MS = 30_000;
 const FOREGROUND_CONTEXT_PREPARATION_RETRY_MAX_DELAY_MS = 1_000;
@@ -164,10 +171,145 @@ export class Job {
   private config: JobConfig;
   /** Serializes competing local terminal observations onto one durable truth. */
   private protectedTaskTerminalSettlement: Promise<void> = Promise.resolve();
+  private protectedWake: AdoptProtectedTaskWakeJobInput | undefined;
+  private wakeExecution: Promise<void> | undefined;
+  private wakeCustodyReleased = false;
   private externalStatusTransitions: Promise<void> = Promise.resolve();
 
   constructor(config: JobConfig) {
     this.config = config;
+  }
+
+  /** Adopt an existing opaque wake Job; this path never invokes generic DB sinks. */
+  static adoptPersisted(input: AdoptProtectedTaskWakeJobInput): Job {
+    const snapshot = snapshotProtectedTaskWakeAdoption(input);
+    if (snapshot.scheduling.jobState !== "queued") {
+      throw new TypeError("Only a queued protected wake Job may be adopted");
+    }
+    const job = new Job({
+      ownerId: snapshot.scheduling.ownerId,
+      requestorId: snapshot.scheduling.requestorId,
+      laneKey: snapshot.scheduling.laneKey,
+      type: "foreground",
+      input: snapshot.reference,
+      ephemeralSinkDisposition: "full",
+      executor: snapshot.executor,
+      persist: () => Promise.reject(new Error("Adopted wake Job cannot be persisted again")),
+      updateStatus: () => Promise.reject(new Error("Adopted wake Job requires its exact terminal sink")),
+    });
+    job._id = snapshot.scheduling.jobId;
+    job.protectedWake = snapshot;
+    job.abortController = new AbortController();
+    return job;
+  }
+
+  get protectedWakeScheduling(): AdoptProtectedTaskWakeJobInput["scheduling"] | undefined {
+    return this.protectedWake?.scheduling;
+  }
+
+  executeProtectedTaskWake(onStarted: () => void = () => {}): Promise<void> {
+    if (this.protectedWake === undefined) throw new TypeError("Job is not an adopted protected wake");
+    this.wakeExecution ??= this.runProtectedTaskWake(onStarted);
+    return this.wakeExecution;
+  }
+
+  private async runProtectedTaskWake(onStarted: () => void): Promise<void> {
+    const wake = this.protectedWake!;
+    const controller = this.abortController!;
+    let invoked = false;
+    let started = false;
+    let settlementRequested = false;
+    let removeAuthorizationAbort: (() => void) | undefined;
+    try {
+      if (this.isTerminal() || controller.signal.aborted) return;
+      try {
+        await wake.candidate.run(async (
+          transientInput,
+          authorizationSignal,
+          custody,
+        ) => {
+          if (invoked) throw new Error("Protected wake execution callback is one-shot");
+          invoked = true;
+          const abort = () => controller.abort();
+          authorizationSignal.addEventListener("abort", abort, { once: true });
+          removeAuthorizationAbort = () => authorizationSignal.removeEventListener("abort", abort);
+          if (authorizationSignal.aborted) abort();
+          try {
+            controller.signal.throwIfAborted();
+            const result = await wake.candidate.start(this.id);
+            if (result.status !== "started") return;
+            started = true;
+            controller.signal.throwIfAborted();
+            this.recordProtectedTaskJobStarted();
+            onStarted();
+            // The protected transcript owner is the sole content sink. There is
+            // no generic event publication or automatic executor retry here.
+            await runWithProtectedTaskWakeExecutionCustody(custody, async () => {
+              for await (const _event of wake.executor(
+                transientInput,
+                this.id,
+                this.laneKey,
+                controller.signal,
+              )) {
+                controller.signal.throwIfAborted();
+              }
+            });
+            controller.signal.throwIfAborted();
+            settlementRequested = true;
+            await this.settleProtectedWake("completed");
+          } catch (error) {
+            if (isProtectedTaskWakeParked(error)) {
+              this._status = "queued";
+              eventBus.emit({
+                type: "job.status",
+                jobId: this.id,
+                status: "queued",
+                ...(this.laneKey === null ? {} : { laneKey: this.laneKey }),
+              });
+              return;
+            }
+            // Start response loss never grants effect or settlement authority.
+            // Once one terminal request begins, its response may be lost after
+            // commit, so never replace it with a different outcome.
+            if (!started || settlementRequested) throw error;
+            settlementRequested = true;
+            await this.settleProtectedWake("failed");
+          }
+        });
+      } catch (error) {
+        // A custody failure outside the authenticated callback grants no
+        // fallback settlement authority. Preserve terminal truth already
+        // committed inside the callback; surface only unsettled started work.
+        if (!this.isTerminal() && started) throw error;
+      }
+    } finally {
+      removeAuthorizationAbort?.();
+      this.releaseProtectedWakeCustody();
+    }
+  }
+
+  private releaseProtectedWakeCustody(): void {
+    if (this.wakeCustodyReleased) return;
+    this.wakeCustodyReleased = true;
+    try { this.protectedWake?.candidate.onIneligible(); } catch { /* Custody cleanup cannot authorize replay. */ }
+  }
+
+  private settleProtectedWake(requested: "completed" | "failed"): Promise<void> {
+    const settle = async () => {
+      if (this.isTerminal()) return;
+      const result = await this.protectedWake!.candidate.settle(this.id, requested);
+      if (result.kind === "rejected"
+        || result.kind === "transitioned" && result.status !== requested
+        || !["completed", "failed", "cancelled", "timed_out"].includes(result.status)) {
+        throw new Error("Protected wake terminal settlement was rejected");
+      }
+      this._status = result.status;
+      eventBus.emit({ type: "job.status", jobId: this.id, status: result.status,
+        ...(this.laneKey === null ? {} : { laneKey: this.laneKey }) });
+    };
+    const result = this.protectedTaskTerminalSettlement.then(settle, settle);
+    this.protectedTaskTerminalSettlement = result.then(() => {}, () => {});
+    return result;
   }
 
   private hasFullSinkDisposition(): boolean {
@@ -217,6 +359,7 @@ export class Job {
   }
 
   async persist(): Promise<void> {
+    if (this.protectedWake !== undefined) throw new TypeError("Adopted wake Job is already persisted");
     if (
       (this.config.durableInputDisposition === "full")
         !== (this.config.durableInputReference !== undefined)
@@ -254,6 +397,7 @@ export class Job {
   }
 
   async execute(authorizationSignal?: AbortSignal): Promise<void> {
+    if (this.protectedWake !== undefined) throw new TypeError("Adopted wake Job requires its candidate");
     return this.executeWithInput(this.config.input, authorizationSignal);
   }
 
@@ -555,6 +699,9 @@ export class Job {
 
   /** Terminalize a persisted Job when an opaque pre-executor candidate fails. */
   async fail(err: unknown): Promise<void> {
+    if (this.protectedWake !== undefined) {
+      throw new TypeError("Adopted wake Job requires its candidate terminal sink");
+    }
     if (this.isTerminal()) return;
     if (err instanceof ImageAssistanceError) {
       await this.setStatus("failed", { message: err.message, errorCode: err.code, errorCategory: "unknown" });
@@ -626,6 +773,13 @@ export class Job {
     message = "Cancelled by user",
     cause: "cancelled" | "process_lost" = "cancelled",
   ): Promise<void> {
+    if (this.protectedWake !== undefined) {
+      this.abortController?.abort();
+      if (this.wakeExecution !== undefined) return this.wakeExecution;
+      // No effects began. Leave the durable queued row for fresh authority.
+      this.releaseProtectedWakeCustody();
+      return;
+    }
     if (this.isTerminal() && !this.cancellationPersistencePending) return;
     this.cancellationPersistencePending = true;
     this.cancellationCause = cause;

@@ -282,6 +282,8 @@ export interface NautiloGraphDeps extends PostModelDeps {
   /** Protected Task only: retain every admitted node body through saver close. */
   readonly protectedTaskNodeSettlementScope?:
     ProtectedTaskNodeSettlementScope;
+  /** Trusted execution-owner diagnostic policy; never restored from graph state. */
+  readonly confidential?: true;
 }
 
 function withProtectedTaskNodeSettlement<Arguments extends unknown[], Result>(
@@ -319,7 +321,17 @@ export function createNautiloGraph(
         ? preflightProjectionShareCalls(state, calls)
         : preflightProtectedProjectionShareCalls(state, calls, projection);
     },
-    { sanitizeProjectionToolArgs: true },
+    {
+      sanitizeProjectionToolArgs: true,
+      ...(deps?.protectedMemoryAccessPortForState === undefined
+        ? {}
+        : {
+          protectedMemoryAccessPortForState: state => {
+            const port = deps.protectedMemoryAccessPortForState?.(state);
+            return port?.restoreApproval === undefined ? undefined : port;
+          },
+        }),
+    },
   );
   const recallRecordsPortForState = deps?.recallRecordsPortForState;
   const draftNodes = researchNoteDraftNodes({
@@ -346,9 +358,11 @@ export function createNautiloGraph(
       draft,
       deps?.ordinaryContentAccessForState,
       deps?.foregroundChatFundingSession,
+      deps?.confidential,
     ),
   });
   const graphToolsNode = createToolsNode({
+    ...(deps?.confidential === true ? { confidential: true } : {}),
     ...(deps?.delegatedLocalExecutionPortForState === undefined ? {} : { delegatedLocalExecutionPortForState: deps.delegatedLocalExecutionPortForState }),
     ...(deps?.localExecutionHistoryPortForState === undefined ? {} : { localExecutionHistoryPortForState: deps.localExecutionHistoryPortForState }),
     ...(deps?.humanTerminalAdmissionPortForState === undefined ? {} : { humanTerminalAdmissionPortForState: deps.humanTerminalAdmissionPortForState }),

@@ -38,9 +38,10 @@ describe("repository-root test DB preload", () => {
       readFileSync(resolve(repoRoot, "package.json"), "utf8"),
     ) as { scripts?: Record<string, string> };
 
-    expect(rootPackage.scripts?.["lint:unused"]).toBe(
-      "NODE_OPTIONS=--max-old-space-size=6144 NAUTILO_DRIZZLE_OFFLINE=1 knip --cache --no-progress",
-    );
+    const lintUnused = rootPackage.scripts?.["lint:unused"];
+    expect(lintUnused).toContain("NAUTILO_DRIZZLE_OFFLINE=1 ");
+    expect(lintUnused).toContain("node_modules/knip/bin/knip.js --no-progress");
+    expect(lintUnused).not.toContain("NODE_OPTIONS=");
   });
 
   test("routes an unset process to scratch and clears inherited DB overrides", () => {

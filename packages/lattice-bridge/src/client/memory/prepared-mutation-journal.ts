@@ -9,6 +9,12 @@ import {
   type ProtectedMemoryPreparedRepairRequestV1,
 } from "@nautilo/api-client/browser";
 import {
+  taskOrdinaryFallbackPreparedCreateRequestV1Schema,
+  taskOrdinaryFallbackPreparedUpdateRequestV1Schema,
+  type TaskOrdinaryFallbackPreparedCreateRequestV1,
+  type TaskOrdinaryFallbackPreparedUpdateRequestV1,
+} from "@nautilo/api-client/browser";
+import {
   protectedArtifactPreparedPublicationRequestV1Schema,
   protectedArtifactPreparedAccessRequestV1Schema,
   type ProtectedArtifactPreparedPublicationRequestV1,
@@ -80,13 +86,15 @@ export type PreparedHumanTaskMutation =
       kind: "task_create";
       taskId: string;
       request: ProtectedTaskPreparedCreateRequestV1
-        | DualTaskPreparedCreateRequestV1;
+        | DualTaskPreparedCreateRequestV1
+        | TaskOrdinaryFallbackPreparedCreateRequestV1;
     }>
   | Readonly<{
       kind: "task_update";
       taskId: string;
       request: ProtectedTaskPreparedUpdateRequestV1
-        | DualTaskPreparedUpdateRequestV1;
+        | DualTaskPreparedUpdateRequestV1
+        | TaskOrdinaryFallbackPreparedUpdateRequestV1;
     }>;
 
 export type PreparedAdditionalDeviceTransitionCampaign = Readonly<{
@@ -131,6 +139,13 @@ export type PreparedMutationJournalState =
   | `terminal_${PreparedMutationTerminalReason}`
   | "corrupt"
   | "missing_authority";
+
+export type PreparedMutationJournalCustodyAvailability =
+  | Readonly<{ status: "available" | "locked" }>
+  | Readonly<{
+      status: "unsupported" | "corrupt" | "storage_lost";
+      reasonCode: string;
+    }>;
 
 interface PreparedMutationJournalIndexBase {
   readonly formatVersion: 1;
@@ -579,9 +594,13 @@ function canonicalMutation(value: PreparedHumanMutation): Readonly<{
     }
     case "task_create": {
       const request = "representation" in value.request
+          && value.request.representation === "ordinary_fallback"
+        ? taskOrdinaryFallbackPreparedCreateRequestV1Schema.parse(value.request)
+        : "representation" in value.request
         ? dualTaskPreparedCreateRequestV1Schema.parse(value.request)
         : protectedTaskPreparedCreateRequestV1Schema.parse(value.request);
-      if (request.taskId !== value.taskId || request.operation !== "create") {
+      if (request.taskId !== value.taskId
+        || ("operation" in request && request.operation !== "create")) {
         throw new TypeError("Prepared Task create coordinates disagree");
       }
       return Object.freeze({
@@ -592,9 +611,13 @@ function canonicalMutation(value: PreparedHumanMutation): Readonly<{
     }
     case "task_update": {
       const request = "representation" in value.request
+          && value.request.representation === "ordinary_fallback"
+        ? taskOrdinaryFallbackPreparedUpdateRequestV1Schema.parse(value.request)
+        : "representation" in value.request
         ? dualTaskPreparedUpdateRequestV1Schema.parse(value.request)
         : protectedTaskPreparedUpdateRequestV1Schema.parse(value.request);
-      if (request.taskId !== value.taskId || request.operation !== "update") {
+      if (request.taskId !== value.taskId
+        || ("operation" in request && request.operation !== "update")) {
         throw new TypeError("Prepared Task update coordinates disagree");
       }
       return Object.freeze({

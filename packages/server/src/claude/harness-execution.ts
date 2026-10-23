@@ -7,6 +7,7 @@ import type {
 } from "@nautilo/runtime";
 import {
   CLAUDE_EXECUTION_MAX_PROMPT_BYTES,
+  CLAUDE_MESSAGE_BOUNDARY_PROTOCOL_VERSION,
   CLAUDE_EXECUTION_MAX_TEXT_BYTES,
 } from "@nautilo/relay";
 import type {
@@ -36,6 +37,8 @@ type ClaudeExecutionControl = Extract<ClaudeExecutionOpenResult, { ok: true }>['
 
 export interface ClaudeHarnessExecutionOptions {
   readonly relay: RelayPort;
+  /** Protected execution must release grant custody when authorization ends. */
+  readonly abortStreamOnCancellation?: true;
 }
 
 type ResultOutcome = "success" | "failed" | "interrupted";
@@ -68,6 +71,7 @@ type ActiveExecution = {
   interruptAcknowledged: boolean;
   userStopConfirmed: boolean;
   readonly outputParts: string[];
+  outputMessageStarted: boolean;
 };
 
 /**
@@ -92,6 +96,7 @@ export class ClaudeHarnessExecution {
   async respond(
     response: HarnessRequestResponse,
     invocationAuthority: AcceptedInvocationAuthority,
+    options?: Readonly<{ signal?: AbortSignal }>,
   ): Promise<void> {
     assertAcceptedInvocationAuthoritySubject(invocationAuthority, response.ownerId);
     const active = this.#activeForRequest(response.requestId, response.ownerId);
@@ -104,7 +109,14 @@ export class ClaudeHarnessExecution {
     if (wire === null) throw new TypeError("Claude request response is invalid");
     active.requests.set(response.requestId, { ...request, responding: true });
     try {
-      const result = await active.control.respond(request.interactionRef, wire);
+      if (this.options.abortStreamOnCancellation === true) {
+        active.admission.abortSignal.throwIfAborted();
+        options?.signal?.throwIfAborted();
+      }
+      const attempt = active.control.respond(request.interactionRef, wire);
+      const result = this.options.abortStreamOnCancellation === true
+        ? await this.#whileAuthorized(active.admission.abortSignal, attempt, options?.signal)
+        : await attempt;
       if (result !== "accepted") throw new TypeError("Claude request response was rejected");
     } finally {
       // This local request has one reply attempt whether Desktop accepts it,
@@ -189,6 +201,7 @@ export class ClaudeHarnessExecution {
       interruptAcknowledged: false,
       userStopConfirmed: false,
       outputParts: [],
+      outputMessageStarted: false,
     };
     this.#activeByTask.set(admission.taskId, active);
     const onAbort = () => { void this.#beginStop(active).catch(() => undefined); };
@@ -199,7 +212,9 @@ export class ClaudeHarnessExecution {
       while (!active.terminal) {
         let event: RelayClaudeExecutionEvent | null;
         try {
-          event = await active.control.next();
+          event = this.options.abortStreamOnCancellation === true
+            ? await this.#whileAuthorized(admission.abortSignal, active.control.next())
+            : await active.control.next();
         } catch {
           this.#bestEffortInterrupt(active);
           yield this.#finish(active, "failed", "process_lost");
@@ -210,14 +225,45 @@ export class ClaudeHarnessExecution {
           yield this.#finish(active, "failed", "process_lost");
           return;
         }
-        const output = await this.#project(active, event);
+        const output = this.options.abortStreamOnCancellation === true
+          ? await this.#whileAuthorized(admission.abortSignal, this.#project(active, event))
+          : await this.#project(active, event);
         for (const item of output) yield item;
       }
     } finally {
+      if (this.options.abortStreamOnCancellation === true && !active.terminal) {
+        // Consumer cancellation and a throw from the for-await body both
+        // bypass the stream-loss branches. Start containment before releasing
+        // local ownership, without waiting for or inventing provider facts.
+        this.#bestEffortInterrupt(active);
+      }
       admission.abortSignal.removeEventListener("abort", onAbort);
       if (this.#activeByTask.get(admission.taskId) === active) this.#activeByTask.delete(admission.taskId);
       active.requests.clear();
       this.#rejectStop(active, "CLAUDE_EXECUTION_STOP_UNAVAILABLE");
+    }
+  }
+
+  async #whileAuthorized<Value>(
+    signal: AbortSignal,
+    operation: Value | PromiseLike<Value>,
+    additionalSignal?: AbortSignal,
+  ): Promise<Value> {
+    let rejectAbort: (reason: unknown) => void = () => undefined;
+    const aborted = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });
+    const onAbort = () => rejectAbort(signal.reason);
+    const onAdditionalAbort = () => rejectAbort(additionalSignal?.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    additionalSignal?.addEventListener("abort", onAdditionalAbort, { once: true });
+    if (signal.aborted) onAbort();
+    else if (additionalSignal?.aborted === true) onAdditionalAbort();
+    try {
+      // The Relay lane remains occupied until its actual provider settlement.
+      // Abandoning this waiter neither proves containment nor admits replay.
+      return await Promise.race([Promise.resolve(operation), aborted]);
+    } finally {
+      signal.removeEventListener("abort", onAbort);
+      additionalSignal?.removeEventListener("abort", onAdditionalAbort);
     }
   }
 
@@ -232,7 +278,14 @@ export class ClaudeHarnessExecution {
     if (active.settlement !== null && event.kind !== "result") return this.#lost(active);
     if (event.kind === "activity") return [progress(active, "Claude Code activity")];
     if (event.kind === "initialized") return [progress(active, "Claude Code initialized")];
+    if (event.kind === "output_message_started") {
+      if (active.admission.claude.scope.selectedProtocolVersion < CLAUDE_MESSAGE_BOUNDARY_PROTOCOL_VERSION) return this.#lost(active);
+      active.outputMessageStarted = true;
+      active.outputParts.length = 0;
+      return [];
+    }
     if (event.kind === "output_delta") {
+      if (active.admission.claude.scope.selectedProtocolVersion >= CLAUDE_MESSAGE_BOUNDARY_PROTOCOL_VERSION && !active.outputMessageStarted) return this.#lost(active);
       if (event.text.length === 0) return [];
       active.outputParts.push(event.text);
       return [outputDelta(active, event.text)];
@@ -359,22 +412,29 @@ export class ClaudeHarnessExecution {
     const stop: StopWaiter = { promise, resolve, reject, settled: false };
     active.stop = stop;
     active.requests.clear();
+    void this.#interruptOnce(active).then(
+      (outcome) => {
+        if (outcome !== "acknowledged") this.#rejectStop(active, "CLAUDE_EXECUTION_STOP_UNCERTAIN");
+        else {
+          active.interruptAcknowledged = true;
+          this.#confirmStop(active);
+        }
+      },
+      () => this.#rejectStop(active, "CLAUDE_EXECUTION_STOP_UNAVAILABLE"),
+    );
+    return promise;
+  }
+
+  #interruptOnce(active: ActiveExecution): Promise<"acknowledged" | "uncertain"> {
+    if (active.interrupt !== null) return active.interrupt;
     try {
       active.interrupt = Promise.resolve(active.control.interrupt());
-      void active.interrupt.then(
-        (outcome) => {
-          if (outcome !== "acknowledged") this.#rejectStop(active, "CLAUDE_EXECUTION_STOP_UNCERTAIN");
-          else {
-            active.interruptAcknowledged = true;
-            this.#confirmStop(active);
-          }
-        },
-        () => this.#rejectStop(active, "CLAUDE_EXECUTION_STOP_UNAVAILABLE"),
+    } catch (error) {
+      active.interrupt = Promise.reject(
+        error instanceof Error ? error : new Error("Claude interrupt failed"),
       );
-    } catch {
-      this.#rejectStop(active, "CLAUDE_EXECUTION_STOP_UNAVAILABLE");
     }
-    return promise;
+    return active.interrupt;
   }
 
   #confirmStop(active: ActiveExecution): boolean {
@@ -415,7 +475,7 @@ export class ClaudeHarnessExecution {
   }
 
   #bestEffortInterrupt(active: ActiveExecution): void {
-    try { void active.control.interrupt().catch(() => undefined); } catch { /* stream loss owns the terminal */ }
+    void this.#interruptOnce(active).catch(() => undefined);
   }
 
   #lost(active: ActiveExecution): readonly HarnessExecutionOutput[] {

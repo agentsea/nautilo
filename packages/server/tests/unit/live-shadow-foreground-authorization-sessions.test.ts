@@ -3,6 +3,7 @@ import { authorizationRevision } from "@nautilo/lattice-crypto";
 
 import {
   createDomainCompressedLiveShadowSessionCapability,
+  inspectDomainCompressedLiveShadowSessionCapability,
   type AgentLiveShadowForegroundAuthorizationScope,
   type RuntimeLiveShadowForegroundAuthorizationScope,
 } from "@nautilo/lattice-bridge/server";
@@ -79,7 +80,230 @@ function capability(input: Readonly<{
   });
 }
 
+function runtimeCapability(input: Readonly<{
+  issuedAt?: number;
+  expiresAt?: number;
+  authorizationId?: string;
+}> = {}) {
+  const issuedAt = input.issuedAt ?? Date.now();
+  return createDomainCompressedLiveShadowSessionCapability({
+    description: {
+      authorizationId: input.authorizationId ?? "runtime-authorization-1",
+      subjectHumanId: runtimeScope.subjectHumanId,
+      issuingDeviceId: runtimeScope.issuingDeviceId,
+      recipientKind: runtimeScope.recipientKind,
+      browserSessionId: runtimeScope.browserSessionId,
+      topLevelRoomId: runtimeScope.topLevelRoomId,
+      recipientKeyId: "runtime-key-1",
+      policyRevision: runtimeScope.policyRevision,
+      hostAuthorizationRevision: runtimeScope.hostAuthorizationRevision,
+      namespaceIds: runtimeScope.namespaceIds,
+      grantDomainIds: runtimeScope.grantDomainIds,
+      issuedAt,
+      expiresAt: input.expiresAt ?? issuedAt + 2 * 60 * 60_000,
+      authorizationDigest: new Uint8Array(32).fill(2),
+    },
+    entries: [Object.freeze({
+      grantDomainId: runtimeScope.grantDomainIds[0]!,
+      participantDigest: new Uint8Array(32).fill(3),
+      domainKeyGeneration: 1,
+      headDigest: new Uint8Array(32).fill(4),
+      publicationDigest: new Uint8Array(32).fill(5),
+      publicationAuthorizationRevision: authorizationRevision(1),
+      authorizationRevision: authorizationRevision(1),
+      activeNamespaceBindingSetDigest: new Uint8Array(32).fill(6),
+      activeNamespaceBindingCount: 1,
+      domainAiGrantKey: new Uint8Array(32).fill(7),
+    })],
+  });
+}
+
 describe("live Shadow foreground authorization sessions", () => {
+  test("executes a transient child without replacing a concurrent reusable session", async () => {
+    const now = 1_800_000_000_000;
+    const sessions = new LiveShadowForegroundAuthorizationSessions({
+      now: () => now,
+      startSweep: false,
+    });
+    const primary = sessions.register({
+      capability: runtimeCapability({ issuedAt: now, expiresAt: now + 60_000 }),
+      scope: runtimeScope,
+      publicEvidence: {
+        authorizationDigest: new Uint8Array(32).fill(2),
+        authorizationPlanBytes: new Uint8Array([1]),
+        authorizationPlanDigest: new Uint8Array(32).fill(8),
+        recipientId: "recipient-1",
+        recipientKeyId: "recipient-key-1",
+        recipientPublicKey: new Uint8Array(32).fill(9),
+      },
+      now,
+    });
+    expect(primary).not.toBeNull();
+    const transientCapability = runtimeCapability({
+      issuedAt: now,
+      expiresAt: now + 60_000,
+      authorizationId: "transient-authorization",
+    });
+    const entered = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    try {
+      const transient = sessions.executeTransient({
+        capability: transientCapability,
+        scope: runtimeScope,
+        namespaceIds: runtimeScope.namespaceIds,
+        domainIds: runtimeScope.grantDomainIds,
+        operations: ["decrypt", "encrypt"],
+        workDescriptorDigest: new Uint8Array(32).fill(0xaa),
+        operationDeadline: now + 30_000,
+        execute: async () => {
+          entered.resolve();
+          await release.promise;
+          return Object.freeze({ status: "executed" as const, value: "transient" });
+        },
+      });
+      await entered.promise;
+      expect(sessions.inspectReusable(runtimeScope)?.sessionReference)
+        .toBe(primary?.sessionReference);
+      expect(await sessions.execute({
+        sessionReference: primary!.sessionReference,
+        scope: runtimeScope,
+        execute: async () => Object.freeze({
+          status: "executed" as const,
+          value: "primary",
+        }),
+      })).toEqual({ status: "executed", value: "primary" });
+      release.resolve();
+      expect(await transient).toEqual({
+        status: "executed",
+        value: "transient",
+      });
+      expect(inspectDomainCompressedLiveShadowSessionCapability(
+        transientCapability,
+      )).toBeNull();
+      expect(sessions.inspectReusable(runtimeScope)?.sessionReference)
+        .toBe(primary?.sessionReference);
+    } finally {
+      release.resolve();
+      sessions.close();
+    }
+  });
+
+  test("destroys a transient session after callback failure", async () => {
+    const now = 1_800_000_000_000;
+    const sessions = new LiveShadowForegroundAuthorizationSessions({
+      now: () => now,
+      startSweep: false,
+    });
+    const transientCapability = capability({
+      issuedAt: now,
+      expiresAt: now + 60_000,
+      authorizationId: "failing-transient-authorization",
+    });
+    try {
+      expect(await sessions.executeTransient({
+        capability: transientCapability,
+        scope,
+        namespaceIds: scope.namespaceIds,
+        domainIds: scope.grantDomainIds,
+        operations: ["decrypt", "encrypt"],
+        workDescriptorDigest: new Uint8Array(32).fill(0xbb),
+        execute: () => {
+          throw new Error("publication failed");
+        },
+      })).toEqual({ status: "unavailable", reason: "execution_failed" });
+      expect(inspectDomainCompressedLiveShadowSessionCapability(
+        transientCapability,
+      )).toBeNull();
+    } finally {
+      sessions.close();
+    }
+  });
+
+  test("rejects expired, foreign, and widened transient admissions", async () => {
+    const now = 1_800_000_000_000;
+    const sessions = new LiveShadowForegroundAuthorizationSessions({
+      now: () => now,
+      startSweep: false,
+    });
+    let invoked = false;
+    const execute = async () => {
+      invoked = true;
+      return Object.freeze({ status: "executed" as const, value: "unexpected" });
+    };
+    try {
+      const expired = capability({
+        issuedAt: now - 60_000,
+        expiresAt: now,
+        authorizationId: "expired-transient-authorization",
+      });
+      expect(await sessions.executeTransient({
+        capability: expired,
+        scope,
+        namespaceIds: scope.namespaceIds,
+        domainIds: scope.grantDomainIds,
+        operations: ["decrypt", "encrypt"],
+        workDescriptorDigest: new Uint8Array(32).fill(0xcc),
+        execute,
+      })).toEqual({ status: "unavailable", reason: "session_expired" });
+      expect(inspectDomainCompressedLiveShadowSessionCapability(expired))
+        .toBeNull();
+
+      const foreign = capability({
+        issuedAt: now,
+        expiresAt: now + 60_000,
+        authorizationId: "foreign-transient-authorization",
+      });
+      expect(await sessions.executeTransient({
+        capability: foreign,
+        scope: Object.freeze({ ...scope, subjectHumanId: "revoked-human" }),
+        namespaceIds: scope.namespaceIds,
+        domainIds: scope.grantDomainIds,
+        operations: ["decrypt", "encrypt"],
+        workDescriptorDigest: new Uint8Array(32).fill(0xdd),
+        execute,
+      })).toEqual({ status: "unavailable", reason: "session_cancelled" });
+      expect(inspectDomainCompressedLiveShadowSessionCapability(foreign))
+        .toBeNull();
+
+      const widened = capability({
+        issuedAt: now,
+        expiresAt: now + 60_000,
+        authorizationId: "widened-transient-authorization",
+      });
+      expect(await sessions.executeTransient({
+        capability: widened,
+        scope,
+        namespaceIds: ["namespace-foreign"],
+        domainIds: scope.grantDomainIds,
+        operations: ["decrypt", "encrypt"],
+        workDescriptorDigest: new Uint8Array(32).fill(0xee),
+        execute,
+      })).toEqual({ status: "unavailable", reason: "session_cancelled" });
+      expect(inspectDomainCompressedLiveShadowSessionCapability(widened))
+        .toBeNull();
+
+      const invalidWork = capability({
+        issuedAt: now,
+        expiresAt: now + 60_000,
+        authorizationId: "invalid-work-transient-authorization",
+      });
+      expect(await sessions.executeTransient({
+        capability: invalidWork,
+        scope,
+        namespaceIds: scope.namespaceIds,
+        domainIds: scope.grantDomainIds,
+        operations: ["decrypt", "encrypt"],
+        workDescriptorDigest: new Uint8Array(31).fill(0xff),
+        execute,
+      })).toEqual({ status: "unavailable", reason: "session_cancelled" });
+      expect(inspectDomainCompressedLiveShadowSessionCapability(invalidWork))
+        .toBeNull();
+      expect(invoked).toBeFalse();
+    } finally {
+      sessions.close();
+    }
+  });
+
   test("declines near-expiry reuse without extending or cancelling the retained grant", () => {
     const issuedAt = 1_800_000_000_000;
     let currentTime = issuedAt;
@@ -167,40 +391,12 @@ describe("live Shadow foreground authorization sessions", () => {
       now: () => now,
       startSweep: false,
     });
-    const runtimeCapability =
-      createDomainCompressedLiveShadowSessionCapability({
-        description: {
-          authorizationId: "runtime-authorization-1",
-          subjectHumanId: runtimeScope.subjectHumanId,
-          issuingDeviceId: runtimeScope.issuingDeviceId,
-          recipientKind: runtimeScope.recipientKind,
-          browserSessionId: runtimeScope.browserSessionId,
-          topLevelRoomId: runtimeScope.topLevelRoomId,
-          recipientKeyId: "runtime-key-1",
-          policyRevision: runtimeScope.policyRevision,
-          hostAuthorizationRevision:
-            runtimeScope.hostAuthorizationRevision,
-          namespaceIds: runtimeScope.namespaceIds,
-          grantDomainIds: runtimeScope.grantDomainIds,
-          issuedAt: now,
-          expiresAt: now + 5 * 60_000,
-          authorizationDigest: new Uint8Array(32).fill(2),
-        },
-        entries: [Object.freeze({
-          grantDomainId: "domain-1",
-          participantDigest: new Uint8Array(32).fill(3),
-          domainKeyGeneration: 1,
-          headDigest: new Uint8Array(32).fill(4),
-          publicationDigest: new Uint8Array(32).fill(5),
-          publicationAuthorizationRevision: authorizationRevision(1),
-          authorizationRevision: authorizationRevision(1),
-          activeNamespaceBindingSetDigest: new Uint8Array(32).fill(6),
-          activeNamespaceBindingCount: 1,
-          domainAiGrantKey: new Uint8Array(32).fill(7),
-        })],
-      });
+    const runtimeSessionCapability = runtimeCapability({
+      issuedAt: now,
+      expiresAt: now + 5 * 60_000,
+    });
     const registered = sessions.register({
-      capability: runtimeCapability,
+      capability: runtimeSessionCapability,
       scope: runtimeScope,
       publicEvidence: {
         authorizationDigest: new Uint8Array(32).fill(2),

@@ -1,3 +1,4 @@
+import type { VerifyStagedTaskCancellationPublication } from "./postgres-task-cancellation-crypto-staging.ts";
 import type { TaskContentAuthorityV1 } from "../../task/task-content-authority-v1.ts";
 import {
   mutateTaskContentV1,
@@ -21,6 +22,7 @@ import {
   type TaskContentCoordinateV1,
   type TaskContentPayloadV1,
   type TaskContentRepository,
+  type TaskOrdinaryFallbackRepairSourceProofV1,
 } from "../../task/task-content-repository.ts";
 import { readPreparedTaskContentCryptoRevisionSnapshotV1 } from "../../task/task-content-prepared-revision.ts";
 import {
@@ -77,6 +79,7 @@ type PreparedTaskContentPublicationCommonV1 = Readonly<{
     TaskContentRepository["reserveRevision"]
   >[0]["operationalMetadata"];
   prepared: PreparedTaskContentCryptoRevisionV1;
+  fallbackRepairSource?: TaskOrdinaryFallbackRepairSourceProofV1;
 }>;
 
 export type ProtectedPreparedTaskContentPublicationV1<ProductResult> =
@@ -147,6 +150,7 @@ export interface DurableTaskContentRepositoryV1<ProductResult> {
     coordinate: TaskContentCoordinateV1;
   }>): ReturnType<typeof readTaskContentV1>;
   reconcilePending: TaskContentRepository["reconcilePending"];
+  reconcileCoordinate: TaskContentRepository["reconcileCoordinate"];
 }
 
 /**
@@ -243,6 +247,9 @@ export function bindDurableTaskContentRepositoryV1<ProductResult>(input: Readonl
           authority: request.authority,
           prepared: request.prepared,
           operationalMetadata: request.operationalMetadata,
+          ...(request.fallbackRepairSource === undefined ? {} : {
+            fallbackRepairSource: request.fallbackRepairSource,
+          }),
         });
         if (reservation.status === "stale") {
           throw new ClassifiedDataOperationError(
@@ -296,6 +303,9 @@ export function bindDurableTaskContentRepositoryV1<ProductResult>(input: Readonl
           authority: request.authority,
           prepared: request.prepared,
           operationalMetadata: request.operationalMetadata,
+          ...(request.fallbackRepairSource === undefined ? {} : {
+            fallbackRepairSource: request.fallbackRepairSource,
+          }),
         });
         if (reservation.status === "stale") {
           throw new ClassifiedDataOperationError(
@@ -341,6 +351,9 @@ export function bindDurableTaskContentRepositoryV1<ProductResult>(input: Readonl
 
     reconcilePending: (request: Parameters<TaskContentRepository["reconcilePending"]>[0]) =>
       input.protectedRepository.reconcilePending(request),
+    reconcileCoordinate: (
+      request: Parameters<TaskContentRepository["reconcileCoordinate"]>[0],
+    ) => input.protectedRepository.reconcileCoordinate(request),
   };
   return Object.freeze(repository);
 }
@@ -354,6 +367,9 @@ export function createPostgresTaskContentRepositoryV1<ProductResult>(input: Read
   product: Readonly<{
     handle: ConversationProductPostgresHandle;
     resolveCurrentAuthority: ResolveCurrentTaskContentAuthority;
+    /** Called under product predecessor locks immediately before a new reservation. */
+    assertReservationCurrent?: (coordinate: TaskContentCoordinateV1) => void | Promise<void>;
+    verifyStagedCancellation?: VerifyStagedTaskCancellationPublication;
   }>;
   crypto: PostgresCryptoCompletionInput;
   content: DurableTaskContentPortsV1<ProductResult>;
@@ -361,6 +377,8 @@ export function createPostgresTaskContentRepositoryV1<ProductResult>(input: Read
   const product = new PostgresTaskContentProductStore(
     input.product.handle,
     input.product.resolveCurrentAuthority,
+    input.product.assertReservationCurrent,
+    input.product.verifyStagedCancellation,
   );
   const crypto = createPostgresTaskContentCryptoCompletion(input.crypto);
   return bindDurableTaskContentRepositoryV1({

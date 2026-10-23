@@ -8,6 +8,10 @@ import type {
   Task,
   TaskRun,
 } from "@nautilo/db";
+import type {
+  ProtectedTaskOccurrenceOwner,
+  ProtectedTaskOccurrencePort,
+} from "../../src/tasks/task-observer";
 
 const database = await import("@nautilo/db");
 const claimPlain = mock(async (
@@ -58,6 +62,18 @@ const reconcileInterrupted = mock(async (
   _db: DirectDatabase,
   _input: { taskId: string; taskRunId: string },
 ) => ({ transitioned: true }));
+const listWriterReviews = mock(async (
+  _db: DirectDatabase,
+  _input: Parameters<typeof database.listAwaitingWriterReviewTasks>[1],
+): ReturnType<typeof database.listAwaitingWriterReviewTasks> => []);
+const listPendingWriterReviews = mock(async (
+  _db: DirectDatabase,
+  _input: Parameters<typeof database.listPendingWriterReviewVerificationTasks>[1],
+): ReturnType<typeof database.listPendingWriterReviewVerificationTasks> => []);
+const listRunningWriterReviews = mock(async (
+  _db: DirectDatabase,
+  _input: Parameters<typeof database.listRunningWriterReviewVerificationTasks>[1],
+): ReturnType<typeof database.listRunningWriterReviewVerificationTasks> => []);
 mock.module("@nautilo/db", () => ({
   ...database,
   clearStaleFireLocks: async () => 0,
@@ -71,9 +87,9 @@ mock.module("@nautilo/db", () => ({
   getCallerFundedRunningTaskRunRestartBoundary: interruptedBoundary,
   listCallerFundedRunningTaskRunsForRestart: listInterrupted,
   reconcileCallerFundedTaskRunAfterRestart: reconcileInterrupted,
-  listAwaitingWriterReviewTasks: async () => [],
-  listPendingWriterReviewVerificationTasks: async () => [],
-  listRunningWriterReviewVerificationTasks: async () => [],
+  listAwaitingWriterReviewTasks: listWriterReviews,
+  listPendingWriterReviewVerificationTasks: listPendingWriterReviews,
+  listRunningWriterReviewVerificationTasks: listRunningWriterReviews,
 }));
 
 const ordinaryDispatch = mock(async (_task: Task, _deps: unknown) => ({
@@ -95,7 +111,11 @@ mock.module("../../src/tasks/report-back", () => ({
 mock.module("../../src/tasks/security-report-recovery", () => ({
   resumeReconnectedSecurityResearch: async () => {},
 }));
-const pause = mock(async (_deps: unknown, _taskId: string, _reason: string) => {});
+const pause = mock(async (_deps: unknown, _taskId: string, _reason: string) => ({
+  ok: true,
+  status: "paused",
+  message: "Task paused.",
+}));
 mock.module("../../src/tasks/lifecycle", () => ({ pauseTask: pause }));
 
 const { TaskObserver } = await import("../../src/tasks/task-observer");
@@ -153,6 +173,19 @@ function restartCursor(candidate: TaskRun): { startedAt: string; runId: string }
   return { startedAt: candidate.startedAt.toISOString(), runId: candidate.id };
 }
 
+function currentOwner(port: ProtectedTaskOccurrencePort) {
+  const withCurrentSpy = mock(() => {});
+  const owner: ProtectedTaskOccurrenceOwner = {
+    async withCurrent<Result>(
+      use: (current: ProtectedTaskOccurrencePort) => Promise<Result>,
+    ): Promise<Result | null> {
+      withCurrentSpy();
+      return use(port);
+    },
+  };
+  return { owner, withCurrentSpy };
+}
+
 const acceptingGate = {
   isAcceptingWork: async () => true,
   assertAcceptingNewWork: async () => {},
@@ -174,6 +207,9 @@ beforeEach(() => {
     interruptedBoundary,
     listInterrupted,
     reconcileInterrupted,
+    listWriterReviews,
+    listPendingWriterReviews,
+    listRunningWriterReviews,
     ordinaryDispatch,
     dispatchError,
     taskError,
@@ -185,11 +221,18 @@ beforeEach(() => {
   listOfflineWaits.mockImplementation(async () => []);
   prepareProtected.mockImplementation(async () => ({ status: "stale" as const }));
   timedOut.mockImplementation(async () => []);
-  pause.mockImplementation(async () => {});
+  pause.mockImplementation(async () => ({
+    ok: true,
+    status: "paused",
+    message: "Task paused.",
+  }));
   interruptedBoundary.mockImplementation(async () => undefined);
   ordinaryDispatch.mockImplementation(async () => ({ kind: "dispatched" as const }));
   listInterrupted.mockImplementation(async () => []);
   reconcileInterrupted.mockImplementation(async () => ({ transitioned: true }));
+  listWriterReviews.mockImplementation(async () => []);
+  listPendingWriterReviews.mockImplementation(async () => []);
+  listRunningWriterReviews.mockImplementation(async () => []);
 });
 
 test("startup reconciles caller-funded running runs in bounded keyset pages", async () => {
@@ -276,6 +319,77 @@ test("startup retries a failed caller-funded reconciliation before claiming fres
   expect(interruptedBoundary).toHaveBeenCalledTimes(1);
 });
 
+test("strict policy defers ordinary restart repair until fallback and drains it before claims", async () => {
+  let ordinaryAllowed = false;
+  let ordinaryCurrent = false;
+  const order: string[] = [];
+  const ordinaryOwner = {
+    async withCurrent<Result>(use: () => Promise<Result>): Promise<Result | null> {
+      if (!ordinaryAllowed) return null;
+      ordinaryCurrent = true;
+      try { return await use(); } finally { ordinaryCurrent = false; }
+    },
+  };
+  interruptedBoundary.mockImplementation(async () => {
+    expect(ordinaryCurrent).toBeTrue();
+    order.push("caller-recovery");
+    return undefined;
+  });
+  listWriterReviews.mockImplementation(async () => {
+    expect(ordinaryCurrent).toBeTrue();
+    order.push("writer-awaiting-recovery");
+    return [];
+  });
+  listPendingWriterReviews.mockImplementation(async () => {
+    expect(ordinaryCurrent).toBeTrue();
+    order.push("writer-pending-recovery");
+    return [];
+  });
+  listRunningWriterReviews.mockImplementation(async () => {
+    expect(ordinaryCurrent).toBeTrue();
+    order.push("writer-running-recovery");
+    return [];
+  });
+  claimPlain.mockImplementation(async () => {
+    expect(ordinaryCurrent).toBeTrue();
+    order.push("ordinary-claim");
+    return [];
+  });
+  const protectedOwner = currentOwner({ observeProtectedTaskOccurrence: async () => {} });
+  const observer = new TaskObserver({
+    db: {} as never,
+    jobManager: jobManager as never,
+    maintenanceGate: acceptingGate,
+    intervalMs: 60_000,
+    ordinaryOccurrencePort: ordinaryOwner,
+    protectedOccurrencePort: protectedOwner.owner,
+  });
+
+  await observer.start();
+  expect(interruptedBoundary).not.toHaveBeenCalled();
+  expect(listWriterReviews).not.toHaveBeenCalled();
+  expect(claimPlain).not.toHaveBeenCalled();
+  expect(claimProtected).toHaveBeenCalledTimes(1);
+
+  ordinaryAllowed = true;
+  await observer.tick();
+  await observer.tick();
+  await observer.stop();
+
+  expect(order).toEqual([
+    "caller-recovery",
+    "writer-awaiting-recovery",
+    "writer-pending-recovery",
+    "writer-running-recovery",
+    "ordinary-claim",
+    "ordinary-claim",
+  ]);
+  expect(interruptedBoundary).toHaveBeenCalledTimes(1);
+  expect(listWriterReviews).toHaveBeenCalledTimes(1);
+  expect(listPendingWriterReviews).toHaveBeenCalledTimes(1);
+  expect(listRunningWriterReviews).toHaveBeenCalledTimes(1);
+});
+
 test("without a protected port the ordinary observer is unchanged", async () => {
   const ordinary = task({
     contentRepresentation: "ordinary",
@@ -336,11 +450,12 @@ test("a recovery-only protected port never claims or prepares due initial work",
     }),
     observeProtectedTaskOccurrence: mock(async (_occurrence: unknown) => {}),
   };
+  const recoveryOwner = currentOwner(recoveryPort);
   const observer = new TaskObserver({
     db: {} as never,
     jobManager: jobManager as never,
     maintenanceGate: acceptingGate,
-    protectedOccurrenceRecoveryPort: recoveryPort,
+    protectedOccurrenceRecoveryPort: recoveryOwner.owner,
   });
 
   await observer.tick();
@@ -348,6 +463,7 @@ test("a recovery-only protected port never claims or prepares due initial work",
   expect(ordinaryDispatch).toHaveBeenCalledTimes(1);
   expect(ordinaryDispatch.mock.calls[0]?.[0]).toBe(ordinary);
   expect(listAwaiting).toHaveBeenCalledTimes(1);
+  expect(recoveryOwner.withCurrentSpy).toHaveBeenCalledTimes(1);
   expect(recoveryPort.recoverBeforeObservation).toHaveBeenCalledTimes(1);
   expect(recoveryPort.recoverBeforeObservation.mock.calls[0]?.[0]).toBeGreaterThan(0);
   expect(recoveryPort.observeProtectedTaskOccurrence).toHaveBeenCalledTimes(1);
@@ -357,36 +473,178 @@ test("a recovery-only protected port never claims or prepares due initial work",
   expect(prepareProtected).not.toHaveBeenCalled();
 });
 
-test("protected occurrences preserve fire identity, skip downtime backlog, and retry only through the port", async () => {
-  const scheduledFor = new Date("2026-09-01T09:00:00.000Z");
-  const claimed = task({ nextFireAt: scheduledFor });
-  const existingTask = task({ status: "awaiting", fireLockId: null, nextFireAt: null });
-  const existingRun = run();
-  let protectedClaims = 0;
-  claimProtected.mockImplementation(async () => {
-    protectedClaims += 1;
-    return protectedClaims === 1 ? [claimed] : [];
+test("ordinary policy refusal leaves ordinary claims untouched and still observes protected work", async () => {
+  const { owner } = currentOwner({ observeProtectedTaskOccurrence: async () => {} });
+  const observer = new TaskObserver({
+    db: {} as never,
+    jobManager: jobManager as never,
+    maintenanceGate: acceptingGate,
+    ordinaryOccurrencePort: { withCurrent: () => Promise.resolve(null) },
+    protectedOccurrencePort: owner,
   });
-  listAwaiting.mockImplementation(async () => [{ task: existingTask, run: existingRun }]);
-  prepareProtected.mockImplementation(async (_db, input) => ({
-    status: "prepared" as const,
-    task: task({
-      status: "pending",
+  await observer.tick();
+  expect(listOfflineWaits).not.toHaveBeenCalled();
+  expect(claimPlain).not.toHaveBeenCalled();
+  expect(ordinaryDispatch).not.toHaveBeenCalled();
+  expect(claimProtected).toHaveBeenCalledTimes(1);
+});
+
+test("ordinary claims and dispatch remain inside their current owner", async () => {
+  let current = false;
+  claimPlain.mockImplementation(async () => {
+    expect(current).toBeTrue();
+    return [task({ contentRepresentation: "ordinary" })];
+  });
+  ordinaryDispatch.mockImplementation(async () => {
+    expect(current).toBeTrue();
+    return { kind: "dispatched" as const };
+  });
+  const observer = new TaskObserver({
+    db: {} as never,
+    jobManager: jobManager as never,
+    maintenanceGate: acceptingGate,
+    ordinaryOccurrencePort: {
+      async withCurrent<Result>(use: () => Promise<Result>): Promise<Result> {
+        current = true;
+        try { return await use(); } finally { current = false; }
+      },
+    },
+  });
+  await observer.tick();
+  expect(current).toBeFalse();
+  expect(claimPlain).toHaveBeenCalledTimes(1);
+  expect(ordinaryDispatch).toHaveBeenCalledTimes(1);
+  expect(reschedule).toHaveBeenCalledTimes(1);
+  expect(claimProtected).not.toHaveBeenCalled();
+});
+
+test.each(["dual", "protected"] as const)(
+  "%s occurrences preserve fire identity, skip downtime backlog, and retry only through the current port",
+  async (contentRepresentation) => {
+    const scheduledFor = new Date("2026-09-01T09:00:00.000Z");
+    const claimed = task({ contentRepresentation, nextFireAt: scheduledFor });
+    const existingTask = task({
+      contentRepresentation,
+      status: "awaiting",
       fireLockId: null,
-      nextFireAt: input.cronNextFireAt!,
-      lastFiredAt: input.scheduledFor,
-    }),
-    run: run(input.taskRunId),
-  }));
-  const observed: unknown[] = [];
-  let existingAttempts = 0;
+      nextFireAt: null,
+    });
+    const existingRun = run();
+    let protectedClaims = 0;
+    claimProtected.mockImplementation(async () => {
+      protectedClaims += 1;
+      return protectedClaims === 1 ? [claimed] : [];
+    });
+    listAwaiting.mockImplementation(async () => [{ task: existingTask, run: existingRun }]);
+    prepareProtected.mockImplementation(async (_db, input) => ({
+      status: "prepared" as const,
+      task: task({
+        status: "pending",
+        fireLockId: null,
+        nextFireAt: input.cronNextFireAt!,
+        lastFiredAt: input.scheduledFor,
+      }),
+      run: run(input.taskRunId),
+    }));
+    const observed: unknown[] = [];
+    let existingAttempts = 0;
+    const port = {
+      observeProtectedTaskOccurrence: mock(async (occurrence: unknown) => {
+        observed.push(occurrence);
+        const candidate = occurrence as { run: { id: string } };
+        if (candidate.run.id === EXISTING_RUN_ID && existingAttempts++ === 0) {
+          throw new Error(SENTINEL);
+        }
+      }),
+    };
+    const owner = currentOwner(port);
+    const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+    const observer = new TaskObserver({
+      db: {} as never,
+      jobManager: jobManager as never,
+      maintenanceGate: acceptingGate,
+      now: () => new Date("2026-09-23T12:00:00.000Z"),
+      protectedOccurrencePort: owner.owner,
+    });
+
+    try {
+      await observer.tick();
+      await observer.tick();
+
+      expect(prepareProtected).toHaveBeenCalledTimes(1);
+      expect(owner.withCurrentSpy).toHaveBeenCalledTimes(4);
+      const preparation = prepareProtected.mock.calls[0]?.[1];
+      expect(preparation).toMatchObject({
+        taskId: TASK_ID,
+        scheduledFor,
+        cronNextFireAt: new Date("2026-09-24T09:00:00.000Z"),
+      });
+      expect(preparation?.taskRunId).toMatch(/^[0-9a-f-]{36}$/);
+      expect(preparation?.graphThreadId).toMatch(
+        new RegExp(`^subagent:task:${TASK_ID}:[0-9a-f-]{36}$`),
+      );
+      expect(existingAttempts).toBe(2);
+      expect(observed).toHaveLength(3);
+      expect(JSON.stringify(observed)).not.toContain(SENTINEL);
+      expect(Object.keys((observed[0] as { task: object }).task).sort()).toEqual([
+        "agentId",
+        "callingRoomId",
+        "contentNamespaceId",
+        "contentRepresentation",
+        "contentRevision",
+        "cryptoAccessRevision",
+        "cryptoObjectId",
+        "cryptoRequiredNamespaceFingerprint",
+        "id",
+        "ownerId",
+        "requestorId",
+        "scheduleKind",
+      ]);
+      expect(ordinaryDispatch).not.toHaveBeenCalled();
+      expect(dispatchError).not.toHaveBeenCalled();
+      expect(taskError).not.toHaveBeenCalled();
+      expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(SENTINEL);
+      expect(errorSpy.mock.calls.some((call) => String(call[0]).includes("PROTECTED_PORT_RETRY")))
+        .toBeTrue();
+    } finally {
+      errorSpy.mockRestore();
+    }
+  },
+);
+
+test("inactive current policy leaves retained protected rows untouched", async () => {
+  const retainedTask = task();
+  const retainedRun = run();
   const port = {
-    observeProtectedTaskOccurrence: mock(async (occurrence: unknown) => {
-      observed.push(occurrence);
-      const candidate = occurrence as { run: { id: string } };
-      if (candidate.run.id === EXISTING_RUN_ID && existingAttempts++ === 0) {
-        throw new Error(SENTINEL);
-      }
+    recoverBeforeObservation: mock(async (_limit: number) => {}),
+    observeProtectedTaskOccurrence: mock(async (_occurrence: unknown) => {}),
+  };
+  const owner = {
+    withCurrent: mock(async (_use: (current: typeof port) => Promise<unknown>) => null),
+  };
+  const observer = new TaskObserver({
+    db: {} as never,
+    jobManager: jobManager as never,
+    maintenanceGate: acceptingGate,
+    protectedOccurrencePort: owner,
+  });
+
+  await observer.tick();
+
+  expect(owner.withCurrent).toHaveBeenCalledTimes(2);
+  expect(claimProtected).not.toHaveBeenCalled();
+  expect(listAwaiting).not.toHaveBeenCalled();
+  expect(prepareProtected).not.toHaveBeenCalled();
+  expect(port.recoverBeforeObservation).not.toHaveBeenCalled();
+  expect(port.observeProtectedTaskOccurrence).not.toHaveBeenCalled();
+  expect(retainedTask.status).toBe("pending");
+  expect(retainedRun.status).toBe("awaiting");
+});
+
+test("current policy failure denies protected discovery and claim before durable access", async () => {
+  const owner = {
+    withCurrent: mock(async (_use: (current: never) => Promise<unknown>) => {
+      throw new Error("policy unavailable");
     }),
   };
   const errorSpy = spyOn(console, "error").mockImplementation(() => {});
@@ -394,51 +652,82 @@ test("protected occurrences preserve fire identity, skip downtime backlog, and r
     db: {} as never,
     jobManager: jobManager as never,
     maintenanceGate: acceptingGate,
-    now: () => new Date("2026-09-23T12:00:00.000Z"),
-    protectedOccurrencePort: port,
+    protectedOccurrencePort: owner,
   });
 
   try {
     await observer.tick();
-    await observer.tick();
 
-    expect(prepareProtected).toHaveBeenCalledTimes(1);
-    const preparation = prepareProtected.mock.calls[0]?.[1];
-    expect(preparation).toMatchObject({
-      taskId: TASK_ID,
-      scheduledFor,
-      cronNextFireAt: new Date("2026-09-24T09:00:00.000Z"),
-    });
-    expect(preparation?.taskRunId).toMatch(/^[0-9a-f-]{36}$/);
-    expect(preparation?.graphThreadId).toMatch(
-      new RegExp(`^subagent:task:${TASK_ID}:[0-9a-f-]{36}$`),
-    );
-    expect(existingAttempts).toBe(2);
-    expect(observed).toHaveLength(3);
-    expect(JSON.stringify(observed)).not.toContain(SENTINEL);
-    expect(Object.keys((observed[0] as { task: object }).task).sort()).toEqual([
-      "agentId",
-      "callingRoomId",
-      "contentNamespaceId",
-      "contentRepresentation",
-      "contentRevision",
-      "cryptoAccessRevision",
-      "cryptoObjectId",
-      "cryptoRequiredNamespaceFingerprint",
-      "id",
-      "ownerId",
-      "requestorId",
-      "scheduleKind",
-    ]);
-    expect(ordinaryDispatch).not.toHaveBeenCalled();
-    expect(dispatchError).not.toHaveBeenCalled();
-    expect(taskError).not.toHaveBeenCalled();
-    expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(SENTINEL);
-    expect(errorSpy.mock.calls.some((call) => String(call[0]).includes("PROTECTED_PORT_RETRY")))
-      .toBeTrue();
+    expect(owner.withCurrent).toHaveBeenCalledTimes(2);
+    expect(claimProtected).not.toHaveBeenCalled();
+    expect(listAwaiting).not.toHaveBeenCalled();
+    expect(prepareProtected).not.toHaveBeenCalled();
+    expect(errorSpy.mock.calls.some((call) =>
+      String(call[0]).includes("PROTECTED_RECOVERY_QUERY_RETRY")
+    )).toBeTrue();
+    expect(errorSpy.mock.calls.some((call) =>
+      String(call[0]).includes("PROTECTED_CLAIM_RETRY")
+    )).toBeTrue();
   } finally {
     errorSpy.mockRestore();
   }
+});
+
+test("current ownership stays live through discovery, preparation, and observation", async () => {
+  let current = false;
+  const claimed = task();
+  claimProtected.mockImplementation(async () => {
+    expect(current).toBeTrue();
+    return [claimed];
+  });
+  listAwaiting.mockImplementation(async () => {
+    expect(current).toBeTrue();
+    return [];
+  });
+  prepareProtected.mockImplementation(async (_db, input) => {
+    expect(current).toBeTrue();
+    return {
+      status: "prepared" as const,
+      task: task({ status: "awaiting", fireLockId: null, nextFireAt: null }),
+      run: run(input.taskRunId),
+    };
+  });
+  const port = {
+    recoverBeforeObservation: mock(async (_limit: number) => {
+      expect(current).toBeTrue();
+    }),
+    observeProtectedTaskOccurrence: mock(async (_occurrence: unknown) => {
+      expect(current).toBeTrue();
+    }),
+  };
+  const withCurrentSpy = mock(() => {});
+  const owner: ProtectedTaskOccurrenceOwner = {
+    async withCurrent<Result>(
+      use: (currentPort: ProtectedTaskOccurrencePort) => Promise<Result>,
+    ): Promise<Result | null> {
+      withCurrentSpy();
+      expect(current).toBeFalse();
+      current = true;
+      try {
+        return await use(port);
+      } finally {
+        current = false;
+      }
+    },
+  };
+  const observer = new TaskObserver({
+    db: {} as never,
+    jobManager: jobManager as never,
+    maintenanceGate: acceptingGate,
+    protectedOccurrencePort: owner,
+  });
+
+  await observer.tick();
+
+  expect(current).toBeFalse();
+  expect(withCurrentSpy).toHaveBeenCalledTimes(2);
+  expect(prepareProtected).toHaveBeenCalledTimes(1);
+  expect(port.observeProtectedTaskOccurrence).toHaveBeenCalledTimes(1);
 });
 
 test.each(["dual", "protected"] as const)(
@@ -473,6 +762,33 @@ test.each(["dual", "protected"] as const)(
     }
   },
 );
+
+test("protected timeout reports pending until durable settlement is complete", async () => {
+  timedOut.mockImplementation(async () => [{
+    task: task({ contentRepresentation: "protected", status: "running" }),
+    run: run(),
+  }]);
+  pause.mockImplementation(async () => ({
+    ok: true,
+    status: "running",
+    message: "Task pause requested; waiting for a safe checkpoint.",
+  }));
+  const errorSpy = spyOn(console, "error").mockImplementation(() => {});
+  const observer = new TaskObserver({
+    db: {} as never,
+    jobManager: jobManager as never,
+    maintenanceGate: acceptingGate,
+  });
+  try {
+    await observer.tick();
+    expect(errorSpy.mock.calls.some((call) =>
+      String(call[0]).includes("PROTECTED_TIME_LIMIT_SETTLEMENT_PENDING"))).toBeTrue();
+    expect(errorSpy.mock.calls.some((call) =>
+      String(call[0]).includes("time-limit reached → paused"))).toBeFalse();
+  } finally {
+    errorSpy.mockRestore();
+  }
+});
 
 test("ordinary timeout failure preserves its existing diagnostic", async () => {
   timedOut.mockImplementation(async () => [{

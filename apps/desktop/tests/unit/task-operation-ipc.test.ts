@@ -5,6 +5,8 @@ import { parseTaskOperationRequestV1 } from
   "../../electron/task-operation-ipc";
 
 const taskId = "91000000-0000-4000-8000-000000000001";
+const taskRunId = "91000000-0000-4000-8000-000000000002";
+const agentId = "91000000-0000-4000-8000-000000000003";
 const summary = {
   id: taskId,
   parentTaskId: null,
@@ -37,6 +39,16 @@ describe("Desktop Task operation IPC", () => {
       version: 1, operation: "open", task: summary,
     }).operation).toBe("open");
     expect(parseTaskOperationRequestV1({
+      version: 1, operation: "open_result", taskId, taskRunId, agentId,
+    })).toEqual({ version: 1, operation: "open_result", taskId, taskRunId, agentId });
+    expect(parseTaskOperationRequestV1({
+      version: 1, operation: "open_transcript", taskId, taskRunId, agentId,
+      cursor: "WzEsMV0", limit: 50,
+    })).toEqual({
+      version: 1, operation: "open_transcript", taskId, taskRunId, agentId,
+      cursor: "WzEsMV0", limit: 50,
+    });
+    expect(parseTaskOperationRequestV1({
       version: 1, operation: "create", payload, task: {},
     }).operation).toBe("create");
     expect(parseTaskOperationRequestV1({
@@ -60,6 +72,21 @@ describe("Desktop Task operation IPC", () => {
       version: 1, operation: "update", current: { ...summary, id: "not-a-uuid" },
       payload, task: {},
     })).toThrow();
+    expect(() => parseTaskOperationRequestV1({
+      version: 1, operation: "open_result", taskId, taskRunId: "wrong-run", agentId,
+    })).toThrow();
+    expect(() => parseTaskOperationRequestV1({
+      version: 1, operation: "open_result", taskId, taskRunId, agentId,
+      resultText: "untrusted result",
+    })).toThrow();
+    expect(() => parseTaskOperationRequestV1({
+      version: 1, operation: "open_transcript", taskId, taskRunId, agentId,
+      limit: 51,
+    })).toThrow();
+    expect(() => parseTaskOperationRequestV1({
+      version: 1, operation: "open_transcript", taskId, taskRunId, agentId,
+      readerDeviceId: "renderer-chosen-device",
+    })).toThrow();
   });
 
   test("main handler gates the sender and delegates every protected operation", () => {
@@ -74,6 +101,8 @@ describe("Desktop Task operation IPC", () => {
     expect(handler).toContain("foregroundShadowControllerForSender(e)");
     expect(handler).toContain("controller.taskList");
     expect(handler).toContain("controller.taskOpen");
+    expect(handler).toContain("controller.taskOpenResult");
+    expect(handler).toContain("controller.taskOpenTranscript");
     expect(handler).toContain("controller.taskCreate");
     expect(handler).toContain("controller.taskUpdate");
     expect(preload).toContain('ipcRenderer.invoke("foregroundShadow:task:operateV1", request)');

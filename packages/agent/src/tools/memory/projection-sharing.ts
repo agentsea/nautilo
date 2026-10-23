@@ -29,6 +29,30 @@ import {
 
 const PROJECTION_SNAPSHOT_TTL_MS = 10 * 60 * 1_000;
 
+function protectedProjectionRequesterUserId(
+  state: NautiloState,
+  authority: ReturnType<typeof protectedMemoryAuthorityFromEnvelope>,
+): string | null {
+  if (authority === null) return null;
+  if (!state.taskRun && !state.subagentRun) {
+    return state.userId === authority.subjectUserId
+      ? authority.subjectUserId
+      : null;
+  }
+  if (
+    state.taskRun !== true
+    || state.subagentRun !== true
+    || state.trustedExecutionEntrypoint !== "background.task"
+    || !state.currentTaskId
+    || !state.currentTaskRunId
+    || !state.currentThreadId
+    || state.currentThreadId !== state.langgraphThreadId
+    || !state.userId
+    || state.causalHumanUserId !== authority.subjectUserId
+  ) return null;
+  return authority.subjectUserId;
+}
+
 export type ProjectionSourceFingerprint = Readonly<{ id: string; contentHash: string }>;
 
 /** Trusted checkpoint-only data. Never copy this structure into a tool event. */
@@ -416,29 +440,30 @@ export async function preflightProtectedProjectionShareCalls(
     const toolCallId = projectionCallId(call);
     if (toolCallId === null) continue;
     const parsed = parseShareMemoryInput(call.args);
-    if (
-      !parsed.ok
-      || parsed.value.mode !== "project"
-      || state.taskRun
-      || state.subagentRun
-      || !state.userId
-      || !state.memoryAccessEnvelope?.actorId
-      || !state.memoryAccessEnvelope.agentId
-      || !parsed.value.source_memory_ids.every((memoryId) =>
-        searchableSourceIds.has(memoryId)
-      )
-    ) {
+    if (!parsed.ok || parsed.value.mode !== "project") {
       rejectedToolCallIds.push(toolCallId);
       messages.push({
         toolCallId,
-        content: "Cannot project Memory: protected projection requires a foreground Human request and concrete sources from search_memory.",
+        content: "Cannot project Memory: protected projection requires concrete sources from search_memory.",
       });
       continue;
     }
     const authority = protectedMemoryAuthorityFromEnvelope(
       state.memoryAccessEnvelope,
     );
-    if (!authority) {
+    const requesterUserId = protectedProjectionRequesterUserId(
+      state,
+      authority,
+    );
+    if (
+      authority === null
+      || requesterUserId === null
+      || !state.memoryAccessEnvelope?.actorId
+      || !state.memoryAccessEnvelope.agentId
+      || !parsed.value.source_memory_ids.every((memoryId) =>
+        searchableSourceIds.has(memoryId)
+      )
+    ) {
       rejectedToolCallIds.push(toolCallId);
       messages.push({
         toolCallId,
@@ -456,7 +481,7 @@ export async function preflightProtectedProjectionShareCalls(
         operationId: protectedMemoryToolOperationId({
           requestId: toolCallId,
           action: "projection_prepare",
-          subjectId: `${state.userId}:${state.memoryAccessEnvelope.agentId}`,
+          subjectId: `${requesterUserId}:${state.memoryAccessEnvelope.agentId}`,
         }),
         toolCallId,
         authority,
@@ -525,7 +550,7 @@ export async function preflightProtectedProjectionShareCalls(
       || reference.referenceId.length < 1
       || reference.referenceId.length > 256
       || reference.toolCallId !== toolCallId
-      || reference.requesterUserId !== state.userId
+      || reference.requesterUserId !== requesterUserId
       || reference.requesterActorId !== state.memoryAccessEnvelope.actorId
       || reference.agentId !== state.memoryAccessEnvelope.agentId
       || reference.createdAt > now
@@ -620,14 +645,17 @@ export async function executeTrustedProjection(
   const envelope = state.memoryAccessEnvelope;
   if (isProtectedProjectionSnapshot(snapshot)) {
     const authority = protectedMemoryAuthorityFromEnvelope(envelope);
+    const requesterUserId = protectedProjectionRequesterUserId(
+      state,
+      authority,
+    );
     if (
       protectedPort === undefined
       || authority === null
+      || requesterUserId === null
       || authority.subjectUserId !== snapshot.requesterUserId
-      || state.taskRun
-      || state.subagentRun
       || snapshot.reference.expiresAt <= now
-      || state.userId !== snapshot.requesterUserId
+      || requesterUserId !== snapshot.requesterUserId
       || envelope?.actorId !== snapshot.requesterActorId
       || envelope?.agentId !== snapshot.agentId
       || snapshot.reference.toolCallId !== snapshot.toolCallId

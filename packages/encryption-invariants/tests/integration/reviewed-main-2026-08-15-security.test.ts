@@ -5,10 +5,41 @@ import { BASELINE_REGISTRY } from "../../baseline/existing-debt";
 import {
   REVIEWED_MAIN_2026_08_15_SOURCE_ALARMS,
 } from "../../baseline/reviewed-main-2026-08-15-source-alarms";
+import {
+  REVIEWED_MAIN_2026_10_13_COVERAGE_ENTRIES,
+} from "../../baseline/reviewed-main-2026-10-13-coverage";
 import { CURRENT_SOURCE_ALARM_REVIEWS } from "../../src/node/source-alarm-review";
+
+const CURRENT_REFLECTION_METADATA_REASON =
+  "This exact Reflection coordinate is limited by schema checks to opaque commitments, fixed outcomes, recovery versions, and closed waiting or failure codes; it cannot contain a prompt, Message body, generated reflection, credential, or private key.";
+
+const CURRENT_REFLECTION_SEMANTIC_WORK_LOCATORS = [
+  "public.reflection_record_semantic_work.completion_outcome",
+  "public.reflection_record_semantic_work.failure_detail",
+  "public.reflection_record_semantic_work.projection_refresh_only",
+  "public.reflection_record_semantic_work.recovery_policy_version",
+  "public.reflection_record_semantic_work.waiting_reason",
+] as const;
 
 describe("reviewed 2026-08-15 encryption inventory", () => {
   test("keeps Reflection semantic work content-free metadata", () => {
+    const currentReflectionEntries = REVIEWED_MAIN_2026_10_13_COVERAGE_ENTRIES
+      .filter((entry) =>
+        CURRENT_REFLECTION_SEMANTIC_WORK_LOCATORS.includes(
+          entry.locator as (typeof CURRENT_REFLECTION_SEMANTIC_WORK_LOCATORS)[number],
+        )
+      );
+    expect(currentReflectionEntries.map((entry) => entry.locator)).toEqual([
+      ...CURRENT_REFLECTION_SEMANTIC_WORK_LOCATORS,
+    ]);
+    expect(currentReflectionEntries.every((entry) =>
+      entry.classification === "bounded_metadata"
+      && entry.plaintextReason === CURRENT_REFLECTION_METADATA_REASON
+      && BASELINE_REGISTRY.entries.includes(entry)
+    )).toBe(true);
+    const currentReflectionLocators = new Set(
+      CURRENT_REFLECTION_SEMANTIC_WORK_LOCATORS,
+    );
     const semanticWork = BASELINE_REGISTRY.entries.filter((entry) =>
       entry.locator.includes("reflection_record_semantic_work")
       || entry.locator.includes("reflection_record_source_")
@@ -27,6 +58,10 @@ describe("reviewed 2026-08-15 encryption inventory", () => {
         expect(entry.metadataAllowlist).toEqual(["ordinary_fallback_reason"]);
         expect(entry.plaintextReason).toContain("contain no Record semantic payload");
         expect(entry.plaintextReason).toContain("ordinary and protected payload representations retain their separate classifications");
+      } else if (currentReflectionLocators.has(
+        entry.locator as (typeof CURRENT_REFLECTION_SEMANTIC_WORK_LOCATORS)[number],
+      )) {
+        expect(entry.plaintextReason).toBe(CURRENT_REFLECTION_METADATA_REASON);
       } else {
         expect(entry.plaintextReason).toMatch(/content-free|writes no Record payload/);
         expect(entry.plaintextReason).toMatch(/prompts?|source content/);

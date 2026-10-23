@@ -65,4 +65,59 @@ describe("per-provider system-message projection", () => {
     const source = history();
     expect(collapseNonLeadingSystemMessages(source).collapsed).toBe(1);
   });
+
+  test("adds one transient Anthropic turn after the exact Task wake continuation", () => {
+    const outcome = new AIMessage("private Task result");
+    const continuation = new SystemMessage({
+      content: "Continue using the authenticated outcome.",
+      additional_kwargs: { nautilo_task_wake_continuation: true },
+    });
+    const source = [new SystemMessage("authority"), outcome, continuation];
+    const projected = projectSystemMessagesForProvider(
+      source,
+      "anthropic:claude-sonnet-4-6",
+    );
+
+    expect(projected.collapsed).toBe(1);
+    expect(projected.messages.map(message => message._getType()))
+      .toEqual(["system", "ai", "human"]);
+    expect(projected.messages[1]).toBe(outcome);
+    expect(projected.messages[2]?.content)
+      .toBe("Continue from the authenticated Task outcome.");
+    expect(projected.messages[2]?.additional_kwargs)
+      .toEqual({ nautilo_transient_context: true });
+    expect(projected.messages[0]?.content).not.toContain("private Task result");
+    expect(projected.messages[2]?.content).not.toContain("private Task result");
+    expect(source.map(message => message._getType()))
+      .toEqual(["system", "ai", "system"]);
+
+    const repeated = projectSystemMessagesForProvider(
+      projected.messages,
+      "anthropic:claude-sonnet-4-6",
+    );
+    expect(repeated).toEqual({ messages: projected.messages, collapsed: 0 });
+  });
+
+  test("does not add transport turns for untagged or OpenAI system history", () => {
+    const untagged = [
+      new SystemMessage("authority"),
+      new AIMessage("assistant tail"),
+      new SystemMessage("ordinary late authority"),
+    ];
+    expect(projectSystemMessagesForProvider(
+      untagged,
+      "anthropic:claude-sonnet-4-6",
+    ).messages.map(message => message._getType())).toEqual(["system", "ai"]);
+
+    const tagged = [
+      new SystemMessage("authority"),
+      new AIMessage("Task result"),
+      new SystemMessage({
+        content: "Continue.",
+        additional_kwargs: { nautilo_task_wake_continuation: true },
+      }),
+    ];
+    expect(projectSystemMessagesForProvider(tagged, "openai:gpt-5.6-sol"))
+      .toEqual({ messages: tagged, collapsed: 0 });
+  });
 });

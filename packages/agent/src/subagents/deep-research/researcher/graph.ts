@@ -92,7 +92,7 @@ async function summarizeSearchNotes(
     return summary.trim() ? [summary, ...notes] : notes;
   } catch (error) {
     if (config?.signal?.aborted || getDeepResearchFunding()) throw error;
-    warn(`[researcher] search summarization failed: ${error instanceof Error ? error.message : String(error)}`);
+    if (!cfg.confidential) warn(`[researcher] search summarization failed: ${error instanceof Error ? error.message : String(error)}`);
     return notes;
   }
 }
@@ -191,6 +191,7 @@ async function researcher(
       : model.bindTools(lcTools, { tool_choice: "required" });
 
     const response = await invokeWithRetry<BaseMessageLike, unknown>(toolBoundModel, messages, {
+      ...(cfg.confidential ? { confidential: true as const } : {}),
       label: "researcher.invoke",
       attempts: 3,
       timeoutMs: 45000,
@@ -202,7 +203,7 @@ async function researcher(
   } catch (e) {
     if (config?.signal?.aborted) throw e;
     if (e instanceof ModelToolCallIdentityError) throw e;
-    warn(`[researcher] research step failed: ${e instanceof Error ? e.message : String(e)}`);
+    if (!cfg.confidential) warn(`[researcher] research step failed: ${e instanceof Error ? e.message : String(e)}`);
     return { researcher_messages: existingMessages };
   }
 }
@@ -358,7 +359,7 @@ async function compressResearch(
   } catch (e) {
     if (e instanceof ModelOutputLimitError) throw e;
     if (config?.signal?.aborted) throw e;
-    warn(`[researcher] compression failed: ${e instanceof Error ? e.message : String(e)}`);
+    if (!cfg.confidential) warn(`[researcher] compression failed: ${e instanceof Error ? e.message : String(e)}`);
   }
   return { compressed_research: "Error synthesizing research report: Maximum retries exceeded", raw_notes: rawNotes };
 }

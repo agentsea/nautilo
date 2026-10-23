@@ -267,6 +267,35 @@ describe("protected Memory browser DTO", () => {
     })).toThrow();
   });
 
+  test("accepts bounded unique Task Runtime signer certificates", () => {
+    const entry = {
+      kind: "task_runtime_signer_certificate" as const,
+      evidenceBytesBase64url: "Y2VydGlmaWNhdGU",
+    };
+    const value = dto();
+    expect(protectedMemoryDtoV1Schema.parse({
+      ...value,
+      protectedPayload: {
+        ...value.protectedPayload,
+        accessSignerEvidence: [entry],
+      },
+    }).protectedPayload).toMatchObject({ accessSignerEvidence: [entry] });
+    expect(() => protectedMemoryDtoV1Schema.parse({
+      ...value,
+      protectedPayload: {
+        ...value.protectedPayload,
+        accessSignerEvidence: [entry, entry],
+      },
+    })).toThrow();
+    expect(() => protectedMemoryDtoV1Schema.parse({
+      ...value,
+      protectedPayload: {
+        ...value.protectedPayload,
+        accessSignerEvidence: [{ ...entry, evidenceBytesBase64url: "!" }],
+      },
+    })).toThrow();
+  });
+
   test("allows no read authority while protection is pending but not once encrypted", () => {
     const value = dto();
     const projection = { ...value.projection, readAuthorities: [] };

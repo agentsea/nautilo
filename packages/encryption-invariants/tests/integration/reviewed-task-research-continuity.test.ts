@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import ts from "typescript";
 import { BASELINE_REGISTRY } from "../../baseline/existing-debt";
 import { TASK_RESEARCH_METADATA_WRITERS, REVIEWED_TASK_RESEARCH_SOURCE_ALARMS } from "../../baseline/reviewed-task-research-continuity";
+import { REVIEWED_MAIN_2026_10_13_SOURCE_ALARMS } from "../../baseline/reviewed-main-2026-10-13-source-alarms";
 import { CURRENT_SOURCE_ALARM_REVIEWS, inspectSourceAlarmReviews } from "../../src/node/source-alarm-review";
 import { discoverDatabaseWriterInventory } from "../../src/node/database-writer-inventory";
 import { scanSourceAlarms } from "../../src/node/source-inventory";
@@ -11,6 +12,21 @@ import { scanSourceAlarms } from "../../src/node/source-inventory";
 const root = resolve(import.meta.dir, "../../../..");
 const load = (path: string) => readFile(resolve(root, path), "utf8");
 const normalize = (value: string) => value.replace(/\s+/g, " ");
+
+const CURRENT_MANUAL_PAUSE_CONTROL_WRITER = {
+  path: "packages/db/src/queries/tasks.ts",
+  symbol: "transitionTaskLifecyclePaused",
+  table: "tasks",
+  fields: ["lastError", "updatedAt"],
+  locator:
+    "packages/db/src/queries/tasks.ts#transitionTaskLifecyclePaused:update:public.tasks:2",
+} as const;
+
+const CURRENT_MODEL_FUNDING_LOG_LOCATORS = [
+  "packages/agent/src/utils/chat-model-invocation.ts#log_emitter:7ef703451e44cded:12",
+  "packages/agent/src/utils/chat-model-invocation.ts#log_emitter:7ef703451e44cded:13",
+  "packages/agent/src/utils/chat-model-invocation.ts#log_emitter:7ef703451e44cded:14",
+] as const;
 
 /** Read actual call arguments; only the exact reviewed conditional spread is accepted. */
 function updates(source: string, symbol: string) {
@@ -43,15 +59,22 @@ function updates(source: string, symbol: string) {
   return { writes, body: normalize(fn.body.getText(ast)) };
 }
 
-test("Task research continuity writes only the fifteen reviewed metadata projections into existing plaintext column debt", async () => {
+test("Task research continuity keeps its fifteen reviewed writes and isolates the later manual-pause control write", async () => {
   expect(TASK_RESEARCH_METADATA_WRITERS).toHaveLength(15);
   const functions = new Map(TASK_RESEARCH_METADATA_WRITERS.map((writer) => [`${writer.path}#${writer.symbol}`, writer]));
   let observed = 0;
   for (const { path, symbol } of functions.values()) {
     const { writes, body } = updates(await load(path), symbol);
-    expect(writes.map(({ table, fields }) => ({ table, fields }))).toEqual(
-      TASK_RESEARCH_METADATA_WRITERS.filter((writer) => writer.path === path && writer.symbol === symbol).map(({ table, fields }) => ({ table, fields: [...fields] })),
-    );
+    const reviewedWrites = TASK_RESEARCH_METADATA_WRITERS
+      .filter((writer) => writer.path === path && writer.symbol === symbol)
+      .map(({ table, fields }) => ({ table, fields: [...fields] }));
+    const expectedWrites = symbol === CURRENT_MANUAL_PAUSE_CONTROL_WRITER.symbol
+      ? [{
+        table: CURRENT_MANUAL_PAUSE_CONTROL_WRITER.table,
+        fields: [...CURRENT_MANUAL_PAUSE_CONTROL_WRITER.fields],
+      }, ...reviewedWrites]
+      : reviewedWrites;
+    expect(writes.map(({ table, fields }) => ({ table, fields }))).toEqual(expectedWrites);
     observed += writes.length;
     if (symbol !== "holdSecurityResearchDesktop") expect(body).toContain('.for("update")');
     for (const write of writes) for (const field of write.fields) {
@@ -60,7 +83,7 @@ test("Task research continuity writes only the fifteen reviewed metadata project
     }
     expect(writes.flatMap((write) => write.fields)).not.toContain("resultText");
     if (symbol === "holdSecurityResearchDesktop") {
-      expect(body).toContain('eq(tasks.id, taskId), eq(tasks.status, "paused"), eq(tasks.lastError, DESKTOP_WAIT_TEXT)');
+      expect(body).toContain('eq(tasks.id, taskId), eq(tasks.contentRepresentation, "ordinary"), eq(tasks.status, "paused"), eq(tasks.lastError, DESKTOP_WAIT_TEXT)');
     } else if (symbol === "recoverSecurityResearchContextFailure") {
       expect(body).toContain("current.ownerId !== task.ownerId");
       expect(body).toContain("run.id !== eligible.id");
@@ -75,17 +98,24 @@ test("Task research continuity writes only the fifteen reviewed metadata project
       expect(body).toContain("eq(taskRuns.id, input.taskRunId)");
       expect(body).toContain("eq(taskRuns.taskId, task.id)");
     } else {
+      expect(body).toContain('task.status === "paused"');
+      expect(body).toContain("task.lastError === TASK_LOCAL_EXECUTION_OFFLINE_TEXT");
+      expect(body).toContain("lastError: TASK_LOCAL_EXECUTION_MANUAL_PAUSE_TEXT");
+      expect(body).toContain('transitioned: false, outcome: "already_paused"');
       expect(body).toContain('TERMINAL_TASK_STATUSES.includes');
       expect(body).toContain('latest?.status === "running" || latest?.status === "awaiting"');
       expect(body).toContain('eq(taskRuns.taskId, taskId)');
     }
   }
-  expect(observed).toBe(15);
+  expect(observed).toBe(16);
   const writers = await discoverDatabaseWriterInventory(root, { tasks: "public.tasks", taskRuns: "public.task_runs" });
   const scoped = writers.filter((writer) => writer.path === "packages/runtime/src/tasks/security-report-recovery.ts"
     || writer.path === "packages/db/src/queries/tasks.ts" && writer.symbol === "transitionTaskLifecyclePaused");
-  expect(scoped.map((writer) => writer.locator).sort()).toEqual(TASK_RESEARCH_METADATA_WRITERS.map((writer) =>
-    `${writer.path}#${writer.symbol}:update:public.${writer.table}:1`).sort());
+  expect(scoped.map((writer) => writer.locator).sort()).toEqual([
+    ...TASK_RESEARCH_METADATA_WRITERS.map((writer) =>
+      `${writer.path}#${writer.symbol}:update:public.${writer.table}:1`),
+    CURRENT_MANUAL_PAUSE_CONTROL_WRITER.locator,
+  ].sort());
 
 });
 
@@ -137,9 +167,21 @@ test("Task research continuity reviews only the new recovery log while keeping a
   expect(source).toContain("const modelConfig = getModelById(currentModelId)");
   const scan = await scanSourceAlarms({ repoRoot: root, scanRoots: ["packages/agent/src/utils"] });
   const alarms = scan.alarms.filter((alarm) => alarm.path === "packages/agent/src/utils/chat-model-invocation.ts");
-  expect(alarms).toHaveLength(17);
+  expect(alarms).toHaveLength(20);
   expect(scan.errors).toEqual([]);
   expect(REVIEWED_TASK_RESEARCH_SOURCE_ALARMS).toHaveLength(1);
   expect(CURRENT_SOURCE_ALARM_REVIEWS).toContainEqual(REVIEWED_TASK_RESEARCH_SOURCE_ALARMS[0]!);
+  const currentFundingLogs = REVIEWED_MAIN_2026_10_13_SOURCE_ALARMS.filter((review) =>
+    CURRENT_MODEL_FUNDING_LOG_LOCATORS.includes(
+      review.locator as (typeof CURRENT_MODEL_FUNDING_LOG_LOCATORS)[number],
+    )
+  );
+  expect(currentFundingLogs.map((review) => review.locator)).toEqual([
+    ...CURRENT_MODEL_FUNDING_LOG_LOCATORS,
+  ]);
+  expect(currentFundingLogs.every((review) =>
+    review.closure === "declaration"
+    && CURRENT_SOURCE_ALARM_REVIEWS.includes(review)
+  )).toBe(true);
   expect(inspectSourceAlarmReviews(alarms).errors.filter((error) => error.includes("chat-model-invocation.ts"))).toEqual([]);
 });

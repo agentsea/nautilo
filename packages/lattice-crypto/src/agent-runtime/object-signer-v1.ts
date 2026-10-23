@@ -140,7 +140,7 @@ function withDerivedSignerSeed<Value>(
 }
 
 export function agentRuntimeObjectSignerKeyIdV1(
-  crypto: LatticeCrypto,
+  crypto: Pick<LatticeCrypto, "hash">,
   publicKey: Uint8Array,
 ): string {
   const ownedPublicKey = assertFixedBytes(

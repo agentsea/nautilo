@@ -34,6 +34,10 @@ const EXPECTED_TABLE_NAMES = [
   "background_crypto_authorization_domain_requirements",
   "background_crypto_authorization_namespace_requirements",
   "processor_crypto_signer_authorizations",
+  "task_cancellation_crypto_staging_receipts",
+  "task_terminal_message_crypto_staging_receipts",
+  "task_historical_content_crypto_staging_receipts",
+  "foreground_memory_crypto_publication_receipts",
 ] as const;
 
 const migration = readFileSync(
@@ -154,6 +158,7 @@ describe("Wave 6 crypto storage schema", () => {
       "previous_manifest_hash",
       "payload_hash",
       "manifest_bytes",
+      "signer_evidence_bytes",
     ]);
     expect(columnsByTable["human_crypto_recovery_archives"]).toContain(
       "archive_hash",
@@ -181,6 +186,9 @@ describe("Wave 6 crypto storage schema", () => {
       objectAccessEnvelope: 1_048_576,
       agentRuntimeDomainEnvelope: 1_048_576,
       agentRuntimeSignerPublication: 1_024,
+      taskRuntimeSignerEvidence: 2_039,
+      taskDefinitionForegroundAuthorizationEvidence: 3_675,
+      historicalTaskPublicationRequest: 1_048_576,
       signingPublicKey: 32,
       wrappedDekMinimum: 40,
       wrappedDekMaximum: 4_096,

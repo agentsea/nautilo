@@ -70,7 +70,7 @@ mac:
     NSBonjourServices:
       - _nautilo._tcp
     NSHumanReadableCopyright: "Copyright © 2026 Nautilo"
-    LSMinimumSystemVersion: "11.0"
+    LSMinimumSystemVersion: "13.0"
   extraResources:
     # App-owned stdin handover helper. It has no standalone daemon or credentials.
     - from: dist/bolter-handover

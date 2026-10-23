@@ -1,3 +1,4 @@
+import { protectedTaskDefinitionSupportsPolicy } from "@nautilo/db";
 import type { PostgresJsBridgeConnection } from "@nautilo/db";
 import {
   selectLiveEncryptionRepresentationPolicy,
@@ -259,11 +260,7 @@ export function createProtectedTaskMemoryBoundaries(
     input.policy,
   );
   if (representation.write === "ordinary_only"
-    || (current.occurrence.task.contentRepresentation === "dual"
-      ? input.policy.mode !== "shadow_encryption"
-      : current.occurrence.task.contentRepresentation === "protected"
-        ? input.policy.mode !== "encrypted_only"
-        : true)) throw unavailable();
+    || !protectedTaskDefinitionSupportsPolicy(current.occurrence.task.contentRepresentation, input.policy.mode)) throw unavailable();
   const policy: CurrentProtectedTaskMemoryPolicy = Object.freeze({
     mode: input.policy.mode,
     shadowBehavior: input.policy.shadowBehavior,

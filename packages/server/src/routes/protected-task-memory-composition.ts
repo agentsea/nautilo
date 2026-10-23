@@ -44,6 +44,8 @@ export type ProtectedTaskMemoryRepositoryCompositionInput = Readonly<{
   agentId: string;
   entrypointId: CreateRepositoryInput["entrypointId"];
   read: ProtectedTaskMemoryReadComposition;
+  /** One invocation-owned reader shared with specialized protected operations. */
+  reader?: ProtectedTaskMemoryReadPort;
   /** Bound to the Agent product role; it remains the semantic mutation owner. */
   mutationProduct: ProtectedAgentMemoryProductPort;
   crypto: ProtectedAgentMemoryCryptoSessionPort;
@@ -63,9 +65,17 @@ type Dependencies = Readonly<{
 }>;
 
 const productionDependencies: Dependencies = Object.freeze({
-  createReader: input => new PostgresTaskMemoryReadPort(input),
+  createReader: createProtectedTaskMemoryReader,
   createRepository: createInvocationBoundProtectedAgentMemoryRepository,
 });
+
+/** Construct the invocation reader once when more than the generic repository
+ * must use the same exact product-role projection. */
+export function createProtectedTaskMemoryReader(
+  input: ProtectedTaskMemoryReadComposition,
+): ProtectedTaskMemoryReadPort {
+  return new PostgresTaskMemoryReadPort(input);
+}
 
 function sameIds(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length
@@ -256,7 +266,7 @@ export function createProtectedTaskMemoryRepository(
     ...productionDependencies,
     ...overrides,
   });
-  const reader = dependencies.createReader(input.read);
+  const reader = input.reader ?? dependencies.createReader(input.read);
   return dependencies.createRepository({
     subjectUserId: input.subjectUserId,
     agentId: input.agentId,

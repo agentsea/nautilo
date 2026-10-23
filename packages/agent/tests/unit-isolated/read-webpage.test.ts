@@ -59,6 +59,29 @@ function browserPage(overrides: Partial<BrowserPageReadResult> = {}): BrowserPag
 }
 
 describe("read-webpage", () => {
+  test("suppresses provider exception text only for trusted confidential reads", async () => {
+    const privateCanary = "PRIVATE_PROVIDER_ERROR_CANARY";
+    const rejectingFetch = (async () => {
+      throw new Error(privateCanary);
+    }) as unknown as typeof fetch;
+
+    warn.mockClear();
+    await buildReadWebpageFetcher({
+      apiKey: "test-key",
+      fetchImpl: rejectingFetch,
+      confidential: true,
+    })("https://example.org/private");
+    expect(warn).toHaveBeenCalledWith("[read_webpage] provider request failed");
+    expect(JSON.stringify(warn.mock.calls)).not.toContain(privateCanary);
+
+    warn.mockClear();
+    await buildReadWebpageFetcher({
+      apiKey: "test-key",
+      fetchImpl: rejectingFetch,
+    })("https://example.org/plain");
+    expect(JSON.stringify(warn.mock.calls)).toContain(privateCanary);
+  });
+
   test("fetcher blocks localhost URLs", async () => {
     const fetchPage = buildReadWebpageFetcher();
     const result = await fetchPage("http://localhost:3000");

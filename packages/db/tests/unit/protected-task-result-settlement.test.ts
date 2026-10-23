@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { SQL } from "drizzle-orm";
+import { PgDialect } from "drizzle-orm/pg-core";
 
 import type { DirectDatabase } from "../../src/config/direct-database";
 import {
@@ -787,4 +788,39 @@ describe("published protected Task result settlement", () => {
     const jobLost = fixture({ loseJobUpdate: true });
     expect(settle(jobLost, async () => true)).rejects.toThrow("lost its Job");
   });
+});
+
+
+test("renewed checkpoint publication maps and settles using retained older acceptance", async () => {
+  const fingerprint = Buffer.from(new Uint8Array(32).fill(7)).toString("base64url");
+  const renewed = reference({ policyRevision: 8, executionSegment: 2,
+    authorizationRequestId: `task-checkpoint-continuation:${ids.run}:2:${fingerprint}`,
+    resumeContinuationFingerprint: fingerprint });
+  const f = fixture({ job: job({ input: renewed }) });
+  expect(await lockProof(f, "mapped", renewed)).not.toBeNull();
+  expect(await settle(f, async () => true, renewed)).toBe(true);
+  const attachment = f.writes.find(write => write.table === protectedTaskRunOutputBindings)!;
+  expect(attachment.patch).toEqual({ resultAttachedAt: completedAt, completedAt });
+  const predicate = new PgDialect().sqlToQuery(attachment.where);
+  expect(predicate.sql).toContain('"accepted_policy_revision" <=');
+  expect(predicate.params).toContain(8);
+  const replay = fixture({ job: job({ input: renewed, status: "completed", completedAt: jobFinishedAt }),
+    binding: binding({ resultAttachedAt: completedAt, completedAt }) });
+  expect(await settle(replay, async () => true, renewed)).toBe(true);
+  expect(replay.writes).toEqual([]);
+  const invalid = fixture({ job: job({ input: renewed }), binding: binding({ acceptedPolicyRevision: 9 }) });
+  expect(await settle(invalid, async () => true, renewed)).toBe(false);
+  expect(invalid.writes).toEqual([]);
+});
+
+
+test("Full result mapping and authorization settlement retain the historical dual definition", async () => {
+  const f = fixture({ definition: definition({ representation: "dual" }) });
+  expect(await lockProof(f, "mapped")).not.toBeNull();
+  let calls = 0;
+  await settle(f, async () => { calls += 1; return true; });
+  expect(calls).toBe(1);
+  const unmapped = fixture({ definition: definition({ representation: "dual" }),
+    run: unmappedRun(), revision: activeRevision() });
+  expect(await lockProof(unmapped, "unmapped")).not.toBeNull();
 });

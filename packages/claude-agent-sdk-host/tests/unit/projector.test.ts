@@ -158,3 +158,11 @@ describe("Claude Agent SDK projector", () => {
     }]);
   });
 });
+
+
+test("rejects malformed or non-assistant root boundaries", () => {
+  for (const message of [undefined, null, {}, { role: "user" }, { role: "system" }]) {
+    expect(projectClaudeExecutionMessage({ type: "stream_event", parent_tool_use_id: null,
+      event: { type: "message_start", message } })).toBeNull();
+  }
+});

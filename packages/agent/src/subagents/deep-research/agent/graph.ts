@@ -37,6 +37,7 @@ function createClarifyWithUserNode(cfg: Configuration) {
         fundingLane: "research",
       });
       const resp: unknown = await invokeWithRetry<BaseMessageLike, unknown>(model, [{ role: "user", content: prompt }] as BaseMessageLike[], {
+        ...(cfg.confidential ? { confidential: true as const } : {}),
         label: "clarify.invoke",
         attempts: 3,
         timeoutMs: 30000,
@@ -146,7 +147,7 @@ export function createFinalReportGenerationNode(cfg: Configuration) {
       return { final_report: text, messages: [resp as BaseMessageLike] };
     } catch (e) {
       if (config?.signal?.aborted) throw e;
-      warn(`[agent] final report failed: ${(e as Error).message}`);
+      if (!cfg.confidential) warn(`[agent] final report failed: ${(e as Error).message}`);
       // A failed synthesis must fail the Task, not become a successful report.
       // Preserve the provider cause rather than inventing retry exhaustion.
       const detail = classifyError(e).category === "TIMEOUT" ? ": the report model timed out" : "";

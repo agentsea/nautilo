@@ -296,6 +296,23 @@ export const runtimeInvocationAuthorizationResponseV1Schema = z.object({
   invocationId: portableId,
 }).strict();
 
+export const taskDefinitionAuthorizationRequestV1Schema = z.object({
+  requestVersion: z.literal(1),
+  status: z.literal("prepared"),
+  operationId: portableId,
+  parentOperationId: portableId,
+  clientActionSessionId: portableId,
+  authorizationScheme: z.literal("runtime_foreground_v1"),
+  authorizationPlanBytesBase64url: liveShadowMessagePlanBytes,
+  authorizationBytesBase64url: liveShadowAuthorizationBytes,
+}).strict();
+
+export const taskDefinitionAuthorizationResponseV1Schema = z.object({
+  responseVersion: z.literal(1),
+  status: z.enum(["authorized", "unavailable"]),
+  authorizationId: portableId,
+}).strict();
+
 export const liveShadowMessageClientUnavailableRequestV1Schema = z.object({
   requestVersion: z.literal(1),
   status: z.literal("client_unavailable"),
@@ -665,6 +682,12 @@ export type RuntimeInvocationAuthorizationRequestV1 = z.infer<
 >;
 export type RuntimeInvocationAuthorizationResponseV1 = z.infer<
   typeof runtimeInvocationAuthorizationResponseV1Schema
+>;
+export type TaskDefinitionAuthorizationRequestV1 = z.infer<
+  typeof taskDefinitionAuthorizationRequestV1Schema
+>;
+export type TaskDefinitionAuthorizationResponseV1 = z.infer<
+  typeof taskDefinitionAuthorizationResponseV1Schema
 >;
 export type LiveShadowMessageRecoveryResponseV1 = z.infer<
   typeof liveShadowMessageRecoveryResponseV1Schema

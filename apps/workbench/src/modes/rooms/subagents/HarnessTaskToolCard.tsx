@@ -5,6 +5,7 @@ import type {
   TaskFundingFailureCode,
   TaskFundingSource,
   TaskHarnessActivity,
+  TaskRunSummaryV1,
 } from "@nautilo/types";
 import { TASK_FUNDING_FAILURE_CODES } from "@nautilo/types";
 import { ApiError } from "@nautilo/api-client/browser";
@@ -46,6 +47,7 @@ import {
   TaskFundingRecoveryNotice,
   taskFundingRecovery,
 } from "../../../components/task-funding-recovery";
+import { ProtectedTaskRunResult } from "./ProtectedTaskRunResult";
 
 interface HarnessTaskResult {
   readonly taskId: string;
@@ -175,6 +177,20 @@ export function taskActionScopeToken(contentScopeKey: string, taskId: string): s
   return `${contentScopeKey}\0${taskId}`;
 }
 
+/** Choose only an exact run identity; multiple stored runs require Human selection. */
+export function selectedProtectedTaskRunId(input: Readonly<{
+  liveTaskRunId: string | null | undefined;
+  selectedTaskRunId: string | null | undefined;
+  storedRuns: readonly TaskRunSummaryV1[];
+}>): string | null {
+  if (input.selectedTaskRunId
+    && input.storedRuns.some((run) => run.id === input.selectedTaskRunId)) {
+    return input.selectedTaskRunId;
+  }
+  if (input.liveTaskRunId) return input.liveTaskRunId;
+  return input.storedRuns.length === 1 ? input.storedRuns[0].id : null;
+}
+
 export function harnessTaskCanonicalStatus(input: {
   readonly execution: string | undefined;
   readonly durableStatus: string | undefined;
@@ -289,6 +305,12 @@ function HarnessExecutionToolCard({
   const [scopedProtected, setScopedProtected] = useState<{
     scopeKey: string;
     opened: Awaited<ReturnType<WorkbenchProtectedHumanTaskController["open"]>>;
+    runs: readonly TaskRunSummaryV1[];
+  } | null>(null);
+  const [selectedStoredRun, setSelectedStoredRun] = useState<{
+    scopeKey: string;
+    taskId: string;
+    taskRunId: string;
   } | null>(null);
   const [stopRequested, setStopRequested] = useState(false);
   const [lifecycleError, setLifecycleError] = useState<"pause" | "resume" | "stop" | null>(null);
@@ -335,11 +357,22 @@ function HarnessExecutionToolCard({
   ]);
   const protectedOpened = scopedProtected?.scopeKey === contentScopeKey
     ? scopedProtected.opened : null;
+  const protectedRuns = scopedProtected?.scopeKey === contentScopeKey
+    ? scopedProtected.runs : [];
+  const selectedStoredRunId = selectedStoredRun?.scopeKey === contentScopeKey
+    && selectedStoredRun.taskId === taskResult.taskId
+    ? selectedStoredRun.taskRunId : null;
+  const protectedTaskRunId = selectedProtectedTaskRunId({
+    liveTaskRunId: entry?.taskRunId,
+    selectedTaskRunId: selectedStoredRunId,
+    storedRuns: protectedRuns,
+  });
   useEffect(() => {
     setStopRequested(false);
     setLifecycleError(null);
     setLifecycleFundingFailure(null);
     setNativeLifecycleBusy(null);
+    setSelectedStoredRun(null);
   }, [actionScopeToken]);
   useEffect(() => {
     setScopedDetail(null);
@@ -349,7 +382,7 @@ function HarnessExecutionToolCard({
       poll: taskResult.execution === "native",
       initialStatus: liveCanonicalStatus ?? entry?.status ?? taskResult.status,
       read: () => readWorkbenchTaskForViewer({
-        mode: encryptionPolicyMode,
+        owner: protectedOwner,
         taskId: taskResult.taskId,
         protectedController,
       }),
@@ -361,15 +394,19 @@ function HarnessExecutionToolCard({
           setScopedDetail({ scopeKey: contentScopeKey, detail: read.detail });
           setScopedProtected(null);
         } else {
-          setScopedProtected({ scopeKey: contentScopeKey, opened: read.opened });
+          setScopedProtected({
+            scopeKey: contentScopeKey,
+            opened: read.opened,
+            runs: read.runs,
+          });
           setScopedDetail(null);
         }
       },
       onError: () => { /* Recovery UI below remains available. */ },
     });
   }, [auth.viewer.isVerified, contentScopeKey, encryptionPolicyMode, entry?.status,
-    entry?.terminalAtMs, liveCanonicalStatus, protectedController, taskResult.execution,
-    taskResult.status, taskResult.taskId]);
+    entry?.terminalAtMs, liveCanonicalStatus, protectedController, protectedOwner,
+    taskResult.execution, taskResult.status, taskResult.taskId]);
   const researchProgress = entry ? entry.researchProgress
     : (taskMap[taskResult.taskId] ?? durableDetail?.task)?.preparation?.research;
   const canonicalStatus = harnessTaskCanonicalStatus({
@@ -402,7 +439,10 @@ function HarnessExecutionToolCard({
     taskStatus,
     displayedFundingFailure,
   );
-  const { messages, error } = useSubagentTranscript(taskResult.taskId, { enabled: true });
+  const { messages, error } = useSubagentTranscript(taskResult.taskId, {
+    enabled: true,
+    taskRunId: protectedTaskRunId,
+  });
   const transcriptTools = messages.filter(isToolRow);
   const lastLiveActivity = useRef<{ scopeKey: string; activity: readonly TaskHarnessActivity[] } | null>(null);
   // Durable Task truth wins over a lagging process-local activity overlay.
@@ -635,7 +675,54 @@ function HarnessExecutionToolCard({
                   Expected: {protectedOpened.content.payload.expectedOutput}
                 </p>
               ) : null}
+              {typeof protectedOpened.content.retainedHistoricalError === "string" ? (
+                <p className="mt-1 whitespace-pre-wrap break-words" data-testid="task-retained-historical-error">
+                  Earlier error: {protectedOpened.content.retainedHistoricalError}
+                </p>
+              ) : null}
             </div>
+          ) : null}
+
+          {protectedOpened?.content.status === "protected" ? (
+            <>
+              {protectedRuns.length > 1 ? (
+                <div className="flex flex-wrap items-center gap-1 text-xs"
+                  data-testid="protected-task-run-picker">
+                  <span className="text-foreground-muted">Stored runs:</span>
+                  {protectedRuns.map((run, index) => (
+                    <button
+                      key={run.id}
+                      type="button"
+                      aria-pressed={protectedTaskRunId === run.id}
+                      className="rounded border border-border px-2 py-1 font-medium text-foreground-muted hover:text-foreground aria-pressed:border-primary aria-pressed:text-foreground"
+                      onClick={() => setSelectedStoredRun({
+                        scopeKey: contentScopeKey,
+                        taskId: taskResult.taskId,
+                        taskRunId: run.id,
+                      })}
+                    >
+                      Run {index + 1} · {run.status}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+              {protectedTaskRunId ? (
+                <ProtectedTaskRunResult
+                  agentId={protectedOpened.task.agentId}
+                  controller={protectedController}
+                  owner={protectedOwner}
+                  refreshToken={`${taskStatus ?? ""}:${lastSuccessfulAtMs ?? 0}`}
+                  scopeKey={contentScopeKey}
+                  taskId={taskResult.taskId}
+                  taskRunId={protectedTaskRunId}
+                />
+              ) : protectedRuns.length > 1 ? (
+                <p className="rounded bg-background px-2 py-1.5 text-xs text-foreground-muted"
+                  role="status">
+                  Choose a stored run to open its protected result.
+                </p>
+              ) : null}
+            </>
           ) : null}
 
           {failureOutcome ? (

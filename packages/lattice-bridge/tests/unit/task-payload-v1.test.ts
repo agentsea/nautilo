@@ -8,8 +8,10 @@ import {
   TASK_PAYLOAD_MAX_WIRE_BYTES_V1,
   TASK_RUN_RESULT_PAYLOAD_MAX_TEXT_BYTES_V1,
   TASK_RUN_RESULT_PAYLOAD_MAX_WIRE_BYTES_V1,
+  decodeTaskDefinitionContent,
   decodeTaskPayloadV1,
   decodeTaskRunResultPayloadV1,
+  encodeTaskDefinitionContentV2,
   encodeTaskPayloadV1,
   encodeTaskRunResultPayloadV1,
 } from "../../src/task/task-payload-v1.ts";
@@ -18,6 +20,60 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
 describe("Task payload v1", () => {
+  test("decodes canonical V1 and V2 definition content without granting the snapshot lifecycle meaning", () => {
+    const v1 = encodeTaskPayloadV1({
+      formatVersion: 1, prompt: "p", expectedOutput: null, protectedMetadata: {},
+    });
+    expect(decodeTaskDefinitionContent(v1)).toEqual({
+      payload: { formatVersion: 1, prompt: "p", expectedOutput: null, protectedMetadata: {} },
+      retainedHistoricalError: null,
+    });
+
+    const v2 = encodeTaskDefinitionContentV2({
+      formatVersion: 2,
+      prompt: "p",
+      expectedOutput: "done",
+      protectedMetadata: { target: "file:///private" },
+      retainedHistoricalError: "",
+    });
+    expect(decoder.decode(v2)).toBe(
+      '{"formatVersion":2,"prompt":"p","expectedOutput":"done","protectedMetadata":{"target":"file:///private"},"retainedHistoricalError":""}',
+    );
+    expect(decodeTaskDefinitionContent(v2)).toEqual({
+      payload: {
+        formatVersion: 1,
+        prompt: "p",
+        expectedOutput: "done",
+        protectedMetadata: { target: "file:///private" },
+      },
+      retainedHistoricalError: "",
+    });
+    expect(() => decodeTaskPayloadV1(v2)).toThrow("field set");
+  });
+
+  test("rejects malformed, non-canonical, and over-limit V2 display snapshots", () => {
+    expect(() => decodeTaskDefinitionContent(encoder.encode(
+      '{"formatVersion":2,"prompt":"p","expectedOutput":null,"protectedMetadata":{},"retainedHistoricalError":null}',
+    ))).toThrow("must be text");
+    expect(() => decodeTaskDefinitionContent(encoder.encode(
+      '{"formatVersion":2,"prompt":"p","expectedOutput":null,"protectedMetadata":{},"retainedHistoricalError":"e","extra":true}',
+    ))).toThrow("field set");
+    expect(() => encodeTaskDefinitionContentV2({
+      formatVersion: 2,
+      prompt: "p",
+      expectedOutput: null,
+      protectedMetadata: {},
+      retainedHistoricalError: "\ud800",
+    })).toThrow("Unicode");
+    expect(() => encodeTaskDefinitionContentV2({
+      formatVersion: 2,
+      prompt: "p",
+      expectedOutput: null,
+      protectedMetadata: {},
+      retainedHistoricalError: "x".repeat(TASK_PAYLOAD_MAX_WIRE_BYTES_V1),
+    })).toThrow();
+  });
+
   test("round-trips one deterministic definition without changing content", () => {
     const payload = {
       formatVersion: 1,

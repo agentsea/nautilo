@@ -8,11 +8,15 @@ import {
   LatticeCrypto,
   TaskRuntimeRecipientRegistry,
 } from "@nautilo/lattice-crypto";
+import { createTaskRuntimeGrantClaim } from "@nautilo/runtime";
 
 import {
   createProductionProtectedTaskRuntimeInitialComposition,
+  createProtectedTaskRuntimeInitialExecutionPreparation,
   loadInitialProtectedTaskOccurrence,
 } from "../../src/routes/protected-task-runtime-initial-composition";
+import type { ProductionProtectedTaskNativeExecution } from
+  "../../src/routes/protected-task-native-execution-composition";
 
 const USER = "10000000-0000-4000-8000-000000000001";
 const AGENT = "20000000-0000-4000-8000-000000000002";
@@ -114,8 +118,76 @@ test("loads only the exact operational initial occurrence", async () => {
   })).toBeNull();
 });
 
+test("routes repo docs through the initial native owner for fresh and parked preparation", async () => {
+  type Preparation = Parameters<
+    ProductionProtectedTaskNativeExecution["prepareExecution"]
+  >[0];
+  const prepared = Object.freeze({ occurrence: { task: {
+    id: TASK,
+    ownerId: USER,
+    requestorId: USER,
+    agentId: AGENT,
+    contentRevision: 2,
+    cryptoObjectId: "definition",
+    contentNamespaceId: NAMESPACE,
+  } } }) as Preparation;
+  const nativeResult = Object.freeze({ kind: "native" });
+  const repoDocsResult = Object.freeze({ kind: "repo_docs" });
+  const calls: unknown[] = [];
+  const native = {
+    prepareExecution: async (value: Preparation) => {
+      calls.push({ kind: "native", value });
+      return nativeResult as never;
+    },
+    prepareRepoDocsExecution: async (selection, value) => {
+      calls.push({ kind: "repo_docs", selection, value });
+      return repoDocsResult as never;
+    },
+    publishResult: async () => {},
+  } satisfies ProductionProtectedTaskNativeExecution;
+  let rows: readonly Record<string, unknown>[] = [{
+    native: false,
+    claude: null,
+    codex: null,
+    hermes: null,
+    deepResearch: null,
+    repoDocs: { mode: "auto", publish: "pr" },
+  }];
+  const db = {
+    select: () => {
+      const query = {
+        from: () => query,
+        where: () => query,
+        limit: async () => rows,
+      };
+      return query;
+    },
+  } as unknown as DirectDatabase;
+  const prepare = createProtectedTaskRuntimeInitialExecutionPreparation(
+    db,
+    native,
+  );
+
+  const repoDocsActual: unknown = await prepare(prepared);
+  expect(repoDocsActual).toBe(repoDocsResult);
+  expect(calls).toEqual([{ kind: "repo_docs", selection: {
+    mode: "auto", publish: "pr",
+  }, value: prepared }]);
+
+  calls.length = 0;
+  rows = [{ native: true, claude: null, codex: null, hermes: null,
+    deepResearch: null, repoDocs: null }];
+  const nativeActual: unknown = await prepare(prepared);
+  expect(nativeActual).toBe(nativeResult);
+  expect(calls).toEqual([{ kind: "native", value: prepared }]);
+});
+
 test("constructs inert coordinator and initial device hooks over shared custody", async () => {
   let kicks = 0;
+  const requestedUsers: string[] = [];
+  let authorizationRequested: Parameters<
+    typeof createTaskRuntimeGrantClaim
+  >[0]["authorizationRequested"];
   const crypto = new LatticeCrypto();
   const restricted = {
     query: async () => [{
@@ -141,9 +213,17 @@ test("constructs inert coordinator and initial device hooks over shared custody"
     kick: () => {
       kicks += 1;
     },
+    authorizationRequested: requestorUserId => {
+      requestedUsers.push(requestorUserId);
+    },
     restricted,
     crypto,
     serverScope: "https://server.example.test",
+  }, {
+    grantClaim: dependencies => {
+      authorizationRequested = dependencies.authorizationRequested;
+      return createTaskRuntimeGrantClaim(dependencies);
+    },
   });
 
   expect(typeof composition.coordinator.observeProtectedTaskOccurrence)
@@ -153,4 +233,8 @@ test("constructs inert coordinator and initial device hooks over shared custody"
   expect(typeof composition.isTaskRecipientActive).toBe("function");
   composition.wakeProtectedTask();
   expect(kicks).toBe(1);
+  await authorizationRequested?.({
+    task: { requestorId: USER },
+  } as never, {} as never);
+  expect(requestedUsers).toEqual([USER]);
 });

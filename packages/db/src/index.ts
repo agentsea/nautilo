@@ -16,6 +16,13 @@ export * from "./queries/personal-provider-credentials";
 export * from "./queries/personal-capability-preferences";
 export * from "./queries/soul-generation-attempts";
 export * from "./queries/protected-task-output-bindings";
+export * from "./queries/protected-task-output-wake";
+export * from "./queries/protected-task-wake-continuation";
+export {
+  protectedTaskRunCancelledResultObjectId,
+  protectedTaskRunCancelledResultOperationId,
+} from "./queries/protected-task-output-binding-identities";
+export * from "./queries/protected-task-cancellation-output";
 export * from "./queries/video-generation-links";
 export * from "./queries/bolter-bridge";
 export {
@@ -116,6 +123,16 @@ export {
   type PostgresJsBridgeRow,
   type PostgresJsBridgeScalar,
 } from "./config/postgres-js-executor";
+export {
+  readProtectedTaskActivationProductReadiness,
+  readProtectedTaskActivationProductReadinessInTransaction,
+  type ProtectedTaskActivationProductReadiness,
+} from "./queries/protected-task-activation-readiness";
+export {
+  readProtectedTaskActivationOperationalPersistenceInTransaction,
+  type ProtectedTaskActivationOperationalPersistence,
+  type ProtectedTaskActivationOperationalReadiness,
+} from "./queries/protected-task-activation-operational-readiness";
 
 export {
   registerPoolForShutdown,
@@ -428,6 +445,7 @@ export {
 } from "./utils/server-provider-policy-queries";
 export {
   LIVE_SHADOW_ENCRYPTION_TRANSITION_MODES,
+  protectedTaskDefinitionSupportsPolicy,
   UnsupportedEncryptionTransitionStateError,
   EncryptionTransitionPolicyConflictError,
   EncryptionPublicationPolicyError,
@@ -439,6 +457,8 @@ export {
   projectLiveShadowEncryptionTransitionPolicy,
   getEncryptionTransitionPolicy,
   compareAndSwapEncryptionTransitionPolicy,
+  compareAndSwapValidatedEncryptionTransitionPolicy,
+  type EncryptionTransitionCurrentValidation,
   observationBoundsFromPolicyRow,
   type LiveShadowEncryptionTransitionMode,
   type LiveShadowEncryptionTransitionBehavior,
@@ -448,6 +468,7 @@ export {
 } from "./utils/encryption-transition-queries";
 export {
   recordStrictShadowBoundaryHealth,
+  retireLegacyUnsupportedTaskObserverHealth,
   readStrictShadowBoundaryHealth,
   type StrictShadowBoundaryHealthDb,
   type StrictShadowBoundaryHealthRecord,
@@ -604,6 +625,7 @@ export {
   createTask,
   getTaskById,
   getTaskByIdWithMutationVersion,
+  getProtectedTaskMutationSourceById,
   listTasksForOwner,
   listStoppableTasksForOwnerRoom,
   updateTask,
@@ -663,18 +685,36 @@ export {
   startProtectedTaskRun,
   parkProtectedTaskRun,
   sealAndParkProtectedTaskRun,
+  sealAndParkProtectedTaskHumanRun,
+  sealAndParkProtectedTaskCheckpointRun,
+  discoverParkedProtectedTaskCheckpointContinuation,
+  readParkedProtectedTaskCheckpointContinuation,
+  lockParkedProtectedTaskCheckpointContinuation,
+  parseParkedProtectedTaskCheckpointContinuation,
+  copyParkedProtectedTaskCheckpointContinuation,
+  sameParkedProtectedTaskCheckpointContinuation,
+  startParkedProtectedTaskCheckpointSegment,
   readParkedProtectedTaskAdditionalAuthority,
   discoverParkedProtectedTaskAdditionalAuthority,
+  readAcceptedParkedProtectedTaskHumanContinuation,
+  discoverAcceptedParkedProtectedTaskHumanContinuation,
   parseParkedProtectedTaskAdditionalAuthority,
+  parseParkedProtectedTaskHumanContinuation,
   parkedTaskAdditionalAuthorityTaskProjection,
   parkedTaskAdditionalAuthorityRunProjection,
   parkedTaskAdditionalAuthorityJobProjection,
   sameParkedProtectedTaskAdditionalAuthority,
+  sameParkedProtectedTaskHumanContinuation,
   PROTECTED_TASK_RUN_PARK_RECEIPT_METADATA_KEY,
+  PROTECTED_TASK_HUMAN_ACCEPTANCE_METADATA_KEY,
+  PROTECTED_TASK_HUMAN_APPROVAL_POLICY_METADATA_KEY,
   PROTECTED_TASK_RUN_TERMINAL_RECEIPT_METADATA_KEY,
-  acceptProtectedTaskAwaitReply,
+  acceptProtectedTaskHumanContinuation,
+  exactProtectedTaskHumanContinuationAcceptanceReceipt,
+  protectedTaskHumanContinuationAcceptanceId,
+  resolveParkedProtectedTaskHumanContinuationAcceptance,
   resolvePublishedProtectedTaskAwaitReply,
-  startParkedProtectedTaskRunSegment,
+  startParkedProtectedTaskHumanRunSegment,
   startParkedProtectedTaskRunAdditionalAuthoritySegment,
   attachProtectedTaskRunModel,
   terminalizeProtectedTaskRunResult,
@@ -717,21 +757,38 @@ export {
   type SealAndParkProtectedTaskRunInput,
   type SealAndParkProtectedTaskRunContinuation,
   type SealAndParkProtectedTaskRunResult,
+  type SealAndParkProtectedTaskHumanRunInput,
+  type SealAndParkProtectedTaskCheckpointRunInput,
+  type ParkedProtectedTaskCheckpointContinuation,
+  type StartParkedProtectedTaskCheckpointSegmentInput,
+  type StartParkedProtectedTaskCheckpointSegmentResult,
+  type SealAndParkProtectedTaskHumanRunResult,
   type ParkedProtectedTaskAdditionalAuthority,
   type ParkedProtectedTaskAdditionalAuthorityProof,
   type ParkedProtectedTaskAdditionalAuthorityTaskRow,
   type ParkedProtectedTaskAdditionalAuthorityRunRow,
   type ParkedProtectedTaskAdditionalAuthorityJobRow,
+  type ParkedProtectedTaskHumanContinuation,
+  type ParkedProtectedTaskHumanContinuationTaskRow,
+  type ParkedProtectedTaskHumanContinuationJobRow,
+  type ProtectedTaskPendingAttentionViewer,
+  type ProtectedTaskPendingAttentionCursor,
+  type ProtectedTaskPendingAttentionInterrupt,
+  type ProtectedTaskPendingAttentionCandidate,
+  type ProtectedTaskPendingAttentionPage,
   type LockedParkedProtectedTaskAdditionalAuthorityTaskRow,
+  type LockedParkedProtectedTaskHumanContinuationTaskRow,
   type ProtectedTaskRunInterruptKind,
   type ProtectedTaskRunInterruptCoordinate,
   type ProtectedTaskAwaitReplyMessageReference,
-  type ProtectedTaskAwaitReplyAcceptance,
-  type AcceptProtectedTaskAwaitReplyInput,
-  type AcceptProtectedTaskAwaitReplyResult,
+  type ProtectedTaskHumanContinuationAcceptance,
+  type AcceptProtectedTaskHumanContinuationInput,
+  type AcceptProtectedTaskHumanContinuationResult,
+  type ResolveParkedProtectedTaskHumanContinuationAcceptanceInput,
+  type ResolveParkedProtectedTaskHumanContinuationAcceptanceResult,
   type ResolvePublishedProtectedTaskAwaitReplyResult,
-  type StartParkedProtectedTaskRunSegmentInput,
-  type StartParkedProtectedTaskRunSegmentResult,
+  type StartParkedProtectedTaskHumanRunSegmentInput,
+  type StartParkedProtectedTaskHumanRunSegmentResult,
   type StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput,
   type StartParkedProtectedTaskRunAdditionalAuthoritySegmentResult,
   type AttachProtectedTaskRunModelInput,
@@ -753,6 +810,15 @@ export {
   type SettleCancelledProtectedTaskRunAuthorizationInput,
   copyParkedProtectedTaskAdditionalAuthority,
   lockParkedProtectedTaskAdditionalAuthority,
+  copyParkedProtectedTaskHumanContinuation,
+  lockParkedProtectedTaskHumanContinuation,
+  listProtectedTaskPendingAttentionCandidates,
+  readProtectedTaskPendingAttentionCandidate,
+  sealProtectedTaskHumanApprovalPolicy,
+  type ProtectedTaskHumanApprovalPolicy,
+  type SealProtectedTaskHumanApprovalPolicyInput,
+  type SealProtectedTaskHumanApprovalPolicyResult,
+  protectedTaskDefinitionHistoricalRepairProjection,
 } from "./queries/tasks";
 export {
   appendPendingArtifactEvent,
@@ -1005,6 +1071,7 @@ export { memoryEmbeddingValues, memoryEmbeddingCompatibilityCondition } from "./
 export { PHYSICAL_FILE_URI_COLUMNS, physicalFileUriBase, physicalPathFromStorageUri, rebindPhysicalFileUri } from "./utils/physical-storage-uris";
 
 export * from "./queries/task-run-message-associations";
+export * from "./queries/protected-task-running-recovery";
 export * from "./queries/protected-task-execution-receipts";
 export {
   exactParkedProtectedTaskJobReference,
@@ -1025,6 +1092,27 @@ export {
   type ParkedProtectedTaskPreexecutionRecoveryResult,
   type RecoverUnstartedParkedProtectedTaskClaimInput,
 } from "./queries/protected-task-parked-preexecution";
+export {
+  requestProtectedTaskCheckpointPause,
+  finalizeProtectedTaskCheckpointPause,
+  resumeProtectedTaskCheckpointPause,
+  listProtectedTaskCheckpointPauseRecoveryCandidates,
+  type ProtectedTaskCheckpointPauseRecoveryCursor,
+  type ProtectedTaskCheckpointPauseRecoveryCandidate,
+  type ProtectedTaskCheckpointPauseRecoveryPage,
+} from "./queries/protected-task-checkpoint-pause";
+
+export * from "./queries/task-content-backfill";
+
+export * from "./queries/protected-task-funding";
+
+export { lockProtectedTaskForegroundCreationIdentity } from "./queries/protected-task-foreground-creation-lock";
+
+export * from "./queries/protected-task-activation-draining-lease";
+export * from "./queries/protected-task-activation-parked-integrity";
+
+export { parseProtectedTaskCheckpointAadBinding, sameProtectedTaskCheckpointAadBinding, type ProtectedTaskCheckpointAadBinding } from "./queries/protected-task-checkpoint-aad-binding";
+export { getTaskLifecycleState, type TaskLifecycleState } from "./queries/task-lifecycle-state";
 
 export * from "./queries/external-room-execution-claims";
 export * from "./queries/chatgpt-registrations";

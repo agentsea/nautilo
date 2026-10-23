@@ -22,6 +22,21 @@ import {
 } from "../../src/schemas/live-shadow-message.ts";
 
 const ROOM = "40000000-0000-4000-8000-000000000282";
+const TASK_AUTHORIZATION_ID =
+  "task1:AQAwAAAAAABAAIAAAAAAAAMhAAAAAAAAAAF7uq_icacWxHhGoy139BrgZVZgxbB4RvxyXhGHuWteJUJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJC";
+
+function preparedTaskAuthorization(operationId = TASK_AUTHORIZATION_ID) {
+  return {
+    requestVersion: 1 as const,
+    status: "prepared" as const,
+    operationId,
+    parentOperationId: "live-shadow:api-client-route-regression",
+    clientActionSessionId: "session:api-client-route-regression",
+    authorizationScheme: "runtime_foreground_v1" as const,
+    authorizationPlanBytesBase64url: "AQ",
+    authorizationBytesBase64url: "Ag",
+  };
+}
 
 function response(value: unknown): Response {
   return new Response(JSON.stringify(value), {
@@ -523,6 +538,68 @@ describe("live Shadow Message HTTP contract", () => {
       namespaceEnvelopeBytesBase64url: auxiliaryBytes,
     }).success).toBeTrue();
   }, 30_000);
+
+  test("keeps the exact Task authorization coordinate in the fixed-path body", async () => {
+    expect(TASK_AUTHORIZATION_ID).toHaveLength(126);
+    const prepared = preparedTaskAuthorization();
+    const calls: Array<{ url: string; method: string | undefined; body: unknown }> = [];
+    const fetchImpl: NautiloApiFetch = async (target, init) => {
+      const url = typeof target === "string"
+        ? target
+        : target instanceof URL ? target.href : target.url;
+      calls.push({
+        url,
+        method: init?.method,
+        body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
+      });
+      return response({
+        responseVersion: 1,
+        status: "authorized",
+        authorizationId: TASK_AUTHORIZATION_ID,
+      });
+    };
+    const client = new NautiloApiClient("https://nautilo.test", { fetchImpl });
+
+    expect(await client.authorizeTaskDefinition(
+      ROOM,
+      TASK_AUTHORIZATION_ID,
+      prepared,
+    )).toEqual({
+      responseVersion: 1,
+      status: "authorized",
+      authorizationId: TASK_AUTHORIZATION_ID,
+    });
+    expect(calls).toEqual([{
+      url: `https://nautilo.test/api/rooms/${ROOM}/live-shadow/task-definition/authorize`,
+      method: "POST",
+      body: prepared,
+    }]);
+  });
+
+  test("rejects a mismatched Task authorization coordinate before fetch", async () => {
+    let fetchCalls = 0;
+    const client = new NautiloApiClient("https://nautilo.test", {
+      fetchImpl: async () => {
+        fetchCalls++;
+        return response({
+          responseVersion: 1,
+          status: "authorized",
+          authorizationId: TASK_AUTHORIZATION_ID,
+        });
+      },
+    });
+
+    const rejected = await client.authorizeTaskDefinition(
+      ROOM,
+      `${TASK_AUTHORIZATION_ID.slice(0, -1)}A`,
+      preparedTaskAuthorization(),
+    ).catch((error: unknown) => error);
+    expect(rejected).toBeInstanceOf(TypeError);
+    expect((rejected as Error).message).toBe(
+      "Task definition authorization ID does not match the prepared operation",
+    );
+    expect(fetchCalls).toBe(0);
+  });
 
   test("recovers durable turn evidence through an idempotent GET", async () => {
     const calls: Array<{ url: string; method: string | undefined }> = [];

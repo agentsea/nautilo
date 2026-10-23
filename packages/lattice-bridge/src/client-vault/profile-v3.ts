@@ -520,6 +520,41 @@ async function withAnchorUpdateLock<T>(
   }
 }
 
+function sameProfileCoordinates(
+  left: ClientProfileCoordinates,
+  right: ClientProfileCoordinates,
+): boolean {
+  return left.serverScope === right.serverScope
+    && left.userId === right.userId
+    && left.humanActorId === right.humanActorId
+    && left.profileId === right.profileId
+    && left.deviceId === right.deviceId
+    && left.installationLineageDigest === right.installationLineageDigest;
+}
+
+/** Attempts only an exact, vault-authenticated staged successor activation. */
+export async function recoverExactStagedClientProfile(input: Readonly<{
+  vault: ClientProfileVault;
+  coordinates: ClientProfileCoordinates;
+  expectedActive: Readonly<{
+    generation: number;
+    profileBytes: Uint8Array;
+    publicState: ClientProfilePublicState;
+  }>;
+  candidate: Readonly<{
+    generation: number;
+    profileBytes: Uint8Array;
+    publicState: ClientProfilePublicState;
+  }>;
+}>): Promise<boolean> {
+  if (input.vault.recoverExactStagedProfile === undefined) return false;
+  return await input.vault.recoverExactStagedProfile({
+    coordinates: input.coordinates,
+    expectedActive: input.expectedActive,
+    candidate: input.candidate,
+  });
+}
+
 /** Shared authenticated rollback-anchor staging/CAS; codecs preserve the full profile. */
 export function createClientProfileObjectAccessAnchorPortOwner<Profile>(input: Readonly<{
   crypto: LatticeCrypto;
@@ -554,11 +589,11 @@ export function createClientProfileObjectAccessAnchorPortOwner<Profile>(input: R
         async () => {
           const publicProfile = (await input.vault.listPublicProfiles()).find((entry) =>
             entry.lifecycle === "active"
-            && entry.coordinates.profileId === input.coordinates.profileId
-            && entry.coordinates.deviceId === input.coordinates.deviceId
+            && sameProfileCoordinates(entry.coordinates, input.coordinates)
           );
           if (publicProfile === undefined) throw new Error("Client profile is unavailable");
           let candidateBytes: Uint8Array | undefined;
+          let expectedActiveBytes: Uint8Array | undefined;
           let matched = false;
           await input.vault.withOpenProfile(input.coordinates, async (bytes) => {
             const profile = await input.authenticate(bytes);
@@ -572,19 +607,43 @@ export function createClientProfileObjectAccessAnchorPortOwner<Profile>(input: R
               }
               if (index < 0) anchors.push(update.next);
               else anchors[index] = update.next;
-              candidateBytes = input.encode(profile, Object.freeze(anchors));
+              const encoded = input.encode(profile, Object.freeze(anchors));
+              try {
+                expectedActiveBytes = bytes.slice();
+                candidateBytes = encoded;
+              } catch (error) {
+                encoded.fill(0);
+                throw error;
+              }
               matched = true;
             } finally { input.destroy(profile); }
           });
           if (!matched) return false;
-          const stageId = input.createStageId();
           try {
+            if (await recoverExactStagedClientProfile({
+              vault: input.vault,
+              coordinates: input.coordinates,
+              expectedActive: {
+                generation: publicProfile.generation,
+                profileBytes: expectedActiveBytes!,
+                publicState: publicProfile.publicState,
+              },
+              candidate: {
+                generation: publicProfile.generation + 1,
+                profileBytes: candidateBytes!,
+                publicState: publicProfile.publicState,
+              },
+            })) return true;
+            const stageId = input.createStageId();
             await input.vault.stageProfile({ coordinates: input.coordinates,
               stageId, generation: publicProfile.generation + 1,
               profileBytes: candidateBytes!, publicState: publicProfile.publicState });
             await input.vault.activateProfile(input.coordinates, stageId);
             return true;
-          } finally { candidateBytes?.fill(0); }
+          } finally {
+            expectedActiveBytes?.fill(0);
+            candidateBytes?.fill(0);
+          }
         });
     },
   });

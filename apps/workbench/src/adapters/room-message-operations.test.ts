@@ -4,6 +4,7 @@ import {
   ClassifiedDataOperationError,
   type LiveShadowEncryptionTransitionPolicy,
 } from "@nautilo/lattice-bridge";
+import { ApiError } from "@nautilo/api-client/browser";
 import { createRoomMessageOperations } from "./room-message-operations";
 import type { ServerEvent } from "@nautilo/types";
 
@@ -181,6 +182,43 @@ describe("shared Room data operations", () => {
     f.protectedSend.mockRejectedValueOnce(new Error("ambiguous commit"));
     await expect(f.operations.sendRoomMessage("child-room", { content: "hello" })).rejects.toThrow("ambiguous commit");
     expect(f.ordinarySend).not.toHaveBeenCalled();
+  });
+
+  test("an unclassified protected history server failure never retries the ordinary read", async () => {
+    const policy = modes[1]!;
+    const owner = bindEncryptionDataOperationOwner({ policy: {
+      resolve: async () => ({ policy, revalidationToken: 1 }),
+      revalidate: async () => {},
+    } });
+    const getOlderRoomMessages = mock(async (options: Record<string, unknown>) => {
+      if (options["shadowRead"] !== undefined) {
+        throw new ApiError(500, "Room history metadata is invalid");
+      }
+      return {
+        messages: [{
+          id: "1",
+          role: "assistant",
+          content: "must not be returned",
+          createdAt: "2026-09-08T00:00:00Z",
+        }],
+        pageInfo: { hasMoreBefore: false, oldestCursor: null },
+      };
+    });
+    const operations = createRoomMessageOperations({
+      owner,
+      api: { getOlderRoomMessages: getOlderRoomMessages as never },
+      ordinarySend: mock(async () => ({ messageId: 1, jobId: null })),
+      historyReader: {
+        createIntent: () => ({ requestVersion: 1, clientRequestKey: "invalid-metadata" }),
+        reconcile: async ({ messages }) => messages,
+      },
+    });
+
+    await expect(operations.readRoomMessages("room-a")).rejects.toThrow(
+      "Room history metadata is invalid",
+    );
+    expect(getOlderRoomMessages).toHaveBeenCalledTimes(1);
+    expect(getOlderRoomMessages.mock.calls[0]?.[0]).toHaveProperty("shadowRead");
   });
 
   test("pagination preserves the exact caller cursor through the bound owner", async () => {

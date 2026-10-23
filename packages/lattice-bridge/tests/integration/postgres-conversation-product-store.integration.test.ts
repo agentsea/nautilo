@@ -33,6 +33,7 @@ import {
   verifyConversationProductPostgresHandle,
   type ConversationProductDatabaseRow,
   type ConversationProductCanonicalTransactionConnection,
+  type ConversationProductPublicationGuard,
   type ConversationProductPostgresConnection,
   type ConversationProductPostgresExecutor,
   type ConversationProductPostgresIsolationLevel,
@@ -42,6 +43,8 @@ import { deriveHumanMessageEditCryptoObjectIdV1 } from "@nautilo/lattice-crypto/
 import { deriveLiveShadowMessageCryptoObjectIdV1 } from "../../src/message/conversation-repository.ts";
 import type { CanonicalTranscriptTx } from "@nautilo/trust";
 import { fingerprintNamespaceGenerationAudience, humanId } from "@nautilo/lattice-crypto";
+import { withDisposableFixtureCleanup } from
+  "../../scripts/disposable-postgres-cleanup";
 
 type SqlClient = postgres.Sql;
 type SqlExecutor = Pick<SqlClient, "unsafe">;
@@ -325,7 +328,7 @@ async function createFixture(): Promise<ProductFixture> {
 }
 
 async function cleanupFixture(fixture: ProductFixture): Promise<void> {
-  await admin.begin(async (transaction) => {
+  await withDisposableFixtureCleanup(admin, async (transaction) => {
     await transaction.unsafe(
       `DELETE FROM session_messages WHERE session_id = $1`,
       [fixture.sessionId],
@@ -382,11 +385,16 @@ afterEach(async () => {
   for (const fixture of fixtures.splice(0)) {
     await cleanupFixture(fixture);
   }
-  for (const objectId of cryptoObjects) {
-    await admin.unsafe(
-      `DELETE FROM crypto_objects WHERE object_id = $1`,
-      [objectId],
-    );
+  if (cryptoObjects.size > 0) {
+    await withDisposableFixtureCleanup(admin, async (transaction) => {
+      const cleanup = drizzle(transaction, { schema });
+      for (const objectId of cryptoObjects) {
+        await cleanup.delete(cryptoObjectsTable).where(eq(
+          cryptoObjectsTable.objectId,
+          objectId,
+        ));
+      }
+    });
   }
   cryptoObjects.clear();
 });
@@ -687,7 +695,7 @@ describe("Postgres conversation product store", () => {
         revision: sql`${encryptionTransitionPolicy.revision} + 1`,
         updatedAt: sql`CURRENT_TIMESTAMP`,
       }).where(eq(encryptionTransitionPolicy.id, "server"));
-      await admin.begin(async (transaction) => {
+      await withDisposableFixtureCleanup(admin, async (transaction) => {
         await transaction.unsafe(
           `DELETE FROM session_messages WHERE session_id = $1`,
           [sourceSessionId],
@@ -2181,6 +2189,71 @@ test("Runtime allocation waiting on a Room leaves its Message available to the R
       expect(rows).toEqual([{id: message.id}]);
     });
     expect(await pending).toMatchObject({status: "allocated"});
+  } finally {
+    if (pending !== undefined) await Promise.allSettled([pending]);
+    await client.end();
+  }
+});
+
+test("guarded append acquires its authority dependency before the canonical Room write", async () => {
+  const fixture = await createFixture();
+  const client = sqlClient(agentUrl, 1);
+  const db = drizzle(admin);
+  let reachedPreparation!: () => void;
+  const preparationStarted = new Promise<void>(resolve => {
+    reachedPreparation = resolve;
+  });
+  let postAllocationChecks = 0;
+  let pending: ReturnType<PostgresConversationProductStore["appendAllocated"]>
+    | undefined;
+  try {
+    const context = {
+      userId: fixture.requesterId,
+      agentId: fixture.agentId,
+    };
+    const handle = await verifyConversationProductPostgresHandle(
+      connection(client, context),
+    );
+    const guard: ConversationProductPublicationGuard = {
+      prepareAppendPublication: async transaction => {
+        reachedPreparation();
+        await transaction.select({ id: sessions.id }).from(sessions)
+          .where(eq(sessions.id, fixture.sessionId)).limit(1).for("update");
+      },
+      assertPublicationAllowed: async () => {
+        postAllocationChecks += 1;
+      },
+    };
+    const store = new PostgresConversationProductStore(
+      handle,
+      bindConversationProductCanonicalTransactionRunner(
+        handle,
+        canonicalConnection(client, context),
+      ),
+      guard,
+    );
+
+    await db.transaction(async locked => {
+      await locked.select({ id: sessions.id }).from(sessions)
+        .where(eq(sessions.id, fixture.sessionId)).for("update");
+      pending = store.appendAllocated({
+        ...canonicalAppendFacts,
+        sessionId: fixture.sessionId,
+        idempotencyKey: `guard-order:${randomUUID()}`,
+        content: "authority before Room",
+        keyClass: "ai",
+        authorRole: "assistant",
+        requestDigest: digest(0xe8),
+      });
+      void pending.catch(() => undefined);
+      await preparationStarted;
+      expect(await locked.select({ id: rooms.id }).from(rooms)
+        .where(eq(rooms.id, fixture.roomId)).for("update", { noWait: true }))
+        .toEqual([{ id: fixture.roomId }]);
+    });
+
+    expect(await pending).toMatchObject({ status: "allocated" });
+    expect(postAllocationChecks).toBe(1);
   } finally {
     if (pending !== undefined) await Promise.allSettled([pending]);
     await client.end();

@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import type {
   ParkedProtectedTaskAdditionalAuthority,
+  ParkedProtectedTaskCheckpointContinuation,
   ProtectedTaskRunOutputBinding,
 } from "@nautilo/db";
 import type { ParkedTaskRuntimeCurrentRoutingFacts } from
@@ -9,7 +10,10 @@ import { taskRuntimeStableRoutingDigest } from "@nautilo/runtime";
 
 import type { ParkedProtectedTaskRuntimeMemoryPlan } from
   "../../src/routes/protected-task-runtime-parked-memory-plan";
-import { createParkedTaskRuntimeAuthorizationPlanResolver } from
+import {
+  createParkedTaskRuntimeAuthorizationPlanResolver,
+  createParkedTaskRuntimeAuthorizationRecord,
+} from
   "../../src/routes/protected-task-runtime-parked-plan";
 
 const USER = "10000000-0000-4000-8000-000000000001";
@@ -26,6 +30,9 @@ const NOW = 1_700_000_000_000;
 const INPUT = `task-definition:v1:${"a".repeat(64)}`;
 const RESULT = `task-run-result:v1:${"b".repeat(64)}`;
 const REQUEST = "task-run-authorization:v2:parked-plan";
+const CHECKPOINT_FINGERPRINT = Buffer.alloc(32, 4).toString("base64url");
+const CHECKPOINT_REQUEST =
+  `task-checkpoint-continuation:${RUN}:2:${CHECKPOINT_FINGERPRINT}`;
 
 function fixture() {
   const facts: ParkedTaskRuntimeCurrentRoutingFacts = {
@@ -147,6 +154,56 @@ function fixture() {
   return { facts, expected, output, memory };
 }
 
+function checkpointFixture() {
+  const value = fixture();
+  const routingDigest = value.expected.proof.continuation.stableRoutingDigest;
+  const expected = {
+    ...value.expected,
+    priorJob: {
+      id: JOB, generation: 2, parkedAt: new Date(NOW + 1),
+      interrupts: Object.freeze([]),
+      reference: {
+        kind: "protected_task_run_v1" as const,
+        taskId: TASK, taskRunId: RUN, inputObjectId: INPUT,
+        resultObjectId: RESULT, authorizationRequestId: REQUEST,
+        policyRevision: 7, executionSegment: 1,
+      },
+    },
+    proof: {
+      segment: {
+        taskRunId: RUN, executionSegment: 1, jobId: JOB,
+        route: "native_langgraph_v1" as const,
+        transcriptContract: "protected_message_associations_v1" as const,
+        expectedTranscriptAssociationCount: 0,
+        transcriptAssociationDigest: new Uint8Array(32).fill(2),
+        checkpointContract: "encrypted_langgraph_v1" as const,
+        expectedCheckpointCount: 1,
+        checkpointDigest: new Uint8Array(32).fill(3),
+        expectedCheckpointBlobCount: 1,
+        checkpointBlobDigest: new Uint8Array(32).fill(4),
+        expectedPendingWriteCount: 0,
+        pendingWriteDigest: new Uint8Array(32).fill(5),
+        sealedAt: new Date(NOW + 1),
+      },
+      continuation: {
+        taskRunId: RUN, executionSegment: 1, jobId: JOB,
+        kind: "checkpoint_safe_v1" as const,
+        reason: "manual_pause" as const,
+        effectDisposition: "none_v1" as const,
+        interruptId: null, operationId: null, requestDigest: null,
+        requiredAuthorityDigest: null, stableRoutingDigest: null,
+        semanticAuthorityRequirements: null,
+        sealedAt: new Date(NOW + 1),
+      },
+    },
+    stableRoutingDigest: routingDigest,
+    authorizationRequestId: CHECKPOINT_REQUEST,
+    continuationFingerprint: CHECKPOINT_FINGERPRINT,
+    nextExecutionSegment: 2,
+  } as unknown as ParkedProtectedTaskCheckpointContinuation;
+  return { ...value, expected };
+}
+
 test("resolves a fresh parked plan and validates its committed routing", async () => {
   const value = fixture();
   const resolve = createParkedTaskRuntimeAuthorizationPlanResolver({
@@ -166,6 +223,40 @@ test("resolves a fresh parked plan and validates its committed routing", async (
   });
   expect(resolved?.expected.authorizationRequestId).toBe(REQUEST);
   expect(resolved?.validateCurrentRouting(value.facts)).toBe(true);
+});
+
+test("builds a checkpoint grant from the closed routing proof without semantic authority", async () => {
+  const value = checkpointFixture();
+  const resolve = createParkedTaskRuntimeAuthorizationPlanResolver({
+    db: {} as never,
+    discover: async () => value.expected,
+    readPolicy: async () => ({
+      mode: "shadow_encryption", shadowBehavior: "strict", revision: 7,
+    }),
+    readOutput: async () => value.output,
+    resolveMemory: async () => value.memory,
+  });
+  const resolved = await resolve({ taskRunId: RUN,
+    authorizationRequestId: CHECKPOINT_REQUEST });
+  if (resolved === null) throw new Error("checkpoint plan missing");
+  expect(resolved.validateCurrentRouting(value.facts)).toBe(true);
+  const currentFacts = resolved.inventory.namespaceIds.map((namespaceId, index) => ({
+    namespaceId, domainId: `domain:${index}`,
+    expectedAccessRevision: 0, expectedPolicyRevision: 7,
+    expectedDomainEpoch: 1, expectedAuthorizationRevision: 0,
+  }));
+  const record = createParkedTaskRuntimeAuthorizationRecord(
+    resolved, value.facts, currentFacts, NOW,
+  );
+  expect(record.initialRecord).toMatchObject({
+    workKind: "task.execute", purpose: "task.execute",
+    snapshot: { requestId: CHECKPOINT_REQUEST, workId: RUN },
+  });
+  expect(record.stableIdentity).toMatchObject({
+    executionSegment: 2,
+    resumeContinuationFingerprint: CHECKPOINT_FINGERPRINT,
+  });
+  expect(resolved.inventory.namespaceIds).not.toContain("semantic:authority");
 });
 
 test("rejects an optional request-ID mismatch before policy or Memory reads", async () => {

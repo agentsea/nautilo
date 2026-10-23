@@ -39,6 +39,38 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   including streamed customization previews and service cost tracking. Eligible
   Surplus-only requests let the marketplace choose an available seller and can
   recover from confirmed supply refusals through other eligible models.
+- Server Docker builds require Chromium 156.0.8078.47 or later from Debian
+  13 security updates on both AMD64 and ARM64, and no longer waive findings
+  for the older Chromium packages.
+
+- Update TOML parsing to reject malformed input without excessive processing.
+- Preserve strict IP matching in network allowlists during hostname normalization.
+- Genie can change access to encrypted Memory across Domains whose
+  authorization histories have advanced independently.
+- Bundled Bun and contributor tooling use Bun 1.4.4 with updated certificate
+  trust. macOS Desktop downloads verify the official runtime archive checksums.
+
+- Scheduled Tasks keep concurrent results on separate execution threads.
+  Finished encrypted schedules show no future runs and retain result history.
+- Encrypted Task creation, editing and repair use current Domain authority on
+  Devices without legacy key caches. Task attention and avatar reads respect
+  current content policy.
+- Encrypted schedules with invalid content verification remain locked while
+  other schedules stay visible.
+- New encrypted Tasks can be read on their signing Device without previously
+  imported signer history or legacy Namespace key caches. Concurrent encrypted
+  Task reads no longer exhaust database connections while loading schedules or chats.
+
+- Node.js development and CLI requirements now start at 24.22.1. CI uses
+  patched Node.js releases, and the OpenConnector derivative uses Node.js
+  24.22.1 with its maintained CA bundle to reject compromised intermediate keys.
+
+- Desktop uses Electron 43.8.3, which rejects certificate chains containing
+  compromised eMudhra intermediate keys in its Chromium and Node.js networking.
+  Desktop requires macOS 13 (Ventura) or later; its package metadata now
+  declares that minimum. Native rebuild tooling recognizes the selected Electron
+  runtime. The bundled Google Workspace helper requires macOS 15 or later and
+  remains unavailable on macOS 13 and 14 without blocking Desktop.
 
 - Background Tasks can save Workspace files using their authorized namespace
   room while keeping their transcripts separate from the originating chat.

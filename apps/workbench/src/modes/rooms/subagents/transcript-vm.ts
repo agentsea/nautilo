@@ -56,8 +56,11 @@ function truncate(s: string, n: number): string {
  * following `tool` result rows (preferring matching `toolName`); unconsumed
  * tool rows become orphan fallbacks. Preserves chronological order.
  */
-export function taskRunToVMs(messages: Parameters<typeof taskRunTranscriptToPresentation>[0]): TranscriptMessageVM[] {
-  return taskRunTranscriptToPresentation(messages);
+export function taskRunToVMs(
+  messages: Parameters<typeof taskRunTranscriptToPresentation>[0],
+  runId?: string,
+): TranscriptMessageVM[] {
+  return taskRunTranscriptToPresentation(messages, runId);
 }
 
 /** Map `GET /api/tasks/:id` detail — uses the latest run's transcript. */

@@ -34,6 +34,7 @@ import {
   protectedMemoryToolOperationId,
   protectedMemoryToolRequestId,
   ProtectedMemoryToolUnavailableError,
+  type ProtectedAgentMemoryAccessApprovalReference,
   type ProtectedAgentMemoryAccessPort,
 } from "./protected-memory-ports";
 import type { OrdinaryContentAccessExecution } from "../../runtime/ordinary-content-access";
@@ -47,6 +48,7 @@ interface ShareMemoryContext {
   userId?: string;
   memoryAccessEnvelope?: MemoryAccessEnvelope | null;
   protectedMemoryAccessPort?: ProtectedAgentMemoryAccessPort;
+  protectedMemoryAccessApprovalReference?: ProtectedAgentMemoryAccessApprovalReference;
   ordinaryContentAccessRequired?: boolean;
   ordinaryContentAccess?: OrdinaryContentAccessExecution;
 }
@@ -476,13 +478,22 @@ This is NOT manage_memory(action: "promote"). Use project only when the Human ex
               subjectId: memory_id,
             });
           const handle = normalizeShareTargetHandle(target_handle);
+          const approvalKey = protectedShareApprovalKey(requestId, memory_id, handle);
           const retained = protectedShareApprovalReferences.get(
             context.protectedMemoryAccessPort,
           );
-          const approvalKey = protectedShareApprovalKey(requestId, memory_id, handle);
-          const approvalReference = retained?.get(approvalKey);
+          const approvalReference = context.protectedMemoryAccessApprovalReference
+            ?? retained?.get(approvalKey);
           retained?.delete(approvalKey);
           if (approvalReference === undefined) {
+            throw new ProtectedMemoryToolUnavailableError("authorization_required");
+          }
+          if (
+            approvalReference.toolCallId !== requestId
+            || (context.protectedMemoryAccessPort.restoreApproval !== undefined
+              && approvalReference.taskContinuation?.kind
+                !== "protected_task_v1")
+          ) {
             throw new ProtectedMemoryToolUnavailableError("authorization_required");
           }
           const result = await context.protectedMemoryAccessPort.change({

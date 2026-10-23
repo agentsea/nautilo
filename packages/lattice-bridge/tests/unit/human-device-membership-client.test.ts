@@ -331,7 +331,7 @@ describe("Human-device membership client", () => {
     v4Bytes.fill(0);
   });
 
-  test("activates one accepted Welcome when polling and continuation overlap", async () => {
+  test("activates one accepted Welcome and resumes exact authority revision staging", async () => {
     const sourceDeviceId = "device_m304_source_browser";
     const sourceCrypto = new LatticeCrypto(seededRng(3_045));
     const targetCrypto = new LatticeCrypto(seededRng(3_046));
@@ -487,7 +487,7 @@ describe("Human-device membership client", () => {
       publishHumanDeviceMembershipRemove: () =>
         Promise.reject(new Error("unexpected Remove")),
     };
-    const client = createHumanDeviceMembershipClient({
+    const createClient = () => createHumanDeviceMembershipClient({
       api,
       crypto: targetCrypto,
       vault: profileVault,
@@ -496,6 +496,7 @@ describe("Human-device membership client", () => {
       installationLineageDigest: LINEAGE,
       idempotencyKey: "m304-concurrent-welcome",
     });
+    const client = createClient();
 
     expect(await Promise.all([client.ensure(), client.ensure()])).toEqual([
       { status: "ready" },
@@ -537,6 +538,235 @@ describe("Human-device membership client", () => {
         destroyOpenedClientDeviceProfileV4(profile);
       }
     });
+
+    current = Object.freeze({ ...current, deviceRevision: 5 });
+    const interruptedStageId =
+      `human-device-authority:${DEVICE_ID}:${String(current.deviceRevision)}`;
+    const activateProfile = profileVault.activateProfile.bind(profileVault);
+    let interrupted = false;
+    profileVault.activateProfile = (coordinates, stageId) => {
+      if (!interrupted && stageId === interruptedStageId) {
+        interrupted = true;
+        return Promise.reject(new Error(
+          "simulated authority activation interruption",
+        ));
+      }
+      return activateProfile(coordinates, stageId);
+    };
+    const interruption = await createClient().ensure().then(
+      () => null, (error: unknown) => error,
+    );
+    expect(interruption).toBeInstanceOf(Error);
+    expect(interruption).toHaveProperty("message", "simulated authority activation interruption");
+    expect(interrupted).toBe(true);
+    expect((await profileVault.listPublicProfiles()).map((entry) => ({
+      lifecycle: entry.lifecycle,
+      stageId: entry.stageId,
+    }))).toEqual([
+      { lifecycle: "active", stageId: undefined },
+      { lifecycle: "staged", stageId: interruptedStageId },
+    ]);
+
+    profileVault.activateProfile = activateProfile;
+    expect(await createClient().ensure()).toEqual({ status: "ready" });
+    const resumedProfiles = await profileVault.listPublicProfiles();
+    expect(resumedProfiles).toHaveLength(1);
+    expect(resumedProfiles[0]).toMatchObject({
+      lifecycle: "active",
+      generation: 5,
+    });
+    let activeBytes!: Uint8Array;
+    await profileVault.withOpenProfile(COORDINATES, async (profileBytes) => {
+      activeBytes = profileBytes.slice();
+      const profile = await authenticateClientDeviceProfileV4({
+        crypto: targetCrypto,
+        profileBytes,
+        expectedDeviceId: DEVICE_ID,
+      });
+      try {
+        expect(profile.baseProfile.baseProfile.trustedDeviceRevision).toBe(5);
+        expect(
+          profile.baseProfile.baseProfile.trustedHostAuthorizationRevision,
+        ).toBe(5);
+      } finally {
+        destroyOpenedClientDeviceProfileV4(profile);
+      }
+    });
+
+    current = Object.freeze({ ...current, deviceRevision: 5 });
+    const producerStageId = "object-access-anchor:interrupted";
+    const [activeBeforeProducer] = (await profileVault.listPublicProfiles())
+      .filter((entry) => entry.lifecycle === "active");
+    await profileVault.stageProfile({
+      coordinates: COORDINATES,
+      stageId: producerStageId,
+      generation: activeBeforeProducer!.generation + 1,
+      profileBytes: activeBytes,
+      publicState: activeBeforeProducer!.publicState,
+    });
+    const stageProfile = profileVault.stageProfile.bind(profileVault);
+    const abortProfile = profileVault.abortStagedProfile.bind(profileVault);
+    let membershipVaultMutations = 0;
+    profileVault.stageProfile = (request) => {
+      membershipVaultMutations += 1;
+      return stageProfile(request);
+    };
+    profileVault.activateProfile = (coordinates, stageId) => {
+      membershipVaultMutations += 1;
+      return activateProfile(coordinates, stageId);
+    };
+    profileVault.abortStagedProfile = (coordinates, stageId) => {
+      membershipVaultMutations += 1;
+      return abortProfile(coordinates, stageId);
+    };
+    expect(await createClient().ensure()).toEqual({ status: "ready" });
+    expect(membershipVaultMutations).toBe(0);
+    expect((await profileVault.listPublicProfiles()).map((entry) =>
+      entry.lifecycle
+    )).toEqual(["active", "staged"]);
+
+    current = Object.freeze({ ...current, personalAuthority: Object.freeze({
+      roomId: PERSONAL_ROOM_ID,
+      namespaceId: PERSONAL_NAMESPACE_ID,
+    }) });
+    const wrongAuthorityClient = createHumanDeviceMembershipClient({
+      api,
+      crypto: targetCrypto,
+      vault: profileVault,
+      coordinates: COORDINATES,
+      clientKind: "electron",
+      installationLineageDigest: LINEAGE,
+      idempotencyKey: "m304-concurrent-welcome-wrong-authority",
+      personalAuthority: {
+        ensure: () => Promise.resolve({ status: "unavailable" as const }),
+      },
+    });
+    expect(await wrongAuthorityClient.ensure().then(
+      () => null,
+      (error: unknown) => error,
+    )).toHaveProperty(
+      "message",
+      expect.stringContaining("Another client profile transition is already staged"),
+    );
+    expect(membershipVaultMutations).toBe(0);
+    current = Object.freeze({ ...current, personalAuthority: null });
+    profileVault.stageProfile = stageProfile;
+    profileVault.activateProfile = activateProfile;
+    profileVault.abortStagedProfile = abortProfile;
+    await profileVault.abortStagedProfile(COORDINATES, producerStageId);
+
+    const wrongCoordinates = Object.freeze({
+      ...COORDINATES,
+      userId: "20000000-0000-4000-8000-000000000399",
+    });
+    await profileVault.stageProfile({
+      coordinates: wrongCoordinates,
+      stageId: "object-access-anchor:wrong-coordinates",
+      generation: 1,
+      profileBytes: activeBytes,
+      publicState: activeBeforeProducer!.publicState,
+    });
+    expect(await createClient().ensure().then(
+      () => null,
+      (error: unknown) => error,
+    )).toHaveProperty(
+      "message",
+      "Another client profile transition is already staged",
+    );
+    expect((await profileVault.listPublicProfiles()).filter((entry) =>
+      entry.lifecycle === "staged"
+    )).toHaveLength(1);
+    await profileVault.abortStagedProfile(
+      wrongCoordinates,
+      "object-access-anchor:wrong-coordinates",
+    );
+
+    const assertRejectedStagePreserved = async (
+      stageId: string,
+      membershipState: "current" | "stale" | "removed",
+      expectedMessage: string,
+      profileBytes: Uint8Array = activeBytes,
+      deviceRevision = 6,
+    ) => {
+      current = Object.freeze({
+        ...current,
+        deviceRevision,
+        membershipState,
+      });
+      const [active] = (await profileVault.listPublicProfiles()).filter(
+        (entry) => entry.lifecycle === "active",
+      );
+      await profileVault.stageProfile({
+        coordinates: COORDINATES,
+        stageId,
+        generation: active!.generation + 1,
+        profileBytes,
+        publicState: active!.publicState,
+      });
+      const rejection = await createClient().ensure().then(
+        () => null, (error: unknown) => error,
+      );
+      expect(rejection).toBeInstanceOf(Error);
+      expect(rejection).toHaveProperty("message", expect.stringContaining(expectedMessage));
+      if (expectedMessage === "Another client profile transition is already staged") {
+        expect(rejection).toHaveProperty("message", expect.stringContaining(stageId));
+        expect(rejection).toHaveProperty("message", expect.stringContaining(`generation ${String(active!.generation + 1)}`));
+      }
+      expect((await profileVault.listPublicProfiles()).map((entry) => ({
+        lifecycle: entry.lifecycle,
+        stageId: entry.stageId,
+        generation: entry.generation,
+      }))).toEqual([
+        {
+          lifecycle: "active",
+          stageId: undefined,
+          generation: active!.generation,
+        },
+        {
+          lifecycle: "staged",
+          stageId,
+          generation: active!.generation + 1,
+        },
+      ]);
+      await profileVault.abortStagedProfile(COORDINATES, stageId);
+    };
+    const exactNextStageId = `human-device-authority:${DEVICE_ID}:6`;
+    const alteredStageBytes = activeBytes.slice();
+    alteredStageBytes[alteredStageBytes.length - 1] =
+      alteredStageBytes[alteredStageBytes.length - 1]! ^ 1;
+    await assertRejectedStagePreserved(
+      `human-device-authority:${DEVICE_ID}:5`,
+      "current",
+      "Another client profile transition is already staged",
+      alteredStageBytes,
+      5,
+    );
+    await assertRejectedStagePreserved(
+      exactNextStageId,
+      "current",
+      "another client profile stage is already pending",
+      alteredStageBytes,
+    );
+    alteredStageBytes.fill(0);
+    for (const stageId of [
+      "human-device-authority:other-device:6",
+      `human-device-authority:${DEVICE_ID}:7`,
+      "unrelated-profile-transition",
+    ]) {
+      await assertRejectedStagePreserved(
+        stageId,
+        "current",
+        "Another client profile transition is already staged",
+      );
+    }
+    for (const membershipState of ["stale", "removed"] as const) {
+      await assertRejectedStagePreserved(
+        exactNextStageId,
+        membershipState,
+        "Another client profile transition is already staged",
+      );
+    }
+    activeBytes.fill(0);
 
     joinSnapshot.stateHash.fill(0);
     joinSnapshot.ciphertext.fill(0);

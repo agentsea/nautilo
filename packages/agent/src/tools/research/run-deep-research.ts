@@ -3,7 +3,7 @@ import { z } from "zod";
 import { warn } from "@nautilo/logger";
 import { getCapabilityFundingSession, type CapabilityFundingSession } from "../../runtime/capability-funding";
 import { getDeepResearchReturnContext } from "../../runtime/deep-research-return-context";
-import { getTaskToolRuntime, type TaskToolCreateInput } from "../tasks/task-tool-runtime";
+import { getTaskToolRuntime, type TaskToolCreateInput, type TaskToolRuntime } from "../tasks/task-tool-runtime";
 import {
   DeepResearchUnavailableError,
   deepResearchModelPlanFromConfiguration,
@@ -36,6 +36,8 @@ interface DeepResearchToolDependencies {
     input: TaskToolCreateInput,
   ) => Promise<{ taskId: string; status: string; nextFireAt?: Date | undefined }>;
   getCapabilityFundingSession?: () => CapabilityFundingSession | undefined;
+  canUseLegacyTaskContent?: TaskToolRuntime["canUseLegacyTaskContent"];
+  createProtectedTask?: TaskToolRuntime["createProtectedTask"];
 }
 
 async function admitPersonalDeepResearch(
@@ -87,8 +89,6 @@ export function createRunDeepResearchTool(
   dependencies: DeepResearchToolDependencies = {},
 ) {
   const resolveConfiguration = dependencies.resolveConfiguration ?? fromRuntimeConfig;
-  const createTask = dependencies.createTask ?? ((input: TaskToolCreateInput) =>
-    getTaskToolRuntime().createTask(input));
   const resolveCapabilityFunding = dependencies.getCapabilityFundingSession ?? getCapabilityFundingSession;
   return new DynamicStructuredTool({
     name: "run_deep_research",
@@ -111,6 +111,19 @@ IMPORTANT: After receiving the report from this tool, do NOT run additional web 
     func: async (
       { research_brief, report_language }: { research_brief: string; report_language?: string },
     ) => {
+      const runtime = dependencies.createTask === undefined ? getTaskToolRuntime() : undefined;
+      const ordinary = dependencies.canUseLegacyTaskContent !== undefined
+        ? await dependencies.canUseLegacyTaskContent()
+        : runtime?.canUseLegacyTaskContent !== undefined
+          ? await runtime.canUseLegacyTaskContent()
+          : true;
+      const protectedCreator = dependencies.createProtectedTask ?? runtime?.createProtectedTask;
+      if (!ordinary && protectedCreator === undefined) {
+        throw new DeepResearchAdmissionError("Protected Deep Research Task creation is unavailable.");
+      }
+      const createTask = ordinary
+        ? dependencies.createTask ?? ((input: TaskToolCreateInput) => runtime!.createTask(input))
+        : protectedCreator!;
       const language = report_language || "English";
       const capabilityFunding = resolveCapabilityFunding();
       let legacyModelPlan: ReturnType<typeof deepResearchModelPlanFromConfiguration> | undefined;
@@ -123,12 +136,12 @@ IMPORTANT: After receiving the report from this tool, do NOT run additional web 
         try {
           legacyModelPlan = deepResearchModelPlanFromConfiguration(resolveConfiguration());
         } catch (error) {
-          const message = unavailableMessage(error);
+          const message = ordinary ? unavailableMessage(error) : null;
           if (message) throw new DeepResearchAdmissionError(message, { cause: error });
-          warn(`[deep-research] Model configuration admission failed: ${error instanceof Error ? error.message : String(error)}`);
+          if (ordinary) warn(`[deep-research] Model configuration admission failed: ${error instanceof Error ? error.message : String(error)}`);
           throw new DeepResearchAdmissionError(
             "Deep research model configuration could not be validated. Ask a server operator to review the configured research models, then try again.",
-            { cause: error },
+            ordinary ? { cause: error } : undefined,
           );
         }
       }
@@ -175,11 +188,11 @@ IMPORTANT: After receiving the report from this tool, do NOT run additional web 
         });
         return `I've started deep research on "${research_brief.slice(0, 80)}${research_brief.length > 80 ? "..." : ""}" in the background. You can keep chatting — I'll share the results when they're ready. (Task ID: ${task.taskId})`;
       } catch (e) {
-        if (e instanceof DeepResearchAdmissionError) throw e;
-        warn(`[deep-research] Background task creation failed: ${e instanceof Error ? e.message : String(e)}`);
+        if (ordinary && e instanceof DeepResearchAdmissionError) throw e;
+        if (ordinary) warn(`[deep-research] Background task creation failed: ${e instanceof Error ? e.message : String(e)}`);
         throw new DeepResearchAdmissionError(
           "Deep research could not confirm that its background Task started. Check Tasks before retrying.",
-          { cause: e },
+          ordinary ? { cause: e } : undefined,
         );
       }
     },

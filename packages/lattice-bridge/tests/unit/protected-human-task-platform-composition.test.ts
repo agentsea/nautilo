@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { NautiloApiClient } from "@nautilo/api-client/browser";
+import { ApiError, type NautiloApiClient } from "@nautilo/api-client/browser";
 import type { TaskContentSummaryV1 } from "@nautilo/types";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -32,7 +32,8 @@ const summary = {
 } as TaskContentSummaryV1;
 
 function owner(
-  mode: "encrypted_only" | "shadow_encryption" = "encrypted_only",
+  mode: "plaintext_only" | "encrypted_only" | "shadow_encryption" =
+    "encrypted_only",
   shadowBehavior: "strict" | "fallback" = "strict",
 ) {
   return bindEncryptionDataOperationOwner({
@@ -109,8 +110,19 @@ describe("protected Human Task platform composition", () => {
         };
       },
     } as unknown as NautiloApiClient;
+    const revalidations: number[] = [];
+    const dataOperationOwner = bindEncryptionDataOperationOwner({ policy: {
+      resolve: () => Promise.resolve({
+        policy: { mode: "encrypted_only" as const, shadowBehavior: "strict" as const },
+        revalidationToken: 17,
+      }),
+      revalidate: (token) => {
+        revalidations.push(token);
+        return Promise.resolve();
+      },
+    } });
     const common = {
-      ...input(resultApi),
+      ...input(resultApi, dataOperationOwner),
       resolveTrustedIssuingDevicePublicKey: () => Promise.resolve(null),
     };
     const request = {
@@ -140,6 +152,89 @@ describe("protected Human Task platform composition", () => {
       `${taskId}:${taskRunId}`,
       `${taskId}:${taskRunId}`,
     ]);
+    expect(revalidations).toEqual([17, 17, 17, 17, 17, 17]);
+  });
+
+  test("Plain result reads reject before protected API or device custody", async () => {
+    const taskId = "30000000-0000-4000-8000-000000000248";
+    const taskRunId = "30000000-0000-4000-8000-000000000249";
+    const effects: string[] = [];
+    const api = {
+      getProtectedTaskRunResultEnvelopeV1: async () => {
+        effects.push("protected-api");
+        throw new Error("Plain must not reach the protected result API");
+      },
+    } as unknown as NautiloApiClient;
+    const directory = await mkdtemp(join(tmpdir(), "nautilo-task-result-plain-"));
+    try {
+      const reader = createElectronHumanTaskRunResultReader({
+        ...input(api, owner("plaintext_only", "fallback")),
+        directory,
+        safeStorage: {
+          isEncryptionAvailable: () => {
+            effects.push("safe-storage-availability");
+            return true;
+          },
+          encryptString: (value) => {
+            effects.push("safe-storage-encrypt");
+            return Buffer.from(value, "utf8");
+          },
+          decryptString: (value) => {
+            effects.push("safe-storage-decrypt");
+            return value.toString("utf8");
+          },
+        },
+        resolveDeviceAdmissionStatus: () => {
+          effects.push("device-admission");
+          return Promise.reject(new Error("Plain must not inspect device admission"));
+        },
+        resolveTrustedIssuingDevicePublicKey: () => {
+          effects.push("issuer-key");
+          return Promise.resolve(null);
+        },
+      });
+      let failure: unknown;
+      try {
+        await reader.read({
+          taskId,
+          taskRunId,
+          agentId: "30000000-0000-4000-8000-000000000250",
+        });
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(ClassifiedDataOperationError);
+      expect((failure as ClassifiedDataOperationError).failureClass)
+        .toBe("unsupported");
+      expect(effects).toEqual([]);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("Shadow result failures never fall back to an ordinary read", async () => {
+    const taskId = "30000000-0000-4000-8000-000000000248";
+    const taskRunId = "30000000-0000-4000-8000-000000000249";
+    const failure = new ClassifiedDataOperationError(
+      "key_waiting", "protected result key is unavailable",
+    );
+    const reader = createBrowserHumanTaskRunResultReader({
+      ...input({
+        getProtectedTaskRunResultEnvelopeV1: () => Promise.reject(failure),
+      } as unknown as NautiloApiClient, owner("shadow_encryption", "fallback")),
+      resolveTrustedIssuingDevicePublicKey: () => Promise.resolve(null),
+    });
+    let received: unknown;
+    try {
+      await reader.read({
+        taskId,
+        taskRunId,
+        agentId: "30000000-0000-4000-8000-000000000250",
+      });
+    } catch (error) {
+      received = error;
+    }
+    expect(received).toBe(failure);
   });
 
   test("Browser selects the additive protected list transport", async () => {
@@ -171,14 +266,23 @@ describe("protected Human Task platform composition", () => {
     }
   });
 
-  test("Browser maps a recoverable pre-send Shadow failure to the legacy ordinary API", async () => {
+  test("Browser cannot downgrade a Shadow failure through the legacy Plain endpoints", async () => {
     const calls: unknown[] = [];
+    let protectedDefinitionReads = 0;
     const api = {
+      getProtectedTaskDefinitionEnvelopeV1: async () => {
+        protectedDefinitionReads += 1;
+        throw new ClassifiedDataOperationError("key_waiting", "device key unavailable");
+      },
       planProtectedTaskCreateV1: async () => {
         throw new ClassifiedDataOperationError("key_waiting", "device key unavailable");
       },
       planProtectedTaskUpdateV1: async () => {
         throw new ClassifiedDataOperationError("key_waiting", "device key unavailable");
+      },
+      planTaskOrdinaryFallbackCreateV1: async () => {
+        calls.push("signed-fallback-plan");
+        throw new ClassifiedDataOperationError("key_waiting", "Device fallback authority unavailable");
       },
       createOrdinaryTaskV1: async (body: unknown) => {
         calls.push(["ordinary-create", body]);
@@ -204,7 +308,7 @@ describe("protected Human Task platform composition", () => {
       api,
       owner("shadow_encryption", "fallback"),
     ));
-    const created = await taskClient.create({
+    expect(taskClient.create({
       payload: {
         formatVersion: 1,
         prompt: "private prompt",
@@ -212,8 +316,8 @@ describe("protected Human Task platform composition", () => {
         protectedMetadata: {},
       },
       task: { scheduleKind: "now" },
-    });
-    const updated = await taskClient.update(summary, {
+    })).rejects.toThrow("Device fallback authority unavailable");
+    expect(taskClient.update(summary, {
       payload: {
         formatVersion: 1,
         prompt: "updated private prompt",
@@ -221,25 +325,29 @@ describe("protected Human Task platform composition", () => {
         protectedMetadata: {},
       },
       task: { timezone: "UTC" },
-    });
-    expect(created.taskId).toBe(summary.id);
-    expect(updated.content).toEqual({
-      dtoVersion: 1,
-      status: "ordinary",
-      promptPreview: "updated private prompt",
-      lastError: null,
-    });
-    expect(calls).toEqual([
-      ["ordinary-create", {
-        scheduleKind: "now",
-        prompt: "private prompt",
-        expectedOutput: null,
-      }],
-      ["ordinary-update", {
-        timezone: "UTC",
-        prompt: "updated private prompt",
-        expectedOutput: "answer",
-      }],
-    ]);
+    })).rejects.toThrow("source content is unavailable");
+    expect(protectedDefinitionReads).toBe(1);
+    expect(calls).toEqual(["signed-fallback-plan"]);
+  });
+
+  test("Browser classifies only the exact server encryption-availability plan failure", async () => {
+    for (const [status, code, expectedFallback] of [
+      [409, "task_encryption_not_ready", true],
+      [403, "task_encryption_not_ready", false],
+      [403, "task_authority_unavailable", false],
+      [409, "task_changed", false],
+    ] as const) {
+      let plans = 0;
+      const initial = new ApiError(status, code);
+      const missingDevice = new Error("signed fallback Device unavailable");
+      const client = createBrowserHumanTaskClient(input({
+        planProtectedTaskCreateV1: async () => { throw initial; },
+        planTaskOrdinaryFallbackCreateV1: async () => { plans += 1; throw missingDevice; },
+        createOrdinaryTaskV1: async () => { throw new Error("Plain route must remain idle"); },
+      } as unknown as NautiloApiClient, owner("shadow_encryption", "fallback")));
+      expect(client.create({ payload: { formatVersion: 1, prompt: "Task", expectedOutput: null, protectedMetadata: {} },
+        task: {} })).rejects.toBe(expectedFallback ? missingDevice : initial);
+      expect(plans).toBe(expectedFallback ? 1 : 0);
+    }
   });
 });

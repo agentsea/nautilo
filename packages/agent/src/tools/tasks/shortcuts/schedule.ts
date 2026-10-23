@@ -19,6 +19,7 @@ import {
   isBoundedPersonalNativeShortcutCreate,
   isPersonalOnlyNativeShortcutCreate,
 } from "../../../runtime/personal-task-controls";
+import { createTaskForCurrentContentPolicy } from "../policy-aware-create";
 
 /**
  * `schedule` shortcut. A thin `TaskCreateInput` builder that
@@ -186,7 +187,7 @@ export function createScheduleTool(context?: unknown) {
           : {}),
         ...(args.model_id !== undefined ? { requestedModelId: args.model_id } : {}),
       };
-      const { taskId, status, nextFireAt } = await rt.createTask(input);
+      const { taskId, status, nextFireAt } = await createTaskForCurrentContentPolicy(rt, input);
       return JSON.stringify({
         taskId,
         status,

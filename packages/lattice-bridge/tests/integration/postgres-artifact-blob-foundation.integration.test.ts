@@ -3,7 +3,10 @@ import { mkdtemp, open as openFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { eq, inArray } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
+import * as schema from "@nautilo/db/schema";
 import {
   LatticeCrypto,
   accessRevision,
@@ -70,6 +73,8 @@ import {
   deriveArtifactControlObjectIdV1,
   fingerprintRequiredArtifactNamespaces,
 } from "@nautilo/lattice-bridge";
+import { withDisposableFixtureCleanup } from
+  "../../scripts/disposable-postgres-cleanup";
 
 type SqlClient = postgres.Sql;
 type SqlExecutor = Pick<SqlClient, "unsafe">;
@@ -1236,59 +1241,62 @@ describe("Postgres protected Artifact blob foundation", () => {
       }]);
     } finally {
       transientSecrets.forEach((bytes) => bytes.fill(0));
-      await admin.unsafe("DELETE FROM artifacts WHERE id = $1", [artifactRowId]);
-      await admin.unsafe(
-        "DELETE FROM artifact_crypto_operations WHERE operation_id = $1",
-        [operationId],
-      );
-      await admin.unsafe(
-        "DELETE FROM artifact_crypto_operations WHERE operation_id = $1",
-        [controlOperationId],
-      );
-      await admin.unsafe(
-        "DELETE FROM artifact_crypto_operations WHERE operation_id = $1",
-        [accessOperationId],
-      );
-      await admin.unsafe(
-        "DELETE FROM artifact_crypto_revisions WHERE artifact_row_id = $1",
-        [artifactRowId],
-      );
-      await admin.unsafe(
-        "DELETE FROM artifact_crypto_blobs WHERE artifact_row_id = $1",
-        [artifactRowId],
-      );
-      await admin.unsafe(
-        "DELETE FROM object_crypto_access_heads WHERE object_id = ANY($1::text[])",
-        [objectIds],
-      );
-      await admin.unsafe(
-        "DELETE FROM object_crypto_namespace_envelopes WHERE object_id = ANY($1::text[])",
-        [objectIds],
-      );
-      await admin.unsafe(
-        "DELETE FROM object_crypto_access_manifests WHERE object_id = ANY($1::text[])",
-        [objectIds],
-      );
-      await admin.unsafe(
-        "DELETE FROM crypto_objects WHERE object_id = ANY($1::text[])",
-        [objectIds],
-      );
-      await admin.unsafe(
-        "DELETE FROM namespace_crypto_heads WHERE namespace_id = ANY($1::text[])",
-        [allNamespaceIds],
-      );
-      await admin.unsafe(
-        "DELETE FROM namespace_crypto_bindings WHERE namespace_id = ANY($1::text[])",
-        [allNamespaceIds],
-      );
-      await admin.unsafe(
-        "DELETE FROM crypto_domains WHERE id = ANY($1::text[])",
-        [domainIds],
-      );
-      await admin.unsafe(
-        "DELETE FROM namespaces WHERE id = ANY($1::uuid[])",
-        [allNamespaceIds],
-      );
+      await withDisposableFixtureCleanup(admin, async (transaction) => {
+        const cleanup = drizzle(transaction, { schema });
+        await cleanup.delete(schema.artifacts).where(eq(schema.artifacts.id, artifactRowId));
+        await cleanup.delete(schema.artifactCryptoOperations).where(eq(
+          schema.artifactCryptoOperations.operationId,
+          operationId,
+        ));
+        await cleanup.delete(schema.artifactCryptoOperations).where(eq(
+          schema.artifactCryptoOperations.operationId,
+          controlOperationId,
+        ));
+        await cleanup.delete(schema.artifactCryptoOperations).where(eq(
+          schema.artifactCryptoOperations.operationId,
+          accessOperationId,
+        ));
+        await cleanup.delete(schema.artifactCryptoRevisions).where(eq(
+          schema.artifactCryptoRevisions.artifactRowId,
+          artifactRowId,
+        ));
+        await cleanup.delete(schema.artifactCryptoBlobs).where(eq(
+          schema.artifactCryptoBlobs.artifactRowId,
+          artifactRowId,
+        ));
+        await cleanup.delete(schema.objectCryptoAccessHeads).where(inArray(
+          schema.objectCryptoAccessHeads.objectId,
+          objectIds,
+        ));
+        await cleanup.delete(schema.objectCryptoNamespaceEnvelopes).where(inArray(
+          schema.objectCryptoNamespaceEnvelopes.objectId,
+          objectIds,
+        ));
+        await cleanup.delete(schema.objectCryptoAccessManifests).where(inArray(
+          schema.objectCryptoAccessManifests.objectId,
+          objectIds,
+        ));
+        await cleanup.delete(schema.cryptoObjects).where(inArray(
+          schema.cryptoObjects.objectId,
+          objectIds,
+        ));
+        await cleanup.delete(schema.namespaceCryptoHeads).where(inArray(
+          schema.namespaceCryptoHeads.namespaceId,
+          allNamespaceIds,
+        ));
+        await cleanup.delete(schema.namespaceCryptoBindings).where(inArray(
+          schema.namespaceCryptoBindings.namespaceId,
+          allNamespaceIds,
+        ));
+        await cleanup.delete(schema.cryptoDomains).where(inArray(
+          schema.cryptoDomains.id,
+          domainIds,
+        ));
+        await cleanup.delete(schema.namespaces).where(inArray(
+          schema.namespaces.id,
+          allNamespaceIds,
+        ));
+      });
       await Promise.all([cryptoClient.end(), productClient.end()]);
       await rm(root, { recursive: true, force: true });
     }

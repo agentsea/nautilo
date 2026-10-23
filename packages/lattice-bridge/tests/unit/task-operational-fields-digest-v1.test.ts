@@ -4,7 +4,10 @@ import {
   fingerprintTaskDualPublicationFieldsV1,
   fingerprintTaskOperationalFieldsV1,
 } from "../../src/task/task-operational-fields-digest-v1.ts";
-import { encodeTaskPayloadV1 } from "../../src/task/task-payload-v1.ts";
+import {
+  encodeTaskDefinitionContentV2,
+  encodeTaskPayloadV1,
+} from "../../src/task/task-payload-v1.ts";
 
 describe("Task operational fields digest", () => {
   test("object key order is canonical, including nested selection fields", () => {
@@ -88,6 +91,37 @@ describe("Task operational fields digest", () => {
         "create",
         {},
         new TextEncoder().encode('{"prompt":"not canonical"}'),
+      )).toThrow();
+    } finally {
+      first.fill(0);
+      second.fill(0);
+    }
+  });
+
+  test("dual update digest accepts and binds exact V2 definition content", () => {
+    const first = encodeTaskDefinitionContentV2({
+      formatVersion: 2,
+      prompt: "private prompt",
+      expectedOutput: null,
+      protectedMetadata: {},
+      retainedHistoricalError: "first historical error",
+    });
+    const second = encodeTaskDefinitionContentV2({
+      formatVersion: 2,
+      prompt: "private prompt",
+      expectedOutput: null,
+      protectedMetadata: {},
+      retainedHistoricalError: "second historical error",
+    });
+    try {
+      const digest = fingerprintTaskDualPublicationFieldsV1("update", {}, first);
+      expect(digest).toHaveLength(32);
+      expect(fingerprintTaskDualPublicationFieldsV1("update", {}, second))
+        .not.toEqual(digest);
+      expect(() => fingerprintTaskDualPublicationFieldsV1(
+        "create",
+        {},
+        first,
       )).toThrow();
     } finally {
       first.fill(0);

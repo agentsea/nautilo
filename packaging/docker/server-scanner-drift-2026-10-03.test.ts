@@ -7,7 +7,7 @@ type Architecture = "linux/amd64" | "linux/arm64";
 type Tuple = readonly ["grype" | "trivy", string, string, string, "high", boolean, string[]];
 const read = (path: string) => JSON.parse(readFileSync(join(import.meta.dir, path), "utf8"));
 const fixture = read("fixtures/server-scanner-drift-2026-10-03.json") as { architectures: Record<Architecture, Tuple[]> };
-const decisions = (read("server-vulnerability-exceptions.input.json") as { exceptions: VulnerabilityPolicyV1["exceptions"] })
+const decisions = (read("fixtures/server-policy-before-security-renewal-2026-10-23.json") as { exceptions: VulnerabilityPolicyV1["exceptions"] })
   .exceptions.filter(entry => entry.advisoryId === "CVE-2026-95619");
 const digest = `sha256:${"a".repeat(64)}`;
 

@@ -141,6 +141,7 @@ function binding(
     deliveryMode: "none",
     destinationRoomId: null,
     destinationNamespaceId: null,
+    resultRevision: 1,
     resultOperationId: `task-run-result:${ids.run}`,
     resultObjectId: protectedTaskRunResultObjectId(ids.task, ids.run),
     messageOperationId: null,
@@ -272,6 +273,7 @@ describe("protected TaskRun start transition", () => {
   test("returns stale without writes for duplicate or changed durable state", async () => {
     const cases: FixtureOptions[] = [
       { task: task({ status: "paused" }) },
+      { task: task({ pauseRequestId: "pause-request" }) },
       { task: task({ scheduleKind: "cron", status: "awaiting" }) },
       { task: task({ contentRevision: 5 }) },
       { task: task({ cryptoAccessRevision: 7 }) },

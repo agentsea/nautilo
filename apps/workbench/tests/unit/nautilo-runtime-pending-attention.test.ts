@@ -6,7 +6,10 @@ import {
   isTaskPendingAttentionPreviewEvent,
   pendingAttentionPreviewIngress,
   recoverDesktopRoomPendingAttention,
+  recoverDesktopTaskPendingAttention,
+  roomHydrationShouldClearPendingAttentionUi,
   shouldAutoResolvePendingAttentionAsk,
+  taskPendingAttentionRecoveryTrigger,
 } from "../../src/adapters/nautilo-runtime";
 
 const ROOM = "40000000-0000-4000-8000-000000000322";
@@ -54,6 +57,31 @@ describe("pending approval restart recovery", () => {
 
     expect(result).toEqual({ status: "unavailable", events: [] });
     expect(admissionCalls).toBe(0);
+
+    expect(await recoverDesktopTaskPendingAttention({}, {
+      clientActionSessionId: "session-322",
+    }, async (operation) => {
+      admissionCalls += 1;
+      return operation();
+    })).toEqual({ status: "unavailable", events: [] });
+    expect(admissionCalls).toBe(0);
+  });
+
+  test("fences a Desktop Task recovery after its captured generation changes", async () => {
+    let current = true;
+    let resolve!: (value: { status: "ready"; events: [] }) => void;
+    const pending = new Promise<{ status: "ready"; events: [] }>((done) => {
+      resolve = done;
+    });
+    const recovery = recoverDesktopTaskPendingAttention({
+      recoverTaskPendingAttention: () => pending,
+    }, {
+      clientActionSessionId: "session-322",
+      isCurrent: () => current,
+    }, (operation) => operation());
+    current = false;
+    resolve({ status: "ready", events: [] });
+    expect(await recovery).toEqual({ status: "unavailable", events: [] });
   });
 
   test("preserves every Task/subagent attention type on the owner-scoped live path", () => {
@@ -96,24 +124,64 @@ describe("pending approval restart recovery", () => {
       true,
     ]);
     expect(events.map((event) => pendingAttentionPreviewIngress(event, false)))
-      .toEqual(["direct", "direct", "direct"]);
+      .toEqual(["enqueue", "enqueue", "enqueue"]);
 
     expect(pendingAttentionPreviewIngress({
       ...events[0],
       origin: undefined,
       laneKey: "task:legacy-task-322",
-    }, false)).toBe("direct");
+    }, false)).toBe("enqueue");
     expect(pendingAttentionPreviewIngress({
       ...events[1],
       origin: "task",
       laneKey: "legacy-owner-scoped-lane",
-    }, false)).toBe("direct");
+    }, false)).toBe("enqueue");
   });
 
   test("does not divert ordinary Room attention from checkpoint reconciliation", () => {
     expect(isTaskPendingAttentionPreviewEvent(approval())).toBe(false);
     expect(pendingAttentionPreviewIngress(approval(), true)).toBe("enqueue");
     expect(pendingAttentionPreviewIngress(approval(OTHER_ROOM), false)).toBe("drop");
+  });
+
+  test("keeps an active Task prompt mounted while Room hydration clears Room prompts", () => {
+    const taskApproval = {
+      ...approval(),
+      origin: "task" as const,
+      taskId: "task-322",
+      taskRunId: "run-322",
+      laneKey: "task:task-322",
+    };
+    expect(roomHydrationShouldClearPendingAttentionUi(taskApproval)).toBeFalse();
+    expect(roomHydrationShouldClearPendingAttentionUi(approval())).toBeTrue();
+    expect(roomHydrationShouldClearPendingAttentionUi(null)).toBeTrue();
+  });
+
+  test("retries bounded Task recovery from content-free lifecycle events", () => {
+    expect(taskPendingAttentionRecoveryTrigger({
+      type: "task.status",
+      taskId: "task-322",
+      ownerId: VIEWER,
+      status: "awaiting",
+    })).toBeTrue();
+    expect(taskPendingAttentionRecoveryTrigger({
+      type: "job.status",
+      jobId: "job-322",
+      laneKey: "task:task-322",
+      status: "completed",
+    })).toBeTrue();
+    expect(taskPendingAttentionRecoveryTrigger({
+      type: "job.status",
+      jobId: "job-room",
+      laneKey: `room:${ROOM}`,
+      status: "completed",
+    })).toBeFalse();
+    expect(taskPendingAttentionRecoveryTrigger({
+      type: "job.status",
+      jobId: "job-running",
+      laneKey: "task:task-322",
+      status: "running",
+    })).toBeFalse();
   });
 
   test("rejects a late callback after challenge, Room, or viewer generation changes", () => {
@@ -132,6 +200,11 @@ describe("pending approval restart recovery", () => {
     expect(isPendingAttentionSubmissionCurrent({ ...base, currentRoomId: OTHER_ROOM })).toBe(false);
     expect(isPendingAttentionSubmissionCurrent({ ...base, currentViewerGeneration: 8 })).toBe(false);
     expect(isPendingAttentionSubmissionCurrent({ ...base, currentScopeGeneration: 12 })).toBe(false);
+    expect(isPendingAttentionSubmissionCurrent({
+      ...base,
+      capturedRoomId: null,
+      currentRoomId: null,
+    })).toBe(true);
   });
   test("never auto-replies to recovered previews while preserving live auto-approve", () => {
     let approvalReplies = 0;

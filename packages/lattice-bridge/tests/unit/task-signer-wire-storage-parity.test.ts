@@ -1,0 +1,25 @@
+import { expect, test } from "bun:test";
+import {
+  BACKGROUND_AUTHORIZATION_BYTE_LIMITS,
+  CRYPTO_STORAGE_BYTE_LIMITS,
+} from "@nautilo/db/schema";
+import {
+  MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V2,
+  MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_BYTES_V2,
+  MAX_TASK_RUNTIME_SIGNER_AUTHORIZATION_WIRE_BYTES_V1,
+} from "@nautilo/lattice-crypto/background";
+import { DOMAIN_FOREGROUND_AUTHORIZATION_MAX_WIRE_BYTES_V2 } from
+  "@nautilo/lattice-crypto/wire";
+
+test("Task public signer evidence and response wrappers fit their durable format bounds", () => {
+  expect<number>(CRYPTO_STORAGE_BYTE_LIMITS.taskRuntimeSignerEvidence)
+    .toBe(MAX_TASK_RUNTIME_SIGNER_AUTHORIZATION_WIRE_BYTES_V1);
+  expect<number>(BACKGROUND_AUTHORIZATION_BYTE_LIMITS.runtimeResponse)
+    .toBe(MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_BYTES_V2);
+  expect<number>(BACKGROUND_AUTHORIZATION_BYTE_LIMITS.legacyRuntimeResponse)
+    .toBe(DOMAIN_FOREGROUND_AUTHORIZATION_MAX_WIRE_BYTES_V2);
+  expect(MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V2)
+    .toBeLessThanOrEqual(BACKGROUND_AUTHORIZATION_BYTE_LIMITS.descriptor);
+  expect(BACKGROUND_AUTHORIZATION_BYTE_LIMITS.runtimeResponse)
+    .toBeLessThanOrEqual(BACKGROUND_AUTHORIZATION_BYTE_LIMITS.response);
+});

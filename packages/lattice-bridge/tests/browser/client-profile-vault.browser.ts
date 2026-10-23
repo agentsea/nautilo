@@ -35,7 +35,7 @@ window.runNautiloBrowserVaultTest = async () => {
   const conformance = await runClientProfileVaultConformance(
     createBrowserClientProfileVault,
   );
-  if (conformance.checks.length !== 11) {
+  if (conformance.checks.length !== 12) {
     throw new Error("browser vault shared conformance failed");
   }
   checks.push("shared-conformance");

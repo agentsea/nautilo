@@ -1,0 +1,2578 @@
+{
+  "schemaVersion": 1,
+  "review": {
+    "reviewedAt": "2026-10-23T00:00:00Z",
+    "expiresAt": "2026-12-07T00:00:00Z",
+    "acceptedRiskDays": 45,
+    "riskAcceptance": "maintainer-approved",
+    "oldSourceCommitSha": "3967a8e67542814bee3c668ec432082366f5749d",
+    "evidenceBoundary": "Source-only policy review. No new image build, SBOM generation, vulnerability scan, native build, or release qualification was performed."
+  },
+  "sourcePolicies": [
+    {
+      "path": "packaging/docker/server-vulnerability-exceptions.input.json",
+      "snapshotFixture": "packaging/docker/fixtures/server-policy-before-security-renewal-2026-10-23.json",
+      "sha256": "5901ea91cbde6d0b52d4499c2cb53c16ba59c2ab207da9a524fe5146366af9f7",
+      "exceptionCount": 122
+    },
+    {
+      "path": "packaging/docker/bootstrap-vulnerability-policy.input.json",
+      "snapshotFixture": "packaging/docker/fixtures/bootstrap-policy-before-security-renewal-2026-10-23.json",
+      "sha256": "63d56d58a3443d1a13959659f461281262fcb16a35e77939a8aa3799143821d2",
+      "exceptionCount": 2
+    }
+  ],
+  "currentEvidence": {
+    "debianSecurityTracker": {
+      "sha256": "7bc77f57fd1db15482c0a294d71dffac69672b39296769b5d4493a9fece639d9",
+      "advisoryCount": 42,
+      "fixedInTrixieSecurityAtRequiredChromiumVersion": 10,
+      "remainingVulnerableInTrixie": 32,
+      "checkedAt": {
+        "earliest": "2026-10-23T12:45:36.848402+00:00",
+        "latest": "2026-10-23T12:45:37.883866+00:00"
+      },
+      "advisories": [
+        {
+          "id": "CVE-2022-4055",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2022-4055",
+          "checkedAt": "2026-10-23T12:45:36.848402+00:00",
+          "trixieRows": [
+            {
+              "release": "forky, sid, trixie",
+              "version": "1.2.1-2",
+              "status": "vulnerable"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2025-69720",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2025-69720",
+          "checkedAt": "2026-10-23T12:45:36.851239+00:00",
+          "trixieRows": [
+            {
+              "release": "trixie",
+              "version": "6.5+20250216-2",
+              "status": "vulnerable"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2026-102010",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2026-102010",
+          "checkedAt": "2026-10-23T12:45:36.852599+00:00",
+          "trixieRows": [
+            {
+              "release": "trixie",
+              "version": "12.4.0-5",
+              "status": "vulnerable"
+            },
+            {
+              "release": "trixie",
+              "version": "13.3.0-16",
+              "status": "vulnerable"
+            },
+            {
+              "release": "trixie",
+              "version": "14.2.0-19",
+              "status": "vulnerable"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2026-107161",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2026-107161",
+          "checkedAt": "2026-10-23T12:45:36.848825+00:00",
+          "trixieRows": [
+            {
+              "release": "trixie",
+              "version": "2.1.28+dfsg1-9",
+              "status": "vulnerable"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2026-107778",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2026-107778",
+          "checkedAt": "2026-10-23T12:45:36.851072+00:00",
+          "trixieRows": [
+            {
+              "release": "trixie (security), trixie",
+              "version": "1.21.3-5+deb13u1",
+              "status": "vulnerable"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2026-110913",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2026-110913",
+          "checkedAt": "2026-10-23T12:45:36.848995+00:00",
+          "trixieRows": [
+            {
+              "release": "trixie",
+              "version": "150.0.7871.181-1~deb13u1",
+              "status": "vulnerable"
+            },
+            {
+              "release": "trixie (security)",
+              "version": "156.0.8078.47-1~deb13u1",
+              "status": "fixed"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2026-110914",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2026-110914",
+          "checkedAt": "2026-10-23T12:45:37.023106+00:00",
+          "trixieRows": [
+            {
+              "release": "trixie",
+              "version": "150.0.7871.181-1~deb13u1",
+              "status": "vulnerable"
+            },
+            {
+              "release": "trixie (security)",
+              "version": "156.0.8078.47-1~deb13u1",
+              "status": "fixed"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2026-110915",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2026-110915",
+          "checkedAt": "2026-10-23T12:45:37.004703+00:00",
+          "trixieRows": [
+            {
+              "release": "trixie",
+              "version": "150.0.7871.181-1~deb13u1",
+              "status": "vulnerable"
+            },
+            {
+              "release": "trixie (security)",
+              "version": "156.0.8078.47-1~deb13u1",
+              "status": "fixed"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2026-110916",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2026-110916",
+          "checkedAt": "2026-10-23T12:45:36.994552+00:00",
+          "trixieRows": [
+            {
+              "release": "trixie",
+              "version": "150.0.7871.181-1~deb13u1",
+              "status": "vulnerable"
+            },
+            {
+              "release": "trixie (security)",
+              "version": "156.0.8078.47-1~deb13u1",
+              "status": "fixed"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2026-110917",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2026-110917",
+          "checkedAt": "2026-10-23T12:45:37.005000+00:00",
+          "trixieRows": [
+            {
+              "release": "trixie",
+              "version": "150.0.7871.181-1~deb13u1",
+              "status": "vulnerable"
+            },
+            {
+              "release": "trixie (security)",
+              "version": "156.0.8078.47-1~deb13u1",
+              "status": "fixed"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2026-110918",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2026-110918",
+          "checkedAt": "2026-10-23T12:45:37.006877+00:00",
+          "trixieRows": [
+            {
+              "release": "trixie",
+              "version": "150.0.7871.181-1~deb13u1",
+              "status": "vulnerable"
+            },
+            {
+              "release": "trixie (security)",
+              "version": "156.0.8078.47-1~deb13u1",
+              "status": "fixed"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2026-110919",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2026-110919",
+          "checkedAt": "2026-10-23T12:45:36.994263+00:00",
+          "trixieRows": [
+            {
+              "release": "trixie",
+              "version": "150.0.7871.181-1~deb13u1",
+              "status": "vulnerable"
+            },
+            {
+              "release": "trixie (security)",
+              "version": "156.0.8078.47-1~deb13u1",
+              "status": "fixed"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2026-110920",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2026-110920",
+          "checkedAt": "2026-10-23T12:45:37.138556+00:00",
+          "trixieRows": [
+            {
+              "release": "trixie",
+              "version": "150.0.7871.181-1~deb13u1",
+              "status": "vulnerable"
+            },
+            {
+              "release": "trixie (security)",
+              "version": "156.0.8078.47-1~deb13u1",
+              "status": "fixed"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2026-110921",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2026-110921",
+          "checkedAt": "2026-10-23T12:45:37.140819+00:00",
+          "trixieRows": [
+            {
+              "release": "trixie",
+              "version": "150.0.7871.181-1~deb13u1",
+              "status": "vulnerable"
+            },
+            {
+              "release": "trixie (security)",
+              "version": "156.0.8078.47-1~deb13u1",
+              "status": "fixed"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2026-110922",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2026-110922",
+          "checkedAt": "2026-10-23T12:45:37.158570+00:00",
+          "trixieRows": [
+            {
+              "release": "trixie",
+              "version": "150.0.7871.181-1~deb13u1",
+              "status": "vulnerable"
+            },
+            {
+              "release": "trixie (security)",
+              "version": "156.0.8078.47-1~deb13u1",
+              "status": "fixed"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2026-16742",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2026-16742",
+          "checkedAt": "2026-10-23T12:45:37.146738+00:00",
+          "trixieRows": [
+            {
+              "release": "trixie",
+              "version": "257.13-1~deb13u1",
+              "status": "vulnerable"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2026-19499",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2026-19499",
+          "checkedAt": "2026-10-23T12:45:37.148666+00:00",
+          "trixieRows": [
+            {
+              "release": "trixie",
+              "version": "2.41-12+deb13u4",
+              "status": "vulnerable"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2026-37555",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2026-37555",
+          "checkedAt": "2026-10-23T12:45:37.164582+00:00",
+          "trixieRows": [
+            {
+              "release": "trixie",
+              "version": "1.2.2-2+deb13u1",
+              "status": "vulnerable"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2026-5435",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2026-5435",
+          "checkedAt": "2026-10-23T12:45:37.529542+00:00",
+          "trixieRows": [
+            {
+              "release": "trixie",
+              "version": "2.41-12+deb13u4",
+              "status": "vulnerable"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2026-54369",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2026-54369",
+          "checkedAt": "2026-10-23T12:45:37.307801+00:00",
+          "trixieRows": [
+            {
+              "release": "trixie",
+              "version": "2.3.2-2",
+              "status": "vulnerable"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2026-54370",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2026-54370",
+          "checkedAt": "2026-10-23T12:45:37.299298+00:00",
+          "trixieRows": [
+            {
+              "release": "trixie",
+              "version": "2.3.2-2",
+              "status": "vulnerable"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2026-6653",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2026-6653",
+          "checkedAt": "2026-10-23T12:45:37.636236+00:00",
+          "trixieRows": [
+            {
+              "release": "trixie",
+              "version": "2.12.7+dfsg+really2.9.14-2.1+deb13u3",
+              "status": "vulnerable"
+            },
+            {
+              "release": "trixie (security)",
+              "version": "2.12.7+dfsg+really2.9.14-2.1+deb13u1",
+              "status": "vulnerable"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2026-74860",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2026-74860",
+          "checkedAt": "2026-10-23T12:45:37.297693+00:00",
+          "trixieRows": [
+            {
+              "release": "trixie",
+              "version": "2.12.7+dfsg+really2.9.14-2.1+deb13u3",
+              "status": "vulnerable"
+            },
+            {
+              "release": "trixie (security)",
+              "version": "2.12.7+dfsg+really2.9.14-2.1+deb13u1",
+              "status": "vulnerable"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2026-76642",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2026-76642",
+          "checkedAt": "2026-10-23T12:45:37.300592+00:00",
+          "trixieRows": [
+            {
+              "release": "trixie (security), trixie",
+              "version": "2.41.5-0+deb13u1",
+              "status": "vulnerable"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2026-78408",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2026-78408",
+          "checkedAt": "2026-10-23T12:45:37.442259+00:00",
+          "trixieRows": [
+            {
+              "release": "trixie (security), trixie",
+              "version": "2.41.5-0+deb13u1",
+              "status": "vulnerable"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2026-78409",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2026-78409",
+          "checkedAt": "2026-10-23T12:45:37.443087+00:00",
+          "trixieRows": [
+            {
+              "release": "trixie (security), trixie",
+              "version": "2.41.5-0+deb13u1",
+              "status": "vulnerable"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2026-78410",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2026-78410",
+          "checkedAt": "2026-10-23T12:45:37.442064+00:00",
+          "trixieRows": [
+            {
+              "release": "trixie (security), trixie",
+              "version": "2.41.5-0+deb13u1",
+              "status": "vulnerable"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2026-82560",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2026-82560",
+          "checkedAt": "2026-10-23T12:45:37.462455+00:00",
+          "trixieRows": [
+            {
+              "release": "trixie",
+              "version": "5.40.1-6+deb13u1",
+              "status": "vulnerable"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2026-85091",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2026-85091",
+          "checkedAt": "2026-10-23T12:45:37.584287+00:00",
+          "trixieRows": [
+            {
+              "release": "trixie",
+              "version": "1:1.3.dfsg+really1.3.1-1",
+              "status": "vulnerable"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2026-86138",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2026-86138",
+          "checkedAt": "2026-10-23T12:45:37.590972+00:00",
+          "trixieRows": [
+            {
+              "release": "trixie",
+              "version": "2.12.7+dfsg+really2.9.14-2.1+deb13u3",
+              "status": "vulnerable"
+            },
+            {
+              "release": "trixie (security)",
+              "version": "2.12.7+dfsg+really2.9.14-2.1+deb13u1",
+              "status": "vulnerable"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2026-86139",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2026-86139",
+          "checkedAt": "2026-10-23T12:45:37.583692+00:00",
+          "trixieRows": [
+            {
+              "release": "trixie",
+              "version": "2.12.7+dfsg+really2.9.14-2.1+deb13u3",
+              "status": "vulnerable"
+            },
+            {
+              "release": "trixie (security)",
+              "version": "2.12.7+dfsg+really2.9.14-2.1+deb13u1",
+              "status": "vulnerable"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2026-86140",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2026-86140",
+          "checkedAt": "2026-10-23T12:45:37.602592+00:00",
+          "trixieRows": [
+            {
+              "release": "trixie",
+              "version": "2.12.7+dfsg+really2.9.14-2.1+deb13u3",
+              "status": "vulnerable"
+            },
+            {
+              "release": "trixie (security)",
+              "version": "2.12.7+dfsg+really2.9.14-2.1+deb13u1",
+              "status": "vulnerable"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2026-86142",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2026-86142",
+          "checkedAt": "2026-10-23T12:45:37.670753+00:00",
+          "trixieRows": [
+            {
+              "release": "trixie",
+              "version": "2.12.7+dfsg+really2.9.14-2.1+deb13u3",
+              "status": "vulnerable"
+            },
+            {
+              "release": "trixie (security)",
+              "version": "2.12.7+dfsg+really2.9.14-2.1+deb13u1",
+              "status": "vulnerable"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2026-86143",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2026-86143",
+          "checkedAt": "2026-10-23T12:45:37.738426+00:00",
+          "trixieRows": [
+            {
+              "release": "trixie",
+              "version": "2.12.7+dfsg+really2.9.14-2.1+deb13u3",
+              "status": "vulnerable"
+            },
+            {
+              "release": "trixie (security)",
+              "version": "2.12.7+dfsg+really2.9.14-2.1+deb13u1",
+              "status": "vulnerable"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2026-86144",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2026-86144",
+          "checkedAt": "2026-10-23T12:45:37.718418+00:00",
+          "trixieRows": [
+            {
+              "release": "trixie",
+              "version": "2.12.7+dfsg+really2.9.14-2.1+deb13u3",
+              "status": "vulnerable"
+            },
+            {
+              "release": "trixie (security)",
+              "version": "2.12.7+dfsg+really2.9.14-2.1+deb13u1",
+              "status": "vulnerable"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2026-88372",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2026-88372",
+          "checkedAt": "2026-10-23T12:45:37.728655+00:00",
+          "trixieRows": [
+            {
+              "release": "trixie",
+              "version": "1.2.2-2+deb13u1",
+              "status": "vulnerable"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2026-88806",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2026-88806",
+          "checkedAt": "2026-10-23T12:45:37.741875+00:00",
+          "trixieRows": [
+            {
+              "release": "trixie",
+              "version": "2:1.8.12-1",
+              "status": "vulnerable"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2026-88807",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2026-88807",
+          "checkedAt": "2026-10-23T12:45:37.778593+00:00",
+          "trixieRows": [
+            {
+              "release": "forky, sid, trixie",
+              "version": "1:0.9.12-1",
+              "status": "vulnerable"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2026-93543",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2026-93543",
+          "checkedAt": "2026-10-23T12:45:37.818484+00:00",
+          "trixieRows": [
+            {
+              "release": "trixie",
+              "version": "2:1.8.2-1",
+              "status": "vulnerable"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2026-94286",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2026-94286",
+          "checkedAt": "2026-10-23T12:45:37.849609+00:00",
+          "trixieRows": [
+            {
+              "release": "forky, sid, trixie",
+              "version": "2:1.2.5-1",
+              "status": "vulnerable"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2026-9538",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2026-9538",
+          "checkedAt": "2026-10-23T12:45:37.883866+00:00",
+          "trixieRows": [
+            {
+              "release": "trixie",
+              "version": "5.40.1-6+deb13u1",
+              "status": "vulnerable"
+            }
+          ]
+        },
+        {
+          "id": "CVE-2026-95619",
+          "url": "https://security-tracker.debian.org/tracker/CVE-2026-95619",
+          "checkedAt": "2026-10-23T12:45:37.881018+00:00",
+          "trixieRows": [
+            {
+              "release": "trixie",
+              "version": "12.4.0-5",
+              "status": "vulnerable"
+            },
+            {
+              "release": "trixie",
+              "version": "13.3.0-16",
+              "status": "vulnerable"
+            },
+            {
+              "release": "trixie",
+              "version": "14.2.0-19",
+              "status": "vulnerable"
+            }
+          ]
+        }
+      ]
+    },
+    "chromiumSecurityUpdate": {
+      "advisory": {
+        "id": "DSA-6577-1",
+        "url": "https://www.debian.org/security/2026/dsa-6577"
+      },
+      "fixedAdvisoryIds": [
+        "CVE-2026-110913",
+        "CVE-2026-110914",
+        "CVE-2026-110915",
+        "CVE-2026-110916",
+        "CVE-2026-110917",
+        "CVE-2026-110918",
+        "CVE-2026-110919",
+        "CVE-2026-110920",
+        "CVE-2026-110921",
+        "CVE-2026-110922"
+      ],
+      "requiredVersion": "156.0.8078.47-1~deb13u1",
+      "availabilityProof": {
+        "sha256": "6f84571ab5edd085cecf06a4b2e427c2d5e93d9a139ea9cdbf1520d38dff23ec",
+        "capturedAt": "2026-10-23T12:45:35Z",
+        "verificationClass": "https-qualified-ca-plus-inrelease-metadata-hash",
+        "qualificationLimit": "OpenPGP signature verification was not performed because no gpgv, gpg, sq, debsig-verify, apt-get, or Debian archive keyring was available. This proves TLS transport and exact agreement with downloaded InRelease metadata; it is not apt-secure or image qualification.",
+        "inRelease": {
+          "url": "https://security.debian.org/debian-security/dists/trixie-security/InRelease",
+          "sha256": "c4a2dcb81cb98970f01005a2e559a7db8ecb1641897c18b6aa69c79f4e7d13d6",
+          "origin": "Debian",
+          "label": "Debian-Security",
+          "suite": "stable-security",
+          "codename": "trixie-security",
+          "date": "Fri, 23 Oct 2026 10:44:10 UTC",
+          "validUntil": "Fri, 30 Oct 2026 10:44:10 UTC"
+        },
+        "indexes": [
+          {
+            "architecture": "amd64",
+            "url": "https://security.debian.org/debian-security/dists/trixie-security/main/binary-amd64/Packages.xz",
+            "sizeBytes": 269404,
+            "sha256": "320ce5ef5baed8f5681bb6c153316450dd6fb11a1cf20625a4d528225b3200f0",
+            "matchesInRelease": true,
+            "packages": [
+              {
+                "package": "chromium-common",
+                "version": "156.0.8078.47-1~deb13u1",
+                "architecture": "amd64",
+                "filename": "pool/updates/main/c/chromium/chromium-common_156.0.8078.47-1~deb13u1_amd64.deb",
+                "sizeBytes": 31691860,
+                "sha256": "c49cb205bf269463a8aae8f99d7ed380e3a432fad6b6fc63a8423dc843deb2cf"
+              },
+              {
+                "package": "chromium-headless-shell",
+                "version": "156.0.8078.47-1~deb13u1",
+                "architecture": "amd64",
+                "filename": "pool/updates/main/c/chromium/chromium-headless-shell_156.0.8078.47-1~deb13u1_amd64.deb",
+                "sizeBytes": 69324944,
+                "sha256": "4daf0fc38f8c0fecbf09b1b23c611b0f8aa153a9b971eda924a0bcf66efe5988"
+              }
+            ]
+          },
+          {
+            "architecture": "arm64",
+            "url": "https://security.debian.org/debian-security/dists/trixie-security/main/binary-arm64/Packages.xz",
+            "sizeBytes": 270552,
+            "sha256": "a323b860123272717d1c70e713638ff4d1bfb58f35594e7bb5feb887212ca192",
+            "matchesInRelease": true,
+            "packages": [
+              {
+                "package": "chromium-common",
+                "version": "156.0.8078.47-1~deb13u1",
+                "architecture": "arm64",
+                "filename": "pool/updates/main/c/chromium/chromium-common_156.0.8078.47-1~deb13u1_arm64.deb",
+                "sizeBytes": 36723424,
+                "sha256": "7d53c862a4782ee27830dbed22dc984661d71251e34156793a2da98fb32c9d1f"
+              },
+              {
+                "package": "chromium-headless-shell",
+                "version": "156.0.8078.47-1~deb13u1",
+                "architecture": "arm64",
+                "filename": "pool/updates/main/c/chromium/chromium-headless-shell_156.0.8078.47-1~deb13u1_arm64.deb",
+                "sizeBytes": 60754036,
+                "sha256": "b6cfc081381ebe4f9d3132bd11f26ecd6edb1fd1baed039f0da38f43dd09f44d"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "decisions": {
+    "retiredChromiumExceptions": {
+      "count": 40,
+      "sourcePolicyTuples": [
+        {
+          "advisoryId": "CVE-2026-110913",
+          "packageName": "chromium-common",
+          "installedVersion": "155.0.8059.79-1~deb13u1",
+          "severity": "high",
+          "scannerAuthority": [
+            "grype",
+            "trivy"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-10-19T11:42:00Z",
+          "previousExpiresAt": "2026-10-26T00:00:00Z",
+          "unavailableFix": {
+            "architecture": "linux/amd64",
+            "distribution": "debian:13",
+            "availableVersion": "155.0.8059.79-1~deb13u1",
+            "fixedVersion": "155.0.8059.84"
+          }
+        },
+        {
+          "advisoryId": "CVE-2026-110913",
+          "packageName": "chromium-headless-shell",
+          "installedVersion": "155.0.8059.79-1~deb13u1",
+          "severity": "high",
+          "scannerAuthority": [
+            "grype",
+            "trivy"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-10-19T11:42:00Z",
+          "previousExpiresAt": "2026-10-26T00:00:00Z",
+          "unavailableFix": {
+            "architecture": "linux/amd64",
+            "distribution": "debian:13",
+            "availableVersion": "155.0.8059.79-1~deb13u1",
+            "fixedVersion": "155.0.8059.84"
+          }
+        },
+        {
+          "advisoryId": "CVE-2026-110914",
+          "packageName": "chromium-common",
+          "installedVersion": "155.0.8059.79-1~deb13u1",
+          "severity": "high",
+          "scannerAuthority": [
+            "grype"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-10-19T11:42:00Z",
+          "previousExpiresAt": "2026-10-26T00:00:00Z",
+          "unavailableFix": {
+            "architecture": "linux/amd64",
+            "distribution": "debian:13",
+            "availableVersion": "155.0.8059.79-1~deb13u1",
+            "fixedVersion": "155.0.8059.84"
+          }
+        },
+        {
+          "advisoryId": "CVE-2026-110914",
+          "packageName": "chromium-headless-shell",
+          "installedVersion": "155.0.8059.79-1~deb13u1",
+          "severity": "high",
+          "scannerAuthority": [
+            "grype"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-10-19T11:42:00Z",
+          "previousExpiresAt": "2026-10-26T00:00:00Z",
+          "unavailableFix": {
+            "architecture": "linux/amd64",
+            "distribution": "debian:13",
+            "availableVersion": "155.0.8059.79-1~deb13u1",
+            "fixedVersion": "155.0.8059.84"
+          }
+        },
+        {
+          "advisoryId": "CVE-2026-110915",
+          "packageName": "chromium-common",
+          "installedVersion": "155.0.8059.79-1~deb13u1",
+          "severity": "high",
+          "scannerAuthority": [
+            "grype"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-10-19T11:42:00Z",
+          "previousExpiresAt": "2026-10-26T00:00:00Z",
+          "unavailableFix": {
+            "architecture": "linux/amd64",
+            "distribution": "debian:13",
+            "availableVersion": "155.0.8059.79-1~deb13u1",
+            "fixedVersion": "155.0.8059.84"
+          }
+        },
+        {
+          "advisoryId": "CVE-2026-110915",
+          "packageName": "chromium-headless-shell",
+          "installedVersion": "155.0.8059.79-1~deb13u1",
+          "severity": "high",
+          "scannerAuthority": [
+            "grype"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-10-19T11:42:00Z",
+          "previousExpiresAt": "2026-10-26T00:00:00Z",
+          "unavailableFix": {
+            "architecture": "linux/amd64",
+            "distribution": "debian:13",
+            "availableVersion": "155.0.8059.79-1~deb13u1",
+            "fixedVersion": "155.0.8059.84"
+          }
+        },
+        {
+          "advisoryId": "CVE-2026-110916",
+          "packageName": "chromium-common",
+          "installedVersion": "155.0.8059.79-1~deb13u1",
+          "severity": "critical",
+          "scannerAuthority": [
+            "grype"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-10-19T11:42:00Z",
+          "previousExpiresAt": "2026-10-26T00:00:00Z",
+          "unavailableFix": {
+            "architecture": "linux/amd64",
+            "distribution": "debian:13",
+            "availableVersion": "155.0.8059.79-1~deb13u1",
+            "fixedVersion": "155.0.8059.84"
+          }
+        },
+        {
+          "advisoryId": "CVE-2026-110916",
+          "packageName": "chromium-headless-shell",
+          "installedVersion": "155.0.8059.79-1~deb13u1",
+          "severity": "critical",
+          "scannerAuthority": [
+            "grype"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-10-19T11:42:00Z",
+          "previousExpiresAt": "2026-10-26T00:00:00Z",
+          "unavailableFix": {
+            "architecture": "linux/amd64",
+            "distribution": "debian:13",
+            "availableVersion": "155.0.8059.79-1~deb13u1",
+            "fixedVersion": "155.0.8059.84"
+          }
+        },
+        {
+          "advisoryId": "CVE-2026-110917",
+          "packageName": "chromium-common",
+          "installedVersion": "155.0.8059.79-1~deb13u1",
+          "severity": "high",
+          "scannerAuthority": [
+            "trivy"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-10-19T11:42:00Z",
+          "previousExpiresAt": "2026-10-26T00:00:00Z",
+          "unavailableFix": {
+            "architecture": "linux/amd64",
+            "distribution": "debian:13",
+            "availableVersion": "155.0.8059.79-1~deb13u1",
+            "fixedVersion": "155.0.8059.84"
+          }
+        },
+        {
+          "advisoryId": "CVE-2026-110917",
+          "packageName": "chromium-headless-shell",
+          "installedVersion": "155.0.8059.79-1~deb13u1",
+          "severity": "high",
+          "scannerAuthority": [
+            "trivy"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-10-19T11:42:00Z",
+          "previousExpiresAt": "2026-10-26T00:00:00Z",
+          "unavailableFix": {
+            "architecture": "linux/amd64",
+            "distribution": "debian:13",
+            "availableVersion": "155.0.8059.79-1~deb13u1",
+            "fixedVersion": "155.0.8059.84"
+          }
+        },
+        {
+          "advisoryId": "CVE-2026-110918",
+          "packageName": "chromium-common",
+          "installedVersion": "155.0.8059.79-1~deb13u1",
+          "severity": "high",
+          "scannerAuthority": [
+            "trivy"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-10-19T11:42:00Z",
+          "previousExpiresAt": "2026-10-26T00:00:00Z",
+          "unavailableFix": {
+            "architecture": "linux/amd64",
+            "distribution": "debian:13",
+            "availableVersion": "155.0.8059.79-1~deb13u1",
+            "fixedVersion": "155.0.8059.84"
+          }
+        },
+        {
+          "advisoryId": "CVE-2026-110918",
+          "packageName": "chromium-headless-shell",
+          "installedVersion": "155.0.8059.79-1~deb13u1",
+          "severity": "high",
+          "scannerAuthority": [
+            "trivy"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-10-19T11:42:00Z",
+          "previousExpiresAt": "2026-10-26T00:00:00Z",
+          "unavailableFix": {
+            "architecture": "linux/amd64",
+            "distribution": "debian:13",
+            "availableVersion": "155.0.8059.79-1~deb13u1",
+            "fixedVersion": "155.0.8059.84"
+          }
+        },
+        {
+          "advisoryId": "CVE-2026-110919",
+          "packageName": "chromium-common",
+          "installedVersion": "155.0.8059.79-1~deb13u1",
+          "severity": "high",
+          "scannerAuthority": [
+            "grype",
+            "trivy"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-10-19T11:42:00Z",
+          "previousExpiresAt": "2026-10-26T00:00:00Z",
+          "unavailableFix": {
+            "architecture": "linux/amd64",
+            "distribution": "debian:13",
+            "availableVersion": "155.0.8059.79-1~deb13u1",
+            "fixedVersion": "155.0.8059.84"
+          }
+        },
+        {
+          "advisoryId": "CVE-2026-110919",
+          "packageName": "chromium-headless-shell",
+          "installedVersion": "155.0.8059.79-1~deb13u1",
+          "severity": "high",
+          "scannerAuthority": [
+            "grype",
+            "trivy"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-10-19T11:42:00Z",
+          "previousExpiresAt": "2026-10-26T00:00:00Z",
+          "unavailableFix": {
+            "architecture": "linux/amd64",
+            "distribution": "debian:13",
+            "availableVersion": "155.0.8059.79-1~deb13u1",
+            "fixedVersion": "155.0.8059.84"
+          }
+        },
+        {
+          "advisoryId": "CVE-2026-110920",
+          "packageName": "chromium-common",
+          "installedVersion": "155.0.8059.79-1~deb13u1",
+          "severity": "high",
+          "scannerAuthority": [
+            "grype",
+            "trivy"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-10-19T11:42:00Z",
+          "previousExpiresAt": "2026-10-26T00:00:00Z",
+          "unavailableFix": {
+            "architecture": "linux/amd64",
+            "distribution": "debian:13",
+            "availableVersion": "155.0.8059.79-1~deb13u1",
+            "fixedVersion": "155.0.8059.84"
+          }
+        },
+        {
+          "advisoryId": "CVE-2026-110920",
+          "packageName": "chromium-headless-shell",
+          "installedVersion": "155.0.8059.79-1~deb13u1",
+          "severity": "high",
+          "scannerAuthority": [
+            "grype",
+            "trivy"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-10-19T11:42:00Z",
+          "previousExpiresAt": "2026-10-26T00:00:00Z",
+          "unavailableFix": {
+            "architecture": "linux/amd64",
+            "distribution": "debian:13",
+            "availableVersion": "155.0.8059.79-1~deb13u1",
+            "fixedVersion": "155.0.8059.84"
+          }
+        },
+        {
+          "advisoryId": "CVE-2026-110921",
+          "packageName": "chromium-common",
+          "installedVersion": "155.0.8059.79-1~deb13u1",
+          "severity": "high",
+          "scannerAuthority": [
+            "grype",
+            "trivy"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-10-19T11:42:00Z",
+          "previousExpiresAt": "2026-10-26T00:00:00Z",
+          "unavailableFix": {
+            "architecture": "linux/amd64",
+            "distribution": "debian:13",
+            "availableVersion": "155.0.8059.79-1~deb13u1",
+            "fixedVersion": "155.0.8059.84"
+          }
+        },
+        {
+          "advisoryId": "CVE-2026-110921",
+          "packageName": "chromium-headless-shell",
+          "installedVersion": "155.0.8059.79-1~deb13u1",
+          "severity": "high",
+          "scannerAuthority": [
+            "grype",
+            "trivy"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-10-19T11:42:00Z",
+          "previousExpiresAt": "2026-10-26T00:00:00Z",
+          "unavailableFix": {
+            "architecture": "linux/amd64",
+            "distribution": "debian:13",
+            "availableVersion": "155.0.8059.79-1~deb13u1",
+            "fixedVersion": "155.0.8059.84"
+          }
+        },
+        {
+          "advisoryId": "CVE-2026-110922",
+          "packageName": "chromium-common",
+          "installedVersion": "155.0.8059.79-1~deb13u1",
+          "severity": "high",
+          "scannerAuthority": [
+            "grype",
+            "trivy"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-10-19T11:42:00Z",
+          "previousExpiresAt": "2026-10-26T00:00:00Z",
+          "unavailableFix": {
+            "architecture": "linux/amd64",
+            "distribution": "debian:13",
+            "availableVersion": "155.0.8059.79-1~deb13u1",
+            "fixedVersion": "155.0.8059.84"
+          }
+        },
+        {
+          "advisoryId": "CVE-2026-110922",
+          "packageName": "chromium-headless-shell",
+          "installedVersion": "155.0.8059.79-1~deb13u1",
+          "severity": "high",
+          "scannerAuthority": [
+            "grype",
+            "trivy"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-10-19T11:42:00Z",
+          "previousExpiresAt": "2026-10-26T00:00:00Z",
+          "unavailableFix": {
+            "architecture": "linux/amd64",
+            "distribution": "debian:13",
+            "availableVersion": "155.0.8059.79-1~deb13u1",
+            "fixedVersion": "155.0.8059.84"
+          }
+        },
+        {
+          "advisoryId": "CVE-2026-110913",
+          "packageName": "chromium-common",
+          "installedVersion": "155.0.8059.79-1~deb13u1",
+          "severity": "high",
+          "scannerAuthority": [
+            "grype",
+            "trivy"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-10-19T11:42:00Z",
+          "previousExpiresAt": "2026-10-26T00:00:00Z",
+          "unavailableFix": {
+            "architecture": "linux/arm64",
+            "distribution": "debian:13",
+            "availableVersion": "155.0.8059.79-1~deb13u1",
+            "fixedVersion": "155.0.8059.84"
+          }
+        },
+        {
+          "advisoryId": "CVE-2026-110913",
+          "packageName": "chromium-headless-shell",
+          "installedVersion": "155.0.8059.79-1~deb13u1",
+          "severity": "high",
+          "scannerAuthority": [
+            "grype",
+            "trivy"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-10-19T11:42:00Z",
+          "previousExpiresAt": "2026-10-26T00:00:00Z",
+          "unavailableFix": {
+            "architecture": "linux/arm64",
+            "distribution": "debian:13",
+            "availableVersion": "155.0.8059.79-1~deb13u1",
+            "fixedVersion": "155.0.8059.84"
+          }
+        },
+        {
+          "advisoryId": "CVE-2026-110914",
+          "packageName": "chromium-common",
+          "installedVersion": "155.0.8059.79-1~deb13u1",
+          "severity": "high",
+          "scannerAuthority": [
+            "grype"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-10-19T11:42:00Z",
+          "previousExpiresAt": "2026-10-26T00:00:00Z",
+          "unavailableFix": {
+            "architecture": "linux/arm64",
+            "distribution": "debian:13",
+            "availableVersion": "155.0.8059.79-1~deb13u1",
+            "fixedVersion": "155.0.8059.84"
+          }
+        },
+        {
+          "advisoryId": "CVE-2026-110914",
+          "packageName": "chromium-headless-shell",
+          "installedVersion": "155.0.8059.79-1~deb13u1",
+          "severity": "high",
+          "scannerAuthority": [
+            "grype"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-10-19T11:42:00Z",
+          "previousExpiresAt": "2026-10-26T00:00:00Z",
+          "unavailableFix": {
+            "architecture": "linux/arm64",
+            "distribution": "debian:13",
+            "availableVersion": "155.0.8059.79-1~deb13u1",
+            "fixedVersion": "155.0.8059.84"
+          }
+        },
+        {
+          "advisoryId": "CVE-2026-110915",
+          "packageName": "chromium-common",
+          "installedVersion": "155.0.8059.79-1~deb13u1",
+          "severity": "high",
+          "scannerAuthority": [
+            "grype"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-10-19T11:42:00Z",
+          "previousExpiresAt": "2026-10-26T00:00:00Z",
+          "unavailableFix": {
+            "architecture": "linux/arm64",
+            "distribution": "debian:13",
+            "availableVersion": "155.0.8059.79-1~deb13u1",
+            "fixedVersion": "155.0.8059.84"
+          }
+        },
+        {
+          "advisoryId": "CVE-2026-110915",
+          "packageName": "chromium-headless-shell",
+          "installedVersion": "155.0.8059.79-1~deb13u1",
+          "severity": "high",
+          "scannerAuthority": [
+            "grype"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-10-19T11:42:00Z",
+          "previousExpiresAt": "2026-10-26T00:00:00Z",
+          "unavailableFix": {
+            "architecture": "linux/arm64",
+            "distribution": "debian:13",
+            "availableVersion": "155.0.8059.79-1~deb13u1",
+            "fixedVersion": "155.0.8059.84"
+          }
+        },
+        {
+          "advisoryId": "CVE-2026-110916",
+          "packageName": "chromium-common",
+          "installedVersion": "155.0.8059.79-1~deb13u1",
+          "severity": "critical",
+          "scannerAuthority": [
+            "grype"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-10-19T11:42:00Z",
+          "previousExpiresAt": "2026-10-26T00:00:00Z",
+          "unavailableFix": {
+            "architecture": "linux/arm64",
+            "distribution": "debian:13",
+            "availableVersion": "155.0.8059.79-1~deb13u1",
+            "fixedVersion": "155.0.8059.84"
+          }
+        },
+        {
+          "advisoryId": "CVE-2026-110916",
+          "packageName": "chromium-headless-shell",
+          "installedVersion": "155.0.8059.79-1~deb13u1",
+          "severity": "critical",
+          "scannerAuthority": [
+            "grype"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-10-19T11:42:00Z",
+          "previousExpiresAt": "2026-10-26T00:00:00Z",
+          "unavailableFix": {
+            "architecture": "linux/arm64",
+            "distribution": "debian:13",
+            "availableVersion": "155.0.8059.79-1~deb13u1",
+            "fixedVersion": "155.0.8059.84"
+          }
+        },
+        {
+          "advisoryId": "CVE-2026-110917",
+          "packageName": "chromium-common",
+          "installedVersion": "155.0.8059.79-1~deb13u1",
+          "severity": "high",
+          "scannerAuthority": [
+            "trivy"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-10-19T11:42:00Z",
+          "previousExpiresAt": "2026-10-26T00:00:00Z",
+          "unavailableFix": {
+            "architecture": "linux/arm64",
+            "distribution": "debian:13",
+            "availableVersion": "155.0.8059.79-1~deb13u1",
+            "fixedVersion": "155.0.8059.84"
+          }
+        },
+        {
+          "advisoryId": "CVE-2026-110917",
+          "packageName": "chromium-headless-shell",
+          "installedVersion": "155.0.8059.79-1~deb13u1",
+          "severity": "high",
+          "scannerAuthority": [
+            "trivy"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-10-19T11:42:00Z",
+          "previousExpiresAt": "2026-10-26T00:00:00Z",
+          "unavailableFix": {
+            "architecture": "linux/arm64",
+            "distribution": "debian:13",
+            "availableVersion": "155.0.8059.79-1~deb13u1",
+            "fixedVersion": "155.0.8059.84"
+          }
+        },
+        {
+          "advisoryId": "CVE-2026-110918",
+          "packageName": "chromium-common",
+          "installedVersion": "155.0.8059.79-1~deb13u1",
+          "severity": "high",
+          "scannerAuthority": [
+            "trivy"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-10-19T11:42:00Z",
+          "previousExpiresAt": "2026-10-26T00:00:00Z",
+          "unavailableFix": {
+            "architecture": "linux/arm64",
+            "distribution": "debian:13",
+            "availableVersion": "155.0.8059.79-1~deb13u1",
+            "fixedVersion": "155.0.8059.84"
+          }
+        },
+        {
+          "advisoryId": "CVE-2026-110918",
+          "packageName": "chromium-headless-shell",
+          "installedVersion": "155.0.8059.79-1~deb13u1",
+          "severity": "high",
+          "scannerAuthority": [
+            "trivy"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-10-19T11:42:00Z",
+          "previousExpiresAt": "2026-10-26T00:00:00Z",
+          "unavailableFix": {
+            "architecture": "linux/arm64",
+            "distribution": "debian:13",
+            "availableVersion": "155.0.8059.79-1~deb13u1",
+            "fixedVersion": "155.0.8059.84"
+          }
+        },
+        {
+          "advisoryId": "CVE-2026-110919",
+          "packageName": "chromium-common",
+          "installedVersion": "155.0.8059.79-1~deb13u1",
+          "severity": "high",
+          "scannerAuthority": [
+            "grype",
+            "trivy"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-10-19T11:42:00Z",
+          "previousExpiresAt": "2026-10-26T00:00:00Z",
+          "unavailableFix": {
+            "architecture": "linux/arm64",
+            "distribution": "debian:13",
+            "availableVersion": "155.0.8059.79-1~deb13u1",
+            "fixedVersion": "155.0.8059.84"
+          }
+        },
+        {
+          "advisoryId": "CVE-2026-110919",
+          "packageName": "chromium-headless-shell",
+          "installedVersion": "155.0.8059.79-1~deb13u1",
+          "severity": "high",
+          "scannerAuthority": [
+            "grype",
+            "trivy"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-10-19T11:42:00Z",
+          "previousExpiresAt": "2026-10-26T00:00:00Z",
+          "unavailableFix": {
+            "architecture": "linux/arm64",
+            "distribution": "debian:13",
+            "availableVersion": "155.0.8059.79-1~deb13u1",
+            "fixedVersion": "155.0.8059.84"
+          }
+        },
+        {
+          "advisoryId": "CVE-2026-110920",
+          "packageName": "chromium-common",
+          "installedVersion": "155.0.8059.79-1~deb13u1",
+          "severity": "high",
+          "scannerAuthority": [
+            "grype",
+            "trivy"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-10-19T11:42:00Z",
+          "previousExpiresAt": "2026-10-26T00:00:00Z",
+          "unavailableFix": {
+            "architecture": "linux/arm64",
+            "distribution": "debian:13",
+            "availableVersion": "155.0.8059.79-1~deb13u1",
+            "fixedVersion": "155.0.8059.84"
+          }
+        },
+        {
+          "advisoryId": "CVE-2026-110920",
+          "packageName": "chromium-headless-shell",
+          "installedVersion": "155.0.8059.79-1~deb13u1",
+          "severity": "high",
+          "scannerAuthority": [
+            "grype",
+            "trivy"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-10-19T11:42:00Z",
+          "previousExpiresAt": "2026-10-26T00:00:00Z",
+          "unavailableFix": {
+            "architecture": "linux/arm64",
+            "distribution": "debian:13",
+            "availableVersion": "155.0.8059.79-1~deb13u1",
+            "fixedVersion": "155.0.8059.84"
+          }
+        },
+        {
+          "advisoryId": "CVE-2026-110921",
+          "packageName": "chromium-common",
+          "installedVersion": "155.0.8059.79-1~deb13u1",
+          "severity": "high",
+          "scannerAuthority": [
+            "grype",
+            "trivy"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-10-19T11:42:00Z",
+          "previousExpiresAt": "2026-10-26T00:00:00Z",
+          "unavailableFix": {
+            "architecture": "linux/arm64",
+            "distribution": "debian:13",
+            "availableVersion": "155.0.8059.79-1~deb13u1",
+            "fixedVersion": "155.0.8059.84"
+          }
+        },
+        {
+          "advisoryId": "CVE-2026-110921",
+          "packageName": "chromium-headless-shell",
+          "installedVersion": "155.0.8059.79-1~deb13u1",
+          "severity": "high",
+          "scannerAuthority": [
+            "grype",
+            "trivy"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-10-19T11:42:00Z",
+          "previousExpiresAt": "2026-10-26T00:00:00Z",
+          "unavailableFix": {
+            "architecture": "linux/arm64",
+            "distribution": "debian:13",
+            "availableVersion": "155.0.8059.79-1~deb13u1",
+            "fixedVersion": "155.0.8059.84"
+          }
+        },
+        {
+          "advisoryId": "CVE-2026-110922",
+          "packageName": "chromium-common",
+          "installedVersion": "155.0.8059.79-1~deb13u1",
+          "severity": "high",
+          "scannerAuthority": [
+            "grype",
+            "trivy"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-10-19T11:42:00Z",
+          "previousExpiresAt": "2026-10-26T00:00:00Z",
+          "unavailableFix": {
+            "architecture": "linux/arm64",
+            "distribution": "debian:13",
+            "availableVersion": "155.0.8059.79-1~deb13u1",
+            "fixedVersion": "155.0.8059.84"
+          }
+        },
+        {
+          "advisoryId": "CVE-2026-110922",
+          "packageName": "chromium-headless-shell",
+          "installedVersion": "155.0.8059.79-1~deb13u1",
+          "severity": "high",
+          "scannerAuthority": [
+            "grype",
+            "trivy"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-10-19T11:42:00Z",
+          "previousExpiresAt": "2026-10-26T00:00:00Z",
+          "unavailableFix": {
+            "architecture": "linux/arm64",
+            "distribution": "debian:13",
+            "availableVersion": "155.0.8059.79-1~deb13u1",
+            "fixedVersion": "155.0.8059.84"
+          }
+        }
+      ]
+    },
+    "renewedExceptions": {
+      "count": 74,
+      "serverCount": 72,
+      "bootstrapCount": 2,
+      "sourcePolicyTuples": {
+        "server": [
+          {
+            "advisoryId": "CVE-2026-95619",
+            "packageName": "gcc-14-base",
+            "installedVersion": "14.2.0-19",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-10-03T15:15:00Z",
+            "previousExpiresAt": "2026-10-23T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-95619",
+            "packageName": "libatomic1",
+            "installedVersion": "14.2.0-19",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-10-03T15:15:00Z",
+            "previousExpiresAt": "2026-10-23T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-95619",
+            "packageName": "libgcc-s1",
+            "installedVersion": "14.2.0-19",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-10-03T15:15:00Z",
+            "previousExpiresAt": "2026-10-23T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-95619",
+            "packageName": "libstdc++6",
+            "installedVersion": "14.2.0-19",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-10-03T15:15:00Z",
+            "previousExpiresAt": "2026-10-23T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-102010",
+            "packageName": "gcc-14-base",
+            "installedVersion": "14.2.0-19",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-10-01T20:28:00Z",
+            "previousExpiresAt": "2026-10-23T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-102010",
+            "packageName": "libatomic1",
+            "installedVersion": "14.2.0-19",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-10-01T20:28:00Z",
+            "previousExpiresAt": "2026-10-23T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-102010",
+            "packageName": "libgcc-s1",
+            "installedVersion": "14.2.0-19",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-10-01T20:28:00Z",
+            "previousExpiresAt": "2026-10-23T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-102010",
+            "packageName": "libstdc++6",
+            "installedVersion": "14.2.0-19",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-10-01T20:28:00Z",
+            "previousExpiresAt": "2026-10-23T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-94286",
+            "packageName": "libxtst6",
+            "installedVersion": "2:1.2.5-1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-30T15:20:00Z",
+            "previousExpiresAt": "2026-10-23T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-88372",
+            "packageName": "libsndfile1",
+            "installedVersion": "1.2.2-2+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-10-05T10:40:00Z",
+            "previousExpiresAt": "2026-10-23T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-93543",
+            "packageName": "libxi6",
+            "installedVersion": "2:1.8.2-1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-10-05T10:40:00Z",
+            "previousExpiresAt": "2026-10-23T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-5435",
+            "packageName": "libc-bin",
+            "installedVersion": "2.41-12+deb13u4",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-19499",
+            "packageName": "libc6",
+            "installedVersion": "2.41-12+deb13u4",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-10-03T15:15:00Z",
+            "previousExpiresAt": "2026-10-23T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-19499",
+            "packageName": "libc-bin",
+            "installedVersion": "2.41-12+deb13u4",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-10-03T15:15:00Z",
+            "previousExpiresAt": "2026-10-23T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-5435",
+            "packageName": "libc6",
+            "installedVersion": "2.41-12+deb13u4",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-82560",
+            "packageName": "perl-base",
+            "installedVersion": "5.40.1-6+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-10-05T10:40:00Z",
+            "previousExpiresAt": "2026-10-23T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-9538",
+            "packageName": "perl-base",
+            "installedVersion": "5.40.1-6+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-76642",
+            "packageName": "bsdutils",
+            "installedVersion": "1:2.41.5-0+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-76642",
+            "packageName": "libblkid1",
+            "installedVersion": "2.41.5-0+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-76642",
+            "packageName": "liblastlog2-2",
+            "installedVersion": "2.41.5-0+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-76642",
+            "packageName": "libmount1",
+            "installedVersion": "2.41.5-0+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-76642",
+            "packageName": "libsmartcols1",
+            "installedVersion": "2.41.5-0+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-76642",
+            "packageName": "libuuid1",
+            "installedVersion": "2.41.5-0+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-76642",
+            "packageName": "login",
+            "installedVersion": "1:4.16.0-2+really2.41.5-0+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-76642",
+            "packageName": "mount",
+            "installedVersion": "2.41.5-0+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-76642",
+            "packageName": "util-linux",
+            "installedVersion": "2.41.5-0+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-78408",
+            "packageName": "bsdutils",
+            "installedVersion": "1:2.41.5-0+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-78408",
+            "packageName": "libblkid1",
+            "installedVersion": "2.41.5-0+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-78408",
+            "packageName": "liblastlog2-2",
+            "installedVersion": "2.41.5-0+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-78408",
+            "packageName": "libmount1",
+            "installedVersion": "2.41.5-0+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-78408",
+            "packageName": "libsmartcols1",
+            "installedVersion": "2.41.5-0+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-78408",
+            "packageName": "libuuid1",
+            "installedVersion": "2.41.5-0+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-78408",
+            "packageName": "login",
+            "installedVersion": "1:4.16.0-2+really2.41.5-0+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-78408",
+            "packageName": "mount",
+            "installedVersion": "2.41.5-0+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-78408",
+            "packageName": "util-linux",
+            "installedVersion": "2.41.5-0+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-78409",
+            "packageName": "bsdutils",
+            "installedVersion": "1:2.41.5-0+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-78409",
+            "packageName": "libblkid1",
+            "installedVersion": "2.41.5-0+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-78409",
+            "packageName": "liblastlog2-2",
+            "installedVersion": "2.41.5-0+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-78409",
+            "packageName": "libmount1",
+            "installedVersion": "2.41.5-0+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-78409",
+            "packageName": "libsmartcols1",
+            "installedVersion": "2.41.5-0+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-78409",
+            "packageName": "libuuid1",
+            "installedVersion": "2.41.5-0+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-78409",
+            "packageName": "login",
+            "installedVersion": "1:4.16.0-2+really2.41.5-0+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-78409",
+            "packageName": "mount",
+            "installedVersion": "2.41.5-0+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-78409",
+            "packageName": "util-linux",
+            "installedVersion": "2.41.5-0+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-78410",
+            "packageName": "bsdutils",
+            "installedVersion": "1:2.41.5-0+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-78410",
+            "packageName": "libblkid1",
+            "installedVersion": "2.41.5-0+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-78410",
+            "packageName": "liblastlog2-2",
+            "installedVersion": "2.41.5-0+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-78410",
+            "packageName": "libmount1",
+            "installedVersion": "2.41.5-0+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-78410",
+            "packageName": "libsmartcols1",
+            "installedVersion": "2.41.5-0+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-78410",
+            "packageName": "libuuid1",
+            "installedVersion": "2.41.5-0+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-78410",
+            "packageName": "login",
+            "installedVersion": "1:4.16.0-2+really2.41.5-0+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-78410",
+            "packageName": "mount",
+            "installedVersion": "2.41.5-0+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-78410",
+            "packageName": "util-linux",
+            "installedVersion": "2.41.5-0+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-85091",
+            "packageName": "libminizip1t64",
+            "installedVersion": "1:1.3.dfsg+really1.3.1-1+b1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-85091",
+            "packageName": "zlib1g",
+            "installedVersion": "1:1.3.dfsg+really1.3.1-1+b1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-86140",
+            "packageName": "libxml2",
+            "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-16T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-74860",
+            "packageName": "libxml2",
+            "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-86138",
+            "packageName": "libxml2",
+            "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-86139",
+            "packageName": "libxml2",
+            "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-86142",
+            "packageName": "libxml2",
+            "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-86143",
+            "packageName": "libxml2",
+            "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-86144",
+            "packageName": "libxml2",
+            "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-88806",
+            "packageName": "libx11-6",
+            "installedVersion": "2:1.8.12-1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-10-05T10:40:00Z",
+            "previousExpiresAt": "2026-10-23T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-88806",
+            "packageName": "libx11-data",
+            "installedVersion": "2:1.8.12-1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-10-05T10:40:00Z",
+            "previousExpiresAt": "2026-10-23T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-88806",
+            "packageName": "libx11-xcb1",
+            "installedVersion": "2:1.8.12-1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-10-05T10:40:00Z",
+            "previousExpiresAt": "2026-10-23T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-88807",
+            "packageName": "libxrender1",
+            "installedVersion": "1:0.9.12-1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype",
+              "trivy"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-10-05T10:40:00Z",
+            "previousExpiresAt": "2026-10-23T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-107161",
+            "packageName": "libsasl2-2",
+            "installedVersion": "2.1.28+dfsg1-9",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-10-19T11:42:00Z",
+            "previousExpiresAt": "2026-10-26T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-107161",
+            "packageName": "libsasl2-modules-db",
+            "installedVersion": "2.1.28+dfsg1-9",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-10-19T11:42:00Z",
+            "previousExpiresAt": "2026-10-26T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-107778",
+            "packageName": "libgssapi-krb5-2",
+            "installedVersion": "1.21.3-5+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-10-19T11:42:00Z",
+            "previousExpiresAt": "2026-10-26T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-107778",
+            "packageName": "libk5crypto3",
+            "installedVersion": "1.21.3-5+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-10-19T11:42:00Z",
+            "previousExpiresAt": "2026-10-26T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-107778",
+            "packageName": "libkrb5-3",
+            "installedVersion": "1.21.3-5+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-10-19T11:42:00Z",
+            "previousExpiresAt": "2026-10-26T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-107778",
+            "packageName": "libkrb5support0",
+            "installedVersion": "1.21.3-5+deb13u1",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype"
+            ],
+            "owner": "release/security",
+            "previousReviewedAt": "2026-10-19T11:42:00Z",
+            "previousExpiresAt": "2026-10-26T00:00:00Z"
+          }
+        ],
+        "bootstrap": [
+          {
+            "advisoryId": "CVE-2026-5435",
+            "packageName": "libc6",
+            "installedVersion": "2.41-12+deb13u4",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype"
+            ],
+            "owner": "Nautilo release engineering",
+            "previousReviewedAt": "2026-09-17T00:00:00Z",
+            "previousExpiresAt": "2026-11-15T00:00:00Z"
+          },
+          {
+            "advisoryId": "CVE-2026-19499",
+            "packageName": "libc6",
+            "installedVersion": "2.41-12+deb13u4",
+            "severity": "high",
+            "scannerAuthority": [
+              "grype"
+            ],
+            "owner": "Nautilo release engineering",
+            "previousReviewedAt": "2026-10-03T15:15:00Z",
+            "previousExpiresAt": "2026-10-23T00:00:00Z"
+          }
+        ]
+      },
+      "removalThreshold": "Remove each exception before expiry at the first supported Debian 13 fix or corrected applicability evidence."
+    },
+    "preservedLaterDecemberExceptions": {
+      "count": 10,
+      "canonicalEntriesSha256": "62cefe6b1d872810f723829b56e039b751e6895521ecfbd28b28289cd0641c8b",
+      "sourcePolicyTuples": [
+        {
+          "advisoryId": "CVE-2022-4055",
+          "packageName": "xdg-utils",
+          "installedVersion": "1.2.1-2",
+          "severity": "high",
+          "scannerAuthority": [
+            "grype",
+            "trivy"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-08-23T00:00:00Z",
+          "previousExpiresAt": "2026-12-21T00:00:00Z"
+        },
+        {
+          "advisoryId": "CVE-2025-69720",
+          "packageName": "libtinfo6",
+          "installedVersion": "6.5+20250216-2",
+          "severity": "high",
+          "scannerAuthority": [
+            "grype",
+            "trivy"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-08-23T00:00:00Z",
+          "previousExpiresAt": "2026-12-21T00:00:00Z"
+        },
+        {
+          "advisoryId": "CVE-2025-69720",
+          "packageName": "ncurses-base",
+          "installedVersion": "6.5+20250216-2",
+          "severity": "high",
+          "scannerAuthority": [
+            "grype",
+            "trivy"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-08-23T00:00:00Z",
+          "previousExpiresAt": "2026-12-21T00:00:00Z"
+        },
+        {
+          "advisoryId": "CVE-2025-69720",
+          "packageName": "ncurses-bin",
+          "installedVersion": "6.5+20250216-2",
+          "severity": "high",
+          "scannerAuthority": [
+            "grype",
+            "trivy"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-08-23T00:00:00Z",
+          "previousExpiresAt": "2026-12-21T00:00:00Z"
+        },
+        {
+          "advisoryId": "CVE-2026-37555",
+          "packageName": "libsndfile1",
+          "installedVersion": "1.2.2-2+deb13u1",
+          "severity": "high",
+          "scannerAuthority": [
+            "grype",
+            "trivy"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-08-23T00:00:00Z",
+          "previousExpiresAt": "2026-12-21T00:00:00Z"
+        },
+        {
+          "advisoryId": "CVE-2026-54369",
+          "packageName": "libacl1",
+          "installedVersion": "2.3.2-2+b1",
+          "severity": "high",
+          "scannerAuthority": [
+            "grype",
+            "trivy"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-08-23T00:00:00Z",
+          "previousExpiresAt": "2026-12-21T00:00:00Z"
+        },
+        {
+          "advisoryId": "CVE-2026-54370",
+          "packageName": "libacl1",
+          "installedVersion": "2.3.2-2+b1",
+          "severity": "high",
+          "scannerAuthority": [
+            "grype"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-08-23T00:00:00Z",
+          "previousExpiresAt": "2026-12-21T00:00:00Z"
+        },
+        {
+          "advisoryId": "CVE-2026-6653",
+          "packageName": "libxml2",
+          "installedVersion": "2.12.7+dfsg+really2.9.14-2.1+deb13u3",
+          "severity": "critical",
+          "scannerAuthority": [
+            "grype",
+            "trivy"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-08-23T00:00:00Z",
+          "previousExpiresAt": "2026-12-21T00:00:00Z"
+        },
+        {
+          "advisoryId": "CVE-2026-16742",
+          "packageName": "libsystemd0",
+          "installedVersion": "257.13-1~deb13u1",
+          "severity": "high",
+          "scannerAuthority": [
+            "trivy"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-09-02T22:15:00Z",
+          "previousExpiresAt": "2026-12-25T00:00:00Z"
+        },
+        {
+          "advisoryId": "CVE-2026-16742",
+          "packageName": "libudev1",
+          "installedVersion": "257.13-1~deb13u1",
+          "severity": "high",
+          "scannerAuthority": [
+            "trivy"
+          ],
+          "owner": "release/security",
+          "previousReviewedAt": "2026-09-02T22:15:00Z",
+          "previousExpiresAt": "2026-12-25T00:00:00Z"
+        }
+      ]
+    },
+    "resultingPolicyCounts": {
+      "server": 82,
+      "bootstrap": 2
+    }
+  },
+  "deferred": [
+    "Fresh server image build",
+    "Fresh SBOM generation and vulnerability scans",
+    "Native builds",
+    "Release qualification and publication"
+  ]
+}

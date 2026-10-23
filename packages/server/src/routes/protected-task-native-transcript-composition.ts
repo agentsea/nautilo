@@ -1,5 +1,12 @@
-import { ensureSession } from "@nautilo/agent";
-import { eq, rooms, sessions } from "@nautilo/db";
+import {
+  acquireEncryptionConsumptionFence,
+  and,
+  eq,
+  protectedTaskDefinitionSupportsPolicy,
+  rooms,
+  sessions,
+  tasks,
+} from "@nautilo/db";
 import {
   PostgresHumanDeviceSignerHistory,
   verifyCryptoPostgresHandle,
@@ -30,26 +37,65 @@ type CreateTranscriptPublisherInput = Parameters<CreateTranscriptPublisher>[0];
 
 type SessionFacts = Readonly<{
   sessionId: string;
+  ownerId: string;
+  roomId: string;
   namespaceId: string;
 }>;
 
+type AdmittedTranscript = Readonly<{
+  session: SessionFacts;
+  authority: ProtectedTaskMessageProductAuthority;
+}>;
+
+type ExecutionRoomFacts = Readonly<{
+  id: string;
+  ownerId: string;
+  namespaceId: string;
+  type: string;
+  kind: string;
+  parentRoomId: string | null;
+  humanActorIds: readonly string[];
+  archivedAt: Date | null;
+}>;
+
+function isAdmittedExecutionRoom(
+  room: ExecutionRoomFacts,
+  expected: Readonly<{ roomId: string; ownerId: string }>,
+): boolean {
+  return room.id === expected.roomId
+    && room.archivedAt === null
+    && (room.kind !== "task" || (
+      room.ownerId === expected.ownerId
+      && room.type === "private"
+      && room.humanActorIds.length === 0
+    ));
+}
+
+function sameExecutionRoom(
+  left: ExecutionRoomFacts,
+  right: ExecutionRoomFacts,
+): boolean {
+  return left.id === right.id
+    && left.ownerId === right.ownerId
+    && left.namespaceId === right.namespaceId
+    && left.type === right.type
+    && left.kind === right.kind
+    && left.parentRoomId === right.parentRoomId
+    && left.archivedAt?.getTime() === right.archivedAt?.getTime()
+    && left.humanActorIds.length === right.humanActorIds.length
+    && left.humanActorIds.every((id, index) => id === right.humanActorIds[index]);
+}
+
+function unavailableSession(): never {
+  throw new TypeError("Protected Task transcript Session is unavailable");
+}
+
 type Dependencies = Readonly<{
-  ensureSession: typeof ensureSession;
-  loadSessionFacts(
+  admitTranscript(
     runner: ConversationProductCanonicalTransactionRunner,
-    expected: Readonly<{
-      sessionId: string;
-      graphThreadId: string;
-      ownerId: string;
-      agentId: string;
-      roomId: string;
-    }>,
-  ): Promise<SessionFacts | null>;
-  validateProductAuthority(
-    runner: ConversationProductCanonicalTransactionRunner,
-    authority: ProtectedTaskMessageProductAuthority,
+    input: CreateTranscriptPublisherInput,
     now: () => number,
-  ): Promise<void>;
+  ): Promise<AdmittedTranscript | null>;
   withNamespaceSource: typeof withNativeTaskNamespaceSource;
   createPublication: typeof createProtectedTaskNativeMessagePublication;
   verifyCryptoHandle: typeof verifyCryptoPostgresHandle;
@@ -58,72 +104,163 @@ type Dependencies = Readonly<{
   ): PostgresHumanDeviceSignerHistory;
 }>;
 
-async function loadSessionFacts(
+async function admitTranscript(
   runner: ConversationProductCanonicalTransactionRunner,
-  expected: Readonly<{
-    sessionId: string;
-    graphThreadId: string;
-    ownerId: string;
-    agentId: string;
-    roomId: string;
-  }>,
-): Promise<SessionFacts | null> {
+  input: CreateTranscriptPublisherInput,
+  now: () => number,
+): Promise<AdmittedTranscript | null> {
+  const occurrence = input.occurrence;
+  const expected = Object.freeze({
+    graphThreadId: occurrence.run.graphThreadId,
+    taskOwnerId: occurrence.task.ownerId,
+    requestorId: occurrence.task.requestorId,
+    requesterHumanId: input.current.subject.humanActorId,
+    agentId: occurrence.task.agentId,
+    executionRoomId: input.current.executionRoomId,
+    sourceRoomId: input.request.sourceRoomId,
+    contentNamespaceId: occurrence.task.contentNamespaceId,
+  });
   return runner.transaction(async tx => {
-    const [session] = await tx.select({
+    const policy = await acquireEncryptionConsumptionFence(tx);
+    if (policy.mode !== input.policy.mode
+      || policy.revision !== input.policy.revision) {
+      throw new TypeError("Protected Task transcript policy changed");
+    }
+    const [task] = await tx.select({ id: tasks.id }).from(tasks)
+      .where(eq(tasks.id, occurrence.task.id)).limit(1).for("share");
+    if (task === undefined) return null;
+    const selectRoom = (roomId: string) => tx.select({
+      id: rooms.id,
+      ownerId: rooms.ownerId,
+      namespaceId: rooms.namespaceId,
+      type: rooms.type,
+      kind: rooms.kind,
+      parentRoomId: rooms.parentRoomId,
+      humanActorIds: rooms.humanActorIds,
+      archivedAt: rooms.archivedAt,
+    }).from(rooms).where(eq(rooms.id, roomId))
+      .limit(2);
+    const executionRoomRows = await selectRoom(expected.executionRoomId);
+    const executionRoom = executionRoomRows[0];
+    if (executionRoomRows.length !== 1 || executionRoom === undefined
+      || !isAdmittedExecutionRoom(executionRoom, {
+        roomId: expected.executionRoomId,
+        ownerId: expected.taskOwnerId,
+      })) return null;
+    const hidden = executionRoom.kind === "task";
+    const roomRows = hidden
+      ? await selectRoom(expected.sourceRoomId)
+      : executionRoomRows;
+    const room = roomRows[0];
+    if (roomRows.length !== 1 || room === undefined
+      || room.archivedAt !== null
+      || (hidden && (
+        room.id !== expected.sourceRoomId
+        || room.ownerId !== expected.requestorId
+        || room.namespaceId !== expected.contentNamespaceId
+        || room.type !== "private"
+        || room.kind !== "private"
+        || room.parentRoomId !== null
+        || room.humanActorIds.length !== 1
+        || room.humanActorIds[0] !== expected.requesterHumanId
+      ))) return null;
+
+    const selectSession = () => tx.select({
       id: sessions.id,
       threadId: sessions.threadId,
       ownerId: sessions.ownerId,
+      personaId: sessions.personaId,
       agentId: sessions.agentId,
       roomId: sessions.roomId,
-    }).from(sessions).where(eq(sessions.id, expected.sessionId))
-      .limit(2).for("share");
-    const [room] = await tx.select({
-      id: rooms.id,
-      namespaceId: rooms.namespaceId,
-    }).from(rooms).where(eq(rooms.id, expected.roomId))
-      .limit(2).for("share");
-    if (session === undefined || room === undefined
-      || session.id !== expected.sessionId
+    }).from(sessions).where(and(
+      eq(sessions.ownerId, expected.taskOwnerId),
+      eq(sessions.threadId, expected.graphThreadId),
+    )).limit(2);
+    let sessionRows = await selectSession();
+    let session = sessionRows[0];
+    if (sessionRows.length > 1) return null;
+    let insertedSession = false;
+    if (session === undefined) {
+      await tx.insert(sessions).values({
+        threadId: expected.graphThreadId,
+        ownerId: expected.taskOwnerId,
+        personaId: "owner",
+        agentId: expected.agentId,
+        roomId: room.id,
+        title: "Task transcript",
+      }).onConflictDoNothing({
+        target: [sessions.ownerId, sessions.threadId],
+      });
+      insertedSession = true;
+      sessionRows = await selectSession();
+      session = sessionRows[0];
+    }
+    if (sessionRows.length !== 1 || session === undefined
       || session.threadId !== expected.graphThreadId
-      || session.ownerId !== expected.ownerId
+      || session.ownerId !== expected.taskOwnerId
+      || session.personaId !== "owner"
       || session.agentId !== expected.agentId
-      || session.roomId !== expected.roomId
-      || room.id !== expected.roomId) return null;
-    return Object.freeze({
+      || session.roomId !== room.id) {
+      if (insertedSession) unavailableSession();
+      return null;
+    }
+    const facts = Object.freeze({
       sessionId: session.id,
+      ownerId: session.ownerId,
+      roomId: session.roomId,
       namespaceId: room.namespaceId,
     });
+    const authority = productAuthority(input, facts);
+    const guard = createProtectedTaskMessageProductGuard(authority, now);
+    await guard.assertPublicationAllowed(tx, {
+      action: "appendAllocated",
+      sessionId: authority.sessionId,
+      messageId: 0,
+      revision: 0,
+      idempotencyKey:
+        `task-transcript:${authority.taskRunId}:fp:v1:preflight`,
+      authorRole: "assistant",
+      keyClass: "ai",
+      publicationPolicy: {
+        expectedRevision: authority.policyRevision,
+        representation: authority.representation === "dual"
+          ? "ordinary_and_protected"
+          : "protected_only",
+      },
+    });
+    const finalExecutionRoomRows = await selectRoom(expected.executionRoomId);
+    const finalExecutionRoom = finalExecutionRoomRows[0];
+    const finalRoomRows = hidden
+      ? await selectRoom(expected.sourceRoomId)
+      : finalExecutionRoomRows;
+    const finalRoom = finalRoomRows[0];
+    const finalSessionRows = await selectSession();
+    const finalSession = finalSessionRows[0];
+    if (finalExecutionRoomRows.length !== 1
+      || finalExecutionRoom === undefined
+      || !isAdmittedExecutionRoom(finalExecutionRoom, {
+        roomId: expected.executionRoomId,
+        ownerId: expected.taskOwnerId,
+      })
+      || !sameExecutionRoom(executionRoom, finalExecutionRoom)
+      || finalRoomRows.length !== 1 || finalRoom === undefined
+      || finalRoom.id !== room.id
+      || finalRoom.archivedAt !== null
+      || !sameExecutionRoom(room, finalRoom)
+      || finalRoom.namespaceId !== facts.namespaceId
+      || finalSessionRows.length !== 1 || finalSession === undefined
+      || finalSession.id !== facts.sessionId
+      || finalSession.threadId !== expected.graphThreadId
+      || finalSession.ownerId !== expected.taskOwnerId
+      || finalSession.personaId !== "owner"
+      || finalSession.agentId !== expected.agentId
+      || finalSession.roomId !== room.id) unavailableSession();
+    return Object.freeze({ session: facts, authority });
   }, { isolationLevel: "read committed" });
 }
 
-async function validateProductAuthority(
-  runner: ConversationProductCanonicalTransactionRunner,
-  authority: ProtectedTaskMessageProductAuthority,
-  now: () => number,
-): Promise<void> {
-  const guard = createProtectedTaskMessageProductGuard(authority, now);
-  await runner.transaction(tx => guard.assertPublicationAllowed(tx, {
-    action: "appendAllocated",
-    sessionId: authority.sessionId,
-    messageId: 0,
-    revision: 0,
-    idempotencyKey:
-      `task-transcript:${authority.taskRunId}:fp:v1:preflight`,
-    authorRole: "assistant",
-    keyClass: "ai",
-    publicationPolicy: {
-      expectedRevision: authority.policyRevision,
-      representation: authority.representation === "dual"
-        ? "ordinary_and_protected"
-        : "protected_only",
-    },
-  }), { isolationLevel: "read committed" });
-}
-
 const productionDependencies: Dependencies = Object.freeze({
-  ensureSession,
-  loadSessionFacts,
-  validateProductAuthority,
+  admitTranscript,
   withNamespaceSource: withNativeTaskNamespaceSource,
   createPublication: createProtectedTaskNativeMessagePublication,
   verifyCryptoHandle: verifyCryptoPostgresHandle,
@@ -137,6 +274,10 @@ function productAuthority(
   const occurrence = input.occurrence;
   const reference = input.current.reference;
   const signal = input.current.signal;
+  if (!protectedTaskDefinitionSupportsPolicy(occurrence.task.contentRepresentation, input.policy.mode)
+    || input.policy.revision !== input.current.evidence.policyRevision) {
+    throw new TypeError("Protected Task transcript policy changed");
+  }
   return Object.freeze({
     taskId: occurrence.task.id,
     taskRunId: occurrence.run.id,
@@ -144,8 +285,9 @@ function productAuthority(
     taskOwnerId: occurrence.task.ownerId,
     graphThreadId: occurrence.run.graphThreadId,
     sessionId: session.sessionId,
-    sessionOwnerId: occurrence.task.ownerId,
-    roomId: input.current.executionRoomId,
+    sessionOwnerId: session.ownerId,
+    executionRoomId: input.current.executionRoomId,
+    roomId: session.roomId,
     namespaceId: session.namespaceId,
     contentNamespaceId: occurrence.task.contentNamespaceId,
     contentRevision: occurrence.task.contentRevision,
@@ -153,6 +295,7 @@ function productAuthority(
       occurrence.task.cryptoRequiredNamespaceFingerprint.slice(),
     agentId: occurrence.task.agentId,
     requestorId: occurrence.task.requestorId,
+    requesterHumanId: input.current.subject.humanActorId,
     inputObjectId: reference.inputObjectId,
     resultObjectId: reference.resultObjectId,
     authorizationRequestId: reference.authorizationRequestId,
@@ -167,7 +310,8 @@ function productAuthority(
         }
       : {}),
     policyRevision: input.current.evidence.policyRevision,
-    representation: occurrence.task.contentRepresentation,
+    definitionRepresentation: occurrence.task.contentRepresentation,
+    representation: input.policy.mode === "shadow_encryption" ? "dual" : "protected",
     authorizationExpiresAt: input.current.evidence.expiresAt,
     signal,
   });
@@ -205,32 +349,15 @@ export function createProtectedTaskNativeTranscriptPublisher(
     }
     await segment.assertCurrentTaskAuthority();
     signal.throwIfAborted();
-    const sessionId = await dependencies.ensureSession({
-      threadId: occurrence.run.graphThreadId,
-      ownerId: occurrence.task.ownerId,
-      personaId: "owner",
-      agentId: occurrence.task.agentId,
-      roomId: current.executionRoomId,
-      title: "Task transcript",
-    });
-    await segment.assertCurrentTaskAuthority();
-    signal.throwIfAborted();
-    const session = await dependencies.loadSessionFacts(current.runner, {
-      sessionId,
-      graphThreadId: occurrence.run.graphThreadId,
-      ownerId: occurrence.task.ownerId,
-      agentId: occurrence.task.agentId,
-      roomId: current.executionRoomId,
-    });
-    if (session === null) {
-      throw new TypeError("Protected Task transcript Session is unavailable");
-    }
-    const authority = productAuthority(segment, session);
-    await dependencies.validateProductAuthority(
+    const admitted = await dependencies.admitTranscript(
       current.runner,
-      authority,
+      segment,
       current.now,
     );
+    if (admitted === null) {
+      throw new TypeError("Protected Task transcript Session is unavailable");
+    }
+    const { session, authority } = admitted;
     await segment.assertCurrentTaskAuthority();
     signal.throwIfAborted();
     const cryptoHandle = await dependencies.verifyCryptoHandle(
@@ -275,6 +402,9 @@ export function createProtectedTaskNativeTranscriptPublisher(
           namespace,
           runtime: segment.signer.runtime,
           signerPublication: segment.signer.signerPublication,
+          ...(segment.signer.temporarySigner === undefined ? {} : {
+            temporarySigner: segment.signer.temporarySigner,
+          }),
           agentAuthorizationRevision:
             segment.signer.agentAuthorizationRevision,
           resolveHistoricalSignerPublicationManager:

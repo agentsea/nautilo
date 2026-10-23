@@ -1,3 +1,4 @@
+import { deriveTaskHistoricalContentCryptoObjectIdV1 } from "../../src/task/task-historical-content-identity.ts";
 import { describe, expect, test } from "bun:test";
 import {
   PROTECTED_TASK_EXECUTION_OPAQUE_ID_MAX_UTF8_BYTES_V1,
@@ -8,6 +9,7 @@ import {
 import type { TaskContentAuthorityV1 } from "../../src/task/task-content-authority-v1.ts";
 import {
   TASK_CONTENT_PAYLOAD_VERSION_V1,
+  TaskCancellationPublicationPolicyUnavailableError,
   deriveTaskContentCryptoObjectIdV1,
   fingerprintTaskContentAuthorityV1,
   fingerprintTaskContentNamespaceV1,
@@ -103,6 +105,10 @@ class FakeProduct implements TaskContentProductStorePort {
   throwAfterMap = false;
   tooMany = false;
   claimedStates: readonly TaskContentRevisionStateV1[] | null = null;
+  lastCoordinateClaim: Parameters<NonNullable<
+    TaskContentProductStorePort["claimReconciliationCoordinate"]
+  >>[0] | null = null;
+  quarantineFailedClaim = false;
 
   constructor(events: string[]) {
     this.events = events;
@@ -246,8 +252,51 @@ class FakeProduct implements TaskContentProductStorePort {
     return this.tooMany ? [this.state, this.state] : [this.state];
   }
 
+  async claimReconciliationCoordinate(input: Parameters<NonNullable<
+    TaskContentProductStorePort["claimReconciliationCoordinate"]
+  >>[0]) {
+    this.events.push("product:claim-coordinate");
+    this.lastCoordinateClaim = input;
+    if (
+      input.operationId !== this.state.lifecycle.operationId
+      || input.coordinate.kind !== this.state.lifecycle.coordinate.kind
+      || input.coordinate.taskId !== this.state.lifecycle.coordinate.taskId
+      || input.coordinate.contentRevision
+        !== this.state.lifecycle.coordinate.contentRevision
+      || (input.coordinate.kind === "run_result"
+        && (this.state.lifecycle.coordinate.kind !== "run_result"
+          || input.coordinate.taskRunId
+            !== this.state.lifecycle.coordinate.taskRunId))
+    ) return null;
+    if (this.state.lifecycle.disposition === "mapped") return this.state;
+    if (this.state.lifecycle.leaseToken !== null) return null;
+    this.state = Object.freeze({
+      ...this.state,
+      lifecycle: lifecycle({
+        ...this.state.lifecycle,
+        leaseToken: input.leaseToken,
+        leaseExpiresAt: new Date(60_000),
+      }),
+    });
+    return this.state;
+  }
+
   async failReconciliationClaim() {
     this.events.push("product:fail");
+    if (this.quarantineFailedClaim) {
+      this.state = Object.freeze({
+        ...this.state,
+        lifecycle: lifecycle({
+          ...this.state.lifecycle,
+          attemptCount: 8,
+          disposition: "quarantined",
+          failureCode: "retry_exhausted",
+          nextAttemptAt: null,
+          leaseToken: null,
+          leaseExpiresAt: null,
+        }),
+      });
+    }
     return this.state.lifecycle;
   }
 }
@@ -291,6 +340,43 @@ function harness() {
     repository: createDormantTaskContentShadowRepository({ product, crypto }),
   };
 }
+
+test.each(["claim", "verify", "publication", "mapping", "mapped_verify"])(
+  "cancellation policy wait at %s never consumes retry attempts or changes disposition", async step => {
+    const h = harness();
+    const stopped = { ...coordinate, contentRevision: 2 };
+    const operationId = `task-run-cancelled-result:${RUN_ID}`;
+    h.product.state = { product: step === "mapped_verify" ? {
+      coordinate: stopped, namespaceId: authority.namespaceId, representation: "dual",
+      cryptoObjectId: deriveTaskContentCryptoObjectIdV1(stopped), cryptoAccessRevision: 0,
+      cryptoRequiredNamespaceFingerprint: fingerprintTaskContentNamespaceV1(authority.namespaceId),
+      cryptoMappingState: "verified",
+    } : null, authority, lifecycle: lifecycle({
+      coordinate: stopped, operationId, cryptoObjectId: deriveTaskContentCryptoObjectIdV1(stopped),
+      ...(step === "mapped_verify" ? { completion: "complete", disposition: "mapped", cryptoCompletedAt: new Date(1), nextAttemptAt: null } : {}),
+    }) };
+    h.crypto.stored = prepared({ coordinate: stopped, objectId: deriveTaskContentCryptoObjectIdV1(stopped) });
+    const wait = () => Promise.reject(new TaskCancellationPublicationPolicyUnavailableError());
+    if (step === "claim") h.product.claimReconciliationCoordinate = wait;
+    if (step === "verify" || step === "mapped_verify") h.crypto.verify = wait;
+    if (step === "mapping") h.product.compareAndSwapCryptoMapping = wait;
+    expect(await h.repository.reconcileCoordinate({ coordinate: stopped, operationId, leaseToken: LEASE,
+      ...(step === "publication" ? { publishProduct: wait } : {}),
+    })).toBe("pending");
+    expect(h.events).not.toContain("product:fail");
+    expect(h.events).not.toContain("product:authority-stale");
+    expect(h.events).not.toContain("product:quarantine");
+    expect(h.product.state.lifecycle.attemptCount).toBe(0);
+    expect(h.product.state.lifecycle.disposition).toBe(step === "mapped_verify" ? "mapped" : "active");
+  },
+);
+
+test("ordinary writer does not gain cancellation policy-wait semantics", async () => {
+  const h = harness();
+  h.product.claimReconciliationCoordinate = () => Promise.reject(new TaskCancellationPublicationPolicyUnavailableError());
+  expect(await h.repository.reconcileCoordinate({ coordinate, operationId: h.product.state.lifecycle.operationId,
+    leaseToken: LEASE }).catch((error: unknown) => error)).toBeInstanceOf(TaskCancellationPublicationPolicyUnavailableError);
+});
 
 async function reserve(testHarness: ReturnType<typeof harness>) {
   return testHarness.repository.reserveRevision({
@@ -672,6 +758,171 @@ describe("dormant Task content shadow repository", () => {
     expect(testHarness.events).not.toContain("product:quarantine");
   });
 
+  test("reconciles only the exact coordinate and operation without a global claim", async () => {
+    const testHarness = harness();
+    testHarness.crypto.stored = prepared();
+    const mutableCoordinate: {
+      kind: "run_result";
+      taskId: string;
+      taskRunId: string;
+      contentRevision: number;
+    } = { ...coordinate };
+
+    expect(await testHarness.repository.reconcileCoordinate({
+      coordinate: mutableCoordinate,
+      operationId: "task-result-operation.1",
+      leaseToken: LEASE,
+      async publishProduct() {
+        testHarness.events.push("product:publish-callback");
+      },
+    })).toBe("mapped");
+    mutableCoordinate.taskRunId = "20000000-0000-4000-8000-000000000002";
+
+    expect(testHarness.events).toContain("product:claim-coordinate");
+    expect(testHarness.events).not.toContain("product:claim");
+    expect(testHarness.events.indexOf("crypto:verify")).toBeLessThan(
+      testHarness.events.indexOf("product:publish-callback"),
+    );
+    expect(testHarness.events.indexOf("product:publish-callback")).toBeLessThan(
+      testHarness.events.indexOf("product:complete"),
+    );
+    expect(testHarness.product.lastCoordinateClaim?.coordinate).toEqual(coordinate);
+    expect(Object.isFrozen(
+      testHarness.product.lastCoordinateClaim?.coordinate,
+    )).toBe(true);
+
+    const wrongOperation = harness();
+    expect(await wrongOperation.repository.reconcileCoordinate({
+      coordinate,
+      operationId: "task-result-operation.2",
+      leaseToken: LEASE,
+    })).toBe("pending");
+    expect(wrongOperation.events).not.toContain("crypto:verify");
+
+    const alreadyLeased = harness();
+    alreadyLeased.product.state = Object.freeze({
+      ...alreadyLeased.product.state,
+      lifecycle: lifecycle({
+        leaseToken: "30000000-0000-4000-8000-000000000002",
+        leaseExpiresAt: new Date(60_000),
+      }),
+    });
+    expect(await alreadyLeased.repository.reconcileCoordinate({
+      coordinate,
+      operationId: "task-result-operation.1",
+      leaseToken: LEASE,
+    })).toBe("pending");
+    expect(alreadyLeased.events).not.toContain("crypto:verify");
+  });
+
+  test("retries missing coordinate crypto, quarantines exhaustion, and replays mapping", async () => {
+    const missing = harness();
+    expect(await missing.repository.reconcileCoordinate({
+      coordinate,
+      operationId: "task-result-operation.1",
+      leaseToken: LEASE,
+    })).toBe("pending");
+    expect(missing.events).toContain("product:fail");
+
+    const exhausted = harness();
+    exhausted.product.quarantineFailedClaim = true;
+    expect(await exhausted.repository.reconcileCoordinate({
+      coordinate,
+      operationId: "task-result-operation.1",
+      leaseToken: LEASE,
+    })).toBe("quarantined");
+    expect(exhausted.product.state.lifecycle.failureCode).toBe("retry_exhausted");
+
+    const callbackFailure = harness();
+    callbackFailure.crypto.stored = prepared();
+    expect(await callbackFailure.repository.reconcileCoordinate({
+      coordinate,
+      operationId: "task-result-operation.1",
+      leaseToken: LEASE,
+      async publishProduct() {
+        callbackFailure.events.push("product:publish-callback");
+        throw new Error("lost product publication response");
+      },
+    })).toBe("pending");
+    expect(callbackFailure.events).toContain("crypto:verify");
+    expect(callbackFailure.events).toContain("product:publish-callback");
+    expect(callbackFailure.events).toContain("product:fail");
+    expect(callbackFailure.events).not.toContain("product:complete");
+    expect(callbackFailure.events).not.toContain("product:map");
+
+    const mapped = harness();
+    await reserve(mapped);
+    await mapped.repository.completeRevision({ coordinate, prepared: prepared() });
+    const globalClaims = mapped.events.filter((event) => event === "product:claim").length;
+    expect(await mapped.repository.reconcileCoordinate({
+      coordinate,
+      operationId: "task-result-operation.1",
+      leaseToken: LEASE,
+      async publishProduct() {
+        mapped.events.push("product:unexpected-callback");
+      },
+    })).toBe("mapped");
+    expect(mapped.events.filter((event) => event === "product:claim")).toHaveLength(
+      globalClaims,
+    );
+    expect(mapped.events).not.toContain("product:unexpected-callback");
+  });
+
+  test("binds only the closed cancellation reference to its genesis manifest hash", async () => {
+    const cancellation = harness();
+    const cancellationCoordinate = Object.freeze({
+      kind: "run_result" as const,
+      taskId: TASK_ID,
+      taskRunId: RUN_ID,
+      contentRevision: 2,
+    });
+    const requestDigest = new Uint8Array(32).fill(0x5a);
+    cancellation.product.state = Object.freeze({
+      product: null,
+      lifecycle: lifecycle({
+        coordinate: cancellationCoordinate,
+        operationId: `task-run-cancelled-result:${RUN_ID}`,
+        requestDigest,
+        cryptoObjectId: deriveTaskContentCryptoObjectIdV1(
+          cancellationCoordinate,
+        ),
+      }),
+      authority,
+    });
+
+    expect(await cancellation.repository.reconcileCoordinate({
+      coordinate: cancellationCoordinate,
+      operationId: `task-run-cancelled-result:${RUN_ID}`,
+      leaseToken: LEASE,
+    })).toBe("pending");
+    expect(cancellation.crypto.lastReference?.expectedGenesisManifestHash)
+      .toEqual(requestDigest);
+    expect(cancellation.crypto.lastReference?.expectedGenesisManifestHash)
+      .not.toBe(requestDigest);
+
+    const normal = harness();
+    normal.crypto.stored = prepared();
+    await normal.repository.reconcileCoordinate({
+      coordinate,
+      operationId: "task-result-operation.1",
+      leaseToken: LEASE,
+    });
+    expect(normal.crypto.lastReference?.expectedGenesisManifestHash)
+      .toBeUndefined();
+  });
+
+  test("fails explicitly when exact coordinate claiming is unsupported", () => {
+    const testHarness = harness();
+    Object.defineProperty(testHarness.product, "claimReconciliationCoordinate", {
+      value: undefined,
+    });
+    expect(testHarness.repository.reconcileCoordinate({
+      coordinate,
+      operationId: "task-result-operation.1",
+      leaseToken: LEASE,
+    })).rejects.toThrow("does not support coordinate reconciliation");
+  });
+
   test("rejects cross-run prepared content and bounds leased batches", () => {
     const testHarness = harness();
     expect(testHarness.repository.completeRevision({
@@ -687,10 +938,38 @@ describe("dormant Task content shadow repository", () => {
       leaseToken: "invalid",
       limit: 1,
     })).rejects.toThrow("lease must be a UUID");
+    expect(testHarness.repository.reconcileCoordinate({
+      coordinate,
+      operationId: "task-result-operation.1",
+      leaseToken: "invalid",
+    })).rejects.toThrow("lease must be a UUID");
+    expect(testHarness.repository.reconcileCoordinate({
+      coordinate,
+      operationId: "invalid operation",
+      leaseToken: LEASE,
+    })).rejects.toThrow("operation ID is invalid");
     testHarness.product.tooMany = true;
     expect(testHarness.repository.reconcilePending({
       leaseToken: LEASE,
       limit: 1,
     })).rejects.toThrow("too many candidates");
   });
+});
+
+test("historical recovery carries its closed source identity and exact signed genesis to crypto verification", async () => {
+  const h = harness();
+  const historicalRepair = { version: 2 as const, claimId: "70000000-0000-4000-8000-000000000001",
+    publisherDeviceId: "historical-device", signedRequestDigest: "0a".repeat(32), sourceDigest: "04".repeat(32),
+    sourcePayloadHash: "05".repeat(32), sourceRevision: 0 as const, genesisManifestHash: "06".repeat(32) };
+  const cryptoObjectId = deriveTaskHistoricalContentCryptoObjectIdV1({ coordinate,
+    namespaceId: authority.namespaceId, sourceDigest: new Uint8Array(32).fill(4) });
+  h.product.state = Object.freeze({ product: null, authority, lifecycle: lifecycle({
+    historicalRepair, representation: "dual", requestDigest: new Uint8Array(32).fill(10), cryptoObjectId,
+  }) });
+  h.crypto.stored = { ...prepared(), objectId: cryptoObjectId };
+  expect(await h.repository.reconcileCoordinate({ coordinate,
+    operationId: h.product.state.lifecycle.operationId, leaseToken: LEASE })).toBe("mapped");
+  expect(h.crypto.lastReference?.historicalRepair).toEqual({ provenance: historicalRepair,
+    namespaceId: authority.namespaceId });
+  expect(h.crypto.lastReference?.expectedGenesisManifestHash).toEqual(new Uint8Array(32).fill(6));
 });

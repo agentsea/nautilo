@@ -9,6 +9,7 @@ import { RELAY_FULL_MAC_EXECUTION_PROTOCOL_VERSION } from "@nautilo/relay";
 import { parseHumanTerminalOperation, sameHumanTerminalConsentOwner } from "../../types/src/human-terminal";
 import { parseRelayHumanTerminalBinding, parseRelayHumanTerminalCapability, RELAY_HUMAN_TERMINAL_PROTOCOL_VERSION, type RelayHumanTerminalBinding } from "@nautilo/relay";
 import { RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION, RELAY_BASIC_EXECUTION_PROTOCOL_VERSION } from "@nautilo/relay";
+import { isRelayTaskProjectFileDispatch } from "@nautilo/relay";
 import { parseRelayBasicExecutionCapability } from "@nautilo/relay";
 import { RELAY_READ_SHELL_OUTPUT_PROTOCOL_VERSION } from "@nautilo/relay";
 import { parseRelayLocalExecutionHistoryBinding, isRelayLocalExecutionHistoryRead, RELAY_LOCAL_EXECUTION_HISTORY_PROTOCOL_VERSION, type RelayLocalExecutionHistoryBindingV1 } from "@nautilo/relay";
@@ -3162,7 +3163,13 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
         throw new Error("LOCAL_EXECUTION_HISTORY_BINDING_INVALID");
       }
     }
-    const managedExecution = request.localExecutionHistoryBinding === undefined &&
+    const taskProjectFile = request.toolName === "local-file" && request.localExecutionBinding !== undefined;
+    if (taskProjectFile && !isRelayTaskProjectFileDispatch({ request, capabilities: entry.capabilities,
+      protocolVersion: entry.protocolVersion, userId: entry.userId, relayId,
+      desktopSessionId: entry.desktopSessionId, pairingGeneration: entry.pairingGenerationRef })) {
+      throw new Error("TASK_PROJECT_FILE_UNAVAILABLE");
+    }
+    const managedExecution = !taskProjectFile && request.localExecutionHistoryBinding === undefined &&
       (request.toolName === "exec_command" || request.toolName === "write_stdin" || request.localExecutionBinding !== undefined);
     const managedYieldMs = managedExecution && request.args["yield_time_ms"] !== undefined ? request.args["yield_time_ms"] : 0;
     if (managedExecution) {
@@ -4093,7 +4100,7 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
     }
     this.pruneCodexReplay();
     const key = this.codexCommandKey(command.scope, command.commandId);
-    const fingerprint = JSON.stringify(command);
+    const fingerprint = createHash("sha256").update(JSON.stringify(command)).digest("hex");
     const outcome = this.codexCommandOutcomes.get(key);
     if (outcome) {
       return outcome.fingerprint === fingerprint
@@ -5535,13 +5542,13 @@ export class InMemoryRelayRegistry implements FocusedResourceRelayRegistry {
     if (message.type === "relay:codex-event") {
       return {
         identity: `event:${this.codexScopeKey(message.scope)}:${message.eventSequence}`,
-        content: JSON.stringify(message),
+        content: createHash("sha256").update(JSON.stringify(message)).digest("hex"),
       };
     }
     if (message.type === "relay:codex-request") {
       return {
         identity: `request:${this.codexScopeKey(message.scope)}:${message.scope.requestRef}`,
-        content: JSON.stringify(message),
+        content: createHash("sha256").update(JSON.stringify(message)).digest("hex"),
       };
     }
     return null;

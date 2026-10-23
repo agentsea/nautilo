@@ -61,6 +61,9 @@ import {
 } from "@nautilo/lattice-bridge/server";
 import postgres from "postgres";
 
+import { withDisposableFixtureCleanup } from
+  "../../scripts/disposable-postgres-cleanup";
+
 bootstrapTestDbInstance();
 
 type SqlClient = postgres.Sql;
@@ -155,6 +158,7 @@ function orderedNamespaceIds(): readonly [string, string] {
 
 export type PublicRoomGrantVisibilityFixture = Readonly<{
   crypto: LatticeCrypto;
+  restricted: PostgresJsBridgeConnection;
   repository: PostgresDomainKeyAuthorityRepository;
   namespaceProduct: PostgresNamespaceProductAuthority;
   userId: string;
@@ -181,6 +185,12 @@ export type PublicRoomGrantVisibilityFixture = Readonly<{
     shadowBehavior: string;
     shadowEncryptionStartedAt: Date | null;
   }>;
+}>;
+
+export type PublicRoomGrantVisibilityFixtureOptions = Readonly<{
+  canonicalRequesterPrivateSource?: boolean;
+  grantServerFunding?: boolean;
+  mode?: "encrypted_only" | "shadow_encryption";
 }>;
 
 async function publishNamespaceBundle(
@@ -283,7 +293,9 @@ async function publishNamespaceBundle(
   }
 }
 
-export async function createVisibilityGrantFixture(): Promise<PublicRoomGrantVisibilityFixture> {
+export async function createVisibilityGrantFixture(
+  options: PublicRoomGrantVisibilityFixtureOptions = {},
+): Promise<PublicRoomGrantVisibilityFixture> {
   const crypto = new LatticeCrypto();
   const userId = randomUUID();
   const peerUserId = randomUUID();
@@ -307,9 +319,21 @@ export async function createVisibilityGrantFixture(): Promise<PublicRoomGrantVis
   }[]>(`SELECT mode, shadow_behavior, shadow_encryption_started_at
           FROM encryption_transition_policy WHERE id = 'server'`);
   if (original[0] === undefined) throw new Error("Missing encryption policy");
+  const mode = options.mode ?? "shadow_encryption";
+  const canonicalRequesterPrivateSource =
+    options.canonicalRequesterPrivateSource === true;
+  const sourceHumanActorIds = canonicalRequesterPrivateSource
+    ? [humanActorId]
+    : [humanActorId, peerHumanId].sort();
+  const targetHumanActorIds = [...sourceHumanActorIds];
 
   await admin.begin(async (tx) => {
     await tx.unsafe("INSERT INTO users (id, name) VALUES ($1, 'M314 Grant Human'), ($2, 'M314 Grant Peer')", [userId, peerUserId]);
+    await tx.unsafe(
+      `INSERT INTO server_admission (user_id, admitted)
+       VALUES ($1, TRUE), ($2, TRUE)`,
+      [userId, peerUserId],
+    );
     await tx.unsafe("INSERT INTO agents (id, handle) VALUES ($1, $2)", [agentId, `m314-grant-${agentId}`]);
     await tx.unsafe(
       `INSERT INTO actors (id, owner_id, display_name, trust_state, kind, agent_id)
@@ -318,44 +342,64 @@ export async function createVisibilityGrantFixture(): Promise<PublicRoomGrantVis
               ($5, $2, 'M314 Grant Agent', 'verified', 'agent', $6)`,
       [humanActorId, userId, peerHumanId, peerUserId, agentActorId, agentId],
     );
+    if (options.grantServerFunding === true) {
+      await tx.unsafe(
+        `INSERT INTO group_members (group_id, user_id, granted_by)
+         SELECT id, $1, $2 FROM groups WHERE type = 'owners'`,
+        [userId, humanActorId],
+      );
+    }
     await tx.unsafe(
       `INSERT INTO namespaces (id, scope, label)
-       VALUES ($1, 'room', 'M314 visibility source'),
-              ($2, 'room', 'M314 visibility target')`,
+       VALUES ($1, 'room', 'Grant visibility source'),
+              ($2, 'room', 'Grant visibility target')`,
       [namespaceValue, targetNamespaceId],
     );
-    const humans = [humanActorId, peerHumanId].sort();
     await tx.unsafe(
       `INSERT INTO rooms (
          id, owner_id, type, label, graph_thread_id, namespace_id,
          namespace_access_revision, human_actor_ids, kind, created_by
-       ) VALUES
-         ($1, $2, 'shared', 'M314 visibility source', $3, $4, 7,
-          $5::uuid[], 'group', $6),
-         ($7, $2, 'private', 'M314 visibility target', $8, $9, 7,
+       ) VALUES ($1, $2, $3, 'Grant visibility source', $4, $5, 7,
+          $6::uuid[], $7, $8)`,
+      [roomId, userId,
+        canonicalRequesterPrivateSource ? "private" : "shared",
+        canonicalRequesterPrivateSource ? "app:default" : `visibility-grant:${roomId}`,
+        namespaceValue, sourceHumanActorIds,
+        canonicalRequesterPrivateSource ? "private" : "group", humanActorId],
+    );
+    await tx.unsafe(
+      `INSERT INTO rooms (
+         id, owner_id, type, label, graph_thread_id, namespace_id,
+         namespace_access_revision, human_actor_ids, kind, created_by
+       ) VALUES ($1, $2, 'private', 'Grant visibility target', $3, $4, 7,
           $5::uuid[], 'private', $6)`,
-      [roomId, userId, `m314-grant:${roomId}`, namespaceValue, humans,
-        humanActorId, targetRoomId, `m314-grant:${targetRoomId}`,
-        targetNamespaceId],
+      [targetRoomId, userId, `visibility-grant:${targetRoomId}`,
+        targetNamespaceId, targetHumanActorIds, humanActorId],
     );
     await tx.unsafe(
       `INSERT INTO room_members (room_id, actor_id, room_role, agent_response_mode)
-       VALUES ($1, $2, 'admin', NULL), ($1, $3, 'member', NULL),
-              ($1, $4, 'member', 'active'), ($5, $2, 'admin', NULL),
-              ($5, $3, 'member', NULL)`,
-      [roomId, humanActorId, peerHumanId, agentActorId, targetRoomId],
+       VALUES ($1, $2, 'admin', NULL), ($1, $3, 'member', 'active'),
+              ($4, $2, 'admin', NULL)`,
+      [roomId, humanActorId, agentActorId, targetRoomId],
     );
+    if (!canonicalRequesterPrivateSource) {
+      await tx.unsafe(
+        `INSERT INTO room_members (room_id, actor_id, room_role, agent_response_mode)
+         VALUES ($1, $2, 'member', NULL), ($3, $2, 'member', NULL)`,
+        [roomId, peerHumanId, targetRoomId],
+      );
+    }
     await tx.unsafe(
       `INSERT INTO sessions (id, thread_id, owner_id, agent_id, room_id, channel)
        VALUES ($1, $2, $3, $4, $5, 'browser')`,
-      [sessionId, `m314-grant:${roomId}`, userId, agentId, roomId],
+      [sessionId, `visibility-grant:${roomId}`, userId, agentId, roomId],
     );
     await tx.unsafe(
       `UPDATE encryption_transition_policy
-          SET mode = 'shadow_encryption', revision = revision + 1,
+          SET mode = $2, revision = revision + 1,
               shadow_encryption_started_at = $1, updated_at = $1
         WHERE id = 'server'`,
-      [new Date(now).toISOString()],
+      [new Date(now).toISOString(), mode],
     );
     await tx.unsafe(
       `INSERT INTO human_crypto_custodies (
@@ -606,6 +650,7 @@ export async function createVisibilityGrantFixture(): Promise<PublicRoomGrantVis
   if (policy === undefined) throw new Error("Missing updated encryption policy");
   const fixtureWithoutDomain = Object.freeze({
     crypto,
+    restricted: restrictedConnection,
     repository,
     namespaceProduct,
     userId,
@@ -665,13 +710,21 @@ export async function destroyVisibilityGrantFixture(fixture: PublicRoomGrantVisi
   fixture.signing.privateKey.fill(0);
   fixture.domainKey.fill(0);
   fixture.membershipVault.destroy();
-  await admin.begin(async (tx) => {
+  await withDisposableFixtureCleanup(admin, async (tx) => {
     await tx.unsafe("DELETE FROM conversation_shadow_turn_operations WHERE room_id = $1", [fixture.roomId]);
     await tx.unsafe("DELETE FROM conversation_shadow_turn_plan_attempts WHERE room_id = $1", [fixture.roomId]);
     await tx.unsafe("DELETE FROM conversation_shared_agent_shadow_executions WHERE room_id = $1", [fixture.roomId]);
     await tx.unsafe("DELETE FROM conversation_shared_agent_shadow_invocations WHERE room_id = $1", [fixture.roomId]);
     await tx.unsafe("DELETE FROM conversation_shared_agent_shadow_operations WHERE room_id = $1", [fixture.roomId]);
-    await tx.unsafe("DELETE FROM session_messages WHERE session_id = $1", [fixture.sessionId]);
+    await tx.unsafe(
+      "DELETE FROM session_messages WHERE session_id IN (SELECT id FROM sessions WHERE room_id = ANY($1::uuid[]))",
+      [[fixture.roomId, fixture.targetRoomId]],
+    );
+    await tx.unsafe("DELETE FROM agent_crypto_runtime_challenges WHERE agent_id = $1", [fixture.agentId]);
+    await tx.unsafe("DELETE FROM agent_crypto_runtime_domain_envelopes WHERE agent_id = $1", [fixture.agentId]);
+    await tx.unsafe("DELETE FROM agent_crypto_runtime_config_objects WHERE agent_id = $1", [fixture.agentId]);
+    await tx.unsafe("DELETE FROM agent_crypto_runtime_signers WHERE agent_id = $1", [fixture.agentId]);
+    await tx.unsafe("DELETE FROM agent_crypto_runtime_states WHERE agent_id = $1", [fixture.agentId]);
     await tx.unsafe("DELETE FROM namespace_domain_key_heads WHERE namespace_id = ANY($1::uuid[])", [[fixture.namespaceId, fixture.targetNamespaceId]]);
     await tx.unsafe("DELETE FROM namespace_domain_key_bindings WHERE namespace_id = ANY($1::uuid[])", [[fixture.namespaceId, fixture.targetNamespaceId]]);
     await tx.unsafe("DELETE FROM domain_key_envelope_acknowledgements WHERE recipient_device_id = $1", [fixture.deviceId]);
@@ -689,7 +742,7 @@ export async function destroyVisibilityGrantFixture(fixture: PublicRoomGrantVisi
     await tx.unsafe("DELETE FROM human_crypto_custodies WHERE human_id = $1", [fixture.humanId]);
     await tx.unsafe("DELETE FROM crypto_domains WHERE id = $1", [fixture.domainId]);
     await tx.unsafe("DELETE FROM room_members WHERE room_id = ANY($1::uuid[])", [[fixture.roomId, fixture.targetRoomId]]);
-    await tx.unsafe("DELETE FROM sessions WHERE room_id = $1", [fixture.roomId]);
+    await tx.unsafe("DELETE FROM sessions WHERE room_id = ANY($1::uuid[])", [[fixture.roomId, fixture.targetRoomId]]);
     await tx.unsafe("DELETE FROM rooms WHERE id = ANY($1::uuid[])", [[fixture.roomId, fixture.targetRoomId]]);
     await tx.unsafe("DELETE FROM namespaces WHERE id = ANY($1::uuid[])", [[fixture.namespaceId, fixture.targetNamespaceId]]);
     await tx.unsafe("DELETE FROM actors WHERE id = ANY($1::uuid[])", [[fixture.humanId, fixture.peerHumanId]]);
@@ -829,12 +882,15 @@ function cloneReusable(
   });
 }
 
-export async function planWithReusableVisibilityGrant(
+export async function planWithReusableVisibilityGrantAndRuntime(
   fixture: PublicRoomGrantVisibilityFixture,
   readableNamespaceIds: readonly string[],
   grant: Awaited<ReturnType<typeof mintReusableVisibilityGrant>>,
   suffix: string,
-) {
+): Promise<Readonly<{
+  plan: ReturnType<typeof decodeLiveShadowMessagePlanV4>;
+  runtime: NonNullable<ReturnType<LiveShadowRecipientRegistry["takeAgentRuntime"]>>;
+}>> {
   const sharedPlanner = new PostgresSharedAgentLiveShadowPlanner(
     connection(product),
     connection(restricted),
@@ -870,7 +926,7 @@ export async function planWithReusableVisibilityGrant(
       `INSERT INTO session_messages (id, session_id, role, content, created_at)
        VALUES ($1, $2::uuid, 'user', $3, $4)`,
       [humanPlan.humanMessageId, humanPlan.sessionId,
-        `M314 visibility ${suffix}`, new Date(humanPlan.createdAt)],
+        `Grant visibility ${suffix}`, new Date(humanPlan.createdAt)],
     );
     await tx.unsafe(
       `UPDATE conversation_shared_agent_shadow_operations
@@ -928,11 +984,12 @@ export async function planWithReusableVisibilityGrant(
   );
   if (retainedPlan === null) throw new Error("Reusable Grant plan invalid");
   let inspected = false;
+  const recipients = new LiveShadowRecipientRegistry(() => executionNow);
   const planner = new PostgresLiveShadowTurnPlanner(
     connection(product),
     connection(restricted),
     fixture.crypto,
-    new LiveShadowRecipientRegistry(() => executionNow),
+    recipients,
     {
       serverId: fixture.serverId,
       resolveReadableNamespaces: () => Promise.resolve(readableNamespaceIds),
@@ -970,11 +1027,36 @@ export async function planWithReusableVisibilityGrant(
     if (result.status !== "authorized") {
       throw new Error("Shared foreground execution was not authorized");
     }
-    return decodeLiveShadowMessagePlanV4(result.planBytes);
+    const plan = decodeLiveShadowMessagePlanV4(result.planBytes);
+    const runtime = recipients.takeAgentRuntime(executionId);
+    if (runtime === null) {
+      throw new Error("Shared foreground Agent Runtime custody missing");
+    }
+    return Object.freeze({ plan, runtime });
   } finally {
+    recipients.shutdown();
     destroyDomainForegroundAuthorizationPlanV2(retainedPlan);
     inputSetDigest.fill(0);
     humanRequestBytes.fill(0);
+  }
+}
+
+export async function planWithReusableVisibilityGrant(
+  fixture: PublicRoomGrantVisibilityFixture,
+  readableNamespaceIds: readonly string[],
+  grant: Awaited<ReturnType<typeof mintReusableVisibilityGrant>>,
+  suffix: string,
+) {
+  const planned = await planWithReusableVisibilityGrantAndRuntime(
+    fixture,
+    readableNamespaceIds,
+    grant,
+    suffix,
+  );
+  try {
+    return planned.plan;
+  } finally {
+    planned.runtime.key.fill(0);
   }
 }
 
@@ -982,14 +1064,17 @@ export async function createVisibilityGrantCurrentAuthority(
   fixture: PublicRoomGrantVisibilityFixture,
   plan: ReturnType<typeof decodeLiveShadowMessagePlanV4>,
   resolveReadableNamespaces: () => readonly string[],
+  representationMode: "full_encryption" | "shadow_encryption" =
+    "shadow_encryption",
+  currentProduct: PostgresJsBridgeConnection = connection(product),
 ) {
   return createPostgresDomainKeyV2LiveShadowCurrentAuthority({
-    product: connection(product),
+    product: currentProduct,
     restricted: connection(restricted),
     crypto: fixture.crypto,
     serverId: fixture.serverId,
     plan,
-    representationMode: "shadow_encryption",
+    representationMode,
     source: "shared_execution",
     resolveReadableNamespaces: () => Promise.resolve(
       resolveReadableNamespaces(),

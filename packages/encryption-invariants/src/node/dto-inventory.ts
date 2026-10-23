@@ -878,9 +878,17 @@ function isFrameworkReplyType(
 ): boolean {
   const symbolName = type.aliasSymbol?.getName() ?? type.getSymbol()?.getName();
   if (symbolName === "FastifyReply") return true;
-  return /^FastifyReply(?:<|$)/u.test(
+  if (/^FastifyReply(?:<|$)/u.test(
     checker.typeToString(type, location, ts.TypeFormatFlags.NoTruncation),
-  );
+  )) return true;
+  // Only unwrap the standard Promise container. FastifyReply is itself
+  // thenable; fully awaiting it erases its framework identity into internals.
+  if (symbolName === "Promise" && (type.flags & ts.TypeFlags.Object) !== 0
+    && ((type as ts.ObjectType).objectFlags & ts.ObjectFlags.Reference) !== 0) {
+    const promised = checker.getTypeArguments(type as ts.TypeReference)[0];
+    return promised !== undefined && isFrameworkReplyType(checker, promised, location);
+  }
+  return false;
 }
 
 type RequestStructuralProperty = "body" | "params" | "query";

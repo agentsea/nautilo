@@ -2,9 +2,10 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "bun:test";
+import { readMigrationFiles } from "drizzle-orm/migrator";
 
 import { finalizeModerationMigration } from "../../scripts/finalize-moderation";
-import { repairModerationMigration, withMigrationPrivilegeCompat } from "../../src/utils/migration-privilege-compat";
+import { readMigrationFilesWithPrivilegeCompat, repairModerationMigration } from "../../src/utils/migration-privilege-compat";
 
 const triggerPrivilegeRevoke =
   'REVOKE TRUNCATE, REFERENCES, TRIGGER ON TABLE "moderation_actions" FROM "nautilo";';
@@ -32,7 +33,7 @@ describe("moderation migration trigger privileges", () => {
     expect(finalizeModerationMigration(finalized)).toBe(finalized);
   });
 
-  test("the committed migration stays immutable and the runtime correction is narrowly scoped", async () => {
+  test("the committed migration stays immutable and the runtime correction is narrowly scoped", () => {
     const migrationsFolder = new URL("../../src/migrations/", import.meta.url);
     const migration = readFileSync(
       new URL("0300_flimsy_kingpin.sql", migrationsFolder),
@@ -43,11 +44,13 @@ describe("moderation migration trigger privileges", () => {
     expect(migration.indexOf(triggerPrivilegeRevoke)).toBeLessThan(migration.indexOf(rowTrigger));
     expectTriggerPrivilegeOrder(repairModerationMigration(migration));
     expect(() => repairModerationMigration(`${migration}\n-- changed`)).toThrow("Refusing unknown");
-    await withMigrationPrivilegeCompat(fileURLToPath(migrationsFolder), async (folder) => {
-      expectTriggerPrivilegeOrder(readFileSync(`${folder}/0300_flimsy_kingpin.sql`, "utf8"));
-      expect(readFileSync(`${folder}/meta/_journal.json`, "utf8"))
-        .toBe(readFileSync(new URL("meta/_journal.json", migrationsFolder), "utf8"));
-    });
+    const config = { migrationsFolder: fileURLToPath(migrationsFolder) };
+    const canonical = readMigrationFiles(config);
+    const corrected = readMigrationFilesWithPrivilegeCompat(config);
+    const index = canonical.findIndex(({ hash }) => hash === createHash("sha256").update(migration).digest("hex"));
+    expectTriggerPrivilegeOrder(corrected[index]!.sql.join("--> statement-breakpoint"));
+    expect(corrected[index]!.hash).toBe(canonical[index]!.hash);
+    expect(corrected[index]!.folderMillis).toBe(canonical[index]!.folderMillis);
     expect(readFileSync(new URL("0300_flimsy_kingpin.sql", migrationsFolder), "utf8"))
       .toBe(migration);
   });

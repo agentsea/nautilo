@@ -17,8 +17,10 @@ const ids = {
   session: "40000000-0000-4000-8000-000000000004",
   owner: "50000000-0000-4000-8000-000000000005",
   peer: "90000000-0000-4000-8000-000000000009",
+  human: "91000000-0000-4000-8000-000000000009",
   agent: "60000000-0000-4000-8000-000000000006",
   room: "70000000-0000-4000-8000-000000000007",
+  executionRoom: "71000000-0000-4000-8000-000000000007",
   namespace: "80000000-0000-4000-8000-000000000008",
 };
 const inputObjectId = `task-definition:v1:${"a".repeat(64)}`;
@@ -37,6 +39,7 @@ function authority(
     graphThreadId,
     sessionId: ids.session,
     sessionOwnerId: ids.owner,
+    executionRoomId: ids.room,
     roomId: ids.room,
     namespaceId: ids.namespace,
     contentNamespaceId: ids.namespace,
@@ -44,12 +47,14 @@ function authority(
     requiredNamespaceFingerprint: new Uint8Array(32).fill(3),
     agentId: ids.agent,
     requestorId: ids.owner,
+    requesterHumanId: ids.human,
     inputObjectId,
     resultObjectId,
     authorizationRequestId: `task-run-authorization:${ids.run}`,
     executionSegment: 1,
     policyRevision: 9,
     representation: "protected",
+    definitionRepresentation: "protected",
     authorizationExpiresAt: 2000,
     signal: new AbortController().signal,
     ...overrides,
@@ -81,8 +86,8 @@ function reference(expected: ProtectedTaskMessageProductAuthority) {
 function rows(expected: ProtectedTaskMessageProductAuthority) {
   return [
     { id: ids.task, ownerId: ids.owner, requestorId: ids.owner,
-      agentId: ids.agent, targetRoomId: ids.room,
-      contentRepresentation: expected.representation,
+      agentId: ids.agent, targetRoomId: expected.executionRoomId,
+      contentRepresentation: expected.definitionRepresentation,
       contentNamespaceId: expected.contentNamespaceId,
       contentRevision: expected.contentRevision,
       cryptoRequiredNamespaceFingerprint: expected.requiredNamespaceFingerprint,
@@ -96,15 +101,31 @@ function rows(expected: ProtectedTaskMessageProductAuthority) {
       laneKey: `task:${ids.task}`, type: "foreground", status: "running",
       result: null, message: null, input: reference(expected) },
     { id: ids.session, ownerId: expected.sessionOwnerId, agentId: ids.agent,
-      threadId: graphThreadId, roomId: ids.room },
-    { id: ids.room, namespaceId: ids.namespace },
+      threadId: graphThreadId, roomId: expected.roomId },
+    { id: expected.roomId, ownerId: expected.requestorId,
+      namespaceId: expected.namespaceId, type: "private", kind: "private",
+      parentRoomId: null, archivedAt: null,
+      humanActorIds: [expected.requesterHumanId] },
+    ...(expected.executionRoomId === expected.roomId ? [] : [{
+      id: expected.executionRoomId, ownerId: expected.taskOwnerId,
+      namespaceId: "92000000-0000-4000-8000-000000000009",
+      type: "private", kind: "task", parentRoomId: null, archivedAt: null,
+      humanActorIds: [],
+    }]),
     { id: "server", revision: 9, mode: expected.representation === "dual"
       ? "shadow_encryption" : "encrypted_only" },
   ];
 }
 
-function transaction(data: unknown[]): CanonicalTranscriptTx {
-  const remaining = [...data];
+function transaction(
+  data: unknown[],
+  lockModes?: string[],
+): CanonicalTranscriptTx {
+  // Fixture rows describe the aggregate; the policy fence is queried first.
+  const policyIndex = data.findIndex(value =>
+    (value as { id?: unknown } | undefined)?.id === "server");
+  const remaining = [data[policyIndex],
+    ...data.slice(0, policyIndex), ...data.slice(policyIndex + 1)];
   return {
     select() {
       const value = remaining.shift();
@@ -112,7 +133,11 @@ function transaction(data: unknown[]): CanonicalTranscriptTx {
         from: () => chain,
         where: () => chain,
         limit: () => chain,
-        for: () => Promise.resolve(value === undefined ? [] : [value]),
+        for: (mode: string) => {
+          const id = (value as { id?: unknown } | undefined)?.id;
+          lockModes?.push(`${String(id)}:${mode}`);
+          return Promise.resolve(value === undefined ? [] : [value]);
+        },
         then: (resolve: (rows: unknown[]) => unknown) =>
           Promise.resolve(value === undefined ? [] : [value]).then(resolve),
       };
@@ -142,10 +167,70 @@ const append: ConversationProductPublicationGuardInput = {
 };
 
 describe("protected Task Message product guard", () => {
+  test("prelocks append authority before canonical Room and Session writes", async () => {
+    const expected = authority({ executionRoomId: ids.executionRoom });
+    const guard = createProtectedTaskMessageProductGuard(expected, () => 1000);
+    const aggregate = rows(expected);
+    const prelockRows = [
+      aggregate[0],
+      aggregate[1],
+      aggregate[2],
+      aggregate[3],
+      aggregate[4],
+      aggregate[5],
+      aggregate[6],
+    ];
+    const lockModes: string[] = [];
+    await guard.prepareAppendPublication?.(
+      transaction(prelockRows, lockModes),
+      {
+        action: "appendAllocated",
+        sessionId: append.sessionId,
+        revision: append.revision,
+        idempotencyKey: append.idempotencyKey,
+        authorRole: append.authorRole,
+        keyClass: append.keyClass,
+        publicationPolicy: append.publicationPolicy,
+      },
+    );
+    expect(lockModes).toEqual([
+      "server:share",
+      `${ids.task}:share`,
+      `${ids.run}:share`,
+      `${ids.job}:share`,
+      `${ids.session}:update`,
+      `${ids.room}:update`,
+      `${ids.executionRoom}:update`,
+    ]);
+  });
+
   test("accepts an exact running Task transcript append", async () => {
     const expected = authority();
     const guard = createProtectedTaskMessageProductGuard(expected, () => 1000);
     await guard.assertPublicationAllowed(transaction(rows(expected)), append);
+  });
+
+  test("binds an orphan execution Room to the exact requester-private transcript Room", async () => {
+    const expected = authority({ executionRoomId: ids.executionRoom });
+    const guard = createProtectedTaskMessageProductGuard(expected, () => 1000);
+    await guard.assertPublicationAllowed(transaction(rows(expected)), append);
+
+    const changedAudience: unknown[] = rows(expected);
+    changedAudience[4] = {
+      ...(changedAudience[4] as Record<string, unknown>),
+      humanActorIds: [ids.peer],
+    };
+    await Promise.resolve(expect(guard.assertPublicationAllowed(
+      transaction(changedAudience), append,
+    )).rejects.toThrow("authority changed"));
+
+    const changedExecution: unknown[] = rows(expected);
+    changedExecution[5] = {
+      ...(changedExecution[5] as Record<string, unknown>), kind: "private",
+    };
+    await Promise.resolve(expect(guard.assertPublicationAllowed(
+      transaction(changedExecution), append,
+    )).rejects.toThrow("authority changed"));
   });
 
   test("accepts either exact resume binding on a later execution segment", async () => {
@@ -296,7 +381,7 @@ describe("protected Task Message product guard", () => {
   });
 
   test("accepts a Shadow lifecycle with the canonical null policy revision", async () => {
-    const expected = authority({ representation: "dual" });
+    const expected = authority({ representation: "dual", definitionRepresentation: "dual" });
     const coordinates = {
       action: "markCryptoComplete" as const,
       sessionId: ids.session,
@@ -322,4 +407,17 @@ describe("protected Task Message product guard", () => {
       coordinates,
     ))).toContain("authority changed");
   });
+});
+
+
+test("current Full writes retain exact dual source identity", async () => {
+  const expected = authority({ definitionRepresentation: "dual" });
+  const guard = createProtectedTaskMessageProductGuard(expected, () => 1000);
+  await guard.assertPublicationAllowed(transaction(rows(expected)), append);
+  const substitutedSource: unknown[] = rows(expected);
+  substitutedSource[0] = { ...rows(expected)[0]!, contentRepresentation: "protected" };
+  await Promise.resolve(expect(guard.assertPublicationAllowed(transaction(substitutedSource), append)).rejects.toThrow());
+  await Promise.resolve(expect(guard.assertPublicationAllowed(transaction(rows(expected)), {
+    ...append, publicationPolicy: { expectedRevision: 9, representation: "ordinary_and_protected" },
+  })).rejects.toThrow());
 });

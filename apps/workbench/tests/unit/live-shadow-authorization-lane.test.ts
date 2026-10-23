@@ -9,7 +9,7 @@ const runtimeSource = readFileSync(
 
 test("foreground crypto authorization is not queued behind receive work", () => {
   const authorizationStart = runtimeSource.indexOf(
-    'event.type === "message.shared_agent_authorization_required"',
+    'if (isLiveShadowForegroundAuthorizationRequestV1(event))',
   );
   const authorizationEnd = runtimeSource.indexOf(
     'event.type === "crypto.domain_key_catch_up_requested"',
