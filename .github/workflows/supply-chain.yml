@@ -256,7 +256,7 @@ jobs:
           # This exact package manager honors the maintained install CA.
           # Frozen installation preserves the committed dependency graph;
           # shipped native Bun remains separately admitted by release policy.
-          bun-version: "1.4.3"
+          bun-version: "1.4.4"
 
       - name: Test the scoped Socket Firewall trust wrapper
         run: python3 .github/scripts/test_install_with_socket_trust.py

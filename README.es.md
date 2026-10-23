@@ -8,7 +8,7 @@ Guía local ilustrada: [English](https://nautilo.ai/docs/operator/deploy/local) 
 
 La interfaz de Nautilo está actualmente en inglés. El README y la guía local están traducidos; el resto de la documentación puede seguir en inglés.
 
-<!-- Translation source: README.md; SHA-256: 9a4d4ad7613a2fa8d902c92c6c68d4863714026caa43a5d16cff07c11478583c -->
+<!-- Translation source: README.md; SHA-256: 70b9d8b55da933e1da5c68d0656f5c2e4ac61690fd958de91b9be5268859f07a -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### La IA se vuelve multijugador.
@@ -99,7 +99,7 @@ Para despliegue y mantenimiento, consulta [deploy](deploy/README.md), [el contro
 
 ## Desarrollar desde el código fuente
 
-El repositorio fija **Bun 1.4.3** y **Node 24.22.1**. Instala Docker para la infraestructura local de PostgreSQL y Logto. La preparación de Desktop también puede necesitar Rust para su componente auxiliar nativo.
+El repositorio fija **Bun 1.4.4** y **Node 24.22.1**. Instala Docker para la infraestructura local de PostgreSQL y Logto. La preparación de Desktop también puede necesitar Rust para su componente auxiliar nativo.
 
 ```bash
 git clone https://github.com/agentsea/nautilo.git

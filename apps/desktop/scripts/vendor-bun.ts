@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /**
- * Vendor the Bun runtime into the Electron app bundle (D057 2a.2).
+ * Vendor the Bun runtime into the Electron app bundle.
  *
  * Downloads the specified Bun version for both macOS architectures
  * (arm64 + x64) into apps/desktop/vendor/bun/<arch>/bun. electron-builder
@@ -9,8 +9,7 @@
  *
  * Why: without a bundled runtime, the DMG silently fails for any user
  * who doesn't have Bun on their PATH. "Install Bun first" is not an
- * acceptable user experience for a shipped desktop app. See D057 2a.2
- * for the full rationale.
+ * acceptable user experience for a shipped desktop app.
  *
  * Runs at build time (from apps/desktop/package.json `predist`/`prepack`).
  * Idempotent: if the target binaries already exist and match the pinned
@@ -18,7 +17,7 @@
  * cache record. The exact bundled license is always checked.
  *
  * Bun versioning: pinned to match the dev toolchain (`bun --version`
- * at the time this was written was 1.3.11). Kept in sync manually; a
+ * at the time this was written was 1.4.4). Kept in sync manually; a
  * future refinement is to read it from package.json#engines.bun or
  * a root-level .bun-version file.
  *
@@ -36,6 +35,7 @@ import { mkdirSync, existsSync, readFileSync, writeFileSync, rmSync, chmodSync, 
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { vendorPinnedBunLicense } from "./desktop-license-payload";
 import { isBunRuntimeCached, recordBunRuntimeCache } from "./bun-vendor-cache";
 
@@ -43,7 +43,7 @@ import { isBunRuntimeCached, recordBunRuntimeCache } from "./bun-vendor-cache";
 // Configuration
 // ---------------------------------------------------------------------------
 
-const BUN_VERSION = "1.3.11";
+const BUN_VERSION = "1.4.4";
 
 /**
  * Map: electron-builder arch identifier -> Bun release asset stem.
@@ -53,6 +53,13 @@ const BUN_VERSION = "1.3.11";
 const ARCHES: Record<string, string> = {
   "arm64": "bun-darwin-aarch64",
   "x64": "bun-darwin-x64",
+};
+
+// Exact release archives, verified against the upstream release asset digests
+// and SHASUMS256.txt before updating this pin.
+const ARCHIVE_SHA256: Record<string, string> = {
+  "bun-darwin-aarch64": "c240d7f0ccb90c263a849fcdb09b7ee62630d921348ed6aafda86b9d577bc510",
+  "bun-darwin-x64": "50a3491f73abc2fe81673171a85762d3bc2cc1680ccecadd983de99adf77977e",
 };
 
 // Repo-layout: __filename = apps/desktop/scripts/vendor-bun.ts
@@ -78,11 +85,14 @@ function isFresh(): boolean {
   return Object.keys(ARCHES).every(arch => isBunRuntimeCached(join(VENDOR_DIR, arch, "bun"), BUN_VERSION));
 }
 
-async function downloadTo(url: string, dest: string): Promise<void> {
+async function downloadTo(url: string, dest: string, expectedSha256: string): Promise<void> {
   log(`GET ${url}`);
   const res = await fetch(url, { redirect: "follow" });
   if (!res.ok) fail(`HTTP ${res.status} fetching ${url}`);
   const buf = Buffer.from(await res.arrayBuffer());
+  if (createHash("sha256").update(buf).digest("hex") !== expectedSha256) {
+    fail("downloaded Bun archive differs from its pinned upstream SHA-256");
+  }
   mkdirSync(dirname(dest), { recursive: true });
   writeFileSync(dest, buf);
 }
@@ -112,6 +122,8 @@ async function vendorArch(arch: string, assetStem: string): Promise<void> {
   const targetBin = join(targetDir, "bun");
   const zipName = `${assetStem}.zip`;
   const url = `https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/${zipName}`;
+  const expectedSha256 = ARCHIVE_SHA256[assetStem];
+  if (!expectedSha256) fail(`missing pinned archive SHA-256 for ${assetStem}`);
 
   // Download into a tmp dir under VENDOR_DIR; extract; move binary into
   // place; clean up. Putting tmp under VENDOR_DIR keeps the operation
@@ -121,7 +133,7 @@ async function vendorArch(arch: string, assetStem: string): Promise<void> {
   mkdirSync(tmpDir, { recursive: true });
 
   const zipPath = join(tmpDir, zipName);
-  await downloadTo(url, zipPath);
+  await downloadTo(url, zipPath, expectedSha256);
 
   unzipTo(zipPath, tmpDir);
 

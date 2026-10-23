@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-/** Prepare one native architecture candidate's digest-bound D490 audit inputs. */
+/** Prepare one native architecture candidate's digest-bound release audit inputs. */
 import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -160,7 +160,7 @@ async function main(): Promise<void> {
   const baseImages = args.baseImages === undefined
     ? [{
         role: "bun-build-and-runtime",
-        identity: "docker.io/oven/bun@sha256:e10577f0db68676a7024391c6e5cb4b879ebd17188ab750cf10024a6d700e5c4",
+        identity: "docker.io/oven/bun@sha256:1d22548f177f4ff38e0c15baa3c2c46c6c2060ba2d1bc573bb4720b407548f1d",
       }]
     : JSON.parse(readFileSync(args.baseImages, "utf8")) as RuntimeImageBaseIdentity[];
   const manifest: RuntimeImageEvidenceManifestV1 = {
@@ -204,7 +204,7 @@ async function main(): Promise<void> {
   writeJson(join(args.outputDirectory, "manifest.json"), manifest);
   writeJson(join(args.outputDirectory, "vulnerability-policy.json"), vulnerabilityPolicy);
   writeJson(join(args.outputDirectory, "disclosure-policy.json"), disclosurePolicy);
-  process.stdout.write(`[d490:prepare-release-audit] image=${args.image} architecture=${args.architecture}\n`);
+  process.stdout.write(`[prepare-release-audit] image=${args.image} architecture=${args.architecture}\n`);
 }
 
 if (import.meta.main) await main();

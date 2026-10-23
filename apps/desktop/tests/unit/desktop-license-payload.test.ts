@@ -23,7 +23,7 @@ function validResources(): string {
   const root = temporaryRoot();
   mkdirSync(join(root, "legal"));
   writeFileSync(join(root, "legal/THIRD_PARTY_NOTICES.md"), canonicalNotice);
-  vendorPinnedBunLicense("1.3.11", join(root, "bun"));
+  vendorPinnedBunLicense("1.4.4", join(root, "bun"));
   return root;
 }
 
@@ -86,7 +86,7 @@ describe("Desktop license payload", () => {
       mkdirSync(dirname(binary), { recursive: true });
       writeFileSync(binary, "cached binary fixture");
       truncateSync(binary, 1_000_000);
-      recordBunRuntimeCache(binary, "1.3.11");
+      recordBunRuntimeCache(binary, "1.4.4");
     }
     writeFileSync(join(vendor, "LICENSE-bun.txt"), "old stub");
     const before = binaries.map((binary) => readFileSync(binary));
@@ -96,6 +96,19 @@ describe("Desktop license payload", () => {
     expect(result.stdout).toContain("cache hit");
     expect(readFileSync(join(vendor, "LICENSE-bun.txt")).equals(upstreamLicense)).toBe(true);
     expect(binaries.map((binary) => readFileSync(binary))).toEqual(before);
+  });
+
+  test.skipIf(process.platform === "win32")("rejects an altered runtime archive before replacing an existing binary", () => {
+    const { root, desktop } = copiedSource();
+    const binary = join(desktop, "vendor/bun/arm64/bun");
+    mkdirSync(dirname(binary), { recursive: true });
+    writeFileSync(binary, "existing runtime");
+    writeFileSync(join(root, "altered-download.ts"), 'globalThis.fetch = async () => new Response("altered archive");\n');
+    const result = spawnSync(process.execPath, ["--preload", join(root, "altered-download.ts"), join(desktop, "scripts/vendor-bun.ts")], { cwd: root, env: {}, encoding: "utf8" });
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("pinned upstream SHA-256");
+    expect(readFileSync(binary, "utf8")).toBe("existing runtime");
+    expect(existsSync(join(desktop, "vendor/bun/.tmp/arm64/bun-darwin-aarch64.zip"))).toBe(false);
   });
 
   test("electron-builder copies both notices despite the application Markdown exclusion", async () => {
@@ -114,7 +127,7 @@ describe("Desktop license payload", () => {
     };
     const configuration = yaml.load(readFileSync(join(desktopRoot, "electron-builder.yml"), "utf8"));
     const { root, desktop } = copiedSource();
-    vendorPinnedBunLicense("1.3.11", join(desktop, "vendor/bun"));
+    vendorPinnedBunLicense("1.4.4", join(desktop, "vendor/bun"));
     mkdirSync(join(desktop, "dist"));
     writeFileSync(join(desktop, "dist/main.js"), "// application fixture\n");
     writeFileSync(join(desktop, "dist/internal.md"), "excluded application Markdown");

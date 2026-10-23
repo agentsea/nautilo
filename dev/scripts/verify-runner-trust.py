@@ -91,7 +91,7 @@ def main():
     qualify_client("Python default environment trust", python_tls, "example.com")
     qualify_client("curl explicit CA file" if os.name == "nt" else "curl environment CA", curl_tls, "example.com")
     qualify_client("Git", git_tls, "github.com")
-    if command(["bun", "--version"]).stdout.strip() != "1.4.3":
+    if command(["bun", "--version"]).stdout.strip() != "1.4.4":
         raise RuntimeError("Package-manager qualification requires the exact CI Bun pin")
     qualify_client("Bun package manager global CA", bun_package_manager, "registry.npmjs.org")
     script = r'''
