@@ -4,6 +4,7 @@
     "tsBuildInfoFile": "../../../node_modules/.cache/tsconfig/repo-invariants.tsbuildinfo"
   },
   "include": [
+    "./bun-pin-alignment.test.ts",
     "./contribution-governance.test.ts",
     "./*-mutation-characterization-coverage.test.ts",
     "./hono-security-floor.test.ts",

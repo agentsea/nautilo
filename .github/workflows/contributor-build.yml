@@ -10,6 +10,8 @@ on:
       - "turbo.json"
       - "patches/**"
       - "dev/scripts/install-first-party-apps.ts"
+      - "packages/office-core/**"
+      - "packages/office-sheets/**"
       - ".github/scripts/contributor-build.sh"
       - ".github/workflows/contributor-build.yml"
   workflow_dispatch:

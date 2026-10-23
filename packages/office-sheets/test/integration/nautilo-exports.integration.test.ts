@@ -9,7 +9,7 @@ describe('Nautilo package entries', () => {
     expect([...browser.extractReferences('=A1+B2')]).toEqual(['A1', 'B2']);
     expect(typeof browser.Spreadsheet).toBe('function');
     const bundle = await readFile(
-      fileURLToPath(new URL('../dist/browser.js', import.meta.url)),
+      fileURLToPath(new URL('../../dist/browser.js', import.meta.url)),
       'utf8',
     );
     expect(bundle).not.toMatch(/from\s*["'](?:assert|util)["']/);
@@ -24,7 +24,7 @@ describe('Nautilo package entries', () => {
     await node.calculateSheet(sheet, new Map(), ['A2']);
     expect((await store.get(node.parseRef('A2')))?.v).toBe('5');
     const bundle = await readFile(
-      fileURLToPath(new URL('../dist/node.js', import.meta.url)),
+      fileURLToPath(new URL('../../dist/node.js', import.meta.url)),
       'utf8',
     );
     expect(bundle).not.toMatch(

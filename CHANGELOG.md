@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Server Docker builds require Chromium 156.0.8078.47 or later from Debian
+  13 security updates on both AMD64 and ARM64, and no longer waive findings
+  for the older Chromium packages.
+
 - Update TOML parsing to reject malformed input without excessive processing.
 - Preserve strict IP matching in network allowlists during hostname normalization.
 - Genie can change access to encrypted Memory across Domains whose
@@ -31,9 +35,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 - Desktop uses Electron 43.8.3, which rejects certificate chains containing
   compromised eMudhra intermediate keys in its Chromium and Node.js networking.
-  Desktop requires macOS 12 (Monterey) or later; its package metadata now
+  Desktop requires macOS 13 (Ventura) or later; its package metadata now
   declares that minimum. Native rebuild tooling recognizes the selected Electron
-  runtime. Separately bundled runtimes require their own updates.
+  runtime. The bundled Google Workspace helper requires macOS 15 or later and
+  remains unavailable on macOS 13 and 14 without blocking Desktop.
 
 - Background Tasks can save Workspace files using their authorized namespace
   room while keeping their transcripts separate from the originating chat.

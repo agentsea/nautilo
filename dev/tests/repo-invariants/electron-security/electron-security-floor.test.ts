@@ -73,6 +73,6 @@ describe("Desktop Electron security floor", () => {
     const builder = Bun.YAML.parse(
       await readFile(join(repositoryRoot, "apps/desktop/electron-builder.yml"), "utf8"),
     ) as { mac: { extendInfo: { LSMinimumSystemVersion: string } } };
-    expect(builder.mac.extendInfo.LSMinimumSystemVersion).toBe("12.0");
+    expect(builder.mac.extendInfo.LSMinimumSystemVersion).toBe("13.0");
   });
 });

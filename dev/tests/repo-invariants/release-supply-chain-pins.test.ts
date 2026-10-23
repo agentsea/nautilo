@@ -43,6 +43,18 @@ describe("Release supply-chain pins", () => {
       expect(match?.[2]).toBe(bunDigest);
     }
     expect(dockerfile).not.toMatch(/^FROM\s+oven\/bun:[^@\s]+(?:\s|$)/m);
+
+    const bootstrapDockerfile = source("packaging/docker/Dockerfile.bootstrap");
+    expect(bootstrapDockerfile.match(/^FROM\s+oven\/bun:[^\s]+/gm)).toEqual([
+      `FROM ${bunBase}`,
+    ]);
+    const bootstrapBaseImages = JSON.parse(
+      source("packaging/docker/bootstrap-base-images.json"),
+    ) as Array<{ role: string; identity: string }>;
+    expect(bootstrapBaseImages).toContainEqual({
+      role: "builder",
+      identity: `docker.io/oven/bun@sha256:${bunDigest}`,
+    });
   });
 
   test("keeps retained base evidence aligned with the Dockerfile Bun pin", () => {
