@@ -3710,7 +3710,7 @@ describe("Postgres protected Memory product and crypto adapters", () => {
         if (
           prepared.status !== "executed"
           || prepared.value.status !== "success"
-        ) throw new Error("Agent exact-access integration preparation failed");
+        ) throw new Error(`Agent exact-access integration preparation failed: ${JSON.stringify(prepared)}`);
         const preparedHandle = prepared.value.value;
         const responseLoss = await contentPort.authorizeCommit({
           capability,
