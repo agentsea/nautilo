@@ -28,8 +28,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 - Desktop uses Electron 43.8.3, which rejects certificate chains containing
   compromised eMudhra intermediate keys in its Chromium and Node.js networking.
-  Desktop requires macOS 12 (Monterey) or later; its package metadata now
-  declares that minimum. Separately bundled runtimes require their own updates.
+  Desktop requires macOS 13 (Ventura) or later; its package metadata now
+  declares that minimum. The bundled Google Workspace helper requires macOS 15
+  or later and remains unavailable on macOS 13 and 14 without blocking Desktop.
 
 - Background Tasks can save Workspace files using their authorized namespace
   room while keeping their transcripts separate from the originating chat.
