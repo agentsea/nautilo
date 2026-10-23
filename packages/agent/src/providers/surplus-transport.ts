@@ -7,10 +7,7 @@ import type { ChatModel, ReasoningEffort } from "./types";
 import type { QualifiedSurplusChatRoute } from "./surplus-route";
 import { OpenRouterReasoningCompletions } from "./openrouter-reasoning";
 import { openRouterSessionModelKwargs, surplusReasoningModelKwargs } from "./factory";
-import {
-  VeniceChatOpenAICompletions,
-  wrapVeniceModelForToolSchemas,
-} from "./venice-compat";
+import { wrapVeniceModelForToolSchemas } from "./venice-compat";
 
 const SURPLUS_API_ROOT = "https://api.surplusintelligence.ai/v1";
 const SURPLUS_CHAT_PATH = "/v1/chat/completions";
@@ -283,7 +280,7 @@ type CompletionDeltaConversion = Parameters<
   typeof convertCompletionsDeltaToBaseMessageChunk
 >[0];
 
-/** Preserve terminal metadata for every non-Venice OpenAI-compatible pin. */
+/** Preserve terminal metadata for every Surplus OpenAI-compatible pin. */
 class SurplusOpenAICompatibleCompletions extends OpenRouterReasoningCompletions {
   protected override _convertCompletionsDeltaToBaseMessageChunk(
     delta: CompletionDeltaConversion["delta"],
@@ -371,11 +368,9 @@ export function createSurplusChatModel(input: CreateSurplusChatModelInput): Chat
   };
   const model = new ChatOpenAI({
     ...base,
-    ...(isVenice
-      ? { completions: new VeniceChatOpenAICompletions(base) }
-      : input.route.providerPin === "openrouter"
-        ? { completions: new SurplusOpenRouterCompletions(base) }
-        : { completions: new SurplusOpenAICompatibleCompletions(base) }),
+    ...(input.route.providerPin === "openrouter"
+      ? { completions: new SurplusOpenRouterCompletions(base) }
+      : { completions: new SurplusOpenAICompatibleCompletions(base) }),
   }) as unknown as ChatModel;
   return isVenice
     ? wrapVeniceModelForToolSchemas(model)

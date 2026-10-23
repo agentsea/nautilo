@@ -1,5 +1,7 @@
+import { BaseCallbackHandler } from "@langchain/core/callbacks/base";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { AIMessage, HumanMessage } from "@langchain/core/messages";
+import type { ChatGeneration, LLMResult } from "@langchain/core/outputs";
 import {
   createSurplusChatModel,
   createSurplusObservedFetch,
@@ -45,6 +47,16 @@ const QUALIFIED_OPENROUTER_ROUTE = {
   maxContextTokens: 1_050_000,
   maxOutputTokens: 128_000,
 };
+
+class CaptureSurplusLLMEnd extends BaseCallbackHandler {
+  name = "capture_surplus_llm_end";
+  readonly lc_prefer_streaming = true;
+  output: LLMResult | undefined;
+
+  override handleLLMEnd(output: LLMResult): void {
+    this.output = output;
+  }
+}
 
 beforeEach(installSurplusCatalogFixture);
 afterEach(resetSurplusModelCatalog);
@@ -279,6 +291,192 @@ describe("Surplus wire boundary", () => {
       reasoningTokens: 10,
       buyerCostMicro: 283,
     });
+  });
+
+  test("Venice callback-preferred invoke preserves text, tools, terminal metadata, and final usage", async () => {
+    const route = resolveQualifiedSurplusChatRoute("venice:minimax-m3-preview");
+    if (!route) throw new Error("Expected the discovered Venice route to remain qualified");
+    const frames = [
+      {
+        id: "chatcmpl-surplus-venice-callback",
+        object: "chat.completion.chunk",
+        created: 1,
+        model: route.surplusModelId,
+        choices: [{ index: 0, delta: { content: "Checking " }, finish_reason: null }],
+      },
+      {
+        id: "chatcmpl-surplus-venice-callback",
+        object: "chat.completion.chunk",
+        created: 1,
+        model: route.surplusModelId,
+        choices: [{
+          index: 0,
+          delta: {
+            content: "now",
+            tool_calls: [{
+              index: 0,
+              id: "call-report",
+              type: "function",
+              function: { name: "report_probe", arguments: "{" },
+            }],
+          },
+          finish_reason: null,
+        }],
+      },
+      ...["\"status\": ", "\"ok", "\"", "}"].map((argumentsFragment) => ({
+        id: "chatcmpl-surplus-venice-callback",
+        object: "chat.completion.chunk",
+        created: 1,
+        model: route.surplusModelId,
+        choices: [{
+          index: 0,
+          delta: {
+            tool_calls: [{
+              index: 0,
+              id: null,
+              type: "function",
+              function: { arguments: argumentsFragment },
+            }],
+          },
+          finish_reason: null,
+        }],
+      })),
+      {
+        id: "chatcmpl-surplus-venice-callback",
+        object: "chat.completion.chunk",
+        created: 1,
+        model: route.surplusModelId,
+        choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+      },
+      {
+        id: "chatcmpl-surplus-venice-callback",
+        object: "chat.completion.chunk",
+        created: 1,
+        model: route.surplusModelId,
+        choices: [],
+        usage: {
+          prompt_tokens: 379,
+          completion_tokens: 55,
+          total_tokens: 434,
+          prompt_tokens_details: { cached_tokens: 107 },
+          cache_read_input_tokens: 107,
+          completion_tokens_details: { reasoning_tokens: 27 },
+          buyer_cost_micro: 116,
+        },
+      },
+    ];
+    const model = createSurplusChatModel({
+      route,
+      apiKey: "synthetic-key",
+      maxOutputTokens: 256,
+      onResponse: () => {},
+      fetchImpl: (async () => new Response(
+        `${frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join("")}data: [DONE]\n\n`,
+        { headers: { "content-type": "text/event-stream" } },
+      )) as unknown as typeof fetch,
+    }).bindTools!([{
+      type: "function",
+      function: {
+        name: "report_probe",
+        description: "Record the synthetic probe.",
+        parameters: {
+          type: "object",
+          properties: { status: { type: "string" } },
+          required: ["status"],
+          additionalProperties: false,
+        },
+      },
+    } as never]);
+    const capture = new CaptureSurplusLLMEnd();
+
+    const response = await model.invoke(
+      [new HumanMessage("Run the probe")],
+      { callbacks: [capture] },
+    ) as AIMessage;
+    const generation = capture.output?.generations[0]?.[0] as ChatGeneration | undefined;
+
+    expect(response.content).toBe("Checking now");
+    expect(response.tool_calls).toEqual([{
+      id: "call-report",
+      name: "report_probe",
+      args: { status: "ok" },
+      type: "tool_call",
+    }]);
+    expect(response.response_metadata["finish_reason"]).toBe("tool_calls");
+    expect(generation?.generationInfo?.["finish_reason"]).toBe("tool_calls");
+    expect(generation?.message.response_metadata["finish_reason"]).toBe("tool_calls");
+    expect(readSurplusResponseUsage(response)).toMatchObject({
+      inputTokens: 379,
+      outputTokens: 55,
+      totalTokens: 434,
+      reasoningTokens: 27,
+      cachedInputTokens: 107,
+      buyerCostMicro: 116,
+    });
+    expect(() => assertCompleteSurplusResponse(
+      { providerFamily: "venice", truncated: false },
+      response,
+    )).not.toThrow();
+  });
+
+  test("Venice callback-preferred invoke deduplicates its final marker without doubling cost", async () => {
+    const route = resolveQualifiedSurplusChatRoute("venice:minimax-m3-preview");
+    if (!route) throw new Error("Expected the discovered Venice route to remain qualified");
+    const frames = [
+      {
+        id: "chatcmpl-surplus-venice-final",
+        object: "chat.completion.chunk",
+        created: 1,
+        model: route.surplusModelId,
+        choices: [{
+          index: 0,
+          delta: { role: "assistant", content: "Done" },
+          finish_reason: "stop",
+        }],
+      },
+      {
+        id: "chatcmpl-surplus-venice-final",
+        object: "chat.completion.chunk",
+        created: 1,
+        model: route.surplusModelId,
+        choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: "stop" }],
+        usage: {
+          prompt_tokens: 70,
+          completion_tokens: 42,
+          total_tokens: 112,
+          buyer_cost_micro: 129,
+        },
+      },
+    ];
+    const model = createSurplusChatModel({
+      route,
+      apiKey: "synthetic-key",
+      maxOutputTokens: 256,
+      onResponse: () => {},
+      fetchImpl: (async () => new Response(
+        `${frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join("")}data: [DONE]\n\n`,
+        { headers: { "content-type": "text/event-stream" } },
+      )) as unknown as typeof fetch,
+    });
+    const capture = new CaptureSurplusLLMEnd();
+
+    const response = await model.invoke(
+      [new HumanMessage("Reply Done")],
+      { callbacks: [capture] },
+    ) as AIMessage;
+
+    expect(response.content).toBe("Done");
+    expect(response.response_metadata["finish_reason"]).toBe("stop");
+    expect(readSurplusResponseUsage(response)).toMatchObject({
+      inputTokens: 70,
+      outputTokens: 42,
+      totalTokens: 112,
+      buyerCostMicro: 129,
+    });
+    expect(() => assertCompleteSurplusResponse(
+      { providerFamily: "venice", truncated: false },
+      response,
+    )).not.toThrow();
   });
 
   test("non-Venice SDK requests omit Venice-only options", async () => {
