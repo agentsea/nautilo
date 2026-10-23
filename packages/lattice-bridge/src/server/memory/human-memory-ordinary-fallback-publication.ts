@@ -8,8 +8,15 @@ import type { LatticeCrypto } from "@nautilo/lattice-crypto";
 
 import {
   decodeHumanMemoryOrdinaryFallbackRequestV1,
+  decodeHumanMemoryOrdinaryFallbackRequestV2,
   digestHumanMemoryOrdinaryFallbackRequestV1,
+  digestHumanMemoryOrdinaryFallbackRequestV2,
   verifyHumanMemoryOrdinaryFallbackRequestV1,
+  verifyHumanMemoryOrdinaryFallbackRequestV2,
+  type HumanMemoryOrdinaryFallbackRequestV1,
+  type HumanMemoryOrdinaryFallbackRequestV2,
+  type AuthenticatedHumanMemoryOrdinaryFallbackRequestV1,
+  type AuthenticatedHumanMemoryOrdinaryFallbackRequestV2,
 } from "../../memory/human-memory-ordinary-fallback-request.ts";
 import {
   MEMORY_FOREGROUND_PROCESSOR_MAX_DEADLINE_MS,
@@ -25,6 +32,18 @@ import type {
 } from "./postgres-human-memory-product-update.ts";
 import { humanMemoryPreparedAuthorizationError,
   humanMemoryPreparedIntegrityError } from "./human-memory-prepared-route-error.ts";
+
+type FallbackRequest = HumanMemoryOrdinaryFallbackRequestV1 | HumanMemoryOrdinaryFallbackRequestV2;
+type AuthenticatedFallback = AuthenticatedHumanMemoryOrdinaryFallbackRequestV1 | AuthenticatedHumanMemoryOrdinaryFallbackRequestV2;
+function decodeFallback(bytes: Uint8Array): FallbackRequest {
+  try { return decodeHumanMemoryOrdinaryFallbackRequestV2(bytes); }
+  catch { return decodeHumanMemoryOrdinaryFallbackRequestV1(bytes); }
+}
+function requestedSpace(request: FallbackRequest) {
+  return request.formatVersion === 2 ? request.requestedEmbedding.canonicalSpace
+    : { provider: request.requestedProvider, model: request.requestedModel,
+      dimensions: request.dimensions };
+}
 
 type SubmittedOrdinaryFallback =
   | ProtectedMemoryOrdinaryFallbackCreateRequestV1
@@ -61,7 +80,7 @@ function unavailable(): ProtectedMemoryUnavailableResponseV1 {
 
 function exactOuterRequest(
   submitted: SubmittedOrdinaryFallback,
-  request: ReturnType<typeof verifyHumanMemoryOrdinaryFallbackRequestV1>["request"],
+  request: FallbackRequest,
   expectedPurpose: HumanMemoryOrdinaryFallbackPurpose,
 ): boolean {
   return request.purpose === expectedPurpose
@@ -100,10 +119,12 @@ export async function publishHumanMemoryOrdinaryFallbackIntent<
   ));
   try {
   let digest: Uint8Array;
-  let unsigned: ReturnType<typeof decodeHumanMemoryOrdinaryFallbackRequestV1>;
+  let unsigned: FallbackRequest;
   try {
-    unsigned = decodeHumanMemoryOrdinaryFallbackRequestV1(requestBytes);
-    digest = digestHumanMemoryOrdinaryFallbackRequestV1(requestBytes);
+    unsigned = decodeFallback(requestBytes);
+    digest = unsigned.formatVersion === 2
+      ? digestHumanMemoryOrdinaryFallbackRequestV2(requestBytes)
+      : digestHumanMemoryOrdinaryFallbackRequestV1(requestBytes);
   } catch (error) {
     if (!(error instanceof TypeError) && !(error instanceof RangeError)) throw error;
     throw humanMemoryPreparedIntegrityError(
@@ -134,9 +155,11 @@ export async function publishHumanMemoryOrdinaryFallbackIntent<
       "Human Memory ordinary fallback signer is unavailable",
     );
   }
-  let authenticated: ReturnType<typeof verifyHumanMemoryOrdinaryFallbackRequestV1>;
+  let authenticated: AuthenticatedFallback;
   try {
-    authenticated = verifyHumanMemoryOrdinaryFallbackRequestV1(input.crypto, {
+    const verify = unsigned.formatVersion === 2
+      ? verifyHumanMemoryOrdinaryFallbackRequestV2 : verifyHumanMemoryOrdinaryFallbackRequestV1;
+    authenticated = verify(input.crypto, {
       requestBytes,
       signingPublicKey: historical.committerSigningPublicKey,
       now: input.now(),
@@ -167,14 +190,14 @@ export async function publishHumanMemoryOrdinaryFallbackIntent<
   });
   const processorIssuedAt = input.now();
   const embedded = await input.foregroundEmbeddingProcessor.embed({
-    request: Object.freeze({ contractVersion: 1,
+    request: Object.freeze({ contractVersion: authenticated.request.processorContractVersion,
       purpose: "memory.content_embedding",
       subjectId: authenticated.request.subjectHumanId,
       requestId: authenticated.request.operationId,
       plaintext: authenticated.request.content,
-      provider: authenticated.request.requestedProvider,
-      model: authenticated.request.requestedModel,
-      dimensions: authenticated.request.dimensions,
+      ...requestedSpace(authenticated.request),
+      ...(authenticated.request.formatVersion === 2
+        ? { embeddingDisclosure: authenticated.request.requestedEmbedding } : {}),
       issuedAt: processorIssuedAt,
       deadlineAt: processorIssuedAt + MEMORY_FOREGROUND_PROCESSOR_MAX_DEADLINE_MS,
       publication: Object.freeze({ objectId: authenticated.request.memoryId,

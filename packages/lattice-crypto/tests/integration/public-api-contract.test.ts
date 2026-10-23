@@ -4398,7 +4398,7 @@ describe("M226 clean supported package API", () => {
     const versionedWire = explicitExports(`${sourceRoot}/wire.ts`);
     const classified = [...root, ...versionedWire];
 
-    expect(previous).toHaveLength(635);
+    expect(previous).toHaveLength(653);
     expect(classified).toHaveLength(inventory.length);
     expect(classificationErrors(inventory, root, versionedWire)).toEqual([]);
     expect(

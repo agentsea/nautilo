@@ -7,6 +7,7 @@ import type {
 import {
   createHumanMemoryOrdinaryFallbackReplayAdmissionV1,
   type AuthenticatedHumanMemoryOrdinaryFallbackRequestV1,
+  type AuthenticatedHumanMemoryOrdinaryFallbackRequestV2,
   type HumanMemoryOrdinaryFallbackReplayAdmissionV1,
 } from "../../memory/human-memory-ordinary-fallback-request.ts";
 import {
@@ -115,7 +116,7 @@ export type HumanMemoryReservationReplay = Readonly<{
 }>;
 
 export type HumanMemoryOrdinaryFallbackAdmission = Readonly<{
-  authenticated: AuthenticatedHumanMemoryOrdinaryFallbackRequestV1;
+  authenticated: AuthenticatedHumanMemoryOrdinaryFallbackRequestV1 | AuthenticatedHumanMemoryOrdinaryFallbackRequestV2;
   expectedAccessRevision: number;
 }>;
 
@@ -136,7 +137,7 @@ export interface HumanMemoryProductUpdatePort {
   }>): Promise<HumanMemoryOrdinaryFallbackReplay | null>;
   admitOrdinaryFallback(input: Readonly<{
     authority: HumanMemoryProductAuthority;
-    authenticated: AuthenticatedHumanMemoryOrdinaryFallbackRequestV1;
+    authenticated: AuthenticatedHumanMemoryOrdinaryFallbackRequestV1 | AuthenticatedHumanMemoryOrdinaryFallbackRequestV2;
   }>): Promise<HumanMemoryOrdinaryFallbackAdmission>;
   publishOrdinaryFallbackIntent(input: Readonly<{
     authority: HumanMemoryProductAuthority;
@@ -213,7 +214,7 @@ export interface HumanMemoryProductCreatePort {
   }>): Promise<HumanMemoryOrdinaryFallbackReplay | null>;
   admitOrdinaryFallback(input: Readonly<{
     authority: HumanMemoryProductCreateAuthority;
-    authenticated: AuthenticatedHumanMemoryOrdinaryFallbackRequestV1;
+    authenticated: AuthenticatedHumanMemoryOrdinaryFallbackRequestV1 | AuthenticatedHumanMemoryOrdinaryFallbackRequestV2;
   }>): Promise<HumanMemoryOrdinaryFallbackAdmission>;
   publishOrdinaryFallbackIntent(input: Readonly<{
     authority: HumanMemoryProductCreateAuthority;
@@ -914,7 +915,7 @@ export class PostgresHumanMemoryProductUpdate
 
   async admitOrdinaryFallback(input: Readonly<{
     authority: HumanMemoryProductAuthority | HumanMemoryProductCreateAuthority;
-    authenticated: AuthenticatedHumanMemoryOrdinaryFallbackRequestV1;
+    authenticated: AuthenticatedHumanMemoryOrdinaryFallbackRequestV1 | AuthenticatedHumanMemoryOrdinaryFallbackRequestV2;
   }>): Promise<HumanMemoryOrdinaryFallbackAdmission> {
     const { request, requestDigest } = input.authenticated;
     const create = request.purpose === "memory.ordinary_fallback.create";
@@ -1802,7 +1803,9 @@ export class PostgresHumanMemoryProductUpdate
           nextContentRevision: request.nextContentRevision,
           expectedAccessRevision: request.expectedCryptoAccessRevision,
           requiredNamespaceIds: request.requiredNamespaceIds,
-          authored: request, embedding: input.embedding, retainOrdinary: true,
+          authored: { formatVersion: 1, type: request.type, content: request.content,
+            ...(request.importance === undefined ? {} : { importance: request.importance }) },
+          embedding: input.embedding, retainOrdinary: true,
           resetAccessRevision: false, priorMapping: "if-present",
           isCreate: request.purpose === "memory.ordinary_fallback.create" });
         const projection = projectProduct(await loadProduct(tx, request.memoryId));

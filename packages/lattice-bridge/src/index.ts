@@ -10,7 +10,12 @@ export {
 
 export {
   createForegroundMemoryProcessorRecipient,
+  decodeMemoryProcessorSearchQueryV2,
+  encodeMemoryProcessorSearchQueryV2,
   sealForegroundMemoryProcessorRequest,
+  sealForegroundMemoryProcessorRequestV2,
+  sealForegroundMemoryProcessorSearchQueryV2,
+  type MemoryProcessorSearchQueryV2,
 } from "./memory/foreground-memory-processor-transport.ts";
 export { createHumanMemoryProcessorTransport } from "./client/memory/human-memory-processor-transport.ts";
 export {
@@ -97,7 +102,9 @@ export {
   type AuthorizedHumanMemoryReadResultV1,
   type AuthorizedHumanMemoryTestAuthority,
   type AuthorizedHumanMemoryUnavailableReason,
+  type AuthorizedHumanMemoryWriteIntent,
   type AuthorizedHumanMemoryWriteIntentV1,
+  type AuthorizedHumanMemoryWriteIntentV2,
 } from "./client/memory/authorized-human-memory-client.ts";
 export {
   createVaultAuthorizedHumanMemoryDeviceContentPort,
@@ -1386,5 +1393,20 @@ export {
 export * from "./message/message-backfill-ack.ts";
 export * from "./message/message-backfill-state.ts";
 export { PROTECTED_TOP_LEVEL_ROOM_KINDS, isProtectedTopLevelRoomKind } from "./message/protected-room-topology.ts";
+
+export {
+  createHumanMemoryOrdinaryFallbackReplayAdmissionV2,
+  encodeHumanMemoryOrdinaryFallbackRequestV2,
+  decodeHumanMemoryOrdinaryFallbackRequestV2,
+  digestHumanMemoryOrdinaryFallbackRequestV2,
+  prepareHumanMemoryOrdinaryFallbackRequestV2,
+  verifyHumanMemoryOrdinaryFallbackRequestV2,
+} from "./memory/human-memory-ordinary-fallback-request.ts";
+export type {
+  HumanMemoryOrdinaryFallbackUnsignedRequestV2,
+  HumanMemoryOrdinaryFallbackRequestV2,
+  AuthenticatedHumanMemoryOrdinaryFallbackRequestV2,
+  HumanMemoryOrdinaryFallbackReplayAdmissionV2,
+} from "./memory/human-memory-ordinary-fallback-request.ts";
 export * from "./client/task/device-task-content-backfill-client.ts";
 export * from "./client/task/task-content-backfill-worker.ts";

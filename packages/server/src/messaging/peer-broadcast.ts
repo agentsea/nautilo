@@ -2,9 +2,9 @@ import { randomUUID } from "node:crypto";
 import {
   appendTranscriptMessages,
   buildForegroundUserHumanMessage,
-  getDefaultModel,
+  modelIdForCapabilityProjection,
 } from "@nautilo/agent";
-import { and, db, eq, isNull, rooms, sessionMessages, sessions, sessionMessageRecipientState } from "@nautilo/db";
+import { and, db, eq, getCachedServerModelConfigRow, isNull, rooms, sessionMessages, sessions, sessionMessageRecipientState } from "@nautilo/db";
 import { log } from "@nautilo/logger";
 import { eventBus } from "@nautilo/runtime";
 import type { RoomDetailPayload } from "@nautilo/trust";
@@ -136,6 +136,9 @@ export async function peerBroadcastHumanMessage(args: {
   const { room, senderUserId, content, attachmentTextBlocks, multimodalImages, replyToMessageId } =
     args;
   const humanTurnId = args.persistedMessage?.humanTurnId ?? randomUUID();
+  const projectionModelId = modelIdForCapabilityProjection("chat",
+    process.env["NAUTILO_MODEL"]?.trim()
+      || getCachedServerModelConfigRow()?.defaultChatModel?.trim());
   const result: Awaited<ReturnType<typeof appendTranscriptMessages>> = args.persistedMessage === undefined
     ? await appendTranscriptMessages(
       room.graphThreadId,
@@ -145,7 +148,7 @@ export async function peerBroadcastHumanMessage(args: {
         userText: content,
         attachmentTextBlocks,
         multimodalImages,
-        modelId: getDefaultModel().id,
+        modelId: projectionModelId,
         replyToMessageId: replyToMessageId ?? null,
       })],
       {

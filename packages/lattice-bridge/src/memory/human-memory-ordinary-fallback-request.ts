@@ -4,6 +4,10 @@ import {
   type LatticeCrypto,
 } from "@nautilo/lattice-crypto";
 import {
+  assertMemoryEmbeddingDisclosureV2,
+  encodeMemoryEmbeddingDisclosureV2,
+  decodeMemoryEmbeddingDisclosureV2,
+  type MemoryEmbeddingDisclosureV2,
   HUMAN_MEMORY_CONTENT_EMBEDDING_REQUEST_MAX_NAMESPACE_ENVELOPES_V2,
   HUMAN_MEMORY_CONTENT_EMBEDDING_REQUEST_MAX_TTL_MS_V2,
   MAX_HUMAN_MEMORY_CONTENT_EMBEDDING_REQUEST_WIRE_BYTES_V2,
@@ -11,6 +15,7 @@ import {
 import { encodeMemoryPayloadV1 } from "./memory-payload-v1.ts";
 
 const DOMAIN = "nautilo/memory/human-ordinary-fallback/v1";
+const DOMAIN_V2 = "nautilo/memory/human-ordinary-fallback/v2";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const PORTABLE = /^[A-Za-z0-9][A-Za-z0-9._:@/-]*$/u;
 const encoder = new TextEncoder();
@@ -56,6 +61,26 @@ export type AuthenticatedHumanMemoryOrdinaryFallbackRequestV1 = Readonly<{
   requestDigest: Uint8Array;
 }>;
 
+export interface HumanMemoryOrdinaryFallbackUnsignedRequestV2 extends Omit<
+  HumanMemoryOrdinaryFallbackUnsignedRequestV1,
+  "formatVersion" | "requestedProvider" | "requestedModel" | "dimensions" | "processorContractVersion"
+> {
+  readonly formatVersion: 2;
+  readonly requestedEmbedding: MemoryEmbeddingDisclosureV2;
+  readonly processorContractVersion: 2;
+}
+export interface HumanMemoryOrdinaryFallbackRequestV2 extends HumanMemoryOrdinaryFallbackUnsignedRequestV2 {
+  readonly signature: Uint8Array;
+}
+export type AuthenticatedHumanMemoryOrdinaryFallbackRequestV2 = Readonly<{
+  request: HumanMemoryOrdinaryFallbackRequestV2;
+  requestDigest: Uint8Array;
+}>;
+type FallbackUnsigned = HumanMemoryOrdinaryFallbackUnsignedRequestV1 | HumanMemoryOrdinaryFallbackUnsignedRequestV2;
+type FallbackRequest = HumanMemoryOrdinaryFallbackRequestV1 | HumanMemoryOrdinaryFallbackRequestV2;
+type FallbackAuthenticated = AuthenticatedHumanMemoryOrdinaryFallbackRequestV1 | AuthenticatedHumanMemoryOrdinaryFallbackRequestV2;
+type FallbackVersion = 1 | 2;
+
 declare const replayAdmissionBrand: unique symbol;
 export type HumanMemoryOrdinaryFallbackReplayAdmissionV1 = Readonly<{
   [replayAdmissionBrand]: true;
@@ -78,6 +103,26 @@ export function createHumanMemoryOrdinaryFallbackReplayAdmissionV1(
     requestDigest: input.requestDigest.slice() }));
   return token;
 }
+
+// Durable replay admission binds the exact canonical request digest, including
+// its signing domain and format. Both versions share the same opaque authority.
+export type HumanMemoryOrdinaryFallbackReplayAdmissionV2 = HumanMemoryOrdinaryFallbackReplayAdmissionV1;
+export function createHumanMemoryOrdinaryFallbackReplayAdmissionV2(
+  input: Readonly<{ operationId: string; memoryId: string; requestDigest: Uint8Array }>,
+): HumanMemoryOrdinaryFallbackReplayAdmissionV2 {
+  if (!(input.requestDigest instanceof Uint8Array)) {
+    throw new TypeError("Human Memory ordinary fallback replay admission is invalid");
+  }
+  return createHumanMemoryOrdinaryFallbackReplayAdmissionV1(input);
+}
+
+const FIELDS_V2 = Object.freeze([
+  "formatVersion", "purpose", "reason", "operationId", "memoryId",
+  "expectedContentRevision", "nextContentRevision", "expectedCryptoAccessRevision",
+  "requiredNamespaceIds", "type", "content", "requestedEmbedding", "processorContractVersion",
+  "policyRevision", "subjectHumanId", "committerDeviceId", "committerDeviceSigningKeyGeneration",
+  "hostAuthorizationRevision", "planIssuedAt", "planDeadlineAt", "issuedAt", "deadlineAt", "signature",
+]);
 
 function validCounter(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
@@ -105,7 +150,15 @@ function fromHex(value: string, length: number): Uint8Array {
     Number.parseInt(value.slice(index * 2, index * 2 + 2), 16));
 }
 
-function assertRequest(value: HumanMemoryOrdinaryFallbackRequestV1): void {
+function assertRequest(value: FallbackRequest, version: FallbackVersion): void {
+  if (version === 2) {
+    if (typeof value !== "object" || value === null || Array.isArray(value)
+      || !FIELDS_V2.every((field) => Object.hasOwn(value, field))
+      || Reflect.ownKeys(value).some((field) => typeof field !== "string" || (field !== "importance" && !FIELDS_V2.includes(field)))) {
+      throw new TypeError("Human Memory ordinary fallback request has an invalid field set");
+    }
+    assertMemoryEmbeddingDisclosureV2((value as HumanMemoryOrdinaryFallbackRequestV2).requestedEmbedding);
+  }
   const create = value.purpose === "memory.ordinary_fallback.create";
   let authoredPayload: Uint8Array;
   try {
@@ -118,7 +171,7 @@ function assertRequest(value: HumanMemoryOrdinaryFallbackRequestV1): void {
     throw new TypeError("Human Memory ordinary fallback authored payload is invalid");
   }
   authoredPayload.fill(0);
-  if (value.formatVersion !== 1
+  if (value.formatVersion !== version
     || (!create && value.purpose !== "memory.ordinary_fallback.update")
     || value.reason !== "target_encryption_not_ready"
     || !validPortable(value.operationId) || !validUuid(value.memoryId)
@@ -135,9 +188,9 @@ function assertRequest(value: HumanMemoryOrdinaryFallbackRequestV1): void {
       || (index > 0 && value.requiredNamespaceIds[index - 1]! >= id))
     || (value.importance !== undefined && (!Number.isFinite(value.importance)
       || value.importance < 0 || value.importance > 1))
-    || (value.requestedProvider !== "openai" && value.requestedProvider !== "openrouter" && value.requestedProvider !== "venice")
-    || !validPortable(value.requestedModel)
-    || value.dimensions !== 1536 || value.processorContractVersion !== 1
+    || (value.formatVersion === 1 && ((value.requestedProvider !== "openai" && value.requestedProvider !== "openrouter" && value.requestedProvider !== "venice")
+      || !validPortable(value.requestedModel) || value.dimensions !== 1536))
+    || value.processorContractVersion !== version
     || !validCounter(value.policyRevision) || value.policyRevision < 1
     || !validPortable(value.subjectHumanId) || !validPortable(value.committerDeviceId)
     || !validCounter(value.committerDeviceSigningKeyGeneration)
@@ -159,28 +212,31 @@ function assertRequest(value: HumanMemoryOrdinaryFallbackRequestV1): void {
   }
 }
 
-function wire(value: HumanMemoryOrdinaryFallbackRequestV1): readonly unknown[] {
-  return [DOMAIN, value.formatVersion, value.purpose, value.reason,
+function wire(value: FallbackRequest): readonly unknown[] {
+  return [value.formatVersion === 1 ? DOMAIN : DOMAIN_V2, value.formatVersion, value.purpose, value.reason,
     value.operationId, value.memoryId, value.expectedContentRevision,
     value.nextContentRevision, value.expectedCryptoAccessRevision,
     value.requiredNamespaceIds, value.type, value.content,
-    value.importance ?? null, value.requestedProvider, value.requestedModel,
-    value.dimensions, value.processorContractVersion, value.policyRevision,
+    value.importance ?? null,
+    ...(value.formatVersion === 1 ? [value.requestedProvider, value.requestedModel, value.dimensions]
+      : [decodeMemoryEmbeddingDisclosureV2(encodeMemoryEmbeddingDisclosureV2(value.requestedEmbedding))]),
+    value.processorContractVersion, value.policyRevision,
     value.subjectHumanId, value.committerDeviceId,
     value.committerDeviceSigningKeyGeneration, value.hostAuthorizationRevision,
     value.planIssuedAt, value.planDeadlineAt, value.issuedAt, value.deadlineAt,
     hex(value.signature)];
 }
 
-function signingBytes(value: HumanMemoryOrdinaryFallbackUnsignedRequestV1): Uint8Array {
+function signingBytes(value: FallbackUnsigned): Uint8Array {
   return encoder.encode(JSON.stringify(wire({ ...value, signature: new Uint8Array(64) })
     .slice(0, -1)));
 }
 
-export function encodeHumanMemoryOrdinaryFallbackRequestV1(
-  value: HumanMemoryOrdinaryFallbackRequestV1,
+function encodeHumanMemoryOrdinaryFallbackRequestForVersion(
+  value: FallbackRequest,
+  version: FallbackVersion,
 ): Uint8Array {
-  assertRequest(value);
+  assertRequest(value, version);
   const bytes = encoder.encode(JSON.stringify(wire(value)));
   if (bytes.length > MAX_HUMAN_MEMORY_CONTENT_EMBEDDING_REQUEST_WIRE_BYTES_V2) {
     bytes.fill(0);
@@ -189,20 +245,23 @@ export function encodeHumanMemoryOrdinaryFallbackRequestV1(
   return bytes;
 }
 
-export function decodeHumanMemoryOrdinaryFallbackRequestV1(
+function decodeHumanMemoryOrdinaryFallbackRequestForVersion(
   bytes: Uint8Array,
-): HumanMemoryOrdinaryFallbackRequestV1 {
+  version: FallbackVersion,
+): FallbackRequest {
   if (!(bytes instanceof Uint8Array)
     || bytes.length === 0
     || bytes.length > MAX_HUMAN_MEMORY_CONTENT_EMBEDDING_REQUEST_WIRE_BYTES_V2) {
     throw new TypeError("Human Memory ordinary fallback wire is invalid");
   }
   const raw: unknown = JSON.parse(decoder.decode(bytes));
-  if (!Array.isArray(raw) || raw.length !== 27 || raw[0] !== DOMAIN
-    || !Array.isArray(raw[9]) || typeof raw[26] !== "string") {
+  const length = version === 1 ? 27 : 25;
+  if (!Array.isArray(raw) || raw.length !== length || raw[0] !== (version === 1 ? DOMAIN : DOMAIN_V2)
+    || !Array.isArray(raw[9]) || typeof raw[length - 1] !== "string") {
     throw new TypeError("Human Memory ordinary fallback wire is invalid");
   }
   const fields = raw as readonly unknown[];
+  const offset = version === 1 ? 0 : -2;
   const value = {
     formatVersion: fields[1], purpose: fields[2], reason: fields[3],
     operationId: fields[4], memoryId: fields[5],
@@ -210,50 +269,59 @@ export function decodeHumanMemoryOrdinaryFallbackRequestV1(
     expectedCryptoAccessRevision: fields[8], requiredNamespaceIds: fields[9],
     type: fields[10], content: fields[11],
     ...(fields[12] === null ? {} : { importance: fields[12] }),
-    requestedProvider: fields[13], requestedModel: fields[14],
-    dimensions: fields[15], processorContractVersion: fields[16],
-    policyRevision: fields[17], subjectHumanId: fields[18],
-    committerDeviceId: fields[19],
-    committerDeviceSigningKeyGeneration: fields[20],
-    hostAuthorizationRevision: fields[21], planIssuedAt: fields[22],
-    planDeadlineAt: fields[23], issuedAt: fields[24], deadlineAt: fields[25],
-    signature: fromHex(fields[26] as string, 64),
-  } as HumanMemoryOrdinaryFallbackRequestV1;
-  assertRequest(value);
-  const canonical = encodeHumanMemoryOrdinaryFallbackRequestV1(value);
+    ...(version === 1 ? { requestedProvider: fields[13], requestedModel: fields[14], dimensions: fields[15] }
+      : { requestedEmbedding: fields[13] }),
+    processorContractVersion: fields[16 + offset],
+    policyRevision: fields[17 + offset], subjectHumanId: fields[18 + offset],
+    committerDeviceId: fields[19 + offset],
+    committerDeviceSigningKeyGeneration: fields[20 + offset],
+    hostAuthorizationRevision: fields[21 + offset], planIssuedAt: fields[22 + offset],
+    planDeadlineAt: fields[23 + offset], issuedAt: fields[24 + offset], deadlineAt: fields[25 + offset],
+    signature: fromHex(fields[26 + offset] as string, 64),
+  } as FallbackRequest;
+  assertRequest(value, version);
+  const canonical = encodeHumanMemoryOrdinaryFallbackRequestForVersion(value, version);
   if (canonical.length !== bytes.length
     || canonical.some((entry, index) => entry !== bytes[index])) {
     throw new TypeError("Human Memory ordinary fallback wire is noncanonical");
   }
   return Object.freeze({ ...value,
+    ...(value.formatVersion === 2 ? { requestedEmbedding: decodeMemoryEmbeddingDisclosureV2(encodeMemoryEmbeddingDisclosureV2(value.requestedEmbedding)) } : {}),
     requiredNamespaceIds: Object.freeze([...value.requiredNamespaceIds]),
     signature: value.signature.slice() });
 }
 
-export function digestHumanMemoryOrdinaryFallbackRequestV1(
+function digestHumanMemoryOrdinaryFallbackRequestForVersion(
   bytes: Uint8Array,
+  version: FallbackVersion,
 ): Uint8Array {
-  decodeHumanMemoryOrdinaryFallbackRequestV1(bytes);
+  decodeHumanMemoryOrdinaryFallbackRequestForVersion(bytes, version);
   return sha256(bytes);
 }
 
-export function prepareHumanMemoryOrdinaryFallbackRequestV1(
+function prepareHumanMemoryOrdinaryFallbackRequestForVersion(
   crypto: LatticeCrypto,
-  input: HumanMemoryOrdinaryFallbackUnsignedRequestV1 & Readonly<{
+  input: FallbackUnsigned & Readonly<{
     signingPrivateKey: Uint8Array;
   }>,
-): Readonly<{ request: HumanMemoryOrdinaryFallbackRequestV1; bytes: Uint8Array }> {
+  version: FallbackVersion,
+): Readonly<{ request: FallbackRequest; bytes: Uint8Array }> {
   const { signingPrivateKey, ...unsigned } = input;
+  if (version === 2) {
+    if (Object.hasOwn(unsigned, "signature")) throw new TypeError("Human Memory ordinary fallback preparation has an invalid field set");
+    assertRequest({ ...unsigned, signature: new Uint8Array(64) }, version);
+  }
   const signed = signingBytes(unsigned);
   try {
     const request = Object.freeze({ ...unsigned,
       requiredNamespaceIds: Object.freeze([...unsigned.requiredNamespaceIds]),
       signature: crypto.sign(signingPrivateKey, signed) });
-    return Object.freeze({ request, bytes: encodeHumanMemoryOrdinaryFallbackRequestV1(request) });
+    const bytes = encodeHumanMemoryOrdinaryFallbackRequestForVersion(request, version);
+    return Object.freeze({ request: version === 1 ? request : decodeHumanMemoryOrdinaryFallbackRequestForVersion(bytes, version), bytes });
   } finally { signed.fill(0); }
 }
 
-export function verifyHumanMemoryOrdinaryFallbackRequestV1(
+function verifyHumanMemoryOrdinaryFallbackRequestForVersion(
   crypto: LatticeCrypto,
   input: Readonly<{
     requestBytes: Uint8Array;
@@ -261,8 +329,9 @@ export function verifyHumanMemoryOrdinaryFallbackRequestV1(
     now: number;
     replayAdmission?: HumanMemoryOrdinaryFallbackReplayAdmissionV1;
   }>,
-): AuthenticatedHumanMemoryOrdinaryFallbackRequestV1 {
-  const request = decodeHumanMemoryOrdinaryFallbackRequestV1(input.requestBytes);
+  version: FallbackVersion,
+): FallbackAuthenticated {
+  const request = decodeHumanMemoryOrdinaryFallbackRequestForVersion(input.requestBytes, version);
   const requestDigest = sha256(input.requestBytes);
   const replay = input.replayAdmission === undefined ? undefined
     : replayAdmissions.get(input.replayAdmission);
@@ -282,6 +351,48 @@ export function verifyHumanMemoryOrdinaryFallbackRequestV1(
       || verificationTime >= request.deadlineAt) {
       throw new TypeError("Human Memory ordinary fallback request is not currently valid");
     }
-    return Object.freeze({ request, requestDigest });
+    return Object.freeze({ request, requestDigest }) as FallbackAuthenticated;
   } finally { signed.fill(0); }
+}
+
+export function encodeHumanMemoryOrdinaryFallbackRequestV1(value: HumanMemoryOrdinaryFallbackRequestV1): Uint8Array {
+  return encodeHumanMemoryOrdinaryFallbackRequestForVersion(value, 1);
+}
+export function decodeHumanMemoryOrdinaryFallbackRequestV1(bytes: Uint8Array): HumanMemoryOrdinaryFallbackRequestV1 {
+  return decodeHumanMemoryOrdinaryFallbackRequestForVersion(bytes, 1) as HumanMemoryOrdinaryFallbackRequestV1;
+}
+export function digestHumanMemoryOrdinaryFallbackRequestV1(bytes: Uint8Array): Uint8Array {
+  return digestHumanMemoryOrdinaryFallbackRequestForVersion(bytes, 1);
+}
+export function prepareHumanMemoryOrdinaryFallbackRequestV1(crypto: LatticeCrypto, input: HumanMemoryOrdinaryFallbackUnsignedRequestV1 & Readonly<{
+  signingPrivateKey: Uint8Array;
+}>): Readonly<{ request: HumanMemoryOrdinaryFallbackRequestV1; bytes: Uint8Array }> {
+  return prepareHumanMemoryOrdinaryFallbackRequestForVersion(crypto, input, 1) as Readonly<{ request: HumanMemoryOrdinaryFallbackRequestV1; bytes: Uint8Array }>;
+}
+export function verifyHumanMemoryOrdinaryFallbackRequestV1(crypto: LatticeCrypto, input: Readonly<{
+  requestBytes: Uint8Array; signingPublicKey: Uint8Array; now: number;
+  replayAdmission?: HumanMemoryOrdinaryFallbackReplayAdmissionV1;
+}>): AuthenticatedHumanMemoryOrdinaryFallbackRequestV1 {
+  return verifyHumanMemoryOrdinaryFallbackRequestForVersion(crypto, input, 1) as AuthenticatedHumanMemoryOrdinaryFallbackRequestV1;
+}
+
+export function encodeHumanMemoryOrdinaryFallbackRequestV2(value: HumanMemoryOrdinaryFallbackRequestV2): Uint8Array {
+  return encodeHumanMemoryOrdinaryFallbackRequestForVersion(value, 2);
+}
+export function decodeHumanMemoryOrdinaryFallbackRequestV2(bytes: Uint8Array): HumanMemoryOrdinaryFallbackRequestV2 {
+  return decodeHumanMemoryOrdinaryFallbackRequestForVersion(bytes, 2) as HumanMemoryOrdinaryFallbackRequestV2;
+}
+export function digestHumanMemoryOrdinaryFallbackRequestV2(bytes: Uint8Array): Uint8Array {
+  return digestHumanMemoryOrdinaryFallbackRequestForVersion(bytes, 2);
+}
+export function prepareHumanMemoryOrdinaryFallbackRequestV2(crypto: LatticeCrypto, input: HumanMemoryOrdinaryFallbackUnsignedRequestV2 & Readonly<{
+  signingPrivateKey: Uint8Array;
+}>): Readonly<{ request: HumanMemoryOrdinaryFallbackRequestV2; bytes: Uint8Array }> {
+  return prepareHumanMemoryOrdinaryFallbackRequestForVersion(crypto, input, 2) as Readonly<{ request: HumanMemoryOrdinaryFallbackRequestV2; bytes: Uint8Array }>;
+}
+export function verifyHumanMemoryOrdinaryFallbackRequestV2(crypto: LatticeCrypto, input: Readonly<{
+  requestBytes: Uint8Array; signingPublicKey: Uint8Array; now: number;
+  replayAdmission?: HumanMemoryOrdinaryFallbackReplayAdmissionV2;
+}>): AuthenticatedHumanMemoryOrdinaryFallbackRequestV2 {
+  return verifyHumanMemoryOrdinaryFallbackRequestForVersion(crypto, input, 2) as AuthenticatedHumanMemoryOrdinaryFallbackRequestV2;
 }

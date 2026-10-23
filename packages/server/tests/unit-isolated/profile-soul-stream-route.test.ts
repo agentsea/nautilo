@@ -10,6 +10,7 @@ const generateSoulFileMock = mock(async (
   _signal?: AbortSignal,
   _authorization?: unknown,
 ) => "# Generated\n\n## Essence\nA usable generated Soul.\n\n## Tone\nExact.");
+const upsertSoulProfileMock = mock(async (_userId: string, _agentId: string, _data: unknown) => undefined);
 const generateSoulFileStreamMock = mock(
   (
     _input: Partial<SoulFileInput>,
@@ -28,6 +29,7 @@ describe("POST /api/profile/generate-soul/stream", () => {
 
   afterEach(async () => {
     generateSoulFileMock.mockClear();
+    upsertSoulProfileMock.mockClear();
     generateSoulFileStreamMock.mockReset();
     await Promise.all(apps.splice(0).map((app) => app.close()));
   });
@@ -56,7 +58,7 @@ describe("POST /api/profile/generate-soul/stream", () => {
       },
       generateSoulFile: generator,
       generateSoulFileStream: generateSoulFileStreamMock,
-      upsertSoulProfile: async () => undefined,
+      upsertSoulProfile: upsertSoulProfileMock,
     });
     app.addHook("preHandler", async (request) => {
       request.sessionUserId = "test-user";
@@ -90,6 +92,7 @@ describe("POST /api/profile/generate-soul/stream", () => {
     expect(response.body).toContain("# Safe fallback");
     expect(response.body).toContain("Unable to generate a soul file right now; using a fallback.");
     expect(response.body).not.toContain(secret);
+    expect(upsertSoulProfileMock).not.toHaveBeenCalled();
     expect(generateSoulFileStreamMock.mock.calls[0]?.[2]).toMatchObject({
       humanUserId: "test-user",
       agentId: "agent-own",
@@ -117,6 +120,7 @@ describe("POST /api/profile/generate-soul/stream", () => {
     expect(response.statusCode).toBe(200);
     expect(signal).toBeDefined();
     expect(signal?.aborted).toBe(false);
+    expect(upsertSoulProfileMock).not.toHaveBeenCalled();
   });
 
   test("denies before starting the soul provider stream without server funding", async () => {
@@ -141,6 +145,10 @@ describe("POST /api/profile/generate-soul/stream", () => {
     });
     expect(response.statusCode).toBe(200);
     expect(generateSoulFileMock).toHaveBeenCalledTimes(1);
+    expect(upsertSoulProfileMock).toHaveBeenCalledTimes(1);
+    expect(upsertSoulProfileMock).toHaveBeenCalledWith("test-user", "agent-own", {
+      soulFile: "# Generated\n\n## Essence\nA usable generated Soul.\n\n## Tone\nExact.",
+    });
     expect(generateSoulFileMock.mock.calls[0]?.[2]).toMatchObject({
       humanUserId: "test-user",
       agentId: "agent-own",

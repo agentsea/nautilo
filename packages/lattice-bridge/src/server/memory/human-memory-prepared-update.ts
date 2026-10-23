@@ -14,7 +14,10 @@ import {
   verifyHumanMemoryContentEmbeddingRequest,
 } from "@nautilo/lattice-crypto";
 import {
+  type HumanMemoryContentEmbeddingRequestV3,
+  verifyHumanMemoryContentEmbeddingRequestV3,
   decodeHumanMemoryContentEmbeddingRequestV2,
+  decodeHumanMemoryContentEmbeddingRequestV3,
   decodeEncryptedPayloadV2,
   decodeNamespaceObjectEnvelopeV2,
   decodeObjectAccessManifestV5,
@@ -35,6 +38,22 @@ import {
   humanMemoryPreparedAuthorizationError,
   humanMemoryPreparedIntegrityError,
 } from "./human-memory-prepared-route-error.ts";
+
+type SignedContentEmbeddingRequest = HumanMemoryContentEmbeddingRequest | HumanMemoryContentEmbeddingRequestV3;
+
+function decodeContentEmbeddingRequest(bytes: Uint8Array): SignedContentEmbeddingRequest {
+  try {
+    return decodeHumanMemoryContentEmbeddingRequestV3(bytes);
+  } catch {
+    return decodeHumanMemoryContentEmbeddingRequestV2(bytes);
+  }
+}
+
+function requestedEmbeddingSpace(request: SignedContentEmbeddingRequest) {
+  return request.formatVersion === 3 ? request.requestedEmbedding.canonicalSpace
+    : { provider: request.requestedProvider, model: request.requestedModel,
+      dimensions: request.dimensions };
+}
 
 const PORTABLE_ID = /^[A-Za-z0-9][A-Za-z0-9._:@/-]*$/;
 const UUID =
@@ -114,7 +133,7 @@ export function digestPreparedHumanMemorySignedRequest(
     prepared.signedContentEmbeddingRequestBytesBase64url, 160 * 1024);
   try {
     decodeIntegrity("Signed Human Memory request", () =>
-      decodeHumanMemoryContentEmbeddingRequestV2(bytes));
+      decodeContentEmbeddingRequest(bytes));
     return crypto.hash(bytes);
   } finally {
     bytes.fill(0);
@@ -287,7 +306,7 @@ function decodeIntegrity<Value>(label: string, decode: () => Value): Value {
 }
 
 function requestMatchesOuterPreparedUpdate(input: Readonly<{
-  request: HumanMemoryContentEmbeddingRequest;
+  request: SignedContentEmbeddingRequest;
   expectedHumanId: string;
   memoryId: string;
   prepared:
@@ -403,9 +422,9 @@ async function authenticatePreparedHumanMemory(input: Readonly<{
   let payload: ReturnType<typeof decodeEncryptedPayloadV2> | undefined;
   let genesis: ReturnType<typeof decodeObjectAccessManifestV5> | undefined;
   let decodedSignedRequest:
-    | ReturnType<typeof decodeHumanMemoryContentEmbeddingRequestV2>
+    | SignedContentEmbeddingRequest
     | undefined;
-  let verifiedSignedRequest: HumanMemoryContentEmbeddingRequest | undefined;
+  let verifiedSignedRequest: SignedContentEmbeddingRequest | undefined;
   let payloadHash: Uint8Array | undefined;
   let genesisManifestHash: Uint8Array | undefined;
   let operationRequestDigest: Uint8Array | undefined;
@@ -439,7 +458,7 @@ async function authenticatePreparedHumanMemory(input: Readonly<{
     genesis = decodeIntegrity("Prepared Human Memory access manifest", () =>
       decodeObjectAccessManifestV5(genesisManifestBytes!));
     decodedSignedRequest = decodeIntegrity("Signed Human Memory request", () =>
-      decodeHumanMemoryContentEmbeddingRequestV2(signedRequestBytes!));
+      decodeContentEmbeddingRequest(signedRequestBytes!));
     payloadHash = input.crypto.hash(payloadBytes);
     genesisManifestHash = input.crypto.hash(genesisManifestBytes);
     for (const entry of [...input.prepared.namespaceEnvelopes]
@@ -570,7 +589,9 @@ async function authenticatePreparedHumanMemory(input: Readonly<{
       );
     }
     try {
-      verifiedSignedRequest = verifyHumanMemoryContentEmbeddingRequest(input.crypto, {
+      const verify = decodedSignedRequest.formatVersion === 3
+        ? verifyHumanMemoryContentEmbeddingRequestV3 : verifyHumanMemoryContentEmbeddingRequest;
+      verifiedSignedRequest = verify(input.crypto, {
         requestBytes: signedRequestBytes,
         committerSigningPublicKey: resolverPublicKey,
         // A durable exact reservation proves these signed bytes were admitted
@@ -673,9 +694,9 @@ async function authenticatePreparedHumanMemory(input: Readonly<{
         subjectId: verifiedSignedRequest.subjectHumanId,
         requestId: verifiedSignedRequest.requestId,
         plaintext: verifiedSignedRequest.content,
-        provider: verifiedSignedRequest.requestedProvider,
-        model: verifiedSignedRequest.requestedModel,
-        dimensions: verifiedSignedRequest.dimensions,
+        ...requestedEmbeddingSpace(verifiedSignedRequest),
+        ...(verifiedSignedRequest.formatVersion === 3
+          ? { embeddingDisclosure: verifiedSignedRequest.requestedEmbedding } : {}),
         // An exact durable reservation admits a new, transient processor
         // attempt. It does not renew or rewrite the original signed request.
         // Route composition rechecks current device authority before disclosure.

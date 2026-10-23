@@ -6,7 +6,12 @@ import { z } from "zod";
 import {
   createForegroundMemoryProcessorRecipient,
   MEMORY_QUERY_EMBEDDING_MAX_BYTES,
+  decodeMemoryProcessorSearchQueryV2,
 } from "@nautilo/lattice-bridge";
+import {
+  sameMemoryEmbeddingDisclosureV2,
+  type MemoryEmbeddingDisclosureV2,
+} from "@nautilo/lattice-crypto/wire";
 import {
   memoryProcessorSealedRequestV1Schema,
   protectedMemoryBriefResponseV1Schema,
@@ -78,6 +83,7 @@ import {
 import {
   resolveCurrentProtectedMemoryRoutePorts,
   type ProtectedMemoryCompositionSource,
+  type ProtectedMemoryRoutePorts,
 } from "./protected-memory-composition";
 import { protectedMemoryRoutes } from "./protected-memory-routes";
 import {
@@ -86,6 +92,15 @@ import {
   strictShadowHttpBody,
   strictShadowHttpStatus,
 } from "../lib/strict-shadow-policy";
+
+function embeddingDisclosureForPorts(ports: ProtectedMemoryRoutePorts): MemoryEmbeddingDisclosureV2 | undefined {
+  return ports.embeddingDisclosure
+    ?? (ports.embeddingConfiguration === undefined ? undefined : {
+      contractVersion: 2 as const,
+      canonicalSpace: ports.embeddingConfiguration,
+      processingRoute: { transport: "direct" as const },
+    });
+}
 
 const protectedMemoryBriefRouteResponseSchema =
   protectedMemoryBriefResponseV1Schema.or(
@@ -117,7 +132,12 @@ const protectedMemorySearchRequestSchema = z.object({
   mode: z.enum(["text", "semantic"]),
   limit: z.number().int().min(1).max(256).optional(),
   includeArchive: z.boolean().optional(),
-}).strict();
+}).strict().or(z.object({
+  sealedQueryV2: memoryProcessorSealedRequestV1Schema,
+  mode: z.enum(["text", "semantic"]),
+  limit: z.number().int().min(1).max(256).optional(),
+  includeArchive: z.boolean().optional(),
+}).strict());
 function assertProtectedMemoryMode(
   response: { readonly memoryMode: "namespace" | "scope" },
   expected: "namespace" | "scope",
@@ -593,10 +613,28 @@ export function memoryRoutes(
       return reply.code(404).send({ error: "Protected Memory processor is unavailable" });
     }
     reply.header("Cache-Control", "no-store");
+    const disclosure = embeddingDisclosureForPorts(resolved.ports);
     return reply.send({ ...(await recipient()).descriptor,
-      ...(resolved.ports.embeddingConfiguration === undefined ? {}
-        : { embedding: resolved.ports.embeddingConfiguration }),
+      ...(disclosure?.processingRoute.transport === "direct"
+        ? { embedding: disclosure.canonicalSpace } : {}),
     });
+  });
+
+  app.get("/api/memory/processor-recipient/v2", async (request, reply) => {
+    const userId = sessionUserId(request);
+    if (!userId) return reply.code(401).send({ error: "Authentication required" });
+    if (!(await requireReadMemories(userId))) {
+      return reply.code(403).send({ error: "read_memories capability required" });
+    }
+    const resolved = await resolveProtectedMemoryRequest(request, userId, protectedComposition);
+    if (resolved === null) {
+      return reply.code(404).send({ error: "Protected Memory processor is unavailable" });
+    }
+    const descriptor = (await recipient()).descriptor;
+    const disclosure = embeddingDisclosureForPorts(resolved.ports);
+    reply.header("Cache-Control", "no-store");
+    return reply.send({ ...descriptor, formatVersion: 2,
+      ...(disclosure === undefined ? {} : { embedding: disclosure }) });
   });
 
   app.get("/api/memory/brief", async (request, reply) => {
@@ -885,9 +923,29 @@ export function memoryRoutes(
         reason: "text_search_unsupported",
       }));
     }
-    const query = await (await recipient()).open(body.data.sealedQuery, {
+    const versioned = "sealedQueryV2" in body.data;
+    const payload = await (await recipient()).open(
+      "sealedQueryV2" in body.data ? body.data.sealedQueryV2 : body.data.sealedQuery, {
       purpose: "memory.query_embedding", subjectId: userId,
     });
+    let query = payload;
+    let embeddingDisclosure: MemoryEmbeddingDisclosureV2 | undefined;
+    if (versioned && payload !== null) {
+      try {
+        const decoded = decodeMemoryProcessorSearchQueryV2(payload);
+        query = decoded.query;
+        embeddingDisclosure = decoded.embeddingDisclosure;
+        const current = embeddingDisclosureForPorts(protectedRequest.ports);
+        if (current === undefined
+          || !sameMemoryEmbeddingDisclosureV2(current, embeddingDisclosure)) {
+          return reply.code(409).send({ error: "The Memory embedding route changed. Prepare the search again." });
+        }
+      } catch {
+        return reply.code(400).send({ error: "Valid protected Memory query disclosure required" });
+      }
+    } else if (protectedRequest.ports.embeddingDisclosure?.processingRoute.transport === "surplus_marketplace") {
+      return reply.code(409).send({ error: "A fresh Memory marketplace disclosure is required. Update the client and prepare the search again." });
+    }
     if (query === null || query.trim().length === 0
       || new TextEncoder().encode(query).length > MEMORY_QUERY_EMBEDDING_MAX_BYTES) {
       return reply.code(400).send({ error: "Valid protected Memory query carrier required" });
@@ -900,6 +958,7 @@ export function memoryRoutes(
       authority: protectedRequest.authority,
       namespaceIds,
       query: query.trim(),
+      ...(embeddingDisclosure === undefined ? {} : { embeddingDisclosure }),
       ...(body.data.limit === undefined ? {} : { limit: body.data.limit }),
       includeArchive: body.data.includeArchive ?? false,
     });

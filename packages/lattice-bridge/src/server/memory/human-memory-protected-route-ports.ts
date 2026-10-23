@@ -23,6 +23,7 @@ import {
   type MemoryForegroundEmbeddingProcessor,
   type MemoryForegroundEmbeddingResult,
 } from "../../memory/foreground-embedding-processor.ts";
+import type { MemoryEmbeddingDisclosureV2 } from "@nautilo/lattice-crypto/wire";
 import type {
   HumanMemoryPreparedCreateRoutePort,
 } from "./human-memory-prepared-create-composition.ts";
@@ -253,6 +254,7 @@ export interface HumanMemoryProtectedRoutePorts {
     authority: HumanMemoryProtectedRouteAuthority;
     namespaceIds: readonly string[];
     query: string;
+    embeddingDisclosure?: MemoryEmbeddingDisclosureV2;
     limit?: number;
     includeArchive: boolean;
   }>): Promise<ProtectedReadResult<ProtectedMemorySearchResponseV1>>;
@@ -721,7 +723,10 @@ export function createHumanMemoryProtectedRoutePortsFromTrustedPorts(
       const embedded = await input.foregroundEmbeddingProcessor.embed({
         authenticatedSubjectId: productCommon.subjectHumanId,
         request: Object.freeze({
-          contractVersion: MEMORY_FOREGROUND_PROCESSOR_CONTRACT_VERSION,
+          contractVersion: operation.embeddingDisclosure === undefined
+            ? MEMORY_FOREGROUND_PROCESSOR_CONTRACT_VERSION : 2,
+          ...(operation.embeddingDisclosure === undefined ? {}
+            : { embeddingDisclosure: operation.embeddingDisclosure }),
           purpose: "memory.query_embedding" as const,
           subjectId: productCommon.subjectHumanId,
           requestId,

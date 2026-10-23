@@ -9,6 +9,7 @@ import {
   beginServiceLlmAttempt,
   beginServerLlmAttempt,
   beginSurplusLlmAttempt,
+  classifySurplusLlmAttemptRecovery,
   interruptExpiredPersonalLlmAttempts,
   interruptPersonalLlmAttemptsByOwner,
   listPendingSurplusAttempts,
@@ -456,6 +457,23 @@ describe("Surplus durable LLM attempts", () => {
     expect(fake.updated[0]?.["attemptOutcome"]).not.toBe("cancelled");
   });
 
+  test("receipt recovery classification preserves the original inference failure", async () => {
+    const fake = mutationDb({ returning: [{ id: ATTEMPT_ID }] });
+    __setLlmUsageDbForTests(fake.handle);
+    expect(await classifySurplusLlmAttemptRecovery({
+      attemptId: ATTEMPT_ID,
+      expectedUpdatedAt: new Date(0),
+      recoveryState: "retryable",
+      failureCode: "receipt_not_found",
+    })).toBe(true);
+    expect(fake.updated[0]).toMatchObject({ recoveryState: "retryable" });
+    expect(fake.updated[0]).not.toHaveProperty("failureCode");
+    const metadata = new PgDialect().sqlToQuery(fake.updated[0]?.["metadata"] as SQL);
+    expect(metadata.params).toContain(JSON.stringify({
+      surplusReceiptRecoveryFailureCode: "receipt_not_found",
+    }));
+  });
+
   test("requeues a payer's old blocked receipts only behind a current-key guard", async () => {
     const fake = mutationDb({ returning: [{ id: ATTEMPT_ID }] });
     __setLlmUsageDbForTests(fake.handle);
@@ -466,8 +484,8 @@ describe("Surplus durable LLM attempts", () => {
     })).toBe(1);
     expect(fake.updated[0]).toMatchObject({
       recoveryState: "retryable",
-      failureCode: null,
     });
+    expect(fake.updated[0]).not.toHaveProperty("failureCode");
     const predicate = new PgDialect().sqlToQuery(fake.updatePredicates[0]!);
     expect(predicate.sql).toContain("exists (select 1 where");
     expect(predicate.sql).toContain('"personal_provider_credentials"."id"');
@@ -480,8 +498,8 @@ describe("Surplus durable LLM attempts", () => {
     expect(await requeueBlockedServerSurplusAttempts()).toBe(1);
     expect(fake.updated[0]).toMatchObject({
       recoveryState: "retryable",
-      failureCode: null,
     });
+    expect(fake.updated[0]).not.toHaveProperty("failureCode");
     const predicate = new PgDialect().sqlToQuery(fake.updatePredicates[0]!);
     expect(predicate.params).toContain("server");
     expect(predicate.params).toContain("service");
@@ -499,8 +517,8 @@ describe("Surplus durable LLM attempts", () => {
     expect(await requeueBlockedSurplusDecisionAttempts()).toBe(1);
     expect(fake.updated[0]).toMatchObject({
       recoveryState: "retryable",
-      failureCode: null,
     });
+    expect(fake.updated[0]).not.toHaveProperty("failureCode");
     const predicate = new PgDialect().sqlToQuery(fake.updatePredicates[0]!);
     expect(predicate.params).toContain("surplus");
     expect(predicate.params).toContain("/v1/decisions");

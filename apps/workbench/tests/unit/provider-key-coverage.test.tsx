@@ -66,7 +66,7 @@ describe("ProviderKeyCoverage", () => {
       "TypeSafeOpenRouterVeniceSurplus Intelligence (qualified routes)",
       "VeniceOpenRouterOpenAIAnthropicGooglexAIFireworksTogether AISurplus Intelligence (qualified routes)OpenAI-compatible Gateway",
       "OpenAIAnthropicGoogleOpenRouterVeniceFireworksSurplus Intelligence (qualified models)",
-      "VeniceOpenRouterOpenAI",
+      "VeniceOpenRouterOpenAISurplus Intelligence (Venice 3-large)",
       "ElevenLabs",
       "ElevenLabsGroq",
       "VeniceOpenRouterOpenAIGoogleSurplus Intelligence (generation only; qualified routes)",
@@ -129,6 +129,7 @@ describe("ProviderKeyCoverage", () => {
       "Classification, scoring, and Decisions (Surplus pilot account required)",
       "Chat",
       "Image understanding",
+      "Embeddings",
       "Image generation",
       "Music generation",
       "Video generation",
@@ -138,7 +139,6 @@ describe("ProviderKeyCoverage", () => {
       ).toBeTruthy();
     }
     for (const functionality of [
-      "Embeddings",
       "Text-to-speech",
       "Speech-to-text",
       "Web search",
@@ -150,6 +150,7 @@ describe("ProviderKeyCoverage", () => {
       ).toBeTruthy();
     }
     expect(view.getByText(/Surplus rows require Prefer Surplus/u)).toBeTruthy();
+    expect(view.getByLabelText("Surplus Intelligence (Venice 3-large): API key configured")).toBeTruthy();
   });
 
   test("maps Groq only to speech-to-text", () => {

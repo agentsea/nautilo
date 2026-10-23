@@ -7,6 +7,39 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Personal chat keeps its admitted provider and credential when marketplace
+  availability changes. Already-admitted direct calls skip Surplus discovery,
+  and protected Memory retains its approved marketplace embedding disclosure.
+
+- Surplus model selection and requests now use its live catalogue for confirmed
+  model names, capabilities, reasoning parameters, and token limits. Auto skips
+  unconfirmed routes, and chat and Soul share the same marketplace budget.
+  Responses with an adapted output ceiling are accepted when they finish
+  naturally and reported output stays within the original request budget.
+
+- Onboarding waits for an in-progress Soul before saving the final profile,
+  and automatic foreground chat selection supports Surplus-only servers.
+
+- Invite room pickers now list only public rooms and exclude external rooms.
+
+- Web Genie customization now loads the default shell avatar correctly instead
+  of showing a missing-image error and requiring a replacement.
+
+- Surplus-only chat can use available sellers for eligible ordinary models,
+  preserves streamed tool calls, and respects qualified marketplace output
+  limits. Missing recovery keys retain the original marketplace failure;
+  pre-routing error traces no longer become pending cost receipts.
+
+- Embeddings can use Surplus with an explicit Venice text-embedding-3-large
+  selection and Prefer Surplus enabled. Protected Memory shows and binds the
+  processing route before saving or searching, and usage receipts track
+  marketplace costs without replaying provider requests.
+
+- Soul generation supports a server Surplus key without a direct provider key,
+  including streamed customization previews and service cost tracking. Eligible
+  Surplus-only requests let the marketplace choose an available seller and can
+  recover from confirmed supply refusals through other eligible models.
+
 - Operators can connect a selected Genie to mAgent through a private Unix socket,
   with a fresh external-context Room and a fixed sponsor and sender identity.
 

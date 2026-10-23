@@ -1,5 +1,7 @@
-import { describe, expect, test } from "bun:test";
+import { BaseCallbackHandler } from "@langchain/core/callbacks/base";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { AIMessage, HumanMessage } from "@langchain/core/messages";
+import type { ChatGeneration, LLMResult } from "@langchain/core/outputs";
 import {
   createSurplusChatModel,
   createSurplusObservedFetch,
@@ -10,6 +12,7 @@ import {
   resolveQualifiedSurplusChatRoute,
   resolveSurplusChatServingAvailability,
 } from "../../src/providers/surplus-route";
+import { resetSurplusModelCatalog } from "../../src/providers/surplus-catalog";
 import {
   assertCompleteSurplusResponse,
   assertSuccessfulSurplusProviderReceipt,
@@ -21,6 +24,7 @@ import {
   SurplusProviderRouteMismatchError,
 } from "../../src/providers/surplus-attempt";
 import { createManageConnectedWebOperationTool } from "../../src/tools/connected-web-accounts/manage-connected-web-operation";
+import { installSurplusCatalogFixture } from "../helpers/surplus-catalog-fixture";
 
 const VENICE_ROUTE = {
   catalogModelId: "venice:openai-gpt-55",
@@ -43,6 +47,29 @@ const QUALIFIED_OPENROUTER_ROUTE = {
   maxContextTokens: 1_050_000,
   maxOutputTokens: 128_000,
 };
+
+class CaptureSurplusLLMEnd extends BaseCallbackHandler {
+  name = "capture_surplus_llm_end";
+  readonly lc_prefer_streaming = true;
+  output: LLMResult | undefined;
+
+  override handleLLMEnd(output: LLMResult): void {
+    this.output = output;
+  }
+}
+
+class CaptureSurplusTokens extends BaseCallbackHandler {
+  name = "capture_surplus_tokens";
+  readonly lc_prefer_streaming = true;
+  readonly tokens: string[] = [];
+
+  override handleLLMNewToken(token: string): void {
+    if (token) this.tokens.push(token);
+  }
+}
+
+beforeEach(installSurplusCatalogFixture);
+afterEach(resetSurplusModelCatalog);
 
 describe("Surplus wire boundary", () => {
   test("retains real zero cost and omits absent cost", () => {
@@ -276,6 +303,192 @@ describe("Surplus wire boundary", () => {
     });
   });
 
+  test("Venice callback-preferred invoke preserves text, tools, terminal metadata, and final usage", async () => {
+    const route = resolveQualifiedSurplusChatRoute("venice:minimax-m3-preview");
+    if (!route) throw new Error("Expected the discovered Venice route to remain qualified");
+    const frames = [
+      {
+        id: "chatcmpl-surplus-venice-callback",
+        object: "chat.completion.chunk",
+        created: 1,
+        model: route.surplusModelId,
+        choices: [{ index: 0, delta: { content: "Checking " }, finish_reason: null }],
+      },
+      {
+        id: "chatcmpl-surplus-venice-callback",
+        object: "chat.completion.chunk",
+        created: 1,
+        model: route.surplusModelId,
+        choices: [{
+          index: 0,
+          delta: {
+            content: "now",
+            tool_calls: [{
+              index: 0,
+              id: "call-report",
+              type: "function",
+              function: { name: "report_probe", arguments: "{" },
+            }],
+          },
+          finish_reason: null,
+        }],
+      },
+      ...["\"status\": ", "\"ok", "\"", "}"].map((argumentsFragment) => ({
+        id: "chatcmpl-surplus-venice-callback",
+        object: "chat.completion.chunk",
+        created: 1,
+        model: route.surplusModelId,
+        choices: [{
+          index: 0,
+          delta: {
+            tool_calls: [{
+              index: 0,
+              id: null,
+              type: "function",
+              function: { arguments: argumentsFragment },
+            }],
+          },
+          finish_reason: null,
+        }],
+      })),
+      {
+        id: "chatcmpl-surplus-venice-callback",
+        object: "chat.completion.chunk",
+        created: 1,
+        model: route.surplusModelId,
+        choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }],
+      },
+      {
+        id: "chatcmpl-surplus-venice-callback",
+        object: "chat.completion.chunk",
+        created: 1,
+        model: route.surplusModelId,
+        choices: [],
+        usage: {
+          prompt_tokens: 379,
+          completion_tokens: 55,
+          total_tokens: 434,
+          prompt_tokens_details: { cached_tokens: 107 },
+          cache_read_input_tokens: 107,
+          completion_tokens_details: { reasoning_tokens: 27 },
+          buyer_cost_micro: 116,
+        },
+      },
+    ];
+    const model = createSurplusChatModel({
+      route,
+      apiKey: "synthetic-key",
+      maxOutputTokens: 256,
+      onResponse: () => {},
+      fetchImpl: (async () => new Response(
+        `${frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join("")}data: [DONE]\n\n`,
+        { headers: { "content-type": "text/event-stream" } },
+      )) as unknown as typeof fetch,
+    }).bindTools!([{
+      type: "function",
+      function: {
+        name: "report_probe",
+        description: "Record the synthetic probe.",
+        parameters: {
+          type: "object",
+          properties: { status: { type: "string" } },
+          required: ["status"],
+          additionalProperties: false,
+        },
+      },
+    } as never]);
+    const capture = new CaptureSurplusLLMEnd();
+
+    const response = await model.invoke(
+      [new HumanMessage("Run the probe")],
+      { callbacks: [capture] },
+    ) as AIMessage;
+    const generation = capture.output?.generations[0]?.[0] as ChatGeneration | undefined;
+
+    expect(response.content).toBe("Checking now");
+    expect(response.tool_calls).toEqual([{
+      id: "call-report",
+      name: "report_probe",
+      args: { status: "ok" },
+      type: "tool_call",
+    }]);
+    expect(response.response_metadata["finish_reason"]).toBe("tool_calls");
+    expect(generation?.generationInfo?.["finish_reason"]).toBe("tool_calls");
+    expect(generation?.message.response_metadata["finish_reason"]).toBe("tool_calls");
+    expect(readSurplusResponseUsage(response)).toMatchObject({
+      inputTokens: 379,
+      outputTokens: 55,
+      totalTokens: 434,
+      reasoningTokens: 27,
+      cachedInputTokens: 107,
+      buyerCostMicro: 116,
+    });
+    expect(() => assertCompleteSurplusResponse(
+      { providerFamily: "venice", truncated: false },
+      response,
+    )).not.toThrow();
+  });
+
+  test("Venice callback-preferred invoke deduplicates its final marker without doubling cost", async () => {
+    const route = resolveQualifiedSurplusChatRoute("venice:minimax-m3-preview");
+    if (!route) throw new Error("Expected the discovered Venice route to remain qualified");
+    const frames = [
+      {
+        id: "chatcmpl-surplus-venice-final",
+        object: "chat.completion.chunk",
+        created: 1,
+        model: route.surplusModelId,
+        choices: [{
+          index: 0,
+          delta: { role: "assistant", content: "Done" },
+          finish_reason: "stop",
+        }],
+      },
+      {
+        id: "chatcmpl-surplus-venice-final",
+        object: "chat.completion.chunk",
+        created: 1,
+        model: route.surplusModelId,
+        choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: "stop" }],
+        usage: {
+          prompt_tokens: 70,
+          completion_tokens: 42,
+          total_tokens: 112,
+          buyer_cost_micro: 129,
+        },
+      },
+    ];
+    const model = createSurplusChatModel({
+      route,
+      apiKey: "synthetic-key",
+      maxOutputTokens: 256,
+      onResponse: () => {},
+      fetchImpl: (async () => new Response(
+        `${frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join("")}data: [DONE]\n\n`,
+        { headers: { "content-type": "text/event-stream" } },
+      )) as unknown as typeof fetch,
+    });
+    const capture = new CaptureSurplusLLMEnd();
+
+    const response = await model.invoke(
+      [new HumanMessage("Reply Done")],
+      { callbacks: [capture] },
+    ) as AIMessage;
+
+    expect(response.content).toBe("Done");
+    expect(response.response_metadata["finish_reason"]).toBe("stop");
+    expect(readSurplusResponseUsage(response)).toMatchObject({
+      inputTokens: 70,
+      outputTokens: 42,
+      totalTokens: 112,
+      buyerCostMicro: 129,
+    });
+    expect(() => assertCompleteSurplusResponse(
+      { providerFamily: "venice", truncated: false },
+      response,
+    )).not.toThrow();
+  });
+
   test("non-Venice SDK requests omit Venice-only options", async () => {
     const openAIRoute = {
       ...VENICE_ROUTE,
@@ -395,7 +608,7 @@ describe("Surplus wire boundary", () => {
   });
 
   test("qualified OpenRouter vision preserves text and image_url on the SDK wire", async () => {
-    const route = resolveQualifiedSurplusChatRoute("openrouter:google/gemini-3.1-flash-lite-preview");
+    const route = resolveQualifiedSurplusChatRoute(QUALIFIED_OPENROUTER_ROUTE.catalogModelId);
     if (!route) throw new Error("Expected the signed vision route to remain qualified");
     const personalFunding = {
       kind: "personal" as const,
@@ -406,7 +619,7 @@ describe("Surplus wire boundary", () => {
       credentialRevision: 1,
     };
     expect(route).toMatchObject({
-      surplusModelId: "google/gemini-3.1-flash-lite-preview",
+      surplusModelId: "gpt-5.6-sol",
       providerPin: "openrouter",
       supportsVision: true,
     });
@@ -528,7 +741,7 @@ describe("Surplus wire boundary", () => {
         truncated: false,
       },
       200,
-    )).toThrow(SurplusAdaptedParametersError);
+    )).not.toThrow();
     expect(() => assertSuccessfulSurplusProviderReceipt(
       VENICE_ROUTE,
       { truncated: false },
@@ -542,18 +755,23 @@ describe("Surplus wire boundary", () => {
     )).not.toThrow();
   });
 
-  test("accepts cache and stream metering hints while preserving provider and inference guards", () => {
+  test("defers only output-ceiling aliases while preserving provider and inference guards", () => {
     const receipt = { providerFamily: "venice", truncated: false };
-    for (const adaptation of [" prompt_cache_key ", "stream_options", "stream_options, prompt_cache_key"]) {
+    for (const adaptation of [
+      " prompt_cache_key ", "stream_options", "stream_options, prompt_cache_key",
+      "max_tokens", "max_completion_tokens", "prompt_cache_key,max_tokens",
+      "stream_options,max_completion_tokens", "max_tokens,max_completion_tokens",
+    ]) {
       expect(() => assertSuccessfulSurplusProviderReceipt(
         VENICE_ROUTE, { ...receipt, adaptedParameters: adaptation }, 200,
       )).not.toThrow();
     }
     for (const adaptation of [
-      "model", "reasoning_effort", "max_completion_tokens", "response_format",
+      "model", "reasoning_effort", "response_format",
       "prompt_cache_retention", "session_id", "unknown_setting", "PROMPT_CACHE_KEY",
       "prompt_cache_key,reasoning_effort", "prompt_cache_key,", ",prompt_cache_key",
       "stream_options,reasoning_effort", "stream_options,", "STREAM_OPTIONS",
+      "max_tokens,reasoning_effort", "max_tokens,max_tokens",
     ]) {
       expect(() => assertSuccessfulSurplusProviderReceipt(
         VENICE_ROUTE, { ...receipt, adaptedParameters: adaptation }, 200,
@@ -599,7 +817,7 @@ describe("Surplus wire boundary", () => {
       { ...receipt!, marketplaceAttempts: 0 }, false)).toBe(false);
   });
 
-  test("rejects a successful adapted response before the SDK can assemble its output", async () => {
+  test("rejects another semantic adaptation before the SDK can assemble its output", async () => {
     const chunk = {
       id: "chatcmpl-surplus-adapted",
       object: "chat.completion.chunk",
@@ -622,7 +840,7 @@ describe("Surplus wire boundary", () => {
           "content-type": "text/event-stream",
           "x-request-id": "request-adapted",
           "x-si-provider-family": "Venice",
-          "x-si-adapted-params": "max_completion_tokens",
+          "x-si-adapted-params": "reasoning_effort",
         },
       })) as unknown as typeof fetch,
     });
@@ -637,7 +855,202 @@ describe("Surplus wire boundary", () => {
     expect(invokeError).toBeInstanceOf(Error);
     expect(observedReceipt).toMatchObject({
       requestId: "request-adapted",
+      adaptedParameters: "reasoning_effort",
+    });
+  });
+
+  test("accepts a naturally completed full-catalogue Kimi request with max_tokens adaptation and bound tools", async () => {
+    const route = resolveQualifiedSurplusChatRoute("openrouter:moonshotai/kimi-k3");
+    if (!route) throw new Error("Expected the discovered Kimi route to remain qualified");
+    expect(route.maxOutputTokens).toBe(131_072);
+    const frames = [{
+      id: "chatcmpl-surplus-kimi-ceiling", object: "chat.completion.chunk", created: 1,
+      model: route.surplusModelId,
+      choices: [{ index: 0, delta: { role: "assistant", content: "Complete" }, finish_reason: "stop" }],
+    }, {
+      id: "chatcmpl-surplus-kimi-ceiling", object: "chat.completion.chunk", created: 1,
+      model: route.surplusModelId, choices: [],
+      usage: { prompt_tokens: 37, completion_tokens: 19, total_tokens: 56, buyer_cost_micro: 62 },
+    }];
+    let requestBody: Record<string, unknown> | undefined;
+    let receipt: Parameters<typeof assertCompleteSurplusResponse>[0];
+    const model = createSurplusChatModel({
+      route,
+      apiKey: "synthetic-key",
+      providerMode: "any",
+      maxOutputTokens: 131_072,
+      onResponse: (next, status) => {
+        receipt = next;
+        assertSuccessfulSurplusProviderReceipt(route, next, status, "any");
+      },
+      fetchImpl: (async (request: string | URL | Request, init?: RequestInit) => {
+        const rawBody = init?.body ?? (request instanceof Request ? await request.clone().text() : undefined);
+        requestBody = typeof rawBody === "string" ? JSON.parse(rawBody) as Record<string, unknown> : undefined;
+        return new Response(
+          `${frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join("")}data: [DONE]\n\n`,
+          { status: 200, headers: {
+            "content-type": "text/event-stream",
+            "x-request-id": "request-kimi-ceiling",
+            "x-si-provider-family": "openai",
+            "x-si-marketplace-attempts": "1",
+            "x-si-adapted-params": "max_tokens",
+          } },
+        );
+      }) as typeof fetch,
+    }).bindTools!([{
+      type: "function",
+      function: {
+        name: "record_probe",
+        description: "Record a synthetic probe.",
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+      },
+    } as never]);
+
+    const response = await model.invoke([new HumanMessage("Complete the probe")]) as AIMessage;
+
+    expect(requestBody?.["max_tokens"]).toBe(131_072);
+    expect(requestBody).not.toHaveProperty("max_completion_tokens");
+    expect(requestBody?.["provider"]).toBeUndefined();
+    expect(requestBody?.["tools"]).toHaveLength(1);
+    expect(receipt).toMatchObject({
+      requestId: "request-kimi-ceiling",
+      providerFamily: "openai",
+      marketplaceAttempts: 1,
+      adaptedParameters: "max_tokens",
+      truncated: false,
+    });
+    expect(response.content).toBe("Complete");
+    expect(() => assertCompleteSurplusResponse(receipt, response, 131_072)).not.toThrow();
+  });
+
+  test("output-ceiling adaptation requires a natural terminal and authoritative usage within the original cap", () => {
+    const receipt = {
+      requestId: "request-output-ceiling",
+      providerFamily: "venice",
       adaptedParameters: "max_completion_tokens",
+      truncated: false,
+    };
+    const response = (
+      finishReason: string,
+      completionTokens: unknown,
+      fields: string | {
+        content: string;
+        additional_kwargs?: Record<string, unknown>;
+        response_metadata?: Record<string, unknown>;
+        tool_calls?: Array<{
+          id: string;
+          name: string;
+          args: Record<string, unknown>;
+          type: "tool_call";
+        }>;
+      } = "done",
+    ) => new AIMessage(typeof fields === "string" ? {
+      content: fields,
+      response_metadata: {
+        finish_reason: finishReason,
+        usage: { prompt_tokens: 5, completion_tokens: completionTokens, total_tokens: 105 },
+      },
+    } : {
+      ...fields,
+      response_metadata: {
+        ...fields.response_metadata,
+        finish_reason: finishReason,
+        usage: { prompt_tokens: 5, completion_tokens: completionTokens, total_tokens: 105 },
+      },
+    });
+
+    expect(() => assertCompleteSurplusResponse(receipt, response("stop", 100), 100)).not.toThrow();
+    expect(() => assertCompleteSurplusResponse(
+      { ...receipt, adaptedParameters: "max_tokens,prompt_cache_key" },
+      response("tool_calls", 100, {
+        content: "",
+        tool_calls: [{ id: "call-1", name: "record_probe", args: {}, type: "tool_call" }],
+      }),
+      100,
+    )).not.toThrow();
+    expect(() => assertCompleteSurplusResponse(receipt, response("function_call", 1, {
+      content: "",
+      additional_kwargs: { function_call: { name: "record_probe", arguments: "{}" } },
+    }), 100)).not.toThrow();
+    expect(() => assertCompleteSurplusResponse(receipt, response("content_filter", 0, ""), 100)).not.toThrow();
+
+    expect(() => assertCompleteSurplusResponse(receipt, response("stop", 101), 100))
+      .toThrow(SurplusAdaptedParametersError);
+    expect(() => assertCompleteSurplusResponse(receipt, response("length", 100), 100))
+      .toThrow(SurplusAdaptedParametersError);
+    expect(() => assertCompleteSurplusResponse(receipt, response("stop", 100)))
+      .toThrow(SurplusAdaptedParametersError);
+    const normalizedOnlyUsage = new AIMessage({
+      content: "done",
+      response_metadata: { finish_reason: "stop", usage: { prompt_tokens: 5, total_tokens: 5 } },
+    });
+    normalizedOnlyUsage.usage_metadata = {
+      input_tokens: 5,
+      output_tokens: 0,
+      total_tokens: 5,
+    } as never;
+    expect(() => assertCompleteSurplusResponse(receipt, normalizedOnlyUsage, 100))
+      .toThrow(SurplusAdaptedParametersError);
+    for (const malformed of [-1, 1.5, "100", Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => assertCompleteSurplusResponse(receipt, response("stop", malformed), 100))
+        .toThrow(SurplusAdaptedParametersError);
+    }
+    expect(() => assertCompleteSurplusResponse(
+      { ...receipt, adaptedParameters: "max_tokens,reasoning_effort" }, response("stop", 1), 100,
+    )).toThrow(SurplusAdaptedParametersError);
+    expect(() => assertCompleteSurplusResponse(
+      { ...receipt, truncated: true }, response("stop", 1), 100,
+    )).toThrow(SurplusIncompleteResponseError);
+    expect(() => assertCompleteSurplusResponse(receipt, response("stop", 1, "   "), 100))
+      .toThrow(SurplusIncompleteResponseError);
+  });
+
+  test("a rejected ceiling-adapted stream exposes callbacks but cannot replay after delivered text", async () => {
+    const frames = [{
+      id: "chatcmpl-surplus-visible-ceiling", object: "chat.completion.chunk", created: 1, model: "gpt-5.5",
+      choices: [{ index: 0, delta: { role: "assistant", content: "visible" }, finish_reason: "stop" }],
+    }, {
+      id: "chatcmpl-surplus-visible-ceiling", object: "chat.completion.chunk", created: 1, model: "gpt-5.5",
+      choices: [], usage: { prompt_tokens: 3, completion_tokens: 11, total_tokens: 14, buyer_cost_micro: 62 },
+    }];
+    let receipt: Parameters<typeof assertCompleteSurplusResponse>[0];
+    const model = createSurplusChatModel({
+      route: VENICE_ROUTE, apiKey: "test-key", maxOutputTokens: 10,
+      onResponse: (next, status) => {
+        receipt = next;
+        assertSuccessfulSurplusProviderReceipt(VENICE_ROUTE, next, status);
+      },
+      fetchImpl: (async () => new Response(
+        `${frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join("")}data: [DONE]\n\n`,
+        { headers: { "content-type": "text/event-stream", "x-request-id": "request-visible-ceiling",
+          "x-si-provider-family": "venice", "x-si-adapted-params": "max_tokens" } },
+      )) as unknown as typeof fetch,
+    });
+    const capture = new CaptureSurplusTokens();
+
+    const response = await model.invoke([new HumanMessage("Reply")], { callbacks: [capture] }) as AIMessage;
+    let completionError: unknown;
+    try {
+      assertCompleteSurplusResponse(receipt, response, 10);
+    } catch (error) {
+      completionError = error;
+    }
+
+    expect(capture.tokens.join("")).toBe("visible");
+    expect(completionError).toBeInstanceOf(SurplusAdaptedParametersError);
+    expect(classifySurplusFailedAttempt({
+      error: completionError,
+      cancelled: false,
+      responseStatus: 200,
+      receipt,
+      deliveredOutput: capture.tokens.length > 0,
+      terminalUsage: readSurplusResponseUsage(response),
+    })).toEqual({
+      outcome: "unknown",
+      costState: "actual",
+      actualCostUsd: 0.000062,
+      failureCode: "adapted_parameters",
+      directFallback: false,
     });
   });
 
@@ -903,11 +1316,11 @@ describe("qualified Surplus route selection", () => {
     expect(resolveQualifiedSurplusChatRoute(QUALIFIED_OPENROUTER_ROUTE.catalogModelId))
       .toMatchObject({
         catalogModelId: QUALIFIED_OPENROUTER_ROUTE.catalogModelId,
-        surplusModelId: "openai/gpt-5.6-sol",
+        surplusModelId: "gpt-5.6-sol",
         providerPin: "openrouter",
       });
-    expect(resolveQualifiedSurplusChatRoute("venice:openai-gpt-55")).not.toBeNull();
-    expect(resolveQualifiedSurplusChatRoute("openrouter:openai/gpt-5.6-terra")).not.toBeNull();
+    expect(resolveQualifiedSurplusChatRoute("venice:minimax-m3-preview")).not.toBeNull();
+    expect(resolveQualifiedSurplusChatRoute("openrouter:anthropic/claude-sonnet-4.6")).not.toBeNull();
     expect(resolveQualifiedSurplusChatRoute("openai:gpt-5.6-sol")).not.toBeNull();
   });
 
