@@ -12,14 +12,17 @@ const ownerPolicy = (name: string, userId: AnyPgColumn, productFactory = false) 
   withCheck: sql`${userId} = nullif(current_setting('app.current_user_id', true), '')::uuid`,
 });
 
-/** Metadata only: the paired Desktop retains credentials and resolves the opaque home. */
+/** Metadata only. Transport credentials remain with the admitted operator or Desktop. */
 export const bolterConnections = pgTable("bolter_connections", {
   id: uuid("id").primaryKey().defaultRandom(),
   userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-  relayId: text("relay_id").notNull(),
-  desktopSessionId: text("desktop_session_id").notNull(),
-  pairingGenerationRef: text("pairing_generation_ref").notNull(),
-  homeHandle: text("home_handle").notNull(),
+  provider: text("provider", { enum: ["bolter", "magent"] }).notNull().default("bolter"),
+  transportKind: text("transport_kind", { enum: ["desktop-relay", "operator-unix"] }).notNull().default("desktop-relay"),
+  operatorBindingId: uuid("operator_binding_id"),
+  relayId: text("relay_id"),
+  desktopSessionId: text("desktop_session_id"),
+  pairingGenerationRef: text("pairing_generation_ref"),
+  homeHandle: text("home_handle"),
   origin: text("origin").notNull(),
   providerAgentId: text("provider_agent_id").notNull(),
   /** Hash of the verified qualified identity, not a short provider id alone. */
@@ -33,6 +36,8 @@ export const bolterConnections = pgTable("bolter_connections", {
 }, (t) => [
   unique("bolter_connections_owner_id").on(t.userId, t.id),
   uniqueIndex("bolter_connections_home").on(t.userId, t.relayId, t.homeHandle),
+  uniqueIndex("external_connections_operator").on(t.userId, t.operatorBindingId).where(sql`${t.operatorBindingId} IS NOT NULL`),
+  check("external_connections_transport", sql`(${t.provider} = 'bolter' AND ${t.origin} = 'https://bolter.chat' AND ${t.transportKind} = 'desktop-relay' AND ${t.operatorBindingId} IS NULL AND ${t.relayId} IS NOT NULL AND ${t.desktopSessionId} IS NOT NULL AND ${t.pairingGenerationRef} IS NOT NULL AND ${t.homeHandle} IS NOT NULL) OR (${t.provider} = 'magent' AND ${t.transportKind} = 'operator-unix' AND ${t.operatorBindingId} IS NOT NULL AND ${t.relayId} IS NULL AND ${t.desktopSessionId} IS NULL AND ${t.pairingGenerationRef} IS NULL AND ${t.homeHandle} IS NULL)`),
   index("bolter_connections_owner").on(t.userId, t.createdAt),
   check("bolter_connections_generation", sql`${t.generation} > 0 AND ${t.revision} >= 0`),
   check("bolter_connections_revocation", sql`${t.revokedAt} IS NULL OR ${t.enabled} = false`),
@@ -49,6 +54,7 @@ export const bolterRoomBindings = pgTable("bolter_room_bindings", {
   roomId: uuid("room_id").notNull(),
   namespaceId: uuid("namespace_id").notNull(),
   agentId: uuid("agent_id").notNull().references(() => agents.id, { onDelete: "restrict" }),
+  provider: text("provider", { enum: ["bolter", "magent"] }).notNull().default("bolter"),
   origin: text("origin").notNull(),
   providerAgentId: text("provider_agent_id").notNull(),
   chatId: text("chat_id").notNull(),
@@ -70,6 +76,18 @@ export const bolterRoomBindings = pgTable("bolter_room_bindings", {
   check("bolter_bindings_state", sql`${t.state} IN ('active', 'paused', 'revoked')`),
   check("bolter_bindings_identity", sql`length(${t.origin}) > 0 AND length(${t.providerAgentId}) > 0 AND length(${t.chatId}) > 0`),
   ownerPolicy("bolter_bindings_owner", t.userId, true),
+]).enableRLS();
+
+/** A connector context generation can never inherit a previous generation's Genie transcript. */
+export const externalOperatorSessions = pgTable("external_operator_sessions", {
+  bindingId: uuid("binding_id").primaryKey(),
+  userId: uuid("user_id").notNull(),
+  sessionId: text("session_id").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, (t) => [
+  foreignKey({ name: "external_operator_sessions_binding_owner", columns: [t.userId, t.bindingId], foreignColumns: [bolterRoomBindings.userId, bolterRoomBindings.id] }).onDelete("cascade"),
+  check("external_operator_sessions_identity", sql`length(${t.sessionId}) > 0`),
+  ownerPolicy("external_operator_sessions_owner", t.userId),
 ]).enableRLS();
 
 /** Deduplication and provenance only; content lives in canonical session_messages. */

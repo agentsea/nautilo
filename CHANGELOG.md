@@ -7,6 +7,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Operators can connect a selected Genie to mAgent through a private Unix socket,
+  with a fresh external-context Room and a fixed sponsor and sender identity.
+
 - Server Docker builds require Chromium 156.0.8078.47 or later from Debian
   13 security updates on both AMD64 and ARM64, and no longer waive findings
   for the older Chromium packages.

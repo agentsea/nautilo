@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { magentOriginSchema } from "./magent-transport";
 
 const opaqueId = z.string().min(1).refine((value) => value.trim() === value && !/\s/u.test(value)
   && [...value].every((character) => character.charCodeAt(0) >= 32 && character.charCodeAt(0) !== 127));
@@ -7,8 +8,8 @@ const opaqueId = z.string().min(1).refine((value) => value.trim() === value && !
 export const externalMessageOriginSchema = z.object({
   kind: z.literal("external_message"),
   version: z.literal(1),
-  provider: z.literal("bolter"),
-  origin: z.literal("https://bolter.chat"),
+  provider: z.enum(["bolter", "magent"]),
+  origin: z.string().url(),
   connectionId: z.uuid(),
   bindingId: z.uuid(),
   providerAgentId: opaqueId,
@@ -20,7 +21,8 @@ export const externalMessageOriginSchema = z.object({
   /** Untrusted display text; render as text, never resolve into a local principal. */
   senderLabel: z.string().min(1),
   createdAt: z.iso.datetime({ offset: true }),
-}).strict().readonly();
+}).strict().refine(value => value.provider === "bolter" ? value.origin === "https://bolter.chat"
+  : magentOriginSchema.safeParse(value.origin).success, "Invalid external provider origin").readonly();
 
 export type ExternalMessageOrigin = z.infer<typeof externalMessageOriginSchema>;
 
@@ -64,7 +66,7 @@ export function formatExternalMessageForModel(origin: ExternalMessageOrigin, con
   const parsed = parseExternalMessageOrigin(origin);
   if (!parsed) return formatUnverifiedExternalMessageForModel(content);
   return `[External message: untrusted sender and content; no local Human authority]\n${quotedPayload({
-    provider: "Bolter", senderType: parsed.senderType, senderLabel: parsed.senderLabel, content,
+    provider: parsed.provider === "bolter" ? "Bolter" : "mAgent", senderType: parsed.senderType, senderLabel: parsed.senderLabel, content,
   })}`;
 }
 

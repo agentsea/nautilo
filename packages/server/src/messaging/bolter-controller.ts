@@ -84,7 +84,7 @@ export function createBolterController(options: { relay: Registry; execution: Ex
   async function requireMode() { if (!await mode()) throw new BolterControlError("mode_unsupported"); }
   async function connection(userId: string, id: string) {
     const row = await getBolterConnectionWith(db, { userId }, id);
-    if (!row) throw new BolterControlError("not_found");
+    if (!row || row.transportKind === "operator-unix" || row.relayId === null) throw new BolterControlError("not_found");
     return row;
   }
   function receiver(row: BolterConnection, scope: Scope): BolterReceiverContext {
@@ -105,7 +105,7 @@ export function createBolterController(options: { relay: Registry; execution: Ex
     const entry = live(row);
     const supported = await mode();
     return { id: row.id, revision: row.revision, displayName: "Bolter", identity: { providerAgentId: row.providerAgentId, label: entry?.value.identity?.label ?? "Bolter identity" },
-      device: { relayId: row.relayId, label: "Desktop" }, status: row.revokedAt ? "revoked" : !row.enabled ? "paused" : !supported ? "qualification_required" : entry ? "connected" : "offline",
+      device: { relayId: row.relayId!, label: "Desktop" }, status: row.revokedAt ? "revoked" : !row.enabled ? "paused" : !supported ? "qualification_required" : entry ? "connected" : "offline",
       receiver: entry?.value.receiver ?? "stopped", canCreateRoom: supported && row.enabled && !row.revokedAt && entry !== null,
       ...(!supported ? { reason: "mode_unsupported" as const } : !entry ? { reason: "desktop_offline" as const }
         : entry.value.reason ? { reason: entry.value.reason } : {}) };
@@ -229,7 +229,7 @@ export function createBolterController(options: { relay: Registry; execution: Ex
   async function checkConnection(userId: string, id: string) {
       await requireMode(); let row = await connection(userId, id);
       if (row.revokedAt || !row.enabled) return summary(row);
-      const scope = options.relay.getBolterSession(row.relayId, userId);
+      const scope = row.relayId ? options.relay.getBolterSession(row.relayId, userId) : null;
       if (!scope) return summary(row);
       const result = await command(scope, { action: "check", connectionId: id, generation: row.generation });
       if (result.kind !== "observation") { forget(id); return summary(row); }
@@ -333,7 +333,7 @@ export function createBolterController(options: { relay: Registry; execution: Ex
     async connections(userId: string): Promise<BolterConnectionsResponse> {
       const supported = await mode();
       const sessions = options.relay.listBolterSessions(userId);
-      const connections = await Promise.all((await listBolterConnectionsWith(db, { userId })).map(summary));
+      const connections = await Promise.all((await listBolterConnectionsWith(db, { userId })).filter(row => row.transportKind !== "operator-unix").map(summary));
       return { connections, desktops: sessions.map(scope => ({ relayId: scope.relayId, label: "Desktop" })), availability: { state: !supported ? "mode_unsupported" : !sessions.length ? "desktop_required"
         : "available" } };
     },
@@ -371,9 +371,10 @@ export function createBolterController(options: { relay: Registry; execution: Ex
     },
     check: checkConnection,
     async updateConnection(userId: string, id: string, expectedRevision: number, enabled: boolean, revoke = false) {
+      await connection(userId, id);
       const row = await setBolterConnectionStateWith(db, { userId }, { connectionId: id, expectedRevision, enabled, ...(revoke ? { revoke: true } : {}) });
-      if (!row) throw new BolterControlError("authority_changed");
-      const scope = options.relay.getBolterSession(row.relayId, userId);
+      if (!row || row.transportKind === "operator-unix") throw new BolterControlError("authority_changed");
+      const scope = row.relayId ? options.relay.getBolterSession(row.relayId, userId) : null;
       forget(id);
       if (scope && (!enabled || revoke)) await command(scope, { action: revoke ? "revoke" : "pause", connectionId: id, generation: row.generation }).catch(() => undefined);
       publishBolterStateChanged(userId);
@@ -417,10 +418,12 @@ export function createBolterController(options: { relay: Registry; execution: Ex
       return { links: await Promise.all((await listBolterBindingsWith(db, { userId }, id)).map(linkSummary)) };
     },
     async room(userId: string, roomId: string) {
-      const binding = (await listBolterBindingsWith(db, { userId })).find(item => item.roomId === roomId);
+      const binding = (await listBolterBindingsWith(db, { userId })).find(item => item.roomId === roomId && item.provider !== "magent");
       return { link: binding ? await linkSummary(binding) : null };
     },
     async updateBinding(userId: string, id: string, expectedRevision: number, state: "active" | "paused" | "revoked") {
+      const existing = await getBolterBindingWith(db, { userId }, id);
+      if (!existing || existing.provider === "magent") throw new BolterControlError("not_found");
       const row = await updateBolterBindingStateWith(db, { userId }, { bindingId: id, expectedRevision, state });
       if (!row) throw new BolterControlError("authority_changed");
       publishBolterStateChanged(userId);
