@@ -17,6 +17,7 @@ import {
   sessionMessageCryptoRevisions,
   roomMembers,
   rooms,
+  serverAdmission,
   actors,
   users,
   sessions,
@@ -42,12 +43,14 @@ import {
   LatticeCrypto,
   namespaceGeneration,
   namespaceId,
+  objectId,
   prepareDomainKeyAccessRequest,
   prepareDomainKeyAcknowledgement,
   prepareDomainKeyHead,
   prepareDomainKeyRecipientAuthorization,
   prepareDomainKeyRecipientEnvelope,
   prepareDomainNamespaceBundle,
+  prepareHumanAiReadableLiveShadowMessageRequest,
   unixTimestamp,
 } from "@nautilo/lattice-crypto";
 import {
@@ -73,6 +76,10 @@ import { drizzle } from "drizzle-orm/postgres-js";
 import * as schema from "@nautilo/db/schema";
 import postgres from "postgres";
 import { sharedHistoryExecution } from "../fixtures/room-history-shared-execution.ts";
+import { withDisposableFixtureCleanup } from
+  "../../scripts/disposable-postgres-cleanup";
+import { deriveLiveShadowMessageCryptoObjectIdV1 } from
+  "../../src/message/conversation-repository.ts";
 import { verifyConversationProductPostgresHandle } from
   "../../src/server/message/postgres-conversation-product-store.ts";
 import {
@@ -157,6 +164,53 @@ function connection(client: SqlClient, context?: { userId: string; agentId: stri
 
 function digest(fill: number): Uint8Array {
   return new Uint8Array(32).fill(fill);
+}
+
+function prepareSharedHumanHistoryRequest(
+  crypto: LatticeCrypto,
+  plan: ReturnType<typeof decodeHumanAiReadableLiveShadowMessagePlanV1>,
+  planBytes: Uint8Array,
+  cryptoObjectId: string,
+  signing: Readonly<{
+    publicKey: Uint8Array;
+    privateKey: Uint8Array;
+  }>,
+) {
+  return prepareHumanAiReadableLiveShadowMessageRequest(crypto, {
+    operationId: plan.operationId,
+    clientIdempotencyKey: plan.clientIdempotencyKey,
+    policyRevision: plan.policyRevision,
+    sessionId: plan.sessionId,
+    roomId: plan.roomId,
+    messageId: plan.humanMessageId,
+    revision: 0,
+    transcriptOrdinal: plan.transcriptOrdinal,
+    role: "user",
+    createdAt: plan.createdAt,
+    subjectHumanId: plan.subjectHumanId,
+    committerDeviceId: plan.committerDeviceId,
+    committerDeviceSigningKeyGeneration:
+      plan.committerDeviceSigningKeyGeneration,
+    hostAuthorizationRevision: plan.hostAuthorizationRevision,
+    namespaceId: plan.namespaceId,
+    keyClass: "ai",
+    namespaceAccessRevision: plan.namespaceAccessRevision,
+    namespaceKeyGeneration: plan.namespaceKeyGeneration,
+    namespaceHeadDigest: plan.namespaceHeadDigest,
+    namespacePublicationDigest: plan.namespacePublicationDigest,
+    namespacePublicationSetDigest: plan.namespacePublicationSetDigest,
+    namespaceAudienceFingerprint: plan.namespaceAudienceFingerprint,
+    issuedAt: plan.issuedAt,
+    deadlineAt: plan.deadlineAt,
+    cryptoObjectId: objectId(cryptoObjectId),
+    planDigest: crypto.hash(planBytes),
+    plaintextPayloadDigest: digest(0xa1),
+    encryptedPayloadDigest: digest(0xa2),
+    manifestDigest: digest(0xa3),
+    envelopeDigest: digest(0xa4),
+    committerSigningPublicKey: signing.publicKey,
+    committerSigningPrivateKey: signing.privateKey,
+  }, 1);
 }
 
 async function expectM315CapacityConstraints(): Promise<void> {
@@ -261,6 +315,11 @@ describe("M306 native V2 authority on disposable PostgreSQL", () => {
           "INSERT INTO users (id, name) VALUES ($1, 'M306 integration user')",
           [userId],
         );
+        // The borrowed postgres transaction needs its parent parser options.
+        await drizzle(Object.assign(tx, { options: admin.options })).insert(serverAdmission).values({
+          userId,
+          admitted: true,
+        });
         await tx.unsafe(
           `INSERT INTO agents (id, handle) VALUES ($1, $2)`,
           [agentId, `m306-${agentId}`],
@@ -469,6 +528,10 @@ describe("M306 native V2 authority on disposable PostgreSQL", () => {
         let peerSessionId: string = randomUUID();
         try {
           await adminCleanupDatabase.insert(users).values({ id: peerUserId, name: "Human peer fixture" });
+          await adminCleanupDatabase.insert(serverAdmission).values({
+            userId: peerUserId,
+            admitted: true,
+          });
           await adminCleanupDatabase.insert(actors).values({
             id: peerActorId, ownerId: peerUserId, displayName: "Human peer fixture", kind: "user",
           });
@@ -1227,9 +1290,9 @@ describe("M306 native V2 authority on disposable PostgreSQL", () => {
       modernPlan.planBytes.fill(0);
       if (modernReplay.status === "planned") modernReplay.planBytes.fill(0);
       // Exercise the production Drizzle joins and provenance fields against
-      // real PostgreSQL. This pending allocation needs no plaintext or crypto
-      // replacement; signed/decrypted Human and Agent/tool round trips are
-      // independently covered by the hermetic history reader tests.
+      // real PostgreSQL. The signed Human request binds the allocation while
+      // its protected payload remains pending, so this fixture needs no
+      // plaintext or ciphertext replacement.
       await adminCleanupDatabase.insert(sessionMessages).values({
         id: v2SharedPlan.humanMessageId, sessionId: v2SharedPlan.sessionId,
         role: "user", content: "history query-shape fixture",
@@ -1242,6 +1305,26 @@ describe("M306 native V2 authority on disposable PostgreSQL", () => {
           [v2SharedPlan.operationId],
         );
         if (sharedOperation === undefined) throw new Error("Missing shared history operation");
+        const sharedHumanRequest = prepareSharedHumanHistoryRequest(
+          crypto,
+          v2SharedPlan,
+          v2SharedTurn.planBytes,
+          sharedOperation.crypto_object_id,
+          signing,
+        );
+        const sharedHumanVerifiedAt = new Date(Date.now() + 1_000);
+        await adminCleanupDatabase.update(
+          conversationSharedAgentShadowOperations,
+        ).set({
+          state: "human_verified",
+          humanRequestBytes: sharedHumanRequest.bytes,
+          humanRequestDigest: sharedHumanRequest.requestDigest,
+          humanVerifiedAt: sharedHumanVerifiedAt,
+          updatedAt: sharedHumanVerifiedAt,
+        }).where(eq(
+          conversationSharedAgentShadowOperations.operationId,
+          v2SharedPlan.operationId,
+        ));
         await adminCleanupDatabase.insert(sessionMessageCryptoRevisions).values({
           sessionId: v2SharedPlan.sessionId, messageId: v2SharedPlan.humanMessageId,
           editRevision: 0, roomId, namespaceIdAtAllocation: namespaceValue,
@@ -1249,7 +1332,8 @@ describe("M306 native V2 authority on disposable PostgreSQL", () => {
           sharedAgentShadowOperationId: v2SharedPlan.operationId,
           shadowTranscriptOrdinal: v2SharedPlan.transcriptOrdinal,
           shadowReservedCreatedAt: new Date(v2SharedPlan.createdAt),
-          keyClass: "ai", authorRole: "user", allocationRequestDigest: digest(0x73),
+          keyClass: "ai", authorRole: "user",
+          allocationRequestDigest: sharedHumanRequest.requestDigest,
           appendIdempotencyKey: `history:${v2SharedPlan.operationId}`,
         });
         const historyProduct = await verifyConversationProductPostgresHandle(
@@ -1304,6 +1388,20 @@ describe("M306 native V2 authority on disposable PostgreSQL", () => {
         });
         if (secondInput.status !== "planned") throw new Error("Missing second history input plan");
         const secondInputPlan = decodeHumanAiReadableLiveShadowMessagePlanV1(secondInput.planBytes);
+        const secondInputRequest = prepareSharedHumanHistoryRequest(
+          crypto,
+          secondInputPlan,
+          secondInput.planBytes,
+          deriveLiveShadowMessageCryptoObjectIdV1({
+            operationId: secondInputPlan.operationId,
+            sessionId: secondInputPlan.sessionId,
+            messageId: secondInputPlan.humanMessageId,
+            revision: 0,
+            transcriptOrdinal: secondInputPlan.transcriptOrdinal,
+            authorRole: "user",
+          }),
+          signing,
+        );
         const retainedInputs = [v2SharedPlan, secondInputPlan].map((plan) => ({
           operationId: plan.operationId, messageId: plan.humanMessageId,
         }));
@@ -1313,14 +1411,21 @@ describe("M306 native V2 authority on disposable PostgreSQL", () => {
         // Invocation authorization is independently accepted Runtime evidence;
         // the execution's V4 plan may retain a different cached grant digest.
         const invocationAuthorizationDigest = digest(0x7d);
+        const secondInputVerifiedAt = new Date(Date.now() + 1_000);
+        await adminCleanupDatabase.update(
+          conversationSharedAgentShadowOperations,
+        ).set({
+          state: "human_verified",
+          humanRequestBytes: secondInputRequest.bytes,
+          humanRequestDigest: secondInputRequest.requestDigest,
+          humanVerifiedAt: secondInputVerifiedAt,
+          updatedAt: secondInputVerifiedAt,
+        }).where(eq(
+          conversationSharedAgentShadowOperations.operationId,
+          secondInputPlan.operationId,
+        ));
         for (const plan of [v2SharedPlan, secondInputPlan]) {
           const publishedAt = new Date(Date.now() + 1_000);
-          await adminCleanupDatabase.update(conversationSharedAgentShadowOperations).set({
-            state: "human_verified", humanRequestBytes: new Uint8Array([1]),
-            humanRequestDigest: crypto.hash(new Uint8Array([1])),
-            humanVerifiedAt: publishedAt,
-            updatedAt: publishedAt,
-          }).where(eq(conversationSharedAgentShadowOperations.operationId, plan.operationId));
           await adminCleanupDatabase.update(conversationSharedAgentShadowOperations).set({
             state: "published", protectedMessageDigest: digest(0x76),
             finalEventDigest: digest(0x77), terminalAt: publishedAt,
@@ -1481,10 +1586,24 @@ describe("M306 native V2 authority on disposable PostgreSQL", () => {
           // The planner's SQL insert owns database wall-clock timestamps. Use
           // a fresh later timestamp for the monotonic operation transition.
           const publishedAt = new Date(Date.now() + 1_000);
+          const subthreadRequest = prepareSharedHumanHistoryRequest(
+            crypto,
+            subthreadPlan,
+            subthreadTurn.planBytes,
+            deriveLiveShadowMessageCryptoObjectIdV1({
+              operationId: subthreadPlan.operationId,
+              sessionId: subthreadPlan.sessionId,
+              messageId: subthreadPlan.humanMessageId,
+              revision: 0,
+              transcriptOrdinal: subthreadPlan.transcriptOrdinal,
+              authorRole: "user",
+            }),
+            signing,
+          );
           await adminCleanupDatabase.update(conversationSharedAgentShadowOperations).set({
             state: "human_verified",
-            humanRequestBytes: new Uint8Array([1]),
-            humanRequestDigest: crypto.hash(new Uint8Array([1])),
+            humanRequestBytes: subthreadRequest.bytes,
+            humanRequestDigest: subthreadRequest.requestDigest,
             humanVerifiedAt: publishedAt,
             updatedAt: publishedAt,
           }).where(eq(
@@ -1630,18 +1749,21 @@ describe("M306 native V2 authority on disposable PostgreSQL", () => {
               .where(eq(rooms.id, roomId));
           }
         } finally {
-          await adminCleanupDatabase.delete(conversationSharedAgentShadowInvocations)
-            .where(eq(conversationSharedAgentShadowInvocations.roomId, subthreadRoomId));
-          await adminCleanupDatabase.delete(conversationSharedAgentShadowOperations)
-            .where(eq(conversationSharedAgentShadowOperations.roomId, subthreadRoomId));
-          await adminCleanupDatabase.delete(sessions)
-            .where(eq(sessions.roomId, subthreadRoomId));
-          await adminCleanupDatabase.delete(roomMembers)
-            .where(eq(roomMembers.roomId, subthreadRoomId));
-          await adminCleanupDatabase.delete(rooms)
-            .where(eq(rooms.id, subthreadRoomId));
-          await adminCleanupDatabase.delete(sessionMessages)
-            .where(eq(sessionMessages.id, threadRoot.id));
+          await withDisposableFixtureCleanup(adminCleanup, async (transaction) => {
+            const cleanupDatabase = drizzle(transaction, { schema });
+            await cleanupDatabase.delete(conversationSharedAgentShadowInvocations)
+              .where(eq(conversationSharedAgentShadowInvocations.roomId, subthreadRoomId));
+            await cleanupDatabase.delete(conversationSharedAgentShadowOperations)
+              .where(eq(conversationSharedAgentShadowOperations.roomId, subthreadRoomId));
+            await cleanupDatabase.delete(sessions)
+              .where(eq(sessions.roomId, subthreadRoomId));
+            await cleanupDatabase.delete(roomMembers)
+              .where(eq(roomMembers.roomId, subthreadRoomId));
+            await cleanupDatabase.delete(rooms)
+              .where(eq(rooms.id, subthreadRoomId));
+            await cleanupDatabase.delete(sessionMessages)
+              .where(eq(sessionMessages.id, threadRoot.id));
+          });
         }
       }
       await admin.unsafe(
@@ -1814,6 +1936,10 @@ describe("M306 native V2 authority on disposable PostgreSQL", () => {
           `INSERT INTO users (id, name) VALUES ($1, 'M320 transition user')`,
           [transitionUserId],
         );
+        await adminCleanupDatabase.insert(serverAdmission).values({
+          userId: transitionUserId,
+          admitted: true,
+        });
         await adminCleanup.unsafe(
           `INSERT INTO actors (
              id, owner_id, display_name, trust_state, kind, agent_id
@@ -2112,6 +2238,10 @@ describe("M306 native V2 authority on disposable PostgreSQL", () => {
       try {
         await adminCleanupDatabase.insert(users).values({ id: fullPeerUserId,
           name: "M318 Full peer" });
+        await adminCleanupDatabase.insert(serverAdmission).values({
+          userId: fullPeerUserId,
+          admitted: true,
+        });
         await adminCleanupDatabase.insert(actors).values({ id: fullPeerActorId,
           ownerId: fullPeerUserId, displayName: "M318 Full peer", kind: "user" });
         await adminCleanupDatabase.delete(roomMembers).where(and(
@@ -2174,6 +2304,11 @@ describe("M306 native V2 authority on disposable PostgreSQL", () => {
                     id,
                     name: `M314 scale Human ${offset + index}`,
                   }),
+                ),
+              );
+              await database.insert(serverAdmission).values(
+                scaleUserIds.slice(offset, offset + scaleChunkSize).map(
+                  (userId) => ({ userId, admitted: true }),
                 ),
               );
               await database.insert(actors).values(
@@ -3005,7 +3140,8 @@ describe("M306 native V2 authority on disposable PostgreSQL", () => {
         .where(
           like(namespaceDomainKeyBindings.domainId, `${capacityDomainPrefix}%`),
         );
-      await admin.begin(async (tx) => {
+      await withDisposableFixtureCleanup(adminCleanup, async (tx) => {
+        const cleanupDatabase = drizzle(tx, { schema });
         await tx.unsafe(
           `DELETE FROM conversation_shadow_turn_operations
             WHERE room_id = $1`,
@@ -3106,13 +3242,14 @@ describe("M306 native V2 authority on disposable PostgreSQL", () => {
             WHERE human_id = $1`,
           [humanActorId],
         );
-        await tx.unsafe(`DELETE FROM room_members WHERE room_id = $1`, [roomId]);
-        await tx.unsafe(`DELETE FROM sessions WHERE room_id = $1`, [roomId]);
-        await tx.unsafe(`DELETE FROM rooms WHERE id = $1`, [roomId]);
-        await tx.unsafe(`DELETE FROM namespaces WHERE id = $1`, [namespaceValue]);
-        await tx.unsafe(`DELETE FROM actors WHERE owner_id = $1`, [userId]);
-        await tx.unsafe(`DELETE FROM agents WHERE id = $1`, [agentId]);
-        await tx.unsafe(`DELETE FROM users WHERE id = $1`, [userId]);
+        await cleanupDatabase.delete(roomMembers).where(eq(roomMembers.roomId, roomId));
+        await cleanupDatabase.delete(sessions).where(eq(sessions.roomId, roomId));
+        await cleanupDatabase.delete(rooms).where(eq(rooms.id, roomId));
+        await cleanupDatabase.delete(schema.namespaces)
+          .where(eq(schema.namespaces.id, namespaceValue));
+        await cleanupDatabase.delete(actors).where(eq(actors.ownerId, userId));
+        await cleanupDatabase.delete(schema.agents).where(eq(schema.agents.id, agentId));
+        await cleanupDatabase.delete(users).where(eq(users.id, userId));
       });
       await adminCleanupDatabase
         .delete(cryptoDomains)

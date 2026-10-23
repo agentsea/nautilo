@@ -198,6 +198,8 @@ export function createProtectedAgentConversationSessionCryptoPreparer(
                       crypto: input.crypto,
                       storage: input.storage,
                       opened,
+                      expectedRuntimeAuthorizationRevision:
+                        opened.agentAuthorizationRevision,
                       agentId: agentId(request.agentId),
                       resolveHistoricalCommitter:
                         input.resolveHistoricalRuntimeCommitter,

@@ -21,7 +21,8 @@ env:
 jobs:
   evaluate:
     name: Evaluate bundled official skills
-    runs-on: ubuntu-latest
+    # Keep the runner compatible with the pinned Python 3.13.7 hosted build.
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1

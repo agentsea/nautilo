@@ -2,21 +2,52 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import {
   __resetSharedDirectDbForTests, __resetSharedDirectCryptoDbForTests, getSharedDirectCryptoDb, actors, capabilities, createPostgresJsBridgeConnection,
-  ensureDatabase, eq, getSharedDirectDb, groupMembers, groupRoles, groups, roleCapabilities,
-  roles, rooms, serverAdmission, sql, users,
+  eq, getSharedDirectDb, groupMembers, groupRoles, groups, roleCapabilities,
+  resolveCryptoDatabaseConnectionString, roles, rooms, serverAdmission, sql, users,
 } from "@nautilo/db";
-import { bootstrapTestDbInstance } from "@nautilo/db/testing";
 import { addRoomMember, createOpenRoom } from "@nautilo/trust";
 import { applyModeration, inspectModerationPerson } from "../../../trust/src/moderation-coordinator";
 import { completeModerationEnrollmentInTx } from "../../../trust/src/moderation-enrollment";
 import { PostgresNamespaceProductAuthority, inspectNamespaceProductAuthoritySnapshot } from "../../src/server/delivery/postgres-namespace-product-authority";
+import { readDisposableResetAuthority, resetDisposablePostgresDatabase } from "../../scripts/disposable-postgres-reset";
+
+let restoreAppConnection: (() => void) | undefined;
+
+function requiredEnvironment(name: string): string {
+  const value = process.env[name];
+  if (!value) throw new Error(`Missing disposable Postgres environment: ${name}`);
+  return value;
+}
 
 beforeAll(async () => {
-  bootstrapTestDbInstance();
-  process.env["NAUTILO_TEST_DB_AUTOHEAL"] = "0";
-  await ensureDatabase();
+  const urls = {
+    admin: requiredEnvironment("LATTICE_BRIDGE_TEST_ADMIN_DATABASE_URL"),
+    app: requiredEnvironment("LATTICE_BRIDGE_TEST_APP_DATABASE_URL"),
+    agent: requiredEnvironment("LATTICE_BRIDGE_TEST_AGENT_DATABASE_URL"),
+    crypto: requiredEnvironment("LATTICE_BRIDGE_TEST_DATABASE_URL"),
+  };
+  readDisposableResetAuthority(urls);
+  if (resolveCryptoDatabaseConnectionString() !== urls.crypto) {
+    throw new Error("Runtime crypto connection is outside the disposable fixture");
+  }
+  await Promise.all([__resetSharedDirectCryptoDbForTests(), __resetSharedDirectDbForTests()]);
+  // The runner migrated this fixture; verify container ownership and reset it
+  // instead of bootstrapping a separately resolved named instance.
+  resetDisposablePostgresDatabase(urls);
+  const previousAppConnection = process.env["DB_CONNECTION_STRING"];
+  process.env["DB_CONNECTION_STRING"] = urls.app;
+  restoreAppConnection = () => {
+    if (previousAppConnection === undefined) delete process.env["DB_CONNECTION_STRING"];
+    else process.env["DB_CONNECTION_STRING"] = previousAppConnection;
+  };
 }, 120_000);
-afterAll(async () => { await __resetSharedDirectCryptoDbForTests(); await __resetSharedDirectDbForTests(); });
+afterAll(async () => {
+  try {
+    await Promise.all([__resetSharedDirectCryptoDbForTests(), __resetSharedDirectDbForTests()]);
+  } finally {
+    restoreAppConnection?.();
+  }
+});
 
 async function fixture() {
   const db = getSharedDirectDb();

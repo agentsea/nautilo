@@ -61,6 +61,9 @@ import {
 } from "@nautilo/lattice-bridge/server";
 import postgres from "postgres";
 
+import { withDisposableFixtureCleanup } from
+  "../../scripts/disposable-postgres-cleanup";
+
 bootstrapTestDbInstance();
 
 type SqlClient = postgres.Sql;
@@ -707,7 +710,7 @@ export async function destroyVisibilityGrantFixture(fixture: PublicRoomGrantVisi
   fixture.signing.privateKey.fill(0);
   fixture.domainKey.fill(0);
   fixture.membershipVault.destroy();
-  await admin.begin(async (tx) => {
+  await withDisposableFixtureCleanup(admin, async (tx) => {
     await tx.unsafe("DELETE FROM conversation_shadow_turn_operations WHERE room_id = $1", [fixture.roomId]);
     await tx.unsafe("DELETE FROM conversation_shadow_turn_plan_attempts WHERE room_id = $1", [fixture.roomId]);
     await tx.unsafe("DELETE FROM conversation_shared_agent_shadow_executions WHERE room_id = $1", [fixture.roomId]);

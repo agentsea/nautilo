@@ -776,6 +776,8 @@ export function createProtectedAgentMemorySessionContentPort(input: Readonly<{
           crypto: input.crypto,
           storage: input.storage,
           opened: openedRuntime,
+          expectedRuntimeAuthorizationRevision:
+            session.material.runtimeAuthorizationRevision,
           agentId: agentId(request.agentId),
           resolveHistoricalCommitter:
             input.resolveHistoricalRuntimeCommitter,

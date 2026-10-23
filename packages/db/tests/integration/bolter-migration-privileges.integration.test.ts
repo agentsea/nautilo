@@ -103,13 +103,13 @@ describe.skipIf(process.env["NAUTILO_TEST_BOLTER_MIGRATIONS"] !== "1")("packaged
     });
     try {
       await migrateWithMigrationPrivilegeCompat(drizzle(client), {
-        migrationsFolder: directory.pathname,
+        migrationsFolder: fileURLToPath(directory),
       });
     } finally {
       await client.end();
     }
     sql(`SET ROLE nautilo; ${buildAgentRoleGrantsSql()}`);
-    const canonical = readMigrationFiles({ migrationsFolder: directory.pathname });
+    const canonical = readMigrationFiles({ migrationsFolder: fileURLToPath(directory) });
     const expectedLedger = canonical
       .map(({ hash, folderMillis }) => `${hash}|${folderMillis}`)
       .sort()

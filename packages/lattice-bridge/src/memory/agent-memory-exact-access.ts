@@ -763,6 +763,8 @@ export function createProtectedAgentMemoryExactAccessContentPort(input: Readonly
                       domain.expectedAgentAuthorizationRevision,
                     aiRoot: domain.aiRoot,
                   },
+                  expectedRuntimeAuthorizationRevision:
+                    runtimeState.runtime.authorizationRevision,
                   agentId: agentId(request.agentId),
                   resolveHistoricalCommitter:
                     input.resolveHistoricalRuntimeCommitter,
@@ -971,6 +973,8 @@ export function createProtectedAgentMemoryExactAccessContentPort(input: Readonly
                     domain.expectedAgentAuthorizationRevision,
                   aiRoot: domain.aiRoot,
                 },
+                expectedRuntimeAuthorizationRevision:
+                  runtimeState.runtime.authorizationRevision,
                 agentId: agentId(request.agentId),
                 resolveHistoricalCommitter:
                   input.resolveHistoricalRuntimeCommitter,

@@ -7,6 +7,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Genie can change access to encrypted Memory across Domains whose
+  authorization histories have advanced independently.
+
 - Scheduled Tasks keep concurrent results on separate execution threads.
   Finished encrypted schedules show no future runs and retain result history.
 - Encrypted Task creation, editing and repair use current Domain authority on

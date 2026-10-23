@@ -71,7 +71,7 @@ import {
   classifyProtectedTaskMetadataV1,
 } from "@nautilo/types";
 import {
-  and, eq, inArray, sql, taskRuns, taskRunResultCryptoRevisions, protectedTaskRunOutputBindings,
+  and, eq, inArray, sql, jobs, tasks, taskRuns, taskRunResultCryptoRevisions, protectedTaskRunOutputBindings,
   createDirectDb,
   prepareProtectedTaskCancellationOutput,
   settleProtectedTaskCancellationOutput,
@@ -79,69 +79,50 @@ import {
   type ProtectedTaskCancellationOutputCandidate,
   type ProtectedTaskCancellationOutputDiscoveryCursor,
 } from "@nautilo/db";
-import { assertFixtureDbMutationAllowed, bootstrapTestDbInstance } from "@nautilo/db/testing";
+import { readDisposableCleanupUrls, withDisposableFixtureCleanup } from "../../scripts/disposable-postgres-cleanup";
+import { verifyDisposablePostgresAuthority } from "../../scripts/disposable-postgres-reset";
 import { readPreparedTaskContentCryptoRevisionSnapshotV1 } from "../../src/task/task-content-prepared-revision.ts";
 import type { TaskContentAuthorityV1 } from "../../src/task/task-content-authority-v1.ts";
 
 type SqlClient = postgres.Sql;
 type SqlExecutor = Pick<SqlClient, "unsafe">;
 
-const adminUrl = requiredEnvironment("LATTICE_BRIDGE_TEST_ADMIN_DATABASE_URL");
-const cryptoUrl = requiredEnvironment("LATTICE_BRIDGE_TEST_DATABASE_URL");
-const appUrl = requiredEnvironment("LATTICE_BRIDGE_TEST_APP_DATABASE_URL");
+const urls = readDisposableCleanupUrls();
+const { admin: adminUrl, crypto: cryptoUrl, app: appUrl } = urls;
 const NOW = 1_830_000_000_000;
 
 let admin: SqlClient;
-
-function requiredEnvironment(name: string): string {
-  const value = process.env[name];
-  if (value === undefined || value === "") {
-    throw new Error(`${name} is required for the Postgres integration suite`);
-  }
-  return value;
-}
 
 function client(url: string): SqlClient {
   return postgres(url, { max: 2, prepare: false, onnotice: () => undefined });
 }
 
-function assertExactCleanupTarget(): void {
-  const instance = process.env["NAUTILO_PROTECTED_TASK_QA_INSTANCE"];
-  const port = process.env["NAUTILO_PROTECTED_TASK_QA_POSTGRES_PORT"];
-  if (!instance || !/^qa-[a-z0-9-]+$/.test(instance)
-    || process.env["NAUTILO_INSTANCE_ID"] !== instance || !port) {
-    throw new Error("Task repository cleanup requires an explicitly bound disposable QA instance and port");
-  }
-  assertFixtureDbMutationAllowed();
-  for (const [value, role] of [[adminUrl, null], [appUrl, "nautilo"], [cryptoUrl, "nautilo_crypto"]] as const) {
-    const url = new URL(value);
-    if (!["postgres:", "postgresql:"].includes(url.protocol)
-      || !["127.0.0.1", "localhost", "::1"].includes(url.hostname)
-      || url.port !== port || url.pathname !== "/nautilo"
-      || !url.username || !url.password || (role !== null && url.username !== role)) {
-      throw new Error("Task repository cleanup requires the exact local QA role connections");
-    }
+function fixtureDirectDb() {
+  // The factory captures its URL synchronously; never resolve a named instance.
+  const previous = process.env["DB_DIRECT_CONNECTION"];
+  process.env["DB_DIRECT_CONNECTION"] = appUrl;
+  try {
+    return createDirectDb(1);
+  } finally {
+    if (previous === undefined) delete process.env["DB_DIRECT_CONNECTION"];
+    else process.env["DB_DIRECT_CONNECTION"] = previous;
   }
 }
 
 async function deleteFixtureCryptoObjects(connection: SqlClient, objectIds: readonly string[]): Promise<void> {
-  assertExactCleanupTarget();
   if (objectIds.length === 0) return;
-  await drizzle(connection).transaction(async tx => {
+  const database = drizzle(connection);
+  const [original] = await database.execute<{ parent_owner: string; allowed: boolean; can_select: boolean }>(sql`
+    select pg_get_userbyid(relowner) as parent_owner,
+      has_table_privilege('nautilo', 'public.task_cancellation_crypto_staging_receipts', 'DELETE') as allowed,
+      has_table_privilege('nautilo', 'public.task_cancellation_crypto_staging_receipts', 'SELECT') as can_select
+    from pg_class where oid = 'public.crypto_objects'::regclass
+  `);
+  if (original?.parent_owner !== "nautilo") throw new Error("Fixture crypto owner is unexpected");
+  await withDisposableFixtureCleanup(connection, async transaction => {
+    const tx = drizzle(transaction);
     await tx.select({ objectId: cryptoObjects.objectId }).from(cryptoObjects)
       .where(inArray(cryptoObjects.objectId, [...objectIds])).for("update");
-    const [original] = await tx.execute<{ parent_owner: string; allowed: boolean; can_select: boolean }>(sql`
-      select pg_get_userbyid(relowner) as parent_owner,
-        has_table_privilege('nautilo', 'public.task_cancellation_crypto_staging_receipts', 'DELETE') as allowed,
-        has_table_privilege('nautilo', 'public.task_cancellation_crypto_staging_receipts', 'SELECT') as can_select
-      from pg_class where oid = 'public.crypto_objects'::regclass
-    `);
-    if (original?.parent_owner !== "nautilo") throw new Error("Fixture crypto owner is unexpected");
-    // Parent cascades execute as nautilo. Restore these operator-only grants
-    // before commit; any failure rolls back both the grants and fixture deletion.
-    // Forced RLS remains enabled; no persistent receipt privileges change.
-    if (!original.allowed) await tx.execute(sql`grant delete on public.task_cancellation_crypto_staging_receipts to nautilo`);
-    if (!original.can_select) await tx.execute(sql`grant select on public.task_cancellation_crypto_staging_receipts to nautilo`);
     await tx.delete(objectCryptoAccessHeads).where(inArray(objectCryptoAccessHeads.objectId, [...objectIds]));
     await tx.delete(objectCryptoNamespaceEnvelopes).where(inArray(objectCryptoNamespaceEnvelopes.objectId, [...objectIds]));
     await tx.delete(objectCryptoAccessManifests).where(inArray(objectCryptoAccessManifests.objectId, [...objectIds]));
@@ -151,14 +132,12 @@ async function deleteFixtureCryptoObjects(connection: SqlClient, objectIds: read
       .where(inArray(taskCancellationCryptoStagingReceipts.cryptoObjectId, [...objectIds]))).toHaveLength(0);
     expect(await tx.select({ objectId: cryptoObjects.objectId }).from(cryptoObjects)
       .where(inArray(cryptoObjects.objectId, [...objectIds]))).toHaveLength(0);
-    if (!original.allowed) await tx.execute(sql`revoke delete on public.task_cancellation_crypto_staging_receipts from nautilo`);
-    if (!original.can_select) await tx.execute(sql`revoke select on public.task_cancellation_crypto_staging_receipts from nautilo`);
-    const [restored] = await tx.execute<{ allowed: boolean; can_select: boolean }>(sql`
-      select has_table_privilege('nautilo', 'public.task_cancellation_crypto_staging_receipts', 'DELETE') as allowed,
-        has_table_privilege('nautilo', 'public.task_cancellation_crypto_staging_receipts', 'SELECT') as can_select
-    `);
-    expect(restored).toEqual({ allowed: original.allowed, can_select: original.can_select });
   });
+  const [restored] = await database.execute<{ allowed: boolean; can_select: boolean }>(sql`
+    select has_table_privilege('nautilo', 'public.task_cancellation_crypto_staging_receipts', 'DELETE') as allowed,
+      has_table_privilege('nautilo', 'public.task_cancellation_crypto_staging_receipts', 'SELECT') as can_select
+  `);
+  expect(restored).toEqual({ allowed: original.allowed, can_select: original.can_select });
 }
 
 function productExecutor(
@@ -289,8 +268,7 @@ function prepareRevision(input: Readonly<{
 }
 
 beforeAll(() => {
-  bootstrapTestDbInstance();
-  assertExactCleanupTarget();
+  verifyDisposablePostgresAuthority(urls);
   admin = client(adminUrl);
 });
 
@@ -332,7 +310,7 @@ describe.serial("Postgres protected Task content repository", () => {
     }
     const app = client(appUrl);
     const cryptoDatabase = client(cryptoUrl);
-    const directDb = createDirectDb(1);
+    const directDb = fixtureDirectDb();
     const objectIds: string[] = [];
     const [originalPolicy] = await admin.unsafe<{
       mode: string;
@@ -993,8 +971,11 @@ describe.serial("Postgres protected Task content repository", () => {
       });
     } finally {
       try {
-        await admin.unsafe("DELETE FROM tasks WHERE id = $1", [taskId]);
-        await admin.unsafe("DELETE FROM jobs WHERE id = $1", [preparedCancellationJobId]);
+        await withDisposableFixtureCleanup(admin, async transaction => {
+          const cleanup = drizzle(transaction);
+          await cleanup.delete(tasks).where(eq(tasks.id, taskId));
+          await cleanup.delete(jobs).where(eq(jobs.id, preparedCancellationJobId));
+        });
         await admin.unsafe(
           "DELETE FROM task_run_result_crypto_revisions WHERE task_id = $1",
           [taskId],
@@ -1448,7 +1429,9 @@ async function exerciseNativeCancellationStaging(input: {
   } finally {
     try {
       await database.delete(backgroundCryptoAuthorizationRequests).where(eq(backgroundCryptoAuthorizationRequests.requestId, requestId));
-      await database.delete(taskRuns).where(eq(taskRuns.id, run));
+      await withDisposableFixtureCleanup(fixtureAdmin, async transaction => {
+        await drizzle(transaction).delete(taskRuns).where(eq(taskRuns.id, run));
+      });
       await database.delete(taskRunResultCryptoRevisions).where(eq(taskRunResultCryptoRevisions.taskRunId, run));
       await deleteFixtureCryptoObjects(fixtureAdmin, [intent.resultObjectId]);
       await database.delete(namespaceDomainKeyHeads).where(eq(namespaceDomainKeyHeads.namespaceId, input.namespaceValue));
@@ -1457,7 +1440,9 @@ async function exerciseNativeCancellationStaging(input: {
       await database.delete(domainKeyPublicationOperations).where(eq(domainKeyPublicationOperations.domainId, input.domainId));
       await database.delete(cryptoDomains).where(eq(cryptoDomains.id, input.domainId));
       await database.delete(agentCryptoRuntimeSigners).where(eq(agentCryptoRuntimeSigners.agentId, input.agentId));
-      await database.delete(agentCryptoRuntimeStates).where(eq(agentCryptoRuntimeStates.agentId, input.agentId));
+      await withDisposableFixtureCleanup(fixtureAdmin, async transaction => {
+        await drizzle(transaction).delete(agentCryptoRuntimeStates).where(eq(agentCryptoRuntimeStates.agentId, input.agentId));
+      });
       await database.delete(humanCryptoDevices).where(eq(humanCryptoDevices.deviceId, f.DEVICE));
       await database.delete(humanCryptoCustodies).where(eq(humanCryptoCustodies.humanId, input.humanActorId));
     } finally {
