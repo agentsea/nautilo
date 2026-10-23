@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Personal chat keeps its admitted provider and credential when marketplace
+  availability changes. Already-admitted direct calls skip Surplus discovery,
+  and protected Memory retains its approved marketplace embedding disclosure.
+
 - Surplus model selection and requests now use its live catalogue for confirmed
   model names, capabilities, reasoning parameters, and token limits. Auto skips
   unconfirmed routes, and chat and Soul share the same marketplace budget.

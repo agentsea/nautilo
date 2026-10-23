@@ -151,6 +151,23 @@ describe("trusted model funding", () => {
     }, h.deps))).toBe("unsupported_workload");
   });
 
+  test("direct-only inference rejects a conflicting Surplus transport", async () => {
+    const h = harness();
+    h.capabilities.set(ALICE, ["use_personal_provider_credentials"]);
+    h.rows.set(`${ALICE}:surplus`, row(ALICE, "surplus"));
+    h.setSurplusEligible(true);
+    const admitted = await resolveModelFunding(request(ALICE), h.deps);
+    expect(admitted).toMatchObject({ kind: "personal", providerRoute: "surplus" });
+    let hydrations = 0;
+    h.deps.getPreferSurplus = () => true;
+    h.deps.hydrateSurplusChatCatalog = async () => { hydrations += 1; };
+
+    expect(await code(resolveModelFunding({
+      ...request(ALICE), priorDecision: admitted, directOnly: true, transport: "surplus",
+    }, h.deps))).toBe("funding_source_changed");
+    expect(hydrations).toBe(0);
+  });
+
   test("API-key-only personal recovery may select Surplus without consulting subscriptions", async () => {
     const h = harness();
     h.capabilities.set(ALICE, ["use_server_provider_credentials", "use_personal_provider_credentials"]);
@@ -281,6 +298,66 @@ describe("trusted model funding", () => {
       kind: "personal", providerRoute: "surplus",
     });
     expect(hydrations).toBe(1);
+  });
+
+  test("same-model personal direct rechecks stay on their admitted credential without Surplus discovery", async () => {
+    const h = harness();
+    let hydrations = 0;
+    h.capabilities.set(ALICE, ["use_personal_provider_credentials"]);
+    const direct = { ...row(ALICE, "openrouter"), id: "50000000-0000-4000-8000-000000000005" };
+    direct.envelope = encryptPersonalProviderCredential(custody, "caller-direct", direct);
+    h.rows.set(`${ALICE}:openrouter`, direct);
+    const surplus = { ...row(ALICE, "surplus"), id: "60000000-0000-4000-8000-000000000006" };
+    surplus.envelope = encryptPersonalProviderCredential(custody, "marketplace", surplus);
+    h.rows.set(`${ALICE}:surplus`, surplus);
+    h.deps.getPreferSurplus = () => true;
+    h.deps.hydrateSurplusChatCatalog = async () => {
+      hydrations += 1;
+      if (hydrations > 1) h.setSurplusEligible(true);
+    };
+
+    const admitted = await resolveModelFunding(request(ALICE), h.deps);
+    expect(admitted).toMatchObject({
+      kind: "personal", providerRoute: "openrouter", credentialId: direct.id,
+    });
+
+    const rechecked = await resolveModelFunding({ ...request(ALICE), priorDecision: admitted }, h.deps);
+    expect(rechecked).toEqual(admitted);
+    if (rechecked.kind !== "personal") throw new Error("Expected personal funding");
+    expect(await withAdmittedPersonalProviderKey(rechecked, (key) => key, h.deps, admitted))
+      .toBe("caller-direct");
+    expect(hydrations).toBe(1);
+    expect(h.reads).toEqual([
+      `${ALICE}:surplus`,
+      `${ALICE}:openrouter`,
+      `${ALICE}:openrouter`,
+      `${ALICE}:openrouter`,
+      `${ALICE}:openrouter`,
+    ]);
+
+    expect(await code(resolveModelFunding({
+      ...request(ALICE), priorDecision: admitted, transport: "surplus",
+    }, h.deps))).toBe("funding_source_changed");
+    expect(hydrations).toBe(1);
+  });
+
+  test("same-model server direct rechecks skip irrelevant Surplus discovery", async () => {
+    const h = harness();
+    let preferSurplus = false;
+    let hydrations = 0;
+    h.setFundingPreference("server_first");
+    h.capabilities.set(ALICE, ["use_server_provider_credentials"]);
+    h.deps.getPreferSurplus = () => preferSurplus;
+    h.deps.getServerSurplusKeyConfigured = () => true;
+    h.deps.hydrateSurplusChatCatalog = async () => { hydrations += 1; };
+
+    const admitted = await resolveModelFunding(request(ALICE), h.deps);
+    expect(admitted).toMatchObject({ kind: "server", providerRoute: "openrouter" });
+
+    preferSurplus = true;
+    expect(await resolveModelFunding({ ...request(ALICE), priorDecision: admitted }, h.deps))
+      .toEqual(admitted);
+    expect(hydrations).toBe(0);
   });
 
   test("native text Tasks admit independently and pin their own source", async () => {
@@ -711,6 +788,19 @@ describe("personal marketplace transport funding", () => {
     expect(await withAdmittedPersonalProviderKey(fallback, (key) => key, h.deps, admitted)).toBe("caller-direct");
     h.rows.set(`${ALICE}:surplus`, row(ALICE, "surplus", 2));
     expect(await code(resolveModelFunding({ ...request(ALICE), priorDecision: admitted, transport: "direct" }, h.deps))).toBe("personal_credential_stale");
+  });
+  test("same-model marketplace rechecks stay pinned until an explicit direct recovery", async () => {
+    const h = harness(); h.setSurplusEligible(true); h.capabilities.set(ALICE, ["use_personal_provider_credentials"]);
+    h.rows.set(`${ALICE}:surplus`, row(ALICE, "surplus"));
+    h.rows.set(`${ALICE}:openrouter`, row(ALICE, "openrouter"));
+    const admitted = await resolveModelFunding(request(ALICE), h.deps);
+    expect(admitted).toMatchObject({ kind: "personal", providerRoute: "surplus" });
+    expect(await resolveModelFunding({ ...request(ALICE), priorDecision: admitted }, h.deps))
+      .toEqual(admitted);
+
+    h.setSurplusEligible(false);
+    expect(await code(resolveModelFunding({ ...request(ALICE), priorDecision: admitted }, h.deps)))
+      .toBe("personal_credential_missing");
   });
   test("missing direct fallback never borrows a server credential", async () => {
     const h = harness(); h.setSurplusEligible(true); h.capabilities.set(ALICE, ["use_personal_provider_credentials", "use_server_provider_credentials"]);

@@ -149,6 +149,8 @@ export async function agentNode(
   const config = fromRuntimeConfig();
   const configuredModelId = state.model || config.nautilo_model;
   if (!hasStubModelForTests() && foregroundChatFundingSession?.kind !== "personal"
+    && (foregroundChatFundingSession?.admission === undefined
+      || foregroundChatFundingSession.admission.binding.providerRoute === "surplus")
     && getCachedServerModelConfigRow()?.preferSurplus === true && resolveProviderKey("surplus") !== null) {
     await hydrateSurplusChatCatalog({
       ...(configuredModelId ? { catalogModelIds: [configuredModelId] } : {}),

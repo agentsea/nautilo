@@ -267,6 +267,9 @@ export async function resolveModelFunding(
   if (input.directOnly && input.workload === "memory") {
     throw new ModelFundingError("unsupported_workload");
   }
+  if (input.directOnly && input.transport === "surplus") {
+    throw new ModelFundingError("funding_source_changed");
+  }
   if (!input.humanUserId.trim()) throw new ModelFundingError("server_credentials_forbidden");
   const provider = directProvider(input.modelId);
   if (provider === "typesafe" && input.workload !== "decision") throw new ModelFundingError("unsupported_provider");
@@ -296,10 +299,28 @@ export async function resolveModelFunding(
     throw new ModelFundingError("personal_credentials_forbidden");
   }
 
-  const surplusPolicyEnabled = !input.directOnly && input.transport !== "direct"
-    && (deps.getPreferSurplus?.() ?? true);
-  const hydrateSurplus = async (keyConfigured: boolean): Promise<void> => {
-    if (!surplusPolicyEnabled || !keyConfigured || !deps.hydrateSurplusChatCatalog) return;
+  const pinnedPersonalTransport = prior?.kind === "personal" && prior.modelId === input.modelId
+    && prior.providerRoute !== "openai-chatgpt"
+    ? prior.providerRoute === "surplus" ? "surplus" : "direct"
+    : undefined;
+  const pinnedServerTransport = prior?.kind === "server"
+    ? prior.providerRoute === "surplus" ? "surplus" : "direct"
+    : undefined;
+  if (input.transport === "surplus"
+    && (pinnedPersonalTransport === "direct" || pinnedServerTransport === "direct")) {
+    throw new ModelFundingError("funding_source_changed");
+  }
+  const requestedPersonalTransport = input.transport
+    ?? (input.directOnly ? "direct" : pinnedPersonalTransport);
+  const requestedServerTransport = input.transport
+    ?? (input.directOnly ? "direct" : pinnedServerTransport);
+  const surplusPolicyEnabled = (transport: "direct" | "surplus" | undefined) =>
+    !input.directOnly && transport !== "direct" && (deps.getPreferSurplus?.() ?? true);
+  const hydrateSurplus = async (
+    keyConfigured: boolean,
+    transport: "direct" | "surplus" | undefined,
+  ): Promise<void> => {
+    if (!surplusPolicyEnabled(transport) || !keyConfigured || !deps.hydrateSurplusChatCatalog) return;
     try {
       await deps.hydrateSurplusChatCatalog({ catalogModelIds: [input.modelId] });
     } catch {
@@ -308,9 +329,9 @@ export async function resolveModelFunding(
     }
   };
   const serverRoute = async (
-    transport: "direct" | "surplus" | undefined = input.directOnly ? "direct" : input.transport,
+    transport: "direct" | "surplus" | undefined = requestedServerTransport,
   ) => {
-    await hydrateSurplus(deps.getServerSurplusKeyConfigured?.() === true);
+    await hydrateSurplus(deps.getServerSurplusKeyConfigured?.() === true, transport);
     const route = deps.serverRoute(input.modelId, input.workload, transport);
     // Only image-capable signed routes may receive the helper's image envelope.
     return input.workload === "image_assistance" && route === "surplus"
@@ -379,19 +400,19 @@ export async function resolveModelFunding(
     // dependencies without the policy/discovery seam retain their explicit
     // route-first behavior and never acquire a network dependency.
     const explicitSurplusEligibility = deps.getPreferSurplus === undefined
-      ? !input.directOnly && input.transport !== "direct"
+      ? requestedPersonalTransport !== "direct"
         && deps.personalSurplusRoute?.(input.modelId, input.workload) === true
-      : surplusPolicyEnabled;
+      : surplusPolicyEnabled(requestedPersonalTransport);
     const surplusCredential = explicitSurplusEligibility
       ? prior?.kind === "personal" && prior.providerRoute === "surplus"
         ? priorCredential : await deps.getCredential(input.humanUserId, "surplus")
       : null;
-    await hydrateSurplus(surplusCredential !== null);
+    await hydrateSurplus(surplusCredential !== null, requestedPersonalTransport);
     const surplusEligible = surplusCredential !== null
       && (deps.getPreferSurplus === undefined || deps.personalSurplusRoute?.(input.modelId, input.workload) === true);
     const qualifiedSurplusCredential = surplusEligible ? surplusCredential : null;
     const selectedProvider = qualifiedSurplusCredential ? "surplus" : provider;
-    const credential = qualifiedSurplusCredential ?? (input.transport === "surplus" ? null
+    const credential = qualifiedSurplusCredential ?? (requestedPersonalTransport === "surplus" ? null
       : prior?.kind === "personal" && prior.providerRoute === provider
         ? priorCredential : await deps.getCredential(input.humanUserId, provider));
     if (credential) {
@@ -412,7 +433,7 @@ export async function resolveModelFunding(
       // still admit it. The distinct requested transport or later model's
       // credential is absent, so invocation may safely consult the configured
       // same-payer model chain without starting a provider call.
-      if (prior.providerRoute === "surplus" && input.transport === "direct") {
+      if (prior.providerRoute === "surplus" && requestedPersonalTransport === "direct") {
         throw new PersonalDirectFundingUnavailableError();
       }
       if (prior.modelId !== input.modelId) {
@@ -432,13 +453,6 @@ export async function resolveModelFunding(
       ? "personal_credential_missing"
       : "server_credentials_forbidden");
   }
-  const pinnedServerTransport = prior?.kind === "server"
-    ? prior.providerRoute === "surplus" ? "surplus" : "direct"
-    : undefined;
-  if (input.transport === "surplus" && pinnedServerTransport === "direct") {
-    throw new ModelFundingError("funding_source_changed");
-  }
-  const requestedServerTransport = input.transport ?? (input.directOnly ? "direct" : pinnedServerTransport);
   const route = await serverRoute(requestedServerTransport);
   if (!route) throw new ModelFundingError("provider_credentials_missing");
   if (requestedServerTransport === "surplus" && route !== "surplus") {
