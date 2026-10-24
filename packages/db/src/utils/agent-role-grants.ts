@@ -5,6 +5,7 @@ const TARGET_ROLE = "nautilo_agent";
 const TARGET_DB = "nautilo";
 
 export const SENSITIVE_TABLES = [
+  "external_operator_control_archive",
   "external_room_execution_claims",
   "feed_events",
   "feed_recipients",

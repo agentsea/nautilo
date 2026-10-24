@@ -15,7 +15,7 @@ const now = new Date("2026-01-01T00:00:00Z");
 const ctx: BolterBindingContext = { userId: U, connectionId: C, connectionGeneration: 3, relayId: "relay", desktopSessionId: "desktop", pairingGenerationRef: "pairing", bindingId: B, bindingRevision: 2 };
 const connection: BolterConnection = { provider: "bolter", transportKind: "desktop-relay", operatorBindingId: null, id: C, userId: U, relayId: ctx.relayId, desktopSessionId: ctx.desktopSessionId, pairingGenerationRef: ctx.pairingGenerationRef, homeHandle: "home-handle", origin: "https://example.test", providerAgentId: "abc12345", identityFingerprint: "a".repeat(64), generation: 3, revision: 2, enabled: true, revokedAt: null, createdAt: now, updatedAt: now };
 const binding: BolterRoomBinding = { provider: "bolter", id: B, userId: U, connectionId: C, roomId: R, namespaceId: N, agentId: A, origin: connection.origin, providerAgentId: connection.providerAgentId, chatId: "abc12345", threadId: "", revision: 2, modelSponsorshipAcceptedAt: now, state: "active", createdAt: now, updatedAt: now };
-const receipt: BolterInboxReceipt = { id: I, userId: U, bindingId: B, bindingRevision: 2, connectionGeneration: 3, providerMessageId: "message", fingerprint: "b".repeat(64), externalSenderId: "outside-speaker", sessionMessageId: 91, turnId: "external-turn", jobId: null, state: "accepted", createdAt: now, updatedAt: now };
+const receipt: BolterInboxReceipt = { id: I, userId: U, bindingId: B, bindingRevision: 2, connectionGeneration: 3, providerMessageId: "message", fingerprint: "b".repeat(64), externalSenderId: "outside-speaker", sessionMessageId: 91, controlInput: null, turnId: "external-turn", jobId: null, state: "accepted", createdAt: now, updatedAt: now };
 const inbound = { providerMessageId: receipt.providerMessageId, fingerprint: receipt.fingerprint, externalSenderId: receipt.externalSenderId };
 type Step = { op: "select" | "insert" | "update"; table: string; rows: unknown[] };
 type Call = { op: Step["op"]; table: string; values?: Record<string, unknown>; predicate?: SQL };
@@ -76,7 +76,7 @@ describe("Bolter qualified identity and durable transactions", () => {
     expect(factories).toBe(0);
     const fakeInbound = database([{ op: "select", table: "bolter_connections", rows: [connection] }]);
     let inserts = 0;
-    expect(await acceptBolterInboundWith(fakeInbound.db, { ...ctx, desktopSessionId: "stale" }, inbound, async () => { inserts++; return { jobId: "88888888-8888-4888-8888-888888888888", sessionMessageId: 91, turnId: "turn" }; })).toEqual({ status: "unavailable" });
+    expect(await acceptBolterInboundWith(fakeInbound.db, { ...ctx, desktopSessionId: "stale" }, inbound, async () => { inserts++; return { jobId: "88888888-8888-4888-8888-888888888888", sessionMessageId: 91, controlInput: null, turnId: "turn" }; })).toEqual({ status: "unavailable" });
     expect(inserts).toBe(0);
   });
 
@@ -113,7 +113,7 @@ describe("Bolter qualified identity and durable transactions", () => {
   test("new receipt and canonical source references commit atomically with distinct sender provenance", async () => {
     const pending = { ...receipt, state: "pending", sessionMessageId: null, turnId: null };
     const fake = database([...authority(), { op: "select", table: "bolter_inbox_receipts", rows: [] }, { op: "insert", table: "bolter_inbox_receipts", rows: [pending] }, { op: "update", table: "bolter_inbox_receipts", rows: [receipt] }]);
-    expect((await acceptBolterInboundWith(fake.db, ctx, inbound, async (tx, room, receiptId) => { expect(tx as unknown).toBe(fake.tx); expect(room.roomId).toBe(R); expect(receiptId).toBe(I); return { jobId: "88888888-8888-4888-8888-888888888888", sessionMessageId: 91, turnId: "external-turn" }; })).status).toBe("accepted");
+    expect((await acceptBolterInboundWith(fake.db, ctx, inbound, async (tx, room, receiptId) => { expect(tx as unknown).toBe(fake.tx); expect(room.roomId).toBe(R); expect(receiptId).toBe(I); return { jobId: "88888888-8888-4888-8888-888888888888", sessionMessageId: 91, controlInput: null, turnId: "external-turn" }; })).status).toBe("accepted");
     expect(fake.transactions()).toBe(1);
     expect(fake.calls[3]?.values).toMatchObject({ userId: U, externalSenderId: "outside-speaker", bindingRevision: 2, connectionGeneration: 3 });
     expect(fake.calls[3]?.values).not.toHaveProperty("content");
@@ -222,4 +222,81 @@ test("cancelling an operator receipt durably fences its exact job and ambiguous 
   expect(where).toContain(I);
   expect(where).toContain(U);
   expect(fake.remaining()).toBe(0);
+});
+
+test("operator controls persist outside canonical messages and deduplicate the exact receipt", async () => {
+  const operator = { ...connection, provider: "magent", transportKind: "operator-unix", operatorBindingId: I,
+    relayId: null, desktopSessionId: null, pairingGenerationRef: null, homeHandle: null };
+  const receiver = { ...ctx, transportKind: "operator-unix" as const, operatorBindingId: I,
+    relayId: null, desktopSessionId: null, pairingGenerationRef: null };
+  const controlInput = { kind: "operator_control_v1" as const, content: "Synthetic operator input",
+    origin: { kind: "external_message" as const, version: 1 as const, provider: "magent" as const,
+      origin: connection.origin, connectionId: C, bindingId: B, providerAgentId: connection.providerAgentId,
+      chatId: binding.chatId, threadRootId: null, messageId: "message", senderId: "outside-speaker",
+      senderType: "anima" as const, senderLabel: "Synthetic connector", createdAt: now.toISOString() } };
+  const controlReceipt = { ...receipt, sessionMessageId: null, controlInput, jobId: A };
+  const admission: Step[] = [{ op: "select", table: "bolter_connections", rows: [operator] },
+    { op: "select", table: "bolter_room_bindings", rows: [{ ...binding, provider: "magent" }] },
+    { op: "select", table: "external_operator_sessions", rows: [{ sessionId: "generation" }] }];
+  const fake = database([...admission, { op: "select", table: "bolter_inbox_receipts", rows: [] },
+    { op: "insert", table: "bolter_inbox_receipts", rows: [{ ...receipt, state: "pending" }] },
+    { op: "update", table: "bolter_inbox_receipts", rows: [controlReceipt] }]);
+  expect(await acceptBolterInboundWith(fake.db, receiver, inbound, async () => ({
+    sessionMessageId: null, controlInput, turnId: "external-turn", jobId: A,
+  }), "generation")).toEqual({ status: "accepted", receipt: controlReceipt });
+  expect(fake.calls.at(-1)?.values).toMatchObject({ sessionMessageId: null, controlInput });
+  expect(fake.calls.some(call => call.table === "session_messages")).toBe(false);
+  const duplicate = database([...admission, { op: "select", table: "bolter_inbox_receipts", rows: [controlReceipt] }]);
+  expect(await acceptBolterInboundWith(duplicate.db, receiver, inbound, async () => { throw new Error("must not duplicate"); }, "generation"))
+    .toEqual({ status: "duplicate", receipt: controlReceipt });
+  const stale = database(admission);
+  expect(await acceptBolterInboundWith(stale.db, receiver, inbound, async () => { throw new Error("must not accept a new context"); }, "other-generation"))
+    .toEqual({ status: "unavailable" });
+});
+
+test("control recovery verifies durable provenance and refuses legacy transcript receipts", async () => {
+  const { loadBolterExecutionWith, completeBolterExecutionWith } = await import("../../src/queries/bolter-bridge");
+  const { createHash } = await import("node:crypto");
+  const operator = { ...connection, provider: "magent", transportKind: "operator-unix", operatorBindingId: I,
+    relayId: null, desktopSessionId: null, pairingGenerationRef: null, homeHandle: null };
+  const bound = { ...binding, provider: "magent" };
+  const reference = { kind: "external_room_turn_v1" as const, receiptId: I, bindingId: B,
+    bindingRevision: 2, connectionGeneration: 3, acceptanceId: N, roomId: R, agentId: A, turnId: "external-turn" };
+  const content = "Synthetic control prompt";
+  const origin = { kind: "external_message" as const, version: 1 as const, provider: "magent" as const,
+    origin: connection.origin, connectionId: C, bindingId: B, providerAgentId: connection.providerAgentId,
+    chatId: binding.chatId, threadRootId: null, messageId: receipt.providerMessageId,
+    senderId: receipt.externalSenderId, senderType: "anima" as const, senderLabel: "Connector", createdAt: now.toISOString() };
+  const digest = createHash("sha256").update(JSON.stringify([origin.provider, origin.origin, origin.providerAgentId,
+    origin.chatId, origin.threadRootId, origin.messageId, origin.senderId, origin.senderType, origin.createdAt, content])).digest("hex");
+  const controlReceipt = { ...receipt, jobId: A, sessionMessageId: null, fingerprint: digest,
+    controlInput: { kind: "operator_control_v1", content, origin } };
+  const rows = (inputReceipt: unknown): Step[] => [
+    { op: "select", table: "bolter_room_bindings", rows: [bound] },
+    { op: "select", table: "bolter_connections", rows: [operator] },
+    { op: "select", table: "bolter_room_bindings", rows: [bound] },
+    { op: "select", table: "bolter_inbox_receipts", rows: [inputReceipt] },
+    { op: "select", table: "work_acceptances", rows: [{ id: N, kind: "foreground", status: "dispatched", jobId: A }] },
+    { op: "select", table: "jobs", rows: [{ id: A, status: "running", startedAt: now, completedAt: null }] },
+  ];
+  const fake = database(rows(controlReceipt));
+  expect(await loadBolterExecutionWith(fake.db, ctx, { jobId: A, reference })).toMatchObject({
+    sourceMessage: { id: null, content }, session: { id: null, threadId: `room:${R}:operator:${I}` },
+  });
+  expect(fake.remaining()).toBe(0);
+  for (const invalid of [{ ...receipt, jobId: A },
+    { ...controlReceipt, controlInput: { ...controlReceipt.controlInput, content: "tampered" } },
+    { ...controlReceipt, controlInput: { ...controlReceipt.controlInput, origin: { ...origin, bindingId: N } } },
+  ]) {
+    const rejected = database(rows(invalid));
+    expect(await loadBolterExecutionWith(rejected.db, ctx, { jobId: A, reference })).toBeNull();
+    expect(rejected.calls.some(call => call.table === "session_messages")).toBe(false);
+  }
+  const final = database([...rows(controlReceipt), { op: "update", table: "jobs", rows: [] },
+    { op: "insert", table: "bolter_outbox", rows: [{ id: I, state: "pending" }] }]);
+  expect(await completeBolterExecutionWith(final.db, ctx, { jobId: A, reference }, async () => ({
+    sessionMessageId: null, controlResult: "Synthetic decision", fingerprint: "c".repeat(64),
+  }))).toMatchObject({ state: "pending" });
+  expect(final.calls.at(-1)?.values).toMatchObject({ sessionMessageId: null, controlResult: "Synthetic decision", sourceInboxId: I });
+  expect(final.calls.some(call => call.table === "session_messages")).toBe(false);
 });

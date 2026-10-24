@@ -847,7 +847,7 @@ export async function* langgraphExecutor(
       }),
     ...protectedMemoryDeps,
   };
-  if (liveShadowRuntime !== undefined) {
+  if (liveShadowRuntime !== undefined || externalTurn?.operatorControl) {
     foregroundActivationState.suppressToolLifecycleEvents = true;
   }
   const taskReportBackContinuation = externalContext ? null : parseTaskReportBackContinuation(
@@ -1012,7 +1012,7 @@ export async function* langgraphExecutor(
   // a duplicate human row without relying on read-time fingerprint collapse.
   const humanAlreadyPersisted = input["humanAlreadyPersisted"] === true;
   if (externalTurn && (!externalContext || !humanAlreadyPersisted || causalHumanUserId !== null
-    || typeof input["currentMessageId"] !== "number" || !Number.isInteger(input["currentMessageId"]))) {
+    || (!externalTurn.operatorControl && (typeof input["currentMessageId"] !== "number" || !Number.isInteger(input["currentMessageId"]))))) {
     throw new Error("external_room_canonical_input_required");
   }
   // TTS admits the initiating Human's ElevenLabs account independently of chat.
@@ -1070,7 +1070,7 @@ export async function* langgraphExecutor(
         : undefined;
   const retainedImageResults: ImageAssistanceResult[] = protectedTurn ? retainedImageAssistance(protectedTurn.history) : [];
   let imageReplyContext = "";
-  const historyMessages = protectedTurn === undefined
+  const historyMessages = externalTurn?.operatorControl ? [] : protectedTurn === undefined
     ? await prepareForegroundEncryptedContext(
       () => resolveForegroundHistoryMessages({
         turnKind,
@@ -1226,7 +1226,7 @@ export async function* langgraphExecutor(
   const persistOptsBase = {
     onCommittedRows: recordCommittedTranscriptRows,
     ...(foregroundContextRefreshEligible ? { requireDurable: "foreground-context" as const, foregroundExecutionId } : {}),
-    ...(supervisionMetadata === undefined
+    ...(supervisionMetadata === undefined && !externalTurn?.operatorControl
       ? await memoryReviewAdmission(memoryAccessEnvelope, langgraphThreadId, {
           threadId: langgraphThreadId, transcriptOwnerId, turnId, input,
         })
@@ -1481,7 +1481,7 @@ export async function* langgraphExecutor(
   });
   const voiceSubjectId = causalHumanUserId;
   const sentenceDetectorConfig: SentenceDetectorConfig = {
-    onIdleEvents: events => { if (!signal.aborted) for (const event of events) eventBus.emit(event); },
+    onIdleEvents: events => { if (!signal.aborted && !externalTurn?.operatorControl) for (const event of events) eventBus.emit(event); },
   };
   sentenceDetectorConfig.turnId = turnId || _jobId;
   if (voiceSubjectId) {
@@ -1642,7 +1642,7 @@ export async function* langgraphExecutor(
   // visible-output / depth state. The bare-`turnId` fallback paths below cover
   // legacy callers / background jobs where no `agentId` is bound.
 
-  let memoryReviewRecorded = supervisionMetadata !== undefined;
+  let memoryReviewRecorded = supervisionMetadata !== undefined || !!externalTurn?.operatorControl;
   try {
     const streamInput = taskWake?.continuation === undefined
       ? graphInput
@@ -1688,6 +1688,7 @@ export async function* langgraphExecutor(
       const { events, messagesToPersist, assistantMessageKey } = processStreamEvent(ev, tokenBatcher, toolTracker, streamCtx, sentenceDetector);
       attributeImageAssistance(messagesToPersist, imageAssistanceResult);
       for (const event of events) {
+        if (externalTurn?.operatorControl) continue;
         if (liveShadowRuntime !== undefined) {
           const protectedStream = await protectLiveShadowAssistantToken({
             ...(foregroundContextRefreshEligible ? { foregroundExecutionId } : {}),
