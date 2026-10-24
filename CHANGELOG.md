@@ -7,6 +7,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Server images require Debian's Brotli decoder security update on AMD64 and
+  ARM64; vulnerable packages fail the build instead of receiving an exception.
+
 - Personal chat keeps its admitted provider and credential when marketplace
   availability changes. Already-admitted direct calls skip Surplus discovery,
   and protected Memory retains its approved marketplace embedding disclosure.
@@ -39,6 +42,8 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   including streamed customization previews and service cost tracking. Eligible
   Surplus-only requests let the marketplace choose an available seller and can
   recover from confirmed supply refusals through other eligible models.
+- Update shipped MCP SDK dependencies to 1.32.0. MCP HTTP transports remain
+  outbound clients; contributor MCP servers use stdio.
 
 - Operators can connect a selected Genie to mAgent through a private Unix socket,
   with a fresh external-context Room and a fixed sponsor and sender identity.
