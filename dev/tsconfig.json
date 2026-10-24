@@ -1,6 +1,8 @@
 {
   "extends": "../tsconfig.base.json",
   "include": [
+    "scripts/install-git-hooks.ts",
+    "scripts/install-git-hooks.test.ts",
     "scripts/test-community-moderation.ts",
     "testing/synthetic-fixture-email.ts",
     "tests/repo-invariants/synthetic-fixture-email.test.ts",
