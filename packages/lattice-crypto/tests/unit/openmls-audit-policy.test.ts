@@ -8,73 +8,36 @@ import {
   validateReview,
   verifyCandidate,
 } from "../../scripts/openmls-audit-policy.ts";
+import recordedFindings from "../fixtures/openmls-rustsec-findings.json";
 
-const registry = "registry+https://github.com/rust-lang/crates.io-index";
-function fixture() {
-  return {
-    database: { "last-commit": "a".repeat(40) },
-    settings: {
-      ignore: [],
-      target_arch: [],
-      target_os: [],
-      severity: null,
-      informational_warnings: ["unmaintained", "unsound", "notice"],
-    },
-    vulnerabilities: {
-      found: true,
-      count: decisions.length,
-      list: decisions.map((entry) => ({
-        advisory: {
-          id: entry.id,
-          package: entry.name,
-          withdrawn: null,
-          cvss: entry.cvss,
-          informational: null,
-        },
-        package: {
-          name: entry.name,
-          version: entry.version,
-          checksum: entry.checksum,
-          source: registry,
-          replace: null,
-        },
-        versions: { patched: [...entry.patched], unaffected: [] as string[] },
-      })),
-    },
-    warnings: {
-      unmaintained: [
-        [
-          "RUSTSEC-2024-0384",
-          "instant",
-          "0.1.13",
-          "e0242819d153cba4b4b05a5a8f2a7e9bbf97b6055b2a002b395c96b5ff3c0222",
-        ],
-        [
-          "RUSTSEC-2026-0210",
-          "libcrux-aesgcm",
-          "0.0.7",
-          "99f2a019dab4097585a7d4f5b9deebe46cd1e628b16a5bc4cb0ce35e1da334e6",
-        ],
-        [
-          "RUSTSEC-2026-0173",
-          "proc-macro-error2",
-          "2.0.1",
-          "11ec05c52be0a07b08061f7dd003e7d7092e0472bc731b4af7bb1ef876109802",
-        ],
-      ].map(([id, name, version, checksum]) => ({
-        kind: "unmaintained",
-        advisory: {
-          id,
-          package: name,
-          withdrawn: null,
-          cvss: null,
-          informational: "unmaintained",
-        },
-        package: { name, version, checksum, source: registry, replace: null },
-        versions: { patched: [], unaffected: [] },
-      })),
-    },
+type RecordedFinding = {
+  advisory: {
+    id: string;
+    package: string;
+    withdrawn: null;
+    cvss: string | null;
+    informational: string | null;
   };
+  package: {
+    name: string;
+    version: string;
+    checksum: string;
+    source: string;
+    replace: null;
+  };
+  versions: { patched: string[]; unaffected: string[] };
+};
+type AuditFixture = Omit<
+  typeof recordedFindings,
+  "vulnerabilities" | "warnings"
+> & {
+  vulnerabilities: { found: boolean; count: number; list: RecordedFinding[] };
+  warnings: { unmaintained: (RecordedFinding & { kind: string })[] };
+};
+
+function fixture(): AuditFixture {
+  // Independent scanner tuples, not a fixture generated from the policy under test.
+  return structuredClone(recordedFindings);
 }
 
 describe("exact expiring OpenMLS risk decisions", () => {
