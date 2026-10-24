@@ -6,7 +6,7 @@
       "version": "0.2.1",
       "status": "internal-testing",
       "releaseNotes": "0.2.1.md",
-      "candidateCommit": "965e1a1072a297edc6ff0913105b38b824f3119e",
+      "candidateCommit": "caf8d2c8eb63dd46813c7aa609857e4566ed96ab",
       "builds": [
         {
           "platform": "android",
@@ -33,6 +33,18 @@
           "testFlightGroupId": "731fa432-ca25-47c6-8cfb-b8d9697fe16e",
           "appStoreConnectBuildId": "a7d32ca3-c81e-4075-bde6-c95d7bbac1fc",
           "verifiedAt": "2026-09-13",
+          "publicStoreUrl": null
+        },
+        {
+          "platform": "android",
+          "nativeBuildNumber": 45,
+          "easBuildId": "da69a537-1288-488a-a13d-37dece9a9f7b",
+          "sourceCommit": "caf8d2c8eb63dd46813c7aa609857e4566ed96ab",
+          "gitCommitHash": "c98c1388c8730b123cbc9115f2f979fbf75a3da9",
+          "submissionId": "f5a60a48-9e1b-4ef2-a66a-4d4fd31699ca",
+          "channel": "play_internal",
+          "storeState": "completed",
+          "verifiedAt": "2026-10-24",
           "publicStoreUrl": null
         }
       ]
