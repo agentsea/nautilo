@@ -139,7 +139,7 @@ const warnings = [
 
 // Reviewed stable candidates in the actual supported dependency chains. Any new
 // compatible release stops this exception path, even before the review expires.
-export const candidates = [
+const candidates = [
   ["openmls", "^0.8.1", "0.8.3"],
   ["openmls_rust_crypto", "^0.5", "0.5.1"],
   ["hpke-rs", "^0.6", "0.6.1"],
