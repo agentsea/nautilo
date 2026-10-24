@@ -10,6 +10,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 - Server images require Debian's Brotli decoder security update on AMD64 and
   ARM64; vulnerable packages fail the build instead of receiving an exception.
 
+- Mobile reconciles active chat jobs after reconnecting or returning to the
+  foreground, clearing a stale Genie working indicator when a reply finished
+  while the completion event was missed.
+
 - Personal chat keeps its admitted provider and credential when marketplace
   availability changes. Already-admitted direct calls skip Surplus discovery,
   and protected Memory retains its approved marketplace embedding disclosure.
