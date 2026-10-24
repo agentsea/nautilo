@@ -1,5 +1,6 @@
 import type { LogtoAdminClient } from "@nautilo/trust";
-import { PasswordPolicyChecker, passwordPolicyGuard } from "@logto/core-kit";
+import { PasswordPolicyChecker } from "@logto/core-kit";
+import { parseLogtoPasswordPolicy } from "./logto-password-policy";
 
 export type LogtoPasswordChangeClient = Pick<
   LogtoAdminClient,
@@ -13,7 +14,7 @@ export type ExecuteLogtoPasswordChangeResult =
   | { outcome: "logto_unavailable"; message: string };
 
 /**
- * D104 — verify current Logto password, then apply the new one.
+ * Verify the current Logto password, then apply the new one.
  * Pure orchestration so unit tests can inject a fake Management client.
  */
 export async function executeLogtoPasswordChange(
@@ -45,7 +46,7 @@ export async function executeLogtoPasswordChange(
         message: "The identity service could not validate the password change. Try again later.",
       };
     }
-    const policy = passwordPolicyGuard.parse(rawPolicy);
+    const policy = parseLogtoPasswordPolicy(rawPolicy);
     const checker = new PasswordPolicyChecker(policy);
     const userInfo: { username?: string; email?: string } = {};
     if (user.username !== null) userInfo.username = user.username;
