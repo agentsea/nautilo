@@ -13,7 +13,7 @@ test("the production closure selects patched schema and request parsers", () => 
   }
   for (const filename of ["../../bun.lock", "runtime-install/bun.lock"]) {
     const lock = readFileSync(join(import.meta.dir, filename), "utf8");
-    expect(lock).toContain('"zod@4.6.7"');
+    expect([filename, lock.includes('"zod@4.6.7"')]).toEqual([filename, true]);
     expect(lock).toContain('"body-parser@2.4.0"');
     expect(lock).not.toContain('"@langchain/core/zod":');
     if (filename === "runtime-install/bun.lock") {
@@ -31,4 +31,22 @@ test("bounded containers reject oversized input before walking elements", () => 
   expect(result.success).toBe(false);
   expect(elementsRead).toBe(0);
   if (!result.success) expect(result.error.issues.map(issue => issue.code)).toEqual(["too_big"]);
+});
+
+test("standalone seeded app locks retain the patched shared schema dependency", () => {
+  const dockerfile = readFileSync(join(import.meta.dir, "Dockerfile"), "utf8");
+  const copiedApps = [...dockerfile.matchAll(/COPY --from=deps \/repo\/packages\/first-party-apps\/([a-z-]+)\/node_modules/g)]
+    .map(match => match[1]!);
+  expect(copiedApps).toContain("writer");
+  expect(copiedApps).toContain("video");
+  for (const app of copiedApps) {
+    const lock = readFileSync(join(import.meta.dir, "../../packages/first-party-apps", app, "bun.lock"), "utf8");
+    if (app === "writer" || app === "video") expect([app, lock.includes('"zod@')]).toEqual([app, true]);
+    if (!lock.includes('"zod@')) continue;
+    expect([app, lock.includes('"zod@4.6.7"')]).toEqual([app, true]);
+    for (const vulnerable of ["3.24.3", "3.25.76", "4.3.6", "4.4.3"]) {
+      expect([app, vulnerable, lock.includes(`"zod@${vulnerable}"`)]).toEqual([app, vulnerable, false]);
+      expect([app, vulnerable, lock.includes(`"zod": "${vulnerable}"`)]).toEqual([app, vulnerable, false]);
+    }
+  }
 });
