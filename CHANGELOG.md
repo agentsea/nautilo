@@ -7,6 +7,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Server images require Debian's Brotli decoder security update on AMD64 and
+  ARM64; vulnerable packages fail the build instead of receiving an exception.
+
 - Personal chat keeps its admitted provider and credential when marketplace
   availability changes. Already-admitted direct calls skip Surplus discovery,
   and protected Memory retains its approved marketplace embedding disclosure.
