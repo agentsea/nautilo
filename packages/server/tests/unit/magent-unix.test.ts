@@ -11,10 +11,11 @@ const config = { version: 1 as const, operatorBindingId: id, sponsorUserId: id, 
   providerAgentId: "receiving-agent", senderId: "connector-relay", chatId: "synthetic-room", roomName: "External conversation",
   socketPath: "/path/to/private/magent.sock", credential, maxRequestBytes: 1024 };
 const headers = { authorization: `Bearer ${credential}` };
-function fixture() {
+function fixture(avatar: Awaited<ReturnType<MagentOperatorService["avatar"]>> = null) {
   const calls: unknown[][] = [];
   const service = {
     async status() { calls.push(["status"]); return { status: "ready", operatorBindingId: id, providerAgentId: "receiving-agent", chatId: "synthetic-room", senderId: "connector-relay" }; },
+    async avatar() { calls.push(["avatar"]); return avatar; },
     async accept(input: unknown) { calls.push(["accept", input]); return { receiptId: id, state: "accepted", dispatch: "adopted" }; },
     async receipt(value: string) { calls.push(["receipt", value]); return { receiptId: value, state: "pending" }; },
     async cancel(value: string) { calls.push(["cancel", value]); return { receiptId: value, state: "cancelled" }; },
@@ -43,9 +44,9 @@ test("operator routes require the scoped credential before exposing metadata or 
 
 test("external input cannot supply local Human authority, routing, tools or oversized content", async () => {
   const { app, calls } = fixture();
-  const message = { sessionId: "connector-session", messageId: "message-1", senderId: "connector-relay", senderLabel: "Remote connector", content: "Literal remote request", createdAt: "2026-01-01T00:00:00Z" };
+  const message = { kind: "operator_control_v1", sessionId: "connector-session", messageId: "message-1", senderId: "connector-relay", senderLabel: "Remote connector", content: "Literal remote request", createdAt: "2026-01-01T00:00:00Z" };
   try {
-    for (const extra of [{ sponsorUserId: id }, { roomId: id }, { agentId: id }, { externalOrigin: {} }, { content: "x".repeat(2048) }]) {
+    for (const extra of [{ kind: undefined }, { kind: "message" }, { sponsorUserId: id }, { roomId: id }, { agentId: id }, { externalOrigin: {} }, { content: "x".repeat(2048) }]) {
       expect((await app.inject({ method: "POST", url: "/v1/turns", headers, payload: { ...message, ...extra } })).statusCode).toBe(400);
     }
     expect(calls).toEqual([]);
@@ -81,4 +82,32 @@ test("operator configuration rejects shared permissions and symlink substitution
     await symlink(path, alias);
     await Promise.resolve(expect(readMagentOperatorConfig(alias)).rejects.toThrow("magent_config_path_invalid"));
   } finally { await rm(directory, { recursive: true }); }
+});
+
+
+test("avatar endpoint returns only authenticated binding pixels and rejects identity overrides", async () => {
+  const png = Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]);
+  const { app, calls } = fixture({ status: "ready", bytes: png, contentType: "image/png" });
+  try {
+    expect((await app.inject({ url: "/v1/avatar" })).statusCode).toBe(401);
+    expect((await app.inject({ url: `/v1/avatar?genieId=${id}`, headers })).statusCode).toBe(400);
+    expect(calls).toEqual([]);
+    const result = await app.inject({ url: "/v1/avatar", headers });
+    expect(result.statusCode).toBe(200);
+    expect(result.headers["content-type"]).toBe("image/png");
+    expect(result.headers["cache-control"]).toBe("no-store");
+    expect(result.rawPayload).toEqual(Buffer.from(png));
+    expect(calls).toEqual([["avatar"]]);
+  } finally { await app.close(); }
+  for (const [avatar, statusCode, error] of [
+    [null, 409, "authority_or_state_unavailable"],
+    [{ status: "absent" as const }, 404, "avatar_absent"],
+  ] as const) {
+    const fixtureApp = fixture(avatar).app;
+    try {
+      const result = await fixtureApp.inject({ url: "/v1/avatar", headers });
+      expect(result.statusCode).toBe(statusCode);
+      expect(result.json()).toEqual({ error });
+    } finally { await fixtureApp.close(); }
+  }
 });

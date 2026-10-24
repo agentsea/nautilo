@@ -34,6 +34,13 @@ for (const format of ["legacy", "full"] as const) {
     test("admits older snapshots with unrelated rows", async () => {
       await withDump(`${prefix}COPY public.users (id) FROM stdin;\nsynthetic-owner\n\\.\n`, async path => { await assertBolterRestoreDumpAllowed(path); });
     });
+    test("admits inert control evidence without admitting replay authority", async () => {
+      const archive = `${prefix}COPY public.external_operator_control_archive (message_id, user_id, evidence) FROM stdin;\n1\tsynthetic-owner\t{"message":{"content":"synthetic audit evidence"}}\n\\.\n`;
+      await withDump(archive, async path => { await assertBolterRestoreDumpAllowed(path); });
+      await withDump(archive + "COPY public.bolter_inbox_receipts (id) FROM stdin;\nsynthetic-receipt\n\\.\n", async path => {
+        await Promise.resolve(expect(assertBolterRestoreDumpAllowed(path)).rejects.toThrow("Restore of populated Bolter"));
+      });
+    });
   });
 }
 

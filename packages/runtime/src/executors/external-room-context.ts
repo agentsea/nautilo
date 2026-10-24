@@ -2,6 +2,7 @@ import { getSharedDirectDb, sessions, inArray, isNotNull, and } from "@nautilo/d
 import type { ForkRunMetadata } from "../fork/fork-metadata";
 import { restrictExternalRoomEnvelope, externalRoomExecutionDependencies,
   type ExternalRoomExecutionDependencies, type MemoryAccessEnvelope } from "@nautilo/trust";
+import { getCurrentExternalRoomExecution } from "../external-room-execution";
 import { botThreadId } from "../conductor/thread-id";
 
 /** Resolve the permanent room boundary before reading any model context. */
@@ -31,12 +32,15 @@ export async function externalRoomExecutionInput(
       throw new Error("external_room_text_only");
     }
   }
+  const execution = getCurrentExternalRoomExecution();
   return {
     externalContext: true,
     input: {
       ...input,
       memoryAccessEnvelope: restrictExternalRoomEnvelope(envelope, policy.namespaceId),
-      threadId: botThreadId(roomId, envelope.agentId),
+      threadId: execution?.operatorControl
+        ? `room:${roomId}:operator:${execution.reference.receiptId}`
+        : botThreadId(roomId, envelope.agentId),
       roomRoster: [], currentFolder: "", currentFolderRelayId: "", workspacePath: "",
       activeMiniApp: null, liveMiniAppSession: null, verifiedOrdinaryOrigin: null,
       voiceMode: false, autoApprove: false, redirectAllowed: false,

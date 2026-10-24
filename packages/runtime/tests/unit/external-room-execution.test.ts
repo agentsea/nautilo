@@ -8,6 +8,7 @@ import { randomUUID } from "node:crypto";
 import { eventBus } from "../../src/event-bus";
 import type { ServerEvent } from "@nautilo/types";
 import { processStreamEvent } from "../../src/executors/langgraph-executor";
+import { externalRoomExecutionInput } from "../../src/executors/external-room-context";
 import { TokenBatcher, ToolCallTracker } from "../../src/utils/token-batcher";
 
 afterEach(uninstallForegroundChatFundingPort);
@@ -269,4 +270,47 @@ test("external execution suppresses opt-in raw model stream diagnostics", async 
     if (previous === undefined) delete process.env["NAUTILO_DEBUG_FIREWORKS_STREAM"];
     else process.env["NAUTILO_DEBUG_FIREWORKS_STREAM"] = previous;
   }
+});
+
+test("operator control completes durably without forwarding executor events to the room", async () => {
+  const base = candidate();
+  let completed = false;
+  const control: ExternalRoomExecutionCandidate = { ...base, async hydrate() {
+    const loaded = await base.hydrate();
+    return { ...loaded, context: { ...loaded.context, operatorControl: "operator_control_v1",
+      async complete(result) { expect(result).toBe("private decision"); completed = true; } } };
+  } };
+  const run = externalRoomExecutor(control, async function* () {
+    yield { type: "message.new", laneKey: "room:room", messageId: "1", role: "ai", content: "private decision" } as ServerEvent;
+    await getCurrentExternalRoomExecution()!.complete("private decision");
+  });
+  const events: ServerEvent[] = [];
+  for await (const event of run({}, "job", null, new AbortController().signal)) events.push(event);
+  expect(events).toEqual([]);
+  expect(completed).toBe(true);
+});
+
+
+test("operator receipt checkpoints never reuse the historical room conversation checkpoint", async () => {
+  const roomInput = { roomId: "room", ownerId: "sponsor", agentId: "agent", threadId: "room:room:bot:agent",
+    memoryAccessEnvelope: { ownerId: "sponsor", actorId: "human", agentId: "agent", roomId: "room",
+      readableNamespaces: ["namespace"], mutableNamespaces: [], writableNamespaces: [], toolPolicy: {} } };
+  const deps = { policy: async () => ({ roomId: "room", namespaceId: "namespace" }),
+    assertTextMode: async () => {}, assertAccess: async () => {} };
+  const threads: unknown[] = [];
+  for (const receiptId of ["first", "second"]) {
+    const base = candidate();
+    const control = { ...base, async hydrate() {
+      const loaded = await base.hydrate();
+      return { ...loaded, context: { ...loaded.context, operatorControl: "operator_control_v1" as const,
+        reference: { ...loaded.context.reference, receiptId } } };
+    } };
+    const run = externalRoomExecutor(control, async function* () {
+      yield* [];
+      threads.push((await externalRoomExecutionInput(roomInput, deps)).input["threadId"]);
+    });
+    for await (const _event of run({}, "job", null, new AbortController().signal)) { /* drain */ }
+  }
+  expect(threads).toEqual(["room:room:operator:first", "room:room:operator:second"]);
+  expect((await externalRoomExecutionInput(roomInput, deps)).input["threadId"]).toBe("room:room:bot:agent");
 });

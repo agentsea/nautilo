@@ -239,9 +239,11 @@ describe("paid media tool entry", () => {
     expect(parameters.properties?.["durationSeconds"]).toMatchObject({
       anyOf: [{ type: "integer" }, { type: "null" }],
     });
-    expect(parameters.properties?.["lyrics"]).toMatchObject({
-      type: ["string", "null"],
-    });
+    const lyricsSchema = parameters.properties?.["lyrics"];
+    expect(lyricsSchema).toBeDefined();
+    for (const lyrics of ["hello", null]) {
+      expect(new Validator(lyricsSchema!).validate(lyrics).valid).toBe(true);
+    }
     for (const lyrics of [false, 1, [], {}]) {
       expect(new Validator(parameters).validate({ ...args, lyrics }).valid).toBe(false);
     }

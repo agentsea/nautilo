@@ -50,10 +50,11 @@ describe("Task cancellation crypto staging migration finalizer", () => {
     expect(finalized.match(/CREATE FUNCTION/g)).toHaveLength(1);
   });
 
-  test("precedes the external transport finalizer at the end of canonical generation", () => {
-    expect(packageJson.scripts["db:generate"]?.split(" && ").slice(-2)).toEqual([
+  test("precedes the external transport and control finalizers at the end of canonical generation", () => {
+    expect(packageJson.scripts["db:generate"]?.split(" && ").slice(-3)).toEqual([
       "bun scripts/finalize-task-cancellation-staging.ts",
       "bun scripts/finalize-magent-transport.ts",
+      "bun scripts/finalize-magent-control.ts",
     ]);
   });
 });

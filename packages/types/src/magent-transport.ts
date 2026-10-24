@@ -22,6 +22,7 @@ export type MagentOperatorConfig = z.infer<typeof magentOperatorConfigSchema>;
 
 /** Attribution only: the fixed connector sender cannot supply local authority or routing. */
 export const magentTurnRequestSchema = z.object({
+  kind: z.literal("operator_control_v1"),
   sessionId: opaqueId, messageId: opaqueId, senderId: opaqueId, senderLabel: z.string().min(1),
   content: z.string().refine(value => value.trim().length > 0), createdAt: z.iso.datetime({ offset: true }),
 }).strict();
