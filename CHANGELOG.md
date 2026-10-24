@@ -35,6 +35,11 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 - Web Genie customization now loads the default shell avatar correctly instead
   of showing a missing-image error and requiring a replacement.
 
+- External agent connectors keep control requests and structured decisions out
+  of human chats. Verified older control rows are archived while real replies
+  and thread links are preserved. Approved connectors can also retrieve their
+  bound Genie's avatar for display in the connected agent room.
+
 - Surplus-only chat can use available sellers for eligible ordinary models,
   preserves streamed tool calls, and respects qualified marketplace output
   limits. Missing recovery keys retain the original marketplace failure;
