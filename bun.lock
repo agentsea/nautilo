@@ -8,7 +8,7 @@
         "@noble/hashes": "^2.2.0",
         "@xmldom/xmldom": "0.9.12",
         "kdbxweb": "2.1.1",
-        "zod": "4.3.6",
+        "zod": "4.6.7",
       },
       "devDependencies": {
         "@eslint/js": "9.39.2",
@@ -55,7 +55,7 @@
         "postgres": "3.4.7",
         "smol-toml": "1.9.1",
         "yargs": "18.0.0",
-        "zod": "4.3.6",
+        "zod": "4.6.7",
       },
       "devDependencies": {
         "@microsoft/api-extractor": "7.58.13",
@@ -409,7 +409,7 @@
         "@nautilo/db": "workspace:*",
         "@nautilo/local": "workspace:*",
         "@nautilo/operator-secrets": "workspace:*",
-        "zod": "4.3.6",
+        "zod": "4.6.7",
       },
       "devDependencies": {
         "@types/node": "24.10.4",
@@ -462,7 +462,7 @@
       "dependencies": {
         "@modelcontextprotocol/sdk": "1.30.0",
         "pg": "8.13.1",
-        "zod": "4.3.6",
+        "zod": "4.6.7",
       },
       "devDependencies": {
         "@types/node": "24.10.4",
@@ -488,7 +488,7 @@
       "version": "0.1.0",
       "dependencies": {
         "@modelcontextprotocol/sdk": "1.30.0",
-        "zod": "4.3.6",
+        "zod": "4.6.7",
       },
       "devDependencies": {
         "@types/node": "24.10.4",
@@ -556,7 +556,7 @@
         "remark-gfm": "4.0.1",
         "remark-parse": "11.0.0",
         "write-file-atomic": "7.0.1",
-        "zod": "4.3.6",
+        "zod": "4.6.7",
       },
       "devDependencies": {
         "@nautilo/document-mutations": "workspace:*",
@@ -579,7 +579,7 @@
         "@nautilo/lattice-crypto": "workspace:*",
         "@nautilo/profile-portability": "workspace:*",
         "@nautilo/types": "workspace:*",
-        "zod": "4.3.6",
+        "zod": "4.6.7",
       },
       "devDependencies": {
         "@types/node": "24.10.4",
@@ -621,7 +621,7 @@
       "devDependencies": {
         "@types/node": "24.10.4",
         "typescript": "5.9.3",
-        "zod": "4.3.6",
+        "zod": "4.6.7",
       },
     },
     "packages/claude-agent-sdk-host": {
@@ -633,7 +633,7 @@
         "@modelcontextprotocol/sdk": "1.32.0",
         "@nautilo/relay": "workspace:*",
         "@nautilo/vault": "workspace:*",
-        "zod": "4.3.6",
+        "zod": "4.6.7",
       },
       "devDependencies": {
         "@types/node": "24.10.4",
@@ -667,7 +667,7 @@
       "name": "@nautilo/codex-app-server",
       "version": "0.1.0",
       "dependencies": {
-        "zod": "4.3.6",
+        "zod": "4.6.7",
       },
       "devDependencies": {
         "@types/node": "24.10.4",
@@ -703,7 +703,7 @@
       "name": "@nautilo/computer-use-contracts",
       "version": "0.1.0",
       "dependencies": {
-        "zod": "4.3.6",
+        "zod": "4.6.7",
       },
       "devDependencies": {
         "@types/node": "24.10.4",
@@ -740,7 +740,7 @@
         "@nautilo/types": "workspace:*",
         "fflate": "^0.8.3",
         "ipaddr.js": "2.3.0",
-        "zod": "4.3.6",
+        "zod": "4.6.7",
       },
       "devDependencies": {
         "@types/node": "24.10.4",
@@ -756,7 +756,7 @@
         "@nautilo/types": "workspace:*",
         "dotenv": "16.6.1",
         "smol-toml": "1.9.1",
-        "zod": "4.3.6",
+        "zod": "4.6.7",
       },
       "devDependencies": {
         "@nautilo/model-capabilities": "workspace:*",
@@ -789,7 +789,7 @@
         "@nautilo/api-client": "workspace:*",
         "@nautilo/config-guard": "workspace:*",
         "smol-toml": "1.9.1",
-        "zod": "4.3.6",
+        "zod": "4.6.7",
       },
       "devDependencies": {
         "@types/node": "24.10.4",
@@ -990,7 +990,7 @@
         "@nautilo/relay": "workspace:*",
         "@nautilo/types": "workspace:*",
         "cockatiel": "4.0.0",
-        "zod": "4.3.6",
+        "zod": "4.6.7",
       },
       "devDependencies": {
         "@types/node": "24.10.4",
@@ -1172,7 +1172,7 @@
       "name": "@nautilo/reflection",
       "version": "0.1.0",
       "dependencies": {
-        "zod": "4.3.6",
+        "zod": "4.6.7",
       },
       "devDependencies": {
         "@types/node": "24.10.4",
@@ -1235,7 +1235,7 @@
         "@nautilo/trust": "workspace:*",
         "@nautilo/types": "workspace:*",
         "cron-parser": "^5.5.0",
-        "zod": "4.3.6",
+        "zod": "4.6.7",
       },
       "devDependencies": {
         "@types/node": "24.10.4",
@@ -1322,7 +1322,7 @@
         "pino": "10.3.1",
         "sharp": "0.35.5",
         "ws": "8.21.2",
-        "zod": "4.3.6",
+        "zod": "4.6.7",
       },
       "devDependencies": {
         "@langchain/langgraph": "1.2.9",
@@ -1372,7 +1372,7 @@
       "version": "0.1.0",
       "dependencies": {
         "node-diff3": "3.2.1",
-        "zod": "4.3.6",
+        "zod": "4.6.7",
       },
       "devDependencies": {
         "@types/node": "24.10.4",
@@ -1478,7 +1478,7 @@
     "@langchain/openai": "1.4.5",
     "@modelcontextprotocol/sdk": "1.32.0",
     "@xmldom/xmldom": "0.9.12",
-    "body-parser": "2.3.0",
+    "body-parser": "2.4.0",
     "electron-builder-squirrel-windows": "26.15.3",
     "form-data": "4.0.6",
     "hono": "4.12.34",
@@ -1489,7 +1489,7 @@
     "plist": "3.1.1",
     "postcss": "8.5.26",
     "proxy-addr": "2.0.8",
-    "qs": "6.15.3",
+    "qs": "6.16.1",
     "tar": "7.5.22",
     "tmp": "0.2.7",
   },
@@ -3364,7 +3364,7 @@
 
     "bmp-ts": ["bmp-ts@1.0.9", "", {}, "sha512-cTEHk2jLrPyi+12M3dhpEbnnPOsaZuq7C45ylbbQIiWgDFZq4UVYPEY5mlqjvsj/6gJv9qX5sa+ebDzLXT28Vw=="],
 
-    "body-parser": ["body-parser@2.3.0", "", { "dependencies": { "bytes": "^3.1.2", "content-type": "^2.0.0", "debug": "^4.4.3", "http-errors": "^2.0.1", "iconv-lite": "^0.7.2", "on-finished": "^2.4.1", "qs": "^6.15.2", "raw-body": "^3.0.2", "type-is": "^2.1.0" } }, "sha512-2cGmJupaNgg+QUwVLAucDuWuoMZ6EX9iHDRswZ5lsNYEmwPaRknMPCLZz07yTzVq/83p4o/wzbDZbBrTvGGTIw=="],
+    "body-parser": ["body-parser@2.4.0", "", { "dependencies": { "bytes": "^3.1.2", "content-type": "^2.1.0", "debug": "^4.4.3", "http-errors": "^2.0.1", "iconv-lite": "^0.7.3", "on-finished": "^2.4.1", "qs": "^6.16.1", "raw-body": "^3.0.2", "type-is": "^2.1.0" } }, "sha512-Ifk1KcLrxaGt1occQagQNFNNOqRt1LFuehEnHHzB8Z6cRgIxRU1TBaiIsUiCdA+gy5PL7Y1IX31DNKkRmxtXjQ=="],
 
     "bonjour-service": ["bonjour-service@1.3.0", "", { "dependencies": { "fast-deep-equal": "^3.1.3", "multicast-dns": "^7.2.5" } }, "sha512-3YuAUiSkWykd+2Azjgyxei8OWf8thdn8AITIog2M4UICzoqfjlqr64WIjEXZllf/W6vK1goqleSR6brGomxQqA=="],
 
@@ -4916,7 +4916,7 @@
 
     "qrcode.react": ["qrcode.react@4.2.0", "", { "peerDependencies": { "react": "^16.8.0 || ^17.0.0 || ^18.0.0 || ^19.0.0" } }, "sha512-QpgqWi8rD9DsS9EP3z7BT+5lY5SFhsqGjpgW5DY/i3mK4M9DTBNz3ErMi8BWYEfI3L0d8GIbGmcdFAS1uIRGjA=="],
 
-    "qs": ["qs@6.15.3", "", { "dependencies": { "es-define-property": "^1.0.1", "side-channel": "^1.1.1" } }, "sha512-O9gl3zCl5h5blw1KGUzQKhA5oUXSl8rwUIM5o0S3nCXMliSvy5Dzx7/DJcI+SwgICv+IneSZwhBh1oSyEHA71A=="],
+    "qs": ["qs@6.16.1", "", { "dependencies": { "es-define-property": "^1.0.1", "side-channel": "^1.1.1" } }, "sha512-5Px6J7rfHBAGUhNQ3es4YzcOdBBw0SDcVtThJml4RdnKw4tKs2epA0kPZ+K8X+WiHktT93RHVcQ/3ym5aTCgtg=="],
 
     "query-string": ["query-string@7.1.3", "", { "dependencies": { "decode-uri-component": "^0.2.2", "filter-obj": "^1.1.0", "split-on-first": "^1.0.0", "strict-uri-encode": "^2.0.0" } }, "sha512-hh2WYhq4fi8+b+/2Kg9CEge4fDPvHS534aOOvOZeQ3+Vf2mCFsaFBYj0i+iXcAq6I9Vzp5fjMFBlONvayDC1qg=="],
 
@@ -5572,7 +5572,7 @@
 
     "yoga-layout": ["yoga-layout@3.2.1", "", {}, "sha512-0LPOt3AxKqMdFBZA3HBAt/t/8vIKq7VaQYbuA8WxCgung+p9TVyKRYdpvCb80HcdTN2NkbIKbhNwKUfm3tQywQ=="],
 
-    "zod": ["zod@4.3.6", "", {}, "sha512-rftlrkhHZOcjDwkGlnUtZZkvaPHCsDATp4pGpuOOMDaTdDDXF91wuVDJoWoPsKX/3YPQ5fHuF3STjcYyKr+Qhg=="],
+    "zod": ["zod@4.6.7", "", {}, "sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg=="],
 
     "zod-to-json-schema": ["zod-to-json-schema@3.25.2", "", { "peerDependencies": { "zod": "^3.25.28 || ^4" } }, "sha512-O/PgfnpT1xKSDeQYSCfRI5Gy3hPf91mKVDuYLUHZJMiDFptvP41MSnWofm8dnCm0256ZNfZIM7DSzuSMAFnjHA=="],
 
@@ -5833,6 +5833,10 @@
     "@langchain/langgraph-sdk/p-retry": ["p-retry@7.1.1", "", { "dependencies": { "is-network-error": "^1.1.0" } }, "sha512-J5ApzjyRkkf601HpEeykoiCvzHQjWxPAHhyjFcEUP2SWq0+35NKh8TLhpLw+Dkq5TZBFvUM6UigdE9hIVYTl5w=="],
 
     "@langchain/langgraph-sdk/uuid": ["uuid@13.0.1", "", { "bin": { "uuid": "dist-node/bin/uuid" } }, "sha512-9ezox2roIft6ExBVTVqibSd5dc5/47Sw/uY6b4SjQUT2TzQ0tltNquWA46y4xPQmdZYqvnio22SgWd41M86+jw=="],
+
+    "@langchain/openai/zod": ["zod@4.4.3", "", {}, "sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ=="],
+
+    "@langchain/tavily/zod": ["zod@4.4.3", "", {}, "sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ=="],
 
     "@lexical/clipboard/@lexical/utils": ["@lexical/utils@0.35.0", "", { "dependencies": { "@lexical/list": "0.35.0", "@lexical/selection": "0.35.0", "@lexical/table": "0.35.0", "lexical": "0.35.0" } }, "sha512-2H393EYDnFznYCDFOW3MHiRzwEO5M/UBhtUjvTT+9kc+qhX4U3zc8ixQalo5UmZ5B2nh7L/inXdTFzvSRXtsRA=="],
 
@@ -6328,6 +6332,8 @@
 
     "body-parser/content-type": ["content-type@2.1.0", "", {}, "sha512-mj7UPXE0jaqaOsukNZRUEfEi2AcL7C/vwmwcHV0O97eO1E1pxBZuyjlZrx5seTaNBg1U6+o35wpa35Qfcc+7ag=="],
 
+    "body-parser/iconv-lite": ["iconv-lite@0.7.3", "", { "dependencies": { "safer-buffer": ">= 2.1.2 < 3.0.0" } }, "sha512-IKXpvIzjnC9XTAUbVBcMfGS0EPaIXtW6v+zr+RRp+hqULEpo0owZax6wyRwPOJbWbzjYspQwusTsfVr0ifh4uQ=="],
+
     "body-parser/type-is": ["type-is@2.1.0", "", { "dependencies": { "content-type": "^2.0.0", "media-typer": "^1.1.0", "mime-types": "^3.0.0" } }, "sha512-faYHw0anBbc/kWF3zFTEnxSFOAGUX9GFbOBthvDdLsIlEoWOFOtS0zgCiQYwIskL9iGXZL3kAXD8OoZ4GmMATA=="],
 
     "buffer-image-size/@types/node": ["@types/node@25.6.0", "", { "dependencies": { "undici-types": "~7.19.0" } }, "sha512-+qIYRKdNYJwY3vRCZMdJbPLJAtGjQBudzZzdzwQYkEPQd+PJGixUL5QfvCLDaULoLv+RhT3LDkwEfKaAkgSmNQ=="],
@@ -6408,6 +6414,8 @@
 
     "eslint/minimatch": ["minimatch@3.1.5", "", { "dependencies": { "brace-expansion": "^1.1.7" } }, "sha512-VgjWUsnnT6n+NUk6eZq77zeFdpW2LWDzP6zFGrCbHXiYNul5Dzqk2HHQ5uFH2DNW5Xbp8+jVzaeNt94ssEEl4w=="],
 
+    "eslint-plugin-react-hooks/zod": ["zod@4.4.3", "", {}, "sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ=="],
+
     "expo-build-properties/semver": ["semver@7.8.5", "", { "bin": { "semver": "bin/semver.js" } }, "sha512-Y7/KDsb8LjooZpwaqGyulO6DQlksgCncchHGk+sZIY4SBvUocMBEFH5Ur1fI4dV+Jvl0w6cjvucaIi40puRioA=="],
 
     "expo-modules-autolinking/chalk": ["chalk@4.1.2", "", { "dependencies": { "ansi-styles": "^4.1.0", "supports-color": "^7.1.0" } }, "sha512-oKnbhFyRIXpUuez8iBMmyEa4nbj4IOQyuhc/wy9kY7/WVPcwIO9VA668Pu8RkO7+0G76SLROeyw9CpQ061i4mA=="],
@@ -6483,6 +6491,8 @@
     "jsdom/whatwg-mimetype": ["whatwg-mimetype@5.0.0", "", {}, "sha512-sXcNcHOC51uPGF0P/D4NVtrkjSU2fNsm9iog4ZvZJsL3rjoDAzXZhkm2MWt1y+PUdggKAYVoMAIYcs78wJ51Cw=="],
 
     "kdbxweb/fflate": ["fflate@0.7.4", "", {}, "sha512-5u2V/CDW15QM1XbbgS+0DfPxVB+jUKhWEKuuFuHncbk3tEEqzmoXL+2KyOFuKGqOnmdIy0/davWF1CkuwtibCw=="],
+
+    "knip/zod": ["zod@4.4.3", "", {}, "sha512-ytENFjIJFl2UwYglde2jchW2Hwm4GJFLDiSXWdTrJQBIN9Fcyp7n4DhxJEiWNAJMV1/BqWfW/kkg71UDcHJyTQ=="],
 
     "light-my-request/cookie": ["cookie@1.1.1", "", {}, "sha512-ei8Aos7ja0weRpFzJnEA9UHJ/7XQmqglbRwnf2ATjcB9Wq874VKH9kfjjirM6UhU2/E5fFYadylyhFldcqSidQ=="],
 
