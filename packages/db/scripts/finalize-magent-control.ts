@@ -201,6 +201,35 @@ GRANT SELECT(user_id,binding_id,source_inbox_id,session_message_id,explicit_shar
 REVOKE INSERT, UPDATE, DELETE ON TABLE public.external_operator_control_archive FROM nautilo;\n`;
 }
 
+export const MAGENT_ARCHIVE_CASCADE_MARKER = "-- EXTERNAL_OPERATOR_ARCHIVE_OWNER_CASCADE";
+
+/** FK cleanup runs as the archive owner, so DELETE needs an immutable guard. */
+export function finalizeMagentControlArchiveCascadeMigration(source: string): string {
+  if (source.includes(MAGENT_ARCHIVE_CASCADE_MARKER)) return source;
+  return `${source}\n--> statement-breakpoint\n${MAGENT_ARCHIVE_CASCADE_MARKER}
+CREATE OR REPLACE FUNCTION public.guard_external_operator_control_archive()
+RETURNS trigger LANGUAGE plpgsql SET search_path = pg_catalog, public AS $$
+BEGIN
+  IF TG_OP = 'DELETE' AND pg_trigger_depth() >= 2 THEN
+    IF NOT EXISTS (SELECT 1 FROM public.users WHERE id = OLD.user_id) THEN
+      RETURN OLD;
+    END IF;
+  END IF;
+  RAISE EXCEPTION 'Operator control archive is immutable' USING ERRCODE = '23514';
+END;
+$$;--> statement-breakpoint
+GRANT TRIGGER ON TABLE public.external_operator_control_archive TO nautilo;--> statement-breakpoint
+CREATE TRIGGER external_control_archive_immutable_row
+BEFORE UPDATE OR DELETE ON public.external_operator_control_archive
+FOR EACH ROW EXECUTE FUNCTION public.guard_external_operator_control_archive();--> statement-breakpoint
+CREATE TRIGGER external_control_archive_immutable_table
+BEFORE TRUNCATE ON public.external_operator_control_archive
+FOR EACH STATEMENT EXECUTE FUNCTION public.guard_external_operator_control_archive();--> statement-breakpoint
+REVOKE ALL PRIVILEGES ON TABLE public.external_operator_control_archive FROM PUBLIC, nautilo, nautilo_agent, nautilo_crypto;--> statement-breakpoint
+GRANT SELECT, DELETE ON TABLE public.external_operator_control_archive TO nautilo;--> statement-breakpoint
+REVOKE ALL ON FUNCTION public.guard_external_operator_control_archive() FROM PUBLIC, nautilo_agent, nautilo_crypto;\n`;
+}
+
 if (import.meta.main) {
   const directory = resolve(import.meta.dir, "../src/migrations");
   const journal = JSON.parse(readFileSync(resolve(directory, "meta/_journal.json"), "utf8")) as { entries: { tag: string }[] };
@@ -208,6 +237,8 @@ if (import.meta.main) {
   if (!latest) throw new Error("Migration journal is empty");
   const path = resolve(directory, `${latest.tag}.sql`);
   const source = readFileSync(path, "utf8");
-  const result = finalizeMagentControlArchiveMigration(finalizeMagentControlMigration(source));
+  const result = process.argv.includes("--owner-cascade")
+    ? finalizeMagentControlArchiveCascadeMigration(source)
+    : finalizeMagentControlArchiveMigration(finalizeMagentControlMigration(source));
   if (result !== source) writeFileSync(path, result);
 }

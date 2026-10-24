@@ -19,6 +19,7 @@
     "db:generate:moderation-recipients": "NAUTILO_DRIZZLE_OFFLINE=1 drizzle-kit generate --custom --name moderation_recipient_access && bun scripts/finalize-moderation.ts --recipient-access",
     "db:generate:content-access-immutability": "NAUTILO_DRIZZLE_OFFLINE=1 drizzle-kit generate --custom --name content_access_receipt_immutability && bun scripts/finalize-content-access-operations.ts --immutability",
     "db:generate:content-access-fk-permissions": "NAUTILO_DRIZZLE_OFFLINE=1 drizzle-kit generate --custom --name content_access_receipt_fk_permissions && bun scripts/finalize-content-access-operations.ts --fk-permissions",
+    "db:generate:operator-control-archive-cascade": "NAUTILO_DRIZZLE_OFFLINE=1 drizzle-kit generate --custom --name operator_control_archive_cascade && bun scripts/finalize-magent-control.ts --owner-cascade",
     "db:repair-meta-snapshots": "bun scripts/repair-migration-meta-snapshots.mjs",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",

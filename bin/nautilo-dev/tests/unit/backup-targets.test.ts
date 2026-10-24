@@ -40,6 +40,7 @@ describe("backup restore target allowlists", () => {
       bolter_explicit_shares: ["users", "bolter_room_bindings", "session_messages"],
       bolter_outbox: ["users", "bolter_room_bindings", "session_messages", "bolter_inbox_receipts", "bolter_explicit_shares"],
       external_room_execution_claims: ["rooms"],
+      external_operator_control_archive: ["users"],
     };
     for (const [table, parents] of Object.entries(dependencies)) {
       const child = DATA_TABLES.indexOf(`public.${table}`);
