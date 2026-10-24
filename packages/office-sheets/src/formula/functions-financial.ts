@@ -10,7 +10,7 @@ import {
   toStr,
   getRefsFromExpression,
 } from './functions-helpers';
-import { parseDate, formatDate } from './functions-date';
+import { parseDate, formatDate, isDateOnlyValue } from './functions-date';
 
 function getCashFlowValues(
   expr: ParseTree,
@@ -1675,7 +1675,12 @@ function yearFrac(startDate: Date, endDate: Date, basis: number): number {
   const ed = new Date(endDate);
   const y1 = sd.getFullYear(), m1 = sd.getMonth() + 1, d1Orig = sd.getDate();
   const y2 = ed.getFullYear(), m2 = ed.getMonth() + 1, d2Orig = ed.getDate();
-  const actualDays = (ed.getTime() - sd.getTime()) / 86400000;
+  // Two date-only values are whole days apart, but two local midnights either
+  // side of a DST change are not a whole number of 24-hour days, so their count
+  // is rounded. A timestamp keeps its time of day.
+  const elapsedDays = (ed.getTime() - sd.getTime()) / 86400000;
+  const actualDays =
+    isDateOnlyValue(startDate) && isDateOnlyValue(endDate) ? Math.round(elapsedDays) : elapsedDays;
 
   switch (basis) {
     case 0: { // US 30/360
