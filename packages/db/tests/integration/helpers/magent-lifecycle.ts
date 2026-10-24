@@ -2,9 +2,9 @@ import { expect } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
 import postgres from "postgres";
 import { drizzle } from "drizzle-orm/postgres-js";
+import { eq } from "drizzle-orm";
 import * as schema from "../../../src/schema";
 import { insertPrivateRoomBundleTx } from "../../../../trust/src/queries";
-import { appendCanonicalTranscriptRowsInTx, type CanonicalTranscriptAppendRow } from "../../../../trust/src/canonical-transcript-mutations";
 import { insertAcceptanceInTransaction } from "../../../src/queries/work-acceptances";
 import { persistJobInTransaction } from "../../../src/queries/jobs";
 import { acquireExternalRoomExecutionClaimWith, releaseExternalRoomExecutionClaimWith } from "../../../src/queries/external-room-execution-claims";
@@ -15,9 +15,6 @@ import {
   settleBolterOutboxWith, withdrawMagentBindingWith, updateBolterBindingStateWith, type BolterBridgeDatabase, type BolterFactoryDatabase,
 } from "../../../src/queries/bolter-bridge";
 const digest = (parts: unknown[]) => createHash("sha256").update(JSON.stringify(parts)).digest("hex");
-const row = (input: Pick<CanonicalTranscriptAppendRow, "role" | "content" | "fingerprint" | "humanTurnId" | "metadata" | "replyToMessageId">): CanonicalTranscriptAppendRow => ({
-  ...input, toolCalls: null, toolName: null, transcriptOrigin: "main", parentThreadId: null, scopeId: null, subthreadRoomId: null,
-});
 /** Caller owns the disposable database. Never resolves a workspace instance or shared pool. */
 export async function verifyMagentLifecycle(port: string) {
   if (!/^\d+$/u.test(port)) throw new Error("Invalid isolated fixture port");
@@ -51,21 +48,22 @@ export async function verifyMagentLifecycle(port: string) {
     });
     expect(binding.provider).toBe("magent");
     const ctx = { ...receiver, bindingId: binding.id, bindingRevision: binding.revision };
-    const session = { threadId: `room:${binding.roomId}:bot:${genieId}`, ownerId: userId, personaId: "owner", agentId: genieId, roomId: binding.roomId, title: "Synthetic external conversation" };
-    const notificationContext = { causalHumanUserId: null, causalHumanTurnId: null, mentionedHumanUserIds: [] };
+    async function assertNoConversationRows() {
+      expect(await admin.select({ id: schema.sessions.id }).from(schema.sessions).where(eq(schema.sessions.roomId, binding.roomId))).toHaveLength(0);
+      expect(await admin.select({ id: schema.sessionMessages.id }).from(schema.sessionMessages)
+        .innerJoin(schema.sessions, eq(schema.sessions.id, schema.sessionMessages.sessionId))
+        .where(eq(schema.sessions.roomId, binding.roomId))).toHaveLength(0);
+    }
     async function accept(messageId: string, content = "Synthetic remote input", sessionId = connectorSessionId) {
       const origin = { kind: "external_message", version: 1, provider: "magent", origin: connection.origin, connectionId: connection.id, bindingId: binding.id,
-        providerAgentId: connection.providerAgentId, chatId: binding.chatId, threadRootId: null, messageId, senderId: "fixture-connector", senderType: "anima", senderLabel: "Synthetic agent", createdAt: "2026-01-01T00:00:00Z" };
+        providerAgentId: connection.providerAgentId, chatId: binding.chatId, threadRootId: null, messageId, senderId: "fixture-connector", senderType: "anima", senderLabel: "Synthetic agent", createdAt: "2026-01-01T00:00:00Z" } as const;
       const fingerprint = digest([origin.provider, origin.origin, origin.providerAgentId, origin.chatId, origin.threadRootId, origin.messageId, origin.senderId, origin.senderType, origin.createdAt, content]);
       return acceptBolterInboundWith(agent, ctx, { providerMessageId: messageId, fingerprint, externalSenderId: origin.senderId }, async (tx, locked, receiptId) => {
         const turnId = randomUUID(), acceptanceId = await insertAcceptanceInTransaction(tx, "foreground");
         const reference = { kind: "external_room_turn_v1", receiptId, acceptanceId, bindingId: locked.id, bindingRevision: locked.revision,
           connectionGeneration: ctx.connectionGeneration, roomId: locked.roomId, agentId: locked.agentId, turnId };
-        const appended = await appendCanonicalTranscriptRowsInTx(tx, { session, notificationContext,
-          rows: [row({ role: "user", content, fingerprint: digest(["external-room-input-v1", receiptId]), humanTurnId: turnId, replyToMessageId: null, metadata: { externalOrigin: origin, externalReceiptId: receiptId } })] });
-        if (!appended.insertedRows[0] || appended.failedIndices.length) throw new Error("Synthetic canonical intake failed");
         const jobId = await persistJobInTransaction(tx, { ownerId: userId, requestorId: userId, roomId: locked.roomId, laneKey: `room:${locked.roomId}`, type: "foreground", input: reference });
-        return { sessionMessageId: Number(appended.insertedRows[0].id), turnId, jobId };
+        return { sessionMessageId: null, controlInput: { kind: "operator_control_v1", content, origin }, turnId, jobId };
       }, sessionId);
     }
     async function inputFor(receiptId: string) {
@@ -75,6 +73,9 @@ export async function verifyMagentLifecycle(port: string) {
     }
     const accepted = await accept("original");
     if (accepted.status !== "accepted") throw new Error("Synthetic intake rejected");
+    expect(accepted.receipt).toMatchObject({ sessionMessageId: null,
+      controlInput: { kind: "operator_control_v1", content: "Synthetic remote input", origin: { messageId: "original", provider: "magent" } } });
+    await assertNoConversationRows();
     const duplicate = await accept("original");
     expect(duplicate.status).toBe("duplicate");
     if (duplicate.status === "duplicate") expect(duplicate.receipt.id).toBe(accepted.receipt.id);
@@ -89,16 +90,17 @@ export async function verifyMagentLifecycle(port: string) {
     let outbox;
     try {
       expect(await startBolterExecutionWith(agent, owner, { ...input, executionClaim })).toBe("started");
-      outbox = await completeBolterExecutionWith(agent, owner, input, async (tx, execution) => {
+      outbox = await completeBolterExecutionWith(agent, owner, input, (_tx, execution) => {
         const content = "Synthetic final reply", fingerprint = digest(["external-room-final-v1", input.reference.receiptId, input.jobId, content]);
-        const appended = await appendCanonicalTranscriptRowsInTx(tx, { session, notificationContext,
-          rows: [row({ role: "assistant", content, fingerprint, humanTurnId: null, replyToMessageId: execution.receipt.sessionMessageId,
-            metadata: { externalFinalReply: { kind: "external_room_final_reply_v1", receiptId: input.reference.receiptId, jobId: input.jobId, turnId: input.reference.turnId, acceptanceId: input.reference.acceptanceId } } })] });
-        if (!appended.insertedRows[0] || appended.failedIndices.length) throw new Error("Synthetic final persistence failed");
-        return { sessionMessageId: Number(appended.insertedRows[0].id), fingerprint };
+        expect(execution.receipt.sessionMessageId).toBeNull();
+        expect(execution.sourceMessage).toEqual({ id: null, content: "Synthetic remote input" });
+        expect(execution.session).toEqual({ id: null, threadId: `room:${binding.roomId}:operator:${input.reference.receiptId}` });
+        return Promise.resolve({ sessionMessageId: null, controlResult: content, fingerprint });
       });
     } finally { await releaseExternalRoomExecutionClaimWith(product, owner, executionClaim); }
     if (!outbox) throw new Error("Synthetic publication missing");
+    expect(outbox).toMatchObject({ sessionMessageId: null, controlResult: "Synthetic final reply" });
+    await assertNoConversationRows();
     return outbox;
     }
     let outbox = await finish(input);
@@ -106,6 +108,11 @@ export async function verifyMagentLifecycle(port: string) {
     let claimToken = randomUUID();
     expect((await claimBolterOutboxWith(agent, ctx, outbox.id, claimToken))?.claimToken).toBe(claimToken);
     await agentClient.end(); agentClient = client("nautilo_agent"); agent = drizzle(agentClient, { schema }) as unknown as BolterBridgeDatabase;
+    expect((await admin.select().from(schema.bolterInboxReceipts).where(eq(schema.bolterInboxReceipts.id, accepted.receipt.id)))[0]?.controlInput)
+      .toEqual(accepted.receipt.controlInput);
+    expect((await admin.select().from(schema.bolterOutbox).where(eq(schema.bolterOutbox.id, outbox.id)))[0])
+      .toMatchObject({ sessionMessageId: null, controlResult: "Synthetic final reply" });
+    await assertNoConversationRows();
     expect((await getMagentReceiptStatusWith(agent, ctx, accepted.receipt.id))?.state).toBe("completed");
     expect((await claimBolterOutboxWith(agent, ctx, outbox.id, claimToken))?.claimToken).toBe(claimToken);
     expect(await claimBolterOutboxWith(agent, ctx, outbox.id, randomUUID())).toBeNull();
@@ -148,5 +155,6 @@ export async function verifyMagentLifecycle(port: string) {
     const revoked = await updateBolterBindingStateWith(agent, owner, { bindingId: binding.id, expectedRevision: paused!.binding.revision, state: "revoked" });
     expect(revoked?.state).toBe("revoked");
     expect(await updateBolterBindingStateWith(agent, owner, { bindingId: binding.id, expectedRevision: revoked!.revision, state: "active" })).toBeNull();
+    await assertNoConversationRows();
   } finally { await agentClient.end(); await productClient.end(); await adminClient.end(); }
 }
