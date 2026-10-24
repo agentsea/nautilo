@@ -150,7 +150,7 @@ compact where every listed member shares the same version and license.
 | [LangChain JS](https://github.com/langchain-ai/langchainjs) family | core 1.1.45; Anthropic 1.3.29; Fireworks 0.1.3; Google GenAI 2.1.29; OpenAI 1.4.5; Tavily 1.2.0; xAI 1.3.17 | LangChain | MIT | Server agent runtime. |
 | [LangGraph JS](https://github.com/langchain-ai/langgraphjs) family | langgraph 1.2.9; checkpoint-postgres 1.0.1 | LangChain | MIT | Server agent runtime. |
 | [Model Context Protocol TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk) / [ACP TypeScript SDK](https://github.com/agentclientprotocol/typescript-sdk) | 1.32.0 / 1.3.0 | MCP / ACP | MIT / Apache-2.0 | Desktop and server integration surfaces. |
-| [Zod](https://github.com/colinhacks/zod) | 4.3.6 | Colin McDonnell | MIT | Desktop, server, Workbench, and mobile. |
+| [Zod](https://github.com/colinhacks/zod) | 4.6.7 | Colin McDonnell | MIT | Desktop, server, Workbench, and mobile. |
 | [Drizzle ORM](https://github.com/drizzle-team/drizzle-orm) / [postgres.js](https://github.com/porsager/postgres) / [node-postgres](https://github.com/brianc/node-postgres) | 0.45.2 / 3.4.7 / 8.13.1 | Drizzle / porsager / brianc | Apache-2.0 / Unlicense / MIT | Server database clients. |
 | [OpenID/JWT libraries: Logto JS](https://github.com/logto-io/js) and [jose](https://github.com/panva/jose) | browser 3.0.13; react 4.0.13; jose 6.2.3 | Logto / panva | MIT / MIT | Desktop, Workbench, mobile, and server authentication. |
 | [Noble cryptography](https://github.com/paulmillr/noble-curves) family | ciphers 2.2.0; curves 2.2.0; hashes 2.2.0 | Paul Miller | MIT | Server and mobile cryptography. |

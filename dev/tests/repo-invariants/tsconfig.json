@@ -18,6 +18,7 @@
     "./public-documentation.test.ts",
     "./query-inventory-wiring.test.ts",
     "./reflection-package-boundary.test.ts",
+    "./residual-js-dependency-security-pack.test.ts",
     "./root-test-db-preload.test.ts",
     "./smol-toml-security-floor.test.ts",
     "./test-maintenance-lifecycle-guards.test.ts",
