@@ -7,6 +7,11 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Server security policy distinguishes Debian HarfBuzz builds without the affected
+  WebAssembly backend from two unfixed Expat denial-of-service findings. Exact
+  decisions expire November 14; scanner-reported fixes for High/Critical findings
+  and changed tuples still fail.
+
 - Refresh the shipped Zod (including seeded Writer and Video apps) and body-parser security patches, preserving identity
   password-policy defaults and image-processing compatibility.
 
