@@ -15,6 +15,7 @@ test("the production closure selects patched schema and request parsers", () => 
     const lock = readFileSync(join(import.meta.dir, filename), "utf8");
     expect(lock).toContain('"zod@4.6.7"');
     expect(lock).toContain('"body-parser@2.4.0"');
+    expect(lock).not.toContain('"@langchain/core/zod":');
     if (filename === "runtime-install/bun.lock") {
       for (const vulnerable of ["3.24.3", "3.25.76", "4.3.6", "4.4.3"]) expect(lock).not.toContain(`"zod@${vulnerable}"`);
     }
