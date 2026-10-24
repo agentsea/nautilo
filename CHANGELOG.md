@@ -7,7 +7,7 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
-- Refresh the shipped Zod and body-parser security patches, preserving identity
+- Refresh the shipped Zod (including seeded Writer and Video apps) and body-parser security patches, preserving identity
   password-policy defaults and image-processing compatibility.
 
 - Server images require Debian's Brotli decoder security update on AMD64 and

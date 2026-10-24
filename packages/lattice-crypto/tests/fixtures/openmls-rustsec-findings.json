@@ -1,0 +1,288 @@
+{
+  "database": {
+    "advisory-count": 1352,
+    "last-commit": "21d909e4c8bd4e14c7aea58bf980c881a0053ab1",
+    "last-updated": "2026-10-24T10:30:13+02:00"
+  },
+  "lockfile": {
+    "dependency-count": 174
+  },
+  "settings": {
+    "target_arch": [],
+    "target_os": [],
+    "severity": null,
+    "ignore": [],
+    "informational_warnings": [
+      "unmaintained",
+      "unsound",
+      "notice"
+    ]
+  },
+  "vulnerabilities": {
+    "found": true,
+    "count": 9,
+    "list": [
+      {
+        "advisory": {
+          "id": "RUSTSEC-2026-0387",
+          "package": "crypto-bigint",
+          "withdrawn": null,
+          "cvss": null,
+          "informational": null
+        },
+        "package": {
+          "name": "crypto-bigint",
+          "version": "0.5.5",
+          "checksum": "0dc92fb57ca44df6db8059111ab3af99a63d5d0f8375d9972e319a379c6bab76",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "replace": null
+        },
+        "versions": {
+          "patched": [
+            ">=0.7.6"
+          ],
+          "unaffected": []
+        }
+      },
+      {
+        "advisory": {
+          "id": "RUSTSEC-2026-0209",
+          "package": "libcrux-aesgcm",
+          "withdrawn": null,
+          "cvss": "CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:N/VI:L/VA:N/SC:N/SI:N/SA:N",
+          "informational": null
+        },
+        "package": {
+          "name": "libcrux-aesgcm",
+          "version": "0.0.7",
+          "checksum": "99f2a019dab4097585a7d4f5b9deebe46cd1e628b16a5bc4cb0ce35e1da334e6",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "replace": null
+        },
+        "versions": {
+          "patched": [],
+          "unaffected": []
+        }
+      },
+      {
+        "advisory": {
+          "id": "RUSTSEC-2026-0211",
+          "package": "libcrux-aesgcm",
+          "withdrawn": null,
+          "cvss": "CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:N/VI:L/VA:N/SC:N/SI:N/SA:N",
+          "informational": null
+        },
+        "package": {
+          "name": "libcrux-aesgcm",
+          "version": "0.0.7",
+          "checksum": "99f2a019dab4097585a7d4f5b9deebe46cd1e628b16a5bc4cb0ce35e1da334e6",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "replace": null
+        },
+        "versions": {
+          "patched": [],
+          "unaffected": []
+        }
+      },
+      {
+        "advisory": {
+          "id": "RUSTSEC-2026-0124",
+          "package": "libcrux-chacha20poly1305",
+          "withdrawn": null,
+          "cvss": "CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:N/VI:N/VA:H/SC:N/SI:N/SA:N",
+          "informational": null
+        },
+        "package": {
+          "name": "libcrux-chacha20poly1305",
+          "version": "0.0.7",
+          "checksum": "cc08d044676af21343b32b988411fa98dbb5cf65a03c9df478ced221bbdfdb1b",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "replace": null
+        },
+        "versions": {
+          "patched": [
+            ">=0.0.8"
+          ],
+          "unaffected": []
+        }
+      },
+      {
+        "advisory": {
+          "id": "RUSTSEC-2026-0331",
+          "package": "libcrux-kem",
+          "withdrawn": null,
+          "cvss": "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:N/VI:N/VA:H/SC:N/SI:N/SA:N",
+          "informational": null
+        },
+        "package": {
+          "name": "libcrux-kem",
+          "version": "0.0.7",
+          "checksum": "12631592f491d22fd1a176d32b2c6edfb673998fd3987e9d95f8fa79ad2a737b",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "replace": null
+        },
+        "versions": {
+          "patched": [
+            ">=0.0.10"
+          ],
+          "unaffected": []
+        }
+      },
+      {
+        "advisory": {
+          "id": "RUSTSEC-2026-0330",
+          "package": "libcrux-kem",
+          "withdrawn": null,
+          "cvss": "CVSS:4.0/AV:L/AC:L/AT:P/PR:H/UI:N/VC:N/VI:N/VA:H/SC:N/SI:N/SA:N",
+          "informational": null
+        },
+        "package": {
+          "name": "libcrux-kem",
+          "version": "0.0.7",
+          "checksum": "12631592f491d22fd1a176d32b2c6edfb673998fd3987e9d95f8fa79ad2a737b",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "replace": null
+        },
+        "versions": {
+          "patched": [
+            ">=0.0.10"
+          ],
+          "unaffected": []
+        }
+      },
+      {
+        "advisory": {
+          "id": "RUSTSEC-2026-0212",
+          "package": "libcrux-secrets",
+          "withdrawn": null,
+          "cvss": "CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:N/VI:N/VA:H/SC:N/SI:N/SA:N",
+          "informational": null
+        },
+        "package": {
+          "name": "libcrux-secrets",
+          "version": "0.0.5",
+          "checksum": "1ce650f3041b44ba40d4263852347d007cd2cd9d1cc856a6f6c8b2e10c3fd40b",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "replace": null
+        },
+        "versions": {
+          "patched": [
+            ">=0.0.6"
+          ],
+          "unaffected": []
+        }
+      },
+      {
+        "advisory": {
+          "id": "RUSTSEC-2026-0207",
+          "package": "libcrux-sha3",
+          "withdrawn": null,
+          "cvss": "CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:N/VI:N/VA:H/SC:N/SI:N/SA:N",
+          "informational": null
+        },
+        "package": {
+          "name": "libcrux-sha3",
+          "version": "0.0.8",
+          "checksum": "b1ae0b7d0e1cc4793a609fd0ff2ca3b3a3fabae523770c619a3d4bc86417b0d7",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "replace": null
+        },
+        "versions": {
+          "patched": [
+            ">=0.0.10"
+          ],
+          "unaffected": []
+        }
+      },
+      {
+        "advisory": {
+          "id": "RUSTSEC-2026-0208",
+          "package": "libcrux-sha3",
+          "withdrawn": null,
+          "cvss": "CVSS:4.0/AV:N/AC:L/AT:P/PR:N/UI:N/VC:N/VI:N/VA:H/SC:N/SI:N/SA:N",
+          "informational": null
+        },
+        "package": {
+          "name": "libcrux-sha3",
+          "version": "0.0.8",
+          "checksum": "b1ae0b7d0e1cc4793a609fd0ff2ca3b3a3fabae523770c619a3d4bc86417b0d7",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "replace": null
+        },
+        "versions": {
+          "patched": [
+            ">=0.0.10"
+          ],
+          "unaffected": []
+        }
+      }
+    ]
+  },
+  "warnings": {
+    "unmaintained": [
+      {
+        "advisory": {
+          "id": "RUSTSEC-2024-0384",
+          "package": "instant",
+          "withdrawn": null,
+          "cvss": null,
+          "informational": "unmaintained"
+        },
+        "package": {
+          "name": "instant",
+          "version": "0.1.13",
+          "checksum": "e0242819d153cba4b4b05a5a8f2a7e9bbf97b6055b2a002b395c96b5ff3c0222",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "replace": null
+        },
+        "versions": {
+          "patched": [],
+          "unaffected": []
+        },
+        "kind": "unmaintained"
+      },
+      {
+        "advisory": {
+          "id": "RUSTSEC-2026-0210",
+          "package": "libcrux-aesgcm",
+          "withdrawn": null,
+          "cvss": null,
+          "informational": "unmaintained"
+        },
+        "package": {
+          "name": "libcrux-aesgcm",
+          "version": "0.0.7",
+          "checksum": "99f2a019dab4097585a7d4f5b9deebe46cd1e628b16a5bc4cb0ce35e1da334e6",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "replace": null
+        },
+        "versions": {
+          "patched": [],
+          "unaffected": []
+        },
+        "kind": "unmaintained"
+      },
+      {
+        "advisory": {
+          "id": "RUSTSEC-2026-0173",
+          "package": "proc-macro-error2",
+          "withdrawn": null,
+          "cvss": null,
+          "informational": "unmaintained"
+        },
+        "package": {
+          "name": "proc-macro-error2",
+          "version": "2.0.1",
+          "checksum": "11ec05c52be0a07b08061f7dd003e7d7092e0472bc731b4af7bb1ef876109802",
+          "source": "registry+https://github.com/rust-lang/crates.io-index",
+          "replace": null
+        },
+        "versions": {
+          "patched": [],
+          "unaffected": []
+        },
+        "kind": "unmaintained"
+      }
+    ]
+  }
+}
