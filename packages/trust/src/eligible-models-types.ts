@@ -270,6 +270,11 @@ export interface EligibleModel {
   enabled: boolean;
   routing?: RoutingClass;
   capabilities: EligibleModelCapabilities;
+  /** Effective request limits after intersecting catalog policy with the serving route. */
+  limits?: {
+    contextTokens: number;
+    outputTokens: number;
+  };
   /** Caller-authorized image input, including automatic assistance. */
   imageInput?: "direct" | "assisted" | "unavailable";
   /** public projection of reviewed catalog controls; no provider selectors/provenance. */

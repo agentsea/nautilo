@@ -64,7 +64,10 @@ for (const [files, env, timeout] of [
   [integrationEnv ? integrationFiles : [], integrationEnv, "120000"],
 ] as const) {
   for (const file of files) {
-    const child = Bun.spawn(["bun", "test", "--preload", "./packages/trust/tests/test-env-preload.ts", "--timeout", timeout, file],
+    const command = file === "packages/lattice-bridge/tests/integration/moderation-recipient-authority.integration.test.ts"
+      ? ["bun", "run", "--cwd", "packages/lattice-bridge", "test:integration", file]
+      : ["bun", "test", "--preload", "./packages/trust/tests/test-env-preload.ts", "--timeout", timeout, file];
+    const child = Bun.spawn(command,
       { cwd: root, env, stdout: "inherit", stderr: "inherit" });
     const status = await child.exited;
     if (status !== 0) process.exit(status);

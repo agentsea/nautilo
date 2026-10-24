@@ -38,14 +38,20 @@ function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
     && left.every((value, index) => value === right[index]);
 }
 
-/** @internal Open only from one exact, already-authorized Domain root. */
+/**
+ * @internal Open only from one exact, already-authorized Domain root.
+ * Global Runtime freshness and the Domain's Agent revision are independent.
+ */
 export async function openProtectedAgentRuntimeFromDomainRoot(input: Readonly<{
   crypto: LatticeCrypto;
   storage: Pick<LatticeStorage, "getAgentRuntimeAtomicState">;
   domain: ProtectedAgentRuntimeDomainRoot;
   agentId: AgentId;
+  expectedRuntimeAuthorizationRevision: number;
   resolveHistoricalCommitter: HistoricalAgentRuntimeCommitterResolverV1;
 }>): Promise<OpenedProtectedAgentRuntime | null> {
+  if (!Number.isSafeInteger(input.expectedRuntimeAuthorizationRevision)
+    || input.expectedRuntimeAuthorizationRevision < 0) return null;
   let stored: Awaited<
     ReturnType<LatticeStorage["getAgentRuntimeAtomicState"]>
   >;
@@ -58,7 +64,7 @@ export async function openProtectedAgentRuntimeFromDomainRoot(input: Readonly<{
     stored === null
     || stored.runtime.agentId !== input.agentId
     || stored.runtime.authorizationRevision
-      !== input.domain.agentAuthorizationRevision
+      !== input.expectedRuntimeAuthorizationRevision
   ) return null;
   const envelopeRecords = stored.domainEnvelopes.filter((record) =>
     record.agentId === input.agentId

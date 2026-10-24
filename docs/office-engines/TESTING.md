@@ -8,8 +8,15 @@ The engine packages, app adapters and packaged image have separate checks.
 ```sh
 bunx turbo run build typecheck test:unit --filter=@nautilo/office-board...
 bunx turbo run build typecheck test:unit --filter=@nautilo/office-slides...
+bunx turbo run typecheck test:unit --filter=@nautilo/office-sheets...
+bunx turbo run test:integration --filter=@nautilo/office-sheets
 bun run --cwd packages/office-board test:browser
 ```
+
+The Office Sheets integration task builds the package and its dependencies,
+then verifies the emitted browser and Node package exports. These compiled-
+artifact checks are excluded from `test:unit`; the remaining source-level
+Office Sheets tests continue to run there.
 
 The Board browser test needs Playwright Chromium, or an installed Chrome with
 `BOARD_TEST_BROWSER_CHANNEL=chrome`. It exercises emitted browser exports;

@@ -274,6 +274,16 @@ describe("caller-scoped model availability", () => {
 
   test("admits a server-funded Surplus-only route without changing personal capability isolation", async () => {
     const modelId = "venice:openai-gpt-55";
+    const route = {
+      catalogModelId: modelId,
+      surplusModelId: "gpt-5.5",
+      providerPin: "venice" as const,
+      supportsTools: true,
+      supportsVision: false,
+      supportsReasoning: false,
+      maxContextTokens: 100_000,
+      maxOutputTokens: 8_000,
+    };
     const result = await resolveCallerModelAvailability(
       "human-1",
       modelId,
@@ -286,12 +296,40 @@ describe("caller-scoped model availability", () => {
           providerRoute: "surplus",
           workload: input.workload,
         }),
+        getQualifiedSurplusChatRoutes: () => [route],
       },
     );
     expect(result).toMatchObject({
       model: { id: modelId, availability: "selectable", enabled: true },
       funding: { kind: "server", providerRoute: "surplus" },
       selectableInThisRelease: true,
+    });
+    expect(result.model.capabilities).toMatchObject({
+      tools: true,
+      vision: false,
+      reasoning: false,
+      webSearch: false,
+    });
+    expect(result.model.limits).toEqual({ contextTokens: 100_000, outputTokens: 8_000 });
+  });
+
+  test("rejects chat-tools when the confirmed Surplus route lacks tool support", async () => {
+    const modelId = "venice:openai-gpt-55";
+    const result = await resolveCallerModelAvailability("human-1", modelId,
+      { purpose: "chat-tools", env: {} }, {
+        resolveFunding: async (input) => ({ kind: "server", humanUserId: input.humanUserId,
+          modelId: input.modelId, providerRoute: "surplus", workload: input.workload }),
+        getQualifiedSurplusChatRoutes: () => [{
+          catalogModelId: modelId, surplusModelId: "gpt-5.5", providerPin: "venice",
+          supportsTools: false, supportsVision: true, supportsReasoning: true,
+          maxContextTokens: 100_000, maxOutputTokens: 8_000,
+        }],
+      });
+    expect(result.selectableInThisRelease).toBe(false);
+    expect(result.model).toMatchObject({
+      enabled: false,
+      availability: "unsupported-capability",
+      unavailableReason: "model does not support tool/function calling",
     });
   });
 

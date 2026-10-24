@@ -17,7 +17,7 @@
  * venice + capabilities caches so the rows are deterministic. The validator
  * is pure / cache-backed — it never awaits a fetch (Phase 0).
  */
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { resetModelCapabilitiesCacheForTests } from "@nautilo/model-capabilities";
 import {
   validateExactTaskModelSelection,
@@ -27,6 +27,9 @@ import {
 import type { QualifiedSurplusChatRoute } from "../../src/providers/surplus-route";
 import { validateTaskModelSelectionForCreate } from "../../src/tools/tasks/selection-validation";
 import { resetVeniceCatalogCacheModuleForTests } from "../../src/config/venice-catalog-cache";
+
+import { installSurplusCatalogFixture } from "../helpers/surplus-catalog-fixture";
+import { resetSurplusModelCatalog } from "../../src/providers/surplus-catalog";
 
 const FULL_ENV: NodeJS.ProcessEnv = {
   ANTHROPIC_API_KEY: "x",
@@ -245,9 +248,23 @@ describe("validateExactTaskModelSelection (D429 Phase 3) — strict tool-capabil
 });
 
 describe("validateExactTaskModelSelection — qualified server-funded exact Tasks", () => {
+  beforeEach(installSurplusCatalogFixture);
+  afterEach(resetSurplusModelCatalog);
   test("admits a signed tool-capable default route without an injected route allowlist", () => {
     expect(validateExactTaskModelSelection({
       requestedModelId: "anthropic:claude-sonnet-4-6",
+      env: NO_ENV,
+      toolsMode: "auto",
+      surplus: {
+        policyEnabled: true,
+        keyConfigured: true,
+      },
+    })).toBeNull();
+  });
+
+  test("admits the derived Sonnet route at its lower qualified Surplus output budget", () => {
+    expect(validateExactTaskModelSelection({
+      requestedModelId: "openrouter:anthropic/claude-sonnet-4.6",
       env: NO_ENV,
       toolsMode: "auto",
       surplus: {
@@ -329,7 +346,7 @@ describe("validateExactTaskModelSelection — qualified server-funded exact Task
     })?.code).toBe("capability_mismatch");
   });
 
-  test("rejects a route narrower than the signed Task output budget", () => {
+  test("admits a qualified route narrower than the signed direct output budget", () => {
     expect(validateExactTaskModelSelection({
       requestedModelId: SURPLUS_ONLY_MODEL,
       env: NO_ENV,
@@ -339,7 +356,23 @@ describe("validateExactTaskModelSelection — qualified server-funded exact Task
         keyConfigured: true,
         routes: [{ ...QUALIFIED_SURPLUS_ROUTE, maxOutputTokens: 8_000 }],
       },
-    })?.code).toBe("capability_mismatch");
+    })).toBeNull();
+  });
+
+  test("admits an output maximum equal to context because invocation budgets the remaining context", () => {
+    expect(validateExactTaskModelSelection({
+      requestedModelId: SURPLUS_ONLY_MODEL,
+      env: NO_ENV,
+      toolsMode: "none",
+      surplus: {
+        policyEnabled: true,
+        keyConfigured: true,
+        routes: [{
+          ...QUALIFIED_SURPLUS_ROUTE,
+          maxContextTokens: QUALIFIED_SURPLUS_ROUTE.maxOutputTokens,
+        }],
+      },
+    })).toBeNull();
   });
 
   test.each([

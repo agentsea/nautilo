@@ -55,6 +55,8 @@ import {
   type Rng,
 } from "@nautilo/lattice-crypto";
 import {
+  decodeHumanMemoryContentEmbeddingRequestV2,
+  prepareHumanMemoryContentEmbeddingRequestV3,
   encodeAgentRuntimeSignerPublicationV1,
   encodeLiveShadowMessagePlanV4,
   encodeEncryptedPayloadV2,
@@ -1552,6 +1554,7 @@ async function assertMemoryRepresentationAndCryptoOpaque(
 
 async function createHumanDeletionFixture(
   representation: "ordinary_and_protected" | "protected_only" = "protected_only",
+  marketplace = false,
 ) {
   const memoryId = randomUUID();
   const namespaceValue = randomUUID();
@@ -1613,7 +1616,7 @@ async function createHumanDeletionFixture(
     committerSigningPublicKey: signing.publicKey,
     committerSigningPrivateKey: signing.privateKey,
   });
-  const signedEmbeddingRequest = prepareHumanMemoryContentEmbeddingRequest(
+  const legacySignedEmbeddingRequest = prepareHumanMemoryContentEmbeddingRequest(
     crypto,
     {
       subjectHumanId: humanId(humanValue),
@@ -1642,6 +1645,21 @@ async function createHumanDeletionFixture(
       committerSigningPrivateKey: signing.privateKey,
     },
   );
+  const legacyRequest = decodeHumanMemoryContentEmbeddingRequestV2(legacySignedEmbeddingRequest.bytes);
+  const { formatVersion: _version, purpose: _purpose, signature: _signature,
+    requestedProvider: _provider, requestedModel: _model, dimensions: _dimensions,
+    processorContractVersion: _contract, ...signedCoordinates } = legacyRequest;
+  const requestedEmbedding = { contractVersion: 2, canonicalSpace: {
+    provider: "venice", model: "text-embedding-3-large", dimensions: 1536 },
+    processingRoute: { transport: "surplus_marketplace",
+      marketplacePolicyVersion: "surplus-embedding-marketplace-v1",
+      dataRecipientClasses: ["surplus", "marketplace_seller", "seller_upstream_processor"] } } as const;
+  const signedEmbeddingRequest = marketplace
+    ? prepareHumanMemoryContentEmbeddingRequestV3(crypto, { ...signedCoordinates,
+      requestedEmbedding, processorContractVersion: 2,
+      committerSigningPublicKey: signing.publicKey,
+      committerSigningPrivateKey: signing.privateKey })
+    : legacySignedEmbeddingRequest;
   const preparedCreateRequest = Object.freeze({
       requestVersion: 1,
       memoryId,
@@ -1794,11 +1812,13 @@ async function createHumanDeletionFixture(
     foregroundEmbeddingProcessor: {
       embed: async ({ request }) => {
         expect(request.plaintext).toBe(plaintext);
+        if (marketplace) expect(request).toMatchObject({ contractVersion: 2,
+          embeddingDisclosure: requestedEmbedding });
         return {
           status: "embedded",
           embedding: {
-            provider: "openai",
-            canonicalModel: "text-embedding-3-small",
+            provider: marketplace ? "venice" : "openai",
+            canonicalModel: marketplace ? "text-embedding-3-large" : "text-embedding-3-small",
             dimensions: 1536,
             vector: new Array<number>(1536).fill(0.5),
             processorContractVersion: 1,
@@ -3710,7 +3730,7 @@ describe("Postgres protected Memory product and crypto adapters", () => {
         if (
           prepared.status !== "executed"
           || prepared.value.status !== "success"
-        ) throw new Error("Agent exact-access integration preparation failed");
+        ) throw new Error(`Agent exact-access integration preparation failed: ${JSON.stringify(prepared)}`);
         const preparedHandle = prepared.value.value;
         const responseLoss = await contentPort.authorizeCommit({
           capability,
@@ -4343,7 +4363,7 @@ describe("Postgres protected Memory product and crypto adapters", () => {
     }
   });
 
-  test("publishes and replays early ordinary Human create/update with truthful terminal receipts and no crypto allocation", async () => {
+  test.each([false, true])("publishes and replays early ordinary Human create/update with truthful terminal receipts and no crypto allocation (marketplace=%s)", async (marketplace) => {
     const fixture = await createHumanDeletionFixture("ordinary_and_protected");
     const operationId = `human-memory:ordinary-update:${randomUUID()}`;
     const requestDigest = fixture.crypto.hash(new TextEncoder().encode(operationId));
@@ -4363,7 +4383,7 @@ describe("Postgres protected Memory product and crypto adapters", () => {
           withLocks: async (_input, publish) => publish(async () => {}),
           withOrdinaryLocks: async (_input, publish) => publish(async () => {}) },
       });
-      const authenticated = Object.freeze({ requestDigest,
+      const legacyAuthenticated = Object.freeze({ requestDigest,
         request: Object.freeze({ formatVersion: 1 as const,
           purpose: "memory.ordinary_fallback.update" as const,
           reason: "target_encryption_not_ready" as const,
@@ -4380,14 +4400,27 @@ describe("Postgres protected Memory product and crypto adapters", () => {
           hostAuthorizationRevision: 1, planIssuedAt: null,
           planDeadlineAt: null, issuedAt: NOW, deadlineAt: NOW + 30_000,
           signature: new Uint8Array(64) }) });
+      const { formatVersion: _version, requestedProvider: _provider,
+        requestedModel: _model, dimensions: _dimensions,
+        processorContractVersion: _contract, ...coordinates } = legacyAuthenticated.request;
+      const authenticated = marketplace ? Object.freeze({ requestDigest,
+        request: Object.freeze({ ...coordinates, formatVersion: 2 as const,
+          processorContractVersion: 2 as const,
+          requestedEmbedding: { contractVersion: 2 as const,
+            canonicalSpace: { provider: "venice" as const,
+              model: "text-embedding-3-large", dimensions: 1536 as const },
+            processingRoute: { transport: "surplus_marketplace" as const,
+              marketplacePolicyVersion: "surplus-embedding-marketplace-v1" as const,
+              dataRecipientClasses: ["surplus", "marketplace_seller", "seller_upstream_processor"] as const } } }) })
+        : legacyAuthenticated;
       expect(() => product.admitOrdinaryFallback({
         authority: { ...authority, mutableNamespaceIds: [] }, authenticated,
       })).toThrow("fallback authority is incomplete");
       const admission = await product.admitOrdinaryFallback({ authority,
         authenticated });
       const projection = await product.publishOrdinaryFallbackIntent({
-        authority, admission, embedding: { provider: "openai",
-          canonicalModel: "text-embedding-3-small", dimensions: 1536,
+        authority, admission, embedding: { provider: marketplace ? "venice" : "openai",
+          canonicalModel: marketplace ? "text-embedding-3-large" : "text-embedding-3-small", dimensions: 1536,
           vector: new Array<number>(1536).fill(0.25),
           processorContractVersion: 1 },
       });
@@ -4456,7 +4489,7 @@ describe("Postgres protected Memory product and crypto adapters", () => {
       if (plan.issuedAt === undefined) throw new Error("Missing plan issue time");
       const createDigest = fixture.crypto.hash(
         new TextEncoder().encode(createdOperationId));
-      const createAuthenticated = Object.freeze({ requestDigest: createDigest,
+      const legacyCreateAuthenticated = Object.freeze({ requestDigest: createDigest,
         request: Object.freeze({ formatVersion: 1 as const,
           purpose: "memory.ordinary_fallback.create" as const,
           reason: "target_encryption_not_ready" as const,
@@ -4473,12 +4506,20 @@ describe("Postgres protected Memory product and crypto adapters", () => {
           hostAuthorizationRevision: 1, planIssuedAt: plan.issuedAt,
           planDeadlineAt: plan.deadlineAt, issuedAt: plan.issuedAt,
           deadlineAt: plan.deadlineAt, signature: new Uint8Array(64) }) });
+      const { formatVersion: _createVersion, requestedProvider: _createProvider,
+        requestedModel: _createModel, dimensions: _createDimensions,
+        processorContractVersion: _createContract, ...createCoordinates } = legacyCreateAuthenticated.request;
+      const createAuthenticated = authenticated.request.formatVersion === 2
+        ? { requestDigest: createDigest, request: { ...createCoordinates,
+          formatVersion: 2 as const, processorContractVersion: 2 as const,
+          requestedEmbedding: authenticated.request.requestedEmbedding } }
+        : legacyCreateAuthenticated;
       const createAdmission = await createProduct.admitOrdinaryFallback({
         authority: createAuthority, authenticated: createAuthenticated });
       expect(await createProduct.publishOrdinaryFallbackIntent({
         authority: createAuthority, admission: createAdmission,
-        embedding: { provider: "openai",
-          canonicalModel: "text-embedding-3-small", dimensions: 1536,
+        embedding: { provider: marketplace ? "venice" : "openai",
+          canonicalModel: marketplace ? "text-embedding-3-large" : "text-embedding-3-small", dimensions: 1536,
           vector: new Array<number>(1536).fill(0.5),
           processorContractVersion: 1 },
       })).toMatchObject({ memoryId: createdMemoryId, contentRevision: 1,
@@ -4945,4 +4986,25 @@ describe("Postgres protected Memory product and crypto adapters", () => {
       await Promise.all([agentClient.end(), productStore.client.end(), crypto.client.end()]);
     }
   });
+});
+
+
+test("persists marketplace-bound protected Human content with canonical Venice vectors", async () => {
+  const fixture = await createHumanDeletionFixture("protected_only", true);
+  try {
+    const db = drizzle(admin, { schema });
+    const [stored] = await db.select({ content: memories.content,
+      provider: memories.embeddingProvider, model: memories.embeddingModel,
+      dimensions: memories.embeddingDimensions, contract: memories.embeddingContractVersion,
+      embeddingRevision: memories.embeddingRevision, contentRevision: memories.contentRevision,
+      mapping: memories.cryptoMappingState }).from(memories).where(eq(memories.id, fixture.memoryId));
+    expect(stored).toEqual({ content: null, provider: "venice", model: "text-embedding-3-large",
+      dimensions: 1536, contract: 1, embeddingRevision: 1, contentRevision: 1, mapping: "verified" });
+    const opened = decryptObjectPayload(fixture.crypto, fixture.objectDek, decodeEncryptedPayloadV2(fixture.payloadBytes));
+    if (opened === null) throw new Error("Protected Memory payload failed to decrypt");
+    expect(decodeMemoryPayloadV1(opened).content).toBe(fixture.plaintext);
+  } finally {
+    fixture.objectDek.fill(0); fixture.signingPrivateKey.fill(0);
+    fixture.envelopeBytes.fill(0); fixture.signedEmbeddingRequest.bytes.fill(0);
+  }
 });

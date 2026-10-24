@@ -14,6 +14,53 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   target bitrates. Unsigned builds accept user-replaced FFmpeg files, as LGPL
   requires.
 
+- Personal chat keeps its admitted provider and credential when marketplace
+  availability changes. Already-admitted direct calls skip Surplus discovery,
+  and protected Memory retains its approved marketplace embedding disclosure.
+
+- Surplus model selection and requests now use its live catalogue for confirmed
+  model names, capabilities, reasoning parameters, and token limits. Auto skips
+  unconfirmed routes, and chat and Soul share the same marketplace budget.
+  Responses with an adapted output ceiling are accepted when they finish
+  naturally and reported output stays within the original request budget.
+
+- Onboarding waits for an in-progress Soul before saving the final profile,
+  and automatic foreground chat selection supports Surplus-only servers.
+
+- Invite room pickers now list only public rooms and exclude external rooms.
+
+- Web Genie customization now loads the default shell avatar correctly instead
+  of showing a missing-image error and requiring a replacement.
+
+- Surplus-only chat can use available sellers for eligible ordinary models,
+  preserves streamed tool calls, and respects qualified marketplace output
+  limits. Missing recovery keys retain the original marketplace failure;
+  pre-routing error traces no longer become pending cost receipts.
+
+- Embeddings can use Surplus with an explicit Venice text-embedding-3-large
+  selection and Prefer Surplus enabled. Protected Memory shows and binds the
+  processing route before saving or searching, and usage receipts track
+  marketplace costs without replaying provider requests.
+
+- Soul generation supports a server Surplus key without a direct provider key,
+  including streamed customization previews and service cost tracking. Eligible
+  Surplus-only requests let the marketplace choose an available seller and can
+  recover from confirmed supply refusals through other eligible models.
+
+- Operators can connect a selected Genie to mAgent through a private Unix socket,
+  with a fresh external-context Room and a fixed sponsor and sender identity.
+
+- Server Docker builds require Chromium 156.0.8078.47 or later from Debian
+  13 security updates on both AMD64 and ARM64, and no longer waive findings
+  for the older Chromium packages.
+
+- Update TOML parsing to reject malformed input without excessive processing.
+- Preserve strict IP matching in network allowlists during hostname normalization.
+- Genie can change access to encrypted Memory across Domains whose
+  authorization histories have advanced independently.
+- Bundled Bun and contributor tooling use Bun 1.4.4 with updated certificate
+  trust. macOS Desktop downloads verify the official runtime archive checksums.
+
 - Scheduled Tasks keep concurrent results on separate execution threads.
   Finished encrypted schedules show no future runs and retain result history.
 - Encrypted Task creation, editing and repair use current Domain authority on
@@ -31,8 +78,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 - Desktop uses Electron 43.8.3, which rejects certificate chains containing
   compromised eMudhra intermediate keys in its Chromium and Node.js networking.
-  Desktop requires macOS 12 (Monterey) or later; its package metadata now
-  declares that minimum. Separately bundled runtimes require their own updates.
+  Desktop requires macOS 13 (Ventura) or later; its package metadata now
+  declares that minimum. Native rebuild tooling recognizes the selected Electron
+  runtime. The bundled Google Workspace helper requires macOS 15 or later and
+  remains unavailable on macOS 13 and 14 without blocking Desktop.
 
 - Background Tasks can save Workspace files using their authorized namespace
   room while keeping their transcripts separate from the originating chat.

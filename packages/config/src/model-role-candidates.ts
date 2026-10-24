@@ -185,6 +185,7 @@ export const MODEL_ROLE_CANDIDATES = {
     "venice:text-embedding-3-small",
     "openrouter:openai/text-embedding-3-small",
     "openai:text-embedding-3-small",
+    "venice:text-embedding-3-large",
   ],
   imageGeneration: [
     "openai:gpt-image-2.5-sunburst",

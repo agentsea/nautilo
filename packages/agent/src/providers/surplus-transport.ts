@@ -1,13 +1,13 @@
 import type { ChatGenerationChunk } from "@langchain/core/outputs";
-import { ChatOpenAI } from "@langchain/openai";
+import {
+  ChatOpenAI,
+  type convertCompletionsDeltaToBaseMessageChunk,
+} from "@langchain/openai";
 import type { ChatModel, ReasoningEffort } from "./types";
 import type { QualifiedSurplusChatRoute } from "./surplus-route";
 import { OpenRouterReasoningCompletions } from "./openrouter-reasoning";
 import { openRouterSessionModelKwargs, surplusReasoningModelKwargs } from "./factory";
-import {
-  VeniceChatOpenAICompletions,
-  wrapVeniceModelForToolSchemas,
-} from "./venice-compat";
+import { wrapVeniceModelForToolSchemas } from "./venice-compat";
 
 const SURPLUS_API_ROOT = "https://api.surplusintelligence.ai/v1";
 const SURPLUS_CHAT_PATH = "/v1/chat/completions";
@@ -178,6 +178,72 @@ export interface CreateSurplusChatModelInput {
   readonly fetchImpl?: typeof fetch;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * Project the factory-reviewed reasoning intent onto the exact spelling the
+ * discovered model advertises. Surplus does not generally translate these two
+ * chat-wire shapes, and include_reasoning is always stripped upstream.
+ */
+function discoveredSurplusReasoningKwargs(
+  route: QualifiedSurplusChatRoute,
+  reviewed: Record<string, unknown>,
+  explicitReasoningEffort: boolean,
+): Record<string, unknown> {
+  const withoutVisibilityHint = { ...reviewed };
+  delete withoutVisibilityHint["include_reasoning"];
+  if (route.supportedParameters === undefined) return withoutVisibilityHint;
+
+  const supported = new Set(route.supportedParameters);
+  const supportsNested = supported.has("reasoning");
+  const supportsFlat = supported.has("reasoning_effort");
+  const nested = isRecord(withoutVisibilityHint["reasoning"])
+    ? withoutVisibilityHint["reasoning"]
+    : undefined;
+  const flat = typeof withoutVisibilityHint["reasoning_effort"] === "string"
+    ? withoutVisibilityHint["reasoning_effort"]
+    : undefined;
+
+  delete withoutVisibilityHint["reasoning"];
+  delete withoutVisibilityHint["reasoning_effort"];
+
+  if (supportsNested && supportsFlat) {
+    return {
+      ...withoutVisibilityHint,
+      ...(nested ? { reasoning: nested } : {}),
+      ...(flat ? { reasoning_effort: flat } : {}),
+    };
+  }
+  if (supportsNested) {
+    return {
+      ...withoutVisibilityHint,
+      ...(nested
+        ? { reasoning: nested }
+        : flat
+          ? { reasoning: { effort: flat } }
+          : {}),
+    };
+  }
+  if (supportsFlat) {
+    const effort = flat
+      ?? (typeof nested?.["effort"] === "string"
+        ? nested["effort"]
+        : nested?.["enabled"] === false
+          ? "none"
+          : undefined);
+    return {
+      ...withoutVisibilityHint,
+      ...(effort ? { reasoning_effort: effort } : {}),
+    };
+  }
+  if (explicitReasoningEffort) {
+    throw new Error("The discovered Surplus model does not advertise a reasoning control.");
+  }
+  return withoutVisibilityHint;
+}
+
 function projectSurplusStreamChunk(
   chunk: ChatGenerationChunk,
   terminalReason: string | undefined,
@@ -210,8 +276,27 @@ function projectSurplusStreamChunk(
   return terminalReason;
 }
 
-/** Preserve terminal metadata for every non-Venice OpenAI-compatible pin. */
+type CompletionDeltaConversion = Parameters<
+  typeof convertCompletionsDeltaToBaseMessageChunk
+>[0];
+
+/** Preserve terminal metadata for every Surplus OpenAI-compatible pin. */
 class SurplusOpenAICompatibleCompletions extends OpenRouterReasoningCompletions {
+  protected override _convertCompletionsDeltaToBaseMessageChunk(
+    delta: CompletionDeltaConversion["delta"],
+    rawResponse: CompletionDeltaConversion["rawResponse"],
+    defaultRole?: CompletionDeltaConversion["defaultRole"],
+  ) {
+    // A chat-completion choice is assistant output, but Surplus sellers may
+    // omit delta.role from every streamed frame. Explicit roles still win in
+    // LangChain's converter; this supplies only its otherwise-missing default.
+    return super._convertCompletionsDeltaToBaseMessageChunk(
+      delta,
+      rawResponse,
+      defaultRole ?? "assistant",
+    );
+  }
+
   override async *_streamResponseChunks(
     ...args: Parameters<OpenRouterReasoningCompletions["_streamResponseChunks"]>
   ) {
@@ -224,7 +309,7 @@ class SurplusOpenAICompatibleCompletions extends OpenRouterReasoningCompletions 
 }
 
 /** Surplus may repeat the terminal choice when attaching its final usage receipt. */
-class SurplusOpenRouterCompletions extends OpenRouterReasoningCompletions {
+class SurplusOpenRouterCompletions extends SurplusOpenAICompatibleCompletions {
   override invocationParams(
     ...args: Parameters<OpenRouterReasoningCompletions["invocationParams"]>
   ) {
@@ -236,18 +321,6 @@ class SurplusOpenRouterCompletions extends OpenRouterReasoningCompletions {
       delete params.max_completion_tokens;
     }
     return params;
-  }
-
-  override async *_streamResponseChunks(
-    ...args: Parameters<OpenRouterReasoningCompletions["_streamResponseChunks"]>
-  ) {
-    // State belongs to this stream, so concurrent invocations cannot share a
-    // terminal marker. Keep the SDK's final usage chunk and all reasoning.
-    let terminalReason: string | undefined;
-    for await (const chunk of super._streamResponseChunks(...args)) {
-      terminalReason = projectSurplusStreamChunk(chunk, terminalReason);
-      yield chunk;
-    }
   }
 }
 
@@ -262,6 +335,15 @@ export function createSurplusChatModel(input: CreateSurplusChatModelInput): Chat
     throw new Error("Surplus output budget exceeds the qualified route limit.");
   }
   const isVenice = input.providerMode !== "any" && input.route.providerPin === "venice";
+  const reasoningKwargs = discoveredSurplusReasoningKwargs(
+    input.route,
+    surplusReasoningModelKwargs({
+      modelId: input.route.catalogModelId,
+      ...(input.reasoningEffort === undefined ? {} : { reasoningEffort: input.reasoningEffort }),
+      ...(input.reasoningOutput === undefined ? {} : { reasoningOutput: input.reasoningOutput }),
+    }, input.maxOutputTokens),
+    input.reasoningEffort !== undefined,
+  );
   const base = {
     model: input.route.surplusModelId,
     apiKey,
@@ -271,11 +353,7 @@ export function createSurplusChatModel(input: CreateSurplusChatModelInput): Chat
     streamUsage: true,
     modelKwargs: {
       ...(input.providerMode === "any" ? {} : { provider: input.route.providerPin }),
-      ...surplusReasoningModelKwargs({
-        modelId: input.route.catalogModelId,
-        ...(input.reasoningEffort === undefined ? {} : { reasoningEffort: input.reasoningEffort }),
-        ...(input.reasoningOutput === undefined ? {} : { reasoningOutput: input.reasoningOutput }),
-      }, input.maxOutputTokens),
+      ...reasoningKwargs,
       ...(input.route.providerPin === "openrouter"
         ? openRouterSessionModelKwargs(input.openrouterSessionId)
         : {}),
@@ -290,11 +368,9 @@ export function createSurplusChatModel(input: CreateSurplusChatModelInput): Chat
   };
   const model = new ChatOpenAI({
     ...base,
-    ...(isVenice
-      ? { completions: new VeniceChatOpenAICompletions(base) }
-      : input.route.providerPin === "openrouter"
-        ? { completions: new SurplusOpenRouterCompletions(base) }
-        : { completions: new SurplusOpenAICompatibleCompletions(base) }),
+    ...(input.route.providerPin === "openrouter"
+      ? { completions: new SurplusOpenRouterCompletions(base) }
+      : { completions: new SurplusOpenAICompatibleCompletions(base) }),
   }) as unknown as ChatModel;
   return isVenice
     ? wrapVeniceModelForToolSchemas(model)

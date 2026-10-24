@@ -16,6 +16,7 @@ import {
   getAgentExecutionConfigById,
   getAgentDisplayNameById,
   getDefaultForegroundAgentModelId,
+  hydrateForegroundAgentModelCatalog,
   resolveForegroundAgentModelId,
   loadForegroundModelControlSnapshot,
   foregroundModelControlPlanFromSnapshot,
@@ -390,6 +391,12 @@ export async function* forkLanggraphExecutor(
   const foregroundModelControlSnapshot = await loadForegroundModelControlSnapshot(
     roomId, agentId, perTurnModel || null,
   );
+  if (!perTurnModel && !profile?.defaultModel
+    && !foregroundModelControlSnapshot.turnModelId
+    && !foregroundModelControlSnapshot.roomSelection?.modelId
+    && !foregroundModelControlSnapshot.agentSelection?.modelId) {
+    await hydrateForegroundAgentModelCatalog(signal);
+  }
   const foregroundModelPlan = foregroundModelControlPlanFromSnapshot(foregroundModelControlSnapshot, () =>
     profile?.defaultModel
       ? profile.defaultModel

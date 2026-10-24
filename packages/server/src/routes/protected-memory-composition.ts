@@ -18,6 +18,7 @@ import type {
   ProtectedMemoryRepairResponseV1,
 } from "@nautilo/api-client";
 import type { MemoryAccessEnvelope } from "@nautilo/trust";
+import type { MemoryEmbeddingDisclosureV2 } from "@nautilo/lattice-crypto/wire";
 
 export type ProtectedMemoryMode = "namespace" | "scope";
 
@@ -73,6 +74,7 @@ export interface ProtectedMemoryRoutePorts {
       prepared: ProtectedMemoryPreparedRepairRequestV1 }>): Promise<ProtectedMemoryRepairResponseV1>;
   }>;
   readonly embeddingConfiguration?: MemoryProcessorRecipientV1["embedding"];
+  readonly embeddingDisclosure?: MemoryEmbeddingDisclosureV2;
   planCreate(input: Readonly<{
     authority: ProtectedMemoryRouteAuthority;
   }>): Promise<
@@ -105,6 +107,7 @@ export interface ProtectedMemoryRoutePorts {
     authority: ProtectedMemoryRouteAuthority;
     namespaceIds: readonly string[];
     query: string;
+    embeddingDisclosure?: MemoryEmbeddingDisclosureV2;
     limit?: number;
     includeArchive: boolean;
   }>): Promise<ProtectedMemoryReadResult<ProtectedMemorySearchResponseV1>>;
@@ -351,6 +354,10 @@ export function createProtectedMemoryTestShadowComposition(input: Readonly<{
   assertPorts(input.ports);
   const ports: ProtectedMemoryRoutePorts = Object.freeze({
     ...(input.ports.repair === undefined ? {} : { repair: input.ports.repair }),
+    ...(input.ports.embeddingConfiguration === undefined ? {}
+      : { embeddingConfiguration: input.ports.embeddingConfiguration }),
+    ...(input.ports.embeddingDisclosure === undefined ? {}
+      : { embeddingDisclosure: input.ports.embeddingDisclosure }),
     planCreate: input.ports.planCreate.bind(input.ports),
     createPrepared: input.ports.createPrepared.bind(input.ports),
     list: input.ports.list.bind(input.ports),

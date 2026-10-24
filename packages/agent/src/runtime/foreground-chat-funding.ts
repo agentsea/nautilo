@@ -50,6 +50,8 @@ export interface ForegroundFundingSnapshot {
 
 export interface ForegroundChatFundingSession {
   readonly admission?: ForegroundFundingSnapshot;
+  /** Request-local serving fact, never checkpointed or used as funding authority. */
+  readonly admittedTransport?: "direct" | "surplus";
   readonly kind: "personal" | "server";
   /** Trusted request-local diagnostics policy; independent of who pays. Never serialized. */
   readonly contentPrivateDiagnostics?: true;

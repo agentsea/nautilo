@@ -19,6 +19,8 @@ import {
   wrapObjectDekForNamespace,
 } from "@nautilo/lattice-crypto";
 import {
+  decodeHumanMemoryContentEmbeddingRequestV2,
+  prepareHumanMemoryContentEmbeddingRequestV3,
   decodeEncryptedPayloadV2,
   decodeNamespaceObjectEnvelopeV2,
   decodeObjectAccessManifestV5,
@@ -1572,4 +1574,36 @@ describe("Human prepared Memory create", () => {
     expect(processorCalls).toBe(1);
     expect(completionCalls).toBe(3);
   });
+});
+
+
+test("authenticates a marketplace-bound signed content request without changing vector provenance format", async () => {
+  const state = fixture();
+  const legacy = decodeHumanMemoryContentEmbeddingRequestV2(Buffer.from(
+    state.dto.signedContentEmbeddingRequestBytesBase64url, "base64url"));
+  const { formatVersion: _version, purpose: _purpose, signature: _signature,
+    requestedProvider: _provider, requestedModel: _model, dimensions: _dimensions,
+    processorContractVersion: _contract, ...coordinates } = legacy;
+  const requestedEmbedding = { contractVersion: 2, canonicalSpace: {
+    provider: "venice", model: "text-embedding-3-large", dimensions: 1536 },
+    processingRoute: { transport: "surplus_marketplace",
+      marketplacePolicyVersion: "surplus-embedding-marketplace-v1",
+      dataRecipientClasses: ["surplus", "marketplace_seller", "seller_upstream_processor"] } } as const;
+  const signed = prepareHumanMemoryContentEmbeddingRequestV3(state.crypto, {
+    ...coordinates, requestedEmbedding, processorContractVersion: 2,
+    committerSigningPublicKey: state.signingPublicKey,
+    committerSigningPrivateKey: state.signingPrivateKey,
+  });
+  const authenticated = await authenticatePreparedHumanMemoryUpdate({
+    crypto: state.crypto, expectedHumanId: "human:1", memoryId: MEMORY_ID,
+    prepared: { ...state.dto, signedContentEmbeddingRequestBytesBase64url:
+      Buffer.from(signed.bytes).toString("base64url") },
+    now: 1_800_000_000_000,
+    resolveHistoricalDeviceAuthority: authorityResolver(state.signingPublicKey),
+  });
+  expect(authenticated.embeddingRequest).toMatchObject({ contractVersion: 2,
+    provider: "venice", model: "text-embedding-3-large", dimensions: 1536,
+    embeddingDisclosure: requestedEmbedding, plaintext: "kept client-side" });
+  expect(authenticated.operationRequestDigest).not.toEqual(
+    digestPreparedHumanMemorySignedRequest(state.crypto, state.dto));
 });

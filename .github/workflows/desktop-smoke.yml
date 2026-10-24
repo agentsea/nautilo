@@ -58,7 +58,8 @@ permissions:
   contents: read
 
 env:
-  BUN_VERSION: "1.3.11"
+  NODE_OPTIONS: --use-openssl-ca
+  BUN_VERSION: "1.4.4"
 
 jobs:
   desktop-smoke:
@@ -71,8 +72,146 @@ jobs:
       TURBO_SCM_BASE: ${{ github.event.pull_request.base.sha || github.sha }}
       TURBO_SCM_HEAD: HEAD
     steps:
+      - &runner_trust
+        name: Prepare maintained runner trust before network access
+        shell: bash
+        working-directory: ${{ github.workspace }}
+        run: |
+          python_cmd=python3
+          command -v "$python_cmd" >/dev/null || python_cmd=python
+          "$python_cmd" - <<'PY'
+          import gzip, hashlib, io, json, os, re, ssl, subprocess, sys, tarfile, urllib.parse, urllib.request
+          from pathlib import Path
+          APK_URL = "https://dl-cdn.alpinelinux.org/alpine/v3.23/main/x86_64/ca-certificates-bundle-20261020-r0.apk"
+          APK_SHA256 = "a4c5de1bf37652cd98cbe71aec209512ae0508a964961957a6c9650f795e46c4"
+          BUNDLE_SHA256 = "5961c0a3c65459931c023e0075c09733f09aea4ca439cb85bc4a08bb4f3f568b"
+          # Host policy: G3B, G3C, and the AAA cross-sign. Bun retains its separate six-root guard.
+          BLOCKED = {"7dd78d5f4f13459a83dff9abbba62edbaf6f2d102bf257fd712f4d9f2746ed8d",
+                     "86a1ecba089c4a8d3bbe2734c612ba341d813e043cf9e8a862cd5c57a36bbe6b",
+                     "d7a7a0fb5d7e2731d771e9484ebcdef71d5f0c3e0a2948782bc83ee0ea699ef4"}
+          PEM = re.compile(rb"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----", re.S)
+          EXPORTS = ("SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "PIP_CERT",
+                     "CURL_CA_BUNDLE", "GIT_SSL_CAINFO", "GIT_SSL_CAPATH", "CLOUDSDK_CORE_CUSTOM_CA_CERTS_FILE", "AWS_CA_BUNDLE", "npm_config_cafile")
+          def restrict_windows_roots():
+              if os.name != "nt" or os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get("RUNNER_ENVIRONMENT") != "github-hosted" or os.environ.get("RUNNER_OS") != "Windows":
+                  raise RuntimeError("Native root repair is limited to an ephemeral GitHub-hosted Windows runner")
+              script = r"""$ErrorActionPreference = 'Stop'
+          $blocked = @('7dd78d5f4f13459a83dff9abbba62edbaf6f2d102bf257fd712f4d9f2746ed8d', '86a1ecba089c4a8d3bbe2734c612ba341d813e043cf9e8a862cd5c57a36bbe6b', 'd7a7a0fb5d7e2731d771e9484ebcdef71d5f0c3e0a2948782bc83ee0ea699ef4')
+          function Fingerprint($certificate) { $certificate.GetCertHashString([System.Security.Cryptography.HashAlgorithmName]::SHA256).ToLowerInvariant() }
+          $found = @{}
+          foreach ($location in @('LocalMachine', 'CurrentUser')) {
+            foreach ($name in @('Root', 'CA')) {
+              $store = [System.Security.Cryptography.X509Certificates.X509Store]::new($name, $location)
+              try {
+                $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly -bor [System.Security.Cryptography.X509Certificates.OpenFlags]::OpenExistingOnly)
+                foreach ($certificate in @($store.Certificates)) {
+                  $fingerprint = Fingerprint $certificate
+                  if ($blocked -contains $fingerprint) { $found[$fingerprint] = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new($certificate.RawData) }
+                }
+              } finally { $store.Close(); $store.Dispose() }
+            }
+          }
+          # Establish native distrust before removing the copies CPython imports into OpenSSL.
+          foreach ($location in @('LocalMachine', 'CurrentUser')) {
+            $store = [System.Security.Cryptography.X509Certificates.X509Store]::new('Disallowed', $location)
+            try {
+              $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite -bor [System.Security.Cryptography.X509Certificates.OpenFlags]::OpenExistingOnly)
+              foreach ($certificate in $found.Values) { $store.Add($certificate) }
+            } finally { $store.Close(); $store.Dispose() }
+            $store = [System.Security.Cryptography.X509Certificates.X509Store]::new('Disallowed', $location)
+            try {
+              $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadOnly -bor [System.Security.Cryptography.X509Certificates.OpenFlags]::OpenExistingOnly)
+              $present = @($store.Certificates | ForEach-Object { Fingerprint $_ })
+              foreach ($fingerprint in $found.Keys) { if ($present -notcontains $fingerprint) { throw 'Native distrust was not installed' } }
+            } finally { $store.Close(); $store.Dispose() }
+          }
+          foreach ($location in @('LocalMachine', 'CurrentUser')) {
+            foreach ($name in @('Root', 'CA')) {
+              $store = [System.Security.Cryptography.X509Certificates.X509Store]::new($name, $location)
+              try {
+                $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite -bor [System.Security.Cryptography.X509Certificates.OpenFlags]::OpenExistingOnly)
+                foreach ($certificate in @($store.Certificates)) {
+                  if ($blocked -contains (Fingerprint $certificate)) { $store.Remove($certificate) }
+                }
+              } finally { $store.Close(); $store.Dispose() }
+            }
+          }
+          Write-Host ('Restricted exact incident root identities on the ephemeral Windows runner: ' + $found.Count)
+          """
+              subprocess.run(["pwsh", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], check=True, timeout=60)
+              # CPython also sees policy, enterprise, service and other-user collections.
+              # Never alter those stores; refuse the runner if any affected copy remains.
+              verify = "import hashlib,json,ssl,sys; denied=set(json.loads(sys.argv[1])); present={hashlib.sha256(cert).hexdigest() for name in ('CA','ROOT') for cert,encoding,trust in ssl.enum_certificates(name) if encoding=='x509_asn'}; assert not (denied & present), 'An affected Windows root remains visible to Python'"
+              subprocess.run([sys.executable, "-c", verify, json.dumps(sorted(BLOCKED))], check=True, timeout=30)
+          def download():
+              request = urllib.request.Request(APK_URL, headers={"User-Agent": "nautilo-runner-trust-bootstrap/1"})
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  if urllib.parse.urlparse(response.geturl()).scheme != "https": raise RuntimeError("Runner trust package redirected outside HTTPS")
+                  payload = response.read(2_000_001)
+              if len(payload) > 2_000_000: raise RuntimeError("Runner trust package exceeds the bootstrap limit")
+              return payload
+          def qualify_bundle(bundle):
+              if not bundle.strip(): raise RuntimeError("Maintained CA bundle is empty or malformed")
+              try:
+                  context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                  context.load_verify_locations(cadata=bundle.decode("ascii"))
+              except (UnicodeDecodeError, ValueError, ssl.SSLError) as error:
+                  raise RuntimeError("Maintained CA bundle contains malformed certificates") from error
+              certificates = PEM.findall(bundle)
+              if not certificates or PEM.sub(b"", bundle).strip(): raise RuntimeError("Maintained CA bundle is empty or malformed")
+              fingerprints = {hashlib.sha256(ssl.PEM_cert_to_DER_cert(cert.decode())).hexdigest() for cert in certificates}
+              exposed = sorted(BLOCKED & fingerprints)
+              if exposed: raise RuntimeError("Maintained CA bundle contains blocked roots: " + ", ".join(exposed))
+              return len(certificates)
+          def prepare(payload, runner_temp, github_env):
+              if hashlib.sha256(payload).hexdigest() != APK_SHA256: raise RuntimeError("Runner trust package hash mismatch before extraction")
+              try:
+                  archive = gzip.decompress(payload)
+                  with tarfile.open(fileobj=io.BytesIO(archive), mode="r:", ignore_zeros=True) as package:
+                      selected = [item for item in package.getmembers() if item.name == "etc/ssl/certs/ca-certificates.crt"]
+                      if len(selected) != 1 or not selected[0].isfile(): raise RuntimeError("Runner trust package lacks the exact regular CA bundle")
+                      stream = package.extractfile(selected[0])
+                      if stream is None: raise RuntimeError("Runner trust package CA bundle is unreadable")
+                      bundle = stream.read(1_000_001)
+              except (gzip.BadGzipFile, EOFError, tarfile.TarError) as error:
+                  raise RuntimeError("Runner trust package is not a valid APK archive") from error
+              if len(bundle) > 1_000_000 or hashlib.sha256(bundle).hexdigest() != BUNDLE_SHA256: raise RuntimeError("Maintained CA bundle hash mismatch")
+              root_count = qualify_bundle(bundle); temp = Path(runner_temp)
+              if not temp.is_dir() or temp.is_symlink(): raise RuntimeError("Runner temporary path is not a real directory")
+              root = temp / "nautilo-runner-trust"
+              if root.exists() or root.is_symlink(): raise RuntimeError("Runner trust destination already exists")
+              root.mkdir(mode=0o700); ca, empty = root / "ca-certificates.crt", root / "empty-ca-directory"
+              with ca.open("xb") as output: output.write(bundle)
+              ca.chmod(0o600); empty.mkdir(mode=0o700)
+              if empty.is_symlink() or any(empty.iterdir()): raise RuntimeError("Runner trust CA directory is not isolated and empty")
+              github_env = Path(github_env)
+              if github_env.is_symlink() or (github_env.exists() and not github_env.is_file()): raise RuntimeError("GITHUB_ENV is not a regular file")
+              config_root = root / "package-manager-config"
+              config_root.mkdir(mode=0o700)
+              config = config_root / ".bunfig.toml"
+              with config.open("x", encoding="utf-8") as output:
+                  output.write("[install]\ncafile = " + json.dumps(str(ca)) + "\n")
+              config.chmod(0o600)
+              exports = {name: empty if name in ("SSL_CERT_DIR", "GIT_SSL_CAPATH") else ca for name in EXPORTS}
+              # A nonempty CURL_CA_BUNDLE suppresses curl's SSL_CERT_DIR override.
+              exports["CURL_CA_BUNDLE"] = ""
+              exports["XDG_CONFIG_HOME"] = config_root
+              if os.name == "nt":
+                  exports.update({"GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "http.schannelUseSSLCAInfo", "GIT_CONFIG_VALUE_0": "true"})
+              with github_env.open("a", encoding="utf-8") as output:
+                  for name, value in exports.items():
+                      rendered = str(value)
+                      if "\n" in rendered or "\r" in rendered: raise RuntimeError("Runner trust path contains a newline")
+                      output.write(f"{name}={rendered}\n")
+              print(f"Prepared maintained runner trust ({root_count} roots, {BUNDLE_SHA256}).")
+              return ca, empty, exports
+          if __name__ == "__main__":
+              prepare(download(), os.environ["RUNNER_TEMP"], os.environ["GITHUB_ENV"])
+              if os.name == "nt": restrict_windows_roots()
+          PY
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
+          persist-credentials: false
           fetch-depth: 2
 
       - name: Ensure exact pull request base is available
@@ -96,6 +235,9 @@ jobs:
 
       - name: Install dependencies
         run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: Build Writer dependencies before first-party installation
+        run: bun run writer:prepare
 
       - name: Install first-party app dependencies
         run: bun run first-party-apps:install

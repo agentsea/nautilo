@@ -34,6 +34,158 @@ function createRecovery(
 }
 
 describe("Surplus automatic financial recovery", () => {
+  test("recovers a qualified embedding receipt with its observed serving provider", async () => {
+    const writes: unknown[] = [];
+    let genericReads = 0;
+    let embeddingReads = 0;
+    const embedding = {
+      ...row,
+      endpoint: "/v1/embeddings",
+      callType: "embedding",
+      provider: "venice",
+      model: "venice:text-embedding-3-large",
+      servingProvider: "mordiem",
+      metadata: {
+        catalogModelId: "venice:text-embedding-3-large",
+        surplusModelId: "text-embedding-3-large",
+        surplusEmbeddingPolicy: "surplus-embedding-marketplace-v1",
+        surplusEmbeddingDimensions: 1_536,
+        surplusEmbeddingReceiptModel: "venice-embed-1",
+        surplusEmbeddingServingProviders: ["mordiem", "venice"],
+        surplusCredentialFingerprint: surplusCredentialFingerprint(key),
+      },
+    } satisfies SurplusPendingAttempt;
+    const recovery = createRecovery({
+      list: async () => [embedding],
+      resolveCredential: () => available(),
+      fetchCost: async () => {
+        genericReads++;
+        return { status: "settled", costMicro: 0 };
+      },
+      fetchEmbeddingCost: async (input) => {
+        embeddingReads++;
+        expect(input).toMatchObject({
+          requestId: embedding.providerRequestId,
+          expectedReceiptModel: "venice-embed-1",
+          knownServingProviders: ["mordiem", "venice"],
+          observedServingProvider: "mordiem",
+        });
+        return { status: "settled", costMicro: 0 };
+      },
+      settle: async (input) => { writes.push(input); return true; },
+    });
+    recovery.wake();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await recovery.stop();
+    expect(genericReads).toBe(0);
+    expect(embeddingReads).toBe(1);
+    expect(writes).toEqual([{
+      attemptId: embedding.id,
+      providerRequestId: embedding.providerRequestId,
+      expectedUpdatedAtToken: embedding.updatedAtToken,
+      actualCostUsd: 0,
+    }]);
+  });
+
+  test("blocks an embedding recovery row whose immutable route binding drifted", async () => {
+    let reads = 0;
+    const classifications: unknown[] = [];
+    const baseEmbedding = {
+      ...row,
+      endpoint: "/v1/embeddings",
+      callType: "embedding",
+      provider: "venice",
+      model: "venice:text-embedding-3-large",
+      servingProvider: "mordiem",
+      metadata: {
+        catalogModelId: "venice:text-embedding-3-large",
+        surplusModelId: "text-embedding-3-large",
+        surplusEmbeddingPolicy: "surplus-embedding-marketplace-v1",
+        surplusEmbeddingDimensions: 1_536,
+        surplusEmbeddingReceiptModel: "venice-embed-1",
+        surplusEmbeddingServingProviders: ["mordiem", "venice"],
+        surplusCredentialFingerprint: surplusCredentialFingerprint(key),
+      },
+    } satisfies SurplusPendingAttempt;
+    const rows = [
+      { ...baseEmbedding, model: "venice:text-embedding-3-small" },
+      { ...baseEmbedding, servingProvider: "unknown" },
+      { ...baseEmbedding, metadata: { ...baseEmbedding.metadata,
+        surplusEmbeddingReceiptModel: "another-model" } },
+      { ...baseEmbedding, fundingKind: "personal" },
+      { ...baseEmbedding, callType: "chat" },
+    ] satisfies SurplusPendingAttempt[];
+    const recovery = createRecovery({
+      list: async () => rows,
+      resolveCredential: () => available(),
+      fetchEmbeddingCost: async () => {
+        reads++;
+        return { status: "settled", costMicro: 0 };
+      },
+      classify: async (input) => { classifications.push(input); return true; },
+    });
+    recovery.wake();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    await recovery.stop();
+    expect(reads).toBe(0);
+    expect(classifications).toHaveLength(5);
+    expect(classifications.every((input) => (
+      input as { failureCode: string }
+    ).failureCode === "receipt_binding_invalid")).toBe(true);
+  });
+
+  test("default embedding receipt read requires its canonical receipt alias and provider", async () => {
+    const originalFetch = globalThis.fetch;
+    const embedding = {
+      ...row,
+      endpoint: "/v1/embeddings",
+      callType: "embedding",
+      provider: "venice",
+      model: "venice:text-embedding-3-large",
+      servingProvider: "mordiem",
+      metadata: {
+        catalogModelId: "venice:text-embedding-3-large",
+        surplusModelId: "text-embedding-3-large",
+        surplusEmbeddingPolicy: "surplus-embedding-marketplace-v1",
+        surplusEmbeddingDimensions: 1_536,
+        surplusEmbeddingReceiptModel: "venice-embed-1",
+        surplusEmbeddingServingProviders: ["mordiem", "venice"],
+        surplusCredentialFingerprint: surplusCredentialFingerprint(key),
+      },
+    } satisfies SurplusPendingAttempt;
+    const writes: unknown[] = [];
+    try {
+      globalThis.fetch = (async (input, init) => {
+        const url = typeof input === "string" ? input
+          : input instanceof URL ? input.href : input.url;
+        expect(url).toEndWith(`/v1/requests/${embedding.providerRequestId}`);
+        expect(init?.redirect).toBe("error");
+        return Response.json({
+          request_id: embedding.providerRequestId,
+          model: "venice-embed-1",
+          provider: "mordiem",
+          settlement_status: "accrued",
+          settlement_type: "credit",
+          settlement_error: null,
+          confirmed_at: "2026-10-21T12:00:00.000Z",
+          buyer_cost_micro: 0,
+        });
+      }) as typeof fetch;
+      const recovery = createRecovery({
+        list: async () => [embedding],
+        resolveCredential: () => available(),
+        settle: async (input) => { writes.push(input); return true; },
+      });
+      recovery.wake();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      await recovery.stop();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({ actualCostUsd: 0 });
+  });
+
   test("image recovery uses exact model/account proof without an invented processor pin", async () => {
     const writes: unknown[] = [];
     const media = { ...row, endpoint: "/v1/images/generations", provider: "venice", model: "venice:gpt-image-2",

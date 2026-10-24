@@ -71,7 +71,7 @@ describe("October security package decisions", () => {
     expect(decisions.some((e: {packageName: string}) => e.packageName === "fastify")).toBe(false);
     const floors = readFileSync(join(import.meta.dir, "server-security-package-floors.txt"), "utf8");
     for (const pkg of ["chromium-common", "chromium-headless-shell"]) {
-      expect(floors).toContain(pkg + " 154.0.8037.92-1~deb13u1");
+      expect(floors).toContain(pkg + " 156.0.8078.47-1~deb13u1");
     }
     const dockerfile = readFileSync(join(import.meta.dir, "Dockerfile"), "utf8");
     expect(dockerfile.indexOf("COPY packaging/docker/server-security-package-floors.txt"))

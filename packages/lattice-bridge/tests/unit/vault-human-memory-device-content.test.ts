@@ -3,6 +3,8 @@ import { sha256 } from "@noble/hashes/sha2.js";
 import { AuthorizedHumanMemoryUnavailableError } from "../../src/client/memory/authorized-human-memory-client.ts";
 import { verifyHumanMemoryOrdinaryFallbackRequestV1 } from
   "../../src/memory/human-memory-ordinary-fallback-request.ts";
+import { verifyHumanMemoryOrdinaryFallbackRequestV2 } from
+  "../../src/memory/human-memory-ordinary-fallback-request.ts";
 
 import {
   LatticeCrypto,
@@ -31,6 +33,7 @@ import {
   decodeLiveShadowMessagePlanV4,
   encodeLiveShadowMessagePlanV4,
   encodeNamespaceObjectEnvelopeV2,
+  verifyHumanMemoryContentEmbeddingRequestV3,
 } from "@nautilo/lattice-crypto/wire";
 
 import {
@@ -59,8 +62,6 @@ import { decodeMemoryPayloadV1, encodeMemoryPayloadV1 } from "../../src/memory/m
 import { MemoryClientProfileVault } from "../../src/testing/client-profile-vault.ts";
 import { decodeHumanMemoryRepairAttestationV1, humanMemoryRepairAttestationSigningDigestV1 } from "../../src/memory/human-memory-repair-attestation.ts";
 import { deriveMemoryCryptoObjectIdV1, fingerprintRequiredMemoryNamespaces } from "../../src/memory/memory-repository.ts";
-import { authenticatePreparedHumanMemoryUpdate } from
-  "../../src/server/memory/human-memory-prepared-update.ts";
 
 const MEMORY_ID = "00000000-0000-4000-8000-000000000248";
 const NAMESPACE_ID = "00000000-0000-4000-8000-000000000249";
@@ -633,6 +634,46 @@ async function revisionThreeFixture() {
 }
 
 describe("vault-backed Human Memory device content", () => {
+  test("signs the full marketplace disclosure in an ordinary fallback V2", async () => {
+    const state = await setup();
+    const requestedEmbedding = {
+      contractVersion: 2 as const,
+      canonicalSpace: { provider: "venice" as const,
+        model: "text-embedding-3-large", dimensions: 1536 as const },
+      processingRoute: {
+        transport: "surplus_marketplace" as const,
+        marketplacePolicyVersion: "surplus-embedding-marketplace-v1" as const,
+        dataRecipientClasses: [
+          "surplus", "marketplace_seller", "seller_upstream_processor",
+        ] as const,
+      },
+    };
+    const prepared = await state.content.prepareOrdinaryFallbackCreate!({
+      plan: { dtoVersion: 1, status: "ordinary_fallback_ready",
+        reason: "target_encryption_not_ready", memoryId: MEMORY_ID,
+        operationId: "memory-create:fallback-v2", expectedContentRevision: 0,
+        nextContentRevision: 1, expectedCryptoAccessRevision: 0,
+        productAuthority: { mode: "namespace" },
+        requiredNamespaceIds: [NAMESPACE_ID],
+        ordinaryFallbackAuthorization: { policyRevision: 9 },
+        issuedAt: state.now, deadlineAt: state.now + 30_000 },
+      intent: { payload: { formatVersion: 1, type: "preference",
+        content: "marketplace signed value" }, requestedEmbedding },
+    });
+    const bytes = decodeBase64url(
+      prepared.signedOrdinaryFallbackRequestBytesBase64url,
+    );
+    try {
+      const authenticated = verifyHumanMemoryOrdinaryFallbackRequestV2(
+        state.crypto,
+        { requestBytes: bytes, signingPublicKey: state.signing.publicKey,
+          now: state.now },
+      );
+      expect(authenticated.request.requestedEmbedding).toEqual(requestedEmbedding);
+      expect(authenticated.request.processorContractVersion).toBe(2);
+    } finally { bytes.fill(0); }
+  });
+
   test("signs an ordinary create intent with the admitted device and no Namespace keys", async () => {
     const state = await setup();
     state.unavailableAuthorities.add(NAMESPACE_ID);
@@ -1150,8 +1191,18 @@ describe("vault-backed Human Memory device content", () => {
       current,
       intent: {
         payload: { formatVersion: 1, type: "fact", content: "new" },
-        requestedProvider: "openai",
-        requestedModel: "text-embedding-3-small",
+        requestedEmbedding: {
+          contractVersion: 2,
+          canonicalSpace: { provider: "venice",
+            model: "text-embedding-3-large", dimensions: 1536 },
+          processingRoute: {
+            transport: "surplus_marketplace",
+            marketplacePolicyVersion: "surplus-embedding-marketplace-v1",
+            dataRecipientClasses: [
+              "surplus", "marketplace_seller", "seller_upstream_processor",
+            ],
+          },
+        },
       },
     });
     expect(updated).toMatchObject({
@@ -1159,14 +1210,28 @@ describe("vault-backed Human Memory device content", () => {
       nextContentRevision: 2,
       requiredNamespaceIds: [NAMESPACE_ID],
     });
-    const authenticated = await authenticatePreparedHumanMemoryUpdate({
-      crypto, expectedHumanId: COORDINATES.humanActorId, memoryId: MEMORY_ID,
-      prepared: updated, now,
-      resolveHistoricalDeviceAuthority: (authority) => Promise.resolve({
-        ...authority, committerSigningPublicKey: signing.publicKey.slice(),
-      }),
+    const signedBytes = decodeBase64url(
+      updated.signedContentEmbeddingRequestBytesBase64url,
+    );
+    const authenticated = verifyHumanMemoryContentEmbeddingRequestV3(crypto, {
+      requestBytes: signedBytes,
+      committerSigningPublicKey: signing.publicKey,
+      now: unixTimestamp(now),
     });
-    expect(authenticated.authored.content).toBe("new");
+    expect(authenticated.content).toBe("new");
+    expect(authenticated.requestedEmbedding).toEqual({
+      contractVersion: 2,
+      canonicalSpace: { provider: "venice",
+        model: "text-embedding-3-large", dimensions: 1536 },
+      processingRoute: {
+        transport: "surplus_marketplace",
+        marketplacePolicyVersion: "surplus-embedding-marketplace-v1",
+        dataRecipientClasses: [
+          "surplus", "marketplace_seller", "seller_upstream_processor",
+        ],
+      },
+    });
+    signedBytes.fill(0);
   });
 
   test("requires exact server-derived Human signer evidence", async () => {

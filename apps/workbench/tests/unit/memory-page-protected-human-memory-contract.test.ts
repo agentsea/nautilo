@@ -32,11 +32,30 @@ describe("Memory page protected Human Memory activation", () => {
     expect(facade).toContain("protectedPort(input.protected).search");
   });
 
-  test("uses server-advertised embedding coordinates for protected edits", () => {
+  test("shows and preserves the server-advertised disclosure for protected actions", () => {
+    expect(source).toContain("await apiClient.getMemoryProcessorRecipientV2()");
+    expect(source).toContain(
+      "Semantic indexing sends this text through Surplus Intelligence, a marketplace seller, and that seller’s upstream model providers.",
+    );
+    expect(source).toContain("const current = embeddingApprovalRef.current");
+    expect(source).toContain("Reload the semantic indexing disclosure before trying again");
+    expect(source).toContain("resolveEmbeddingDisclosure: () => {");
+    expect(source).toContain('message: "The semantic indexing route changed. Reload the disclosure before trying again."');
+    expect(facade).toContain("requestedEmbedding: embedding");
     expect(source).toContain("await apiClient.getMemoryProcessorRecipient()");
     expect(facade).toContain("requestedProvider: embedding.provider");
     expect(facade).toContain("requestedModel: embedding.model");
     expect(source).not.toContain('requestedProvider: "openai"');
+    const list = source.slice(source.indexOf("function MemoryListView("),
+      source.indexOf("function MemoryEditorView("));
+    const editor = source.slice(source.indexOf("function MemoryEditorView("),
+      source.indexOf("export function MemoryPage("));
+    expect(list.indexOf("<MemoryEmbeddingDisclosure")).toBeLessThan(
+      list.indexOf("onClick={() => void runSearch()}"),
+    );
+    expect(editor.indexOf("<MemoryEmbeddingDisclosure")).toBeLessThan(
+      editor.indexOf("onClick={() => void submit()}"),
+    );
   });
 
   test("reports committed updates whose durable follow-up is pending", () => {

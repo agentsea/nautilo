@@ -5,6 +5,11 @@ import {
   surplusCredentialFingerprint,
   surplusReceiptTelemetry,
 } from "../../src/providers/surplus-reconciliation";
+import {
+  provenPreRoutingSurplusTrace,
+  readBoundedSurplusErrorBody,
+  safeSurplusErrorDiagnostics,
+} from "../../src/providers/surplus-error";
 
 const binding = { requestId: "request-1", surplusModelId: "gpt-5.5", providerPin: "venice" };
 const receipt = {
@@ -19,6 +24,38 @@ const receipt = {
 };
 
 describe("Surplus financial receipt boundary", () => {
+  test("retains only bounded stable error diagnostics and proves routing traces narrowly", async () => {
+    expect(safeSurplusErrorDiagnostics({ error: { code: " NO_HEALTHY_SELLERS " } }, 503)).toEqual({
+      vendorCode: "no_healthy_sellers",
+      responseStatus: 503,
+    });
+    expect(safeSurplusErrorDiagnostics({ code: "bad-code!", message: "private" }, 700)).toEqual({});
+    expect(provenPreRoutingSurplusTrace({
+      error: { code: "no_healthy_sellers" },
+      responseStatus: 503,
+      receipt: { requestId: "trace-1", marketplaceAttempts: 0, truncated: false },
+    })).toEqual({ vendorCode: "no_healthy_sellers", responseStatus: 503, traceId: "trace-1" });
+    expect(provenPreRoutingSurplusTrace({
+      error: { code: "no_healthy_sellers" },
+      responseStatus: 503,
+      receipt: { requestId: "request-1", marketplaceAttempts: 1, truncated: false },
+    })).toBeNull();
+    for (const conflicting of [
+      { truncated: true }, { adaptedParameters: "reasoning" }, { buyerCostMicro: 1 },
+    ]) {
+      expect(provenPreRoutingSurplusTrace({
+        error: { code: "no_healthy_sellers" }, responseStatus: 503,
+        receipt: { requestId: "trace-1", marketplaceAttempts: 0, truncated: false, ...conflicting },
+      })).toBeNull();
+    }
+
+    expect(await readBoundedSurplusErrorBody(Response.json({
+      error: { code: "no_sellers_for_model", message: "discarded" },
+      request_id: "trace-body-1",
+      extra: "discarded",
+    }).body?.getReader())).toEqual({ vendorCode: "no_sellers_for_model", requestId: "trace-body-1" });
+  });
+
   test("accepts confirmed charge and explicit zero, rejecting absent or unrelated evidence", () => {
     expect(readConfirmedSurplusSettlement(receipt, binding)).toBe(283);
     expect(readConfirmedSurplusSettlement({ ...receipt, buyer_cost_micro: 0 }, binding)).toBe(0);

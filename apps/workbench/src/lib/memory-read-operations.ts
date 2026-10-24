@@ -1,4 +1,5 @@
 import { ClassifiedDataOperationError, type EncryptionDataOperationOwner } from "@nautilo/lattice-bridge";
+import type { MemoryEmbeddingDisclosureV2 } from "@nautilo/api-client/browser";
 
 import type { MemoryDetail, MemoryDetailResponse, MemoryListItem, MemoryMode } from "./memory-api";
 import type {
@@ -121,7 +122,7 @@ export function createWorkbenchMemoryReadOperations(input: Readonly<{
   disposeProtected?: () => Promise<void>;
   resolveEmbedding?: () => Promise<Readonly<{
     provider: "openai" | "openrouter" | "venice"; model: string;
-  }>>;
+  }> | MemoryEmbeddingDisclosureV2>;
 }>): WorkbenchMemoryReadOperations {
   return Object.freeze({
     async list(options: MemoryListOptions) {
@@ -173,9 +174,17 @@ export function createWorkbenchMemoryReadOperations(input: Readonly<{
             ...item, updatedAt: item.createdAt, namespaceIds: [],
           }));
         },
-        protected: async () => (await protectedPort(input.protected).search({
-          ...options, mode: "semantic",
-        })).items.map(row),
+        protected: async () => {
+          const embedding = await input.resolveEmbedding?.();
+          if (embedding === undefined) throw new ClassifiedDataOperationError(
+            "unsupported", "Memory embedding is unavailable",
+          );
+          return (await protectedPort(input.protected).search({
+            ...options, mode: "semantic",
+            ...( "canonicalSpace" in embedding
+              ? { embeddingDisclosure: embedding } : {}),
+          })).items.map(row);
+        },
         consumeOrdinary: (value) => value,
         consumeProtected: (value) => value,
       })).value;
@@ -213,13 +222,17 @@ export function createWorkbenchMemoryReadOperations(input: Readonly<{
           const embedding = await input.resolveEmbedding?.();
           if (embedding === undefined) throw new ClassifiedDataOperationError("unsupported", "Memory embedding is unavailable");
           return protectedMutationPort(input.protected).update({ memoryId, ...edit,
-            requestedProvider: embedding.provider, requestedModel: embedding.model });
+            ...("canonicalSpace" in embedding
+              ? { requestedEmbedding: embedding }
+              : { requestedProvider: embedding.provider, requestedModel: embedding.model }) });
         },
         protected: async () => {
           const embedding = await input.resolveEmbedding?.();
           if (embedding === undefined) throw new ClassifiedDataOperationError("unsupported", "Memory embedding is unavailable");
           return protectedMutationPort(input.protected).update({ memoryId, ...edit,
-            requestedProvider: embedding.provider, requestedModel: embedding.model });
+            ...("canonicalSpace" in embedding
+              ? { requestedEmbedding: embedding }
+              : { requestedProvider: embedding.provider, requestedModel: embedding.model }) });
         },
       });
     },

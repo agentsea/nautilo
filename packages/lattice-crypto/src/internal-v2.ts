@@ -867,3 +867,28 @@ export type {
   RecoveryArchiveWireRecordV2,
   V2Storage,
 } from "./storage/v2-store.ts";
+
+export {
+  assertMemoryEmbeddingDisclosureV2,
+  encodeMemoryEmbeddingDisclosureV2,
+  decodeMemoryEmbeddingDisclosureV2,
+  sameMemoryEmbeddingDisclosureV2,
+  MAX_MEMORY_EMBEDDING_DISCLOSURE_WIRE_BYTES_V2,
+} from "./memory/embedding-disclosure-v2.ts";
+export type { MemoryEmbeddingDisclosureV2 } from "./memory/embedding-disclosure-v2.ts";
+export {
+  HUMAN_MEMORY_CONTENT_EMBEDDING_REQUEST_FORMAT_VERSION_V3,
+  HUMAN_MEMORY_CONTENT_EMBEDDING_REQUEST_DOMAIN_V3,
+  HUMAN_MEMORY_CONTENT_EMBEDDING_PROCESSOR_CONTRACT_VERSION_V3,
+  humanMemoryContentEmbeddingRequestSigningBytesV3,
+  encodeHumanMemoryContentEmbeddingRequestV3,
+  decodeHumanMemoryContentEmbeddingRequestV3,
+  prepareHumanMemoryContentEmbeddingRequestV3,
+  verifyHumanMemoryContentEmbeddingRequestV3,
+} from "./memory/content-embedding-request-v3.ts";
+export type {
+  HumanMemoryContentEmbeddingRequestUnsignedV3,
+  HumanMemoryContentEmbeddingRequestV3,
+  PrepareHumanMemoryContentEmbeddingRequestInputV3,
+  CreatedHumanMemoryContentEmbeddingRequestV3,
+} from "./memory/content-embedding-request-v3.ts";
