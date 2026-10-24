@@ -1,8 +1,18 @@
 import { spawnSync } from "node:child_process";
-import { join } from "node:path";
+import { join, posix } from "node:path";
 
 import { expandTilde } from "./remote-exec.ts";
 import type { SshProfile } from "./types.ts";
+
+/**
+ * Join below an instance root. A remote root is a POSIX path on the target
+ * host; on a Windows operator machine the native join would turn it into a
+ * drive-relative Windows path that the remote filesystem no longer maps to
+ * its staging tree. Local roots, and every root on POSIX hosts, join natively.
+ */
+export function instancePath(root: string, ...segments: string[]): string {
+  return root.startsWith("/") ? posix.join(root, ...segments) : join(root, ...segments);
+}
 
 /**
  * Remote instance root for a `transport=remote` deploy.

@@ -141,7 +141,7 @@ import {
   type PersonalProviderCredentialDbEvidence,
 } from "./personal-provider-custody.ts";
 import { gates } from "./gates.ts";
-import { localInstanceRootDir } from "./instance-paths.ts";
+import { instancePath, localInstanceRootDir } from "./instance-paths.ts";
 import { httpsMode } from "./https-mode.ts";
 import { resolveLogtoPublicUrl, resolveServerBaseUrl } from "./instance-urls.ts";
 import {
@@ -882,11 +882,11 @@ export const CONFIG_CONTAINER_ENV_PATH = `${CONFIG_CONTAINER_DIR}/instance.env`;
 export const RUNTIME_CONFIG_DIR_NAME = "runtime-config";
 
 export function runtimeConfigDir(instanceRootDir: string): string {
-  return join(instanceRootDir, RUNTIME_CONFIG_DIR_NAME);
+  return instancePath(instanceRootDir, RUNTIME_CONFIG_DIR_NAME);
 }
 
 export function canonicalInstanceEnvPath(instanceRootDir: string): string {
-  return join(runtimeConfigDir(instanceRootDir), "instance.env");
+  return instancePath(runtimeConfigDir(instanceRootDir), "instance.env");
 }
 
 /**
@@ -900,7 +900,7 @@ export function canonicalInstanceEnvPath(instanceRootDir: string): string {
 export async function ensureCanonicalConfigLayout(instanceRootDir: string): Promise<void> {
   const configDir = runtimeConfigDir(instanceRootDir);
   const canonical = canonicalInstanceEnvPath(instanceRootDir);
-  const legacy = join(instanceRootDir, "instance.env");
+  const legacy = instancePath(instanceRootDir, "instance.env");
   await nodeFs.mkdir(configDir, { recursive: true, mode: 0o700 });
 
   let legacyKind: "missing" | "symlink" | "other" = "missing";
@@ -1608,7 +1608,7 @@ export class ComposeDriver {
     profile: ComposeDriverProfile,
   ): string | undefined {
     const instanceRootDir = this.deps.resolveInstanceRootDir(profile);
-    const remotePath = join(instanceRootDir, "deploy.compose.env");
+    const remotePath = instancePath(instanceRootDir, "deploy.compose.env");
     const localPath = isRemoteFs(this.deps.fs)
       ? this.deps.fs.toLocalStagingPath(remotePath)
       : remotePath;
@@ -1635,7 +1635,7 @@ export class ComposeDriver {
     profile: ComposeDriverProfile,
   ): string | undefined {
     const instanceRootDir = this.deps.resolveInstanceRootDir(profile);
-    const remotePath = join(instanceRootDir, "deploy.server-overlay.yml");
+    const remotePath = instancePath(instanceRootDir, "deploy.server-overlay.yml");
     const localPath = isRemoteFs(this.deps.fs)
       ? this.deps.fs.toLocalStagingPath(remotePath)
       : remotePath;
@@ -1657,7 +1657,7 @@ export class ComposeDriver {
     profile: ComposeDriverProfile,
   ): string | undefined {
     const instanceRootDir = this.deps.resolveInstanceRootDir(profile);
-    const path = join(instanceRootDir, "deploy.registry-overlay.yml");
+    const path = instancePath(instanceRootDir, "deploy.registry-overlay.yml");
     try {
       if (existsSync(path)) return path;
     } catch {
@@ -1680,7 +1680,7 @@ export class ComposeDriver {
     profile: ComposeDriverProfile,
   ): string | undefined {
     const instanceRootDir = this.deps.resolveInstanceRootDir(profile);
-    const remotePath = join(instanceRootDir, "deploy.caddy-overlay.yml");
+    const remotePath = instancePath(instanceRootDir, "deploy.caddy-overlay.yml");
     const localPath = isRemoteFs(this.deps.fs)
       ? this.deps.fs.toLocalStagingPath(remotePath)
       : remotePath;
@@ -1705,7 +1705,7 @@ export class ComposeDriver {
     profile: ComposeDriverProfile,
   ): string | undefined {
     const instanceRootDir = this.deps.resolveInstanceRootDir(profile);
-    const remotePath = join(instanceRootDir, "deploy.volumes-overlay.yml");
+    const remotePath = instancePath(instanceRootDir, "deploy.volumes-overlay.yml");
     const localPath = isRemoteFs(this.deps.fs)
       ? this.deps.fs.toLocalStagingPath(remotePath)
       : remotePath;
@@ -1822,14 +1822,14 @@ export class ComposeDriver {
             "https=letsencrypt requires a non-empty profile.domain.",
           );
         }
-        caddyfilePath = join(instanceRootDir, "deploy.Caddyfile");
+        caddyfilePath = instancePath(instanceRootDir, "deploy.Caddyfile");
         composeEnvOpts = { acmeEmail, caddyfilePath };
       }
       const composeEnv = buildComposeEnv(profile, inst, passwords, {
         ...composeEnvOpts,
         ...(sourceBuildSha === undefined ? {} : { sourceBuildSha }),
       });
-      const composeEnvPath = join(instanceRootDir, "deploy.compose.env");
+      const composeEnvPath = instancePath(instanceRootDir, "deploy.compose.env");
       await this.deps.fs.writeFile(
         composeEnvPath,
         envFileContents(composeEnv),
@@ -1844,7 +1844,7 @@ export class ComposeDriver {
           { mode: 0o644 },
         );
         log(`deploy: wrote ${caddyfilePath}`);
-        caddyOverlayPath = join(instanceRootDir, "deploy.caddy-overlay.yml");
+        caddyOverlayPath = instancePath(instanceRootDir, "deploy.caddy-overlay.yml");
         await this.deps.fs.writeFile(
           caddyOverlayPath,
           buildCaddyOverlay(),
@@ -1857,7 +1857,7 @@ export class ComposeDriver {
       const sourceOverlayPath = join(this.deps.templateDir, "docker-compose.source.yml");
       let registryOverlayPath: string | undefined;
       if (registryMode) {
-        registryOverlayPath = join(instanceRootDir, "deploy.registry-overlay.yml");
+        registryOverlayPath = instancePath(instanceRootDir, "deploy.registry-overlay.yml");
         await this.deps.fs.writeFile(
           registryOverlayPath,
           buildPinnedImageOverlay(registryImageRef(profile)),
@@ -1878,11 +1878,11 @@ export class ComposeDriver {
           "utf8",
         );
         await this.deps.fs.writeFile(
-          join(instanceRootDir, "postgres-init.sh"),
+          instancePath(instanceRootDir, "postgres-init.sh"),
           postgresInit,
           { mode: 0o755 },
         );
-        volumesOverlayPath = join(instanceRootDir, "deploy.volumes-overlay.yml");
+        volumesOverlayPath = instancePath(instanceRootDir, "deploy.volumes-overlay.yml");
         await this.deps.fs.writeFile(
           volumesOverlayPath,
           remoteVolumesOverlayYaml(instanceRootDir),
@@ -2185,13 +2185,13 @@ export class ComposeDriver {
         pushTokenEncryptionKey,
         personalProviderCustody: personalProviderCustody ?? null,
       });
-      const serverEnvPath = join(instanceRootDir, "deploy.server.env");
+      const serverEnvPath = instancePath(instanceRootDir, "deploy.server.env");
       await this.deps.fs.writeFile(
         serverEnvPath,
         envFileContents(overlayEnv),
         { mode: 0o600 },
       );
-      const overlayYmlPath = join(instanceRootDir, "deploy.server-overlay.yml");
+      const overlayYmlPath = instancePath(instanceRootDir, "deploy.server-overlay.yml");
       const instanceEnvPath = canonicalInstanceEnvPath(instanceRootDir);
       // `env_file:` paths inside compose YAML are parsed client-side
       // (docker CLI loads the file and injects vars as `environment:`
@@ -2811,7 +2811,7 @@ export class ComposeDriver {
         });
       }
 
-      const stampPath = join(
+      const stampPath = instancePath(
         this.deps.resolveInstanceRootDir(profile),
         "auth-contract-applied.json",
       );
@@ -3721,7 +3721,7 @@ export class ComposeDriver {
       return;
     }
     await this.deps.fs.writeFile(
-      join(this.deps.resolveInstanceRootDir(profile), "release-state.json"),
+      instancePath(this.deps.resolveInstanceRootDir(profile), "release-state.json"),
       contents,
       { mode: 0o600 },
     );
@@ -4051,7 +4051,7 @@ export class ComposeDriver {
     let overlay: string | undefined;
     if (imageRef !== undefined) {
       const root = this.deps.resolveInstanceRootDir(profile);
-      overlay = join(root, "deploy.release-registry-overlay.yml");
+      overlay = instancePath(root, "deploy.release-registry-overlay.yml");
       await this.deps.fs.writeFile(overlay, buildPinnedImageOverlay(imageRef), {
         mode: 0o600,
       });
@@ -4226,7 +4226,7 @@ export class ComposeDriver {
     instanceRootDir: string,
   ): Promise<void> {
     await nodeFs.mkdir(instanceRootDir, { recursive: true, mode: 0o700 });
-    const target = join(instanceRootDir, "auth-contract-applied.json");
+    const target = instancePath(instanceRootDir, "auth-contract-applied.json");
     const temporary = `${target}.tmp-${process.pid}-${Date.now()}`;
     await nodeFs.writeFile(temporary, serializeAppliedAuthContract(stamp), {
       encoding: "utf8",
@@ -5862,7 +5862,7 @@ export class ComposeDriver {
         const isRemote = profile.transport === "remote";
         const streamMode = isRemote && opts.stream === true;
         const stagedMode = isRemote && !streamMode;
-        const remoteStagingDir = join(instanceRootDir, `.restore-staging-${stamp}`);
+        const remoteStagingDir = instancePath(instanceRootDir, `.restore-staging-${stamp}`);
         const stageDir = stagedMode ? remoteStagingDir : opts.fromPath;
         const toLocal = (remotePath: string): string =>
           isRemoteFs(this.deps.fs)
@@ -5884,11 +5884,11 @@ export class ComposeDriver {
             "utf8",
           );
           await this.deps.fs.writeFile(
-            join(instanceRootDir, "postgres-init.sh"),
+            instancePath(instanceRootDir, "postgres-init.sh"),
             postgresInit,
             { mode: 0o755 },
           );
-          volumesOverlayPath = join(instanceRootDir, "deploy.volumes-overlay.yml");
+          volumesOverlayPath = instancePath(instanceRootDir, "deploy.volumes-overlay.yml");
           await this.deps.fs.writeFile(
             volumesOverlayPath,
             remoteVolumesOverlayYaml(instanceRootDir),
@@ -6032,7 +6032,7 @@ export class ComposeDriver {
             envContents = restoredCrypto.raw;
             await this.deps.fs.mkdir(instanceRootDir, { recursive: true });
             await this.deps.fs.mkdir(
-              join(instanceRootDir, ".bootstrap"),
+              instancePath(instanceRootDir, ".bootstrap"),
               { recursive: true, mode: 0o700 },
             );
             await ensureCanonicalConfigLayout(toLocal(instanceRootDir));
@@ -6040,7 +6040,7 @@ export class ComposeDriver {
               mode: 0o600,
             });
             await this.deps.fs.writeFile(
-              join(instanceRootDir, CRYPTO_DB_PASSWORD_RELATIVE_PATH),
+              instancePath(instanceRootDir, CRYPTO_DB_PASSWORD_RELATIVE_PATH),
               `${restoredCrypto.secret}\n`,
               { mode: 0o600 },
             );
@@ -6116,13 +6116,13 @@ export class ComposeDriver {
               personalProviderCustody: restorePersonalProviderCustody,
             },
           );
-          const restoreServerEnvPath = join(instanceRootDir, "deploy.server.env");
+          const restoreServerEnvPath = instancePath(instanceRootDir, "deploy.server.env");
           await this.deps.fs.writeFile(
             restoreServerEnvPath,
             envFileContents(restoreOverlayEnv),
             { mode: 0o600 },
           );
-          const restoreServerOverlayYmlPath = join(
+          const restoreServerOverlayYmlPath = instancePath(
             instanceRootDir,
             "deploy.server-overlay.yml",
           );
@@ -6165,7 +6165,7 @@ export class ComposeDriver {
             imageRef = backupTag;
           }
 
-          restoreOverlayPath = join(instanceRootDir, "deploy.restore-overlay.yml");
+          restoreOverlayPath = instancePath(instanceRootDir, "deploy.restore-overlay.yml");
           await this.deps.fs.writeFile(
             restoreOverlayPath,
             buildPinnedImageOverlay(imageRef),
@@ -6347,13 +6347,13 @@ export class ComposeDriver {
           if (manifest.contents.nautiloDb) {
             requiredDumps.push({
               label: "nautilo DB dump validation",
-              path: join(stageDir, "nautilo.sql.gz"),
+              path: instancePath(stageDir, "nautilo.sql.gz"),
             });
           }
           if (manifest.contents.logtoDb) {
             requiredDumps.push({
               label: "logto DB dump validation",
-              path: join(stageDir, "logto_nautilo.sql.gz"),
+              path: instancePath(stageDir, "logto_nautilo.sql.gz"),
             });
           }
           for (const { label, path } of requiredDumps) {
@@ -6372,7 +6372,7 @@ export class ComposeDriver {
           await runPipeline(
             "nautilo DB restore",
             atomicDbRestoreScript(
-              join(stageDir, "nautilo.sql.gz"),
+              instancePath(stageDir, "nautilo.sql.gz"),
               `${appPgExec}psql -U postgres -d nautilo`,
               NAUTILO_SCHEMA_RESET_SQL,
               CHATGPT_RESTORE_FENCE_SQL,
@@ -6395,7 +6395,7 @@ export class ComposeDriver {
           await runPipeline(
             "logto DB restore",
             atomicDbRestoreScript(
-              join(stageDir, "logto_nautilo.sql.gz"),
+              instancePath(stageDir, "logto_nautilo.sql.gz"),
               `${logtoPgExec}psql -U postgres -d logto_nautilo`,
               LOGTO_SCHEMA_RESET_SQL,
             ),
@@ -6495,7 +6495,7 @@ export class ComposeDriver {
           await loadVolume("caddy_config volume restore", `${projectName}_caddy_config`, "caddy_config.tgz");
         }
         if (mode === "full" && manifest.contents.localCaCerts) {
-          const certsPath = join(instanceRootDir, "certs");
+          const certsPath = instancePath(instanceRootDir, "certs");
           if (streamMode && profile.ssh !== undefined) {
             await runChecked(
               "local CA certs restore",
@@ -6510,7 +6510,7 @@ export class ComposeDriver {
           } else {
             await runPipeline(
               "local CA certs restore",
-              `mkdir -p ${shellQuote(certsPath)} && rm -rf ${shellQuote(certsPath)}/* && tar xzf ${shellQuote(join(stageDir, "certs.tgz"))} -C ${shellQuote(certsPath)}`,
+              `mkdir -p ${shellQuote(certsPath)} && rm -rf ${shellQuote(certsPath)}/* && tar xzf ${shellQuote(instancePath(stageDir, "certs.tgz"))} -C ${shellQuote(certsPath)}`,
             );
           }
         }
@@ -6703,7 +6703,7 @@ export class ComposeDriver {
 
       if (opts.hard) {
         const instanceRootDir = this.deps.resolveInstanceRootDir(profile);
-        const bootstrapDir = join(instanceRootDir, ".bootstrap");
+        const bootstrapDir = instancePath(instanceRootDir, ".bootstrap");
         await this.deps.fs.rm(bootstrapDir, { recursive: true, force: true });
 
         // Operator-side state also needs a wipe so the next deploy
