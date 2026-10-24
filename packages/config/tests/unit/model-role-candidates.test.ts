@@ -80,6 +80,7 @@ describe("model role candidates", () => {
       "venice:text-embedding-3-small",
       "openrouter:openai/text-embedding-3-small",
       "openai:text-embedding-3-small",
+      "venice:text-embedding-3-large",
     ]);
   });
 });

@@ -23,6 +23,7 @@ import {
   encodeEncryptedPayloadV2,
   encodeNamespaceObjectEnvelopeV2,
   encodeObjectAccessManifestV5,
+  prepareHumanMemoryContentEmbeddingRequestV3,
 } from "@nautilo/lattice-crypto/wire";
 
 import {
@@ -68,9 +69,11 @@ import {
 } from "../foreground-agent-accepted-execution.ts";
 import { prepareHumanMemoryOrdinaryFallbackRequestV1 } from
   "../../memory/human-memory-ordinary-fallback-request.ts";
+import { prepareHumanMemoryOrdinaryFallbackRequestV2 } from
+  "../../memory/human-memory-ordinary-fallback-request.ts";
 import type {
   AuthorizedHumanMemoryDeviceContentPort,
-  AuthorizedHumanMemoryWriteIntentV1,
+  AuthorizedHumanMemoryWriteIntent,
 } from "./authorized-human-memory-client.ts";
 import type {
   DeviceAdmissionStatus,
@@ -532,7 +535,7 @@ async function prepareOrdinaryFallback(
     nextContentRevision: number; expectedCryptoAccessRevision: number;
     requiredNamespaceIds: readonly string[]; policyRevision: number;
     planIssuedAt: number | null; planDeadlineAt: number | null;
-    issuedAt: number; deadlineAt: number; intent: AuthorizedHumanMemoryWriteIntentV1;
+    issuedAt: number; deadlineAt: number; intent: AuthorizedHumanMemoryWriteIntent;
   }>,
 ) {
   return withProfile(input, async (profile) => {
@@ -541,7 +544,7 @@ async function prepareOrdinaryFallback(
       || admission.deviceId !== input.coordinates.deviceId) {
       throw new AuthorizedHumanMemoryUnavailableError("authorization_required");
     }
-    const prepared = prepareHumanMemoryOrdinaryFallbackRequestV1(input.crypto, {
+    const common = {
       formatVersion: 1, purpose: source.purpose,
       reason: "target_encryption_not_ready", operationId: source.operationId,
       memoryId: source.memoryId,
@@ -553,9 +556,6 @@ async function prepareOrdinaryFallback(
       ...(source.intent.importance === undefined ? {} : {
         importance: source.intent.importance,
       }),
-      requestedProvider: source.intent.requestedProvider,
-      requestedModel: source.intent.requestedModel,
-      dimensions: 1536, processorContractVersion: 1,
       policyRevision: source.policyRevision, subjectHumanId: input.subjectHumanId,
       committerDeviceId: profile.deviceId,
       committerDeviceSigningKeyGeneration: admission.deviceGeneration,
@@ -563,7 +563,21 @@ async function prepareOrdinaryFallback(
       planIssuedAt: source.planIssuedAt, planDeadlineAt: source.planDeadlineAt,
       issuedAt: source.issuedAt, deadlineAt: source.deadlineAt,
       signingPrivateKey: profile.signingPrivateKey,
-    });
+    } as const;
+    const prepared = "requestedEmbedding" in source.intent
+      ? prepareHumanMemoryOrdinaryFallbackRequestV2(input.crypto, {
+          ...common,
+          formatVersion: 2,
+          requestedEmbedding: source.intent.requestedEmbedding,
+          processorContractVersion: 2,
+        })
+      : prepareHumanMemoryOrdinaryFallbackRequestV1(input.crypto, {
+          ...common,
+          requestedProvider: source.intent.requestedProvider,
+          requestedModel: source.intent.requestedModel,
+          dimensions: 1536,
+          processorContractVersion: 1,
+        });
     try { return toBase64url(prepared.bytes); }
     finally {
       prepared.bytes.fill(0);
@@ -862,7 +876,7 @@ async function prepareContentRevision(input: Readonly<{
   namespaceIds: readonly string[];
   authorities: readonly ProtectedMemoryNamespaceAuthorityV1[];
   deadlineAt: number;
-  intent: AuthorizedHumanMemoryWriteIntentV1;
+  intent: AuthorizedHumanMemoryWriteIntent;
 }>): Promise<Readonly<{
   cryptoObjectId: string;
   payloadBytes: Uint8Array;
@@ -917,9 +931,7 @@ async function prepareContentRevision(input: Readonly<{
         payloadBytes = sealed.payloadBytes;
         envelopeBytes = sealed.envelopeBytes;
         manifestBytes = sealed.manifestBytes;
-        const signedRequest = prepareHumanMemoryContentEmbeddingRequest(
-          input.dependencies.crypto,
-          {
+        const common = {
             subjectHumanId: humanId(input.dependencies.subjectHumanId),
             requestId: input.operationId,
             memoryId: input.memoryId,
@@ -938,10 +950,6 @@ async function prepareContentRevision(input: Readonly<{
             content: input.intent.payload.content,
             ...(input.intent.importance === undefined
               ? {} : { importance: input.intent.importance }),
-            requestedProvider: input.intent.requestedProvider,
-            requestedModel: input.intent.requestedModel,
-            dimensions: 1536,
-            processorContractVersion: 1,
             issuedAt: unixTimestamp(now),
             deadlineAt: unixTimestamp(Math.min(
               input.deadlineAt,
@@ -953,8 +961,22 @@ async function prepareContentRevision(input: Readonly<{
             ),
             committerSigningPublicKey: input.profile.signingPublicKey,
             committerSigningPrivateKey: input.profile.signingPrivateKey,
-          },
-        );
+        } as const;
+        const signedRequest = "requestedEmbedding" in input.intent
+          ? prepareHumanMemoryContentEmbeddingRequestV3(
+              input.dependencies.crypto,
+              { ...common,
+                requestedEmbedding: input.intent.requestedEmbedding,
+                processorContractVersion: 2 },
+            )
+          : prepareHumanMemoryContentEmbeddingRequest(
+              input.dependencies.crypto,
+              { ...common,
+                requestedProvider: input.intent.requestedProvider,
+                requestedModel: input.intent.requestedModel,
+                dimensions: 1536,
+                processorContractVersion: 1 },
+            );
         signedRequestBytes = signedRequest.bytes;
         return Object.freeze({
           cryptoObjectId,
@@ -1351,7 +1373,7 @@ export function createVaultAuthorizedHumanMemoryDeviceContentPort(
     },
     prepareCreate: ({ plan: rawPlan, intent }: Readonly<{
       plan: ProtectedMemoryCreatePlanSlotResponseV1;
-      intent: AuthorizedHumanMemoryWriteIntentV1;
+      intent: AuthorizedHumanMemoryWriteIntent;
     }>) =>
       withProfile(dependencies, async (profile) => {
         const plan = exactCreatePlan(rawPlan);
@@ -1428,7 +1450,7 @@ export function createVaultAuthorizedHumanMemoryDeviceContentPort(
     },
     prepareUpdate: async ({ current, intent }: Readonly<{
       current: ProtectedMemoryDtoV1;
-      intent: AuthorizedHumanMemoryWriteIntentV1;
+      intent: AuthorizedHumanMemoryWriteIntent;
     }>) => {
       if (current.protectedPayload.status !== "encrypted") {
         throw new Error("Protected Human Memory ciphertext is unavailable");

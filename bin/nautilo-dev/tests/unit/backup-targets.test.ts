@@ -35,6 +35,7 @@ describe("backup restore target allowlists", () => {
     const dependencies: Record<string, string[]> = {
       bolter_connections: ["users"],
       bolter_room_bindings: ["users", "agents", "rooms", "namespaces", "bolter_connections"],
+      external_operator_sessions: ["users", "bolter_room_bindings"],
       bolter_inbox_receipts: ["users", "bolter_room_bindings", "session_messages", "jobs"],
       bolter_explicit_shares: ["users", "bolter_room_bindings", "session_messages"],
       bolter_outbox: ["users", "bolter_room_bindings", "session_messages", "bolter_inbox_receipts", "bolter_explicit_shares"],

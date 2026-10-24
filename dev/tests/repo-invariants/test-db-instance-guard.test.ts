@@ -47,6 +47,8 @@ const GUARD_MARKERS = [
   /\bbootstrapTestDbInstance\b/,
   /\bassertFixtureDbMutationAllowed\b/,
   /\bsetupOwnerAppFixture\b/,
+  // Prove the exact loopback role URLs, label token, running container and port.
+  /\bverifyDisposablePostgresAuthority\s*\(/,
 ];
 
 /** Hardcoded protected-default Postgres host port. */
@@ -166,6 +168,13 @@ function auditFile(absPath: string): Violation[] {
 }
 
 describe("D202 — live-DB tests are routed off the protected default", () => {
+  test("recognizes an invoked container guard rather than an unused import", () => {
+    expect(hasGuard("verifyDisposablePostgresAuthority(urls);")).toBe(true);
+    expect(hasGuard('import { verifyDisposablePostgresAuthority } from "./disposable-postgres-reset";'))
+      .toBe(false);
+    expect(hasGuard("createDirectDb(1);")).toBe(false);
+  });
+
   test("every live-DB test guards its instance and avoids the default port", () => {
     const files = collectTestFiles();
     expect(files.length).toBeGreaterThan(0);
@@ -184,7 +193,8 @@ describe("D202 — live-DB tests are routed off the protected default", () => {
         "",
         "Missing instance guard (add `bootstrapTestDbInstance()` from",
         "`@nautilo/db/testing` as the first line of beforeAll, or use",
-        "`setupOwnerAppFixture`):",
+        "`setupOwnerAppFixture`, or invoke `verifyDisposablePostgresAuthority`",
+        "for an exact owned Docker fixture):",
         byCode("missing_guard") || "  (none)",
         "",
         "Hardcoded protected-default port 5434 (remove it — `createDirectDb`",

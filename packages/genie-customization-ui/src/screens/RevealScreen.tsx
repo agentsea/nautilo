@@ -41,6 +41,14 @@ type RevealPhase =
   | "completing"
   | "error";
 
+export const SOUL_NOT_GENERATED_NOTICE =
+  "Your profile was saved without a generated Soul. You can add one later in Settings.";
+
+function combineNotices(...notices: Array<string | null>): string | null {
+  const present = notices.filter((notice): notice is string => notice !== null);
+  return present.length > 0 ? present.join(" ") : null;
+}
+
 function playableAudioUrl(rawUrl: string): { url: string; revoke: boolean } {
   if (!rawUrl.startsWith("data:")) return { url: rawUrl, revoke: false };
   const [meta = "", base64 = ""] = rawUrl.split(",", 2);
@@ -65,8 +73,8 @@ function buildSoulInput(state: ScreenProps["state"]) {
 
 /**
  * Test seam for non-linear flows that reach Reveal without having started soul
- * generation. Reveal may enqueue the work, but final profile persistence never
- * waits for the model request.
+ * generation. Reveal starts the same reducer-fenced generation used by the
+ * ordinary Compiling screen before it starts final profile persistence.
  */
 export function shouldStartSoulGenerationAtReveal(state: ScreenProps["state"]): boolean {
   return state.compilingPhase === "idle" && state.soulFile === null;
@@ -74,6 +82,7 @@ export function shouldStartSoulGenerationAtReveal(state: ScreenProps["state"]): 
 
 export function RevealScreen({
   state,
+  dispatch,
   api,
 }: ScreenProps): React.ReactElement {
   const [phase, setPhase] = useState<RevealPhase>("writing");
@@ -91,13 +100,44 @@ export function RevealScreen({
   useEffect(() => {
     if (phase !== "writing") return;
     if (!api) return;
-    // The model request can take a minute or more. Desktop owns it after IPC
-    // dispatch and persists the result when it finishes, even if this window
-    // has already closed. Never turn that background work into a save blocker.
+
+    // A non-linear flow can reach Reveal before Compiling starts. Route that
+    // request through the ordinary reducer generation fence so its result is
+    // part of the one final profile mutation rather than discarded.
     if (shouldStartSoulGenerationAtReveal(state) && !lateSoulStartedRef.current) {
       lateSoulStartedRef.current = true;
-      void api.generateSoul(buildSoulInput(state)).catch(() => undefined);
+      const generation = state.compilingGeneration + 1;
+      dispatch({ type: "START_COMPILE" });
+      void (async () => {
+        try {
+          const result = await api.generateSoul(buildSoulInput(state));
+          if (result.ok) {
+            dispatch({
+              type: "FINISH_COMPILE",
+              generation,
+              soulFile: result.data.soulFile,
+            });
+            return;
+          }
+          dispatch({ type: "ERROR_COMPILE", generation, message: result.error });
+        } catch {
+          dispatch({
+            type: "ERROR_COMPILE",
+            generation,
+            message: "Soul generation failed.",
+          });
+        }
+      })();
+      return;
     }
+
+    // Compiling may have auto-advanced after its seven-second display cap.
+    // Keep later wizard screens non-blocking, but do not commit the final
+    // profile until the already-authorized request settles. This guarantees a
+    // successful Soul is included exactly once and never replays a failure.
+    if (state.compilingPhase === "running" || state.compilingPhase === "background") return;
+    // StrictMode can probe this effect again before START_COMPILE rerenders.
+    if (state.compilingPhase === "idle" && state.soulFile === null) return;
     if (profileWriteStartedRef.current) return;
     if (!state.voiceSelection && !state.voiceSkipped) {
       // A null voice is valid only when the user explicitly skipped voice.
@@ -132,7 +172,10 @@ export function RevealScreen({
         setPhase("error");
         return;
       }
-      setNotice(res.notice);
+      setNotice(combineNotices(
+        res.notice,
+        state.soulFile === null ? SOUL_NOT_GENERATED_NOTICE : null,
+      ));
       if (res.voice === "assigned") {
         setGreetingAudioUrl(res.greetingAudioUrl);
         setPhase("greeting");
@@ -140,7 +183,7 @@ export function RevealScreen({
         setPhase("ready");
       }
     })();
-  }, [phase, api, state, newlyUsableVoice]);
+  }, [phase, api, state, dispatch, newlyUsableVoice]);
 
   // Step 2.5: greeting playback.
   useEffect(() => {

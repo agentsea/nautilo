@@ -298,6 +298,7 @@ async function withAuthenticatedProtectedTaskResultSigner<Value>(
       agentAuthorizationRevision: expectedAgentAuthorizationRevision,
       domainRoot: input.domain.domainKey,
     },
+    expectedRuntimeAuthorizationRevision: expectedAgentAuthorizationRevision,
     agentId: agentId(signerAgentId(input.evidence)),
     resolveHistoricalCommitter: input.resolveHistoricalRuntimeCommitter,
   });

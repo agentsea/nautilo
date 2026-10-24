@@ -44,6 +44,7 @@ import type {
   TaskContentBackfillProgressResponse,
 } from "@nautilo/api-client/browser";
 import type { MessagePayloadV2 } from "@nautilo/lattice-bridge";
+import type { MemoryEmbeddingDisclosureV2 } from "@nautilo/lattice-crypto/wire";
 import type {
   AuthorizedHumanMemoryClient,
   BrowserRoomHistoryShadowAcknowledgementInput,
@@ -374,6 +375,7 @@ export interface DesktopForegroundShadowAPI {
     search(options: Readonly<{
       q: string; mode: "text" | "semantic"; limit?: number;
       includeArchive?: boolean;
+      embeddingDisclosure?: MemoryEmbeddingDisclosureV2;
     }>): Promise<Readonly<{
       items: readonly WorkbenchProtectedMemorySearchResult[];
       memoryMode: "namespace" | "scope";
@@ -388,6 +390,7 @@ export interface DesktopForegroundShadowAPI {
     }>>;
     update(input: Readonly<{
       memoryId: string; type: string; content: string; importance: number;
+      requestedEmbedding?: MemoryEmbeddingDisclosureV2;
     }>): Promise<Readonly<{
       status: "published" | "replayed";
       memoryId: string;

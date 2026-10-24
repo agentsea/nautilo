@@ -843,6 +843,89 @@ describe("ElectronForegroundShadowController", () => {
     await controller.dispose();
   });
 
+  test("signs Desktop Memory edits with the advertised marketplace disclosure", async () => {
+    let intent: unknown;
+    const embedding = {
+      contractVersion: 2 as const,
+      canonicalSpace: { provider: "venice" as const,
+        model: "text-embedding-3-large", dimensions: 1536 as const },
+      processingRoute: { transport: "surplus_marketplace" as const,
+        marketplacePolicyVersion: "surplus-embedding-marketplace-v1" as const,
+        dataRecipientClasses: [
+          "surplus", "marketplace_seller", "seller_upstream_processor",
+        ] as const },
+    };
+    const controller = createElectronForegroundShadowController(controllerInput({
+      api: {
+        setToken: () => undefined,
+        admin: { encryptionTransition: { getPolicy: async () => ({
+          policy: { mode: "shadow_encryption", shadowBehavior: "fallback",
+            revision: 1, updatedAt: "2026-09-01T00:00:00.000Z" },
+        }) } },
+        getMemoryProcessorRecipientV2: async () => ({ formatVersion: 2,
+          purpose: "memory.foreground_embedding", recipientId: "A".repeat(43),
+          publicKeyBase64url: "B".repeat(87), embedding }),
+      } as unknown as ElectronForegroundShadowApi,
+      factories: factories({ humanMemory: {
+        update: async (_memoryId: string, value: unknown) => {
+          intent = value;
+          return { status: "ordinary_fallback", memoryId: "memory-1",
+            reason: "target_encryption_not_ready" };
+        },
+      } }),
+    }));
+    expect(await controller.memoryUpdate({ memoryId: "memory-1", type: "fact",
+      content: "private", importance: 0.8,
+      requestedEmbedding: embedding })).toMatchObject({
+      status: "ordinary_fallback", memoryId: "memory-1",
+    });
+    expect(intent).toEqual({
+      payload: { formatVersion: 1, type: "fact", content: "private" },
+      importance: 0.8,
+      requestedEmbedding: embedding,
+    });
+    await controller.dispose();
+  });
+
+  test("rejects a Desktop Memory edit when the displayed route no longer matches", async () => {
+    const direct = {
+      contractVersion: 2 as const,
+      canonicalSpace: { provider: "venice" as const,
+        model: "text-embedding-3-large", dimensions: 1536 as const },
+      processingRoute: { transport: "direct" as const },
+    };
+    const marketplace = { ...direct, processingRoute: {
+      transport: "surplus_marketplace" as const,
+      marketplacePolicyVersion: "surplus-embedding-marketplace-v1" as const,
+      dataRecipientClasses: [
+        "surplus", "marketplace_seller", "seller_upstream_processor",
+      ] as const,
+    } };
+    let updates = 0;
+    const controller = createElectronForegroundShadowController(controllerInput({
+      api: {
+        setToken: () => undefined,
+        admin: { encryptionTransition: { getPolicy: async () => ({
+          policy: { mode: "shadow_encryption", shadowBehavior: "fallback",
+            revision: 1, updatedAt: "2026-09-01T00:00:00.000Z" },
+        }) } },
+        getMemoryProcessorRecipientV2: async () => ({ formatVersion: 2,
+          purpose: "memory.foreground_embedding", recipientId: "A".repeat(43),
+          publicKeyBase64url: "B".repeat(87), embedding: marketplace }),
+      } as unknown as ElectronForegroundShadowApi,
+      factories: factories({ humanMemory: {
+        update: async () => { updates += 1; throw new Error("unexpected update"); },
+      } }),
+    }));
+    const failure = await rejected(controller.memoryUpdate({ memoryId: "memory-1",
+      type: "fact", content: "private", importance: 0.8,
+      requestedEmbedding: direct }));
+    expect(failure).toBeInstanceOf(TypeError);
+    expect((failure as TypeError).message).toContain("embedding disclosure changed");
+    expect(updates).toBe(0);
+    await controller.dispose();
+  });
+
   test("withholds a Memory result when policy changes during the operation", async () => {
     const started = deferred();
     const release = deferred();

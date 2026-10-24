@@ -1,7 +1,13 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { buildForegroundModelControlPlan } from "../../src/config/foreground-model-controls";
 import { resolveModelRole } from "../../src/config/model-role-resolution";
 import { resolveForegroundAgentModelId } from "../../src/nodes/agent";
+
+import { installSurplusCatalogFixture } from "../helpers/surplus-catalog-fixture";
+import { resetSurplusModelCatalog } from "../../src/providers/surplus-catalog";
+
+beforeEach(installSurplusCatalogFixture);
+afterEach(resetSurplusModelCatalog);
 
 const MODEL_ID = "openrouter:openai/gpt-5.6-sol";
 const ROUTE = {
@@ -23,6 +29,25 @@ const surplusOnly = {
 };
 
 describe("foreground agent model selection", () => {
+  test("automatic foreground chat can select a qualified server Surplus route", () => {
+    const automaticRoute = {
+      ...ROUTE,
+      catalogModelId: "openrouter:minimax/minimax-m3",
+      surplusModelId: "minimax/minimax-m3",
+      maxContextTokens: 1_000,
+      maxOutputTokens: 100,
+    };
+    const automatic = { ...surplusOnly, routes: [automaticRoute] };
+    expect(resolveForegroundAgentModelId(undefined, automatic)).toBe(automaticRoute.catalogModelId);
+    expect(() => resolveForegroundAgentModelId(undefined, { ...automatic, policyEnabled: false })).toThrow();
+    expect(() => resolveForegroundAgentModelId(undefined, { ...automatic, keyConfigured: false })).toThrow();
+    expect(() => resolveForegroundAgentModelId(undefined, { ...automatic, routes: [] })).toThrow();
+    expect(() => resolveForegroundAgentModelId(undefined, {
+      ...automatic,
+      routes: [{ ...automaticRoute, supportsTools: false }],
+    })).toThrow();
+  });
+
   test("a selected foreground model reaches the agent node without a direct credential", () => {
     const plan = buildForegroundModelControlPlan(
       { modelId: MODEL_ID },

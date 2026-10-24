@@ -965,6 +965,8 @@ export function createProtectedAgentBackgroundMemoryWorkPort(input: Readonly<{
                               crypto: input.crypto,
                               storage: input.storage,
                               opened: openedRuntime,
+                              expectedRuntimeAuthorizationRevision:
+                                exactDescriptor.subject.authorizationRevision,
                               agentId: agentId(exactDescriptor.subject.agentId),
                               resolveHistoricalCommitter:
                                 input.resolveHistoricalRuntimeCommitter,

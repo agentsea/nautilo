@@ -54,6 +54,11 @@
       "dependsOn": ["transit", "build"],
       "outputs": []
     },
+    "@nautilo/office-sheets#test:integration": {
+      "dependsOn": ["build"],
+      "cache": false,
+      "outputs": []
+    },
     "@nautilo/office-sheets#lint": {
       "dependsOn": ["transit", "build"],
       "outputs": []

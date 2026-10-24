@@ -363,11 +363,17 @@ For a disposable packaged test copy, modify an `app.asar` byte and confirm that 
 
 ## 11. Packaging compatibility and release acceptance
 
-Desktop requires macOS 12 (Monterey) or later. Keep
+Desktop requires macOS 13 (Ventura) or later. Keep
 `mac.extendInfo.LSMinimumSystemVersion` in `electron-builder.yml` aligned with
-the pinned Electron runtime, so the bundle does not advertise an older system
-than its embedded framework supports. The exact runtime version is recorded in
-`package.json`, `bun.lock`, and the root `THIRD_PARTY_NOTICES.md`.
+the highest minimum required by the application and its always-required
+embedded runtimes. Bundled Bun establishes the current macOS 13 floor; exact
+runtime versions are recorded in `package.json`, `bun.lock`, and the root
+`THIRD_PARTY_NOTICES.md`.
+
+The bundled `gog` helper used for Google Workspace requires macOS 15 or later.
+On macOS 13 and 14, Desktop remains supported: its runtime readiness probe
+rejects the incompatible helper, omits the Google Workspace capability, and
+reports the helper as unavailable without preventing application startup.
 
 A source update is separate from a signed artifact and installed adoption.
 Release acceptance should exercise first-run and sign-in, application menus,

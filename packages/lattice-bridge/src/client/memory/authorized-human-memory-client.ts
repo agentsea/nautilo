@@ -17,6 +17,11 @@ import type {
   ProtectedMemoryPreparedRepairRequestV1,
   ProtectedMemoryRepairResponseV1,
 } from "@nautilo/api-client/browser";
+import {
+  decodeMemoryEmbeddingDisclosureV2,
+  encodeMemoryEmbeddingDisclosureV2,
+  type MemoryEmbeddingDisclosureV2,
+} from "@nautilo/lattice-crypto/wire";
 
 import {
   decodeMemoryPayloadV1,
@@ -63,6 +68,7 @@ export type ProtectedMemoryApi = ProtectedMemoryApiBase &
         mode: "text" | "semantic";
         limit?: number;
         includeArchive?: boolean;
+        embeddingDisclosure?: MemoryEmbeddingDisclosureV2;
       }>,
     ): ReturnType<NautiloApiClient["searchProtectedMemories"]>;
     createProtectedMemory(
@@ -101,6 +107,16 @@ export type AuthorizedHumanMemoryWriteIntentV1 = Readonly<{
   requestedProvider: "openai" | "openrouter" | "venice";
   requestedModel: string;
 }>;
+
+export type AuthorizedHumanMemoryWriteIntentV2 = Readonly<{
+  payload: MemoryPayloadV1;
+  importance?: number;
+  requestedEmbedding: MemoryEmbeddingDisclosureV2;
+}>;
+
+export type AuthorizedHumanMemoryWriteIntent =
+  | AuthorizedHumanMemoryWriteIntentV1
+  | AuthorizedHumanMemoryWriteIntentV2;
 
 export type AuthorizedHumanMemoryOpenedV1 = Readonly<{
   projection: ProtectedMemoryProjectionV1;
@@ -158,13 +174,13 @@ export interface AuthorizedHumanMemoryDeviceContentPort {
   prepareCreate(
     input: Readonly<{
       plan: Exclude<ProtectedMemoryCreatePlanResponseV1, { status: string }>;
-      intent: AuthorizedHumanMemoryWriteIntentV1;
+      intent: AuthorizedHumanMemoryWriteIntent;
     }>,
   ): Promise<ProtectedMemoryPreparedCreateRequestV1>;
   prepareUpdate(
     input: Readonly<{
       current: ProtectedMemoryDtoV1;
-      intent: AuthorizedHumanMemoryWriteIntentV1;
+      intent: AuthorizedHumanMemoryWriteIntent;
     }>,
   ): Promise<ProtectedMemoryPreparedUpdateRequestV1>;
   prepareOrdinaryFallbackCreate?(
@@ -172,14 +188,14 @@ export interface AuthorizedHumanMemoryDeviceContentPort {
       plan:
         | ProtectedMemoryOrdinaryFallbackCreatePlanV1
         | Exclude<ProtectedMemoryCreatePlanResponseV1, { status: string }>;
-      intent: AuthorizedHumanMemoryWriteIntentV1;
+      intent: AuthorizedHumanMemoryWriteIntent;
     }>,
   ): Promise<ProtectedMemoryOrdinaryFallbackCreateRequestV1>;
   prepareOrdinaryFallbackUpdate?(
     input: Readonly<{
       current: ProtectedMemoryDtoV1;
       policyRevision: number;
-      intent: AuthorizedHumanMemoryWriteIntentV1;
+      intent: AuthorizedHumanMemoryWriteIntent;
     }>,
   ): Promise<ProtectedMemoryOrdinaryFallbackUpdateRequestV1>;
   prepareAccess(
@@ -314,12 +330,12 @@ export interface AuthorizedHumanMemoryClient {
       HumanMemoryObservationDeliveryResult
   >;
   create(
-    intent: AuthorizedHumanMemoryWriteIntentV1,
+    intent: AuthorizedHumanMemoryWriteIntent,
     use: (opened: AuthorizedHumanMemoryOpenedV1) => void | Promise<void>,
   ): Promise<ContentCompletion>;
   update(
     memoryId: string,
-    intent: AuthorizedHumanMemoryWriteIntentV1,
+    intent: AuthorizedHumanMemoryWriteIntent,
     use: (opened: AuthorizedHumanMemoryOpenedV1) => void | Promise<void>,
   ): Promise<ContentCompletion>;
   archive(memoryId: string): Promise<
@@ -429,25 +445,29 @@ function exactStrings(
 }
 
 function normalizeWriteIntent(
-  value: AuthorizedHumanMemoryWriteIntentV1,
-): AuthorizedHumanMemoryWriteIntentV1 {
+  value: AuthorizedHumanMemoryWriteIntent,
+): AuthorizedHumanMemoryWriteIntent {
   const fields = Object.keys(value).sort();
-  const expected =
-    value.importance === undefined
-      ? ["payload", "requestedModel", "requestedProvider"]
+  const v2 = "requestedEmbedding" in value;
+  const expected = value.importance === undefined
+    ? v2 ? ["payload", "requestedEmbedding"]
+      : ["payload", "requestedModel", "requestedProvider"]
+    : v2 ? ["importance", "payload", "requestedEmbedding"]
       : ["importance", "payload", "requestedModel", "requestedProvider"];
   if (
     fields.length !== expected.length ||
     fields.some((field, index) => field !== expected[index])
   )
     throw new TypeError("Protected Human Memory write intent is invalid");
-  if (
-    value.requestedProvider !== "openai" &&
-    value.requestedProvider !== "openrouter" && value.requestedProvider !== "venice"
-  )
-    throw new TypeError("Protected Human Memory provider is invalid");
-  if (!/^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$/u.test(value.requestedModel))
-    throw new TypeError("Protected Human Memory model is invalid");
+  if (!v2) {
+    if (value.requestedProvider !== "openai" && value.requestedProvider !== "openrouter"
+      && value.requestedProvider !== "venice") {
+      throw new TypeError("Protected Human Memory provider is invalid");
+    }
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,127}$/u.test(value.requestedModel)) {
+      throw new TypeError("Protected Human Memory model is invalid");
+    }
+  }
   if (
     value.importance !== undefined &&
     (!Number.isFinite(value.importance) ||
@@ -457,14 +477,20 @@ function normalizeWriteIntent(
     throw new TypeError("Protected Human Memory importance is invalid");
   const payloadBytes = encodeMemoryPayloadV1(value.payload);
   try {
-    return Object.freeze({
+    const common = {
       payload: decodeMemoryPayloadV1(payloadBytes),
       ...(value.importance === undefined
         ? {}
         : { importance: value.importance }),
+    };
+    if (!v2) return Object.freeze({ ...common,
       requestedProvider: value.requestedProvider,
-      requestedModel: value.requestedModel,
-    });
+      requestedModel: value.requestedModel });
+    const disclosure = encodeMemoryEmbeddingDisclosureV2(value.requestedEmbedding);
+    try {
+      return Object.freeze({ ...common,
+        requestedEmbedding: decodeMemoryEmbeddingDisclosureV2(disclosure) });
+    } finally { disclosure.fill(0); }
   } finally {
     payloadBytes.fill(0);
   }

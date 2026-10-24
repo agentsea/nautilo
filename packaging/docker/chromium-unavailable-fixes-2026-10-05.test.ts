@@ -68,7 +68,7 @@ describe("Chromium decisions require a fresh supported-package gap", () => {
     test(`${architecture}: renews only the seven rechecked tuples with unchanged fixable blockers`, () => {
       const tuples = fixture.renewals[architecture];
       const renewalIds = new Set(tuples.map(tuple => tuple[1]));
-      const source = read("server-vulnerability-exceptions.input.json") as { exceptions: VulnerabilityPolicyV1["exceptions"] };
+      const source = read("fixtures/server-policy-before-security-renewal-2026-10-23.json") as { exceptions: VulnerabilityPolicyV1["exceptions"] };
       const exceptions = source.exceptions.filter(entry => renewalIds.has(entry.advisoryId));
       expect(exceptions).toHaveLength(7);
       expect(tuples).toHaveLength(11);

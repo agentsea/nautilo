@@ -25,6 +25,7 @@ import {
   getAgentExecutionConfigById,
   getAgentDisplayNameById,
   getDefaultForegroundAgentModelId,
+  hydrateForegroundAgentModelCatalog,
   resolveForegroundAgentModelId,
   loadForegroundModelControlSnapshot,
   foregroundModelControlPlanFromSnapshot,
@@ -960,6 +961,12 @@ export async function* langgraphExecutor(
   const foregroundModelControlSnapshot = await loadForegroundModelControlSnapshot(
     roomId, agentId, perTurnModelRaw || null,
   );
+  if (!configuredModel
+    && !foregroundModelControlSnapshot.turnModelId
+    && !foregroundModelControlSnapshot.roomSelection?.modelId
+    && !foregroundModelControlSnapshot.agentSelection?.modelId) {
+    await hydrateForegroundAgentModelCatalog(signal);
+  }
   const foregroundModelPlan = foregroundModelControlPlanFromSnapshot(foregroundModelControlSnapshot, () =>
     configuredModel
       ? configuredModel

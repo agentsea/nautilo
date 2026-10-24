@@ -21,7 +21,7 @@
   "dependencies": {
     "@nautilo/config": "workspace:*",
     "bonjour-service": "1.3.0",
-    "smol-toml": "1.8.0"
+    "smol-toml": "1.9.1"
   },
   "devDependencies": {
     "@types/node": "24.10.4",

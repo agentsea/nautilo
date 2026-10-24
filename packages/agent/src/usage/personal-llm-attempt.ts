@@ -146,14 +146,23 @@ export async function runPersonalLlmAttempt<T>(input: {
   endpoint: string;
   signal?: AbortSignal | undefined;
   hasObservedProviderWork?: (() => boolean) | undefined;
+  /** Optional live authority fence, evaluated immediately before provider work. */
+  assertStillAuthorized?: (() => void | Promise<void>) | undefined;
   invoke: () => Promise<T>;
 }, deps: PersonalAttemptDependencies = defaultDependencies): Promise<T> {
   const context = getUsageContext();
   const funding = context?.funding;
   const isMemoryWork = context && ["memory_review", "room_stenographer", "room_reflection", "room_event_compaction"].includes(context.callType);
   const isServerImageAssistance = context?.callType === "image_assistance" && funding?.kind === "server";
+  const isSoulService = context?.callType === "soul" && funding?.kind === "service";
   if (!context || !funding || funding.providerRoute === "surplus"
-    || (funding.kind !== "personal" && !isMemoryWork && !isServerImageAssistance)) return input.invoke();
+    || (funding.kind !== "personal" && !isMemoryWork && !isServerImageAssistance && !isSoulService)) {
+    if (input.assertStillAuthorized) {
+      await input.assertStillAuthorized();
+      input.signal?.throwIfAborted();
+    }
+    return input.invoke();
+  }
   const nonpersonalBegin = funding.kind === "service" ? deps.beginService : deps.beginServer;
   const persistSettlement = funding.kind === "personal" ? deps.settle
     : funding.kind === "service" ? deps.settleService : deps.settleServer;
@@ -187,13 +196,15 @@ export async function runPersonalLlmAttempt<T>(input: {
   const settle = async (
     outcome: "succeeded" | "cancelled" | "failed" | "unknown",
     preserveOutcome = false,
+    knownUnsent = false,
   ) => {
     const evidence = usage;
     const hasTokenEvidence = evidence !== undefined
       && (evidence.inputTokens > 0 || evidence.outputTokens > 0
         || evidence.totalTokens !== undefined || evidence.reasoningTokens > 0
         || evidence.cachedInputTokens > 0 || evidence.cacheCreationTokens > 0);
-    const costState = evidence?.actualCostUsd != null ? "actual" as const
+    const costState = knownUnsent ? "actual" as const
+      : evidence?.actualCostUsd != null ? "actual" as const
       : hasTokenEvidence ? "estimated" as const : "unknown" as const;
     const providerRequestId = evidence?.providerRequestId ?? terminalProviderRequestId;
     try {
@@ -211,6 +222,7 @@ export async function runPersonalLlmAttempt<T>(input: {
           ...(evidence.actualCostUsd === null ? {} : { actualCostUsd: evidence.actualCostUsd }),
           metadata: { cacheCreationTokens: evidence.cacheCreationTokens },
         } : {}),
+        ...(knownUnsent ? { actualCostUsd: 0 } : {}),
         ...(providerRequestId === undefined ? {} : { providerRequestId }),
         ...(outcome === "succeeded" ? {} : { failureCode: terminalFailureCode
           ?? (outcome === "cancelled" ? "cancelled"
@@ -224,10 +236,10 @@ export async function runPersonalLlmAttempt<T>(input: {
       return false;
     }
   };
-  const finish = async (outcome: NonNullable<typeof terminalOutcome>) => {
+  const finish = async (outcome: NonNullable<typeof terminalOutcome>, knownUnsent = false) => {
     terminalOutcome = outcome;
     const evidenceAtSettlement = usage;
-    initialSettlementSucceeded = await settle(outcome);
+    initialSettlementSucceeded = await settle(outcome, false, knownUnsent);
     initialSettlementDone = true;
     // Usage can arrive while the terminal database write is in flight.
     if (usage && usage !== evidenceAtSettlement && !knownCostSettled
@@ -235,7 +247,15 @@ export async function runPersonalLlmAttempt<T>(input: {
       await settle(outcome, initialSettlementSucceeded);
     }
   };
+  let authorizationGuardEntered = false;
+  let invocationEntered = false;
   try {
+    if (input.assertStillAuthorized) {
+      authorizationGuardEntered = true;
+      await input.assertStillAuthorized();
+      input.signal?.throwIfAborted();
+    }
+    invocationEntered = true;
     const result = await runWithUsageContext({ ...context, trackedAttemptId: id,
       onAttemptUsage: (observed) => {
         usage = observed;
@@ -252,6 +272,12 @@ export async function runPersonalLlmAttempt<T>(input: {
     await finish("succeeded");
     return result;
   } catch (error) {
+    if (authorizationGuardEntered && !invocationEntered) {
+      const cancelled = input.signal?.aborted === true;
+      terminalFailureCode = cancelled ? "cancelled" : "authorization_changed";
+      await finish(cancelled ? "cancelled" : "failed", true);
+      throw error;
+    }
     const failure = classifyPersonalAttemptFailure(
       error,
       input.signal?.aborted === true,

@@ -9,10 +9,10 @@ function context(): ExternalRoomIntakeContext {
   return {
     receiver: { userId: uid(1), connectionId: uid(2), bindingId: uid(3), bindingRevision: 0,
       connectionGeneration: 1, relayId: "relay", desktopSessionId: "desktop", pairingGenerationRef: "pairing" },
-    connection: { id: uid(2), userId: uid(1), relayId: "relay", desktopSessionId: "desktop", pairingGenerationRef: "pairing",
+    connection: { provider: "bolter", transportKind: "desktop-relay", operatorBindingId: null, id: uid(2), userId: uid(1), relayId: "relay", desktopSessionId: "desktop", pairingGenerationRef: "pairing",
       homeHandle: "home", origin: "https://bolter.chat", providerAgentId: "provider-agent", identityFingerprint: "a".repeat(64),
       generation: 1, revision: 0, enabled: true, revokedAt: null, createdAt: now, updatedAt: now },
-    binding: { id: uid(3), userId: uid(1), connectionId: uid(2), roomId: uid(4), namespaceId: uid(5), agentId: uid(6),
+    binding: { provider: "bolter", id: uid(3), userId: uid(1), connectionId: uid(2), roomId: uid(4), namespaceId: uid(5), agentId: uid(6),
       origin: "https://bolter.chat", providerAgentId: "provider-agent", chatId: "chat", threadId: "", revision: 0,
       state: "active", modelSponsorshipAcceptedAt: now, createdAt: now, updatedAt: now },
     memoryEnvelope: { externalContext: true, ownerId: uid(1), actorId: uid(7), agentId: uid(6), roomId: uid(4),
@@ -117,4 +117,25 @@ test("a legacy binding without accepted model sponsorship cannot prepare executi
   const ctx = context();
   ctx.binding.modelSponsorshipAcceptedAt = null;
   expect(prepareBolterExternalRoomTurn(ctx, message)).toEqual({ ok: false, reason: "sponsor-authority-unavailable" });
+});
+
+test("operator transport admits truthful mAgent provenance with exactly one external namespace", async () => {
+  const { prepareMagentExternalRoomTurn } = await import("../../src/messaging/external-room-turn");
+  const ctx = context();
+  Object.assign(ctx.connection, { provider: "magent", transportKind: "operator-unix", operatorBindingId: uid(9),
+    relayId: null, desktopSessionId: null, pairingGenerationRef: null, homeHandle: null, origin: "http://127.0.0.1:8080" });
+  Object.assign(ctx.binding, { provider: "magent", origin: ctx.connection.origin });
+  Object.assign(ctx.receiver, { transportKind: "operator-unix", operatorBindingId: uid(9), relayId: null, desktopSessionId: null, pairingGenerationRef: null });
+  const input = { ...message, senderType: "anima", addressed: true };
+  const prepared = prepareMagentExternalRoomTurn(ctx, input);
+  expect(prepared.ok).toBe(true);
+  if (prepared.ok) {
+    expect(prepared.turn.origin.provider).toBe("magent");
+    expect(prepared.turn.origin.origin).toBe("http://127.0.0.1:8080");
+    expect("readableNamespaces" in prepared.turn.memoryEnvelope && prepared.turn.memoryEnvelope.readableNamespaces).toEqual([uid(5)]);
+  }
+  expect(prepareBolterExternalRoomTurn(ctx, input)).toEqual({ ok: false, reason: "stale-binding" });
+  expect(prepareMagentExternalRoomTurn(ctx, { ...input, senderType: "user" })).toEqual({ ok: false, reason: "unsupported-content" });
+  Object.assign(ctx.receiver, { operatorBindingId: uid(8) });
+  expect(prepareMagentExternalRoomTurn(ctx, input)).toEqual({ ok: false, reason: "stale-binding" });
 });

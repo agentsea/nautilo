@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { AIMessage, BaseMessage } from "@langchain/core/messages";
+import { AIMessage, type BaseMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
 import type { StructuredTool } from "@langchain/core/tools";
 import {
@@ -12,8 +12,15 @@ import { warn } from "@nautilo/logger";
 import { getUsageContext, normalizeUsageRoomId, type UsageFundingProvenance } from "../usage/usage-context";
 import { modelRouteProvider } from "./model-route";
 import type { QualifiedSurplusChatRoute } from "./surplus-route";
+import { invalidateSurplusModelCatalog } from "./surplus-catalog";
 import type { ReasoningEffort } from "./types";
 import { surplusAttemptBinding, surplusReceiptTelemetry } from "./surplus-reconciliation";
+import {
+  provenPreRoutingSurplusTrace,
+  safeSurplusErrorDiagnostics,
+  surplusErrorTelemetry,
+  SurplusMarketplaceAttemptError,
+} from "./surplus-error";
 import {
   createSurplusChatModel,
   isSafeSurplusDirectFallback,
@@ -45,11 +52,22 @@ export interface SurplusChatAttemptInput {
   readonly hasDeliveredOutput: () => boolean;
   readonly invokeModel: InvokeModel;
   readonly validateResponse?: (response: AIMessage) => void;
+  /** Optional live authority fence, evaluated after admission and immediately before provider work. */
+  readonly assertStillAuthorized?: () => void | Promise<void>;
+  /** Narrow service callers may retry direct only after a proven pre-service refusal. */
+  readonly directFallbackPolicy?: "pre_service_only";
 }
 
 export type SurplusChatAttemptResult =
   | Readonly<{ kind: "served"; response: AIMessage; requestId?: string }>
-  | Readonly<{ kind: "direct_fallback"; retryUnpinned?: true }>;
+  | Readonly<{
+      kind: "direct_fallback";
+      retryUnpinned?: true;
+      /** Exact-model supply was refused before any marketplace seller attempt. */
+      modelUnavailableBeforeService?: true;
+      /** Content-free typed cause retained when optional recovery is unavailable. */
+      failure?: Error;
+    }>;
 
 export class SurplusProviderRouteMismatchError extends Error {
   readonly code = "surplus_provider_route_mismatch" as const;
@@ -113,20 +131,38 @@ export function canUseQualifiedSurplusChatRoute(input: {
   if (input.needsVision && !route.supportsVision) return false;
   if (input.requiresTools && !route.supportsTools) return false;
   if (input.reasoningRequested && !route.supportsReasoning) return false;
-  if (input.maxOutputTokens > route.maxOutputTokens) return false;
+  if (!Number.isSafeInteger(input.maxOutputTokens) || input.maxOutputTokens < 1
+    || input.maxOutputTokens > route.maxOutputTokens) return false;
   return input.estimatedInputTokens + input.maxOutputTokens <= route.maxContextTokens;
 }
 
-function hasUnsupportedSurplusAdaptation(adaptedParameters: string | undefined): boolean {
+type SurplusAdaptationKind = "none" | "benign" | "output_ceiling" | "unsupported";
+
+function surplusAdaptationKind(adaptedParameters: string | undefined): SurplusAdaptationKind {
   const adapted = adaptedParameters?.trim();
-  // Surplus may choose a cache bucket and overwrite stream_options with
-  // include_usage:true for metering, which our adapter already requests.
-  // Neither changes inference semantics. Reject every other adaptation,
-  // including malformed lists and mixtures with inference-changing settings.
-  return Boolean(adapted && adapted.split(",").some((parameter) => {
-    const name = parameter.trim();
-    return name !== "prompt_cache_key" && name !== "stream_options";
-  }));
+  if (!adapted) return "none";
+  const parameters = adapted.split(",").map((parameter) => parameter.trim());
+  if (parameters.some((parameter) => !parameter)
+    || new Set(parameters).size !== parameters.length) return "unsupported";
+  let outputCeilingAdapted = false;
+  for (const parameter of parameters) {
+    // Surplus may choose a cache bucket and overwrite stream_options with
+    // include_usage:true for metering, which our adapter already requests.
+    if (parameter === "prompt_cache_key" || parameter === "stream_options") continue;
+    // The receipt names the parameter but not how it changed. Defer these two
+    // ceiling aliases until the completed response can prove that the actual
+    // result stayed within the caller's original budget.
+    if (parameter === "max_tokens" || parameter === "max_completion_tokens") {
+      outputCeilingAdapted = true;
+      continue;
+    }
+    return "unsupported";
+  }
+  return outputCeilingAdapted ? "output_ceiling" : "benign";
+}
+
+function hasUnsupportedSurplusAdaptation(adaptedParameters: string | undefined): boolean {
+  return surplusAdaptationKind(adaptedParameters) === "unsupported";
 }
 
 /** A successful marketplace response must preserve the provider and inference settings. */
@@ -157,16 +193,32 @@ const TERMINAL_FINISH_REASONS = new Set([
 /** A complete answer needs both an untruncated receipt and SDK-observed terminal metadata. */
 export function assertCompleteSurplusResponse(
   receipt: SurplusWireReceipt | undefined,
-  response: AIMessage,
+  response: unknown,
+  maxOutputTokens?: number,
 ): void {
-  const finishReason = record(response.response_metadata)?.["finish_reason"];
+  if (!AIMessage.isInstance(response)) throw new SurplusIncompleteResponseError();
+  const message = response;
+  const finishReason = record(message.response_metadata)?.["finish_reason"];
   if (receipt?.truncated || typeof finishReason !== "string" || !TERMINAL_FINISH_REASONS.has(finishReason)) {
     throw new SurplusIncompleteResponseError();
+  }
+  const adaptation = surplusAdaptationKind(receipt?.adaptedParameters);
+  if (adaptation === "unsupported") throw new SurplusAdaptedParametersError();
+  if (adaptation === "output_ceiling") {
+    if (typeof maxOutputTokens !== "number" || !Number.isSafeInteger(maxOutputTokens) || maxOutputTokens < 1
+      || finishReason === "length") throw new SurplusAdaptedParametersError();
+    // LangChain can synthesize a normalized zero while merging absent usage
+    // fields. Require the raw terminal completion count emitted by Surplus.
+    const rawUsage = record(record(message.response_metadata)?.["usage"]);
+    const actualOutputTokens = count(rawUsage?.["completion_tokens"]);
+    if (actualOutputTokens === undefined || actualOutputTokens > maxOutputTokens) {
+      throw new SurplusAdaptedParametersError();
+    }
   }
   // A provider-enforced content filter is a valid terminal answer even when it
   // deliberately carries no text. Every other successful terminal must give
   // Nautilo something useful to deliver or execute.
-  if (finishReason !== "content_filter" && !hasUsableSurplusResponse(response)) {
+  if (finishReason !== "content_filter" && !hasUsableSurplusResponse(message)) {
     throw new SurplusIncompleteResponseError();
   }
 }
@@ -217,7 +269,8 @@ export function classifySurplusFailedAttempt(input: {
     ? "cancelled" as const
     : input.receipt?.truncated === true
       ? "truncated_response" as const
-      : hasUnsupportedSurplusAdaptation(input.receipt?.adaptedParameters) || input.error instanceof SurplusAdaptedParametersError
+      : ["output_ceiling", "unsupported"].includes(surplusAdaptationKind(input.receipt?.adaptedParameters))
+        || input.error instanceof SurplusAdaptedParametersError
         ? "adapted_parameters" as const
         : input.error instanceof SurplusProviderRouteMismatchError
           ? "provider_route_mismatch" as const
@@ -369,10 +422,16 @@ export async function invokeSurplusChatAttempt(input: SurplusChatAttemptInput): 
   let receipt: SurplusWireReceipt | undefined;
   let responseStatus: number | undefined;
   let terminalUsage: ReturnType<typeof readSurplusResponseUsage> | undefined;
+  let authorizationGuardEntered = false;
+  let invocationEntered = false;
+  let receiptAttached = false;
   const onResponse = async (next: SurplusWireReceipt, status: number) => {
     receipt = next;
     responseStatus = status;
-    if (next.requestId) {
+    // Successful streamed responses expose a settlement id. Error responses
+    // may expose only a pre-routing trace id, so defer those until the stable
+    // error code and attempt count are available in the catch path.
+    if (next.requestId && status >= 200 && status < 300) {
       try {
         await attachSurplusRequestReceipt({
           attemptId,
@@ -380,6 +439,7 @@ export async function invokeSurplusChatAttempt(input: SurplusChatAttemptInput): 
           ...(next.providerFamily ? { servingProvider: next.providerFamily } : {}),
           metadata: surplusReceiptTelemetry(next),
         });
+        receiptAttached = true;
       } catch {
         warn("[nautilo/surplus] request receipt persistence failed", { failureCode: "request_receipt_failed" });
       }
@@ -399,13 +459,19 @@ export async function invokeSurplusChatAttempt(input: SurplusChatAttemptInput): 
     });
     const bound = input.tools.length > 0 ? model.bindTools?.([...input.tools], input.toolBindingOptions) : model;
     if (!bound) throw new Error("The selected Surplus route cannot bind tools.");
+    if (input.assertStillAuthorized) {
+      authorizationGuardEntered = true;
+      await input.assertStillAuthorized();
+      input.config.signal?.throwIfAborted();
+    }
+    invocationEntered = true;
     const response = await input.invokeModel(
       bound as { invoke(messages: BaseMessage[], options?: RunnableConfig): Promise<unknown> },
       input.messages,
       input.config,
     );
     terminalUsage = readSurplusResponseUsage(response);
-    assertCompleteSurplusResponse(receipt, response);
+    assertCompleteSurplusResponse(receipt, response, input.maxOutputTokens);
     input.validateResponse?.(response);
     const usage = terminalUsage;
     const costMicro = usage.buyerCostMicro ?? receipt?.buyerCostMicro;
@@ -436,22 +502,61 @@ export async function invokeSurplusChatAttempt(input: SurplusChatAttemptInput): 
     };
   } catch (error) {
     const cancelled = input.config.signal?.aborted === true;
-    const disposition = classifySurplusFailedAttempt({
-      error,
-      cancelled,
-      responseStatus,
-      receipt,
-      deliveredOutput: input.hasDeliveredOutput(),
-      ...(terminalUsage === undefined ? {} : { terminalUsage }),
-    });
+    const guardRejectedBeforeInvocation = authorizationGuardEntered && !invocationEntered;
+    const disposition = guardRejectedBeforeInvocation
+      ? {
+          outcome: cancelled ? "cancelled" as const : "failed" as const,
+          costState: "actual" as const,
+          actualCostUsd: 0,
+          failureCode: cancelled ? "cancelled" as const : "authorization_changed" as const,
+          directFallback: false,
+        }
+      : classifySurplusFailedAttempt({
+          error,
+          cancelled,
+          responseStatus,
+          receipt,
+          deliveredOutput: input.hasDeliveredOutput(),
+          ...(terminalUsage === undefined ? {} : { terminalUsage }),
+        });
+    const safeDiagnostics = safeSurplusErrorDiagnostics(error, responseStatus);
+    const trace = provenPreRoutingSurplusTrace({ error, responseStatus, receipt });
+    if (trace?.vendorCode === "no_sellers_for_model" || error instanceof SurplusAdaptedParametersError) {
+      // Refresh metadata for the next admission; this never replays a request
+      // whose output or billing may already have occurred.
+      invalidateSurplusModelCatalog();
+    }
+    const failure = new SurplusMarketplaceAttemptError(trace ?? safeDiagnostics);
+    if (!trace && receipt?.requestId && !receiptAttached) {
+      try {
+        await attachSurplusRequestReceipt({
+          attemptId,
+          providerRequestId: receipt.requestId,
+          ...(receipt.providerFamily ? { servingProvider: receipt.providerFamily } : {}),
+          metadata: {
+            ...surplusReceiptTelemetry(receipt),
+            ...surplusErrorTelemetry(safeDiagnostics),
+          },
+        });
+        receiptAttached = true;
+      } catch {
+        warn("[nautilo/surplus] request receipt persistence failed", { failureCode: "request_receipt_failed" });
+      }
+    }
     try {
       await settleSurplusAttemptWithRetry({
         attemptId,
-        ...(receipt?.requestId ? { providerRequestId: receipt.requestId } : {}),
-        ...(receipt ? { metadata: surplusReceiptTelemetry(receipt) } : {}),
+        ...(!trace && receipt?.requestId ? { providerRequestId: receipt.requestId } : {}),
+        ...(!receipt && Object.keys(safeDiagnostics).length === 0 ? {} : {
+          metadata: {
+            ...(receipt ? surplusReceiptTelemetry(receipt) : {}),
+            ...surplusErrorTelemetry(trace ?? safeDiagnostics),
+          },
+        }),
         outcome: disposition.outcome,
-        costState: disposition.costState,
-        ...(disposition.actualCostUsd === undefined ? {} : { actualCostUsd: disposition.actualCostUsd }),
+        costState: trace ? "actual" : disposition.costState,
+        ...(trace ? { actualCostUsd: 0 }
+          : disposition.actualCostUsd === undefined ? {} : { actualCostUsd: disposition.actualCostUsd }),
         ...(terminalUsage?.inputTokens === undefined ? {} : { inputTokens: terminalUsage.inputTokens }),
         ...(terminalUsage?.outputTokens === undefined ? {} : { outputTokens: terminalUsage.outputTokens }),
         ...(terminalUsage?.totalTokens === undefined ? {} : { totalTokens: terminalUsage.totalTokens }),
@@ -463,13 +568,21 @@ export async function invokeSurplusChatAttempt(input: SurplusChatAttemptInput): 
     } catch {
       warn("[nautilo/surplus] attempt settlement failed", { failureCode: "attempt_settlement_failed" });
     }
+    if (guardRejectedBeforeInvocation) throw error;
     if (cancelled) throw input.config.signal?.reason ?? error;
-    if (disposition.directFallback) {
+    if (disposition.directFallback
+      && (input.directFallbackPolicy !== "pre_service_only" || disposition.outcome === "failed")) {
+      const modelUnavailableBeforeService = input.directFallbackPolicy === "pre_service_only"
+        && disposition.outcome === "failed"
+        && receipt?.marketplaceAttempts === 0
+        && (responseStatus === 404 || responseStatus === 503);
       return {
         kind: "direct_fallback",
+        failure,
         ...(input.providerMode !== "any" && disposition.failureCode === "no_sellers_for_model"
           ? { retryUnpinned: true as const }
           : {}),
+        ...(modelUnavailableBeforeService ? { modelUnavailableBeforeService: true as const } : {}),
       };
     }
     throw new SurplusOutcomeUnknownError();

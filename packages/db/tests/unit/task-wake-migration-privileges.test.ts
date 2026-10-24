@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "bun:test";
 import { readMigrationFiles } from "drizzle-orm/migrator";
 import { readMigrationFilesWithPrivilegeCompat, repairTaskWakeMigration } from "../../src/utils/migration-privilege-compat";
@@ -30,7 +31,7 @@ describe("Task wake migration trigger privileges", () => {
     expect(() => repairTaskWakeMigration(source.replace(trigger, `${trigger}\n${trigger}`)))
       .toThrow("Refusing unknown");
 
-    const config = { migrationsFolder: directory.pathname };
+    const config = { migrationsFolder: fileURLToPath(directory) };
     const canonical = readMigrationFiles(config);
     const metadata = readMigrationFilesWithPrivilegeCompat(config);
     const index = canonical.findIndex(({ hash }) => hash === createHash("sha256").update(source).digest("hex"));

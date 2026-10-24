@@ -7,7 +7,7 @@ lifecycle operations. It is not an interactive chat client.
 ## Requirements
 
 - Node **24.x** (matches `engines` in `package.json`; the published `bin` runs `dist/index.js` under Node)
-- Bun **1.3.11** optional for monorepo dev (`bun apps/cli/src/index.ts`)
+- Bun **1.4.4** optional for monorepo dev (`bun apps/cli/src/index.ts`)
 - Loopback-only `nautilo setup` (`127.0.0.1`, `::1`, `localhost`, or a Unix HTTP socket path)
 
 ## Install

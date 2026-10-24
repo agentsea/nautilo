@@ -43,6 +43,8 @@ export interface ServiceEmbeddingAttemptInput<T> {
   endpoint: string;
   dimensions: number;
   signal?: AbortSignal;
+  /** Revalidate the selected route and credential after durable admission. */
+  assertStillAuthorized?: () => void;
   invoke: (
     observeEvidence: (evidence: ServiceEmbeddingAttemptEvidence) => void,
   ) => Promise<T>;
@@ -144,13 +146,16 @@ export async function runServiceEmbeddingAttempt<T>(
     evidence = { ...(evidence ?? {}), ...next };
   };
   const settle = async (
-    outcome: "succeeded" | "cancelled" | "unknown",
+    outcome: "succeeded" | "failed" | "cancelled" | "unknown",
     failureCode?: string,
+    knownPreWireZero = false,
   ): Promise<void> => {
     const hasReportedUsage = evidence?.inputTokens !== undefined
       || evidence?.totalTokens !== undefined;
     const hasActualCost = evidence?.actualCostUsd !== undefined;
-    const costState = hasActualCost
+    const costState = knownPreWireZero
+      ? "actual" as const
+      : hasActualCost
       ? "actual" as const
       : hasReportedUsage
         ? "estimated" as const
@@ -177,9 +182,11 @@ export async function runServiceEmbeddingAttempt<T>(
         ...(estimatedCostUsd === undefined
           ? {}
           : { estimatedCostUsd, pricingVersion: PRICING_VERSION }),
-        ...(evidence?.actualCostUsd === undefined
-          ? {}
-          : { actualCostUsd: evidence.actualCostUsd }),
+        ...(knownPreWireZero
+          ? { actualCostUsd: 0 }
+          : evidence?.actualCostUsd === undefined
+            ? {}
+            : { actualCostUsd: evidence.actualCostUsd }),
         ...(evidence?.providerRequestId === undefined
           ? {}
           : { providerRequestId: evidence.providerRequestId }),
@@ -195,12 +202,19 @@ export async function runServiceEmbeddingAttempt<T>(
     }
   };
 
+  let providerDispatched = false;
   try {
+    input.assertStillAuthorized?.();
+    input.signal?.throwIfAborted();
+    providerDispatched = true;
     const value = await input.invoke(observeEvidence);
     await settle("succeeded");
     return value;
   } catch (error) {
-    if (input.signal?.aborted === true) await settle("cancelled", "cancelled");
+    if (!providerDispatched) {
+      if (input.signal?.aborted === true) await settle("cancelled", "cancelled", true);
+      else await settle("failed", "pre_wire_authorization_changed", true);
+    } else if (input.signal?.aborted === true) await settle("cancelled", "cancelled");
     else await settle("unknown", "outcome_unknown");
     throw error;
   }

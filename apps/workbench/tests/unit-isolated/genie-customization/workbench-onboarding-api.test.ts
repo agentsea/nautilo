@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
-import type { AgentProfileResponse } from "@nautilo/types";
+import type { AgentProfileResponse, AvatarRef } from "@nautilo/types";
 import { VoiceFundingApiError } from "@nautilo/api-client/browser";
 
 const profileWrite = {
@@ -50,6 +50,8 @@ mock.module("../../../src/lib/api", () => ({ apiClient }));
 const { createWorkbenchOnboardingApi } = await import("../../../src/genie-customization/workbench-onboarding-api");
 
 const originalFetch = globalThis.fetch;
+const originalCreateObjectURL = URL.createObjectURL;
+const originalRevokeObjectURL = URL.revokeObjectURL;
 
 function adapterOptions(overrides: Partial<Parameters<typeof createWorkbenchOnboardingApi>[0]> = {}) {
   return {
@@ -65,10 +67,52 @@ function adapterOptions(overrides: Partial<Parameters<typeof createWorkbenchOnbo
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  URL.createObjectURL = originalCreateObjectURL;
+  URL.revokeObjectURL = originalRevokeObjectURL;
   for (const operation of Object.values(apiClient)) operation.mockClear();
 });
 
 describe("Workbench onboarding adapter", () => {
+  test.each<AvatarRef>([
+    { kind: "preset", id: "shell" },
+    { kind: "uploaded", blobId: "uploaded-photo" },
+    { kind: "generated", blobId: "generated-photo" },
+  ])("loads the current %j avatar through authenticated media and preserves it on save", async (avatar) => {
+    const image = '<svg xmlns="http://www.w3.org/2000/svg"></svg>';
+    const fetchStub = mock(async () => new Response(image, {
+      headers: { "Content-Type": "image/svg+xml" },
+    }));
+    globalThis.fetch = fetchStub as typeof fetch;
+    const createUrl = mock((_blob: Blob) => "blob:current-avatar");
+    const revokeUrl = mock(() => {});
+    URL.createObjectURL = createUrl;
+    URL.revokeObjectURL = revokeUrl;
+    const adapter = createWorkbenchOnboardingApi(adapterOptions({
+      getCanonicalProfile: () => ({
+        ok: true,
+        data: { ...PROFILE_RESPONSE, agent: { ...PROFILE_RESPONSE.agent, avatar } },
+      }),
+    }));
+
+    await expect(adapter.api.loadExistingProfile()).resolves.toEqual({
+      ok: true,
+      data: expect.objectContaining({ avatar, avatarUrl: "blob:current-avatar" }),
+    });
+    expect(fetchStub).toHaveBeenCalledTimes(1);
+    expect(fetchStub).toHaveBeenCalledWith("/api/profile/avatar", {
+      headers: { Authorization: "Bearer token" },
+    });
+    expect(createUrl).toHaveBeenCalledTimes(1);
+    const loadedImage = createUrl.mock.calls[0]![0];
+    expect(await loadedImage.text()).toBe(image);
+
+    await expect(adapter.api.putProfile(profileWrite)).resolves.toEqual({ ok: true, data: { ok: true } });
+    expect(apiClient.selectAgentPhotoLibraryEntry).toHaveBeenCalledTimes(0);
+    expect(revokeUrl).toHaveBeenCalledTimes(0);
+    adapter.dispose();
+    expect(revokeUrl).toHaveBeenCalledWith("blob:current-avatar");
+  });
+
   test("hydrates safe voice data and relays the browser soul stream", async () => {
     globalThis.fetch = mock(async (input: RequestInfo | URL) => {
       if (String(input).endsWith("setup-flags")) {

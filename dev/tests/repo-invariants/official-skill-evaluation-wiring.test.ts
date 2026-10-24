@@ -43,7 +43,8 @@ describe("official skill evaluation repository wiring", () => {
     });
     expect(workflow.permissions).toEqual({ contents: "read" });
     expect(workflow.env).toEqual({
-      BUN_VERSION: "1.3.11",
+      NODE_OPTIONS: "--use-openssl-ca",
+      BUN_VERSION: "1.4.4",
       PYTHON_VERSION: "3.13.7",
       UV_VERSION: "0.7.3",
     });
@@ -52,7 +53,7 @@ describe("official skill evaluation repository wiring", () => {
     expect(job).toBeDefined();
     if (!job) throw new Error("official skill evaluation job is missing");
     expect(job).toMatchObject({
-      "runs-on": "ubuntu-latest",
+      "runs-on": "ubuntu-24.04",
       "timeout-minutes": 20,
     });
     expect(job.steps).toContainEqual({

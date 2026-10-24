@@ -8,7 +8,16 @@ import {
 } from "bun:test";
 import postgres from "postgres";
 import { drizzle } from "drizzle-orm/postgres-js";
-import { count, eq, processorCryptoSignerAuthorizations, createPostgresJsBridgeConnection } from "@nautilo/db";
+import { count, eq, inArray } from "drizzle-orm";
+import {
+  backgroundCryptoAuthorizationRequests,
+  createPostgresJsBridgeConnection,
+  cryptoObjects,
+  objectCryptoAccessHeads,
+  objectCryptoAccessManifests,
+  objectCryptoNamespaceEnvelopes,
+  processorCryptoSignerAuthorizations,
+} from "@nautilo/db";
 import {
   LatticeCrypto,
   ProcessorTransformRecipientRegistry,
@@ -81,6 +90,8 @@ import {
   PostgresProcessorTransformCommitVerifier,
   PostgresProtectedJournalProcessorObjectVerifier,
 } from "@nautilo/lattice-bridge/server";
+import { withDisposableFixtureCleanup } from
+  "../../scripts/disposable-postgres-cleanup";
 
 import {
   advanceBackgroundAuthorizationGeneration,
@@ -748,7 +759,7 @@ async function cleanupProductFixture(
   fixture: ProductFixture,
 ): Promise<void> {
   if (!productFixtures.delete(fixture)) return;
-  await admin.begin(async (transaction) => {
+  await withDisposableFixtureCleanup(admin, async (transaction) => {
     await transaction.unsafe(
       `DELETE FROM session_message_crypto_revisions WHERE session_id = $1`,
       [fixture.sessionId],
@@ -1092,48 +1103,49 @@ async function createSagaCryptoFixture(
 async function cleanupBackgroundRequests(): Promise<void> {
   if (backgroundRequestIds.size === 0) return;
   const ids = [...backgroundRequestIds];
-  await admin.unsafe(
-    `DELETE FROM processor_crypto_signer_authorizations
-      WHERE request_id = ANY($1::text[])`,
-    [ids],
-  );
-  await admin.unsafe(
-    `DELETE FROM background_crypto_authorization_requests
-      WHERE request_id = ANY($1::text[])`,
-    [ids],
-  );
+  await withDisposableFixtureCleanup(admin, async (transaction) => {
+    const cleanup = drizzle(transaction);
+    await cleanup.delete(processorCryptoSignerAuthorizations).where(inArray(
+      processorCryptoSignerAuthorizations.requestId,
+      ids,
+    ));
+    await cleanup.delete(backgroundCryptoAuthorizationRequests).where(inArray(
+      backgroundCryptoAuthorizationRequests.requestId,
+      ids,
+    ));
+  });
   backgroundRequestIds.clear();
 }
 
 async function cleanupCryptoObjects(): Promise<void> {
   if (cryptoObjectIds.size === 0) return;
   const ids = [...cryptoObjectIds];
-  await admin.unsafe(
-    `DELETE FROM object_crypto_access_heads
-      WHERE object_id = ANY($1::text[])`,
-    [ids],
-  );
-  await admin.unsafe(
-    `DELETE FROM object_crypto_namespace_envelopes
-      WHERE object_id = ANY($1::text[])`,
-    [ids],
-  );
-  await admin.unsafe(
-    `DELETE FROM object_crypto_access_manifests
-      WHERE object_id = ANY($1::text[])`,
-    [ids],
-  );
-  await admin.unsafe(
-    `DELETE FROM crypto_objects WHERE object_id = ANY($1::text[])`,
-    [ids],
-  );
+  await withDisposableFixtureCleanup(admin, async (transaction) => {
+    const cleanup = drizzle(transaction);
+    await cleanup.delete(objectCryptoAccessHeads).where(inArray(
+      objectCryptoAccessHeads.objectId,
+      ids,
+    ));
+    await cleanup.delete(objectCryptoNamespaceEnvelopes).where(inArray(
+      objectCryptoNamespaceEnvelopes.objectId,
+      ids,
+    ));
+    await cleanup.delete(objectCryptoAccessManifests).where(inArray(
+      objectCryptoAccessManifests.objectId,
+      ids,
+    ));
+    await cleanup.delete(cryptoObjects).where(inArray(
+      cryptoObjects.objectId,
+      ids,
+    ));
+  });
   cryptoObjectIds.clear();
 }
 
 async function cleanupSagaProductChildren(
   fixture: SagaCryptoFixture,
 ): Promise<void> {
-  await admin.begin(async (transaction) => {
+  await withDisposableFixtureCleanup(admin, async (transaction) => {
     await transaction.unsafe(
       `DELETE FROM room_event_rollups WHERE room_id = $1`,
       [fixture.product.roomId],
@@ -1168,7 +1180,7 @@ async function cleanupSagaProductChildren(
 async function cleanupProductCryptoReferences(
   fixture: ProductFixture,
 ): Promise<void> {
-  await admin.begin(async (transaction) => {
+  await withDisposableFixtureCleanup(admin, async (transaction) => {
     await transaction.unsafe(
       `DELETE FROM room_event_rollups WHERE room_id = $1`,
       [fixture.roomId],
@@ -1182,7 +1194,7 @@ async function cleanupProductCryptoReferences(
 
 async function cleanupSagaAuthorities(): Promise<void> {
   for (const fixture of sagaCryptoFixtures) {
-    await admin.begin(async (transaction) => {
+    await withDisposableFixtureCleanup(admin, async (transaction) => {
       await transaction.unsafe(
         `DELETE FROM namespace_crypto_heads WHERE namespace_id = $1`,
         [fixture.product.namespaceId],

@@ -42,14 +42,27 @@ describe("Human Memory post-commit effects", () => {
     expect(wake).toHaveBeenCalledTimes(1);
   });
 
-  test("preserves the approved embedding disclosure descriptor", () => {
+  test("preserves the approved embedding disclosure descriptors", () => {
     const embeddingConfiguration = { provider: "openai" as const,
       model: "text-embedding-3-small", dimensions: 1536 as const };
-    const wrapped = withHumanMemoryMutationEffects({
+    const canonicalSpace = { provider: "venice" as const,
+      model: "text-embedding-3-large", dimensions: 1536 as const };
+    const embeddingDisclosure = { contractVersion: 2 as const,
+      canonicalSpace,
+      processingRoute: { transport: "surplus_marketplace" as const,
+        marketplacePolicyVersion: "surplus-embedding-marketplace-v1" as const,
+        dataRecipientClasses: ["surplus", "marketplace_seller",
+          "seller_upstream_processor"] as const } };
+    const direct = withHumanMemoryMutationEffects({
       ports: { ...ports(), embeddingConfiguration },
       deliver: async () => "pending", wakeRecovery: () => {},
     });
-    expect(wrapped.embeddingConfiguration).toEqual(embeddingConfiguration);
+    expect(direct.embeddingConfiguration).toEqual(embeddingConfiguration);
+    const marketplace = withHumanMemoryMutationEffects({
+      ports: { ...ports(), embeddingDisclosure },
+      deliver: async () => "pending", wakeRecovery: () => {},
+    });
+    expect(marketplace.embeddingDisclosure).toBe(embeddingDisclosure);
   });
 
   test("returns the successful exact receipt even if notification or its wake fails", async () => {

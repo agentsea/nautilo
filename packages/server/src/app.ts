@@ -15,6 +15,8 @@ import { protectedTaskPendingAttentionRoutes } from "./routes/protected-task-pen
 import { createProtectedTaskHumanResponse } from "./routes/protected-task-human-response";
 import { createTaskLocalExecutionCaptureAdmission, resolveTaskLocalExecutionCaptureTarget, taskNeedsLocalExecutionCapture } from "./local-execution-task-capture";
 import { createBolterController, type BolterController } from "./messaging/bolter-controller";
+import { createMagentOperatorService } from "./messaging/magent-operator";
+import { readMagentOperatorConfig, startMagentUnixHttp } from "./messaging/magent-unix";
 import { bolterRoutes } from "./routes/bolter";
 import { createExternalRoomExecutionService } from "./messaging/external-room-execution";
 import { acceptPublishedProtectedTaskReply } from
@@ -2213,6 +2215,16 @@ export async function createApp(options?: CreateAppOptions) {
     onRecoveryPass: () => { bolterController?.wakePublications(); },
   });
   app.decorate("externalRoomExecution", externalRoomExecution);
+  const magentConfigPath = fromRuntimeConfig().nautilo_magent_config_file;
+  let magentSocket: Awaited<ReturnType<typeof startMagentUnixHttp>> | undefined;
+  if (magentConfigPath) {
+    app.addHook("onReady", async () => {
+      const operatorConfig = await readMagentOperatorConfig(magentConfigPath);
+      const operator = await createMagentOperatorService({ config: operatorConfig, execution: externalRoomExecution, jobManager });
+      magentSocket = await startMagentUnixHttp(operatorConfig, operator);
+    });
+    app.addHook("preClose", async () => { await magentSocket?.close(); });
+  }
   // Match the existing conversion worker's recovery cadence. Durable claims
   // prevent overlapping execution across processes; this timer never takes over a claim.
   app.addHook("onListen", () => { externalRoomExecution.start({ intervalMs: 5_000 }); return Promise.resolve(); });

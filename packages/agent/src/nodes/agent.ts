@@ -46,11 +46,8 @@ import {
 import { getActiveModelCatalogSync } from "../config/model-catalog/runtime-catalog";
 import { getModelById } from "../config/assistant-models";
 import { ModelUnavailableError } from "../config/eligible-models";
+import { hydrateSurplusChatCatalog, type QualifiedSurplusChatRoute } from "../providers/surplus-route";
 import { resolveProviderKey } from "../resolve-provider-key";
-import {
-  resolveSurplusChatServingAvailability,
-  type QualifiedSurplusChatRoute,
-} from "../providers/surplus-route";
 import { hasStubModelForTests } from "../providers/stub-model-state";
 import { getCurrentInitiatingClientSurface } from "../runtime/initiating-client-surface-context";
 import { effectiveLiveMiniAppSessionForState } from "../runtime/live-mini-app-execution-context";
@@ -104,24 +101,15 @@ export function resolveForegroundAgentModelId(
   },
 ): string {
   if (input.fundingKind === "personal") return resolvePersonalForegroundModelId(configuredModelId);
-  try {
-    return resolveModelRole("chat", {
-      ...(configuredModelId ? { configuredId: configuredModelId } : {}),
-      ...(input.env === undefined ? {} : { env: input.env }),
-    });
-  } catch (error) {
-    const modelId = configuredModelId?.trim();
-    if (!modelId || !(error instanceof ModelUnavailableError) || error.availability !== "missing-key") throw error;
-    const surplus = resolveSurplusChatServingAvailability({
-      catalogModelId: modelId,
-      policyEnabled: input.policyEnabled ?? getCachedServerModelConfigRow()?.preferSurplus === true,
-      keyConfigured: input.keyConfigured ?? resolveProviderKey("surplus") !== null,
-      fundingKind: "server",
+  return resolveModelRole("chat", {
+    ...(configuredModelId ? { configuredId: configuredModelId } : {}),
+    ...(input.env === undefined ? {} : { env: input.env }),
+    serverSurplus: {
+      ...(input.policyEnabled === undefined ? {} : { policyEnabled: input.policyEnabled }),
+      ...(input.keyConfigured === undefined ? {} : { keyConfigured: input.keyConfigured }),
       ...(input.routes === undefined ? {} : { routes: input.routes }),
-    });
-    if (surplus.status !== "available" || !surplus.route.supportsTools) throw error;
-    return modelId;
-  }
+    },
+  });
 }
 
 /** Foreground executor fallback that honors the server default without widening background roles. */
@@ -141,6 +129,13 @@ export function getDefaultForegroundAgentModelId(
   return resolveForegroundAgentModelId(configured, { fundingKind: "server", ...input });
 }
 
+/** Async owners refresh discovery before entering the synchronous Auto resolver. */
+export async function hydrateForegroundAgentModelCatalog(signal?: AbortSignal): Promise<void> {
+  if (getCachedServerModelConfigRow()?.preferSurplus === true && resolveProviderKey("surplus") !== null) {
+    await hydrateSurplusChatCatalog(signal ? { signal } : {});
+  }
+}
+
 export async function agentNode(
   state: NautiloState,
   invocationConfig?: RunnableConfig,
@@ -154,6 +149,18 @@ export async function agentNode(
   if (isExternalRoomState(state)) state = { ...state, ...await prepareExternalRoomTextContext(state) };
   const config = fromRuntimeConfig();
   const configuredModelId = state.model || config.nautilo_model;
+  const admittedTransport = foregroundChatFundingSession?.admittedTransport
+    ?? (foregroundChatFundingSession?.admission === undefined ? undefined
+      : foregroundChatFundingSession.admission.binding.providerRoute === "surplus" ? "surplus" : "direct");
+  if (!hasStubModelForTests() && foregroundChatFundingSession?.kind !== "personal"
+    && admittedTransport !== "direct"
+    && getCachedServerModelConfigRow()?.preferSurplus === true && resolveProviderKey("surplus") !== null) {
+    await hydrateSurplusChatCatalog({
+      ...(configuredModelId ? { catalogModelIds: [configuredModelId] } : {}),
+      ...(invocationConfig?.signal ? { signal: invocationConfig.signal } : {}),
+    });
+    if (invocationConfig?.signal?.aborted) throw invocationConfig.signal.reason;
+  }
   const isForegroundTurn = (state.subagentDepth ?? 0) === 0;
   const isExactTaskTurn = state.taskRun === true
     && state.trustedExecutionEntrypoint === "background.task"

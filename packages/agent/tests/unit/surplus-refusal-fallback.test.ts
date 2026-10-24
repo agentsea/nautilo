@@ -1,9 +1,11 @@
 import { BaseCallbackHandler } from "@langchain/core/callbacks/base";
 import { HumanMessage, type AIMessage } from "@langchain/core/messages";
 import type { ChatGeneration, LLMResult } from "@langchain/core/outputs";
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
+import * as db from "@nautilo/db";
 import {
   classifySurplusFailedAttempt,
+  invokeSurplusChatAttempt,
 } from "../../src/providers/surplus-attempt";
 import {
   createSurplusChatModel,
@@ -162,6 +164,30 @@ describe("Surplus definitive refusal fallback", () => {
       failureCode: "pre_service_refusal",
       directFallback: true,
     });
+
+    expect(classifySurplusFailedAttempt({
+      error: { code: "no_healthy_sellers" },
+      cancelled: false,
+      responseStatus: 503,
+      receipt: BASE_RECEIPT,
+      deliveredOutput: false,
+    })).toMatchObject({ outcome: "failed", directFallback: true });
+    expect(classifySurplusFailedAttempt({
+      error: { code: "no_healthy_sellers" },
+      cancelled: false,
+      responseStatus: 503,
+      receipt: { ...BASE_RECEIPT, marketplaceAttempts: 1 },
+      deliveredOutput: false,
+    })).toMatchObject({ outcome: "unknown", directFallback: true });
+    for (const responseStatus of [401, 402]) {
+      expect(classifySurplusFailedAttempt({
+        error: {},
+        cancelled: false,
+        responseStatus,
+        receipt: BASE_RECEIPT,
+        deliveredOutput: false,
+      })).toMatchObject({ outcome: "failed", directFallback: true });
+    }
   });
 
   test("recognizes the SDK error from a fake documented 404 without inventing zero cost", async () => {
@@ -221,6 +247,256 @@ describe("Surplus definitive refusal fallback", () => {
       receipt,
       deliveredOutput: false,
     })).toMatchObject({ costState: "pending", directFallback: true });
+  });
+
+  test("recognizes a fake documented 503 only with explicit zero marketplace attempts", async () => {
+    for (const [attempts, expectedUnavailable] of [[0, true], [1, false]] as const) {
+      let receipt: SurplusWireReceipt | undefined;
+      let status: number | undefined;
+      let fetches = 0;
+      const model = createSurplusChatModel({
+        route: {
+          catalogModelId: "openrouter:minimax/minimax-m3",
+          surplusModelId: "minimax/minimax-m3",
+          providerPin: "openrouter",
+          supportsTools: true,
+          supportsVision: false,
+          supportsReasoning: true,
+          maxContextTokens: 204_800,
+          maxOutputTokens: 131_072,
+        },
+        apiKey: "synthetic-key",
+        maxOutputTokens: 32,
+        onResponse: (next, nextStatus) => {
+          receipt = next;
+          status = nextStatus;
+        },
+        fetchImpl: (async () => {
+          fetches++;
+          return new Response(JSON.stringify({
+            error: {
+              message: "No healthy sellers",
+              type: "service_unavailable",
+              code: "no_healthy_sellers",
+            },
+          }), {
+            status: 503,
+            headers: {
+              "content-type": "application/json",
+              "x-request-id": `request-http-503-${attempts}`,
+              "x-si-marketplace-attempts": String(attempts),
+            },
+          });
+        }) as unknown as typeof fetch,
+      });
+
+      let caught: unknown;
+      try {
+        await model.invoke([new HumanMessage("synthetic")]);
+      } catch (error) {
+        caught = error;
+      }
+
+      expect(fetches).toBe(1);
+      expect(status).toBe(503);
+      const disposition = classifySurplusFailedAttempt({
+        error: caught,
+        cancelled: false,
+        responseStatus: status,
+        receipt,
+        deliveredOutput: false,
+      });
+      expect(disposition.directFallback).toBe(true);
+      expect(isSafeSurplusDirectFallback(caught, status, receipt, false)).toBe(expectedUnavailable);
+    }
+  });
+
+  test("exposes model-supply recovery authority only for real zero-attempt 404/503 refusals", async () => {
+    const beginSpy = spyOn(db, "beginSurplusLlmAttempt").mockResolvedValue(undefined);
+    const attachSpy = spyOn(db, "attachSurplusRequestReceipt").mockResolvedValue(undefined);
+    const settleSpy = spyOn(db, "settleSurplusLlmAttempt").mockResolvedValue(undefined);
+    const fetchSpy = spyOn(globalThis, "fetch");
+    const cases = [
+      [404, "no_sellers_for_model", 0, true, true],
+      [503, "no_healthy_sellers", 0, true, true],
+      [503, "no_healthy_sellers", 1, false, false],
+      [401, "invalid_api_key", 0, false, true],
+      [402, "insufficient_balance", 0, false, true],
+    ] as const;
+
+    try {
+      for (const [status, code, attempts, expectedUnavailable, returnsFallback] of cases) {
+        let fetches = 0;
+        fetchSpy.mockImplementation((async () => {
+          fetches++;
+          return new Response(JSON.stringify({
+            error: { message: code, type: "invalid_request_error", code },
+          }), {
+            status,
+            headers: {
+              "content-type": "application/json",
+              "x-request-id": `request-${status}-${attempts}`,
+              "x-si-marketplace-attempts": String(attempts),
+            },
+          });
+        }) as unknown as typeof fetch);
+        const invocation = invokeSurplusChatAttempt({
+          route: {
+            catalogModelId: "openrouter:minimax/minimax-m3",
+            surplusModelId: "minimax/minimax-m3",
+            providerPin: "openrouter",
+            supportsTools: true,
+            supportsVision: false,
+            supportsReasoning: true,
+            maxContextTokens: 204_800,
+            maxOutputTokens: 131_072,
+          },
+          apiKey: "synthetic-key",
+          messages: [new HumanMessage("synthetic")],
+          tools: [],
+          config: { signal: new AbortController().signal },
+          maxOutputTokens: 32,
+          funding: { kind: "service", humanUserId: "user-1", providerRoute: "surplus" },
+          hasDeliveredOutput: () => false,
+          directFallbackPolicy: "pre_service_only",
+          invokeModel: async (model, messages, config) =>
+            await model.invoke(messages, config) as AIMessage,
+        });
+
+        if (!returnsFallback) {
+          await Promise.resolve(expect(invocation).rejects.toThrow());
+          expect(fetches).toBe(1);
+          continue;
+        }
+        const result = await invocation;
+        expect(fetches).toBe(1);
+        expect(result).toMatchObject({ kind: "direct_fallback" });
+        if (expectedUnavailable) {
+          expect(result).toHaveProperty("modelUnavailableBeforeService", true);
+        } else {
+          expect(result).not.toHaveProperty("modelUnavailableBeforeService");
+        }
+      }
+    } finally {
+      fetchSpy.mockRestore();
+      settleSpy.mockRestore();
+      attachSpy.mockRestore();
+      beginSpy.mockRestore();
+    }
+  });
+
+  test("a failed attempt-ledger begin never grants model-supply recovery authority or sends a wire", async () => {
+    const beginSpy = spyOn(db, "beginSurplusLlmAttempt")
+      .mockRejectedValue(new Error("synthetic ledger unavailable"));
+    const fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async () => {
+      throw new Error("unexpected marketplace wire");
+    }) as unknown as typeof fetch);
+
+    try {
+      const result = await invokeSurplusChatAttempt({
+        route: OPENAI_REASONING_ROUTE,
+        apiKey: "synthetic-key",
+        messages: [new HumanMessage("synthetic")],
+        tools: [],
+        config: { signal: new AbortController().signal },
+        maxOutputTokens: 32,
+        funding: { kind: "service", humanUserId: "user-1", providerRoute: "surplus" },
+        hasDeliveredOutput: () => false,
+        directFallbackPolicy: "pre_service_only",
+        invokeModel: async (model, messages, config) =>
+          await model.invoke(messages, config) as AIMessage,
+      });
+
+      expect(result).toEqual({ kind: "direct_fallback" });
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      fetchSpy.mockRestore();
+      beginSpy.mockRestore();
+    }
+  });
+
+  test("post-admission authorization and cancellation settle known-unsent without a Surplus wire", async () => {
+    const abort = new AbortController();
+    const errors = {
+      policy: new Error("Soul Surplus policy changed"),
+      key: new Error("Soul Surplus key changed"),
+      rbac: Object.assign(new Error("Soul Surplus authorization changed"), { status: 403 }),
+    } as const;
+    const cancellation = new Error("Soul Surplus cancelled during admission");
+    let mode: "policy" | "key" | "rbac" | "cancellation" = "policy";
+    let policyEnabled = true;
+    let credential = "synthetic-key";
+    let authorized = true;
+    const settlements: Array<Record<string, unknown>> = [];
+    const beginSpy = spyOn(db, "beginSurplusLlmAttempt").mockImplementation(async () => {
+      if (mode === "policy") policyEnabled = false;
+      else if (mode === "key") credential = "replacement-key";
+      else if (mode === "rbac") authorized = false;
+      else abort.abort(cancellation);
+    });
+    const settleSpy = spyOn(db, "settleSurplusLlmAttempt").mockImplementation(async (input) => {
+      settlements.push(input as unknown as Record<string, unknown>);
+    });
+    const fetchSpy = spyOn(globalThis, "fetch").mockImplementation((async () => {
+      throw new Error("unexpected Surplus wire");
+    }) as unknown as typeof fetch);
+    let providerInvokes = 0;
+
+    try {
+      for (mode of ["policy", "key", "rbac", "cancellation"] as const) {
+        policyEnabled = true;
+        credential = "synthetic-key";
+        authorized = true;
+        const beforeSettlements = settlements.length;
+        const signal = mode === "cancellation" ? abort.signal : new AbortController().signal;
+        const expected = mode === "cancellation" ? cancellation : errors[mode];
+        const thrown = await invokeSurplusChatAttempt({
+          route: OPENAI_REASONING_ROUTE,
+          apiKey: "synthetic-key",
+          messages: [new HumanMessage("synthetic")],
+          tools: [],
+          config: { signal },
+          maxOutputTokens: 32,
+          funding: { kind: "service", humanUserId: "user-1", providerRoute: "surplus" },
+          hasDeliveredOutput: () => false,
+          directFallbackPolicy: "pre_service_only",
+          assertStillAuthorized: () => {
+            signal.throwIfAborted();
+            if (!policyEnabled) throw errors.policy;
+            if (credential !== "synthetic-key") throw errors.key;
+            if (!authorized) throw errors.rbac;
+          },
+          invokeModel: async () => {
+            providerInvokes++;
+            throw new Error("must not dispatch");
+          },
+        }).then(() => null, (error: unknown) => error);
+
+        expect(thrown).toBe(expected);
+        if (mode === "rbac") expect(thrown).toMatchObject({ status: 403 });
+        expect(settlements).toHaveLength(beforeSettlements + 1);
+        expect(settlements.at(-1)).toMatchObject(mode === "cancellation"
+          ? {
+              outcome: "cancelled",
+              costState: "actual",
+              actualCostUsd: 0,
+              failureCode: "cancelled",
+            }
+          : {
+              outcome: "failed",
+              costState: "actual",
+              actualCostUsd: 0,
+              failureCode: "authorization_changed",
+            });
+      }
+      expect(providerInvokes).toBe(0);
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(beginSpy).toHaveBeenCalledTimes(4);
+    } finally {
+      fetchSpy.mockRestore();
+      settleSpy.mockRestore();
+      beginSpy.mockRestore();
+    }
   });
 });
 

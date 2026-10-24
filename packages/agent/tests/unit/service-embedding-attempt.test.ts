@@ -154,7 +154,8 @@ describe("service embedding durable attempts", () => {
     expect(aborted.settlements[0]).toMatchObject({
       outcome: "cancelled",
       failureCode: "cancelled",
-      costState: "unknown",
+      costState: "actual",
+      actualCostUsd: 0,
     });
   });
 
@@ -168,6 +169,41 @@ describe("service embedding durable attempts", () => {
     expect(runServiceEmbeddingAttempt(attempt(async () => { calls++; }), unavailable.deps))
       .rejects.toBeInstanceOf(ServiceEmbeddingAttemptLedgerUnavailableError);
     expect(calls).toBe(0);
+  });
+
+  test("settles a rejected post-begin authorization and pre-dispatch cancellation as zero cost", async () => {
+    for (const cancelled of [false, true]) {
+      const h = harness();
+      const controller = new AbortController();
+      if (cancelled) controller.abort(new Error("cancelled before dispatch"));
+      let wires = 0;
+      const authorizationError = new Error("embedding binding changed");
+      const input = {
+        ...attempt(async () => { wires++; }, controller.signal),
+        assertStillAuthorized: () => {
+          if (!cancelled) throw authorizationError;
+        },
+      };
+      const error = await runServiceEmbeddingAttempt(input, h.deps)
+        .catch((caught: unknown) => caught);
+      expect(error).toBe(cancelled ? controller.signal.reason : authorizationError);
+      expect(wires).toBe(0);
+      expect(h.settlements).toHaveLength(1);
+      expect(h.settlements[0]).toMatchObject(cancelled
+        ? {
+            outcome: "cancelled",
+            costState: "actual",
+            actualCostUsd: 0,
+            failureCode: "cancelled",
+          }
+        : {
+            outcome: "failed",
+            costState: "actual",
+            actualCostUsd: 0,
+            failureCode: "pre_wire_authorization_changed",
+          });
+      expect(h.settlements[0]).not.toHaveProperty("providerRequestId");
+    }
   });
 
   test("retries only the exact settlement and never repeats embedding work", async () => {

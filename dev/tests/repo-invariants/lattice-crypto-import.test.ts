@@ -1684,6 +1684,25 @@ const reviewedCryptoProductConsumerInventory = [
   "packages/server/tests/unit/room-history-shadow-read-composition.test.ts -> @nautilo/lattice-crypto",
   "packages/server/tests/unit/task-content-backfill-authority.test.ts -> @nautilo/lattice-crypto",
   "packages/server/tests/unit/task-content-backfill-scan.test.ts -> @nautilo/lattice-crypto",
+  // Protected Memory carries the exact versioned embedding disclosure from the
+  // Agent producer through Server validation and the Desktop/Workbench consent
+  // surfaces. The package edges own those direct imports; the two Server tests
+  // exercise the same disclosure boundary without admitting a broader crypto
+  // package or internal-module seam.
+  "apps/desktop/electron/foreground-shadow-controller.ts -> @nautilo/lattice-crypto/wire",
+  "apps/desktop/electron/main.ts -> @nautilo/lattice-crypto/wire",
+  "apps/desktop/electron/preload.ts -> @nautilo/lattice-crypto/wire",
+  "apps/desktop/package.json dependency @nautilo/lattice-crypto -> workspace:*",
+  "apps/workbench/package.json dependency @nautilo/lattice-crypto -> workspace:*",
+  "apps/workbench/src/lib/desktop.ts -> @nautilo/lattice-crypto/wire",
+  "apps/workbench/src/pages/memory/memory-page.tsx -> @nautilo/lattice-crypto/wire",
+  "packages/agent/package.json dependency @nautilo/lattice-crypto -> workspace:*",
+  "packages/agent/src/store/embeddings.ts -> @nautilo/lattice-crypto/wire",
+  "packages/server/src/routes/human-memory-embedding-processor.ts -> @nautilo/lattice-crypto/wire",
+  "packages/server/src/routes/memory.ts -> @nautilo/lattice-crypto/wire",
+  "packages/server/src/routes/protected-memory-composition.ts -> @nautilo/lattice-crypto/wire",
+  "packages/server/tests/unit-isolated/human-memory-live-composition-embedding.test.ts -> @nautilo/lattice-crypto/wire",
+  "packages/server/tests/unit-isolated/memory-routes.test.ts -> @nautilo/lattice-crypto/wire",
 ] as const;
 
 const allowedReviewedCryptoProductConsumers = new Set(
@@ -3637,9 +3656,9 @@ describe("Lattice-crypto current package governance", () => {
     );
 
     const mutationTargets = manifest.scopes.flatMap((scope) => scope.mutate);
-    expect(new Set(mutationTargets).size).toBe(142);
+    expect(new Set(mutationTargets).size).toBe(144);
     expect(mutationTargets).toContain("src/message/human-message-edit-v1.ts");
-    expect(eligibleTargets).toHaveLength(142);
+    expect(eligibleTargets).toHaveLength(144);
     // Temporary Task signing adds six eligible modules to the exact inventory.
     expect(mutationTargets).toEqual(expect.arrayContaining([
       "src/background/task-runtime-request-authority.ts",
