@@ -30,7 +30,7 @@ afterEach(() => {
   }
 });
 
-describe("D525 paid media tool entry", () => {
+describe("paid media tool entry", () => {
   test("keeps unavailable registrations hidden from live catalog projections", () => {
     delete process.env["VENICE_API_KEY"];
     resetMediaGenerationApprovalRuntimeForTests();
@@ -240,8 +240,12 @@ describe("D525 paid media tool entry", () => {
       anyOf: [{ type: "integer" }, { type: "null" }],
     });
     expect(parameters.properties?.["lyrics"]).toMatchObject({
-      anyOf: [{ type: "string" }, { type: "null" }],
+      type: ["string", "null"],
     });
+    for (const lyrics of [false, 1, [], {}]) {
+      expect(new Validator(parameters).validate({ ...args, lyrics }).valid).toBe(false);
+    }
+    expect(new Validator(parameters).validate({ ...args, forceInstrumental: false, lyrics: "hello" }).valid).toBe(true);
     expect(new Validator(parameters).validate(args).valid).toBe(true);
     expect(GenerateMusicSchema.parse(args)).toEqual(args);
     expect(normalizeMediaGenerationIntent(args)).toEqual(args);
