@@ -61,6 +61,8 @@ export interface FetchVendoredBinaryInput {
   readonly executable?: boolean;
   /** Injectable fetch for tests. Defaults to global fetch. */
   readonly fetchImpl?: typeof fetch;
+  /** Waits before the second and third public download attempt. Test seam. */
+  readonly retryWaitMs?: readonly [number, number];
   /**
    * Optional trusted file containing a bearer token for one private immutable
    * GitHub/GitLab release asset. The token itself is never accepted from argv,
@@ -165,6 +167,49 @@ async function fetchAuthenticatedReleaseAsset(
   throw new VendoredBinaryFetchError("authenticated release asset exceeded redirect limit");
 }
 
+// Public release hosts drop connections now and then. A failed connection or a
+// server error gets two more attempts; client errors fail at once, and the
+// checksum alone still decides what is accepted.
+const PUBLIC_DOWNLOAD_RETRY_WAIT_MS = [2_000, 5_000] as const;
+
+async function downloadPublicArtifact(
+  url: string,
+  doFetch: typeof fetch,
+  retryWaitMs: readonly [number, number],
+  log: (message: string) => void,
+): Promise<Buffer> {
+  for (let attempt = 0; ; attempt += 1) {
+    let failure: string;
+    try {
+      const response = await doFetch(url, { redirect: "follow" });
+      if (response.ok) return Buffer.from(await response.arrayBuffer());
+      failure = `HTTP ${response.status} ${response.statusText}`;
+      if (response.status < 500) throw new VendoredBinaryFetchError(`download failed for ${url}: ${failure}`);
+    } catch (err) {
+      if (err instanceof VendoredBinaryFetchError) throw err;
+      failure = err instanceof Error ? err.message : String(err);
+    }
+    const wait = retryWaitMs[attempt];
+    if (wait === undefined) throw new VendoredBinaryFetchError(`download failed for ${url}: ${failure}`);
+    log(`retrying ${url} after: ${failure}`);
+    await new Promise(resolveWait => setTimeout(resolveWait, wait));
+  }
+}
+
+/** Token-bearing downloads are never repeated. */
+async function downloadAuthenticatedArtifact(
+  url: string,
+  authenticatedUrl: URL,
+  tokenFile: string,
+  doFetch: typeof fetch,
+): Promise<Buffer> {
+  const response = await fetchAuthenticatedReleaseAsset(authenticatedUrl, tokenFile, doFetch);
+  if (!response.ok) {
+    throw new VendoredBinaryFetchError(`download failed for ${url}: HTTP ${response.status} ${response.statusText}`);
+  }
+  return Buffer.from(await response.arrayBuffer());
+}
+
 function recursiveFindByBasename(root: string, member: string): string | null {
   for (const entry of readdirSync(root, { withFileTypes: true })) {
     const full = join(root, entry.name);
@@ -237,23 +282,9 @@ export async function fetchAndVerifyVendoredBinary(
     : parseAuthenticatedReleaseAssetUrl(input.url);
 
   log(`GET ${authenticatedUrl?.toString() ?? input.url}`);
-  let response: Response;
-  try {
-    response = input.releaseAssetBearerTokenFile === undefined
-      ? await doFetch(input.url, { redirect: "follow" })
-      : await fetchAuthenticatedReleaseAsset(authenticatedUrl!, input.releaseAssetBearerTokenFile, doFetch);
-  } catch (err) {
-    if (err instanceof VendoredBinaryFetchError) throw err;
-    throw new VendoredBinaryFetchError(
-      `download failed for ${input.url}: ${err instanceof Error ? err.message : String(err)}`,
-    );
-  }
-  if (!response.ok) {
-    throw new VendoredBinaryFetchError(
-      `download failed for ${input.url}: HTTP ${response.status} ${response.statusText}`,
-    );
-  }
-  const downloaded = Buffer.from(await response.arrayBuffer());
+  const downloaded = authenticatedUrl === undefined
+    ? await downloadPublicArtifact(input.url, doFetch, input.retryWaitMs ?? PUBLIC_DOWNLOAD_RETRY_WAIT_MS, log)
+    : await downloadAuthenticatedArtifact(input.url, authenticatedUrl, input.releaseAssetBearerTokenFile!, doFetch);
   if (downloaded.length === 0) {
     throw new VendoredBinaryFetchError(`download returned an empty body for ${input.url}`);
   }

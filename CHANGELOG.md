@@ -7,6 +7,13 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Windows x64 Desktop bundles the same prebuilt LGPL FFmpeg 9.0.1 as the Mac,
+  with its license texts and complete corresponding source, so video export,
+  media inspection and waveforms work without a separately installed FFmpeg.
+  Exports encode H.264 with Media Foundation's software encoder at the Mac's
+  target bitrates. Unsigned builds accept user-replaced FFmpeg files, as LGPL
+  requires.
+
 - Personal chat keeps its admitted provider and credential when marketplace
   availability changes. Already-admitted direct calls skip Surplus discovery,
   and protected Memory retains its approved marketplace embedding disclosure.

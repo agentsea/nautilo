@@ -10,8 +10,9 @@ import ffmpegDistribution from "../scripts/ffmpeg-distribution.json";
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { codesignTeam, verifyFfmpegFile } from "./ffmpeg-integrity";
+import { acceptsReplacedFfmpeg, authenticodeStatus, codesignTeam, verifyFfmpegFile } from "./ffmpeg-integrity";
 import {
+  desktopRuntimeArchDir,
   detectDesktopPlatformKey,
   resolveDesktopRuntimePath,
 } from "./tool-runtime-resolver.ts";
@@ -26,6 +27,15 @@ let cachedFfmpeg: { readonly isPackaged: boolean; readonly result: CachedFfmpeg 
 
 function devVendorRoot(): string {
   return join(fileURLToPath(new URL("..", import.meta.url)), "vendor");
+}
+
+/** FFmpeg is the one managed runtime that also ships for Windows x64. */
+export function detectDesktopFfmpegPlatformKey(
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch,
+): ToolRuntimePlatformKey | null {
+  if (platform === "win32") return arch === "x64" ? "win-x64" : null;
+  return detectDesktopPlatformKey(platform, arch);
 }
 
 function expectedSha256(
@@ -60,6 +70,8 @@ export interface ProbeDesktopFfmpegInput {
   readonly environment?: NodeJS.ProcessEnv;
   /** Unit seam for path/manifest resolution; production always verifies real files. */
   readonly verifyFile?: typeof verifyFfmpegFile;
+  /** Unit seam for the Windows app-signature decision; production asks Authenticode. */
+  readonly acceptsReplaced?: () => boolean;
 }
 
 export type ProbeDesktopFfmpegResult =
@@ -78,7 +90,7 @@ export async function probeDesktopFfmpeg(
   const resourcesPath = input.resourcesPath ?? process.resourcesPath ?? null;
   const vendorRoot = input.devVendorRoot ?? devVendorRoot();
   const platformKey =
-    input.platformKey ?? detectDesktopPlatformKey(process.platform, process.arch);
+    input.platformKey ?? detectDesktopFfmpegPlatformKey(process.platform, process.arch);
 
   if (cachedFfmpeg?.isPackaged === isPackaged) return cachedFfmpeg.result;
 
@@ -86,7 +98,7 @@ export async function probeDesktopFfmpeg(
     return {
       ok: false,
       code: "FFMPEG_MISSING",
-      error: "Managed FFmpeg is currently bundled for macOS darwin-arm64 and darwin-x64 only.",
+      error: "Managed FFmpeg is currently bundled for macOS darwin-arm64 and darwin-x64 and Windows win-x64 only.",
     };
   }
 
@@ -110,13 +122,22 @@ export async function probeDesktopFfmpeg(
       };
     }
     const teamId = isPackaged && process.platform === "darwin" ? codesignTeam(process.execPath) : null;
-    const signing = isPackaged ? (teamId ? { teamId, requireSignature: true } : { allowAdHoc: true, requireSignature: true }) : undefined;
+    // Asked once, and only when a pinned hash differs.
+    let replacedAccepted: boolean | undefined;
+    const allowReplaced = (): boolean => (replacedAccepted ??=
+      input.acceptsReplaced?.() ?? acceptsReplacedFfmpeg(authenticodeStatus(process.execPath)));
+    const signing = !isPackaged ? undefined
+      : platformKey === "win-x64" ? { allowReplaced }
+        : teamId ? { teamId, requireSignature: true } : { allowAdHoc: true, requireSignature: true };
     const verifyFile = input.verifyFile ?? verifyFfmpegFile;
     const verified = await verifyFile(resolved.result.path, sha256, verificationCache, signing);
     if (verified) {
-      const arch = platformKey === "darwin-arm64" ? "arm64" : "x64";
+      const arch = desktopRuntimeArchDir(platformKey);
       const distributionRoot = isPackaged ? join(resourcesPath, "tools-ffmpeg") : join(vendorRoot, "ffmpeg");
-      for (const library of ffmpegDistribution.binaries.filter(file => file.path.startsWith(`${arch}/lib/`))) {
+      // macOS keeps libraries under lib/; Windows loads its DLLs beside ffmpeg.exe.
+      const libraries = ffmpegDistribution.binaries.filter(file =>
+        file.path.startsWith(`${arch}/`) && !/\/bin\/ffmpeg(?:\.exe)?$/.test(file.path));
+      for (const library of libraries) {
         if (!await verifyFile(join(distributionRoot, library.path), library.sha256, verificationCache, signing)) {
           return { ok: false, code: "FFMPEG_UNAVAILABLE", error: "Managed FFmpeg library failed integrity verification." };
         }
@@ -153,7 +174,7 @@ export async function probeDesktopFfmpeg(
     ok: false,
     code: "FFMPEG_MISSING",
     error: isPackaged
-      ? `Managed FFmpeg is missing for ${platformKey}; packaged builds do not use PATH or Homebrew.`
+      ? `Managed FFmpeg is missing for ${platformKey}; packaged builds do not use PATH or a system FFmpeg.`
       : `Managed FFmpeg is missing for ${platformKey}. Run \`bun run vendor:ffmpeg\` before starting the desktop app.`,
   };
 }

@@ -34,8 +34,10 @@ describe("sequence renderer", () => {
       const built = buildSequenceFfmpegArgs(plan, new Map(), output)!;
       expect(built).not.toBeNull();
       expect(built.args[built.args.indexOf("-b:a") + 1]).toBe(audioBitrateKbps + "k");
-      expect(built.args.includes("-crf")).toBe(process.platform !== "darwin" && quality !== "custom");
-      expect(built.args.includes("-b:v")).toBe(process.platform === "darwin" || quality === "custom");
+      // VideoToolbox and Media Foundation take a target bitrate; only x264 has CRF.
+      const bitrateEncoder = process.platform === "darwin" || process.platform === "win32";
+      expect(built.args.includes("-crf")).toBe(!bitrateEncoder && quality !== "custom");
+      expect(built.args.includes("-b:v")).toBe(bitrateEncoder || quality === "custom");
       expect(await renderSequence(plan, { ffmpegPath: ffmpeg, sources: new Map(), outputPath: output })).toMatchObject({ status: "succeeded" });
       const { stderr } = await exec(ffmpeg, ["-hide_banner", "-i", output, "-vf", "showinfo", "-frames:v", "1", "-f", "null", "-"]);
       expect(stderr).toContain("Video: h264");

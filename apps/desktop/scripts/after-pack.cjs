@@ -222,6 +222,9 @@ exports.default = async function afterPack(context) {
   if (electronPlatformName === "darwin" || electronPlatformName === "mas") {
     execFileSync("bun", ["run", join(__dirname, "verify-github-cli.ts"), join(resourcesDir, "tools-github-cli")], { stdio: "inherit", cwd: join(__dirname, "..") });
     execFileSync("bun", ["run", join(__dirname, "verify-ffmpeg.ts"), join(resourcesDir, "tools-ffmpeg"), "--allow-resigned"], { stdio: "inherit", cwd: join(__dirname, "..") });
+  } else if (electronPlatformName === "win32") {
+    // Windows ships the supplier's unsigned FFmpeg; every file keeps its pinned hash.
+    execFileSync("bun", ["run", join(__dirname, "verify-ffmpeg.ts"), join(resourcesDir, "tools-ffmpeg")], { stdio: "inherit", cwd: join(__dirname, "..") });
   }
 
   console.log(`[after-pack] flipping Electron fuses on ${bundlePath}`);
