@@ -16,7 +16,7 @@ import { createProtectedTaskHumanResponse } from "./routes/protected-task-human-
 import { createTaskLocalExecutionCaptureAdmission, resolveTaskLocalExecutionCaptureTarget, taskNeedsLocalExecutionCapture } from "./local-execution-task-capture";
 import { createBolterController, type BolterController } from "./messaging/bolter-controller";
 import { createMagentOperatorService } from "./messaging/magent-operator";
-import { readMagentOperatorConfig, startMagentUnixHttp } from "./messaging/magent-unix";
+import { readMagentBindings, startMagentBindings } from "./messaging/magent-bindings";
 import { bolterRoutes } from "./routes/bolter";
 import { createExternalRoomExecutionService } from "./messaging/external-room-execution";
 import { acceptPublishedProtectedTaskReply } from
@@ -2216,12 +2216,12 @@ export async function createApp(options?: CreateAppOptions) {
   });
   app.decorate("externalRoomExecution", externalRoomExecution);
   const magentConfigPath = fromRuntimeConfig().nautilo_magent_config_file;
-  let magentSocket: Awaited<ReturnType<typeof startMagentUnixHttp>> | undefined;
+  let magentSocket: Awaited<ReturnType<typeof startMagentBindings>> | undefined;
   if (magentConfigPath) {
     app.addHook("onReady", async () => {
-      const operatorConfig = await readMagentOperatorConfig(magentConfigPath);
-      const operator = await createMagentOperatorService({ config: operatorConfig, execution: externalRoomExecution, jobManager });
-      magentSocket = await startMagentUnixHttp(operatorConfig, operator);
+      const configs = await readMagentBindings(magentConfigPath);
+      magentSocket = await startMagentBindings(configs, config =>
+        createMagentOperatorService({ config, execution: externalRoomExecution, jobManager }));
     });
     app.addHook("preClose", async () => { await magentSocket?.close(); });
   }
