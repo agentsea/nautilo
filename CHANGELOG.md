@@ -7,13 +7,15 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
-
 - Windows x64 Desktop bundles the same prebuilt LGPL FFmpeg 9.0.1 as the Mac,
   with its license texts and complete corresponding source, so video export,
   media inspection and waveforms work without a separately installed FFmpeg.
   Exports encode H.264 with Media Foundation's software encoder at the Mac's
   target bitrates. Unsigned builds accept user-replaced FFmpeg files, as LGPL
   requires.
+
+- Run multiple independent mAgent Genie bindings on one server through a private
+  operator manifest, with separate capabilities and sockets for each binding.
 
 - Server security policy distinguishes Debian HarfBuzz builds without the affected
   WebAssembly backend from two unfixed Expat denial-of-service findings. Exact

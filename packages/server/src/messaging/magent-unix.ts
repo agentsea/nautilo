@@ -9,19 +9,38 @@ import { magentOperatorConfigSchema, magentTurnRequestSchema, magentPublicationC
   magentPublicationSettlementSchema, type MagentOperatorConfig } from "@nautilo/types";
 import type { MagentOperatorService } from "./magent-operator";
 
-export async function readMagentOperatorConfig(path: string): Promise<MagentOperatorConfig> {
-  if (!isAbsolute(path) || await realpath(path) !== resolve(path)) throw new Error("magent_config_path_invalid");
+export async function readMagentPrivateJson(path: string): Promise<unknown> {
+  if (!isAbsolute(path) || resolve(path) !== path || await realpath(path) !== path) throw new Error("magent_config_path_invalid");
+  const parent = dirname(path);
+  for (let directory = parent; ; directory = dirname(directory)) {
+    const stat = await lstat(directory);
+    const owned = stat.uid === process.getuid?.();
+    // A dedicated private parent protects the file name from other users.
+    // Higher ancestors may be root-owned; only root-owned sticky temporary
+    // directories may permit other users to create entries.
+    const rootSticky = stat.uid === 0 && (stat.mode & 0o1000) !== 0;
+    if (!stat.isDirectory() || stat.isSymbolicLink()
+      || (directory === parent ? !owned || (stat.mode & 0o077) !== 0
+        : (!owned && stat.uid !== 0) || ((stat.mode & 0o022) !== 0 && !rootSticky))) {
+      throw new Error("magent_config_directory_invalid");
+    }
+    if (directory === dirname(directory)) break;
+  }
   const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
     const stat = await file.stat();
     if (!stat.isFile() || (stat.mode & 0o077) !== 0 || stat.uid !== process.getuid?.()) throw new Error("magent_config_permissions_invalid");
-    const result = magentOperatorConfigSchema.safeParse(JSON.parse(await file.readFile("utf8")));
-    if (!result.success) throw new Error("magent_config_invalid");
-    return result.data;
+    return JSON.parse(await file.readFile("utf8")) as unknown;
   } catch {
     // Never include a credential-bearing configuration or validation payload in logs.
     throw new Error("magent_config_invalid");
   } finally { await file.close(); }
+}
+
+export async function readMagentOperatorConfig(path: string): Promise<MagentOperatorConfig> {
+  const result = magentOperatorConfigSchema.safeParse(await readMagentPrivateJson(path));
+  if (!result.success) throw new Error("magent_config_invalid");
+  return result.data;
 }
 
 /** Independently testable routes. This server is never registered on the public HTTP listener. */

@@ -111,3 +111,48 @@ test("avatar endpoint returns only authenticated binding pixels and rejects iden
     } finally { await fixtureApp.close(); }
   }
 });
+
+test("another binding credential cannot access any authenticated surface", async () => {
+  const { app, calls } = fixture();
+  try {
+    const otherHeaders = { authorization: "Bearer synthetic-other-binding-capability-with-no-authority-0000" };
+    for (const request of [
+      { method: "GET" as const, url: "/v1/status" },
+      { method: "GET" as const, url: "/v1/avatar" },
+      { method: "GET" as const, url: `/v1/turns/${id}` },
+      { method: "DELETE" as const, url: `/v1/turns/${id}` },
+      { method: "POST" as const, url: `/v1/publications/${id}/claim`, payload: { claimToken: id } },
+      { method: "POST" as const, url: `/v1/publications/${id}/authorize`, payload: { claimToken: id } },
+      { method: "POST" as const, url: `/v1/publications/${id}/settle`, payload: { claimToken: id, state: "cancelled" } },
+    ]) expect((await app.inject({ ...request, headers: otherHeaders })).statusCode).toBe(401);
+    expect(calls).toEqual([]);
+  } finally { await app.close(); }
+});
+
+
+test("private config files require a private parent and safe canonical ancestors", async () => {
+  const directory = await realpath(await mkdtemp(join(tmpdir(), "magent-parent-test-")));
+  const path = join(directory, "operator.json");
+  try {
+    await writeFile(path, JSON.stringify(config), { mode: 0o600 });
+    for (const mode of [0o755, 0o770, 0o777]) {
+      await chmod(directory, mode);
+      await Promise.resolve(expect(readMagentOperatorConfig(path)).rejects.toThrow("magent_config_directory_invalid"));
+    }
+    await chmod(directory, 0o700);
+    expect(await readMagentOperatorConfig(path)).toEqual(config);
+    const { mkdir } = await import("node:fs/promises");
+    const parent = join(directory, "ancestor");
+    const child = join(parent, "private");
+    await mkdir(child, { recursive: true, mode: 0o700 });
+    const nested = join(child, "operator.json");
+    await writeFile(nested, JSON.stringify(config), { mode: 0o600 });
+    await chmod(parent, 0o777);
+    await Promise.resolve(expect(readMagentOperatorConfig(nested)).rejects.toThrow("magent_config_directory_invalid"));
+    await chmod(parent, 0o700);
+    const alias = join(directory, "alias");
+    await symlink(parent, alias);
+    await Promise.resolve(expect(readMagentOperatorConfig(join(alias, "private", "operator.json"))).rejects.toThrow("magent_config_path_invalid"));
+    await Promise.resolve(expect(readMagentOperatorConfig(`${parent}/../operator.json`)).rejects.toThrow("magent_config_path_invalid"));
+  } finally { await chmod(directory, 0o700); await rm(directory, { recursive: true }); }
+});
