@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { boolean, check, foreignKey, index, integer, pgPolicy, pgTable, text, timestamp, unique, uniqueIndex, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
+import { boolean, check, foreignKey, index, integer, jsonb, pgPolicy, pgTable, text, timestamp, unique, uniqueIndex, uuid, type AnyPgColumn } from "drizzle-orm/pg-core";
 import { users } from "./users";
 import { agents } from "./agents";
 import { rooms } from "./rooms";
@@ -90,7 +90,7 @@ export const externalOperatorSessions = pgTable("external_operator_sessions", {
   ownerPolicy("external_operator_sessions_owner", t.userId),
 ]).enableRLS();
 
-/** Deduplication and provenance only; content lives in canonical session_messages. */
+/** Human conversation provenance and isolated operator control inputs. */
 export const bolterInboxReceipts = pgTable("bolter_inbox_receipts", {
   id: uuid("id").primaryKey().defaultRandom(),
   userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
@@ -101,6 +101,7 @@ export const bolterInboxReceipts = pgTable("bolter_inbox_receipts", {
   fingerprint: text("fingerprint").notNull(),
   externalSenderId: text("external_sender_id").notNull(),
   sessionMessageId: integer("session_message_id").references(() => sessionMessages.id, { onDelete: "restrict" }),
+  controlInput: jsonb("control_input").$type<{ kind: "operator_control_v1"; content: string; origin: import("@nautilo/types").ExternalMessageOrigin }>(),
   turnId: text("turn_id"),
   jobId: uuid("job_id").references(() => jobs.id, { onDelete: "restrict" }),
   state: text("state", { enum: ["pending", "accepted", "quarantined", "cancelled"] }).notNull().default("pending"),
@@ -111,7 +112,8 @@ export const bolterInboxReceipts = pgTable("bolter_inbox_receipts", {
   foreignKey({ name: "bolter_inbox_binding_owner", columns: [t.userId, t.bindingId], foreignColumns: [bolterRoomBindings.userId, bolterRoomBindings.id] }).onDelete("restrict"),
   uniqueIndex("bolter_inbox_provider_message").on(t.bindingId, t.providerMessageId),
   uniqueIndex("bolter_inbox_canonical_message").on(t.sessionMessageId),
-  check("bolter_inbox_state", sql`${t.state} IN ('pending', 'accepted', 'quarantined', 'cancelled') AND (${t.state} <> 'accepted' OR (${t.sessionMessageId} IS NOT NULL AND ${t.turnId} IS NOT NULL))`),
+  check("bolter_inbox_state", sql`${t.state} IN ('pending', 'accepted', 'quarantined', 'cancelled') AND (${t.state} <> 'accepted' OR ((${t.sessionMessageId} IS NOT NULL OR ${t.controlInput} IS NOT NULL) AND ${t.turnId} IS NOT NULL))`),
+  check("external_inbox_control", sql`${t.controlInput} IS NULL OR coalesce((${t.sessionMessageId} IS NULL AND ${t.controlInput}->>'kind' = 'operator_control_v1' AND jsonb_typeof(${t.controlInput}->'content') = 'string' AND length(${t.controlInput}->>'content') > 0 AND jsonb_typeof(${t.controlInput}->'origin') = 'object'), false)`),
   check("bolter_inbox_identity", sql`${t.fingerprint} ~ '^[0-9a-f]{64}$' AND length(${t.providerMessageId}) > 0 AND length(${t.externalSenderId}) > 0 AND ${t.bindingRevision} >= 0 AND ${t.connectionGeneration} > 0`),
   ownerPolicy("bolter_inbox_owner", t.userId),
 ]).enableRLS();
@@ -142,7 +144,8 @@ export const bolterOutbox = pgTable("bolter_outbox", {
   bindingId: uuid("binding_id").notNull(),
   bindingRevision: integer("binding_revision").notNull(),
   connectionGeneration: integer("connection_generation").notNull(),
-  sessionMessageId: integer("session_message_id").notNull().references(() => sessionMessages.id, { onDelete: "restrict" }),
+  sessionMessageId: integer("session_message_id").references(() => sessionMessages.id, { onDelete: "restrict" }),
+  controlResult: text("control_result"),
   sourceInboxId: uuid("source_inbox_id"),
   /** Server-minted explicit share operation; outside text cannot mint this authority. */
   explicitShareId: uuid("explicit_share_id"),
@@ -160,10 +163,28 @@ export const bolterOutbox = pgTable("bolter_outbox", {
   uniqueIndex("bolter_outbox_canonical_publication").on(t.bindingId, t.sessionMessageId),
   uniqueIndex("bolter_outbox_final_reply").on(t.sourceInboxId).where(sql`${t.sourceInboxId} IS NOT NULL`),
   index("bolter_outbox_owner_pending").on(t.userId, t.bindingId, t.createdAt).where(sql`${t.state} = 'pending'`),
+  check("external_outbox_content", sql`(${t.sessionMessageId} IS NOT NULL AND ${t.controlResult} IS NULL) OR (${t.sessionMessageId} IS NULL AND ${t.controlResult} IS NOT NULL AND length(btrim(${t.controlResult})) > 0 AND ${t.sourceInboxId} IS NOT NULL AND ${t.explicitShareId} IS NULL)`),
   check("bolter_outbox_reason", sql`(${t.sourceInboxId} IS NOT NULL) <> (${t.explicitShareId} IS NOT NULL)`),
   check("bolter_outbox_identity", sql`${t.fingerprint} ~ '^[0-9a-f]{64}$' AND ${t.bindingRevision} >= 0 AND ${t.connectionGeneration} > 0`),
   check("bolter_outbox_state", sql`${t.state} IN ('pending', 'publishing', 'published', 'uncertain', 'cancelled') AND (${t.state} NOT IN ('publishing', 'published', 'uncertain') OR ${t.claimToken} IS NOT NULL) AND (${t.state} <> 'published' OR ${t.providerMessageId} IS NOT NULL)`),
   ownerPolicy("bolter_outbox_owner", t.userId),
+]).enableRLS();
+
+/** Exact legacy control rows retained for operator audit, never a conversation source. */
+export const externalOperatorControlArchive = pgTable("external_operator_control_archive", {
+  messageId: integer("message_id").primaryKey(),
+  userId: uuid("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  receiptId: uuid("receipt_id").notNull(),
+  bindingId: uuid("binding_id").notNull(),
+  sessionId: uuid("session_id").notNull(),
+  kind: text("kind", { enum: ["input", "result"] }).notNull(),
+  evidence: jsonb("evidence").$type<Record<string, unknown>>().notNull(),
+  archivedAt: timestamp("archived_at", { withTimezone: true }).notNull().defaultNow(),
+}, t => [
+  check("external_control_archive_kind", sql`${t.kind} IN ('input', 'result')`),
+  pgPolicy("external_control_archive_owner", { for: "all", to: "nautilo",
+    using: sql`${t.userId} = nullif(current_setting('app.current_user_id', true), '')::uuid`,
+    withCheck: sql`${t.userId} = nullif(current_setting('app.current_user_id', true), '')::uuid` }),
 ]).enableRLS();
 
 export type BolterConnection = typeof bolterConnections.$inferSelect;

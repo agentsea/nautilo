@@ -8,6 +8,7 @@ export type { ExternalRoomJobReference } from "@nautilo/db";
 
 /** Process-local authority reconstructed by Server from the exact durable receipt. */
 export interface ExternalRoomExecutionContext {
+  readonly operatorControl?: "operator_control_v1";
   readonly origin: ExternalMessageOrigin;
   readonly reference: ExternalRoomJobReference;
   readonly sponsorUserId: string;
@@ -48,7 +49,7 @@ export function externalRoomExecutor(
       while (true) {
         const next = await executionStorage.run(loaded.context, () => events.next());
         if (next.done) return;
-        yield next.value;
+        if (!loaded.context.operatorControl) yield next.value;
       }
     } finally {
       await executionStorage.run(loaded.context, () => events.return(undefined));

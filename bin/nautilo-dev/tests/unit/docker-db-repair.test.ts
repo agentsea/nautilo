@@ -36,6 +36,16 @@ describe("docker-db legacy repair integration", () => {
     expect(source).toContain("'drizzle_migrations_owner'");
   });
 
+  test("restore repair keeps plaintext control evidence owner-scoped and read-only", () => {
+    const sql = buildRestoreOwnershipAndGrantsSql();
+    const revoke = "REVOKE ALL PRIVILEGES ON TABLE public.external_operator_control_archive FROM PUBLIC, nautilo, nautilo_agent, nautilo_crypto";
+    expect(sql.lastIndexOf(revoke)).toBeGreaterThan(sql.lastIndexOf("ON ALL TABLES IN SCHEMA public"));
+    expect(sql).toContain("GRANT SELECT ON TABLE public.external_operator_control_archive TO nautilo");
+    expect(sql).toContain("ALTER TABLE public.external_operator_control_archive ENABLE ROW LEVEL SECURITY");
+    expect(sql).toContain("ALTER TABLE public.external_operator_control_archive FORCE ROW LEVEL SECURITY");
+    expect(sql).not.toContain("DROP POLICY external_control_archive_owner");
+  });
+
   test("canonical repair SQL is a single idempotent block suitable for restore", () => {
     const sql = buildFullLegacyRoleRepairSql();
     expect(sql).toContain("CREATE EXTENSION IF NOT EXISTS vector");

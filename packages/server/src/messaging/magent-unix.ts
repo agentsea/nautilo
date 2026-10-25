@@ -37,6 +37,14 @@ export function createMagentUnixHttp(config: Pick<MagentOperatorConfig, "credent
   const sendResult = (result: unknown, reply: import("fastify").FastifyReply) => result === null
     ? reply.code(409).send({ error: "authority_or_state_unavailable" }) : reply.send(result);
   app.get("/v1/status", () => service.status());
+  app.get("/v1/avatar", async (request, reply) => {
+    z.object({}).strict().parse(request.query);
+    const avatar = await service.avatar();
+    reply.header("cache-control", "no-store");
+    if (avatar === null) return sendResult(null, reply);
+    if (avatar.status === "absent") return reply.code(404).send({ error: "avatar_absent" });
+    return reply.type(avatar.contentType).send(Buffer.from(avatar.bytes));
+  });
   app.post("/v1/turns", async (request, reply) => sendResult(await service.accept(magentTurnRequestSchema.parse(request.body)), reply));
   app.get("/v1/turns/:id", async (request, reply) => sendResult(await service.receipt(params.parse(request.params).id), reply));
   app.delete("/v1/turns/:id", async (request, reply) => sendResult(await service.cancel(params.parse(request.params).id), reply));

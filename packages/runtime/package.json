@@ -39,7 +39,7 @@
     "@nautilo/trust": "workspace:*",
     "@nautilo/types": "workspace:*",
     "cron-parser": "^5.5.0",
-    "zod": "4.3.6"
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@types/node": "24.10.4",

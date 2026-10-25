@@ -15,7 +15,11 @@ type Architecture = "linux/amd64" | "linux/arm64";
 const read = (path: string): PolicySource => JSON.parse(readFileSync(join(import.meta.dir, path), "utf8")) as PolicySource;
 const beforeServer = read("fixtures/server-policy-before-security-renewal-2026-10-23.json");
 const beforeBootstrap = read("fixtures/bootstrap-policy-before-security-renewal-2026-10-23.json");
-const currentServer = read("server-vulnerability-exceptions.input.json");
+// Keep this dated renewal test scoped to its original decisions. Later additions
+// have their own regression fixtures and must not change the renewal accounting.
+const currentServer = { exceptions: read("server-vulnerability-exceptions.input.json").exceptions.filter(entry =>
+  beforeServer.exceptions.some(previous => decisionKey(previous) === decisionKey(entry))
+) };
 const currentBootstrap = read("bootstrap-vulnerability-policy.input.json");
 
 function decisionKey(decision: VulnerabilityPolicyExceptionV1): string {

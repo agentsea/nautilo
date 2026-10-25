@@ -7,6 +7,7 @@ import {
   NATIVE_CONTRACT_SCHEMAS,
 } from "@nautilo/computer-use-contracts/native";
 import { z } from "zod";
+import { toComputerUseContractJsonSchema } from "@nautilo/computer-use-contracts/schema-digest";
 import {
   computeComputerUseContractSchemaDigestV1,
   computerUseContractCatalogueV1Schema,
@@ -31,7 +32,7 @@ const entry = (
   scheduling?: ComputerUseContractCatalogueEntry["scheduling"],
 ): ComputerUseContractCatalogueEntry => {
   const asJsonDocument = (schema: z.ZodType) => JSON.parse(
-    JSON.stringify(z.toJSONSchema(schema)),
+    JSON.stringify(toComputerUseContractJsonSchema(schema)),
   ) as ComputerUseContractCatalogueEntry["publicSchemas"]["input"]["jsonSchema"];
   const publicSchemas = {
     input: {
