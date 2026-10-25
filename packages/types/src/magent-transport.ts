@@ -32,3 +32,8 @@ export const magentPublicationSettlementSchema = z.discriminatedUnion("state", [
   z.object({ claimToken: z.uuid(), state: z.literal("published"), providerMessageId: opaqueId }).strict(),
   z.object({ claimToken: z.uuid(), state: z.enum(["uncertain", "cancelled"]) }).strict(),
 ]);
+
+/** Private operator manifest; every referenced file retains its own capability. */
+export const magentOperatorManifestSchema = z.object({
+  version: z.literal(1), configFiles: z.array(z.string().min(1)).min(1),
+}).strict();
