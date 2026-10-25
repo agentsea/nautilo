@@ -7,6 +7,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Run multiple independent mAgent Genie bindings on one server through a private
+  operator manifest, with separate capabilities and sockets for each binding.
+
 - Server security policy distinguishes Debian HarfBuzz builds without the affected
   WebAssembly backend from two unfixed Expat denial-of-service findings. Exact
   decisions expire November 14; scanner-reported fixes for High/Critical findings
