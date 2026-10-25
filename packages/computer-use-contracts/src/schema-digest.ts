@@ -26,6 +26,37 @@ export function stringifyCanonicalComputerUseSchemaJson(value: unknown): string 
   return JSON.stringify(canonicalize(value));
 }
 
+/** Keep the public nullable spelling stable across schema-library upgrades. */
+export function toComputerUseContractJsonSchema(schema: z.ZodType) {
+  const document = z.toJSONSchema(schema);
+  const visit = (node: unknown): void => {
+    if (node === null || typeof node !== "object" || Array.isArray(node)) return;
+    const json = node as Record<string, unknown>;
+    const types = json["type"];
+    if (Array.isArray(types) && types.length === 2 && types.includes("null")
+      && types.every((type) => typeof type === "string")
+      && json["anyOf"] === undefined && json["enum"] === undefined && json["const"] === undefined) {
+      delete json["type"];
+      json["anyOf"] = types.map((type: string) => ({ type }));
+    }
+    // Visit schema positions only: defaults, examples and enum/const values are data.
+    for (const key of ["properties", "patternProperties", "$defs", "definitions", "dependentSchemas"]) {
+      const children = json[key];
+      if (children !== null && typeof children === "object" && !Array.isArray(children)) {
+        for (const child of Object.values(children)) visit(child);
+      }
+    }
+    for (const key of ["anyOf", "oneOf", "allOf", "prefixItems"]) {
+      const children = json[key];
+      if (Array.isArray(children)) for (const child of children) visit(child);
+    }
+    for (const key of ["items", "additionalProperties", "unevaluatedProperties", "unevaluatedItems",
+      "contains", "propertyNames", "not", "if", "then", "else"]) visit(json[key]);
+  };
+  visit(document);
+  return document;
+}
+
 /** Recompute a descriptor digest from schemas carried by a signed catalogue. */
 export function computeComputerUseJsonSchemaDigest(
   inputJsonSchema: Readonly<Record<string, unknown>>,
@@ -47,7 +78,7 @@ export function computeComputerUseSchemaDigest(
   resultSchema: z.ZodType,
 ): `sha256:${string}` {
   return computeComputerUseJsonSchemaDigest(
-    z.toJSONSchema(inputSchema),
-    z.toJSONSchema(resultSchema),
+    toComputerUseContractJsonSchema(inputSchema),
+    toComputerUseContractJsonSchema(resultSchema),
   );
 }

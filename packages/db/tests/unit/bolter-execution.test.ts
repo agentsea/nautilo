@@ -26,7 +26,7 @@ const content = "Synthetic source";
 const fingerprint = createHash("sha256").update(JSON.stringify([origin.provider, origin.origin, origin.providerAgentId,
   origin.chatId, origin.threadRootId, origin.messageId, origin.senderId, origin.senderType, origin.createdAt, content])).digest("hex");
 const receipt = { id: receiptId, userId: owner, bindingId, bindingRevision: 0, connectionGeneration: 1,
-  sessionMessageId: 17, turnId: input.reference.turnId, jobId, state: "accepted", fingerprint,
+  sessionMessageId: 17, controlInput: null, turnId: input.reference.turnId, jobId, state: "accepted", fingerprint,
   providerMessageId: origin.messageId, externalSenderId: origin.senderId };
 const job = { id: jobId, ownerId: owner, requestorId: owner, input: input.reference, status: "queued", startedAt: null, completedAt: null };
 const acceptance = { id: acceptanceId, kind: "foreground", status: "dispatched", jobId, dispatchedAt: now, cancelledAt: null };
@@ -69,7 +69,7 @@ const publicationContext = { userId: owner, connectionId, connectionGeneration: 
 const publicationClaim = { outboxId: uuid(11), claimToken: uuid(12) };
 const finalContent = "Synthetic final response";
 const finalFingerprint = createHash("sha256").update(JSON.stringify(["external-room-final-v1", receiptId, jobId, finalContent])).digest("hex");
-const outbox = { id: publicationClaim.outboxId, sourceInboxId: receiptId, explicitShareId: null, sessionMessageId: 18, fingerprint: finalFingerprint };
+const outbox = { id: publicationClaim.outboxId, sourceInboxId: receiptId, explicitShareId: null, sessionMessageId: 18, controlResult: null, fingerprint: finalFingerprint };
 const publicationSteps = (): Step[] => [
   { table: "bolter_connections", rows: [connection] }, { table: "bolter_room_bindings", rows: [binding] },
   { table: "bolter_outbox", rows: [outbox] }, { table: "bolter_inbox_receipts", rows: [{ jobId, input: input.reference }] },

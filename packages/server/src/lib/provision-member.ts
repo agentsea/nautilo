@@ -1,5 +1,6 @@
 import { createHash, createHmac, randomBytes, randomInt } from "node:crypto";
-import { PasswordPolicyChecker, passwordPolicyGuard } from "@logto/core-kit";
+import { PasswordPolicyChecker } from "@logto/core-kit";
+import { parseLogtoPasswordPolicy } from "./logto-password-policy";
 import {
   getSharedDirectDb,
   actors,
@@ -87,7 +88,7 @@ async function generatePolicyCompliantPassword(
   input: ProvisionMemberIntent,
 ): Promise<string | null> {
   try {
-    const policy = passwordPolicyGuard.parse(await logto.getPasswordPolicy());
+    const policy = parseLogtoPasswordPolicy(await logto.getPasswordPolicy());
     const checker = new PasswordPolicyChecker(policy);
     for (let attempt = 0; attempt < 8; attempt += 1) {
       const candidate = `N!${randomBytes(32).toString("base64url")}`;
@@ -110,7 +111,7 @@ export async function isPolicyCompliantProvisioningPassword(
   password: string,
 ): Promise<boolean> {
   try {
-    const policy = passwordPolicyGuard.parse(await logto.getPasswordPolicy());
+    const policy = parseLogtoPasswordPolicy(await logto.getPasswordPolicy());
     const checker = new PasswordPolicyChecker(policy);
     return (await checker.check(password, {
       name: input.displayName,

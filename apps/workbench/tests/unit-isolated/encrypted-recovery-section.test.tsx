@@ -12,6 +12,7 @@ import { getCryptoAdmissionSnapshot, registerCryptoAdmissionAccessOwner, setCryp
 
 import type {
   WorkbenchEncryptionDeviceRoster,
+  WorkbenchEncryptionRecoveryReadiness,
   WorkbenchEncryptionRecoveryReadinessPort,
 } from
   "../../src/lib/encryption-recovery-readiness";
@@ -477,6 +478,7 @@ describe("EncryptedRecoverySection", () => {
 
   test("approves a matching additional-device code on the active device", async () => {
     let approved: readonly [string, string] | null = null;
+    let finishApproval: ((readiness: WorkbenchEncryptionRecoveryReadiness) => void) | undefined;
     const port: WorkbenchEncryptionRecoveryReadinessPort = {
       inspect: () => Promise.resolve({
         status: "active",
@@ -491,11 +493,7 @@ describe("EncryptedRecoverySection", () => {
       }),
       approveAdditionalDevice: (operationId, verificationCode) => {
         approved = [operationId, verificationCode];
-        return Promise.resolve({
-          status: "active",
-          encryptionSetup: "human_domain_active",
-          pendingAdditionalDevices: [],
-        });
+        return new Promise((resolve) => { finishApproval = resolve; });
       },
       setup: () => Promise.reject(new Error("must not setup")),
     };
@@ -509,7 +507,16 @@ describe("EncryptedRecoverySection", () => {
       "device-add-2",
       "ABCDEF-012345-6789AB",
     ]));
-    expect(view.queryByText("ABCDEF-012345-6789AB")).toBeNull();
+    expect(view.getByText("ABCDEF-012345-6789AB")).toBeTruthy();
+    expect(finishApproval).toBeDefined();
+    await act(async () => {
+      finishApproval?.({
+        status: "active",
+        encryptionSetup: "human_domain_active",
+        pendingAdditionalDevices: [],
+      });
+    });
+    await waitFor(() => expect(view.queryByText("ABCDEF-012345-6789AB") === null).toBe(true));
   });
 
   test("keeps a transfer-ready device connection visible and resumable", async () => {
@@ -543,7 +550,7 @@ describe("EncryptedRecoverySection", () => {
       name: "Finish device connection",
     }));
     await waitFor(() => expect(advanced).toBe("device-add-transfer"));
-    expect(view.queryByText(/Continue the signed device connection/)).toBeNull();
+    await waitFor(() => expect(view.queryByText(/Continue the signed device connection/) === null).toBe(true));
   });
 
   test("keeps a blocked final connection visible with its exact reason", async () => {

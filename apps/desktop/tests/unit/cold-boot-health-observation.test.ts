@@ -4,10 +4,10 @@ import {
   type ColdBootDiagnostic,
 } from "../../electron/cold-boot-observation";
 
-const servers: Array<{ stop: () => void }> = [];
+const servers: Array<{ stop: (closeActiveConnections?: boolean) => Promise<void> }> = [];
 
-afterEach(() => {
-  while (servers.length > 0) servers.pop()?.stop();
+afterEach(async () => {
+  await Promise.all(servers.splice(0).map(server => server.stop(true)));
 });
 
 function healthBody(identity = "expected"): Record<string, unknown> {
@@ -24,6 +24,9 @@ function startHealthServer(
 ): string {
   let index = 0;
   const server = Bun.serve({
+    // Match the fetched address: localhost may bind only IPv6 while the same
+    // numeric port already belongs to an unrelated IPv4 listener.
+    hostname: "127.0.0.1",
     port: 0,
     async fetch(request) {
       if (new URL(request.url).pathname !== "/health") {
@@ -60,7 +63,7 @@ function authority(
   });
 }
 
-describe("D514 cold-boot health observation", () => {
+describe("cold-boot health observation", () => {
   test("a promoted connection cohort changes the previously connecting bootstrap snapshot to live without a second fetch", () => {
     let fetches = 0;
     const observer = new ColdBootObservationAuthority({

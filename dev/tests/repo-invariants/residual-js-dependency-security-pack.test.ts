@@ -29,8 +29,8 @@ describe("residual JavaScript dependency security pack", () => {
         await readFile(join(repositoryRoot, manifestPath), "utf8"),
       ) as { overrides?: Record<string, unknown> };
 
-      expect(manifest.overrides?.["body-parser"]).toBe("2.3.0");
-      expect(manifest.overrides?.qs).toBe("6.15.3");
+      expect(manifest.overrides?.["body-parser"]).toBe("2.4.0");
+      expect(manifest.overrides?.qs).toBe("6.16.1");
     }
 
     for (const lockfilePath of expressLockfiles) {
@@ -39,9 +39,10 @@ describe("residual JavaScript dependency security pack", () => {
         "utf8",
       );
 
-      expect(lockfile).toContain('"body-parser@2.3.0"');
+      expect(lockfile).toContain('"body-parser@2.4.0"');
+      expect(lockfile).not.toContain('"body-parser@2.3.0"');
       expect(lockfile).not.toContain('"body-parser@2.2.2"');
-      expect(lockfile).toContain('"qs@6.15.3"');
+      expect(lockfile).toContain('"qs@6.16.1"');
       expect(lockfile).not.toContain('"qs@6.15.1"');
     }
   });

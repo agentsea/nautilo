@@ -59,7 +59,8 @@ describe("Debian 13 security update and exception retirement", () => {
   test("remaining decisions match reviewed package versions and production schema", () => {
     const floors = new Map(readFileSync(join(import.meta.dir, "server-security-package-floors.txt"), "utf8")
       .split("\n").filter((line) => line && !line.startsWith("#")).map((line) => line.split(" ") as [string, string]));
-    expect(floors.size).toBe(9);
+    expect(floors.size).toBe(10);
+    expect(floors.get("libbrotli1")).toBe("1.1.0-2+deb13u1");
     for (const entry of current.exceptions) {
       // This historical September 13 review predates these separately tested findings.
       if (entry.reviewedAt === "2026-10-05T10:40:00Z" || entry.reviewedAt === "2026-10-03T15:15:00Z" || entry.reviewedAt === "2026-10-01T21:39:28Z" || entry.reviewedAt === "2026-10-01T20:28:00Z" || entry.reviewedAt === "2026-09-30T15:20:00Z" ||

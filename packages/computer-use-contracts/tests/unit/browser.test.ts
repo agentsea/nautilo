@@ -15,6 +15,7 @@ import {
 import {
   computeComputerUseSchemaDigest,
   stringifyCanonicalComputerUseSchemaJson,
+  toComputerUseContractJsonSchema,
 } from "../../src/schema-digest.ts";
 
 const opaque = (prefix: string, fill: string) => `${prefix}_${fill.repeat(43)}`;
@@ -37,13 +38,32 @@ describe("browser Computer Use contracts", () => {
     for (const key of Object.keys(BROWSER_CONTRACT_SCHEMAS) as Array<keyof typeof BROWSER_CONTRACT_SCHEMAS>) {
       const schemas = BROWSER_CONTRACT_SCHEMAS[key];
       const canonical = stringifyCanonicalComputerUseSchemaJson({
-        input: z.toJSONSchema(schemas.input),
-        result: z.toJSONSchema(schemas.result),
+        input: toComputerUseContractJsonSchema(schemas.input),
+        result: toComputerUseContractJsonSchema(schemas.result),
       });
       const independentlyComputed = `sha256:${createHash("sha256").update(canonical, "utf8").digest("hex")}`;
       expect(String(COMPUTER_USE_BROWSER_CONTRACTS[key].schemaDigest)).toBe(independentlyComputed);
       expect(String(computeComputerUseSchemaDigest(schemas.input, schemas.result))).toBe(independentlyComputed);
     }
+  });
+
+  test("public nullable schemas retain their spelling without rewriting data or dropping constraints", () => {
+    const literal = { type: ["string", "null"], example: null };
+    const schema = z.object({
+      active: z.boolean().nullable(),
+      name: z.string().min(2).nullable(),
+      rows: z.array(z.object({ value: z.string().nullable() }).strict()),
+      data: z.unknown().default(literal).meta({ examples: [literal] }),
+    }).strict();
+    const document = toComputerUseContractJsonSchema(schema);
+    expect(document.properties?.["active"]).toEqual({ anyOf: [{ type: "boolean" }, { type: "null" }] });
+    expect(document.properties?.["name"]).toEqual({ anyOf: [{ type: "string", minLength: 2 }, { type: "null" }] });
+    expect(document.properties?.["data"]).toMatchObject({ default: literal, examples: [literal] });
+    expect(JSON.stringify(document.properties?.["rows"])).toContain('"anyOf":[{"type":"string"},{"type":"null"}]');
+    expect(schema.safeParse({ active: null, name: "x", rows: [] }).success).toBe(false);
+    expect(schema.safeParse({ active: false, name: "ok", rows: [{ value: null }] }).success).toBe(true);
+    expect(COMPUTER_USE_BROWSER_CONTRACTS.bindWindow.schemaDigest)
+      .toBe("sha256:a8a326b6948dd07592913a70178a5714834b7aeee33fda6a4a4557ef183ce313");
   });
 
   test("action recovery exposes only reviewed route and escalation enums", () => {

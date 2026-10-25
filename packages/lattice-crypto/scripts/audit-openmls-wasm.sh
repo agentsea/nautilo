@@ -23,8 +23,9 @@ actual_version="$("$AUDIT_BIN" --version)"
 
 tree_file="$(mktemp "${TMPDIR:-/tmp}/nautilo-openmls-tree.XXXXXX")"
 feature_tree_file="$(mktemp "${TMPDIR:-/tmp}/nautilo-openmls-features.XXXXXX")"
+audit_file="$(mktemp "${TMPDIR:-/tmp}/nautilo-openmls-audit.XXXXXX")"
 cleanup() {
-  rm -f "$tree_file" "$feature_tree_file"
+  rm -f "$tree_file" "$feature_tree_file" "$audit_file"
 }
 trap cleanup EXIT
 
@@ -41,7 +42,7 @@ cargo tree \
   --target wasm32-unknown-unknown \
   -e features > "$feature_tree_file"
 
-for forbidden in hpke-rs-libcrux libcrux-aesgcm libcrux-chacha20poly1305 proc-macro-error2; do
+for forbidden in hpke-rs-libcrux libcrux-aesgcm libcrux-chacha20poly1305 libcrux-kem proc-macro-error2; do
   if grep -F "$forbidden" "$tree_file" >/dev/null; then
     printf 'error: reviewed lock-only dependency became active: %s\n' "$forbidden" >&2
     exit 1
@@ -57,11 +58,12 @@ grep -F \
   "Ciphersuite::MLS_128_DHKEMX25519_CHACHA20POLY1305_SHA256_Ed25519" \
   "$CRATE_DIR/src/lib.rs" >/dev/null
 
-"$AUDIT_BIN" audit \
-  --file "$CRATE_DIR/Cargo.lock" \
-  --ignore RUSTSEC-2026-0209 \
-  --ignore RUSTSEC-2026-0211 \
-  --ignore RUSTSEC-2026-0124 \
-  --ignore RUSTSEC-2026-0212 \
-  --ignore RUSTSEC-2026-0207 \
-  --ignore RUSTSEC-2026-0208
+audit_status=0
+"$AUDIT_BIN" audit --json --file "$CRATE_DIR/Cargo.lock" > "$audit_file" || audit_status=$?
+# Preserve every raw finding and warning before applying a separate disposition.
+cat "$audit_file"
+[[ "$audit_status" -eq 0 || "$audit_status" -eq 1 ]] || {
+  printf 'error: cargo-audit infrastructure failed with status %s\n' "$audit_status" >&2
+  exit 1
+}
+bun run "$SCRIPT_DIR/openmls-audit-policy.ts" "$audit_file"

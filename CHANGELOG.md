@@ -7,6 +7,21 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Server security policy distinguishes Debian HarfBuzz builds without the affected
+  WebAssembly backend from two unfixed Expat denial-of-service findings. Exact
+  decisions expire November 14; scanner-reported fixes for High/Critical findings
+  and changed tuples still fail.
+
+- Refresh the shipped Zod (including seeded Writer and Video apps) and body-parser security patches, preserving identity
+  password-policy defaults and image-processing compatibility.
+
+- Server images require Debian's Brotli decoder security update on AMD64 and
+  ARM64; vulnerable packages fail the build instead of receiving an exception.
+
+- Mobile reconciles active chat jobs after reconnecting or returning to the
+  foreground, clearing a stale Genie working indicator when a reply finished
+  while the completion event was missed.
+
 - Personal chat keeps its admitted provider and credential when marketplace
   availability changes. Already-admitted direct calls skip Surplus discovery,
   and protected Memory retains its approved marketplace embedding disclosure.
@@ -25,6 +40,11 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 - Web Genie customization now loads the default shell avatar correctly instead
   of showing a missing-image error and requiring a replacement.
 
+- External agent connectors keep control requests and structured decisions out
+  of human chats. Verified older control rows are archived while real replies
+  and thread links are preserved. Approved connectors can also retrieve their
+  bound Genie's avatar for display in the connected agent room.
+
 - Surplus-only chat can use available sellers for eligible ordinary models,
   preserves streamed tool calls, and respects qualified marketplace output
   limits. Missing recovery keys retain the original marketplace failure;
@@ -39,6 +59,8 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   including streamed customization previews and service cost tracking. Eligible
   Surplus-only requests let the marketplace choose an available seller and can
   recover from confirmed supply refusals through other eligible models.
+- Update shipped MCP SDK dependencies to 1.32.0. MCP HTTP transports remain
+  outbound clients; contributor MCP servers use stdio.
 
 - Operators can connect a selected Genie to mAgent through a private Unix socket,
   with a fresh external-context Room and a fixed sponsor and sender identity.

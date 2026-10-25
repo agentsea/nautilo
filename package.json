@@ -61,11 +61,11 @@
     "reset-pin": "bun bin/nautilo-reset-pin/src/index.ts",
     "lint:unused": "NAUTILO_DRIZZLE_OFFLINE=1 node --max-old-space-size=6144 node_modules/knip/bin/knip.js --no-progress",
     "ci:local": "bash dev/scripts/ci-local.sh",
-    "setup": "lefthook install",
+    "setup": "bun dev/scripts/install-git-hooks.ts",
     "first-party-apps:install": "bun dev/scripts/install-first-party-apps.ts",
     "writer:prepare": "turbo run build --filter=@nautilo/office-docs...",
     "sheets:prepare": "bun dev/scripts/prepare-sheets.ts",
-    "postinstall": "lefthook install && bun run writer:prepare && bun run first-party-apps:install && bun dev/scripts/fix-node-pty-perms.ts",
+    "postinstall": "bun run setup && bun run writer:prepare && bun run first-party-apps:install && bun dev/scripts/fix-node-pty-perms.ts",
     "dev:test": "cd dev && bun test --timeout 60000",
     "ptt:build": "cd native/macos-ptt-helper && swift build",
     "dev:save": "bun bin/nautilo-dev/src/index.ts save",
@@ -145,13 +145,13 @@
     "node-pty"
   ],
   "overrides": {
-    "@modelcontextprotocol/sdk": "1.31.0",
+    "@modelcontextprotocol/sdk": "1.32.0",
     "@fastify/busboy": "3.2.1",
     "@hono/node-server": "1.19.15",
     "@langchain/openai": "1.4.5",
     "@langchain/langgraph-checkpoint": "1.0.1",
     "@xmldom/xmldom": "0.9.12",
-    "body-parser": "2.3.0",
+    "body-parser": "2.4.0",
     "electron-builder-squirrel-windows": "26.15.3",
     "form-data": "4.0.6",
     "hono": "4.12.34",
@@ -162,7 +162,7 @@
     "plist": "3.1.1",
     "postcss": "8.5.26",
     "proxy-addr": "2.0.8",
-    "qs": "6.15.3",
+    "qs": "6.16.1",
     "tar": "7.5.22",
     "tmp": "0.2.7"
   },
@@ -170,7 +170,7 @@
     "@noble/hashes": "^2.2.0",
     "@xmldom/xmldom": "0.9.12",
     "kdbxweb": "2.1.1",
-    "zod": "4.3.6"
+    "zod": "4.6.7"
   },
   "patchedDependencies": {
     "@oomol-lab/connector@1.1.0": "patches/@oomol-lab%2Fconnector@1.1.0.patch",
