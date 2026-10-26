@@ -358,13 +358,13 @@ function networkdaysFunc(
     return endDate;
   }
 
-  const direction = startDate <= endDate ? 1 : -1;
+  const direction = calendarDay(startDate) <= calendarDay(endDate) ? 1 : -1;
   const start = direction === 1 ? startDate : endDate;
-  const end = direction === 1 ? endDate : startDate;
+  const endDay = calendarDay(direction === 1 ? endDate : startDate);
 
   let count = 0;
   const current = new Date(start);
-  while (current <= end) {
+  while (calendarDay(current) <= endDay) {
     const day = current.getDay();
     if (day !== 0 && day !== 6) {
       count++;
@@ -406,20 +406,21 @@ function networkdaysintlFunc(
       for (const sref of toSrefs([hNode.v])) {
         const cell = grid.get(sref);
         if (cell?.v) {
-          const hd = new Date(cell.v);
+          const hd = parseDateString(String(cell.v));
           if (!isNaN(hd.getTime())) {
-            holidays.add(hd.toISOString().slice(0, 10));
+            holidays.add(formatDate(hd));
           }
         }
       }
     }
   }
 
-  const direction = endDate >= startDate ? 1 : -1;
+  const endDay = calendarDay(endDate);
+  const direction = endDay >= calendarDay(startDate) ? 1 : -1;
   const current = new Date(startDate);
   let count = 0;
-  while ((direction > 0 && current <= endDate) || (direction < 0 && current >= endDate)) {
-    if (!weekendDays.has(current.getDay()) && !holidays.has(current.toISOString().slice(0, 10))) {
+  while ((direction > 0 && calendarDay(current) <= endDay) || (direction < 0 && calendarDay(current) >= endDay)) {
+    if (!weekendDays.has(current.getDay()) && !holidays.has(formatDate(current))) {
       count++;
     }
     current.setDate(current.getDate() + direction);
@@ -589,13 +590,16 @@ function weeknumFunc(
     type = Math.trunc(typeNode.v);
   }
 
-  const jan1 = new Date(date.getFullYear(), 0, 1);
   const startDay = type === 2 ? 1 : 0;
-  const jan1Day = jan1.getDay();
+  const jan1Day = new Date(date.getFullYear(), 0, 1).getDay();
   const dayOffset = (jan1Day - startDay + 7) % 7;
-  const weekStart = new Date(jan1.getTime() - dayOffset * 86400000);
-  const diff = date.getTime() - weekStart.getTime();
-  const weekNum = Math.floor(diff / (7 * 86400000)) + 1;
+  // Whole calendar days since 1 January, counted in UTC so that a daylight
+  // saving change between the two dates cannot shorten the span by an hour.
+  const dayOfYear =
+    (Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) -
+      Date.UTC(date.getFullYear(), 0, 1)) /
+    86400000;
+  const weekNum = Math.floor((dayOfYear + dayOffset) / 7) + 1;
 
   return numNode(weekNum);
 }
@@ -712,9 +716,9 @@ function workdayintlFunc(
       for (const sref of toSrefs([hNode.v])) {
         const cell = grid.get(sref);
         if (cell?.v) {
-          const hd = new Date(cell.v);
+          const hd = parseDateString(String(cell.v));
           if (!isNaN(hd.getTime())) {
-            holidays.add(hd.toISOString().slice(0, 10));
+            holidays.add(formatDate(hd));
           }
         }
       }
@@ -726,7 +730,7 @@ function workdayintlFunc(
   let remaining = Math.abs(numDays);
   while (remaining > 0) {
     result.setDate(result.getDate() + direction);
-    if (!weekendDays.has(result.getDay()) && !holidays.has(result.toISOString().slice(0, 10))) {
+    if (!weekendDays.has(result.getDay()) && !holidays.has(formatDate(result))) {
       remaining--;
     }
   }
@@ -770,6 +774,15 @@ function yearfracFunc(
 
   const s = startDate < endDate ? startDate : endDate;
   const e = startDate < endDate ? endDate : startDate;
+  // 30/360 reads a date-only value as the calendar day written, and a
+  // timestamp by its UTC day as before, so one with an explicit offset gives
+  // the same result in every time zone.
+  const dayOf = (date: Date) =>
+    isDateOnlyValue(date)
+      ? { y: date.getFullYear(), m: date.getMonth() + 1, d: date.getDate() }
+      : { y: date.getUTCFullYear(), m: date.getUTCMonth() + 1, d: date.getUTCDate() };
+  const sd = dayOf(s);
+  const ed = dayOf(e);
   const actualDays = Math.round(
     (e.getTime() - s.getTime()) / 86400000,
   );
@@ -777,20 +790,17 @@ function yearfracFunc(
   switch (basis) {
     case 0: {
       // US (NASD) 30/360
-      let d1 = s.getUTCDate();
-      let d2 = e.getUTCDate();
-      const m1 = s.getUTCMonth() + 1;
-      const m2 = e.getUTCMonth() + 1;
-      const y1 = s.getUTCFullYear();
-      const y2 = e.getUTCFullYear();
-      const isLastDayOfFeb = (d: Date): boolean => {
-        const y = d.getUTCFullYear();
-        const m = d.getUTCMonth();
-        return m === 1 && d.getUTCDate() === new Date(Date.UTC(y, m + 1, 0)).getUTCDate();
-      };
-      if (isLastDayOfFeb(s)) {
+      let d1 = sd.d;
+      let d2 = ed.d;
+      const m1 = sd.m;
+      const m2 = ed.m;
+      const y1 = sd.y;
+      const y2 = ed.y;
+      const isLastDayOfFeb = (d: { y: number; m: number; d: number }): boolean =>
+        d.m === 2 && d.d === new Date(Date.UTC(d.y, 2, 0)).getUTCDate();
+      if (isLastDayOfFeb(sd)) {
         d1 = 30;
-        if (isLastDayOfFeb(e)) d2 = 30;
+        if (isLastDayOfFeb(ed)) d2 = 30;
       }
       if (d1 === 31) d1 = 30;
       if (d2 === 31 && d1 === 30) d2 = 30;
@@ -799,12 +809,9 @@ function yearfracFunc(
     }
     case 4: {
       // European 30/360
-      const d1 = Math.min(s.getUTCDate(), 30);
-      const d2 = Math.min(e.getUTCDate(), 30);
-      const days30 =
-        (e.getUTCFullYear() - s.getUTCFullYear()) * 360 +
-        (e.getUTCMonth() - s.getUTCMonth()) * 30 +
-        (d2 - d1);
+      const d1 = Math.min(sd.d, 30);
+      const d2 = Math.min(ed.d, 30);
+      const days30 = (ed.y - sd.y) * 360 + (ed.m - sd.m) * 30 + (d2 - d1);
       return numNode(days30 / 360);
     }
     case 1: {
@@ -897,11 +904,61 @@ export function parseDate(
   const str = toStr(node, grid);
   if (str.t === 'err') return str;
 
-  const date = new Date(str.v);
+  const date = parseDateString(str.v);
   if (isNaN(date.getTime())) {
     return ErrNode.VALUE;
   }
   return date;
+}
+
+/** Dates `parseDateString` read from a date-only (`YYYY-MM-DD`) string. */
+const dateOnlyValues = new WeakSet<Date>();
+
+/**
+ * `isDateOnlyValue` reports whether `date` was parsed from a date-only string,
+ * as opposed to a timestamp.
+ */
+export function isDateOnlyValue(date: Date): boolean {
+  return dateOnlyValues.has(date);
+}
+
+/**
+ * `calendarDay` returns the local calendar date of `date` as a whole number of
+ * days since 1970-01-01, so that two dates compare by day whatever their time
+ * of day or a daylight saving change between them.
+ */
+function calendarDay(date: Date): number {
+  const utc = new Date(0);
+  utc.setUTCFullYear(date.getFullYear(), date.getMonth(), date.getDate());
+  return utc.getTime() / 86400000;
+}
+
+/**
+ * `parseDateString` parses a date string into a Date at local midnight for
+ * date-only values.
+ *
+ * `new Date('2024-03-15')` is defined to parse a date-only ISO string as UTC
+ * midnight, while every date function here reads the result with local getters
+ * (`getDate`, `getDay`, ...) and formats with `formatDate`. West of UTC that
+ * moved every such date back by one day. Other strings keep the built-in parser.
+ */
+function parseDateString(text: string): Date {
+  const isoDate = /^\s*(\d{4})-(\d{2})-(\d{2})\s*$/.exec(text);
+  if (isoDate) {
+    const year = Number(isoDate[1]);
+    const month = Number(isoDate[2]);
+    const day = Number(isoDate[3]);
+    if (month < 1 || month > 12 || day < 1 || day > 31) {
+      return new Date(NaN);
+    }
+    // Year, month and day are set together: the Date constructor maps years
+    // 0-99 to 19xx, which would roll a leap day such as 0000-02-29 over first.
+    const date = new Date(2000, 0, 1);
+    date.setFullYear(year, month - 1, day);
+    dateOnlyValues.add(date);
+    return date;
+  }
+  return new Date(text);
 }
 
 /**
@@ -935,7 +992,7 @@ function parseDateTime(
     return new Date(1970, 0, 1, hour, minute, second);
   }
 
-  const date = new Date(str.v);
+  const date = parseDateString(str.v);
   if (isNaN(date.getTime())) {
     return ErrNode.VALUE;
   }
