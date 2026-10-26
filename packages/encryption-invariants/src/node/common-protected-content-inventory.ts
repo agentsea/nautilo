@@ -39,7 +39,7 @@ export const OBJECT_ACCESS_CODEC_CONSUMERS = Object.freeze([
     family: "common_v5",
     sourcePath:
       "packages/lattice-bridge/src/client/memory/vault-human-memory-device-content.ts",
-    anchor: "verifyCommonObjectAccessManifestChain(input.crypto, {",
+    anchor: "operation: taskResolvers => verifyCommonObjectAccessManifestChain(",
   },
   {
     id: "memory.agent.prepared",
