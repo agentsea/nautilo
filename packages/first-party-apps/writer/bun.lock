@@ -128,7 +128,7 @@
 
     "@nautilo/office-docs": ["@nautilo/office-docs@file:../../office-docs", { "dependencies": { "@nautilo/office-core": "0.6.9", "@pdf-lib/fontkit": "^1.1.1", "jszip": "^3.10.1", "nspell": "^2.1.5", "pdf-lib": "^1.17.1" }, "devDependencies": { "@types/nspell": "^2.1.6", "@vitest/coverage-v8": "^4.1.8", "jsdom": "^28.0.0", "playwright": "^1.58.2", "prettier": "^3.3.2", "typescript": "^5.9.3", "vite": "^6.4.2", "vitest": "^4.1.8" } }],
 
-    "@nautilo/types": ["@nautilo/types@file:../../types", { "dependencies": { "node-diff3": "3.2.1", "zod": "4.3.6" }, "devDependencies": { "@types/node": "24.10.4", "bun-types": "1.4.4", "typescript": "5.9.3" } }],
+    "@nautilo/types": ["@nautilo/types@file:../../types", { "dependencies": { "node-diff3": "3.2.1", "zod": "4.6.7" }, "devDependencies": { "@types/node": "24.10.4", "bun-types": "1.4.4", "typescript": "5.9.3" } }],
 
     "@nautilo/writer-proposal-core": ["@nautilo/writer-proposal-core@file:../../writer-proposal-core", { "dependencies": { "@nautilo/office-docs": "0.6.9", "@nautilo/types": "0.1.0", "parse5": "8.0.1" }, "devDependencies": { "@types/node": "24.10.4", "typescript": "5.9.3" } }],
 
@@ -472,7 +472,7 @@
 
     "xmlchars": ["xmlchars@2.2.0", "", {}, "sha512-JZnDKK8B0RCDw84FNdDAIpZK+JuJw+s7Lz8nksI7SIuU3UXJJslUthsi+uWBUYOwPFwW7W7PRLRfUKpxjtjFCw=="],
 
-    "zod": ["zod@4.3.6", "", {}, "sha512-rftlrkhHZOcjDwkGlnUtZZkvaPHCsDATp4pGpuOOMDaTdDDXF91wuVDJoWoPsKX/3YPQ5fHuF3STjcYyKr+Qhg=="],
+    "zod": ["zod@4.6.7", "", {}, "sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg=="],
 
     "@nautilo/office-core/typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
 
@@ -484,7 +484,7 @@
 
     "@nautilo/writer-proposal-core/@nautilo/office-docs": ["@nautilo/office-docs@file:../../office-docs", { "dependencies": { "@nautilo/office-core": "0.6.9", "@pdf-lib/fontkit": "^1.1.1", "jszip": "^3.10.1", "nspell": "^2.1.5", "pdf-lib": "^1.17.1" }, "devDependencies": { "@types/nspell": "^2.1.6", "@vitest/coverage-v8": "^4.1.8", "jsdom": "^28.0.0", "playwright": "^1.58.2", "prettier": "^3.3.2", "typescript": "^5.9.3", "vite": "^6.4.2", "vitest": "^4.1.8" } }],
 
-    "@nautilo/writer-proposal-core/@nautilo/types": ["@nautilo/types@file:../../types", { "dependencies": { "node-diff3": "3.2.1", "zod": "4.3.6" }, "devDependencies": { "@types/node": "24.10.4", "bun-types": "1.4.4", "typescript": "5.9.3" } }],
+    "@nautilo/writer-proposal-core/@nautilo/types": ["@nautilo/types@file:../../types", { "dependencies": { "node-diff3": "3.2.1", "zod": "4.6.7" }, "devDependencies": { "@types/node": "24.10.4", "bun-types": "1.4.4", "typescript": "5.9.3" } }],
 
     "@nautilo/writer-proposal-core/typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
 

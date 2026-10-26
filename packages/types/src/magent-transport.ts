@@ -22,6 +22,7 @@ export type MagentOperatorConfig = z.infer<typeof magentOperatorConfigSchema>;
 
 /** Attribution only: the fixed connector sender cannot supply local authority or routing. */
 export const magentTurnRequestSchema = z.object({
+  kind: z.literal("operator_control_v1"),
   sessionId: opaqueId, messageId: opaqueId, senderId: opaqueId, senderLabel: z.string().min(1),
   content: z.string().refine(value => value.trim().length > 0), createdAt: z.iso.datetime({ offset: true }),
 }).strict();
@@ -31,3 +32,8 @@ export const magentPublicationSettlementSchema = z.discriminatedUnion("state", [
   z.object({ claimToken: z.uuid(), state: z.literal("published"), providerMessageId: opaqueId }).strict(),
   z.object({ claimToken: z.uuid(), state: z.enum(["uncertain", "cancelled"]) }).strict(),
 ]);
+
+/** Private operator manifest; every referenced file retains its own capability. */
+export const magentOperatorManifestSchema = z.object({
+  version: z.literal(1), configFiles: z.array(z.string().min(1)).min(1),
+}).strict();

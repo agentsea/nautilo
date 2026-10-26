@@ -47,6 +47,7 @@ import {
   type RoomOperationToken,
 } from "@/features/room-chat-pane/room-operation-guard";
 import { mayMarkRoomRead } from "@/features/room-chat-pane/viewport-state";
+import { useRoomJobActivity } from "@/features/room-chat-pane/use-room-job-activity";
 import {
   canEditMobileMessage,
   hasMobileMessageDeleteAuthority,
@@ -243,7 +244,7 @@ export function useRoomChatController({
   artifactRefs = [],
 }: RoomChatControllerOptions) {
   const { activeServer } = useServers();
-  const { subscribe, send, recoveryRevision, withClientActionSession } = useRealtime();
+  const { subscribe, send, connectionState, recoveryRevision, withClientActionSession } = useRealtime();
   const { viewer, viewerState, status, refreshViewer } = useAuth();
   const canInvokeAgents = viewerCan(viewer, "invoke_agents");
   const canMentionEveryone = viewerCan(viewer, "manage_rooms");
@@ -294,10 +295,6 @@ export function useRoomChatController({
   const [sendingOperation, setSendingOperation] = useState<RoomOperationToken | null>(null);
   const [capabilityError, setCapabilityError] = useState<string | null>(null);
   const [contentFilterNotice, setContentFilterNotice] = useState<string | null>(null);
-  // The stream placeholder is not a job lifecycle signal: it can settle
-  // between model output and a tool call. Keep the server-dispatched job live
-  // until its terminal `job.status`, matching desktop's presence strip.
-  const [liveJobIds, setLiveJobIds] = useState<ReadonlySet<string>>(() => new Set());
   // Local "turn was stopped" override so the composer's stop button greys down
   // the instant the user taps stop (mirrors desktop `voice.isRunning` flipping
   // false), instead of waiting on a terminal stream event that a stopped turn
@@ -307,9 +304,6 @@ export function useRoomChatController({
   // also dismissable). `stopNoteVisible` drives fade in/out.
   const [stopNoteVisible, setStopNoteVisible] = useState(false);
 
-  useEffect(() => {
-    setLiveJobIds(new Set());
-  }, [roomId]);
   const stopNoteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // session-only model selection is keyed by paired server + room.
   // This revision counter only re-renders after a store write; it does not
@@ -383,6 +377,20 @@ export function useRoomChatController({
     });
     return () => subscription.remove();
   }, []);
+  const getActiveJobs = useCallback(async () => {
+    if (!activeServer || !roomId) return { jobIds: [] };
+    return getApiClient(activeServer.serverUrl).getRoomActiveJobs(roomId);
+  }, [activeServer, roomId]);
+  // A settled bubble can precede another tool/model phase. Track the server
+  // job lifecycle and recover its truth when mobile resumes or reconnects.
+  const liveJobIds = useRoomJobActivity({
+    scopeKey: verifiedViewerIdentityScope,
+    roomId: roomId ?? null,
+    active: appIsActive && connectionState === "open",
+    recoveryRevision,
+    subscribe,
+    getActiveJobs,
+  });
   const askUserScope = useMemo<AskUserRoutingScope | null>(() =>
     activeServer && viewerUserId && viewerActorId && roomIdValid && roomId
       ? {
@@ -1086,27 +1094,10 @@ export function useRoomChatController({
   useEffect(() => {
     if (!roomIdValid || !roomId) return;
     const handler = (event: ServerEvent): void => {
-      if (event.type === "job.dispatched") {
-        if (roomIdFromLaneKey(event.laneKey) !== roomId) return;
-        setLiveJobIds((previous) => new Set(previous).add(event.jobId));
-        return;
-      }
       if (event.type === "job.status") {
         if (roomIdFromLaneKey(event.laneKey) === roomId && event.errorCode === "image_assistance_failed") {
           setItems((previous) => applyStreamEvent(previous, event));
         }
-        const terminal =
-          event.status === "completed" ||
-          event.status === "failed" ||
-          event.status === "timed_out" ||
-          event.status === "cancelled";
-        if (!terminal) return;
-        setLiveJobIds((previous) => {
-          if (!previous.has(event.jobId)) return previous;
-          const next = new Set(previous);
-          next.delete(event.jobId);
-          return next;
-        });
         return;
       }
       if (event.type === "typing.ping") {

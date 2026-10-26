@@ -279,6 +279,9 @@ export const DATA_TABLES = [
   // Preserve complete backup coverage in FK order. Restore admission rejects
   // populated bridge authority until an explicit reconciliation path exists.
   ...BOLTER_RESTORE_AUTHORITY_TABLES,
+  // Inert audit evidence references only its owning Human. Preserve it unchanged;
+  // it does not authorize bridge replay and is not part of the authority guard.
+  "public.external_operator_control_archive",
   // Content-free deletion receipts have no foreign-key parents and survive the
   // message they record; keep them in every full backup and restore.
   "public.message_deletion_receipts",

@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "MCP server that reads logs/nautilo-server.log with filters (last, since, grep, turnId, level, clear). Pairs with D082 PR B turn correlation.",
+  "description": "MCP server that reads logs/nautilo-server.log with filters (last, since, grep, turnId, level, clear) and turn correlation.",
   "main": "index.ts",
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.30.0"
@@ -13,8 +13,8 @@
   },
   "overrides": {
     "@hono/node-server": "1.19.15",
-    "body-parser": "2.3.0",
+    "body-parser": "2.4.0",
     "hono": "4.12.34",
-    "qs": "6.15.3"
+    "qs": "6.16.1"
   }
 }

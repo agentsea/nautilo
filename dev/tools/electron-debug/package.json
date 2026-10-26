@@ -15,8 +15,8 @@
   },
   "overrides": {
     "@hono/node-server": "1.19.15",
-    "body-parser": "2.3.0",
+    "body-parser": "2.4.0",
     "hono": "4.12.34",
-    "qs": "6.15.3"
+    "qs": "6.16.1"
   }
 }

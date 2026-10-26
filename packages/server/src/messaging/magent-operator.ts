@@ -12,6 +12,7 @@ import {
 import { type MagentOperatorConfig, type MagentTurnRequest, magentPublicationSettlementSchema } from "@nautilo/types";
 import type { JobManager } from "@nautilo/runtime";
 import type { ExternalRoomExecutionService } from "./external-room-execution";
+import { loadMagentGenieAvatar } from "./magent-avatar";
 
 /** The socket owns one binding; no request can select a sponsor, Genie, room or namespace. */
 export async function createMagentOperatorService(options: {
@@ -73,10 +74,17 @@ export async function createMagentOperatorService(options: {
       return { status: await available() ? "ready" : "withdrawn", operatorBindingId: config.operatorBindingId,
         providerAgentId: config.providerAgentId, chatId: config.chatId, senderId: config.senderId };
     },
+    async avatar() {
+      if (!await available()) return null;
+      const avatar = await loadMagentGenieAvatar(config.genieId);
+      // Recheck the binding after asynchronous storage and image decoding.
+      if (!await available()) return null;
+      return avatar ? { status: "ready" as const, ...avatar } : { status: "absent" as const };
+    },
     async accept(input: MagentTurnRequest) {
       if (input.senderId !== config.senderId) return null;
-      const { sessionId, ...message } = input;
-      const result = await options.execution.accept({ receiver: ctx, operatorSessionId: sessionId,
+      const { sessionId, kind, ...message } = input;
+      const result = await options.execution.accept({ receiver: ctx, operatorSessionId: sessionId, operatorControl: kind,
         invocationAuthority: createAcceptedInvocationAuthority(owner.userId, { originRoomId: roomId }) }, {
         ...message, type: "message", chatId: config.chatId, threadRootId: null, senderType: "anima",
         addressed: true, truncated: false, redelivered: false,

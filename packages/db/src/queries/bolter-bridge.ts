@@ -38,7 +38,8 @@ export interface BolterInboundInsert {
   readonly externalSenderId: string;
 }
 export interface BolterCanonicalInbound {
-  readonly sessionMessageId: number;
+  readonly sessionMessageId: number | null;
+  readonly controlInput?: BolterInboxReceipt["controlInput"];
   readonly turnId: string;
   readonly jobId: string;
 }
@@ -69,8 +70,8 @@ export interface BolterExecution {
   readonly connection: BolterConnection;
   readonly receiverContext: BolterBindingContext;
   readonly acceptance: typeof workAcceptances.$inferSelect;
-  readonly sourceMessage: typeof sessionMessages.$inferSelect;
-  readonly session: typeof sessions.$inferSelect;
+  readonly sourceMessage: Pick<typeof sessionMessages.$inferSelect, "content"> & { id: number | null };
+  readonly session: { id: string | null; threadId: string };
   readonly origin: ExternalMessageOrigin;
 }
 export type BolterExecutionSettlement = { readonly kind: "transitioned" | "existing_terminal"; readonly status: string } | { readonly kind: "rejected" };
@@ -395,8 +396,12 @@ export function acceptBolterInboundWith(db: BolterBridgeDatabase, ctx: BolterBin
     const [receipt] = await tx.insert(bolterInboxReceipts).values({ ...input, userId: ctx.userId, bindingId: ctx.bindingId, bindingRevision: ctx.bindingRevision, connectionGeneration: ctx.connectionGeneration }).returning();
     if (!receipt) throw new BolterBridgeAuthorityError();
     const canonical = await persist(tx, binding, receipt.id);
-    if (!Number.isSafeInteger(canonical.sessionMessageId) || canonical.sessionMessageId <= 0 || !canonical.turnId || !canonical.jobId) throw new TypeError("Canonical Bolter message identity is missing");
-    const [accepted] = await tx.update(bolterInboxReceipts).set({ sessionMessageId: canonical.sessionMessageId, turnId: canonical.turnId, jobId: canonical.jobId, state: "accepted", updatedAt: new Date() }).where(eq(bolterInboxReceipts.id, receipt.id)).returning();
+    const control = binding.provider === "magent" && canonical.sessionMessageId === null
+      && canonical.controlInput?.kind === "operator_control_v1";
+    const conversation = binding.provider === "bolter" && typeof canonical.sessionMessageId === "number"
+      && Number.isSafeInteger(canonical.sessionMessageId) && canonical.sessionMessageId > 0 && !canonical.controlInput;
+    if ((!control && !conversation) || !canonical.turnId || !canonical.jobId) throw new TypeError("External input identity is missing");
+    const [accepted] = await tx.update(bolterInboxReceipts).set({ sessionMessageId: canonical.sessionMessageId, controlInput: canonical.controlInput ?? null, turnId: canonical.turnId, jobId: canonical.jobId, state: "accepted", updatedAt: new Date() }).where(eq(bolterInboxReceipts.id, receipt.id)).returning();
     return { status: "accepted", receipt: accepted! };
   });
 }
@@ -558,7 +563,7 @@ export async function getBolterOutboxMessageIdsWith(db: Pick<BolterBridgeDatabas
   if (!ids.length) return new Set<number>();
   const rows = await db.select({ sessionMessageId: bolterOutbox.sessionMessageId }).from(bolterOutbox)
     .where(and(eq(bolterOutbox.userId, ctx.userId), inArray(bolterOutbox.sessionMessageId, [...ids])));
-  return new Set(rows.map(row => row.sessionMessageId));
+  return new Set(rows.flatMap(row => row.sessionMessageId === null ? [] : [row.sessionMessageId]));
 }
 export const getBolterOutboxMessageIds = (ctx: BolterOwnerContext, ids: readonly number[]) => scoped(getSharedDirectAgentDb(), ctx, tx => getBolterOutboxMessageIdsWith(tx, ctx, ids));
 
@@ -615,7 +620,7 @@ async function lockBolterExecution(tx: BolterBridgeTransaction, ctx: BolterOwner
   }
   const [receipt] = await tx.select().from(bolterInboxReceipts).where(and(eq(bolterInboxReceipts.userId, ctx.userId), eq(bolterInboxReceipts.id, reference.receiptId), eq(bolterInboxReceipts.bindingId, binding.id))).for("update");
   if (!receipt || receipt.jobId !== input.jobId || receipt.turnId !== reference.turnId || receipt.bindingRevision !== reference.bindingRevision
-    || receipt.connectionGeneration !== reference.connectionGeneration || receipt.sessionMessageId === null || (current && receipt.state !== "accepted")) return null;
+    || receipt.connectionGeneration !== reference.connectionGeneration || (receipt.sessionMessageId === null && receipt.controlInput === null) || (current && receipt.state !== "accepted")) return null;
   // Link/update paths take the acceptance lock before the Job FK key lock.
   const [acceptance] = await tx.select().from(workAcceptances).where(eq(workAcceptances.id, reference.acceptanceId)).for("update");
   const [job] = await tx.select().from(jobs).where(and(eq(jobs.id, input.jobId), eq(jobs.ownerId, ctx.userId), eq(jobs.requestorId, ctx.userId),
@@ -626,6 +631,25 @@ async function lockBolterExecution(tx: BolterBridgeTransaction, ctx: BolterOwner
 
 async function hydrateBolterExecution(tx: BolterBridgeTransaction, ctx: BolterOwnerContext,
   execution: Omit<BolterExecution, "sourceMessage" | "session" | "origin">): Promise<BolterExecution | null> {
+  if (execution.receipt.controlInput !== null) {
+    const control = execution.receipt.controlInput;
+    const origin = parseExternalMessageOrigin(control.origin);
+    const binding = execution.binding;
+    if (binding.provider !== "magent" || execution.connection.transportKind !== "operator-unix"
+      || execution.receipt.sessionMessageId !== null || control.kind !== "operator_control_v1" || !origin
+      || origin.provider !== "magent" || origin.bindingId !== binding.id || origin.connectionId !== execution.connection.id
+      || origin.origin !== binding.origin || origin.providerAgentId !== binding.providerAgentId
+      || origin.chatId !== binding.chatId || (origin.threadRootId ?? "") !== binding.threadId
+      || origin.messageId !== execution.receipt.providerMessageId || origin.senderId !== execution.receipt.externalSenderId
+      || origin.senderType !== "anima") return null;
+    const digest = createHash("sha256").update(JSON.stringify([origin.provider, origin.origin, origin.providerAgentId,
+      origin.chatId, origin.threadRootId, origin.messageId, origin.senderId, origin.senderType, origin.createdAt, control.content])).digest("hex");
+    if (digest !== execution.receipt.fingerprint) return null;
+    return { ...execution, origin, sourceMessage: { id: null, content: control.content },
+      session: { id: null, threadId: `room:${binding.roomId}:operator:${execution.receipt.id}` } };
+  }
+  // Old operator receipts must never resume through the human conversation path.
+  if (execution.binding.provider === "magent") return null;
   const [canonical] = await tx.select({ sourceMessage: sessionMessages, session: sessions }).from(sessionMessages)
     .innerJoin(sessions, eq(sessions.id, sessionMessages.sessionId)).where(and(eq(sessionMessages.id, execution.receipt.sessionMessageId!),
       eq(sessionMessages.role, "user"), eq(sessionMessages.humanTurnId, execution.reference.turnId), eq(sessions.ownerId, ctx.userId),
@@ -721,7 +745,7 @@ export function settleBolterExecutionWith(db: BolterBridgeDatabase, ctx: BolterO
 }
 
 export function completeBolterExecutionWith(db: BolterBridgeDatabase, ctx: BolterOwnerContext, input: BolterExecutionInput,
-  persistFinal: (tx: BolterBridgeTransaction, execution: BolterExecution) => Promise<{ sessionMessageId: number; fingerprint: string }>) {
+  persistFinal: (tx: BolterBridgeTransaction, execution: BolterExecution) => Promise<{ sessionMessageId: number | null; controlResult?: string; fingerprint: string }>) {
   return scoped(db, ctx, async tx => {
     await externalPlaintextFence(tx);
     const execution = await lockBolterExecution(tx, ctx, input, true);
@@ -731,12 +755,16 @@ export function completeBolterExecutionWith(db: BolterBridgeDatabase, ctx: Bolte
     const hydrated = await hydrateBolterExecution(tx, ctx, execution);
     if (!hydrated) return null;
     const final = await persistFinal(tx, hydrated);
-    if (!Number.isSafeInteger(final.sessionMessageId) || final.sessionMessageId <= 0) throw new TypeError("Canonical final message identity is missing");
+    const validFinal = hydrated.receipt.controlInput !== null
+      ? final.sessionMessageId === null && !!final.controlResult?.trim()
+      : typeof final.sessionMessageId === "number" && Number.isSafeInteger(final.sessionMessageId)
+        && final.sessionMessageId > 0 && final.controlResult === undefined;
+    if (!validFinal) throw new TypeError("External result identity is missing");
     fingerprint(final.fingerprint);
     await tx.update(jobs).set({ status: "completed", completedAt: new Date() }).where(and(eq(jobs.id, input.jobId), eq(jobs.ownerId, ctx.userId), eq(jobs.status, "running"), isNull(jobs.completedAt)));
     const [outbox] = await tx.insert(bolterOutbox).values({ userId: ctx.userId, bindingId: execution.binding.id,
       bindingRevision: input.reference.bindingRevision, connectionGeneration: input.reference.connectionGeneration,
-      sourceInboxId: execution.receipt.id, sessionMessageId: final.sessionMessageId, fingerprint: final.fingerprint }).returning();
+      sourceInboxId: execution.receipt.id, sessionMessageId: final.sessionMessageId, controlResult: final.controlResult ?? null, fingerprint: final.fingerprint }).returning();
     if (!outbox) throw new BolterBridgeAuthorityError();
     return outbox;
   });
@@ -884,6 +912,16 @@ export function loadBolterPublicationContentWith(db: BolterBridgeDatabase, ctx: 
       || execution.connection.providerAgentId !== binding.providerAgentId) return null;
     const [claim] = await tx.select().from(bolterOutbox).where(predicate).for("update");
     if (!claim || claim.sourceInboxId !== reference.receiptId || claim.explicitShareId !== null) return null;
+    if (hydrated.receipt.controlInput !== null) {
+      if (claim.sessionMessageId !== null || !claim.controlResult?.trim()) return null;
+      const digest = createHash("sha256").update(JSON.stringify([
+        "external-room-final-v1", reference.receiptId, work.jobId, claim.controlResult,
+      ])).digest("hex");
+      if (digest !== claim.fingerprint) return null;
+      return Object.freeze({ origin: binding.origin, providerAgentId: binding.providerAgentId,
+        chatId: binding.chatId, threadRootId: binding.threadId || null, content: claim.controlResult });
+    }
+    if (claim.sessionMessageId === null || hydrated.session.id === null) return null;
     const [message] = await tx.select({ content: sessionMessages.content, fingerprint: sessionMessages.fingerprint })
       .from(sessionMessages).where(and(eq(sessionMessages.id, claim.sessionMessageId),
         eq(sessionMessages.sessionId, hydrated.session.id), eq(sessionMessages.role, "assistant"),
