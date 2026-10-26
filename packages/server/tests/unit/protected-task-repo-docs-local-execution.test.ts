@@ -117,7 +117,9 @@ function runGit(cwd: string, args: readonly string[]): string {
   return result.stdout.trim();
 }
 
-describe("protected Task RepoDocs delegated local execution", () => {
+// Windows Desktops offer no local execution, so these POSIX shell flows only
+// ever run on macOS and Linux hosts.
+describe.skipIf(process.platform === "win32")("protected Task RepoDocs delegated local execution", () => {
   test("pins one immutable V4 project generation and returns a genuine contained prepare result", async () => {
     const f = fixture();
     const plan = await f.port.plan(f.request);

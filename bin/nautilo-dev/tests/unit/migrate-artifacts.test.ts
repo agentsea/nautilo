@@ -30,10 +30,12 @@ interface FakeArt {
 }
 
 function makeHarness() {
-  const documentsNautiloRoot = join("/home", "op", "Documents", "Nautilo");
-  const artifactsRoot = join("/srv", "artifacts-root");
-  const receiptsDir = join("/tmp", "receipts");
-  const userHome = join("/home", "op");
+  // Absolute on every platform: file URLs of drive-less Windows paths resolve
+  // against the current drive, so their round trip would change the key.
+  const documentsNautiloRoot = path.resolve("/home", "op", "Documents", "Nautilo");
+  const artifactsRoot = path.resolve("/srv", "artifacts-root");
+  const receiptsDir = path.resolve("/tmp", "receipts");
+  const userHome = path.resolve("/home", "op");
 
   const artifacts = new Map<string, FakeArt>();
   const junctionNsByArtifact = new Map<string, Set<string>>();

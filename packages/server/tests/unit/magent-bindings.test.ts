@@ -17,8 +17,11 @@ const second: MagentOperatorConfig = { ...first, operatorBindingId: "20000000-00
   genieId: "20000000-0000-4000-8000-000000000003", chatId: "chat-two", socketPath: "/path/to/private/two.sock",
   credential: "synthetic-second-binding-capability-with-no-authority-0000" };
 const service = {} as MagentOperatorService;
+// Bindings listen on Unix sockets at POSIX paths below directories checked for
+// POSIX owner and mode, so Windows rejects every binding.
+const posixTest = test.skipIf(process.platform === "win32");
 
-test("independent Genies on one instance retain distinct binding configuration", () => {
+posixTest("independent Genies on one instance retain distinct binding configuration", () => {
   expect(() => validateMagentBindings([first, second])).not.toThrow();
   for (const override of [{ operatorBindingId: first.operatorBindingId }, { socketPath: first.socketPath },
     { credential: first.credential }, { chatId: first.chatId, senderId: "other-connector" }]) {
@@ -27,7 +30,7 @@ test("independent Genies on one instance retain distinct binding configuration",
   expect(() => validateMagentBindings([{ ...first, socketPath: "/path/to/private/../private/one.sock" }])).toThrow();
 });
 
-test("single config compatibility and complete private manifest validation before activation", async () => {
+posixTest("single config compatibility and complete private manifest validation before activation", async () => {
   const directory = await realpath(await mkdtemp(join(tmpdir(), "magent-bindings-")));
   const one = join(directory, "one.json"), two = join(directory, "two.json"), manifest = join(directory, "manifest.json");
   try {
@@ -46,7 +49,7 @@ test("single config compatibility and complete private manifest validation befor
   } finally { await rm(directory, { recursive: true }); }
 });
 
-test("duplicates prevent service construction; partial startup closes already opened sockets", async () => {
+posixTest("duplicates prevent service construction; partial startup closes already opened sockets", async () => {
   const events: string[] = [];
   const create = async (config: MagentOperatorConfig) => { events.push(`create:${config.chatId}`); return service; };
   const start = (async (config: MagentOperatorConfig) => {
@@ -60,7 +63,7 @@ test("duplicates prevent service construction; partial startup closes already op
   expect(events).toEqual(["create:chat-one", "create:chat-two", "start:chat-one", "start:chat-two", "close:chat-one"]);
 });
 
-test("shutdown attempts every socket even when one close fails", async () => {
+posixTest("shutdown attempts every socket even when one close fails", async () => {
   const closed: string[] = [];
   const start = (async (config: MagentOperatorConfig) => ({ close: async () => {
     closed.push(config.chatId);
@@ -72,7 +75,7 @@ test("shutdown attempts every socket even when one close fails", async () => {
 });
 
 
-test("real Unix sockets are removed after shutdown and partial listen failure", async () => {
+posixTest("real Unix sockets are removed after shutdown and partial listen failure", async () => {
   const directory = await realpath(await mkdtemp(join(tmpdir(), "magent-sockets-")));
   await chmod(directory, 0o700);
   const one = { ...first, socketPath: join(directory, "one.sock") };
