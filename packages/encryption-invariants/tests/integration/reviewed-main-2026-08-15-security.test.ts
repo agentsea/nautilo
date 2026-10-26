@@ -11,6 +11,10 @@ import {
   REVIEWED_MAIN_2026_10_13_COVERAGE_ENTRIES,
 } from "../../baseline/reviewed-main-2026-10-13-coverage";
 import { CURRENT_SOURCE_ALARM_REVIEWS } from "../../src/node/source-alarm-review";
+import {
+  REVIEWED_CI_SOURCE_RECONCILIATION_ALARMS,
+  SUPERSEDED_CI_SOURCE_RECONCILIATION_LOCATORS,
+} from "../../baseline/reviewed-ci-source-reconciliation";
 
 const CURRENT_REFLECTION_METADATA_REASON =
   "This exact Reflection coordinate is limited by schema checks to opaque commitments, fixed outcomes, recovery versions, and closed waiting or failure codes; it cannot contain a prompt, Message body, generated reflection, credential, or private key.";
@@ -152,7 +156,16 @@ describe("reviewed 2026-08-15 encryption inventory", () => {
       "packages/compose-lifecycle/src/lifecycle.ts#backup_export:9edc15f28c86b2a1:1",
     ]);
     for (const review of REVIEWED_MAIN_2026_08_15_SOURCE_ALARMS) {
-      expect(CURRENT_SOURCE_ALARM_REVIEWS).toContainEqual(review);
+      if (SUPERSEDED_CI_SOURCE_RECONCILIATION_LOCATORS.has(review.locator)) {
+        expect(CURRENT_SOURCE_ALARM_REVIEWS).not.toContainEqual(review);
+        const replacement = REVIEWED_CI_SOURCE_RECONCILIATION_ALARMS.find(
+          entry => entry.locator === review.locator,
+        );
+        expect(CURRENT_SOURCE_ALARM_REVIEWS.filter(entry => entry.locator === review.locator))
+          .toEqual(replacement ? [replacement] : []);
+      } else {
+        expect(CURRENT_SOURCE_ALARM_REVIEWS).toContainEqual(review);
+      }
     }
   });
 });

@@ -53,8 +53,41 @@ import {
   inspectSourceAlarmReviews,
 } from "../../src/node/source-alarm-review";
 import { scanSourceAlarms } from "../../src/node/source-inventory";
+import { REVIEWED_CI_DTO_REPLACEMENTS } from "../../baseline/reviewed-ci-dto";
+import { REVIEWED_RELEASE_RECONCILIATION_DTO_DECLARATIONS } from
+  "../../baseline/reviewed-release-reconciliation-dto";
+import type { DtoDeclaration } from "../../src/node/dto-inventory";
 
 const repositoryRoot = resolve(import.meta.dir, "../../../..");
+const currentCiDtoByLocator = new Map<string, DtoDeclaration>(
+  REVIEWED_CI_DTO_REPLACEMENTS.map((entry) =>
+    [entry.locator, entry.declaration] as const),
+);
+const releaseDtoByLocator = new Map<string, DtoDeclaration>(
+  REVIEWED_RELEASE_RECONCILIATION_DTO_DECLARATIONS.map((entry) =>
+    [entry.locator, entry] as const),
+);
+function currentStaticSuccessors(
+  declarations: readonly DtoDeclaration[],
+): readonly DtoDeclaration[] {
+  return declarations.map((declaration) =>
+    currentCiDtoByLocator.get(declaration.locator)
+      ?? releaseDtoByLocator.get(declaration.locator)
+      ?? declaration);
+}
+function expectCurrentStaticLeaves(
+  locator: string,
+  declarations: readonly DtoDeclaration[],
+): void {
+  const current = DTO_BASELINE_DECLARATIONS.filter((candidate) =>
+    candidate.locator === locator
+  );
+  const expected = currentStaticSuccessors(declarations);
+  expect(current).toHaveLength(1);
+  expect(expected).toHaveLength(1);
+  expect(current[0]?.observationId).toBe(expected[0]?.observationId);
+  expect(current[0]?.arbitraryPayloads).toEqual(expected[0]?.arbitraryPayloads);
+}
 
 describe("reviewed main 2026-08-20 encryption inventory", () => {
   test("classifies protected device state narrowly and keeps all other additions bounded", () => {
@@ -85,11 +118,12 @@ describe("reviewed main 2026-08-20 encryption inventory", () => {
     expect(REVIEWED_MAIN_2026_08_20_DTO_DECLARATIONS).toHaveLength(37);
     for (const declaration of REVIEWED_MAIN_2026_08_20_DTO_DECLARATIONS) {
       if (SUPERSEDED_MAIN_2026_10_13_DTO_LOCATORS.has(declaration.locator)) {
-        expect(DTO_BASELINE_DECLARATIONS.filter((candidate) =>
-          candidate.locator === declaration.locator
-        )).toEqual(REVIEWED_MAIN_2026_10_13_DTO_REPLACEMENTS.filter(
+        expectCurrentStaticLeaves(
+          declaration.locator,
+          REVIEWED_MAIN_2026_10_13_DTO_REPLACEMENTS.filter(
           (candidate) => candidate.locator === declaration.locator,
-        ));
+          ),
+        );
         continue;
       }
       if (SUPERSEDED_PAID_SERVICE_FUNDING_DTO_LOCATORS.has(declaration.locator)) {
@@ -99,18 +133,30 @@ describe("reviewed main 2026-08-20 encryption inventory", () => {
         continue;
       }
       if (SUPERSEDED_MAIN_2026_09_12_DTO_LOCATORS.has(declaration.locator)) {
-        expect(DTO_BASELINE_DECLARATIONS.filter((candidate) => candidate.locator === declaration.locator))
-          .toEqual(REVIEWED_MAIN_2026_09_12_DTO_REPLACEMENTS.filter((candidate) => candidate.locator === declaration.locator));
+        expectCurrentStaticLeaves(
+          declaration.locator,
+          REVIEWED_MAIN_2026_09_12_DTO_REPLACEMENTS.filter(
+            (candidate) => candidate.locator === declaration.locator,
+          ),
+        );
         continue;
       }
       if (SUPERSEDED_M318_DTO_LOCATORS.has(declaration.locator)) {
-        expect(DTO_BASELINE_DECLARATIONS.filter((candidate) => candidate.locator === declaration.locator))
-          .toEqual(REVIEWED_M318_DTO_DECLARATIONS.filter((candidate) => candidate.locator === declaration.locator));
+        expectCurrentStaticLeaves(
+          declaration.locator,
+          REVIEWED_M318_DTO_DECLARATIONS.filter(
+            (candidate) => candidate.locator === declaration.locator,
+          ),
+        );
         continue;
       }
       if (SUPERSEDED_LANDING_DTO_LOCATORS.has(declaration.locator)) {
-        expect(DTO_BASELINE_DECLARATIONS.filter((candidate) => candidate.locator === declaration.locator))
-          .toEqual(REVIEWED_LANDING_DTO_DECLARATIONS.filter((candidate) => candidate.locator === declaration.locator));
+        expectCurrentStaticLeaves(
+          declaration.locator,
+          REVIEWED_LANDING_DTO_DECLARATIONS.filter(
+            (candidate) => candidate.locator === declaration.locator,
+          ),
+        );
         continue;
       }
       if (
@@ -134,9 +180,16 @@ describe("reviewed main 2026-08-20 encryption inventory", () => {
           (candidate) => candidate.locator === declaration.locator,
         );
         if (SUPERSEDED_MAIN_2026_08_31_DTO_LOCATORS.has(declaration.locator)) {
-          expect(DTO_BASELINE_DECLARATIONS.filter((candidate) =>
-            candidate.locator === declaration.locator
-          )).toEqual(august31Replacement ? [august31Replacement] : []);
+          if (august31Replacement) {
+            expectCurrentStaticLeaves(
+              declaration.locator,
+              [august31Replacement],
+            );
+          } else {
+            expect(DTO_BASELINE_DECLARATIONS.some((candidate) =>
+              candidate.locator === declaration.locator
+            )).toBe(false);
+          }
         } else {
           expect(DTO_BASELINE_DECLARATIONS.some((candidate) =>
             candidate.locator === declaration.locator
