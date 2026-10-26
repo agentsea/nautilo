@@ -1,5 +1,8 @@
 import { prepareVaultHumanMessageEdit } from "./vault-human-message-edit.ts";
-import { isRoomPendingAttentionEventForViewer } from "@nautilo/api-client/browser";
+import {
+  isRoomPendingAttentionEventForViewer,
+  isTaskPendingAttentionEventForViewer,
+} from "@nautilo/api-client/browser";
 import type {
   LiveShadowMessagePreparedRequestV1,
   FullEncryptionMessagePreparedRequestV2,
@@ -7,6 +10,9 @@ import type {
   NautiloApiClient,
   RoomPendingAttentionChallenge,
   RoomPendingAttentionPageResponse,
+  TaskPendingAttentionChallenge,
+  TaskPendingAttentionEvent,
+  TaskPendingAttentionPageResponse,
 } from "@nautilo/api-client/browser";
 import type { LatticeCrypto } from "@nautilo/lattice-crypto";
 import { sha256 } from "@noble/hashes/sha2.js";
@@ -22,6 +28,8 @@ import {
   parseDomainForegroundAuthorizationPlanV2,
 } from "@nautilo/lattice-crypto/wire";
 import {
+  type CodexRequestEvent,
+  type CodexRequestResponse,
   parseLiveShadowMessageRealtimeEventV1,
   type ProtectedMessageDtoV2,
   type ServerEvent,
@@ -53,6 +61,11 @@ import { PREPARED_MUTATION_JOURNAL_LIMITS } from
   "../memory/prepared-mutation-journal-limits.ts";
 import { isOwnedHumanPublication, matchesHumanPublicationReceipt } from
   "./live-shadow-human-publication-receipt.ts";
+import {
+  deriveTaskDefinitionForegroundRecipientKeyIdV1,
+  taskDefinitionForegroundAuthorizationIdV1Matches,
+} from
+  "../../task/task-definition-foreground-authorization-id-v1.ts";
 
 type RoomSendBody = Parameters<NautiloApiClient["sendRoomMessage"]>[1];
 type RoomSendResult = Awaited<ReturnType<NautiloApiClient["sendRoomMessage"]>>;
@@ -94,14 +107,44 @@ export interface HumanLiveShadowMessageApiPort {
   authorizeSharedAgentExecution?:
     NautiloApiClient["authorizeSharedAgentExecution"];
   authorizeRuntimeInvocation?: NautiloApiClient["authorizeRuntimeInvocation"];
+  authorizeTaskDefinition?: NautiloApiClient["authorizeTaskDefinition"];
   getRoomPendingAttention?: NautiloApiClient["getRoomPendingAttention"];
   readRoomPendingAttention?: NautiloApiClient["readRoomPendingAttention"];
+  getTaskPendingAttention?: NautiloApiClient["getTaskPendingAttention"];
+  readTaskPendingAttention?: NautiloApiClient["readTaskPendingAttention"];
+  listProtectedTaskExternalRequests?:
+    NautiloApiClient["listProtectedTaskExternalRequests"];
+  planProtectedTaskExternalRequest?:
+    NautiloApiClient["planProtectedTaskExternalRequest"];
+  readProtectedTaskExternalRequest?:
+    NautiloApiClient["readProtectedTaskExternalRequest"];
+  respondProtectedTaskExternalRequest?:
+    NautiloApiClient["respondProtectedTaskExternalRequest"];
 }
 
 export type RecoveredRoomPendingAttention = Readonly<{
   status: "ready" | "unavailable";
   events: readonly ServerEvent[];
 }>;
+
+export type RecoveredTaskPendingAttention = Readonly<{
+  status: "ready" | "unavailable";
+  events: readonly TaskPendingAttentionEvent[];
+}>;
+
+export type RecoveredProtectedTaskExternalRequests =
+  | Readonly<{
+      status: "ready";
+      entries: readonly Readonly<{
+        event: CodexRequestEvent;
+        responseCapability: string;
+      }>[];
+    }>
+  | Readonly<{ status: "unavailable"; entries: readonly [] }>;
+
+export type ProtectedTaskExternalRequestResponseResult =
+  | Readonly<{ status: "responded" }>
+  | Readonly<{ status: "unavailable" }>;
 
 export interface AuthorizedHumanLiveShadowMessageClient {
   /** Stable device coordinate for this local crypto installation/account. */
@@ -147,8 +190,27 @@ export interface AuthorizedHumanLiveShadowMessageClient {
     roomId: string;
     clientActionSessionId: string;
     signal?: AbortSignal;
-    isCurrent?: () => boolean;
+    isCurrent?: () => boolean | Promise<boolean>;
   }>): Promise<RecoveredRoomPendingAttention>;
+  recoverTaskPendingAttention(input: Readonly<{
+    clientActionSessionId: string;
+    signal?: AbortSignal;
+    isCurrent?: () => boolean | Promise<boolean>;
+  }>): Promise<RecoveredTaskPendingAttention>;
+  recoverProtectedTaskExternalRequests(input: Readonly<{
+    clientActionSessionId: string;
+    requestId?: string;
+    signal?: AbortSignal;
+    isCurrent?: () => boolean | Promise<boolean>;
+  }>): Promise<RecoveredProtectedTaskExternalRequests>;
+  respondProtectedTaskExternalRequest(input: Readonly<{
+    clientActionSessionId: string;
+    requestId: string;
+    responseCapability: string;
+    response: CodexRequestResponse;
+    signal?: AbortSignal;
+    isCurrent?: () => boolean | Promise<boolean>;
+  }>): Promise<ProtectedTaskExternalRequestResponseResult>;
 }
 
 export interface CreateAuthorizedHumanLiveShadowMessageClientInput {
@@ -287,13 +349,13 @@ function destroySharedAgentPlan(
   plan.namespaceAudienceFingerprint.fill(0);
 }
 
-function isCurrentPendingAttentionRecovery(input: Readonly<{
+async function isCurrentForegroundRequest(input: Readonly<{
   signal?: AbortSignal;
-  isCurrent?: () => boolean;
-}>): boolean {
+  isCurrent?: () => boolean | Promise<boolean>;
+}>): Promise<boolean> {
   if (input.signal?.aborted) return false;
   try {
-    return input.isCurrent?.() ?? true;
+    return await input.isCurrent?.() ?? true;
   } catch {
     return false;
   }
@@ -315,6 +377,18 @@ function areExactPendingAttentionEvents(
       humanActorId,
     });
   });
+}
+
+function areExactTaskPendingAttentionEvents(
+  events: readonly ServerEvent[],
+  challenge: TaskPendingAttentionChallenge,
+  userId: string,
+): events is readonly TaskPendingAttentionEvent[] {
+  return events.every((event) => isTaskPendingAttentionEventForViewer(event, {
+    taskId: challenge.taskId,
+    taskRunId: challenge.taskRunId,
+    userId,
+  }));
 }
 
 function isExactPendingAttentionPlan(input: Readonly<{
@@ -352,6 +426,92 @@ const unavailablePendingAttention = Object.freeze({
   status: "unavailable" as const,
   events: Object.freeze([]) as readonly ServerEvent[],
 });
+const unavailableTaskPendingAttention = Object.freeze({
+  status: "unavailable" as const,
+  events: Object.freeze([]) as readonly TaskPendingAttentionEvent[],
+});
+const unavailableProtectedTaskExternalRequests: Readonly<{
+  status: "unavailable";
+  entries: readonly [];
+}> = Object.freeze({
+  status: "unavailable" as const,
+  entries: Object.freeze([] as const),
+});
+const unavailableProtectedTaskExternalResponse = Object.freeze({
+  status: "unavailable" as const,
+});
+
+function isExactProtectedTaskExternalRequestPlan(input: Readonly<{
+  challengeId: string;
+  clientActionSessionId: string;
+  sourceRoomId: string;
+  deadlineAt: number;
+  requestDeadlineAt: number;
+  planBytes: Uint8Array;
+  coordinates: ClientProfileCoordinates;
+  now: number;
+}>): boolean {
+  const plan = parseDomainForegroundAuthorizationPlanV2(input.planBytes);
+  if (plan === null) return false;
+  try {
+    const domain = plan.domains[0];
+    return plan.authorizationId === input.challengeId
+      && plan.sessionId === input.clientActionSessionId
+      && plan.roomId === input.sourceRoomId
+      && plan.subjectHumanId === input.coordinates.humanActorId
+      && plan.committerDeviceId === input.coordinates.deviceId
+      && plan.recipientKind === "runtime"
+      && plan.recipientPrincipalId === "nautilo_foreground_runtime"
+      && plan.recipientAuthorizationRevision === 0
+      && plan.recipientRuntimeGeneration === 0
+      && plan.operations.length === 1
+      && plan.operations[0] === "decrypt"
+      && plan.domainCount === 1
+      && plan.domains.length === 1
+      && domain !== undefined
+      && domain.keyClass === "ai"
+      && domain.domainId.length > 0
+      && domain.sourceNamespaceId.length > 0
+      && Number.isSafeInteger(input.deadlineAt)
+      && Number.isSafeInteger(input.requestDeadlineAt)
+      && input.deadlineAt <= input.requestDeadlineAt
+      && plan.deadlineAt === input.deadlineAt
+      && input.now >= plan.issuedAt
+      && input.now < plan.deadlineAt
+      && input.now < input.requestDeadlineAt;
+  } finally {
+    destroyDomainForegroundAuthorizationPlanV2(plan);
+  }
+}
+
+function isExactProtectedTaskExternalRequestEvent(input: Readonly<{
+  event: CodexRequestEvent;
+  listed: Readonly<{
+    requestId: string;
+    taskId: string;
+    jobId: string;
+    roomId: string;
+    ownerId: string;
+    state: "available";
+  }>;
+  expectedOwnerId: string;
+  deadlineAt: number;
+  requestDeadlineAt: number;
+  now: number;
+}>): boolean {
+  const expiresAt = input.event.expiresAt === null
+    ? Number.NaN
+    : Date.parse(input.event.expiresAt);
+  return input.listed.ownerId === input.expectedOwnerId
+    && input.event.ownerId === input.expectedOwnerId
+    && input.event.requestId === input.listed.requestId
+    && input.event.taskId === input.listed.taskId
+    && input.event.jobId === input.listed.jobId
+    && input.event.roomId === input.listed.roomId
+    && expiresAt === input.requestDeadlineAt
+    && input.now < input.deadlineAt
+    && input.now < expiresAt;
+}
 
 export function createAuthorizedHumanLiveShadowMessageClient(
   input: CreateAuthorizedHumanLiveShadowMessageClientInput,
@@ -485,7 +645,7 @@ export function createAuthorizedHumanLiveShadowMessageClient(
     async recoverRoomPendingAttention(request) {
       const page = input.api.getRoomPendingAttention;
       const read = input.api.readRoomPendingAttention;
-      if (page === undefined || !isCurrentPendingAttentionRecovery(request)) {
+      if (page === undefined || !await isCurrentForegroundRequest(request)) {
         return unavailablePendingAttention;
       }
       const events: ServerEvent[] = [];
@@ -493,7 +653,7 @@ export function createAuthorizedHumanLiveShadowMessageClient(
       let cursor: string | undefined;
       try {
         for (;;) {
-          if (!isCurrentPendingAttentionRecovery(request)) {
+          if (!await isCurrentForegroundRequest(request)) {
             return unavailablePendingAttention;
           }
           const response: RoomPendingAttentionPageResponse = await page.call(
@@ -507,7 +667,7 @@ export function createAuthorizedHumanLiveShadowMessageClient(
             request.signal === undefined ? undefined : { signal: request.signal },
           );
           if (response.status !== "ready"
-            || !isCurrentPendingAttentionRecovery(request)
+            || !await isCurrentForegroundRequest(request)
             || !areExactPendingAttentionEvents(
               response.events,
               request.roomId,
@@ -539,7 +699,7 @@ export function createAuthorizedHumanLiveShadowMessageClient(
                 clientActionSessionId: request.clientActionSessionId,
                 coordinates: input.coordinates,
                 now,
-              }) || !isCurrentPendingAttentionRecovery(request)) {
+              }) || !await isCurrentForegroundRequest(request)) {
                 return unavailablePendingAttention;
               }
               const prepared = await prepareVaultRuntimeForegroundAuthorization({
@@ -556,7 +716,7 @@ export function createAuthorizedHumanLiveShadowMessageClient(
                 return unavailablePendingAttention;
               }
               try {
-                if (!isCurrentPendingAttentionRecovery(request)) {
+                if (!await isCurrentForegroundRequest(request)) {
                   return unavailablePendingAttention;
                 }
                 const opened = await read.call(input.api, request.roomId, {
@@ -569,7 +729,7 @@ export function createAuthorizedHumanLiveShadowMessageClient(
                   ? undefined
                   : { signal: request.signal });
                 if (opened.status !== "read"
-                  || !isCurrentPendingAttentionRecovery(request)
+                  || !await isCurrentForegroundRequest(request)
                   || !areExactPendingAttentionEvents(
                     opened.events,
                     request.roomId,
@@ -601,6 +761,267 @@ export function createAuthorizedHumanLiveShadowMessageClient(
         }
       } catch {
         return unavailablePendingAttention;
+      }
+    },
+    async recoverTaskPendingAttention(request) {
+      const page = input.api.getTaskPendingAttention;
+      const read = input.api.readTaskPendingAttention;
+      if (page === undefined || read === undefined
+        || input.domainForegroundAuthority === undefined
+        || !await isCurrentForegroundRequest(request)) {
+        return unavailableTaskPendingAttention;
+      }
+      const events: TaskPendingAttentionEvent[] = [];
+      const seenCursors = new Set<string>();
+      let cursor: string | undefined;
+      try {
+        for (;;) {
+          if (!await isCurrentForegroundRequest(request)) {
+            return unavailableTaskPendingAttention;
+          }
+          const response: TaskPendingAttentionPageResponse = await page.call(
+            input.api,
+            {
+              clientActionSessionId: request.clientActionSessionId,
+              authorizationDeviceId: input.coordinates.deviceId,
+              ...(cursor === undefined ? {} : { cursor }),
+            },
+            request.signal === undefined ? undefined : { signal: request.signal },
+          );
+          if (response.status !== "ready"
+            || !await isCurrentForegroundRequest(request)) {
+            return unavailableTaskPendingAttention;
+          }
+          const challenge = response.challenge;
+          if (challenge !== undefined) {
+            let authorizationPlanBytes: Uint8Array | undefined;
+            let recipientPublicKey: Uint8Array | undefined;
+            try {
+              authorizationPlanBytes = fromBase64url(
+                challenge.authorizationPlanBytesBase64url,
+              );
+              recipientPublicKey = fromBase64url(
+                challenge.recipientPublicKeyBase64url,
+              );
+              const now = input.now();
+              if (!isExactPendingAttentionPlan({
+                challenge,
+                planBytes: authorizationPlanBytes,
+                roomId: challenge.roomId,
+                clientActionSessionId: request.clientActionSessionId,
+                coordinates: input.coordinates,
+                now,
+              }) || !await isCurrentForegroundRequest(request)) {
+                return unavailableTaskPendingAttention;
+              }
+              const prepared = await prepareVaultRuntimeForegroundAuthorization({
+                crypto: input.crypto,
+                vault: input.vault,
+                coordinates: input.coordinates,
+                domainForegroundAuthority: input.domainForegroundAuthority,
+                authorizationPlanBytes,
+                recipientPublicKey,
+                browserSessionId: request.clientActionSessionId,
+                now,
+              });
+              if (prepared.status !== "prepared") {
+                return unavailableTaskPendingAttention;
+              }
+              try {
+                if (!await isCurrentForegroundRequest(request)) {
+                  return unavailableTaskPendingAttention;
+                }
+                const opened = await read.call(input.api, {
+                  clientActionSessionId: request.clientActionSessionId,
+                  authorizationDeviceId: input.coordinates.deviceId,
+                  taskId: challenge.taskId,
+                  taskRunId: challenge.taskRunId,
+                  challengeId: challenge.challengeId,
+                  authorizationBytesBase64url:
+                    toBase64url(prepared.authorizationBytes),
+                }, request.signal === undefined
+                  ? undefined
+                  : { signal: request.signal });
+                if (opened.status !== "read"
+                  || !await isCurrentForegroundRequest(request)
+                  || !areExactTaskPendingAttentionEvents(
+                    opened.events,
+                    challenge,
+                    input.coordinates.userId,
+                  )) {
+                  return unavailableTaskPendingAttention;
+                }
+                events.push(...opened.events);
+              } finally {
+                prepared.authorizationBytes.fill(0);
+                prepared.authorizationDigest.fill(0);
+              }
+            } finally {
+              authorizationPlanBytes?.fill(0);
+              recipientPublicKey?.fill(0);
+            }
+          }
+          const nextCursor = response.nextCursor;
+          if (nextCursor === null) {
+            return Object.freeze({
+              status: "ready" as const,
+              events: Object.freeze(events.slice()),
+            });
+          }
+          if (seenCursors.has(nextCursor)) {
+            return unavailableTaskPendingAttention;
+          }
+          seenCursors.add(nextCursor);
+          cursor = nextCursor;
+        }
+      } catch {
+        return unavailableTaskPendingAttention;
+      }
+    },
+    async recoverProtectedTaskExternalRequests(request) {
+      const list = input.api.listProtectedTaskExternalRequests;
+      const plan = input.api.planProtectedTaskExternalRequest;
+      const read = input.api.readProtectedTaskExternalRequest;
+      if (list === undefined || plan === undefined || read === undefined
+        || input.domainForegroundAuthority === undefined
+        || !await isCurrentForegroundRequest(request)) {
+        return unavailableProtectedTaskExternalRequests;
+      }
+      try {
+        const listed = await list.call(input.api, {
+          clientActionSessionId: request.clientActionSessionId,
+          authorizationDeviceId: input.coordinates.deviceId,
+        }, request.signal === undefined ? undefined : { signal: request.signal });
+        if (listed.status !== "ready"
+          || !await isCurrentForegroundRequest(request)
+          || listed.requests.some((candidate) =>
+            candidate.ownerId !== input.coordinates.userId
+            || candidate.state !== "available"
+          )) return unavailableProtectedTaskExternalRequests;
+
+        const selected = request.requestId === undefined
+          ? listed.requests
+          : listed.requests.filter(candidate => candidate.requestId === request.requestId);
+        if (request.requestId !== undefined && selected.length !== 1) {
+          return unavailableProtectedTaskExternalRequests;
+        }
+        const entries: Array<Readonly<{
+          event: CodexRequestEvent;
+          responseCapability: string;
+        }>> = [];
+        for (const candidate of selected) {
+          if (!await isCurrentForegroundRequest(request)) {
+            return unavailableProtectedTaskExternalRequests;
+          }
+          const planned = await plan.call(input.api, {
+            clientActionSessionId: request.clientActionSessionId,
+            authorizationDeviceId: input.coordinates.deviceId,
+            requestId: candidate.requestId,
+          }, request.signal === undefined ? undefined : { signal: request.signal });
+          if (planned.status !== "authorization_required"
+            || !await isCurrentForegroundRequest(request)) {
+            return unavailableProtectedTaskExternalRequests;
+          }
+          let authorizationPlanBytes: Uint8Array | undefined;
+          let recipientPublicKey: Uint8Array | undefined;
+          try {
+            authorizationPlanBytes = fromBase64url(
+              planned.authorizationPlanBytesBase64url,
+            );
+            recipientPublicKey = fromBase64url(
+              planned.recipientPublicKeyBase64url,
+            );
+            const now = input.now();
+            if (!isExactProtectedTaskExternalRequestPlan({
+              challengeId: planned.challengeId,
+              clientActionSessionId: request.clientActionSessionId,
+              sourceRoomId: planned.roomId,
+              deadlineAt: planned.deadlineAt,
+              requestDeadlineAt: planned.requestDeadlineAt,
+              planBytes: authorizationPlanBytes,
+              coordinates: input.coordinates,
+              now,
+            }) || !await isCurrentForegroundRequest(request)) {
+              return unavailableProtectedTaskExternalRequests;
+            }
+            const prepared = await prepareVaultRuntimeForegroundAuthorization({
+              crypto: input.crypto,
+              vault: input.vault,
+              coordinates: input.coordinates,
+              domainForegroundAuthority: input.domainForegroundAuthority,
+              authorizationPlanBytes,
+              recipientPublicKey,
+              browserSessionId: request.clientActionSessionId,
+              now,
+            });
+            if (prepared.status !== "prepared") {
+              return unavailableProtectedTaskExternalRequests;
+            }
+            try {
+              if (!await isCurrentForegroundRequest(request)) {
+                return unavailableProtectedTaskExternalRequests;
+              }
+              const opened = await read.call(input.api, {
+                clientActionSessionId: request.clientActionSessionId,
+                authorizationDeviceId: input.coordinates.deviceId,
+                challengeId: planned.challengeId,
+                authorizationBytesBase64url:
+                  toBase64url(prepared.authorizationBytes),
+              }, request.signal === undefined ? undefined : { signal: request.signal });
+              if (opened.status !== "read"
+                || !await isCurrentForegroundRequest(request)
+                || !isExactProtectedTaskExternalRequestEvent({
+                  event: opened.event,
+                  listed: candidate,
+                  expectedOwnerId: input.coordinates.userId,
+                  deadlineAt: planned.deadlineAt,
+                  requestDeadlineAt: planned.requestDeadlineAt,
+                  now: input.now(),
+                })) return unavailableProtectedTaskExternalRequests;
+              entries.push(Object.freeze({
+                event: Object.freeze(structuredClone(opened.event)),
+                responseCapability: opened.responseCapability,
+              }));
+            } finally {
+              prepared.authorizationBytes.fill(0);
+              prepared.authorizationDigest.fill(0);
+            }
+          } finally {
+            authorizationPlanBytes?.fill(0);
+            recipientPublicKey?.fill(0);
+          }
+        }
+        return await isCurrentForegroundRequest(request)
+          ? Object.freeze({
+              status: "ready" as const,
+              entries: Object.freeze(entries.slice()),
+            })
+          : unavailableProtectedTaskExternalRequests;
+      } catch {
+        return unavailableProtectedTaskExternalRequests;
+      }
+    },
+    async respondProtectedTaskExternalRequest(request) {
+      const respond = input.api.respondProtectedTaskExternalRequest;
+      if (respond === undefined || request.requestId.length === 0
+        || request.responseCapability.length === 0
+        || !await isCurrentForegroundRequest(request)) {
+        return unavailableProtectedTaskExternalResponse;
+      }
+      try {
+        const result = await respond.call(input.api, {
+          clientActionSessionId: request.clientActionSessionId,
+          authorizationDeviceId: input.coordinates.deviceId,
+          requestId: request.requestId,
+          responseCapability: request.responseCapability,
+          response: structuredClone(request.response),
+        }, request.signal === undefined ? undefined : { signal: request.signal });
+        return result.status === "responded"
+          && await isCurrentForegroundRequest(request)
+          ? Object.freeze({ status: "responded" as const })
+          : unavailableProtectedTaskExternalResponse;
+      } catch {
+        return unavailableProtectedTaskExternalResponse;
       }
     },
     async authorizeSharedAgentExecution(candidate) {
@@ -706,6 +1127,114 @@ export function createAuthorizedHumanLiveShadowMessageClient(
           authorizationPlanBytes?.fill(0);
           sourceHumanPlanBytes?.fill(0);
           recipientPublicKey?.fill(0);
+        }
+      }
+      if (event.type === "message.task_definition_authorization_required") {
+        if (input.api.authorizeTaskDefinition === undefined) {
+          reportRuntimeAuthorizationDiagnostic(input.onUnavailable, "api_unavailable");
+          return false;
+        }
+        let authorizationPlanBytes: Uint8Array | undefined;
+        let recipientPublicKey: Uint8Array | undefined;
+        let workDescriptorDigest: Uint8Array | undefined;
+        let parentAgentSignerPublicKey: Uint8Array | undefined;
+        try {
+          authorizationPlanBytes = fromBase64url(
+            event.authorizationPlanBytesBase64url,
+          );
+          recipientPublicKey = fromBase64url(
+            event.recipientPublicKeyBase64url,
+          );
+          workDescriptorDigest = fromBase64url(
+            event.workDescriptorDigestBase64url,
+          );
+          parentAgentSignerPublicKey = fromBase64url(
+            event.parentAgentSignerPublicKeyBase64url,
+          );
+          const expectedRecipientKeyId =
+            deriveTaskDefinitionForegroundRecipientKeyIdV1(input.crypto, {
+              authorizationId: event.authorizationId,
+              parentAgentSignerPublicKey,
+            });
+          if (
+            event.userId !== input.coordinates.userId
+            || event.laneKey !== `room:${event.roomId}`
+            || input.now() >= event.deadlineAt
+            || !taskDefinitionForegroundAuthorizationIdV1Matches(
+              input.crypto,
+              {
+                authorizationId: event.authorizationId,
+                parentOperationId: event.parentOperationId,
+                taskId: event.taskId,
+                operation: event.operation,
+                targetContentRevision: event.targetContentRevision,
+                workDescriptorDigest,
+              },
+            )
+          ) {
+            reportRuntimeAuthorizationDiagnostic(input.onUnavailable, "event_stale");
+            return false;
+          }
+          reportRuntimeAuthorizationDiagnostic(input.onUnavailable, "prepare_started");
+          const prepared = await prepareVaultRuntimeForegroundAuthorization({
+            crypto: input.crypto,
+            vault: input.vault,
+            coordinates: input.coordinates,
+            domainForegroundAuthority: input.domainForegroundAuthority,
+            authorizationPlanBytes,
+            recipientPublicKey,
+            browserSessionId: event.clientActionSessionId,
+            expectedPlanSessionId: event.parentSessionId,
+            expectedAuthorizationId: event.authorizationId,
+            expectedRecipientKeyId,
+            now: input.now(),
+          });
+          reportRuntimeAuthorizationDiagnostic(
+            input.onUnavailable,
+            prepared.status === "prepared"
+              ? "prepare_complete_prepared"
+              : "prepare_complete_unavailable",
+          );
+          if (prepared.status !== "prepared") {
+            reportRuntimeAuthorizationDiagnostic(input.onUnavailable, prepared.reason);
+            return false;
+          }
+          try {
+            reportRuntimeAuthorizationDiagnostic(input.onUnavailable, "request_started");
+            const result = await input.api.authorizeTaskDefinition(
+              event.roomId,
+              event.authorizationId,
+              {
+                requestVersion: 1,
+                status: "prepared",
+                operationId: event.authorizationId,
+                parentOperationId: event.parentOperationId,
+                clientActionSessionId: event.clientActionSessionId,
+                authorizationScheme: "runtime_foreground_v1",
+                authorizationPlanBytesBase64url:
+                  toBase64url(authorizationPlanBytes),
+                authorizationBytesBase64url:
+                  toBase64url(prepared.authorizationBytes),
+              },
+            );
+            const accepted = result.status === "authorized";
+            reportRuntimeAuthorizationDiagnostic(
+              input.onUnavailable,
+              accepted ? "request_authorized" : "result_rejected",
+            );
+            return accepted;
+          } finally {
+            prepared.authorizationBytes.fill(0);
+            prepared.authorizationDigest.fill(0);
+          }
+        } catch {
+          reportRuntimeAuthorizationDiagnostic(input.onUnavailable, "request_failed");
+          return false;
+        } finally {
+          authorizationPlanBytes?.fill(0);
+          recipientPublicKey?.fill(0);
+          workDescriptorDigest?.fill(0);
+          parentAgentSignerPublicKey?.fill(0);
         }
       }
       if (event.type !== "message.shared_agent_authorization_required") {

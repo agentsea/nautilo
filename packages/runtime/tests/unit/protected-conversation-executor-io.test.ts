@@ -880,6 +880,140 @@ describe("protected conversation executor IO", () => {
     expect(liveCallbacks).toBe(0);
   });
 
+  test.each([false, true])(
+    "pages current-execution progress past surrounding pressure or a pending Human anchor (anchor=%s)",
+    async (acceptedAnchorBeyondFullOwnBudget) => {
+    let initial = true;
+    let liveCallbacks = 0;
+    let maximumLiveCallbacks = 0;
+    let pageCalls = 0;
+    let consumerLiveCallbacks = 0;
+    const productReadAuthorization = Object.freeze({}) as never;
+    const row = (
+      messageId: number,
+      role: "user" | "assistant",
+      content: string,
+      foregroundExecutionId?: string,
+    ) => ({
+      messageId,
+      revision: 0,
+      createdAt: new Date(
+        `2027-01-15T08:00:${messageId.toString().padStart(2, "0")}.000Z`,
+      ),
+      author: {
+        actorId: role === "user" ? "actor-human" : "actor-agent",
+        handle: role === "user" ? "human" : "agent",
+        displayName: role === "user" ? "Human" : "Agent",
+      },
+      payload: {
+        role,
+        content,
+        ...(foregroundExecutionId === undefined
+          ? {}
+          : { sensitiveMetadata: { foregroundExecutionId } }),
+      },
+    });
+    const pages = new Map<number | undefined, readonly ReturnType<typeof row>[]>([
+      [undefined, [
+        acceptedAnchorBeyondFullOwnBudget
+          ? row(13, "assistant", `OWN PROGRESS PRESSURE ${"own ".repeat(500)}`, "active")
+          : row(13, "user", `SURROUNDING HUMAN PRESSURE ${"human ".repeat(500)}`),
+        row(14, "assistant", "LATEST OWN PROGRESS", "active"),
+      ]],
+      [13, [
+        row(11, "assistant", "EARLIER OWN PROGRESS", "active"),
+        row(12, "user", "ACCEPTED STEERING"),
+      ]],
+      [11, []],
+    ]);
+    const repository = {
+      withAgentTranscript: async <Value>(
+        input: Parameters<ActiveConversationRepository["withAgentTranscript"]>[0],
+      ) => {
+        expect(input.productReadAuthorization).toBe(productReadAuthorization);
+        expect(input.authorization).toBe(authorization);
+        expect(input.limit).toBe(2);
+        const first = initial;
+        initial = false;
+        const page = first ? [] : pages.get(input.beforeMessageId) ?? [];
+        if (!first) {
+          pageCalls += 1;
+          expect(input.upToMessageId).toBe(14);
+        }
+        liveCallbacks += 1;
+        maximumLiveCallbacks = Math.max(maximumLiveCallbacks, liveCallbacks);
+        try {
+          return {
+            status: "executed" as const,
+            value: await input.execute(page) as Value,
+          };
+        } finally {
+          liveCallbacks -= 1;
+        }
+      },
+      appendPreparedAgent: async () => ({
+        status: "committed" as const,
+        message: committedMessage,
+      }),
+    } as Pick<
+      ActiveConversationRepository,
+      "withAgentTranscript" | "appendPreparedAgent"
+    >;
+
+    const result = await executeProtectedConversationTurn({
+      sessionId: "10000000-0000-4000-8000-000000000001",
+      namespaceId: "namespace-room",
+      limit: 2,
+      productReadAuthorization,
+      authorization,
+      entrypointId: "foreground.main",
+      agentId: "40000000-0000-4000-8000-000000000001",
+      appendContext: {
+        transcriptOrigin: "main",
+        parentThreadId: null,
+        scopeId: null,
+        subthreadRoomId: null,
+        notificationContext: {
+          mentionedHumanUserIds: [],
+          causalHumanUserId: null,
+          causalHumanTurnId: null,
+        },
+      },
+      repository,
+      preparer: {
+        prepare: async (input) => ({
+          status: "prepared",
+          write: prepared(input.sessionId, input.idempotencyKey),
+        }),
+      },
+      execute: ({ readFreshHistory }) => readFreshHistory({
+        throughMessageIdInclusive: 14,
+        excludeMessageId: 10,
+        foregroundExecutionId: "active",
+        ...(acceptedAnchorBeyondFullOwnBudget
+          ? { acceptedHumanMessageIds: [12] }
+          : {}),
+        maximumContextCharacters: 500,
+        recentConversationLimit: 1,
+        execute: (history) => {
+          consumerLiveCallbacks = liveCallbacks;
+          return history.map((hit) => hit.messageId);
+        },
+      }),
+    });
+
+    const expectedCallbackDepth = acceptedAnchorBeyondFullOwnBudget ? 3 : 4;
+    expect(pageCalls).toBe(acceptedAnchorBeyondFullOwnBudget ? 2 : 3);
+    expect(result).toEqual({
+      status: "executed",
+      value: { status: "executed", value: [11, 12, 13, 14] },
+    });
+    expect(consumerLiveCallbacks).toBeGreaterThanOrEqual(expectedCallbackDepth);
+    expect(maximumLiveCallbacks).toBeGreaterThanOrEqual(expectedCallbackDepth);
+    expect(liveCallbacks).toBe(0);
+    },
+  );
+
   test("rereads a fresh authorized cut with concurrent surrounding activity", async () => {
     let opens = 0;
     let lateRead:
@@ -1160,17 +1294,35 @@ describe("protected conversation executor IO", () => {
             execute: () => "must not run",
           } as never).catch((error: unknown) => error));
         }
-        return failures;
+        const invalidAnchors = [[10], [15], [Number.NaN]];
+        const anchorFailures: unknown[] = [];
+        for (const acceptedHumanMessageIds of invalidAnchors) {
+          anchorFailures.push(await readFreshHistory({
+            excludeMessageId: 10,
+            throughMessageIdInclusive: 14,
+            maximumContextCharacters: 1_000,
+            acceptedHumanMessageIds,
+            execute: () => "must not run",
+          }).catch((error: unknown) => error));
+        }
+        return { failures, anchorFailures };
       },
     });
 
     expect(result.status).toBe("executed");
     if (result.status !== "executed") throw new Error("expected execution");
-    expect(result.value).toHaveLength(4);
-    for (const failure of result.value) {
+    expect(result.value.failures).toHaveLength(4);
+    for (const failure of result.value.failures) {
       expect(failure).toBeInstanceOf(RangeError);
       expect((failure as Error).message).toBe(
         "protected transcript refresh envelope is out of bounds",
+      );
+    }
+    expect(result.value.anchorFailures).toHaveLength(3);
+    for (const failure of result.value.anchorFailures) {
+      expect(failure).toBeInstanceOf(RangeError);
+      expect((failure as Error).message).toBe(
+        "protected transcript refresh Human anchor is out of bounds",
       );
     }
     expect(freshTranscriptPageReads).toBe(0);

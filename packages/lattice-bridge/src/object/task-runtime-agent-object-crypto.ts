@@ -1,6 +1,7 @@
 import {
   LATTICE_LIMITS,
   accessRevision,
+  assertAuthenticPreparedTaskRuntimeAgentObjectAccessManifestGenesisSet,
   assertAuthenticTaskRuntimeExecutionEvidence,
   encryptedObjectWriteRecord,
   encryptObjectPayload,
@@ -16,6 +17,7 @@ import {
   type PreparedTaskRuntimeAgentObjectAccessManifestGenesisSet,
   type ResolveHistoricalAgentRuntimeSignerPublicationManager,
   type TaskRuntimeExecutionEvidence,
+  type TaskRuntimeTemporarySigner,
 } from "@nautilo/lattice-crypto";
 import {
   encodeEncryptedPayloadV2,
@@ -63,6 +65,9 @@ export function readPreparedTaskRuntimeAgentObjectSnapshot(
   ) throw new TypeError(
     "Task Runtime Agent object requires its authentic preparation and exact evidence",
   );
+  assertAuthenticPreparedTaskRuntimeAgentObjectAccessManifestGenesisSet(
+    snapshot.access,
+  );
   return Object.freeze({
     object: encryptedObjectWriteRecord(
       snapshot.object.payloadBytes.ciphertext.slice(),
@@ -82,7 +87,8 @@ export function prepareTaskRuntimeAgentObject(input: Readonly<{
   namespaceSet: readonly TaskRuntimeAgentObjectNamespaceMaterial[];
   operationId: string;
   runtime: AgentRuntimeKeyGeneration;
-  signerPublication: AgentRuntimeSignerPublication;
+  signerPublication: AgentRuntimeSignerPublication | null;
+  temporarySigner?: TaskRuntimeTemporarySigner;
   resolveHistoricalSignerPublicationManager:
     ResolveHistoricalAgentRuntimeSignerPublicationManager;
   agentAuthorizationRevision: number;
@@ -146,6 +152,9 @@ export function prepareTaskRuntimeAgentObject(input: Readonly<{
         agentAuthorizationRevision: input.agentAuthorizationRevision,
         runtime: input.runtime,
         signerPublication: input.signerPublication,
+        ...(input.temporarySigner === undefined ? {} : {
+          temporarySigner: input.temporarySigner,
+        }),
         resolveHistoricalSignerPublicationManager:
           input.resolveHistoricalSignerPublicationManager,
       },

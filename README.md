@@ -98,7 +98,7 @@ interact with application surfaces.
 
 ## Develop from source
 
-The checkout pins **Bun 1.3.11** and **Node 24.x**. Install Docker for local
+The checkout pins **Bun 1.4.4** and **Node 24.22.1**. Install Docker for local
 PostgreSQL and Logto infrastructure. Desktop preparation may also need Rust
 for its native helper.
 

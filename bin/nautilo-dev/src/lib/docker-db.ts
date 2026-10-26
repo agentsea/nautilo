@@ -279,6 +279,9 @@ export const DATA_TABLES = [
   // Preserve complete backup coverage in FK order. Restore admission rejects
   // populated bridge authority until an explicit reconciliation path exists.
   ...BOLTER_RESTORE_AUTHORITY_TABLES,
+  // Inert audit evidence references only its owning Human. Preserve it unchanged;
+  // it does not authorize bridge replay and is not part of the authority guard.
+  "public.external_operator_control_archive",
   // Content-free deletion receipts have no foreign-key parents and survive the
   // message they record; keep them in every full backup and restore.
   "public.message_deletion_receipts",
@@ -417,6 +420,11 @@ export const DATA_TABLES = [
   // mixed legacy/protected Artifact table and omit it from the later crypto
   // block. Blob rows precede revision rows for the exact retained-blob FK.
   "public.crypto_objects",
+  "public.task_cancellation_crypto_staging_receipts",
+  "public.task_terminal_message_crypto_staging_receipts",
+  // Immutable publication receipts survive restore with their ciphertext parents.
+  "public.task_historical_content_crypto_staging_receipts",
+  "public.foreground_memory_crypto_publication_receipts",
   "public.artifacts",
   // immutable exact-operation receipts must survive restore so a retry
   // cannot regrant access. COPY inserts unchanged receipts after all four FK
@@ -460,6 +468,10 @@ export const DATA_TABLES = [
   "public.task_run_message_associations",
   "public.protected_task_execution_segment_receipts",
   "public.protected_task_continuation_receipts",
+  "public.protected_task_wake_continuation_receipts",
+  // Keep device-driven repair cursors and sparse source dispositions intact.
+  "public.task_content_backfill_scans",
+  "public.task_content_backfill_failures",
   // Pending/recoverable Plan input references the Task, run, Job,
   // Room, and Codex binding, so every parent must be restored first.
   "public.codex_user_input_requests",

@@ -1,4 +1,5 @@
-import type { NautiloApiClient } from "@nautilo/api-client/browser";
+import { ApiError, type NautiloApiClient } from "@nautilo/api-client/browser";
+import type { MemoryEmbeddingDisclosureV2 } from "@nautilo/lattice-crypto/wire";
 import { createObservedHumanMemoryDeviceContent } from "../memory/observed-human-memory-device-content.ts";
 import type { DeviceAdmissionStatus } from "@nautilo/api-client/browser";
 import {
@@ -97,12 +98,17 @@ import {
   type EncryptionDataOperationOwner,
 } from "../../transition/encryption-data-operation-owner.ts";
 import { createDeviceMessageBackfillClient, type DeviceMessageBackfillApiPort } from "./device-message-backfill-client.ts";
+import {
+  createDeviceTaskContentBackfillClient,
+  type DeviceTaskContentBackfillApiPort,
+} from "../task/device-task-content-backfill-client.ts";
 import { createHumanMemoryProcessorTransport } from "../memory/human-memory-processor-transport.ts";
 import {
   createVaultAuthorizedHumanMemoryDeviceContentPort,
 } from "../memory/vault-human-memory-device-content.ts";
 import {
   createAuthorizedHumanTaskRunResultReaderV1,
+  type HumanTaskRunResultReadV1,
 } from "../task/authorized-human-task-run-result.ts";
 import {
   createVaultHumanTaskRunResultReaderV1,
@@ -110,7 +116,7 @@ import {
 import type { ResolveTrustedObjectAccessEvidenceIssuerV4 } from
   "../../client-vault/ingest-object-access-signer-evidence-v4.ts";
 import type { PreparedMutationJournalCustodyAvailability } from
-  "../memory/file-prepared-mutation-journal-vault.ts";
+  "../memory/prepared-mutation-journal.ts";
 import {
   createHumanDeviceMembershipClient,
   type HumanDeviceMembershipApiPort,
@@ -806,6 +812,7 @@ export type ForegroundHumanMemoryClientInput = Readonly<{
   createIdempotencyKey?: () => string;
   resolveDeviceAdmissionStatus: () => Promise<DeviceAdmissionStatus>;
   onProtectedRoomAccessState?: (state: ProtectedRoomAccessStateV2) => void;
+  resolveEmbeddingDisclosure?: () => MemoryEmbeddingDisclosureV2 | undefined;
 }>;
 
 /**
@@ -857,6 +864,9 @@ export function createForegroundHumanMemoryClient(
     owner: input.dataOperationOwner,
     api: createHumanMemoryProcessorTransport({
       api: input.api, crypto, subjectId: input.userId, now,
+      ...(input.resolveEmbeddingDisclosure === undefined ? {} : {
+        resolveEmbeddingDisclosure: input.resolveEmbeddingDisclosure,
+      }),
     }),
     content: createObservedHumanMemoryDeviceContent({
       crypto,
@@ -937,11 +947,11 @@ export type ForegroundHumanTaskClientInput = Readonly<{
 
 export type ForegroundHumanTaskRunResultReaderInput =
   ForegroundHumanTaskClientInput & Readonly<{
-    resolveTrustedIssuingDevicePublicKey:
+    resolveTrustedIssuingDevicePublicKey?:
       ResolveTrustedObjectAccessEvidenceIssuerV4;
   }>;
 
-/** Shared protected-only result read composition; live Task policy is separate. */
+/** Shared protected-only result read composition under the live Task policy. */
 export function createForegroundHumanTaskRunResultReader(
   platform: ForegroundShadowClientPlatform,
   input: ForegroundHumanTaskRunResultReaderInput,
@@ -951,7 +961,18 @@ export function createForegroundHumanTaskRunResultReader(
   const vault = platform.createProfileVault();
   const createStageId = input.createIdempotencyKey
     ?? (() => platform.createId());
-  return createAuthorizedHumanTaskRunResultReaderV1({
+  const authorities = authorityClients(platform, {
+    api: input.api,
+    crypto,
+    vault,
+    coordinates: clientIdentity.coordinates,
+    now: input.now ?? Date.now,
+    createId: createStageId,
+  });
+  if (authorities.namespaceAuthority === undefined) {
+    throw new TypeError("Domain Key V2 Human Task result authority is unavailable");
+  }
+  const exactReader = createAuthorizedHumanTaskRunResultReaderV1({
     api: input.api,
     device: createVaultHumanTaskRunResultReaderV1({
       crypto,
@@ -959,9 +980,12 @@ export function createForegroundHumanTaskRunResultReader(
       coordinates: clientIdentity.coordinates,
       subjectHumanId: input.humanActorId,
       now: input.now ?? Date.now,
+      namespaceAuthority: authorities.namespaceAuthority,
       resolveDeviceAdmissionStatus: input.resolveDeviceAdmissionStatus,
-      resolveTrustedIssuingDevicePublicKey:
-        input.resolveTrustedIssuingDevicePublicKey,
+      ...(input.resolveTrustedIssuingDevicePublicKey === undefined ? {} : {
+        resolveTrustedIssuingDevicePublicKey:
+          input.resolveTrustedIssuingDevicePublicKey,
+      }),
       createStageId,
       accessAnchors: createClientProfileObjectAccessAnchorPortV4({
         crypto,
@@ -970,6 +994,25 @@ export function createForegroundHumanTaskRunResultReader(
         createStageId,
       }),
     }),
+  });
+  return Object.freeze({
+    async read(
+      request: Parameters<typeof exactReader.read>[0],
+    ): Promise<HumanTaskRunResultReadV1> {
+      const opened = await input.dataOperationOwner.read<
+        never,
+        HumanTaskRunResultReadV1,
+        HumanTaskRunResultReadV1
+      >({
+        protected: () => exactReader.read(request),
+        consumeOrdinary: (value) => value,
+        consumeProtected: (value) => value,
+        // TaskRun results have no ordinary representation at this boundary.
+        // Keep every protected failure ineligible for transition fallback.
+        classifyFailure: () => "unsupported",
+      });
+      return opened.value;
+    },
   });
 }
 
@@ -984,6 +1027,20 @@ export function createForegroundHumanTaskClient(
   const journalVault = platform.createPreparedMutationJournalVault();
   const now = input.now ?? Date.now;
   const createId = input.createIdempotencyKey ?? (() => platform.createId());
+  const authorities = authorityClients(platform, {
+    api: input.api,
+    crypto,
+    vault,
+    coordinates: clientIdentity.coordinates,
+    now,
+    createId,
+  });
+  if (
+    authorities.namespaceAuthority === undefined
+    || authorities.namespaceV2 === undefined
+  ) {
+    throw new TypeError("Domain Key V2 Human Task authority is unavailable");
+  }
   const journal = createPreparedMutationJournal({ vault: journalVault, now });
   const withJournal = async <Result>(use: () => Promise<Result>): Promise<Result> => {
     const current = await journalVault.availability();
@@ -1002,6 +1059,17 @@ export function createForegroundHumanTaskClient(
     mutation: PreparedHumanMutation,
   ): mutation is PreparedHumanTaskMutation =>
     mutation.kind === "task_create" || mutation.kind === "task_update";
+  const withTaskPlanAvailability = async <Value>(use: () => Promise<Value>): Promise<Value> => {
+    try { return await use(); }
+    catch (error) {
+      if (error instanceof ApiError && error.status === 409
+        && (error.message === "task_encryption_not_ready"
+          || error.message === "task_counterpart_not_ready")) {
+        throw new ClassifiedDataOperationError("key_waiting", "Task encryption is not ready", { cause: error });
+      }
+      throw error;
+    }
+  };
 
   return createAuthorizedHumanTaskClientV1({
     owner: input.dataOperationOwner,
@@ -1009,9 +1077,13 @@ export function createForegroundHumanTaskClient(
     plans: {
       listProtected: (query) => input.api.listProtectedTaskContentV1(query),
       create: ({ operationId, task }) =>
-        input.api.planProtectedTaskCreateV1({ operationId, task }),
+        withTaskPlanAvailability(() => input.api.planProtectedTaskCreateV1({ operationId, task })),
       update: ({ operationId, taskId, task }) =>
-        input.api.planProtectedTaskUpdateV1(taskId, { operationId, task }),
+        withTaskPlanAvailability(() => input.api.planProtectedTaskUpdateV1(taskId, { operationId, task })),
+      ordinaryFallbackCreate: ({ operationId, task }) =>
+        input.api.planTaskOrdinaryFallbackCreateV1({ operationId, task }),
+      ordinaryFallbackUpdate: ({ operationId, taskId, task }) =>
+        input.api.planTaskOrdinaryFallbackUpdateV1(taskId, { operationId, task }),
       readExact: async ({ taskId, reference }) => {
         const envelope = await input.api.getProtectedTaskDefinitionEnvelopeV1(
           taskId,
@@ -1030,6 +1102,7 @@ export function createForegroundHumanTaskClient(
           contentRevision: envelope.contentRevision,
           cryptoAccessRevision: envelope.cryptoAccessRevision,
           namespaceId: envelope.namespaceId,
+          readAuthority: envelope.readAuthority,
           encryptedPayloadBytes: decodeCanonicalBase64url(
             envelope.encryptedPayloadBytesBase64url,
           ),
@@ -1041,6 +1114,9 @@ export function createForegroundHumanTaskClient(
           namespaceEnvelopeBytes: decodeCanonicalBase64url(
             envelope.namespaceEnvelopeBytesBase64url,
           ),
+          ...(envelope.historicalRepair === undefined ? {} : {
+            historicalRepair: envelope.historicalRepair,
+          }),
           signerEvidence: envelope.signerEvidence,
         });
       },
@@ -1051,6 +1127,8 @@ export function createForegroundHumanTaskClient(
       coordinates: clientIdentity.coordinates,
       subjectHumanId: input.humanActorId,
       now,
+      namespaceAuthority: authorities.namespaceAuthority,
+      nativeNamespaceAuthority: authorities.namespaceV2,
       resolveDeviceAdmissionStatus: input.resolveDeviceAdmissionStatus,
       accessAnchors: createClientProfileObjectAccessAnchorPortV4({
         crypto,
@@ -1477,7 +1555,7 @@ export type ForegroundRoomHistoryShadowMessageReaderInput = Omit<
 > & Readonly<{
   api: ForegroundLiveShadowMessageClientInput["api"] & Pick<
     NautiloApiClient,
-    "acknowledgeRoomHistoryShadowRead"
+    "acknowledgeRoomHistoryShadowRead" | "deviceAdmission"
   >;
   resolveTrustedDeviceSigningPublicKey?: (input: Readonly<{
     deviceId: string;
@@ -1545,6 +1623,48 @@ export function createForegroundMessageBackfillClient(
   return createDeviceMessageBackfillClient({owner: input.dataOperationOwner, api: input.api,
     namespaceAuthority: clients.namespaceAuthority, vault, coordinates: clientIdentity.coordinates, crypto,
     historyReader: createForegroundRoomHistoryShadowMessageReader(platform, input), now, createId});
+}
+
+export type ForegroundTaskContentBackfillClientInput =
+  ForegroundHumanTaskClientInput & Readonly<{
+    api: NautiloApiClient & DeviceTaskContentBackfillApiPort;
+    onProtectedRoomAccessState?: (state: ProtectedRoomAccessStateV2) => void;
+  }>;
+
+/** Shared Browser/Electron Task repair client using the platform's existing custody. */
+export function createForegroundTaskContentBackfillClient(
+  platform: ForegroundShadowClientPlatform,
+  input: ForegroundTaskContentBackfillClientInput,
+) {
+  const crypto = input.crypto ?? new LatticeCrypto();
+  const clientIdentity = identity(platform, crypto, input);
+  const vault = platform.createProfileVault();
+  const now = input.now ?? Date.now;
+  const createId = input.createIdempotencyKey ?? (() => platform.createId());
+  const clients = authorityClients(platform, {
+    api: input.api,
+    crypto,
+    vault,
+    coordinates: clientIdentity.coordinates,
+    now,
+    createId,
+    ...(input.onProtectedRoomAccessState === undefined ? {} : {
+      onProtectedRoomAccessState: input.onProtectedRoomAccessState,
+    }),
+  });
+  if (clients.namespaceAuthority === undefined) {
+    throw new TypeError("Task repair namespace authority is unavailable");
+  }
+  return createDeviceTaskContentBackfillClient({
+    owner: input.dataOperationOwner,
+    api: input.api,
+    namespaceAuthority: clients.namespaceAuthority,
+    vault,
+    coordinates: clientIdentity.coordinates,
+    crypto,
+    resolveDeviceAdmissionStatus: input.resolveDeviceAdmissionStatus,
+    now,
+  });
 }
 
 function bytesFromBase64url(value: string): Uint8Array {
@@ -1633,6 +1753,14 @@ export function createForegroundRoomHistoryShadowMessageReader(
     coordinates: clientIdentity.coordinates,
     authority,
     namespaceAuthority: namespace,
+    resolveCurrentOwnDeviceGeneration: async () => {
+      const admission = await input.api.deviceAdmission.status();
+      return admission.status === "admitted"
+        && admission.deviceId === clientIdentity.coordinates.deviceId
+        && admission.expiresAt > now()
+        ? admission.deviceGeneration
+        : null;
+    },
     resolveTrustedDeviceSigningPublicKey:
       input.resolveTrustedDeviceSigningPublicKey ?? (() => Promise.resolve(null)),
     createProfileStageId: createId,

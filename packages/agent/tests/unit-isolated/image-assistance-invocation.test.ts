@@ -6,10 +6,12 @@
 import { AIMessage, HumanMessage, type BaseMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
 import type { StructuredTool } from "@langchain/core/tools";
-import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { ForegroundChatFundingSession } from "../../src/runtime/foreground-chat-funding";
 import type { UsageFundingProvenance } from "../../src/usage/usage-context";
 import type { ChatModel } from "../../src/providers/types";
+import { resetSurplusModelCatalog } from "../../src/providers/surplus-catalog";
+import { installSurplusCatalogFixture } from "../helpers/surplus-catalog-fixture";
 
 const VISION_MODEL = "anthropic:claude-sonnet-4-6";
 const CHAIN_MODEL = "openai:gpt-5.5-2026-04-23";
@@ -171,7 +173,8 @@ afterAll(() => {
   }
 });
 
-beforeEach(() => {
+beforeEach(async () => {
+  await installSurplusCatalogFixture();
   preferSurplus = false;
   providerResponse = new AIMessage("image-a / invoice.png: total 123.45");
   directInvocations = 0;
@@ -191,6 +194,8 @@ beforeEach(() => {
   serverFundingAdmission.mockClear();
   policy = { enabled: true, chain: [CHAIN_MODEL] };
 });
+
+afterEach(resetSurplusModelCatalog);
 
 function personalSession(initialRoute: "direct" | "surplus" = "direct"): ForegroundChatFundingSession {
   return {

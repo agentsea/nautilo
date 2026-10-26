@@ -5,7 +5,7 @@ import {
 import { resolveDotenvPath } from "@nautilo/config-guard";
 import { runBootstrap as defaultRunBootstrap } from "@nautilo/local/bootstrap-logto";
 import { rename, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import {
   buildAppliedAuthContract,
   serializeAppliedAuthContract,
@@ -16,6 +16,7 @@ import { httpsMode } from "./https-mode.ts";
 import { resolveLogtoPublicUrl } from "./instance-urls.ts";
 import type { ComposeDriverProfile } from "./types.ts";
 
+import { instancePath } from "./instance-paths.ts";
 /**
  * Loose, structural type for the `runBootstrap` injection seam. Tests
  * pass a fake whose actual type may not exactly match the production
@@ -108,7 +109,7 @@ async function writeAppliedAuthContractAtomically(
   stamp: AppliedAuthContract,
   instanceRootDir: string,
 ): Promise<void> {
-  const target = join(instanceRootDir, APPLIED_AUTH_CONTRACT_FILE);
+  const target = instancePath(instanceRootDir, APPLIED_AUTH_CONTRACT_FILE);
   const temporary = `${target}.tmp-${process.pid}-${Date.now()}`;
   await writeFile(temporary, serializeAppliedAuthContract(stamp), {
     encoding: "utf8",

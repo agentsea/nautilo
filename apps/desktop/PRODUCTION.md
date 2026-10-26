@@ -1,6 +1,6 @@
 # Nautilo Desktop — Production architecture lock
 
-> Status: Living document, owner: desktop maintainers. Architecture baseline: 2026-05-12 (connect-to-server rescope); contributor packaging guidance updated 2026-09-12; companion origin and preload contract added 2026-09-22.
+> Maintained by the Desktop contributors. Package manifests and implementation tests establish the current runtime contract.
 >
 > **Audience**: anyone shipping changes to `apps/desktop/`. The README explains how to run dev mode; this document is the **production contract** every change must respect. If a code change appears to violate something here, either the change needs revision or this document needs revision — never silently diverge.
 >
@@ -47,7 +47,7 @@ The Electron shell is described here in **two** runtime modes. Mode resolution i
 | dev-from-source | predictable defaults (e.g. workbench + server ports from `@nautilo/config` `resolveInstance()`) | `@nautilo/config` | Developers want stable URLs across `bun run` invocations on the dev machine |
 | **connect** | whatever the paired server advertises (any host/port/path prefix the operator chose) | URL captured at pairing time (first-run picker / persisted targets; multiple saved servers) | The desktop app is a client; it does not open listen ports for Workbench in production |
 
-**Rule:** packaged **connect** code paths MUST NOT bake in dev-only literals like `localhost:3000` / `localhost:3001` as implicit production defaults. Phase 4b sweeps for violations. Any URL constructed in main / preload / renderer for the main window should derive from the resolved `serverUrl` for the active pairing (including when multiple servers are configured).
+**Rule:** packaged **connect** code paths MUST NOT bake in dev-only literals like `localhost:3000` / `localhost:3001` as implicit production defaults. Any URL constructed in main / preload / renderer for the main window should derive from the resolved `serverUrl` for the active pairing (including when multiple servers are configured).
 
 ## 3. Workbench-loading decision
 
@@ -68,8 +68,8 @@ The alternative considered historically was a custom `nautilo://` protocol for s
 **Decision:** `electron-updater` with signed channels for the **Electron shell** (main, preload, picker/onboarding file bundles, vendored Bun, brand assets).
 
 - `electron-updater@6.8.9` is already a runtime dep.
-- Update artifacts (`latest-mac.yml`, `Nautilo-x.y.z.dmg`, blockmap) ship from GitHub Releases (Phase 5 wires the workflow).
-- Signature verification is automatic when artifacts are signed (Phase 3b's cert-arrival flow lights this up).
+- Update metadata, installer archives, and blockmaps are published to the stable feed configured in `electron-builder.yml`.
+- Signed artifact publication and updater verification follow [packaging and artifact trust](PACKAGING.md).
 - The ordinary `desktop-vX.Y.Z` GitHub Release is the stable identity. Unsigned
   `desktop-vX.Y.Z-rc.N` prereleases are build QA only, not an updater channel.
 
@@ -101,14 +101,14 @@ Every origin a `BrowserWindow` may load is enumerated below with its preload ass
 **connect** URLs (paired servers) receive the full Workbench preload — they are privileged origins. Three controls apply:
 
 1. **User-explicit allowlisting**: the only way an origin gets here is the first-run picker's commit (or a developer's explicit env var). The picker URL probe (`first-run:probe-url` at `main.ts:1719-1722`) is the user's affirmative trust act. We do NOT auto-promote arbitrary URLs.
-2. **API-version compatibility check**: before granting preload, the boot flow MUST verify the server's `/api/setup/status` (and/or a future `/api/version`) reports a compatible API version tuple. **Currently a gap** — `loadBootSetupStatus` at `main.ts:153` reads the response but does not version-gate. Phase 4 wires the gate; today the contract is "any reachable server is compatible," which is acceptable for v0 but a known weakness.
-3. **Navigation containment**: once loaded, `mainWindow` MUST NOT navigate to a different origin while still holding the preload. **Currently a gap** — `mainWindow` has no `setWindowOpenHandler` or `will-navigate` guard. Phase 4 wires both. The auth window already does this correctly (`auth/auth-window.ts:127-132`).
+2. **Server compatibility**: server reachability alone does not establish compatibility with the privileged preload. Preserve the boot flow's server identity and readiness checks; changes to server APIs or preload capabilities require corresponding compatibility qualification.
+3. **Navigation containment**: a Workbench document MUST NOT navigate to a different origin while retaining its preload. `attachNavigationGuards` enforces the allowed origins for Workbench and local windows; the auth window has its own navigation policy.
 
-A future cloud mode adds: TLS-only, certificate pinning to the cloud-service CA, and a server-side allowlist of acceptable client app versions. Out of scope for this stack.
+New hosted connection modes require explicit origin, certificate, and client-compatibility policies before receiving privileged preload access.
 
 ## 7. Electron fuse decisions
 
-Wired via `@electron/fuses` package-time hook (Phase 4 implementation). Verified post-build with `npx @electron/fuses read --app <Nautilo.app>`.
+Wired via the `@electron/fuses` package-time hook. Verify each built artifact with `npx @electron/fuses read --app <Nautilo.app>`.
 
 | Fuse | Decision | Rationale |
 |---|---|---|
@@ -125,7 +125,7 @@ Wired via `@electron/fuses` package-time hook (Phase 4 implementation). Verified
 
 Rationale: `app.isPackaged` is set by Electron itself based on whether the app was built into an ASAR + launched via the packaged binary. It cannot be spoofed by an attacker who controls the environment. `NODE_ENV` is a string that any parent process can set.
 
-**Audit of current code**:
+**Implementation owners**:
 
 - Historical `electron/server.ts` packaged-server lifecycle was removed with the connect-to-server architecture; no server spawn path remains in desktop.
 - `electron/menu.ts:153` — `const isDev = !app.isPackaged` ✓
@@ -135,9 +135,9 @@ Rationale: `app.isPackaged` is set by Electron itself based on whether the app w
 
 New code MUST use `app.isPackaged` unless an equivalent inline justification is recorded here.
 
-## 8b. Preload surface contract (P4.2)
+## 8b. Preload surface contract
 
-The preload bundles each expose a deliberately narrow API on `window.<scoped-namespace>`. The renderer never receives raw `ipcRenderer`. Every channel name passed to `ipcRenderer.invoke()` in a preload MUST have a matching `ipcMain.handle()` registration; the IPC parity test (`tests/unit/ipc-parity.test.ts`, P4.8) enforces this.
+The preload bundles each expose a deliberately narrow API on `window.<scoped-namespace>`. The renderer never receives raw `ipcRenderer`. Every channel name passed to `ipcRenderer.invoke()` in a preload MUST have a matching `ipcMain.handle()` registration; the IPC parity test (`tests/unit/ipc-parity.test.ts`) enforces this.
 
 | Preload bundle | Allowed window | Exposes | Notes |
 |---|---|---|---|
@@ -147,9 +147,9 @@ The preload bundles each expose a deliberately narrow API on `window.<scoped-nam
 | `electron/preload-onboarding.ts` | Onboarding wizard | `window.nautiloOnboarding` — `get-server-url`, `complete`, `cancel`, `load-existing-profile`, `get-voices`, `preview-voice`, `generate-soul`, `generate-avatar`, `put-profile`, `get-config-flags` | Same per-window scoping as first-run. Human account setup (handle / PIN / recovery codes) belongs to invite/admin/account-security surfaces, not this Genie wizard. |
 | (no preload — auth window) | Auth window | NONE — Logto OIDC origin is treated as untrusted | Defence-in-depth: even if Logto's hosted form is compromised, there is no IPC surface to attack. See `electron/auth/auth-window.ts:75-83`. |
 
-### Canonical exposed surface (enforced by P5 smoke harness)
+### Canonical exposed surface
 
-Both the `tests/unit/ipc-parity.test.ts` static-text check (P4.8) and `scripts/smoke-packaged.ts` (P5.1+P5.5, runtime CDP eval) treat this list as the contract. If the preload bundles change, both the doc here AND the smoke harness's `NAUTILO_DESKTOP_SURFACE` / `NAUTILO_FIRST_RUN_SURFACE` constants must update — the smoke fails closed otherwise.
+Both the `tests/unit/ipc-parity.test.ts` static-text check and `scripts/smoke-packaged.ts` (runtime CDP evaluation) treat this list as the contract. If the preload bundles change, both the doc here AND the smoke harness's `NAUTILO_DESKTOP_SURFACE` / `NAUTILO_FIRST_RUN_SURFACE` constants must update — the smoke fails closed otherwise.
 
 **`window.nautiloDesktop`** (Workbench, from `electron/preload.ts`):
 
@@ -215,7 +215,7 @@ generateSoul, generateAvatar, putProfile
 
 All `nautiloOnboarding` API-proxy methods return `IpcResult<T> = {ok:true,data:T} | {ok:false,error:string}`. The smoke harness does not currently assert this surface (the wizard window only opens during the onboarding flow); the static `ipc-parity` test still covers the channel names.
 
-### Sender-id gate policy (P4.2)
+### Sender-id gate policy
 
 `assertMainWindowSender(e)` is called at the top of every privileged module-level handler:
 
@@ -240,20 +240,20 @@ Trivial / non-privileged read handlers (`app:getVersion`, `relay:getStatus`, `cu
 
 When mainWindow has not yet been created (handlers register at module load, before `createWindow`), `assertMainWindowSender` throws `ipc-denied: mainWindow not ready`. This is the safe default — no legitimate caller should fire these before mainWindow exists.
 
-## 8c. Token & relay-token lifecycle (P4.7)
+## 8c. Token & relay-token lifecycle
 
 | Concern | Decision | Implementation |
 |---|---|---|
 | **At-rest storage** | macOS Keychain / libsecret via Electron `safeStorage` | `auth/token-store.ts` writes `<userData>/nautilo-auth-v1-enc` (header `nautilo-auth-v1-enc` + safeStorage-encrypted JSON). `auth/relay-pair.ts` writes `<userData>/relay-token-<scope>.json` with safeStorage-encrypted body when keychain available, plain body otherwise. |
 | **Sign-out clears access/refresh tokens** | YES | `handleSignOut()` calls `clearTokens()` first thing. |
-| **Sign-out clears relay token** | YES (P4.7 — was a gap) | `handleSignOut()` calls `clearRelayToken(resolvedServerUrl)` and `stopRelay()` before clearing Logto cookies. Closes the impersonation window where the next OS user could reuse the on-disk relay token. |
+| **Sign-out clears relay token** | YES | `handleSignOut()` calls `clearRelayToken(resolvedServerUrl)` and `stopRelay()` before clearing Logto cookies. Closes the impersonation window where the next OS user could reuse the on-disk relay token. |
 | **4401 re-pair behavior** | Auto-clear + re-pair | `bootRelayIfPossible()` (`main.ts`) catches "Invalid or missing relay token" responses, calls `clearRelayToken(serverUrl)`, then re-mints via `pairRelay()` with a fresh access token. |
-| **Token rotation** | Logto access tokens rotate per-issue; refresh-on-near-expiry handled by `auth/refresh.ts`. Relay tokens are long-lived; rotation is server-driven (relay can revoke; renderer triggers a re-pair via the 4401 path). | Document; no action required this stack. |
+| **Token rotation** | Logto access tokens rotate per-issue; refresh-on-near-expiry handled by `auth/refresh.ts`. Relay tokens are long-lived; rotation is server-driven (relay can revoke; renderer triggers a re-pair via the 4401 path). | `auth/refresh.ts` and the server pairing protocol. |
 | **Local "forget this server" affordance** | NOT SHIPPED — follow-up | `handleSignOut()` is the closest thing today; explicit "remove server pairing" UI is a Workbench / first-run polish task. Tracked as a future improvement. |
-| **Log redaction** | Bearer tokens logged prefix-only (`token.slice(0, 8) + …`); never full body | `electron/main.ts:2121` is the canonical pattern. Sweep via `rg "Bearer [A-Za-z0-9_-]{15,}|token: ?[\"'\`][A-Za-z0-9_-]{15,}" apps/desktop/electron/` returns zero matches as of the P4.7 commit. |
+| **Log redaction** | Never log complete bearer tokens | Review authentication and relay diagnostics when changing token handling. |
 | **Crash-dump redaction** | Crash dumps stay LOCAL (no upload) | `crashReporter` at `main.ts:130` has `uploadToServer: false`. When upload wires up (separate issue), redaction is mandatory. |
 
-## 8d. Persisted state inventory (P4d.3 audit)
+## 8d. Persisted state inventory
 
 Every file the desktop writes to disk, where it lives, what it contains, and which threat tier it sits in. All `<userData>` paths are platform-resolved via `app.getPath("userData")` (macOS: `~/Library/Application Support/Nautilo/`, Linux: `~/.config/Nautilo/`, Windows: `%APPDATA%\Nautilo\`). `~/.nautilo/...` paths are cross-process state shared with CLI and server tooling (see `electron/paths.ts` family B).
 
@@ -271,7 +271,7 @@ Every file the desktop writes to disk, where it lives, what it contains, and whi
 | `~/.nautilo/session.json` | session token (legacy) | plaintext | reader at `main.ts:1595` (whoami bootstrap) | treat as transitional/inert; Logto tokens live in `nautilo-auth-v1-enc`. |
 | `~/.nautilo/certs/ca.crt` | local development CA cert (PEM) | plaintext (public cert; key is not stored desktop-side) | external (CLI / nautilo-server bootstrap) — desktop reads only | None — the cert is public; the key never leaves the server side. |
 
-**No sensitive data co-locates with `config.json`.** safeStorage is correctly applied to the two files that hold bearers. Plaintext-fallback for libsecret-less Linux is a documented existing trade-off (mode 0600), not a P4d regression.
+**No sensitive data co-locates with `config.json`.** safeStorage is correctly applied to the two files that hold bearers. Plaintext-fallback for libsecret-less Linux is a documented existing trade-off (mode 0600).
 
 **Compatibility note — `/api/setup/status` viewer payload.** The desktop consumes
 this surface narrowly: `mapSetupStatusToServerClaimState` reads `serverRole` /
@@ -300,7 +300,7 @@ npx @electron/fuses read --app <Nautilo.app>
 # Expect: "EnableEmbeddedAsarIntegrityValidation is Enabled"
 ```
 
-Phase 4 wires this into the smoke harness. Tamper test (Phase 4): edit a byte inside `app.asar` with a hex editor, re-run verify, confirm non-zero exit and the runtime refuses to launch.
+For a disposable packaged test copy, modify an `app.asar` byte and confirm that runtime integrity enforcement refuses to launch it.
 
 `asarIntegrity: true` only verifies at build time that the ASAR's hash is recorded in the binary's Mach-O header (macOS) / PE resource (Windows). The runtime check requires the `EnableEmbeddedAsarIntegrityValidation` fuse (§7), which we enable.
 
@@ -361,63 +361,32 @@ Phase 4 wires this into the smoke harness. Tamper test (Phase 4): edit a byte in
                        boot() returns
 ```
 
-## 11. Findings — Phase 1 audit against the lock
+## 11. Packaging compatibility and release acceptance
 
-Every deviation between this lock and the current code, tagged with the phase that closes the gap. **Each row is a real bug or an observation, not a "should review" placeholder.**
+Desktop requires macOS 13 (Ventura) or later. Keep
+`mac.extendInfo.LSMinimumSystemVersion` in `electron-builder.yml` aligned with
+the highest minimum required by the application and its always-required
+embedded runtimes. Bundled Bun establishes the current macOS 13 floor; exact
+runtime versions are recorded in `package.json`, `bun.lock`, and the root
+`THIRD_PARTY_NOTICES.md`.
 
-| File:line | Finding | Owner phase |
-|---|---|---|
-| `electron/main.ts:1393-1430` (mainWindow) | No `setWindowOpenHandler`, no `will-navigate` — § 6 navigation containment is unenforced. Auth window does this correctly; main does not. | ✓ closed by **P4.5** — `attachNavigationGuards(mainWindow, { allowedOrigins: [Workbench origin] })` covers `setWindowOpenHandler`, `will-navigate`, `will-frame-navigate`, plus diagnostic `did-fail-load`. External links → `shell.openExternal`. |
-| `electron/main.ts:1690-1709` (first-run window) | No `setWindowOpenHandler`. Less critical than mainWindow because preload is narrow, but defense-in-depth says wire it. | ✓ closed by **P4.5** — `attachNavigationGuards(win, { allowedOrigins: [] })`; first-run is a `file://` SPA with IPC-only data path, no legitimate top-level navigation. |
-| `electron/main.ts:1979` (onboarding window) | No `setWindowOpenHandler`. Same posture as first-run. | ✓ closed by **P4.5** — `attachNavigationGuards(win, { allowedOrigins: [] })`; same posture. API fetches go via the CSP-overridden `fetch()` which is not a navigation event. |
-| `electron/main.ts:1640-1665` (`setupLocalCATrust`) | Trusts ANY cert for `localhost` / `127.0.0.1` / `.local` when `~/.nautilo/certs/ca.crt` exists. Production should verify chain anchors to that pinned CA, not trust unconditionally. | ✓ closed by **P4.6** — `chainAnchorsTo()` walks the Electron Certificate `issuerCert` chain and verifies signatures against the pinned CA's public key via `node:crypto.X509Certificate.verify()`. **connect** + packaged + non-local hostname → reject early; default-fail on every error path. Boot mode plumbed via `currentBootMode`. |
-| `electron/main.ts:153-162` (`loadBootSetupStatus`) | Fetches `/api/setup/status` but does not version-gate **connect** origin trust before granting preload. § 6 control #2 currently a gap. | **P4** (separate from .5/.6 — defer to a follow-up if scope tight) |
-| `electron-builder.yml` | No `@electron/fuses` afterPack hook. § 7 fuses unenforced. | ✓ closed by **P4.3** — `@electron/fuses@^2.1.1` added to devDeps; `scripts/flip-fuses.ts` flips RunAsNode / NodeOptions / NodeCliInspect to false and CookieEncryption / EmbeddedAsarIntegrityValidation to true (OnlyLoadAppFromAsar deferred per §7); `scripts/after-pack.cjs` resolves the per-platform bundle path and invokes the script via Bun; wired via `afterPack: ./scripts/after-pack.cjs` in `electron-builder.yml`. Runtime verification deferred to a packaged-build smoke (`npx @electron/fuses read --app …`) in P5. |
-| `scripts/build-electron.ts` | (Historical) Workbench `dist/` staging for smoke/dev vs server `NAUTILO_WORKBENCH_DIST` mount. | **Superseded by connect-to-server architecture** — production **connect** loads Workbench from the paired server’s `/`; the operator’s server package owns static assets. A desktop build step that copies `apps/workbench/dist` may still exist for harnesses or transitional tooling; it is **not** the shipped-to-users production contract. Server-side `@fastify/static` mount when `NAUTILO_WORKBENCH_DIST` is set (`packages/server/src/app.ts`, `ef8ea575`) remains the operator-side mechanism. |
-| `electron-builder.yml:13-26` | No win/linux targets; no exclude rules for tests/docs/tsconfig; no `copyright` field. | ✓ closed by **P2.2** — `win.target: nsis`, `linux.target: AppImage`, `copyright`, and `files`-excludes for tests/docs/tsconfigs. |
-| `package.json:scripts` | No `package:mac` / `package:linux` / `package:win` aliases. Milestone test command (`pnpm package:mac`) does not work. | ✓ closed by **P2.3** + audit pass — `package:mac` / `package:linux` / `package:win` / `package:dev` are the canonical scripts. Legacy `pack` and `dist` aliases dropped (no external CI/docs referenced them; `package:*` is the single source of truth). |
-| `assets/` | Empty. No `icon.icns`, no `icon.ico`, no `icon.png`, no tray asset (README claims `iconTemplate.png` exists but it does not). | ✓ closed by **P3.2 + P3.3** (`f3331768`) — `apps/desktop/scripts/generate-icons.ts` derives `icon.icns` / `.ico` / `.png` (multi-res containers via png2icons) and `iconTemplate.png` + `@2x.png` (alpha-thresholded silhouette via sharp) from `<repo>/assets/brand/nautilo-logo_v1_logo_only_transparent.png`. Wired as the first step of `package:mac/linux/win/dev` so packaging never goes stale on a master swap. |
-| `electron-builder.yml:22-25` | `extendInfo` declares `NSMicrophoneUsageDescription` only; missing `CFBundleShortVersionString`, `CFBundleVersion`, `NSHumanReadableCopyright`, `LSMinimumSystemVersion`. | ✓ closed by **P3.5** — `NSHumanReadableCopyright` and `LSMinimumSystemVersion: "11.0"` added to `mac.extendInfo`. `CFBundleShortVersionString` / `CFBundleVersion` are read by electron-builder from the package version, which release CI derives from the GitHub Release tag. |
-| `app.setAboutPanelOptions` | Not wired — macOS About menu shows raw bundle name. | ✓ closed by **P3.7** — wired before `app.whenReady()` with `applicationName: "Nautilo"`, `applicationVersion: app.getVersion()`, `copyright: "Copyright © 2026 Nautilo"`, and `iconPath: assets/icon.png`. |
-| `electron/boot-setup-status.ts:9-15` | `mapSetupStatusToServerClaimState` emits 2 of 4 declared `ServerClaimState` values. Renderer cannot distinguish `claimed-needs-auth` / `server-needs-keys` / authenticated-with-viewer. | **P4c** |
-| `electron/main.ts` (entire boot flow) | Path resolution sweep — verify every `path.join`/`__dirname`/`app.getPath()` use is canonical; verify no `localhost:3000`/`localhost:3001` literals leak into packaged paths. | ✓ closed by **P4b** (`f1efc3c0` + `6b4fc2a2` + `3f48bd5a` re-verify 2026-05-12) — full sweep across `apps/desktop/electron/**`, `first-run/**`, `onboarding/**` found zero actionable findings; only `:3001` match in `electron/preflight.ts:31` is a JSDoc string illustrating a user-typed URL. All `app.getPath()` calls use canonical names. All `path.join`/`__dirname` usage is cross-OS-safe. **Connect mode:** bundling `bin/nautilo-server` in the desktop `.app` is **N/A** — the packaged product is a connect client; see PACKAGE-MANIFEST.md. |
-| `electron/main.ts` log lines (~100+ matches) | Audit pass for token-shaped substrings in logs. The diagnostic prefix-only pattern at `main.ts:2526` is the desired form. | ✓ closed by **P4.7** — `handleSignOut()` now clears the relay token + stops the relay alongside Logto access/refresh tokens; log-redaction sweep confirmed prefix-only via `rg "Bearer [A-Za-z0-9_-]{15,}\|token: ?[\"'\`][A-Za-z0-9_-]{15,}" apps/desktop/electron/` → 0 matches. Lifecycle policy documented in §8c. |
-| `tests/unit/` (no parity test exists) | `MenuAction` union string list is duplicated in `electron/menu.ts:20`, `electron/preload.ts:9`, and `apps/workbench/src/lib/desktop.ts`. Drift caught by code review only; no static check. | ✓ closed by **P4.8** — `tests/unit/ipc-parity.test.ts` asserts every preload `ipcRenderer.invoke` channel has a matching `ipcMain.handle` in `main.ts`; soft-snapshot of preload channel-set size catches wholesale drops. (`MenuAction` string-union drift across the three files remains a separate, narrower concern; if it bites we can add a similar text-parity check.) |
-| `README.md:15` | "Chat with Jeannie works identically..." — Legacy product naming needs to match the current Genie name. | Documentation maintenance |
-| First-run UX `/health` probe | `first-run:probe-url` calls `probeUrl()` at `main.ts:1721` which probes `/health`. § 6 wants `/api/setup/status` so the picker can branch on `ServerClaimState`. | ✓ closed by **P4d.1+P4d.2** — new `first-run:probe-state` IPC channel calls `probeServerClaimStateForUrl()` (P4c export); preload bridges via `window.nautiloFirstRun.probeServerState`; first-run picker renders state-specific copy under the URL input for all 4 ServerClaimState values. Network-layer `first-run:probe-url` retained for TLS/timeout signaling — the state probe is additive. (Commits `4f63bad0` + `d11d5fab`.) |
-| `mapSetupStatusToServerClaimState` | Mapper collapsed 3 of 4 `setupState` values into `ready`; renderer cannot distinguish unclaimed / claim-pending / authenticated. | ✓ closed by **P4c** (`65da825c`) — mapper emits all 4 values; `_exhaustive: never` guard against server schema drift; `probeServerClaimStateForUrl` exported for first-run wiring; `main.ts:probeServerState` consumer rewritten as exhaustive switch with matching `_exhaustive: never`. Local shadow `type ServerClaimState` in `main.ts` removed in follow-up `d0c4352d` — single source of truth in `electron/boot-setup-status.ts`. |
-| `first-run/index.tsx` cancel handler | Cancel quits the app rather than returning to mode selection. | Documented as intentional (matches onboarding-wizard cancel semantics; explicit terminal user choice). Not changed. |
-| `createWindow` show-timing | `createWindow` does not set `show: false` + `ready-to-show` gate. Single-frame risk of unauthed-workbench flash on the happy path; legitimate sign-in screen on the unhappy path. P4d audit (commit `4f63bad0` notes) confirmed the structural risk; real verification needs a packaged build. | **Deferred to P5** smoke harness (will exercise on real packaged DMG). Fix when verified, not speculatively. |
-| `electron/main.ts` first-run commit (caught by 2026-05-12 milestone smoke) | URL persistence stored the user-typed host verbatim. `127.0.0.1` and `localhost` are separate origins for OIDC redirect URI allowlisting, cookies, and `/api/setup/status`'s self-declared `serverUrl`. Pasting the wrong loopback form makes Logto reject the redirect with `invalid_redirect_uri`. | ✓ closed by **P4d.8** (`012569ea` + `f5e78864`) — `apps/desktop/electron/url-canonical.ts` `canonicalizeServerUrl(input, serverDeclared)` rewrites loopback↔loopback drift; first-run:commit probes `/api/setup/status`, learns the server-declared host, canonicalizes BEFORE `saveConfig`. 13 unit tests cover loopback-rewrite, non-loopback-leave-alone, malformed-declared-fallback, trailing-slash strip, and path preservation. |
-| `electron/main.ts:556` `resolveLogtoConfig` (caught by 2026-05-12 milestone smoke) | Called once at boot. If the `/health` probe fails (server temporarily down, HTTPS/HTTP mismatch, port collision, mid-rebuild), `logtoConfig` stays `null` for the lifetime of the process. Sign-in then throws a stale auth-config error (historical message: missing Logto readiness) even after the server has been healthy for hours. Only a full Electron-app restart recovered. | ✓ closed by **P4d.9** (`f5e78864`) — new `auth:reprobe-server` IPC + `nautiloDesktop.auth.reprobeServer()` preload bridge calls `resolveLogtoConfig(resolvedServerUrl)` on demand. Idempotent (existing function overwrites on success, leaves old config on failure). Workbench renderer hook-up — calling `reprobeServer` on `disconnected → connected` transitions — belongs to the Workbench connection lifecycle. |
+The bundled `gog` helper used for Google Workspace requires macOS 15 or later.
+On macOS 13 and 14, Desktop remains supported: its runtime readiness probe
+rejects the incompatible helper, omits the Google Workspace capability, and
+reports the helper as unavailable without preventing application startup.
 
-## 11b. Audit pass — bugs caught after initial close-out
+A source update is separate from a signed artifact and installed adoption.
+Release acceptance should exercise first-run and sign-in, application menus,
+Keychain prompts, navigation containment, local certificate handling, the
+preload contract, and native tool execution on the packaged application.
+On Linux, qualify the token-storage behavior both with and without an available
+secret service; a plaintext fallback must remain visible to the operator.
 
-| File:line | Finding | Resolution |
-|---|---|---|
-| `electron/main.ts:1773-1806` (`chainAnchorsTo`) | **Silent-fail bug.** `createPublicKey(caPem)` rejects `BEGIN CERTIFICATE` PEM bodies (it expects SPKI/PKCS1 public-key PEM). The `try { caKey = createPublicKey(...) } catch { return false }` block swallowed the rejection, so the chain check **always** returned false when the local-CA path was exercised — operator-CA-rooted lab certs were silently rejected by the `certificate-error` handler instead of being accepted. Reproduced with a Node one-liner: `createPublicKey(certPem)` → `error:0680009B:asn1 encoding routines::too long`. | ✓ fixed in commit `4ac04b8a` — extract public key via `new X509Certificate(certPem).publicKey` (canonical pattern; verified `cert.verify(cert.publicKey) === true` against a self-signed test cert). Renamed the parameter `caPublicKeyPem` → `caCertificatePem` to make the input format unambiguous. Added a defensive code comment citing the failure mode so future edits don't regress. |
-| `package.json:scripts` | Duplicate paths: `pack` ≈ `package:dev` (both: vendor:bun + build + electron-builder --dir); `dist` ≈ `package:mac/linux/win` (electron-builder defaults to current OS, ambiguous). They were retained as "deprecation aliases", but no external CI/docs reference them (`rg "(bun \|pnpm )?run (pack\|dist)\b"` → 0 matches outside `package.json`). | ✓ removed both. `package:mac/linux/win/dev` is the single canonical surface. README updated. |
+## 12. Maintaining this contract
 
-## 11c. Deferred follow-ups (post-omnibus, tracked)
-
-Items observed during the milestone build/launch verification on 2026-05-12. None block the omnibus PR; each is small enough to land as its own follow-up commit.
-
-| ID | Observation | Proposed fix | Size |
-|---|---|---|---|
-| **F-1: Two Keychain prompts on first launch** | First boot triggers two macOS Keychain prompts: (1) Chromium asking for the app-scoped cookie/encryption key (forced by `EnableCookieEncryption` fuse, see §7) and (2) Electron `safeStorage` asking for the app master key (triggered by `loadTokens()` in the early boot path before sign-in). The first prompt is unavoidable given our fuse posture; the second is gratuitous on a first-run flow where the user hasn't signed in yet and there's nothing to decrypt. | Defer the `safeStorage` probe until after sign-in. Today the boot path calls `loadTokens()` early; lazy-load it on first auth-state read instead. Single-digit lines of code change in `electron/main.ts`. Verify by reinstalling on a clean account and confirming only one prompt appears until the user reaches the OIDC redirect. | ~5–10 LOC, `electron/main.ts` only. |
-| **F-2: Default Electron menu visible during first-run** | The custom application menu (`createApplicationMenu` in `electron/menu.ts`) is only installed inside `boot()` after `createWindow(workbenchUrl)` (line 2846). During the first-run picker window (and during the onboarding flow), `Menu.setApplicationMenu` has not been called, so macOS shows Electron's default menu (no "Nautilo" app menu, no File / Edit / View / Window / Help built by us). | Move the initial `rebuildApplicationMenu()` call to immediately after `app.whenReady()` so the custom menu is in place before the first-run window shows. The menu builder already tolerates `mainWindow === null` (window-scoped clicks short-circuit via `sendAction`'s `isDestroyed` guard). After the main window opens, the existing rebuild calls keep things in sync. | ~3 LOC in `electron/main.ts` boot entry; no menu.ts changes. |
-| **F-3: safeStorage plaintext-fallback is operator-invisible** | On Linux without libsecret/D-Bus (minimal server images, headless, some WSL setups), both `electron/auth/token-store.ts` and `electron/auth/relay-pair.ts` silently fall back to chmod-600 plaintext writes. The auth writer at least emits a `auth.token_store.unencrypted_fallback` warn; the relay writer (`relay-pair.ts:121-159`) makes the same decision **without any log line**. Operator has no way to know their tokens are at rest in plaintext. | Add a parallel warn in the relay writer; surface fallback selection to the renderer so the workbench can show a "tokens stored unencrypted" banner. Bundled here because the change is small and aligned with F-1's `safeStorage` boot-order work. | ~10 LOC across `relay-pair.ts` + 1 IPC channel for the renderer banner. |
-
-These observations remain recorded here until the corresponding rows are
-resolved or deliberately retired. Public contributors do not need a separate
-planning repository to understand them.
-
-## 12. Living-document discipline
-
-When a code change interacts with anything in §§ 1–10:
-
-1. If the change brings code closer to the lock, update the corresponding row in §11 to "✓ closed in <commit>". Do not delete the row — it's audit history.
-2. If the change requires the lock itself to evolve (e.g., new mode added, new fuse decision, new privileged origin), update the affected section AND add a dated note at the top of this file.
-3. If the change adds a new BrowserWindow, the §5 threat model row is mandatory in the same commit. CI does not enforce this, but code review must.
-
-Reviewers: when reviewing PRs touching `apps/desktop/`, scan §11 for newly-introduced findings or rows that should be marked closed. The document is the contract; the code is the implementation.
+Update the affected contract sections when runtime ownership, a privileged
+origin, preload capability, packaging requirement, or persistence boundary
+changes. New windows need a corresponding threat-model entry in section 5.
+Keep requirements and verification commands here; use source and tests to
+establish the current implementation rather than retaining historical closure
+receipts or phase tracking.

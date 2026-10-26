@@ -11,8 +11,15 @@ import {
 } from "@nautilo/lattice-crypto";
 import {
   createTaskRuntimeBackgroundAuthorizationRequestV1,
+  createTaskRuntimeBackgroundAuthorizationRequestV2,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV1,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV2,
+  encodeTaskRuntimeBackgroundAuthorizationResponseV2,
   encodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  encodeTaskRuntimeBackgroundAuthorizationRequestV2,
 } from "@nautilo/lattice-crypto/background";
+import {agentRuntimeObjectSignerKeyIdV1} from "@nautilo/lattice-crypto/wire";
+import {bytesToHex} from "@noble/hashes/utils.js";
 import type {
   CurrentTaskRuntimeAuthority,
 } from "@nautilo/lattice-bridge/server";
@@ -29,12 +36,17 @@ import type {
 } from "@nautilo/runtime";
 
 import {
+  acceptedTaskRuntimeRecord,
   createCurrentProtectedTaskRuntimeClaimAuthorityPort,
   createCurrentProtectedTaskRuntimeAuthorityPort,
   loadCurrentProtectedTaskRuntimeLifecycleFacts,
   loadCurrentProtectedTaskRuntimeRequesterRoomFacts,
   type CurrentProtectedTaskRuntimeFacts,
 } from "../../src/routes/task-runtime-current-authority";
+
+const openCodeSelection = { execution: { version: 1, harnessId: "opencode-acp", source: "genie", executionProfile: "autonomous",
+  readiness: { relayId: "relay", relaySessionId: "socket", desktopSessionId: "desktop", pairingGenerationRef: "pairing",
+    selectedProtocolVersion: 15, capabilityRevision: 3 } } } as const;
 
 function factLoaders(facts: CurrentProtectedTaskRuntimeFacts) {
   const { requesterPrivateRoom, ...lifecycle } = facts;
@@ -82,7 +94,7 @@ async function fixture() {
     recipientKeyId: "recipient:task",
     operations: ["decrypt", "encrypt"],
     issuedAt: now,
-    deadlineAt: now + 60_000,
+    deadlineAt: now + 4 * 60_000,
     maximumSecretBytes: 4_096,
     domains: [domain],
   });
@@ -229,6 +241,40 @@ async function fixture() {
 }
 
 describe("current protected Task Runtime authority adapter", () => {
+  test("unwraps a certified response for the existing accepted-grant authority owner", async () => {
+    const f = await fixture();
+    const domain = new TextEncoder().encode(
+      "nautilo/lattice-crypto/task-runtime-background-authorization-request/v2",
+    );
+    const descriptorBytes = new Uint8Array(4 + domain.length);
+    new DataView(descriptorBytes.buffer).setUint32(0, domain.length, false);
+    descriptorBytes.set(domain, 4);
+    const authorizationBytes = new Uint8Array([7, 8, 9]);
+    const responseBytes = encodeTaskRuntimeBackgroundAuthorizationResponseV2({
+      authorizationBytes,
+      certificateBytes: new Uint8Array([10]),
+    });
+    const credentialDigest = "33".repeat(32);
+    const accepted = acceptedTaskRuntimeRecord({
+      ...f.record,
+      descriptorBytes,
+      snapshot: {
+        ...f.record.snapshot,
+        acceptedResponse: {
+          ...f.record.snapshot.acceptedResponse!,
+          responseDigest: "44".repeat(32),
+          credentialDigest,
+        },
+      },
+      acceptedMaterial: {
+        ...f.record.acceptedMaterial!,
+        responseBytes,
+      },
+    });
+    expect(accepted?.authorizationBytes).toEqual(authorizationBytes);
+    expect(accepted?.authorizationDigest).toBe(credentialDigest);
+  });
+
   test("rechecks an accepted awaiting run before claim", async () => {
     const f = await fixture();
     const awaitingFacts: CurrentProtectedTaskRuntimeFacts = {
@@ -241,7 +287,7 @@ describe("current protected Task Runtime authority adapter", () => {
       withAcceptedAuthority: (async (input: Parameters<
         typeof withCurrentAcceptedTaskRuntimeAuthority>[0]) => {
         const product = {} as never;
-        if (!await input.validateCurrentProduct(product)) return null;
+        if (!await input.validateCurrentProduct(product, {} as never)) return null;
         return input.use(f.authority, product, {} as never);
       }) as typeof withCurrentAcceptedTaskRuntimeAuthority,
     });
@@ -300,9 +346,9 @@ describe("current protected Task Runtime authority adapter", () => {
         insideAuthority = true;
         try {
           const product = {} as never;
-          if (!await input.validateCurrentProduct(product)) return null;
+          if (!await input.validateCurrentProduct(product, {} as never)) return null;
           events.push("namespace");
-          const value = await input.use(f.authority, product, restricted);
+          const value = await input.use(f.authority, product, restricted, {} as never);
           await input.validateBeforeCommit();
           return value;
         } finally {
@@ -413,6 +459,7 @@ describe("current protected Task Runtime authority adapter", () => {
     const currentFacts = {
       ...f.facts,
       task: { ...f.facts.task, callingRoomId: "room:open" },
+      opencodeExecutionSelection: openCodeSelection,
     };
     const port = createCurrentProtectedTaskRuntimeAuthorityPort({
       loadCurrentLifecycleFacts: async () => {
@@ -430,7 +477,7 @@ describe("current protected Task Runtime authority adapter", () => {
         insideAuthority = true;
         try {
           const product = {} as never;
-          if (!await input.validateCurrentProduct(product)) return null;
+          if (!await input.validateCurrentProduct(product, {} as never)) return null;
           order.push("namespace");
           return await input.use(f.authority, product, {} as never);
         } finally {insideAuthority = false;}
@@ -456,7 +503,23 @@ describe("current protected Task Runtime authority adapter", () => {
         expect(current.namespaceRequirements).toEqual(
           f.record.authoritySet.namespaceRequirements,
         );
+        expect(current.currentIssuer).toEqual({
+          humanId: f.authority.device.humanActorId,
+          deviceId: f.authority.device.deviceId,
+          deviceGeneration: f.authority.device.deviceGeneration,
+          serverInstanceId: f.authority.device.serverInstanceId,
+          lineageGeneration: f.authority.device.lineageGeneration,
+          epoch: f.authority.device.epoch,
+          securityRevision: f.authority.device.securityRevision,
+          headDigest: f.authority.device.headDigest,
+          signingPublicKeyHash: f.crypto.hash(
+            f.authority.device.signingPublicKey,
+          ),
+        });
         expect(current.nativeExecutionSupported).toBe(true);
+        expect(current.opencodeExecutionSelection).toEqual(openCodeSelection);
+        expect(current.opencodeExecutionSelection).not.toBe(openCodeSelection);
+        expect(Object.isFrozen(current.opencodeExecutionSelection?.execution.readiness)).toBe(true);
         return "current";
       },
     });
@@ -464,6 +527,120 @@ describe("current protected Task Runtime authority adapter", () => {
     expect(loaded).toBe(1);
     expect(order).toEqual(["lifecycle", "namespace", "room", "execution"]);
     f.signing.privateKey.fill(0);
+  });
+
+  test("accepts a V2 descriptor carrier through the current authority base projection", async () => {
+    const f = await fixture();
+    const taskId = "10000000-0000-4000-8000-000000000901";
+    const runId = "20000000-0000-4000-8000-000000000901";
+    const baseRequest = createTaskRuntimeBackgroundAuthorizationRequestV1({
+      requestId: f.request.requestId,
+      workId: runId,
+      workKind: f.request.workKind,
+      workPurpose: f.request.workPurpose,
+      recipientGeneration: f.request.recipientGeneration,
+      episodeId: f.request.episodeId,
+      sourceRoomId: f.request.sourceRoomId,
+      recipientKeyId: f.request.recipientKeyId,
+      recipientPublicKey: f.request.recipientPublicKey,
+      authorizationPlan: f.authority.plan,
+      issuedAt: f.request.issuedAt,
+      deadlineAt: f.request.deadlineAt,
+    });
+    const resultDigest = f.crypto.hash(new TextEncoder().encode(
+      `nautilo/task-run-result-crypto-object/v1\n${taskId}\n${runId}\n1`,
+    ));
+    const request = createTaskRuntimeBackgroundAuthorizationRequestV2(
+      f.crypto,
+      {
+        baseRequest,
+        work: {
+          taskId,
+          taskRunId: runId,
+          inputObjectId: f.occurrence.task.cryptoObjectId,
+          resultObjectId: `task-run-result:v1:${bytesToHex(resultDigest)}`,
+          executionSegment: 1,
+          workIdentityHash: new Uint8Array(32).fill(0x71),
+        },
+        signer: {
+          agentId: f.occurrence.task.agentId,
+          runtimeGeneration: 0,
+          signerKeyId: agentRuntimeObjectSignerKeyIdV1(
+            f.crypto,
+            f.signing.publicKey,
+          ),
+          signerPublicKey: f.signing.publicKey,
+        },
+        deviceGroupHead: {
+          serverInstanceId: f.authority.device.serverInstanceId,
+          lineageGeneration: f.authority.device.lineageGeneration,
+          epoch: f.authority.device.epoch,
+          headDigest: f.authority.device.headDigest,
+          signingPublicKeyHash: f.crypto.hash(f.signing.publicKey),
+        },
+        namespaceRequirements: f.record.authoritySet.namespaceRequirements,
+      },
+    );
+    resultDigest.fill(0);
+    const descriptorBytes = encodeTaskRuntimeBackgroundAuthorizationRequestV2(
+      f.crypto,
+      request,
+    );
+    const occurrence: ProtectedTaskRunningOccurrence = {
+      task: { ...f.runningOccurrence.task, id: taskId },
+      run: { ...f.runningOccurrence.run, id: runId, taskId },
+    };
+    const facts: CurrentProtectedTaskRuntimeFacts = {
+      ...f.facts,
+      task: { ...f.facts.task, id: taskId },
+      run: { ...f.facts.run, id: runId, taskId },
+    };
+    const record = {
+      ...f.record,
+      descriptorBytes,
+      snapshot: { ...f.record.snapshot, workId: runId },
+      acceptedMaterial: {
+        ...f.record.acceptedMaterial!,
+        responseBytes: encodeTaskRuntimeBackgroundAuthorizationResponseV2({
+          authorizationBytes: f.record.acceptedMaterial!.responseBytes,
+          certificateBytes: new Uint8Array([4]),
+        }),
+      },
+    };
+    const port = createCurrentProtectedTaskRuntimeAuthorityPort({
+      ...factLoaders(facts),
+      withAcceptedAuthority: (async (input: Parameters<
+        typeof withCurrentAcceptedTaskRuntimeAuthority>[0]) => {
+        const product = {} as never;
+        if (!await input.validateCurrentProduct(product, {} as never)) {
+          return null;
+        }
+        return input.use(f.authority, product, {} as never);
+      }) as typeof withCurrentAcceptedTaskRuntimeAuthority,
+    });
+    try {
+      expect(await port({
+        runner: {} as never,
+        restricted: {} as never,
+        crypto: f.crypto,
+        serverScope: "https://nautilo.example",
+        subject: {
+          userId: occurrence.task.requestorId,
+          humanActorId: f.authority.plan.subjectHumanId,
+          deviceId: f.authority.plan.committerDeviceId,
+        },
+        occurrence,
+        record,
+        request: baseRequest,
+        now: () => f.now,
+        use: current => current.foreground.authorizationId,
+      })).toBe(f.request.requestId);
+    } finally {
+      descriptorBytes.fill(0);
+      destroyTaskRuntimeBackgroundAuthorizationRequestV2(request);
+      destroyTaskRuntimeBackgroundAuthorizationRequestV1(baseRequest);
+      f.signing.privateKey.fill(0);
+    }
   });
 
   test("accepts current running cron authority with a pending parent Task", async () => {
@@ -480,7 +657,7 @@ describe("current protected Task Runtime authority adapter", () => {
       withAcceptedAuthority: (async (input: Parameters<
         typeof withCurrentAcceptedTaskRuntimeAuthority>[0]) => {
         const product = {} as never;
-        if (!await input.validateCurrentProduct(product)) return null;
+        if (!await input.validateCurrentProduct(product, {} as never)) return null;
         return input.use(f.authority, product, {} as never);
       }) as typeof withCurrentAcceptedTaskRuntimeAuthority,
     });
@@ -516,7 +693,7 @@ describe("current protected Task Runtime authority adapter", () => {
         withAcceptedAuthority: (async (input: Parameters<
           typeof withCurrentAcceptedTaskRuntimeAuthority>[0]) => {
           const product = {} as never;
-          if (!await input.validateCurrentProduct(product)) return null;
+          if (!await input.validateCurrentProduct(product, {} as never)) return null;
           return input.use(f.authority, product, {} as never);
         }) as typeof withCurrentAcceptedTaskRuntimeAuthority,
       });
@@ -543,9 +720,12 @@ describe("current protected Task Runtime authority adapter", () => {
     }
   });
 
-  test("projects only content-free native route admission from the locked Task", async () => {
+  test("projects only content-free native route admission from the locked Task and keeps source custody Human-owned", async () => {
     const f = await fixture();
-    const load = async (nativeExecutionSupported: boolean) => {
+    const load = async (
+      nativeExecutionSupported: boolean,
+      sourceRoomAgentId = f.occurrence.task.agentId,
+    ) => {
       const statements: Readonly<{sql: string; params: readonly unknown[]}>[] = [];
       const rows: unknown[][] = [
         [{
@@ -565,6 +745,7 @@ describe("current protected Task Runtime authority adapter", () => {
             f.facts.task.cryptoRequiredNamespaceFingerprint,
           crypto_mapping_state: f.facts.task.cryptoMappingState,
           native_execution_supported: nativeExecutionSupported,
+          opencode_execution_selection: openCodeSelection,
         }],
         [{
           id: f.facts.run.id,
@@ -589,7 +770,7 @@ describe("current protected Task Runtime authority adapter", () => {
         }],
         [
           { id: f.authority.plan.subjectHumanId, kind: "user", agent_id: null },
-          { id: "actor:agent", kind: "agent", agent_id: f.occurrence.task.agentId },
+          { id: "actor:agent", kind: "agent", agent_id: sourceRoomAgentId },
         ],
       ];
       const product = {
@@ -614,6 +795,10 @@ describe("current protected Task Runtime authority adapter", () => {
 
     const admitted = await load(true);
     expect(admitted.facts?.nativeExecutionSupported).toBe(true);
+    expect(admitted.facts?.opencodeExecutionSelection).toEqual(openCodeSelection);
+    expect(admitted.statement.sql).toContain("for no key update");
+    expect(admitted.statement.sql).not.toContain("for update");
+    expect(admitted.statement.sql).toContain('as "opencode_execution_selection"');
     expect(Object.hasOwn(admitted.facts?.task ?? {}, "metadata")).toBe(false);
     expect(Object.hasOwn(admitted.facts?.task ?? {}, "preset")).toBe(false);
     expect(admitted.statement.sql).toContain(
@@ -636,6 +821,13 @@ describe("current protected Task Runtime authority adapter", () => {
     ]);
 
     expect((await load(false)).facts?.nativeExecutionSupported).toBe(false);
+    const otherAgentSource = await load(true, "agent:other-private-room-member");
+    expect(otherAgentSource.facts?.requesterPrivateRoom).toEqual({
+      roomId: f.request.sourceRoomId,
+      namespaceId: f.occurrence.task.contentNamespaceId,
+    });
+    expect(otherAgentSource.facts?.task.agentId)
+      .toBe(f.occurrence.task.agentId);
     f.signing.privateKey.fill(0);
   });
 });

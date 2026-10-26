@@ -25,6 +25,8 @@ import {
 } from "../../src/runtime/foreground-chat-funding";
 import type { RecoverPreparedContext } from "../../src/utils/chat-model-invocation";
 import type { ResolvedFallbackPolicy } from "../../src/utils/resolve-fallback-policy";
+import { installSurplusCatalogFixture } from "../helpers/surplus-catalog-fixture";
+import { resetSurplusModelCatalog } from "../../src/providers/surplus-catalog";
 import { setAgentEventSink } from "../../src/runtime-hooks";
 import { getOrCreateAgentTurnContextByKey, turnContextKey, _resetAgentTurnContextsForTests } from "../../src/runtime/turn-context";
 import { ProviderTimeoutError } from "../../src/providers/errors";
@@ -124,6 +126,7 @@ const priorProviderKeys = Object.fromEntries(
     .map((key) => [key, process.env[key]]),
 );
 const priorFetch = globalThis.fetch;
+beforeEach(installSurplusCatalogFixture);
 
 test("resolves each candidate's policy with explicit temporary or caller provenance", () => {
   const legacy = resolveModelAttemptPolicy(A);
@@ -213,6 +216,7 @@ let invokeChatModelWithFallback: (
     /** strict / no-chain mode suppresses every cross-model hop. */
     modelFallbackMode?: "agent_chain" | "none";
     sameModelRetryMode?: "none" | "short";
+    confidential?: true;
     providerTimeoutMs?: number;
     firstProgressTimeoutMs?: number;
     preparedStableSystemPrefixLength?: number;
@@ -245,6 +249,7 @@ beforeAll(async () => {
 });
 
 afterAll(() => {
+  resetSurplusModelCatalog();
   uninstallPersonalAttemptOwner?.();
   resetRuntimeModelCatalog();
   setAgentEventSink(null);
@@ -281,6 +286,26 @@ describe("invokeChatModelWithFallback (chain)", () => {
     _resetAgentTurnContextsForTests();
     _setFirstTokenTimeoutMsForTests(undefined);
   });
+
+  for (const confidential of [false, true]) {
+    test(`confidential invocation closes server-funded diagnostics and health reason (${confidential})`, async () => {
+      const marker = "PRIVATE_RESEARCH_PROVIDER_MARKER";
+      const cause = Object.assign(new Error(`rate limit ${marker}`), { status: 429 });
+      const logger = spyOn(console, "error").mockImplementation(() => {});
+      const model: AuraModel = { invoke: async () => { throw cause; }, bindTools: () => model };
+      createUniversalModelMock.mockResolvedValue(model);
+      try {
+        const failure = await invokeChatModelWithFallback(messages, tools, A, "user-1", "agent-1", null,
+          undefined, { modelFallbackMode: "none", sameModelRetryMode: "none",
+            ...(confidential ? { confidential: true } : {}) }).catch((error: unknown) => error);
+        expect(failure).toBe(cause);
+        expect(JSON.stringify(logger.mock.calls).includes(marker)).toBe(!confidential);
+        expect(markModelInvokeFailureMock).toHaveBeenCalledWith(A,
+          confidential ? classifyError(cause).category : classifyError(cause).message);
+        expect(createUniversalModelMock).toHaveBeenCalledTimes(1);
+      } finally { logger.mockRestore(); }
+    });
+  }
 
   test("content-private server funding preserves failure classification without logging or caching provider text", async () => {
     const privateFailure = Object.assign(new Error("PRIVATE_EXTERNAL_TEXT rejected by provider"), { status: 503 });

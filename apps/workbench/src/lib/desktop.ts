@@ -41,8 +41,10 @@ import type {
   DeviceAdmissionProofRequest,
   MessageBackfillUrgentSelection,
   NautiloApiClient,
+  TaskContentBackfillProgressResponse,
 } from "@nautilo/api-client/browser";
 import type { MessagePayloadV2 } from "@nautilo/lattice-bridge";
+import type { MemoryEmbeddingDisclosureV2 } from "@nautilo/lattice-crypto/wire";
 import type {
   AuthorizedHumanMemoryClient,
   BrowserRoomHistoryShadowAcknowledgementInput,
@@ -341,6 +343,25 @@ export interface DesktopForegroundShadowAPI {
     roomId: string;
     clientActionSessionId: string;
   }>): Promise<import("@nautilo/api-client/browser").RoomPendingAttentionRecoveryResponse>;
+  recoverTaskPendingAttention?(input: Readonly<{
+    clientActionSessionId: string;
+  }>): Promise<import("@nautilo/api-client/browser").TaskPendingAttentionRecoveryResponse>;
+  recoverProtectedTaskExternalRequests?(input: Readonly<{
+    clientActionSessionId: string;
+    requestId?: string;
+  }>): Promise<
+    | Readonly<{ status: "ready"; entries: readonly Readonly<{
+        event: import("@nautilo/types").CodexRequestEvent;
+        responseCapability: string;
+      }>[] }>
+    | Readonly<{ status: "unavailable"; entries: readonly [] }>
+  >;
+  respondProtectedTaskExternalRequest?(input: Readonly<{
+    clientActionSessionId: string;
+    requestId: string;
+    responseCapability: string;
+    response: import("@nautilo/types").CodexRequestResponse;
+  }>): Promise<Readonly<{ status: "responded" | "unavailable" }>>;
   memory: {
     list(options?: Readonly<{
       cursor?: string; limit?: number; includeArchive?: boolean;
@@ -354,6 +375,7 @@ export interface DesktopForegroundShadowAPI {
     search(options: Readonly<{
       q: string; mode: "text" | "semantic"; limit?: number;
       includeArchive?: boolean;
+      embeddingDisclosure?: MemoryEmbeddingDisclosureV2;
     }>): Promise<Readonly<{
       items: readonly WorkbenchProtectedMemorySearchResult[];
       memoryMode: "namespace" | "scope";
@@ -368,6 +390,7 @@ export interface DesktopForegroundShadowAPI {
     }>>;
     update(input: Readonly<{
       memoryId: string; type: string; content: string; importance: number;
+      requestedEmbedding?: MemoryEmbeddingDisclosureV2;
     }>): Promise<Readonly<{
       status: "published" | "replayed";
       memoryId: string;
@@ -417,6 +440,15 @@ export interface DesktopForegroundShadowAPI {
   }>>;
   /** Cancels only this renderer sender's current repair batch. */
   cancelMessageBackfill(): Promise<void>;
+  /** Content-free current Task repair activation; feature-detect older shells. */
+  getTaskContentBackfillProgress?(): Promise<TaskContentBackfillProgressResponse>;
+  /** One main-owned historical Task repair batch. */
+  serviceTaskContentBackfill?(): Promise<Readonly<{
+    state: "more" | "waiting" | "caught_up";
+    resumeAt: number | null;
+  }>>;
+  /** Cancels only this renderer sender's current Task repair batch. */
+  cancelTaskContentBackfill?(): Promise<void>;
   /** Added after the foreground Shadow namespace; feature-detect on older shells. */
   onProtectedRoomAccessState?(
     listener: (state: ProtectedRoomAccessStateV2) => void,

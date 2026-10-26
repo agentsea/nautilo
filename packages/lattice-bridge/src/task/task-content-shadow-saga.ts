@@ -1,18 +1,25 @@
 import { assertProtectedTaskOperationalMetadataProjectionV1 } from "@nautilo/types";
+import { preparedTaskHistoricalRepairProvenanceV1 } from
+  "./task-historical-repair-provenance.ts";
 
 import {
+  TaskCancellationPublicationPolicyUnavailableError,
+  TaskHistoricalRepairPublicationUnavailableError,
   TASK_CONTENT_PAYLOAD_VERSION_V1,
   TASK_CONTENT_RECONCILE_MAX_BATCH,
+  assertTaskContentCoordinateV1,
   assertTaskContentRevisionLifecycleV1,
-  deriveTaskContentCryptoObjectIdV1,
+  taskContentRevisionObjectIdV1,
   fingerprintTaskContentAuthorityIdentityV1,
   fingerprintTaskContentAuthorityV1,
   fingerprintTaskContentNamespaceV1,
+  isTaskOrdinaryFallbackRepairSourceProofV1,
   sameTaskContentCoordinateV1,
   taskContentObjectTypeV1,
   type AtomicTaskContentCryptoCompletionPort,
   type PreparedTaskContentCryptoRevisionV1,
   type TaskContentCompletionResult,
+  type TaskContentCoordinateV1,
   type TaskContentCryptoRevisionReferenceV1,
   type TaskContentFailureCode,
   type TaskContentProductStorePort,
@@ -48,6 +55,14 @@ function sameJson(left: unknown, right: unknown): boolean {
   return leftKeys.length === rightKeys.length
     && leftKeys.every((key, index) => key === rightKeys[index]
       && sameJson(leftRecord[key], rightRecord[key]));
+}
+
+function cancellationPolicyWait(cause: unknown, coordinate: TaskContentCoordinateV1,
+  operationId: string): boolean {
+  return cause instanceof TaskHistoricalRepairPublicationUnavailableError
+    || cause instanceof TaskCancellationPublicationPolicyUnavailableError
+    && coordinate.kind === "run_result" && coordinate.contentRevision === 2
+    && operationId === `task-run-cancelled-result:${coordinate.taskRunId}`;
 }
 
 function orphanReason(
@@ -125,15 +140,33 @@ function authorityMatches(state: TaskContentRevisionStateV1): boolean {
 
 function cryptoReference(
   state: TaskContentRevisionStateV1,
+  historicalStagedPrepared?: PreparedTaskContentCryptoRevisionV1,
 ): TaskContentCryptoRevisionReferenceV1 {
+  const coordinate = Object.freeze({ ...state.lifecycle.coordinate });
+  const cancellationResult = coordinate.kind === "run_result"
+    && coordinate.contentRevision === 2
+    && state.lifecycle.operationId
+      === `task-run-cancelled-result:${coordinate.taskRunId}`;
   return Object.freeze({
-    coordinate: Object.freeze({ ...state.lifecycle.coordinate }),
+    coordinate,
     objectId: state.lifecycle.cryptoObjectId,
     objectType: state.lifecycle.objectType,
     expectedAccessRevision: state.product?.cryptoAccessRevision ?? 0,
+    ...(historicalStagedPrepared === undefined || state.lifecycle.disposition === "mapped"
+      ? {} : { historicalStagedPrepared }),
     expectedAuthorityFingerprint: state.lifecycle.authorityFingerprint.slice(),
     expectedAuthorityIdentityFingerprint:
       fingerprintTaskContentAuthorityIdentityV1(state.authority),
+    ...(state.lifecycle.historicalRepair == null ? {} : { historicalRepair: {
+      provenance: state.lifecycle.historicalRepair, namespaceId: state.lifecycle.namespaceId,
+    } }),
+    ...(state.lifecycle.historicalRepair?.version === 2 ? {
+      expectedGenesisManifestHash: Uint8Array.from(state.lifecycle.historicalRepair.genesisManifestHash.match(/../gu)!,
+        byte => Number.parseInt(byte, 16)),
+    } : {}),
+    ...(cancellationResult
+      ? { expectedGenesisManifestHash: state.lifecycle.requestDigest.slice() }
+      : {}),
   });
 }
 
@@ -147,7 +180,7 @@ function verifiedMatches(
       state.lifecycle.coordinate,
     )
       && verified.objectId
-        === deriveTaskContentCryptoObjectIdV1(state.lifecycle.coordinate)
+        === taskContentRevisionObjectIdV1(state.lifecycle)
       && verified.objectId === state.lifecycle.cryptoObjectId
       && verified.objectType
         === taskContentObjectTypeV1(state.lifecycle.coordinate)
@@ -204,11 +237,13 @@ export function createDormantTaskContentShadowRepository(input: Readonly<{
   async function verifyComplete(
     state: TaskContentRevisionStateV1,
     leaseToken: string | null,
+    historicalStagedPrepared?: PreparedTaskContentCryptoRevisionV1,
   ): Promise<VerifiedTaskContentCryptoRevisionV1> {
     let verified: VerifiedTaskContentCryptoRevisionV1 | null;
     try {
-      verified = await input.crypto.verify(cryptoReference(state));
+      verified = await input.crypto.verify(cryptoReference(state, historicalStagedPrepared));
     } catch (cause) {
+      if (cancellationPolicyWait(cause, state.lifecycle.coordinate, state.lifecycle.operationId)) throw cause;
       throw new Error("Task content crypto verification is unavailable", {
         cause,
       });
@@ -226,6 +261,7 @@ export function createDormantTaskContentShadowRepository(input: Readonly<{
   async function publishVerified(
     state: TaskContentRevisionStateV1,
     leaseToken: string | null,
+    historicalStagedPrepared?: PreparedTaskContentCryptoRevisionV1,
   ): Promise<TaskContentCompletionResult> {
     const lifecycle = state.lifecycle;
     const marked = await input.product.markCryptoComplete({
@@ -254,6 +290,7 @@ export function createDormantTaskContentShadowRepository(input: Readonly<{
       cryptoObjectId: lifecycle.cryptoObjectId,
       expectedAuthorityFingerprint: lifecycle.authorityFingerprint,
       expectedRepresentation: lifecycle.representation,
+      ...(historicalStagedPrepared === undefined ? {} : { historicalStagedPrepared }),
       leaseToken,
     });
     if (mapped === "lease_lost") {
@@ -298,10 +335,19 @@ export function createDormantTaskContentShadowRepository(input: Readonly<{
   async function reconcileOne(
     state: TaskContentRevisionStateV1,
     leaseToken: string,
+    publishProduct?: () => Promise<void>,
   ): Promise<TaskContentReconciliationOutcome> {
     const lifecycle = state.lifecycle;
     if (lifecycle.disposition === "quarantined") return "quarantined";
     if (orphanReason(lifecycle) !== null) return "orphaned";
+    if (lifecycle.disposition === "mapped") {
+      assertMappedState(state);
+      try { await verifyComplete(state, null); } catch (cause) {
+        if (cancellationPolicyWait(cause, lifecycle.coordinate, lifecycle.operationId)) return "pending";
+        throw cause;
+      }
+      return "mapped";
+    }
     if (!authorityMatches(state)) {
       const stale = await markAuthorityStale(lifecycle, leaseToken);
       return stale.disposition === "quarantined"
@@ -311,7 +357,8 @@ export function createDormantTaskContentShadowRepository(input: Readonly<{
     let verified: VerifiedTaskContentCryptoRevisionV1 | null;
     try {
       verified = await input.crypto.verify(cryptoReference(state));
-    } catch {
+    } catch (cause) {
+      if (cancellationPolicyWait(cause, lifecycle.coordinate, lifecycle.operationId)) return "pending";
       return failClaim(lifecycle, leaseToken, "storage_transient");
     }
     if (verified === null) {
@@ -328,9 +375,11 @@ export function createDormantTaskContentShadowRepository(input: Readonly<{
       return "quarantined";
     }
     try {
+      await publishProduct?.();
       const result = await publishVerified(state, leaseToken);
       return result.status === "orphaned" ? "orphaned" : "mapped";
-    } catch {
+    } catch (cause) {
+      if (cancellationPolicyWait(cause, lifecycle.coordinate, lifecycle.operationId)) return "pending";
       return failClaim(lifecycle, leaseToken, "storage_transient");
     }
   }
@@ -366,7 +415,7 @@ export function createDormantTaskContentShadowRepository(input: Readonly<{
           request.coordinate,
         )
         || state.lifecycle.cryptoObjectId
-          !== deriveTaskContentCryptoObjectIdV1(request.coordinate)
+          !== taskContentRevisionObjectIdV1(state.lifecycle)
         || state.lifecycle.requesterHumanId
           !== request.requesterHumanId
         || state.lifecycle.namespaceId !== request.namespaceId
@@ -388,9 +437,12 @@ export function createDormantTaskContentShadowRepository(input: Readonly<{
     async reserveRevision(
       request: Parameters<TaskContentRepository["reserveRevision"]>[0],
     ) {
+      const historicalRepair = request.historicalRepair === true
+        ? preparedTaskHistoricalRepairProvenanceV1(request.prepared) : null;
       if (
         request.prepared.objectId
-          !== deriveTaskContentCryptoObjectIdV1(request.prepared.coordinate)
+          !== taskContentRevisionObjectIdV1({ coordinate: request.prepared.coordinate,
+            namespaceId: request.prepared.namespaceId, historicalRepair })
         || request.prepared.objectType
           !== taskContentObjectTypeV1(request.prepared.coordinate)
         || request.prepared.namespaceId !== request.authority.namespaceId
@@ -410,6 +462,27 @@ export function createDormantTaskContentShadowRepository(input: Readonly<{
       if (!(request.requestDigest instanceof Uint8Array)
         || request.requestDigest.length !== 32) {
         throw new TypeError("Task content request digest must contain 32 bytes");
+      }
+      if (request.historicalRepair !== undefined) {
+        const provenance = preparedTaskHistoricalRepairProvenanceV1(request.prepared);
+        if (request.historicalRepair !== true || request.representation !== "dual"
+          || provenance.signedRequestDigest !== Array.from(request.requestDigest,
+            byte => byte.toString(16).padStart(2, "0")).join("")) {
+          throw new TypeError("Historical Task repair reservation disagrees");
+        }
+      }
+      if (request.fallbackRepairSource !== undefined) {
+        const source = request.fallbackRepairSource;
+        if (!isTaskOrdinaryFallbackRepairSourceProofV1(source)
+          || request.historicalRepair !== undefined
+          || request.representation !== "dual"
+          || request.prepared.coordinate.kind !== "definition"
+          || request.prepared.coordinate.taskId !== source.taskId
+          || request.prepared.coordinate.contentRevision
+            !== source.sourceContentRevision + 1
+          || request.prepared.namespaceId !== source.sourceNamespaceId) {
+          throw new TypeError("Fallback Task repair reservation disagrees");
+        }
       }
       if (request.prepared.coordinate.kind === "definition") {
         assertProtectedTaskOperationalMetadataProjectionV1(
@@ -433,6 +506,11 @@ export function createDormantTaskContentShadowRepository(input: Readonly<{
         objectType: request.prepared.objectType,
         payloadVersion: request.prepared.payloadVersion,
         operationalMetadata: request.operationalMetadata,
+        ...(request.historicalRepair === true
+          ? { historicalPrepared: request.prepared } : {}),
+        ...(request.fallbackRepairSource === undefined ? {} : {
+          fallbackRepairSource: request.fallbackRepairSource,
+        }),
       });
       if (!("state" in reserved)) {
         return reserved;
@@ -489,10 +567,12 @@ export function createDormantTaskContentShadowRepository(input: Readonly<{
         });
       }
       assertPrepared(state, request.prepared);
+      const historicalStagedPrepared = state.lifecycle.historicalRepair?.version === 2
+        ? request.prepared : undefined;
 
       if (state.lifecycle.disposition === "mapped") {
         assertMappedState(state);
-        await verifyComplete(state, null);
+        await verifyComplete(state, null, historicalStagedPrepared);
         return Object.freeze({
           status: "replayed" as const,
           coordinate: state.lifecycle.coordinate,
@@ -502,7 +582,7 @@ export function createDormantTaskContentShadowRepository(input: Readonly<{
       const existingOrphan = orphanReason(state.lifecycle);
       if (existingOrphan !== null) {
         if (state.lifecycle.completion === "complete") {
-          await verifyComplete(state, null);
+          await verifyComplete(state, null, historicalStagedPrepared);
         }
         return Object.freeze({
           status: "orphaned" as const,
@@ -516,8 +596,8 @@ export function createDormantTaskContentShadowRepository(input: Readonly<{
       }
 
       await input.crypto.complete(request.prepared);
-      await verifyComplete(state, null);
-      return publishVerified(state, null);
+      await verifyComplete(state, null, historicalStagedPrepared);
+      return publishVerified(state, null, historicalStagedPrepared);
     },
 
     async reconcilePending(
@@ -579,6 +659,52 @@ export function createDormantTaskContentShadowRepository(input: Readonly<{
         }));
       }
       return Object.freeze({ outcomes: Object.freeze(outcomes) });
+    },
+
+    async reconcileCoordinate(
+      request: Parameters<TaskContentRepository["reconcileCoordinate"]>[0],
+    ) {
+      if (!UUID.test(request.leaseToken)) {
+        throw new TypeError("Task content reconciliation lease must be a UUID");
+      }
+      if (
+        typeof request.operationId !== "string"
+        || !PORTABLE_ID.test(request.operationId)
+        || new TextEncoder().encode(request.operationId).length > 128
+      ) throw new TypeError("Task content operation ID is invalid");
+      assertTaskContentCoordinateV1(request.coordinate);
+      const coordinate: TaskContentCoordinateV1 = Object.freeze({
+        ...request.coordinate,
+      });
+      if (input.product.claimReconciliationCoordinate === undefined) {
+        throw new Error(
+          "Task content product adapter does not support coordinate reconciliation",
+        );
+      }
+      let state: TaskContentRevisionStateV1 | null;
+      try {
+        state = await input.product.claimReconciliationCoordinate(Object.freeze({
+          coordinate, operationId: request.operationId, leaseToken: request.leaseToken,
+        }));
+      } catch (cause) {
+        if (cancellationPolicyWait(cause, coordinate, request.operationId)) return "pending";
+        throw cause;
+      }
+      if (state === null) return "pending";
+      assertState(state);
+      if (
+        !sameTaskContentCoordinateV1(state.lifecycle.coordinate, coordinate)
+        || state.lifecycle.operationId !== request.operationId
+      ) throw new Error("Claimed Task content lifecycle is not the requested operation");
+      if (
+        state.lifecycle.disposition === "active"
+        && state.lifecycle.leaseToken !== request.leaseToken
+      ) throw new Error("Claimed Task content lifecycle has the wrong lease");
+      return reconcileOne(
+        state,
+        request.leaseToken,
+        request.publishProduct,
+      );
     },
   });
 }

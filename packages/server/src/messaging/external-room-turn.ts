@@ -5,6 +5,7 @@ import { bolterBindingMatches, bolterReceiverMatches, type BolterBindingContext,
   type BolterRoomBinding, type BolterInboundInsert } from "@nautilo/db";
 import { assertAcceptedInvocationAuthoritySubject, getAcceptedInvocationAuthorityOrigin, restrictExternalRoomEnvelope,
   type AcceptedInvocationAuthority, type MemoryAccessEnvelope } from "@nautilo/trust";
+import { isBolterMessageAddressed } from "./bolter-addressing";
 
 const opaqueId = z.string().min(1).refine((value) => value.trim() === value && !/\s/u.test(value)
   && [...value].every((character) => character.charCodeAt(0) >= 32 && character.charCodeAt(0) !== 127));
@@ -56,12 +57,22 @@ export type ExternalRoomIntakeResult =
  * in the receipt, and no imported text is interpreted as Human authorization.
  */
 export function prepareBolterExternalRoomTurn(context: ExternalRoomIntakeContext, raw: unknown): ExternalRoomIntakeResult {
+  return prepareExternalRoomTurn(context, raw, "bolter");
+}
+
+export function prepareMagentExternalRoomTurn(context: ExternalRoomIntakeContext, raw: unknown): ExternalRoomIntakeResult {
+  return prepareExternalRoomTurn(context, raw, "magent");
+}
+
+function prepareExternalRoomTurn(context: ExternalRoomIntakeContext, raw: unknown, provider: "bolter" | "magent"): ExternalRoomIntakeResult {
   const fail = (reason: ExternalRoomIntakeFailure): ExternalRoomIntakeResult => ({ ok: false, reason });
   if (context.representationMode !== "plaintext_only") return fail("unsupported-mode");
   const { receiver, connection, binding } = context;
   if (!binding.modelSponsorshipAcceptedAt) return fail("sponsor-authority-unavailable");
   if (!bolterReceiverMatches(connection, receiver) || !bolterBindingMatches(binding, receiver)
-    || binding.origin !== "https://bolter.chat" || connection.origin !== binding.origin
+    || (connection.provider ?? "bolter") !== provider || (binding.provider ?? "bolter") !== provider
+    || (provider === "bolter" ? binding.origin !== "https://bolter.chat" || (connection.transportKind ?? "desktop-relay") !== "desktop-relay"
+      : connection.transportKind !== "operator-unix") || connection.origin !== binding.origin
     || connection.providerAgentId !== binding.providerAgentId) return fail("stale-binding");
   try {
     assertAcceptedInvocationAuthoritySubject(context.invocationAuthority, receiver.userId);
@@ -81,9 +92,10 @@ export function prepareBolterExternalRoomTurn(context: ExternalRoomIntakeContext
   const message = parsed.data;
   if (message.chatId !== binding.chatId || (message.threadRootId ?? "") !== binding.threadId) return fail("destination-mismatch");
   if (message.senderType === "system" || message.senderId === binding.providerAgentId) return fail("echo");
-  if (message.senderType === "anima" && !message.addressed) return fail("not-addressed");
+  if (provider === "magent" && message.senderType !== "anima") return fail("unsupported-content");
+  if (!isBolterMessageAddressed(message, binding.providerAgentId)) return fail("not-addressed");
   const originResult = externalMessageOriginSchema.safeParse({
-    kind: "external_message", version: 1, provider: "bolter", origin: binding.origin,
+    kind: "external_message", version: 1, provider, origin: binding.origin,
     connectionId: connection.id, bindingId: binding.id, providerAgentId: binding.providerAgentId,
     chatId: message.chatId, threadRootId: message.threadRootId, messageId: message.messageId,
     senderId: message.senderId, senderType: message.senderType,
@@ -116,7 +128,7 @@ export function prepareBolterExternalRoomTurn(context: ExternalRoomIntakeContext
 export function externalRoomTurnMatchesLockedBinding(turn: PreparedExternalRoomTurn, binding: BolterRoomBinding): boolean {
   return bolterBindingMatches(binding, turn.bindingContext)
     && binding.roomId === turn.roomId && binding.agentId === turn.agentId
-    && binding.origin === turn.origin.origin && binding.providerAgentId === turn.origin.providerAgentId
+    && (binding.provider ?? "bolter") === turn.origin.provider && binding.origin === turn.origin.origin && binding.providerAgentId === turn.origin.providerAgentId
     && binding.chatId === turn.origin.chatId && binding.threadId === (turn.origin.threadRootId ?? "")
     && "readableNamespaces" in turn.memoryEnvelope
     && turn.memoryEnvelope.readableNamespaces.length === 1

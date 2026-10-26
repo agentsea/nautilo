@@ -4,7 +4,8 @@ import { BACKGROUND_AUTHORIZATION_MAX_IDENTIFIER_BYTES } from
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
 const PORTABLE_ID = /^[A-Za-z0-9][A-Za-z0-9._:@/-]*$/u;
 const SHA256_BASE64URL = /^[A-Za-z0-9_-]{42}[AEIMQUYcgkosw048]$/u;
-const TASK_DEFINITION_OBJECT_ID = /^task-definition:v1:[0-9a-f]{64}$/u;
+// Lexical correlation only; current publication/execution validates the exact mapped definition ledger.
+const TASK_DEFINITION_OBJECT_ID = /^(?:task-definition|task-historical):v1:[0-9a-f]{64}$/u;
 const TASK_RUN_RESULT_OBJECT_ID = /^task-run-result:v1:[0-9a-f]{64}$/u;
 const encoder = new TextEncoder();
 

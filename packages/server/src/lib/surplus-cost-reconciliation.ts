@@ -1,5 +1,6 @@
 import {
   fetchSurplusSettlement,
+  getQualifiedSurplusEmbeddingRoute,
   resolveProviderKey,
   surplusCredentialFingerprint,
 } from "@nautilo/agent";
@@ -32,7 +33,107 @@ interface SurplusCostRecoveryDependencies {
   requeueBlockedServer(): Promise<number>;
   requeueBlockedDecisions(): Promise<number>;
   fetchCost: typeof fetchSurplusSettlement;
+  fetchEmbeddingCost(input: {
+    requestId: string;
+    apiKey: string;
+    expectedReceiptModel: string;
+    knownServingProviders: readonly string[];
+    observedServingProvider: string;
+    signal: AbortSignal;
+  }): Promise<Awaited<ReturnType<typeof fetchSurplusSettlement>>>;
   now(): number;
+}
+
+async function readBoundedReceiptJson(response: Response): Promise<unknown> {
+  const reader = response.body?.getReader();
+  if (!reader) return null;
+  const parts: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      if (!(chunk.value instanceof Uint8Array)) return null;
+      size += chunk.value.byteLength;
+      if (size > 65_536) {
+        await reader.cancel();
+        return null;
+      }
+      parts.push(chunk.value);
+    }
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const part of parts) {
+      bytes.set(part, offset);
+      offset += part.byteLength;
+    }
+    return JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    return null;
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+/** Embedding receipts bind both the qualified adapter model and its observed processor. */
+async function fetchQualifiedEmbeddingSettlement(input: {
+  requestId: string;
+  apiKey: string;
+  expectedReceiptModel: string;
+  knownServingProviders: readonly string[];
+  observedServingProvider: string;
+  signal: AbortSignal;
+}): Promise<Awaited<ReturnType<typeof fetchSurplusSettlement>>> {
+  if (!/^[a-zA-Z0-9_-]{1,128}$/.test(input.requestId)) {
+    return { status: "blocked_repair", failureCode: "receipt_request_rejected" };
+  }
+  const response = await fetch(
+    `https://api.surplusintelligence.ai/v1/requests/${encodeURIComponent(input.requestId)}`,
+    {
+      method: "GET",
+      redirect: "error",
+      signal: input.signal,
+      headers: { Authorization: `Bearer ${input.apiKey.trim()}` },
+    },
+  );
+  if (!response.ok) {
+    await response.body?.cancel();
+    if (response.status === 401 || response.status === 403) {
+      return { status: "blocked_repair", failureCode: "receipt_read_unauthorized" };
+    }
+    if (response.status === 404) {
+      return { status: "retryable", failureCode: "receipt_not_found" };
+    }
+    if (response.status === 429) {
+      return { status: "retryable", failureCode: "receipt_rate_limited" };
+    }
+    if (response.status >= 500) {
+      return { status: "retryable", failureCode: "receipt_service_unavailable" };
+    }
+    return { status: "blocked_repair", failureCode: "receipt_request_rejected" };
+  }
+  const value = await readBoundedReceiptJson(response);
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { status: "retryable", failureCode: "receipt_not_confirmed" };
+  }
+  const row = value as Record<string, unknown>;
+  const provider = typeof row["provider"] === "string"
+    ? row["provider"].trim().toLowerCase() : "";
+  if (row["request_id"] !== input.requestId
+    || row["model"] !== input.expectedReceiptModel
+    || !input.knownServingProviders.includes(provider)
+    || provider !== input.observedServingProvider.trim().toLowerCase()
+    || row["settlement_status"] !== "accrued"
+    || row["settlement_type"] !== "credit"
+    || (row["settlement_error"] !== undefined && row["settlement_error"] !== null)
+    || typeof row["confirmed_at"] !== "string"
+    || !Number.isFinite(Date.parse(row["confirmed_at"]))) {
+    return { status: "retryable", failureCode: "receipt_not_confirmed" };
+  }
+  const cost = row["buyer_cost_micro"];
+  return typeof cost === "number" && Number.isSafeInteger(cost) && cost >= 0
+    ? { status: "settled", costMicro: cost }
+    : { status: "retryable", failureCode: "receipt_not_confirmed" };
 }
 
 function defaultCredential(row: SurplusPendingAttempt): Promise<RecoveryCredential> | RecoveryCredential {
@@ -63,6 +164,7 @@ export function createSurplusCostRecovery(overrides: Partial<SurplusCostRecovery
     requeueBlockedServer: requeueBlockedServerSurplusAttempts,
     requeueBlockedDecisions: requeueBlockedSurplusDecisionAttempts,
     fetchCost: fetchSurplusSettlement,
+    fetchEmbeddingCost: fetchQualifiedEmbeddingSettlement,
     now: Date.now,
     ...overrides,
   };
@@ -122,21 +224,49 @@ export function createSurplusCostRecovery(overrides: Partial<SurplusCostRecovery
           continue;
         }
         const imageEndpoint = row.endpoint === "/v1/images/generations" || row.endpoint === "/v1/images/edits";
-        if (!imageEndpoint && row.endpoint !== "/v1/chat/completions" && row.endpoint !== "/v1/decisions") {
+        const embeddingEndpoint = row.endpoint === "/v1/embeddings";
+        if (!imageEndpoint && !embeddingEndpoint
+          && row.endpoint !== "/v1/chat/completions" && row.endpoint !== "/v1/decisions") {
           await classify(row, "blocked_repair", "receipt_endpoint_unsupported");
           continue;
         }
         const binding = row.metadata;
-        const unpinnedModel = !imageEndpoint && binding?.["surplusUnpinnedModel"] === true;
+        const unpinnedModel = !imageEndpoint && !embeddingEndpoint
+          && binding?.["surplusUnpinnedModel"] === true;
         const catalogProvider = typeof binding?.["catalogModelId"] === "string"
           ? binding["catalogModelId"].split(":", 1)[0]
           : binding?.["surplusProviderPin"];
+        const embeddingProviders = binding?.["surplusEmbeddingServingProviders"];
+        const embeddingDimensions = binding?.["surplusEmbeddingDimensions"];
+        const embeddingRoute = embeddingEndpoint
+          && typeof embeddingDimensions === "number"
+          ? getQualifiedSurplusEmbeddingRoute(row.model, embeddingDimensions)
+          : null;
+        const validEmbeddingBinding = embeddingEndpoint
+          && embeddingRoute !== null
+          && row.fundingKind === "service"
+          && row.callType === "embedding"
+          && row.provider === embeddingRoute.provider
+          && binding?.["catalogModelId"] === row.model
+          && binding?.["surplusModelId"] === embeddingRoute.wireModel
+          && binding?.["surplusEmbeddingPolicy"] === embeddingRoute.servingPolicy
+          && embeddingDimensions === embeddingRoute.dimensions
+          && binding?.["surplusEmbeddingReceiptModel"] === embeddingRoute.receiptModel
+          && Array.isArray(embeddingProviders)
+          && embeddingProviders.length === embeddingRoute.knownServingProviders.length
+          && embeddingRoute.knownServingProviders.every(
+            (provider, index) => embeddingProviders[index] === provider,
+          )
+          && typeof row.servingProvider === "string"
+          && embeddingProviders.includes(row.servingProvider.toLowerCase());
         if (typeof binding?.["surplusCredentialFingerprint"] !== "string"
           || typeof binding["surplusModelId"] !== "string"
-          || (imageEndpoint
+          || (embeddingEndpoint
+            ? !validEmbeddingBinding
+            : imageEndpoint
             ? binding["surplusUnpinnedMedia"] !== true
             : typeof binding["surplusProviderPin"] !== "string")
-          || catalogProvider !== row.provider) {
+          || (!embeddingEndpoint && catalogProvider !== row.provider)) {
           await classify(row, "blocked_repair", "receipt_binding_invalid");
           continue;
         }
@@ -167,16 +297,26 @@ export function createSurplusCostRecovery(overrides: Partial<SurplusCostRecovery
         }
 
         try {
-          const result = await deps.fetchCost({
-            apiKey: credential.apiKey,
-            binding: {
-              requestId: row.providerRequestId,
-              surplusModelId: binding["surplusModelId"],
-              providerPin: imageEndpoint || unpinnedModel ? null : binding["surplusProviderPin"] as string,
-              ...(unpinnedModel ? { unpinnedModel: true as const } : {}),
-            },
-            signal: AbortSignal.any([shutdown.signal, AbortSignal.timeout(10_000)]),
-          });
+          const signal = AbortSignal.any([shutdown.signal, AbortSignal.timeout(10_000)]);
+          const result = embeddingEndpoint
+            ? await deps.fetchEmbeddingCost({
+                apiKey: credential.apiKey,
+                requestId: row.providerRequestId,
+                expectedReceiptModel: binding["surplusEmbeddingReceiptModel"] as string,
+                knownServingProviders: embeddingProviders as string[],
+                observedServingProvider: row.servingProvider!,
+                signal,
+              })
+            : await deps.fetchCost({
+                apiKey: credential.apiKey,
+                binding: {
+                  requestId: row.providerRequestId,
+                  surplusModelId: binding["surplusModelId"],
+                  providerPin: imageEndpoint || unpinnedModel ? null : binding["surplusProviderPin"] as string,
+                  ...(unpinnedModel ? { unpinnedModel: true as const } : {}),
+                },
+                signal,
+              });
           if (isStopped()) return;
           if (result.status === "blocked_repair") {
             await classify(row, "blocked_repair", result.failureCode);

@@ -1,3 +1,4 @@
+import { parseTaskHistoricalRepairProvenanceV1 } from "@nautilo/lattice-bridge";
 import { isTaskLocalExecutionOfflineSourceReady } from "./local-execution-delegation";
 import { listTaskLocalExecutionOfflineWaits, rearmTaskLocalExecutionOffline } from "@nautilo/db";
 import { resumeReconnectedSecurityResearch } from "./security-report-recovery";
@@ -70,6 +71,7 @@ export type ProtectedTaskOccurrence = Readonly<{
     contentNamespaceId: string;
     contentRevision: number;
     cryptoObjectId: string;
+    definitionHistoricalRepair?: Readonly<Record<string, unknown>> | null;
     cryptoAccessRevision: number;
     cryptoRequiredNamespaceFingerprint: Uint8Array;
   }>;
@@ -113,6 +115,18 @@ export interface ProtectedTaskOccurrencePort {
   observeProtectedTaskOccurrence(occurrence: ProtectedTaskOccurrence): Promise<void>;
 }
 
+/**
+ * Current encryption-policy owner for protected occurrence work. The callback
+ * lifetime covers discovery/claim, durable preparation, and handoff to the
+ * server-owned occurrence port; returning `null` leaves protected rows
+ * untouched.
+ */
+export interface ProtectedTaskOccurrenceOwner {
+  withCurrent<Result>(
+    use: (port: ProtectedTaskOccurrencePort) => Promise<Result>,
+  ): Promise<Result | null>;
+}
+
 type ProtectedAwaitingTaskRunForAuthorization = Awaited<
   ReturnType<typeof listProtectedAwaitingTaskRunsForAuthorization>
 >[number];
@@ -145,6 +159,9 @@ function projectProtectedTaskOccurrence(
       contentNamespaceId: task.contentNamespaceId,
       contentRevision: task.contentRevision,
       cryptoObjectId: task.cryptoObjectId,
+      ...(task.definitionHistoricalRepair == null ? {} : {
+        definitionHistoricalRepair: parseTaskHistoricalRepairProvenanceV1(task.definitionHistoricalRepair),
+      }),
       cryptoAccessRevision: task.cryptoAccessRevision,
       cryptoRequiredNamespaceFingerprint:
         new Uint8Array(task.cryptoRequiredNamespaceFingerprint),
@@ -205,14 +222,18 @@ export interface TaskObserverDeps {
    * current ordinary Task observer and protected dispatch gate unchanged.
    * Receives both recovered awaiting runs and newly prepared due occurrences.
    */
-  protectedOccurrencePort?: ProtectedTaskOccurrencePort;
+  protectedOccurrencePort?: ProtectedTaskOccurrenceOwner;
+  /** Current policy owner for ordinary-only claims and their dispatch. */
+  ordinaryOccurrencePort?: Readonly<{
+    withCurrent<Result>(use: () => Promise<Result>): Promise<Result | null>;
+  }>;
   /**
    * Optional recovery-only protected occurrence boundary. This observes
    * already-awaiting runs without enabling the due protected-Task claim path.
    * When both ports are supplied, recovered runs use this port and newly
    * prepared runs use `protectedOccurrencePort`.
    */
-  protectedOccurrenceRecoveryPort?: ProtectedTaskOccurrencePort;
+  protectedOccurrenceRecoveryPort?: ProtectedTaskOccurrenceOwner;
 }
 
 type PreparationWrite = Parameters<typeof recordTaskPreparation>[1];
@@ -288,9 +309,10 @@ export class TaskObserver implements Observer {
   private readonly assertInvocation: typeof assertCanInvokeAgent;
   private readonly convergeCreatedRoomCatalog: DispatchTaskRunDeps["convergeCreatedRoomCatalog"];
   private readonly onMaintenance: (() => void | Promise<void>) | undefined;
-  private readonly protectedOccurrencePort: ProtectedTaskOccurrencePort | undefined;
+  private readonly ordinaryOccurrencePort: TaskObserverDeps["ordinaryOccurrencePort"];
+  private readonly protectedOccurrencePort: ProtectedTaskOccurrenceOwner | undefined;
   private readonly protectedOccurrenceRecoveryPort:
-    ProtectedTaskOccurrencePort | undefined;
+    ProtectedTaskOccurrenceOwner | undefined;
   private protectedRecoveryAfter: { taskRunId: string } | undefined;
   /**
    * Frozen process-start boundary for caller-funded runs which lost their
@@ -302,6 +324,13 @@ export class TaskObserver implements Observer {
     through?: CallerFundedRunningTaskRunCursor;
     after?: CallerFundedRunningTaskRunCursor;
   } | null = null;
+  /**
+   * Legacy ordinary restart repair must be selected by the same current
+   * policy owner as ordinary claims. Keep it pending while Strict/Full selects
+   * only protected work so a later fallback/Plain policy can drain it before
+   * the first ordinary claim.
+   */
+  private ordinaryRestartRecoveryPending = false;
 
   private interval: ReturnType<typeof setInterval> | null = null;
   private kickTimer: ReturnType<typeof setTimeout> | null = null;
@@ -322,6 +351,7 @@ export class TaskObserver implements Observer {
     this.assertInvocation = deps.assertInvocation ?? assertCanInvokeAgent;
     this.convergeCreatedRoomCatalog = deps.convergeCreatedRoomCatalog;
     this.onMaintenance = deps.onMaintenance;
+    this.ordinaryOccurrencePort = deps.ordinaryOccurrencePort;
     this.protectedOccurrencePort = deps.protectedOccurrencePort;
     this.protectedOccurrenceRecoveryPort =
       deps.protectedOccurrenceRecoveryPort ?? deps.protectedOccurrencePort;
@@ -374,28 +404,10 @@ export class TaskObserver implements Observer {
     }
   }
 
-  async start(): Promise<void> {
-    eventBus.off(this.onProgress);
-    eventBus.on(this.onProgress);
-    // The executor (invoked by JobManager, outside this call graph) reads the
-    // db handle from the module singleton.
-    setTaskRunDb(this.db);
-    this.callerFundingRestartRecovery = {};
-
-    // Stale-lock recovery + the first tick must never crash server boot — a
-    // transient DB hiccup is logged and retried on the next interval. (Server
-    // unit tests boot the app with a non-DB stub handle; this keeps them
-    // green while the real interval still runs in production.)
+  private async reconcileOrdinaryWorkInterruptedByRestart(): Promise<boolean> {
+    if (!this.ordinaryRestartRecoveryPending) return true;
+    const callerFundingSettled = await this.reconcileCallerFundingInterruptedByRestart();
     try {
-      const cutoff = new Date(this.now().getTime() - this.staleLockMs);
-      const cleared = await clearStaleFireLocks(this.db, cutoff);
-      if (cleared > 0) {
-        log(`[task-observer] cleared ${cleared} stale fire-lock(s) on start`);
-      }
-      // Caller-funded provider authority is process-local. Reconcile the
-      // frozen pre-start candidate set. A failure remains pending and is
-      // retried by runTickOnce before this observer can claim fresh work.
-      await this.reconcileCallerFundingInterruptedByRestart();
       // A live session capability never survives process restart. Reconcile
       // only exact Writer-review markers, in bounded SQL-filtered pages; do
       // not scan arbitrary `awaiting` Tasks and infer authority in JS.
@@ -511,6 +523,58 @@ export class TaskObserver implements Observer {
         const last = orphanedRunningVerification.at(-1)!;
         afterRunningVerification = { startedAt: last.run.startedAt, runId: last.run.id };
       }
+      if (callerFundingSettled) this.ordinaryRestartRecoveryPending = false;
+      return callerFundingSettled;
+    } catch (err) {
+      log(
+        `[task-observer] ordinary restart reconciliation failed; retrying before claims: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return false;
+    }
+  }
+
+  private async reconcileCurrentOrdinaryWorkInterruptedByRestart(): Promise<boolean> {
+    if (!this.ordinaryRestartRecoveryPending) return true;
+    const reconcile = () => this.reconcileOrdinaryWorkInterruptedByRestart();
+    try {
+      const selected = this.ordinaryOccurrencePort === undefined
+        ? await reconcile()
+        : await this.ordinaryOccurrencePort.withCurrent(reconcile);
+      // Strict/Full deliberately leaves ordinary recovery pending, but must
+      // not block protected recovery and claims in the same observer tick.
+      return selected ?? true;
+    } catch (err) {
+      log(
+        `[task-observer] ordinary restart policy unavailable; retrying before claims: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+      return false;
+    }
+  }
+
+  async start(): Promise<void> {
+    eventBus.off(this.onProgress);
+    eventBus.on(this.onProgress);
+    // The executor (invoked by JobManager, outside this call graph) reads the
+    // db handle from the module singleton.
+    setTaskRunDb(this.db);
+    this.callerFundingRestartRecovery = {};
+    this.ordinaryRestartRecoveryPending = true;
+
+    // Stale-lock recovery + the first tick must never crash server boot — a
+    // transient DB hiccup is logged and retried on the next interval. (Server
+    // unit tests boot the app with a non-DB stub handle; this keeps them
+    // green while the real interval still runs in production.)
+    try {
+      const cutoff = new Date(this.now().getTime() - this.staleLockMs);
+      const cleared = await clearStaleFireLocks(this.db, cutoff);
+      if (cleared > 0) {
+        log(`[task-observer] cleared ${cleared} stale fire-lock(s) on start`);
+      }
+      await this.reconcileCurrentOrdinaryWorkInterruptedByRestart();
     } catch (err) {
       log(
         `[task-observer] stale-lock clear failed on start: ${err instanceof Error ? err.message : String(err)}`,
@@ -569,7 +633,7 @@ export class TaskObserver implements Observer {
   private async runTickOnce(): Promise<void> {
     const now = this.now();
 
-    if (!await this.reconcileCallerFundingInterruptedByRestart()) return;
+    if (!await this.reconcileCurrentOrdinaryWorkInterruptedByRestart()) return;
 
     if (this.onMaintenance) {
       try {
@@ -605,6 +669,38 @@ export class TaskObserver implements Observer {
       return;
     }
 
+    try {
+      const observe = () => this.observeOrdinaryOccurrences(now);
+      const observed = this.ordinaryOccurrencePort === undefined
+        ? await observe()
+        : await this.ordinaryOccurrencePort.withCurrent(observe);
+      if (observed === false) return;
+    } catch {
+      log("[task-observer] ordinary occurrence observation deferred code=TASK_POLICY_UNAVAILABLE");
+      return;
+    }
+
+    if (this.protectedOccurrenceRecoveryPort) {
+      await this.recoverProtectedOccurrences(
+        this.protectedOccurrenceRecoveryPort,
+      );
+    }
+    if (this.protectedOccurrencePort) {
+      await this.prepareDueProtectedOccurrences(
+        now,
+        this.protectedOccurrencePort,
+      );
+    }
+
+    // Time-limit watchdog. After the claim/dispatch/recurrence
+    // pass, scan running tasks whose active run has overrun its
+    // `time_limit_seconds` budget and pause each (on expiry the run is
+    // paused, awaiting explicit unpause/stop — not stopped). Reuses `pauseTask`
+    // verbatim (one abort path). A single bad task must not abort the scan.
+    await this.runTimeLimitWatchdog(now);
+  }
+
+  private async observeOrdinaryOccurrences(now: Date): Promise<boolean> {
     let due: Awaited<ReturnType<typeof claimDueTasks>>;
     try {
       const waiting = await listTaskLocalExecutionOfflineWaits(this.db, { limit: this.batch,
@@ -624,7 +720,7 @@ export class TaskObserver implements Observer {
       log(
         `[task-observer] claim failed: ${err instanceof Error ? err.message : String(err)}`,
       );
-      return;
+      return false;
     }
     for (const task of due) {
       try {
@@ -684,111 +780,92 @@ export class TaskObserver implements Observer {
       }
     }
 
-    if (this.protectedOccurrenceRecoveryPort) {
-      await this.recoverProtectedOccurrences(
-        this.protectedOccurrenceRecoveryPort,
-      );
-    }
-    if (this.protectedOccurrencePort) {
-      await this.prepareDueProtectedOccurrences(
-        now,
-        this.protectedOccurrencePort,
-      );
-    }
-
-    // Time-limit watchdog. After the claim/dispatch/recurrence
-    // pass, scan running tasks whose active run has overrun its
-    // `time_limit_seconds` budget and pause each (on expiry the run is
-    // paused, awaiting explicit unpause/stop — not stopped). Reuses `pauseTask`
-    // verbatim (one abort path). A single bad task must not abort the scan.
-    await this.runTimeLimitWatchdog(now);
+    return true;
   }
 
   /** One keyset page per tick keeps recovery bounded without starving later runs. */
   private async recoverProtectedOccurrences(
-    port: ProtectedTaskOccurrencePort,
+    owner: ProtectedTaskOccurrenceOwner,
   ): Promise<void> {
-    let awaiting: Awaited<ReturnType<typeof listProtectedAwaitingTaskRunsForAuthorization>>;
     try {
-      await port.recoverBeforeObservation?.(this.batch);
-      awaiting = await listProtectedAwaitingTaskRunsForAuthorization(
-        this.db,
-        this.batch,
-        this.protectedRecoveryAfter,
-      );
+      await owner.withCurrent(async (port) => {
+        await port.recoverBeforeObservation?.(this.batch);
+        const awaiting = await listProtectedAwaitingTaskRunsForAuthorization(
+          this.db,
+          this.batch,
+          this.protectedRecoveryAfter,
+        );
+        for (const { task, run } of awaiting) {
+          await this.offerProtectedOccurrence(
+            port,
+            task,
+            run,
+          );
+        }
+        this.protectedRecoveryAfter = awaiting.length === this.batch
+          ? { taskRunId: awaiting.at(-1)!.run.id }
+          : undefined;
+      });
     } catch {
       log("[task-observer] protected occurrence recovery deferred code=PROTECTED_RECOVERY_QUERY_RETRY");
-      return;
     }
-
-    for (const { task, run } of awaiting) {
-      await this.offerProtectedOccurrence(
-        port,
-        task,
-        run,
-      );
-    }
-    this.protectedRecoveryAfter = awaiting.length === this.batch
-      ? { taskRunId: awaiting.at(-1)!.run.id }
-      : undefined;
   }
 
   private async prepareDueProtectedOccurrences(
     now: Date,
-    port: ProtectedTaskOccurrencePort,
+    owner: ProtectedTaskOccurrenceOwner,
   ): Promise<void> {
-    let due: Awaited<ReturnType<typeof claimDueProtectedTasks>>;
     try {
-      due = await claimDueProtectedTasks(this.db, now, this.batch);
+      await owner.withCurrent(async (port) => {
+        const due = await claimDueProtectedTasks(this.db, now, this.batch);
+        for (const task of due) {
+          try {
+            if (
+              task.fireLockId === null
+              || task.nextFireAt === null
+              || (task.contentRepresentation !== "dual"
+                && task.contentRepresentation !== "protected")
+              || task.contentNamespaceId === null
+              || task.cryptoObjectId === null
+              || task.cryptoRequiredNamespaceFingerprint === null
+            ) {
+              throw new TypeError("Protected Task claim is incomplete");
+            }
+            const scheduledFor = task.nextFireAt;
+            const taskRunId = randomUUID();
+            const prepared = await prepareClaimedProtectedTaskOccurrence(this.db, {
+              taskId: task.id,
+              fireLockId: task.fireLockId,
+              contentRepresentation: task.contentRepresentation,
+              contentNamespaceId: task.contentNamespaceId,
+              contentRevision: task.contentRevision,
+              cryptoObjectId: task.cryptoObjectId,
+              cryptoRequiredNamespaceFingerprint: task.cryptoRequiredNamespaceFingerprint,
+              scheduledFor,
+              taskRunId,
+              graphThreadId: `subagent:task:${task.id}:${randomUUID()}`,
+              // `scheduledFor` identifies the claimed occurrence. Recurrence keeps
+              // the ordinary observer's catch-up policy and skips downtime backlog.
+              ...(task.scheduleKind === "cron" && task.cron
+                ? { cronNextFireAt: nextCronOccurrence(task.cron, task.timezone, now) }
+                : {}),
+            });
+            if (prepared.status === "prepared") {
+              await this.offerProtectedOccurrence(
+                port,
+                prepared.task,
+                prepared.run,
+              );
+            }
+          } catch {
+            // Preparation is atomic. A successfully prepared occurrence remains
+            // awaiting; the recovery page retries it without a raw error sink.
+            log("[task-observer] protected occurrence deferred code=PROTECTED_PREPARE_RETRY");
+          }
+        }
+      });
     } catch {
       log("[task-observer] protected occurrence claim deferred code=PROTECTED_CLAIM_RETRY");
-      return;
-    }
-
-    for (const task of due) {
-      try {
-        if (
-          task.fireLockId === null
-          || task.nextFireAt === null
-          || (task.contentRepresentation !== "dual"
-            && task.contentRepresentation !== "protected")
-          || task.contentNamespaceId === null
-          || task.cryptoObjectId === null
-          || task.cryptoRequiredNamespaceFingerprint === null
-        ) {
-          throw new TypeError("Protected Task claim is incomplete");
-        }
-        const scheduledFor = task.nextFireAt;
-        const taskRunId = randomUUID();
-        const prepared = await prepareClaimedProtectedTaskOccurrence(this.db, {
-          taskId: task.id,
-          fireLockId: task.fireLockId,
-          contentRepresentation: task.contentRepresentation,
-          contentNamespaceId: task.contentNamespaceId,
-          contentRevision: task.contentRevision,
-          cryptoObjectId: task.cryptoObjectId,
-          cryptoRequiredNamespaceFingerprint: task.cryptoRequiredNamespaceFingerprint,
-          scheduledFor,
-          taskRunId,
-          graphThreadId: `subagent:task:${task.id}:${randomUUID()}`,
-          // `scheduledFor` identifies the claimed occurrence. Recurrence keeps
-          // the ordinary observer's catch-up policy and skips downtime backlog.
-          ...(task.scheduleKind === "cron" && task.cron
-            ? { cronNextFireAt: nextCronOccurrence(task.cron, task.timezone, now) }
-            : {}),
-        });
-        if (prepared.status === "prepared") {
-          await this.offerProtectedOccurrence(
-            port,
-            prepared.task,
-            prepared.run,
-          );
-        }
-      } catch {
-        // Preparation is atomic. A successfully prepared occurrence remains
-        // awaiting; the recovery page retries it without a raw error sink.
-        log("[task-observer] protected occurrence deferred code=PROTECTED_PREPARE_RETRY");
-      }
     }
   }
 
@@ -820,8 +897,18 @@ export class TaskObserver implements Observer {
     }
     for (const { task } of timedOut) {
       try {
-        await pauseTask({ db: this.db, jobManager: this.jobManager }, task.id, "time_limit");
-        log(`[task-observer] time-limit reached → paused task=${task.id}`);
+        const result = await pauseTask(
+          { db: this.db, jobManager: this.jobManager },
+          task.id,
+          "time_limit",
+        );
+        if (result.status === "paused") {
+          log(`[task-observer] time-limit reached → paused task=${task.id}`);
+        } else if (task.contentRepresentation !== "ordinary") {
+          log("[task-observer] protected time-limit settlement pending code=PROTECTED_TIME_LIMIT_SETTLEMENT_PENDING");
+        } else {
+          log(`[task-observer] time-limit reached → ${result.status} task=${task.id}`);
+        }
       } catch (err) {
         if (task.contentRepresentation !== "ordinary") {
           // Protected diagnostics must not inspect provider/tool error text.

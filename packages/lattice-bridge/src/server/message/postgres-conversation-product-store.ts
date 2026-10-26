@@ -29,6 +29,7 @@ import {
   type PostgresJsBridgeRow,
   type PostgresJsBridgeScalar,
 } from "@nautilo/db";
+import { assertTaskWakeLiveShadowPublicationAuthority } from "./postgres-task-wake-live-shadow-authority.ts";
 import { sha256 } from "@noble/hashes/sha2.js";
 import {
   deriveHumanMessageEditCryptoObjectIdV1,
@@ -248,7 +249,23 @@ export type ConversationProductPublicationGuardInput =
     >;
   }>);
 
+export type ConversationProductAppendPreparationGuardInput = Omit<
+  Extract<
+    ConversationProductPublicationGuardInput,
+    Readonly<{ action: "appendAllocated" }>
+  >,
+  "messageId"
+>;
+
 export interface ConversationProductPublicationGuard {
+  /**
+   * Acquire authority and write rows in the guard's canonical order before
+   * the transcript append. The ordinary guard still revalidates allocation.
+   */
+  prepareAppendPublication?(
+    transaction: CanonicalTranscriptTx,
+    input: ConversationProductAppendPreparationGuardInput,
+  ): Promise<void>;
   assertPublicationAllowed(
     transaction: CanonicalTranscriptTx,
     input: ConversationProductPublicationGuardInput,
@@ -651,6 +668,7 @@ function lifecycleFromRow(
     row,
     "shared_agent_shadow_execution_id",
   );
+  const taskWakeOperationId = nullableString(row, "task_wake_operation_id");
   const shadowTranscriptOrdinal = nullableInteger(
     row,
     "shadow_transcript_ordinal",
@@ -768,6 +786,7 @@ function lifecycleFromRow(
     humanPeerShadowOperationId,
     sharedAgentShadowOperationId,
     sharedAgentShadowExecutionId,
+    taskWakeOperationId,
   ].filter((value) => value !== null).length;
   if (
     objectIdScheme === "message_v2"
@@ -782,6 +801,7 @@ function lifecycleFromRow(
       : objectIdScheme === "human_message_edit_v1"
         ? liveParentCount > 1
           || sharedAgentShadowExecutionId !== null
+          || taskWakeOperationId !== null
           || authorRole !== "user"
           || revision < 1
       : liveParentCount !== 1
@@ -789,6 +809,11 @@ function lifecycleFromRow(
         || shadowTranscriptOrdinal < 1
         || shadowReservedCreatedAt === null
   ) throw new TypeError("Conversation live object identity is incoherent");
+  if (taskWakeOperationId !== null && (objectIdScheme !== "live_shadow_v1"
+    || keyClass !== "ai" || (authorRole !== "assistant" && authorRole !== "tool")
+    || revision !== 0 || shadowTranscriptOrdinal === null || shadowTranscriptOrdinal < 2)) {
+    throw new TypeError("Conversation Task wake identity is incoherent");
+  }
   if (objectIdScheme === "human_message_edit_v1") {
     parseHumanMessageEditCryptoObjectIdV1(objectId, {
       sessionId,
@@ -994,6 +1019,7 @@ function lifecycleFromRow(
     humanPeerShadowOperationId,
     sharedAgentShadowOperationId,
     sharedAgentShadowExecutionId,
+    taskWakeOperationId,
     shadowTranscriptOrdinal,
     shadowReservedCreatedAt,
     shadowStreamId,
@@ -1268,6 +1294,7 @@ const LIFECYCLE_COLUMNS = `lifecycle.sequence,
        lifecycle.human_peer_shadow_operation_id,
        lifecycle.shared_agent_shadow_operation_id,
        lifecycle.shared_agent_shadow_execution_id,
+       lifecycle.task_wake_operation_id,
        lifecycle.shadow_transcript_ordinal,
        lifecycle.shadow_reserved_created_at,
        lifecycle.shadow_stream_id,
@@ -1336,6 +1363,7 @@ const lifecycleSelection = {
     sessionMessageCryptoRevisions.sharedAgentShadowOperationId,
   shared_agent_shadow_execution_id:
     sessionMessageCryptoRevisions.sharedAgentShadowExecutionId,
+  task_wake_operation_id: sessionMessageCryptoRevisions.taskWakeOperationId,
   shadow_transcript_ordinal:
     sessionMessageCryptoRevisions.shadowTranscriptOrdinal,
   shadow_reserved_created_at:
@@ -1437,6 +1465,15 @@ async function readCommitted<Result>(
   ) => Promise<Result>,
 ): Promise<Result> {
   return handle.transaction(callback, { isolationLevel: "read committed" });
+}
+
+function exactLiveAgentParent(lifecycle: ConversationRevisionLifecycle, operationId: string, wake: boolean): boolean {
+  return wake ? lifecycle.taskWakeOperationId === operationId
+    && lifecycle.shadowOperationId === null && lifecycle.humanPeerShadowOperationId === null
+    && lifecycle.sharedAgentShadowOperationId === null && lifecycle.sharedAgentShadowExecutionId === null
+    : lifecycle.taskWakeOperationId === null && (
+      lifecycle.shadowOperationId === operationId && lifecycle.sharedAgentShadowExecutionId === null
+      || lifecycle.sharedAgentShadowExecutionId === operationId && lifecycle.shadowOperationId === null);
 }
 
 /** Serialize new publication with loss of the exact shared execution authority. */
@@ -1620,6 +1657,7 @@ export class PostgresConversationProductStore
     private readonly canonicalRunner:
       ConversationProductCanonicalTransactionRunner,
     private readonly publicationGuard?: ConversationProductPublicationGuard,
+    private readonly taskWakeAuthority?: import("../../message/conversation-repository.ts").TaskWakeLiveShadowPublicationAuthority,
   ) {
     assertVerifiedConversationProductPostgresHandle(handle);
     assertConversationProductCanonicalTransactionRunner(handle, canonicalRunner);
@@ -1644,6 +1682,11 @@ export class PostgresConversationProductStore
     ) throw new TypeError("Live Shadow Agent reservation is invalid");
 
     return canonicalTransaction(this.canonicalRunner, async (transaction) => {
+      const wake = input.taskWakeAuthority === undefined ? null
+        : assertTaskWakeLiveShadowPublicationAuthority(input.taskWakeAuthority, {
+          transaction, operationId: input.operationId, sessionId: input.sessionId,
+          publicationPolicy: input.publicationPolicy,
+        });
       if (input.publicationPolicy !== undefined) {
         await acquireEncryptionPublicationFence(transaction, input.publicationPolicy);
       }
@@ -1658,6 +1701,7 @@ export class PostgresConversationProductStore
           .from(sessionMessageCryptoRevisions)
           .where(and(
             or(
+              eq(sessionMessageCryptoRevisions.taskWakeOperationId, input.operationId),
               eq(
                 sessionMessageCryptoRevisions.shadowOperationId,
                 input.operationId,
@@ -1685,7 +1729,8 @@ export class PostgresConversationProductStore
         const expectedPolicyRevision = expectedRepresentationMode === "full_encryption"
           ? input.publicationPolicy!.expectedRevision
           : null;
-        return lifecycle.sessionId === input.sessionId
+        return lifecycle.taskWakeOperationId === (wake === null ? null : input.operationId)
+            && lifecycle.sessionId === input.sessionId
             && lifecycle.authorRole === input.authorRole
             && lifecycle.objectIdScheme === "live_shadow_v1"
             && lifecycle.representationMode === expectedRepresentationMode
@@ -1715,7 +1760,7 @@ export class PostgresConversationProductStore
           : Object.freeze({ status: "conflict" as const });
       }
 
-      const turnRows = canonicalRows(
+      const turnRows = wake === null ? canonicalRows(
         await transaction.select({
           state: conversationShadowTurnOperations.state,
           session_id: conversationShadowTurnOperations.sessionId,
@@ -1727,9 +1772,9 @@ export class PostgresConversationProductStore
             input.operationId,
           ))
           .for("update", { of: conversationShadowTurnOperations }).limit(2),
-      );
+      ) : [];
       const turn = oneOrNone(turnRows, "Live Shadow Agent turn");
-      const sharedRows = turn === null
+      const sharedRows = wake === null && turn === null
         ? canonicalRows(await transaction.select({
           state: conversationSharedAgentShadowExecutions.state,
           invocation_id: conversationSharedAgentShadowExecutions.invocationId,
@@ -1751,7 +1796,8 @@ export class PostgresConversationProductStore
       const shared = turn === null
         ? oneOrNone(sharedRows, "Shared-Agent execution")
         : null;
-      const parent = turn ?? shared;
+      const parent = wake === null ? turn ?? shared : { state: "running",
+        session_id: input.sessionId, room_id: wake.roomId, namespace_id: wake.namespaceId };
       const sharedParent = shared !== null;
       const sharedInvocationId = shared === null
         ? null
@@ -1798,7 +1844,8 @@ export class PostgresConversationProductStore
           publicationPolicyRevision: input.publicationPolicy?.representation === "protected_only"
             ? input.publicationPolicy.expectedRevision
             : null,
-          shadowOperationId: sharedParent ? null : input.operationId,
+          shadowOperationId: sharedParent || wake !== null ? null : input.operationId,
+          taskWakeOperationId: wake === null ? null : input.operationId,
           humanPeerShadowOperationId: null,
           sharedAgentShadowOperationId: null,
           sharedAgentShadowExecutionId:
@@ -1854,7 +1901,7 @@ export class PostgresConversationProductStore
             eq(conversationSharedAgentShadowInvocations.state, "authorized"),
           ));
         }
-      } else {
+      } else if (wake === null) {
         await transaction.update(conversationShadowTurnOperations).set({
           state: "running",
           startedAt: sql`COALESCE(${conversationShadowTurnOperations.startedAt}, CURRENT_TIMESTAMP)`,
@@ -1925,6 +1972,11 @@ export class PostgresConversationProductStore
     }
 
     return canonicalTransaction(this.canonicalRunner, async (transaction) => {
+      const wake = input.taskWakeAuthority === undefined ? null
+        : assertTaskWakeLiveShadowPublicationAuthority(input.taskWakeAuthority, {
+          transaction, operationId: input.operationId, sessionId: input.sessionId,
+          publicationPolicy: input.publicationPolicy,
+        });
       if (input.publicationPolicy !== undefined) {
         await acquireEncryptionPublicationFence(transaction, input.publicationPolicy);
       }
@@ -1949,6 +2001,10 @@ export class PostgresConversationProductStore
       );
       if (lifecycleRow === null) return { status: "conflict" as const };
       const lifecycle = lifecycleFromRow(lifecycleRow);
+      if (wake !== null && (input.humanTurnId !== null || input.transcriptOrigin !== "main"
+        || lifecycle.roomId !== wake.roomId || lifecycle.namespaceIdAtAllocation !== wake.namespaceId)) {
+        return { status: "conflict" as const };
+      }
       const expectedRepresentationMode = input.publicationPolicy?.representation === "protected_only"
         ? "full_encryption"
         : "shadow_encryption";
@@ -1956,16 +2012,7 @@ export class PostgresConversationProductStore
         ? input.publicationPolicy!.expectedRevision
         : null;
       if (
-        lifecycle.shadowOperationId !== input.operationId
-          && lifecycle.sharedAgentShadowExecutionId !== input.operationId
-        || (
-          lifecycle.shadowOperationId === input.operationId
-          && lifecycle.sharedAgentShadowExecutionId !== null
-        )
-        || (
-          lifecycle.sharedAgentShadowExecutionId === input.operationId
-          && lifecycle.shadowOperationId !== null
-        )
+        !exactLiveAgentParent(lifecycle, input.operationId, wake !== null)
         || lifecycle.shadowTranscriptOrdinal !== input.transcriptOrdinal
         || lifecycle.shadowReservedCreatedAt?.getTime()
           !== input.reservedCreatedAt
@@ -2084,6 +2131,11 @@ export class PostgresConversationProductStore
     ) throw new TypeError("Live Shadow Agent evidence coordinate is invalid");
 
     return canonicalTransaction(this.canonicalRunner, async (transaction) => {
+      const wake = input.taskWakeAuthority === undefined ? null
+        : assertTaskWakeLiveShadowPublicationAuthority(input.taskWakeAuthority, {
+          transaction, operationId: input.operationId, sessionId: input.sessionId,
+          publicationPolicy: input.publicationPolicy,
+        });
       if (input.publicationPolicy !== undefined) {
         await acquireEncryptionPublicationFence(transaction, input.publicationPolicy);
       }
@@ -2121,16 +2173,7 @@ export class PostgresConversationProductStore
             && lifecycle.shadowStreamedTextDigest !== null
             && bytesEqual(lifecycle.shadowStreamedTextDigest, input.streamEvidence.streamedTextDigest));
       if (
-        lifecycle.shadowOperationId !== input.operationId
-          && lifecycle.sharedAgentShadowExecutionId !== input.operationId
-        || (
-          lifecycle.shadowOperationId === input.operationId
-          && lifecycle.sharedAgentShadowExecutionId !== null
-        )
-        || (
-          lifecycle.sharedAgentShadowExecutionId === input.operationId
-          && lifecycle.shadowOperationId !== null
-        )
+        !exactLiveAgentParent(lifecycle, input.operationId, wake !== null)
         || lifecycle.shadowTranscriptOrdinal !== input.transcriptOrdinal
         || lifecycle.completion !== "complete"
         || lifecycle.disposition !== "mapped"
@@ -2146,16 +2189,16 @@ export class PostgresConversationProductStore
         )
       ) return "conflict" as const;
 
-      const turnRows = canonicalRows(await transaction.select({
+      const turnRows = wake === null ? canonicalRows(await transaction.select({
         state: conversationShadowTurnOperations.state,
         final_causal_event_digest:
           conversationShadowTurnOperations.finalCausalEventDigest,
       }).from(conversationShadowTurnOperations).where(eq(
         conversationShadowTurnOperations.operationId,
         input.operationId,
-      )).for("update", { of: conversationShadowTurnOperations }).limit(2));
+      )).for("update", { of: conversationShadowTurnOperations }).limit(2)) : [];
       const turn = oneOrNone(turnRows, "Live Shadow Agent evidence turn");
-      const sharedRows = turn === null
+      const sharedRows = wake === null && turn === null
         ? canonicalRows(await transaction.select({
           state: conversationSharedAgentShadowExecutions.state,
           invocation_id: conversationSharedAgentShadowExecutions.invocationId,
@@ -2170,7 +2213,7 @@ export class PostgresConversationProductStore
       const shared = turn === null
         ? oneOrNone(sharedRows, "Shared-Agent evidence execution")
         : null;
-      const parent = turn ?? shared;
+      const parent = wake === null ? turn ?? shared : { state: "running", final_causal_event_digest: null };
       if (parent === null) return "conflict" as const;
       const sharedParent = shared !== null;
       const sharedInvocationId = shared === null
@@ -2187,7 +2230,7 @@ export class PostgresConversationProductStore
           ? turnState !== "running" && !turnExact
           : turnState !== "running"
       ) return "conflict" as const;
-      if (lifecycleExact && (!input.finalTurnMessage || turnExact)) {
+      if (lifecycleExact && (wake !== null || !input.finalTurnMessage || turnExact)) {
         return "duplicate" as const;
       }
 
@@ -2208,7 +2251,7 @@ export class PostgresConversationProductStore
         eq(sessionMessageCryptoRevisions.messageId, input.messageId),
         eq(sessionMessageCryptoRevisions.editRevision, 0),
       ));
-      if (input.finalTurnMessage && !turnExact) {
+      if (wake === null && input.finalTurnMessage && !turnExact) {
         if (sharedParent) {
           await transaction.update(conversationSharedAgentShadowExecutions).set({
             state: "completed",
@@ -2448,6 +2491,16 @@ export class PostgresConversationProductStore
           ? { status: "replayed", lifecycle }
           : { status: "conflict" };
       }
+
+      await this.publicationGuard?.prepareAppendPublication?.(transaction, {
+        action: "appendAllocated",
+        sessionId: input.sessionId,
+        revision: 0,
+        idempotencyKey: input.idempotencyKey,
+        authorRole: input.authorRole,
+        keyClass: input.keyClass,
+        publicationPolicy: input.publicationPolicy,
+      });
 
       const result = await appendCanonicalTranscriptRowsToExistingSessionInTx(
         transaction,
@@ -3798,6 +3851,13 @@ export class PostgresConversationProductStore
       );
       if (row === null) return "missing";
       const lifecycle = lifecycleFromRow(row);
+      if (lifecycle.taskWakeOperationId !== null) {
+        assertTaskWakeLiveShadowPublicationAuthority(this.taskWakeAuthority, {
+          transaction, operationId: lifecycle.taskWakeOperationId, sessionId: lifecycle.sessionId,
+          namespaceId: lifecycle.namespaceIdAtAllocation,
+        });
+      }
+
       if (lifecycle.completion === "pending" && lifecycle.repairPublisherKind !== null
         && (input.repairPublication === undefined || lifecycle.repairPublisherKind !== input.repairPublication.publisherKind
           || lifecycle.repairPublisherId !== input.repairPublication.publisherId
@@ -3953,6 +4013,13 @@ export class PostgresConversationProductStore
       const row = await this.#lockedLifecycleCanonical(transaction, input, true);
       if (row === null) return "missing";
       const lifecycle = lifecycleFromRow(row);
+      if (lifecycle.taskWakeOperationId !== null) {
+        assertTaskWakeLiveShadowPublicationAuthority(this.taskWakeAuthority, {
+          transaction, operationId: lifecycle.taskWakeOperationId, sessionId: lifecycle.sessionId,
+          namespaceId: lifecycle.namespaceIdAtAllocation,
+        });
+      }
+
       if (!leaseMatches(row, lifecycle, input.leaseToken)) {
         return "lease_lost";
       }

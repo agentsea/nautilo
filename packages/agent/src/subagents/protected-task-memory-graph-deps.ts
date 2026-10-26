@@ -1,6 +1,4 @@
 import type {
-  ProtectedAgentMemoryAccessPort,
-  ProtectedAgentMemoryProjectionPort,
   ProtectedAgentMemoryRepository,
   ProtectedAgentMemorySearchPort,
 } from "@nautilo/lattice-bridge";
@@ -14,6 +12,14 @@ import {
 
 import type { NautiloGraphDeps } from "../agent/graph";
 import type { NautiloState } from "../agent/state";
+import {
+  createProtectedTaskMemoryAccessPort,
+  type ProtectedTaskMemoryAccessHandoff,
+} from "../tools/memory/protected-task-access-authority";
+import {
+  createProtectedTaskMemoryProjectionPort,
+  type ProtectedTaskMemoryProjectionHandoff,
+} from "../tools/memory/protected-task-projection-authority";
 
 export type ProtectedTaskMemoryGraphIdentity = Readonly<{
   taskId: string;
@@ -34,8 +40,8 @@ export type ProtectedTaskMemoryGraphIdentity = Readonly<{
 export type ProtectedTaskMemoryGraphHandoff = Readonly<{
   search: ProtectedAgentMemorySearchPort;
   repository: ProtectedAgentMemoryRepository;
-  access?: ProtectedAgentMemoryAccessPort;
-  projection?: ProtectedAgentMemoryProjectionPort;
+  access?: ProtectedTaskMemoryAccessHandoff;
+  projection?: ProtectedTaskMemoryProjectionHandoff;
   /** Trusted policy-owner decision. This adapter never derives a mode. */
   fullEncryptionOnly: boolean;
 }>;
@@ -77,10 +83,22 @@ function validateHandoff(handoff: ProtectedTaskMemoryGraphHandoff): void {
     requiredMethod(handoff?.repository, method, "repository");
   }
   if (handoff?.access !== undefined) {
-    requiredMethod(handoff.access, "change", "access port");
+    for (const method of [
+      "prepareApproval",
+      "restoreApproval",
+      "planChange",
+      "changeAuthorized",
+    ] as const) {
+      requiredMethod(handoff.access, method, "access port");
+    }
   }
   if (handoff?.projection !== undefined) {
-    for (const method of ["prepare", "publish"] as const) {
+    for (const method of [
+      "prepare",
+      "restore",
+      "planPublication",
+      "publishAuthorized",
+    ] as const) {
       requiredMethod(handoff.projection, method, "projection port");
     }
   }
@@ -234,13 +252,19 @@ export function createProtectedTaskMemoryGraphDeps(
 ): ProtectedTaskMemoryGraphDeps | NoProtectedTaskMemoryGraphDeps {
   if (handoff === undefined) return Object.freeze({});
   validateHandoff(handoff);
+  const projection = handoff.projection === undefined
+    ? undefined
+    : createProtectedTaskMemoryProjectionPort(handoff.projection);
+  const access = handoff.access === undefined
+    ? undefined
+    : createProtectedTaskMemoryAccessPort(handoff.access);
   const boundHandoff = Object.freeze({
     search: handoff.search,
     repository: handoff.repository,
-    ...(handoff.access === undefined ? {} : { access: handoff.access }),
-    ...(handoff.projection === undefined
+    ...(access === undefined ? {} : { access }),
+    ...(projection === undefined
       ? {}
-      : { projection: handoff.projection }),
+      : { projection }),
     fullEncryptionOnly: handoff.fullEncryptionOnly,
   });
   for (const [name, value] of [

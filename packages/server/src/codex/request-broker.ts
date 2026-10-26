@@ -22,7 +22,149 @@ export interface CodexRelayRequestSource {
   ): () => void;
   /** Registry lifecycle invalidation for relay disconnect/re-registration. */
   onCodexContextInvalidated(listener: (relayId: string, errorCode: string) => void): () => void;
+  /** Protected partition retirement; absent on an unpartitioned or ordinary source. */
+  onCodexRequestScopeRetired?(
+    listener: (identity: CodexRequestScopePartitionIdentity) => void,
+  ): () => void;
   sendCodex(relayId: string, message: RelayCodexServerMessage): { readonly ok: boolean };
+}
+
+export type CodexRequestScopePartitionIdentity = Readonly<{
+  relayId: string;
+  bindingId: string;
+  bindingGeneration: number;
+  taskId: string;
+  jobId: string;
+}>;
+
+export function codexRequestScopePartitionIdentity(input: Readonly<{
+  relayId: string;
+  bindingId: string;
+  bindingGeneration: string;
+  taskId: string;
+  jobId: string;
+}>): CodexRequestScopePartitionIdentity {
+  const bindingGeneration = Number(input.bindingGeneration);
+  if (!Number.isSafeInteger(bindingGeneration) || bindingGeneration < 0
+    || String(bindingGeneration) !== input.bindingGeneration) {
+    throw new TypeError("Codex request binding generation is invalid");
+  }
+  return Object.freeze({
+    relayId: input.relayId,
+    bindingId: input.bindingId,
+    bindingGeneration,
+    taskId: input.taskId,
+    jobId: input.jobId,
+  });
+}
+
+export interface CodexRequestScopeLease {
+  close(): void;
+}
+
+type PartitionKind = "ordinary" | "protected";
+
+/**
+ * Routes each native request to one broker before either broker can retain it.
+ * Leases are installed before provider start. Unowned frames are dropped, and
+ * releasing a lease purges every buffered turn for that exact execution.
+ */
+export class CodexRequestSourcePartition {
+  private readonly listeners: Record<PartitionKind, Set<(relayId: string, message: RelayCodexClientMessage) => void>> = {
+    ordinary: new Set(), protected: new Set(),
+  };
+  private readonly invalidationListeners = new Set<(relayId: string, errorCode: string) => void>();
+  private readonly retirementListeners: Record<PartitionKind, Set<(identity: CodexRequestScopePartitionIdentity) => void>> = {
+    ordinary: new Set(), protected: new Set(),
+  };
+  private readonly ownedScopes = new Map<string, Readonly<{ kind: PartitionKind; token: object }>>();
+  private readonly unsubscribe: () => void;
+  private readonly unsubscribeInvalidation: () => void;
+  readonly ordinary: CodexRelayRequestSource;
+  readonly protected: CodexRelayRequestSource;
+
+  constructor(private readonly source: CodexRelayRequestSource) {
+    this.unsubscribe = source.onCodexMessage((relayId, message) => this.route(relayId, message));
+    this.unsubscribeInvalidation = source.onCodexContextInvalidated((relayId, errorCode) => {
+      this.clearRelay(relayId);
+      for (const listener of this.invalidationListeners) listener(relayId, errorCode);
+    });
+    this.ordinary = this.view("ordinary");
+    this.protected = this.view("protected");
+  }
+
+  protect(identity: CodexRequestScopePartitionIdentity): CodexRequestScopeLease {
+    return this.claim("protected", identity);
+  }
+
+  claimOrdinary(identity: CodexRequestScopePartitionIdentity): CodexRequestScopeLease {
+    return this.claim("ordinary", identity);
+  }
+
+  private claim(kind: PartitionKind, identity: CodexRequestScopePartitionIdentity): CodexRequestScopeLease {
+    const ownedIdentity = detachPartitionIdentity(identity);
+    const key = partitionScopeKey(ownedIdentity);
+    if (this.ownedScopes.has(key)) throw new TypeError("Codex request scope is already owned");
+    const token = Object.freeze({});
+    this.ownedScopes.set(key, Object.freeze({ kind, token }));
+    let active = true;
+    return Object.freeze({
+      close: () => {
+        if (!active) return;
+        active = false;
+        if (this.ownedScopes.get(key)?.token !== token) return;
+        this.ownedScopes.delete(key);
+        for (const listener of this.retirementListeners[kind]) listener(ownedIdentity);
+      },
+    });
+  }
+
+  dispose(): void {
+    this.unsubscribe();
+    this.unsubscribeInvalidation();
+    this.listeners.ordinary.clear();
+    this.listeners.protected.clear();
+    this.invalidationListeners.clear();
+    this.retirementListeners.ordinary.clear();
+    this.retirementListeners.protected.clear();
+    this.ownedScopes.clear();
+  }
+
+  private view(kind: PartitionKind): CodexRelayRequestSource {
+    const source: CodexRelayRequestSource = {
+      onCodexMessage: (listener: (relayId: string, message: RelayCodexClientMessage) => void) => {
+        this.listeners[kind].add(listener);
+        return () => { this.listeners[kind].delete(listener); };
+      },
+      onCodexContextInvalidated: (listener: (relayId: string, errorCode: string) => void) => {
+        this.invalidationListeners.add(listener);
+        return () => { this.invalidationListeners.delete(listener); };
+      },
+      sendCodex: (relayId: string, message: RelayCodexServerMessage) => this.source.sendCodex(relayId, message),
+      onCodexRequestScopeRetired: (listener: (identity: CodexRequestScopePartitionIdentity) => void) => {
+        this.retirementListeners[kind].add(listener);
+        return () => { this.retirementListeners[kind].delete(listener); };
+      },
+    };
+    return Object.freeze(source);
+  }
+
+  private route(relayId: string, message: RelayCodexClientMessage): void {
+    if (message.type !== "relay:codex-request" || relayId !== message.scope.relayId) {
+      for (const listener of this.listeners.ordinary) listener(relayId, message);
+      for (const listener of this.listeners.protected) listener(relayId, message);
+      return;
+    }
+    const key = partitionScopeKey(message.scope);
+    const owner = this.ownedScopes.get(key);
+    if (owner === undefined) return;
+    for (const listener of this.listeners[owner.kind]) listener(relayId, message);
+  }
+
+  private clearRelay(relayId: string): void {
+    const prefix = JSON.stringify([relayId]).slice(0, -1);
+    for (const key of this.ownedScopes.keys()) if (key.startsWith(prefix)) this.ownedScopes.delete(key);
+  }
 }
 
 export interface CodexRequestSubscription extends AsyncIterable<RelayCodexRequestMessage> {
@@ -89,6 +231,7 @@ export class CodexRequestBroker {
   private readonly now: () => number;
   private readonly unsubscribe: () => void;
   private readonly unsubscribeInvalidation: (() => void) | null;
+  private readonly unsubscribeScopeRetired: (() => void) | null;
 
   constructor(private readonly options: CodexRequestBrokerOptions) {
     this.maxBufferedTurns = options.maxBufferedTurns ?? DEFAULT_MAX_BUFFERED_TURNS;
@@ -103,6 +246,9 @@ export class CodexRequestBroker {
     this.unsubscribeInvalidation = options.source.onCodexContextInvalidated((relayId) => {
       this.closeRelay(relayId);
     });
+    this.unsubscribeScopeRetired = options.source.onCodexRequestScopeRetired?.((identity) => {
+      this.closePartitionScope(identity);
+    }) ?? null;
   }
 
   subscribe(
@@ -192,6 +338,7 @@ export class CodexRequestBroker {
   dispose(): void {
     this.unsubscribe();
     this.unsubscribeInvalidation?.();
+    this.unsubscribeScopeRetired?.();
     for (const stream of [...this.streams.values()]) this.closeStream(stream, true);
     this.streams.clear();
     this.tombstones.clear();
@@ -342,6 +489,13 @@ export class CodexRequestBroker {
     }
   }
 
+  private closePartitionScope(identity: CodexRequestScopePartitionIdentity): void {
+    const expected = partitionScopeKey(identity);
+    for (const stream of [...this.streams.values()]) {
+      if (partitionScopeKey(stream.scope) === expected) this.closeStream(stream, true);
+    }
+  }
+
   private rememberTombstone(key: string): void {
     if (this.tombstones.size >= this.maxBufferedTurns * this.maxRequestsPerTurn) {
       const oldest = this.tombstones.values().next().value;
@@ -482,6 +636,28 @@ function turnScopeKey(scope: CodexRelayTurnScope): string {
 function requestScopeKey(message: RelayCodexRequestMessage): string {
   return JSON.stringify([turnScopeKey(scopeFrom(message)), message.scope.eventId, message.scope.itemId,
     message.scope.requestRef, "callRef" in message.scope ? message.scope.callRef : null]);
+}
+
+function partitionScopeKey(identity: CodexRequestScopePartitionIdentity): string {
+  return JSON.stringify([
+    identity.relayId,
+    identity.bindingId,
+    identity.bindingGeneration,
+    identity.taskId,
+    identity.jobId,
+  ]);
+}
+
+function detachPartitionIdentity(
+  identity: CodexRequestScopePartitionIdentity,
+): CodexRequestScopePartitionIdentity {
+  return Object.freeze({
+    relayId: identity.relayId,
+    bindingId: identity.bindingId,
+    bindingGeneration: identity.bindingGeneration,
+    taskId: identity.taskId,
+    jobId: identity.jobId,
+  });
 }
 
 function positive(value: number): boolean {

@@ -3,13 +3,17 @@ import type { PostgresJsBridgeConnection, PostgresJsBridgeRow, PostgresJsBridgeS
 import {
   LatticeCrypto, accessRevision, agentId, authorizationRevision, cryptoDeviceId, cryptoDomainId,
   assertAuthenticPreparedTaskRuntimeResultObject, decryptObjectThroughNamespace,
-  domainNamespaceRetainedAuthoritySetDigest, humanId, namespaceGeneration, namespaceId,
+  createDomainForegroundAuthorizationPlan, domainNamespaceRetainedAuthoritySetDigest,
+  humanId, mintDomainForegroundAuthorization, namespaceGeneration, namespaceId,
   prepareAgentRuntimeInitialization, prepareDomainNamespaceBundle, prepareNativeTaskRuntimeResultObject,
+  TaskRuntimeRecipientRegistry,
   type DomainForegroundSecretEntry, type PrepareNativeTaskRuntimeResultObjectInput,
+  type TaskRuntimeCancellationResultEvidence,
 } from "@nautilo/lattice-crypto";
 import {
   DOMAIN_NAMESPACE_BUNDLE_FORMAT_VERSION_V2, DOMAIN_NAMESPACE_BUNDLE_INNER_PURPOSE_V2,
   decodeEncryptedPayloadV2, decodeNamespaceObjectEnvelopeV2, encodeAgentRuntimeSignerPublicationV1,
+  serializeDomainForegroundAuthorizationV2,
 } from "@nautilo/lattice-crypto/wire";
 import {
   withTaskRuntimeExecutionEvidenceV1,
@@ -21,7 +25,9 @@ import { decodeTaskRunResultPayloadV1, encodeTaskRunResultPayloadV1 } from "../.
 import { taskRuntimePreparedResultDigestV1 } from "../../src/task/task-run-result-preparation.ts";
 import {
   prepareNativeTaskRuntimeRunResult,
+  prepareNativeTaskRuntimeCancelledRunResult,
   withNativeTaskNamespaceSource,
+  type PrepareNativeTaskRuntimeCancelledRunResultInput,
   type PrepareNativeTaskRuntimeRunResultInput,
 } from "../../src/server/task/native-task-run-result-preparation.ts";
 
@@ -111,6 +117,122 @@ async function fixture(adjust: Adjust = (_stage, rows) => rows) {
     createdAt: NOW, agentAuthorizationRevision: 7, runtime: initialized.runtime,
     signerPublication: initialized.signerPublication, resolveHistoricalSignerPublicationManager: () => manager.publicKey,
     assertCurrentTaskAuthority: () => { stages.push("product"); return Promise.resolve(); } };
+  const cancellationCoordinate = Object.freeze({
+    kind: "run_result" as const,
+    taskId: TASK,
+    taskRunId: RUN,
+    contentRevision: 2 as const,
+  });
+  const cancellationResult = Object.freeze({
+    taskId: TASK,
+    taskRunId: RUN,
+    contentRevision: 2 as const,
+    objectId: deriveTaskContentCryptoObjectIdV1(cancellationCoordinate),
+    signerAgentId: AGENT,
+    namespace: Object.freeze({
+      namespaceId: NAMESPACE,
+      domainId: DOMAIN,
+      operations: Object.freeze(["encrypt"] as const),
+      expectedAccessRevision: 0,
+      expectedPolicyRevision: 3,
+    }),
+  });
+  let cancellationNow = NOW;
+  const withCancellationEvidence = async <Value>(operation: (
+    evidence: TaskRuntimeCancellationResultEvidence,
+    signal: AbortSignal,
+    domains: readonly DomainForegroundSecretEntry[],
+  ) => Value | PromiseLike<Value>) => {
+    const recipients = new TaskRuntimeRecipientRegistry(crypto, {
+      now: () => cancellationNow,
+    });
+    const attempt = await recipients.createAttempt({
+      requestId: "native-cancel-result-request",
+      workId: RUN,
+      recipientGeneration: 1,
+      recipientKeyId: "native-cancel-result-recipient",
+      expiresAt: NOW + 60_000,
+    });
+    if (attempt.status !== "created") throw new Error("cancellation recipient unavailable");
+    const plan = createDomainForegroundAuthorizationPlan(crypto, {
+      authorizationId: "native-cancel-result-request",
+      policyRevision: 3,
+      sessionId: "native-cancel-result-episode",
+      roomId: "native-cancel-result-room",
+      subjectHumanId: humanId(HUMAN),
+      committerDeviceId: cryptoDeviceId(DEVICE),
+      committerDeviceSigningGeneration: 1,
+      hostAuthorizationRevision: authorizationRevision(5),
+      recipientKind: "runtime",
+      recipientPrincipalId: "nautilo_task_runtime",
+      recipientAuthorizationRevision: authorizationRevision(6),
+      recipientRuntimeGeneration: 1,
+      recipientKeyId: "native-cancel-result-recipient",
+      operations: ["encrypt"],
+      issuedAt: NOW,
+      deadlineAt: NOW + 60_000,
+      maximumSecretBytes: 4_096,
+      domains: [domainRequirement],
+    });
+    const authorization = await mintDomainForegroundAuthorization(crypto, {
+      plan,
+      domains: [domain],
+      committerDeviceSigningPrivateKey: issuer.privateKey,
+      recipientEncryptionPublicKey: attempt.attempt.recipientPublicKey,
+    });
+    const authorizationBytes = serializeDomainForegroundAuthorizationV2(
+      authorization,
+    );
+    try {
+      return await recipients.withOpenedCancellationResultGrant({
+        requestId: "native-cancel-result-request",
+        workId: RUN,
+        recipientGeneration: 1,
+        recipientKeyId: "native-cancel-result-recipient",
+        claimId: "native-cancel-result-claim",
+        claimExpiresAt: NOW + 60_000,
+        authorizationBytes,
+        current: {
+          authorizationId: plan.authorizationId,
+          policyRevision: plan.policyRevision,
+          sessionId: plan.sessionId,
+          roomId: plan.roomId,
+          subjectHumanId: plan.subjectHumanId,
+          committerDeviceId: plan.committerDeviceId,
+          committerDeviceSigningGeneration:
+            plan.committerDeviceSigningGeneration,
+          committerDeviceSigningPublicKey: issuer.publicKey,
+          committerDeviceActive: true,
+          hostAuthorizationRevision: plan.hostAuthorizationRevision,
+          recipientKind: plan.recipientKind,
+          recipientPrincipalId: plan.recipientPrincipalId,
+          recipientAuthorizationRevision:
+            plan.recipientAuthorizationRevision,
+          recipientRuntimeGeneration: plan.recipientRuntimeGeneration,
+          recipientKeyId: plan.recipientKeyId,
+          recipientAuthorized: true,
+          domains: plan.domains,
+        },
+        currentNamespaceRequirements: [{
+          ordinal: 0,
+          namespaceId: NAMESPACE,
+          domainId: DOMAIN,
+          operations: ["encrypt"],
+          expectedAccessRevision: 0,
+          expectedPolicyRevision: 3,
+        }],
+        result: cancellationResult,
+        operation: (domains, signal, evidence) => operation(
+          evidence,
+          signal,
+          domains,
+        ),
+      });
+    } finally {
+      authorizationBytes.fill(0);
+      recipients.close();
+    }
+  };
   const prepare = (overrides: Partial<PrepareNativeTaskRuntimeRunResultInput> = {}) => withTaskRuntimeExecutionEvidenceV1({
     evidence: evidenceInput, signal: base.signal, now: () => NOW,
     execute: (evidence) => prepareNativeTaskRuntimeRunResult({ ...base, evidence, ...overrides }),
@@ -119,7 +241,20 @@ async function fixture(adjust: Adjust = (_stage, rows) => rows) {
     current, bindingBytes: native.bytes, expectedBindingDigest: native.bindingDigest,
     issuerSigningPublicKey: issuer.publicKey, domainKey,
   };
-  return { crypto, coordinate, generationKey, base, evidenceInput, nativeSource, prepare, stages };
+  return {
+    crypto,
+    coordinate,
+    cancellationCoordinate,
+    cancellationResult,
+    generationKey,
+    base,
+    evidenceInput,
+    nativeSource,
+    prepare,
+    setCancellationNow: (value: number) => { cancellationNow = value; },
+    stages,
+    withCancellationEvidence,
+  };
 }
 
 function cloneRow(row: DatabaseRow): DatabaseRow {
@@ -273,6 +408,150 @@ async function fails(operation: Promise<unknown>): Promise<void> {
 }
 
 describe("native Task Runtime result preparation", () => {
+  test("seals the fixed cancellation result through a real encrypt-only grant", async () => {
+    const value = await fixture();
+    const { payload: _payload, domains: _domains, signal: _signal, ...base } =
+      value.base;
+    const opened = await value.withCancellationEvidence(
+      (evidence, signal, domains) =>
+        prepareNativeTaskRuntimeCancelledRunResult({
+          ...base,
+          domains,
+          signal,
+          evidence,
+        }),
+    );
+    expect(opened.status).toBe("opened");
+    if (opened.status !== "opened") throw new Error("cancellation grant did not open");
+    const revision = opened.value;
+    const snapshot = readPreparedTaskContentCryptoRevisionSnapshotV1(revision);
+    expect(revision.coordinate).toEqual(value.cancellationCoordinate);
+    expect(snapshot.access.manifest.signer).toMatchObject({
+      kind: "agent_runtime",
+      agentId: AGENT,
+    });
+    const payload = decodeEncryptedPayloadV2(snapshot.object.payloadBytes.ciphertext);
+    const envelope = decodeNamespaceObjectEnvelopeV2(
+      snapshot.access.envelopeBytes[0],
+    );
+    const plaintext = decryptObjectThroughNamespace(
+      value.crypto,
+      value.generationKey,
+      envelope,
+      payload,
+    );
+    expect(plaintext).not.toBeNull();
+    try {
+      expect(decodeTaskRunResultPayloadV1(plaintext!)).toEqual({
+        formatVersion: 1,
+        resultText: "Task cancelled",
+        lastError: null,
+      });
+    } finally {
+      plaintext?.fill(0);
+    }
+    expect(value.stages.some((stage) => stage.includes("definition")))
+      .toBe(false);
+    expect(value.stages.filter((stage) => stage === "product")).toHaveLength(2);
+  });
+
+  test("rejects stale, expired, forged, or cross-purpose cancellation evidence", async () => {
+    const changedNamespace = await fixture();
+    const {
+      payload: _changedPayload,
+      domains: _changedDomains,
+      signal: _changedSignal,
+      ...changedBase
+    } = changedNamespace.base;
+    const changed = await changedNamespace.withCancellationEvidence(
+      (evidence, signal, domains) => fails(
+        prepareNativeTaskRuntimeCancelledRunResult({
+          ...changedBase,
+          authority: {
+            ...changedNamespace.base.authority,
+            namespaceId: TASK,
+          },
+          domains,
+          signal,
+          evidence,
+        }),
+      ),
+    );
+    expect(changed).toEqual({ status: "opened", value: undefined });
+
+    const expired = await fixture();
+    const {
+      payload: _expiredPayload,
+      domains: _expiredDomains,
+      signal: _expiredSignal,
+      ...expiredBase
+    } = expired.base;
+    const expiredResult = await expired.withCancellationEvidence(
+      (evidence, signal, domains) => {
+        expired.setCancellationNow(NOW + 60_000);
+        return fails(prepareNativeTaskRuntimeCancelledRunResult({
+          ...expiredBase,
+          domains,
+          signal,
+          evidence,
+        }));
+      },
+    );
+    expect(expiredResult).toEqual({ status: "opened", value: undefined });
+
+    const forged = await fixture();
+    const {
+      payload: _forgedPayload,
+      domains: _forgedDomains,
+      signal: _forgedSignal,
+      ...forgedBase
+    } = forged.base;
+    const forgedResult = await forged.withCancellationEvidence(
+      (evidence, signal, domains) => fails(
+        prepareNativeTaskRuntimeCancelledRunResult({
+          ...forgedBase,
+          domains,
+          signal,
+          evidence: {
+            ...evidence,
+          } as TaskRuntimeCancellationResultEvidence,
+        }),
+      ),
+    );
+    expect(forgedResult).toEqual({ status: "opened", value: undefined });
+
+    const crossed = await fixture();
+    await withTaskRuntimeExecutionEvidenceV1({
+      evidence: crossed.evidenceInput,
+      signal: crossed.base.signal,
+      now: () => NOW,
+      execute: (evidence) => fails(
+        prepareNativeTaskRuntimeCancelledRunResult({
+          ...crossed.base,
+          evidence: evidence as unknown as
+            PrepareNativeTaskRuntimeCancelledRunResultInput["evidence"],
+        }),
+      ),
+    });
+    const {
+      payload: _normalPayload,
+      domains: _normalDomains,
+      signal: _normalSignal,
+      ...normalBase
+    } = crossed.base;
+    const normalResult = await crossed.withCancellationEvidence(
+      (evidence, signal, domains) => fails(prepareNativeTaskRuntimeRunResult({
+        ...normalBase,
+        payload: crossed.base.payload,
+        domains,
+        signal,
+        evidence: evidence as unknown as
+          PrepareNativeTaskRuntimeRunResultInput["evidence"],
+      })),
+    );
+    expect(normalResult).toEqual({ status: "opened", value: undefined });
+  });
+
   test("seals an authentic compatible result revision and decrypts with the native generation", async () => {
     const value = await fixture();
     const revision = await value.prepare();

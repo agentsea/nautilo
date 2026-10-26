@@ -1,3 +1,4 @@
+import { isTaskExecutionWorkKind } from "@nautilo/runtime";
 import {
   settleCancelledProtectedTaskRunAuthorization,
   type DirectDatabase,
@@ -35,8 +36,8 @@ function sameTaskRequest(
     && record.snapshot.workId === candidate.workId
     && record.snapshot.namespaceId === candidate.namespaceId
     && record.snapshot.recipientGeneration === candidate.recipientGeneration
-    && record.workKind === "task.execute"
-    && record.purpose === "task.execute"
+    && isTaskExecutionWorkKind(record.workKind)
+    && record.purpose === record.workKind
     && record.processorAuthorizationRevision === null
     && record.authoritySet !== undefined
     && isTaskRuntimeStableIdempotencyKey(record.idempotencyKey, candidate.workId);

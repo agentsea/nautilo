@@ -17,6 +17,11 @@ export type ProtectedTaskExecutionStartResult =
   | Readonly<{ status: "started" }>
   | Readonly<{ status: "stale" }>;
 
+export type ProtectedTaskCheckpointPauseReason =
+  | "manual_pause"
+  | "time_limit"
+  | "grant_refresh";
+
 /** The candidate released its custody without calling the execution callback. */
 export class ProtectedTaskExecutionDidNotBeginError extends Error {
   constructor() {
@@ -59,6 +64,11 @@ export interface ProtectedTaskExecutionCandidate {
       settlement: ProtectedTaskExecutionSettlement,
     ) => Promise<T>,
   ): Promise<T>;
+  /** Request a checkpoint-bound park from this exact process-owned execution. */
+  requestCheckpointPause?(
+    reason: ProtectedTaskCheckpointPauseReason,
+    pauseRequestId?: string,
+  ): boolean;
   /** Reconcile only after the exact durable Job is proved cancelled and unstarted. */
   deferBeforeExecution?(jobId: string): Promise<boolean>;
   onIneligible(): void;

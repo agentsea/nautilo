@@ -1069,6 +1069,14 @@ export class PostgresNamespaceProductAuthority {
     subjectHumanId: string;
     sourceRoomId: string;
     namespaceIds: readonly string[];
+    /** Pins an actual delivery Room, including an inherited Subthread. */
+    destinationRoom?: Readonly<{ roomId: string; namespaceId: string }>;
+    /** An additional actual Room already covered by this exact Namespace set. */
+    additionalDestinationRoom?: Readonly<{ roomId: string; namespaceId: string }>;
+    /** Product-only planning fence; never returned as Namespace key authority. */
+    planningDestinationRoom?: Readonly<{ roomId: string; namespaceId: string }>;
+    /** Explicit mutation audience; never included in the source-readable partition. */
+    mutationDestinationRoom?: Readonly<{ roomId: string; namespaceId: string }>;
     use: (
       entries: readonly NamespaceProductAuthoritySetEntry[],
     ) => Promise<Value>;
@@ -1083,7 +1091,37 @@ export class PostgresNamespaceProductAuthority {
         !UUID.test(value)
         || (index > 0 && input.namespaceIds[index - 1]! >= value)
       )
+      || input.destinationRoom !== undefined && (
+        !UUID.test(input.destinationRoom.roomId)
+        || !input.namespaceIds.includes(input.destinationRoom.namespaceId)
+      )
+      || input.additionalDestinationRoom !== undefined && (
+        input.destinationRoom === undefined
+        || !UUID.test(input.additionalDestinationRoom.roomId)
+        || !input.namespaceIds.includes(input.additionalDestinationRoom.namespaceId)
+      )
+      || input.planningDestinationRoom !== undefined && (
+        input.destinationRoom === undefined
+        || !UUID.test(input.planningDestinationRoom.roomId)
+        || !UUID.test(input.planningDestinationRoom.namespaceId)
+      )
+      || input.mutationDestinationRoom !== undefined && (
+        input.destinationRoom === undefined
+        || !UUID.test(input.mutationDestinationRoom.roomId)
+        || !input.namespaceIds.includes(input.mutationDestinationRoom.namespaceId)
+        || input.mutationDestinationRoom.namespaceId === input.destinationRoom.namespaceId
+      )
     ) throw new TypeError("Namespace key product set coordinates are invalid");
+    const targetNamespaceIds = Object.freeze([...new Set([...input.namespaceIds,
+      ...(input.planningDestinationRoom === undefined ? [] : [input.planningDestinationRoom.namespaceId])])].sort());
+    const mutationDestination = input.mutationDestinationRoom === undefined ? undefined
+      : Object.freeze({ ...input.mutationDestinationRoom });
+    const destinations = Object.freeze([
+      ...(input.destinationRoom === undefined ? [] : [Object.freeze({ ...input.destinationRoom })]),
+      ...(input.additionalDestinationRoom === undefined ? [] : [Object.freeze({ ...input.additionalDestinationRoom })]),
+      ...(input.planningDestinationRoom === undefined ? [] : [Object.freeze({ ...input.planningDestinationRoom })]),
+      ...(input.mutationDestinationRoom === undefined ? [] : [Object.freeze({ ...input.mutationDestinationRoom })]),
+    ]);
     return this.product.transactionOnce(async (transaction) => {
       const candidateTargets = await transaction.query(
         `/* m291_namespace_key_readable_set_target_candidates */
@@ -1093,17 +1131,18 @@ export class PostgresNamespaceProductAuthority {
           WHERE target.namespace_id = ANY($1::uuid[])
             AND target.parent_room_id IS NULL
           ORDER BY target.namespace_id`,
-        [input.namespaceIds],
+        [targetNamespaceIds],
       );
       if (
-        candidateTargets.length !== input.namespaceIds.length
+        candidateTargets.length !== targetNamespaceIds.length
         || candidateTargets.some((row, index) =>
-          text(row, "namespace_id") !== input.namespaceIds[index]
+          text(row, "namespace_id") !== targetNamespaceIds[index]
         )
       ) return null;
       const candidateRoomIds = [...new Set([
         input.sourceRoomId,
         ...candidateTargets.map((row) => text(row, "room_id")),
+        ...destinations.map(destination => destination.roomId),
       ])].sort();
       // Invalid inherited sources must follow the same order before rejection.
       // Retain one array parameter: the admitted set can exceed PostgreSQL's
@@ -1117,6 +1156,36 @@ export class PostgresNamespaceProductAuthority {
           .for("update", { of: roomsTable }),
       );
       if (lockedRows.length !== candidateRoomIds.length) return null;
+      const currentDestinations = new Map<string, PostgresJsBridgeRow>();
+      for (const destination of destinations) {
+        const destinationRows = await executeTypedConversationProductQuery(
+          transaction,
+          conversationProductTypedDb.select({
+            id: roomsTable.id,
+            namespace_id: roomsTable.namespaceId,
+            parent_room_id: roomsTable.parentRoomId,
+            kind: roomsTable.kind,
+            archived_at: roomsTable.archivedAt,
+            human_actor_ids: roomsTable.humanActorIds,
+            effective_human_actor_ids: sql<string[]>`public.moderation_effective_humans(${roomsTable.humanActorIds}, ${roomsTable.id})`
+              .as("effective_human_actor_ids"),
+            destination_access_allowed: sql<boolean>`public.moderation_access_allowed(${input.subjectUserId}::uuid, ${roomsTable.id})`
+              .mapWith(Boolean).as("destination_access_allowed"),
+          }).from(roomsTable).where(eq(roomsTable.id, destination.roomId)).limit(2),
+        );
+        const current = destinationRows[0];
+        if (current !== undefined) currentDestinations.set(destination.roomId, current);
+        const authorityRoomId = candidateTargets.find(row =>
+          text(row, "namespace_id") === destination.namespaceId)?.["room_id"];
+        if (destinationRows.length !== 1 || current === undefined
+          || current.id !== destination.roomId
+          || current.namespace_id !== destination.namespaceId
+          || current.archived_at !== null
+          || current.destination_access_allowed !== true
+          || (current.parent_room_id === null
+            ? current.id !== authorityRoomId
+            : current.parent_room_id !== authorityRoomId || current.kind !== "subthread")) return null;
+      }
       const sourceRows = await transaction.query(
         `/* m291_namespace_key_readable_set_source */
          SELECT source.id::text AS source_room_id, source.kind,
@@ -1186,18 +1255,20 @@ export class PostgresNamespaceProductAuthority {
             AND target.parent_room_id IS NULL
           ORDER BY target.namespace_id
           FOR UPDATE OF target`,
-        [input.namespaceIds],
+        [targetNamespaceIds],
       );
       if (
-        targetRows.length !== input.namespaceIds.length
+        targetRows.length !== targetNamespaceIds.length
         || targetRows.some((row, index) =>
-          text(row, "namespace_id") !== input.namespaceIds[index]
+          text(row, "namespace_id") !== targetNamespaceIds[index]
         )
       ) return null;
-      const targetRoomIds = targetRows.map((row) => text(row, "room_id"));
-      if (targetRoomIds.some((roomId, index) =>
+      const namespaceRoomIds = targetRows.map((row) => text(row, "room_id"));
+      if (namespaceRoomIds.some((roomId, index) =>
         roomId !== text(candidateTargets[index]!, "room_id")
       )) return null;
+      const targetRoomIds = destinations.length === 0 ? namespaceRoomIds
+        : [...new Set([...namespaceRoomIds, ...destinations.map(destination => destination.roomId)])].sort();
       const memberRows = await transaction.query(
         `/* m291_namespace_key_readable_set_target_members */
          SELECT member.room_id::text AS room_id,
@@ -1209,10 +1280,29 @@ export class PostgresNamespaceProductAuthority {
           FOR UPDATE OF member`,
         [targetRoomIds],
       );
+      for (const destination of destinations) {
+        const currentDestination = currentDestinations.get(destination.roomId);
+        if (currentDestination === undefined) return null;
+        const destinationMembers = memberRows.filter(member =>
+          text(member, "room_id") === destination.roomId);
+        const destinationHumanIds = destinationMembers
+          .filter(member => member["kind"] === "user")
+          .map(member => text(member, "actor_id"));
+        if (destinationHumanIds.length === 0) return null;
+        const destinationHumans = canonicalHumans(destinationHumanIds);
+        const storedHumans = currentDestination["human_actor_ids"];
+        if (!destinationHumans.includes(humanId(input.subjectHumanId))
+          || !destinationMembers.some(member => member["kind"] === "agent")
+          || !Array.isArray(storedHumans)
+          || storedHumans.length !== destinationHumans.length
+          || storedHumans.some((value, index) => value !== destinationHumans[index])
+          || effectiveAudience(currentDestination, "effective_human_actor_ids",
+            destinationHumans, input.subjectHumanId) === null) return null;
+      }
       if (!await readableNamespacePolicyAllows(transaction, {
         sourceRoomId: input.sourceRoomId,
         sourceHumanIds: effectiveSourceHumans,
-        namespaceIds: input.namespaceIds,
+        namespaceIds: input.namespaceIds.filter(id => id !== mutationDestination?.namespaceId),
       })) return null;
       const subjectHumanId = humanId(input.subjectHumanId);
       const handles: NamespaceProductAuthoritySetEntry[] = [];
@@ -1235,6 +1325,7 @@ export class PostgresNamespaceProductAuthority {
           ) return null;
           const effectiveHumans = effectiveAudience(row, "effective_human_actor_ids", humans, subjectHumanId);
           if (effectiveHumans === null) return null;
+          if (!input.namespaceIds.includes(text(row, "namespace_id"))) continue;
           const audienceFingerprint =
             fingerprintNamespaceGenerationAudience(effectiveHumans);
           fingerprints.push(audienceFingerprint);

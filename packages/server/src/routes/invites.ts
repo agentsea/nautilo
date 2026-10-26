@@ -306,22 +306,18 @@ export function invitesRoutes(app: FastifyInstance, opts: InvitesRoutesOpts): vo
   async function listInvitableRoomsForCaller(userId: string, canManageAnyRoom: boolean): Promise<
     Array<{ roomId: string; label: string; type: string }>
   > {
-    const rows = canManageAnyRoom
-      ? await db
-          .select({
-            roomId: rooms.id,
-            label: rooms.label,
-            type: rooms.type,
-          })
-          .from(rooms)
-      : await db
-          .select({
-            roomId: rooms.id,
-            label: rooms.label,
-            type: rooms.type,
-          })
-          .from(rooms)
-          .where(eq(rooms.ownerId, userId));
+    const rows = await db
+      .select({
+        roomId: rooms.id,
+        label: rooms.label,
+        type: rooms.type,
+      })
+      .from(rooms)
+      .where(and(
+        eq(rooms.kind, "open"),
+        eq(rooms.externalContext, false),
+        canManageAnyRoom ? undefined : eq(rooms.ownerId, userId),
+      ));
     return rows;
   }
 

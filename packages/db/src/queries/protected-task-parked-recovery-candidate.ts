@@ -4,15 +4,26 @@ import type { ProtectedTaskExecutionSegmentReceipt } from
   "../schema/protected-task-execution-segment-receipts";
 import {
   exactParkedProtectedTaskAdditionalAuthorityProof,
+  exactParkedProtectedTaskHumanProof,
   prepareParkedProtectedTaskAdditionalAuthorityStart,
+  prepareParkedProtectedTaskHumanStart,
+  prepareParkedProtectedTaskCheckpointStart,
 } from "./protected-task-parked-start-proof";
 import {
   type ProtectedTaskDurableJobReference,
+  parseParkedProtectedTaskCheckpointContinuation,
+  type StartParkedProtectedTaskCheckpointSegmentInput,
+  exactProtectedTaskHumanContinuationAcceptanceReceipt,
+  type ProtectedTaskHumanContinuationAcceptance,
+  type StartParkedProtectedTaskHumanRunSegmentInput,
   type StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput,
 } from "./tasks";
 
 type CandidateTask = Readonly<{
   id: string;
+  ownerId: string;
+  agentId: string;
+  callingRoomId: string | null;
   requestorId: string;
   scheduleKind: string;
   status: string;
@@ -31,6 +42,7 @@ type CandidateRun = Readonly<{
   taskId: string;
   jobId: string | null;
   graphThreadId: string;
+  startedAt: Date;
   status: string;
   modelId: string | null;
   fundingPristine: boolean;
@@ -52,6 +64,7 @@ type CandidateJob = Readonly<{
 
 type CandidatePriorJob = CandidateJob & Readonly<{
   parkReceipt: unknown;
+  humanAcceptanceReceipt?: unknown;
 }>;
 
 export type ParkedProtectedTaskRecoveryCandidateRow = Readonly<{
@@ -64,7 +77,9 @@ export type ParkedProtectedTaskRecoveryCandidateRow = Readonly<{
 }>;
 
 export type ProjectedParkedProtectedTaskRecoveryCandidate = Readonly<{
-  input: StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput;
+  input: StartParkedProtectedTaskRunAdditionalAuthoritySegmentInput
+    | StartParkedProtectedTaskHumanRunSegmentInput
+    | StartParkedProtectedTaskCheckpointSegmentInput;
   lifecycle: "linked" | "parked";
 }>;
 
@@ -90,7 +105,7 @@ export function projectParkedProtectedTaskRecoveryCandidate(
   row: ParkedProtectedTaskRecoveryCandidateRow,
 ): ProjectedParkedProtectedTaskRecoveryCandidate | null {
   const { task, run, nextJob, priorJob, segment, continuation } = row;
-  if (priorJob === null || segment === null || continuation === null
+  if (priorJob === null || segment === null
     || !isRecord(nextJob.reference) || !isRecord(priorJob.reference)
     || !isRecord(priorJob.parkReceipt)
     || (nextJob.status !== "queued" && nextJob.status !== "cancelled")
@@ -130,16 +145,156 @@ export function projectParkedProtectedTaskRecoveryCandidate(
     || parkedAt === null
     || priorJob.completedAt.getTime() !== parkedAt.getTime()
     || segment.taskRunId !== run.id
-    || continuation.taskRunId !== run.id
     || segment.jobId !== priorJob.id
-    || continuation.jobId !== priorJob.id
     || segment.executionSegment !== nextReference.executionSegment - 1
-    || continuation.executionSegment !== segment.executionSegment
     || segment.route !== "native_langgraph_v1"
     || segment.checkpointContract !== "encrypted_langgraph_v1"
     || segment.checkpointDigest === null
     || segment.checkpointBlobDigest === null
     || segment.pendingWriteDigest === null
+  ) return null;
+
+  if (continuation?.kind === "checkpoint_safe_v1") {
+    if (task.scheduleKind !== "now" && task.scheduleKind !== "one_shot" && task.scheduleKind !== "cron") return null;
+    const current = parseParkedProtectedTaskCheckpointContinuation({
+      task: { ...task, scheduleKind: task.scheduleKind, contentRepresentation: task.contentRepresentation,
+        cryptoMappingState: task.cryptoMappingState,
+        status: task.scheduleKind === "cron" ? "pending" : "awaiting" },
+      run: { ...run, status: "awaiting", jobId: priorJob.id },
+      job: priorJob, proof: { segment, continuation },
+    });
+    if (current === null || nextReference.authorizationRequestId !== current.authorizationRequestId
+      || nextReference.resumeContinuationFingerprint !== current.continuationFingerprint) return null;
+    const raw: StartParkedProtectedTaskCheckpointSegmentInput = {
+      taskId: task.id, taskRunId: run.id, graphThreadId: run.graphThreadId,
+      priorJobId: priorJob.id, jobId: nextJob.id,
+      generation: current.priorJob.generation, interrupts: [], parkedAt,
+      stableRoutingDigest: current.stableRoutingDigest,
+      continuationFingerprint: current.continuationFingerprint,
+      contentRepresentation: task.contentRepresentation, contentNamespaceId: task.contentNamespaceId,
+      contentRevision: task.contentRevision, cryptoObjectId: task.cryptoObjectId,
+      cryptoAccessRevision: task.cryptoAccessRevision,
+      cryptoRequiredNamespaceFingerprint: Uint8Array.from(task.cryptoRequiredNamespaceFingerprint),
+      priorJobReference: current.priorJob.reference, jobReference: Object.freeze({ ...nextReference }),
+      checkpointManifest: {
+        contract: "encrypted_langgraph_v1", expectedCheckpointCount: segment.expectedCheckpointCount,
+        checkpointOrderedDigest: Uint8Array.from(segment.checkpointDigest),
+        expectedBlobCount: segment.expectedCheckpointBlobCount,
+        blobOrderedDigest: Uint8Array.from(segment.checkpointBlobDigest),
+        expectedPendingWriteCount: segment.expectedPendingWriteCount,
+        pendingWriteOrderedDigest: Uint8Array.from(segment.pendingWriteDigest),
+      },
+    };
+    try {
+      prepareParkedProtectedTaskCheckpointStart(raw);
+      return Object.freeze({ lifecycle: linked ? "linked" : "parked", input: Object.freeze(raw) });
+    } catch {
+      return null;
+    }
+  }
+
+  const human = typeof nextReference.resumeAcceptanceId === "string"
+    && nextReference.resumeContinuationFingerprint === undefined;
+  if (human) {
+    if (continuation !== null
+      || !isRecord(priorJob.humanAcceptanceReceipt)
+      || typeof priorJob.parkReceipt["stableRoutingDigest"] !== "string") {
+      return null;
+    }
+    const stableRoutingDigest = new Uint8Array(Buffer.from(
+      priorJob.parkReceipt["stableRoutingDigest"],
+      "base64url",
+    ));
+    const rawAcceptance = priorJob.humanAcceptanceReceipt;
+    const acceptedAt = date(rawAcceptance["acceptedAt"]);
+    if (stableRoutingDigest.length !== 32 || acceptedAt === null) return null;
+    const acceptance = {
+      acceptanceId: rawAcceptance["acceptanceId"],
+      acceptedBy: rawAcceptance["acceptedBy"],
+      interrupt: rawAcceptance["interrupt"],
+      response: rawAcceptance["response"],
+      acceptedAt,
+    } as ProtectedTaskHumanContinuationAcceptance;
+    const raw: StartParkedProtectedTaskHumanRunSegmentInput = {
+      taskId: task.id,
+      taskRunId: run.id,
+      graphThreadId: run.graphThreadId,
+      priorJobId: priorJob.id,
+      jobId: nextJob.id,
+      generation: priorJob.parkReceipt["generation"] as number,
+      interrupts: priorJob.parkReceipt["interrupts"] as
+        StartParkedProtectedTaskHumanRunSegmentInput["interrupts"],
+      parkedAt,
+      stableRoutingDigest,
+      contentRepresentation: task.contentRepresentation,
+      contentNamespaceId: task.contentNamespaceId,
+      contentRevision: task.contentRevision,
+      cryptoObjectId: task.cryptoObjectId,
+      cryptoAccessRevision: task.cryptoAccessRevision,
+      cryptoRequiredNamespaceFingerprint:
+        task.cryptoRequiredNamespaceFingerprint.slice(),
+      priorJobReference: priorReference,
+      jobReference: nextReference,
+      checkpointManifest: {
+        contract: "encrypted_langgraph_v1",
+        expectedCheckpointCount: segment.expectedCheckpointCount,
+        checkpointOrderedDigest: segment.checkpointDigest.slice(),
+        expectedBlobCount: segment.expectedCheckpointBlobCount,
+        blobOrderedDigest: segment.checkpointBlobDigest.slice(),
+        expectedPendingWriteCount: segment.expectedPendingWriteCount,
+        pendingWriteOrderedDigest: segment.pendingWriteDigest.slice(),
+      },
+      acceptance,
+    };
+    try {
+      const prepared = prepareParkedProtectedTaskHumanStart(raw);
+      if (!exactParkedProtectedTaskHumanProof(
+        segment,
+        priorJob.parkReceipt,
+        prepared,
+        true,
+      ) || !exactProtectedTaskHumanContinuationAcceptanceReceipt(
+        priorJob.humanAcceptanceReceipt,
+        {
+          taskId: raw.taskId,
+          taskRunId: raw.taskRunId,
+          graphThreadId: raw.graphThreadId,
+          priorJobId: raw.priorJobId,
+          generation: raw.generation,
+          executionSegment: raw.priorJobReference.executionSegment,
+          interrupts: raw.interrupts,
+          parkedAt: raw.parkedAt,
+          stableRoutingDigest: raw.stableRoutingDigest,
+          priorJobReference: raw.priorJobReference,
+          acceptance: raw.acceptance,
+        },
+        linked ? nextJob.id : undefined,
+      )) return null;
+      return Object.freeze({
+        lifecycle: linked ? "linked" : "parked",
+        input: Object.freeze({
+          ...raw,
+          interrupts: prepared.receipt.interrupts,
+          parkedAt: prepared.parkedAt,
+          stableRoutingDigest: prepared.stableRoutingDigest,
+          cryptoRequiredNamespaceFingerprint:
+            prepared.cryptoRequiredNamespaceFingerprint,
+          priorJobReference: prepared.priorJobReference,
+          jobReference: prepared.jobReference,
+          checkpointManifest: prepared.checkpointManifest,
+          acceptance: prepared.acceptance,
+        }),
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  if (continuation === null
+    || nextReference.resumeAcceptanceId !== undefined
+    || continuation.taskRunId !== run.id
+    || continuation.jobId !== priorJob.id
+    || continuation.executionSegment !== segment.executionSegment
     || continuation.kind !== "pre_effect_interrupt_v1"
     || continuation.reason !== "additional_authority"
     || continuation.effectDisposition !== "not_started_v1"

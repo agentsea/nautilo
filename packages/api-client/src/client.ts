@@ -1,6 +1,20 @@
 import type { CheckSummary, KeyReport, TransactionDetail } from "@nautilo/config-guard";
 import { z } from "zod";
 import {
+  protectedTaskExternalRequestBindingSchema,
+  protectedTaskExternalRequestListSchema,
+  protectedTaskExternalRequestPlanBodySchema,
+  protectedTaskExternalRequestPlanSchema,
+  protectedTaskExternalRequestReadBodySchema,
+  protectedTaskExternalRequestReadSchema,
+  protectedTaskExternalRequestRespondBodySchema,
+  protectedTaskExternalRequestRespondSchema,
+  type ProtectedTaskExternalRequestBinding,
+  type ProtectedTaskExternalRequestPlanBody,
+  type ProtectedTaskExternalRequestReadBody,
+  type ProtectedTaskExternalRequestRespondBody,
+} from "./schemas/protected-task-external-requests";
+import {
   bolterConnectRequestSchema, bolterConnectionUpdateSchema, bolterRevisionRequestSchema,
   bolterCreateRoomRequestSchema, bolterBindingUpdateSchema, bolterReviewedMessageRequestSchema,
   bolterConnectionsResponseSchema, bolterConnectionSummarySchema, bolterOperationResponseSchema,
@@ -46,8 +60,10 @@ import {
   type ProtectedMemoryRepairResponseV1,
 } from "./schemas/protected-memory-repair";
 import {
+  memoryProcessorRecipientV2Schema,
   memoryProcessorRecipientV1Schema,
   memoryProcessorSealedRequestV1Schema,
+  type MemoryProcessorRecipientV2,
   type MemoryProcessorRecipientV1,
   type MemoryProcessorSealedRequestV1,
 } from "./schemas/memory-processor-transport";
@@ -324,6 +340,10 @@ import {
   runtimeInvocationAuthorizationResponseV1Schema,
   type RuntimeInvocationAuthorizationRequestV1,
   type RuntimeInvocationAuthorizationResponseV1,
+  taskDefinitionAuthorizationRequestV1Schema,
+  taskDefinitionAuthorizationResponseV1Schema,
+  type TaskDefinitionAuthorizationRequestV1,
+  type TaskDefinitionAuthorizationResponseV1,
   type LiveShadowMessageRecoveryResponseV1,
   humanMessageEditPlanRequestV1Schema,
   humanMessageEditPlanResponseV1Schema,
@@ -365,6 +385,33 @@ import {
   type MessageBackfillPublishResponse,
   type MessageBackfillSourceResponse,
 } from "./schemas/message-backfill";
+import {
+  taskContentBackfillAckRequestSchema,
+  taskContentBackfillAckResponseSchema,
+  taskContentBackfillClaimIdRequestSchema,
+  taskContentBackfillClaimRequestSchema,
+  taskContentBackfillClaimResponseSchema,
+  taskContentBackfillDiscoverResponseSchema,
+  taskContentBackfillProgressResponseSchema,
+  taskContentBackfillPublishRequestSchema,
+  taskContentBackfillPublishResponseSchema,
+  taskContentBackfillRecoverResponseSchema,
+  taskContentBackfillReleaseRequestSchema,
+  taskContentBackfillReleaseResponseSchema,
+  taskContentBackfillSourceResponseSchema,
+  type TaskContentBackfillAckRequest,
+  type TaskContentBackfillAckResponse,
+  type TaskContentBackfillClaimRequest,
+  type TaskContentBackfillClaimResponse,
+  type TaskContentBackfillDiscoverResponse,
+  type TaskContentBackfillProgressResponse,
+  type TaskContentBackfillPublishRequest,
+  type TaskContentBackfillPublishResponse,
+  type TaskContentBackfillRecoverResponse,
+  type TaskContentBackfillReleaseRequest,
+  type TaskContentBackfillReleaseResponse,
+  type TaskContentBackfillSourceResponse,
+} from "./schemas/task-content-backfill";
 import {
   backgroundAuthorizationListRequestSchema,
   backgroundAuthorizationListResponseSchema,
@@ -468,6 +515,24 @@ import {
   type DualTaskPreparedCreateRequestV1,
   type DualTaskPreparedUpdateRequestV1,
 } from "./schemas/protected-task";
+import {
+  taskOrdinaryFallbackPlanCreateRequestV1Schema,
+  taskOrdinaryFallbackCreatePlanV1Schema,
+  taskOrdinaryFallbackPreparedCreateRequestV1Schema,
+  taskOrdinaryFallbackPlanUpdateRequestV1Schema,
+  taskOrdinaryFallbackUpdatePlanV1Schema,
+  taskOrdinaryFallbackPreparedUpdateRequestV1Schema,
+  type TaskOrdinaryFallbackCreatePlanV1,
+  type TaskOrdinaryFallbackPreparedCreateRequestV1,
+  type TaskOrdinaryFallbackUpdatePlanV1,
+  type TaskOrdinaryFallbackPreparedUpdateRequestV1,
+} from "./schemas/task-ordinary-fallback";
+import {
+  protectedTaskTranscriptReadRequestV1Schema,
+  protectedTaskTranscriptReadResponseV1Schema,
+  type ProtectedTaskTranscriptReadRequestV1,
+  type ProtectedTaskTranscriptReadResponseV1,
+} from "./schemas/protected-task-transcript-read";
 import {
   protectedAdditionalDeviceAcknowledgementRequestV1Schema,
   protectedAdditionalDeviceActivationRequestV1Schema,
@@ -907,6 +972,57 @@ export type RoomPendingAttentionEvent = Extract<ServerEvent, {
   type: "approval.ask" | "prove_it.challenge" | "identity.challenge";
 }>;
 
+export type TaskPendingAttentionEvent = Readonly<
+  RoomPendingAttentionEvent & {
+    origin: "task";
+    taskId: string;
+    taskRunId: string;
+    userId: string;
+  }
+>;
+
+/** Socket- and device-bound request for one protected Task checkpoint page. */
+export type TaskPendingAttentionPageRequest = Omit<
+  RoomPendingAttentionPageRequest,
+  "cursor"
+> & Readonly<{ cursor?: string }>;
+
+export interface TaskPendingAttentionChallenge
+  extends RoomPendingAttentionChallenge {
+  taskId: string;
+  taskRunId: string;
+}
+
+export type TaskPendingAttentionPageResponse =
+  | Readonly<{
+      status: "ready";
+      nextCursor: string | null;
+      challenge?: TaskPendingAttentionChallenge | undefined;
+    }>
+  | Readonly<{
+      status: "unavailable";
+      nextCursor: string | null;
+      challenge?: never;
+    }>;
+
+export interface TaskPendingAttentionReadRequest {
+  clientActionSessionId: string;
+  authorizationDeviceId: string;
+  taskId: string;
+  taskRunId: string;
+  challengeId: string;
+  authorizationBytesBase64url: string;
+}
+
+export type TaskPendingAttentionReadResponse =
+  | Readonly<{ status: "read"; events: TaskPendingAttentionEvent[] }>
+  | Readonly<{ status: "unavailable"; events: [] }>;
+
+export interface TaskPendingAttentionRecoveryResponse {
+  status: "ready" | "unavailable";
+  events: readonly TaskPendingAttentionEvent[];
+}
+
 const UUID_LANE_COMPONENT_PATTERN =
   "[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 const UUID_LANE_COMPONENT = new RegExp(`^${UUID_LANE_COMPONENT_PATTERN}$`, "i");
@@ -939,6 +1055,26 @@ export function isRoomPendingAttentionEventForViewer(
   return groupLane !== null
     && groupLane[1] === expected.roomId
     && groupLane[2]?.toLowerCase() === expected.humanActorId.toLowerCase();
+}
+
+/** Exact owner-private Task prompt returned from one authenticated checkpoint. */
+export function isTaskPendingAttentionEventForViewer(
+  event: ServerEvent,
+  expected: Readonly<{
+    taskId: string;
+    taskRunId: string;
+    userId: string;
+  }>,
+): event is TaskPendingAttentionEvent {
+  return (event.type === "approval.ask"
+      || event.type === "prove_it.challenge"
+      || event.type === "identity.challenge")
+    && event.origin === "task"
+    && event.taskId === expected.taskId
+    && event.taskRunId === expected.taskRunId
+    && event.userId === expected.userId
+    && event.threadId.length > 0
+    && event.laneKey === `task:${expected.taskId}`;
 }
 
 function isPendingAttentionTool(value: unknown): boolean {
@@ -1013,6 +1149,49 @@ const roomPendingAttentionReadResponseSchema: z.ZodType<RoomPendingAttentionRead
     status: z.enum(["read", "unavailable"]),
     events: z.array(pendingAttentionEventSchema),
   }).strict();
+const taskPendingAttentionChallengeSchema: z.ZodType<TaskPendingAttentionChallenge> =
+  z.object({
+    challengeId: z.string().min(1),
+    authorizationPlanBytesBase64url: z.string().min(1),
+    recipientPublicKeyBase64url: z.string().min(1),
+    deadlineAt: z.number().int().nonnegative(),
+    roomId: z.string().min(1),
+    taskId: z.string().uuid(),
+    taskRunId: z.string().uuid(),
+  }).strict();
+const taskPendingAttentionEventSchema = z.custom<TaskPendingAttentionEvent>(
+  (value) => isPendingAttentionEvent(value)
+    && value.origin === "task"
+    && typeof value.taskId === "string"
+    && value.taskId.length > 0
+    && typeof value.taskRunId === "string"
+    && value.taskRunId.length > 0
+    && typeof value.userId === "string"
+    && value.userId.length > 0,
+);
+const taskPendingAttentionPageResponseSchema: z.ZodType<TaskPendingAttentionPageResponse> =
+  z.discriminatedUnion("status", [
+    z.object({
+      status: z.literal("ready"),
+      nextCursor: z.string().min(1).nullable(),
+      challenge: taskPendingAttentionChallengeSchema.optional(),
+    }).strict(),
+    z.object({
+      status: z.literal("unavailable"),
+      nextCursor: z.string().min(1).nullable(),
+    }).strict(),
+  ]);
+const taskPendingAttentionReadResponseSchema: z.ZodType<TaskPendingAttentionReadResponse> =
+  z.discriminatedUnion("status", [
+    z.object({
+      status: z.literal("read"),
+      events: z.array(taskPendingAttentionEventSchema),
+    }).strict(),
+    z.object({
+      status: z.literal("unavailable"),
+      events: z.tuple([]),
+    }).strict(),
+  ]);
 
 /** First-time PIN enrollment returns recovery codes exactly once. */
 export interface PinEnrollmentResponse {
@@ -1729,6 +1908,14 @@ export const assistantModelSummarySchema = z
         reasoning: z.boolean(),
         e2ee: z.boolean(),
         webSearch: z.boolean(),
+      })
+      .strict()
+      .optional(),
+    /** Effective request limits after intersecting catalog policy with the serving route. */
+    limits: z
+      .object({
+        contextTokens: z.number().int().positive(),
+        outputTokens: z.number().int().positive(),
       })
       .strict()
       .optional(),
@@ -6315,6 +6502,72 @@ export class NautiloApiClient {
     });
   }
 
+  /** Read one canonical protected Task checkpoint page without resuming it. */
+  async getTaskPendingAttention(
+    input: TaskPendingAttentionPageRequest,
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ): Promise<TaskPendingAttentionPageResponse> {
+    return this.request({
+      method: "POST",
+      path: "/api/tasks/pending-attention",
+      body: input,
+      schema: taskPendingAttentionPageResponseSchema,
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+      defaultErrorPrefix: "POST /api/tasks/pending-attention",
+    });
+  }
+
+  /** Open one exact protected Task checkpoint with fresh decrypt-only custody. */
+  async readTaskPendingAttention(
+    input: TaskPendingAttentionReadRequest,
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ): Promise<TaskPendingAttentionReadResponse> {
+    return this.request({
+      method: "POST",
+      path: "/api/tasks/pending-attention/read",
+      body: input,
+      schema: taskPendingAttentionReadResponseSchema,
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+      defaultErrorPrefix: "POST /api/tasks/pending-attention/read",
+    });
+  }
+
+  async listProtectedTaskExternalRequests(input: ProtectedTaskExternalRequestBinding,
+    options?: Readonly<{ signal?: AbortSignal }>) {
+    return this.request({ method: "POST", path: "/api/tasks/external-requests",
+      body: protectedTaskExternalRequestBindingSchema.parse(input),
+      schema: protectedTaskExternalRequestListSchema,
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+      defaultErrorPrefix: "POST /api/tasks/external-requests" });
+  }
+
+  async planProtectedTaskExternalRequest(input: ProtectedTaskExternalRequestPlanBody,
+    options?: Readonly<{ signal?: AbortSignal }>) {
+    return this.request({ method: "POST", path: "/api/tasks/external-requests/plan",
+      body: protectedTaskExternalRequestPlanBodySchema.parse(input),
+      schema: protectedTaskExternalRequestPlanSchema,
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+      defaultErrorPrefix: "POST /api/tasks/external-requests/plan" });
+  }
+
+  async readProtectedTaskExternalRequest(input: ProtectedTaskExternalRequestReadBody,
+    options?: Readonly<{ signal?: AbortSignal }>) {
+    return this.request({ method: "POST", path: "/api/tasks/external-requests/read",
+      body: protectedTaskExternalRequestReadBodySchema.parse(input),
+      schema: protectedTaskExternalRequestReadSchema,
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+      defaultErrorPrefix: "POST /api/tasks/external-requests/read" });
+  }
+
+  async respondProtectedTaskExternalRequest(input: ProtectedTaskExternalRequestRespondBody,
+    options?: Readonly<{ signal?: AbortSignal }>) {
+    return this.request({ method: "POST", path: "/api/tasks/external-requests/respond",
+      body: protectedTaskExternalRequestRespondBodySchema.parse(input),
+      schema: protectedTaskExternalRequestRespondSchema,
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+      defaultErrorPrefix: "POST /api/tasks/external-requests/respond" });
+  }
+
   /** Exhaust ordinary pending-attention pages; protected pages require custody. */
   async recoverOrdinaryRoomPendingAttention(
     roomId: string,
@@ -6570,6 +6823,28 @@ export class NautiloApiClient {
       schema: runtimeInvocationAuthorizationResponseV1Schema,
       defaultErrorPrefix:
         `POST /api/rooms/${roomId}/live-shadow/runtime-invocation/${invocationId}/authorize`,
+    });
+  }
+
+  /** Complete a foreground Task-definition authorization. */
+  async authorizeTaskDefinition(
+    roomId: string,
+    authorizationId: string,
+    input: TaskDefinitionAuthorizationRequestV1,
+  ): Promise<TaskDefinitionAuthorizationResponseV1> {
+    const body = taskDefinitionAuthorizationRequestV1Schema.parse(input);
+    if (body.operationId !== authorizationId) {
+      throw new TypeError(
+        "Task definition authorization ID does not match the prepared operation",
+      );
+    }
+    return this.request({
+      method: "POST",
+      path: `/api/rooms/${encodeURIComponent(roomId)}/live-shadow/task-definition/authorize`,
+      body,
+      schema: taskDefinitionAuthorizationResponseV1Schema,
+      defaultErrorPrefix:
+        `POST /api/rooms/${roomId}/live-shadow/task-definition/authorize`,
     });
   }
 
@@ -8161,6 +8436,33 @@ export class NautiloApiClient {
     });
   }
 
+  /** Exact, bounded protected Message history for one TaskRun transcript. */
+  async readProtectedTaskRunTranscriptV1(input: Readonly<{
+    taskId: string;
+    taskRunId: string;
+  }> & ProtectedTaskTranscriptReadRequestV1): Promise<
+    ProtectedTaskTranscriptReadResponseV1
+  > {
+    const taskId = z.string().uuid().parse(input.taskId);
+    const taskRunId = z.string().uuid().parse(input.taskRunId);
+    const body = protectedTaskTranscriptReadRequestV1Schema.parse({
+      readVersion: input.readVersion,
+      agentId: input.agentId,
+      ...(input.cursor === undefined ? {} : { cursor: input.cursor }),
+      ...(input.limit === undefined ? {} : { limit: input.limit }),
+      historyRead: input.historyRead,
+    });
+    return this.request<ProtectedTaskTranscriptReadResponseV1>({
+      method: "POST",
+      path: `/api/tasks/${encodeURIComponent(taskId)}/runs/${encodeURIComponent(taskRunId)}/transcript-v1`,
+      auth: "session-fresh",
+      body,
+      schema: protectedTaskTranscriptReadResponseV1Schema,
+      defaultErrorPrefix:
+        `POST /api/tasks/${taskId}/runs/${taskRunId}/transcript-v1`,
+    });
+  }
+
   async planProtectedTaskCreateV1(input: Readonly<{
     operationId: string;
     task: TaskOperationalCreateV1;
@@ -8174,6 +8476,80 @@ export class NautiloApiClient {
       body,
       schema: protectedTaskPublicationPlanV1Schema,
       defaultErrorPrefix: "POST /api/protected/tasks/publication-plan",
+    });
+  }
+
+  async planTaskOrdinaryFallbackCreateV1(input: Readonly<{
+    operationId: string;
+    task: TaskOperationalCreateV1;
+  }>): Promise<TaskOrdinaryFallbackCreatePlanV1> {
+    const body = taskOrdinaryFallbackPlanCreateRequestV1Schema.parse({
+      requestVersion: 1,
+      ...input,
+    });
+    return this.request<TaskOrdinaryFallbackCreatePlanV1>({
+      method: "POST",
+      path: "/api/protected/tasks/ordinary-fallback-plan",
+      body,
+      schema: taskOrdinaryFallbackCreatePlanV1Schema,
+      defaultErrorPrefix:
+        "POST /api/protected/tasks/ordinary-fallback-plan",
+    });
+  }
+
+  async planTaskOrdinaryFallbackUpdateV1(taskId: string, input: Readonly<{
+    operationId: string;
+    task: TaskOperationalUpdateV1;
+  }>): Promise<TaskOrdinaryFallbackUpdatePlanV1> {
+    const id = z.string().uuid().parse(taskId);
+    const body = taskOrdinaryFallbackPlanUpdateRequestV1Schema.parse({
+      requestVersion: 1,
+      ...input,
+    });
+    return this.request<TaskOrdinaryFallbackUpdatePlanV1>({
+      method: "POST",
+      path:
+        `/api/protected/tasks/${encodeURIComponent(id)}/ordinary-fallback-plan`,
+      body,
+      schema: taskOrdinaryFallbackUpdatePlanV1Schema,
+      defaultErrorPrefix:
+        `POST /api/protected/tasks/${id}/ordinary-fallback-plan`,
+    });
+  }
+
+  async createTaskOrdinaryFallbackV1(
+    prepared: TaskOrdinaryFallbackPreparedCreateRequestV1,
+  ): Promise<TaskCreateResponse> {
+    const body = taskOrdinaryFallbackPreparedCreateRequestV1Schema.parse(prepared);
+    return this.request<TaskCreateResponse>({
+      method: "POST",
+      path: "/api/protected/tasks/ordinary-fallback",
+      body,
+      schema: z.object({
+        taskId: z.string().uuid(),
+        status: z.string(),
+        nextFireAt: z.string().nullable(),
+      }).strict(),
+      defaultErrorPrefix: "POST /api/protected/tasks/ordinary-fallback",
+    });
+  }
+
+  async updateTaskOrdinaryFallbackV1(
+    taskId: string,
+    prepared: TaskOrdinaryFallbackPreparedUpdateRequestV1,
+  ): Promise<TaskContentSummaryV1> {
+    const id = z.string().uuid().parse(taskId);
+    const body = taskOrdinaryFallbackPreparedUpdateRequestV1Schema.parse(prepared);
+    if (body.taskId !== id) {
+      throw new TypeError("Task ordinary fallback update does not match path Task");
+    }
+    return this.request<TaskContentSummaryV1>({
+      method: "PATCH",
+      path: `/api/protected/tasks/${encodeURIComponent(id)}/ordinary-fallback`,
+      body,
+      schema: taskContentSummaryV1Schema,
+      defaultErrorPrefix:
+        `PATCH /api/protected/tasks/${id}/ordinary-fallback`,
     });
   }
 
@@ -9828,6 +10204,15 @@ export class NautiloApiClient {
     });
   }
 
+  async getMemoryProcessorRecipientV2(): Promise<MemoryProcessorRecipientV2> {
+    return this.request({
+      path: "/api/memory/processor-recipient/v2",
+      auth: "session-fresh",
+      schema: memoryProcessorRecipientV2Schema,
+      defaultErrorPrefix: "GET /api/memory/processor-recipient/v2",
+    });
+  }
+
   async searchProtectedMemories(opts: {
     sealedQuery: MemoryProcessorSealedRequestV1;
     mode: "text" | "semantic";
@@ -9850,6 +10235,31 @@ export class NautiloApiClient {
       },
       schema: protectedMemorySearchRouteResponseV1Schema,
       defaultErrorPrefix: "POST /api/memory/search (protected)",
+    });
+  }
+
+  async searchProtectedMemoriesV2(opts: {
+    sealedQueryV2: MemoryProcessorSealedRequestV1;
+    mode: "text" | "semantic";
+    limit?: number;
+    includeArchive?: boolean;
+  }): Promise<
+    ProtectedMemorySearchResponseV1 | ProtectedMemoryUnavailableResponseV1
+  > {
+    return this.request({
+      method: "POST",
+      path: "/api/memory/search",
+      auth: "session-fresh",
+      body: {
+        sealedQueryV2: memoryProcessorSealedRequestV1Schema.parse(opts.sealedQueryV2),
+        mode: opts.mode,
+        ...(opts.limit === undefined ? {} : { limit: opts.limit }),
+        ...(opts.includeArchive === undefined
+          ? {}
+          : { includeArchive: opts.includeArchive }),
+      },
+      schema: protectedMemorySearchRouteResponseV1Schema,
+      defaultErrorPrefix: "POST /api/memory/search (protected V2)",
     });
   }
 
@@ -10457,6 +10867,8 @@ export class NautiloApiClient {
       attachments?: MessageAttachmentRef[];
       imageAssistance?: ImageAssistanceSummary;
       artifacts?: MessageArtifactOpenRef[];
+      foregroundExecutionId?: string;
+      modelInputExposure?: unknown;
     }>;
     pageInfo: {
       hasMoreBefore: boolean;
@@ -10502,6 +10914,8 @@ export class NautiloApiClient {
         attachments?: MessageAttachmentRef[];
         imageAssistance?: ImageAssistanceSummary;
         artifacts?: MessageArtifactOpenRef[];
+        foregroundExecutionId?: string;
+        modelInputExposure?: unknown;
       }>;
       pageInfo: {
         hasMoreBefore: boolean;
@@ -10630,6 +11044,122 @@ export class NautiloApiClient {
       auth: "session-fresh",
       schema: messageBackfillProgressSchema,
       defaultErrorPrefix: "GET /api/message-backfill/progress",
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+    });
+  }
+
+  async discoverTaskContentBackfill(
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ): Promise<TaskContentBackfillDiscoverResponse> {
+    return this.request({
+      method: "POST",
+      path: "/api/tasks/content/backfill/discover",
+      auth: "session-fresh",
+      body: {},
+      schema: taskContentBackfillDiscoverResponseSchema,
+      defaultErrorPrefix: "POST /api/tasks/content/backfill/discover",
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+    });
+  }
+
+  async claimTaskContentBackfill(
+    input: TaskContentBackfillClaimRequest,
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ): Promise<TaskContentBackfillClaimResponse> {
+    return this.request({
+      method: "POST",
+      path: "/api/tasks/content/backfill/claim",
+      auth: "session-fresh",
+      body: taskContentBackfillClaimRequestSchema.parse(input),
+      schema: taskContentBackfillClaimResponseSchema,
+      defaultErrorPrefix: "POST /api/tasks/content/backfill/claim",
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+    });
+  }
+
+  async readTaskContentBackfillSource(
+    input: Readonly<{ claimId: string }>,
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ): Promise<TaskContentBackfillSourceResponse> {
+    return this.request({
+      method: "POST",
+      path: "/api/tasks/content/backfill/source",
+      auth: "session-fresh",
+      body: taskContentBackfillClaimIdRequestSchema.parse(input),
+      schema: taskContentBackfillSourceResponseSchema,
+      defaultErrorPrefix: "POST /api/tasks/content/backfill/source",
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+    });
+  }
+
+  async publishTaskContentBackfill(
+    input: TaskContentBackfillPublishRequest,
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ): Promise<TaskContentBackfillPublishResponse> {
+    return this.request({
+      method: "POST",
+      path: "/api/tasks/content/backfill/publish",
+      auth: "session-fresh",
+      body: taskContentBackfillPublishRequestSchema.parse(input),
+      schema: taskContentBackfillPublishResponseSchema,
+      defaultErrorPrefix: "POST /api/tasks/content/backfill/publish",
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+    });
+  }
+
+  async recoverTaskContentBackfill(
+    input: Readonly<{ claimId: string }>,
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ): Promise<TaskContentBackfillRecoverResponse> {
+    return this.request({
+      method: "POST",
+      path: "/api/tasks/content/backfill/recover",
+      auth: "session-fresh",
+      body: taskContentBackfillClaimIdRequestSchema.parse(input),
+      schema: taskContentBackfillRecoverResponseSchema,
+      defaultErrorPrefix: "POST /api/tasks/content/backfill/recover",
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+    });
+  }
+
+  async getTaskContentBackfillProgress(
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ): Promise<TaskContentBackfillProgressResponse> {
+    return this.request({
+      path: "/api/tasks/content/backfill/progress",
+      auth: "session-fresh",
+      schema: taskContentBackfillProgressResponseSchema,
+      defaultErrorPrefix: "GET /api/tasks/content/backfill/progress",
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+    });
+  }
+
+  async releaseTaskContentBackfill(
+    input: TaskContentBackfillReleaseRequest,
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ): Promise<TaskContentBackfillReleaseResponse> {
+    return this.request({
+      method: "POST",
+      path: "/api/tasks/content/backfill/release",
+      auth: "session-fresh",
+      body: taskContentBackfillReleaseRequestSchema.parse(input),
+      schema: taskContentBackfillReleaseResponseSchema,
+      defaultErrorPrefix: "POST /api/tasks/content/backfill/release",
+      ...(options?.signal === undefined ? {} : { signal: options.signal }),
+    });
+  }
+
+  async acknowledgeTaskContentBackfill(
+    input: TaskContentBackfillAckRequest,
+    options?: Readonly<{ signal?: AbortSignal }>,
+  ): Promise<TaskContentBackfillAckResponse> {
+    return this.request({
+      method: "POST",
+      path: "/api/tasks/content/backfill/ack",
+      auth: "session-fresh",
+      body: taskContentBackfillAckRequestSchema.parse(input),
+      schema: taskContentBackfillAckResponseSchema,
+      defaultErrorPrefix: "POST /api/tasks/content/backfill/ack",
       ...(options?.signal === undefined ? {} : { signal: options.signal }),
     });
   }

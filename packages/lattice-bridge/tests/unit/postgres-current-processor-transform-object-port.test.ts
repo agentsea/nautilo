@@ -318,7 +318,8 @@ describe("current processor input authority dispatch", () => {
         return Promise.resolve({objectId: substitute ? "other" : "record-1", payloadHash: f.crypto.hash(f.output.payloadBytes),
           headManifest: decodeObjectAccessManifestV5(f.output.v5), headManifestBytes: borrowed,
           headManifestHash: f.crypto.hash(f.output.v5), genesisHumanId: null,
-          headSignerPublicKey: new Uint8Array(32), signerEvidence: []});
+          headSignerPublicKey: new Uint8Array(32),
+          taskDefinitionForegroundAuthorizationEvidence: [], signerEvidence: []});
       }});
     expect((await port.openInput(request)).payload.context.objectId).toBe(objectId("record-1"));
     expect(borrowed?.every((byte) => byte === 0)).toBe(true);

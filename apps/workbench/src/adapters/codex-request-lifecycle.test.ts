@@ -244,6 +244,30 @@ describe("Codex request lifecycle recovery", () => {
     expect(state.byId[olderBaseline.requestId]).toEqual(olderBaseline);
   });
 
+  test("clears only the exact in-flight submit when its displayed Room scope changes", () => {
+    let state = initialCodexRequestLifecycleState();
+    const first = inputEvent("first-submit");
+    const second = inputEvent("second-request", ROOM_B);
+    state = reduceCodexRequestLifecycle(state, { kind: "arm", event: first });
+    state = reduceCodexRequestLifecycle(state, { kind: "arm", event: second });
+    state = reduceCodexRequestLifecycle(state, { kind: "submit_start", requestId: first.requestId });
+
+    state = reduceCodexRequestLifecycle(state, {
+      kind: "submit_cancelled",
+      requestId: second.requestId,
+    });
+    expect(state.submittingRequestId).toBe(first.requestId);
+
+    state = reduceCodexRequestLifecycle(state, {
+      kind: "submit_cancelled",
+      requestId: first.requestId,
+    });
+    expect(state.submittingRequestId).toBeNull();
+    expect(state.byId[first.requestId]).toEqual(first);
+    expect(state.byId[second.requestId]).toEqual(second);
+    expect(state.terminalRequestIds).not.toContain(first.requestId);
+  });
+
   test("filters another owner synchronously and reset clears all retained state", () => {
     let state = initialCodexRequestLifecycleState();
     const owned = inputEvent("owned");
@@ -264,5 +288,34 @@ describe("Codex request lifecycle recovery", () => {
     state = reduceCodexRequestLifecycle(state, { kind: "reset_owner" });
     expect(state.order).toEqual([]);
     expect(state.terminalRequestIds).toEqual([]);
+  });
+
+  test("forgets selected protected content without disturbing ordinary cards or terminal facts", () => {
+    let state = initialCodexRequestLifecycleState();
+    const protectedRequest = inputEvent("protected-live");
+    const ordinaryRequest = approvalEvent("ordinary-live");
+    const terminalRequest = inputEvent("already-terminal");
+    state = reduceCodexRequestLifecycle(state, { kind: "arm", event: protectedRequest });
+    state = reduceCodexRequestLifecycle(state, { kind: "arm", event: ordinaryRequest });
+    state = reduceCodexRequestLifecycle(state, { kind: "arm", event: terminalRequest });
+    state = reduceCodexRequestLifecycle(state, {
+      kind: "resolved",
+      requestId: terminalRequest.requestId,
+    });
+
+    state = reduceCodexRequestLifecycle(state, {
+      kind: "forget_content",
+      requestIds: [protectedRequest.requestId, terminalRequest.requestId],
+    });
+    expect(state.byId[protectedRequest.requestId]).toBeUndefined();
+    expect(state.byId[ordinaryRequest.requestId]).toEqual(ordinaryRequest);
+    expect(state.terminalRequestIds).toContain(terminalRequest.requestId);
+
+    // A new authorized read may restore forgotten nonterminal content, while
+    // the existing terminal fact continues to fence a late duplicate.
+    state = reduceCodexRequestLifecycle(state, { kind: "arm", event: protectedRequest });
+    state = reduceCodexRequestLifecycle(state, { kind: "arm", event: terminalRequest });
+    expect(state.byId[protectedRequest.requestId]).toEqual(protectedRequest);
+    expect(state.byId[terminalRequest.requestId]).toBeUndefined();
   });
 });

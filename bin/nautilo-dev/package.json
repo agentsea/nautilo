@@ -30,7 +30,7 @@
     "@nautilo/server": "workspace:*",
     "@nautilo/trust": "workspace:*",
     "postgres": "3.4.7",
-    "smol-toml": "1.8.0"
+    "smol-toml": "1.9.1"
   },
   "devDependencies": {
     "@logto/cli": "1.38.0",

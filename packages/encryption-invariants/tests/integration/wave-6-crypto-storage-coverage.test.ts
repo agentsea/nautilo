@@ -9,6 +9,9 @@ import {
   REVIEWED_WAVE_6_DATABASE_WRITER_ENTRIES,
 } from "../../baseline/reviewed-wave-6";
 import {
+  REVIEWED_TASK_PROTECTION_COVERAGE_ENTRIES,
+} from "../../baseline/reviewed-task-protection-coverage";
+import {
   inventoryDrizzleSchema,
 } from "../../src/node/schema-inventory";
 
@@ -44,6 +47,13 @@ const WAVE_11_ADDITIVE_TABLES = new Set([
   "background_crypto_authorization_namespace_requirements",
 ]);
 
+const TASK_PROTECTION_ADDITIVE_TABLES = new Set([
+  "foreground_memory_crypto_publication_receipts",
+  "task_cancellation_crypto_staging_receipts",
+  "task_historical_content_crypto_staging_receipts",
+  "task_terminal_message_crypto_staging_receipts",
+]);
+
 describe("Wave 6 crypto-storage coverage declarations", () => {
   test("classifies every exact table and column observed from Drizzle", () => {
     const tableNames = new Set<string>(LATTICE_STORAGE_TABLE_NAMES);
@@ -56,6 +66,7 @@ describe("Wave 6 crypto-storage coverage declarations", () => {
           && !WAVE_9_ADDITIVE_TABLES.has(item.name)
           && !WAVE_10_ADDITIVE_TABLES.has(item.name)
           && !WAVE_11_ADDITIVE_TABLES.has(item.name)
+          && !TASK_PROTECTION_ADDITIVE_TABLES.has(item.name)
         )
         .map((item) => item.locator),
       ...inventory.columns
@@ -65,6 +76,7 @@ describe("Wave 6 crypto-storage coverage declarations", () => {
           && !WAVE_9_ADDITIVE_TABLES.has(item.objectName)
           && !WAVE_10_ADDITIVE_TABLES.has(item.objectName)
           && !WAVE_11_ADDITIVE_TABLES.has(item.objectName)
+          && !TASK_PROTECTION_ADDITIVE_TABLES.has(item.objectName)
           && !WAVE_7_ADDITIVE_COLUMNS.has(item.locator)
         )
         .map((item) => item.locator),
@@ -75,6 +87,28 @@ describe("Wave 6 crypto-storage coverage declarations", () => {
 
     expect(declared).toEqual(observed);
     expect(new Set(declared).size).toBe(declared.length);
+
+    const delegatedObserved = [
+      ...inventory.objects
+        .filter((item) =>
+          item.kind === "table" && TASK_PROTECTION_ADDITIVE_TABLES.has(item.name)
+        )
+        .map((item) => item.locator),
+      ...inventory.columns
+        .filter((item) => TASK_PROTECTION_ADDITIVE_TABLES.has(item.objectName))
+        .map((item) => item.locator),
+    ].sort();
+    const delegatedDeclared = REVIEWED_TASK_PROTECTION_COVERAGE_ENTRIES
+      .filter((entry) => delegatedObserved.includes(entry.locator))
+      .map((entry) => entry.locator)
+      .sort();
+    expect(delegatedObserved).toHaveLength(42);
+    expect(delegatedDeclared).toEqual(delegatedObserved);
+    expect(REVIEWED_TASK_PROTECTION_COVERAGE_ENTRIES
+      .filter((entry) => delegatedObserved.includes(entry.locator))
+      .every((entry) =>
+        entry.surface === "db" && entry.classification === "bounded_metadata"
+      )).toBeTrue();
   });
 
   test("marks opaque bytes and every containing table as protected", () => {

@@ -1,3 +1,4 @@
+import { assertProtectedTaskJobReferenceV1, type ProtectedTaskJobReferenceV1 } from "@nautilo/runtime";
 import type {
   CodexCanonicalBindingFacts,
   CodexCanonicalFactsPort,
@@ -54,6 +55,17 @@ export interface CanonicalCodexJobRecord {
   readonly laneKey: string | null;
   readonly roomId: string | null;
   readonly input: Readonly<Record<string, unknown>> | null;
+}
+
+/** Only the private protected execution composition supplies this current-grant check. */
+export interface CodexCanonicalFactsOptions {
+  readonly assertProtectedJobBinding?: (input: Readonly<{
+    task: CanonicalCodexTaskRecord;
+    run: CanonicalCodexTaskRunRecord;
+    job: Omit<CanonicalCodexJobRecord, "input"> & Readonly<{
+      input: ProtectedTaskJobReferenceV1;
+    }>;
+  }>) => Promise<boolean>;
 }
 
 export interface CanonicalCodexProfileRecord {
@@ -212,7 +224,10 @@ function inputString(input: Readonly<Record<string, unknown>> | null, key: strin
  * A later caller cannot swap one UUID after a turn has been accepted.
  */
 export class CodexCanonicalFactsService implements CodexCanonicalFactsPort {
-  constructor(private readonly reader: CodexCanonicalFactsReader) {}
+  constructor(
+    private readonly reader: CodexCanonicalFactsReader,
+    private readonly options: CodexCanonicalFactsOptions = {},
+  ) {}
 
   async resolve(
     request: Omit<CodexSemanticAuthorityRequest, "posture" | "collaborationMode">,
@@ -247,9 +262,11 @@ export class CodexCanonicalFactsService implements CodexCanonicalFactsPort {
       job.roomId !== request.roomId ||
       inputString(job.input, "taskId") !== task.id ||
       inputString(job.input, "taskRunId") !== run.id ||
-      inputString(job.input, "agentId") !== task.agentId ||
-      inputString(job.input, "roomId") !== request.roomId ||
-      inputString(job.input, "graphThreadId") !== run.graphThreadId ||
+      (job.input?.["kind"] !== "protected_task_run_v1" && (
+        inputString(job.input, "agentId") !== task.agentId ||
+        inputString(job.input, "roomId") !== request.roomId ||
+        inputString(job.input, "graphThreadId") !== run.graphThreadId
+      )) ||
       agentOwner !== task.ownerId ||
       !nonEmpty(profile.relayId) ||
       !nonEmpty(profile.homeHandle) ||
@@ -265,6 +282,22 @@ export class CodexCanonicalFactsService implements CodexCanonicalFactsPort {
 
     const member = await this.reader.isAgentMember(request.roomId, request.agentId);
     if (!member) throw new CodexCanonicalFactsRejected();
+
+    if (job.input?.["kind"] === "protected_task_run_v1") {
+      const assertBinding = this.options.assertProtectedJobBinding;
+      if (!assertBinding) throw new CodexCanonicalFactsRejected();
+      try {
+        assertProtectedTaskJobReferenceV1(job.input);
+        const binding = Object.freeze({
+          task: Object.freeze({ ...task }),
+          run: Object.freeze({ ...run }),
+          job: Object.freeze({ ...job, input: Object.freeze({ ...job.input }) }),
+        });
+        if (await assertBinding(binding) !== true) throw new CodexCanonicalFactsRejected();
+      } catch {
+        throw new CodexCanonicalFactsRejected();
+      }
+    }
 
     return Object.freeze({
       userId: task.ownerId,

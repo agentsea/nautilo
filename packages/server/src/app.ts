@@ -1,7 +1,26 @@
+import { createProtectedTaskOpenCodeExecution } from "./routes/protected-task-opencode-execution";
+import { createProtectedTaskDeepResearchExecution } from "./routes/protected-task-deep-research-execution";
+import { createProtectedTaskCodexExecution } from "./routes/protected-task-codex-execution";
+import { createProtectedTaskHermesExecution } from "./routes/protected-task-hermes-execution";
+import { createTaskOccurrencePolicyPorts } from "./routes/task-occurrence-policy";
+import { protectedTaskRoutes } from "./routes/task-protected-routes";
+import { createProductionProtectedTaskComposition } from "./routes/task-protected-composition";
+import { createTaskOrdinaryFallbackPorts } from "./routes/task-ordinary-fallback-composition";
+import { taskOrdinaryFallbackRoutes } from "./routes/task-ordinary-fallback-routes";
+import { createProtectedTaskRequestAuthorityResolver } from "./routes/task-protected-request-authority";
+import { createProtectedTaskActivationReadinessAssertion, ProtectedTaskActivationReadinessError } from "./routes/protected-task-activation-readiness";
+import { createProtectedTaskActivationParkedIntegrityInspector } from "./routes/protected-task-activation-parked-integrity";
+import { lockProtectedTaskActivationDrainingLease, readProtectedTaskActivationOperationalPersistenceInTransaction } from "@nautilo/db";
+import { protectedTaskPendingAttentionRoutes } from "./routes/protected-task-pending-attention-routes";
+import { createProtectedTaskHumanResponse } from "./routes/protected-task-human-response";
+import { createTaskLocalExecutionCaptureAdmission, resolveTaskLocalExecutionCaptureTarget, taskNeedsLocalExecutionCapture } from "./local-execution-task-capture";
 import { createBolterController, type BolterController } from "./messaging/bolter-controller";
+import { createMagentOperatorService } from "./messaging/magent-operator";
+import { readMagentBindings, startMagentBindings } from "./messaging/magent-bindings";
 import { bolterRoutes } from "./routes/bolter";
 import { createExternalRoomExecutionService } from "./messaging/external-room-execution";
-import { resolveTaskLocalExecutionCaptureTarget } from "./local-execution-task-capture";
+import { acceptPublishedProtectedTaskReply } from
+  "./messaging/protected-task-reply-acceptance";
 import { createTaskLocalExecutionSourceAssertion } from "./local-execution-task-source";
 import { setTaskLocalExecutionSourceComposition } from "@nautilo/runtime";
 import { parseLocalExecutionDelegation } from "@nautilo/types";
@@ -18,9 +37,16 @@ import {createProductionReflectionAuthorityMaintenance} from "./reflection/prote
 import { bindEncryptionDataOperationOwner } from "@nautilo/lattice-bridge";
 import { bindReflectionSemanticDataOperationPort, resolveReflectionSemanticStageAdmission, createPostgresStenographerAuthorizationWaitPort, createStenographerDataOperationPort, createStenographerCandidateDataOperationPort, readPostgresReflectionAuthorityStatus, readPostgresStenographerProtectionStatus, verifyCryptoPostgresHandle, type StenographerIntentAdapter } from "@nautilo/lattice-bridge/server";
 import { LatticeCrypto, TaskRuntimeRecipientRegistry } from "@nautilo/lattice-crypto";
-import { createParkedProtectedTaskOccurrenceCoordinator } from "@nautilo/runtime";
-import { createProtectedTaskRuntimeParkedPreparation } from "./routes/protected-task-runtime-parked-preparation";
-import { createProtectedTaskRuntimeParkedDeviceAuthorization } from "./routes/protected-task-runtime-parked-device-authorization";
+import { createProductionProtectedTaskRuntimeInitialComposition } from "./routes/protected-task-runtime-initial-composition";
+import { createProtectedTaskExternalRequests } from "./routes/protected-task-external-requests";
+import { createProtectedTaskExternalRequestAuthority } from "./routes/protected-task-external-request-authority";
+import { protectedTaskExternalRequestRoutes } from "./routes/protected-task-external-request-routes";
+import { createProtectedTaskClaudeExecution } from "./routes/protected-task-claude-execution";
+import { currentProtectedTaskForegroundCreationContext, readProtectedTaskForegroundCreationPolicy,
+  type ProtectedTaskForegroundCreationContext } from "./routes/protected-task-foreground-creation-context";
+import { protectedTaskForegroundCreationIdentity, protectedTaskForegroundCreationCandidateIdentity,
+  protectedTaskForegroundUpdateIdentity } from "./routes/protected-task-foreground-creation-identity";
+import type { ProtectedTaskCreationPlanV1 } from "@nautilo/runtime";
 import {decodeBackgroundProcessorWorkDescriptorV2} from "@nautilo/lattice-crypto/background";
 import { createHmacProtectedStenographerRecordCommitmentPort, createHmacRecordSemanticCommitmentPort, verifyRecordProductPostgresHandle } from "@nautilo/reflection-bridge/server";
 import { createProductionProtectedStenographerComposition } from "./background/stenographer-composition";
@@ -56,9 +82,10 @@ import {
   assertRunnableNativeTaskSelection,
   isPersonalOnlyNativeTaskSelection,
   nativeTaskFundingPort,
+  withProtectedTaskFundingAuthority,
 } from "./lib/native-task-funding";
 import { assertTaskFundingAdmission, TaskFundingError } from "@nautilo/runtime";
-import { getLatestResumableTaskRun } from "@nautilo/db";
+import { getLatestResumableTaskRun, type NewTask, type Task } from "@nautilo/db";
 import { assertCanUseServerProviderCredentials } from "@nautilo/trust";
 import { memoryStatusRoutes } from "./routes/memory-status";
 import {
@@ -159,6 +186,12 @@ import { invokeDirectRoutes } from "./routes/invoke-direct";
 import { jobRoutes } from "./routes/jobs";
 import { operatorMaintenanceRoutes, withMaintenanceStatusPublishing } from "./routes/operator-release";
 import { tasksRoutes } from "./routes/tasks";
+import {
+  createProtectedTaskTranscriptReadService,
+} from "./routes/protected-task-transcript-read";
+import {
+  createProductionRoomHistoryShadowReadComposition,
+} from "./routes/room-history-shadow-read-composition";
 import { profileRoutes } from "./routes/profile";
 import { profileAvatarRoutes } from "./routes/profile-avatar";
 import { agentPhotoLibraryRoutes } from "./routes/agent-photo-library";
@@ -209,6 +242,7 @@ import { claudeConnectionsRoutes } from "./routes/claude-connections";
 import { codexRequestsRoutes } from "./routes/codex-requests";
 import { acpReadinessRoutes } from "./acp/routes";
 import { createHermesAcpHarnessTask } from "./acp/harness-task";
+import { createOpenCodeAcpHarnessTask } from "./acp/opencode-harness-task";
 import { createHermesAcpTaskExecutionRouteRegistration } from "./acp/task-execution-composition";
 import { createOpenCodeAcpTaskExecutionRouteRegistration } from "./acp/opencode-task-execution-composition";
 import { CodexAdminControlPlane } from "./codex/admin-control-plane";
@@ -248,7 +282,7 @@ import {
   createCodexTaskRunLifecycleWriter,
 } from "./codex/task-run-lifecycle";
 import { CodexTurnEventBroker } from "./codex/turn-event-broker";
-import { CodexRequestBroker } from "./codex/request-broker";
+import { CodexRequestBroker, CodexRequestSourcePartition } from "./codex/request-broker";
 import { CodexExecutionPreflight } from "./codex/execution-preflight";
 import { CodexProfileRemovalTurnCoordinator } from "./codex/profile-removal-turn-coordinator";
 import { ClaudeConnectionController } from "./claude/connection-controller";
@@ -270,6 +304,7 @@ import {
   getServerContextConfig,
   getCodexUserInputRequestWith,
   getTaskById,
+  getTaskByIdWithMutationVersion,
   getTaskRuns,
   recordTaskWriterReviewAcceptedReceipt,
   reserveTaskWriterReviewWorkspaceOperation,
@@ -308,6 +343,8 @@ import { personalProviderCredentialRoutes } from "./routes/personal-provider-cre
 import { encryptionTransitionRoutes } from "./routes/encryption-transition";
 import { personalEncryptionCoverageRoutes } from "./routes/personal-encryption-coverage";
 import { messageBackfillRoutes } from "./routes/message-backfill";
+import { taskContentBackfillRoutes } from "./routes/task-content-backfill-routes";
+import { createProductionTaskContentBackfillComposition } from "./routes/task-content-backfill-composition";
 import { deviceAdmissionRoutes } from "./routes/device-admission";
 import { backgroundAuthorizationRoutes } from "./routes/background-authorization";
 import { createProductionBackgroundAuthorizationComposition } from "./routes/background-authorization-composition";
@@ -499,11 +536,13 @@ import {
   InMemoryWorkstationSessionRegistry,
   InMemoryWorkstationDispatchPlanRegistry,
   jobManager,
+  langgraphExecutor,
   TaskObserver,
   getTaskObserver,
   setTaskObserver,
   setTaskRunJobManager,
   createTask as runtimeCreateTask,
+  prepareTaskCreation,
   createAgentTurnTaskCreationProvenance,
   getPlaintextTaskCreationAdmission,
   clearTaskReturnBindings,
@@ -556,6 +595,7 @@ import {
   type WorkstationAccessAuditEvent,
   type WorkstationAdmissionAuditEvent,
   type OrdinaryStenographerIntentAdapterOptions,
+  type PreparedTaskCreationDeps,
   type TaskWriterReviewBinding,
   hasTaskWriterReviewBindingForTaskRun,
 } from "@nautilo/runtime";
@@ -627,7 +667,11 @@ import {
   queryReflectionAdminStatus,
   getAccountSecurityRowByUserId,
   getEncryptionTransitionPolicy,
-  createPostgresJsBridgeConnection, getSharedDirectCryptoDb, rooms, roomMembers, and, actors, inArray, isNull,
+  recordStrictShadowBoundaryHealth,
+  retireLegacyUnsupportedTaskObserverHealth,
+  createPostgresJsBridgeConnection, createPostgresJsCanonicalBridgeConnection,
+  type PostgresJsCanonicalTransaction, type PostgresJsBridgeExecutor,
+  getSharedDirectCryptoDb, rooms, roomMembers, and, actors, inArray, isNull,
   getConnectedAppProfile,
   upsertConnectedAppProfile,
   markConnectedAppUserProfilesState,
@@ -1006,10 +1050,22 @@ export async function createApp(options?: CreateAppOptions) {
       warn("[memory] foreground effect recovery pass failed; durable receipts remain pending");
     },
   });
+  let protectedTaskExternalRequestService: ReturnType<typeof createProtectedTaskExternalRequests> | null = null;
   const liveShadowMessageComposition =
     createProductionLiveShadowMessageComposition({
+      taskContentOwner: () => taskContentOwner,
+      cancelTaskExternalRequestsForHuman: humanActorId => protectedTaskExternalRequestService?.cancelForHuman(humanActorId),
       wakeForegroundMemoryEffectRecovery: () =>
         foregroundMemoryEffectRecovery.wake(),
+      onSharedAgentHumanPublished: async message => {
+        const outcome = await acceptPublishedProtectedTaskReply(
+          getServerDirectDb(),
+          message,
+        );
+        if (outcome === "accepted" || outcome === "exact_replay") {
+          getTaskObserver()?.kick();
+        }
+      },
     });
   installProductionLiveShadowMessageComposition(
     app,
@@ -1019,6 +1075,8 @@ export async function createApp(options?: CreateAppOptions) {
     Date.now,
     (clientActionSessionId) => {
       liveShadowMessageComposition.pendingAttention?.cancelForClientSession(clientActionSessionId);
+      liveShadowMessageComposition.taskPendingAttention?.cancelForClientSession(clientActionSessionId);
+      protectedTaskExternalRequestService?.cancelForClientSession(clientActionSessionId);
       liveShadowMessageComposition.recipients.deleteClientSession(
         clientActionSessionId,
       );
@@ -1844,29 +1902,7 @@ export async function createApp(options?: CreateAppOptions) {
     publishMaintenanceStatus,
   );
   const maintenanceGate = new ProductionMaintenanceGate(publishingMaintenanceController);
-  const strictBackgroundMaintenanceGate = (boundaryId: string) => {
-    const permitsProtectedWork = async (): Promise<boolean> => {
-      const enforcement = await enforceRegisteredStrictShadowBoundary({
-        boundaryId,
-        state: "unsupported",
-        reason: "unsupported_operation",
-        retryable: false,
-      });
-      return enforcement.result.disposition === "ordinary"
-        || enforcement.result.disposition === "protected";
-    };
-    return {
-      isAcceptingWork: async (): Promise<boolean> =>
-        await maintenanceGate.isAcceptingWork()
-        && await permitsProtectedWork(),
-      assertAcceptingNewWork: async (): Promise<void> => {
-        await maintenanceGate.assertAcceptingNewWork();
-        if (!(await permitsProtectedWork())) {
-          throw new Error("Strict Shadow background protection is unavailable");
-        }
-      },
-    };
-  };
+
   setMaintenanceGate(maintenanceGate);
   let reflectionCommitmentKey: Uint8Array | undefined;
   const getReflectionCommitmentKey = () =>
@@ -1948,18 +1984,37 @@ export async function createApp(options?: CreateAppOptions) {
       () => getEncryptionTransitionPolicy(getServerDirectDb()),
     ),
   });
-  // Task protection remains dark until its complete create/read/execution
-  // composition is activated. Preserve the established ordinary Task route
-  // in every server-wide encryption mode through a Task-specific owner.
-  const dormantTaskContentOwner = bindEncryptionDataOperationOwner({
-    policy: {
-      resolve: () => Promise.resolve({
-        policy: { mode: "plaintext_only" as const, shadowBehavior: "fallback" as const },
-        revalidationToken: 0,
-      }),
-      revalidate: () => Promise.resolve(),
-    },
+  // Every Task surface shares the current server policy owner. Plain selects
+  // only existing ordinary ports; Shadow and Full can reach protected ports
+  // only after the common policy owner has revalidated the durable revision.
+  const taskContentPolicy = createLiveShadowDataOperationPolicyBinding(
+    () => readProtectedTaskForegroundCreationPolicy(
+      () => getEncryptionTransitionPolicy(getServerDirectDb()),
+    ),
+  );
+  const taskContentOwner = bindEncryptionDataOperationOwner({
+    policy: taskContentPolicy,
   });
+  const currentProtectedTaskExternalRequests = () => {
+    const construct = () => {
+      if (protectedTaskExternalRequestService !== null) return Promise.resolve(protectedTaskExternalRequestService);
+      const crypto = new LatticeCrypto();
+      const db = getServerDirectDb();
+      const restricted = createPostgresJsBridgeConnection(getSharedDirectCryptoDb());
+      const serverScope = process.env["NAUTILO_PUBLIC_BASE_URL"]?.trim() || "http://localhost:3001";
+      const inspectCurrent = createProtectedTaskExternalRequestAuthority({ db, restricted, crypto,
+        serverScope, owner: taskContentOwner,
+        clientSessions: { inspect: input => clientActionBindingRegistry.inspectLiveSession(input) } });
+      protectedTaskExternalRequestService = createProtectedTaskExternalRequests({
+        crypto, recipients: liveShadowMessageComposition.recipients, inspectCurrent,
+        onChanged: change => eventBus.emit({ type: "task.external_request.changed", ...change }),
+      });
+      return Promise.resolve(protectedTaskExternalRequestService);
+    };
+    return taskContentOwner.selectReadMetadata({ ordinary: () => Promise.resolve(null),
+      fallback: construct, protected: construct });
+  };
+  app.addHook("onClose", () => { protectedTaskExternalRequestService?.close(); });
   let protectedStenographerPromise: ReturnType<typeof createProductionProtectedStenographerComposition> | null = null;
   let stenographerProtectionCryptoHandlePromise: ReturnType<
     typeof verifyCryptoPostgresHandle
@@ -2160,6 +2215,16 @@ export async function createApp(options?: CreateAppOptions) {
     onRecoveryPass: () => { bolterController?.wakePublications(); },
   });
   app.decorate("externalRoomExecution", externalRoomExecution);
+  const magentConfigPath = fromRuntimeConfig().nautilo_magent_config_file;
+  let magentSocket: Awaited<ReturnType<typeof startMagentBindings>> | undefined;
+  if (magentConfigPath) {
+    app.addHook("onReady", async () => {
+      const configs = await readMagentBindings(magentConfigPath);
+      magentSocket = await startMagentBindings(configs, config =>
+        createMagentOperatorService({ config, execution: externalRoomExecution, jobManager }));
+    });
+    app.addHook("preClose", async () => { await magentSocket?.close(); });
+  }
   // Match the existing conversion worker's recovery cadence. Durable claims
   // prevent overlapping execution across processes; this timer never takes over a claim.
   app.addHook("onListen", () => { externalRoomExecution.start({ intervalMs: 5_000 }); return Promise.resolve(); });
@@ -2311,6 +2376,10 @@ export async function createApp(options?: CreateAppOptions) {
     };
 
     authRoutes(app, {
+      acceptProtectedTaskResponse: createProtectedTaskHumanResponse({
+        db: getServerDirectDb(), owner: taskContentOwner,
+        wake: () => taskObserver.kick(), now: () => new Date(),
+      }),
       pinProvider,
       ownerActorId,
       ownerId,
@@ -2425,6 +2494,13 @@ export async function createApp(options?: CreateAppOptions) {
       },
     });
   }
+  if (liveShadowMessageComposition.taskPendingAttention !== undefined) {
+    protectedTaskPendingAttentionRoutes(app, {
+      service: liveShadowMessageComposition.taskPendingAttention,
+      clientSessions: { inspect: value => clientActionBindingRegistry.inspectLiveSession(value) },
+    });
+  }
+  protectedTaskExternalRequestRoutes(app, { service: currentProtectedTaskExternalRequests });
   messagesReadStateRoutes(app);
   modelControlSelectionRoutes(app);
   notificationPreferenceRoutes(app);
@@ -3143,7 +3219,43 @@ export async function createApp(options?: CreateAppOptions) {
       }
     },
   });
+  const assertTaskActivationReadiness = createProtectedTaskActivationReadinessAssertion();
+  const inspectTaskParkedIntegrity = createProtectedTaskActivationParkedIntegrityInspector();
+  let taskActivationCryptoPromise: ReturnType<typeof verifyCryptoPostgresHandle> | null = null;
   encryptionTransitionRoutes(app, {
+    validateFullTransition: async ({ transaction, current, requested, maintenanceOperationId, now }) => {
+      taskActivationCryptoPromise ??= verifyCryptoPostgresHandle(
+        createPostgresJsBridgeConnection(getSharedDirectCryptoDb()),
+      );
+      await assertTaskActivationReadiness({ transaction, current, requested, now,
+        restricted: await taskActivationCryptoPromise,
+        readOperational: async ({ transaction: held, policyRevision, now: observedAt }) => {
+          const maintenance = await lockProtectedTaskActivationDrainingLease(held, {
+            operationId: maintenanceOperationId, now: observedAt,
+          });
+          if (maintenance === null) throw new ProtectedTaskActivationReadinessError("maintenance_not_drained");
+          const jobs = jobManager.getExecutableJobWorkSummary();
+          const [acceptedWork, taskWork, persistence] = await Promise.all([
+            countAcceptedWorkWith(held), countActiveTaskWorkWith(held),
+            readProtectedTaskActivationOperationalPersistenceInTransaction(held),
+          ]);
+          return { policyRevision, maintenance, persistence,
+            activity: { ...jobs, acceptedWork, runningTaskRuns: taskWork.runningTaskRuns,
+              claimedTasks: taskWork.claimedTasks } };
+        },
+        assertCurrentMountedCapabilities: async () => {
+          // Construction verifies and assembles ports only. Operational work
+          // remains selected later through taskContentOwner callbacks.
+          const runtime = await initializeProtectedTaskRuntime();
+          if (runtime === null || policyResolver === null || taskRuntimeRecipients === null
+            || liveShadowMessageComposition.taskPendingAttention === undefined
+            || taskProtectedHttpComposition.mode !== "protected_task_production") {
+            throw new ProtectedTaskActivationReadinessError("runtime_not_ready");
+          }
+        },
+        inspectParkedExecutionIntegrity: inspectTaskParkedIntegrity,
+      });
+    },
     publishPolicyChanged: publishEncryptionPolicyChanged,
     maintenanceController: publishingMaintenanceController,
     getExecutableActivity: async () => {
@@ -3163,20 +3275,120 @@ export async function createApp(options?: CreateAppOptions) {
   });
   personalEncryptionCoverageRoutes(app);
   messageBackfillRoutes(app);
+  taskContentBackfillRoutes(app, createProductionTaskContentBackfillComposition({
+    db: getServerDirectDb(),
+    restricted: createPostgresJsBridgeConnection(getSharedDirectCryptoDb()),
+    serverScope: process.env["NAUTILO_PUBLIC_BASE_URL"]?.trim() || "http://localhost:3001",
+    owner: taskContentOwner,
+  }));
   const taskRuntimeRecipients = policyResolver === null
     ? null : new TaskRuntimeRecipientRegistry(new LatticeCrypto());
   app.addHook("onClose", () => {
     taskRuntimeRecipients?.close();
     return Promise.resolve();
   });
-  const parkedTaskDeviceAuthorization = policyResolver === null || taskRuntimeRecipients === null
-    ? {} : createProtectedTaskRuntimeParkedDeviceAuthorization({
-      resolver: policyResolver, recipients: taskRuntimeRecipients,
-    });
+  let protectedTaskRuntime: Awaited<ReturnType<typeof createProductionProtectedTaskRuntimeInitialComposition>> | null = null;
+  let protectedTaskRuntimePromise: ReturnType<typeof createProductionProtectedTaskRuntimeInitialComposition> | null = null;
+  const currentProtectedTaskRuntime = () => taskContentOwner.runMutation({
+    ordinary: () => Promise.resolve(null),
+    protected: initializeProtectedTaskRuntime,
+    dual: initializeProtectedTaskRuntime,
+  });
+  async function initializeProtectedTaskRuntime() {
+    if (policyResolver === null || taskRuntimeRecipients === null) return null;
+    if (protectedTaskRuntimePromise === null) {
+      const pending = createProductionProtectedTaskRuntimeInitialComposition({
+        db: getServerDirectDb(), resolver: policyResolver,
+        convergeCreatedRoomCatalog: convergeHumanRoomCatalogs,
+        owner: taskContentOwner, recipients: taskRuntimeRecipients, jobManager,
+        prepareExternalExecution: {
+          claude: async (selection, preparation) => {
+            if (!enableClaudeCodeTasks || protectedClaudeHarnessExecution === null) throw new TypeError("Protected Claude execution is unavailable");
+            const requests = await currentProtectedTaskExternalRequests();
+            if (requests === null) throw new TypeError("Protected external request ownership is unavailable");
+            return createProtectedTaskClaudeExecution({ db: getServerDirectDb(),
+              restricted: createPostgresJsBridgeConnection(getSharedDirectCryptoDb()),
+              crypto: new LatticeCrypto(),
+              serverScope: process.env["NAUTILO_PUBLIC_BASE_URL"]?.trim() || "http://localhost:3001",
+              owner: taskContentOwner, controller: claudeConnections,
+              execution: protectedClaudeHarnessExecution, requests })(selection)(preparation);
+          },
+          codex: async (selection, preparation) => {
+            const requests = await currentProtectedTaskExternalRequests();
+            if (requests === null) throw new TypeError("Protected external request ownership is unavailable");
+            return createProtectedTaskCodexExecution({ db: getServerDirectDb(),
+              restricted: createPostgresJsBridgeConnection(getSharedDirectCryptoDb()), crypto: new LatticeCrypto(),
+              serverScope: process.env["NAUTILO_PUBLIC_BASE_URL"]?.trim() || "http://localhost:3001", owner: taskContentOwner,
+              preferences: codexPreferences, preflight: codexExecutionPreflight,
+              models: { list: profile => codexAdmin.listModels(profile) }, limits: { resolve: resolveModelExecutionLimits },
+              canonicalReader: codexCanonicalFactsReader, sessions: codexAuthoritySessions,
+              mutations: codexPersistence, admissionFactory: codexAdmissionFactory,
+              execution: protectedCodexHarnessExecution, requestBroker: protectedCodexRequestBroker,
+              requestPartition: codexRequestPartition, requests,
+            })(selection)(preparation);
+          },
+          deepResearch: async (selection, preparation) => {
+            const requests = await currentProtectedTaskExternalRequests();
+            if (requests === null) throw new TypeError("Protected research ownership is unavailable");
+            return createProtectedTaskDeepResearchExecution({ db: getServerDirectDb(),
+              restricted: createPostgresJsBridgeConnection(getSharedDirectCryptoDb()), crypto: new LatticeCrypto(),
+              serverScope: process.env["NAUTILO_PUBLIC_BASE_URL"]?.trim() || "http://localhost:3001",
+              owner: taskContentOwner, requests,
+            })(selection)(preparation);
+          },
+          hermes: async (selection, preparation) => {
+            const requests = await currentProtectedTaskExternalRequests();
+            if (requests === null) throw new TypeError("Protected external request ownership is unavailable");
+            return createProtectedTaskHermesExecution({ db: getServerDirectDb(),
+              restricted: createPostgresJsBridgeConnection(getSharedDirectCryptoDb()), crypto: new LatticeCrypto(),
+              serverScope: process.env["NAUTILO_PUBLIC_BASE_URL"]?.trim() || "http://localhost:3001", owner: taskContentOwner,
+              relay: relayRegistry, requests,
+            })(selection)(preparation);
+          },
+          opencode: async (selection, preparation) => {
+            const requests = await currentProtectedTaskExternalRequests();
+            if (requests === null) throw new TypeError("Protected external request ownership is unavailable");
+            return createProtectedTaskOpenCodeExecution({ db: getServerDirectDb(),
+              restricted: createPostgresJsBridgeConnection(getSharedDirectCryptoDb()), crypto: new LatticeCrypto(),
+              serverScope: process.env["NAUTILO_PUBLIC_BASE_URL"]?.trim() || "http://localhost:3001", owner: taskContentOwner,
+              relay: relayRegistry, requests,
+            })(selection)(preparation);
+          },
+        },
+        kick: () => getTaskObserver()?.kick(),
+        authorizationRequested: requestorUserId => {
+          broadcast(
+            { type: "crypto.background_authorization_requested" },
+            { kind: "user", userId: requestorUserId },
+          );
+        },
+        wakeForeground: { jobManager, executor: langgraphExecutor,
+          wakeEffectRecovery: () => foregroundMemoryEffectRecovery.wake() },
+      });
+      protectedTaskRuntimePromise = pending;
+      void pending.then(runtime => { protectedTaskRuntime = runtime; }, () => {
+        if (protectedTaskRuntimePromise === pending) protectedTaskRuntimePromise = null;
+      });
+    }
+    return protectedTaskRuntimePromise;
+  }
   backgroundAuthorizationRoutes(app, createProductionBackgroundAuthorizationComposition({
-    ...parkedTaskDeviceAuthorization,
+    ...(policyResolver === null || taskRuntimeRecipients === null ? {} : {
+      bindTaskRecipient: async operation =>
+        (await currentProtectedTaskRuntime())?.bindTaskRecipient(operation) ?? null,
+      withTaskAuthority: async operation =>
+        (await currentProtectedTaskRuntime())?.withTaskAuthority(operation) ?? null,
+      isTaskRecipientActive: record => protectedTaskRuntime?.isTaskRecipientActive(record) ?? false,
+    }),
     wakeProtectedTask: () => getTaskObserver()?.kick(),
   }));
+  app.addHook("onClose", async () => {
+    if (protectedTaskRuntimePromise !== null) {
+      const settled = await Promise.allSettled([protectedTaskRuntimePromise]);
+      const runtime = settled[0];
+      if (runtime?.status === "fulfilled") await runtime.value.close();
+    }
+  });
   deviceAdmissionRoutes(app, {
     composition: deviceAdmissionComposition,
     requiresCryptoDevice: async () =>
@@ -3932,11 +4144,23 @@ export async function createApp(options?: CreateAppOptions) {
     mintId: randomUUID,
   });
   const codexTurnBroker = new CodexTurnEventBroker({ source: relayRegistry });
-  const codexRequestBroker = new CodexRequestBroker({ source: relayRegistry });
+  const codexRequestPartition = new CodexRequestSourcePartition(relayRegistry);
+  const codexRequestBroker = new CodexRequestBroker({ source: codexRequestPartition.ordinary });
   const codexHarnessExecution = new CodexHarnessExecution({
     sessions: codexBindingSessions,
     events: codexTurnBroker,
     requests: codexRequestBroker,
+    requestScopes: { claim: identity => codexRequestPartition.claimOrdinary(identity) },
+  });
+  const protectedCodexRequestBroker = new CodexRequestBroker({ source: codexRequestPartition.protected });
+  const protectedCodexHarnessExecution = new CodexHarnessExecution({
+    sessions: codexBindingSessions, events: codexTurnBroker, requests: protectedCodexRequestBroker,
+    abortStreamOnCancellation: true,
+  });
+  app.addHook("onClose", () => {
+    protectedCodexRequestBroker.dispose();
+    codexRequestBroker.dispose();
+    codexRequestPartition.dispose();
   });
   const codexControlPlane = createCodexHarnessControlPlane({
     execution: codexHarnessExecution,
@@ -3980,6 +4204,10 @@ export async function createApp(options?: CreateAppOptions) {
   app.addHook("onClose", () => claudeConnections.close());
   const claudeHarnessExecution = enableClaudeCodeTasks
     ? new ClaudeHarnessExecution({ relay: relayRegistry })
+    : null;
+  // Protected requests must never enter the ordinary owner-only responder.
+  const protectedClaudeHarnessExecution = enableClaudeCodeTasks
+    ? new ClaudeHarnessExecution({ relay: relayRegistry, abortStreamOnCancellation: true })
     : null;
   const claudeEphemeralOutputProjector = enableClaudeCodeTasks
     ? new CodexRoomOutputProjector({ requestMode: "ephemeral" })
@@ -4056,22 +4284,48 @@ export async function createApp(options?: CreateAppOptions) {
   // sealed server-authored harness descriptor; Native Tasks return undefined
   // and preserve their existing executor. Stopped on app close.
   let moderationEffectRecovery: ReturnType<typeof createModerationEffectRecovery> | null = null;
-  // Only already parked protected runs enter request preparation. Initial
-  // protected dispatch remains unavailable until the execution owner is complete.
-  const parkedTaskPreparation = policyResolver === null || taskRuntimeRecipients === null
-    ? undefined : createParkedProtectedTaskOccurrenceCoordinator({
-        prepare: createProtectedTaskRuntimeParkedPreparation({
-          resolver: policyResolver, recipients: taskRuntimeRecipients,
-        }),
-      });
+  const taskOccurrencePolicy = createTaskOccurrencePolicyPorts(
+    taskContentOwner,
+    async () => {
+      const runtime = await initializeProtectedTaskRuntime();
+      return runtime?.coordinator ?? null;
+    },
+    {
+      resolveExactPolicyRevision: async expectedRevision => {
+        await taskContentPolicy.revalidate(expectedRevision);
+        return expectedRevision;
+      },
+      record: observation => recordStrictShadowBoundaryHealth(
+        getServerDirectDb(),
+        {
+          ...observation,
+          boundaryId: "background.task.observer",
+          family: "task",
+          operation: "process",
+          actorClass: "background",
+          observedAt: new Date(),
+        },
+      ),
+      retireLegacyUnsupported: policyRevision =>
+        retireLegacyUnsupportedTaskObserverHealth(
+          getServerDirectDb(),
+          policyRevision,
+        ),
+    },
+  );
+  const protectedTaskOccurrences = policyResolver === null || taskRuntimeRecipients === null
+    ? undefined : taskOccurrencePolicy.protected;
+
   const taskObserver = new TaskObserver({
     db: getServerDirectDb(),
     jobManager,
-    maintenanceGate: strictBackgroundMaintenanceGate(
-      "background.task.observer",
-    ),
+    maintenanceGate,
+    ordinaryOccurrencePort: taskOccurrencePolicy.ordinary,
     executionRouteSelector: taskHarnessExecutionRouteSelector,
-    ...(parkedTaskPreparation === undefined ? {} : { protectedOccurrenceRecoveryPort: parkedTaskPreparation }),
+    ...(protectedTaskOccurrences === undefined ? {} : {
+      protectedOccurrencePort: protectedTaskOccurrences,
+      protectedOccurrenceRecoveryPort: protectedTaskOccurrences,
+    }),
     convergeCreatedRoomCatalog: convergeHumanRoomCatalogs,
     onMaintenance: async () => {
       liveMiniAppSessionRegistry.expire();
@@ -4094,6 +4348,15 @@ export async function createApp(options?: CreateAppOptions) {
     },
   });
   setTaskObserver(taskObserver);
+  const wakeProtectedLocalExecution = () => {
+    void currentProtectedTaskRuntime().then(runtime => runtime?.wakeProtectedTask())
+      .catch(() => warn("[task-observer] protected local readiness retry deferred"));
+  };
+  eventBus.onTaskLocalExecutionSourceChanged(wakeProtectedLocalExecution);
+  app.addHook("onClose", () => {
+    eventBus.offTaskLocalExecutionSourceChanged(wakeProtectedLocalExecution);
+    return Promise.resolve();
+  });
   setTaskLocalExecutionSourceComposition({
     assertSource: createTaskLocalExecutionSourceAssertion(),
     subscribeChanges: (check) => {
@@ -4124,7 +4387,9 @@ export async function createApp(options?: CreateAppOptions) {
   }
   const createTaskForAgentTool = async (
     task: Parameters<typeof runtimeCreateTask>[1],
+    protectedCreation?: ProtectedTaskForegroundCreationContext,
   ) => {
+    if (protectedCreation !== undefined) task = structuredClone(task);
     const liveMiniAppContext = getTaskCreationLiveMiniAppContext();
     const taskProvenance = getTaskCreationBackgroundTaskProvenance();
     const invocationProvenance = getTaskCreationInvocationProvenance();
@@ -4220,25 +4485,42 @@ export async function createApp(options?: CreateAppOptions) {
         : {}),
     };
     const directDb = getServerDirectDb();
+    const provenance = createAgentTurnTaskCreationProvenance({
+      ownerId: protectedCreation === undefined ? task.ownerId : task.requestorId,
+      invocation: invocationProvenance,
+    });
+    const createInput = protectedCreation === undefined
+      ? taskForCreate
+      : { ...taskForCreate, ownerId: task.requestorId };
+    const preparedCreate = protectedCreation === undefined
+      ? undefined
+      : await prepareTaskCreation(createInput, provenance);
+    const definitionIdentity = protectedCreation === undefined ? undefined
+      : protectedTaskForegroundCreationCandidateIdentity({ invocation: invocationProvenance, candidate: taskForCreate });
     let bindingTaskId: string | null = null;
     let created: Awaited<ReturnType<typeof runtimeCreateTask>>;
     try {
-      created = await directDb.transaction(async (tx) => {
+      const createInTransaction = async (tx: PostgresJsCanonicalTransaction, executor?: PostgresJsBridgeExecutor) => {
+        const create = async () => {
         // The observer must not see the committed row before its process-local
         // authority is registered. The transaction supplies that ordering;
         // the real kick happens only after commit below.
-        const result = await runtimeCreateTask(
-          {
-            db: tx as unknown as Parameters<typeof runtimeCreateTask>[0]["db"],
-            observer: { kick() {} },
-            provenance: createAgentTurnTaskCreationProvenance({
-              ownerId: task.ownerId,
-              invocation: invocationProvenance,
+        const createDeps: PreparedTaskCreationDeps<ProtectedTaskCreationPlanV1> = {
+          db: tx as unknown as Parameters<typeof runtimeCreateTask>[0]["db"],
+          observer: { kick() {} },
+          admission: protectedCreation?.admission ?? getPlaintextTaskCreationAdmission(),
+            ...(protectedCreation === undefined ? {} : {
+              resolveProtectedIdentity: operation => protectedTaskForegroundCreationIdentity({ ...operation,
+                invocation: invocationProvenance }),
+              publishProtected: operation => {
+                if (executor === undefined) throw new TypeError("Protected Task creation needs its canonical product executor");
+                const identity = protectedTaskForegroundCreationIdentity({ ...operation, invocation: invocationProvenance });
+                return protectedCreation.publishProtected({ ...operation, transaction: tx, executor,
+                  operationId: identity.operationId });
+              },
             }),
-            admission: getPlaintextTaskCreationAdmission(),
             captureLocalExecution: async (candidate) => {
-              if (candidate.toolsMode === "none" || (candidate.toolsMode === "whitelist"
-                && !candidate.toolsWhitelist?.some(name => name === "exec_command" || name === "write_stdin"))) return null;
+              if (!taskNeedsLocalExecutionCapture(candidate, protectedCreation !== undefined)) return null;
               const inherited = getCurrentLocalExecutionDelegation();
               if (candidate.parentTaskId) {
                 if (!inherited || inherited.taskId !== candidate.parentTaskId) return null;
@@ -4250,10 +4532,20 @@ export async function createApp(options?: CreateAppOptions) {
               const context = getTaskCreationReturnContext();
               if (!context?.localExecutionSource) return null;
               const source = context.localExecutionSource;
-              if (context.ownerId !== candidate.requestorId || candidate.callingRoomId !== source.roomId) {
+              if (context.ownerId !== candidate.requestorId || candidate.callingRoomId !== source.roomId
+                || candidate.agentId !== source.agentId) {
                 throw new Error("Task project source changed. Create the Task again from the intended Room.");
               }
-              return source.withAdmission(async (signal) => {
+              return source.withBorrowedAdmission(createTaskLocalExecutionCaptureAdmission({
+                database: tx,
+                humanUserId: candidate.requestorId,
+                agentId: source.agentId,
+                roomId: source.roomId,
+                conversationId: source.conversationId,
+                ...(protectedCreation === undefined ? {} : {
+                  assertCurrentProtected: () => protectedCreation.assertCurrent(),
+                }),
+              }), async (signal) => {
                 const target = resolveTaskLocalExecutionCaptureTarget(context, candidate.requestorId, relayRegistry);
                 if (!target) {
                   throw new Error("This Mac cannot capture Task project access. Reconnect the original Desktop and create the Task again.");
@@ -4281,11 +4573,12 @@ export async function createApp(options?: CreateAppOptions) {
                 return descriptor;
               });
             },
-          },
-          taskForCreate,
-        );
-        bindingTaskId = result.taskId;
-        if (scheduleKind === "now" && task.callingRoomId) {
+          };
+        const result = preparedCreate === undefined
+          ? await runtimeCreateTask<ProtectedTaskCreationPlanV1>({ ...createDeps, provenance }, createInput)
+          : await preparedCreate.create<ProtectedTaskCreationPlanV1>(createDeps);
+        if (result.publicationDisposition !== "replayed") bindingTaskId = result.taskId;
+        if (result.publicationDisposition !== "replayed" && scheduleKind === "now" && task.callingRoomId) {
           const returnContext = getTaskCreationReturnContext();
           const registered = registerTaskReturnBinding(
             result.taskId,
@@ -4303,7 +4596,7 @@ export async function createApp(options?: CreateAppOptions) {
             );
           }
         }
-        if (delegatesLiveMiniApp) {
+        if (result.publicationDisposition !== "replayed" && delegatesLiveMiniApp) {
           const registered = registerTaskLiveMiniAppBinding(
             result.taskId,
             liveMiniAppContext,
@@ -4343,7 +4636,23 @@ export async function createApp(options?: CreateAppOptions) {
           }
         }
         return result;
-      });
+        };
+        if (protectedCreation === undefined) return create();
+        if (executor === undefined) throw new TypeError("Protected Task creation needs its canonical product executor");
+        const identity = definitionIdentity!;
+        return protectedCreation.withProduct({ taskId: identity.taskId, transaction: tx, executor, use: create });
+      };
+      created = protectedCreation === undefined ? await directDb.transaction(createInTransaction)
+        : await protectedCreation.withTaskDefinitionAuthorization({
+            taskId: definitionIdentity!.taskId,
+            taskExecutorAgentId: createInput.agentId,
+            targetContentRevision: 1,
+            operation: "create",
+            operationId: definitionIdentity!.operationId,
+            workDescriptorDigest: definitionIdentity!.workDescriptorDigest,
+            use: () => createPostgresJsCanonicalBridgeConnection(directDb)
+              .transaction(createInTransaction, { isolationLevel: "read committed" }),
+          });
     } catch (error) {
       if (bindingTaskId) removeTaskReturnBinding(bindingTaskId);
       throw error;
@@ -4363,7 +4672,7 @@ export async function createApp(options?: CreateAppOptions) {
     },
     createTask: createTaskForAgentTool,
   };
-  const hermesAcpHarnessTaskDeps = {
+  const acpHarnessTaskDeps = {
     facts: codexCanonicalFactsReader,
     relay: relayRegistry,
     createTask: createTaskForAgentTool,
@@ -4386,17 +4695,108 @@ export async function createApp(options?: CreateAppOptions) {
     await prepareHarnessStop(taskId);
     return runtimeStopTask(taskLifecycleDeps(), taskId);
   };
+  const assertTaskMutationFunding = async (
+    task: Task,
+    operation: "update" | "unpause",
+    patch?: Readonly<Partial<NewTask>>,
+  ): Promise<void> => {
+    const definedPatch = Object.fromEntries(Object.entries(patch ?? {}).filter(([, value]) => value !== undefined));
+    const prospective = { ...task, ...definedPatch };
+    const priorRun = task.contentRepresentation === "dual" || task.contentRepresentation === "protected"
+      ? await getLatestResumableTaskRun(getServerDirectDb(), task.id, { fundingOnly: true })
+      : await getLatestResumableTaskRun(getServerDirectDb(), task.id);
+    if (task.fundingMode === "caller" && priorRun && prospective.targetChat !== task.targetChat) {
+      throw new TaskFundingError("funding_source_changed");
+    }
+    if (task.fundingMode === "caller" && priorRun && operation === "update") {
+      await assertRunnableNativeTaskSelection(prospective);
+    }
+    const admission = await assertTaskFundingAdmission(prospective, priorRun);
+    if (!admission) await assertCanUseServerProviderCredentials(task.requestorId, `task_${operation}`);
+  };
   setTaskToolRuntime({
     onDefinitionChanged: (task) => eventBus.emit({ type: "task.status", taskId: task.id, ownerId: task.ownerId, status: task.status }),
     db: getServerDirectDb(),
     isPersonalOnlyTaskSelection: isPersonalOnlyNativeTaskSelection,
-    canUseLegacyTaskContent: () => dormantTaskContentOwner.runMutation({
+    canUseLegacyTaskContent: () => taskContentOwner.runMutation({
       ordinary: () => Promise.resolve(true),
       dual: () => Promise.resolve(false),
       protected: () => Promise.resolve(false),
     }),
     ...(enableClaudeCodeTasks ? { claudeCodeTasksEnabled: true as const } : {}),
     createTask: createTaskForAgentTool,
+    createProtectedTask: input => {
+      const source = currentProtectedTaskForegroundCreationContext();
+      if (source === null) throw new Error("Protected Task creation requires the current admitted foreground turn");
+      return createTaskForAgentTool(input, source);
+    },
+    updateProtectedTask: async input => {
+      const source = currentProtectedTaskForegroundCreationContext();
+      if (source === null) throw new Error("Protected Task update requires the current admitted foreground turn");
+      // Hold one exact semantic intent while the Device authorization is in flight.
+      input = structuredClone(input);
+      await source.assertCurrent();
+      const observed = await getTaskByIdWithMutationVersion(getServerDirectDb(), input.taskId,
+        { lifecycleOnly: true, ownerId: input.ownerId });
+      if (observed === undefined || observed.ownerId !== input.ownerId
+        || observed.requestorId !== input.requestorId) {
+        throw new Error("Protected Task update source is unavailable");
+      }
+      const identity = protectedTaskForegroundUpdateIdentity({
+        invocation: getTaskCreationInvocationProvenance(), taskId: input.taskId,
+        requestorId: input.requestorId, agentId: input.agentId, callingRoomId: input.callingRoomId,
+        source: { contentRevision: observed.contentRevision, mutationVersion: observed.mutationVersion },
+        request: input,
+      });
+      const bridge = createPostgresJsCanonicalBridgeConnection(getServerDirectDb());
+      return source.withTaskDefinitionAuthorization({
+        taskId: input.taskId, taskExecutorAgentId: observed.agentId,
+        targetContentRevision: observed.contentRevision + 1, operation: "update",
+        operationId: identity.operationId, workDescriptorDigest: identity.workDescriptorDigest,
+        use: async () => {
+          const preflight = await bridge.transaction(async (transaction, executor) => {
+            if (executor === undefined) throw new TypeError("Protected Task update needs its canonical product executor");
+            return source.withProduct({ taskId: input.taskId, transaction, executor,
+              use: () => source.preflightProtectedTaskUpdate({ operationId: identity.operationId, request: input }) });
+          }, { isolationLevel: "read committed" });
+          if (preflight.source.mutationVersion !== observed.mutationVersion
+            || preflight.source.contentRevision !== observed.contentRevision) {
+            throw new Error("Protected Task changed while its authorization was prepared");
+          }
+          await withProtectedTaskFundingAuthority(source.assertCurrent, () =>
+            assertTaskMutationFunding(preflight.source, "update", preflight.patch));
+          return bridge.transaction(async (transaction, executor) => {
+            if (executor === undefined) throw new TypeError("Protected Task update needs its canonical product executor");
+            return source.withProduct({ taskId: input.taskId, transaction, executor,
+              use: () => source.updateProtectedTask({ operationId: identity.operationId, request: input, preflight }) });
+          }, { isolationLevel: "read committed" });
+        },
+      });
+    },
+    createProtectedHarnessTask: async input => {
+      if (input.callingRoomId === null) {
+        throw new TypeError("Protected harness Task creation is unavailable");
+      }
+      const source = currentProtectedTaskForegroundCreationContext();
+      if (source === null) throw new TypeError("Protected harness Task creation needs the current admitted foreground turn");
+      const createProtected = async (candidate: Parameters<typeof createTaskForAgentTool>[0]) => {
+        const result = await createTaskForAgentTool(candidate, source);
+        return { taskId: result.taskId, status: result.status, nextFireAt: result.nextFireAt };
+      };
+      if (input.harness === "codex") return createCodexHarnessTask({ ...codexHarnessTaskDeps, createTask: createProtected }, input);
+      if (input.harness === "hermes-acp") return createHermesAcpHarnessTask({ ...acpHarnessTaskDeps, createTask: createProtected }, input);
+      if (input.harness === "opencode-acp") return createOpenCodeAcpHarnessTask({ ...acpHarnessTaskDeps, createTask: createProtected }, input);
+      if (!enableClaudeCodeTasks) throw new TypeError("Protected Claude execution is unavailable");
+      const selectedModels = (await claudeConnections.listExecutionModels(input.ownerId))
+        .filter(model => model.selected);
+      const model = input.harnessModelId === undefined
+        ? selectedModels.length === 1 ? selectedModels[0] ?? null : null
+        : selectedModels.find(candidate => candidate.catalogModelId === input.harnessModelId) ?? null;
+      if (model === null) throw new TypeError("Protected Claude model selection is unavailable");
+      return createClaudeHarnessTask({ ...claudeHarnessTaskDeps, createTask: createProtected }, { ownerId: input.ownerId, requestorId: input.requestorId, agentId: input.agentId,
+        prompt: input.prompt, callingRoomId: input.callingRoomId, harness: "claude-code",
+        profileRef: model.profileRef, catalogModelId: model.catalogModelId, selectedModel: model.selectedModel });
+    },
     createHarnessTask: (input) => {
       if (input.harness === "codex") {
         return createCodexHarnessTask(codexHarnessTaskDeps, input);
@@ -4426,12 +4826,10 @@ export async function createApp(options?: CreateAppOptions) {
         })();
       }
       if (input.harness === "hermes-acp") {
-        return createHermesAcpHarnessTask(hermesAcpHarnessTaskDeps, input);
+        return createHermesAcpHarnessTask(acpHarnessTaskDeps, input);
       }
       if (input.harness === "opencode-acp") {
-        throw Object.assign(new Error("ACP_HARNESS_UNAVAILABLE"), {
-          code: "ACP_HARNESS_UNAVAILABLE" as const,
-        });
+        return createOpenCodeAcpHarnessTask(acpHarnessTaskDeps, input);
       }
       throw new Error("Unsupported harness selection.");
     },
@@ -4506,19 +4904,8 @@ export async function createApp(options?: CreateAppOptions) {
       };
     },
     computeNextFireAt: runtimeComputeNextFireAt,
-    assertMutationFunding: async ({ task, operation, patch }) => {
-      const definedPatch = Object.fromEntries(Object.entries(patch ?? {}).filter(([, value]) => value !== undefined));
-      const prospective = { ...task, ...definedPatch };
-      const priorRun = await getLatestResumableTaskRun(getServerDirectDb(), task.id);
-      if (task.fundingMode === "caller" && priorRun && prospective.targetChat !== task.targetChat) {
-        throw new TaskFundingError("funding_source_changed");
-      }
-      if (task.fundingMode === "caller" && priorRun && operation === "update") {
-        await assertRunnableNativeTaskSelection(prospective);
-      }
-      const admission = await assertTaskFundingAdmission(prospective, priorRun);
-      if (!admission) await assertCanUseServerProviderCredentials(task.requestorId, `task_${operation}`);
-    },
+    assertMutationFunding: ({ task, operation, patch }) =>
+      assertTaskMutationFunding(task, operation, patch),
     canResumeResearch: (task) => canResumeSecurityResearchContextFailure(getServerDirectDb(), task),
     // lifecycle commands funnel through the runtime fns (shared abort
     // seam); `unpauseTask` kicks this observer to re-claim for checkpoint resume.
@@ -4540,7 +4927,32 @@ export async function createApp(options?: CreateAppOptions) {
   tasksRoutes(app, {
     observer: taskObserver,
     prepareStopTask: prepareHarnessStop,
-    contentOwner: dormantTaskContentOwner,
+    contentOwner: taskContentOwner,
+    protectedTranscriptRead: createProtectedTaskTranscriptReadService({
+      db: getServerDirectDb(),
+      history: createProductionRoomHistoryShadowReadComposition(),
+    }),
+  });
+  const taskProtectedHttpDependencies = {
+    db: getServerDirectDb(),
+    restricted: createPostgresJsBridgeConnection(getSharedDirectCryptoDb()),
+    crypto: new LatticeCrypto(),
+    serverScope: process.env["NAUTILO_PUBLIC_BASE_URL"]?.trim() || "http://localhost:3001",
+    owner: taskContentOwner,
+    observer: taskObserver,
+  };
+  const taskProtectedHttpComposition = createProductionProtectedTaskComposition(taskProtectedHttpDependencies);
+  protectedTaskRoutes(app, {
+    composition: taskProtectedHttpComposition,
+    resolveAuthorizedRequest: createProtectedTaskRequestAuthorityResolver({
+      deviceAdmission: deviceAdmissionComposition,
+    }),
+  });
+  taskOrdinaryFallbackRoutes(app, {
+    ports: createTaskOrdinaryFallbackPorts(taskProtectedHttpDependencies),
+    resolveAuthorizedRequest: createProtectedTaskRequestAuthorityResolver({
+      deviceAdmission: deviceAdmissionComposition,
+    }),
   });
   await taskObserver.start();
   codexRequestsRoutes(app, {
@@ -4870,7 +5282,6 @@ export async function createApp(options?: CreateAppOptions) {
     setWorkspaceCanonicalUndoTurnExecution(undefined);
     setWorkspaceOfficeCliCommitExecution(undefined);
     codexTurnBroker.dispose();
-    codexRequestBroker.dispose();
     relayRegistry.stop();
     clearTaskReturnBindings();
     //  task 3.2.5 — release the Full Workstation override resolver so a

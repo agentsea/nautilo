@@ -1,11 +1,13 @@
+import { createProtectedTaskRuntimeMappedHeadReplan, type ProtectedTaskRuntimeMappedHeadReplan } from "./protected-task-runtime-mapped-head-replan";
+import { createProtectedTaskRuntimeAccessLineageReader } from "./protected-task-runtime-access-lineage";
 import {
-  discoverParkedProtectedTaskAdditionalAuthority, getEncryptionTransitionPolicy,
+  getEncryptionTransitionPolicy, createPostgresJsBridgeConnection, getSharedDirectCryptoDb,
   getProtectedTaskRunOutputBinding,
   type DirectDatabase, type PostgresJsBridgeConnection,
 } from "@nautilo/db";
 import { LatticeCrypto, type TaskRuntimeRecipientRegistry } from "@nautilo/lattice-crypto";
 import {
-  decodeTaskRuntimeBackgroundAuthorizationRequestV1,
+  decodeTaskRuntimeBackgroundAuthorizationRequestBase,
   destroyTaskRuntimeBackgroundAuthorizationRequestV1,
 } from "@nautilo/lattice-crypto/background";
 import {
@@ -13,7 +15,7 @@ import {
 } from "@nautilo/lattice-crypto/wire";
 import {
   matchesCurrentTaskRuntimeAuthority, matchesStenographerRequestAdmission,
-  verifyCryptoPostgresHandle, withParkedTaskRuntimeRecipientAuthority,
+  verifyCryptoPostgresHandle, withParkedTaskRuntimeRecipientAuthority, withParkedTaskRuntimeNamespaceAuthority,
   type InitialTaskRuntimeRecipientAuthority, type ParkedTaskRuntimeCurrentRoutingFacts,
 } from "@nautilo/lattice-bridge/server";
 import {
@@ -28,7 +30,8 @@ import { createHumanProductTransactionContext } from "./human-message-product-st
 import type { createProductionBackgroundAuthorizationComposition } from "./background-authorization-composition";
 import { createProtectedTaskRuntimeParkedMemoryPlanResolver } from "./protected-task-runtime-parked-memory-plan";
 import {
-  createParkedTaskRuntimeAuthorizationPlanResolver, createParkedTaskRuntimeAuthorizationRecord,
+  createParkedTaskRuntimeAuthorizationPlanResolver,
+  discoverParkedProtectedTaskContinuation, createParkedTaskRuntimeAuthorizationRecord,
   type ParkedTaskRuntimeAuthorizationPlan,
 } from "./protected-task-runtime-parked-plan";
 import { createProtectedTaskRuntimeRecipientRequestPlan } from "./protected-task-runtime-recipient-request-plan";
@@ -45,6 +48,8 @@ type Dependencies = Readonly<{
   resolvePlan: ReturnType<typeof createParkedTaskRuntimeAuthorizationPlanResolver>;
   productContext: typeof createHumanProductTransactionContext;
   withRecipientAuthority: typeof withParkedTaskRuntimeRecipientAuthority;
+  withNamespaceAuthority: typeof withParkedTaskRuntimeNamespaceAuthority;
+  mappedHeadReplan: ProtectedTaskRuntimeMappedHeadReplan;
   repository(connection: PostgresJsBridgeConnection): Promise<BackgroundAuthorizationTaskRuntimeReplacementRepository>;
   attach: typeof attachExactTaskRuntimeRecipient;
 }>;
@@ -72,12 +77,19 @@ export function createProtectedTaskRuntimeParkedDeviceAuthorization(
       ?? (process.env["NAUTILO_PUBLIC_BASE_URL"]?.trim() || "http://localhost:3001"),
     now: overrides.now ?? Date.now,
     resolvePlan: overrides.resolvePlan ?? createParkedTaskRuntimeAuthorizationPlanResolver({
-      db, discover: discoverParkedProtectedTaskAdditionalAuthority,
+      db, discover: discoverParkedProtectedTaskContinuation,
+      readAccessLineage: createProtectedTaskRuntimeAccessLineageReader({ db, crypto,
+        restricted: () => createPostgresJsBridgeConnection(getSharedDirectCryptoDb()) }),
       readOutput: getProtectedTaskRunOutputBinding, readPolicy: getEncryptionTransitionPolicy,
       resolveMemory: createProtectedTaskRuntimeParkedMemoryPlanResolver({ db, resolver: input.resolver }),
     }),
     productContext: overrides.productContext ?? createHumanProductTransactionContext,
     withRecipientAuthority: overrides.withRecipientAuthority ?? withParkedTaskRuntimeRecipientAuthority,
+    withNamespaceAuthority: overrides.withNamespaceAuthority ?? withParkedTaskRuntimeNamespaceAuthority,
+    mappedHeadReplan: overrides.mappedHeadReplan ?? createProtectedTaskRuntimeMappedHeadReplan({
+      db, crypto, recipients, now: overrides.now ?? Date.now,
+      serverScope: overrides.serverScope ?? (process.env["NAUTILO_PUBLIC_BASE_URL"]?.trim() || "http://localhost:3001"),
+    }),
     repository: overrides.repository ?? (async connection =>
       new PostgresBackgroundAuthorizationRepository(await verifyCryptoPostgresHandle(connection))),
     attach: overrides.attach ?? attachExactTaskRuntimeRecipient,
@@ -89,6 +101,42 @@ export function createProtectedTaskRuntimeParkedDeviceAuthorization(
       recipientGeneration: record.snapshot.recipientGeneration, recipientKeyId: recipient.recipientKeyId,
     });
   };
+  const replanMappedHead = async (operation: Pick<DeviceInput, "record" | "admission" | "restricted">): Promise<boolean> => {
+    if (!["awaiting_recipient", "awaiting_device"].includes(operation.record.snapshot.state)) return true;
+    const coordinates = { taskRunId: operation.record.snapshot.workId, authorizationRequestId: operation.record.snapshot.requestId };
+    const resolved = await dependencies.resolvePlan(coordinates);
+    if (resolved === null) return false;
+    return await dependencies.mappedHeadReplan({ occurrence: resolved.expected.occurrence,
+      record: operation.record, admission: operation.admission, restricted: operation.restricted,
+      resolvePlan: async () => {
+        const current = await dependencies.resolvePlan(coordinates);
+        if (current === null) return null;
+        const { expected, memory, inventory, policy } = current;
+        const occurrence = expected.occurrence;
+        const product = await dependencies.productContext(occurrence.task.requestorId, db);
+        let routing: ParkedTaskRuntimeCurrentRoutingFacts | null = null;
+        return dependencies.withNamespaceAuthority({ runner: product.canonicalRunner, restricted: operation.restricted,
+          crypto, serverScope: dependencies.serverScope, taskId: occurrence.task.id,
+          requesterUserId: occurrence.task.requestorId, requesterHumanId: memory.routing.requesterHumanId,
+          agentId: occurrence.task.agentId, contentNamespaceId: occurrence.task.contentNamespaceId,
+          sourceRoomId: memory.routing.sourceRoomId, targetRoomId: memory.routing.targetRoomId,
+          namespaceIds: inventory.namespaceIds, expectedPolicyRevision: policy.revision,
+          ...(memory.scopeMemory === undefined ? {} : { scopeMemory: memory.scopeMemory }),
+          ...(memory.expectedNamespaceParticipants === undefined ? {} : { expectedNamespaceParticipants: memory.expectedNamespaceParticipants }),
+          expected, authorizationRequestId: expected.authorizationRequestId,
+          validateCurrentRouting: facts => {
+            if (!current.validateCurrentRouting(facts)) return false;
+            routing = structuredClone(facts); return true;
+          },
+          use: authority => {
+            if (routing === null) throw new TypeError("Task current routing is unavailable");
+            const plan = createParkedTaskRuntimeAuthorizationRecord(current, routing, authority.facts, dependencies.now());
+            return Promise.resolve({ occurrence, stableIdentity: plan.stableIdentity, initialRecord: plan.initialRecord });
+          },
+        });
+      } }) === "unchanged";
+  };
+
   const withHeldPlan = async <Value>(
     operation: Pick<DeviceInput, "subject" | "admission" | "restricted" | "record">,
     use: (held: HeldPlan) => Promise<Value | null>,
@@ -165,6 +213,9 @@ export function createProtectedTaskRuntimeParkedDeviceAuthorization(
   return {
     isTaskRecipientActive,
     bindTaskRecipient: async operation => {
+      operation = { ...operation, subject: structuredClone(operation.subject), admission: structuredClone(operation.admission),
+        record: structuredClone(operation.record), device: structuredClone(operation.device) };
+      if (!await replanMappedHead(operation)) return null;
       const binding = Object.freeze({ userId: operation.subject.userId,
         humanActorId: operation.subject.humanActorId, deviceId: operation.subject.deviceId });
       const attached: { value: Awaited<ReturnType<typeof attachExactTaskRuntimeRecipient>> } = { value: null };
@@ -172,6 +223,7 @@ export function createProtectedTaskRuntimeParkedDeviceAuthorization(
         return await withHeldPlan(operation, async held => {
           const callbacks = createProtectedTaskRuntimeRecipientRequestPlan({
             crypto, occurrence: held.resolved.expected.occurrence,
+            executionIdentity: held.canonical.stableIdentity,
             initialRecord: held.canonical.initialRecord, sourceRoomId: held.current.sourceRoomId,
             authority: held.canonical.authority, createdAt: held.record.snapshot.createdAt,
             recipientTtlMs: TASK_RUNTIME_AUTHORIZATION_ABSOLUTE_LIMIT_MS,
@@ -196,7 +248,10 @@ export function createProtectedTaskRuntimeParkedDeviceAuthorization(
         throw error;
       }
     },
-    withTaskAuthority: operation => {
+    withTaskAuthority: async operation => {
+      operation = { ...operation, subject: structuredClone(operation.subject), admission: structuredClone(operation.admission),
+        record: structuredClone(operation.record) };
+      if (!await replanMappedHead(operation)) return null;
       const subject = structuredClone(operation.subject);
       const admission = structuredClone(operation.admission);
       const use = operation.use;
@@ -204,7 +259,10 @@ export function createProtectedTaskRuntimeParkedDeviceAuthorization(
         const { record, current } = held;
         if (!isTaskRecipientActive(record) || record.descriptorBytes === null
           || !["awaiting_device", "grant_ready"].includes(record.snapshot.state)) return null;
-        const request = decodeTaskRuntimeBackgroundAuthorizationRequestV1(record.descriptorBytes);
+        const request = decodeTaskRuntimeBackgroundAuthorizationRequestBase(
+          crypto,
+          record.descriptorBytes,
+        );
         if (request === null) return null;
         const plan = parseDomainForegroundAuthorizationPlanV2(request.authorizationPlanBytes);
         if (plan === null) { destroyTaskRuntimeBackgroundAuthorizationRequestV1(request); return null; }

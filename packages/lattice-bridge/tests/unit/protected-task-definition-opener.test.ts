@@ -39,7 +39,10 @@ import {
   withProtectedTaskDefinitionV1,
   type ProtectedTaskDefinitionOccurrenceV1,
 } from "../../src/task/protected-task-definition-opener.ts";
-import { encodeTaskPayloadV1 } from "../../src/task/task-payload-v1.ts";
+import {
+  encodeTaskDefinitionContentV2,
+  encodeTaskPayloadV1,
+} from "../../src/task/task-payload-v1.ts";
 
 const NOW = 1_920_000_000_000;
 const TASK_ID = "10000000-0000-4000-8000-000000000711";
@@ -68,7 +71,7 @@ function seededRng(seed: number): Rng {
   };
 }
 
-async function fixture() {
+async function fixture(retainedHistoricalError: string | null = null) {
   const crypto = new LatticeCrypto(seededRng(711), { now: () => NOW });
   const committer = crypto.generateSigningKeyPair();
   const objectSigner = crypto.generateSigningKeyPair();
@@ -133,12 +136,20 @@ async function fixture() {
     expectedAccessRevision: 0,
     expectedPolicyRevision: 3,
   });
-  const plaintext = encodeTaskPayloadV1({
-    formatVersion: 1,
-    prompt: "Open the protected definition",
-    expectedOutput: "A result",
-    protectedMetadata: {},
-  });
+  const plaintext = retainedHistoricalError === null
+    ? encodeTaskPayloadV1({
+        formatVersion: 1,
+        prompt: "Open the protected definition",
+        expectedOutput: "A result",
+        protectedMetadata: {},
+      })
+    : encodeTaskDefinitionContentV2({
+        formatVersion: 2,
+        prompt: "Open the protected definition",
+        expectedOutput: "A result",
+        protectedMetadata: {},
+        retainedHistoricalError,
+      });
   const encrypted = encryptObjectPayload(crypto, {
     objectId: objectId(occurrence.objectId),
     keyClass: "ai",
@@ -309,6 +320,55 @@ describe("protected Task definition opener", () => {
     });
     expect(result).toBe("Open the protected definition:A result");
     expect(reads).toBe(2);
+  });
+
+  test("normalizes V2 display content before lending the definition to execution", async () => {
+    const value = await fixture("provider unavailable");
+    const result = await withTaskRuntimeExecutionEvidenceV1({
+      evidence: value.evidence,
+      signal: new AbortController().signal,
+      now: () => NOW,
+      execute: (evidence) => withProtectedTaskDefinitionV1({
+        evidence,
+        crypto: value.crypto,
+        domains: [value.domain],
+        storage: {
+          getObject: async () => ({
+            objectId: value.occurrence.objectId,
+            payloadBytes: value.payloadBytes,
+          }),
+          getObjectAccessState: async () => ({
+            head: {
+              objectId: value.occurrence.objectId,
+              accessRevision: 0,
+              manifestHash: value.prepared.manifestHash,
+              manifestBytes: value.prepared.manifestBytes,
+            },
+            namespaceEnvelopes: [{
+            namespaceId: NAMESPACE_ID,
+            envelopeHash: value.crypto.hash(value.namespaceEnvelopeBytes),
+            envelopeBytes: value.namespaceEnvelopeBytes,
+            }],
+          }),
+        },
+        namespace: {
+          trustedHead: value.trustedHead,
+          aiKeyringEnvelope: value.aiEnvelope,
+          resolveHistoricalCommitter: () => value.committer.publicKey,
+        },
+        resolveHistoricalHumanDeviceSigningPublicKey: () => value.objectSigner.publicKey,
+        signal: new AbortController().signal,
+        loadCurrentOccurrence: () => Promise.resolve(value.occurrence),
+        execute: payload => payload,
+      }),
+    });
+    expect(result).toEqual({
+      formatVersion: 1,
+      prompt: "Open the protected definition",
+      expectedOutput: "A result",
+      protectedMetadata: {},
+    });
+    expect(result).not.toHaveProperty("retainedHistoricalError");
   });
 
   test("rejects an untrusted historical Human signer", async () => {

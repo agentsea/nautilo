@@ -679,3 +679,64 @@ test("automatic image observations preserve canonical pair correlation and final
     role: "assistant", content: answer.content, sensitiveMetadata: { imageAssistance },
   }));
 });
+
+test("foreground execution identity composes with assistant and Tool metadata", () => {
+  const executionId = "foreground-operation:task-create/1";
+  const modelInputExposure = { version: 1, status: "incomplete" } as const;
+  const imageAssistance = { status: "completed", modelId: "vision-a", modelDisplayName: "Vision A", attachmentIds: ["image-a"] };
+  const assistant = { role: "assistant", content: "Creating the Task", tool_name: null,
+    tool_calls: JSON.stringify([{ id: "call-1", name: "in_background", args: { brief: "do work" } }]),
+    metadata_json: JSON.stringify({
+      nautilo_image_assistance: imageAssistance,
+      nautilo_foreground_execution_id: executionId,
+      nautilo_memory_model_exposure: modelInputExposure,
+    }) };
+  const expectedAssistant = encodeMessagePayloadV2({
+    role: "assistant", content: assistant.content,
+    toolCalls: [{ id: "call-1", name: "in_background", args: { brief: "do work" } }],
+    sensitiveMetadata: { imageAssistance, foregroundExecutionId: executionId,
+      nautilo_memory_model_exposure: modelInputExposure },
+  });
+  expect(encodeLiveShadowOrdinaryPayloadV2(assistant, null)).toEqual(expectedAssistant);
+
+  const tool = { role: "tool", content: JSON.stringify({
+    taskId: "task-background-1", status: "pending", execution: "native",
+    message: "The task is running in the background; it will report back to this chat when done.",
+  }), tool_calls: null, tool_name: "in_background",
+    metadata_json: JSON.stringify({
+      nautilo_foreground_execution_id: executionId,
+      nautilo_memory_model_exposure: modelInputExposure,
+      nautilo_tool_result: { toolCallId: "call-1", toolStatus: "success" },
+    }) };
+  const expectedForegroundTool = encodeMessagePayloadV2({
+    role: "tool", content: tool.content, toolName: "in_background",
+    sensitiveMetadata: { toolCallId: "call-1", foregroundExecutionId: executionId,
+      nautilo_memory_model_exposure: modelInputExposure },
+  });
+  expect(encodeLiveShadowOrdinaryPayloadV2(tool, "call-1"))
+    .toEqual(expectedForegroundTool);
+  expect(encodeLiveShadowOrdinaryPayloadV2(tool, "call-1", "success"))
+    .toEqual(encodeMessagePayloadV2({
+      role: "tool", content: tool.content, toolName: "in_background",
+      sensitiveMetadata: { toolCallId: "call-1", toolStatus: "success",
+        foregroundExecutionId: executionId,
+        nautilo_memory_model_exposure: modelInputExposure },
+    }));
+  expect(encodeLiveShadowOrdinaryPayloadV2({
+    ...tool,
+    metadata_json: JSON.stringify({ nautilo_foreground_execution_id: "substituted-operation" }),
+  }, "call-1")).not.toEqual(expectedForegroundTool);
+  expect(() => encodeLiveShadowOrdinaryPayloadV2({
+    ...tool,
+    metadata_json: JSON.stringify({ nautilo_foreground_execution_id: "" }),
+  }, "call-1")).toThrow("foreground execution identity is invalid");
+  expect(encodeLiveShadowOrdinaryPayloadV2({
+    ...tool,
+    metadata_json: JSON.stringify({
+      nautilo_tool_result: { toolCallId: "call-1", toolStatus: "unknown" },
+    }),
+  }, "call-1")).toEqual(encodeMessagePayloadV2({
+    role: "tool", content: tool.content, toolName: "in_background",
+    sensitiveMetadata: { toolCallId: "call-1" },
+  }));
+});

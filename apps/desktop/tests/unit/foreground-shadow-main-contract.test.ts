@@ -36,6 +36,27 @@ describe("foreground Shadow main-process contract", () => {
     );
     expect(pendingAttention.indexOf("parseForegroundShadowPendingAttention(raw)"))
       .toBeLessThan(pendingAttention.indexOf("foregroundShadowControllerForSender(e)"));
+    const taskPendingAttention = handler(
+      "foregroundShadow:recoverTaskPendingAttention",
+      "foregroundShadow:recoverProtectedTaskExternalRequests",
+    );
+    expect(taskPendingAttention.indexOf("parseForegroundShadowTaskPendingAttention(raw)"))
+      .toBeLessThan(taskPendingAttention.indexOf("foregroundShadowControllerForSender(e)"));
+    const externalRecovery = handler(
+      "foregroundShadow:recoverProtectedTaskExternalRequests",
+      "foregroundShadow:respondProtectedTaskExternalRequest",
+    );
+    expect(externalRecovery.indexOf("boundedForegroundShadowValue("))
+      .toBeLessThan(externalRecovery.indexOf("foregroundShadowControllerForSender(e)"));
+    expect(externalRecovery).toContain('foregroundShadowString(value.requestId, "Request id", 512)');
+    const externalResponse = handler(
+      "foregroundShadow:respondProtectedTaskExternalRequest",
+      "foregroundShadow:edit",
+    );
+    expect(externalResponse.indexOf("codexRequestResponseSchema.safeParse("))
+      .toBeLessThan(externalResponse.indexOf("foregroundShadowControllerForSender(e)"));
+    expect(externalResponse.indexOf("codexPermissionSelectionResponseSchema.safeParse("))
+      .toBeLessThan(externalResponse.indexOf("foregroundShadowControllerForSender(e)"));
     const receive = handler("foregroundShadow:receive", "foregroundShadow:synchronizeRecipients");
     expect(receive.indexOf("parseLiveShadowMessageRealtimeEventV1(")).toBeLessThan(
       receive.indexOf("foregroundShadowControllerForSender(e)"),
@@ -68,6 +89,21 @@ describe("foreground Shadow main-process contract", () => {
         access.indexOf("foregroundShadowControllerForSender(e)"),
       );
     }
+  });
+
+  test("strictly decodes the renderer-approved Memory disclosure before custody", () => {
+    const search = handler("foregroundShadow:memory:search", "foregroundShadow:memory:detail");
+    const update = handler("foregroundShadow:memory:update", "foregroundShadow:memory:retryPending");
+    for (const operation of [search, update]) {
+      expect(operation).toContain("assertMemoryEmbeddingDisclosureV2(");
+      expect(operation).toContain("decodeMemoryEmbeddingDisclosureV2(");
+      expect(operation).toContain("encodeMemoryEmbeddingDisclosureV2(");
+      expect(operation.indexOf("assertMemoryEmbeddingDisclosureV2(")).toBeLessThan(
+        operation.indexOf("foregroundShadowControllerForSender(e)"),
+      );
+    }
+    expect(search).toContain("embeddingDisclosure");
+    expect(update).toContain("requestedEmbedding");
   });
 
   test("binds one controller to the active sender/session and disposes on lifecycle exits", () => {
@@ -125,4 +161,17 @@ describe("foreground Shadow main-process contract", () => {
     expect(cancel).toContain("bound.serverScope !== session.scope");
     expect(cancel).toContain("bound.controller.cancelMessageBackfill()");
   });
+});
+
+
+test("Task repair IPC is sender-bound and cancellation never creates profile custody", () => {
+  const service = handler("foregroundShadow:taskContentBackfill:service", "foregroundShadow:taskContentBackfill:cancel");
+  expect(service).toContain("foregroundShadowControllerForSender(e)");
+  expect(service).toContain("controller.serviceTaskContentBackfill()");
+  const cancel = handler("foregroundShadow:taskContentBackfill:cancel", "foregroundShadow:history:reconcile");
+  expect(cancel).toContain("resolveSessionFromSender(e)");
+  expect(cancel).toContain("bound.sender !== e.sender");
+  expect(cancel).toContain("bound.serverScope !== session.scope");
+  expect(cancel).toContain("bound.controller.cancelTaskContentBackfill()");
+  expect(cancel).not.toContain("foregroundShadowControllerForSender");
 });

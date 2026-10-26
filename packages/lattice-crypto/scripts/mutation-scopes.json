@@ -80,13 +80,22 @@
       "tier": "critical",
       "mutate": [
         "src/background/task-runtime-recipient-registry-v1.ts",
+        "src/background/task-runtime-request-v1.ts",
+        "src/background/task-runtime-request-v2.ts",
+        "src/background/task-runtime-request-v3.ts",
+        "src/background/task-runtime-request-authority.ts",
+        "src/background/task-runtime-signer-authorization-v1.ts",
         "src/background/task-runtime-execution-evidence-v1.ts",
+        "src/background/task-runtime-terminal-message-evidence-v1.ts",
+        "src/background/task-runtime-run-result-read-evidence-v1.ts",
+        "src/background/task-runtime-wake-foreground-evidence-v1.ts",
         "src/object/task-runtime-result-preparation-v1.ts",
         "src/object/task-runtime-checkpoint-namespace-v1.ts",
         "src/object/task-runtime-agent-access-manifest-set-v1.ts",
-        "src/object/task-runtime-agent-storage-coordinator-v1.ts"
+        "src/object/task-runtime-agent-storage-coordinator-v1.ts",
+        "src/object/task-runtime-publication-signing.ts"
       ],
-      "command": "bun test --bail=1 --timeout 60000 tests/unit/task-runtime-recipient-registry-v1.test.ts tests/integration/task-runtime-object-v1.test.ts tests/unit/task-runtime-agent-object-access-set-v1.test.ts tests/property/task-runtime-agent-object-access-set-v1.property.test.ts tests/unit/task-runtime-execution-evidence-v1.test.ts tests/integration/task-runtime-result-preparation-v1.test.ts tests/unit/task-runtime-checkpoint-namespace-v1.test.ts"
+      "command": "bun test --bail=1 --timeout 60000 tests/unit/task-runtime-recipient-registry-v1.test.ts tests/integration/task-runtime-object-v1.test.ts tests/unit/task-runtime-agent-object-access-set-v1.test.ts tests/property/task-runtime-agent-object-access-set-v1.property.test.ts tests/unit/task-runtime-execution-evidence-v1.test.ts tests/unit/task-runtime-terminal-message-evidence-v1.test.ts tests/unit/task-runtime-run-result-read-evidence-v1.test.ts tests/integration/task-runtime-result-preparation-v1.test.ts tests/unit/task-runtime-checkpoint-namespace-v1.test.ts tests/unit/task-runtime-request-v2.test.ts tests/unit/task-runtime-signer-authorization-v1.test.ts tests/unit/task-runtime-object-access-manifest-v5.test.ts tests/unit/task-runtime-request-v3.test.ts tests/unit/task-runtime-signer-authorization-v2.test.ts tests/unit/task-runtime-publication-preparation.test.ts"
     },
     {
       "name": "background-work-manifest",
@@ -197,7 +206,7 @@
         "src/object/agent-storage-coordinator.ts",
         "src/object/device-wrapped-agent-access-manifest-set-v1.ts"
       ],
-      "command": "bun test --bail=1 --timeout 60000 tests/unit/agent-runtime-object-signer-v1.test.ts tests/unit/agent-runtime-signer-publication-v1.test.ts tests/unit/object-access-manifest-v3.test.ts tests/unit/object-access-manifest-v5-adversarial.test.ts tests/unit/agent-runtime-rotation-v2.test.ts tests/unit/device-wrapped-agent-object-access.test.ts tests/unit/device-wrapped-agent-object-access-set.test.ts tests/integration/agent-runtime-v2-initialization.test.ts tests/integration/agent-object-access-genesis-set-v3.test.ts tests/integration/agent-object-access-storage-coordinator.test.ts"
+      "command": "bun test --bail=1 --timeout 60000 tests/unit/agent-runtime-object-signer-v1.test.ts tests/unit/agent-runtime-signer-publication-v1.test.ts tests/unit/object-access-manifest-v3.test.ts tests/unit/object-access-manifest-v5-adversarial.test.ts tests/unit/agent-runtime-rotation-v2.test.ts tests/unit/device-wrapped-agent-object-access.test.ts tests/unit/device-wrapped-agent-object-access-set.test.ts tests/integration/agent-runtime-v2-initialization.test.ts tests/integration/agent-object-access-genesis-set-v3.test.ts tests/integration/agent-object-access-storage-coordinator.test.ts tests/unit/task-runtime-publication-preparation.test.ts"
     },
     {
       "name": "runtime-handoff",
@@ -233,7 +242,7 @@
       "mutate": [
         "src/storage/in-memory-v2-store.ts"
       ],
-      "command": "bun test --bail=1 --timeout 60000 tests/unit/storage-v2.test.ts tests/integration/human-object-access-storage-coordinator.test.ts tests/integration/object-v2-storage-coordinator.test.ts tests/integration/agent-object-access-storage-coordinator.test.ts"
+      "command": "bun test --bail=1 --timeout 60000 tests/unit/storage-v2.test.ts tests/integration/human-object-access-storage-coordinator.test.ts tests/integration/object-v2-storage-coordinator.test.ts tests/integration/agent-object-access-storage-coordinator.test.ts tests/unit/task-runtime-publication-preparation.test.ts"
     },
     {
       "name": "storage-adapter-support",
@@ -249,7 +258,7 @@
       "mutate": [
         "src/storage/v2-record-policy.ts"
       ],
-      "command": "bun test --bail=1 --timeout 60000 tests/unit/storage-v2.test.ts tests/integration/storage-adapter-support.test.ts tests/integration/object-v2-storage-coordinator.test.ts tests/integration/agent-object-access-storage-coordinator.test.ts tests/unit/task-runtime-agent-object-access-set-v1.test.ts"
+      "command": "bun test --bail=1 --timeout 60000 tests/unit/storage-v2.test.ts tests/integration/storage-adapter-support.test.ts tests/integration/object-v2-storage-coordinator.test.ts tests/integration/agent-object-access-storage-coordinator.test.ts tests/unit/task-runtime-agent-object-access-set-v1.test.ts tests/unit/task-runtime-publication-preparation.test.ts"
     },
     {
       "name": "existing-message-representation-publication",
@@ -312,18 +321,21 @@
       "tier": "critical",
       "mutate": [
         "src/memory/content-embedding-request-v1.ts",
+        "src/memory/content-embedding-request-v3.ts",
+        "src/memory/embedding-disclosure-v2.ts",
         "src/memory/deletion-v1.ts",
         "src/memory/exact-access-request-v1.ts"
       ],
-      "command": "bun test --bail=1 --timeout 60000 tests/unit/human-memory-content-embedding-request-v1.test.ts tests/unit/human-memory-deletion-v1.test.ts tests/unit/human-memory-exact-access-request-v1.test.ts tests/property/human-memory-content-embedding-request-v1.property.test.ts"
+      "command": "bun test --bail=1 --timeout 60000 tests/unit/human-memory-content-embedding-request-v1.test.ts tests/unit/human-memory-deletion-v1.test.ts tests/unit/human-memory-exact-access-request-v1.test.ts tests/property/human-memory-content-embedding-request-v1.property.test.ts tests/unit/human-memory-content-embedding-request-v3.test.ts tests/unit/memory-embedding-disclosure-v2.test.ts tests/property/human-memory-content-embedding-request-v3.property.test.ts"
     },
     {
       "name": "human-task-publication",
       "tier": "critical",
       "mutate": [
-        "src/task/publication-request-v1.ts"
+        "src/task/publication-request-v1.ts",
+        "src/task/existing-representation-publication-request-v1.ts"
       ],
-      "command": "bun test --bail=1 --timeout 60000 tests/unit/human-task-publication-request-v1.test.ts"
+      "command": "bun test --bail=1 --timeout 60000 tests/unit/human-task-publication-request-v1.test.ts tests/unit/human-existing-task-representation-publication-request-v1.test.ts"
     },
     {
       "name": "human-recovery",

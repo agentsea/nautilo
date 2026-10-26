@@ -8,7 +8,7 @@
  * passthrough and assert the DOM scroll contract we wire up; real scroll
  * behavior is verified live.
  */
-import { afterAll, afterEach, beforeAll, describe, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import { act, cleanup, render } from "@testing-library/react";
 import { Window } from "happy-dom";
 import * as React from "react";
@@ -17,6 +17,10 @@ import {
   ConversationEncryptionPolicyModeContext,
   RunningSubagentsContext,
 } from "../../src/adapters/runtime-contexts";
+import {
+  resetCryptoAdmissionAccess,
+  setCryptoAdmissionAccessState,
+} from "../../src/lib/crypto-admission-access";
 
 type StbChildren =
   | React.ReactNode
@@ -60,6 +64,34 @@ let canonicalStatus = "completed";
 
 const actualApi = await import("../../src/lib/api");
 const actualAuth = await import("../../src/hooks/use-auth");
+const getTask = mock(async () => ({
+  task: {
+    id: "task-1",
+    status: canonicalStatus,
+    preset: "default",
+    prompt: "work",
+    scheduleKind: "now",
+    nextFireAt: null,
+    callingRoomId: null,
+    expectedOutput: null,
+    cron: null,
+    runAt: null,
+    timezone: "UTC",
+    targetChat: "orphan",
+    resultDelivery: "wake",
+    useScope: false,
+    scopeId: null,
+    toolsMode: "all",
+    toolsWhitelist: [],
+    parentTaskId: null,
+    depth: 0,
+    selectionProfile: "balanced",
+    selectionSpec: null,
+    createdAt: "2026-06-15T10:00:00.000Z",
+    updatedAt: "2026-06-15T10:00:00.000Z",
+  },
+  runs: [],
+}));
 
 mock.module("../../src/hooks/use-auth", () => ({
   ...actualAuth,
@@ -73,34 +105,7 @@ mock.module("../../src/lib/api", () => ({
   ...actualApi,
   apiClient: {
     ...actualApi.apiClient,
-    getTask: async () => ({
-      task: {
-        id: "task-1",
-        status: canonicalStatus,
-        preset: "default",
-        prompt: "work",
-        scheduleKind: "now",
-        nextFireAt: null,
-        callingRoomId: null,
-        expectedOutput: null,
-        cron: null,
-        runAt: null,
-        timezone: "UTC",
-        targetChat: "orphan",
-        resultDelivery: "wake",
-        useScope: false,
-        scopeId: null,
-        toolsMode: "all",
-        toolsWhitelist: [],
-        parentTaskId: null,
-        depth: 0,
-        selectionProfile: "balanced",
-        selectionSpec: null,
-        createdAt: "2026-06-15T10:00:00.000Z",
-        updatedAt: "2026-06-15T10:00:00.000Z",
-      },
-      runs: [],
-    }),
+    getTask,
   },
 }));
 
@@ -145,6 +150,16 @@ beforeAll(() => {
   });
 });
 
+beforeEach(() => {
+  resetCryptoAdmissionAccess();
+  setCryptoAdmissionAccessState({
+    status: "open",
+    identity: "viewer-a:device:test",
+    policy: { mode: "plaintext_only", shadowBehavior: "fallback" },
+  });
+  getTask.mockClear();
+});
+
 afterAll(() => {
   mock.module("../../src/lib/api", () => actualApi);
   mock.module("../../src/hooks/use-auth", () => actualAuth);
@@ -159,6 +174,7 @@ afterAll(() => {
 afterEach(() => {
   canonicalStatus = "completed";
   cleanup();
+  resetCryptoAdmissionAccess();
 });
 
 describe("SubagentTranscriptSurface scroll contract", () => {
@@ -172,6 +188,9 @@ describe("SubagentTranscriptSurface scroll contract", () => {
       </ConversationEncryptionPolicyModeContext.Provider>,
     );
     await act(async () => { await Promise.resolve(); });
+    expect(getTask).toHaveBeenCalledTimes(1);
+    expect(getTask).toHaveBeenCalledWith("task-1");
+    expect(view.queryByTestId("subagent-transcript-error")).toBeNull();
     expect(view.getByTestId("subagent-transcript-header").textContent).toContain("needs attention");
     expect(view.queryByTestId("subagent-transcript-working")).toBeNull();
     expect(view.getByTestId("subagent-transcript-empty").className).not.toContain("animate-pulse");

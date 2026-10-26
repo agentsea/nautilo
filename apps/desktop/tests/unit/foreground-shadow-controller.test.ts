@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { ClassifiedDataOperationError } from "@nautilo/lattice-bridge";
 import type {
   ElectronLiveShadowMessageClientInput,
   ElectronLiveShadowMessageReceiverInput,
@@ -48,7 +49,9 @@ type FactoryOverrides = Partial<{
   historyReader: Record<string, unknown>;
   humanMemory: Record<string, unknown>;
   humanTask: Record<string, unknown>;
+  humanTaskRunResult: Record<string, unknown>;
   messageBackfill: Record<string, unknown>;
+  taskContentBackfill: Record<string, unknown>;
   backgroundAuthorization: Record<string, unknown>;
   custodyDispose: () => Promise<void>;
 }>;
@@ -61,6 +64,11 @@ function factories(
     send: async () => ({ messageId: 1 }),
     recoverPending: async () => 0,
     recoverRoomPendingAttention: async () => ({ status: "ready", events: [] }),
+    recoverTaskPendingAttention: async () => ({ status: "ready", events: [] }),
+    recoverProtectedTaskExternalRequests: async () => ({
+      status: "ready", entries: [],
+    }),
+    respondProtectedTaskExternalRequest: async () => ({ status: "responded" }),
     completePending: async () => true,
     synchronizeHumanPeerRecipients: async () => true,
     serviceDomainKeyBacklog: async () => true,
@@ -147,10 +155,18 @@ function factories(
       update: async (current: unknown) => current,
       ...overrides.humanTask,
     }) as never,
+    createHumanTaskRunResult: () => ({
+      read: async () => ({ status: "waiting", reason: "result_not_mapped" }),
+      ...overrides.humanTaskRunResult,
+    }) as never,
     createMessageBackfill: () => ({
       prioritize: () => undefined,
       runBatch: async () => ({ state: "caught_up", resumeAt: null }),
       ...overrides.messageBackfill,
+    }) as never,
+    createTaskContentBackfill: () => ({
+      runBatch: async () => ({ state: "caught_up", resumeAt: null }),
+      ...overrides.taskContentBackfill,
     }) as never,
     createBackgroundAuthorization: () => ({
       deviceId: "device:electron:test",
@@ -167,6 +183,7 @@ function controllerInput(input: Readonly<{
   factories?: ElectronForegroundShadowControllerFactories;
   api?: ElectronForegroundShadowApi;
   isBindingCurrent?: () => boolean | Promise<boolean>;
+  isAccountCurrent?: () => boolean | Promise<boolean>;
   refreshBearer?: () => Promise<string | null>;
   sendRoomMessage?: ElectronLiveShadowMessageClientInput["api"][
     "sendRoomMessage"
@@ -175,6 +192,7 @@ function controllerInput(input: Readonly<{
 }> = {}) {
   const api = input.api ?? ({
     setToken: () => undefined,
+    getTaskContentBackfillProgress: async () => ({ status: "ready", value: null }),
     admin: { encryptionTransition: { getPolicy: async () => ({
       policy: { mode: "shadow_encryption", shadowBehavior: "fallback",
         revision: 1, updatedAt: "2026-09-01T00:00:00.000Z" },
@@ -186,6 +204,9 @@ function controllerInput(input: Readonly<{
   return {
     api,
     isBindingCurrent: input.isBindingCurrent ?? (() => true),
+    ...(input.isAccountCurrent === undefined
+      ? {}
+      : { isAccountCurrent: input.isAccountCurrent }),
     refreshBearer: input.refreshBearer ?? (() => Promise.resolve("bearer")),
     sendRoomMessage: input.sendRoomMessage ?? (async () => ({ messageId: 1 })) as never,
     serverScope: "https://nautilo.test",
@@ -201,12 +222,119 @@ function controllerInput(input: Readonly<{
 }
 
 describe("ElectronForegroundShadowController", () => {
-  test("routes protected Task list, open, create, and update through main custody", async () => {
+  test("fences protected Task external requests to the current Desktop custody", async () => {
+    const calls: string[] = [];
+    let bindingCurrent = true;
+    let accountCurrent = true;
+    let observedCurrent: (() => boolean | Promise<boolean>) | undefined;
+    let observedSignal: AbortSignal | undefined;
+    const controller = createElectronForegroundShadowController(controllerInput({
+      isBindingCurrent: () => bindingCurrent,
+      isAccountCurrent: () => accountCurrent,
+      factories: factories({ sender: {
+        recoverProtectedTaskExternalRequests: async (input: Readonly<{
+          requestId?: string;
+          signal: AbortSignal;
+          isCurrent: () => boolean | Promise<boolean>;
+        }>) => {
+          calls.push("recover");
+          observedCurrent = input.isCurrent;
+          observedSignal = input.signal;
+          expect(input.requestId).toBe("request-1");
+          return { status: "ready", entries: [] };
+        },
+        respondProtectedTaskExternalRequest: async () => {
+          calls.push("respond");
+          return { status: "responded" };
+        },
+      } }),
+    }));
+
+    expect(await controller.recoverProtectedTaskExternalRequests({
+      clientActionSessionId: "client-session",
+      requestId: "request-1",
+    })).toEqual({ status: "ready", entries: [] });
+    expect(await observedCurrent?.()).toBe(true);
+    accountCurrent = false;
+    expect(await observedCurrent?.()).toBe(false);
+    expect(await rejected(controller.respondProtectedTaskExternalRequest({
+      clientActionSessionId: "client-session",
+      requestId: "request-1",
+      responseCapability: "11111111-1111-4111-8111-111111111111",
+      response: { kind: "command_approval_required", decision: "deny" },
+    }))).toBeInstanceOf(ElectronForegroundShadowControllerUnavailableError);
+    expect(calls).toEqual(["recover"]);
+
+    accountCurrent = true;
+    bindingCurrent = false;
+    expect(await rejected(controller.recoverProtectedTaskExternalRequests({
+      clientActionSessionId: "client-session",
+    }))).toBeInstanceOf(ElectronForegroundShadowControllerUnavailableError);
+    expect(calls).toEqual(["recover"]);
+    await controller.dispose();
+    expect(observedSignal?.aborted).toBe(true);
+    expect(await observedCurrent?.()).toBe(false);
+  });
+
+  test("drains external request custody before destroying the profile", async () => {
+    const calls: string[] = [];
+    const started = deferred();
+    const controller = createElectronForegroundShadowController(controllerInput({
+      factories: factories({
+        sender: {
+          recoverProtectedTaskExternalRequests: async (input: Readonly<{
+            signal: AbortSignal;
+          }>) => {
+            calls.push("recover:start");
+            started.resolve();
+            await new Promise<void>((resolve) => input.signal.addEventListener(
+              "abort",
+              () => resolve(),
+              { once: true },
+            ));
+            calls.push("recover:abort");
+            return { status: "unavailable", entries: [] };
+          },
+        },
+        custodyDispose: async () => {
+          calls.push("custody:dispose");
+        },
+      }),
+    }));
+
+    const recovery = controller.recoverProtectedTaskExternalRequests({
+      clientActionSessionId: "client-session",
+    });
+    await started.promise;
+    const disposal = controller.dispose();
+    expect(await recovery).toEqual({ status: "unavailable", entries: [] });
+    await disposal;
+    expect(calls).toEqual([
+      "recover:start",
+      "recover:abort",
+      "custody:dispose",
+    ]);
+  });
+
+  test("routes protected Task operations through main custody", async () => {
     const calls: string[] = [];
     const summary = { id: "task-1", content: { status: "protected" } };
     const controller = createElectronForegroundShadowController(controllerInput({
       api: {
         setToken: () => undefined,
+        readProtectedTaskRunTranscriptV1: async (input: Readonly<{
+          taskId: string; taskRunId: string; agentId: string;
+        }>) => {
+          calls.push("open_transcript");
+          return {
+            readVersion: 1 as const,
+            status: "waiting" as const,
+            taskId: input.taskId,
+            taskRunId: input.taskRunId,
+            agentId: input.agentId,
+            reason: "transcript_not_mapped" as const,
+          };
+        },
         admin: { encryptionTransition: { getPolicy: async () => ({
           policy: { mode: "encrypted_only", shadowBehavior: "strict",
             revision: 7, updatedAt: "2026-09-01T00:00:00.000Z" },
@@ -218,14 +346,175 @@ describe("ElectronForegroundShadowController", () => {
           content: { status: "protected", payload: { prompt: "private" } } }; },
         create: async () => { calls.push("create"); return { taskId: "task-1" }; },
         update: async () => { calls.push("update"); return summary; },
+      }, humanTaskRunResult: {
+        read: async (request: unknown) => {
+          calls.push("open_result");
+          return { status: "ready", payload: { formatVersion: 1,
+            resultText: JSON.stringify(request), lastError: null } };
+        },
       } }),
     }));
 
     expect(await controller.taskList({})).toEqual([summary]);
     expect((await controller.taskOpen(summary as never)).content.status).toBe("protected");
+    expect(await controller.taskOpenResult({
+      taskId: "task-1", taskRunId: "run-1", agentId: "agent-1",
+    })).toEqual({ status: "ready", payload: { formatVersion: 1,
+      resultText: '{"taskId":"task-1","taskRunId":"run-1","agentId":"agent-1"}',
+      lastError: null } });
+    expect(await controller.taskOpenTranscript({
+      taskId: "task-1", taskRunId: "run-1", agentId: "agent-1",
+    })).toEqual({ status: "waiting", reason: "transcript_not_mapped" });
     expect((await controller.taskCreate({} as never)).taskId).toBe("task-1");
     expect((await controller.taskUpdate(summary as never, {} as never)).id).toBe("task-1");
-    expect(calls).toEqual(["list", "open", "create", "update"]);
+    expect(calls).toEqual([
+      "list", "open", "open_result", "open_transcript", "create", "update",
+    ]);
+  });
+
+  test("rejects a stale result sender and preserves unavailable outcomes", async () => {
+    let bindingCurrent = false;
+    let reads = 0;
+    const controller = createElectronForegroundShadowController(controllerInput({
+      isBindingCurrent: () => bindingCurrent,
+      factories: factories({ humanTaskRunResult: {
+        read: async () => {
+          reads += 1;
+          return { status: "unavailable", reason: "authority_changed" };
+        },
+      } }),
+    }));
+    const request = {
+      taskId: "task-1", taskRunId: "run-1", agentId: "agent-1",
+    };
+
+    expect(await rejected(controller.taskOpenResult(request)))
+      .toBeInstanceOf(ElectronForegroundShadowControllerUnavailableError);
+    expect(reads).toBe(0);
+
+    bindingCurrent = true;
+    expect(await controller.taskOpenResult(request)).toEqual({
+      status: "unavailable", reason: "authority_changed",
+    });
+    expect(reads).toBe(1);
+  });
+
+  test("withholds a result after mid-read policy or viewer changes", async () => {
+    const policyGate = deferred();
+    const policyReadStarted = deferred();
+    let policyRevision = 1;
+    const policyController = createElectronForegroundShadowController(
+      controllerInput({
+        api: {
+          setToken: () => undefined,
+          admin: { encryptionTransition: { getPolicy: async () => ({
+            policy: { mode: "encrypted_only", shadowBehavior: "strict",
+              revision: policyRevision, updatedAt: "2026-09-01T00:00:00.000Z" },
+          }) } },
+        } as unknown as ElectronForegroundShadowApi,
+        factories: factories({ humanTaskRunResult: {
+          read: async () => {
+            policyReadStarted.resolve();
+            await policyGate.promise;
+            return { status: "waiting", reason: "result_not_mapped" };
+          },
+        } }),
+      }),
+    );
+    const request = {
+      taskId: "task-1", taskRunId: "run-1", agentId: "agent-1",
+    };
+    const policyRead = policyController.taskOpenResult(request);
+    await policyReadStarted.promise;
+    policyRevision = 2;
+    policyGate.resolve();
+    expect(await rejected(policyRead)).toBeInstanceOf(ClassifiedDataOperationError);
+
+    const viewerGate = deferred();
+    const viewerReadStarted = deferred();
+    let viewerCurrent = true;
+    const viewerController = createElectronForegroundShadowController(
+      controllerInput({
+        isAccountCurrent: () => viewerCurrent,
+        factories: factories({ humanTaskRunResult: {
+          read: async () => {
+            viewerReadStarted.resolve();
+            await viewerGate.promise;
+            return { status: "waiting", reason: "result_not_mapped" };
+          },
+        } }),
+      }),
+    );
+    const viewerRead = viewerController.taskOpenResult(request);
+    await viewerReadStarted.promise;
+    viewerCurrent = false;
+    viewerGate.resolve();
+    expect(await rejected(viewerRead))
+      .toBeInstanceOf(ElectronForegroundShadowControllerUnavailableError);
+  });
+
+  test("withholds a transcript page after mid-read policy or viewer changes", async () => {
+    const request = {
+      taskId: "task-1", taskRunId: "run-1", agentId: "agent-1",
+    };
+    const transcriptResponse = {
+      readVersion: 1 as const,
+      status: "waiting" as const,
+      ...request,
+      reason: "transcript_not_mapped" as const,
+    };
+
+    const policyGate = deferred();
+    const policyReadStarted = deferred();
+    let policyRevision = 1;
+    const policyController = createElectronForegroundShadowController(
+      controllerInput({
+        api: {
+          setToken: () => undefined,
+          readProtectedTaskRunTranscriptV1: async () => {
+            policyReadStarted.resolve();
+            await policyGate.promise;
+            return transcriptResponse;
+          },
+          admin: { encryptionTransition: { getPolicy: async () => ({
+            policy: { mode: "encrypted_only", shadowBehavior: "strict",
+              revision: policyRevision, updatedAt: "2026-09-01T00:00:00.000Z" },
+          }) } },
+        } as unknown as ElectronForegroundShadowApi,
+      }),
+    );
+    const policyRead = policyController.taskOpenTranscript(request);
+    await policyReadStarted.promise;
+    policyRevision = 2;
+    policyGate.resolve();
+    expect(await rejected(policyRead)).toBeInstanceOf(ClassifiedDataOperationError);
+
+    const viewerGate = deferred();
+    const viewerReadStarted = deferred();
+    let viewerCurrent = true;
+    const viewerController = createElectronForegroundShadowController(
+      controllerInput({
+        isAccountCurrent: () => viewerCurrent,
+        api: {
+          setToken: () => undefined,
+          readProtectedTaskRunTranscriptV1: async () => {
+            viewerReadStarted.resolve();
+            await viewerGate.promise;
+            return transcriptResponse;
+          },
+          admin: { encryptionTransition: { getPolicy: async () => ({
+            policy: { mode: "encrypted_only", shadowBehavior: "strict",
+              revision: 1, updatedAt: "2026-09-01T00:00:00.000Z" },
+          }) } },
+        } as unknown as ElectronForegroundShadowApi,
+      }),
+    );
+    const viewerRead = viewerController.taskOpenTranscript(request);
+    await viewerReadStarted.promise;
+    viewerCurrent = false;
+    viewerGate.resolve();
+    expect(await rejected(viewerRead))
+      .toBeInstanceOf(ElectronForegroundShadowControllerUnavailableError);
   });
 
   test("coalesces one Message backfill batch and aborts it without exposing content", async () => {
@@ -554,6 +843,89 @@ describe("ElectronForegroundShadowController", () => {
     await controller.dispose();
   });
 
+  test("signs Desktop Memory edits with the advertised marketplace disclosure", async () => {
+    let intent: unknown;
+    const embedding = {
+      contractVersion: 2 as const,
+      canonicalSpace: { provider: "venice" as const,
+        model: "text-embedding-3-large", dimensions: 1536 as const },
+      processingRoute: { transport: "surplus_marketplace" as const,
+        marketplacePolicyVersion: "surplus-embedding-marketplace-v1" as const,
+        dataRecipientClasses: [
+          "surplus", "marketplace_seller", "seller_upstream_processor",
+        ] as const },
+    };
+    const controller = createElectronForegroundShadowController(controllerInput({
+      api: {
+        setToken: () => undefined,
+        admin: { encryptionTransition: { getPolicy: async () => ({
+          policy: { mode: "shadow_encryption", shadowBehavior: "fallback",
+            revision: 1, updatedAt: "2026-09-01T00:00:00.000Z" },
+        }) } },
+        getMemoryProcessorRecipientV2: async () => ({ formatVersion: 2,
+          purpose: "memory.foreground_embedding", recipientId: "A".repeat(43),
+          publicKeyBase64url: "B".repeat(87), embedding }),
+      } as unknown as ElectronForegroundShadowApi,
+      factories: factories({ humanMemory: {
+        update: async (_memoryId: string, value: unknown) => {
+          intent = value;
+          return { status: "ordinary_fallback", memoryId: "memory-1",
+            reason: "target_encryption_not_ready" };
+        },
+      } }),
+    }));
+    expect(await controller.memoryUpdate({ memoryId: "memory-1", type: "fact",
+      content: "private", importance: 0.8,
+      requestedEmbedding: embedding })).toMatchObject({
+      status: "ordinary_fallback", memoryId: "memory-1",
+    });
+    expect(intent).toEqual({
+      payload: { formatVersion: 1, type: "fact", content: "private" },
+      importance: 0.8,
+      requestedEmbedding: embedding,
+    });
+    await controller.dispose();
+  });
+
+  test("rejects a Desktop Memory edit when the displayed route no longer matches", async () => {
+    const direct = {
+      contractVersion: 2 as const,
+      canonicalSpace: { provider: "venice" as const,
+        model: "text-embedding-3-large", dimensions: 1536 as const },
+      processingRoute: { transport: "direct" as const },
+    };
+    const marketplace = { ...direct, processingRoute: {
+      transport: "surplus_marketplace" as const,
+      marketplacePolicyVersion: "surplus-embedding-marketplace-v1" as const,
+      dataRecipientClasses: [
+        "surplus", "marketplace_seller", "seller_upstream_processor",
+      ] as const,
+    } };
+    let updates = 0;
+    const controller = createElectronForegroundShadowController(controllerInput({
+      api: {
+        setToken: () => undefined,
+        admin: { encryptionTransition: { getPolicy: async () => ({
+          policy: { mode: "shadow_encryption", shadowBehavior: "fallback",
+            revision: 1, updatedAt: "2026-09-01T00:00:00.000Z" },
+        }) } },
+        getMemoryProcessorRecipientV2: async () => ({ formatVersion: 2,
+          purpose: "memory.foreground_embedding", recipientId: "A".repeat(43),
+          publicKeyBase64url: "B".repeat(87), embedding: marketplace }),
+      } as unknown as ElectronForegroundShadowApi,
+      factories: factories({ humanMemory: {
+        update: async () => { updates += 1; throw new Error("unexpected update"); },
+      } }),
+    }));
+    const failure = await rejected(controller.memoryUpdate({ memoryId: "memory-1",
+      type: "fact", content: "private", importance: 0.8,
+      requestedEmbedding: direct }));
+    expect(failure).toBeInstanceOf(TypeError);
+    expect((failure as TypeError).message).toContain("embedding disclosure changed");
+    expect(updates).toBe(0);
+    await controller.dispose();
+  });
+
   test("withholds a Memory result when policy changes during the operation", async () => {
     const started = deferred();
     const release = deferred();
@@ -837,6 +1209,26 @@ describe("ElectronForegroundShadowController", () => {
     });
     expect(typeof call.isCurrent).toBe("function");
     expect(call.isCurrent()).toBeTrue();
+
+    const taskCalls: unknown[] = [];
+    const taskController = createElectronForegroundShadowController(controllerInput({
+      factories: factories({ sender: {
+        recoverTaskPendingAttention: async (input: unknown) => {
+          taskCalls.push(input);
+          return { status: "ready", events: [] };
+        },
+      } }),
+    }));
+    expect(await taskController.recoverTaskPendingAttention({
+      clientActionSessionId: "session-2",
+    })).toEqual({ status: "ready", events: [] });
+    expect(taskCalls).toHaveLength(1);
+    const taskCall = taskCalls[0] as Readonly<{
+      clientActionSessionId: string;
+      isCurrent: () => boolean;
+    }>;
+    expect(taskCall.clientActionSessionId).toBe("session-2");
+    expect(taskCall.isCurrent()).toBeTrue();
   });
 
   test("routes receive, recipient, and history operations as public DTOs", async () => {
@@ -987,5 +1379,102 @@ describe("ElectronForegroundShadowController", () => {
     await send;
     await dispose;
     expect(destroyed).toEqual(["live", "shared-output", "custody"]);
+  });
+});
+
+describe("Desktop Task content repair custody", () => {
+  test("uses exact profile input, gates Shadow activation and coalesces cancellation", async () => {
+    const current = controllerInput();
+    const base = factories();
+    let batches = 0;
+    let signal: AbortSignal | undefined;
+    const controller = createElectronForegroundShadowController({ ...current, factories: {
+      ...base,
+      createTaskContentBackfill: input => {
+        expect(input.serverScope).toBe(current.serverScope);
+        expect(input.userId).toBe(current.userId);
+        expect(input.humanActorId).toBe(current.humanActorId);
+        expect(input.installationId).toBe(current.installationId);
+        expect(input.foregroundCustody).toBeDefined();
+        return { runBatch: async operation => {
+          batches++; signal = operation.signal;
+          return input.dataOperationOwner.runMutation({ dual: () => new Promise(resolve => {
+            operation.signal.addEventListener("abort", () => resolve({ state: "waiting", resumeAt: null }), { once: true });
+          }) });
+        } };
+      },
+    } });
+    const first = controller.serviceTaskContentBackfill();
+    expect(controller.serviceTaskContentBackfill()).toBe(first);
+    await new Promise<void>(resolve => setTimeout(resolve, 0));
+    expect(batches).toBe(1);
+    controller.cancelTaskContentBackfill();
+    expect(await first).toEqual({ state: "waiting", resumeAt: null });
+    expect(signal?.aborted).toBe(true);
+    await controller.dispose();
+  });
+
+  for (const mode of ["plaintext_only", "encrypted_only"] as const) test(`${mode} touches no Task repair transport or custody`, async () => {
+    let calls = 0;
+    const original = controllerInput();
+    const api = { ...original.api,
+      getTaskContentBackfillProgress: async () => { calls++; throw new Error("must not request repair"); },
+      admin: { encryptionTransition: { getPolicy: async () => ({ policy: {
+        mode, shadowBehavior: "strict", revision: 1,
+      } }) } },
+    } as unknown as ElectronForegroundShadowApi;
+    const controller = createElectronForegroundShadowController(controllerInput({ api,
+      factories: factories({ taskContentBackfill: { runBatch: async () => { calls++; throw new Error("must not open"); } } }),
+    }));
+    expect(await controller.serviceTaskContentBackfill()).toEqual({ state: "waiting", resumeAt: null });
+    expect(calls).toBe(0);
+    await controller.dispose();
+  });
+
+  test("inactive gate and profile change during progress refuse custody", async () => {
+    let current = true;
+    let opened = 0;
+    const original = controllerInput();
+    const gate = deferred();
+    const api = { ...original.api, getTaskContentBackfillProgress: async () => {
+      await gate.promise; return { status: "ready", value: null };
+    } } as unknown as ElectronForegroundShadowApi;
+    const controller = createElectronForegroundShadowController(controllerInput({ api,
+      isBindingCurrent: () => current,
+      factories: factories({ taskContentBackfill: { runBatch: async () => { opened++; return { state: "caught_up", resumeAt: null }; } } }),
+    }));
+    const pending = controller.serviceTaskContentBackfill();
+    await new Promise<void>(resolve => setTimeout(resolve, 0));
+    current = false; gate.resolve();
+    expect(await rejected(pending)).toBeInstanceOf(ElectronForegroundShadowControllerUnavailableError);
+    expect(opened).toBe(0);
+    await controller.dispose();
+    const inactive = createElectronForegroundShadowController(controllerInput({
+      api: { ...original.api, getTaskContentBackfillProgress: async () => ({ status: "inactive" }) } as unknown as ElectronForegroundShadowApi,
+      factories: factories({ taskContentBackfill: { runBatch: async () => { opened++; } } }),
+    }));
+    expect(await inactive.serviceTaskContentBackfill()).toEqual({ state: "waiting", resumeAt: null });
+    expect(opened).toBe(0); await inactive.dispose();
+  });
+
+  test("foreground preemption retries but profile disposal cancels before custody teardown", async () => {
+    const events: string[] = [];
+    const controller = createElectronForegroundShadowController(controllerInput({ factories: factories({
+      taskContentBackfill: { runBatch: ({ signal }: { signal: AbortSignal }) => new Promise(resolve => {
+        events.push("open"); signal.addEventListener("abort", () => {
+          events.push("abort"); resolve({ state: "waiting", resumeAt: null });
+        }, { once: true });
+      }) },
+      custodyDispose: async () => { events.push("dispose"); },
+    }) }));
+    const first = controller.serviceTaskContentBackfill();
+    await new Promise<void>(resolve => setTimeout(resolve, 0));
+    await controller.send("room", { content: "current foreground" });
+    expect(await first).toMatchObject({ state: "more" });
+    const second = controller.serviceTaskContentBackfill();
+    await new Promise<void>(resolve => setTimeout(resolve, 0));
+    await controller.dispose();
+    expect(await second).toEqual({ state: "waiting", resumeAt: null });
+    expect(events).toEqual(["open", "abort", "open", "abort", "dispose"]);
   });
 });

@@ -7,13 +7,19 @@ import {
   resolveExactTaskModelId,
   resolveTaskModel,
   type NautiloProfile,
+  type ForegroundChatFundingSession,
+  type ProtectedRepoDocsOpenedSelection,
+  type ProtectedRepoDocsExecutionPort,
+  type ProtectedTaskProjectFilePort,
   type RunScopeSubagentOpts,
 } from "@nautilo/agent";
 import {
   attachProtectedTaskRunModel,
+  bindProtectedTaskRunFunding,
   and,
   eq,
   jobs,
+  sql,
   taskRuns,
   tasks,
   type DirectDatabase,
@@ -24,15 +30,33 @@ import {
 import type { TaskPayloadV1 } from "@nautilo/lattice-bridge";
 import {
   assertProtectedTaskJobReferenceV1,
+  assertTaskFundingAdmission,
   computeTaskRelayCapabilities,
+  getCurrentAcceptedInvocationAuthority,
+  openTaskFundingSession,
   resolveToolWhitelist,
   resolveTaskReturnBinding,
   type ProtectedTaskNativeExecution,
   type ProtectedTaskPredispatchPlan,
   type ProtectedTaskRunningOccurrence,
+  type TaskFundingRunSource,
+  type TaskFundingTaskSource,
   type TaskRuntimeGrantClaimPlan,
 } from "@nautilo/runtime";
-import { assertCanUseServerProviderCredentials } from "@nautilo/trust";
+import {
+  assertAcceptedInvocationAuthoritySubject,
+  assertCanUseServerProviderCredentials,
+  getAcceptedInvocationAuthorityOrigin,
+  type AcceptedInvocationAuthority,
+} from "@nautilo/trust";
+import { parseLocalExecutionDelegation, parseTaskFundingBinding, type TaskFundingBinding } from "@nautilo/types";
+
+import { withProtectedTaskFundingAuthority } from "../lib/native-task-funding";
+import { resolveProtectedTaskLocalExecutionPort } from "./protected-task-local-execution";
+import { createProtectedTaskRepoDocsLocalExecutionPort } from "./protected-task-repo-docs-local-execution";
+import { createProtectedTaskRepoDocsProjectFilePort } from "./protected-task-repo-docs-project-file";
+import { parseProtectedTaskRepoDocsSelection, protectedTaskRepoDocsSelectionProjection,
+  sameProtectedTaskRepoDocsSelection } from "./protected-task-repo-docs-selection";
 
 type FixedExecutionContext = Omit<
   ProtectedTaskNativeExecution,
@@ -46,61 +70,27 @@ type FixedExecutionContext = Omit<
   | "actorRole"
   | "roomId"
   | "callingRoomId"
->;
+  | "protectedRepoDocs"
+> & Readonly<{
+  protectedRepoDocsExecutionPort?: ProtectedRepoDocsExecutionPort;
+  createProtectedRepoDocsProjectFilePort?(workDir: string): ProtectedTaskProjectFilePort;
+}>;
 
 type JobReference = TaskRuntimeGrantClaimPlan["reference"];
-type OperationalTask = Readonly<Pick<Task,
-  | "id"
-  | "ownerId"
-  | "requestorId"
-  | "agentId"
-  | "preset"
-  | "scheduleKind"
-  | "callingRoomId"
-  | "targetChat"
-  | "targetChatHandle"
-  | "targetRoomId"
-  | "targetUserIds"
-  | "useScope"
-  | "scopeId"
-  | "toolsMode"
-  | "toolsWhitelist"
-  | "awaitResponse"
-  | "selectionProfile"
-  | "selectionSpec"
-  | "requestedModelId"
-  | "parentTaskId"
-  | "depth"
-  | "status"
-  | "fundingMode"
-  | "contentRepresentation"
-  | "contentNamespaceId"
-  | "contentRevision"
-  | "cryptoObjectId"
-  | "cryptoAccessRevision"
-  | "cryptoRequiredNamespaceFingerprint"
-  | "cryptoMappingState"
->>;
-type OperationalRun = Readonly<Pick<TaskRun,
-  | "id"
-  | "taskId"
-  | "jobId"
-  | "graphThreadId"
-  | "status"
-  | "modelId"
-  | "fundingBinding"
-  | "fundingPredecessorRunId"
-  | "startedAt"
-  | "completedAt"
-  | "resultRepresentation"
-  | "resultContentNamespaceId"
-  | "resultRevision"
-  | "resultCryptoObjectId"
-  | "resultCryptoAccessRevision"
-  | "resultCryptoRequiredNamespaceFingerprint"
+type OperationalTask = Readonly<Omit<TaskFundingTaskSource, "metadata"> & Pick<Task,
+  | "scheduleKind" | "status" | "localExecutionDelegation"
+> & { repoDocsSelection?: unknown }>;
+type OperationalRun = Readonly<TaskFundingRunSource & Pick<TaskRun,
+  | "startedAt" | "completedAt" | "resultRepresentation"
+  | "resultContentNamespaceId" | "resultRevision" | "resultCryptoObjectId"
+  | "resultCryptoAccessRevision" | "resultCryptoRequiredNamespaceFingerprint"
   | "resultCryptoMappingState"
->>;
-type OperationalJob = Readonly<Pick<Job,
+> & {
+  resultTextIsNull: boolean;
+  lastErrorIsNull: boolean;
+}>;
+type OperationalJob = Readonly<Pick<
+  Job,
   | "id"
   | "ownerId"
   | "requestorId"
@@ -131,6 +121,9 @@ export type ProtectedTaskNativeExecutionContextInput = Readonly<{
   occurrence: ProtectedTaskRunningOccurrence;
   predispatch: ProtectedTaskPredispatchPlan;
   protectedMetadata: TaskPayloadV1["protectedMetadata"];
+  repoDocs?: ProtectedRepoDocsOpenedSelection;
+  signal: AbortSignal;
+  assertCurrentTaskAuthority(): Promise<void>;
 }>;
 
 export type ProductionProtectedTaskNativeExecutionContextDependencies =
@@ -148,6 +141,16 @@ export type ProductionProtectedTaskNativeExecutionContextDependencies =
     assertCanUseServerProviderCredentials?:
       typeof assertCanUseServerProviderCredentials;
     attachProtectedTaskRunModel?: typeof attachProtectedTaskRunModel;
+    bindProtectedTaskRunFunding?: typeof bindProtectedTaskRunFunding;
+    assertTaskFundingAdmission?: typeof assertTaskFundingAdmission;
+    openTaskFundingSession?: typeof openTaskFundingSession;
+    getCurrentAcceptedInvocationAuthority?:
+      typeof getCurrentAcceptedInvocationAuthority;
+    withProtectedTaskFundingAuthority?:
+      typeof withProtectedTaskFundingAuthority;
+    resolveLocalExecutionPort?: typeof resolveProtectedTaskLocalExecutionPort;
+    createRepoDocsLocalExecutionPort?: typeof createProtectedTaskRepoDocsLocalExecutionPort;
+    createRepoDocsProjectFilePort?: typeof createProtectedTaskRepoDocsProjectFilePort;
     resolveTaskReturnBinding?: typeof resolveTaskReturnBinding;
     resolveRelayCapabilities?: (
       ownerId: string,
@@ -165,11 +168,13 @@ async function readOperationalTask(
     agentId: tasks.agentId,
     preset: tasks.preset,
     scheduleKind: tasks.scheduleKind,
+    status: tasks.status,
     callingRoomId: tasks.callingRoomId,
     targetChat: tasks.targetChat,
     targetChatHandle: tasks.targetChatHandle,
     targetRoomId: tasks.targetRoomId,
     targetUserIds: tasks.targetUserIds,
+    resultDelivery: tasks.resultDelivery,
     useScope: tasks.useScope,
     scopeId: tasks.scopeId,
     toolsMode: tasks.toolsMode,
@@ -180,16 +185,19 @@ async function readOperationalTask(
     requestedModelId: tasks.requestedModelId,
     parentTaskId: tasks.parentTaskId,
     depth: tasks.depth,
-    status: tasks.status,
     fundingMode: tasks.fundingMode,
+    localExecutionDelegation: tasks.localExecutionDelegation,
+    repoDocsSelection: protectedTaskRepoDocsSelectionProjection(),
     contentRepresentation: tasks.contentRepresentation,
     contentNamespaceId: tasks.contentNamespaceId,
     contentRevision: tasks.contentRevision,
     cryptoObjectId: tasks.cryptoObjectId,
     cryptoAccessRevision: tasks.cryptoAccessRevision,
-    cryptoRequiredNamespaceFingerprint: tasks.cryptoRequiredNamespaceFingerprint,
+    cryptoRequiredNamespaceFingerprint:
+      tasks.cryptoRequiredNamespaceFingerprint,
     cryptoMappingState: tasks.cryptoMappingState,
-  }).from(tasks).where(eq(tasks.id, taskId)).limit(1);
+  }).from(tasks)
+    .where(eq(tasks.id, taskId)).limit(1);
   return row;
 }
 
@@ -209,6 +217,10 @@ async function readOperationalRun(
     fundingPredecessorRunId: taskRuns.fundingPredecessorRunId,
     startedAt: taskRuns.startedAt,
     completedAt: taskRuns.completedAt,
+    resultTextIsNull:
+      sql<boolean>`${taskRuns.resultText} is null`,
+    lastErrorIsNull:
+      sql<boolean>`${taskRuns.lastError} is null`,
     resultRepresentation: taskRuns.resultRepresentation,
     resultContentNamespaceId: taskRuns.resultContentNamespaceId,
     resultRevision: taskRuns.resultRevision,
@@ -229,17 +241,7 @@ async function readOperationalJob(
   jobId: string,
   ownerId: string,
 ): Promise<OperationalJob | undefined> {
-  const [row] = await db.select({
-    id: jobs.id,
-    ownerId: jobs.ownerId,
-    requestorId: jobs.requestorId,
-    laneKey: jobs.laneKey,
-    type: jobs.type,
-    status: jobs.status,
-    input: jobs.input,
-    startedAt: jobs.startedAt,
-    completedAt: jobs.completedAt,
-  }).from(jobs).where(and(
+  const [row] = await db.select().from(jobs).where(and(
     eq(jobs.id, jobId),
     eq(jobs.ownerId, ownerId),
   )).limit(1);
@@ -288,6 +290,7 @@ function executionSelection(task: OperationalTask): string {
     task.useScope, task.scopeId, task.toolsMode, task.toolsWhitelist,
     task.awaitResponse, task.selectionProfile, task.selectionSpec,
     task.requestedModelId, task.parentTaskId, task.depth, task.fundingMode,
+    task.localExecutionDelegation,
   ]);
 }
 
@@ -297,6 +300,7 @@ function currentTaskAndRun(
   task: OperationalTask,
   run: OperationalRun,
   expectedModelId: string | null | undefined,
+  expectedFundingBinding: TaskFundingBinding | null | undefined,
 ): boolean {
   const expectedTaskStatus = task.scheduleKind === "cron"
     ? "pending"
@@ -335,9 +339,15 @@ function currentTaskAndRun(
     && (expectedModelId === undefined
       ? run.modelId !== null
       : run.modelId === expectedModelId)
-    && run.fundingBinding === null
+    && (expectedFundingBinding === undefined
+      ? run.fundingBinding !== null
+      : expectedFundingBinding === null
+        ? run.fundingBinding === null
+        : sameFundingBinding(run.fundingBinding, expectedFundingBinding))
     && run.fundingPredecessorRunId === null
+    && run.resultTextIsNull
     && run.completedAt === null
+    && run.lastErrorIsNull
     && run.resultRepresentation === "ordinary"
     && run.resultContentNamespaceId === null
     && run.resultRevision === 0
@@ -345,6 +355,72 @@ function currentTaskAndRun(
     && run.resultCryptoAccessRevision === 0
     && run.resultCryptoRequiredNamespaceFingerprint === null
     && run.resultCryptoMappingState === "unmapped";
+}
+
+function fundingTaskSource(
+  task: OperationalTask,
+  metadata: TaskPayloadV1["protectedMetadata"],
+): TaskFundingTaskSource {
+  return Object.freeze({
+    id: task.id,
+    ownerId: task.ownerId,
+    requestorId: task.requestorId,
+    agentId: task.agentId,
+    preset: task.preset,
+    callingRoomId: task.callingRoomId,
+    targetChat: task.targetChat,
+    targetChatHandle: task.targetChatHandle,
+    targetRoomId: task.targetRoomId,
+    targetUserIds: Object.freeze([...task.targetUserIds]),
+    resultDelivery: task.resultDelivery,
+    useScope: task.useScope,
+    scopeId: task.scopeId,
+    toolsMode: task.toolsMode,
+    toolsWhitelist: Object.freeze([...task.toolsWhitelist]),
+    awaitResponse: task.awaitResponse,
+    selectionProfile: task.selectionProfile,
+    selectionSpec: task.selectionSpec,
+    requestedModelId: task.requestedModelId,
+    parentTaskId: task.parentTaskId,
+    depth: task.depth,
+    fundingMode: task.fundingMode,
+    metadata: structuredClone(metadata),
+    contentRepresentation: task.contentRepresentation,
+    contentNamespaceId: task.contentNamespaceId,
+    contentRevision: task.contentRevision,
+    cryptoObjectId: task.cryptoObjectId,
+    cryptoAccessRevision: task.cryptoAccessRevision,
+    cryptoRequiredNamespaceFingerprint:
+      task.cryptoRequiredNamespaceFingerprint === null
+        ? null
+        : Uint8Array.from(task.cryptoRequiredNamespaceFingerprint),
+    cryptoMappingState: task.cryptoMappingState,
+  });
+}
+
+function fundingRunSource(run: OperationalRun): TaskFundingRunSource {
+  return Object.freeze({
+    id: run.id,
+    taskId: run.taskId,
+    jobId: run.jobId,
+    graphThreadId: run.graphThreadId,
+    status: run.status,
+    modelId: run.modelId,
+    fundingBinding: structuredClone(run.fundingBinding),
+    fundingPredecessorRunId: run.fundingPredecessorRunId,
+  });
+}
+
+function sameFundingBinding(
+  left: unknown,
+  right: TaskFundingBinding,
+): boolean {
+  try {
+    return JSON.stringify(parseTaskFundingBinding(left))
+      === JSON.stringify(right);
+  } catch {
+    return false;
+  }
 }
 
 function currentJob(
@@ -402,7 +478,7 @@ function selectLegacyModel(
       )({
         requestedModelId: task.requestedModelId,
         toolsMode: task.toolsMode,
-        toolsWhitelist: task.toolsWhitelist,
+        toolsWhitelist: [...task.toolsWhitelist],
       }),
       exact: true,
     });
@@ -448,6 +524,61 @@ function bindingInput(
   };
 }
 
+function fundingBindingInput(
+  occurrence: ProtectedTaskRunningOccurrence,
+  reference: JobReference,
+  modelId: string,
+  fundingBinding: TaskFundingBinding,
+): Parameters<typeof bindProtectedTaskRunFunding>[1] {
+  return {
+    ...bindingInput(occurrence, reference, modelId),
+    fundingBinding,
+  };
+}
+
+function protectedFundingSession(
+  session: ForegroundChatFundingSession,
+  assertCurrent: () => Promise<void>,
+): ForegroundChatFundingSession {
+  const recheckAttempt: ForegroundChatFundingSession["recheckAttempt"] =
+    async (modelId, transport) => {
+      await assertCurrent();
+      try {
+        await session.recheckAttempt(modelId, transport);
+      } finally {
+        await assertCurrent();
+      }
+    };
+  const runAttempt: ForegroundChatFundingSession["runAttempt"] =
+    async (modelId, run, transport) => {
+      await assertCurrent();
+      try {
+        return await session.runAttempt(modelId, run, transport);
+      } finally {
+        await assertCurrent();
+      }
+    };
+  return Object.freeze({
+    ...session,
+    recheckAttempt,
+    runAttempt,
+  });
+}
+
+function currentCallerFundingAuthority(
+  authority: AcceptedInvocationAuthority | undefined,
+  task: OperationalTask,
+): AcceptedInvocationAuthority {
+  if (authority === undefined) {
+    throw new TypeError("Protected Task caller funding authority is unavailable");
+  }
+  assertAcceptedInvocationAuthoritySubject(authority, task.requestorId);
+  if (getAcceptedInvocationAuthorityOrigin(authority).originTaskId !== task.id) {
+    throw new TypeError("Protected Task caller funding authority changed");
+  }
+  return authority;
+}
+
 /**
  * Load and bind the non-content execution context for one initial native
  * protected Task segment. Every durable identity is re-read before and after
@@ -466,17 +597,28 @@ export function createProductionProtectedTaskNativeExecutionContext(
     ?? assertCanUseServerProviderCredentials;
   const attachModel = dependencies.attachProtectedTaskRunModel
     ?? attachProtectedTaskRunModel;
+  const bindFunding = dependencies.bindProtectedTaskRunFunding
+    ?? bindProtectedTaskRunFunding;
+  const admitFunding = dependencies.assertTaskFundingAdmission
+    ?? assertTaskFundingAdmission;
+  const openFunding = dependencies.openTaskFundingSession
+    ?? openTaskFundingSession;
+  const currentInvocationAuthority =
+    dependencies.getCurrentAcceptedInvocationAuthority
+      ?? getCurrentAcceptedInvocationAuthority;
+  const withFundingAuthority =
+    dependencies.withProtectedTaskFundingAuthority
+      ?? withProtectedTaskFundingAuthority;
   const taskReturnBinding = dependencies.resolveTaskReturnBinding
     ?? resolveTaskReturnBinding;
   const relayCapabilities = dependencies.resolveRelayCapabilities
     ?? computeTaskRelayCapabilities;
   const toolResolver = dependencies.resolveToolWhitelist
     ?? resolveToolWhitelist;
+  const resolveLocalExecution = dependencies.resolveLocalExecutionPort
+    ?? resolveProtectedTaskLocalExecutionPort;
 
   return async input => {
-    // The metadata is already authenticated protected definition content. It
-    // deliberately supplies no operational fallback for the schema rows.
-    void input.protectedMetadata;
     if (!sameOccurrence(input.occurrence, input.predispatch)) {
       throw new TypeError("Protected Task execution occurrence changed");
     }
@@ -496,34 +638,50 @@ export function createProductionProtectedTaskNativeExecutionContext(
     if (!task || !run || !job) {
       throw new TypeError("Protected Task execution is no longer current");
     }
+    if (task.preset === "repo_docs" ? input.repoDocs === undefined
+      || !sameProtectedTaskRepoDocsSelection(parseProtectedTaskRepoDocsSelection(task.repoDocsSelection),
+        { mode: input.repoDocs.mode, publish: input.repoDocs.publish })
+      || task.toolsMode !== "whitelist" || task.toolsWhitelist.length !== 1 || task.toolsWhitelist[0] !== "file"
+      : input.repoDocs !== undefined) {
+      throw new TypeError("Protected Task repo docs selection changed");
+    }
     const reference = currentJob(input.occurrence, task, job);
     if (reference === null) {
       throw new TypeError("Protected Task execution Job is no longer current");
+    }
+    const initialSegment = reference.executionSegment === 1;
+    const callerFunding = task.fundingMode === "caller";
+    if (task.fundingMode !== "legacy_server" && !callerFunding) {
+      throw new TypeError("Protected Task funding mode is invalid");
     }
     if (!currentTaskAndRun(
       input.occurrence,
       input.predispatch,
       task,
       run,
-      reference.executionSegment === 1 ? null : undefined,
+      initialSegment ? null : undefined,
+      callerFunding && !initialSegment ? undefined : null,
     )) {
       throw new TypeError("Protected Task execution is no longer current");
     }
-
-    if ((task.fundingMode ?? "legacy_server") !== "legacy_server") {
-      // The owning caller-funded Task contract deliberately supports only its
-      // narrow ordinary text workload. Never fall through to server custody.
-      throw new TypeError(
-        "Caller-funded protected Task execution is unsupported",
-      );
-    }
-    await assertServerFunding(task.requestorId, "task_execute");
+    const admittedFundingTask = fundingTaskSource(
+      task,
+      input.repoDocs === undefined ? input.protectedMetadata : {
+        ...input.protectedMetadata, mode: input.repoDocs.mode, publish: input.repoDocs.publish,
+      },
+    );
+    const admittedFundingRun = fundingRunSource(run);
 
     const expectedSelection = executionSelection(task);
+    const delegatedLocalExecutionPort = await resolveLocalExecution({
+      db: dependencies.db,
+      occurrence: input.occurrence,
+      signal: input.signal,
+      assertCurrentTaskAuthority: input.assertCurrentTaskAuthority,
+    });
     const profile = await readProfile(task.agentId);
-    const selection = selectLegacyModel(task, profile, dependencies);
     const toolWhitelist = toolResolver(
-      task,
+      { ...task, toolsWhitelist: [...task.toolsWhitelist] },
       input.predispatch.memory.envelope,
     );
     const subagentDepth = task.depth + 1;
@@ -533,12 +691,60 @@ export function createProductionProtectedTaskNativeExecutionContext(
       throw new TypeError("Protected Task execution depth is invalid");
     }
 
-    const attached = await attachModel(
-      dependencies.db,
-      bindingInput(input.occurrence, reference, selection.modelId),
-    );
+    let modelId: string;
+    let exactModel: boolean;
+    let fundingBinding: TaskFundingBinding | null = null;
+    const invocationAuthority = callerFunding
+      ? currentCallerFundingAuthority(currentInvocationAuthority(), task)
+      : undefined;
+    if (callerFunding) {
+      const admission = await withFundingAuthority(
+        input.assertCurrentTaskAuthority,
+        () => admitFunding(
+          admittedFundingTask,
+          initialSegment ? undefined : admittedFundingRun,
+        ),
+      );
+      if (admission === null) {
+        throw new TypeError("Protected Task caller funding is unavailable");
+      }
+      modelId = admission.modelId;
+      exactModel = task.requestedModelId !== null;
+      fundingBinding = admission.binding;
+    } else {
+      await assertServerFunding(task.requestorId, "task_execute");
+      const selection = selectLegacyModel(task, profile, dependencies);
+      modelId = selection.modelId;
+      exactModel = selection.exact;
+    }
+
+    let attached: Awaited<ReturnType<typeof attachProtectedTaskRunModel>>;
+    if (callerFunding) {
+      if (fundingBinding === null) {
+        throw new TypeError("Protected Task caller funding is unavailable");
+      }
+      attached = await withFundingAuthority(
+        input.assertCurrentTaskAuthority,
+        () => bindFunding(
+          dependencies.db,
+          fundingBindingInput(
+            input.occurrence,
+            reference,
+            modelId,
+            fundingBinding,
+          ),
+        ),
+      );
+    } else {
+      attached = await attachModel(
+        dependencies.db,
+        bindingInput(input.occurrence, reference, modelId),
+      );
+    }
     if (attached.status === "stale") {
-      throw new TypeError("Protected Task execution model binding is stale");
+      throw new TypeError(callerFunding
+        ? "Protected Task execution funding binding is stale"
+        : "Protected Task execution model binding is stale");
     }
 
     const [currentTask, currentRun, currentJobRow] = await Promise.all([
@@ -563,12 +769,43 @@ export function createProductionProtectedTaskNativeExecutionContext(
         input.predispatch,
         currentTask,
         currentRun,
-        selection.modelId,
+        modelId,
+        fundingBinding,
       )
       || executionSelection(currentTask) !== expectedSelection
+      || input.repoDocs !== undefined && !sameProtectedTaskRepoDocsSelection(
+        parseProtectedTaskRepoDocsSelection(currentTask.repoDocsSelection),
+        { mode: input.repoDocs.mode, publish: input.repoDocs.publish },
+      )
       || finalReference === null
       || !sameReference(reference, finalReference)) {
       throw new TypeError("Protected Task execution changed after model binding");
+    }
+
+    let fundingSession: ForegroundChatFundingSession | null = null;
+    if (callerFunding) {
+      const currentFundingTask = fundingTaskSource(
+        currentTask,
+        input.repoDocs === undefined ? input.protectedMetadata : {
+          ...input.protectedMetadata, mode: input.repoDocs.mode, publish: input.repoDocs.publish,
+        },
+      );
+      const currentFundingRun = fundingRunSource(currentRun);
+      fundingSession = await withFundingAuthority(
+        input.assertCurrentTaskAuthority,
+        () => openFunding({
+          task: currentFundingTask,
+          run: currentFundingRun,
+          authority: invocationAuthority,
+          requestorId: currentTask.requestorId,
+          modelId,
+          jobId: input.occurrence.run.jobId,
+          graphThreadId: currentFundingRun.graphThreadId,
+        }),
+      );
+      if (fundingSession === null) {
+        throw new TypeError("Protected Task caller funding is unavailable");
+      }
     }
 
     const returnBinding = taskReturnBinding(
@@ -578,13 +815,38 @@ export function createProductionProtectedTaskNativeExecutionContext(
     );
     const hasReturnBinding = returnBinding.status === "available";
     const currentRelayCapabilities = relayCapabilities(currentTask.ownerId);
+    let protectedRepoDocsExecutionPort: ProtectedRepoDocsExecutionPort | undefined;
+    let createProtectedRepoDocsProjectFilePort: ((workDir: string) => ProtectedTaskProjectFilePort) | undefined;
+    if (input.repoDocs !== undefined) {
+      if (delegatedLocalExecutionPort === undefined) {
+        throw new TypeError("Protected repo docs project authority is unavailable");
+      }
+      const delegation = parseLocalExecutionDelegation(currentTask.localExecutionDelegation);
+      if (delegation === null) throw new TypeError("Protected repo docs project source is unavailable");
+      const repoDocsRegistry = getRelayRegistry();
+      if (repoDocsRegistry === null) throw new TypeError("Protected repo docs relay is unavailable");
+      const repoDocsContext = {
+        delegated: delegatedLocalExecutionPort, registry: repoDocsRegistry,
+        state: { currentTaskId: currentTask.id, currentTaskRunId: currentRun.id,
+          agentId: currentTask.agentId, roomId: input.predispatch.scheduling.roomId,
+          currentThreadId: currentRun.graphThreadId, langgraphThreadId: currentRun.graphThreadId,
+          causalHumanUserId: currentTask.requestorId, trustedExecutionEntrypoint: "background.task" as const },
+        selection: input.repoDocs, modelId, signal: input.signal, assertCurrent: input.assertCurrentTaskAuthority,
+      };
+      protectedRepoDocsExecutionPort = (
+        dependencies.createRepoDocsLocalExecutionPort ?? createProtectedTaskRepoDocsLocalExecutionPort
+      )(repoDocsContext);
+      createProtectedRepoDocsProjectFilePort = workDir => (
+        dependencies.createRepoDocsProjectFilePort ?? createProtectedTaskRepoDocsProjectFilePort
+      )({ ...repoDocsContext, workspaceRoot: workDir, relayId: delegation.target.relayId });
+    }
     return Object.freeze({
       ...(toolWhitelist === undefined
         ? {}
         : { toolWhitelist: [...toolWhitelist] }),
       assistantName: profile?.name ?? "Genie",
       soulFile: profile?.soulFile ?? "",
-      modelId: selection.modelId,
+      modelId,
       currentFolder: hasReturnBinding ? returnBinding.currentFolder ?? "" : "",
       workspacePath: hasReturnBinding ? returnBinding.workspacePath ?? "" : "",
       subagentDepth,
@@ -593,7 +855,20 @@ export function createProductionProtectedTaskNativeExecutionContext(
       ...(currentRelayCapabilities === undefined
         ? {}
         : { relayCapabilities: currentRelayCapabilities }),
-      modelFallbackMode: selection.exact ? "none" : "agent_chain",
+      ...(fundingSession === null
+        ? {}
+        : {
+            foregroundChatFundingSession: protectedFundingSession(
+              fundingSession,
+              input.assertCurrentTaskAuthority,
+            ),
+          }),
+      ...(delegatedLocalExecutionPort === undefined
+        ? {}
+        : { delegatedLocalExecutionPort }),
+      ...(protectedRepoDocsExecutionPort === undefined ? {} : { protectedRepoDocsExecutionPort }),
+      ...(createProtectedRepoDocsProjectFilePort === undefined ? {} : { createProtectedRepoDocsProjectFilePort }),
+      modelFallbackMode: exactModel ? "none" : "agent_chain",
     });
   };
 }

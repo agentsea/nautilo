@@ -13,6 +13,7 @@ import {
 } from "../file-vault.ts";
 import {
   decodePreparedMutationJournalIndex,
+  type PreparedMutationJournalCustodyAvailability,
   type PreparedMutationJournalIndex,
   type PreparedMutationJournalVaultPort,
 } from "./prepared-mutation-journal.ts";
@@ -24,13 +25,6 @@ const AES_KEY_BYTES = 32;
 const AES_NONCE_BYTES = 12;
 const AES_TAG_BYTES = 16;
 const pathTails = new Map<string, Promise<void>>();
-
-export type PreparedMutationJournalCustodyAvailability =
-  | Readonly<{ status: "available" | "locked" }>
-  | Readonly<{
-      status: "unsupported" | "corrupt" | "storage_lost";
-      reasonCode: string;
-    }>;
 
 interface PersistedJournalRecord {
   readonly formatVersion: typeof FORMAT_VERSION;

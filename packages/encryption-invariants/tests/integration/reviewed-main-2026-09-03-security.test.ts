@@ -26,6 +26,14 @@ import {
   REVIEWED_MAIN_2026_09_12_DTO_REPLACEMENTS,
   SUPERSEDED_MAIN_2026_09_12_DTO_LOCATORS,
 } from "../../baseline/reviewed-main-2026-09-12-dto";
+import {
+  REVIEWED_MAIN_2026_10_13_DTO_REPLACEMENTS,
+  SUPERSEDED_MAIN_2026_10_13_DTO_LOCATORS,
+} from "../../baseline/reviewed-main-2026-10-13-dto";
+import {
+  REVIEWED_TASK_PROTECTION_DTO_DECLARATIONS,
+  SUPERSEDED_TASK_PROTECTION_DTO_LOCATORS,
+} from "../../baseline/reviewed-task-protection-dto";
 import { SUPERSEDED_MAIN_2026_09_17_DTO_LOCATORS } from
   "../../baseline/reviewed-main-2026-09-17-dto";
 import {
@@ -134,6 +142,27 @@ describe("reviewed main 2026-09-03 encryption inventory", () => {
   });
 
   test("pins current DTO structures and removes only superseded declarations", () => {
+    const octoberReplacements = REVIEWED_MAIN_2026_10_13_DTO_REPLACEMENTS
+      .filter((declaration) =>
+        REVIEWED_MAIN_2026_09_03_DTO_DECLARATIONS.some((prior) =>
+          prior.locator === declaration.locator
+        )
+      );
+    expect(octoberReplacements.map((declaration) => declaration.locator)).toEqual([
+      "http:request_response:GET /api/auth/whoami",
+      "http:request_response:GET /api/costs",
+      "http:request_response:GET /api/health/keys",
+      "http:request_response:GET /api/security/audit-log",
+      "http:request_response:POST /api/health/keys/validate",
+    ]);
+    const taskProtectionReplacements = REVIEWED_TASK_PROTECTION_DTO_DECLARATIONS
+      .filter((declaration) =>
+        REVIEWED_MAIN_2026_09_03_DTO_DECLARATIONS.some((prior) =>
+          prior.locator === declaration.locator
+        )
+      );
+    expect(taskProtectionReplacements.map((declaration) => declaration.locator))
+      .toEqual(["http:request_response:GET /api/tasks/pending-attention"]);
     expect(REVIEWED_MAIN_2026_09_03_DTO_DECLARATIONS.filter((declaration) =>
       SUPERSEDED_MAIN_2026_09_12_DTO_LOCATORS.has(declaration.locator)
     ).map((declaration) => declaration.locator)).toEqual([
@@ -142,6 +171,22 @@ describe("reviewed main 2026-09-03 encryption inventory", () => {
       "http:request_response:GET /api/tasks/pending-attention",
     ]);
     for (const declaration of REVIEWED_MAIN_2026_09_03_DTO_DECLARATIONS) {
+      if (SUPERSEDED_TASK_PROTECTION_DTO_LOCATORS.has(declaration.locator)) {
+        expect(DTO_BASELINE_DECLARATIONS.filter((entry) =>
+          entry.locator === declaration.locator
+        )).toEqual(taskProtectionReplacements.filter((entry) =>
+          entry.locator === declaration.locator
+        ));
+        continue;
+      }
+      if (SUPERSEDED_MAIN_2026_10_13_DTO_LOCATORS.has(declaration.locator)) {
+        expect(DTO_BASELINE_DECLARATIONS.filter((entry) =>
+          entry.locator === declaration.locator
+        )).toEqual(octoberReplacements.filter((entry) =>
+          entry.locator === declaration.locator
+        ));
+        continue;
+      }
       if (SUPERSEDED_MAIN_2026_09_12_DTO_LOCATORS.has(declaration.locator)) {
         expect(DTO_BASELINE_DECLARATIONS.filter((entry) => entry.locator === declaration.locator))
           .toEqual([currentSeptember12Replacement(declaration.locator)]);
@@ -169,6 +214,16 @@ describe("reviewed main 2026-09-03 encryption inventory", () => {
       }
     }
     for (const locator of SUPERSEDED_MAIN_2026_09_03_DTO_LOCATORS) {
+      if (SUPERSEDED_TASK_PROTECTION_DTO_LOCATORS.has(locator)) {
+        expect(DTO_BASELINE_DECLARATIONS.filter((entry) => entry.locator === locator))
+          .toEqual(taskProtectionReplacements.filter((entry) => entry.locator === locator));
+        continue;
+      }
+      if (SUPERSEDED_MAIN_2026_10_13_DTO_LOCATORS.has(locator)) {
+        expect(DTO_BASELINE_DECLARATIONS.filter((entry) => entry.locator === locator))
+          .toEqual(octoberReplacements.filter((entry) => entry.locator === locator));
+        continue;
+      }
       if (SUPERSEDED_MAIN_2026_09_12_DTO_LOCATORS.has(locator)) {
         expect(DTO_BASELINE_DECLARATIONS.filter((entry) => entry.locator === locator))
           .toEqual([currentSeptember12Replacement(locator)]);

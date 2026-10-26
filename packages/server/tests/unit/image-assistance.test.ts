@@ -76,8 +76,13 @@ describe("automatic caller image selection", () => {
 
   test("a native vision model with an unqualified marketplace image route cannot advertise assistance", async () => {
     const h = harness(["openai:vision"]);
+    const hydrated: string[][] = [];
+    const deps = { ...h.deps, hydrateSurplusChatCatalog: async (input: {
+      readonly catalogModelIds?: readonly string[];
+    } = {}) => { hydrated.push([...(input.catalogModelIds ?? [])]); } };
     expect(await resolveCallerImageInput({ humanUserId: HUMAN, modelId: "openai:vision",
-      funding: { ...decision("openai:vision"), providerRoute: "surplus" } }, h.deps)).toBe("unavailable");
+      funding: { ...decision("openai:vision"), providerRoute: "surplus" } }, deps)).toBe("unavailable");
+    expect(hydrated).toEqual([["openai:vision"]]);
     expect(h.calls).toEqual([]);
   });
 

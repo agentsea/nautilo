@@ -29,4 +29,31 @@ describe("M300 Desktop foreground Shadow runtime selection", () => {
     expect(runtime).toContain("let readerDeviceId: string");
     expect(runtime).not.toContain("@nautilo/lattice-bridge/client/electron");
   });
+
+  test("constructs Task repair custody only for Shadow mode", () => {
+    const start = runtime.indexOf("const taskContentBackfill = useMemo(() => {");
+    const end = runtime.indexOf("const localExecutionHistoryScopeRef", start);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const composition = runtime.slice(start, end);
+    const modeGate = composition.indexOf(
+      'shadowPolicyMode !== "shadow_encryption"',
+    );
+    const desktopFactory = composition.indexOf(
+      "createDesktopTaskContentBackfillSchedulerClient({",
+    );
+    const browserCustody = composition.indexOf(
+      "readOrCreateBrowserCryptoInstallationId({",
+    );
+    const browserFactory = composition.indexOf(
+      "createBrowserTaskContentBackfillClient({",
+    );
+
+    expect(modeGate).toBeGreaterThanOrEqual(0);
+    expect(desktopFactory).toBeGreaterThan(modeGate);
+    expect(browserCustody).toBeGreaterThan(modeGate);
+    expect(browserFactory).toBeGreaterThan(browserCustody);
+    expect(composition.slice(composition.lastIndexOf("}, [")))
+      .toContain("shadowPolicyMode");
+  });
 });

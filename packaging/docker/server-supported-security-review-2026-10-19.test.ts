@@ -12,7 +12,7 @@ const review = read("fixtures/server-supported-security-review-2026-10-19.json")
   architectures: Record<Architecture, Tuple[]>; previousFailures: Record<Architecture, string[][]>;
   reviewedAdvisories: Record<string, { url: string; supportedStatus: string; upstreamFixedVersion: string }>;
 };
-const source = read("server-vulnerability-exceptions.input.json") as { exceptions: VulnerabilityPolicyV1["exceptions"] };
+const source = read("fixtures/server-policy-before-security-renewal-2026-10-23.json") as { exceptions: VulnerabilityPolicyV1["exceptions"] };
 const previous = read("fixtures/server-policy-before-upgrade-2026-10-19.json") as typeof source;
 const isChromium = (entry: { packageName: string }) => entry.packageName.startsWith("chromium-");
 

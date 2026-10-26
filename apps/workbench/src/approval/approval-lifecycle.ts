@@ -103,6 +103,51 @@ export function reconcilePendingApprovalPreviewSnapshot<T>(
   });
 }
 
+/** Replace one canonical source without disturbing previews owned by another. */
+export function reconcilePendingApprovalPreviewSubset<T>(
+  state: PendingApprovalPreviewQueue<T>,
+  canonical: readonly T[],
+  keyOf: (item: T) => string,
+  belongsToSubset: (item: T) => boolean,
+): Readonly<{ queue: PendingApprovalPreviewQueue<T>; retainedActive: boolean }> {
+  const uniqueCanonical = canonical.filter((item, index) =>
+    canonical.findIndex((candidate) => keyOf(candidate) === keyOf(item)) === index);
+  const retainedWaiting = state.waiting.filter((item) => !belongsToSubset(item));
+  if (state.active !== null && !belongsToSubset(state.active)) {
+    const activeKey = keyOf(state.active);
+    const waiting = [...retainedWaiting, ...uniqueCanonical].filter((item, index, all) =>
+      keyOf(item) !== activeKey
+      && all.findIndex((candidate) => keyOf(candidate) === keyOf(item)) === index);
+    return Object.freeze({
+      retainedActive: true,
+      queue: Object.freeze({ active: state.active, waiting: Object.freeze(waiting) }),
+    });
+  }
+  if (state.active !== null) {
+    const activeKey = keyOf(state.active);
+    if (uniqueCanonical.some((item) => keyOf(item) === activeKey)) {
+      return Object.freeze({
+        retainedActive: true,
+        queue: Object.freeze({
+          active: state.active,
+          waiting: Object.freeze([
+            ...retainedWaiting,
+            ...uniqueCanonical.filter((item) => keyOf(item) !== activeKey),
+          ]),
+        }),
+      });
+    }
+  }
+  const replacement = [...retainedWaiting, ...uniqueCanonical];
+  return Object.freeze({
+    retainedActive: false,
+    queue: Object.freeze({
+      active: replacement[0] ?? null,
+      waiting: Object.freeze(replacement.slice(1)),
+    }),
+  });
+}
+
 /** How an approval id reached its terminal state. */
 export type ApprovalResolution =
   | "approved"

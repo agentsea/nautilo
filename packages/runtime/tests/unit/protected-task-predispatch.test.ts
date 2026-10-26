@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { taskContentRevisionObjectIdV1 } from "@nautilo/lattice-bridge";
 import type { MemoryAccessEnvelope } from "@nautilo/trust";
 
 import {
@@ -305,6 +306,7 @@ describe("protected Task predispatch", () => {
           mode: "scope",
           authorityStatus: "exact",
           provenance: "scope_existing",
+          scopeOrigin: { roomId: ROOM, namespaceId: NAMESPACE },
         }),
       },
     });
@@ -340,4 +342,65 @@ describe("protected Task predispatch", () => {
       },
     })).rejects.toThrow("Protected Task Memory authority is not exact");
   });
+
+  test("rejects a Scope whose claimed origin is absent or crosses Room coordinates", async () => {
+    const scopeId = "99999999-9999-4999-8999-999999999999";
+    const base = ports();
+    const exact = {
+      envelope: {
+        memoryMode: "scope" as const,
+        ownerId: OWNER,
+        actorId: "88888888-8888-4888-8888-888888888888",
+        agentId: AGENT,
+        roomId: ROOM,
+        scopeId,
+        originWritableNamespaceId: NAMESPACE,
+        toolPolicy: {},
+      },
+      mode: "scope" as const,
+      authorityStatus: "exact" as const,
+      provenance: "scope_existing" as const,
+    };
+    for (const resolution of [
+      exact,
+      { ...exact, scopeOrigin: { roomId: OWNER, namespaceId: NAMESPACE } },
+      { ...exact, scopeOrigin: { roomId: ROOM, namespaceId: OWNER } },
+    ]) {
+      // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+      await expect(planProtectedTaskPredispatch({
+        task: task({ useScope: true, scopeId }),
+        run: run(),
+        ports: { ...base, resolveMemoryEnvelope: async () => resolution },
+      })).rejects.toThrow("Protected Task Memory authority is not exact");
+    }
+  });
+});
+
+
+test("historical predispatch binds and copies closed provenance before any effects", async () => {
+  const provenance = { version: 2, claimId: RUN, publisherDeviceId: PEER,
+    signedRequestDigest: "a".repeat(64), sourceDigest: "b".repeat(64),
+    sourcePayloadHash: "c".repeat(64), sourceRevision: 0,
+    genesisManifestHash: "d".repeat(64) } as const;
+  const current = task({ contentRevision: 1, definitionHistoricalRepair: provenance,
+    cryptoObjectId: taskContentRevisionObjectIdV1({
+      coordinate: { kind: "definition", taskId: TASK, contentRevision: 1 },
+      namespaceId: NAMESPACE, historicalRepair: provenance,
+    }) });
+  const plan = await planProtectedTaskPredispatch({ task: current, run: run(), ports: ports() });
+  expect(plan.occurrence.task.definitionHistoricalRepair).toEqual(provenance);
+  expect(plan.occurrence.task.definitionHistoricalRepair).not.toBe(provenance);
+  expect(Object.isFrozen(plan.occurrence.task.definitionHistoricalRepair)).toBe(true);
+  for (const changed of [
+    { definitionHistoricalRepair: null },
+    { definitionHistoricalRepair: { ...provenance, sourceDigest: "e".repeat(64) } },
+    { contentNamespaceId: PEER },
+    { contentRevision: 2 },
+  ]) {
+    const events: string[] = [];
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(planProtectedTaskPredispatch({ task: { ...current, ...changed },
+      run: run(), ports: ports(events) })).rejects.toThrow();
+    expect(events).toEqual([]);
+  }
 });

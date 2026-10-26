@@ -71,6 +71,20 @@ describe("M302 Strict Shadow boundary registry", () => {
     });
   });
 
+  test("classifies only the current protected Task observer background surface", () => {
+    expect(STRICT_SHADOW_BOUNDARY_REGISTRY.find((entry) =>
+      entry.id === "background.task.observer"
+    )).toMatchObject({ readiness: "protected" });
+    for (const id of [
+      "background.task.server",
+      "background.task.dispatch",
+      "background.memory.review",
+    ]) {
+      expect(STRICT_SHADOW_BOUNDARY_REGISTRY.find((entry) => entry.id === id))
+        .toMatchObject({ readiness: "unsupported" });
+    }
+  });
+
   test("produces one complete deterministic activation preview", () => {
     const preview = strictShadowCoveragePreview();
     expect(preview.protected + preview.unsupported + preview.unexercised)

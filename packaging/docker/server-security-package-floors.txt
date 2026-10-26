@@ -1,10 +1,12 @@
-# Debian 13 security checkpoint reviewed 2026-10-01. Newer stable updates remain allowed.
-# ARM64 lacks the patched binary; fresh signed-index qualification must prove the gap.
-chromium-common 154.0.8037.92-1~deb13u1 amd64
-chromium-headless-shell 154.0.8037.92-1~deb13u1 amd64
-chromium-common 154.0.8037.57-1~deb13u1 arm64
-chromium-headless-shell 154.0.8037.57-1~deb13u1 arm64
+# Debian 13 security checkpoint reviewed 2026-10-24. Newer stable updates remain allowed.
+# Both native architectures publish the DSA-6577-1 Chromium security build.
+chromium-common 156.0.8078.47-1~deb13u1 amd64
+chromium-headless-shell 156.0.8078.47-1~deb13u1 amd64
+chromium-common 156.0.8078.47-1~deb13u1 arm64
+chromium-headless-shell 156.0.8078.47-1~deb13u1 arm64
 gzip 1.13-1+deb13u1
+# DSA-6582-1 fixes CVE-2026-111497 on both supported native architectures.
+libbrotli1 1.1.0-2+deb13u1
 libc-bin 2.41-12+deb13u4
 libc6 2.41-12+deb13u4
 libglib2.0-0t64 2.84.4-3~deb13u5

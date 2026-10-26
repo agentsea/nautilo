@@ -193,7 +193,7 @@
     {
       "kind": "root-override",
       "name": "@modelcontextprotocol/sdk",
-      "reason": "Keep all shipped MCP transports on the supported patched 1.31.0 SDK release."
+      "reason": "Keep all shipped MCP transports on SDK 1.32.0; HTTP server input validation remains a separate transport requirement."
     },
     {
       "kind": "root-override",
@@ -224,6 +224,11 @@
       "kind": "root-override",
       "name": "qs",
       "reason": "Keep the shipped Express query parser on the audited patched release."
+    },
+    {
+      "kind": "runtime-only-override",
+      "name": "zod",
+      "reason": "Use patched Zod 4.6.7 across the packaged production closure, with password-policy and image-processing compatibility tests; retain the separate Logto development CLI's Zod 3 API outside that closure."
     }
   ]
 }

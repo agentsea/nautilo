@@ -97,6 +97,10 @@ describe("M241 generated migration authority finalizer", () => {
       "bun scripts/finalize-bolter-execution.ts",
       "bun scripts/finalize-bolter-reviewed-share.ts",
       "bun scripts/finalize-chatgpt-registrations.ts",
+      "bun scripts/finalize-message-search.ts",
+      "bun scripts/finalize-task-cancellation-staging.ts",
+      "bun scripts/finalize-magent-transport.ts",
+      "bun scripts/finalize-magent-control.ts",
     ]);
   });
 });

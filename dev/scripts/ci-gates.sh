@@ -40,6 +40,8 @@ run_cmd() {
 run_gate() {
   case "${1:-}" in
     lint-eslint)
+      # Match CI while retaining an explicit caller's Node options.
+      export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=6144}"
       run_cmd lint-eslint bun run lint -- --affected
       run_cmd board-build bunx turbo run build --filter=@nautilo/office-board...
       run_cmd lint-board bun run --cwd packages/first-party-apps/board lint
@@ -55,7 +57,7 @@ run_gate() {
       ;;
     typecheck)
       # Match the CI typecheck step for local gates and their mini-app checks.
-      export NODE_OPTIONS=--max-old-space-size=5120
+      export NODE_OPTIONS="${NODE_OPTIONS:---max-old-space-size=6144}"
       export TURBO_CONCURRENCY="${TURBO_CONCURRENCY:-1}"
       run_cmd typecheck bun run typecheck -- --affected
       # First-party mini-apps are sandbox bundles outside Turbo's workspace glob.

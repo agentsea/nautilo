@@ -1,3 +1,9 @@
+import type { EncryptionDataOperationOwner } from "@nautilo/lattice-bridge";
+import { deriveTaskDefinitionForegroundRecipientKeyIdV1 } from
+  "@nautilo/lattice-bridge";
+import { createProtectedTaskPendingAttention } from "./protected-task-pending-attention";
+import { createProtectedTaskForegroundCreationOwner, type TaskDefinitionProductLoan } from "./protected-task-foreground-creation-owner";
+import { withProtectedTaskForegroundCreationContext } from "./protected-task-foreground-creation-context";
 import {
   and,
   conversationSharedAgentShadowExecutions,
@@ -7,8 +13,15 @@ import {
   eq,
   getEncryptionTransitionPolicy,
   getSharedDirectCryptoDb,
+  tasks,
 } from "@nautilo/db";
 import {
+  agentId,
+  agentRuntimeGeneration,
+  authorizationRevision,
+  createDomainForegroundAuthorizationPlan,
+  cryptoDeviceId,
+  humanId,
   LatticeCrypto,
   decryptObjectThroughNamespace,
   deriveAgentRuntimeObjectSignerPublic,
@@ -28,6 +41,10 @@ import {
   decodeNamespaceObjectEnvelopeV2,
   destroyDomainForegroundAuthorizationV2,
   parseDomainForegroundAuthorizationV2,
+  destroyDomainForegroundAuthorizationPlanV2,
+  serializeDomainForegroundAuthorizationPlanV2,
+  DOMAIN_FOREGROUND_AUTHORIZATION_MAX_SECRET_BYTES_V2,
+  DOMAIN_FOREGROUND_AUTHORIZATION_MAX_TTL_MS_V2,
 } from "@nautilo/lattice-crypto/wire";
 import {
   envelopeReadableNamespaces,
@@ -43,7 +60,7 @@ import {
   createForegroundMemoryHistoryRepairer,
   createForegroundRecordHistoryRepairer,
 } from "@nautilo/runtime";
-import { createDormantConversationShadowRepository, decodeMessagePayloadV2, type StrictShadowEnforcementPolicy } from
+import { authenticateForegroundRuntimeRecipientKeyPair, createDormantConversationShadowRepository, decodeMessagePayloadV2, type StrictShadowEnforcementPolicy } from
   "@nautilo/lattice-bridge";
 import { createForegroundMessageProductStore } from
   "./foreground-message-product-store.ts";
@@ -88,6 +105,7 @@ import {
   persistDeviceWrappedAgentObject,
   readVerifiedDeviceWrappedAgentObject,
   createPostgresForegroundAgentSignerResolver,
+  createPostgresForegroundMemoryPublication,
   LiveShadowRecipientRegistry,
   PostgresConversationProductStore,
   PostgresHumanMessageEditPlanner,
@@ -95,6 +113,7 @@ import {
   PostgresNamespaceProductAuthority,
   PostgresLatticeStorage,
   PostgresHumanDeviceSignerHistory,
+  PostgresDeviceAdmissionRepository,
   verifyConversationProductPostgresHandle,
   verifyCryptoPostgresHandle,
   verifyAndRecordLiveShadowClientVerification,
@@ -108,6 +127,7 @@ import {
   type LiveShadowHumanPreparedAttempt,
   type LiveShadowExecutionCapability,
   type DomainKeyV2LiveShadowCurrentAuthority,
+  type DomainCompressedLiveShadowSessionCapability,
   type ForegroundLiveShadowSessionExecutionCapability,
   type LiveShadowForegroundAuthorizationScope,
   type LiveShadowReusableForegroundAuthorization,
@@ -144,6 +164,12 @@ import {
 import { LiveShadowForegroundAuthorizationSessions } from
   "./live-shadow-foreground-authorization-sessions";
 import type { ProtectedHumanMessageEditRouteService } from "./rooms.ts";
+import { createProtectedTaskRequesterPrivateRoomResolver } from
+  "./protected-task-requester-private-room";
+import {
+  inspectTaskDefinitionForegroundAuthorizationEvidence,
+  taskDefinitionForegroundAuthorizationId,
+} from "./task-definition-foreground-authorization";
 
 function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
   if (left.length !== right.length) return false;
@@ -164,6 +190,95 @@ function errorCauseSummary(error: unknown): string {
   return parts.length > 0 ? parts.join(" <- ") : typeof error;
 }
 
+type TaskDefinitionAuthoritySnapshot = Readonly<{
+  userId: string;
+  humanId: string;
+  deviceId: string;
+  clientActionSessionId: string;
+  roomId: string;
+  agentId: string;
+  privateRoomId: string;
+  namespace: Awaited<ReturnType<
+    PostgresDomainKeyAuthorityRepository["inspectForegroundNamespaceAuthority"]
+  >> & Readonly<{ status: "ready" }>;
+  policyRevision: number;
+  deviceGeneration: number;
+  deviceSigningPublicKey: Uint8Array;
+  hostAuthorizationRevision: number;
+  domains: readonly import("@nautilo/lattice-crypto").DomainForegroundAuthorityEntry[];
+}>;
+
+type TaskDefinitionAcceptedAuthorization = Readonly<{
+  capability: DomainCompressedLiveShadowSessionCapability;
+  scope: LiveShadowForegroundAuthorizationScope;
+  authorizationBytes: Uint8Array;
+  authorizationDigest: Uint8Array;
+}>;
+type TaskDefinitionAuthorizationRequiredEvent = Readonly<{
+  wireVersion: 1;
+  type: "message.task_definition_authorization_required";
+  laneKey: string;
+  userId: string;
+  roomId: string;
+  parentOperationId: string;
+  parentSessionId: string;
+  authorizationId: string;
+  taskId: string;
+  operation: "create" | "update";
+  targetContentRevision: number;
+  workDescriptorDigestBase64url: string;
+  parentAgentSignerPublicKeyBase64url: string;
+  clientActionSessionId: string;
+  deadlineAt: number;
+  authorizationScheme: "runtime_foreground_v1";
+  authorizationPlanBytesBase64url: string;
+  recipientPublicKeyBase64url: string;
+}>;
+
+export function createGrantedForegroundReadableNamespaceResolver(input: Readonly<{
+  source: "turn" | "shared_execution" | "shared_resume";
+  plan: Readonly<{
+    subjectHumanId: string;
+    roomId: string;
+    recipientAgentId: string;
+    namespaceId: string;
+  }>;
+  grant: Readonly<{
+    subjectHumanId: string;
+    roomId: string;
+    recipientAgentId?: string;
+    namespaceIds: readonly string[];
+  }>;
+}>): ResolveLiveShadowReadableNamespaces {
+  if (
+    input.grant.subjectHumanId !== input.plan.subjectHumanId
+    || (input.grant.recipientAgentId !== undefined
+      && input.grant.recipientAgentId !== input.plan.recipientAgentId)
+    || input.grant.namespaceIds.length < 1
+    || !input.grant.namespaceIds.includes(input.plan.namespaceId)
+    || (input.source === "turn"
+      && input.grant.roomId !== input.plan.roomId)
+  ) {
+    throw new TypeError("Foreground readable Namespace grant is inconsistent");
+  }
+  const expectedRoomId = input.source === "turn"
+    ? input.plan.roomId
+    : input.grant.roomId;
+  const namespaceIds = Object.freeze([...input.grant.namespaceIds]);
+  return coordinates => {
+    if (
+      coordinates.humanActorId !== input.plan.subjectHumanId
+      || coordinates.roomId !== expectedRoomId
+      || coordinates.agentId !== input.plan.recipientAgentId
+    ) {
+      return Promise.reject(
+        new TypeError("Foreground readable Namespace coordinates changed"),
+      );
+    }
+    return Promise.resolve(namespaceIds);
+  };
+}
+
 type RuntimeInvocationContentSelection =
   | Readonly<{ representationMode?: "shadow_encryption"; expectedMergedHumanContent: string }>
   | Readonly<{ representationMode: "full_encryption"; expectedMergedHumanContent?: never }>;
@@ -173,6 +288,7 @@ export interface ProductionLiveShadowMessageComposition
   readonly protectedEdit?: ProtectedHumanMessageEditRouteService;
   readonly recipients: LiveShadowRecipientRegistry;
   readonly pendingAttention?: ReturnType<typeof createProductionForegroundPendingAttention>;
+  readonly taskPendingAttention?: ReturnType<typeof createProtectedTaskPendingAttention> | undefined;
   admitPrepared(input: LiveShadowHumanPreparedAttempt):
     Promise<LiveShadowHumanAdmissionResult>;
   admitHumanPeer(input: HumanPeerLiveShadowPreparedAttempt & Readonly<{
@@ -343,6 +459,17 @@ export interface ProductionLiveShadowMessageComposition
     authorizationBytes: Uint8Array;
     now: number;
   }>): Promise<"authorized" | "replayed" | "unavailable">;
+  admitTaskDefinitionAuthorization?(input: Readonly<{
+    authorizationId: string;
+    parentOperationId: string;
+    roomId: string;
+    clientActionSessionId: string;
+    userId: string;
+    actorId: string;
+    authorizationPlanBytes: Uint8Array;
+    authorizationBytes: Uint8Array;
+    now: number;
+  }>): Promise<"authorized" | "unavailable">;
   recordSharedAgentExecutionUnavailable?(input: Readonly<{
     executionId: string;
     reason: string;
@@ -477,6 +604,9 @@ export interface ProductionLiveShadowMessageComposition
     capability: LiveShadowExecutionCapability;
     entrypointId?: "foreground.main" | "foreground.fork";
     expectedMergedHumanContent?: string;
+    publishTaskDefinitionAuthorizationRequired?(
+      event: TaskDefinitionAuthorizationRequiredEvent,
+    ): void;
     work(
       session: LiveShadowAgentTurnSession,
       openedHumanContent?: string,
@@ -568,7 +698,102 @@ export async function notifyProtectedTaskReplyAfterSharedAgentPublication(
   }
 }
 
+export async function loadTaskDefinitionAuthority(request: Readonly<{
+  userId: string;
+  humanId: string;
+  deviceId: string;
+  clientActionSessionId: string;
+  roomId: string;
+  agentId: string;
+  expectedNamespaceId?: string;
+}>, context: Readonly<{
+  crypto: LatticeCrypto;
+  serverId: string;
+  loadRuntimePolicy(): Promise<StrictShadowEnforcementPolicy>;
+  currentProduct?: Pick<TaskDefinitionProductLoan, "transaction" | "product"> | null;
+}>): Promise<TaskDefinitionAuthoritySnapshot | null> {
+  const { crypto, serverId, loadRuntimePolicy } = context;
+  const privateRoom = await createProtectedTaskRequesterPrivateRoomResolver(
+    context.currentProduct?.transaction ?? getServerDirectDb(),
+  )(request.userId, request.agentId, request.expectedNamespaceId);
+  if (privateRoom === null) return null;
+  const policy = await loadRuntimePolicy();
+  if (policy.mode === "plaintext_only") return null;
+  const product = context.currentProduct?.product
+    ?? createPostgresJsBridgeConnection(getServerDirectDb());
+  const currentRoom = await new PostgresNamespaceProductAuthority(product)
+    .withCurrentPrivateRoom({
+      subjectUserId: request.userId,
+      subjectHumanId: request.humanId,
+      roomId: privateRoom.roomId,
+      namespaceId: privateRoom.namespaceId,
+      use: () => Promise.resolve(true),
+    });
+  if (currentRoom !== true) return null;
+  const restricted = createPostgresJsBridgeConnection(
+    getSharedDirectCryptoDb(),
+  );
+  const handle = await verifyCryptoPostgresHandle(restricted);
+  const device = await new PostgresDeviceAdmissionRepository(handle, crypto)
+    .currentAuthorityForDelegation({
+      userId: request.userId,
+      humanActorId: request.humanId,
+      deviceId: request.deviceId,
+    });
+  if (device === null) return null;
+  const repository = new PostgresDomainKeyAuthorityRepository(
+    restricted,
+    crypto,
+    serverId,
+  );
+  const [foreground, namespace] = await Promise.all([
+    repository.inspectForegroundAuthority({
+      namespaceIds: [privateRoom.namespaceId],
+      keyClass: "ai",
+      subjectHumanId: request.humanId,
+      deviceId: request.deviceId,
+    }),
+    repository.inspectForegroundNamespaceAuthority({
+      namespaceId: privateRoom.namespaceId,
+      keyClass: "ai",
+    }),
+  ]);
+  if (foreground.status !== "ready" || namespace.status !== "ready"
+    || foreground.domains.length !== 1
+    || foreground.domains[0]!.domainId !== namespace.domainId
+    || foreground.domains[0]!.sourceNamespaceId !== namespace.namespaceId
+    || foreground.committerDeviceId !== device.deviceId
+    || foreground.committerDeviceSigningGeneration !== device.deviceGeneration) {
+    if (foreground.status === "ready") foreground.domains.forEach((domain) => {
+      domain.participantDigest.fill(0);
+      domain.headDigest.fill(0);
+      domain.activeNamespaceBindingSetDigest.fill(0);
+    });
+    if (namespace.status === "ready") Object.values(namespace).forEach(
+      value => { if (value instanceof Uint8Array) value.fill(0); },
+    );
+    device.signingPublicKey.fill(0);
+    device.headDigest.fill(0);
+    return null;
+  }
+  device.headDigest.fill(0);
+  return Object.freeze({
+    ...request,
+    privateRoomId: privateRoom.roomId,
+    namespace,
+    policyRevision: policy.revision,
+    deviceGeneration: device.deviceGeneration,
+    deviceSigningPublicKey: device.signingPublicKey,
+    // Foreground grants bind the current Device row revision, as their
+    // parent Room grant does. MLS securityRevision is a separate counter.
+    hostAuthorizationRevision: foreground.hostAuthorizationRevision,
+    domains: foreground.domains,
+  });
+}
+
 export function createProductionLiveShadowMessageComposition(input: Readonly<{
+  taskContentOwner?: () => EncryptionDataOperationOwner;
+  cancelTaskExternalRequestsForHuman?: (humanActorId: string) => void;
   wakeForegroundMemoryEffectRecovery: () => void;
   resolveReadableNamespaces?: ResolveLiveShadowReadableNamespaces;
   loadRuntimePolicy?: () => Promise<StrictShadowEnforcementPolicy>;
@@ -577,6 +802,7 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
     messageId: number;
   }>) => Promise<void>;
 }>): ProductionLiveShadowMessageComposition {
+  const taskContentOwner = input.taskContentOwner;
   const wakeForegroundMemoryEffectRecovery =
     input.wakeForegroundMemoryEffectRecovery;
   const loadRuntimePolicy = input.loadRuntimePolicy
@@ -603,6 +829,7 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
   };
   const recipients = new LiveShadowRecipientRegistry();
   let pendingAttention: ReturnType<typeof createProductionForegroundPendingAttention> | undefined;
+  let taskPendingAttention: ReturnType<typeof createProtectedTaskPendingAttention> | undefined;
   const foregroundAuthorizations =
     new LiveShadowForegroundAuthorizationSessions();
   const crypto = new LatticeCrypto();
@@ -610,6 +837,7 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
     bytes: Uint8Array;
     deadlineAt: number;
     source: "turn" | "shared_execution" | "shared_resume";
+    clientActionSessionId: string;
   }>>();
   const activeAgentOperations = new Set<string>();
   const dispatches = new Map<string, Readonly<{
@@ -629,10 +857,24 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
     expiresAt: number;
     timer: ReturnType<typeof setTimeout>;
   }>>();
-  const runtimeInvocationAuthorizationWaiters = new Map<string, Readonly<{
+  const runtimeInvocationAuthorizationWaiters = new Map<string,
+    | Readonly<{
+    kind: "runtime_invocation";
     resolve(value: Readonly<{
       capability: ForegroundLiveShadowSessionExecutionCapability;
     }> | null): void;
+    timer: ReturnType<typeof setTimeout>;
+  }>
+    | Readonly<{
+    kind: "task_definition";
+    parentOperationId: string;
+    parentSessionId: string;
+    snapshot: TaskDefinitionAuthoritySnapshot;
+    planBytes: Uint8Array;
+    recipientKeyId: string;
+    issuedAt: number;
+    deadlineAt: number;
+    resolve(value: TaskDefinitionAcceptedAuthorization | null): void;
     timer: ReturnType<typeof setTimeout>;
   }>>();
   const runtimeInvocationAcceptedAuthorizations = new Map<string, Readonly<{
@@ -654,7 +896,7 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
     expiresAt: number,
   ): void => {
     const waiter = runtimeInvocationAuthorizationWaiters.get(invocationId);
-    if (waiter !== undefined) {
+    if (waiter?.kind === "runtime_invocation") {
       clearTimeout(waiter.timer);
       runtimeInvocationAuthorizationWaiters.delete(invocationId);
       waiter.resolve(Object.freeze({ capability }));
@@ -676,6 +918,95 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
     }
     runtimeInvocationAcceptedAuthorizations.set(invocationId, retained);
   };
+  const wipeTaskDefinitionAuthoritySnapshot = (
+    snapshot: TaskDefinitionAuthoritySnapshot,
+  ): void => {
+    snapshot.deviceSigningPublicKey.fill(0);
+    for (const value of Object.values(snapshot.namespace)) {
+      if (value instanceof Uint8Array) value.fill(0);
+    }
+    snapshot.domains.forEach((domain) => {
+      domain.participantDigest.fill(0);
+      domain.headDigest.fill(0);
+      domain.activeNamespaceBindingSetDigest.fill(0);
+    });
+  };
+  const copyTaskDefinitionAuthoritySnapshot = (
+    snapshot: TaskDefinitionAuthoritySnapshot,
+  ): TaskDefinitionAuthoritySnapshot => Object.freeze({
+    ...snapshot,
+    deviceSigningPublicKey: snapshot.deviceSigningPublicKey.slice(),
+    namespace: Object.freeze({
+      ...snapshot.namespace,
+      namespaceHeadDigest: snapshot.namespace.namespaceHeadDigest.slice(),
+      namespacePublicationDigest:
+        snapshot.namespace.namespacePublicationDigest.slice(),
+      namespacePublicationSetDigest:
+        snapshot.namespace.namespacePublicationSetDigest.slice(),
+      namespaceAudienceFingerprint:
+        snapshot.namespace.namespaceAudienceFingerprint.slice(),
+      domainHeadDigest: snapshot.namespace.domainHeadDigest.slice(),
+      bundleDigest: snapshot.namespace.bundleDigest.slice(),
+    }),
+    domains: Object.freeze(snapshot.domains.map(domain => Object.freeze({
+      ...domain,
+      participantDigest: domain.participantDigest.slice(),
+      headDigest: domain.headDigest.slice(),
+      activeNamespaceBindingSetDigest:
+        domain.activeNamespaceBindingSetDigest.slice(),
+    }))),
+  });
+  const sameTaskDefinitionAuthoritySnapshot = (
+    left: TaskDefinitionAuthoritySnapshot,
+    right: TaskDefinitionAuthoritySnapshot,
+  ): boolean => left.userId === right.userId
+    && left.humanId === right.humanId
+    && left.deviceId === right.deviceId
+    && left.clientActionSessionId === right.clientActionSessionId
+    && left.roomId === right.roomId
+    && left.agentId === right.agentId
+    && left.privateRoomId === right.privateRoomId
+    && left.policyRevision === right.policyRevision
+    && left.deviceGeneration === right.deviceGeneration
+    && left.hostAuthorizationRevision === right.hostAuthorizationRevision
+    && equalBytes(left.deviceSigningPublicKey, right.deviceSigningPublicKey)
+    && left.namespace.namespaceId === right.namespace.namespaceId
+    && left.namespace.namespaceAccessRevision
+      === right.namespace.namespaceAccessRevision
+    && left.namespace.namespaceKeyGeneration
+      === right.namespace.namespaceKeyGeneration
+    && left.namespace.domainId === right.namespace.domainId
+    && left.namespace.domainKeyGeneration
+      === right.namespace.domainKeyGeneration
+    && left.namespace.domainAuthorizationRevision
+      === right.namespace.domainAuthorizationRevision
+    && equalBytes(left.namespace.namespaceHeadDigest,
+      right.namespace.namespaceHeadDigest)
+    && equalBytes(left.namespace.namespacePublicationDigest,
+      right.namespace.namespacePublicationDigest)
+    && equalBytes(left.namespace.namespacePublicationSetDigest,
+      right.namespace.namespacePublicationSetDigest)
+    && equalBytes(left.namespace.namespaceAudienceFingerprint,
+      right.namespace.namespaceAudienceFingerprint)
+    && equalBytes(left.namespace.domainHeadDigest,
+      right.namespace.domainHeadDigest)
+    && left.domains.length === 1
+    && right.domains.length === 1
+    && left.domains[0]!.domainId === right.domains[0]!.domainId
+    && left.domains[0]!.sourceNamespaceId
+      === right.domains[0]!.sourceNamespaceId
+    && left.domains[0]!.participantCount === right.domains[0]!.participantCount
+    && left.domains[0]!.domainKeyGeneration
+      === right.domains[0]!.domainKeyGeneration
+    && left.domains[0]!.authorizationRevision
+      === right.domains[0]!.authorizationRevision
+    && left.domains[0]!.activeNamespaceBindingCount
+      === right.domains[0]!.activeNamespaceBindingCount
+    && equalBytes(left.domains[0]!.participantDigest,
+      right.domains[0]!.participantDigest)
+    && equalBytes(left.domains[0]!.headDigest, right.domains[0]!.headDigest)
+    && equalBytes(left.domains[0]!.activeNamespaceBindingSetDigest,
+      right.domains[0]!.activeNamespaceBindingSetDigest);
   const destroySharedAgentAcceptedAuthorization = (
     executionId: string,
     accepted: Readonly<{
@@ -879,6 +1210,7 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
       bytes: prepared.planBytes.slice(),
       deadlineAt: plan.deadlineAt,
       source: "turn",
+      clientActionSessionId: prepared.clientActionSessionId,
     }));
     return result;
   };
@@ -941,6 +1273,7 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
       ]
     >> = null;
     let scopeDigest: Uint8Array | null = null;
+    let accepted = false;
     try {
       current = await authority.resolveCurrentForegroundAuthorization();
       signingPublicKey = authority.signingPublicKey();
@@ -1035,7 +1368,6 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
       let sessionReference: string | null = null;
       let authorizationDigest: Uint8Array | null = null;
       let newlyRegistered = false;
-      let accepted = false;
       const authorizationId = agentCurrent.authorizationId;
       const currentRecipientKeyId = agentCurrent.recipientKeyId;
       const currentRuntimeGeneration = agentCurrent.recipientRuntimeGeneration;
@@ -1312,6 +1644,7 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
             bytes: prepared.planBytes.slice(),
             deadlineAt: plan.deadlineAt,
             source: "shared_execution",
+            clientActionSessionId: prepared.clientActionSessionId,
           }));
           accepted = true;
           return Object.freeze({
@@ -2086,7 +2419,7 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
       }, Math.max(0, input.deadlineAt - Date.now()));
       runtimeInvocationAuthorizationWaiters.set(
         input.invocationId,
-        Object.freeze({ resolve, timer }),
+        Object.freeze({ kind: "runtime_invocation" as const, resolve, timer }),
       );
     });
   };
@@ -2112,6 +2445,7 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
         source: result.executionKind === "resume"
           ? "shared_resume"
           : "shared_execution",
+        clientActionSessionId: input.clientActionSessionId,
       }));
     }
     return result;
@@ -2540,6 +2874,7 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
           source: executionKind === "resume"
             ? "shared_resume"
             : "shared_execution",
+          clientActionSessionId: input.clientActionSessionId,
         }));
         publishAcceptedSharedAuthorization(
           input.operationId,
@@ -2816,6 +3151,170 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
     } finally {
       authorizationDigest.fill(0);
       current.destroy();
+    }
+  };
+
+  const admitTaskDefinitionAuthorization: NonNullable<
+    ProductionLiveShadowMessageComposition[
+      "admitTaskDefinitionAuthorization"
+    ]
+  > = async (input) => {
+    const waiter = runtimeInvocationAuthorizationWaiters.get(
+      input.authorizationId,
+    );
+    if (waiter?.kind !== "task_definition"
+      || waiter.parentOperationId !== input.parentOperationId
+      || waiter.snapshot.userId !== input.userId
+      || waiter.snapshot.humanId !== input.actorId
+      || waiter.snapshot.roomId !== input.roomId
+      || waiter.snapshot.clientActionSessionId
+        !== input.clientActionSessionId
+      || waiter.deadlineAt <= input.now) return "unavailable";
+    runtimeInvocationAuthorizationWaiters.delete(input.authorizationId);
+    clearTimeout(waiter.timer);
+    const reject = (): "unavailable" => {
+      recipients.delete(input.authorizationId);
+      waiter.resolve(null);
+      waiter.planBytes.fill(0);
+      wipeTaskDefinitionAuthoritySnapshot(waiter.snapshot);
+      return "unavailable";
+    };
+    const inspected = inspectTaskDefinitionForegroundAuthorizationEvidence({
+      authorizationBytes: input.authorizationBytes,
+      expectedAuthorizationId: input.authorizationId,
+      expectedPlanBytes: input.authorizationPlanBytes,
+      expectedRoomId: waiter.snapshot.privateRoomId,
+      expectedHumanId: input.actorId,
+      expectedNamespaceId: waiter.snapshot.namespace.namespaceId,
+      expectedDomainId: waiter.snapshot.namespace.domainId,
+    });
+    if (inspected === null
+      || !equalBytes(input.authorizationPlanBytes, waiter.planBytes)) {
+      inspected?.planBytes.fill(0);
+      return reject();
+    }
+    inspected.planBytes.fill(0);
+    const current = await loadTaskDefinitionAuthority({
+      userId: waiter.snapshot.userId,
+      humanId: waiter.snapshot.humanId,
+      deviceId: waiter.snapshot.deviceId,
+      clientActionSessionId: waiter.snapshot.clientActionSessionId,
+      roomId: waiter.snapshot.roomId,
+      agentId: waiter.snapshot.agentId,
+      expectedNamespaceId: waiter.snapshot.namespace.namespaceId,
+    }, { crypto, serverId, loadRuntimePolicy });
+    if (current === null) return reject();
+    const currentMatches = sameTaskDefinitionAuthoritySnapshot(
+      waiter.snapshot,
+      current,
+    );
+    wipeTaskDefinitionAuthoritySnapshot(current);
+    if (!currentMatches) return reject();
+    const recipient = recipients.takeRuntime({
+      operationId: input.authorizationId,
+      clientActionSessionId: input.clientActionSessionId,
+      actorId: input.actorId,
+    });
+    if (recipient === null) return reject();
+    const authorizationDigest = crypto.hash(input.authorizationBytes);
+    const scopeDigest = domainForegroundAuthoritySetDigest(
+      crypto,
+      waiter.snapshot.domains,
+    );
+    const scope: LiveShadowForegroundAuthorizationScope = Object.freeze({
+      subjectHumanId: input.actorId,
+      issuingDeviceId: waiter.snapshot.deviceId,
+      recipientKind: "nautilo_foreground_runtime",
+      browserSessionId: input.clientActionSessionId,
+      topLevelRoomId: waiter.snapshot.privateRoomId,
+      policyRevision: waiter.snapshot.policyRevision,
+      hostAuthorizationRevision: waiter.snapshot.hostAuthorizationRevision,
+      namespaceIds: Object.freeze([waiter.snapshot.namespace.namespaceId]),
+      grantDomainIds: Object.freeze([waiter.snapshot.namespace.domainId]),
+      domainAuthoritySetDigest: scopeDigest.slice(),
+    });
+    let accepted = false;
+    try {
+      const opened = await withProtectedInvocationRecipientPrivateKey(
+        recipient.recipient,
+        privateKey => withOpenedDomainForegroundAuthorization<
+          DomainCompressedLiveShadowSessionCapability
+        >(crypto, {
+          authorizationBytes: input.authorizationBytes,
+          expectedOperations: ["decrypt", "encrypt"],
+          now: input.now,
+          current: {
+            authorizationId: input.authorizationId,
+            policyRevision: waiter.snapshot.policyRevision,
+            sessionId: waiter.parentSessionId,
+            roomId: waiter.snapshot.privateRoomId,
+            subjectHumanId: humanId(input.actorId),
+            committerDeviceId: cryptoDeviceId(waiter.snapshot.deviceId),
+            committerDeviceSigningGeneration:
+              waiter.snapshot.deviceGeneration,
+            committerDeviceSigningPublicKey:
+              waiter.snapshot.deviceSigningPublicKey,
+            committerDeviceActive: true,
+            hostAuthorizationRevision: authorizationRevision(
+              waiter.snapshot.hostAuthorizationRevision,
+            ),
+            recipientKind: "runtime",
+            recipientPrincipalId: "nautilo_foreground_runtime",
+            recipientAuthorizationRevision: authorizationRevision(0),
+            recipientRuntimeGeneration: 0,
+            recipientKeyId: waiter.recipientKeyId,
+            recipientEncryptionPrivateKey: privateKey,
+            recipientAuthorized: true,
+            domains: waiter.snapshot.domains,
+          },
+          operation: entries => createDomainCompressedLiveShadowSessionCapability({
+            description: {
+              authorizationId: input.authorizationId,
+              subjectHumanId: input.actorId,
+              issuingDeviceId: waiter.snapshot.deviceId,
+              recipientKind: "nautilo_foreground_runtime",
+              browserSessionId: input.clientActionSessionId,
+              topLevelRoomId: waiter.snapshot.privateRoomId,
+              recipientKeyId: waiter.recipientKeyId,
+              policyRevision: waiter.snapshot.policyRevision,
+              hostAuthorizationRevision:
+                waiter.snapshot.hostAuthorizationRevision,
+              namespaceIds: scope.namespaceIds,
+              grantDomainIds: scope.grantDomainIds,
+              issuedAt: waiter.issuedAt,
+              expiresAt: waiter.deadlineAt,
+              authorizationDigest,
+            },
+            entries: entries.map(entry => Object.freeze({
+              grantDomainId: entry.domainId,
+              domainKeyGeneration: entry.domainKeyGeneration,
+              participantDigest: entry.participantDigest,
+              headDigest: entry.headDigest,
+              authorizationRevision: entry.authorizationRevision,
+              domainAiGrantKey: entry.domainKey,
+            })),
+          }),
+        }),
+      );
+      if (opened === null || opened.status !== "opened") return reject();
+      accepted = true;
+      waiter.resolve(Object.freeze({
+        capability: opened.value,
+        scope,
+        authorizationBytes: input.authorizationBytes.slice(),
+        authorizationDigest: authorizationDigest.slice(),
+      }));
+      waiter.planBytes.fill(0);
+      wipeTaskDefinitionAuthoritySnapshot(waiter.snapshot);
+      return "authorized";
+    } catch {
+      return reject();
+    } finally {
+      if (!accepted) scope.domainAuthoritySetDigest.fill(0);
+      recipient.publicKey.fill(0);
+      destroyProtectedInvocationRecipient(recipient.recipient);
+      authorizationDigest.fill(0);
+      scopeDigest.fill(0);
     }
   };
 
@@ -3537,6 +4036,7 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
     admitSharedAgentExecutionAuthorization,
     admitSharedAgentRuntimeAuthorization,
     admitRuntimeInvocationAuthorization,
+    admitTaskDefinitionAuthorization,
     recordSharedAgentExecutionUnavailable,
     acknowledgeSharedAgent,
     planSharedAgentAcknowledgement,
@@ -3619,6 +4119,9 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
       capability: LiveShadowExecutionCapability;
       entrypointId?: "foreground.main" | "foreground.fork";
       expectedMergedHumanContent?: string;
+      publishTaskDefinitionAuthorizationRequired?(
+        event: TaskDefinitionAuthorizationRequiredEvent,
+      ): void;
       work(
         session: LiveShadowAgentTurnSession,
         openedHumanContent?: string,
@@ -3851,6 +4354,21 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
                               product,
                               crypto: completion,
                             });
+                          // Nominate only the accepted grant's Namespace set. The
+                          // scoped product owner revalidates it under current locks.
+                          const resolveGrantedReadableNamespaces =
+                            createGrantedForegroundReadableNamespaceResolver({
+                              source: retained.source,
+                              plan: foregroundPlan,
+                              grant: {
+                                subjectHumanId: description.subjectHumanId,
+                                roomId: "recipientKind" in description
+                                  ? description.topLevelRoomId : description.roomId,
+                                ...("recipientAgentId" in description
+                                  ? { recipientAgentId: description.recipientAgentId } : {}),
+                                namespaceIds: description.namespaceIds,
+                              },
+                            });
                           const repairProduct = await createForegroundMessageProductStore({
                             userId: authority!.causalHumanUserId,
                             agentId: foregroundPlan.recipientAgentId,
@@ -3858,6 +4376,7 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
                           const historyRepairer =
                             createForegroundMessageHistoryRepairer({
                               crypto,
+                              commonManifestHandle: cryptoHandle,
                               cryptoCompletion: completion,
                               storage,
                               entities,
@@ -3891,16 +4410,8 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
                                         crypto, serverId, plan: foregroundPlan,
                                         representationMode: policy.mode === "encrypted_only" ? "full_encryption" : "shadow_encryption",
                                         source: retained.source,
-                                        resolveReadableNamespaces: async (coordinates) => {
-                                          const readable = [...new Set(await resolveReadableNamespaces(coordinates))].sort();
-                                          const admitted = [...description.namespaceIds].sort();
-                                          // Every revalidation locks the SAME full sorted Room set.
-                                          // A changed grant set must fail before acquiring more locks.
-                                          if (readable.length !== admitted.length || readable.some((id, index) => id !== admitted[index])) {
-                                            throw new Error("Foreground publication namespace authority changed");
-                                          }
-                                          return readable;
-                                        },
+                                        resolveReadableNamespaces:
+                                          resolveGrantedReadableNamespaces,
                                       });
                                       if (scoped === null) return null;
                                       try {
@@ -4318,6 +4829,16 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
                                 envelope, policy,
                                 wakeEffectRecovery:
                                   wakeForegroundMemoryEffectRecovery,
+                                publication: createPostgresForegroundMemoryPublication({
+                                  handle: cryptoHandle,
+                                  crypto,
+                                  resolveCurrentAuthorization:
+                                    authority!.resolveCurrentForegroundEntityObjectWrite,
+                                  resolveHistoricalAgentSignerAuthority:
+                                    signerHistory.resolveAgentRuntimeSignerManager,
+                                  resolveLiveShadowAgentSigner:
+                                    resolveForegroundSigner,
+                                }),
                                 domain: {
                                   subjectUserId: authority!.causalHumanUserId,
                                   agentId: foregroundPlan.recipientAgentId,
@@ -4385,11 +4906,439 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
                           const settled = Promise.withResolvers<void>();
                           activeAgentWork.settlement = settled.promise;
                           try {
-                            const value = await input.work(
+                            const work = () => input.work(
                                 session,
                                 openedHumanContent,
                                 entities.signal,
                               );
+                            const createProtected = async () => {
+                              const creation = createProtectedTaskForegroundCreationOwner({
+                                owner: taskContentOwner!(), crypto, entities, restricted: restrictedConnection,
+                                serverScope: serverId, representation: policy.mode === "encrypted_only" ? "protected" : "dual",
+                                subject: { userId: authority!.causalHumanUserId, humanId: foregroundPlan.subjectHumanId,
+                                  agentId: foregroundPlan.recipientAgentId, roomId: foregroundPlan.roomId,
+                                  policyRevision: foregroundPlan.policyRevision, namespaceIds: description.namespaceIds },
+                                publication: { operationId: foregroundPlan.operationId,
+                                  policyRevision: foregroundPlan.policyRevision, grantId: description.authorizationId,
+                                  grantDigest: description.authorizationDigest, recipientKeyId: description.recipientKeyId,
+                                  agentAuthorizationRevision: foregroundPlan.agentAuthorizationRevision,
+                                  signerKeyId: foregroundPlan.agentSignerKeyId, signerPublicKey: foregroundPlan.agentSignerPublicKey,
+                                  runtime: agentRuntime },
+                                assertCurrentForeground: async () => {
+                                  entities.signal.throwIfAborted();
+                                  if (!await authority!.verifyCurrentPlan()) throw new Error("Foreground Task creation authority changed");
+                                  entities.signal.throwIfAborted();
+                                },
+                                authorizeTaskDefinition: async request => {
+                                  const clientActionSessionId =
+                                    retained.clientActionSessionId;
+                                  if (input.publishTaskDefinitionAuthorizationRequired === undefined
+                                    || ("browserSessionId" in description
+                                      && description.browserSessionId
+                                        !== clientActionSessionId)
+                                    || request.workDescriptorDigest.length !== 32) {
+                                    throw new Error("Foreground Task definition authorization is unavailable");
+                                  }
+                                  const authorizationId = taskDefinitionForegroundAuthorizationId(
+                                    crypto,
+                                    {
+                                      parentOperationId: foregroundPlan.operationId,
+                                      taskId: request.taskId,
+                                      operation: request.operation,
+                                      targetContentRevision:
+                                        request.targetContentRevision,
+                                      workDescriptorDigest: request.workDescriptorDigest,
+                                    },
+                                  );
+                                  if (runtimeInvocationAuthorizationWaiters.has(authorizationId)) {
+                                    throw new Error("Foreground Task definition authorization is already pending");
+                                  }
+                                  let expectedNamespaceId: string | undefined;
+                                  if (request.operation === "update") {
+                                    const rows = await getServerDirectDb().select({
+                                      ownerId: tasks.ownerId,
+                                      agentId: tasks.agentId,
+                                      namespaceId: tasks.contentNamespaceId,
+                                    }).from(tasks).where(eq(tasks.id, request.taskId)).limit(2);
+                                    if (rows.length !== 1
+                                      || rows[0]!.ownerId !== authority!.causalHumanUserId
+                                      || rows[0]!.agentId !== request.taskExecutorAgentId
+                                      || rows[0]!.namespaceId === null) {
+                                      throw new Error("Foreground Task definition target is unavailable");
+                                    }
+                                    expectedNamespaceId = rows[0]!.namespaceId;
+                                  }
+                                  const snapshot = await loadTaskDefinitionAuthority({
+                                    userId: authority!.causalHumanUserId,
+                                    humanId: foregroundPlan.subjectHumanId,
+                                    deviceId: foregroundPlan.committerDeviceId,
+                                    clientActionSessionId,
+                                    roomId: foregroundPlan.roomId,
+                                    agentId: request.taskExecutorAgentId,
+                                    ...(expectedNamespaceId === undefined
+                                      ? {} : { expectedNamespaceId }),
+                                  }, { crypto, serverId, loadRuntimePolicy });
+                                  if (snapshot === null) {
+                                    throw new Error("Foreground Task private authority is unavailable");
+                                  }
+                                  if (foregroundPlan.namespaceId
+                                      === snapshot.namespace.namespaceId
+                                    && foregroundPlan.grantDomainId
+                                      === snapshot.namespace.domainId) {
+                                    try {
+                                      return await request.use({
+                                        authority: {
+                                          authorityVersion: 1,
+                                          kind: "requester_private_namespace",
+                                          keyClass: "ai",
+                                          requesterHumanId: snapshot.humanId,
+                                          namespaceId:
+                                            snapshot.namespace.namespaceId,
+                                          domainId: snapshot.namespace.domainId,
+                                          expectedAccessRevision:
+                                            snapshot.namespace.namespaceAccessRevision,
+                                          expectedPolicyRevision:
+                                            snapshot.policyRevision,
+                                        },
+                                        entities,
+                                        publication: {
+                                          operationId:
+                                            foregroundPlan.operationId,
+                                          grantId: description.authorizationId,
+                                          grantDigest:
+                                            description.authorizationDigest,
+                                          recipientKeyId:
+                                            description.recipientKeyId,
+                                        },
+                                        resolveCurrentForegroundDefinitionAuthorization: context =>
+                                          request.withCurrentProduct(async current => current === null
+                                            ? authority!.resolveCurrentForegroundEntityObjectWrite(context)
+                                            : current.resolveCurrentForegroundEntityObjectWrite(context)),
+                                        assertCurrent: async () => {
+                                          entities.signal.throwIfAborted();
+                                          await request.withCurrentProduct(async current => {
+                                            if (current === null) {
+                                              if (!await authority!.verifyCurrentPlan()) {
+                                                throw new Error("Foreground Task authority changed");
+                                              }
+                                            } else await current.assertCurrent();
+                                          });
+                                          entities.signal.throwIfAborted();
+                                        },
+                                      });
+                                    } finally {
+                                      wipeTaskDefinitionAuthoritySnapshot(snapshot);
+                                    }
+                                  }
+                                  const issuedAt = Date.now();
+                                  const deadlineAt = Math.min(
+                                    retained.deadlineAt,
+                                    description.expiresAt,
+                                    issuedAt
+                                      + DOMAIN_FOREGROUND_AUTHORIZATION_MAX_TTL_MS_V2,
+                                  );
+                                  const reservation = {
+                                    operationId: authorizationId,
+                                    clientActionSessionId,
+                                    actorId: foregroundPlan.subjectHumanId,
+                                    deadlineAt,
+                                  };
+                                  if (!recipients.reserveRuntime(reservation)) {
+                                    wipeTaskDefinitionAuthoritySnapshot(snapshot);
+                                    throw new Error("Foreground Task authorization recipient is unavailable");
+                                  }
+                                  const recipientKeyId =
+                                    deriveTaskDefinitionForegroundRecipientKeyIdV1(
+                                      crypto,
+                                      {
+                                        authorizationId,
+                                        parentAgentSignerPublicKey:
+                                          foregroundPlan.agentSignerPublicKey,
+                                      },
+                                    );
+                                  let publicKey: Uint8Array | null = null;
+                                  let planBytes: Uint8Array | null = null;
+                                  try {
+                                    const keyPair = await crypto.generateEncryptionKeyPair();
+                                    try {
+                                      const recipient = await authenticateForegroundRuntimeRecipientKeyPair({
+                                        crypto,
+                                        recipientKind: "nautilo_foreground_runtime",
+                                        recipientKeyId,
+                                        ...keyPair,
+                                      });
+                                      if (!recipients.completeReservedRuntime({
+                                        ...reservation,
+                                        publicKey: keyPair.publicKey,
+                                        recipient,
+                                      })) {
+                                        destroyProtectedInvocationRecipient(recipient);
+                                        throw new Error("Foreground Task authorization recipient changed");
+                                      }
+                                      publicKey = keyPair.publicKey.slice();
+                                    } finally {
+                                      keyPair.publicKey.fill(0);
+                                      keyPair.privateKey.fill(0);
+                                    }
+                                    const plan = createDomainForegroundAuthorizationPlan(crypto, {
+                                      authorizationId,
+                                      policyRevision: snapshot.policyRevision,
+                                      sessionId: foregroundPlan.sessionId,
+                                      roomId: snapshot.privateRoomId,
+                                      subjectHumanId: humanId(foregroundPlan.subjectHumanId),
+                                      committerDeviceId: cryptoDeviceId(foregroundPlan.committerDeviceId),
+                                      committerDeviceSigningGeneration:
+                                        snapshot.deviceGeneration,
+                                      hostAuthorizationRevision: authorizationRevision(
+                                        snapshot.hostAuthorizationRevision,
+                                      ),
+                                      recipientKind: "runtime",
+                                      recipientPrincipalId: "nautilo_foreground_runtime",
+                                      recipientAuthorizationRevision: authorizationRevision(0),
+                                      recipientRuntimeGeneration: 0,
+                                      recipientKeyId,
+                                      operations: ["decrypt", "encrypt"],
+                                      issuedAt,
+                                      deadlineAt,
+                                      maximumSecretBytes:
+                                        DOMAIN_FOREGROUND_AUTHORIZATION_MAX_SECRET_BYTES_V2,
+                                      domains: snapshot.domains,
+                                    });
+                                    try {
+                                      planBytes = serializeDomainForegroundAuthorizationPlanV2(plan);
+                                    } finally {
+                                      destroyDomainForegroundAuthorizationPlanV2(plan);
+                                    }
+                                    const accepted = await new Promise<TaskDefinitionAcceptedAuthorization | null>(resolve => {
+                                      const retainedSnapshot = copyTaskDefinitionAuthoritySnapshot(snapshot);
+                                      const timer = setTimeout(() => {
+                                        const waiter = runtimeInvocationAuthorizationWaiters.get(authorizationId);
+                                        if (waiter?.kind !== "task_definition") return;
+                                        runtimeInvocationAuthorizationWaiters.delete(authorizationId);
+                                        recipients.delete(authorizationId);
+                                        waiter.planBytes.fill(0);
+                                        wipeTaskDefinitionAuthoritySnapshot(waiter.snapshot);
+                                        waiter.resolve(null);
+                                      }, Math.max(0, deadlineAt - Date.now()));
+                                      timer.unref?.();
+                                      runtimeInvocationAuthorizationWaiters.set(
+                                        authorizationId,
+                                        Object.freeze({
+                                          kind: "task_definition" as const,
+                                          parentOperationId: foregroundPlan.operationId,
+                                          parentSessionId: foregroundPlan.sessionId,
+                                          snapshot: retainedSnapshot,
+                                          planBytes: planBytes!.slice(),
+                                          recipientKeyId,
+                                          issuedAt,
+                                          deadlineAt,
+                                          resolve,
+                                          timer,
+                                        }),
+                                      );
+                                      try {
+                                        input.publishTaskDefinitionAuthorizationRequired!({
+                                          wireVersion: 1,
+                                          type: "message.task_definition_authorization_required",
+                                          laneKey: `room:${foregroundPlan.roomId}`,
+                                          userId: authority!.causalHumanUserId,
+                                          roomId: foregroundPlan.roomId,
+                                          parentOperationId: foregroundPlan.operationId,
+                                          parentSessionId: foregroundPlan.sessionId,
+                                          authorizationId,
+                                          taskId: request.taskId,
+                                          operation: request.operation,
+                                          targetContentRevision:
+                                            request.targetContentRevision,
+                                          workDescriptorDigestBase64url:
+                                            Buffer.from(request.workDescriptorDigest)
+                                              .toString("base64url"),
+                                          parentAgentSignerPublicKeyBase64url:
+                                            Buffer.from(
+                                              foregroundPlan.agentSignerPublicKey,
+                                            ).toString("base64url"),
+                                          clientActionSessionId,
+                                          deadlineAt,
+                                          authorizationScheme: "runtime_foreground_v1",
+                                          authorizationPlanBytesBase64url:
+                                            Buffer.from(planBytes!).toString("base64url"),
+                                          recipientPublicKeyBase64url:
+                                            Buffer.from(publicKey!).toString("base64url"),
+                                        });
+                                      } catch {
+                                        clearTimeout(timer);
+                                        runtimeInvocationAuthorizationWaiters.delete(authorizationId);
+                                        recipients.delete(authorizationId);
+                                        wipeTaskDefinitionAuthoritySnapshot(retainedSnapshot);
+                                        resolve(null);
+                                      }
+                                    });
+                                    if (accepted === null) {
+                                      throw new Error("Foreground Task definition authorization was not accepted");
+                                    }
+                                    const namespaceKeys = new PostgresDomainKeyAuthorityRepository(
+                                      restrictedConnection,
+                                      crypto,
+                                      serverId,
+                                    );
+                                    const gateway = createForegroundAgentEntityCryptoGateway({
+                                      authorizations: foregroundAuthorizations,
+                                      namespaceKeys,
+                                    });
+                                    try {
+                                      const executed = await gateway.executeTransient({
+                                        capability: accepted.capability,
+                                        scope: accepted.scope,
+                                        namespaceIds: [snapshot.namespace.namespaceId],
+                                        domainIds: [snapshot.namespace.domainId],
+                                        operations: ["decrypt", "encrypt"],
+                                        workDescriptorDigest: request.workDescriptorDigest,
+                                        operationDeadline: deadlineAt,
+                                        entrypointId: input.entrypointId ?? "foreground.main",
+                                        execute: async ({ entities: taskEntities }) => {
+                                          const assertTaskCurrent = async () => {
+                                            const current = await request.withCurrentProduct(
+                                              currentProduct => loadTaskDefinitionAuthority({
+                                              userId: snapshot.userId,
+                                              humanId: snapshot.humanId,
+                                              deviceId: snapshot.deviceId,
+                                              clientActionSessionId: snapshot.clientActionSessionId,
+                                              roomId: snapshot.roomId,
+                                              agentId: snapshot.agentId,
+                                              expectedNamespaceId:
+                                                snapshot.namespace.namespaceId,
+                                            }, { crypto, serverId, currentProduct,
+                                              loadRuntimePolicy: currentProduct === null
+                                                ? loadRuntimePolicy
+                                                : () => getEncryptionTransitionPolicy(currentProduct.transaction),
+                                            }),
+                                            );
+                                            if (current === null) throw new Error("Foreground Task private authority changed");
+                                            const matches = sameTaskDefinitionAuthoritySnapshot(snapshot, current);
+                                            wipeTaskDefinitionAuthoritySnapshot(current);
+                                            if (!matches) throw new Error("Foreground Task private authority changed");
+                                          };
+                                          const resolveCurrentForegroundDefinitionAuthorization = async (context: Parameters<
+                                            import("@nautilo/lattice-crypto").ResolveCurrentDeviceWrappedAgentObjectAccessGenesisSetAuthorization
+                                          >[0]) => {
+                                            await assertTaskCurrent();
+                                            if (context.operationId !== authorizationId
+                                              || context.grantId !== authorizationId
+                                              || !equalBytes(context.grantHash, accepted.authorizationDigest)
+                                              || context.recipientKeyId !== recipientKeyId
+                                              || context.agentId !== foregroundPlan.recipientAgentId
+                                              || context.agentAuthorizationRevision
+                                                !== foregroundPlan.agentAuthorizationRevision
+                                              || context.runtimeGeneration
+                                                !== foregroundPlan.agentRuntimeGeneration
+                                              || context.signerKeyId !== foregroundPlan.agentSignerKeyId
+                                              || context.namespaces.length !== 1
+                                              || context.envelopes.length !== 1) return null;
+                                            const currentNamespace = await namespaceKeys
+                                              .inspectForegroundNamespaceAuthority({
+                                                namespaceId: snapshot.namespace.namespaceId,
+                                                keyClass: "ai",
+                                              });
+                                            if (currentNamespace.status !== "ready") return null;
+                                            try {
+                                              const namespace = context.namespaces[0]!;
+                                              const envelope = context.envelopes[0]!;
+                                              if (namespace.namespaceId !== currentNamespace.namespaceId
+                                                || namespace.accessRevision !== currentNamespace.namespaceAccessRevision
+                                                || namespace.keyGeneration !== currentNamespace.namespaceKeyGeneration
+                                                || namespace.domainId !== currentNamespace.domainId
+                                                || namespace.domainKeyGeneration !== currentNamespace.domainKeyGeneration
+                                                || namespace.domainAuthorizationRevision !== currentNamespace.domainAuthorizationRevision
+                                                || !equalBytes(namespace.domainHeadDigest, currentNamespace.domainHeadDigest)
+                                                || !equalBytes(namespace.headDigest, currentNamespace.namespaceHeadDigest)
+                                                || !equalBytes(namespace.publicationDigest, currentNamespace.namespacePublicationDigest)
+                                                || !equalBytes(namespace.publicationSetDigest, currentNamespace.namespacePublicationSetDigest)
+                                                || !equalBytes(namespace.audienceFingerprint, currentNamespace.namespaceAudienceFingerprint)
+                                                || envelope.namespaceId !== currentNamespace.namespaceId
+                                                || envelope.keyClass !== "ai"
+                                                || envelope.keyGeneration !== currentNamespace.namespaceKeyGeneration
+                                                || envelope.bindingRevisionAtWrap !== currentNamespace.namespaceAccessRevision) return null;
+                                              return Object.freeze({
+                                                context,
+                                                grantAuthorized: true,
+                                                namespacesAuthorized: true,
+                                                agentAuthorized: true,
+                                                hostAllowsOperation: true,
+                                                currentRuntime: Object.freeze({
+                                                  agentId: agentId(foregroundPlan.recipientAgentId),
+                                                  authorizationRevision: authorizationRevision(
+                                                    foregroundPlan.agentAuthorizationRevision,
+                                                  ),
+                                                  runtimeGeneration: agentRuntimeGeneration(
+                                                    foregroundPlan.agentRuntimeGeneration,
+                                                  ),
+                                                }),
+                                                signerPublicKey:
+                                                  foregroundPlan.agentSignerPublicKey.slice(),
+                                              });
+                                            } finally {
+                                              Object.values(currentNamespace).forEach(value => {
+                                                if (value instanceof Uint8Array) value.fill(0);
+                                              });
+                                            }
+                                          };
+                                          await assertTaskCurrent();
+                                          return request.use({
+                                            authority: {
+                                              authorityVersion: 1,
+                                              kind: "requester_private_namespace",
+                                              keyClass: "ai",
+                                              requesterHumanId: snapshot.humanId,
+                                              namespaceId: snapshot.namespace.namespaceId,
+                                              domainId: snapshot.namespace.domainId,
+                                              expectedAccessRevision:
+                                                snapshot.namespace.namespaceAccessRevision,
+                                              expectedPolicyRevision:
+                                                snapshot.policyRevision,
+                                            },
+                                            entities: taskEntities,
+                                            publication: {
+                                              operationId: authorizationId,
+                                              grantId: authorizationId,
+                                              grantDigest: accepted.authorizationDigest,
+                                              recipientKeyId,
+                                              taskDefinitionForegroundAuthorizationBytes:
+                                                accepted.authorizationBytes,
+                                            },
+                                            resolveCurrentForegroundDefinitionAuthorization,
+                                            assertCurrent: assertTaskCurrent,
+                                          });
+                                        },
+                                      });
+                                      if (executed.status !== "executed") {
+                                        throw new Error("Foreground Task definition authorization closed");
+                                      }
+                                      return executed.value;
+                                    } finally {
+                                      accepted.authorizationBytes.fill(0);
+                                      accepted.authorizationDigest.fill(0);
+                                      accepted.scope.domainAuthoritySetDigest.fill(0);
+                                    }
+                                  } finally {
+                                    recipients.delete(authorizationId);
+                                    publicKey?.fill(0);
+                                    planBytes?.fill(0);
+                                    wipeTaskDefinitionAuthoritySnapshot(snapshot);
+                                  }
+                                },
+                                createCurrentAuthority: async product => createPostgresDomainKeyV2LiveShadowCurrentAuthority({
+                                  product, restricted: restrictedConnection, crypto, serverId, plan: foregroundPlan,
+                                  representationMode: policy.mode === "encrypted_only" ? "full_encryption" : "shadow_encryption",
+                                  source: retained.source,
+                                  resolveReadableNamespaces:
+                                    resolveGrantedReadableNamespaces,
+                                }),
+                              });
+                              try { return await withProtectedTaskForegroundCreationContext(creation.context, work); }
+                              finally { creation.dispose(); }
+                            };
+                            const value = taskContentOwner === undefined ? await work()
+                              : await taskContentOwner().runMutation({ ordinary: work, dual: createProtected, protected: createProtected });
                             return Object.freeze({
                               value,
                             });
@@ -4441,6 +5390,13 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
       }
       return agentFallback(input.operationId, "plan_invalid");
     },
+    get taskPendingAttention() {
+      if (input.taskContentOwner === undefined) return undefined;
+      return taskPendingAttention ??= createProtectedTaskPendingAttention({
+        db: getServerDirectDb(), restricted: createPostgresJsBridgeConnection(getSharedDirectCryptoDb()),
+        serverScope: serverId, owner: input.taskContentOwner(), recipients,
+      });
+    },
     get pendingAttention() {
       return pendingAttention ??= createProductionForegroundPendingAttention(recipients);
     },
@@ -4450,7 +5406,20 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
       foregroundAuthorizations.cancelForHuman(
         request.authority.humanActorId,
       );
+      for (const [authorizationId, waiter] of
+        runtimeInvocationAuthorizationWaiters) {
+        if (waiter.kind !== "task_definition"
+          || waiter.snapshot.humanId !== request.authority.humanActorId) continue;
+        runtimeInvocationAuthorizationWaiters.delete(authorizationId);
+        clearTimeout(waiter.timer);
+        recipients.delete(authorizationId);
+        waiter.planBytes.fill(0);
+        wipeTaskDefinitionAuthoritySnapshot(waiter.snapshot);
+        waiter.resolve(null);
+      }
       pendingAttention?.cancelForHuman(request.authority.humanActorId);
+      taskPendingAttention?.cancelForHuman(request.authority.humanActorId);
+      input.cancelTaskExternalRequestsForHuman?.(request.authority.humanActorId);
     },
     reconcileLifecycle: async (request: Readonly<{
       now?: number;
@@ -4500,6 +5469,7 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
         if (rejected?.status === "rejected") throw rejected.reason;
       } finally {
         pendingAttention?.close();
+        taskPendingAttention?.close();
         foregroundAuthorizations.close();
         for (const waiter of sharedAgentAuthorizationWaiters.values()) {
           clearTimeout(waiter.timer);
@@ -4513,6 +5483,10 @@ export function createProductionLiveShadowMessageComposition(input: Readonly<{
         sharedAgentAcceptedAuthorizations.clear();
         for (const waiter of runtimeInvocationAuthorizationWaiters.values()) {
           clearTimeout(waiter.timer);
+          if (waiter.kind === "task_definition") {
+            waiter.planBytes.fill(0);
+            wipeTaskDefinitionAuthoritySnapshot(waiter.snapshot);
+          }
           waiter.resolve(null);
         }
         runtimeInvocationAuthorizationWaiters.clear();

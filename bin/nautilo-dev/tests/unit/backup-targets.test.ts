@@ -35,10 +35,12 @@ describe("backup restore target allowlists", () => {
     const dependencies: Record<string, string[]> = {
       bolter_connections: ["users"],
       bolter_room_bindings: ["users", "agents", "rooms", "namespaces", "bolter_connections"],
+      external_operator_sessions: ["users", "bolter_room_bindings"],
       bolter_inbox_receipts: ["users", "bolter_room_bindings", "session_messages", "jobs"],
       bolter_explicit_shares: ["users", "bolter_room_bindings", "session_messages"],
       bolter_outbox: ["users", "bolter_room_bindings", "session_messages", "bolter_inbox_receipts", "bolter_explicit_shares"],
       external_room_execution_claims: ["rooms"],
+      external_operator_control_archive: ["users"],
     };
     for (const [table, parents] of Object.entries(dependencies)) {
       const child = DATA_TABLES.indexOf(`public.${table}`);
@@ -141,6 +143,35 @@ describe("backup restore target allowlists", () => {
     }
     expect([...DATA_TABLES].sort()).toEqual(schemaTables);
     expect([...RESTORE_DATA_TABLES].sort()).toEqual(schemaTables);
+  });
+
+  test("preserves Task repair and wake recovery state after every schema parent", () => {
+    const parents: Record<string, readonly string[]> = {
+      "public.task_historical_content_crypto_staging_receipts": ["public.crypto_objects"],
+      "public.foreground_memory_crypto_publication_receipts": ["public.crypto_objects"],
+      "public.task_content_backfill_scans": ["public.actors"],
+      "public.task_content_backfill_failures": [],
+      "public.protected_task_wake_continuation_receipts": [
+        "public.jobs", "public.tasks", "public.task_runs", "public.rooms",
+        "public.protected_task_run_output_bindings",
+      ],
+    };
+    for (const [table, dependencies] of Object.entries(parents)) {
+      expect(DATA_TABLES.indexOf(table)).toBeGreaterThanOrEqual(0);
+      expect(RESTORE_DATA_TABLES.has(table)).toBe(true);
+      expect(RESTORE_MIGRATIONS.find(rule => rule.table === table)).toBeUndefined();
+      for (const parent of dependencies) {
+        expect(DATA_TABLES.indexOf(parent)).toBeGreaterThanOrEqual(0);
+        expect(DATA_TABLES.indexOf(table)).toBeGreaterThan(DATA_TABLES.indexOf(parent));
+      }
+    }
+  });
+
+  test("restores cancellation staging receipts after their encrypted object", () => {
+    const receipt = "public.task_cancellation_crypto_staging_receipts";
+    expect(DATA_TABLES.indexOf(receipt)).toBeGreaterThan(DATA_TABLES.indexOf("public.crypto_objects"));
+    expect(RESTORE_DATA_TABLES.has(receipt)).toBe(true);
+    expect(RESTORE_MIGRATIONS.find(rule => rule.table === receipt)).toBeUndefined();
   });
 
   test("restores Task crypto revisions before their mapped product rows", () => {

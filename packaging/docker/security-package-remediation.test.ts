@@ -6,7 +6,7 @@ import { parseVulnerabilityPolicy } from "./vulnerability-policy.ts";
 const read = (path: string) => JSON.parse(readFileSync(join(import.meta.dir, path), "utf8"));
 const historical = read("fixtures/server-vulnerability-exceptions-2026-09-11.json");
 const current = read("fixtures/server-policy-before-retirement-2026-10-07.json");
-const bootstrap = read("bootstrap-vulnerability-policy.input.json");
+const bootstrap = read("fixtures/bootstrap-policy-before-security-renewal-2026-10-23.json");
 const supersededChromiumAdvisories = new Set([
   "CVE-2026-93372", "CVE-2026-93373", "CVE-2026-93374", "CVE-2026-93375",
   "CVE-2026-93377", "CVE-2026-93381", "CVE-2026-93382",
@@ -59,7 +59,8 @@ describe("Debian 13 security update and exception retirement", () => {
   test("remaining decisions match reviewed package versions and production schema", () => {
     const floors = new Map(readFileSync(join(import.meta.dir, "server-security-package-floors.txt"), "utf8")
       .split("\n").filter((line) => line && !line.startsWith("#")).map((line) => line.split(" ") as [string, string]));
-    expect(floors.size).toBe(9);
+    expect(floors.size).toBe(10);
+    expect(floors.get("libbrotli1")).toBe("1.1.0-2+deb13u1");
     for (const entry of current.exceptions) {
       // This historical September 13 review predates these separately tested findings.
       if (entry.reviewedAt === "2026-10-05T10:40:00Z" || entry.reviewedAt === "2026-10-03T15:15:00Z" || entry.reviewedAt === "2026-10-01T21:39:28Z" || entry.reviewedAt === "2026-10-01T20:28:00Z" || entry.reviewedAt === "2026-09-30T15:20:00Z" ||

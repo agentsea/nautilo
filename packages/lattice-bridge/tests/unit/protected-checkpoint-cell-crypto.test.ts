@@ -6,11 +6,17 @@ import {
 } from "@nautilo/lattice-crypto";
 
 import {
+  bindProtectedCheckpointCellDataOperationOwner,
   createProtectedCheckpointCellCrypto,
   type ProtectedCheckpointCellAuthorityPort,
+  type ProtectedCheckpointAadBinding,
   type ProtectedCheckpointInvocationScope,
   type ProtectedCheckpointNamespaceMaterial,
 } from "../../src/checkpoint/protected-checkpoint-cell-crypto";
+import {
+  bindEncryptionDataOperationOwner,
+  ClassifiedDataOperationError,
+} from "../../src/transition/encryption-data-operation-owner.ts";
 
 const encoder = new TextEncoder();
 
@@ -62,6 +68,7 @@ function fixture(options: Readonly<{
   currentGeneration?: number;
   accessRevision?: number;
   policyRevision?: number;
+  aadBinding?: ProtectedCheckpointAadBinding;
 }> = {}) {
   let next = 0;
   const crypto = new LatticeCrypto({
@@ -132,6 +139,7 @@ function fixture(options: Readonly<{
     authority,
     domainId: "domain-a",
     entrypointId: "foreground.main",
+    ...(options.aadBinding === undefined ? {} : { aadBinding: options.aadBinding }),
   });
   return {
     calls,
@@ -147,7 +155,76 @@ function fixture(options: Readonly<{
   };
 }
 
+function owner(
+  mode: "plaintext_only" | "shadow_encryption" | "encrypted_only",
+  shadowBehavior: "fallback" | "strict" = "fallback",
+) {
+  return bindEncryptionDataOperationOwner({
+    policy: {
+      resolve: async () => ({
+        policy: { mode, shadowBehavior },
+        revalidationToken: 11,
+      }),
+      revalidate: async () => undefined,
+    },
+  });
+}
+
 describe("protected checkpoint cell crypto", () => {
+  test("retained ciphertext AAD never replaces fresh Namespace/policy authorization", async () => {
+    const original = fixture();
+    const plaintext = encoder.encode("sealed prior segment");
+    const ciphertext = await original.cellCrypto.executeAuthorizedOperation({
+      operation: "write", scope: SCOPE, execute: context => original.cellCrypto.seal({
+        scope: SCOPE, coordinate: COORDINATE, plaintext, signal: context.signal,
+      }),
+    });
+    const binding = Object.freeze({ namespaceId: SCOPE.namespaceId, domainId: "domain-a",
+      namespaceAccessRevision: 7, policyRevision: 11 });
+    const freshScope = { ...SCOPE, expectedAccessRevision: 8, expectedPolicyRevision: 12 };
+    const renewed = fixture({ accessRevision: 8, policyRevision: 12, aadBinding: binding });
+    await renewed.cellCrypto.executeAuthorizedOperation({
+      operation: "read", scope: freshScope, execute: async context => {
+        const opened = await renewed.cellCrypto.open({ scope: freshScope, coordinate: COORDINATE,
+          ciphertext, signal: context.signal });
+        expect(opened).toEqual(plaintext); opened.fill(0);
+      },
+    });
+    const oldAuthority = fixture({ aadBinding: binding });
+    await expectCheckpointError(oldAuthority.cellCrypto.executeAuthorizedOperation({
+      operation: "read", scope: freshScope, execute: () => Promise.resolve(),
+    }), "scope_invalid");
+    const missingBinding = fixture({ accessRevision: 8, policyRevision: 12 });
+    await expectCheckpointError(missingBinding.cellCrypto.executeAuthorizedOperation({
+      operation: "read", scope: freshScope, execute: context => missingBinding.cellCrypto.open({
+        scope: freshScope, coordinate: COORDINATE, ciphertext, signal: context.signal,
+      }),
+    }), "authentication_failed");
+    for (const changed of [{ ...binding, namespaceId: "namespace-other" },
+      { ...binding, namespaceAccessRevision: 9 }, { ...binding, policyRevision: 13 }]) {
+      const denied = fixture({ accessRevision: 8, policyRevision: 12, aadBinding: changed });
+      await expectCheckpointError(denied.cellCrypto.executeAuthorizedOperation({
+        operation: "read", scope: freshScope, execute: context => denied.cellCrypto.open({
+          scope: freshScope, coordinate: COORDINATE, ciphertext, signal: context.signal,
+        }),
+      }), "scope_invalid");
+    }
+    const newWriter = fixture({ accessRevision: 8, policyRevision: 12, aadBinding: binding });
+    const resumedBytes = await newWriter.cellCrypto.executeAuthorizedOperation({
+      operation: "write", scope: freshScope, execute: context => newWriter.cellCrypto.seal({
+        scope: freshScope, coordinate: COORDINATE, plaintext, signal: context.signal,
+      }),
+    });
+    const newReader = fixture({ accessRevision: 8, policyRevision: 12, aadBinding: binding });
+    await newReader.cellCrypto.executeAuthorizedOperation({
+      operation: "read", scope: freshScope, execute: async context => {
+        const opened = await newReader.cellCrypto.open({ scope: freshScope, coordinate: COORDINATE,
+          ciphertext: resumedBytes, signal: context.signal });
+        expect(opened).toEqual(plaintext); opened.fill(0);
+      },
+    });
+  });
+
   test("bounds physical coordinates independently of portable authority IDs and authenticates every byte", async () => {
     const coordinate = {
       ...COORDINATE,
@@ -478,5 +555,139 @@ describe("protected checkpoint cell crypto", () => {
         });
       },
     }), "authentication_failed");
+  });
+});
+
+describe("protected checkpoint data-operation owner", () => {
+  test.each(["read", "write", "delete", "cleanup"] as const)(
+    "Plain rejects %s before opening checkpoint authority",
+    async operation => {
+      const state = fixture();
+      const crypto = bindProtectedCheckpointCellDataOperationOwner({
+        owner: owner("plaintext_only"),
+        crypto: state.cellCrypto,
+      });
+      let executed = false;
+      const failure = await crypto.executeAuthorizedOperation({
+        operation,
+        scope: SCOPE,
+        execute: async () => {
+          executed = true;
+        },
+      }).then(() => null, (error: unknown) => error);
+      expect(failure).toMatchObject({ failureClass: "unsupported" });
+      expect(executed).toBe(false);
+      expect(state.calls).toEqual([]);
+    },
+  );
+
+  test.each([
+    ["shadow_encryption", "fallback"],
+    ["shadow_encryption", "strict"],
+    ["encrypted_only", "strict"],
+  ] as const)(
+    "%s/%s executes the protected operation once and preserves cell bytes",
+    async (mode, shadowBehavior) => {
+      const writer = fixture();
+      const writeCrypto = bindProtectedCheckpointCellDataOperationOwner({
+        owner: owner(mode, shadowBehavior),
+        crypto: writer.cellCrypto,
+      });
+      const plaintext = encoder.encode("owner-bound checkpoint");
+      const ciphertext = await writeCrypto.executeAuthorizedOperation({
+        operation: "write",
+        scope: SCOPE,
+        execute: context => writeCrypto.seal({
+          scope: SCOPE,
+          coordinate: COORDINATE,
+          plaintext,
+          signal: context.signal,
+        }),
+      });
+      expect(writer.calls).toHaveLength(1);
+
+      const reader = fixture();
+      const readCrypto = bindProtectedCheckpointCellDataOperationOwner({
+        owner: owner(mode, shadowBehavior),
+        crypto: reader.cellCrypto,
+      });
+      const opened = await readCrypto.executeAuthorizedOperation({
+        operation: "read",
+        scope: SCOPE,
+        execute: context => readCrypto.open({
+          scope: SCOPE,
+          coordinate: COORDINATE,
+          ciphertext,
+          signal: context.signal,
+        }),
+      });
+      try {
+        expect(opened).toEqual(plaintext);
+      } finally {
+        opened.fill(0);
+        plaintext.fill(0);
+      }
+      expect(reader.calls).toHaveLength(1);
+    },
+  );
+
+  test.each(["recoverable_availability", "integrity", "authority"] as const)(
+    "%s operation failure is not retried after execution begins",
+    async failureClass => {
+      const failure = new ClassifiedDataOperationError(
+        failureClass,
+        "checkpoint outcome",
+      );
+      let attempts = 0;
+      const crypto = bindProtectedCheckpointCellDataOperationOwner({
+        owner: owner("shadow_encryption", "fallback"),
+        crypto: Object.freeze({
+          executeAuthorizedOperation: async () => {
+            attempts += 1;
+            throw failure;
+          },
+          seal: async () => new Uint8Array(),
+          open: async () => new Uint8Array(),
+        }),
+      });
+      const caught = await crypto.executeAuthorizedOperation({
+        operation: "write",
+        scope: SCOPE,
+        execute: async () => undefined,
+      }).then(() => null, (error: unknown) => error);
+      expect(caught).toBe(failure);
+      expect(attempts).toBe(1);
+    },
+  );
+
+  test("foreign and retained signals cannot bypass the selected operation", async () => {
+    const state = fixture();
+    const crypto = bindProtectedCheckpointCellDataOperationOwner({
+      owner: owner("encrypted_only", "strict"),
+      crypto: state.cellCrypto,
+    });
+    const plaintext = encoder.encode("signal-bound checkpoint");
+    await expectCheckpointError(crypto.seal({
+      scope: SCOPE,
+      coordinate: COORDINATE,
+      plaintext,
+      signal: new AbortController().signal,
+    }), "authorization_unavailable");
+
+    let retained!: AbortSignal;
+    await crypto.executeAuthorizedOperation({
+      operation: "write",
+      scope: SCOPE,
+      execute: async context => {
+        retained = context.signal;
+      },
+    });
+    await expectCheckpointError(crypto.seal({
+      scope: SCOPE,
+      coordinate: COORDINATE,
+      plaintext,
+      signal: retained,
+    }), "authorization_unavailable");
+    plaintext.fill(0);
   });
 });

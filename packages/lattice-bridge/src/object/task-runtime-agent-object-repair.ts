@@ -5,6 +5,7 @@ import {
   type LatticeCrypto,
   type ResolveHistoricalAgentRuntimeSignerPublicationManager,
   type TaskRuntimeExecutionEvidence,
+  type TaskRuntimeTemporarySigner,
 } from "@nautilo/lattice-crypto";
 
 import {
@@ -63,7 +64,8 @@ export function createTaskRuntimeAgentObjectRepairer(input: Readonly<{
     "signal" | "use" | "useCurrentSet"
   >;
   runtime: AgentRuntimeKeyGeneration;
-  signerPublication: AgentRuntimeSignerPublication;
+  signerPublication: AgentRuntimeSignerPublication | null;
+  temporarySigner?: TaskRuntimeTemporarySigner;
   resolveHistoricalSignerPublicationManager:
     ResolveHistoricalAgentRuntimeSignerPublicationManager;
   agentAuthorizationRevision: number;
@@ -84,7 +86,11 @@ export function createTaskRuntimeAgentObjectRepairer(input: Readonly<{
   assertAuthenticTaskRuntimeExecutionEvidence(input.evidence);
   if (
     input.runtime.agentId !== input.evidence.result.signerAgentId
-    || input.signerPublication.agentId !== input.evidence.result.signerAgentId
+    || (input.signerPublication !== null
+      && input.signerPublication.agentId
+        !== input.evidence.result.signerAgentId)
+    || (input.signerPublication === null)
+      !== (input.temporarySigner !== undefined)
   ) throw new TypeError(
     "Task Runtime Agent object repair Agent disagrees with execution evidence",
   );
@@ -172,6 +178,9 @@ export function createTaskRuntimeAgentObjectRepairer(input: Readonly<{
               operationId,
               runtime: input.runtime,
               signerPublication: input.signerPublication,
+              ...(input.temporarySigner === undefined ? {} : {
+                temporarySigner: input.temporarySigner,
+              }),
               resolveHistoricalSignerPublicationManager:
                 input.resolveHistoricalSignerPublicationManager,
               agentAuthorizationRevision: input.agentAuthorizationRevision,

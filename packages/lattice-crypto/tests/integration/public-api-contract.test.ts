@@ -123,7 +123,15 @@ const ROOT_TYPE_CLOSURE_ADDITIONS: readonly ExportDisposition[] = [
     exported: "TaskRuntimeRecipientRegistry",
     typeOnly: false,
   },
+  {
+    source: "./background/task-runtime-recipient-registry-v1.ts",
+    imported: "assertAuthenticTaskRuntimeCancellationResultEvidenceV1",
+    exported: "assertAuthenticTaskRuntimeCancellationResultEvidence",
+    typeOnly: false,
+  },
   ...([
+    "TaskRuntimeCancellationResultEvidence",
+    "TaskRuntimeCancellationResultProof",
     "TaskRuntimeRecipientAttempt",
     "TaskRuntimeRecipientCreationResult",
     "TaskRuntimeRecipientDeadlineHandle",
@@ -176,6 +184,10 @@ const ROOT_TYPE_CLOSURE_ADDITIONS: readonly ExportDisposition[] = [
       "prepareTaskRuntimeResultObject",
     ],
     [
+      "prepareNativeTaskRuntimeCancellationResultObjectV1",
+      "prepareNativeTaskRuntimeCancellationResultObject",
+    ],
+    [
       "prepareNativeTaskRuntimeResultObjectV1",
       "prepareNativeTaskRuntimeResultObject",
     ],
@@ -195,6 +207,12 @@ const ROOT_TYPE_CLOSURE_ADDITIONS: readonly ExportDisposition[] = [
     exported: name,
     typeOnly: true,
   })),
+  {
+    source: "./object/task-runtime-result-preparation-v1.ts",
+    imported: "PrepareNativeTaskRuntimeCancellationResultObjectV1Input",
+    exported: "PrepareNativeTaskRuntimeCancellationResultObjectInput",
+    typeOnly: true,
+  },
   {
     source: "./object/task-runtime-result-preparation-v1.ts",
     imported: "PrepareTaskRuntimeResultObjectV1Input",
@@ -3685,6 +3703,300 @@ const ROOT_TYPE_CLOSURE_ADDITIONS: readonly ExportDisposition[] = [
     exported: name,
     typeOnly: true,
   })),
+  ...([
+    ["createTaskRuntimeBackgroundAuthorizationRequestV2", "createTaskRuntimeBackgroundAuthorizationRequest"],
+    ["taskRuntimeBackgroundAuthorizationIssuerV2", "taskRuntimeBackgroundAuthorizationIssuer"],
+  ] as const).map(([imported, exported]) => ({
+    source: "./background/task-runtime-request-v2.ts",
+    imported,
+    exported,
+    typeOnly: false,
+  })),
+  ...([
+    "createTaskRuntimeSignerAuthorization",
+    "destroyVerifiedTaskRuntimeSignerAuthorization",
+    "readTaskRuntimeSignerAuthorizationIssuer",
+    "verifyCurrentTaskRuntimeSignerAuthorization",
+    "verifyHistoricalTaskRuntimeSignerAuthorization",
+  ] as const).map((name) => ({
+    source: "./background/task-runtime-signer-authorization-v1.ts",
+    imported: name,
+    exported: name,
+    typeOnly: false,
+  })),
+  ...([
+    "ResolveCurrentTaskRuntimeSignerAuthorizationIssuer",
+    "ResolveHistoricalTaskRuntimeSignerAuthorizationIssuer",
+    "TaskRuntimeCertifiedBackgroundAuthorizationRequest",
+    "TaskRuntimeSignerAuthorizationIssuerContext",
+    "TaskRuntimeSignerAuthorizationProjection",
+    "TaskRuntimeSignerAuthorization",
+    "VerifiedCurrentTaskRuntimeSignerAuthorization",
+    "VerifiedHistoricalTaskRuntimeSignerAuthorization",
+    "VerifiedTaskRuntimeSignerAuthorization",
+  ] as const).map((name) => ({
+    source: "./background/task-runtime-signer-authorization-v1.ts",
+    imported: name,
+    exported: name,
+    typeOnly: true,
+  })),
+  ...([
+    ["assertAuthenticTaskRuntimeTerminalMessageEvidenceV1", "assertAuthenticTaskRuntimeTerminalMessageEvidence"],
+    ["hasTaskRuntimeTemporarySignerV1", "hasTaskRuntimeTemporarySigner"],
+    ["withTaskRuntimeTemporarySignerV1", "withTaskRuntimeTemporarySigner"],
+  ] as const).map(([imported, exported]) => ({
+    source: "./background/task-runtime-recipient-registry-v1.ts",
+    imported,
+    exported,
+    typeOnly: false,
+  })),
+  ...([
+    ["TaskRuntimeCertifiedPublicationSigningInputV1", "TaskRuntimeCertifiedPublicationSigningInput"],
+    ["TaskRuntimeCertifiedSigningInputV1", "TaskRuntimeCertifiedSigningInput"],
+    ["TaskRuntimeTemporarySignerV1", "TaskRuntimeTemporarySigner"],
+    ["TaskRuntimeRunResultReadPartitionsV1", "TaskRuntimeRunResultReadPartitions"],
+    ["TaskRuntimeTemporarySignerEvidenceV1", "TaskRuntimeTemporarySignerEvidence"],
+  ] as const).map(([imported, exported]) => ({
+    source: "./background/task-runtime-recipient-registry-v1.ts",
+    imported,
+    exported,
+    typeOnly: true,
+  })),
+  ...([
+    ["TaskRuntimeTerminalMessageEvidenceV1", "TaskRuntimeTerminalMessageEvidence"],
+    ["TaskRuntimeTerminalMessageProofV1", "TaskRuntimeTerminalMessageProof"],
+  ] as const).map(([imported, exported]) => ({
+    source: "./background/task-runtime-terminal-message-evidence-v1.ts",
+    imported,
+    exported,
+    typeOnly: true,
+  })),
+  {
+    source: "./object/device-wrapped-agent-access-manifest-set-v1.ts",
+    imported: "assertAuthenticPreparedDeviceWrappedAgentObjectAccessManifestGenesisSetV1",
+    exported: "assertAuthenticPreparedDeviceWrappedAgentObjectAccessManifestGenesisSet",
+    typeOnly: false,
+  },
+  ...([
+    ["CurrentTaskRuntimeAgentObjectAccessGenesisSetLegacyAuthorizationV1", "CurrentTaskRuntimeAgentObjectAccessGenesisSetLegacyAuthorization"],
+    ["CurrentTaskRuntimeAgentObjectAccessGenesisSetTemporaryAuthorizationV1", "CurrentTaskRuntimeAgentObjectAccessGenesisSetTemporaryAuthorization"],
+  ] as const).map(([imported, exported]) => ({
+    source: "./object/task-runtime-agent-storage-coordinator-v1.ts",
+    imported,
+    exported,
+    typeOnly: true,
+  })),
+  ...([
+    ["createTaskDefinitionForegroundObjectAccessManifestV5", "createTaskDefinitionForegroundObjectAccessManifest", false],
+    ["createTaskRuntimeObjectAccessManifestV5", "createTaskRuntimeCommonObjectAccessManifest", false],
+    ["ResolveTaskDefinitionForegroundAuthorizationSignerPublicKeyV5", "ResolveTaskDefinitionForegroundAuthorizationSignerPublicKey", true],
+  ] as const).map(([imported, exported, typeOnly]) => ({
+    source: "./format/object-access-manifest-v5.ts",
+    imported,
+    exported,
+    typeOnly,
+  })),
+  ...([
+    ["prepareHumanExistingTaskRepresentationPublicationRequestV1", "prepareHumanExistingTaskRepresentationPublicationRequest"],
+    ["verifyHumanExistingTaskRepresentationPublicationRequestV1", "verifyHumanExistingTaskRepresentationPublicationRequest"],
+    ["verifyHumanExistingTaskRepresentationPublicationRequestExactReplayV1", "verifyHumanExistingTaskRepresentationPublicationRequestExactReplay"],
+  ] as const).map(([imported, exported]) => ({
+    source: "./task/existing-representation-publication-request-v1.ts",
+    imported,
+    exported,
+    typeOnly: false,
+  })),
+  ...([
+    ["HumanExistingTaskRepresentationPublicationRequestV1", "HumanExistingTaskRepresentationPublicationRequest"],
+    ["PrepareHumanExistingTaskRepresentationPublicationRequestInputV1", "PrepareHumanExistingTaskRepresentationPublicationRequestInput"],
+  ] as const).map(([imported, exported]) => ({
+    source: "./task/existing-representation-publication-request-v1.ts",
+    imported,
+    exported,
+    typeOnly: true,
+  })),
+  {
+    source: "./background/task-runtime-run-result-read-evidence-v1.ts",
+    imported: "assertAuthenticTaskRuntimeRunResultReadEvidenceV1",
+    exported: "assertAuthenticTaskRuntimeRunResultReadEvidence",
+    typeOnly: false,
+  },
+  ...([
+    "TaskRuntimeRunResultReadEvidence",
+    "TaskRuntimeRunResultReadProof",
+    "TaskRuntimeRunResultReadInvocation",
+  ] as const).map((name) => ({
+    source: "./background/task-runtime-run-result-read-evidence-v1.ts",
+    imported: `${name}V1`,
+    exported: name,
+    typeOnly: true,
+  })),
+  {
+    source: "./background/task-runtime-wake-foreground-evidence-v1.ts",
+    imported: "assertAuthenticTaskRuntimeWakeForegroundEvidenceV1",
+    exported: "assertAuthenticTaskRuntimeWakeForegroundEvidence",
+    typeOnly: false,
+  },
+  {
+    source: "./background/task-runtime-wake-foreground-evidence-v1.ts",
+    imported: "TaskRuntimeWakeForegroundEvidenceV1",
+    exported: "TaskRuntimeWakeForegroundEvidence",
+    typeOnly: true,
+  },
+  {
+    source: "./object/task-runtime-result-preparation-v1.ts",
+    imported: "assertTaskRuntimeTemporarySignerForPreparationV1",
+    exported: "assertTaskRuntimeTemporarySignerForPreparation",
+    typeOnly: false,
+  },
+  {
+    source: "./object/task-runtime-publication-signing.ts",
+    imported: "TaskRuntimePublicationSigning",
+    exported: "TaskRuntimePublicationSigning",
+    typeOnly: true,
+  },
+  ...([
+    "MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V2",
+    "TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_FORMAT_VERSION_V2",
+    "TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_PURPOSE_V2",
+    "decodeTaskRuntimeBackgroundAuthorizationRequestV2",
+    "destroyTaskRuntimeBackgroundAuthorizationRequestV2",
+    "encodeTaskRuntimeBackgroundAuthorizationRequestV2",
+    "isTaskRuntimeBackgroundAuthorizationRequestV2Carrier",
+  ] as const).map((name) => ({
+    source: "./background/task-runtime-request-v2.ts",
+    imported: name,
+    exported: name,
+    typeOnly: false,
+  })),
+  ...([
+    "TaskRuntimeBackgroundAuthorizationRequestV2",
+    "TaskRuntimeDeviceGroupHeadV2",
+    "TaskRuntimeEphemeralSignerV2",
+    "TaskRuntimeExecutionWorkBindingV2",
+  ] as const).map((name) => ({
+    source: "./background/task-runtime-request-v2.ts",
+    imported: name,
+    exported: name,
+    typeOnly: true,
+  })),
+  ...([
+    "TaskRuntimeBackgroundAuthorizationRequestV1",
+    "TaskRuntimeBackgroundAuthorizationWorkV1",
+  ] as const).map((name) => ({
+    source: "./background/task-runtime-request-v1.ts",
+    imported: name,
+    exported: name,
+    typeOnly: true,
+  })),
+  ...([
+    "MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_BYTES_V2",
+    "MAX_TASK_RUNTIME_SIGNER_AUTHORIZATION_PROJECTION_WIRE_BYTES_V1",
+    "MAX_TASK_RUNTIME_SIGNER_AUTHORIZATION_PROJECTION_WIRE_BYTES_V2",
+    "MAX_TASK_RUNTIME_SIGNER_AUTHORIZATION_WIRE_BYTES_V1",
+    "MAX_TASK_RUNTIME_SIGNER_AUTHORIZATION_WIRE_BYTES_V2",
+    "TASK_RUNTIME_SIGNER_AUTHORIZATION_FORMAT_VERSION_V1",
+    "TASK_RUNTIME_SIGNER_AUTHORIZATION_FORMAT_VERSION_V2",
+    "TASK_RUNTIME_SIGNER_AUTHORIZATION_PURPOSE_V1",
+    "TaskRuntimeSignerAuthorizationErrorV1",
+    "createTaskRuntimeSignerAuthorizationV1",
+    "createTaskRuntimeSignerAuthorizationV2",
+    "decodeTaskRuntimeBackgroundAuthorizationResponseV2",
+    "decodeTaskRuntimeSignerAuthorizationProjectionV1",
+    "decodeTaskRuntimeSignerAuthorizationProjectionV2",
+    "destroyTaskRuntimeSignerAuthorizationProjectionV1",
+    "destroyTaskRuntimeSignerAuthorizationV1",
+    "destroyVerifiedTaskRuntimeSignerAuthorizationV1",
+    "encodeTaskRuntimeBackgroundAuthorizationResponseV2",
+    "readTaskRuntimeSignerAuthorizationIssuerV1",
+    "readTaskRuntimeSignerAuthorizationIssuerV2",
+    "verifyCurrentTaskRuntimeSignerAuthorizationV1",
+    "verifyHistoricalTaskRuntimeSignerAuthorizationV1",
+  ] as const).map((name) => ({
+    source: "./background/task-runtime-signer-authorization-v1.ts",
+    imported: name,
+    exported: name,
+    typeOnly: false,
+  })),
+  ...([
+    "ResolveCurrentTaskRuntimeSignerAuthorizationIssuerV1",
+    "ResolveHistoricalTaskRuntimeSignerAuthorizationIssuerV1",
+    "TaskRuntimeSignerAuthorizationIssuerContextV1",
+    "TaskRuntimeSignerAuthorizationProjectionV1",
+    "TaskRuntimeSignerAuthorizationProjectionV2",
+    "TaskRuntimeSignerAuthorizationV1",
+    "TaskRuntimeSignerAuthorizationV2",
+    "VerifiedCurrentTaskRuntimeSignerAuthorizationV1",
+    "VerifiedHistoricalTaskRuntimeSignerAuthorizationV1",
+    "VerifiedTaskRuntimeSignerAuthorizationV1",
+  ] as const).map((name) => ({
+    source: "./background/task-runtime-signer-authorization-v1.ts",
+    imported: name,
+    exported: name,
+    typeOnly: true,
+  })),
+  {
+    source: "./format/domain-foreground-authorization-v2.ts",
+    imported: "verifyHistoricalDomainForegroundAuthorizationV2",
+    exported: "verifyHistoricalDomainForegroundAuthorizationV2",
+    typeOnly: false,
+  },
+  {
+    source: "./format/object-access-manifest-v5.ts",
+    imported: "ResolveTaskRuntimeSignerAuthorizationBytesV5",
+    exported: "ResolveTaskRuntimeSignerAuthorizationBytesV5",
+    typeOnly: true,
+  },
+  ...([
+    "HUMAN_EXISTING_TASK_REPRESENTATION_PUBLICATION_REQUEST_DOMAIN_V1",
+    "HUMAN_EXISTING_TASK_REPRESENTATION_PUBLICATION_REQUEST_MAX_TTL_MS_V1",
+    "MAX_HUMAN_EXISTING_TASK_REPRESENTATION_PUBLICATION_REQUEST_WIRE_BYTES_V1",
+    "decodeHumanExistingTaskRepresentationPublicationRequestV1",
+    "encodeHumanExistingTaskRepresentationPublicationRequestV1",
+    "humanExistingTaskRepresentationPublicationRequestSigningBytesV1",
+  ] as const).map((name) => ({
+    source: "./task/existing-representation-publication-request-v1.ts",
+    imported: name,
+    exported: name,
+    typeOnly: false,
+  })),
+  {
+    source: "./task/existing-representation-publication-request-v1.ts",
+    imported: "HumanExistingTaskRepresentationPublicationRequestUnsignedV1",
+    exported: "HumanExistingTaskRepresentationPublicationRequestUnsignedV1",
+    typeOnly: true,
+  },
+  ...([
+    "MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V3",
+    "MAX_TASK_RUNTIME_PUBLICATION_WORK_BINDING_WIRE_BYTES_V3",
+    "TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_FORMAT_VERSION_V3",
+    "TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_PURPOSE_V3",
+    "assertTaskRuntimePublicationWorkMatchesBaseRequestV3",
+    "createTaskRuntimeBackgroundAuthorizationRequestV3",
+    "decodeTaskRuntimeBackgroundAuthorizationRequestV3",
+    "destroyTaskRuntimeBackgroundAuthorizationRequestV3",
+    "destroyTaskRuntimePublicationWorkBindingV3",
+    "encodeTaskRuntimeBackgroundAuthorizationRequestV3",
+    "encodeTaskRuntimePublicationWorkBindingV3",
+    "isTaskRuntimeBackgroundAuthorizationRequestV3Carrier",
+    "normalizeTaskRuntimePublicationWorkBindingV3",
+    "readTaskRuntimePublicationWorkBindingV3",
+    "taskRuntimeBackgroundAuthorizationIssuerV3",
+  ] as const).map((name) => ({
+    source: "./background/task-runtime-request-v3.ts",
+    imported: name,
+    exported: name,
+    typeOnly: false,
+  })),
+  ...([
+    "TaskRuntimeBackgroundAuthorizationRequestV3",
+    "TaskRuntimePublicationWorkBindingV3",
+  ] as const).map((name) => ({
+    source: "./background/task-runtime-request-v3.ts",
+    imported: name,
+    exported: name,
+    typeOnly: true,
+  })),
 ];
 
 type WireRoundTrip = (bytes: Uint8Array) => Uint8Array | null;
@@ -4032,9 +4344,12 @@ describe("M226 clean supported package API", () => {
   test("data-only wire limits are exact codec-owned aliases", () => {
     const versionedNames = [
       "DOMAIN_FOREGROUND_AUTHORIZATION_MAX_WIRE_BYTES_V2",
+      "HUMAN_HISTORY_READ_ACKNOWLEDGEMENT_MAX_RESULTS_V1",
       "HUMAN_MEMORY_EXACT_ACCESS_REQUEST_MAX_ENTRIES_V2",
+      "HUMAN_TASK_PUBLICATION_REQUEST_MAX_TTL_MS_V1",
       "MAX_ENCRYPTED_PAYLOAD_WIRE_BYTES_V2",
       "MAX_HUMAN_EXISTING_MESSAGE_REPRESENTATION_PUBLICATION_REQUEST_WIRE_BYTES_V1",
+      "MAX_HUMAN_EXISTING_TASK_REPRESENTATION_PUBLICATION_REQUEST_WIRE_BYTES_V1",
       "MAX_HUMAN_HISTORY_READ_ACKNOWLEDGEMENT_WIRE_BYTES_V1",
       "MAX_HUMAN_MEMORY_CONTENT_EMBEDDING_REQUEST_WIRE_BYTES_V2",
       "MAX_HUMAN_MEMORY_EXACT_ACCESS_REQUEST_WIRE_BYTES_V2",
@@ -4044,12 +4359,15 @@ describe("M226 clean supported package API", () => {
     ] as const;
     expect(Object.keys(wireLimits).sort()).toEqual([
       "DOMAIN_FOREGROUND_AUTHORIZATION_MAX_WIRE_BYTES_V2",
+      "HUMAN_HISTORY_READ_ACKNOWLEDGEMENT_MAX_RESULTS_V1",
       "HUMAN_MEMORY_EXACT_ACCESS_REQUEST_MAX_ENTRIES_V2",
+      "HUMAN_TASK_PUBLICATION_REQUEST_MAX_TTL_MS_V1",
       "LATTICE_LIMITS",
       "MAX_AGENT_GRANT_DOMAINS_V2",
       "MAX_AGENT_GRANT_NAMESPACES_V2",
       "MAX_ENCRYPTED_PAYLOAD_WIRE_BYTES_V2",
       "MAX_HUMAN_EXISTING_MESSAGE_REPRESENTATION_PUBLICATION_REQUEST_WIRE_BYTES_V1",
+      "MAX_HUMAN_EXISTING_TASK_REPRESENTATION_PUBLICATION_REQUEST_WIRE_BYTES_V1",
       "MAX_HUMAN_HISTORY_READ_ACKNOWLEDGEMENT_WIRE_BYTES_V1",
       "MAX_HUMAN_MEMORY_CONTENT_EMBEDDING_REQUEST_WIRE_BYTES_V2",
       "MAX_HUMAN_MEMORY_EXACT_ACCESS_REQUEST_WIRE_BYTES_V2",
@@ -4080,7 +4398,7 @@ describe("M226 clean supported package API", () => {
     const versionedWire = explicitExports(`${sourceRoot}/wire.ts`);
     const classified = [...root, ...versionedWire];
 
-    expect(previous).toHaveLength(635);
+    expect(previous).toHaveLength(653);
     expect(classified).toHaveLength(inventory.length);
     expect(classificationErrors(inventory, root, versionedWire)).toEqual([]);
     expect(

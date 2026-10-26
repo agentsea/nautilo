@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from "bun:test";
 import type { QualifiedSurplusChatRoute } from "@nautilo/agent";
-import { computeSetupHasLlm } from "../../src/routes/setup-status";
+import { computeSetupHasLlm, hydrateSetupSurplusReadiness } from "../../src/routes/setup-status";
 
 const QUALIFIED_TOOL_ROUTE: QualifiedSurplusChatRoute = {
   catalogModelId: "venice:openai-gpt-55",
@@ -14,9 +14,7 @@ const QUALIFIED_TOOL_ROUTE: QualifiedSurplusChatRoute = {
 };
 
 const NON_REASONING_TOOL_ROUTE: QualifiedSurplusChatRoute = {
-  catalogModelId: "google:gemini-2.5-pro",
-  surplusModelId: "gemini-2.5-pro",
-  providerPin: "google-ai-studio",
+  ...QUALIFIED_TOOL_ROUTE,
   supportsTools: true,
   supportsVision: false,
   supportsReasoning: false,
@@ -31,6 +29,17 @@ const FULL_BUDGET_REASONING_ROUTE: QualifiedSurplusChatRoute = {
   maxOutputTokens: 131_072,
 };
 
+const QUALIFIED_SONNET_ROUTE: QualifiedSurplusChatRoute = {
+  catalogModelId: "openrouter:anthropic/claude-sonnet-4.6",
+  surplusModelId: "anthropic/claude-sonnet-4.6",
+  providerPin: "openrouter",
+  supportsTools: true,
+  supportsVision: true,
+  supportsReasoning: true,
+  maxContextTokens: 1_000_000,
+  maxOutputTokens: 64_000,
+};
+
 const CLAIMED_AUTHENTICATED = {
   directProviderReady: false,
   authenticated: true,
@@ -38,11 +47,28 @@ const CLAIMED_AUTHENTICATED = {
 } as const;
 
 describe("Surplus setup readiness", () => {
-  test("accepts a derived signed route when Surplus policy and credentials are ready", () => {
+  test("fails closed when vendor discovery confirms no exact route", () => {
     expect(computeSetupHasLlm(CLAIMED_AUTHENTICATED, {
       getPreferSurplus: () => true,
       getSurplusKeyConfigured: () => true,
-    })).toBe(true);
+      getQualifiedSurplusChatRoutes: () => [],
+    })).toBe(false);
+  });
+
+  test("hydrates only for an authenticated claimed server with active policy and credentials", async () => {
+    const hydrate = mock(async () => {});
+    await hydrateSetupSurplusReadiness(CLAIMED_AUTHENTICATED, {
+      getPreferSurplus: () => true,
+      getSurplusKeyConfigured: () => true,
+      hydrateSurplusChatCatalog: hydrate,
+    });
+    expect(hydrate).toHaveBeenCalledTimes(1);
+    await hydrateSetupSurplusReadiness({ ...CLAIMED_AUTHENTICATED, directProviderReady: true }, {
+      getPreferSurplus: () => true,
+      getSurplusKeyConfigured: () => true,
+      hydrateSurplusChatCatalog: hydrate,
+    });
+    expect(hydrate).toHaveBeenCalledTimes(1);
   });
 
   test("requires enabled policy and a configured server credential", () => {
@@ -59,13 +85,13 @@ describe("Surplus setup readiness", () => {
     })).toBe(false);
   });
 
-  test("does not treat the limited non-reasoning pilot as ordinary Room readiness", () => {
+  test("accepts a qualified lower output budget when it leaves input context", () => {
     const deps = {
       getPreferSurplus: () => true,
       getSurplusKeyConfigured: () => true,
       getQualifiedSurplusChatRoutes: () => [QUALIFIED_TOOL_ROUTE],
     };
-    expect(computeSetupHasLlm(CLAIMED_AUTHENTICATED, deps)).toBe(false);
+    expect(computeSetupHasLlm(CLAIMED_AUTHENTICATED, deps)).toBe(true);
   });
 
   test("accepts a signed non-reasoning route with tools and the full default budget", () => {
@@ -83,7 +109,7 @@ describe("Surplus setup readiness", () => {
       getQualifiedSurplusChatRoutes: () => [{
         ...QUALIFIED_TOOL_ROUTE,
         supportsTools: false,
-      }, NON_REASONING_TOOL_ROUTE],
+      }, QUALIFIED_SONNET_ROUTE],
     })).toBe(true);
   });
 
@@ -96,6 +122,14 @@ describe("Surplus setup readiness", () => {
     expect(computeSetupHasLlm(CLAIMED_AUTHENTICATED, deps)).toBe(true);
   });
 
+  test("accepts the exact Sonnet route at its qualified Surplus output budget", () => {
+    expect(computeSetupHasLlm(CLAIMED_AUTHENTICATED, {
+      getPreferSurplus: () => true,
+      getSurplusKeyConfigured: () => true,
+      getQualifiedSurplusChatRoutes: () => [QUALIFIED_SONNET_ROUTE],
+    })).toBe(true);
+  });
+
   test("rejects a tool-unsupported route even when its budget fits", () => {
     expect(computeSetupHasLlm(CLAIMED_AUTHENTICATED, {
       getPreferSurplus: () => true,
@@ -105,6 +139,17 @@ describe("Surplus setup readiness", () => {
         supportsTools: false,
       }],
     })).toBe(false);
+  });
+
+  test("accepts a positive route context when runtime clamps output to remaining context", () => {
+    expect(computeSetupHasLlm(CLAIMED_AUTHENTICATED, {
+      getPreferSurplus: () => true,
+      getSurplusKeyConfigured: () => true,
+      getQualifiedSurplusChatRoutes: () => [{
+        ...NON_REASONING_TOOL_ROUTE,
+        maxContextTokens: NON_REASONING_TOOL_ROUTE.maxOutputTokens,
+      }],
+    })).toBe(true);
   });
 
   test("does not inspect policy or provider keys for guests or unclaimed servers", () => {

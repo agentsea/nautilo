@@ -20,7 +20,7 @@ const REPLACEMENTS: Readonly<Record<string, readonly Replacement[]>> = {
   "http:request_response:GET /api/tasks/pending-attention": [{
     from: ";editRevision?:number;imageAssistance?:", to: `;editRevision?:number;${EXTERNAL_FIELDS}imageAssistance?:`, count: 1,
   }],
-  "http:request_response:POST /api/message-backfill/source": [structural(8)],
+  "http:request_response:POST /api/message-backfill/source": [structural(10)],
   "http:request_response:POST /api/rooms/:id/messages/shadow-read": [structural(8)],
 };
 

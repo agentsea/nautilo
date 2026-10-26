@@ -32,11 +32,17 @@ export function SubagentTranscriptSurface({
   const {
     messages,
     loading,
+    loadingMore,
+    hasMore,
+    loadMore,
     error,
     status: fetchedStatus,
     fundingSource,
     fundingFailure,
-  } = useSubagentTranscript(taskId, { enabled: true });
+  } = useSubagentTranscript(taskId, {
+    enabled: true,
+    taskRunId: taskRunId ?? null,
+  });
   const { list } = useRunningSubagents();
   const reduced = usePrefersReducedMotion();
 
@@ -108,6 +114,17 @@ export function SubagentTranscriptSurface({
             </p>
           ) : null}
           <VirtualTranscriptRows key={taskId} isRunning={isRunning} messages={messages.filter((message) => harnessActivity.length === 0 || !isToolRow(message))} />
+          {hasMore ? (
+            <button
+              type="button"
+              className="self-center rounded border border-border px-2 py-1 text-xs font-medium text-primary disabled:opacity-60"
+              disabled={loading || loadingMore}
+              onClick={loadMore}
+              data-testid="subagent-transcript-load-more"
+            >
+              {loadingMore ? "Opening more…" : "Load more"}
+            </button>
+          ) : null}
           {harnessActivity.length > 0 ? (
             <HarnessActivityFeed activity={harnessActivity} />
           ) : liveActivity.length > 0 ? (

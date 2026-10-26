@@ -623,7 +623,7 @@ describe("ModelsSection Embedding model", () => {
     expect(select.selectedOptions[0]?.textContent).toBe("Server configuration");
     expect(Array.from(select.options).map((option) => option.textContent)).toEqual([
       "Server configuration",
-      "Automatic — Venice → OpenRouter → OpenAI",
+      "Automatic — Venice → OpenRouter → OpenAI → Surplus fallback",
       "Qwen3 Embedding 8B (Venice)",
       "Qwen3 Embedding 8B (OpenRouter)",
       "Text Embedding 3 Small (Venice)",
@@ -631,6 +631,8 @@ describe("ModelsSection Embedding model", () => {
       "Text Embedding 3 Small (OpenAI) (Unavailable)",
     ]);
     expect(select.options[6]?.disabled).toBe(true);
+    expect(view.getByText(/If no direct embedding credential is ready, Prefer Surplus can use/))
+      .toBeTruthy();
   });
 
   test("persists automatic independently", async () => {

@@ -24,6 +24,7 @@
   },
   "dependencies": {
     "@langchain/core": "1.1.45",
+    "@langchain/langgraph": "1.2.9",
     "@nautilo/agent": "workspace:*",
     "@nautilo/attachments": "workspace:*",
     "@nautilo/config": "workspace:*",
@@ -38,7 +39,7 @@
     "@nautilo/trust": "workspace:*",
     "@nautilo/types": "workspace:*",
     "cron-parser": "^5.5.0",
-    "zod": "4.3.6"
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@types/node": "24.10.4",

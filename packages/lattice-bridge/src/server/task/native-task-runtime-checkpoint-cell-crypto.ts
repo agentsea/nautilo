@@ -5,6 +5,8 @@ import {
   humanCryptoDevices,
   namespaceDomainKeyBindings,
   namespaceDomainKeyHeads,
+  parseProtectedTaskCheckpointAadBinding,
+  type ProtectedTaskCheckpointAadBinding,
   type PostgresJsBridgeConnection,
 } from "@nautilo/db";
 import {
@@ -20,6 +22,7 @@ import {
   type TaskRuntimeExecutionEvidence,
 } from "@nautilo/lattice-crypto";
 import {
+  bindProtectedCheckpointCellDataOperationOwner,
   createProtectedCheckpointCellCrypto,
   type ProtectedCheckpointCellAuthorityPort,
 } from "../../checkpoint/protected-checkpoint-cell-crypto.ts";
@@ -31,6 +34,8 @@ import {
   PostgresDomainKeyAuthorityRepository,
   type DomainForegroundNamespaceAuthorityInspectionV2,
 } from "../delivery/postgres-domain-key-authority.ts";
+import type { EncryptionDataOperationOwner } from
+  "../../transition/encryption-data-operation-owner.ts";
 import {
   cryptoTypedDb,
   executeTypedCryptoQuery,
@@ -41,9 +46,12 @@ import {
 export type NativeTaskRuntimeCheckpointCellCryptoInput = Readonly<{
   restricted: PostgresJsBridgeConnection;
   crypto: LatticeCrypto;
+  owner: EncryptionDataOperationOwner;
   serverScope: string;
   evidence: TaskRuntimeExecutionEvidence;
   identity: TaskRuntimeCheckpointCellIdentity;
+  /** Only the exact canonical sealed park supplies retained ciphertext metadata. */
+  checkpointAadBinding?: ProtectedTaskCheckpointAadBinding;
   domains: readonly DomainForegroundSecretEntry[];
   signal: AbortSignal;
   now(): number;
@@ -88,58 +96,11 @@ function sameAuthority(
   );
 }
 
-/** Unmounted Task cell owner; native retained generation keys never leave an operation callback. */
-export function createNativeTaskRuntimeCheckpointCellCrypto(
+function runtimeCheckpointDomain(
   input: NativeTaskRuntimeCheckpointCellCryptoInput,
-): TaskRuntimeCheckpointCellCrypto {
-  const identity = Object.freeze({ ...input.identity });
-  const evidence = input.evidence;
-  const domains = Object.freeze([...input.domains]);
-  if (
-    identity.graphThreadId.length === 0 ||
-    !(input.signal instanceof AbortSignal)
-  ) {
-    throw new TypeError("Native Task checkpoint graph identity is invalid");
-  }
-  const authorizationSession = Object.freeze({});
-  const scope = Object.freeze({
-    logicalThreadId: identity.graphThreadId,
-    namespaceId: identity.namespaceId,
-    keyClass: "ai" as const,
-    expectedAccessRevision: identity.expectedAccessRevision,
-    expectedPolicyRevision: identity.expectedPolicyRevision,
-    authorizationSession,
-  });
-  const authority: ProtectedCheckpointCellAuthorityPort = {
-    execute: async (request) => {
-      if (
-        request.entrypointId !== "task.execute" ||
-        request.authorizationSession !== authorizationSession ||
-        request.namespaceId !== identity.namespaceId ||
-        request.domainId !== identity.domainId ||
-        request.expectedAccessRevision !== identity.expectedAccessRevision ||
-        request.expectedPolicyRevision !== identity.expectedPolicyRevision ||
-        (request.operation !== "encrypt" && request.operation !== "decrypt")
-      ) {
-        throw new TypeError(
-          "Native Task checkpoint operation identity was substituted",
-        );
-      }
-      const controller = new AbortController();
-      const forwardAbort = () => controller.abort(input.signal.reason);
-      if (input.signal.aborted) forwardAbort();
-      else input.signal.addEventListener("abort", forwardAbort, { once: true });
-      let active = true;
-      const assertActive = (): void => {
-        if (!active)
-          throw new TypeError("Native Task checkpoint operation has ended");
-        controller.signal.throwIfAborted();
-        assertAuthenticTaskRuntimeExecutionEvidence(evidence);
-      };
-      const owned: Uint8Array[] = [];
-      let namespace: DomainForegroundNamespaceAuthorityInspectionV2 | undefined;
-      try {
-        assertActive();
+): DomainForegroundSecretEntry {
+  const { evidence, identity, domains } = input;
+  assertAuthenticTaskRuntimeExecutionEvidence(evidence);
         const requirements = evidence.namespaceRequirements.filter(
           (entry) => entry.namespaceId === identity.namespaceId,
         );
@@ -196,6 +157,139 @@ export function createNativeTaskRuntimeCheckpointCellCrypto(
             "Native Task checkpoint evidence or Domain was substituted",
           );
         }
+  return domain;
+}
+
+export type NativeTaskRuntimeCheckpointCellCrypto = TaskRuntimeCheckpointCellCrypto & Readonly<{
+  checkpointAadBinding: ProtectedTaskCheckpointAadBinding;
+}>;
+
+type NativeCheckpointCustody = Omit<NativeTaskRuntimeCheckpointCellCryptoInput, "evidence"> & Readonly<{
+  readOnly: boolean;
+  expiresAt: number;
+  assertGrant(): void;
+  currentDomain(): DomainForegroundSecretEntry;
+}>;
+
+/** Runtime custody admits both checkpoint writes and reads. */
+export function createNativeTaskRuntimeCheckpointCellCrypto(
+  supplied: NativeTaskRuntimeCheckpointCellCryptoInput,
+): NativeTaskRuntimeCheckpointCellCrypto {
+  const input = { ...supplied, identity: Object.freeze({ ...supplied.identity }),
+    domains: Object.freeze([...supplied.domains]) };
+  return createNativeTaskCheckpointCells({
+    ...input, readOnly: false, expiresAt: input.evidence.expiresAt,
+    assertGrant: () => assertAuthenticTaskRuntimeExecutionEvidence(input.evidence),
+    currentDomain: () => runtimeCheckpointDomain(input),
+  });
+}
+
+export type HumanTaskCheckpointReadInput = Omit<
+  NativeTaskRuntimeCheckpointCellCryptoInput, "evidence"
+> & Readonly<{ deadlineAt: number }>;
+
+/**
+ * Decrypt-only cells inside one authenticated Human/device read callback. The
+ * caller owns the Domain secrets and aborts this reader when that callback ends;
+ * current Task/Run/interrupt authority must be revalidated by its supplied port.
+ */
+export function createHumanTaskCheckpointCellReader(
+  supplied: HumanTaskCheckpointReadInput,
+): NativeTaskRuntimeCheckpointCellCrypto {
+  const input = { ...supplied, identity: Object.freeze({ ...supplied.identity }),
+    domains: Object.freeze([...supplied.domains]) };
+  if (!Number.isSafeInteger(input.deadlineAt)) {
+    throw new TypeError("Task checkpoint read deadline is invalid");
+  }
+  const cell = createNativeTaskCheckpointCells({
+    ...input, readOnly: true, expiresAt: input.deadlineAt,
+    assertGrant: () => {
+      input.signal.throwIfAborted();
+      if (input.now() >= input.deadlineAt) throw new TypeError("Task checkpoint read expired");
+    },
+    currentDomain: () => {
+      const domain = input.domains[0];
+      if (input.domains.length !== 1 || domain === undefined
+        || domain.domainId !== input.identity.domainId || domain.keyClass !== "ai") {
+        throw new TypeError("Task checkpoint read Domain was substituted");
+      }
+      return domain;
+    },
+  });
+  const readCrypto: TaskRuntimeCheckpointCellCrypto["crypto"] = {
+    ...cell.crypto,
+    executeAuthorizedOperation: operation => {
+      if (operation.operation !== "read"
+        || operation.scope.logicalThreadId !== input.identity.graphThreadId) {
+        throw new TypeError("Task checkpoint reader cannot execute or mutate a checkpoint");
+      }
+      return cell.crypto.executeAuthorizedOperation(operation);
+    },
+  };
+  return Object.freeze({ scope: cell.scope, crypto: Object.freeze(readCrypto), checkpointAadBinding: cell.checkpointAadBinding });
+}
+
+/** Native retained generation keys never leave an operation callback. */
+function createNativeTaskCheckpointCells(
+  input: NativeCheckpointCustody,
+): NativeTaskRuntimeCheckpointCellCrypto {
+  const identity = Object.freeze({ ...input.identity });
+  if (
+    identity.graphThreadId.length === 0 ||
+    !(input.signal instanceof AbortSignal)
+  ) {
+    throw new TypeError("Native Task checkpoint graph identity is invalid");
+  }
+  const checkpointAadBinding = parseProtectedTaskCheckpointAadBinding(input.checkpointAadBinding ?? {
+    version: 1, namespaceId: identity.namespaceId, domainId: identity.domainId,
+    namespaceAccessRevision: identity.expectedAccessRevision, policyRevision: identity.expectedPolicyRevision,
+  });
+  if (checkpointAadBinding === null || checkpointAadBinding.namespaceId !== identity.namespaceId
+    || checkpointAadBinding.namespaceAccessRevision > identity.expectedAccessRevision
+    || checkpointAadBinding.policyRevision > identity.expectedPolicyRevision) {
+    throw new TypeError("Native Task checkpoint ciphertext binding is invalid");
+  }
+  const authorizationSession = Object.freeze({});
+  const scope = Object.freeze({
+    logicalThreadId: identity.graphThreadId,
+    namespaceId: identity.namespaceId,
+    keyClass: "ai" as const,
+    expectedAccessRevision: identity.expectedAccessRevision,
+    expectedPolicyRevision: identity.expectedPolicyRevision,
+    authorizationSession,
+  });
+  const authority: ProtectedCheckpointCellAuthorityPort = {
+    execute: async (request) => {
+      if (
+        request.entrypointId !== "task.execute" ||
+        request.authorizationSession !== authorizationSession ||
+        request.namespaceId !== identity.namespaceId ||
+        request.domainId !== identity.domainId ||
+        request.expectedAccessRevision !== identity.expectedAccessRevision ||
+        request.expectedPolicyRevision !== identity.expectedPolicyRevision ||
+        (request.operation !== "encrypt" && request.operation !== "decrypt")
+        || (input.readOnly && request.operation !== "decrypt")
+      ) {
+        throw new TypeError(
+          "Native Task checkpoint operation identity was substituted",
+        );
+      }
+      const controller = new AbortController();
+      const forwardAbort = () => controller.abort(input.signal.reason);
+      if (input.signal.aborted) forwardAbort();
+      else input.signal.addEventListener("abort", forwardAbort, { once: true });
+      let active = true;
+      const assertActive = (): void => {
+        if (!active)
+          throw new TypeError("Native Task checkpoint operation has ended");
+        controller.signal.throwIfAborted();
+        input.assertGrant();
+      };
+      const owned: Uint8Array[] = [];
+      let namespace: DomainForegroundNamespaceAuthorityInspectionV2 | undefined;
+      try {
+        assertActive();
+        const domain = input.currentDomain();
         await input.assertCurrentTaskAuthority();
         assertActive();
         const handle = await verifyCryptoPostgresHandle(input.restricted);
@@ -426,7 +520,7 @@ export function createNativeTaskRuntimeCheckpointCellCrypto(
                   signal: controller.signal,
                   assertActive,
                   assertCommitAllowed,
-                  remainingMs: () => evidence.expiresAt - input.now(),
+                  remainingMs: () => input.expiresAt - input.now(),
                   material: Object.freeze({
                     namespaceId: identity.namespaceId,
                     domainId: identity.domainId,
@@ -459,13 +553,19 @@ export function createNativeTaskRuntimeCheckpointCellCrypto(
       }
     },
   };
+  const crypto = createProtectedCheckpointCellCrypto({
+    crypto: input.crypto,
+    authority,
+    domainId: identity.domainId,
+    entrypointId: "task.execute",
+    aadBinding: checkpointAadBinding,
+  });
   return Object.freeze({
-    crypto: createProtectedCheckpointCellCrypto({
-      crypto: input.crypto,
-      authority,
-      domainId: identity.domainId,
-      entrypointId: "task.execute",
+    crypto: bindProtectedCheckpointCellDataOperationOwner({
+      owner: input.owner,
+      crypto,
     }),
     scope,
+    checkpointAadBinding,
   });
 }

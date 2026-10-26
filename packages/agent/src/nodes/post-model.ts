@@ -1,3 +1,5 @@
+import { getCurrentProtectedTaskProjectFilePort, matchesProtectedTaskProjectFilePort } from "../runtime/protected-task-project-file";
+import { withResultReader } from "../tools/result-reader/result-projection";
 import { isExternalRoomState, settleExternalRoomToolDenials } from "../tools/external-room-policy";
 import { bindDelegatedLocalExecution } from "../tools/local-execution/admission";
 import { getCurrentLocalExecutionDelegation, type DelegatedLocalExecutionPort } from "../runtime/local-execution-delegation";
@@ -78,6 +80,10 @@ import {
   projectionSnapshotExpiresAt,
   projectionSnapshotRoomKind,
 } from "../tools/memory/projection-sharing";
+import {
+  findProtectedMemoryAccessSnapshot,
+  protectedMemoryAccessApprovalPreview,
+} from "../tools/memory/protected-task-access-sharing";
 import { computeShareArtifactApprovalPreview } from "../tools/file/share-artifact";
 import { parseOrdinaryContentAccessIntent } from "../tools/content-access-intent";
 import {
@@ -591,7 +597,7 @@ export function createPostModelNode(
       toolPolicy: envelope?.toolPolicy,
       readableNamespaces: envelopeReadableNamespaces(envelope),
       activeModelCapabilities,
-      toolNameWhitelist: state.toolWhitelist,
+      toolNameWhitelist: withResultReader(state.toolWhitelist),
       activatedToolNames,
       // Pre-flight retains its relay-live-check defense model: dispatch
       // revalidates liveness immediately before execution.
@@ -807,6 +813,16 @@ export function createPostModelNode(
       const resolveCandidates = async (candidates: ToolCall[]): Promise<ToolCall[]> => {
         const retained: ToolCall[] = [];
         for (const tc of candidates) {
+          const projectFile = getCurrentProtectedTaskProjectFilePort();
+          if (tc.name === "file" && projectFile !== null) {
+            if (!tc.id || !matchesProtectedTaskProjectFilePort(projectFile, state)) {
+              forbidden.push({ tc, reason: "Task project file authority does not match this invocation" });
+              continue;
+            }
+            requiredHostByToolCall.set(tc.id, projectFile.relayId);
+            retained.push(tc);
+            continue;
+          }
           if (isLocalExecutionTool(tc.name) && state.trustedExecutionEntrypoint === "background.task") {
             const registry = getRelayRegistry();
             const operation = localExecutionOperation(tc.name, tc.args);
@@ -2138,6 +2154,24 @@ export async function interruptToolEntry(
       // Invalid projection-like input is rejected by preflight in a normal
       // graph run. Keep its provenance out of any defensive approval payload.
       return { ...base, args: { mode: "project" } };
+    }
+    const accessSnapshot = findProtectedMemoryAccessSnapshot(state, tc);
+    if (accessSnapshot !== null) {
+      const preview = protectedMemoryAccessPort === undefined
+        ? null
+        : protectedMemoryAccessApprovalPreview(
+            accessSnapshot,
+            protectedMemoryAccessPort,
+          );
+      if (preview === null) {
+        throw new ProtectedMemoryToolUnavailableError("authorization_required");
+      }
+      return { ...base, shareMemoryPreview: preview };
+    }
+    if (state.protectedMemoryAccessSnapshots?.some(
+      snapshot => snapshot.toolCallId === tc.id,
+    )) {
+      throw new ProtectedMemoryToolUnavailableError("stale_revision");
     }
     try {
       const preview = await computeShareMemoryApprovalPreview(tc, {

@@ -5,11 +5,19 @@ import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 import Fastify from "fastify";
 import {
   NautiloApiClient,
+  memoryProcessorRecipientV1Schema,
+  memoryProcessorRecipientV2Schema,
   type MemoryProcessorRecipientV1,
   type NautiloApiFetch,
 } from "@nautilo/api-client";
 import { LatticeCrypto } from "@nautilo/lattice-crypto";
-import { sealForegroundMemoryProcessorRequest } from "@nautilo/lattice-bridge";
+import {
+  encodeMemoryProcessorSearchQueryV2,
+  sealForegroundMemoryProcessorRequest,
+  sealForegroundMemoryProcessorRequestV2,
+  sealForegroundMemoryProcessorSearchQueryV2,
+} from "@nautilo/lattice-bridge";
+import type { MemoryEmbeddingDisclosureV2 } from "@nautilo/lattice-crypto/wire";
 import {
   createHumanMemoryProtectedRoutePorts,
   type HumanMemoryProtectedProductRoutePort,
@@ -166,6 +174,7 @@ mock.module("../../../agent/src/store/memory-store", () => ({
   executeAtomicProjectionMemory: async () => {
     throw new Error("executeAtomicProjectionMemory must not run in memory route tests");
   },
+  fingerprintProjectionAudience: () => "test-projection-audience",
   fingerprintProjectionReadableAuthority: () => "test-projection-readable-authority",
 }));
 
@@ -510,6 +519,22 @@ describe("memory routes (D234)", () => {
     });
   }
 
+  function marketplaceDisclosure(): MemoryEmbeddingDisclosureV2 {
+    return {
+      contractVersion: 2,
+      canonicalSpace: { provider: "venice", model: "text-embedding-3-large", dimensions: 1536 },
+      processingRoute: { transport: "surplus_marketplace", marketplacePolicyVersion: "surplus-embedding-marketplace-v1",
+        dataRecipientClasses: ["surplus", "marketplace_seller", "seller_upstream_processor"] },
+    };
+  }
+
+  async function recipientV2(app: ReturnType<typeof makeApp>) {
+    const response = await app.inject({ method: "GET", url: "/api/memory/processor-recipient/v2" });
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store");
+    return memoryProcessorRecipientV2Schema.parse(response.json());
+  }
+
   async function sealedPrepared(
     app: ReturnType<typeof makeApp>,
     prepared: ReturnType<typeof preparedCreatePayload>
@@ -775,6 +800,134 @@ describe("memory routes (D234)", () => {
     expect(legacyGet.statusCode).toBe(405);
     expect(ports.search.mock.calls.length).toBe(1);
     expect(searchMemoryMock.mock.calls.length).toBe(0);
+  });
+
+  test("keeps the legacy recipient strict-compatible while disclosing the complete marketplace route through V2", async () => {
+    const disclosure = marketplaceDisclosure();
+    const ports = { ...protectedPorts(), embeddingConfiguration: disclosure.canonicalSpace, embeddingDisclosure: disclosure };
+    const app = makeApp(protectedEnvelope(), async () => ports);
+    try {
+      const legacyResponse = await app.inject({ method: "GET", url: "/api/memory/processor-recipient" });
+      expect(legacyResponse.statusCode).toBe(200);
+      expect(legacyResponse.headers["cache-control"]).toBe("no-store");
+      const legacy = memoryProcessorRecipientV1Schema.parse(legacyResponse.json());
+      expect(legacy).not.toHaveProperty("embedding");
+      expect(legacy).not.toHaveProperty("embeddingDisclosure");
+      const versioned = await recipientV2(app);
+      expect(versioned).toEqual({ ...legacy, formatVersion: 2, embedding: disclosure });
+      expect(ports.search).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
+
+  test("preserves the legacy direct descriptor and derives its exact V2 disclosure", async () => {
+    const canonicalSpace = { provider: "openai" as const, model: "text-embedding-3-small", dimensions: 1536 as const };
+    const ports = { ...protectedPorts(), embeddingConfiguration: canonicalSpace };
+    const app = makeApp(protectedEnvelope(), async () => ports);
+    try {
+      const response = await app.inject({ method: "GET", url: "/api/memory/processor-recipient" });
+      const legacy = memoryProcessorRecipientV1Schema.parse(response.json());
+      expect(legacy.embedding).toEqual(canonicalSpace);
+      expect((await recipientV2(app)).embedding).toEqual({ contractVersion: 2, canonicalSpace, processingRoute: { transport: "direct" } });
+    } finally { await app.close(); }
+  });
+
+  test.each(["direct", "surplus_marketplace"] as const)("admits an exact sealed V2 %s query and passes its disclosure to the processor", async (transport) => {
+    const marketplace = marketplaceDisclosure();
+    const disclosure: MemoryEmbeddingDisclosureV2 = transport === "direct"
+      ? { ...marketplace, processingRoute: { transport } } : marketplace;
+    const ports = { ...protectedPorts(), embeddingConfiguration: disclosure.canonicalSpace, embeddingDisclosure: disclosure };
+    const app = makeApp(protectedEnvelope(), async () => ports);
+    try {
+      const recipient = await recipientV2(app);
+      const sealedQueryV2 = await sealForegroundMemoryProcessorSearchQueryV2({ crypto: new LatticeCrypto(), recipient,
+        subjectId: "user-1", query: "  private marketplace query  ", embeddingDisclosure: disclosure });
+      expect(JSON.stringify(sealedQueryV2)).not.toContain("private marketplace query");
+      const response = await app.inject({ method: "POST", url: "/api/memory/search",
+        payload: { sealedQueryV2, mode: "semantic", limit: 10, includeArchive: true } });
+      expect(response.statusCode).toBe(200);
+      expect(ports.search).toHaveBeenCalledTimes(1);
+      expect(ports.search.mock.calls[0]?.[0]).toMatchObject({
+        authority: { userId: "user-1", readableNamespaceIds: [UUID_NS] }, namespaceIds: [UUID_NS],
+        query: "private marketplace query", embeddingDisclosure: disclosure, limit: 10, includeArchive: true,
+      });
+      expect(searchMemoryMock).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
+
+  test.each(["transport", "provider", "model"] as const)("rejects a V2 query after its advertised %s changes before processor access", async (changedField) => {
+    const direct: MemoryEmbeddingDisclosureV2 = { ...marketplaceDisclosure(), processingRoute: { transport: "direct" } };
+    const ports = protectedPorts();
+    let current = direct;
+    const app = makeApp(protectedEnvelope(), async () => ({ ...ports,
+      embeddingConfiguration: current.canonicalSpace, embeddingDisclosure: current }));
+    try {
+      const recipient = await recipientV2(app);
+      const sealedQueryV2 = await sealForegroundMemoryProcessorSearchQueryV2({ crypto: new LatticeCrypto(), recipient,
+        subjectId: "user-1", query: "private stale query", embeddingDisclosure: direct });
+      current = changedField === "transport" ? marketplaceDisclosure()
+        : { ...direct, canonicalSpace: { ...direct.canonicalSpace,
+          ...(changedField === "provider" ? { provider: "openai" as const } : { model: "text-embedding-3-small" }) } };
+      const response = await app.inject({ method: "POST", url: "/api/memory/search",
+        payload: { sealedQueryV2, mode: "semantic" } });
+      expect(response.statusCode).toBe(409);
+      expect(response.body).not.toContain("private stale query");
+      expect(ports.search).not.toHaveBeenCalled();
+      expect(searchMemoryMock).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
+
+  test("rejects malformed or unknown V2 disclosure semantics inside valid sealed carriers before processor access", async () => {
+    const disclosure = marketplaceDisclosure();
+    const ports = { ...protectedPorts(), embeddingDisclosure: disclosure };
+    const app = makeApp(protectedEnvelope(), async () => ports);
+    try {
+      const recipient = await recipientV2(app);
+      const body = { formatVersion: 2, purpose: "memory.query_embedding", query: "private invalid query", embeddingDisclosure: disclosure };
+      const malformed: unknown[] = [
+        { ...body, formatVersion: 1 }, { ...body, purpose: "memory.content_embedding" }, { ...body, extra: true },
+        { ...body, embeddingDisclosure: { ...disclosure, contractVersion: 1 } },
+        { ...body, embeddingDisclosure: { ...disclosure, extra: true } },
+        { ...body, embeddingDisclosure: { ...disclosure, canonicalSpace: { ...disclosure.canonicalSpace, dimensions: 3072 } } },
+        { ...body, embeddingDisclosure: { ...disclosure, processingRoute: { ...disclosure.processingRoute, marketplacePolicyVersion: "unknown" } } },
+        { ...body, embeddingDisclosure: { ...disclosure, processingRoute: { ...disclosure.processingRoute, dataRecipientClasses: ["surplus"] } } },
+        { ...body, embeddingDisclosure: undefined },
+      ];
+      for (const invalid of malformed) {
+        const sealedQueryV2 = await sealForegroundMemoryProcessorRequestV2({ crypto: new LatticeCrypto(), recipient,
+          subjectId: "user-1", purpose: "memory.query_embedding", payload: JSON.stringify(invalid) });
+        const response = await app.inject({ method: "POST", url: "/api/memory/search", payload: { sealedQueryV2, mode: "semantic" } });
+        expect(response.statusCode).toBe(400);
+        expect(response.body).not.toContain("private invalid query");
+      }
+      const sealedQueryV2 = await sealForegroundMemoryProcessorRequestV2({ crypto: new LatticeCrypto(), recipient,
+        subjectId: "user-1", purpose: "memory.query_embedding", payload: "legacy raw plaintext query" });
+      expect((await app.inject({ method: "POST", url: "/api/memory/search", payload: { sealedQueryV2, mode: "semantic" } })).statusCode).toBe(400);
+      expect(ports.search).not.toHaveBeenCalled();
+      expect(searchMemoryMock).not.toHaveBeenCalled();
+    } finally { await app.close(); }
+  });
+
+  test("rejects legacy marketplace queries and V2 subject or purpose substitutions before processor access", async () => {
+    const disclosure = marketplaceDisclosure();
+    const ports = { ...protectedPorts(), embeddingConfiguration: disclosure.canonicalSpace, embeddingDisclosure: disclosure };
+    const app = makeApp(protectedEnvelope(), async () => ports);
+    try {
+      const sealedQuery = await sealFor(app, "memory.query_embedding", "legacy private query");
+      expect((await app.inject({ method: "POST", url: "/api/memory/search", payload: { sealedQuery, mode: "semantic" } })).statusCode).toBe(409);
+      const recipient = await recipientV2(app);
+      for (const binding of [
+        { purpose: "memory.content_embedding" as const, subjectId: "user-1" },
+        { purpose: "memory.query_embedding" as const, subjectId: "other-user" },
+      ]) {
+        const sealedQueryV2 = await sealForegroundMemoryProcessorRequestV2({ crypto: new LatticeCrypto(), recipient, ...binding,
+          payload: encodeMemoryProcessorSearchQueryV2({ formatVersion: 2, purpose: "memory.query_embedding", query: "private subject-bound query", embeddingDisclosure: disclosure }) });
+        const response = await app.inject({ method: "POST", url: "/api/memory/search", payload: { sealedQueryV2, mode: "semantic" } });
+        expect(response.statusCode).toBeGreaterThanOrEqual(400);
+        expect(response.statusCode).toBeLessThan(500);
+      }
+      expect(ports.search).not.toHaveBeenCalled();
+      expect(searchMemoryMock).not.toHaveBeenCalled();
+    } finally { await app.close(); }
   });
 
   test("executes the dormant Human assembler through the canonical API client", async () => {

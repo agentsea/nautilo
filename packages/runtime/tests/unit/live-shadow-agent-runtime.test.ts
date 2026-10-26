@@ -23,13 +23,23 @@ import {
   StrictShadowEnforcementError,
   type StrictShadowEnforcementPolicy,
 } from "@nautilo/lattice-bridge";
-import { parseFullEncryptionMessageRealtimeContentEventV2, type ProtectedMessageDtoV2 } from "@nautilo/types";
+import {
+  parseFullEncryptionMessageRealtimeContentEventV2,
+  type ProtectedMessageDtoV2,
+  type ServerEvent,
+} from "@nautilo/types";
 import { normalizeModelToolCallIdentity } from "../../../agent/src/nodes/model-tool-call-identity";
 
 import { createLiveShadowAgentRuntimeTurn as createRuntimeTurn } from
   "../../src/conversation/live-shadow-agent-runtime";
-import { protectLiveShadowAssistantToken, publishLiveShadowRuntimeMessages } from
+import {
+  filterDurableOnlyLiveShadowEvents,
+  projectLiveShadowPublishedMessageEvent,
+  protectLiveShadowAssistantToken,
+  publishLiveShadowRuntimeMessages,
+} from
   "../../src/conversation/live-shadow-agent-runtime-events";
+import { TokenBatcher } from "../../src/utils/token-batcher";
 
 function createLiveShadowAgentRuntimeTurn(
   session: LiveShadowAgentTurnSession,
@@ -329,6 +339,242 @@ describe("live Shadow Agent Runtime fallback boundary", () => {
       },
     })).rejects.toThrow("reservation outcome unknown");
     expect(reserveCalls).toBe(1);
+  });
+
+  test("certified Task wakes suppress realtime frames and retain one durable publication in Full and dual", async () => {
+    for (const representationMode of [
+      "shadow_encryption",
+      "full_encryption",
+    ] as const) {
+      let reserveCalls = 0;
+      let sealCalls = 0;
+      let publishCalls = 0;
+      const protectedMessage: ProtectedMessageDtoV2 = {
+        dtoVersion: 2,
+        projection: {
+          messageId: "42",
+          sessionId: "10000000-0000-4000-8000-000000000042",
+          roomId: "20000000-0000-4000-8000-000000000042",
+          namespaceId: "30000000-0000-4000-8000-000000000042",
+          role: "assistant",
+          createdAt: "2027-01-15T08:00:00.000Z",
+          editRevision: 0,
+        },
+        protectedPayload: {
+          status: "encrypted",
+          cryptoObjectId: "message:certified-task:42",
+          payloadVersion: 2,
+          keyClass: "ai",
+          encryptedPayloadBytesBase64url: "AQ",
+          accessManifestBytesBase64url: "Ag",
+          namespaceEnvelopeBytesBase64url: "Aw",
+        },
+      };
+      const runtime = {
+        representationMode,
+        sharedAgentPlanBytesBase64url: null,
+        toolBoundary: {} as never,
+        reserveAssistantStream: async () => {
+          reserveCalls += 1;
+          return {
+            reservation: {
+              messageId: 42,
+              transcriptOrdinal: 2,
+              authorRole: "assistant" as const,
+            } as LiveShadowAgentStreamReservation["reservation"],
+            startBytes: new Uint8Array([1]),
+          };
+        },
+        sealAssistantStreamChunk: async () => {
+          sealCalls += 1;
+          return { frameBytes: new Uint8Array([2]), terminal: false };
+        },
+        publishMessages: async () => {
+          publishCalls += 1;
+          return {
+            status: "protected" as const,
+            protectedMessages: [{
+              representationMode,
+              reservation: {
+                messageId: 42,
+                transcriptOrdinal: 2,
+                authorRole: "assistant" as const,
+              } as LiveShadowAgentPublishedMessage["reservation"],
+              policyRevision: 8,
+              ordinaryPayloadBytes: new TextEncoder().encode("final"),
+              openedPayload: { role: "assistant" as const, content: "final" },
+              protectedMessage,
+              durableEventDigest: new Uint8Array(32),
+              streamEvidence: null,
+            }],
+          };
+        },
+      };
+      const event = {
+        type: "message.tokens" as const,
+        laneKey: "room:certified-task",
+        content: "private token",
+        done: false,
+        assistantMessageKey: "assistant:certified-task",
+        chunkSequence: 1,
+      };
+      const suppressed = await protectLiveShadowAssistantToken({
+        runtime,
+        operationId: "task-run-delivery-wake:certified",
+        laneKey: "room:certified-task",
+        state: { ordinals: new Map() },
+        messagesToPersist: [],
+        event,
+        durableOnly: true,
+      });
+      expect(suppressed).toEqual({ handled: true, events: [] });
+      expect({ reserveCalls, sealCalls }).toEqual({
+        reserveCalls: 0,
+        sealCalls: 0,
+      });
+
+      const durable = await publishLiveShadowRuntimeMessages({
+        runtime,
+        operationId: "task-run-delivery-wake:certified",
+        laneKey: "room:certified-task",
+        agentId: "agent:certified-task",
+        messages: [new AIMessage({ content: "final" })],
+        persistOrdinary: async () => undefined,
+        warn: () => undefined,
+      });
+      expect(publishCalls).toBe(1);
+      expect(durable).toHaveLength(1);
+      expect(durable[0]).toMatchObject({
+        type: "message.shadow_durable",
+        wireVersion: representationMode === "full_encryption" ? 2 : 1,
+      });
+      if (representationMode === "full_encryption") {
+        expect(durable[0]).not.toHaveProperty("ordinaryPayloadBytesBase64url");
+      } else {
+        expect(durable[0]).toHaveProperty(
+          "ordinaryPayloadBytesBase64url",
+          "ZmluYWw",
+        );
+      }
+
+      const streamed = await protectLiveShadowAssistantToken({
+        runtime,
+        operationId: "legacy-permanent-wake",
+        laneKey: "room:certified-task",
+        state: { ordinals: new Map() },
+        messagesToPersist: [],
+        event,
+      });
+      expect(streamed.handled).toBe(true);
+      expect({ reserveCalls, sealCalls }).toEqual({
+        reserveCalls: 1,
+        sealCalls: 1,
+      });
+    }
+  });
+
+  test("projects committed durable receipts onto the existing local and shared wire", () => {
+    const protectedMessage: ProtectedMessageDtoV2 = {
+      dtoVersion: 2,
+      projection: {
+        messageId: "42",
+        sessionId: "10000000-0000-4000-8000-000000000042",
+        roomId: "20000000-0000-4000-8000-000000000042",
+        namespaceId: "30000000-0000-4000-8000-000000000042",
+        role: "assistant",
+        createdAt: "2027-01-15T08:00:00.000Z",
+        editRevision: 0,
+      },
+      protectedPayload: {
+        status: "encrypted",
+        cryptoObjectId: "message:certified-task:42",
+        payloadVersion: 2,
+        keyClass: "ai",
+        encryptedPayloadBytesBase64url: "AQ",
+        accessManifestBytesBase64url: "Ag",
+        namespaceEnvelopeBytesBase64url: "Aw",
+      },
+    };
+    const receipt = {
+      representationMode: "shadow_encryption" as const,
+      reservation: {
+        messageId: 42,
+        transcriptOrdinal: 2,
+        authorRole: "assistant" as const,
+      } as LiveShadowAgentPublishedMessage["reservation"],
+      policyRevision: 8,
+      ordinaryPayloadBytes: new TextEncoder().encode("final"),
+      openedPayload: { role: "assistant" as const, content: "final" },
+      protectedMessage,
+      durableEventDigest: new Uint8Array(32).fill(3),
+      streamEvidence: null,
+    } satisfies LiveShadowAgentPublishedMessage;
+    const common = {
+      message: receipt,
+      representationMode: "shadow_encryption" as const,
+      operationId: "task-run-delivery-wake:certified",
+      laneKey: "room:20000000-0000-4000-8000-000000000042",
+    };
+
+    expect(projectLiveShadowPublishedMessageEvent({
+      ...common,
+      sharedAgentPlanBytesBase64url: null,
+    })).toMatchObject({
+      type: "message.shadow_durable",
+      wireVersion: 1,
+      ordinaryPayloadBytesBase64url: "ZmluYWw",
+    });
+    expect(projectLiveShadowPublishedMessageEvent({
+      ...common,
+      sharedAgentPlanBytesBase64url: "cGxhbg",
+    })).toMatchObject({
+      type: "message.shared_agent_output_shadow",
+      wireVersion: 1,
+      planBytesBase64url: "cGxhbg",
+      ordinaryPayloadBytesBase64url: "ZmluYWw",
+    });
+    expect(projectLiveShadowPublishedMessageEvent({
+      ...common,
+      message: { ...receipt, representationMode: "full_encryption" },
+      representationMode: "full_encryption",
+      sharedAgentPlanBytesBase64url: null,
+    })).not.toHaveProperty("ordinaryPayloadBytesBase64url");
+    expect(() => projectLiveShadowPublishedMessageEvent({
+      ...common,
+      representationMode: "full_encryption",
+      sharedAgentPlanBytesBase64url: null,
+    })).toThrow("representation disagrees");
+  });
+
+  test("certified Task wakes suppress final buffered tokens on every stream exit", () => {
+    for (const exit of ["success", "error", "cancel"] as const) {
+      const batcher = new TokenBatcher({
+        laneKey: `room:certified-${exit}`,
+        maxChars: 1_000,
+      });
+      batcher.addToken(`private ${exit} tail`);
+      expect(batcher.drain()).toEqual([]);
+      batcher.completeMessage();
+      const drained = batcher.drain();
+      expect(drained).toHaveLength(1);
+      expect(drained[0]).toMatchObject({
+        type: "message.tokens",
+        content: `private ${exit} tail`,
+        done: true,
+      });
+      expect(filterDurableOnlyLiveShadowEvents(drained, true)).toEqual([]);
+      expect(filterDurableOnlyLiveShadowEvents(drained, false)).toBe(drained);
+    }
+
+    const nonToken = {
+      type: "agent.progress",
+      laneKey: "room:certified-task",
+      turnId: "turn:certified-task",
+      phase: "post_model",
+    } as ServerEvent;
+    expect(filterDurableOnlyLiveShadowEvents([nonToken], true)).toEqual([
+      nonToken,
+    ]);
   });
 
   test("refuses a Full runtime backed by an ordinary-persisting Shadow session", () => {

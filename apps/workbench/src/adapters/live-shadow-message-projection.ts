@@ -142,3 +142,35 @@ export function projectLiveShadowMessageResult(input: Readonly<{
     turnId: input.event.operationId,
   })]);
 }
+
+/** Failed durable realtime verification may recover only through the current
+ * Room's authenticated history reader. The action carries no fallback body. */
+export function resolveLiveShadowMessageDisplayAction(input: Readonly<{
+  event: ProjectableLiveShadowMessageEvent;
+  result: VaultLiveShadowReceiveResult;
+  activeRoomId: string | null;
+}>): Readonly<
+  | { kind: "history_refresh"; messageId: string }
+  | { kind: "project"; events: readonly ServerEvent[] }
+> {
+  if (
+    input.event.type === "message.shadow_durable"
+    && input.result.status === "failed"
+    && (
+      input.result.reason === "integrity"
+      || input.result.ordinaryFallback === undefined
+    )
+    && input.activeRoomId !== null
+    && input.event.laneKey === `room:${input.activeRoomId}`
+    && input.event.protectedMessage.projection.roomId === input.activeRoomId
+  ) {
+    return Object.freeze({
+      kind: "history_refresh" as const,
+      messageId: input.event.protectedMessage.projection.messageId,
+    });
+  }
+  return Object.freeze({
+    kind: "project" as const,
+    events: projectLiveShadowMessageResult(input),
+  });
+}

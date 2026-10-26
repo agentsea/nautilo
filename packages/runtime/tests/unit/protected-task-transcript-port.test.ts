@@ -25,17 +25,21 @@ async function expectRejection(work: Promise<void>, message: string): Promise<vo
 
 describe("protected Task transcript port", () => {
   test("publishes exact Agent payloads in order with stable retry identities", async () => {
-    const calls: Array<{ key: string; role: string; content: string }> = [];
+    const calls: Array<{ key: string; role: string; content: string;
+      sensitiveMetadata: Readonly<Record<string, unknown>> | undefined }> = [];
     const port = createProtectedTaskTranscriptPort({
       identity,
       signal: new AbortController().signal,
       publish: async ({ idempotencyKey, payload }) => {
-        calls.push({ key: idempotencyKey, role: payload.role, content: payload.content });
+        calls.push({ key: idempotencyKey, role: payload.role,
+          content: payload.content,
+          sensitiveMetadata: payload.sensitiveMetadata });
       },
     });
     const messages = [
       new AIMessage({ content: "working" }),
-      new ToolMessage({ content: "private output", tool_call_id: "call-1" }),
+      new ToolMessage({ content: "private output", tool_call_id: "call-1",
+        additional_kwargs: { nautilo_tool_status: "success" } }),
     ];
     await port.publishBatch({ ...identity, messages });
     const first = [...calls];
@@ -44,7 +48,38 @@ describe("protected Task transcript port", () => {
     expect(calls.slice(2)).toEqual(first);
     expect(first.map((call) => call.role)).toEqual(["assistant", "tool"]);
     expect(first.map((call) => call.content)).toEqual(["working", "private output"]);
+    expect(first[1]?.sensitiveMetadata).toEqual({
+      toolCallId: "call-1", toolStatus: "success",
+    });
     expect(first.every((call) => call.key.startsWith("task-transcript:run-1:fp:v1:"))).toBe(true);
+  });
+
+  test("withholds an unknown native Tool status", async () => {
+    let metadata: Readonly<Record<string, unknown>> | undefined;
+    const port = createProtectedTaskTranscriptPort({
+      identity,
+      signal: new AbortController().signal,
+      publish: async ({ payload }) => { metadata = payload.sensitiveMetadata; },
+    });
+    await port.publishBatch({ ...identity, messages: [new ToolMessage({
+      content: "private output", tool_call_id: "call-1",
+      additional_kwargs: { nautilo_tool_status: "unknown" },
+    })] });
+    expect(metadata).toEqual({ toolCallId: "call-1" });
+  });
+
+  test("withholds native Tool status without canonical correlation", async () => {
+    let metadata: Readonly<Record<string, unknown>> | undefined;
+    const port = createProtectedTaskTranscriptPort({
+      identity,
+      signal: new AbortController().signal,
+      publish: async ({ payload }) => { metadata = payload.sensitiveMetadata; },
+    });
+    await port.publishBatch({ ...identity, messages: [new ToolMessage({
+      content: "private output", tool_call_id: "",
+      additional_kwargs: { nautilo_tool_status: "success" },
+    })] });
+    expect(metadata).toBeUndefined();
   });
 
   test("refuses a different segment and Human messages before publication", async () => {

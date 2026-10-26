@@ -32,7 +32,10 @@ import {
   unixTimestamp,
 } from "../../src/v2-types/ids.ts";
 
-function fixture(namespaceIds: readonly string[] = ["namespace-a", "namespace-b"]) {
+function fixture(
+  namespaceIds: readonly string[] = ["namespace-a", "namespace-b"],
+  taskDefinitionForegroundAuthorizationBytes?: Uint8Array,
+) {
   const crypto = new LatticeCrypto(seededRng(0x311_aa));
   const runtime: AgentRuntimeGenerationV2 = Object.freeze({
     agentId: agentId("agent-device-wrapped-set"),
@@ -41,13 +44,19 @@ function fixture(namespaceIds: readonly string[] = ["namespace-a", "namespace-b"
     key: new Uint8Array(32).fill(0x31),
   });
   const signer = deriveAgentRuntimeObjectSignerPublicV1(crypto, runtime);
-  const targetObjectId = objectId("object-device-wrapped-agent-set");
+  const targetObjectId = objectId(
+    taskDefinitionForegroundAuthorizationBytes === undefined
+      ? "object-device-wrapped-agent-set"
+      : `task-definition:v1:${"a".repeat(64)}`,
+  );
   const payloadBytes = encodeEncryptedPayloadV2({
     formatVersion: ENCRYPTED_PAYLOAD_FORMAT_VERSION_V2,
     context: {
       objectId: targetObjectId,
       keyClass: "ai",
-      objectType: "memory",
+      objectType: taskDefinitionForegroundAuthorizationBytes === undefined
+        ? "memory"
+        : "task_definition:v1",
       createdAt: unixTimestamp(100),
     },
     ciphertext: new Uint8Array(64).fill(0x32),
@@ -90,10 +99,14 @@ function fixture(namespaceIds: readonly string[] = ["namespace-a", "namespace-b"
         publicationSetDigest: new Uint8Array(32).fill(0x64 + index),
         audienceFingerprint: new Uint8Array(32).fill(0x66 + index),
       })),
-      agentAuthorizationRevision: 9,
+      agentAuthorizationRevision:
+        taskDefinitionForegroundAuthorizationBytes === undefined ? 9 : 0,
       runtime,
       signerKeyId: signer.principal.signerKeyId,
       signerPublicKey: signer.publicKey,
+      ...(taskDefinitionForegroundAuthorizationBytes === undefined ? {} : {
+        taskDefinitionForegroundAuthorizationBytes,
+      }),
     });
   const decision = (context = prepared.authority) => Object.freeze({
     context,
@@ -103,7 +116,9 @@ function fixture(namespaceIds: readonly string[] = ["namespace-a", "namespace-b"
     hostAllowsOperation: true,
     currentRuntime: Object.freeze({
       agentId: runtime.agentId,
-      authorizationRevision: authorizationRevision(9),
+      authorizationRevision: authorizationRevision(
+        taskDefinitionForegroundAuthorizationBytes === undefined ? 9 : 0,
+      ),
       runtimeGeneration: runtime.generation,
     }),
     signerPublicKey: signer.publicKey.slice(),
@@ -166,6 +181,29 @@ describe("device-wrapped live Shadow Agent object access set", () => {
         }),
       }),
     ).toBe("stale");
+    state.signer.publicKey.fill(0);
+    state.runtime.key.fill(0);
+  });
+
+  test("hashes and persists exact Task-definition foreground evidence", async () => {
+    const authorizationBytes = new Uint8Array(3_675).fill(0x75);
+    const state = fixture(["namespace-private-task"], authorizationBytes);
+    expect(state.prepared.signerEvidenceBytes).toEqual(authorizationBytes);
+    expect(state.prepared.manifest.signerAuthorizationHash)
+      .toEqual(state.crypto.hash(authorizationBytes));
+    expect(state.prepared.authority.signerAuthorizationHash)
+      .toEqual(state.crypto.hash(authorizationBytes));
+    const storage = new InMemoryV2Store();
+    await storage.putObject({
+      objectId: state.prepared.authority.objectId,
+      payloadBytes: opaqueBytes("encrypted-payload", state.payloadBytes),
+    });
+    expect(await persistPreparedDeviceWrappedAgentObjectAccessManifestGenesisSetV1({
+      crypto: state.crypto,
+      storage,
+      prepared: state.prepared,
+      resolveCurrentAuthorization: state.decision,
+    })).toBe("applied");
     state.signer.publicKey.fill(0);
     state.runtime.key.fill(0);
   });

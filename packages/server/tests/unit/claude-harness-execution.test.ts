@@ -135,7 +135,7 @@ function admission(overrides: Partial<ClaudeHarnessExecutionAdmission> = {}): Cl
   };
 }
 
-function fixture(result?: OpenResult | (() => OpenResult)) {
+function fixture(result?: OpenResult | (() => OpenResult), abortStreamOnCancellation?: true) {
   const fake = controlledControl();
   const opens: unknown[] = [];
   const relay: Pick<InMemoryRelayRegistry, "openClaudeExecution"> = {
@@ -144,7 +144,9 @@ function fixture(result?: OpenResult | (() => OpenResult)) {
       return typeof result === "function" ? result() : result ?? Object.freeze({ ok: true as const, control: fake.control });
     },
   };
-  return { fake, opens, execution: new ClaudeHarnessExecution({ relay }) };
+  return { fake, opens, execution: new ClaudeHarnessExecution({ relay,
+    ...(abortStreamOnCancellation === undefined ? {} : { abortStreamOnCancellation }),
+  }) };
 }
 
 // Execute the actual composition closures, not a handwritten copy of their
@@ -524,6 +526,130 @@ describe("ClaudeHarnessExecution", () => {
     expect(fx.opens).toEqual([]);
   });
 
+  test("protected cancellation releases a stalled provider stream without claiming containment", async () => {
+    const fx = fixture(undefined, true);
+    const controller = new AbortController();
+    const active = await begin(fx, admission({ abortSignal: controller.signal }));
+    fx.fake.emit(question());
+    expect(await active.pending).toMatchObject({ kind: "user_input_required" });
+    expect(fx.execution.hasLiveRequest(interactionRef, ownerId)).toBe(true);
+    const pending = active.iterator.next();
+    controller.abort();
+    const terminal = await pending;
+    expect(terminal.value).toMatchObject({ kind: "terminal", status: "failed", code: "process_lost" });
+    expect(fx.execution.hasLiveRequest(interactionRef, ownerId)).toBe(false);
+    expect((await active.iterator.next()).done).toBe(true);
+    expect(fx.fake.interrupts).toBeGreaterThanOrEqual(1);
+    // No interrupt acknowledgement or terminal provider fact was supplied.
+    expect(fx.opens).toHaveLength(1);
+  });
+
+  test("protected consumer return starts one best-effort interrupt without awaiting its result", async () => {
+    const fx = fixture(undefined, true);
+    const active = await begin(fx);
+    fx.fake.emit({ kind: "activity", activity: "tool", state: "progress", toolName: "Read" });
+    expect(await active.pending).toMatchObject({ kind: "progress" });
+
+    expect(await active.iterator.return?.()).toMatchObject({ done: true });
+    expect(fx.fake.interrupts).toBe(1);
+
+    // A late transport rejection is owned by the best-effort attempt. It
+    // neither rejects iterator.return() nor starts a second interrupt.
+    fx.fake.rejectInterrupt();
+    await flush();
+    await flush();
+    expect(fx.fake.interrupts).toBe(1);
+  });
+
+  test("protected authoritative completion does not send a redundant interrupt", async () => {
+    const fx = fixture(undefined, true);
+    const active = await begin(fx);
+    fx.fake.emit({ kind: "output_delta", text: "complete" });
+    expect(await active.pending).toMatchObject({ kind: "output_delta", text: "complete" });
+    const completed = next(active.iterator);
+    fx.fake.emit({ kind: "result", outcome: "success", text: null });
+    fx.fake.emit({ kind: "settled", outcome: "eof" });
+    expect(await completed).toMatchObject({ kind: "assistant_completed", text: "complete" });
+    expect(await next(active.iterator)).toMatchObject({ kind: "terminal", status: "completed" });
+    expect(await active.iterator.next()).toMatchObject({ done: true });
+    expect(fx.fake.interrupts).toBe(0);
+  });
+
+  test("protected expiry releases a stalled response acknowledgment without replaying a late acceptance", async () => {
+    const fx = fixture(undefined, true);
+    const controller = new AbortController();
+    const active = await begin(fx, admission({ abortSignal: controller.signal }));
+    fx.fake.emit(permission());
+    expect(await active.pending).toMatchObject({ kind: "permission_selection_required" });
+    const pendingStream = active.iterator.next();
+    const authority = createAcceptedInvocationAuthority(ownerId);
+    const responding = fx.execution.respond({
+      kind: "permission_selection_required",
+      requestId: interactionRef,
+      ownerId,
+      outcome: { kind: "selected", optionId: "allow_once" },
+    }, authority);
+    expect(fx.fake.responses).toEqual([{ interactionRef, response: { kind: "allow_once" } }]);
+
+    controller.abort(new DOMException("Grant expired", "AbortError"));
+    await expectFailure(responding, "Grant expired");
+    expect((await pendingStream).value).toMatchObject({ kind: "terminal", status: "failed", code: "process_lost" });
+    expect(fx.execution.hasLiveRequest(interactionRef, ownerId)).toBe(false);
+    expect((await active.iterator.next()).done).toBe(true);
+    await expectFailure(fx.execution.respond({
+      kind: "permission_selection_required",
+      requestId: interactionRef,
+      ownerId,
+      outcome: { kind: "selected", optionId: "allow_once" },
+    }, authority), "unavailable");
+
+    fx.fake.acceptResponse();
+    await flush();
+    expect(fx.fake.responses).toEqual([{ interactionRef, response: { kind: "allow_once" } }]);
+    await expectFailure(fx.execution.respond({
+      kind: "permission_selection_required",
+      requestId: interactionRef,
+      ownerId,
+      outcome: { kind: "selected", optionId: "allow_once" },
+    }, authority), "unavailable");
+  });
+
+  test("protected response action expiry retires one send while the execution grant remains live", async () => {
+    const fx = fixture(undefined, true);
+    const grant = new AbortController();
+    const action = new AbortController();
+    const active = await begin(fx, admission({ abortSignal: grant.signal }));
+    fx.fake.emit(permission());
+    expect(await active.pending).toMatchObject({ kind: "permission_selection_required" });
+    const pendingStream = active.iterator.next();
+    const authority = createAcceptedInvocationAuthority(ownerId);
+    const responding = fx.execution.respond({
+      kind: "permission_selection_required",
+      requestId: interactionRef,
+      ownerId,
+      outcome: { kind: "selected", optionId: "allow_once" },
+    }, authority, { signal: action.signal });
+    expect(fx.fake.responses).toEqual([{ interactionRef, response: { kind: "allow_once" } }]);
+
+    action.abort(new DOMException("Response authorization expired", "AbortError"));
+    await expectFailure(responding, "Response authorization expired");
+    expect(grant.signal.aborted).toBe(false);
+    expect(fx.execution.hasLiveRequest(interactionRef, ownerId)).toBe(false);
+    fx.fake.acceptResponse();
+    await flush();
+    expect(fx.fake.responses).toEqual([{ interactionRef, response: { kind: "allow_once" } }]);
+    await expectFailure(fx.execution.respond({
+      kind: "permission_selection_required",
+      requestId: interactionRef,
+      ownerId,
+      outcome: { kind: "selected", optionId: "allow_once" },
+    }, authority, { signal: action.signal }), "unavailable");
+
+    fx.fake.close();
+    expect((await pendingStream).value).toMatchObject({ kind: "terminal", status: "failed", code: "process_lost" });
+    expect((await active.iterator.next()).done).toBe(true);
+  });
+
   test("projects permission choices only through the live accepted request", async () => {
     const fx = fixture();
     const { pending } = await begin(fx);
@@ -775,3 +901,83 @@ function permutations<T>(values: readonly T[]): readonly (readonly T[])[] {
   return values.flatMap((value, index) => permutations([...values.slice(0, index), ...values.slice(index + 1)])
     .map((rest) => [value, ...rest] as const));
 }
+
+// Exercise the production SDK projection, Desktop forwarding, wire parser and
+// Server completion together. Only the external SDK stream and local lease are
+// synthetic; no provider process, filesystem grant, or network is opened.
+for (const version of [18, 31, 32]) {
+  for (const texts of [["B"], ["A", "B"]]) {
+    test(`SDK to harness protocol ${version}: ${texts.length} root messages preserve progress and final result`, async () => {
+      const { ClaudeAgentSdkHost } = await import("../../../claude-agent-sdk-host/src/index");
+      const { ElectronClaudeExecutionHost } = await import("../../../../apps/desktop/electron/claude-execution");
+      const { parseRelayClaudeExecutionDesktopEvent } = await import("@nautilo/relay");
+      const currentScope = { ...scope, selectedProtocolVersion: version };
+      const fx = fixture();
+      const lease = new AbortController();
+      const sdk = new ClaudeAgentSdkHost({
+        executableResolver: { resolve: async () => ({ path: "/synthetic/claude", version: "2.1.235", features: {
+          accountInfo: true, supportedModels: true, interrupt: true, switchModelsOnFlag: true,
+          modelRefusalFallback: false, modelRefusalNoFallback: false, servingModelIdentity: false,
+        } }) },
+        onFact: () => { throw new Error("execution must not emit discovery facts"); },
+        sdk: { query: () => {
+          async function* messages() {
+            for (const text of texts) {
+              yield { type: "stream_event", parent_tool_use_id: null,
+                event: { type: "message_start", message: { role: "assistant", content: [] } } };
+              yield { type: "stream_event", parent_tool_use_id: null,
+                event: { type: "content_block_delta", index: 0, delta: { type: "text_delta", text } } };
+            }
+            yield { type: "result", subtype: "success", is_error: false, result: "B", terminal_reason: null };
+          }
+          return { [Symbol.asyncIterator]: messages, interrupt: async () => undefined, close: () => undefined,
+            streamInput: async () => undefined, accountInfo: async () => ({}), supportedModels: async () => [] } as unknown as ReturnType<import("../../../claude-agent-sdk-host/src/index").ClaudeAgentSdk["query"]>;
+        } },
+      });
+      const desktop = new ElectronClaudeExecutionHost({
+        currentFolder: () => ({ path: "/synthetic/workspace", revision: 0 }),
+        leaseProvider: { acquire: async () => ({ workingDirectory: "/synthetic/workspace", signal: lease.signal,
+          validate: async () => !lease.signal.aborted, close: async () => { lease.abort(); } }) },
+        createHost: () => sdk,
+      });
+      desktop.onRegistered(currentScope, { send: frame => {
+        const parsed = parseRelayClaudeExecutionDesktopEvent(frame);
+        if (parsed === null) throw new Error("producer emitted invalid wire event");
+        fx.fake.emit(parsed.event);
+        return true;
+      } });
+      const outputs = (async () => {
+        const result: HarnessExecutionOutput[] = [];
+        for await (const output of fx.execution.start(admission({ claude: { ...admission().claude, scope: currentScope } }))) result.push(output);
+        return result;
+      })();
+      desktop.onCommand({ type: "relay:claude-execution-command", scope: currentScope,
+        executionRef: fx.fake.control.executionRef, action: { kind: "start", prompt: "test", model: "claude-sonnet-4" } });
+      try {
+        const actual = await outputs;
+        expect(actual.filter(output => output.kind === "output_delta").map(output => output.text)).toEqual(texts);
+        expect(actual.filter(output => output.kind === "assistant_completed")).toMatchObject([
+          { text: version >= 32 ? "B" : texts.join("") },
+        ]);
+        expect(actual.at(-1)).toMatchObject({ kind: "terminal", status: "completed" });
+      } finally { desktop.onDisconnected(); }
+    });
+  }
+}
+
+test("v32 harness rejects missing and late root boundaries without completing a result", async () => {
+  for (const events of [
+    [{ kind: "output_delta", text: "unbounded origin" }],
+    [{ kind: "output_message_started" }, { kind: "output_delta", text: "B" },
+      { kind: "result", outcome: "success", text: null }, { kind: "output_message_started" }],
+  ] satisfies RelayClaudeExecutionEvent[][]) {
+    const fx = fixture();
+    const { iterator, pending } = await begin(fx, admission({ claude: { ...admission().claude,
+      scope: { ...scope, selectedProtocolVersion: 32 } } }));
+    for (const event of events) fx.fake.emit(event);
+    const outputs = [await pending];
+    for (;;) { const item = await iterator.next(); if (item.done) break; outputs.push(item.value); }
+    expect(outputs.some(output => output.kind === "assistant_completed")).toBe(false);
+    expect(outputs.at(-1)).toMatchObject({ kind: "terminal", status: "failed" });
+  }
+});

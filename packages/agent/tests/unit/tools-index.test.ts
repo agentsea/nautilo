@@ -29,7 +29,7 @@ describe("tool catalog registration", () => {
 
   // Built-in tools are counted separately from the active signed Computer Use catalog.
   test("registers all built-in tools including transcription and Connections", () => {
-    expect(catalog.size).toBe(112 + activeComputerUseHostToolDefinitions().length);
+    expect(catalog.size).toBe(113 + activeComputerUseHostToolDefinitions().length);
     for (const name of ["exec_command", "write_stdin", "read_shell_output"]) {
       expect(catalog.get(name)).toBeDefined();
     }
@@ -44,6 +44,13 @@ describe("tool catalog registration", () => {
   test("marks protected foreground Memory mutations as Full-capable", () => {
     expect(catalog.get("manage_memory")?.fullEncryptionSupport)
       .toBe("supported");
+  });
+
+  test("keeps Artifact-free peer contact available in Full", () => {
+    expect(catalog.get("ask_peer")?.fullEncryptionSupport).toBe("supported");
+    expect(catalog.getFiltered(undefined, undefined, {
+      context: { fullEncryptionOnly: true },
+    }).entries.map((entry) => entry.name)).toContain("ask_peer");
   });
 
   test("live office tools are absent when office is disabled but officecli remains", () => {
@@ -266,10 +273,10 @@ describe("tool catalog registration", () => {
   test("stats reflect correct distribution", () => {
     const stats = catalog.getStats();
     // Built-in tools are counted separately from the active signed Computer Use catalog.
-    expect(stats.total).toBe(112 + activeComputerUseHostToolDefinitions().length);
-    expect(stats.bySource.builtin).toBe(112 + activeComputerUseHostToolDefinitions().length);
+    expect(stats.total).toBe(113 + activeComputerUseHostToolDefinitions().length);
+    expect(stats.bySource.builtin).toBe(113 + activeComputerUseHostToolDefinitions().length);
     expect(stats.bySource.mcp).toBe(0);
-    expect(stats.enabled).toBe(112 + activeComputerUseHostToolDefinitions().length);
+    expect(stats.enabled).toBe(113 + activeComputerUseHostToolDefinitions().length);
     expect(stats.byTier.admin).toBeGreaterThan(0);
     expect(stats.byTier.standard).toBeGreaterThan(0);
     expect(stats.byTier.high).toBeGreaterThan(0);

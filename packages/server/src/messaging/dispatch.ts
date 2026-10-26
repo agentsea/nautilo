@@ -585,6 +585,7 @@ async function enqueueConductorBotWake(args: {
             source.request.server,
           )!.runAgentTurn({
             ...input,
+            publishTaskDefinitionAuthorizationRequired: event => eventBus.emit(event),
             ...(source.representationMode === "full_encryption"
               ? { representationMode: "full_encryption" as const }
               : { expectedMergedHumanContent: args.content }),
@@ -1781,7 +1782,8 @@ export async function dispatchRoomMessageSend(
                 if (admitted.status === "human_verified") {
                   liveShadowCapability = admitted.capability;
                   liveShadowRunAgentTurn = (input) =>
-                    composition.runAgentTurn(input);
+                    composition.runAgentTurn({ ...input,
+                      publishTaskDefinitionAuthorizationRequired: event => eventBus.emit(event) });
                 } else {
                   liveShadowExistingJobId = admitted.jobId;
                 }
@@ -1997,6 +1999,7 @@ export async function dispatchRoomMessageSend(
                   ): Promise<Value>;
                   }>) => composition.runAgentTurn({
                     ...input,
+                    publishTaskDefinitionAuthorizationRequired: event => eventBus.emit(event),
                     ...(sharedHuman.representationMode === "full_encryption"
                       ? { representationMode: "full_encryption" as const }
                       : {
@@ -2149,6 +2152,10 @@ export async function dispatchRoomMessageSend(
           ? {
               humanAlreadyPersisted: true,
               currentMessageId: liveShadowPersistedMessageId,
+              // This authenticated one-Human/one-Genie route already selected
+              // the responder; pre-persisting the protected Human message must
+              // not turn it into an inferred/background wake.
+              explicitlySelected: true,
             }
           : {}),
         ...(liveShadowCapability

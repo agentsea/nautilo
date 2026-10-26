@@ -24,7 +24,7 @@ import {
   TASK_DEFINITION_OBJECT_TYPE_V1,
 } from "./task-content-repository.ts";
 import {
-  decodeTaskPayloadV1,
+  decodeTaskDefinitionContent,
   type TaskPayloadV1,
 } from "./task-payload-v1.ts";
 
@@ -303,7 +303,7 @@ export async function withProtectedTaskDefinitionV1<Value>(
       if (plaintext === undefined) {
         throw new TypeError("Task definition ciphertext could not be opened");
       }
-      const decoded = decodeTaskPayloadV1(plaintext);
+      const decoded = decodeTaskDefinitionContent(plaintext).payload;
       assertActive();
       const assertCurrentOccurrence = async (): Promise<void> => {
         assertActive();

@@ -5,6 +5,7 @@ const TARGET_ROLE = "nautilo_agent";
 const TARGET_DB = "nautilo";
 
 export const SENSITIVE_TABLES = [
+  "external_operator_control_archive",
   "external_room_execution_claims",
   "feed_events",
   "feed_recipients",
@@ -33,6 +34,7 @@ export const SENSITIVE_TABLES = [
   "task_run_message_associations",
   "protected_task_execution_segment_receipts",
   "protected_task_continuation_receipts",
+  "protected_task_wake_continuation_receipts",
   "group_moderation_scopes",
   "moderation_subjects",
   "moderation_restrictions",
@@ -380,11 +382,39 @@ BEGIN
         public.bolter_room_bindings, public.bolter_connections TO nautilo;
     END IF;
   END IF;
+  IF to_regclass('public.external_operator_sessions') IS NOT NULL THEN
+    REVOKE ALL ON TABLE public.external_operator_sessions FROM PUBLIC, nautilo, nautilo_agent, nautilo_crypto;
+    GRANT SELECT, INSERT ON TABLE public.external_operator_sessions TO nautilo_agent;
+    GRANT SELECT(user_id,binding_id), UPDATE(binding_id), DELETE ON TABLE public.external_operator_sessions TO nautilo;
+  END IF;
   IF to_regclass('public.bolter_explicit_shares') IS NOT NULL THEN
     REVOKE ALL ON TABLE public.bolter_explicit_shares FROM PUBLIC, nautilo, nautilo_agent, nautilo_crypto;
     GRANT SELECT, INSERT ON TABLE public.bolter_explicit_shares TO nautilo_agent;
     GRANT SELECT(id,user_id,binding_id,session_message_id), UPDATE(id), DELETE ON TABLE public.bolter_explicit_shares TO nautilo;
     GRANT SELECT(explicit_share_id) ON TABLE public.bolter_outbox TO nautilo;
+  END IF;
+  -- Historical plaintext evidence is inert and read-only. Legacy ownership
+  -- repair must not reopen mutation or TRUNCATE privileges on this archive.
+  IF to_regclass('public.external_operator_control_archive') IS NOT NULL THEN
+    REVOKE ALL PRIVILEGES ON TABLE public.external_operator_control_archive FROM PUBLIC, nautilo, nautilo_agent, nautilo_crypto;
+    GRANT SELECT ON TABLE public.external_operator_control_archive TO nautilo;
+    ALTER TABLE public.external_operator_control_archive ENABLE ROW LEVEL SECURITY;
+    ALTER TABLE public.external_operator_control_archive FORCE ROW LEVEL SECURITY;
+    -- FK cascades run as the table owner. Admit DELETE only after both enabled
+    -- immutability guards exist; older migration states remain read-only.
+    IF to_regprocedure('public.guard_external_operator_control_archive()') IS NOT NULL
+      AND EXISTS (SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'public.external_operator_control_archive'::regclass
+          AND tgname = 'external_control_archive_immutable_row'
+          AND tgfoid = to_regprocedure('public.guard_external_operator_control_archive()')
+          AND NOT tgisinternal AND tgenabled IN ('O', 'A'))
+      AND EXISTS (SELECT 1 FROM pg_trigger
+        WHERE tgrelid = 'public.external_operator_control_archive'::regclass
+          AND tgname = 'external_control_archive_immutable_table'
+          AND tgfoid = to_regprocedure('public.guard_external_operator_control_archive()')
+          AND NOT tgisinternal AND tgenabled IN ('O', 'A')) THEN
+      GRANT DELETE ON TABLE public.external_operator_control_archive TO nautilo;
+    END IF;
   END IF;
 END $bolter_privileges$;
 DO $external_execution_privileges$

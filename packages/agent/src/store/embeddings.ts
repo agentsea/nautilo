@@ -1,5 +1,9 @@
 import { fromRuntimeConfig } from "@nautilo/config";
 import { getCachedServerModelConfigRow } from "@nautilo/db";
+import {
+  sameMemoryEmbeddingDisclosureV2,
+  type MemoryEmbeddingDisclosureV2,
+} from "@nautilo/lattice-crypto/wire";
 import { resolveProviderKey } from "../resolve-provider-key";
 import {
   runServiceEmbeddingAttempt,
@@ -7,6 +11,16 @@ import {
 } from "../usage/service-embedding-attempt";
 import { VENICE_EMBEDDINGS_URL } from "../providers/venice-api";
 import { resolveOpenRouterTransport } from "../providers/openrouter-transport";
+import {
+  assertQualifiedSurplusEmbeddingResponseModel,
+  getQualifiedSurplusEmbeddingRoute,
+  QUALIFIED_SURPLUS_EMBEDDING_CATALOG_MODEL_ID,
+  type QualifiedSurplusEmbeddingRoute,
+} from "../providers/surplus-embedding-route";
+import {
+  invokeSurplusEmbeddingAttempt,
+  SurplusEmbeddingAttemptError,
+} from "../usage/surplus-embedding-attempt";
 
 const OPENAI_EMBEDDINGS_URL = "https://api.openai.com/v1/embeddings";
 const DEFAULT_VENICE_EMBEDDING_MODEL = "text-embedding-qwen3-8b";
@@ -54,7 +68,15 @@ interface ResolvedEmbeddingProvider {
   apiKey: string;
   endpoint: string;
   model: string;
+  transport: "direct" | "surplus_marketplace";
+  surplusRoute?: QualifiedSurplusEmbeddingRoute;
 }
+
+const SURPLUS_EMBEDDING_DATA_RECIPIENT_CLASSES = Object.freeze([
+  "surplus",
+  "marketplace_seller",
+  "seller_upstream_processor",
+] as const);
 
 function getEmbeddingConfig(modelOverride?: string | null) {
   const config = fromRuntimeConfig();
@@ -82,9 +104,49 @@ export function getProtectedMemoryEmbeddingConfiguration(
   dimensions: number;
 }> {
   const configured = getEmbeddingConfig(modelOverride);
-  const resolved = resolveEmbeddingProvider(configured.model);
+  const resolved = resolveEmbeddingExecution(configured.model, configured.dims);
   return Object.freeze({ provider: resolved.provider, model: resolved.model,
     dimensions: configured.dims });
+}
+
+function disclosureFor(
+  resolved: ResolvedEmbeddingProvider,
+  dimensions: number,
+): Readonly<MemoryEmbeddingDisclosureV2> {
+  if (dimensions !== 1_536) {
+    throw new EmbeddingProviderError({
+      message: "Protected Memory embeddings require exactly 1,536 dimensions.",
+      code: "unsupported_provider",
+      provider: resolved.provider,
+    });
+  }
+  const canonicalSpace = Object.freeze({
+    provider: resolved.provider,
+    model: resolved.model,
+    dimensions: 1_536 as const,
+  });
+  if (resolved.transport === "direct") {
+    return Object.freeze({
+      contractVersion: 2,
+      canonicalSpace,
+      processingRoute: Object.freeze({ transport: "direct" as const }),
+    });
+  }
+  return Object.freeze({
+    contractVersion: 2,
+    canonicalSpace,
+    processingRoute: Object.freeze({
+      transport: "surplus_marketplace",
+      marketplacePolicyVersion: "surplus-embedding-marketplace-v1",
+      dataRecipientClasses: SURPLUS_EMBEDDING_DATA_RECIPIENT_CLASSES,
+    }),
+  });
+}
+
+/** Current protected-Memory processing disclosure, including marketplace recipients. */
+export function getMemoryEmbeddingDisclosure(): Readonly<MemoryEmbeddingDisclosureV2> {
+  const configured = getEmbeddingConfig();
+  return disclosureFor(resolveEmbeddingExecution(configured.model, configured.dims), configured.dims);
 }
 
 function openRouterModelId(model: string): string {
@@ -126,6 +188,7 @@ function resolveEmbeddingProvider(model: string): ResolvedEmbeddingProvider {
       apiKey: veniceKey,
       endpoint: VENICE_EMBEDDINGS_URL,
       model: trimmedModel.slice("venice:".length),
+      transport: "direct",
     };
   }
 
@@ -142,6 +205,7 @@ function resolveEmbeddingProvider(model: string): ResolvedEmbeddingProvider {
       apiKey: openAiKey,
       endpoint: OPENAI_EMBEDDINGS_URL,
       model: trimmedModel.slice("openai:".length),
+      transport: "direct",
     };
   }
 
@@ -160,6 +224,7 @@ function resolveEmbeddingProvider(model: string): ResolvedEmbeddingProvider {
       apiKey: openRouterTransport.apiKey,
       endpoint: `${openRouterTransport.baseUrl}/embeddings`,
       model: openRouterModelId(trimmedModel),
+      transport: "direct",
     };
   }
 
@@ -171,6 +236,7 @@ function resolveEmbeddingProvider(model: string): ResolvedEmbeddingProvider {
       apiKey: veniceKey,
       endpoint: VENICE_EMBEDDINGS_URL,
       model: trimmedModel || DEFAULT_VENICE_EMBEDDING_MODEL,
+      transport: "direct",
     };
   }
 
@@ -180,6 +246,7 @@ function resolveEmbeddingProvider(model: string): ResolvedEmbeddingProvider {
       apiKey: openAiKey,
       endpoint: OPENAI_EMBEDDINGS_URL,
       model: trimmedModel || DEFAULT_OPENAI_EMBEDDING_MODEL,
+      transport: "direct",
     };
   }
 
@@ -195,6 +262,7 @@ function resolveEmbeddingProvider(model: string): ResolvedEmbeddingProvider {
       model: trimmedModel
         ? openRouterModelId(trimmedModel)
         : DEFAULT_OPENROUTER_EMBEDDING_MODEL,
+      transport: "direct",
     };
   }
 
@@ -204,6 +272,7 @@ function resolveEmbeddingProvider(model: string): ResolvedEmbeddingProvider {
       apiKey: openAiKey,
       endpoint: OPENAI_EMBEDDINGS_URL,
       model: trimmedModel || DEFAULT_OPENAI_EMBEDDING_MODEL,
+      transport: "direct",
     };
   }
 
@@ -213,6 +282,52 @@ function resolveEmbeddingProvider(model: string): ResolvedEmbeddingProvider {
     code: "missing_credentials",
     provider: null,
   });
+}
+
+function resolveEmbeddingExecution(model: string, dimensions: number): ResolvedEmbeddingProvider {
+  const trimmedModel = model.trim();
+  const route = getQualifiedSurplusEmbeddingRoute(trimmedModel, dimensions);
+  const surplusKey = resolveProviderKey("surplus", {});
+  const preferSurplus = getCachedServerModelConfigRow()?.preferSurplus === true;
+  const surplusExecution = (qualified: QualifiedSurplusEmbeddingRoute, apiKey: string) => ({
+    provider: qualified.provider,
+    model: qualified.model,
+    endpoint: "https://api.surplusintelligence.ai/v1/embeddings",
+    apiKey,
+    transport: "surplus_marketplace" as const,
+    surplusRoute: qualified,
+  });
+  if (route && preferSurplus && surplusKey) {
+    return surplusExecution(route, surplusKey);
+  }
+  if (trimmedModel) return resolveEmbeddingProvider(model);
+  try {
+    // Keep Automatic's established direct vector identity whenever any direct
+    // embedding credential is runnable, even when Surplus is preferred.
+    return resolveEmbeddingProvider(model);
+  } catch (error) {
+    if (!(error instanceof EmbeddingProviderError)
+      || error.code !== "missing_credentials") throw error;
+    const fallbackRoute = getQualifiedSurplusEmbeddingRoute(
+      QUALIFIED_SURPLUS_EMBEDDING_CATALOG_MODEL_ID,
+      dimensions,
+    );
+    if (fallbackRoute && preferSurplus && surplusKey) {
+      return surplusExecution(fallbackRoute, surplusKey);
+    }
+    throw error;
+  }
+}
+
+function disclosuresEqual(
+  left: Readonly<MemoryEmbeddingDisclosureV2>,
+  right: Readonly<MemoryEmbeddingDisclosureV2>,
+): boolean {
+  try {
+    return sameMemoryEmbeddingDisclosureV2(left, right);
+  } catch {
+    return false;
+  }
 }
 
 function providerFailureMessage(provider: EmbeddingProvider, status: number): string {
@@ -307,7 +422,59 @@ async function embedTextsWithResolvedProvider(
 }>> {
   const config = getEmbeddingConfig();
   const dims = fixed?.dimensions ?? config.dims;
-  const resolved = fixed?.resolved ?? resolveEmbeddingProvider(config.model);
+  const resolved = fixed?.resolved ?? resolveEmbeddingExecution(config.model, dims);
+
+  if (resolved.transport === "surplus_marketplace") {
+    const route = resolved.surplusRoute;
+    if (!route) throw new Error("Qualified Surplus embedding route is missing.");
+    const authorizedDisclosure = disclosureFor(resolved, dims);
+    try {
+      const embeddings = await invokeSurplusEmbeddingAttempt({
+        route,
+        apiKey: resolved.apiKey,
+        texts,
+        ...(signal === undefined ? {} : { signal }),
+        assertStillAuthorized: () => {
+          try {
+            const latest = getEmbeddingConfig();
+            const current = resolveEmbeddingExecution(latest.model, latest.dims);
+            if (current.transport === "surplus_marketplace"
+              && current.apiKey === resolved.apiKey
+              && current.surplusRoute === route
+              && disclosuresEqual(disclosureFor(current, latest.dims), authorizedDisclosure)) {
+              return;
+            }
+          } catch {
+            // Project every selection, policy, or credential drift through the
+            // same stale-approval result without disclosing credential state.
+          }
+          throw new EmbeddingProviderError({
+            message: "The approved embedding configuration changed. Prepare the Memory request again.",
+            code: "unsupported_provider",
+            provider: resolved.provider,
+          });
+        },
+        parseResponse: (value) => {
+          assertQualifiedSurplusEmbeddingResponseModel(route, value);
+          const embeddings = parseEmbeddingResponse(value, texts.length, dims, resolved.provider);
+          return embeddings;
+        },
+      });
+      return { embeddings, resolved, dimensions: dims };
+    } catch (error) {
+      if (error instanceof EmbeddingProviderError) throw error;
+      if (error instanceof SurplusEmbeddingAttemptError) {
+        throw new EmbeddingProviderError({
+          message: error.message,
+          code: error.failureCode === "invalid_response" ? "invalid_response" : "request_failed",
+          provider: resolved.provider,
+          ...(error.status === undefined ? {} : { status: error.status }),
+          retryable: error.retryable,
+        });
+      }
+      throw error;
+    }
+  }
 
   return runServiceEmbeddingAttempt({
     provider: resolved.provider,
@@ -315,6 +482,31 @@ async function embedTextsWithResolvedProvider(
     endpoint: resolved.endpoint,
     dimensions: dims,
     ...(signal === undefined ? {} : { signal }),
+    assertStillAuthorized: () => {
+      try {
+        const latest = getEmbeddingConfig();
+        const current = resolveEmbeddingExecution(latest.model, latest.dims);
+        const disclosureStillMatches = dims !== 1_536
+          || disclosuresEqual(disclosureFor(current, latest.dims), disclosureFor(resolved, dims));
+        if (current.transport === "direct"
+          && latest.dims === dims
+          && current.provider === resolved.provider
+          && current.model === resolved.model
+          && current.endpoint === resolved.endpoint
+          && current.apiKey === resolved.apiKey
+          && disclosureStillMatches) {
+          return;
+        }
+      } catch {
+        // Project every selection, policy, credential, or disclosure drift
+        // through the same stale-approval result without exposing key state.
+      }
+      throw new EmbeddingProviderError({
+        message: "The approved embedding configuration changed. Prepare the Memory request again.",
+        code: "unsupported_provider",
+        provider: resolved.provider,
+      });
+    },
     invoke: async (observeEvidence) => {
       let response: Response;
       try {
@@ -410,14 +602,34 @@ export async function embedText(text: string, signal?: AbortSignal): Promise<num
 export async function embedTextWithProvenance(
   text: string,
   signal?: AbortSignal,
-  expected?: Readonly<{ provider: EmbeddingProvider; model: string; dimensions: number }>,
+  expected?: Readonly<{
+    provider: EmbeddingProvider;
+    model: string;
+    dimensions: number;
+    disclosure?: Readonly<MemoryEmbeddingDisclosureV2>;
+  }>,
 ): Promise<EmbeddingWithProvenanceV1> {
   const configured = getEmbeddingConfig();
-  const resolved = resolveEmbeddingProvider(configured.model);
+  const resolved = resolveEmbeddingExecution(configured.model, configured.dims);
   if (expected !== undefined && (resolved.provider !== expected.provider
     || resolved.model !== expected.model || configured.dims !== expected.dimensions)) {
     throw new EmbeddingProviderError({
       message: "The approved embedding configuration changed. Prepare the Memory request again.",
+      code: "unsupported_provider", provider: resolved.provider,
+    });
+  }
+  if (expected !== undefined && resolved.transport === "surplus_marketplace"
+    && (expected.disclosure === undefined
+      || !disclosuresEqual(disclosureFor(resolved, configured.dims), expected.disclosure))) {
+    throw new EmbeddingProviderError({
+      message: "The approved embedding processing route changed. Prepare the Memory request again.",
+      code: "unsupported_provider", provider: resolved.provider,
+    });
+  }
+  if (expected?.disclosure !== undefined
+    && !disclosuresEqual(disclosureFor(resolved, configured.dims), expected.disclosure)) {
+    throw new EmbeddingProviderError({
+      message: "The approved embedding processing route changed. Prepare the Memory request again.",
       code: "unsupported_provider", provider: resolved.provider,
     });
   }

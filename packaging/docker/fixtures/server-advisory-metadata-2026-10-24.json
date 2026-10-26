@@ -1,0 +1,204 @@
+{
+  "description": "Minimal native scanner fields for the Debian Expat and HarfBuzz policy regression; image bindings in tests are synthetic.",
+  "reviewedAt": "2026-10-24T00:00:00Z",
+  "expiresAt": "2026-11-14T00:00:00Z",
+  "unchangedExceptionsSha256": "98e11f8c72c56a686964711b8664e2570886312c356b87c8f7bbdb6aac852a6a",
+  "architectures": {
+    "linux/amd64": {
+      "grype": {
+        "matches": [
+          {
+            "vulnerability": {
+              "id": "CVE-2026-113351",
+              "severity": "High",
+              "fix": {
+                "versions": [],
+                "state": "wont-fix"
+              }
+            },
+            "artifact": {
+              "name": "libexpat1",
+              "version": "2.9.0-1~deb13u1"
+            }
+          },
+          {
+            "vulnerability": {
+              "id": "CVE-2026-115506",
+              "severity": "High",
+              "fix": {
+                "versions": [],
+                "state": "wont-fix"
+              }
+            },
+            "artifact": {
+              "name": "libexpat1",
+              "version": "2.9.0-1~deb13u1"
+            }
+          },
+          {
+            "vulnerability": {
+              "id": "CVE-2026-113679",
+              "severity": "High",
+              "fix": {
+                "versions": [],
+                "state": "not-fixed"
+              }
+            },
+            "artifact": {
+              "name": "libharfbuzz-subset0",
+              "version": "10.2.0-1+deb13u1"
+            }
+          },
+          {
+            "vulnerability": {
+              "id": "CVE-2026-113679",
+              "severity": "High",
+              "fix": {
+                "versions": [],
+                "state": "not-fixed"
+              }
+            },
+            "artifact": {
+              "name": "libharfbuzz0b",
+              "version": "10.2.0-1+deb13u1"
+            }
+          }
+        ]
+      },
+      "trivy": {
+        "Results": [
+          {
+            "Vulnerabilities": [
+              {
+                "VulnerabilityID": "CVE-2026-113351",
+                "PkgName": "libexpat1",
+                "InstalledVersion": "2.9.0-1~deb13u1",
+                "Severity": "MEDIUM",
+                "Status": "affected"
+              },
+              {
+                "VulnerabilityID": "CVE-2026-115506",
+                "PkgName": "libexpat1",
+                "InstalledVersion": "2.9.0-1~deb13u1",
+                "Severity": "UNKNOWN",
+                "Status": "affected"
+              },
+              {
+                "VulnerabilityID": "CVE-2026-113679",
+                "PkgName": "libharfbuzz-subset0",
+                "InstalledVersion": "10.2.0-1+deb13u1",
+                "Severity": "MEDIUM",
+                "Status": "affected"
+              },
+              {
+                "VulnerabilityID": "CVE-2026-113679",
+                "PkgName": "libharfbuzz0b",
+                "InstalledVersion": "10.2.0-1+deb13u1",
+                "Severity": "MEDIUM",
+                "Status": "affected"
+              }
+            ]
+          }
+        ]
+      }
+    },
+    "linux/arm64": {
+      "grype": {
+        "matches": [
+          {
+            "vulnerability": {
+              "id": "CVE-2026-113351",
+              "severity": "High",
+              "fix": {
+                "versions": [],
+                "state": "wont-fix"
+              }
+            },
+            "artifact": {
+              "name": "libexpat1",
+              "version": "2.9.0-1~deb13u1"
+            }
+          },
+          {
+            "vulnerability": {
+              "id": "CVE-2026-115506",
+              "severity": "High",
+              "fix": {
+                "versions": [],
+                "state": "wont-fix"
+              }
+            },
+            "artifact": {
+              "name": "libexpat1",
+              "version": "2.9.0-1~deb13u1"
+            }
+          },
+          {
+            "vulnerability": {
+              "id": "CVE-2026-113679",
+              "severity": "High",
+              "fix": {
+                "versions": [],
+                "state": "not-fixed"
+              }
+            },
+            "artifact": {
+              "name": "libharfbuzz-subset0",
+              "version": "10.2.0-1+deb13u1"
+            }
+          },
+          {
+            "vulnerability": {
+              "id": "CVE-2026-113679",
+              "severity": "High",
+              "fix": {
+                "versions": [],
+                "state": "not-fixed"
+              }
+            },
+            "artifact": {
+              "name": "libharfbuzz0b",
+              "version": "10.2.0-1+deb13u1"
+            }
+          }
+        ]
+      },
+      "trivy": {
+        "Results": [
+          {
+            "Vulnerabilities": [
+              {
+                "VulnerabilityID": "CVE-2026-113351",
+                "PkgName": "libexpat1",
+                "InstalledVersion": "2.9.0-1~deb13u1",
+                "Severity": "MEDIUM",
+                "Status": "affected"
+              },
+              {
+                "VulnerabilityID": "CVE-2026-115506",
+                "PkgName": "libexpat1",
+                "InstalledVersion": "2.9.0-1~deb13u1",
+                "Severity": "UNKNOWN",
+                "Status": "affected"
+              },
+              {
+                "VulnerabilityID": "CVE-2026-113679",
+                "PkgName": "libharfbuzz-subset0",
+                "InstalledVersion": "10.2.0-1+deb13u1",
+                "Severity": "MEDIUM",
+                "Status": "affected"
+              },
+              {
+                "VulnerabilityID": "CVE-2026-113679",
+                "PkgName": "libharfbuzz0b",
+                "InstalledVersion": "10.2.0-1+deb13u1",
+                "Severity": "MEDIUM",
+                "Status": "affected"
+              }
+            ]
+          }
+        ]
+      }
+    }
+  }
+}

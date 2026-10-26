@@ -393,7 +393,7 @@ export async function recoverExpiredMaintenanceWith(
  * aggregate over the ledger.
  */
 export async function countAcceptedWorkWith(
-  handle: DirectDatabase,
+  handle: Pick<DirectDatabase, "select">,
 ): Promise<number> {
   const [row] = await handle
     .select({ n: sql<number>`count(*)::int` })

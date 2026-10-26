@@ -36,6 +36,13 @@ export type ProtectedAgentMemoryAccessApprovalReference = Readonly<{
   toolCallId: string;
   requesterUserId: string;
   agentId: string;
+  /** Authenticated Task/Run-bound custody, kept only in the encrypted checkpoint. */
+  taskContinuation?: Readonly<{
+    kind: "protected_task_v1";
+    requesterActorId: string;
+    createdAt: number;
+    sealedPreparation: string;
+  }>;
 }>;
 
 export type ProtectedAgentMemoryAccessApprovalPreview = Readonly<{
@@ -44,6 +51,13 @@ export type ProtectedAgentMemoryAccessApprovalPreview = Readonly<{
 }>;
 
 export interface ProtectedAgentMemoryAccessPort {
+  /** Reopen the exact checkpointed Task approval under fresh invocation custody. */
+  restoreApproval?(input: Readonly<{
+    authority: ProtectedMemoryAuthority;
+    reference: ProtectedAgentMemoryAccessApprovalReference;
+    memoryId: string;
+    action: ProtectedAgentMemoryAccessAction;
+  }>): Promise<ProtectedMemoryResult<ProtectedAgentMemoryAccessApprovalPreview>>;
   prepareApproval?(input: Readonly<{
     operationId: string;
     toolCallId: string;

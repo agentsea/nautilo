@@ -51,6 +51,41 @@ test("protected source is revalidated before exposing the result", async () => {
   expect(validations).toBe(2); expect(effects).toBe(1);
 });
 
+test("borrowed admission uses transaction readers with the original signal before and after the effect", async () => {
+  const f = fixture(); let sourceReads = 0; let borrowedReads = 0; let effectSignal: AbortSignal | undefined;
+  const borrowed = {
+    readPolicy: async () => { borrowedReads++; return { mode: "plaintext_only", revision: 7 }; },
+    readScope: async () => ({ roomId: "borrowed-room", graphThreadId: "borrowed-thread", agentActorId: "borrowed-agent" }),
+    validateProtected: async () => { throw new Error("plain policy must not validate protected authority"); },
+  };
+  f.setPolicy({ mode: "plaintext_only", revision: 99 });
+  f.setProtected(async () => { sourceReads++; });
+  expect(await f.port.withBorrowedAdmission!(borrowed, async signal => { effectSignal = signal; return "captured"; })).toBe("captured");
+  expect(effectSignal).toBe(f.controller.signal);
+  expect(borrowedReads).toBe(4);
+  expect(sourceReads).toBe(0);
+});
+
+test("borrowed admission suppresses results on stale policy or scope, protected denial, and original cancellation", async () => {
+  for (const failure of ["scope", "policy", "protected", "abort"] as const) {
+    const f = fixture(); let reads = 0; let policyReads = 0; let effects = 0;
+    const borrowed = {
+      readPolicy: async () => ({ mode: failure === "protected" ? "full_encryption" : "plaintext_only",
+        revision: failure === "policy" && ++policyReads > 2 ? 2 : 1 }),
+      readScope: async () => ({ roomId: "room", graphThreadId: "thread",
+        agentActorId: failure === "scope" && ++reads > 2 ? "replacement" : "actor" }),
+      validateProtected: async () => { if (failure === "protected") throw new Error("stale protected owner"); },
+    };
+    const result = f.port.withBorrowedAdmission!(borrowed, async () => {
+      effects++;
+      if (failure === "abort") f.controller.abort();
+      return "private-result";
+    });
+    await denied(result);
+    expect(effects).toBe(failure === "protected" ? 0 : 1);
+  }
+});
+
 import type { NautiloState } from "@nautilo/agent";
 import { foregroundHumanTerminalAdmissionPort, type HumanTerminalForegroundOwners } from "../../src/conversation/human-terminal-admission";
 
@@ -61,11 +96,12 @@ function foregroundFixture() {
   const lookups: unknown[] = [];
   const owners = {
     readPolicy: async () => ({ mode, revision: 1 }),
-    getUserCapabilities: async () => workstationAllowed ? ["use_workstation"] : [],
-    assertCanInvokeAgent: async (args: unknown) => { lookups.push(args); if (!allowed) throw new Error("denied"); },
-    findRoomIdByGraphThreadIdForUser: async (_human: string, thread: string) => { lookups.push(thread); return room; },
-    findActorByOwnerId: async () => ({ id: "human-actor" }),
-    getRoomDetailForMember: async () => ({ id: "room", graphThreadId: "persisted-thread", members: [{ kind: "agent", agentId: "agent", actorId: "agent-actor" }] }),
+    readSourceAuthority: async (input: { graphThreadId: string }) => {
+      lookups.push(input);
+      if (!allowed) throw new Error("denied");
+      return workstationAllowed && room === "room"
+        ? { roomId: "room", graphThreadId: "persisted-thread", agentActorId: "agent-actor" } : null;
+    },
     getCurrentLiveShadowTurnContext: () => crypto,
   } as unknown as HumanTerminalForegroundOwners;
   const port = () => foregroundHumanTerminalAdmissionPort(state, new AbortController().signal, owners)!;
@@ -80,18 +116,18 @@ function protectedContext() {
 }
 test("foreground adapter uses persisted conversation and current Room/Agent admission", async () => {
   const f = foregroundFixture(); expect(await f.port().withAdmission(async () => "output")).toBe("output");
-  expect(f.lookups).toContain("persisted-thread");
-  expect(f.lookups).toContainEqual({ humanUserId: "human", agentId: "agent", roomId: "room", origin: "room_message" });
+  expect(f.lookups).toContainEqual({ humanUserId: "human", agentId: "agent", roomId: "room", graphThreadId: "persisted-thread" });
   f.setRoom("foreign"); await denied(f.port().withAdmission(async () => { throw new Error("must not dispatch"); }));
   expect(foregroundHumanTerminalAdmissionPort({ ...f.state, verifiedOrdinaryOrigin: null }, new AbortController().signal, f.owners)).toBeUndefined();
 });
-test("production protected adapter rejects absent, expired, foreign and changed policy owners", async () => {
-  for (const variant of ["absent", "expired", "foreign", "behavior", "valid"]) {
+test("production protected adapter rejects absent, wake, expired, foreign and changed policy owners", async () => {
+  for (const variant of ["absent", "wake", "expired", "foreign", "behavior", "valid"]) {
     const f = foregroundFixture(); const crypto = protectedContext(); let effects = 0;
     if (variant === "expired") crypto.session.authorizationDeadlineAt = 0;
     if (variant === "foreign") crypto.capability.scope.recipientAgentId = "foreign";
     if (variant === "behavior") crypto.enforcementPolicy = { ...crypto.enforcementPolicy, shadowBehavior: "different" };
-    f.protected(variant === "absent" ? undefined : crypto);
+    f.protected(variant === "absent" ? undefined
+      : variant === "wake" ? { ...crypto, capability: null } : crypto);
     const work = f.port().withAdmission(async () => { effects++; return "protected-output"; });
     if (variant === "valid") expect(await work).toBe("protected-output"); else await denied(work);
     expect(effects).toBe(variant === "valid" ? 1 : 0);

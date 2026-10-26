@@ -59,8 +59,21 @@ function mockRuntime(execute: (query: unknown) => Promise<{ rows: unknown[] }>):
     raw: (value: string) => value,
     join: (values: unknown[], separator: unknown) => values.join(String(separator)),
   });
+  mock.module("../../src/usage/record-usage", () => ({ recordLlmUsage: () => {} }));
+  mock.module("../../src/usage/usage-context", () => ({
+    getUsageContext: () => null,
+    normalizeUsageRoomId: (roomId: string | null | undefined) =>
+      typeof roomId === "string" && roomId.trim().length > 0 ? roomId : null,
+  }));
+  mock.module("../../src/store/embeddings", () => ({
+    embedTextWithProvenance: async () => embedding,
+  }));
   mock.module("@nautilo/db", () => ({
     agentDb: handle,
+    getCachedServerModelConfigRow: () => null,
+    kickServerModelConfigRefresh: () => {},
+    refreshServerModelConfigCache: async () => null,
+    primeServerModelConfigCache: () => {},
     agentScopes: {},
     memoryScopes: {},
     db: handle,
@@ -99,6 +112,12 @@ function mockRuntime(execute: (query: unknown) => Promise<{ rows: unknown[] }>):
     isNull: () => ({}),
     memoryEmbeddingValues,
     memoryEmbeddingCompatibilityCondition,
+    beginServiceLlmAttempt: async () => {
+      throw new Error("service attempt must not run in projection isolation");
+    },
+    settleServiceLlmAttempt: async () => {
+      throw new Error("service settlement must not run in projection isolation");
+    },
   }));
   mock.module("@nautilo/logger", () => ({
     log: () => {},
@@ -179,6 +198,41 @@ async function rejectedMessage(operation: Promise<unknown>): Promise<string> {
 }
 
 describe("D476 atomic projection idempotency", () => {
+  for (const actorIdentityLock of [undefined, "share"] as const) {
+    test(`projection ${actorIdentityLock ?? "ordinary"} actor fence preserves destination authority`, async () => {
+      const queries: string[] = [];
+      const membership = `user:${atomicInput.userId}:${atomicInput.requesterActorId}`;
+      mockRuntime(async query => {
+        const text = String(query);
+        queries.push(text);
+        if (text.startsWith("ROOM_LOCK")) return { rows: [] };
+        if (text.includes("PROJECTION_ROOM_BY_ID")) return { rows: [{
+          id: atomicInput.roomId, namespaceId: atomicInput.namespaceId,
+          label: atomicInput.roomLabel, kind: atomicInput.roomKind, archivedAt: null,
+        }] };
+        if (text.includes("FROM actors")) return { rows: [{ id: atomicInput.requesterActorId }] };
+        if (text.includes("FROM room_members")) return { rows: [{
+          actorId: atomicInput.requesterActorId, actorKind: "user", ownerId: atomicInput.userId,
+        }] };
+        if (text.includes("FROM group_members")) return { rows: [{ groupId: "group" }] };
+        throw new Error(`Unexpected query: ${text}`);
+      });
+      const { lockAtomicProjectionDestinationAuthority, fingerprintProjectionAudience } = await importMemoryStore();
+      const { agentDb } = await import("@nautilo/db");
+      const input = { ...atomicInput,
+        audienceFingerprint: fingerprintProjectionAudience(atomicInput.roomId, membership) };
+      const options = actorIdentityLock === undefined ? undefined : { actorIdentityLock };
+      expect(await lockAtomicProjectionDestinationAuthority(agentDb, input, options)).toBeNull();
+      const members = queries.find(query => query.includes("FROM room_members"));
+      expect(members).toContain(actorIdentityLock === "share"
+        ? "FOR UPDATE OF rm FOR SHARE OF a" : "FOR UPDATE OF rm, a");
+      expect(queries.find(query => query.includes("FROM actors"))).toContain("FOR UPDATE");
+      expect(await lockAtomicProjectionDestinationAuthority(agentDb,
+        { ...input, audienceFingerprint: "changed-audience" }, options))
+        .toBe("destination_membership_changed");
+    });
+  }
+
   test("atomic projection locks Room before canonical membership/source rows, then creates one destination edge", async () => {
     const queries: string[] = [];
     const events: string[] = [];

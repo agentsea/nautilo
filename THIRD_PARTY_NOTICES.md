@@ -39,9 +39,9 @@ Versions are release pins, not upstream-latest claims.
 
 | Component | Exact version or revision | Canonical source | License | Shipped scope |
 | --- | --- | --- | --- | --- |
-| [Electron](https://github.com/electron/electron) | 41.10.3 | Electron | MIT | Desktop shell (and its Chromium/Node.js runtime components). |
-| [Bun](https://github.com/oven-sh/bun) | 1.3.11 | Bun | MIT | Desktop: both macOS architectures are vendored under `Contents/Resources/bun`. |
-| [Bun](https://github.com/oven-sh/bun) | 1.3.14 | Bun | MIT | Server image base, digest-pinned in `packaging/docker/Dockerfile`. |
+| [Electron](https://github.com/electron/electron) | 43.8.3 | Electron | MIT | Desktop shell (and its Chromium/Node.js runtime components). |
+| [Bun](https://github.com/oven-sh/bun) | 1.4.4 | Bun | MIT | Desktop: both macOS architectures are vendored under `Contents/Resources/bun`. |
+| [Bun](https://github.com/oven-sh/bun) | 1.4.4 | Bun | MIT | Server image base, digest-pinned in `packaging/docker/Dockerfile`. |
 | [OpenAI Codex app-server](https://github.com/openai/codex) | 0.146.0 (`rust-v0.146.0`) | OpenAI Codex | Apache-2.0 | Desktop external Codex runtime package. |
 | [OpenAI Codex apply-patch extraction](https://github.com/openai/codex/tree/3389fa554e953d07a12a34f5681aae46f17958f8) | 3389fa554e953d07a12a34f5681aae46f17958f8 | OpenAI Codex | Apache-2.0 | Server and desktop `nautilo-apply-patch` runtime; Nautilo-modified extracted source. |
 | [OOMOL OpenConnector](https://github.com/oomol-lab/open-connector) | 1.4.1 (`1bfdc0343057303d2993bcff44d0d5821ea658fd`) | OOMOL | Apache-2.0 | Compose-managed connected-app runtime; Nautilo-modified derivative source. |
@@ -75,7 +75,7 @@ Versions are release pins, not upstream-latest claims.
 
 ### Desktop Bun notices
 
-The Desktop package retains Bun 1.3.11's exact upstream notice under
+The Desktop package retains Bun 1.4.4's exact upstream notice under
 `Contents/Resources/bun/LICENSE-bun.txt`. Its source revision and SHA-256 are
 recorded in `apps/desktop/licenses/bun/manifest.json`. Bun's own MIT declaration
 does not describe every linked component: that upstream notice also identifies
@@ -154,8 +154,8 @@ compact where every listed member shares the same version and license.
 | [Fastify](https://github.com/fastify/fastify) family | 5.12.5; cors 10.1.0; multipart 10.0.0; static 10.1.2; websocket 11.3.0; busboy 3.2.1 | Fastify | MIT | Server. |
 | [LangChain JS](https://github.com/langchain-ai/langchainjs) family | core 1.1.45; Anthropic 1.3.29; Fireworks 0.1.3; Google GenAI 2.1.29; OpenAI 1.4.5; Tavily 1.2.0; xAI 1.3.17 | LangChain | MIT | Server agent runtime. |
 | [LangGraph JS](https://github.com/langchain-ai/langgraphjs) family | langgraph 1.2.9; checkpoint-postgres 1.0.1 | LangChain | MIT | Server agent runtime. |
-| [Model Context Protocol TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk) / [ACP TypeScript SDK](https://github.com/agentclientprotocol/typescript-sdk) | 1.31.0 / 1.3.0 | MCP / ACP | MIT / Apache-2.0 | Desktop and server integration surfaces. |
-| [Zod](https://github.com/colinhacks/zod) | 4.3.6 | Colin McDonnell | MIT | Desktop, server, Workbench, and mobile. |
+| [Model Context Protocol TypeScript SDK](https://github.com/modelcontextprotocol/typescript-sdk) / [ACP TypeScript SDK](https://github.com/agentclientprotocol/typescript-sdk) | 1.32.0 / 1.3.0 | MCP / ACP | MIT / Apache-2.0 | Desktop and server integration surfaces. |
+| [Zod](https://github.com/colinhacks/zod) | 4.6.7 | Colin McDonnell | MIT | Desktop, server, Workbench, and mobile. |
 | [Drizzle ORM](https://github.com/drizzle-team/drizzle-orm) / [postgres.js](https://github.com/porsager/postgres) / [node-postgres](https://github.com/brianc/node-postgres) | 0.45.2 / 3.4.7 / 8.13.1 | Drizzle / porsager / brianc | Apache-2.0 / Unlicense / MIT | Server database clients. |
 | [OpenID/JWT libraries: Logto JS](https://github.com/logto-io/js) and [jose](https://github.com/panva/jose) | browser 3.0.13; react 4.0.13; jose 6.2.3 | Logto / panva | MIT / MIT | Desktop, Workbench, mobile, and server authentication. |
 | [Noble cryptography](https://github.com/paulmillr/noble-curves) family | ciphers 2.2.0; curves 2.2.0; hashes 2.2.0 | Paul Miller | MIT | Server and mobile cryptography. |
@@ -188,7 +188,7 @@ upstream material in addition to this index.
 ## Container operating-system and image closure
 
 The final Nautilo server image is based on
-[oven/bun:1.3.14](https://hub.docker.com/r/oven/bun), pinned by immutable
+[oven/bun:1.4.4](https://hub.docker.com/r/oven/bun), pinned by immutable
 digest in `packaging/docker/Dockerfile`. It installs `tini`, `ca-certificates`,
 `chromium-headless-shell`, `tar`, the current `libicuNN` selected from the
 base distribution, and PostgreSQL client binaries (17, plus copied 16

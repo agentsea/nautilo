@@ -12,7 +12,7 @@
   },
   "dependencies": {
     "@rive-app/react-webgl2": "4.34.3",
-    "electron": "41.10.3",
+    "electron": "43.8.3",
     "esbuild": "0.28.2",
     "react": "19.2.5",
     "react-dom": "19.2.5",

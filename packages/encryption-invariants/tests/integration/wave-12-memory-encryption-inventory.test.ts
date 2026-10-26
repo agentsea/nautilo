@@ -9,9 +9,22 @@ import {
 
 const repositoryRoot = resolve(import.meta.dir, "../../../..");
 
+const currentMemoryEncryptionSurfaces = MEMORY_ENCRYPTION_SURFACES.map((surface) =>
+  surface.id === "memory.scope.task_dispatch"
+    ? {
+        ...surface,
+        sourcePath: "packages/runtime/src/tasks/resolve-task-memory-envelope.ts",
+        anchor: "export async function resolveTaskMemoryEnvelope",
+      }
+    : surface,
+);
+
 describe("Wave 12 Memory encryption inventory", () => {
   test("pins every known Memory content boundary", () => {
-    expect(MEMORY_ENCRYPTION_SURFACES).toHaveLength(37);
+    expect(MEMORY_ENCRYPTION_SURFACES).toHaveLength(35);
+    expect(new Set(MEMORY_ENCRYPTION_SURFACES.map((item) => item.id)).size).toBe(
+      MEMORY_ENCRYPTION_SURFACES.length,
+    );
     expect(new Set(MEMORY_ENCRYPTION_SURFACES.map((item) => item.boundary))).toEqual(
       new Set([
         "schema",
@@ -34,7 +47,17 @@ describe("Wave 12 Memory encryption inventory", () => {
         .filter((item) => item.implementationState === "protected")
         .every((item) => item.implementationAnchors.length > 0),
     ).toBe(true);
-    expect(validateMemoryEncryptionInventory(repositoryRoot)).toEqual([]);
+    const dispatcher = readFileSync(
+      resolve(repositoryRoot, "packages/runtime/src/tasks/dispatch-task-run.ts"),
+      "utf8",
+    );
+    expect(dispatcher).toContain(
+      'import { resolveTaskMemoryEnvelope } from "./resolve-task-memory-envelope"',
+    );
+    expect(dispatcher).toContain("await resolveTaskMemoryEnvelope({");
+    expect(
+      validateMemoryEncryptionInventory(repositoryRoot, currentMemoryEncryptionSurfaces),
+    ).toEqual([]);
   });
 
   test("fails closed when a reviewed source anchor moves", () => {

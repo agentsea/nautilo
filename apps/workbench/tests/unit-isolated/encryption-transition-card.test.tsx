@@ -596,6 +596,8 @@ describe("EncryptionTransitionCard", () => {
     expect(view.getByRole("radio", { name: "Fallback Shadow mode" })).toBeTruthy();
     expect(view.getByRole("radio", { name: "Strict Shadow mode" })).toBeTruthy();
     expect(view.getByRole("radio", { name: "Fully Encrypted mode" })).toBeTruthy();
+    expect(view.getByText(/Nested Tasks, workspace artifacts, and mobile clients remain unsupported/u))
+      .toBeTruthy();
     expect(view.getByText("New foreground messages")).toBeTruthy();
     expect(view.getByText("Foreground message history")).toBeTruthy();
     expect(view.getByText("V2 Domain key catch-up")).toBeTruthy();

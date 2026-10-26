@@ -74,6 +74,12 @@ function isAllowedSchemaContractConsumer(path: string): boolean {
 
 function isAllowedOperationalTableReference(path: string): boolean {
   return path === "bin/nautilo-dev/src/lib/docker-db.ts"
+    // Fixture-only teardown verifies the exact owned Docker container and
+    // administrator handle, then restores temporary privileges before commit.
+    || path === "packages/lattice-bridge/scripts/disposable-postgres-cleanup.ts"
+    // Migration generation only: forced RLS, crypto-role privileges and immutable
+    // receipt triggers. This file never executes runtime storage queries.
+    || path === "packages/db/scripts/finalize-task-cancellation-staging.ts"
     || path ===
       "packages/db/scripts/finalize-crypto-delivery-migration.ts"
     || path ===
@@ -179,6 +185,34 @@ function writeFixture(root: string, path: string, contents: string): void {
 describe("lattice storage ownership", () => {
   test("only bridge server repositories own crypto schema access and table SQL", () => {
     expect(cryptoStorageBoundaryViolations(repositoryRoot)).toEqual([]);
+  });
+
+  test("disposable cleanup ownership does not admit adjacent or runtime storage access", () => {
+    const root = mkdtempSync(join(tmpdir(), "disposable-storage-boundary-"));
+    try {
+      const source = 'const ddl = "GRANT SELECT ON task_cancellation_crypto_staging_receipts TO nautilo";';
+      writeFixture(root, "packages/lattice-bridge/scripts/disposable-postgres-cleanup.ts", source);
+      writeFixture(root, "packages/lattice-bridge/scripts/other-cleanup.ts", source);
+      writeFixture(root, "packages/lattice-bridge/src/invocation/cleanup.ts", source);
+      expect(cryptoStorageBoundaryViolations(root)).toEqual([
+        "packages/lattice-bridge/scripts/other-cleanup.ts references public.task_cancellation_crypto_staging_receipts",
+        "packages/lattice-bridge/src/invocation/cleanup.ts references public.task_cancellation_crypto_staging_receipts",
+      ]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+
+  test("the receipt migration generator exemption does not admit runtime or adjacent script SQL", () => {
+    const root = mkdtempSync(join(tmpdir(), "receipt-storage-boundary-"));
+    try {
+      const source = 'const ddl = "ALTER TABLE task_cancellation_crypto_staging_receipts FORCE ROW LEVEL SECURITY";';
+      writeFixture(root, "packages/db/scripts/finalize-task-cancellation-staging.ts", source);
+      writeFixture(root, "packages/db/scripts/other-receipt-query.ts", source);
+      writeFixture(root, "packages/server/src/receipt-query.ts", source);
+      expect(cryptoStorageBoundaryViolations(root)).toEqual([
+        "packages/db/scripts/other-receipt-query.ts references public.task_cancellation_crypto_staging_receipts",
+        "packages/server/src/receipt-query.ts references public.task_cancellation_crypto_staging_receipts",
+      ]);
+    } finally { rmSync(root, { recursive: true, force: true }); }
   });
 
   test("reports schema imports and raw table access with actionable paths", () => {

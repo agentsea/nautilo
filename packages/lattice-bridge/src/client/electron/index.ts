@@ -46,6 +46,7 @@ import {
   createForegroundHumanTaskRunResultReader,
   createForegroundLiveShadowMessageReceiver,
   createForegroundMessageBackfillClient,
+  createForegroundTaskContentBackfillClient,
   createForegroundRoomHistoryShadowMessageReader,
   createForegroundSharedAgentLiveShadowMessageReceiver,
   createForegroundSharedAgentOutputLiveShadowReceiver,
@@ -58,6 +59,7 @@ import {
   type ForegroundHumanTaskRunResultReaderInput,
   type ForegroundLiveShadowMessageReceiverInput,
   type ForegroundMessageBackfillClientInput,
+  type ForegroundTaskContentBackfillClientInput,
   type ForegroundRoomHistoryShadowAcknowledgementInput,
   type ForegroundRoomHistoryShadowMessageReader,
   type ForegroundRoomHistoryShadowMessageReaderInput,
@@ -505,6 +507,13 @@ export type ElectronHumanTaskRunResultReaderInput =
 export type ElectronMessageBackfillClientInput =
   ForegroundMessageBackfillClientInput & ElectronForegroundShadowCustodyInput;
 
+export type ElectronTaskContentBackfillClientInput =
+  ForegroundTaskContentBackfillClientInput & ElectronForegroundShadowCustodyInput;
+
+export function createElectronTaskContentBackfillClient(input: ElectronTaskContentBackfillClientInput) {
+  return createForegroundTaskContentBackfillClient(electronForegroundShadowPlatform(input), input);
+}
+
 /** Electron-main adapter using the controller's existing private custody. */
 export function createElectronMessageBackfillClient(
   input: ElectronMessageBackfillClientInput,
@@ -538,6 +547,10 @@ export function createElectronHumanTaskRunResultReader(
     input,
   );
 }
+
+export {
+  createAuthorizedHumanTaskRunTranscriptReaderV1,
+} from "../task/authorized-human-task-run-transcript.ts";
 
 /** Electron-main foreground sender with file-backed private custody. */
 export function createElectronLiveShadowMessageClient(
@@ -680,7 +693,9 @@ export {
   type AuthorizedHumanMemoryReadResultV1,
   type AuthorizedHumanMemoryTestAuthority,
   type AuthorizedHumanMemoryUnavailableReason,
+  type AuthorizedHumanMemoryWriteIntent,
   type AuthorizedHumanMemoryWriteIntentV1,
+  type AuthorizedHumanMemoryWriteIntentV2,
 } from "../memory/authorized-human-memory-client.ts";
 export {
   createVaultAuthorizedHumanMemoryDeviceContentPort,

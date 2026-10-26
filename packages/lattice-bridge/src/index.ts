@@ -10,7 +10,12 @@ export {
 
 export {
   createForegroundMemoryProcessorRecipient,
+  decodeMemoryProcessorSearchQueryV2,
+  encodeMemoryProcessorSearchQueryV2,
   sealForegroundMemoryProcessorRequest,
+  sealForegroundMemoryProcessorRequestV2,
+  sealForegroundMemoryProcessorSearchQueryV2,
+  type MemoryProcessorSearchQueryV2,
 } from "./memory/foreground-memory-processor-transport.ts";
 export { createHumanMemoryProcessorTransport } from "./client/memory/human-memory-processor-transport.ts";
 export {
@@ -97,7 +102,9 @@ export {
   type AuthorizedHumanMemoryReadResultV1,
   type AuthorizedHumanMemoryTestAuthority,
   type AuthorizedHumanMemoryUnavailableReason,
+  type AuthorizedHumanMemoryWriteIntent,
   type AuthorizedHumanMemoryWriteIntentV1,
+  type AuthorizedHumanMemoryWriteIntentV2,
 } from "./client/memory/authorized-human-memory-client.ts";
 export {
   createVaultAuthorizedHumanMemoryDeviceContentPort,
@@ -151,6 +158,7 @@ export {
   type TaskMessageDestinationV1,
 } from "./task/task-content-authority-v1.ts";
 export {
+  TASK_DEFINITION_CONTENT_FORMAT_VERSION_V2,
   TASK_PAYLOAD_FORMAT_VERSION_V1,
   TASK_PAYLOAD_MAX_METADATA_ENTRIES_V1,
   TASK_PAYLOAD_MAX_METADATA_JSON_DEPTH_V1,
@@ -162,17 +170,47 @@ export {
   TASK_RUN_RESULT_PAYLOAD_FORMAT_VERSION_V1,
   TASK_RUN_RESULT_PAYLOAD_MAX_TEXT_BYTES_V1,
   TASK_RUN_RESULT_PAYLOAD_MAX_WIRE_BYTES_V1,
+  decodeTaskDefinitionContent,
   decodeTaskPayloadV1,
   decodeTaskRunResultPayloadV1,
+  encodeTaskDefinitionContent,
+  encodeTaskDefinitionContentV2,
   encodeTaskPayloadV1,
   encodeTaskRunResultPayloadV1,
+  type DecodedTaskDefinitionContent,
+  type TaskDefinitionContent,
+  type TaskDefinitionContentV2,
   type TaskPayloadV1,
   type TaskProtectedMetadataContentV1,
   type TaskRunResultPayloadV1,
 } from "./task/task-payload-v1.ts";
 export * from "./task/task-content-repository.ts";
+export * from "./task/task-historical-content-source.ts";
+export * from "./task/task-historical-content-identity.ts";
+export * from "./task/task-historical-repair-provenance.ts";
 export * from "./task/task-content-prepared-revision.ts";
 export * from "./task/task-operational-fields-digest-v1.ts";
+export {
+  createHumanTaskOrdinaryFallbackReplayAdmissionV1,
+  decodeHumanTaskOrdinaryFallbackRequestV1,
+  digestHumanTaskOrdinaryFallbackRequestV1,
+  encodeHumanTaskOrdinaryFallbackRequestV1,
+  fingerprintHumanTaskOrdinaryFallbackContentV1,
+  fingerprintHumanTaskOrdinaryFallbackPlanV1,
+  prepareHumanTaskOrdinaryFallbackRequestV1,
+  verifyHumanTaskOrdinaryFallbackRequestV1,
+  type HumanTaskOrdinaryFallbackPlanV1,
+  type HumanTaskOrdinaryFallbackRequestV1,
+} from "./task/human-task-ordinary-fallback-request.ts";
+export { hasTaskOrdinaryFallbackReceiptV1, type TaskOrdinaryFallbackReceiptV1 } from
+  "./task/task-ordinary-fallback-receipt.ts";
+export {
+  taskDefinitionForegroundAuthorizationIdV1,
+  deriveTaskDefinitionForegroundRecipientKeyIdV1,
+  parseTaskDefinitionForegroundAuthorizationIdV1,
+  taskDefinitionForegroundAuthorizationIdV1Matches,
+  type TaskDefinitionForegroundAuthorizationCoordinatesV1,
+} from "./task/task-definition-foreground-authorization-id-v1.ts";
 export * from "./task/task-content-shadow-saga.ts";
 export * from "./task/task-content-operation.ts";
 export {
@@ -181,8 +219,15 @@ export {
   type PrepareTaskRuntimeRunResultInput,
 } from "./task/task-run-result-preparation.ts";
 export {
+  withProtectedTaskCancellationResultSigner,
   withProtectedTaskResultSigner,
+  withProtectedTaskWakeForegroundSigner,
+  withProtectedTaskTerminalMessageSigner,
+  withProtectedTaskRunResultMessageSigner,
   type ProtectedTaskResultSignerAuthority,
+  type ProtectedTaskExecutionSignerAuthority,
+  type ProtectedTaskPublicationSignerAuthority,
+  withProtectedTaskTemporaryResultSigner,
   type ProtectedTaskResultSignerResult,
 } from "./task/protected-task-result-signer.ts";
 export { withProtectedTaskResultNamespaceSource } from
@@ -263,6 +308,14 @@ export type {
   AgentEntityNamespaceAuthority,
 } from "./object/agent-entity-crypto.ts";
 export {
+  createAgentMemoryProjectionContinuationCapsule,
+  createProtectedTaskMemoryAccessContinuationCapsule,
+  type ProtectedTaskMemoryAccessContinuationCapsule,
+  type ProtectedTaskMemoryAccessContinuationIdentityV1,
+  type AgentMemoryProjectionContinuationCapsule,
+  type AgentMemoryProjectionContinuationIdentityV1,
+} from "./memory/projection-continuation-capsule.ts";
+export {
   createAgentObjectProtector,
   type AgentObjectPreparationSource,
   type AgentObjectProtectionNamespace,
@@ -275,6 +328,7 @@ export {
   createForegroundAgentObjectRepairer,
   type ForegroundAgentObjectRepairResult,
   type ForegroundAgentObjectRepairSource,
+  type ForegroundAgentFreshPublication,
   type VerifiedForegroundAgentObject,
 } from "./object/foreground-agent-object-repair.ts";
 export type {
@@ -631,6 +685,7 @@ export type {
 export {
   ProtectedCheckpointCryptoError,
   createProtectedCheckpointCellCrypto,
+  bindProtectedCheckpointCellDataOperationOwner,
   createProtectedCheckpointNamespaceSessionContentExecutor,
 } from "./checkpoint/protected-checkpoint-cell-crypto.ts";
 export type {
@@ -648,7 +703,6 @@ export type {
   ProtectedCheckpointNamespaceSessionContentExecutor,
 } from "./checkpoint/protected-checkpoint-cell-crypto.ts";
 export {
-  createTaskRuntimeCheckpointCellCrypto,
   type TaskRuntimeCheckpointCellCrypto,
   type TaskRuntimeCheckpointCellIdentity,
 } from "./checkpoint/task-runtime-checkpoint-cell-crypto.ts";
@@ -1247,6 +1301,9 @@ export {
   type VaultRoomHistoryShadowRecordResultV1,
 } from "./client/message/vault-room-history-shadow-message-reader.ts";
 export {
+  createAuthorizedHumanTaskRunTranscriptReaderV1,
+} from "./client/task/authorized-human-task-run-transcript.ts";
+export {
   encodeLiveShadowDurableEventEvidenceV1,
   liveShadowDurableEventDigestV1,
   type LiveShadowDurableEventEvidenceV1,
@@ -1336,3 +1393,20 @@ export {
 export * from "./message/message-backfill-ack.ts";
 export * from "./message/message-backfill-state.ts";
 export { PROTECTED_TOP_LEVEL_ROOM_KINDS, isProtectedTopLevelRoomKind } from "./message/protected-room-topology.ts";
+
+export {
+  createHumanMemoryOrdinaryFallbackReplayAdmissionV2,
+  encodeHumanMemoryOrdinaryFallbackRequestV2,
+  decodeHumanMemoryOrdinaryFallbackRequestV2,
+  digestHumanMemoryOrdinaryFallbackRequestV2,
+  prepareHumanMemoryOrdinaryFallbackRequestV2,
+  verifyHumanMemoryOrdinaryFallbackRequestV2,
+} from "./memory/human-memory-ordinary-fallback-request.ts";
+export type {
+  HumanMemoryOrdinaryFallbackUnsignedRequestV2,
+  HumanMemoryOrdinaryFallbackRequestV2,
+  AuthenticatedHumanMemoryOrdinaryFallbackRequestV2,
+  HumanMemoryOrdinaryFallbackReplayAdmissionV2,
+} from "./memory/human-memory-ordinary-fallback-request.ts";
+export * from "./client/task/device-task-content-backfill-client.ts";
+export * from "./client/task/task-content-backfill-worker.ts";

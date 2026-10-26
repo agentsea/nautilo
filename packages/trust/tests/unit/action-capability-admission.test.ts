@@ -610,7 +610,6 @@ function productionFilesMatching(pattern: RegExp): string[] {
 
 test("invocation admission and authority mint sites stay mechanically inventoried", () => {
   expect(productionFilesMatching(INVOCATION_ADMISSION_PATTERN)).toEqual([
-    "packages/runtime/src/conversation/human-terminal-admission.ts",
     "packages/runtime/src/tasks/report-back.ts",
     "packages/server/src/lib/foreground-chat-funding.ts",
     "packages/server/src/lib/native-task-funding.ts",
@@ -619,7 +618,11 @@ test("invocation admission and authority mint sites stay mechanically inventorie
     "packages/server/src/messaging/bolter-controller.ts",
     // Durable adoption and hydration recheck current sponsor, Room and Genie access.
     "packages/server/src/messaging/external-room-execution.ts",
+    // Private operator configuration fixes the sponsor and Genie; status rechecks access.
+    "packages/server/src/messaging/magent-operator.ts",
     "packages/trust/src/action-capability-admission.ts",
+    // Human Terminal and Task capture use the same transaction-capable source owner.
+    "packages/trust/src/human-terminal-source-authority.ts",
   ]);
 
   expect(productionFilesMatching(SERVER_INVOCATION_ADAPTER_PATTERN)).toEqual([
@@ -629,6 +632,7 @@ test("invocation admission and authority mint sites stay mechanically inventorie
     "packages/server/src/routes/codex-requests.ts",
     "packages/server/src/routes/jobs.ts",
     "packages/server/src/routes/ordinary-content-access-recovery.ts",
+    "packages/server/src/routes/protected-task-external-request-routes.ts",
     "packages/server/src/routes/rooms.ts",
     "packages/server/src/routes/tasks.ts",
     "packages/server/src/routes/workspace-artifacts.ts",
@@ -648,12 +652,17 @@ test("invocation admission and authority mint sites stay mechanically inventorie
     // Receipt-bound queued work supplies the sponsor; current admission is
     // rechecked before execution, without treating the external sender as Human.
     "packages/server/src/messaging/external-room-execution.ts",
+    // The operator capability fixes the sponsor and fresh Room; ordinary intake
+    // still rechecks current invocation authority before committing work.
+    "packages/server/src/messaging/magent-operator.ts",
     "packages/server/src/routes/auth.ts",
     "packages/server/src/routes/chat.ts",
     "packages/server/src/routes/codex-requests.ts",
     "packages/server/src/routes/jobs.ts",
     "packages/server/src/routes/ordinary-content-access-recovery.ts",
+    "packages/server/src/routes/protected-task-external-request-routes.ts",
     "packages/server/src/routes/task-content-access-recovery.ts",
+    "packages/server/src/routes/task-ordinary-fallback-composition.ts",
     "packages/server/src/routes/task-protected-composition.ts",
     "packages/server/src/routes/tasks.ts",
     "packages/server/src/routes/workspace-artifacts.ts",
@@ -668,6 +677,7 @@ test("invocation admission and authority mint sites stay mechanically inventorie
     "packages/runtime/src/tasks/create-task.ts",
     "packages/runtime/src/tasks/resume-task-approval.ts",
     "packages/runtime/src/tasks/task-run-executor.ts",
+    "packages/server/src/routes/protected-task-native-execution-context.ts",
   ]);
 });
 
@@ -770,7 +780,9 @@ const EXECUTION_PRIMITIVE_INVENTORY: ReadonlyArray<{
   },
   {
     primitive: "runtimeCreateTask",
-    pattern: /\bruntimeCreateTask\s*\(/g,
+    // Generic result typing does not change the execution primitive. Keep the
+    // call inventoried when a caller supplies a concrete protected plan type.
+    pattern: /\bruntimeCreateTask(?:\s*<[^()]+>)?\s*\(/g,
     callsites: [
       {
         file: "packages/server/src/app.ts",
@@ -809,32 +821,12 @@ const EXECUTION_PRIMITIVE_INVENTORY: ReadonlyArray<{
         classification: "accepted_continuation",
       },
       {
-        file: "packages/agent/src/tools/tasks/shortcuts/ask-peer.ts",
+        file: "packages/agent/src/tools/tasks/policy-aware-create.ts",
         count: 1,
         classification: "accepted_continuation",
       },
       {
         file: "packages/agent/src/tools/tasks/shortcuts/generate-repo-docs.ts",
-        count: 1,
-        classification: "accepted_continuation",
-      },
-      {
-        file: "packages/agent/src/tools/tasks/shortcuts/in-background.ts",
-        count: 1,
-        classification: "accepted_continuation",
-      },
-      {
-        file: "packages/agent/src/tools/tasks/shortcuts/in-private-namespace.ts",
-        count: 1,
-        classification: "accepted_continuation",
-      },
-      {
-        file: "packages/agent/src/tools/tasks/shortcuts/in-scope.ts",
-        count: 1,
-        classification: "accepted_continuation",
-      },
-      {
-        file: "packages/agent/src/tools/tasks/shortcuts/schedule.ts",
         count: 1,
         classification: "accepted_continuation",
       },

@@ -70,9 +70,10 @@ export function mobileTaskTranscript(detail: MobileTaskDetail): TaskTranscriptMe
     : [];
 }
 
-/** The legacy endpoint refuses a mixed ordinary/protected Task collection. */
+/** Exact legacy denials that direct a client to lifecycle-safe metadata. */
 export function requiresTaskContentProjection(error: unknown): boolean {
   return error instanceof ApiError
     && error.status === 409
-    && error.message === "task_content_requires_current_client";
+    && (error.message === "task_content_requires_current_client"
+      || error.message === "task_content_unavailable");
 }

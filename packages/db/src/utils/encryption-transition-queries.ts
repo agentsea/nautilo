@@ -19,6 +19,16 @@ export type LiveShadowEncryptionTransitionMode =
   (typeof LIVE_SHADOW_ENCRYPTION_TRANSITION_MODES)[number];
 export type LiveShadowEncryptionTransitionBehavior = "fallback" | "strict";
 
+/** Structural source eligibility only; callers still hold the exact current policy fence. */
+export function protectedTaskDefinitionSupportsPolicy(
+  representation: "ordinary" | "dual" | "protected",
+  mode: LiveShadowEncryptionTransitionMode,
+): boolean {
+  return mode === "encrypted_only"
+    ? representation === "dual" || representation === "protected"
+    : mode === "shadow_encryption" && representation === "dual";
+}
+
 export interface LiveShadowEncryptionTransitionPolicy {
   readonly mode: LiveShadowEncryptionTransitionMode;
   readonly shadowBehavior: LiveShadowEncryptionTransitionBehavior;
@@ -327,5 +337,34 @@ export async function compareAndSwapEncryptionTransitionPolicy(
   return db.transaction(async (tx) => {
     await lockEncryptionPolicy(tx, false);
     return compareAndSwapEncryptionTransitionPolicyInTransaction(tx, input);
+  });
+}
+
+export type EncryptionTransitionCurrentValidation = (input: Readonly<{
+  transaction: Parameters<Parameters<Database["transaction"]>[0]>[0];
+  current: LiveShadowEncryptionTransitionPolicy;
+  requested: Parameters<typeof compareAndSwapEncryptionTransitionPolicyInTransaction>[1];
+}>) => Promise<void>;
+
+/** Full admission can inspect current product facts while the exclusive policy
+ * fence prevents a protected/ordinary publisher from racing the final CAS. */
+export async function compareAndSwapValidatedEncryptionTransitionPolicy(
+  db: Parameters<typeof compareAndSwapEncryptionTransitionPolicy>[0],
+  input: Parameters<typeof compareAndSwapEncryptionTransitionPolicy>[1],
+  validateCurrent: EncryptionTransitionCurrentValidation,
+): Promise<LiveShadowEncryptionTransitionPolicy> {
+  if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 0) {
+    throw new TypeError("expectedRevision must be a non-negative safe integer");
+  }
+  assertLiveShadowEncryptionTransitionMode(input.targetMode);
+  assertLiveShadowEncryptionTransitionBehavior(input.targetShadowBehavior);
+  return db.transaction(async transaction => {
+    await lockEncryptionPolicy(transaction, false);
+    const current = projectLiveShadowEncryptionTransitionPolicy(await loadPolicyRow(transaction));
+    if (current.revision !== input.expectedRevision) {
+      throw new EncryptionTransitionPolicyConflictError(input.expectedRevision, current.revision);
+    }
+    await validateCurrent({ transaction, current, requested: input });
+    return compareAndSwapEncryptionTransitionPolicyInTransaction(transaction, input);
   });
 }

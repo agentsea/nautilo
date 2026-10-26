@@ -44,6 +44,67 @@ export type {
 } from "./task-runtime-request-v1.ts";
 
 export {
+  decodeTaskRuntimeBackgroundAuthorizationRequestBase,
+} from "./task-runtime-request-base.ts";
+
+export {
+  MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V2,
+  TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_FORMAT_VERSION_V2,
+  TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_PURPOSE_V2,
+  createTaskRuntimeBackgroundAuthorizationRequestV2,
+  decodeTaskRuntimeBackgroundAuthorizationRequestV2,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV2,
+  encodeTaskRuntimeBackgroundAuthorizationRequestV2,
+  isTaskRuntimeBackgroundAuthorizationRequestV2Carrier,
+  taskRuntimeBackgroundAuthorizationIssuerV2,
+} from "./task-runtime-request-v2.ts";
+export type {
+  TaskRuntimeBackgroundAuthorizationRequestV2,
+  TaskRuntimeDeviceGroupHeadV2,
+  TaskRuntimeEphemeralSignerV2,
+  TaskRuntimeExecutionWorkBindingV2,
+} from "./task-runtime-request-v2.ts";
+
+export {
+  MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_BYTES_V2,
+  MAX_TASK_RUNTIME_SIGNER_AUTHORIZATION_PROJECTION_WIRE_BYTES_V1,
+  MAX_TASK_RUNTIME_SIGNER_AUTHORIZATION_WIRE_BYTES_V1,
+  TASK_RUNTIME_SIGNER_AUTHORIZATION_FORMAT_VERSION_V1,
+  TASK_RUNTIME_SIGNER_AUTHORIZATION_PURPOSE_V1,
+  TaskRuntimeSignerAuthorizationErrorV1,
+  createTaskRuntimeSignerAuthorizationV1,
+  decodeTaskRuntimeBackgroundAuthorizationResponseV2,
+  decodeTaskRuntimeSignerAuthorizationProjectionV1,
+  destroyTaskRuntimeSignerAuthorizationProjectionV1,
+  destroyTaskRuntimeSignerAuthorizationV1,
+  destroyVerifiedTaskRuntimeSignerAuthorizationV1,
+  encodeTaskRuntimeBackgroundAuthorizationResponseV2,
+  readTaskRuntimeSignerAuthorizationIssuerV1,
+  verifyCurrentTaskRuntimeSignerAuthorizationV1,
+  verifyHistoricalTaskRuntimeSignerAuthorizationV1,
+} from "./task-runtime-signer-authorization-v1.ts";
+export type {
+  ResolveCurrentTaskRuntimeSignerAuthorizationIssuerV1,
+  ResolveHistoricalTaskRuntimeSignerAuthorizationIssuerV1,
+  TaskRuntimeSignerAuthorizationIssuerContextV1,
+  TaskRuntimeSignerAuthorizationProjectionV1,
+  TaskRuntimeSignerAuthorizationV1,
+  VerifiedCurrentTaskRuntimeSignerAuthorizationV1,
+  VerifiedHistoricalTaskRuntimeSignerAuthorizationV1,
+  VerifiedTaskRuntimeSignerAuthorizationV1,
+} from "./task-runtime-signer-authorization-v1.ts";
+
+export {
+  hasTaskRuntimeTemporarySignerV1,
+  withTaskRuntimeTemporarySignerV1,
+} from "./task-runtime-recipient-registry-v1.ts";
+export type {
+  TaskRuntimeCertifiedPublicationSigningInputV1,
+  TaskRuntimeCertifiedSigningInputV1,
+  TaskRuntimeTemporarySignerV1,
+} from "./task-runtime-recipient-registry-v1.ts";
+
+export {
   MAX_BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_BYTES_V1,
   createBackgroundAuthorizationResponseV1,
   decodeBackgroundAuthorizationResponseV1,
@@ -149,3 +210,7 @@ export type {BackgroundProcessorDomainKeyV2, CreateBackgroundAuthorizationRespon
 export {reflectionAuthorityReconciliationFingerprintV2, type ReflectionAuthorityObjectPortV2, type ReflectionAuthorityRunInputV2, type ReflectionAuthorityReconciliationBindingV2, type ReflectionSemanticReconciliationBindingV2, type ReflectionPublicationReconciliationBindingV2} from "./reflection-authority-reprojection-v2.ts";
 
 export type {ReflectionSemanticRunInputV2, ReflectionSemanticObjectPortV2, ReflectionSemanticInputV2, ReflectionSemanticOutputV2} from "./reflection-authority-reprojection-v2.ts";
+
+export * from "./task-runtime-request-v3.ts";
+export { createTaskRuntimeSignerAuthorization, createTaskRuntimeSignerAuthorizationV2, verifyCurrentTaskRuntimeSignerAuthorization, verifyHistoricalTaskRuntimeSignerAuthorization, readTaskRuntimeSignerAuthorizationIssuer, destroyVerifiedTaskRuntimeSignerAuthorization, decodeTaskRuntimeSignerAuthorizationProjection, destroyTaskRuntimeSignerAuthorizationProjection } from "./task-runtime-signer-authorization-v1.ts";
+export type { ResolveCurrentTaskRuntimeSignerAuthorizationIssuer, ResolveHistoricalTaskRuntimeSignerAuthorizationIssuer, VerifiedCurrentTaskRuntimeSignerAuthorization, VerifiedHistoricalTaskRuntimeSignerAuthorization, TaskRuntimeSignerAuthorizationProjection, TaskRuntimeSignerAuthorizationIssuerContext } from "./task-runtime-signer-authorization-v1.ts";

@@ -128,7 +128,7 @@
 
     "@nautilo/office-docs": ["@nautilo/office-docs@file:../../office-docs", { "dependencies": { "@nautilo/office-core": "0.6.9", "@pdf-lib/fontkit": "^1.1.1", "jszip": "^3.10.1", "nspell": "^2.1.5", "pdf-lib": "^1.17.1" }, "devDependencies": { "@types/nspell": "^2.1.6", "@vitest/coverage-v8": "^4.1.8", "jsdom": "^28.0.0", "playwright": "^1.58.2", "prettier": "^3.3.2", "typescript": "^5.9.3", "vite": "^6.4.2", "vitest": "^4.1.8" } }],
 
-    "@nautilo/types": ["@nautilo/types@file:../../types", { "dependencies": { "node-diff3": "3.2.1", "zod": "4.3.6" }, "devDependencies": { "@types/node": "24.10.4", "bun-types": "1.3.11", "typescript": "5.9.3" } }],
+    "@nautilo/types": ["@nautilo/types@file:../../types", { "dependencies": { "node-diff3": "3.2.1", "zod": "4.6.7" }, "devDependencies": { "@types/node": "24.10.4", "bun-types": "1.4.4", "typescript": "5.9.3" } }],
 
     "@nautilo/writer-proposal-core": ["@nautilo/writer-proposal-core@file:../../writer-proposal-core", { "dependencies": { "@nautilo/office-docs": "0.6.9", "@nautilo/types": "0.1.0", "parse5": "8.0.1" }, "devDependencies": { "@types/node": "24.10.4", "typescript": "5.9.3" } }],
 
@@ -274,7 +274,7 @@
 
     "buffer-image-size": ["buffer-image-size@0.6.4", "", { "dependencies": { "@types/node": "*" } }, "sha512-nEh+kZOPY1w+gcCMobZ6ETUp9WfibndnosbpwB1iJk/8Gt5ZF2bhS6+B6bPYz424KtwsR6Rflc3tCz1/ghX2dQ=="],
 
-    "bun-types": ["bun-types@1.3.11", "", { "dependencies": { "@types/node": "*" } }, "sha512-1KGPpoxQWl9f6wcZh57LvrPIInQMn2TQ7jsgxqpRzg+l0QPOFvJVH7HmvHo/AiPgwXy+/Thf6Ov3EdVn1vOabg=="],
+    "bun-types": ["bun-types@1.4.4", "", { "dependencies": { "@types/node": "*", "undici-types": "*" } }, "sha512-yjrJh5oGX7mMPKGd19YXyIjmEuj4G4zNC30bs7PM9Az7NQ3ndF3j6hbeRdvJTRQEhJ/FYQwW0a2moweEi2hMxQ=="],
 
     "chai": ["chai@6.2.2", "", {}, "sha512-NUPRluOfOiTKBKvWPtSD4PhFvWCqOi0BGStNWs57X9js7XGTprSmFoz5F0tWhR4WPjNeR9jXqdC7/UpSJTnlRg=="],
 
@@ -472,19 +472,19 @@
 
     "xmlchars": ["xmlchars@2.2.0", "", {}, "sha512-JZnDKK8B0RCDw84FNdDAIpZK+JuJw+s7Lz8nksI7SIuU3UXJJslUthsi+uWBUYOwPFwW7W7PRLRfUKpxjtjFCw=="],
 
-    "zod": ["zod@4.3.6", "", {}, "sha512-rftlrkhHZOcjDwkGlnUtZZkvaPHCsDATp4pGpuOOMDaTdDDXF91wuVDJoWoPsKX/3YPQ5fHuF3STjcYyKr+Qhg=="],
+    "zod": ["zod@4.6.7", "", {}, "sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg=="],
 
     "@nautilo/office-core/typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
 
-    "@nautilo/office-docs/@nautilo/office-core": ["@nautilo/office-core@file:../../office-core", {}],
+    "@nautilo/office-docs/@nautilo/office-core": ["@nautilo/office-core@file:../../office-core", { "devDependencies": { "prettier": "^3.3.2", "tsx": "^4.20.3", "typescript": "^5.9.3", "vitest": "^4.1.8" } }],
 
     "@nautilo/office-docs/typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
 
     "@nautilo/types/typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
 
-    "@nautilo/writer-proposal-core/@nautilo/office-docs": ["@nautilo/office-docs@file:../../office-docs", {}],
+    "@nautilo/writer-proposal-core/@nautilo/office-docs": ["@nautilo/office-docs@file:../../office-docs", { "dependencies": { "@nautilo/office-core": "0.6.9", "@pdf-lib/fontkit": "^1.1.1", "jszip": "^3.10.1", "nspell": "^2.1.5", "pdf-lib": "^1.17.1" }, "devDependencies": { "@types/nspell": "^2.1.6", "@vitest/coverage-v8": "^4.1.8", "jsdom": "^28.0.0", "playwright": "^1.58.2", "prettier": "^3.3.2", "typescript": "^5.9.3", "vite": "^6.4.2", "vitest": "^4.1.8" } }],
 
-    "@nautilo/writer-proposal-core/@nautilo/types": ["@nautilo/types@file:../../types", {}],
+    "@nautilo/writer-proposal-core/@nautilo/types": ["@nautilo/types@file:../../types", { "dependencies": { "node-diff3": "3.2.1", "zod": "4.6.7" }, "devDependencies": { "@types/node": "24.10.4", "bun-types": "1.4.4", "typescript": "5.9.3" } }],
 
     "@nautilo/writer-proposal-core/typescript": ["typescript@5.9.3", "", { "bin": { "tsc": "bin/tsc", "tsserver": "bin/tsserver" } }, "sha512-jl1vZzPDinLr9eUt3J/t7V6FgNEw9QjvBPdysz9KfQDD41fQrC2Y4vKQdiaUpFT4bXlb1RHhLpp8wtm6M5TgSw=="],
 
@@ -495,6 +495,8 @@
     "parse5/entities": ["entities@8.1.0", "", {}, "sha512-kxL7msIffSuh9aaFAMD7rxAIuTRMAHMeBtgHW2yUdWw732ZNh4MehkF2gdjvtdmikkaIP9bFDDJOPlsvm7avrA=="],
 
     "vite/esbuild": ["esbuild@0.25.12", "", { "optionalDependencies": { "@esbuild/aix-ppc64": "0.25.12", "@esbuild/android-arm": "0.25.12", "@esbuild/android-arm64": "0.25.12", "@esbuild/android-x64": "0.25.12", "@esbuild/darwin-arm64": "0.25.12", "@esbuild/darwin-x64": "0.25.12", "@esbuild/freebsd-arm64": "0.25.12", "@esbuild/freebsd-x64": "0.25.12", "@esbuild/linux-arm": "0.25.12", "@esbuild/linux-arm64": "0.25.12", "@esbuild/linux-ia32": "0.25.12", "@esbuild/linux-loong64": "0.25.12", "@esbuild/linux-mips64el": "0.25.12", "@esbuild/linux-ppc64": "0.25.12", "@esbuild/linux-riscv64": "0.25.12", "@esbuild/linux-s390x": "0.25.12", "@esbuild/linux-x64": "0.25.12", "@esbuild/netbsd-arm64": "0.25.12", "@esbuild/netbsd-x64": "0.25.12", "@esbuild/openbsd-arm64": "0.25.12", "@esbuild/openbsd-x64": "0.25.12", "@esbuild/openharmony-arm64": "0.25.12", "@esbuild/sunos-x64": "0.25.12", "@esbuild/win32-arm64": "0.25.12", "@esbuild/win32-ia32": "0.25.12", "@esbuild/win32-x64": "0.25.12" }, "bin": { "esbuild": "bin/esbuild" } }, "sha512-bbPBYYrtZbkt6Os6FiTLCTFxvq4tt3JKall1vRwshA3fdVztsLAatFaZobhkBC8/BrPetoa0oksYoKXoG4ryJg=="],
+
+    "@nautilo/writer-proposal-core/@nautilo/office-docs/@nautilo/office-core": ["@nautilo/office-core@file:../../office-core", { "devDependencies": { "prettier": "^3.3.2", "tsx": "^4.20.3", "typescript": "^5.9.3", "vitest": "^4.1.8" } }],
 
     "vite/esbuild/@esbuild/aix-ppc64": ["@esbuild/aix-ppc64@0.25.12", "", { "os": "aix", "cpu": "ppc64" }, "sha512-Hhmwd6CInZ3dwpuGTF8fJG6yoWmsToE+vYgD4nytZVxcu1ulHpUQRAB1UJ8+N1Am3Mz4+xOByoQoSZf4D+CpkA=="],
 

@@ -228,7 +228,7 @@ async function finish(db: BolterBridgeDatabase, fixture: Fixture, receiptId: str
     return { sessionMessageId: Number(appended.insertedRows[0].id), fingerprint };
   });
   if (!outbox) throw new Error("Fixture final publication unavailable");
-  const facts = await admin.select().from(sessionMessageDirectedRecipients).where(eq(sessionMessageDirectedRecipients.messageId, outbox.sessionMessageId));
+  const facts = await admin.select().from(sessionMessageDirectedRecipients).where(eq(sessionMessageDirectedRecipients.messageId, outbox.sessionMessageId!));
   expect(facts.some(row => row.reason === "direct_room" && row.recipientId === fixture.owner)).toBe(true);
   expect(facts.some(row => row.reason === "explicit_reply" || row.reason === "agent_response")).toBe(false);
   return outbox;
@@ -681,7 +681,7 @@ describe("Bolter actual PostgreSQL authority and lifecycle", () => {
     expect((await tx.select().from(jobs).where(eq(jobs.id, input.jobId)))[0]?.status).toBe("running");
     const result = await completeBolterExecutionWith(db, { userId: fixture.owner }, input, async (inner, execution) => {
       const fp = digest(["Synthetic exact final", input.jobId]);
-      const [row] = await inner.insert(sessionMessages).values({ sessionId: execution.session.id, role: "assistant", content: "Synthetic exact final",
+      const [row] = await inner.insert(sessionMessages).values({ sessionId: execution.session.id!, role: "assistant", content: "Synthetic exact final",
         humanTurnId: null, replyToMessageId: accepted.receipt.sessionMessageId, fingerprint: fp,
         metadata: { externalFinalReply: { kind: "bolter_final_reply_v1", receiptId: accepted.receipt.id, jobId: input.jobId,
           turnId: input.reference.turnId, acceptanceId: input.reference.acceptanceId } } }).returning();
@@ -690,7 +690,7 @@ describe("Bolter actual PostgreSQL authority and lifecycle", () => {
     expect(result?.state).toBe("pending");
     expect((await tx.select().from(jobs).where(eq(jobs.id, input.jobId)))[0]?.status).toBe("completed");
     expect(await completeBolterExecutionWith(db, { userId: fixture.owner }, input, async () => { throw new Error("Must not duplicate final"); })).toEqual(result);
-    const [finalRow] = await tx.select().from(sessionMessages).where(eq(sessionMessages.id, result!.sessionMessageId));
+    const [finalRow] = await tx.select().from(sessionMessages).where(eq(sessionMessages.id, result!.sessionMessageId!));
     const alternateFingerprint = digest(["Synthetic second final", input.jobId]);
     const [alternate] = await tx.insert(sessionMessages).values({ sessionId: finalRow!.sessionId, role: "assistant", content: "Synthetic second final",
       fingerprint: alternateFingerprint, humanTurnId: null, replyToMessageId: accepted.receipt.sessionMessageId,
@@ -777,4 +777,57 @@ describe("reviewed Human publications on real database roles", () => {
     });
     expect(await admin.select().from(bolterExplicitShares).where(eq(bolterExplicitShares.userId, fixture.owner))).toHaveLength(0);
   }));
+});
+
+test("operator control commits input, result and publication without conversation or notification rows", async () => {
+  await withFixture(async (_tx, fixture, db) => {
+    const { createMagentOperatorConnectionWith } = await import("../../src/queries/bolter-bridge");
+    const connection = await createMagentOperatorConnectionWith(db, { userId: fixture.owner }, {
+      operatorBindingId: randomUUID(), origin: "https://operator.example", providerAgentId: "synthetic-genie",
+      identityFingerprint: "c".repeat(64),
+    });
+    const receiver: BolterReceiverContext = { userId: fixture.owner, connectionId: connection.id,
+      connectionGeneration: connection.generation, transportKind: "operator-unix", operatorBindingId: connection.operatorBindingId,
+      relayId: null, desktopSessionId: null, pairingGenerationRef: null };
+    const { binding, ctx } = await freshBinding(db, fixture, receiver, "synthetic-control-room");
+    const content = "Synthetic operator control prompt";
+    const origin = { ...sourceOrigin(ctx, "synthetic-control", binding), provider: "magent" as const,
+      senderType: "anima" as const, senderId: "magent-connector:synthetic-genie" };
+    const fingerprint = digest([origin.provider, origin.origin, origin.providerAgentId, origin.chatId, origin.threadRootId,
+      origin.messageId, origin.senderId, origin.senderType, origin.createdAt, content]);
+    const inbound = { providerMessageId: origin.messageId, externalSenderId: origin.senderId, fingerprint };
+    const accepted = await acceptBolterInboundWith(db, ctx, inbound, async (tx, locked, receiptId) => {
+      const turnId = randomUUID();
+      const acceptanceId = randomUUID(); fixture.acceptanceIds.push(acceptanceId); persistCleanupLedger();
+      await insertAcceptanceInTransaction(tx, "foreground", acceptanceId);
+      const reference = inputReference(receiptId, acceptanceId, locked, ctx, turnId);
+      const jobId = await persistJobInTransaction(tx, { ownerId: fixture.owner, requestorId: fixture.owner,
+        roomId: locked.roomId, laneKey: `room:${locked.roomId}`, type: "foreground", input: { ...reference } });
+      return { sessionMessageId: null, turnId, jobId, controlInput: { kind: "operator_control_v1", content, origin } };
+    }, "synthetic-control-generation");
+    if (accepted.status !== "accepted") throw new Error("Operator fixture was not accepted");
+    expect(accepted.receipt.sessionMessageId).toBeNull();
+    expect((await acceptBolterInboundWith(db, ctx, inbound, async () => { throw new Error("Duplicate execution"); }, "synthetic-control-generation")).status).toBe("duplicate");
+    const execution = await getBolterExecutionInputForReceiptWith(db, { userId: fixture.owner }, accepted.receipt.id);
+    if (!execution) throw new Error("Control reference unavailable");
+    expect(await loadBolterExecutionWith(db, { userId: fixture.owner }, execution)).toMatchObject({ sourceMessage: { id: null, content } });
+    expect(await linkBolterExecutionAcceptanceWith(db, { userId: fixture.owner }, execution)).toBe("linked");
+    const claim = await fixtureClaim(fixture, execution.jobId);
+    try {
+      expect(await startBolterExecutionWith(db, { userId: fixture.owner }, { ...execution, executionClaim: claim })).toBe("started");
+      const result = "Synthetic control result";
+      const outbox = await completeBolterExecutionWith(db, { userId: fixture.owner }, execution, async () => ({
+        sessionMessageId: null, controlResult: result,
+        fingerprint: digest(["external-room-final-v1", accepted.receipt.id, execution.jobId, result]),
+      }));
+      if (!outbox) throw new Error("Control result unavailable");
+      expect(outbox.sessionMessageId).toBeNull();
+      const publication = await claimBolterOutboxWith(db, ctx, outbox.id, randomUUID());
+      if (!publication?.claimToken) throw new Error("Control publication unavailable");
+      expect(await loadBolterPublicationContentWith(db, ctx, { outboxId: outbox.id, claimToken: publication.claimToken }))
+        .toMatchObject({ content: result });
+      expect(await admin.select().from(sessions).where(eq(sessions.roomId, binding.roomId))).toHaveLength(0);
+      expect(await admin.select().from(sessionMessageDirectedRecipients).where(eq(sessionMessageDirectedRecipients.recipientId, fixture.owner))).toHaveLength(0);
+    } finally { expect(await releaseExternalRoomExecutionClaimWith(product, { userId: fixture.owner }, claim)).toBe(true); }
+  });
 });

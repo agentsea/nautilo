@@ -90,9 +90,15 @@ import {
 import {
   ProtectedTaskExecutionDidNotBeginError,
   type CreateProtectedTaskJobInput,
+  type ProtectedTaskCheckpointPauseReason,
   type ProtectedTaskExecutionCandidate,
   type ProtectedTaskJobSchedulingFacts,
 } from "./tasks/protected-task-execution-candidate";
+import {
+  snapshotProtectedTaskWakeAdoption,
+  type AdoptProtectedTaskWakeJobInput,
+  type AdoptProtectedTaskWakeJobResult,
+} from "./tasks/protected-task-wake-execution-candidate";
 
 /**
  * execution-local authority for work that has already crossed an
@@ -309,6 +315,7 @@ function coalescingBoundariesAreCompatible(
 
 /** A coalescer-flushed turn awaiting dispatch on its bot checkpoint thread. */
 interface PendingTurn {
+  protectedWake?: Job;
   /** Per-(room,user,bot) coalescing lane — bookkeeping only; NOT the serialization axis. */
   laneKey: string;
   merged: CoalescedInput;
@@ -341,17 +348,42 @@ export type ProtectedTaskRunQuiescenceRequest = Readonly<{
   jobId: string;
 }>;
 
+export type ProtectedTaskCheckpointPauseRequest = Readonly<{
+  taskId: string;
+  taskRunId: string;
+  jobId: string;
+  reason: ProtectedTaskCheckpointPauseReason;
+  pauseRequestId?: string;
+}>;
+
+export type ProtectedTaskCheckpointPauseResult =
+  | Readonly<{ status: "settled" }>
+  | Readonly<{ status: "unavailable" }>;
+
 type ProtectedTaskExecutionSettlement = {
   readonly job: Job;
   readonly reference: ProtectedTaskJobReferenceV1;
   readonly settled: Promise<void>;
   readonly resolve: () => void;
   readonly reject: (error: unknown) => void;
+  readonly requestCheckpointPause:
+    | ((reason: ProtectedTaskCheckpointPauseReason, pauseRequestId?: string) => boolean)
+    | null;
+  checkpointPauseRequest: Readonly<{
+    reason: ProtectedTaskCheckpointPauseReason;
+    pauseRequestId: string | null;
+  }> | null;
   cancel: Promise<void> | null;
 };
 
 const PROTECTED_TASK_STOPPED = Object.freeze({ status: "stopped" as const });
 const PROTECTED_TASK_QUIESCENCE_UNAVAILABLE = Object.freeze({
+  status: "unavailable" as const,
+});
+const PROTECTED_TASK_CHECKPOINT_PAUSE_SETTLED = Object.freeze({
+  status: "settled" as const,
+});
+const PROTECTED_TASK_CHECKPOINT_PAUSE_UNAVAILABLE = Object.freeze({
   status: "unavailable" as const,
 });
 export interface StopScopeResult {
@@ -529,6 +561,13 @@ function bindInvocationOrigin(humanUserId: string, input: Record<string, unknown
 
 export class JobManager {
   private active = new Map<string, Job>();
+  private readonly protectedWakes = new Map<string, {
+    job: Job;
+    input: AdoptProtectedTaskWakeJobInput;
+    owner: AdoptProtectedTaskWakeJobInput["candidate"];
+    dispatched: boolean;
+  }>();
+  private readonly completedWakeDrains = new Set<string>();
   /**
    * abort-reason side-channel keyed by `jobId`, set by
    * {@link abortJob} and read via {@link getAbortReason}. The distinction
@@ -1001,13 +1040,26 @@ export class JobManager {
           invocationAuthority,
           scheduling.requestorId,
         );
+        const origin = getAcceptedInvocationAuthorityOrigin(invocationAuthority);
+        if (
+          origin.originRoomId !== undefined
+          || (origin.originTaskId !== undefined
+            && origin.originTaskId !== reference.taskId)
+        ) {
+          throw new TypeError(
+            "Accepted invocation authority origin does not match protected Task",
+          );
+        }
       }
       this.clearStopIntent(scheduling.graphThreadId, scheduling.roomId);
       const virtualJobId = randomUUID();
       await this.acceptForegroundAcceptance(virtualJobId, "foreground");
       const acceptedAuthority = authority ?? createMaintenanceAcceptanceAuthority();
-      const acceptedInvocationAuthority = invocationAuthority
-        ?? createAcceptedInvocationAuthority(scheduling.requestorId);
+      const acceptedInvocationAuthority = bindInvocationOrigin(
+        scheduling.requestorId,
+        safeInput,
+        invocationAuthority,
+      );
       this.virtualToAuthority.set(virtualJobId, acceptedAuthority);
       this.virtualToInvocationAuthority.set(
         virtualJobId,
@@ -1036,6 +1088,114 @@ export class JobManager {
       }
       throw error;
     }
+  }
+
+  /** Adopt one existing protected wake on the ordinary thread FIFO without new acceptance. */
+  adoptProtectedTaskWakeJob(input: AdoptProtectedTaskWakeJobInput): Promise<AdoptProtectedTaskWakeJobResult> {
+    let snapshot: AdoptProtectedTaskWakeJobInput;
+    try { snapshot = snapshotProtectedTaskWakeAdoption(input); }
+    catch (error) {
+      try { input.candidate?.onIneligible(); } catch { /* Keep the structural refusal. */ }
+      throw error;
+    }
+    const { scheduling, reference } = snapshot;
+    const existing = this.protectedWakes.get(scheduling.jobId);
+    if (existing !== undefined) {
+      if (existing.owner !== input.candidate) {
+        try { snapshot.candidate.onIneligible(); } catch { /* Preserve existing process ownership. */ }
+      }
+      const same = Object.entries(scheduling).every(([key, value]) => key === "reference" || key === "jobState"
+        || Reflect.get(existing.input.scheduling, key) === value)
+        && Object.entries(reference).every(([key, value]) => Reflect.get(existing.input.reference, key) === value);
+      if (!same) throw new TypeError("Protected wake adoption conflicts with process ownership");
+      return Promise.resolve({ status: "existing", jobId: scheduling.jobId });
+    }
+    if (scheduling.jobState !== "queued" || this.isThreadStopped(scheduling.graphThreadId)
+      || this.isRoomStopped(scheduling.roomId) || this.active.has(scheduling.jobId)) {
+      try { snapshot.candidate.onIneligible(); } catch { /* Ineligible custody cannot admit work. */ }
+      return Promise.resolve({ status: "ineligible", jobId: scheduling.jobId });
+    }
+    const invocationAuthority = createAcceptedInvocationAuthority(scheduling.requestorId, {
+      originTaskId: scheduling.taskId,
+    });
+    const assertCurrentInvocation = async () => {
+      if (!await this.checkInvocationAccess({ humanUserId: scheduling.requestorId,
+        roomId: scheduling.roomId, ...getAcceptedInvocationAuthorityOrigin(invocationAuthority) })) {
+        throw new Error("Protected wake invocation access was withdrawn");
+      }
+    };
+    const job = Job.adoptPersisted({ ...snapshot, candidate: {
+      ...snapshot.candidate,
+      run: work => runWithAcceptedInvocationAuthority(invocationAuthority, async () => {
+        await assertCurrentInvocation();
+        return snapshot.candidate.run(async (transientInput, authorizationSignal, custody) => {
+          await assertCurrentInvocation();
+          return work(transientInput, authorizationSignal, custody);
+        });
+      }),
+      onIneligible: () => {
+        try { snapshot.candidate.onIneligible(); }
+        finally { if (this.protectedWakes.get(job.id)?.dispatched !== true) this.releaseProtectedWake(job); }
+      },
+    } });
+    const merged = jobInputToCoalescedInput({ roomId: scheduling.roomId,
+      graphThreadId: scheduling.graphThreadId, agentId: scheduling.agentId,
+      turnId: reference.wakeOperationId }, scheduling.laneKey,
+    scheduling.ownerId, scheduling.requestorId);
+    const item: PendingTurn = {
+      laneKey: scheduling.laneKey, merged, virtualIds: [], system: true,
+      route: { executor: snapshot.executor, coalescing: "separate", contention: "serialize" },
+      initiatingClientSurface: "unknown", protectedWake: job,
+    };
+    this.protectedWakes.set(job.id, { job, input: snapshot, owner: input.candidate, dispatched: false });
+    this.jobToInvocationAuthority.set(job.id, invocationAuthority);
+    this.active.set(job.id, job);
+    const queue = this.pendingByThread.get(scheduling.graphThreadId);
+    if (queue === undefined) this.pendingByThread.set(scheduling.graphThreadId, [item]);
+    else queue.push(item);
+    void this.drainThread(scheduling.graphThreadId);
+    return Promise.resolve({ status: "adopted", jobId: job.id });
+  }
+
+  private releaseProtectedWake(job: Job): void {
+    if (this.protectedWakes.get(job.id)?.job !== job) return;
+    this.protectedWakes.delete(job.id);
+    this.jobToInvocationAuthority.delete(job.id);
+    this.active.delete(job.id);
+    this.abortReasons.delete(job.id);
+    const threadId = job.protectedWakeScheduling!.graphThreadId;
+    const queue = this.pendingByThread.get(threadId);
+    if (queue !== undefined) {
+      const retained = queue.filter(item => item.protectedWake !== job);
+      if (retained.length === 0) this.pendingByThread.delete(threadId);
+      else this.pendingByThread.set(threadId, retained);
+    }
+  }
+
+  private runProtectedWake(threadId: string, item: PendingTurn,
+    lock: Extract<TryAcquireResult, { acquired: true }>): void {
+    const job = item.protectedWake!;
+    const owned = this.protectedWakes.get(job.id);
+    if (owned !== undefined) owned.dispatched = true;
+    let registered = false;
+    void job.executeProtectedTaskWake(() => {
+      forkCoordinator.registerTurn(threadId, {
+        sequence: forkCoordinator.nextSequence(threadId), jobId: job.id,
+        turnId: item.merged.turnId, kind: "main", mergedSlice: coalescedToSlice(item.merged),
+      });
+      registered = true;
+    }).finally(async () => {
+      try { await lock.release(); }
+      finally {
+        if (registered) forkCoordinator.markMainCompleted(threadId, job.id);
+        this.releaseProtectedWake(job);
+        this.coalescer.flushIfPending(item.laneKey);
+        // A busy-lock response may still be in flight in the current drain.
+        // Preserve this completion edge until that drain releases ownership.
+        if (this.drainingThreads.has(threadId)) this.completedWakeDrains.add(threadId);
+        else void this.drainThread(threadId);
+      }
+    }).catch(() => { log(`[lane] protected_wake_settlement_unavailable job=${job.id}`); });
   }
 
   /**
@@ -1300,10 +1460,12 @@ export class JobManager {
         log(
           `[lane] thread=${threadId} serialized user=${item.merged.requestorId} action=run reason=free`,
         );
-        await this.runMainTurn(threadId, item, tryRes);
+        if (item.protectedWake !== undefined) this.runProtectedWake(threadId, item, tryRes);
+        else await this.runMainTurn(threadId, item, tryRes);
       }
     } finally {
       this.drainingThreads.delete(threadId);
+      if (this.completedWakeDrains.delete(threadId)) void this.drainThread(threadId);
     }
   }
 
@@ -1526,6 +1688,9 @@ export class JobManager {
       : this.registerProtectedTaskExecutionSettlement(
           job,
           protectedTaskExecution.reference,
+          protectedTaskExecution.candidate.requestCheckpointPause?.bind(
+            protectedTaskExecution.candidate,
+          ) ?? null,
         );
     const registerMainTurn = (): void => {
       sequence ??= forkCoordinator.nextSequence(threadId);
@@ -2156,7 +2321,22 @@ export class JobManager {
     await this.invocationTaskStop({ humanUserId, taskId: scope.taskId, taskRunId: scope.taskRunId });
   }
 
+  private currentInvocationJobScope(job: Job): InvocationWorkScope {
+    const authority = this.jobToInvocationAuthority.get(job.id);
+    if (job.protectedWakeScheduling !== undefined) {
+      return { roomId: job.protectedWakeScheduling.roomId,
+        ...(authority ? getAcceptedInvocationAuthorityOrigin(authority) : {}) };
+    }
+    return invocationWorkScope(job.input, authority);
+  }
+
   private async cancelInvocationJob(job: Job, humanUserId: string, reason: string = WORK_ACCEPTANCE_REASONS.accessWithdrawn): Promise<void> {
+    if (job.protectedWakeScheduling !== undefined) {
+      // The origin Task is already terminal. Only this adopted wake owns live
+      // execution; its authenticated candidate decides durable Job settlement.
+      await job.cancel(reason);
+      return;
+    }
     this.pendingInvocationJobStops.set(job.id, { job, humanUserId, reason });
     await this.stopInvocationTask(humanUserId, invocationWorkScope(job.input));
     await job.cancel(reason);
@@ -2244,7 +2424,8 @@ export class JobManager {
     }
     for (const queue of this.pendingByThread.values()) {
       for (let index = queue.length - 1; index >= 0; index -= 1) {
-        if (queue[index]!.virtualIds.every(id => ids.has(id))) queue.splice(index, 1);
+        if (queue[index]!.virtualIds.length > 0
+          && queue[index]!.virtualIds.every(id => ids.has(id))) queue.splice(index, 1);
       }
     }
     const stopped: string[] = [];
@@ -2259,7 +2440,7 @@ export class JobManager {
       try {
         if (!this.pendingInvocationJobStops.has(job.id)
           && (job.isTerminal() || await this.checkInvocationAccess({ humanUserId,
-            ...invocationWorkScope(job.input, this.jobToInvocationAuthority.get(job.id)) }))) continue;
+            ...this.currentInvocationJobScope(job) }))) continue;
         await this.cancelInvocationJob(job, humanUserId, this.pendingInvocationJobStops.get(job.id)?.reason);
       } catch (error) { errors.push(error); }
     }
@@ -2480,6 +2661,9 @@ export class JobManager {
   private registerProtectedTaskExecutionSettlement(
     job: Job,
     reference: ProtectedTaskJobReferenceV1,
+    requestCheckpointPause:
+      | ((reason: ProtectedTaskCheckpointPauseReason, pauseRequestId?: string) => boolean)
+      | null,
   ): ProtectedTaskExecutionSettlement {
     assertProtectedTaskJobReferenceV1(reference);
     if (this.protectedTaskExecutionSettlements.has(job.id)) {
@@ -2495,6 +2679,8 @@ export class JobManager {
       settled: deferred.promise,
       resolve: deferred.resolve,
       reject: deferred.reject,
+      requestCheckpointPause,
+      checkpointPauseRequest: null,
       cancel: null,
     };
     this.protectedTaskExecutionSettlements.set(job.id, settlement);
@@ -2772,7 +2958,8 @@ export class JobManager {
   getForegroundWorkSummary(): ForegroundWorkSummary {
     let runningJobs = 0;
     for (const job of this.active.values()) {
-      if (job.type === "foreground" && job.isRunning()) runningJobs += 1;
+      if (job.type === "foreground" && job.isRunning()
+        && !(job.protectedWakeScheduling !== undefined && job.status === "queued")) runningJobs += 1;
     }
 
     let queuedTurns = 0;
@@ -2795,7 +2982,7 @@ export class JobManager {
     let runningForegroundJobs = 0;
     let runningBackgroundJobs = 0;
     for (const job of this.active.values()) {
-      if (!job.isRunning()) continue;
+      if (!job.isRunning() || job.protectedWakeScheduling !== undefined && job.status === "queued") continue;
       if (job.type === "background") {
         runningBackgroundJobs += 1;
         continue;
@@ -2803,7 +2990,7 @@ export class JobManager {
       // Task dispatch places its durable task-run id on the Job input before
       // enqueue. The task query reports every running task-run (including
       // these Job-backed runs), so keep the categories mutually exclusive.
-      if (typeof job.input["taskRunId"] !== "string") {
+      if (job.protectedWakeScheduling !== undefined || typeof job.input["taskRunId"] !== "string") {
         runningForegroundJobs += 1;
       }
     }
@@ -2856,7 +3043,8 @@ export class JobManager {
 
     await Promise.all(
       jobs.map(async (job) => {
-        const taskId = typeof job.input["taskId"] === "string" ? job.input["taskId"] : null;
+        const taskId = job.protectedWakeScheduling === undefined
+          && typeof job.input["taskId"] === "string" ? job.input["taskId"] : null;
         const taskRunId =
           typeof job.input["taskRunId"] === "string" ? job.input["taskRunId"] : null;
         if (taskId && taskRunId && this.taskStopSink) {
@@ -2937,7 +3125,8 @@ export class JobManager {
     let cancelledJobs = 0;
     let cancelledTaskRuns = 0;
     for (const job of runningJobs) {
-      const taskId = typeof job.input["taskId"] === "string" ? job.input["taskId"] : null;
+      const taskId = job.protectedWakeScheduling === undefined
+          && typeof job.input["taskId"] === "string" ? job.input["taskId"] : null;
       const taskRunId =
         typeof job.input["taskRunId"] === "string" ? job.input["taskRunId"] : null;
       if (taskId && taskRunId && this.taskStopSink) {
@@ -3097,6 +3286,81 @@ export class JobManager {
   }
 
   /**
+   * Ask one exact, process-owned protected Task execution to park at its next
+   * safe checkpoint, then wait for all of its process-local work to settle.
+   * This seam never aborts or cancels the Job and cannot manufacture a durable
+   * checkpoint receipt when this process no longer owns the execution.
+   */
+  async requestProtectedTaskCheckpointPauseAndWait(
+    input: ProtectedTaskCheckpointPauseRequest,
+  ): Promise<ProtectedTaskCheckpointPauseResult> {
+    if (
+      input === null
+      || typeof input !== "object"
+      || ![
+        "jobId,reason,taskId,taskRunId",
+        "jobId,pauseRequestId,reason,taskId,taskRunId",
+      ].includes(Object.keys(input).sort().join(","))
+      || typeof input.jobId !== "string"
+      || input.jobId.length === 0
+      || typeof input.taskId !== "string"
+      || input.taskId.length === 0
+      || typeof input.taskRunId !== "string"
+      || input.taskRunId.length === 0
+      || (
+        input.reason !== "manual_pause"
+        && input.reason !== "time_limit"
+        && input.reason !== "grant_refresh"
+      )
+      || (Object.hasOwn(input, "pauseRequestId")
+        && (typeof input.pauseRequestId !== "string"
+          || !CANONICAL_UUID.test(input.pauseRequestId)))
+      || (input.reason === "grant_refresh"
+        && Object.hasOwn(input, "pauseRequestId"))
+    ) {
+      throw new TypeError("Protected Task checkpoint pause request is invalid");
+    }
+
+    const settlement = this.protectedTaskExecutionSettlements.get(input.jobId);
+    if (settlement === undefined || settlement.requestCheckpointPause === null) {
+      return PROTECTED_TASK_CHECKPOINT_PAUSE_UNAVAILABLE;
+    }
+    const reference = settlement.reference;
+    assertProtectedTaskJobReferenceV1(reference);
+    if (
+      reference.taskId !== input.taskId
+      || reference.taskRunId !== input.taskRunId
+      || settlement.job.id !== input.jobId
+      || settlement.job.input["taskId"] !== reference.taskId
+      || settlement.job.input["taskRunId"] !== reference.taskRunId
+    ) {
+      return PROTECTED_TASK_CHECKPOINT_PAUSE_UNAVAILABLE;
+    }
+
+    const pauseRequestId = input.pauseRequestId ?? null;
+    if (settlement.checkpointPauseRequest === null) {
+      if (!settlement.requestCheckpointPause(
+        input.reason,
+        pauseRequestId ?? undefined,
+      )) {
+        return PROTECTED_TASK_CHECKPOINT_PAUSE_UNAVAILABLE;
+      }
+      settlement.checkpointPauseRequest = Object.freeze({
+        reason: input.reason,
+        pauseRequestId,
+      });
+    } else if (
+      settlement.checkpointPauseRequest.reason !== input.reason
+      || settlement.checkpointPauseRequest.pauseRequestId !== pauseRequestId
+    ) {
+      return PROTECTED_TASK_CHECKPOINT_PAUSE_UNAVAILABLE;
+    }
+
+    await settlement.settled;
+    return PROTECTED_TASK_CHECKPOINT_PAUSE_SETTLED;
+  }
+
+  /**
    * The shared, job-kind-agnostic abort seam. Looks up the live
    * `Job` in `this.active` (keyed by `jobId`); if found, aborts it via the
    * SAME `Job.cancel()` machinery `cancelJob` uses (fires the
@@ -3120,7 +3384,7 @@ export class JobManager {
     // persisted Job has already completed at the interrupt. Their ephemeral
     // Jobs share this active registry and must receive the same cancellation.
     const jobs = taskRun
-      ? [...this.active.values()].filter((job) => job.input["taskId"] === taskRun.taskId && job.input["taskRunId"] === taskRun.taskRunId)
+      ? [...this.active.values()].filter((job) => job.protectedWakeScheduling === undefined && job.input["taskId"] === taskRun.taskId && job.input["taskRunId"] === taskRun.taskRunId)
       : [this.active.get(jobId)].filter((job): job is Job => job !== undefined);
     for (const job of jobs) {
       if (reason) this.abortReasons.set(job.id, reason);
@@ -3155,7 +3419,8 @@ export class JobManager {
       const jobThread = threadIdForJob(job);
       if (jobThread === threadId) {
         if (job.laneKey) lanes.add(job.laneKey);
-        const taskId = typeof job.input["taskId"] === "string" ? job.input["taskId"] : null;
+        const taskId = job.protectedWakeScheduling === undefined
+          && typeof job.input["taskId"] === "string" ? job.input["taskId"] : null;
         const taskRunId = typeof job.input["taskRunId"] === "string" ? job.input["taskRunId"] : null;
         // A task-backed Job has durable Task/TaskRun state in addition to its
         // in-memory Job. Route it through the existing task lifecycle so Room
@@ -3497,6 +3762,7 @@ export class JobManager {
 }
 
 function threadIdForJob(job: Job): string | null {
+  if (job.protectedWakeScheduling !== undefined) return job.protectedWakeScheduling.graphThreadId;
   const input = job.input;
   const forkRun = input["forkRun"] as { parentThreadId?: unknown } | undefined;
   if (typeof forkRun?.parentThreadId === "string" && forkRun.parentThreadId) {
@@ -3508,6 +3774,7 @@ function threadIdForJob(job: Job): string | null {
 }
 
 function jobRoomId(job: Job): string | null {
+  if (job.protectedWakeScheduling !== undefined) return job.protectedWakeScheduling.roomId;
   return roomIdFromInput(job.input);
 }
 

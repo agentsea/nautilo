@@ -32,6 +32,8 @@ import {
 import { getCapabilityFundingSession } from "../../runtime/capability-funding";
 
 export interface ReadWebpageOptions {
+  /** Suppress provider exception text for protected private executions. */
+  confidential?: true;
   maxContentLength?: number;
   timeoutMs?: number;
   apiKey?: string | undefined;
@@ -452,8 +454,12 @@ export function buildReadWebpageFetcher(
           errorCode: "cancelled",
         };
       }
-      const message = error instanceof Error ? error.message : "unknown error";
-      warn(`[read_webpage] ${message}`);
+      if (options.confidential === true) {
+        warn("[read_webpage] provider request failed");
+      } else {
+        const message = error instanceof Error ? error.message : "unknown error";
+        warn(`[read_webpage] ${message}`);
+      }
       return {
         url, status: 0, content: "", preview: "", contentLength: 0,
         error: "This page could not be read. Try again or choose another source.",
@@ -719,6 +725,7 @@ export function createReadWebpageTool(context?: ToolContext): DynamicStructuredT
     return buildAutoReadWebpageFetcher({
       ...(maxContentLength === undefined ? {} : { maxContentLength }),
       browserResearchExecutionPort, provider, recordProviderCost,
+      ...(context?.["confidential"] === true ? { confidential: true } : {}),
       ...(beforeTavilyDispatch ? { beforeTavilyDispatch } : {}),
       ...(runTavilyAttempt ? { runTavilyAttempt } : {}),
     });

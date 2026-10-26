@@ -33,6 +33,8 @@ type TestMessage = {
   authorAgentId?: string;
   authorHarnessId?: string;
   imageAssistance?: import("@nautilo/types").ImageAssistanceSummary;
+  foregroundExecutionId?: string;
+  modelInputExposure?: unknown;
 };
 
 const getLatestSession = mock<() => Promise<TestSession | null>>(() =>
@@ -445,19 +447,22 @@ describe("sessions endpoint — thread_id convention independence", () => {
   });
 
   test("explicit v1 intent selects one canonical page and adds its Shadow sidecar", async () => {
+    const modelInputExposure = { version: 1, status: "incomplete" } as const;
     getRoomMessagesAcrossMemberSessionsWithSelection.mockResolvedValueOnce({
       messages: [{
         ...makeMessage("1", "ordinary fallback"),
         logicalMessageKey: "logical:1",
-        role: "user",
+        role: "assistant",
         editRevision: 0,
+        foregroundExecutionId: "foreground:one",
+        modelInputExposure,
       }],
       hasMoreBefore: false,
       selectedCoordinates: [{
         sessionId: "40000000-0000-4000-8000-000000000275",
         messageId: 1,
         editRevision: 0,
-        role: "user",
+        role: "assistant",
         logicalMessageKey: "logical:1",
       }],
     });
@@ -469,7 +474,8 @@ describe("sessions endpoint — thread_id convention independence", () => {
       });
       expect(res.statusCode).toBe(200);
       expect(JSON.parse(res.body)).toMatchObject({
-        messages: [{ id: "1", content: "ordinary fallback" }],
+        messages: [{ id: "1", content: "ordinary fallback",
+          foregroundExecutionId: "foreground:one", modelInputExposure }],
         shadowEncryption: {
           responseVersion: 1,
           status: "ineligible",
@@ -562,7 +568,9 @@ describe("sessions endpoint — thread_id convention independence", () => {
 
   test("Full requests a structural selected page and composes the protected sidecar", async () => {
     getRoomMessagesAcrossMemberSessionsWithSelection.mockResolvedValueOnce({
-      messages: [{ ...makeMessage("1", null), role: "user", editRevision: 0 }],
+      messages: [{ ...makeMessage("1", null), role: "user", editRevision: 0,
+        foregroundExecutionId: "must-not-escape",
+        modelInputExposure: { version: 1, status: "incomplete" } }],
       hasMoreBefore: false,
       selectedCoordinates: [{
         sessionId: "40000000-0000-4000-8000-000000000275",
@@ -583,7 +591,10 @@ describe("sessions endpoint — thread_id convention independence", () => {
       expect(getRoomMessagesAcrossMemberSessionsWithSelection).toHaveBeenCalledWith(
         expect.objectContaining({ contentRepresentation: "structural" }),
       );
-      expect(res.json<{ messages: { content: string | null }[] }>().messages[0]?.content).toBeNull();
+      const body = res.json<{ messages: Array<Record<string, unknown>> }>();
+      expect(body.messages[0]?.["content"]).toBeNull();
+      expect(body.messages[0]).not.toHaveProperty("foregroundExecutionId");
+      expect(body.messages[0]).not.toHaveProperty("modelInputExposure");
       expect(projectRoomHistoryShadowRead).toHaveBeenCalledTimes(1);
     } finally {
       await app.close();

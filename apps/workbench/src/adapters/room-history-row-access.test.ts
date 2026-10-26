@@ -88,7 +88,7 @@ describe("actual Room row consumption", () => {
     })).rejects.toBeInstanceOf(ClassifiedDataOperationError);
   });
 
-  test("production protected-row consumption preserves exact tool correlation and error status", async () => {
+  test("production protected-row consumption preserves tool status and withholds ambiguous arguments", async () => {
     const toolCalls = (id: string, name: string, args: Record<string, unknown>) =>
       JSON.stringify([{ id, name, args }]);
     const historyRows = [
@@ -160,15 +160,11 @@ describe("actual Room row consumption", () => {
       authenticatedToolStatus: "error",
     });
     expect(cards).toMatchObject([
-      { toolCallId: "share-1", toolName: "share_memory", args: {
-        mode: "project", proposed_content: "first", target_room_name: "Team",
-      }, isError: true },
+      { toolCallId: "share-1", toolName: "share_memory", args: {}, isError: true },
       { toolCallId: "discover-1", toolName: "discover_tools", args: {
         query: "fresh projection preflight share memory",
       } },
-      { toolCallId: "share-2", toolName: "share_memory", args: {
-        mode: "project", proposed_content: "second", target_room_name: "Team",
-      }, isError: true },
+      { toolCallId: "share-2", toolName: "share_memory", args: {}, isError: true },
     ]);
   });
 

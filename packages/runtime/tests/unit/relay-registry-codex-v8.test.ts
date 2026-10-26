@@ -195,6 +195,85 @@ describe("D453 InMemoryRelayRegistry Codex v8 route", () => {
     expect(accept(event("event-5", 4, { kind: "progress", phase: "finalizing", sequence: 4 }))).toEqual({ ok: true });
   });
 
+  test("replay caches retain only digests of private output and questions", async () => {
+    const registry = new InMemoryRelayRegistry();
+    await registry.register("relay-1", "owner-1", CAPS, () => {}, 8, "desktop-1", 0, "token-row-1");
+    const ack = registry.getV8Acknowledgement("relay-1")!;
+    const scope = {
+      relayId: "relay-1", relaySessionId: ack.relaySessionId, desktopSessionId: "desktop-1",
+      pairingGenerationRef: ack.pairingGenerationRef, selectedProtocolVersion: 8, capabilityRevision: 0,
+      profileHandle: "profile", profileGeneration: 1, accountGeneration: 2, runtimeGeneration: 3,
+      childGeneration: 4, bindingId: "binding", bindingGeneration: 5, taskId: "task", jobId: "job",
+      threadId: "thread", turnId: "turn", workspace: { workspaceRef: "workspace", revision: 1,
+        fingerprint: "fingerprint", issuedAt: "2026-07-26T10:00:00.000Z", expiresAt: "2026-07-26T11:00:00.000Z" },
+    };
+    const canary = "private-provider-content-that-must-not-be-retained";
+    const messages: readonly (RelayCodexEventMessage | RelayCodexRequestMessage)[] = [
+      { type: "relay:codex-event", scope: { ...scope, eventId: "delta", itemId: "item" }, eventSequence: 1,
+        event: { kind: "message_delta", sequence: 1, text: `${canary}-delta` } },
+      { type: "relay:codex-request", scope: { ...scope, eventId: "question", itemId: "item", requestRef: "request" },
+        request: { kind: "user_input", questions: [{ id: "question", header: "Input", question: `${canary}-question`,
+          isOther: false, isSecret: false, options: null }], autoResolutionMs: null, expiresAt: "2099-01-01T00:00:00.000Z" } },
+      { type: "relay:codex-event", scope: { ...scope, eventId: "terminal" }, eventSequence: 2,
+        event: { kind: "turn_completed", status: "completed", itemsView: "full",
+          assistantItems: [{ itemId: "item", text: `${canary}-result`, phase: "final_answer" }] } },
+    ];
+    let deliveries = 0;
+    registry.onCodexMessage(() => { deliveries++; });
+    for (const message of messages) {
+      const accept = (value: typeof message) => registry.acceptCodexMessage({ relayId: "relay-1", userId: "owner-1", message: value });
+      expect(accept(message)).toEqual({ ok: true });
+      expect(accept(structuredClone(message))).toEqual({ ok: true });
+      const changed = JSON.parse(JSON.stringify(message).replaceAll(canary, "substituted-private-content")) as typeof message;
+      expect(accept(changed)).toEqual({ ok: false, error: "CODEX_CORRELATION_REPLAY" });
+    }
+    expect(deliveries).toBe(3);
+    // Inspect the actual retained state, not an exported test-only digest helper.
+    for (const name of ["codexReplay", "codexTurnOutcomes"]) {
+      const cache: unknown = Reflect.get(registry, name);
+      if (!(cache instanceof Map)) throw new Error("Expected replay cache");
+      expect(cache.size).toBe(name === "codexReplay" ? 3 : 1);
+      expect(JSON.stringify([...cache])).not.toContain(canary);
+      for (const retained of cache.values()) {
+        const value: unknown = retained;
+        if (value === null || typeof value !== "object") throw new Error("Expected replay entry");
+        expect(Reflect.get(value, "fingerprint")).toMatch(/^[a-f0-9]{64}$/);
+      }
+    }
+    const { turnId: _turnId, ...bindingScope } = scope;
+    const command: RelayCodexCommandMessage = { type: "relay:codex-command", commandId: "start",
+      scope: bindingScope, command: { kind: "start_turn", userText: `${canary}-prompt`, turnInputRef: "input" } };
+    const pending = registry.sendCodexCommand("relay-1", command);
+    expect(registry.sendCodexCommand("relay-1", structuredClone(command))).toBe(pending);
+    const response: RelayCodexCommandResponseMessage = { type: "relay:codex-command-response", commandId: "start",
+      scope, result: { kind: "turn_started" } };
+    expect(registry.acceptCodexMessage({ relayId: "relay-1", userId: "owner-1", message: response })).toEqual({ ok: true });
+    expect(await pending).toEqual(response);
+    expect(await registry.sendCodexCommand("relay-1", structuredClone(command))).toEqual(response);
+    const changedCommand: RelayCodexCommandMessage = { ...command,
+      command: { kind: "start_turn", userText: "substituted-prompt", turnInputRef: "input" } };
+    let mismatch: unknown;
+    try { await registry.sendCodexCommand("relay-1", changedCommand); } catch (error) { mismatch = error; }
+    expect(mismatch).toBeInstanceOf(Error);
+    expect(mismatch instanceof Error && mismatch.message).toBe("CODEX_CORRELATION_REPLAY");
+    const outcomes: unknown = Reflect.get(registry, "codexCommandOutcomes");
+    if (!(outcomes instanceof Map)) throw new Error("Expected command replay cache");
+    expect(outcomes.size).toBe(1);
+    expect(JSON.stringify([...outcomes])).not.toContain(canary);
+    for (const retained of outcomes.values()) {
+      const value: unknown = retained;
+      if (value === null || typeof value !== "object") throw new Error("Expected command replay entry");
+      expect(Reflect.get(value, "fingerprint")).toMatch(/^[a-f0-9]{64}$/);
+      expect(Reflect.get(value, "response")).toEqual(response);
+    }
+    await registry.unregister("relay-1");
+    for (const name of ["codexReplay", "codexTurnOutcomes", "codexCommandOutcomes"]) {
+      const cache: unknown = Reflect.get(registry, name);
+      if (!(cache instanceof Map)) throw new Error("Expected replay cache");
+      expect(cache.size).toBe(0);
+    }
+  });
+
   test("invalidates Codex status on every accepted capability revision", async () => {
     const registry = new InMemoryRelayRegistry();
     await registry.register("relay-1", "owner-1", CAPS, () => {}, 8, "desktop-1", 3, "token-row-1");

@@ -178,6 +178,7 @@ describe("protected TaskRun output binding acceptance", () => {
       taskRunId: ids.run,
       bindingId: protectedTaskRunOutputBindingId(ids.run),
       deliveryMode: "none",
+      resultRevision: 1,
       resultObjectId: protectedTaskRunResultObjectId(ids.task, ids.run),
       messageOperationId: null,
       wakeOperationId: null,
@@ -244,6 +245,7 @@ describe("protected TaskRun output binding acceptance", () => {
       deliveryMode: "raw",
       destinationRoomId: ids.room,
       destinationNamespaceId: ids.namespace,
+      resultRevision: 1,
       resultOperationId: `task-run-result:${ids.run}`,
       resultObjectId: protectedTaskRunResultObjectId(ids.task, ids.run),
       messageOperationId: protectedTaskRunMessageOperationId(ids.run),
@@ -281,6 +283,7 @@ describe("protected TaskRun output binding acceptance", () => {
       deliveryMode: "raw",
       destinationRoomId: ids.room,
       destinationNamespaceId: ids.namespace,
+      resultRevision: 1,
       resultOperationId: `task-run-result:${ids.run}`,
       resultObjectId: protectedTaskRunResultObjectId(ids.task, ids.run),
       messageOperationId: protectedTaskRunMessageOperationId(ids.run),
@@ -312,6 +315,7 @@ describe("protected TaskRun output binding acceptance", () => {
         deliveryMode: "none",
         destinationRoomId: null,
         destinationNamespaceId: null,
+        resultRevision: 1,
         resultOperationId: `task-run-result:${ids.run}`,
         resultObjectId: protectedTaskRunResultObjectId(ids.task, ids.run),
         messageOperationId: null,
@@ -327,4 +331,21 @@ describe("protected TaskRun output binding acceptance", () => {
       destination: null,
     })).toEqual({ status: "rejected", reason: "stale" });
   });
+});
+
+
+test("accepts retained dual definition under the current Full fence without changing it", async () => {
+  const source = task({ contentRepresentation: "dual", prompt: "retained prompt" });
+  const f = harness({ task: source });
+  expect((await acceptProtectedTaskRunOutputBinding(f.db, {
+    taskId: ids.task, taskRunId: ids.run, requiredPolicyRevision: 9,
+    acceptedAt, destination: null,
+  })).status).toBe("accepted");
+  expect(f.locks.slice(0, 3)).toEqual([
+    { table: encryptionTransitionPolicy, kind: "share" },
+    { table: tasks, kind: "update" },
+    { table: taskRuns, kind: "update" },
+  ]);
+  expect(source.contentRepresentation).toBe("dual");
+  expect(source.prompt).toBe("retained prompt");
 });

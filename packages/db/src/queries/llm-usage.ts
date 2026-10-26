@@ -897,9 +897,14 @@ export async function classifySurplusLlmAttemptRecovery(input: {
   recoveryState: "pending" | "retryable" | "blocked_repair";
   failureCode: string;
 }): Promise<boolean> {
+  const recoveryFailureCode = assertNonEmpty(input.failureCode, "failureCode");
   const rows = await db().update(llmUsageEvents).set({
     recoveryState: input.recoveryState,
-    failureCode: assertNonEmpty(input.failureCode, "failureCode"),
+    // Receipt recovery is independent of the inference outcome. Preserve the
+    // original failureCode and keep this mutable diagnostic in metadata.
+    metadata: sql`coalesce(${llmUsageEvents.metadata}, '{}'::jsonb) || ${JSON.stringify({
+      surplusReceiptRecoveryFailureCode: recoveryFailureCode,
+    })}::jsonb`,
     updatedAt: new Date(),
   }).where(and(
     eq(llmUsageEvents.id, input.attemptId),
@@ -921,7 +926,7 @@ export async function requeueBlockedPersonalSurplusAttempts(input: {
   }
   const rows = await db().update(llmUsageEvents).set({
     recoveryState: "retryable",
-    failureCode: null,
+    metadata: sql`${llmUsageEvents.metadata} - 'surplusReceiptRecoveryFailureCode'`,
     updatedAt: new Date(),
   }).where(and(
     eq(llmUsageEvents.providerRoute, "surplus"),
@@ -950,19 +955,27 @@ export async function requeueBlockedPersonalSurplusAttempts(input: {
 export async function requeueBlockedServerSurplusAttempts(): Promise<number> {
   const rows = await db().update(llmUsageEvents).set({
     recoveryState: "retryable",
-    failureCode: null,
+    metadata: sql`${llmUsageEvents.metadata} - 'surplusReceiptRecoveryFailureCode'`,
     updatedAt: new Date(),
   }).where(and(
     eq(llmUsageEvents.providerRoute, "surplus"),
     inArray(llmUsageEvents.fundingKind, ["server", "service"]),
     eq(llmUsageEvents.recoveryState, "blocked_repair"),
     inArray(llmUsageEvents.costState, ["pending", "unknown"]),
-    inArray(llmUsageEvents.failureCode, [
-      "credential_missing",
-      "credential_fingerprint_mismatch",
-      "receipt_account_unproven",
-      "receipt_read_unauthorized",
-    ]),
+    or(
+      inArray(llmUsageEvents.failureCode, [
+        "credential_missing",
+        "credential_fingerprint_mismatch",
+        "receipt_account_unproven",
+        "receipt_read_unauthorized",
+      ]),
+      sql`${llmUsageEvents.metadata}->>'surplusReceiptRecoveryFailureCode' in (
+        'credential_missing',
+        'credential_fingerprint_mismatch',
+        'receipt_account_unproven',
+        'receipt_read_unauthorized'
+      )`,
+    ),
   )).returning({ id: llmUsageEvents.id });
   return rows.length;
 }
@@ -974,13 +987,16 @@ export async function requeueBlockedServerSurplusAttempts(): Promise<number> {
 export async function requeueBlockedSurplusDecisionAttempts(): Promise<number> {
   const rows = await db().update(llmUsageEvents).set({
     recoveryState: "retryable",
-    failureCode: null,
+    metadata: sql`${llmUsageEvents.metadata} - 'surplusReceiptRecoveryFailureCode'`,
     updatedAt: new Date(),
   }).where(and(
     eq(llmUsageEvents.providerRoute, "surplus"),
     eq(llmUsageEvents.endpoint, "/v1/decisions"),
     eq(llmUsageEvents.recoveryState, "blocked_repair"),
-    eq(llmUsageEvents.failureCode, "receipt_endpoint_unsupported"),
+    or(
+      eq(llmUsageEvents.failureCode, "receipt_endpoint_unsupported"),
+      sql`${llmUsageEvents.metadata}->>'surplusReceiptRecoveryFailureCode' = 'receipt_endpoint_unsupported'`,
+    ),
     inArray(llmUsageEvents.costState, ["pending", "unknown"]),
   )).returning({ id: llmUsageEvents.id });
   return rows.length;

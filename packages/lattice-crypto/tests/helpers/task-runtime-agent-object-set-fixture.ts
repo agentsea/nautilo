@@ -18,7 +18,7 @@ import {
   type PrepareTaskRuntimeAgentObjectAccessManifestGenesisSetInputV1,
 } from "../../src/object/task-runtime-agent-access-manifest-set-v1.ts";
 import type {
-  CurrentTaskRuntimeAgentObjectAccessGenesisSetAuthorizationV1,
+  CurrentTaskRuntimeAgentObjectAccessGenesisSetLegacyAuthorizationV1,
 } from "../../src/object/task-runtime-agent-storage-coordinator-v1.ts";
 import type {
   ObjectAccessStateCasStorageV2,
@@ -226,7 +226,7 @@ export async function taskRuntimeAgentObjectSetFixture(seed = 90_001) {
     );
   const currentAuthorization = (
     storage: ObjectAccessStateCasStorageV2,
-  ): CurrentTaskRuntimeAgentObjectAccessGenesisSetAuthorizationV1 => ({
+  ): CurrentTaskRuntimeAgentObjectAccessGenesisSetLegacyAuthorizationV1 => ({
     storage,
     currentRuntime: {
       agentId: initialized.runtime.agentId,

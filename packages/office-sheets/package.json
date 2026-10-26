@@ -37,7 +37,8 @@
     "build:formula": "antlr4ts -visitor antlr/Formula.g4 && bash scripts/fix-antlr-ts.sh",
     "preview": "vite preview",
     "format": "prettier --write .",
-    "test:unit": "vitest --run",
+    "test:unit": "vitest --run --exclude 'test/integration/**'",
+    "test:integration": "vitest --run test/integration",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix"
   },

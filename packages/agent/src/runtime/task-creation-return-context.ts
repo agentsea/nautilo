@@ -4,6 +4,7 @@ import type {
   TrustedLiveMiniAppSessionContext,
 } from "@nautilo/types";
 import type { NautiloState, TrustedExecutionEntrypoint } from "../agent/state";
+import type { BorrowedHumanTerminalAdmission } from "../tools/terminal/admission";
 
 /**
  * Process-local creation facts for an immediate Task started by one direct
@@ -25,6 +26,10 @@ export interface TaskCreationReturnContext {
     readonly conversationId: string;
     readonly agentId: string;
     withAdmission<T>(work: (signal: AbortSignal) => Promise<T>): Promise<T>;
+    withBorrowedAdmission<T>(
+      admission: BorrowedHumanTerminalAdmission,
+      work: (signal: AbortSignal) => Promise<T>,
+    ): Promise<T>;
   };
 }
 
@@ -58,6 +63,8 @@ export interface TaskCreationInvocationProvenance {
   readonly entrypoint: TrustedExecutionEntrypoint;
   readonly taskId?: string;
   readonly taskRunId?: string;
+  /** Checkpointed source identity stamped at the trusted tool boundary. */
+  readonly effect?: Readonly<{ turnId: string; toolCallId: string; timeReferenceMs: number }>;
 }
 
 interface TaskCreationAmbientContext {
@@ -82,9 +89,14 @@ export function getTaskCreationAmbientContext(): TaskCreationAmbientContext | nu
 
 export function taskCreationInvocationProvenanceForState(
   state: NautiloState,
+  toolCallId?: string,
 ): TaskCreationInvocationProvenance | null {
   const entrypoint = state.trustedExecutionEntrypoint;
   if (!entrypoint || !state.userId) return null;
+  const reference = state.promptTimeReference;
+  const effect = toolCallId && state.turnId && reference?.turnId === state.turnId
+    && Number.isSafeInteger(reference.nowMs) && reference.nowMs >= 0
+    ? Object.freeze({ turnId: state.turnId, toolCallId, timeReferenceMs: reference.nowMs }) : undefined;
   if (entrypoint === "background.task") {
     if (!state.currentTaskId || !state.currentTaskRunId) return null;
     return Object.freeze({
@@ -93,12 +105,14 @@ export function taskCreationInvocationProvenanceForState(
       entrypoint,
       taskId: state.currentTaskId,
       taskRunId: state.currentTaskRunId,
+      ...(effect === undefined ? {} : { effect }),
     });
   }
   return Object.freeze({
     ownerId: state.userId,
     roomId: state.roomId || null,
     entrypoint,
+    ...(effect === undefined ? {} : { effect }),
   });
 }
 

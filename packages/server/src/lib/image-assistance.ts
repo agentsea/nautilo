@@ -1,7 +1,9 @@
 import {
+  hydrateSurplusChatCatalog,
   resolveQualifiedSurplusChatRoute,
   resolveCatalogModel,
   type ForegroundChatFundingSession,
+  type QualifiedSurplusChatRoute,
 } from "@nautilo/agent";
 import {
   getCachedServerModelConfigRow,
@@ -36,6 +38,9 @@ export interface ImageAssistanceSelectionDeps extends ImageUnderstandingPreferen
   readonly readPreferences?: (humanUserId: string) => Promise<PersonalCapabilityPreferences>;
   /** Request-local only. Its identity includes both saved selections and revisions. */
   readonly selectionCache?: Map<string, Promise<ModelFundingDecision | null>>;
+  readonly hydrateSurplusChatCatalog?: typeof hydrateSurplusChatCatalog;
+  /** Pure offline seam for exact vendor-confirmed route tests. */
+  readonly getQualifiedSurplusChatRoutes?: () => readonly QualifiedSurplusChatRoute[];
 }
 
 export interface ImageAssistanceExecutionDeps extends ImageAssistanceSelectionDeps {
@@ -89,8 +94,19 @@ export async function resolveCallerImageInput(
   deps: ImageAssistanceSelectionDeps = {},
 ): Promise<"direct" | "assisted" | "unavailable"> {
   if (isSignedImageUnderstandingModel(input.modelId, deps)) {
+    const routes = deps.getQualifiedSurplusChatRoutes?.();
+    if (input.funding.providerRoute === "surplus" && routes === undefined) {
+      try {
+        await (deps.hydrateSurplusChatCatalog ?? hydrateSurplusChatCatalog)({
+          catalogModelIds: [input.modelId],
+        });
+      } catch {
+        // The exact route lookup below remains fail-closed on the last
+        // verified snapshot while direct image-capable funding still works.
+      }
+    }
     return input.funding.providerRoute !== "surplus"
-      || resolveQualifiedSurplusChatRoute(input.modelId)?.supportsVision === true ? "direct" : "unavailable";
+      || resolveQualifiedSurplusChatRoute(input.modelId, routes)?.supportsVision === true ? "direct" : "unavailable";
   }
   if (input.funding.providerRoute === "openai-chatgpt") return "unavailable";
   try {

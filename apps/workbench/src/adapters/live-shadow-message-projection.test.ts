@@ -4,7 +4,10 @@ import type {
   LiveShadowMessageRealtimeEventV1,
 } from "@nautilo/types";
 
-import { projectLiveShadowMessageResult } from
+import {
+  projectLiveShadowMessageResult,
+  resolveLiveShadowMessageDisplayAction,
+} from
   "./live-shadow-message-projection";
 
 const frameEvent: LiveShadowMessageRealtimeEventV1 = {
@@ -270,6 +273,146 @@ describe("live Shadow Message UI projection", () => {
         },
       },
     })).toEqual([]);
+  });
+});
+
+describe("durable Shadow Message history recovery", () => {
+  const activeRoomId = "20000000-0000-4000-8000-000000000282";
+  const durableV1: Extract<LiveShadowMessageRealtimeEventV1, {
+    type: "message.shadow_durable";
+  }> = {
+    wireVersion: 1,
+    type: "message.shadow_durable",
+    laneKey: `room:${activeRoomId}`,
+    operationId: "task-run-delivery-wake:282",
+    policyRevision: 5,
+    transcriptOrdinal: 2,
+    ordinaryPayloadBytesBase64url: "c2VjcmV0",
+    durableEventDigestBase64url: "A".repeat(43),
+    protectedMessage: {
+      dtoVersion: 2,
+      projection: {
+        messageId: "44",
+        sessionId: "10000000-0000-4000-8000-000000000282",
+        roomId: activeRoomId,
+        namespaceId: "30000000-0000-4000-8000-000000000282",
+        role: "assistant",
+        createdAt: "2027-01-15T08:00:00.000Z",
+        editRevision: 0,
+        authorAgentId: "40000000-0000-4000-8000-000000000282",
+      },
+      protectedPayload: { status: "pending", reason: "shadow_pending" },
+    },
+  };
+  const durableV2: Extract<FullEncryptionMessageRealtimeContentEventV2, {
+    type: "message.shadow_durable";
+  }> = {
+    ...durableV1,
+    wireVersion: 2,
+    ordinaryPayloadBytesBase64url: undefined,
+  };
+
+  test.each([
+    ["wire 1", durableV1],
+    ["wire 2", durableV2],
+  ] as const)("uses authenticated history for an exact current-Room %s failure", (
+    _label,
+    event,
+  ) => {
+    const action = resolveLiveShadowMessageDisplayAction({
+      event,
+      activeRoomId,
+      result: {
+        status: "failed",
+        reason: "integrity",
+        ordinaryFallback: {
+          kind: "durable",
+          payload: { role: "assistant", content: "must not be displayed" },
+          messageId: "44",
+          assistantMessageKey: null,
+          authorAgentId: "40000000-0000-4000-8000-000000000282",
+        },
+      },
+    });
+    expect(action).toEqual({ kind: "history_refresh", messageId: "44" });
+    expect(action).not.toHaveProperty("events");
+  });
+
+  test.each([
+    ["offscreen Room", null, durableV1],
+    ["wrong lane", activeRoomId, { ...durableV1, laneKey: "room:other" }],
+    ["wrong projection", activeRoomId, {
+      ...durableV1,
+      protectedMessage: {
+        ...durableV1.protectedMessage,
+        projection: {
+          ...durableV1.protectedMessage.projection,
+          roomId: "20000000-0000-4000-8000-000000000999",
+        },
+      },
+    }],
+  ] as const)("does not fetch authenticated history for an %s event", (
+    _label,
+    selectedRoomId,
+    event,
+  ) => {
+    expect(resolveLiveShadowMessageDisplayAction({
+      event,
+      activeRoomId: selectedRoomId,
+      result: { status: "failed", reason: "integrity" },
+    })).toEqual({ kind: "project", events: [] });
+  });
+
+  test("preserves an eligible availability fallback without fetching history", () => {
+    const action = resolveLiveShadowMessageDisplayAction({
+      event: durableV1,
+      activeRoomId,
+      result: {
+        status: "failed",
+        reason: "unavailable",
+        ordinaryFallback: {
+          kind: "durable",
+          payload: { role: "assistant", content: "available ordinary sibling" },
+          messageId: "44",
+          assistantMessageKey: null,
+          authorAgentId: "40000000-0000-4000-8000-000000000282",
+        },
+      },
+    });
+    expect(action.kind).toBe("project");
+    if (action.kind !== "project") throw new Error("expected projection action");
+    expect(action.events[0]).toMatchObject({
+      type: "message.new",
+      content: "available ordinary sibling",
+    });
+  });
+
+  test("preserves successful realtime projection without fetching history", () => {
+    const action = resolveLiveShadowMessageDisplayAction({
+      event: durableV2,
+      activeRoomId,
+      result: {
+        status: "durable_verified",
+        payload: { role: "assistant", content: "verified realtime reply" },
+        messageId: "44",
+        assistantMessageKey: null,
+        authorAgentId: "40000000-0000-4000-8000-000000000282",
+      },
+    });
+    expect(action.kind).toBe("project");
+    if (action.kind !== "project") throw new Error("expected projection action");
+    expect(action.events[0]).toMatchObject({
+      type: "message.new",
+      content: "verified realtime reply",
+    });
+  });
+
+  test("recovers an unavailable durable event only when no ordinary fallback exists", () => {
+    expect(resolveLiveShadowMessageDisplayAction({
+      event: durableV2,
+      activeRoomId,
+      result: { status: "failed", reason: "unavailable" },
+    })).toEqual({ kind: "history_refresh", messageId: "44" });
   });
 });
 

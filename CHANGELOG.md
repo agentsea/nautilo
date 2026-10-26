@@ -14,6 +14,129 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   target bitrates. Unsigned builds accept user-replaced FFmpeg files, as LGPL
   requires.
 
+- Run multiple independent mAgent Genie bindings on one server through a private
+  operator manifest, with separate capabilities and sockets for each binding.
+
+- Server security policy distinguishes Debian HarfBuzz builds without the affected
+  WebAssembly backend from two unfixed Expat denial-of-service findings. Exact
+  decisions expire November 14; scanner-reported fixes for High/Critical findings
+  and changed tuples still fail.
+
+- Refresh the shipped Zod (including seeded Writer and Video apps) and body-parser security patches, preserving identity
+  password-policy defaults and image-processing compatibility.
+
+- Server images require Debian's Brotli decoder security update on AMD64 and
+  ARM64; vulnerable packages fail the build instead of receiving an exception.
+
+- Mobile reconciles active chat jobs after reconnecting or returning to the
+  foreground, clearing a stale Genie working indicator when a reply finished
+  while the completion event was missed.
+
+- Personal chat keeps its admitted provider and credential when marketplace
+  availability changes. Already-admitted direct calls skip Surplus discovery,
+  and protected Memory retains its approved marketplace embedding disclosure.
+
+- Surplus model selection and requests now use its live catalogue for confirmed
+  model names, capabilities, reasoning parameters, and token limits. Auto skips
+  unconfirmed routes, and chat and Soul share the same marketplace budget.
+  Responses with an adapted output ceiling are accepted when they finish
+  naturally and reported output stays within the original request budget.
+
+- Onboarding waits for an in-progress Soul before saving the final profile,
+  and automatic foreground chat selection supports Surplus-only servers.
+
+- Invite room pickers now list only public rooms and exclude external rooms.
+
+- Web Genie customization now loads the default shell avatar correctly instead
+  of showing a missing-image error and requiring a replacement.
+
+- External agent connectors keep control requests and structured decisions out
+  of human chats. Verified older control rows are archived while real replies
+  and thread links are preserved. Approved connectors can also retrieve their
+  bound Genie's avatar for display in the connected agent room.
+
+- Surplus-only chat can use available sellers for eligible ordinary models,
+  preserves streamed tool calls, and respects qualified marketplace output
+  limits. Missing recovery keys retain the original marketplace failure;
+  pre-routing error traces no longer become pending cost receipts.
+
+- Embeddings can use Surplus with an explicit Venice text-embedding-3-large
+  selection and Prefer Surplus enabled. Protected Memory shows and binds the
+  processing route before saving or searching, and usage receipts track
+  marketplace costs without replaying provider requests.
+
+- Soul generation supports a server Surplus key without a direct provider key,
+  including streamed customization previews and service cost tracking. Eligible
+  Surplus-only requests let the marketplace choose an available seller and can
+  recover from confirmed supply refusals through other eligible models.
+- Update shipped MCP SDK dependencies to 1.32.0. MCP HTTP transports remain
+  outbound clients; contributor MCP servers use stdio.
+
+- Operators can connect a selected Genie to mAgent through a private Unix socket,
+  with a fresh external-context Room and a fixed sponsor and sender identity.
+
+- Server Docker builds require Chromium 156.0.8078.47 or later from Debian
+  13 security updates on both AMD64 and ARM64, and no longer waive findings
+  for the older Chromium packages.
+
+- Update TOML parsing to reject malformed input without excessive processing.
+- Preserve strict IP matching in network allowlists during hostname normalization.
+- Genie can change access to encrypted Memory across Domains whose
+  authorization histories have advanced independently.
+- Bundled Bun and contributor tooling use Bun 1.4.4 with updated certificate
+  trust. macOS Desktop downloads verify the official runtime archive checksums.
+
+- Scheduled Tasks keep concurrent results on separate execution threads.
+  Finished encrypted schedules show no future runs and retain result history.
+- Encrypted Task creation, editing and repair use current Domain authority on
+  Devices without legacy key caches. Task attention and avatar reads respect
+  current content policy.
+- Encrypted schedules with invalid content verification remain locked while
+  other schedules stay visible.
+- New encrypted Tasks can be read on their signing Device without previously
+  imported signer history or legacy Namespace key caches. Concurrent encrypted
+  Task reads no longer exhaust database connections while loading schedules or chats.
+
+- Node.js development and CLI requirements now start at 24.22.1. CI uses
+  patched Node.js releases, and the OpenConnector derivative uses Node.js
+  24.22.1 with its maintained CA bundle to reject compromised intermediate keys.
+
+- Desktop uses Electron 43.8.3, which rejects certificate chains containing
+  compromised eMudhra intermediate keys in its Chromium and Node.js networking.
+  Desktop requires macOS 13 (Ventura) or later; its package metadata now
+  declares that minimum. Native rebuild tooling recognizes the selected Electron
+  runtime. The bundled Google Workspace helper requires macOS 15 or later and
+  remains unavailable on macOS 13 and 14 without blocking Desktop.
+
+- Background Tasks can save Workspace files using their authorized namespace
+  room while keeping their transcripts separate from the originating chat.
+
+- Bolter messages explicitly mentioning only another agent no longer trigger
+  the linked Genie. Direct and shared mentions still reach the linked Genie,
+  and ordinary Human messages without agent mentions continue to work.
+
+- Oversized OfficeCLI results stay in conversation history while Genie receives
+  a compact receipt and can inspect, page through or search the retained output.
+  Task reads and reopened conversations keep these results within the model
+  request budget without discarding the original content.
+
+- Long-running conversations retain the current run's recent exchanges ahead
+  of surrounding Room activity, keep accepted Human replies in order, and
+  reserve Journal and recalled Records independently of older-history settings.
+- Explicitly selected assistants are guided to recognize already-delivered
+  current-turn responses and successful tool actions, close completed requests
+  briefly, and continue unfinished work or later Human input.
+
+- Messages exceeding PostgreSQL's full-text index size limit now save intact
+  and remain immediately searchable. These oversized messages use literal
+  word/prefix/path matching without stemming; ordinary indexed search is unchanged.
+  Session search summarizes a marked excerpt of an oversized match while retaining
+  its full source in conversation history.
+
+- OfficeCLI results containing emoji joiners or invisible layout controls
+  are sanitized before instruction scanning instead of blocking the entire
+  result. Original documents remain unchanged.
+
 - Large Excel reads use indexed shared strings through OfficeCLI 1.0.157,
   pinned together for Desktop and Server. Stopping a server OfficeCLI call
   now cancels its child process before temporary files are cleaned up.

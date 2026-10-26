@@ -21,6 +21,6 @@
     "@nautilo/logger": "workspace:*",
     "fflate": "^0.8.3",
     "ipaddr.js": "2.3.0",
-    "zod": "4.3.6"
+    "zod": "4.6.7"
   }
 }

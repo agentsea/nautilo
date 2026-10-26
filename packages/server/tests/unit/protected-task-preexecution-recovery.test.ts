@@ -596,3 +596,23 @@ describe("protected Task pre-execution recovery", () => {
   });
 
 });
+
+
+test("pre-start recovery carries exact repaired and historical heads into canonical reset", async () => {
+  for (const historical of [false, true]) {
+    const original = startInput();
+    const objectId = historical ? `task-historical:v1:${"b".repeat(64)}` : original.cryptoObjectId;
+    const input = { ...original, cryptoObjectId: objectId, cryptoAccessRevision: 1,
+      jobReference: { ...original.jobReference, inputObjectId: objectId } };
+    const value = harness({ input, now: START + 3_000 });
+    expect(await value.recovery.recover(input, { immediate: false })).toBe(true);
+    expect(value.cancelledJobs()).toEqual([{ jobId: input.jobId, reference: input.jobReference }]);
+    expect(value.counts()).toEqual({ cancelCalls: 1, resetCalls: 1, deferCalls: 1 });
+  }
+  for (const cryptoAccessRevision of [-1, 0.5, Number.MAX_SAFE_INTEGER + 1]) {
+    const input = { ...startInput(), cryptoAccessRevision };
+    const value = harness({ input, now: START + 3_000 });
+    expect(await value.recovery.recover(input, { immediate: false })).toBe(false);
+    expect(value.counts()).toEqual({ cancelCalls: 0, resetCalls: 0, deferCalls: 0 });
+  }
+});

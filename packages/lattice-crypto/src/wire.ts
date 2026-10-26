@@ -9,6 +9,62 @@ export type { OpaqueAgentRuntimeConfigDekV2 } from "./v2-types/opaque.ts";
 export { MAX_RETAINED_NAMESPACE_GENERATIONS_V2 } from "./v2-types/limits.ts";
 
 export {
+  MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V2,
+  TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_FORMAT_VERSION_V2,
+  TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_PURPOSE_V2,
+  decodeTaskRuntimeBackgroundAuthorizationRequestV2,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV2,
+  encodeTaskRuntimeBackgroundAuthorizationRequestV2,
+  isTaskRuntimeBackgroundAuthorizationRequestV2Carrier,
+} from "./background/task-runtime-request-v2.ts";
+export type {
+  TaskRuntimeBackgroundAuthorizationRequestV2,
+  TaskRuntimeDeviceGroupHeadV2,
+  TaskRuntimeEphemeralSignerV2,
+  TaskRuntimeExecutionWorkBindingV2,
+} from "./background/task-runtime-request-v2.ts";
+export type {
+  TaskRuntimeBackgroundAuthorizationRequestV1,
+  TaskRuntimeBackgroundAuthorizationWorkV1,
+} from "./background/task-runtime-request-v1.ts";
+export {
+  MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_RESPONSE_WIRE_BYTES_V2,
+  MAX_TASK_RUNTIME_SIGNER_AUTHORIZATION_PROJECTION_WIRE_BYTES_V1,
+  MAX_TASK_RUNTIME_SIGNER_AUTHORIZATION_PROJECTION_WIRE_BYTES_V2,
+  MAX_TASK_RUNTIME_SIGNER_AUTHORIZATION_WIRE_BYTES_V1,
+  MAX_TASK_RUNTIME_SIGNER_AUTHORIZATION_WIRE_BYTES_V2,
+  TASK_RUNTIME_SIGNER_AUTHORIZATION_FORMAT_VERSION_V1,
+  TASK_RUNTIME_SIGNER_AUTHORIZATION_FORMAT_VERSION_V2,
+  TASK_RUNTIME_SIGNER_AUTHORIZATION_PURPOSE_V1,
+  TaskRuntimeSignerAuthorizationErrorV1,
+  createTaskRuntimeSignerAuthorizationV1,
+  createTaskRuntimeSignerAuthorizationV2,
+  decodeTaskRuntimeBackgroundAuthorizationResponseV2,
+  decodeTaskRuntimeSignerAuthorizationProjectionV1,
+  decodeTaskRuntimeSignerAuthorizationProjectionV2,
+  destroyTaskRuntimeSignerAuthorizationProjectionV1,
+  destroyTaskRuntimeSignerAuthorizationV1,
+  destroyVerifiedTaskRuntimeSignerAuthorizationV1,
+  encodeTaskRuntimeBackgroundAuthorizationResponseV2,
+  readTaskRuntimeSignerAuthorizationIssuerV1,
+  readTaskRuntimeSignerAuthorizationIssuerV2,
+  verifyCurrentTaskRuntimeSignerAuthorizationV1,
+  verifyHistoricalTaskRuntimeSignerAuthorizationV1,
+} from "./background/task-runtime-signer-authorization-v1.ts";
+export type {
+  ResolveCurrentTaskRuntimeSignerAuthorizationIssuerV1,
+  ResolveHistoricalTaskRuntimeSignerAuthorizationIssuerV1,
+  TaskRuntimeSignerAuthorizationIssuerContextV1,
+  TaskRuntimeSignerAuthorizationProjectionV1,
+  TaskRuntimeSignerAuthorizationProjectionV2,
+  TaskRuntimeSignerAuthorizationV1,
+  TaskRuntimeSignerAuthorizationV2,
+  VerifiedCurrentTaskRuntimeSignerAuthorizationV1,
+  VerifiedHistoricalTaskRuntimeSignerAuthorizationV1,
+  VerifiedTaskRuntimeSignerAuthorizationV1,
+} from "./background/task-runtime-signer-authorization-v1.ts";
+
+export {
   ARTIFACT_BLOB_FORMAT_VERSION_V1,
   decodeArtifactBlobHeaderV1,
   encodeArtifactBlobChunkFrameV1,
@@ -276,6 +332,7 @@ export {
   serializeDomainForegroundAuthorizationPlanV2,
   serializeDomainForegroundAuthorizationV2,
   verifyDomainForegroundAuthorizationV2,
+  verifyHistoricalDomainForegroundAuthorizationV2,
 } from "./format/domain-foreground-authorization-v2.ts";
 export type {
   DomainForegroundAuthorizationPlanV2,
@@ -1009,6 +1066,9 @@ export {
   OBJECT_ACCESS_MANIFEST_FORMAT_VERSION_V5,
   objectAccessManifestSigningBytesV5,
 } from "./format/object-access-manifest-v5.ts";
+export type {
+  ResolveTaskRuntimeSignerAuthorizationBytesV5,
+} from "./format/object-access-manifest-v5.ts";
 export {
   decodeObjectAccessStorageManifest as decodeObjectAccessStorageManifestV5,
   decodeObjectAccessManifestV2OrV3,
@@ -1278,3 +1338,61 @@ export {
 } from "./task/publication-request-v1.ts";
 
 export type { HumanTaskPublicationRequestUnsignedV1 } from "./task/publication-request-v1.ts";
+
+export {
+  assertMemoryEmbeddingDisclosureV2,
+  encodeMemoryEmbeddingDisclosureV2,
+  decodeMemoryEmbeddingDisclosureV2,
+  sameMemoryEmbeddingDisclosureV2,
+  MAX_MEMORY_EMBEDDING_DISCLOSURE_WIRE_BYTES_V2,
+} from "./memory/embedding-disclosure-v2.ts";
+export type { MemoryEmbeddingDisclosureV2 } from "./memory/embedding-disclosure-v2.ts";
+export {
+  HUMAN_MEMORY_CONTENT_EMBEDDING_REQUEST_FORMAT_VERSION_V3,
+  HUMAN_MEMORY_CONTENT_EMBEDDING_REQUEST_DOMAIN_V3,
+  HUMAN_MEMORY_CONTENT_EMBEDDING_PROCESSOR_CONTRACT_VERSION_V3,
+  humanMemoryContentEmbeddingRequestSigningBytesV3,
+  encodeHumanMemoryContentEmbeddingRequestV3,
+  decodeHumanMemoryContentEmbeddingRequestV3,
+  prepareHumanMemoryContentEmbeddingRequestV3,
+  verifyHumanMemoryContentEmbeddingRequestV3,
+} from "./memory/content-embedding-request-v3.ts";
+export type {
+  HumanMemoryContentEmbeddingRequestUnsignedV3,
+  HumanMemoryContentEmbeddingRequestV3,
+  PrepareHumanMemoryContentEmbeddingRequestInputV3,
+  CreatedHumanMemoryContentEmbeddingRequestV3,
+} from "./memory/content-embedding-request-v3.ts";
+export {
+  HUMAN_EXISTING_TASK_REPRESENTATION_PUBLICATION_REQUEST_DOMAIN_V1,
+  HUMAN_EXISTING_TASK_REPRESENTATION_PUBLICATION_REQUEST_MAX_TTL_MS_V1,
+  MAX_HUMAN_EXISTING_TASK_REPRESENTATION_PUBLICATION_REQUEST_WIRE_BYTES_V1,
+  decodeHumanExistingTaskRepresentationPublicationRequestV1,
+  encodeHumanExistingTaskRepresentationPublicationRequestV1,
+  humanExistingTaskRepresentationPublicationRequestSigningBytesV1,
+} from "./task/existing-representation-publication-request-v1.ts";
+export type {
+  HumanExistingTaskRepresentationPublicationRequestUnsignedV1,
+} from "./task/existing-representation-publication-request-v1.ts";
+
+export {
+  MAX_TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_WIRE_BYTES_V3,
+  MAX_TASK_RUNTIME_PUBLICATION_WORK_BINDING_WIRE_BYTES_V3,
+  TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_FORMAT_VERSION_V3,
+  TASK_RUNTIME_BACKGROUND_AUTHORIZATION_REQUEST_PURPOSE_V3,
+  assertTaskRuntimePublicationWorkMatchesBaseRequestV3,
+  createTaskRuntimeBackgroundAuthorizationRequestV3,
+  decodeTaskRuntimeBackgroundAuthorizationRequestV3,
+  destroyTaskRuntimeBackgroundAuthorizationRequestV3,
+  destroyTaskRuntimePublicationWorkBindingV3,
+  encodeTaskRuntimeBackgroundAuthorizationRequestV3,
+  encodeTaskRuntimePublicationWorkBindingV3,
+  isTaskRuntimeBackgroundAuthorizationRequestV3Carrier,
+  normalizeTaskRuntimePublicationWorkBindingV3,
+  readTaskRuntimePublicationWorkBindingV3,
+  taskRuntimeBackgroundAuthorizationIssuerV3,
+} from "./background/task-runtime-request-v3.ts";
+export type {
+  TaskRuntimeBackgroundAuthorizationRequestV3,
+  TaskRuntimePublicationWorkBindingV3,
+} from "./background/task-runtime-request-v3.ts";

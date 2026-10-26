@@ -148,7 +148,7 @@ test("real service and LangGraph publish source-bound replies through a fixed te
       const outbox = await listBolterOutboxWith(agentDb, { userId: sponsor.userId }, binding.bindingId);
       expect(outbox).toHaveLength(1);
       expect(outbox[0]).toMatchObject({ sourceInboxId: receipt.id, state: "pending" });
-      const [final] = await fixture.db.select().from(sessionMessages).where(eq(sessionMessages.id, outbox[0]!.sessionMessageId));
+      const [final] = await fixture.db.select().from(sessionMessages).where(eq(sessionMessages.id, outbox[0]!.sessionMessageId!));
       expect(final?.replyToMessageId).toBe(receipt.sessionMessageId);
       expect(final?.role).toBe("assistant");
       expect(await publisher.publish(binding, outbox[0]!.id)).toEqual({ status: "published", providerMessageId: `synthetic-reply-${index + 1}` });
@@ -241,7 +241,7 @@ test("real service and LangGraph publish source-bound replies through a fixed te
     await controller.publishPending(shareCtx);
     expect(nativeSends).toEqual([{ chatId: "synthetic-chat-c", content: reviewed.content }]);
     expect(model.invocations).toHaveLength(2);
-    const [humanMessage] = await fixture.db.select().from(sessionMessages).where(eq(sessionMessages.id, shared.messageId));
+    const [humanMessage] = await fixture.db.select().from(sessionMessages).where(eq(sessionMessages.id, shared.messageId!));
     expect(humanMessage).toMatchObject({ role: "user", externalAuthorship: false, content: reviewed.content });
     const paused = await controller.updateBinding(sponsor.userId, created.link.id, created.link.revision, "paused");
     expect(paused.canSend).toBe(false);

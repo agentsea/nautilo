@@ -17,6 +17,7 @@ import {
   type AgentRuntimeSignerPublication,
   type EncryptedPayload,
   type LatticeCrypto,
+  type TaskRuntimePublicationSigning,
   type ResolveCurrentDeviceWrappedLiveShadowAgentObjectAccessGenesisAuthorization,
 } from "@nautilo/lattice-crypto";
 import {
@@ -90,6 +91,7 @@ export interface PrepareDeviceWrappedLiveShadowAgentConversationCryptoRevisionWi
   readonly signerKeyId: string;
   readonly signerPublicKey: Uint8Array;
   readonly agentAuthorizationRevision: number;
+  readonly taskRuntimeSigner?: TaskRuntimePublicationSigning;
   readonly resolveCurrentAuthorization:
     ResolveCurrentDeviceWrappedLiveShadowAgentObjectAccessGenesisAuthorization;
 }
@@ -221,6 +223,7 @@ function prepareWithOwnedDek(
         },
         signerKeyId: input.signerKeyId,
         signerPublicKey: input.signerPublicKey,
+        ...(input.taskRuntimeSigner === undefined ? {} : { taskRuntimeSigner: input.taskRuntimeSigner }),
       },
     );
     return createPreparedDeviceWrappedLiveShadowAgentConversationCryptoRevision({

@@ -25,6 +25,7 @@ import type {
 } from "@nautilo/api-client";
 import type { AtomicDocumentMutationEventBatch } from "@nautilo/document-mutations";
 import type { MessagePayloadV2 } from "@nautilo/lattice-bridge";
+import type { MemoryEmbeddingDisclosureV2 } from "@nautilo/lattice-crypto/wire";
 import type {
   BrowserRoomHistoryShadowAcknowledgementInput,
   HumanPeerLiveShadowReceiveResult,
@@ -38,6 +39,8 @@ import type {
   HumanEditLeaseStoreResult,
   LiveShadowMessageRealtimeEventV1,
   FullEncryptionMessageRealtimeContentEventV2,
+  CodexRequestEvent,
+  CodexRequestResponse,
   RegisterHumanEditLeaseRequest,
   ReleaseHumanEditLeaseRequest,
   RenewHumanEditLeaseRequest,
@@ -123,6 +126,10 @@ type ForegroundShadowHistoryReconcileInput = Readonly<{
     BrowserRoomHistoryShadowAcknowledgementInput,
     "result"
   >;
+}>;
+type TaskContentBackfillBatchResult = Readonly<{
+  state: "more" | "waiting" | "caught_up";
+  resumeAt: number | null;
 }>;
 type MessageBackfillBatchResult = Readonly<{
   state: "more" | "waiting" | "caught_up";
@@ -2038,6 +2045,34 @@ const foregroundShadowAPI = {
     "foregroundShadow:recoverRoomPendingAttention",
     input,
   ) as Promise<RoomPendingAttentionRecoveryResponse>,
+  recoverTaskPendingAttention: (input: Readonly<{
+    clientActionSessionId: string;
+  }>) => ipcRenderer.invoke(
+    "foregroundShadow:recoverTaskPendingAttention",
+    input,
+  ) as Promise<import("@nautilo/api-client").TaskPendingAttentionRecoveryResponse>,
+  recoverProtectedTaskExternalRequests: (input: Readonly<{
+    clientActionSessionId: string;
+    requestId?: string;
+  }>) => ipcRenderer.invoke(
+    "foregroundShadow:recoverProtectedTaskExternalRequests",
+    input,
+  ) as Promise<
+    | Readonly<{ status: "ready"; entries: readonly Readonly<{
+        event: CodexRequestEvent;
+        responseCapability: string;
+      }>[] }>
+    | Readonly<{ status: "unavailable"; entries: readonly [] }>
+  >,
+  respondProtectedTaskExternalRequest: (input: Readonly<{
+    clientActionSessionId: string;
+    requestId: string;
+    responseCapability: string;
+    response: CodexRequestResponse;
+  }>) => ipcRenderer.invoke(
+    "foregroundShadow:respondProtectedTaskExternalRequest",
+    input,
+  ) as Promise<Readonly<{ status: "responded" | "unavailable" }>>,
   memory: {
     list: (options?: Readonly<{
       cursor?: string; limit?: number; includeArchive?: boolean;
@@ -2048,12 +2083,14 @@ const foregroundShadowAPI = {
     search: (options: Readonly<{
       q: string; mode: "text" | "semantic"; limit?: number;
       includeArchive?: boolean;
+      embeddingDisclosure?: MemoryEmbeddingDisclosureV2;
     }>) => ipcRenderer.invoke("foregroundShadow:memory:search", options),
     detail: (memoryId: string) => ipcRenderer.invoke(
       "foregroundShadow:memory:detail", { memoryId },
     ),
     update: (input: Readonly<{
       memoryId: string; type: string; content: string; importance: number;
+      requestedEmbedding?: MemoryEmbeddingDisclosureV2;
     }>) => ipcRenderer.invoke("foregroundShadow:memory:update", input),
     retryPendingMutations: () => ipcRenderer.invoke(
       "foregroundShadow:memory:retryPending",
@@ -2115,6 +2152,15 @@ const foregroundShadowAPI = {
     ipcRenderer.invoke(
       "foregroundShadow:messageBackfill:cancel",
     ) as Promise<void>,
+  getTaskContentBackfillProgress: () => ipcRenderer.invoke(
+    "foregroundShadow:taskContentBackfill:progress",
+  ) as ReturnType<NautiloApiClient["getTaskContentBackfillProgress"]>,
+  serviceTaskContentBackfill: () => ipcRenderer.invoke(
+    "foregroundShadow:taskContentBackfill:service",
+  ) as Promise<TaskContentBackfillBatchResult>,
+  cancelTaskContentBackfill: () => ipcRenderer.invoke(
+    "foregroundShadow:taskContentBackfill:cancel",
+  ) as Promise<void>,
   onProtectedRoomAccessState: (
     listener: (state: ProtectedRoomAccessStateV2) => void,
   ) => {

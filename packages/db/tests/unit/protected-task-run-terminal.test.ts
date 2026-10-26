@@ -249,6 +249,7 @@ function outputBinding(
     deliveryMode: "none",
     destinationRoomId: null,
     destinationNamespaceId: null,
+    resultRevision: 1,
     resultOperationId: `task-run-result:${ids.run}`,
     resultObjectId,
     messageOperationId: null,
@@ -874,4 +875,90 @@ describe("protected TaskRun result terminal CAS", () => {
     expect(await publication).toEqual({ status: "transitioned" });
     expect(fixture.writes[1]?.patch["resultText"]).toBe("snapshotted result");
   });
+});
+
+
+test("accepted result drains while a cooperative pause owns parent state", async () => {
+  const fixture = harness({ task: task({ pauseRequestId: ids.task, pauseReason: "manual_pause", pauseRequestedAt: completedAt }) });
+  expect(await terminalizeProtectedTaskRunResult(fixture.db, input())).toEqual({ status: "transitioned" });
+  expect(fixture.writes.some(write => write.table === tasks)).toBe(false);
+  expect(fixture.writes.find(write => write.table === taskRuns)?.patch).toEqual({ status: "completed", completedAt });
+  expect(await terminalizeProtectedTaskRunResult(fixture.db, input())).toEqual({ status: "exact_replay" });
+});
+
+
+describe("renewed checkpoint result policy provenance", () => {
+  const continuationFingerprint = Buffer.from(new Uint8Array(32).fill(7)).toString("base64url");
+  const renewedReference = { ...jobReference(), policyRevision: 10, executionSegment: 2,
+    authorizationRequestId: `task-checkpoint-continuation:${ids.run}:2:${continuationFingerprint}`,
+    resumeContinuationFingerprint: continuationFingerprint };
+  test("fresh result and exact terminal replay retain older immutable acceptance", async () => {
+    const f = harness({ policy: policy({ revision: 10 }), job: job({ input: renewedReference }) });
+    expect(await terminalizeProtectedTaskRunResult(f.db, input())).toEqual({ status: "transitioned" });
+    expect(f.writes.find(write => write.table === protectedTaskRunOutputBindings)?.patch).toEqual({ resultTerminalAt: completedAt });
+    expect(await terminalizeProtectedTaskRunResult(f.db, input())).toEqual({ status: "exact_replay" });
+  });
+  test("older reference, newer acceptance, and incompatible mode cannot publish", async () => {
+    for (const options of [
+      { policy: policy({ revision: 9 }), job: job({ input: renewedReference }) },
+      { policy: policy({ revision: 10 }), job: job({ input: renewedReference }), outputBinding: outputBinding({ acceptedPolicyRevision: 11 }) },
+      { policy: policy({ revision: 10, mode: "shadow_encryption" }), job: job({ input: renewedReference }) },
+      { policy: policy({ revision: 10, mode: "plaintext_only" }), job: job({ input: renewedReference }) },
+    ]) {
+      const f = harness(options);
+      expect((await terminalizeProtectedTaskRunResult(f.db, input())).status).toBe("rejected");
+      expect(f.writes).toEqual([]);
+    }
+  });
+});
+
+
+test("mapped definition access head advances independently of immutable genesis ledger", async () => {
+  for (const cryptoObjectId of [definitionObjectId, `task-historical:v1:${"c".repeat(64)}`]) {
+    const fixture = harness({
+      task: task({ cryptoObjectId, cryptoAccessRevision: 1 }),
+      definitionRevision: definitionRevision({ cryptoObjectId }),
+      job: job({ input: { ...jobReference(), inputObjectId: cryptoObjectId } }),
+    });
+    expect(await terminalizeProtectedTaskRunResult(fixture.db, input()))
+      .toEqual({ status: "transitioned" });
+    expect(fixture.writes).toHaveLength(4);
+    expect(await terminalizeProtectedTaskRunResult(fixture.db, input()))
+      .toEqual({ status: "exact_replay" });
+  }
+});
+
+test("rewrapped definition still requires the exact complete immutable genesis ledger", async () => {
+  for (const changed of [
+    { cryptoAccessRevision: 1 },
+    { cryptoObjectId: `task-historical:v1:${"d".repeat(64)}` },
+    { contentNamespaceId: ids.agent },
+    { requiredNamespaceFingerprint: new Uint8Array(32) },
+    { contentRevision: 2 },
+    { completion: "pending" as const },
+  ]) {
+    const fixture = harness({ task: task({ cryptoAccessRevision: 1 }),
+      definitionRevision: definitionRevision(changed) });
+    expect((await terminalizeProtectedTaskRunResult(fixture.db, input())).status).toBe("rejected");
+    expect(fixture.writes).toEqual([]);
+  }
+});
+
+
+test("Full terminal publication keeps a retained dual definition and writes no new sibling", async () => {
+  const source = task({ contentRepresentation: "dual", prompt: "retained source", expectedOutput: "retained expectation" });
+  const f = harness({ task: source, definitionRevision: definitionRevision({ representation: "dual" }) });
+  expect(await terminalizeProtectedTaskRunResult(f.db, input())).toEqual({ status: "transitioned" });
+  expect(await terminalizeProtectedTaskRunResult(f.db, input())).toEqual({ status: "exact_replay" });
+  expect(source.prompt).toBe("retained source");
+  expect(source.contentRepresentation).toBe("dual");
+  for (const write of f.writes) {
+    expect(Object.hasOwn(write.patch, "prompt")).toBe(false);
+    expect(Object.hasOwn(write.patch, "expectedOutput")).toBe(false);
+    expect(Object.hasOwn(write.patch, "contentRepresentation")).toBe(false);
+    expect(Object.hasOwn(write.patch, "resultText")).toBe(false);
+  }
+  const wrong = harness({ task: source, definitionRevision: definitionRevision() });
+  expect((await terminalizeProtectedTaskRunResult(wrong.db, input())).status).toBe("rejected");
+  expect(wrong.writes).toEqual([]);
 });

@@ -21,7 +21,7 @@ import {
 import { type MessageNewEvent } from "@nautilo/types";
 import { createReceiptRecoveryPump } from "../lib/receipt-recovery";
 import { getServerDirectDb } from "../lib/server-direct-db";
-import { prepareBolterExternalRoomTurn, externalRoomTurnMatchesLockedBinding } from "./external-room-turn";
+import { prepareBolterExternalRoomTurn, prepareMagentExternalRoomTurn, externalRoomTurnMatchesLockedBinding } from "./external-room-turn";
 
 function emitCommittedMessage(event: MessageNewEvent): void {
   try { eventBus.emit(event); }
@@ -116,16 +116,18 @@ export function createExternalRoomExecutionService(options: {
             message: current.sourceMessage.content, currentMessageId: current.sourceMessage.id,
             humanAlreadyPersisted: true, memoryAccessEnvelope: envelope, actorRole },
           context: { reference: input.reference, sponsorUserId: userId, origin, assertSponsorship,
+            ...(current.receipt.controlInput ? { operatorControl: "operator_control_v1" as const } : {}),
             async complete(finalText: string) {
               let event: MessageNewEvent | undefined;
               const outbox = await completeBolterExecutionWith(db, ctx, input, async (tx, execution) => {
                 const fp = fingerprint(["external-room-final-v1", input.reference.receiptId, input.jobId, finalText]);
+                if (execution.receipt.controlInput) return { sessionMessageId: null, controlResult: finalText, fingerprint: fp };
                 const appended = await appendCanonicalTranscriptRowsInTx(tx, {
                   session: { threadId: current.session.threadId, ownerId: userId, personaId: "owner",
                     agentId: input.reference.agentId, roomId: input.reference.roomId, title: "External conversation" },
                   rows: [transcriptRow({ role: "assistant", content: finalText, fingerprint: fp,
                     humanTurnId: null, replyToMessageId: execution.receipt.sessionMessageId,
-                    metadata: { externalFinalReply: { kind: "bolter_final_reply_v1", receiptId: input.reference.receiptId,
+                    metadata: { externalFinalReply: { kind: origin.provider === "bolter" ? "bolter_final_reply_v1" : "external_room_final_reply_v1", receiptId: input.reference.receiptId,
                       jobId: input.jobId, turnId: input.reference.turnId, acceptanceId: input.reference.acceptanceId } } })],
                   notificationContext: { causalHumanUserId: null, causalHumanTurnId: null, mentionedHumanUserIds: [] },
                 });
@@ -163,7 +165,7 @@ export function createExternalRoomExecutionService(options: {
   }
 
   const service = {
-    async accept(input: { receiver: BolterBindingContext; invocationAuthority: AcceptedInvocationAuthority }, raw: unknown) {
+    async accept(input: { receiver: BolterBindingContext; invocationAuthority: AcceptedInvocationAuthority; operatorSessionId?: string; operatorControl?: "operator_control_v1" }, raw: unknown) {
       if (closed) throw new Error("external_room_execution_closed");
       await getMaintenanceGate().assertAcceptingNewWork();
       const receiver = input.receiver;
@@ -172,8 +174,10 @@ export function createExternalRoomExecutionService(options: {
         getBolterConnectionWith(db, receiver, receiver.connectionId), getBolterBindingWith(db, receiver, receiver.bindingId),
       ]);
       if (!connection || !binding || !binding.modelSponsorshipAcceptedAt) throw new Error("external_room_sponsorship_unavailable");
+      if ((connection.provider === "magent") !== (input.operatorControl === "operator_control_v1")) return { ok: false as const, reason: "unsupported-content" as const };
       const { envelope } = await sponsorEnvelope(receiver.userId, binding.roomId, binding.agentId);
-      const prepared = prepareBolterExternalRoomTurn({ receiver, connection, binding, memoryEnvelope: envelope,
+      const prepare = connection.provider === "magent" ? prepareMagentExternalRoomTurn : prepareBolterExternalRoomTurn;
+      const prepared = prepare({ receiver, connection, binding, memoryEnvelope: envelope,
         representationMode: "plaintext_only", invocationAuthority: input.invocationAuthority }, raw);
       if (!prepared.ok) return prepared;
       const turn = prepared.turn;
@@ -186,6 +190,13 @@ export function createExternalRoomExecutionService(options: {
         const reference: ExternalRoomJobReference = { kind: "external_room_turn_v1", receiptId, acceptanceId,
           bindingId: locked.id, bindingRevision: locked.revision, connectionGeneration: receiver.connectionGeneration,
           roomId: locked.roomId, agentId: locked.agentId, turnId };
+        if (input.operatorControl === "operator_control_v1") {
+          const jobId = await persistJobInTransaction(tx, { ownerId: receiver.userId, requestorId: receiver.userId,
+            laneKey: `room:${locked.roomId}`, roomId: locked.roomId, type: "foreground", input: { ...reference } });
+          acceptedJob = { jobId, reference };
+          return { sessionMessageId: null, turnId, jobId,
+            controlInput: { kind: "operator_control_v1" as const, content: turn.literalText, origin: turn.origin } };
+        }
         const appended = await appendCanonicalTranscriptRowsInTx(tx, {
           session: { threadId: turn.graphThreadId, ownerId: receiver.userId, personaId: "owner", agentId: locked.agentId,
             roomId: locked.roomId, title: "External conversation" },
@@ -201,7 +212,7 @@ export function createExternalRoomExecutionService(options: {
         event = { type: "message.new", laneKey: `room:${locked.roomId}`, messageId: row.id, role: "user",
           content: turn.literalText, externalOrigin: turn.origin, ...(row.createdAt ? { createdAt: row.createdAt } : {}) };
         return { sessionMessageId: Number(row.id), turnId, jobId };
-      });
+      }, input.operatorSessionId);
       if (accepted.status === "unavailable") return { ok: false as const, reason: "stale-binding" as const };
       if (accepted.status === "quarantined") return { ok: false as const, reason: "identity-conflict" as const };
       let dispatch: "not-needed" | "adopted" | "active" | "ineligible" | "ownership-unproven" | "pending-recovery" = "not-needed";

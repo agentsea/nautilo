@@ -5,10 +5,24 @@ import type { ServerEvent } from "@nautilo/types";
 import type {
   LiveShadowAgentRuntimeTurn,
 } from "./live-shadow-agent-runtime";
+import type { LiveShadowAgentPublishedMessage } from
+  "@nautilo/lattice-bridge/server";
 
 export type LiveShadowStreamState = Readonly<{
   ordinals: Map<string, number>;
 }>;
+
+/** Certified Task signers publish only through durable V5 records because the
+ * realtime V2 transport cannot carry their signer certificate. */
+export function filterDurableOnlyLiveShadowEvents(
+  events: readonly ServerEvent[],
+  durableOnly: boolean,
+): readonly ServerEvent[] {
+  if (!durableOnly || events.every(event => event.type !== "message.tokens")) {
+    return events;
+  }
+  return Object.freeze(events.filter(event => event.type !== "message.tokens"));
+}
 
 /**
  * Frame one assistant token through the canonical Runtime turn owner. A false
@@ -23,11 +37,18 @@ export async function protectLiveShadowAssistantToken(input: Readonly<{
   event: ServerEvent;
   messagesToPersist: readonly BaseMessage[];
   foregroundExecutionId?: string;
+  durableOnly?: true;
 }>): Promise<Readonly<{
   events: readonly ServerEvent[];
   handled: boolean;
 }>> {
   const event = input.event;
+  if (filterDurableOnlyLiveShadowEvents(
+    [event],
+    input.durableOnly === true,
+  ).length === 0) {
+    return Object.freeze({ events: Object.freeze([]), handled: true });
+  }
   const full = input.runtime.representationMode === "full_encryption";
   if (
     event.type !== "message.tokens"
@@ -118,6 +139,48 @@ export async function protectLiveShadowAssistantToken(input: Readonly<{
   });
 }
 
+/** Project one already-committed protected receipt onto the established
+ * realtime wire. Callers remain responsible for audience and Room authority. */
+export function projectLiveShadowPublishedMessageEvent(input: Readonly<{
+  message: LiveShadowAgentPublishedMessage;
+  representationMode: "shadow_encryption" | "full_encryption";
+  sharedAgentPlanBytesBase64url: string | null;
+  operationId: string;
+  laneKey: string;
+}>): ServerEvent {
+  const messageRepresentation = input.message.representationMode
+    ?? "shadow_encryption";
+  if (messageRepresentation !== input.representationMode) {
+    throw new Error(
+      "Agent durable evidence representation disagrees with transport policy",
+    );
+  }
+  const common = {
+    laneKey: input.laneKey,
+    operationId: input.operationId,
+    policyRevision: input.message.policyRevision,
+    transcriptOrdinal: input.message.reservation.transcriptOrdinal,
+    protectedMessage: input.message.protectedMessage,
+    durableEventDigestBase64url:
+      Buffer.from(input.message.durableEventDigest).toString("base64url"),
+  };
+  const protectedEvent = input.sharedAgentPlanBytesBase64url === null
+    ? { ...common, type: "message.shadow_durable" as const }
+    : {
+      ...common,
+      type: "message.shared_agent_output_shadow" as const,
+      planBytesBase64url: input.sharedAgentPlanBytesBase64url,
+    };
+  return input.representationMode === "full_encryption"
+    ? { ...protectedEvent, wireVersion: 2 as const }
+    : {
+      ...protectedEvent,
+      wireVersion: 1 as const,
+      ordinaryPayloadBytesBase64url:
+        Buffer.from(input.message.ordinaryPayloadBytes).toString("base64url"),
+    };
+}
+
 /** Frame one canonical Runtime publication batch. `publishMessages` owns policy,
  * exact receipts and fallback classification; never retry it after rejection. */
 export async function publishLiveShadowRuntimeMessages(input: Readonly<{
@@ -136,31 +199,16 @@ export async function publishLiveShadowRuntimeMessages(input: Readonly<{
     input.foregroundExecutionId,
   );
   const full = input.runtime.representationMode === "full_encryption";
-  const events: ServerEvent[] = batch.protectedMessages.map((message) => {
-    if ((message.representationMode ?? "shadow_encryption") !== input.runtime.representationMode) {
-      throw new Error("Agent durable evidence representation disagrees with transport policy");
-    }
-    const common = {
-      laneKey: input.laneKey,
+  const events: ServerEvent[] = batch.protectedMessages.map((message) =>
+    projectLiveShadowPublishedMessageEvent({
+      message,
+      representationMode: input.runtime.representationMode,
+      sharedAgentPlanBytesBase64url:
+        input.runtime.sharedAgentPlanBytesBase64url,
       operationId: input.operationId,
-      policyRevision: message.policyRevision,
-      transcriptOrdinal: message.reservation.transcriptOrdinal,
-      protectedMessage: message.protectedMessage,
-      durableEventDigestBase64url:
-        Buffer.from(message.durableEventDigest).toString("base64url"),
-    };
-    const protectedEvent = input.runtime.sharedAgentPlanBytesBase64url === null
-      ? { ...common, type: "message.shadow_durable" as const }
-      : {
-        ...common, type: "message.shared_agent_output_shadow" as const,
-        planBytesBase64url: input.runtime.sharedAgentPlanBytesBase64url,
-      };
-    return full ? { ...protectedEvent, wireVersion: 2 as const } : {
-      ...protectedEvent, wireVersion: 1 as const,
-      ordinaryPayloadBytesBase64url:
-        Buffer.from(message.ordinaryPayloadBytes).toString("base64url"),
-    };
-  });
+      laneKey: input.laneKey,
+    })
+  );
   input.onCommittedMessageIds?.(batch.protectedMessages.map((message) => message.reservation.messageId));
   if (batch.status !== "ordinary_fallback") return Object.freeze(events);
   if (full) throw new Error("Full encryption cannot publish ordinary fallback output");

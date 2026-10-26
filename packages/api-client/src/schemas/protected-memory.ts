@@ -133,7 +133,7 @@ const protectedMemoryNamespaceGenerationAuthorityV1Schema = z.object({
   publicationSetDigestBase64url: base64url,
   audienceFingerprintBase64url: base64url,
 }).strict();
-const protectedMemoryNamespaceAuthorityV1Schema = z.object({
+export const protectedMemoryNamespaceAuthorityV1Schema = z.object({
   sourceRoomId: canonicalLowerUuid,
   namespaceId: canonicalLowerUuid,
   currentGeneration: nonnegativeInteger,
@@ -262,6 +262,10 @@ const encryptedPayload = z.object({
   // complete evidence set; uniqueness and aggregate byte validation follow.
   accessSignerEvidence: z.array(z.union([
     protectedObjectAccessSignerEvidenceV1Schema,
+    z.object({
+      kind: z.literal("task_runtime_signer_certificate"),
+      evidenceBytesBase64url: base64url,
+    }).strict(),
     z.object({
       kind: z.literal("human_device"),
       subjectHumanId: canonicalLowerUuid,

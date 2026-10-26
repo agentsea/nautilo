@@ -126,10 +126,13 @@ export const STRICT_SHADOW_BOUNDARY_REGISTRY = Object.freeze([
     family: backgroundFamily(surface.id),
     operation: operation(surface.id),
     actorClass: "background" as const,
-    // PR1 gates these roots before plaintext work. Existing protected Memory
-    // entrypoints are classified independently below; the generic background
-    // surfaces remain unavailable under Strict until their own verticals ship.
-    readiness: "unsupported" as const,
+    // Protected Task scheduling now enters its current policy owner before
+    // discovery and hands selected occurrences to the protected coordinator.
+    // Other generic background surfaces remain unavailable under Strict until
+    // their own verticals ship.
+    readiness: surface.id === "task.observer"
+      ? "protected" as const
+      : "unsupported" as const,
   })),
   ...MEMORY_ENCRYPTION_SURFACES.map((surface) => Object.freeze({
     id: surface.id,

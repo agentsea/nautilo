@@ -5,11 +5,14 @@ import {
   getEligibleModels,
   getActiveModelCatalogProvenance,
   getDefaultImageModel,
+  hydrateSurplusChatCatalog,
   kickRuntimeModelCatalogRefresh,
   MAX_RETAINED_MODEL_IDS,
   resolveCatalogModel,
   resolveRetainedModels,
   resolveProviderKey,
+  resolveQualifiedSurplusChatRoute,
+  type QualifiedSurplusChatRoute,
 } from "@nautilo/agent";
 import { fromRuntimeConfig } from "@nautilo/config";
 import { getPersonalCapabilityPreferences } from "@nautilo/db";
@@ -44,6 +47,9 @@ export interface CallerModelAvailabilityDeps {
   readonly resolveImageInput?: typeof resolveCallerImageInput;
   readonly imageAssistanceSelections?: Map<string, Promise<ModelFundingDecision | null>>;
   readonly readImageAssistancePreferences?: () => Promise<PersonalCapabilityPreferences>;
+  readonly hydrateSurplusChatCatalog?: typeof hydrateSurplusChatCatalog;
+  /** Pure offline seam for vendor-confirmed route projections. */
+  readonly getQualifiedSurplusChatRoutes?: () => readonly QualifiedSurplusChatRoute[];
 }
 
 const FUNDING_UNAVAILABLE_REASON: Readonly<Record<ModelFundingError["code"], string>> = {
@@ -115,14 +121,37 @@ export async function resolveCallerModelAvailability(
       modelId,
       workload: "foreground_text_chat",
     });
-    if (funding.kind === "server" && options.purpose === "chat-tools"
-      && catalogModel.features.tools !== true) {
+    const injectedRoutes = deps.getQualifiedSurplusChatRoutes?.();
+    if (funding.providerRoute === "surplus" && injectedRoutes === undefined) {
+      try {
+        await (deps.hydrateSurplusChatCatalog ?? hydrateSurplusChatCatalog)({
+          catalogModelIds: [modelId],
+        });
+      } catch {
+        // Fall through to the exact fail-closed route lookup below.
+      }
+    }
+    const surplusRoute = funding.providerRoute === "surplus"
+      ? resolveQualifiedSurplusChatRoute(modelId, injectedRoutes)
+      : null;
+    if (funding.providerRoute === "surplus" && !surplusRoute) {
+      return {
+        model: unavailableForCaller(base, "the selected model is not available through Surplus"),
+        funding: null,
+        selectableInThisRelease: false,
+      };
+    }
+    const supportsTools = surplusRoute
+      ? catalogModel.features.tools === true && surplusRoute.supportsTools
+      : catalogModel.features.tools === true;
+    if (options.purpose === "chat-tools" && !supportsTools
+      && (funding.kind === "server" || surplusRoute !== null)) {
       return {
         model: {
           ...base,
           enabled: false,
           availability: "unsupported-capability",
-          unavailableReason: catalogModel.features.tools === false
+          unavailableReason: catalogModel.features.tools === false || surplusRoute?.supportsTools === false
             ? "model does not support tool/function calling"
             : "tool/function calling capability is unverified",
         },
@@ -150,8 +179,24 @@ export async function resolveCallerModelAvailability(
         ...(deps.resolveFunding ? { resolveFunding: deps.resolveFunding } : {}),
         ...(deps.imageAssistanceSelections ? { selectionCache: deps.imageAssistanceSelections } : {}),
         ...(deps.readImageAssistancePreferences ? { readPreferences: deps.readImageAssistancePreferences } : {}),
+        ...(deps.hydrateSurplusChatCatalog ? { hydrateSurplusChatCatalog: deps.hydrateSurplusChatCatalog } : {}),
+        ...(deps.getQualifiedSurplusChatRoutes ? { getQualifiedSurplusChatRoutes: deps.getQualifiedSurplusChatRoutes } : {}),
       }),
-      ...(funding.kind === "personal"
+      ...(surplusRoute
+        ? {
+            capabilities: {
+              ...selectedBase.capabilities,
+              tools: supportsTools,
+              vision: catalogModel.input.includes("image") && surplusRoute.supportsVision,
+              reasoning: catalogModel.features.reasoning === true && surplusRoute.supportsReasoning,
+              webSearch: false,
+            },
+            limits: {
+              contextTokens: surplusRoute.maxContextTokens,
+              outputTokens: surplusRoute.maxOutputTokens,
+            },
+          }
+        : funding.kind === "personal"
         ? {
             capabilities: {
               ...selectedBase.capabilities,

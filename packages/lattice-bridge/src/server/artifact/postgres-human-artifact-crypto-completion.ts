@@ -360,10 +360,12 @@ async function verifyStoredArtifactRevisionV5(input: Readonly<{
     return Object.freeze({
       verified,
       signerEvidence: Object.freeze(verifiedChain.signerEvidence.map(
-        (entry) => Object.freeze({
-          kind: entry.kind,
-          evidenceBytes: entry.evidenceBytes.slice(),
-        }),
+        (entry) => {
+          if (entry.kind === "task_runtime_signer_certificate") {
+            throw new TypeError("Task Runtime signer certificates cannot authorize Artifacts");
+          }
+          return Object.freeze({ kind: entry.kind, evidenceBytes: entry.evidenceBytes.slice() });
+        },
       )),
     });
   } finally {

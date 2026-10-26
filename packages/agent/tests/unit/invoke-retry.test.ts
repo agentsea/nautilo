@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import type { ChatModel } from "../../src/providers/types";
 import { invokeWithRetry } from "../../src/utils/invoke";
 
@@ -51,3 +51,18 @@ test("an already-cancelled caller makes no provider request", async () => {
   expect(result).toBe(reason);
   expect(calls).toBe(0);
 });
+
+
+for (const confidential of [false, true]) {
+  test(`retry diagnostics retain ordinary details and suppress confidential details (${confidential})`, async () => {
+    const logger = spyOn(console, "error").mockImplementation(() => {});
+    const cause = new Error("PRIVATE_PROVIDER_FAILURE_MARKER");
+    const model: ChatModel = { invoke: async () => { throw cause; } };
+    try {
+      const failure = await invokeWithRetry(model, [], { attempts: 1,
+        ...(confidential ? { confidential: true } : {}) }).catch((error: unknown) => error);
+      expect(failure).toBe(cause);
+      expect(JSON.stringify(logger.mock.calls).includes(cause.message)).toBe(!confidential);
+    } finally { logger.mockRestore(); }
+  });
+}

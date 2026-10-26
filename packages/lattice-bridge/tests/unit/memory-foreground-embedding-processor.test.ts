@@ -315,3 +315,39 @@ describe("Human foreground Memory embedding processor contract", () => {
     });
   });
 });
+
+describe("versioned Memory embedding disclosure", () => {
+  const space = { provider: "venice" as const, model: "text-embedding-3-large", dimensions: 1536 as const };
+  const disclosure = { contractVersion: 2 as const, canonicalSpace: space,
+    processingRoute: { transport: "surplus_marketplace" as const,
+      marketplacePolicyVersion: "surplus-embedding-marketplace-v1" as const,
+      dataRecipientClasses: ["surplus", "marketplace_seller", "seller_upstream_processor"] as const } };
+
+  test("rejects missing, mismatched, and legacy-attached disclosures before the provider", async () => {
+    let calls = 0;
+    const processor = createMemoryForegroundEmbeddingProcessor({ now: () => now,
+      provider: { async embed() { calls++; throw new Error("must not disclose"); } } });
+    for (const value of [request({ ...space, contractVersion: 2 }),
+      request({ contractVersion: 2, embeddingDisclosure: disclosure }),
+      request({ ...space, embeddingDisclosure: disclosure })]) {
+      expect(await processor.embed({ request: value, authenticatedSubjectId: "human-alice" }))
+        .toEqual({ status: "unavailable", reason: "invalid_request" });
+    }
+    expect(calls).toBe(0);
+  });
+
+  test("requires the returned canonical model to match the versioned approved space", async () => {
+    let calls = 0;
+    const processor = createMemoryForegroundEmbeddingProcessor({ now: () => now,
+      provider: { async embed(input) {
+        calls++;
+        expect(input.embeddingDisclosure).toEqual(disclosure);
+        return { provider: "venice", canonicalModel: "text-embedding-qwen3-8b", dimensions: 1536,
+          vector: new Array<number>(1536).fill(0.1) };
+      } } });
+    expect(await processor.embed({ request: request({ ...space, contractVersion: 2,
+      embeddingDisclosure: disclosure }), authenticatedSubjectId: "human-alice" }))
+      .toEqual({ status: "unavailable", reason: "incompatible_embedding" });
+    expect(calls).toBe(1);
+  });
+});

@@ -1,3 +1,4 @@
+import { getCurrentProtectedTaskProjectFilePort } from "../../runtime/protected-task-project-file";
 /**
  * Unified filesystem tool with a discriminated command schema.
  * Workspace commands use server-owned artifacts; local commands route through
@@ -6,7 +7,7 @@
 
 import { DynamicStructuredTool } from "@langchain/core/tools";
 import { getCurrentTurnId, log } from "@nautilo/logger";
-import type { MemoryAccessEnvelope } from "@nautilo/trust";
+import { isNamespaceMemoryEnvelope, type MemoryAccessEnvelope } from "@nautilo/trust";
 import {
   fileToolSchema,
   securityResearchFileToolSchema,
@@ -96,12 +97,23 @@ function contextFromUnknown(ctx: unknown): FileToolContext {
     envRaw && typeof envRaw === "object"
       ? (envRaw as MemoryAccessEnvelope)
       : null;
+  // An isolated Task has no transcript Room, but its resolved namespace
+  // envelope carries the Room authorized for Workspace operations. Keep that
+  // distinction local to the tool; the coordinator rechecks current membership.
+  const taskWorkspaceRoomId =
+    typeof c["currentTaskId"] === "string" && c["currentTaskId"].length > 0 &&
+    typeof c["currentTaskRunId"] === "string" && c["currentTaskRunId"].length > 0 &&
+    isNamespaceMemoryEnvelope(envelope) &&
+    envelope.ownerId === c["ownerId"] && envelope.agentId === c["agentId"] &&
+    typeof envelope.roomId === "string"
+      ? envelope.roomId
+      : "";
   return {
     ownerId: typeof c["ownerId"] === "string" ? c["ownerId"] : "",
     currentFolder: typeof c["currentFolder"] === "string" ? c["currentFolder"] : "",
     workspacePath: typeof c["workspacePath"] === "string" ? c["workspacePath"] : "",
     agentId: typeof c["agentId"] === "string" ? c["agentId"] : "",
-    roomId: typeof c["roomId"] === "string" ? c["roomId"] : "",
+    roomId: (typeof c["roomId"] === "string" ? c["roomId"] : "") || taskWorkspaceRoomId,
     activeModelId: typeof c["activeModelId"] === "string" ? c["activeModelId"] : "",
     memoryAccessEnvelope: envelope,
     securityResearchReadOnly: Array.isArray(c["toolWhitelist"])
@@ -220,15 +232,23 @@ export function createFileTool(context?: unknown) {
      */
     func: async (rawArgs: FileToolRawArgs, _runManager, runConfig) => {
       const requiredHost = getRequiredOrdinaryHostContext();
+      const projectFile = getCurrentProtectedTaskProjectFilePort();
+      if (projectFile !== null && (fileCtx.ownerId !== projectFile.humanUserId || fileCtx.agentId !== projectFile.agentId)) {
+        return fileToolError("Task project file identity changed.");
+      }
       const zoneCtx: ZoneContext = {
-        workspaceRoot: requiredHost?.workspaceRoot ?? fileCtx.workspacePath,
-        currentFolder: requiredHost?.currentFolderRoot ?? (fileCtx.currentFolder || null),
+        workspaceRoot: projectFile?.workspaceRoot ?? requiredHost?.workspaceRoot ?? fileCtx.workspacePath,
+        currentFolder: projectFile?.workspaceRoot ?? requiredHost?.currentFolderRoot ?? (fileCtx.currentFolder || null),
       };
       const args = applySelectedCurrentFolderReadDefaults(
         rawArgs,
         zoneCtx.currentFolder,
       );
-      log(`[file:${args.command}] path=${args.path} zone=${args.zone}`);
+      if (projectFile === null) log(`[file:${args.command}] path=${args.path} zone=${args.zone}`);
+      if (projectFile !== null && (args.zone !== undefined && !isLocalFileZone(args.zone)
+        || args.destinationZone !== undefined && !isLocalFileZone(args.destinationZone))) {
+        return fileToolError("Task project files require the captured local project.");
+      }
       const readInputError = selectedCurrentFolderReadInputError(args, zoneCtx.currentFolder);
       if (readInputError !== null) return fileToolError(readInputError);
 
@@ -285,9 +305,11 @@ export function createFileTool(context?: unknown) {
           ...(mutationRequestId ? { mutationRequestId } : {}),
           ...(fileCtx.activeModelId ? { activeModelId: fileCtx.activeModelId } : {}),
           approvalObtained: true,
+          ...(runConfig?.signal === undefined ? {} : { signal: runConfig.signal }),
         });
       }
 
+      if (projectFile !== null) return fileToolError("Task project file route is unavailable.");
       const dispatchCtx: DispatchContext = {
         zoneCtx,
         ...(mutationRequestId

@@ -26,6 +26,9 @@ describe("M300 foreground Shadow preload contract", () => {
       "foregroundShadow:edit",
       "foregroundShadow:recoverPending",
       "foregroundShadow:recoverRoomPendingAttention",
+      "foregroundShadow:recoverTaskPendingAttention",
+      "foregroundShadow:recoverProtectedTaskExternalRequests",
+      "foregroundShadow:respondProtectedTaskExternalRequest",
       "foregroundShadow:authorize",
       "foregroundShadow:receive",
       "foregroundShadow:synchronizeRecipients",
@@ -33,6 +36,9 @@ describe("M300 foreground Shadow preload contract", () => {
       "foregroundShadow:backgroundAuthorization:service",
       "foregroundShadow:messageBackfill:service",
       "foregroundShadow:messageBackfill:cancel",
+      "foregroundShadow:taskContentBackfill:progress",
+      "foregroundShadow:taskContentBackfill:service",
+      "foregroundShadow:taskContentBackfill:cancel",
       "foregroundShadow:protectedRoomAccess",
       "foregroundShadow:history:reconcile",
     ]) expect(surface).toContain(`"${channel}"`);
@@ -47,6 +53,7 @@ describe("M300 foreground Shadow preload contract", () => {
     expect(surface).not.toContain("claimId");
     expect(surface).not.toContain("payloadBytes");
     expect(surface).toContain("MessageBackfillBatchResult");
+    expect(surface).toContain("TaskContentBackfillBatchResult");
     expect(surface).toContain("ProtectedRoomAccessStateV2");
   });
 
@@ -72,5 +79,12 @@ describe("M300 foreground Shadow preload contract", () => {
     expect(workbenchDesktop).not.toContain(
       "DesktopForegroundShadowStoredMessage",
     );
+  });
+
+  test("carries the displayed Memory embedding disclosure across the IPC surface", () => {
+    expect(preload).toContain("embeddingDisclosure?: MemoryEmbeddingDisclosureV2");
+    expect(preload).toContain("requestedEmbedding?: MemoryEmbeddingDisclosureV2");
+    expect(workbenchDesktop).toContain("embeddingDisclosure?: MemoryEmbeddingDisclosureV2");
+    expect(workbenchDesktop).toContain("requestedEmbedding?: MemoryEmbeddingDisclosureV2");
   });
 });

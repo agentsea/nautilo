@@ -1,3 +1,4 @@
+import { getCurrentProtectedTaskProjectFilePort } from "../../runtime/protected-task-project-file";
 /**
  * M206 — one typed `local-file` relay dispatch per unified `file` command.
  */
@@ -41,6 +42,7 @@ export interface LocalFileDispatchContext {
   zoneCtx: ZoneContext;
   /** Server four-verb approval already granted before tool execution. */
   approvalObtained: boolean;
+  signal?: AbortSignal;
   /** Trusted initial tool-call identity or an explicitly supplied retry identity. */
   mutationRequestId?: string | undefined;
 }
@@ -449,6 +451,33 @@ export async function executeLocalFileCommand(
   }
 
   const registry = getRelayRegistry();
+  const projectFile = getCurrentProtectedTaskProjectFilePort();
+  if (projectFile !== null && (ctx.ownerId !== projectFile.humanUserId || ctx.agentId !== projectFile.agentId
+    || ctx.zoneCtx.currentFolder !== projectFile.workspaceRoot || ctx.zoneCtx.workspaceRoot !== projectFile.workspaceRoot
+    || raw.zone !== undefined && !isLocalFileZone(raw.zone)
+    || raw.destinationZone !== undefined && !isLocalFileZone(raw.destinationZone))) {
+    return fileToolError("Task project file authority changed.");
+  }
+  if (projectFile !== null) {
+    if (raw.command === "pin_revision" || raw.command === "unpin_revision") {
+      return fileToolError(
+        "Task project revision pinning is unavailable because local revision references do not prove a project path.",
+      );
+    }
+    const paths = [
+      [raw.path, raw.zone],
+      [raw.destinationPath, raw.destinationZone ?? raw.zone],
+    ] as const;
+    const hostPath = pathApiForRelayPath(projectFile.workspaceRoot);
+    for (const [candidate, zone] of paths) {
+      if (candidate === undefined) continue;
+      const absolute = zone === "absolute" ? candidate : hostPath.resolve(projectFile.workspaceRoot, candidate);
+      const relative = hostPath.relative(projectFile.workspaceRoot, absolute);
+      if (!hostPath.isAbsolute(absolute) || relative === ".." || relative.startsWith(`..${hostPath.sep}`)
+        || hostPath.isAbsolute(relative)) return fileToolError("Task project file path is outside the captured project.");
+    }
+  }
+  ctx.signal?.throwIfAborted();
 
   // D423 Phase 5 — when the model's `file` target maps to a focused local-file
   // ref, pin dispatch to that ref's exact originating relay. The hint is
@@ -469,7 +498,10 @@ export async function executeLocalFileCommand(
     return fileToolError(formatRelayError(FOCUSED_RELAY_MISMATCH_MESSAGE, RELAY_OWNERSHIP_MISMATCH));
   }
   const requiredHost = getRequiredOrdinaryHostContext();
-  const requiredHostHint = requiredHost?.relayId ?? null;
+  if (projectFile !== null && requiredHost !== null && requiredHost.relayId !== projectFile.relayId) {
+    return fileToolError("Task project file host changed.");
+  }
+  const requiredHostHint = projectFile?.relayId ?? requiredHost?.relayId ?? null;
   const exactTaskDispatchOptions = requiredHost?.requiredRelaySessionId === undefined
       || requiredHost.requiredDesktopSessionId === undefined
       || requiredHost.requiredPairingGeneration === undefined
@@ -489,7 +521,7 @@ export async function executeLocalFileCommand(
   const relayIdHint = requiredHostHint ?? historyHint ?? focusHint;
 
   const candidatePath = resolveReadOnlyCandidatePath(raw, ctx);
-  const selection = resolveLocalFileRelay({
+  const selection = projectFile === null ? resolveLocalFileRelay({
     command: raw.command,
     ownerId: ctx.ownerId,
     registry,
@@ -497,18 +529,28 @@ export async function executeLocalFileCommand(
       ? { relayIdHint, relayHintMismatchMessage: FOCUSED_RELAY_MISMATCH_MESSAGE }
       : {}),
     ...(candidatePath !== undefined ? { candidatePath } : {}),
-  });
+  }) : { ok: true as const, relayId: projectFile.relayId, allowedRoots: [projectFile.workspaceRoot] };
   if (!selection.ok) {
     return fileToolError(formatRelayError(selection.error, selection.code));
   }
 
-  if (!registry?.localFileDispatch) {
+  if (projectFile === null && !registry?.localFileDispatch) {
     return fileToolError(formatRelayError(
       "file operations on zone=\"current\" or zone=\"absolute\" require the Nautilo desktop app with local file execution enabled.",
       "LOCAL_FILE_EXECUTION_UNSUPPORTED",
     ));
   }
 
+  const dispatch: NonNullable<NonNullable<ReturnType<typeof getRelayRegistry>>["localFileDispatch"]> =
+    projectFile === null ? (relayId, request, options) => registry!.localFileDispatch!(relayId, request, options)
+      : (relayId, request, options) => {
+        if (relayId !== projectFile.relayId || getCurrentProtectedTaskProjectFilePort() !== projectFile) {
+          throw new Error("Task project file custody ended");
+        }
+        ctx.signal?.throwIfAborted();
+        return projectFile.dispatch(request, { mutating: options.mutating, approvalObtained: options.approvalObtained,
+          ...(ctx.signal === undefined ? {} : { signal: ctx.signal }) });
+      };
   const mutating = isMutatingLocalFileCommand(raw.command);
   const coordinatorContentMutation =
     raw.command === "write" ||
@@ -520,6 +562,9 @@ export async function executeLocalFileCommand(
     !coordinatorContentMutation &&
     (guardedCandidates.length > 0 || guardedDirectories.length > 0)
   ) {
+    // The ordinary guard resolves paths through its ambient filesystem owner.
+    // This private lane cannot lend that owner Task project authority.
+    if (projectFile !== null) return fileToolError("This Task project mutation requires an unavailable live document guard.");
     const gateFailure = await rejectIfOpenInWriter({
       surface: "currentFolder",
       ownerId: ctx.ownerId,
@@ -545,7 +590,7 @@ export async function executeLocalFileCommand(
       allowedRoots: selection.allowedRoots,
       historyArgs,
       localFileDispatch: (relayId, request, options) =>
-        registry.localFileDispatch!(relayId, request, {
+        dispatch(relayId, request, {
           ...options,
           ...exactTaskDispatchOptions,
         }),
@@ -568,8 +613,8 @@ export async function executeLocalFileCommand(
   // generic tool-dispatch seam, so attach the same server-policy envelope here.
   // Desktop still revalidates local roots and grants before reading anything.
   let sandboxProfile: RelaySandboxProfile | undefined;
-  if (req.operation.kind === "search") {
-    const relayCaps = registry.getCapabilities(selection.relayId);
+  if (req.operation.kind === "search" && projectFile === null) {
+    const relayCaps = registry!.getCapabilities(selection.relayId);
     const built = relayCaps == null ? null : buildRelaySandboxProfile({
       posture: resolveServerPosture(),
       relayCaps,
@@ -608,12 +653,13 @@ export async function executeLocalFileCommand(
     ...exactTaskDispatchOptions,
   };
 
-  const relayResult = await registry.localFileDispatch(
+  const relayResult = await dispatch(
     selection.relayId,
     req,
     dispatchOptions,
   );
 
+  ctx.signal?.throwIfAborted();
   if (!relayResult.ok) {
     return fileToolError(formatRelayError(relayResult.message, relayResult.code));
   }

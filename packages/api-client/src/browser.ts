@@ -37,6 +37,7 @@ export {
   saveArtifactToDisk,
   pickHighestRoleSlug,
   isRoomPendingAttentionEventForViewer,
+  isTaskPendingAttentionEventForViewer,
 } from "./client";
 
 export type {
@@ -149,6 +150,13 @@ export type {
   RoomPendingAttentionReadResponse,
   RoomPendingAttentionRecoveryResponse,
   RoomPendingAttentionEvent,
+  TaskPendingAttentionPageRequest,
+  TaskPendingAttentionChallenge,
+  TaskPendingAttentionPageResponse,
+  TaskPendingAttentionReadRequest,
+  TaskPendingAttentionReadResponse,
+  TaskPendingAttentionRecoveryResponse,
+  TaskPendingAttentionEvent,
   UnauthorizedResponse,
   UnauthorizedResponseHandler,
   ListArtifactsResponse,
@@ -319,6 +327,15 @@ export {
   taskOperationalCreateV1Schema,
   taskOperationalUpdateV1Schema,
 } from "./schemas/protected-task";
+export {
+  protectedTaskTranscriptReadRequestV1Schema,
+  protectedTaskTranscriptReadResponseV1Schema,
+} from "./schemas/protected-task-transcript-read";
+export type {
+  ProtectedTaskTranscriptReadRequestV1,
+  ProtectedTaskTranscriptReadResponseV1,
+  ProtectedTaskTranscriptReadReadyResponseV1,
+} from "./schemas/protected-task-transcript-read";
 export type {
   ProtectedTaskPreparedCreateRequestV1,
   ProtectedTaskPreparedPublicationRequestV1,
@@ -576,6 +593,8 @@ export {
   sharedAgentExecutionAuthorizationResponseV1Schema,
   runtimeInvocationAuthorizationRequestV1Schema,
   runtimeInvocationAuthorizationResponseV1Schema,
+  taskDefinitionAuthorizationRequestV1Schema,
+  taskDefinitionAuthorizationResponseV1Schema,
   liveShadowMessageRecoveryResponseV1Schema,
   type LiveShadowMessagePlanRequestV1,
   type LiveShadowMessagePlanRequestV2,
@@ -606,6 +625,8 @@ export {
   type SharedAgentExecutionAuthorizationResponseV1,
   type RuntimeInvocationAuthorizationRequestV1,
   type RuntimeInvocationAuthorizationResponseV1,
+  type TaskDefinitionAuthorizationRequestV1,
+  type TaskDefinitionAuthorizationResponseV1,
   type LiveShadowMessageRecoveryResponseV1,
 } from "./schemas/live-shadow-message";
 export {
@@ -614,6 +635,7 @@ export {
   roomHistoryShadowSelectedCoordinateV1Schema,
   roomHistoryShadowAuthorityV1Schema,
   roomHistoryShadowRecordV1Schema,
+  roomHistoryShadowReadReadyResponseV1Schema,
   roomHistoryShadowReadResponseV1Schema,
   roomHistoryShadowReadAcknowledgementRequestV1Schema,
   roomHistoryShadowReadAcknowledgementResponseV1Schema,
@@ -622,6 +644,7 @@ export {
   type RoomHistoryShadowSelectedCoordinateV1,
   type RoomHistoryShadowAuthorityV1,
   type RoomHistoryShadowRecordV1,
+  type RoomHistoryShadowReadReadyResponseV1,
   type RoomHistoryShadowReadResponseV1,
   type RoomHistoryShadowReadAcknowledgementRequestV1,
   type RoomHistoryShadowReadAcknowledgementResponseV1,
@@ -645,3 +668,7 @@ export {
   type HumanMemoryReadObservationRequestV1,
   type HumanMemoryReadObservationResponseV1,
 } from "./schemas/human-memory-read-observation";
+export * from "./schemas/task-content-backfill";
+
+export * from "./schemas/protected-task-external-requests";
+export * from "./schemas/task-ordinary-fallback";

@@ -396,9 +396,20 @@ REVOKE ALL ON FUNCTION "public"."reject_session_message_crypto_revision_identity
   FROM PUBLIC, "nautilo_agent", "nautilo_crypto";`;
 }
 
-export function finalizeM296SharedAgentShadowEncryptionMigration(
+export function finalizeSharedAgentShadowEncryptionMigration(
   migration: string,
 ): string {
+  if (migration.includes('ALTER TABLE "session_message_crypto_revisions" ADD COLUMN "task_wake_operation_id"')) {
+    const marker = "-- TASK_WAKE_TRANSCRIPT_IDENTITY";
+    if (migration.includes(marker)) return migration;
+    const original = authoritySql();
+    const from = original.indexOf('CREATE OR REPLACE FUNCTION "public"."reject_session_message_crypto_revision_identity_update"()');
+    if (from < 0) throw new Error("Conversation immutable identity function is missing");
+    const identity = original.slice(from)
+      .replace("NEW.shared_agent_shadow_execution_id, NEW.shadow_transcript_ordinal", "NEW.shared_agent_shadow_execution_id, NEW.task_wake_operation_id, NEW.shadow_transcript_ordinal")
+      .replace("OLD.shared_agent_shadow_execution_id, OLD.shadow_transcript_ordinal", "OLD.shared_agent_shadow_execution_id, OLD.task_wake_operation_id, OLD.shadow_transcript_ordinal");
+    return `${migration}\n--> statement-breakpoint\n${marker}\n${identity}\n`;
+  }
   const required = [
     `CREATE TABLE "${OPERATION_TABLE}"`,
     `CREATE TABLE "${EXECUTION_TABLE}"`,
@@ -430,7 +441,7 @@ function run(): void {
   if (latest === undefined) throw new Error("Migration journal is empty");
   const migrationPath = resolve(migrationsDirectory, `${latest.tag}.sql`);
   const migration = readFileSync(migrationPath, "utf8");
-  const finalized = finalizeM296SharedAgentShadowEncryptionMigration(migration);
+  const finalized = finalizeSharedAgentShadowEncryptionMigration(migration);
   if (finalized !== migration) writeFileSync(migrationPath, finalized, "utf8");
 }
 
