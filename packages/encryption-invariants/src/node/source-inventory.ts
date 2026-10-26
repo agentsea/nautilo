@@ -40,9 +40,41 @@ export type SourceDeclaration = {
 
 const declaration = <T extends SourceDeclaration>(value: T): T => value;
 
+// The carrier authority remains in the reviewed Bolter baseline. Reconcile its
+// exact evidence tokens here so repository inspection follows the strengthened
+// admission and attachment-fingerprint calls without rewriting that history.
+const currentBolterPlaintextSourceDeclarations =
+  BOLTER_PLAINTEXT_SOURCE_DECLARATIONS.map((item): SourceDeclaration => {
+    if (item.id === "source.bolter.connection-owner") {
+      return {
+        ...item,
+        evidence: item.evidence.map((entry) => ({
+          ...entry,
+          symbols: entry.symbols.map((symbol) =>
+            symbol === "accept(decoded.value" ? "accept(retained," : symbol
+          ),
+        })),
+      };
+    }
+    if (item.id === "source.bolter.publication") {
+      return {
+        ...item,
+        evidence: item.evidence.map((entry) => ({
+          ...entry,
+          symbols: entry.symbols.map((symbol) =>
+            symbol === "bolterReviewedTextFingerprint(binding.id, share.requestId, message.content)"
+              ? "bolterReviewedTextFingerprint(binding.id, share.requestId, message.content, files)"
+              : symbol
+          ),
+        })),
+      };
+    }
+    return item;
+  });
+
 export const SOURCE_DECLARATIONS: readonly SourceDeclaration[] = [
   ...CHATGPT_PLAN_SOURCE_DECLARATIONS,
-  ...BOLTER_PLAINTEXT_SOURCE_DECLARATIONS,
+  ...currentBolterPlaintextSourceDeclarations,
   ...BOLTER_NATIVE_STORAGE_DECLARATIONS,
   declaration({
     id: "source.file.desktop-bolter-inbox",

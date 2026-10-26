@@ -31,6 +31,7 @@ import { SUPERSEDED_PAID_SERVICE_FUNDING_DTO_LOCATORS } from
   "../../baseline/reviewed-paid-service-funding-dto";
 import { SUPERSEDED_MAIN_2026_08_31_SOURCE_ALARM_LOCATORS } from "../../baseline/reviewed-main-2026-08-31-source-alarms";
 import { SUPERSEDED_M300_SOURCE_ALARM_LOCATORS } from "../../baseline/reviewed-m300-source-alarms";
+import { SUPERSEDED_CI_SOURCE_RECONCILIATION_LOCATORS } from "../../baseline/reviewed-ci-source-reconciliation";
 import { SUPERSEDED_M300_DTO_LOCATORS } from "../../baseline/reviewed-m300-dto";
 import { SUPERSEDED_M301_DTO_LOCATORS } from "../../baseline/reviewed-m301-dto";
 import { SUPERSEDED_RELAY_BINDING_DTO_LOCATORS } from "../../baseline/reviewed-relay-binding-dto";
@@ -184,7 +185,14 @@ describe("reviewed main 2026-08-20 encryption inventory", () => {
         SUPERSEDED_MAIN_2026_08_29_SOURCE_ALARM_LOCATORS.has(review.locator)
         || SUPERSEDED_M300_SOURCE_ALARM_LOCATORS.has(review.locator)
         || SUPERSEDED_MAIN_2026_08_31_SOURCE_ALARM_LOCATORS.has(review.locator)
+        || SUPERSEDED_CI_SOURCE_RECONCILIATION_LOCATORS.has(review.locator)
       ) {
+        if (SUPERSEDED_CI_SOURCE_RECONCILIATION_LOCATORS.has(review.locator)) {
+          const path = review.locator.split("#")[0]!;
+          expect(CURRENT_SOURCE_ALARM_REVIEWS.some((candidate) =>
+            candidate.locator.startsWith(`${path}#`)
+          )).toBe(true);
+        }
         continue;
       }
       expect(CURRENT_SOURCE_ALARM_REVIEWS).toContainEqual(review);

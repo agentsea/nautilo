@@ -1,6 +1,9 @@
+// Exact reviewed source-call snapshot after filesystem helper consolidation,
+// operator/runtime changes, and accounting diagnostics. Unresolved payload
+// evidence remains explicit release-blocking alarm debt in the review manifest.
 export const SOURCE_ALARM_BASELINE = {
-  "count": 3436,
-  "sha256": "562a14016dde60c9010d5a581d28c6fd6070188d1bf7fbdea161ad9c53d9e3af"
+  "count": 3432,
+  "sha256": "505780e47136fb93869905b69bf68aea5f26388f0a35626f5f23028867873a7a"
 } as const;
 
 // The complete immutable migration tree includes the reviewed protected-Task
