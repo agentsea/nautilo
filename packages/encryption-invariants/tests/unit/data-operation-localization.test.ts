@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import {
   findDataOperationLocalizationViolations,
   POLICY_FREE_DATA_OPERATION_CONSUMERS,
@@ -79,5 +82,27 @@ describe("M321 policy-hiding data-operation localization", () => {
       path: MAIN_RUNTIME_DATA_FACADE,
       token: "apiClient.getOlderRoomMessages(",
     }]);
+  });
+
+  test("reads the Runtime facade from disk when only consumer sources are injected", async () => {
+    const root = await mkdtemp(join(tmpdir(), "data-operation-localization-"));
+    const facade = join(root, MAIN_RUNTIME_DATA_FACADE);
+    const sources = Object.fromEntries(POLICY_FREE_DATA_OPERATION_CONSUMERS.map((path) => [
+      path,
+      "export {};",
+    ]));
+    try {
+      await mkdir(dirname(facade), { recursive: true });
+      await writeFile(facade, `
+        // apiClient.sendRoomMessage("comment-only", body);
+        await apiClient.getRoomMessagesAround({ roomId, messageId });
+      `);
+      expect(await findDataOperationLocalizationViolations(root, sources)).toEqual([{
+        path: MAIN_RUNTIME_DATA_FACADE,
+        token: "apiClient.getRoomMessagesAround(",
+      }]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
