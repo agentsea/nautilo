@@ -1,3 +1,7 @@
+import {
+  REVIEWED_CI_DATABASE_COVERAGE,
+  REVIEWED_CI_DATABASE_DEBT_LINKS,
+} from "./reviewed-ci-database-coverage";
 import { REVIEWED_PROTECTED_TASK_EXTERNAL_REQUEST_COVERAGE } from "./reviewed-protected-task-external-request-coverage";
 import {
   RETIRED_RELEASE_RECONCILIATION_FROZEN_DEBT,
@@ -1980,6 +1984,7 @@ export const BASELINE_REGISTRY: CoverageRegistry = {
       !SUPERSEDED_RELEASE_RECONCILIATION_COVERAGE_LOCATORS.has(entry.locator)
     ),
     ...REVIEWED_RELEASE_RECONCILIATION_COVERAGE,
+    ...REVIEWED_CI_DATABASE_COVERAGE,
   ].filter((entry) =>
     !RETIRED_MAIN_2026_08_20_DATABASE_WRITER_LOCATORS.has(entry.locator)
     && !RETIRED_MAIN_2026_08_21_RAW_DATABASE_WRITER_LOCATORS.has(entry.locator)
@@ -2026,6 +2031,7 @@ export const BASELINE_REGISTRY: CoverageRegistry = {
       && entry.locator !== "http:request_response:POST /api/admin/server-models#request.body"
     ),
     ...REVIEWED_PERSONAL_MEMORY_EXPOSURE_DEBT_LINKS,
+    ...REVIEWED_CI_DATABASE_DEBT_LINKS,
     ...REVIEWED_IMAGE_UNDERSTANDING_DEBT_LINKS,
   ],
   retiredFrozenDebt: [
