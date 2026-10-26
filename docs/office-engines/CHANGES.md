@@ -3,6 +3,18 @@
 Baseline: Wafflebase 0.6.9, acde58012910ec68645c65b6896d5408fad1645c.
 Modification dates: 2026-09-06 through 2026-09-13. Original-file hashes are in snapshot.json.
 
+## Sheets date parsing — 2026-10-19
+
+- Date-only strings (`YYYY-MM-DD`) are read as local calendar dates in the
+  formula date functions instead of UTC midnight, so DAY, WEEKDAY, EDATE,
+  DATEVALUE, NETWORKDAYS, WORKDAY and DATE() round trips no longer move back a
+  day west of UTC. Holiday sets, NETWORKDAYS and WEEKNUM count local calendar
+  days, also across a daylight saving change at midnight. YEARFRAC 30/360 reads
+  date-only values by calendar day and timestamps by their UTC day as before;
+  financial day counts round only between date-only values, so timestamps keep
+  their time of day. `test/formula/date-timezone.test.ts` runs them in zones
+  either side of UTC.
+
 ## Native Board surface — 2026-09-13
 
 New Nautilo-authored UI in `packages/first-party-apps/board` composes the owned
