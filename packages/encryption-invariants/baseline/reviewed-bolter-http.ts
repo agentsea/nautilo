@@ -1,8 +1,9 @@
 import type { DtoDeclaration } from "../src/node/dto-inventory";
 import type { AuthorizedPlaintextCoverageEntry } from "../src/model";
+import { REVIEWED_CI_DTO_REPLACEMENTS } from "./reviewed-ci-dto";
 
 /** Exact closed owner-facing contracts; provider labels and reviewed text are not content-free metadata. */
-export const BOLTER_HTTP_DECLARATIONS: readonly DtoDeclaration[] = [
+export const BOLTER_HTTP_PREDECESSOR_DECLARATIONS: readonly DtoDeclaration[] = [
   {
     "observationId": "wire.http.request.response.delete.api.bolter.connections.id.oh8s0r",
     "locator": "http:request_response:DELETE /api/bolter/connections/:id",
@@ -129,6 +130,15 @@ export const BOLTER_HTTP_DECLARATIONS: readonly DtoDeclaration[] = [
     "arbitraryPayloads": []
   }
 ];
+
+const reviewedCiBolterDeclarations = new Map<string, DtoDeclaration>(
+  REVIEWED_CI_DTO_REPLACEMENTS.map((entry) => [entry.locator, entry.declaration]),
+);
+
+/** Current static contracts; the aggregate baseline applies the same declarations through its guarded predecessor layer. */
+export const BOLTER_HTTP_DECLARATIONS: readonly DtoDeclaration[] =
+  BOLTER_HTTP_PREDECESSOR_DECLARATIONS.map((declaration) =>
+    reviewedCiBolterDeclarations.get(declaration.locator) ?? declaration);
 
 export const BOLTER_HTTP_COVERAGE: readonly AuthorizedPlaintextCoverageEntry[] = BOLTER_HTTP_DECLARATIONS.map(dto => ({
   id: dto.observationId, surface: "wire", locator: dto.locator, owner: "packages/server",

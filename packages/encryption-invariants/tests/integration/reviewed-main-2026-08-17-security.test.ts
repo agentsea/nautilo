@@ -90,7 +90,6 @@ describe("reviewed 2026-08-17 encryption inventory", () => {
     for (const locator of [
       "http:request_response:GET /api/rooms/:id/messages/:messageId/around",
       "http:request_response:GET /api/rooms/:id/messages",
-      "http:request_response:GET /api/rooms/:id/thread-detail",
       "http:request_response:GET /api/sessions/latest",
     ]) {
       const declaration = DTO_BASELINE_DECLARATIONS.find((candidate) =>
@@ -108,6 +107,15 @@ describe("reviewed 2026-08-17 encryption inventory", () => {
           : [],
       );
     }
+    const threadDetail = DTO_BASELINE_DECLARATIONS.find((candidate) =>
+      candidate.locator === "http:request_response:GET /api/rooms/:id/thread-detail"
+    );
+    expect(threadDetail?.structuralSignatures?.join("\n")).toContain(
+      "response.body:{anchor:",
+    );
+    expect(threadDetail?.structuralSignatures?.join("\n")).not.toContain(
+      "workcardContinuation",
+    );
   });
 
   test("closes the two new source alarms without hiding plaintext debt", () => {

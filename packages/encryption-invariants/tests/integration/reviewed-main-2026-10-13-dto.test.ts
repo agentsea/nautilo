@@ -6,6 +6,7 @@ import {
   REVIEWED_MAIN_2026_10_13_NEW_DTO_DECLARATIONS,
   SUPERSEDED_MAIN_2026_10_13_DTO_LOCATORS,
 } from "../../baseline/reviewed-main-2026-10-13-dto";
+import { DTO_BASELINE_DECLARATIONS } from "../../baseline/dto-declarations";
 import {
   auditDtoDeclarations,
   discoverDtoInventory,
@@ -35,11 +36,14 @@ describe("current-main October 13 DTO review", () => {
     expect(REVIEWED_MAIN_2026_10_13_DTO_REPLACEMENTS).toHaveLength(57);
     expect(REVIEWED_MAIN_2026_10_13_NEW_DTO_DECLARATIONS).toHaveLength(36);
 
-    const declarations = [
+    const reviewedDeclarations = [
       ...REVIEWED_MAIN_2026_10_13_DTO_REPLACEMENTS,
       ...REVIEWED_MAIN_2026_10_13_NEW_DTO_DECLARATIONS,
     ];
-    const locators = new Set(declarations.map((entry) => entry.locator));
+    const locators = new Set(reviewedDeclarations.map((entry) => entry.locator));
+    const declarations = DTO_BASELINE_DECLARATIONS.filter((entry) =>
+      locators.has(entry.locator)
+    );
     const observations = (await discoverDtoInventory(repoRoot)).filter((entry) =>
       locators.has(entry.locator)
     );

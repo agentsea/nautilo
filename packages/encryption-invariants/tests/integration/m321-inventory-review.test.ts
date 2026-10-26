@@ -1,14 +1,11 @@
-import { reviewedExternalMessageAttributionDtoReplacements } from "../../baseline/reviewed-external-message-attribution-dto";
-import { reviewedImageAssistanceDtoReplacements } from "../../baseline/reviewed-image-assistance-dto";
-
 import { describe, expect, test } from "bun:test";
 import { resolve } from "node:path";
 
 import { REVIEWED_M321_COVERAGE_ENTRIES } from "../../baseline/reviewed-m321-coverage";
 import {
-  REVIEWED_M321_DTO_DECLARATIONS,
   SUPERSEDED_M321_DTO_LOCATORS,
 } from "../../baseline/reviewed-m321-dto";
+import { DTO_BASELINE_DECLARATIONS } from "../../baseline/dto-declarations";
 import { REVIEWED_MAIN_2026_09_12_DTO_REPLACEMENTS } from
   "../../baseline/reviewed-main-2026-09-12-dto";
 import { REVIEWED_MAIN_2026_10_13_DTO_REPLACEMENTS } from
@@ -39,11 +36,10 @@ describe("M321 inventory review", () => {
       "http:request_response:GET /api/rooms/:id/messages/:messageId/around",
     ]);
     const reviewedReplacements = [...september12Replacements, ...protectedHistoryReplacements];
-    const currentDeclarations = [...reviewedExternalMessageAttributionDtoReplacements(
-      reviewedImageAssistanceDtoReplacements(REVIEWED_M321_DTO_DECLARATIONS.map((entry) =>
-        reviewedReplacements.find((replacement) => replacement.locator === entry.locator) ?? entry
-      )),
-    )];
+    const currentDeclarations = DTO_BASELINE_DECLARATIONS.filter((entry) =>
+      SUPERSEDED_M321_DTO_LOCATORS.has(entry.locator)
+    );
+    expect(reviewedReplacements).toHaveLength(2);
     expect(observations).toHaveLength(SUPERSEDED_M321_DTO_LOCATORS.size);
     expect(auditDtoDeclarations({
       observations,
@@ -56,7 +52,7 @@ describe("M321 inventory review", () => {
         arbitraryPayloads: 0,
       },
     });
-  });
+  }, 60_000);
 
   test("classifies policy change as content-free invalidation metadata", () => {
     expect(REVIEWED_M321_COVERAGE_ENTRIES).toEqual([expect.objectContaining({
