@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 
 import { DTO_BASELINE_DECLARATIONS } from "../../baseline/dto-declarations";
 import { BASELINE_REGISTRY } from "../../baseline/existing-debt";
+import { REVIEWED_PERSONAL_MEMORY_FUNDING_COVERAGE } from
+  "../../baseline/reviewed-personal-memory-funding-coverage";
 import {
   REVIEWED_MAIN_2026_08_15_SOURCE_ALARMS,
 } from "../../baseline/reviewed-main-2026-08-15-source-alarms";
@@ -62,6 +64,16 @@ describe("reviewed 2026-08-15 encryption inventory", () => {
         entry.locator as (typeof CURRENT_REFLECTION_SEMANTIC_WORK_LOCATORS)[number],
       )) {
         expect(entry.plaintextReason).toBe(CURRENT_REFLECTION_METADATA_REASON);
+      } else if (entry.locator === "public.reflection_record_semantic_work.accepted_model_binding"
+        || entry.locator === "public.reflection_record_semantic_work.accepted_model_binding_generation") {
+        expect(REVIEWED_PERSONAL_MEMORY_FUNDING_COVERAGE).toContainEqual(entry);
+        expect(entry.metadataAllowlist).toEqual(
+          entry.locator.endsWith("_generation")
+            ? ["accepted_model_binding_generation"]
+            : ["version", "role", "modelId", "inputCommitment", "kind",
+              "humanUserId", "preferenceRevision", "funding.kind",
+              "funding.providerRoute", "funding.credentialId", "funding.credentialRevision"],
+        );
       } else {
         expect(entry.plaintextReason).toMatch(/content-free|writes no Record payload/);
         expect(entry.plaintextReason).toMatch(/prompts?|source content/);
