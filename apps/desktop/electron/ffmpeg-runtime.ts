@@ -98,7 +98,7 @@ export async function probeDesktopFfmpeg(
     return {
       ok: false,
       code: "FFMPEG_MISSING",
-      error: "Managed FFmpeg is currently bundled for macOS darwin-arm64 and darwin-x64 and Windows win-x64 only.",
+      error: "Managed FFmpeg is currently bundled for macOS darwin-arm64 and darwin-x64 and for Windows win-x64 only.",
     };
   }
 

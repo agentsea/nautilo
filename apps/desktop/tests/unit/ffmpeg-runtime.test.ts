@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -7,7 +7,7 @@ import {
   probeDesktopFfmpeg,
   resetDesktopFfmpegProbeCache,
 } from "../../electron/ffmpeg-runtime.ts";
-import { acceptsReplacedFfmpeg, verifyFfmpegFile } from "../../electron/ffmpeg-integrity";
+import { acceptsReplacedFfmpeg, authenticodeStatus, verifyFfmpegFile } from "../../electron/ffmpeg-integrity";
 import { detectDesktopPlatformKey } from "../../electron/tool-runtime-resolver.ts";
 import type { ToolRuntimePlatformKey } from "../../electron/tool-runtimes-manifest.ts";
 import ffmpegDistribution from "../../scripts/ffmpeg-distribution.json";
@@ -230,6 +230,23 @@ describe("probeDesktopFfmpeg", () => {
     expect(await verifyFfmpegFile(file, PINNED_SHA256, new Map(), { allowReplaced: () => false })).toBe(false);
     expect(await verifyFfmpegFile(file, PINNED_SHA256, new Map(), { allowReplaced: () => true })).toBe(true);
   });
+
+  test.skipIf(process.platform !== "win32")("Authenticode keeps a signed app pinned and lets an altered or unsigned copy accept replacements", () => {
+    // Pinned Bun releases are Authenticode-signed, so a copy of the running
+    // executable stands in for a signed Nautilo.exe.
+    const root = makeTempRoot();
+    const signed = join(root, "signed.exe");
+    const altered = join(root, "altered.exe");
+    const unsignable = join(root, "plain.dll");
+    copyFileSync(process.execPath, signed);
+    copyFileSync(process.execPath, altered);
+    appendFileSync(altered, "appended after signing");
+    writeFileSync(unsignable, "not a PE image");
+    expect(authenticodeStatus(signed)).toBe("Valid");
+    expect(acceptsReplacedFfmpeg(authenticodeStatus(signed))).toBe(false);
+    expect(acceptsReplacedFfmpeg(authenticodeStatus(altered))).toBe(true);
+    expect(acceptsReplacedFfmpeg(authenticodeStatus(unsignable))).toBe(false);
+  }, 30_000);
 
   test("only a missing signature or a modified signed app accepts replaced FFmpeg files", () => {
     expect(acceptsReplacedFfmpeg("NotSigned")).toBe(true);

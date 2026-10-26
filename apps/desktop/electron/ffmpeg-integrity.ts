@@ -30,11 +30,14 @@ export function codesignTeam(binaryPath: string): string | null {
 }
 
 /** Authenticode status of a Windows file (`Valid`, `NotSigned`, `HashMismatch`,
- * ...), or null when Windows PowerShell cannot report it. */
+ * ...), or null when Windows PowerShell cannot report it. A PSModulePath
+ * inherited from PowerShell 7 makes Windows PowerShell load the wrong
+ * Security module, so the child rebuilds its own default path. */
 export function authenticodeStatus(filePath: string): string | null {
   const powershell = join(process.env["SystemRoot"] ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  const env = Object.fromEntries(Object.entries(process.env).filter(([name]) => name.toLowerCase() !== "psmodulepath"));
   const result = spawnSync(powershell, ["-NoProfile", "-NonInteractive", "-Command", "(Get-AuthenticodeSignature -LiteralPath $env:NAUTILO_SIGNED_PATH).Status"], {
-    encoding: "utf8", windowsHide: true, env: { ...process.env, NAUTILO_SIGNED_PATH: filePath },
+    encoding: "utf8", windowsHide: true, env: { ...env, NAUTILO_SIGNED_PATH: filePath },
   });
   return result.status === 0 ? result.stdout.trim() || null : null;
 }
