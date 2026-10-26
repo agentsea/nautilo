@@ -69,6 +69,10 @@ import {
   SUPERSEDED_TASK_PROTECTION_DTO_LOCATORS,
 } from "../../baseline/reviewed-task-protection-dto";
 import { CURRENT_SOURCE_ALARM_REVIEWS } from "../../src/node/source-alarm-review";
+import {
+  REVIEWED_CI_SOURCE_RECONCILIATION_ALARMS,
+  SUPERSEDED_CI_SOURCE_RECONCILIATION_LOCATORS,
+} from "../../baseline/reviewed-ci-source-reconciliation";
 import { REVIEWED_TASK_RUNTIME_SIGNER_DTO_LOCATORS } from
   "../../baseline/reviewed-task-runtime-signer-dto";
 import { REVIEWED_CI_DTO_REPLACEMENTS } from "../../baseline/reviewed-ci-dto";
@@ -536,7 +540,16 @@ describe("reviewed main 2026-08-29 encryption inventory", () => {
       ) {
         continue;
       }
-      expect(CURRENT_SOURCE_ALARM_REVIEWS).toContainEqual(review);
+      if (SUPERSEDED_CI_SOURCE_RECONCILIATION_LOCATORS.has(review.locator)) {
+        expect(CURRENT_SOURCE_ALARM_REVIEWS).not.toContainEqual(review);
+        const replacement = REVIEWED_CI_SOURCE_RECONCILIATION_ALARMS.find(
+          entry => entry.locator === review.locator,
+        );
+        expect(CURRENT_SOURCE_ALARM_REVIEWS.filter(entry => entry.locator === review.locator))
+          .toEqual(replacement ? [replacement] : []);
+      } else {
+        expect(CURRENT_SOURCE_ALARM_REVIEWS).toContainEqual(review);
+      }
     }
     for (const locator of SUPERSEDED_MAIN_2026_08_29_SOURCE_ALARM_LOCATORS) {
       expect(CURRENT_SOURCE_ALARM_REVIEWS.some((review) =>

@@ -10,22 +10,22 @@ const DATABASE_EVIDENCE =
 const MIGRATION_EVIDENCE =
   "packages/db/tests/unit/magent-control-migration.test.ts";
 
-export const EXTERNAL_OPERATOR_CONNECTION_METADATA_FIELDS = [
+const EXTERNAL_OPERATOR_CONNECTION_METADATA_FIELDS = [
   "provider",
   "transport_kind",
   "operator_binding_id",
 ] as const;
 
-export const EXTERNAL_OPERATOR_BINDING_METADATA_FIELDS = ["provider"] as const;
+const EXTERNAL_OPERATOR_BINDING_METADATA_FIELDS = ["provider"] as const;
 
-export const EXTERNAL_OPERATOR_SESSION_METADATA_FIELDS = [
+const EXTERNAL_OPERATOR_SESSION_METADATA_FIELDS = [
   "binding_id",
   "user_id",
   "session_id",
   "created_at",
 ] as const;
 
-export const EXTERNAL_OPERATOR_ARCHIVE_METADATA_FIELDS = [
+const EXTERNAL_OPERATOR_ARCHIVE_METADATA_FIELDS = [
   "message_id",
   "user_id",
   "receipt_id",
