@@ -9,7 +9,12 @@ import {
   REVIEWED_MAIN_2026_09_12_SOURCE_ALARMS,
   SUPERSEDED_MAIN_2026_09_12_SOURCE_ALARM_LOCATORS,
 } from "../../baseline/reviewed-main-2026-09-12-source-alarms";
-import { inspectSourceAlarmReviews } from "../../src/node/source-alarm-review";
+import { SUPERSEDED_CI_SOURCE_RECONCILIATION_LOCATORS } from
+  "../../baseline/reviewed-ci-source-reconciliation";
+import {
+  CURRENT_SOURCE_ALARM_REVIEWS,
+  inspectSourceAlarmReviews,
+} from "../../src/node/source-alarm-review";
 import {
   scanSourceAlarms,
   type SourceAlarm,
@@ -121,21 +126,34 @@ describe("reviewed main 2026-09-12 source-alarm reconciliation", () => {
     expect(scan.errors).toEqual([]);
 
     const observedByLocator = new Map(scan.alarms.map((alarm) => [alarm.locator, alarm]));
-    const ownedLocators = new Set(REVIEWED_MAIN_2026_09_12_SOURCE_ALARMS.map(
-      (review) => review.locator,
-    ));
+    const ownedLocators = new Set(REVIEWED_MAIN_2026_09_12_SOURCE_ALARMS
+      .filter((review) =>
+        !SUPERSEDED_CI_SOURCE_RECONCILIATION_LOCATORS.has(review.locator)
+      )
+      .map((review) => review.locator));
     const ownedAlarms = [...ownedLocators].map((locator) => {
       const alarm = observedByLocator.get(locator);
       if (!alarm) throw new Error(`reviewed current locator is absent: ${locator}`);
       return alarm;
     });
+    for (const review of REVIEWED_MAIN_2026_09_12_SOURCE_ALARMS.filter((candidate) =>
+      SUPERSEDED_CI_SOURCE_RECONCILIATION_LOCATORS.has(candidate.locator)
+    )) {
+      expect(observedByLocator.has(review.locator)).toBe(false);
+      const path = review.locator.split("#")[0]!;
+      expect(CURRENT_SOURCE_ALARM_REVIEWS.some((candidate) =>
+        candidate.locator.startsWith(`${path}#`)
+      )).toBe(true);
+    }
 
     expect(MAIN_2026_09_12_UNMAPPED_SOURCE_ALARM_LOCATORS.size).toBe(127);
     expect(MAIN_2026_09_12_ORDINAL_RUN_SOURCE_LOCATORS.size).toBe(149);
     expect(REVIEWED_MAIN_2026_09_12_SOURCE_ALARMS).toHaveLength(224);
     expect(inspectSourceAlarmReviews(
       ownedAlarms,
-      REVIEWED_MAIN_2026_09_12_SOURCE_ALARMS,
+      REVIEWED_MAIN_2026_09_12_SOURCE_ALARMS.filter((review) =>
+        !SUPERSEDED_CI_SOURCE_RECONCILIATION_LOCATORS.has(review.locator)
+      ),
     ).errors).toEqual([]);
 
     const newReviews = REVIEWED_MAIN_2026_09_12_SOURCE_ALARMS.filter((review) =>
@@ -212,8 +230,11 @@ describe("reviewed main 2026-09-12 source-alarm reconciliation", () => {
     const slideTemplate = await source(
       "packages/server/src/lib/slide-template-service.ts",
     );
-    expect(slideTemplate).toContain("await open(temporary, \"wx\", 0o600)");
+    expect(slideTemplate).toContain(
+      "await writePrivateFileExclusive(temporary, new TextEncoder().encode(content))",
+    );
     expect(slideTemplate).toContain("await link(temporary, path)");
+    expect(slideTemplate).toContain("await syncDirectory(dirname(path))");
     expect(slideTemplate).toContain("await rm(temporary, { force: true })");
 
     for (const path of [

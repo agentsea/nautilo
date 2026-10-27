@@ -15,9 +15,35 @@ const repositoryRoot = resolve(import.meta.dir, "../../../..");
 // These exact slice reads remain on the canonical plaintext Message boundary.
 // Neither whole metadata nor authored reply text becomes bounded metadata.
 const EXTERNAL_MESSAGE_READS = [
+  // Human-reviewed shares re-read the canonical body and attachment metadata
+  // under the plaintext fence and current binding lock before publication.
+  {
+    path: "packages/db/src/queries/bolter-bridge.ts", field: "content",
+    signature: "const [canonical] = await tx.select({ content: sessionMessages.content, fingerprint: sessionMessages.fingerprint, metadata: sessionMessages.metadata })",
+  },
+  {
+    path: "packages/db/src/queries/bolter-bridge.ts", field: "metadata",
+    signature: "const [canonical] = await tx.select({ content: sessionMessages.content, fingerprint: sessionMessages.fingerprint, metadata: sessionMessages.metadata })",
+  },
   {
     path: "packages/db/src/queries/bolter-bridge.ts", field: "metadata",
     signature: "role: sessionMessages.role, humanTurnId: sessionMessages.humanTurnId, metadata: sessionMessages.metadata,",
+  },
+  {
+    path: "packages/db/src/queries/bolter-bridge.ts", field: "content",
+    signature: "const [message] = await tx.select({ content: sessionMessages.content, fingerprint: sessionMessages.fingerprint, metadata: sessionMessages.metadata })",
+  },
+  {
+    path: "packages/db/src/queries/bolter-bridge.ts", field: "metadata",
+    signature: "const [message] = await tx.select({ content: sessionMessages.content, fingerprint: sessionMessages.fingerprint, metadata: sessionMessages.metadata })",
+  },
+  {
+    path: "packages/db/src/queries/bolter-bridge.ts", field: "toolCalls",
+    signature: "eq(sessionMessages.transcriptOrigin, \"main\"), isNull(sessionMessages.toolCalls), isNull(sessionMessages.toolName),",
+  },
+  {
+    path: "packages/db/src/queries/bolter-bridge.ts", field: "metadata",
+    signature: "sql`${sessionMessages.metadata}->'bolterReviewedShare' = ${JSON.stringify({ shareId: share.id, requestId: share.requestId })}::jsonb`",
   },
   {
     path: "packages/db/src/queries/bolter-bridge.ts", field: "content",
@@ -53,9 +79,22 @@ type ReviewedReferenceHandoff = Readonly<{
 }>;
 
 const REVIEWED_LATER_REFERENCE_HANDOFFS = [
-  // Human-visible history added two authenticated presentation sidecars. The
-  // other two identical projections remain in the original Wave 9 budget.
-  { path: "packages/agent/src/store/session-store.ts", field: "metadata", signature: "metadata: sessionMessages.metadata,", occurrences: 4, consume: 2 },
+  // Two authenticated history sidecars and the invocation-scoped exposure
+  // reader retain ordinary metadata; the original two projections stay in
+  // the frozen access budget.
+  { path: "packages/agent/src/store/session-store.ts", field: "metadata", signature: "metadata: sessionMessages.metadata,", occurrences: 5, consume: 3 },
+  // The same invocation-scoped exposure reader reopens exact ordinary source
+  // bodies. Its metadata projection above stays confidential, as does content.
+  { path: "packages/agent/src/store/session-store.ts", field: "content", signature: "content: sessionMessages.content,", occurrences: 5, consume: 1 },
+  // A saved tool result is resolved under the exact owner, Agent and thread;
+  // the selector must reject missing or ambiguous call identities.
+  { path: "packages/agent/src/store/session-store.ts", field: "content", signature: "const rows = await tx.select({ content: sessionMessages.content, toolName: sessionMessages.toolName })", occurrences: 1 },
+  // The existing authored-run transcript also projects presentation metadata.
+  // This is ordinary confidential data, never a bounded-metadata exemption.
+  { path: "packages/agent/src/store/session-store.ts", field: "metadata", signature: "content: sessionMessages.content, toolName: sessionMessages.toolName, toolCalls: sessionMessages.toolCalls, metadata: sessionMessages.metadata,", occurrences: 1 },
+  // Reflection's exact source resolver already reads the ordinary body; its
+  // added provenance sidecar remains on the frozen confidential boundary.
+  { path: "packages/db/src/queries/reflection-sources.ts", field: "metadata", signature: "metadata: sessionMessages.metadata,", occurrences: 1 },
   // This SQL only decides whether an assistant row is a skip-only control row;
   // it does not select or return the serialized tool calls.
   { path: "packages/agent/src/store/session-store.ts", field: "toolCalls", signature: "WHEN pg_input_is_valid(${sessionMessages.toolCalls}, 'jsonb') THEN CASE", occurrences: 1 },
@@ -94,6 +133,12 @@ const REVIEWED_HANDOFF_EVIDENCE = [
   ["packages/server/tests/unit/protected-task-native-reply-authority.test.ts", "expect(taskChecks).toBe(2)"],
   ["packages/server/tests/unit/protected-task-output-read-product.test.ts", "proof rejects a changed invocation, transaction, or current digest"],
   ["packages/server/src/routes/protected-task-terminal-message-product.ts", "The guard cannot escape the exact canonical authority-held transaction"],
+  ["packages/agent/src/store/session-store.ts", "if (rows.length !== 1 || rows[0]!.content === null) return null;"],
+  ["packages/agent/src/store/session-store.ts", "withSerializableAgentTrustContext({ userId: input.ownerId, agentId: input.agentId }"],
+  ["packages/db/tests/unit/bolter-execution.test.ts", "publication never reads final text for wrong mode, owner, generation, sponsorship or claim"],
+  ["packages/agent/tests/unit/ordinary-transcript-exposure-reader.test.ts", "projectCurrentOrdinaryTranscriptExposureRows"],
+  ["packages/db/src/queries/reflection-sources.ts", "eq(sessions.roomId, roomId)"],
+  ["packages/db/src/queries/reflection-sources.ts", "eq(rooms.namespaceId, namespaceId)"],
 ] as const;
 
 describe("Wave 9 confidential message direct-access closure", () => {
@@ -102,7 +147,7 @@ describe("Wave 9 confidential message direct-access closure", () => {
     expect(references.filter(isExternalMessageRead).map(({ path, field, signature }) => ({ path, field, signature })))
       .toEqual([...EXTERNAL_MESSAGE_READS]);
     expect(references.filter((reference) => reference.path === "packages/db/src/queries/bolter-bridge.ts"))
-      .toHaveLength(4);
+      .toHaveLength(10);
     for (const column of ["content", "metadata", "tool_calls"]) {
       expect(WAVE_0_FROZEN_BASELINE_DEBT.some((debt) =>
         debt.id === `debt.db.public.session_messages.${column}`

@@ -62,6 +62,23 @@ describe("database writer inventory", () => {
         observations.filter((item) => item.operation === "unresolved").length,
       sha256: fingerprintDatabaseWriterInventory(observations),
     }).toEqual(DATABASE_WRITER_BASELINE);
+    const restoreFenceLocator =
+      "bin/nautilo-dev/src/lib/docker-db.ts#restoreFromGzip:raw_sql:unresolved:unresolved.dynamic_sql:1";
+    expect(observations.filter((item) =>
+      item.locator === restoreFenceLocator
+    )).toEqual([{
+      operation: "unresolved",
+      table: "unresolved.dynamic_sql",
+      path: "bin/nautilo-dev/src/lib/docker-db.ts",
+      symbol: "restoreFromGzip",
+      locator: restoreFenceLocator,
+    }]);
+    expect(BASELINE_REGISTRY.entries.find((entry) =>
+      entry.locator === restoreFenceLocator
+    )).toMatchObject({
+      classification: "bounded_metadata",
+      metadataAllowlist: ["state", "token_generation", "updated_at", "envelope=NULL"],
+    });
     expect(observations).toContainEqual({
       operation: "insert",
       table: "public.session_message_crypto_revisions",

@@ -69,6 +69,16 @@ import {
   SUPERSEDED_TASK_PROTECTION_DTO_LOCATORS,
 } from "../../baseline/reviewed-task-protection-dto";
 import { CURRENT_SOURCE_ALARM_REVIEWS } from "../../src/node/source-alarm-review";
+import {
+  REVIEWED_CI_SOURCE_RECONCILIATION_ALARMS,
+  SUPERSEDED_CI_SOURCE_RECONCILIATION_LOCATORS,
+} from "../../baseline/reviewed-ci-source-reconciliation";
+import { REVIEWED_TASK_RUNTIME_SIGNER_DTO_LOCATORS } from
+  "../../baseline/reviewed-task-runtime-signer-dto";
+import { REVIEWED_CI_DTO_REPLACEMENTS } from "../../baseline/reviewed-ci-dto";
+import { REVIEWED_RELEASE_RECONCILIATION_DTO_DECLARATIONS } from
+  "../../baseline/reviewed-release-reconciliation-dto";
+import type { DtoDeclaration } from "../../src/node/dto-inventory";
 
 const EXTRACTED_SCANNER_ASSEMBLY_LOCATORS = [
   "apps/desktop/scripts/assemble-security-scanners.ts#network_processor:7f417ba7e396c76b:1",
@@ -85,6 +95,47 @@ const EXTRACTED_SCANNER_ASSEMBLY_LOCATORS = [
 
 const REFERENCE_AUDIO_SIGNATURE_FRAGMENT =
   ";referenceAudios?:{artifactId:string;content?:{mimeType:string;sha256:string;sizeBytes:number};durationSeconds:number;index:number;label:string}[]";
+const currentCiDtoByLocator = new Map<string, DtoDeclaration>(REVIEWED_CI_DTO_REPLACEMENTS.map(
+  (entry) => [entry.locator, entry.declaration] as const,
+));
+const releaseDtoByLocator = new Map<string, DtoDeclaration>(REVIEWED_RELEASE_RECONCILIATION_DTO_DECLARATIONS.map(
+  (entry) => [entry.locator, entry] as const,
+));
+
+function expectCurrentDtoLeaves(
+  locator: string,
+  reviewed: readonly DtoDeclaration[],
+): void {
+  const current = DTO_BASELINE_DECLARATIONS.filter((candidate) =>
+    candidate.locator === locator
+  );
+  expect(current).toHaveLength(1);
+  expect(reviewed).toHaveLength(1);
+  const expected = currentCiDtoByLocator.get(locator)
+    ?? releaseDtoByLocator.get(locator)
+    ?? reviewed[0];
+  expect(current[0]?.observationId).toBe(expected?.observationId);
+  expect(current[0]?.arbitraryPayloads).toEqual(expected?.arbitraryPayloads);
+}
+
+function withTaskRuntimeSigner(
+  declarations: readonly (typeof REVIEWED_MAIN_2026_09_12_DTO_REPLACEMENTS)[number][],
+) {
+  const locators = new Set<string>(REVIEWED_TASK_RUNTIME_SIGNER_DTO_LOCATORS);
+  return declarations.map((declaration) => {
+    if (!locators.has(declaration.locator)) return declaration;
+    const prior = '{evidenceBytesBase64url:string;kind:"agent_runtime_publication"|"processor_authorization"}';
+    const next = `${prior}|{evidenceBytesBase64url:string;kind:"task_runtime_signer_certificate"}`;
+    let matches = 0;
+    const structuralSignatures = (declaration.structuralSignatures ?? []).map((signature) => {
+      matches += signature.split(prior).length - 1;
+      return signature.replaceAll(prior, next);
+    });
+    const expected = declaration.locator.endsWith("/message-backfill/source") ? 2 : 1;
+    if (matches !== expected) throw new Error(`Task signer successor mismatch for ${declaration.locator}`);
+    return { ...declaration, structuralSignatures };
+  });
+}
 
 function expectLatestTaskResearchReplacement(
   predecessor: (typeof REVIEWED_MAIN_2026_08_29_DTO_DECLARATIONS)[number],
@@ -237,13 +288,25 @@ describe("reviewed main 2026-08-29 encryption inventory", () => {
 
     for (const declaration of REVIEWED_MAIN_2026_08_29_DTO_DECLARATIONS) {
       if (SUPERSEDED_MAIN_2026_10_13_DTO_LOCATORS.has(declaration.locator)) {
-        expect(DTO_BASELINE_DECLARATIONS.filter((candidate) => candidate.locator === declaration.locator))
-          .toEqual(REVIEWED_MAIN_2026_10_13_DTO_REPLACEMENTS.filter((candidate) => candidate.locator === declaration.locator));
+        const current = DTO_BASELINE_DECLARATIONS.filter((candidate) =>
+          candidate.locator === declaration.locator
+        );
+        const reviewed = REVIEWED_MAIN_2026_10_13_DTO_REPLACEMENTS
+          .filter((candidate) => candidate.locator === declaration.locator)
+          .map((candidate) => currentCiDtoByLocator.get(candidate.locator)
+            ?? releaseDtoByLocator.get(candidate.locator)
+            ?? candidate);
+        expect(current).toHaveLength(1);
+        expect(reviewed).toHaveLength(1);
+        expect(current[0]?.observationId).toBe(reviewed[0]?.observationId);
+        expect(current[0]?.arbitraryPayloads).toEqual(reviewed[0]?.arbitraryPayloads);
         continue;
       }
       if (SUPERSEDED_TASK_PROTECTION_DTO_LOCATORS.has(declaration.locator)) {
         expect(DTO_BASELINE_DECLARATIONS.filter((candidate) => candidate.locator === declaration.locator))
-          .toEqual(REVIEWED_TASK_PROTECTION_DTO_DECLARATIONS.filter((candidate) => candidate.locator === declaration.locator));
+          .toEqual(REVIEWED_TASK_PROTECTION_DTO_DECLARATIONS
+            .filter((candidate) => candidate.locator === declaration.locator)
+            .map((candidate) => currentCiDtoByLocator.get(candidate.locator) ?? candidate));
         continue;
       }
       if (
@@ -266,16 +329,26 @@ describe("reviewed main 2026-08-29 encryption inventory", () => {
       }
       if (SUPERSEDED_MAIN_2026_09_12_DTO_LOCATORS.has(declaration.locator)) {
         expect(DTO_BASELINE_DECLARATIONS.filter((candidate) => candidate.locator === declaration.locator))
-          .toEqual([...reviewedExternalMessageAttributionDtoReplacements(reviewedImageAssistanceDtoReplacements(
+          .toEqual(withTaskRuntimeSigner([...reviewedExternalMessageAttributionDtoReplacements(reviewedImageAssistanceDtoReplacements(
             REVIEWED_MAIN_2026_09_12_DTO_REPLACEMENTS.filter((candidate) => candidate.locator === declaration.locator),
-          ))]);
+          ))]));
         continue;
       }
       if (SUPERSEDED_MAIN_2026_09_09_MESSAGEBACKFILL_DTO_LOCATORS.has(declaration.locator)) {
-        expect(DTO_BASELINE_DECLARATIONS.filter((candidate) => candidate.locator === declaration.locator))
-          .toEqual([...reviewedExternalMessageAttributionDtoReplacements(reviewedImageAssistanceDtoReplacements(
-            REVIEWED_MAIN_2026_09_09_MESSAGEBACKFILL_DTO_DECLARATIONS.filter((candidate) => candidate.locator === declaration.locator),
-          ))]);
+        const current = DTO_BASELINE_DECLARATIONS.filter((candidate) =>
+          candidate.locator === declaration.locator
+        );
+        const reviewed = reviewedExternalMessageAttributionDtoReplacements(
+          reviewedImageAssistanceDtoReplacements(
+            REVIEWED_MAIN_2026_09_09_MESSAGEBACKFILL_DTO_DECLARATIONS.filter(
+              (candidate) => candidate.locator === declaration.locator,
+            ),
+          ),
+        );
+        expect(current).toHaveLength(1);
+        expect(reviewed).toHaveLength(1);
+        expect(current[0]?.observationId).toBe(reviewed[0]?.observationId);
+        expect(current[0]?.arbitraryPayloads).toEqual(reviewed[0]?.arbitraryPayloads);
         continue;
       }
       if (SUPERSEDED_M322_REPAIR_DTO_LOCATORS.has(declaration.locator)) {
@@ -331,13 +404,13 @@ describe("reviewed main 2026-08-29 encryption inventory", () => {
     }
     for (const locator of SUPERSEDED_MAIN_2026_08_29_DTO_LOCATORS) {
       if (SUPERSEDED_MAIN_2026_10_13_DTO_LOCATORS.has(locator)) {
-        expect(DTO_BASELINE_DECLARATIONS.filter((candidate) => candidate.locator === locator))
-          .toEqual(REVIEWED_MAIN_2026_10_13_DTO_REPLACEMENTS.filter((candidate) => candidate.locator === locator));
+        expectCurrentDtoLeaves(locator, REVIEWED_MAIN_2026_10_13_DTO_REPLACEMENTS
+          .filter((candidate) => candidate.locator === locator));
         continue;
       }
       if (SUPERSEDED_TASK_PROTECTION_DTO_LOCATORS.has(locator)) {
-        expect(DTO_BASELINE_DECLARATIONS.filter((candidate) => candidate.locator === locator))
-          .toEqual(REVIEWED_TASK_PROTECTION_DTO_DECLARATIONS.filter((candidate) => candidate.locator === locator));
+        expectCurrentDtoLeaves(locator, REVIEWED_TASK_PROTECTION_DTO_DECLARATIONS
+          .filter((candidate) => candidate.locator === locator));
         continue;
       }
       if (
@@ -366,17 +439,15 @@ describe("reviewed main 2026-08-29 encryption inventory", () => {
         continue;
       }
       if (SUPERSEDED_MAIN_2026_09_12_DTO_LOCATORS.has(locator)) {
-        expect(DTO_BASELINE_DECLARATIONS.filter((candidate) => candidate.locator === locator))
-          .toEqual([...reviewedExternalMessageAttributionDtoReplacements(reviewedImageAssistanceDtoReplacements(
+        expectCurrentDtoLeaves(locator, reviewedExternalMessageAttributionDtoReplacements(reviewedImageAssistanceDtoReplacements(
             REVIEWED_MAIN_2026_09_12_DTO_REPLACEMENTS.filter((candidate) => candidate.locator === locator),
-          ))]);
+          )));
         continue;
       }
       if (SUPERSEDED_MAIN_2026_09_09_MESSAGEBACKFILL_DTO_LOCATORS.has(locator)) {
-        expect(DTO_BASELINE_DECLARATIONS.filter((candidate) => candidate.locator === locator))
-          .toEqual([...reviewedExternalMessageAttributionDtoReplacements(reviewedImageAssistanceDtoReplacements(
+        expectCurrentDtoLeaves(locator, reviewedExternalMessageAttributionDtoReplacements(reviewedImageAssistanceDtoReplacements(
             REVIEWED_MAIN_2026_09_09_MESSAGEBACKFILL_DTO_DECLARATIONS.filter((candidate) => candidate.locator === locator),
-          ))]);
+          )));
         continue;
       }
       if (SUPERSEDED_M322_REPAIR_DTO_LOCATORS.has(locator)) {
@@ -469,7 +540,16 @@ describe("reviewed main 2026-08-29 encryption inventory", () => {
       ) {
         continue;
       }
-      expect(CURRENT_SOURCE_ALARM_REVIEWS).toContainEqual(review);
+      if (SUPERSEDED_CI_SOURCE_RECONCILIATION_LOCATORS.has(review.locator)) {
+        expect(CURRENT_SOURCE_ALARM_REVIEWS).not.toContainEqual(review);
+        const replacement = REVIEWED_CI_SOURCE_RECONCILIATION_ALARMS.find(
+          entry => entry.locator === review.locator,
+        );
+        expect(CURRENT_SOURCE_ALARM_REVIEWS.filter(entry => entry.locator === review.locator))
+          .toEqual(replacement ? [replacement] : []);
+      } else {
+        expect(CURRENT_SOURCE_ALARM_REVIEWS).toContainEqual(review);
+      }
     }
     for (const locator of SUPERSEDED_MAIN_2026_08_29_SOURCE_ALARM_LOCATORS) {
       expect(CURRENT_SOURCE_ALARM_REVIEWS.some((review) =>

@@ -182,7 +182,9 @@ function fixture(workspaceRoot = WORKSPACE) {
   };
 }
 
-describe("protected Task repo docs project file port", () => {
+// Windows Desktops offer no local execution or Task project files, so RepoDocs
+// only ever addresses POSIX project roots such as WORKSPACE.
+describe.skipIf(process.platform === "win32")("protected Task repo docs project file port", () => {
   test("reads only through the exact Task-owned V4 binding", async () => {
     const f = fixture();
     expect(await f.port.dispatch(readRequest, {

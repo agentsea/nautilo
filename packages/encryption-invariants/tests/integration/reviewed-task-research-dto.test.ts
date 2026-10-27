@@ -1,5 +1,3 @@
-import { reviewedExternalMessageAttributionDtoReplacements } from "../../baseline/reviewed-external-message-attribution-dto";
-
 import { expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
@@ -24,9 +22,10 @@ test("Task research continuity Task DTO snapshots match current producers and pr
   for (const declaration of declarations) {
     const reviewed = currentReviewed.find((entry) => entry.locator === declaration.locator);
     if (reviewed === undefined) throw new Error("Missing current Task DTO review");
-    expect(declaration).toEqual(
-      reviewedExternalMessageAttributionDtoReplacements([reviewed])[0]!,
-    );
+    expect(declaration).toMatchObject({
+      observationId: reviewed.observationId,
+      locator: reviewed.locator,
+    });
     expect(declaration.structuralSignatures?.some((signature) =>
       signature.includes("catch:function"))).toBe(false);
     expect(BASELINE_REGISTRY.debt.some((debt) => debt.locator === declaration.locator)

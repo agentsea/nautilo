@@ -135,7 +135,7 @@ describe("current-main September 17 DTO review", () => {
         "committerDeviceSigningPublicKeyBase64url?:string;kind:\"human_ai_readable",
       );
       expect(negotiatedHistory).toContain(
-        "signerEvidence:{evidenceBytesBase64url:string;kind:\"agent_runtime_publication\"|\"processor_authorization\"}|{kind:\"human_ai_readable",
+        "signerEvidence:{evidenceBytesBase64url:string;kind:\"agent_runtime_publication\"|\"processor_authorization\"}|{evidenceBytesBase64url:string;kind:\"task_runtime_signer_certificate\"}|{kind:\"human_ai_readable",
       );
     }
 

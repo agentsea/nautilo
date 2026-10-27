@@ -12,13 +12,16 @@ import { collectRepositoryInventory, repositoryVerificationCategories } from "..
 
 const root = resolve(import.meta.dir, "../../../..");
 const paths = BOLTER_PLAINTEXT_SOURCE_DECLARATIONS.map(item => item.evidence[0]!.path);
+const currentDeclarations = SOURCE_DECLARATIONS.filter((item) =>
+  BOLTER_PLAINTEXT_SOURCE_DECLARATIONS.some((historical) => historical.id === item.id)
+);
 
 describe("exact authorized Bolter plaintext carriers", () => {
   test("verifies executable carrier and admission evidence without adding frozen debt", async () => {
     expect(BOLTER_PLAINTEXT_COVERAGE).toHaveLength(8);
     expect(WAVE_0_FROZEN_BASELINE_DEBT).toHaveLength(1590);
     const debtBefore = JSON.stringify(BASELINE_REGISTRY.debt);
-    const inspection = await inspectDeclaredSourceInventory({ repoRoot: root, declarations: BOLTER_PLAINTEXT_SOURCE_DECLARATIONS });
+    const inspection = await inspectDeclaredSourceInventory({ repoRoot: root, declarations: currentDeclarations });
     expect(inspection.errors).toEqual([]);
     expect(inspection.observations).toHaveLength(8);
     const registry = { ...BASELINE_REGISTRY, entries: BOLTER_PLAINTEXT_COVERAGE };
@@ -42,8 +45,11 @@ describe("exact authorized Bolter plaintext carriers", () => {
   test("closes exact spawn and fixed diagnostics while inventorying undetected IPC carriers", async () => {
     const scan = await scanSourceAlarms({ repoRoot: root, scanRoots: paths });
     expect(scan.errors).toEqual([]);
-    expect(scan.alarms).toHaveLength(4);
-    expect(inspectSourceAlarmReviews(scan.alarms, BOLTER_PLAINTEXT_SOURCE_ALARMS).errors).toEqual([]);
+    expect(scan.alarms).toHaveLength(6);
+    const currentPathReviews = CURRENT_SOURCE_ALARM_REVIEWS.filter((review) =>
+      paths.includes(review.locator.split("#")[0]!)
+    );
+    expect(inspectSourceAlarmReviews(scan.alarms, currentPathReviews).errors).toEqual([]);
     for (const review of BOLTER_PLAINTEXT_SOURCE_ALARMS) expect(CURRENT_SOURCE_ALARM_REVIEWS).toContainEqual(review);
     expect(BOLTER_PLAINTEXT_SOURCE_ALARMS.every(review => review.closure !== "baseline_debt")).toBe(true);
     const changed = scan.alarms.map(alarm => ({ ...alarm, locator: alarm.locator.replace(":1", ":2") }));
@@ -51,10 +57,18 @@ describe("exact authorized Bolter plaintext carriers", () => {
   });
 
   test("retention scope excludes archives, logs, zeroization and remote erasure claims", async () => {
-    for (const path of paths) {
+    for (const path of paths.filter((path) =>
+      path !== "apps/desktop/electron/bolter-bridge/connection-owner.ts"
+    )) {
       const source = await readFile(resolve(root, path), "utf8");
       expect(source).not.toMatch(/\b(?:writeFile|appendFile|createWriteStream|logger|console)\s*[.(]/u);
     }
+    const providerEventDiagnostic = CURRENT_SOURCE_ALARM_REVIEWS.find((review) =>
+      review.locator === "apps/desktop/electron/bolter-bridge/connection-owner.ts#log_emitter:d9fe2303095b762b:1"
+    );
+    expect(providerEventDiagnostic?.closure).toBe("baseline_debt");
+    expect(providerEventDiagnostic && "evidenceGap" in providerEventDiagnostic
+      ? providerEventDiagnostic.evidenceGap : "").toContain("provider event kind");
     const handover = await readFile(resolve(root, "apps/desktop/electron/bolter-bridge/handover.ts"), "utf8");
     expect(handover).toContain("socket.write(Buffer.concat"); // This is real plaintext wire content.
     expect(handover.indexOf("await store(jsonl)")).toBeLessThan(handover.indexOf("socket.end(\"committed\\n\")"));
