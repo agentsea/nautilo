@@ -118,7 +118,8 @@ describe("media source inspection", () => {
     const jpeg = path.join(root, "jpeg.data");
     const webp = path.join(root, "webp.data");
 
-    await exec(ffmpeg, ["-hide_banner", "-y", "-f", "lavfi", "-i", "color=red:s=32x24:r=24000/1001:d=0.25", ...testH264EncoderArgs, "-pix_fmt", "yuv420p", "-f", "mp4", video]);
+    // Media Foundation's H.264 encoder needs at least 48 pixels per side.
+    await exec(ffmpeg, ["-hide_banner", "-y", "-f", "lavfi", "-i", "color=red:s=64x48:r=24000/1001:d=0.25", ...testH264EncoderArgs, "-pix_fmt", "yuv420p", "-f", "mp4", video]);
     await exec(ffmpeg, ["-hide_banner", "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=0.35", "-f", "wav", wav]);
     await exec(ffmpeg, ["-hide_banner", "-y", "-f", "lavfi", "-i", "sine=frequency=550:duration=0.4", "-f", "mp3", mp3]);
     await exec(ffmpeg, ["-hide_banner", "-y", "-f", "lavfi", "-i", "sine=frequency=660:duration=0.45", "-c:a", "aac", "-f", "mp4", m4a]);
@@ -140,7 +141,10 @@ describe("media source inspection", () => {
     expect(await detectMediaFormat(jpeg)).toBe("jpeg");
   }, 30_000);
 
-  test("inspects a HEVC video with audio without the zero-frame encoder EOF failure", async () => {
+  // The fixture needs an HEVC encoder. The Windows LGPL build has none that
+  // works without the optional HEVC Video Extensions; the inspection itself
+  // uses FFmpeg's built-in HEVC decoder, which the macOS and Linux lanes cover.
+  test.skipIf(process.platform === "win32")("inspects a HEVC video with audio without the zero-frame encoder EOF failure", async () => {
     const root = await fixtureRoot();
     const source = path.join(root, "generated-hevc.mp4");
     const encoder = process.platform === "darwin"

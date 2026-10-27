@@ -18,10 +18,16 @@ uniformly supported on Intel and Apple Silicon. Software encoding is permitted
 within VideoToolbox when the OS cannot provide a hardware session; no different
 binary or GPL encoder is retried.
 
+Windows Desktop encodes H.264 High profile with Media Foundation's software
+encoder through the same prebuilt LGPL FFmpeg and uses the same bitrate targets,
+since Media Foundation has no CRF mode either. Hardware Media Foundation encoders
+depend on the GPU driver and are not used. The encoder refuses frames under 48
+pixels per side, far below every export resolution.
+
 Audio choices remain 128/192/320 kbps. Complexity and rate control affect the
 final byte count; target bitrate is not a fixed file-size promise. Separately
-provisioned non-Mac development/test FFmpeg retains the previous libx264
-CRF 28/23/18 lowering; those executables are not in the Mac distribution.
+provisioned development/test FFmpeg on other hosts retains the previous libx264
+CRF 28/23/18 lowering; those executables are not in the Desktop distribution.
 See [FFmpeg VideoToolbox](https://ffmpeg.org/ffmpeg-codecs.html#VideoToolbox)
 and [AAC](https://ffmpeg.org/ffmpeg-codecs.html#aac).
 

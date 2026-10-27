@@ -94,12 +94,17 @@ and original notices travel with the app; consult each archive for the full
 component-specific terms.
 
 Desktop uses iSpy's precompiled LGPL FFmpeg 9.0.1 for both
-Mac architectures. Video encoding uses Apple's VideoToolbox; GPL/nonfree
-components, including libx264 and libfdk_aac, are excluded. Native AAC remains.
+Mac architectures and Windows x64. Video encoding uses Apple's VideoToolbox on
+the Mac and Media Foundation on Windows; GPL/nonfree components, including
+libx264 and libfdk_aac, are excluded. Native AAC remains. The Windows build also
+contains NVIDIA nv-codec-headers n12.2.72.0 and AMD AMF 1.5.2 headers (MIT),
+Intel's libvpl 2.17.0 dispatcher (MIT) and MinGW-w64's winpthreads 6.0.0
+runtime (MIT and BSD-style terms).
 
 Every app download includes exact FFmpeg and dependency source archives, matching
 build scripts, license texts, configuration records and checksums under
-`Nautilo.app/Contents/Resources/tools-ffmpeg`. See [source access and build
+`Nautilo.app/Contents/Resources/tools-ffmpeg` or, on Windows,
+`resources\tools-ffmpeg` in the installation directory. See [source access and build
 instructions](apps/desktop/FFMPEG.md). Vendoring and packaging validate these
 records and reject unapproved binaries or missing sources. Nautilo's own code
 retains its own license.
