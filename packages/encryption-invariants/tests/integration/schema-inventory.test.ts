@@ -18,9 +18,12 @@ describe("Drizzle schema inventory", () => {
     const tableLocators = inventory.objects
       .filter((object) => object.kind === "table")
       .map((object) => object.locator);
-    expect(tableLocators).toHaveLength(232);
+    expect(tableLocators).toHaveLength(241);
     const reviewedAddedTableLocators = [
+      "public.chatgpt_registrations",
       "public.conversion_operations",
+      "public.external_operator_control_archive",
+      "public.external_operator_sessions",
       "public.foreground_memory_crypto_publication_receipts",
       "public.group_moderation_scopes",
       "public.message_deletion_receipts",
@@ -47,7 +50,7 @@ describe("Drizzle schema inventory", () => {
       "public.task_run_result_crypto_revisions",
       "public.task_terminal_message_crypto_staging_receipts",
     ] as const;
-    expect(reviewedAddedTableLocators).toHaveLength(26);
+    expect(reviewedAddedTableLocators).toHaveLength(29);
     for (const locator of reviewedAddedTableLocators) {
       expect(tableLocators).toContain(locator);
     }
@@ -63,9 +66,9 @@ describe("Drizzle schema inventory", () => {
         isExisting: true,
       },
     ]);
-    expect(inventory.columns.filter((column) => column.kind === "table")).toHaveLength(3182);
+    expect(inventory.columns.filter((column) => column.kind === "table")).toHaveLength(3310);
     expect(inventory.columns.filter((column) => column.kind === "view")).toHaveLength(6);
-    expect(inventory.constraints).toHaveLength(890);
+    expect(inventory.constraints).toHaveLength(936);
 
     expect(inventory.columns).toContainEqual({
       id: "db.public.session_messages.content",
@@ -169,7 +172,7 @@ describe("Drizzle schema inventory", () => {
       columnName: "content_search",
       sqlType: "tsvector",
       notNull: false,
-      generated: true,
+      generated: false,
       defaultSql: null,
       primaryKey: false,
     });

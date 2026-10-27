@@ -36,13 +36,9 @@ beforeAll(async () => {
 describe("actual repository coverage inventory", () => {
   test("has no new or stale observation, declaration, migration, or alarm drift", async () => {
     const inventory = actualInventory;
-    expect(verifyRepositoryInventory(inventory, BASELINE_REGISTRY)).toEqual({
-      ok: true,
-      errors: [],
-    });
     expect(inventory.observations.length).toBeGreaterThan(1_000);
-    expect(inventory.schema.objects.filter((item) => item.kind === "table")).toHaveLength(232);
-    expect(inventory.schema.columns).toHaveLength(3_188);
+    expect(inventory.schema.objects.filter((item) => item.kind === "table")).toHaveLength(241);
+    expect(inventory.schema.columns).toHaveLength(3_316);
     expect(inventory.observations.filter((item) =>
       item.surface === "db" && item.locator === "public.session_messages"
     ).map(({ id, surface, locator }) => ({ id, surface, locator }))).toEqual([{
@@ -50,7 +46,7 @@ describe("actual repository coverage inventory", () => {
       surface: "db",
       locator: "public.session_messages",
     }]);
-    expect(inventory.dto).toHaveLength(882);
+    expect(inventory.dto).toHaveLength(925);
     expect(inventory.source.observations).toHaveLength(52);
     expect(inventory.source.alarms.length).toBeGreaterThan(2_000);
     expect(inventory.source.alarmReviews.errors).toEqual([]);
@@ -63,6 +59,12 @@ describe("actual repository coverage inventory", () => {
       + inventory.source.alarmReviews.counts.reviewedExclusion
       + inventory.source.alarmReviews.counts.unmapped,
     ).toBe(inventory.source.alarms.length);
+    // Keep the current inventory assertions reachable while explicit unresolved
+    // security classifications continue to fail the aggregate verification.
+    expect(verifyRepositoryInventory(inventory, BASELINE_REGISTRY)).toEqual({
+      ok: true,
+      errors: [],
+    });
   });
 
   test("generated report is byte-deterministic and current", async () => {

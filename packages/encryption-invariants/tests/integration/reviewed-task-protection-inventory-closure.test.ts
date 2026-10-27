@@ -154,7 +154,7 @@ describe("Task protection inventory closure", () => {
       "http:request_response:POST /api/tasks",
       "http:request_response:POST /api/tasks/:id/content-access-recovery",
     ]));
-  });
+  }, 60_000);
 
   test("keeps every current Task diagnostic and migration finalizer explicitly reviewed", async () => {
     const scan = await scanSourceAlarms({

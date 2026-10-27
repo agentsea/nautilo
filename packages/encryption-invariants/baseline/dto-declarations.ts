@@ -1,6 +1,7 @@
 import { CHATGPT_PLAN_DTO_DECLARATIONS } from "./reviewed-chatgpt-plan-coverage";
-import { BOLTER_HTTP_DECLARATIONS } from "./reviewed-bolter-http";
+import { BOLTER_HTTP_PREDECESSOR_DECLARATIONS } from "./reviewed-bolter-http";
 import { reviewedBolterRelayDtoReplacements } from "./reviewed-bolter-relay-dto";
+import { reviewedCiDtoReplacements } from "./reviewed-ci-dto";
 import {
   reviewedTaskRuntimeSignerDtoReplacements,
 } from "./reviewed-task-runtime-signer-dto";
@@ -6254,7 +6255,7 @@ const PRE_MESSAGE_MODEL_INPUT_EXPOSURE_DTO_DECLARATIONS:
     !SUPERSEDED_RELEASE_RECONCILIATION_DTO_LOCATORS.has(entry.locator)
   ),
   ...REVIEWED_RELEASE_RECONCILIATION_DTO_DECLARATIONS,
-  ...BOLTER_HTTP_DECLARATIONS,
+  ...BOLTER_HTTP_PREDECESSOR_DECLARATIONS,
   ...CHATGPT_PLAN_DTO_DECLARATIONS,
         ]),
       ),
@@ -6262,8 +6263,10 @@ const PRE_MESSAGE_MODEL_INPUT_EXPOSURE_DTO_DECLARATIONS:
   );
 
 export const DTO_BASELINE_DECLARATIONS: readonly DtoDeclaration[] =
-  reviewedTaskDefinitionAuthorizationDtoReplacements(
-    reviewedMessageModelInputExposureDtoReplacements(
-      PRE_MESSAGE_MODEL_INPUT_EXPOSURE_DTO_DECLARATIONS,
+  reviewedCiDtoReplacements(
+    reviewedTaskDefinitionAuthorizationDtoReplacements(
+      reviewedMessageModelInputExposureDtoReplacements(
+        PRE_MESSAGE_MODEL_INPUT_EXPOSURE_DTO_DECLARATIONS,
+      ),
     ),
   );

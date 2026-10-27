@@ -264,7 +264,6 @@ describe("DTO inventory against the actual Nautilo source tree", () => {
       "desktopFilesystemGrantRequest.policy.lifetime",
       "desktopFilesystemGrantRequest.requiredOperations[]",
       "desktopFilesystemGrantRequest.subject",
-      "githubBinding",
       "humanTerminalBinding.owner",
       "localExecutionBinding.authority.delegation",
       "localExecutionDelegationCapture.source",

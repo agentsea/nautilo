@@ -61,7 +61,7 @@ describe("personal attempt lease encryption review", () => {
     expect(ownerCheck).toContain(
       "(${table.attemptOwnerToken} IS NOT NULL AND ${table.attemptLeaseExpiresAt} IS NOT NULL",
     );
-    expect(ownerCheck).toContain("${table.fundingKind} = 'personal'");
+    expect(ownerCheck).toContain("${table.fundingKind} IN ('personal', 'server', 'service')");
     expect(ownerCheck).toContain("${table.providerRoute} <> 'surplus'");
     expect(ownerCheck).toContain("${table.attemptOutcome} IS NOT NULL");
     expect(ownerCheck).toContain("${table.costState} IS NOT NULL");

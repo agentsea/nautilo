@@ -9,6 +9,11 @@ import {
 import { REVIEWED_MAIN_2026_09_09_PLATFORM_SOURCE_ALARMS } from
   "../../baseline/reviewed-main-2026-09-09-platform-source-alarms";
 import {
+  CI_SOURCE_ALARM_DEBT_LINEAGE,
+  SUPERSEDED_CI_SOURCE_RECONCILIATION_LOCATORS,
+} from
+  "../../baseline/reviewed-ci-source-reconciliation";
+import {
   CURRENT_SOURCE_ALARM_REVIEWS,
   inspectSourceAlarmReviews,
 } from "../../src/node/source-alarm-review";
@@ -37,9 +42,24 @@ describe("current-main 2026-09-17 source alarm review", () => {
     )).size).toBe(50);
 
     for (const review of REVIEWED_MAIN_2026_09_17_SOURCE_ALARMS) {
-      expect(CURRENT_SOURCE_ALARM_REVIEWS).toContainEqual(review);
-      expect(scan.alarms.some((alarm) => alarm.locator === review.locator))
-        .toBe(true);
+      if (SUPERSEDED_CI_SOURCE_RECONCILIATION_LOCATORS.has(review.locator)) {
+        const path = review.locator.split("#")[0]!;
+        const samePathReplacement = CURRENT_SOURCE_ALARM_REVIEWS.some((candidate) =>
+          candidate.locator.startsWith(`${path}#`)
+        );
+        const centralizedReplacement = CI_SOURCE_ALARM_DEBT_LINEAGE.currentLocators.some(
+          (locator) => CURRENT_SOURCE_ALARM_REVIEWS.some((candidate) =>
+            candidate.locator === locator
+          ),
+        );
+        expect(samePathReplacement || centralizedReplacement).toBe(true);
+        expect(scan.alarms.some((alarm) => alarm.locator === review.locator))
+          .toBe(false);
+      } else {
+        expect(CURRENT_SOURCE_ALARM_REVIEWS).toContainEqual(review);
+        expect(scan.alarms.some((alarm) => alarm.locator === review.locator))
+          .toBe(true);
+      }
     }
     for (const locator of SUPERSEDED_MAIN_2026_09_17_SOURCE_ALARM_LOCATORS) {
       expect(CURRENT_SOURCE_ALARM_REVIEWS.some((review) =>
@@ -155,8 +175,9 @@ describe("current-main 2026-09-17 source alarm review", () => {
         readFile(resolve(repositoryRoot, "packages/lattice-bridge/scripts/disposable-postgres-reset.ts"), "utf8"),
       ]);
 
-    expect(plan).toContain("constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600");
-    expect(plan).toContain("file.writeFile(JSON.stringify(plan, null, 2)");
+    expect(plan).toContain("writePrivateFileExclusive(resolve(planPath)");
+    expect(plan).toContain("Buffer.from(JSON.stringify(plan, null, 2)");
+    expect(plan).toContain("syncDirectory(dirname(resolve(planPath)))");
     expect(sequence).toContain("execFile(ffmpegPath");
     expect(sequence).toContain('"-i", sourcePath');
     expect(restore).toContain('"--exclude=.protected-instance", "--exclude=profiles"');

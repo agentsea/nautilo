@@ -27,7 +27,10 @@ import {
 const temporaryDirectories: string[] = [];
 
 const TABLES_ADDED_SINCE_THE_PRIOR_MIGRATION_ASSERTION = [
+  "public.chatgpt_registrations",
   "public.conversion_operations",
+  "public.external_operator_control_archive",
+  "public.external_operator_sessions",
   "public.foreground_memory_crypto_publication_receipts",
   "public.group_moderation_scopes",
   "public.message_deletion_receipts",
@@ -133,6 +136,30 @@ const IMMUTABLE_TASK_MIGRATION_MANIFEST = [
   {
     path: "0380_loud_beast.sql",
     sha256: "5287a3fcc6e4c48cab14cd4a1c69951360469dfe1132ff2f756e2fe4aa3b7234",
+  },
+] as const;
+
+/** Immutable external-operator transport, control, and audit migration bytes. */
+const IMMUTABLE_EXTERNAL_OPERATOR_MIGRATION_MANIFEST = [
+  {
+    path: "0381_married_barracuda.sql",
+    sha256: "27798cc120a87ca8b6d289bf5a4acba384bde84bd5c9fe7f2def5144dc0bc557",
+  },
+  {
+    path: "0382_zippy_jean_grey.sql",
+    sha256: "f6ab1fccafbd911fe930a3e846211d1276794251c98562cecb01ade25a7a4a27",
+  },
+  {
+    path: "0383_natural_zarda.sql",
+    sha256: "4e6d17ed9ae483fe29573e60e6ccbca242943c37a65617787c9562c13f58ec97",
+  },
+  {
+    path: "0384_heavy_saracen.sql",
+    sha256: "d40b99d3e610084fe55b8f7b0cbfc2bdab20b82844cf04fa1f074626280cd82f",
+  },
+  {
+    path: "0385_operator_control_archive_cascade.sql",
+    sha256: "80ff376b15d59816d08f95ef96733ab27e9f59abf8aed12daf80febbf755d091",
   },
 ] as const;
 
@@ -266,11 +293,11 @@ describe("migration inventory", () => {
     expect(inventory.missingSnapshotIndices).toContain(6);
     expect(inventory.missingSnapshotIndices).toContain(118);
     expect(inventory.latestSnapshotIndex).toBe(MIGRATION_TREE_BASELINE.tip);
-    expect(inventory.currentTables).toHaveLength(232);
+    expect(inventory.currentTables).toHaveLength(241);
     const currentTableLocators = new Set(
       inventory.currentTables.map((table) => table.locator),
     );
-    expect(TABLES_ADDED_SINCE_THE_PRIOR_MIGRATION_ASSERTION).toHaveLength(26);
+    expect(TABLES_ADDED_SINCE_THE_PRIOR_MIGRATION_ASSERTION).toHaveLength(29);
     for (const locator of TABLES_ADDED_SINCE_THE_PRIOR_MIGRATION_ASSERTION) {
       expect(currentTableLocators).toContain(locator);
     }
@@ -281,8 +308,8 @@ describe("migration inventory", () => {
       schema: "public",
       name: "session_messages",
     });
-    expect(inventory.currentColumns).toHaveLength(3186);
-    expect(inventory.currentConstraints).toHaveLength(890);
+    expect(inventory.currentColumns).toHaveLength(3310);
+    expect(inventory.currentConstraints).toHaveLength(936);
     expect(inventory.currentConstraints).toContainEqual({
       locator: "public.actors#foreign_key:actors_owner_id_users_id_fk",
       tableLocator: "public.actors",
@@ -294,7 +321,7 @@ describe("migration inventory", () => {
       onDelete: "cascade",
       onUpdate: "no action",
     });
-    expect(inventory.historicalCreatedTables).toHaveLength(248);
+    expect(inventory.historicalCreatedTables).toHaveLength(257);
     expect(inventory.historicalDroppedTables).toEqual([
       "public.collaboration_sessions",
       "public.grant_domain_envelope_acknowledgements",
@@ -484,10 +511,10 @@ describe("migration inventory", () => {
     expect(inventory.migrations.every((migration) => !migration.path.startsWith("/")))
       .toBe(true);
     expect(inventory.migrations.at(-1)).toEqual({
-      index: 380,
-      tag: "0380_loud_beast",
-      path: "0380_loud_beast.sql",
-      sha256: "5287a3fcc6e4c48cab14cd4a1c69951360469dfe1132ff2f756e2fe4aa3b7234",
+      index: 385,
+      tag: "0385_operator_control_archive_cascade",
+      path: "0385_operator_control_archive_cascade.sql",
+      sha256: "80ff376b15d59816d08f95ef96733ab27e9f59abf8aed12daf80febbf755d091",
     });
 
     const comparison = compareSchemaAndMigrationInventory(
@@ -513,11 +540,26 @@ describe("migration inventory", () => {
       path: migration.path,
       sha256: migration.sha256,
     }))).toEqual([...IMMUTABLE_TASK_MIGRATION_MANIFEST]);
-    expect(inventory.migrations.at(-1)).toEqual({
+    expect(inventory.migrations[380]).toEqual({
       index: 380,
       tag: "0380_loud_beast",
       path: "0380_loud_beast.sql",
       sha256: "5287a3fcc6e4c48cab14cd4a1c69951360469dfe1132ff2f756e2fe4aa3b7234",
+    });
+  });
+
+  test("pins the immutable external-operator migration tail without a DB", () => {
+    const directory = resolve(import.meta.dir, "../../../db/src/migrations");
+    const inventory = inventoryMigrationTree(directory);
+
+    expect(IMMUTABLE_EXTERNAL_OPERATOR_MIGRATION_MANIFEST).toHaveLength(5);
+    expect(inventory.migrations.slice(381, 386).map((migration) => ({
+      path: migration.path,
+      sha256: migration.sha256,
+    }))).toEqual([...IMMUTABLE_EXTERNAL_OPERATOR_MIGRATION_MANIFEST]);
+    expect(inventory.migrations.at(-1)).toMatchObject({
+      index: 385,
+      tag: "0385_operator_control_archive_cascade",
     });
   });
 

@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 
 import { DTO_BASELINE_DECLARATIONS } from "../../baseline/dto-declarations";
 import { BASELINE_REGISTRY } from "../../baseline/existing-debt";
+import { REVIEWED_PERSONAL_MEMORY_FUNDING_COVERAGE } from
+  "../../baseline/reviewed-personal-memory-funding-coverage";
 import {
   REVIEWED_MAIN_2026_08_15_SOURCE_ALARMS,
 } from "../../baseline/reviewed-main-2026-08-15-source-alarms";
@@ -9,6 +11,10 @@ import {
   REVIEWED_MAIN_2026_10_13_COVERAGE_ENTRIES,
 } from "../../baseline/reviewed-main-2026-10-13-coverage";
 import { CURRENT_SOURCE_ALARM_REVIEWS } from "../../src/node/source-alarm-review";
+import {
+  REVIEWED_CI_SOURCE_RECONCILIATION_ALARMS,
+  SUPERSEDED_CI_SOURCE_RECONCILIATION_LOCATORS,
+} from "../../baseline/reviewed-ci-source-reconciliation";
 
 const CURRENT_REFLECTION_METADATA_REASON =
   "This exact Reflection coordinate is limited by schema checks to opaque commitments, fixed outcomes, recovery versions, and closed waiting or failure codes; it cannot contain a prompt, Message body, generated reflection, credential, or private key.";
@@ -62,6 +68,16 @@ describe("reviewed 2026-08-15 encryption inventory", () => {
         entry.locator as (typeof CURRENT_REFLECTION_SEMANTIC_WORK_LOCATORS)[number],
       )) {
         expect(entry.plaintextReason).toBe(CURRENT_REFLECTION_METADATA_REASON);
+      } else if (entry.locator === "public.reflection_record_semantic_work.accepted_model_binding"
+        || entry.locator === "public.reflection_record_semantic_work.accepted_model_binding_generation") {
+        expect(REVIEWED_PERSONAL_MEMORY_FUNDING_COVERAGE).toContainEqual(entry);
+        expect(entry.metadataAllowlist).toEqual(
+          entry.locator.endsWith("_generation")
+            ? ["accepted_model_binding_generation"]
+            : ["version", "role", "modelId", "inputCommitment", "kind",
+              "humanUserId", "preferenceRevision", "funding.kind",
+              "funding.providerRoute", "funding.credentialId", "funding.credentialRevision"],
+        );
       } else {
         expect(entry.plaintextReason).toMatch(/content-free|writes no Record payload/);
         expect(entry.plaintextReason).toMatch(/prompts?|source content/);
@@ -140,7 +156,16 @@ describe("reviewed 2026-08-15 encryption inventory", () => {
       "packages/compose-lifecycle/src/lifecycle.ts#backup_export:9edc15f28c86b2a1:1",
     ]);
     for (const review of REVIEWED_MAIN_2026_08_15_SOURCE_ALARMS) {
-      expect(CURRENT_SOURCE_ALARM_REVIEWS).toContainEqual(review);
+      if (SUPERSEDED_CI_SOURCE_RECONCILIATION_LOCATORS.has(review.locator)) {
+        expect(CURRENT_SOURCE_ALARM_REVIEWS).not.toContainEqual(review);
+        const replacement = REVIEWED_CI_SOURCE_RECONCILIATION_ALARMS.find(
+          entry => entry.locator === review.locator,
+        );
+        expect(CURRENT_SOURCE_ALARM_REVIEWS.filter(entry => entry.locator === review.locator))
+          .toEqual(replacement ? [replacement] : []);
+      } else {
+        expect(CURRENT_SOURCE_ALARM_REVIEWS).toContainEqual(review);
+      }
     }
   });
 });

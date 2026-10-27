@@ -33,6 +33,10 @@ import {
   SUPERSEDED_RELEASE_RECONCILIATION_SOURCE_ALARM_LOCATORS,
 } from "../../baseline/reviewed-release-reconciliation-source-alarms";
 import {
+  REVIEWED_CI_SOURCE_RECONCILIATION_ALARMS,
+  SUPERSEDED_CI_SOURCE_RECONCILIATION_LOCATORS,
+} from "../../baseline/reviewed-ci-source-reconciliation";
+import {
   REVIEWED_TRUSTED_DEVELOPMENT_ENVIRONMENT_SOURCE_ALARMS,
   SUPERSEDED_TRUSTED_DEVELOPMENT_ENVIRONMENT_SOURCE_ALARM_LOCATORS,
 } from "../../baseline/reviewed-trusted-development-environment-source-alarms";
@@ -397,7 +401,11 @@ export const CURRENT_SOURCE_ALARM_REVIEWS: readonly SourceAlarmReview[] = review
   .filter((review) =>
     !SUPERSEDED_RELEASE_RECONCILIATION_SOURCE_ALARM_LOCATORS.has(review.locator)
   )
-  .concat(REVIEWED_RELEASE_RECONCILIATION_SOURCE_ALARMS));
+  .concat(REVIEWED_RELEASE_RECONCILIATION_SOURCE_ALARMS))
+  .filter((review) =>
+    !SUPERSEDED_CI_SOURCE_RECONCILIATION_LOCATORS.has(review.locator)
+  )
+  .concat(REVIEWED_CI_SOURCE_RECONCILIATION_ALARMS);
 
 const LOCATOR_PATTERN =
   /^(?<path>[^#]+)#(?<kind>[a-z_]+):(?<signature>[0-9a-f]{16}):(?<occurrence>[1-9][0-9]*)$/u;

@@ -44,6 +44,17 @@ import { REVIEWED_MAIN_2026_09_09_PLATFORM_SOURCE_ALARMS } from
   "../../baseline/reviewed-main-2026-09-09-platform-source-alarms";
 import { CURRENT_SOURCE_ALARM_REVIEWS } from "../../src/node/source-alarm-review";
 import { REVIEWED_M318_DTO_DECLARATIONS, SUPERSEDED_M318_DTO_LOCATORS } from "../../baseline/reviewed-m318-dto";
+import { REVIEWED_CI_DTO_REPLACEMENTS } from "../../baseline/reviewed-ci-dto";
+import { REVIEWED_RELEASE_RECONCILIATION_DTO_DECLARATIONS } from
+  "../../baseline/reviewed-release-reconciliation-dto";
+import type { DtoDeclaration } from "../../src/node/dto-inventory";
+
+const currentCiDtoByLocator = new Map<string, DtoDeclaration>(REVIEWED_CI_DTO_REPLACEMENTS.map(
+  (entry) => [entry.locator, entry.declaration] as const,
+));
+const releaseDtoByLocator = new Map<string, DtoDeclaration>(REVIEWED_RELEASE_RECONCILIATION_DTO_DECLARATIONS.map(
+  (entry) => [entry.locator, entry] as const,
+));
 
 function replaceReviewedSignature(
   locator: string,
@@ -147,7 +158,10 @@ describe("reviewed main 2026-09-03 encryption inventory", () => {
         REVIEWED_MAIN_2026_09_03_DTO_DECLARATIONS.some((prior) =>
           prior.locator === declaration.locator
         )
-      );
+      ).map((declaration) => {
+        const release = releaseDtoByLocator.get(declaration.locator) ?? declaration;
+        return currentCiDtoByLocator.get(declaration.locator) ?? release;
+      });
     expect(octoberReplacements.map((declaration) => declaration.locator)).toEqual([
       "http:request_response:GET /api/auth/whoami",
       "http:request_response:GET /api/costs",
@@ -160,6 +174,8 @@ describe("reviewed main 2026-09-03 encryption inventory", () => {
         REVIEWED_MAIN_2026_09_03_DTO_DECLARATIONS.some((prior) =>
           prior.locator === declaration.locator
         )
+      ).map((declaration) =>
+        currentCiDtoByLocator.get(declaration.locator) ?? declaration
       );
     expect(taskProtectionReplacements.map((declaration) => declaration.locator))
       .toEqual(["http:request_response:GET /api/tasks/pending-attention"]);
