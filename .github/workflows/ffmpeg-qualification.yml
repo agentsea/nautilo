@@ -182,3 +182,4 @@ jobs:
           apps/desktop/tests/unit/media-process.test.ts
           apps/desktop/tests/unit/ffmpeg-media-metadata.test.ts
           apps/desktop/tests/unit/ffmpeg-distribution.test.ts
+          apps/desktop/tests/unit/ffmpeg-runtime.test.ts

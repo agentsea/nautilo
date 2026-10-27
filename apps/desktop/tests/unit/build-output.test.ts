@@ -2,6 +2,8 @@ import { expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
+import { WinPackager } from "electron-builder";
+import ffmpegDistribution from "../../scripts/ffmpeg-distribution.json";
 
 const desktopRoot = join(import.meta.dir, "../..");
 const electronBuilderYml = readFileSync(join(desktopRoot, "electron-builder.yml"), "utf-8");
@@ -94,6 +96,23 @@ test("macOS and Windows packaging vendor managed FFmpeg before packaging", () =>
   const vendorFfmpeg = readFileSync(join(desktopRoot, "scripts/vendor-ffmpeg.ts"), "utf-8");
   expect(vendorFfmpeg).toContain('writeFileSync(join(root, "manifest.json")');
   expect(vendorFfmpeg).toContain("JSON.stringify({ ffmpeg: ffmpegManifest }");
+});
+
+test("Windows signing leaves the pinned ffmpeg.exe and its DLLs unsigned", () => {
+  // Electron Builder signs every .exe copied through extraResources unless a
+  // "!" pattern in win.signExts excludes it. A signed ffmpeg.exe no longer
+  // matches its pinned hash in after-pack.cjs or at runtime.
+  const winBlock = electronBuilderYml.match(/^win:\n((?:[ \t]+.*\n|[ \t]*\n)*)/m)?.[1] ?? "";
+  const signExts = [...(winBlock.match(/^ {2}signExts:\n((?: {4}- .*\n)+)/m)?.[1] ?? "").matchAll(/^ {4}- "([^"]+)"/gm)].map((match) => match[1]!);
+  expect(signExts).toEqual(["!ffmpeg.exe"]);
+  const shouldSignFile = (file: string, fallback = false): boolean =>
+    (WinPackager.prototype as unknown as { shouldSignFile(file: string, fallback?: boolean): boolean })
+      .shouldSignFile.call({ platformSpecificBuildOptions: { signExts } }, file, fallback);
+  const ffmpegFiles = ffmpegDistribution.binaries.filter((file) => file.path.startsWith("win-x64/")).map((file) => `resources/tools-ffmpeg/${file.path}`);
+  expect(ffmpegFiles.some((file) => file.endsWith("/ffmpeg.exe"))).toBe(true);
+  for (const file of ffmpegFiles) expect(shouldSignFile(file), file).toBe(false);
+  expect(shouldSignFile("Nautilo.exe", true)).toBe(true);
+  expect(shouldSignFile("resources/bun/bun.exe")).toBe(true);
 });
 
 test("macOS package builds vendor both Darwin Sharp native package trees into the unpacked runtime path", () => {

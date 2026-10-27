@@ -131,6 +131,12 @@ win:
   target:
     - nsis
   icon: assets/icon.ico
+  # Electron Builder signs every .exe it copies, including the supplier's
+  # ffmpeg.exe from extraResources. Signing changes its bytes, so after-pack.cjs
+  # and the runtime would reject the pinned hash. Nautilo.exe and the installer
+  # stay signed. tests/unit/build-output.test.ts guards this exclusion.
+  signExts:
+    - "!ffmpeg.exe"
 
 linux:
   target:

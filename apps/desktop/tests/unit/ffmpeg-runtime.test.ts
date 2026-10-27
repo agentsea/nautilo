@@ -176,11 +176,17 @@ describe("probeDesktopFfmpeg", () => {
     expect(result).toMatchObject({ ok: false, code: "FFMPEG_UNAVAILABLE" });
   });
 
-  test("a packaged Windows runtime verifies ffmpeg.exe and every DLL beside it", async () => {
-    const root = makeTempRoot(); const resourcesPath = join(root, "resources");
+  function writePackagedWindowsFfmpeg(): { resourcesPath: string; binary: string } {
+    const resourcesPath = join(makeTempRoot(), "resources");
     const binary = join(resourcesPath, "tools-ffmpeg", "win-x64", "bin", "ffmpeg.exe");
-    mkdirSync(join(binary, ".."), { recursive: true }); writeFileSync(binary, "fixture");
+    mkdirSync(join(binary, ".."), { recursive: true });
+    writeFileSync(binary, "fixture");
     writeRuntimeManifest(join(resourcesPath, "tools-ffmpeg", "manifest.json"), "win-x64");
+    return { resourcesPath, binary };
+  }
+
+  test("a packaged Windows runtime verifies ffmpeg.exe and every DLL beside it", async () => {
+    const { resourcesPath, binary } = writePackagedWindowsFfmpeg();
     const verified = new Map<string, string>();
     const result = await probeDesktopFfmpeg({ isPackaged: true, resourcesPath, platformKey: "win-x64", environment: {},
       verifyFile: async (file, sha) => { verified.set(file, sha); return true; },
@@ -194,10 +200,7 @@ describe("probeDesktopFfmpeg", () => {
   });
 
   test("an altered Windows DLL refuses the managed runtime", async () => {
-    const root = makeTempRoot(); const resourcesPath = join(root, "resources");
-    const binary = join(resourcesPath, "tools-ffmpeg", "win-x64", "bin", "ffmpeg.exe");
-    mkdirSync(join(binary, ".."), { recursive: true }); writeFileSync(binary, "fixture");
-    writeRuntimeManifest(join(resourcesPath, "tools-ffmpeg", "manifest.json"), "win-x64");
+    const { resourcesPath } = writePackagedWindowsFfmpeg();
     const result = await probeDesktopFfmpeg({ isPackaged: true, resourcesPath, platformKey: "win-x64", environment: {},
       verifyFile: async file => !file.endsWith("avcodec-63.dll"),
     });
@@ -205,10 +208,7 @@ describe("probeDesktopFfmpeg", () => {
   });
 
   test("a packaged Windows runtime lets the integrity check accept replaced LGPL files only for an unsigned app", async () => {
-    const root = makeTempRoot(); const resourcesPath = join(root, "resources");
-    const binary = join(resourcesPath, "tools-ffmpeg", "win-x64", "bin", "ffmpeg.exe");
-    mkdirSync(join(binary, ".."), { recursive: true }); writeFileSync(binary, "fixture");
-    writeRuntimeManifest(join(resourcesPath, "tools-ffmpeg", "manifest.json"), "win-x64");
+    const { resourcesPath } = writePackagedWindowsFfmpeg();
     let asked = 0;
     for (const unsigned of [true, false]) {
       resetDesktopFfmpegProbeCache();

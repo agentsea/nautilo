@@ -38,7 +38,9 @@ async function main(): Promise<void> {
       // The exact ZIP is hash-verified before extraction. Only declared files
       // enter the app; no pkgconfig metadata or incidental executables ship.
       if (key === "win-x64") extractZipOnWindows(archive, extracted);
-      else execFileSync("unzip", ["-q", archive, "-d", extracted]);
+      else {
+        execFileSync("unzip", ["-q", archive, "-d", extracted]);
+      }
       for (const file of [...ffmpegDistribution.binaries, ...ffmpegDistribution.notices].filter(file => file.path.startsWith(`${arch}/`))) {
         const source = realpathSync(join(extracted, file.member));
         if (!source.startsWith(realpathSync(extracted) + sep)) throw new Error(`FFmpeg archive member escapes its root: ${file.member}`);

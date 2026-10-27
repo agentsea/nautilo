@@ -89,6 +89,10 @@ In the installation directory, `resources\tools-ffmpeg` contains:
   The Mac executables and libraries are not included.
 - `manifest.json`, `distribution.json` and `PROVENANCE.md` as on the Mac.
 
+Signed releases sign `Nautilo.exe` and the installer but leave `ffmpeg.exe`
+unsigned (`win.signExts` in `electron-builder.yml`), so the supplier's bytes
+keep their pinned hash.
+
 To rebuild, extract `source\build-source.tar.gz` and run
 `.\build.ps1 -Arch win64 -Variant lgpl` with the documented Docker and 7-Zip
 tools. The script's default is GPL: explicitly select `-Variant lgpl`.
