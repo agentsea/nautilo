@@ -31,6 +31,10 @@ import {
   SUPERSEDED_RELEASE_RECONCILIATION_SOURCE_ALARM_LOCATORS,
 } from "../../baseline/reviewed-release-reconciliation-source-alarms";
 import {
+  REVIEWED_CI_SOURCE_RECONCILIATION_ALARMS,
+  SUPERSEDED_CI_SOURCE_RECONCILIATION_LOCATORS,
+} from "../../baseline/reviewed-ci-source-reconciliation";
+import {
   REVIEWED_TRUSTED_DEVELOPMENT_ENVIRONMENT_SOURCE_ALARMS,
   SUPERSEDED_TRUSTED_DEVELOPMENT_ENVIRONMENT_SOURCE_ALARM_LOCATORS,
 } from "../../baseline/reviewed-trusted-development-environment-source-alarms";
@@ -413,7 +417,11 @@ describe("source alarm review closure", () => {
       .filter((review) =>
         !SUPERSEDED_RELEASE_RECONCILIATION_SOURCE_ALARM_LOCATORS.has(review.locator)
       )
-      .concat(REVIEWED_RELEASE_RECONCILIATION_SOURCE_ALARMS)));
+      .concat(REVIEWED_RELEASE_RECONCILIATION_SOURCE_ALARMS))
+      .filter((review) =>
+        !SUPERSEDED_CI_SOURCE_RECONCILIATION_LOCATORS.has(review.locator)
+      )
+      .concat(REVIEWED_CI_SOURCE_RECONCILIATION_ALARMS));
   });
 
   test("maps every exact baseline alarm to owned, release-blocking closure", () => {

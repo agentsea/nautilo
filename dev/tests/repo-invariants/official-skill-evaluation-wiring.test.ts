@@ -80,7 +80,8 @@ describe("official skill evaluation repository wiring", () => {
       with: {
         name: "official-skill-evaluation-${{ github.run_id }}",
         path: "dev/evals/official-skills/.results/",
-        "if-no-files-found": "warn",
+        "include-hidden-files": true,
+        "if-no-files-found": "error",
         "retention-days": 14,
       },
     });

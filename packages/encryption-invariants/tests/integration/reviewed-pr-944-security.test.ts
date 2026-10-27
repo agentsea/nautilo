@@ -6,7 +6,7 @@ import { SUPERSEDED_PR_944_DTO_LOCATORS } from "../../baseline/reviewed-pr-944-d
 const OBJECT_SIGNER_EVIDENCE =
   'accessSignerEvidence:{evidenceBytesBase64url:string;kind:"agent_runtime_publication"|"processor_authorization"}[];';
 const MEMORY_SIGNER_EVIDENCE =
-  'accessSignerEvidence:{committerDeviceId:string;hostAuthorizationRevision:number;kind:"human_device";signingPublicKeyBase64url:string;subjectHumanId:string}|{deviceId:string;hostAuthorizationRevision:number;kind:"evidence_issuer_human_device";signingPublicKeyBase64url:string;subjectHumanId:string}|{evidenceBytesBase64url:string;kind:"agent_runtime_publication"|"processor_authorization"}|{kind:"foreground_agent_accepted_execution";planBytesBase64url:string;planDigestBase64url:string}[];';
+  'accessSignerEvidence:{committerDeviceId:string;hostAuthorizationRevision:number;kind:"human_device";signingPublicKeyBase64url:string;subjectHumanId:string}|{deviceId:string;hostAuthorizationRevision:number;kind:"evidence_issuer_human_device";signingPublicKeyBase64url:string;subjectHumanId:string}|{evidenceBytesBase64url:string;kind:"agent_runtime_publication"|"processor_authorization"}|{evidenceBytesBase64url:string;kind:"task_runtime_signer_certificate"}|{kind:"foreground_agent_accepted_execution";planBytesBase64url:string;planDigestBase64url:string}[];';
 const MEMORY_SIGNER_EVIDENCE_LOCATORS = new Set([
   "http:request_response:GET /api/memory/:id",
   "http:request_response:GET /api/memory/brief/readonly",
