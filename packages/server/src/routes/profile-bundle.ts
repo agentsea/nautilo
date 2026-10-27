@@ -1,6 +1,7 @@
 import { randomUUID, createHash, timingSafeEqual } from "node:crypto";
 import { physicalPathFromStorageUri as absPathFromStorageUri } from "@nautilo/db";
-import { mkdir, rm, writeFile, rename, unlink } from "node:fs/promises";
+import { mkdir, rm, writeFile, unlink } from "node:fs/promises";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 import { existsSync, readFileSync, createWriteStream, readdirSync } from "node:fs";
 import { isAbsolute, join, resolve, relative, sep } from "node:path";
 import { tmpdir } from "node:os";
@@ -1608,7 +1609,7 @@ function createArtifactJournalStore(
       const target = pathFor(planToken, artifactId);
       const tmp = `${target}.tmp-${randomUUID()}`;
       await writeFile(tmp, JSON.stringify(record), "utf8");
-      await rename(tmp, target);
+      await renameWithWindowsRetry(tmp, target);
     },
     finalize: async (planToken, artifactId) => {
       const target = pathFor(planToken, artifactId);
@@ -1620,7 +1621,7 @@ function createArtifactJournalStore(
       const updated: ArtifactJournalRecord = { ...rec, state: "finalized" };
       const tmp = `${target}.tmp-${randomUUID()}`;
       await writeFile(tmp, JSON.stringify(updated), "utf8");
-      await rename(tmp, target);
+      await renameWithWindowsRetry(tmp, target);
     },
     remove: async (planToken, artifactId) => {
       const target = pathFor(planToken, artifactId);
@@ -1654,7 +1655,7 @@ function createArtifactJournalStore(
         qDir,
         `${journalFileName(planToken, artifactId)}.${Date.now()}`,
       );
-      await rename(target, dest).catch(() => {
+      await renameWithWindowsRetry(target, dest).catch(() => {
         // best-effort move; if it fails the record stays in place (retryable).
       });
     },

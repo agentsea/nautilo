@@ -1,6 +1,7 @@
 import { constants } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { lstat, open, opendir, realpath, rename, rmdir, unlink, writeFile } from "node:fs/promises";
+import { lstat, open, opendir, realpath, rmdir, unlink, writeFile } from "node:fs/promises";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 import { dirname, join, resolve, relative } from "node:path";
 import { containsHostPath } from "./host-paths";
 import { CodexHostError, type ProfileHomeRemovalFilesystem, type ProfileHomeRemovalSpec } from "./contracts";
@@ -29,7 +30,7 @@ export const nodeProfileHomeRemovalFilesystem: ProfileHomeRemovalFilesystem = {
       quarantine = await nextQuarantinePath(root);
       // Rename moves the exact directory entry atomically. Everything after
       // this point acts only on the unguessable quarantine sibling.
-      await rename(path, quarantine);
+      await renameWithWindowsRetry(path, quarantine);
       moved = true;
       await input.assertAuthorized();
       await assertExactHome(quarantine, input);
@@ -155,7 +156,7 @@ async function restoreExactQuarantine(quarantine: string, path: string, input: P
     await restoreExactMarker(quarantine, input);
     try { await lstat(path); return; }
     catch (error) { if (!isMissing(error)) return; }
-    await rename(quarantine, path);
+    await renameWithWindowsRetry(quarantine, path);
   } catch { /* preserve uncertain quarantine; it is never a deletion target */ }
 }
 

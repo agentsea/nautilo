@@ -6,11 +6,11 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
-  renameSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
+import { renameWithWindowsRetrySync } from "@nautilo/config/private-filesystem";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { __resetResolvedInstanceForTests } from "@nautilo/config";
@@ -1574,7 +1574,7 @@ describe("devStackCmd", () => {
     const backupPath = `${indexPath}.d170-unit-test-bak`;
     const hadIndex = existsSync(indexPath);
     if (hadIndex) {
-      renameSync(indexPath, backupPath);
+      renameWithWindowsRetrySync(indexPath, backupPath);
     }
 
     const errLines: string[] = [];
@@ -1610,7 +1610,7 @@ describe("devStackCmd", () => {
     } finally {
       console.error = origErr;
       if (hadIndex && existsSync(backupPath)) {
-        renameSync(backupPath, indexPath);
+        renameWithWindowsRetrySync(backupPath, indexPath);
       }
     }
   });

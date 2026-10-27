@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import * as fsp from "node:fs/promises";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 import * as os from "node:os";
 import * as path from "node:path";
 import { createDefaultManifest, serializeVideoHtml } from "../../../../packages/first-party-apps/video/src/video-document";
@@ -36,7 +37,7 @@ describe("Current Folder sequence export host", () => {
   });
 
   test("rereads the saved document, resolves its ref canonically, and moves the real rendered file to the chosen path", async () => {
-    const value = await fixture("media/a b;$(x).mp4"); const underscored = path.join(value.root, "test_video.html"); await fsp.rename(value.documentPath, underscored); value.documentPath = underscored; const final = path.join(value.root, "chosen final.mp4"); let authorizedPath = "";
+    const value = await fixture("media/a b;$(x).mp4"); const underscored = path.join(value.root, "test_video.html"); await renameWithWindowsRetry(value.documentPath, underscored); value.documentPath = underscored; const final = path.join(value.root, "chosen final.mp4"); let authorizedPath = "";
     const result = await exportCurrentFolderSequence({ ...value, activeRoot: value.root, expectedSha256: value.sha, ffmpegPath: "/managed/ffmpeg", chooseOutput: async () => final,
       probeSource: async (_ffmpeg, source) => (authorizedPath = source, { hasVideo: true, hasAudio: false }),
       render: async (_plan, deps) => { expect(deps.sources.get("media")?.canonicalPath).toBe(authorizedPath); expect(authorizedPath).not.toBe(await fsp.realpath(value.sourcePath)); expect(path.relative(value.root, deps.outputPath).startsWith("..")).toBe(false); await fsp.writeFile(deps.outputPath, "rendered"); return { status: "succeeded", sizeBytes: 8, warnings: [] }; },
@@ -121,7 +122,7 @@ describe("Current Folder sequence export host", () => {
     const result = await exportCurrentFolderSequence({ activeRoot: value.root, documentPath: value.documentPath, expectedSha256: value.sha, ffmpegPath: "/ffmpeg", chooseOutput: async () => final,
       probeSource: async () => ({ hasVideo: true, hasAudio: false }),
       render: async (_plan, deps) => { await fsp.writeFile(deps.outputPath, "rendered"); return { status: "succeeded", sizeBytes: 8, warnings: [] }; },
-      link: async (source, destination) => { await fsp.link(source, destination); await fsp.rename(destination, moved); },
+      link: async (source, destination) => { await fsp.link(source, destination); await renameWithWindowsRetry(destination, moved); },
     });
     expect(result).toEqual({ status: "succeeded", label: "moved-after-save.mp4", sizeBytes: 8, warnings: [] });
     expect(await fsp.readFile(moved, "utf8")).toBe("rendered");

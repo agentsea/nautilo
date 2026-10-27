@@ -20,12 +20,12 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
-  renameSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { spawnSync } from "node:child_process";
+import { renameWithWindowsRetrySync } from "@nautilo/config/private-filesystem";
 import { basename, dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -174,12 +174,12 @@ async function fetchVerifiedTarball(spec: SharpDarwinPackage, fetchImpl: typeof 
 function installAtomically(staging: string, vendorDir: string): void {
   const backup = `${vendorDir}.previous-${randomBytes(8).toString("hex")}`;
   const hadCurrent = existsSync(vendorDir);
-  if (hadCurrent) renameSync(vendorDir, backup);
+  if (hadCurrent) renameWithWindowsRetrySync(vendorDir, backup);
   try {
-    renameSync(staging, vendorDir);
+    renameWithWindowsRetrySync(staging, vendorDir);
     if (hadCurrent) rmSync(backup, { recursive: true, force: true });
   } catch (error) {
-    if (hadCurrent && !existsSync(vendorDir) && existsSync(backup)) renameSync(backup, vendorDir);
+    if (hadCurrent && !existsSync(vendorDir) && existsSync(backup)) renameWithWindowsRetrySync(backup, vendorDir);
     throw error;
   }
 }

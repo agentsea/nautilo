@@ -28,6 +28,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import log from "electron-log/main";
+import { renameWithWindowsRetrySync } from "@nautilo/config/private-filesystem";
 import {
   recentFoldersFilePath,
   legacyRecentFoldersFilePath,
@@ -73,7 +74,7 @@ export function migrateLegacyFile(): void {
 
   try {
     fs.mkdirSync(path.dirname(newPath), { recursive: true });
-    fs.renameSync(oldPath, newPath);
+    renameWithWindowsRetrySync(oldPath, newPath);
     log.info(
       `[desktop] migrated recent-workspaces.json → recent-current-folders.json (D079 Phase 1)`,
     );

@@ -1,6 +1,7 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { chmod, copyFile, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, copyFile, lstat, mkdir, open, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { createGunzip } from "node:zlib";
 import type {
@@ -229,7 +230,7 @@ export class NodeComputerUseHostStorage implements ComputerUseHostStorage {
     await writeFile(join(payload, RELEASE_MARKER), `${release.archive.sha256}\n`, { flag: "wx", mode: 0o400 });
     await chmod(payload, 0o700);
     const destination = this.releaseRoot(root, release.archive.sha256);
-    try { await rename(payload, destination); } catch (error) {
+    try { await renameWithWindowsRetry(payload, destination); } catch (error) {
       const code = error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : null;
       if (code !== "EEXIST" && code !== "ENOTEMPTY") throw error;
       // Crash recovery: an exact previously published digest root wins. A
@@ -245,7 +246,7 @@ export class NodeComputerUseHostStorage implements ComputerUseHostStorage {
   async writeRecord(kind: "active" | "rollback", record: ComputerUseHostRecord): Promise<void> {
     if (parseRecord(record) === null) throw new Error("record rejected"); const root = await this.root(); const path = join(root, "records", `${kind}.json`);
     const temporary = `${path}.${randomUUID()}.tmp`; await writeFile(temporary, `${JSON.stringify(record)}\n`, { flag: "wx", mode: 0o600 });
-    try { await rename(temporary, path); } catch (error) { await rm(temporary, { force: true }); throw error; }
+    try { await renameWithWindowsRetry(temporary, path); } catch (error) { await rm(temporary, { force: true }); throw error; }
   }
 
   private async createStage(): Promise<string> {

@@ -5,7 +5,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { secureFilesystemPath, writePrivateFileExclusive } from "@nautilo/config/private-filesystem";
+import { renameWithWindowsRetry, secureFilesystemPath, writePrivateFileExclusive } from "@nautilo/config/private-filesystem";
 
 import { payloadByteCount, snapshotFromBytes } from "./hash.ts";
 import {
@@ -599,7 +599,7 @@ async function writeAtomicJson(
     } finally {
       await handle.close();
     }
-    await fs.rename(tmpPath, filePath);
+    await renameWithWindowsRetry(tmpPath, filePath);
     await options.onManifestAtomicWriteBoundary?.("manifest_renamed");
     // Windows retains the private DACL assigned to the temporary file.
     // Do not rewrite that DACL after publication while readers can hold it.

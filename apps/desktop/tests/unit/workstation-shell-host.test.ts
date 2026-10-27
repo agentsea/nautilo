@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { stat } from "node:fs/promises";
+import { renameWithWindowsRetrySync } from "@nautilo/config/private-filesystem";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createWorkstationShellHost } from "../../electron/workstation-shell-host";
@@ -80,7 +81,7 @@ describe("workstation shell consent compatibility", () => {
     expect(await host.consentStatus(root)).toBe("durable");
 
     const moved = join(parent, "old-project");
-    renameSync(root, moved);
+    renameWithWindowsRetrySync(root, moved);
     mkdirSync(root);
     expect(await host.consentStatus(root)).toBe("none");
   });

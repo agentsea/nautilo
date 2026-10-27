@@ -510,6 +510,7 @@ import {
 import { parseProfileFromArgv } from "./auth/profile-from-argv";
 import { computeUserDataDirName } from "./user-data-dir-name";
 import { resolveInstance, resolveNautiloRootDir } from "@nautilo/config";
+import { renameWithWindowsRetry, renameWithWindowsRetrySync } from "@nautilo/config/private-filesystem";
 import * as os from "node:os";
 import type { RelayFsChangeEvent, RelayStatus } from "@nautilo/relay";
 import { ipcPayloadFromRelayFsChange } from "./local-file-dispatch/change-event.ts";
@@ -1884,7 +1885,7 @@ async function probePickedVideoFromCurrentFolder(documentPath: unknown): Promise
       return { ok: false, error: { code: "unsupported_type" } };
     }
     const namedSource = path.join(importedDirectory, `source.${metadata.extension}`);
-    await fsp.rename(importedSource, namedSource);
+    await renameWithWindowsRetry(importedSource, namedSource);
     const mediaRef = path.relative(path.dirname(canonicalDocument), namedSource).split(path.sep).join("/");
     // The first V1 project ref may not traverse: requiring source media below
     // the document folder keeps the document-relative resolver closed.
@@ -2007,7 +2008,7 @@ function migrateLegacyCurrentFolderFile(): void {
   if (!oldExists) return;
 
   try {
-    fs.renameSync(LEGACY_WORKSPACE_FILE, CURRENT_FOLDER_FILE);
+    renameWithWindowsRetrySync(LEGACY_WORKSPACE_FILE, CURRENT_FOLDER_FILE);
     log.info(
       `[desktop] migrated workspace.json → current-folder.json`,
     );
@@ -2183,7 +2184,7 @@ const dynamicDocumentMutationFileAdapter: GuardedFileAdapter = {
         throw new Error(
           "Desktop document path drifted before atomic replacement",
         );
-      await fsp.rename(temporary, canonical);
+      await renameWithWindowsRetry(temporary, canonical);
     } catch (error) {
       await fsp.rm(temporary, { force: true }).catch(() => undefined);
       throw error;
@@ -2231,7 +2232,7 @@ const dynamicDocumentMutationFileAdapter: GuardedFileAdapter = {
       if (!publishCurrent.equals(Buffer.from(expected.bytes))) {
         return { kind: "conflict" };
       }
-      await fsp.rename(temporary, publishTarget);
+      await renameWithWindowsRetry(temporary, publishTarget);
       return { kind: "applied" };
     } finally {
       await fsp.rm(temporary, { force: true }).catch(() => undefined);
@@ -2275,7 +2276,7 @@ const dynamicDocumentMutationFileAdapter: GuardedFileAdapter = {
     );
   },
   async rename(from, to) {
-    await fsp.rename(
+    await renameWithWindowsRetry(
       await dynamicDocumentMutationFileAdapter.canonicalize(from),
       await dynamicDocumentMutationFileAdapter.canonicalize(to),
     );
@@ -2495,7 +2496,7 @@ function workingFolderBootstrapOptions(): WorkingFolderBootstrapOptions {
           mode: 0o600,
         });
       },
-      rename: (from, to) => fs.renameSync(from, to),
+      rename: renameWithWindowsRetrySync,
       unlink: (filePath) => fs.unlinkSync(filePath),
     },
     dirname: (filePath) => path.dirname(filePath),
@@ -10671,7 +10672,7 @@ ipcMain.handle(
           const previewToken = `preview_${randomUUID().replace(/-/g, "")}`;
           const outputPath = path.join(parentDir, "preview.mp4");
           try {
-            await fsp.rename(output.outputPath, outputPath);
+            await renameWithWindowsRetry(output.outputPath, outputPath);
             mediaProxyOutputs.set(outputRef, {
               lifetime: new AbortController(),
               ownerId: e.sender.id,
@@ -11058,7 +11059,7 @@ registerFsStructuralIpcHandlers({
   fs: {
     readFile: (filePath) => fsp.readFile(filePath),
     writeFile: (filePath, data) => fsp.writeFile(filePath, data),
-    rename: (from, to) => fsp.rename(from, to),
+    rename: renameWithWindowsRetry,
     unlink: (filePath) => fsp.unlink(filePath),
   },
   shell,

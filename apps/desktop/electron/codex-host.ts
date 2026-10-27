@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { chmod, lstat, mkdir, readFile, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, realpath, stat, unlink, writeFile } from "node:fs/promises";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 import { dirname, isAbsolute, join } from "node:path";
 import type {
   BindingOpenScope,
@@ -1404,7 +1405,7 @@ export const nodeCodexHostFilesystem = {
   writeFile: (path: string, contents: string, options: { readonly mode: number; readonly flag: "wx" | "w" }) => writeFile(path, contents, options).then(() => undefined),
   readFile: (path: string) => readFile(path, "utf8"),
   unlink,
-  rename,
+  rename: renameWithWindowsRetry,
 } satisfies HostFilesystem;
 
 export interface CodexBindingPersistence {
@@ -1419,7 +1420,7 @@ const nodeCodexBindingPersistence: CodexBindingPersistence = {
   mkdir,
   readFile: (path) => readFile(path, "utf8"),
   writeFile: (path, contents, options) => writeFile(path, contents, options).then(() => undefined),
-  rename,
+  rename: renameWithWindowsRetry,
   unlink,
 } satisfies CodexBindingPersistence;
 

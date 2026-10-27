@@ -1,4 +1,5 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import ts from "typescript";
 import {
@@ -398,7 +399,7 @@ export async function buildAgentToolBundle(options: {
   try {
     const builtPath = bundleOutput.path;
     if (builtPath !== outputFile) {
-      await rename(builtPath, outputFile);
+      await renameWithWindowsRetry(builtPath, outputFile);
     }
   } catch (err) {
     return {

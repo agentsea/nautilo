@@ -6,7 +6,7 @@ import { createReadStream, existsSync, statSync } from "node:fs";
 import * as nodeFs from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, posix, resolve } from "node:path";
-import { ensurePrivateDirectory, resolveLinkedLocation, secureFilesystemPath } from "@nautilo/config/private-filesystem";
+import { ensurePrivateDirectory, renameWithWindowsRetry, resolveLinkedLocation, secureFilesystemPath } from "@nautilo/config/private-filesystem";
 
 import {
   __resetResolvedInstanceForTests,
@@ -913,7 +913,7 @@ export async function ensureCanonicalConfigLayout(instanceRootDir: string): Prom
   if (legacyKind === "other") {
     // Compatibility writers may atomically rename over the symlink. Their
     // completed file is authoritative; move it into the narrow directory.
-    await nodeFs.rename(legacy, canonical);
+    await renameWithWindowsRetry(legacy, canonical);
   } else if (legacyKind === "symlink") {
     // Preserve readable content from a legacy/nonstandard link before
     // replacing it with the canonical relative target.
@@ -3833,7 +3833,7 @@ export class ComposeDriver {
     const temporary = `${composeEnvPath}.source-sha-${process.pid}-${randomBytes(6).toString("hex")}`;
     try {
       await nodeFs.writeFile(temporary, refreshed, { mode: 0o600, flag: "wx" });
-      await nodeFs.rename(temporary, composeEnvPath);
+      await renameWithWindowsRetry(temporary, composeEnvPath);
     } catch (error) {
       await nodeFs.rm(temporary, { force: true }).catch(() => {});
       throw new Error(
@@ -4232,7 +4232,7 @@ export class ComposeDriver {
       encoding: "utf8",
       mode: 0o600,
     });
-    await nodeFs.rename(temporary, target);
+    await renameWithWindowsRetry(temporary, target);
   }
 
   async restart(profile: ComposeDriverProfile, opts: RestartOptions = {}): Promise<void> {

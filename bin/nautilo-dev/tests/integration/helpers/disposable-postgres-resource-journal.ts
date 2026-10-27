@@ -1,10 +1,10 @@
 /** Disposable PostgreSQL test-only exact resource ownership. Never prunes Docker or removes images. */
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { existsSync, linkSync, lstatSync, readFileSync, readdirSync, renameSync, rmSync, unlinkSync } from "node:fs";
+import { existsSync, linkSync, lstatSync, readFileSync, readdirSync, rmSync, unlinkSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { homedir, tmpdir } from "node:os";
-import { ensurePrivateDirectorySync, isPrivateFilesystemPath, writePrivateFileExclusiveSync } from "@nautilo/config/private-filesystem";
+import { ensurePrivateDirectorySync, isPrivateFilesystemPath, renameWithWindowsRetrySync, writePrivateFileExclusiveSync } from "@nautilo/config/private-filesystem";
 
 const JOURNAL_VERSION = 1 as const;
 const RUN_RE = /^disposable-accept-[a-z0-9]{12}$/;
@@ -119,7 +119,7 @@ function writeOwnerOnly(path: string, journal: DisposablePostgresResourceJournal
       linkSync(temporary, path);
       unlinkSync(temporary);
     } else {
-      renameSync(temporary, path);
+      renameWithWindowsRetrySync(temporary, path);
     }
   } catch (error) {
     rmSync(temporary, { force: true });

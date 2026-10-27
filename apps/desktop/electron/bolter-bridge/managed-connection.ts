@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, open, readFile, rename, unlink } from "node:fs/promises";
+import { lstat, open, readFile, unlink } from "node:fs/promises";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 import { join } from "node:path";
 import type { BolterConnectionObservation } from "@nautilo/types";
 import { BolterConnectionOwner } from "./connection-owner";
@@ -68,7 +69,7 @@ export function createManagedBolterConnectionFactory(options: {
       try {
         const file = await open(temporary, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW, 0o600);
         try { await file.writeFile(ciphertext); await file.sync(); } finally { await file.close(); }
-        await check(); await rename(temporary, path);
+        await check(); await renameWithWindowsRetry(temporary, path);
         const directory = await open(records, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
         try { const stat = await directory.stat(); if (stat.dev !== recordDirectory.dev || stat.ino !== recordDirectory.ino) throw unavailable(); await directory.sync(); }
         finally { await directory.close(); }

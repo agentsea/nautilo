@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
-import { lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 import { dirname, isAbsolute, resolve } from "node:path";
 
 import {
@@ -181,7 +182,7 @@ export function createRemoteComputerUseContractCatalogueLoader(
     await mkdir(parent, { recursive: true, mode: 0o700 });
     try {
       await writeFile(temporary, body, { flag: "wx", mode: 0o600 });
-      await rename(temporary, lkgPath);
+      await renameWithWindowsRetry(temporary, lkgPath);
     } finally {
       await rm(temporary, { force: true }).catch(() => undefined);
     }

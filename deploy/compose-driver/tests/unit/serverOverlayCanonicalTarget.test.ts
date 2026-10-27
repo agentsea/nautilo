@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, readlink, rename, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readlink, rm, writeFile } from "node:fs/promises";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 import { tmpdir } from "node:os";
 import { join, posix } from "node:path";
 import {
@@ -154,7 +155,7 @@ describe("serverOverlayYaml D445 Phase 0 canonical config wiring", () => {
       // Atomic rename through the legacy path replaces the symlink itself.
       const temporary = join(root, "instance.env.tmp");
       await writeFile(temporary, "TAVILY_API_KEY=newest\n");
-      await rename(temporary, join(root, "instance.env"));
+      await renameWithWindowsRetry(temporary, join(root, "instance.env"));
 
       await ensureCanonicalConfigLayout(root);
 

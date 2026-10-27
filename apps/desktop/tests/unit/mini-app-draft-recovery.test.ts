@@ -1,6 +1,7 @@
 /* eslint-disable @typescript-eslint/await-thenable -- Bun promise matchers are awaited at runtime. */
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
+import { renameWithWindowsRetrySync } from "@nautilo/config/private-filesystem";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
@@ -156,7 +157,7 @@ describe("MiniAppDraftRecoveryStore", () => {
     const canonicalPath = await resolveMiniAppRecoveryFilePath(files, original);
     const localBinding: MiniAppRecoveryBinding = { ...binding, target: { kind: "local_file", relayId: "local-relay", canonicalPath } };
     await makeStore().write(localBinding, null, draft);
-    fs.renameSync(original, path.join(documents, "renamed.presentation.html"));
+    renameWithWindowsRetrySync(original, path.join(documents, "renamed.presentation.html"));
     expect(await resolveMiniAppRecoveryFilePath(files, original)).toBe(canonicalPath);
     expect((await makeStore().read(localBinding)).draft).toEqual(draft);
     expect(fs.existsSync(original)).toBe(false);

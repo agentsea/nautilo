@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Stats } from "node:fs";
 import * as fsp from "node:fs/promises";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 import { RELAY_FS_MAX_BYTES } from "./constants";
 import {
   RELAY_FS_READDIR_MAX_ENTRIES,
@@ -253,7 +254,7 @@ async function executeFsOp(
       try {
         await fsp.writeFile(tmp, data);
         await fsp.chmod(tmp, mode);
-        await fsp.rename(tmp, path);
+        await renameWithWindowsRetry(tmp, path);
       } catch (err) {
         try {
           await fsp.unlink(tmp);
@@ -339,7 +340,7 @@ async function executeFsOp(
       if (fsReq.destPath === undefined) {
         return { ok: false, code: "EINVAL", message: "destPath required for rename" };
       }
-      await fsp.rename(path, fsReq.destPath);
+      await renameWithWindowsRetry(path, fsReq.destPath);
       return { ok: true };
     }
 

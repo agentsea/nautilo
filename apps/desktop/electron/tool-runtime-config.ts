@@ -1,5 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { renameWithWindowsRetrySync } from "@nautilo/config/private-filesystem";
 
 export const TOOL_RUNTIME_CONFIG_VERSION = 1 as const;
 
@@ -116,7 +117,7 @@ function saveToolRuntimeConfig(configPath: string, config: ToolRuntimeConfig): v
   const tmp = `${configPath}.tmp`;
   writeFileSync(tmp, `${JSON.stringify(parsed, null, 2)}\n`, { mode: 0o600 });
   try {
-    renameSync(tmp, configPath);
+    renameWithWindowsRetrySync(tmp, configPath);
   } catch (err) {
     try { unlinkSync(tmp); } catch { /* ignore */ }
     throw err;

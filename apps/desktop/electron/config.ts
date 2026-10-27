@@ -18,7 +18,8 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { renameWithWindowsRetrySync } from "@nautilo/config/private-filesystem";
 import { dirname, join } from "node:path";
 import {
   clearDesktopConfigFile,
@@ -84,7 +85,7 @@ export function saveConfig(cfg: DesktopConfig): void {
     directoryPath: dirname(p),
     config: cfg,
     temporaryId: randomUUID(),
-    fs: { mkdirSync, openSync, writeFileSync, closeSync, renameSync, unlinkSync },
+    fs: { mkdirSync, openSync, writeFileSync, closeSync, renameSync: renameWithWindowsRetrySync, unlinkSync },
   });
 }
 

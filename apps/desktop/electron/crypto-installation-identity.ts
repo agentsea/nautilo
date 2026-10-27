@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import { renameWithWindowsRetrySync } from "@nautilo/config/private-filesystem";
 import * as path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 
@@ -40,7 +41,7 @@ function writeIdentity(filePath: string, installationId: string): void {
       { mode: 0o600, flag: "wx" },
     );
     fs.chmodSync(temporary, 0o600);
-    fs.renameSync(temporary, filePath);
+    renameWithWindowsRetrySync(temporary, filePath);
     fs.chmodSync(filePath, 0o600);
   } finally {
     try {

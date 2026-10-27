@@ -3,6 +3,7 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 import { FS_WRITE_FILE_MAX_BYTES } from "./fs-write";
 import type { GuardedFileAdapter } from "./local-file-history/file-adapter";
 import {
@@ -170,7 +171,7 @@ async function writeAtomically(
     await handle.close();
     handle = undefined;
     await beforePublish();
-    await fs.rename(temporaryPath, filePath);
+    await renameWithWindowsRetry(temporaryPath, filePath);
     await fs.chmod(filePath, FILE_MODE);
     await syncDirectory(dirPath);
   } catch (error) {

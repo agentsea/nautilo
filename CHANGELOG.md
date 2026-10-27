@@ -154,6 +154,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   Exports encode H.264 with Media Foundation's software encoder at the Mac's
   target bitrates. Unsigned builds accept user-replaced FFmpeg files, as LGPL
   requires.
+- On Windows, saving state files no longer fails with "operation not
+  permitted" when a virus scanner, the search indexer or a sync client briefly
+  holds the file open: every atomic replacement in Desktop, CLI, server and
+  tooling now waits and retries the rename for up to ten seconds.
 - New first-owner claim files include a copyable claim URL while retaining the
   single-use code. Existing code-only files remain redeemable through the
   server's `/claim` page. Owner-claim setup resolves the native user home when

@@ -5,10 +5,10 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
-  renameSync,
   writeFileSync,
 } from "node:fs";
 import { resolveInstance, resolveNautiloRootDir } from "@nautilo/config";
+import { renameWithWindowsRetrySync } from "@nautilo/config/private-filesystem";
 import { appendAuditEntrySync } from "./audit-log";
 import { isForbiddenInInstanceEnv } from "./mode-registry";
 import { migrateSetupTomlToDeployToml } from "./setup-toml-migration";
@@ -51,7 +51,7 @@ export function migrateConfigEnvToInstanceEnv(
     return null;
   }
 
-  renameSync(configEnv, instanceEnv);
+  renameWithWindowsRetrySync(configEnv, instanceEnv);
   const from = configEnv;
   const to = instanceEnv;
   console.error(
