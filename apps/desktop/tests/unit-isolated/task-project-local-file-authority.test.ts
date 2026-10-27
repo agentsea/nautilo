@@ -181,8 +181,10 @@ function fixture(input: {
   searchExecute?: NonNullable<Parameters<typeof makeDispatchHandler>[1]>["localFileSearchExecute"];
   commitContent?: NonNullable<Parameters<typeof makeDispatchHandler>[1]>["commitDesktopAgentContent"];
 } = {}) {
-  const delegationRoot = realpathSync(mkdtempSync(join(tmpdir(), "task-project-grant-")));
-  const baselineRoot = realpathSync(mkdtempSync(join(tmpdir(), "task-project-baseline-")));
+  // The anchor compares against native realpath, which also expands Windows
+  // 8.3 names such as a runner's RUNNER~1 temporary directory.
+  const delegationRoot = realpathSync.native(mkdtempSync(join(tmpdir(), "task-project-grant-")));
+  const baselineRoot = realpathSync.native(mkdtempSync(join(tmpdir(), "task-project-baseline-")));
   roots.push(delegationRoot, baselineRoot);
   const projectRoot = join(delegationRoot, "nautilo-repo-docs", `task-run-${RUN_ID}`);
   mkdirSync(projectRoot, { recursive: true });

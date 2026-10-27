@@ -26,6 +26,9 @@ function fixture(avatar: Awaited<ReturnType<MagentOperatorService["avatar"]>> = 
   } as unknown as MagentOperatorService;
   return { calls, app: createMagentUnixHttp(config, service) };
 }
+// Private configuration files are checked for POSIX owner and mode, so Windows
+// rejects every configuration.
+const posixTest = test.skipIf(process.platform === "win32");
 
 test("operator routes require the scoped credential before exposing metadata or invoking work", async () => {
   const { app, calls } = fixture();
@@ -69,7 +72,7 @@ test("publication retries retain the client claim and withdrawn authorization fa
   } finally { await app.close(); }
 });
 
-test("operator configuration rejects shared permissions and symlink substitution", async () => {
+posixTest("operator configuration rejects shared permissions and symlink substitution", async () => {
   const directory = await realpath(await mkdtemp(join(tmpdir(), "magent-config-test-")));
   const path = join(directory, "operator.json");
   try {
@@ -130,7 +133,7 @@ test("another binding credential cannot access any authenticated surface", async
 });
 
 
-test("private config files require a private parent and safe canonical ancestors", async () => {
+posixTest("private config files require a private parent and safe canonical ancestors", async () => {
   const directory = await realpath(await mkdtemp(join(tmpdir(), "magent-parent-test-")));
   const path = join(directory, "operator.json");
   try {
