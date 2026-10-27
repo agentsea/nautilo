@@ -19,6 +19,7 @@ import {
 } from "../../baseline/reviewed-main-2026-09-05-source-alarms";
 import { SOURCE_ALARM_BASELINE_REVIEWS } from "../../baseline/source-alarm-reviews";
 import { REVIEWED_MAIN_2026_08_11_SOURCE_ALARMS } from "../../baseline/reviewed-main-2026-08-11-source-alarms";
+import { SUPERSEDED_CI_SOURCE_RECONCILIATION_LOCATORS } from "../../baseline/reviewed-ci-source-reconciliation";
 import {
   CURRENT_SOURCE_ALARM_REVIEWS,
   inspectSourceAlarmReviews,
@@ -101,7 +102,13 @@ describe("Relay dispatch refactor Desktop Relay source migration", () => {
   test("closes current alarms and preserves moved or removed debt history", async () => {
     expect(REVIEWED_RELAY_DISPATCH_SOURCE_ALARMS).toHaveLength(31);
     for (const review of REVIEWED_RELAY_DISPATCH_SOURCE_ALARMS) {
-      expect(CURRENT_SOURCE_ALARM_REVIEWS).toContainEqual(review);
+      if (SUPERSEDED_CI_SOURCE_RECONCILIATION_LOCATORS.has(review.locator)) {
+        expect(CURRENT_SOURCE_ALARM_REVIEWS.some((candidate) =>
+          candidate.locator === review.locator
+        )).toBe(false);
+      } else {
+        expect(CURRENT_SOURCE_ALARM_REVIEWS).toContainEqual(review);
+      }
     }
     expect(REVIEWED_RELAY_DISPATCH_SOURCE_ALARMS.filter((review) =>
       review.closure === "baseline_debt"

@@ -115,8 +115,10 @@ describe("reviewed main 2026-08-21 encryption inventory", () => {
       review.closure === "declaration"
       && review.reason
         === "TTS failure handling emits a fixed playback/generation/accounting sentence without speech, audio or raw provider error."
-      && CURRENT_SOURCE_ALARM_REVIEWS.includes(review)
     )).toBeTrue();
+    for (const review of currentFixedWarnings) {
+      expect(CURRENT_SOURCE_ALARM_REVIEWS).toContainEqual(review);
+    }
 
     const source = await scanSourceAlarms({ repoRoot: repositoryRoot });
     expect(source.errors).toEqual([]);

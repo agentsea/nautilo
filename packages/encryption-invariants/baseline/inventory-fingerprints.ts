@@ -1,19 +1,21 @@
+// Exact reviewed source-call snapshot after filesystem helper consolidation,
+// operator/runtime changes, and accounting diagnostics. Unresolved payload
+// evidence remains explicit release-blocking alarm debt in the review manifest.
 export const SOURCE_ALARM_BASELINE = {
-  "count": 3436,
-  "sha256": "562a14016dde60c9010d5a581d28c6fd6070188d1bf7fbdea161ad9c53d9e3af"
+  "count": 3432,
+  "sha256": "505780e47136fb93869905b69bf68aea5f26388f0a35626f5f23028867873a7a"
 } as const;
 
-// Reviewed public-browser receipt constraints (0289–0291), scoped media
-// references (0292), content-free Events preferences (0293), and the exact
-// content-access receipt FK-cleanup permissions (0294); see the September 17
-// coverage regression test. The speech-model selection column remains main's
-// 0295 migration, followed by the execution-input message lookup index at 0296
-// for selected-message interruption summaries. No migration body was edited.
+// The complete immutable migration tree includes the reviewed protected-Task
+// persistence tail followed by the external operator transport, isolated
+// control storage, legacy audit archive, and owner-deletion correction. The
+// focused migration inventory pins the appended SQL bytes and proves the
+// current schema/snapshot pair remains structurally identical without a DB.
 export const MIGRATION_TREE_BASELINE = {
-  "migrations": 355,
-  "snapshots": 326,
-  "tip": 354,
-  "sha256": "153d0cd90c2dc942fb3f54149288f9634957f50dd0be55978ad9418b64350f12"
+  "migrations": 386,
+  "snapshots": 357,
+  "tip": 385,
+  "sha256": "a966c4bf1e6ab7a8575adaa99042c07ad243cfd4fcaba509afdc91cae527bb68"
 } as const;
 
 /**
@@ -52,13 +54,19 @@ export const MIGRATION_TREE_BASELINE = {
 // media-generations repository: cancellation request and provider acknowledgement.
 // The protected Human-approval branch repair adds one jobs.metadata UPDATE that
 // seals the content-free allowed-verb policy beside the existing park receipt.
+// External operator control adds two connection/session inserts and three
+// lifecycle updates in the canonical bridge query owner. Its authored input,
+// generated result, and retained legacy evidence remain linked to the frozen
+// Message-content boundary; only routing, isolation, and archive coordinates
+// are bounded metadata. The fixed restore fence remains the single additional
+// statically unresolved transport and has no caller-controlled SQL input.
 export const DATABASE_WRITER_BASELINE = {
-  "count": 1601,
-  "insert": 522,
-  "update": 876,
-  "delete": 186,
-  "unresolved": 17,
-  "sha256": "0b4de58aee5b15e2272e73ee71eb5480438b607d0e102a614106c911d74c6604"
+  "count": 1667,
+  "insert": 534,
+  "update": 922,
+  "delete": 193,
+  "unresolved": 18,
+  "sha256": "a1309da5cc48b967e0581e3a3b81ca32e33c0e87a14e66281680009e860446ff"
 } as const;
 
 /**

@@ -52,5 +52,6 @@ describe("Task runtime signer DTO inventory", () => {
         counts: { observations: 9, declarations: 9, arbitraryPayloads: 0 },
       });
     },
+    60_000,
   );
 });

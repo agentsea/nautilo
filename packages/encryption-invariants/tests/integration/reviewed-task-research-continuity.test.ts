@@ -5,6 +5,7 @@ import ts from "typescript";
 import { BASELINE_REGISTRY } from "../../baseline/existing-debt";
 import { TASK_RESEARCH_METADATA_WRITERS, REVIEWED_TASK_RESEARCH_SOURCE_ALARMS } from "../../baseline/reviewed-task-research-continuity";
 import { REVIEWED_MAIN_2026_10_13_SOURCE_ALARMS } from "../../baseline/reviewed-main-2026-10-13-source-alarms";
+import { SUPERSEDED_CI_SOURCE_RECONCILIATION_LOCATORS } from "../../baseline/reviewed-ci-source-reconciliation";
 import { CURRENT_SOURCE_ALARM_REVIEWS, inspectSourceAlarmReviews } from "../../src/node/source-alarm-review";
 import { discoverDatabaseWriterInventory } from "../../src/node/database-writer-inventory";
 import { scanSourceAlarms } from "../../src/node/source-inventory";
@@ -181,7 +182,21 @@ test("Task research continuity reviews only the new recovery log while keeping a
   ]);
   expect(currentFundingLogs.every((review) =>
     review.closure === "declaration"
-    && CURRENT_SOURCE_ALARM_REVIEWS.includes(review)
+    && (
+      CURRENT_SOURCE_ALARM_REVIEWS.some((candidate) =>
+        candidate.locator === review.locator
+        && candidate.closure === "declaration"
+        && candidate.declarationId === review.declarationId
+      )
+      || (
+        SUPERSEDED_CI_SOURCE_RECONCILIATION_LOCATORS.has(review.locator)
+        && CURRENT_SOURCE_ALARM_REVIEWS.filter((candidate) =>
+          candidate.locator === review.locator
+          && candidate.closure === "reviewed_exclusion"
+          && candidate.exclusionId === "exclusion.external-room.provider-failure-category"
+        ).length === 1
+      )
+    )
   )).toBe(true);
   expect(inspectSourceAlarmReviews(alarms).errors.filter((error) => error.includes("chat-model-invocation.ts"))).toEqual([]);
 });

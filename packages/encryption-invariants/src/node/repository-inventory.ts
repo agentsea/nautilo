@@ -42,6 +42,7 @@ import {
 import {
   auditDtoDeclarations,
   discoverDtoInventory,
+  type DtoDeclaration,
   type DtoInventoryObservation,
 } from "./dto-inventory";
 import {
@@ -421,12 +422,21 @@ function verifyRepositoryEvidence(
   return errors;
 }
 
-function dtoDebtReferenceErrors(
+export function dtoDebtReferenceErrors(
   registry: CoverageRegistry,
+  declarations: readonly DtoDeclaration[] = DTO_BASELINE_DECLARATIONS,
+  frozenBaselineDebt: readonly FrozenBaselineDebt[] =
+    CURRENT_FROZEN_BASELINE_DEBT,
 ): readonly string[] {
   const errors: string[] = [];
   const debtById = new Map(registry.debt.map((item) => [item.id, item]));
-  for (const declaration of DTO_BASELINE_DECLARATIONS) {
+  const frozenDebt = new Set(
+    frozenBaselineDebt.map((item) => `${item.id}:${item.surface}:${item.locator}`),
+  );
+  const retiredDebt = new Set(
+    (registry.retiredFrozenDebt ?? []).map((item) => item.debtId),
+  );
+  for (const declaration of declarations) {
     for (const payload of declaration.arbitraryPayloads) {
       if ("debtId" in payload && payload.debtId) {
         const debt = debtById.get(payload.debtId);
@@ -437,7 +447,20 @@ function dtoDebtReferenceErrors(
           continue;
         }
         const expectedLocator = `${declaration.locator}#${payload.path}`;
-        if (debt.surface !== "wire" || debt.locator !== expectedLocator) {
+        const exactLinks = (registry.reviewedDebtLinks ?? []).filter((link) =>
+          link.surface === "wire"
+          && link.locator === expectedLocator
+          && link.targetDebtIds.length === 1
+          && link.targetDebtIds[0] === payload.debtId
+        );
+        const exactFrozenLink = exactLinks.length === 1
+          && debt.surface === "wire"
+          && frozenDebt.has(`${debt.id}:${debt.surface}:${debt.locator}`)
+          && !retiredDebt.has(debt.id);
+        if (
+          debt.surface !== "wire"
+          || (debt.locator !== expectedLocator && !exactFrozenLink)
+        ) {
           errors.push(
             `${declaration.locator}: arbitrary payload ${payload.path} references debt `
             + `${payload.debtId} at ${debt.locator}; expected ${expectedLocator}`,
@@ -633,7 +656,14 @@ export function repositoryVerificationCategories(
     },
     {
       category: "dto_declarations",
-      errors: [...inventory.dtoAuditErrors, ...dtoDebtReferenceErrors(registry)],
+      errors: [
+        ...inventory.dtoAuditErrors,
+        ...dtoDebtReferenceErrors(
+          registry,
+          DTO_BASELINE_DECLARATIONS,
+          frozenBaselineDebt,
+        ),
+      ],
     },
     {
       category: "source_declarations",
