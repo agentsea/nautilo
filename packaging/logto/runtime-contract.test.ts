@@ -138,7 +138,7 @@ describe("Logto runtime derivative", () => {
     expect(contract).toContain("['info', '-e', `${name}=${version}`]");
   });
 
-  test("installs a hash-bound supported npm toolchain without application lifecycle scripts", () => {
+  test("cleanly replaces the npm toolchain from its hash-bound archive without lifecycle scripts", () => {
     expect(manifest.npm).toEqual({
       version: "12.2.1",
       archiveUrl: "https://registry.npmjs.org/npm/-/npm-12.2.1.tgz",
@@ -147,7 +147,11 @@ describe("Logto runtime derivative", () => {
     expect(dockerfile).toContain(`ARG NPM_VERSION=${manifest.npm.version}`);
     expect(dockerfile).toContain(`ARG NPM_ARCHIVE_SHA256=${manifest.npm.archiveSha256}`);
     expect(dockerfile).toContain('echo "${NPM_ARCHIVE_SHA256}  /tmp/npm.tgz" | sha256sum -c -');
-    expect(dockerfile).toContain("npm install --global --ignore-scripts --offline --no-audit --no-fund /tmp/npm.tgz");
+    const removal = dockerfile.indexOf("rm -rf /usr/local/lib/node_modules/npm");
+    const unpack = dockerfile.indexOf("tar -xzf /tmp/npm.tgz -C /usr/local/lib/node_modules/npm --strip-components=1");
+    expect(removal).toBeGreaterThan(0);
+    expect(unpack).toBeGreaterThan(removal);
+    expect(dockerfile).not.toContain("npm install --global");
     expect(contract).toContain("readVersion('/usr/local/lib/node_modules/npm/package.json'), '12.2.1'");
   });
 
