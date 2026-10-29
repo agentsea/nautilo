@@ -20,7 +20,7 @@ describe("auth plan classification", () => {
   const incoming = buildAuthContract();
   const applied = buildAppliedAuthContract("2026-07-12T12:00:00.000Z", incoming);
 
-  test("classifies an exact stamp and matching running image as compatible", () => {
+  test("classifies an exact stamp and matching digest without inventing a version", () => {
     const plan = classifyAuthPlan({
       incoming,
       applied,
@@ -29,7 +29,16 @@ describe("auth plan classification", () => {
 
     expect(plan.classification).toBe("compatible");
     expect(plan.live.inspected).toBe(true);
-    expect(plan.live.logtoEngineVersion).toBe(incoming.logtoEngine.minimumVersion);
+    expect(plan.live.logtoEngineImage).toBe(incoming.logtoEngine.image);
+    expect(plan.live.logtoEngineVersion).toBeNull();
+  });
+
+  test("reports an application version when the exact matching image has a version tag", () => {
+    const image = "ghcr.io/logto-io/logto:1.38.0";
+    const tagged = { ...incoming, logtoEngine: { ...incoming.logtoEngine, image } };
+    const plan = classifyAuthPlan({ incoming: tagged, applied, liveLogtoEngineImage: image });
+    expect(plan.classification).toBe("compatible");
+    expect(plan.live.logtoEngineVersion).toBe("1.38.0");
   });
 
   test("fails closed when no durable stamp or running image exists", () => {
@@ -80,10 +89,11 @@ describe("auth plan classification", () => {
   });
 
   test("rejects an inspected engine below the incoming minimum", () => {
+    const image = "ghcr.io/logto-io/logto:1.37.0";
     const plan = classifyAuthPlan({
-      incoming,
+      incoming: { ...incoming, logtoEngine: { ...incoming.logtoEngine, image } },
       applied,
-      liveLogtoEngineImage: "ghcr.io/logto-io/logto:1.37.0",
+      liveLogtoEngineImage: image,
     });
 
     expect(plan.classification).toBe("incompatible");

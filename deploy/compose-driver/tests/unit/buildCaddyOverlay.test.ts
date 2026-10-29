@@ -5,7 +5,7 @@ describe("buildCaddyOverlay", () => {
   test("emits Caddy service, volumes, and port suppressions", () => {
     const out = buildCaddyOverlay();
     expect(out).toContain("caddy:");
-    expect(out).toContain("image: caddy:2-alpine");
+    expect(out).toContain("image: caddy@sha256:eb4d35b7452d1ab6171fbdbe8d9275b2301dad6dad92115d91e19fb9b24d510f");
     expect(out).toContain('"80:80"');
     expect(out).toContain('"443:443"');
     expect(out).toContain(

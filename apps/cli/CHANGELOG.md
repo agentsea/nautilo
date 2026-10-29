@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.35] - 2026-10-29
+
+### Security
+
+- Pin Compose PostgreSQL 17.11/16.15, Caddy 2.11.7, and the maintained Logto
+  runtime with Node 22.23.4 and refreshed certificate trust. The Logto application
+  remains 1.38.0; database major versions and existing user identities are unchanged.
+
 ## [0.1.34] - 2026-10-23
 
 ### Security

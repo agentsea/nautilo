@@ -31,7 +31,7 @@ describe("portable maintenance runtime image contract", () => {
     expect(dockerfile).toContain("install -m 0755 /usr/lib/postgresql/17/bin/pg_dump /usr/local/bin/pg_dump");
     expect(dockerfile).toContain("install -m 0755 /usr/lib/postgresql/17/bin/pg_restore /usr/local/bin/pg_restore");
     expect(dockerfile).toContain("install -m 0755 /usr/lib/postgresql/17/bin/psql /usr/local/bin/psql");
-    expect(dockerfile).toContain("postgres@sha256:95206741a5b214807675e14165369d05b93a9cf692223b616d07cca227e74b0b AS pg16-client");
+    expect(dockerfile).toContain("postgres@sha256:1beaa3084eee2676f20a9cd9928f0bf2c5bf674f8e49f81017912183d377c61c AS pg16-client");
     expect(dockerfile).toContain("COPY --from=pg16-client /usr/lib/postgresql/16/bin/pg_dump /usr/local/bin/pg_dump16");
     expect(dockerfile).toContain("COPY --from=pg16-client /usr/lib/postgresql/16/bin/pg_restore /usr/local/bin/pg_restore16");
     expect(dockerfile).toContain("COPY --from=pg16-client /usr/lib/postgresql/16/bin/psql /usr/local/bin/psql16");

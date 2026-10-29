@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Refresh digest-pinned deployment baselines to PostgreSQL 17.11/16.15, Caddy
+  2.11.7, and the maintained Logto 1.38.0 runtime with Node 22.23.4. Refresh the
+  server's PostgreSQL 16 maintenance clients and hosting image selections.
+
 - Run multiple independent mAgent Genie bindings on one server through a private
   operator manifest, with separate capabilities and sockets for each binding.
 

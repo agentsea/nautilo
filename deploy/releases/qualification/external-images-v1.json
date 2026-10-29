@@ -1,18 +1,18 @@
 {
   "version": 1,
-  "resolvedAt": "2026-08-06T13:18:37Z",
+  "resolvedAt": "2026-10-29T09:00:00Z",
   "images": {
     "app-postgres": {
       "resolvedFrom": "pgvector/pgvector:pg17",
-      "reference": "pgvector/pgvector@sha256:7ae6051efd0e60444282c27c7e141af07f322ce033300e727a49c3dd11075e38"
+      "reference": "pgvector/pgvector@sha256:ac08538c6f8b9904c33c8224c5e5706dbe760aca29db1d096972b4052c22a75d"
     },
     "logto-postgres": {
       "resolvedFrom": "postgres:16",
-      "reference": "postgres@sha256:95206741a5b214807675e14165369d05b93a9cf692223b616d07cca227e74b0b"
+      "reference": "postgres@sha256:1beaa3084eee2676f20a9cd9928f0bf2c5bf674f8e49f81017912183d377c61c"
     },
     "logto": {
-      "resolvedFrom": "ghcr.io/logto-io/logto:1.38.0",
-      "reference": "ghcr.io/logto-io/logto@sha256:aa4c428b70d9dd8eac23b6eeb3826a02d5fe0283b5dd774589b9b9760e0c6e9f"
+      "resolvedFrom": "ghcr.io/agentsea/nautilo-logto-runtime:1.38.0-nautilo.1",
+      "reference": "ghcr.io/agentsea/nautilo-logto-runtime@sha256:c71ebaf08e4ad1eb92b7f456dd1e5f24b158e4fd815cd44f76bf39f7c2160225"
     }
   }
 }

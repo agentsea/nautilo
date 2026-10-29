@@ -31,7 +31,7 @@ name: ${COMPOSE_PROJECT_NAME:-nautilo}
 
 services:
   postgres:
-    image: postgres:16
+    image: postgres@sha256:1beaa3084eee2676f20a9cd9928f0bf2c5bf674f8e49f81017912183d377c61c
     volumes:
       - pgdata:/var/lib/postgresql/data
       # Init script runs once on first volume boot; creates `nautilo` +

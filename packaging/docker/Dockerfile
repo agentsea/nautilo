@@ -450,7 +450,7 @@ RUN AGENT_BROWSER_ARCH="linux-x64"; \
 # The portable restore must talk to both topology-owned database majors. A
 # PG17 client cannot restore its output into Logto's PG16 server because it
 # emits PG17-only session settings such as transaction_timeout.
-FROM postgres@sha256:95206741a5b214807675e14165369d05b93a9cf692223b616d07cca227e74b0b AS pg16-client
+FROM postgres@sha256:1beaa3084eee2676f20a9cd9928f0bf2c5bf674f8e49f81017912183d377c61c AS pg16-client
 
 # ─── Nautilo Office Sheets artifact ────────────────────────────────────────
 # Build the owned office workspace closure and include compiled app artifacts
