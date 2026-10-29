@@ -12,9 +12,9 @@
   "nodeImage": "docker.io/library/node@sha256:206878a60dc7014193f418ab9259b6110c15fbd514b3044a267be706509944e4",
   "nodeVersion": "22.23.4",
   "npm": {
-    "version": "11.21.1",
-    "archiveUrl": "https://registry.npmjs.org/npm/-/npm-11.21.1.tgz",
-    "archiveSha256": "dd77c48eb845f4856c2cdba347cfb52bd877a2655a1ea48ff0c4796e3df9dd7b"
+    "version": "12.2.1",
+    "archiveUrl": "https://registry.npmjs.org/npm/-/npm-12.2.1.tgz",
+    "archiveSha256": "228bd64aaef23270dbdbd2cf3d5ef5c467602ef38c4066246cef1984adab9a67"
   },
   "systemPackages": {
     "alpine-release": "3.24.3-r0",
@@ -57,5 +57,5 @@
     ],
     "port": 3001
   },
-  "localImage": "nautilo/logto:1.45.0-nautilo.1"
+  "localImage": "nautilo/logto:1.45.0-nautilo.2"
 }

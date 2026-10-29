@@ -54,7 +54,7 @@ describe("Logto runtime derivative", () => {
       upstreamImage: "ghcr.io/logto-io/logto@sha256:9a9aff9423ab7863f00c881c31408e0bfe4def730bac2182d0097367002f5854",
       nodeImage: "docker.io/library/node@sha256:206878a60dc7014193f418ab9259b6110c15fbd514b3044a267be706509944e4",
       nodeVersion: "22.23.4",
-      localImage: "nautilo/logto:1.45.0-nautilo.1",
+      localImage: "nautilo/logto:1.45.0-nautilo.2",
     });
     for (const digest of [
       ...Object.values(manifest.upstreamManifests),
@@ -140,15 +140,15 @@ describe("Logto runtime derivative", () => {
 
   test("installs a hash-bound supported npm toolchain without application lifecycle scripts", () => {
     expect(manifest.npm).toEqual({
-      version: "11.21.1",
-      archiveUrl: "https://registry.npmjs.org/npm/-/npm-11.21.1.tgz",
-      archiveSha256: "dd77c48eb845f4856c2cdba347cfb52bd877a2655a1ea48ff0c4796e3df9dd7b",
+      version: "12.2.1",
+      archiveUrl: "https://registry.npmjs.org/npm/-/npm-12.2.1.tgz",
+      archiveSha256: "228bd64aaef23270dbdbd2cf3d5ef5c467602ef38c4066246cef1984adab9a67",
     });
     expect(dockerfile).toContain(`ARG NPM_VERSION=${manifest.npm.version}`);
     expect(dockerfile).toContain(`ARG NPM_ARCHIVE_SHA256=${manifest.npm.archiveSha256}`);
     expect(dockerfile).toContain('echo "${NPM_ARCHIVE_SHA256}  /tmp/npm.tgz" | sha256sum -c -');
     expect(dockerfile).toContain("npm install --global --ignore-scripts --offline --no-audit --no-fund /tmp/npm.tgz");
-    expect(contract).toContain("readVersion('/usr/local/lib/node_modules/npm/package.json'), '11.21.1'");
+    expect(contract).toContain("readVersion('/usr/local/lib/node_modules/npm/package.json'), '12.2.1'");
   });
 
   test("runtime contract binds app, architecture, package, bundle, and default trust", () => {
