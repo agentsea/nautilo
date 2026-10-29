@@ -8,8 +8,14 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 ## [Unreleased]
 
 - Refresh digest-pinned deployment baselines to PostgreSQL 17.11/16.15, Caddy
-  2.11.7, and the maintained Logto 1.38.0 runtime with Node 22.23.4. Refresh the
+  2.11.7, and the maintained Logto 1.45.0 runtime with Node 22.23.4. Refresh the
   server's PostgreSQL 16 maintenance clients and hosting image selections.
+
+- Preserve exact authentication and database image selections in fresh remote
+  recovery bundles. Keep authentication stopped until full database restoration
+  completes, so rollback cannot mix an old schema with a new authentication image.
+  Authentication, its database, and the server resume after host reboots while
+  explicitly stopped maintenance services stay stopped.
 
 - Run multiple independent mAgent Genie bindings on one server through a private
   operator manifest, with separate capabilities and sockets for each binding.

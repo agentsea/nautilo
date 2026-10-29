@@ -91,6 +91,7 @@ services:
   # with `infra/postgres-init.sh`).
   logto-postgres:
     image: ${POSTGRES_IMAGE}
+    restart: unless-stopped
     volumes:
       - logto_pgdata:/var/lib/postgresql/data
       - ../../../infra/postgres-init.sh:/docker-entrypoint-initdb.d/01-nautilo.sh:ro
@@ -113,6 +114,7 @@ services:
 
   logto:
     image: ${LOGTO_IMAGE}
+    restart: unless-stopped
     profiles: ["auth", "full"]
     depends_on:
       logto-postgres: { condition: service_healthy }
@@ -146,6 +148,7 @@ services:
       - deploy-net
 
   nautilo-server:
+    restart: unless-stopped
     image: nautilo-server:${NAUTILO_SERVER_TAG:-local-dev}
     build:
       context: ../../..

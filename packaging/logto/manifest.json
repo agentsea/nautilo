@@ -16,6 +16,16 @@
     "archiveUrl": "https://registry.npmjs.org/npm/-/npm-12.2.1.tgz",
     "archiveSha256": "228bd64aaef23270dbdbd2cf3d5ef5c467602ef38c4066246cef1984adab9a67"
   },
+  "npmUndici": {
+    "version": "6.29.1",
+    "archiveUrl": "https://registry.npmjs.org/undici/-/undici-6.29.1.tgz",
+    "archiveSha256": "29c4b8e0b2d86cb8795571c1959012ce057a14ecfd34858335f47c31e770a04f"
+  },
+  "npmIpAddress": {
+    "version": "10.7.4",
+    "archiveUrl": "https://registry.npmjs.org/ip-address/-/ip-address-10.7.4.tgz",
+    "archiveSha256": "f9e1d0dd369c002f43770c6ee35942c8078e76d080a1e18e89113eef865f26ff"
+  },
   "systemPackages": {
     "alpine-release": "3.24.3-r0",
     "musl": "1.2.6-r3",

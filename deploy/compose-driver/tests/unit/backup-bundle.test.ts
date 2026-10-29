@@ -98,7 +98,7 @@ const remoteProfile: ComposeDriverProfile = {
   lifecycle: "compose",
   from_source: true,
   instance_id: "prod",
-  ssh: { host: "1.2.3.4", user: "root" },
+  ssh: { host: "192.0.2.44", user: "root" },
 };
 
 const tmpDirs: string[] = [];
@@ -277,7 +277,7 @@ describe("backup full bundle", () => {
       lifecycle: "compose",
       tag: "sha-c9f8517",
       instance_id: "stack39",
-      ssh: { host: "10.0.0.39", user: "root" },
+      ssh: { host: "192.0.2.39", user: "root" },
     };
     seedOperatorFiles(home, registryProfile);
     const repoDigest =
@@ -367,7 +367,10 @@ describe("backup full bundle", () => {
       if (call.cmd === "rsync" && call.args[0] === "--version") {
         return { code: 0, stdout: "rsync  version 3.2.7  protocol version 31\n", stderr: "" };
       }
-      if (call.cmd === "rsync") allowOtherReadersSync(bundlePath);
+      if (call.cmd === "rsync") {
+        allowOtherReadersSync(bundlePath);
+        writeFileSync(join(bundlePath, "docker-compose.yml"), "# captured remote template\n");
+      }
       return { code: 0, stdout: "", stderr: "" };
     });
     const driver = new ComposeDriver(
@@ -402,7 +405,7 @@ describe("backup full bundle", () => {
     const rsync = localExec.calls.find((c) => c.cmd === "rsync" && c.args.includes("-e"));
     expect(rsync?.args).toContain("--partial");
     expect(rsync?.args).toContain("--append-verify");
-    expect(rsync?.args.some((a) => a.includes("root@1.2.3.4:/opt/nautilo-prod/.backup-staging-"))).toBe(
+    expect(rsync?.args.some((a) => a.includes("root@192.0.2.44:/opt/nautilo-prod/.backup-staging-"))).toBe(
       true,
     );
     expect(exec.calls.some((c) => c.cmd === "rm" && c.args[0] === "-rf")).toBe(true);
@@ -443,11 +446,13 @@ describe("backup full bundle", () => {
       return { code: 0, stdout: "", stderr: "" };
     });
     // Apple's bundled rsync — predates --append-verify.
-    const localExec = makeFakeExec((call) =>
-      call.cmd === "rsync" && call.args[0] === "--version"
-        ? { code: 0, stdout: "rsync  version 2.6.9  protocol version 29\n", stderr: "" }
-        : { code: 0, stdout: "", stderr: "" },
-    );
+    const localExec = makeFakeExec((call) => {
+      if (call.cmd === "rsync" && call.args[0] === "--version") {
+        return { code: 0, stdout: "rsync  version 2.6.9  protocol version 29\n", stderr: "" };
+      }
+      if (call.cmd === "rsync") writeFileSync(join(home, "old-rsync-bundle", "docker-compose.yml"), "# captured remote template\n");
+      return { code: 0, stdout: "", stderr: "" };
+    });
     const driver = new ComposeDriver(
       makeDeps({
         exec: exec.exec,
@@ -463,12 +468,20 @@ describe("backup full bundle", () => {
     expect(rsync?.args).not.toContain("--append-verify");
   });
 
-  test("remote stream skips staging and rsync, uses DOCKER_HOST pipelines, and warns", async () => {
+  test.each([false, true])("remote stream captures exact recovery selections, skips staging and warns (legacy=%s)", async (legacyTag) => {
     seedOperatorFiles(home, remoteProfile);
     const logs: string[] = [];
+    const oldAuth = `ghcr.io/example/auth@sha256:${"b".repeat(64)}`;
     const exec = makeFakeExec((call) => {
+      if (call.cmd === "cat" && call.args[0] === "/opt/nautilo-prod/deploy.compose.env") {
+        return { code: 0, stdout: `LOGTO_IMAGE=${legacyTag ? "ghcr.io/example/auth:1.38.0" : oldAuth}\nLOGTO_IMAGE_TAG=1.38.0\nLOGTO_DB_PASSWORD=fixture-secret\n`, stderr: "" };
+      }
+      const text = commandText(call);
+      if (call.cmd === "sh" && text.includes("label=com.docker.compose.service=logto")) return { code: 0, stdout: "auth-container\n", stderr: "" };
+      if (call.cmd === "sh" && text.includes("{{.Image}}") && text.includes("auth-container")) return { code: 0, stdout: `sha256:${"c".repeat(64)}\n`, stderr: "" };
+      if (call.cmd === "sh" && text.includes("{{json .RepoDigests}}") && text.includes("c".repeat(64))) return { code: 0, stdout: JSON.stringify([oldAuth]), stderr: "" };
       if (call.cmd === "cat" && call.args[0] === "/opt/nautilo-prod/docker-compose.yml") {
-        return { code: 0, stdout: "# prior remote template\n", stderr: "" };
+        return { code: 0, stdout: 'image: ${LOGTO_IMAGE}\ntarget: ${LOGTO_IMAGE_TAG}\n', stderr: "" };
       }
       if (call.cmd === "test") return { code: 1, stdout: "", stderr: "" };
       if (call.cmd === "docker" && call.args.includes("inspect")) {
@@ -493,7 +506,7 @@ describe("backup full bundle", () => {
     expect(localExec.calls.some((c) => c.cmd === "rsync")).toBe(false);
     const shellPipes = localExec.calls.filter((c) => c.cmd === "sh");
     expect(shellPipes.length).toBeGreaterThan(0);
-    expect(shellPipes.every((c) => c.opts.env?.["DOCKER_HOST"] === "ssh://root@1.2.3.4")).toBe(
+    expect(shellPipes.every((c) => c.opts.env?.["DOCKER_HOST"] === "ssh://root@192.0.2.44")).toBe(
       true,
     );
     expect(shellPipes.map(commandText).join("\n")).toContain(
@@ -510,8 +523,9 @@ describe("backup full bundle", () => {
     const manifest = readManifest(bundlePath);
     expect(manifest.contents.composeTemplate).toBe(true);
     expect(readFileSync(join(bundlePath, "docker-compose.yml"), "utf8")).toBe(
-      "# prior remote template\n",
+      `image: ${oldAuth}\ntarget: 1.38.0\n`,
     );
+    expect(readFileSync(join(bundlePath, "docker-compose.yml"), "utf8")).not.toContain("fixture-secret");
     expect(manifest.version).toBe(2);
     if (manifest.version === 2) {
       expect(manifest.integrity.composeTemplate).toBeDefined();
@@ -698,7 +712,7 @@ describe("backup full bundle", () => {
         ...baseProfile,
         https: "letsencrypt",
         domain: "example.com",
-        acme_email: "ops@example.com",
+        acme_email: "fixture@example.com",
       },
       { toPath: bundlePath },
     );
@@ -747,7 +761,7 @@ describe("backup full bundle", () => {
     expect(await shExit(failClosedDumpScript("sh -c 'exit 7'", failedDump))).toBe(7);
   });
 
-  // D420 (Wave 3 task 3.3.1) — consolidated backup integrity fault table. The
+  // Consolidated consolidated backup integrity fault table. The
   // recovery bundle is the rollback target for the entire upgrade transaction,
   // so every integrity failure must fail CLOSED: reject the bundle before
   // manifest acceptance (a corrupt/empty/partial bundle can never become an
@@ -755,7 +769,7 @@ describe("backup full bundle", () => {
   // proves the gate runs AFTER the dump pipeline (not instead of it) for each
   // of the four integrity modes: app pg_dump failure (not masked by gzip),
   // logto dump failure, empty nautilo dump, and corrupt logto gzip.
-  describe("D420 (3.3.1) backup integrity fault table", () => {
+  describe("backup integrity fault table", () => {
     const modes: Array<{
       label: string;
       fail: string;

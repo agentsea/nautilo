@@ -605,7 +605,7 @@ describe("restore full bundle", () => {
       "DELETE FROM public.nautilo_instance_identity",
     );
 
-    // D420 atomic restore: reset + dump share one psql `--single-transaction`.
+    // Atomic restore: reset + dump share one psql `--single-transaction`.
     const nautiloRestore = exec.calls.find(
       (c) =>
         c.cmd === "sh" &&
@@ -787,7 +787,7 @@ describe("restore full bundle", () => {
     expect(events).toContain("regrant");
   });
 
-  // D420 (Wave 3 task 3.3.2) — restore-time role password reconciliation.
+  // Restore-time restore-time role password reconciliation.
   // A restored target can boot green behind a password desync: grants are
   // correct but the cluster-level `nautilo` / `nautilo_agent` / Logto tenant
   // roles keep their pre-restore passwords. Restore must re-pin them from
@@ -1429,7 +1429,7 @@ describe("restore full bundle", () => {
     expect(exec.calls.map(commandText).join("\n")).not.toContain("apps.tgz");
   });
 
-  test("remote registry bundle restore uses remote overlays and SSH-native compose only", async () => {
+  test.each([false, true])("remote registry restore keeps auth stopped through database restore (failure=%s)", async (failAuthRestore) => {
     const events: string[] = [];
     const remoteRoot = "/opt/nautilo-prod";
     const remoteProfile: ComposeDriverProfile = {
@@ -1439,7 +1439,7 @@ describe("restore full bundle", () => {
       from_source: false,
       tag: "main",
       instance_id: "prod",
-      ssh: { host: "1.2.3.4", user: "root" },
+      ssh: { host: "192.0.2.44", user: "root" },
     };
     const deploymentManifest = {
       version: 1,
@@ -1464,6 +1464,7 @@ describe("restore full bundle", () => {
         if (text.includes(" pull nautilo-server")) events.push("pull");
         else if (text.includes(" up -d --no-build")) events.push("up");
         else if (text.includes(" stop nautilo-server")) events.push("stop");
+        else if (text.includes(" stop logto")) events.push("stop-auth");
         else if (text.includes(" start nautilo-server")) events.push("start");
       }
       if (call.opts.stdin?.includes("CREATE ROLE nautilo_feed_reader")) {
@@ -1483,6 +1484,7 @@ describe("restore full bundle", () => {
         text.includes("--single-transaction")
       ) {
         events.push("load-logto");
+        if (failAuthRestore) return { code: 1, stdout: "", stderr: "fixture auth restore failure" };
       }
       if (text.includes("artifacts.tgz")) events.push("load-artifacts");
       if (text.includes("media.tgz")) events.push("load-media");
@@ -1527,18 +1529,27 @@ describe("restore full bundle", () => {
       }),
     );
 
+    if (failAuthRestore) {
+      // eslint-disable-next-line @typescript-eslint/await-thenable -- bun `expect().rejects`
+      await expect(driver.restore(remoteProfile, { fromPath: bundlePath, force: true })).rejects.toThrow("fixture auth restore failure");
+      expect(events).toEqual(["stop", "stop-auth", "pull", "stop", "prepare-event-feed-role", "load-nautilo", "load-logto"]);
+      expect(events).not.toContain("up");
+      expect(events).not.toContain("health-poll");
+      return;
+    }
     await driver.restore(remoteProfile, { fromPath: bundlePath, force: true });
 
     expect(events).toEqual([
+      "stop",
+      "stop-auth",
       "pull",
-      "up",
       "stop",
       "prepare-event-feed-role",
       "load-nautilo",
       "load-logto",
       "load-artifacts",
       "load-media",
-      "start",
+      "up",
       "health-poll",
     ]);
     expect(exec.calls.some((call) => call.cmd === "docker")).toBe(false);
@@ -1565,13 +1576,15 @@ describe("restore full bundle", () => {
       .filter((call) => call.cmd === "sh" && (call.args[1] ?? "").includes("docker compose"))
       .map((call) => call.args[1] ?? "");
     expect(remoteCompose.length).toBeGreaterThanOrEqual(4);
-    for (const script of remoteCompose) {
+    for (const [index, script] of remoteCompose.entries()) {
       expect(script).toContain(`${remoteRoot}/deploy.volumes-overlay.yml`);
       expect(script).toContain(`${remoteRoot}/deploy.server-overlay.yml`);
-      expect(script).toContain(`${remoteRoot}/deploy.restore-overlay.yml`);
+      expect(script).toContain(`${remoteRoot}/${index < 2 ? "deploy.registry-overlay.yml" : "deploy.restore-overlay.yml"}`);
       expect(script).not.toContain("DOCKER_HOST");
       expect(script).not.toContain(".remote-staging");
     }
+    expect(remoteCompose[0]).toContain(" stop nautilo-server");
+    expect(remoteCompose[1]).toContain(" stop logto");
     const up = remoteCompose.find((script) => script.includes(" up -d --no-build"));
     expect(up).toBeDefined();
     const logtoPostgresUp = remoteCompose.find(
@@ -1617,7 +1630,7 @@ describe("restore full bundle", () => {
       from_source: true,
       tag: "main",
       instance_id: "prod",
-      ssh: { host: "1.2.3.4", user: "root" },
+      ssh: { host: "192.0.2.44", user: "root" },
     };
     let deploymentManifest: RemoteDeploymentManifest = {
       version: 2,
@@ -1796,7 +1809,7 @@ describe("restore full bundle", () => {
       localExec.calls.some(
         (call) =>
           call.cmd === "rsync" &&
-          call.args.at(-1) === "root@1.2.3.4:/opt/nautilo-prod/",
+          call.args.at(-1) === "root@192.0.2.44:/opt/nautilo-prod/",
       ),
     ).toBe(true);
     const streamedReconciliation = exec.calls.find((call) => {
@@ -1835,7 +1848,7 @@ describe("restore full bundle", () => {
       from_source: false,
       tag: "main",
       instance_id: "prod",
-      ssh: { host: "1.2.3.4", user: "root" },
+      ssh: { host: "192.0.2.44", user: "root" },
     };
     const deploymentManifest = {
       version: 2,
@@ -1946,7 +1959,7 @@ describe("restore full bundle", () => {
       from_source: false,
       tag: "main",
       instance_id: "prod",
-      ssh: { host: "1.2.3.4", user: "root" },
+      ssh: { host: "192.0.2.44", user: "root" },
     };
     const deploymentManifest = {
       version: 1,
@@ -2008,7 +2021,7 @@ describe("restore full bundle", () => {
       from_source: false,
       tag: "main",
       instance_id: "prod",
-      ssh: { host: "1.2.3.4", user: "root" },
+      ssh: { host: "192.0.2.44", user: "root" },
     };
     const deploymentManifest = {
       version: 1,
@@ -2104,7 +2117,7 @@ describe("restore full bundle", () => {
       from_source: false,
       tag: "main",
       instance_id: "prod",
-      ssh: { host: "1.2.3.4", user: "root" },
+      ssh: { host: "192.0.2.44", user: "root" },
     };
     const deploymentManifest = {
       version: 1,
@@ -2192,7 +2205,7 @@ describe("restore full bundle", () => {
       lifecycle: "compose",
       from_source: false,
       tag: "main",
-      ssh: { host: "1.2.3.4", user: "root" },
+      ssh: { host: "192.0.2.44", user: "root" },
     };
     const exec = makeFakeExec((call) =>
       call.cmd === "cat"
@@ -2281,7 +2294,7 @@ describe("restore full bundle", () => {
     const events: string[] = [];
     const exec = makeFakeExec((call) => {
       const text = commandText(call);
-      // D420 3.1.1: simulate a corrupt/truncated nautilo dump — the
+      // Failure case: simulate a corrupt/truncated nautilo dump — the
       // pre-DROP validation gate exits nonzero. The logto dump is fine.
       if (
         call.cmd === "sh" &&
@@ -2362,7 +2375,7 @@ describe("restore full bundle", () => {
     ).toBe(false);
   });
 
-  // D420 (Wave 3 task 3.3.1) — consolidated restore validation fault table.
+  // Consolidated consolidated restore validation fault table.
   // Restore is the rollback action for the entire upgrade transaction, so a
   // restore validation failure must fail CLOSED before ANY destructive schema
   // reset AND before the restore pipeline (gunzip|psql) loads a byte — a
@@ -2370,7 +2383,7 @@ describe("restore full bundle", () => {
   // both guarantees uniformly for each DB: no DROP attempted, and the failing
   // DB's restore pipeline never ran. (R9A: validate compressed input before
   // schema destruction; decompression failure aborts recovery.)
-  describe("D420 (3.3.1) restore validation fault table", () => {
+  describe("restore validation fault table", () => {
     const modes: Array<{
       label: string;
       inject: "nautilo" | "logto";
@@ -2454,7 +2467,7 @@ describe("restore full bundle", () => {
 });
 
 // ---------------------------------------------------------------------------
-// D420 3.1.1 / R9A — exercise the fail-closed restore pipeline + dump
+// Recovery regression — exercise the fail-closed restore pipeline + dump
 // validation gate in a REAL POSIX shell (no faked exec). A stub `psql`
 // stands in for the database client so we can prove the side-file status
 // propagation actually defeats the gunzip-masking and first-SQL-error cases
