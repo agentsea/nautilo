@@ -40,6 +40,7 @@ function fixture() {
     getPairingGeneration: () => "pairing-fixture",
     getLocalExecutionPairingGeneration: () => "pairing-fixture",
     getLocalExecutionWorkstationBinding: () => sent[0]?.workstationShellBinding ?? null,
+    getDesktopFilesystemGrantSnapshot: () => ({ revision: 1, instanceId: "", agentScope: "all_owned_agents", grants: [] }),
     getLocalExecutionBinding: (_relayId: string, executionId: string) => binding?.executionId === executionId ? binding : null,
     dispatch: async (_relayId, request) => { sent.push(request); if (request.localExecutionBinding?.operation === "start") binding = request.localExecutionBinding;
       if (dispatchError !== null) throw dispatchError;
