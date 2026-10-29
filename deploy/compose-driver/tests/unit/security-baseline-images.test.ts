@@ -8,9 +8,9 @@ describe("deployment security image baselines", () => {
     const external = JSON.parse(readFileSync(new URL("../../../releases/qualification/external-images-v1.json", import.meta.url), "utf8")) as {
       images: Record<"logto-postgres" | "app-postgres" | "logto", { reference: string }>;
     };
-    expect(DEPENDENCY_PINS.postgres).toBe(external.images["logto-postgres"].reference);
-    expect(DEPENDENCY_PINS.pgvectorPg17).toBe(external.images["app-postgres"].reference);
-    expect(DEPENDENCY_PINS.logto).toBe(external.images.logto.reference);
+    expect(external.images["logto-postgres"].reference).toBe(DEPENDENCY_PINS.postgres);
+    expect(external.images["app-postgres"].reference).toBe(DEPENDENCY_PINS.pgvectorPg17);
+    expect(external.images.logto.reference).toBe(DEPENDENCY_PINS.logto);
     for (const reference of [DEPENDENCY_PINS.postgres, DEPENDENCY_PINS.pgvectorPg17, DEPENDENCY_PINS.logto]) {
       expect(reference).toMatch(/@sha256:[a-f0-9]{64}$/);
     }
