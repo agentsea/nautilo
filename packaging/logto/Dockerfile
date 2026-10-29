@@ -35,6 +35,8 @@ RUN set -eu; \
     esac; \
     echo "${apk_sha256}  /tmp/ca-certificates-bundle.apk" | sha256sum -c -; \
     apk add --no-cache --no-network --upgrade /tmp/ca-certificates-bundle.apk; \
+    apk upgrade --no-cache; \
+    for package in 'alpine-release=3.23.7-r0' 'musl=1.2.5-r24' 'libcrypto3=3.5.9-r0' 'libssl3=3.5.9-r0' 'zlib=1.3.2-r1' 'apk-tools=3.0.8-r0'; do apk info -e "$package"; done; \
     apk info -e "ca-certificates-bundle=${CA_CERTIFICATES_VERSION}"; \
     test "$(apk info --who-owns /etc/ssl/certs/ca-certificates.crt)" = "/etc/ssl/certs/ca-certificates.crt is owned by ca-certificates-bundle-${CA_CERTIFICATES_VERSION}"; \
     echo '5961c0a3c65459931c023e0075c09733f09aea4ca439cb85bc4a08bb4f3f568b  /etc/ssl/certs/ca-certificates.crt' | sha256sum -c -; \
@@ -45,8 +47,8 @@ RUN set -eu; \
     test "$(node --version)" = v22.23.4
 
 # Keep Logto's upstream application, working directory, npm entrypoint, start
-# command, and unrelated environment unchanged. Only the Node and CA trust
-# identities differ from the pinned upstream image.
+# command, and unrelated environment unchanged. Node, CA trust and supported
+# Alpine security packages differ from the pinned upstream image.
 ENV NODE_VERSION=22.23.4 \
     NODE_OPTIONS=--use-openssl-ca \
     SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \

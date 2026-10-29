@@ -11,6 +11,14 @@
   },
   "nodeImage": "docker.io/library/node@sha256:206878a60dc7014193f418ab9259b6110c15fbd514b3044a267be706509944e4",
   "nodeVersion": "22.23.4",
+  "systemPackages": {
+    "alpine-release": "3.23.7-r0",
+    "musl": "1.2.5-r24",
+    "libcrypto3": "3.5.9-r0",
+    "libssl3": "3.5.9-r0",
+    "zlib": "1.3.2-r1",
+    "apk-tools": "3.0.8-r0"
+  },
   "nodeManifests": {
     "amd64": "sha256:f717c0ddc1137fc3859992963e168af40902fdbb87c1a90cf73e63b89f320016",
     "arm64": "sha256:e68233b2ddf5cd18c41c878f161d5a9cb7c7baaedab5de99bd05d08dc3eed90e"
@@ -44,5 +52,5 @@
     ],
     "port": 3001
   },
-  "localImage": "nautilo/logto:1.38.0-nautilo.1"
+  "localImage": "nautilo/logto:1.38.0-nautilo.2"
 }

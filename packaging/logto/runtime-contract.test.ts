@@ -13,6 +13,7 @@ type Manifest = {
   upstreamManifests: Record<Architecture, string>;
   nodeImage: string;
   nodeVersion: string;
+  systemPackages: Record<string, string>;
   nodeManifests: Record<Architecture, string>;
   tlsTrust: {
     caCertificatesPackage: string;
@@ -52,7 +53,7 @@ describe("Logto runtime derivative", () => {
       upstreamImage: "ghcr.io/logto-io/logto@sha256:aa4c428b70d9dd8eac23b6eeb3826a02d5fe0283b5dd774589b9b9760e0c6e9f",
       nodeImage: "docker.io/library/node@sha256:206878a60dc7014193f418ab9259b6110c15fbd514b3044a267be706509944e4",
       nodeVersion: "22.23.4",
-      localImage: "nautilo/logto:1.38.0-nautilo.1",
+      localImage: "nautilo/logto:1.38.0-nautilo.2",
     });
     for (const digest of [
       ...Object.values(manifest.upstreamManifests),
@@ -116,6 +117,24 @@ describe("Logto runtime derivative", () => {
     expect(dockerfile).not.toMatch(/^\s*(?:ENTRYPOINT|CMD|WORKDIR|EXPOSE)\b/mu);
     expect(dockerfile).not.toMatch(/\b(?:COPY|ADD)\s+[^\n]*\/etc\/logto\b/u);
     expect(dockerfile).not.toContain("YARN_VERSION=");
+  });
+
+  test("upgrades supported Alpine packages and binds every security baseline", () => {
+    expect(dockerfile).toContain("apk upgrade --no-cache");
+    expect(manifest.systemPackages).toEqual({
+      "alpine-release": "3.23.7-r0",
+      musl: "1.2.5-r24",
+      libcrypto3: "3.5.9-r0",
+      libssl3: "3.5.9-r0",
+      zlib: "1.3.2-r1",
+      "apk-tools": "3.0.8-r0",
+    });
+    for (const [name, version] of Object.entries(manifest.systemPackages)) {
+      expect(contract).toContain(name);
+      expect(contract).toContain(version);
+      if (name !== "alpine-release") expect(dockerfile).toContain(`${name}=${version}`);
+    }
+    expect(contract).toContain("['info', '-e', `${name}=${version}`]");
   });
 
   test("runtime contract binds app, architecture, package, bundle, and default trust", () => {
