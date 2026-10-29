@@ -13,6 +13,10 @@ type Manifest = {
   upstreamManifests: Record<Architecture, string>;
   nodeImage: string;
   nodeVersion: string;
+  npm: { version: string; archiveUrl: string; archiveSha256: string };
+  npmUndici: { version: string; archiveUrl: string; archiveSha256: string };
+  npmIpAddress: { version: string; archiveUrl: string; archiveSha256: string };
+  systemPackages: Record<string, string>;
   nodeManifests: Record<Architecture, string>;
   tlsTrust: {
     caCertificatesPackage: string;
@@ -47,12 +51,12 @@ describe("Logto runtime derivative", () => {
       schemaVersion: 1,
       component: "logto",
       upstreamRepository: "https://github.com/logto-io/logto",
-      upstreamVersion: "1.38.0",
+      upstreamVersion: "1.45.0",
       license: "MPL-2.0",
-      upstreamImage: "ghcr.io/logto-io/logto@sha256:aa4c428b70d9dd8eac23b6eeb3826a02d5fe0283b5dd774589b9b9760e0c6e9f",
+      upstreamImage: "ghcr.io/logto-io/logto@sha256:9a9aff9423ab7863f00c881c31408e0bfe4def730bac2182d0097367002f5854",
       nodeImage: "docker.io/library/node@sha256:206878a60dc7014193f418ab9259b6110c15fbd514b3044a267be706509944e4",
       nodeVersion: "22.23.4",
-      localImage: "nautilo/logto:1.38.0-nautilo.1",
+      localImage: "nautilo/logto:1.45.0-nautilo.2",
     });
     for (const digest of [
       ...Object.values(manifest.upstreamManifests),
@@ -66,23 +70,23 @@ describe("Logto runtime derivative", () => {
   test("fetches hash-bound APKs and verifies Alpine signatures offline", () => {
     expect(manifest.tlsTrust).toEqual({
       caCertificatesPackage: "alpine:20261020-r0",
-      repository: "https://dl-cdn.alpinelinux.org/alpine/v3.23/main",
+      repository: "https://dl-cdn.alpinelinux.org/alpine/v3.24/main",
       signatureVerification: "apk verifies the package against the unchanged upstream Alpine keyring",
       apk: {
         amd64: {
           repositoryArchitecture: "x86_64",
-          sha256: "a4c5de1bf37652cd98cbe71aec209512ae0508a964961957a6c9650f795e46c4",
+          sha256: "bb008f6d214b6af7576324659856fb63dc8dcb4373f8345ff706388696f1254d",
         },
         arm64: {
           repositoryArchitecture: "aarch64",
-          sha256: "bdf6033710a251d8239f63236eacf40c84afdf8f7b25bb58d69a2c75202350e7",
+          sha256: "d0a573c27d337c369ad3abe3f39f09ffe67b95af23861577a8d134738375176a",
         },
       },
       bundlePath: "/etc/ssl/certs/ca-certificates.crt",
       bundleSha256: "5961c0a3c65459931c023e0075c09733f09aea4ca439cb85bc4a08bb4f3f568b",
       emptyCertificateDirectory: "/etc/ssl/nautilo-empty-certs",
     });
-    expect(dockerfile).toContain("https://dl-cdn.alpinelinux.org/alpine/v3.23/main/${apk_arch}/ca-certificates-bundle-${CA_CERTIFICATES_VERSION}.apk");
+    expect(dockerfile).toContain("https://dl-cdn.alpinelinux.org/alpine/v3.24/main/${apk_arch}/ca-certificates-bundle-${CA_CERTIFICATES_VERSION}.apk");
     for (const value of Object.values(manifest.tlsTrust.apk)) {
       expect(dockerfile).toContain(value.repositoryArchitecture);
       expect(dockerfile).toContain(value.sha256);
@@ -90,7 +94,7 @@ describe("Logto runtime derivative", () => {
     expect(dockerfile).toContain("apk add --no-cache --no-network --upgrade /tmp/ca-certificates-bundle.apk");
     expect(dockerfile).toContain(`echo '${manifest.tlsTrust.bundleSha256}  ${manifest.tlsTrust.bundlePath}' | sha256sum -c -`);
     expect(dockerfile).not.toContain("--allow-untrusted");
-    expect(dockerfile).toContain("rm /tmp/ca-certificates-bundle.apk");
+    expect(dockerfile).toContain("rm /tmp/ca-certificates-bundle.apk /tmp/npm.tgz");
   });
 
   test("uses the maintained bundle exclusively without replacing Logto runtime behavior", () => {
@@ -118,6 +122,41 @@ describe("Logto runtime derivative", () => {
     expect(dockerfile).not.toContain("YARN_VERSION=");
   });
 
+  test("upgrades supported Alpine packages and binds every security baseline", () => {
+    expect(dockerfile).toContain("apk upgrade --no-cache");
+    expect(manifest.systemPackages).toEqual({
+      "alpine-release": "3.24.3-r0",
+      musl: "1.2.6-r3",
+      libcrypto3: "3.5.9-r0",
+      libssl3: "3.5.9-r0",
+      zlib: "1.3.2-r1",
+      "apk-tools": "3.0.8-r0",
+    });
+    for (const [name, version] of Object.entries(manifest.systemPackages)) {
+      expect(contract).toContain(name);
+      expect(contract).toContain(version);
+      if (name !== "alpine-release") expect(dockerfile).toContain(`${name}=${version}`);
+    }
+    expect(contract).toContain("['info', '-e', `${name}=${version}`]");
+  });
+
+  test("cleanly replaces the npm toolchain from its hash-bound archive without lifecycle scripts", () => {
+    expect(manifest.npm).toEqual({
+      version: "12.2.1",
+      archiveUrl: "https://registry.npmjs.org/npm/-/npm-12.2.1.tgz",
+      archiveSha256: "228bd64aaef23270dbdbd2cf3d5ef5c467602ef38c4066246cef1984adab9a67",
+    });
+    expect(dockerfile).toContain(`ARG NPM_VERSION=${manifest.npm.version}`);
+    expect(dockerfile).toContain(`ARG NPM_ARCHIVE_SHA256=${manifest.npm.archiveSha256}`);
+    expect(dockerfile).toContain('echo "${NPM_ARCHIVE_SHA256}  /tmp/npm.tgz" | sha256sum -c -');
+    const removal = dockerfile.indexOf("rm -rf /usr/local/lib/node_modules/npm");
+    const unpack = dockerfile.indexOf("tar -xzf /tmp/npm.tgz -C /usr/local/lib/node_modules/npm --strip-components=1");
+    expect(removal).toBeGreaterThan(0);
+    expect(unpack).toBeGreaterThan(removal);
+    expect(dockerfile).not.toContain("npm install --global");
+    expect(contract).toContain("readVersion('/usr/local/lib/node_modules/npm/package.json'), '12.2.1'");
+  });
+
   test("runtime contract binds app, architecture, package, bundle, and default trust", () => {
     for (const expected of [
       manifest.upstreamVersion,
@@ -132,5 +171,30 @@ describe("Logto runtime derivative", () => {
     expect(contract).toContain("tls.createSecureContext()");
     expect(contract).toContain("ca-certificates-bundle=20261020-r0");
     expect(contract.match(/[a-f0-9]{64}/gu)).toHaveLength(4);
+  });
+  test("patches npm's bundled HTTP client from a verified same-major upstream archive", () => {
+    expect(manifest.npmUndici).toEqual({
+      version: "6.29.1",
+      archiveUrl: "https://registry.npmjs.org/undici/-/undici-6.29.1.tgz",
+      archiveSha256: "29c4b8e0b2d86cb8795571c1959012ce057a14ecfd34858335f47c31e770a04f",
+    });
+    expect(dockerfile).toContain(`ARG UNDICI_VERSION=${manifest.npmUndici.version}`);
+    expect(dockerfile).toContain(`ARG UNDICI_ARCHIVE_SHA256=${manifest.npmUndici.archiveSha256}`);
+    expect(dockerfile).toContain('echo "${UNDICI_ARCHIVE_SHA256}  /tmp/undici.tgz" | sha256sum -c -');
+    expect(dockerfile).toContain("tar -xzf /tmp/undici.tgz -C /usr/local/lib/node_modules/npm/node_modules/undici --strip-components=1");
+    expect(contract).toContain("readVersion('/usr/local/lib/node_modules/npm/node_modules/undici/package.json'), '6.29.1'");
+    expect(contract).toContain("typeof npmHttpClient.Agent");
+  });
+  test("patches npm's bundled address parser from a verified same-major upstream archive", () => {
+    expect(manifest.npmIpAddress).toEqual({
+      version: "10.7.4",
+      archiveUrl: "https://registry.npmjs.org/ip-address/-/ip-address-10.7.4.tgz",
+      archiveSha256: "f9e1d0dd369c002f43770c6ee35942c8078e76d080a1e18e89113eef865f26ff",
+    });
+    expect(dockerfile).toContain(`ARG IP_ADDRESS_VERSION=${manifest.npmIpAddress.version}`);
+    expect(dockerfile).toContain(`ARG IP_ADDRESS_ARCHIVE_SHA256=${manifest.npmIpAddress.archiveSha256}`);
+    expect(dockerfile).toContain('echo "${IP_ADDRESS_ARCHIVE_SHA256}  /tmp/ip-address.tgz" | sha256sum -c -');
+    expect(contract).toContain("readVersion('/usr/local/lib/node_modules/npm/node_modules/ip-address/package.json'), '10.7.4'");
+    expect(contract).toContain("typeof npmAddressParser.Address6");
   });
 });

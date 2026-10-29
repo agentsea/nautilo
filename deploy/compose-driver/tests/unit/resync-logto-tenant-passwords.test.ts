@@ -687,7 +687,7 @@ describe("Logto tenant password resync restore ordering", () => {
       from_source: false,
       image_ref: CANONICAL_IMAGE_REF,
       instance_id: "prod",
-      ssh: { host: "1.2.3.4", user: "root" },
+      ssh: { host: "192.0.2.44", user: "root" },
     };
     const manifest = validRemoteManifest({
       instanceId: "prod",
@@ -735,7 +735,7 @@ describe("Logto tenant password resync restore ordering", () => {
             : "preflight-tenant-password-resync",
         );
       }
-      if (script.includes(" start nautilo-server")) {
+      if (script.includes(" start nautilo-server") || script.includes(" up -d --no-build")) {
         order.push("server-start");
       }
       return { code: 0, stdout: "", stderr: "" };

@@ -9,7 +9,7 @@ import { setRelayRegistry, setWorkstationDispatchPlanRegistry, type ToolRelayReg
 import { createExecCommandTool, createWriteStdinTool } from "../../src/tools/local-execution/local-execution";
 
 afterEach(() => { setAgentEventSink(null); setRelayRegistry(null); setWorkstationDispatchPlanRegistry(null); clearToolCatalog(); });
-function fixture() {
+function fixture(desktopInstanceId: string | null = "", planInstanceId = desktopInstanceId ?? "") {
   const catalog = new ToolCatalog();
   for (const factory of [createExecCommandTool, createWriteStdinTool]) {
     catalog.register({ name: factory().name, factory, exposure: "core", category: "development", trustTier: "admin",
@@ -27,13 +27,14 @@ function fixture() {
     getPairingGeneration: () => "pairing-fixture",
     getLocalExecutionPairingGeneration: () => "pairing-fixture",
     getLocalExecutionWorkstationBinding: () => sent[0]?.workstationShellBinding ?? null,
+    getDesktopFilesystemGrantSnapshot: () => desktopInstanceId === null ? null : ({ revision: 1, instanceId: desktopInstanceId, agentScope: "all_owned_agents", grants: [] }),
     getLocalExecutionBinding: (_relayId: string, executionId: string) => binding?.executionId === executionId ? binding : null,
     dispatch: async (_relayId, request) => { sent.push(request); if (request.localExecutionBinding?.operation === "start") binding = request.localExecutionBinding;
       if (dispatchError !== null) throw dispatchError;
       return { status: "ok", result: { session_id: binding?.executionId, state: "running" } }; },
   } as ToolRelayRegistry);
   setWorkstationDispatchPlanRegistry({
-    get: () => ({ toolCallId: "call-exec_command", userId: "human-fixture", relayId: "relay-fixture", instanceId: "",
+    get: () => ({ toolCallId: "call-exec_command", userId: "human-fixture", relayId: "relay-fixture", instanceId: planInstanceId,
       desktopSessionId: "desktop-fixture", serverBindingId: "server-fixture", pairingGeneration: "pairing-fixture",
       profileId: "profile-fixture", profileRevision: 1, grantIds: [], capabilityRevision: 1,
       executionClass: "profile_bound_sandbox", currentFolder: "/tmp/fixture", grantRevision: 1, protectedPolicyVersion: 1 }),
@@ -70,6 +71,37 @@ describe("contained execution invocation", () => {
     await toolsNode(state("write_stdin", { session_id: "foreign-execution" }));
     expect(sent).toHaveLength(2);
   });
+  test("remote server commands retain the Desktop instance through input, read and cancellation", async () => {
+    const previous = process.env["NAUTILO_INSTANCE_ID"];
+    process.env["NAUTILO_INSTANCE_ID"] = "remote-server";
+    try {
+      for (const desktopId of ["", "desktop-local"]) {
+        const f = fixture(desktopId);
+        await toolsNode(f.state("exec_command", { cmd: "printf fixture", tty: true }));
+        expect(f.sent).toHaveLength(1);
+        const binding = f.sent[0]!.localExecutionBinding!;
+        expect(binding.owner.instanceId).toBe(desktopId);
+        for (const extra of [{}, { chars: "next\n" }, { cancel: true }]) {
+          await toolsNode(f.state("write_stdin", { session_id: binding.executionId, ...extra }));
+        }
+        expect(f.sent).toHaveLength(4);
+        for (const request of f.sent) expect(request.localExecutionBinding!.owner).toEqual(binding.owner);
+      }
+    } finally {
+      if (previous === undefined) delete process.env["NAUTILO_INSTANCE_ID"];
+      else process.env["NAUTILO_INSTANCE_ID"] = previous;
+    }
+  });
+
+  test("missing Desktop identity or a plan for another instance rejects before dispatch", async () => {
+    for (const [desktopId, planId] of [[null, ""], ["desktop-local", "foreign-desktop"]] as const) {
+      const f = fixture(desktopId, planId);
+      const result = await toolsNode(f.state("exec_command", { cmd: "printf fixture" }));
+      expect(f.sent).toHaveLength(0);
+      expect(result.messages?.at(-1)).toMatchObject({ status: "error" });
+    }
+  });
+
   test("lost initial reply retains the exact recovery locator without claiming process state", async () => {
     const f = fixture();
     const events: ServerEvent[] = [];

@@ -58,6 +58,7 @@ async function fixture() {
   const registry = new InMemoryRelayRegistry();
   const sent: RelayServerMessage[] = [];
   const caps = { profile: "desktop-agent" as const, canExecuteLocal: true, canDelegateLocalExecution: true,
+    desktopFilesystemGrantSnapshot: { revision: 1, instanceId: "desktop-fixture", agentScope: "all_owned_agents" as const, grants: [] },
     localExecution: { version: 1 as const, generation: "host-generation", pipe: true as const, pty: true,
       localNetworkPolicy: true as const, capacity: 2 } };
   let duringDispatch: () => void = () => {};
@@ -78,7 +79,7 @@ function capture(target: NonNullable<ReturnType<typeof resolveTaskLocalExecution
   return { version: 1, invocationId: "capture-task", ...target.captureBinding,
     source: { version: 1, humanUserId: "human", agentId: "agent", rootTaskId: "task", sourceRoomId: "room",
       sourceConversationId: "conversation", ceiling: "basic", profile: null,
-      target: { instanceId: "", relayId: "relay", pairingGeneration: target.rawPairingGeneration } } };
+      target: { instanceId: target.instanceId, relayId: "relay", pairingGeneration: target.rawPairingGeneration } } };
 }
 
 test("raw ordinary origin captures the distinct managed pairing reference on the real Registry wire", async () => {
@@ -89,7 +90,7 @@ test("raw ordinary origin captures the distinct managed pairing reference on the
   expect(result.status).toBe("ok"); expect(target!.isCurrent()).toBe(true);
   expect(f.sent.find(message => message.type === "relay:dispatch")).toMatchObject({
     localExecutionDelegationCapture: { pairingGeneration: f.registry.getLocalExecutionPairingGeneration("relay"),
-      source: { target: { pairingGeneration: "raw-pairing-row" } } },
+      source: { target: { instanceId: "desktop-fixture", pairingGeneration: "raw-pairing-row" } } },
   });
   expect(f.context.pairingGeneration).toBe("raw-pairing-row");
 });
@@ -123,4 +124,19 @@ test("wrong raw origin and current transport or capability loss cannot capture",
   const capability = spyOn(f.registry, "getCapabilities").mockReturnValue({ profile: "desktop-agent", canDelegateLocalExecution: false });
   try { expect(f.target()).toBeNull(); expect(target.isCurrent()).toBe(false); } finally { capability.mockRestore(); }
   await f.registry.unregister("relay"); expect(target.isCurrent()).toBe(false);
+});
+
+
+test("capture requires the selected Desktop identity and fences a changed instance", async () => {
+  const f = await fixture();
+  const target = f.target()!;
+  expect(target.instanceId).toBe("desktop-fixture");
+  const spy = spyOn(f.registry, "getDesktopFilesystemGrantSnapshot").mockReturnValue(null);
+  try {
+    expect(f.target()).toBeNull();
+    expect(target.isCurrent()).toBe(false);
+    spy.mockReturnValue({ revision: 1, instanceId: "", agentScope: "all_owned_agents", grants: [] });
+    expect(f.target()?.instanceId).toBe("");
+    expect(target.isCurrent()).toBe(false);
+  } finally { spy.mockRestore(); }
 });

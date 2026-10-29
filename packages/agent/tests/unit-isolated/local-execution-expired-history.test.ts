@@ -1,5 +1,4 @@
 import { afterEach, expect, test } from "bun:test";
-import { resolveInstance } from "@nautilo/config";
 import { ToolCatalog, clearToolCatalog, initToolCatalog } from "@nautilo/catalog";
 import type { RelayLocalExecutionBinding } from "@nautilo/relay";
 import type { NautiloState } from "../../src/agent/state";
@@ -14,7 +13,7 @@ function fixture() {
     impact: "read-only", executor: "cloud", resultScanPolicy: "never" });
   initToolCatalog(catalog);
   const binding: RelayLocalExecutionBinding = { version: 1, executionId: "execution-fixture", generation: "generation-fixture", invocationId: "original-call", operation: "start",
-    owner: { instanceId: resolveInstance().instanceId, humanUserId: "human-fixture", agentId: "agent-fixture", runId: "old-run", conversationId: "conversation-fixture",
+    owner: { instanceId: "desktop-local", humanUserId: "human-fixture", agentId: "agent-fixture", runId: "old-run", conversationId: "conversation-fixture",
       relayId: "relay-fixture", desktopSessionId: "desktop-fixture", pairingGeneration: "opaque-pairing", serverBindingId: "server-fixture",
       profileId: null, profileRevision: null, grantIds: [], grantRevision: null, protectedPolicyVersion: null } };
   const sent: Parameters<ToolRelayRegistry["dispatch"]>[1][] = [];
@@ -28,6 +27,7 @@ function fixture() {
       localExecution: { version: 1, generation: binding.generation, pipe: true, pty: true, capacity: 1 } }),
     getUserId: () => "human-fixture", getDesktopSessionId: () => "desktop-fixture", getProtocolVersion: () => 26,
     getPairingGeneration: () => pairing, getLocalExecutionPairingGeneration: () => "opaque-pairing",
+    getDesktopFilesystemGrantSnapshot: () => ({ revision: 1, instanceId: "desktop-local", agentScope: "all_owned_agents", grants: [] }),
     getLocalExecutionBinding: () => binding,
     dispatch: async (_relay, request) => {
       sent.push(request);

@@ -68,6 +68,7 @@ import {
   buildRegistryImageRef,
 } from "./buildRegistryOverlay.ts";
 import { buildComposeEnv } from "./buildComposeEnv.ts";
+import { pinRecoveryComposeTemplate } from "./recovery-compose-template.ts";
 import { assertSourceBuildSha, resolveSourceBuildIdentity } from "./source-build-identity.ts";
 import {
   buildDirectTransportBaselineInspectScript,
@@ -4237,6 +4238,16 @@ export class ComposeDriver {
 
   async restart(profile: ComposeDriverProfile, opts: RestartOptions = {}): Promise<void> {
     gates(profile);
+    if (profile.transport === "remote" && profile.from_source === undefined) {
+      try {
+        const manifest = await this.readRemoteDeploymentManifest(profile);
+        profile = { ...profile, from_source: manifest.image.mode === "source" };
+      } catch (error) {
+        // Only legacy source installations may lack a deployment manifest.
+        // Invalid or inaccessible authority must not fall back to local Docker.
+        if (!errorMessage(error).includes("is missing or unreadable")) throw error;
+      }
+    }
     const restoreEnv = this.setInstanceEnv(profile);
     try {
       if (opts.full === true) {
@@ -4964,7 +4975,40 @@ export class ComposeDriver {
       // before a server-only upgrade can replace it, so rollback restores the
       // topology that produced the captured data and image. A capture failure
       // aborts the backup rather than producing a falsely complete bundle.
+      let recoveryComposeEnv: string | undefined;
       if (isRemote) {
+        const capturedEnv = await runChecked(
+          "remote recovery image selections",
+          this.deps.exec,
+          "cat",
+          [posix.join(instanceRootDir, "deploy.compose.env")],
+          { stdio: "pipe" },
+        );
+        recoveryComposeEnv = capturedEnv.stdout;
+        const imageSelections = parseDotenv(capturedEnv.stdout);
+        for (const [key, service] of [
+          ["LOGTO_IMAGE", "logto"],
+          ["POSTGRES_IMAGE", "logto-postgres"],
+          ["PGVECTOR_IMAGE", "app-postgres"],
+        ] as const) {
+          const selected = imageSelections[key];
+          if (!selected || selected.includes("@sha256:")) continue;
+          const containers = await this.runReleaseDocker(profile, [
+            "ps", "-aq", "--filter", `label=com.docker.compose.project=${projectName}`,
+            "--filter", `label=com.docker.compose.service=${service}`,
+          ]);
+          const ids = containers.stdout.trim().split(/\s+/).filter(Boolean);
+          if (containers.code !== 0 || ids.length !== 1) throw new Error(`backup: ambiguous recovery container for ${service}`);
+          const containerImage = await this.runReleaseDocker(profile, ["inspect", "--format", "{{.Image}}", ids[0]!]);
+          if (containerImage.code !== 0 || !/^sha256:[a-f0-9]{64}$/.test(containerImage.stdout.trim())) throw new Error(`backup: missing recovery image identity for ${service}`);
+          const image = await this.runReleaseDocker(profile, ["image", "inspect", "--format", "{{json .RepoDigests}}", containerImage.stdout.trim()]);
+          const repository = selected.replace(/:[^/:]+$/, "");
+          const digests: unknown = image.code === 0 ? JSON.parse(image.stdout) : null;
+          const matching = Array.isArray(digests) ? digests.filter((value: unknown): value is string => typeof value === "string" && value.startsWith(`${repository}@sha256:`)) : [];
+          if (matching.length !== 1) throw new Error(`backup: missing exact repository digest for ${service}`);
+          imageSelections[key] = matching[0]!;
+        }
+        recoveryComposeEnv = envFileContents(imageSelections);
         const remoteTemplatePath = posix.join(instanceRootDir, "docker-compose.yml");
         const capturedTemplatePath = join(bundlePath, "docker-compose.yml");
         if (streamMode) {
@@ -5138,6 +5182,14 @@ export class ComposeDriver {
           ["-rf", remoteStagingDir],
           { stdio: "pipe" },
         );
+      }
+
+      if (contents.composeTemplate && recoveryComposeEnv !== undefined) {
+        const capturedPath = join(bundlePath, "docker-compose.yml");
+        // Apply before the integrity inventory: restore must not resolve old
+        // authentication/schema selections through a newer host environment.
+        const captured = await nodeFs.readFile(capturedPath, "utf8");
+        await nodeFs.writeFile(capturedPath, pinRecoveryComposeTemplate(captured, recoveryComposeEnv), { mode: 0o644 });
       }
 
       const image =
@@ -7159,6 +7211,17 @@ export class ComposeDriver {
       restoreOverlay = true;
     }
 
+    if (mode === "full") {
+      // Stop schema consumers using the current target's configuration before
+      // replacing any inputs. Neither may restart until both dumps are loaded.
+      for (const service of ["nautilo-server", "logto"] as const) {
+        await this.runRemoteComposeAtRoot(
+          profile, remoteRoot, projectName, deployment.https === "letsencrypt",
+          { verb: "stop", service }, true, false,
+        );
+      }
+    }
+
     // The manifest was validated before this first remote write. Do not use
     // RemoteFs here: its staging tree is an operator-side compose input.
     await this.writeRemoteFiles(remoteRoot, files);
@@ -7245,15 +7308,6 @@ export class ComposeDriver {
         ),
         profiles: this.remoteDeployProfiles(profile),
       });
-      await this.runRemoteComposeAtRoot(
-        profile,
-        remoteRoot,
-        projectName,
-        deployment.https === "letsencrypt",
-        { verb: "up", noBuild: true },
-        true,
-        restoreOverlay,
-      );
     }
 
     const runChecked = async (
@@ -7460,7 +7514,9 @@ export class ComposeDriver {
       remoteRoot,
       projectName,
       deployment.https === "letsencrypt",
-      { verb: "start", service: "nautilo-server" },
+      mode === "full"
+        ? { verb: "up", noBuild: true }
+        : { verb: "start", service: "nautilo-server" },
       true,
       restoreOverlay,
     );

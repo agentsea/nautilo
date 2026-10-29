@@ -5,7 +5,6 @@ import { DynamicStructuredTool } from "@langchain/core/tools";
 import { z } from "zod";
 import { Command, MemorySaver, entrypoint } from "@langchain/langgraph";
 import { ToolCatalog, clearToolCatalog, initToolCatalog } from "@nautilo/catalog";
-import { resolveInstance } from "@nautilo/config";
 import type { PolicyResolver } from "@nautilo/trust";
 import type { RelayLocalExecutionBinding } from "@nautilo/relay";
 import type { NautiloState } from "../../src/agent/state";
@@ -33,19 +32,21 @@ function fixture() {
   let source: DelegatedLocalExecutionAdmission = { taskId: "task", taskRunId: "run", signal,
     delegation: { version: 1, humanUserId: "human", agentId: "agent", sourceRoomId: "source-room",
       sourceConversationId: "source-thread", rootTaskId: "task", projectGrantId: "project", ceiling: "basic", profile: null,
-      target: { instanceId: resolveInstance().instanceId, relayId: "relay", pairingGeneration: "raw-pairing",
+      target: { instanceId: "desktop-local", relayId: "relay", pairingGeneration: "raw-pairing",
         serverOrigin: "https://server.example", serverFingerprint: "fingerprint" } } };
   const port: DelegatedLocalExecutionPort = { get taskId() { return source.taskId; },
     get taskRunId() { return source.taskRunId; }, signal,
     withAdmission: async (_operation, work) => work({ ...source, delegation: structuredClone(source.delegation) }) };
   const sent: Parameters<ToolRelayRegistry["dispatch"]>[1][] = [];
   let binding: RelayLocalExecutionBinding | undefined;
+  let desktopInstanceId = "desktop-local";
   setRelayRegistry({
     findByCapabilityForUser: (_capability, userId) => userId === "human" ? ["relay"] : [],
     getCapabilities: () => ({ profile: "desktop-agent", canExecuteLocal: true, canDelegateLocalExecution: true,
       localExecution: { version: 1, generation, pipe: true, pty: true, localNetworkPolicy: true, capacity: 1 } }),
     getUserId: () => "human", getDesktopSessionId: () => "desktop", getProtocolVersion: () => 29,
     getPairingGeneration: () => "raw-pairing", getLocalExecutionPairingGeneration: () => "opaque-pairing",
+    getDesktopFilesystemGrantSnapshot: () => ({ revision: 1, instanceId: desktopInstanceId, agentScope: "all_owned_agents", grants: [] }),
     getLocalExecutionBinding: (_relayId: string, id: string) => binding?.executionId === id ? binding : null,
     dispatch: async (_relayId, request) => {
       sent.push(request); if (request.localExecutionBinding?.operation === "start") binding = request.localExecutionBinding;
@@ -62,6 +63,7 @@ function fixture() {
   state.messages = [new AIMessage({ content: "", tool_calls: state.approvedToolCalls })];
   const tools = createToolsNode({ delegatedLocalExecutionPortForState: () => port });
   return { state, port, sent, tools, catalog,
+    changeDesktop() { desktopInstanceId = "other-desktop"; },
     changeGeneration() { generation = "new-generation"; },
     changeProject() { source = { ...source, delegation: { ...source.delegation, projectGrantId: "replacement-project" } }; },
     nextRun() { source = { ...source, taskRunId: "next-run" }; },
@@ -275,4 +277,12 @@ test("ordinary-only delegated PIN proof and enrollment use the exact requesting 
   const flow = await park(f, () => f.port, { isPinEnrolled: async userId => { checked.push(userId); return false; } });
   expect(flow.pending).toMatchObject({ __interrupt__: [{ value: { type: "identity_challenge", userId: "human" } }] });
   expect(checked).toEqual(["human"]);
+});
+
+
+test("delegated execution rejects a different Desktop instance before dispatch", async () => {
+  const f = fixture();
+  f.changeDesktop();
+  await f.tools(f.state);
+  expect(f.sent).toHaveLength(0);
 });

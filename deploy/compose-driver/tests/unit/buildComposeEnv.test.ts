@@ -3,6 +3,7 @@ import type { ResolvedInstance } from "@nautilo/config";
 import { buildComposeEnv } from "../../src/buildComposeEnv.ts";
 import type { DbPasswords } from "../../src/ensureDbPasswords.ts";
 import type { ComposeDriverProfile } from "../../src/types.ts";
+import { DEPENDENCY_PINS } from "../../../dependency-pins.ts";
 
 function fakePasswords(): DbPasswords {
   return {
@@ -111,7 +112,7 @@ describe("buildComposeEnv", () => {
     expect(env["NAUTILO_DEPLOY_LOGTO_ADMIN_PORT"]).toBe("4302");
     expect(env["NAUTILO_DEPLOY_SERVER_PORT"]).toBe("4001");
     expect(env["NAUTILO_PUBLIC_BASE_URL"]).toBe("http://localhost:4001");
-    // M201 — office (coolwsd) server_name host + plain-http ssl.termination.
+    // Office (coolwsd) server_name host + plain-http ssl.termination.
     expect(env["NAUTILO_PUBLIC_HOST"]).toBe("localhost:4001");
     expect(env["NAUTILO_COOLWSD_SSL_TERMINATION"]).toBe("false");
     expect(env["NAUTILO_OFFICE_ENABLED"]).toBe("false");
@@ -125,8 +126,8 @@ describe("buildComposeEnv", () => {
     expect(env["NAUTILO_AGENT_DB_PASSWORD"]).toBe("test_agent_pw");
     expect(env["NAUTILO_CRYPTO_DB_PASSWORD"]).toBe("test_crypto_pw");
     expect(env["LOGTO_TRUST_PROXY"]).toBe("0");
-    expect(env["LOGTO_IMAGE_TAG"]).toBe("1.38.0");
-    expect(env["LOGTO_IMAGE"]).toBe("ghcr.io/logto-io/logto:1.38.0");
+    expect(env["LOGTO_IMAGE_TAG"]).toBe("1.45.0");
+    expect(env["LOGTO_IMAGE"]).toBe(DEPENDENCY_PINS.logto);
     expect(env["NAUTILO_DISABLE_TLS"]).toBe("1");
     expect(Object.keys(env)).not.toContain("NEON_PROXY_IMAGE");
     expect(Object.keys(env)).not.toContain("NGINX_IMAGE");
@@ -164,7 +165,7 @@ describe("buildComposeEnv", () => {
     expect(env["NAUTILO_PASSWORD_RECOVERY_DRIVER"]).toBe("logto_native");
   });
 
-  test("M117 — LOGTO_TRUST_PROXY=1 in https=letsencrypt mode (Caddy forwards X-Forwarded-Proto)", () => {
+  test("LOGTO_TRUST_PROXY=1 in https=letsencrypt mode (Caddy forwards X-Forwarded-Proto)", () => {
     const env = buildComposeEnv(
       profile({
         name: "remote-le",
@@ -172,16 +173,16 @@ describe("buildComposeEnv", () => {
         ssh: { host: "1.2.3.4", user: "root" },
         domain: "test.example.com",
         https: "letsencrypt",
-        acme_email: "ops@example.com",
+        acme_email: "test@example.com",
       }),
       fakeInstance(),
       fakePasswords(),
-      { acmeEmail: "ops@example.com", caddyfilePath: "/opt/x/deploy.Caddyfile" },
+      { acmeEmail: "test@example.com", caddyfilePath: "/opt/x/deploy.Caddyfile" },
     );
     expect(env["LOGTO_TRUST_PROXY"]).toBe("1");
   });
 
-  test("M117 — LOGTO_TRUST_PROXY=0 stays in https=off mode (default)", () => {
+  test("LOGTO_TRUST_PROXY=0 stays in https=off mode (default)", () => {
     const env = buildComposeEnv(profile(), fakeInstance(), fakePasswords());
     expect(env["LOGTO_TRUST_PROXY"]).toBe("0");
   });
@@ -209,22 +210,22 @@ describe("buildComposeEnv", () => {
         transport: "remote",
         https: "letsencrypt",
         domain: "alpha.example.com",
-        acme_email: "ops@example.com",
+        acme_email: "test@example.com",
         ssh: { host: "1.2.3.4", user: "root" },
       }),
       fakeInstance(),
       fakePasswords(),
       {
-        acmeEmail: "ops@example.com",
+        acmeEmail: "test@example.com",
         caddyfilePath: "/opt/nautilo/deploy.Caddyfile",
       },
     );
     expect(env["NAUTILO_DOMAIN"]).toBe("alpha.example.com");
-    expect(env["ACME_EMAIL"]).toBe("ops@example.com");
+    expect(env["ACME_EMAIL"]).toBe("test@example.com");
     expect(env["NAUTILO_DEPLOY_CADDYFILE_PATH"]).toBe("/opt/nautilo/deploy.Caddyfile");
     expect(env["LOGTO_ENDPOINT"]).toBe("https://auth.alpha.example.com");
     expect(env["NAUTILO_PUBLIC_BASE_URL"]).toBe("https://alpha.example.com");
-    // M201 — LE deploy: coolwsd server_name = bare domain, edge-TLS termination.
+    // LE deploy: coolwsd server_name = bare domain, edge-TLS termination.
     expect(env["NAUTILO_PUBLIC_HOST"]).toBe("alpha.example.com");
     expect(env["NAUTILO_COOLWSD_SSL_TERMINATION"]).toBe("true");
   });

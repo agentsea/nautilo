@@ -141,7 +141,7 @@ const remoteProfile: ComposeDriverProfile = {
   from_source: false,
   image_ref: canonicalImageRef,
   instance_id: "prod",
-  ssh: { host: "1.2.3.4", user: "root" },
+  ssh: { host: "192.0.2.44", user: "root" },
 };
 
 function remoteDeploymentManifest(remoteRoot: string) {
@@ -527,7 +527,7 @@ describe("ComposeDriver upgrade orchestrator", () => {
       transport: "remote",
       lifecycle: "compose",
       from_source: true,
-      ssh: { host: "1.2.3.4", user: "root" },
+      ssh: { host: "192.0.2.44", user: "root" },
     };
     const order: string[] = [];
     const localExecCalls: ExecCall[] = [];
@@ -605,7 +605,7 @@ describe("ComposeDriver upgrade orchestrator", () => {
     );
     expect(lifecycleCalls).toHaveLength(1);
     for (const call of lifecycleCalls) {
-      expect(call.opts.env?.["DOCKER_HOST"]).toBe("ssh://root@1.2.3.4");
+      expect(call.opts.env?.["DOCKER_HOST"]).toBe("ssh://root@192.0.2.44");
     }
   });
 
@@ -684,7 +684,7 @@ describe("ComposeDriver upgrade orchestrator", () => {
       lifecycle: "compose",
       from_source: false,
       image_ref: canonicalImageRef,
-      ssh: { host: "1.2.3.4", user: "root" },
+      ssh: { host: "192.0.2.44", user: "root" },
     };
     const manifest = {
       ...remoteDeploymentManifest("/opt/nautilo-prod"),
@@ -789,7 +789,7 @@ describe("ComposeDriver upgrade orchestrator", () => {
     );
     expect(events).toContain("up");
     expect(events.filter((event) => event === "stop").length).toBeGreaterThanOrEqual(2);
-    expect(events.filter((event) => event === "start").length).toBeGreaterThanOrEqual(1);
+    expect(events.lastIndexOf("up")).toBeGreaterThan(events.lastIndexOf("stop"));
     expect(events[events.length - 1]).toBe("re-health");
     expect(calls.some((call) => call.cmd === "docker")).toBe(false);
     for (const script of composeScripts) {
@@ -798,7 +798,7 @@ describe("ComposeDriver upgrade orchestrator", () => {
     }
   });
 });
-describe("D420 1.2.2 upgrade strategy matrix", () => {
+describe("upgrade strategy matrix", () => {
   const localCell: ComposeDriverProfile = {
     name: "local-cell",
     transport: "local",
@@ -811,7 +811,7 @@ describe("D420 1.2.2 upgrade strategy matrix", () => {
     lifecycle: "compose",
     https: "off",
     image_ref: canonicalImageRef,
-    ssh: { host: "10.0.0.2", user: "root" },
+    ssh: { host: "192.0.2.2", user: "root" },
   };
   const remoteCell: ComposeDriverProfile = {
     name: "remote-cell",
@@ -1092,7 +1092,7 @@ describe("D420 1.2.2 upgrade strategy matrix", () => {
     expect(fullDeployProfile).toMatchObject({ from_source: true });
   });
 });
-// D420 (Wave 3 task 3.3.1) — fault-inject the COMPLETE full-upgrade transaction.
+// — fault-inject the COMPLETE full-upgrade transaction.
 // Each injected failure must resolve to exactly one deterministic outcome:
 //   (a) a healthy full-bundle rollback to the prior image/DB/config/volumes
 //       (restore + rollback health proven), with the EXACT bundle path in the
@@ -1170,7 +1170,7 @@ function wireFullUpgradeFault(
   return { driver, order, restoreCalls, healthCalls, localRoot, bundleDir };
 }
 
-describe("D420 (3.3.1) full upgrade transaction fault injection", () => {
+describe("full upgrade transaction fault injection", () => {
   const sourceLane: ComposeDriverProfile = {
     name: "local-source-fault",
     transport: "local",
@@ -1310,7 +1310,7 @@ describe("D420 (3.3.1) full upgrade transaction fault injection", () => {
   }
 });
 
-// D420 (Wave 3 task 3.3.2) — runtime acceptance gate. `checkRuntimeAcceptance`
+// — runtime acceptance gate. `checkRuntimeAcceptance`
 // is the post-deploy/post-rollback verification that replaces `/health`-alone.
 // It must (1) retain the `/health` poll, (2) verify target/profile instance
 // identity via `/api/setup/status`, (3) confirm the SPA serves HTML, (4) run
@@ -1319,7 +1319,7 @@ describe("D420 (3.3.1) full upgrade transaction fault injection", () => {
 // Logto OIDC discovery. Any probe failure throws so the upgrade/rollback
 // orchestration never reports success on a partially restored target. It
 // must NOT require a browser or end-user login.
-describe("D420 (3.3.2) ComposeDriver runtime acceptance gate", () => {
+describe("ComposeDriver runtime acceptance gate", () => {
   const acceptanceProfile: ComposeDriverProfile = {
     name: "local-acceptance",
     transport: "local",
@@ -1444,7 +1444,7 @@ describe("D420 (3.3.2) ComposeDriver runtime acceptance gate", () => {
       lifecycle: "compose",
       from_source: true,
       instance_id: "lan-acceptance",
-      ssh: { host: "10.20.30.40", user: "deploy" },
+      ssh: { host: "192.0.2.40", user: "deploy" },
     };
     // The probe must route Docker to the target profile, never a local daemon
     // that happens to be healthy. The credential is expanded only inside the
@@ -1461,7 +1461,7 @@ describe("D420 (3.3.2) ComposeDriver runtime acceptance gate", () => {
     );
     expect(probeCalls).toHaveLength(3);
     for (const call of probeCalls) {
-      expect(call.opts.env?.["DOCKER_HOST"]).toBe("ssh://deploy@10.20.30.40");
+      expect(call.opts.env?.["DOCKER_HOST"]).toBe("ssh://deploy@192.0.2.40");
     }
     expect(
       probeCalls.some((c) => (c.args[1] ?? "").includes("psql -U nautilo ")),
@@ -1490,7 +1490,7 @@ describe("D420 (3.3.2) ComposeDriver runtime acceptance gate", () => {
         (c.args[1] ?? "").includes('import postgres from "postgres"'),
     );
     expect(runtimeProbe).toBeDefined();
-    expect(runtimeProbe!.opts.env?.["DOCKER_HOST"]).toBe("ssh://deploy@10.20.30.40");
+    expect(runtimeProbe!.opts.env?.["DOCKER_HOST"]).toBe("ssh://deploy@192.0.2.40");
     expect(runtimeProbe!.args[1]).not.toContain("agent-pw");
   });
 
@@ -1688,7 +1688,7 @@ describe("D420 (3.3.2) ComposeDriver runtime acceptance gate", () => {
   });
 });
 
-// D427 (Wave 4 task 4.x) — remote runtime-acceptance + health-poll transport.
+// — remote runtime-acceptance + health-poll transport.
 // On a split-DNS upgrade (v1 live at 192.0.2.40 instanceId upgrade-fixture,
 // public DNS pointing v2 at 198.51.100.40), the gate's global fetch on
 // `https://upgrade.example.test` hits v2 and falsely fails/validates v1. With the
@@ -1697,7 +1697,7 @@ describe("D420 (3.3.2) ComposeDriver runtime acceptance gate", () => {
 // /api/setup/status, --resolve vhost curl for HTTPS SPA/OIDC) and never touch
 // `deps.fetch` on public DNS. Local behavior is unchanged (proven by the
 // acceptance tests above, which never wire the transport).
-describe("D427 remote runtime-acceptance transport (false-v2 prevention)", () => {
+describe("Remote runtime-acceptance transport (false-v2 prevention)", () => {
   const remoteLeProfile: ComposeDriverProfile = {
     name: "remote-le",
     transport: "remote",

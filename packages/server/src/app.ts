@@ -4555,7 +4555,7 @@ export async function createApp(options?: CreateAppOptions) {
                   version: 1, invocationId: `task-project:${candidate.id}`, ...target.captureBinding,
                   source: { version: 1, humanUserId: candidate.requestorId, agentId: candidate.agentId,
                     sourceRoomId: source.roomId, sourceConversationId: source.conversationId, rootTaskId: candidate.id,
-                    target: { instanceId: parseNautiloInstanceId(process.env), relayId: context.relayId, pairingGeneration: target.rawPairingGeneration },
+                    target: { instanceId: target.instanceId, relayId: context.relayId, pairingGeneration: target.rawPairingGeneration },
                     ceiling: profile ? "development" : "basic", profile: profile ? { id: profile.profileId, revision: profile.profileRevision } : null },
                 };
                 const result = await relayRegistry.dispatch(context.relayId, {
