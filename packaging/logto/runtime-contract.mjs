@@ -18,6 +18,14 @@ function readVersion(path) {
 const caBundlePath = '/etc/ssl/certs/ca-certificates.crt';
 const emptyCertificateDirectory = '/etc/ssl/nautilo-empty-certs';
 const expectedBundleSha256 = '5961c0a3c65459931c023e0075c09733f09aea4ca439cb85bc4a08bb4f3f568b';
+const systemPackages = {
+  'alpine-release': '3.24.3-r0',
+  musl: '1.2.6-r3',
+  libcrypto3: '3.5.9-r0',
+  libssl3: '3.5.9-r0',
+  zlib: '1.3.2-r1',
+  'apk-tools': '3.0.8-r0',
+};
 const distrustedRootFingerprints = new Set([
   '7dd78d5f4f13459a83dff9abbba62edbaf6f2d102bf257fd712f4d9f2746ed8d',
   '86a1ecba089c4a8d3bbe2734c612ba341d813e043cf9e8a862cd5c57a36bbe6b',
@@ -27,8 +35,9 @@ const distrustedRootFingerprints = new Set([
 assert.equal(process.versions.node, '22.23.4');
 assert.ok(['x64', 'arm64'].includes(process.arch), `Unsupported runtime architecture: ${process.arch}`);
 assert.equal(process.cwd(), '/etc/logto');
-assert.equal(readVersion('/etc/logto/packages/core/package.json'), '1.38.0');
-assert.equal(readVersion('/etc/logto/packages/cli/package.json'), '1.38.0');
+assert.equal(readVersion('/etc/logto/packages/core/package.json'), '1.45.0');
+assert.equal(readVersion('/etc/logto/packages/cli/package.json'), '1.45.0');
+assert.equal(readVersion('/usr/local/lib/node_modules/npm/package.json'), '11.21.1');
 assert.equal(process.env.YARN_VERSION, '1.22.22');
 assert.equal(process.env.NODE_OPTIONS, '--use-openssl-ca');
 assert.equal(process.env.SSL_CERT_FILE, caBundlePath);
@@ -61,12 +70,20 @@ const packageCheck = spawnSync('apk', ['info', '-e', 'ca-certificates-bundle=202
 });
 assert.equal(packageCheck.error, undefined);
 assert.equal(packageCheck.status, 0, packageCheck.stderr);
+for (const [name, version] of Object.entries(systemPackages)) {
+  const check = spawnSync('apk', ['info', '-e', `${name}=${version}`], { encoding: 'utf8' });
+  assert.equal(check.error, undefined);
+  assert.equal(check.status, 0, `Unsupported ${name} baseline: ${check.stderr}`);
+}
 assert.equal(fs.existsSync('/tmp/ca-certificates-bundle.apk'), false);
+assert.equal(fs.existsSync('/tmp/npm.tgz'), false);
 
 log(JSON.stringify({
   logto: readVersion('/etc/logto/packages/core/package.json'),
   node: process.versions.node,
+  npm: readVersion('/usr/local/lib/node_modules/npm/package.json'),
   architecture: process.arch,
+  systemPackages,
   caCertificatesPackage: process.env.NAUTILO_CA_CERTIFICATES_PACKAGE,
   caBundleSha256: bundleSha256,
   certificateCount: certificates.length,

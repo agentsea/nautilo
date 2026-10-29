@@ -203,7 +203,7 @@ export function buildAuthContract(): AuthContract {
     managedDesiredStateHash,
     logtoEngine: {
       image: DEPENDENCY_PINS.logto,
-      minimumVersion: DEPENDENCY_PINS.logtoImageTag,
+      minimumVersion: DEPENDENCY_PINS.packagedLogtoImageTag,
     },
     uriDerivationRuleVersion: URI_DERIVATION_RULE_VERSION,
     requiredEnvKeyNames: [

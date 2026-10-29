@@ -184,10 +184,10 @@ describe("runUpgrade — failure branches", () => {
 });
 
 describe("Logto version pin — single source of truth", () => {
-  test("maintained image selection preserves the upstream application version", () => {
-    const recipe = JSON.parse(readFileSync(join(import.meta.dir, "../../../../packaging/logto/manifest.json"), "utf8")) as { upstreamVersion: string };
+  test("source migrations match source auth independently from the packaged image", () => {
+    const compose = readFileSync(join(import.meta.dir, "../../../../infra/compose/nautilo.yml"), "utf8");
     const external = JSON.parse(readFileSync(join(import.meta.dir, "../../../../deploy/releases/qualification/external-images-v1.json"), "utf8")) as { images: { logto: { reference: string } } };
-    expect(recipe.upstreamVersion).toBe(DEPENDENCY_PINS.logtoImageTag);
+    expect(compose).toContain(`image: ghcr.io/logto-io/logto:${DEPENDENCY_PINS.logtoImageTag}`);
     expect(external.images.logto.reference).toBe(DEPENDENCY_PINS.logto);
     expect(DEPENDENCY_PINS.logto).toMatch(/^ghcr\.io\/agentsea\/nautilo-logto-runtime@sha256:[a-f0-9]{64}$/);
   });
