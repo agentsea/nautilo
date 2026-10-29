@@ -14,6 +14,8 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 - Preserve exact authentication and database image selections in fresh remote
   recovery bundles. Keep authentication stopped until full database restoration
   completes, so rollback cannot mix an old schema with a new authentication image.
+  Authentication, its database, and the server resume after host reboots while
+  explicitly stopped maintenance services stay stopped.
 
 - Run multiple independent mAgent Genie bindings on one server through a private
   operator manifest, with separate capabilities and sockets for each binding.

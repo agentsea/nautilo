@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { pinRecoveryComposeTemplate } from "../../src/recovery-compose-template.ts";
 
 describe("recovery Compose infrastructure selections", () => {
@@ -21,5 +22,12 @@ describe("recovery Compose infrastructure selections", () => {
   });
   test.each(["", "LOGTO_IMAGE=auth:latest", `LOGTO_IMAGE=${image}\nLOGTO_IMAGE_TAG=bad`])("rejects unavailable or unsafe selections", (env) => {
     expect(() => pinRecoveryComposeTemplate('${LOGTO_IMAGE}\n${LOGTO_IMAGE_TAG}', env)).toThrow("recovery selection");
+  });
+  test("durable services resume after a host reboot while the migration job stays one-shot", () => {
+    const compose = Bun.YAML.parse(readFileSync(new URL("../../templates/docker-compose.yml", import.meta.url), "utf8")) as { services: Record<string, { restart?: unknown }> };
+    for (const service of ["app-postgres", "logto-postgres", "logto", "nautilo-server"]) {
+      expect(compose.services[service]!.restart).toBe("unless-stopped");
+    }
+    expect(compose.services["logto-seed"]!.restart).toBe("no");
   });
 });
