@@ -13,6 +13,7 @@ type Manifest = {
   upstreamManifests: Record<Architecture, string>;
   nodeImage: string;
   nodeVersion: string;
+  npm: { version: string; archiveUrl: string; archiveSha256: string };
   systemPackages: Record<string, string>;
   nodeManifests: Record<Architecture, string>;
   tlsTrust: {
@@ -91,7 +92,7 @@ describe("Logto runtime derivative", () => {
     expect(dockerfile).toContain("apk add --no-cache --no-network --upgrade /tmp/ca-certificates-bundle.apk");
     expect(dockerfile).toContain(`echo '${manifest.tlsTrust.bundleSha256}  ${manifest.tlsTrust.bundlePath}' | sha256sum -c -`);
     expect(dockerfile).not.toContain("--allow-untrusted");
-    expect(dockerfile).toContain("rm /tmp/ca-certificates-bundle.apk");
+    expect(dockerfile).toContain("rm /tmp/ca-certificates-bundle.apk /tmp/npm.tgz");
   });
 
   test("uses the maintained bundle exclusively without replacing Logto runtime behavior", () => {
@@ -135,6 +136,19 @@ describe("Logto runtime derivative", () => {
       if (name !== "alpine-release") expect(dockerfile).toContain(`${name}=${version}`);
     }
     expect(contract).toContain("['info', '-e', `${name}=${version}`]");
+  });
+
+  test("installs a hash-bound supported npm toolchain without application lifecycle scripts", () => {
+    expect(manifest.npm).toEqual({
+      version: "11.21.1",
+      archiveUrl: "https://registry.npmjs.org/npm/-/npm-11.21.1.tgz",
+      archiveSha256: "dd77c48eb845f4856c2cdba347cfb52bd877a2655a1ea48ff0c4796e3df9dd7b",
+    });
+    expect(dockerfile).toContain(`ARG NPM_VERSION=${manifest.npm.version}`);
+    expect(dockerfile).toContain(`ARG NPM_ARCHIVE_SHA256=${manifest.npm.archiveSha256}`);
+    expect(dockerfile).toContain('echo "${NPM_ARCHIVE_SHA256}  /tmp/npm.tgz" | sha256sum -c -');
+    expect(dockerfile).toContain("npm install --global --ignore-scripts --offline --no-audit --no-fund /tmp/npm.tgz");
+    expect(contract).toContain("readVersion('/usr/local/lib/node_modules/npm/package.json'), '11.21.1'");
   });
 
   test("runtime contract binds app, architecture, package, bundle, and default trust", () => {

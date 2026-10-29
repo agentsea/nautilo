@@ -37,6 +37,7 @@ assert.ok(['x64', 'arm64'].includes(process.arch), `Unsupported runtime architec
 assert.equal(process.cwd(), '/etc/logto');
 assert.equal(readVersion('/etc/logto/packages/core/package.json'), '1.45.0');
 assert.equal(readVersion('/etc/logto/packages/cli/package.json'), '1.45.0');
+assert.equal(readVersion('/usr/local/lib/node_modules/npm/package.json'), '11.21.1');
 assert.equal(process.env.YARN_VERSION, '1.22.22');
 assert.equal(process.env.NODE_OPTIONS, '--use-openssl-ca');
 assert.equal(process.env.SSL_CERT_FILE, caBundlePath);
@@ -75,10 +76,12 @@ for (const [name, version] of Object.entries(systemPackages)) {
   assert.equal(check.status, 0, `Unsupported ${name} baseline: ${check.stderr}`);
 }
 assert.equal(fs.existsSync('/tmp/ca-certificates-bundle.apk'), false);
+assert.equal(fs.existsSync('/tmp/npm.tgz'), false);
 
 log(JSON.stringify({
   logto: readVersion('/etc/logto/packages/core/package.json'),
   node: process.versions.node,
+  npm: readVersion('/usr/local/lib/node_modules/npm/package.json'),
   architecture: process.arch,
   systemPackages,
   caCertificatesPackage: process.env.NAUTILO_CA_CERTIFICATES_PACKAGE,

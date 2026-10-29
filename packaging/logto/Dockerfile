@@ -10,6 +10,8 @@ ARG TARGETARCH
 ARG CA_CERTIFICATES_VERSION=20261020-r0
 ARG CA_APK_X86_64_SHA256=bb008f6d214b6af7576324659856fb63dc8dcb4373f8345ff706388696f1254d
 ARG CA_APK_AARCH64_SHA256=d0a573c27d337c369ad3abe3f39f09ffe67b95af23861577a8d134738375176a
+ARG NPM_VERSION=11.21.1
+ARG NPM_ARCHIVE_SHA256=dd77c48eb845f4856c2cdba347cfb52bd877a2655a1ea48ff0c4796e3df9dd7b
 RUN set -eu; \
     case "$TARGETARCH" in \
       amd64) apk_arch=x86_64; apk_sha256="$CA_APK_X86_64_SHA256" ;; \
@@ -18,7 +20,9 @@ RUN set -eu; \
     esac; \
     apk_url="https://dl-cdn.alpinelinux.org/alpine/v3.24/main/${apk_arch}/ca-certificates-bundle-${CA_CERTIFICATES_VERSION}.apk"; \
     wget -q -O /tmp/ca-certificates-bundle.apk "$apk_url"; \
-    echo "${apk_sha256}  /tmp/ca-certificates-bundle.apk" | sha256sum -c -
+    echo "${apk_sha256}  /tmp/ca-certificates-bundle.apk" | sha256sum -c -; \
+    wget -q -O /tmp/npm.tgz "https://registry.npmjs.org/npm/-/npm-${NPM_VERSION}.tgz"; \
+    echo "${NPM_ARCHIVE_SHA256}  /tmp/npm.tgz" | sha256sum -c -
 
 FROM --platform=$TARGETPLATFORM ${LOGTO_IMAGE}
 ARG TARGETARCH
@@ -27,6 +31,7 @@ ARG CA_APK_X86_64_SHA256=bb008f6d214b6af7576324659856fb63dc8dcb4373f8345ff706388
 ARG CA_APK_AARCH64_SHA256=d0a573c27d337c369ad3abe3f39f09ffe67b95af23861577a8d134738375176a
 COPY --from=trust-package /usr/local/bin/node /usr/local/bin/node
 COPY --from=trust-package /tmp/ca-certificates-bundle.apk /tmp/ca-certificates-bundle.apk
+COPY --from=trust-package /tmp/npm.tgz /tmp/npm.tgz
 RUN set -eu; \
     case "$TARGETARCH" in \
       amd64) apk_sha256="$CA_APK_X86_64_SHA256" ;; \
@@ -40,14 +45,17 @@ RUN set -eu; \
     apk info -e "ca-certificates-bundle=${CA_CERTIFICATES_VERSION}"; \
     test "$(apk info --who-owns /etc/ssl/certs/ca-certificates.crt)" = "/etc/ssl/certs/ca-certificates.crt is owned by ca-certificates-bundle-${CA_CERTIFICATES_VERSION}"; \
     echo '5961c0a3c65459931c023e0075c09733f09aea4ca439cb85bc4a08bb4f3f568b  /etc/ssl/certs/ca-certificates.crt' | sha256sum -c -; \
-    rm /tmp/ca-certificates-bundle.apk; \
+    npm install --global --ignore-scripts --offline --no-audit --no-fund /tmp/npm.tgz; \
+    test "$(npm --version)" = 11.21.1; \
+    npm cache clean --force; \
+    rm /tmp/ca-certificates-bundle.apk /tmp/npm.tgz; \
     mkdir -p /etc/ssl/nautilo-empty-certs; \
     test -d /etc/ssl/nautilo-empty-certs; \
     test -z "$(find /etc/ssl/nautilo-empty-certs -mindepth 1 -maxdepth 1 -print -quit)"; \
     test "$(node --version)" = v22.23.4
 
 # Keep Logto's upstream application, working directory, npm entrypoint, start
-# command, and unrelated environment unchanged. Node, CA trust and supported
+# command, and unrelated environment unchanged. Node, npm, CA trust and supported
 # Alpine security packages differ from the pinned upstream image.
 ENV NODE_VERSION=22.23.4 \
     NODE_OPTIONS=--use-openssl-ca \
