@@ -1,5 +1,5 @@
 /**
- * M059 — `nautilo-dev upgrade` runner.
+ * `nautilo-dev upgrade` runner.
  *
  * Covers every branch with injected deps so we never touch docker /
  * Postgres / npx:
@@ -18,7 +18,7 @@ import { runUpgrade, type UpgradeDeps } from "../../src/commands/upgrade";
 import { DEPENDENCY_PINS } from "../../../../deploy/dependency-pins";
 
 /** Synthetic nautilo-* worktree — do not derive from repo root (CI checkout basename is `nautilo`). */
-const FEATURE_WORKTREE_CWD = join(tmpdir(), "nautilo-d202-protect-default-db");
+const FEATURE_WORKTREE_CWD = join(tmpdir(), "nautilo-upgrade-test");
 mkdirSync(FEATURE_WORKTREE_CWD, { recursive: true });
 
 interface ShellInvocation {
@@ -184,10 +184,12 @@ describe("runUpgrade — failure branches", () => {
 });
 
 describe("Logto version pin — single source of truth", () => {
-  test("dependency-pins image string carries its own tag (internal consistency)", () => {
-    expect(DEPENDENCY_PINS.logto).toBe(
-      `ghcr.io/logto-io/logto:${DEPENDENCY_PINS.logtoImageTag}`,
-    );
+  test("maintained image selection preserves the upstream application version", () => {
+    const recipe = JSON.parse(readFileSync(join(import.meta.dir, "../../../../packaging/logto/manifest.json"), "utf8")) as { upstreamVersion: string };
+    const external = JSON.parse(readFileSync(join(import.meta.dir, "../../../../deploy/releases/qualification/external-images-v1.json"), "utf8")) as { images: { logto: { reference: string } } };
+    expect(recipe.upstreamVersion).toBe(DEPENDENCY_PINS.logtoImageTag);
+    expect(external.images.logto.reference).toBe(DEPENDENCY_PINS.logto);
+    expect(DEPENDENCY_PINS.logto).toMatch(/^ghcr\.io\/agentsea\/nautilo-logto-runtime@sha256:[a-f0-9]{64}$/);
   });
 
   test("@logto/cli devDependency matches the deployed server image tag", () => {
