@@ -35,8 +35,8 @@ const distrustedRootFingerprints = new Set([
 assert.equal(process.versions.node, '22.23.4');
 assert.ok(['x64', 'arm64'].includes(process.arch), `Unsupported runtime architecture: ${process.arch}`);
 assert.equal(process.cwd(), '/etc/logto');
-assert.equal(readVersion('/etc/logto/packages/core/package.json'), '1.43.0');
-assert.equal(readVersion('/etc/logto/packages/cli/package.json'), '1.43.0');
+assert.equal(readVersion('/etc/logto/packages/core/package.json'), '1.45.0');
+assert.equal(readVersion('/etc/logto/packages/cli/package.json'), '1.45.0');
 assert.equal(process.env.YARN_VERSION, '1.22.22');
 assert.equal(process.env.NODE_OPTIONS, '--use-openssl-ca');
 assert.equal(process.env.SSL_CERT_FILE, caBundlePath);

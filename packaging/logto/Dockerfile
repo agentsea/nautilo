@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-ARG LOGTO_IMAGE=ghcr.io/logto-io/logto@sha256:41196a1fadbff35eae337965321c57946936755066bd92625ccf8a5b65d4b1be
+ARG LOGTO_IMAGE=ghcr.io/logto-io/logto@sha256:9a9aff9423ab7863f00c881c31408e0bfe4def730bac2182d0097367002f5854
 ARG NODE_IMAGE=docker.io/library/node@sha256:206878a60dc7014193f418ab9259b6110c15fbd514b3044a267be706509944e4
 
 # Fetch the signed Alpine package over HTTPS, then bind the bytes to the
@@ -57,5 +57,5 @@ ENV NODE_VERSION=22.23.4 \
     NAUTILO_CA_BUNDLE_SHA256=5961c0a3c65459931c023e0075c09733f09aea4ca439cb85bc4a08bb4f3f568b
 LABEL org.opencontainers.image.title="Nautilo Logto Runtime" \
       org.opencontainers.image.source="https://github.com/logto-io/logto" \
-      org.opencontainers.image.version="1.43.0" \
+      org.opencontainers.image.version="1.45.0" \
       org.opencontainers.image.licenses="MPL-2.0"

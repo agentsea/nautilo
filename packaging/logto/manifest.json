@@ -2,12 +2,12 @@
   "schemaVersion": 1,
   "component": "logto",
   "upstreamRepository": "https://github.com/logto-io/logto",
-  "upstreamVersion": "1.43.0",
+  "upstreamVersion": "1.45.0",
   "license": "MPL-2.0",
-  "upstreamImage": "ghcr.io/logto-io/logto@sha256:41196a1fadbff35eae337965321c57946936755066bd92625ccf8a5b65d4b1be",
+  "upstreamImage": "ghcr.io/logto-io/logto@sha256:9a9aff9423ab7863f00c881c31408e0bfe4def730bac2182d0097367002f5854",
   "upstreamManifests": {
-    "amd64": "sha256:b8905cd49025f0849f0d360d0a14445879af595c73fd0b06a7d233a2d9fecfa4",
-    "arm64": "sha256:1c5c6b40c9bb01630fd062121456aa2ca3951cd778115dc33681e4e0a87e7b4d"
+    "amd64": "sha256:1d597fb052525fef6106f85ec41bcbe15c5a288c62d89a25373725c22439beac",
+    "arm64": "sha256:c4cb178c4006d1039cd9a4dfd9a4501be50923839bea72bb45d50855b8ae30e7"
   },
   "nodeImage": "docker.io/library/node@sha256:206878a60dc7014193f418ab9259b6110c15fbd514b3044a267be706509944e4",
   "nodeVersion": "22.23.4",
@@ -52,5 +52,5 @@
     ],
     "port": 3001
   },
-  "localImage": "nautilo/logto:1.43.0-nautilo.1"
+  "localImage": "nautilo/logto:1.45.0-nautilo.1"
 }

@@ -48,12 +48,12 @@ describe("Logto runtime derivative", () => {
       schemaVersion: 1,
       component: "logto",
       upstreamRepository: "https://github.com/logto-io/logto",
-      upstreamVersion: "1.43.0",
+      upstreamVersion: "1.45.0",
       license: "MPL-2.0",
-      upstreamImage: "ghcr.io/logto-io/logto@sha256:41196a1fadbff35eae337965321c57946936755066bd92625ccf8a5b65d4b1be",
+      upstreamImage: "ghcr.io/logto-io/logto@sha256:9a9aff9423ab7863f00c881c31408e0bfe4def730bac2182d0097367002f5854",
       nodeImage: "docker.io/library/node@sha256:206878a60dc7014193f418ab9259b6110c15fbd514b3044a267be706509944e4",
       nodeVersion: "22.23.4",
-      localImage: "nautilo/logto:1.43.0-nautilo.1",
+      localImage: "nautilo/logto:1.45.0-nautilo.1",
     });
     for (const digest of [
       ...Object.values(manifest.upstreamManifests),
