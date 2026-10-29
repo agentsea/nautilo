@@ -133,7 +133,11 @@ sends admitted interactive input, or explicitly cancels the same execution.
 The Human Terminal pool and its explicit Genie handoff remain separate.
 
 Server admission supplies the initiating Human, Agent, conversation, run,
-selected Desktop, pairing and execution-generation identity. Electron checks
+selected Desktop, pairing and execution-generation identity. The local instance
+identity comes from that Desktop's validated discovery snapshot, including the
+empty default identity; it is independent of the server's deployment instance.
+Missing or changed Desktop identity prevents dispatch or history recovery.
+Electron checks
 Basic authority or the contained Workstation profile and local folder grants, prepares
 the sandbox once, and transfers its ownership to `LocalExecutionHost` inside
 the same `DesktopRelaySession`. Neither a model argument nor a catalogue entry

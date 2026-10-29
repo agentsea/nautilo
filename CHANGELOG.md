@@ -7,6 +7,14 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Restore local commands when Desktop connects to a differently named server.
+  Command continuation, saved output, and Task project capture retain the selected
+  Desktop identity while preserving execution ownership checks.
+
+- Refresh exact server security decisions for corrected Debian Chromium builds
+  and two libXi findings without a supported patched package. Decisions expire
+  November 5; changed findings and newly available fixes remain blocking.
+
 - Refresh digest-pinned deployment baselines to PostgreSQL 17.11/16.15, Caddy
   2.11.7, and the maintained Logto 1.45.0 runtime with Node 22.23.4. Refresh the
   server's PostgreSQL 16 maintenance clients and hosting image selections.

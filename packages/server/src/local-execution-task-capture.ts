@@ -1,4 +1,4 @@
-import { RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION, type RelayCapabilities } from "@nautilo/relay";
+import { RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION, type RelayCapabilities, type RelayDesktopFilesystemGrantSnapshot } from "@nautilo/relay";
 import {
   roomGraphThreadFromLaneThread,
   type TaskCreationReturnContext,
@@ -32,6 +32,7 @@ interface CaptureRegistry {
   getDesktopSessionId(relayId: string): string | null;
   getPairingGeneration(relayId: string): string | null;
   getLocalExecutionPairingGeneration(relayId: string): string | null;
+  getDesktopFilesystemGrantSnapshot(relayId: string): RelayDesktopFilesystemGrantSnapshot | null;
   isRelayHeartbeatFresh(relayId: string): boolean;
 }
 
@@ -88,8 +89,10 @@ export function resolveTaskLocalExecutionCaptureTarget(
 ) {
   const { relayId, relaySessionId, desktopSessionId, pairingGeneration: rawPairingGeneration } = context;
   const pairingGeneration = registry.getLocalExecutionPairingGeneration(relayId);
-  if (!rawPairingGeneration || !pairingGeneration) return null;
+  const instanceId = registry.getDesktopFilesystemGrantSnapshot(relayId)?.instanceId;
+  if (instanceId === undefined || !rawPairingGeneration || !pairingGeneration) return null;
   const isCurrent = () => registry.getUserId(relayId) === humanUserId
+    && registry.getDesktopFilesystemGrantSnapshot(relayId)?.instanceId === instanceId
     && registry.getRelaySessionId(relayId) === relaySessionId
     && registry.getDesktopSessionId(relayId) === desktopSessionId
     && registry.getPairingGeneration(relayId) === rawPairingGeneration
@@ -98,6 +101,7 @@ export function resolveTaskLocalExecutionCaptureTarget(
     && registry.getCapabilities(relayId)?.canDelegateLocalExecution === true
     && (registry.getProtocolVersion(relayId) ?? 0) >= RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION;
   return isCurrent() ? {
+    instanceId,
     rawPairingGeneration,
     captureBinding: { desktopSessionId, pairingGeneration },
     isCurrent,

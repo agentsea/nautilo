@@ -21,7 +21,9 @@ function fixture(protocol = 21, search = false) {
   initToolCatalog(catalog);
   let binding: RelayLocalExecutionBinding | null = null;
   let dispatchError: Error | null = null;
+  let onDispatch = () => {};
   let pairing = "pairing-fixture";
+  let desktopInstanceId: string | undefined = "desktop-history";
   const sent: Parameters<ToolRelayRegistry["dispatch"]>[1][] = [];
   setRelayRegistry({
     findByCapabilityForUser: (_capability: string, userId: string) => userId === "human-fixture" ? ["relay-fixture"] : [],
@@ -30,8 +32,9 @@ function fixture(protocol = 21, search = false) {
     getUserId: () => "human-fixture", getDesktopSessionId: () => "desktop-fixture", getProtocolVersion: () => protocol,
     getPairingGeneration: () => pairing,
     getLocalExecutionPairingGeneration: () => `opaque-${pairing}`,
+    getDesktopFilesystemGrantSnapshot: () => desktopInstanceId === undefined ? null : ({ revision: 1, instanceId: desktopInstanceId, agentScope: "all_owned_agents", grants: [] }),
     getLocalExecutionBinding: (_relayId: string, executionId: string) => binding?.executionId === executionId ? binding : null,
-    dispatch: async (_relayId, request) => { sent.push(request); if (request.localExecutionBinding?.operation === "start") binding = request.localExecutionBinding;
+    dispatch: async (_relayId, request) => { sent.push(request); onDispatch(); if (request.localExecutionBinding?.operation === "start") binding = request.localExecutionBinding;
       if (dispatchError !== null) throw dispatchError;
       return { status: "ok", result: { session_id: "execution-old", generation: "generation-old", state: "completed", exitCode: 7, historical: true, output: { data: "final" } } }; },
   } as ToolRelayRegistry);
@@ -44,7 +47,7 @@ function fixture(protocol = 21, search = false) {
     verifiedOrdinaryOrigin: { kind: "local_electron", userId: "human-fixture", actorId: "actor-fixture", relayId: "relay-fixture",
       desktopSessionId: "desktop-fixture", pairingGeneration: "pairing-fixture", requestId: "request-fixture" }, ...overrides,
   }) as unknown as NautiloState;
-  return { sent, state, binding: (value: RelayLocalExecutionBinding) => { binding = value; }, pairing: (value: string) => { pairing = value; }, failWith: (error: Error | null) => { dispatchError = error; } };
+  return { sent, state, duringDispatch: (work: () => void) => { onDispatch = work; }, instance: (value: string | undefined) => { desktopInstanceId = value; }, binding: (value: RelayLocalExecutionBinding) => { binding = value; }, pairing: (value: string) => { pairing = value; }, failWith: (error: Error | null) => { dispatchError = error; } };
 }
 
 
@@ -53,10 +56,26 @@ describe("model execution history recovery", () => {
   test("lost registry becomes a new final ToolMessage, with no live binding or replay", async () => {
     const f = fixture(); const result = await node()(f.state("write_stdin", { session_id: "execution-old" }));
     expect(f.sent).toHaveLength(1);
-    expect(f.sent[0]).toMatchObject({ toolName: "write_stdin", impact: "read-only", localExecutionHistoryBinding: { generation: "generation-old", sourceMessageId: 42, reader: { humanUserId: "human-fixture", agentId: "agent-fixture", conversationId: "conversation-fixture" } } });
+    expect(f.sent[0]).toMatchObject({ toolName: "write_stdin", impact: "read-only", localExecutionHistoryBinding: { generation: "generation-old", sourceMessageId: 42, reader: { instanceId: "desktop-history", humanUserId: "human-fixture", agentId: "agent-fixture", conversationId: "conversation-fixture" } } });
     expect(f.sent[0]).not.toHaveProperty("localExecutionBinding");
     expect(JSON.parse(result.messages!.at(-1)!.content as string)).toMatchObject({ historical: true, state: "completed", exitCode: 7 });
   });
+  test("missing or changed Desktop identity denies history and withholds recovered bytes", async () => {
+    for (const phase of ["missing", "before", "after"] as const) {
+      const f = fixture();
+      if (phase === "missing") f.instance(undefined);
+      const recover = createToolsNode({ localExecutionHistoryPortForState: () => ({ withReference: async (executionId, read) => {
+        if (phase === "before") f.instance("replacement");
+        const result = await read({ executionId, generation: "generation-old", sourceMessageId: 42 });
+        return result;
+      } }) });
+      if (phase === "after") f.duringDispatch(() => f.instance("replacement"));
+      const result = await recover(f.state("write_stdin", { session_id: "execution-old" }));
+      expect(f.sent).toHaveLength(phase === "after" ? 1 : 0);
+      expect(result.messages!.at(-1)!.content).not.toContain('"historical":true');
+    }
+  });
+
   test("Desktop restart recovers even when server retained an old live binding", async () => {
     const f = fixture(); f.binding({ version: 1, executionId: "execution-old", generation: "generation-old", invocationId: "old", operation: "start", owner: { instanceId: "", humanUserId: "human-fixture", agentId: "agent-fixture", runId: "old-run", conversationId: "conversation-fixture", relayId: "relay-fixture", desktopSessionId: "old-desktop", pairingGeneration: "pairing-fixture", serverBindingId: "server", profileId: null, profileRevision: null, grantIds: [], grantRevision: null, protectedPolicyVersion: null } });
     await node()(f.state("write_stdin", { session_id: "execution-old" }));

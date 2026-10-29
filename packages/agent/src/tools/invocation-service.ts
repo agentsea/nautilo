@@ -3653,6 +3653,7 @@ async function executeViaRelayRaw(
         const desktopSessionId = registry.getDesktopSessionId?.(relayId);
         const pairingGeneration = registry.getLocalExecutionPairingGeneration?.(relayId);
         const isCurrent = () => registry === _relayRegistry && registry.getUserId?.(relayId) === humanId
+          && registry.getDesktopFilesystemGrantSnapshot?.(relayId)?.instanceId === delegation.target.instanceId
           && registry.getPairingGeneration?.(relayId) === delegation.target.pairingGeneration
           && registry.getDesktopSessionId?.(relayId) === desktopSessionId
           && registry.getLocalExecutionPairingGeneration?.(relayId) === pairingGeneration
@@ -3662,7 +3663,7 @@ async function executeViaRelayRaw(
           || caps?.profile !== "desktop-agent" || caps.canExecuteLocal !== true
           || (registry.getProtocolVersion?.(relayId) ?? 0) < RELAY_DELEGATED_LOCAL_EXECUTION_PROTOCOL_VERSION
           || delegation.humanUserId !== humanId || delegation.agentId !== state.agentId
-          || delegation.target.instanceId !== resolveInstance().instanceId || !isCurrent()
+          || !isCurrent()
           || (tc.args["tty"] === true && !contract.pty)
           || !isRelayLocalExecutionSearchAllowed(tc.name, tc.args, caps, registry.getProtocolVersion?.(relayId) ?? 0)) {
           return { ok: false as const, relayUnavailable: true,
@@ -3753,8 +3754,10 @@ async function executeViaRelayRaw(
     const registry = historyRegistry;
     const origin = historyOrigin;
     const pairingGeneration = registry.getLocalExecutionPairingGeneration?.(origin.relayId);
+    const instanceId = registry.getDesktopFilesystemGrantSnapshot?.(origin.relayId)?.instanceId;
     const port = opts.localExecutionHistoryPort;
     const isCurrent = () => registry === _relayRegistry && registry.getUserId?.(origin.relayId) === userId
+      && registry.getDesktopFilesystemGrantSnapshot?.(origin.relayId)?.instanceId === instanceId
       && registry.getDesktopSessionId?.(origin.relayId) === origin.desktopSessionId
       && registry.getPairingGeneration?.(origin.relayId) === origin.pairingGeneration
       && registry.getLocalExecutionPairingGeneration?.(origin.relayId) === pairingGeneration
@@ -3762,7 +3765,7 @@ async function executeViaRelayRaw(
       && registry.getCapabilities(origin.relayId)?.canReadLocalExecutionHistory === true
       && isRelayLocalExecutionSearchAllowed(tc.name, tc.args, registry.getCapabilities(origin.relayId), registry.getProtocolVersion?.(origin.relayId) ?? 0)
       && (registry.getProtocolVersion?.(origin.relayId) ?? 0) >= RELAY_LOCAL_EXECUTION_HISTORY_PROTOCOL_VERSION;
-    if (!port || !pairingGeneration || !state.roomId || state.trustedExecutionEntrypoint !== "foreground.main"
+    if (!port || instanceId === undefined || !pairingGeneration || !state.roomId || state.trustedExecutionEntrypoint !== "foreground.main"
       || state.taskRun || state.subagentRun || !isCurrent()) {
       return { ok: false, errorMessage: "Error: execution history is unavailable for the current conversation and computer. No command was restarted." };
     }
@@ -3776,7 +3779,7 @@ async function executeViaRelayRaw(
         }
         const binding: RelayLocalExecutionHistoryBindingV1 = {
           version: 1, ...reference, invocationId: tc.id!, reader: {
-            instanceId: resolveInstance().instanceId, humanUserId: userId, agentId: state.agentId,
+            instanceId, humanUserId: userId, agentId: state.agentId,
             conversationId: state.currentThreadId || state.langgraphThreadId, roomId: state.roomId,
             relayId: origin.relayId, desktopSessionId: origin.desktopSessionId, pairingGeneration,
           },
@@ -4683,9 +4686,12 @@ async function executeViaRelayRaw(
     const capability = parseRelayLocalExecutionCapability(relayCaps?.localExecution);
     const desktopSessionId = _relayRegistry.getDesktopSessionId?.(relayId);
     const pairingGeneration = _relayRegistry.getLocalExecutionPairingGeneration?.(relayId);
+    // This identity belongs to the selected Desktop, whose local instance can
+    // differ from the remote server. The executor still validates it locally.
+    const instanceId = _relayRegistry.getDesktopFilesystemGrantSnapshot?.(relayId)?.instanceId;
     if (capability === null || capability.capacity > LOCAL_EXECUTION_MAX_IDENTITIES || relayCaps?.profile !== "desktop-agent" || relayCaps.canExecuteLocal !== true
       || (_relayRegistry.getProtocolVersion?.(relayId) ?? 0) < RELAY_LOCAL_EXECUTION_PROTOCOL_VERSION
-      || !desktopSessionId || !pairingGeneration || _relayRegistry.getUserId?.(relayId) !== userId
+      || instanceId === undefined || !desktopSessionId || !pairingGeneration || _relayRegistry.getUserId?.(relayId) !== userId
       || state.verifiedOrdinaryOrigin?.kind !== "local_electron" || state.verifiedOrdinaryOrigin.relayId !== relayId
       || state.verifiedOrdinaryOrigin.desktopSessionId !== desktopSessionId
       || _relayRegistry.getPairingGeneration?.(relayId) !== state.verifiedOrdinaryOrigin.pairingGeneration
@@ -4693,7 +4699,7 @@ async function executeViaRelayRaw(
       return { ok: false, errorMessage: "Error: the selected Desktop does not support this contained execution contract." };
     }
     const operation = localExecutionOperation(tc.name, tc.args);
-    const caller = { instanceId: resolveInstance().instanceId, humanUserId: userId, agentId: state.agentId,
+    const caller = { instanceId, humanUserId: userId, agentId: state.agentId,
       conversationId: state.currentThreadId || state.langgraphThreadId, relayId, desktopSessionId, pairingGeneration };
     const owner: RelayLocalExecutionOwnerV1 = { ...caller, runId: state.currentTaskRunId || turnContextKey(state.turnId, state.agentId),
       serverBindingId: plan?.serverBindingId ?? `instance:${caller.instanceId}`,
@@ -4701,6 +4707,9 @@ async function executeViaRelayRaw(
       grantIds: plan?.grantIds ?? [], grantRevision: plan?.grantRevision ?? null,
       protectedPolicyVersion: plan?.protectedPolicyVersion ?? null };
     if (operation === "start") {
+      if (plan && plan.instanceId !== instanceId) {
+        return { ok: false, errorMessage: "Error: local execution computer identity changed; request a fresh command." };
+      }
       const localNetworkPolicy = toRelayNetworkPolicy(resolveServerPosture().localNetworkPolicy ?? { mode: "host" });
       if (capability.localNetworkPolicy !== true
         || (_relayRegistry.getProtocolVersion?.(relayId) ?? 0) < RELAY_LOCAL_EXECUTION_NETWORK_POLICY_PROTOCOL_VERSION
