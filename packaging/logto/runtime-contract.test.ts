@@ -15,6 +15,7 @@ type Manifest = {
   nodeVersion: string;
   npm: { version: string; archiveUrl: string; archiveSha256: string };
   npmUndici: { version: string; archiveUrl: string; archiveSha256: string };
+  npmIpAddress: { version: string; archiveUrl: string; archiveSha256: string };
   systemPackages: Record<string, string>;
   nodeManifests: Record<Architecture, string>;
   tlsTrust: {
@@ -183,5 +184,17 @@ describe("Logto runtime derivative", () => {
     expect(dockerfile).toContain("tar -xzf /tmp/undici.tgz -C /usr/local/lib/node_modules/npm/node_modules/undici --strip-components=1");
     expect(contract).toContain("readVersion('/usr/local/lib/node_modules/npm/node_modules/undici/package.json'), '6.29.1'");
     expect(contract).toContain("typeof npmHttpClient.Agent");
+  });
+  test("patches npm's bundled address parser from a verified same-major upstream archive", () => {
+    expect(manifest.npmIpAddress).toEqual({
+      version: "10.7.4",
+      archiveUrl: "https://registry.npmjs.org/ip-address/-/ip-address-10.7.4.tgz",
+      archiveSha256: "f9e1d0dd369c002f43770c6ee35942c8078e76d080a1e18e89113eef865f26ff",
+    });
+    expect(dockerfile).toContain(`ARG IP_ADDRESS_VERSION=${manifest.npmIpAddress.version}`);
+    expect(dockerfile).toContain(`ARG IP_ADDRESS_ARCHIVE_SHA256=${manifest.npmIpAddress.archiveSha256}`);
+    expect(dockerfile).toContain('echo "${IP_ADDRESS_ARCHIVE_SHA256}  /tmp/ip-address.tgz" | sha256sum -c -');
+    expect(contract).toContain("readVersion('/usr/local/lib/node_modules/npm/node_modules/ip-address/package.json'), '10.7.4'");
+    expect(contract).toContain("typeof npmAddressParser.Address6");
   });
 });

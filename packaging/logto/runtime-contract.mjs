@@ -40,12 +40,17 @@ assert.equal(readVersion('/etc/logto/packages/core/package.json'), '1.45.0');
 assert.equal(readVersion('/etc/logto/packages/cli/package.json'), '1.45.0');
 assert.equal(readVersion('/usr/local/lib/node_modules/npm/package.json'), '12.2.1');
 assert.equal(readVersion('/usr/local/lib/node_modules/npm/node_modules/undici/package.json'), '6.29.1');
+assert.equal(readVersion('/usr/local/lib/node_modules/npm/node_modules/ip-address/package.json'), '10.7.4');
 const npmRequire = createRequire('/usr/local/lib/node_modules/npm/package.json');
 /** @type {unknown} */
 const npmHttpClient = npmRequire('undici');
 assert.ok(npmHttpClient !== null && typeof npmHttpClient === 'object' && 'Agent' in npmHttpClient && 'fetch' in npmHttpClient);
 assert.equal(typeof npmHttpClient.Agent, 'function');
 assert.equal(typeof npmHttpClient.fetch, 'function');
+/** @type {unknown} */
+const npmAddressParser = npmRequire('ip-address');
+assert.ok(npmAddressParser !== null && typeof npmAddressParser === 'object' && 'Address6' in npmAddressParser);
+assert.equal(typeof npmAddressParser.Address6, 'function');
 assert.equal(process.env.YARN_VERSION, '1.22.22');
 assert.equal(process.env.NODE_OPTIONS, '--use-openssl-ca');
 assert.equal(process.env.SSL_CERT_FILE, caBundlePath);
@@ -86,12 +91,14 @@ for (const [name, version] of Object.entries(systemPackages)) {
 assert.equal(fs.existsSync('/tmp/ca-certificates-bundle.apk'), false);
 assert.equal(fs.existsSync('/tmp/npm.tgz'), false);
 assert.equal(fs.existsSync('/tmp/undici.tgz'), false);
+assert.equal(fs.existsSync('/tmp/ip-address.tgz'), false);
 
 log(JSON.stringify({
   logto: readVersion('/etc/logto/packages/core/package.json'),
   node: process.versions.node,
   npm: readVersion('/usr/local/lib/node_modules/npm/package.json'),
   npmUndici: readVersion('/usr/local/lib/node_modules/npm/node_modules/undici/package.json'),
+  npmIpAddress: readVersion('/usr/local/lib/node_modules/npm/node_modules/ip-address/package.json'),
   architecture: process.arch,
   systemPackages,
   caCertificatesPackage: process.env.NAUTILO_CA_CERTIFICATES_PACKAGE,

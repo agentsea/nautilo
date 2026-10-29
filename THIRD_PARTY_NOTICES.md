@@ -214,7 +214,7 @@ images; exact image digests are declared in `deploy/dependency-pins.ts` and the 
 | [PostgreSQL](https://www.postgresql.org/) | 16.15 (digest-pinned) | PostgreSQL Global Development Group | PostgreSQL License |
 | [pgvector](https://github.com/pgvector/pgvector) | PostgreSQL 17.11 (digest-pinned pgvector image) | pgvector | PostgreSQL License |
 | [Logto](https://github.com/logto-io/logto) | 1.45.0, maintained runtime with Node 22.23.4 | Logto | MPL-2.0 |
-| [npm](https://github.com/npm/cli) / [Undici](https://github.com/nodejs/undici) | 12.2.1 with bundled Undici patched to 6.29.1 in the maintained authentication image | npm / Node.js contributors | Artistic-2.0 / MIT; license files retained in their package archives |
+| [npm](https://github.com/npm/cli) / [Undici](https://github.com/nodejs/undici) / [ip-address](https://github.com/beaugunderson/ip-address) | 12.2.1 with bundled Undici patched to 6.29.1 and ip-address to 10.7.4 in the maintained authentication image | npm / Node.js contributors / ip-address contributors | Artistic-2.0 / MIT; license files retained in their package archives |
 | [Caddy](https://github.com/caddyserver/caddy) | 2.11.7 (digest-pinned) | Caddy authors | Apache-2.0 |
 | [Collabora Online](https://www.collaboraonline.com/code/) | `collabora/code:26.04.1.4.1` | Collabora | MPL-2.0 |
 | [nginx](https://nginx.org/) | `nginx:1.27-alpine` | F5/nginx | BSD-2-Clause |

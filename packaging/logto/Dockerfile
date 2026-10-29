@@ -14,6 +14,8 @@ ARG NPM_VERSION=12.2.1
 ARG NPM_ARCHIVE_SHA256=228bd64aaef23270dbdbd2cf3d5ef5c467602ef38c4066246cef1984adab9a67
 ARG UNDICI_VERSION=6.29.1
 ARG UNDICI_ARCHIVE_SHA256=29c4b8e0b2d86cb8795571c1959012ce057a14ecfd34858335f47c31e770a04f
+ARG IP_ADDRESS_VERSION=10.7.4
+ARG IP_ADDRESS_ARCHIVE_SHA256=f9e1d0dd369c002f43770c6ee35942c8078e76d080a1e18e89113eef865f26ff
 RUN set -eu; \
     case "$TARGETARCH" in \
       amd64) apk_arch=x86_64; apk_sha256="$CA_APK_X86_64_SHA256" ;; \
@@ -26,7 +28,9 @@ RUN set -eu; \
     wget -q -O /tmp/npm.tgz "https://registry.npmjs.org/npm/-/npm-${NPM_VERSION}.tgz"; \
     echo "${NPM_ARCHIVE_SHA256}  /tmp/npm.tgz" | sha256sum -c -; \
     wget -q -O /tmp/undici.tgz "https://registry.npmjs.org/undici/-/undici-${UNDICI_VERSION}.tgz"; \
-    echo "${UNDICI_ARCHIVE_SHA256}  /tmp/undici.tgz" | sha256sum -c -
+    echo "${UNDICI_ARCHIVE_SHA256}  /tmp/undici.tgz" | sha256sum -c -; \
+    wget -q -O /tmp/ip-address.tgz "https://registry.npmjs.org/ip-address/-/ip-address-${IP_ADDRESS_VERSION}.tgz"; \
+    echo "${IP_ADDRESS_ARCHIVE_SHA256}  /tmp/ip-address.tgz" | sha256sum -c -
 
 FROM --platform=$TARGETPLATFORM ${LOGTO_IMAGE}
 ARG TARGETARCH
@@ -37,6 +41,7 @@ COPY --from=trust-package /usr/local/bin/node /usr/local/bin/node
 COPY --from=trust-package /tmp/ca-certificates-bundle.apk /tmp/ca-certificates-bundle.apk
 COPY --from=trust-package /tmp/npm.tgz /tmp/npm.tgz
 COPY --from=trust-package /tmp/undici.tgz /tmp/undici.tgz
+COPY --from=trust-package /tmp/ip-address.tgz /tmp/ip-address.tgz
 RUN set -eu; \
     case "$TARGETARCH" in \
       amd64) apk_sha256="$CA_APK_X86_64_SHA256" ;; \
@@ -56,9 +61,12 @@ RUN set -eu; \
     rm -rf /usr/local/lib/node_modules/npm/node_modules/undici; \
     mkdir -p /usr/local/lib/node_modules/npm/node_modules/undici; \
     tar -xzf /tmp/undici.tgz -C /usr/local/lib/node_modules/npm/node_modules/undici --strip-components=1; \
+    rm -rf /usr/local/lib/node_modules/npm/node_modules/ip-address; \
+    mkdir -p /usr/local/lib/node_modules/npm/node_modules/ip-address; \
+    tar -xzf /tmp/ip-address.tgz -C /usr/local/lib/node_modules/npm/node_modules/ip-address --strip-components=1; \
     test "$(npm --version)" = 12.2.1; \
     npm cache clean --force; \
-    rm /tmp/ca-certificates-bundle.apk /tmp/npm.tgz /tmp/undici.tgz; \
+    rm /tmp/ca-certificates-bundle.apk /tmp/npm.tgz /tmp/undici.tgz /tmp/ip-address.tgz; \
     mkdir -p /etc/ssl/nautilo-empty-certs; \
     test -d /etc/ssl/nautilo-empty-certs; \
     test -z "$(find /etc/ssl/nautilo-empty-certs -mindepth 1 -maxdepth 1 -print -quit)"; \
