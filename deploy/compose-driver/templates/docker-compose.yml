@@ -140,7 +140,8 @@ services:
     restart: "no"
     environment:
       DB_URL: postgres://logto:${LOGTO_DB_PASSWORD:-logto}@logto-postgres:5432/logto_nautilo
-    command: ["cli", "--", "db", "seed", "--swe"]
+    entrypoint: ["/bin/sh", "-ec"]
+    command: ["npm run cli -- db seed --swe && npm run alteration deploy ${LOGTO_IMAGE_TAG:?LOGTO_IMAGE_TAG must match the selected authentication image}"]
     networks:
       - deploy-net
 
@@ -161,7 +162,7 @@ services:
       NAUTILO_HOSTING_MODE: local
       # Instance identity, always present on EVERY compose invocation (deploy,
       # restore/rollback, manual `up`) via the --env-file. Empty = the default
-      # instance; named instances (e.g. omega) get their id here so the D374
+      # instance; named instances (e.g. omega) get their id here so the
       # marker + server self-identity never depend on the server overlay alone.
       # The server overlay still sets this too (belt-and-suspenders).
       NAUTILO_INSTANCE_ID: "${NAUTILO_INSTANCE_ID:-}"

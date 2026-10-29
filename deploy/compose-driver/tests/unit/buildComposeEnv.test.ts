@@ -125,8 +125,8 @@ describe("buildComposeEnv", () => {
     expect(env["NAUTILO_AGENT_DB_PASSWORD"]).toBe("test_agent_pw");
     expect(env["NAUTILO_CRYPTO_DB_PASSWORD"]).toBe("test_crypto_pw");
     expect(env["LOGTO_TRUST_PROXY"]).toBe("0");
-    expect(env["LOGTO_IMAGE_TAG"]).toBe("1.38.0");
-    expect(env["LOGTO_IMAGE"]).toBe("ghcr.io/agentsea/nautilo-logto-runtime@sha256:c71ebaf08e4ad1eb92b7f456dd1e5f24b158e4fd815cd44f76bf39f7c2160225");
+    expect(env["LOGTO_IMAGE_TAG"]).toBe("1.45.0");
+    expect(env["LOGTO_IMAGE"]).toBe("ghcr.io/agentsea/nautilo-logto-runtime@sha256:255150162936bd6e717300d2c81d17f993a4f584c3f147010fe3483bd8f6a647");
     expect(env["NAUTILO_DISABLE_TLS"]).toBe("1");
     expect(Object.keys(env)).not.toContain("NEON_PROXY_IMAGE");
     expect(Object.keys(env)).not.toContain("NGINX_IMAGE");

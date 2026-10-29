@@ -10,8 +10,8 @@ ARG TARGETARCH
 ARG CA_CERTIFICATES_VERSION=20261020-r0
 ARG CA_APK_X86_64_SHA256=bb008f6d214b6af7576324659856fb63dc8dcb4373f8345ff706388696f1254d
 ARG CA_APK_AARCH64_SHA256=d0a573c27d337c369ad3abe3f39f09ffe67b95af23861577a8d134738375176a
-ARG NPM_VERSION=11.21.1
-ARG NPM_ARCHIVE_SHA256=dd77c48eb845f4856c2cdba347cfb52bd877a2655a1ea48ff0c4796e3df9dd7b
+ARG NPM_VERSION=12.2.1
+ARG NPM_ARCHIVE_SHA256=228bd64aaef23270dbdbd2cf3d5ef5c467602ef38c4066246cef1984adab9a67
 RUN set -eu; \
     case "$TARGETARCH" in \
       amd64) apk_arch=x86_64; apk_sha256="$CA_APK_X86_64_SHA256" ;; \
@@ -46,7 +46,7 @@ RUN set -eu; \
     test "$(apk info --who-owns /etc/ssl/certs/ca-certificates.crt)" = "/etc/ssl/certs/ca-certificates.crt is owned by ca-certificates-bundle-${CA_CERTIFICATES_VERSION}"; \
     echo '5961c0a3c65459931c023e0075c09733f09aea4ca439cb85bc4a08bb4f3f568b  /etc/ssl/certs/ca-certificates.crt' | sha256sum -c -; \
     npm install --global --ignore-scripts --offline --no-audit --no-fund /tmp/npm.tgz; \
-    test "$(npm --version)" = 11.21.1; \
+    test "$(npm --version)" = 12.2.1; \
     npm cache clean --force; \
     rm /tmp/ca-certificates-bundle.apk /tmp/npm.tgz; \
     mkdir -p /etc/ssl/nautilo-empty-certs; \

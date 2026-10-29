@@ -32,7 +32,7 @@ describe("server image auth contract", () => {
       };
     };
 
-    expect(contract.logtoEngine.minimumVersion).toBe("1.38.0");
+    expect(contract.logtoEngine.minimumVersion).toBe("1.45.0");
     expect(contract.uriDerivationRuleVersion).toBe(URI_DERIVATION_RULE_VERSION);
     expect(contract.requiredEnvKeyNames).toContain("LOGTO_M2M_APP_SECRET");
     expect(contract.requiredEnvKeyNames).toContain(
