@@ -45,7 +45,9 @@ RUN set -eu; \
     apk info -e "ca-certificates-bundle=${CA_CERTIFICATES_VERSION}"; \
     test "$(apk info --who-owns /etc/ssl/certs/ca-certificates.crt)" = "/etc/ssl/certs/ca-certificates.crt is owned by ca-certificates-bundle-${CA_CERTIFICATES_VERSION}"; \
     echo '5961c0a3c65459931c023e0075c09733f09aea4ca439cb85bc4a08bb4f3f568b  /etc/ssl/certs/ca-certificates.crt' | sha256sum -c -; \
-    npm install --global --ignore-scripts --offline --no-audit --no-fund /tmp/npm.tgz; \
+    rm -rf /usr/local/lib/node_modules/npm; \
+    mkdir -p /usr/local/lib/node_modules/npm; \
+    tar -xzf /tmp/npm.tgz -C /usr/local/lib/node_modules/npm --strip-components=1; \
     test "$(npm --version)" = 12.2.1; \
     npm cache clean --force; \
     rm /tmp/ca-certificates-bundle.apk /tmp/npm.tgz; \
