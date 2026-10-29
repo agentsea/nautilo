@@ -3,6 +3,7 @@ import type { ResolvedInstance } from "@nautilo/config";
 import { buildComposeEnv } from "../../src/buildComposeEnv.ts";
 import type { DbPasswords } from "../../src/ensureDbPasswords.ts";
 import type { ComposeDriverProfile } from "../../src/types.ts";
+import { DEPENDENCY_PINS } from "../../../dependency-pins.ts";
 
 function fakePasswords(): DbPasswords {
   return {
@@ -126,7 +127,7 @@ describe("buildComposeEnv", () => {
     expect(env["NAUTILO_CRYPTO_DB_PASSWORD"]).toBe("test_crypto_pw");
     expect(env["LOGTO_TRUST_PROXY"]).toBe("0");
     expect(env["LOGTO_IMAGE_TAG"]).toBe("1.45.0");
-    expect(env["LOGTO_IMAGE"]).toBe("ghcr.io/agentsea/nautilo-logto-runtime@sha256:255150162936bd6e717300d2c81d17f993a4f584c3f147010fe3483bd8f6a647");
+    expect(env["LOGTO_IMAGE"]).toBe(DEPENDENCY_PINS.logto);
     expect(env["NAUTILO_DISABLE_TLS"]).toBe("1");
     expect(Object.keys(env)).not.toContain("NEON_PROXY_IMAGE");
     expect(Object.keys(env)).not.toContain("NGINX_IMAGE");
