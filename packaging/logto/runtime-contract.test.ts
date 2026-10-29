@@ -14,6 +14,7 @@ type Manifest = {
   nodeImage: string;
   nodeVersion: string;
   npm: { version: string; archiveUrl: string; archiveSha256: string };
+  npmUndici: { version: string; archiveUrl: string; archiveSha256: string };
   systemPackages: Record<string, string>;
   nodeManifests: Record<Architecture, string>;
   tlsTrust: {
@@ -169,5 +170,18 @@ describe("Logto runtime derivative", () => {
     expect(contract).toContain("tls.createSecureContext()");
     expect(contract).toContain("ca-certificates-bundle=20261020-r0");
     expect(contract.match(/[a-f0-9]{64}/gu)).toHaveLength(4);
+  });
+  test("patches npm's bundled HTTP client from a verified same-major upstream archive", () => {
+    expect(manifest.npmUndici).toEqual({
+      version: "6.29.1",
+      archiveUrl: "https://registry.npmjs.org/undici/-/undici-6.29.1.tgz",
+      archiveSha256: "29c4b8e0b2d86cb8795571c1959012ce057a14ecfd34858335f47c31e770a04f",
+    });
+    expect(dockerfile).toContain(`ARG UNDICI_VERSION=${manifest.npmUndici.version}`);
+    expect(dockerfile).toContain(`ARG UNDICI_ARCHIVE_SHA256=${manifest.npmUndici.archiveSha256}`);
+    expect(dockerfile).toContain('echo "${UNDICI_ARCHIVE_SHA256}  /tmp/undici.tgz" | sha256sum -c -');
+    expect(dockerfile).toContain("tar -xzf /tmp/undici.tgz -C /usr/local/lib/node_modules/npm/node_modules/undici --strip-components=1");
+    expect(contract).toContain("readVersion('/usr/local/lib/node_modules/npm/node_modules/undici/package.json'), '6.29.1'");
+    expect(contract).toContain("typeof npmHttpClient.Agent");
   });
 });

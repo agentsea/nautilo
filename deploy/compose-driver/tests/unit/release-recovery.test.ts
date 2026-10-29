@@ -278,7 +278,7 @@ describe("release migration recovery", () => {
   });
 });
 
-describe("D420 (2.2.5) releaseApply maintenance handle ordering", () => {
+describe("releaseApply maintenance handle ordering", () => {
   function fakeMaintenanceHandle(
     order: string[],
     opts: {
@@ -491,7 +491,7 @@ describe("D420 (2.2.5) releaseApply maintenance handle ordering", () => {
   });
 });
 
-// D420 (Wave 3 task 3.1.2) — unified full-bundle rollback for the server-only
+// — unified full-bundle rollback for the server-only
 // releaseApply lane. These tests prove the pre-migration deploy/startup branch
 // now shares the SAME full-bundle rollback semantics as the post-migration
 // health-failure branch and the full upgrade path: restore DB/config/volumes +
@@ -554,7 +554,7 @@ function wireRollbackHarness(
   return { base, driver, restoreCalls, healthState };
 }
 
-describe("D420 (3.1.2) releaseApply unified full-bundle rollback", () => {
+describe("releaseApply unified full-bundle rollback", () => {
   const bundleDir = releaseRollbackBundleDir;
 
   test("pre-migration deploy failure restores the bundle + prior image and proves rollback health", async () => {
@@ -692,19 +692,19 @@ describe("D420 (3.1.2) releaseApply unified full-bundle rollback", () => {
   });
 });
 
-// D420 (Wave 3 task 3.1.2) — prove snapshot + prior-image restoration for the
+// — prove snapshot + prior-image restoration for the
 // server-only lane through a REAL remote bundle restore (not just a method
 // call). The remote registry bundle restore re-pins the prior image via a
 // `deploy.restore-overlay.yml` compose overlay and rsyncs the snapshot bundle
 // to the remote staging dir; these tests assert those commands actually run.
-describe("D420 (3.1.2) releaseApply remote real-bundle rollback restores snapshot + prior image", () => {
+describe("releaseApply remote real-bundle rollback restores snapshot + prior image", () => {
   const remoteProfile: ComposeDriverProfile = {
     name: "remote-rollback",
     transport: "remote",
     lifecycle: "compose",
     from_source: false,
     tag: "main",
-    ssh: { host: "1.2.3.4", user: "root" },
+    ssh: { host: "192.0.2.44", user: "root" },
   };
 
   function remoteManifest(remoteRoot: string): RemoteDeploymentManifest {
@@ -884,7 +884,7 @@ describe("D420 (3.1.2) releaseApply remote real-bundle rollback restores snapsho
     // The prior image is re-pinned by the restore overlay compose commands.
     expect(events).toContain("up");
     expect(events.filter((e) => e === "stop").length).toBeGreaterThanOrEqual(1);
-    expect(events.filter((e) => e === "start").length).toBeGreaterThanOrEqual(1);
+    expect(events.lastIndexOf("up")).toBeGreaterThan(events.lastIndexOf("stop"));
     expect(events[events.length - 1]).toBe("re-health");
     expect(composeScripts.some((s) => s.includes("deploy.restore-overlay.yml"))).toBe(true);
     // The snapshot bundle is actually transferred to the remote staging dir.
@@ -917,21 +917,21 @@ describe("D420 (3.1.2) releaseApply remote real-bundle rollback restores snapsho
 
     expect(events).toContain("up");
     expect(events.filter((e) => e === "stop").length).toBeGreaterThanOrEqual(1);
-    expect(events.filter((e) => e === "start").length).toBeGreaterThanOrEqual(1);
+    expect(events.lastIndexOf("up")).toBeGreaterThan(events.lastIndexOf("stop"));
     expect(events[events.length - 1]).toBe("re-health");
     expect(composeScripts.some((s) => s.includes("deploy.restore-overlay.yml"))).toBe(true);
     expect(rsyncCalls.some((c) => c.args.join(" ").includes(bundlePath))).toBe(true);
   });
 });
 
-// D420 (Wave 3 task 3.1.3) — maintenance completion fencing for the
+// — maintenance completion fencing for the
 // server-only releaseApply lane. Completion of the owning lease happens ONLY
 // after a healthy rollback (restore + rollback health), never on an unproven
 // state. `--no-rollback`, a restore failure, and a rollback-health failure
 // (double failure) retain `applying` for hard-expiry to reclaim; no
 // completion or cancel is attempted. The exact recovery bundle path is
 // preserved in every failure message.
-describe("D420 (3.1.3) releaseApply maintenance completion fencing", () => {
+describe("releaseApply maintenance completion fencing", () => {
   const bundleDir = releaseRollbackBundleDir;
 
   function fakeHandle(
@@ -1078,7 +1078,7 @@ describe("D420 (3.1.3) releaseApply maintenance completion fencing", () => {
   });
 });
 
-// D420 (Wave 3 task 3.3.1) — fault-inject the artifact/source PREPARATION phase
+// — fault-inject the artifact/source PREPARATION phase
 // of the server-only releaseApply transaction. Preparation (releasePlan +
 // running-image capture) runs BEFORE the owning lease transitions to applying
 // and BEFORE any stop/backup/start mutation, so a preparation failure must
@@ -1146,7 +1146,7 @@ function wireReleasePreparationHarness(
   return { base, mutationCalls, order };
 }
 
-describe("D420 (3.3.1) releaseApply artifact/source preparation failures", () => {
+describe("releaseApply artifact/source preparation failures", () => {
   function preparationHandle(
     order: string[],
     releaseError?: string,

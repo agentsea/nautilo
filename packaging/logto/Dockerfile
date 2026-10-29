@@ -12,6 +12,8 @@ ARG CA_APK_X86_64_SHA256=bb008f6d214b6af7576324659856fb63dc8dcb4373f8345ff706388
 ARG CA_APK_AARCH64_SHA256=d0a573c27d337c369ad3abe3f39f09ffe67b95af23861577a8d134738375176a
 ARG NPM_VERSION=12.2.1
 ARG NPM_ARCHIVE_SHA256=228bd64aaef23270dbdbd2cf3d5ef5c467602ef38c4066246cef1984adab9a67
+ARG UNDICI_VERSION=6.29.1
+ARG UNDICI_ARCHIVE_SHA256=29c4b8e0b2d86cb8795571c1959012ce057a14ecfd34858335f47c31e770a04f
 RUN set -eu; \
     case "$TARGETARCH" in \
       amd64) apk_arch=x86_64; apk_sha256="$CA_APK_X86_64_SHA256" ;; \
@@ -22,7 +24,9 @@ RUN set -eu; \
     wget -q -O /tmp/ca-certificates-bundle.apk "$apk_url"; \
     echo "${apk_sha256}  /tmp/ca-certificates-bundle.apk" | sha256sum -c -; \
     wget -q -O /tmp/npm.tgz "https://registry.npmjs.org/npm/-/npm-${NPM_VERSION}.tgz"; \
-    echo "${NPM_ARCHIVE_SHA256}  /tmp/npm.tgz" | sha256sum -c -
+    echo "${NPM_ARCHIVE_SHA256}  /tmp/npm.tgz" | sha256sum -c -; \
+    wget -q -O /tmp/undici.tgz "https://registry.npmjs.org/undici/-/undici-${UNDICI_VERSION}.tgz"; \
+    echo "${UNDICI_ARCHIVE_SHA256}  /tmp/undici.tgz" | sha256sum -c -
 
 FROM --platform=$TARGETPLATFORM ${LOGTO_IMAGE}
 ARG TARGETARCH
@@ -32,6 +36,7 @@ ARG CA_APK_AARCH64_SHA256=d0a573c27d337c369ad3abe3f39f09ffe67b95af23861577a8d134
 COPY --from=trust-package /usr/local/bin/node /usr/local/bin/node
 COPY --from=trust-package /tmp/ca-certificates-bundle.apk /tmp/ca-certificates-bundle.apk
 COPY --from=trust-package /tmp/npm.tgz /tmp/npm.tgz
+COPY --from=trust-package /tmp/undici.tgz /tmp/undici.tgz
 RUN set -eu; \
     case "$TARGETARCH" in \
       amd64) apk_sha256="$CA_APK_X86_64_SHA256" ;; \
@@ -48,9 +53,12 @@ RUN set -eu; \
     rm -rf /usr/local/lib/node_modules/npm; \
     mkdir -p /usr/local/lib/node_modules/npm; \
     tar -xzf /tmp/npm.tgz -C /usr/local/lib/node_modules/npm --strip-components=1; \
+    rm -rf /usr/local/lib/node_modules/npm/node_modules/undici; \
+    mkdir -p /usr/local/lib/node_modules/npm/node_modules/undici; \
+    tar -xzf /tmp/undici.tgz -C /usr/local/lib/node_modules/npm/node_modules/undici --strip-components=1; \
     test "$(npm --version)" = 12.2.1; \
     npm cache clean --force; \
-    rm /tmp/ca-certificates-bundle.apk /tmp/npm.tgz; \
+    rm /tmp/ca-certificates-bundle.apk /tmp/npm.tgz /tmp/undici.tgz; \
     mkdir -p /etc/ssl/nautilo-empty-certs; \
     test -d /etc/ssl/nautilo-empty-certs; \
     test -z "$(find /etc/ssl/nautilo-empty-certs -mindepth 1 -maxdepth 1 -print -quit)"; \
@@ -58,7 +66,8 @@ RUN set -eu; \
 
 # Keep Logto's upstream application, working directory, npm entrypoint, start
 # command, and unrelated environment unchanged. Node, npm, CA trust and supported
-# Alpine security packages differ from the pinned upstream image.
+# Alpine security packages differ from the pinned upstream image. npm's bundled
+# Undici receives the supported same-major security patch recorded in manifest.json.
 ENV NODE_VERSION=22.23.4 \
     NODE_OPTIONS=--use-openssl-ca \
     SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
