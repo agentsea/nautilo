@@ -34,11 +34,11 @@ describe("auth plan classification", () => {
   });
 
   test("reports an application version when the exact matching image has a version tag", () => {
-    const image = "ghcr.io/logto-io/logto:1.38.0";
+    const image = `ghcr.io/logto-io/logto:${incoming.logtoEngine.minimumVersion}`;
     const tagged = { ...incoming, logtoEngine: { ...incoming.logtoEngine, image } };
     const plan = classifyAuthPlan({ incoming: tagged, applied, liveLogtoEngineImage: image });
     expect(plan.classification).toBe("compatible");
-    expect(plan.live.logtoEngineVersion).toBe("1.38.0");
+    expect(plan.live.logtoEngineVersion).toBe(incoming.logtoEngine.minimumVersion);
   });
 
   test("fails closed when no durable stamp or running image exists", () => {

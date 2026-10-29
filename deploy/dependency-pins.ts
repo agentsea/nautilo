@@ -19,11 +19,11 @@ export const DEPENDENCY_PINS = {
   neonProxy:
     "ghcr.io/timowilhelm/local-neon-http-proxy@sha256:cd2ae14edf2feafbc3330492de5c80506f77274c3bd013154cdef697bdeb768a",
   nginxAlpine: "nginx:1.27-alpine",
-  logto: "ghcr.io/agentsea/nautilo-logto-runtime@sha256:c71ebaf08e4ad1eb92b7f456dd1e5f24b158e4fd815cd44f76bf39f7c2160225",
+  logto: "ghcr.io/agentsea/nautilo-logto-runtime@sha256:255150162936bd6e717300d2c81d17f993a4f584c3f147010fe3483bd8f6a647",
   /** Source-development migration target; matches infra/compose/nautilo.yml. */
   logtoImageTag: "1.38.0",
   /** Packaged deployment application version; advances with its qualified image. */
-  packagedLogtoImageTag: "1.38.0",
+  packagedLogtoImageTag: "1.45.0",
   /**
    * Collabora Online (CODE) coolwsd base image. Used as the
    * `COOLWSD_BASE` build arg in `infra/compose/nautilo.yml` `collabora`
