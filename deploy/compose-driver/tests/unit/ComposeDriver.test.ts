@@ -63,7 +63,7 @@ function makeFakeExec(
 }
 
 /**
- * D427 Wave 1 — write a real v2 recovery bundle on disk whose per-file
+ * Write a real v2 recovery bundle on disk whose per-file
  * integrity inventory matches its members, with valid gzip dumps and
  * restrictive permissions. `adopt --confirm` verifies this before writing
  * the deployment manifest.
@@ -1443,7 +1443,7 @@ describe("ComposeDriver", () => {
     expect(pullCall!.args).toContain("-f");
     expect(pullCall!.args).toContain(registryOverlayPath);
 
-    // D248 — the registry pull must enable the `auth` profile (alongside
+    // The registry pull must enable the `auth` profile (alongside
     // `app`) so the caddy overlay's `depends_on: logto` validates. Without
     // `auth`, compose rejects the project with "service 'caddy' depends on
     // undefined service 'logto'" before the named pull runs.
@@ -1767,7 +1767,7 @@ describe("ComposeDriver", () => {
 
     await driver.upgrade(remoteComposeProfile);
 
-    // D420 — stop-before-snapshot: upgrade stops nautilo-server for backup, then
+    // Stop-before-snapshot: upgrade stops nautilo-server for backup, then
     // deploy brings it back; no intermediate docker start before deploy.
     // M215 adds a direct-transport baseline inspect before mutation (extra remote sh).
     expect(order).toEqual(["doctor", "stop", "backup", "deploy", "health"]);
@@ -2090,7 +2090,7 @@ describe("ComposeDriver", () => {
       'if [ "$working_dir" != "$root" ]; then exit 47; fi',
     );
 
-    // D427 Wave 1 — confirmed adoption requires a verified recovery bundle
+    // Confirmed adoption requires a verified recovery bundle
     // and persists its provenance in the deployment manifest.
     const bundlePath = buildVerifiedBundle(mktmp("verified-bundle-"));
     await driver.adopt(profile, { confirm: true, bundlePath });
@@ -2706,7 +2706,7 @@ describe("ComposeDriver", () => {
       tag: "main",
       domain: "alpha.example.com",
       https: "letsencrypt",
-      acme_email: "admin@example.com",
+      acme_email: "fixture@example.invalid",
     });
 
     const promoteIdx = calls.findIndex(
@@ -3105,7 +3105,7 @@ describe("ComposeDriver", () => {
         fetch: fakeFetch,
         readInstanceLogtoEnv: async () => ({}),
         resolveInstanceRootDir: () => instanceRootDir,
-        resolveAcmeEmail: () => "fallback@example.com",
+        resolveAcmeEmail: () => "sample@example.invalid",
       }),
     );
     await driver.deploy(remoteProfile);
@@ -3114,7 +3114,7 @@ describe("ComposeDriver", () => {
       join(instanceRootDir, "deploy.compose.env"),
       "utf8",
     );
-    expect(composeEnv).toContain("ACME_EMAIL=fallback@example.com");
+    expect(composeEnv.split("\n").find((line) => line.startsWith("ACME_EMAIL="))?.slice("ACME_EMAIL=".length)).toBe("sample@example.invalid");
   });
 
   // -------------------------------------------------------------------------
@@ -3190,7 +3190,7 @@ describe("ComposeDriver", () => {
       fromPath: join(home, ".nautilo", "backups", "dump.sql.gz"),
       force: true,
     });
-    // D420 3.1.1: the legacy restore now runs TWO sh pipelines through
+    // The legacy restore now runs TWO sh pipelines through
     // localExec — a gzip validation gate, then the fail-closed gunzip|psql
     // restore. Both must run with the remote DOCKER_HOST env so they target
     // the droplet daemon, and the restore pipeline must still carry gunzip.
@@ -4302,6 +4302,36 @@ describe("ComposeDriver", () => {
     expect(calls.filter((c) => c.cmd === "sh")).toHaveLength(2);
   });
 
+  for (const full of [false, true]) {
+    test(`restart (persisted remote, full=${full}): derives registry mode from deployment authority`, async () => {
+      const remoteRoot = "/opt/nautilo";
+      const manifest = validRemoteManifest({ remoteRoot });
+      const { exec, calls } = makeRemoteLifecycleExec(manifest);
+      const driver = new ComposeDriver(makeDeps({ exec, resolveInstanceRootDir: () => remoteRoot }));
+      const persistedProfile = { ...remoteRegistryProfile };
+      delete persistedProfile.from_source;
+      await driver.restart(persistedProfile, { full });
+      const composeCalls = calls.filter((call) => call.cmd === "sh" && (call.args[1] ?? "").includes("docker compose"));
+      expect(composeCalls).toHaveLength(full ? 2 : 1);
+      for (const call of composeCalls) expectRemoteSshNativeInvocation(call, remoteRoot);
+      expect(calls.filter((call) => call.cmd === "docker")).toHaveLength(0);
+    });
+  }
+
+  test("restart (persisted remote): invalid deployment authority cannot invoke local Docker", async () => {
+    const remoteRoot = "/opt/nautilo";
+    const manifest = validRemoteManifest({ remoteRoot });
+    const { exec, calls } = makeRemoteLifecycleExec(manifest, (call) => call.cmd === "cat"
+      && call.args.some((arg) => arg.includes("deployment-manifest.json"))
+      ? { code: 0, stdout: "not-json", stderr: "" } : undefined);
+    const driver = new ComposeDriver(makeDeps({ exec, resolveInstanceRootDir: () => remoteRoot }));
+    const persistedProfile = { ...remoteRegistryProfile };
+    delete persistedProfile.from_source;
+    const failure = await driver.restart(persistedProfile, { full: true }).then(() => undefined, (error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(calls.filter((call) => call.cmd === "docker" || call.cmd === "sh")).toHaveLength(0);
+  });
+
   test("logs (remote): SSH-native compose logs with follow and service", async () => {
     const remoteRoot = "/opt/nautilo";
     const manifest = validRemoteManifest({ remoteRoot });
@@ -4561,7 +4591,7 @@ describe("ComposeDriver", () => {
     test("releaseApply: source to registry uses host-canonical files and commits registry mode only after health", async () => {
       const remoteRoot = "/opt/nautilo";
       const operatorRoot = mktmp("release-cutover-operator-");
-      const remoteInstanceEnv = "LOGTO_ENDPOINT=http://10.0.0.2:3301\n";
+      const remoteInstanceEnv = "LOGTO_ENDPOINT=http://192.0.2.2:3301\n";
       const repoDigest = `ghcr.io/agentsea/nautilo-server@sha256:${"c".repeat(64)}`;
       let manifestJson = JSON.stringify({
         ...validRemoteManifest({ remoteRoot }),
@@ -4945,7 +4975,7 @@ describe("ComposeDriver", () => {
 
     test("releaseApply: source cutover backup failure restarts prior source without registry overlay", async () => {
       const remoteRoot = "/opt/nautilo";
-      const remoteInstanceEnv = "LOGTO_ENDPOINT=http://10.0.0.2:3301\n";
+      const remoteInstanceEnv = "LOGTO_ENDPOINT=http://192.0.2.2:3301\n";
       const manifest: RemoteDeploymentManifest = {
         ...validRemoteManifest({ remoteRoot }),
         version: 2,
@@ -5126,7 +5156,7 @@ describe("ComposeDriver", () => {
         ) {
           return {
             code: 0,
-            stdout: "LOGTO_ENDPOINT=http://10.0.0.2:3301\n",
+            stdout: "LOGTO_ENDPOINT=http://192.0.2.2:3301\n",
             stderr: "",
           };
         }

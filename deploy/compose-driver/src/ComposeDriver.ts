@@ -4237,6 +4237,16 @@ export class ComposeDriver {
 
   async restart(profile: ComposeDriverProfile, opts: RestartOptions = {}): Promise<void> {
     gates(profile);
+    if (profile.transport === "remote" && profile.from_source === undefined) {
+      try {
+        const manifest = await this.readRemoteDeploymentManifest(profile);
+        profile = { ...profile, from_source: manifest.image.mode === "source" };
+      } catch (error) {
+        // Only legacy source installations may lack a deployment manifest.
+        // Invalid or inaccessible authority must not fall back to local Docker.
+        if (!errorMessage(error).includes("is missing or unreadable")) throw error;
+      }
+    }
     const restoreEnv = this.setInstanceEnv(profile);
     try {
       if (opts.full === true) {
