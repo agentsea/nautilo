@@ -19,7 +19,7 @@ export const DEPENDENCY_PINS = {
   neonProxy:
     "ghcr.io/timowilhelm/local-neon-http-proxy@sha256:cd2ae14edf2feafbc3330492de5c80506f77274c3bd013154cdef697bdeb768a",
   nginxAlpine: "nginx:1.27-alpine",
-  logto: "ghcr.io/agentsea/nautilo-logto-runtime@sha256:255150162936bd6e717300d2c81d17f993a4f584c3f147010fe3483bd8f6a647",
+  logto: "ghcr.io/agentsea/nautilo-logto-runtime@sha256:fa18003d670d977c78ab2d6d48f488811f447d2b3804b4707bb87eef23835966",
   /** Source-development migration target; matches infra/compose/nautilo.yml. */
   logtoImageTag: "1.38.0",
   /** Packaged deployment application version; advances with its qualified image. */

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "resolvedAt": "2026-10-29T10:55:00Z",
+  "resolvedAt": "2026-10-29T12:00:00Z",
   "images": {
     "app-postgres": {
       "resolvedFrom": "pgvector/pgvector:pg17",
@@ -11,8 +11,8 @@
       "reference": "postgres@sha256:1beaa3084eee2676f20a9cd9928f0bf2c5bf674f8e49f81017912183d377c61c"
     },
     "logto": {
-      "resolvedFrom": "ghcr.io/agentsea/nautilo-logto-runtime:1.45.0-nautilo.1",
-      "reference": "ghcr.io/agentsea/nautilo-logto-runtime@sha256:255150162936bd6e717300d2c81d17f993a4f584c3f147010fe3483bd8f6a647"
+      "resolvedFrom": "ghcr.io/agentsea/nautilo-logto-runtime:1.45.0-nautilo.2",
+      "reference": "ghcr.io/agentsea/nautilo-logto-runtime@sha256:fa18003d670d977c78ab2d6d48f488811f447d2b3804b4707bb87eef23835966"
     }
   }
 }
