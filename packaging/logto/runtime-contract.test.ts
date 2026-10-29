@@ -48,12 +48,12 @@ describe("Logto runtime derivative", () => {
       schemaVersion: 1,
       component: "logto",
       upstreamRepository: "https://github.com/logto-io/logto",
-      upstreamVersion: "1.38.0",
+      upstreamVersion: "1.43.0",
       license: "MPL-2.0",
-      upstreamImage: "ghcr.io/logto-io/logto@sha256:aa4c428b70d9dd8eac23b6eeb3826a02d5fe0283b5dd774589b9b9760e0c6e9f",
+      upstreamImage: "ghcr.io/logto-io/logto@sha256:41196a1fadbff35eae337965321c57946936755066bd92625ccf8a5b65d4b1be",
       nodeImage: "docker.io/library/node@sha256:206878a60dc7014193f418ab9259b6110c15fbd514b3044a267be706509944e4",
       nodeVersion: "22.23.4",
-      localImage: "nautilo/logto:1.38.0-nautilo.2",
+      localImage: "nautilo/logto:1.43.0-nautilo.1",
     });
     for (const digest of [
       ...Object.values(manifest.upstreamManifests),
@@ -67,23 +67,23 @@ describe("Logto runtime derivative", () => {
   test("fetches hash-bound APKs and verifies Alpine signatures offline", () => {
     expect(manifest.tlsTrust).toEqual({
       caCertificatesPackage: "alpine:20261020-r0",
-      repository: "https://dl-cdn.alpinelinux.org/alpine/v3.23/main",
+      repository: "https://dl-cdn.alpinelinux.org/alpine/v3.24/main",
       signatureVerification: "apk verifies the package against the unchanged upstream Alpine keyring",
       apk: {
         amd64: {
           repositoryArchitecture: "x86_64",
-          sha256: "a4c5de1bf37652cd98cbe71aec209512ae0508a964961957a6c9650f795e46c4",
+          sha256: "bb008f6d214b6af7576324659856fb63dc8dcb4373f8345ff706388696f1254d",
         },
         arm64: {
           repositoryArchitecture: "aarch64",
-          sha256: "bdf6033710a251d8239f63236eacf40c84afdf8f7b25bb58d69a2c75202350e7",
+          sha256: "d0a573c27d337c369ad3abe3f39f09ffe67b95af23861577a8d134738375176a",
         },
       },
       bundlePath: "/etc/ssl/certs/ca-certificates.crt",
       bundleSha256: "5961c0a3c65459931c023e0075c09733f09aea4ca439cb85bc4a08bb4f3f568b",
       emptyCertificateDirectory: "/etc/ssl/nautilo-empty-certs",
     });
-    expect(dockerfile).toContain("https://dl-cdn.alpinelinux.org/alpine/v3.23/main/${apk_arch}/ca-certificates-bundle-${CA_CERTIFICATES_VERSION}.apk");
+    expect(dockerfile).toContain("https://dl-cdn.alpinelinux.org/alpine/v3.24/main/${apk_arch}/ca-certificates-bundle-${CA_CERTIFICATES_VERSION}.apk");
     for (const value of Object.values(manifest.tlsTrust.apk)) {
       expect(dockerfile).toContain(value.repositoryArchitecture);
       expect(dockerfile).toContain(value.sha256);
@@ -122,8 +122,8 @@ describe("Logto runtime derivative", () => {
   test("upgrades supported Alpine packages and binds every security baseline", () => {
     expect(dockerfile).toContain("apk upgrade --no-cache");
     expect(manifest.systemPackages).toEqual({
-      "alpine-release": "3.23.7-r0",
-      musl: "1.2.5-r24",
+      "alpine-release": "3.24.3-r0",
+      musl: "1.2.6-r3",
       libcrypto3: "3.5.9-r0",
       libssl3: "3.5.9-r0",
       zlib: "1.3.2-r1",

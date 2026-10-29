@@ -1,5 +1,5 @@
 {
   "extends": "../tsconfig.base.json",
-  "include": ["dependency-pins.ts"],
+  "include": ["dependency-pins.ts", "contracts/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }

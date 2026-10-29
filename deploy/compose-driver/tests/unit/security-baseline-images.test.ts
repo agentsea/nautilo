@@ -16,14 +16,14 @@ describe("deployment security image baselines", () => {
     }
   });
 
-  test("the maintained Node runtime does not advance the Logto application contract", () => {
+  test("the deployment contract uses its packaged application version", () => {
     const contract = buildAuthContract();
     const recipe = JSON.parse(readFileSync(new URL("../../../../packaging/logto/manifest.json", import.meta.url), "utf8")) as {
       nodeVersion: string;
       upstreamVersion: string;
     };
     expect(recipe.nodeVersion).toBe("22.23.4");
-    expect(contract.logtoEngine.minimumVersion).toBe(recipe.upstreamVersion);
+    expect(contract.logtoEngine.minimumVersion).toBe(DEPENDENCY_PINS.packagedLogtoImageTag);
     expect(contract.logtoEngine.image).toBe(DEPENDENCY_PINS.logto);
     expect(DEPENDENCY_PINS.logto).toStartWith("ghcr.io/agentsea/nautilo-logto-runtime@sha256:");
   });
