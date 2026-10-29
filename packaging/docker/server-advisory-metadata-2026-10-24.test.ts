@@ -14,7 +14,7 @@ const fixture = read("fixtures/server-advisory-metadata-2026-10-24.json") as {
   reviewedAt: string; expiresAt: string; unchangedExceptionsSha256: string;
   architectures: Record<Architecture, ScannerFixture>;
 };
-const source = read("server-vulnerability-exceptions.input.json") as VulnerabilityPolicyExceptionSourceV1;
+const source = read("fixtures/server-vulnerability-exceptions-2026-10-24.json") as VulnerabilityPolicyExceptionSourceV1;
 const advisoryIds = ["CVE-2026-113351", "CVE-2026-115506", "CVE-2026-113679"];
 const decisions = source.exceptions.filter(entry => advisoryIds.includes(entry.advisoryId));
 
