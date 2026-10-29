@@ -207,13 +207,14 @@ not invent versions that the checked-in source cannot prove.
 | [PostgreSQL client](https://www.postgresql.org/) utilities | 17 from the final image; 16 binaries copied from the pinned build stage | PostgreSQL Global Development Group | PostgreSQL License |
 
 Supported Compose/deployment paths also reference the following third-party
-images; the declared release tags are the source-level pins:
+images; exact image digests are declared in `deploy/dependency-pins.ts` and the signed hosting release:
 
 | Component | Declared pin | Canonical source | License |
 | --- | --- | --- | --- |
-| [PostgreSQL](https://www.postgresql.org/) | `postgres:16` | PostgreSQL Global Development Group | PostgreSQL License |
-| [pgvector](https://github.com/pgvector/pgvector) | `pgvector/pgvector:pg17` | pgvector | PostgreSQL License |
-| [Logto](https://github.com/logto-io/logto) | 1.38.0 | Logto | MPL-2.0 |
+| [PostgreSQL](https://www.postgresql.org/) | 16.15 (digest-pinned) | PostgreSQL Global Development Group | PostgreSQL License |
+| [pgvector](https://github.com/pgvector/pgvector) | PostgreSQL 17.11 (digest-pinned pgvector image) | pgvector | PostgreSQL License |
+| [Logto](https://github.com/logto-io/logto) | 1.38.0, maintained runtime with Node 22.23.4 | Logto | MPL-2.0 |
+| [Caddy](https://github.com/caddyserver/caddy) | 2.11.7 (digest-pinned) | Caddy authors | Apache-2.0 |
 | [Collabora Online](https://www.collaboraonline.com/code/) | `collabora/code:26.04.1.4.1` | Collabora | MPL-2.0 |
 | [nginx](https://nginx.org/) | `nginx:1.27-alpine` | F5/nginx | BSD-2-Clause |
 | [local-neon-http-proxy](https://github.com/timowilhelm/local-neon-http-proxy) | source digest `cd2ae14e…bdeb768a` | timowilhelm | MIT |

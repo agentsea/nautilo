@@ -2,7 +2,7 @@ name: ${COMPOSE_PROJECT_NAME:-nautilo}
 
 services:
   legacy-postgres:
-    image: pgvector/pgvector:pg17
+    image: pgvector/pgvector@sha256:ac08538c6f8b9904c33c8224c5e5706dbe760aca29db1d096972b4052c22a75d
     container_name: ${COMPOSE_PROJECT_NAME:-nautilo}-postgres
     environment:
       # postgres-init.sh creates `nautilo` and `logto_nautilo`; leave the

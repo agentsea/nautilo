@@ -31,7 +31,7 @@ name: ${COMPOSE_PROJECT_NAME:-nautilo}
 
 services:
   postgres:
-    image: postgres:16
+    image: postgres@sha256:1beaa3084eee2676f20a9cd9928f0bf2c5bf674f8e49f81017912183d377c61c
     volumes:
       - pgdata:/var/lib/postgresql/data
       # Init script runs once on first volume boot; creates `nautilo` +
@@ -56,7 +56,7 @@ services:
       retries: 30
 
   logto:
-    image: ghcr.io/logto-io/logto:1.38.0
+    image: ghcr.io/agentsea/nautilo-logto-runtime@sha256:c71ebaf08e4ad1eb92b7f456dd1e5f24b158e4fd815cd44f76bf39f7c2160225
     profiles: ["auth", "full", "saas"]
     # The dev flow runs `nautilo-server` on the HOST, so Logto's
     # `http-email` ForgotPassword connector must reach it via
@@ -97,11 +97,11 @@ services:
     # github.com/logto-io/logto master docker-compose.yml.
     #
     # The image's ENTRYPOINT is ["npm", "run"] (verified via
-    # `docker inspect ghcr.io/logto-io/logto:1.38.0`), so `command:` only
+    # `docker inspect` on the pinned Logto image), so `command:` only
     # supplies the script name + args. Including "npm" "run" here would
     # double-up to `npm run npm run cli ...` and fail with
     # `Missing script: "npm"`.
-    image: ghcr.io/logto-io/logto:1.38.0
+    image: ghcr.io/agentsea/nautilo-logto-runtime@sha256:c71ebaf08e4ad1eb92b7f456dd1e5f24b158e4fd815cd44f76bf39f7c2160225
     profiles: ["auth", "full", "saas"]
     depends_on:
       postgres:
