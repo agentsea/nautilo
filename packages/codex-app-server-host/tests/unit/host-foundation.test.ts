@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { lstat as nodeLstat, mkdir as nodeMkdir, mkdtemp, open as nodeOpen, realpath as nodeRealpath, readdir as nodeReaddir, rename as nodeRename, rm as nodeRm, symlink as nodeSymlink, writeFile as nodeWriteFile } from "node:fs/promises";
+import { lstat as nodeLstat, mkdir as nodeMkdir, mkdtemp, open as nodeOpen, realpath as nodeRealpath, readdir as nodeReaddir, rm as nodeRm, symlink as nodeSymlink, writeFile as nodeWriteFile } from "node:fs/promises";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 import { join, normalize, parse } from "node:path";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
@@ -128,7 +129,7 @@ describe("node profile-home removal adapter", () => {
       // Allocate the replacement while the original inode is still live. A
       // remove-then-mkdir sequence may legally reuse the same inode on ext4,
       // which made this identity-race fixture nondeterministic in Linux CI.
-      const inode = await create("inode"); const replacementPath = join(root, "inode-replacement"); await nodeMkdir(replacementPath, { mode: 0o700 }); await nodeWriteFile(join(replacementPath, ".nautilo-codex-profile.json"), JSON.stringify(inode.spec.expectedMarker), { mode: 0o600 }); const replacementInode = Number((await nodeLstat(replacementPath)).ino); expect(replacementInode).not.toBe(inode.spec.expectedInode); await nodeRm(inode.path, { recursive: true }); await nodeRename(replacementPath, inode.path); await rejects(nodeProfileHomeRemovalFilesystem.removeOwnedProfileHome(inode.spec), "PROFILE_HOME_INVALID"); expect(Number((await nodeLstat(inode.path)).ino)).toBe(replacementInode);
+      const inode = await create("inode"); const replacementPath = join(root, "inode-replacement"); await nodeMkdir(replacementPath, { mode: 0o700 }); await nodeWriteFile(join(replacementPath, ".nautilo-codex-profile.json"), JSON.stringify(inode.spec.expectedMarker), { mode: 0o600 }); const replacementInode = Number((await nodeLstat(replacementPath)).ino); expect(replacementInode).not.toBe(inode.spec.expectedInode); await nodeRm(inode.path, { recursive: true }); await renameWithWindowsRetry(replacementPath, inode.path); await rejects(nodeProfileHomeRemovalFilesystem.removeOwnedProfileHome(inode.spec), "PROFILE_HOME_INVALID"); expect(Number((await nodeLstat(inode.path)).ino)).toBe(replacementInode);
       const link = await create("link"); await nodeRm(link.path, { recursive: true }); await nodeSymlink(root, link.path, process.platform === "win32" ? "junction" : "dir"); await rejects(nodeProfileHomeRemovalFilesystem.removeOwnedProfileHome(link.spec), "PROFILE_HOME_INVALID");
     } finally { await nodeRm(root, { recursive: true, force: true }); }
   });
@@ -159,7 +160,7 @@ describe("node profile-home removal adapter", () => {
       const shortSocketPath = join(root, "s");
       await new Promise<void>((resolve, reject) => { socket.once("error", reject); socket.listen(shortSocketPath, resolve); });
       try {
-        await nodeRename(shortSocketPath, join(special.path, "socket"));
+        await renameWithWindowsRetry(shortSocketPath, join(special.path, "socket"));
         await rejects(nodeProfileHomeRemovalFilesystem.removeOwnedProfileHome(special.spec), "PROFILE_HOME_INVALID");
       } finally {
         await new Promise<void>((resolve) => socket.close(() => resolve()));

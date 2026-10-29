@@ -4,9 +4,9 @@
  * This deliberately owns just two names below an existing snapshot root. It
  * does not discover, modify, or prune ordinary developer snapshots.
  */
-import { lstat, open, readFile, readdir, rename, rm } from "node:fs/promises";
+import { lstat, open, readFile, readdir, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { ensurePrivateDirectory, isPrivateFilesystemPathAsync, secureFilesystemPath } from "@nautilo/config/private-filesystem";
+import { ensurePrivateDirectory, isPrivateFilesystemPathAsync, renameWithWindowsRetry, secureFilesystemPath } from "@nautilo/config/private-filesystem";
 import {
   verifyCanonicalDefaultFullBackupDirectory,
   type VerifiedFullBackup,
@@ -193,7 +193,7 @@ async function withCheckpointMaintenanceBackupLock<T>(
         if (!(typeof livenessError === "object" && livenessError !== null && "code" in livenessError && (livenessError as { code?: unknown }).code === "ESRCH")) throw livenessError;
         const retired = `${paths.lock}.stale-${process.pid}-${Date.now()}`;
         try {
-          await rename(paths.lock, retired);
+          await renameWithWindowsRetry(paths.lock, retired);
         } catch (renameError) {
           if (isMissing(renameError)) continue;
           throw renameError;
@@ -301,7 +301,7 @@ async function refreshCheckpointMaintenanceRecoveryBackupUnderLock(
       let renamed = false;
       let rewritten = false;
       try {
-        await rename(paths.current, paths.previous);
+        await renameWithWindowsRetry(paths.current, paths.previous);
         renamed = true;
         await secureFilesystemPath(paths.previous);
         await writeOwnerOnlyJsonAtomically(join(paths.previous, "manifest.json"), {
@@ -319,7 +319,7 @@ async function refreshCheckpointMaintenanceRecoveryBackupUnderLock(
                 name: CHECKPOINT_MAINTENANCE_CURRENT_BACKUP,
               });
             }
-            await rename(paths.previous, paths.current);
+            await renameWithWindowsRetry(paths.previous, paths.current);
           } catch {
             // The primary error remains useful; the retained artifact is
             // intentionally left for explicit operator recovery if this

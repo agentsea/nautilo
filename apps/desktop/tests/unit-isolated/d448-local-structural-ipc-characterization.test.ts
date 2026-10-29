@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -28,13 +29,13 @@ async function fixture() {
     fs: {
       readFile: (target) => fs.readFile(target),
       writeFile: (target, data) => fs.writeFile(target, data),
-      rename: (from, to) => fs.rename(from, to),
+      rename: renameWithWindowsRetry,
       unlink: (target) => fs.unlink(target),
     },
     shell: {
       trashItem: async (target) => {
         calls.push(`trash:${target}`);
-        await fs.rename(target, path.join(trashRoot, path.basename(target)));
+        await renameWithWindowsRetry(target, path.join(trashRoot, path.basename(target)));
       },
     },
     createFileExclusive: async (target, bytes) => {

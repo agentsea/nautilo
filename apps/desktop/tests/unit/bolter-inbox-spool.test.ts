@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, test as bunTest } from "bun:test";
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
-import { mkdirSync, readdirSync, renameSync } from "node:fs";
-import { chmod, copyFile, mkdtemp, readFile, readdir, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdirSync, readdirSync } from "node:fs";
+import { chmod, copyFile, mkdtemp, readFile, readdir, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { renameWithWindowsRetry, renameWithWindowsRetrySync } from "@nautilo/config/private-filesystem";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BolterInboxSpool, createBolterSpoolDirectory, type BolterSpoolCipher, type BolterSpoolScope } from "../../electron/bolter-bridge/inbox-spool";
@@ -78,7 +79,7 @@ describe("durable protected Bolter handover", () => {
     const guarded = new BolterInboxSpool({ ...f.options, isCurrent: () => {
       if (!replaced && readdirSync(f.directory).some(name => name.endsWith(".sealed"))) {
         replaced = true;
-        renameSync(f.directory, previous);
+        renameWithWindowsRetrySync(f.directory, previous);
         mkdirSync(f.directory, { mode: 0o700 });
       }
       return true;
@@ -230,7 +231,7 @@ describe("durable protected Bolter handover", () => {
     const receipt = await f.spool.store("one\n");
     await expect(f.spool.read("../outside")).rejects.toThrow("unavailable");
     const saved = join(f.parent, "saved.sealed");
-    await rename(join(f.directory, receipt.id), saved);
+    await renameWithWindowsRetry(join(f.directory, receipt.id), saved);
     await symlink(saved, join(f.directory, receipt.id));
     await expect(f.spool.read(receipt.id)).rejects.toThrow("unavailable");
     await expect(f.spool.acknowledge(receipt)).rejects.toThrow("unavailable");
@@ -242,7 +243,7 @@ describe("durable protected Bolter handover", () => {
   test("a replaced directory cannot inherit the old spool ownership", async () => {
     const f = await fixture();
     await f.spool.store("one\n");
-    await rename(f.directory, join(f.parent, "previous"));
+    await renameWithWindowsRetry(f.directory, join(f.parent, "previous"));
     await expect(f.spool.pending()).rejects.toThrow("unavailable");
   });
 

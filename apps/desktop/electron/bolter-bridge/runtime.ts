@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { constants, type Stats } from "node:fs";
-import { lstat, mkdir, open, readFile, realpath, rename, rm } from "node:fs/promises";
+import { lstat, mkdir, open, readFile, realpath, rm } from "node:fs/promises";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import type { BolterSpoolScope } from "./inbox-spool";
 
@@ -354,7 +355,7 @@ async function acquireLatestBolterRuntime(options: BolterRuntimeProvisioning): P
       if (!await attestBolterRuntime({ directory: options.directory, runtime, isCurrent: options.isCurrent,
         signal, inspectVersion: options.inspectVersion ?? inspectBolterVersion })) throw unavailable();
     } else {
-      try { await rename(staging, release); staging = null; }
+      try { await renameWithWindowsRetry(staging, release); staging = null; }
       catch (error) {
         if (!error || typeof error !== "object" || !("code" in error)
           || (error.code !== "EEXIST" && error.code !== "ENOTEMPTY")) throw unavailable();

@@ -6,6 +6,7 @@
 import { app, safeStorage } from "electron";
 import * as fs from "node:fs";
 import { hostname } from "node:os";
+import { renameWithWindowsRetrySync } from "@nautilo/config/private-filesystem";
 import { installationIdFilePath, physicalDeviceSeedFilePath } from "../paths";
 import {
   clearRelayToken as clearRelayTokenImpl,
@@ -22,7 +23,7 @@ function deps(): RelayPairDeps {
     fs: {
       writeFileSync: fs.writeFileSync,
       readFileSync: fs.readFileSync,
-      renameSync: fs.renameSync,
+      renameSync: renameWithWindowsRetrySync,
       unlinkSync: fs.unlinkSync,
       mkdirSync: fs.mkdirSync,
       linkSync: fs.linkSync,

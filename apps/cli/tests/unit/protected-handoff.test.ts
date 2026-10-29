@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { allowOtherReaders } from "@nautilo/config/private-filesystem-fixtures";
-import { mkdtemp, mkdir, readFile, realpath, rename, stat, symlink } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, stat, symlink } from "node:fs/promises";
 import { rejects } from "node:assert/strict";
-import { isPrivateFilesystemPathAsync, writePrivateFileExclusive } from "@nautilo/config/private-filesystem";
+import { isPrivateFilesystemPathAsync, renameWithWindowsRetry, writePrivateFileExclusive } from "@nautilo/config/private-filesystem";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { rm } from "node:fs/promises";
@@ -86,7 +86,7 @@ describe("protected handoff", () => {
     const moved = join(root, "original.json");
     const reservation = await reserveProtectedHandoff(path);
     try {
-      await rename(path, moved);
+      await renameWithWindowsRetry(path, moved);
       await writePrivateFileExclusive(path, Buffer.from('{"replacement":true}', "utf8"));
       if (action === "write") await rejects(reservation.write({ token: "CANARY" }), ProtectedHandoffError);
       else await reservation.discard();

@@ -2,13 +2,13 @@ import { createHash, randomBytes } from "node:crypto";
 import {
   mkdir,
   readFile,
-  rename,
   rm,
   stat,
   unlink,
   writeFile,
 } from "node:fs/promises";
 import { basename, dirname, join, resolve, sep } from "node:path";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 import { buildMiniApp, type MiniAppBuildResult } from "./app-builder";
 import { isSafeMiniAppId, parseMiniAppManifestJson } from "./app-manifest";
 import {
@@ -336,7 +336,7 @@ async function writeValidatedEntries(
     const tempPath = join(parentDir, `.nautilo-authoring-${randomBytes(8).toString("hex")}.tmp`);
     try {
       await writeFile(tempPath, entry.content, "utf8");
-      await rename(tempPath, entry.absPath);
+      await renameWithWindowsRetry(tempPath, entry.absPath);
     } catch (err) {
       await unlink(tempPath).catch(() => undefined);
       throw err;
@@ -470,7 +470,7 @@ export async function createMiniAppSource(
     }
 
     const targetDir = join(appsRoot, appId);
-    await rename(stagingDir, targetDir);
+    await renameWithWindowsRetry(stagingDir, targetDir);
 
     const { status, sourceHash, registration } = await refreshAfterMutation(appsRoot, appId, options);
 

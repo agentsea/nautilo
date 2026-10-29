@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
+import { renameWithWindowsRetrySync } from "@nautilo/config/private-filesystem";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { ReadyToWorkBinding } from "../../electron/ready-to-work-contract";
@@ -158,7 +159,7 @@ describe("Ready Workstation protected receipt", () => {
       } } });
     expect(() => racing.clear()).toThrow("READY_TO_WORK_PERSISTENCE_UNSUPPORTED");
     const target = path.join(root, "future.bin");
-    fs.renameSync(filePath, target);
+    renameWithWindowsRetrySync(filePath, target);
     fs.symlinkSync(process.platform === "win32" ? root : target, filePath,
       process.platform === "win32" ? "junction" : "file");
     const linkedFile = process.platform === "win32" ? path.join(filePath, "future.bin") : filePath;

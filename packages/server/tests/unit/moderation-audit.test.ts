@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { renameWithWindowsRetrySync } from "@nautilo/config/private-filesystem";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { gzipSync } from "node:zlib";
@@ -16,7 +17,7 @@ describe("durable moderation audit projection", () => {
   test("retry after a lost checkpoint writes once, including across rotation and compression", async () => {
     const path = join(dir, "audit.log");
     await createModerationAuditSink(path)(event);
-    renameSync(path, `${path}.1`);
+    renameWithWindowsRetrySync(path, `${path}.1`);
     writeFileSync(`${path}.2.gz`, gzipSync(readFileSync(`${path}.1`)));
     rmSync(`${path}.1`);
     await createModerationAuditSink(path)(event);

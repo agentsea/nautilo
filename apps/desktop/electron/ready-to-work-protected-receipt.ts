@@ -5,11 +5,11 @@ import {
   closeSync,
   openSync,
   readFileSync,
-  renameSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname } from "node:path";
+import { renameWithWindowsRetrySync } from "@nautilo/config/private-filesystem";
 import { ensurePrivateStoreDirectorySync } from "./private-store-directory";
 import {
   hasReadyToWorkExactBinding,
@@ -68,7 +68,7 @@ const productionFs: ReceiptFs = {
   openSync,
   writeFileSync,
   closeSync,
-  renameSync,
+  renameSync: renameWithWindowsRetrySync,
   readFileSync,
   unlinkSync,
 };

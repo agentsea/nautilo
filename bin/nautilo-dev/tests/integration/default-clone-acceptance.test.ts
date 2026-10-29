@@ -8,12 +8,12 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
-  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { renameWithWindowsRetrySync } from "@nautilo/config/private-filesystem";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
@@ -300,7 +300,7 @@ function writeJournal(journal: ResourceJournal): void {
   const temp = `${journal.journalPath}.${process.pid}.tmp`;
   writeFileSync(temp, `${JSON.stringify(journal, null, 2)}\n`, { flag: "wx", mode: 0o600 });
   chmodSync(temp, 0o600);
-  renameSync(temp, journal.journalPath);
+  renameWithWindowsRetrySync(temp, journal.journalPath);
 }
 
 function composeImages(): string[] {

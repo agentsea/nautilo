@@ -4,7 +4,6 @@ import {
   mkdir,
   readFile,
   readdir,
-  rename,
   unlink,
 } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
@@ -14,6 +13,7 @@ import {
   isOwnedFilesystemPathAsync,
   isPrivateFilesystemPathAsync,
   publishPrivateFileAtomically,
+  renameWithWindowsRetry,
   secureFilesystemPath,
   writePrivateFileExclusive,
 } from "@nautilo/config/private-filesystem";
@@ -460,7 +460,7 @@ export async function migrateLegacySessionFile(profile: string): Promise<boolean
     }
     if (!parsed.success) return false;
     await saveCliSessionUnlocked(parsed.data, opts);
-    await rename(legacy, backup);
+    await renameWithWindowsRetry(legacy, backup);
     return true;
   }));
 }

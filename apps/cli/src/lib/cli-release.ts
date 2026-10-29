@@ -7,13 +7,13 @@ import {
   mkdtempSync,
   readlinkSync,
   realpathSync,
-  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
+import { renameWithWindowsRetrySync } from "@nautilo/config/private-filesystem";
 
 import { CLI_PUBLIC_RELEASE_ORIGIN, CLI_RELEASE_TRUSTED_PUBLIC_KEYS, CLI_STABLE_MANIFEST_URL } from "./cli-release-trust.ts";
 
@@ -157,7 +157,7 @@ function atomicSymlink(target: string, destination: string): void {
   const temp = `${destination}.new-${process.pid}`;
   if (existsSync(temp)) rmSync(temp, { force: true });
   symlinkSync(target, temp);
-  renameSync(temp, destination);
+  renameWithWindowsRetrySync(temp, destination);
 }
 function currentVersion(roots: CliInstallRoots): string | null {
   const current = join(roots.share, "current");
@@ -221,7 +221,7 @@ export async function installStableCliRelease(input: {
     mkdirSync(versionDir, { recursive: true, mode: 0o755 });
     const destination = join(versionDir, bundleName);
     if (existsSync(destination)) rmSync(destination, { recursive: true, force: true });
-    renameSync(bundle, destination);
+    renameWithWindowsRetrySync(bundle, destination);
     const currentTarget = `versions/${signed.manifest.version}/${bundleName}`;
     if (prior !== null) {
       const old = readlinkSync(join(roots.share, "current"));

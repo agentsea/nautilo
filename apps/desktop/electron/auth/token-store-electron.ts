@@ -8,6 +8,7 @@
 import { app, safeStorage } from "electron";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { renameWithWindowsRetrySync } from "@nautilo/config/private-filesystem";
 import {
   parseNautiloInstanceId,
   resolveInstance,
@@ -186,7 +187,7 @@ function deps(): TokenStoreDeps {
       unlinkSync: fs.unlinkSync,
       chmodSync: fs.chmodSync,
       existsSync: fs.existsSync,
-      renameSync: fs.renameSync,
+      renameSync: renameWithWindowsRetrySync,
     },
     authDir: resolveNautiloRootDir(),
     profile: profileFromArgv,

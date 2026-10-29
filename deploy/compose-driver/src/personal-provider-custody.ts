@@ -1,4 +1,5 @@
 import * as nodeFs from "node:fs/promises";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 import { dirname } from "node:path";
 
 import {
@@ -367,7 +368,7 @@ export function defaultEnsurePersonalProviderCustodyDeps(): EnsurePersonalProvid
         await handle.sync();
         await handle.close();
         handle = undefined;
-        await nodeFs.rename(temporary, path);
+        await renameWithWindowsRetry(temporary, path);
         const directory = await nodeFs.open(dirname(path), "r");
         try {
           await directory.sync();

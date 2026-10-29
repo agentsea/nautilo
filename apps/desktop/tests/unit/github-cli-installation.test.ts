@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { link, mkdir, mkdtemp, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import {
@@ -91,7 +92,7 @@ describe("GitHub CLI installation", () => {
       const installation = f.make();
       await installation.verify();
       await writeFile(`${f.bin}.new`, f.bytes, { mode: 0o700 });
-      await rename(`${f.bin}.new`, f.bin);
+      await renameWithWindowsRetry(`${f.bin}.new`, f.bin);
       await fails(installation.verify());
       await fails(installation.verify());
     } finally {

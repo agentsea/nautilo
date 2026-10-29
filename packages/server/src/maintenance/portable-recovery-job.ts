@@ -9,7 +9,8 @@
 import { randomBytes } from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync, readdirSync } from "node:fs";
-import { appendFile, chmod, lstat, mkdir, mkdtemp, open, readFile, rename, rm, rmdir, writeFile } from "node:fs/promises";
+import { appendFile, chmod, lstat, mkdir, mkdtemp, open, readFile, rm, rmdir, writeFile } from "node:fs/promises";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 import { tmpdir } from "node:os";
 import { posix, resolve } from "node:path";
 import {
@@ -1274,7 +1275,7 @@ export function createNodePortableRecoveryFilesystem(root = "/var/lib/nautilo"):
     writeFile: async (path, bytes, mode) => { await writeFile(path, bytes, { mode }); },
     appendFile: async (path, bytes) => { await appendFile(path, bytes); },
     readFile: async (path) => new Uint8Array(await readFile(path)),
-    rename: async (from, to) => { await rename(from, to); },
+    rename: renameWithWindowsRetry,
     remove: async (path) => { await rm(path, { recursive: true, force: true }); },
     removeEmptyDirectory: async (path) => { await rmdir(path); },
     syncFile: async (path) => { const handle = await open(path, "r"); try { await handle.sync(); } finally { await handle.close(); } },

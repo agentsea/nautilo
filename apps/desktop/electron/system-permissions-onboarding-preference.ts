@@ -5,11 +5,11 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
-  renameSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { renameWithWindowsRetrySync } from "@nautilo/config/private-filesystem";
 
 export const SYSTEM_PERMISSIONS_ONBOARDING_PREFERENCE_VERSION = 1 as const;
 
@@ -67,7 +67,7 @@ const nativeFileSystem: SystemPermissionsOnboardingPreferenceFileSystem = {
   openSync,
   writeFileSync,
   closeSync,
-  renameSync,
+  renameSync: renameWithWindowsRetrySync,
   unlinkSync,
 };
 

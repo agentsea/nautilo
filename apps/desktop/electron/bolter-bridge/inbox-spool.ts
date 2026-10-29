@@ -1,5 +1,6 @@
 import { constants, type Stats } from "node:fs";
-import { lstat, mkdir, open, readdir, realpath, rename, unlink, type FileHandle } from "node:fs/promises";
+import { lstat, mkdir, open, readdir, realpath, unlink, type FileHandle } from "node:fs/promises";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 import { createHash, randomUUID } from "node:crypto";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 
@@ -157,7 +158,7 @@ export class BolterInboxSpool {
         } finally { await file.close(); }
         await this.directory();
         this.current();
-        await rename(temporary, committed);
+        await renameWithWindowsRetry(temporary, committed);
         renamed = true;
         const entry = await lstat(committed);
         if (!entry.isFile() || entry.isSymbolicLink() || entry.nlink !== 1 ||
