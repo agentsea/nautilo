@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { cp, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAppsRoot } from "@nautilo/config";
@@ -198,7 +199,7 @@ async function installStagedSeed(
   try {
     if (hadExistingSeed) {
       try {
-        await rename(destRoot, backupRoot);
+        await renameWithWindowsRetry(destRoot, backupRoot);
         movedExistingSeed = true;
       } catch (err) {
         // A concurrent failed/retried bootstrap may remove the stale seed
@@ -208,10 +209,10 @@ async function installStagedSeed(
       }
     }
     try {
-      await rename(stagingRoot, destRoot);
+      await renameWithWindowsRetry(stagingRoot, destRoot);
     } catch (err) {
       if (movedExistingSeed) {
-        await rename(backupRoot, destRoot);
+        await renameWithWindowsRetry(backupRoot, destRoot);
       }
       throw err;
     }

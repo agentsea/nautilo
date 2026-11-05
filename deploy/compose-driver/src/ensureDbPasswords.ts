@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -378,7 +379,7 @@ export function defaultEnsureDbPasswordsDeps(opts?: {
       await mkdir(dirname(target), { recursive: true, mode: 0o700 });
       const temporary = `${target}.tmp-${process.pid}`;
       await writeFile(temporary, `${password}\n`, { mode: 0o600 });
-      await rename(temporary, target);
+      await renameWithWindowsRetry(temporary, target);
       await chmod(target, 0o600);
     },
     removeCryptoDbPasswordFromInstanceEnv: async (instanceRootDir) => {

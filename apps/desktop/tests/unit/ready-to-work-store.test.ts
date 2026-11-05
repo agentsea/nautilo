@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs";
+import { renameWithWindowsRetrySync } from "@nautilo/config/private-filesystem";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
@@ -186,7 +187,7 @@ describe("Ready-to-work desired state", () => {
     expect(() => new ReadyToWorkStore({ filePath: storePath(), fs: racingFs }).clear())
       .toThrow("READY_TO_WORK_PERSISTENCE_UNSUPPORTED");
     const target = path.join(tempRoot, "future.json");
-    fs.renameSync(storePath(), target);
+    renameWithWindowsRetrySync(storePath(), target);
     fs.symlinkSync(process.platform === "win32" ? tempRoot : target, storePath(),
       process.platform === "win32" ? "junction" : "file");
     const linkedFile = process.platform === "win32" ? path.join(storePath(), "future.json") : storePath();

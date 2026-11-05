@@ -8,12 +8,12 @@ import {
   mkdtemp,
   readFile,
   readdir,
-  rename,
   rm,
   stat,
   symlink,
   writeFile,
 } from "node:fs/promises";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { seedFirstPartyApps } from "../../src/apps/seed-first-party-apps";
@@ -416,7 +416,7 @@ describe("isolated seed metadata recovery", () => {
   test("preserves filesystem errors while reading the marker", async () => {
     const f = await fixture();
     const entry = await readFile(join(f.installed, "main.ts"), "utf8");
-    await rename(f.marker, join(f.options.appsRoot, "saved-marker.json"));
+    await renameWithWindowsRetry(f.marker, join(f.options.appsRoot, "saved-marker.json"));
     await mkdir(f.marker);
     const readError = await readFile(f.marker, "utf8").catch((error: unknown) => error);
     expect(readError).toBeInstanceOf(Error);

@@ -1,4 +1,5 @@
-import { lstat, mkdtemp, rename, rm } from "node:fs/promises";
+import { lstat, mkdtemp, rm } from "node:fs/promises";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 import path from "node:path";
 
 import { verifySharedBrowserViewerWebExport } from "./shared-browser-viewer-export-probe";
@@ -64,17 +65,15 @@ export async function exportCanonicalMobileWeb(
   const outputDirectory = path.join(appRoot, "dist");
   const stagingRoot = await mkdtemp(path.join(appRoot, ".mobile-web-export-"));
   const stagingOutput = path.join(stagingRoot, "output");
+  // All transaction writes stay inside staging. Do not touch an output that
+  // appeared after the transaction started, even if promotion failed.
   try {
     await assertRemovableCanonicalOutput(outputDirectory);
     await (dependencies.exportWeb ?? ((output) => defaultExpoWebExport(output, appRoot)))(stagingOutput);
     await (dependencies.verifyGeneric ?? verifyMobileWebExport)(stagingOutput);
     await (dependencies.verifyViewer ?? verifySharedBrowserViewerWebExport)(stagingOutput, appRoot);
     await assertCanonicalOutputIsStillAbsent(outputDirectory);
-    await rename(stagingOutput, outputDirectory);
-  } catch (error) {
-    // All transaction writes stay inside staging. Do not touch an output that
-    // appeared after the transaction started, even if promotion failed.
-    throw error;
+    await renameWithWindowsRetry(stagingOutput, outputDirectory);
   } finally {
     await rm(stagingRoot, { recursive: true, force: true });
   }

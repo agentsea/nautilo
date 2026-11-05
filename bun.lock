@@ -680,6 +680,7 @@
       "dependencies": {
         "@nautilo/acp-host": "workspace:*",
         "@nautilo/codex-app-server": "workspace:*",
+        "@nautilo/config": "workspace:*",
         "@nautilo/relay": "workspace:*",
       },
       "devDependencies": {

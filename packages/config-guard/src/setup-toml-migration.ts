@@ -3,11 +3,11 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
-  renameSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import { renameWithWindowsRetrySync } from "@nautilo/config/private-filesystem";
 import { parse as parseToml, stringify } from "smol-toml";
 import { SetupTemplateV1 } from "./setup-template-v1-for-migration";
 import { appendAuditEntrySync } from "./audit-log";
@@ -234,7 +234,7 @@ export function migrateSetupTomlToDeployToml(
     rootDir,
     `setup.toml.bak-m091-${m091IsoCompactStamp(now)}`,
   );
-  renameSync(setupTomlPath, setupTomlBackup);
+  renameWithWindowsRetrySync(setupTomlPath, setupTomlBackup);
   try {
     chmodSync(setupTomlBackup, 0o600);
   } catch {

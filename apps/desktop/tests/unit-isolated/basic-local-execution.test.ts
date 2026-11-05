@@ -1,5 +1,6 @@
 import { afterEach, beforeAll, describe, expect, mock, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { renameWithWindowsRetrySync } from "@nautilo/config/private-filesystem";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildProtectedPathPolicy } from "@nautilo/security";
@@ -116,7 +117,7 @@ test("Basic retained reads revalidate original directory identity and protected 
   const read = { ...f.request, toolName: "write_stdin", args: { session_id: "execution-a" }, localExecutionBinding: { ...f.request.localExecutionBinding!, operation: "read" as const } };
   f.revoke(); expect((await f.handler(read)).status).toBe("error");
   const g = fixture(); await g.handler(g.request); await g.spawned;
-  const moved = `${g.root}-moved`; renameSync(g.root, moved); roots.push(moved); mkdirSync(g.root);
+  const moved = `${g.root}-moved`; renameWithWindowsRetrySync(g.root, moved); roots.push(moved); mkdirSync(g.root);
   expect((await g.handler({ ...read, localExecutionBinding: { ...g.request.localExecutionBinding!, operation: "read" } })).status).toBe("error");
 });
 

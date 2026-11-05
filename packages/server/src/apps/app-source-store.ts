@@ -3,12 +3,12 @@ import {
   readdir,
   readFile,
   realpath,
-  rename,
   stat,
   unlink,
   writeFile,
 } from "node:fs/promises";
 import { dirname, join, relative, resolve, sep } from "node:path";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 import {
   computeAppSourceHash,
   scanInstalledApps,
@@ -461,7 +461,7 @@ export async function writeAppSourceFile(
   const tempPath = join(parentDir, `.nautilo-source-${randomBytes(8).toString("hex")}.tmp`);
   try {
     await writeFile(tempPath, content, "utf8");
-    await rename(tempPath, resolved.absPath);
+    await renameWithWindowsRetry(tempPath, resolved.absPath);
   } catch (err) {
     await unlink(tempPath).catch(() => undefined);
     throw err;

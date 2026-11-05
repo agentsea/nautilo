@@ -2,13 +2,12 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   readdir,
   readFile,
-  rename,
   unlink,
 } from "node:fs/promises";
 import { createReadStream, createWriteStream } from "node:fs";
 import { join, resolve } from "node:path";
 import { once } from "node:events";
-import { ensurePrivateDirectory } from "@nautilo/config/private-filesystem";
+import { ensurePrivateDirectory, renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 
 import { atomicWritePrivateFile } from "../file-vault.ts";
 import {
@@ -176,7 +175,7 @@ implements PreparedArtifactCiphertextSidecarPort, PreparedArtifactCiphertextStag
           ciphertextLength: staged.ciphertextLength,
           ciphertextSha256Base64url: staged.ciphertextSha256Base64url,
         };
-        await rename(tempPath, blobPath);
+        await renameWithWindowsRetry(tempPath, blobPath);
         await atomicWritePrivateFile(metaPath, JSON.stringify(placeholder));
         return staged;
       } catch (cause) {
@@ -272,7 +271,7 @@ implements PreparedArtifactCiphertextSidecarPort, PreparedArtifactCiphertextStag
           bytes !== input.reference.ciphertextLength
           || digest !== input.reference.ciphertextSha256Base64url
         ) throw new Error("Prepared Artifact ciphertext sidecar disagrees with its declaration");
-        await rename(tempPath, blobPath);
+        await renameWithWindowsRetry(tempPath, blobPath);
         await atomicWritePrivateFile(metaPath, JSON.stringify(input.reference));
         return "inserted";
       } catch (cause) {

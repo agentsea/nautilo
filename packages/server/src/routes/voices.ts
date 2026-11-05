@@ -4,7 +4,8 @@ import { dialogueSpeechResponse } from "../realtime/dialogue-speech";
 import { splitSpeechText } from "../realtime/speech-text";
 import { randomUUID } from "node:crypto";
 import { createReadStream } from "node:fs";
-import { lstat, mkdir, readdir, rename, unlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readdir, unlink, writeFile } from "node:fs/promises";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 import { basename, dirname, join } from "node:path";
 import { requestAllowsOwnerOrLoopback } from "../lib/request-trust";
 import {
@@ -220,7 +221,7 @@ async function writePreviewAtomically(path: string, bytes: Buffer): Promise<void
   const temporary = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
   try {
     await writeFile(temporary, bytes, { flag: "wx", mode: 0o600 });
-    await rename(temporary, path);
+    await renameWithWindowsRetry(temporary, path);
   } finally {
     await unlink(temporary).catch(() => {});
   }

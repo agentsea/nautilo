@@ -3,6 +3,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import type { ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import * as fsp from "node:fs/promises";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
@@ -82,7 +83,7 @@ describe("D385 Phase 0 disk-to-disk media executor", () => {
         return child as unknown as ChildProcess;
       },
       registerOutput: async (output) => {
-        await fsp.rename(output.outputPath, retained);
+        await renameWithWindowsRetry(output.outputPath, retained);
         return { ok: true, outputRef: "proxy_approved" };
       },
     }));
@@ -229,7 +230,7 @@ describe("D385 Phase 0 disk-to-disk media executor", () => {
           return (await fsp.readFile(filePath)).subarray(0, 32);
         },
         registerOutput: async (output) => {
-          await fsp.rename(output.outputPath, retained);
+          await renameWithWindowsRetry(output.outputPath, retained);
           if (phase === "register") controller.abort();
           return { ok: true, outputRef: `proxy_${phase}` };
         },

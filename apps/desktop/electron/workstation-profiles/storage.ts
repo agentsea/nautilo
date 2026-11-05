@@ -11,6 +11,7 @@
 import { randomBytes } from "node:crypto";
 import * as nodeFs from "node:fs/promises";
 import * as nodePath from "node:path";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
@@ -44,7 +45,7 @@ export function createWorkstationProfileStorage(
   filePath: string,
   dependencies: WorkstationProfileStorageDependencies = {},
 ): WorkstationProfileStorage {
-  const fs = dependencies.fs ?? nodeFs;
+  const fs = dependencies.fs ?? { ...nodeFs, rename: renameWithWindowsRetry };
   const dirname = dependencies.dirname ?? ((targetPath: string) => nodePath.dirname(targetPath));
   const basename = dependencies.basename ?? ((targetPath: string) => nodePath.basename(targetPath));
   const randomHex = dependencies.randomHex ?? (() => randomBytes(12).toString("hex"));

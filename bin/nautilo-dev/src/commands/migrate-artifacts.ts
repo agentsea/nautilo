@@ -13,7 +13,6 @@
 import path, { dirname, join } from "node:path";
 import {
   mkdir,
-  rename,
   copyFile,
   rm,
   readdir,
@@ -26,6 +25,7 @@ import { loadConfigEnvIntoProcess } from "../lib/config-env";
 import { resolveAndEvaluateDefaultInstanceMutationGuard } from "../lib/default-instance-guard";
 import { resolveSnapshotsDir } from "../lib/paths";
 import { getArtifactsRoot } from "@nautilo/config";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 import {
   and,
   attachArtifactToNamespace,
@@ -164,7 +164,7 @@ async function renameOrCopyDelete(
   to: string,
 ): Promise<void> {
   try {
-    await rename(from, to);
+    await renameWithWindowsRetry(from, to);
   } catch (err: unknown) {
     const code = err && typeof err === "object" && "code" in err ? (err as NodeJS.ErrnoException).code : undefined;
     if (code === "EXDEV") {

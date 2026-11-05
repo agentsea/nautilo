@@ -1,5 +1,6 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
-import { chmod, link, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, link, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 import { createReadStream } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
@@ -654,7 +655,7 @@ export class CodexManagedRuntimeManager {
       await writeFile(join(packageRoot, ".nautilo-managed-release"), descriptor.sha256, { mode: 0o600, flag: "wx" });
       if (options.signal?.aborted) return this.cancelled(options, descriptor);
       await this.assertMutationLock(root);
-      try { await rename(packageRoot, finalRoot); await fsyncDirectory(dirname(finalRoot)); } catch (error) {
+      try { await renameWithWindowsRetry(packageRoot, finalRoot); await fsyncDirectory(dirname(finalRoot)); } catch (error) {
         if (!(await this.hasOwnedRelease(root, finalRoot, descriptor.sha256)) || !(await this.isHealthyExisting(finalRoot, descriptor, options))) throw error;
       }
       // `packageRoot` belongs to staging and is removed in finally.  Every
@@ -813,7 +814,7 @@ export class CodexManagedRuntimeManager {
       await writeFile(temp, JSON.stringify(record), { mode: 0o600, flag: "wx" });
       await fsyncFile(temp);
       await this.assertMutationLock(root);
-      await rename(temp, file);
+      await renameWithWindowsRetry(temp, file);
       await fsyncFile(file);
       await fsyncDirectory(dirname(file));
     } catch (error) {
@@ -882,7 +883,7 @@ export class CodexManagedRuntimeManager {
   private async reclaimDeadLock(root: string, owner: RuntimeLockOwner): Promise<boolean> {
     const lock = join(root, LOCK_DIRECTORY);
     const quarantine = join(root, `${LOCK_DIRECTORY}.quarantine-${randomUUID()}`);
-    try { await rename(lock, quarantine); }
+    try { await renameWithWindowsRetry(lock, quarantine); }
     catch { return false; }
     const current = await this.readLockOwner(root, quarantine);
     if (current && current.nonce === owner.nonce && current.pid === owner.pid && this.pidIsProvablyDead(current.pid)) {
@@ -891,7 +892,7 @@ export class CodexManagedRuntimeManager {
     }
     // A replacement or live owner is never deleted.  Put it back only if no
     // contender acquired the official name while it was quarantined.
-    try { await rename(quarantine, lock); } catch { /* Fail closed; leave quarantine intact. */ }
+    try { await renameWithWindowsRetry(quarantine, lock); } catch { /* Fail closed; leave quarantine intact. */ }
     return false;
   }
   private async acquireRootLock(root: string, signal?: AbortSignal): Promise<string> {
@@ -908,7 +909,7 @@ export class CodexManagedRuntimeManager {
         await assertOwnedDescendant(root, candidate, true);
         const owner: RuntimeLockOwner = Object.freeze({ schemaVersion: 1, pid: process.pid, nonce });
         await writeFile(join(candidate, LOCK_OWNER_FILE), JSON.stringify(owner), { mode: 0o600, flag: "wx" });
-        await rename(candidate, lock);
+        await renameWithWindowsRetry(candidate, lock);
         return nonce;
       } catch (error) {
         // This generated name was created only by this attempt.  It is never

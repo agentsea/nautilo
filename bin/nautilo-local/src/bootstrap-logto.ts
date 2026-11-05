@@ -51,11 +51,11 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
-  renameSync,
   writeFileSync,
 } from "node:fs";
 import { join, dirname } from "node:path";
 import postgresImport from "postgres";
+import { renameWithWindowsRetrySync } from "@nautilo/config/private-filesystem";
 import {
   resolveInstance,
   resolveInstanceUncached,
@@ -356,7 +356,7 @@ function defaultAtomicWriter(path: string, contents: string): void {
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.${randomBytes(6).toString("hex")}.tmp`;
   writeFileSync(tmp, contents, { encoding: "utf-8", mode: 0o600 });
-  renameSync(tmp, path);
+  renameWithWindowsRetrySync(tmp, path);
   // Belt-and-suspenders: some FS ignore mode when replacing via rename.
   chmodSync(path, 0o600);
 }

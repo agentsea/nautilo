@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { isPrivateFilesystemPath } from "@nautilo/config/private-filesystem";
+import { isPrivateFilesystemPath, renameWithWindowsRetrySync } from "@nautilo/config/private-filesystem";
 import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
 import { createReadyToWorkDesiredState, readyToWorkRememberedKey, type ReadyToWorkBinding } from "../../electron/ready-to-work-contract";
 import { ReadyToWorkStore, type ReadyToWorkStoreFs } from "../../electron/ready-to-work-store";
@@ -153,7 +153,7 @@ test("corrupt protected bytes are never overwritten and OS-protection loss never
 
 test("intent replacement failure leaves an orphan proof but cannot publish a remembered choice", () => {
   const f = fixture();
-  const broken: ReadyToWorkStoreFs = { ...fs, renameSync: (from, to) => { if (to === f.desiredPath) throw new Error("disk failure"); fs.renameSync(from, to); } };
+  const broken: ReadyToWorkStoreFs = { ...fs, renameSync: (from, to) => { if (to === f.desiredPath) throw new Error("disk failure"); renameWithWindowsRetrySync(from, to); } };
   const desired = new ReadyToWorkStore({ filePath: f.legacy, rememberedFilePath: f.desiredPath, fs: broken });
   expect(() => saveRememberedReadyToWork({ ...f, desired, selection: createReadyToWorkDesiredState(first, selection), proof, isCurrent: () => true })).toThrow("disk failure");
   expect(fs.existsSync(f.receiptPath)).toBe(true); expect(f.recover()).toBeNull(); expect(fs.existsSync(f.legacy)).toBe(false);
@@ -161,7 +161,7 @@ test("intent replacement failure leaves an orphan proof but cannot publish a rem
 
 test("crash between intent and sentinel replacement is visibly unconfirmed and never auto-repaired", () => {
   const f = fixture();
-  const broken: ReadyToWorkStoreFs = { ...fs, renameSync: (from, to) => { if (to === f.legacy) throw new Error("sentinel failure"); fs.renameSync(from, to); } };
+  const broken: ReadyToWorkStoreFs = { ...fs, renameSync: (from, to) => { if (to === f.legacy) throw new Error("sentinel failure"); renameWithWindowsRetrySync(from, to); } };
   const desired = new ReadyToWorkStore({ filePath: f.legacy, rememberedFilePath: f.desiredPath, fs: broken });
   expect(() => saveRememberedReadyToWork({ ...f, desired, selection: createReadyToWorkDesiredState(first, selection), proof, isCurrent: () => true })).toThrow("sentinel failure");
   expect(f.desired.inspectRemembered(first).status).toBe("confirmation_required"); expect(f.recover()).toBeNull();
@@ -194,7 +194,7 @@ test("successful account removal clears its old ciphertext without deleting anot
 test("normal subsequent save collects an orphan proof left by failed intent publication", () => {
   const f = fixture(); f.enroll(second);
   const desired = new ReadyToWorkStore({ filePath: f.legacy, rememberedFilePath: f.desiredPath,
-    fs: { ...fs, renameSync: (from, to) => { if (to === f.desiredPath) throw new Error("disk failure"); fs.renameSync(from, to); } } });
+    fs: { ...fs, renameSync: (from, to) => { if (to === f.desiredPath) throw new Error("disk failure"); renameWithWindowsRetrySync(from, to); } } });
   expect(() => saveRememberedReadyToWork({ ...f, desired, selection: createReadyToWorkDesiredState(first, selection), proof, isCurrent: () => true })).toThrow("disk failure");
   expect(f.recover(first)).toBeNull(); f.enroll(second);
   const state = f.desired.inspectRemembered(second); if (state.status !== "ready") throw new Error("missing fixture intent");

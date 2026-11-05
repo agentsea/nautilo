@@ -1,7 +1,8 @@
 import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
 import { spawn } from "node:child_process";
 import { createReadStream } from "node:fs";
-import { chmod, lstat, mkdir, open, readFile, readdir, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, open, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { createGunzip } from "node:zlib";
 import type {
@@ -253,7 +254,7 @@ export class SecurityScannerRuntimeManager {
         const entrypoint = join(payload, descriptor.entrypoint);
         if (!inside(payload, entrypoint)) throw new Error("unsafe_entrypoint");
         await mkdir(dirname(entrypoint), { recursive: true, mode: 0o700 });
-        await rename(archive, entrypoint);
+        await renameWithWindowsRetry(archive, entrypoint);
       } else {
         await extractTarGz(archive, payload, options.signal);
       }
@@ -271,7 +272,7 @@ export class SecurityScannerRuntimeManager {
       await mkdir(dirname(release), { recursive: true, mode: 0o700 });
       await this.assertOwnedDescendant(root, dirname(release), true);
       await writeFile(join(payload, RELEASE_MARKER), descriptor.sha256, { flag: "wx", mode: 0o600 });
-      await rename(payload, release);
+      await renameWithWindowsRetry(payload, release);
       const admitted = await this.validateRelease(root, release, descriptor, options.signal);
       if (admitted === null) throw new Error("released_payload_invalid");
       return this.activate(root, descriptor, admitted, options, received);
@@ -399,7 +400,7 @@ export class SecurityScannerRuntimeManager {
     await this.assertOwnedDescendant(root, dirname(destination), true);
     const temporary = `${destination}.${randomUUID()}.tmp`;
     await writeFile(temporary, JSON.stringify(record), { flag: "wx", mode: 0o600 });
-    await rename(temporary, destination);
+    await renameWithWindowsRetry(temporary, destination);
   }
 }
 

@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { lstat, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import * as filesystem from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { isPrivateFilesystemPathAsync } from "@nautilo/config/private-filesystem";
+import { isPrivateFilesystemPathAsync, renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 
 import { createMaintenanceReceipt, parseMaintenanceReceipt, type MaintenanceReceipt } from "@nautilo/hosting";
 import {
@@ -49,7 +49,7 @@ afterEach(async () => {
 test("maintenance discovery binds each directory to its internal maintenance identity", async () => {
   const place = await location();
   await writeRailwayMaintenanceState(place.root, place.path, state());
-  await rename(place.path, join(place.root, "forged-maintenance"));
+  await renameWithWindowsRetry(place.path, join(place.root, "forged-maintenance"));
   await expectRejected(discoverRailwayMaintenanceStates(place.root), { message: "Railway maintenance discovery failed" });
 });
 
@@ -730,7 +730,7 @@ describe("Railway maintenance composite state", () => {
 
   test("rejects gaps, tampering, unknown fields, secrets, symlinks, and unsafe modes without reflection", async () => {
     const gap = await location(); await writeRailwayMaintenanceState(gap.root, gap.path, state());
-    await rename(join(gap.path, "revision-0000000000.json"), join(gap.path, "revision-0000000001.json"));
+    await renameWithWindowsRetry(join(gap.path, "revision-0000000000.json"), join(gap.path, "revision-0000000001.json"));
     await expectRejected(readRailwayMaintenanceState(gap.root, gap.path), { code: "invalid-chain" });
 
     for (const mutation of [

@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
-import { ensurePrivateDirectory, syncDirectory } from "@nautilo/config/private-filesystem";
+import { ensurePrivateDirectory, renameWithWindowsRetry, syncDirectory } from "@nautilo/config/private-filesystem";
 import type { VeniceArtifactCommitProof } from "./venice-lifecycle";
 
 const ALLOWED_MEDIA_MIME_TYPES = ["video/mp4", "audio/mp4", "audio/mpeg"] as const;
@@ -263,7 +263,7 @@ export async function writeStagedMediaArtifact(input: WriteStagedMediaArtifactIn
     }
 
     try {
-      await fsp.rename(temporaryPath, finalPath);
+      await renameWithWindowsRetry(temporaryPath, finalPath);
       finalized = true;
       await syncDirectory(finalDirectory);
     } catch (error) {

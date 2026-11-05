@@ -7,6 +7,7 @@
 import { afterAll, beforeAll, describe, expect, mock, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -149,7 +150,7 @@ describe("D448 local document mutation characterization", () => {
       ).toEqual({ ok: true });
       await writeFileAtomically(target, next, {
         writeFile: async (filePath, bytes) => await fs.writeFile(filePath, bytes),
-        rename: async (from, to) => await fs.rename(from, to),
+        rename: async (from, to) => await renameWithWindowsRetry(from, to),
         unlink: async (filePath) => await fs.unlink(filePath),
       });
 

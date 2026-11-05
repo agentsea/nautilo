@@ -1,5 +1,5 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -142,6 +142,26 @@ test.skipIf(process.platform !== "win32")("renames wait while another process ho
   expect(readFileSync(target, "utf8")).toBe("sync");
   await hold.released;
 }, 30_000);
+
+test.skipIf(process.platform !== "win32")("renames onto a directory or a read-only file fail at once instead of waiting out the deadline", async () => {
+  const root = fixture();
+  const source = join(root, "source.txt");
+  const directory = join(root, "directory");
+  const readOnly = join(root, "read-only.txt");
+  writeFileSync(source, "new");
+  mkdirSync(directory);
+  writeFileSync(readOnly, "old");
+  chmodSync(readOnly, 0o444);
+  const startedAt = Date.now();
+  await Promise.resolve(expect(renameWithWindowsRetry(source, directory)).rejects.toMatchObject({ code: "EPERM" }));
+  expect(() => renameWithWindowsRetrySync(source, directory)).toThrow(expect.objectContaining({ code: "EPERM" }));
+  await Promise.resolve(expect(renameWithWindowsRetry(source, readOnly)).rejects.toMatchObject({ code: "EPERM" }));
+  expect(() => renameWithWindowsRetrySync(source, readOnly)).toThrow(expect.objectContaining({ code: "EPERM" }));
+  expect(Date.now() - startedAt).toBeLessThan(2_000);
+  expect(readFileSync(source, "utf8")).toBe("new");
+  expect(readFileSync(readOnly, "utf8")).toBe("old");
+  chmodSync(readOnly, 0o600);
+});
 
 test("the async writer also runs in the supported Node runtime", () => {
   const path = join(fixture(), "node-secret.json");

@@ -8,8 +8,9 @@
  * doctor command is the single supported migration entry point.
  */
 
-import { chmodSync, existsSync, readFileSync, readdirSync, renameSync, statSync } from "node:fs";
+import { chmodSync, existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { renameWithWindowsRetrySync } from "@nautilo/config/private-filesystem";
 import { bootstrapTokenPath, writeBootstrapToken } from "./bootstrap-tokens.ts";
 
 /** Same line shape previously used in `resolveTransport` for legacy `NAUTILO_BOOTSTRAP_TOKEN` (value may be empty). */
@@ -48,7 +49,7 @@ export function migrateProfileEnvBootstrapTokenIfPresent(
   if (existsSync(newPath)) {
     if (existsSync(legacyPath)) {
       const backupPath = `${legacyPath}.bak-m091-${m091IsoCompactStamp(now)}`;
-      renameSync(legacyPath, backupPath);
+      renameWithWindowsRetrySync(legacyPath, backupPath);
       chmodSync(backupPath, 0o600);
       process.stderr.write(
         `[m091] Archived legacy profile env (bootstrap token already at ~/.nautilo/bootstrap-tokens/${profileName}). Backup: ${backupPath}\n`,
@@ -79,7 +80,7 @@ export function migrateProfileEnvBootstrapTokenIfPresent(
 
   writeBootstrapToken(profileName, token, { home });
   const backupPath = `${legacyPath}.bak-m091-${m091IsoCompactStamp(now)}`;
-  renameSync(legacyPath, backupPath);
+  renameWithWindowsRetrySync(legacyPath, backupPath);
   chmodSync(backupPath, 0o600);
   process.stderr.write(
     `[m091] Migrated bootstrap token: ~/.nautilo/profiles/${profileName}.env → ~/.nautilo/bootstrap-tokens/${profileName} (one-time; legacy backed up)\n`,

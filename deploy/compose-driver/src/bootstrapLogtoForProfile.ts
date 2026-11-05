@@ -4,7 +4,8 @@ import {
 } from "@nautilo/config";
 import { resolveDotenvPath } from "@nautilo/config-guard";
 import { runBootstrap as defaultRunBootstrap } from "@nautilo/local/bootstrap-logto";
-import { rename, writeFile } from "node:fs/promises";
+import { writeFile } from "node:fs/promises";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 import { dirname } from "node:path";
 import {
   buildAppliedAuthContract,
@@ -115,7 +116,7 @@ async function writeAppliedAuthContractAtomically(
     encoding: "utf8",
     mode: 0o600,
   });
-  await rename(temporary, target);
+  await renameWithWindowsRetry(temporary, target);
 }
 
 /**

@@ -7,7 +7,6 @@ import {
   mkdtemp,
   open,
   readFile,
-  rename,
   realpath,
   rm,
   symlink,
@@ -16,7 +15,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import { isPrivateFilesystemPathAsync, secureFilesystemPath } from "@nautilo/config/private-filesystem";
+import { isPrivateFilesystemPathAsync, renameWithWindowsRetry, secureFilesystemPath } from "@nautilo/config/private-filesystem";
 import { allowOtherReaders, allowOtherWriters } from "@nautilo/config/private-filesystem-fixtures";
 
 import {
@@ -224,7 +223,7 @@ describe("owner seed result durable publication", () => {
     const temporary = join(outputDirectory, ".owner.json.tmp-replaced");
     const filesystem = nativeFilesystem(async event => {
       if (event !== "close-temporary") return;
-      await rename(temporary, join(outputDirectory, "retained.json"));
+      await renameWithWindowsRetry(temporary, join(outputDirectory, "retained.json"));
       await writeFile(temporary, "unrelated file", { mode: 0o600 });
     });
     await expectOwnerRejection(publishOwnerSeedResult({ path: outputPath, result, temporarySuffix: () => "replaced", filesystem }), "result-publish-failed");

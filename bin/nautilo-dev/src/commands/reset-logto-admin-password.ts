@@ -27,7 +27,8 @@
  * without docker / Postgres / Logto / disk.
  */
 import { randomBytes } from "node:crypto";
-import { chmodSync, mkdirSync, renameSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { renameWithWindowsRetrySync } from "@nautilo/config/private-filesystem";
 import { dirname, join } from "node:path";
 import { resolveInstance, resolveNautiloRootDir } from "@nautilo/config";
 import { resolveLogtoContainer } from "../lib/logto-db";
@@ -229,7 +230,7 @@ function defaultAtomicWriter(path: string, contents: string): void {
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.${randomBytes(6).toString("hex")}.tmp`;
   writeFileSync(tmp, contents, { encoding: "utf-8", mode: 0o600 });
-  renameSync(tmp, path);
+  renameWithWindowsRetrySync(tmp, path);
   chmodSync(path, 0o600);
 }
 

@@ -14,6 +14,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
+import { renameWithWindowsRetrySync } from "@nautilo/config/private-filesystem";
 import { ensurePrivateStoreDirectorySync } from "./private-store-directory";
 import { isServerFingerprint } from "./config-schema";
 import { planServerTarget } from "./server-target";
@@ -482,6 +483,7 @@ export function createPendingConnectionStore(options: PendingConnectionStoreOpti
   const fileSystem: PendingConnectionFs = options.fs ?? {
     ...fs,
     mkdirSync: ensurePrivateStoreDirectorySync,
+    renameSync: renameWithWindowsRetrySync,
   };
   const temporaryId = options.temporaryId ?? randomUUID;
 

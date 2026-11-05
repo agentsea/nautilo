@@ -1,4 +1,5 @@
-import { stat, rename, symlink, writeFile, readdir, lstat, rmdir } from "node:fs/promises";
+import { stat, symlink, writeFile, readdir, lstat, rmdir } from "node:fs/promises";
+import { renameWithWindowsRetry } from "./private-filesystem";
 import { dirname, join } from "node:path";
 import { log, warn } from "@nautilo/logger";
 import type { NautiloRuntimePaths } from "./runtime-paths";
@@ -103,7 +104,7 @@ async function moveIfSafe(
   }
 
   try {
-    await rename(source, destination);
+    await renameWithWindowsRetry(source, destination);
     log(`[storage] migrate ${label}: ${source} → ${destination}`);
     return true;
   } catch (err) {

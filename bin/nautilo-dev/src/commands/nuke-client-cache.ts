@@ -109,13 +109,13 @@ import {
   existsSync,
   mkdirSync,
   readdirSync,
-  renameSync,
   rmSync,
   statSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { resolveNautiloRootDir } from "@nautilo/config";
+import { renameWithWindowsRetrySync } from "@nautilo/config/private-filesystem";
 import { computeUserDataDirName } from "../../../../apps/desktop/electron/user-data-dir-name";
 import { probeInstanceProcessState } from "../lib/process-state";
 import { formatBytes } from "../lib/format-bytes";
@@ -440,7 +440,7 @@ function executeNuke(resolved: ResolvedTargets): NukeExecuteResult {
   for (const t of resolved.targets) {
     const stagedAt = join(stagingDir, basename(t.path));
     try {
-      renameSync(t.path, stagedAt);
+      renameWithWindowsRetrySync(t.path, stagedAt);
       staged.push(stagedAt);
     } catch {
       return { staged, failedAt: t.path, stagingDir };

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 import * as os from "node:os";
 import * as path from "node:path";
 import { createCurrentFolderClaudeLeaseProvider } from "../../electron/current-folder-claude-lease";
@@ -48,7 +49,7 @@ describe("Current Folder Claude lease", () => {
       let selection: { path: string; revision: number } | null = { path: root, revision: 0 };
       const lease = await createCurrentFolderClaudeLeaseProvider({ currentFolder: () => selection }).acquire();
       const moved = `${root}-moved`;
-      await fs.rename(root, moved);
+      await renameWithWindowsRetry(root, moved);
       await fs.mkdir(root);
       expect(await lease?.validate()).toBeFalse();
       await lease?.close();

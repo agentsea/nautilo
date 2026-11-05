@@ -2,6 +2,7 @@ import { randomBytes } from "node:crypto";
 import * as nodeFs from "node:fs/promises";
 import * as nodePath from "node:path";
 import { isCanonicalNautiloInstanceId } from "@nautilo/config";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 
 /** The durable-format version, intentionally independent from provider APIs. */
 export const COMPUTER_USE_LOCAL_STORE_VERSION = 1 as const;
@@ -113,7 +114,7 @@ export function createComputerUseLocalStorage(
   filePath: string,
   dependencies: ComputerUseLocalStorageDependencies = {},
 ): ComputerUseLocalStorage {
-  const fs = dependencies.fs ?? nodeFs;
+  const fs = dependencies.fs ?? { ...nodeFs, rename: renameWithWindowsRetry };
   const randomHex = dependencies.randomHex ?? (() => randomBytes(12).toString("hex"));
   const directory = nodePath.dirname(filePath);
   return {

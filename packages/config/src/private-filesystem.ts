@@ -1,6 +1,6 @@
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { chmodSync, closeSync, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { accessSync, chmodSync, closeSync, constants as fsConstants, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { chmod, lstat, mkdir, open, realpath, rename, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 
@@ -426,16 +426,32 @@ export async function writePrivateFileExclusive(path: string, contents: Uint8Arr
 // target open. Under load, a scan of a freshly written file can outlast a
 // second, so the retry waits with doubling pauses from 20 ms, capped at
 // 500 ms, until 10 s have passed. Other platforms and other errors fail
-// immediately.
+// immediately, as do the refusals that waiting never clears.
 const WINDOWS_RENAME_DEADLINE_MS = 10_000;
 const WINDOWS_RENAME_INITIAL_WAIT_MS = 20;
 const WINDOWS_RENAME_MAX_WAIT_MS = 500;
 
-function windowsRenameWait(error: unknown, attempt: number, startedAt: number): number | undefined {
+// Windows reports a directory target and a read-only target file with the
+// same EPERM as a transient lock. Neither changes while the caller waits.
+function windowsRenameRefusedForGood(to: string): boolean {
+  try {
+    if (lstatSync(to).isDirectory()) return true;
+  } catch {
+    return false;
+  }
+  try {
+    accessSync(to, fsConstants.W_OK);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+function windowsRenameWait(error: unknown, attempt: number, startedAt: number, to: string): number | undefined {
   const code = (error as NodeJS.ErrnoException).code;
   const locked = code === "EPERM" || code === "EACCES" || code === "EBUSY";
   const remaining = WINDOWS_RENAME_DEADLINE_MS - (Date.now() - startedAt);
-  if (process.platform !== "win32" || !locked || remaining <= 0) return undefined;
+  if (process.platform !== "win32" || !locked || remaining <= 0 || windowsRenameRefusedForGood(to)) return undefined;
   return Math.min(WINDOWS_RENAME_INITIAL_WAIT_MS * 2 ** (attempt - 1), WINDOWS_RENAME_MAX_WAIT_MS, remaining);
 }
 
@@ -447,7 +463,7 @@ export function renameWithWindowsRetrySync(from: string, to: string): void {
       renameSync(from, to);
       return;
     } catch (error) {
-      const wait = windowsRenameWait(error, attempt, startedAt);
+      const wait = windowsRenameWait(error, attempt, startedAt, to);
       if (wait === undefined) throw error;
       Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, wait);
     }
@@ -462,7 +478,7 @@ export async function renameWithWindowsRetry(from: string, to: string): Promise<
       await rename(from, to);
       return;
     } catch (error) {
-      const wait = windowsRenameWait(error, attempt, startedAt);
+      const wait = windowsRenameWait(error, attempt, startedAt, to);
       if (wait === undefined) throw error;
       await new Promise((resolveWait) => setTimeout(resolveWait, wait));
     }

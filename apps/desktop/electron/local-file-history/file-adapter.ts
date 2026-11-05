@@ -7,6 +7,7 @@
 
 import { randomBytes } from "node:crypto";
 import * as fs from "node:fs/promises";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 import * as path from "node:path";
 
 export interface FileStat {
@@ -313,7 +314,7 @@ export function createGuardedNodeAdapter(
       const resolved = await assertAllowed(filePath);
       const tempPath = await temporaryPostimage(resolved, bytes);
       try {
-        await fs.rename(tempPath, resolved);
+        await renameWithWindowsRetry(tempPath, resolved);
       } catch (err) {
         await fs.rm(tempPath, { force: true }).catch(() => undefined);
         throw err;
@@ -345,7 +346,7 @@ export function createGuardedNodeAdapter(
         if (!await matchesExpected(resolved, expected)) {
           return { kind: "conflict" };
         }
-        await fs.rename(tempPath, resolved);
+        await renameWithWindowsRetry(tempPath, resolved);
         return { kind: "applied" };
       } finally {
         await fs.rm(tempPath, { force: true }).catch(() => undefined);
@@ -384,7 +385,7 @@ export function createGuardedNodeAdapter(
     async rename(from, to) {
       const resolvedFrom = await assertAllowed(from);
       const resolvedTo = await assertAllowed(to);
-      await fs.rename(resolvedFrom, resolvedTo);
+      await renameWithWindowsRetry(resolvedFrom, resolvedTo);
     },
 
     async canonicalize(filePath) {

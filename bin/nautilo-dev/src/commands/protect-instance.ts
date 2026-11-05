@@ -1,4 +1,5 @@
-import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { renameWithWindowsRetrySync } from "@nautilo/config/private-filesystem";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join, normalize } from "node:path";
@@ -22,7 +23,7 @@ function writeProfileAtomically(path: string, value: Record<string, unknown>, ex
         throw new Error("profile changed concurrently");
       }
     }
-    renameSync(temporary, path);
+    renameWithWindowsRetrySync(temporary, path);
     chmodSync(path, 0o600);
   } finally {
     if (existsSync(temporary)) unlinkSync(temporary);

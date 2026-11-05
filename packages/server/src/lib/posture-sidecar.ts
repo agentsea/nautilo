@@ -35,11 +35,11 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
-  renameSync,
   unlinkSync,
   writeSync,
 } from "node:fs";
 import { dirname } from "node:path";
+import { renameWithWindowsRetrySync } from "@nautilo/config/private-filesystem";
 
 import {
   DeploymentModeSchema,
@@ -222,7 +222,7 @@ export function writePostureSidecar(
   }
 
   try {
-    renameSync(tmpPath, path);
+    renameWithWindowsRetrySync(tmpPath, path);
   } catch (err) {
     // Try to clean up the tmp file so the directory doesn\u0027t
     // accumulate *.tmp-<pid> leftovers.

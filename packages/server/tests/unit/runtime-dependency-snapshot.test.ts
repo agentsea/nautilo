@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, readdir, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
@@ -41,7 +42,7 @@ async function fixture(viaAlias = false) {
   }
   async function publish(localDependencies: readonly { name: string; root: string }[] = []) {
     await snapshotRuntimeDependencies(app, staging, published, localDependencies);
-    await rename(staging, published);
+    await renameWithWindowsRetry(staging, published);
     return createRequire(join(published, "main.cjs"));
   }
   return { root, app, published, packageAt, edge, publish };

@@ -1,4 +1,5 @@
 import * as fsp from "node:fs/promises";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 import { createHash, randomUUID } from "node:crypto";
 import * as path from "node:path";
 import type { MemoryAccessEnvelope } from "@nautilo/trust";
@@ -278,7 +279,7 @@ export async function createWorkspaceBinaryArtifactFromStream(input: WorkspaceBi
       await handle.sync();
       await handle.close();
       handle = null;
-      if (overwrite) await fsp.rename(temporaryPath, physicalPath);
+      if (overwrite) await renameWithWindowsRetry(temporaryPath, physicalPath);
       else await publishFileIfAbsent(temporaryPath, physicalPath);
       return { size, sha256: hash.digest("hex") };
     } catch (error) {

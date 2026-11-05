@@ -22,6 +22,7 @@
  */
 
 import * as fs from "node:fs/promises";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 import * as path from "node:path";
 import * as kdbxweb from "kdbxweb";
 
@@ -122,7 +123,7 @@ export class KdbxStore {
     const tmp = `${this.dbPath}.${process.pid}.${Date.now()}.tmp`;
     await fs.writeFile(tmp, bytes, { mode: 0o600 });
     try {
-      await fs.rename(tmp, this.dbPath);
+      await renameWithWindowsRetry(tmp, this.dbPath);
     } catch (err) {
       await fs.rm(tmp, { force: true });
       throw err;

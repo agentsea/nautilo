@@ -8,7 +8,7 @@
 import { randomBytes } from "node:crypto";
 import * as nodeFs from "node:fs/promises";
 import * as nodePath from "node:path";
-import { secureFilesystemPath, writePrivateFileExclusive } from "@nautilo/config/private-filesystem";
+import { renameWithWindowsRetry, secureFilesystemPath, writePrivateFileExclusive } from "@nautilo/config/private-filesystem";
 
 const DIRECTORY_MODE = 0o700;
 const FILE_MODE = 0o600;
@@ -44,6 +44,7 @@ function isNotFound(error: unknown): boolean {
 
 const nativeFileSystem: DesktopFilesystemGrantFileSystem = {
   ...nodeFs,
+  rename: renameWithWindowsRetry,
   chmod: (path) => secureFilesystemPath(nodePath.resolve(path)),
   writeFile: (path, data) => writePrivateFileExclusive(nodePath.resolve(path), new TextEncoder().encode(data)),
 };

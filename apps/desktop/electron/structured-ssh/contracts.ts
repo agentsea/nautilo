@@ -3,6 +3,7 @@ import * as nodeFs from "node:fs/promises";
 import { isIP } from "node:net";
 import * as nodePath from "node:path";
 import { isCanonicalNautiloInstanceId } from "@nautilo/config";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 
 /**
  * The replacement for rejected tuple-bound records. This is intentionally a
@@ -264,7 +265,7 @@ export function matchesSshCapabilitySubject(
 }
 
 export function createStructuredSshStorage(filePath: string, dependencies: StructuredSshStorageDependencies = {}): StructuredSshStorage {
-  const fs = dependencies.fs ?? nodeFs;
+  const fs = dependencies.fs ?? { ...nodeFs, rename: renameWithWindowsRetry };
   const randomHex = dependencies.randomHex ?? (() => randomBytes(12).toString("hex"));
   const directory = nodePath.dirname(filePath);
   return {

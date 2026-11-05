@@ -24,6 +24,7 @@
     "tests/repo-invariants/image-publication-authority.test.ts",
     "tests/repo-invariants/tart-consumer-boundary.test.ts",
     "tests/repo-invariants/publication-fixture-isolation.test.ts",
+    "tests/repo-invariants/windows-rename-retry.test.ts",
     "scripts/prepare-board.ts"
   ]
 }

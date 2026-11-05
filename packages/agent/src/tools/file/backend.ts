@@ -18,6 +18,7 @@
 
 import * as fsp from "node:fs/promises";
 import { createHash } from "node:crypto";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 import type {
   RelayFsChangeEvent,
   RelayFsDirEntry,
@@ -115,7 +116,7 @@ export class LocalFileBackend implements FileBackend {
     await fsp.mkdir(p, { recursive: opts?.recursive === true });
   }
   rename(from: string, to: string): Promise<void> {
-    return fsp.rename(from, to);
+    return renameWithWindowsRetry(from, to);
   }
   unlink(p: string): Promise<void> {
     return fsp.unlink(p);

@@ -8,12 +8,12 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
-  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { gzipSync } from "node:zlib";
 import { dirname, join, resolve } from "node:path";
+import { renameWithWindowsRetrySync } from "@nautilo/config/private-filesystem";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 
@@ -419,8 +419,8 @@ export function buildStandaloneCandidate(options: StandaloneBuildOptions): {
     if (exists(finalBundle) || exists(finalArchive)) {
       throw new Error(`Standalone output already contains ${bundleName}; choose an empty output directory.`);
     }
-    renameSync(stagedBundle, finalBundle);
-    renameSync(stagedArchive, finalArchive);
+    renameWithWindowsRetrySync(stagedBundle, finalBundle);
+    renameWithWindowsRetrySync(stagedArchive, finalArchive);
     const archiveSha256 = sha256(finalArchive);
     const compilerConfiguration = JSON.parse(
       readFileSync(compilerConfigurationPath, "utf8"),

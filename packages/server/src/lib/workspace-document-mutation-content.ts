@@ -8,7 +8,8 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, open, readFile, rename, unlink } from "node:fs/promises";
+import { mkdir, open, readFile, unlink } from "node:fs/promises";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 import { join } from "node:path";
 import { getArtifactsRoot } from "@nautilo/config";
 
@@ -41,7 +42,7 @@ const nodeFileOps: WorkspaceDocumentMutationContentFileOps = {
   mkdir,
   readFile,
   open,
-  rename,
+  rename: renameWithWindowsRetry,
   unlink,
 };
 

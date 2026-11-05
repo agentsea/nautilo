@@ -1,5 +1,6 @@
 import { afterEach, beforeAll, describe, expect, mock, test } from "bun:test";
-import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { renameWithWindowsRetrySync } from "@nautilo/config/private-filesystem";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Sandbox } from "@nautilo/sandbox";
@@ -203,7 +204,7 @@ describe("complete Desktop dispatch resource lifetime", () => {
     expect((await f.handler(f.request)).status).toBe("ok");
     await f.spawned;
     const moved = `${f.root}-original`;
-    renameSync(f.root, moved);
+    renameWithWindowsRetrySync(f.root, moved);
     roots.push(moved);
     mkdirSync(f.root);
     const result = await f.handler({ ...f.request, toolName: "write_stdin",

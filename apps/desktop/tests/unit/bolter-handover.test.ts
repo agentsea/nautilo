@@ -1,5 +1,6 @@
 import { expect, test as bunTest } from "bun:test";
-import { mkdtemp, chmod, lstat, mkdir, readdir, realpath, rename, rm } from "node:fs/promises";
+import { mkdtemp, chmod, lstat, mkdir, readdir, realpath, rm } from "node:fs/promises";
+import { renameWithWindowsRetry } from "@nautilo/config/private-filesystem";
 import { dirname, join } from "node:path";
 import { createConnection } from "node:net";
 import { createBolterHandoverServer, handOverBolterBatch, parseBolterHandoverDescriptor } from "../../electron/bolter-bridge/handover";
@@ -172,7 +173,7 @@ test("replaced storage anchor rejects handover without removing replacement dire
     maxBatchBytes: 1000, isCurrent: () => true, store: () => { stored++; return Promise.resolve({ id: "fixture", fingerprint: "fixture" }); } });
   const endpoint = dirname(server.descriptor.socketPath);
   try {
-    await rename(path, join(root, "original"));
+    await renameWithWindowsRetry(path, join(root, "original"));
     await mkdir(path, { mode: 0o700 });
     expect(await handOverBolterBatch(server.descriptor, input())).toBe(false);
     expect(stored).toBe(0);
