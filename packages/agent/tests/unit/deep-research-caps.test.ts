@@ -1,9 +1,7 @@
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { supervisor, truncateSupervisorDirective } from "../../src/subagents/deep-research/supervisor/graph";
 import {
-  appendDroppedNotesNotice,
   buildSearchResultToolContent,
-  selectNotesForCompression,
   truncateResearchBriefForPrompt,
 } from "../../src/subagents/deep-research/researcher/graph";
 import { formatSearchToolPrintable } from "../../src/subagents/deep-research/tools/index";
@@ -50,12 +48,12 @@ describe("deep-research caps", () => {
       expect.objectContaining({ supervisor_model_max_tokens: 4321 }),
       expect.objectContaining({ maxTokens: 4321, useOpenAIResponsesApi: true }),
     );
-    expect(spModel.mock.calls[0]?.[2]?.messages?.slice(1)).toEqual(existing);
+    expect(spModel.mock.calls[0]?.[2]?.messages?.slice(2)).toEqual(existing);
     expect(spModel.mock.calls[0]?.[2]?.tools?.map((tool) => tool.name)).toEqual(["ConductResearch", "ResearchComplete", "think_tool"]);
     expect(existing).toEqual([{ role: "user", content: "prior plan step" }]);
   });
 
-  test("A6: buildSearchResultToolContent honors search_max_results and shows subset count", () => {
+  test("buildSearchResultToolContent honors search_max_results and shows subset count", () => {
     const items = Array.from({ length: 8 }, (_, i) => ({
       title: `Result ${i + 1}`,
       url: `https://example.com/${i + 1}`,
@@ -69,7 +67,7 @@ describe("deep-research caps", () => {
     expect(content).not.toContain("Result 4");
   });
 
-  test("A6: formatSearchToolPrintable honors search_max_results", () => {
+  test("formatSearchToolPrintable honors search_max_results", () => {
     const items = Array.from({ length: 7 }, (_, i) => ({
       title: `Hit ${i + 1}`,
       url: `https://example.com/${i + 1}`,
@@ -81,39 +79,21 @@ describe("deep-research caps", () => {
     expect(printable).not.toContain("Hit 3");
   });
 
-  test("A6: selectNotesForCompression uses summarization_max_items and notes dropped count", () => {
-    const notes = ["note-1", "note-2", "note-3", "note-4", "note-5"];
-    const { text, takeCount, droppedCount } = selectNotesForCompression(notes, 2);
-
-    expect(takeCount).toBe(2);
-    expect(droppedCount).toBe(3);
-    expect(text).toContain("[3 older note(s) omitted; compressing 2 most recent]");
-    expect(text).toContain("note-4");
-    expect(text).toContain("note-5");
-    expect(text).not.toContain("note-1");
-  });
-
-  test("A6: appendDroppedNotesNotice prefixes compressed output when notes were dropped", () => {
-    const out = appendDroppedNotesNotice("compressed summary", 2);
-    expect(out).toContain("[2 older note(s) dropped from compression]");
-    expect(out).toContain("compressed summary");
-  });
-
-  test("A6: truncateResearchBriefForPrompt appends marker when truncated", () => {
+  test("truncateResearchBriefForPrompt appends marker when truncated", () => {
     const long = "x".repeat(700);
     const truncated = truncateResearchBriefForPrompt(long);
     expect(truncated.length).toBe(601);
     expect(truncated.endsWith("…")).toBe(true);
   });
 
-  test("A6: truncateSupervisorDirective appends marker when truncated", () => {
+  test("truncateSupervisorDirective appends marker when truncated", () => {
     const long = "y".repeat(600);
     const truncated = truncateSupervisorDirective(long);
     expect(truncated.length).toBe(501);
     expect(truncated.endsWith("…")).toBe(true);
   });
 
-  test("A6: formatWebSearchSources limits to configured max results", () => {
+  test("formatWebSearchSources limits to configured max results", () => {
     const items = Array.from({ length: 6 }, (_, i) => ({
       url: `https://example.com/${i + 1}`,
       title: `Title ${i + 1}`,
@@ -124,7 +104,7 @@ describe("deep-research caps", () => {
     expect(sources).not.toContain("Title 3");
   });
 
-  test("A6: truncateWithMarker appends truncation marker for long page content", () => {
+  test("truncateWithMarker appends truncation marker for long page content", () => {
     const long = "z".repeat(100);
     const truncated = truncateWithMarker(long, 40);
     expect(truncated).toBe("z".repeat(40) + "…[truncated at 40 chars]");

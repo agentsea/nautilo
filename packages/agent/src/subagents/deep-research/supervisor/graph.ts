@@ -61,7 +61,11 @@ function createSupervisorNode(cfg: Configuration) {
         const brief = state.research_brief ?? "";
         messages = [{ role: "system", content: systemPrompt }, { role: "user", content: brief }];
       } else {
-        messages = [{ role: "system", content: systemPrompt }, ...supervisorMessages];
+        messages = [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: state.research_brief ?? "" },
+          ...supervisorMessages,
+        ];
       }
 
       const lastCandidate = supervisorMessages[supervisorMessages.length - 1];
@@ -237,6 +241,7 @@ function createSupervisorToolsNode(cfg: Configuration, _checkpointSaver?: Postgr
 
           const output = isRecord(rawOutput) ? rawOutput : {};
           return {
+            toolCallId: getToolCallId(toolCall.id),
             raw_notes: toStringArray(output["raw_notes"]),
             compressed_research: typeof output["compressed_research"] === "string" ? output["compressed_research"] : undefined,
           };
@@ -248,8 +253,20 @@ function createSupervisorToolsNode(cfg: Configuration, _checkpointSaver?: Postgr
         .map((r) => r.compressed_research)
         .filter((value): value is string => typeof value === "string" && value.length > 0);
 
+      // The supervisor must assess completed findings, not a delegation receipt.
+      // Keep the original tool-call identity so parallel topics cannot cross-wire.
+      const completedTools = toolMessages.map((message) => {
+        const research = researchResults.find((result) => result.toolCallId === message.tool_call_id);
+        if (!research) return message;
+        return new ToolMessage({
+          content: research.compressed_research || research.raw_notes.join("\n\n") || "No research findings were returned.",
+          tool_call_id: message.tool_call_id,
+          name: "ConductResearch",
+        });
+      });
+
       return {
-        supervisor_messages: conversationSoFar,
+        supervisor_messages: [...previousMessages, mostRecentMessage, ...completedTools],
         raw_notes: [...existingRawNotes, ...mergedRaw],
         notes: [...existingNotes, ...mergedNotes],
         research_iterations: researchIterations + 1,

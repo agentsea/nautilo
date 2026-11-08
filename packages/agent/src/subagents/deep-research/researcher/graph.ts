@@ -15,7 +15,6 @@ import {
   ModelToolCallIdentityError,
   normalizeModelToolCallIdentity,
 } from "../../../nodes/model-tool-call-identity";
-import { isTokenLimitError } from "../../../utils/errors";
 import { invokeWithRetry } from "../../../utils/invoke";
 import { hasNativeWebsearch } from "../shared/native_search";
 import { getStringField, isRecord, toStringArray } from "../shared/langchain-helpers";
@@ -47,25 +46,6 @@ export function buildSearchResultToolContent(
   return `Found ${items.length} results:\n\n${searchResults}`;
 }
 
-export function selectNotesForCompression(rawNotes: string[], maxItems: number): {
-  text: string;
-  takeCount: number;
-  droppedCount: number;
-} {
-  const takeCount = Math.min(maxItems, rawNotes.length || 0) || 0;
-  const droppedCount = Math.max(0, rawNotes.length - takeCount);
-  let text = rawNotes.slice(-takeCount).join("\n\n");
-  if (droppedCount > 0) {
-    text = `[${droppedCount} older note(s) omitted; compressing ${takeCount} most recent]\n\n${text}`;
-  }
-  return { text, takeCount, droppedCount };
-}
-
-export function appendDroppedNotesNotice(compressed: string, droppedCount: number): string {
-  if (droppedCount <= 0) return compressed;
-  return `[${droppedCount} older note(s) dropped from compression]\n\n${compressed}`;
-}
-
 async function summarizeSearchNotes(
   notes: string[],
   cfg: Configuration,
@@ -86,6 +66,8 @@ async function summarizeSearchNotes(
     const response = await model.invoke(messages, {
       ...(config?.signal ? { signal: config.signal } : {}),
     });
+    config?.signal?.throwIfAborted();
+    if (AIMessage.isInstance(response) && modelResponseReachedOutputLimit(response)) return notes;
     const summary = extractTextFromResponse(response);
     // The summary is an aid for later synthesis. Keep the original evidence
     // and URLs as separate notes so a model omission cannot erase a source.
@@ -313,55 +295,46 @@ async function compressResearch(
 ): Promise<{ compressed_research: string; raw_notes: string[] }> {
   const prompt = buildCompressResearchPrompt();
   const rawNotes = state.raw_notes ?? [];
-  const maxItems = cfg.summarization_max_items;
-  let { text, takeCount, droppedCount } = selectNotesForCompression(rawNotes, maxItems);
+  const text = rawNotes.join("\n\n");
+  const messages: BaseMessageLike[] = [
+    { role: "system", content: prompt },
+    { role: "user", content: text },
+  ];
+
+  try {
+    await dispatchCustomEvent("job.progress", {
+      phase: "Consolidating research findings...",
+      detail: `Consolidating ${rawNotes.length} notes without dropping sources.`,
+    }, config);
+  } catch { /* progress is advisory */ }
 
   try {
     const model = await createModel(cfg.compression_model, cfg, {
       maxTokens: cfg.compression_model_max_tokens,
+      messages,
       fundingLane: "compression",
     });
-    if (!model) throw new Error("Failed to create compression model");
-
-    let attempts = 0;
-    const maxAttempts = 3;
-    while (attempts < maxAttempts) {
-      attempts += 1;
-      const messages: BaseMessageLike[] = [
-        { role: "system", content: prompt },
-        { role: "user", content: text },
-      ];
-      try {
-        const resp: unknown = await model.invoke(messages, {
-          ...(config?.signal ? { signal: config.signal } : {}),
-        });
-        config?.signal?.throwIfAborted();
-        if (AIMessage.isInstance(resp) && modelResponseReachedOutputLimit(resp)) {
-          throw new ModelOutputLimitError();
-        }
-        const out: string = extractTextFromResponse(resp);
-        return { compressed_research: appendDroppedNotesNotice(out, droppedCount), raw_notes: rawNotes };
-      } catch (err) {
-        if (err instanceof ModelOutputLimitError) throw err;
-        if (config?.signal?.aborted) throw err;
-        if (isTokenLimitError(err) && takeCount > 3) {
-          takeCount = Math.max(3, Math.floor(takeCount * 0.8));
-          droppedCount = Math.max(0, rawNotes.length - takeCount);
-          text = rawNotes.slice(-takeCount).join("\n\n");
-          if (droppedCount > 0) {
-            text = `[${droppedCount} older note(s) omitted; compressing ${takeCount} most recent]\n\n${text}`;
-          }
-          continue;
-        }
-        throw err;
-      }
+    const resp = await model.invoke(messages, {
+      ...(config?.signal ? { signal: config.signal } : {}),
+    });
+    config?.signal?.throwIfAborted();
+    if (AIMessage.isInstance(resp) && modelResponseReachedOutputLimit(resp)) {
+      // Compression is an optimization, not the research result. Discard its
+      // incomplete output and give synthesis the complete original evidence.
+      if (!text.trim()) throw new ModelOutputLimitError();
+      return {
+        compressed_research: "Consolidation reached the model output limit. Original research notes follow in full; these are findings for synthesis, not a finished report.\n\n" + text,
+        raw_notes: rawNotes,
+      };
     }
+    const out = extractTextFromResponse(resp);
+    if (!out.trim()) throw new Error("Research consolidation returned no findings");
+    return { compressed_research: out, raw_notes: rawNotes };
   } catch (e) {
-    if (e instanceof ModelOutputLimitError) throw e;
     if (config?.signal?.aborted) throw e;
     if (!cfg.confidential) warn(`[researcher] compression failed: ${e instanceof Error ? e.message : String(e)}`);
+    throw e;
   }
-  return { compressed_research: "Error synthesizing research report: Maximum retries exceeded", raw_notes: rawNotes };
 }
 
 interface CompiledGraph {

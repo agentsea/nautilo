@@ -19,9 +19,11 @@ let modelCalls = 0;
 let reply = new AIMessage("");
 let queuedReplies: AIMessage[] = [];
 let onInvoke: (() => void) | undefined;
+const invocations: unknown[][] = [];
 
 beforeEach(() => {
   modelCalls = 0;
+  invocations.length = 0;
   queuedReplies = [];
   onInvoke = undefined;
 });
@@ -31,7 +33,8 @@ mock.module("../../src/providers/universal", () => ({
     modelCalls += 1;
     const model: ChatModel = {
       bindTools: () => model,
-      invoke: async () => {
+      invoke: async (messages) => {
+        invocations.push(messages);
         onInvoke?.();
         return queuedReplies.shift() ?? reply;
       },
@@ -105,18 +108,37 @@ test("supervisor rejects cutoff before completion, tool dispatch or child resear
   }
 });
 
-test("compression cutoff rejects the parent research graph without accepting partial notes", async () => {
+test("compression cutoff preserves every original note and discards the incomplete summary", async () => {
+  const notes = Array.from({ length: 8 }, (_, index) => `Finding ${index}: https://example.invalid/source-${index}`);
   queuedReplies = [
-    new AIMessage({ content: "", tool_calls: [{ name: "ConductResearch", args: { research_topic: "RFC 1035" }, id: "research-1" }] }),
     new AIMessage({ content: "", tool_calls: [{ name: "ResearchComplete", args: {}, id: "complete-1" }] }),
-    new AIMessage({ content: "Partial summary", additional_kwargs: { stop_reason: "max_tokens" } }),
+    new AIMessage({ content: "INCOMPLETE_SUMMARY", additional_kwargs: { stop_reason: "max_tokens" } }),
   ];
-  const result = await withServerFunding(() => createSupervisorGraph(configuration).invoke({ research_brief: "Use RFC 1035." }))
-    .catch((error: unknown) => error);
+  const result = await withServerFunding(() => createResearcherGraph(configuration).invoke({
+    research_topic: "DNS findings", research_brief: "Use all sources.", raw_notes: notes,
+  })) as Record<string, unknown>;
+  expect(result["raw_notes"]).toEqual(notes);
+  const recovered = String(result["compressed_research"]);
+  expect(recovered).toContain("Original research notes follow in full");
+  expect(recovered).not.toContain("INCOMPLETE_SUMMARY");
+  for (const note of notes) {
+    expect(recovered).toContain(note);
+    expect(JSON.stringify(invocations[1])).toContain(note);
+  }
+  expect(modelCalls).toBe(2);
+});
+
+test("compression without evidence cannot turn a cutoff into successful research", async () => {
+  queuedReplies = [
+    new AIMessage({ content: "", tool_calls: [{ name: "ResearchComplete", args: {}, id: "complete-1" }] }),
+    new AIMessage({ content: "INCOMPLETE_SUMMARY", response_metadata: { finish_reason: "length" } }),
+  ];
+  const result = await withServerFunding(() => createResearcherGraph(configuration).invoke({
+    research_topic: "DNS findings", research_brief: "Use all sources.",
+  })).catch((error: unknown) => error);
   expect(result).toBeInstanceOf(Error);
   expect((result as Error).name).toBe("ModelOutputLimitError");
-  expect((result as Error).message).not.toContain("saved");
-  expect(modelCalls).toBe(3);
+  expect(modelCalls).toBe(2);
 });
 
 test("complete supervisor, researcher and compression responses still produce notes", async () => {
@@ -128,7 +150,46 @@ test("complete supervisor, researcher and compression responses still produce no
   ];
   const result = await withServerFunding(() => createSupervisorGraph(configuration).invoke({ research_brief: "Use RFC 1035." }));
   expect(result).toMatchObject({ notes: ["Complete summary"] });
+  expect(JSON.stringify(invocations[3])).toContain("Complete summary");
+  expect(JSON.stringify(invocations[3])).toContain("Use RFC 1035.");
+  expect(JSON.stringify(invocations[3])).not.toContain("Research delegated:");
   expect(modelCalls).toBe(4);
+});
+
+test("parallel research findings return under their own tool-call identities", async () => {
+  queuedReplies = [
+    new AIMessage({ content: "", tool_calls: [
+      { name: "ConductResearch", args: { research_topic: "DNS caching" }, id: "research-cache" },
+      { name: "ConductResearch", args: { research_topic: "DNS delegation" }, id: "research-delegation" },
+    ] }),
+    new AIMessage({ content: "", tool_calls: [{ name: "ResearchComplete", args: {}, id: "done-cache" }] }),
+    new AIMessage({ content: "", tool_calls: [{ name: "ResearchComplete", args: {}, id: "done-delegation" }] }),
+    new AIMessage("Caching evidence: https://example.invalid/cache"),
+    new AIMessage("Delegation evidence: https://example.invalid/delegation"),
+    new AIMessage({ content: "", tool_calls: [{ name: "ResearchComplete", args: {}, id: "done-supervisor" }] }),
+  ];
+  const result = await withServerFunding(() => createSupervisorGraph({ ...configuration, max_concurrent_research_units: 2 }).invoke({
+    research_brief: "Compare DNS caching and delegation.",
+  }));
+  expect(result).toMatchObject({ notes: [
+    "Caching evidence: https://example.invalid/cache",
+    "Delegation evidence: https://example.invalid/delegation",
+  ] });
+  const supervisorInput = invocations[5] as Array<{
+    tool_call_id?: string; content?: unknown;
+    tool_calls?: Array<{ id: string; args: { research_topic?: string } }>;
+  }>;
+  const calls = supervisorInput.flatMap(message => message.tool_calls ?? []);
+  const cacheId = calls.find(call => call.args.research_topic === "DNS caching")?.id;
+  const delegationId = calls.find(call => call.args.research_topic === "DNS delegation")?.id;
+  expect(cacheId).toBeDefined();
+  expect(delegationId).toBeDefined();
+  expect(supervisorInput.find(message => message.tool_call_id === cacheId)?.content)
+    .toBe("Caching evidence: https://example.invalid/cache");
+  expect(supervisorInput.find(message => message.tool_call_id === delegationId)?.content)
+    .toBe("Delegation evidence: https://example.invalid/delegation");
+  expect(JSON.stringify(supervisorInput)).toContain("Compare DNS caching and delegation.");
+  expect(modelCalls).toBe(6);
 });
 
 for (const cancelAt of [1, 2, 3]) {

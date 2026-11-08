@@ -20,20 +20,20 @@ const ConfigurationSchema = z.object({
   max_tool_messages: z.number().int().min(1).max(500).default(64),
   prefer_native_search: z.boolean().default(true),
 
-  // Generative roles inherit catalog/remaining-context output unless explicitly capped.
+  // Every role inherits catalog/remaining-context output unless explicitly capped.
+  // Reasoning consumes the same completion allowance as visible findings.
   supervisor_model: z.string().default("anthropic:claude-sonnet-4-5-20250929"),
   supervisor_model_max_tokens: z.number().int().positive().optional(),
 
   summarization_model: z.string().default("fireworks:accounts/fireworks/models/glm-5p3"),
-  summarization_model_max_tokens: z.number().int().default(8192),
+  summarization_model_max_tokens: z.number().int().positive().optional(),
   max_content_length: z.number().int().min(1000).max(200000).default(50000),
 
   research_model: z.string().default("fireworks:accounts/fireworks/models/glm-5p3"),
   research_model_max_tokens: z.number().int().positive().optional(),
 
-  // Compression intentionally produces a bounded summary, not the final report.
   compression_model: z.string().default("fireworks:accounts/fireworks/models/glm-5p3"),
-  compression_model_max_tokens: z.number().int().default(4096),
+  compression_model_max_tokens: z.number().int().positive().optional(),
 
   final_report_model: z.string().default("openai:gpt-5.5-2026-04-23"),
   final_report_model_max_tokens: z.number().int().positive().optional(),

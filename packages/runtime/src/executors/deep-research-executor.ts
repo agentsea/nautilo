@@ -300,7 +300,8 @@ async function* runDeepResearchReportStream(
 
         if (event === "on_custom_event" && name === "job.progress" && data) {
           const phase = typeof data["phase"] === "string" ? data["phase"] : "Processing...";
-          yield { phase };
+          const detail = typeof data["detail"] === "string" ? data["detail"] : undefined;
+          yield { phase, ...(detail ? { detail } : {}) };
         }
 
         if (event === "on_chain_end" && data) {
