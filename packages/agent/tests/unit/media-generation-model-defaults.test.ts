@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { primeServerModelConfigCache, type ServerModelConfigRow } from "@nautilo/db";
 import { configureRuntimeModelCatalog, resetRuntimeModelCatalog } from "../../src/config/model-catalog/runtime-catalog";
 import { getDefaultMediaGenerationModel, listMediaGenerationModels, listOrderedMediaGenerationModels, withMediaGenerationDefault } from "../../src/config/media-generation-models";
@@ -9,6 +12,8 @@ import { runWithCapabilityFundingSession, type CapabilityFundingSession } from "
 
 const previousSkip = process.env["NAUTILO_SKIP_VENICE_REFRESH"];
 const previousVenice = process.env["VENICE_API_KEY"];
+const previousVeniceCache = process.env["NAUTILO_VENICE_MODELS_CACHE_PATH"];
+let veniceCacheDirectory: string;
 const stored = (patch: Partial<ServerModelConfigRow> = {}): ServerModelConfigRow => ({
   id: "server", defaultChatModel: null, conductorModel: null, stenographerModel: null,
   reflectionModel: null, memoryReviewModel: null, embeddingModel: null,
@@ -17,11 +22,17 @@ const stored = (patch: Partial<ServerModelConfigRow> = {}): ServerModelConfigRow
   updatedAt: new Date(), ...patch,
 });
 beforeEach(() => {
+  // Model-preference tests must not inherit a developer or preceding test's catalog snapshot.
+  veniceCacheDirectory = mkdtempSync(join(tmpdir(), "media-defaults-"));
+  process.env["NAUTILO_VENICE_MODELS_CACHE_PATH"] = join(veniceCacheDirectory, "catalog.json");
   process.env["NAUTILO_SKIP_VENICE_REFRESH"] = "1";
   configureRuntimeModelCatalog({ catalogPointerUrl: null });
   primeServerModelConfigCache(null);
 });
 afterEach(() => {
+  rmSync(veniceCacheDirectory, { recursive: true, force: true });
+  if (previousVeniceCache === undefined) delete process.env["NAUTILO_VENICE_MODELS_CACHE_PATH"];
+  else process.env["NAUTILO_VENICE_MODELS_CACHE_PATH"] = previousVeniceCache;
   primeServerModelConfigCache(null);
   resetRuntimeModelCatalog();
   resetMediaGenerationApprovalRuntimeForTests();
