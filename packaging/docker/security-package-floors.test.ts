@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 
-test("native Chromium floors reject 154 and 155 on both architectures and accept 156 or newer", () => {
+test("native Chromium floors reject older builds on both architectures and accept the reviewed build or newer", () => {
   const root = mkdtempSync(join(tmpdir(), "package-floors-"));
   writeFileSync(join(root, "dpkg"), `#!/bin/sh
 if [ "$1" = --print-architecture ]; then echo "$FIXTURE_ARCH"; exit 0; fi
@@ -12,7 +12,7 @@ test "$1" = --compare-versions
 test "$3" = ge
 # Only Chromium is under test: the query shim echoes each other package's floor.
 case "$2" in
-  156.0.8078.48-1~deb13u1|157.0.8100.1-1~deb13u1) exit 0 ;;
+  156.0.8078.80-1~deb13u1|157.0.8100.1-1~deb13u1) exit 0 ;;
 esac
 test "$2" = "$4"
 `, {mode: 0o700});
@@ -30,8 +30,10 @@ esac
   for (const architecture of ["amd64", "arm64"]) {
     expect(execute(architecture, "154.0.8037.92-1~deb13u1").status).toBe(1);
     expect(execute(architecture, "155.0.8059.79-1~deb13u1").status).toBe(1);
-    expect(execute(architecture, "156.0.8078.47-1~deb13u1").status).toBe(0);
-    expect(execute(architecture, "156.0.8078.48-1~deb13u1").status).toBe(0);
+    expect(execute(architecture, "156.0.8078.47-1~deb13u1").status).toBe(1);
+    expect(execute(architecture, "156.0.8078.73-1~deb13u1").status).toBe(1);
+    expect(execute(architecture, "156.0.8078.79-1~deb13u1").status).toBe(0);
+    expect(execute(architecture, "156.0.8078.80-1~deb13u1").status).toBe(0);
     expect(execute(architecture, "157.0.8100.1-1~deb13u1").status).toBe(0);
   }
   expect(execute("unsupported", "156.0.8078.47-1~deb13u1").status).toBe(1);
