@@ -7,6 +7,12 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Deep Research uses each model's available output allowance for note summaries
+  and consolidation, including reasoning tokens. Consolidation includes every
+  collected note and falls back to the original findings if its output is cut
+  off. Supervisors receive completed findings to assess coverage, and progress
+  distinguishes consolidation from web searching.
+
 - Restore local commands when Desktop connects to a differently named server.
   Command continuation, saved output, and Task project capture retain the selected
   Desktop identity while preserving execution ownership checks.

@@ -35,6 +35,9 @@ const admitted: AdmittedDeepResearchTaskMetadata = {
   tavilyFunding: { kind: "server", providerRoute: "tavily" },
 };
 let failLane: Lane | undefined;
+let cutoffLane: Lane | undefined;
+const modelBudgets: Array<{ lane: Lane; maxTokens: unknown }> = [];
+const laneInputs: Array<{ lane: Lane; text: string }> = [];
 let failureStatus = 400;
 const visits: Lane[] = [];
 const opened: string[] = [];
@@ -71,14 +74,17 @@ mock.module("../../../agent/src/providers/surplus-attempt", () => ({ ...actualSu
 }));
 const actualUniversal = await import("../../../agent/src/providers/universal");
 mock.module("../../../agent/src/providers/universal", () => ({ ...actualUniversal,
-  createUniversalModel: async (modelId: string): Promise<ChatModel> => {
+  createUniversalModel: async (modelId: string, options: Record<string, unknown>): Promise<ChatModel> => {
     const lane = lanes.find(candidate => models[candidate] === modelId);
     if (!lane) throw new Error("Unexpected model at provider boundary");
+    modelBudgets.push({ lane, maxTokens: options["maxTokens"] });
     const model: ChatModel = {
       bindTools: () => model,
       invoke: async messages => {
         visits.push(lane);
         prompts.push(JSON.stringify(messages));
+        laneInputs.push({ lane, text: JSON.stringify(messages) });
+        if (cutoffLane === lane) return new AIMessage({ content: "INCOMPLETE_SUMMARY", response_metadata: { finish_reason: "length" } });
         if (failLane === lane) throw Object.assign(new Error(`${canary}:${lane}:provider-error`), { status: failureStatus });
         const count = visits.filter(value => value === lane).length;
         if (lane === "supervisor") return new AIMessage({ content: `${canary}:supervisor-result`, tool_calls: [
@@ -165,6 +171,9 @@ setAgentEventSink({ emit: event => { realtime.push(event); } });
 
 beforeEach(() => {
   failLane = undefined;
+  cutoffLane = undefined;
+  modelBudgets.length = 0;
+  laneInputs.length = 0;
   failureStatus = 400;
   for (const values of [visits, opened, health, accounting, realtime, logs, prompts]) values.length = 0;
   searchCalls = 0;
@@ -255,4 +264,28 @@ for (const confidential of [false, true]) {
       expect((result.error as Error).message).toBe("deep_research_failed");
     } else expect(JSON.stringify(health)).toContain(`${canary}:finalReport:provider-error`);
   });
+}
+
+for (const version of [1, 2] as const) {
+  for (const lane of ["summarization", "compression"] as const) {
+    test(`v${version} ${lane} cutoff reaches final synthesis with original evidence and no new search`, async () => {
+      cutoffLane = lane;
+      const result = await run(version, false);
+      expect(result.error).toBeNull();
+      expect(result.report).toBe(`${canary}:finalReport:result`);
+      expect(searchCalls).toBe(1);
+      expect(visits.filter(value => value === lane)).toHaveLength(1);
+      const nextLane = lane === "summarization" ? "compression" : "finalReport";
+      const nextInput = laneInputs.find(value => value.lane === nextLane)?.text ?? "";
+      expect(nextInput).toContain(`${canary}:search-result`);
+      expect(nextInput).toContain("https://example.test/research");
+      expect(nextInput).not.toContain("INCOMPLETE_SUMMARY");
+      expect(Number(modelBudgets.find(value => value.lane === "compression")?.maxTokens)).toBeGreaterThan(4096);
+      expect(Number(modelBudgets.find(value => value.lane === "summarization")?.maxTokens)).toBeGreaterThan(8192);
+      expect(result.progress).toContainEqual(expect.objectContaining({
+        phase: "Consolidating research findings...",
+      }));
+      expect(JSON.stringify(result.progress)).toContain("without dropping sources");
+    });
+  }
 }

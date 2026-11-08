@@ -233,14 +233,16 @@ test("graph cancellation reaches compression transport and rejects promptly", as
 });
 
 
-test("uncapped generative roles use the model allowance while compression keeps its own budget", async () => {
+test("all uncapped research roles use the model allowance while explicit budgets remain respected", async () => {
   const { fromRuntimeConfig } = await import("../../src/subagents/deep-research/shared/config");
   const cfg = fromRuntimeConfig({ ...configuration, supervisor_model_max_tokens: undefined,
-    research_model_max_tokens: undefined, final_report_model_max_tokens: undefined }, { env: {} });
+    research_model_max_tokens: undefined, final_report_model_max_tokens: undefined,
+    summarization_model_max_tokens: undefined, compression_model_max_tokens: undefined }, { env: {} });
   expect(cfg.supervisor_model_max_tokens).toBeUndefined();
   expect(cfg.research_model_max_tokens).toBeUndefined();
   expect(cfg.final_report_model_max_tokens).toBeUndefined();
-  expect(cfg.compression_model_max_tokens).toBe(2_222);
+  expect(cfg.compression_model_max_tokens).toBeUndefined();
+  expect(cfg.summarization_model_max_tokens).toBeUndefined();
   const id = "openai:gpt-6-luna";
   await withServerFunding(() => createModel(id, cfg, { messages: [{ role: "user", content: "Write a complete report." }] }));
   expect(factoryCalls.at(-1)?.options["maxTokens"]).toBe(128_000);
@@ -256,9 +258,10 @@ for (const confidential of [false, true]) {
     scenario = "researcher-fail";
     const logger = spyOn(console, "error").mockImplementation(() => {});
     try {
-      await withServerFunding(() => createResearcherGraph({ ...configuration,
+      const failure = await withServerFunding(() => createResearcherGraph({ ...configuration,
         ...(confidential ? { confidential: true } : {}),
-      }).invoke({ research_topic: "private research", research_brief: "private brief", raw_notes: ["private note"] }));
+      }).invoke({ research_topic: "private research", research_brief: "private brief", raw_notes: ["private note"] })).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(Error);
       expect(JSON.stringify(logger.mock.calls).includes("PRIVATE_RESEARCHER_ERROR_MARKER")).toBe(!confidential);
     } finally { logger.mockRestore(); }
   });
