@@ -482,6 +482,7 @@ async function invokeModelWithAttemptSupervisor(
   supervisor.start();
 
   let outputTokens = 0;
+  let generationInfo: Record<string, unknown> | undefined;
   const localProgress = isolatedProgress ? BaseCallbackHandler.fromMethods({
     handleLLMNewToken: (token, _indices, _runId, _parentRunId, _tags, fields) => {
       const chunk = fields?.chunk;
@@ -489,8 +490,17 @@ async function invokeModelWithAttemptSupervisor(
       outputTokens = Math.max(outputTokens, progress.outputTokens ?? 0);
       if (progress.meaningful) supervisor.reportMeaningfulProgress(attemptPolicy.attemptId);
     },
+    handleLLMEnd: (result) => {
+      generationInfo = result.generations[0]?.[0]?.generationInfo;
+    },
   }) : undefined;
-  if (localProgress) localProgress.awaitHandlers = true;
+  if (localProgress) {
+    localProgress.awaitHandlers = true;
+    // LangChain otherwise buffers invoke() without token callbacks. Opt this
+    // private observer into streaming so ongoing reasoning counts as progress
+    // while invoke() still returns the complete, aggregated response.
+    Object.assign(localProgress, { lc_prefer_streaming: true });
+  }
 
   try {
     const metadata = (llmCallConfig as Record<string, unknown> | undefined)?.["metadata"] as Record<string, unknown> | undefined;
@@ -504,7 +514,14 @@ async function invokeModelWithAttemptSupervisor(
       },
       signal: supervisor.signal,
     }) as Promise<AIMessage>;
-    return await supervisor.race(invokePromise);
+    const response = await supervisor.race(invokePromise);
+    // Callback-preferred streaming aggregates generation metadata separately
+    // from the message. Preserve terminal reasons for output-limit validation
+    // without copying the separate usage receipt or charging it twice.
+    if (generationInfo) {
+      response.response_metadata = { ...generationInfo, ...response.response_metadata };
+    }
+    return response;
   } finally {
     if (key) clearModelAttemptProgressSinkByKey(key, attemptPolicy.attemptId);
     supervisor.dispose();
