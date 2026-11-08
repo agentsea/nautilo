@@ -17,9 +17,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   Command continuation, saved output, and Task project capture retain the selected
   Desktop identity while preserving execution ownership checks.
 
-- Refresh exact server security decisions for corrected Debian Chromium builds
-  and two libXi findings without a supported patched package. Decisions expire
-  November 5; changed findings and newly available fixes remain blocking.
+- Require the supported Chromium 156.0.8078.79 server packages and retire obsolete
+  security exceptions. Refresh exact native audit decisions for packages without
+  a supported fix, with a November 15 review deadline. Changed findings and
+  newly available fixes remain blocking.
 
 - Refresh digest-pinned deployment baselines to PostgreSQL 17.11/16.15, Caddy
   2.11.7, and the maintained Logto 1.45.0 runtime with Node 22.23.4. Refresh the

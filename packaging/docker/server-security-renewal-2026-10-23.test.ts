@@ -17,10 +17,12 @@ const beforeServer = read("fixtures/server-policy-before-security-renewal-2026-1
 const beforeBootstrap = read("fixtures/bootstrap-policy-before-security-renewal-2026-10-23.json");
 // Keep this dated renewal test scoped to its original decisions. Later additions
 // have their own regression fixtures and must not change the renewal accounting.
-const currentServer = { exceptions: read("server-vulnerability-exceptions.input.json").exceptions.filter(entry =>
+const currentServer = { exceptions: read("fixtures/server-vulnerability-exceptions-2026-10-29.json").exceptions.filter(entry =>
   beforeServer.exceptions.some(previous => decisionKey(previous) === decisionKey(entry))
 ) };
-const currentBootstrap = read("bootstrap-vulnerability-policy.input.json");
+const currentBootstrap = { exceptions: read("bootstrap-vulnerability-policy.input.json").exceptions.filter(entry =>
+  beforeBootstrap.exceptions.some(previous => decisionKey(previous) === decisionKey(entry))
+) };
 
 function decisionKey(decision: VulnerabilityPolicyExceptionV1): string {
   return JSON.stringify({
