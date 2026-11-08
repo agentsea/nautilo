@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Deep Research observes streamed model progress while assembling complete
+  responses, preventing active long-running consolidation from being mistaken
+  for a stalled provider. Cancellation and idle-request timeouts remain active.
+
 - Deep Research uses each model's available output allowance for note summaries
   and consolidation, including reasoning tokens. Consolidation includes every
   collected note and falls back to the original findings if its output is cut
