@@ -304,8 +304,9 @@ describe("secondary model tool-call admission", () => {
     expect(firstId).not.toBe(secondId);
     expect(firstId).not.toBe("provider-reused");
     expect(secondId).not.toBe("provider-reused");
-    expect((providerInputs[1]![1] as AIMessage).tool_calls![0]!.id).toBe(firstId);
-    expect((providerInputs[1]![2] as ToolMessage).tool_call_id).toBe(firstId);
+    expect(providerInputs[1]![1]).toEqual({ role: "user", content: "Trace identity." });
+    expect((providerInputs[1]![2] as AIMessage).tool_calls![0]!.id).toBe(firstId);
+    expect((providerInputs[1]![3] as ToolMessage).tool_call_id).toBe(firstId);
   });
 });
 
