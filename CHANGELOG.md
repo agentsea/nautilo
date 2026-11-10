@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Support Claude Fable 5.2 and Haiku 5.5 with their adaptive thinking controls
+  and full streaming output allowance. Recognize GPT-6.1 Terra in the OpenAI
+  transport adapter, preserving output limits and optional reasoning.
+
 - Deep Research observes streamed model progress while assembling complete
   responses, preventing active long-running consolidation from being mistaken
   for a stalled provider. Cancellation and idle-request timeouts remain active.

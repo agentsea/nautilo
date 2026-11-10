@@ -94,7 +94,7 @@ function reasoningEnabled(options: CreateModelOptions, maxTokens: number): boole
 }
 
 function usesAdaptiveAnthropicThinking(modelId: string): boolean {
-  return /^anthropic:claude-(?:opus-5-5|sonnet-5-5|fable-5-1)$/.test(modelId);
+  return /^anthropic:claude-(?:opus-5-5|sonnet-5-5|fable-5-[12])$/.test(modelId);
 }
 
 /**
@@ -110,6 +110,12 @@ function anthropicReasoningFields(
   options: CreateModelOptions,
   maxTokens: number,
 ): Record<string, unknown> {
+  if (options.modelId === "anthropic:claude-haiku-5-5") {
+    const effort = requestedReasoningEffort(options);
+    if (effort === "off") return { thinking: { type: "disabled" } };
+    assertProviderReasoningEffort("anthropic", effort);
+    return { thinking: { type: "adaptive" }, outputConfig: { effort } };
+  }
   if (usesAdaptiveAnthropicThinking(options.modelId)) {
     const effort = requestedReasoningEffort(options);
     assertProviderReasoningEffort("anthropic", effort);
@@ -381,7 +387,8 @@ export async function createAnthropic(options: CreateModelOptions): Promise<Chat
     streamUsage: true,
     // LangChain aggregates streamed chunks for invoke(). The full model output
     // allowance exceeds the SDK's non-streaming request limit.
-    ...(usesAdaptiveAnthropicThinking(options.modelId) ? { streaming: true } : {}),
+    ...((usesAdaptiveAnthropicThinking(options.modelId) || options.modelId === "anthropic:claude-haiku-5-5")
+      ? { streaming: true } : {}),
     ...anthropicReasoningFields(options, maxTokens),
   };
   if (timeoutMs !== undefined) base["timeout"] = timeoutMs;
@@ -409,7 +416,8 @@ export async function createAnthropicWithLongContext(options: CreateModelOptions
     maxTokens,
     betas,
     streamUsage: true,
-    ...(usesAdaptiveAnthropicThinking(options.modelId) ? { streaming: true } : {}),
+    ...((usesAdaptiveAnthropicThinking(options.modelId) || options.modelId === "anthropic:claude-haiku-5-5")
+      ? { streaming: true } : {}),
     ...Object.fromEntries(Object.entries(reasoning).filter(([k]) => k !== "betas")),
   };
   if (timeoutMs !== undefined) base["timeout"] = timeoutMs;
