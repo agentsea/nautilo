@@ -8,10 +8,10 @@ beforeAll(async () => {
   await activateModelCatalogForTests([{
     id: "anthropic:test-non-reasoning",
     reasoning: false,
-  }]);
+  }, "anthropic:claude-fable-5-2", "anthropic:claude-haiku-5-5"]);
   const baseline = getActiveModelCatalogSync().catalog;
   const catalog = ModelCatalogSchema.parse({ ...baseline, entries: baseline.entries.map((entry) =>
-    entry.id === "openrouter:deepseek/deepseek-v4-pro-0813" ? { ...entry, controls: { reasoning: {
+    ["anthropic:claude-fable-5-2", "anthropic:claude-haiku-5-5"].includes(entry.id) ? { ...entry, limits: { contextTokens: 1_000_000, outputTokens: 128_000 } } : entry.id === "openrouter:deepseek/deepseek-v4-pro-0813" ? { ...entry, controls: { reasoning: {
       levels: ["minimal", "low", "medium", "high", "xhigh", "max"], defaultLevel: "high", canDisable: true, mandatory: false,
       provenance: { kind: "provider-documentation", provider: "openrouter", verifiedAt: "2026-09-08T00:00:00Z" },
     } } } : entry.id === "venice:openai-gpt-6-sol" ? { ...entry, controls: { reasoning: {
@@ -376,7 +376,7 @@ describe("OpenAI-compatible reasoning output", () => {
 });
 
 describe("current Claude adaptive reasoning", () => {
-  for (const modelId of ["anthropic:claude-sonnet-5-5", "anthropic:claude-fable-5-1"]) {
+  for (const modelId of ["anthropic:claude-sonnet-5-5", "anthropic:claude-fable-5-1", "anthropic:claude-fable-5-2"]) {
     it(`preserves effort and the full streaming allowance for ${modelId}`, async () => {
       const model = await createAnthropic({ modelId, apiKey: "test-key", reasoningOutput: false,
         reasoningEffort: "max", maxTokens: 128_000 });
@@ -391,4 +391,26 @@ describe("current Claude adaptive reasoning", () => {
         .rejects.toThrow("not supported");
     });
   }
+});
+
+
+describe("Claude Haiku adaptive reasoning", () => {
+  it("preserves the full streamed allowance and omits legacy sampling fields", async () => {
+    const model = await createAnthropic({ modelId: "anthropic:claude-haiku-5-5", apiKey: "test-key",
+      reasoningOutput: false, reasoningEffort: "high", maxTokens: 128_000 });
+    const fields = anthropicFields(model);
+    expect(fields["streaming"]).toBe(true);
+    expect(fields["maxTokens"]).toBe(128_000);
+    expect(fields["thinking"]).toEqual({ type: "adaptive" });
+    expect(fields["outputConfig"]).toEqual({ effort: "high" });
+    expect(fields["temperature"]).toBeUndefined();
+    expect(fields["betas"]).toBeUndefined();
+  });
+  it("maps optional reasoning off without an invalid effort value", async () => {
+    const fields = anthropicFields(await createAnthropic({ modelId: "anthropic:claude-haiku-5-5",
+      apiKey: "test-key", reasoningEffort: "off" }));
+    expect(fields["thinking"]).toEqual({ type: "disabled" });
+    expect(fields["outputConfig"]).toBeUndefined();
+    expect(fields["temperature"]).toBeUndefined();
+  });
 });

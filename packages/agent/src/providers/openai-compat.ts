@@ -108,7 +108,7 @@ export function convertCanonicalResponsesInput(
 }
 
 export function isDirectGpt6Model(modelId: string): boolean {
-  return /^openai:gpt-(?:6-(?:astra|sol|luna)|6\.1-sol)$/.test(modelId);
+  return /^openai:gpt-(?:6-(?:astra|sol|luna)|6\.1-(?:sol|terra))$/.test(modelId);
 }
 
 /**
