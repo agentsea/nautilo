@@ -24,9 +24,8 @@ import {
   commitPromptBriefMemoryOverflow,
   getAgentExecutionConfigById,
   getAgentDisplayNameById,
-  getDefaultForegroundAgentModelId,
   hydrateForegroundAgentModelCatalog,
-  resolveForegroundAgentModelId,
+  withMindSwapperModels,
   loadForegroundModelControlSnapshot,
   foregroundModelControlPlanFromSnapshot,
   collectPendingInterruptEvents,
@@ -179,10 +178,13 @@ import {
   "../tasks/protected-task-wake-foreground-context";
 import {
   assertForegroundChatFundingWorkloadSupported,
+  ForegroundChatFundingAuthorityError,
   openConnectedWebOperationWakeFundingSessionForInvocation,
   openExternalRoomFundingSession,
   openForegroundChatFundingSessionForInvocation,
   openImageAssistanceForInvocation,
+  resolveAdmittedForegroundModelId,
+  resolveDefaultFundedForegroundModelId,
 } from "../foreground-chat-funding-port";
 
 function parseStringArray(raw: unknown): string[] {
@@ -961,17 +963,19 @@ export async function* langgraphExecutor(
   const foregroundModelControlSnapshot = await loadForegroundModelControlSnapshot(
     roomId, agentId, perTurnModelRaw || null,
   );
-  if (!configuredModel
+  const needsDefaultModel = !configuredModel
     && !foregroundModelControlSnapshot.turnModelId
     && !foregroundModelControlSnapshot.roomSelection?.modelId
-    && !foregroundModelControlSnapshot.agentSelection?.modelId) {
+    && !foregroundModelControlSnapshot.agentSelection?.modelId;
+  let defaultModel = configuredModel;
+  if (needsDefaultModel) {
     await hydrateForegroundAgentModelCatalog(signal);
+    defaultModel = await resolveDefaultFundedForegroundModelId();
   }
-  const foregroundModelPlan = foregroundModelControlPlanFromSnapshot(foregroundModelControlSnapshot, () =>
-    configuredModel
-      ? configuredModel
-      : getDefaultForegroundAgentModelId(),
-  );
+  const foregroundModelPlan = foregroundModelControlPlanFromSnapshot(foregroundModelControlSnapshot, () => {
+    if (defaultModel === null) throw new ForegroundChatFundingAuthorityError();
+    return defaultModel;
+  });
   const fundingSession = externalTurn
     ? await openExternalRoomFundingSession({ modelId: foregroundModelPlan.initialModelId, roomId, agentId })
     : await openTaskWakeFundingSessionForInvocation({
@@ -992,9 +996,7 @@ export async function* langgraphExecutor(
     agentId,
     protectedTurn: protectedTurn !== undefined,
   });
-  const modelId = fundingSession?.kind === "personal"
-    ? foregroundModelPlan.initialModelId
-    : resolveForegroundAgentModelId(foregroundModelPlan.initialModelId, { fundingKind: "server" });
+  const modelId = resolveAdmittedForegroundModelId(foregroundModelPlan.initialModelId, fundingSession);
   assertForegroundChatFundingWorkloadSupported(fundingSession, {
     hasImages: multimodalImages.length > 0,
     voiceRequested: input["voiceMode"] === true,
@@ -1314,7 +1316,8 @@ export async function* langgraphExecutor(
   }
 
   if (protectedTurn) imageReplyContext = protectedTurn.history.find((hit) => hit.messageId === input["replyToMessageId"])?.snippet ?? "";
-  const needsImageAssistance = multimodalImages.length > 0 && !modelSupportsInput(modelId, "image");
+  const needsImageAssistance = multimodalImages.length > 0
+    && !withMindSwapperModels(fundingSession?.mindswapperModels ?? [], () => modelSupportsInput(modelId, "image"));
   if (needsImageAssistance) await fundingSession?.recheckAttempt(modelId).catch((error) => failImageAssistance(error, signal));
   const retainedImageResultAvailable = retainedImageResults.some((result) => result.inputDigest === imageAssistanceInputDigest({
     turnId: turnId || _jobId, userText: message, replyContext: imageReplyContext, images: multimodalImages,

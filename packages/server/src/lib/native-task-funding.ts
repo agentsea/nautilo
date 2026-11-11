@@ -7,6 +7,7 @@ import {
   validateExactTaskModelSelection, resolveRetainedModels, resolveCatalogModel,
   type ForegroundChatFundingAttempt, type ForegroundChatFundingSession,
   isSupportedPersonalTool, readDeepResearchTaskMetadata,
+  withMindSwapperModels,
 } from "@nautilo/agent";
 import { and, eq, isNull, rooms, roomMembers, namespaces, sql, tasks, taskRuns, getServerProviderPolicy, getTaskById, getTaskRunForTask, getCachedServerModelConfigRow, recordTaskWakeFundingFailure, type TaskRun } from "@nautilo/db";
 import { assertCanInvokeAgent, findActorByOwnerId, getUserCapabilities } from "@nautilo/trust";
@@ -14,9 +15,11 @@ import { TaskFundingError, taskFundingFailureCode, type TaskFundingPort, type Ta
   type TaskFundingRunSource, type TaskFundingTaskSource } from "@nautilo/runtime";
 import { classifyProtectedTaskMetadataV1, parseTaskFundingBinding, type TaskFundingBinding, type TaskFundingFailureCode } from "@nautilo/types";
 import { isOwnPrivateGenieRoom, usageFundingFor } from "./foreground-chat-funding";
-import { ModelFundingError, resolveModelFunding, withAdmittedPersonalCredential,
+import { ModelFundingError, readAdmittedMindSwapperModel, readCallerMindSwapperModels, resolveModelFunding,
+  withAdmittedMindSwapperAttempt, withAdmittedPersonalCredential,
   type ModelFundingDecision } from "./model-funding";
 import { getServerDirectDb } from "./server-direct-db";
+import { isMindSwapperModelId, mindSwapperConfigured } from "./mindswapper-catalog";
 import {
   openServerFirstPersonalRecovery,
   openSurplusPersonalDirectRecovery,
@@ -429,7 +432,8 @@ function bindingFor(decision: ModelFundingDecision): TaskFundingBinding {
   return decision.kind === "personal"
     ? { kind: "personal", providerRoute: decision.providerRoute,
       credentialId: decision.credentialId, credentialRevision: decision.credentialRevision }
-    : { kind: "server", providerRoute: decision.providerRoute };
+    : { kind: "server", providerRoute: decision.providerRoute,
+      ...(decision.connectionRevision ? { connectionRevision: decision.connectionRevision } : {}) };
 }
 
 function assertProtectedFundingDecision(decision: ModelFundingDecision): void {
@@ -515,6 +519,13 @@ export function validateNativeTaskExactModelSelection(
 }
 
 async function selectTaskModel(task: TaskSelection, priorRun?: TaskFundingRunSource): Promise<string> {
+  const models = await readCallerMindSwapperModels(task.requestorId, {
+    tools: nativeTaskSelectionPurpose(task) === "task-tools",
+  });
+  return withMindSwapperModels(models, () => selectTaskModelInScope(task, priorRun));
+}
+
+async function selectTaskModelInScope(task: TaskSelection, priorRun?: TaskFundingRunSource): Promise<string> {
   if (priorRun) {
     if (!priorRun.modelId || (task.requestedModelId && task.requestedModelId !== priorRun.modelId)) {
       throw new TaskFundingError("funding_source_changed");
@@ -590,7 +601,9 @@ async function admit(task: TaskFundingTaskSource,
     ...pin, humanUserId: task.requestorId, payerHumanId: task.requestorId, modelId, workload: "native_text_task" as const,
   } : undefined;
   const decision = await resolveModelFunding({ humanUserId: task.requestorId, modelId,
-    workload: "native_text_task", ...(priorDecision ? { priorDecision } : {}) });
+    workload: "native_text_task",
+    ...(isMindSwapperModelId(modelId) ? { mindSwapperTools: nativeTaskSelectionPurpose(task) === "task-tools" } : {}),
+    ...(priorDecision ? { priorDecision } : {}) });
   if (authority) assertProtectedFundingDecision(decision);
   await authority?.();
   return { modelId, binding: bindingFor(decision) };
@@ -678,12 +691,14 @@ async function openSession(task: FundingTaskSource, run: FundingRunSource,
     }
     if (protectedSource) await assertOwnShape(currentTask, authority);
     else await assertCanonicalShape(currentTask);
-    assertNativeTaskRetainedModelSelection(candidateModelId, currentTask);
+    if (!isMindSwapperModelId(candidateModelId)) assertNativeTaskRetainedModelSelection(candidateModelId, currentTask);
     if (!wake && task.requestedModelId && task.requestedModelId !== candidateModelId) {
       throw new TaskFundingError("funding_source_changed");
     }
     const decision = await resolveModelFunding({ humanUserId: task.requestorId, modelId: candidateModelId,
-      workload: "native_text_task", priorDecision: admitted, ...(transport ? { transport } : {}) });
+      workload: "native_text_task", priorDecision: admitted,
+      ...(isMindSwapperModelId(candidateModelId) ? { mindSwapperTools: nativeTaskSelectionPurpose(currentTask) === "task-tools" } : {}),
+      ...(transport ? { transport } : {}) });
     if (protectedSource) assertProtectedFundingDecision(decision);
     await authority?.();
     return decision;
@@ -699,6 +714,8 @@ async function openSession(task: FundingTaskSource, run: FundingRunSource,
     }
   };
   const initialDecision = await resolveCandidate(modelId);
+  const mindSwapperTools = nativeTaskSelectionPurpose(task) === "task-tools";
+  const mindswapperModels = await readCallerMindSwapperModels(task.requestorId, { tools: mindSwapperTools, kind: admitted.kind });
   const allowUnpinnedSurplusRetry = nativeTaskAllowsUnpinnedSurplusRetry(task);
   const fundingPolicy = admitted.kind === "server"
     ? await getServerProviderPolicy(getServerDirectDb())
@@ -706,6 +723,7 @@ async function openSession(task: FundingTaskSource, run: FundingRunSource,
   let lastAttempt: ModelFundingDecision | undefined;
   return {
     kind: admitted.kind,
+    ...(mindswapperModels.length > 0 ? { mindswapperModels } : {}),
     ...(admitted.kind === "server" ? {
       admittedTransport: initialDecision.providerRoute === "surplus" ? "surplus" as const : "direct" as const,
     } : {}),
@@ -739,7 +757,8 @@ async function openSession(task: FundingTaskSource, run: FundingRunSource,
         };
       },
     } : {}),
-    ...(admitted.kind === "server" && fundingPolicy?.fundingPreference === "server_first" ? {
+    ...(admitted.kind === "server" && admitted.providerRoute !== "mindswapper"
+      && fundingPolicy?.fundingPreference === "server_first" ? {
       openPersonalRecovery: async (candidate: string) => {
         const recovery = await fundingBoundary(() => openServerFirstPersonalRecovery({
           humanUserId: task.requestorId,
@@ -777,6 +796,12 @@ async function openSession(task: FundingTaskSource, run: FundingRunSource,
         const usageFunding = usageFundingFor(decision);
         await authority?.();
         try {
+          if (decision.providerRoute === "mindswapper") {
+            const model = await readAdmittedMindSwapperModel(decision, mindSwapperTools);
+            if (!model) throw new TaskFundingError("provider_credentials_missing");
+            return await withAdmittedMindSwapperAttempt(decision, model, (personalCredential) =>
+              runAttempt({ usageFunding, ...(personalCredential ? { personalCredential } : {}) }));
+          }
           if (decision.kind === "server") return await runAttempt({ usageFunding });
           return await withAdmittedPersonalCredential(decision,
             (personalCredential) => runAttempt({ usageFunding, personalCredential }), undefined, admitted);
@@ -929,6 +954,7 @@ export async function openProtectedTaskWakeFundingSession(input: Readonly<{
         humanUserId: task.requestorId,
         modelId,
         workload: "native_text_task",
+        ...(isMindSwapperModelId(modelId) ? { mindSwapperTools: nativeTaskSelectionPurpose(task) === "task-tools" } : {}),
       });
       assertProtectedFundingDecision(retainedDecision);
       await input.assertCurrent();
@@ -973,6 +999,11 @@ export const nativeTaskFundingPort: TaskFundingPort = {
     };
     const caps = await getUserCapabilities(input.requestorId);
     const policy = await getServerProviderPolicy(getServerDirectDb());
+    const configuredModel = input.requestedModelId || (mindSwapperConfigured()
+      ? (await getProfileByAgentId(input.agentId))?.defaultModel?.trim()
+        || process.env["NAUTILO_MODEL"]?.trim() || getCachedServerModelConfigRow()?.defaultChatModel?.trim()
+      : "") || "";
+    const usesMindSwapper = isMindSwapperModelId(configuredModel);
     let admittedDeepResearch: boolean;
     try {
       admittedDeepResearch = readDeepResearchTaskMetadata(input.metadata)?.version === 2;
@@ -982,7 +1013,7 @@ export const nativeTaskFundingPort: TaskFundingPort = {
     if (!shouldPrepareNativeTaskCallerFunding(input.metadata, {
       allowPersonalProviderKeys: policy.allowPersonalProviderKeys,
       capabilities: caps,
-    }) && !inheritedSubscription) {
+    }) && !inheritedSubscription && !usesMindSwapper) {
       // An unavailable explicitly selected plan is still a funding choice.
       // Never reinterpret policy disable/revocation as permission to charge
       // the legacy server lane when a queued Task is created.
@@ -999,7 +1030,7 @@ export const nativeTaskFundingPort: TaskFundingPort = {
         && provenance.parentTaskId === inputParentTaskId
         && (provenance.parentTaskId === null || provenance.parentTaskRunId !== null);
     if (!originSupported || !supportedShape(input) || !input.callingRoomId) {
-      if (!inheritedSubscription && !admittedDeepResearch && caps.includes("use_server_provider_credentials")
+      if (!usesMindSwapper && !inheritedSubscription && !admittedDeepResearch && caps.includes("use_server_provider_credentials")
         && !await wouldUseSelectedSubscription()) return false;
       throw new TaskFundingError("unsupported_workload");
     }
@@ -1013,6 +1044,7 @@ export const nativeTaskFundingPort: TaskFundingPort = {
       await assertCanonicalShape(input);
       const modelId = await selectTaskModel(input);
       return resolveModelFunding({ humanUserId: input.requestorId, modelId, workload: "native_text_task",
+        ...(isMindSwapperModelId(modelId) ? { mindSwapperTools: nativeTaskSelectionPurpose(input) === "task-tools" } : {}),
         ...(inheritedSubscription ? { priorDecision: inheritedSubscription } : {}) });
     });
     return decision.kind === "personal" && decision.providerRoute === "openai-chatgpt"

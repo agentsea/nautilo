@@ -1,6 +1,7 @@
 import { log as logInfo, warn as logWarn } from "@nautilo/logger";
 import { modelSupportsInput as catalogSupportsInput } from "@nautilo/model-capabilities";
 import { getActiveModelCatalogSync } from "../config/model-catalog/runtime-catalog";
+import { findMindSwapperModel, isMindSwapperModelId, mindSwapperOfferForModel } from "../config/mindswapper-models";
 
 export type ModelClass = "4K" | "32K" | "128K" | "160K" | "200K" | "256K" | "400K" | "512K" | "1M" | "2M" | "10M";
 export type ModelInputCapability = "text" | "image" | "pdf" | "audio";
@@ -175,7 +176,8 @@ export interface ResolveOptions {
 }
 
 interface ActiveCatalogLimitSnapshot {
-  readonly catalogVersion: string;
+  readonly catalogVersion: string | null;
+  readonly maxInputTokens?: number;
   readonly contextTokens: number;
   readonly outputTokens: number;
 }
@@ -183,6 +185,7 @@ interface ActiveCatalogLimitSnapshot {
 export interface ResolvedModelExecutionLimits {
   readonly modelId: string;
   readonly catalogVersion: string | null;
+  readonly maxInputTokens?: number;
   readonly contextTokens: number;
   readonly maxOutputTokens: number;
   readonly contextSource: "override" | "catalog" | "static";
@@ -215,6 +218,16 @@ export class MissingModelExecutionLimitsError extends Error {
 }
 
 function requireActiveCatalogLimitSnapshot(modelId: string): ActiveCatalogLimitSnapshot {
+  if (isMindSwapperModelId(modelId)) {
+    const offer = mindSwapperOfferForModel(findMindSwapperModel(modelId));
+    if (!offer) throw new Error(`Model "${modelId}" is unavailable through the current MindSwapper connection.`);
+    return {
+      catalogVersion: null,
+      maxInputTokens: offer.maxInputTokens,
+      contextTokens: offer.maxInputTokens + offer.maxOutputTokens,
+      outputTokens: offer.maxOutputTokens,
+    };
+  }
   const normalizedId = modelId.trim();
   const { catalog } = getActiveModelCatalogSync();
   const entry = catalog.entries.find((candidate) => candidate.id === normalizedId);
@@ -485,10 +498,18 @@ export function getModelTokenLimit(modelId: string, options?: ResolveOptions): n
   return override === undefined ? catalogLimit : Math.min(catalogLimit, override);
 }
 
+export function modelSupportsAgentInput(modelId: string, capability: Parameters<typeof catalogSupportsInput>[1]): boolean {
+  if (isMindSwapperModelId(modelId)) {
+    const offer = mindSwapperOfferForModel(findMindSwapperModel(modelId));
+    return (capability === "text" || capability === "image") && !!offer?.inputModalities.includes(capability);
+  }
+  return catalogSupportsInput(modelId, capability);
+}
+
 export function modelSupportsInput(modelId: string, capability: ModelInputCapability): boolean {
   if (capability === "text") return true;
   if (capability !== "image") return false;
-  return catalogSupportsInput(modelId, "image");
+  return modelSupportsAgentInput(modelId, "image");
 }
 
 type ModelProvider = "anthropic" | "openai" | "google" | "xai" | "fireworks" | "openrouter" | "other";
@@ -922,6 +943,7 @@ function resolveModelExecutionLimitsSync(
   return {
     modelId: normalizedId,
     catalogVersion: catalogLimits.catalogVersion,
+    ...(catalogLimits.maxInputTokens === undefined ? {} : { maxInputTokens: Math.min(contextTokens, catalogLimits.maxInputTokens) }),
     contextTokens,
     maxOutputTokens,
     contextSource: contextWasLowered ? "override" : "catalog",

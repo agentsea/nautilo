@@ -15,6 +15,7 @@ import {
   getActiveModelCatalogSync,
   getProfile,
   hydrateSurplusChatCatalog,
+  mindSwapperOfferForModel,
   resolveProviderKey,
   resolveSurplusChatServingAvailability,
   type QualifiedSurplusChatRoute,
@@ -34,6 +35,7 @@ import {
 import type { AvatarRef } from "@nautilo/types";
 import { getUserCapabilities, PinChallengeProvider } from "@nautilo/trust";
 import { getServerDirectDb } from "../lib/server-direct-db";
+import { isMindSwapperModelId, readServerMindSwapperModels } from "../lib/mindswapper-catalog";
 import { resolvePublicServerUrl, resolvePublicWorkbenchUrl } from "../lib/public-urls";
 import { requestAllowsLoopbackTrust } from "../lib/request-trust";
 import { error as logError } from "@nautilo/logger";
@@ -59,12 +61,33 @@ export interface SetupStatusRouteDeps {
   readonly getPreferSurplus?: () => boolean;
   readonly getSurplusKeyConfigured?: () => boolean;
   readonly hydrateSurplusChatCatalog?: typeof hydrateSurplusChatCatalog;
+  readonly getConfiguredChatDefault?: () => string | null;
+  readonly readServerMindSwapperModels?: typeof readServerMindSwapperModels;
 }
 
 interface SetupLlmReadinessInput {
   readonly directProviderReady: boolean;
   readonly authenticated: boolean;
   readonly claimed: boolean;
+}
+
+/** A claimed server can use its explicitly chosen MindSwapper chat default. */
+async function computeSetupMindSwapperReadiness(
+  input: SetupLlmReadinessInput,
+  deps: SetupStatusRouteDeps = {},
+): Promise<boolean> {
+  if (!input.authenticated || !input.claimed) return false;
+  const modelId = (deps.getConfiguredChatDefault ?? (() =>
+    process.env["NAUTILO_MODEL"]?.trim() || getCachedServerModelConfigRow()?.defaultChatModel?.trim() || null))();
+  if (!modelId || !isMindSwapperModelId(modelId)) return false;
+  try {
+    const models = await (deps.readServerMindSwapperModels ?? readServerMindSwapperModels)();
+    const offer = mindSwapperOfferForModel(models.find(({ id }) => id === modelId));
+    return Boolean(offer && offer.supportedParameters.includes("tools")
+      && offer.maxInputTokens > 0 && offer.maxOutputTokens > 0);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -310,7 +333,8 @@ async function deriveSetupStateCore(args: {
       claimed: hasA,
     } as const;
     await hydrateSetupSurplusReadiness(readinessInput, args.deps ?? {});
-    hasLlm = computeSetupHasLlm(readinessInput, args.deps ?? {});
+    hasLlm = computeSetupHasLlm(readinessInput, args.deps ?? {})
+      || await computeSetupMindSwapperReadiness(readinessInput, args.deps ?? {});
     hasVoice = summary.hasVoice;
     hasSearch = summary.hasSearch;
     hasConversion = summary.hasConversion;

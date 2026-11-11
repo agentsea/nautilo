@@ -1,4 +1,5 @@
 import { CHATGPT_PLAN_SOURCE_DECLARATIONS } from "../../baseline/reviewed-chatgpt-plan-coverage";
+import { MINDSWAPPER_CREDENTIAL_SOURCE_DECLARATIONS } from "../../baseline/reviewed-mindswapper-credential-boundaries";
 import { BOLTER_NATIVE_STORAGE_DECLARATIONS } from "../../baseline/reviewed-bolter-native-storage";
 import { BOLTER_PLAINTEXT_SOURCE_DECLARATIONS } from "../../baseline/reviewed-bolter-plaintext-carriers";
 import { createHash } from "node:crypto";
@@ -74,6 +75,7 @@ const currentBolterPlaintextSourceDeclarations =
 
 export const SOURCE_DECLARATIONS: readonly SourceDeclaration[] = [
   ...CHATGPT_PLAN_SOURCE_DECLARATIONS,
+  ...MINDSWAPPER_CREDENTIAL_SOURCE_DECLARATIONS,
   ...currentBolterPlaintextSourceDeclarations,
   ...BOLTER_NATIVE_STORAGE_DECLARATIONS,
   declaration({

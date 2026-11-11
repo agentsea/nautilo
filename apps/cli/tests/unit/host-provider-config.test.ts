@@ -4,12 +4,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { resolveRailwayProviderConfig } from "../../src/lib/host-provider-config.ts";
-import { KEY_REGISTRY } from "@nautilo/config-guard";
+import { KEY_REGISTRY, MINDSWAPPER_API_KEY, MINDSWAPPER_BASE_URL } from "@nautilo/config-guard";
 import { HOSTING_PROVIDER_ENV_VARS, resolveProviderCapabilities } from "@nautilo/hosting";
 import { secureFilesystemPath } from "@nautilo/config/private-filesystem";
 import { allowOtherReaders } from "@nautilo/config/private-filesystem-fixtures";
 
-const HOSTING_KEY_REGISTRY = KEY_REGISTRY;
+const HOSTING_KEY_REGISTRY = KEY_REGISTRY.filter(({ id }) => id !== "mindswapper");
 
 let root: string;
 
@@ -43,6 +43,7 @@ describe("Railway provider-only TOML", () => {
     expect(Object.fromEntries(HOSTING_KEY_REGISTRY.map((key) => [key.id, key.envVar])))
       .toEqual(HOSTING_PROVIDER_ENV_VARS);
     expect(HOSTING_PROVIDER_ENV_VARS).not.toHaveProperty("nautilo-gateway");
+    expect(HOSTING_PROVIDER_ENV_VARS).not.toHaveProperty("mindswapper");
   });
 
   test("a retired provider name is rejected by hosted provider adoption", async () => {
@@ -59,13 +60,30 @@ describe("Railway provider-only TOML", () => {
     })).toEqual({ outcome: "failure", code: "railway.plan.provider-config-invalid" });
   });
 
-  test("both downloadable template forms include every registered service", async () => {
+  test("downloadable templates include adopted providers and explain how to configure MindSwapper", async () => {
     const railway = await readFile(new URL("../../templates/nautilo-railway-providers.toml", import.meta.url), "utf8");
     const local = await readFile(new URL("../../templates/nautilo-deploy.toml", import.meta.url), "utf8");
     for (const key of HOSTING_KEY_REGISTRY) {
       expect(railway).toMatch(new RegExp(`^(?:# )?${key.id} = \\{ value =`, "m"));
       expect(local).toContain(`key = "${key.envVar}"`);
     }
+    expect(railway).not.toMatch(/^(?:# )?mindswapper =/m);
+    expect(railway).toContain("Admin → API Keys");
+    expect(local).toContain(`# key = "${MINDSWAPPER_BASE_URL}"`);
+    expect(local).toContain(`# key = "${MINDSWAPPER_API_KEY}"`);
+  });
+
+  test("does not discover a bare MindSwapper key in process environment or legacy dotenv", async () => {
+    const compatibility = join(root, "legacy.env");
+    await writeFile(compatibility, `${MINDSWAPPER_API_KEY}=synthetic-legacy-key\n`, { mode: 0o600 });
+    const result = await resolveRailwayProviderConfig({
+      environment: {
+        HOME: root,
+        NAUTILO_DOTENV_PATH: compatibility,
+        [MINDSWAPPER_API_KEY]: "synthetic-environment-key",
+      },
+    });
+    expect(result).toEqual({ outcome: "resolved", providers: new Map() });
   });
 
   test("reads and selects the complete recommended bundle, with no secret values in the plan", async () => {

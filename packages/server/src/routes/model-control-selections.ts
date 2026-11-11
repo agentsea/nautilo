@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { ModelControlSelection } from "@nautilo/types";
-import { getActiveModelCatalogSync } from "@nautilo/agent";
+import { getActiveModelCatalogSync, isMindSwapperModelId } from "@nautilo/agent";
 import {
   getRoomAgentModelControlSelection,
   InvalidModelControlSelectionError,
@@ -98,6 +98,12 @@ function validateSelectionAgainstActiveCatalog(
   selection: ModelControlSelection,
   entries: readonly ModelControlCatalogEntry[],
 ): string | null {
+  if (isMindSwapperModelId(selection.modelId)) {
+    if (selection.reasoningEffort !== undefined) return "selection reasoningEffort is not supported by this model";
+    if (selection.servingProfileId !== undefined) return "selection servingProfileId is not supported by this model";
+    // Caller availability below proves membership and a usable connection.
+    return null;
+  }
   const entry = entries.find((candidate) => candidate.id === selection.modelId);
   if (!entry) return "selection modelId is not in the active catalog";
 

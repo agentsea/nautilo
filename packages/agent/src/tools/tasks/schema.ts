@@ -152,7 +152,7 @@ export function createTaskToolSchema(
     .nullable()
     .optional()
     .describe(
-      "Pin the EXACT model this task's run will use (a strict same-model pin — no cross-model fallback). First call the `discover_models` tool (list/search/get) and copy the EXACT stable curated model id it returns; do NOT guess or hand-type one. Only curated ids are accepted in v1 (dynamic openrouter:/gateway: ids are rejected). Mutually exclusive with model_selection_profile / model_selection_spec — pass model_id OR a selection bias, never both. On update, pass model_id: null to clear the pin (omission preserves it). A tool-using task (tools omitted, or a non-empty tools list) requires a model with confirmed tool support; pass tools: [] to allow a tool-free model.",
+      "Pin the EXACT model this task's run will use (a strict same-model pin — no cross-model fallback). First call the `discover_models` tool (list/search/get) and copy the EXACT stable model id it returns; do NOT guess or hand-type one. Only IDs from discover_models are accepted. Mutually exclusive with model_selection_profile / model_selection_spec — pass model_id OR a selection bias, never both. On update, pass model_id: null to clear the pin (omission preserves it). A tool-using task (tools omitted, or a non-empty tools list) requires a model with confirmed tool support; pass tools: [] to allow a tool-free model.",
     ),
   // D453 — execution remains Native unless the Genie deliberately selects an
   // external harness. Exact selection must fail rather than silently falling

@@ -71,6 +71,7 @@ import {
   type ModelCatalogProvenance,
 } from "./model-catalog/runtime-catalog";
 import { isSupportedModelCatalogWorkload } from "./model-catalog/supported-providers";
+import { findMindSwapperModel, isMindSwapperModelId, mindSwapperOfferForModel, readMindSwapperModels } from "./mindswapper-models";
 
 /** Explicit caller consent overrides the operator setting; injected environments are authoritative. */
 export function resolveChinaUpstreamConsent(
@@ -405,10 +406,48 @@ function resolveFeaturesFor(
  * credentials, make China routing consent true, or make an unsupported
  * provider runnable .
  */
+function resolveMindSwapperCatalogModel(id: string): ResolvedCatalogModel {
+  const model = findMindSwapperModel(id);
+  const offer = mindSwapperOfferForModel(model);
+  return {
+    id,
+    displayName: model?.displayName ?? id,
+    provider: "mindswapper",
+    availability: offer ? "selectable" : model ? "disabled" : "unknown_model",
+    ...(offer ? {} : {
+      unavailableReason: model?.unavailableReason ?? "model is not available through your current MindSwapper connection",
+    }),
+    routing: null,
+    input: offer?.inputModalities ?? ["text"],
+    output: ["text"],
+    workload: "chat",
+    generation: null,
+    decision: null,
+    features: {
+      tools: offer?.supportedParameters.includes("tools") ?? false,
+      structuredOutputs: offer?.supportedParameters.includes("response_format") ?? false,
+      reasoning: offer?.supportedParameters.includes("reasoning") ?? false,
+      visualGrounding: null,
+      webSearch: false,
+      e2ee: false,
+    },
+    privacyGrade: null,
+    privacyLabel: null,
+    intelligenceTier: null,
+    intelligenceRank: null,
+    costCoefficient: 1,
+    contextTokens: offer ? offer.maxInputTokens + offer.maxOutputTokens : null,
+    maxOutputTokens: offer?.maxOutputTokens ?? null,
+    provenance: null,
+    lastVerifiedAt: null,
+  };
+}
+
 export function resolveCatalogModel(
   id: string,
   options: ResolveCatalogModelOptions = {},
 ): ResolvedCatalogModel {
+  if (isMindSwapperModelId(id)) return resolveMindSwapperCatalogModel(id);
   const env = options.env ?? process.env;
   const entry = findActiveCatalogEntry(id);
   const config = resolveCatalogConfig(id, entry);
@@ -577,8 +616,8 @@ export function listResolvedCatalogModels(
   const { includeUnavailable = false } = options;
   const { catalog } = getActiveModelCatalogSync();
   const out: ResolvedCatalogModel[] = [];
-  for (const entry of catalog.entries) {
-    const row = resolveCatalogModel(entry.id, options);
+  for (const { id } of [...catalog.entries, ...readMindSwapperModels()]) {
+    const row = resolveCatalogModel(id, options);
     if (row.availability !== "selectable" && !includeUnavailable) continue;
     out.push(row);
   }

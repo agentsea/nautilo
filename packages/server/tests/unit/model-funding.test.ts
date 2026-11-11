@@ -8,6 +8,7 @@ import {
 import {
   PersonalDirectFundingUnavailableError,
   PersonalModelFundingUnavailableError,
+  type MindSwapperChatModel,
 } from "@nautilo/agent";
 import {
   ModelFundingError,
@@ -79,6 +80,54 @@ async function code(promise: Promise<unknown>): Promise<string | undefined> {
   }
   return undefined;
 }
+
+describe("MindSwapper funding", () => {
+  const model: MindSwapperChatModel = {
+    id: "mindswapper:maker/model", displayName: "Model",
+    offers: [{ inputModalities: ["text"], supportedParameters: ["tools"], maxInputTokens: 2000, maxOutputTokens: 1000 }],
+  };
+  const tools = { ...request(ALICE, model.id), mindSwapperTools: true };
+
+  test("uses an eligible server first without reading personal credentials, and pins the server revision", async () => {
+    const h = harness();
+    h.capabilities.set(ALICE, ["use_server_provider_credentials", "use_personal_provider_credentials"]);
+    h.setFundingPreference("server_first");
+    let serverRevision = "a".repeat(64);
+    h.deps.getMindSwapperServerRevision = () => serverRevision;
+    h.deps.readMindSwapperServerModels = async () => [model];
+    h.deps.readMindSwapperPersonalModels = async () => [model];
+    h.rows.set(ALICE + ":mindswapper", row(ALICE, "mindswapper"));
+    const priorDecision = await resolveModelFunding(tools, h.deps);
+    expect(priorDecision).toMatchObject({ kind: "server", providerRoute: "mindswapper", connectionRevision: serverRevision });
+    expect(h.reads).toEqual([]);
+    h.setFundingPreference("personal_first");
+    expect(await resolveModelFunding(tools, h.deps)).toMatchObject({ kind: "personal", payerHumanId: ALICE });
+    expect(await resolveModelFunding({ ...tools, priorDecision }, h.deps)).toEqual(priorDecision);
+    serverRevision = "b".repeat(64);
+    expect(await code(resolveModelFunding({ ...tools, priorDecision }, h.deps))).toBe("funding_source_changed");
+  });
+
+  test("applies purpose qualification independently for each payer, with no post-admission payer change", async () => {
+    const h = harness();
+    h.capabilities.set(ALICE, ["use_server_provider_credentials", "use_personal_provider_credentials"]);
+    h.capabilities.set(BOB, ["use_personal_provider_credentials"]);
+    h.deps.getMindSwapperServerRevision = () => "a".repeat(64);
+    h.deps.readMindSwapperServerModels = async () => [model];
+    h.deps.readMindSwapperPersonalModels = async () => [{
+      ...model, offers: [{ ...model.offers[0]!, supportedParameters: [] }],
+    }];
+    h.rows.set(ALICE + ":mindswapper", row(ALICE, "mindswapper"));
+    expect(await resolveModelFunding(tools, h.deps)).toMatchObject({ kind: "server" });
+    const task = { ...tools, workload: "native_text_task" as const, mindSwapperTools: false };
+    const priorDecision = await resolveModelFunding(task, h.deps);
+    expect(priorDecision).toMatchObject({ kind: "personal", payerHumanId: ALICE, credentialRevision: 1 });
+    expect(await code(resolveModelFunding({ ...task, humanUserId: BOB }, h.deps))).toBe("provider_credentials_missing");
+    h.rows.set(ALICE + ":mindswapper", row(ALICE, "mindswapper", 2));
+    expect(await code(resolveModelFunding({ ...task, priorDecision }, h.deps))).toBe("personal_credential_stale");
+    expect(await code(resolveModelFunding({ ...tools, transport: "surplus" }, h.deps))).toBe("funding_source_changed");
+    expect(await code(resolveModelFunding({ ...tools, workload: "research" }, h.deps))).toBe("unsupported_workload");
+  });
+});
 
 describe("trusted model funding", () => {
   test("generation Surplus eligibility uses the signed media spelling and explicit policy", () => {

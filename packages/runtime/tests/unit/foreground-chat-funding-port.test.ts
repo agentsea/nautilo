@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createAcceptedInvocationAuthority } from "@nautilo/trust";
-import type { ForegroundChatFundingSession } from "@nautilo/agent";
+import type { ForegroundChatFundingSession, MindSwapperChatModel } from "@nautilo/agent";
 import {
   ForegroundChatFundingAuthorityError,
   ForegroundChatFundingUnsupportedWorkloadError,
@@ -11,6 +11,8 @@ import {
   openForegroundChatFundingSessionForInvocation,
   openConnectedWebOperationWakeFundingSessionForInvocation,
   openImageAssistanceForInvocation,
+  resolveAdmittedForegroundModelId,
+  resolveDefaultFundedForegroundModelId,
   uninstallForegroundChatFundingPort,
 } from "../../src/foreground-chat-funding-port";
 import { setTaskRunDb } from "../../src/tasks/task-runtime-context";
@@ -41,6 +43,41 @@ afterEach(() => {
 });
 
 describe("foreground chat funding port", () => {
+  test("an explicit MindSwapper chat default requires an admitted funding projection to run", async () => {
+    const model = {
+      id: "mindswapper:example/model",
+      displayName: "Example model",
+      offers: [{
+        inputModalities: ["text"],
+        supportedParameters: ["tools"],
+        maxInputTokens: 1024,
+        maxOutputTokens: 512,
+      }],
+    } as const;
+    const previous = process.env["NAUTILO_MODEL"];
+    try {
+      process.env["NAUTILO_MODEL"] = model.id;
+      let serverModels: readonly MindSwapperChatModel[] = [];
+      installForegroundChatFundingPort({
+        openSession: async () => null,
+        readServerMindSwapperModels: async () => serverModels,
+      });
+      expect(await resolveDefaultFundedForegroundModelId()).toBe(model.id);
+      expect(() => resolveAdmittedForegroundModelId(model.id, null)).toThrow(ForegroundChatFundingAuthorityError);
+      serverModels = [{ ...model, offers: [{ ...model.offers[0], supportedParameters: [] }] }];
+      expect(await resolveDefaultFundedForegroundModelId()).toBe(model.id);
+      serverModels = [model];
+      expect(await resolveDefaultFundedForegroundModelId()).toBe(model.id);
+      expect(resolveAdmittedForegroundModelId(model.id, { ...personalSession, kind: "server", mindswapperModels: [model] }))
+        .toBe(model.id);
+      expect(resolveAdmittedForegroundModelId(model.id, { ...personalSession, mindswapperModels: [model] }))
+        .toBe(model.id);
+    } finally {
+      if (previous === undefined) delete process.env["NAUTILO_MODEL"];
+      else process.env["NAUTILO_MODEL"] = previous;
+    }
+  });
+
   test("opens a personal session for an exact durable connected-website wake only", async () => {
     const opened: unknown[] = [];
     installForegroundChatFundingPort({ openSession: async (input) => { opened.push(input); return personalSession; } });

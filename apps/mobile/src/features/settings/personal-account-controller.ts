@@ -40,7 +40,7 @@ export interface PersonalCredentialsController {
   setScope(scope: SettingsDataScope | null): void;
   load(): Promise<SettingsLoadResult<PersonalCredentialsData>>;
   retry(): Promise<SettingsLoadResult<PersonalCredentialsData>>;
-  save(provider: string, apiKey: string, current?: CredentialMetadata): Promise<SettingsMutationResult<PersonalCredentialsData>>;
+  save(provider: string, apiKey: string, current?: CredentialMetadata, destination?: string): Promise<SettingsMutationResult<PersonalCredentialsData>>;
   validate(provider: string, current: CredentialMetadata): Promise<SettingsMutationResult<PersonalCredentialsData>>;
   remove(provider: string, current: CredentialMetadata): Promise<SettingsMutationResult<PersonalCredentialsData>>;
 }
@@ -77,7 +77,7 @@ export function createPersonalCredentialsController(
     setScope: (scope) => data.setScope(scope),
     load: () => data.load(load),
     retry: () => data.retryLoad(load),
-    save(provider, apiKey, current) {
+    save(provider, apiKey, current, destination) {
       const currentData = readyData();
       if (!currentData || currentData.allowPersonalProviderKeys === false) {
         return Promise.resolve({ status: "ignored" });
@@ -88,6 +88,7 @@ export function createPersonalCredentialsController(
       return mutate((api) => api.putProviderCredential(provider, {
         apiKey: normalized,
         ...(current ? { expectedRevision: current.revision } : {}),
+        ...(destination === undefined ? {} : { destination }),
       }))
         // A failed PUT can still have committed before its response was lost.
         // Reconcile with a GET, but preserve the mutation failure and never
@@ -162,8 +163,8 @@ export function personalAccountErrorMessage(error: unknown): string {
       case "invalid_credential_request": return "This key request is invalid. Reload these settings and try again.";
       case "credential_conflict": return "This key changed elsewhere. Try again after current key details have loaded.";
       case "credential_not_found": return "This key no longer exists.";
-      case "credential_destination_unavailable": return "This provider destination is not configured on the server. Contact the Server operator.";
-      case "credential_destination_changed": return "The server's provider destination changed. Replace this key before using it again.";
+      case "credential_destination_unavailable": return "Choose an API URL approved by the server administrator.";
+      case "credential_destination_changed": return "This API URL is no longer approved. Replace the key for an approved URL.";
     }
   }
   const status = error !== null && typeof error === "object" && "status" in error

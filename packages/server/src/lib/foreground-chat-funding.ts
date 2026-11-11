@@ -12,10 +12,14 @@ import {
 } from "@nautilo/trust";
 import {
   ModelFundingError,
+  readAdmittedMindSwapperModel,
+  readCallerMindSwapperModels,
   resolveModelFunding,
+  withAdmittedMindSwapperAttempt,
   withAdmittedPersonalCredential,
   type ModelFundingDecision,
 } from "./model-funding";
+import { isMindSwapperModelId } from "./mindswapper-catalog";
 import { getServerDirectDb } from "./server-direct-db";
 import { callerTaskModelIds, personalOnlyTaskModelIds } from "./caller-task-model-context";
 import {
@@ -151,7 +155,7 @@ export async function openForegroundChatFundingSession(
   }
   // Funding can make a missing-key catalogue entry runnable, but it cannot
   // authorize an unsigned, disabled, or non-chat model identifier.
-  assertSignedChatModel(input.modelId);
+  if (!isMindSwapperModelId(input.modelId)) assertSignedChatModel(input.modelId);
 
   const prior = input.prior;
   if (prior && prior.modelId !== input.modelId) throw new ModelFundingError("funding_source_changed");
@@ -162,23 +166,35 @@ export async function openForegroundChatFundingSession(
     humanUserId: input.humanUserId,
     modelId: input.modelId,
     workload: "foreground_text_chat",
+    ...(isMindSwapperModelId(input.modelId) ? { mindSwapperTools: true } : {}),
     ...(priorDecision ? { priorDecision } : {}),
   });
   const resolveCandidate = async (modelId: string, transport?: "direct" | "surplus") => {
     await recheckAuthority();
-    assertSignedChatModel(modelId);
+    if (!isMindSwapperModelId(modelId)) assertSignedChatModel(modelId);
     return resolveModelFunding({
       humanUserId: input.humanUserId,
       modelId,
       workload: "foreground_text_chat",
       priorDecision: admitted,
+      ...(isMindSwapperModelId(modelId) ? { mindSwapperTools: true } : {}),
       ...(transport ? { transport } : {}),
     });
   };
   const runnableModelIds = await callerTaskModelIds(input.humanUserId);
+  const [mindswapperModels, mindSwapperModel, mindswapperTaskModels] = await Promise.all([
+    readCallerMindSwapperModels(input.humanUserId, { tools: true, kind: admitted.kind }),
+    readAdmittedMindSwapperModel(admitted, true),
+    readCallerMindSwapperModels(input.humanUserId),
+  ]);
+  if (admitted.providerRoute === "mindswapper" && !mindSwapperModel) {
+    throw new ModelFundingError("provider_credentials_missing");
+  }
   let lastAttempt: ModelFundingDecision | undefined;
   return {
     kind: admitted.kind,
+    ...(mindswapperModels.length > 0 ? { mindswapperModels } : {}),
+    ...(mindswapperTaskModels.length > 0 ? { mindswapperTaskModels } : {}),
     ...(input.protectedTurn !== true ? { allowUnpinnedSurplusRetry: true as const } : {}),
     ...(external ? { contentPrivateDiagnostics: true as const } : {}),
     admission: { modelId: admitted.modelId, binding: capabilityFundingBinding(admitted) },
@@ -186,7 +202,7 @@ export async function openForegroundChatFundingSession(
       admitted.kind, capabilityFundingBinding(admitted),
       input.protectedTurn !== true ? true : undefined),
     personalTaskControls: admitted.kind === "personal"
-      && resolveCatalogModel(input.modelId, { env: {} }).features.tools === true,
+      && (mindSwapperModel !== undefined || resolveCatalogModel(input.modelId, { env: {} }).features.tools === true),
     runnableModelIds,
     personalOnlyTaskModelIds: await personalOnlyTaskModelIds(input.humanUserId, runnableModelIds),
     ...(admitted.kind === "server" && admitted.providerRoute === "surplus" ? {
@@ -199,7 +215,8 @@ export async function openForegroundChatFundingSession(
         recheckPrimary: () => resolveCandidate(modelId),
       }),
     } : {}),
-    ...(admitted.kind === "server" && policy.fundingPreference === "server_first" ? {
+    ...(admitted.kind === "server" && admitted.providerRoute !== "mindswapper"
+      && policy.fundingPreference === "server_first" ? {
       openPersonalRecovery: (modelId: string) => openServerFirstPersonalRecovery({
         humanUserId: input.humanUserId,
         modelId,
@@ -222,6 +239,12 @@ export async function openForegroundChatFundingSession(
       const decision = await resolveCandidate(modelId, transport);
       lastAttempt = decision;
       const usageFunding = usageFundingFor(decision);
+      if (decision.providerRoute === "mindswapper") {
+        const model = await readAdmittedMindSwapperModel(decision, true);
+        if (!model) throw new ModelFundingError("provider_credentials_missing");
+        return withAdmittedMindSwapperAttempt(decision, model, (personalCredential) =>
+          run({ usageFunding, ...(personalCredential ? { personalCredential } : {}) }));
+      }
       if (decision.kind === "server") return run({ usageFunding });
       return withAdmittedPersonalCredential(
         decision,

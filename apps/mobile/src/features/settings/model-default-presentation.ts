@@ -118,7 +118,8 @@ function unavailableDescription(model: AssistantModelSummary): string {
 }
 
 function providerLabel(model: AssistantModelSummary): string {
-  return model.provider?.trim() || model.id.split(":", 1)[0] || "Other";
+  const provider = model.provider?.trim() || model.id.split(":", 1)[0] || "Other";
+  return provider === "mindswapper" ? "MindSwapper" : provider;
 }
 
 function fundingLabel(model: AssistantModelSummary): string | null {

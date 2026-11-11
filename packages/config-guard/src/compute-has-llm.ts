@@ -24,6 +24,8 @@ export function computeHasLlmFromKeys(
       // A Surplus key is only a marketplace credential and cannot make setup
       // inference-ready without a direct model-provider credential.
       key.id !== "surplus"
+      // MindSwapper readiness depends on an endpoint and a discovered model.
+      && key.id !== "mindswapper"
       && LLM_KEY_IDS.has(key.id)
       && keyIsConfigured(key),
   );

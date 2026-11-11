@@ -98,7 +98,9 @@ mock.module("../../src/lib/capability-funding", () => ({
 class TestModelFundingError extends Error {
   constructor(readonly code: string) { super(code); }
 }
+const actualModelFunding = await import("../../src/lib/model-funding");
 mock.module("../../src/lib/model-funding", () => ({
+  ...actualModelFunding,
   ModelFundingError: TestModelFundingError,
   readModelFundingPolicy: async () => ({ allowPersonalProviderKeys: true, fundingPreference }),
   resolveModelFunding: async (input: {

@@ -30,7 +30,8 @@ type ProviderCredentialsApi = Pick<
   | "setupKeys"
   | "validateKeys"
   | "deleteServerProviderKey"
->;
+> & Partial<Pick<typeof apiClient, "getMindSwapperConnection" | "updateMindSwapperConnection">>;
+type MindSwapperConnection = Awaited<ReturnType<typeof apiClient.getMindSwapperConnection>>;
 
 export interface ProviderCredentialsEditorProps {
   /** Focused test seam; production uses the shared authenticated client. */
@@ -88,14 +89,24 @@ export function ProviderCredentialsEditor({
   const [editing, setEditing] = useState<Record<string, string>>({});
   const [rowActions, setRowActions] = useState<Record<string, RowAction>>({});
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [mindSwapperConnection, setMindSwapperConnection] = useState<MindSwapperConnection | null>(null);
+  const [mindSwapperKeyUrl, setMindSwapperKeyUrl] = useState("");
+  const [mindSwapperUrlDraft, setMindSwapperUrlDraft] = useState<{
+    baseUrl: string;
+    approved: string;
+  } | null>(null);
   const mutatingRowsRef = useRef(new Set<string>());
   const loadGenerationRef = useRef(0);
 
   const load = useCallback(async () => {
     const generation = ++loadGenerationRef.current;
     try {
-      const { keys } = await keyApi.getKeySummary();
+      const [{ keys }, connection] = await Promise.all([
+        keyApi.getKeySummary(),
+        keyApi.getMindSwapperConnection?.().catch(() => null),
+      ]);
       if (generation !== loadGenerationRef.current) return;
+      setMindSwapperConnection(connection ?? null);
       setState({ kind: "ready", keys });
     } catch (e) {
       if (generation !== loadGenerationRef.current) return;
@@ -140,22 +151,20 @@ export function ProviderCredentialsEditor({
     mutatingRowsRef.current.add(report.id);
     setRowState(report.id, "saving");
     try {
-      const result = await keyApi.setupKeys(
-        { [report.envVar]: value },
-        true,
-      );
-      const detail = result.details?.find((d) => d.key === report.envVar);
-      if (detail?.action === "failed") {
-        setRowState(report.id, {
-          error: detail.reason ?? "Rejected by config-guard",
-        });
-        return;
-      }
-      if (!result.success) {
-        setRowState(report.id, {
-          error: result.error ?? "Save failed",
-        });
-        return;
+      if (report.id === "mindswapper") {
+        if (!keyApi.updateMindSwapperConnection) return;
+        await keyApi.updateMindSwapperConnection({ baseUrl: mindSwapperKeyUrl, apiKey: value });
+      } else {
+        const result = await keyApi.setupKeys({ [report.envVar]: value }, true);
+        const detail = result.details?.find((d) => d.key === report.envVar);
+        if (detail?.action === "failed") {
+          setRowState(report.id, { error: detail.reason ?? "Rejected by config-guard" });
+          return;
+        }
+        if (!result.success) {
+          setRowState(report.id, { error: result.error ?? "Save failed" });
+          return;
+        }
       }
       setRowState(report.id, "saved");
       setEditing((prev) => {
@@ -163,11 +172,7 @@ export function ProviderCredentialsEditor({
         delete next[report.id];
         return next;
       });
-      // Refresh status so the pill reflects the new value.
       await load();
-      // The gate owns setup-status polling. This payload-free signal avoids
-      // coupling the key editor to its state while letting a newly configured
-      // provider unlock the already-open recovery route.
       window.dispatchEvent(new Event("nautilo:provider-keys-saved"));
     } catch (e) {
       if (e instanceof ApiError && e.status === 403) {
@@ -181,6 +186,28 @@ export function ProviderCredentialsEditor({
       }
     } finally {
       mutatingRowsRef.current.delete(report.id);
+    }
+  };
+
+  const saveMindSwapperUrls = async (hasKey: boolean) => {
+    const draft = mindSwapperUrlDraft;
+    if (!draft || !keyApi.updateMindSwapperConnection || mutatingRowsRef.current.has("mindswapper")) return;
+    mutatingRowsRef.current.add("mindswapper");
+    setRowState("mindswapper", "saving");
+    try {
+      const baseUrl = draft.baseUrl.trim() || null;
+      const updated = await keyApi.updateMindSwapperConnection({
+        ...(hasKey || baseUrl === mindSwapperConnection?.baseUrl ? {} : { baseUrl }),
+        approvedDestinations: draft.approved.split("\n").map((url) => url.trim()).filter(Boolean),
+      });
+      setMindSwapperConnection(updated);
+      setMindSwapperUrlDraft(null);
+      setRowState("mindswapper", "saved");
+      window.dispatchEvent(new Event("nautilo:provider-keys-saved"));
+    } catch (e) {
+      setRowState("mindswapper", { error: e instanceof Error ? e.message : "MindSwapper URLs could not be saved." });
+    } finally {
+      mutatingRowsRef.current.delete("mindswapper");
     }
   };
 
@@ -328,6 +355,7 @@ export function ProviderCredentialsEditor({
             const rowBusy = row === "saving" || row === "validating" || row === "deleting";
             const statusReady = state.kind === "ready";
             const hasKey = statusReady && report !== undefined && report.status !== "missing";
+            const isMindSwapper = k.id === "mindswapper";
             return (
               <FieldRow
                 key={k.id}
@@ -373,9 +401,59 @@ export function ProviderCredentialsEditor({
                   {report?.hint ? (
                     <p className="text-xs text-foreground-muted">{report.hint}</p>
                   ) : null}
+                  {isMindSwapper && mindSwapperConnection ? (
+                    <div className="flex flex-col gap-2 text-xs text-foreground-muted">
+                      <p>Server API URL: {mindSwapperConnection.baseUrl ?? "Not configured"}</p>
+                      {mindSwapperUrlDraft ? (
+                        <div className="flex flex-col gap-2">
+                          {!hasKey ? (
+                            <TextInput
+                              ariaLabel="MindSwapper server API URL"
+                              value={mindSwapperUrlDraft.baseUrl}
+                              onChange={(baseUrl) => setMindSwapperUrlDraft({ ...mindSwapperUrlDraft, baseUrl })}
+                              placeholder="https://your-mindswapper-server/v1"
+                              disabled={rowBusy}
+                            />
+                          ) : <p>Replace the server key to change its API URL.</p>}
+                          <label className="flex flex-col gap-1">
+                            Approved URLs for personal keys, one per line
+                            <textarea
+                              className="rounded-md border border-border bg-background-panel px-3 py-2 text-foreground"
+                              value={mindSwapperUrlDraft.approved}
+                              onChange={(event) => setMindSwapperUrlDraft({ ...mindSwapperUrlDraft, approved: event.target.value })}
+                              disabled={rowBusy}
+                            />
+                          </label>
+                          <div className="flex gap-2">
+                            <Button variant="primary" loading={row === "saving"} onClick={() => void saveMindSwapperUrls(hasKey)}>Save URLs</Button>
+                            <Button variant="ghost" disabled={rowBusy} onClick={() => { setMindSwapperUrlDraft(null); setRowState(k.id, "idle"); }}>Cancel</Button>
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          <p>{mindSwapperConnection.approvedDestinations.length
+                            ? `Approved personal URLs: ${mindSwapperConnection.approvedDestinations.join(", ")}`
+                            : "No URLs are approved for personal keys."}</p>
+                          {!isEditing ? <Button disabled={rowBusy} onClick={() => setMindSwapperUrlDraft({
+                            baseUrl: mindSwapperConnection.baseUrl ?? "",
+                            approved: mindSwapperConnection.approvedDestinations.join("\n"),
+                          })}>Edit API URLs</Button> : null}
+                        </>
+                      )}
+                    </div>
+                  ) : isMindSwapper && statusReady && keyApi.getMindSwapperConnection ? (
+                    <p className="text-xs text-foreground-muted">MindSwapper connection settings are unavailable. <button type="button" className="underline" onClick={() => void load()}>Retry</button></p>
+                  ) : null}
 
                   {isEditing ? (
                     <div className="flex flex-col gap-2">
+                      {isMindSwapper ? <TextInput
+                        ariaLabel="MindSwapper server API URL"
+                        value={mindSwapperKeyUrl}
+                        onChange={setMindSwapperKeyUrl}
+                        placeholder="https://your-mindswapper-server/v1"
+                        disabled={rowBusy}
+                      /> : null}
                       <div className="flex items-center gap-2">
                         <TextInput
                           id={`settings-key-${k.id}`}
@@ -396,7 +474,7 @@ export function ProviderCredentialsEditor({
                           variant="primary"
                           onClick={() => void saveRow(k)}
                           loading={row === "saving"}
-                          disabled={!statusReady || !editingValue.trim()}
+                          disabled={!statusReady || !editingValue.trim() || (isMindSwapper && !mindSwapperKeyUrl.trim())}
                         >
                           Save
                         </Button>
@@ -433,7 +511,7 @@ export function ProviderCredentialsEditor({
                       </Button>
                       <Button
                         variant="ghost"
-                        disabled={!statusReady || rowBusy}
+                        disabled={!statusReady || rowBusy || (isMindSwapper && (!mindSwapperConnection || Boolean(mindSwapperUrlDraft)))}
                         onClick={() => setConfirmDelete(null)}
                       >
                         Cancel
@@ -444,9 +522,10 @@ export function ProviderCredentialsEditor({
                       <Button
                         disabled={!statusReady || rowBusy}
                         ariaLabel={`${hasKey ? "Replace" : "Add"} ${k.name} key`}
-                        onClick={() =>
-                          setEditing((p) => ({ ...p, [k.id]: "" }))
-                        }
+                        onClick={() => {
+                          if (isMindSwapper) setMindSwapperKeyUrl(mindSwapperConnection?.baseUrl ?? "");
+                          setEditing((p) => ({ ...p, [k.id]: "" }));
+                        }}
                       >
                         {hasKey ? "Replace" : "Add key"}
                       </Button>

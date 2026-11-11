@@ -35,6 +35,7 @@ elevenlabs = { value = "REPLACE_with_ElevenLabs_key" }
 # A Surplus key provides the marketplace chat rail for signed routes. Runtime
 # use also requires the administrator's Prefer Surplus setting.
 # A custom gateway also needs its URL configured separately in Nautilo.
+# Configure MindSwapper's API URL and key together under Admin → API Keys in Nautilo.
 # This file is not a Railway dashboard upload. Pass it to nautilo host adopt
 # with --provider-config, or to host plan/deploy with --all-providers.
 

@@ -8,14 +8,15 @@ export const SOURCE_ALARM_BASELINE = {
 
 // The complete immutable migration tree includes the reviewed protected-Task
 // persistence tail followed by the external operator transport, isolated
-// control storage, legacy audit archive, and owner-deletion correction. The
+// control storage, legacy audit archive, owner-deletion correction, and
+// destination-bound MindSwapper credential constraints. The
 // focused migration inventory pins the appended SQL bytes and proves the
 // current schema/snapshot pair remains structurally identical without a DB.
 export const MIGRATION_TREE_BASELINE = {
-  "migrations": 386,
-  "snapshots": 357,
-  "tip": 385,
-  "sha256": "a966c4bf1e6ab7a8575adaa99042c07ad243cfd4fcaba509afdc91cae527bb68"
+  "migrations": 387,
+  "snapshots": 358,
+  "tip": 386,
+  "sha256": "3c1d9736f29ad582233443746d0dd647082e0be852033a697dd83e6ac7b3e74d"
 } as const;
 
 /**

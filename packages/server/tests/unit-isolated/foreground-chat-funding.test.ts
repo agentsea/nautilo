@@ -102,7 +102,9 @@ mock.module("../../src/lib/server-direct-db", () => ({
     select: () => ({ from: () => ({ where: () => ({ limit: async () => roomLive ? [{ id: ROOM }] : [] }) }) }),
   }),
 }));
+const actualModelFunding = await import("../../src/lib/model-funding");
 mock.module("../../src/lib/model-funding", () => ({
+  ...actualModelFunding,
   PERSONAL_CHAT_PROVIDER_IDS: [
     "anthropic", "openai", "openrouter", "google", "xai", "fireworks", "together", "venice",
   ],

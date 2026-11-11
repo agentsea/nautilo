@@ -47,6 +47,7 @@ import {
 } from "../graph/no-progress";
 import { isEmptyTerminalResponseError } from "../graph/empty-terminal-response";
 import { SurplusOutcomeUnknownError } from "../providers/surplus-transport";
+import { MindSwapperRequestError } from "../providers/mindswapper-completions";
 import { SurplusDirectFallbackUnavailableError } from "../providers/surplus-route";
 import {
   PersonalDirectFundingUnavailableError,
@@ -342,7 +343,22 @@ const SUBSCRIPTION_MESSAGES: Record<ChatGPTSubscriptionFailure, { category: Frie
   },
 };
 
+const MIND_SWAPPER_MESSAGES: Record<MindSwapperRequestError["code"], Pick<FriendlyError, "category" | "message">> = {
+  authentication_error: { category: "auth", message: "MindSwapper rejected the key for this connection. Check its provider settings." },
+  insufficient_balance: { category: "provider_unavailable", message: "The connected MindSwapper account has insufficient credit. Check its balance before trying again." },
+  unsupported_request: { category: "bad_request", message: "The selected MindSwapper model cannot handle this request. Change the input or choose another available model." },
+  no_eligible_supply: { category: "provider_unavailable", message: "The selected MindSwapper model is currently unavailable. Refresh the model list or choose another model." },
+  rate_limit_error: { category: "rate_limit", message: "MindSwapper is rate limiting this connection. Try again later." },
+  outcome_unknown: { category: "unknown", message: "MindSwapper did not return a complete response. Check the original request in Costs before trying again." },
+  context_length_exceeded: { category: "context_exceeded", message: "This request exceeds the selected MindSwapper model's token limits." },
+  invalid_endpoint: { category: "provider_unavailable", message: "The MindSwapper connection is unavailable. Check its provider settings." },
+};
+
 export function toFriendlyError(error: unknown): FriendlyError {
+  if (error instanceof MindSwapperRequestError) {
+    const presentation = MIND_SWAPPER_MESSAGES[error.outcomeUnknown ? "outcome_unknown" : error.code];
+    return { ...presentation, code: CATEGORY_CODES[presentation.category], detailsForLog: `mindswapper_${error.code}` };
+  }
   const subscriptionError = findChatGPTSubscriptionError(error);
   if (subscriptionError) {
     const presentation = SUBSCRIPTION_MESSAGES[subscriptionError.code];

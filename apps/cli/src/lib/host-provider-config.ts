@@ -21,7 +21,8 @@ export type ProviderConfigFailureCode =
   | "railway.plan.provider-config-unreadable"
   | "railway.plan.provider-config-unsafe"
   | "railway.plan.provider-config-too-large"
-  | "railway.plan.provider-config-invalid";
+  | "railway.plan.provider-config-invalid"
+  | "railway.plan.mindswapper-requires-api-url";
 
 export interface ResolvedProviderValue {
   readonly value: string;
@@ -135,6 +136,9 @@ function parseProviderToml(
 
   const providers = new Map<RailwayRuntimeProvider, ResolvedProviderValue>();
   for (const [provider, rawEntry] of Object.entries(parsed["providers"])) {
+    if (provider === "mindswapper") {
+      return { outcome: "failure", code: "railway.plan.mindswapper-requires-api-url" };
+    }
     if (!providerSet.has(provider) || !isRecord(rawEntry)) {
       return { outcome: "failure", code: "railway.plan.provider-config-invalid" };
     }

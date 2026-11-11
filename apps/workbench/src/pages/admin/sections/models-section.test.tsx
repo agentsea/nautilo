@@ -205,6 +205,42 @@ beforeEach(() => {
 });
 
 describe("ModelsSection catalog inventory", () => {
+  test("offers only tool-capable server MindSwapper models as chat defaults", async () => {
+    const id = "mindswapper:example/model";
+    const toolFreeId = "mindswapper:example/tool-free";
+    const offer = {
+      provider: "mindswapper", workload: "chat", availability: "selectable",
+      input: ["text"], output: ["text"],
+      features: { tools: true, structuredOutputs: null, reasoning: null, visualGrounding: null, webSearch: false, e2ee: false },
+    };
+    savedConfig.catalogModels = [
+      ...catalogModels,
+      { ...offer, id, displayName: "MindSwapper Example" },
+      { ...offer, id: toolFreeId, displayName: "MindSwapper Tool Free", features: { ...offer.features, tools: false } },
+    ];
+    const view = render(<ModelsSection />);
+    const select = await view.findByLabelText("Default chat model") as HTMLSelectElement;
+    expect(within(select).getByRole("option", { name: "MindSwapper Example" })).toBeTruthy();
+    expect(within(select).queryByRole("option", { name: "MindSwapper Tool Free" })).toBeNull();
+    expect(view.container.querySelector('select:not(#server-default-model) option[value="mindswapper:example/model"]')).toBeNull();
+
+    const readinessChanged = mock(() => {});
+    window.addEventListener("nautilo:provider-keys-saved", readinessChanged, { once: true });
+    await act(async () => {
+      fireEvent.change(select, { target: { value: id } });
+      fireEvent.click(view.getByRole("button", { name: "Save changes" }));
+    });
+    await waitFor(() => expect(setServerModelsMock).toHaveBeenCalledWith({ defaultChatModel: id }));
+    expect(readinessChanged).toHaveBeenCalledTimes(1);
+
+    savedConfig.catalogModels = catalogModels;
+    await act(async () => { window.dispatchEvent(new Event("nautilo:provider-keys-saved")); });
+    expect(await view.findByText("The server’s MindSwapper connection has no available tool-capable route for this model.")).toBeTruthy();
+    const retained = within(select).getByRole("option", { name: /example\/model.*unavailable/i }) as HTMLOptionElement;
+    expect(retained.disabled).toBe(true);
+    expect(select.value).toBe(id);
+  });
+
   test("shows decision and coordinate capabilities without adding decision models to chat selectors", async () => {
     canManage = false;
     const view = render(<ModelsSection />);

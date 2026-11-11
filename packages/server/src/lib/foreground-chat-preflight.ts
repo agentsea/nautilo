@@ -8,6 +8,7 @@ import {
 } from "@nautilo/agent";
 import { getCachedServerModelConfigRow } from "@nautilo/db";
 import { resolveModelFunding } from "./model-funding";
+import { isMindSwapperModelId } from "./mindswapper-catalog";
 
 export interface ForegroundChatPreflightDeps {
   loadSnapshot: typeof loadForegroundModelControlSnapshot;
@@ -55,9 +56,10 @@ export async function resolveForegroundChatPreflightModelId(
       // verified map and can still select a directly credentialed model.
     }
   }
-  const plan = foregroundModelControlPlanFromSnapshot(snapshot, () =>
-    input.turnModelId || profile?.defaultModel || deps.defaultForegroundModelId(),
-  );
+  const configuredDefault = process.env["NAUTILO_MODEL"]?.trim()
+    || getCachedServerModelConfigRow()?.defaultChatModel?.trim() || "";
+  const plan = foregroundModelControlPlanFromSnapshot(snapshot, () => input.turnModelId || profile?.defaultModel
+    || (isMindSwapperModelId(configuredDefault) ? configuredDefault : deps.defaultForegroundModelId()));
   return plan.initialModelId;
 }
 
@@ -70,5 +72,6 @@ export async function resolveForegroundChatPreflightFunding(
     humanUserId: input.humanUserId,
     modelId,
     workload: "foreground_text_chat",
+    ...(isMindSwapperModelId(modelId) ? { mindSwapperTools: true } : {}),
   });
 }

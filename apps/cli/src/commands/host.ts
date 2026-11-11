@@ -148,10 +148,7 @@ export interface HostPlanInputFailure {
   readonly mutationAuthorized: false;
   readonly error: {
     readonly code:
-      | "railway.plan.provider-config-unreadable"
-      | "railway.plan.provider-config-unsafe"
-      | "railway.plan.provider-config-too-large"
-      | "railway.plan.provider-config-invalid"
+      | ProviderConfigFailureCode
       | "railway.plan.project-name-invalid"
       | "railway.plan.release-unavailable";
     readonly message: string;
@@ -402,7 +399,7 @@ function authorizationRequired(failure: RailwayOAuthFailure): HostPlanAuthorizat
 }
 
 function inputFailure(
-  code: HostPlanInputFailure["error"]["code"] | ProviderConfigFailureCode,
+  code: HostPlanInputFailure["error"]["code"],
 ): HostPlanInputFailure {
   const releaseFailure = code === "railway.plan.release-unavailable";
   const projectNameFailure = code === "railway.plan.project-name-invalid";
@@ -414,6 +411,8 @@ function inputFailure(
       ? "The documented provider configuration exceeds the 1 MiB planning limit."
     : code === "railway.plan.provider-config-unsafe"
       ? "The documented provider configuration is not a safe regular file."
+    : code === "railway.plan.mindswapper-requires-api-url"
+      ? "Remove MindSwapper from Railway provider selection and configure its API URL and key under Admin → API Keys in Nautilo."
       : code === "railway.plan.provider-config-invalid"
         ? "The documented provider configuration does not match the provider-only schema."
       : "The documented provider configuration exists but could not be read.";
@@ -539,6 +538,12 @@ async function executeRailwayHostPlan(
   input: RailwayHostPlanInput,
   dependencies: HostPlanDependencies,
 ): Promise<RailwayHostPlanExecution> {
+  if (input.includeProviders.includes("mindswapper")) {
+    return {
+      outcome: "input-failure",
+      error: inputFailure("railway.plan.mindswapper-requires-api-url"),
+    };
+  }
   let release: RailwayPlanReleaseInput;
   try {
     release = await dependencies.resolveRailwayRelease();

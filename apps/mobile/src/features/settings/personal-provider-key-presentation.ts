@@ -5,6 +5,7 @@ export type PersonalProviderKeyRow = PersonalProviderKeyCatalogueEntry & {
   readonly catalogued: boolean;
   readonly available: boolean;
   readonly destination: string | null;
+  readonly approvedDestinations?: readonly string[] | undefined;
   readonly deleteOnly: boolean;
 };
 
@@ -18,6 +19,7 @@ export function personalProviderKeyRows(data: PersonalCredentialsData | null): P
     ...provider,
     personalCapabilities: data ? responseProviders.get(provider.id)?.personalCapabilities ?? [] : provider.personalCapabilities,
     destination: responseProviders.get(provider.id)?.destination ?? null,
+    approvedDestinations: responseProviders.get(provider.id)?.approvedDestinations,
     catalogued: true,
     available: Boolean(enabled && data && responseIds.has(provider.id)),
     deleteOnly: !enabled,

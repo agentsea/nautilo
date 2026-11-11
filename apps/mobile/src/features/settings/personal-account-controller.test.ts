@@ -52,8 +52,8 @@ describe("personal account Settings controllers", () => {
       ["invalid_credential_request", 422, "This key request is invalid. Reload these settings and try again."],
       ["credential_conflict", 409, "This key changed elsewhere. Try again after current key details have loaded."],
       ["credential_not_found", 404, "This key no longer exists."],
-      ["credential_destination_unavailable", 422, "This provider destination is not configured on the server. Contact the Server operator."],
-      ["credential_destination_changed", 409, "The server's provider destination changed. Replace this key before using it again."],
+      ["credential_destination_unavailable", 422, "Choose an API URL approved by the server administrator."],
+      ["credential_destination_changed", 409, "This API URL is no longer approved. Replace the key for an approved URL."],
     ];
 
     for (const [code, status, expected] of expectedMessages) {

@@ -104,6 +104,20 @@ test("without an Agent override dispatch retains the ordinary product default", 
   expect((await dispatch())["modelId"]).toBe(expected);
 });
 
+test("legacy dispatch uses the built-in automatic model when only the foreground default uses MindSwapper", async () => {
+  configuredModel = "mindswapper:example/model";
+  expect((await dispatch())["modelId"]).toBe("anthropic:claude-sonnet-4-6");
+  inserted.length = 0; jobs.length = 0;
+  process.env["NAUTILO_MODEL"] = configuredModel;
+  expect((await dispatch())["modelId"]).toBe(agent.resolveModelRole("chat"));
+  inserted.length = 0; jobs.length = 0;
+  const failure = await dispatch({ requestedModelId: configuredModel }).catch((error: unknown) => error);
+  expect(failure).toBeInstanceOf(Error);
+  expect(String(failure)).toContain("Unknown model_id");
+  expect(inserted).toHaveLength(0);
+  expect(jobs).toHaveLength(0);
+});
+
 test("security dispatch keeps exact pins strict and fails before writes when unavailable", async () => {
   const requestedModelId = "anthropic:claude-sonnet-4-6";
   configuredModel = "venice:z-ai-glm-5-3"; // Unavailable base must not replace or block an explicit valid pin.

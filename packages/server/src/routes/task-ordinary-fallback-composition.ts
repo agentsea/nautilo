@@ -6,7 +6,12 @@ import type {
   TaskOrdinaryFallbackPreparedCreateRequestV1,
   TaskOrdinaryFallbackPreparedUpdateRequestV1,
 } from "@nautilo/api-client";
-import { validateTaskModelSelectionForCreate } from "@nautilo/agent";
+import {
+  isMindSwapperModelId,
+  validateTaskModelSelectionForCreate,
+  withMindSwapperModels,
+  type MindSwapperChatModel,
+} from "@nautilo/agent";
 import {
   acquireEncryptionConsumptionFence,
   and,
@@ -70,7 +75,7 @@ import {
   validateSchedule,
   type ProtectedTaskRouteAuthority,
 } from "./task-protected-composition";
-import { toTaskContentSummaryV1 } from "./tasks";
+import { readTaskSelectionMindSwapperModels, toTaskContentSummaryV1 } from "./tasks";
 
 type Source = Task & Readonly<{ mutationVersion: string }>;
 type ProductTransaction = Parameters<Parameters<DirectDatabase["transaction"]>[0]>[0];
@@ -187,7 +192,11 @@ export function isTaskOrdinaryFallbackMutableV1(task: Task): boolean {
     && (task.cryptoMappingState === "verified" || task.cryptoMappingState === "stale");
 }
 
-function validateUpdate(source: Task, task: TaskOrdinaryFallbackPlanUpdateRequestV1["task"]): void {
+function validateUpdate(
+  source: Task,
+  task: TaskOrdinaryFallbackPlanUpdateRequestV1["task"],
+  models: readonly MindSwapperChatModel[],
+): void {
   validateSchedule({
     scheduleKind: task.scheduleKind ?? source.scheduleKind,
     runAt: task.runAt === undefined ? source.runAt : parseRunAt(task.runAt),
@@ -197,13 +206,17 @@ function validateUpdate(source: Task, task: TaskOrdinaryFallbackPlanUpdateReques
   const selected = task.tools === undefined
     ? { toolsMode: source.toolsMode, toolsWhitelist: source.toolsWhitelist }
     : toolsFields(task.tools);
-  const error = validateTaskModelSelectionForCreate({
-    requestedModelId: task.requestedModelId === undefined ? source.requestedModelId : task.requestedModelId,
+  const requestedModelId = task.requestedModelId === undefined ? source.requestedModelId : task.requestedModelId;
+  if (source.fundingMode === "legacy_server" && requestedModelId && isMindSwapperModelId(requestedModelId.trim())) {
+    throw new ProtectedTaskRouteError(422, "task_selection_invalid", "Create a new Task to use MindSwapper funding.");
+  }
+  const error = withMindSwapperModels(models, () => validateTaskModelSelectionForCreate({
+    requestedModelId,
     profile: task.selectionProfile ?? source.selectionProfile,
     spec: task.selectionSpec === undefined ? source.selectionSpec : task.selectionSpec,
     toolsMode: "toolsMode" in selected ? selected.toolsMode : source.toolsMode,
     toolsWhitelist: "toolsWhitelist" in selected ? selected.toolsWhitelist : source.toolsWhitelist,
-  });
+  }));
   if (error !== null) throw new ProtectedTaskRouteError(422, "task_selection_invalid", error);
 }
 
@@ -230,6 +243,27 @@ export function createTaskOrdinaryFallbackPorts(input: Readonly<{
       throw new ProtectedTaskRouteError(404, "task_not_found", "Task not found");
     }
     return { source, authority: resolved };
+  };
+  const selectionModels = async (
+    authority: ProtectedTaskRouteAuthority,
+    taskId: string | null,
+    task: TaskOrdinaryFallbackPlanCreateRequestV1["task"] | TaskOrdinaryFallbackPlanUpdateRequestV1["task"],
+  ): Promise<readonly MindSwapperChatModel[]> => {
+    if (task.requestedModelId === null
+      || (task.requestedModelId !== undefined && !isMindSwapperModelId(task.requestedModelId.trim()))) return [];
+    let source: Source | undefined;
+    if (taskId !== null && (task.requestedModelId === undefined || task.tools === undefined)) {
+      source = await getTaskByIdWithMutationVersion(input.db, taskId);
+      if (!source || source.requestorId !== authority.userId
+        || resolveOwnedProtectedTaskAuthority(authority, source) === null) return [];
+    }
+    const tools = task.tools === undefined && source
+      ? { toolsMode: source.toolsMode, toolsWhitelist: source.toolsWhitelist }
+      : toolsFields(task.tools);
+    return readTaskSelectionMindSwapperModels(authority.userId, {
+      requestedModelId: task.requestedModelId ?? source?.requestedModelId,
+      ...tools,
+    });
   };
   const signingRevision = async (authority: ProtectedTaskRouteAuthority) => {
     if (authority.admission === undefined || authority.admission.expiresAt <= now()) unavailable();
@@ -276,15 +310,16 @@ export function createTaskOrdinaryFallbackPorts(input: Readonly<{
     const operation = taskId === null ? "create" : "update";
     const id = taskId ?? deterministicTaskId(authority, request.operationId);
     const revision = await signingRevision(authority);
+    const models = await selectionModels(authority, taskId, request.task);
     return withDevice(authority, revision, () => input.db.transaction(async transaction => {
       const policyRevision = await currentPolicy(transaction, admittedPolicyRevision);
       const current = taskId === null ? null : await sourceFor(transaction as unknown as DirectDatabase, authority, id);
       const effective = current?.authority ?? authority;
       if (current !== null) {
         if (!isTaskOrdinaryFallbackMutableV1(current.source)) unavailable();
-        validateUpdate(current.source, request.task);
+        validateUpdate(current.source, request.task, models);
       } else {
-        validateCreateShape(request.task);
+        validateCreateShape(request.task, models);
         validateSchedule({ scheduleKind: request.task.scheduleKind ?? "now",
           runAt: parseRunAt(request.task.runAt), cron: request.task.cron,
           timezone: request.task.timezone ?? "UTC" });
@@ -331,6 +366,7 @@ export function createTaskOrdinaryFallbackPorts(input: Readonly<{
     try {
       if (operation === "create" && (prepared.taskId !== deterministicTaskId(authority, prepared.operationId)
         || content.retainedHistoricalError !== null)) unavailable();
+      const models = await selectionModels(authority, operation === "create" ? null : prepared.taskId, prepared.task);
       return await withDevice(authority, request.hostAuthorizationRevision, key => input.db.transaction(async transaction => {
         await currentPolicy(transaction, request.policyRevision);
         const database = transaction as unknown as DirectDatabase;
@@ -370,7 +406,7 @@ export function createTaskOrdinaryFallbackPorts(input: Readonly<{
           || request.expectedUpdatedAt !== (source?.updatedAt.toISOString() ?? null)) unavailable();
         if (source !== undefined) {
           if (!isTaskOrdinaryFallbackMutableV1(source)) unavailable();
-          validateUpdate(source, prepared.task);
+          validateUpdate(source, prepared.task, models);
           // A protected publication may have reserved n+1 before this fallback.
           // Never let its later recovery attach older ciphertext to the new sibling.
           const pending = await transaction.select({ taskId: taskDefinitionCryptoRevisions.taskId })
@@ -406,7 +442,7 @@ export function createTaskOrdinaryFallbackPorts(input: Readonly<{
             admission: getPlaintextTaskCreationAdmission(),
           }, { ...taskCreateInput(authority, prepared.taskId, {
               ...createRequest.task, ...(scopeId == null ? {} : { scopeId }),
-            }, content.payload), metadata: reconstructed.metadata });
+            }, content.payload, models), metadata: reconstructed.metadata });
           const [created] = await transaction.update(tasks).set(receipt)
             .where(and(eq(tasks.id, prepared.taskId), eq(tasks.ownerId, authority.userId))).returning();
           if (created === undefined) throw new Error("Task fallback creation disappeared");

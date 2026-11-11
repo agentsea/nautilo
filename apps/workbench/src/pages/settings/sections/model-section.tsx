@@ -45,6 +45,7 @@ const LLM_KEY_IDS = new Set<string>([
   "openai",
   "openrouter",
   "gateway",
+  "mindswapper",
   "google",
   "xai",
   "fireworks",

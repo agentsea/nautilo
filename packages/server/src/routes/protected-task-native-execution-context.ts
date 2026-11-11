@@ -4,6 +4,7 @@ import {
   getDefaultModel,
   getProfileByAgentId,
   getRelayRegistry,
+  isMindSwapperModelId,
   resolveExactTaskModelId,
   resolveTaskModel,
   type NautiloProfile,
@@ -33,6 +34,7 @@ import {
   assertTaskFundingAdmission,
   computeTaskRelayCapabilities,
   getCurrentAcceptedInvocationAuthority,
+  getLegacyTaskBaseModelId,
   openTaskFundingSession,
   resolveToolWhitelist,
   resolveTaskReturnBinding,
@@ -472,6 +474,9 @@ function selectLegacyModel(
   dependencies: ProductionProtectedTaskNativeExecutionContextDependencies,
 ): Readonly<{ modelId: string; exact: boolean }> {
   if (task.requestedModelId !== null && task.requestedModelId !== undefined) {
+    if (isMindSwapperModelId(task.requestedModelId)) {
+      throw new Error("[task-model-selection] MindSwapper requires an admitted Task funding source.");
+    }
     return Object.freeze({
       modelId: (
         dependencies.resolveExactTaskModelId ?? resolveExactTaskModelId
@@ -483,15 +488,18 @@ function selectLegacyModel(
       exact: true,
     });
   }
-  const baseModelId = profile?.defaultModel?.trim()
-    || (dependencies.getDefaultModel ?? getDefaultModel)().id;
+  const baseModelId = getLegacyTaskBaseModelId(profile?.defaultModel, dependencies.getDefaultModel);
   try {
+    const modelId = (dependencies.resolveTaskModel ?? resolveTaskModel)({
+      baseModelId,
+      profile: task.selectionProfile,
+      spec: task.selectionSpec,
+    }).modelId;
+    if (isMindSwapperModelId(modelId)) {
+      throw new Error("[task-model-selection] MindSwapper requires an admitted Task funding source.");
+    }
     return Object.freeze({
-      modelId: (dependencies.resolveTaskModel ?? resolveTaskModel)({
-        baseModelId,
-        profile: task.selectionProfile,
-        spec: task.selectionSpec,
-      }).modelId,
+      modelId,
       exact: false,
     });
   } catch (error) {

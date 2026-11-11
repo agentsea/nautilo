@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Configure MindSwapper for server or personal funding. Supported chat models
+  appear after discovery and can be selected for Genie chat and native text Tasks
+  according to their Chat Completions capabilities.
+
 - Support Claude Fable 5.2 and Haiku 5.5 with their adaptive thinking controls
   and full streaming output allowance. Recognize GPT-6.1 Terra in the OpenAI
   transport adapter, preserving output limits and optional reasoning.

@@ -93,6 +93,10 @@ export const KEY_REGISTRY: KeyDefinition[] = [
       },
     ],
   }),
+  providerKey("mindswapper", {
+    formatCheck: (value) => value.length > 0 && isSinglePrintableAsciiLine(value),
+    doctorHints: [],
+  }),
   providerKey("google", {
     // Google keys are opaque: classic AI Studio keys are AIzaSy…, but Cloud /
     // Gemini console also issues other prefixes (e.g. AQ.…). Accept any

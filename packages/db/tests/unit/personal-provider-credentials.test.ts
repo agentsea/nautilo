@@ -48,6 +48,7 @@ describe("personal provider credential database contract", () => {
       "openrouter",
       "nautilo-gateway",
       "gateway",
+      "mindswapper",
       "google",
       "xai",
       "fireworks",

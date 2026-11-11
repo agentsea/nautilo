@@ -65,7 +65,8 @@ interface CapabilityFundingOverrides {
 export function capabilityFundingBinding(decision: ModelFundingDecision): TaskFundingBinding {
   return decision.kind === "personal"
     ? { kind: "personal", providerRoute: decision.providerRoute, credentialId: decision.credentialId, credentialRevision: decision.credentialRevision }
-    : { kind: "server", providerRoute: decision.providerRoute };
+    : { kind: "server", providerRoute: decision.providerRoute,
+      ...(decision.connectionRevision ? { connectionRevision: decision.connectionRevision } : {}) };
 }
 
 /** Caller must first establish an eligible own-Genie Room or canonical Task. */

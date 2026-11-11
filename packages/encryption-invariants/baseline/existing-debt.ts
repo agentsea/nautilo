@@ -13,6 +13,7 @@ import {
   SUPERSEDED_RELEASE_RECONCILIATION_COVERAGE_LOCATORS,
 } from "./reviewed-release-reconciliation-coverage";
 import { REVIEWED_CHATGPT_PLAN_COVERAGE } from "./reviewed-chatgpt-plan-coverage";
+import { MINDSWAPPER_CHAT_PROCESSOR_DEBT_LINK, MINDSWAPPER_CREDENTIAL_COVERAGE } from "./reviewed-mindswapper-credential-boundaries";
 import { BOLTER_NATIVE_STORAGE_COVERAGE } from "./reviewed-bolter-native-storage";
 import { BOLTER_HTTP_COVERAGE } from "./reviewed-bolter-http";
 import { BOLTER_PLAINTEXT_COVERAGE } from "./reviewed-bolter-plaintext-carriers";
@@ -1979,6 +1980,7 @@ export const BASELINE_REGISTRY: CoverageRegistry = {
     ...REVIEWED_PERSONAL_ATTEMPT_LEASE_COVERAGE,
     ...REVIEWED_IMAGE_UNDERSTANDING_COVERAGE,
     ...REVIEWED_CHATGPT_PLAN_COVERAGE,
+    ...MINDSWAPPER_CREDENTIAL_COVERAGE,
     ...REVIEWED_PERSONAL_MEMORY_FUNDING_COVERAGE,
     ...REVIEWED_PUBLIC_JOIN_AVAILABILITY_COVERAGE,
     ...REVIEWED_TASK_EXECUTION_EVIDENCE_COVERAGE_ENTRIES,
@@ -2002,6 +2004,7 @@ export const BASELINE_REGISTRY: CoverageRegistry = {
   ),
   debt: CURRENT_FROZEN_BASELINE_DEBT,
   reviewedDebtLinks: [
+    MINDSWAPPER_CHAT_PROCESSOR_DEBT_LINK,
     ...REVIEWED_WAVE_4_DEBT_LINKS.filter((entry) =>
       !RETIRED_MAIN_2026_08_14_LANDING_RAW_DATABASE_WRITER_LOCATORS.has(
         entry.locator,

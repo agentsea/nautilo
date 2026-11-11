@@ -64,7 +64,7 @@ describe("ProviderKeyCoverage", () => {
       rows.map((row) => within(row).getAllByRole("cell")[0]?.textContent),
     ).toEqual([
       "TypeSafeOpenRouterVeniceSurplus Intelligence (qualified routes)",
-      "VeniceOpenRouterOpenAIAnthropicGooglexAIFireworksTogether AISurplus Intelligence (qualified routes)OpenAI-compatible Gateway",
+      "VeniceOpenRouterOpenAIAnthropicGooglexAIFireworksTogether AISurplus Intelligence (qualified routes)OpenAI-compatible GatewayMindSwapper",
       "OpenAIAnthropicGoogleOpenRouterVeniceFireworksSurplus Intelligence (qualified models)",
       "VeniceOpenRouterOpenAISurplus Intelligence (Venice 3-large)",
       "ElevenLabs",

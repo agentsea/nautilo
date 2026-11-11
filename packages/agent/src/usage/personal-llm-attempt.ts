@@ -5,6 +5,8 @@ import { estimateCostFromPrice, resolveModelPrice, PRICING_VERSION } from "../co
 import { getUsageContext, normalizeUsageRoomId, runWithUsageContext } from "./usage-context";
 import type { ExtractedUsage } from "./usage-callback";
 import { classifyError } from "../utils/errors";
+import { findMindSwapperModel, isMindSwapperModelId } from "../config/mindswapper-models";
+import { MindSwapperRequestError } from "../providers/mindswapper-completions";
 import {
   getPersonalLlmAttemptOwner,
   type PersonalLlmAttemptOwnerBinding,
@@ -51,6 +53,12 @@ export function classifyPersonalAttemptFailure(
 ): { outcome: "cancelled" | "failed" | "unknown"; failureCode: string; disposition: PersonalAttemptErrorDisposition } {
   if (cancelled) {
     return { outcome: "cancelled", failureCode: "cancelled", disposition: "terminal_cancelled" };
+  }
+  if (error instanceof MindSwapperRequestError && error.outcomeUnknown) {
+    return { outcome: "unknown", failureCode: "outcome_unknown", disposition: "terminal_unknown" };
+  }
+  if (error instanceof MindSwapperRequestError && !providerWorkObserved && error.status === 402) {
+    return { outcome: "failed", failureCode: "insufficient_balance", disposition: "safe_refusal" };
   }
   const status = classifyError(error).statusCode;
   if (!providerWorkObserved && status !== undefined && VERIFIED_PRE_SERVICE_REFUSAL_STATUSES.has(status)) {
@@ -155,8 +163,9 @@ export async function runPersonalLlmAttempt<T>(input: {
   const isMemoryWork = context && ["memory_review", "room_stenographer", "room_reflection", "room_event_compaction"].includes(context.callType);
   const isServerImageAssistance = context?.callType === "image_assistance" && funding?.kind === "server";
   const isSoulService = context?.callType === "soul" && funding?.kind === "service";
+  const isMindSwapper = isMindSwapperModelId(input.modelId) && funding?.providerRoute === "mindswapper";
   if (!context || !funding || funding.providerRoute === "surplus"
-    || (funding.kind !== "personal" && !isMemoryWork && !isServerImageAssistance && !isSoulService)) {
+    || (funding.kind !== "personal" && !isMemoryWork && !isServerImageAssistance && !isSoulService && !isMindSwapper)) {
     if (input.assertStillAuthorized) {
       await input.assertStillAuthorized();
       input.signal?.throwIfAborted();
@@ -170,7 +179,10 @@ export async function runPersonalLlmAttempt<T>(input: {
   const owner = deps.owner();
   if (owner === null) throw new PersonalAttemptLedgerUnavailableError();
   const id = randomUUID();
-  const pricing = structuredClone(resolveModelPrice(input.modelId, context.modelControl?.servingProfileId));
+  const indicativePrice = isMindSwapper ? findMindSwapperModel(input.modelId)?.indicativePrice : undefined;
+  const pricing = isMindSwapper
+    ? indicativePrice ? { source: "mindswapper_catalogue", price: { ...indicativePrice } } : undefined
+    : structuredClone(resolveModelPrice(input.modelId, context.modelControl?.servingProfileId));
   try {
     const common = { id, ownerToken: owner.ownerToken,
       roomId: normalizeUsageRoomId(context.roomId),
@@ -178,8 +190,9 @@ export async function runPersonalLlmAttempt<T>(input: {
       callType: context.callType, model: input.modelId,
       provider: input.modelId.split(":", 1)[0]!, providerRoute: funding.providerRoute,
       endpoint: input.endpoint,
-      metadata: { ...(context.metadata ?? {}), usagePricingSource: pricing.source,
-        pricingSnapshot: pricing.price, ...(context.modelControl ?? {}) },
+      metadata: { ...(context.metadata ?? {}),
+        ...(pricing ? { usagePricingSource: pricing.source, pricingSnapshot: pricing.price } : {}),
+        ...(context.modelControl ?? {}) },
     };
     if (funding.kind === "personal") await deps.begin({ ...common, userId: funding.humanUserId,
       credentialId: funding.credentialId, credentialRevision: funding.credentialRevision });
@@ -205,7 +218,7 @@ export async function runPersonalLlmAttempt<T>(input: {
         || evidence.cachedInputTokens > 0 || evidence.cacheCreationTokens > 0);
     const costState = knownUnsent ? "actual" as const
       : evidence?.actualCostUsd != null ? "actual" as const
-      : hasTokenEvidence ? "estimated" as const : "unknown" as const;
+      : hasTokenEvidence && pricing ? "estimated" as const : "unknown" as const;
     const providerRequestId = evidence?.providerRequestId ?? terminalProviderRequestId;
     try {
       await settlePersonalAttemptWithRetry(persistSettlement, { attemptId: id, ownerToken: owner.ownerToken,
@@ -215,7 +228,7 @@ export async function runPersonalLlmAttempt<T>(input: {
           ? { inputTokens: evidence.inputTokens, outputTokens: evidence.outputTokens,
           reasoningTokens: evidence.reasoningTokens, cachedInputTokens: evidence.cachedInputTokens,
           ...(evidence.totalTokens === undefined ? {} : { totalTokens: evidence.totalTokens }),
-          ...(hasTokenEvidence ? {
+          ...(hasTokenEvidence && pricing ? {
             estimatedCostUsd: estimateCostFromPrice(pricing.price, evidence),
             pricingVersion: PRICING_VERSION,
           } : {}),
@@ -258,7 +271,7 @@ export async function runPersonalLlmAttempt<T>(input: {
     invocationEntered = true;
     const result = await runWithUsageContext({ ...context, trackedAttemptId: id,
       onAttemptUsage: (observed) => {
-        usage = observed;
+        usage = isMindSwapper ? { ...observed, actualCostUsd: null } : observed;
         if (terminalOutcome && initialSettlementDone && !knownCostSettled
           && !knownCostSettlementInFlight
           && hasKnownFinancialEvidence(observed)) {

@@ -26,6 +26,7 @@ const COVERAGE_ROWS = [
       ["together", "Together AI"],
       ["surplus", "Surplus Intelligence (qualified routes)"],
       ["gateway", "OpenAI-compatible Gateway"],
+      ["mindswapper", "MindSwapper"],
     ],
   },
   {

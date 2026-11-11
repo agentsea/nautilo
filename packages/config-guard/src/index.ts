@@ -140,6 +140,14 @@ export type {
   GoogleOAuthClientJsonValidationResult,
   GoogleOAuthClientJsonValidationSuccess,
 } from "./google-oauth-client-json";
+export {
+  MINDSWAPPER_API_KEY,
+  MINDSWAPPER_BASE_URL,
+  MINDSWAPPER_APPROVED_BASE_URLS,
+  normalizeMindSwapperBaseUrl,
+  getApprovedMindSwapperDestinations,
+  isApprovedMindSwapperDestination,
+} from "./mindswapper";
 
 function buildSummary(
   keys: KeyReport[],
@@ -208,7 +216,7 @@ export async function check(input?: unknown): Promise<CheckResult> {
       status = "missing";
     } else {
       const v = raw.trim();
-      masked = maskValue(v);
+      masked = def.id === "mindswapper" ? "********" : maskValue(v);
       if (!def.formatCheck(v)) {
         status = "invalid_format";
         hint = firstDoctorHint(def, v);

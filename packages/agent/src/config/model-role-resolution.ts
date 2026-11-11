@@ -10,6 +10,7 @@ import {
   ModelUnavailableError,
 } from "./eligible-models";
 import { resolveProviderKey } from "../resolve-provider-key";
+import { isMindSwapperModelId } from "./mindswapper-models";
 import {
   resolveSurplusChatServingAvailability,
   type QualifiedSurplusChatRoute,
@@ -117,6 +118,9 @@ export function resolveModelRole(
       : { allowChinaUpstream: options.allowChinaUpstream }),
   } as const;
   if (configured) {
+    if (role !== "chat" && isMindSwapperModelId(configured)) {
+      throw new ModelUnavailableError(configured, "unsupported-capability", "MindSwapper is available for chat and native text Tasks");
+    }
     if (role === "imageGeneration"
       && configured.startsWith("openrouter:")
       && !env["OPENROUTER_API_KEY"]?.trim()) {
@@ -137,6 +141,7 @@ export function resolveModelRole(
     .filter((model) => model.availability === "selectable"
       || (model.availability === "missing-key"
         && isServerSurplusRunnable(model.id, purpose, options)))
+    .filter((model) => !isMindSwapperModelId(model.id))
     .filter((model) => role !== "imageGeneration"
       || model.provider !== "openrouter"
       || !!env["OPENROUTER_API_KEY"]?.trim())

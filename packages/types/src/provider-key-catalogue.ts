@@ -32,6 +32,7 @@ export const PROVIDER_KEY_CATALOGUE: readonly ProviderKeyCatalogueEntry[] = [
   { id: "openai", name: "OpenAI", envVar: "OPENAI_API_KEY", category: "llm+embeddings", purpose: "GPT models + embeddings", required: false, signupUrl: "https://platform.openai.com/api-keys", formatHint: "sk-proj-..." },
   { id: "openrouter", name: "OpenRouter", envVar: "OPENROUTER_API_KEY", category: "llm", purpose: "OpenRouter-compatible chat models through one gateway key", required: false, signupUrl: "https://openrouter.ai/settings/keys", formatHint: "sk-or-v1-..." },
   { id: "gateway", name: "OpenAI-Compatible Gateway", envVar: "NAUTILO_GATEWAY_API_KEY", category: "llm", purpose: "Custom OpenAI-compatible chat endpoint. Also requires NAUTILO_GATEWAY_BASE_URL and a gateway model selection.", required: false, formatHint: "opaque gateway API key" },
+  { id: "mindswapper", name: "MindSwapper", envVar: "MINDSWAPPER_API_KEY", category: "llm", purpose: "Discover and use chat models from a MindSwapper API URL.", required: false, formatHint: "MindSwapper API key" },
   { id: "google", name: "Google", envVar: "GOOGLE_API_KEY", category: "llm", purpose: "Gemini models", required: false, signupUrl: "https://aistudio.google.com/apikey", formatHint: "opaque API key (20+ chars)" },
   { id: "xai", name: "xAI", envVar: "XAI_API_KEY", category: "llm", purpose: "xAI models", required: false, formatHint: "raw opaque API key" },
   { id: "fireworks", name: "Fireworks", envVar: "FIREWORKS_API_KEY", category: "llm", purpose: "Fireworks AI models", required: false, signupUrl: "https://app.fireworks.ai/settings/users/api-keys", formatHint: "fw_..." },
@@ -79,7 +80,7 @@ export const PERSONAL_PROVIDER_KEY_CATALOGUE: readonly PersonalProviderKeyCatalo
         ? "OpenAI text and image models; embeddings remain server-managed"
         : entry.purpose,
     personalCapabilities: [
-      ...(PERSONAL_CHAT_PROVIDER_IDS.has(entry.id) ? ["chat" as const] : []),
+      ...(PERSONAL_CHAT_PROVIDER_IDS.has(entry.id) || entry.id === "mindswapper" ? ["chat" as const] : []),
       ...(PERSONAL_RESEARCH_PROVIDER_IDS.has(entry.id) ? ["research" as const] : []),
       ...(PERSONAL_DECISION_PROVIDER_IDS.has(entry.id) ? ["decision" as const] : []),
       ...(entry.id === "browser-use" ? ["browsing" as const] : []),
@@ -110,7 +111,9 @@ export function personalProviderCapabilitySummary(
     return "Not used by delivered personal workflows in this release.";
   }
   const labels = provider.personalCapabilities.map((capability) =>
-    provider.id === "surplus" && capability === "images"
+    provider.id === "mindswapper" && capability === "chat"
+      ? "personal chat and native text Tasks"
+      : provider.id === "surplus" && capability === "images"
       ? "qualified image generation"
       : provider.id === "surplus" && capability === "media"
         ? "qualified video or music generation"
@@ -136,6 +139,7 @@ const KEY_DISPLAY_ORDER = [
   "fireworks",
   "together",
   "groq",
+  "mindswapper",
 ] as const;
 
 function displayOrder(providerId: string): number {

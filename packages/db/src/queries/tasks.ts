@@ -10435,7 +10435,8 @@ function sameTaskFundingBinding(
   return left.kind === right.kind
     && left.providerRoute === right.providerRoute
     && (left.kind === "server"
-      || (right.kind === "personal"
+      ? right.kind === "server" && left.connectionRevision === right.connectionRevision
+      : (right.kind === "personal"
         && left.credentialId === right.credentialId
         && left.credentialRevision === right.credentialRevision));
 }

@@ -11,6 +11,7 @@ import type { ModelCatalogEntry } from "@nautilo/types";
 import { resolveCatalogModel, resolveChinaUpstreamConsent } from "./resolved-catalog";
 import { scheduleVeniceCatalogRefreshIfNeeded } from "./venice-catalog-cache";
 import { getActiveModelCatalogSync } from "./model-catalog/runtime-catalog";
+import { isMindSwapperModelId, readMindSwapperModels } from "./mindswapper-models";
 
 function capabilityFailure(
   row: ReturnType<typeof resolveCatalogModel>,
@@ -154,12 +155,13 @@ function toEligibleModel(
  * enforces that).
  */
 export function getEligibleModels(opts: GetEligibleModelsOptions = {}): EligibleModel[] {
-  return projectEligibleModels(getActiveModelCatalogSync().catalog.entries, opts);
+  return projectEligibleModels(getActiveModelCatalogSync().catalog.entries, opts, readMindSwapperModels().map(({ id }) => id));
 }
 
 function projectEligibleModels(
   entries: readonly ModelCatalogEntry[],
   opts: GetEligibleModelsOptions,
+  mindSwapperIds: readonly string[],
 ): EligibleModel[] {
   const {
     includeUnavailable = false,
@@ -215,6 +217,25 @@ function projectEligibleModels(
     out.push(toEligibleModel(entry, availability, reason, routingClass));
   }
 
+  for (const id of mindSwapperIds) {
+    const row = resolveCatalogModel(id);
+    const failure = row.availability === "selectable" ? capabilityFailure(row, purpose) : row.unavailableReason;
+    const availability: ModelAvailability = row.availability !== "selectable" ? "filtered"
+      : failure ? "unsupported-capability" : "selectable";
+    if (!includeUnavailable && availability !== "selectable") continue;
+    out.push({
+      id,
+      displayName: row.displayName,
+      provider: row.provider,
+      priority: Number.MAX_SAFE_INTEGER,
+      costCoefficient: row.costCoefficient,
+      enabled: availability === "selectable",
+      capabilities: projectEligibleCapabilities(id),
+      availability,
+      ...(failure ? { unavailableReason: failure } : {}),
+    });
+  }
+
   // Canonical-row projection already merges venice capability hints, so the
   // legacy second-pass overlay is no longer needed. Keep the background refresh
   // kick so the cache warms for the next call.
@@ -253,7 +274,8 @@ export function resolveRetainedModels(
   }
   const requestedIds = new Set(normalized);
   const entries = getActiveModelCatalogSync().catalog.entries.filter((entry) => requestedIds.has(entry.id));
-  const all = projectEligibleModels(entries, { ...opts, includeUnavailable: true });
+  const mindSwapperIds = readMindSwapperModels().map(({ id }) => id).filter((id) => requestedIds.has(id));
+  const all = projectEligibleModels(entries, { ...opts, includeUnavailable: true }, mindSwapperIds);
   const byId = new Map(all.map((row) => [row.id, row]));
   return normalized.map((id) => {
     const found = byId.get(id);
@@ -273,7 +295,9 @@ export function resolveRetainedModels(
         webSearch: false,
       },
       availability: "unknown-model",
-      unavailableReason: "model is not present in the current signed catalog",
+      unavailableReason: isMindSwapperModelId(id)
+        ? "model is not available through your current MindSwapper connection"
+        : "model is not present in the current signed catalog",
     };
   });
 }

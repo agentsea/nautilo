@@ -8,6 +8,7 @@ import type { ModelControlSelection } from "@nautilo/types";
 import { log } from "@nautilo/logger";
 import type { ResolveForegroundModelControls } from "../utils/chat-model-invocation";
 import { getActiveModelCatalogSync } from "./model-catalog/runtime-catalog";
+import { findMindSwapperModel, isMindSwapperModelId } from "./mindswapper-models";
 import { resolveModelControlSelection, type ModelControlCatalogEntry } from "./model-control-selection";
 
 export interface ForegroundModelControlPlan {
@@ -36,6 +37,12 @@ export function buildForegroundModelControlPlan(
           : agentBundle?.modelId === candidateModelId
             ? agentBundle
             : null;
+      if (isMindSwapperModelId(candidateModelId) && findMindSwapperModel(candidateModelId)) {
+        if (matchingPersisted?.reasoningEffort !== undefined || matchingPersisted?.servingProfileId !== undefined) {
+          throw new Error("MindSwapper model selections do not have configurable reasoning or serving profiles.");
+        }
+        return undefined;
+      }
       if (!catalogByModelId.has(candidateModelId) && !matchingPersisted) return undefined;
       const catalogReasoning = catalogByModelId.get(candidateModelId)?.controls?.reasoning;
       const overrideEffort = serverReasoningPolicy?.overrides[candidateModelId];

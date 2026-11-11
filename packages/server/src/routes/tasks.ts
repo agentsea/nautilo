@@ -74,10 +74,14 @@ import {
   validateTaskModelSelectionForCreate,
   getProfileByAgentId,
   getRunAgentTranscript,
+  isMindSwapperModelId,
+  withMindSwapperModels,
+  type MindSwapperChatModel,
 } from "@nautilo/agent";
 import { candidatesForModelRole } from "@nautilo/config";
 import { getServerDirectDb } from "../lib/server-direct-db";
 import { callerTaskModelEnvironment, callerTaskModelIds } from "../lib/caller-task-model-context";
+import { readCallerMindSwapperModels } from "../lib/model-funding";
 import { requireAgentInvocation, requireServerFunding } from "../lib/agent-invocation-admission";
 import {
   AgentInvocationDeniedError,
@@ -234,6 +238,35 @@ async function taskSelectionValidationContext(
     purpose: "chat",
     baseModelId: configuredBaseModel ?? candidatesForModelRole("chat")[0]!,
   };
+}
+
+async function validateCallerTaskModelSelection(
+  requestorId: string,
+  agentId: string,
+  selection: Parameters<typeof validateTaskModelSelectionForCreate>[0],
+): Promise<string | null> {
+  const context = await taskSelectionValidationContext(requestorId, agentId, selection.toolsMode);
+  if ((typeof selection.requestedModelId === "string" && isMindSwapperModelId(selection.requestedModelId.trim()))
+    || isMindSwapperModelId(context.baseModelId ?? "")) {
+    const modelId = selection.requestedModelId ?? context.baseModelId;
+    const models = await readTaskSelectionMindSwapperModels(requestorId, { ...selection, requestedModelId: modelId });
+    return withMindSwapperModels(models, () => validateTaskModelSelectionForCreate({ ...selection, ...context }));
+  }
+  return validateTaskModelSelectionForCreate({ ...selection, ...context });
+}
+
+/** Fetch the exact caller projection before entering a protected publication
+ * transaction. Existing signed-model validation does not require discovery. */
+export async function readTaskSelectionMindSwapperModels(
+  requestorId: string,
+  selection: Pick<Parameters<typeof validateTaskModelSelectionForCreate>[0],
+    "requestedModelId" | "toolsMode" | "toolsWhitelist">,
+): Promise<readonly MindSwapperChatModel[]> {
+  if (typeof selection.requestedModelId !== "string"
+    || !isMindSwapperModelId(selection.requestedModelId.trim())) return [];
+  const tools = selection.toolsMode !== "none"
+    && !(selection.toolsMode === "whitelist" && (selection.toolsWhitelist?.length ?? 0) === 0);
+  return readCallerMindSwapperModels(requestorId, { tools });
 }
 
 type TaskSummarySource = Pick<
@@ -594,18 +627,12 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
     // truth, mutual-exclusion conflict) and profile/spec bias.
     // Unsatisfiable → 422 with the actionable message + structured detail.
     const toolsFieldsForValidation = toolsFields(body.tools);
-    const validationContext = await taskSelectionValidationContext(
-      ownerId,
-      agentId,
-      toolsFieldsForValidation.toolsMode,
-    );
-    const selectionError = validateTaskModelSelectionForCreate({
+    const selectionError = await validateCallerTaskModelSelection(ownerId, agentId, {
       requestedModelId: body.requestedModelId,
       profile: body.selectionProfile,
       spec: body.selectionSpec,
       toolsMode: toolsFieldsForValidation.toolsMode,
       toolsWhitelist: toolsFieldsForValidation.toolsWhitelist,
-      ...validationContext,
     });
     if (selectionError) {
       return reply
@@ -1144,16 +1171,14 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
           body.tools !== undefined ? tf.toolsMode : task.toolsMode;
         const effectiveToolsWhitelist =
           body.tools !== undefined ? (tf.toolsWhitelist ?? []) : task.toolsWhitelist;
-        const validationContext = await taskSelectionValidationContext(
-          task.requestorId,
-          task.agentId,
-          effectiveToolsMode,
-        );
-        const selectionError = validateTaskModelSelectionForCreate({
-          requestedModelId:
-            body.requestedModelId !== undefined
-              ? body.requestedModelId
-              : task.requestedModelId,
+        const requestedModelId = body.requestedModelId !== undefined
+          ? body.requestedModelId : task.requestedModelId;
+        if (task.fundingMode === "legacy_server" && typeof requestedModelId === "string"
+          && isMindSwapperModelId(requestedModelId.trim())) {
+          return reply.status(422).send({ error: "Create a new Task to use MindSwapper funding." });
+        }
+        const selectionError = await validateCallerTaskModelSelection(task.requestorId, task.agentId, {
+          requestedModelId,
           profile:
             body.selectionProfile !== undefined
               ? body.selectionProfile
@@ -1164,7 +1189,6 @@ export function tasksRoutes(app: FastifyInstance, deps: TasksRoutesDeps) {
               : task.selectionSpec,
           toolsMode: effectiveToolsMode,
           toolsWhitelist: effectiveToolsWhitelist,
-          ...validationContext,
         });
         if (selectionError) {
           return reply

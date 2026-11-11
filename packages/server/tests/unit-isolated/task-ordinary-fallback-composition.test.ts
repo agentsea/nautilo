@@ -18,6 +18,7 @@ import {
   importTaskOrdinaryFallbackSubmissionV1,
   isTaskOrdinaryFallbackMutableV1,
 } from "../../src/routes/task-ordinary-fallback-composition";
+import { validateCreateShape } from "../../src/routes/task-protected-composition";
 
 const TASK = "81000000-0000-8000-8000-000000000001";
 const authority = { userId: "owner", subjectHumanId: "human", actorId: "human",
@@ -71,6 +72,22 @@ function prepared(): TaskOrdinaryFallbackPreparedCreateRequestV1 {
 }
 
 describe("Task ordinary fallback admission", () => {
+  test("protected Task selection requires the exact caller's discovery and tool eligibility", () => {
+    const model = {
+      id: "mindswapper:example/tool-free",
+      displayName: "Example model",
+      offers: [{
+        inputModalities: ["text"],
+        supportedParameters: [],
+        maxInputTokens: 1024,
+        maxOutputTokens: 512,
+      }],
+    } as const;
+    expect(() => validateCreateShape({ requestedModelId: model.id, tools: [] })).toThrow("Unknown model_id");
+    expect(() => validateCreateShape({ requestedModelId: model.id, tools: [] }, [model])).not.toThrow();
+    expect(() => validateCreateShape({ requestedModelId: model.id }, [model])).toThrow(/tools|tool calling/i);
+  });
+
   test("binds transport content, execution fields, operation, Human and Device to signed metadata", () => {
     const request = prepared();
     const accepted = importTaskOrdinaryFallbackSubmissionV1({ authority, prepared: request, operation: "create" });

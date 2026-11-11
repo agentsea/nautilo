@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { TaskFundingBinding } from "@nautilo/types";
 import type { CapabilityFundingSession } from "./capability-funding";
+import type { MindSwapperChatModel } from "../config/mindswapper-models";
 import type { PersonalProviderCredential } from "../providers/types";
 import type { UsageFundingProvenance } from "../usage/usage-context";
 
@@ -50,6 +51,10 @@ export interface ForegroundFundingSnapshot {
 
 export interface ForegroundChatFundingSession {
   readonly admission?: ForegroundFundingSnapshot;
+  /** Non-secret catalogue for the admitted payer. Never serialized. */
+  readonly mindswapperModels?: readonly MindSwapperChatModel[];
+  /** Caller-visible Task discovery, which can differ from the current model's payer. */
+  readonly mindswapperTaskModels?: readonly MindSwapperChatModel[];
   /** Request-local serving fact, never checkpointed or used as funding authority. */
   readonly admittedTransport?: "direct" | "surplus";
   readonly kind: "personal" | "server";

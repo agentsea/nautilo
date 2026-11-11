@@ -98,6 +98,25 @@ function buildApp(
 }
 
 describe("room model-control selection routes", () => {
+  test("accepts an exact discovered MindSwapper ID through the caller's funding projection", async () => {
+    const id = "mindswapper:example/model";
+    const { app, setCalls } = buildApp(async (human, modelId) => ({
+      ...availableForServer(modelId), selectableInThisRelease: human === USER_ID && modelId === id,
+    }));
+    try {
+      const put = (selection: ModelControlSelection) => app.inject({
+        method: "PUT", url: "/api/rooms/room-1/agents/agent-1/model-control-selection",
+        headers: { "x-test-user": USER_ID, "x-test-actor": USER_ACTOR_ID }, payload: { selection },
+      });
+      expect((await put({ modelId: id })).statusCode).toBe(200);
+      expect((await put({ modelId: id, reasoningEffort: "high" })).statusCode).toBe(422);
+      expect((await put({ modelId: "mindswapper:unknown/model" })).statusCode).toBe(422);
+      expect(setCalls).toEqual([{ roomId: ROOM_ID, agentId: AGENT_ID, selection: { modelId: id } }]);
+    } finally {
+      await app.close();
+    }
+  });
+
   test("opt-in effective model projection retains the existing authorized endpoint", async () => {
     const { app } = buildApp();
     try {

@@ -7,6 +7,8 @@ export type TaskFundingBinding =
   | Readonly<{
       kind: "server";
       providerRoute: string;
+      /** Exact server connection revision for a MindSwapper admission. */
+      connectionRevision?: string;
     }>
   | Readonly<{
       kind: "personal";
@@ -64,7 +66,13 @@ export function parseTaskFundingBinding(value: unknown): TaskFundingBinding {
   if (!isRecord(value) || !validProviderRoute(value["providerRoute"])) {
     throw new TypeError("Task funding binding is malformed");
   }
+  if (value["kind"] === "server" && value["providerRoute"] === "mindswapper"
+    && hasExactKeys(value, ["kind", "providerRoute", "connectionRevision"])
+    && typeof value["connectionRevision"] === "string" && /^[0-9a-f]{64}$/u.test(value["connectionRevision"])) {
+    return Object.freeze({ kind: "server", providerRoute: "mindswapper", connectionRevision: value["connectionRevision"] });
+  }
   if (value["kind"] === "server" && hasExactKeys(value, ["kind", "providerRoute"])) {
+    if (value["providerRoute"] === "mindswapper") throw new TypeError("Task funding binding is malformed");
     return Object.freeze({ kind: "server", providerRoute: value["providerRoute"] });
   }
   if (

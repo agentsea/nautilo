@@ -1,8 +1,9 @@
-import { getEligibleModels } from "@nautilo/agent";
+import { getEligibleModels, withMindSwapperModels } from "@nautilo/agent";
 import { getServerProviderPolicy, listPersonalProviderCredentials } from "@nautilo/db";
 import { getUserCapabilities } from "@nautilo/trust";
 import { getServerDirectDb } from "./server-direct-db";
-import { createModelFundingSnapshot, resolveModelFunding, resolveServerFundingRoute } from "./model-funding";
+import { createModelFundingSnapshot, readCallerMindSwapperModels, resolveModelFunding, resolveServerFundingRoute } from "./model-funding";
+import { isMindSwapperModelId } from "./mindswapper-catalog";
 
 /** Presence-only selection data. No credential plaintext crosses model discovery. */
 const PERSONAL_CHAT_ENV: Readonly<Record<string, string>> = {
@@ -30,7 +31,8 @@ export async function callerTaskModelEnvironment(humanUserId: string): Promise<N
 
 export async function callerTaskModelIds(humanUserId: string): Promise<readonly string[]> {
   const snapshot = await createModelFundingSnapshot(humanUserId);
-  const rows = getEligibleModels({ purpose: "chat", includeUnavailable: true, env: {} });
+  const models = await readCallerMindSwapperModels(humanUserId, {}, snapshot.deps);
+  const rows = withMindSwapperModels(models, () => getEligibleModels({ purpose: "chat", includeUnavailable: true, env: {} }));
   const admitted = await Promise.all(rows.map(async row => {
     if (row.availability !== "selectable" && row.availability !== "missing-key") return null;
     try {
@@ -43,6 +45,9 @@ export async function callerTaskModelIds(humanUserId: string): Promise<readonly 
 
 export async function personalOnlyTaskModelIds(humanUserId: string, models: readonly string[]): Promise<readonly string[]> {
   const caps = await getUserCapabilities(humanUserId);
+  const serverModels = caps.includes("use_server_provider_credentials") && models.some(isMindSwapperModelId)
+    ? await readCallerMindSwapperModels(humanUserId, { kind: "server" }) : [];
   return models.filter((modelId) => !caps.includes("use_server_provider_credentials")
-    || resolveServerFundingRoute(modelId) === null);
+    || (isMindSwapperModelId(modelId)
+      ? !serverModels.some(model => model.id === modelId) : resolveServerFundingRoute(modelId) === null));
 }

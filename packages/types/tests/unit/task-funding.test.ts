@@ -74,4 +74,12 @@ describe("Task funding binding", () => {
       expect(taskFundingFailureMessage(code).length).toBeGreaterThan(0);
     }
   });
+
+  test("requires a server connection revision for MindSwapper only", () => {
+    const binding = { kind: "server", providerRoute: "mindswapper", connectionRevision: "c".repeat(64) } as const;
+    expect(parseTaskFundingBinding(binding)).toEqual(binding);
+    expect(() => parseTaskFundingBinding({ kind: "server", providerRoute: "mindswapper" })).toThrow(TypeError);
+    expect(() => parseTaskFundingBinding({ ...binding, connectionRevision: "secret" })).toThrow(TypeError);
+    expect(() => parseTaskFundingBinding({ ...binding, providerRoute: "openrouter" })).toThrow(TypeError);
+  });
 });

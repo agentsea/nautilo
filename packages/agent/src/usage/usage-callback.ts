@@ -3,6 +3,7 @@ import { BaseCallbackHandler } from "@langchain/core/callbacks/base";
 import type { LLMResult } from "@langchain/core/outputs";
 import { recordLlmUsage, type RecordUsageInput } from "./record-usage";
 import { getUsageContext, normalizeUsageRoomId } from "./usage-context";
+import { isMindSwapperModelId } from "../config/mindswapper-models";
 import {
   createToolProviderCostRecorder,
   providerToolEstimateReceipt,
@@ -221,6 +222,8 @@ class UsageCallbackHandler extends BaseCallbackHandler {
 
   override handleLLMEnd(output: LLMResult, runId?: string): void {
     const usage = extractUsageFromLLMResult(output);
+    // Inference response usage does not establish the Gateway customer's charge.
+    if (usage && isMindSwapperModelId(this.modelId)) usage.actualCostUsd = null;
     const ctx = getUsageContext();
     // Surplus has a durable pre-wire attempt row and exact buyer receipt.
     // Recording a second callback row would double-count this invocation.

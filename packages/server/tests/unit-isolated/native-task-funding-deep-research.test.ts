@@ -115,7 +115,9 @@ class TestModelFundingError extends Error {
     super(code);
   }
 }
+const actualModelFunding = await import("../../src/lib/model-funding");
 mock.module("../../src/lib/model-funding", () => ({
+  ...actualModelFunding,
   ModelFundingError: TestModelFundingError,
   readModelFundingPolicy: async () => ({
     allowPersonalProviderKeys,

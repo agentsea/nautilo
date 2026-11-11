@@ -120,6 +120,49 @@ describe("POST /api/setup/keys (D445 Phase 1)", () => {
     };
   }
 
+  test("MindSwapper connection requires authenticated provider administration", async () => {
+    const path = "/api/setup/keys/mindswapper/connection";
+    const anonymous = await makeApp().inject({ method: "GET", url: path });
+    expect(anonymous.statusCode).toBe(401);
+    getUserCapabilitiesMock.mockImplementation(async () => []);
+    const denied = await makeApp(MEMBER_USER_ID).inject({
+      method: "PUT", url: path, payload: { approvedDestinations: ["https://api.example/v1"] },
+    });
+    expect(denied.statusCode).toBe(403);
+    expect(transactionMock).not.toHaveBeenCalled();
+  });
+
+  test("MindSwapper approval can be saved without a shared key and paired saves check the exact URL", async () => {
+    const path = "/api/setup/keys/mindswapper/connection";
+    const app = makeApp(ADMIN_USER_ID);
+    const baseUrl = "https://shared.example/v1";
+    const personalUrl = "https://personal.example/tenant/v1";
+    const originalFetch = globalThis.fetch;
+    const check = mock(async (_url: Parameters<typeof fetch>[0], _init?: RequestInit) => Response.json({ data: { label: "test key" } }));
+    globalThis.fetch = check as unknown as typeof fetch;
+    try {
+      const approved = await app.inject({ method: "PUT", url: path, payload: { approvedDestinations: [personalUrl + "/"] } });
+      expect(approved.statusCode).toBe(200);
+      expect(check).not.toHaveBeenCalled();
+      expect(transactionMock.mock.calls[0]?.[0]).toMatchObject({
+        operations: [{ type: "set", key: "MINDSWAPPER_APPROVED_BASE_URLS", value: personalUrl }],
+      });
+      const paired = await app.inject({ method: "PUT", url: path, payload: { baseUrl: baseUrl + "/", apiKey: SECRET_VALUE } });
+      expect(paired.statusCode).toBe(200);
+      expect(paired.body).not.toContain(SECRET_VALUE);
+      expect(check.mock.calls[0]?.[0]).toBe(baseUrl + "/key");
+      expect(check.mock.calls[0]?.[1]).toMatchObject({ redirect: "error", headers: { Authorization: `Bearer ${SECRET_VALUE}` } });
+      expect(transactionMock.mock.calls[1]?.[0]).toMatchObject({
+        operations: [
+          { type: "set", key: "MINDSWAPPER_BASE_URL", value: baseUrl },
+          { type: "set", key: "MINDSWAPPER_API_KEY", value: SECRET_VALUE },
+        ],
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("401 when remote, unauthenticated, no bootstrap token", async () => {
     const app = makeApp(null);
     const res = await app.inject({

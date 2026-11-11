@@ -12,6 +12,8 @@ import { wrapAnthropicModelForToolSchemas } from "./anthropic-schema";
 import { resolveFireworksKimiK3ServingProfile } from "./serving-profile";
 import { getActiveModelCatalogSync } from "../config/model-catalog/runtime-catalog";
 import { OpenRouterReasoningCompletions } from "./openrouter-reasoning";
+import { createMindSwapperFetch, MindSwapperCompletions } from "./mindswapper-completions";
+import { findMindSwapperModel, mindSwapperOfferForModel, mindSwapperUpstreamModelId, readMindSwapperConnection } from "../config/mindswapper-models";
 import { isDirectGpt6Model, OpenAIGpt6Completions, OpenAIUsageResponses } from "./openai-compat";
 import {
   VeniceChatOpenAICompletions,
@@ -245,7 +247,7 @@ function resolveTimeoutMs(options: CreateModelOptions): number | undefined {
 
 export function stripProviderPrefix(modelId: string): string {
   return String(modelId || "").replace(
-    /^(openai|anthropic|google|xai|fireworks|together|openrouter|gateway|venice):/i,
+    /^(openai|anthropic|google|xai|fireworks|together|openrouter|gateway|mindswapper|venice):/i,
     "",
   );
 }
@@ -300,7 +302,15 @@ export async function createOpenAI(options: CreateModelOptions): Promise<ChatMod
   if (options.headers && Object.keys(options.headers).length > 0) {
     configuration["defaultHeaders"] = { ...options.headers };
   }
-  if (options.forbidRedirects) {
+  const mindSwapperModel = mindSwapperUpstreamModelId(options.modelId);
+  if (mindSwapperModel) {
+    const offer = mindSwapperOfferForModel(findMindSwapperModel(options.modelId));
+    const connection = readMindSwapperConnection();
+    if (!connection || connection.baseUrl !== options.baseUrl || connection.apiKey !== options.apiKey || !offer) {
+      throw new Error("MindSwapper connection or model is unavailable.");
+    }
+    configuration["fetch"] = createMindSwapperFetch(connection, mindSwapperModel, offer);
+  } else if (options.forbidRedirects) {
     configuration["fetch"] = (
       input: Parameters<typeof fetch>[0],
       init?: Parameters<typeof fetch>[1],
@@ -315,7 +325,8 @@ export async function createOpenAI(options: CreateModelOptions): Promise<ChatMod
   };
   if (timeoutMs !== undefined) base["timeout"] = timeoutMs;
   if (options.callbacks) base["callbacks"] = options.callbacks;
-  if (options.maxRetries !== undefined) base["maxRetries"] = options.maxRetries;
+  if (mindSwapperModel) base["maxRetries"] = 0;
+  else if (options.maxRetries !== undefined) base["maxRetries"] = options.maxRetries;
   if (options.apiKey) base["apiKey"] = options.apiKey;
   if (useResponsesApi) {
     const directGpt6 = isDirectGpt6Model(options.modelId);
@@ -351,10 +362,11 @@ export async function createOpenAI(options: CreateModelOptions): Promise<ChatMod
       };
     }
   } else {
-    const modelKwargs = {
-      ...openAICompatibleReasoningModelKwargs(options, maxTokens),
-      ...(options.modelKwargs ?? {}),
-    };
+    const effort = options.reasoningEffort;
+    if (mindSwapperModel && effort === "max") throw new Error("MindSwapper Chat Completions does not support max reasoning effort.");
+    const modelKwargs = mindSwapperModel
+      ? (effort === undefined ? {} : { reasoning_effort: effort === "off" ? "none" : effort })
+      : { ...openAICompatibleReasoningModelKwargs(options, maxTokens), ...(options.modelKwargs ?? {}) };
     // Pass-through for provider-specific body fields (e.g. Venice's
     // `venice_parameters`). `@langchain/openai` spreads `modelKwargs` directly
     // into the chat completion request body — see chat_models/completions.js:49.
@@ -366,7 +378,8 @@ export async function createOpenAI(options: CreateModelOptions): Promise<ChatMod
   const isDirectOpenAI = options.modelId.toLowerCase().startsWith("openai:");
   const llm = new ChatOpenAI({ ...base,
     ...(useResponsesApi && isDirectOpenAI ? { responses: new OpenAIUsageResponses(base) } : {}),
-    ...(!useResponsesApi && options.modelId.toLowerCase().startsWith("openrouter:")
+    ...(mindSwapperModel ? { completions: new MindSwapperCompletions(base) }
+      : !useResponsesApi && options.modelId.toLowerCase().startsWith("openrouter:")
       ? { completions: new OpenRouterReasoningCompletions(base) }
       : !useResponsesApi && isVenice
         ? { completions: new VeniceChatOpenAICompletions(base) }

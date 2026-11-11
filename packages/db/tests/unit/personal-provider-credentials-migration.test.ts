@@ -11,6 +11,11 @@ const providerExpansionMigrationPath = join(
   import.meta.dir,
   "../../src/migrations/0312_salty_robin_chapel.sql",
 );
+const initialExpandedProviders = [
+  "typesafe", "anthropic", "openai", "openrouter", "nautilo-gateway", "gateway",
+  "google", "xai", "fireworks", "together", "venice", "elevenlabs", "groq", "tavily",
+  "browser-use", "cloudconvert",
+];
 
 describe("personal provider credential migration", () => {
   test("creates one encrypted current record per Human and provider", async () => {
@@ -51,17 +56,25 @@ describe("personal provider credential migration", () => {
     expect(migration).toContain(
       'DROP CONSTRAINT "personal_provider_credentials_provider_check"',
     );
-    // Applied migrations retain their original provider set.
-    for (const provider of PERSONAL_PROVIDER_IDS.filter((id) => id !== "surplus")) {
+    for (const provider of initialExpandedProviders) {
       expect(migration).toContain(`'${provider}'`);
     }
+    expect(migration).not.toContain("'mindswapper'");
   });
 
   test("adds marketplace credentials and endpoint binding without rewriting encrypted history", async () => {
     const migration = await readFile(join(import.meta.dir, "../../src/migrations/0318_wakeful_energizer.sql"), "utf8");
-    for (const provider of PERSONAL_PROVIDER_IDS) expect(migration).toContain(`'${provider}'`);
+    for (const provider of [...initialExpandedProviders, "surplus"]) expect(migration).toContain(`'${provider}'`);
     expect(migration).toContain('ADD COLUMN "destination" text');
     expect(migration).toContain('ADD COLUMN "receipt_read_status" varchar(16) DEFAULT \'unknown\' NOT NULL');
     expect(migration).not.toMatch(/UPDATE\s+"personal_provider_credentials"|DROP TABLE/i);
+  });
+
+  test("adds destination-bound MindSwapper credentials without rewriting prior envelopes", async () => {
+    const migration = await readFile(join(import.meta.dir, "../../src/migrations/0386_blue_vulcan.sql"), "utf8");
+    for (const provider of PERSONAL_PROVIDER_IDS) expect(migration).toContain(`'${provider}'`);
+    expect(migration).toContain('ADD CONSTRAINT "personal_provider_credentials_destination_check"');
+    expect(migration).toContain('"provider" = \'mindswapper\' and nullif("personal_provider_credentials"."destination", \'\') is not null');
+    expect(migration).not.toMatch(/UPDATE\s+"personal_provider_credentials"|DROP TABLE|DROP COLUMN/i);
   });
 });

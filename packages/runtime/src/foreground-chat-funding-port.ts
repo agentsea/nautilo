@@ -1,10 +1,17 @@
 import { getCurrentExternalRoomExecution } from "./external-room-execution";
-import type { ForegroundChatFundingSession } from "@nautilo/agent";
+import {
+  getDefaultForegroundAgentModelId,
+  isMindSwapperModelId,
+  resolveForegroundAgentModelId,
+  withMindSwapperModels,
+  type ForegroundChatFundingSession,
+  type MindSwapperChatModel,
+} from "@nautilo/agent";
 import {
   getAcceptedInvocationAuthoritySubject,
   type AcceptedInvocationAuthority,
 } from "@nautilo/trust";
-import { and, connectedWebOperations, eq } from "@nautilo/db";
+import { and, connectedWebOperations, eq, getCachedServerModelConfigRow } from "@nautilo/db";
 import { getTaskRunDb } from "./tasks/task-runtime-context";
 
 export type ForegroundChatFundingEntrypoint =
@@ -32,6 +39,8 @@ export interface ImageAssistanceSession {
 }
 
 export interface ForegroundChatFundingPort {
+  readServerMindSwapperModels?: () => Promise<readonly MindSwapperChatModel[]>;
+
   openImageAssistance?(
     input: Omit<ForegroundChatFundingOpenInput, "entrypoint"> & {
       readonly entrypoint: "foreground.main" | "foreground.fork";
@@ -80,6 +89,35 @@ export function uninstallForegroundChatFundingPort(): void {
 
 export function hasForegroundChatFundingPort(): boolean {
   return installedPort !== undefined;
+}
+
+/** Keep an explicit server chat pin through admission, including when its
+ * shared connection is unavailable and this Human can fund the same ID. */
+export async function resolveDefaultFundedForegroundModelId(): Promise<string> {
+  const configured = process.env["NAUTILO_MODEL"]?.trim()
+    || getCachedServerModelConfigRow()?.defaultChatModel?.trim();
+  if (configured && isMindSwapperModelId(configured)) {
+    const models = await installedPort?.readServerMindSwapperModels?.();
+    if (!models?.some((row) => row.id === configured
+      && row.offers.some((offer) => offer.supportedParameters.includes("tools")))) return configured;
+    return withMindSwapperModels(models, () => getDefaultForegroundAgentModelId());
+  }
+  return getDefaultForegroundAgentModelId();
+}
+
+/** Dynamic selections are runnable only after the accepted Human's funding
+ * session supplies a projection for the exact model and payer. */
+export function resolveAdmittedForegroundModelId(
+  modelId: string,
+  session: ForegroundChatFundingSession | null,
+): string {
+  if (isMindSwapperModelId(modelId)
+    && !session?.mindswapperModels?.some((row) => row.id === modelId)) {
+    throw new ForegroundChatFundingAuthorityError();
+  }
+  if (session?.kind === "personal") return modelId;
+  return withMindSwapperModels(session?.mindswapperModels ?? [],
+    () => resolveForegroundAgentModelId(modelId, { fundingKind: "server" }));
 }
 
 function hasUnsupportedForegroundFundingShape(
