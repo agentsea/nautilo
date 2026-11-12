@@ -508,9 +508,11 @@ export function ModelSection({ showProviderKeyStatus = true }: { showProviderKey
                                 <code className="mt-1 block truncate font-mono text-[11px] text-foreground-muted">
                                   {m.id}
                                 </code>
-                                <span className="mt-1 block text-[11px] text-foreground-dim">
-                                  Priority {m.priority} · cost ×{formatCostCoefficient(m.costCoefficient)}
-                                </span>
+                                {provider !== "mindswapper" ? (
+                                  <span className="mt-1 block text-[11px] text-foreground-dim">
+                                    Priority {m.priority} · cost ×{formatCostCoefficient(m.costCoefficient)}
+                                  </span>
+                                ) : null}
                                 {veniceBadges.length > 0 ? (
                                   <span className="mt-1 block text-[10px] leading-snug text-foreground-dim">
                                     {veniceBadges.join(" · ")}

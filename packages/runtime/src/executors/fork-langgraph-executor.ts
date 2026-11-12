@@ -454,35 +454,40 @@ export async function* forkLanggraphExecutor(
         : undefined;
   const retainedImageResults: ImageAssistanceResult[] = protectedTurn ? retainedImageAssistance(protectedTurn.history) : [];
   let imageReplyContext = "";
-  const historyMessages = protectedTurn === undefined
-    ? await prepareForegroundEncryptedContext(
-      () => resolveForegroundHistoryMessages({
-        turnKind: "fresh",
-        roomId,
-        transcriptOwnerId,
-        agentId,
+  // Context preparation runs before graph nodes establish their funding scope.
+  const historyMessages = await withMindSwapperModels(
+    fundingSession?.mindswapperModels ?? [],
+    async () => (protectedTurn === undefined
+      ? await prepareForegroundEncryptedContext(
+        () => resolveForegroundHistoryMessages({
+          turnKind: "fresh",
+          roomId,
+          transcriptOwnerId,
+          agentId,
+          modelId,
+          currentHumanText: message,
+          ...(multimodalImages.length > 0 && turnId ? { imageAssistanceTurnId: turnId } : {}),
+          onAuthorizedHistory: (hits) => {
+            retainedImageResults.push(...retainedImageAssistance(hits));
+            imageReplyContext = hits.find((hit) => hit.messageId === input["replyToMessageId"])?.snippet ?? "";
+          },
+          ...(initialRecordContext === undefined
+            ? {}
+            : { recordContext: initialRecordContext }),
+          signal,
+          ...(subthreadParentRoomId ? { subthreadParentRoomId } : {}),
+          ...(subthreadAnchorMessageId != null ? { subthreadAnchorMessageId } : {}),
+          ...(currentMessageId != null ? { currentMessageId } : {}),
+          excludeMessageIds: memoryReviewSourceIds(input),
+        }),
+        liveShadowContext?.session?.authorizationDeadlineAt,
+      )
+      : buildProtectedRoomTranscriptContext(
+        imageAssistanceHistory(protectedTurn.history.filter((hit) => !memoryReviewSourceIds(input).includes(hit.messageId))),
         modelId,
-        currentHumanText: message,
-        ...(multimodalImages.length > 0 && turnId ? { imageAssistanceTurnId: turnId } : {}),
-        onAuthorizedHistory: (hits) => {
-          retainedImageResults.push(...retainedImageAssistance(hits));
-          imageReplyContext = hits.find((hit) => hit.messageId === input["replyToMessageId"])?.snippet ?? "";
-        },
-        ...(initialRecordContext === undefined
-          ? {}
-          : { recordContext: initialRecordContext }),
-        signal,
-        ...(subthreadParentRoomId ? { subthreadParentRoomId } : {}),
-        ...(subthreadAnchorMessageId != null ? { subthreadAnchorMessageId } : {}),
-        ...(currentMessageId != null ? { currentMessageId } : {}),
-        excludeMessageIds: memoryReviewSourceIds(input),
-      }),
-      liveShadowContext?.session?.authorizationDeadlineAt,
-    )
-    : buildProtectedRoomTranscriptContext(
-      imageAssistanceHistory(protectedTurn.history.filter((hit) => !memoryReviewSourceIds(input).includes(hit.messageId))),
-      modelId,
-    );
+      )
+    ),
+  );
 
   // Do not mutate Memory tiers until every selected pre-model family is
   // ready. Any later context wait repeats this executor with the same product
@@ -814,11 +819,14 @@ export async function* forkLanggraphExecutor(
     const eventStream = streamForegroundGraph(graph, graphInput, streamConfig, {
       signal,
       ...(foregroundContextRefreshEligible ? {
-        rebuildForegroundContext: createForegroundContextRebuilder({
-          roomId, ownerId: ownerId, agentId, receipts: foregroundContextReceipts,
-          ...(protectedTurn === undefined ? {} : { protectedTurn }),
-          ...(initialRecordContext === undefined ? {} : { recordContext: initialRecordContext }),
-        }),
+        rebuildForegroundContext: (transition) => withMindSwapperModels(
+          fundingSession?.mindswapperModels ?? [],
+          () => createForegroundContextRebuilder({
+            roomId, ownerId: ownerId, agentId, receipts: foregroundContextReceipts,
+            ...(protectedTurn === undefined ? {} : { protectedTurn }),
+            ...(initialRecordContext === undefined ? {} : { recordContext: initialRecordContext }),
+          })(transition),
+        ),
       } : {}),
     });
 

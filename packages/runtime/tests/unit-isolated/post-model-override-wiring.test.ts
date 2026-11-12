@@ -20,6 +20,8 @@ import type { WorkstationAdmissionDecision } from "@nautilo/trust";
 import * as realNautiloAgent from "@nautilo/agent";
 import * as realTrust from "@nautilo/trust";
 import * as realDatabase from "@nautilo/db";
+import * as realFundingPort from "../../src/foreground-chat-funding-port";
+import type { ProtectedConversationExecutionServices, ProtectedConversationExecutorTurnScope } from "../../src/conversation/conversation-execution-services";
 import * as externalRoomContext from "../../src/executors/external-room-context";
 
 let capturedDeps: unknown = undefined;
@@ -46,11 +48,38 @@ const capturedGraphInputs: Record<string, unknown>[] = [];
 const resolvedModelIds: string[] = [];
 const forkSourceLookups: string[][] = [];
 const assertForkRoomContextAllowed = externalRoomContext.assertForkRoomContextAllowed;
+const externalRoomExecutionInput = externalRoomContext.externalRoomExecutionInput;
+const getRealModelTokenLimit = realNautiloAgent.getModelTokenLimit;
+const streamRealForegroundGraph = realNautiloAgent.streamForegroundGraph;
+let exerciseContextRefresh = false;
+
+// Keep the real history renderer and model-limit resolver. Only its data reads
+// and the already-admitted server funding port are replaced in this fixture.
+const admittedSessions = new Map<string, realNautiloAgent.ForegroundChatFundingSession>();
+let haltAtContextLimit = false;
+const preparedContextLimits: number[] = [];
+const contextLimitReached = "__real_context_limit_prepared__";
+mock.module("../../src/foreground-chat-funding-port", () => ({
+  ...realFundingPort,
+  openForegroundChatFundingSessionForInvocation: async (input: { roomId: string }) =>
+    admittedSessions.get(input.roomId) ?? null,
+}));
+mock.module("../../src/context/build-transcript-context-deps", () => ({
+  defaultBuildTranscriptContextDeps: () => ({
+    readRoomTranscript: async () => { await Promise.resolve(); return []; },
+    readSubagentTranscript: async () => [],
+    close: async () => {},
+  }),
+}));
 
 // Model-selection fixtures have no external source Rooms. Keep the real fork
 // guard, but supply its canonical lookup instead of consulting a live database.
 mock.module("../../src/executors/external-room-context", () => ({
   ...externalRoomContext,
+  externalRoomExecutionInput: (input: Record<string, unknown>) => externalRoomExecutionInput(input, {
+    ...realTrust.externalRoomExecutionDependencies,
+    policy: async () => null,
+  }),
   assertForkRoomContextAllowed: (input: Record<string, unknown>, fork: Parameters<typeof externalRoomContext.assertForkRoomContextAllowed>[1]) =>
     assertForkRoomContextAllowed(input, fork, {
       policy: async () => null,
@@ -71,6 +100,28 @@ const noImageAssistance: typeof realNautiloAgent.maybeSummarizeImagesWithVisionF
 
 mock.module("@nautilo/agent", () => ({
   ...realNautiloAgent,
+  streamForegroundGraph: async function* (...args: Parameters<typeof streamRealForegroundGraph>) {
+    if (!exerciseContextRefresh) return yield* streamRealForegroundGraph(...args);
+    const graphInput = args[1] as realNautiloAgent.NautiloState;
+    const rebuild = args[3]?.rebuildForegroundContext;
+    if (!rebuild) throw new Error("missing-foreground-refresh-callback");
+    haltAtContextLimit = true;
+    if (graphInput.model === null) throw new Error("missing-refresh-model");
+    await rebuild({
+      state: graphInput,
+      request: { kind: "foreground_context_refresh", status: "ready", reason: "visible_assistant_text",
+        modelId: graphInput.model, maximumContextCharacters: 1_000, projectionFingerprint: "fixture" },
+    });
+    throw new Error("unexpected-refresh-success");
+  },
+  getModelTokenLimit: (modelId: string) => {
+    const limit = getRealModelTokenLimit(modelId);
+    if (haltAtContextLimit) {
+      preparedContextLimits.push(limit);
+      throw new Error(contextLimitReached);
+    }
+    return limit;
+  },
   // Keep the REAL defaultPostModelDeps object so the test's mutation is
   // visible to the executor (it imports the same reference).
   defaultPostModelDeps: realNautiloAgent.defaultPostModelDeps,
@@ -155,6 +206,10 @@ type PostModelDepsWithResolver = {
 };
 
 afterEach(() => {
+  exerciseContextRefresh = false;
+  admittedSessions.clear();
+  haltAtContextLimit = false;
+  preparedContextLimits.length = 0;
   capturedDeps = undefined;
   capturedPolicyResolver = undefined;
   captureGraphInput = false;
@@ -347,4 +402,92 @@ describe("foreground model-control snapshot ingress", () => {
     expect(resolvedModelIds).not.toContain(profileDefaultModel);
     expect(foregroundCatalogHydrationCalls).toBe(0);
   });
+});
+
+
+describe("funded foreground context preparation", () => {
+  const modelId = "mindswapper:fixture/chat";
+  const model = (maxInputTokens: number): realNautiloAgent.MindSwapperChatModel => ({
+    id: modelId,
+    displayName: "Scoped chat fixture",
+    offers: [{ inputModalities: ["text"], supportedParameters: ["tools"], maxInputTokens, maxOutputTokens: 100 }],
+  });
+  const session = (models: readonly realNautiloAgent.MindSwapperChatModel[]): realNautiloAgent.ForegroundChatFundingSession => ({
+    kind: "server",
+    mindswapperModels: models,
+    recheckAttempt: async () => {},
+    runAttempt: async () => { throw new Error("unexpected-provider-attempt-during-context-preparation"); },
+  });
+
+  async function prepare(fork: boolean, protectedContext: boolean, roomId: string): Promise<void> {
+    const input = {
+      ...minimalInput(), model: modelId, roomId,
+      ...(exerciseContextRefresh ? { causalHumanUserId: "human-fixture", explicitlySelected: true, currentMessageId: 10 } : {}),
+      ...(fork ? { forkRun: {
+        mode: "fork", parentThreadId: "parent", forkThreadId: "parent:fork:fixture",
+        checkpointThreadId: "parent:fork:fixture", transcriptThreadId: "parent",
+        sequence: 1, pendingTurns: [],
+      } } : {}),
+    };
+    // Context limit resolution must finish before any protected service can be
+    // used. The real limit resolver below halts at that precise boundary.
+    const services = protectedContext ? {} as ProtectedConversationExecutionServices : undefined;
+    const turn: ProtectedConversationExecutorTurnScope | undefined = protectedContext ? {
+      history: [],
+      readFreshHistory: async () => { throw new Error("unexpected-refresh"); },
+      persist: async () => { throw new Error("unexpected-protected-write"); },
+    } : undefined;
+    const execute = fork ? forkLanggraphExecutor : langgraphExecutor;
+    await execute(input, "context-preparation-fixture", null, new AbortController().signal, services, turn).next();
+  }
+
+  for (const fork of [false, true]) {
+    test(`${fork ? "fork" : "main"} later history refresh re-enters the same model scope outside graph nodes`, async () => {
+      exerciseContextRefresh = true;
+      captureGraphInput = true;
+      admittedSessions.set("room-refresh", session([model(2_000)]));
+      const result = await prepare(fork, false, "room-refresh").then(
+        () => "unexpected-context-success", (error: unknown) => String(error),
+      );
+      expect(result).toContain(contextLimitReached);
+      expect(preparedContextLimits).toEqual([2_100]);
+      expect(() => getRealModelTokenLimit(modelId)).toThrow("unavailable through the current MindSwapper connection");
+    });
+  }
+
+  for (const fork of [false, true]) for (const protectedContext of [false, true]) {
+    test(`${fork ? "fork" : "main"} ${protectedContext ? "protected" : "ordinary"} history uses only its admitted model envelope`, async () => {
+      haltAtContextLimit = true;
+      admittedSessions.set("room-small", session([model(1_000)]));
+      admittedSessions.set("room-large", session([model(4_000)]));
+      const results = await Promise.allSettled([
+        prepare(fork, protectedContext, "room-small"),
+        prepare(fork, protectedContext, "room-large"),
+      ]);
+      for (const result of results) {
+        expect(result.status).toBe("rejected");
+        if (result.status === "rejected") expect(String(result.reason)).toContain(contextLimitReached);
+      }
+      expect(preparedContextLimits.slice().sort((a, b) => a - b)).toEqual([1_100, 4_100]);
+      expect(() => realNautiloAgent.getModelTokenLimit(modelId)).toThrow("unavailable through the current MindSwapper connection");
+      expect(capturedDeps).toBeUndefined();
+    });
+
+    test(`${fork ? "fork" : "main"} ${protectedContext ? "protected" : "ordinary"} history rejects an absent or revoked projection despite ambient rows`, async () => {
+      haltAtContextLimit = true;
+      for (const unavailable of [[], [{ ...model(1_000), unavailableReason: "revoked" }]]) {
+        admittedSessions.set("room-unavailable", session(unavailable));
+        const result = await realNautiloAgent.withMindSwapperModels([model(9_000)], () =>
+          prepare(fork, protectedContext, "room-unavailable").then(
+            () => "unexpected-context-success",
+            (error: unknown) => String(error),
+          ));
+        expect(result).toContain(unavailable.length === 0
+          ? "Foreground chat funding authority is unavailable"
+          : "unavailable through the current MindSwapper connection");
+      }
+      expect(preparedContextLimits).toEqual([]);
+      expect(capturedDeps).toBeUndefined();
+    });
+  }
 });

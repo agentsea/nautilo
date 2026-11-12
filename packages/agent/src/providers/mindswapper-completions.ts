@@ -52,6 +52,9 @@ export function sanitizeMindSwapperError(error: unknown): Error {
   if (status === 402) {
     return new MindSwapperRequestError("the selected account has insufficient credit. Check its balance.", "insufficient_balance", status, id);
   }
+  if (status === 413) {
+    return new MindSwapperRequestError("the request is too large or complex for this connection.", "unsupported_request", status, id);
+  }
   if (status === 400 || status === 422) {
     return new MindSwapperRequestError("the selected model or offer does not support this request.", "unsupported_request", status, id);
   }
@@ -98,6 +101,21 @@ function assertWireOffer(request: WireRecord, offer: MindSwapperChatOffer): void
   if (inputTokens > offer.maxInputTokens) {
     throw new MindSwapperRequestError("the prepared input exceeds the model's token budget.", "context_length_exceeded", 400);
   }
+}
+
+function withoutToolMessageNames(request: WireRecord): WireRecord {
+  if (!Array.isArray(request["messages"])) return request;
+  return {
+    ...request,
+    messages: request["messages"].map((message: unknown) => {
+      const row = asRecord(message);
+      // LangChain carries the tool's name as metadata; Chat Completions
+      // correlates its result exclusively through tool_call_id.
+      return row?.["role"] === "tool"
+        ? Object.fromEntries(Object.entries(row).filter(([field]) => field !== "name"))
+        : message;
+    }),
+  };
 }
 
 /** MindSwapper's SSE contract requires a terminal data event. Never accept a truncated body as a completed generation. */
@@ -154,10 +172,11 @@ export function createMindSwapperFetch(
     if (!request || request["model"] !== upstreamModelId) {
       throw new MindSwapperRequestError("the request did not match its admitted model.", "unsupported_request", 400);
     }
-    assertWireOffer(request, offer);
+    const normalizedRequest = withoutToolMessageNames(request);
+    assertWireOffer(normalizedRequest, offer);
     const response = await globalThis.fetch(endpoint, {
       method: "POST",
-      body: init.body,
+      body: JSON.stringify(normalizedRequest),
       headers: {
         Authorization: `Bearer ${connection.apiKey}`,
         "Content-Type": "application/json",

@@ -1072,42 +1072,47 @@ export async function* langgraphExecutor(
         : undefined;
   const retainedImageResults: ImageAssistanceResult[] = protectedTurn ? retainedImageAssistance(protectedTurn.history) : [];
   let imageReplyContext = "";
-  const historyMessages = externalTurn?.operatorControl ? [] : protectedTurn === undefined
-    ? await prepareForegroundEncryptedContext(
-      () => resolveForegroundHistoryMessages({
-        turnKind,
-        roomId,
-        transcriptOwnerId,
-        agentId,
-        modelId,
-        currentHumanText: message,
-        ...(multimodalImages.length > 0 && turnId ? { imageAssistanceTurnId: turnId } : {}),
-        onAuthorizedHistory: (hits) => {
-          localExecutionHistoryRows = hits;
-          retainedImageResults.push(...retainedImageAssistance(hits));
-          imageReplyContext = hits.find((hit) => hit.messageId === input["replyToMessageId"])?.snippet ?? "";
-        },
-        ...(initialRecordContext === undefined
-          ? {}
-          : { recordContext: initialRecordContext }),
-        signal,
-        ...(subthreadParentRoomId ? { subthreadParentRoomId } : {}),
-        ...(subthreadAnchorMessageId != null ? { subthreadAnchorMessageId } : {}),
-        ...(currentMessageId != null ? { currentMessageId } : {}),
-        excludeMessageIds: memoryReviewSourceIds(input),
-      }),
-      liveShadowContext?.session?.authorizationDeadlineAt,
-    )
-    : await buildProtectedRoomHybridContext({
-        hits: imageAssistanceHistory(protectedTurn.history.filter((hit) => !memoryReviewSourceIds(input).includes(hit.messageId))),
-        journal: protectedTurn.journal ?? { rollup: null, events: [] },
-        currentHumanText: message,
-        ...(initialRecordContext === undefined
-          ? {}
-          : { recordContext: initialRecordContext }),
-        modelId,
-        signal,
-      });
+  // Context preparation runs before graph nodes establish their funding scope.
+  const historyMessages = await withMindSwapperModels(
+    fundingSession?.mindswapperModels ?? [],
+    async () => (externalTurn?.operatorControl ? [] : protectedTurn === undefined
+      ? await prepareForegroundEncryptedContext(
+        () => resolveForegroundHistoryMessages({
+          turnKind,
+          roomId,
+          transcriptOwnerId,
+          agentId,
+          modelId,
+          currentHumanText: message,
+          ...(multimodalImages.length > 0 && turnId ? { imageAssistanceTurnId: turnId } : {}),
+          onAuthorizedHistory: (hits) => {
+            localExecutionHistoryRows = hits;
+            retainedImageResults.push(...retainedImageAssistance(hits));
+            imageReplyContext = hits.find((hit) => hit.messageId === input["replyToMessageId"])?.snippet ?? "";
+          },
+          ...(initialRecordContext === undefined
+            ? {}
+            : { recordContext: initialRecordContext }),
+          signal,
+          ...(subthreadParentRoomId ? { subthreadParentRoomId } : {}),
+          ...(subthreadAnchorMessageId != null ? { subthreadAnchorMessageId } : {}),
+          ...(currentMessageId != null ? { currentMessageId } : {}),
+          excludeMessageIds: memoryReviewSourceIds(input),
+        }),
+        liveShadowContext?.session?.authorizationDeadlineAt,
+      )
+      : await buildProtectedRoomHybridContext({
+          hits: imageAssistanceHistory(protectedTurn.history.filter((hit) => !memoryReviewSourceIds(input).includes(hit.messageId))),
+          journal: protectedTurn.journal ?? { rollup: null, events: [] },
+          currentHumanText: message,
+          ...(initialRecordContext === undefined
+            ? {}
+            : { recordContext: initialRecordContext }),
+          modelId,
+          signal,
+        })
+    ),
+  );
 
   // A later Message/Journal/Record authority wait restarts this executor.
   // Commit the existing brief-overflow lifecycle only after every selected
@@ -1659,12 +1664,15 @@ export async function* langgraphExecutor(
       streamForegroundGraph(graph, streamInput, streamConfig, {
         signal,
         ...(foregroundContextRefreshEligible ? {
-          rebuildForegroundContext: createForegroundContextRebuilder({
-            roomId, ownerId: transcriptOwnerId, agentId, receipts: foregroundContextReceipts,
-            ...(protectedTurn === undefined ? {} : { protectedTurn }),
-            ...(initialRecordContext === undefined ? {} : { recordContext: initialRecordContext }),
-            onAuthorizedHistory: (hits) => { localExecutionHistoryRows = hits; },
-          }),
+          rebuildForegroundContext: (transition) => withMindSwapperModels(
+            fundingSession?.mindswapperModels ?? [],
+            () => createForegroundContextRebuilder({
+              roomId, ownerId: transcriptOwnerId, agentId, receipts: foregroundContextReceipts,
+              ...(protectedTurn === undefined ? {} : { protectedTurn }),
+              ...(initialRecordContext === undefined ? {} : { recordContext: initialRecordContext }),
+              onAuthorizedHistory: (hits) => { localExecutionHistoryRows = hits; },
+            })(transition),
+          ),
         } : {}),
       }),
       memoryBriefReceipt,

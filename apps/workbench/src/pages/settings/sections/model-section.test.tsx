@@ -1,6 +1,6 @@
 import { reapplyHappyDomGlobals } from "../../../../tests/bun-dom-preload";
 import { beforeEach, describe, expect, mock, test } from "bun:test";
-import { cleanup, render, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { act } from "react";
 import type { AgentProfileFull } from "@nautilo/types";
@@ -95,6 +95,42 @@ beforeEach(() => {
 });
 
 describe("ModelSection Agent scope", () => {
+  test("keeps MindSwapper selectable without displaying its internal priority and cost defaults", async () => {
+    agent.defaultModel = callerModels[0]!.id;
+    const modelId = "mindswapper:openai/gpt-oss-120b";
+    callerModels.push({
+      id: modelId,
+      displayName: "GPT OSS 120B",
+      provider: "mindswapper",
+      priority: Number.MAX_SAFE_INTEGER,
+      costCoefficient: 1,
+      enabled: true,
+      availability: "selectable",
+    });
+    const view = render(<MemoryRouter><ModelSection /></MemoryRouter>);
+    const mindSwapper = await view.findByRole<HTMLInputElement>("radio", { name: /GPT OSS 120B MindSwapper/ });
+    const existing = view.getByRole<HTMLInputElement>("radio", { name: /GPT-5.4 via OpenRouter/ });
+    expect(view.getAllByRole("radio")).toEqual([existing, mindSwapper]);
+    expect(existing.closest("label")?.textContent).toContain("Priority 1 · cost ×1");
+    const label = mindSwapper.closest("label")?.textContent;
+    expect(label).toContain("GPT OSS 120B");
+    expect(label).toContain("MindSwapper");
+    expect(label).toContain(modelId);
+    expect(label).not.toContain("Priority");
+    expect(label).not.toContain("cost ×");
+    expect(label).not.toContain(String(Number.MAX_SAFE_INTEGER));
+    expect(existing.checked).toBe(true);
+    expect(mindSwapper.checked).toBe(false);
+
+    fireEvent.click(mindSwapper);
+    expect(mindSwapper.checked).toBe(true);
+    expect(existing.checked).toBe(false);
+    expect(view.getByText("Selected catalog model:").textContent).toContain("GPT OSS 120B");
+    fireEvent.click(view.getByRole("button", { name: "Save" }));
+    expect(await view.findByText("Saved")).toBeTruthy();
+    expect(mindSwapper.checked).toBe(true);
+  });
+
   test("shows the current admitted payer and explains request-time rechecking", async () => {
     agent.defaultModel = "openrouter:openai/gpt-5.4";
     callerModels[0] = { ...callerModels[0]!, fundingSource: "personal", fundingProviderRoute: "surplus" };

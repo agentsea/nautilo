@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { TaskFundingBinding } from "@nautilo/types";
 import type { CapabilityFundingSession } from "./capability-funding";
-import type { MindSwapperChatModel } from "../config/mindswapper-models";
+import { withMindSwapperModels, type MindSwapperChatModel } from "../config/mindswapper-models";
 import type { PersonalProviderCredential } from "../providers/types";
 import type { UsageFundingProvenance } from "../usage/usage-context";
 
@@ -103,7 +103,10 @@ export interface ForegroundChatFundingSession {
 
 const resumeFunding = new AsyncLocalStorage<ForegroundChatFundingSession>();
 export function runWithForegroundFundingSession<T>(session: ForegroundChatFundingSession | null, run: () => T): T {
-  return session ? resumeFunding.run(session, run) : resumeFunding.exit(run);
+  // Context refresh also runs outside graph nodes. Bind its non-secret model
+  // limits to the restored operation without granting a provider connection.
+  return withMindSwapperModels(session?.mindswapperModels ?? [], () =>
+    session ? resumeFunding.run(session, run) : resumeFunding.exit(run));
 }
 export function getForegroundFundingSession(): ForegroundChatFundingSession | undefined {
   return resumeFunding.getStore();

@@ -11,6 +11,7 @@ import { resolveCatalogModel } from "../../src/config/resolved-catalog";
 import { validateExactTaskModelSelection } from "../../src/config/validate-exact-task-model";
 import { resolveModelRole } from "../../src/config/model-role-resolution";
 import { createUnmeteredEvaluationModel } from "../../src/providers/universal";
+import { createMindSwapperFetch } from "../../src/providers/mindswapper-completions";
 import { resolveModelExecutionLimits } from "../../src/providers/models";
 import { createDiscoverModelsTool } from "../../src/tools/meta/discover-models";
 import { buildForegroundModelControlPlan } from "../../src/config/foreground-model-controls";
@@ -182,7 +183,10 @@ describe("MindSwapper Chat Completions", () => {
         ] }, finish_reason: null }]) + frame([{ index: 0, delta: {}, finish_reason: "tool_calls" }], usage) + frame([], usage), true);
       }
       const messages = wire["messages"] as unknown[];
-      expect(messages.at(-1)).toMatchObject({ role: "tool", tool_call_id: "call_fixture", content: "result" });
+      expect(messages.at(-1)).toEqual({ role: "tool", tool_call_id: "call_fixture", content: "result" });
+      expect(messages.at(-2)).toMatchObject({ tool_calls: [
+        { id: "call_fixture", type: "function", function: { name: "look_up", arguments: "{}" } },
+      ] });
       return completion();
     });
     await withConnection(async () => {
@@ -196,14 +200,44 @@ describe("MindSwapper Chat Completions", () => {
       expect(aggregate?.tool_calls?.[0]).toMatchObject({ name: "look_up", id: "call_fixture", args: {} });
       expect(aggregate?.usage_metadata).toMatchObject({ total_tokens: 19 });
       expect(aggregate?.response_metadata["request_id"]).toBe(requestId);
+      const toolResult = new ToolMessage({ content: "result", tool_call_id: "call_fixture", name: "look_up" });
       const response = await chat.invoke([
         ...messages,
         new AIMessage({ content: "", tool_calls: aggregate?.tool_calls ?? [] }),
-        new ToolMessage({ content: "result", tool_call_id: "call_fixture" }),
+        toolResult,
       ]) as AIMessage;
       expect(response.content).toBe("hello");
+      expect(toolResult.name).toBe("look_up");
     });
     expect(requests).toBe(2);
+  });
+
+  test("validates the input byte ceiling after removing only tool-message name metadata", async () => {
+    const toolCall = { id: "call_fixture", type: "function", function: { name: "look_up", arguments: "{}" } };
+    const messages = [
+      { role: "user", content: "look it up", name: "human" },
+      { role: "assistant", content: "", tool_calls: [toolCall] },
+      { role: "tool", content: "result", tool_call_id: "call_fixture" },
+    ];
+    const tools = [{ type: "function", function: { name: "look_up", parameters: { type: "object" } } }];
+    const finalRequest = { model: upstreamId, stream: false, max_tokens: 8, messages, tools };
+    const toolName = "metadata".repeat(1_000);
+    const original = { ...finalRequest, messages: [...messages.slice(0, -1), { ...messages.at(-1), name: toolName }] };
+    const body = JSON.stringify(original);
+    let requests = 0;
+    stubFetch((_url, init) => {
+      requests++;
+      expect(wireBody(init)).toEqual(finalRequest);
+      return completion();
+    });
+    const fetch = createMindSwapperFetch(connection, upstreamId, {
+      inputModalities: ["text"], supportedParameters: ["tools"], maxOutputTokens: 8,
+      maxInputTokens: Math.ceil(Buffer.byteLength(JSON.stringify({ messages, tools }), "utf8") / 4),
+    });
+    await fetch(`${connection.baseUrl}/chat/completions`, { method: "POST", body });
+    expect(requests).toBe(1);
+    expect(JSON.stringify(original)).toBe(body);
+    expect(original.messages.at(-1)?.name).toBe(toolName);
   });
 
   test("rejects an unsupported input before sending any request", async () => {
@@ -230,6 +264,37 @@ describe("MindSwapper Chat Completions", () => {
     }), { status: 402, code: "insufficient_balance", outcomeUnknown: false });
     expect(requests).toBe(1);
   });
+
+  for (const format of ["json", "plain"] as const) {
+    test(`treats HTTP 413 with a ${format} body as a definitive refusal without leaking or retrying`, async () => {
+      let requests = 0;
+      const privateDetails = `untrusted provider details including ${connection.apiKey}`;
+      stubFetch((url, init) => {
+        requests++;
+        expect(url).toBe(`${connection.baseUrl}/chat/completions`);
+        expect(init?.redirect).toBe("error");
+        expect(new Headers(init?.headers).get("authorization")).toBe(`Bearer ${connection.apiKey}`);
+        expect(wireBody(init)["model"]).toBe(upstreamId);
+        const options = { status: 413, headers: { "x-request-id": requestId } };
+        return format === "json"
+          ? Response.json({ error: { code: "request_too_complex", message: privateDetails } }, options)
+          : new Response(privateDetails, options);
+      });
+      await assert.rejects(withConnection(async () => {
+        const chat = await createUnmeteredEvaluationModel(modelId);
+        return chat.invoke([new HumanMessage("hello")]);
+      }), (error: unknown) => {
+        expect(error).toMatchObject({
+          status: 413, code: "unsupported_request", outcomeUnknown: false, requestId,
+          message: "MindSwapper: the request is too large or complex for this connection.",
+        });
+        expect(JSON.stringify(error)).not.toContain(privateDetails);
+        expect(JSON.stringify(error)).not.toContain(connection.apiKey);
+        return true;
+      });
+      expect(requests).toBe(1);
+    });
+  }
 
   test("rejects a disconnected stream even when it has emitted visible content", async () => {
     let requests = 0;
