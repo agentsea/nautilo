@@ -169,6 +169,27 @@ describe("MindSwapper Chat Completions", () => {
     expect(requests).toBe(1);
   });
 
+  test("removes only the MindSwapper prefix when sending a colon-bearing upstream ID", async () => {
+    const upstreamVariantId = "maker/model:variant";
+    const variantId = `mindswapper:${upstreamVariantId}`;
+    let requests = 0;
+    stubFetch((url, init) => {
+      requests++;
+      expect(url).toBe(`${connection.baseUrl}/chat/completions`);
+      expect(wireBody(init)["model"]).toBe(upstreamVariantId);
+      return Response.json({
+        id: requestId, object: "chat.completion", created: 1, model: upstreamVariantId, usage,
+        choices: [{ index: 0, message: { role: "assistant", content: "variant response" }, finish_reason: "stop" }],
+      });
+    });
+    const response = await withConnection(async () => {
+      const chat = await createUnmeteredEvaluationModel(variantId);
+      return chat.invoke([new HumanMessage("hello")]) as Promise<AIMessage>;
+    }, { ...model, id: variantId });
+    expect(response.content).toBe("variant response");
+    expect(requests).toBe(1);
+  });
+
   test("streams a function call, records terminal usage once and accepts its matching result", async () => {
     const tool = { type: "function", function: { name: "look_up", parameters: { type: "object", properties: {} } } };
     let requests = 0;

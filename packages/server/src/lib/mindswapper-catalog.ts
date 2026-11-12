@@ -4,7 +4,7 @@ import type { PersonalProviderCredentialRecord } from "@nautilo/db";
 import { isApprovedMindSwapperDestination, normalizeMindSwapperBaseUrl } from "./personal-provider-destination";
 
 const KEY_PATTERN = /^ngw_[A-Za-z0-9_-]{43}$/u;
-const MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/-]*$/u;
+const MODEL_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._/:-]*$/u;
 const MAX_MODEL_ROWS = 512;
 const MAX_CATALOG_BYTES = 1024 * 1024;
 const MAX_CACHED_CONNECTIONS = 256;

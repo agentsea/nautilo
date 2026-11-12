@@ -49,6 +49,13 @@ describe("MindSwapper discovery", () => {
     })))).toThrow();
   });
 
+  test("preserves a colon-bearing Cloud model ID without changing its upstream identity", () => {
+    const upstreamId = "maker/model:variant";
+    const parsed = parseMindSwapperModels(list(row(upstreamId)));
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0]).toMatchObject({ id: `mindswapper:${upstreamId}`, displayName: upstreamId });
+  });
+
   test("coalesces requests for a connection and isolates refresh, delisting, and revocation by revision", async () => {
     let clock = 0;
     const upstream = [
