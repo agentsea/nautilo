@@ -1,4 +1,5 @@
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, test } from "bun:test";
@@ -9,6 +10,8 @@ import type { RuntimeImageEvidenceManifestV1 } from "./runtime-image-evidence.ts
 import type { VulnerabilityDatabaseIdentityV1 } from "./vulnerability-db-identity.ts";
 import type { BoundedDisclosurePolicyV1, DisclosureArchiveObservation } from "./bounded-disclosure.ts";
 import type { VulnerabilityPolicyV1 } from "./vulnerability-policy.ts";
+import chromiumArtifacts from "./chromium-artifacts.json";
+import bootstrapBaseImages from "./bootstrap-base-images.json";
 
 const digest = `sha256:${"a".repeat(64)}`;
 const reference = `registry.example/nautilo/server@${digest}`;
@@ -26,7 +29,7 @@ function temporaryDirectory(prefix: string): string {
 }
 
 function fixture(): { manifest: RuntimeImageEvidenceManifestV1; databaseIdentity: VulnerabilityDatabaseIdentityV1; root: string; cache: string; tools: string } {
-  const directory = temporaryDirectory("d490-exact-image-audit-");
+  const directory = temporaryDirectory("exact-image-audit-");
   const grypePath = join(directory, "grype.db");
   const trivyPath = join(directory, "trivy.db");
   writeFileSync(grypePath, "grype database");
@@ -60,7 +63,8 @@ function fixture(): { manifest: RuntimeImageEvidenceManifestV1; databaseIdentity
   };
 }
 
-function successfulRun(overrides: { trivyTarget?: string; syft?: string; grype?: string } = {}): NonNullable<ExactImageAuditDependencies["run"]> {
+function successfulRun(overrides: { trivyTarget?: string; syft?: string; grype?: string; imageReference?: string } = {}): NonNullable<ExactImageAuditDependencies["run"]> {
+  const imageReference = overrides.imageReference ?? reference;
   return async (command, args, environment) => {
     if (args[0] === "version") {
       const name = command.split("/").at(-1);
@@ -71,7 +75,7 @@ function successfulRun(overrides: { trivyTarget?: string; syft?: string; grype?:
       exitCode: 0,
       stdout: overrides.syft ?? JSON.stringify({
         artifacts: [],
-        source: { version: digest, metadata: { userInput: reference, repoDigests: [reference], manifestDigest: `sha256:${"f".repeat(64)}` } },
+        source: { version: digest, metadata: { userInput: imageReference, repoDigests: [imageReference], manifestDigest: `sha256:${"f".repeat(64)}` } },
       }),
       stderr: "",
     };
@@ -79,8 +83,14 @@ function successfulRun(overrides: { trivyTarget?: string; syft?: string; grype?:
       expect(environment).toMatchObject({ GRYPE_DB_AUTO_UPDATE: "false" });
       return { exitCode: 0, stdout: overrides.grype ?? JSON.stringify({ matches: [], source: {}, descriptor: {} }), stderr: "" };
     }
-    if (command.endsWith("/trivy")) return { exitCode: 0, stdout: JSON.stringify({ SchemaVersion: 2, ArtifactName: overrides.trivyTarget ?? reference, Results: [] }), stderr: "" };
-    if (args[1] === "inspect") return { exitCode: 0, stdout: JSON.stringify([{ Os: "linux", Architecture: "arm64", Size: 1234, RepoDigests: [reference] }]), stderr: "" };
+    if (command.endsWith("/trivy")) return { exitCode: 0, stdout: JSON.stringify({ SchemaVersion: 2, ArtifactName: overrides.trivyTarget ?? imageReference, Results: [] }), stderr: "" };
+    if (args[0] === "run") {
+      const pin = chromiumArtifacts.targets["linux/arm64"];
+      return { exitCode: 0, stdout: JSON.stringify({ platform: "linux", arch: "arm64", executableSha256: pin.executableSha256,
+        elf: { class: 64, endianness: "little", machine: 183 },
+        receipt: { schemaVersion: 1, version: chromiumArtifacts.version, platform: "linux/arm64", archiveSha256: pin.sha256, executableSha256: pin.executableSha256, url: pin.url } }), stderr: "" };
+    }
+    if (args[1] === "inspect") return { exitCode: 0, stdout: JSON.stringify([{ Os: "linux", Architecture: "arm64", Size: 1234, RepoDigests: [imageReference] }]), stderr: "" };
     if (args[1] === "history") return { exitCode: 0, stdout: `${JSON.stringify({ ID: "layer-1", Size: "1kB" })}\n`, stderr: "" };
     throw new Error(`unexpected command: ${command} ${args.join(" ")}`);
   };
@@ -96,6 +106,7 @@ async function runFixture(f = fixture(), run = successfulRun(), disclosure: Disc
       ...vulnerabilityPolicy,
       binding: {
         ...vulnerabilityPolicy.binding,
+        image: { digest: f.manifest.image.digest, reference: f.manifest.image.reference },
         databases: { grype: f.databaseIdentity.databases.grype.sha256, trivy: f.databaseIdentity.databases.trivy.sha256 },
       },
     },
@@ -107,7 +118,7 @@ async function runFixture(f = fixture(), run = successfulRun(), disclosure: Disc
   });
 }
 
-describe("D490 exact-image audit evidence binding", () => {
+describe("exact-image audit evidence binding", () => {
   test("writes seven digest-bound reports and the index last", async () => {
     const result = await runFixture();
     expect(result.index.reports.map((report) => report.type)).toEqual(["sbom", "vulnerabilities", "image-analysis", "vulnerability-policy", "image-inspect", "image-history", "bounded-disclosure"]);
@@ -137,6 +148,74 @@ describe("D490 exact-image audit evidence binding", () => {
     expect(trivyArgs).toContain("--image-src");
     expect(trivyArgs[trivyArgs.indexOf("--image-src") + 1]).toBe("remote");
     expect(trivyArgs.at(-1)).toBe(f.manifest.image.reference);
+  });
+
+  test("retains raw Syft inventory and passes the augmented Chrome SBOM to Grype", async () => {
+    const f = fixture();
+    const run = successfulRun();
+    let augmentedPath = "";
+    const result = await runFixture(f, async (command, args, environment) => {
+      if (command.endsWith("/grype") && args[0]?.startsWith("sbom:")) {
+        augmentedPath = args[0].slice(5);
+        const sbom = JSON.parse(readFileSync(augmentedPath, "utf8"));
+        expect(sbom.artifacts.some((entry: { name: string }) => entry.name === "google-chrome")).toBe(true);
+        expect(sbom.nautiloChromium.image.reference).toBe(reference);
+      }
+      if (command === "docker" && args[0] === "run") {
+        expect(args).toContain("--read-only");
+        expect(args[args.indexOf("--network") + 1]).toBe("none");
+        expect(args[args.indexOf("--platform") + 1]).toBe(f.manifest.architecture);
+        expect(args).toContain(reference);
+      }
+      return run(command, args, environment);
+    });
+    expect(augmentedPath).toBe(join(result.directory, "sbom.syft.json"));
+    const raw = readFileSync(join(result.directory, "sbom.syft.raw.json"), "utf8");
+    expect(JSON.parse(raw).artifacts).toEqual([]);
+    expect(JSON.parse(readFileSync(augmentedPath, "utf8")).nautiloChromium.rawSyftSha256).toBe(`sha256:${sha256HexOfBytes(Buffer.from(raw))}`);
+  });
+
+  test("withholds Grype and the index when the image browser probe fails", async () => {
+    let scanned = false;
+    const run = successfulRun();
+    await expect(runFixture(fixture(), async (command, args, environment) => {
+      if (command.endsWith("/grype") && args[0]?.startsWith("sbom:")) scanned = true;
+      if (command === "docker" && args[0] === "run") return { exitCode: 1, stdout: "", stderr: "missing browser receipt" };
+      return run(command, args, environment);
+    })).rejects.toThrow("Chromium inventory probe failed");
+    expect(scanned).toBe(false);
+  });
+
+  test.each(["ghcr.io/agentsea/nautilo-bootstrap-staging", "ghcr.io/agentsea/nautilo-bootstrap-runtime-v2"])("scans canonical bootstrap profile %s without the server browser probe", async (repository) => {
+    const f = fixture();
+    f.manifest = { ...f.manifest, baseImages: bootstrapBaseImages, image: { ...f.manifest.image, reference: `${repository}@${digest}` } };
+    const syft = JSON.stringify({ artifacts: [{ id: "bootstrap-libc", name: "libc6", version: "2.41", type: "deb" }], source: { version: digest, metadata: { userInput: f.manifest.image.reference, repoDigests: [f.manifest.image.reference] } } });
+    const run = successfulRun({ imageReference: f.manifest.image.reference, syft });
+    let scannedPath = "";
+    const result = await runFixture(f, async (command, args, environment) => {
+      if (command === "docker" && args[0] === "run") throw new Error("bootstrap must not invoke Bun or a browser");
+      if (command.endsWith("/grype") && args[0]?.startsWith("sbom:")) scannedPath = args[0].slice(5);
+      return run(command, args, environment);
+    });
+    expect(scannedPath).toBe(join(result.directory, "sbom.syft.json"));
+    const scanned = JSON.parse(readFileSync(scannedPath, "utf8"));
+    expect(readFileSync(join(result.directory, "sbom.syft.raw.json"), "utf8")).toBe(syft);
+    expect(scanned).toEqual(JSON.parse(readFileSync(join(result.directory, "sbom.syft.raw.json"), "utf8")));
+    expect(scanned.artifacts).toEqual([{ id: "bootstrap-libc", name: "libc6", version: "2.41", type: "deb" }]);
+    expect(scanned.nautiloChromium).toBeUndefined();
+    expect(result.index.reports).toHaveLength(7);
+  });
+
+  test.each(["unknown-repository", "lookalike-repository", "wrong-base-profile"])("retains required browser verification for %s", async (kind) => {
+    const f = fixture();
+    const repository = kind === "unknown-repository" ? "ghcr.io/agentsea/another-image" : kind === "lookalike-repository" ? "ghcr.io/agentsea/nautilo-bootstrap-staging-copy" : "ghcr.io/agentsea/nautilo-bootstrap-staging";
+    f.manifest = { ...f.manifest, baseImages: kind === "wrong-base-profile" ? f.manifest.baseImages : bootstrapBaseImages, image: { ...f.manifest.image, reference: `${repository}@${digest}` } };
+    const run = successfulRun({ imageReference: f.manifest.image.reference });
+    await expect(runFixture(f, async (command, args, environment) => {
+      if (command === "docker" && args[0] === "run") return { exitCode: 1, stdout: "", stderr: "browser absent" };
+      return run(command, args, environment);
+    })).rejects.toThrow("Chromium inventory probe failed");
+    expect([...new Bun.Glob("**/report-index.json").scanSync({ cwd: f.root })]).toEqual([]);
   });
 
   test("rejects an installed scanner version that differs from the pin", async () => {
@@ -210,7 +289,8 @@ describe("D490 exact-image audit evidence binding", () => {
 
   test("writes the secret-marker report but withholds the complete index", async () => {
     const f = fixture();
-    const disclosed: DisclosureArchiveObservation = { ...cleanDisclosure, files: [{ layer: "layer.tar", path: "app/runtime.js", contents: 'API_TOKEN="wK5m2vF9qR7sT3xN8cD4pL6a"' }] };
+    const syntheticAssignment = `API_TOKEN=${JSON.stringify(randomBytes(24).toString("hex"))}`;
+    const disclosed: DisclosureArchiveObservation = { ...cleanDisclosure, files: [{ layer: "layer.tar", path: "app/runtime.js", contents: syntheticAssignment }] };
     await expect(runFixture(f, successfulRun(), disclosed)).rejects.toThrow("bounded disclosure gate");
     const files = [...new Bun.Glob("**/*").scanSync({ cwd: f.root })];
     expect(files.some((path) => path.endsWith("bounded-disclosure.json"))).toBe(true);

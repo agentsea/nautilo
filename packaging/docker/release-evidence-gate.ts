@@ -6,6 +6,9 @@ import { basename, join, resolve } from "node:path";
 import { assertRuntimeImageEvidenceManifest, type RuntimeImageEvidenceManifestV1 } from "./runtime-image-evidence.ts";
 import type { ExactImageAuditReportIndexV1 } from "./exact-image-audit.ts";
 
+import { assertChromiumSbomEvidence } from "./chromium-sbom.ts";
+import { assertBrowserQualification } from "./native-runtime-probe.ts";
+
 const REQUIRED_REPORT_TYPES = [
   "sbom", "vulnerabilities", "image-analysis", "vulnerability-policy",
   "image-inspect", "image-history", "bounded-disclosure",
@@ -82,6 +85,7 @@ export function evaluateReleaseArchitectureEvidence(evidenceDirectory: string, n
   }
 
   const sbom = record(reports.get("sbom"), "SBOM");
+  assertChromiumSbomEvidence(sbom, manifest);
   if (!Array.isArray(sbom.artifacts) || sbom.artifacts.length === 0) fail("SBOM has no package inventory");
   const packages = sbom.artifacts.map((entry, index) => {
     const artifact = record(entry, `SBOM artifact ${index}`);
@@ -119,6 +123,7 @@ export function evaluateReleaseArchitectureEvidence(evidenceDirectory: string, n
   const sharp = record(probe.sharp, "Sharp probe");
   const argon2 = record(probe.argon2, "argon2 probe");
   const officecli = record(probe.officecli, "OfficeCLI probe");
+  assertBrowserQualification(probe.browser, manifest.architecture);
   const screenshots = officecli.screenshots;
   if (native.sourceSha !== manifest.sourceSha || native.requestedPlatform !== manifest.architecture || native.executionMode !== "native") fail("native probe identity or execution mode does not match manifest");
   if (nativeImage.reference !== manifest.image.reference || nativeImage.sizeBytes !== manifest.image.sizeBytes || !Array.isArray(nativeImage.repoDigests) || !nativeImage.repoDigests.includes(manifest.image.reference)) {

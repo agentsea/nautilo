@@ -7,6 +7,11 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Update the server image to the pinned Google Chrome for Testing 157.0.8103.78
+  headless browser on both Linux architectures, with native rendering and
+  explicit vendor-component vulnerability coverage. Retire obsolete Debian
+  browser exceptions and track the exact remaining Kerberos fixes awaiting Debian packages.
+
 - Refuse detected vulnerable Ubuntu TCP kernels during normal container startup
   and before Compose deployment or upgrade. Keep unsupported host kernels
   explicitly unverified, and require a patched running kernel for new Ubuntu
