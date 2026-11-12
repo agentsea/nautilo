@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { CHROMIUM_VENDOR_MANIFEST } from "./chromium-vendor.ts";
 import { evaluateVulnerabilityPolicy, parseVulnerabilityPolicy } from "./vulnerability-policy.ts";
 
 type Architecture = "linux/amd64" | "linux/arm64";
@@ -71,11 +72,20 @@ describe("October security package decisions", () => {
     expect(decisions.some((e: {packageName: string}) => e.packageName === "fastify")).toBe(false);
     const floors = readFileSync(join(import.meta.dir, "server-security-package-floors.txt"), "utf8");
     for (const pkg of ["chromium-common", "chromium-headless-shell"]) {
-      expect(floors).toContain(pkg + " 156.0.8078.79-1~deb13u1");
+      expect(floors.split("\n").some((line) => line.startsWith(pkg + " "))).toBe(false);
+    }
+    expect(CHROMIUM_VENDOR_MANIFEST.version).toBe("157.0.8103.78");
+    for (const platform of ["linux/amd64", "linux/arm64"] as const) {
+      expect(CHROMIUM_VENDOR_MANIFEST.targets[platform].sha256).toMatch(/^[a-f0-9]{64}$/);
+      expect(CHROMIUM_VENDOR_MANIFEST.targets[platform].executableSha256).toMatch(/^[a-f0-9]{64}$/);
     }
     const dockerfile = readFileSync(join(import.meta.dir, "Dockerfile"), "utf8");
     expect(dockerfile.indexOf("COPY packaging/docker/server-security-package-floors.txt"))
       .toBeLessThan(dockerfile.lastIndexOf("apt-get update"));
     expect(dockerfile).toContain("sh /tmp/check-security-package-floors.sh");
+    expect(dockerfile).toContain("COPY packaging/docker/chromium-vendor.ts packaging/docker/chromium-vendor.ts");
+    expect(dockerfile).toContain('bun packaging/docker/chromium-vendor.ts "linux/$TARGETARCH" /opt/nautilo/chromium');
+    expect(dockerfile).toContain("COPY packaging/docker/chromium-artifacts.json packaging/docker/chromium-artifacts.json");
+    expect(dockerfile).toContain("unexpected Debian browser retained:");
   });
 });

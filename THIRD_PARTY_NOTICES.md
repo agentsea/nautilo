@@ -190,7 +190,7 @@ upstream material in addition to this index.
 The final Nautilo server image is based on
 [oven/bun:1.4.4](https://hub.docker.com/r/oven/bun), pinned by immutable
 digest in `packaging/docker/Dockerfile`. It installs `tini`, `ca-certificates`,
-`chromium-headless-shell`, `tar`, the current `libicuNN` selected from the
+`tar`, the current `libicuNN` and browser shared libraries selected from the
 base distribution, and PostgreSQL client binaries (17, plus copied 16
 utilities). These are distributed components, but this repository deliberately
 does **not** pin their individual Debian package versions: the exact OS
@@ -201,10 +201,18 @@ not invent versions that the checked-in source cannot prove.
 | --- | --- | --- | --- |
 | [tini](https://github.com/krallin/tini) | Dynamic Debian package; release SBOM is authoritative | krallin/tini | MIT |
 | [Mozilla CA Certificate Store](https://www.mozilla.org/en-US/about/governance/policies/security-group/certs/) / Debian `ca-certificates` | Dynamic Debian package; release SBOM is authoritative | Mozilla / Debian | MPL-2.0 and package-local notices |
-| [Chromium](https://chromium.googlesource.com/chromium/src/) headless shell | Dynamic Debian package; release SBOM is authoritative | Chromium authors | BSD-style and third-party notices |
+| [Chrome for Testing headless shell](https://developer.chrome.com/docs/automation-and-testing/headless-chrome-shell) | 157.0.8103.78; architecture-specific archives and executable hashes in `packaging/docker/chromium-artifacts.json` | Google Chrome for Testing / Chromium authors | Chromium BSD-style and bundled third-party licenses; see the shipped `LICENSE.headless_shell` |
 | [ICU](https://github.com/unicode-org/icu) (`libicuNN`) | Highest available Debian `libicuNN`, selected at image build | Unicode | ICU License |
 | [GNU tar](https://www.gnu.org/software/tar/) | Dynamic Debian package; release SBOM is authoritative | GNU | GPL-3.0-or-later |
 | [PostgreSQL client](https://www.postgresql.org/) utilities | 17 from the final image; 16 binaries copied from the pinned build stage | PostgreSQL Global Development Group | PostgreSQL License |
+
+The headless browser is a separately pinned vendor artifact, rather than a
+Debian Chromium package. The complete upstream resources, `ABOUT`,
+`LICENSE.headless_shell`, and dependency notices are retained under
+`/opt/nautilo/chromium`. Native release qualification verifies the executable
+hash, version and dependency closure on each architecture. Its explicit Chrome
+component and CPE are included in the image-bound vulnerability inventory; the
+CfT repository license alone is not a license for every bundled component.
 
 Supported Compose/deployment paths also reference the following third-party
 images; exact image digests are declared in `deploy/dependency-pins.ts` and the signed hosting release:

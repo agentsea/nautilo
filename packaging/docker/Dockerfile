@@ -447,6 +447,18 @@ RUN AGENT_BROWSER_ARCH="linux-x64"; \
     if [ "$TARGETARCH" = "arm64" ]; then AGENT_BROWSER_ARCH="linux-arm64"; fi; \
     bun dev/scripts/vendor-agent-browser.ts "$AGENT_BROWSER_ARCH"
 
+# Stable Chrome Headless Shell, pinned by archive and executable hashes for
+# both native platforms. Python is already build tooling in deps; none of the
+# ZIP/download tooling is copied into runtime.
+FROM deps AS chromium-vendor
+WORKDIR /repo
+COPY packaging/docker/chromium-artifacts.json packaging/docker/chromium-artifacts.json
+COPY packaging/docker/chromium-vendor.ts packaging/docker/chromium-vendor.ts
+COPY packages/config/src/vendored-binary-fetch.ts packages/config/src/vendored-binary-fetch.ts
+COPY packages/config/src/vendored-binary.ts packages/config/src/vendored-binary.ts
+ARG TARGETARCH
+RUN bun packaging/docker/chromium-vendor.ts "linux/$TARGETARCH" /opt/nautilo/chromium
+
 # The portable restore must talk to both topology-owned database majors. A
 # PG17 client cannot restore its output into Logto's PG16 server because it
 # emits PG17-only session settings such as transaction_timeout.
@@ -522,6 +534,7 @@ COPY --from=pg16-client /usr/lib/postgresql/16/bin/pg_restore /usr/local/bin/pg_
 COPY --from=pg16-client /usr/lib/postgresql/16/bin/psql /usr/local/bin/psql16
 COPY packaging/docker/server-security-package-floors.txt /tmp/server-security-package-floors.txt
 COPY packaging/docker/check-security-package-floors.sh /tmp/check-security-package-floors.sh
+COPY --from=chromium-vendor /opt/nautilo/chromium /opt/nautilo/chromium
 # tini/ca-certificates: process reaping and TLS roots. The health probe uses
 # Bun's built-in fetch so curl and its unused native dependency chain stay out.
 # libicu: OfficeCLI is a self-contained .NET binary that requires ICU for
@@ -529,16 +542,22 @@ COPY packaging/docker/check-security-package-floors.sh /tmp/check-security-packa
 # "Couldn't find a valid ICU package installed on the system". Install the
 # runtime ICU lib version-agnostically (highest available libicuNN) so it
 # survives Debian base-image bumps rather than pinning e.g. libicu76.
-# chromium-headless-shell: OfficeCLI's screenshot renderer requires a browser.
-# OfficeCLI probes the canonical Chromium executable name, so expose the
-# smaller headless-only package there instead of installing the full browser.
+# OfficeCLI uses the complete pinned vendor browser above. Its Debian 13
+# shared libraries follow Playwright's supported native dependency contract;
+# https://github.com/microsoft/playwright/blob/v1.65.0/packages/playwright-core/src/server/registry/nativeDeps.ts
+# retain fonts and the unrelated security-floor libraries explicitly when
+# the Debian Chromium package no longer supplies transitive dependencies.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     apt-get update \
  && apt-get upgrade -y --no-install-recommends \
  && ICU_PKG="$(apt-cache search --names-only '^libicu[0-9]+$' | sort -V | tail -n1 | cut -d' ' -f1)" \
  && if [ -z "$ICU_PKG" ]; then echo "no libicuNN package found in apt lists" >&2; exit 1; fi \
- && apt-get install -y --no-install-recommends tini ca-certificates chromium-headless-shell postgresql-client-17 tar "$ICU_PKG" \
+ && apt-get install -y --no-install-recommends tini ca-certificates postgresql-client-17 tar "$ICU_PKG" \
+      fonts-liberation libfontconfig1 libfreetype6 libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 \
+      libatspi2.0-0t64 libcairo2 libcups2t64 libdbus-1-3 libdrm2 libgbm1 libglib2.0-0t64 libnspr4 libnss3 \
+      libpango-1.0-0 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2 \
+      gzip libbrotli1 libpcre2-8-0 libsqlite3-0 \
  && install -m 0755 /usr/lib/postgresql/17/bin/pg_dump /usr/local/bin/pg_dump \
  && install -m 0755 /usr/lib/postgresql/17/bin/pg_restore /usr/local/bin/pg_restore \
  && install -m 0755 /usr/lib/postgresql/17/bin/psql /usr/local/bin/psql \
@@ -554,7 +573,20 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
  && pg_dump16 --version | grep -F '16.' \
  && pg_restore16 --version | grep -F '16.' \
  && psql16 --version | grep -F '16.' \
- && ln -s /usr/bin/chromium-headless-shell /usr/bin/chromium \
+ && for package in chromium-common chromium-headless-shell; do \
+      if dpkg-query -W -f='${db:Status-Abbrev}' "$package" 2>/dev/null | grep -q '^ii'; then \
+        echo "unexpected Debian browser retained: $package" >&2; exit 1; \
+      fi; \
+    done \
+ && ln -s /opt/nautilo/chromium/chrome-headless-shell /usr/bin/chromium \
+ && browser_version="$(/usr/bin/chromium --version)" \
+ && expected_version="$(bun -e 'process.stdout.write(require("/opt/nautilo/chromium/artifact-manifest.json").version)')" \
+ && test "${browser_version##* }" = "$expected_version" \
+ && for binary in /opt/nautilo/chromium/chrome-headless-shell /opt/nautilo/chromium/*.so /opt/nautilo/chromium/*.so.1; do \
+      ldd "$binary" > /tmp/chromium-linkage.txt || { cat /tmp/chromium-linkage.txt >&2; exit 1; }; \
+      if grep -F 'not found' /tmp/chromium-linkage.txt; then exit 1; fi; \
+    done \
+ && rm /tmp/chromium-linkage.txt \
  && sh /tmp/check-security-package-floors.sh /tmp/server-security-package-floors.txt \
  && rm /tmp/check-security-package-floors.sh /tmp/server-security-package-floors.txt
 

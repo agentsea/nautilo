@@ -77,10 +77,10 @@ async function main(): Promise<void> {
   const rawProbe = await checked("docker", [
     "run", "--rm", "--platform", args.platform,
     "--entrypoint", "/usr/local/bin/bun",
-    "-e", `D490_EXPECTED_PLATFORM=${args.platform}`,
-    "-v", `${probeDirectory}:/tmp/d490-native-probe:ro`,
+    "-e", `NAUTILO_EXPECTED_PLATFORM=${args.platform}`,
+    "-v", `${probeDirectory}:/tmp/nautilo-native-probe:ro`,
     args.image,
-    "/tmp/d490-native-probe/native-runtime-probe.ts",
+    "/tmp/nautilo-native-probe/native-runtime-probe.ts",
   ]);
   const probe = JSON.parse(rawProbe) as Record<string, unknown>;
   if (probe["platform"] !== args.platform) throw new Error("probe platform does not match requested platform");

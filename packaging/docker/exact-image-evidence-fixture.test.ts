@@ -8,6 +8,9 @@ import type {
 } from "./exact-image-audit.ts";
 import type { RuntimeImageEvidenceManifestV1 } from "./runtime-image-evidence.ts";
 
+import { augmentChromiumSbom } from "./chromium-sbom.ts";
+import chromiumArtifacts from "./chromium-artifacts.json";
+
 const REPORT_TYPES = [
   "sbom",
   "vulnerabilities",
@@ -61,6 +64,20 @@ function serverNativeProbe(
       encryptionInventory: { typescriptVersion: "5.9.3" },
       sharp: { version: "0.35.5", sha256: "a".repeat(64) },
       argon2: { verified: true, rejectedWrongValue: true },
+      browser: {
+        vendor: "google-chrome-for-testing",
+        version: chromiumArtifacts.version,
+        platform: manifest.architecture,
+        archiveSha256: chromiumArtifacts.targets[manifest.architecture].sha256,
+        executableSha256: chromiumArtifacts.targets[manifest.architecture].executableSha256,
+        realExecutable: "/opt/nautilo/chromium/chrome-headless-shell",
+        elf: { class: 64, endianness: "little", machine: manifest.architecture === "linux/amd64" ? 62 : 183 },
+        linkage: { passed: true, checkedFiles: [
+          "/opt/nautilo/chromium/chrome-headless-shell", "/opt/nautilo/chromium/libEGL.so",
+          "/opt/nautilo/chromium/libGLESv2.so", "/opt/nautilo/chromium/libvk_swiftshader.so",
+          "/opt/nautilo/chromium/libvulkan.so.1",
+        ], missing: [] },
+      },
       officecli: {
         browserExecutable: "/usr/bin/chromium",
         screenshots: ["docx", "xlsx", "pptx"].map((format) => ({
@@ -216,6 +233,18 @@ export function createExactImageEvidenceFixture(
       passed: true,
     },
   };
+  if (options.kind === "server") {
+    const pin = chromiumArtifacts.targets[manifest.architecture];
+    reportValues.sbom = augmentChromiumSbom(JSON.stringify(reportValues.sbom), manifest, {
+      platform: "linux", arch: manifest.architecture === "linux/amd64" ? "x64" : "arm64",
+      executableSha256: pin.executableSha256,
+      elf: { class: 64, endianness: "little", machine: manifest.architecture === "linux/amd64" ? 62 : 183 },
+      receipt: {
+        schemaVersion: 1, version: chromiumArtifacts.version, platform: manifest.architecture,
+        archiveSha256: pin.sha256, executableSha256: pin.executableSha256, url: pin.url,
+      },
+    });
+  }
   const reports = REPORT_TYPES.map((type) => {
     const path = REPORT_PATHS[type];
     const contents = `${JSON.stringify(reportValues[type], null, 2)}\n`;

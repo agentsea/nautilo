@@ -1,5 +1,7 @@
 /** Exact-image audit orchestration and report binding. */
 import { collectSupportedPackageAvailability } from "./supported-package-availability.ts";
+import { augmentChromiumSbom, CHROMIUM_INVENTORY_PROBE } from "./chromium-sbom.ts";
+import bootstrapBaseImages from "./bootstrap-base-images.json";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { writeFile } from "node:fs/promises";
@@ -238,6 +240,15 @@ function assertManifestBindings(input: RunExactImageAuditInput): void {
   }
 }
 
+function isBootstrapAudit(manifest: RuntimeImageEvidenceManifestV1): boolean {
+  const repository = manifest.image.reference.split("@")[0];
+  // Only the canonical bootstrap repositories with the source-owned bootstrap
+  // base profile omit the server browser. Unknown identities retain its probe.
+  return (repository === "ghcr.io/agentsea/nautilo-bootstrap-staging" || repository === "ghcr.io/agentsea/nautilo-bootstrap-runtime-v2") &&
+    manifest.baseImages.length === bootstrapBaseImages.length &&
+    bootstrapBaseImages.every((expected) => manifest.baseImages.some((actual) => actual.role === expected.role && actual.identity === expected.identity));
+}
+
 /** Executes all scanners against one immutable image and writes report-index.json last. */
 export async function runExactImageAudit(input: RunExactImageAuditInput): Promise<RunExactImageAuditResult> {
   assertRuntimeImageEvidenceManifest(input.manifest);
@@ -269,7 +280,18 @@ export async function runExactImageAudit(input: RunExactImageAuditInput): Promis
   };
 
   const syft = await checkedRun(run, toolPaths.syft, [input.manifest.image.reference, "-o", "syft-json"], "Syft audit");
-  await emit("sbom", "sbom.syft.json", syft);
+  assertReportShape("sbom", parseJson(syft, "sbom"), input.manifest);
+  await write(join(written.directory, "sbom.syft.raw.json"), syft);
+  if (isBootstrapAudit(input.manifest)) {
+    await emit("sbom", "sbom.syft.json", syft);
+  } else {
+    const chromium = await checkedRun(run, "docker", [
+      "run", "--rm", "--pull", "never", "--platform", input.manifest.architecture,
+      "--network", "none", "--read-only", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+      "--entrypoint", "/usr/local/bin/bun", input.manifest.image.reference, "-e", CHROMIUM_INVENTORY_PROBE,
+    ], "Chromium inventory probe");
+    await emit("sbom", "sbom.syft.json", JSON.stringify(augmentChromiumSbom(syft, input.manifest, parseJson(chromium, "Chromium inventory probe"))));
+  }
   const sbomPath = join(written.directory, "sbom.syft.json");
   const grype = await checkedRun(run, toolPaths.grype, [`sbom:${sbomPath}`, "-o", "json"], "Grype audit", {
     GRYPE_DB_AUTO_UPDATE: "false",

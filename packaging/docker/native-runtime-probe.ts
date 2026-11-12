@@ -1,8 +1,106 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { collectNativeRuntimeInventory, runtimeArchForPlatform, type NativeRuntimePlatform } from "./native-runtime-contract.ts";
+import { collectNativeRuntimeInventory, runtimeArchForPlatform, type NativeRuntimePlatform, expectedElfMachine } from "./native-runtime-contract.ts";
+
+import chromiumArtifacts from "./chromium-artifacts.json";
+
+export const BROWSER_EXECUTABLE = "/opt/nautilo/chromium/chrome-headless-shell";
+const REQUIRED_BROWSER_LINKAGE_FILES = [
+  BROWSER_EXECUTABLE,
+  "/opt/nautilo/chromium/libEGL.so",
+  "/opt/nautilo/chromium/libGLESv2.so",
+  "/opt/nautilo/chromium/libvk_swiftshader.so",
+  "/opt/nautilo/chromium/libvulkan.so.1",
+] as const;
+
+/** Validate both native execution evidence and the reviewed architecture-specific source pin. */
+export function assertBrowserQualification(value: unknown, platform: NativeRuntimePlatform): void {
+  const browser = value as Record<string, unknown> | null;
+  const pin = chromiumArtifacts.targets[platform];
+  if (!browser || browser.vendor !== "google-chrome-for-testing" ||
+      browser.version !== chromiumArtifacts.version || browser.platform !== platform ||
+      browser.archiveSha256 !== pin.sha256 || browser.executableSha256 !== pin.executableSha256 ||
+      browser.realExecutable !== BROWSER_EXECUTABLE) {
+    throw new Error("Browser qualification does not match the source-pinned artifact");
+  }
+  const elf = browser.elf as Record<string, unknown> | undefined;
+  if (!elf || elf.class !== 64 || elf.endianness !== "little" || elf.machine !== expectedElfMachine(platform)) {
+    throw new Error("Browser qualification has the wrong ELF architecture");
+  }
+  const linkage = browser.linkage as Record<string, unknown> | undefined;
+  const checkedFiles = linkage?.checkedFiles;
+  if (!linkage || linkage.passed !== true || !Array.isArray(linkage.missing) || linkage.missing.length !== 0 ||
+      !Array.isArray(checkedFiles) || !REQUIRED_BROWSER_LINKAGE_FILES.every((path) => checkedFiles.includes(path)) ||
+      new Set(checkedFiles).size !== checkedFiles.length ||
+      !checkedFiles.every((path) => typeof path === "string" && path.startsWith("/opt/nautilo/chromium/") && !path.split("/").includes(".."))) {
+    throw new Error("Browser qualification has incomplete or failed linkage evidence");
+  }
+}
+
+export function assertBrowserElf(header: Buffer, platform: NativeRuntimePlatform): void {
+  if (header.length < 20 || !header.subarray(0, 4).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46])) ||
+      header[4] !== 2 || header[5] !== 1 || header.readUInt16LE(18) !== expectedElfMachine(platform)) {
+    throw new Error("Browser executable must be an ELF64 little-endian binary for the requested platform");
+  }
+}
+
+export function assertBrowserLinkage(exitCode: number, stdout: string, stderr: string): void {
+  if (exitCode !== 0 || /\bnot found\b/i.test(`${stdout}\n${stderr}`) || stdout.trim() === "") {
+    throw new Error("Browser shared-library linkage failed");
+  }
+}
+
+async function browserCommand(args: string[]): Promise<{ stdout: string; stderr: string; exitCode: number }> {
+  const child = Bun.spawn(args, { stdout: "pipe", stderr: "pipe" });
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(child.stdout).text(), new Response(child.stderr).text(), child.exited,
+  ]);
+  return { stdout, stderr, exitCode };
+}
+
+async function browserLibraries(directory: string): Promise<string[]> {
+  const result: string[] = [];
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) result.push(...await browserLibraries(path));
+    else if (/\.so(?:\.|$)/.test(entry.name)) result.push(path);
+  }
+  return result;
+}
+
+export async function probeBrowser(platform: NativeRuntimePlatform): Promise<Record<string, unknown>> {
+  const realExecutable = await realpath("/usr/bin/chromium");
+  if (realExecutable !== BROWSER_EXECUTABLE) throw new Error("Canonical Chromium path does not resolve to the pinned vendor executable");
+  const bytes = await readFile(realExecutable);
+  const executableSha256 = createHash("sha256").update(bytes).digest("hex");
+  const pin = chromiumArtifacts.targets[platform];
+  const receipt = JSON.parse(await readFile("/opt/nautilo/chromium/artifact-manifest.json", "utf8"));
+  if (receipt.schemaVersion !== 1 || receipt.version !== chromiumArtifacts.version || receipt.platform !== platform ||
+      receipt.url !== pin.url || receipt.archiveSha256 !== pin.sha256 ||
+      receipt.executableSha256 !== executableSha256 || executableSha256 !== pin.executableSha256) {
+    throw new Error("Installed browser receipt or executable differs from the source pin");
+  }
+  assertBrowserElf(bytes, platform);
+  const version = await browserCommand([realExecutable, "--version"]);
+  const actualVersion = version.stdout.trim().match(/^(?:Google Chrome for Testing|Google Chrome|Chromium|HeadlessChrome) (\d+\.\d+\.\d+\.\d+)$/)?.[1];
+  if (version.exitCode !== 0 || actualVersion !== chromiumArtifacts.version) throw new Error("Installed browser reports an unexpected version");
+  const checkedFiles = [...new Set([realExecutable, ...await browserLibraries("/opt/nautilo/chromium")])].sort();
+  for (const file of checkedFiles) {
+    assertBrowserElf(await readFile(file), platform);
+    const linkage = await browserCommand(["ldd", file]);
+    assertBrowserLinkage(linkage.exitCode, linkage.stdout, linkage.stderr);
+  }
+  const result = {
+    vendor: "google-chrome-for-testing", version: actualVersion, platform,
+    archiveSha256: receipt.archiveSha256, executableSha256, realExecutable,
+    elf: { class: 64, endianness: "little", machine: expectedElfMachine(platform) },
+    linkage: { passed: true, checkedFiles, missing: [] },
+  };
+  assertBrowserQualification(result, platform);
+  return result;
+}
 
 interface SharpPipeline {
   resize(width: number, height: number): SharpPipeline;
@@ -30,8 +128,8 @@ interface TypeScriptModule {
 }
 
 function platformFromEnvironment(): NativeRuntimePlatform {
-  const value = process.env.D490_EXPECTED_PLATFORM;
-  if (value !== "linux/amd64" && value !== "linux/arm64") throw new Error("D490_EXPECTED_PLATFORM must be linux/amd64 or linux/arm64");
+  const value = process.env.NAUTILO_EXPECTED_PLATFORM;
+  if (value !== "linux/amd64" && value !== "linux/arm64") throw new Error("NAUTILO_EXPECTED_PLATFORM must be linux/amd64 or linux/arm64");
   return value;
 }
 
@@ -51,7 +149,7 @@ export function officeCliProbeEnvironment(
 async function probeOfficeCliScreenshots(platform: NativeRuntimePlatform): Promise<Record<string, unknown>> {
   const architecture = platform === "linux/amd64" ? "linux-x64" : "linux-arm64";
   const officeCli = `/srv/repo/packages/server/vendor/officecli/${architecture}/officecli`;
-  const scratch = await mkdtemp(join(tmpdir(), "d490-officecli-render-"));
+  const scratch = await mkdtemp(join(tmpdir(), "nautilo-officecli-render-"));
   const screenshots: Array<Record<string, unknown>> = [];
 
   for (const format of ["docx", "xlsx", "pptx"] as const) {
@@ -101,6 +199,7 @@ async function main(): Promise<void> {
     throw new Error(`runtime reported ${process.platform}/${process.arch}; expected ${platform}`);
   }
   const inventory = await collectNativeRuntimeInventory(platform);
+  const browser = await probeBrowser(platform);
 
   await import(
     "/srv/repo/packages/encryption-invariants/src/node/database-writer-inventory.ts"
@@ -126,7 +225,7 @@ async function main(): Promise<void> {
 
   const argon2Namespace = await import("/srv/repo/node_modules/argon2/argon2.cjs") as { default?: Argon2Module } & Partial<Argon2Module>;
   const argon2 = argon2Namespace.default ?? argon2Namespace as Argon2Module;
-  const phrase = "d490-native-runtime-probe";
+  const phrase = "nautilo-native-runtime-probe";
   const hash = await argon2.hash(phrase, {
     type: argon2.argon2id,
     memoryCost: 4096,
@@ -154,6 +253,7 @@ async function main(): Promise<void> {
     },
     argon2: { algorithm: "argon2id", verified, rejectedWrongValue },
     officecli,
+    browser,
     agentBrowser,
   })}\n`);
 }
