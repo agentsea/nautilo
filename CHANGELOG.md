@@ -7,6 +7,11 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Refuse detected vulnerable Ubuntu TCP kernels during normal container startup
+  and before Compose deployment or upgrade. Keep unsupported host kernels
+  explicitly unverified, and require a patched running kernel for new Ubuntu
+  security-test VM baselines. See [host kernel security](docs/host-kernel-security.md).
+
 - Support Claude Fable 5.2 and Haiku 5.5 with their adaptive thinking controls
   and full streaming output allowance. Recognize GPT-6.1 Terra in the OpenAI
   transport adapter, preserving output limits and optional reasoning.

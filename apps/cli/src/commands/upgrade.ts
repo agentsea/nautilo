@@ -4,6 +4,7 @@ import { buildRegistryImageRef } from "@nautilo/compose-driver";
 import { buildUpgradeDoctor } from "../lib/compose-driver-factory.ts";
 import { runComposeVerb } from "../lib/run-compose-verb.ts";
 import { resolveStableRuntimeImage } from "../lib/stable-runtime-image.ts";
+import { assertComposeHostKernelReady } from "../lib/compose-host-kernel.ts";
 
 const WAIT_FOR_RE = /^(\d+)(ms|s|m|h)$/;
 const DEFAULT_WAIT_FOR_MS = 5 * 60 * 1000;
@@ -87,7 +88,7 @@ export const upgradeModule: CommandModule = {
       },
       { doctor: buildUpgradeDoctor() },
       {
-        beforeDriver: async () => {
+        beforeDriver: async (profile) => {
           if (fromSources && imageRef) {
             throw new Error("--from-sources and --image cannot be used together.");
           }
@@ -96,6 +97,7 @@ export const upgradeModule: CommandModule = {
               ? buildRegistryImageRef(imageRef)
               : await resolveStableRuntimeImage();
           }
+          assertComposeHostKernelReady(profile, selectedImageRef);
         },
       },
     );
