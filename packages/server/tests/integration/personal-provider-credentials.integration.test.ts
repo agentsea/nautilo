@@ -13,12 +13,23 @@ import {
   type DirectDatabase,
 } from "@nautilo/db";
 import { bootstrapTestDbInstance } from "@nautilo/db/testing";
-import { createPersonalProviderCustody } from "@nautilo/operator-secrets";
+import {
+  createPersonalProviderCustody,
+  decryptPersonalProviderCredential,
+  type PersonalProviderCustody,
+} from "@nautilo/operator-secrets";
 import { personalProviderCredentialRoutes } from "../../src/routes/personal-provider-credentials";
 
 const SENTINEL = "personal-credential-integration-secret";
+const MINDSWAPPER_KEY = `ngw_${"a".repeat(43)}`;
+const MINDSWAPPER_REPLACEMENT_KEY = `ngw_${"b".repeat(43)}`;
+const MINDSWAPPER_DESTINATION = "https://personal-mindswapper.example/v1";
+const MINDSWAPPER_REPLACEMENT_DESTINATION = "https://personal-mindswapper.example/tenant/v1";
+const originalApprovedDestinations = process.env["MINDSWAPPER_APPROVED_BASE_URLS"];
+const validationCalls: Array<{ provider: string; apiKey: string; destination: string | null }> = [];
 let db: DirectDatabase;
 let app: FastifyInstance;
+let custody: PersonalProviderCustody;
 let userA: string;
 let userB: string;
 let allowPersonalProviderKeys = true;
@@ -43,7 +54,7 @@ beforeAll(async () => {
   userA = created[0]!.id;
   userB = created[1]!.id;
 
-  const custody = createPersonalProviderCustody();
+  custody = createPersonalProviderCustody();
   app = Fastify({ logger: false });
   app.decorateRequest("sessionUserId", null);
   app.addHook("preHandler", async (request) => {
@@ -55,7 +66,10 @@ beforeAll(async () => {
     getPolicy: async () => ({ allowPersonalProviderKeys, fundingPreference: "personal_first" }),
     getCapabilities: async () => ["use_personal_provider_credentials"],
     readCustody: async () => custody,
-    validate: async () => ({ status: "accepted" }),
+    validate: async (provider, apiKey, _signal, destination) => {
+      validationCalls.push({ provider, apiKey, destination: destination ?? null });
+      return { status: "accepted" };
+    },
     auditEvent: () => undefined,
   });
   await app.ready();
@@ -63,6 +77,9 @@ beforeAll(async () => {
 
 afterEach(async () => {
   allowPersonalProviderKeys = true;
+  validationCalls.length = 0;
+  if (originalApprovedDestinations === undefined) delete process.env["MINDSWAPPER_APPROVED_BASE_URLS"];
+  else process.env["MINDSWAPPER_APPROVED_BASE_URLS"] = originalApprovedDestinations;
   if (!db) return;
   for (const userId of [userA, userB]) {
     if (userId) await db.delete(personalProviderCredentials)
@@ -153,6 +170,7 @@ describe("personal credential API with migrated database", () => {
   });
 
   test("personal providers follow the server registry without its server-owned gateways", async () => {
+    process.env["MINDSWAPPER_APPROVED_BASE_URLS"] = MINDSWAPPER_DESTINATION;
     const registry = getAllKeyDefinitions().filter((provider) =>
       provider.id !== "gateway" && provider.id !== "nautilo-gateway");
     for (const provider of ["gateway", "nautilo-gateway"] as const) {
@@ -166,22 +184,26 @@ describe("personal credential API with migrated database", () => {
     for (const provider of registry) {
       const response = await app.inject({
         method: "PUT", url: `/api/account/provider-credentials/${provider.id}`,
-        headers: auth(userB), payload: { apiKey: SENTINEL },
+        headers: auth(userB),
+        payload: provider.id === "mindswapper"
+          ? { apiKey: MINDSWAPPER_KEY, destination: MINDSWAPPER_DESTINATION }
+          : { apiKey: SENTINEL },
       });
       expect(response.statusCode).toBe(200);
       expect(response.body).not.toContain(SENTINEL);
     }
     const listed = await app.inject({
-      method: "GET", url: "/api/account/provider-credentials", headers: auth(userB),
+      method: "GET", url: "/api/account/provider-credentials?includeMindSwapper=1", headers: auth(userB),
     });
     const body = responseBody(listed);
     const providers = body["providers"] as Array<{ id: string; personalCapabilities: string[] }>;
     expect(providers.map((provider) => provider.id)).toEqual(orderProviderKeys(registry).map((provider) => provider.id));
     expect(providers.filter((provider) => provider.personalCapabilities.includes("chat"))
       .map((provider) => provider.id).sort())
-      .toEqual(["anthropic", "fireworks", "google", "openai", "openrouter", "surplus", "together", "venice", "xai"]);
+      .toEqual(["anthropic", "fireworks", "google", "mindswapper", "openai", "openrouter", "surplus", "together", "venice", "xai"]);
     expect((body["credentials"] as unknown[]).length).toBe(registry.length);
     expect(listed.body).not.toContain(SENTINEL);
+    expect(listed.body).not.toContain(MINDSWAPPER_KEY);
     expect(listed.body).not.toContain("ciphertextBase64");
     // Remove this user's keys so the existing conflict tests start from their
     // own revision instead of depending on another scenario's receipts.
@@ -193,6 +215,144 @@ describe("personal credential API with migrated database", () => {
       expect(response.statusCode).toBe(200);
     }
   });
+
+  test("rejects MindSwapper destinations before observing or storing the key", async () => {
+    process.env["MINDSWAPPER_APPROVED_BASE_URLS"] = MINDSWAPPER_DESTINATION;
+    for (const destination of [
+      undefined,
+      "http://personal-mindswapper.example/v1",
+      MINDSWAPPER_DESTINATION + "?redirect=elsewhere",
+      "https://other-mindswapper.example/v1",
+      MINDSWAPPER_REPLACEMENT_DESTINATION,
+    ]) {
+      const response = await app.inject({
+        method: "PUT", url: "/api/account/provider-credentials/mindswapper",
+        headers: auth(userA),
+        payload: { apiKey: MINDSWAPPER_KEY, ...(destination === undefined ? {} : { destination }) },
+      });
+      expect(response.statusCode).toBe(422);
+      expect(responseBody(response)["error"]).toBe("credential_destination_unavailable");
+      expect(response.body).not.toContain(MINDSWAPPER_KEY);
+      expect(await getPersonalProviderCredential(db, userA, "mindswapper")).toBeNull();
+    }
+    expect(validationCalls).toEqual([]);
+  });
+
+  test("binds each Human's encrypted MindSwapper key to its approved destination and replacement revision", async () => {
+    process.env["MINDSWAPPER_APPROVED_BASE_URLS"] =
+      `${MINDSWAPPER_DESTINATION},${MINDSWAPPER_REPLACEMENT_DESTINATION}`;
+    const url = "/api/account/provider-credentials/mindswapper";
+    const created = await app.inject({
+      method: "PUT", url, headers: auth(userA),
+      payload: { apiKey: MINDSWAPPER_KEY, destination: "HTTPS://PERSONAL-MINDSWAPPER.example:443/v1/" },
+    });
+    expect(created.statusCode).toBe(200);
+    expect(responseBody(created)).toMatchObject({
+      committed: true,
+      credential: {
+        destination: MINDSWAPPER_DESTINATION, revision: 1,
+        masked: "********", validationStatus: "accepted", requiresReplacement: false,
+      },
+    });
+    expect(validationCalls).toEqual([
+      { provider: "mindswapper", apiKey: MINDSWAPPER_KEY, destination: MINDSWAPPER_DESTINATION },
+    ]);
+    const initial = await getPersonalProviderCredential(db, userA, "mindswapper");
+    expect(initial).not.toBeNull();
+    expect(decryptPersonalProviderCredential(custody, initial!.envelope, initial!)).toBe(MINDSWAPPER_KEY);
+    const [raw] = await db.select().from(personalProviderCredentials)
+      .where(eq(personalProviderCredentials.id, initial!.id));
+    expect(raw?.destination).toBe(MINDSWAPPER_DESTINATION);
+    expect(JSON.stringify(raw)).not.toContain(MINDSWAPPER_KEY);
+    expect(created.body).not.toContain(MINDSWAPPER_KEY);
+    const checked = await app.inject({
+      method: "POST", url: url + "/validate", headers: auth(userA), payload: { expectedRevision: 1 },
+    });
+    expect(checked.statusCode).toBe(200);
+    expect(responseBody(checked)).toMatchObject({
+      committed: false,
+      credential: { revision: 1, destination: MINDSWAPPER_DESTINATION, validationStatus: "accepted", masked: "********" },
+    });
+    expect(validationCalls.at(-1)).toEqual({
+      provider: "mindswapper", apiKey: MINDSWAPPER_KEY, destination: MINDSWAPPER_DESTINATION,
+    });
+
+    const otherListed = await app.inject({
+      method: "GET", url: "/api/account/provider-credentials?includeMindSwapper=1", headers: auth(userB),
+    });
+    expect(responseBody(otherListed)["credentials"]).toEqual([]);
+    const foreignValidation = await app.inject({
+      method: "POST", url: url + "/validate", headers: auth(userB), payload: { expectedRevision: 1 },
+    });
+    expect(foreignValidation.statusCode).toBe(404);
+    const foreignDeletion = await app.inject({
+      method: "DELETE", url, headers: auth(userB), payload: { expectedRevision: 1 },
+    });
+    expect(foreignDeletion.statusCode).toBe(200);
+    expect((await getPersonalProviderCredential(db, userA, "mindswapper"))?.revision).toBe(1);
+    expect(validationCalls.length).toBe(2);
+
+    const otherCreated = await app.inject({
+      method: "PUT", url, headers: auth(userB),
+      payload: { apiKey: MINDSWAPPER_REPLACEMENT_KEY, destination: MINDSWAPPER_REPLACEMENT_DESTINATION },
+    });
+    expect(otherCreated.statusCode).toBe(200);
+    const other = await getPersonalProviderCredential(db, userB, "mindswapper");
+    expect(other?.id).not.toBe(initial!.id);
+    expect(other?.destination).toBe(MINDSWAPPER_REPLACEMENT_DESTINATION);
+
+    process.env["MINDSWAPPER_APPROVED_BASE_URLS"] = MINDSWAPPER_REPLACEMENT_DESTINATION;
+    const listed = await app.inject({
+      method: "GET", url: "/api/account/provider-credentials?includeMindSwapper=1", headers: auth(userA),
+    });
+    expect(responseBody(listed)["credentials"]).toMatchObject([
+      { destination: MINDSWAPPER_DESTINATION, revision: 1, requiresReplacement: true, masked: "********" },
+    ]);
+    expect(listed.body).not.toContain(MINDSWAPPER_KEY);
+    expect(listed.body).not.toContain("ciphertextBase64");
+    const revokedDestination = await app.inject({
+      method: "POST", url: url + "/validate", headers: auth(userA), payload: { expectedRevision: 1 },
+    });
+    expect(revokedDestination.statusCode).toBe(409);
+    expect(responseBody(revokedDestination)["error"]).toBe("credential_destination_changed");
+    expect(validationCalls.length).toBe(3);
+
+    const staleReplacement = await app.inject({
+      method: "PUT", url, headers: auth(userA),
+      payload: { apiKey: MINDSWAPPER_REPLACEMENT_KEY, destination: MINDSWAPPER_REPLACEMENT_DESTINATION, expectedRevision: 2 },
+    });
+    expect(staleReplacement.statusCode).toBe(409);
+    expect(validationCalls.length).toBe(3);
+    const replaced = await app.inject({
+      method: "PUT", url, headers: auth(userA),
+      payload: { apiKey: MINDSWAPPER_REPLACEMENT_KEY, destination: MINDSWAPPER_REPLACEMENT_DESTINATION, expectedRevision: 1 },
+    });
+    expect(replaced.statusCode).toBe(200);
+    expect(responseBody(replaced)["credential"]).toMatchObject({
+      id: initial!.id, destination: MINDSWAPPER_REPLACEMENT_DESTINATION,
+      revision: 2, requiresReplacement: false, masked: "********",
+    });
+    const replacement = await getPersonalProviderCredential(db, userA, "mindswapper");
+    expect(replacement?.envelope).not.toEqual(initial!.envelope);
+    expect(decryptPersonalProviderCredential(custody, replacement!.envelope, replacement!))
+      .toBe(MINDSWAPPER_REPLACEMENT_KEY);
+    expect(validationCalls.at(-1)).toEqual({
+      provider: "mindswapper", apiKey: MINDSWAPPER_REPLACEMENT_KEY, destination: MINDSWAPPER_REPLACEMENT_DESTINATION,
+    });
+    expect(replaced.body).not.toContain(MINDSWAPPER_REPLACEMENT_KEY);
+
+    const staleDeletion = await app.inject({
+      method: "DELETE", url, headers: auth(userA), payload: { expectedRevision: 1 },
+    });
+    expect(staleDeletion.statusCode).toBe(409);
+    const deleted = await app.inject({
+      method: "DELETE", url, headers: auth(userA), payload: { expectedRevision: 2 },
+    });
+    expect(deleted.statusCode).toBe(200);
+    expect(await getPersonalProviderCredential(db, userA, "mindswapper")).toBeNull();
+    expect(await getPersonalProviderCredential(db, userB, "mindswapper")).toEqual(other);
+  });
+
   test("persists one owner's encrypted key, safe metadata, revision status, and deletion", async () => {
     const created = await app.inject({
       method: "PUT", url: "/api/account/provider-credentials/openai",

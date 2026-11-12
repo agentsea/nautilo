@@ -86,6 +86,65 @@ afterAll(async () => {
 });
 
 describe("personal provider credential encryption and storage", () => {
+  test("authenticates the persisted MindSwapper destination and revision with its encrypted key", async () => {
+    const firstDestination = "https://custody-mindswapper.example/v1";
+    const secondDestination = "https://custody-mindswapper.example/tenant/v1";
+    const firstKey = `ngw_${"c".repeat(43)}`;
+    const replacementKey = `ngw_${"d".repeat(43)}`;
+    const identity = createPersonalProviderCredentialIdentity();
+    const context: PersonalProviderCredentialContext = {
+      ...identity, userId: ownerId, provider: "mindswapper", destination: firstDestination,
+    };
+    const inserted = await insertPersonalProviderCredential(db, {
+      identity, userId: ownerId, provider: "mindswapper", destination: firstDestination,
+      envelope: encryptPersonalProviderCredential(OLD_CUSTODY, firstKey, context),
+    });
+    expect(inserted.status).toBe("created");
+    const initial = await getPersonalProviderCredential(db, ownerId, "mindswapper");
+    expect(initial?.destination).toBe(firstDestination);
+    expect(decryptPersonalProviderCredential(OLD_CUSTODY, initial!.envelope, initial!)).toBe(firstKey);
+    expectCustodyError(
+      () => decryptPersonalProviderCredential(OLD_CUSTODY, initial!.envelope, {
+        ...initial!, destination: secondDestination,
+      }),
+      "credential_authentication_failed",
+    );
+    expectCustodyError(
+      () => decryptPersonalProviderCredential(OLD_CUSTODY, initial!.envelope, {
+        ...initial!, destination: null,
+      }),
+      "credential_authentication_failed",
+    );
+
+    const replacementContext = { ...context, revision: 2, destination: secondDestination };
+    const replaced = await replacePersonalProviderCredential(db, {
+      id: identity.id, userId: ownerId, provider: "mindswapper", expectedRevision: 1,
+      destination: secondDestination,
+      envelope: encryptPersonalProviderCredential(OLD_CUSTODY, replacementKey, replacementContext),
+    });
+    expect(replaced.status).toBe("replaced");
+    const replacement = await getPersonalProviderCredential(db, ownerId, "mindswapper");
+    expect(replacement).toMatchObject({
+      id: identity.id, revision: 2, destination: secondDestination,
+    });
+    expect(decryptPersonalProviderCredential(OLD_CUSTODY, replacement!.envelope, replacement!))
+      .toBe(replacementKey);
+    for (const wrongContext of [
+      { ...replacement!, destination: firstDestination },
+      { ...replacement!, revision: 1 },
+      { ...replacement!, userId: otherUserId },
+    ]) {
+      expectCustodyError(
+        () => decryptPersonalProviderCredential(OLD_CUSTODY, replacement!.envelope, wrongContext),
+        "credential_authentication_failed",
+      );
+    }
+    const [raw] = await db.select().from(personalProviderCredentials)
+      .where(eq(personalProviderCredentials.id, identity.id));
+    expect(JSON.stringify(raw)).not.toContain(firstKey);
+    expect(JSON.stringify(raw)).not.toContain(replacementKey);
+  });
+
   test("binds ciphertext to its owner and revision, replaces without the old key, and cascades account deletion", async () => {
     const identity = createPersonalProviderCredentialIdentity();
     const initialContext: PersonalProviderCredentialContext = {

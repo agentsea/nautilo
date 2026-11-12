@@ -337,6 +337,44 @@ describe("personal provider credential storage", () => {
     expect(receiptStatusRejected).toBe(true);
   });
 
+  test("requires a persisted MindSwapper destination even when bypassing credential helpers", async () => {
+    const ownerId = await createFixtureUser("mindswapper-destination-constraint");
+    for (const destination of [null, ""]) {
+      const id = randomUUID();
+      let rejected = false;
+      try {
+        await db.insert(personalProviderCredentials).values({
+          id, userId: ownerId, provider: "mindswapper", revision: 1,
+          destination, validationStatus: "unverified", receiptReadStatus: "unknown",
+          ...envelope(),
+        });
+      } catch {
+        rejected = true;
+      }
+      expect(rejected).toBe(true);
+      expect(await db.select({ id: personalProviderCredentials.id })
+        .from(personalProviderCredentials).where(eq(personalProviderCredentials.id, id))).toEqual([]);
+    }
+
+    const identity = createPersonalProviderCredentialIdentity();
+    const destination = "https://mindswapper.example.test/v1";
+    expect(await insertPersonalProviderCredential(db, {
+      identity, userId: ownerId, provider: "mindswapper", destination, envelope: envelope(),
+    })).toMatchObject({
+      status: "created", credential: { revision: 1, destination, provider: "mindswapper" },
+    });
+    let removalRejected = false;
+    try {
+      await db.update(personalProviderCredentials).set({ destination: null })
+        .where(eq(personalProviderCredentials.id, identity.id));
+    } catch {
+      removalRejected = true;
+    }
+    expect(removalRejected).toBe(true);
+    expect(await getPersonalProviderCredential(db, ownerId, "mindswapper"))
+      .toMatchObject({ id: identity.id, revision: 1, destination });
+  });
+
   test("grants full access only to the product role", async () => {
     const result = await db.execute<{
       role_name: string;
