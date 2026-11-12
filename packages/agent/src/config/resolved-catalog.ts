@@ -71,7 +71,7 @@ import {
   type ModelCatalogProvenance,
 } from "./model-catalog/runtime-catalog";
 import { isSupportedModelCatalogWorkload } from "./model-catalog/supported-providers";
-import { findMindSwapperModel, isMindSwapperModelId, mindSwapperOfferForModel, readMindSwapperModels } from "./mindswapper-models";
+import { findMindSwapperModel, isMindSwapperModelId, mindSwapperOfferForModel, readMindSwapperModels, MINDSWAPPER_DEFAULT_INTELLIGENCE_TIER } from "./mindswapper-models";
 
 /** Explicit caller consent overrides the operator setting; injected environments are authoritative. */
 export function resolveChinaUpstreamConsent(
@@ -433,8 +433,8 @@ function resolveMindSwapperCatalogModel(id: string): ResolvedCatalogModel {
     },
     privacyGrade: null,
     privacyLabel: null,
-    intelligenceTier: null,
-    intelligenceRank: null,
+    intelligenceTier: MINDSWAPPER_DEFAULT_INTELLIGENCE_TIER,
+    intelligenceRank: INTELLIGENCE_RANK[MINDSWAPPER_DEFAULT_INTELLIGENCE_TIER],
     costCoefficient: 1,
     contextTokens: offer ? offer.maxInputTokens + offer.maxOutputTokens : null,
     maxOutputTokens: offer?.maxOutputTokens ?? null,

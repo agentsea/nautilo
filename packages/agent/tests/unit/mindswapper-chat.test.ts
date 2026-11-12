@@ -4,12 +4,16 @@ import { AIMessage, AIMessageChunk, HumanMessage, ToolMessage } from "@langchain
 import {
   withMindSwapperConnection,
   withMindSwapperModels,
+  MINDSWAPPER_DEFAULT_INTELLIGENCE_TIER,
   type MindSwapperChatModel,
 } from "../../src/config/mindswapper-models";
 import { getEligibleModels, resolveRetainedModels } from "../../src/config/eligible-models";
 import { resolveCatalogModel } from "../../src/config/resolved-catalog";
 import { validateExactTaskModelSelection } from "../../src/config/validate-exact-task-model";
 import { resolveModelRole } from "../../src/config/model-role-resolution";
+import { intelligenceRankOf, INTELLIGENCE_RANK, modelAxesOf } from "../../src/config/model-selection";
+import { localModelCatalog } from "../../src/config/model-catalog/catalog";
+import { resolveTaskModel } from "../../src/config/resolve-task-model";
 import { createUnmeteredEvaluationModel } from "../../src/providers/universal";
 import { createMindSwapperFetch } from "../../src/providers/mindswapper-completions";
 import { resolveModelExecutionLimits } from "../../src/providers/models";
@@ -93,6 +97,43 @@ describe("scoped MindSwapper model catalogue", () => {
     });
     expect(validateExactTaskModelSelection({ requestedModelId: modelId })?.code).toBe("unknown_model");
     expect(resolveRetainedModels([modelId])[0]?.unavailableReason).toContain("MindSwapper connection");
+  });
+
+  test("uses the current Kimi K3 tier as the MindSwapper intelligence default without changing other axes", () => {
+    const kimiIds = ["fireworks:accounts/fireworks/models/kimi-k3", "openrouter:moonshotai/kimi-k3"];
+    for (const id of kimiIds) {
+      const kimi = localModelCatalog.entries.find((entry) => entry.id === id);
+      expect(kimi?.intelligence?.tier).toBe(MINDSWAPPER_DEFAULT_INTELLIGENCE_TIER);
+      expect(INTELLIGENCE_RANK[MINDSWAPPER_DEFAULT_INTELLIGENCE_TIER]).toBe(4);
+    }
+    withMindSwapperModels([model], () => {
+      const resolved = resolveCatalogModel(modelId);
+      expect(resolved).toMatchObject({ intelligenceTier: "frontier", intelligenceRank: 4,
+        privacyGrade: null, costCoefficient: 1 });
+      expect(modelAxesOf(modelId, resolved)).toEqual({ privacy: 1, smart: 4, cost: 1 });
+      expect(intelligenceRankOf(modelId)).toBe(4);
+      expect(getEligibleModels({ purpose: "chat-tools", env: {} }).find((row) => row.id === modelId)?.priority)
+        .toBe(Number.MAX_SAFE_INTEGER);
+    });
+    expect(intelligenceRankOf("unknown:selection-fixture")).toBe(2);
+  });
+
+  test("keeps MindSwapper in automatic Task profiles while preserving balanced and exact selections", () => {
+    withMindSwapperModels([model], () => {
+      const input = { baseModelId: modelId, env: {}, runnableModelIds: [modelId] };
+      for (const profile of ["smartest", "cheapest", "smart_cheap", "cheap_smart"] as const) {
+        expect(resolveTaskModel({ ...input, profile })).toEqual({ modelId });
+      }
+      const competitor = "openai:gpt-5.6-luna";
+      const competing = { ...input, env: { OPENAI_API_KEY: "synthetic-selection-fixture" },
+        runnableModelIds: [modelId, competitor] };
+      expect(getEligibleModels({ purpose: "task-tools", env: competing.env })
+        .find((row) => row.id === competitor)?.availability).toBe("selectable");
+      expect(resolveTaskModel({ ...competing, profile: "smartest" })).toEqual({ modelId });
+      expect(resolveTaskModel({ ...competing, profile: "balanced" })).toEqual({ modelId });
+      expect(resolveTaskModel(competing)).toEqual({ modelId });
+      expect(validateExactTaskModelSelection({ requestedModelId: modelId })).toBeNull();
+    });
   });
 
   test("honors separate input and output limits for a small-context model", async () => {

@@ -1,6 +1,10 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import type { IntelligenceTier } from "@nautilo/trust";
 
 const MIND_SWAPPER_PREFIX = "mindswapper:";
+
+/** Provider default for model selection; individual discovery rows do not publish a reviewed tier. */
+export const MINDSWAPPER_DEFAULT_INTELLIGENCE_TIER: IntelligenceTier = "frontier";
 
 export interface MindSwapperChatOffer {
   readonly inputModalities: readonly ("text" | "image")[];
