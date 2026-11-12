@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { augmentChromiumSbom, assertChromiumSbomEvidence, chromiumCpe } from "./chromium-sbom.ts";
+import { augmentChromiumSbom, assertChromiumSbomEvidence } from "./chromium-sbom.ts";
 import artifacts from "./chromium-artifacts.json";
 import type { RuntimeImageEvidenceManifestV1 } from "./runtime-image-evidence.ts";
 
@@ -19,7 +19,7 @@ describe("source-pinned Chromium SBOM", () => {
     const original = JSON.parse(raw);
     expect((sbom["artifacts"] as unknown[]).slice(0, -1)).toEqual(original.artifacts);
     for (const key of ["artifactRelationships", "files", "source", "descriptor", "schema"]) expect(sbom[key]).toEqual(original[key]);
-    expect((sbom["artifacts"] as unknown[]).at(-1)).toMatchObject({ name: "google-chrome", version: artifacts.version, type: "binary", cpes: [{ cpe: chromiumCpe(artifacts.version) }] });
+    expect((sbom["artifacts"] as unknown[]).at(-1)).toMatchObject({ name: "google-chrome", version: artifacts.version, type: "binary", cpes: [{ cpe: `cpe:2.3:a:google:chrome:${artifacts.version}:*:*:*:*:*:*:*` }] });
     expect(() => assertChromiumSbomEvidence(sbom, manifest)).not.toThrow();
   });
 

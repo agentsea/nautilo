@@ -245,6 +245,7 @@ describe("Dockerfile stage shape", () => {
       [
         "agent-browser-vendor",
         "auth-contract",
+        "chromium-vendor",
         "deps",
         "manifests",
         "mobile-web-build",

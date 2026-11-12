@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 import artifacts from "./chromium-artifacts.json";
 import type { RuntimeImageEvidenceManifestV1 } from "./runtime-image-evidence.ts";
 
-export const CHROMIUM_EXECUTABLE_PATH = "/opt/nautilo/chromium/chrome-headless-shell";
-export const CHROMIUM_RECEIPT_PATH = "/opt/nautilo/chromium/artifact-manifest.json";
+const CHROMIUM_EXECUTABLE_PATH = "/opt/nautilo/chromium/chrome-headless-shell";
+const CHROMIUM_RECEIPT_PATH = "/opt/nautilo/chromium/artifact-manifest.json";
 const AUGMENTATION = "source-pinned-chrome-headless-shell";
 const CATALOGER = "nautilo-source-pinned-chromium";
 
@@ -26,7 +26,7 @@ function expected(manifest: RuntimeImageEvidenceManifestV1) {
   };
 }
 
-export function chromiumCpe(version: string): string {
+function chromiumCpe(version: string): string {
   return `cpe:2.3:a:google:chrome:${version}:*:*:*:*:*:*:*`;
 }
 
