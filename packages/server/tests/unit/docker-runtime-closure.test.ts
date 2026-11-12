@@ -1,4 +1,4 @@
-// M118: closure-guard test for the runtime image package set.
+// Closure-guard test for the runtime image package set.
 //
 // The Dockerfile's runtime stage must copy EXACTLY the transitive production
 // workspace-package closure of `@nautilo/server-bin` — no workspace-package
@@ -12,7 +12,7 @@
 // "Closure" follows production `dependencies` only. Client-only workspaces
 // such as `@nautilo/realtime-client` must not leak into the runtime source or
 // install inventory. `@nautilo/api-client` is a server runtime dependency as
-// of M243 because it canonically owns the protected Memory wire schemas.
+// because it canonically owns the protected Memory wire schemas.
 
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -23,7 +23,7 @@ const REPO_ROOT = resolve(import.meta.dir, "../../../..");
 const DOCKERFILE_PATH = join(REPO_ROOT, "packaging/docker/Dockerfile");
 const SERVER_BIN_NAME = "@nautilo/server-bin";
 const NON_WORKSPACE_RUNTIME_PACKAGE_ASSETS = new Set([
-  // M182 first-party mini-app seed sources are runtime assets, not workspace packages.
+  // First-party mini-app seed sources are runtime assets, not workspace packages.
   "first-party-apps",
 ]);
 
@@ -102,7 +102,7 @@ function extractRuntimeStage(dockerfile: string): string {
   return out.join("\n");
 }
 
-describe("M118 runtime image closure", () => {
+describe("runtime image closure", () => {
   const workspaces = loadWorkspaceManifests();
   const closure = computeProductionClosure(SERVER_BIN_NAME, workspaces);
   const dockerfile = readFileSync(DOCKERFILE_PATH, "utf8");
@@ -154,8 +154,8 @@ describe("M118 runtime image closure", () => {
 
   test("runtime stage does NOT copy the full /repo/packages tree (any source)", () => {
     // Catches regressions to either of the pre-fix shapes:
-    //   COPY --from=server-deps /repo/packages ./repo/packages   (pre-M118)
-    //   COPY --from=deps /repo/packages packages                 (incomplete-M118)
+    //   COPY --from=server-deps /repo/packages ./repo/packages   (old layout)
+    //   COPY --from=deps /repo/packages packages                 (incomplete layout)
     //   COPY packages ./repo/packages                            (context-bulk)
     const fromDeps = /^\s*COPY\s+(?:--[^\s]+\s+)*--from=deps\s+\/repo\/packages\s+/m;
     const fromContext = /^\s*COPY\s+(?:--[^\s=]+\s+)*packages\s+/m;
@@ -195,8 +195,20 @@ describe("M118 runtime image closure", () => {
   });
 
   test("runtime retains the OfficeCLI headless screenshot backend", () => {
-    expect(runtimeBody).toContain("chromium-headless-shell");
-    expect(runtimeBody).toContain("ln -s /usr/bin/chromium-headless-shell /usr/bin/chromium");
+    expect(dockerfile).toContain("FROM deps AS chromium-vendor");
+    expect(dockerfile).toContain('bun packaging/docker/chromium-vendor.ts "linux/$TARGETARCH" /opt/nautilo/chromium');
+    expect(runtimeBody).toContain("COPY --from=chromium-vendor /opt/nautilo/chromium /opt/nautilo/chromium");
+    expect(runtimeBody).toContain("ln -s /opt/nautilo/chromium/chrome-headless-shell /usr/bin/chromium");
+    expect(runtimeBody).toContain("for package in chromium-common chromium-headless-shell");
+    expect(runtimeBody).toContain("unexpected Debian browser retained");
+    expect(runtimeBody).toContain('browser_version="$(/usr/bin/chromium --version)"');
+    expect(runtimeBody).toContain('ldd "$binary"');
+    const installStatements = runtimeBody.replace(/\\\r?\n\s*/gu, " ").split(/&&|\n/u)
+      .filter((line) => line.includes("apt-get install"));
+    expect(installStatements.length).toBeGreaterThan(0);
+    for (const line of installStatements) {
+      expect(line).not.toMatch(/\bchromium(?:-common|-headless-shell)?\b/);
+    }
   });
 
   test("runtime copies only the vendored Lattice crypto surface, not its builder tree", () => {

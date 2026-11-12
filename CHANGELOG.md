@@ -11,6 +11,16 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   appear after discovery and can be selected for Genie chat and native text Tasks
   according to their Chat Completions capabilities.
 
+- Update the server image to the pinned Google Chrome for Testing 157.0.8103.78
+  headless browser on both Linux architectures, with native rendering and
+  explicit vendor-component vulnerability coverage. Retire obsolete Debian
+  browser exceptions and track the exact remaining Kerberos fixes awaiting Debian packages.
+
+- Refuse detected vulnerable Ubuntu TCP kernels during normal container startup
+  and before Compose deployment or upgrade. Keep unsupported host kernels
+  explicitly unverified, and require a patched running kernel for new Ubuntu
+  security-test VM baselines. See [host kernel security](docs/host-kernel-security.md).
+
 - Support Claude Fable 5.2 and Haiku 5.5 with their adaptive thinking controls
   and full streaming output allowance. Recognize GPT-6.1 Terra in the OpenAI
   transport adapter, preserving output limits and optional reasoning.

@@ -5,14 +5,12 @@
 # Sequence:
 #   1. Verify `limactl` is installed.
 #   2. Tear down any existing nautilo-smoke-linux VM (idempotent).
-#   3. Start a fresh VM using lima-config.yaml.
+#   3. Start a fresh VM using lima-config.yaml, then reboot onto its updated kernel.
 #   4. Stream the Nautilo repo into the VM (excluding node_modules, .turbo,
 #      .git/objects, logs — we reinstall deps in-VM).
-#   5. Run `bun install` inside the VM.
+#   5. Verify the running kernel is fixed, then run `bun install` inside the VM.
 #   6. Plant honeypot fixtures via honeypot.sh.
 #   7. Take baseline snapshot.
-#
-# D063 Phase 1 tasks 1.2 and 1.4.
 
 set -euo pipefail
 
@@ -59,12 +57,8 @@ echo "==> Using limactl $(limactl --version | awk '{print $NF}')"
 
 # --- 2. Tear down existing VM (idempotent) ----------------------------------
 
-# D063 PR-001 M-2: the previous check used `jq -e ".name == \"$VM_NAME\""`
-# which works for the first line of ndjson output but returns false for
-# subsequent lines. If the user had multiple Lima VMs, the existing-VM
-# detection would miss our VM when it wasn't the first entry listed.
-# Slurping with `-s` turns the newline-delimited stream into a single
-# array that we can match with an exact-name filter.
+# Slurp Lima's newline-delimited JSON into an array so the exact-name
+# match finds the owned VM regardless of its position in the list.
 if limactl list --format=json 2>/dev/null | jq -se "map(select(.name == \"$VM_NAME\")) | length > 0" >/dev/null 2>&1; then
   echo "==> Removing existing VM: $VM_NAME"
   limactl stop --force "$VM_NAME" 2>/dev/null || true
@@ -92,14 +86,21 @@ for attempt in $(seq 1 60); do
   sleep 2
 done
 
+# Provisioning installs the supported kernel, but the first boot still runs
+# the image's original kernel. Gracefully reboot before any workload or
+# baseline is prepared; a failed shutdown/start must abort setup.
+echo "==> Rebooting VM to activate the updated Ubuntu kernel..."
+limactl stop "$VM_NAME"
+limactl start --tty=false "$VM_NAME"
+
 # --- 4. Push Nautilo source into VM -----------------------------------------
 
 echo "==> Pushing Nautilo source into VM..."
 # Stream a tarball of tracked+untracked files (excluding heavy caches)
 # so we preserve uncommitted local changes but skip 1GB+ of node_modules.
-# Source is placed at /home/nautilotest/nautilo.
+# Source is placed in the test user's home directory.
 
-limactl shell "$VM_NAME" -- bash -c "sudo -u nautilotest mkdir -p /home/nautilotest/nautilo"
+limactl shell "$VM_NAME" -- sudo -H -u nautilotest bash -lc 'mkdir -p "$HOME/nautilo"'
 
 (cd "$NAUTILO_ROOT" && tar -cf - \
   --exclude='./node_modules' \
@@ -112,12 +113,24 @@ limactl shell "$VM_NAME" -- bash -c "sudo -u nautilotest mkdir -p /home/nautilot
   --exclude='._*' \
   --exclude='dist' \
   --exclude='*/dist' \
-  .) | limactl shell "$VM_NAME" -- bash -c \
-    "sudo -u nautilotest tar -xf - -C /home/nautilotest/nautilo"
+  .) | limactl shell "$VM_NAME" -- sudo -H -u nautilotest bash -lc \
+    'tar -xf - -C "$HOME/nautilo"'
 # NOTE: '._*' excludes macOS AppleDouble resource forks. bun treats them
-# as executable JS on Linux and the tests fail with parse errors. This
-# is a bug we caught on the first smoke run of @nautilo/security tests
-# (see D063 Phase 1 task 1.9). Invisible on macOS, loud on Linux.
+# as executable JS on Linux and the tests fail with parse errors.
+
+# Require positive evidence about the running kernel before dependencies,
+# fixtures, services, or a reusable baseline are prepared. The shared checker
+# also permits unknown hosts for runtime compatibility; those cannot qualify
+# this Ubuntu baseline. pipefail preserves checker failures through jq.
+echo "==> Verifying the running Ubuntu kernel is fixed..."
+if ! limactl shell "$VM_NAME" -- sudo -H -u nautilotest bash -lc '
+  set -euo pipefail
+  "$HOME/.bun/bin/bun" "$HOME/nautilo/packages/hosting/src/ubuntu-host-kernel-check.ts" --json |
+    jq -e ".status == \"fixed\""
+'; then
+  echo "!!  Running Ubuntu kernel is not verified fixed; baseline setup refused" >&2
+  exit 1
+fi
 
 # --- 5. bun install inside VM -----------------------------------------------
 
@@ -125,7 +138,7 @@ echo "==> Running bun install inside VM (this takes a couple of minutes)..."
 
 # Ensure bun is installed for nautilotest (the provision block should have
 # done this, but this is cheap+idempotent).
-limactl shell "$VM_NAME" -- sudo -u nautilotest bash -lc \
+limactl shell "$VM_NAME" -- sudo -H -u nautilotest bash -lc \
   'test -x "$HOME/.bun/bin/bun" || curl -fsSL https://bun.sh/install | bash'
 
 # Run bun install as nautilotest, using its own shell init.
@@ -134,36 +147,35 @@ limactl shell "$VM_NAME" -- sudo -u nautilotest bash -lc \
 # --ignore-scripts skips the repo's postinstall (`lefthook install`),
 # which is a dev-machine git-hooks tool that isn't useful inside a
 # disposable test VM. Omitting saves ~15s and avoids git-worktree edge cases.
-limactl shell "$VM_NAME" -- sudo -u nautilotest bash -lc \
-  'cd /home/nautilotest/nautilo && ~/.bun/bin/bun install --ignore-scripts'
+limactl shell "$VM_NAME" -- sudo -H -u nautilotest bash -lc \
+  'cd "$HOME/nautilo" && "$HOME/.bun/bin/bun" install --ignore-scripts'
 
 # --- 6. Plant honeypot fixtures ---------------------------------------------
 
 echo "==> Planting honeypot fixtures..."
-# honeypot.sh is the real 307-line POSIX-sh implementation (D063 Phase 1
-# task 1.4 complete). A failure here means plant actually broke — fail
+# A honeypot.sh failure means planting broke — fail
 # hard rather than silently continuing with an empty VM that would let
 # smoke tests falsely pass. The outer `set -euo pipefail` does the work.
-limactl shell "$VM_NAME" -- sudo -u nautilotest bash -lc \
-  "sh /home/nautilotest/nautilo/scripts/security-test-env/honeypot.sh plant"
+limactl shell "$VM_NAME" -- sudo -H -u nautilotest bash -lc \
+  'sh "$HOME/nautilo/scripts/security-test-env/honeypot.sh" plant'
 
-# --- 6b. Install bubblewrap (D060 Phase 1 SANDBOX-LINUX-* harness) ----------
+# --- 6b. Install bubblewrap (SANDBOX-LINUX-* harness) ----------
 
 echo "==> Installing bubblewrap for SANDBOX-LINUX-* containment tests..."
-# D060 Phase 1 — the SANDBOX-LINUX-* smoke rows wrap run_shell in bwrap.
+# The SANDBOX-LINUX-* smoke rows wrap run_shell in bwrap.
 # Ubuntu 24.04 ships a recent bwrap in universe; apt is idempotent so
-# re-runs are no-ops. D103 isolated-network rows also need bwrap to
+# re-runs are no-ops. Isolated-network rows also need bwrap to
 # configure loopback inside a new network namespace; Ubuntu's package is
 # not setuid by default, so the disposable VM grants setuid on bwrap
 # explicitly. This is VM-only test harness setup, not a product default.
 limactl shell "$VM_NAME" -- sudo -n bash -lc \
   "DEBIAN_FRONTEND=noninteractive apt-get install -y bubblewrap && chmod u+s /usr/bin/bwrap"
 
-# --- 6c. Generate smoke token + systemd service (D063 Phase 6 follow-up) -----
+# --- 6c. Generate smoke token + systemd service -----
 
 echo "==> Generating smoke token + registering nautilo-test.service..."
 # The SANDBOX-LINUX-* matrix drives run_shell via the in-VM Nautilo
-# server's /api/test/tool-invoke endpoint (D063 Phase 6). The server
+# server's /api/test/tool-invoke endpoint. The server
 # runs under NAUTILO_TEST_MODE_ONLY=1 which skips DB bootstrap + seed
 # — we don't need Postgres or Docker inside the VM. The bearer token
 # lives at /etc/nautilo/smoke-token (readable by nautilotest).
@@ -171,6 +183,8 @@ SMOKE_TOKEN="$(head -c 24 /dev/urandom | base64 | tr -d '+/=' | cut -c1-32)"
 
 limactl shell "$VM_NAME" -- sudo -n bash -lc "
 set -e
+TEST_HOME=\$(getent passwd nautilotest | cut -d: -f6)
+test -n \"\$TEST_HOME\"
 install -d -m 0755 /etc/nautilo
 printf '%s' '${SMOKE_TOKEN}' > /etc/nautilo/smoke-token
 chown nautilotest:nautilotest /etc/nautilo/smoke-token
@@ -188,14 +202,14 @@ chmod 0644 /etc/nautilo/smoke-token
 rm -f /etc/systemd/system/nautilo-test.service
 cat > /etc/systemd/system/nautilo-test.service <<SERVICE
 [Unit]
-Description=Nautilo server (test-mode-only, D063 SANDBOX-LINUX-* harness)
+Description=Nautilo server (test-mode-only, SANDBOX-LINUX-* harness)
 After=network.target
 
 [Service]
 Type=simple
 User=nautilotest
 Group=nautilotest
-WorkingDirectory=/home/nautilotest/nautilo
+WorkingDirectory=\"\$TEST_HOME/nautilo\"
 Environment=NAUTILO_TEST_MODE_ONLY=1
 Environment=NAUTILO_TEST_MODE=1
 # NO leading '-' — we REQUIRE the token file. If it's missing,
@@ -208,7 +222,7 @@ EnvironmentFile=/etc/nautilo/service-env
 Environment=NAUTILO_PORT=3001
 Environment=NAUTILO_MDNS=false
 Environment=NAUTILO_HOST=127.0.0.1
-ExecStart=/home/nautilotest/.bun/bin/bun run /home/nautilotest/nautilo/bin/nautilo-server/src/index.ts
+ExecStart=\"\$TEST_HOME/.bun/bin/bun\" run \"\$TEST_HOME/nautilo/bin/nautilo-server/src/index.ts\"
 Restart=on-failure
 RestartSec=2
 
@@ -227,7 +241,7 @@ systemctl daemon-reload
 systemctl enable --now nautilo-test.service
 "
 
-# --- 6c.5. Register headless relay service (D060 Sprint 2 G2) ---------------
+# --- 6c.5. Register headless relay service ---------------
 #
 # The SANDBOX-LINUX-* matrix exercises the full production protocol:
 # test client -> server /api/test/tool-invoke -> server Policy Resolver ->
@@ -247,6 +261,8 @@ systemctl enable --now nautilo-test.service
 echo "==> Registering nautilo-relay.service (headless, co-located with server)..."
 limactl shell "$VM_NAME" -- sudo -n bash -lc "
 set -e
+TEST_HOME=\$(getent passwd nautilotest | cut -d: -f6)
+test -n \"\$TEST_HOME\"
 
 # Relay workspace — the 'what can the sandboxed subprocess read/write'
 # root the relay reports as allowedRoots[0]. For the smoke harness
@@ -254,12 +270,12 @@ set -e
 # Runner's beforeToolInvocation hook), so the relay's guard unions
 # with it at dispatch time. Until that hook fires, an empty dir is
 # fine — relay starts + registers + waits for dispatches.
-install -d -m 0755 -o nautilotest -g nautilotest /home/nautilotest/workspace
+install -d -m 0755 -o nautilotest -g nautilotest \"\$TEST_HOME/workspace\"
 
 rm -f /etc/systemd/system/nautilo-relay.service
 cat > /etc/systemd/system/nautilo-relay.service <<SERVICE
 [Unit]
-Description=Nautilo headless relay (D060 Sprint 2 G2 — SANDBOX-LINUX-* harness)
+Description=Nautilo headless relay (SANDBOX-LINUX-* harness)
 Documentation=https://github.com/agentsea/nautilo/blob/main/scripts/security-test-env/README.md
 After=network.target nautilo-test.service
 # Not 'Requires=' on purpose: if the server is restarting, we want
@@ -282,15 +298,14 @@ After=network.target nautilo-test.service
 Type=simple
 User=nautilotest
 Group=nautilotest
-WorkingDirectory=/home/nautilotest/nautilo
+WorkingDirectory=\"\$TEST_HOME/nautilo\"
 Environment=NODE_ENV=production
 Environment=NAUTILO_SERVER_URL=http://127.0.0.1:3001
-Environment=NAUTILO_USER_ID=@owner@nautilo.local
-Environment=NAUTILO_WORKSPACE=/home/nautilotest/workspace
+Environment=\"NAUTILO_WORKSPACE=\$TEST_HOME/workspace\"
 # NAUTILO_TOOLS_BIN is a filesystem-layout hint (not policy). Points
 # at where bun lives so the sandbox can bind-mount it. Same taxonomy
 # category as NAUTILO_HOST / NAUTILO_PORT per G5.6 classification.
-Environment=NAUTILO_TOOLS_BIN=/home/nautilotest/.bun/bin
+Environment=\"NAUTILO_TOOLS_BIN=\$TEST_HOME/.bun/bin\"
 # SANDBOX-LINUX-04 CANARY: LD_PRELOAD is set on the relay (parent)
 # so SANDBOX-LINUX-04 actually EXERCISES the DANGEROUS_ENV_VARS
 # filter — if the filter is intact, the spawned child sees
@@ -299,7 +314,7 @@ Environment=NAUTILO_TOOLS_BIN=/home/nautilotest/.bun/bin
 # the smoke row fails loudly. The file doesn\u0027t exist so even a
 # regression doesn\u0027t actually LOAD the library — safe.
 Environment=LD_PRELOAD=/tmp/nautilo-smoke-canary-should-not-reach-child.so
-ExecStart=/home/nautilotest/.bun/bin/bun run /home/nautilotest/nautilo/bin/nautilo-relay/src/index.ts
+ExecStart=\"\$TEST_HOME/.bun/bin/bun\" run \"\$TEST_HOME/nautilo/bin/nautilo-relay/src/index.ts\"
 Restart=on-failure
 RestartSec=2
 
@@ -366,7 +381,7 @@ if [ "$RELAY_OK" -eq 0 ]; then
   exit 1
 fi
 
-# --- 6f. Plant execute_artifact test scripts (D060 Sprint 2 G5/EXEC-*) -----
+# --- 6f. Plant execute_artifact test scripts -----
 #
 # `execute_artifact` runs scripts FROM the home/scratch artifact zones.
 # Pre-plant a small set of canonical scripts so the EXEC-LINUX-* matrix
@@ -383,7 +398,7 @@ fi
 # Snapshot captures the planted state — every per-test restore returns
 # to scripts-present so EXEC-* rows are deterministic.
 echo "==> Planting execute_artifact test scripts in ~nautilotest/.nautilo/home/exec/..."
-limactl shell "$VM_NAME" -- sudo -u nautilotest bash -lc "
+limactl shell "$VM_NAME" -- sudo -H -u nautilotest bash -lc "
 set -e
 mkdir -p \$HOME/.nautilo/home/exec
 
@@ -400,15 +415,15 @@ touch ./exec-linux-02-marker && ls ./exec-linux-02-marker
 SH
 chmod 0755 \$HOME/.nautilo/home/exec/write-workspace.sh
 
-cat > \$HOME/.nautilo/home/exec/escape-write.sh <<'SH'
+cat > \$HOME/.nautilo/home/exec/escape-write.sh <<SH
 #!/bin/sh
-# /home/nautilotest is NOT bind-mounted into the bwrap namespace
+# The test user home is NOT bind-mounted into the bwrap namespace
 # (only the workspace, /etc, /usr, /tmp tmpfs are). Touch should
 # fail with ENOENT or EROFS; the explicit ESCAPE-BLOCKED marker is
 # how the matrix asserts containment fired without depending on
 # the exact errno text.
-touch /home/nautilotest/exec-linux-03-escape 2>/dev/null
-ls /home/nautilotest/exec-linux-03-escape 2>/dev/null \
+touch \"\$HOME/exec-linux-03-escape\" 2>/dev/null
+ls \"\$HOME/exec-linux-03-escape\" 2>/dev/null \
   || echo ESCAPE-BLOCKED
 SH
 chmod 0755 \$HOME/.nautilo/home/exec/escape-write.sh
@@ -456,7 +471,7 @@ Enter:        limactl shell $VM_NAME
 Restore:      limactl snapshot apply $VM_NAME --tag $SNAPSHOT_NAME -y
 Teardown:     $SCRIPT_DIR/teardown.sh --linux
 
-Nautilo:      /home/nautilotest/nautilo
+Nautilo:      ~nautilotest/nautilo
 Start both:   limactl shell $VM_NAME -- sudo bash -c \\
               'systemctl start nautilo-test.service && systemctl start nautilo-relay.service'
 Smoke token:  /etc/nautilo/smoke-token (inside VM, 0644, readable by lima user)
@@ -464,7 +479,7 @@ Tool-invoke:  curl -H "Authorization: Bearer \$(cat /etc/nautilo/smoke-token)" \
               http://127.0.0.1:3001/api/test/ping
 Relay status: limactl shell $VM_NAME -- sudo journalctl -u nautilo-relay -n 20
 
-Start OSS:    limactl shell $VM_NAME -- sudo -u nautilotest bash -lc \\
-              'cd /home/nautilotest/nautilo && ~/.bun/bin/bun run oss'
+Start OSS:    limactl shell $VM_NAME -- sudo -H -u nautilotest bash -lc \\
+              'cd "\$HOME/nautilo" && "\$HOME/.bun/bin/bun" run oss'
 
 EOF

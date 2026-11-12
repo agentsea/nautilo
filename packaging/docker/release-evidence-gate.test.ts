@@ -35,7 +35,7 @@ function rewriteIndexedReport(
   writeFileSync(indexPath, `${JSON.stringify(index, null, 2)}\n`);
 }
 
-describe("D490 release evidence gate", () => {
+describe("Server release evidence gate", () => {
   test("accepts complete digest-bound audit and native evidence", () => {
     const fixture = copiedFixture("arm64");
     const receipt = evaluateReleaseArchitectureEvidence(fixture.directory, fixture.nativeProbe);
@@ -69,6 +69,79 @@ describe("D490 release evidence gate", () => {
     delete officeNative.probe.officecli;
     writeFileSync(missingOfficeCli.nativeProbe, `${JSON.stringify(officeNative, null, 2)}\n`);
     expect(() => evaluateReleaseArchitectureEvidence(missingOfficeCli.directory, missingOfficeCli.nativeProbe)).toThrow("OfficeCLI");
+  });
+
+  test("requires the source-pinned native browser and complete linkage on both architectures", () => {
+    const mutations: Array<readonly [readonly string[], unknown]> = [
+      [["browser"], undefined],
+      [["browser", "vendor"], "debian"],
+      [["browser", "version"], "156.0.8078.79"],
+      [["browser", "platform"], "linux/other"],
+      [["browser", "archiveSha256"], "0".repeat(64)],
+      [["browser", "executableSha256"], "0".repeat(64)],
+      [["browser", "realExecutable"], "/usr/bin/chromium-headless-shell"],
+      [["browser", "elf", "machine"], 0],
+      [["browser", "elf", "class"], 32],
+      [["browser", "elf", "endianness"], "big"],
+      [["browser", "linkage"], undefined],
+      [["browser", "linkage", "passed"], false],
+      [["browser", "linkage", "checkedFiles"], []],
+      [["browser", "linkage", "checkedFiles"], ["/opt/nautilo/chromium/chrome-headless-shell", "/tmp/unrelated.so"]],
+      [["browser", "linkage", "missing"], ["libmissing.so"]],
+    ];
+    for (const architecture of ["amd64", "arm64"] as const) {
+      const valid = copiedFixture(architecture);
+      expect(evaluateReleaseArchitectureEvidence(valid.directory, valid.nativeProbe).passed).toBe(true);
+      for (const [path, value] of mutations) {
+        const fixture = copiedFixture(architecture);
+        const native = JSON.parse(readFileSync(fixture.nativeProbe, "utf8"));
+        let target = native.probe as Record<string, unknown>;
+        for (const key of path.slice(0, -1)) target = target[key] as Record<string, unknown>;
+        const key = path[path.length - 1]!;
+        if (value === undefined) delete target[key];
+        else target[key] = value;
+        writeFileSync(fixture.nativeProbe, JSON.stringify(native));
+        expect(() => evaluateReleaseArchitectureEvidence(fixture.directory, fixture.nativeProbe)).toThrow("Browser qualification");
+      }
+    }
+  });
+
+  test("requires linkage coverage for every shipped browser library on both architectures", () => {
+    const libraries = ["libEGL.so", "libGLESv2.so", "libvk_swiftshader.so", "libvulkan.so.1"];
+    for (const architecture of ["amd64", "arm64"] as const) {
+      for (const omitted of ["all-libraries", ...libraries]) {
+        const fixture = copiedFixture(architecture);
+        const native = JSON.parse(readFileSync(fixture.nativeProbe, "utf8")) as {
+          probe: { browser: { linkage: { checkedFiles: string[] } } };
+        };
+        const linkage = native.probe.browser.linkage;
+        linkage.checkedFiles = omitted === "all-libraries"
+          ? ["/opt/nautilo/chromium/chrome-headless-shell"]
+          : linkage.checkedFiles.filter((path) => path !== `/opt/nautilo/chromium/${omitted}`);
+        writeFileSync(fixture.nativeProbe, JSON.stringify(native));
+        expect(() => evaluateReleaseArchitectureEvidence(fixture.directory, fixture.nativeProbe))
+          .toThrow("incomplete or failed linkage evidence");
+      }
+    }
+  });
+
+  test("requires the browser component and provenance in digest-bound SBOM evidence", () => {
+    for (const mutation of ["missing-proof", "missing-component", "wrong-version", "missing-cpe"] as const) {
+      const fixture = copiedFixture("amd64");
+      rewriteIndexedReport(fixture, "sbom", (report) => {
+        if (mutation === "missing-proof") { delete report.nautiloChromium; return; }
+        if (!Array.isArray(report.artifacts)) throw new Error("fixture SBOM has no artifacts");
+        if (mutation === "missing-component") {
+          report.artifacts = report.artifacts.filter((artifact) => artifact.name !== "google-chrome");
+          return;
+        }
+        const browser = report.artifacts.find((artifact) => artifact.name === "google-chrome");
+        if (!browser) throw new Error("fixture SBOM has no browser");
+        if (mutation === "wrong-version") browser.version = "156.0.8078.79";
+        else browser.cpes = [];
+      });
+      expect(() => evaluateReleaseArchitectureEvidence(fixture.directory, fixture.nativeProbe)).toThrow();
+    }
   });
 
   test("withholds a receipt for an unreviewed high or critical finding", () => {
@@ -130,9 +203,9 @@ describe("D490 release evidence gate", () => {
   });
 });
 
-describe("D490 vulnerability database capture", () => {
+describe("Vulnerability database capture", () => {
   test("hashes exact provider database files and metadata", () => {
-    const root = mkdtempSync(join(tmpdir(), "d490-db-capture-"));
+    const root = mkdtempSync(join(tmpdir(), "server-db-capture-"));
     const grype = join(root, "grype");
     const trivy = join(root, "trivy");
     mkdirSync(join(grype, "6"), { recursive: true });

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { CHROMIUM_VENDOR_MANIFEST } from "./chromium-vendor.ts";
 import { parseVulnerabilityPolicy } from "./vulnerability-policy.ts";
 
 const read = (path: string) => JSON.parse(readFileSync(join(import.meta.dir, path), "utf8"));
@@ -59,7 +60,23 @@ describe("Debian 13 security update and exception retirement", () => {
   test("remaining decisions match reviewed package versions and production schema", () => {
     const floors = new Map(readFileSync(join(import.meta.dir, "server-security-package-floors.txt"), "utf8")
       .split("\n").filter((line) => line && !line.startsWith("#")).map((line) => line.split(" ") as [string, string]));
-    expect(floors.size).toBe(10);
+    expect(floors.size).toBe(8);
+    expect([...floors.keys()].sort()).toEqual([
+      "gzip", "libbrotli1", "libc-bin", "libc6", "libglib2.0-0t64", "libpcre2-8-0", "libsqlite3-0", "perl-base",
+    ]);
+    expect(floors.has("chromium-common")).toBe(false);
+    expect(floors.has("chromium-headless-shell")).toBe(false);
+    expect(CHROMIUM_VENDOR_MANIFEST.version).toBe("157.0.8103.78");
+    expect(Object.keys(CHROMIUM_VENDOR_MANIFEST.targets).sort()).toEqual(["linux/amd64", "linux/arm64"]);
+    for (const platform of ["linux/amd64", "linux/arm64"] as const) {
+      const pin = CHROMIUM_VENDOR_MANIFEST.targets[platform];
+      const upstreamPlatform = platform === "linux/amd64" ? "linux64" : "linux-arm64";
+      expect(pin.url).toBe(`https://storage.googleapis.com/chrome-for-testing-public/157.0.8103.78/${upstreamPlatform}/chrome-headless-shell-${upstreamPlatform}.zip`);
+      expect(pin.sha256).toMatch(/^[a-f0-9]{64}$/);
+      expect(pin.executableSha256).toMatch(/^[a-f0-9]{64}$/);
+      expect(pin.size).toBeGreaterThan(0);
+      expect(pin.archiveRoot).toBe(`chrome-headless-shell-${upstreamPlatform}`);
+    }
     expect(floors.get("libbrotli1")).toBe("1.1.0-2+deb13u1");
     for (const entry of current.exceptions) {
       // This historical September 13 review predates these separately tested findings.

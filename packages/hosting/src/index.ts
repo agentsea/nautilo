@@ -1,4 +1,9 @@
 export {
+  assessUbuntuHostKernel,
+  type UbuntuHostKernelAssessment,
+} from "./ubuntu-host-kernel-policy";
+
+export {
   CORE_HOSTING_CAPABILITIES,
   evaluatePreMutation,
   type PreMutationEvaluation,

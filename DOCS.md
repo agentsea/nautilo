@@ -19,6 +19,8 @@ operate, package, or release the public source tree.
 - [Docker Compose deployment](https://nautilo.ai/docs/operator/deploy/docker-compose)
 - [Linux server deployment](https://nautilo.ai/docs/operator/deploy/linux-server)
 - [Security hardening](https://nautilo.ai/docs/operator/security-hardening)
+- [Host kernel security](docs/host-kernel-security.md) — Ubuntu TCP patch checks,
+  host updates, and the boundary between container and kernel maintenance.
 - [Support](https://nautilo.ai/community/support)
 
 ## Contributor documentation

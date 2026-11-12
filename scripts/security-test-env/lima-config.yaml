@@ -19,7 +19,7 @@ minimumLimaVersion: "2.0.0"
 # WHY: `limactl snapshot create/apply` requires QEMU. The `vz` driver
 # (Apple Virtualization.framework) is faster to boot but snapshot is
 # "unimplemented" there — we need snapshot-restore for the per-test
-# clean-state pattern (see D063 issue § "Per-test execution model").
+# clean-state pattern.
 #
 # On Apple Silicon, QEMU runs arm64 guests via HVF acceleration
 # at native speed — no emulation penalty for same-arch.
@@ -52,6 +52,8 @@ provision:
     set -eux -o pipefail
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
+    # Track supported Ubuntu kernel updates; setup reboots before qualification.
+    apt-get install -y linux-virtual
     apt-get install -y \
       git curl ca-certificates build-essential \
       unzip jq rsync
@@ -77,8 +79,8 @@ provision:
   script: |
     #!/bin/bash
     set -eux -o pipefail
-    if ! sudo -u nautilotest bash -lc 'test -x "$HOME/.bun/bin/bun"'; then
-      sudo -u nautilotest bash -lc 'curl -fsSL https://bun.sh/install | bash'
+    if ! sudo -H -u nautilotest bash -lc 'test -x "$HOME/.bun/bin/bun"'; then
+      sudo -H -u nautilotest bash -lc 'curl -fsSL https://bun.sh/install | bash'
     fi
 
 # Readiness probes — fail `limactl start` if provisioning didn't complete.
@@ -92,5 +94,5 @@ probes:
 - script: |
     #!/bin/bash
     set -e
-    sudo -u nautilotest test -x /home/nautilotest/.bun/bin/bun
+    sudo -H -u nautilotest bash -lc 'test -x "$HOME/.bun/bin/bun"'
   hint: "bun install failed — re-run limactl start to retry provisioning"

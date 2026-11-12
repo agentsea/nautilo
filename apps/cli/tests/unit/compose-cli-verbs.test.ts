@@ -42,6 +42,7 @@ import {
 } from "../../src/lib/compose-owner-claim.ts";
 import { KeyringComposeOwnerClaimStore } from "../../src/lib/compose-owner-claim-store.ts";
 import { setStableRuntimeImageResolverForTests } from "../../src/lib/stable-runtime-image.ts";
+import { setComposeHostKernelRunnerForTests } from "../../src/lib/compose-host-kernel.ts";
 
 const tmpDirs: string[] = [];
 const STABLE_IMAGE = `ghcr.io/agentsea/nautilo-runtime-v2@sha256:${"7".repeat(64)}`;
@@ -197,7 +198,7 @@ async function runHandler(
   );
 }
 
-describe("compose CLI verbs (M092 Step 5)", () => {
+describe("compose CLI verbs", () => {
   let home: string;
   let fake: ReturnType<typeof makeFakeDriver>;
   let factoryInvoked: boolean;
@@ -224,6 +225,13 @@ describe("compose CLI verbs (M092 Step 5)", () => {
       return fake;
     });
     setStableRuntimeImageResolverForTests(async () => STABLE_IMAGE);
+    setComposeHostKernelRunnerForTests((args) => ({
+      code: 0,
+      stdout: args[0] === "ps" ? "c".repeat(64) : args[0] === "inspect"
+        ? `sha256:${"1".repeat(64)}`
+        : JSON.stringify({ signature: "Ubuntu 6.8.0-149.149-generic 6.8.12" }),
+      stderr: "",
+    }));
     let ownerCredential: string | null = null;
     setComposeOwnerClaimDependenciesForTests({
       createStore: async () => {
@@ -250,6 +258,7 @@ describe("compose CLI verbs (M092 Step 5)", () => {
   });
 
   afterEach(() => {
+    setComposeHostKernelRunnerForTests(undefined);
     setComposeDriverFactoryForTests(undefined);
     setStableRuntimeImageResolverForTests(undefined);
     setComposeOwnerClaimDependenciesForTests(undefined);
@@ -504,7 +513,7 @@ user = "root"
     });
   });
 
-  test("deploy builder: does not register workbench-only or revert (D249)", () => {
+  test("deploy builder: does not register workbench-only or revert", () => {
     const optionNames: string[] = [];
     const chain = {
       option: (name: string) => {
@@ -798,6 +807,26 @@ user = "root"
       allowArtifactLoss: true,
       backupDir: "/tmp/legacy-upgrade-backups",
     });
+  });
+
+  test.each([false, true])("vulnerable kernel refuses upgrade before any lifecycle work (full=%s)", async (full) => {
+    setComposeHostKernelRunnerForTests(() => ({ code: 0,
+      stdout: JSON.stringify({ signature: "Ubuntu 6.8.0-147.147-generic 6.8.12" }), stderr: "" }));
+    await runHandler(upgradeModule, { profile: "local-default", full });
+    expect(process.exitCode).toBe(2);
+    expect(factoryInvoked).toBe(false);
+    expect(fake.calls).toEqual([]);
+    expect(ownerStoreCreates).toBe(0);
+  });
+
+  test("vulnerable kernel refuses deploy before owner custody or driver construction", async () => {
+    setComposeHostKernelRunnerForTests(() => ({ code: 0,
+      stdout: JSON.stringify({ signature: "Ubuntu 6.8.0-147.147-generic 6.8.12" }), stderr: "" }));
+    await runHandler(deployModule, { profile: "local-default" });
+    expect(process.exitCode).toBe(2);
+    expect(factoryInvoked).toBe(false);
+    expect(fake.calls).toEqual([]);
+    expect(ownerStoreCreates).toBe(0);
   });
 
   test("upgrade defaults to the latest signed stable image with a five-minute ceiling", async () => {
