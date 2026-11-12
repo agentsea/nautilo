@@ -37,6 +37,7 @@ import {
   renderServerCompletionSummary,
 } from "../lib/server-completion.ts";
 import { resolveStableRuntimeImage } from "../lib/stable-runtime-image.ts";
+import { assertComposeHostKernelReady } from "../lib/compose-host-kernel.ts";
 
 export const deployModule: CommandModule = {
   command: "deploy",
@@ -217,6 +218,7 @@ export const deployModule: CommandModule = {
           selectedImageRef = imageRef === undefined
             ? await resolveStableRuntimeImage()
             : buildRegistryImageRef(imageRef);
+          assertComposeHostKernelReady(profile, selectedImageRef);
           const defaultOwnerConfigPath = join(
             process.env["XDG_CONFIG_HOME"] ?? join(homedir(), ".config"),
             "nautilo",

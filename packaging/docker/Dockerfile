@@ -727,6 +727,8 @@ COPY packages/generated-media-ui \
 # NAUTILO_MIGRATIONS_DIR (default /srv/migrations from the entrypoint).
 COPY packages/db/src/migrations ./migrations
 
+COPY packages/hosting/src/ubuntu-host-kernel-policy.ts ./ubuntu-host-kernel-policy.ts
+COPY packages/hosting/src/ubuntu-host-kernel-check.ts ./host-kernel-check.ts
 COPY packaging/docker/entrypoint.sh ./entrypoint.sh
 RUN chmod +x ./entrypoint.sh
 
