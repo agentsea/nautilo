@@ -6,6 +6,7 @@ import {
   type ModeDefinition,
 } from "./mode-registry";
 import type { ConfigOperation } from "./types";
+import { MINDSWAPPER_API_KEY, MINDSWAPPER_BASE_URL, normalizeMindSwapperBaseUrl } from "./mindswapper";
 
 export interface ValidatedOperation {
   operation: ConfigOperation;
@@ -89,6 +90,19 @@ export function validateOperations(
   if (errors.length === 0) {
     const merged = mergedEnvAfterApply(apply, options.existingEnv);
     errors.push(...crossKeyInvariants(merged));
+    const changes = apply.filter(({ skip }) => !skip).map(({ operation }) => operation);
+    const changesMindSwapper = changes.some(({ key }) =>
+      key === MINDSWAPPER_BASE_URL || key === MINDSWAPPER_API_KEY);
+    if (changesMindSwapper && merged[MINDSWAPPER_API_KEY]?.trim()) {
+      const destination = normalizeMindSwapperBaseUrl(merged[MINDSWAPPER_BASE_URL], merged);
+      if (!destination) {
+        errors.push("A MindSwapper server key requires a valid API URL.");
+      } else if (options.existingEnv[MINDSWAPPER_API_KEY]?.trim()
+        && normalizeMindSwapperBaseUrl(options.existingEnv[MINDSWAPPER_BASE_URL], options.existingEnv) !== destination
+        && !changes.some(({ key, type }) => key === MINDSWAPPER_API_KEY && type === "set")) {
+        errors.push("Provide the MindSwapper key for the new API URL.");
+      }
+    }
   }
 
   return { apply, errors };

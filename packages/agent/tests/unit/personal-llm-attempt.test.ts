@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { withMindSwapperModels } from "../../src/config/mindswapper-models";
 import {
   classifyPersonalAttemptFailure,
   runPersonalLlmAttempt,
@@ -571,4 +572,40 @@ describe("server-funded image assistance attempts", () => {
     expect(settlements).toBe(2);
     expect(h.begun).toHaveLength(1);
   });
+});
+
+describe("MindSwapper attempt accounting", () => {
+  for (const withPrice of [false, true]) {
+    test(`server receipts retain usage and ${withPrice ? "an indicative estimate" : "unknown cost"}`, async () => {
+      const h = harness();
+      const serverBegun: BeginServiceLlmAttemptInput[] = [];
+      const id = "mindswapper:maker/model";
+      const providerRequestId = "c9c6d06b-1ba7-40df-b07d-34b0169b6684";
+      const answer = await withMindSwapperModels([{
+        id, displayName: "Chat", offers: [],
+        ...(withPrice ? { indicativePrice: { inputPerMtok: 1, outputPerMtok: 2 } } : {}),
+      }], () => runWithUsageContext({
+        callType: "chat", funding: { kind: "server", providerRoute: "mindswapper" },
+      }, () => runPersonalLlmAttempt({
+        modelId: id, endpoint: "/v1/chat/completions",
+        invoke: async () => {
+          expect(serverBegun[0]).toMatchObject({ model: id, providerRoute: "mindswapper" });
+          getUsageContext()!.onAttemptUsage!({ inputTokens: 5, outputTokens: 2,
+            reasoningTokens: 0, cachedInputTokens: 0, cacheCreationTokens: 0, actualCostUsd: 2, providerRequestId });
+          return "done";
+        },
+      }, {
+        ...h.deps,
+        beginServer: async (row) => { serverBegun.push(row); },
+        settleServer: h.deps.settle,
+      })));
+      expect(answer).toBe("done");
+      expect(h.settled).toHaveLength(1);
+      expect(h.settled[0]).toMatchObject({
+        costState: withPrice ? "estimated" : "unknown", outcome: "succeeded", inputTokens: 5, outputTokens: 2, providerRequestId,
+      });
+      expect(h.settled[0]!.estimatedCostUsd).toBe(withPrice ? 0.000009 : undefined);
+      expect(h.settled[0]!.actualCostUsd).toBeUndefined();
+    });
+  }
 });

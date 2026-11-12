@@ -19,7 +19,7 @@ import type { NautiloState } from "../agent/state";
 import { causalHumanForExecution } from "../runtime/causal-human-context";
 import { findLocalUserByHandle, type PolicyResolver, type ToolAccessDecision } from "@nautilo/trust";
 import { getToolCatalog } from "@nautilo/catalog";
-import { modelSupportsInput } from "@nautilo/model-capabilities";
+import { modelSupportsAgentInput as modelSupportsInput } from "../providers/models";
 import type { ProtectedAgentMemoryAccessPort, ProtectedAgentMemoryRepository } from "@nautilo/lattice-bridge";
 import { ProtectedMemoryToolUnavailableError } from "../tools/memory/protected-memory-ports";
 import { fromRuntimeConfig } from "@nautilo/config";

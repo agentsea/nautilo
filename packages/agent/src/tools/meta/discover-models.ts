@@ -160,10 +160,8 @@ async function resolveCatalogRows(
   context?: DiscoverModelsContext,
   requestedWorkload?: (typeof WORKLOADS)[number],
 ): Promise<ResolvedCatalogModel[]> {
-  // includeUnavailable: true so Genie can see the full curated catalog and
-  // learn which rows are selectable vs missing credentials / routing-filtered.
-  // listResolvedCatalogModels iterates only signed catalog rows across all
-  // workloads, so dynamic openrouter:/gateway: ids never appear here.
+  // Include signed catalogue rows and the current caller's scoped discovery.
+  // Arbitrary openrouter:/gateway: ids do not enter either source.
   const options: { includeUnavailable: true; env?: NodeJS.ProcessEnv; allowChinaUpstream?: boolean } = {
     includeUnavailable: true,
   };
@@ -182,7 +180,7 @@ async function resolveCatalogRows(
         .catch(() => {}),
     ]));
   }
-  const callerRunnableRows = rows.map((row) => (runnable.has(row.id)
+  const callerRunnableRows = rows.map((row) => (row.provider !== "mindswapper" && runnable.has(row.id)
     && row.workload === "chat"
     && row.output.includes("text")) || personalDecisionIds.has(row.id)
     ? ({
@@ -228,7 +226,7 @@ function malformed(message: string): string {
 const discoverModelsSchema = z.object({
       command: z
         .enum(["list", "search", "get"])
-        .describe("Discovery command: list (browse), search (text + filters), or get (one curated id)."),
+        .describe("Discovery command: list (browse), search (text + filters), or get (one exact id)."),
       model_id: z
         .string()
         .optional()
@@ -319,7 +317,7 @@ export function createDiscoverModelsTool(context?: DiscoverModelsContext) {
     name: "discover_models",
     description: context?.personalTaskControls === true
       ? "List, search, or get the non-secret catalog rows currently runnable for your native text Tasks, or explicitly discover admitted decision models with workload decision."
-      : "Search the resolved model catalog to find available models by name, provider, workload, or capability. Use `list` to browse with optional workload/capability/output/generation filters, `search` to add a text query to those filters (AND semantics), and `get` to fetch one curated model by its exact stable id. Results are non-secret and bounded with explicit truncation/next offset. Dynamic openrouter:/gateway: ids are not accepted by `get`.",
+      : "Search the resolved model catalog to find available models by name, provider, workload, or capability. Use `list` to browse with optional workload/capability/output/generation filters, `search` to add a text query to those filters (AND semantics), and `get` to fetch one model by its exact stable id. Results are non-secret and bounded with explicit truncation/next offset. Dynamic openrouter:/gateway: ids are not accepted by `get`.",
     schema: context?.personalTaskControls === true
       ? personalDiscoverModelsSchema
       : discoverModelsSchema,
@@ -341,20 +339,14 @@ export function createDiscoverModelsTool(context?: DiscoverModelsContext) {
         if (!modelId) {
           return malformed("`get` requires a non-empty `model_id`.");
         }
-        // `get` only returns a curated resolved-catalog row. Dynamic
-        // openrouter:/gateway: ids are NOT a v1 call surface : they
-        // synthesize a config in getModelById and would otherwise resolve to
-        // selectable/missing_credentials, so membership is checked against
-        // the curated list (which iterates only ASSISTANT_MODELS) rather than
-        // relying on the availability state.
-        const curated = await resolveCatalogRows(context, fullInput.workload);
-        const row = curated.find((candidate) => candidate.id === modelId);
+        const rows = await resolveCatalogRows(context, fullInput.workload);
+        const row = rows.find((candidate) => candidate.id === modelId);
         if (!row) {
           const notFound: GetNotFoundResponse = {
             found: false,
             model_id: modelId,
             reason:
-              "model id not found in the curated catalog; `get` does not accept dynamic openrouter:/gateway: ids.",
+              "model id is unavailable in the current curated or caller-discovered catalog; `get` accepts exact listed IDs.",
           };
           return JSON.stringify(notFound);
         }

@@ -77,6 +77,7 @@ import { installConversionRuntime, uninstallConversionRuntime } from "@nautilo/a
 import { connectedWebBrowserFunding } from "./connected-web-accounts/browser-use-funding";
 import { beginServerProviderCostAttempt, settleServerProviderCostAttempt } from "./costs/provider-cost-recorder";
 import { openForegroundChatFundingSession } from "./lib/foreground-chat-funding";
+import { readServerMindSwapperModels } from "./lib/mindswapper-catalog";
 import { openImageAssistance } from "./lib/image-assistance";
 import {
   assertRunnableNativeTaskSelection,
@@ -2208,7 +2209,7 @@ export async function createApp(options?: CreateAppOptions) {
   const reflectionSleepController = new ReflectionSleepController({
     resolveWorker: async () => (await reflectionRuntime()).worker,
   });
-  installForegroundChatFundingPort({ openSession: openForegroundChatFundingSession, openImageAssistance });
+  installForegroundChatFundingPort({ openSession: openForegroundChatFundingSession, openImageAssistance, readServerMindSwapperModels });
   let bolterController: BolterController | null = null;
   const externalRoomExecution = createExternalRoomExecutionService({ jobManager,
     onPendingPublication: () => { bolterController?.wakePublications(); },

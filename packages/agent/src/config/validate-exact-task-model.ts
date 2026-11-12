@@ -8,7 +8,7 @@
  * - An exact `requestedModelId` is a STRICT pin (same-model retries only;
  * enforces no cross-model fallback). It is mutually exclusive with
  * selection profile/spec — passing both is a `conflict`.
- * - Exact calls only accept curated IDs returned by `listResolvedCatalogModels`.
+ * - Exact calls only accept signed or caller-scoped discovered IDs returned by `listResolvedCatalogModels`.
  * Arbitrary dynamic `openrouter:` / `gateway:` values are invalid in v1
  * even though `resolveCatalogModel` can synthesize a config for them; they
  * are rejected as `unknown_model` via curated-list membership, not via the
@@ -29,7 +29,6 @@
  */
 import {
   listResolvedCatalogModels,
-  resolveCatalogModel,
 } from "./resolved-catalog";
 import { getCachedServerModelConfigRow } from "@nautilo/db";
 import { resolveProviderKey } from "../resolve-provider-key";
@@ -37,7 +36,6 @@ import {
   resolveSurplusChatServingAvailability,
   type QualifiedSurplusChatRoute,
 } from "../providers/surplus-route";
-import type { ResolvedCatalogModel } from "@nautilo/trust";
 import type { SelectionProfile, ComboSpec } from "@nautilo/types";
 
 export type ExactModelSelectionFailureCode =
@@ -103,9 +101,7 @@ export function validateExactTaskModelSelection(
     };
   }
 
-  // 2. Curated membership. v1 exact calls only accept curated IDs returned by
-  // listResolvedCatalogModels; dynamic openrouter:/gateway: ids are rejected
-  // here even though resolveCatalogModel can synthesize a config for them.
+  // 2. Membership in the signed or caller-scoped model catalogue. Arbitrary IDs remain ineligible.
   const options = {
     includeUnavailable: true,
     ...(input.env !== undefined ? { env: input.env } : {}),
@@ -113,26 +109,20 @@ export function validateExactTaskModelSelection(
       ? { allowChinaUpstream: input.allowChinaUpstream }
       : {}),
   } as const;
-  const curated = listResolvedCatalogModels(options);
-  const curatedRow = curated.find((r) => r.id === requestedModelId);
-  if (!curatedRow) {
+  const row = listResolvedCatalogModels(options).find((r) => r.id === requestedModelId);
+  if (!row) {
     return {
       code: "unknown_model",
       modelId: requestedModelId,
       message:
         `Unknown model_id "${requestedModelId}". Exact task model selection ` +
-        `only accepts curated model ids returned by the discover_models ` +
-        `tool (list/get). Dynamic openrouter:/gateway: ids are not ` +
-        `accepted in v1. Run discover_models to copy the exact stable id.`,
+        `only accepts curated or caller-discovered model ids returned by the discover_models tool (list/get). ` +
+        `Run discover_models to copy the exact stable id.`,
     };
   }
 
   // 3. Availability (credentials / routing / disabled), evaluated separately
   // from membership so the message distinguishes each failure.
-  const row: ResolvedCatalogModel = resolveCatalogModel(
-    requestedModelId,
-    options,
-  );
   const serverModelConfig = input.surplus === undefined
     ? getCachedServerModelConfigRow()
     : null;

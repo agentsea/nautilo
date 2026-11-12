@@ -390,6 +390,45 @@ describe("server-models toWire", () => {
 });
 
 describe("server-models route authorization, partial writes, and audit", () => {
+  test("uses the server's discovered MindSwapper route for the chat default only", async () => {
+    const id = "mindswapper:example/model";
+    const toolFreeId = "mindswapper:example/tool-free";
+    const offer = { inputModalities: ["text"], maxInputTokens: 1024, maxOutputTokens: 512 } as const;
+    const writeCalls: unknown[] = [];
+    const call = routeHarness({
+      getCapabilities: async () => ["manage_server_operations", "read_server_settings"],
+      getDb: () => ({}) as never,
+      getConfig: async () => modelConfig,
+      getDefaults: () => ({ defaultChatModel: KNOWN_MODEL, fallbackChain: [] }),
+      readMindSwapperModels: async () => [
+        { id, displayName: "Example model", offers: [{ ...offer, supportedParameters: ["tools"] }] },
+        { id: toolFreeId, displayName: "Tool-free model", offers: [{ ...offer, supportedParameters: [] }] },
+      ],
+      upsertConfig: async (_db, patch) => {
+        writeCalls.push(patch);
+        return { ...modelConfig, defaultChatModel: patch.defaultChatModel ?? modelConfig.defaultChatModel };
+      },
+      refreshConfigCache: async () => null,
+      auditEvent: () => undefined,
+      getSurplusKeyConfigured: () => false,
+      getEffectiveEmbeddingModel: () => null,
+      getEffectiveMediaModel: () => null,
+      getEffectiveSpeechModel: () => null,
+      listMediaModels,
+    });
+    const get = await call("GET", { ...requestBase, sessionUserId: "admin" });
+    expect(get.status).toBe(200);
+    const { catalogModels } = get.body as { catalogModels: { id: string }[] };
+    expect(catalogModels.find((model) => model.id === id)).toMatchObject({
+      id, provider: "mindswapper", availability: "selectable", features: { tools: true },
+    });
+    const post = (body: object) => call("POST", { ...requestBase, sessionUserId: "admin", body });
+    expect(await post({ defaultChatModel: id })).toMatchObject({ status: 200, body: { defaultChatModel: id } });
+    expect(await post({ defaultChatModel: toolFreeId })).toMatchObject({ status: 422 });
+    expect(await post({ conductorModel: id })).toMatchObject({ status: 422 });
+    expect(writeCalls).toEqual([{ defaultChatModel: id }]);
+  });
+
   test("catalog visibility uses read permission and returns no metadata to unauthenticated viewers", async () => {
     const call = routeHarness({ getCapabilities: async () => [] });
     expect(await call("GET", requestBase)).toEqual({ status: 401, body: { error: "Authentication required" } });

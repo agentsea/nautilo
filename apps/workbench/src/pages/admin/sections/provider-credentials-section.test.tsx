@@ -41,6 +41,27 @@ beforeEach(() => {
 });
 
 describe("ProviderCredentialsEditor", () => {
+  test("approves a personal MindSwapper URL without entering a shared key", async () => {
+    const personalUrl = "https://personal.example/v1";
+    const keyApi = {
+      ...api([key({ id: "mindswapper", status: "missing", masked: null })]),
+      getMindSwapperConnection: mock(async () => ({ baseUrl: null, approvedDestinations: [] })),
+      updateMindSwapperConnection: mock(async () => ({ baseUrl: null, approvedDestinations: [personalUrl] })),
+    };
+    const view = render(<ProviderCredentialsEditor keyApi={keyApi} enabled viewerIsVerified />);
+    fireEvent.click(await view.findByRole("button", { name: "Edit API URLs" }));
+    await userEvent.setup({ document: globalThis.document }).type(
+      view.getByLabelText("Approved URLs for personal keys, one per line"),
+      personalUrl,
+    );
+    fireEvent.click(view.getByRole("button", { name: "Save URLs" }));
+    await waitFor(() => expect(keyApi.updateMindSwapperConnection).toHaveBeenCalledWith({
+      approvedDestinations: [personalUrl],
+    }));
+    expect(await view.findByText(`Approved personal URLs: ${personalUrl}`)).toBeTruthy();
+    expect(keyApi.setupKeys).not.toHaveBeenCalled();
+  });
+
   test("renders stable disabled provider rows while key status is loading", async () => {
     let resolve!: (value: { keys: KeyReport[]; hasLlm: boolean }) => void;
     const pending = new Promise<{ keys: KeyReport[]; hasLlm: boolean }>((done) => { resolve = done; });

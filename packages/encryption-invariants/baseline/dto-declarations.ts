@@ -1,4 +1,5 @@
 import { CHATGPT_PLAN_DTO_DECLARATIONS } from "./reviewed-chatgpt-plan-coverage";
+import { reviewedMindSwapperCredentialDtoReplacements } from "./reviewed-mindswapper-credential-boundaries";
 import { BOLTER_HTTP_PREDECESSOR_DECLARATIONS } from "./reviewed-bolter-http";
 import { reviewedBolterRelayDtoReplacements } from "./reviewed-bolter-relay-dto";
 import { reviewedCiDtoReplacements } from "./reviewed-ci-dto";
@@ -6263,10 +6264,12 @@ const PRE_MESSAGE_MODEL_INPUT_EXPOSURE_DTO_DECLARATIONS:
   );
 
 export const DTO_BASELINE_DECLARATIONS: readonly DtoDeclaration[] =
-  reviewedCiDtoReplacements(
-    reviewedTaskDefinitionAuthorizationDtoReplacements(
-      reviewedMessageModelInputExposureDtoReplacements(
-        PRE_MESSAGE_MODEL_INPUT_EXPOSURE_DTO_DECLARATIONS,
+  reviewedMindSwapperCredentialDtoReplacements(
+    reviewedCiDtoReplacements(
+      reviewedTaskDefinitionAuthorizationDtoReplacements(
+        reviewedMessageModelInputExposureDtoReplacements(
+          PRE_MESSAGE_MODEL_INPUT_EXPOSURE_DTO_DECLARATIONS,
+        ),
       ),
     ),
   );

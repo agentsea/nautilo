@@ -9,9 +9,9 @@ import {
 } from "./types";
 
 /**
- * Provider IDs mirrored from config-guard's current KEY_REGISTRY. Keeping the
- * list closed makes unknown config input visible instead of silently treating
- * an arbitrary environment variable as a deployable provider credential.
+ * Provider IDs supported by key-only hosting adoption. MindSwapper requires
+ * an API URL bound to its key and is configured in Nautilo Admin.
+ * Keep the list closed so unknown credential inputs fail visibly.
  */
 export const HOSTING_PROVIDER_ENV_VARS = {
   anthropic: "ANTHROPIC_API_KEY",

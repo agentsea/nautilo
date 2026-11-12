@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Configure MindSwapper for server or personal funding. Supported chat models
+  appear after discovery and can be selected for Genie chat and native text Tasks
+  according to their Chat Completions capabilities.
+
 - Update the server image to the pinned Google Chrome for Testing 157.0.8103.78
   headless browser on both Linux architectures, with native rendering and
   explicit vendor-component vulnerability coverage. Retire obsolete Debian

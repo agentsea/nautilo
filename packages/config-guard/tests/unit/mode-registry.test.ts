@@ -10,8 +10,8 @@ import { crossKeyInvariants, validateOperations } from "../../src/validator";
 import { FULL_LOGTO_PROCESS_ENV } from "../fixtures/full-logto-env";
 
 describe("MODE_REGISTRY", () => {
-  test("contains 13 LOGTO_* entries, gateway, web research, OpenRouter, M071 instance env, protected recovery/push/pairing secrets, M116 DB passwords, and CloudConvert knobs (D120 A1.P1 retired the default-agent/default-owner pointers)", () => {
-    expect(MODE_REGISTRY.length).toBe(48);
+  test("includes supported provider, instance and protected configuration", () => {
+    expect(MODE_REGISTRY.length).toBe(50);
     expect(MODE_REGISTRY[0]?.envVar).toBe("LOGTO_ENDPOINT");
     const logtoCount = MODE_REGISTRY.filter((m) =>
       m.envVar.startsWith("LOGTO_"),
@@ -19,6 +19,8 @@ describe("MODE_REGISTRY", () => {
     expect(logtoCount).toBe(13);
     expect(getModeByEnvVar("NAUTILO_GATEWAY_BASE_URL")).toBeDefined();
     expect(getModeByEnvVar("NAUTILO_GATEWAY_LABEL")).toBeDefined();
+    expect(getModeByEnvVar("MINDSWAPPER_BASE_URL")).toBeDefined();
+    expect(getModeByEnvVar("MINDSWAPPER_APPROVED_BASE_URLS")).toBeDefined();
     expect(getModeByEnvVar("OPENROUTER_HTTP_REFERER")).toBeDefined();
     expect(getModeByEnvVar("OPENROUTER_TITLE")).toBeDefined();
     expect(getModeByEnvVar("NAUTILO_PORT")).toBeDefined();

@@ -6,6 +6,7 @@ import { getActiveModelCatalogSync } from "./model-catalog/runtime-catalog";
 import { isSupportedModelCatalogProvider } from "./model-catalog/supported-providers";
 import { resolveModelRole } from "./model-role-resolution";
 import { hasRunnableOpenRouterTransport } from "../providers/openrouter-transport";
+import { findMindSwapperModel, isMindSwapperModelId, mindSwapperOfferForModel } from "./mindswapper-models";
 
 /** Venice upstream routing for privacy UX. */
 export type VeniceRouting = "venice-hosted" | "western-anonymized" | "china-anonymized";
@@ -218,6 +219,16 @@ export function getDefaultModel(): AssistantModelConfig {
  * catalog row.
  */
 export function getModelById(id: string): AssistantModelConfig | undefined {
+  if (isMindSwapperModelId(id)) {
+    const model = findMindSwapperModel(id);
+    return model ? {
+      id: model.id,
+      displayName: model.displayName,
+      priority: Number.MAX_SAFE_INTEGER,
+      enabled: mindSwapperOfferForModel(model) !== undefined,
+      costCoefficient: 1,
+    } : undefined;
+  }
   const active = getActiveModelCatalogSync().catalog.entries.find(
     (entry) => entry.id === id,
   );

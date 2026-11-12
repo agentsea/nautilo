@@ -38,6 +38,26 @@ async function enterSecret(input: HTMLElement, value: string) {
 beforeEach(() => { reapplyHappyDomGlobals(); cleanup(); });
 
 describe("PersonalProviderKeysSection", () => {
+  test("enrolls a MindSwapper key with the selected approved URL", async () => {
+    const approvedDestinations = ["https://first.example/v1", "https://second.example/v1"];
+    const keyApi = api({ listProviderCredentials: mock(async () => ({
+      credentials: [],
+      providers: [{ id: "mindswapper", name: "MindSwapper", purpose: "Chat", personalCapabilities: ["chat" as const], destination: null, approvedDestinations }],
+    })) });
+    const view = render(<PersonalProviderKeysSection credentialApi={keyApi} />);
+    const add = await view.findByRole("button", { name: "Add MindSwapper key" });
+    fireEvent.click(add);
+    const save = view.getByRole("button", { name: "Save key" }) as HTMLButtonElement;
+    expect(save.disabled).toBeTrue();
+    await userEvent.setup({ document: globalThis.document })
+      .selectOptions(view.getByLabelText("MindSwapper API URL"), approvedDestinations[1]!);
+    await enterSecret(view.getByLabelText("New MindSwapper API key"), "personal-key");
+    fireEvent.click(save);
+    await waitFor(() => expect(keyApi.putProviderCredential).toHaveBeenCalledWith("mindswapper", {
+      apiKey: "personal-key", destination: approvedDestinations[1],
+    }));
+  });
+
   test("renders stable inert rows and honest coverage while the gated read is pending", async () => {
     let resolve!: (value: { credentials: CredentialMetadata[]; providers: PersonalProviderCatalogEntry[] }) => void;
     const pending = new Promise<{ credentials: CredentialMetadata[]; providers: PersonalProviderCatalogEntry[] }>((done) => { resolve = done; });

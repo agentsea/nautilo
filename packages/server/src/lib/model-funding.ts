@@ -13,6 +13,9 @@ import {
   resolveSurplusChatServingAvailability,
   resolveQualifiedSurplusChatRoute,
   deriveSurplusMediaModelId,
+  withMindSwapperConnection,
+  withMindSwapperModels,
+  type MindSwapperChatModel,
   type QualifiedSurplusChatRoute,
 } from "@nautilo/agent";
 import {
@@ -31,6 +34,16 @@ import {
 import { getUserCapabilities } from "@nautilo/trust";
 import { readPersonalProviderCustody } from "./personal-provider-custody";
 import { getServerDirectDb } from "./server-direct-db";
+import {
+  isMindSwapperModelId,
+  mindSwapperCatalogue,
+  personalMindSwapperCacheId,
+  personalMindSwapperDestination,
+  mindSwapperConfigured,
+  readServerMindSwapperModels,
+  serverMindSwapperConnection,
+  serverMindSwapperRevision,
+} from "./mindswapper-catalog";
 
 export type ModelFundingWorkload =
   | "foreground_text_chat"
@@ -43,7 +56,7 @@ export type ModelFundingWorkload =
 
 /** Runnable personal chat adapters; storing a service key never enables its paid path. */
 export const PERSONAL_CHAT_PROVIDER_IDS = [
-  "anthropic", "openai", "openrouter", "google", "xai", "fireworks", "together", "venice", "surplus",
+  "anthropic", "openai", "openrouter", "google", "xai", "fireworks", "together", "venice", "surplus", "mindswapper",
 ] as const satisfies readonly PersonalProviderId[];
 
 interface FundingBase {
@@ -55,7 +68,7 @@ interface FundingBase {
 
 /** Safe to use in projections and usage records. Never add a key to this type. */
 export type ModelFundingDecision =
-  | (FundingBase & { readonly kind: "server" })
+  | (FundingBase & { readonly kind: "server"; readonly connectionRevision?: string })
   | (FundingBase & {
       readonly kind: "personal";
       readonly payerHumanId: string;
@@ -96,6 +109,7 @@ export interface ResolveModelFundingInput {
   readonly directOnly?: boolean;
   /** A bounded personal recovery may use API keys but never a subscription registration. */
   readonly apiKeyOnly?: boolean;
+  readonly mindSwapperTools?: boolean;
 }
 
 export interface ModelFundingDeps {
@@ -119,6 +133,9 @@ export interface ModelFundingDeps {
   decrypt: typeof decryptPersonalProviderCredential;
   getSubscription?: (userId: string, id?: string) => Promise<ChatGPTFundingRegistration | null>;
   getSubscriptionModels?: (userId: string, id: string) => Promise<readonly string[]>;
+  readMindSwapperServerModels?: () => Promise<readonly MindSwapperChatModel[]>;
+  readMindSwapperPersonalModels?: (record: PersonalProviderCredentialRecord) => Promise<readonly MindSwapperChatModel[]>;
+  getMindSwapperServerRevision?: () => string | null;
 }
 
 export function resolveServerFundingRoute(
@@ -130,6 +147,7 @@ export function resolveServerFundingRoute(
     readonly routes?: readonly QualifiedSurplusChatRoute[];
   } = {},
 ): string | null {
+  if (isMindSwapperModelId(modelId)) return null; // Connection-scoped admission runs through resolveMindSwapperFunding.
   const env = input.env ?? process.env;
   const decision = resolveCatalogModel(modelId, { env });
   const preferSurplus = input.preferSurplus
@@ -203,6 +221,20 @@ const DEFAULT_DEPS: ModelFundingDeps = {
   getServerSurplusKeyConfigured: () => resolveProviderKey("surplus") !== null,
   readCustody: readPersonalProviderCustody,
   decrypt: decryptPersonalProviderCredential,
+  readMindSwapperServerModels: readServerMindSwapperModels,
+  getMindSwapperServerRevision: () => {
+    const connection = serverMindSwapperConnection();
+    return connection && serverMindSwapperRevision(connection);
+  },
+  readMindSwapperPersonalModels: (record) => {
+    const baseUrl = personalMindSwapperDestination(record);
+    if (!baseUrl) return Promise.resolve([]);
+    return mindSwapperCatalogue.get(personalMindSwapperCacheId(record, baseUrl), async () => {
+      const custody = await readPersonalProviderCustody();
+      const apiKey = decryptPersonalProviderCredential(custody, record.envelope, record);
+      return { baseUrl, apiKey };
+    });
+  },
 };
 
 /** Read the live operator policy through the same dependency boundary as funding admission. */
@@ -250,6 +282,117 @@ function verifyPrior(input: ResolveModelFundingInput, provider: PersonalProvider
   }
 }
 
+type MindSwapperProjections = Readonly<{
+  server: readonly MindSwapperChatModel[];
+  personal: readonly MindSwapperChatModel[];
+  personalRecord: PersonalProviderCredentialRecord | null;
+  serverRevision: string | null;
+}>;
+
+async function mindSwapperProjections(
+  humanUserId: string,
+  deps: ModelFundingDeps,
+  onlyKind?: "server" | "personal",
+): Promise<MindSwapperProjections> {
+  const [policy, caps] = await Promise.all([deps.getPolicy(), deps.getCapabilities(humanUserId)]);
+  const serverRevision = onlyKind !== "personal" && caps.includes("use_server_provider_credentials")
+    ? deps.getMindSwapperServerRevision?.() ?? null : null;
+  const personalRecord = onlyKind !== "server" && policy.allowPersonalProviderKeys
+    && caps.includes("use_personal_provider_credentials")
+    ? await deps.getCredential(humanUserId, "mindswapper") : null;
+  const [server, personal] = await Promise.all([
+    serverRevision ? deps.readMindSwapperServerModels?.() ?? [] : [],
+    personalRecord ? deps.readMindSwapperPersonalModels?.(personalRecord) ?? [] : [],
+  ]);
+  return {
+    server: serverRevision && serverRevision === deps.getMindSwapperServerRevision?.() ? server : [],
+    personal, personalRecord, serverRevision,
+  };
+}
+
+function findMindSwapperModel(
+  models: readonly MindSwapperChatModel[],
+  id: string,
+  tools?: boolean,
+): MindSwapperChatModel | undefined {
+  const model = models.find(row => row.id === id);
+  if (!model || !tools) return model;
+  const offers = model.offers.filter(offer => offer.supportedParameters.includes("tools"));
+  return offers.length > 0 ? { ...model, offers } : undefined;
+}
+
+export async function readCallerMindSwapperModels(
+  humanUserId: string,
+  options: Readonly<{ tools?: boolean; kind?: "server" | "personal" }> = {},
+  deps: ModelFundingDeps = DEFAULT_DEPS,
+): Promise<readonly MindSwapperChatModel[]> {
+  if ((!deps.readMindSwapperServerModels && !deps.readMindSwapperPersonalModels)
+    || (deps === DEFAULT_DEPS && !mindSwapperConfigured())) return [];
+  const { server, personal } = await mindSwapperProjections(humanUserId, deps, options.kind);
+  const personalFirst = (await deps.getPolicy()).fundingPreference !== "server_first";
+  const models = new Map<string, MindSwapperChatModel>();
+  for (const row of personalFirst ? [...personal, ...server] : [...server, ...personal]) {
+    const eligible = findMindSwapperModel([row], row.id, options.tools);
+    if (eligible && !models.has(row.id)) models.set(row.id, eligible);
+  }
+  return [...models.values()];
+}
+
+export async function readAdmittedMindSwapperModel(
+  decision: ModelFundingDecision,
+  tools?: boolean,
+): Promise<MindSwapperChatModel | undefined> {
+  if (decision.providerRoute !== "mindswapper") return undefined;
+  const available = await mindSwapperProjections(decision.humanUserId, DEFAULT_DEPS, decision.kind);
+  if (decision.kind === "server" && decision.connectionRevision !== available.serverRevision) return undefined;
+  if (decision.kind === "personal" && (available.personalRecord?.id !== decision.credentialId
+    || available.personalRecord.revision !== decision.credentialRevision)) return undefined;
+  return findMindSwapperModel(available[decision.kind], decision.modelId, tools);
+}
+
+async function resolveMindSwapperFunding(input: ResolveModelFundingInput, deps: ModelFundingDeps): Promise<ModelFundingDecision> {
+  if (input.workload !== "foreground_text_chat" && input.workload !== "native_text_task") {
+    throw new ModelFundingError("unsupported_workload");
+  }
+  verifyPrior(input, "mindswapper");
+  if (input.transport === "surplus") throw new ModelFundingError("funding_source_changed");
+  const prior = input.priorDecision;
+  const payer = prior?.kind ?? input.fundingKind;
+  const policy = await deps.getPolicy();
+  if (payer === "personal" && !policy.allowPersonalProviderKeys) throw new ModelFundingError("personal_credentials_disabled");
+  if (prior?.kind === "personal" && prior.providerRoute !== "mindswapper") {
+    const priorProvider = prior.providerRoute === "surplus" ? "surplus" : directProvider(prior.modelId);
+    if (!priorProvider || prior.providerRoute === "openai-chatgpt") throw new ModelFundingError("funding_source_changed");
+    const record = await deps.getCredential(input.humanUserId, priorProvider);
+    if (record?.id !== prior.credentialId || record.revision !== prior.credentialRevision) {
+      throw new ModelFundingError("personal_credential_stale");
+    }
+  }
+  const base = { humanUserId: input.humanUserId, modelId: input.modelId, providerRoute: "mindswapper", workload: input.workload };
+  const order: readonly ("server" | "personal")[] = payer ? [payer]
+    : policy.fundingPreference === "server_first" ? ["server", "personal"] : ["personal", "server"];
+  for (const source of order) {
+    const { server, personal, serverRevision, personalRecord } = await mindSwapperProjections(input.humanUserId, deps, source);
+    if (prior?.providerRoute === "mindswapper") {
+      if (prior.kind === "server" && (!serverRevision || prior.connectionRevision !== serverRevision)) {
+        throw new ModelFundingError("funding_source_changed");
+      }
+      if (prior.kind === "personal" && (personalRecord?.id !== prior.credentialId
+        || personalRecord.revision !== prior.credentialRevision)) {
+        throw new ModelFundingError("personal_credential_stale");
+      }
+    }
+    if (source === "server" && serverRevision && findMindSwapperModel(server, input.modelId, input.mindSwapperTools)) {
+      return { ...base, kind: "server", connectionRevision: serverRevision };
+    }
+    if (source === "personal" && personalRecord && findMindSwapperModel(personal, input.modelId, input.mindSwapperTools)) {
+      return { ...base, kind: "personal", payerHumanId: input.humanUserId,
+        credentialId: personalRecord.id, credentialRevision: personalRecord.revision };
+    }
+  }
+  throw new ModelFundingError(payer === "personal" ? "personal_credential_missing" : "provider_credentials_missing");
+}
+
 /**
  * Resolve a single paid model attempt from live policy and the causal Human.
  * Fresh operations follow the saved source priority for this model's route.
@@ -271,6 +414,11 @@ export async function resolveModelFunding(
     throw new ModelFundingError("funding_source_changed");
   }
   if (!input.humanUserId.trim()) throw new ModelFundingError("server_credentials_forbidden");
+  if (isMindSwapperModelId(input.modelId)) return resolveMindSwapperFunding(input, deps);
+  if (input.priorDecision?.providerRoute === "mindswapper") {
+    const prior = input.priorDecision;
+    await resolveMindSwapperFunding({ ...input, modelId: prior.modelId, transport: "direct" }, deps);
+  }
   const provider = directProvider(input.modelId);
   if (provider === "typesafe" && input.workload !== "decision") throw new ModelFundingError("unsupported_provider");
   if (!provider && !isServerOnlyGateway(input.modelId)) {
@@ -535,6 +683,43 @@ export async function withAdmittedPersonalCredential<T>(
   const accessToken = await chatGPTSessionStore.accessToken(decision.humanUserId, decision.credentialId,
     decision.credentialRevision, AbortSignal.timeout(DEFAULT_PROVIDER_TIMEOUT_MS));
   return useCredential({ kind: "chatgpt_plan", accessToken });
+}
+
+export async function withAdmittedMindSwapperAttempt<T>(
+  decision: ModelFundingDecision,
+  model: MindSwapperChatModel,
+  run: (personalCredential?: PersonalProviderCredential) => Promise<T>,
+): Promise<T> {
+  const invoke = async (
+    cacheId: string, baseUrl: string, apiKey: string, personalCredential?: PersonalProviderCredential,
+  ) => {
+    try {
+      return await withMindSwapperModels([model], () => withMindSwapperConnection({ baseUrl, apiKey }, () => run(personalCredential)));
+    } catch (error) {
+      const providerError = error instanceof Error && error.cause instanceof Error ? error.cause : error;
+      if (providerError instanceof Error && providerError.name === "MindSwapperRequestError"
+        && "code" in providerError && providerError.code === "authentication_error") {
+        mindSwapperCatalogue.invalidate(cacheId);
+      }
+      throw error;
+    }
+  };
+  if (decision.kind === "server") {
+    const connection = serverMindSwapperConnection();
+    if (!connection || decision.connectionRevision !== serverMindSwapperRevision(connection)) {
+      throw new ModelFundingError("funding_source_changed");
+    }
+    return invoke("server:" + decision.connectionRevision, connection.baseUrl, connection.apiKey);
+  }
+  const record = await DEFAULT_DEPS.getCredential(decision.humanUserId, "mindswapper");
+  const baseUrl = record && personalMindSwapperDestination(record);
+  if (!record || !baseUrl || record.id !== decision.credentialId || record.revision !== decision.credentialRevision) {
+    throw new ModelFundingError("personal_credential_stale");
+  }
+  return withAdmittedPersonalProviderKey(decision, (apiKey) => {
+    if (personalMindSwapperDestination(record) !== baseUrl) throw new ModelFundingError("personal_credential_stale");
+    return invoke(personalMindSwapperCacheId(record, baseUrl), baseUrl, apiKey, { apiKey, destination: baseUrl });
+  });
 }
 
 /** Request-local readiness projection; subscription discovery can refresh tokens but never runs inference. Never use these dependencies to dispatch. */

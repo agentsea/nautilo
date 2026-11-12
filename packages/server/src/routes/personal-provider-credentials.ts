@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import { resolveNautiloRootDir } from "@nautilo/config";
-import { maskValue } from "@nautilo/config-guard";
+import { getKeyDefinition, maskValue } from "@nautilo/config-guard";
 import {
   PERSONAL_PROVIDER_IDS,
   createPersonalProviderCredentialIdentity,
@@ -30,7 +30,10 @@ import {
 } from "@nautilo/types";
 import { readPersonalProviderCustody } from "../lib/personal-provider-custody";
 import {
-  validatePersonalGatewayDestination,
+  getApprovedMindSwapperDestinations,
+  isApprovedMindSwapperDestination,
+  normalizeMindSwapperBaseUrl,
+  validatePersonalProviderDestination,
 } from "../lib/personal-provider-destination";
 import { validatePersonalProviderCredential } from "../lib/personal-provider-validation";
 import { writeSecurityAuditEvent, type PersonalProviderCredentialAuditEvent } from "../lib/security-audit-log";
@@ -45,15 +48,20 @@ type ErrorCode =
 
 const canonicalPersonalProviderIds = new Set(PERSONAL_PROVIDER_KEY_CATALOGUE.map(({ id }) => id));
 
-function personalProviderCatalog() {
-  return orderProviderKeys(PERSONAL_PROVIDER_KEY_CATALOGUE).map((definition) => ({
-    id: definition.id,
-    name: definition.name,
-    purpose: definition.purpose,
-    ...(definition.signupUrl ? { signupUrl: definition.signupUrl } : {}),
-    ...(definition.formatHint ? { formatHint: definition.formatHint } : {}),
-    personalCapabilities: definition.personalCapabilities,
-  }));
+function personalProviderCatalog(includeMindSwapper = false) {
+  return orderProviderKeys(PERSONAL_PROVIDER_KEY_CATALOGUE)
+    .filter((definition) => includeMindSwapper || definition.id !== "mindswapper")
+    .map((definition) => ({
+      id: definition.id,
+      name: definition.name,
+      purpose: definition.purpose,
+      ...(definition.signupUrl ? { signupUrl: definition.signupUrl } : {}),
+      ...(definition.formatHint ? { formatHint: definition.formatHint } : {}),
+      personalCapabilities: definition.personalCapabilities,
+      ...(definition.id === "mindswapper"
+        ? { approvedDestinations: getApprovedMindSwapperDestinations() }
+        : {}),
+    }));
 }
 
 function failure(
@@ -81,14 +89,23 @@ function parseRevision(value: unknown): number | null {
   return Number.isSafeInteger(value) && (value as number) >= 1 ? value as number : null;
 }
 
-function parseWrite(body: unknown): { apiKey: string; expectedRevision?: number } | null {
+interface PersonalProviderCredentialWrite {
+  apiKey: string;
+  expectedRevision?: number;
+  destination?: string;
+}
+
+function parseWrite(body: unknown): PersonalProviderCredentialWrite | null {
   if (!isObject(body)) return null;
   const keys = Object.keys(body);
-  if (keys.some((key) => key !== "apiKey" && key !== "expectedRevision")) return null;
+  if (keys.some((key) => key !== "apiKey" && key !== "expectedRevision" && key !== "destination")) return null;
   if (typeof body["apiKey"] !== "string" || body["apiKey"].trim().length === 0) return null;
-  if (body["expectedRevision"] === undefined) return keys.length === 1 ? { apiKey: body["apiKey"] } : null;
+  const destination = body["destination"];
+  if (destination !== undefined && typeof destination !== "string") return null;
+  const key = { apiKey: body["apiKey"], ...(destination === undefined ? {} : { destination }) };
+  if (body["expectedRevision"] === undefined) return key;
   const expectedRevision = parseRevision(body["expectedRevision"]);
-  return expectedRevision === null ? null : { apiKey: body["apiKey"], expectedRevision };
+  return expectedRevision === null ? null : { ...key, expectedRevision };
 }
 
 function parseRevisionBody(body: unknown): number | null {
@@ -118,11 +135,15 @@ function credentialAccess(
   if (record.envelope.keyId !== custody.keyId) throw new PersonalProviderCustodyError("custody_key_mismatch");
   // A matching key ID alone does not prove that the key bytes can read this row.
   const apiKey = decryptPersonalProviderCredential(custody, record.envelope, record);
-  return { state: "ready", apiKey, masked: maskPersonalCredential(apiKey) };
+  return {
+    state: "ready",
+    apiKey,
+    masked: record.provider === "mindswapper" ? "********" : maskPersonalCredential(apiKey),
+  };
 }
 
 function metadata(record: PersonalProviderCredentialRecord, access: CredentialAccess) {
-  const destinationMatches = validatePersonalGatewayDestination(record);
+  const destinationMatches = validatePersonalProviderDestination(record);
   return {
     provider: record.provider,
     id: record.id,
@@ -300,7 +321,7 @@ export function personalProviderCredentialRoutes(app: FastifyInstance, overrides
     }
   }
 
-  app.get("/api/account/provider-credentials", { logLevel: "silent" }, async (request, reply) => {
+  app.get<{ Querystring: { includeMindSwapper?: string } }>("/api/account/provider-credentials", { logLevel: "silent" }, async (request, reply) => {
     const admission = await admit(request, reply, { allowDisabled: true });
     if (!admission) return;
     try {
@@ -317,14 +338,14 @@ export function personalProviderCredentialRoutes(app: FastifyInstance, overrides
       return reply.send({
         allowPersonalProviderKeys: true,
         credentials: records.map((record) => metadata(record, credentialAccess(record, custody))),
-        providers: personalProviderCatalog(),
+        providers: personalProviderCatalog(request.query.includeMindSwapper === "1"),
       });
     } catch (error) {
       return unavailableAfter(error, reply, "retry");
     }
   });
 
-  app.put("/api/account/provider-credentials/:provider", { logLevel: "silent" }, async (request, reply) => {
+  app.put<{ Body: PersonalProviderCredentialWrite }>("/api/account/provider-credentials/:provider", { logLevel: "silent" }, async (request, reply) => {
     const admission = await admit(request, reply);
     if (!admission) return;
     const { userId } = admission;
@@ -334,7 +355,17 @@ export function personalProviderCredentialRoutes(app: FastifyInstance, overrides
     // Gateway remains a server-admin provider. Historical personal rows are
     // listed so their owners can remove them, but they cannot be renewed.
     if (provider === "gateway" || provider === "nautilo-gateway") return reply.code(422).send(failure("invalid_provider"));
-    const destination = null;
+    if (provider !== "mindswapper" && body.destination !== undefined) {
+      return reply.code(422).send(failure("invalid_credential_request"));
+    }
+    if (provider === "mindswapper" && !getKeyDefinition(provider)?.formatCheck(body.apiKey)) {
+      return reply.code(422).send(failure("invalid_credential_request"));
+    }
+    const destination = provider === "mindswapper" ? normalizeMindSwapperBaseUrl(body.destination) : null;
+    const destinationAdmitted = () => provider !== "mindswapper" || isApprovedMindSwapperDestination(destination);
+    if (!destinationAdmitted()) {
+      return reply.code(422).send(failure("credential_destination_unavailable"));
+    }
     const custody = await readCustody(reply);
     if (!custody) return;
     try {
@@ -349,6 +380,7 @@ export function personalProviderCredentialRoutes(app: FastifyInstance, overrides
           request, provider, body.apiKey, destination, true,
         );
         if (!await admit(request, reply)) return;
+        if (!destinationAdmitted()) return reply.code(409).send(failure("credential_destination_changed"));
         const envelope = encryptPersonalProviderCredential(custody, body.apiKey, {
           userId, provider, id: current.id, revision: current.revision + 1,
           destination,
@@ -379,6 +411,7 @@ export function personalProviderCredentialRoutes(app: FastifyInstance, overrides
         request, provider, body.apiKey, destination, true,
       );
       if (!await admit(request, reply)) return;
+      if (!destinationAdmitted()) return reply.code(409).send(failure("credential_destination_changed"));
       const identity = createPersonalProviderCredentialIdentity();
       const envelope = encryptPersonalProviderCredential(custody, body.apiKey, {
         userId, provider, ...identity, destination,
@@ -421,7 +454,7 @@ export function personalProviderCredentialRoutes(app: FastifyInstance, overrides
       if (access.state === "reenroll") {
         return reply.code(409).send(failure("credential_reenrollment_required", false, false, "replace_credential"));
       }
-      if (!validatePersonalGatewayDestination(record)) {
+      if (!validatePersonalProviderDestination(record)) {
         return reply.code(409).send(failure(
           "credential_destination_changed", false, false, "replace_credential",
         ));
@@ -431,6 +464,9 @@ export function personalProviderCredentialRoutes(app: FastifyInstance, overrides
       );
       // A switch or capability revocation during a network call cannot publish status.
       if (!await admit(request, reply)) return;
+      if (!validatePersonalProviderDestination(record)) {
+        return reply.code(409).send(failure("credential_destination_changed", false, false, "replace_credential"));
+      }
       const result = await deps.setValidation(db, {
         userId, provider, id: record.id, expectedRevision,
         status: observation.status, validatedAt: new Date(),

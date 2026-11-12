@@ -59,6 +59,7 @@ type ProviderRow = PersonalProviderKeyCatalogueEntry & {
   catalogued: boolean;
   available: boolean;
   destination: string | null;
+  approvedDestinations?: readonly string[] | undefined;
 };
 
 function readableTime(value: string | null): string | null {
@@ -96,9 +97,9 @@ function errorMessage(error: unknown, action: "load" | "save" | "validate" | "de
       case "credential_not_found":
         return "This key no longer exists. Current details were reloaded.";
       case "credential_destination_unavailable":
-        return "This provider destination is not configured on the server. Contact the Server operator.";
+        return "Choose an API URL approved by the server administrator.";
       case "credential_destination_changed":
-        return "The server's provider destination changed. Replace this key before using it again.";
+        return "This API URL is no longer approved. Replace the key for an approved URL.";
       case "invalid_provider":
       case "invalid_credential_request":
         return "The provider key request was not accepted. Check the value and try again.";
@@ -139,6 +140,7 @@ export function PersonalProviderKeysSection({
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [editingProvider, setEditingProvider] = useState<string | null>(null);
   const [secret, setSecret] = useState("");
+  const [destination, setDestination] = useState("");
   const [confirmDelete, setConfirmDelete] = useState<DeleteConfirmation | null>(null);
   const [rowActions, setRowActions] = useState<Record<string, RowAction>>({});
   const [savedProvider, setSavedProvider] = useState<string | null>(null);
@@ -285,6 +287,7 @@ export function PersonalProviderKeysSection({
         ...provider,
         personalCapabilities: state.kind === "ready" ? responseProviders.get(provider.id)?.personalCapabilities ?? [] : provider.personalCapabilities,
         destination: responseProviders.get(provider.id)?.destination ?? null,
+        approvedDestinations: responseProviders.get(provider.id)?.approvedDestinations,
         catalogued: true,
         available: state.kind === "ready" && responseIds.has(provider.id),
       })),
@@ -322,6 +325,7 @@ export function PersonalProviderKeysSection({
       .map((provider) => [provider.id, provider.name] as const);
     return {
       chat: forCapability("chat"),
+      imageUnderstanding: forCapability("chat").filter(([id]) => id !== "mindswapper"),
       research: forCapability("research"),
       decision: forCapability("decision"),
       images: forCapability("images"),
@@ -383,6 +387,7 @@ export function PersonalProviderKeysSection({
       const result = await credentialApi.putProviderCredential(provider, {
         apiKey,
         ...(current ? { expectedRevision: current.revision } : {}),
+        ...(provider === "mindswapper" ? { destination } : {}),
       });
       if (!mountedRef.current) return;
       clearSubmittedDraft(provider, submittedSecret);
@@ -520,7 +525,7 @@ export function PersonalProviderKeysSection({
               configuredProviderIds={configuredPersonalProviderIds}
               rows={[
                 { functionality: "Chat", providers: personalCapabilityProviders.chat },
-                { functionality: "Image understanding (qualified chat models)", providers: personalCapabilityProviders.chat },
+                { functionality: "Image understanding (qualified chat models)", providers: personalCapabilityProviders.imageUnderstanding },
                 { functionality: "Research", providers: personalCapabilityProviders.research },
                 { functionality: "Decisions", providers: personalCapabilityProviders.decision },
                 { functionality: "Image generation", providers: personalCapabilityProviders.images },
@@ -546,6 +551,10 @@ export function PersonalProviderKeysSection({
             const actionsEnabled = deletionEnabled && !personalKeysDisabled;
             const savedAt = readableTime(current?.updatedAt ?? null);
             const validatedAt = readableTime(current?.validatedAt ?? null);
+            const approvedDestinations = provider.approvedDestinations ?? [];
+            const usesMindSwapperUrl = provider.id === "mindswapper";
+            const destinationAvailable = !usesMindSwapperUrl || approvedDestinations.length > 0;
+            const canSubmit = !usesMindSwapperUrl || approvedDestinations.includes(destination);
             return (
               <FieldRow
                 key={provider.id}
@@ -571,8 +580,8 @@ export function PersonalProviderKeysSection({
                     {state.kind === "ready"
                       ? current ? `Saved${savedAt ? ` ${savedAt}` : ""}` : "No key saved"
                       : state.kind === "loading" ? "Checking saved status…" : "Saved status unavailable"}
-                    {provider.destination ? (
-                      <> · Uses <code className="break-all text-[11px]">{provider.destination}</code></>
+                    {current?.destination || provider.destination ? (
+                      <> · Uses <code className="break-all text-[11px]">{current?.destination ?? provider.destination}</code></>
                     ) : null}
                   </span>
                 )}
@@ -599,9 +608,26 @@ export function PersonalProviderKeysSection({
                       ) : null}
                     </div>
                   ) : null}
+                  {state.kind === "ready" && provider.available && !destinationAvailable ? (
+                    <p className="text-xs text-foreground-muted">Ask your server administrator to approve a MindSwapper API URL.</p>
+                  ) : null}
 
                   {editing && provider.catalogued && !personalKeysDisabled ? (
                     <div className="flex flex-col gap-2">
+                      {usesMindSwapperUrl ? (
+                        <label className="flex flex-col gap-1 text-xs text-foreground-muted">
+                          MindSwapper API URL
+                          <select
+                            className="rounded-md border border-border bg-background-panel px-3 py-2 text-sm text-foreground"
+                            value={canSubmit ? destination : ""}
+                            onChange={(event) => setDestination(event.target.value)}
+                            disabled={busy || !actionsEnabled}
+                          >
+                            <option value="" disabled>Choose an approved API URL</option>
+                            {approvedDestinations.map((url) => <option key={url} value={url}>{url}</option>)}
+                          </select>
+                        </label>
+                      ) : null}
                       <TextInput
                         id={`personal-provider-key-${provider.id}`}
                         type="password"
@@ -616,7 +642,7 @@ export function PersonalProviderKeysSection({
                         disabled={busy || !actionsEnabled}
                       />
                       <div className="flex flex-wrap gap-2">
-                        <Button variant="primary" loading={busy} disabled={!actionsEnabled} onClick={() => void save(provider.id, current)}>
+                        <Button variant="primary" loading={busy} disabled={!actionsEnabled || !canSubmit} onClick={() => void save(provider.id, current)}>
                           {current ? "Replace key" : "Save key"}
                         </Button>
                         <Button
@@ -640,16 +666,19 @@ export function PersonalProviderKeysSection({
                     </div>
                   ) : (
                     <div className="flex flex-wrap gap-2">
-                      {!personalKeysDisabled && provider.catalogued && (state.kind !== "ready" || provider.available) ? (
+                      {!personalKeysDisabled && provider.catalogued && destinationAvailable && (state.kind !== "ready" || provider.available) ? (
                         <Button disabled={!actionsEnabled || busy} onClick={() => {
                           setEditingProvider(provider.id);
                           setSecret("");
+                          setDestination(current?.destination && approvedDestinations.includes(current.destination)
+                            ? current.destination : approvedDestinations.length === 1 ? approvedDestinations[0] ?? "" : "");
                           setSavedProvider(null);
                         }} ariaLabel={`${current ? "Replace" : "Add"} ${provider.name} key`}>
                           {current ? "Replace" : "Add key"}
                         </Button>
                       ) : null}
-                      {!personalKeysDisabled && current && provider.catalogued && provider.available ? (
+                      {!personalKeysDisabled && current && provider.catalogued && provider.available
+                        && (!usesMindSwapperUrl || !current.requiresReplacement) ? (
                           <Button
                             loading={busy && action.action === "validate"}
                             disabled={!actionsEnabled || busy}

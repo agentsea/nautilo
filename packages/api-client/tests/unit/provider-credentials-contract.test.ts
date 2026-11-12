@@ -109,7 +109,7 @@ describe("personal provider credentials client contract", () => {
 
     expect(calls).toEqual([
       {
-        url: `${BASE}/api/account/provider-credentials`,
+        url: `${BASE}/api/account/provider-credentials?includeMindSwapper=1`,
         method: "GET",
         authorization: "Bearer human-session",
         body: undefined,

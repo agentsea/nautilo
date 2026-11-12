@@ -53,7 +53,7 @@ import { budgetResearchContext, isResearchPreEvictionConsolidating, prepareResea
 import { SECURITY_RESEARCH_WORKFLOW } from "../tools/security/research-protocol";
 import { buildResearchWorkContextMessage } from "../tools/security/research-work-context";
 import { prepareResearchRoleHistory } from "../tools/security/research-role-history";
-import { modelSupportsInput as mcSupportsInput } from "@nautilo/model-capabilities";
+import { modelSupportsAgentInput as mcSupportsInput } from "../providers/models";
 import { browserDecisionHandoffContent, browserHandoffToolResultIndex, currentBrowserDecision } from "../graph/browser-decision";
 import {
   drainSessionNotifications,

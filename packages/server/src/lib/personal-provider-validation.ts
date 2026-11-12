@@ -1,4 +1,5 @@
 import type { PersonalProviderId } from "@nautilo/db";
+import { isApprovedMindSwapperDestination, normalizeMindSwapperBaseUrl } from "./personal-provider-destination";
 
 export type PersonalProviderValidationResult = Readonly<{
   status: "accepted" | "rejected" | "unavailable" | "unverified";
@@ -101,6 +102,12 @@ function validationRequest(
         url: "https://api.surplusintelligence.ai/v1/buyer/me",
         headers: bearer(apiKey),
       };
+    case "mindswapper": {
+      const approvedUrl = normalizeMindSwapperBaseUrl(destination);
+      return approvedUrl && isApprovedMindSwapperDestination(approvedUrl)
+        ? { url: `${approvedUrl}/key`, headers: bearer(apiKey) }
+        : null;
+    }
     case "gateway":
       return destination
         ? {
@@ -172,7 +179,7 @@ export async function validatePersonalProviderCredential(
         return { status: "accepted", receiptReadStatus: "unknown" };
       }
     }
-    if (response.status === 401 || (
+    if (response.status === 401 || (provider === "mindswapper" && response.status === 403) || (
       provider === "google" && response.status === 400 && await hasGoogleInvalidKeyReason(response)
     )) {
       return { status: "rejected", receiptReadStatus: "unknown" };

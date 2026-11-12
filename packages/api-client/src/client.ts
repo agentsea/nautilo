@@ -1770,6 +1770,7 @@ const LLM_KEY_IDS = new Set<string>([
   "openai",
   "openrouter",
   "gateway",
+  "mindswapper",
   "google",
   "xai",
   "fireworks",
@@ -1785,6 +1786,7 @@ function computeHasLlmFromKeys(keys: KeyReport[]): boolean {
   return keys.some(
     (k) =>
       k.id !== "surplus"
+      && k.id !== "mindswapper"
       && LLM_KEY_IDS.has(k.id)
       && (k.status === "present" || k.status === "verified"),
   );
@@ -2537,13 +2539,16 @@ export interface PersonalProviderCatalogEntry {
   readonly signupUrl?: string | undefined;
   readonly formatHint?: string | undefined;
   readonly personalCapabilities: readonly PersonalProviderCapability[];
-  /** Fixed server-owned destination. Humans cannot supply or edit this value. */
+  /** Fixed server-owned destination for providers that use one. */
   readonly destination: string | null;
+  /** Exact API roots the administrator approved for this provider. */
+  readonly approvedDestinations?: readonly string[] | undefined;
 }
 
 export interface PutProviderCredentialInput {
   readonly apiKey: string;
   readonly expectedRevision?: number;
+  readonly destination?: string;
 }
 
 export interface ProviderCredentialRevisionInput {
@@ -2591,6 +2596,7 @@ const personalProviderCatalogEntrySchema: z.ZodType<PersonalProviderCatalogEntry
       (PERSONAL_PROVIDER_CAPABILITIES as readonly string[]).includes(value),
   )),
   destination: z.string().min(1).nullable().optional().default(null),
+  approvedDestinations: z.array(z.string().min(1)).optional(),
 }).strict();
 
 const listProviderCredentialsResponseSchema = z.object({
@@ -2599,6 +2605,11 @@ const listProviderCredentialsResponseSchema = z.object({
   credentials: z.array(credentialMetadataSchema),
   // During a rolling upgrade an older server may not project its registry yet.
   providers: z.array(personalProviderCatalogEntrySchema).optional().default([]),
+}).strict();
+
+const mindSwapperConnectionMetadataSchema = z.object({
+  baseUrl: z.string().min(1).nullable(),
+  approvedDestinations: z.array(z.string().min(1)),
 }).strict();
 
 const putProviderCredentialResponseSchema = z.object({
@@ -6202,6 +6213,26 @@ export class NautiloApiClient {
     return { keys, hasLlm: computeHasLlmFromKeys(keys) };
   }
 
+  async getMindSwapperConnection(): Promise<z.infer<typeof mindSwapperConnectionMetadataSchema>> {
+    return this.request({
+      path: "/api/setup/keys/mindswapper/connection",
+      schema: mindSwapperConnectionMetadataSchema,
+    });
+  }
+
+  async updateMindSwapperConnection(input: {
+    baseUrl?: string | null;
+    approvedDestinations?: string[];
+    apiKey?: string;
+  }): Promise<z.infer<typeof mindSwapperConnectionMetadataSchema>> {
+    return this.request({
+      method: "PUT",
+      path: "/api/setup/keys/mindswapper/connection",
+      body: input,
+      schema: mindSwapperConnectionMetadataSchema,
+    });
+  }
+
   async listChatGPTAccounts() {
     return this.request({ path: "/api/account/chatgpt", schema: z.object({
       canEnroll: z.boolean(), canEnrollWithDesktop: z.boolean().optional(), enabled: z.boolean(), accounts: z.array(z.object({
@@ -6250,7 +6281,7 @@ export class NautiloApiClient {
     providers: PersonalProviderCatalogEntry[];
   }> {
     return this.request({
-      path: "/api/account/provider-credentials",
+      path: "/api/account/provider-credentials?includeMindSwapper=1",
       schema: listProviderCredentialsResponseSchema,
       statusErrors: providerCredentialStatusErrors,
     });

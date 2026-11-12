@@ -21,6 +21,9 @@ import {
   resolveServerFundedForegroundCatalogModel,
   resolveSurplusChatServingAvailability,
   resolveSurplusDecisionServingAvailability,
+  withMindSwapperModels,
+  isMindSwapperModelId,
+  type MindSwapperChatModel,
   type QualifiedSurplusChatRoute,
 } from "@nautilo/agent";
 import { candidatesForModelRole } from "@nautilo/config";
@@ -37,6 +40,7 @@ import { warn } from "@nautilo/logger";
 import { getUserCapabilities } from "@nautilo/trust";
 import { writeSecurityAuditEvent, type SecurityAuditEvent } from "../lib/security-audit-log";
 import { getServerDirectDb } from "../lib/server-direct-db";
+import { readServerMindSwapperModels } from "../lib/mindswapper-catalog";
 import {
   isSignedImageUnderstandingModel,
   listOrderedImageUnderstandingModels,
@@ -249,6 +253,7 @@ function parseUpdateBody(
     readonly routes?: readonly QualifiedSurplusChatRoute[];
   },
   retained?: ResolvedServerModelConfig,
+  mindSwapperModels: readonly MindSwapperChatModel[] = [],
 ): ParseResult {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return { ok: false, error: "invalid body" };
@@ -337,7 +342,10 @@ function parseUpdateBody(
     const v = raw["defaultChatModel"];
     if (typeof v !== "string") return { ok: false, error: "defaultChatModel must be a string" };
     if (v.trim() !== "") {
-      const reason = unavailableReason(v, "chat-tools", true);
+      const modelId = v.trim();
+      const reason = isMindSwapperModelId(modelId)
+        ? withMindSwapperModels(mindSwapperModels, () => unavailableReason(modelId, "chat-tools", false))
+        : unavailableReason(modelId, "chat-tools", true);
       if (reason && v !== retained?.defaultChatModel) return { ok: false, error: `model unavailable: ${v} (${reason})` };
     }
     patch.defaultChatModel = v.trim() === "" ? null : v;
@@ -548,6 +556,7 @@ export interface ServerModelsRouteDeps {
   hydrateSurplusChatCatalog?: typeof hydrateSurplusChatCatalog;
   /** Pure offline seam; production derives routes from the signed catalogue. */
   getQualifiedSurplusChatRoutes?: () => readonly QualifiedSurplusChatRoute[];
+  readMindSwapperModels?: typeof readServerMindSwapperModels;
 }
 
 export function serverModelsRoutes(
@@ -569,6 +578,7 @@ export function serverModelsRoutes(
   const getSurplusKeyConfigured = overrides.getSurplusKeyConfigured
     ?? (() => resolveProviderKey("surplus") !== null);
   const getQualifiedSurplusChatRoutes = overrides.getQualifiedSurplusChatRoutes;
+  const readMindSwapperModels = overrides.readMindSwapperModels ?? readServerMindSwapperModels;
   const hydrateSurplusProjection = async (policyEnabled: boolean, keyConfigured: boolean) => {
     if (!policyEnabled || !keyConfigured || getQualifiedSurplusChatRoutes) return;
     try {
@@ -578,7 +588,7 @@ export function serverModelsRoutes(
       // on the last verified discovery snapshot.
     }
   };
-  const wire = (config: ResolvedServerModelConfig) => {
+  const wire = (config: ResolvedServerModelConfig, mindSwapperModels: readonly MindSwapperChatModel[]) => {
     const keyConfigured = getSurplusKeyConfigured();
     const routes = getQualifiedSurplusChatRoutes?.();
     const surplus = resolveSurplusChatServingAvailability({
@@ -598,8 +608,10 @@ export function serverModelsRoutes(
         policyEnabled: config.preferSurplus,
         chatStatus: surplus.status,
       },
-      catalogModels: catalogModels({ policyEnabled: config.preferSurplus, keyConfigured,
-        ...(routes === undefined ? {} : { routes }) }),
+      catalogModels: withMindSwapperModels(mindSwapperModels, () => catalogModels({
+        policyEnabled: config.preferSurplus, keyConfigured,
+        ...(routes === undefined ? {} : { routes }),
+      })),
       effectiveEmbeddingModel: (overrides.getEffectiveEmbeddingModel ?? effectiveEmbeddingModel)(),
       embeddingSelectionPending: activeEmbeddingSelection() !== config.embeddingModel,
       embeddingModels: embeddingModels(),
@@ -633,7 +645,7 @@ export function serverModelsRoutes(
     // when refresh retains stale state after a database failure.
     await refreshConfigCache(true);
     await hydrateSurplusProjection(config.preferSurplus, getSurplusKeyConfigured());
-    return reply.send(wire(config));
+    return reply.send(wire(config, await readMindSwapperModels()));
   });
 
   app.post("/api/admin/server-models", async (request, reply) => {
@@ -659,11 +671,12 @@ export function serverModelsRoutes(
     const keyConfigured = getSurplusKeyConfigured();
     const routes = getQualifiedSurplusChatRoutes?.();
     await hydrateSurplusProjection(requestedPolicy, keyConfigured);
+    const mindSwapperModels = await readMindSwapperModels();
     const parsed = parseUpdateBody(request.body, listMediaModels, {
       policyEnabled: requestedPolicy,
       keyConfigured,
       ...(routes === undefined ? {} : { routes }),
-    }, before);
+    }, before, mindSwapperModels);
     if (!parsed.ok) return reply.code(422).send({ error: parsed.error });
 
     const after = await upsertConfig(db, parsed.patch, defaults);
@@ -686,6 +699,6 @@ export function serverModelsRoutes(
         failureCode: "runtime_reconciliation_failed",
       });
     }
-    return reply.send(wire(after));
+    return reply.send(wire(after, mindSwapperModels));
   });
 }

@@ -1574,3 +1574,9 @@ export { readCurrentOrdinaryTranscriptExposureRows, projectCurrentOrdinaryTransc
 
 export { memoryReviewFingerprint } from "./memory/memory-review-staging";
 export { resultReceipt, resultVersion } from "./tools/result-reader/result-window";
+
+export {
+  isMindSwapperModelId, mindSwapperUpstreamModelId, mindSwapperOfferForModel,
+  withMindSwapperModels, withMindSwapperConnection,
+  type MindSwapperChatModel, type MindSwapperChatOffer,
+} from "./config/mindswapper-models";

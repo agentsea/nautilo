@@ -22,7 +22,8 @@ import {
 import { log } from "@nautilo/logger";
 import { getToolCatalog } from "@nautilo/catalog";
 import { envelopeReadableNamespaces } from "@nautilo/trust";
-import { modelSupportsInput } from "@nautilo/model-capabilities";
+import { modelSupportsAgentInput as modelSupportsInput } from "../providers/models";
+import { isMindSwapperModelId } from "../config/mindswapper-models";
 import { invokeChatModelWithFallback, resolvePreparedMessageBudget } from "../utils/chat-model-invocation";
 import { normalizeModelToolCallIdentity } from "./model-tool-call-identity";
 import { runWithUsageContext } from "../usage/usage-context";
@@ -45,7 +46,7 @@ import {
 } from "../config/model-role-resolution";
 import { getActiveModelCatalogSync } from "../config/model-catalog/runtime-catalog";
 import { getModelById } from "../config/assistant-models";
-import { ModelUnavailableError } from "../config/eligible-models";
+import { assertModelRunnable, ModelUnavailableError } from "../config/eligible-models";
 import { hydrateSurplusChatCatalog, type QualifiedSurplusChatRoute } from "../providers/surplus-route";
 import { resolveProviderKey } from "../resolve-provider-key";
 import { hasStubModelForTests } from "../providers/stub-model-state";
@@ -77,6 +78,10 @@ function signedCatalogEntrySupportsForegroundText(
 
 function resolvePersonalForegroundModelId(configuredModelId: string | null | undefined): string {
   const modelId = modelIdForCapabilityProjection("chat", configuredModelId);
+  if (isMindSwapperModelId(modelId)) {
+    assertModelRunnable(modelId, { purpose: "chat" });
+    return modelId;
+  }
   const entry = getActiveModelCatalogSync().catalog.entries.find((candidate) => candidate.id === modelId);
   if (!entry || !entry.defaultEnabled || !getModelById(modelId)) {
     throw new ModelUnavailableError(modelId, entry ? "filtered" : "unknown-model",

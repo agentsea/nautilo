@@ -1175,6 +1175,31 @@ describe("nautilo host plan", () => {
     expect(JSON.stringify(failure)).not.toContain(invalid);
   });
 
+  test("directs Railway users to configure the MindSwapper API URL and key in Nautilo", async () => {
+    const providerConfig = join(root, "mindswapper.toml");
+    const secret = "synthetic-mindswapper-key";
+    await writeFile(
+      providerConfig,
+      `schemaVersion = 1\n[providers]\nmindswapper = { value = "${secret}" }\n`,
+      { mode: 0o600 },
+    );
+
+    for (const selection of [
+      ["--provider-config", providerConfig, "--all-providers"],
+      ["--include-provider", "mindswapper"],
+    ]) {
+      const fixture = harness({ HOME: root });
+      await runHost(["host", "plan", "--backend", "railway", ...selection, "--json"], fixture.dependencies);
+      const failure = JSON.parse(fixture.stdout.join("")) as HostPlanInputFailure;
+      expect(failure.error.code).toBe("railway.plan.mindswapper-requires-api-url");
+      expect(failure.error.message).toContain("Admin → API Keys");
+      expect(fixture.authorizationCalls.count).toBe(0);
+      expect(fixture.transport.calls).toEqual([]);
+      expect(JSON.stringify(failure)).not.toContain(secret);
+      expect(JSON.stringify(failure)).not.toContain(providerConfig);
+    }
+  });
+
   test("deploy and resume reject invalid --provider-config before Railway authorization", async () => {
     const invalid = join(root, "invalid-providers.toml");
     const secret = "provider-config-must-not-leak";

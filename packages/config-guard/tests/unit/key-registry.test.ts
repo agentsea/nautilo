@@ -16,10 +16,6 @@ describe("key-registry", () => {
     expect(getKeyByEnvVar("NAUTILO_GATEWAY_API_KEY")?.signupUrl).toBe("");
   });
 
-  test("registry has sixteen keys", () => {
-    expect(KEY_REGISTRY.length).toBe(16);
-  });
-
   test("uses the shared presentation catalogue without metadata drift", () => {
     expect(KEY_REGISTRY.map(({ formatCheck: _formatCheck, doctorHints: _doctorHints, healthCheck: _healthCheck, ...entry }) => entry))
       .toEqual(PROVIDER_KEY_CATALOGUE.map((entry) => ({

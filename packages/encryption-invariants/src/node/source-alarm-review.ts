@@ -1,4 +1,5 @@
 import { CHATGPT_PLAN_SOURCE_ALARMS } from "../../baseline/reviewed-chatgpt-plan-coverage";
+import { MINDSWAPPER_CREDENTIAL_SOURCE_ALARMS } from "../../baseline/reviewed-mindswapper-credential-boundaries";
 import { BOLTER_NATIVE_STORAGE_ALARMS } from "../../baseline/reviewed-bolter-native-storage";
 import { BOLTER_PLAINTEXT_SOURCE_ALARMS } from "../../baseline/reviewed-bolter-plaintext-carriers";
 import { reviewedExternalRoomSourceAlarms } from "../../baseline/reviewed-external-room-source-alarms";
@@ -364,6 +365,7 @@ export const CURRENT_SOURCE_ALARM_REVIEWS: readonly SourceAlarmReview[] = review
   .concat(REVIEWED_M321_SOURCE_ALARMS)
   .concat(REVIEWED_TASK_RESEARCH_SOURCE_ALARMS)
   .concat(CHATGPT_PLAN_SOURCE_ALARMS)
+  .concat(MINDSWAPPER_CREDENTIAL_SOURCE_ALARMS)
   .filter((review) =>
     !SUPERSEDED_MAIN_2026_09_09_DOCUMENTMEDIA_SOURCE_LOCATORS.has(review.locator)
     && !SUPERSEDED_MAIN_2026_09_09_MESSAGEBACKFILL_SOURCE_LOCATORS.has(review.locator)

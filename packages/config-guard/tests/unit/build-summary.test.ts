@@ -19,6 +19,7 @@ const PASSING_VALUES: Record<string, string> = {
   openai: `sk-proj-${"a".repeat(40)}`,
   openrouter: `sk-or-v1-${"a".repeat(40)}`,
   gateway: "opaque-gateway-key-1234",
+  mindswapper: "mindswapper-test-key",
   google: `AIzaSy${"a".repeat(34)}`,
   xai: "opaque-xai-key",
   fireworks: `fw_${"a".repeat(20)}`,
@@ -66,9 +67,8 @@ describe("buildSummary().hasLlm derives from key-registry", () => {
       const r = await check({ validate: false });
       const keyReport = r.keys.find((k) => k.id === id);
       expect(keyReport?.status === "verified" || keyReport?.status === "present").toBe(true);
-      // A marketplace key does not prove that any released chat route has
-      // passed model, provider-pin, and usage qualification.
-      expect(r.summary.hasLlm).toBe(id !== "surplus");
+      // These providers also need qualified model availability.
+      expect(r.summary.hasLlm).toBe(id !== "surplus" && id !== "mindswapper");
     });
   }
 });

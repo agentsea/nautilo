@@ -442,6 +442,7 @@ export {
 export {
   dispatchTaskRun,
   resolveToolWhitelist,
+  getLegacyTaskBaseModelId,
   type DispatchTaskRunDeps,
   type TaskExecutionRouteFacts,
   type TaskExecutionRouteSelector,

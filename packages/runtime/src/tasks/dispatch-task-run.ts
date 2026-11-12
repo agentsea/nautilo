@@ -2,6 +2,8 @@ import { taskLocalExecutionOfflinePhase, claimTaskLocalExecutionOfflineRun } fro
 import {
   getLatestResumableTaskRun,
   getTaskById,
+  getCachedServerModelConfigRow,
+  kickServerModelConfigRefresh,
   insertTaskRun,
   startClaimedCallerTaskRun,
   startTaskRunForWriterReviewVerification,
@@ -25,6 +27,8 @@ import {
   resolveTaskModel,
   ModelSelectionError,
   resolveExactTaskModelId,
+  isMindSwapperModelId,
+  resolveModelRole,
   getRelayRegistry,
   assertSecurityResearchResumeBinding,
 } from "@nautilo/agent";
@@ -283,6 +287,21 @@ export function resolveToolWhitelist(
       // tool-free.
       return undefined;
   }
+}
+
+/** Legacy Tasks cannot acquire a MindSwapper connection from a foreground default. */
+export function getLegacyTaskBaseModelId(
+  profileDefault: string | null | undefined,
+  readDefault: typeof getDefaultModel = getDefaultModel,
+): string {
+  const profileModel = profileDefault?.trim();
+  if (profileModel && !isMindSwapperModelId(profileModel)) return profileModel;
+  const serverDefault = process.env["NAUTILO_MODEL"] || getCachedServerModelConfigRow()?.defaultChatModel;
+  if (serverDefault && isMindSwapperModelId(serverDefault.trim())) {
+    kickServerModelConfigRefresh();
+    return resolveModelRole("chat");
+  }
+  return readDefault().id;
 }
 
 /**
@@ -587,7 +606,7 @@ export async function dispatchTaskRun(
   } else {
     try {
       // Security research retains the configured model and explicit selection intent.
-      const baseModelId = profile?.defaultModel?.trim() || getDefaultModel().id;
+      const baseModelId = getLegacyTaskBaseModelId(profile?.defaultModel);
       const resolution = resolveTaskModel({
         baseModelId,
         profile: task.selectionProfile,
@@ -602,6 +621,10 @@ export async function dispatchTaskRun(
       }
       throw e;
     }
+  }
+
+  if (!fundingAdmission && isMindSwapperModelId(modelId)) {
+    throw new Error("[task-model-selection] MindSwapper requires an admitted Task funding source.");
   }
 
   // 4. Insert the run row + mark the task running.

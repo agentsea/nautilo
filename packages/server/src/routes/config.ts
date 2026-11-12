@@ -12,6 +12,8 @@ import {
   resolveRetainedModels,
   resolveProviderKey,
   resolveQualifiedSurplusChatRoute,
+  withMindSwapperModels,
+  type MindSwapperChatModel,
   type QualifiedSurplusChatRoute,
 } from "@nautilo/agent";
 import { fromRuntimeConfig } from "@nautilo/config";
@@ -21,9 +23,11 @@ import { getServerDirectDb } from "../lib/server-direct-db";
 import {
   createModelFundingSnapshot,
   ModelFundingError,
+  readCallerMindSwapperModels,
   resolveModelFunding,
   type ModelFundingDecision,
 } from "../lib/model-funding";
+import { isMindSwapperModelId } from "../lib/mindswapper-catalog";
 import { resolveCallerImageInput } from "../lib/image-assistance";
 
 export interface ConfigRouteDeps {
@@ -50,6 +54,7 @@ export interface CallerModelAvailabilityDeps {
   readonly hydrateSurplusChatCatalog?: typeof hydrateSurplusChatCatalog;
   /** Pure offline seam for vendor-confirmed route projections. */
   readonly getQualifiedSurplusChatRoutes?: () => readonly QualifiedSurplusChatRoute[];
+  readonly mindswapperModels?: readonly MindSwapperChatModel[];
 }
 
 const FUNDING_UNAVAILABLE_REASON: Readonly<Record<ModelFundingError["code"], string>> = {
@@ -87,6 +92,21 @@ export async function resolveCallerModelAvailability(
   options: Omit<GetEligibleModelsOptions, "includeUnavailable"> = {},
   deps: CallerModelAvailabilityDeps = {},
 ): Promise<CallerModelAvailability> {
+  if (isMindSwapperModelId(modelId)) {
+    const models = deps.mindswapperModels ?? await readCallerMindSwapperModels(humanUserId, {
+      tools: options.purpose === "chat-tools",
+    });
+    return withMindSwapperModels(models, () => resolveCallerModelAvailabilityInScope(humanUserId, modelId, options, deps));
+  }
+  return resolveCallerModelAvailabilityInScope(humanUserId, modelId, options, deps);
+}
+
+async function resolveCallerModelAvailabilityInScope(
+  humanUserId: string,
+  modelId: string,
+  options: Omit<GetEligibleModelsOptions, "includeUnavailable">,
+  deps: CallerModelAvailabilityDeps,
+): Promise<CallerModelAvailability> {
   const base = resolveRetainedModels([modelId], { ...options, purpose: "chat" })[0]!;
   if (base.availability !== "selectable" && base.availability !== "missing-key") {
     return { model: base, funding: null, selectableInThisRelease: false };
@@ -120,6 +140,7 @@ export async function resolveCallerModelAvailability(
       humanUserId,
       modelId,
       workload: "foreground_text_chat",
+      ...(isMindSwapperModelId(modelId) && options.purpose === "chat-tools" ? { mindSwapperTools: true } : {}),
     });
     const injectedRoutes = deps.getQualifiedSurplusChatRoutes?.();
     if (funding.providerRoute === "surplus" && injectedRoutes === undefined) {
@@ -301,25 +322,26 @@ export function configRoutes(app: FastifyInstance, deps: ConfigRouteDeps = {}) {
     const allowChinaUpstream = parseBoolQuery(query["allowChinaUpstream"]) ?? false;
     const listModels = deps.getEligibleModels ?? getEligibleModels;
     const resolveAvailability = deps.resolveCallerAvailability ?? resolveCallerModelAvailability;
-    const candidates = listModels({
+    const snapshot = deps.resolveCallerAvailability ? null : await createModelFundingSnapshot(humanUserId);
+    const models = snapshot ? await readCallerMindSwapperModels(humanUserId, { tools: true }, snapshot.deps) : [];
+    const candidates = withMindSwapperModels(models, () => listModels({
       includeUnavailable: true,
       allowChinaUpstream,
       purpose: "chat",
       // Credential availability comes from the caller funding resolver below.
       // The signed catalogue projection must not require a process-wide key.
       env: {},
-    });
-    const snapshot = deps.resolveCallerAvailability ? null : await createModelFundingSnapshot(humanUserId);
+    }));
     const imageAssistanceSelections = new Map<string, Promise<ModelFundingDecision | null>>();
     let preferenceSnapshot: Promise<PersonalCapabilityPreferences> | undefined;
     const readImageAssistancePreferences = () => preferenceSnapshot ??= getPersonalCapabilityPreferences(getServerDirectDb(), humanUserId);
-    const resolved = await Promise.all(
+    const resolved = await withMindSwapperModels(models, () => Promise.all(
       candidates.map(async (candidate) => {
         const availability = await resolveAvailability(
           humanUserId,
           candidate.id,
           { purpose: "chat-tools", allowChinaUpstream, env: {} },
-          { imageAssistanceSelections, readImageAssistancePreferences,
+          { imageAssistanceSelections, readImageAssistancePreferences, mindswapperModels: models,
             ...(snapshot ? { resolveFunding: (input) => resolveModelFunding(input, snapshot.deps) } : {}) },
         );
         return {
@@ -330,7 +352,7 @@ export function configRoutes(app: FastifyInstance, deps: ConfigRouteDeps = {}) {
           } : {}),
         };
       }),
-    );
+    ));
     return reply.send(
       includeUnavailable
         ? resolved
@@ -346,13 +368,17 @@ export function configRoutes(app: FastifyInstance, deps: ConfigRouteDeps = {}) {
       });
     }
     kickRuntimeModelCatalogRefresh();
+    const models = request.sessionUserId && parsed.data.ids.some(isMindSwapperModelId)
+      ? await readCallerMindSwapperModels(request.sessionUserId, {
+        tools: parsed.data.purpose === "chat-tools" || parsed.data.purpose === "task-tools" || parsed.data.purpose === "vision-tools",
+      }) : [];
     return reply.send(
-      resolveRetainedModels(parsed.data.ids, {
+      withMindSwapperModels(models, () => resolveRetainedModels(parsed.data.ids, {
         ...(parsed.data.purpose ? { purpose: parsed.data.purpose } : {}),
         ...(parsed.data.allowChinaUpstream === undefined
           ? {}
           : { allowChinaUpstream: parsed.data.allowChinaUpstream }),
-      }),
+      })),
     );
   });
 

@@ -92,5 +92,14 @@ value = { value = "REPLACE_with_OpenRouter_key" }
 # key = "NAUTILO_GATEWAY_API_KEY"
 # value = { value = "REPLACE_with_gateway_key" }
 
+# MindSwapper: enable both blocks together with the API URL and its key.
+# [[providers]]
+# key = "MINDSWAPPER_BASE_URL"
+# value = { value = "https://REPLACE_with_MindSwapper_host/v1" }
+
+# [[providers]]
+# key = "MINDSWAPPER_API_KEY"
+# value = { value = "REPLACE_with_MindSwapper_key" }
+
 [genie]
 mode = "skip"

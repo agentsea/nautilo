@@ -12,7 +12,10 @@ import type {
   ProtectedTaskPublicationPlanV1,
 } from "@nautilo/api-client";
 import {
+  isMindSwapperModelId,
   validateTaskModelSelectionForCreate,
+  withMindSwapperModels,
+  type MindSwapperChatModel,
 } from "@nautilo/agent";
 import {
   and,
@@ -115,7 +118,7 @@ import {
 } from "./protected-task-requester-private-room";
 import { createProtectedTaskDefinitionForegroundAuthorizationResolver } from
   "./protected-task-runtime-access-lineage";
-import { listProtectedTaskContentV1, toTaskContentSummaryV1 } from "./tasks";
+import { listProtectedTaskContentV1, readTaskSelectionMindSwapperModels, toTaskContentSummaryV1 } from "./tasks";
 
 export type ProtectedTaskRouteAuthority = Readonly<{
   userId: string;
@@ -827,7 +830,7 @@ function emptyMetadata() {
   return metadataFor({ metadata: {} });
 }
 
-export function validateCreateShape(task: OperationalCreate): void {
+export function validateCreateShape(task: OperationalCreate, models: readonly MindSwapperChatModel[] = []): void {
   if (task.parentTaskId != null) {
     throw new ProtectedTaskRouteError(
       422,
@@ -835,7 +838,7 @@ export function validateCreateShape(task: OperationalCreate): void {
       "Protected nested Tasks are not supported",
     );
   }
-  validateSelection(task);
+  withMindSwapperModels(models, () => validateSelection(task));
 }
 
 function validateSelection(
@@ -861,8 +864,9 @@ export function taskCreateInput(
   taskId: string,
   task: OperationalCreate,
   payload: TaskDefinitionPayload | null,
+  models: readonly MindSwapperChatModel[] = [],
 ): TaskCreateInput {
-  validateCreateShape(task);
+  validateCreateShape(task, models);
   return {
     id: taskId,
     ownerId: authority.userId,
@@ -1461,7 +1465,11 @@ export function createProductionProtectedTaskComposition(
     }>,
   ): Promise<ProtectedTaskPublicationPlanV1> => {
     if (request.operation === "create") {
-      validateCreateShape(request.task);
+      const models = await readTaskSelectionMindSwapperModels(authority.userId, {
+        requestedModelId: request.task.requestedModelId,
+        ...toolsFields(request.task.tools),
+      });
+      validateCreateShape(request.task, models);
       validateSchedule({
         scheduleKind: request.task.scheduleKind ?? "now",
         runAt: parseRunAt(request.task.runAt),
@@ -1546,16 +1554,22 @@ export function createProductionProtectedTaskComposition(
         const selectedTools = request.task.tools === undefined
           ? { toolsMode: task.toolsMode, toolsWhitelist: task.toolsWhitelist }
           : toolsFields(request.task.tools);
-        const error = validateTaskModelSelectionForCreate({
-          requestedModelId: request.task.requestedModelId !== undefined
-            ? request.task.requestedModelId : task.requestedModelId,
+        const requestedModelId = request.task.requestedModelId !== undefined
+          ? request.task.requestedModelId : task.requestedModelId;
+        if (task.fundingMode === "legacy_server" && requestedModelId && isMindSwapperModelId(requestedModelId.trim())) {
+          throw new ProtectedTaskRouteError(422, "task_selection_invalid", "Create a new Task to use MindSwapper funding.");
+        }
+        const selection = {
+          requestedModelId,
           profile: request.task.selectionProfile !== undefined
             ? request.task.selectionProfile : task.selectionProfile,
           spec: request.task.selectionSpec !== undefined
             ? request.task.selectionSpec : task.selectionSpec,
           toolsMode: selectedTools.toolsMode,
           toolsWhitelist: selectedTools.toolsWhitelist,
-        });
+        };
+        const models = await readTaskSelectionMindSwapperModels(task.requestorId, selection);
+        const error = withMindSwapperModels(models, () => validateTaskModelSelectionForCreate(selection));
         if (error !== null) {
           throw new ProtectedTaskRouteError(422, "task_selection_invalid", error);
         }
@@ -1795,6 +1809,10 @@ export function createProductionProtectedTaskComposition(
     if (identity !== undefined) {
       throw new ProtectedTaskRouteError(409, "task_identity_conflict", "Task identity conflicts");
     }
+    const models = await readTaskSelectionMindSwapperModels(authority.userId, {
+      requestedModelId: task.requestedModelId,
+      ...toolsFields(task.tools),
+    });
     try {
       return await dependencies.db.transaction(async (transaction) => {
         const transactionDb = transaction as unknown as DirectDatabase;
@@ -1818,7 +1836,7 @@ export function createProductionProtectedTaskComposition(
         }, taskCreateInput(authority, taskId, {
           ...task,
           ...(scopeId == null ? {} : { scopeId }),
-        }, payload));
+        }, payload, models));
         const created = (await readMutationSource(
           authority,
           taskId,

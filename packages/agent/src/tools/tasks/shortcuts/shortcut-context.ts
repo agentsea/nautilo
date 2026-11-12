@@ -46,7 +46,7 @@ export const modelSelectionParam = z
  * Shared exact-model pin param every intent shortcut accepts.
  * Mutually exclusive with {@link modelSelectionParam}: pass model_id OR a
  * model_selection bias, never both. Genie must first call `discover_models`
- * and copy the exact stable curated id; only curated ids are accepted in v1.
+ * and copy the exact stable ID from the current catalogue.
  * Kept as one named helper so the description is single-sourced across every
  * shortcut (no per-tool duplication).
  */
@@ -55,7 +55,7 @@ export const modelIdParam = z
   .nullable()
   .optional()
   .describe(
-    "Pin the EXACT model this task's run will use (strict same-model pin, no cross-model fallback). First call `discover_models` and copy the EXACT stable curated model id it returns; do not guess. Only curated ids are accepted in v1 (dynamic openrouter:/gateway: ids are rejected). Mutually exclusive with model_selection — pass model_id OR a model_selection bias, never both. A tool-using task requires a model with confirmed tool support; pass tools: [] for a tool-free run.",
+    "Pin the EXACT model this task's run will use (strict same-model pin, no cross-model fallback). First call `discover_models` and copy the EXACT stable model id it returns; do not guess. Only IDs from discover_models are accepted. Mutually exclusive with model_selection — pass model_id OR a model_selection bias, never both. A tool-using task requires a model with confirmed tool support; pass tools: [] for a tool-free run.",
   );
 
 export function shortcutContextFromUnknown(ctx: unknown): ShortcutContext {

@@ -20,6 +20,7 @@
  */
 
 import { validateNautiloInstanceIdValue } from "@nautilo/config/instance-id";
+import { MINDSWAPPER_APPROVED_BASE_URLS, MINDSWAPPER_BASE_URL, normalizeMindSwapperBaseUrl } from "./mindswapper";
 import {
   GOOGLE_OAUTH_CLIENT_JSON_ENV,
   validateGoogleOAuthClientJsonBase64Env,
@@ -285,6 +286,19 @@ export const MODE_REGISTRY: ModeDefinition[] = [
     envVar: "NAUTILO_GATEWAY_LABEL",
     description: "Display label for the configured OpenAI-compatible gateway.",
     validator: (v) => (v.trim().length > 0 ? null : "required"),
+  },
+  {
+    id: MINDSWAPPER_BASE_URL,
+    envVar: MINDSWAPPER_BASE_URL,
+    description: "MindSwapper API root used by the server key.",
+    validator: (value) => normalizeMindSwapperBaseUrl(value) ? null : "must be an HTTPS API URL ending in /v1",
+  },
+  {
+    id: MINDSWAPPER_APPROVED_BASE_URLS,
+    envVar: MINDSWAPPER_APPROVED_BASE_URLS,
+    description: "Comma-separated API roots approved for personal MindSwapper keys.",
+    validator: (value) => value.split(",").every((entry) => normalizeMindSwapperBaseUrl(entry))
+      ? null : "each URL must be an HTTPS API URL ending in /v1",
   },
   {
     id: "NAUTILO_SEARCH_PROVIDER",

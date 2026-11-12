@@ -4,11 +4,18 @@ import { z } from "zod";
 import { getSharedDirectDb } from "@nautilo/db";
 import { fromRuntimeConfig, invalidateRuntimeConfigCache, resolveNautiloRootDir } from "@nautilo/config";
 import {
+  checkProviderHealth,
   ConfigGuardError,
+  getApprovedMindSwapperDestinations,
   getAllKeyDefinitions,
   getKeyDefinition,
   isCloudManagedDeployment,
+  MINDSWAPPER_API_KEY,
+  MINDSWAPPER_APPROVED_BASE_URLS,
+  MINDSWAPPER_BASE_URL,
+  normalizeMindSwapperBaseUrl,
   transaction,
+  type ConfigOperation,
 } from "@nautilo/config-guard";
 import { getRelayRegistry } from "@nautilo/agent";
 import {
@@ -50,6 +57,23 @@ const SetupKeysBodySchema = z.object({
 const ResearchProviderBodySchema = z.object({
   provider: z.enum(["auto", "duckduckgo_html"]),
 }).strict();
+
+const MindSwapperConnectionBodySchema = z.object({
+  baseUrl: z.string().nullable().optional(),
+  approvedDestinations: z.array(z.string()).optional(),
+  apiKey: z.string().optional(),
+}).strict();
+
+function mindSwapperConnectionMetadata() {
+  return {
+    baseUrl: normalizeMindSwapperBaseUrl(process.env[MINDSWAPPER_BASE_URL]),
+    approvedDestinations: getApprovedMindSwapperDestinations(),
+  };
+}
+
+function configOperation(key: string, value: string | null): ConfigOperation {
+  return value === null ? { type: "remove", key } : { type: "set", key, value };
+}
 
 const OwnerClaimInstallBodySchema = z
   .object({ schemaVersion: z.literal(1), claimHash: z.string(), expiresAt: z.string() })
@@ -108,6 +132,83 @@ function researchDesktopDiagnostics(userId: string): {
 }
 
 export function setupRoutes(app: FastifyInstance) {
+  const mindSwapperConnectionPath = "/api/setup/keys/mindswapper/connection";
+  app.get("/api/setup/keys/mindswapper/connection", async (request, reply) => {
+    if (managedProviderCredentialRouteIsBlocked(mindSwapperConnectionPath)) {
+      return reply.code(403).send({ error: "managed_credentials_control_plane_owned" });
+    }
+    const userId = request.sessionUserId;
+    if (!userId) return reply.code(401).send({ error: "Authentication required" });
+    if (!(await viewerCanManageProviderKeys(userId))) return reply.code(403).send({ error: "admin only" });
+    return reply.send(mindSwapperConnectionMetadata());
+  });
+
+  app.put<{ Body: z.input<typeof MindSwapperConnectionBodySchema> }>("/api/setup/keys/mindswapper/connection", {
+    logLevel: "silent",
+    errorHandler(error, _request, reply) {
+      const status = error.statusCode === 400 || error.statusCode === 413 ? error.statusCode : 500;
+      void reply.code(status).send({ error: "MindSwapper connection could not be saved." });
+    },
+  }, async (request, reply) => {
+    if (managedProviderCredentialRouteIsBlocked(mindSwapperConnectionPath)) {
+      return reply.code(403).send({ error: "managed_credentials_control_plane_owned" });
+    }
+    const userId = request.sessionUserId;
+    if (!userId) return reply.code(401).send({ error: "Authentication required" });
+    if (!(await viewerCanManageProviderKeys(userId))) return reply.code(403).send({ error: "admin only" });
+    const parsed = MindSwapperConnectionBodySchema.safeParse(request.body);
+    if (!parsed.success) return reply.code(400).send({ error: "Invalid MindSwapper connection." });
+    const input = parsed.data;
+    const operations: ConfigOperation[] = [];
+    const baseUrl = normalizeMindSwapperBaseUrl(input.baseUrl);
+    if (input.baseUrl !== undefined) {
+      if (input.baseUrl !== null && baseUrl === null) {
+        return reply.code(400).send({ error: "Enter an HTTPS API URL ending in /v1." });
+      }
+      operations.push(configOperation(MINDSWAPPER_BASE_URL, baseUrl));
+    }
+    if (input.approvedDestinations !== undefined) {
+      const urls = input.approvedDestinations.map((url) => normalizeMindSwapperBaseUrl(url));
+      if (urls.some((url) => url === null)) {
+        return reply.code(400).send({ error: "Enter approved HTTPS API URLs ending in /v1." });
+      }
+      operations.push(configOperation(MINDSWAPPER_APPROVED_BASE_URLS, [...new Set(urls)].join(",") || null));
+    }
+    if (input.apiKey !== undefined) {
+      const apiKey = input.apiKey.trim();
+      if (!baseUrl || !getKeyDefinition("mindswapper")?.formatCheck(apiKey)) {
+        return reply.code(400).send({ error: "Enter the MindSwapper API URL and its key." });
+      }
+      const observation = await checkProviderHealth("mindswapper", apiKey, {
+        ...process.env, [MINDSWAPPER_BASE_URL]: baseUrl,
+      });
+      if (observation.status === "invalid_key") {
+        return reply.code(422).send({ error: "MindSwapper rejected the key for this URL." });
+      }
+      if (observation.status !== "verified") {
+        return reply.code(503).send({ error: "MindSwapper could not validate the key. Try again." });
+      }
+      if (!(await viewerCanManageProviderKeys(userId))) return reply.code(403).send({ error: "admin only" });
+      operations.push(configOperation(MINDSWAPPER_API_KEY, apiKey));
+    }
+    if (operations.length === 0) return reply.code(400).send({ error: "No MindSwapper changes supplied." });
+    const result = await transaction({
+      operations,
+      healthCheck: "none",
+      overwrite: true,
+      reason: "MindSwapper connection updated in Server Admin",
+      actor: "setup-spa",
+    });
+    if (!result.success) {
+      const message = result.error === "Provide the MindSwapper key for the new API URL."
+        ? "Enter a key for the new API URL, or delete the current key first."
+        : "MindSwapper connection could not be saved.";
+      return reply.code(400).send({ error: message });
+    }
+    invalidateRuntimeConfigCache();
+    return reply.send(mindSwapperConnectionMetadata());
+  });
+
   app.get("/api/setup/research-provider", async (request, reply) => {
     const sessionUserId = request.sessionUserId;
     if (!sessionUserId) return reply.code(401).send({ error: "Authentication required" });

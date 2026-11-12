@@ -17,6 +17,7 @@ const PROVIDER_GROUP_LABELS: Record<string, string> = {
   google: "Google",
   fireworks: "Fireworks",
   openrouter: "OpenRouter",
+  mindswapper: "MindSwapper",
   together: "Together",
   xai: "xAI",
   venice: "Venice",

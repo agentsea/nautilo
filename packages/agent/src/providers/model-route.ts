@@ -8,7 +8,7 @@ export function modelRouteProvider(modelId: string): string {
 
 /** Behavior shared by adapters using OpenAI chat-completions wire semantics. */
 export function usesOpenAICompatibleChatTransport(modelId: string): boolean {
-  return ["openai", "openrouter", "gateway", "venice"].includes(
+  return ["openai", "openrouter", "gateway", "mindswapper", "venice"].includes(
     modelRouteProvider(modelId),
   );
 }

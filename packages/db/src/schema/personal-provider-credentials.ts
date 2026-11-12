@@ -18,6 +18,7 @@ export const PERSONAL_PROVIDER_IDS = [
   "openrouter",
   "nautilo-gateway",
   "gateway",
+  "mindswapper",
   "google",
   "xai",
   "fireworks",
@@ -101,7 +102,7 @@ export const personalProviderCredentials = pgTable(
     ),
     check(
       "personal_provider_credentials_provider_check",
-      sql`${table.provider} in ('typesafe', 'anthropic', 'openai', 'openrouter', 'nautilo-gateway', 'gateway', 'google', 'xai', 'fireworks', 'together', 'venice', 'elevenlabs', 'groq', 'tavily', 'browser-use', 'cloudconvert', 'surplus')`,
+      sql`${table.provider} in ('typesafe', 'anthropic', 'openai', 'openrouter', 'nautilo-gateway', 'gateway', 'mindswapper', 'google', 'xai', 'fireworks', 'together', 'venice', 'elevenlabs', 'groq', 'tavily', 'browser-use', 'cloudconvert', 'surplus')`,
     ),
     check(
       "personal_provider_credentials_revision_check",
@@ -121,7 +122,7 @@ export const personalProviderCredentials = pgTable(
     ),
     check(
       "personal_provider_credentials_destination_check",
-      sql`${table.destination} is null or ${table.provider} = 'gateway'`,
+      sql`(${table.provider} = 'mindswapper' and nullif(${table.destination}, '') is not null) or ${table.provider} = 'gateway' or (${table.provider} <> 'mindswapper' and ${table.destination} is null)`,
     ),
     check(
       "personal_provider_credentials_receipt_read_status_check",

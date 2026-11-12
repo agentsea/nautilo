@@ -40,7 +40,9 @@ import { resolveOpenRouterTransport } from "../providers/openrouter-transport";
 import { hasStubModelForTests } from "../providers/stub-model-state";
 import type { ReasoningEffort } from "../providers/types";
 import { resolveFireworksKimiK3ServingProfile, type ResolvedFireworksKimiK3ServingProfile } from "../providers/serving-profile";
-import { modelSupportsInput, resolveModelExecutionLimits } from "../providers/models";
+import { modelSupportsInput, resolveModelExecutionLimits, type ResolvedModelExecutionLimits } from "../providers/models";
+import { isMindSwapperModelId, withMindSwapperModels } from "../config/mindswapper-models";
+import { MindSwapperRequestError } from "../providers/mindswapper-completions";
 import { estimateTokenCount } from "./history-manager";
 import { classifyError, getRetryStrategy, messageImpliesCapabilityMismatch, waitForRetryDelay, type ClassifiedError } from "./errors";
 import { isModelHealthy, markModelInvokeFailure } from "./model-health";
@@ -404,10 +406,17 @@ function preparedMessageBudget(contextTokens: number, tools: readonly Structured
   return contextTokens - estimateBoundToolTokens(tools) - COMPLETION_SAFETY_MARGIN_TOKENS;
 }
 
+function preparedModelMessageBudget(limits: ResolvedModelExecutionLimits, tools: readonly StructuredTool[]): number {
+  if (limits.maxInputTokens === undefined) return preparedMessageBudget(limits.contextTokens, tools);
+  // This route publishes independent input/output budgets. Preserve room for
+  // one completion token when an operator lowers the combined context limit.
+  return Math.min(limits.maxInputTokens, limits.contextTokens - 1) - estimateBoundToolTokens(tools);
+}
+
 /** Shared preparation/invocation workspace, including bound tool schemas. Output uses its remainder. */
 export async function resolvePreparedMessageBudget(modelId: string, tools: readonly StructuredTool[] = []): Promise<number> {
   const limits = await resolveModelExecutionLimits(modelId);
-  return preparedMessageBudget(limits.contextTokens, tools);
+  return preparedModelMessageBudget(limits, tools);
 }
 
 export async function resolveCompletionBudget(modelId: string, messages: BaseMessage[], tools: readonly StructuredTool[] = []): Promise<number> {
@@ -415,10 +424,12 @@ export async function resolveCompletionBudget(modelId: string, messages: BaseMes
   const contextWindow = limits.contextTokens;
   const maxOutputTokens = limits.maxOutputTokens;
   const estimatedInput = estimateTokenCount(messages) + estimateBoundToolTokens(tools);
-  const available = preparedMessageBudget(contextWindow, tools) - estimateTokenCount(messages);
-
-  if (available < 1) {
-    throw new PreparedContextExceededError(modelId, estimatedInput, contextWindow);
+  const inputLimit = limits.maxInputTokens;
+  const available = inputLimit === undefined
+    ? preparedMessageBudget(contextWindow, tools) - estimateTokenCount(messages)
+    : contextWindow - estimatedInput;
+  if (available < 1 || (inputLimit !== undefined && estimatedInput > inputLimit)) {
+    throw new PreparedContextExceededError(modelId, estimatedInput, inputLimit ?? contextWindow);
   }
 
   // The per-model catalog/provider limit is authoritative. Only remaining
@@ -585,6 +596,7 @@ async function invokeOnceWithShortRetries(
       // failure. Never turn it into a same-model retry because a provider's
       // cooperative AbortError happens to resemble a timeout.
       if (llmCallConfig.signal?.aborted) throw error;
+      if (providerError instanceof MindSwapperRequestError && providerError.outcomeUnknown) throw error;
       const subscriptionError = findChatGPTSubscriptionError(providerError);
       if (subscriptionError) throw subscriptionError;
       // Unknown/visible timeout outcomes cannot be replayed. Safe supervised timeouts
@@ -782,7 +794,7 @@ function nextInUserChain(
       log(`[nautilo/agent] Skipping unhealthy chain entry: ${candidate}`);
       continue;
     }
-    if (personalFunding) {
+    if (personalFunding && !isMindSwapperModelId(candidate)) {
       const entry = getActiveModelCatalogSync().catalog.entries.find((row) => row.id === candidate);
       if (
         !entry
@@ -824,7 +836,12 @@ function nextInUserChain(
  * is intentional. The single legitimate caller is `agent.ts`, which
  * already has `state.userId` and `state.agentId` in scope.
  */
-export async function invokeChatModelWithFallback(
+export function invokeChatModelWithFallback(...args: Parameters<typeof invokeScopedChatModelWithFallback>) {
+  const models = args[7]?.fundingSession?.mindswapperModels;
+  return models ? withMindSwapperModels(models, () => invokeScopedChatModelWithFallback(...args)) : invokeScopedChatModelWithFallback(...args);
+}
+
+async function invokeScopedChatModelWithFallback(
   messages: BaseMessage[],
   tools: StructuredTool[],
   initialModelId: string,
@@ -946,7 +963,7 @@ export async function invokeChatModelWithFallback(
     assertNotCancelled();
     const estimatedMessageTokens = estimateTokenCount(messages);
     const limits = await resolveModelExecutionLimits(currentModelId);
-    const maxMessageTokens = preparedMessageBudget(limits.contextTokens, tools);
+    const maxMessageTokens = preparedModelMessageBudget(limits, tools);
     if (maxMessageTokens < 1) return false;
     const recovered = await invokeOptions.recoverContext({
       messages, modelId: currentModelId, contextWindowTokens: limits.contextTokens,
@@ -966,7 +983,7 @@ export async function invokeChatModelWithFallback(
   while (true) {
     assertNotCancelled();
     if (!hasStubModelForTests()) {
-      const availability = personalFunding
+      const availability = personalFunding && !isMindSwapperModelId(currentModelId)
         ? (() => {
             const entry = getActiveModelCatalogSync().catalog.entries.find((row) => row.id === currentModelId);
             if (!entry) return { availability: "unknown-model" as const, unavailableReason: "model is not present in the current signed catalog" };
@@ -1114,7 +1131,7 @@ export async function invokeChatModelWithFallback(
           // Apply the server-wide serving preference inside the admitted payer.
           // Supported routes reuse the current signed catalogue and preserve
           // the selected provider pin.
-          if (!attemptFundingSession || usageFunding.providerRoute === "surplus") {
+          if (!isMindSwapperModelId(currentModelId) && (!attemptFundingSession || usageFunding.providerRoute === "surplus")) {
             kickServerModelConfigRefresh();
             const surplusKey = usageFunding.kind === "personal"
               ? personalCredential?.apiKey ?? null : resolveProviderKey("surplus");
@@ -1396,6 +1413,9 @@ export async function invokeChatModelWithFallback(
       const memoryMaintenance = [
         "memory_review", "room_stenographer", "room_reflection", "room_event_compaction",
       ].includes(getUsageContext()?.callType ?? "");
+      if (providerFailure instanceof MindSwapperRequestError && (
+        providerFailure.outcomeUnknown || providerFailure.status === 401 || providerFailure.status === 402 || providerFailure.status === 403
+      )) throw providerFailure;
       if (providerFailure instanceof SurplusOutcomeUnknownError) {
         if (memoryMaintenance) throw new MemoryProviderOutcomeUnknownError();
         throw providerFailure;
@@ -1415,7 +1435,7 @@ export async function invokeChatModelWithFallback(
       const subscriptionError = findChatGPTSubscriptionError(providerFailure);
       if (subscriptionError) throw subscriptionError;
       const classified = classifyError(providerFailure);
-      if (!personalRecoveryAttemptedForModel && serverDirectAttemptedForModel
+      if (!isMindSwapperModelId(currentModelId) && !personalRecoveryAttemptedForModel && serverDirectAttemptedForModel
         && currentModelId === initialModelId && fundingSession?.kind === "server"
         && fundingSession.openPersonalRecovery
         && !attemptVisibility.hasVisibleOutput() && !hasAssistantVisibleOutputForCurrentTurn(agentId)
@@ -1431,6 +1451,7 @@ export async function invokeChatModelWithFallback(
       const recoveryUnavailable = providerFailure instanceof SurplusRecoveryUnavailableError ? providerFailure : undefined;
       const terminalProviderError = recoveryUnavailable?.marketplaceFailure ?? ((personalFunding || personalRecoveryAttemptedForModel)
         && !(providerFailure instanceof SurplusDirectFallbackUnavailableError)
+        && !(providerFailure instanceof MindSwapperRequestError)
         ? new PersonalProviderInvocationError(classified.category)
         : providerFailure);
       // Recovery uses a separate personal attempt, without granting another

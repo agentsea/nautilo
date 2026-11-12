@@ -48,6 +48,7 @@ export default function PersonalProviderKeysScreen() {
   const scope = useMemo(() => settingsScopeForVerifiedViewer(activeServer, { status, viewerState, viewer }), [activeServer, status, viewer, viewerState]);
   const [editing, setEditing] = useState<string | null>(null);
   const [secret, setSecret] = useState("");
+  const [destination, setDestination] = useState("");
   const [success, setSuccess] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<CredentialDeleteConfirmation | null>(null);
   const focusedRef = useRef(false);
@@ -100,7 +101,7 @@ export default function PersonalProviderKeysScreen() {
   const save = async (provider: string, current?: CredentialMetadata): Promise<void> => {
     setSuccess(null);
     try {
-      const result = await controller.save(provider, secret, current);
+      const result = await controller.save(provider, secret, current, provider === "mindswapper" ? destination : undefined);
       if (result.status === "applied") { setEditing(null); setSecret(""); setSuccess(provider); }
     } catch {
       // Empty input remains local and never reaches the client.
@@ -130,6 +131,10 @@ export default function PersonalProviderKeysScreen() {
       {state.mutationError ? <SettingsStatus tone="error">{personalAccountErrorMessage(state.mutationError)}</SettingsStatus> : null}
       {providers.map((provider) => {
         const current = byProvider.get(provider.id);
+        const usesMindSwapperUrl = provider.id === "mindswapper";
+        const approvedDestinations = provider.approvedDestinations ?? [];
+        const destinationAvailable = !usesMindSwapperUrl || approvedDestinations.length > 0;
+        const canSubmit = !usesMindSwapperUrl || approvedDestinations.includes(destination);
         const isEditing = editing === provider.id;
         const actionsEnabled = loadAllowsActions && !provider.deleteOnly && provider.available;
         const deleteEnabled = loadAllowsActions && Boolean(current);
@@ -145,6 +150,8 @@ export default function PersonalProviderKeysScreen() {
           <View style={styles.cardHeader}><View style={styles.cardCopy}><Text style={styles.provider}>{provider.name}</Text>{provider.deleteOnly ? <Text style={styles.help}>{savedAt ? `Saved ${savedAt}` : "Saved"}</Text> : <Text style={styles.help}>{provider.purpose}</Text>}</View>{!provider.deleteOnly ? <Text style={[styles.badge, current && !current.requiresReplacement && current.validationStatus !== "rejected" ? styles.good : styles.muted]}>{state.data ? current ? current.validationStatus : "Not added" : "Checking status…"}</Text> : null}</View>
           {!provider.deleteOnly && provider.catalogued ? <Text style={styles.help}>{personalProviderCapabilitySummary(provider)}</Text> : null}
           {!provider.deleteOnly && current?.masked ? <Text style={styles.masked}>{current.masked}</Text> : null}
+          {!provider.deleteOnly && current?.destination ? <Text style={styles.destination}>{current.destination}</Text> : null}
+          {!provider.deleteOnly && provider.available && !destinationAvailable ? <Text style={styles.help}>Ask your server administrator to approve a MindSwapper API URL.</Text> : null}
           {!provider.deleteOnly && current?.requiresReplacement ? <SettingsStatus tone="error">Replace this key before it can be used.</SettingsStatus> : null}
           {!provider.deleteOnly && current?.receiptReadStatus === "unavailable" ? <Text style={styles.help}>This key can run eligible requests. Some costs may appear later because it cannot currently read cost receipts.</Text> : null}
           {!provider.deleteOnly && success === provider.id ? <SettingsStatus tone="success">{`${current?.validationStatus === "unverified" ? "Key saved. No automatic credential check is available for this provider." : "Key saved. Validation did not make a paid request."} ${provider.catalogued ? personalProviderCapabilitySummary(provider) : ""} Review charges in Your costs.`}</SettingsStatus> : null}
@@ -156,11 +163,37 @@ export default function PersonalProviderKeysScreen() {
             <Text style={styles.help}>Delete personal key? Eligible work will stop using this provider key. Your historical costs remain available.</Text>
             <View style={styles.actions}><ActionButton label="Delete key" accessibilityLabel={`Delete ${provider.name} key now`} disabled={!deleteEnabled || state.mutating} onPress={() => void remove(confirmDelete)} /><ActionButton label="Cancel" accessibilityLabel={`Cancel deleting ${provider.name} key`} disabled={!deleteEnabled || state.mutating} onPress={() => setConfirmDelete(null)} /></View>
           </> : isEditing && provider.catalogued && !provider.deleteOnly ? <>
+            {usesMindSwapperUrl ? <>
+              <Text style={styles.help}>MindSwapper API URL</Text>
+              <View accessibilityRole="radiogroup">
+                {approvedDestinations.map((url) => (
+                  <Pressable
+                    key={url}
+                    accessibilityRole="radio"
+                    accessibilityState={{ checked: destination === url, disabled: state.mutating || !actionsEnabled }}
+                    disabled={state.mutating || !actionsEnabled}
+                    onPress={() => setDestination(url)}
+                    style={[styles.button, destination === url && styles.selectedUrl]}
+                  >
+                    <Text style={styles.buttonText}>{url}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            </> : null}
             <TextInput value={secret} onChangeText={setSecret} secureTextEntry autoCapitalize="none" autoCorrect={false} autoComplete="new-password" textContentType="newPassword" editable={actionsEnabled && !state.mutating} style={styles.input} placeholder={provider.formatHint ?? "Provider API key"} placeholderTextColor={t.color.text.muted} accessibilityLabel={`${current ? "Replacement" : "New"} ${provider.name} API key`} />
-            <View style={styles.actions}><ActionButton label={state.mutating ? "Saving…" : current ? "Replace key" : "Save key"} disabled={!actionsEnabled || state.mutating || !secret.trim()} onPress={() => void save(provider.id, current)} primary /><ActionButton label="Cancel" disabled={state.mutating} onPress={() => { setEditing(null); setSecret(""); }} /></View>
+            <View style={styles.actions}><ActionButton label={state.mutating ? "Saving…" : current ? "Replace key" : "Save key"} disabled={!actionsEnabled || state.mutating || !secret.trim() || !canSubmit} onPress={() => void save(provider.id, current)} primary /><ActionButton label="Cancel" disabled={state.mutating} onPress={() => { setEditing(null); setSecret(""); }} /></View>
           </> : <View style={styles.actions}>
-            {!provider.deleteOnly && provider.catalogued && (!state.data || provider.available) ? <ActionButton label={current ? "Replace" : "Add key"} disabled={!actionsEnabled || state.mutating} onPress={() => { setEditing(provider.id); setSecret(""); setSuccess(null); }} primary={!current} /> : null}
-            {!provider.deleteOnly && current && provider.catalogued && (current.validationStatus === "unavailable" || current.validationStatus === "unverified" || current.receiptReadStatus === "unavailable") ? <ActionButton label="Check again" disabled={!actionsEnabled || state.mutating} onPress={() => void controller.validate(provider.id, current)} /> : null}
+            {!provider.deleteOnly && provider.catalogued && destinationAvailable && (!state.data || provider.available) ? <ActionButton label={current ? "Replace" : "Add key"} disabled={!actionsEnabled || state.mutating} onPress={() => {
+              setEditing(provider.id);
+              setSecret("");
+              setSuccess(null);
+              setDestination(current?.destination && approvedDestinations.includes(current.destination)
+                ? current.destination : approvedDestinations.length === 1 ? approvedDestinations[0] ?? "" : "");
+            }} primary={!current} /> : null}
+            {!provider.deleteOnly && current && provider.catalogued
+              && (usesMindSwapperUrl ? !current.requiresReplacement
+                : current.validationStatus === "unavailable" || current.validationStatus === "unverified" || current.receiptReadStatus === "unavailable")
+              ? <ActionButton label="Check again" disabled={!actionsEnabled || state.mutating} onPress={() => void controller.validate(provider.id, current)} /> : null}
             {current ? <ActionButton label="Delete" accessibilityLabel={`Delete ${provider.name} key`} disabled={!deleteEnabled || state.mutating} onPress={() => setConfirmDelete({ provider: provider.id, credential: current, policyEnabled: state.data?.allowPersonalProviderKeys !== false })} /> : null}
           </View>}
         </View>;
@@ -175,6 +208,7 @@ function ActionButton({ label, onPress, accessibilityLabel, disabled = false, pr
 }
 
 function createStyles(t: AppTheme) { return StyleSheet.create({
+  selectedUrl: { borderColor: t.color.brand.accent, backgroundColor: t.color.surface.subtle },
   container: { flex: 1, backgroundColor: t.color.surface.background }, content: { gap: t.spacing.lg }, intro: { ...t.typography.body, color: t.color.text.muted },
   card: { gap: t.spacing.md, padding: t.spacing.lg, borderRadius: t.radii.lg, backgroundColor: t.color.surface.panel, borderWidth: StyleSheet.hairlineWidth, borderColor: t.color.border.default },
   cardHeader: { flexDirection: "row", alignItems: "flex-start", gap: t.spacing.md }, cardCopy: { flex: 1, gap: 2 }, provider: { ...t.typography.subheading, color: t.color.text.foreground }, help: { ...t.typography.caption, color: t.color.text.muted },

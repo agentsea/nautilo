@@ -31,6 +31,8 @@ import {
   setStubModelForTests,
 } from "./stub-model-state";
 import { resolveOpenRouterTransport } from "./openrouter-transport";
+import { readMindSwapperConnection } from "../config/mindswapper-models";
+import { sanitizeMindSwapperError } from "./mindswapper-completions";
 
 /**
  * Compose the final `venice_parameters` object that will be forwarded on the
@@ -73,6 +75,7 @@ const PERSONAL_CHAT_PROVIDERS: ReadonlySet<string> = new Set([
   "anthropic",
   "openai",
   "openrouter",
+  "mindswapper",
   "google",
   "xai",
   "fireworks",
@@ -277,12 +280,13 @@ export function buildGatewayCreateModelOptions(
 export function withGatewayErrorLabel(
   model: ChatModel,
   label: string,
+  sanitize = (error: unknown) => labelGatewayError(error, label),
 ): ChatModel {
   const invoke: ChatModel["invoke"] = async (messages, options) => {
     try {
       return await model.invoke(messages, options);
     } catch (error) {
-      throw labelGatewayError(error, label);
+      throw sanitize(error);
     }
   };
   const stream: NonNullable<ChatModel["stream"]> = async function* (messages, options) {
@@ -295,14 +299,14 @@ export function withGatewayErrorLabel(
         yield chunk;
       }
     } catch (error) {
-      throw labelGatewayError(error, label);
+      throw sanitize(error);
     }
   };
   const bindTools: NonNullable<ChatModel["bindTools"]> = (tools, options) => {
     if (!model.bindTools) {
       throw new Error(`${label} model does not support tool binding`);
     }
-    return withGatewayErrorLabel(model.bindTools(tools, options), label);
+    return withGatewayErrorLabel(model.bindTools(tools, options), label, sanitize);
   };
 
   // Preserve the concrete LangChain instance and all of its configuration
@@ -546,6 +550,24 @@ async function createUniversalModelInternal(
         await createOpenAI(orOpts),
         "OpenRouter",
       );
+    }
+    case "mindswapper": {
+      const connection = readMindSwapperConnection();
+      if (!connection || !connection.apiKey.trim()) throw new Error("MindSwapper requires an admitted connection.");
+      if (personalCredential && (personalCredential.apiKey !== connection.apiKey
+        || personalCredential.destination !== connection.baseUrl)) {
+        throw new Error("MindSwapper personal credential does not match the admitted connection.");
+      }
+      return withGatewayErrorLabel(await createOpenAI({
+        modelId: id,
+        apiKey: connection.apiKey,
+        baseUrl: connection.baseUrl,
+        maxRetries: 0,
+        ...(usageCallbacks ? { callbacks: usageCallbacks } : {}),
+        ...(resolvedMaxTokens === undefined ? {} : { maxTokens: resolvedMaxTokens }),
+        ...(resolvedTimeoutMs === undefined ? {} : { timeoutMs: resolvedTimeoutMs }),
+        ...(factoryOpts.reasoningEffort === undefined ? {} : { reasoningEffort: factoryOpts.reasoningEffort }),
+      }), "MindSwapper", sanitizeMindSwapperError);
     }
     case "gateway": {
       const gateway = buildGatewayCreateModelOptions(id, cleanOptions, usageCallbacks);

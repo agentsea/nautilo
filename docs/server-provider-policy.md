@@ -78,3 +78,24 @@ Tests cover policy storage/concurrency, authenticated routes and client
 contracts, funding resolution, dispatch, catalogue union, multi-user foreground/Conductor admission,
 native Task lineage and attempt recovery. Provider-boundary integration tests use distinct synthetic server
 and personal credentials with a fake transport.
+
+## MindSwapper
+
+In **Server Admin → API Keys**, open **MindSwapper** and enter an HTTPS API
+base URL ending in /v1 and a server API key. In **Server Admin → Models**,
+select an available MindSwapper model as the chat default. A model needs
+qualified function calling for ordinary Genie chat. The MindSwapper endpoint
+must expose Chat Completions capabilities in its authenticated model list.
+
+Administrators can approve exact API base URLs for personal use independently
+of the server key. With personal provider keys enabled, an eligible Human can
+open personal provider settings, select an approved URL, and save their own
+MindSwapper key. To change a personal destination, save a key for the new URL.
+A key check confirms authentication. Credit and model supply are checked when
+inference runs.
+
+The server reads the connected account's model catalogue as needed. Supported
+models appear after the catalogue refreshes. A saved selection can become
+unavailable when the model is withdrawn, supply is interrupted, or its
+connection changes. Check the connection or select another available model.
+An admitted native Task retains its funding binding across retries and resume.

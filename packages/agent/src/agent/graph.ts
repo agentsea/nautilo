@@ -2,6 +2,7 @@ import { externalRoomStateForExecution, isExternalRoomState, settleExternalRoomT
 import type { RunnableConfig } from "@langchain/core/runnables";
 import { getForegroundFundingSession } from "../runtime/foreground-chat-funding";
 import { runWithCapabilityFundingSession } from "../runtime/capability-funding";
+import { withMindSwapperModels } from "../config/mindswapper-models";
 import {
   StateGraph,
   END,
@@ -311,7 +312,15 @@ export function createNautiloGraph(
   const restoredFunding = getForegroundFundingSession();
   if (!deps?.foregroundChatFundingSession && restoredFunding) deps = { ...deps, foregroundChatFundingSession: restoredFunding };
   const withinFunding = <Args extends unknown[], Result>(run: (...args: Args) => Result) =>
-    (...args: Args): Result => runWithCapabilityFundingSession(deps?.foregroundChatFundingSession?.capabilityFunding, () => run(...args));
+    (...args: Args): Result => runWithCapabilityFundingSession(deps?.foregroundChatFundingSession?.capabilityFunding, () => {
+      const models = deps?.foregroundChatFundingSession?.mindswapperModels;
+      return models ? withMindSwapperModels(models, () => run(...args)) : run(...args);
+    });
+  const graphToolModelScope = <Args extends unknown[], Result>(run: (...args: Args) => Result) =>
+    (...args: Args): Result => {
+      const models = deps?.foregroundChatFundingSession?.mindswapperTaskModels;
+      return models ? withMindSwapperModels(models, () => run(...args)) : run(...args);
+    };
   const nodeSettlement = deps?.protectedTaskNodeSettlementScope;
   const postModelNode = createPostModelNode(policyResolver, deps);
   const graphProjectionPreflightNode = createProjectionPreflightNode(
@@ -469,7 +478,7 @@ export function createNautiloGraph(
       "tools",
       externalBoundary((state, config) => isExternalRoomState(state)
         ? settleExternalRoomToolDenials(state, state.approvedToolCalls)
-        : withinFunding(graphToolsNode)(state, config)),
+        : withinFunding(graphToolModelScope(graphToolsNode))(state, config)),
     ))
     .addNode("await_reply", withProtectedTaskNodeSettlement(
       nodeSettlement,

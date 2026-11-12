@@ -253,7 +253,7 @@ export function ModelsSection() {
         cfg.memoryReviewModel ?? "",
         ...cfg.fallbackChain,
         ...currentDraftIds.chat,
-      ].filter(Boolean))];
+      ].filter((id) => id && !id.startsWith("mindswapper:")))];
       const retainedUtilityIds = [...new Set([
         cfg.conductorModel,
         cfg.stenographerModel,
@@ -346,6 +346,14 @@ export function ModelsSection() {
   }, [canRead, load]);
 
   const selectableModels = useMemo(() => models.filter(isSelectableModel), [models]);
+  const mindSwapperChatDefaults = config?.catalogModels?.filter((model) =>
+    model.provider === "mindswapper" && model.workload === "chat"
+    && model.availability === "selectable" && model.features.tools === true) ?? [];
+  const savedMindSwapperDefault = draft?.defaultChatModel.startsWith("mindswapper:") === true;
+  const mindSwapperDefaultUnavailable = savedMindSwapperDefault
+    && !mindSwapperChatDefaults.some((model) => model.id === draft?.defaultChatModel);
+  const savedMindSwapperModel = savedMindSwapperDefault
+    ? config?.catalogModels?.find((model) => model.id === draft?.defaultChatModel) : undefined;
   const selectableUtilityModels = useMemo(
     () => utilityModels.filter(isSelectableModel),
     [utilityModels],
@@ -453,6 +461,8 @@ export function ModelsSection() {
   const handleSave = async () => {
     if (!draft || !dirty) return;
     const surplusPolicyChanged = draft.preferSurplus !== config?.preferSurplus;
+    const mindSwapperReadinessChanged = draft.defaultChatModel !== config?.defaultChatModel
+      && (draft.defaultChatModel.startsWith("mindswapper:") || config?.defaultChatModel.startsWith("mindswapper:"));
     setSave("saving");
     try {
       const saved = await apiClient.admin.serverModels.set({
@@ -475,7 +485,8 @@ export function ModelsSection() {
       setDraft(saved);
       draftRef.current = saved;
       setSave("saved");
-      if (surplusPolicyChanged) await load(true);
+      if (mindSwapperReadinessChanged) window.dispatchEvent(new Event("nautilo:provider-keys-saved"));
+      else if (surplusPolicyChanged) await load(true);
     } catch (e) {
       const message = e instanceof Error ? e.message : "Save failed";
       setSave({ error: message });
@@ -568,9 +579,9 @@ export function ModelsSection() {
                 disabled={!canManage}
                 onChange={(e) => patch({ defaultChatModel: e.target.value })}
               >
-                {unavailableRow(draft.defaultChatModel) ? (
+                {unavailableRow(draft.defaultChatModel) || mindSwapperDefaultUnavailable ? (
                   <option value={draft.defaultChatModel} disabled>
-                    {modelLabel(models, draft.defaultChatModel)} (Unavailable)
+                    {savedMindSwapperModel?.displayName ?? modelLabel(models, draft.defaultChatModel)} (Unavailable)
                   </option>
                 ) : null}
                 {selectableModels.map((m) => (
@@ -578,10 +589,19 @@ export function ModelsSection() {
                     {m.displayName}
                   </option>
                 ))}
+                {mindSwapperChatDefaults.length > 0 ? (
+                  <optgroup label="MindSwapper">
+                    {mindSwapperChatDefaults.map((model) => (
+                      <option key={model.id} value={model.id}>{model.displayName}</option>
+                    ))}
+                  </optgroup>
+                ) : null}
               </select>
-              {unavailableRow(draft.defaultChatModel) ? (
+              {unavailableRow(draft.defaultChatModel) || mindSwapperDefaultUnavailable ? (
                 <p className="text-[11px] text-[var(--warning)]">
-                  {unavailableReason(draft.defaultChatModel)}
+                  {mindSwapperDefaultUnavailable
+                    ? savedMindSwapperModel?.unavailableReason ?? "The server’s MindSwapper connection has no available tool-capable route for this model."
+                    : unavailableReason(draft.defaultChatModel)}
                 </p>
               ) : null}
             </div>

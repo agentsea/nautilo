@@ -26,6 +26,7 @@ const CREATED_AT = new Date("2026-09-28T10:00:00.000Z");
 const UPDATED_AT = new Date("2026-09-28T10:01:00.000Z");
 const SENTINEL = "sk-personal-sentinel-never-disclose";
 const ORIGINAL_GATEWAY_BASE_URL = process.env["NAUTILO_GATEWAY_BASE_URL"];
+const ORIGINAL_MINDSWAPPER_APPROVED_BASE_URLS = process.env["MINDSWAPPER_APPROVED_BASE_URLS"];
 
 type AuditEvent = Parameters<NonNullable<PersonalProviderCredentialRouteDeps["auditEvent"]>>[1];
 type ValidationResult = Awaited<ReturnType<NonNullable<PersonalProviderCredentialRouteDeps["validate"]>>>;
@@ -38,6 +39,11 @@ afterEach(async () => {
     delete process.env["NAUTILO_GATEWAY_BASE_URL"];
   } else {
     process.env["NAUTILO_GATEWAY_BASE_URL"] = ORIGINAL_GATEWAY_BASE_URL;
+  }
+  if (ORIGINAL_MINDSWAPPER_APPROVED_BASE_URLS === undefined) {
+    delete process.env["MINDSWAPPER_APPROVED_BASE_URLS"];
+  } else {
+    process.env["MINDSWAPPER_APPROVED_BASE_URLS"] = ORIGINAL_MINDSWAPPER_APPROVED_BASE_URLS;
   }
 });
 
@@ -282,7 +288,8 @@ describe("personal provider credential routes", () => {
     expect(result["allowPersonalProviderKeys"]).toBe(true);
     expect(result["credentials"]).toEqual([]);
     const providers = result["providers"] as Array<Record<string, unknown>>;
-    const definitions = orderProviderKeys(PERSONAL_PROVIDER_KEY_CATALOGUE);
+    const definitions = orderProviderKeys(PERSONAL_PROVIDER_KEY_CATALOGUE)
+      .filter(({ id }) => id !== "mindswapper");
     expect(providers.map(({ id }) => id)).toEqual(definitions.map(({ id }) => id));
     expect(providers).toEqual(definitions.map((definition) => ({
       id: definition.id,
@@ -311,6 +318,51 @@ describe("personal provider credential routes", () => {
     for (const definition of definitions) {
       expect(serializedProviders).not.toContain(definition.envVar);
     }
+  });
+
+  test("enrolls a MindSwapper key for one approved API root and fences replacements", async () => {
+    const first = "https://first.example/v1";
+    const second = "https://second.example/tenant/v1";
+    process.env["MINDSWAPPER_APPROVED_BASE_URLS"] = `${first}, ${second}`;
+    const harness = await makeHarness();
+    const listed = await harness.app.inject({
+      method: "GET", url: "/api/account/provider-credentials?includeMindSwapper=1", headers: auth(),
+    });
+    expect((body(listed)["providers"] as Array<{ id: string }>).find(({ id }) => id === "mindswapper")).toMatchObject({
+      approvedDestinations: [first, second], personalCapabilities: ["chat"],
+    });
+    const url = "/api/account/provider-credentials/mindswapper";
+    const rejected = await harness.app.inject({
+      method: "PUT", url, headers: auth(), payload: { apiKey: SENTINEL, destination: "https://first.example/other/v1" },
+    });
+    expect(rejected.statusCode).toBe(422);
+    expect(harness.validatedDestinations).toEqual([]);
+
+    const created = await harness.app.inject({
+      method: "PUT", url, headers: auth(), payload: { apiKey: SENTINEL, destination: first + "/" },
+    });
+    expect(created.statusCode).toBe(200);
+    expect(body(created)["credential"]).toMatchObject({ destination: first, revision: 1, masked: "********" });
+    expect(created.body).not.toContain(SENTINEL);
+    const stored = harness.records.get(key(USER_A, "mindswapper"))!;
+    expect(decryptPersonalProviderCredential(harness.custody, stored.envelope, stored)).toBe(SENTINEL);
+    expect(() => decryptPersonalProviderCredential(harness.custody, stored.envelope, { ...stored, destination: second }))
+      .toThrow();
+
+    process.env["MINDSWAPPER_APPROVED_BASE_URLS"] = second;
+    const denied = await harness.app.inject({
+      method: "POST", url: url + "/validate", headers: auth(), payload: { expectedRevision: 1 },
+    });
+    expect(denied.statusCode).toBe(409);
+    expect(body(denied)["error"]).toBe("credential_destination_changed");
+    expect(harness.validatedDestinations).toEqual([first]);
+
+    const replaced = await harness.app.inject({
+      method: "PUT", url, headers: auth(), payload: { apiKey: SENTINEL + "-replacement", destination: second, expectedRevision: 1 },
+    });
+    expect(replaced.statusCode).toBe(200);
+    expect(body(replaced)["credential"]).toMatchObject({ destination: second, revision: 2, requiresReplacement: false });
+    expect(harness.validatedDestinations).toEqual([first, second]);
   });
 
   test("requires an authenticated Human before every operation", async () => {

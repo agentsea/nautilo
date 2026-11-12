@@ -1,3 +1,4 @@
+import { isMindSwapperModelId, MINDSWAPPER_DEFAULT_INTELLIGENCE_TIER } from "./mindswapper-models";
 import { privacyGradeOf } from "./model-privacy";
 import { getCostCoefficient, ASSISTANT_MODELS } from "./assistant-models";
 import {
@@ -106,7 +107,9 @@ export function intelligenceRankOf(
 ): number {
   if (resolved?.intelligenceRank != null) return resolved.intelligenceRank;
   if (resolved?.intelligenceTier != null) return INTELLIGENCE_RANK[resolved.intelligenceTier];
-  return INTELLIGENCE_RANK[MODEL_INTELLIGENCE_TIER[modelId] ?? DEFAULT_INTELLIGENCE_TIER];
+  const fallbackTier = isMindSwapperModelId(modelId)
+    ? MINDSWAPPER_DEFAULT_INTELLIGENCE_TIER : DEFAULT_INTELLIGENCE_TIER;
+  return INTELLIGENCE_RANK[MODEL_INTELLIGENCE_TIER[modelId] ?? fallbackTier];
 }
 
 /**
