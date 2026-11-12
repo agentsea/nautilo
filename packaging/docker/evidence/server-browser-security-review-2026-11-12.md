@@ -86,3 +86,17 @@ available; the exceptions must not cover it. The unchanged 14-day warning
 window begins November 28 for the renewed decisions, and expiry remains
 blocking on December 12. There is no automatic renewal. Existing unrelated
 December 7 decisions retain their earlier warning and expiry boundaries.
+
+## Exclude the unused CUPS dependency
+
+The pinned headless browser does not require the CUPS shared library. The
+explicit dependency list had carried `libcups2t64` over from a broader browser
+installation profile; it is removed from the runtime apt request. The build
+also rejects an installed `libcups2t64`, so a transitive reintroduction cannot
+silently restore the affected library. No CUPS vulnerability exception is
+added. Browser executable and bundled-library linkage checks remain mandatory.
+
+The intended image contains no affected CUPS library. Fresh native amd64 and
+arm64 images must still prove package absence, complete linkage, all three
+OfficeCLI rendering formats, and successful vulnerability audits before
+publication. Source dependency removal alone is not installed-image evidence.

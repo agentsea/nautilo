@@ -555,7 +555,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
  && if [ -z "$ICU_PKG" ]; then echo "no libicuNN package found in apt lists" >&2; exit 1; fi \
  && apt-get install -y --no-install-recommends tini ca-certificates postgresql-client-17 tar "$ICU_PKG" \
       fonts-liberation libfontconfig1 libfreetype6 libasound2t64 libatk-bridge2.0-0t64 libatk1.0-0t64 \
-      libatspi2.0-0t64 libcairo2 libcups2t64 libdbus-1-3 libdrm2 libgbm1 libglib2.0-0t64 libnspr4 libnss3 \
+      libatspi2.0-0t64 libcairo2 libdbus-1-3 libdrm2 libgbm1 libglib2.0-0t64 libnspr4 libnss3 \
       libpango-1.0-0 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 libxfixes3 libxkbcommon0 libxrandr2 \
       gzip libbrotli1 libpcre2-8-0 libsqlite3-0 \
  && install -m 0755 /usr/lib/postgresql/17/bin/pg_dump /usr/local/bin/pg_dump \
@@ -576,6 +576,11 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
  && for package in chromium-common chromium-headless-shell; do \
       if dpkg-query -W -f='${db:Status-Abbrev}' "$package" 2>/dev/null | grep -q '^ii'; then \
         echo "unexpected Debian browser retained: $package" >&2; exit 1; \
+      fi; \
+    done \
+ && for package in libcups2t64; do \
+      if dpkg-query -W -f='${db:Status-Abbrev}' "$package" 2>/dev/null | grep -q '^ii'; then \
+        echo "unexpected unused printing library retained: $package" >&2; exit 1; \
       fi; \
     done \
  && ln -s /opt/nautilo/chromium/chrome-headless-shell /usr/bin/chromium \
