@@ -21,6 +21,7 @@ import {
   type FriendlyErrorCategory,
 } from "@nautilo/agent";
 import { eventBus } from "./event-bus";
+import { ExternalRoomTextOnlyError } from "./external-room-errors";
 import {
   isForegroundContextPreparationWaitingError,
 } from "./conversation/foreground-context-preparation";
@@ -703,6 +704,11 @@ export class Job {
       throw new TypeError("Adopted wake Job requires its candidate terminal sink");
     }
     if (this.isTerminal()) return;
+    if (err instanceof ExternalRoomTextOnlyError) {
+      log(`[nautilo/job] ${this.id} failed (code=external_room_text_only)`);
+      await this.setStatus("failed", { message: err.userMessage, errorCategory: "unknown" });
+      return;
+    }
     if (err instanceof ImageAssistanceError) {
       await this.setStatus("failed", { message: err.message, errorCode: err.code, errorCategory: "unknown" });
       return;

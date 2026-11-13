@@ -4,6 +4,7 @@ import { restrictExternalRoomEnvelope, externalRoomExecutionDependencies,
   type ExternalRoomExecutionDependencies, type MemoryAccessEnvelope } from "@nautilo/trust";
 import { getCurrentExternalRoomExecution } from "../external-room-execution";
 import { botThreadId } from "../conductor/thread-id";
+import { ExternalRoomTextOnlyError } from "../external-room-errors";
 
 /** Resolve the permanent room boundary before reading any model context. */
 export async function externalRoomExecutionInput(
@@ -29,7 +30,7 @@ export async function externalRoomExecutionInput(
   for (const name of ["attachmentTextBlocks", "multimodalImages", "retainedAttachmentIds", "artifactRefs", "focusedResources"]) {
     const value = input[name];
     if (value !== undefined && (!Array.isArray(value) || value.length > 0)) {
-      throw new Error("external_room_text_only");
+      throw new ExternalRoomTextOnlyError();
     }
   }
   const execution = getCurrentExternalRoomExecution();

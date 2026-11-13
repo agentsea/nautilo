@@ -7,6 +7,9 @@ import { externalRoomExecutionInput, assertForkRoomContextAllowed } from "../../
 import { loadForegroundAuthoredContext } from "../../src/executors/foreground-authored-context";
 import { memoryReviewAdmission } from "../../src/memory-review/admission";
 import type { NamespaceMemoryEnvelope } from "@nautilo/trust";
+import { Job } from "../../src/job";
+import { eventBus } from "../../src/event-bus";
+import type { JobStatusEvent, ServerEvent } from "@nautilo/types";
 
 const envelope = (roomId: string): NamespaceMemoryEnvelope => ({ ownerId: "sponsor", actorId: "human", agentId: "genie", roomId,
   readableNamespaces: ["private", "namespace-a", "namespace-b"], mutableNamespaces: ["private"], writableNamespaces: ["private"], toolPolicy: { file: "allow" } });
@@ -39,6 +42,53 @@ describe("external room runtime admission", () => {
     await rejects(externalRoomExecutionInput({ ...input("a"), artifactRefs: [{ id: "private" }] }, dependencies), "external_room_text_only");
     await rejects(externalRoomExecutionInput({ ...input("a"), metadata: { originatedBy: "task" } }, dependencies), "external_room_delegation_unavailable");
     await rejects(externalRoomExecutionInput({ ...input("a"), memoryAccessEnvelope: envelope("b") }, dependencies), "external_room_authority_mismatch");
+  });
+  test("plain text reaches the executor while explicit resources produce a text-only explanation", async () => {
+    const events: JobStatusEvent[] = [];
+    const capture = (event: ServerEvent) => {
+      if (event.type === "job.status") events.push(event);
+    };
+    eventBus.on(capture);
+    let modelCalls = 0;
+    try {
+      for (const resources of [
+        {},
+        { focusedResources: [{ kind: "workspace-artifact", artifactId: "synthetic-private-artifact" }] },
+        { artifactRefs: [{ artifactId: "synthetic-private-artifact" }] },
+        { multimodalImages: [{ attachmentId: "synthetic-image" }] },
+        { attachmentTextBlocks: ["synthetic attachment content"] },
+        { retainedAttachmentIds: ["synthetic-attachment"] },
+      ]) {
+        const updates: { status: string; message: string | undefined }[] = [];
+        const job = new Job({
+          ownerId: "sponsor", requestorId: "sponsor", laneKey: "room:a", type: "foreground",
+          input: { ...input("a"), ...resources },
+          executor: async function* (jobInput) {
+            await externalRoomExecutionInput(jobInput, dependencies);
+            modelCalls++;
+            yield { type: "message.tokens", laneKey: "room:a", content: "Hello back", chunkSequence: 1, done: true };
+          },
+          persist: async () => "test-job",
+          updateStatus: async (_id, status, fields) => { updates.push({ status, message: fields?.message }); },
+        });
+        await job.persist();
+        await job.execute();
+        if (Object.keys(resources).length === 0) {
+          expect(job.status).toBe("completed");
+        } else {
+          expect(job.status).toBe("failed");
+          const failure = events.at(-1);
+          expect(failure?.message).toContain("connected conversation supports text only");
+          expect(failure?.message).toContain("regular Nautilo chat");
+          expect(failure?.message).not.toContain("MDL007");
+          expect(failure?.message).not.toContain("synthetic");
+          expect(updates.at(-1)?.message).toBe(failure?.message);
+        }
+      }
+      expect(modelCalls).toBe(1);
+    } finally {
+      eventBus.off(capture);
+    }
   });
   test("private Soul and Skills loaders are never invoked", async () => {
     const forbidden = async (): Promise<never> => { throw new Error("private-context-read"); };
