@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +11,12 @@ import {
   reloadEnvOverlay,
   transaction,
 } from "../../src";
+
+// On Windows every private-filesystem call starts a PowerShell ACL helper
+// (about 0.7 s per synchronous check), so a test with several of them exceeds
+// Bun's 5 s default when this file runs directly with `bun test`. Only the
+// runner budget changes; product deadlines and assertions do not.
+if (process.platform === "win32") setDefaultTimeout(60_000);
 
 function seedDummyLogtoEnv(): void {
   for (const k of LOGTO_REQUIRED_KEYS) {

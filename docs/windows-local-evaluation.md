@@ -134,6 +134,10 @@ it does not contain a database or start the server itself.
   Desktop tests use a 60-second per-test budget on Windows because native ACL
   checks start external processes. This changes only the test runner budget;
   product operation deadlines and test assertions remain unchanged.
+  Config-guard tests that persist through the private filesystem carry the
+  same 60-second budget per test on Windows, so a direct `bun test <file>`
+  is not cut off by Bun's 5-second default. One synchronous ACL check took
+  0.70–0.81 s with the Microsoft Store PowerShell 7; a test makes several.
   The Unix socket inode and POSIX execute-bit tests run only on POSIX hosts.
   Release-byte inspection still runs on Windows.
 - Some Compose unit tests create file symbolic links for the canonical
