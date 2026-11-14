@@ -7,6 +7,11 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Full remote CLI upgrades refresh authentication, database and HTTPS proxy
+  image selections after preserving a coherent recovery bundle. Recovery
+  captures the actual prior images and authentication version, not merely
+  their configured incoming replacements.
+
 - Keep text chat working in connected external conversations while a document
   is open. Only regular chats receive automatic document context; explicit
   attachments and document references retain a clear text-only explanation.

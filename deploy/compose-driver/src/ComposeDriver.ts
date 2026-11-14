@@ -69,6 +69,12 @@ import {
 } from "./buildRegistryOverlay.ts";
 import { buildComposeEnv } from "./buildComposeEnv.ts";
 import { pinRecoveryComposeTemplate } from "./recovery-compose-template.ts";
+import {
+  assertFullUpgradeInfrastructureContract,
+  recoveryLogtoVersion,
+  refreshFullUpgradeInfrastructureEnv,
+  resolveRecoveryImageReference,
+} from "./full-upgrade-infrastructure.ts";
 import { assertSourceBuildSha, resolveSourceBuildIdentity } from "./source-build-identity.ts";
 import {
   buildDirectTransportBaselineInspectScript,
@@ -4373,6 +4379,14 @@ export class ComposeDriver {
   ): Promise<void> {
     const strategy = resolveUpgradeStrategy(profile, opts);
     const effectiveProfile = applyUpgradeStrategy(profile, strategy);
+    const refreshRemoteInfrastructure = strategy.scope === "full" && usesRemoteRegistryMode(effectiveProfile);
+    if (refreshRemoteInfrastructure) {
+      gates(effectiveProfile);
+      // Prove target and incoming topology compatibility before acquiring maintenance.
+      await this.readRemoteDeploymentManifest(effectiveProfile);
+      const incoming = await this.prepareReleaseArtifact(effectiveProfile);
+      assertFullUpgradeInfrastructureContract(incoming.authContract);
+    }
     // The legacy server-only readiness probe is a no-mutation preflight. Run
     // it before acquiring a maintenance lease: a transport/auth failure here
     // must not leave an otherwise idle server stranded in `draining`.
@@ -4521,6 +4535,38 @@ export class ComposeDriver {
 
       let deployFailed: unknown;
       try {
+        if (refreshRemoteInfrastructure) {
+          // The verified bundle above still owns the actual previous auth schema/images.
+          // Refresh inputs inside the rollback boundary, never before capture.
+          const remoteRoot = this.deps.resolveInstanceRootDir(effectiveProfile);
+          const current = await this.execWithoutDockerHost(
+            "cat", [posix.join(remoteRoot, "deploy.compose.env")], { stdio: "pipe" },
+          );
+          if (current.code !== 0 || !current.stdout.trim()) {
+            throw new Error("Full upgrade refused: remote infrastructure configuration is unreadable.");
+          }
+          const path = posix.join(remoteRoot, "deploy.compose.env");
+          const script = [
+            "set -eu", "umask 077",
+            `target=${shellQuote(path)}`,
+            'temporary="$(mktemp "$target.tmp.XXXXXX")"',
+            'trap \'rm -f -- "$temporary"\' EXIT',
+            'cat > "$temporary"', 'chmod 600 "$temporary"',
+            'mv -f -- "$temporary" "$target"',
+          ].join("\n");
+          const written = await this.execWithoutDockerHost("sh", ["-lc", script], {
+            stdio: "pipe", stdin: refreshFullUpgradeInfrastructureEnv(current.stdout),
+          });
+          if (written.code !== 0) throw new Error("Full upgrade refused: infrastructure configuration update failed.");
+          if (effectiveProfile.https === "letsencrypt") {
+            await this.writeRemoteFiles(remoteRoot, [{
+              relative: "deploy.caddy-overlay.yml",
+              contents: buildCaddyOverlay(),
+              mode: 0o600,
+            }]);
+          }
+          log("upgrade: refreshed packaged infrastructure selections after recovery capture.");
+        }
         await this.deploy(effectiveProfile, {
           allowArtifactLoss: opts?.allowArtifactLoss === true,
         });
@@ -4992,7 +5038,7 @@ export class ComposeDriver {
           ["PGVECTOR_IMAGE", "app-postgres"],
         ] as const) {
           const selected = imageSelections[key];
-          if (!selected || selected.includes("@sha256:")) continue;
+          if (!selected) continue;
           const containers = await this.runReleaseDocker(profile, [
             "ps", "-aq", "--filter", `label=com.docker.compose.project=${projectName}`,
             "--filter", `label=com.docker.compose.service=${service}`,
@@ -5001,12 +5047,18 @@ export class ComposeDriver {
           if (containers.code !== 0 || ids.length !== 1) throw new Error(`backup: ambiguous recovery container for ${service}`);
           const containerImage = await this.runReleaseDocker(profile, ["inspect", "--format", "{{.Image}}", ids[0]!]);
           if (containerImage.code !== 0 || !/^sha256:[a-f0-9]{64}$/.test(containerImage.stdout.trim())) throw new Error(`backup: missing recovery image identity for ${service}`);
+          const actualReference = await this.runReleaseDocker(profile, ["inspect", "--format", "{{.Config.Image}}", ids[0]!]);
+          if (actualReference.code !== 0 || !actualReference.stdout.trim()) throw new Error(`backup: missing actual image reference for ${service}`);
           const image = await this.runReleaseDocker(profile, ["image", "inspect", "--format", "{{json .RepoDigests}}", containerImage.stdout.trim()]);
-          const repository = selected.replace(/:[^/:]+$/, "");
           const digests: unknown = image.code === 0 ? JSON.parse(image.stdout) : null;
-          const matching = Array.isArray(digests) ? digests.filter((value: unknown): value is string => typeof value === "string" && value.startsWith(`${repository}@sha256:`)) : [];
-          if (matching.length !== 1) throw new Error(`backup: missing exact repository digest for ${service}`);
-          imageSelections[key] = matching[0]!;
+          imageSelections[key] = resolveRecoveryImageReference(actualReference.stdout.trim(), selected, digests);
+          if (service === "logto") {
+            const version = await this.runReleaseDocker(profile, [
+              "image", "inspect", "--format", '{{index .Config.Labels "org.opencontainers.image.version"}}', containerImage.stdout.trim(),
+            ]);
+            if (version.code !== 0) throw new Error("backup: unable to inspect actual authentication image version");
+            imageSelections["LOGTO_IMAGE_TAG"] = recoveryLogtoVersion(version.stdout);
+          }
         }
         recoveryComposeEnv = envFileContents(imageSelections);
         const remoteTemplatePath = posix.join(instanceRootDir, "docker-compose.yml");
@@ -7552,9 +7604,12 @@ export class ComposeDriver {
   private execWithoutDockerHost(
     cmd: string,
     args: string[],
-    opts: { stdio: "inherit" | "pipe" },
+    opts: { stdio: "inherit" | "pipe"; stdin?: string },
   ): Promise<ExecResult> {
-    return this.deps.exec(cmd, args, { stdio: opts.stdio });
+    return this.deps.exec(cmd, args, {
+      stdio: opts.stdio,
+      ...(opts.stdin === undefined ? {} : { stdin: opts.stdin }),
+    });
   }
 
   private remoteManifestMissingHint(
