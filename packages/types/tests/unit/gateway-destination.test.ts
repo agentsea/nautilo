@@ -4,7 +4,7 @@ import { gatewayKeyDestination, normalizeGatewayBaseUrl } from "../../src/gatewa
 describe("gateway destination", () => {
   test("normalizes a trimmed http(s) base URL without trailing slashes", () => {
     expect(normalizeGatewayBaseUrl("  https://gateway.example.test/v1//  ")).toBe("https://gateway.example.test/v1");
-    expect(normalizeGatewayBaseUrl("http://127.0.0.1:8888/v1")).toBe("http://127.0.0.1:8888/v1");
+    expect(normalizeGatewayBaseUrl("http://127.0.0.1:4000/v1")).toBe("http://127.0.0.1:4000/v1");
     for (const value of [undefined, null, 42, "", "   ", "not a url", "file:///tmp/gateway", "ftp://gateway.example.test"]) {
       expect(normalizeGatewayBaseUrl(value)).toBeUndefined();
     }
