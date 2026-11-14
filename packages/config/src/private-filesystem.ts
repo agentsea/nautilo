@@ -130,6 +130,33 @@ function failure(code: string): NodeJS.ErrnoException {
   return Object.assign(new Error("Private filesystem operation failed"), { code });
 }
 
+/**
+ * Why a helper invocation failed. The helper runs only from its one trusted
+ * location and every failure stays fail-closed (EACCES). When the executable
+ * is simply not there, the error names that location: a PowerShell 7
+ * installed elsewhere (the Microsoft Store package, for example) otherwise
+ * surfaces as an unexplained failure of every private file operation.
+ *
+ * The check runs only after a failed invocation and uses lstat, which does
+ * not open the file: some installed executables can be started but not opened.
+ */
+function windowsHelperFailure(powershell: string): NodeJS.ErrnoException {
+  try {
+    lstatSync(powershell);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return Object.assign(
+        new Error(
+          `Private filesystem operation failed: PowerShell 7 was not found at ${powershell}. ` +
+          "Install the PowerShell 7 MSI package; a Microsoft Store installation is not at this path.",
+        ),
+        { code: "EACCES" },
+      );
+    }
+  }
+  return failure("EACCES");
+}
+
 function windowsRequest(operation: "check" | "create" | "protect", path: string, directory: boolean, contents?: Uint8Array) {
   const programFiles = process.env["ProgramW6432"] ?? process.env["ProgramFiles"] ?? "C:\\Program Files";
   const powershell = join(programFiles, "PowerShell", "7", "pwsh.exe");
@@ -162,7 +189,7 @@ function parseWindowsResponse(stdout: string): WindowsPathSecurity {
 function windowsPathSecurity(operation: "check" | "create" | "protect", path: string, directory: boolean, contents?: Uint8Array): WindowsPathSecurity {
   const request = windowsRequest(operation, path, directory, contents);
   const result = spawnSync(request.powershell, request.args, { input: request.input, env: request.env, encoding: "utf8", windowsHide: true });
-  if (result.error || result.status !== 0) throw failure("EACCES");
+  if (result.error || result.status !== 0) throw windowsHelperFailure(request.powershell);
   return parseWindowsResponse(result.stdout);
 }
 
@@ -172,6 +199,7 @@ const WINDOWS_HELPER_IDLE_MS = 250;
 type PendingWindowsRequest = { resolve(value: WindowsPathSecurity): void; reject(error: unknown): void };
 type WindowsWorker = {
   readonly key: string;
+  readonly powershell: string;
   readonly child: ChildProcessWithoutNullStreams;
   readonly pending: PendingWindowsRequest[];
   buffer: string;
@@ -185,7 +213,11 @@ function stopWindowsWorker(worker: WindowsWorker, failed: boolean): void {
   worker.stopped = true;
   clearTimeout(worker.idle);
   if (windowsWorker === worker) windowsWorker = undefined;
-  for (const pending of worker.pending.splice(0)) pending.reject(failure("EACCES"));
+  const abandoned = worker.pending.splice(0);
+  if (abandoned.length !== 0) {
+    const reason = windowsHelperFailure(worker.powershell);
+    for (const pending of abandoned) pending.reject(reason);
+  }
   worker.child.stdin.end();
   if (failed) worker.child.kill();
 }
@@ -196,7 +228,7 @@ function getWindowsWorker(request: ReturnType<typeof windowsRequest>): WindowsWo
   const child = spawn(request.powershell, request.args, {
     env: request.env, windowsHide: true, stdio: "pipe",
   });
-  const worker: WindowsWorker = { key, child, pending: [], buffer: "", idle: undefined, stopped: false };
+  const worker: WindowsWorker = { key, powershell: request.powershell, child, pending: [], buffer: "", idle: undefined, stopped: false };
   windowsWorker = worker;
   child.stderr.resume();
   child.stdin.on("error", () => stopWindowsWorker(worker, true));

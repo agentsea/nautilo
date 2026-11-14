@@ -13,7 +13,11 @@ not been accepted.
 
 - Windows x64 and native PowerShell 7. PowerShell 7 is also required at runtime
   for Windows ownership and ACL checks on private files, CLI sessions, and
-  instance locks.
+  instance locks. Those checks start `pwsh.exe` only from
+  `%ProgramFiles%\PowerShell\7`, where the PowerShell 7 MSI package installs
+  it. A Microsoft Store installation is not at that path; without the MSI
+  package every private file operation fails with
+  `PowerShell 7 was not found at …`.
 - Bun **1.4.4**, matching `.bun-version`, and Node **24.22.1**. Check both exact
   versions before running repository scripts.
 - Docker Desktop with the Linux engine running. `docker version` must show both
@@ -137,7 +141,7 @@ it does not contain a database or start the server itself.
   Config-guard tests that persist through the private filesystem carry the
   same 60-second budget per test on Windows, so a direct `bun test <file>`
   is not cut off by Bun's 5-second default. One synchronous ACL check took
-  0.70–0.81 s with the Microsoft Store PowerShell 7; a test makes several.
+  0.70–0.81 s on the reporting host; a test makes several.
   The Unix socket inode and POSIX execute-bit tests run only on POSIX hosts.
   Release-byte inspection still runs on Windows.
 - Some Compose unit tests create file symbolic links for the canonical

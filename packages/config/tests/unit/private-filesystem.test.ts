@@ -234,14 +234,24 @@ test.skipIf(process.platform !== "win32").each(["exit", "pipe error"])("rejects 
   }
 }, 15_000);
 
-test.skipIf(process.platform !== "win32")("fails closed when the trusted helper executable is missing", async () => {
+test.skipIf(process.platform !== "win32")("fails closed and names the expected location when the trusted helper executable is missing", async () => {
   const root = fixture();
   const previous = process.env["ProgramW6432"];
   process.env["ProgramW6432"] = root;
+  const expected = `PowerShell 7 was not found at ${join(root, "PowerShell", "7", "pwsh.exe")}`;
   try {
     const error = await writePrivateFileExclusive(join(root, "secret"), Buffer.from("secret"))
       .then(() => null, (failure: unknown) => failure);
     expect(error).toMatchObject({ code: "EACCES" });
+    expect((error as Error).message).toContain(expected);
+    // The synchronous path reports the same cause, and nothing was written.
+    let syncError: unknown;
+    try { writePrivateFileExclusiveSync(join(root, "secret-sync"), Buffer.from("secret")); }
+    catch (failure) { syncError = failure; }
+    expect(syncError).toMatchObject({ code: "EACCES" });
+    expect((syncError as Error).message).toContain(expected);
+    expect(() => lstatSync(join(root, "secret"))).toThrow();
+    expect(() => lstatSync(join(root, "secret-sync"))).toThrow();
   } finally {
     if (previous === undefined) delete process.env["ProgramW6432"]; else process.env["ProgramW6432"] = previous;
   }

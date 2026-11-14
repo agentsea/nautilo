@@ -202,6 +202,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   gateway key against `GET <NAUTILO_GATEWAY_BASE_URL>/models` instead of
   rejecting it as an unknown provider. A gateway that serves its model list
   without authentication accepts any key.
+- On Windows, private file operations name the required PowerShell 7 location
+  when `pwsh.exe` is not there, instead of failing with only "Private
+  filesystem operation failed". A Microsoft Store installation is not at that
+  location.
 - Windows x64 source builds produce a Desktop installer with bundled Bun and
   the private Relay Host for connecting to a Nautilo server.
   ACP-backed local agents remain unavailable on Windows until process-tree
