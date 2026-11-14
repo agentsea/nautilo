@@ -152,6 +152,66 @@ describe("health-checker", () => {
     expect(r.ok).toBe(true);
   });
 
+  test("gateway health probes GET <base>/models with the bearer key and no redirects", async () => {
+    const env = { NAUTILO_GATEWAY_BASE_URL: "https://gateway.example.test/v1/" };
+    for (const [status, expected] of [[200, "verified"], [401, "invalid_key"], [403, "invalid_key"], [404, "unreachable"], [500, "unreachable"]] as const) {
+      const seen: Array<{ url: string; method?: string | undefined; redirect?: string | undefined; auth: string | null }> = [];
+      globalThis.fetch = (async (url, init) => {
+        seen.push({
+          url: url instanceof Request ? url.url : url.toString(),
+          method: init?.method,
+          redirect: init?.redirect,
+          auth: new Headers(init?.headers).get("authorization"),
+        });
+        return new Response("private-gateway-body", { status });
+      }) as typeof fetch;
+      const result = await checkProviderHealth("gateway", "synthetic-gateway-key", env);
+      expect(result.status).toBe(expected);
+      expect(seen).toEqual([{
+        url: "https://gateway.example.test/v1/models",
+        method: "GET",
+        redirect: "error",
+        auth: "Bearer synthetic-gateway-key",
+      }]);
+      expect(JSON.stringify(result)).not.toContain("private-gateway-body");
+      expect(JSON.stringify(result)).not.toContain("synthetic-gateway-key");
+    }
+  });
+
+  test("gateway health refuses a missing or unsafe base URL without sending the key", async () => {
+    let requested = false;
+    globalThis.fetch = (async () => {
+      requested = true;
+      return new Response("", { status: 200 });
+    }) as unknown as typeof fetch;
+    for (const baseUrl of [
+      undefined,
+      "",
+      "file:///tmp/gateway",
+      "not a url",
+      "https://user:pass@gateway.example.test/v1",
+      "https://gateway.example.test/v1?token=x",
+      "https://gateway.example.test/v1#frag",
+    ]) {
+      const env = baseUrl === undefined ? {} : { NAUTILO_GATEWAY_BASE_URL: baseUrl };
+      const result = await checkProviderHealth("gateway", "synthetic-gateway-key", env);
+      expect(result.status).toBe("unreachable");
+      expect(result.detail).toContain("NAUTILO_GATEWAY_BASE_URL");
+    }
+    expect(requested).toBe(false);
+  });
+
+  test("checkKeysHealth live-checks a configured gateway key", async () => {
+    globalThis.fetch = (async () => new Response("{\"data\":[]}", { status: 200 })) as unknown as typeof fetch;
+    expect(await checkKeysHealth(
+      {
+        NAUTILO_GATEWAY_API_KEY: "synthetic-gateway-key",
+        NAUTILO_GATEWAY_BASE_URL: "http://127.0.0.1:4000/v1",
+      },
+      ["gateway"],
+    )).toEqual({ gateway: { status: "verified" } });
+  });
+
   test("unknown key id returns unreachable", async () => {
     const r = await checkProviderHealth("invalid" as never, "x");
     expect(r.status).toBe("unreachable");
