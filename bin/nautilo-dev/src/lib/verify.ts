@@ -8,10 +8,18 @@ import {
   parseDotenv,
   planCredentialReconciliation,
   runRuntimeAcceptance,
+  type RuntimeAcceptanceExecResult,
   type RuntimeAcceptanceReport,
+  type RuntimeAcceptanceTargets,
   type RuntimeAcceptanceTransport,
 } from "@nautilo/db";
 import { resolveDotenvPath } from "./paths";
+import {
+  buildLocalPostgresProbeSpecs,
+  runLocalPostgresProbe,
+  type LocalPostgresProbeConnect,
+  type LocalPostgresProbeSpec,
+} from "./runtime-acceptance-pg-probe";
 import {
   DEV_CRYPTO_DB_PASSWORD_RELATIVE_PATH,
   resolveInstanceServiceSecrets,
@@ -146,8 +154,6 @@ export function buildAuthoritativeExecEnv(
 }
 
 function buildAuthoritativeTransport(): RuntimeAcceptanceTransport {
-  const execEnv = buildAuthoritativeExecEnv();
-
   const transport: RuntimeAcceptanceTransport = {
     fetch: (url) =>
       // Bun-specific: the local dev server may serve HTTPS with a self-signed
@@ -157,16 +163,6 @@ function buildAuthoritativeTransport(): RuntimeAcceptanceTransport {
         signal: AbortSignal.timeout(AUTHORITATIVE_FETCH_TIMEOUT_MS),
         tls: { rejectUnauthorized: false },
       } as Partial<RequestInit>),
-    execSh: (cmd) => {
-      const res = spawnSync("sh", ["-c", cmd], {
-        env: execEnv,
-        encoding: "utf8",
-      });
-      return Promise.resolve({
-        code: res.status ?? 1,
-        stderr: res.stderr ?? "",
-      });
-    },
     pollHealth: (baseUrl) => pollServerHealth(baseUrl),
   };
   return transport;
@@ -195,17 +191,18 @@ async function pollServerHealth(baseUrl: string): Promise<void> {
 }
 
 /**
- * Build the local-dev runtime-acceptance targets (URLs + transport-specific
- * probe commands). Exported so unit tests can assert the probe commands are
- * well-formed without running docker/fetch.
+ * Build the local-dev runtime-acceptance targets (URLs + in-process probes).
+ * Exported so unit tests can assert the probes without running docker/fetch;
+ * `options` injects the credential env and driver connection (test seams).
  */
-export function buildAuthoritativeTargets(): {
-  serverBaseUrl: string;
-  spaUrl: string;
-  expectedInstanceId: string;
-  oidcUrl: string;
-  appRoleProbes: Array<{ role: string; cmd: string }>;
-  directPostgresProbe: { label: string; cmd: string };
+export function buildAuthoritativeTargets(
+  options: {
+    execEnv?: () => NodeJS.ProcessEnv;
+    connect?: LocalPostgresProbeConnect;
+  } = {},
+): Omit<RuntimeAcceptanceTargets, "appRoleProbes" | "directPostgresProbe"> & {
+  appRoleProbes: Array<{ role: string; run: () => Promise<RuntimeAcceptanceExecResult> }>;
+  directPostgresProbe: { label: string; run: () => Promise<RuntimeAcceptanceExecResult> };
 } {
   const inst = resolveInstance();
   const serverBaseUrl = inst.server.url.replace(/\/$/, "");
@@ -216,49 +213,43 @@ export function buildAuthoritativeTargets(): {
   const oidcUrl = `http://localhost:${inst.logto.corePort}/oidc/.well-known/openid-configuration`;
   const dbPort = inst.db.postgresHostPort;
 
-  // App-role connection probes use the host-published port and credentials
-  // from the selected instance.env. Container environment is immutable after
+  // Credentials resolve once, on first probe, from the selected instance.env
+  // (buildAuthoritativeExecEnv). Container environment is immutable after
   // creation and may legitimately remain stale after an in-place role repair.
-  const appRoleProbes = (
-    [
-      ["nautilo", "NAUTILO_DB_PASSWORD"],
-      ["nautilo_agent", "NAUTILO_AGENT_DB_PASSWORD"],
-      ["nautilo_crypto", "NAUTILO_CRYPTO_DB_PASSWORD"],
-    ] as const
-  ).map(([role, passwordEnv]) => {
-    const hostProbe =
-      `PGPASSWORD="\${${passwordEnv}:?${passwordEnv} is not set}" ` +
-      `psql -h 127.0.0.1 -p ${dbPort} -U ${role} -d nautilo -t -A -c "SELECT 1"`;
-    return {
-      role,
-      cmd: hostProbe,
-    };
-  });
+  const resolveEnv = options.execEnv ?? (() => buildAuthoritativeExecEnv());
+  let execEnv: NodeJS.ProcessEnv | undefined;
+  const probeEnv = (): NodeJS.ProcessEnv => (execEnv ??= resolveEnv());
+  const toRun = (spec: LocalPostgresProbeSpec) => () =>
+    runLocalPostgresProbe(spec, probeEnv(), options.connect);
 
-  // Host-side direct wire probe — exercises the published postgres port with
-  // the agent role credentials the runtime uses post-M212. Parameterized
-  // PREPARE/EXECUTE catches auth/port mismatches that a bare SELECT 1 might miss.
-  const hostAgentProbe =
-    `PGPASSWORD="\${NAUTILO_AGENT_DB_PASSWORD:?NAUTILO_AGENT_DB_PASSWORD is not set}" ` +
-    `psql -h 127.0.0.1 -p ${dbPort} -U nautilo_agent -d nautilo -t -A ` +
-    `-c "PREPARE m215_verify_probe AS SELECT \\$1::int; EXECUTE m215_verify_probe(1);"`;
+  // App-role connection probes authenticate each runtime role over the
+  // host-published port. The direct wire probe repeats the agent role with a
+  // bound parameter (M215), which catches auth/port mismatches a bare
+  // SELECT 1 might miss.
+  const specs = buildLocalPostgresProbeSpecs(dbPort);
+  const appRoleProbes = specs.appRoles.map((spec) => ({
+    role: spec.role,
+    run: toRun(spec),
+  }));
   const directPostgresProbe = {
     label: "nautilo_agent direct PostgreSQL probe",
-    cmd: hostAgentProbe,
+    run: toRun(specs.direct),
   };
 
   return { serverBaseUrl, spaUrl, expectedInstanceId, oidcUrl, appRoleProbes, directPostgresProbe };
 }
 
 /**
- * Run the authoritative gate with an optional injected transport (test seam).
- * The public `verify({})` path uses the real transport; tests inject a fake
- * to assert the report mapping + fail-closed semantics without docker/fetch.
+ * Run the authoritative gate with an optional injected transport and targets
+ * (test seams). The public `verify({})` path uses the real ones; tests inject
+ * fakes to assert the report mapping + fail-closed semantics without
+ * docker/fetch/PostgreSQL.
  */
 export async function runAuthoritativeAcceptance(
   transportOverride?: RuntimeAcceptanceTransport,
+  targetsOverride?: ReturnType<typeof buildAuthoritativeTargets>,
 ): Promise<VerifyReport> {
-  const targets = buildAuthoritativeTargets();
+  const targets = targetsOverride ?? buildAuthoritativeTargets();
   const transport = transportOverride ?? buildAuthoritativeTransport();
   let report: RuntimeAcceptanceReport;
   try {

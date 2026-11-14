@@ -300,6 +300,61 @@ describe("D427 restore-acceptance — runRuntimeAcceptance (report mode, fail-cl
     expect(report.allPassed).toBe(false);
     expect(report.checks.some((c) => c.id === "health" && c.detail.includes("never became ready"))).toBe(true);
   });
+
+  test("in-process probes run their own thunk instead of execSh and keep fail-closed semantics", async () => {
+    const shellCommands: string[] = [];
+    const ran: string[] = [];
+    const report = await runRuntimeAcceptance(
+      makeTransport({
+        execSh: (cmd) => {
+          shellCommands.push(cmd);
+          return Promise.resolve({ code: 0, stderr: "" });
+        },
+      }),
+      {
+        ...defaultTargets,
+        appRoleProbes: [
+          {
+            role: "nautilo",
+            run: () => {
+              ran.push("nautilo");
+              return Promise.resolve({ code: 0, stderr: "" });
+            },
+          },
+          {
+            role: "nautilo_agent",
+            run: () => {
+              ran.push("nautilo_agent");
+              return Promise.resolve({ code: 1, stderr: "password authentication failed for user \"nautilo_agent\"" });
+            },
+          },
+        ],
+        directPostgresProbe: {
+          label: "nautilo_agent direct PostgreSQL probe",
+          run: () => Promise.reject(new Error("connect ECONNREFUSED 127.0.0.1:5432")),
+        },
+      },
+    );
+    expect(shellCommands).toEqual([]);
+    expect(ran).toEqual(["nautilo", "nautilo_agent"]);
+    expect(report.allPassed).toBe(false);
+    const roleChecks = report.checks.filter((c) => c.id === "runtime-role");
+    expect(roleChecks.map((c) => c.passed)).toEqual([true, false]);
+    expect(roleChecks[1]?.detail).toContain("nautilo_agent app-role connection probe failed (exit 1): password authentication failed");
+    const direct = report.checks.find((c) => c.id === "direct-postgres");
+    expect(direct?.passed).toBe(false);
+    expect(direct?.detail).toContain("errored: connect ECONNREFUSED");
+  });
+
+  test("a shell probe on a transport without execSh fails closed instead of passing", async () => {
+    const transport = makeTransport();
+    delete transport.execSh;
+    const report = await runRuntimeAcceptance(transport, defaultTargets);
+    expect(report.allPassed).toBe(false);
+    const probes = report.checks.filter((c) => c.id === "runtime-role" || c.id === "direct-postgres");
+    expect(probes).toHaveLength(3);
+    expect(probes.every((c) => !c.passed && c.detail.includes("shell probe needs a transport with execSh"))).toBe(true);
+  });
 });
 
 describe("D427 restore-acceptance — runRuntimeAcceptance (throwOnFirstFailure mode)", () => {

@@ -17,8 +17,9 @@
 //      password reconciliation).
 //
 // The helper is transport-parameterized: the caller builds the transport-
-// specific probe commands (compose-exec for the deploy driver, docker-exec
-// for the local dev tool) and supplies `fetch` / `execSh` / `pollHealth`
+// specific probes (compose-exec shell commands for the deploy driver,
+// in-process PostgreSQL wire probes for the local dev tool so the host needs
+// no POSIX shell or `psql`) and supplies `fetch` / `execSh` / `pollHealth`
 // thunks. The gate supplies the check catalog, ordering, fail-closed
 // semantics, and the canonical error messages. This is the small
 // transport-parameterized helper the Wave 4 design calls for — not a broad
@@ -52,28 +53,56 @@ export interface RuntimeAcceptanceExecResult {
  * gate needs (`ok`, `status`, `text()`). `execSh` runs a single `sh -c`
  * probe command and returns its exit code + stderr — the caller routes
  * Docker to the right daemon (DOCKER_HOST for remote profiles) and expands
- * credentials inside the target container. `pollHealth` throws on timeout so
- * the gate surfaces the canonical "/health never became ready" failure.
+ * credentials inside the target container. A caller whose probes all run
+ * in-process leaves it out. `pollHealth` throws on timeout so the gate
+ * surfaces the canonical "/health never became ready" failure.
  */
 export interface RuntimeAcceptanceTransport {
   fetch(url: string): Promise<RuntimeAcceptanceResponse>;
-  execSh(cmd: string): Promise<RuntimeAcceptanceExecResult>;
+  execSh?(cmd: string): Promise<RuntimeAcceptanceExecResult>;
   pollHealth(serverBaseUrl: string): Promise<void>;
   log?: (msg: string) => void;
 }
 
-export interface RuntimeAcceptanceAppRoleProbe {
+/**
+ * How a probe executes: either a fully-built `sh -c` command the transport's
+ * `execSh` runs, or an in-process `run` thunk the caller built (for a host
+ * without a POSIX shell or PostgreSQL client). Both report exit code +
+ * stderr with the same fail-closed meaning: nonzero is a failed probe.
+ */
+export type RuntimeAcceptanceProbeExecution =
+  | {
+      /** The fully-built `sh -c` probe command (caller constructs). */
+      cmd: string;
+      run?: never;
+    }
+  | {
+      cmd?: never;
+      /** In-process probe (caller constructs); resolves like `execSh`. */
+      run: () => Promise<RuntimeAcceptanceExecResult>;
+    };
+
+export type RuntimeAcceptanceAppRoleProbe = {
   /** Postgres role name; used in the fail-closed error message. */
   role: string;
-  /** The fully-built `sh -c` probe command (caller constructs). */
-  cmd: string;
-}
+} & RuntimeAcceptanceProbeExecution;
 
-export interface RuntimeAcceptanceDirectPostgresProbe {
+export type RuntimeAcceptanceDirectPostgresProbe = {
   /** Label used in the fail-closed error message. */
   label: string;
-  /** The fully-built `sh -c` probe command (caller constructs). */
-  cmd: string;
+} & RuntimeAcceptanceProbeExecution;
+
+function execProbe(
+  transport: RuntimeAcceptanceTransport,
+  probe: RuntimeAcceptanceProbeExecution,
+): Promise<RuntimeAcceptanceExecResult> {
+  if (probe.run !== undefined) return probe.run();
+  // Fail closed: a shell probe without a shell transport is a wiring error,
+  // never a passed check. The gate reports the rejection as a failed probe.
+  if (transport.execSh === undefined) {
+    return Promise.reject(new Error("shell probe needs a transport with execSh"));
+  }
+  return transport.execSh(probe.cmd);
 }
 
 export interface RuntimeAcceptanceTargets {
@@ -294,7 +323,7 @@ export async function runRuntimeAcceptance(
   for (const probe of targets.appRoleProbes) {
     log(`runtime acceptance: probing ${probe.role} app-role connection...`);
     try {
-      const probeRes = await transport.execSh(probe.cmd);
+      const probeRes = await execProbe(transport, probe);
       if (probeRes.code !== 0) {
         record({
           id: "runtime-role",
@@ -326,7 +355,7 @@ export async function runRuntimeAcceptance(
     const wireProbe = targets.directPostgresProbe;
     log(`runtime acceptance: probing ${wireProbe.label}...`);
     try {
-      const wireProbeRes = await transport.execSh(wireProbe.cmd);
+      const wireProbeRes = await execProbe(transport, wireProbe);
       if (wireProbeRes.code !== 0) {
         record({
           id: "direct-postgres",
