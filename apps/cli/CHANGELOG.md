@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.37] - 2026-11-14
+
+### Fixed
+
+- Full remote upgrades adopt the packaged authentication, database and HTTPS
+  proxy image selections only after capturing their recovery bundle. Incoming
+  server authentication contracts must match the signed CLI's baseline.
+- Recovery bundles freeze actual container images and the installed Logto image
+  version even when configuration already names a different incoming image.
+  Existing credentials, operator settings and retained bundles are preserved.
+
 ## [0.1.35] - 2026-10-29
 
 ### Security

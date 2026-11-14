@@ -468,18 +468,22 @@ describe("backup full bundle", () => {
     expect(rsync?.args).not.toContain("--append-verify");
   });
 
-  test.each([false, true])("remote stream captures exact recovery selections, skips staging and warns (legacy=%s)", async (legacyTag) => {
+  test.each(["legacy", "pinned", "drift"])("remote stream captures actual recovery selections, skips staging and warns (%s)", async (selection) => {
     seedOperatorFiles(home, remoteProfile);
     const logs: string[] = [];
     const oldAuth = `ghcr.io/example/auth@sha256:${"b".repeat(64)}`;
     const exec = makeFakeExec((call) => {
       if (call.cmd === "cat" && call.args[0] === "/opt/nautilo-prod/deploy.compose.env") {
-        return { code: 0, stdout: `LOGTO_IMAGE=${legacyTag ? "ghcr.io/example/auth:1.38.0" : oldAuth}\nLOGTO_IMAGE_TAG=1.38.0\nLOGTO_DB_PASSWORD=fixture-secret\n`, stderr: "" };
+        const configured = selection === "legacy" ? "ghcr.io/example/auth:1.38.0"
+          : selection === "pinned" ? oldAuth : `ghcr.io/example/auth@sha256:${"d".repeat(64)}`;
+        return { code: 0, stdout: `LOGTO_IMAGE=${configured}\nLOGTO_IMAGE_TAG=${selection === "drift" ? "1.45.0" : "1.38.0"}\nLOGTO_DB_PASSWORD=fixture-secret\n`, stderr: "" };
       }
       const text = commandText(call);
       if (call.cmd === "sh" && text.includes("label=com.docker.compose.service=logto")) return { code: 0, stdout: "auth-container\n", stderr: "" };
       if (call.cmd === "sh" && text.includes("{{.Image}}") && text.includes("auth-container")) return { code: 0, stdout: `sha256:${"c".repeat(64)}\n`, stderr: "" };
+      if (call.cmd === "sh" && text.includes("{{.Config.Image}}") && text.includes("auth-container")) return { code: 0, stdout: "ghcr.io/example/auth:1.38.0\n", stderr: "" };
       if (call.cmd === "sh" && text.includes("{{json .RepoDigests}}") && text.includes("c".repeat(64))) return { code: 0, stdout: JSON.stringify([oldAuth]), stderr: "" };
+      if (call.cmd === "sh" && text.includes("org.opencontainers.image.version") && text.includes("c".repeat(64))) return { code: 0, stdout: "1.38.0\n", stderr: "" };
       if (call.cmd === "cat" && call.args[0] === "/opt/nautilo-prod/docker-compose.yml") {
         return { code: 0, stdout: 'image: ${LOGTO_IMAGE}\ntarget: ${LOGTO_IMAGE_TAG}\n', stderr: "" };
       }
