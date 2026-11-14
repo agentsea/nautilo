@@ -70,6 +70,13 @@ The Workbench is served by the Nautilo server; there is no separate production
 Workbench process. This local profile advertises `localhost` and cannot be
 made into a LAN server by opening its ports or replacing the hostname later.
 
+The first start of an instance builds every first-party app bundle before the
+server listens, so it takes noticeably longer than later starts. `server-start`
+waits up to three minutes while the server process is alive and fails at once
+if it exits. Before reporting ready, `dev-stack` runs runtime acceptance; its
+PostgreSQL role probes connect in-process to the instance's published port, so
+no host `psql` client or POSIX shell is required.
+
 ## Create the first owner
 
 There is no default username or password, and no external Nautilo account is

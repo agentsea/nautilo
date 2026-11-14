@@ -30,7 +30,15 @@ import { ensureOfficeCliProvisioned } from "../lib/officecli-preflight";
 import { ensureServerAgentBrowserProvisioned } from "../lib/agent-browser-preflight";
 
 const HEALTH_POLL_MS = 250;
-const HEALTH_WAIT_MS = 90_000;
+/**
+ * Ceiling for a server process that stays alive without binding its HTTP
+ * listener. A server that exits during boot fails at once (see
+ * runServerStart), so this bound only applies to a slow or hung boot. A cold
+ * first boot builds every first-party app bundle before listening; on a
+ * Windows 11 host that alone took ~57 s and the listener bound after the
+ * former 90 s ceiling had expired, while a warm restart took ~15 s.
+ */
+export const HEALTH_WAIT_MS = 180_000;
 const HEALTH_PROBE_TIMEOUT_MS = 2_000;
 
 const SERVER_ENTRY = resolve(import.meta.dirname, "../../../nautilo-server/src/index.ts");
@@ -208,6 +216,69 @@ export function buildServerDaemonEnv(params: {
   return serverDaemonEnv(params.inst, params.instanceId, clone);
 }
 
+/**
+ * Extract the detached server PID from the `--daemon` launcher's stdout. Only
+ * a complete line counts, so a chunk that ends inside the number is not read
+ * as a shorter PID.
+ */
+export function parseDaemonLauncherPid(output: string): number | null {
+  const match = /\[daemon\] started, pid=(\d+)\r?\n/.exec(output);
+  if (!match?.[1]) return null;
+  const pid = Number.parseInt(match[1], 10);
+  return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
+}
+
+/** The part of the launcher child process readDaemonLauncherPid observes. */
+interface DaemonLauncherProcess {
+  stdout: NodeJS.ReadableStream | null;
+  once(event: "error", listener: (err: Error) => void): unknown;
+  once(event: "exit", listener: (code: number | null) => void): unknown;
+}
+
+/**
+ * Resolve the server PID as soon as the launcher prints it. It does not wait
+ * for the launcher's stdout to close: a detached server that inherited the
+ * pipe would keep it open for its whole life. A launcher that exits without a
+ * PID resolves null on a clean exit and rejects on a failed one.
+ */
+export function readDaemonLauncherPid(
+  launcher: DaemonLauncherProcess,
+): Promise<number | null> {
+  return new Promise((resolvePid, rejectPid) => {
+    const { stdout } = launcher;
+    let output = "";
+    let ended = stdout === null;
+    let exitCode: number | null | undefined;
+    // Without a PID the verdict needs both the exit code and the end of
+    // stdout, which arrive in either order.
+    const settleWithoutPid = (): void => {
+      if (!ended || exitCode === undefined) return;
+      if (exitCode === 0) resolvePid(null);
+      else rejectPid(new Error(`daemon launcher exited with code ${String(exitCode)}`));
+    };
+    launcher.once("error", rejectPid);
+    launcher.once("exit", (code) => {
+      exitCode = code;
+      settleWithoutPid();
+    });
+    if (stdout === null) return;
+    stdout.setEncoding("utf8");
+    stdout.on("data", (chunk: string) => {
+      output += chunk;
+      const pid = parseDaemonLauncherPid(output);
+      if (pid === null) return;
+      resolvePid(pid);
+      // Release the pipe so a server that inherited it cannot hold this
+      // process open.
+      (stdout as { destroy?: () => void }).destroy?.();
+    });
+    stdout.on("end", () => {
+      ended = true;
+      settleWithoutPid();
+    });
+  });
+}
+
 function parsePidFromFileContent(raw: string): number | null {
   const n = Number.parseInt(raw.trim(), 10);
   return Number.isFinite(n) && n > 0 ? n : null;
@@ -240,7 +311,7 @@ export async function fetchServerHealth(
     // A per-request deadline is required in addition to runServerStart's
     // overall deadline: an accepted TCP connection that never answers HTTP
     // would otherwise keep fetchHealth pending forever and prevent the outer
-    // loop from observing its 90-second deadline.
+    // loop from observing its HEALTH_WAIT_MS deadline.
     const res = await fetchImpl(healthUrl, ({
       signal: AbortSignal.timeout(timeoutMs),
       // Bun-specific: self-signed cert OK on the loopback probe; same
@@ -271,7 +342,13 @@ export interface ServerStartDeps {
   writePidFile: (pid: number) => void;
   removePidFile: () => void;
   isProcessAlive: (pid: number) => boolean;
-  spawnDaemon: () => void;
+  /**
+   * Launch `nautilo-server --daemon`. The promise resolves the detached
+   * server's PID once the launcher reports it (null or no promise: unknown)
+   * and rejects when the launcher itself fails. With the PID a server that
+   * dies during boot fails fast and one that never becomes ready is stopped.
+   */
+  spawnDaemon: () => Promise<number | null> | void;
   fetchHealth: () => Promise<{ ok: boolean; status?: string }>;
   /**
    * Returns the PID listening on the configured port, or null. Used to
@@ -374,7 +451,20 @@ export async function runServerStart(deps: ServerStartDeps): Promise<number> {
     deps.warn("[server:start] server browser provisioning failed; refusing to start an incomplete runtime");
     return 1;
   }
-  deps.spawnDaemon();
+  // The server writes server.pid only after its HTTP listener is bound, so
+  // the PID reported by the `--daemon` launcher is the only handle on a
+  // server that is still booting. The launcher's report is collected while
+  // the loop polls rather than awaited, so a launcher that never reports
+  // cannot outlast the deadline.
+  const launch: { pid: number | null; failure: string | null } = { pid: null, failure: null };
+  void Promise.resolve(deps.spawnDaemon()).then(
+    (pid) => {
+      launch.pid = pid ?? null;
+    },
+    (err: unknown) => {
+      launch.failure = err instanceof Error ? err.message : String(err);
+    },
+  );
 
   const deadline = deps.now() + HEALTH_WAIT_MS;
   while (deps.now() < deadline) {
@@ -387,10 +477,20 @@ export async function runServerStart(deps: ServerStartDeps): Promise<number> {
       deps.log(`  log : ${paths.logPath}`);
       return 0;
     }
+    if (launch.failure !== null) {
+      deps.warn(`[server:start] ${launch.failure}; no server was started`);
+      return 1;
+    }
+    if (launch.pid !== null && !deps.isProcessAlive(launch.pid)) {
+      deps.warn(
+        `[server:start] server process ${launch.pid} exited before ${healthUrl} became ready (see ${paths.logPath})`,
+      );
+      return 1;
+    }
     await deps.sleep(HEALTH_POLL_MS);
   }
 
-  const pidToKill = deps.readPidFile();
+  const pidToKill = deps.readPidFile() ?? launch.pid;
   if (pidToKill !== null && deps.isProcessAlive(pidToKill)) {
     try {
       deps.killPid(pidToKill, "SIGTERM");
@@ -564,11 +664,14 @@ export async function serverStart(options: ServerStartOptions = {}): Promise<num
       }
       const child = spawn(process.execPath, args, {
         cwd: process.cwd(),
-        stdio: "ignore",
+        // stdout carries the launcher's one `[daemon] started, pid=N` line;
+        // the launcher exits right after it.
+        stdio: ["ignore", "pipe", "ignore"],
         detached: true,
         env: daemonEnv,
       });
       child.unref();
+      return readDaemonLauncherPid(child);
     },
     fetchHealth: () => fetchServerHealth(healthUrl),
     log: (s) => {
