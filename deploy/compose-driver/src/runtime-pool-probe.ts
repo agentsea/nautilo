@@ -7,6 +7,17 @@ export type RuntimePoolProbeSpec = {
   cmd: string;
 };
 
+function runtimePoolCommand(bunScript: string): string {
+  // The hardened image nests its workspace under /srv/repo. Retained images
+  // use /srv directly; never fetch a missing dependency during acceptance.
+  return [
+    "if [ -f /srv/repo/package.json ]; then cd /srv/repo;",
+    "elif [ -f /srv/package.json ]; then cd /srv;",
+    "else printf '%s\\n' 'Runtime workspace is unavailable' >&2; exit 1; fi;",
+    `exec bun --no-install -e ${shellQuote(bunScript)}`,
+  ].join(" ");
+}
+
 /**
  * M215 — parameterized postgres.js session probe for `nautilo_agent` through
  * the server's runtime DB_CONNECTION_STRING wiring (not direct psql alone).
@@ -32,7 +43,7 @@ export function buildAgentRuntimePoolProbe(input: {
     "  await sql.end({ timeout: 5 });",
     "}",
   ].join(" ");
-  const probeInner = `bun -e ${shellQuote(bunScript)}`;
+  const probeInner = runtimePoolCommand(bunScript);
   return {
     label: "nautilo_agent postgres.js runtime pool probe (DB_AGENT_CONNECTION_STRING)",
     cmd: `${serverExecPrefix}sh -c ${shellQuote(probeInner)}`,
@@ -67,7 +78,7 @@ export function buildRestrictedRuntimePoolsProbe(input: {
     "  }",
     "}",
   ].join(" ");
-  const probeInner = `bun -e ${shellQuote(bunScript)}`;
+  const probeInner = runtimePoolCommand(bunScript);
   return {
     label: "restricted postgres.js runtime pool probes (nautilo_agent + nautilo_crypto)",
     cmd: `${serverExecPrefix}sh -c ${shellQuote(probeInner)}`,

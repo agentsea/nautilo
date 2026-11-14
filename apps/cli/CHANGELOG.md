@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.38] - 2026-11-14
+
+### Fixed
+
+- Runtime database acceptance probes use the packaged server workspace rather
+  than the container's initial working directory. Retained image layouts remain
+  supported, and missing dependencies fail without an automatic download.
+
 ## [0.1.37] - 2026-11-14
 
 ### Fixed
