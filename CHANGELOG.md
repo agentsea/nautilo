@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- CLI runtime database acceptance resolves dependencies from the packaged
+  server workspace, while retaining support for earlier image layouts and
+  refusing automatic package downloads during probes.
+
 - Full remote CLI upgrades refresh authentication, database and HTTPS proxy
   image selections after preserving a coherent recovery bundle. Recovery
   captures the actual prior images and authentication version, not merely
