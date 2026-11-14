@@ -47,7 +47,7 @@ import { respondFreshProtectedTaskExternalRequest, type ProtectedTaskExternalReq
 import { recoverCurrentProtectedTaskExternalRequests } from "./protected-task-external-request-recovery";
 import { resumeRealtimeAfterAdmission } from "./admission-realtime-resume";
 import { PinDialog } from "../components/pin-dialog";
-import { mergeFocusedResourcesForSend } from "./focused-resource-send";
+import { readRoomDocumentContext } from "./room-document-context";
 import { mergeProtectedMessageUpdate, readProtectedMessageUpdate } from "./protected-message-update";
 import { ApprovalDialog } from "../components/approval-dialog";
 import {
@@ -88,7 +88,7 @@ import { presentWorkbenchApplicationTarget } from "../lib/genie-application-targ
 import { readWorkbenchTheme } from "../lib/genie-soft-prompt";
 import { useSetupStatus } from "../contexts/setup-status-context";
 import { readFileContext } from "./file-context-ref";
-import { readActiveMiniApp, readLiveMiniAppSession, clearLiveMiniAppSessionIfMatches } from "./mini-app-context-ref";
+import { clearLiveMiniAppSessionIfMatches } from "./mini-app-context-ref";
 import {
   parsePlatformLiveAppProposal,
   publishLiveAppProposal,
@@ -2464,6 +2464,8 @@ export function NautiloRuntimeProvider({
   const roomMessageOperationsRef = useRef(roomMessageOperations);
   roomMessageOperationsRef.current = roomMessageOperations;
   const roomNav = useRoomNavigation();
+  const roomsForSendRef = useRef(roomNav.rooms);
+  roomsForSendRef.current = roomNav.rooms;
   const activeRoomId = roomNav.activeRoomId;
   /** bump to re-render subtree (RoomsPanel reads optimistic overlay from rooms-panel-model). */
   const [, setRoomSidebarTick] = useState(0);
@@ -7563,12 +7565,15 @@ export function NautiloRuntimeProvider({
         size: r.size,
       }));
       const hasArtifactRefPayload = artifactRefs.length > 0;
+      const { focusedResources: composerFocusedResources, ...miniAppContext } = readRoomDocumentContext({
+        externalContext: roomsForSendRef.current.find((room) => room.id === roomIdForSend)?.externalContext === true,
+        explicitFocusedResources: isDetachedFocusedTurn ? [] : getFocusedResources().map((item) => item.ref),
+        contextualFocusedResources: isDetachedFocusedTurn ? [] : options?.contextualFocusedResources ?? [],
+        workspaceAttachmentResources: workspaceAttachments.refs,
+      });
       const focusedResources = options?.detachedFocusedResources
         ? [...options.detachedFocusedResources]
-        : mergeFocusedResourcesForSend(
-            getFocusedResources().map((item) => item.ref),
-            [...(options?.contextualFocusedResources ?? []), ...workspaceAttachments.refs],
-          );
+        : composerFocusedResources;
       const hasFocusedResourcePayload = focusedResources.length > 0;
 
       const hasAttachmentPayload = attachments.length > 0;
@@ -7666,8 +7671,6 @@ export function NautiloRuntimeProvider({
         // `workspacePath` can be null; the
         // server tolerates absence gracefully (omits the workspace
         // sub-block in the system prompt).
-        const activeMiniApp = readActiveMiniApp();
-        const liveMiniAppSession = readLiveMiniAppSession();
         const sendExtras = {
           voiceMode: resolveVoiceOwnership({
             activeRoomId: activeRoomIdRef.current,
@@ -7683,8 +7686,7 @@ export function NautiloRuntimeProvider({
           workspacePath: fileContext.workspacePath,
           attachments,
           userTimezone: detectedTimezone,
-          ...(activeMiniApp ? { activeMiniApp } : {}),
-          ...(liveMiniAppSession ? { liveMiniAppSession } : {}),
+          ...miniAppContext,
           ...(hasArtifactRefPayload ? { artifactRefs } : {}),
           ...(hasFocusedResourcePayload ? { focusedResources } : {}),
           ...(options?.replyToMessageId !== undefined

@@ -2060,6 +2060,7 @@ function Composer({
   const workspaceArtifacts = useWorkspaceArtifacts();
   const resolveContextualFocusedResources = useCallback(
     async (): Promise<readonly ChatFocusedResourceRef[]> => {
+      if (roomNav.activeRoom?.externalContext === true) return [];
       const relayId = readerFocusedResourceTarget?.kind === "local-file"
         ? await getDesktopRelayId()
         : null;
@@ -2073,6 +2074,7 @@ function Composer({
     },
     [
       activeRoomId,
+      roomNav.activeRoom?.externalContext,
       readerFocusedResourceTarget,
       workspaceArtifacts.artifacts,
       workspaceArtifacts.roomId,
