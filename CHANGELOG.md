@@ -7,6 +7,19 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- CLI runtime database acceptance resolves dependencies from the packaged
+  server workspace, while retaining support for earlier image layouts and
+  refusing automatic package downloads during probes.
+
+- Full remote CLI upgrades refresh authentication, database and HTTPS proxy
+  image selections after preserving a coherent recovery bundle. Recovery
+  captures the actual prior images and authentication version, not merely
+  their configured incoming replacements.
+
+- Keep text chat working in connected external conversations while a document
+  is open. Only regular chats receive automatic document context; explicit
+  attachments and document references retain a clear text-only explanation.
+
 - Configure MindSwapper for server or personal funding. Supported chat models
   appear after discovery and can be selected for Genie chat and native text Tasks
   according to their Chat Completions capabilities.

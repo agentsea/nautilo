@@ -24,6 +24,8 @@ import {
 } from "../../src/ComposeDriver.ts";
 import type { RunBootstrapFn } from "../../src/bootstrapLogtoForProfile.ts";
 import type { ReleasePlanReport } from "../../../contracts/release.ts";
+import { buildAuthContract } from "../../../contracts/auth.ts";
+import { DEPENDENCY_PINS } from "../../../dependency-pins.ts";
 import type {
   ComposeDriverProfile,
   UpgradeArtifact,
@@ -35,7 +37,7 @@ import { dockerHostFor, wrapWithDockerHost } from "../../src/wrap-docker-host.ts
 interface ExecCall {
   cmd: string;
   args: string[];
-  opts: { cwd?: string; env?: NodeJS.ProcessEnv; stdio?: "inherit" | "pipe" };
+  opts: { cwd?: string; env?: NodeJS.ProcessEnv; stdio?: "inherit" | "pipe"; stdin?: string };
 }
 
 const tmpDirs: string[] = [];
@@ -64,6 +66,18 @@ function makeFakeExec(
     // Supply the prior source-image fixture unless a test has a more specific
     // Docker response.
     const command = [cmd, ...args].join(" ");
+    if (command.includes("docker image inspect") && command.includes('"repoDigests":')) {
+      return { ...result, stdout: JSON.stringify({ id: `sha256:${"e".repeat(64)}`, repoDigests: [canonicalImageRef] }) };
+    }
+    if (command.includes("docker image inspect") && command.includes("{{.Id}}")) {
+      return { ...result, stdout: `sha256:${"e".repeat(64)}\n` };
+    }
+    if (command.includes("docker image inspect") && command.includes("{{json .RepoDigests}}")) {
+      return { ...result, stdout: JSON.stringify([canonicalImageRef]) };
+    }
+    if (command.includes("docker cp") && command.includes("/srv/contracts/auth-contract.json")) {
+      return { ...result, stdout: JSON.stringify(buildAuthContract()) };
+    }
     if (
       (cmd === "docker" && args[0] === "ps") ||
       (cmd === "sh" &&
@@ -609,16 +623,25 @@ describe("ComposeDriver upgrade orchestrator", () => {
     }
   });
 
-  test("current M139 remote registry upgrade preflights manifest, stops server, then delegates deploy", async () => {
+  test.each([false, true])("remote registry full upgrade refreshes infrastructure only after backup (HTTPS=%s)", async (https) => {
     const remoteRoot = "/opt/nautilo-prod";
     const order: string[] = [];
-    const manifest = remoteDeploymentManifest(remoteRoot);
+    const input = { ...remoteProfile, ...(https ? {
+      https: "letsencrypt" as const, domain: "prod.example.test", acme_email: "fixture@example.test",
+    } : {}) };
+    const manifest = { ...remoteDeploymentManifest(remoteRoot), https: https ? "letsencrypt" : "off" };
     const { exec, calls } = makeFakeExec((call) => {
       if (call.cmd === "cat") {
+        if (call.args[0] === `${remoteRoot}/deploy.compose.env`) {
+          order.push("infrastructure-read");
+          return { code: 0, stdout: "LOGTO_IMAGE=old:1.38.0\nLOGTO_IMAGE_TAG=1.38.0\nLOGTO_DB_PASSWORD=fixture-secret\n", stderr: "" };
+        }
         order.push("manifest");
         return { code: 0, stdout: JSON.stringify(manifest), stderr: "" };
       }
       const script = call.args[1] ?? "";
+      if (call.cmd === "sh" && script.includes('cat > "$temporary"')) order.push("infrastructure-write");
+      if (call.cmd === "sh" && script.includes("deploy.caddy-overlay.yml") && script.includes("base64 -d")) order.push("proxy-write");
       if (call.cmd === "sh" && script.includes(" stop nautilo-server")) order.push("stop");
       if (call.cmd === "sh" && script.includes(" start nautilo-server")) order.push("start");
       return { code: 0, stdout: "", stderr: "" };
@@ -643,14 +666,18 @@ describe("ComposeDriver upgrade orchestrator", () => {
       order.push("health");
     }) as typeof driver.checkServerHealth;
 
-    await driver.upgrade(remoteProfile);
+    await driver.upgrade(input);
 
     expect(order).toEqual([
+      "manifest",
       "manifest",
       "doctor",
       "manifest",
       "stop",
       "backup",
+      "infrastructure-read",
+      "infrastructure-write",
+      ...(https ? ["proxy-write"] : []),
       "deploy",
       "health",
     ]);
@@ -674,6 +701,59 @@ describe("ComposeDriver upgrade orchestrator", () => {
       expect(call.opts.env?.["DOCKER_HOST"]).toBeUndefined();
     }
     expect(calls.some((call) => call.cmd === "docker")).toBe(false);
+    const refresh = calls.find((call) => call.opts.stdin?.includes(`LOGTO_IMAGE=${DEPENDENCY_PINS.logto}`));
+    expect(refresh?.opts.stdin).toContain("LOGTO_DB_PASSWORD=fixture-secret\n");
+    expect(refresh?.args.join(" ")).not.toContain("fixture-secret");
+    expect(refresh?.args.join(" ")).not.toContain(Buffer.from("fixture-secret").toString("base64"));
+  });
+
+  test("mismatched full-upgrade baseline refuses before maintenance, backup or config mutation", async () => {
+    const contract = buildAuthContract();
+    const incoming = { ...contract, logtoEngine: { ...contract.logtoEngine, minimumVersion: "1.38.0" } };
+    const { exec, calls } = makeFakeExec((call) => {
+      if (call.cmd === "cat") return { code: 0, stdout: JSON.stringify(remoteDeploymentManifest("/opt/nautilo-prod")), stderr: "" };
+      if (call.cmd === "sh" && call.args.join(" ").includes("/srv/contracts/auth-contract.json")) {
+        return { code: 0, stdout: JSON.stringify(incoming), stderr: "" };
+      }
+      return { code: 0, stdout: "", stderr: "" };
+    });
+    const driver = new ComposeDriver(makeDeps({
+      exec, resolveInstanceRootDir: () => "/opt/nautilo-prod",
+      drainMaintenanceWork: async () => { throw new Error("maintenance must not run"); },
+    }));
+    let backedUp = false;
+    driver.backup = async () => { backedUp = true; return "/unused"; };
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(driver.upgrade(remoteProfile)).rejects.toThrow("different authentication baseline");
+    expect(backedUp).toBe(false);
+    expect(calls.some((call) => / stop nautilo-server|cat >|base64 -d/.test(call.args.join(" ")))).toBe(false);
+  });
+
+  test.each(["read", "write"])("infrastructure %s failure restores the captured bundle before reporting failure", async (failure) => {
+    const remoteRoot = "/opt/nautilo-prod";
+    const { exec } = makeFakeExec((call) => {
+      if (call.cmd === "cat") {
+        if (call.args[0] === `${remoteRoot}/deploy.compose.env`) {
+          return failure === "read" ? { code: 1, stdout: "", stderr: "read failed" }
+            : { code: 0, stdout: "LOGTO_IMAGE=old:1.38.0\nLOGTO_IMAGE_TAG=1.38.0\n", stderr: "" };
+        }
+        return { code: 0, stdout: JSON.stringify(remoteDeploymentManifest(remoteRoot)), stderr: "" };
+      }
+      if (call.args.join(" ").includes('cat > "$temporary"')) return { code: 1, stdout: "", stderr: "write failed" };
+      return { code: 0, stdout: "", stderr: "" };
+    });
+    const driver = new ComposeDriver(makeDeps({ exec, resolveInstanceRootDir: () => remoteRoot }));
+    let captured = "", restored = "", deployed = false, healthy = false;
+    driver.backup = async (_profile, options) => { captured = options?.toPath ?? ""; return captured; };
+    driver.deploy = async () => { deployed = true; };
+    driver.restore = async (_profile, options) => { restored = options.fromPath; };
+    driver.checkServerHealth = async () => { healthy = true; };
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(driver.upgrade(remoteProfile)).rejects.toThrow(/rolled back.*post-rollback health = ready/);
+    expect(captured).not.toBe("");
+    expect(restored).toBe(captured);
+    expect(deployed).toBe(false);
+    expect(healthy).toBe(true);
   });
 
   test("remote deploy failure rolls back through the SSH-native bundle restore", async () => {
@@ -736,6 +816,9 @@ describe("ComposeDriver upgrade orchestrator", () => {
     const events: string[] = [];
     const { exec, calls } = makeFakeExec((call) => {
       if (call.cmd === "cat") {
+        if (call.args[0] === `${remoteRoot}/deploy.compose.env`) {
+          return { code: 0, stdout: "LOGTO_IMAGE=old:1.38.0\nLOGTO_IMAGE_TAG=1.38.0\n", stderr: "" };
+        }
         return { code: 0, stdout: JSON.stringify(manifest), stderr: "" };
       }
       const script = call.args[1] ?? "";

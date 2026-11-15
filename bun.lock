@@ -27,7 +27,7 @@
     },
     "apps/cli": {
       "name": "@nautilo/cli",
-      "version": "0.1.36",
+      "version": "0.1.38",
       "bin": {
         "nautilo": "./dist/index.js",
       },
