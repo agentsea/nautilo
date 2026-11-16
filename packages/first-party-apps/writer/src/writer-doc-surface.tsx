@@ -1,12 +1,14 @@
+import { hasUrlAlteringChars } from "@nautilo/office-core/url";
+import { getNautiloApp } from "./bridge";
 /**
- * WriterDocSurface — the Nautilo Writer chrome (D372 / Nautilo Office, P2.2).
+ * WriterDocSurface — the Nautilo Writer chrome.
  *
- * Re-implements the D362 office ribbon (`office-doc-surface.tsx`) but drives the
+ * Re-implements the office ribbon (`office-doc-surface.tsx`) but drives the
  * Wafflebase `EditorAPI` directly instead of Collabora postMessage/UNO — and in
  * PLAIN CSS (the mini-app is a sandboxed iframe, not the Tailwind workbench).
  * The Wafflebase canvas ships no toolbar, so this IS the formatting UI.
  *
- * Verb map (D362 sendUno → EditorAPI):
+ * Verb map (sendUno → EditorAPI):
  *   Bold/Italic/… → applyStyle({…})   ·  Clear → clearInlineFormatting()
  *   Para style     → setBlockType(type,{headingLevel})
  *   Font/size      → applyStyle({fontFamily|fontSize})
@@ -37,7 +39,7 @@ import {
   Trash2, Underline, Undo2,
 } from "lucide-react";
 import {
-  FindReplaceState, initialize, MemDocStore, setThemeMode, type BlockType, type EditorAPI,
+  FindReplaceState, initialize, MemDocStore, normalizeLinkUrl, setThemeMode, type BlockType, type EditorAPI,
   type TableMergeContext, type ThemeMode,
 } from "@nautilo/office-docs/browser";
 import { attachWriterSpellcheck, ignoreWriterSpellWord, setWriterSpellcheckEnabled, setWriterSpellcheckPersonalWords, type WriterSpellMenuRequest } from "./writer-spellcheck";
@@ -178,10 +180,12 @@ function AnchoredPopover({
       onClose();
     };
     const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    document.addEventListener("mousedown", onDoc);
+    // Capture runs before the editor can open a link popover on mousedown,
+    // so the opening gesture cannot immediately dismiss the new panel.
+    document.addEventListener("mousedown", onDoc, true);
     document.addEventListener("keydown", onKey);
     return () => {
-      document.removeEventListener("mousedown", onDoc);
+      document.removeEventListener("mousedown", onDoc, true);
       document.removeEventListener("keydown", onKey);
     };
   }, [open, onClose, anchorRef]);
@@ -436,35 +440,95 @@ function TableToolsMenu({
   );
 }
 
-function InsertLinkMenu({ disabled, onInsert }: { disabled: boolean; onInsert: (url: string) => void }): JSX.Element {
+export function WriterLinkMenu({ disabled, editor }: { disabled: boolean; editor: EditorAPI | null }): JSX.Element {
   const [open, setOpen] = useState(false);
+  const [editing, setEditing] = useState(false);
   const [url, setUrl] = useState("");
+  const [currentHref, setCurrentHref] = useState<string | undefined>();
+  const [error, setError] = useState("");
   const btnRef = useRef<HTMLButtonElement>(null);
+  const lastHref = useRef<string | undefined>(undefined);
+  const beginEdit = useCallback(() => {
+    const href = editor?.getLinkAtCursor();
+    setCurrentHref(href);
+    setUrl(href ?? "");
+    setError("");
+    setEditing(true);
+    setOpen(true);
+  }, [editor]);
+  const openLink = useCallback((href: string) => {
+    const links = getNautiloApp()?.links;
+    if (!links) { setError("Link opening is unavailable. Reconnect to the server and try again."); setOpen(true); return; }
+    setError("");
+    void links.open(href).catch((err: unknown) => {
+      setError(err instanceof Error ? err.message : "Could not open this link.");
+      setOpen(true);
+    });
+  }, []);
+  useEffect(() => {
+    if (!editor) return;
+    editor.onLinkRequest(disabled ? () => {} : beginEdit);
+    editor.onOpenLink(openLink);
+    editor.onCursorLinkChange((info) => {
+      if (disabled) return;
+      const href = info?.href;
+      setCurrentHref(href);
+      if (href === lastHref.current) {
+        if (href !== undefined) setOpen(true);
+        return;
+      }
+      lastHref.current = href;
+      setError("");
+      setEditing(false);
+      setOpen(href !== undefined);
+    });
+    return () => {
+      editor.onLinkRequest(() => {});
+      editor.onOpenLink(undefined);
+      editor.onCursorLinkChange(() => {});
+    };
+  }, [editor, disabled, beginEdit, openLink]);
+  const close = () => { setOpen(false); editor?.focus(); };
   const submit = () => {
     const trimmed = url.trim();
-    if (trimmed === "") return;
-    onInsert(trimmed);
-    setOpen(false);
-    setUrl("");
+    const next = trimmed.startsWith("#") && trimmed.length > 1 ? trimmed : normalizeLinkUrl(trimmed);
+    if (!next || hasUrlAlteringChars(next)) { setError("Enter a valid web, email, phone, or document link."); return; }
+    editor?.insertLink(next);
+    lastHref.current = next;
+    close();
   };
   return (
     <>
       <button
-        ref={btnRef} type="button" title="Insert link" aria-label="Insert link" aria-haspopup="true"
-        aria-expanded={open} disabled={disabled} className={`wr-btn${open ? " wr-btn--active" : ""}`}
-        onMouseDown={(e) => e.preventDefault()} onClick={() => setOpen((v) => !v)}
+        ref={btnRef} type="button" title={currentHref ? "Edit link" : "Insert link"}
+        aria-label={currentHref ? "Edit link" : "Insert link"} aria-haspopup="true"
+        aria-expanded={open && !disabled} disabled={disabled} className={`wr-btn${open ? " wr-btn--active" : ""}`}
+        onMouseDown={(e) => e.preventDefault()} onClick={beginEdit}
       >
         <LinkIcon aria-hidden="true" className="wr-icon" />
       </button>
-      <AnchoredPopover open={open} onClose={() => setOpen(false)} anchorRef={btnRef}>
-        <div className="wr-link">
-          <input
-            type="url" placeholder="https://…" value={url} autoFocus
-            onChange={(e) => setUrl(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); submit(); } }}
-            className="wr-text"
-          />
-          <button type="button" disabled={url.trim() === ""} className="wr-primary" onClick={submit}>Insert link</button>
+      <AnchoredPopover open={open && !disabled} onClose={() => setOpen(false)} anchorRef={btnRef}>
+        <div className="wr-link" role="dialog" aria-label={currentHref ? "Link details" : "Insert link"}>
+          {editing ? <>
+            <input
+              type="text" aria-label="Link URL" placeholder="https://…" value={url} autoFocus
+              onChange={(e) => { setUrl(e.target.value); setError(""); }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") { e.preventDefault(); submit(); }
+                if (e.key === "Escape") { e.preventDefault(); close(); }
+              }}
+              className="wr-text"
+            />
+            <button type="button" disabled={url.trim() === ""} className="wr-primary" onClick={submit}>
+              {currentHref ? "Apply" : "Insert link"}
+            </button>
+          </> : <>
+            <span className="wr-link-url">{currentHref}</span>
+            <button type="button" onClick={() => { if (currentHref) openLink(currentHref); }}>Open link</button>
+            <button type="button" onClick={beginEdit}>Edit link</button>
+          </>}
+          {currentHref && <button type="button" onClick={() => { editor?.removeLink(); lastHref.current = undefined; close(); }}>Remove link</button>}
+          {error && <span role="alert">{error}</span>}
         </div>
       </AnchoredPopover>
     </>
@@ -1176,7 +1240,7 @@ export function WriterDocSurface({
           <RibbonGroup label="Insert">
             <InsertTableMenu disabled={!ready} onInsert={(rows, cols) => run((e) => e.insertTable(rows, cols))} />
             <ImageInsertButton disabled={!ready} onPick={(src, w, h, alt) => run((e) => e.insertImage(src, w, h, alt ? { alt } : undefined))} />
-            <InsertLinkMenu disabled={!ready} onInsert={(url) => run((e) => e.insertLink(url))} />
+            <WriterLinkMenu disabled={!ready} editor={editor} />
           </RibbonGroup>
 
           {tableTs.inTable && (

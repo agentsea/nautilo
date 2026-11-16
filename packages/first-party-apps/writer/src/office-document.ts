@@ -1,10 +1,11 @@
+import { hasUrlAlteringChars, isSafeUrl } from "@nautilo/office-core/url";
 /**
  * Writer office-document container — the TEXT artifact format for the Writer
- * mini-app (D372 / Nautilo Office). Mirrors the Spreadsheet container
+ * mini-app. Mirrors the Spreadsheet container
  * (`../../excel/src/spreadsheet-html-document.ts`) but wraps a Wafflebase
  * `Document` (block model) instead of a Fortune workbook.
  *
- * WHY a text container: M193 `AnchoredTextPatch` is text-only, so office
+ * WHY a text container: `AnchoredTextPatch` is text-only, so office
  * artifacts must serialize to deterministic text — never binary OOXML. The
  * `.docx` boundary lives in the import/export pipeline (P4), not here.
  *
@@ -94,8 +95,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function escapeHtml(value: unknown): string {
-  return String(value ?? "")
+function escapeHtml(value: string | number): string {
+  return String(value)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
@@ -112,7 +113,7 @@ function collectImageSourcesFromInlines(inlines: unknown, sources: string[]): vo
     if (!isRecord(inline)) continue;
     const style = inline["style"];
     if (!isRecord(style)) continue;
-    if (!isWriterImageInline({ text: String(inline["text"] ?? ""), style })) continue;
+    if (!isWriterImageInline({ text: (typeof inline["text"] === "string" ? inline["text"] : ""), style })) continue;
     const imageStyle = readImageInlineStyle(style);
     if (imageStyle !== null) sources.push(imageStyle.src);
   }
@@ -154,7 +155,7 @@ function renderPreviewInlines(inlines: unknown, imageIndex: PreviewImageIndex): 
   let html = "";
   for (const inline of inlines) {
     if (!isRecord(inline)) continue;
-    const text = String(inline["text"] ?? "");
+    const text = (typeof inline["text"] === "string" ? inline["text"] : "");
     const style = inline["style"];
     if (isRecord(style) && isWriterImageInline({ text, style })) {
       const imageStyle = readImageInlineStyle(style);
@@ -177,7 +178,14 @@ function renderPreviewInlines(inlines: unknown, imageIndex: PreviewImageIndex): 
         continue;
       }
     }
-    if (text.length > 0) html += escapeHtml(text);
+    if (text.length > 0) {
+      const href = isRecord(style) ? style["href"] : undefined;
+      const safeLink = typeof href === "string" && !hasUrlAlteringChars(href) &&
+        (isSafeUrl(href) || (href.startsWith("#") && href.length > 1));
+      html += safeLink
+        ? `<a href="${escapeHtml(href)}" rel="noopener noreferrer">${escapeHtml(text)}</a>`
+        : escapeHtml(text);
+    }
   }
   return html;
 }

@@ -7,6 +7,13 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Preserve clickable links in Writer HTML previews and exports, including older
+  saved documents. Show link destinations with open, edit and remove controls,
+  and support the link keyboard shortcut and host-routed link opening.
+  Large Word exports pass conversion commands through a temporary file instead
+  of exceeding the operating system's command-line argument limit, and retain
+  table hyperlinks, document titles and subtitles.
+
 - CLI runtime database acceptance resolves dependencies from the packaged
   server workspace, while retaining support for earlier image layouts and
   refusing automatic package downloads during probes.

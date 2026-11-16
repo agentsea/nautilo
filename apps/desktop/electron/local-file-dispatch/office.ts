@@ -1,5 +1,5 @@
 /**
- * M206 Phase 3 — Electron local Office runner (structured allowlisted operations only).
+ * Electron local Office runner (structured allowlisted operations only).
  */
 
 import * as fs from "node:fs/promises";
@@ -119,7 +119,7 @@ export interface LocalOfficeCommandContext {
   /** Test hook — inject local markdown convert runner. */
   convertRunner?: LocalConvertRunner | undefined;
   /**
-   * D448 final seam for privately staged binary producers. It owns the V2
+   * Final seam for privately staged binary producers. It owns the V2
    * journal, shared coordinator locks, exact events and durable outbox;
    * OfficeCLI, office.run output and local convert remain private generators.
    */
@@ -564,11 +564,13 @@ async function executeOfficeRunWrite(
     if (create.exitCode !== 0) return rejectMalformed(`officecli create failed (${create.exitCode})`);
 
     if (Array.isArray(stagedImages.resolvedOps) && stagedImages.resolvedOps.length > 0) {
+      const commandsPath = path.join(scratch, "commands.json");
+      await fs.writeFile(commandsPath, JSON.stringify(stagedImages.resolvedOps), { mode: 0o600 });
       const batch = await runArgv(run, [
         "batch",
         outPath,
-        "--commands",
-        JSON.stringify(stagedImages.resolvedOps),
+        "--input",
+        commandsPath,
         "--stop-on-error",
         "--json",
       ]);

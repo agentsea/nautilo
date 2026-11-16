@@ -220,6 +220,8 @@ export interface EditorAPI {
   requestLink(): void;
   /** Register a callback for Cmd/Ctrl+K link requests */
   onLinkRequest(cb: () => void): void;
+  /** Delegate link navigation to the embedding host (for sandboxed editors). */
+  onOpenLink(cb: ((href: string) => void) | undefined): void;
   /** Register a callback for cursor-position-based link detection (fires when cursor enters/leaves a link) */
   onCursorLinkChange(cb: (info: { href: string; rect: { x: number; y: number; width: number; height: number } } | undefined) => void): void;
   /** Get the cursor's screen (viewport) coordinates for popover positioning */
@@ -3732,6 +3734,9 @@ export function initialize(
     },
     requestLink: () => {
       textEditor?.onLinkRequest?.();
+    },
+    onOpenLink: (cb) => {
+      if (textEditor) textEditor.onOpenLink = cb;
     },
     onLinkRequest: (cb: () => void) => {
       if (textEditor) textEditor.onLinkRequest = cb;

@@ -1,5 +1,5 @@
 /**
- * M185 — iframe-side `nautiloApp` bridge client tests.
+ * iframe-side `nautiloApp` bridge client tests.
  *
  * Pins the postMessage round-trip contract: requestId pairing, source
  * validation on responses, pending-request behavior, and that request
@@ -82,11 +82,19 @@ function setupBridge(): TestState {
   return state;
 }
 
-describe("M185 nautiloApp bridge client (iframe side)", () => {
+describe("nautiloApp bridge client (iframe side)", () => {
   let state: TestState;
 
   beforeEach(() => {
     state = setupBridge();
+  });
+
+  test("link opening uses the source-validated host request and reports failures", async () => {
+    const promise = state.win.nautiloApp!.links.open("https://example.com/source");
+    const sent = state.capturedMessages.at(-1)!;
+    expect(sent).toMatchObject({ type: "nautilo.app.links.req", op: "open", url: "https://example.com/source" });
+    respondAsParent(state, sent.requestId!, { ok: false, error: "Click the link to open it." });
+    await expect(promise).rejects.toThrow("Click the link");
   });
 
   test("templates require an editable host grant and send no owner or document authority", async () => {
