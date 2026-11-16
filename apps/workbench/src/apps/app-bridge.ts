@@ -1,9 +1,10 @@
+import { openAppLink } from "./app-link-navigation";
 import type { AppImageAsset } from "./app-image-assets";
 import type { AppSlideTemplateLibrary } from "./app-slide-templates";
 import { downloadDocumentCopy } from "./document-recovery-copy";
 import { isAppRecoveryDraft, type AppDraftRecoveryPort, type AppRecoveryWrite } from "./app-draft-recovery";
 /**
- * M185 — parent-side postMessage bridge for sandboxed mini-app iframes.
+ * parent-side postMessage bridge for sandboxed mini-app iframes.
  *
  * Mirrors `viewers/html/state-bridge.ts` invariants:
  *   1. `event.source === iframe.contentWindow` — NOT origin equality.
@@ -76,7 +77,7 @@ type ArtifactTarget = Extract<OpenFileTarget, { kind: "artifact" }>;
 export type AppTheme = "light" | "dark";
 
 /**
- * D342 Phase 2 — "warm-up" draft seed for a freshly-launched app with no bound
+ * "warm-up" draft seed for a freshly-launched app with no bound
  * document. The app runs against an in-memory blank (seeded from a create-action
  * template) and NO workspace artifact is created until the first persistence
  * (document write or state set). If the user never edits, nothing is saved — no
@@ -240,11 +241,11 @@ export type AppBridgeOptions = {
   onHumanEditUpdate?: (update: AppHumanEditUpdate) => void;
   /** Reports whether this exact frame installed an awaited close handler. */
   onLifecycleRegistrationChange?: (registered: boolean) => void;
-  /** D342 Phase 2 — when `target` is absent, the app runs against this draft
+  /** when `target` is absent, the app runs against this draft
    *  (template seed for read/stat). The first write/state-set triggers
    *  `materialize`. */
   draft?: MiniAppDraftSeed;
-  /** D342 Phase 2 — create the workspace artifact this draft has been deferring
+  /** create the workspace artifact this draft has been deferring
    *  and return the bound target. Owned by the surface (it knows the live,
    *  user-typed name). Called at most once per draft (single-flight here). */
   materialize?: (content: string, mimeType: string) => Promise<ArtifactTarget>;
@@ -373,6 +374,8 @@ const HOST_OWNED_TOP_LEVEL_KEYS = [
   "namespaceId",
   "sessionToken",
 ] as const;
+
+type AppLinkRequest = { type: "nautilo.app.links.req"; requestId: string; op: "open"; url: string };
 
 type AppAssetRequest = { type: "nautilo.app.assets.req"; requestId: string; op: "pick" } | { type: "nautilo.app.assets.req"; requestId: string; op: "read"; ref: string };
 
@@ -627,6 +630,7 @@ export type AppBridgeRequest =
   | AppAssetRequest
   | AppDocumentReadRequest
   | AppDocumentWriteRequest
+  | AppLinkRequest
   | AppDocumentSaveCopyRequest
   | AppRecoveryRequest
   | AppTemplateRequest
@@ -1345,6 +1349,9 @@ export function isAppBridgeRequest(x: unknown): x is AppBridgeRequest {
   if (!x || typeof x !== "object") return false;
   const obj = x as Record<string, unknown>;
   return (
+    (obj["type"] === "nautilo.app.links.req" && obj["op"] === "open" &&
+      isNonEmptyString(obj["requestId"]) && isNonEmptyString(obj["url"]) &&
+      Object.keys(obj).every((key) => ["type", "requestId", "op", "url"].includes(key))) ||
     isAssetRequest(obj) ||
     isDocumentReadRequest(obj) ||
     isDocumentWriteRequest(obj) ||
@@ -2039,7 +2046,7 @@ export async function writeBoundDocument(
   return { kind: "error", message: result.message };
 }
 
-/** D342 Phase 2 — load the blank-document seed for a draft (create-action
+/** load the blank-document seed for a draft (create-action
  *  template, or empty when the app exposes no template). */
 async function loadDraftTemplate(
   draft: MiniAppDraftSeed,
@@ -2309,7 +2316,7 @@ export function installAppBridge(opts: AppBridgeOptions): () => void {
     onVideoGenerationImportReferences,
   } = opts;
 
-  // D342 Phase 2 — draft state. `activeTarget` starts unbound for a draft and
+  // draft state. `activeTarget` starts unbound for a draft and
   // is set the moment the draft materializes; single-flight promises ensure the
   // template is fetched once and the artifact is created exactly once even under
   // concurrent writes.
@@ -2493,6 +2500,17 @@ export function installAppBridge(opts: AppBridgeOptions): () => void {
   };
 
   async function handleMessage(msg: AppBridgeRequest): Promise<void> {
+    if (msg.type === "nautilo.app.links.req") {
+      try {
+        await openAppLink(appId, msg.url);
+        postBridgeResponse(iframe, msg.requestId, { ok: true, value: null });
+      } catch (error) {
+        postBridgeResponse(iframe, msg.requestId, {
+          ok: false, error: error instanceof Error ? error.message : "Could not open this link.",
+        });
+      }
+      return;
+    }
     // Use an allow-list so new bridge operations cannot silently grant a
     // preview write authority. This gate runs after source and shape validation
     // and before any filesystem, API, lifecycle, or proposal side effect.
@@ -2790,7 +2808,7 @@ export function installAppBridge(opts: AppBridgeOptions): () => void {
       postBridgeResponse(iframe, msg.requestId, payload);
     };
 
-    // D342 Phase 2 — a draft (no bound target yet) reads/stats off the template
+    // a draft (no bound target yet) reads/stats off the template
     // and materializes a workspace artifact on the first write/state-set.
     // `unboundDraft` narrows to the seed only while still unmaterialized.
     const unboundDraft = activeTarget === undefined ? draft : undefined;

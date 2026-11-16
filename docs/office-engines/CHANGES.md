@@ -301,3 +301,6 @@ including the bounded-cost large-paste indicator fixture. Docs uses the owned
 `browser.js` / `browser.cjs` entry names for both consumers. Current Folder
 creation retains the coordinated missing-preimage guard for native text and
 binary exports, including binary hash receipts and retry classification.
+
+- Docs exposes an embedding-host callback for link opening so sandboxed Writer
+  can route modifier-click and read-only navigation through its host bridge.
