@@ -29,6 +29,7 @@ import { migrateArtifactsToVolumeModule } from "../../src/commands/migrate-artif
 import { migrateMediaToVolumeModule } from "../../src/commands/migrate-media-to-volume.ts";
 import { statusModule } from "../../src/commands/status.ts";
 import { authModule } from "../../src/commands/auth.ts";
+import { createServerAdminCli } from "../../src/server-admin-index.ts";
 import {
   buildFirstDeployProviderConsumeHook,
   resolveDeployConfigForCompose,
@@ -166,6 +167,10 @@ function makeFakeDriver(): ComposeDriver & { calls: VerbCall[] } {
         reasons: [],
         limitations: [],
       };
+    },
+    authReconcile: async (...args: unknown[]) => {
+      calls.push({ method: "authReconcile", args });
+      return { reconciled: true };
     },
     releasePlan: async (...args: unknown[]) => {
       calls.push({ method: "releasePlan", args });
@@ -747,6 +752,34 @@ user = "root"
     expect(process.exitCode).toBe(0);
     expect(fake.calls.some((call) => call.method === "authPlan")).toBe(true);
     expect(output.join("")).toContain('"classification": "compatible"');
+  });
+
+  test.each(["plan", "reconcile"])("standalone auth %s dispatches through the selected Compose profile", async (command) => {
+    const originalWrite = process.stdout.write;
+    process.stdout.write = (() => true) as typeof process.stdout.write;
+    try {
+      await createServerAdminCli({
+        argv: ["auth", command, "--profile", "local-default", ...(command === "reconcile" ? ["--confirm-session-impact"] : [])],
+      }).parseAsync();
+    } finally {
+      process.stdout.write = originalWrite;
+    }
+    expect(process.exitCode).toBe(0);
+    const call = fake.calls.find((item) => item.method === (command === "plan" ? "authPlan" : "authReconcile"));
+    expect(call?.args[0]).toMatchObject({ name: "local-default" });
+    if (command === "reconcile") expect(call?.args[1]).toEqual({ confirmSessionImpact: true });
+    expect(fake.calls.some((item) => ["deploy", "upgrade", "restore"].includes(item.method))).toBe(false);
+  });
+
+  test.each([{ flags: [] }, { flags: ["--confirm-session-impact=false"] }])("standalone auth reconcile never assumes session-impact confirmation (%j)", async ({ flags }) => {
+    const originalWrite = process.stdout.write;
+    process.stdout.write = (() => true) as typeof process.stdout.write;
+    try {
+      await createServerAdminCli({ argv: ["auth", "reconcile", "--profile", "local-default", ...flags] }).parseAsync();
+    } finally {
+      process.stdout.write = originalWrite;
+    }
+    expect(fake.calls.find((item) => item.method === "authReconcile")?.args[1]).toEqual({ confirmSessionImpact: false });
   });
 
   test("release plan previews the latest signed stable runtime image", async () => {

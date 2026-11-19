@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.39] - 2026-11-19
+
+### Fixed
+
+- Expose managed `auth plan` and `auth reconcile` in the signed administrator
+  CLI. Reconciliation retains full recovery capture, explicit session-impact
+  confirmation and live verification before advancing the applied contract.
+  Legacy identity-provider commands remain outside the standalone command set.
+
 ## [0.1.38] - 2026-11-14
 
 ### Fixed

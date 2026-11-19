@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Restore managed authentication planning and explicit backed-up reconciliation
+  in the signed administrator CLI, allowing upgrades to resume after an earlier
+  authentication baseline change without bypassing compatibility checks.
+
 - Update the server’s pinned headless Chrome runtime to stable 158.0.8127.36
   on Linux AMD64 and ARM64, retaining archive integrity, executable integrity,
   bundled licenses, and native OfficeCLI browser qualification.
