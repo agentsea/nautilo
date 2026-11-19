@@ -2212,12 +2212,15 @@ describe("app tool registration — live Writer session gate", () => {
     expect(beginTaskWriterReviewVerification({
       taskId: "coverage-task", taskRunId: "coverage-run", ownerId: binding.userId,
     })).toBe(true);
+    // Both host admission and the worker read the same canonical bytes. A second
+    // serialization would mint a different metadata.updatedAt and fingerprint.
+    const canonicalSource = liveWriterCanonical("verified");
     await registerAppToolsForApp(root, "nautilo-writer", {
       catalog,
       liveSessionRegistry: registry,
-      readLiveCanonical: async () => ({ ok: true, content: liveWriterCanonical("verified") }),
+      readLiveCanonical: async () => ({ ok: true, content: canonicalSource }),
       invoke: async (request): Promise<AppToolInvokeResult> => {
-        const canonicalSource = liveWriterCanonical("verified");
+        expect((request.args as Record<string, unknown>)["__canonicalContent"]).toBe(canonicalSource);
         const parsed = parseWriterHtml(canonicalSource);
         if (!parsed.ok) throw new Error("Invalid canonical test fixture");
         return { ok: true, result: await readWriterContext({ sessionToken: "server-validated-live-session", documentVersion: ARTIFACT_VERSION,
