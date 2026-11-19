@@ -21,7 +21,7 @@ import {
   foregroundModelControlPlanFromSnapshot,
   collectPendingInterruptEvents,
   maybeSummarizeImagesWithVisionFallback,
-  modelSupportsInput,
+  modelSupportsAgentInput,
   imageAssistanceContext,
   imageAssistanceInputDigest,
   type ImageAssistanceResult,
@@ -420,6 +420,7 @@ export async function* forkLanggraphExecutor(
     protectedTurn: protectedTurn !== undefined,
   });
   const modelId = resolveAdmittedForegroundModelId(foregroundModelPlan.initialModelId, fundingSession);
+  const mindswapperModels = fundingSession?.mindswapperModels ?? [];
   assertForegroundChatFundingWorkloadSupported(fundingSession, {
     hasImages: multimodalImages.length > 0,
     voiceRequested: input["voiceMode"] === true,
@@ -456,7 +457,7 @@ export async function* forkLanggraphExecutor(
   let imageReplyContext = "";
   // Context preparation runs before graph nodes establish their funding scope.
   const historyMessages = await withMindSwapperModels(
-    fundingSession?.mindswapperModels ?? [],
+    mindswapperModels,
     async () => (protectedTurn === undefined
       ? await prepareForegroundEncryptedContext(
         () => resolveForegroundHistoryMessages({
@@ -502,10 +503,10 @@ export async function* forkLanggraphExecutor(
 
   // Like the main executor, a live Shadow fork verifies all selected context
   // before allowing the image-summary model to run.
-  const forkUserForTranscript = buildForegroundUserHumanMessage({
+  const forkUserForTranscript = withMindSwapperModels(mindswapperModels, () => buildForegroundUserHumanMessage({
     userText: message, attachmentTextBlocks, multimodalImages, modelId,
     suppressImageDropNote: true,
-  });
+  }));
   const savedFingerprints = new Set<string>();
 
   const foregroundContextReceipts = new ForegroundContextReceipts(currentMessageId);
@@ -558,25 +559,26 @@ export async function* forkLanggraphExecutor(
   }
 
   if (protectedTurn) imageReplyContext = protectedTurn.history.find((hit) => hit.messageId === input["replyToMessageId"])?.snippet ?? "";
-  const needsImageAssistance = multimodalImages.length > 0
-    && !withMindSwapperModels(fundingSession?.mindswapperModels ?? [], () => modelSupportsInput(modelId, "image"));
-  if (needsImageAssistance) await fundingSession?.recheckAttempt(modelId).catch((error) => failImageAssistance(error, signal));
-  const retainedImageResultAvailable = retainedImageResults.some((result) => result.inputDigest === imageAssistanceInputDigest({
-    turnId: turnId || jobId, userText: message, replyContext: imageReplyContext, images: multimodalImages,
-  }));
-  const assistance = needsImageAssistance && !retainedImageResultAvailable ? await openImageAssistanceForInvocation({
-    authority: getCurrentAcceptedInvocationAuthority(), jobInput: input,
-    causalHumanUserId, entrypoint: foregroundActivationState.trustedExecutionEntrypoint === "foreground.fork" ? "foreground.fork" : null,
-    modelId, roomId, agentId, fundingKind: fundingSession?.kind ?? "server",
-    jobId: jobId, turnId: turnId || jobId,
-    inputDigest: imageAssistanceInputDigest({ turnId: turnId || jobId, userText: message, replyContext: imageReplyContext, images: multimodalImages }),
-    ...(fundingSession ? { parentFunding: fundingSession } : {}),
-  }).catch((error) => failImageAssistance(error, signal)) : null;
-  const imageAssistanceResult = await maybeSummarizeImagesWithVisionFallback({
-    humanUserId: causalHumanUserId ?? "", mainModelId: modelId,
-    images: multimodalImages, userText: message, turnId: turnId || jobId,
-    roomId, agentId, replyContext: imageReplyContext, retainedResults: retainedImageResults,
-    assistance, signal,
+  const imageAssistanceResult = await withMindSwapperModels(mindswapperModels, async () => {
+    const needsImageAssistance = multimodalImages.length > 0 && !modelSupportsAgentInput(modelId, "image");
+    if (needsImageAssistance) await fundingSession?.recheckAttempt(modelId).catch((error) => failImageAssistance(error, signal));
+    const retainedImageResultAvailable = retainedImageResults.some((result) => result.inputDigest === imageAssistanceInputDigest({
+      turnId: turnId || jobId, userText: message, replyContext: imageReplyContext, images: multimodalImages,
+    }));
+    const assistance = needsImageAssistance && !retainedImageResultAvailable ? await openImageAssistanceForInvocation({
+      authority: getCurrentAcceptedInvocationAuthority(), jobInput: input,
+      causalHumanUserId, entrypoint: foregroundActivationState.trustedExecutionEntrypoint === "foreground.fork" ? "foreground.fork" : null,
+      modelId, roomId, agentId, fundingKind: fundingSession?.kind ?? "server",
+      jobId: jobId, turnId: turnId || jobId,
+      inputDigest: imageAssistanceInputDigest({ turnId: turnId || jobId, userText: message, replyContext: imageReplyContext, images: multimodalImages }),
+      ...(fundingSession ? { parentFunding: fundingSession } : {}),
+    }).catch((error) => failImageAssistance(error, signal)) : null;
+    return maybeSummarizeImagesWithVisionFallback({
+      humanUserId: causalHumanUserId ?? "", mainModelId: modelId,
+      images: multimodalImages, userText: message, turnId: turnId || jobId,
+      roomId, agentId, replyContext: imageReplyContext, retainedResults: retainedImageResults,
+      assistance, signal,
+    });
   });
   const visionSummaryBlocks = imageAssistanceResult ? [imageAssistanceContext(imageAssistanceResult)] : [];
   const suppressImageDropNote = imageAssistanceResult !== null;
@@ -598,14 +600,14 @@ export async function* forkLanggraphExecutor(
   // The fork's own user message. The server-time prefix (when present) lives
   // only in the fork checkpoint; the clean copy is persisted to the parent
   // transcript (unchanged behavior).
-  const forkUser = buildForegroundUserHumanMessage({
+  const forkUser = withMindSwapperModels(mindswapperModels, () => buildForegroundUserHumanMessage({
     userText: message,
     attachmentTextBlocks: mergedAttachmentTextBlocks,
     multimodalImages,
     modelId,
     suppressImageDropNote,
     ...(serverTimePrefixIso ? { serverTimePrefixIso } : {}),
-  });
+  }));
 
 
   const { voiceEnabled, voiceSubjectId } = forkVoiceExecutionContext(
@@ -820,7 +822,7 @@ export async function* forkLanggraphExecutor(
       signal,
       ...(foregroundContextRefreshEligible ? {
         rebuildForegroundContext: (transition) => withMindSwapperModels(
-          fundingSession?.mindswapperModels ?? [],
+          mindswapperModels,
           () => createForegroundContextRebuilder({
             roomId, ownerId: ownerId, agentId, receipts: foregroundContextReceipts,
             ...(protectedTurn === undefined ? {} : { protectedTurn }),

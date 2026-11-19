@@ -1,7 +1,7 @@
 import { HumanMessage } from "@langchain/core/messages";
 import type { ChatMultimodalImagePart } from "@nautilo/types";
 import { normalizeAcceptedChatImageMime } from "@nautilo/attachments";
-import { modelSupportsInput } from "@nautilo/model-capabilities";
+import { modelSupportsAgentInput } from "../providers/models";
 
 type VisionContentPart =
   | { type: "text"; text: string }
@@ -63,7 +63,7 @@ export function buildForegroundUserHumanMessage(args: {
       : new HumanMessage(bodyText);
   }
 
-  const visionOk = modelSupportsInput(args.modelId, "image");
+  const visionOk = modelSupportsAgentInput(args.modelId, "image");
   if (!visionOk && args.multimodalImages.length > 0) {
     if (args.suppressImageDropNote === true) {
       const inner = [attachmentPrefix, trimmedUser].filter(Boolean).join("\n\n");

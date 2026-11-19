@@ -4,6 +4,7 @@ import {
   convertCompletionsMessageToBaseMessage,
 } from "@langchain/openai";
 import type { MindSwapperChatOffer } from "../config/mindswapper-models";
+import { readBoundedMediaJson } from "./media-response";
 
 type ChatDelta = Parameters<typeof convertCompletionsDeltaToBaseMessageChunk>[0];
 type ChatCompletion = Parameters<typeof convertCompletionsMessageToBaseMessage>[0];
@@ -13,7 +14,14 @@ const NON_PROMPT_FIELDS = new Set(["model", "stream", "stream_options", "n", "ma
   "gateway_context", "temperature", "top_p", "seed", "stop", "parallel_tool_calls"]);
 const REQUEST_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-type MindSwapperRequestErrorCode = "authentication_error" | "insufficient_balance" | "unsupported_request"
+const BILLING_REFUSALS = {
+  insufficient_balance: "the selected account has insufficient credit. Check its balance.",
+  billing_needs_review: "the account has a request awaiting billing review. Check MindSwapper Billing.",
+  spend_limit_reached: "an account or key spending limit was reached. Check MindSwapper Billing.",
+  billing_error: "MindSwapper declined this request for billing reasons. Check MindSwapper Billing.",
+} as const;
+
+type MindSwapperRequestErrorCode = "authentication_error" | keyof typeof BILLING_REFUSALS | "unsupported_request"
   | "no_eligible_supply" | "rate_limit_error" | "outcome_unknown" | "context_length_exceeded" | "invalid_endpoint";
 
 export class MindSwapperRequestError extends Error {
@@ -50,7 +58,10 @@ export function sanitizeMindSwapperError(error: unknown): Error {
     return new MindSwapperRequestError("the connection key was rejected. Check the key in Settings.", "authentication_error", status, id);
   }
   if (status === 402) {
-    return new MindSwapperRequestError("the selected account has insufficient credit. Check its balance.", "insufficient_balance", status, id);
+    const wireCode = details?.["code"];
+    const code = wireCode === "insufficient_balance" || wireCode === "billing_needs_review" || wireCode === "spend_limit_reached"
+      ? wireCode : "billing_error";
+    return new MindSwapperRequestError(BILLING_REFUSALS[code], code, status, id);
   }
   if (status === 413) {
     return new MindSwapperRequestError("the request is too large or complex for this connection.", "unsupported_request", status, id);
@@ -186,8 +197,14 @@ export function createMindSwapperFetch(
       ...(init.signal === undefined ? {} : { signal: init.signal }),
     });
     if (!response.ok) {
-      await response.body?.cancel().catch(() => undefined);
-      throw sanitizeMindSwapperError({ status: response.status, request_id: response.headers.get("x-request-id") });
+      let code: unknown;
+      if (response.status === 402 && response.headers.get("content-type")?.startsWith("application/json")) {
+        const payload = asRecord(await readBoundedMediaJson(response).catch(() => undefined));
+        code = asRecord(payload?.["error"])?.["code"];
+      } else {
+        await response.body?.cancel().catch(() => undefined);
+      }
+      throw sanitizeMindSwapperError({ status: response.status, code, request_id: response.headers.get("x-request-id") });
     }
     return request["stream"] === true ? requireStreamTerminator(response) : response;
   }) as typeof fetch;

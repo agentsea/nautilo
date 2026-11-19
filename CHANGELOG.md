@@ -7,6 +7,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Use the selected MindSwapper connection’s live model capabilities for chat
+  attachments. Distinguish billing review and spending limits from low credit.
+
 - Preserve clickable links in Writer HTML previews and exports, including older
   saved documents. Show link destinations with open, edit and remove controls,
   and support the link keyboard shortcut and host-routed link opening.

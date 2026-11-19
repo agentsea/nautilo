@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import type { MindSwapperChatModel } from "@nautilo/agent";
 import { assertChatAttachmentImageSupport, ImageAttachmentModelError, pendingChatAttachmentsAreImages } from "../../src/messaging/attachments";
-import type { resolveModelFunding } from "../../src/lib/model-funding";
+import { resolveCallerImageInput } from "../../src/lib/image-assistance";
+import type { ModelFundingDecision, resolveModelFunding } from "../../src/lib/model-funding";
 import type { findPendingMessageAttachmentForSender } from "@nautilo/db";
 
 const textModel = { id: "fireworks:accounts/fireworks/models/glm-5p3", label: "GLM 5.3" };
@@ -14,6 +16,34 @@ function lookup(mimeType: string | null, calls: unknown[]) {
 }
 
 describe("new image admission", () => {
+  test("uses the admitted MindSwapper key's image and tools offer without an ambient catalogue", async () => {
+    const model: MindSwapperChatModel = {
+      id: "mindswapper:maker/model",
+      displayName: "Model",
+      offers: [{ inputModalities: ["text", "image"], supportedParameters: ["tools"], maxInputTokens: 2000, maxOutputTokens: 1000 }],
+    };
+    const humanUserId = "synthetic-human";
+    const funding: ModelFundingDecision = { kind: "personal", humanUserId, payerHumanId: humanUserId,
+      modelId: model.id, workload: "foreground_text_chat", providerRoute: "mindswapper",
+      credentialId: "synthetic-credential", credentialRevision: 1 };
+    const resolveImage: typeof resolveCallerImageInput = (input) => resolveCallerImageInput(input, {
+      readMindSwapperModel: async (admitted, tools) => {
+        expect(admitted).toBe(funding);
+        expect(tools).toBe(true);
+        return model;
+      },
+    });
+    await assertChatAttachmentImageSupport({ ...args, models: [{ id: model.id, funding }], humanUserId },
+      lookup("image/png", []), resolveImage, async () => {
+        throw new Error("must use the admitted funding decision");
+      });
+    await assertChatAttachmentImageSupport({ ...args, models: [{ id: model.id }], humanUserId },
+      lookup("image/png", []), resolveImage, async (request) => {
+        expect(request.mindSwapperTools).toBe(true);
+        return funding;
+      });
+  });
+
   test("accepts a caller-authorized auxiliary route while retaining native capability", async () => {
     const calls: unknown[] = [];
     const funding: typeof resolveModelFunding = async (input) => ({

@@ -2,6 +2,7 @@ import {
   hydrateSurplusChatCatalog,
   resolveQualifiedSurplusChatRoute,
   resolveCatalogModel,
+  withMindSwapperModels,
   type ForegroundChatFundingSession,
   type QualifiedSurplusChatRoute,
 } from "@nautilo/agent";
@@ -20,10 +21,11 @@ import type {
 } from "@nautilo/types";
 import { assertForegroundRoomAuthority, usageFundingFor } from "./foreground-chat-funding";
 import {
-  ModelFundingError, resolveModelFunding, withAdmittedPersonalCredential,
+  ModelFundingError, readAdmittedMindSwapperModel, resolveModelFunding, withAdmittedPersonalCredential,
   withAdmittedPersonalProviderKey,
   type ModelFundingDecision,
 } from "./model-funding";
+import { isMindSwapperModelId } from "./mindswapper-catalog";
 import { imageAssistanceInputCommitment } from "./image-assistance-input-commitment";
 import { getServerDirectDb } from "./server-direct-db";
 import {
@@ -41,6 +43,7 @@ export interface ImageAssistanceSelectionDeps extends ImageUnderstandingPreferen
   readonly hydrateSurplusChatCatalog?: typeof hydrateSurplusChatCatalog;
   /** Pure offline seam for exact vendor-confirmed route tests. */
   readonly getQualifiedSurplusChatRoutes?: () => readonly QualifiedSurplusChatRoute[];
+  readonly readMindSwapperModel?: typeof readAdmittedMindSwapperModel;
 }
 
 export interface ImageAssistanceExecutionDeps extends ImageAssistanceSelectionDeps {
@@ -88,10 +91,34 @@ export async function selectCallerImageAssistance(
   return selection;
 }
 
+type CallerImageInput = Readonly<{
+  humanUserId: string;
+  modelId: string;
+  funding: ModelFundingDecision;
+  mindSwapperTools?: boolean;
+}>;
+
 /** Native modality and the caller's auxiliary image route remain distinct. */
 export async function resolveCallerImageInput(
-  input: Readonly<{ humanUserId: string; modelId: string; funding: ModelFundingDecision }>,
+  input: CallerImageInput,
   deps: ImageAssistanceSelectionDeps = {},
+): Promise<"direct" | "assisted" | "unavailable"> {
+  if (isMindSwapperModelId(input.modelId)) {
+    if (input.funding.modelId !== input.modelId || input.funding.humanUserId !== input.humanUserId) {
+      return "unavailable";
+    }
+    const model = await (deps.readMindSwapperModel ?? readAdmittedMindSwapperModel)(
+      input.funding, input.mindSwapperTools ?? true,
+    );
+    if (!model) return "unavailable";
+    return withMindSwapperModels([model], () => resolveCallerImageInputInScope(input, deps));
+  }
+  return resolveCallerImageInputInScope(input, deps);
+}
+
+async function resolveCallerImageInputInScope(
+  input: CallerImageInput,
+  deps: ImageAssistanceSelectionDeps,
 ): Promise<"direct" | "assisted" | "unavailable"> {
   if (isSignedImageUnderstandingModel(input.modelId, deps)) {
     const routes = deps.getQualifiedSurplusChatRoutes?.();
