@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Edit text directly in ordinary HTML pages, with a Text/Source switch, local
+  undo and redo, and the existing autosave/conflict controls. Preserve surrounding
+  markup and page styles; pause page scripts in text-editing mode.
+
 - Let Genies read a Writer document, section, selection, or block range in one
   request when it fits their available context, with exact continuation for
   larger reads. Replace the five-block window with runtime-sized pages and

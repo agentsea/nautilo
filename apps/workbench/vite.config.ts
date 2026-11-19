@@ -121,6 +121,9 @@ export default defineConfig(() => ({
   optimizeDeps: {
     exclude: [
       "@mdxeditor/editor",
+      // Direct vanilla editors must share the same core command identities.
+      // Prebundling these aliases would bypass the scoped resolver above.
+      ...Object.values(MDXEDITOR_LEXICAL_ALIASES),
       // Silurus resolves each parser WASM relative to its direct format module.
       // Prebundling rewrites that module into .vite/deps and sends the worker to
       // an SPA fallback instead of the matching wasm asset.

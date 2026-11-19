@@ -11,7 +11,7 @@ import type { OpenFileTarget } from "../components/browser-column/open-file-targ
 import { relativeFromWorkspace } from "../components/browser-column/cited-paths";
 import { basename, MAX_TEXT_PREVIEW_BYTES } from "../lib/file-preview";
 import { desktopAPI } from "../lib/desktop";
-import { canEditInThisChannel, editorKindForFile } from "./editor-kind";
+import { canEditInThisChannel, editorKindForFile, isHtmlTextCandidate } from "./editor-kind";
 import {
   loadEditableText,
   type LoadEditableTextResult,
@@ -43,6 +43,9 @@ type EditorSession = {
 
 const MarkdownEditor = deploymentSafeLazy(() =>
   import("./markdown-editor").then((m) => ({ default: m.MarkdownEditor })),
+);
+const HtmlTextEditor = deploymentSafeLazy(() =>
+  import("./html-text-editor").then((m) => ({ default: m.HtmlTextEditor })),
 );
 const CodeEditor = deploymentSafeLazy(() =>
   import("./code-editor").then((m) => ({ default: m.CodeEditor })),
@@ -135,11 +138,13 @@ type LoadedEditorProps = {
 
 function LoadedEditorBody({
   file,
+  initial,
   editor,
   onView,
   onClose,
   onFocus,
 }: LoadedEditorProps & { editor: EditorSession }) {
+  const [htmlMode, setHtmlMode] = useState<"text" | "source">("text");
   const [openError, setOpenError] = useState<string | null>(null);
   const [pendingNav, setPendingNav] = useState<PendingNavAction | null>(null);
 
@@ -164,6 +169,7 @@ function LoadedEditorBody({
   } = editor;
 
   const editorKind = editorKindForFile(file);
+  const htmlTextCandidate = useMemo(() => isHtmlTextCandidate(file, initial.content), [file, initial.content]);
   const relPath = useMemo(() => {
     if (file.kind === "artifact") return file.path;
     return relativeFromWorkspace(file.rootPath, file.path);
@@ -271,6 +277,17 @@ function LoadedEditorBody({
               Edit
             </button>
           </div>
+
+          {htmlTextCandidate ? (
+            <div className="flex rounded-md border border-border p-0.5 text-xs" role="group" aria-label="HTML editing mode">
+              {(["text", "source"] as const).map((mode) => (
+                <button key={mode} type="button" aria-pressed={htmlMode === mode} onClick={() => setHtmlMode(mode)}
+                  className={`rounded px-2 py-0.5 ${htmlMode === mode ? "bg-background-element font-medium text-foreground" : "text-foreground-muted hover:bg-background-element"}`}>
+                  {mode === "text" ? "Text" : "Source"}
+                </button>
+              ))}
+            </div>
+          ) : null}
 
           <span className={statusPillClass(status)}>
             {statusPillLabel(status, lastSavedAt)}
@@ -442,6 +459,8 @@ function LoadedEditorBody({
                 onChange={setDraftFromEditor}
                 diffMarkdown={conflict?.latestContent ?? undefined}
               />
+            ) : htmlTextCandidate && htmlMode === "text" ? (
+              <HtmlTextEditor value={draft} onChange={setDraftFromEditor} onSave={() => { void saveNow({ checkpoint: true }); }} />
             ) : (
               <CodeEditor
                 value={draft}
