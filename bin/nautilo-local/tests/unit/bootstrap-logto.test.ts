@@ -36,6 +36,7 @@ import {
   MANAGEMENT_API_REQUEST_TIMEOUT_MS,
   mergeCustomClientMetadata,
   mintM2mToken,
+  verifyExistingM2mCredential,
   ORG_ROLES_TO_SEED,
   PROVISIONED_LOGTO_APPLICATION_IDENTITIES,
   ProvisionedLogtoIdentityError,
@@ -98,6 +99,33 @@ test("clone URI rebind removes only proven source-generated values", () => {
     "http://tau",
   ]);
   expect(patch.removedRedirects).toEqual(["http://qa-source/auth/callback"]);
+});
+
+describe("existing M2M credential validation", () => {
+  test("uses the exact application, client-secret Basic and management audience without returning the token", async () => {
+    let observed: Request | undefined;
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      observed = input instanceof Request ? new Request(input, init) : new Request(String(input), init);
+      return new Response(JSON.stringify({ access_token: "synthetic-access-token" }), { status: 200 });
+    }) as typeof fetch;
+    expect(await verifyExistingM2mCredential("https://auth.example", "fixture-app", "fixture-secret")).toBe(true);
+    expect(observed?.url).toBe("https://auth.example/oidc/token");
+    expect(observed?.method).toBe("POST");
+    expect(observed?.headers.get("authorization")).toBe(`Basic ${Buffer.from("fixture-app:fixture-secret").toString("base64")}`);
+    const body = new URLSearchParams(await observed!.text());
+    expect(body.get("grant_type")).toBe("client_credentials");
+    expect(body.get("resource")).toBe("https://default.logto.app/api");
+    expect(body.has("client_secret")).toBe(false);
+  });
+
+  test("refuses rejected and malformed token responses without exposing provider errors", async () => {
+    for (const response of [new Response("private-response-canary", { status: 401 }), new Response("not-json"), new Response("{}"), new Response('{"access_token":""}')]) {
+      globalThis.fetch = (async () => response) as unknown as typeof fetch;
+      expect(await verifyExistingM2mCredential("https://auth.example", "fixture-app", "fixture-secret")).toBe(false);
+    }
+    globalThis.fetch = (async () => { throw Error("private-network-canary"); }) as unknown as typeof fetch;
+    expect(await verifyExistingM2mCredential("https://auth.example", "fixture-app", "fixture-secret")).toBe(false);
+  });
 });
 
 describe("mintM2mToken — transient-tolerant retry", () => {

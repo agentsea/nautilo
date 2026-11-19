@@ -866,6 +866,32 @@ export const TOKEN_MINT_MAX_ATTEMPTS = 6;
 const TOKEN_MINT_BACKOFF_CEILING_MS = 8_000;
 const TOKEN_MINT_REQUEST_TIMEOUT_MS = 10_000;
 
+/** Validate an existing credential only; discard the token and never rotate it. */
+export async function verifyExistingM2mCredential(
+  endpoint: string,
+  applicationId: string,
+  secret: string,
+): Promise<boolean> {
+  try {
+    const response = await fetch(`${endpoint}/oidc/token`, {
+      method: "POST",
+      headers: {
+        authorization: `Basic ${Buffer.from(`${applicationId}:${secret}`).toString("base64")}`,
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({ grant_type: "client_credentials", resource: "https://default.logto.app/api", scope: "all" }),
+      signal: AbortSignal.timeout(TOKEN_MINT_REQUEST_TIMEOUT_MS),
+    });
+    if (!response.ok) return false;
+    const result: unknown = await response.json();
+    return result !== null && typeof result === "object"
+      && "access_token" in result && typeof result.access_token === "string"
+      && result.access_token.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
 export async function mintM2mToken(
   endpoint: string,
   clientId: string,
@@ -1591,6 +1617,7 @@ async function readProvisionedLogtoConfig(
         legacySecret: m2mDetails.secret,
         preferredSecret: readConfiguredM2mSecret(envPath, m2m.id),
         readSecrets: () => api(client, "GET", `/api/applications/${encodeURIComponent(m2m.id)}/secrets`),
+        verifyPreferredSecret: (secret) => verifyExistingM2mCredential(endpoint, m2m.id, secret),
       }),
     });
   } catch (error) {
@@ -2200,6 +2227,7 @@ export async function runBootstrap(
     legacySecret: m2mSecret,
     preferredSecret: readConfiguredM2mSecret(options.envPath ?? resolveDotenvPath(), m2mApp.id),
     readSecrets: () => api(defaultClient, "GET", `/api/applications/${encodeURIComponent(m2mApp.id)}/secrets`),
+    verifyPreferredSecret: (secret) => verifyExistingM2mCredential(endpoint, m2mApp.id, secret),
   });
 
   // Step 13: persist via config-guard. Idempotent on equal-value

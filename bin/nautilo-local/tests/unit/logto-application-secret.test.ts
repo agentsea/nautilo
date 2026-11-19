@@ -40,6 +40,25 @@ describe("existing Logto application secret readback", () => {
     await expectSelectionRefusal(readLogtoApplicationSecret({ applicationId: app, preferredSecret: "expired-value", readSecrets: async () => rows, now: 1000 }));
   });
 
+  test("retains an unlisted legacy credential only after its token grant succeeds", async () => {
+    const checked: string[] = [];
+    const value = await readLogtoApplicationSecret({ applicationId: app, preferredSecret: "legacy-value", readSecrets: async () => [secret("modern-value")], verifyPreferredSecret: async (candidate) => { checked.push(candidate); return true; } });
+    expect(value).toBe("legacy-value");
+    expect(checked).toEqual(["legacy-value"]);
+  });
+
+  test("refuses an unlisted configured credential when validation fails or throws", async () => {
+    for (const verifyPreferredSecret of [async () => false, async () => { throw Error("private-response-canary"); }]) {
+      await expectSelectionRefusal(readLogtoApplicationSecret({ applicationId: app, preferredSecret: "legacy-value", readSecrets: async () => [secret("modern-value")], verifyPreferredSecret }));
+    }
+  });
+
+  test("does not use token validation to bypass an explicitly expired listed secret", async () => {
+    let checks = 0;
+    await expectSelectionRefusal(readLogtoApplicationSecret({ applicationId: app, preferredSecret: "expired-value", readSecrets: async () => [secret("expired-value", 999)], now: 1000, verifyPreferredSecret: async () => { checks++; return true; } }));
+    expect(checks).toBe(0);
+  });
+
   test.each([
     { rows: [] },
     { rows: [secret("first-value"), secret("second-value")] },
