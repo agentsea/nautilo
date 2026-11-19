@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef, type KeyboardEvent } from "react";
+import { Bold, Italic, Link as LinkIcon, Underline, type LucideIcon } from "lucide-react";
 
 export type HtmlFormattingMark = "bold" | "italic" | "underline";
 export type HtmlFormattingSelection = {
@@ -27,10 +28,11 @@ type HtmlFormattingToolbarProps = {
 };
 
 const buttonClass = "rounded border border-border px-2.5 py-1 text-foreground hover:bg-background-element disabled:opacity-40 aria-pressed:bg-primary-muted aria-pressed:border-primary aria-[pressed=mixed]:border-primary";
-const marks: { mark: HtmlFormattingMark; label: string; key: string; style: string }[] = [
-  { mark: "bold", label: "Bold", key: "B", style: "font-bold" },
-  { mark: "italic", label: "Italic", key: "I", style: "italic" },
-  { mark: "underline", label: "Underline", key: "U", style: "underline" },
+const iconButtonClass = `${buttonClass} inline-flex h-8 w-8 items-center justify-center p-0`;
+const marks: { mark: HtmlFormattingMark; label: string; key: string; Icon: LucideIcon }[] = [
+  { mark: "bold", label: "Bold", key: "B", Icon: Bold },
+  { mark: "italic", label: "Italic", key: "I", Icon: Italic },
+  { mark: "underline", label: "Underline", key: "U", Icon: Underline },
 ];
 
 export function HtmlFormattingToolbar(props: HtmlFormattingToolbarProps) {
@@ -55,18 +57,18 @@ export function HtmlFormattingToolbar(props: HtmlFormattingToolbarProps) {
 
   return <div className="border-b border-border text-xs">
     <div role="toolbar" aria-label="Text formatting" className="flex flex-wrap items-center gap-2 px-3 py-2" onKeyDown={navigateToolbar}>
-      {marks.map(({ mark, label, key, style }) => <button
+      {marks.map(({ mark, label, key, Icon }) => <button
         key={mark} type="button" aria-label={label}
         aria-pressed={selection.marks[mark] === "mixed" ? "mixed" : selection.marks[mark] === "on"}
         aria-keyshortcuts={`Control+${key.toLowerCase()} Meta+${key.toLowerCase()}`}
         title={`${label} (⌘/Ctrl+${key})`} disabled={!selection.available || open}
-        className={`${buttonClass} ${style}`}
+        className={iconButtonClass}
         onMouseDown={event => event.preventDefault()} onClick={() => props.onToggle(mark)}
-      >{label}</button>)}
+      ><Icon aria-hidden="true" size={15} /></button>)}
       <button type="button" aria-label="Link" aria-haspopup="dialog" aria-expanded={open}
         aria-keyshortcuts="Control+k Meta+k" title="Insert or edit link (⌘/Ctrl+K)"
-        disabled={!selection.available || open} className={buttonClass}
-        onMouseDown={event => event.preventDefault()} onClick={props.onOpenLink}>Link</button>
+        disabled={!selection.available || open} className={iconButtonClass}
+        onMouseDown={event => event.preventDefault()} onClick={props.onOpenLink}><LinkIcon aria-hidden="true" size={15} /></button>
     </div>
     {linkDialog ? <form role="dialog" aria-label={linkDialog.editingExisting ? "Edit link" : "Insert link"}
       className="flex flex-wrap items-end gap-2 border-t border-border px-3 py-3"
