@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Update the server’s pinned headless Chrome runtime to stable 158.0.8127.36
+  on Linux AMD64 and ARM64, retaining archive integrity, executable integrity,
+  bundled licenses, and native OfficeCLI browser qualification.
+
 - Edit text directly in ordinary HTML pages, with a Text/Source switch,
   document-wide undo and redo, bold/italic/underline and link controls, and the
   existing autosave/conflict controls. Use Cmd/Ctrl+B, I, U, and K to format text
