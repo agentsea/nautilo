@@ -11,13 +11,15 @@ import type { OpenFileTarget } from "../components/browser-column/open-file-targ
 import { relativeFromWorkspace } from "../components/browser-column/cited-paths";
 import { basename, MAX_TEXT_PREVIEW_BYTES } from "../lib/file-preview";
 import { desktopAPI } from "../lib/desktop";
-import { canEditInThisChannel, editorKindForFile } from "./editor-kind";
+import { canEditInThisChannel, editorKindForFile, isHtmlTextCandidate } from "./editor-kind";
 import {
   loadEditableText,
   type LoadEditableTextResult,
 } from "./editor-io";
 import { usePatchDocumentSession, type PatchEditorConflict, type PatchEditorStatus } from "./use-patch-document-session";
 import { deploymentSafeLazy } from "../lib/deployment-safe-lazy";
+import { HtmlTextDocumentHistory } from "./html-text-history";
+import type { CodeEditorChangeSelection, CodeEditorSelection } from "./code-editor";
 
 type EditorSessionStatus = PatchEditorStatus;
 
@@ -43,6 +45,9 @@ type EditorSession = {
 
 const MarkdownEditor = deploymentSafeLazy(() =>
   import("./markdown-editor").then((m) => ({ default: m.MarkdownEditor })),
+);
+const HtmlTextEditor = deploymentSafeLazy(() =>
+  import("./html-text-editor").then((m) => ({ default: m.HtmlTextEditor })),
 );
 const CodeEditor = deploymentSafeLazy(() =>
   import("./code-editor").then((m) => ({ default: m.CodeEditor })),
@@ -135,11 +140,13 @@ type LoadedEditorProps = {
 
 function LoadedEditorBody({
   file,
+  initial,
   editor,
   onView,
   onClose,
   onFocus,
 }: LoadedEditorProps & { editor: EditorSession }) {
+  const [htmlMode, setHtmlMode] = useState<"text" | "source">("text");
   const [openError, setOpenError] = useState<string | null>(null);
   const [pendingNav, setPendingNav] = useState<PendingNavAction | null>(null);
 
@@ -164,6 +171,40 @@ function LoadedEditorBody({
   } = editor;
 
   const editorKind = editorKindForFile(file);
+  const htmlTextCandidate = useMemo(() => isHtmlTextCandidate(file, initial.content), [file, initial.content]);
+  const [htmlHistory] = useState(() => new HtmlTextDocumentHistory(initial.content));
+  const [htmlHistoryState, setHtmlHistoryState] = useState(() => htmlHistory.getSnapshot());
+  const [sourceRestore, setSourceRestore] = useState<CodeEditorSelection>();
+  const sourceHistory = useMemo(() => ({
+    undo: () => { htmlHistory.undo(); },
+    redo: () => { htmlHistory.redo(); },
+  }), [htmlHistory]);
+
+  useEffect(() => htmlHistory.subscribe((event) => {
+    setHtmlHistoryState(htmlHistory.getSnapshot());
+    if (event.kind === "reset") setSourceRestore(undefined);
+    if (event.kind !== "restore") return;
+    setDraftFromEditor(event.source);
+    if (event.view?.kind === "source") {
+      setSourceRestore({ anchor: event.view.anchor, head: event.view.head, scrollTop: event.view.scrollTop });
+      setHtmlMode("source");
+    } else if (event.view) {
+      setHtmlMode("text");
+    }
+  }), [htmlHistory, setDraftFromEditor]);
+
+  useEffect(() => {
+    if (htmlTextCandidate && draft !== htmlHistory.getSnapshot().source) htmlHistory.reset(draft);
+  }, [draft, htmlHistory, htmlTextCandidate]);
+
+  const handleHtmlSourceChange = useCallback((next: string, selection?: CodeEditorChangeSelection) => {
+    htmlHistory.record(next, selection ? {
+      before: { kind: "source", ...selection.before },
+      after: { kind: "source", ...selection.after },
+    } : undefined);
+    setDraftFromEditor(next);
+  }, [htmlHistory, setDraftFromEditor]);
+
   const relPath = useMemo(() => {
     if (file.kind === "artifact") return file.path;
     return relativeFromWorkspace(file.rootPath, file.path);
@@ -271,6 +312,17 @@ function LoadedEditorBody({
               Edit
             </button>
           </div>
+
+          {htmlTextCandidate ? (
+            <div className="flex rounded-md border border-border p-0.5 text-xs" role="group" aria-label="HTML editing mode">
+              {(["text", "source"] as const).map((mode) => (
+                <button key={mode} type="button" aria-pressed={htmlMode === mode} onClick={() => setHtmlMode(mode)}
+                  className={`rounded px-2 py-0.5 ${htmlMode === mode ? "bg-background-element font-medium text-foreground" : "text-foreground-muted hover:bg-background-element"}`}>
+                  {mode === "text" ? "Text" : "Source"}
+                </button>
+              ))}
+            </div>
+          ) : null}
 
           <span className={statusPillClass(status)}>
             {statusPillLabel(status, lastSavedAt)}
@@ -442,6 +494,27 @@ function LoadedEditorBody({
                 onChange={setDraftFromEditor}
                 diffMarkdown={conflict?.latestContent ?? undefined}
               />
+            ) : htmlTextCandidate ? (
+              <>
+                <div hidden={htmlMode !== "text"} className="h-full min-h-0">
+                  <HtmlTextEditor value={draft} history={htmlHistory} active={htmlMode === "text"}
+                    onChange={setDraftFromEditor} onSave={() => { void saveNow({ checkpoint: true }); }} />
+                </div>
+                {htmlMode === "source" ? (
+                  <div className="flex h-full min-h-0 flex-col">
+                    <div className="flex gap-2 border-b border-border px-3 py-2 text-xs">
+                      <button type="button" className={headerButtonClass} disabled={!htmlHistoryState.canUndo}
+                        onMouseDown={(event) => event.preventDefault()} onClick={sourceHistory.undo}>Undo</button>
+                      <button type="button" className={headerButtonClass} disabled={!htmlHistoryState.canRedo}
+                        onMouseDown={(event) => event.preventDefault()} onClick={sourceHistory.redo}>Redo</button>
+                    </div>
+                    <div className="min-h-0 flex-1">
+                      <CodeEditor value={draft} onChange={handleHtmlSourceChange} path={file.path}
+                        externalHistory={sourceHistory} restoreSelection={sourceRestore} />
+                    </div>
+                  </div>
+                ) : null}
+              </>
             ) : (
               <CodeEditor
                 value={draft}

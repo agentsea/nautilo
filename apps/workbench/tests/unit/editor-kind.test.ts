@@ -6,6 +6,7 @@ import {
 import {
   canEditInThisChannel,
   editorKindForFile,
+  isHtmlTextCandidate,
 } from "../../src/editors/editor-kind";
 
 describe("editorKindForFile", () => {
@@ -94,5 +95,26 @@ describe("canEditInThisChannel", () => {
 
   test("fs editable on desktop", () => {
     expect(canEditInThisChannel(fsFile, true)).toBe(true);
+  });
+});
+
+
+describe("HTML text presentation eligibility", () => {
+  test("offers ordinary HTML by path or MIME while keeping its code persistence kind", () => {
+    for (const file of [fsOpenFileTarget("/repo/page.html", "/repo"),
+      artifactOpenFileTarget({ id: "a", path: "page", mimeType: "text/html" }),
+      artifactOpenFileTarget({ id: "b", path: "page.xhtml", mimeType: "application/xhtml+xml" })]) {
+      expect(isHtmlTextCandidate(file, "<p>Editable text</p>")).toBe(true);
+      expect(editorKindForFile(file)).toBe("code");
+    }
+    expect(isHtmlTextCandidate(fsOpenFileTarget("/repo/code.ts", "/repo"), "const n = 1")).toBe(false);
+  });
+
+  test("native document manifests remain outside generic friendly HTML editing regardless of filename", () => {
+    const file = artifactOpenFileTarget({ id: "native", path: "ordinary-name.html", mimeType: "text/html" });
+    for (const type of ["document", "spreadsheet", "presentation", "kanban"]) {
+      const content = `<script type="application/vnd.nautilo.document+json" id="manifest">${JSON.stringify({ documentType: type, version: "1.0" })}</script><p>Preview</p>`;
+      expect(isHtmlTextCandidate(file, content)).toBe(false);
+    }
   });
 });

@@ -48,17 +48,28 @@ export async function loadEditableText(
         roomOpts !== undefined
           ? await apiClient.getWorkspaceArtifact(file.id, roomOpts)
           : await apiClient.getWorkspaceArtifact(file.id);
-      const blob =
-        roomOpts !== undefined
-          ? await apiClient.getWorkspaceArtifactBytes(file.id, roomOpts)
-          : await apiClient.getWorkspaceArtifactBytes(file.id);
-      if (blob.size > MAX_TEXT_PREVIEW_BYTES) return { kind: "too_large" };
-      const content = await blob.text();
+      if (!dto) return { kind: "error", message: "File no longer exists." };
+      if (!Number.isSafeInteger(dto.size) || dto.size < 0 || !Number.isSafeInteger(dto.revision) || dto.revision < 0) {
+        return { kind: "error", message: "Could not verify the document version and size." };
+      }
+      if (dto.size > MAX_TEXT_PREVIEW_BYTES) return { kind: "too_large" };
+      // A resync replaces the retained draft. Never promote a truncated body
+      // (including an empty response for a nonempty document) into a new base.
+      const bytes = await apiClient.getWorkspaceArtifactBytesArrayBuffer(file.id, {
+        ...roomOpts, maxBytes: MAX_TEXT_PREVIEW_BYTES, expectedBytes: dto.size,
+      });
+      const latest = roomOpts !== undefined
+        ? await apiClient.getWorkspaceArtifact(file.id, roomOpts)
+        : await apiClient.getWorkspaceArtifact(file.id);
+      if (!latest || latest.revision !== dto.revision || latest.size !== dto.size) {
+        return { kind: "error", message: "The document changed while loading. Try again." };
+      }
+      const content = new TextDecoder().decode(bytes);
       return {
         kind: "ready",
         content,
         baseSha256: await sha256HexForText(content),
-        baseRevision: dto?.revision ?? null,
+        baseRevision: dto.revision,
       };
     }
 
