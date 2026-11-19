@@ -3,6 +3,13 @@
 Baseline: Wafflebase 0.6.9, acde58012910ec68645c65b6896d5408fad1645c.
 Modification dates: 2026-09-06 through 2026-09-13. Original-file hashes are in snapshot.json.
 
+## Writer undo position — 2026-11-19
+
+Docs undo/redo preserves the local caret when a store has no history presence,
+clamps it to surviving text, and chooses a neighboring editable block when the
+current block disappears. Cursor affinity and header/footer context survive;
+refocusing the hidden input leaves scrolling to the editor's caret renderer.
+
 ## Sheets date parsing — 2026-10-19
 
 - Date-only strings (`YYYY-MM-DD`) are read as local calendar dates in the

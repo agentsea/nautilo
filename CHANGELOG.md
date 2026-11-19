@@ -10,6 +10,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 - Use the selected MindSwapper connection’s live model capabilities for chat
   attachments. Distinguish billing review and spending limits from low credit.
 
+- Keep Writer undo and redo near the current cursor instead of jumping to the
+  start of the document. Clarify that Genies can batch edits across multiple
+  blocks in one review proposal.
+
 - Preserve clickable links in Writer HTML previews and exports, including older
   saved documents. Show link destinations with open, edit and remove controls,
   and support the link keyboard shortcut and host-routed link opening.
