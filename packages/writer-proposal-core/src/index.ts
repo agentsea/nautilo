@@ -8,3 +8,5 @@ export * from "./writer-html";
 export * from "./writer-style-validation";
 export * from "./live-review-extension";
 export * from "./static-html-document";
+
+export * from "./context-reader";

@@ -7,6 +7,7 @@ import {
   validateAcceptedOperationSelection,
   validateEditOpenWriterRequest,
   writerLiveReviewExtension,
+  readWriterContext,
 } from "@nautilo/writer-proposal-core";
 
 const MANIFEST_TYPE = "application/vnd.nautilo.document+json";
@@ -136,84 +137,35 @@ describe("edit-open-writer documentVersion contract", () => {
 
   test("guides document-wide work to read every bounded range", () => {
     expect(writerLiveReviewExtension.guidance).toContain("summary.outline is only a preview");
-    expect(writerLiveReviewExtension.guidance).toContain("blockCount");
+    expect(writerLiveReviewExtension.guidance).toContain("nextRead unchanged");
   });
 
-  test("classifies only returned top-level Writer blocks as exact-version reread coverage", () => {
-    const canonical = writerHtml(JSON.stringify({
-      blocks: [paragraph("first", "one"), paragraph("second", "two")],
-    }));
-    expect(writerLiveReviewExtension.readCoverageFactFromResult({
-      canonicalContent: canonical,
-      args: { blockId: "first" },
-      result: {
-        ok: true,
-        status: "range_read",
-        documentVersion: { kind: "artifact_revision", revision: 7 },
-        blocks: [{ id: "first", type: "paragraph", text: "one" }],
-      },
-    })).toEqual({
-      kind: "block_range",
-      documentVersion: { kind: "artifact_revision", revision: 7 },
-      blockCount: 2,
-      blockIndexes: [0],
+  test("credits only exact visible slices, including empty structure, and rejects mismatched evidence", async () => {
+    const document = { blocks: [paragraph("first", "one"), paragraph("second", "two"), createTableBlock(1, 1)] };
+    const canonical = writerHtml(JSON.stringify(document));
+    const args = { sessionToken: "token", documentVersion: { kind: "artifact_revision" as const, revision: 7 }, scope: { kind: "document" as const } };
+    const result = await readWriterContext({ ...args, document, canonicalSource: canonical, responseBudgetBytes: 100_000 });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const classify = (value: unknown) => writerLiveReviewExtension.readCoverageFactFromResult({ canonicalContent: canonical, args, result: value });
+    expect(await classify(result)).toMatchObject({ kind: "text_slices", blockCount: 3, totalEntries: 4,
+      slices: [{ ordinal: 0, startOffset: 0, endOffset: 3, textLength: 3 },
+        { ordinal: 1, startOffset: 0, endOffset: 3, textLength: 3 },
+        { ordinal: 2, startOffset: 0, endOffset: 0, textLength: 0 },
+        { ordinal: 3, startOffset: 0, endOffset: 0, textLength: 0 }],
     });
-    expect(writerLiveReviewExtension.readCoverageFactFromResult({
-      canonicalContent: canonical,
-      args: { blockId: "first" },
-      result: {
-        ok: true,
-        status: "range_read",
-        documentVersion: { kind: "artifact_revision", revision: 8 },
-        blocks: [{ id: "missing", type: "paragraph", text: "not canonical" }],
-      },
-    })).toBeNull();
-  });
-
-  test("classifies table reads as a contiguous page chain without retaining table content", () => {
-    const canonical = writerHtml(JSON.stringify({
-      blocks: [{
-        id: "table-1",
-        type: "table",
-        tableData: { columnWidths: [1], rows: [] },
-      }],
-    }));
-    const start = { rowIndex: 0, colIndex: 0, blockIndex: 0, sliceIndex: 0 };
-    const next = { rowIndex: 50, colIndex: 0, blockIndex: 0, sliceIndex: 0 };
-    expect(writerLiveReviewExtension.readCoverageFactFromResult({
-      canonicalContent: canonical,
-      args: { blockId: "table-1" },
-      result: {
-        ok: true,
-        status: "table_read",
-        documentVersion: { kind: "artifact_revision", revision: 7 },
-        table: { tableBlockId: "table-1", nextCursor: next, cells: [{ text: "not retained" }] },
-      },
-    })).toEqual({
-      kind: "table_page",
-      documentVersion: { kind: "artifact_revision", revision: 7 },
-      blockCount: 1,
-      tableBlockIndex: 0,
-      cursor: start,
-      nextCursor: next,
+    const first = result.blocks[0]!;
+    expect(await classify({ ...result, blocks: [{ ...first, text: "on", endOffset: 2 }] })).toMatchObject({
+      slices: [{ ordinal: 0, startOffset: 0, endOffset: 2, textLength: 3 }],
     });
-    expect(writerLiveReviewExtension.readCoverageFactFromResult({
-      canonicalContent: canonical,
-      args: { blockId: "table-1", tableCursor: next },
-      result: {
-        ok: true,
-        status: "table_read",
-        documentVersion: { kind: "artifact_revision", revision: 7 },
-        table: { tableBlockId: "table-1", cells: [] },
-      },
-    })).toEqual({
-      kind: "table_page",
-      documentVersion: { kind: "artifact_revision", revision: 7 },
-      blockCount: 1,
-      tableBlockIndex: 0,
-      cursor: next,
-      nextCursor: null,
-    });
+    for (const patch of [{ text: "invented" }, { textLength: 2 }, { region: "footer" }, { endOffset: 4 }, { editable: false }, { tablePath: [] }]) {
+      expect(await classify({ ...result, blocks: [{ ...first, ...patch }] })).toBeNull();
+    }
+    expect(await classify({ ...result, documentVersion: { kind: "artifact_revision", revision: 8 } })).toBeNull();
+    expect(await classify({ ...result, totalEntries: 1 })).toBeNull();
+    expect(await classify({ ...result, sourceFingerprint: "0".repeat(64) })).toBeNull();
+    expect(await classify({ ...result, blocks: [] })).toBeNull();
+    expect(await classify({ ...result, status: "range_read" })).toBeNull();
   });
 
   test("preflight returns resolved operations and metadata", () => {

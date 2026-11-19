@@ -7,6 +7,11 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Let Genies read a Writer document, section, selection, or block range in one
+  request when it fits their available context, with exact continuation for
+  larger reads. Replace the five-block window with runtime-sized pages and
+  track partial text coverage before declaring a document fully inspected.
+
 - Use the selected MindSwapper connection’s live model capabilities for chat
   attachments. Distinguish billing review and spending limits from low credit.
 

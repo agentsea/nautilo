@@ -1,11 +1,12 @@
 /**
- * M188 Phase 3 — child-process worker for deployed mini-app agent tools.
+ * child-process worker for deployed mini-app agent tools.
  *
  * Invoked by `app-tool-runner.ts` with a JSON invoke payload on stdin.
  * Host API calls are proxied to the parent over line-delimited JSON.
  */
 
 import { fileURLToPath } from "node:url";
+import type { CapturedWriterSelection } from "@nautilo/types";
 import type { AppToolPlatformFailure } from "./app-tool-types";
 
 export const APP_TOOL_WORKER_SCRIPT = fileURLToPath(new URL("./app-tool-worker.ts", import.meta.url));
@@ -15,6 +16,9 @@ export type WorkerInvokePayload = {
   modulePath: string;
   handler: string;
   args: unknown;
+  readResponseBudgetBytes?: number;
+  writerSelection?: CapturedWriterSelection;
+  writerReadSessionId?: string;
   platformGate?: {
     kind: "live_review";
     sessionSentinel: string;
@@ -209,7 +213,11 @@ async function runWorker(payload: WorkerInvokePayload, lineReader: StdinLineRead
   const handler = resolveHandler(mod, payload.handler);
   const nautiloApp = createNautiloAppProxy(rpc);
   try {
-    const result = await handler(payload.args, { nautiloApp });
+    const result = await handler(payload.args, { nautiloApp,
+      ...(payload.readResponseBudgetBytes !== undefined ? { readResponseBudgetBytes: payload.readResponseBudgetBytes } : {}),
+      ...(payload.writerReadSessionId !== undefined ? { writerReadSessionId: payload.writerReadSessionId } : {}),
+      ...(payload.writerSelection !== undefined ? { writerSelection: payload.writerSelection } : {}),
+    });
     if (pendingRpc.size > 0) {
       await stdinTask;
       if (pendingRpc.size > 0) {

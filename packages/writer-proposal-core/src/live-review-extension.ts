@@ -1,12 +1,12 @@
 import { executeProposalOperations } from "./proposal-execution";
 import type { ProposalOperation } from "./proposal-contract";
 import { parseWriterHtml } from "./writer-html";
+import { buildWriterReadEntries, writerReadFingerprint } from "./context-reader";
 import type {
   LiveDocumentReadCoverageFact,
-  LiveDocumentTableReadCursor,
   LiveDocumentVersion,
 } from "@nautilo/types";
-import { parseLiveDocumentVersion, parseNonNegativeSafeInteger } from "@nautilo/types";
+import { liveDocumentVersionEquals, parseLiveDocumentVersion, parseNonNegativeSafeInteger } from "@nautilo/types";
 
 function publicDocumentVersion(raw: Record<string, unknown>): LiveDocumentVersion | null {
   const parsed = parseLiveDocumentVersion(raw["documentVersion"]);
@@ -18,99 +18,54 @@ function publicDocumentVersion(raw: Record<string, unknown>): LiveDocumentVersio
   return null;
 }
 
-function tableCursor(value: unknown): LiveDocumentTableReadCursor | null {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const record = value as Record<string, unknown>;
-  const parts = [
-    record["rowIndex"],
-    record["colIndex"],
-    record["blockIndex"],
-    record["sliceIndex"],
-  ];
-  if (!parts.every((part) => typeof part === "number" && Number.isSafeInteger(part) && part >= 0)) return null;
-  return Object.freeze({
-    rowIndex: parts[0] as number,
-    colIndex: parts[1] as number,
-    blockIndex: parts[2] as number,
-    sliceIndex: parts[3] as number,
-  });
-}
-
-const TABLE_START_CURSOR: LiveDocumentTableReadCursor = Object.freeze({
-  rowIndex: 0,
-  colIndex: 0,
-  blockIndex: 0,
-  sliceIndex: 0,
-});
-
-/**
- * Translate only this first-party Writer reader's successful result into a
- * structural fact. The host never infers coverage from model text or a tool
- * name: it receives this fact only after the app read canonical bytes.
- */
-function readCoverageFactFromResult(input: {
+/** Only exact canonical text/structure visible in the result earns read credit. */
+async function readCoverageFactFromResult(input: {
   canonicalContent: string;
   args: Readonly<Record<string, unknown>>;
   result: unknown;
-}): LiveDocumentReadCoverageFact | null {
+}): Promise<LiveDocumentReadCoverageFact | null> {
   if (!input.result || typeof input.result !== "object" || Array.isArray(input.result)) return null;
   const result = input.result as Record<string, unknown>;
-  if (result["ok"] !== true) return null;
+  if (result["ok"] !== true || result["status"] !== "context_read") return null;
   const documentVersion = publicDocumentVersion(result);
-  if (!documentVersion) return null;
+  const requestedVersion = publicDocumentVersion(input.args as Record<string, unknown>);
+  if (!documentVersion || !requestedVersion || !liveDocumentVersionEquals(documentVersion, requestedVersion)) return null;
   const parsed = parseWriterHtml(input.canonicalContent);
   if (!parsed.ok) return null;
-  const documentBlocks = (parsed.document.document as { blocks?: unknown }).blocks;
-  if (!Array.isArray(documentBlocks)) return null;
-
-  if (result["status"] === "range_read") {
-    if (!Array.isArray(result["blocks"])) return null;
-    const indexes = new Set<number>();
-    for (const blockResult of result["blocks"]) {
-      if (!blockResult || typeof blockResult !== "object" || Array.isArray(blockResult)) continue;
-      const id = (blockResult as Record<string, unknown>)["id"];
-      if (typeof id !== "string") continue;
-      const index = documentBlocks.findIndex((candidate) =>
-        candidate && typeof candidate === "object" && !Array.isArray(candidate) &&
-        (candidate as Record<string, unknown>)["id"] === id &&
-        (candidate as Record<string, unknown>)["type"] !== "table",
-      );
-      if (index >= 0) indexes.add(index);
-    }
-    if (indexes.size === 0) return null;
-    return Object.freeze({
-      kind: "block_range",
-      documentVersion,
-      blockCount: documentBlocks.length,
-      blockIndexes: Object.freeze([...indexes].sort((a, b) => a - b)),
-    });
+  const document = parsed.document.document as Parameters<typeof buildWriterReadEntries>[0];
+  const entries = buildWriterReadEntries(document);
+  const sourceFingerprint = result["sourceFingerprint"];
+  if (
+    result["blockCount"] !== document.blocks.length || result["totalEntries"] !== entries.length ||
+    typeof sourceFingerprint !== "string" || sourceFingerprint !== await writerReadFingerprint(input.canonicalContent) ||
+    !Array.isArray(result["blocks"]) || (entries.length > 0 && result["blocks"].length === 0)
+  ) return null;
+  const slices: Array<{ ordinal: number; startOffset: number; endOffset: number; textLength: number }> = [];
+  for (const raw of result["blocks"]) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+    const item = raw as Record<string, unknown>;
+    const ordinal = item["ordinal"], startOffset = item["startOffset"], endOffset = item["endOffset"];
+    if (
+      typeof ordinal !== "number" || !Number.isSafeInteger(ordinal) ||
+      typeof startOffset !== "number" || !Number.isSafeInteger(startOffset) ||
+      typeof endOffset !== "number" || !Number.isSafeInteger(endOffset)
+    ) return null;
+    const entry = entries[ordinal];
+    if (
+      !entry || startOffset < 0 || endOffset < startOffset || endOffset > entry.textLength ||
+      (startOffset === endOffset && entry.textLength !== 0) ||
+      item["id"] !== entry.id || item["type"] !== entry.type || item["region"] !== entry.region ||
+      item["editable"] !== entry.editable || item["textLength"] !== entry.textLength ||
+      item["text"] !== entry.text.slice(startOffset, endOffset) ||
+      JSON.stringify(item["tablePath"]) !== JSON.stringify(entry.tablePath) ||
+      JSON.stringify(item["table"]) !== JSON.stringify(entry.table) ||
+      item["headingLevel"] !== entry.headingLevel
+    ) return null;
+    slices.push({ ordinal, startOffset, endOffset, textLength: entry.textLength });
   }
-
-  if (result["status"] !== "table_read") return null;
-  const table = result["table"];
-  if (!table || typeof table !== "object" || Array.isArray(table)) return null;
-  const tableBlockId = (table as Record<string, unknown>)["tableBlockId"];
-  if (typeof tableBlockId !== "string" || input.args["blockId"] !== tableBlockId) return null;
-  const tableBlockIndex = documentBlocks.findIndex((candidate) =>
-    candidate && typeof candidate === "object" && !Array.isArray(candidate) &&
-    (candidate as Record<string, unknown>)["id"] === tableBlockId &&
-    (candidate as Record<string, unknown>)["type"] === "table",
-  );
-  if (tableBlockIndex < 0) return null;
-  const cursor = input.args["tableCursor"] === undefined
-    ? TABLE_START_CURSOR
-    : tableCursor(input.args["tableCursor"]);
-  if (!cursor) return null;
-  const rawNextCursor = (table as Record<string, unknown>)["nextCursor"];
-  const nextCursor = rawNextCursor === undefined ? null : tableCursor(rawNextCursor);
-  if (rawNextCursor !== undefined && !nextCursor) return null;
   return Object.freeze({
-    kind: "table_page",
-    documentVersion,
-    blockCount: documentBlocks.length,
-    tableBlockIndex,
-    cursor,
-    nextCursor,
+    kind: "text_slices", documentVersion, blockCount: document.blocks.length,
+    totalEntries: entries.length, sourceFingerprint, slices: Object.freeze(slices),
   });
 }
 
@@ -122,7 +77,7 @@ export const writerLiveReviewExtension = {
     liveToolIds: ["edit-open-writer", "read-open-writer-range", "locate-open-writer-text"],
   },
   guidance:
-    "For a document-wide request, summary.outline is only a preview. Read the open document in bounded ranges and continue until every range across its blockCount is covered before proposing completion. Collect independent edits across the affected blocks in one edit-open-writer operations array before submitting for review; the read window is not a proposal-size limit. For whole-block rewrites, use one replace operation per block with scope.kind block.",
+    "For all reads of the open Writer document, including read-only summaries and quotations, use read-open-writer-range, not file.read or closed-document inspection. For a document-wide request, summary.outline is only a preview. Call read-open-writer-range with scope {kind: 'document'}. Use selection for the captured selection, section with a known headingBlockId, range with known fromBlockId/toBlockId, or block with a known blockId. The host budgets each page. Copy nextRead unchanged until complete is true for the requested scope; never invent offsets or cursors. Partial text slices are not whole blocks, and a completed section is not a completed document. Use only editable entries as edit targets. Collect independent edits across the affected blocks in one edit-open-writer operations array before submitting for review; a read page is not a proposal-size limit. For whole-block rewrites, read the entire block and use one replace operation per block with scope.kind block. On a version change, restart the read at the current version.",
   proposalToolId: "edit-open-writer",
   locatorToolId: "locate-open-writer-text",
   locatorHandleForOperation(operation: unknown): string | null {

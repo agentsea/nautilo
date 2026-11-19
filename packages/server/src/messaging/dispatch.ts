@@ -962,6 +962,7 @@ export async function dispatchRoomMessageSend(
   activeMiniApp = sanitizeActiveMiniAppContextSafe(opts.body.activeMiniApp);
   liveMiniAppSession = await resolveTrustedLiveMiniAppSession({
     raw: opts.body.liveMiniAppSession,
+    activeMiniApp,
     userId: sessionUserId,
   });
   try {
