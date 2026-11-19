@@ -1,9 +1,10 @@
 import { getAppsRoot } from "@nautilo/config";
 import type {
+  ActiveMiniAppRequestContext,
   LiveMiniAppSessionCapability,
   TrustedLiveMiniAppSessionContext,
 } from "@nautilo/types";
-import { parseLiveDocumentVersion } from "@nautilo/types";
+import { liveDocumentVersionEquals, parseCapturedWriterSelection, parseLiveDocumentVersion } from "@nautilo/types";
 import { scanInstalledApps } from "../apps/app-registry";
 import {
   liveMiniAppSessionRegistry,
@@ -30,6 +31,7 @@ function isCapability(raw: unknown): raw is LiveMiniAppSessionCapability {
  */
 export async function resolveTrustedLiveMiniAppSession(args: {
   raw: unknown;
+  activeMiniApp?: ActiveMiniAppRequestContext | null;
   userId: string;
   appsRoot?: string;
   registry?: Pick<LiveMiniAppSessionRegistry, "validateForSubject">;
@@ -52,7 +54,18 @@ export async function resolveTrustedLiveMiniAppSession(args: {
       documentVersion,
     });
     if (!validated.ok || validated.sessionId !== args.raw.sessionId) continue;
+    const active = args.activeMiniApp;
+    const summary = active?.summary && typeof active.summary === "object" && !Array.isArray(active.summary)
+      ? active.summary as Record<string, unknown> : null;
+    const embedded = summary?.["liveSession"] && typeof summary["liveSession"] === "object" && !Array.isArray(summary["liveSession"])
+      ? summary["liveSession"] as Record<string, unknown> : null;
+    const embeddedVersion = parseLiveDocumentVersion(embedded?.["documentVersion"]);
+    const writerSelection = manifest.id === "nautilo-writer" && active?.appId === manifest.id &&
+      embedded?.["sessionId"] === validated.sessionId && embeddedVersion &&
+      liveDocumentVersionEquals(embeddedVersion, validated.binding.documentVersion)
+      ? parseCapturedWriterSelection(active.selection) : null;
     return {
+      ...(writerSelection ? { writerSelection } : {}),
       appId: manifest.id,
       sessionToken: args.raw.sessionToken,
       sessionId: validated.sessionId,

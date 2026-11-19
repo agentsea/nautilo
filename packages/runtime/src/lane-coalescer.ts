@@ -7,7 +7,7 @@ import type {
   TrustedLiveMiniAppSessionContext,
   VerifiedOrdinaryOrigin,
 } from "@nautilo/types";
-import { parseLiveDocumentVersion } from "@nautilo/types";
+import { parseCapturedWriterSelection, parseLiveDocumentVersion } from "@nautilo/types";
 import type { MemoryAccessEnvelope } from "@nautilo/trust";
 
 export function parseActiveMiniAppInput(raw: unknown): ActiveMiniAppRequestContext | null {
@@ -25,6 +25,7 @@ export function parseTrustedLiveMiniAppSessionInput(
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   const value = raw as Record<string, unknown>;
   const documentVersion = parseLiveDocumentVersion(value["documentVersion"]);
+  const writerSelection = value["appId"] === "nautilo-writer" ? parseCapturedWriterSelection(value["writerSelection"]) : null;
   return (
     typeof value["appId"] === "string" &&
     typeof value["sessionToken"] === "string" &&
@@ -37,13 +38,14 @@ export function parseTrustedLiveMiniAppSessionInput(
         sessionToken: value["sessionToken"],
         sessionId: value["sessionId"],
         instructions: value["instructions"],
+        ...(writerSelection ? { writerSelection } : {}),
         documentVersion,
       } satisfies TrustedLiveMiniAppSessionContext)
     : null;
 }
 
 /**
- * D356 — parse a job-input `artifactRefs` array into validated `ChatArtifactRef`s.
+ * parse a job-input `artifactRefs` array into validated `ChatArtifactRef`s.
  * Already resolved+validated server-side (see `messaging/artifact-refs.ts`);
  * this is the runtime-side shape guard when rehydrating a job payload.
  */
@@ -67,7 +69,7 @@ export function parseArtifactRefsInput(raw: unknown): ChatArtifactRef[] {
   return out;
 }
 
-/** D356 — union artifact refs across coalesced burst segments, dedupe by id. */
+/** union artifact refs across coalesced burst segments, dedupe by id. */
 function mergeArtifactRefs(
   inputs: readonly { artifactRefs?: ChatArtifactRef[] }[],
 ): ChatArtifactRef[] {
@@ -84,7 +86,7 @@ function mergeArtifactRefs(
 }
 
 /**
- * D423 — parse a job-input `focusedResources` array (the server-resolved
+ * parse a job-input `focusedResources` array (the server-resolved
  * `ResolvedFocusedResource[]` manifest) into validated entries. Already
  * resolved+validated server-side (see `messaging/focused-resources.ts`); this
  * is the runtime-side shape guard when rehydrating a job payload. Private
@@ -140,7 +142,7 @@ function isFocusedToolTarget(value: unknown): value is FocusedResourceToolTarget
 }
 
 /**
- * D423 — kind-specific stable dedupe key for a resolved manifest entry. Mirrors
+ * kind-specific stable dedupe key for a resolved manifest entry. Mirrors
  * the server-side `resolvedFocusedResourceDedupeKey` so coalesced burst segments
  * collapse duplicate resources into one manifest entry.
  */
@@ -161,7 +163,7 @@ function focusedResourceDedupeKey(resource: ResolvedFocusedResource): string {
   return `local-file:${locator?.relayId ?? ""}:${locator?.path ?? ""}`;
 }
 
-/** D423 — union resolved focused resources across burst segments, kind-specific dedupe. */
+/** union resolved focused resources across burst segments, kind-specific dedupe. */
 function mergeFocusedResources(
   inputs: readonly { focusedResources?: ResolvedFocusedResource[] }[],
 ): ResolvedFocusedResource[] {
@@ -183,7 +185,7 @@ export interface CoalescedInput {
   attachmentTextBlocks: string[];
   multimodalImages: ChatMultimodalImagePart[];
   /**
-   * D391 — attachment ids (retained images/audio) uploaded with this turn.
+   * attachment ids (retained images/audio) uploaded with this turn.
    * Threaded to the executor so `persistMessages` can stamp `turn_id` (= the
    * human message fingerprint) on them once the human row is persisted → they
    * render from room history. Unioned (dedupe) across coalesced segments, which
@@ -192,9 +194,9 @@ export interface CoalescedInput {
   retainedAttachmentIds?: string[];
   ownerId: string;
   requestorId: string;
-  /** M233 — authenticated initiating Human for supported assistant output. */
+  /** authenticated initiating Human for supported assistant output. */
   causalHumanUserId?: string;
-  /** M233 — union of picker-authored Human recipients across burst segments. */
+  /** union of picker-authored Human recipients across burst segments. */
   mentionedHumanUserIds?: string[];
   /** Structured Room-wide Human mention intent; true wins across a burst. */
   mentionEveryone?: boolean;
@@ -219,10 +221,10 @@ export interface CoalescedInput {
   workspacePath: string | null;
   activeMiniApp: ActiveMiniAppRequestContext | null;
   liveMiniAppSession?: TrustedLiveMiniAppSessionContext | null;
-  /** D356 — turn-scoped artifact references; unioned (dedupe by id) on coalesce. */
+  /** turn-scoped artifact references; unioned (dedupe by id) on coalesce. */
   artifactRefs?: ChatArtifactRef[];
   /**
-   * D423 Phase 4 — server-resolved focused-resource manifest (workspace
+   * server-resolved focused-resource manifest (workspace
    * artifact / local file / message attachment). Unioned (kind-specific
    * dedupe) on coalesce. Private `locator` is carried opaquely; pre-model
    * renders ONE `## Focused resources` block from the public fields only.
@@ -232,9 +234,9 @@ export interface CoalescedInput {
   securityAuditUserAgent: string;
   threadId: string;
   roomRoster: unknown[];
-  /** D124 — last segment wins when bursts coalesce. */
+  /** last segment wins when bursts coalesce. */
   replyToMessageId?: number | null;
-  /** D302 P4 — wake against an already-persisted human row (skip re-persist). */
+  /** wake against an already-persisted human row (skip re-persist). */
   humanAlreadyPersisted?: boolean;
   /** Keys from the original job payload not in the schema above (merged last-wins). Tests + rare forwards. */
   passthrough?: Record<string, unknown>;
@@ -337,9 +339,9 @@ export class LaneCoalescer {
   }
 
   /**
-   * D420 (Wave 2 task 2.2.3) — drop a buffered lane and return its virtual job
+   * drop a buffered lane and return its virtual job
    * ids so the runtime can durably terminalize their mapped acceptances as
-   * `user_cancelled` on a D349 user Stop (R8). Returns `null` when the lane is
+   * `user_cancelled` on a user Stop. Returns `null` when the lane is
    * not buffered (idempotent against a double drop). Mirrors {@link dropLane}
    * but surfaces the identity the ledger needs instead of a bare boolean.
    */
@@ -452,7 +454,7 @@ export function mergeInputs(inputs: readonly CoalescedInput[]): CoalescedInput {
   if (memoryReviewSourceMessageIds.length) mergedPass = { ...mergedPass, memoryReviewSourceMessageIds };
   const artifactRefs = mergeArtifactRefs(inputs);
   const focusedResources = mergeFocusedResources(inputs);
-  // D391 — union retained attachment ids across coalesced segments (dedupe).
+  // union retained attachment ids across coalesced segments (dedupe).
   // The segments merge into ONE human row, so all ids stamp that one fingerprint.
   const retainedAttachmentIds = Array.from(
     new Set(inputs.flatMap((i) => i.retainedAttachmentIds ?? [])),

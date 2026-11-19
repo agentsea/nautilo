@@ -41,7 +41,7 @@ export type LiveReviewExtension = {
     canonicalContent: string;
     args: Readonly<Record<string, unknown>>;
     result: unknown;
-  }): LiveDocumentReadCoverageFact | null;
+  }): LiveDocumentReadCoverageFact | null | Promise<LiveDocumentReadCoverageFact | null>;
   preflightProposal(
     canonicalContent: string,
     operations: unknown[],

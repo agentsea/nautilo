@@ -155,6 +155,10 @@ function buildWorkerPayload(request: AppToolInvokeRequest): WorkerInvokePayload 
     modulePath: request.tool.module,
     handler: request.tool.handler,
     args: request.args,
+    ...(Number.isSafeInteger(request.context.readResponseBudgetBytes) && request.context.readResponseBudgetBytes! >= 0
+      ? { readResponseBudgetBytes: request.context.readResponseBudgetBytes } : {}),
+    ...(request.context.writerReadSessionId ? { writerReadSessionId: request.context.writerReadSessionId } : {}),
+    ...(request.context.writerSelection ? { writerSelection: request.context.writerSelection } : {}),
     ...(request.platformGate ? { platformGate: request.platformGate } : {}),
   };
 }

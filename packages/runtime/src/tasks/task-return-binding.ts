@@ -131,6 +131,11 @@ type TaskWriterVerificationCoverage = Readonly<{
   blockCount: number | null;
   blockIndexes: readonly number[];
   tablePages: readonly TablePageCoverage[];
+  textCoverage?: Readonly<{
+    totalEntries: number;
+    sourceFingerprint: string;
+    slices: Extract<LiveDocumentReadCoverageFact, { kind: "text_slices" }>["slices"];
+  }>;
 }>;
 
 export type TaskWriterVerificationCoverageState =
@@ -217,6 +222,15 @@ function validTableCursor(value: LiveDocumentTableReadCursor): boolean {
 }
 
 function coverageIsComplete(coverage: TaskWriterVerificationCoverage): boolean {
+  if (coverage.textCoverage) {
+    const { totalEntries, slices } = coverage.textCoverage;
+    const byOrdinal = new Map(slices.map((slice) => [slice.ordinal, slice]));
+    if (byOrdinal.size !== totalEntries) return false;
+    // Intervals are merged on admission. A gap leaves multiple slices and
+    // therefore cannot establish complete coverage, even when both ends read.
+    if (slices.length !== totalEntries) return false;
+    return slices.every((slice) => slice.startOffset === 0 && slice.endOffset === slice.textLength);
+  }
   if (coverage.blockCount === null) return false;
   const coveredBlocks = new Set(coverage.blockIndexes);
   const pagesByTable = new Map<number, TablePageCoverage[]>();
@@ -420,10 +434,13 @@ export function advanceTaskLiveMiniAppBindingDocumentVersion(input: {
     return true;
   }
 
+  // A captured selection belongs to the old version. Do not carry offsets
+  // into an accepted-save verifier after the canonical document has changed.
+  const { writerSelection: _previousSelection, ...previousWithoutSelection } = previous;
   const context = Object.freeze({
     ...binding.context,
     liveMiniAppSession: Object.freeze({
-      ...previous,
+      ...previousWithoutSelection,
       documentVersion: Object.freeze(structuredClone(input.resultDocumentVersion)),
     }),
   });
@@ -496,6 +513,51 @@ export function recordTaskWriterReviewReadCoverage(input: {
     (existing.blockCount !== null && existing.blockCount !== input.coverage.blockCount)
   ) return false;
 
+  if (input.coverage.kind === "text_slices") {
+    const fact = input.coverage;
+    const prior = existing.textCoverage;
+    if (
+      !Number.isSafeInteger(fact.totalEntries) || fact.totalEntries < 0 ||
+      !/^[0-9a-f]{64}$/.test(fact.sourceFingerprint) ||
+      (prior && (prior.totalEntries !== fact.totalEntries || prior.sourceFingerprint !== fact.sourceFingerprint)) ||
+      (fact.slices.length === 0 && fact.totalEntries !== 0) ||
+      fact.slices.some((slice) =>
+        ![slice.ordinal, slice.startOffset, slice.endOffset, slice.textLength].every(Number.isSafeInteger) ||
+        slice.ordinal < 0 || slice.ordinal >= fact.totalEntries ||
+        slice.startOffset < 0 || slice.endOffset < slice.startOffset || slice.endOffset > slice.textLength ||
+        (slice.startOffset === slice.endOffset && slice.textLength !== 0),
+      )
+    ) return false;
+    const all = [...(prior?.slices ?? []), ...fact.slices]
+      .sort((a, b) => a.ordinal - b.ordinal || a.startOffset - b.startOffset);
+    const merged: Array<{ ordinal: number; startOffset: number; endOffset: number; textLength: number }> = [];
+    for (const slice of all) {
+      const last = merged.at(-1);
+      if (last?.ordinal === slice.ordinal) {
+        if (last.textLength !== slice.textLength) return false;
+        if (slice.startOffset <= last.endOffset) {
+          last.endOffset = Math.max(last.endOffset, slice.endOffset);
+          continue;
+        }
+      }
+      merged.push({ ...slice });
+    }
+    liveMiniAppBindings.set(input.taskId, Object.freeze({
+      ...binding,
+      verificationCoverage: Object.freeze({
+        ...existing,
+        blockCount: fact.blockCount,
+        textCoverage: Object.freeze({
+          totalEntries: fact.totalEntries,
+          sourceFingerprint: fact.sourceFingerprint,
+          slices: Object.freeze(merged.map((slice) => Object.freeze(slice))),
+        }),
+      }),
+    }));
+    return true;
+  }
+  // Never let a legacy whole-block assertion override partial text evidence.
+  if (existing.textCoverage) return false;
   let blockIndexes = existing.blockIndexes;
   let tablePages = existing.tablePages;
   if (input.coverage.kind === "block_range") {

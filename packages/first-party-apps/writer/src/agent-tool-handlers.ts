@@ -4,7 +4,7 @@
  * Mirrors the Excel pattern (`../../excel/src/agent-tool-handlers.ts`): each
  * tool reads the office-document container, parses it via `parseWriterHtml`,
  * mutates the Wafflebase block model, re-serializes the FULL container, and
- * writes it back through the host. The host derives + broadcasts the M193
+ * writes it back through the host. The host derives and broadcasts the
  * `AnchoredTextPatch`; we never compute a patch here.
  *
  * Types are defined LOCALLY (no cross-app imports) so first-party apps stay
@@ -22,6 +22,7 @@ import {
   type BlockStyle,
   type BlockType,
   type CellAddress,
+  type Document,
   type InlineStyle,
 } from "@nautilo/office-docs/node";
 import {
@@ -53,15 +54,11 @@ import {
   type StyleValidationError,
 } from "./writer-style-validation";
 import {
-  boundedCanonicalBlocks,
-  boundedCanonicalTable,
   findCanonicalTextBlock,
-  isTableReadCursor,
   locateWriterText,
-  type CanonicalTablePayload,
-  type TableReadCursor,
 } from "./writer-live-locator";
-import type { LiveDocumentVersion } from "@nautilo/types";
+import type { CapturedWriterSelection, LiveDocumentVersion } from "@nautilo/types";
+import { parseWriterReadScope, readWriterContext } from "@nautilo/writer-proposal-core";
 import {
   deleteTableBlock as deleteCanonicalTableBlock,
   deleteTableColumn as deleteCanonicalTableColumn,
@@ -135,6 +132,9 @@ export type ServerNautiloAppHost = {
 
 export type AgentToolContext = {
   nautiloApp: ServerNautiloAppHost;
+  readResponseBudgetBytes?: number;
+  writerSelection?: CapturedWriterSelection;
+  writerReadSessionId?: string;
 };
 
 /** Create canonical Writer bytes through the host's create-only storage path. */
@@ -198,9 +198,6 @@ type LiveCanonicalArgs = {
   sessionToken: string;
   documentVersion: LiveDocumentVersion;
   blockId: string;
-  beforeBlocks?: number;
-  afterBlocks?: number;
-  tableCursor?: TableReadCursor;
   /** Injected only by the validated server registration boundary. */
   __canonicalContent?: string;
 };
@@ -220,9 +217,6 @@ function parseLiveCanonicalArgs(args: unknown): LiveCanonicalArgs | ToolError {
     sessionToken: record["sessionToken"],
     documentVersion,
     blockId: record["blockId"],
-    ...(typeof record["beforeBlocks"] === "number" ? { beforeBlocks: record["beforeBlocks"] } : {}),
-    ...(typeof record["afterBlocks"] === "number" ? { afterBlocks: record["afterBlocks"] } : {}),
-    ...(record["tableCursor"] !== undefined ? { tableCursor: record["tableCursor"] as TableReadCursor } : {}),
     ...(typeof record["__canonicalContent"] === "string" ? { __canonicalContent: record["__canonicalContent"] } : {}),
   };
 }
@@ -232,40 +226,24 @@ function liveCanonicalDocument(args: LiveCanonicalArgs): ParsedDocument | ToolEr
   return parseDocument(args.__canonicalContent);
 }
 
-/** Preserve the asynchronous app-worker contract around deterministic validation. */
-export function readOpenWriterRange(args: unknown, ctx: AgentToolContext): Promise<ReturnType<typeof readOpenWriterRangeResult>> {
-  return Promise.resolve().then(() => readOpenWriterRangeResult(args, ctx));
-}
-
-function readOpenWriterRangeResult(args: unknown, _ctx: AgentToolContext):
-  | { ok: true; status: "range_read"; documentVersion: LiveDocumentVersion; blocks: Array<{ id: string; type: string; text: string }> }
-  | { ok: true; status: "table_read"; documentVersion: LiveDocumentVersion; table: CanonicalTablePayload }
-  | ToolError
-{
-  const parsedArgs = parseLiveCanonicalArgs(args);
-  if ("error" in parsedArgs) return parsedArgs;
-  const liveArgs = parsedArgs;
-  if (!validateBlockId(liveArgs.blockId)) return toolError("blockId must be a non-empty string");
-  const before = liveArgs.beforeBlocks ?? 0;
-  const after = liveArgs.afterBlocks ?? 0;
-  if (!Number.isInteger(before) || !Number.isInteger(after) || before < 0 || after < 0 || before + after + 1 > 5) {
-    return toolError("range read must select 1–5 blocks");
-  }
-  const parsed = liveCanonicalDocument(liveArgs);
+/** Read exact canonical context within the host runtime's complete response budget. */
+export async function readOpenWriterRange(args: unknown, ctx: AgentToolContext) {
+  if (!args || typeof args !== "object" || Array.isArray(args)) return toolError("Provide a Writer read scope and current session credentials.");
+  const record = args as Record<string, unknown>;
+  const documentVersion = liveToolDocumentVersion(record);
+  if (!documentVersion) return toolError("documentVersion must be a supported live document version");
+  if (typeof record["sessionToken"] !== "string" || !record["sessionToken"].trim()) return toolError("sessionToken must be an opaque non-empty token");
+  if (["blockId", "beforeBlocks", "afterBlocks", "tableCursor"].some(key => record[key] !== undefined)) return toolError("Legacy block windows are no longer supported. Use scope {kind: 'block', blockId}, {kind: 'range', fromBlockId, toBlockId}, or {kind: 'document'}, and copy nextRead to continue.");
+  const scope = parseWriterReadScope(record["scope"]);
+  if (!scope) return toolError("Provide scope.kind document, selection, section, range, or block with its required block IDs.");
+  if (record["cursor"] !== undefined && typeof record["cursor"] !== "string") return toolError("cursor must be the opaque string from nextRead; restart without cursor if unavailable.");
+  if (typeof record["__canonicalContent"] !== "string") return toolError("live Writer session is unavailable");
+  const parsed = parseDocument(record["__canonicalContent"]);
   if (!parsed.ok) return parsed;
-  const canonicalBlocks = parsed.document.document.blocks as Block[];
-  const table = canonicalBlocks.find((block) => block.id === liveArgs.blockId && block.type === "table");
-  if (table) {
-    if (liveArgs.tableCursor !== undefined && !isTableReadCursor(liveArgs.tableCursor)) {
-      return toolError("tableCursor must be a non-negative table coordinate cursor");
-    }
-    const payload = boundedCanonicalTable(table, liveArgs.tableCursor);
-    if (!payload) return toolError("tableCursor is invalid or stale for this canonical table");
-    return { ok: true, status: "table_read", documentVersion: liveArgs.documentVersion, table: payload };
-  }
-  const blocks = boundedCanonicalBlocks(canonicalBlocks, liveArgs.blockId, before, after);
-  if (!blocks) return toolError("blockId was not found in the canonical document");
-  return { ok: true, status: "range_read", documentVersion: liveArgs.documentVersion, blocks };
+  return readWriterContext({ document: parsed.document.document as Document, canonicalSource: record["__canonicalContent"],
+    sessionToken: record["sessionToken"], documentVersion, scope,
+    ...(typeof record["cursor"] === "string" ? { cursor: record["cursor"] } : {}),
+    responseBudgetBytes: ctx.readResponseBudgetBytes, selection: ctx.writerSelection, sessionIdentity: ctx.writerReadSessionId });
 }
 
 /** Preserve the asynchronous app-worker contract around deterministic validation. */
@@ -408,7 +386,7 @@ export type InsertTableArgs = {
 };
 
 // ---------------------------------------------------------------------------
-// D372 parity tools: table structure edits, cell style, delete-table, and
+// parity tools: table structure edits, cell style, delete-table, and
 // indent/outdent. These mirror the human Writer ribbon over the same
 // Wafflebase Document model so agent and human capability match.
 // ---------------------------------------------------------------------------
@@ -481,7 +459,7 @@ export type OutdentBlocksArgs = {
 };
 
 // ---------------------------------------------------------------------------
-// D372 — .docx import/export tools. The app owns OfficeCLI JSON ⇄ Writer
+// .docx import/export tools. The app owns OfficeCLI JSON ⇄ Writer
 // block mapping; the host primitive performs the OfficeCLI invocation and
 // host-side bytes read/write.
 // ---------------------------------------------------------------------------
@@ -490,7 +468,7 @@ export type ImportDocxArgs = {
   source: { surface: "currentFolder" | "workspace"; path: string };
   targetPath: string;
   fileName?: string;
-  /** M205 — overwrite an existing target instead of returning a conflict. */
+  /** overwrite an existing target instead of returning a conflict. */
   overwrite?: boolean;
 };
 
@@ -498,12 +476,12 @@ export type ExportDocxArgs = {
   source: { surface: "currentFolder" | "workspace"; path: string };
   target: { surface: "currentFolder" | "workspace"; path: string };
   fileName?: string;
-  /** M205 — overwrite an existing target instead of returning a conflict. */
+  /** overwrite an existing target instead of returning a conflict. */
   overwrite?: boolean;
 };
 
 /**
- * M205 — a write target that already exists. Both import and export return
+ * a write target that already exists. Both import and export return
  * this (instead of overwriting or erroring) so the caller can prompt
  * overwrite / rename / cancel uniformly across surfaces.
  */
@@ -603,7 +581,7 @@ function truncate(text: string, limit: number): string {
 }
 
 /**
- * D386 Phase 1 transport envelope only. Session authority is checked by the
+ * Transport envelope only. Session authority is checked by the
  * server registration gate before this worker runs. This handler independently
  * validates the public request contract and deliberately performs no document
  * read, write, resolution, diffing, or canonical mutation.
@@ -1066,7 +1044,7 @@ export async function replaceText(
 }
 
 // ---------------------------------------------------------------------------
-// Shared write helper for the additional D372 tools. Inlines the same
+// Shared write helper for the additional tools. Inlines the same
 // serialize → write → classify-outcome flow used by insertBlocks/replaceText
 // so the new handlers stay consistent without duplicating the boilerplate.
 // ---------------------------------------------------------------------------
@@ -1642,7 +1620,7 @@ export async function insertTable(
 }
 
 // ---------------------------------------------------------------------------
-// D372 parity: table structure edits, cell style, delete-table, indent/outdent.
+// parity: table structure edits, cell style, delete-table, indent/outdent.
 // Each handler operates directly on the plain Wafflebase block model (no Doc
 // store), mirroring the semantics in `EXTERNAL/wafflebase/.../model/document.ts`
 // (insertRow/deleteRow/insertColumn/deleteColumn/mergeCells/splitCell/
@@ -2248,7 +2226,7 @@ export async function outdentBlocks(
 }
 
 // ---------------------------------------------------------------------------
-// D372 — import-docx / export-docx.
+// import-docx / export-docx.
 // ---------------------------------------------------------------------------
 
 const IMPORT_DOCX_RELATIVE_PATH_MAX = 1024;
