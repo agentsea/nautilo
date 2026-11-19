@@ -2,6 +2,26 @@ import { describe, expect, test } from "bun:test";
 import { HtmlTextDocumentHistory, type HtmlTextHistoryEvent, type HtmlTextHistoryView } from "../../src/editors/html-text-history";
 
 describe("document-wide HTML edit history", () => {
+  test("composition drafts and their final formatting form one undo step", () => {
+    const history = new HtmlTextDocumentHistory("<p>Start </p>");
+    const group = {};
+    const before: HtmlTextHistoryView = { kind: "source", anchor: 9, head: 9, scrollTop: 20 };
+    history.record("<p>Start n</p>", { before }, group);
+    history.record("<p>Start ni</p>", {}, group);
+    history.record("<p>Start 你</p>", {}, group);
+    const final = '<p>Start <span style="font-weight:bold">你</span></p>';
+    history.record(final, {}, group);
+    expect(history.getSnapshot().source).toBe(final);
+    history.undo();
+    expect(history.getSnapshot()).toEqual({ source: "<p>Start </p>", canUndo: false, canRedo: true });
+    history.redo();
+    expect(history.getSnapshot().source).toBe(final);
+    const canceled = {};
+    history.record(final + "x", {}, canceled);
+    history.record(final, {}, canceled);
+    history.undo();
+    expect(history.getSnapshot().source).toBe("<p>Start </p>");
+  });
   test("undo follows chronological document edits, not the focused region", () => {
     const history = new HtmlTextDocumentHistory("<p>A</p><td>B</td>");
     history.record("<p>A1</p><td>B</td>");

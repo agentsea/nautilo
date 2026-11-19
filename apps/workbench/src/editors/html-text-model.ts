@@ -5,7 +5,7 @@ type HtmlNode = DefaultTreeAdapterMap["node"];
 type HtmlElement = DefaultTreeAdapterMap["element"];
 type HtmlText = DefaultTreeAdapterMap["textNode"];
 export type HtmlTextMark = "bold" | "italic" | "underline" | "strikethrough" | "code" | "subscript" | "superscript";
-export type HtmlTextInline = { id: string; tagName: string; attributes: Record<string, string> };
+export type HtmlTextInline = { id: string; tagName: string; attributes: Record<string, string>; sourceStartOffset?: number };
 export type HtmlTextRun = {
   id: string;
   text: string;
@@ -52,11 +52,48 @@ export function buildHtmlTextModel(source: string, options: { previewCsp?: strin
     if ("childNodes" in node) node.childNodes.forEach(inspect);
   };
   inspect(tree);
+  // A structural boundary divides editable inline islands, not every text
+  // token. Keep contiguous text/formatting siblings in one inert preview span
+  // so adding a mark never turns one text area into several unrelated areas.
+  // These wrappers have no source locations and never enter saved HTML.
+  const islands = new WeakSet<HtmlElement>();
+  const barriers = new WeakSet<HtmlElement>();
+  const safeInline = (node: HtmlNode): boolean => {
+    if (!element(node)) return true;
+    if (BLOCK_TAGS.has(node.tagName) || INLINE_BOUNDARIES.has(node.tagName) || OMIT_TEXT.has(node.tagName) ||
+      node.namespaceURI !== HTML_NAMESPACE || attr(node, "hidden") !== undefined || attr(node, "aria-hidden") === "true") return false;
+    return node.childNodes.every(safeInline);
+  };
+  const groupIslands = (node: HtmlNode) => {
+    if (!("childNodes" in node)) return;
+    if (element(node) && (OMIT_TEXT.has(node.tagName) || node.namespaceURI !== HTML_NAMESPACE ||
+      attr(node, "hidden") !== undefined || attr(node, "aria-hidden") === "true")) return;
+    node.childNodes.forEach(groupIslands);
+    if (!element(node) || !node.childNodes.some(child => !safeInline(child))) return;
+    barriers.add(node);
+    const children: DefaultTreeAdapterMap["childNode"][] = [];
+    let group: DefaultTreeAdapterMap["childNode"][] = [];
+    const flush = () => {
+      if (!group.length) return;
+      const hasText = (child: HtmlNode): boolean => textNode(child) ? !!child.value.trim() : "childNodes" in child && child.childNodes.some(hasText);
+      if (!group.some(hasText)) { children.push(...group); group = []; return; }
+      const span = defaultTreeAdapter.createElement("span", HTML_NAMESPACE, [{ name: "style", value: "all:unset" }]);
+      span.parentNode = node; islands.add(span);
+      for (const child of group) defaultTreeAdapter.appendChild(span, child);
+      children.push(span); group = [];
+    };
+    for (const child of node.childNodes) {
+      if (safeInline(child)) group.push(child);
+      else { flush(); children.push(child); }
+    }
+    flush(); node.childNodes = children;
+  };
+  groupIslands(tree);
   const needsSplit = (node: HtmlElement): boolean => {
     const known = splitContainers.get(node);
     if (known !== undefined) return known;
     const descendants = [...node.childNodes];
-    let split = false;
+    let split = barriers.has(node);
     while (descendants.length) {
       const child = descendants.pop()!;
       if (!element(child)) continue;
@@ -88,7 +125,8 @@ export function buildHtmlTextModel(source: string, options: { previewCsp?: strin
     const location = node.sourceCodeLocation;
     if (!location || !node.value.trim() || nativeDocument) return;
     const parent = [...ancestors].reverse().find(a => BLOCK_TAGS.has(a.tagName));
-    const target = parent && !needsSplit(parent) ? parent : node;
+    const island = [...ancestors].reverse().find(ancestor => islands.has(ancestor));
+    const target = island ?? (parent && !needsSplit(parent) ? parent : node);
     let region = element(target) ? grouped.get(target) : undefined;
     if (!region) {
       const tagName = parent?.tagName ?? "text";
@@ -180,6 +218,7 @@ export function buildHtmlTextModel(source: string, options: { previewCsp?: strin
           return !value.startsWith("javascript:") && !value.startsWith("vbscript:") && (!value.startsWith("data:") || (a.name === "src" && value.startsWith("data:image/") && !value.startsWith("data:image/svg")));
         });
         if (["input", "button", "select", "textarea"].includes(child.tagName)) child.attrs.push({ name: "disabled", value: "" });
+        if (child.sourceCodeLocation?.startTag) child.attrs.push({ name: "data-nautilo-html-source", value: String(child.sourceCodeLocation.startTag.startOffset) });
         sanitize(child);
         if (child.tagName === "form") {
           child.childNodes.forEach(grandchild => { grandchild.parentNode = node; children.push(grandchild); });
@@ -214,6 +253,7 @@ export function buildHtmlTextModel(source: string, options: { previewCsp?: strin
       let descriptor = inlineElements.get(parent);
       if (!descriptor) {
         descriptor = { id: `html-inline-${inlineElements.size}`, tagName: parent.tagName,
+          ...(parent.sourceCodeLocation?.startTag ? { sourceStartOffset: parent.sourceCodeLocation.startTag.startOffset } : {}),
           attributes: Object.fromEntries(parent.attrs.map(a => [a.prefix ? `${a.prefix}:${a.name}` : a.name, a.value])) };
         inlineElements.set(parent, descriptor);
         parent.attrs.push({ name: "data-nautilo-html-inline", value: descriptor.id });

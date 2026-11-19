@@ -44,9 +44,12 @@ export class HtmlSourceInlineNode extends ElementNode {
 
 
 /** Only properties whose computed values do not freeze a text run's geometry. */
-export function inlineAppearance(style: CSSStyleDeclaration): string {
+export function inlineAppearance(style: CSSStyleDeclaration, options: { includeResourceUrls?: boolean } = {}): string {
   const names = ["color", "font-family", "font-size", "font-style", "font-weight", "font-stretch", "font-variant", "font-kerning", "font-feature-settings", "font-variation-settings", "line-height", "letter-spacing", "word-spacing", "text-transform", "text-decoration-line", "text-decoration-style", "text-decoration-color", "text-decoration-thickness", "text-shadow", "vertical-align", "white-space", "background-color", "background-image", "background-size", "background-position", "background-repeat", "border-top", "border-right", "border-bottom", "border-left", "border-radius", "padding-top", "padding-right", "padding-bottom", "padding-left", "margin-top", "margin-right", "margin-bottom", "margin-left", "box-shadow", "opacity", "display"];
-  return names.map(name => `${name}:${style.getPropertyValue(name)};`).join("");
+  // Computed image URLs are resolved against this preview's origin. Mirror
+  // them in the live preview, but never bake that runtime address into source.
+  return names.filter(name => options.includeResourceUrls !== false || name !== "background-image")
+    .map(name => `${name}:${style.getPropertyValue(name)};`).join("");
 }
 
 

@@ -67,6 +67,7 @@
     "@nautilo/document-mutations": "workspace:*",
     "@nautilo/generated-media-ui": "workspace:*",
     "@nautilo/genie-customization-ui": "workspace:*",
+    "@nautilo/office-core": "workspace:*",
     "@nautilo/profile-portability": "workspace:*",
     "@nautilo/realtime-client": "workspace:*",
     "@nautilo/types": "workspace:*",

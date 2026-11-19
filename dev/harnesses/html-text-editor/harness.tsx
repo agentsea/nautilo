@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { HtmlTextEditor } from "../../../apps/workbench/src/editors/html-text-editor";
 import { HtmlTextDocumentHistory } from "../../../apps/workbench/src/editors/html-text-history";
 import { CodeEditor, type CodeEditorSelection } from "../../../apps/workbench/src/editors/code-editor";
-import { fixture } from "./fixture";
+import { fixture, formattingFixture } from "./fixture";
 
 const storageKey = "nautilo-html-text-prototype";
 function Harness() {
@@ -30,7 +30,7 @@ function Harness() {
   const reopen = (source: string) => {
     history.reset(source); setDraft(source); setGeneration(g => g + 1);
   };
-  return <><header><h1>HTML text editing prototype</h1><span role="status">{draft === saved ? "Saved" : "Unsaved"}</span><button onClick={() => setMode(mode === "text" ? "source" : "text")}>{mode === "text" ? "Source" : "Text"}</button><button onClick={save}>Save</button><button onClick={() => setDraft(current => current.replace("</body>", '<p id="external-update">A neighbour published this updated programme.</p></body>'))}>Simulate external update</button><button onClick={() => reopen(saved)}>Reopen saved</button><button onClick={() => { localStorage.removeItem(storageKey); setSaved(fixture); setMode("text"); reopen(fixture); }}>Reset example</button></header>
+  return <><header><h1>HTML text editing prototype</h1><span role="status">{draft === saved ? "Saved" : "Unsaved"}</span><button onClick={() => setMode(mode === "text" ? "source" : "text")}>{mode === "text" ? "Source" : "Text"}</button><button onClick={save}>Save</button><button onClick={() => setDraft(current => current.replace("</body>", '<p id="external-update">A neighbour published this updated programme.</p></body>'))}>Simulate external update</button><button onClick={() => reopen(saved)}>Reopen saved</button><button onClick={() => { localStorage.removeItem(storageKey); setSaved(fixture); setMode("text"); reopen(fixture); }}>Reset example</button><button onClick={() => { setSaved(formattingFixture); setMode("text"); reopen(formattingFixture); }}>Load formatting example</button></header>
     <pre hidden data-testid="canonical-source">{draft}</pre>
     <main>
       <div hidden={mode !== "text"} style={{ display: mode === "text" ? "flex" : "none", height: "100%", minHeight: 0, flexDirection: "column" }}>

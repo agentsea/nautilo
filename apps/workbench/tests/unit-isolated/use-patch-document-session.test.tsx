@@ -953,6 +953,68 @@ describe("usePatchDocumentSession", () => {
     expect(result.current.draft).toBe("server version\n");
   });
 
+  test("a rejected truncated changed-event snapshot preserves a clean nonempty draft without autosaving", async () => {
+    const initial = "<p>Canonical harbour notes remain intact.</p>\n";
+    const message = "Artifact response size does not match its authorized metadata.";
+    const loadLatest = mock(async (): Promise<LoadEditableTextResult> => ({ kind: "error", message }));
+    const { result, unmount } = renderPatchSession(initial, loadLatest);
+    act(() => {
+      artifactEventHandler?.({ type: "changed", id: "art-1", artifactId: "ext-id", path: "notes.txt" });
+    });
+    expect(pendingTimers.some(timer => timer.delay === CHANGED_EVENT_RELOAD_DELAY_MS)).toBe(true);
+    await act(async () => { flushTimers(); await flushPromises(); });
+    expect(loadLatest).toHaveBeenCalledTimes(1);
+    expect(result.current.draft).toBe(initial);
+    expect(result.current.dirty).toBe(false);
+    expect(result.current.status).toBe("failed");
+    expect(result.current.errorMessage).toBe(message);
+    expect(result.current.conflict).toBeNull();
+    await act(async () => { flushTimers(); await flushPromises(); });
+    expect(result.current.draft).toBe(initial);
+    expect(applyPatchMock).toHaveBeenCalledTimes(0);
+    expect(saveArtifactMock).toHaveBeenCalledTimes(0);
+    unmount();
+  });
+
+  test("a rejected inconsistent changed-event snapshot preserves a dirty draft and its original autosave base", async () => {
+    const initial = "<p>Canonical harbour notes.</p>\n";
+    const localDraft = "<p>Canonical harbour notes with a local addition.</p>\n";
+    const baseSha256 = `sha-${initial}`;
+    const message = "Artifact metadata changed while its content was being loaded. Try again.";
+    const loadLatest = mock(async (): Promise<LoadEditableTextResult> => ({ kind: "error", message }));
+    const { result, unmount } = renderPatchSession(initial, loadLatest);
+    act(() => { result.current.setDraftFromEditor(localDraft); });
+    expect(result.current.autosaveEnabled).toBe(true);
+    expect(pendingTimers.some(timer => timer.delay === AUTOSAVE_DEBOUNCE_MS)).toBe(true);
+    act(() => {
+      artifactEventHandler?.({ type: "changed", id: "art-1", artifactId: "ext-id", path: "notes.txt" });
+    });
+    // Deliver reload before the scheduled autosave. Failure must replace
+    // neither the visible draft nor the previously accepted canonical base.
+    const reloadIndex = pendingTimers.findIndex(timer => timer.delay === CHANGED_EVENT_RELOAD_DELAY_MS);
+    expect(reloadIndex).toBeGreaterThanOrEqual(0);
+    const [reload] = pendingTimers.splice(reloadIndex, 1);
+    await act(async () => { reload.fn(); await flushPromises(); });
+    expect(loadLatest).toHaveBeenCalledTimes(1);
+    expect(result.current.draft).toBe(localDraft);
+    expect(result.current.dirty).toBe(true);
+    expect(result.current.status).toBe("failed");
+    expect(result.current.errorMessage).toBe(message);
+    expect(result.current.conflict).toBeNull();
+    expect(applyPatchMock).toHaveBeenCalledTimes(0);
+    expect(saveArtifactMock).toHaveBeenCalledTimes(0);
+    await act(async () => { flushTimers(); await flushPromises(); });
+    expect(applyPatchMock).toHaveBeenCalledTimes(1);
+    expect(applyPatchMock.mock.calls[0]?.[1]).toMatchObject({
+      baseRevision: 1, baseSha256,
+      patch: deriveExactAnchoredTextPatch(initial, localDraft),
+    });
+    expect(applyPatchMock.mock.calls[0]?.[1].patch.newString).not.toBe("");
+    expect(saveArtifactMock).toHaveBeenCalledTimes(0);
+    expect(result.current.draft).toBe(localDraft);
+    unmount();
+  });
+
   test("EventSource reopen forces an authoritative editor resync", async () => {
     const loadLatest = mock(async (): Promise<LoadEditableTextResult> =>
       readyLoad("missed while disconnected\n", 10),

@@ -22,3 +22,19 @@ body{margin:0;background:#fffdf7;color:#17213a;font:17px/1.65 Georgia,serif}.her
 </main><footer><p>Harbour Library · Community programme · Autumn edition</p></footer>
 <script>window.authoredScriptRan = true;</script>
 </body></html>`;
+
+/** Small, disjoint source fixture for real selection/toolbar acceptance. */
+export const formattingFixture = `<!doctype html>
+<html lang="en"><head><meta charset="UTF-8"><title>Harbour editing notes</title>
+<style>body{font:18px/1.6 Georgia,serif;max-width:1000px;margin:30px auto;padding:20px;color:#20344a}p{margin:20px 0}a{color:rgb(29,91,127);text-decoration:underline}.original-emphasis{color:rgb(126,58,27)}.inherited-bold{font-weight:700}.untouched{background:#eef3ef;padding:14px}</style>
+</head><body>
+<!-- Formatting must preserve this comment, source quote styles, and unrelated CSS. -->
+<p id="format-plain" data-original='plain'>Harbour readers share useful ideas.</p>
+<p id="format-mixed">Keep <strong class="original-emphasis" data-original='bold'>bold</strong> and plain.</p>
+<p id="format-inherited" class="inherited-bold">Inherited harbour text.</p>
+<p id="format-link">Read the <a id="original-report-link" class="original-link" href="https://example.org/original" title='Original harbour link'>community report</a> today.</p>
+<p id="format-nested">The <span class="original-emphasis" style="letter-spacing:.3px"><em>harbour</em> notes</span> stay <u>available</u>.</p>
+<p id="format-break">First words<br>Second words <strong>bold</strong></p>
+<p id="format-untouched" class="untouched">This paragraph, its attributes, and its text stay exactly unchanged.</p>
+<script>window.formattingAuthoredScriptRan = true;</script>
+</body></html>`;

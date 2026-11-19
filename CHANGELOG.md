@@ -8,10 +8,14 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 ## [Unreleased]
 
 - Edit text directly in ordinary HTML pages, with a Text/Source switch,
-  document-wide undo and redo, and the existing autosave/conflict controls.
+  document-wide undo and redo, bold/italic/underline and link controls, and the
+  existing autosave/conflict controls. Use Cmd/Ctrl+B, I, U, and K to format text
+  and edit links without opening Source.
   Restore the cursor and scroll position across text regions and editing modes,
   preserve inline styling and surrounding markup, and refresh previews after
-  external edits. Page scripts stay paused in text-editing mode.
+  external edits. Verify document size and revision before adopting refreshed
+  content, preserving the current draft when a read is incomplete or inconsistent.
+  Page scripts stay paused in text-editing mode.
 
 - Let Genies read a Writer document, section, selection, or block range in one
   request when it fits their available context, with exact continuation for

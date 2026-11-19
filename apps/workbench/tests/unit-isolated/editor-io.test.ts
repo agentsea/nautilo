@@ -6,8 +6,8 @@ import {
 } from "../../src/components/browser-column/open-file-target";
 import { MAX_TEXT_PREVIEW_BYTES } from "../../src/lib/file-preview";
 
-const getArtifactMock = mock(async () => ({ id: "art-1", revision: 7 }));
-const getBytesMock = mock(async () => new Blob(["hello"], { type: "text/plain" }));
+const getArtifactMock = mock(async (): Promise<{ id: string; revision: number; size: number } | null> => ({ id: "art-1", revision: 7, size: 5 }));
+const getBytesMock = mock(async () => new TextEncoder().encode("hello").buffer);
 const saveArtifactMock = mock(async () => ({
   id: "art-1",
   revision: 8,
@@ -31,7 +31,7 @@ const writeFileMock = mock(async () => ({
 mock.module("../../src/lib/api", () => ({
   apiClient: {
     getWorkspaceArtifact: getArtifactMock,
-    getWorkspaceArtifactBytes: getBytesMock,
+    getWorkspaceArtifactBytesArrayBuffer: getBytesMock,
     saveWorkspaceArtifactContent: saveArtifactMock,
   },
 }));
@@ -68,6 +68,41 @@ describe("sha256HexForText", () => {
 });
 
 describe("loadEditableText", () => {
+  test("rejects a truncated resync instead of adopting an empty document", async () => {
+    getBytesMock.mockClear();
+    getBytesMock.mockImplementationOnce(async () => { throw new Error("Artifact byte length does not match authorized metadata."); });
+    const result = await loadEditableText(artifactOpenFileTarget({ id: "art-1", path: "notes.html", mimeType: "text/html" }));
+    expect(result).toEqual({ kind: "error", message: "Artifact byte length does not match authorized metadata." });
+    expect(getBytesMock).toHaveBeenCalledWith("art-1", { maxBytes: MAX_TEXT_PREVIEW_BYTES, expectedBytes: 5 });
+  });
+
+  test("rejects a same-size revision change between metadata and bytes", async () => {
+    getArtifactMock.mockImplementationOnce(async () => ({ id: "art-1", revision: 7, size: 5 }));
+    getArtifactMock.mockImplementationOnce(async () => ({ id: "art-1", revision: 8, size: 5 }));
+    expect(await loadEditableText(artifactOpenFileTarget({ id: "art-1", path: "notes.txt", mimeType: "text/plain" })))
+      .toEqual({ kind: "error", message: "The document changed while loading. Try again." });
+  });
+
+  test("accepts a verified empty artifact and rejects missing metadata", async () => {
+    getArtifactMock.mockImplementationOnce(async () => ({ id: "art-1", revision: 7, size: 0 }));
+    getArtifactMock.mockImplementationOnce(async () => ({ id: "art-1", revision: 7, size: 0 }));
+    getBytesMock.mockImplementationOnce(async () => new ArrayBuffer(0));
+    const file = artifactOpenFileTarget({ id: "art-1", path: "empty.txt", mimeType: "text/plain" });
+    expect(await loadEditableText(file)).toEqual({ kind: "ready", content: "", baseSha256: await sha256HexForText(""), baseRevision: 7 });
+    getArtifactMock.mockImplementationOnce(async () => null);
+    expect(await loadEditableText(file)).toEqual({ kind: "error", message: "File no longer exists." });
+  });
+
+  test("does not interpret invalid size or revision metadata as an empty document", async () => {
+    getBytesMock.mockClear();
+    const file = artifactOpenFileTarget({ id: "art-1", path: "notes.txt", mimeType: "text/plain" });
+    for (const metadata of [{ id: "art-1", revision: 7, size: Number.NaN }, { id: "art-1", revision: -1, size: 5 }]) {
+      getArtifactMock.mockImplementationOnce(async () => metadata);
+      expect((await loadEditableText(file)).kind).toBe("error");
+    }
+    expect(getBytesMock).not.toHaveBeenCalled();
+  });
+
   test("artifact load returns revision and preserves roomId", async () => {
     getArtifactMock.mockClear();
     getBytesMock.mockClear();
@@ -81,7 +116,8 @@ describe("loadEditableText", () => {
     const result = await loadEditableText(file);
 
     expect(getArtifactMock).toHaveBeenCalledWith("art-1", { roomId: "room-42" });
-    expect(getBytesMock).toHaveBeenCalledWith("art-1", { roomId: "room-42" });
+    expect(getBytesMock).toHaveBeenCalledWith("art-1", { roomId: "room-42", maxBytes: MAX_TEXT_PREVIEW_BYTES, expectedBytes: 5 });
+    expect(getArtifactMock).toHaveBeenCalledTimes(2);
     expect(result).toEqual({
       kind: "ready",
       content: "hello",
@@ -101,11 +137,8 @@ describe("loadEditableText", () => {
   });
 
   test("over the preview cap returns too_large", async () => {
-    getBytesMock.mockImplementationOnce(async () => ({
-      // Only `size` matters — the cap check returns before `text()` is read.
-      size: MAX_TEXT_PREVIEW_BYTES + 1,
-      text: async () => "x",
-    } as Blob));
+    getArtifactMock.mockImplementationOnce(async () => ({ id: "big", revision: 7, size: MAX_TEXT_PREVIEW_BYTES + 1 }));
+    getBytesMock.mockClear();
 
     const result = await loadEditableText(
       artifactOpenFileTarget({
@@ -115,6 +148,7 @@ describe("loadEditableText", () => {
       }),
     );
     expect(result).toEqual({ kind: "too_large" });
+    expect(getBytesMock).not.toHaveBeenCalled();
   });
 });
 

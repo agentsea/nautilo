@@ -1,10 +1,20 @@
 import { describe, expect, test } from "bun:test";
 import { createEditor, TextNode, ParagraphNode, $createParagraphNode, $createTextNode, $getRoot, $setSelection, $getSelection, $isRangeSelection, $isElementNode } from "@mdxeditor/lexical";
 import { buildHtmlTextModel, applyHtmlRegionText } from "../../src/editors/html-text-model";
-import { HtmlSourceInlineNode, $appendHtmlRegionRuns, $reconcileHtmlRegion } from "../../src/editors/html-text-inline-node";
+import { inlineAppearance, HtmlSourceInlineNode, $appendHtmlRegionRuns, $reconcileHtmlRegion } from "../../src/editors/html-text-inline-node";
 import { $htmlTextSelectionAtOffsets, $htmlTextSelectionOffsets } from "../../src/editors/html-text-selection";
 
 describe("canonical inline rendering during edits", () => {
+  test("source snapshots exclude preview-resolved resource URLs while retaining text appearance", () => {
+    const values: Record<string, string> = { "background-image": 'url("http://127.0.0.1:8999/relative;image.png")', "font-weight": "700", "color": "rgb(1, 2, 3)" };
+    const style = { getPropertyValue: (name: string) => values[name] ?? "" } as CSSStyleDeclaration;
+    expect(inlineAppearance(style)).toContain(values["background-image"]);
+    const persisted = inlineAppearance(style, { includeResourceUrls: false });
+    expect(persisted).not.toContain("background-image");
+    expect(persisted).not.toContain("127.0.0.1");
+    expect(persisted).toContain("font-weight:700;");
+    expect(persisted).toContain("color:rgb(1, 2, 3);");
+  });
   test("whole-region replacement preserves original wrappers in committed history states", () => {
     const source = '<p>Hello <strong class="bold">bold</strong> and <a href="/guide">linked</a> text.</p>';
     const region = buildHtmlTextModel(source).regions[0];

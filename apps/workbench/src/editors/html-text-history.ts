@@ -5,7 +5,7 @@ export type HtmlTextHistoryView =
   | { kind: "text"; session: object; regionId: string; regionIndex: number; regionCount: number; regionTagName: string; state: EditorState; anchor: number; focus: number; scrollX: number; scrollY: number };
 export type HtmlTextHistorySnapshot = { source: string; canUndo: boolean; canRedo: boolean };
 export type HtmlTextHistoryEvent = HtmlTextHistorySnapshot & { kind: "record" | "restore" | "reset"; view?: HtmlTextHistoryView };
-type Entry = { offset: number; before: string; after: string; beforeView?: HtmlTextHistoryView; afterView?: HtmlTextHistoryView };
+type Entry = { group?: object; offset: number; before: string; after: string; beforeView?: HtmlTextHistoryView; afterView?: HtmlTextHistoryView };
 
 /** One chronological history for the HTML document, independent of focused region or mode. */
 export class HtmlTextDocumentHistory {
@@ -26,13 +26,26 @@ export class HtmlTextDocumentHistory {
     const event = { ...this.getSnapshot(), kind, ...(view ? { view } : {}) };
     for (const listener of this.listeners) listener(event);
   }
-  record(nextSource: string, views: { before?: HtmlTextHistoryView; after?: HtmlTextHistoryView } = {}): boolean {
+  record(nextSource: string, views: { before?: HtmlTextHistoryView; after?: HtmlTextHistoryView } = {}, group?: object): boolean {
     if (nextSource === this.source) return false;
+    // A composition updates the canonical draft continuously but remains one
+    // undoable action, including formatting applied when composition commits.
+    let base = this.source;
+    let beforeView = views.before;
+    const previous = this.undoStack.at(-1);
+    if (group && previous?.group === group) {
+      base = this.source.slice(0, previous.offset) + previous.before + this.source.slice(previous.offset + previous.after.length);
+      beforeView = previous.beforeView;
+      this.undoStack.pop();
+    }
+    if (nextSource === base) {
+      this.source = nextSource; this.emit("record"); return true;
+    }
     let offset = 0;
-    while (offset < this.source.length && offset < nextSource.length && this.source[offset] === nextSource[offset]) offset++;
-    let beforeEnd = this.source.length, afterEnd = nextSource.length;
-    while (beforeEnd > offset && afterEnd > offset && this.source[beforeEnd - 1] === nextSource[afterEnd - 1]) { beforeEnd--; afterEnd--; }
-    this.undoStack.push({ offset, before: this.source.slice(offset, beforeEnd), after: nextSource.slice(offset, afterEnd), ...(views.before ? { beforeView: views.before } : {}), ...(views.after ? { afterView: views.after } : {}) });
+    while (offset < base.length && offset < nextSource.length && base[offset] === nextSource[offset]) offset++;
+    let beforeEnd = base.length, afterEnd = nextSource.length;
+    while (beforeEnd > offset && afterEnd > offset && base[beforeEnd - 1] === nextSource[afterEnd - 1]) { beforeEnd--; afterEnd--; }
+    this.undoStack.push({ ...(group ? { group } : {}), offset, before: base.slice(offset, beforeEnd), after: nextSource.slice(offset, afterEnd), ...(beforeView ? { beforeView } : {}), ...(views.after ? { afterView: views.after } : {}) });
     this.source = nextSource;
     this.redoStack = [];
     this.emit("record");

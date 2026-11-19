@@ -53,23 +53,23 @@ describe("source-preserving HTML text editing", () => {
     const model = buildHtmlTextModel(source);
     expect(model.regions.map(r => r.text)).toEqual(["Visible link", "Form text"]);
     for (const forbidden of ["<script", "onclick", "javascript:", "<iframe", "<object", "<form", "<base", "http-equiv", "autofocus", '="forged"']) expect(model.previewHtml).not.toContain(forbidden);
-    expect(model.previewHtml).toContain("<style>.x{color:red}</style>");
+    expect(model.previewHtml).toContain(`<style data-nautilo-html-source="${source.indexOf("<style>")}">.x{color:red}</style>`);
     expect(model.previewHtml).toContain("disabled");
     expect(applyHtmlRegionTexts(model, source, [])).toMatchObject({ source });
   });
   test("keeps nested block structure and existing breaks outside editable region mounts", () => {
     const source = '<div>Before<p>Paragraph</p>After</div><p>One<br>Two <b>bold</b></p>';
     const model = buildHtmlTextModel(source);
-    expect(model.regions.map(r => r.text)).toEqual(["Before", "Paragraph", "After", "One", "Two ", "bold"]);
-    expect(model.previewHtml).toContain('<div><span data-nautilo-html-region=');
-    expect(model.previewHtml).toContain("<br>");
+    expect(model.regions.map(r => r.text)).toEqual(["Before", "Paragraph", "After", "One", "Two bold"]);
+    expect(model.previewHtml).toContain('<div data-nautilo-html-source="0"><span style="all:unset" data-nautilo-html-region=');
+    expect(model.previewHtml).toContain(`<br data-nautilo-html-source="${source.indexOf("<br>")}">`);
     expect(applyHtmlRegionText(model, source, model.regions[3].id, "First")).toMatchObject({ source: source.replace("One", "First") });
   });
   test("keeps inline images and other nontext content outside editable mounts", () => {
     const source = '<p>Before<img src="cover.png" width="100">After<svg><text>Graphic label</text></svg>End</p>';
     const model = buildHtmlTextModel(source);
     expect(model.regions.map(r => r.text)).toEqual(["Before", "After", "End"]);
-    expect(model.previewHtml).toContain('<img src="cover.png" width="100">');
+    expect(model.previewHtml).toContain('<img src="cover.png" width="100" data-nautilo-html-source="9">');
     expect(model.previewHtml).not.toContain('<p data-nautilo-html-region');
     expect(applyHtmlRegionText(model, source, model.regions[1].id, "Changed")).toMatchObject({ source: source.replace("After", "Changed") });
   });
@@ -96,8 +96,8 @@ describe("source-preserving HTML text editing", () => {
     const model = buildHtmlTextModel(source);
     expect(model.regions.map(r => r.text)).toEqual(["Visible", " Tail"]);
     expect(model.regions.map(r => r.label)).toEqual(["Paragraph", "Paragraph"]);
-    expect(model.previewHtml).toContain("<style>.x{color:red}</style>");
-    expect(model.previewHtml).toContain('<span hidden="">Hidden</span>');
+    expect(model.previewHtml).toContain(`<style data-nautilo-html-source="${source.indexOf("<style>")}">.x{color:red}</style>`);
+    expect(model.previewHtml).toContain(`<span hidden="" data-nautilo-html-source="${source.indexOf('<span hidden>')}">Hidden</span>`);
     expect(model.previewHtml).not.toContain("<script>");
     expect(applyHtmlRegionText(model, source, model.regions[0].id, "Edited")).toMatchObject({ source: source.replace("Visible", "Edited") });
   });
@@ -146,8 +146,8 @@ describe("source-preserving HTML text editing", () => {
     const source = '<p><span class="outer"><em data-kind="label">Text</em></span> <a href="/x" onclick="bad()">Link</a></p>';
     const model = buildHtmlTextModel(source);
     expect(model.regions[0].runs[0].inlinePath?.map(inline => inline.tagName)).toEqual(["span", "em"]);
-    expect(model.regions[0].runs[0].inlinePath?.[0].attributes).toEqual({ class: "outer" });
-    expect(model.regions[0].runs.at(-1)?.inlinePath?.[0].attributes).toEqual({ href: "/x" });
+    expect(model.regions[0].runs[0].inlinePath?.[0].attributes).toEqual({ class: "outer", "data-nautilo-html-source": String(source.indexOf("<span")) });
+    expect(model.regions[0].runs.at(-1)?.inlinePath?.[0].attributes).toEqual({ href: "/x", "data-nautilo-html-source": String(source.indexOf("<a ")) });
   });
   test("blocks native Nautilo document manifests without touching their canonical payload", () => {
     const source = '<script id="manifest" type="application/vnd.nautilo.document+json">{"editor":"writer"}</script><p>Preview only</p>';
