@@ -5,6 +5,7 @@ type HtmlNode = DefaultTreeAdapterMap["node"];
 type HtmlElement = DefaultTreeAdapterMap["element"];
 type HtmlText = DefaultTreeAdapterMap["textNode"];
 export type HtmlTextMark = "bold" | "italic" | "underline" | "strikethrough" | "code" | "subscript" | "superscript";
+export type HtmlTextInline = { id: string; tagName: string; attributes: Record<string, string> };
 export type HtmlTextRun = {
   id: string;
   text: string;
@@ -13,6 +14,8 @@ export type HtmlTextRun = {
   endOffset: number;
   marks: HtmlTextMark[];
   href?: string;
+  /** Sanitized original wrappers, outermost first, relative to the region. */
+  inlinePath?: HtmlTextInline[];
 };
 export type HtmlTextRegion = { id: string; tagName: string; label: string; text: string; runs: HtmlTextRun[] };
 export type HtmlTextModel = { source: string; regions: HtmlTextRegion[]; previewHtml: string; blockedReason?: string };
@@ -40,6 +43,7 @@ export function buildHtmlTextModel(source: string, options: { previewCsp?: strin
   const tree = parse(source, { sourceCodeLocationInfo: true });
   const regions: HtmlTextRegion[] = [];
   const targets = new Map<string, HtmlElement | HtmlText>();
+  const runNodes = new Map<string, HtmlText>();
   const grouped = new Map<HtmlElement, HtmlTextRegion>();
   const splitContainers = new WeakMap<HtmlElement, boolean>();
   let nativeDocument = false;
@@ -95,9 +99,50 @@ export function buildHtmlTextModel(source: string, options: { previewCsp?: strin
     const marks = [...new Set(ancestors.flatMap(a => MARKS[a.tagName] ? [MARKS[a.tagName]!] : []))];
     const href = [...ancestors].reverse().find(a => a.tagName === "a")?.attrs.find(a => a.name === "href")?.value;
     const run: HtmlTextRun = { id: `html-run-${location.startOffset}-${location.endOffset}`, text: node.value, startOffset: location.startOffset, endOffset: location.endOffset, marks, ...(href !== undefined ? { href } : {}) };
-    region.runs.push(run); region.text += run.text;
+    region.runs.push(run); region.text += run.text; runNodes.set(run.id, node);
   };
   visit(tree, []);
+  // Deleting a formatted paragraph leaves its inline elements intact. Keep an
+  // editing target after reopen, including whitespace-only leaves, without
+  // inventing source coordinates for implicit/recovered block boundaries.
+  const visitBlank = (node: HtmlNode, ancestors: HtmlElement[]) => {
+    if (element(node)) {
+      if (OMIT_TEXT.has(node.tagName) || node.namespaceURI !== HTML_NAMESPACE || attr(node, "hidden") !== undefined || attr(node, "aria-hidden") === "true") return;
+      if (!nativeDocument && EMPTY_TEXT_BLOCKS.has(node.tagName) && !grouped.has(node) && !needsSplit(node) &&
+        node.sourceCodeLocation?.startTag && node.sourceCodeLocation.endTag) {
+        const leaves: HtmlText[] = [];
+        const collect = (child: HtmlNode) => {
+          if (textNode(child)) leaves.push(child);
+          else if (element(child) && attr(child, "hidden") === undefined && attr(child, "aria-hidden") !== "true") child.childNodes.forEach(collect);
+        };
+        node.childNodes.forEach(collect);
+        if (leaves.every(leaf => !leaf.value.trim() && leaf.sourceCodeLocation)) {
+          let first = leaves[0];
+          let offset = first?.sourceCodeLocation?.startOffset;
+          if (!first) {
+            // Choose the first explicitly located inline descendant so typing
+            // into an emptied bold/link/span retains that original formatting.
+            let insertion = node;
+            while (true) {
+              const child = insertion.childNodes.find((candidate): candidate is HtmlElement => element(candidate) && attr(candidate, "hidden") === undefined && attr(candidate, "aria-hidden") !== "true" && !!candidate.sourceCodeLocation?.startTag && !!candidate.sourceCodeLocation.endTag);
+              if (!child) break;
+              insertion = child;
+            }
+            offset = insertion.sourceCodeLocation!.startTag!.endOffset;
+            first = defaultTreeAdapter.createTextNode("");
+            defaultTreeAdapter.appendChild(insertion, first);
+          }
+          const run: HtmlTextRun = { id: `html-run-${offset}-${first.sourceCodeLocation?.endOffset ?? offset}`, text: first.value,
+            startOffset: offset!, endOffset: first.sourceCodeLocation?.endOffset ?? offset!, marks: [...new Set(ancestors.flatMap(a => MARKS[a.tagName] ? [MARKS[a.tagName]!] : []))] };
+          const region: HtmlTextRegion = { id: `html-region-${offset}`, tagName: node.tagName, label: LABELS[node.tagName] ?? "Text", text: first.value, runs: [run] };
+          regions.push(region); targets.set(region.id, node); grouped.set(node, region); runNodes.set(run.id, first);
+        }
+      }
+      node.childNodes.forEach(child => visitBlank(child, [...ancestors, node]));
+    } else if ("childNodes" in node) node.childNodes.forEach(child => visitBlank(child, ancestors));
+  };
+  visitBlank(tree, []);
+  regions.sort((a, b) => a.runs[0].startOffset - b.runs[0].startOffset);
   // Include whitespace-only nodes inside an otherwise editable leaf block. They
   // are significant between inline spans and must participate in the text diff.
   for (const [container, region] of grouped) {
@@ -108,7 +153,8 @@ export function buildHtmlTextModel(source: string, options: { previewCsp?: strin
       } else if (textNode(node) && !node.value.trim() && node.sourceCodeLocation) {
         const { startOffset, endOffset } = node.sourceCodeLocation;
         const run: HtmlTextRun = { id: `html-run-${startOffset}-${endOffset}`, text: node.value, startOffset, endOffset, marks: [...new Set(ancestors.flatMap(a => MARKS[a.tagName] ? [MARKS[a.tagName]!] : []))] };
-        region.runs.push(run);
+        if (!region.runs.some(existing => existing.id === run.id)) region.runs.push(run);
+        runNodes.set(run.id, node);
       }
     };
     collect(container, []);
@@ -154,6 +200,28 @@ export function buildHtmlTextModel(source: string, options: { previewCsp?: strin
       const index = parent.childNodes.indexOf(target);
       if (index >= 0) { parent.childNodes[index] = wrapper; target.parentNode = wrapper; }
     }
+  }
+  // Keep the sanitized inline tree for the editing renderer. The marker lets
+  // it capture the original computed appearance before Lexical mounts.
+  const inlineElements = new Map<HtmlElement, HtmlTextInline>();
+  if (!blockedReason) for (const region of regions) for (const run of region.runs) {
+    const target = targets.get(region.id);
+    const node = runNodes.get(run.id);
+    if (!node || target === node) { run.inlinePath = []; continue; }
+    const path: HtmlTextInline[] = [];
+    let parent = node.parentNode;
+    while (parent && parent !== target && element(parent)) {
+      let descriptor = inlineElements.get(parent);
+      if (!descriptor) {
+        descriptor = { id: `html-inline-${inlineElements.size}`, tagName: parent.tagName,
+          attributes: Object.fromEntries(parent.attrs.map(a => [a.prefix ? `${a.prefix}:${a.name}` : a.name, a.value])) };
+        inlineElements.set(parent, descriptor);
+        parent.attrs.push({ name: "data-nautilo-html-inline", value: descriptor.id });
+      }
+      path.unshift(descriptor);
+      parent = parent.parentNode;
+    }
+    run.inlinePath = path;
   }
   // These options are trusted parent-owned policy/style, never document fields.
   // Insert through the parsed head so authored attributes cannot bypass policy.
@@ -228,6 +296,12 @@ function regionRunEdits(region: HtmlTextRegion, newText: string): Array<{ runId:
     }
   }
   return region.runs.map((run, i) => ({ runId: run.id, text: values[i] }));
+}
+
+/** The exact inline run distribution used by both source patches and active rendering. */
+export function projectHtmlRegionRuns(region: HtmlTextRegion, text: string): HtmlTextRun[] {
+  const edits = regionRunEdits(region, text);
+  return region.runs.map((run, index) => ({ ...run, text: edits[index].text }));
 }
 
 /** Apply all desired region texts to one immutable editing-session baseline. */

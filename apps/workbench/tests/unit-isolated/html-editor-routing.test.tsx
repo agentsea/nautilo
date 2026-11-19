@@ -39,6 +39,10 @@ test("HTML Text and Source modes share one draft and patch session, including ex
   const sourceDraft = await view.findByRole("textbox", { name: "HTML source draft" });
   expect((sourceDraft as HTMLTextAreaElement).value).toBe("<p>From text mode</p>");
   fireEvent.click(view.getByRole("button", { name: "Change source draft" }));
+  fireEvent.click(view.getByRole("button", { name: "Undo", exact: true }));
+  await waitFor(() => expect((view.getByRole("textbox", { name: "HTML source draft" }) as HTMLTextAreaElement).value).toBe("<p>From text mode</p>"));
+  fireEvent.click(view.getByRole("button", { name: "Redo", exact: true }));
+  await waitFor(() => expect((view.getByRole("textbox", { name: "HTML source draft" }) as HTMLTextAreaElement).value).toBe("<p>From source mode</p>"));
   fireEvent.click(view.getByRole("button", { name: "Text", exact: true }));
   await waitFor(() => expect((view.getByRole("textbox", { name: "HTML text draft" }) as HTMLTextAreaElement).value).toBe("<p>From source mode</p>"));
   fireEvent.click(view.getByRole("button", { name: "Save HTML text" }));

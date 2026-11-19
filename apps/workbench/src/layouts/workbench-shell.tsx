@@ -1526,11 +1526,7 @@ export function WorkbenchShell() {
           return {
             kind: "file",
             mode: prev.mode,
-            file: {
-              ...currentArtifact,
-              path: nextPath,
-              reloadToken: (currentArtifact.reloadToken ?? 0) + 1,
-            },
+            file: nextTarget,
           };
         });
       }, {

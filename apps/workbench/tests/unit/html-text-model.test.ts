@@ -129,9 +129,25 @@ describe("source-preserving HTML text editing", () => {
     expect(applyHtmlRegionText(reopened, cleared.source, reopened.regions[0].id, "Restored")).toMatchObject({ source: '<p class="copy">Restored</p>' });
   });
   test("does not invent empty ranges for implicit, recovered or nontext containers", () => {
-    for (const source of ['<p>', '<p><p>', '<table><tr><td>', '<div></div>', '<p><b></b></p>', '<p><img src="image.png"></p>']) {
+    for (const source of ['<p>', '<p><p>', '<table><tr><td>', '<div></div>', '<p><img src="image.png"></p>']) {
       expect(buildHtmlTextModel(source).regions).toEqual([]);
     }
+  });
+  test("reopens emptied inline formatting and whitespace-only paragraphs without dropping wrappers", () => {
+    for (const source of ['<p><b></b></p>', '<p><a class="guide" href="/x"><span style="color:red"></span></a></p>', '<p>  </p>']) {
+      const model = buildHtmlTextModel(source);
+      expect(model.regions).toHaveLength(1);
+      const region = model.regions[0];
+      const result = applyHtmlRegionText(model, source, region.id, "Restored");
+      if (!result.ok) throw new Error(result.reason);
+      expect(buildHtmlTextModel(result.source).regions[0].text).toBe("Restored");
+      expect(result.source.replace("Restored", region.text)).toBe(source);
+    }
+    const source = '<p><span class="outer"><em data-kind="label">Text</em></span> <a href="/x" onclick="bad()">Link</a></p>';
+    const model = buildHtmlTextModel(source);
+    expect(model.regions[0].runs[0].inlinePath?.map(inline => inline.tagName)).toEqual(["span", "em"]);
+    expect(model.regions[0].runs[0].inlinePath?.[0].attributes).toEqual({ class: "outer" });
+    expect(model.regions[0].runs.at(-1)?.inlinePath?.[0].attributes).toEqual({ href: "/x" });
   });
   test("blocks native Nautilo document manifests without touching their canonical payload", () => {
     const source = '<script id="manifest" type="application/vnd.nautilo.document+json">{"editor":"writer"}</script><p>Preview only</p>';
