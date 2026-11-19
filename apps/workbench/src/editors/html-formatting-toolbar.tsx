@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, type KeyboardEvent } from "react";
-import { Bold, Italic, Link as LinkIcon, Underline, type LucideIcon } from "lucide-react";
+import { Bold, Italic, Link as LinkIcon, Redo2, Underline, Undo2, type LucideIcon } from "lucide-react";
 
 export type HtmlFormattingMark = "bold" | "italic" | "underline";
 export type HtmlFormattingSelection = {
@@ -15,6 +15,10 @@ export type HtmlLinkDialogState = {
   canRemove: boolean;
 };
 type HtmlFormattingToolbarProps = {
+  canUndo: boolean;
+  canRedo: boolean;
+  onUndo: () => void;
+  onRedo: () => void;
   selection: HtmlFormattingSelection;
   onToggle: (mark: HtmlFormattingMark) => void;
   onOpenLink: () => void;
@@ -27,8 +31,9 @@ type HtmlFormattingToolbarProps = {
   error: string | null;
 };
 
-const buttonClass = "rounded border border-border px-2.5 py-1 text-foreground hover:bg-background-element disabled:opacity-40 aria-pressed:bg-primary-muted aria-pressed:border-primary aria-[pressed=mixed]:border-primary";
-const iconButtonClass = `${buttonClass} inline-flex h-8 w-8 items-center justify-center p-0`;
+const buttonBaseClass = "rounded border border-border text-foreground hover:bg-background-element disabled:opacity-40 aria-pressed:bg-primary-muted aria-pressed:border-primary aria-[pressed=mixed]:border-primary";
+const buttonClass = `${buttonBaseClass} px-2.5 py-1`;
+const iconButtonClass = `${buttonBaseClass} inline-flex h-8 w-8 shrink-0 items-center justify-center p-0`;
 const marks: { mark: HtmlFormattingMark; label: string; key: string; Icon: LucideIcon }[] = [
   { mark: "bold", label: "Bold", key: "B", Icon: Bold },
   { mark: "italic", label: "Italic", key: "I", Icon: Italic },
@@ -57,6 +62,13 @@ export function HtmlFormattingToolbar(props: HtmlFormattingToolbarProps) {
 
   return <div className="border-b border-border text-xs">
     <div role="toolbar" aria-label="Text formatting" className="flex flex-wrap items-center gap-2 px-3 py-2" onKeyDown={navigateToolbar}>
+      <button type="button" aria-label="Undo" title="Undo (⌘/Ctrl+Z)"
+        aria-keyshortcuts="Control+z Meta+z" disabled={!props.canUndo || open} className={iconButtonClass}
+        onMouseDown={event => event.preventDefault()} onClick={props.onUndo}><Undo2 aria-hidden="true" size={15} /></button>
+      <button type="button" aria-label="Redo" title="Redo (⌘/Ctrl+Shift+Z or Ctrl+Y)"
+        aria-keyshortcuts="Control+Shift+z Meta+Shift+z Control+y" disabled={!props.canRedo || open} className={iconButtonClass}
+        onMouseDown={event => event.preventDefault()} onClick={props.onRedo}><Redo2 aria-hidden="true" size={15} /></button>
+      <span aria-hidden="true" className="mx-1 h-5 border-l border-border" />
       {marks.map(({ mark, label, key, Icon }) => <button
         key={mark} type="button" aria-label={label}
         aria-pressed={selection.marks[mark] === "mixed" ? "mixed" : selection.marks[mark] === "on"}

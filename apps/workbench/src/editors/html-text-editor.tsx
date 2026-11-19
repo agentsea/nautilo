@@ -511,12 +511,11 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="html-text-editor">
       <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2 text-xs text-foreground-muted">
-        <button type="button" disabled={!historyStatus.canUndo} onMouseDown={event => event.preventDefault()} onClick={() => history.undo()} className="rounded border border-border px-2 py-1 disabled:opacity-40">Undo</button>
-        <button type="button" disabled={!historyStatus.canRedo} onMouseDown={event => event.preventDefault()} onClick={() => history.redo()} className="rounded border border-border px-2 py-1 disabled:opacity-40">Redo</button>
         <span>{activeLabel ? `Editing ${activeLabel}. Enter or Esc to finish.` : "Click text to edit. Tab moves between text areas."}</span>
         <span className="ml-auto">Page scripts paused while editing.</span>
       </div>
       <HtmlFormattingToolbar selection={formatSelection} onToggle={mark => formatting.current.toggle(mark)}
+        canUndo={historyStatus.canUndo} canRedo={historyStatus.canRedo} onUndo={() => history.undo()} onRedo={() => history.redo()}
         onOpenLink={() => formatting.current.openLink()} linkDialog={linkDialog}
         onLinkUrlChange={url => { setLinkDialog(current => current ? { ...current, url } : null); setLinkError(null); }}
         onLinkTextChange={text => setLinkDialog(current => current ? { ...current, text } : null)}
