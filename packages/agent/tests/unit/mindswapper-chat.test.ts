@@ -20,6 +20,8 @@ import { resolveModelExecutionLimits } from "../../src/providers/models";
 import { createDiscoverModelsTool } from "../../src/tools/meta/discover-models";
 import { buildForegroundModelControlPlan } from "../../src/config/foreground-model-controls";
 import { resolveCompletionBudget, resolvePreparedMessageBudget } from "../../src/utils/chat-model-invocation";
+import { toFriendlyError } from "../../src/utils/friendly-errors";
+import { classifyPersonalAttemptFailure } from "../../src/usage/personal-llm-attempt";
 
 const modelId = "mindswapper:maker/Test-model";
 const upstreamId = "maker/Test-model";
@@ -314,16 +316,33 @@ describe("MindSwapper Chat Completions", () => {
     expect(requests).toBe(0);
   });
 
-  test("distinguishes insufficient credit without leaking the provider error body or retrying", async () => {
+  test.each([
+    ["insufficient_balance", "insufficient_balance", "insufficient credit"],
+    ["billing_needs_review", "billing_needs_review", "charge is under review"],
+    ["spend_limit_reached", "spend_limit_reached", "reached its spending limit"],
+    [undefined, "billing_error", "declined the request for billing reasons"],
+    ["untrusted-provider-code", "billing_error", "declined the request for billing reasons"],
+  ])("preserves the appropriate billing refusal for upstream code %s", async (wireCode, code, message) => {
     let requests = 0;
+    const privateDetails = `untrusted provider details including ${connection.apiKey}`;
     stubFetch(() => {
       requests++;
-      return Response.json({ error: { message: "untrusted provider details" } }, { status: 402 });
+      return Response.json({ error: { code: wireCode, message: privateDetails } }, {
+        status: 402, headers: { "x-request-id": requestId },
+      });
     });
     await assert.rejects(withConnection(async () => {
       const chat = await createUnmeteredEvaluationModel(modelId);
       return chat.invoke([new HumanMessage("hello")]);
-    }), { status: 402, code: "insufficient_balance", outcomeUnknown: false });
+    }), (error: unknown) => {
+      expect(error).toMatchObject({ status: 402, code, outcomeUnknown: false, requestId });
+      expect(toFriendlyError(error).message).toContain(message);
+      expect(classifyPersonalAttemptFailure(error, false)).toEqual({
+        outcome: "failed", failureCode: code, disposition: "safe_refusal",
+      });
+      expect(String(error)).not.toContain(privateDetails);
+      return true;
+    });
     expect(requests).toBe(1);
   });
 

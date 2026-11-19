@@ -190,10 +190,13 @@ export async function openForegroundChatFundingSession(
   if (admitted.providerRoute === "mindswapper" && !mindSwapperModel) {
     throw new ModelFundingError("provider_credentials_missing");
   }
+  const foregroundModels = mindSwapperModel
+    ? [...mindswapperModels.filter(({ id }) => id !== mindSwapperModel.id), mindSwapperModel]
+    : mindswapperModels;
   let lastAttempt: ModelFundingDecision | undefined;
   return {
     kind: admitted.kind,
-    ...(mindswapperModels.length > 0 ? { mindswapperModels } : {}),
+    ...(foregroundModels.length > 0 ? { mindswapperModels: foregroundModels } : {}),
     ...(mindswapperTaskModels.length > 0 ? { mindswapperTaskModels } : {}),
     ...(input.protectedTurn !== true ? { allowUnpinnedSurplusRetry: true as const } : {}),
     ...(external ? { contentPrivateDiagnostics: true as const } : {}),

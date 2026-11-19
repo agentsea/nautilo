@@ -58,7 +58,7 @@ export function classifyPersonalAttemptFailure(
     return { outcome: "unknown", failureCode: "outcome_unknown", disposition: "terminal_unknown" };
   }
   if (error instanceof MindSwapperRequestError && !providerWorkObserved && error.status === 402) {
-    return { outcome: "failed", failureCode: "insufficient_balance", disposition: "safe_refusal" };
+    return { outcome: "failed", failureCode: error.code, disposition: "safe_refusal" };
   }
   const status = classifyError(error).statusCode;
   if (!providerWorkObserved && status !== undefined && VERIFIED_PRE_SERVICE_REFUSAL_STATUSES.has(status)) {

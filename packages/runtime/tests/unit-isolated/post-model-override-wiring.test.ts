@@ -63,6 +63,9 @@ mock.module("../../src/foreground-chat-funding-port", () => ({
   ...realFundingPort,
   openForegroundChatFundingSessionForInvocation: async (input: { roomId: string }) =>
     admittedSessions.get(input.roomId) ?? null,
+  openImageAssistanceForInvocation: async () => {
+    throw new Error("This fixture has no configured image assistance route");
+  },
 }));
 mock.module("../../src/context/build-transcript-context-deps", () => ({
   defaultBuildTranscriptContextDeps: () => ({
@@ -93,10 +96,6 @@ mock.module("@nautilo/db", () => ({
   ...realDatabase,
   getSharedDirectDb: () => { throw new Error("unexpected-database-access-in-model-wiring-test"); },
 }));
-
-// Match the production no-image result; an array would falsely signal completion.
-const noImageAssistance: typeof realNautiloAgent.maybeSummarizeImagesWithVisionFallback =
-  async () => null;
 
 mock.module("@nautilo/agent", () => ({
   ...realNautiloAgent,
@@ -146,7 +145,6 @@ mock.module("@nautilo/agent", () => ({
   }),
   getAgentDisplayNameById: async () => null,
   selectPromptBriefMemories: async () => [],
-  maybeSummarizeImagesWithVisionFallback: noImageAssistance,
   loadForegroundModelControlSnapshot: async (
     roomId: string,
     agentId: string,
@@ -488,6 +486,53 @@ describe("funded foreground context preparation", () => {
       }
       expect(preparedContextLimits).toEqual([]);
       expect(capturedDeps).toBeUndefined();
+    });
+  }
+});
+
+describe("funded foreground images", () => {
+  const modelId = "mindswapper:fixture/chat";
+  const textWithTools: realNautiloAgent.MindSwapperChatModel["offers"][number] = {
+    inputModalities: ["text"], supportedParameters: ["tools"], maxInputTokens: 2_000, maxOutputTokens: 100,
+  };
+  const visionModel: realNautiloAgent.MindSwapperChatModel = {
+    id: modelId, displayName: "Scoped chat fixture",
+    offers: [{ ...textWithTools, inputModalities: ["text", "image"] }],
+  };
+  const input = {
+    model: modelId, roomId: "room-vision",
+    multimodalImages: [{ type: "image", attachmentId: "image-a", filename: "chart.png", mimeType: "image/png", base64: "YWJj" }],
+  };
+  function admit(model: realNautiloAgent.MindSwapperChatModel) {
+    captureGraphInput = true;
+    admittedSessions.set(input.roomId, {
+      kind: "personal",
+      mindswapperModels: [model],
+      recheckAttempt: async () => {},
+      runAttempt: async () => { throw new Error("unexpected-provider-attempt-before-graph"); },
+    });
+  }
+
+  for (const [entrypoint, execute] of [["main", driveExecutorOnce], ["fork", driveForkOnce]] as const) {
+    test(`${entrypoint} forwards the image when the funded tool offer accepts it`, async () => {
+      admit(visionModel);
+      await execute(input);
+      const graphInput = capturedGraphInputs.at(-1) as unknown as realNautiloAgent.NautiloState;
+      expect(graphInput.messages.at(-1)?.content).toEqual([
+        { type: "text", text: "hello" },
+        { type: "image_url", image_url: { url: "data:image/png;base64,YWJj" } },
+      ]);
+    });
+
+    test(`${entrypoint} rejects images when only a different offer or a different scope advertises vision`, async () => {
+      admit({
+        ...visionModel,
+        offers: [textWithTools, { ...textWithTools, inputModalities: ["text", "image"], supportedParameters: [] }],
+      });
+      const error = await realNautiloAgent.withMindSwapperModels([visionModel], () => execute(input))
+        .then(() => null, (error: unknown) => error);
+      expect(error).toHaveProperty("code", "image_assistance_failed");
+      expect(capturedGraphInputs).toHaveLength(0);
     });
   }
 });
