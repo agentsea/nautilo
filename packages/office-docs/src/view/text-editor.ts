@@ -744,7 +744,7 @@ export class TextEditor {
   }
 
   focus(): void {
-    this.textarea.focus();
+    this.textarea.focus({ preventScroll: true });
   }
 
   /**

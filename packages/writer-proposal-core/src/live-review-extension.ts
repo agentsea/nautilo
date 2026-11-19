@@ -122,7 +122,7 @@ export const writerLiveReviewExtension = {
     liveToolIds: ["edit-open-writer", "read-open-writer-range", "locate-open-writer-text"],
   },
   guidance:
-    "For a document-wide request, summary.outline is only a preview. Read the open document in bounded ranges and continue until every range across its blockCount is covered before proposing completion.",
+    "For a document-wide request, summary.outline is only a preview. Read the open document in bounded ranges and continue until every range across its blockCount is covered before proposing completion. Collect independent edits across the affected blocks in one edit-open-writer operations array before submitting for review; the read window is not a proposal-size limit. For whole-block rewrites, use one replace operation per block with scope.kind block.",
   proposalToolId: "edit-open-writer",
   locatorToolId: "locate-open-writer-text",
   locatorHandleForOperation(operation: unknown): string | null {

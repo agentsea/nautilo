@@ -109,6 +109,31 @@ describe("edit-open-writer documentVersion contract", () => {
     expect(validated.ok).toBe(true);
   });
 
+  test("validates and executes one proposal across more than one read window", () => {
+    const document: Document = {
+      blocks: Array.from({ length: 12 }, (_, i) => paragraph(`paragraph-${i}`, `Original paragraph ${i}`)),
+    };
+    const request = validateEditOpenWriterRequest({
+      sessionToken: "token",
+      documentVersion: { kind: "artifact_revision", revision: 2 },
+      operations: document.blocks.map((block, i) => ({
+        kind: "replace", blockId: block.id, scope: { kind: "block" }, text: `Revised paragraph ${i}`,
+      })),
+    });
+    expect(request.ok).toBe(true);
+    if (!request.ok) return;
+    const result = executeProposalOperations(document, request.request.operations);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.document.blocks.map(blockText)).toEqual(
+      document.blocks.map((_, i) => `Revised paragraph ${i}`),
+    );
+    expect(document.blocks.map(blockText)).toEqual(
+      document.blocks.map((_, i) => `Original paragraph ${i}`),
+    );
+    expect(result.operations).toHaveLength(document.blocks.length);
+  });
+
   test("guides document-wide work to read every bounded range", () => {
     expect(writerLiveReviewExtension.guidance).toContain("summary.outline is only a preview");
     expect(writerLiveReviewExtension.guidance).toContain("blockCount");
