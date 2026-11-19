@@ -7,6 +7,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Keep managed authentication reconciliation compatible with current Logto
+  application-secret responses without rotating existing client credentials.
+
 - Restore managed authentication planning and explicit backed-up reconciliation
   in the signed administrator CLI, allowing upgrades to resume after an earlier
   authentication baseline change without bypassing compatibility checks.

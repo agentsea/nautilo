@@ -1,14 +1,12 @@
 /**
- * M051: unit tests for the pure / non-HTTP parts of `bootstrap-logto.ts`.
+ * Unit tests for the pure and mocked-HTTP parts of `bootstrap-logto.ts`.
  *
- * Live-Logto integration is deferred to manual smoke (Option C). These
- * tests cover the contract pieces that wouldn't be caught by either:
- *   - The `LOGTO_*` keys that get persisted to instance.env (M072 removed the legacy auth env var op).
+ * Live Logto acceptance is separate. These tests cover:
+ *   - The `LOGTO_*` keys that get persisted to instance.env.
  *   - The boxed banner format the operator reads (admin URL, username,
  *     password, password-policy notice).
  *   - Default-tenant object names (workbench/tui/m2m), redirect URIs,
- *     and seed org roles — these are the contract M054/M055/M057
- *     consume in later cluster issues.
+ *     and seed organization roles consumed by supported clients.
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
@@ -188,7 +186,7 @@ describe("mintM2mToken — transient-tolerant retry", () => {
   });
 });
 
-describe("M064 — Account Center bootstrap", () => {
+describe("Account Center bootstrap", () => {
   test("PATCH body enables password editing on default tenant", () => {
     expect(ACCOUNT_CENTER_ENABLE_PATCH_BODY.enabled).toBe(true);
     expect(ACCOUNT_CENTER_ENABLE_PATCH_BODY.fields.password).toBe("Edit");
@@ -204,13 +202,13 @@ describe("M064 — Account Center bootstrap", () => {
     expect(source).not.toContain('pathPrefix: "/m/default"');
   });
 
-  test("M071 / 1D.1 — workbench SPA redirect URIs come from resolveInstance()", () => {
+  test("workbench SPA redirect URIs come from resolveInstance()", () => {
     const source = readFileSync(BOOTSTRAP_SOURCE_PATH, "utf-8");
     expect(source).toContain("deriveWorkbenchOidcRedirectUris(instance)");
     expect(source).toContain("deriveWorkbenchPostLogoutRedirectUris(instance)");
   });
 
-  test("M071 / 1D.2 — ensureApp URI reconciliation uses computeOidcUriUnionPatch", () => {
+  test("ensureApp URI reconciliation uses computeOidcUriUnionPatch", () => {
     const source = readFileSync(BOOTSTRAP_SOURCE_PATH, "utf-8");
     expect(source).toContain("computeOidcUriUnionPatch(");
   });
@@ -230,7 +228,7 @@ describe("M064 — Account Center bootstrap", () => {
     expect(reconcile).toContain("requireManagedWorkbenchIdentity: true as const");
   });
 
-  test("M234 clone mode rebinds only Workbench and Nautilo-owned auth projections", () => {
+  test("clone mode rebinds only Workbench and Nautilo-owned auth projections", () => {
     const source = readFileSync(BOOTSTRAP_SOURCE_PATH, "utf-8");
     const preserveStart = source.indexOf(
       "if (options.preserveProvisionedState)",
@@ -260,9 +258,9 @@ describe("M064 — Account Center bootstrap", () => {
   test("populated hosted restore reads exact existing identities without entering provisioning paths", () => {
     const source = readFileSync(BOOTSTRAP_SOURCE_PATH, "utf-8");
     const preserveStart = source.indexOf("if (options.preserveProvisionedState)");
-    const preserveEnd = source.indexOf("// M055: stages 4-10", preserveStart);
+    const preserveEnd = source.indexOf("// stages 4-10", preserveStart);
     const preserve = source.slice(preserveStart, preserveEnd);
-    expect(preserve).toContain("readProvisionedLogtoConfig(defaultClient, endpoint, resource)");
+    expect(preserve).toContain("readProvisionedLogtoConfig(defaultClient, endpoint, resource, options.envPath ?? resolveDotenvPath())");
     expect(preserve).toContain("if (options.persistConfig !== undefined)");
     expect(preserve).not.toContain("ensureApp(");
     expect(preserve).not.toContain("ensureResource(");
@@ -355,7 +353,7 @@ describe("buildLogtoEnvOperations", () => {
     ]);
   });
 
-  test("emits twelve LOGTO_* set operations (M072: dropped legacy auth env var)", () => {
+  test("emits twelve LOGTO_* set operations (dropped legacy auth env var)", () => {
     const ops = buildLogtoEnvOperations({ ...SAMPLE_CFG });
     expect(ops.length).toBe(12);
     expect(ops.every((o) => o.type === "set")).toBe(true);
@@ -411,13 +409,13 @@ describe("formatBootstrapBanner", () => {
     const out = formatBootstrapBanner({
       adminUrl: "http://localhost:3302",
       username: "nautilo-admin",
-      envPath: "/home/me/.nautilo/instance.env",
+      envPath: "/path/to/project/instance.env",
       passwordPolicyDisabled: true,
     });
     expect(out).toContain("http://localhost:3302");
     expect(out).toContain("nautilo-admin");
-    expect(out).toContain("/home/me/.nautilo/instance.env");
-    expect(out).toContain(join("/home/me/.nautilo", "logto-admin.txt"));
+    expect(out).toContain("/path/to/project/instance.env");
+    expect(out).toContain(join("/path/to/project", "logto-admin.txt"));
     expect(out).not.toContain("abc123def456");
   });
 
@@ -449,8 +447,8 @@ describe("formatBootstrapBanner", () => {
   });
 });
 
-describe("mergeCustomClientMetadata (M060)", () => {
-  // Phase 1 found PATCH semantics on `customClientMetadata` are
+describe("mergeCustomClientMetadata", () => {
+  // PATCH semantics on `customClientMetadata` are
   // REPLACE, not merge — sending `{a:1}` alone overwrites and drops
   // sibling keys like `isDeviceFlow`. The bootstrap helpers therefore
   // read-merge-write via this helper; these tests lock the contract.
@@ -497,7 +495,7 @@ describe("mergeCustomClientMetadata (M060)", () => {
   });
 });
 
-describe("M059 — admin credential file", () => {
+describe("admin credential file", () => {
   test("formatLogtoAdminCredentialFile contains username, password, admin URL, and headers", () => {
     const out = formatLogtoAdminCredentialFile(
       {
@@ -572,7 +570,7 @@ describe("M059 — admin credential file", () => {
   });
 });
 
-describe("M102 — TUI device-flow vs loopback redirect contract", () => {
+describe("TUI device-flow vs loopback redirect contract", () => {
   test("bootstrap registers loopback URI only on TUI_LOOPBACK_REDIRECT_URIS (source slice)", () => {
     const source = readFileSync(BOOTSTRAP_SOURCE_PATH, "utf-8");
     const loopStart = source.indexOf("export const TUI_LOOPBACK_REDIRECT_URIS = [");
@@ -618,7 +616,7 @@ describe("M102 — TUI device-flow vs loopback redirect contract", () => {
     ]);
   });
 
-  test("M102 — bootstrap registers the TUI loopback Native app after the desktop app", () => {
+  test("bootstrap registers the TUI loopback Native app after the desktop app", () => {
     const source = readFileSync(BOOTSTRAP_SOURCE_PATH, "utf-8");
     expect(source).toContain("APP_NAMES.tuiLoopback");
     expect(source).toContain("const tuiLoopbackApp = await ensureApp");
@@ -626,7 +624,7 @@ describe("M102 — TUI device-flow vs loopback redirect contract", () => {
   });
 });
 
-describe("M071 / 1D.1 — workbench OIDC URIs from resolveInstance()", () => {
+describe("workbench OIDC URIs from resolveInstance()", () => {
   test("default instance registers exact loopback browser redirect + post-logout literals", () => {
     __resetResolvedInstanceForTests();
     const instance = resolveInstance({});
@@ -744,19 +742,19 @@ describe("M071 / 1D.1 — workbench OIDC URIs from resolveInstance()", () => {
 });
 
 describe("default-tenant object contract", () => {
-  test("APP_NAMES match the spec the M054/M055/M057 cluster issues consume", () => {
+  test("APP_NAMES preserve the supported client registration contract", () => {
     expect(APP_NAMES.workbench).toBe("Nautilo Workbench");
     expect(APP_NAMES.tui).toBe("Nautilo TUI");
     expect(APP_NAMES.tuiLoopback).toBe("Nautilo TUI (loopback)");
     expect(APP_NAMES.m2m).toBe("Nautilo Server");
-    // M055 — fourth Native app for Electron loopback PKCE.
+    // fourth Native app for Electron loopback PKCE.
     expect(APP_NAMES.desktop).toBe("Nautilo Desktop");
-    // M199 — Native app for mobile (Expo) custom-scheme PKCE.
+    // Native app for mobile (Expo) custom-scheme PKCE.
     expect(APP_NAMES.mobile).toBe("Nautilo Mobile");
     expect(APP_NAMES.mobileWeb).toBe("Nautilo Mobile Web");
   });
 
-  test("D515 Mobile Web registers only exact server-origin callback and logout paths", () => {
+  test("Mobile Web registers only exact server-origin callback and logout paths", () => {
     __resetResolvedInstanceForTests();
     const instance = resolveInstance({});
     const redirects = deriveMobileWebOidcRedirectUris(instance);
@@ -786,34 +784,34 @@ describe("default-tenant object contract", () => {
     expect(uris).toContain("http://[::1]:3000/settings/security");
   });
 
-  test("M055: DESKTOP_REDIRECT_URIS registers the bare-host loopback (RFC 8252 §7.3 port-flex)", () => {
+  test("DESKTOP_REDIRECT_URIS registers the bare-host loopback (RFC 8252 §7.3 port-flex)", () => {
     expect(DESKTOP_REDIRECT_URIS).toContain("http://127.0.0.1/callback");
   });
 
-  test("M102: TUI_LOOPBACK_REDIRECT_URIS registers bare-host /callback for the loopback PKCE Native app", () => {
+  test("TUI_LOOPBACK_REDIRECT_URIS registers bare-host /callback for the loopback PKCE Native app", () => {
     expect(TUI_LOOPBACK_REDIRECT_URIS).toContain("http://127.0.0.1/callback");
   });
 
-  test("M102: TUI_REDIRECT_URIS is device-flow placeholder only (no loopback /callback)", () => {
+  test("TUI_REDIRECT_URIS is device-flow placeholder only (no loopback /callback)", () => {
     expect(TUI_REDIRECT_URIS).toEqual(["http://127.0.0.1/tui-device-flow-placeholder"]);
   });
 
-  test("M055: DESKTOP_POST_LOGOUT_REDIRECT_URIS covers both /logout and bare host", () => {
+  test("DESKTOP_POST_LOGOUT_REDIRECT_URIS covers both /logout and bare host", () => {
     expect(DESKTOP_POST_LOGOUT_REDIRECT_URIS).toContain(
       "http://127.0.0.1/logout",
     );
     expect(DESKTOP_POST_LOGOUT_REDIRECT_URIS).toContain("http://127.0.0.1");
   });
 
-  test("M199: MOBILE_REDIRECT_URIS registers custom-scheme callback for Expo PKCE", () => {
+  test("MOBILE_REDIRECT_URIS registers custom-scheme callback for Expo PKCE", () => {
     expect(MOBILE_REDIRECT_URIS).toEqual(["nautilo://callback"]);
   });
 
-  test("M199: MOBILE_POST_LOGOUT_REDIRECT_URIS registers custom-scheme sign-out", () => {
+  test("MOBILE_POST_LOGOUT_REDIRECT_URIS registers custom-scheme sign-out", () => {
     expect(MOBILE_POST_LOGOUT_REDIRECT_URIS).toEqual(["nautilo://sign-out"]);
   });
 
-  test("M055: deriveWorkbenchPostLogoutRedirectUris covers M054's browser sign-out targets", () => {
+  test("deriveWorkbenchPostLogoutRedirectUris covers browser sign-out targets", () => {
     __resetResolvedInstanceForTests();
     const instance = resolveInstance({});
     const uris = deriveWorkbenchPostLogoutRedirectUris(instance);
@@ -831,7 +829,7 @@ describe("default-tenant object contract", () => {
     expect(uris).toContain("http://[::1]:3000/logout");
   });
 
-  test("ORG_ROLES_TO_SEED matches M043 RBAC seed list", () => {
+  test("ORG_ROLES_TO_SEED matches the RBAC seed list", () => {
     expect(ORG_ROLES_TO_SEED).toEqual([
       "owner",
       "household",
@@ -841,10 +839,10 @@ describe("default-tenant object contract", () => {
   });
 });
 
-describe("M107 Phase 1b — default-tenant username SIE patch", () => {
-  test("patch body matches the shape probed against Logto OSS 1.38.0 (Phase 0)", () => {
+describe("default-tenant username SIE patch", () => {
+  test("patch body matches the supported Logto sign-in experience shape", () => {
     // If this test fails because Logto's SIE schema changed, re-run the
-    // Phase 0 probe (see playbook/logto-operations.md) and update both
+    // API compatibility check and update both
     // the constant and this test in lockstep.
     expect(SIGN_IN_EXP_USERNAME_PATCH_BODY).toEqual({
       signIn: {
@@ -872,30 +870,30 @@ describe("M107 Phase 1b — default-tenant username SIE patch", () => {
     expect(source).toMatch(
       /api\(\s*defaultClient,\s*"PATCH",\s*"\/api\/sign-in-exp",\s*SIGN_IN_EXP_USERNAME_PATCH_BODY/,
     );
-    // M107 marker so future cleanup PRs can locate the call.
-    expect(source).toContain("M107 Phase 1b");
+    // The progress message identifies the unconditional username patch below.
+    expect(source).toContain("ensuring default-tenant SIE is username-based");
   });
 
   test("patch body sits OUTSIDE the alreadyBootstrapped guard (runs on upgrade boots)", () => {
-    // Upgrade installs that pre-date M107 must be auto-flipped on next
-    // boot. The branding patch already follows this pattern; the M107
+    // Older installs must converge on username sign-in on next
+    // boot. The branding patch already follows this pattern; this
     // call must be in the same unconditional section. We assert this by
-    // requiring the M107 log line appears AFTER the alreadyBootstrapped
+    // requiring the progress log line appears AFTER the alreadyBootstrapped
     // branch closes (a brittle text check, but cheap and catches the
     // most likely regression: dropping the line into the if-branch).
     const source = readFileSync(BOOTSTRAP_SOURCE_PATH, "utf-8");
     const guardCloseIdx = source.indexOf(
       "admin tenant already provisioned; skipping",
     );
-    const m107LogIdx = source.indexOf(
+    const usernameLogIdx = source.indexOf(
       "ensuring default-tenant SIE is username-based",
     );
     expect(guardCloseIdx).toBeGreaterThan(0);
-    expect(m107LogIdx).toBeGreaterThan(guardCloseIdx);
+    expect(usernameLogIdx).toBeGreaterThan(guardCloseIdx);
   });
 });
 
-describe("logto-hosted-auth-branding (D104 Phase 5)", () => {
+describe("logto-hosted-auth-branding", () => {
   test("mergeNautiloHostedBrandingCustomCss is idempotent when block already present", () => {
     const first = mergeNautiloHostedBrandingCustomCss(null);
     expect(first.changed).toBe(true);
@@ -915,7 +913,7 @@ describe("logto-hosted-auth-branding (D104 Phase 5)", () => {
     const once = mergeNautiloHostedBrandingCustomCss(null);
     const cur = {
       color: {
-        // D254: canonical light hosted-auth brand is #c85040 (was the stale
+        // canonical light hosted-auth brand is #c85040 (was the stale
         // #cc5500); darkPrimaryColor stays #82aaff per the deliberate
         // light=accent / dark=primary(blue) split. Tracks the token source.
         primaryColor: "#c85040",
@@ -930,7 +928,7 @@ describe("logto-hosted-auth-branding (D104 Phase 5)", () => {
   });
 });
 
-describe("M120 — reconcileForgotPasswordRelay I/O", () => {
+describe("reconcileForgotPasswordRelay I/O", () => {
   const client = { base: "https://auth.example", token: "m2m-token" };
   const relay = {
     webhookEndpoint: "http://nautilo-server:3001/api/internal/logto/email-webhook",
@@ -1058,7 +1056,7 @@ describe("M120 — reconcileForgotPasswordRelay I/O", () => {
   });
 });
 
-describe("M120 — OSS relay Logto custom phrases", () => {
+describe("OSS relay Logto custom phrases", () => {
   const client = { base: "https://auth.example", token: "m2m-token" };
 
   function jsonResponse(body: unknown, status = 200): Response {
