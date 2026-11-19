@@ -1,5 +1,5 @@
 /**
- * M108 — `nautilo auth` group: collects every identity-touching verb under
+ * Legacy `nautilo auth` group: collects every identity-touching verb under
  * a single namespace. `login` and `logout` are ALSO registered at the
  * top level (in `src/index.ts`) for muscle-memory ergonomics; every other
  * verb lives only here.
@@ -11,40 +11,7 @@ import { whoamiModule } from "./whoami.ts";
 import { changePasswordModule } from "./change-password.ts";
 import { restorePasswordModule } from "./restore-password.ts";
 import { recoveryCodesModule } from "./recovery-codes.ts";
-import { runComposeVerb } from "../lib/run-compose-verb.ts";
-
-const authPlanModule: CommandModule = {
-  command: "plan",
-  describe:
-    "Read-only auth compatibility plan for the selected compose profile",
-  handler: async (argv) => {
-    await runComposeVerb(argv, async (profile, driver) => {
-      const plan = await driver.authPlan(profile);
-      process.stdout.write(`${JSON.stringify(plan, null, 2)}\n`);
-    });
-  },
-};
-
-const authReconcileModule: CommandModule = {
-  command: "reconcile",
-  describe:
-    "Explicitly reconcile managed Logto state after a full backup; requires session-impact confirmation",
-  builder: (yargs) =>
-    yargs.option("confirm-session-impact", {
-      type: "boolean",
-      default: false,
-      describe:
-        "Required acknowledgement: reconciliation may affect existing sessions",
-    }),
-  handler: async (argv) => {
-    await runComposeVerb(argv, async (profile, driver) => {
-      const result = await driver.authReconcile(profile, {
-        confirmSessionImpact: argv["confirm-session-impact"] === true,
-      });
-      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
-    });
-  },
-};
+import { authPlanModule, authReconcileModule } from "./auth-maintenance.ts";
 
 export const authModule: CommandModule = {
   command: "auth",

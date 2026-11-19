@@ -27,6 +27,7 @@ describe("standalone server-admin entrypoint", () => {
       ["profile"], ["profile", "add"], ["profile", "list"], ["profile", "use"],
       ["profile", "current"], ["profile", "remove"], ["profile", "set"],
       ["login"], ["logout"], ["whoami"], ["change-password"], ["members"], ["members", "invite"],
+      ["auth"], ["auth", "plan"], ["auth", "reconcile"],
       ["members", "invite", "list"], ["members", "invite", "revoke"],
       ["members", "provision"],
       ["members", "rollout"], ["members", "rollout", "plan"],
@@ -83,6 +84,7 @@ describe("standalone server-admin entrypoint", () => {
       "logout",
       "whoami",
       "change-password",
+      "auth plan|reconcile",
       "members invite|provision|rollout plan|apply|status|resume|list|show|disable|enable|reset-password|remove",
       "access catalogue|effective|change plan|apply",
       "security posture|audit|approvals list|revoke",
@@ -177,7 +179,7 @@ describe("standalone server-admin entrypoint", () => {
     expect(commandNames).toContain("logout");
     expect(commandNames).toContain("whoami");
     expect(commandNames).toContain("members");
-    expect(commandNames).not.toContain("auth");
+    expect(commandNames).toContain("auth");
     expect(commandNames).toContain("change-password");
     expect(commandNames).not.toContain("invite");
     expect(commandNames).not.toContain("agent");
@@ -210,6 +212,34 @@ describe("standalone server-admin entrypoint", () => {
     expect(stdout.join("")).not.toContain("unknown-command");
   });
 
+  test("auth maintenance exposes only plan and reconcile, retaining explicit confirmation", async () => {
+    const help = await createServerAdminCli({ argv: ["auth"] }).getHelp();
+    expect(help).toContain("auth plan");
+    expect(help).toContain("auth reconcile");
+    expect(help).not.toContain("auth login");
+    expect(help).not.toContain("auth restore-password");
+    expect(help).not.toContain("auth recovery-codes");
+    const reconcile = await createServerAdminCli({ argv: ["auth", "reconcile"] }).getHelp();
+    expect(reconcile).toContain("--confirm-session-impact");
+    expect(reconcile).toContain("default: false");
+    expect(reconcile).toContain("full backup");
+  });
+
+  test.each(["login", "logout", "whoami", "change-password", "restore-password", "recovery-codes"])(
+    "auth rejects the legacy %s command without dispatch",
+    async (command) => {
+      const stderr: string[] = [];
+      const exits: number[] = [];
+      await runServerAdminCli({
+        argv: ["auth", command],
+        writeStderr: (value) => stderr.push(value),
+        setExitCode: (code) => exits.push(code),
+      });
+      expect(exits).toEqual([2]);
+      expect(stderr.join("")).toContain("Run nautilo --help");
+    },
+  );
+
   test("an affirmative --all/profile conflict emits one document and never enters the handler", async () => {
     const stdout: string[] = [];
     const stderr: string[] = [];
@@ -241,6 +271,7 @@ describe("standalone server-admin entrypoint", () => {
     expect(source).not.toContain('"setup"');
     expect(source).not.toContain('"agent"');
     expect(source).not.toContain('"invite"');
-    expect(source).not.toContain('"auth"');
+    expect(source).not.toContain('"./commands/auth.ts"');
+    expect(source).toContain('"./commands/auth-maintenance.ts"');
   });
 });

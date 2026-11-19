@@ -508,10 +508,17 @@ export function qualifyStandaloneCandidate(candidate: {
       forbiddenRoots: [MONOREPO_ROOT],
     });
 
-    for (const args of [["--version"], ["--help"]] as const) {
+    for (const args of [["--version"], ["--help"], ["auth", "plan", "--help"], ["auth", "reconcile", "--help"]] as const) {
       const smoke = Bun.spawnSync([binary, ...args], { stdout: "pipe", stderr: "pipe" });
       if (smoke.exitCode !== 0) {
         throw new Error(`Standalone qualification ${args[0]} failed: ${new TextDecoder().decode(smoke.stderr)}`);
+      }
+      if (args[0] === "auth") {
+        const help = new TextDecoder().decode(smoke.stdout);
+        if (!help.includes(`nautilo auth ${args[1]}`)
+          || (args[1] === "reconcile" && !help.includes("--confirm-session-impact"))) {
+          throw new Error("Standalone qualification is missing the managed auth maintenance commands.");
+        }
       }
     }
 

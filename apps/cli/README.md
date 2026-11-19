@@ -47,6 +47,25 @@ Global `--server` wins, then a template `serverUrl` (for `setup` only), then `NA
 
 Errors go to stderr; exit code **2** on failure, **0** on success. Set `NO_COLOR=1` to disable ANSI coloring where supported.
 
+## Managed authentication maintenance
+
+If an upgrade refuses an authentication-contract change, inspect the selected
+Compose profile before changing it:
+
+```bash
+nautilo auth plan --profile example
+nautilo auth reconcile --profile example --confirm-session-impact
+```
+
+Reconciliation is explicit maintenance and may affect existing sessions. It
+captures a full recovery bundle, applies the CLI's managed authentication
+baseline and verifies the live result before recording the applied contract.
+It does not adopt unknown state or migrate an incompatible authentication
+engine. Keep the returned backup and verify its bundle before resuming upgrade.
+Do not edit an applied-authentication stamp to bypass the compatibility gate.
+The signed CLI exposes only `plan` and `reconcile` under `auth`; sign-in and
+password commands remain in their existing top-level locations.
+
 ## Repairing relocated artifact references
 
 If an existing Compose instance's artifact bytes were moved but its stored
