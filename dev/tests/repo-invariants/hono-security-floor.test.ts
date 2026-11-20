@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { readdir, readFile } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { execFileSync } from "node:child_process";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { checkoutFiles } from "./checkout-files";
 
 const repositoryRoot = join(import.meta.dir, "../../..");
 const auditedVersions = {
@@ -18,25 +21,10 @@ const installRootManifests = [
   "packaging/docker/runtime-install/package.json",
 ] as const;
 
-const ignoredDirectories = new Set([
-  ".git",
-  ".turbo",
-  "dist",
-  "node_modules",
-  "release",
-]);
-
-async function findLockfiles(directory: string): Promise<string[]> {
-  const paths: string[] = [];
-  for (const entry of await readdir(directory, { withFileTypes: true })) {
-    if (entry.isDirectory() && ignoredDirectories.has(entry.name)) continue;
-    const path = join(directory, entry.name);
-    if (entry.isDirectory()) paths.push(...(await findLockfiles(path)));
-    if (entry.isFile() && entry.name === "bun.lock") {
-      paths.push(relative(repositoryRoot, path).replaceAll("\\", "/"));
-    }
-  }
-  return paths.sort();
+function findLockfiles(root: string): string[] {
+  return checkoutFiles(root).filter(
+    (path) => path === "bun.lock" || path.endsWith("/bun.lock"),
+  );
 }
 
 function resolvedVersions(lockfile: string, packageName: string): string[] {
@@ -47,6 +35,31 @@ function resolvedVersions(lockfile: string, packageName: string): string[] {
 }
 
 describe("Hono security floors", () => {
+  test("lockfile discovery covers new files and skips ignored nested checkouts", async () => {
+    const root = await mkdtemp(join(tmpdir(), "hono-lockfiles-"));
+    try {
+      execFileSync("git", ["init", "-q"], { cwd: root });
+      await writeFile(join(root, ".gitignore"), ".claude/\nnode_modules/\n");
+      await mkdir(join(root, "tools/new-root"), { recursive: true });
+      await mkdir(join(root, ".claude/worktrees/other/tools"), { recursive: true });
+      await mkdir(join(root, "node_modules/pkg"), { recursive: true });
+      for (const path of [
+        "bun.lock",
+        "tools/new-root/bun.lock",
+        ".claude/worktrees/other/bun.lock",
+        ".claude/worktrees/other/tools/bun.lock",
+        "node_modules/pkg/bun.lock",
+      ]) {
+        await writeFile(join(root, path), "");
+      }
+      execFileSync("git", ["add", "bun.lock"], { cwd: root });
+
+      expect(findLockfiles(root)).toEqual(["bun.lock", "tools/new-root/bun.lock"]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("pins every install root and lockfile to the audited patched releases", async () => {
     for (const manifestPath of installRootManifests) {
       const manifest = JSON.parse(
@@ -60,7 +73,7 @@ describe("Hono security floors", () => {
     }
 
     const honoLocks: string[] = [];
-    for (const lockPath of await findLockfiles(repositoryRoot)) {
+    for (const lockPath of findLockfiles(repositoryRoot)) {
       const lockfile = await readFile(join(repositoryRoot, lockPath), "utf8");
       const resolutions = Object.fromEntries(
         Object.keys(auditedVersions).map((packageName) => [

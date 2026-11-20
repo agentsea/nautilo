@@ -5,6 +5,7 @@
   },
   "include": [
     "./bun-pin-alignment.test.ts",
+    "./checkout-files.test.ts",
     "./contribution-governance.test.ts",
     "./*-mutation-characterization-coverage.test.ts",
     "./hono-security-floor.test.ts",
