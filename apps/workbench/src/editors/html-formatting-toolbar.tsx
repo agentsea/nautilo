@@ -1,5 +1,5 @@
 import { useEffect, useId, useRef, type KeyboardEvent } from "react";
-import { Bold, Italic, Link as LinkIcon, Redo2, Underline, Undo2, type LucideIcon } from "lucide-react";
+import { Bold, Italic, Link as LinkIcon, Redo2, Trash2, Underline, Undo2, type LucideIcon } from "lucide-react";
 
 export type HtmlFormattingMark = "bold" | "italic" | "underline";
 export type HtmlFormattingSelection = {
@@ -19,6 +19,8 @@ type HtmlFormattingToolbarProps = {
   canRedo: boolean;
   onUndo: () => void;
   onRedo: () => void;
+  canDeleteParagraph: boolean;
+  onDeleteParagraph: () => void;
   selection: HtmlFormattingSelection;
   onToggle: (mark: HtmlFormattingMark) => void;
   onOpenLink: () => void;
@@ -81,6 +83,10 @@ export function HtmlFormattingToolbar(props: HtmlFormattingToolbarProps) {
         aria-keyshortcuts="Control+k Meta+k" title="Insert or edit link (⌘/Ctrl+K)"
         disabled={!selection.available || open} className={iconButtonClass}
         onMouseDown={event => event.preventDefault()} onClick={props.onOpenLink}><LinkIcon aria-hidden="true" size={15} /></button>
+      <span aria-hidden="true" className="mx-1 h-5 border-l border-border" />
+      <button type="button" aria-label="Delete paragraph" title="Delete paragraph (Backspace or Delete when empty)"
+        disabled={!props.canDeleteParagraph || open} className={iconButtonClass}
+        onMouseDown={event => event.preventDefault()} onClick={props.onDeleteParagraph}><Trash2 aria-hidden="true" size={15} /></button>
     </div>
     {linkDialog ? <form role="dialog" aria-label={linkDialog.editingExisting ? "Edit link" : "Insert link"}
       className="flex flex-wrap items-end gap-2 border-t border-border px-3 py-3"

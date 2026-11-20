@@ -17,7 +17,8 @@ export type HtmlTextRun = {
   /** Sanitized original wrappers, outermost first, relative to the region. */
   inlinePath?: HtmlTextInline[];
 };
-export type HtmlTextRegion = { id: string; tagName: string; label: string; text: string; runs: HtmlTextRun[] };
+export type HtmlTextRegion = { id: string; tagName: string; label: string; text: string; runs: HtmlTextRun[];
+  paragraph?: { startOffset: number; endOffset: number; wholeRegion: boolean } };
 export type HtmlTextModel = { source: string; regions: HtmlTextRegion[]; previewHtml: string; blockedReason?: string };
 export type HtmlTextEditResult = { ok: true; source: string; changedRunIds: string[] } | { ok: false; reason: string };
 
@@ -180,6 +181,18 @@ export function buildHtmlTextModel(source: string, options: { previewCsp?: strin
     } else if ("childNodes" in node) node.childNodes.forEach(child => visitBlank(child, ancestors));
   };
   visitBlank(tree, []);
+  for (const region of regions) {
+    const target = targets.get(region.id)!;
+    let owner: HtmlNode | null = target;
+    while (owner && !(element(owner) && owner.tagName === "p")) owner = "parentNode" in owner ? owner.parentNode : null;
+    if (owner && element(owner) && owner.sourceCodeLocation?.startTag) {
+      const { startOffset, endOffset } = owner.sourceCodeLocation;
+      // Parser-owned element bounds also cover HTML's valid omitted </p> tag.
+      if (endOffset >= owner.sourceCodeLocation.startTag.endOffset) {
+        region.paragraph = { startOffset, endOffset, wholeRegion: target === owner };
+      }
+    }
+  }
   regions.sort((a, b) => a.runs[0].startOffset - b.runs[0].startOffset);
   // Include whitespace-only nodes inside an otherwise editable leaf block. They
   // are significant between inline spans and must participate in the text diff.
@@ -360,4 +373,14 @@ export function applyHtmlRegionTexts(model: HtmlTextModel, currentSource: string
 
 export function applyHtmlRegionText(model: HtmlTextModel, currentSource: string, regionId: string, newText: string): HtmlTextEditResult {
   return applyHtmlRegionTexts(model, currentSource, [{ regionId, text: newText }]);
+}
+
+/** Explicit paragraph removal includes its markup, leaving surrounding source untouched. */
+export function deleteHtmlParagraph(model: HtmlTextModel, currentSource: string, regionId: string): HtmlTextEditResult {
+  if (model.source !== currentSource) return { ok: false, reason: "The HTML changed. Select the paragraph again before deleting it." };
+  if (model.blockedReason) return { ok: false, reason: model.blockedReason };
+  const paragraph = model.regions.find(region => region.id === regionId)?.paragraph;
+  if (!paragraph) return { ok: false, reason: "Select a paragraph to delete. Other page elements can be changed in Source." };
+  return { ok: true, source: currentSource.slice(0, paragraph.startOffset) + currentSource.slice(paragraph.endOffset),
+    changedRunIds: model.regions.filter(region => region.paragraph?.startOffset === paragraph.startOffset).flatMap(region => region.runs.map(run => run.id)) };
 }

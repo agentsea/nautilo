@@ -1,8 +1,28 @@
 import { describe, expect, test } from "bun:test";
 import { parse } from "parse5";
-import { applyHtmlRegionText, applyHtmlRegionTexts, applyHtmlTextEdits, buildHtmlTextModel } from "../../src/editors/html-text-model";
+import { applyHtmlRegionText, applyHtmlRegionTexts, applyHtmlTextEdits, buildHtmlTextModel, deleteHtmlParagraph } from "../../src/editors/html-text-model";
 
 describe("source-preserving HTML text editing", () => {
+  test("explicit paragraph deletion removes its exact source, including all inline islands", () => {
+    const paragraph = '<p class="copy">First <b>part</b><br>Second<img src="cover.png"><span hidden>Hidden</span></p>';
+    const source = '<style>p{color:red}</style><!--before-->' + paragraph + '<!--after--><p>Next</p><script>keep()</script>';
+    const model = buildHtmlTextModel(source);
+    expect(model.regions[0].paragraph?.wholeRegion).toBe(false);
+    for (const region of model.regions.slice(0, 2)) {
+      expect(deleteHtmlParagraph(model, source, region.id)).toMatchObject({ ok: true, source: source.replace(paragraph, "") });
+    }
+  });
+  test("paragraph deletion handles omitted closing tags, emptiness and stale selections without removing other structure", () => {
+    for (const paragraph of ['<p>First', '<p></p>', '<p><b></b></p>']) {
+      const source = paragraph + '<p>Next</p><table><tr><td>Cell</td></tr></table>';
+      const model = buildHtmlTextModel(source);
+      expect(deleteHtmlParagraph(model, source, model.regions[0].id)).toMatchObject({ ok: true, source: source.slice(paragraph.length) });
+      expect(deleteHtmlParagraph(model, source + ' ', model.regions[0].id).ok).toBe(false);
+      expect(deleteHtmlParagraph(model, source, model.regions.at(-1)!.id).ok).toBe(false);
+    }
+    const native = '<script type="application/vnd.nautilo.document+json">{}</script><p>Preview</p>';
+    expect(deleteHtmlParagraph(buildHtmlTextModel(native), native, 'guessed').ok).toBe(false);
+  });
   test("maps decoded text, inline marks and link destinations to exact source spans", () => {
     const source = '<!doctype html><style>p { color:red }</style><p class="x">Hello <strong>bold &amp; bright</strong> <a href="/go">link</a>.</p>';
     const model = buildHtmlTextModel(source);
