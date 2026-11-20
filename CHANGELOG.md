@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Keep cleared HTML paragraphs editable after refocusing or reopening. Add a
+  Delete paragraph toolbar action, and let Backspace/Delete remove an already
+  empty paragraph, with undo/redo and cursor restoration.
+
 - Validate and retain working legacy authentication credentials omitted from
   Logto secret readback, without selecting a different key or rotating one.
 

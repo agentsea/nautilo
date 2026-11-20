@@ -5,7 +5,7 @@ import {
   REDO_COMMAND, UNDO_COMMAND, SKIP_DOM_SELECTION_TAG, SKIP_SCROLL_INTO_VIEW_TAG, type EditorState, type LexicalEditor,
 } from "@mdxeditor/lexical";
 import { registerPlainText } from "@mdxeditor/lexical-plain-text";
-import { applyHtmlRegionTexts, buildHtmlTextModel, type HtmlTextModel, type HtmlTextRegion } from "./html-text-model";
+import { applyHtmlRegionTexts, buildHtmlTextModel, deleteHtmlParagraph, type HtmlTextModel, type HtmlTextRegion } from "./html-text-model";
 import { HtmlTextDocumentHistory, type HtmlTextHistoryView } from "./html-text-history";
 import { HtmlSourceInlineNode, inlineAppearance, $appendHtmlRegionRuns, $reconcileHtmlRegion } from "./html-text-inline-node";
 import { HtmlFormattingToolbar, type HtmlFormattingMark, type HtmlFormattingSelection, type HtmlLinkDialogState } from "./html-formatting-toolbar";
@@ -31,9 +31,14 @@ html { scroll-behavior: auto !important; }
 [data-nautilo-html-region]:hover { outline: 1px dashed #64748b; outline-offset: 3px; }
 [data-nautilo-html-region]:focus { outline: 2px solid #6366f1; outline-offset: 3px; }
 [data-nautilo-html-region][contenteditable=true] > p { all: unset; display: contents; }
+/* An empty display:contents wrapper has no caret box in Chromium. Keep
+   Lexical's empty line editable without inserting placeholder source text. */
+[data-nautilo-html-region][contenteditable=true] > p:empty,
+[data-nautilo-html-region][contenteditable=true] > p:has(> br:only-child) { display: block; min-height: 1em; }
 `;
 const RESTORE_TAG = SKIP_SCROLL_INTO_VIEW_TAG;
 type TextView = Extract<HtmlTextHistoryView, { kind: "text" }>;
+type EditCoordinates = { regionIndex: number; anchor: number; focus: number; scrollX: number; scrollY: number };
 function createModel(source: string): HtmlTextModel { return buildHtmlTextModel(source, { previewCsp: EDIT_CSP, previewStyle: EDIT_STYLE }); }
 
 export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory, active = true }: HtmlTextEditorProps) {
@@ -44,12 +49,14 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
   const liveSession = useRef(session);
   const initializeFrameRef = useRef<() => void>(() => {});
   const [formatSelection, setFormatSelection] = useState<HtmlFormattingSelection>(emptyHtmlFormattingSelection);
+  const [canDeleteParagraph, setCanDeleteParagraph] = useState(false);
+  const deleteParagraphRef = useRef<() => void>(() => {});
   const [linkDialog, setLinkDialog] = useState<HtmlLinkDialogState | null>(null);
   const linkDialogRef = useRef(linkDialog);
   linkDialogRef.current = linkDialog;
   const [linkError, setLinkError] = useState<string | null>(null);
   const pendingMarks = useRef<{ regionIndex: number; offset: number; marks: Partial<Record<HtmlFormattingMark, boolean>> } | null>(null);
-  const formatCoordinates = useRef<{ regionIndex: number; anchor: number; focus: number; scrollX: number; scrollY: number } | null>(null);
+  const formatCoordinates = useRef<EditCoordinates | null>(null);
   const formatting = useRef<{ toggle: (mark: HtmlFormattingMark) => void; openLink: () => void; applyLink: (remove?: boolean) => void; cancelLink: () => void }>({ toggle: () => {}, openLink: () => {}, applyLink: () => {}, cancelLink: () => {} });
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -74,7 +81,7 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
     activeEditor.current = null;
     renderedSource.current = source;
     setActiveLabel(null); setError(null); setLinkDialog(null); setLinkError(null);
-    setFormatSelection(emptyHtmlFormattingSelection); pendingMarks.current = null;
+    setFormatSelection(emptyHtmlFormattingSelection); setCanDeleteParagraph(false); pendingMarks.current = null;
     const next = { model: createModel(source), identity: {}, generation: liveSession.current.generation + 1 };
     liveSession.current = next;
     setSession(next);
@@ -159,7 +166,8 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
     const refreshFormatting = () => {
       if (linkDialogRef.current) return;
       const target = captureTarget();
-      if (!target) { pendingMarks.current = null; setFormatSelection(emptyHtmlFormattingSelection); return; }
+      if (!target) { pendingMarks.current = null; setFormatSelection(emptyHtmlFormattingSelection); setCanDeleteParagraph(false); return; }
+      setCanDeleteParagraph(!!target.region.paragraph);
       const pending = pendingMarks.current;
       if (!composition && pending && (pending.regionIndex !== target.regionIndex || pending.offset !== target.offsets.anchor || target.offsets.anchor !== target.offsets.focus)) pendingMarks.current = null;
       const selection = target.description.selection;
@@ -182,6 +190,29 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
       if (!result.ok) throw new Error(result.reason);
       return result;
     };
+    const installModel = (next: typeof currentSession, coordinates: EditCoordinates | null, before: TextView, group?: object) => {
+      const source = next.model.source;
+      const parsed = new DOMParser().parseFromString(next.model.previewHtml, "text/html");
+      // Reinstall only the inert preview. Canonical saving still uses the exact
+      // source patch above. Synchronous focus restoration keeps rapid typing
+      // after a collapsed formatting toggle in the same input stream.
+      disposeFrame.current();
+      activeEditor.current = null; setActiveLabel(null);
+      liveSession.current = next; pendingRestore.current = null; formatCoordinates.current = coordinates;
+      emittedSource.current = source; renderedSource.current = source;
+      pendingMarks.current = null; setLinkDialog(null); linkDialogRef.current = null; setLinkError(null); setError(null);
+      doc.replaceChild(doc.importNode(parsed.documentElement, true), doc.documentElement);
+      initializeFrameRef.current();
+      const region = coordinates && next.model.regions[coordinates.regionIndex];
+      const afterEditor = activeEditor.current as LexicalEditor | null;
+      if (coordinates && (!afterEditor || !region)) throw new Error("The edited text could not be focused.");
+      const after: TextView | undefined = coordinates && region && afterEditor ? { kind: "text", session: next.identity, regionId: region.id,
+        ...coordinates, regionCount: next.model.regions.length, regionTagName: region.tagName,
+        state: afterEditor.getEditorState() } : undefined;
+      if (!coordinates) { frame.focus(); frameWindow.scrollTo(before.scrollX, before.scrollY); }
+      history.record(source, { before, after }, group);
+      callbacks.current.onChange(source);
+    };
     const installFormatting = (source: string, target: Target, offsets: HtmlTextSelectionOffsets, before = target.view, group?: object) => {
       if (source === history.getSnapshot().source) return;
       const next = { model: createModel(source), identity: {}, generation: currentSession.generation };
@@ -189,26 +220,22 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
       if (next.model.regions.length !== model.regions.length || !nextRegion || nextRegion.tagName !== target.region.tagName) {
         throw new Error("This formatting would change the page's text areas. Use Source to edit this selection.");
       }
-      const coordinates = { regionIndex: target.regionIndex, ...offsets, scrollX: before.scrollX, scrollY: before.scrollY };
-      const parsed = new DOMParser().parseFromString(next.model.previewHtml, "text/html");
-      // Reinstall only the inert preview. Canonical saving still uses the exact
-      // source patch above. Synchronous focus restoration keeps rapid typing
-      // after a collapsed formatting toggle in the same input stream.
-      disposeFrame.current();
-      liveSession.current = next; pendingRestore.current = null; formatCoordinates.current = coordinates;
-      emittedSource.current = source; renderedSource.current = source;
-      pendingMarks.current = null; setLinkDialog(null); linkDialogRef.current = null; setLinkError(null); setError(null);
-      doc.replaceChild(doc.importNode(parsed.documentElement, true), doc.documentElement);
-      initializeFrameRef.current();
-      const region = next.model.regions[target.regionIndex];
-      const afterEditor = activeEditor.current;
-      if (!afterEditor || !region) throw new Error("The formatted text could not be focused.");
-      const after: TextView = { kind: "text", session: next.identity, regionId: region.id,
-        regionIndex: target.regionIndex, regionCount: next.model.regions.length, regionTagName: region.tagName,
-        state: afterEditor.getEditorState(), ...offsets, scrollX: before.scrollX, scrollY: before.scrollY };
-      history.record(source, { before, after }, group);
-      callbacks.current.onChange(source);
+      installModel(next, { regionIndex: target.regionIndex, ...offsets, scrollX: before.scrollX, scrollY: before.scrollY }, before, group);
     };
+    const removeParagraph = (target: Target, preferPrevious: boolean) => {
+      try {
+        const { fresh, region } = freshRegion(emittedSource.current, target);
+        const result = deleteHtmlParagraph(fresh, emittedSource.current, region.id);
+        if (!result.ok) throw new Error(result.reason);
+        const next = { model: createModel(result.source), identity: {}, generation: currentSession.generation };
+        const beforeCount = fresh.regions.filter(candidate => candidate.runs[0].startOffset < region.paragraph!.startOffset).length;
+        const regionIndex = preferPrevious && beforeCount > 0 ? beforeCount - 1 : Math.min(beforeCount, next.model.regions.length - 1);
+        const neighbour = next.model.regions[regionIndex];
+        const offset = regionIndex < beforeCount && neighbour ? neighbour.text.length : 0;
+        installModel(next, neighbour ? { regionIndex, anchor: offset, focus: offset, scrollX: target.view.scrollX, scrollY: target.view.scrollY } : null, target.view);
+      } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not delete this paragraph."); }
+    };
+    deleteParagraphRef.current = () => { const target = captureTarget(); if (target && !linkDialogRef.current) removeParagraph(target, false); };
     const restoreTarget = (target: Target) => {
       target.editor.update(() => { $setSelection($htmlTextSelectionAtOffsets(target.offsets.anchor, target.offsets.focus)); }, { discrete: true, tag: RESTORE_TAG });
       target.element.focus({ preventScroll: true }); frameWindow.scrollTo(target.view.scrollX, target.view.scrollY);
@@ -378,6 +405,10 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
       const region = model.regions.find(candidate => candidate.id === element?.dataset.nautiloHtmlRegion);
       if (!element || !region || editors.has(element)) return;
       event.preventDefault(); const editor = activate(element, region);
+      if (!region.text) {
+        editor.update(() => { $setSelection($htmlTextSelectionAtOffsets(0, 0)); }, { discrete: true });
+        element.focus({ preventScroll: true }); return;
+      }
       editor.focus(() => {
         const pointDoc = doc as Document & { caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null; caretRangeFromPoint?: (x: number, y: number) => Range | null };
         const point = pointDoc.caretPositionFromPoint?.(event.clientX, event.clientY);
@@ -450,6 +481,12 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
     };
     const key = (event: KeyboardEvent) => {
       if (event.isComposing || composition) return;
+      if ((event.key === "Backspace" || event.key === "Delete") && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
+        const target = captureTarget();
+        if (target?.region.paragraph?.wholeRegion && !target.editor.getEditorState().read(() => $getRoot().getTextContent()) && !linkDialogRef.current) {
+          event.preventDefault(); event.stopPropagation(); removeParagraph(target, event.key === "Backspace"); return;
+        }
+      }
       captureBeforeInput();
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") { event.preventDefault(); callbacks.current.onSave?.(); }
       else if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && ["b", "i", "u", "k"].includes(event.key.toLowerCase())) {
@@ -516,6 +553,7 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
       </div>
       <HtmlFormattingToolbar selection={formatSelection} onToggle={mark => formatting.current.toggle(mark)}
         canUndo={historyStatus.canUndo} canRedo={historyStatus.canRedo} onUndo={() => history.undo()} onRedo={() => history.redo()}
+        canDeleteParagraph={canDeleteParagraph} onDeleteParagraph={() => deleteParagraphRef.current()}
         onOpenLink={() => formatting.current.openLink()} linkDialog={linkDialog}
         onLinkUrlChange={url => { setLinkDialog(current => current ? { ...current, url } : null); setLinkError(null); }}
         onLinkTextChange={text => setLinkDialog(current => current ? { ...current, text } : null)}
@@ -523,7 +561,7 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
         onLinkCancel={() => formatting.current.cancelLink()} error={linkError} />
       {notice ? <p role="status" className="px-3 py-2 text-xs text-foreground-muted">{notice}</p> : null}
       {error ? <p role="alert" className="p-3 text-sm text-[var(--error)]">{error}</p> : null}
-      {session.model.regions.length === 0 ? <p className="p-3 text-sm text-foreground-muted">No editable text was found. Text created by scripts can be changed in Source.</p> : null}
+      {liveSession.current.model.regions.length === 0 ? <p className="p-3 text-sm text-foreground-muted">No editable text was found. Use Undo to restore deleted text, or Source to add content.</p> : null}
       <iframe key={session.generation} ref={iframeRef} title="Edit HTML text" sandbox="allow-same-origin" srcDoc={session.model.previewHtml} onLoad={initializeFrame} className="min-h-0 w-full flex-1 border-0 bg-white" />
     </div>
   );
