@@ -344,6 +344,9 @@ const SUBSCRIPTION_MESSAGES: Record<ChatGPTSubscriptionFailure, { category: Frie
 };
 
 const MIND_SWAPPER_MESSAGES: Record<MindSwapperRequestError["code"], Pick<FriendlyError, "category" | "message">> = {
+  qa_concurrency_limit: { category: "rate_limit", message: "MindSwapper is handling too many simultaneous calls. Try again shortly." },
+  gateway_busy: { category: "rate_limit", message: "MindSwapper is temporarily short of request capacity. Try again shortly." },
+  capacity_database_contended: { category: "rate_limit", message: "MindSwapper could not reserve capacity for this call. Try again shortly." },
   authentication_error: { category: "auth", message: "MindSwapper rejected the key for this connection. Check its provider settings." },
   insufficient_balance: { category: "provider_unavailable", message: "The connected MindSwapper account has insufficient credit. Check its balance before trying again." },
   billing_needs_review: { category: "provider_unavailable", message: "MindSwapper declined the request because a charge is under review. Check the account’s Billing page." },
