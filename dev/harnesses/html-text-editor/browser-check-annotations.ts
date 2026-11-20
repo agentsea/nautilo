@@ -65,6 +65,31 @@ try {
   await button('Undo').click(); // Each ordinary typing transaction remains undoable.
   assert.equal(await frame.locator('#copy sup').allTextContents().then(v => v.join('')), '[2][3]');
 
+  // A real IME composition at the citation boundary exits both superscript and link,
+  // and its provisional source updates collapse into one undo unit.
+  await load(); await end();
+  const cdp = await page.context().newCDPSession(page);
+  for (const provisional of ['港', '港湾']) {
+    await cdp.send('Input.imeSetComposition', { text: provisional, selectionStart: provisional.length, selectionEnd: provisional.length });
+    await page.waitForFunction(expected => document.querySelector('[data-testid="canonical-source"]')?.textContent?.includes(expected), provisional);
+  }
+  await cdp.send('Input.insertText', { text: '港湾' });
+  const composed = fixture.replace('</a></p>', '</a>港湾</p>');
+  await waitSource(composed);
+  assert.equal(await frame.locator('#copy sup').allTextContents().then(v => v.join('')), '[2][3]');
+  assert.equal(await frame.locator('#copy a').allTextContents().then(v => v.join('')), '[2][3]');
+  await button('Undo').click(); await waitSource(fixture);
+  await button('Redo').click(); await waitSource(composed);
+
+  // Explicitly requested superscript keeps a composed commit in the citation.
+  await load(); await end();
+  await button('Superscript').click();
+  if (await button('Superscript').getAttribute('aria-pressed') !== 'true') await button('Superscript').click();
+  assert.equal(await button('Superscript').getAttribute('aria-pressed'), 'true');
+  await cdp.send('Input.imeSetComposition', { text: '字', selectionStart: 1, selectionEnd: 1 });
+  await cdp.send('Input.insertText', { text: '字' });
+  await waitSource(fixture.replace('[3]</sup>', '[3]字</sup>'));
+
   // A caret inside a citation still edits that citation.
   await load(); await end(); await page.keyboard.press('ArrowLeft');
   await paste('9');
@@ -87,5 +112,5 @@ try {
   await load('<pre id="copy">Pre</pre>'); await end(); await paste('\nSecond\tline');
   await waitSource('<pre id="copy">Pre\nSecond\tline</pre>');
   assert.deepEqual(errors, []); assert.deepEqual(await page.getByRole('alert').allTextContents(), []);
-  console.log('PASS: citation paste and typing, baseline style, exact source, undo/redo, reopen, inner and ranged edits, adjacent citations, pending formatting');
+  console.log('PASS: citation paste, typing and IME composition, baseline style, exact source, undo/redo, reopen, inner and ranged edits, adjacent citations, pending formatting');
 } finally { await browser.close(); }

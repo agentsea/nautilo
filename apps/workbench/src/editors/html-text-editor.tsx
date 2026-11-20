@@ -143,7 +143,8 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
     type Target = { editor: LexicalEditor; element: HTMLElement; region: HtmlTextRegion; regionIndex: number; offsets: HtmlTextSelectionOffsets; view: TextView; description: ReturnType<typeof describeHtmlFormatting>; sourceInlineStyles: Record<number, string> };
     let linkTarget: Target | null = null;
     let linkSource: string | null = null;
-    let composition: { target: Target; text: string; marks: Partial<Record<HtmlFormattingMark, boolean>> } | null = null;
+    let composition: { target: Target; text: string; source: string; exitAnnotation: boolean;
+      marks: Partial<Record<HtmlFormattingMark, boolean>> } | null = null;
     let compositionFrame: number | null = null;
     const captureTarget = (includeSourceStyles = false): Target | null => {
       const anchor = frameWindow.getSelection()?.anchorNode;
@@ -481,8 +482,13 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
     };
     const compositionStart = () => {
       const target = captureTarget(), pending = pendingMarks.current;
-      if (target && pending?.regionIndex === target.regionIndex) {
-        composition = { target, text: target.editor.getEditorState().read(() => $getRoot().getTextContent()), marks: { ...pending.marks } };
+      if (target) {
+        const marks = pending?.regionIndex === target.regionIndex ? { ...pending.marks } : {};
+        const fresh = createModel(emittedSource.current), region = fresh.regions[target.regionIndex];
+        const exitAnnotation = !!region && target.offsets.anchor === target.offsets.focus && !marks.superscript &&
+          insertHtmlTextAfterAnnotation(fresh, region.id, target.offsets.focus, "x") !== null;
+        if (exitAnnotation || Object.keys(marks).length) composition = { target,
+          text: target.editor.getEditorState().read(() => $getRoot().getTextContent()), source: emittedSource.current, exitAnnotation, marks };
       }
     };
     const compositionEnd = () => {
@@ -506,6 +512,15 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
         }
         try {
           let source = emittedSource.current;
+          if (completed.exitAnnotation) {
+            const baseline = createModel(completed.source);
+            const region = baseline.regions[completed.target.regionIndex];
+            const inserted = text.slice(prefix.length, text.length - suffix.length);
+            const continuation = region && insertHtmlTextAfterAnnotation(baseline, region.id, start, inserted);
+            if (!continuation) throw new Error("The citation boundary changed during composition. Select the committed text and try again.");
+            if (!continuation.ok) throw new Error(continuation.reason);
+            source = continuation.source;
+          }
           for (const mark of ["underline", "bold", "italic", "superscript"] as const) {
             const enabled = completed.marks[mark];
             if (enabled !== undefined) source = applyAction(source, target, { kind: "mark", mark, enabled }, { anchor: start, focus: text.length - suffix.length }).source;
