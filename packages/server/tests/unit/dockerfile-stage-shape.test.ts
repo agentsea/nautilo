@@ -59,6 +59,7 @@ const AUTH_CONTRACT_COPY_CLOSURE = [
   "deploy/contracts/auth.ts",
   "deploy/dependency-pins.ts",
   "bin/nautilo-local/src/bootstrap-logto.ts",
+  "bin/nautilo-local/src/logto-application-secret.ts",
   "bin/nautilo-local/src/logto-hosted-auth-branding.ts",
   "bin/nautilo-local/src/logto-forgot-password-relay.ts",
   "packages/config",
