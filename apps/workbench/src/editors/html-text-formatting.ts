@@ -63,6 +63,44 @@ function runAtOffset(region: HtmlTextRegion, offset: number): HtmlTextRun | unde
   }
 }
 
+/** A continuation at the end of a superscript/subscript belongs outside it. */
+export function insertHtmlTextAfterAnnotation(model: HtmlTextModel, regionId: string, offset: number, text: string): HtmlFormattingResult | null {
+  if (model.blockedReason || !text || !Number.isInteger(offset)) return null;
+  const region = model.regions.find(candidate => candidate.id === regionId);
+  if (!region || offset <= 0 || offset > region.text.length) return null;
+  const run = runAtOffset(region, offset);
+  if (!run?.inlinePath?.some(inline => inline.tagName === "sup" || inline.tagName === "sub")) return null;
+  const { texts } = textNodesAndElements(model.source);
+  let node: Node | undefined = texts.get(run.startOffset);
+  let annotation: Element | undefined;
+  while (node && "parentNode" in node && node.parentNode) {
+    node = node.parentNode;
+    if (isElement(node) && (node.tagName === "sup" || node.tagName === "sub")) annotation = node;
+  }
+  if (!annotation?.sourceCodeLocation?.endTag) return null;
+  const endsAtCaret = (element: Element) => {
+    const location = element.sourceCodeLocation!;
+    let position = 0, end = -1;
+    for (const candidate of region.runs) {
+      position += candidate.text.length;
+      if (candidate.startOffset >= location.startOffset && candidate.endOffset <= location.endOffset) end = position;
+    }
+    return end === offset;
+  };
+  if (!endsAtCaret(annotation)) return null;
+  // Citations can be <sup><a>…</a></sup> or <a><sup>…</sup></a>.
+  // Exit an enclosing link too, but retain unrelated surrounding formatting.
+  let boundary = annotation;
+  const inlineOffsets = new Set(run.inlinePath.map(inline => inline.sourceStartOffset));
+  for (let parent = annotation.parentNode; parent && isElement(parent); parent = parent.parentNode) {
+    if (!parent.sourceCodeLocation?.endTag || !inlineOffsets.has(parent.sourceCodeLocation.startOffset) || !endsAtCaret(parent)) break;
+    if (parent.tagName === "a") boundary = parent;
+  }
+  const at = boundary.sourceCodeLocation!.endTag!.endOffset;
+  const next = offset + text.length;
+  return { ok: true, source: model.source.slice(0, at) + escapeText(text) + model.source.slice(at), anchor: next, focus: next };
+}
+
 /** A caret edits the whole containing link; a range is intentionally left to the caller. */
 export function htmlFormattingLinkRange(model: HtmlTextModel, regionId: string, offset: number): { anchor: number; focus: number; href: string } | null {
   const region = model.regions.find(candidate => candidate.id === regionId);

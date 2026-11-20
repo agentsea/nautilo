@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Keep text pasted or typed after a superscript/subscript citation outside its
+  formatting and link. Paste into an inline element at the current caret instead
+  of moving the inserted text to the end of the element.
+
 - Keep cleared HTML paragraphs editable after refocusing or reopening. Add a
   Delete paragraph toolbar action, and let Backspace/Delete remove an already
   empty paragraph, with undo/redo and cursor restoration.

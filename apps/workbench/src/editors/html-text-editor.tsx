@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  $createParagraphNode, ParagraphNode, TextNode, $getRoot, $getSelection, $isRangeSelection, $setSelection,
-  COMMAND_PRIORITY_HIGH, createEditor, KEY_ENTER_COMMAND, PASTE_COMMAND,
+  $createParagraphNode, ParagraphNode, TextNode, $getRoot, $setSelection,
+  COMMAND_PRIORITY_HIGH, createEditor, KEY_ENTER_COMMAND,
   REDO_COMMAND, UNDO_COMMAND, SKIP_DOM_SELECTION_TAG, SKIP_SCROLL_INTO_VIEW_TAG, type EditorState, type LexicalEditor,
 } from "@mdxeditor/lexical";
 import { registerPlainText } from "@mdxeditor/lexical-plain-text";
@@ -10,7 +10,7 @@ import { HtmlTextDocumentHistory, type HtmlTextHistoryView } from "./html-text-h
 import { HtmlSourceInlineNode, inlineAppearance, $appendHtmlRegionRuns, $reconcileHtmlRegion } from "./html-text-inline-node";
 import { HtmlFormattingToolbar, type HtmlFormattingMark, type HtmlFormattingSelection, type HtmlLinkDialogState } from "./html-formatting-toolbar";
 import { describeHtmlFormatting, emptyHtmlFormattingSelection, mapHtmlSourceOwners } from "./html-formatting-selection";
-import { applyHtmlFormatting, htmlFormattingLinkRange, normalizeHtmlLinkUrl, type HtmlFormattingAction } from "./html-text-formatting";
+import { applyHtmlFormatting, htmlFormattingLinkRange, insertHtmlTextAfterAnnotation, normalizeHtmlLinkUrl, type HtmlFormattingAction } from "./html-text-formatting";
 import { $htmlTextSelectionOffsets, $htmlTextSelectionAtOffsets, captureHtmlDomSelection, type HtmlTextSelectionOffsets } from "./html-text-selection";
 
 export type HtmlTextEditorProps = {
@@ -353,21 +353,11 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
       const unregisterParagraphTransform = editor.registerNodeTransform(ParagraphNode, reconcile);
       const unregisterUndo = editor.registerCommand(UNDO_COMMAND, () => history.undo(), COMMAND_PRIORITY_HIGH);
       const unregisterRedo = editor.registerCommand(REDO_COMMAND, () => history.redo(), COMMAND_PRIORITY_HIGH);
-      const unregisterPaste = editor.registerCommand(PASTE_COMMAND, event => {
-        if (originalWhiteSpace !== "normal" && originalWhiteSpace !== "nowrap") return false;
-        const clipboard = event && "clipboardData" in event ? event.clipboardData : null;
-        if (!clipboard) return false;
-        const text = clipboard.getData("text/plain");
-        if (!/[\r\n]/.test(text)) return false;
-        event.preventDefault(); const selection = $getSelection();
-        if ($isRangeSelection(selection)) selection.insertText(text.replace(/\r\n?|\n/g, " "));
-        return true;
-      }, COMMAND_PRIORITY_HIGH);
       const unregisterEnter = editor.registerCommand(KEY_ENTER_COMMAND, event => { event?.preventDefault(); element.blur(); return true; }, COMMAND_PRIORITY_HIGH);
       const focus = () => { activeEditor.current = editor; setActiveLabel(region.label); };
       element.addEventListener("focus", focus);
       cleanups.push(() => {
-        unregisterPlain(); unregisterUpdate(); unregisterPaste(); unregisterEnter(); unregisterUndo(); unregisterRedo();
+        unregisterPlain(); unregisterUpdate(); unregisterEnter(); unregisterUndo(); unregisterRedo();
         unregisterTextTransform(); unregisterParagraphTransform();
         element.removeEventListener("focus", focus); editor.setRootElement(null);
       });
@@ -430,6 +420,44 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
       beforeInput = { regionId, offsets, text: editor.getEditorState().read(() => $getRoot().getTextContent()), scroll: { x: frameWindow.scrollX, y: frameWindow.scrollY } };
       return { editor, element, offsets };
     };
+    const insertAfterAnnotation = (text: string): boolean => {
+      const target = captureTarget();
+      if (!target || target.offsets.anchor !== target.offsets.focus || !target.region.runs.some(run => run.inlinePath?.some(inline => inline.tagName === "sup" || inline.tagName === "sub"))) return false;
+      try {
+        const { fresh, region } = freshRegion(emittedSource.current, target);
+        const result = insertHtmlTextAfterAnnotation(fresh, region.id, target.offsets.focus, text);
+        if (!result) return false;
+        if (!result.ok) throw new Error(result.reason);
+        let source = result.source;
+        const pending = pendingMarks.current;
+        if (pending?.regionIndex === target.regionIndex) target.sourceInlineStyles = captureTarget(true)?.sourceInlineStyles ?? {};
+        if (pending?.regionIndex === target.regionIndex) for (const mark of ["underline", "bold", "italic"] as const) {
+          const enabled = pending.marks[mark];
+          if (enabled !== undefined) source = applyAction(source, target, { kind: "mark", mark, enabled }, { anchor: target.offsets.focus, focus: result.focus }).source;
+        }
+        installFormatting(source, target, result);
+      } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not insert text after this citation."); }
+      return true;
+    };
+    const paste = (event: ClipboardEvent) => {
+      const captured = captureBeforeInput();
+      if (!captured || !event.clipboardData || composition) return;
+      const target = captureTarget();
+      if (!target) return;
+      const whiteSpace = frameWindow.getComputedStyle(target.element).whiteSpace;
+      const clipboardText = event.clipboardData.getData("text/plain") || event.clipboardData.getData("text/uri-list");
+      if (!clipboardText) return;
+      const text = whiteSpace === "normal" || whiteSpace === "nowrap" ? clipboardText.replace(/\r\n?|\n/g, " ") : clipboardText;
+      event.preventDefault(); event.stopPropagation();
+      if (insertAfterAnnotation(text)) return;
+      // Inserting plain text at the DOM range avoids raw node insertion moving
+      // a paste to the end of an authored inline wrapper.
+      captured.editor.update(() => {
+        const selection = $htmlTextSelectionAtOffsets(captured.offsets.anchor, captured.offsets.focus);
+        selection.style = "all:unset;display:contents";
+        $setSelection(selection); selection.insertText(text);
+      }, { discrete: true });
+    };
     const input = (event: InputEvent) => {
       const captured = captureBeforeInput();
       if (!captured || event.isComposing || event.inputType !== "insertText" || event.data === null) return;
@@ -438,6 +466,7 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
       // uses the real DOM caret, while composition remains with Lexical/browser.
       event.preventDefault(); event.stopPropagation();
       const data = event.data;
+      if (insertAfterAnnotation(data)) return;
       captured.editor.update(() => {
         const selection = $htmlTextSelectionAtOffsets(captured.offsets.anchor, captured.offsets.focus);
         selection.style = "all:unset;display:contents";
@@ -503,13 +532,13 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
     doc.addEventListener("compositionstart", compositionStart, true); doc.addEventListener("compositionend", compositionEnd, true);
     doc.addEventListener("selectionchange", refreshFormatting);
     doc.addEventListener("pointerdown", pointerDown, true); doc.addEventListener("click", click);
-    doc.addEventListener("keydown", key, true); doc.addEventListener("beforeinput", input, true); doc.addEventListener("paste", captureBeforeInput, true); doc.addEventListener("cut", captureBeforeInput, true);
+    doc.addEventListener("keydown", key, true); doc.addEventListener("beforeinput", input, true); doc.addEventListener("paste", paste, true); doc.addEventListener("cut", captureBeforeInput, true);
     disposeFrame.current = () => {
       if (compositionFrame !== null) frameWindow.cancelAnimationFrame(compositionFrame);
       doc.removeEventListener("compositionstart", compositionStart, true); doc.removeEventListener("compositionend", compositionEnd, true);
       doc.removeEventListener("selectionchange", refreshFormatting);
       doc.removeEventListener("pointerdown", pointerDown, true); doc.removeEventListener("click", click);
-      doc.removeEventListener("keydown", key, true); doc.removeEventListener("beforeinput", input, true); doc.removeEventListener("paste", captureBeforeInput, true); doc.removeEventListener("cut", captureBeforeInput, true);
+      doc.removeEventListener("keydown", key, true); doc.removeEventListener("beforeinput", input, true); doc.removeEventListener("paste", paste, true); doc.removeEventListener("cut", captureBeforeInput, true);
       for (const cleanup of cleanups) cleanup();
       for (const [element, markup] of originalMarkup) { element.innerHTML = markup; element.removeAttribute("contenteditable"); }
       cleanups.length = 0;
