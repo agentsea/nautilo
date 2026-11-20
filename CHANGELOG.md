@@ -7,6 +7,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Validate and retain working legacy authentication credentials omitted from
+  Logto secret readback, without selecting a different key or rotating one.
+
 - Keep managed authentication reconciliation compatible with current Logto
   application-secret responses without rotating existing client credentials.
 
