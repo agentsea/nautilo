@@ -6,6 +6,7 @@ import {
 } from "@mdxeditor/lexical";
 import { registerPlainText } from "@mdxeditor/lexical-plain-text";
 import { applyHtmlRegionTexts, buildHtmlTextModel, deleteHtmlParagraph, type HtmlTextModel, type HtmlTextRegion } from "./html-text-model";
+import { htmlPageLinkTargets, prepareHtmlPageLinkTarget } from "./html-page-links";
 import { HtmlTextDocumentHistory, type HtmlTextHistoryView } from "./html-text-history";
 import { HtmlSourceInlineNode, inlineAppearance, $appendHtmlRegionRuns, $reconcileHtmlRegion } from "./html-text-inline-node";
 import { HtmlFormattingToolbar, type HtmlFormattingMark, type HtmlFormattingSelection, type HtmlLinkDialogState } from "./html-formatting-toolbar";
@@ -184,7 +185,7 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
       if (action.kind === "mark" && action.mark === "underline" && !action.enabled && target.description.unlocatedUnderline) throw new Error("This underline comes from an implicit page element. Use Source to change it.");
       const owners = action.kind === "mark" && action.mark === "underline" && !action.enabled
         ? mapHtmlSourceOwners(model.previewHtml, fresh.previewHtml, target.description.underlineOwners, target.description.underlineOwnerLines) : {};
-      const sourceInlineStyles = action.kind === "link" || action.mark === "underline" ? mapHtmlSourceOwners(model.previewHtml, fresh.previewHtml,
+      const sourceInlineStyles = action.kind === "link" || action.mark === "underline" || action.mark === "superscript" ? mapHtmlSourceOwners(model.previewHtml, fresh.previewHtml,
         Object.keys(target.sourceInlineStyles).map(Number), target.sourceInlineStyles).underlineOwnerLines : undefined;
       const result = applyHtmlFormatting(fresh, source, { regionId: region.id, ...offsets, action, ...owners, sourceInlineStyles });
       if (!result.ok) throw new Error(result.reason);
@@ -262,7 +263,8 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
         setFormatSelection(target.description.selection);
         linkTarget = target; linkSource = emittedSource.current;
         const dialog = { url: current?.href ?? target.description.selection.link?.href ?? "", text: "",
-          editingExisting: !!current || !!target.description.selection.link, canRemove: !!current || target.description.anyLink };
+          editingExisting: !!current || !!target.description.selection.link, canRemove: !!current || target.description.anyLink,
+          pageTargets: htmlPageLinkTargets(emittedSource.current) };
         setLinkError(null); setLinkDialog(dialog); linkDialogRef.current = dialog;
       },
       applyLink(remove = false) {
@@ -272,7 +274,8 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
         const href = remove ? null : normalizeHtmlLinkUrl(dialog.url);
         if (!remove && !href) { setLinkError("Enter a valid web, email, phone, or relative link."); return; }
         try {
-          const result = applyAction(emittedSource.current, target, { kind: "link", href,
+          const pageLink = !remove && dialog.pageTarget !== undefined ? prepareHtmlPageLinkTarget(emittedSource.current, dialog.pageTarget) : null;
+          const result = applyAction(pageLink?.source ?? emittedSource.current, target, { kind: "link", href: pageLink?.href ?? href,
             ...(target.description.selection.collapsed && !dialog.editingExisting && !remove ? { text: dialog.text || href! } : {}) });
           if (result.source === emittedSource.current) { formatting.current.cancelLink(); return; }
           installFormatting(result.source, target, dialog.editingExisting && target.description.selection.collapsed ? target.offsets : result);
@@ -315,7 +318,9 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
         const result = applyHtmlRegionTexts(model, model.source, [...edits].map(([regionId, nextText]) => ({ regionId, text: nextText })));
         if (!result.ok) { setError(result.reason); return; }
         setError(null); emittedSource.current = result.source; renderedSource.current = result.source;
-        if (tags.has(RESTORE_TAG) || tags.has(SKIP_DOM_SELECTION_TAG)) return;
+        // Selection-only focus tags can be batched with the next keystroke.
+        // Suppress an actual history restore, never a new text change.
+        if ((tags.has(RESTORE_TAG) || tags.has(SKIP_DOM_SELECTION_TAG)) && result.source === history.getSnapshot().source) return;
         const captured = beforeInput?.regionId === region.id && beforeInput.text === previousText ? beforeInput : null;
         const beforeView = viewFor(prevEditorState, region, captured?.scroll);
         if (captured) Object.assign(beforeView, captured.offsets);
@@ -330,12 +335,13 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
             if (target) {
               try {
                 let formatted = result.source;
-                for (const mark of ["underline", "bold", "italic"] as const) {
+                for (const mark of ["underline", "bold", "italic", "superscript"] as const) {
                   const enabled = pending.marks[mark];
                   if (enabled !== undefined) formatted = applyAction(formatted, target, { kind: "mark", mark, enabled }, { anchor: start, focus: text.length - suffix }).source;
                 }
                 const after = editorState.read($htmlTextSelectionOffsets);
                 installFormatting(formatted, target, after, beforeView);
+                if (pending.marks.superscript) pendingMarks.current = { regionIndex: target.regionIndex, offset: after.focus, marks: { superscript: true } };
                 return;
               } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not format the inserted text."); }
             }
@@ -422,7 +428,7 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
     };
     const insertAfterAnnotation = (text: string): boolean => {
       const target = captureTarget();
-      if (!target || target.offsets.anchor !== target.offsets.focus || !target.region.runs.some(run => run.inlinePath?.some(inline => inline.tagName === "sup" || inline.tagName === "sub"))) return false;
+      if (!target || target.offsets.anchor !== target.offsets.focus || pendingMarks.current?.marks.superscript === true || !target.region.runs.some(run => run.inlinePath?.some(inline => inline.tagName === "sup" || inline.tagName === "sub"))) return false;
       try {
         const { fresh, region } = freshRegion(emittedSource.current, target);
         const result = insertHtmlTextAfterAnnotation(fresh, region.id, target.offsets.focus, text);
@@ -431,7 +437,7 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
         let source = result.source;
         const pending = pendingMarks.current;
         if (pending?.regionIndex === target.regionIndex) target.sourceInlineStyles = captureTarget(true)?.sourceInlineStyles ?? {};
-        if (pending?.regionIndex === target.regionIndex) for (const mark of ["underline", "bold", "italic"] as const) {
+        if (pending?.regionIndex === target.regionIndex) for (const mark of ["underline", "bold", "italic", "superscript"] as const) {
           const enabled = pending.marks[mark];
           if (enabled !== undefined) source = applyAction(source, target, { kind: "mark", mark, enabled }, { anchor: target.offsets.focus, focus: result.focus }).source;
         }
@@ -500,11 +506,12 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
         }
         try {
           let source = emittedSource.current;
-          for (const mark of ["underline", "bold", "italic"] as const) {
+          for (const mark of ["underline", "bold", "italic", "superscript"] as const) {
             const enabled = completed.marks[mark];
             if (enabled !== undefined) source = applyAction(source, target, { kind: "mark", mark, enabled }, { anchor: start, focus: text.length - suffix.length }).source;
           }
           installFormatting(source, target, target.offsets, completed.target.view, completed);
+          if (completed.marks.superscript) pendingMarks.current = { regionIndex: target.regionIndex, offset: target.offsets.focus, marks: { superscript: true } };
         } catch (caught) { pendingMarks.current = null; setError(caught instanceof Error ? caught.message : "Select the committed text to format it."); }
       });
     };
@@ -518,6 +525,9 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
       }
       captureBeforeInput();
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") { event.preventDefault(); callbacks.current.onSave?.(); }
+      else if ((event.metaKey || event.ctrlKey) && !event.altKey && event.shiftKey && (event.key === "+" || event.key === "=")) {
+        event.preventDefault(); event.stopPropagation(); formatting.current.toggle("superscript");
+      }
       else if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && ["b", "i", "u", "k"].includes(event.key.toLowerCase())) {
         event.preventDefault(); event.stopPropagation();
         const key = event.key.toLowerCase();
@@ -584,7 +594,9 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
         canUndo={historyStatus.canUndo} canRedo={historyStatus.canRedo} onUndo={() => history.undo()} onRedo={() => history.redo()}
         canDeleteParagraph={canDeleteParagraph} onDeleteParagraph={() => deleteParagraphRef.current()}
         onOpenLink={() => formatting.current.openLink()} linkDialog={linkDialog}
-        onLinkUrlChange={url => { setLinkDialog(current => current ? { ...current, url } : null); setLinkError(null); }}
+        onLinkUrlChange={url => { setLinkDialog(current => current ? { ...current, url, pageTarget: undefined } : null); setLinkError(null); }}
+        onLinkPageTargetChange={offset => { setLinkDialog(current => current ? { ...current, pageTarget: offset,
+          url: current.pageTargets?.find(target => target.offset === offset)?.href ?? current.url } : null); setLinkError(null); }}
         onLinkTextChange={text => setLinkDialog(current => current ? { ...current, text } : null)}
         onLinkApply={() => formatting.current.applyLink()} onLinkRemove={() => formatting.current.applyLink(true)}
         onLinkCancel={() => formatting.current.cancelLink()} error={linkError} />

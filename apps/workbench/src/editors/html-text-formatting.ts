@@ -6,7 +6,7 @@ type Node = DefaultTreeAdapterMap["node"];
 type Element = DefaultTreeAdapterMap["element"];
 type Text = DefaultTreeAdapterMap["textNode"];
 export type HtmlFormattingAction =
-  | { kind: "mark"; mark: "bold" | "italic" | "underline"; enabled: boolean }
+  | { kind: "mark"; mark: "bold" | "italic" | "underline" | "superscript"; enabled: boolean }
   | { kind: "link"; href: string | null; text?: string };
 export type HtmlFormattingRequest = {
   regionId: string; anchor: number; focus: number; action: HtmlFormattingAction;
@@ -193,7 +193,7 @@ export function applyHtmlFormatting(model: HtmlTextModel, currentSource: string,
     if (from === to) return { ok: true, source: currentSource, anchor: request.anchor, focus: request.focus };
     const selected = selectedPortions(region, from, to);
     const patches: Patch[] = [];
-    if (action.kind === "mark") {
+    if (action.kind === "mark" && action.mark !== "superscript") {
       if (action.mark === "underline" && !action.enabled) {
         const owners = new Set(request.underlineOwners ?? []);
         for (const start of selected.keys()) {
@@ -246,7 +246,19 @@ export function applyHtmlFormatting(model: HtmlTextModel, currentSource: string,
       }
     } else {
       const anchors = new Set<Element>();
-      for (const start of selected.keys()) { const anchor = ancestorAnchor(texts.get(start)); if (anchor) anchors.add(anchor); }
+      const superscript = action.kind === "mark";
+      const annotation = (node: Node | undefined): Element | undefined => {
+        let result: Element | undefined;
+        while (node && "parentNode" in node && node.parentNode) {
+          node = node.parentNode;
+          if (isElement(node) && node.tagName === "sup") result = node;
+        }
+        return result;
+      };
+      for (const start of selected.keys()) {
+        const owner = superscript ? annotation(texts.get(start)) : ancestorAnchor(texts.get(start));
+        if (owner && (!superscript || !action.enabled)) anchors.add(owner);
+      }
       type Fragment = { selected: boolean; text: string };
       const combine = (fragments: Fragment[]) => {
         const result: Fragment[] = [];
@@ -274,7 +286,7 @@ export function applyHtmlFormatting(model: HtmlTextModel, currentSource: string,
         const fragments = combine(node.childNodes.flatMap(split));
         return fragments.map((fragment, index) => {
           const changes: Record<string, string | null> = {};
-          if (node.tagName === "a" && fragment.selected) changes.href = action.href === null ? null : normalizeHtmlLinkUrl(action.href)!;
+          if (action.kind === "link" && node.tagName === "a" && fragment.selected) changes.href = action.href === null ? null : normalizeHtmlLinkUrl(action.href)!;
           if (index > 0) {
             changes.id = null;
             const appearance = request.sourceInlineStyles?.[elementLocation.startTag!.startOffset];
@@ -283,8 +295,14 @@ export function applyHtmlFormatting(model: HtmlTextModel, currentSource: string,
               changes.style = `${style}${style.trimEnd().endsWith(";") || !style ? "" : ";"}${appearance}`;
             }
           }
-          const opening = openingTag(currentSource, node, changes);
-          const closing = currentSource.slice(elementLocation.endTag!.startOffset, elementLocation.endTag!.endOffset);
+          const removeSuperscript = superscript && fragment.selected && node.tagName === "sup";
+          if (removeSuperscript) {
+            const style = changes.style ?? attribute(node, "style") ?? "";
+            changes.style = `${style}${style.trimEnd().endsWith(";") || !style ? "" : ";"}vertical-align:baseline !important;font-size:inherit !important;`;
+          }
+          let opening = openingTag(currentSource, node, changes);
+          if (removeSuperscript) opening = opening.replace(/^<sup\b/i, "<span");
+          const closing = removeSuperscript ? "</span>" : currentSource.slice(elementLocation.endTag!.startOffset, elementLocation.endTag!.endOffset);
           // Keep a href-less anchor on removal: its classes, ID and attributes
           // can carry authored styling/anchors; only hyperlink behavior changes.
           return { selected: fragment.selected, text: opening + fragment.text + closing };
@@ -294,9 +312,9 @@ export function applyHtmlFormatting(model: HtmlTextModel, currentSource: string,
         const location = anchor.sourceCodeLocation!;
         patches.push({ start: location.startOffset, end: location.endOffset, text: split(anchor).map(fragment => fragment.text).join("") });
       }
-      if (action.href !== null) for (const run of region.runs) {
-        const portion = selected.get(run.startOffset); if (!portion || ancestorAnchor(texts.get(run.startOffset))) continue;
-        patches.push({ start: run.startOffset, end: run.endOffset, text: escapeText(run.text.slice(0, portion.start)) + `<a href="${escapeAttribute(normalizeHtmlLinkUrl(action.href)!)}">${escapeText(run.text.slice(portion.start, portion.end))}</a>` + escapeText(run.text.slice(portion.end)) });
+      if (action.kind === "mark" ? action.enabled : action.href !== null) for (const run of region.runs) {
+        const portion = selected.get(run.startOffset); if (!portion || (superscript ? annotation(texts.get(run.startOffset)) : ancestorAnchor(texts.get(run.startOffset)))) continue;
+        patches.push({ start: run.startOffset, end: run.endOffset, text: escapeText(run.text.slice(0, portion.start)) + (action.kind === "mark" ? `<sup>${escapeText(run.text.slice(portion.start, portion.end))}</sup>` : `<a href="${escapeAttribute(normalizeHtmlLinkUrl(action.href!)!)}">${escapeText(run.text.slice(portion.start, portion.end))}</a>`) + escapeText(run.text.slice(portion.end)) });
       }
     }
     return { ok: true, source: applyPatches(currentSource, patches), anchor: request.anchor === request.focus ? from : request.anchor, focus: request.anchor === request.focus ? to : request.focus };

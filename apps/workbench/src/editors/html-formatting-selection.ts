@@ -2,7 +2,7 @@ import type { HtmlFormattingSelection } from "./html-formatting-toolbar";
 import type { HtmlTextSelectionOffsets } from "./html-text-selection";
 
 export const emptyHtmlFormattingSelection: HtmlFormattingSelection = {
-  available: false, collapsed: true, marks: { bold: "off", italic: "off", underline: "off" }, link: null,
+  available: false, collapsed: true, marks: { bold: "off", italic: "off", underline: "off", superscript: "off" }, link: null,
 };
 
 /** Read rendered formatting, including decorations painted by an ancestor. */
@@ -41,13 +41,13 @@ export function describeHtmlFormatting(root: HTMLElement, offsets: HtmlTextSelec
     }
     const href = element.closest("a[href]")?.getAttribute("href") ?? null;
     return { bold: Number.parseInt(style.fontWeight, 10) >= 600 || style.fontWeight === "bold",
-      italic: style.fontStyle === "italic" || style.fontStyle.startsWith("oblique"), underline, href };
+      superscript: element.closest("sup") !== null, italic: style.fontStyle === "italic" || style.fontStyle.startsWith("oblique"), underline, href };
   });
-  const state = (mark: "bold" | "italic" | "underline") => values.every(value => value[mark]) ? "on" : values.some(value => value[mark]) ? "mixed" : "off";
+  const state = (mark: "bold" | "italic" | "underline" | "superscript") => values.every(value => value[mark]) ? "on" : values.some(value => value[mark]) ? "mixed" : "off";
   const href = values[0]?.href;
   return {
     selection: { available: true, collapsed: start === end,
-      marks: { bold: state("bold"), italic: state("italic"), underline: state("underline") },
+      marks: { bold: state("bold"), italic: state("italic"), underline: state("underline"), superscript: state("superscript") },
       link: href && values.every(value => value.href === href) ? { href } : null,
     } satisfies HtmlFormattingSelection,
     underlineOwners: [...owners.keys()], underlineOwnerLines: Object.fromEntries(owners), unlocatedUnderline,
