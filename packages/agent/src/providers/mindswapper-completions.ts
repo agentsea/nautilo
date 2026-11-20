@@ -1,3 +1,4 @@
+import { setTimeout as delay } from "node:timers/promises";
 import {
   ChatOpenAICompletions,
   convertCompletionsDeltaToBaseMessageChunk,
@@ -21,7 +22,14 @@ const BILLING_REFUSALS = {
   billing_error: "MindSwapper declined this request for billing reasons. Check MindSwapper Billing.",
 } as const;
 
-type MindSwapperRequestErrorCode = "authentication_error" | keyof typeof BILLING_REFUSALS | "unsupported_request"
+function admissionRefusal(status: number | undefined, code: unknown) {
+  if (status === 429 && code === "qa_concurrency_limit") return "qa_concurrency_limit";
+  if (status === 503 && code === "gateway_busy") return "gateway_busy";
+  if (status === 503 && code === "capacity_database_contended") return "capacity_database_contended";
+  return undefined;
+}
+
+type MindSwapperRequestErrorCode = Exclude<ReturnType<typeof admissionRefusal>, undefined> | "authentication_error" | keyof typeof BILLING_REFUSALS | "unsupported_request"
   | "no_eligible_supply" | "rate_limit_error" | "outcome_unknown" | "context_length_exceeded" | "invalid_endpoint";
 
 export class MindSwapperRequestError extends Error {
@@ -62,6 +70,11 @@ export function sanitizeMindSwapperError(error: unknown): Error {
     const code = wireCode === "insufficient_balance" || wireCode === "billing_needs_review" || wireCode === "spend_limit_reached"
       ? wireCode : "billing_error";
     return new MindSwapperRequestError(BILLING_REFUSALS[code], code, status, id);
+  }
+  const admission = admissionRefusal(status, details?.["code"]);
+  if (admission && details?.["dispatch"] === "not-started") {
+    return new MindSwapperRequestError("Gateway capacity is busy. No supplier request was sent. Try again shortly.",
+      admission, status, requestId(details?.["correlation_id"]) ?? id);
   }
   if (status === 413) {
     return new MindSwapperRequestError("the request is too large or complex for this connection.", "unsupported_request", status, id);
@@ -185,28 +198,39 @@ export function createMindSwapperFetch(
     }
     const normalizedRequest = withoutToolMessageNames(request);
     assertWireOffer(normalizedRequest, offer);
-    const response = await globalThis.fetch(endpoint, {
-      method: "POST",
-      body: JSON.stringify(normalizedRequest),
-      headers: {
-        Authorization: `Bearer ${connection.apiKey}`,
-        "Content-Type": "application/json",
-        Accept: request["stream"] === true ? "text/event-stream" : "application/json",
-      },
-      redirect: "error",
-      ...(init.signal === undefined ? {} : { signal: init.signal }),
-    });
-    if (!response.ok) {
+    const signal = init.signal ?? (input instanceof Request ? input.signal : undefined);
+    const body = JSON.stringify(normalizedRequest);
+    for (let attempt = 0; ; attempt++) {
+      const response = await globalThis.fetch(endpoint, {
+        method: "POST", body,
+        headers: {
+          Authorization: `Bearer ${connection.apiKey}`,
+          "Content-Type": "application/json",
+          Accept: request["stream"] === true ? "text/event-stream" : "application/json",
+        },
+        redirect: "error",
+        ...(signal ? { signal } : {}),
+      });
+      if (response.ok) return request["stream"] === true ? requireStreamTerminator(response) : response;
+
       let code: unknown;
-      if (response.status === 402 && response.headers.get("content-type")?.startsWith("application/json")) {
+      if ([402, 429, 503].includes(response.status) && response.headers.get("content-type")?.startsWith("application/json")) {
         const payload = asRecord(await readBoundedMediaJson(response).catch(() => undefined));
         code = asRecord(payload?.["error"])?.["code"];
       } else {
         await response.body?.cancel().catch(() => undefined);
       }
-      throw sanitizeMindSwapperError({ status: response.status, code, request_id: response.headers.get("x-request-id") });
+      const dispatch = response.headers.get("x-mindswapper-dispatch");
+      // Only an explicit rejection by the admitted endpoint can authorize one
+      // replay. A provider 429 or an interrupted stream can already be billable.
+      if (attempt === 0 && endpoint.startsWith("https://") && dispatch === "not-started" &&
+          admissionRefusal(response.status, code) && !response.headers.has("retry-after")) {
+        await delay(250 + Math.random() * 500, undefined, signal ? { signal } : undefined);
+        continue;
+      }
+      throw sanitizeMindSwapperError({ status: response.status, code, dispatch, request_id: response.headers.get("x-request-id"),
+        correlation_id: response.headers.get("x-mindswapper-correlation-id") });
     }
-    return request["stream"] === true ? requireStreamTerminator(response) : response;
   }) as typeof fetch;
 }
 

@@ -304,6 +304,41 @@ describe("MindSwapper Chat Completions", () => {
     expect(original.messages.at(-1)?.name).toBe(toolName);
   });
 
+  test("retries a confirmed pre-dispatch refusal once and preserves its correlation ID", async () => {
+    const fetch = createMindSwapperFetch(connection, upstreamId, model.offers[0]!);
+    const body = JSON.stringify({ model: upstreamId, max_tokens: 8, messages: [{ role: "user", content: "hello" }] });
+    let calls = 0;
+    stubFetch(() => {
+      calls++;
+      return Response.json({ error: { code: "gateway_busy" } }, { status: 503,
+        headers: { "x-mindswapper-dispatch": "not-started", "x-mindswapper-correlation-id": requestId } });
+    });
+    await assert.rejects(fetch(`${connection.baseUrl}/chat/completions`, { method: "POST", body }),
+      { code: "gateway_busy", requestId, outcomeUnknown: false });
+    expect(calls).toBe(2);
+  });
+
+  test("an upstream refusal or abort never replays a possibly billable request", async () => {
+    const fetch = createMindSwapperFetch(connection, upstreamId, model.offers[0]!);
+    const body = JSON.stringify({ model: upstreamId, max_tokens: 8, messages: [{ role: "user", content: "hello" }] });
+    const controller = new AbortController();
+    let calls = 0;
+    stubFetch(() => {
+      calls++;
+      return Response.json({ error: { code: "gateway_busy" } }, { status: 503 });
+    });
+    await assert.rejects(fetch(`${connection.baseUrl}/chat/completions`, { method: "POST", body }), { code: "no_eligible_supply" });
+    expect(calls).toBe(1);
+    stubFetch(() => {
+      calls++;
+      controller.abort();
+      return Response.json({ error: { code: "qa_concurrency_limit" } }, { status: 429,
+        headers: { "x-mindswapper-dispatch": "not-started" } });
+    });
+    await assert.rejects(fetch(`${connection.baseUrl}/chat/completions`, { method: "POST", body, signal: controller.signal }), { name: "AbortError" });
+    expect(calls).toBe(2);
+  });
+
   test("rejects an unsupported input before sending any request", async () => {
     let requests = 0;
     stubFetch(() => { requests++; return completion(); });
