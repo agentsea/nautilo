@@ -31,6 +31,7 @@ export * from "./profile";
 export * from "./personal-costs";
 export * from "./personal-capability-preferences";
 export * from "./provider-key-catalogue";
+export * from "./gateway-destination";
 export * from "./public-product-links";
 export * from "./protected-message";
 export * from "./protected-message-realtime";

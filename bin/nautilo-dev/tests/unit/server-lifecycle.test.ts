@@ -2,11 +2,17 @@ import { describe, expect, test } from "bun:test";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import {
   buildServerDaemonEnv,
   checkFirstPartyAppPrerequisitesForServerStart,
   checkWorkbenchDistForServerStart,
   fetchServerHealth,
+  HEALTH_WAIT_MS,
+  parseDaemonLauncherPid,
+  readDaemonLauncherPid,
   runServerStart,
   serverDaemonEnv,
   type ServerStartDeps,
@@ -301,6 +307,176 @@ describe("runServerStart", () => {
     expect(kills.map((k) => k.signal)).toEqual(["SIGTERM", "SIGKILL"]);
     expect(kills.every((k) => k.pid === 777)).toBe(true);
   });
+
+  /** Deps for a fresh daemon launch on a fake clock; `over` sets what a test is about. */
+  function bootDeps(clock: { t: number }, over: Partial<ServerStartDeps>): ServerStartDeps {
+    return {
+      paths,
+      readPidFile: () => null,
+      writePidFile: () => {},
+      removePidFile: () => {},
+      isProcessAlive: (pid) => pid === 4242,
+      spawnDaemon: () => Promise.resolve(4242),
+      fetchHealth: async () => ({ ok: false }),
+      findListenerPid: () => null,
+      looksLikeNautiloServer: () => false,
+      provisionAgentBrowser: async () => true,
+      provisionOfficeCli: () => {},
+      log: () => {},
+      warn: () => {},
+      now: () => clock.t,
+      sleep: async (ms) => {
+        clock.t += ms;
+      },
+      killPid: () => {
+        throw new Error("unexpected kill");
+      },
+      ...over,
+    };
+  }
+
+  test("a booting server that never binds is stopped by its launcher PID (no server.pid yet)", async () => {
+    // server.pid is written only after the listener binds, so a slow boot
+    // used to leave an orphaned daemon behind when the wait expired.
+    const clock = { t: 0 };
+    const kills: { pid: number; signal: NodeJS.Signals }[] = [];
+    const warnings: string[] = [];
+    const deps = bootDeps(clock, {
+      warn: (s) => { warnings.push(s); },
+      killPid: (pid, signal) => { kills.push({ pid, signal }); },
+    });
+    expect(await runServerStart(deps)).toBe(1);
+    expect(clock.t).toBeGreaterThanOrEqual(HEALTH_WAIT_MS);
+    expect(kills).toEqual([
+      { pid: 4242, signal: "SIGTERM" },
+      { pid: 4242, signal: "SIGKILL" },
+    ]);
+    expect(warnings.at(-1)).toContain(`timed out after ${HEALTH_WAIT_MS}ms`);
+  });
+
+  test("keeps waiting past the former 90 s bound while the server is alive and booting", async () => {
+    const clock = { t: 0 };
+    const deps = bootDeps(clock, {
+      readPidFile: () => (clock.t >= 120_000 ? 4242 : null),
+      fetchHealth: async () => (clock.t >= 120_000 ? { ok: true, status: "ready" } : { ok: false }),
+    });
+    expect(await runServerStart(deps)).toBe(0);
+  });
+
+  test("a server that exits during boot fails at once instead of waiting out the deadline", async () => {
+    const clock = { t: 0 };
+    const warnings: string[] = [];
+    const deps = bootDeps(clock, {
+      isProcessAlive: (pid) => pid === 4242 && clock.t < 5_000,
+      warn: (s) => { warnings.push(s); },
+    });
+    expect(await runServerStart(deps)).toBe(1);
+    expect(clock.t).toBeLessThan(6_000);
+    expect(warnings).toEqual([
+      `[server:start] server process 4242 exited before ${paths.serverUrl}/health became ready (see ${paths.logPath})`,
+    ]);
+  });
+
+  test("a failed launcher fails at once: no server was started", async () => {
+    const clock = { t: 0 };
+    const warnings: string[] = [];
+    const deps = bootDeps(clock, {
+      spawnDaemon: () => Promise.reject(new Error("daemon launcher exited with code 3")),
+      warn: (s) => { warnings.push(s); },
+    });
+    expect(await runServerStart(deps)).toBe(1);
+    expect(clock.t).toBe(0);
+    expect(warnings).toEqual(["[server:start] daemon launcher exited with code 3; no server was started"]);
+  });
+
+  test("a launcher that never reports cannot outlast the deadline", async () => {
+    const clock = { t: 0 };
+    const warnings: string[] = [];
+    const deps = bootDeps(clock, {
+      spawnDaemon: () => new Promise<number | null>(() => {}),
+      warn: (s) => { warnings.push(s); },
+    });
+    expect(await runServerStart(deps)).toBe(1);
+    expect(clock.t).toBeGreaterThanOrEqual(HEALTH_WAIT_MS);
+    expect(warnings).toEqual([
+      `[server:start] timed out after ${HEALTH_WAIT_MS}ms waiting for ${paths.serverUrl}/health (see ${paths.logPath})`,
+    ]);
+  });
+});
+
+describe("daemon launcher PID", () => {
+  /** A launcher whose stdout and exit the test drives by hand. */
+  function fakeLauncher() {
+    return Object.assign(new EventEmitter(), { stdout: new PassThrough() });
+  }
+
+  test("parses only a complete started line among other boot output", () => {
+    expect(parseDaemonLauncherPid("[boot] hosting mode: local\n[daemon] started, pid=31337\n")).toBe(31337);
+    expect(parseDaemonLauncherPid("[daemon] started, pid=31337\r\n")).toBe(31337);
+    expect(parseDaemonLauncherPid("[daemon] started, pid=313")).toBeNull();
+    expect(parseDaemonLauncherPid("[daemon] started, pid=undefined\n")).toBeNull();
+    expect(parseDaemonLauncherPid("")).toBeNull();
+  });
+
+  test("resolves the PID when its line arrives, while stdout stays open", async () => {
+    const launcher = fakeLauncher();
+    const pid = readDaemonLauncherPid(launcher);
+    launcher.stdout.write("[boot] hosting mode: local\n[daemon] started, pid=42");
+    launcher.stdout.write("42\n");
+    expect(await pid).toBe(4242);
+    expect(launcher.stdout.destroyed).toBe(true);
+  });
+
+  test("a launcher without a PID resolves null on a clean exit and rejects on a failed one", async () => {
+    for (const exitFirst of [true, false]) {
+      const clean = fakeLauncher();
+      const cleanPid = readDaemonLauncherPid(clean);
+      const failed = fakeLauncher();
+      // Capture the rejection as a value: it settles only after the events
+      // below, and it must not be unhandled while the clean launcher is awaited.
+      const failedOutcome = readDaemonLauncherPid(failed).then(
+        (pid) => `resolved ${String(pid)}`,
+        (err: unknown) => (err instanceof Error ? err.message : String(err)),
+      );
+      for (const [launcher, code] of [[clean, 0], [failed, 3]] as const) {
+        if (exitFirst) launcher.emit("exit", code);
+        launcher.stdout.end("[boot] hosting mode: local\n");
+        if (!exitFirst) launcher.emit("exit", code);
+      }
+      expect(await cleanPid).toBeNull();
+      expect(await failedOutcome).toBe("daemon launcher exited with code 3");
+    }
+  });
+
+  test("real processes: the PID arrives although the detached server keeps the launcher's stdout open", async () => {
+    // The launcher hands its own stdout to a long-lived detached child, the
+    // worst case for the pipe: it never closes while the "server" lives.
+    const launcherScript = [
+      'const { spawn } = require("node:child_process");',
+      'const server = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { detached: true, stdio: ["ignore", "inherit", "ignore"] });',
+      "server.unref();",
+      "console.log(`[daemon] started, pid=${server.pid}`);",
+      "process.exit(0);",
+    ].join("\n");
+    const launcher = spawn(process.execPath, ["-e", launcherScript], {
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const pid = await readDaemonLauncherPid(launcher);
+    try {
+      expect(pid).not.toBeNull();
+      expect(() => process.kill(pid!, 0)).not.toThrow();
+    } finally {
+      if (pid !== null) process.kill(pid);
+    }
+  }, 30_000);
+
+  test("real processes: a launcher that fails before starting a server rejects", async () => {
+    const launcher = spawn(process.execPath, ["-e", "process.exit(3)"], {
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    // eslint-disable-next-line @typescript-eslint/await-thenable -- bun expect().rejects
+    await expect(readDaemonLauncherPid(launcher)).rejects.toThrow("daemon launcher exited with code 3");
+  }, 30_000);
 });
 
 describe("serverDaemonEnv", () => {

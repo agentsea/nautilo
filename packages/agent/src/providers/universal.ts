@@ -26,6 +26,7 @@ import { getModelById, type VeniceRouting } from "../config/assistant-models";
 import { resolveChinaUpstreamConsent } from "../config/resolved-catalog";
 import { createUsageCallbackHandler } from "../usage/usage-callback";
 import type { Callbacks } from "@langchain/core/callbacks/manager";
+import { normalizeGatewayBaseUrl } from "@nautilo/types";
 import {
   getStubModelForTests,
   setStubModelForTests,
@@ -227,18 +228,6 @@ export function buildOpenRouterCreateModelOptions(
     options.modelKwargs = sessionModelKwargs;
   }
   return options;
-}
-
-export function normalizeGatewayBaseUrl(value: unknown): string | undefined {
-  const baseUrl = nonEmptyString(value);
-  if (!baseUrl) return undefined;
-  try {
-    const url = new URL(baseUrl);
-    if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
-    return baseUrl.replace(/\/+$/, "");
-  } catch {
-    return undefined;
-  }
 }
 
 function gatewayLabel(cleanOptions: Record<string, unknown>): string {

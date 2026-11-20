@@ -135,6 +135,54 @@ describe("transaction integration", () => {
     expect(body).toBe("KEEP=1\n");
   });
 
+  test("stores a gateway key whose keys health check reaches <base>/models", async () => {
+    await writeFile(envPath, "NAUTILO_GATEWAY_BASE_URL=http://127.0.0.1:4000/v1\n", "utf-8");
+    const prevGatewayBase = process.env["NAUTILO_GATEWAY_BASE_URL"];
+    const seen: string[] = [];
+    globalThis.fetch = (async (url, init) => {
+      seen.push(`${url instanceof Request ? url.url : url.toString()} ${new Headers(init?.headers).get("authorization")}`);
+      return new Response("{\"data\":[]}", { status: 200 });
+    }) as typeof fetch;
+    try {
+      const r = await transaction({
+        operations: [{ type: "set", key: "NAUTILO_GATEWAY_API_KEY", value: "synthetic-gateway-key" }],
+        healthCheck: "keys",
+        overwrite: true,
+        reason: "t",
+        actor: "test",
+      });
+      expect(r.error ?? null).toBeNull();
+      expect(r.success).toBe(true);
+      expect(seen).toEqual(["http://127.0.0.1:4000/v1/models Bearer synthetic-gateway-key"]);
+      expect(await readFile(envPath, "utf-8")).toContain("NAUTILO_GATEWAY_API_KEY=synthetic-gateway-key");
+    } finally {
+      if (prevGatewayBase === undefined) delete process.env["NAUTILO_GATEWAY_BASE_URL"];
+      else process.env["NAUTILO_GATEWAY_BASE_URL"] = prevGatewayBase;
+    }
+  });
+
+  test("rolls back a gateway key the gateway rejects", async () => {
+    await writeFile(envPath, "NAUTILO_GATEWAY_BASE_URL=http://127.0.0.1:4000/v1\n", "utf-8");
+    const prevGatewayBase = process.env["NAUTILO_GATEWAY_BASE_URL"];
+    globalThis.fetch = (async () => new Response("", { status: 401 })) as unknown as typeof fetch;
+    try {
+      const r = await transaction({
+        operations: [{ type: "set", key: "NAUTILO_GATEWAY_API_KEY", value: "synthetic-gateway-key" }],
+        healthCheck: "keys",
+        overwrite: true,
+        reason: "t",
+        actor: "test",
+      });
+      expect(r.success).toBe(false);
+      expect(r.rolledBack).toBe(true);
+      expect(r.error).toContain("gateway: invalid_key");
+      expect(await readFile(envPath, "utf-8")).toBe("NAUTILO_GATEWAY_BASE_URL=http://127.0.0.1:4000/v1\n");
+    } finally {
+      if (prevGatewayBase === undefined) delete process.env["NAUTILO_GATEWAY_BASE_URL"];
+      else process.env["NAUTILO_GATEWAY_BASE_URL"] = prevGatewayBase;
+    }
+  });
+
   test("concurrent transactions are serialized and both succeed", async () => {
     const [a, b] = await Promise.all([
       transaction({

@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { isAbsolute, join, relative } from "node:path";
 import { tmpdir } from "node:os";
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { isPrivateFilesystemPath } from "@nautilo/config/private-filesystem";
 import { allowOtherReaders } from "@nautilo/config/private-filesystem-fixtures";
 import {
@@ -12,6 +12,12 @@ import {
   snapshotOperationsSummary,
   updateSnapshotMeta,
 } from "../../src/snapshot-store";
+
+// On Windows every private-filesystem call starts a PowerShell ACL helper
+// (about 0.7 s per synchronous check), so a test with several of them exceeds
+// Bun's 5 s default when this file runs directly with `bun test`. Only the
+// runner budget changes; product deadlines and assertions do not.
+if (process.platform === "win32") setDefaultTimeout(60_000);
 
 describe("snapshot-store", () => {
   let dir: string | undefined;

@@ -1,3 +1,4 @@
+import { GATEWAY_BASE_URL_ENV, gatewayKeyDestination } from "@nautilo/types";
 import { getKeyDefinition } from "./key-registry";
 import { MINDSWAPPER_BASE_URL, normalizeMindSwapperBaseUrl } from "./mindswapper";
 
@@ -35,6 +36,33 @@ export async function checkProviderHealth(
           return { status: "invalid_key", detail: `${response.status}` };
         }
         return response.ok ? { status: "verified" } : { status: "unreachable", detail: `HTTP ${response.status}` };
+      }
+      case "gateway": {
+        // OpenAI-compatible gateways serve GET <base>/models with the same
+        // bearer key the runtime sends to <base>/chat/completions; it bills
+        // nothing and names no model. "verified" here means the gateway is
+        // reachable and did not reject the key: a gateway that serves /models
+        // without authentication (many local ones do) accepts any key, and no
+        // generic non-billing request can tell the two apart.
+        const destination = gatewayKeyDestination(env[GATEWAY_BASE_URL_ENV]);
+        if (!destination) {
+          return {
+            status: "unreachable",
+            detail: `Set ${GATEWAY_BASE_URL_ENV} to the gateway's http(s) base URL first.`,
+          };
+        }
+        const res = await fetchWithTimeout(`${destination}/models`, {
+          method: "GET",
+          headers: { authorization: `Bearer ${value}` },
+          redirect: "error",
+        });
+        void res.body?.cancel().catch(() => {});
+        if (res.status === 401 || res.status === 403) {
+          return { status: "invalid_key", detail: `${res.status}` };
+        }
+        return res.ok
+          ? { status: "verified" }
+          : { status: "unreachable", detail: `HTTP ${res.status} from GET /models` };
       }
       case "anthropic": {
         // GET /v1/models is the right liveness probe: no token billing, no

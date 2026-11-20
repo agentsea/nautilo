@@ -13,7 +13,11 @@ not been accepted.
 
 - Windows x64 and native PowerShell 7. PowerShell 7 is also required at runtime
   for Windows ownership and ACL checks on private files, CLI sessions, and
-  instance locks.
+  instance locks. Those checks start `pwsh.exe` only from
+  `%ProgramFiles%\PowerShell\7`, where the PowerShell 7 MSI package installs
+  it. A Microsoft Store installation is not at that path; without the MSI
+  package every private file operation fails with
+  `PowerShell 7 was not found at …`.
 - Bun **1.4.4**, matching `.bun-version`, and Node **24.22.1**. Check both exact
   versions before running repository scripts.
 - Docker Desktop with the Linux engine running. `docker version` must show both
@@ -69,6 +73,13 @@ do not copy a port from another machine. Check `/health` and `/` on that URL.
 The Workbench is served by the Nautilo server; there is no separate production
 Workbench process. This local profile advertises `localhost` and cannot be
 made into a LAN server by opening its ports or replacing the hostname later.
+
+The first start of an instance builds every first-party app bundle before the
+server listens, so it takes noticeably longer than later starts. `server-start`
+waits up to three minutes while the server process is alive and fails at once
+if it exits. Before reporting ready, `dev-stack` runs runtime acceptance; its
+PostgreSQL role probes connect in-process to the instance's published port, so
+no host `psql` client or POSIX shell is required.
 
 ## Create the first owner
 
@@ -127,6 +138,10 @@ it does not contain a database or start the server itself.
   Desktop tests use a 60-second per-test budget on Windows because native ACL
   checks start external processes. This changes only the test runner budget;
   product operation deadlines and test assertions remain unchanged.
+  Config-guard tests that persist through the private filesystem carry the
+  same 60-second budget per test on Windows, so a direct `bun test <file>`
+  is not cut off by Bun's 5-second default. One synchronous ACL check took
+  0.70–0.81 s on the reporting host; a test makes several.
   The Unix socket inode and POSIX execute-bit tests run only on POSIX hosts.
   Release-byte inspection still runs on Windows.
 - Some Compose unit tests create file symbolic links for the canonical
