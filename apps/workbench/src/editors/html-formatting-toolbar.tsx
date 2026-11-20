@@ -1,7 +1,8 @@
+import type { HtmlPageLinkTarget } from "./html-page-links";
 import { useEffect, useId, useRef, type KeyboardEvent } from "react";
-import { Bold, Italic, Link as LinkIcon, Redo2, Underline, Undo2, type LucideIcon } from "lucide-react";
+import { Bold, Italic, Link as LinkIcon, Redo2, Superscript, Trash2, Underline, Undo2, type LucideIcon } from "lucide-react";
 
-export type HtmlFormattingMark = "bold" | "italic" | "underline";
+export type HtmlFormattingMark = "bold" | "italic" | "underline" | "superscript";
 export type HtmlFormattingSelection = {
   available: boolean;
   collapsed: boolean;
@@ -13,18 +14,23 @@ export type HtmlLinkDialogState = {
   text: string;
   editingExisting: boolean;
   canRemove: boolean;
+  pageTarget?: number;
+  pageTargets?: HtmlPageLinkTarget[];
 };
 type HtmlFormattingToolbarProps = {
   canUndo: boolean;
   canRedo: boolean;
   onUndo: () => void;
   onRedo: () => void;
+  canDeleteParagraph: boolean;
+  onDeleteParagraph: () => void;
   selection: HtmlFormattingSelection;
   onToggle: (mark: HtmlFormattingMark) => void;
   onOpenLink: () => void;
   linkDialog: HtmlLinkDialogState | null;
   onLinkUrlChange: (url: string) => void;
   onLinkTextChange: (text: string) => void;
+  onLinkPageTargetChange: (offset: number | undefined) => void;
   onLinkApply: () => void;
   onLinkRemove: () => void;
   onLinkCancel: () => void;
@@ -38,6 +44,7 @@ const marks: { mark: HtmlFormattingMark; label: string; key: string; Icon: Lucid
   { mark: "bold", label: "Bold", key: "B", Icon: Bold },
   { mark: "italic", label: "Italic", key: "I", Icon: Italic },
   { mark: "underline", label: "Underline", key: "U", Icon: Underline },
+  { mark: "superscript", label: "Superscript", key: "Shift+=", Icon: Superscript },
 ];
 
 export function HtmlFormattingToolbar(props: HtmlFormattingToolbarProps) {
@@ -72,7 +79,7 @@ export function HtmlFormattingToolbar(props: HtmlFormattingToolbarProps) {
       {marks.map(({ mark, label, key, Icon }) => <button
         key={mark} type="button" aria-label={label}
         aria-pressed={selection.marks[mark] === "mixed" ? "mixed" : selection.marks[mark] === "on"}
-        aria-keyshortcuts={`Control+${key.toLowerCase()} Meta+${key.toLowerCase()}`}
+        aria-keyshortcuts={mark === "superscript" ? "Control+Shift+= Meta+Shift+=" : `Control+${key.toLowerCase()} Meta+${key.toLowerCase()}`}
         title={`${label} (⌘/Ctrl+${key})`} disabled={!selection.available || open}
         className={iconButtonClass}
         onMouseDown={event => event.preventDefault()} onClick={() => props.onToggle(mark)}
@@ -81,6 +88,10 @@ export function HtmlFormattingToolbar(props: HtmlFormattingToolbarProps) {
         aria-keyshortcuts="Control+k Meta+k" title="Insert or edit link (⌘/Ctrl+K)"
         disabled={!selection.available || open} className={iconButtonClass}
         onMouseDown={event => event.preventDefault()} onClick={props.onOpenLink}><LinkIcon aria-hidden="true" size={15} /></button>
+      <span aria-hidden="true" className="mx-1 h-5 border-l border-border" />
+      <button type="button" aria-label="Delete paragraph" title="Delete paragraph (Backspace or Delete when empty)"
+        disabled={!props.canDeleteParagraph || open} className={iconButtonClass}
+        onMouseDown={event => event.preventDefault()} onClick={props.onDeleteParagraph}><Trash2 aria-hidden="true" size={15} /></button>
     </div>
     {linkDialog ? <form role="dialog" aria-label={linkDialog.editingExisting ? "Edit link" : "Insert link"}
       className="flex flex-wrap items-end gap-2 border-t border-border px-3 py-3"
@@ -90,11 +101,20 @@ export function HtmlFormattingToolbar(props: HtmlFormattingToolbarProps) {
       }}>
       <label className="flex min-w-0 flex-1 flex-col gap-1">
         <span>Link URL</span>
-        <input ref={urlInput} type="text" value={linkDialog.url} placeholder="https://example.com"
+        <input ref={urlInput} type="text" value={linkDialog.url} placeholder="https://example.com or #footnote"
           autoComplete="off" spellCheck={false} aria-invalid={!!props.error} aria-describedby={props.error ? errorId : undefined}
           className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm text-foreground"
           onChange={event => props.onLinkUrlChange(event.target.value)} />
       </label>
+      {linkDialog.pageTargets?.length ? <label className="flex min-w-0 flex-1 flex-col gap-1">
+        <span>Link within this document</span>
+        <select aria-label="Link within this document" value={linkDialog.pageTarget ?? ""}
+          className="w-full rounded border border-border bg-background px-2 py-1.5 text-sm text-foreground"
+          onChange={event => props.onLinkPageTargetChange(event.target.value === "" ? undefined : Number(event.target.value))}>
+          <option value="">Choose a heading or paragraph…</option>
+          {linkDialog.pageTargets.map(target => <option key={target.offset} value={target.offset}>{target.label}</option>)}
+        </select>
+      </label> : null}
       {selection.collapsed && !linkDialog.editingExisting ? <label className="flex min-w-0 flex-1 flex-col gap-1">
         <span>Link text</span>
         <input type="text" value={linkDialog.text} placeholder="Text to display"

@@ -7,6 +7,18 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Add superscript formatting and its keyboard shortcut to HTML text editing.
+  Link selected text to a heading or paragraph in the same document, creating a
+  destination anchor when needed. In-page links scroll within the HTML preview.
+
+- Keep text pasted or typed after a superscript/subscript citation outside its
+  formatting and link. Paste into an inline element at the current caret instead
+  of moving the inserted text to the end of the element.
+
+- Keep cleared HTML paragraphs editable after refocusing or reopening. Add a
+  Delete paragraph toolbar action, and let Backspace/Delete remove an already
+  empty paragraph, with undo/redo and cursor restoration.
+
 - Validate and retain working legacy authentication credentials omitted from
   Logto secret readback, without selecting a different key or rotating one.
 

@@ -1,16 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  $createParagraphNode, ParagraphNode, TextNode, $getRoot, $getSelection, $isRangeSelection, $setSelection,
-  COMMAND_PRIORITY_HIGH, createEditor, KEY_ENTER_COMMAND, PASTE_COMMAND,
+  $createParagraphNode, ParagraphNode, TextNode, $getRoot, $setSelection,
+  COMMAND_PRIORITY_HIGH, createEditor, KEY_ENTER_COMMAND,
   REDO_COMMAND, UNDO_COMMAND, SKIP_DOM_SELECTION_TAG, SKIP_SCROLL_INTO_VIEW_TAG, type EditorState, type LexicalEditor,
 } from "@mdxeditor/lexical";
 import { registerPlainText } from "@mdxeditor/lexical-plain-text";
-import { applyHtmlRegionTexts, buildHtmlTextModel, type HtmlTextModel, type HtmlTextRegion } from "./html-text-model";
+import { applyHtmlRegionTexts, buildHtmlTextModel, deleteHtmlParagraph, type HtmlTextModel, type HtmlTextRegion } from "./html-text-model";
+import { htmlPageLinkTargets, prepareHtmlPageLinkTarget } from "./html-page-links";
 import { HtmlTextDocumentHistory, type HtmlTextHistoryView } from "./html-text-history";
 import { HtmlSourceInlineNode, inlineAppearance, $appendHtmlRegionRuns, $reconcileHtmlRegion } from "./html-text-inline-node";
 import { HtmlFormattingToolbar, type HtmlFormattingMark, type HtmlFormattingSelection, type HtmlLinkDialogState } from "./html-formatting-toolbar";
 import { describeHtmlFormatting, emptyHtmlFormattingSelection, mapHtmlSourceOwners } from "./html-formatting-selection";
-import { applyHtmlFormatting, htmlFormattingLinkRange, normalizeHtmlLinkUrl, type HtmlFormattingAction } from "./html-text-formatting";
+import { applyHtmlFormatting, htmlFormattingLinkRange, insertHtmlTextAfterAnnotation, normalizeHtmlLinkUrl, type HtmlFormattingAction } from "./html-text-formatting";
 import { $htmlTextSelectionOffsets, $htmlTextSelectionAtOffsets, captureHtmlDomSelection, type HtmlTextSelectionOffsets } from "./html-text-selection";
 
 export type HtmlTextEditorProps = {
@@ -31,9 +32,14 @@ html { scroll-behavior: auto !important; }
 [data-nautilo-html-region]:hover { outline: 1px dashed #64748b; outline-offset: 3px; }
 [data-nautilo-html-region]:focus { outline: 2px solid #6366f1; outline-offset: 3px; }
 [data-nautilo-html-region][contenteditable=true] > p { all: unset; display: contents; }
+/* An empty display:contents wrapper has no caret box in Chromium. Keep
+   Lexical's empty line editable without inserting placeholder source text. */
+[data-nautilo-html-region][contenteditable=true] > p:empty,
+[data-nautilo-html-region][contenteditable=true] > p:has(> br:only-child) { display: block; min-height: 1em; }
 `;
 const RESTORE_TAG = SKIP_SCROLL_INTO_VIEW_TAG;
 type TextView = Extract<HtmlTextHistoryView, { kind: "text" }>;
+type EditCoordinates = { regionIndex: number; anchor: number; focus: number; scrollX: number; scrollY: number };
 function createModel(source: string): HtmlTextModel { return buildHtmlTextModel(source, { previewCsp: EDIT_CSP, previewStyle: EDIT_STYLE }); }
 
 export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory, active = true }: HtmlTextEditorProps) {
@@ -44,12 +50,14 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
   const liveSession = useRef(session);
   const initializeFrameRef = useRef<() => void>(() => {});
   const [formatSelection, setFormatSelection] = useState<HtmlFormattingSelection>(emptyHtmlFormattingSelection);
+  const [canDeleteParagraph, setCanDeleteParagraph] = useState(false);
+  const deleteParagraphRef = useRef<() => void>(() => {});
   const [linkDialog, setLinkDialog] = useState<HtmlLinkDialogState | null>(null);
   const linkDialogRef = useRef(linkDialog);
   linkDialogRef.current = linkDialog;
   const [linkError, setLinkError] = useState<string | null>(null);
   const pendingMarks = useRef<{ regionIndex: number; offset: number; marks: Partial<Record<HtmlFormattingMark, boolean>> } | null>(null);
-  const formatCoordinates = useRef<{ regionIndex: number; anchor: number; focus: number; scrollX: number; scrollY: number } | null>(null);
+  const formatCoordinates = useRef<EditCoordinates | null>(null);
   const formatting = useRef<{ toggle: (mark: HtmlFormattingMark) => void; openLink: () => void; applyLink: (remove?: boolean) => void; cancelLink: () => void }>({ toggle: () => {}, openLink: () => {}, applyLink: () => {}, cancelLink: () => {} });
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -74,7 +82,7 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
     activeEditor.current = null;
     renderedSource.current = source;
     setActiveLabel(null); setError(null); setLinkDialog(null); setLinkError(null);
-    setFormatSelection(emptyHtmlFormattingSelection); pendingMarks.current = null;
+    setFormatSelection(emptyHtmlFormattingSelection); setCanDeleteParagraph(false); pendingMarks.current = null;
     const next = { model: createModel(source), identity: {}, generation: liveSession.current.generation + 1 };
     liveSession.current = next;
     setSession(next);
@@ -135,7 +143,8 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
     type Target = { editor: LexicalEditor; element: HTMLElement; region: HtmlTextRegion; regionIndex: number; offsets: HtmlTextSelectionOffsets; view: TextView; description: ReturnType<typeof describeHtmlFormatting>; sourceInlineStyles: Record<number, string> };
     let linkTarget: Target | null = null;
     let linkSource: string | null = null;
-    let composition: { target: Target; text: string; marks: Partial<Record<HtmlFormattingMark, boolean>> } | null = null;
+    let composition: { target: Target; text: string; source: string; exitAnnotation: boolean;
+      marks: Partial<Record<HtmlFormattingMark, boolean>> } | null = null;
     let compositionFrame: number | null = null;
     const captureTarget = (includeSourceStyles = false): Target | null => {
       const anchor = frameWindow.getSelection()?.anchorNode;
@@ -159,7 +168,8 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
     const refreshFormatting = () => {
       if (linkDialogRef.current) return;
       const target = captureTarget();
-      if (!target) { pendingMarks.current = null; setFormatSelection(emptyHtmlFormattingSelection); return; }
+      if (!target) { pendingMarks.current = null; setFormatSelection(emptyHtmlFormattingSelection); setCanDeleteParagraph(false); return; }
+      setCanDeleteParagraph(!!target.region.paragraph);
       const pending = pendingMarks.current;
       if (!composition && pending && (pending.regionIndex !== target.regionIndex || pending.offset !== target.offsets.anchor || target.offsets.anchor !== target.offsets.focus)) pendingMarks.current = null;
       const selection = target.description.selection;
@@ -176,11 +186,34 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
       if (action.kind === "mark" && action.mark === "underline" && !action.enabled && target.description.unlocatedUnderline) throw new Error("This underline comes from an implicit page element. Use Source to change it.");
       const owners = action.kind === "mark" && action.mark === "underline" && !action.enabled
         ? mapHtmlSourceOwners(model.previewHtml, fresh.previewHtml, target.description.underlineOwners, target.description.underlineOwnerLines) : {};
-      const sourceInlineStyles = action.kind === "link" || action.mark === "underline" ? mapHtmlSourceOwners(model.previewHtml, fresh.previewHtml,
+      const sourceInlineStyles = action.kind === "link" || action.mark === "underline" || action.mark === "superscript" ? mapHtmlSourceOwners(model.previewHtml, fresh.previewHtml,
         Object.keys(target.sourceInlineStyles).map(Number), target.sourceInlineStyles).underlineOwnerLines : undefined;
       const result = applyHtmlFormatting(fresh, source, { regionId: region.id, ...offsets, action, ...owners, sourceInlineStyles });
       if (!result.ok) throw new Error(result.reason);
       return result;
+    };
+    const installModel = (next: typeof currentSession, coordinates: EditCoordinates | null, before: TextView, group?: object) => {
+      const source = next.model.source;
+      const parsed = new DOMParser().parseFromString(next.model.previewHtml, "text/html");
+      // Reinstall only the inert preview. Canonical saving still uses the exact
+      // source patch above. Synchronous focus restoration keeps rapid typing
+      // after a collapsed formatting toggle in the same input stream.
+      disposeFrame.current();
+      activeEditor.current = null; setActiveLabel(null);
+      liveSession.current = next; pendingRestore.current = null; formatCoordinates.current = coordinates;
+      emittedSource.current = source; renderedSource.current = source;
+      pendingMarks.current = null; setLinkDialog(null); linkDialogRef.current = null; setLinkError(null); setError(null);
+      doc.replaceChild(doc.importNode(parsed.documentElement, true), doc.documentElement);
+      initializeFrameRef.current();
+      const region = coordinates && next.model.regions[coordinates.regionIndex];
+      const afterEditor = activeEditor.current as LexicalEditor | null;
+      if (coordinates && (!afterEditor || !region)) throw new Error("The edited text could not be focused.");
+      const after: TextView | undefined = coordinates && region && afterEditor ? { kind: "text", session: next.identity, regionId: region.id,
+        ...coordinates, regionCount: next.model.regions.length, regionTagName: region.tagName,
+        state: afterEditor.getEditorState() } : undefined;
+      if (!coordinates) { frame.focus(); frameWindow.scrollTo(before.scrollX, before.scrollY); }
+      history.record(source, { before, after }, group);
+      callbacks.current.onChange(source);
     };
     const installFormatting = (source: string, target: Target, offsets: HtmlTextSelectionOffsets, before = target.view, group?: object) => {
       if (source === history.getSnapshot().source) return;
@@ -189,26 +222,22 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
       if (next.model.regions.length !== model.regions.length || !nextRegion || nextRegion.tagName !== target.region.tagName) {
         throw new Error("This formatting would change the page's text areas. Use Source to edit this selection.");
       }
-      const coordinates = { regionIndex: target.regionIndex, ...offsets, scrollX: before.scrollX, scrollY: before.scrollY };
-      const parsed = new DOMParser().parseFromString(next.model.previewHtml, "text/html");
-      // Reinstall only the inert preview. Canonical saving still uses the exact
-      // source patch above. Synchronous focus restoration keeps rapid typing
-      // after a collapsed formatting toggle in the same input stream.
-      disposeFrame.current();
-      liveSession.current = next; pendingRestore.current = null; formatCoordinates.current = coordinates;
-      emittedSource.current = source; renderedSource.current = source;
-      pendingMarks.current = null; setLinkDialog(null); linkDialogRef.current = null; setLinkError(null); setError(null);
-      doc.replaceChild(doc.importNode(parsed.documentElement, true), doc.documentElement);
-      initializeFrameRef.current();
-      const region = next.model.regions[target.regionIndex];
-      const afterEditor = activeEditor.current;
-      if (!afterEditor || !region) throw new Error("The formatted text could not be focused.");
-      const after: TextView = { kind: "text", session: next.identity, regionId: region.id,
-        regionIndex: target.regionIndex, regionCount: next.model.regions.length, regionTagName: region.tagName,
-        state: afterEditor.getEditorState(), ...offsets, scrollX: before.scrollX, scrollY: before.scrollY };
-      history.record(source, { before, after }, group);
-      callbacks.current.onChange(source);
+      installModel(next, { regionIndex: target.regionIndex, ...offsets, scrollX: before.scrollX, scrollY: before.scrollY }, before, group);
     };
+    const removeParagraph = (target: Target, preferPrevious: boolean) => {
+      try {
+        const { fresh, region } = freshRegion(emittedSource.current, target);
+        const result = deleteHtmlParagraph(fresh, emittedSource.current, region.id);
+        if (!result.ok) throw new Error(result.reason);
+        const next = { model: createModel(result.source), identity: {}, generation: currentSession.generation };
+        const beforeCount = fresh.regions.filter(candidate => candidate.runs[0].startOffset < region.paragraph!.startOffset).length;
+        const regionIndex = preferPrevious && beforeCount > 0 ? beforeCount - 1 : Math.min(beforeCount, next.model.regions.length - 1);
+        const neighbour = next.model.regions[regionIndex];
+        const offset = regionIndex < beforeCount && neighbour ? neighbour.text.length : 0;
+        installModel(next, neighbour ? { regionIndex, anchor: offset, focus: offset, scrollX: target.view.scrollX, scrollY: target.view.scrollY } : null, target.view);
+      } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not delete this paragraph."); }
+    };
+    deleteParagraphRef.current = () => { const target = captureTarget(); if (target && !linkDialogRef.current) removeParagraph(target, false); };
     const restoreTarget = (target: Target) => {
       target.editor.update(() => { $setSelection($htmlTextSelectionAtOffsets(target.offsets.anchor, target.offsets.focus)); }, { discrete: true, tag: RESTORE_TAG });
       target.element.focus({ preventScroll: true }); frameWindow.scrollTo(target.view.scrollX, target.view.scrollY);
@@ -235,7 +264,8 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
         setFormatSelection(target.description.selection);
         linkTarget = target; linkSource = emittedSource.current;
         const dialog = { url: current?.href ?? target.description.selection.link?.href ?? "", text: "",
-          editingExisting: !!current || !!target.description.selection.link, canRemove: !!current || target.description.anyLink };
+          editingExisting: !!current || !!target.description.selection.link, canRemove: !!current || target.description.anyLink,
+          pageTargets: htmlPageLinkTargets(emittedSource.current) };
         setLinkError(null); setLinkDialog(dialog); linkDialogRef.current = dialog;
       },
       applyLink(remove = false) {
@@ -245,7 +275,8 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
         const href = remove ? null : normalizeHtmlLinkUrl(dialog.url);
         if (!remove && !href) { setLinkError("Enter a valid web, email, phone, or relative link."); return; }
         try {
-          const result = applyAction(emittedSource.current, target, { kind: "link", href,
+          const pageLink = !remove && dialog.pageTarget !== undefined ? prepareHtmlPageLinkTarget(emittedSource.current, dialog.pageTarget) : null;
+          const result = applyAction(pageLink?.source ?? emittedSource.current, target, { kind: "link", href: pageLink?.href ?? href,
             ...(target.description.selection.collapsed && !dialog.editingExisting && !remove ? { text: dialog.text || href! } : {}) });
           if (result.source === emittedSource.current) { formatting.current.cancelLink(); return; }
           installFormatting(result.source, target, dialog.editingExisting && target.description.selection.collapsed ? target.offsets : result);
@@ -288,7 +319,9 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
         const result = applyHtmlRegionTexts(model, model.source, [...edits].map(([regionId, nextText]) => ({ regionId, text: nextText })));
         if (!result.ok) { setError(result.reason); return; }
         setError(null); emittedSource.current = result.source; renderedSource.current = result.source;
-        if (tags.has(RESTORE_TAG) || tags.has(SKIP_DOM_SELECTION_TAG)) return;
+        // Selection-only focus tags can be batched with the next keystroke.
+        // Suppress an actual history restore, never a new text change.
+        if ((tags.has(RESTORE_TAG) || tags.has(SKIP_DOM_SELECTION_TAG)) && result.source === history.getSnapshot().source) return;
         const captured = beforeInput?.regionId === region.id && beforeInput.text === previousText ? beforeInput : null;
         const beforeView = viewFor(prevEditorState, region, captured?.scroll);
         if (captured) Object.assign(beforeView, captured.offsets);
@@ -303,12 +336,13 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
             if (target) {
               try {
                 let formatted = result.source;
-                for (const mark of ["underline", "bold", "italic"] as const) {
+                for (const mark of ["underline", "bold", "italic", "superscript"] as const) {
                   const enabled = pending.marks[mark];
                   if (enabled !== undefined) formatted = applyAction(formatted, target, { kind: "mark", mark, enabled }, { anchor: start, focus: text.length - suffix }).source;
                 }
                 const after = editorState.read($htmlTextSelectionOffsets);
                 installFormatting(formatted, target, after, beforeView);
+                if (pending.marks.superscript) pendingMarks.current = { regionIndex: target.regionIndex, offset: after.focus, marks: { superscript: true } };
                 return;
               } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not format the inserted text."); }
             }
@@ -326,21 +360,11 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
       const unregisterParagraphTransform = editor.registerNodeTransform(ParagraphNode, reconcile);
       const unregisterUndo = editor.registerCommand(UNDO_COMMAND, () => history.undo(), COMMAND_PRIORITY_HIGH);
       const unregisterRedo = editor.registerCommand(REDO_COMMAND, () => history.redo(), COMMAND_PRIORITY_HIGH);
-      const unregisterPaste = editor.registerCommand(PASTE_COMMAND, event => {
-        if (originalWhiteSpace !== "normal" && originalWhiteSpace !== "nowrap") return false;
-        const clipboard = event && "clipboardData" in event ? event.clipboardData : null;
-        if (!clipboard) return false;
-        const text = clipboard.getData("text/plain");
-        if (!/[\r\n]/.test(text)) return false;
-        event.preventDefault(); const selection = $getSelection();
-        if ($isRangeSelection(selection)) selection.insertText(text.replace(/\r\n?|\n/g, " "));
-        return true;
-      }, COMMAND_PRIORITY_HIGH);
       const unregisterEnter = editor.registerCommand(KEY_ENTER_COMMAND, event => { event?.preventDefault(); element.blur(); return true; }, COMMAND_PRIORITY_HIGH);
       const focus = () => { activeEditor.current = editor; setActiveLabel(region.label); };
       element.addEventListener("focus", focus);
       cleanups.push(() => {
-        unregisterPlain(); unregisterUpdate(); unregisterPaste(); unregisterEnter(); unregisterUndo(); unregisterRedo();
+        unregisterPlain(); unregisterUpdate(); unregisterEnter(); unregisterUndo(); unregisterRedo();
         unregisterTextTransform(); unregisterParagraphTransform();
         element.removeEventListener("focus", focus); editor.setRootElement(null);
       });
@@ -378,6 +402,10 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
       const region = model.regions.find(candidate => candidate.id === element?.dataset.nautiloHtmlRegion);
       if (!element || !region || editors.has(element)) return;
       event.preventDefault(); const editor = activate(element, region);
+      if (!region.text) {
+        editor.update(() => { $setSelection($htmlTextSelectionAtOffsets(0, 0)); }, { discrete: true });
+        element.focus({ preventScroll: true }); return;
+      }
       editor.focus(() => {
         const pointDoc = doc as Document & { caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null; caretRangeFromPoint?: (x: number, y: number) => Range | null };
         const point = pointDoc.caretPositionFromPoint?.(event.clientX, event.clientY);
@@ -399,6 +427,44 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
       beforeInput = { regionId, offsets, text: editor.getEditorState().read(() => $getRoot().getTextContent()), scroll: { x: frameWindow.scrollX, y: frameWindow.scrollY } };
       return { editor, element, offsets };
     };
+    const insertAfterAnnotation = (text: string): boolean => {
+      const target = captureTarget();
+      if (!target || target.offsets.anchor !== target.offsets.focus || pendingMarks.current?.marks.superscript === true || !target.region.runs.some(run => run.inlinePath?.some(inline => inline.tagName === "sup" || inline.tagName === "sub"))) return false;
+      try {
+        const { fresh, region } = freshRegion(emittedSource.current, target);
+        const result = insertHtmlTextAfterAnnotation(fresh, region.id, target.offsets.focus, text);
+        if (!result) return false;
+        if (!result.ok) throw new Error(result.reason);
+        let source = result.source;
+        const pending = pendingMarks.current;
+        if (pending?.regionIndex === target.regionIndex) target.sourceInlineStyles = captureTarget(true)?.sourceInlineStyles ?? {};
+        if (pending?.regionIndex === target.regionIndex) for (const mark of ["underline", "bold", "italic", "superscript"] as const) {
+          const enabled = pending.marks[mark];
+          if (enabled !== undefined) source = applyAction(source, target, { kind: "mark", mark, enabled }, { anchor: target.offsets.focus, focus: result.focus }).source;
+        }
+        installFormatting(source, target, result);
+      } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not insert text after this citation."); }
+      return true;
+    };
+    const paste = (event: ClipboardEvent) => {
+      const captured = captureBeforeInput();
+      if (!captured || !event.clipboardData || composition) return;
+      const target = captureTarget();
+      if (!target) return;
+      const whiteSpace = frameWindow.getComputedStyle(target.element).whiteSpace;
+      const clipboardText = event.clipboardData.getData("text/plain") || event.clipboardData.getData("text/uri-list");
+      if (!clipboardText) return;
+      const text = whiteSpace === "normal" || whiteSpace === "nowrap" ? clipboardText.replace(/\r\n?|\n/g, " ") : clipboardText;
+      event.preventDefault(); event.stopPropagation();
+      if (insertAfterAnnotation(text)) return;
+      // Inserting plain text at the DOM range avoids raw node insertion moving
+      // a paste to the end of an authored inline wrapper.
+      captured.editor.update(() => {
+        const selection = $htmlTextSelectionAtOffsets(captured.offsets.anchor, captured.offsets.focus);
+        selection.style = "all:unset;display:contents";
+        $setSelection(selection); selection.insertText(text);
+      }, { discrete: true });
+    };
     const input = (event: InputEvent) => {
       const captured = captureBeforeInput();
       if (!captured || event.isComposing || event.inputType !== "insertText" || event.data === null) return;
@@ -407,6 +473,7 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
       // uses the real DOM caret, while composition remains with Lexical/browser.
       event.preventDefault(); event.stopPropagation();
       const data = event.data;
+      if (insertAfterAnnotation(data)) return;
       captured.editor.update(() => {
         const selection = $htmlTextSelectionAtOffsets(captured.offsets.anchor, captured.offsets.focus);
         selection.style = "all:unset;display:contents";
@@ -415,8 +482,13 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
     };
     const compositionStart = () => {
       const target = captureTarget(), pending = pendingMarks.current;
-      if (target && pending?.regionIndex === target.regionIndex) {
-        composition = { target, text: target.editor.getEditorState().read(() => $getRoot().getTextContent()), marks: { ...pending.marks } };
+      if (target) {
+        const marks = pending?.regionIndex === target.regionIndex ? { ...pending.marks } : {};
+        const fresh = createModel(emittedSource.current), region = fresh.regions[target.regionIndex];
+        const exitAnnotation = !!region && target.offsets.anchor === target.offsets.focus && !marks.superscript &&
+          insertHtmlTextAfterAnnotation(fresh, region.id, target.offsets.focus, "x") !== null;
+        if (exitAnnotation || Object.keys(marks).length) composition = { target,
+          text: target.editor.getEditorState().read(() => $getRoot().getTextContent()), source: emittedSource.current, exitAnnotation, marks };
       }
     };
     const compositionEnd = () => {
@@ -440,18 +512,37 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
         }
         try {
           let source = emittedSource.current;
-          for (const mark of ["underline", "bold", "italic"] as const) {
+          if (completed.exitAnnotation) {
+            const baseline = createModel(completed.source);
+            const region = baseline.regions[completed.target.regionIndex];
+            const inserted = text.slice(prefix.length, text.length - suffix.length);
+            const continuation = region && insertHtmlTextAfterAnnotation(baseline, region.id, start, inserted);
+            if (!continuation) throw new Error("The citation boundary changed during composition. Select the committed text and try again.");
+            if (!continuation.ok) throw new Error(continuation.reason);
+            source = continuation.source;
+          }
+          for (const mark of ["underline", "bold", "italic", "superscript"] as const) {
             const enabled = completed.marks[mark];
             if (enabled !== undefined) source = applyAction(source, target, { kind: "mark", mark, enabled }, { anchor: start, focus: text.length - suffix.length }).source;
           }
           installFormatting(source, target, target.offsets, completed.target.view, completed);
+          if (completed.marks.superscript) pendingMarks.current = { regionIndex: target.regionIndex, offset: target.offsets.focus, marks: { superscript: true } };
         } catch (caught) { pendingMarks.current = null; setError(caught instanceof Error ? caught.message : "Select the committed text to format it."); }
       });
     };
     const key = (event: KeyboardEvent) => {
       if (event.isComposing || composition) return;
+      if ((event.key === "Backspace" || event.key === "Delete") && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
+        const target = captureTarget();
+        if (target?.region.paragraph?.wholeRegion && !target.editor.getEditorState().read(() => $getRoot().getTextContent()) && !linkDialogRef.current) {
+          event.preventDefault(); event.stopPropagation(); removeParagraph(target, event.key === "Backspace"); return;
+        }
+      }
       captureBeforeInput();
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") { event.preventDefault(); callbacks.current.onSave?.(); }
+      else if ((event.metaKey || event.ctrlKey) && !event.altKey && event.shiftKey && (event.key === "+" || event.key === "=")) {
+        event.preventDefault(); event.stopPropagation(); formatting.current.toggle("superscript");
+      }
       else if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && ["b", "i", "u", "k"].includes(event.key.toLowerCase())) {
         event.preventDefault(); event.stopPropagation();
         const key = event.key.toLowerCase();
@@ -466,13 +557,13 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
     doc.addEventListener("compositionstart", compositionStart, true); doc.addEventListener("compositionend", compositionEnd, true);
     doc.addEventListener("selectionchange", refreshFormatting);
     doc.addEventListener("pointerdown", pointerDown, true); doc.addEventListener("click", click);
-    doc.addEventListener("keydown", key, true); doc.addEventListener("beforeinput", input, true); doc.addEventListener("paste", captureBeforeInput, true); doc.addEventListener("cut", captureBeforeInput, true);
+    doc.addEventListener("keydown", key, true); doc.addEventListener("beforeinput", input, true); doc.addEventListener("paste", paste, true); doc.addEventListener("cut", captureBeforeInput, true);
     disposeFrame.current = () => {
       if (compositionFrame !== null) frameWindow.cancelAnimationFrame(compositionFrame);
       doc.removeEventListener("compositionstart", compositionStart, true); doc.removeEventListener("compositionend", compositionEnd, true);
       doc.removeEventListener("selectionchange", refreshFormatting);
       doc.removeEventListener("pointerdown", pointerDown, true); doc.removeEventListener("click", click);
-      doc.removeEventListener("keydown", key, true); doc.removeEventListener("beforeinput", input, true); doc.removeEventListener("paste", captureBeforeInput, true); doc.removeEventListener("cut", captureBeforeInput, true);
+      doc.removeEventListener("keydown", key, true); doc.removeEventListener("beforeinput", input, true); doc.removeEventListener("paste", paste, true); doc.removeEventListener("cut", captureBeforeInput, true);
       for (const cleanup of cleanups) cleanup();
       for (const [element, markup] of originalMarkup) { element.innerHTML = markup; element.removeAttribute("contenteditable"); }
       cleanups.length = 0;
@@ -516,14 +607,17 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
       </div>
       <HtmlFormattingToolbar selection={formatSelection} onToggle={mark => formatting.current.toggle(mark)}
         canUndo={historyStatus.canUndo} canRedo={historyStatus.canRedo} onUndo={() => history.undo()} onRedo={() => history.redo()}
+        canDeleteParagraph={canDeleteParagraph} onDeleteParagraph={() => deleteParagraphRef.current()}
         onOpenLink={() => formatting.current.openLink()} linkDialog={linkDialog}
-        onLinkUrlChange={url => { setLinkDialog(current => current ? { ...current, url } : null); setLinkError(null); }}
+        onLinkUrlChange={url => { setLinkDialog(current => current ? { ...current, url, pageTarget: undefined } : null); setLinkError(null); }}
+        onLinkPageTargetChange={offset => { setLinkDialog(current => current ? { ...current, pageTarget: offset,
+          url: current.pageTargets?.find(target => target.offset === offset)?.href ?? current.url } : null); setLinkError(null); }}
         onLinkTextChange={text => setLinkDialog(current => current ? { ...current, text } : null)}
         onLinkApply={() => formatting.current.applyLink()} onLinkRemove={() => formatting.current.applyLink(true)}
         onLinkCancel={() => formatting.current.cancelLink()} error={linkError} />
       {notice ? <p role="status" className="px-3 py-2 text-xs text-foreground-muted">{notice}</p> : null}
       {error ? <p role="alert" className="p-3 text-sm text-[var(--error)]">{error}</p> : null}
-      {session.model.regions.length === 0 ? <p className="p-3 text-sm text-foreground-muted">No editable text was found. Text created by scripts can be changed in Source.</p> : null}
+      {liveSession.current.model.regions.length === 0 ? <p className="p-3 text-sm text-foreground-muted">No editable text was found. Use Undo to restore deleted text, or Source to add content.</p> : null}
       <iframe key={session.generation} ref={iframeRef} title="Edit HTML text" sandbox="allow-same-origin" srcDoc={session.model.previewHtml} onLoad={initializeFrame} className="min-h-0 w-full flex-1 border-0 bg-white" />
     </div>
   );
