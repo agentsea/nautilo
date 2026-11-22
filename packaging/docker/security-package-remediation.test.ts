@@ -83,9 +83,12 @@ describe("Debian 13 security update and exception retirement", () => {
       if (entry.reviewedAt === "2026-10-05T10:40:00Z" || entry.reviewedAt === "2026-10-03T15:15:00Z" || entry.reviewedAt === "2026-10-01T21:39:28Z" || entry.reviewedAt === "2026-10-01T20:28:00Z" || entry.reviewedAt === "2026-09-30T15:20:00Z" ||
           ["CVE-2026-88806", "CVE-2026-88807", "CVE-2026-88372", "CVE-2026-93543"].includes(entry.advisoryId)) continue;
       const p = review.packages.find((p) => p.package === entry.packageName)!;
+      // The September snapshot keeps its original glibc identity after later floor advances.
+      const reviewedFloor = ["libc6", "libc-bin"].includes(entry.packageName)
+        ? "2.41-12+deb13u4" : floors.get(entry.packageName);
       const expectedVersion = /^CVE-2026-933(?:72|73|74|75|77|81|82)$/.test(entry.advisoryId)
         ? "153.0.8010.52-1~deb13u1"
-        : (entry.packageName.startsWith("chromium-") ? p.previousVersion : (floors.get(entry.packageName) ?? p.previousVersion));
+        : (entry.packageName.startsWith("chromium-") ? p.previousVersion : (reviewedFloor ?? p.previousVersion));
       expect(entry.installedVersion).toBe(expectedVersion);
     }
     for (const policy of [current, bootstrap]) {
