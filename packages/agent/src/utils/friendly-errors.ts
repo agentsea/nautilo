@@ -32,6 +32,7 @@
  */
 
 import { findChatGPTSubscriptionError, type ChatGPTSubscriptionFailure } from "../providers/chatgpt-plan-errors";
+import { OpenRouterCreditError } from "../providers/openrouter-credit-error";
 import { classifyError, type ErrorCategory } from "./errors";
 import { ModelOutputLimitError } from "../graph/model-output-limit";
 import { formatProviderError } from "../providers/errors";
@@ -489,6 +490,14 @@ export function toFriendlyError(error: unknown): FriendlyError {
   // detail is preserved on `detailsForLog` for server.log only.
   if (isGraphRecursionError(error)) {
     return toFriendlyGraphBudgetError(DEFAULT_GRAPH_RECURSION_LIMIT, error);
+  }
+  if (error instanceof OpenRouterCreditError) {
+    return {
+      message: "OpenRouter could not fund this request within the available credits or spending limits. Check the OpenRouter account balance and key budget. Auto top-up may not trigger while the balance is above its threshold.",
+      category: "unknown",
+      code: "MDL007",
+      detailsForLog: error.code,
+    };
   }
   const classified = classifyError(error);
   const category = mapCategory(classified.category);

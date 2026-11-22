@@ -31,6 +31,7 @@ import {
   setStubModelForTests,
 } from "./stub-model-state";
 import { resolveOpenRouterTransport } from "./openrouter-transport";
+import { openRouterCreditError } from "./openrouter-credit-error";
 import { readMindSwapperConnection } from "../config/mindswapper-models";
 import { sanitizeMindSwapperError } from "./mindswapper-completions";
 
@@ -280,7 +281,7 @@ export function buildGatewayCreateModelOptions(
 export function withGatewayErrorLabel(
   model: ChatModel,
   label: string,
-  sanitize = (error: unknown) => labelGatewayError(error, label),
+  sanitize: (error: unknown, outputObserved?: boolean) => unknown = error => labelGatewayError(error, label),
 ): ChatModel {
   const invoke: ChatModel["invoke"] = async (messages, options) => {
     try {
@@ -293,13 +294,15 @@ export function withGatewayErrorLabel(
     if (!model.stream) {
       throw new Error(`${label} model does not support streaming`);
     }
+    let outputObserved = false;
     try {
       const stream = await model.stream(messages, options);
       for await (const chunk of stream) {
+        outputObserved = true;
         yield chunk;
       }
     } catch (error) {
-      throw sanitize(error);
+      throw sanitize(error, outputObserved);
     }
   };
   const bindTools: NonNullable<ChatModel["bindTools"]> = (tools, options) => {
@@ -549,6 +552,7 @@ async function createUniversalModelInternal(
       return withGatewayErrorLabel(
         await createOpenAI(orOpts),
         "OpenRouter",
+        (error, outputObserved) => openRouterCreditError(error, outputObserved) ?? labelGatewayError(error, "OpenRouter"),
       );
     }
     case "mindswapper": {
