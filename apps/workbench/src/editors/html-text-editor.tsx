@@ -6,6 +6,7 @@ import {
 } from "@mdxeditor/lexical";
 import { registerPlainText } from "@mdxeditor/lexical-plain-text";
 import { applyHtmlRegionTexts, buildHtmlTextModel, deleteHtmlParagraph, type HtmlTextModel, type HtmlTextRegion } from "./html-text-model";
+import { insertHtmlTextBreak } from "./html-text-breaks";
 import { htmlPageLinkTargets, prepareHtmlPageLinkTarget } from "./html-page-links";
 import { HtmlTextDocumentHistory, type HtmlTextHistoryView } from "./html-text-history";
 import { HtmlSourceInlineNode, inlineAppearance, $appendHtmlRegionRuns, $reconcileHtmlRegion } from "./html-text-inline-node";
@@ -237,6 +238,20 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
         installModel(next, neighbour ? { regionIndex, anchor: offset, focus: offset, scrollX: target.view.scrollX, scrollY: target.view.scrollY } : null, target.view);
       } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not delete this paragraph."); }
     };
+    const insertBreak = (soft: boolean) => {
+      const target = captureTarget(true);
+      if (!target || composition || linkDialogRef.current) return;
+      try {
+        const { fresh, region } = freshRegion(emittedSource.current, target);
+        const styles = mapHtmlSourceOwners(model.previewHtml, fresh.previewHtml,
+          Object.keys(target.sourceInlineStyles).map(Number), target.sourceInlineStyles).underlineOwnerLines;
+        const result = insertHtmlTextBreak(fresh, region.id, target.offsets.anchor, target.offsets.focus, soft, styles);
+        if (!result.ok) throw new Error(result.reason);
+        const next = { model: createModel(result.source), identity: {}, generation: currentSession.generation };
+        installModel(next, { regionIndex: result.regionIndex, anchor: result.offset, focus: result.offset,
+          scrollX: target.view.scrollX, scrollY: target.view.scrollY }, target.view);
+      } catch (caught) { setError(caught instanceof Error ? caught.message : "Could not insert a break."); }
+    };
     deleteParagraphRef.current = () => { const target = captureTarget(); if (target && !linkDialogRef.current) removeParagraph(target, false); };
     const restoreTarget = (target: Target) => {
       target.editor.update(() => { $setSelection($htmlTextSelectionAtOffsets(target.offsets.anchor, target.offsets.focus)); }, { discrete: true, tag: RESTORE_TAG });
@@ -301,7 +316,7 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
       originalMarkup.set(element, element.innerHTML);
       const originalWhiteSpace = frameWindow.getComputedStyle(element).whiteSpace;
       element.contentEditable = "true";
-      element.setAttribute("role", "textbox"); element.setAttribute("aria-label", region.label); element.setAttribute("aria-multiline", "false");
+      element.setAttribute("role", "textbox"); element.setAttribute("aria-label", region.label); element.setAttribute("aria-multiline", "true");
       editor.setRootElement(element);
       element.style.whiteSpace = originalWhiteSpace;
       const unregisterPlain = registerPlainText(editor);
@@ -360,7 +375,7 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
       const unregisterParagraphTransform = editor.registerNodeTransform(ParagraphNode, reconcile);
       const unregisterUndo = editor.registerCommand(UNDO_COMMAND, () => history.undo(), COMMAND_PRIORITY_HIGH);
       const unregisterRedo = editor.registerCommand(REDO_COMMAND, () => history.redo(), COMMAND_PRIORITY_HIGH);
-      const unregisterEnter = editor.registerCommand(KEY_ENTER_COMMAND, event => { event?.preventDefault(); element.blur(); return true; }, COMMAND_PRIORITY_HIGH);
+      const unregisterEnter = editor.registerCommand(KEY_ENTER_COMMAND, event => { event?.preventDefault(); insertBreak(event?.shiftKey ?? false); return true; }, COMMAND_PRIORITY_HIGH);
       const focus = () => { activeEditor.current = editor; setActiveLabel(region.label); };
       element.addEventListener("focus", focus);
       cleanups.push(() => {
@@ -466,6 +481,9 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
       }, { discrete: true });
     };
     const input = (event: InputEvent) => {
+      if (!event.isComposing && (event.inputType === "insertParagraph" || event.inputType === "insertLineBreak")) {
+        event.preventDefault(); event.stopPropagation(); insertBreak(event.inputType === "insertLineBreak"); return;
+      }
       const captured = captureBeforeInput();
       if (!captured || event.isComposing || event.inputType !== "insertText" || event.data === null) return;
       // Native contenteditable under authored normal white-space can discard a
@@ -532,6 +550,9 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
     };
     const key = (event: KeyboardEvent) => {
       if (event.isComposing || composition) return;
+      if (event.key === "Enter" && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        event.preventDefault(); event.stopPropagation(); insertBreak(event.shiftKey); return;
+      }
       if ((event.key === "Backspace" || event.key === "Delete") && !event.metaKey && !event.ctrlKey && !event.altKey && !event.shiftKey) {
         const target = captureTarget();
         if (target?.region.paragraph?.wholeRegion && !target.editor.getEditorState().read(() => $getRoot().getTextContent()) && !linkDialogRef.current) {
@@ -602,7 +623,7 @@ export function HtmlTextEditor({ value, onChange, onSave, history: sharedHistory
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="html-text-editor">
       <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2 text-xs text-foreground-muted">
-        <span>{activeLabel ? `Editing ${activeLabel}. Enter or Esc to finish.` : "Click text to edit. Tab moves between text areas."}</span>
+        <span>{activeLabel ? `Editing ${activeLabel}. Enter for a paragraph, Shift+Enter for a line break, Esc to finish.` : "Click text to edit. Tab moves between text areas."}</span>
         <span className="ml-auto">Page scripts paused while editing.</span>
       </div>
       <HtmlFormattingToolbar selection={formatSelection} onToggle={mark => formatting.current.toggle(mark)}

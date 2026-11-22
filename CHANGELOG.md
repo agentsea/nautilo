@@ -7,6 +7,14 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Recover OpenRouter credit refusals by retrying the same request with its
+  reported affordable output allowance. Preserve spending limits and explain
+  unresolved credit failures without exposing provider diagnostics.
+
+- Let Enter split HTML paragraphs at the cursor and Shift+Enter insert line
+  breaks. Keep new paragraphs and blank lines editable, with formatting,
+  links, selection, and undo/redo preserved.
+
 - Add superscript formatting and its keyboard shortcut to HTML text editing.
   Link selected text to a heading or paragraph in the same document, creating a
   destination anchor when needed. In-page links scroll within the HTML preview.

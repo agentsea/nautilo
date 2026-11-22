@@ -30,6 +30,7 @@ import { resetSurplusModelCatalog } from "../../src/providers/surplus-catalog";
 import { setAgentEventSink } from "../../src/runtime-hooks";
 import { getOrCreateAgentTurnContextByKey, turnContextKey, _resetAgentTurnContextsForTests } from "../../src/runtime/turn-context";
 import { ProviderTimeoutError } from "../../src/providers/errors";
+import { OpenRouterCreditError } from "../../src/providers/openrouter-credit-error";
 import { canUseQualifiedSurplusChatRoute } from "../../src/providers/surplus-attempt";
 import { SurplusOutcomeUnknownError } from "../../src/providers/surplus-transport";
 import type { ModelCatalog, ModelFallbackEvent, ServerEvent } from "@nautilo/types";
@@ -217,6 +218,7 @@ let invokeChatModelWithFallback: (
     modelFallbackMode?: "agent_chain" | "none";
     sameModelRetryMode?: "none" | "short";
     confidential?: true;
+    maxOutputTokens?: number;
     providerTimeoutMs?: number;
     firstProgressTimeoutMs?: number;
     preparedStableSystemPrefixLength?: number;
@@ -285,6 +287,90 @@ describe("invokeChatModelWithFallback (chain)", () => {
     capturedEvents.length = 0;
     _resetAgentTurnContextsForTests();
     _setFirstTokenTimeoutMsForTests(undefined);
+  });
+
+  for (const providerClampsContext of [false, true]) test(`OpenRouter negotiates affordable output with provider context clamp=${providerClampsContext}`, async () => {
+    let attempts = 0;
+    const transports: Array<string | undefined> = [];
+    const recheckAttempt = mock(async () => {});
+    const session: ForegroundChatFundingSession = {
+      kind: "server", recheckAttempt,
+      async runAttempt(_modelId, callback, transport) {
+        transports.push(transport);
+        return callback({ usageFunding: { kind: "server", humanUserId: "sponsor", providerRoute: "openrouter" } });
+      },
+    };
+    createUniversalModelMock.mockImplementation(async (_id, options): Promise<AuraModel> => {
+      const model: AuraModel = { bindTools: () => model, invoke: async request => {
+        expect(request.map(message => message.content)).toEqual(messages.map(message => message.content));
+        if (attempts++ === 0) throw new OpenRouterCreditError({ requested: Number(options?.["maxTokens"]) - (providerClampsContext ? 200 : 0), affordable: 1000 });
+        expect(options?.["maxTokens"]).toBe(1000);
+        return new AIMessage("Finished the edit");
+      } };
+      return model;
+    });
+    const result = await invokeChatModelWithFallback(messages, tools, T1, "user-1", "agent-1", null,
+      undefined, { maxOutputTokens: 2000, fundingSession: session, sameModelRetryMode: "none" });
+    expect(result.response.content).toBe("Finished the edit");
+    expect(modelIdsFromCalls()).toEqual([T1, T1]);
+    expect(recheckAttempt).toHaveBeenCalledTimes(1);
+    expect(recheckAttempt).toHaveBeenCalledWith(T1, "direct");
+    expect(transports).toEqual([undefined, "direct"]);
+    expect(markModelInvokeFailureMock).not.toHaveBeenCalled();
+    expect(capturedEvents.filter(event => event.type === "model.fallback")).toEqual([]);
+  });
+
+  test("OpenRouter does not chase repeated credit refusals or change funding routes", async () => {
+    policyState = { enabled: true, chain: [T1, B] };
+    createUniversalModelMock.mockImplementation(async (_id, options): Promise<AuraModel> => {
+      const model: AuraModel = { bindTools: () => model, invoke: async () => {
+        throw new OpenRouterCreditError({ requested: Number(options?.["maxTokens"]), affordable: Number(options?.["maxTokens"]) / 2 });
+      } };
+      return model;
+    });
+    const failure = await invokeChatModelWithFallback(messages, tools, T1, "user-1", "agent-1", null,
+      undefined, { maxOutputTokens: 2000 }).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(OpenRouterCreditError);
+    expect(modelIdsFromCalls()).toEqual([T1, T1]);
+    expect(markModelInvokeFailureMock).not.toHaveBeenCalled();
+  });
+
+  test("OpenRouter needs matching positive allowance evidence before retrying", async () => {
+    for (const allowance of [undefined, { requested: 2000, affordable: 0 }, { requested: 3000, affordable: 1000 }]) {
+      createUniversalModelMock.mockClear();
+      const failure = new OpenRouterCreditError(allowance);
+      const model: AuraModel = { bindTools: () => model, invoke: async () => { throw failure; } };
+      createUniversalModelMock.mockResolvedValue(model);
+      const result = await invokeChatModelWithFallback(messages, tools, T1, "user-1", "agent-1", null,
+        undefined, { maxOutputTokens: 2000 }).catch((error: unknown) => error);
+      expect(result).toBe(failure);
+      expect(createUniversalModelMock).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  test("OpenRouter allowance recovery honors cancellation and funding revocation", async () => {
+    for (const cancel of [false, true]) {
+      createUniversalModelMock.mockClear();
+      const controller = new AbortController();
+      const denied = new Error("Admission no longer permits this attempt");
+      const recheckAttempt = mock(async () => { throw denied; });
+      const session: ForegroundChatFundingSession = {
+        kind: "server", recheckAttempt,
+        async runAttempt(_modelId, callback) {
+          return callback({ usageFunding: { kind: "server", humanUserId: "sponsor", providerRoute: "openrouter" } });
+        },
+      };
+      const model: AuraModel = { bindTools: () => model, invoke: async () => {
+        if (cancel) controller.abort(denied);
+        throw new OpenRouterCreditError({ requested: 2000, affordable: 1000 });
+      } };
+      createUniversalModelMock.mockResolvedValue(model);
+      const failure = await invokeChatModelWithFallback(messages, tools, T1, "user-1", "agent-1", null,
+        { signal: controller.signal }, { maxOutputTokens: 2000, fundingSession: session }).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(Error);
+      expect(createUniversalModelMock).toHaveBeenCalledTimes(1);
+      expect(recheckAttempt).toHaveBeenCalledTimes(cancel ? 0 : 1);
+    }
   });
 
   for (const confidential of [false, true]) {

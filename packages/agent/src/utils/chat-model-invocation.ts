@@ -37,6 +37,7 @@ import { DEFAULT_REASONING_EFFORT, shouldUseOpenAIResponsesApi } from "../provid
 import { isDirectGpt6Model } from "../providers/openai-compat";
 import { modelRouteProvider } from "../providers/model-route";
 import { resolveOpenRouterTransport } from "../providers/openrouter-transport";
+import { OpenRouterCreditError } from "../providers/openrouter-credit-error";
 import { hasStubModelForTests } from "../providers/stub-model-state";
 import type { ReasoningEffort } from "../providers/types";
 import { resolveFireworksKimiK3ServingProfile, type ResolvedFireworksKimiK3ServingProfile } from "../providers/serving-profile";
@@ -953,6 +954,9 @@ async function invokeScopedChatModelWithFallback(
     return invokeOptions?.reasoningOutput ?? true;
   };
   let disableReasoningOutput = false;
+  // One negotiation per model/request: retry the provider's affordable bound,
+  // then surface any further refusal instead of chasing a changing balance.
+  const affordableOutputByModel = new Map<string, number>();
   let providerAttemptStarted = false;
   const assertNotCancelled = () => {
     if (invocationConfig?.signal?.aborted) throw invocationConfig.signal.reason instanceof Error
@@ -1045,6 +1049,8 @@ async function invokeScopedChatModelWithFallback(
         if (!Number.isSafeInteger(invokeOptions.maxOutputTokens) || invokeOptions.maxOutputTokens < 1) throw new RangeError("maxOutputTokens must be a positive safe integer");
         maxTokens = Math.min(maxTokens, invokeOptions.maxOutputTokens);
       }
+      const affordableOutput = affordableOutputByModel.get(currentModelId);
+      if (affordableOutput !== undefined) maxTokens = Math.min(maxTokens, affordableOutput);
     } catch (error) {
       if (isPreparedContextExceededError(error)) {
         if (await recoverContext("preflight")) continue;
@@ -1131,7 +1137,8 @@ async function invokeScopedChatModelWithFallback(
           // Apply the server-wide serving preference inside the admitted payer.
           // Supported routes reuse the current signed catalogue and preserve
           // the selected provider pin.
-          if (!isMindSwapperModelId(currentModelId) && (!attemptFundingSession || usageFunding.providerRoute === "surplus")) {
+          if (!affordableOutputByModel.has(currentModelId) && !isMindSwapperModelId(currentModelId)
+            && (!attemptFundingSession || usageFunding.providerRoute === "surplus")) {
             kickServerModelConfigRefresh();
             const surplusKey = usageFunding.kind === "personal"
               ? personalCredential?.apiKey ?? null : resolveProviderKey("surplus");
@@ -1359,16 +1366,17 @@ async function invokeScopedChatModelWithFallback(
       if (fundingSession) {
         // Later same-model, context-recovery, reasoning, and fallback attempts
         // recheck the live operation boundary before decrypting another key.
-        if (providerAttemptStarted) await fundingSession.recheckAttempt(currentModelId);
+        const transport = affordableOutputByModel.has(currentModelId) ? "direct" : undefined;
+        if (providerAttemptStarted) await fundingSession.recheckAttempt(currentModelId, transport);
         providerAttemptStarted = true;
-        response = await fundingSession.runAttempt(currentModelId, runProviderAttempt);
+        response = await fundingSession.runAttempt(currentModelId, runProviderAttempt, transport);
       } else {
         // Preserve the legacy server-funded path for all callers that do not
         // opt into the request-local foreground session.
         await assertModelFunding(invokeOptions?.fundingHumanUserId, invokeOptions?.serverFundedService);
         providerAttemptStarted = true;
         kickServerModelConfigRefresh();
-        const allowSurplus = resolveSurplusChatServingAvailability({
+        const allowSurplus = !affordableOutputByModel.has(currentModelId) && resolveSurplusChatServingAvailability({
           catalogModelId: currentModelId,
           policyEnabled: getCachedServerModelConfigRow()?.preferSurplus === true,
           keyConfigured: resolveProviderKey("surplus") !== null,
@@ -1434,6 +1442,25 @@ async function invokeScopedChatModelWithFallback(
       }
       const subscriptionError = findChatGPTSubscriptionError(providerFailure);
       if (subscriptionError) throw subscriptionError;
+      if (providerFailure instanceof OpenRouterCreditError) {
+        const allowance = providerFailure.allowance;
+        if (modelRouteProvider(currentModelId) === "openrouter" && allowance
+          // The provider can lower the requested maximum to fit its measured
+          // context. Recovery must remain below both that bound and our own.
+          && allowance.requested <= maxTokens && allowance.affordable > 0
+          && allowance.affordable < allowance.requested && !affordableOutputByModel.has(currentModelId)
+          && !personalRecoveryAttemptedForModel
+          && (!personalAttemptError || personalAttemptError.disposition === "safe_refusal")
+          && !attemptVisibility.hasVisibleOutput() && !hasAssistantVisibleOutputForCurrentTurn(agentId)) {
+          affordableOutputByModel.set(currentModelId, allowance.affordable);
+          attemptedModels.pop();
+          log(`[nautilo/agent] Retrying ${currentModelId} with the provider-reported affordable output allowance`);
+          // The ordinary loop rechecks cancellation, live funding, credentials,
+          // controls and accounting before dispatching the unchanged request.
+          continue;
+        }
+        throw providerFailure;
+      }
       const classified = classifyError(providerFailure);
       if (!isMindSwapperModelId(currentModelId) && !personalRecoveryAttemptedForModel && serverDirectAttemptedForModel
         && currentModelId === initialModelId && fundingSession?.kind === "server"

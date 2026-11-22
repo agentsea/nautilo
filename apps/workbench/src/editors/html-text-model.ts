@@ -59,6 +59,7 @@ export function buildHtmlTextModel(source: string, options: { previewCsp?: strin
   // These wrappers have no source locations and never enter saved HTML.
   const islands = new WeakSet<HtmlElement>();
   const barriers = new WeakSet<HtmlElement>();
+  const emptyLines: { target: HtmlElement; text: HtmlText; offset: number }[] = [];
   const safeInline = (node: HtmlNode): boolean => {
     if (!element(node)) return true;
     if (BLOCK_TAGS.has(node.tagName) || INLINE_BOUNDARIES.has(node.tagName) || OMIT_TEXT.has(node.tagName) ||
@@ -74,10 +75,21 @@ export function buildHtmlTextModel(source: string, options: { previewCsp?: strin
     barriers.add(node);
     const children: DefaultTreeAdapterMap["childNode"][] = [];
     let group: DefaultTreeAdapterMap["childNode"][] = [];
-    const flush = () => {
-      if (!group.length) return;
+    let afterBreak: number | undefined;
+    const flush = (beforeBreak?: number) => {
+      const emptyOffset = afterBreak ?? beforeBreak;
+      if (!group.length && emptyOffset === undefined) return;
       const hasText = (child: HtmlNode): boolean => textNode(child) ? !!child.value.trim() : "childNodes" in child && child.childNodes.some(hasText);
-      if (!group.some(hasText)) { children.push(...group); group = []; return; }
+      if (!group.some(hasText)) {
+        if (emptyOffset !== undefined) {
+          const span = defaultTreeAdapter.createElement("span", HTML_NAMESPACE, [{ name: "style", value: "all:unset;display:inline-block;min-width:1ch" }]);
+          span.parentNode = node; islands.add(span);
+          for (const child of group) defaultTreeAdapter.appendChild(span, child);
+          const text = defaultTreeAdapter.createTextNode(""); defaultTreeAdapter.appendChild(span, text);
+          emptyLines.push({ target: span, text, offset: emptyOffset }); children.push(span);
+        } else children.push(...group);
+        group = []; return;
+      }
       const span = defaultTreeAdapter.createElement("span", HTML_NAMESPACE, [{ name: "style", value: "all:unset" }]);
       span.parentNode = node; islands.add(span);
       for (const child of group) defaultTreeAdapter.appendChild(span, child);
@@ -85,7 +97,11 @@ export function buildHtmlTextModel(source: string, options: { previewCsp?: strin
     };
     for (const child of node.childNodes) {
       if (safeInline(child)) group.push(child);
-      else { flush(); children.push(child); }
+      else {
+        const isBreak = element(child) && child.tagName === "br";
+        flush(isBreak ? child.sourceCodeLocation?.startOffset : undefined); children.push(child);
+        afterBreak = isBreak ? child.sourceCodeLocation?.endOffset : undefined;
+      }
     }
     flush(); node.childNodes = children;
   };
@@ -181,6 +197,14 @@ export function buildHtmlTextModel(source: string, options: { previewCsp?: strin
     } else if ("childNodes" in node) node.childNodes.forEach(child => visitBlank(child, ancestors));
   };
   visitBlank(tree, []);
+  if (!nativeDocument) for (const { target, text, offset } of emptyLines) {
+    let parent = target.parentNode;
+    while (parent && !(element(parent) && BLOCK_TAGS.has(parent.tagName))) parent = "parentNode" in parent ? parent.parentNode : null;
+    const tagName = parent && element(parent) ? parent.tagName : "text";
+    const run: HtmlTextRun = { id: `html-run-${offset}-${offset}`, text: "", startOffset: offset, endOffset: offset, marks: [] };
+    const region: HtmlTextRegion = { id: `html-region-${offset}`, tagName, label: LABELS[tagName] ?? "Text", text: "", runs: [run] };
+    regions.push(region); targets.set(region.id, target); runNodes.set(run.id, text);
+  }
   for (const region of regions) {
     const target = targets.get(region.id)!;
     let owner: HtmlNode | null = target;
