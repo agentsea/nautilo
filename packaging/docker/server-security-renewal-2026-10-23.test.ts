@@ -20,7 +20,7 @@ const beforeBootstrap = read("fixtures/bootstrap-policy-before-security-renewal-
 const currentServer = { exceptions: read("fixtures/server-vulnerability-exceptions-2026-10-29.json").exceptions.filter(entry =>
   beforeServer.exceptions.some(previous => decisionKey(previous) === decisionKey(entry))
 ) };
-const currentBootstrap = { exceptions: read("bootstrap-vulnerability-policy.input.json").exceptions.filter(entry =>
+const currentBootstrap = { exceptions: read("fixtures/bootstrap-vulnerability-exceptions-2026-11-22-before-glibc.json").exceptions.filter(entry =>
   beforeBootstrap.exceptions.some(previous => decisionKey(previous) === decisionKey(entry))
 ) };
 
