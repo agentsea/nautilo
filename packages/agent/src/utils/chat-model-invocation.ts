@@ -1,4 +1,5 @@
 import { runAdmittedDirectModelRecovery } from "../runtime/direct-model-recovery";
+import { setTimeout as delay } from "node:timers/promises";
 import { findChatGPTSubscriptionError } from "../providers/chatgpt-plan-errors";
 import type { AIMessage, BaseMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
@@ -549,7 +550,7 @@ async function invokeOnceWithShortRetries(
   fundingService: ModelFundingService | undefined,
   fundingSession: ForegroundChatFundingSession | undefined,
   agentId: string | null,
-  attemptPolicyOptions: { readonly providerTimeoutMs?: number; readonly callerSuppliedProviderTimeout: boolean; readonly firstProgressTimeoutMs?: number; readonly isolatedProgress?: boolean; readonly validateResponse?: (response: AIMessage) => void },
+  attemptPolicyOptions: { readonly providerTimeoutMs?: number; readonly callerSuppliedProviderTimeout: boolean; readonly firstProgressTimeoutMs?: number; readonly isolatedProgress?: boolean; readonly validateResponse?: (response: AIMessage) => void; readonly onOpenRouterCreditHoldSettled?: () => void; readonly hasAttemptOutput?: () => boolean },
   endpoint: string,
   maximumAttempts = SAME_MODEL_RETRYABLE_ATTEMPTS,
 ): Promise<AIMessage> {
@@ -609,6 +610,18 @@ async function invokeOnceWithShortRetries(
       // transport shape (503, 408, ECONNRESET) would normally be retryable.
       if (personalAttemptError?.disposition !== undefined
         && personalAttemptError.disposition !== "safe_refusal") throw error;
+      if (providerError instanceof OpenRouterCreditError && providerError.inFlightBudget) {
+        const retryAfterMs = providerError.inFlightBudget.retryAfterMs;
+        if (attempt >= maximumAttempts || retryAfterMs === undefined
+          || attemptPolicyOptions.hasAttemptOutput?.() || hasAssistantVisibleOutputForCurrentTurn(agentId)) throw error;
+        log(`[nautilo/agent] OpenRouter temporarily reserved the available credit; waiting ${retryAfterMs}ms before retrying ${modelId}`);
+        // OpenRouter confirms this request never reached a provider. Keep the
+        // same model, request and payer, honor its minimum wait without jitter,
+        // and use the existing bounded retry and live funding recheck above.
+        await delay(retryAfterMs, undefined, { signal: llmCallConfig.signal });
+        attemptPolicyOptions.onOpenRouterCreditHoldSettled?.();
+        continue;
+      }
       const classified = classifyError(providerError);
       if (attempt >= maximumAttempts || !classified.retryable) throw error;
       const strategy = getRetryStrategy(classified);
@@ -639,7 +652,7 @@ async function invokeForegroundAttemptWithUsageContext(
   funding: UsageFundingProvenance,
   useOpenAIResponsesApi: boolean,
   sameModelRetryMode: "none" | "short",
-  attemptPolicyOptions: { readonly providerTimeoutMs?: number; readonly callerSuppliedProviderTimeout: boolean; readonly firstProgressTimeoutMs?: number; readonly isolatedProgress?: boolean; readonly validateResponse?: (response: AIMessage) => void },
+  attemptPolicyOptions: { readonly providerTimeoutMs?: number; readonly callerSuppliedProviderTimeout: boolean; readonly firstProgressTimeoutMs?: number; readonly isolatedProgress?: boolean; readonly validateResponse?: (response: AIMessage) => void; readonly onOpenRouterCreditHoldSettled?: () => void; readonly hasAttemptOutput?: () => boolean },
   endpoint: string,
 ): Promise<AIMessage> {
   const invoke = () => invokeOnceWithShortRetries(
@@ -954,9 +967,11 @@ async function invokeScopedChatModelWithFallback(
     return invokeOptions?.reasoningOutput ?? true;
   };
   let disableReasoningOutput = false;
-  // One negotiation per model/request: retry the provider's affordable bound,
-  // then surface any further refusal instead of chasing a changing balance.
+  // Negotiate the affordable bound once, with one refresh permitted after a
+  // verified credit-hold wait. Neither path may chase a changing balance.
   const affordableOutputByModel = new Map<string, number>();
+  const creditHoldSettledByModel = new Set<string>();
+  const refreshedCreditAllowanceByModel = new Set<string>();
   let providerAttemptStarted = false;
   const assertNotCancelled = () => {
     if (invocationConfig?.signal?.aborted) throw invocationConfig.signal.reason instanceof Error
@@ -1353,6 +1368,8 @@ async function invokeScopedChatModelWithFallback(
               ...(callerFirstProgressTimeoutMs === undefined ? {} : { firstProgressTimeoutMs: callerFirstProgressTimeoutMs }),
               ...(invokeOptions?.isolatedProgress ? { isolatedProgress: true } : {}),
               ...(invokeOptions?.validateResponse ? { validateResponse: invokeOptions.validateResponse } : {}),
+              onOpenRouterCreditHoldSettled: () => { creditHoldSettledByModel.add(currentModelId); },
+              hasAttemptOutput: attemptVisibility.hasVisibleOutput,
             },
             endpoint,
           );
@@ -1448,10 +1465,16 @@ async function invokeScopedChatModelWithFallback(
           // The provider can lower the requested maximum to fit its measured
           // context. Recovery must remain below both that bound and our own.
           && allowance.requested <= maxTokens && allowance.affordable > 0
-          && allowance.affordable < allowance.requested && !affordableOutputByModel.has(currentModelId)
+          && allowance.affordable < allowance.requested
+          && (!affordableOutputByModel.has(currentModelId)
+            || (creditHoldSettledByModel.has(currentModelId) && !refreshedCreditAllowanceByModel.has(currentModelId)))
           && !personalRecoveryAttemptedForModel
           && (!personalAttemptError || personalAttemptError.disposition === "safe_refusal")
           && !attemptVisibility.hasVisibleOutput() && !hasAssistantVisibleOutputForCurrentTurn(agentId)) {
+          // Settling another request can spend credit while we wait. Refresh
+          // the allowance once after that verified wait, without an unbounded
+          // loop chasing changes in the account balance.
+          if (affordableOutputByModel.has(currentModelId)) refreshedCreditAllowanceByModel.add(currentModelId);
           affordableOutputByModel.set(currentModelId, allowance.affordable);
           attemptedModels.pop();
           log(`[nautilo/agent] Retrying ${currentModelId} with the provider-reported affordable output allowance`);

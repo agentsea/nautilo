@@ -493,7 +493,9 @@ export function toFriendlyError(error: unknown): FriendlyError {
   }
   if (error instanceof OpenRouterCreditError) {
     return {
-      message: "OpenRouter could not fund this request within the available credits or spending limits. Check the OpenRouter account balance and key budget. Auto top-up may not trigger while the balance is above its threshold.",
+      message: error.inFlightBudget
+        ? "OpenRouter temporarily reserved the available credit for running or recently completed requests. Wait for those requests to settle, then try again."
+        : "OpenRouter could not fund this request within the available credits or spending limits. Check the OpenRouter account balance and key budget. Auto top-up may not trigger while the balance is above its threshold.",
       category: "unknown",
       code: "MDL007",
       detailsForLog: error.code,

@@ -10,6 +10,33 @@ const refusal = (requested = "90000", affordable = "40000") => Object.assign(new
 ), { status: 402 });
 
 describe("OpenRouter credit refusals", () => {
+  test("preserves only documented temporary-hold evidence and the provider wait", () => {
+    const temporary = {
+      status: 402,
+      headers: new Headers({ "retry-after": "120", "set-cookie": "private" }),
+      error: { message: "private diagnostic", metadata: {
+        limit_source: "openrouter_in_flight_budget", reason: "in_flight_budget_exhausted", private: "private",
+      } },
+    };
+    const error = openRouterCreditError(temporary)!;
+    expect(error.inFlightBudget).toEqual({ retryAfterMs: 120_000 });
+    expect(error.code).toBe("OPENROUTER_IN_FLIGHT_BUDGET");
+    expect(error.allowance).toBeUndefined();
+    expect(JSON.stringify(error)).not.toContain("private");
+    expect(toFriendlyError(error).message).toContain("temporarily reserved");
+    expect(toFriendlyError(error).detailsForLog).toBe("OPENROUTER_IN_FLIGHT_BUDGET");
+    expect(classifyPersonalAttemptFailure(error, false).disposition).toBe("safe_refusal");
+    expect(classifyPersonalAttemptFailure(error, false, true).disposition).toBe("terminal_unknown");
+    expect(openRouterCreditError(temporary, true)?.inFlightBudget).toBeUndefined();
+    expect(openRouterCreditError(error, true)?.inFlightBudget).toBeUndefined();
+    expect(openRouterCreditError({ ...temporary, status: 503 })).toBeNull();
+    expect(openRouterCreditError({ ...temporary, error: { metadata: { limit_source: "openrouter_credits", reason: "weight_exceeds_budget" } } })?.inFlightBudget).toBeUndefined();
+    for (const header of [undefined, "", "-1", "1.5", "120 seconds", "Infinity", "2147484"]) {
+      expect(openRouterCreditError({ ...temporary, headers: { "retry-after": header } })?.inFlightBudget).toEqual({});
+    }
+    expect(openRouterCreditError({ ...temporary, headers: { "retry-after": "0" } })?.inFlightBudget).toEqual({ retryAfterMs: 0 });
+    expect(openRouterCreditError({ ...temporary, headers: { "retry-after": "Thu, 01 Jan 1970 00:00:00 GMT" } })?.inFlightBudget).toEqual({ retryAfterMs: 0 });
+  });
   test("retains only validated allowance evidence and gives a safe actionable error", () => {
     const error = openRouterCreditError(refusal())!;
     expect(error.allowance).toEqual({ requested: 90000, affordable: 40000 });

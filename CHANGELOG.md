@@ -7,6 +7,10 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Honor OpenRouter's requested wait when temporary credit holds reject a request,
+  then retry the same model within the existing retry policy. Preserve cancellation
+  and spending checks, and distinguish temporary holds from insufficient credit.
+
 - Recover OpenRouter credit refusals by retrying the same request with its
   reported affordable output allowance. Preserve spending limits and explain
   unresolved credit failures without exposing provider diagnostics.
