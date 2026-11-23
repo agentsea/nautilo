@@ -550,7 +550,7 @@ async function invokeOnceWithShortRetries(
   fundingService: ModelFundingService | undefined,
   fundingSession: ForegroundChatFundingSession | undefined,
   agentId: string | null,
-  attemptPolicyOptions: { readonly providerTimeoutMs?: number; readonly callerSuppliedProviderTimeout: boolean; readonly firstProgressTimeoutMs?: number; readonly isolatedProgress?: boolean; readonly validateResponse?: (response: AIMessage) => void; readonly onOpenRouterCreditHoldSettled?: () => void },
+  attemptPolicyOptions: { readonly providerTimeoutMs?: number; readonly callerSuppliedProviderTimeout: boolean; readonly firstProgressTimeoutMs?: number; readonly isolatedProgress?: boolean; readonly validateResponse?: (response: AIMessage) => void; readonly onOpenRouterCreditHoldSettled?: () => void; readonly hasAttemptOutput?: () => boolean },
   endpoint: string,
   maximumAttempts = SAME_MODEL_RETRYABLE_ATTEMPTS,
 ): Promise<AIMessage> {
@@ -613,7 +613,7 @@ async function invokeOnceWithShortRetries(
       if (providerError instanceof OpenRouterCreditError && providerError.inFlightBudget) {
         const retryAfterMs = providerError.inFlightBudget.retryAfterMs;
         if (attempt >= maximumAttempts || retryAfterMs === undefined
-          || hasAssistantVisibleOutputForCurrentTurn(agentId)) throw error;
+          || attemptPolicyOptions.hasAttemptOutput?.() || hasAssistantVisibleOutputForCurrentTurn(agentId)) throw error;
         log(`[nautilo/agent] OpenRouter temporarily reserved the available credit; waiting ${retryAfterMs}ms before retrying ${modelId}`);
         // OpenRouter confirms this request never reached a provider. Keep the
         // same model, request and payer, honor its minimum wait without jitter,
@@ -652,7 +652,7 @@ async function invokeForegroundAttemptWithUsageContext(
   funding: UsageFundingProvenance,
   useOpenAIResponsesApi: boolean,
   sameModelRetryMode: "none" | "short",
-  attemptPolicyOptions: { readonly providerTimeoutMs?: number; readonly callerSuppliedProviderTimeout: boolean; readonly firstProgressTimeoutMs?: number; readonly isolatedProgress?: boolean; readonly validateResponse?: (response: AIMessage) => void; readonly onOpenRouterCreditHoldSettled?: () => void },
+  attemptPolicyOptions: { readonly providerTimeoutMs?: number; readonly callerSuppliedProviderTimeout: boolean; readonly firstProgressTimeoutMs?: number; readonly isolatedProgress?: boolean; readonly validateResponse?: (response: AIMessage) => void; readonly onOpenRouterCreditHoldSettled?: () => void; readonly hasAttemptOutput?: () => boolean },
   endpoint: string,
 ): Promise<AIMessage> {
   const invoke = () => invokeOnceWithShortRetries(
@@ -1369,6 +1369,7 @@ async function invokeScopedChatModelWithFallback(
               ...(invokeOptions?.isolatedProgress ? { isolatedProgress: true } : {}),
               ...(invokeOptions?.validateResponse ? { validateResponse: invokeOptions.validateResponse } : {}),
               onOpenRouterCreditHoldSettled: () => { creditHoldSettledByModel.add(currentModelId); },
+              hasAttemptOutput: attemptVisibility.hasVisibleOutput,
             },
             endpoint,
           );

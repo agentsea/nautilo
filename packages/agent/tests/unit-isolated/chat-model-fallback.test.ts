@@ -423,6 +423,25 @@ describe("invokeChatModelWithFallback (chain)", () => {
     expect(invoke).toHaveBeenCalledTimes(1);
   });
 
+  test("temporary-hold recovery does not replay background output", async () => {
+    const failure = new OpenRouterCreditError(undefined, { retryAfterMs: 0 });
+    const invoke = mock(async (_request: unknown, options?: RunnableConfig) => {
+      const [manager] = await CallbackManager.configure(options?.callbacks)!.handleChatModelStart(
+        { lc: 1, type: "not_implemented", id: ["synthetic-openrouter"] }, [messages],
+      );
+      await manager!.handleLLMNewToken("visible answer", undefined, undefined, undefined, undefined, {
+        chunk: new ChatGenerationChunk({ text: "visible answer", message: new AIMessageChunk("visible answer") }),
+      });
+      throw failure;
+    });
+    const model: AuraModel = { bindTools: () => model, invoke };
+    createUniversalModelMock.mockResolvedValue(model);
+    const result = await invokeChatModelWithFallback(messages, tools, T1, "user-1", null, null)
+      .catch((error: unknown) => error);
+    expect(result).toBe(failure);
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
   test("OpenRouter needs matching positive allowance evidence before retrying", async () => {
     for (const allowance of [undefined, { requested: 2000, affordable: 0 }, { requested: 3000, affordable: 1000 }]) {
       createUniversalModelMock.mockClear();
