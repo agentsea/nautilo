@@ -8,7 +8,7 @@ Guía local ilustrada: [English](https://nautilo.ai/docs/operator/deploy/local) 
 
 La interfaz de Nautilo está actualmente en inglés. El README y la guía local están traducidos; el resto de la documentación puede seguir en inglés.
 
-<!-- Translation source: README.md; SHA-256: 70b9d8b55da933e1da5c68d0656f5c2e4ac61690fd958de91b9be5268859f07a -->
+<!-- Translation source: README.md; SHA-256: 478c663dcf1cc3f2b7cf890cd5843594c0721666a63b1b0dc7681ba8e226fc50 -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### La IA se vuelve multijugador.
@@ -137,8 +137,14 @@ Nautilo tiene [licencia MIT](LICENSE). Consulta los [avisos de terceros](THIRD_P
 
 [Apoya Nautilo a través de agentsea en GitHub Sponsors](https://github.com/sponsors/agentsea) · Aportación única o mensual.
 
-[![Gracias a la comunidad Bankr](https://nautilo.ai/community/bankr-thanks-es.png)](https://hoodscan.co/token/0xddd4947010496b500abe96ab0965c38584413ba3)
+[![Gracias a la comunidad Bankr](https://nautilo.ai/community/bankr-thanks-es.png?v=kentauros)](https://hoodscan.co/token/0xddd4947010496b500abe96ab0965c38584413ba3)
 
-El código abierto avanza cuando la gente se apoya. La comunidad Bankr creó un [token Nautilo](https://hoodscan.co/token/0xddd4947010496b500abe96ab0965c38584413ba3) independiente y destinó parte de sus comisiones de negociación a apoyar nuestro trabajo. Gracias por ayudarnos a seguir construyendo.
+### El token comunitario NAUTILO
 
-Es un token de la comunidad, no emitido ni respaldado por Nautilo. No tiene ninguna función en el software ni otorga derechos de acceso al producto, de propiedad o de gobernanza.
+$NAUTILO nació en la comunidad Bankr, que creó el token y destinó parte de sus comisiones de negociación a apoyar el desarrollo de Nautilo. Agradecemos a quienes lo pusieron en marcha y a todas las personas que han apoyado el proyecto.
+
+Kentauros, Inc., la empresa detrás de Nautilo, ha asumido la gestión de la presencia pública del token, incluido su perfil en DEX Screener. La parte de las comisiones de negociación asignada al proyecto ahora se ingresa directamente en la tesorería Safe de Kentauros. Publicamos la [dirección del contrato del token](https://hoodscan.co/token/0xddd4947010496b500abe96ab0965c38584413ba3) a través de [@nautiloapp](https://x.com/nautiloapp) para que nuestra comunidad pueda identificar el token correcto.
+
+**El token fue creado por la comunidad. Kentauros no lo creó ni realizó una ICO.**
+
+No necesitas tener $NAUTILO para usar Nautilo. Tener el token no otorga participación en el capital de Kentauros, derechos de gobernanza sobre la empresa ni derecho a productos o servicios de Nautilo.
