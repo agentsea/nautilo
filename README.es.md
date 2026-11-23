@@ -8,7 +8,7 @@ Guía local ilustrada: [English](https://nautilo.ai/docs/operator/deploy/local) 
 
 La interfaz de Nautilo está actualmente en inglés. El README y la guía local están traducidos; el resto de la documentación puede seguir en inglés.
 
-<!-- Translation source: README.md; SHA-256: 96bbb32664a451346d5417429827a406d04a80cc494e20d45b68fcdcf0795445 -->
+<!-- Translation source: README.md; SHA-256: 7d5da3b8c2bd4a27146f94a6430bc44c8f1a3d01f2bf1a844cdb357fef4709f6 -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### La IA se vuelve multijugador.
@@ -149,6 +149,4 @@ Kentauros, Inc., la empresa detrás de Nautilo, ha asumido la gestión de la pre
 
 #### Usa MindSwapper. Recibe $NAUTILO a cambio.
 
-Usa [MindSwapper](https://mindswapper.ai/) y conecta una cartera para recibir recompensas automáticas en $NAUTILO por tu uso. No necesitas comprar ni tener el token para participar. Empezamos con pagos pequeños mientras hacemos pruebas. Vendrán pagos mayores cuando sepamos que todo funciona sin problemas.
-
-No necesitas tener $NAUTILO para usar Nautilo. Tener el token no otorga participación en el capital de Kentauros, derechos de gobernanza sobre la empresa ni derecho a productos o servicios de Nautilo.
+Usa [MindSwapper](https://mindswapper.ai/) y conecta una cartera para recibir recompensas automáticas en $NAUTILO por tu uso. No hace falta comprar tokens. Empezamos con pagos pequeños mientras hacemos pruebas. Vendrán pagos mayores cuando sepamos que todo funciona sin problemas.

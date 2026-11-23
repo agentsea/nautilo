@@ -8,7 +8,7 @@
 
 Nautilo の画面は現在英語です。README とローカルセットアップガイドには翻訳がありますが、その他の文書は英語の場合があります。
 
-<!-- Translation source: README.md; SHA-256: 96bbb32664a451346d5417429827a406d04a80cc494e20d45b68fcdcf0795445 -->
+<!-- Translation source: README.md; SHA-256: 7d5da3b8c2bd4a27146f94a6430bc44c8f1a3d01f2bf1a844cdb357fef4709f6 -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### AI が、マルチプレイヤーになる。
@@ -149,6 +149,4 @@ Nautilo を開発する Kentauros, Inc. は現在、DEX Screener のプロフィ
 
 #### MindSwapper を使って、$NAUTILO を受け取ろう。
 
-[MindSwapper](https://mindswapper.ai/) を使い、ウォレットを接続すると、利用に応じて $NAUTILO の報酬を自動で受け取れます。参加するためにトークンを購入・保有する必要はありません。テスト中は少額の報酬から始めています。すべてが順調に動くと確認できたら、報酬額を増やしていきます。
-
-Nautilo の利用に $NAUTILO の保有は必要ありません。トークンを保有しても、Kentauros の持分、会社のガバナンスに関する権利、Nautilo の製品やサービスを受ける権利は付与されません。
+[MindSwapper](https://mindswapper.ai/) を使い、ウォレットを接続すると、利用に応じて $NAUTILO の報酬を自動で受け取れます。トークンの購入は不要です。テスト中は少額の報酬から始めています。すべてが順調に動くと確認できたら、報酬額を増やしていきます。

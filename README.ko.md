@@ -8,7 +8,7 @@
 
 Nautilo의 인터페이스는 현재 영어입니다. README와 로컬 설치 가이드는 번역되어 있으며, 다른 문서는 영어일 수 있습니다.
 
-<!-- Translation source: README.md; SHA-256: 96bbb32664a451346d5417429827a406d04a80cc494e20d45b68fcdcf0795445 -->
+<!-- Translation source: README.md; SHA-256: 7d5da3b8c2bd4a27146f94a6430bc44c8f1a3d01f2bf1a844cdb357fef4709f6 -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### AI가 멀티플레이어가 됩니다.
@@ -149,6 +149,4 @@ Nautilo를 만드는 회사인 Kentauros, Inc.는 현재 DEX Screener 프로필�
 
 #### MindSwapper를 쓰고 $NAUTILO를 돌려받으세요.
 
-[MindSwapper](https://mindswapper.ai/)를 사용하고 지갑을 연결하면 사용량에 따라 $NAUTILO 보상을 자동으로 받을 수 있습니다. 참여하기 위해 토큰을 구매하거나 보유할 필요는 없습니다. 테스트하는 동안은 소액 지급부터 시작합니다. 모든 것이 원활하게 작동하는 것을 확인하면 지급액을 늘릴 예정입니다.
-
-Nautilo를 사용하기 위해 $NAUTILO를 보유할 필요는 없습니다. 토큰을 보유해도 Kentauros의 지분, 회사에 대한 거버넌스 권한, Nautilo 제품이나 서비스를 받을 권리는 부여되지 않습니다.
+[MindSwapper](https://mindswapper.ai/)를 사용하고 지갑을 연결하면 사용량에 따라 $NAUTILO 보상을 자동으로 받을 수 있습니다. 토큰을 구매할 필요는 없습니다. 테스트하는 동안은 소액 지급부터 시작합니다. 모든 것이 원활하게 작동하는 것을 확인하면 지급액을 늘릴 예정입니다.

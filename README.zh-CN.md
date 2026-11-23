@@ -8,7 +8,7 @@
 
 Nautilo 的界面目前为英语。README 和本地安装指南已提供翻译，其他文档可能仍为英文。
 
-<!-- Translation source: README.md; SHA-256: 96bbb32664a451346d5417429827a406d04a80cc494e20d45b68fcdcf0795445 -->
+<!-- Translation source: README.md; SHA-256: 7d5da3b8c2bd4a27146f94a6430bc44c8f1a3d01f2bf1a844cdb357fef4709f6 -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### AI，进入多人模式。
@@ -149,6 +149,4 @@ Nautilo 背后的公司 Kentauros, Inc. 现已接手代币对外信息的管理�
 
 #### 使用 MindSwapper，获得 $NAUTILO 回馈。
 
-使用 [MindSwapper](https://mindswapper.ai/) 并连接钱包，即可根据使用情况自动获得 $NAUTILO 奖励。无需购买或持有代币即可参与。测试期间，我们先从小额发放开始。确认一切运行顺畅后，再提高发放金额。
-
-使用 Nautilo 无需持有 $NAUTILO。持有代币不赋予 Kentauros 的股权、公司治理权，也不赋予获得 Nautilo 产品或服务的权利。
+使用 [MindSwapper](https://mindswapper.ai/) 并连接钱包，即可根据使用情况自动获得 $NAUTILO 奖励。无需购买代币。测试期间，我们先从小额发放开始。确认一切运行顺畅后，再提高发放金额。
