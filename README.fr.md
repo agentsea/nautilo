@@ -8,7 +8,7 @@ Guide local illustré: [English](https://nautilo.ai/docs/operator/deploy/local) 
 
 L’interface de Nautilo est actuellement en anglais. Le README et le guide local sont traduits ; les autres documents peuvent rester en anglais.
 
-<!-- Translation source: README.md; SHA-256: 478c663dcf1cc3f2b7cf890cd5843594c0721666a63b1b0dc7681ba8e226fc50 -->
+<!-- Translation source: README.md; SHA-256: 7d5da3b8c2bd4a27146f94a6430bc44c8f1a3d01f2bf1a844cdb357fef4709f6 -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### L’IA passe en multijoueur.
@@ -147,4 +147,6 @@ Kentauros, Inc., l’entreprise derrière Nautilo, a depuis repris la gestion de
 
 **Le jeton a été créé par la communauté. Kentauros ne l’a pas créé et n’a pas réalisé d’ICO.**
 
-Vous n’avez pas besoin de détenir des $NAUTILO pour utiliser Nautilo. La détention du jeton ne confère ni participation au capital de Kentauros, ni droits de gouvernance sur l’entreprise, ni droit aux produits ou services de Nautilo.
+#### Utilisez MindSwapper. Recevez des $NAUTILO en retour.
+
+Utilisez [MindSwapper](https://mindswapper.ai/) et connectez un portefeuille pour recevoir automatiquement des récompenses en $NAUTILO selon votre utilisation. Aucun achat de jetons requis. Nous commençons par de petits versements pendant les tests. Ils augmenteront quand nous saurons que tout fonctionne bien.

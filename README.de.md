@@ -8,7 +8,7 @@ Bebilderte Anleitung für die lokale Einrichtung: [Englisch](https://nautilo.ai/
 
 Die Benutzeroberfläche von Nautilo ist derzeit auf Englisch. Die README und die Anleitung zur lokalen Einrichtung sind übersetzt; andere Dokumentation kann weiterhin auf Englisch sein.
 
-<!-- Translation source: README.md; SHA-256: 478c663dcf1cc3f2b7cf890cd5843594c0721666a63b1b0dc7681ba8e226fc50 -->
+<!-- Translation source: README.md; SHA-256: 7d5da3b8c2bd4a27146f94a6430bc44c8f1a3d01f2bf1a844cdb357fef4709f6 -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### KI wird mehrspielerfähig.
@@ -178,4 +178,6 @@ Kentauros, Inc., das Unternehmen hinter Nautilo, hat inzwischen die Verwaltung d
 
 **Der Token wurde von der Community geschaffen. Kentauros hat ihn weder geschaffen noch einen ICO durchgeführt.**
 
-Du musst keine $NAUTILO besitzen, um Nautilo zu nutzen. Der Besitz des Tokens gewährt weder Unternehmensanteile an Kentauros noch Mitbestimmungsrechte über das Unternehmen oder einen Anspruch auf Produkte oder Dienstleistungen von Nautilo.
+#### Nutze MindSwapper. Erhalte $NAUTILO zurück.
+
+Nutze [MindSwapper](https://mindswapper.ai/) und verbinde eine Wallet, um für deine Nutzung automatisch Belohnungen in $NAUTILO zu erhalten. Kein Tokenkauf erforderlich. Wir beginnen während der Tests mit kleinen Auszahlungen. Größere folgen, sobald wir wissen, dass alles reibungslos läuft.
