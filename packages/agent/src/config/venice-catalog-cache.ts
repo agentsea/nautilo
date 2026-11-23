@@ -307,6 +307,7 @@ async function writeVeniceCacheFile(payload: VeniceModelsCacheFile): Promise<voi
   const p = cacheFilePath();
   await fsp.mkdir(path.dirname(p), { recursive: true });
   await fsp.writeFile(p, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  if (cachedCatalog?.path === p) cachedCatalog = null;
 }
 
 export async function refreshVeniceCatalogCache(): Promise<void> {

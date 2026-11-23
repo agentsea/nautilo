@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
-import { getEligibleModels } from "../../src/config/eligible-models";
-import { resolveCatalogModel } from "../../src/config/resolved-catalog";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { renameWithWindowsRetrySync } from "@nautilo/config/private-filesystem";
+import { getEligibleModels } from "../../src/config/eligible-models";
+import { resolveCatalogModel } from "../../src/config/resolved-catalog";
 import {
   mergeVeniceCatalogCapabilities,
   parseVeniceCatalogSnapshotResponse,
@@ -280,7 +281,7 @@ describe("refreshVeniceCatalogCache", () => {
       const replacement = path.join(tmpDir, "replacement.json");
       fs.writeFileSync(replacement, absent);
       fs.utimesSync(replacement, fetchedAt, fetchedAt);
-      fs.renameSync(replacement, cachePath);
+      renameWithWindowsRetrySync(replacement, cachePath);
       expect(discover()?.unavailableReason).toBe("model absent from fresh complete Venice catalog");
       clock.mockReturnValue(fetchedAt.getTime() + 24 * 60 * 60 * 1000);
       process.env["NAUTILO_SKIP_VENICE_REFRESH"] = "1";
