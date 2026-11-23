@@ -382,6 +382,33 @@ describe("invokeChatModelWithFallback (chain)", () => {
     }
   });
 
+  for (const changingBalance of [false, true]) test(`OpenRouter refreshes the allowance once after settlement (changing=${changingBalance})`, async () => {
+    let calls = 0;
+    createUniversalModelMock.mockImplementation(async (_id, options): Promise<AuraModel> => {
+      const model: AuraModel = { bindTools: () => model, invoke: async () => {
+        calls++;
+        const requested = Number(options?.["maxTokens"]);
+        if (calls === 1) throw new OpenRouterCreditError({ requested, affordable: 1000 });
+        if (calls === 2 || (changingBalance && calls === 4)) throw new OpenRouterCreditError(undefined, { retryAfterMs: 0 });
+        if (calls === 3 || changingBalance) throw new OpenRouterCreditError({ requested, affordable: requested - 100 });
+        expect(requested).toBe(900);
+        return new AIMessage("Completed with the updated allowance");
+      } };
+      return model;
+    });
+    const result = await invokeChatModelWithFallback(messages, tools, T1, "user-1", "agent-1", null,
+      undefined, { maxOutputTokens: 2000 }).catch((error: unknown) => error);
+    if (changingBalance) {
+      expect(result).toBeInstanceOf(OpenRouterCreditError);
+      expect(calls).toBe(5);
+    } else {
+      expect(result).toMatchObject({ response: { content: "Completed with the updated allowance" } });
+      expect(calls).toBe(4);
+    }
+    expect(modelIdsFromCalls()).toEqual([T1, T1, T1]);
+    expect(markModelInvokeFailureMock).not.toHaveBeenCalled();
+  });
+
   test("cancelling during OpenRouter's wait prevents another request", async () => {
     const controller = new AbortController();
     const invoke = mock(async () => {
