@@ -7,6 +7,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Keep MindSwapper's request reference and recognized stream error reason
+  when a response fails, so the failed attempt can be traced from Costs.
+
 - Keep chat model lists responsive when Venice metadata is present by reusing
   the parsed provider catalog across lookups. File changes and model
   availability are checked on subsequent lookups.

@@ -56,7 +56,7 @@ export function classifyPersonalAttemptFailure(
     return { outcome: "cancelled", failureCode: "cancelled", disposition: "terminal_cancelled" };
   }
   if (error instanceof MindSwapperRequestError && error.outcomeUnknown) {
-    return { outcome: "unknown", failureCode: "outcome_unknown", disposition: "terminal_unknown" };
+    return { outcome: "unknown", failureCode: error.gatewayStreamCode ?? "outcome_unknown", disposition: "terminal_unknown" };
   }
   if (error instanceof MindSwapperRequestError && !providerWorkObserved && error.status === 402) {
     return { outcome: "failed", failureCode: error.code, disposition: "safe_refusal" };
