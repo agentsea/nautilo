@@ -8,7 +8,7 @@ Guía local ilustrada: [English](https://nautilo.ai/docs/operator/deploy/local) 
 
 La interfaz de Nautilo está actualmente en inglés. El README y la guía local están traducidos; el resto de la documentación puede seguir en inglés.
 
-<!-- Translation source: README.md; SHA-256: 478c663dcf1cc3f2b7cf890cd5843594c0721666a63b1b0dc7681ba8e226fc50 -->
+<!-- Translation source: README.md; SHA-256: 96bbb32664a451346d5417429827a406d04a80cc494e20d45b68fcdcf0795445 -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### La IA se vuelve multijugador.
@@ -146,5 +146,9 @@ $NAUTILO nació en la comunidad Bankr, que creó el token y destinó parte de su
 Kentauros, Inc., la empresa detrás de Nautilo, ha asumido la gestión de la presencia pública del token, incluido su perfil en DEX Screener. La parte de las comisiones de negociación asignada al proyecto ahora se ingresa directamente en la tesorería Safe de Kentauros. Publicamos la [dirección del contrato del token](https://hoodscan.co/token/0xddd4947010496b500abe96ab0965c38584413ba3) a través de [@nautiloapp](https://x.com/nautiloapp) para que nuestra comunidad pueda identificar el token correcto.
 
 **El token fue creado por la comunidad. Kentauros no lo creó ni realizó una ICO.**
+
+#### Usa MindSwapper. Recibe $NAUTILO a cambio.
+
+Usa [MindSwapper](https://mindswapper.ai/) y conecta una cartera para recibir recompensas automáticas en $NAUTILO por tu uso. No necesitas comprar ni tener el token para participar. Empezamos con pagos pequeños mientras hacemos pruebas. Vendrán pagos mayores cuando sepamos que todo funciona sin problemas.
 
 No necesitas tener $NAUTILO para usar Nautilo. Tener el token no otorga participación en el capital de Kentauros, derechos de gobernanza sobre la empresa ni derecho a productos o servicios de Nautilo.

@@ -8,7 +8,7 @@ Guide local illustré: [English](https://nautilo.ai/docs/operator/deploy/local) 
 
 L’interface de Nautilo est actuellement en anglais. Le README et le guide local sont traduits ; les autres documents peuvent rester en anglais.
 
-<!-- Translation source: README.md; SHA-256: 478c663dcf1cc3f2b7cf890cd5843594c0721666a63b1b0dc7681ba8e226fc50 -->
+<!-- Translation source: README.md; SHA-256: 96bbb32664a451346d5417429827a406d04a80cc494e20d45b68fcdcf0795445 -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### L’IA passe en multijoueur.
@@ -146,5 +146,9 @@ $NAUTILO est né dans la communauté Bankr, qui a créé le jeton et affecté un
 Kentauros, Inc., l’entreprise derrière Nautilo, a depuis repris la gestion de la présence publique du jeton, notamment de son profil DEX Screener. La part des frais de transaction allouée au projet est désormais versée directement à la trésorerie Safe de Kentauros. Nous publions l’[adresse du contrat du jeton](https://hoodscan.co/token/0xddd4947010496b500abe96ab0965c38584413ba3) via [@nautiloapp](https://x.com/nautiloapp) pour permettre à notre communauté d’identifier le bon jeton.
 
 **Le jeton a été créé par la communauté. Kentauros ne l’a pas créé et n’a pas réalisé d’ICO.**
+
+#### Utilisez MindSwapper. Recevez des $NAUTILO en retour.
+
+Utilisez [MindSwapper](https://mindswapper.ai/) et connectez un portefeuille pour recevoir automatiquement des récompenses en $NAUTILO selon votre utilisation. Vous n’avez pas besoin d’acheter ou de détenir le jeton pour participer. Nous commençons par de petits versements pendant les tests. Ils augmenteront quand nous saurons que tout fonctionne bien.
 
 Vous n’avez pas besoin de détenir des $NAUTILO pour utiliser Nautilo. La détention du jeton ne confère ni participation au capital de Kentauros, ni droits de gouvernance sur l’entreprise, ni droit aux produits ou services de Nautilo.

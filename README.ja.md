@@ -8,7 +8,7 @@
 
 Nautilo の画面は現在英語です。README とローカルセットアップガイドには翻訳がありますが、その他の文書は英語の場合があります。
 
-<!-- Translation source: README.md; SHA-256: 478c663dcf1cc3f2b7cf890cd5843594c0721666a63b1b0dc7681ba8e226fc50 -->
+<!-- Translation source: README.md; SHA-256: 96bbb32664a451346d5417429827a406d04a80cc494e20d45b68fcdcf0795445 -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### AI が、マルチプレイヤーになる。
@@ -146,5 +146,9 @@ $NAUTILO は Bankr コミュニティから生まれました。コミュニテ�
 Nautilo を開発する Kentauros, Inc. は現在、DEX Screener のプロフィールを含む、トークンの対外的な情報発信を管理しています。プロジェクトに割り当てられた取引手数料は、Kentauros の企業用 Safe ウォレットに直接入金されます。コミュニティの皆さんが正しいトークンを識別できるよう、[トークンのコントラクトアドレス](https://hoodscan.co/token/0xddd4947010496b500abe96ab0965c38584413ba3)を [@nautiloapp](https://x.com/nautiloapp) で公開しています。
 
 **トークンを作ったのはコミュニティです。Kentauros が作ったものではなく、Kentauros は ICO を実施していません。**
+
+#### MindSwapper を使って、$NAUTILO を受け取ろう。
+
+[MindSwapper](https://mindswapper.ai/) を使い、ウォレットを接続すると、利用に応じて $NAUTILO の報酬を自動で受け取れます。参加するためにトークンを購入・保有する必要はありません。テスト中は少額の報酬から始めています。すべてが順調に動くと確認できたら、報酬額を増やしていきます。
 
 Nautilo の利用に $NAUTILO の保有は必要ありません。トークンを保有しても、Kentauros の持分、会社のガバナンスに関する権利、Nautilo の製品やサービスを受ける権利は付与されません。

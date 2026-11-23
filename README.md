@@ -166,4 +166,8 @@ Kentauros, Inc., the company behind Nautilo, has since taken over management of 
 
 **The token was community-created. Kentauros did not create it or conduct an ICO.**
 
+#### Use MindSwapper. Get $NAUTILO back.
+
+Use [MindSwapper](https://mindswapper.ai/) and connect a wallet to receive automatic $NAUTILO rewards for your usage. You don’t need to buy or hold the token to participate. We’re starting with small payouts while we test. Bigger ones once we know everything’s working smoothly.
+
 You do not need to own $NAUTILO to use Nautilo. Holding the token does not grant equity in Kentauros, governance rights over the company, or an entitlement to Nautilo products or services.

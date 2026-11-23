@@ -8,7 +8,7 @@
 
 Nautilo의 인터페이스는 현재 영어입니다. README와 로컬 설치 가이드는 번역되어 있으며, 다른 문서는 영어일 수 있습니다.
 
-<!-- Translation source: README.md; SHA-256: 478c663dcf1cc3f2b7cf890cd5843594c0721666a63b1b0dc7681ba8e226fc50 -->
+<!-- Translation source: README.md; SHA-256: 96bbb32664a451346d5417429827a406d04a80cc494e20d45b68fcdcf0795445 -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### AI가 멀티플레이어가 됩니다.
@@ -146,5 +146,9 @@ $NAUTILO는 Bankr 커뮤니티에서 시작되었습니다. 커뮤니티는 토�
 Nautilo를 만드는 회사인 Kentauros, Inc.는 현재 DEX Screener 프로필을 비롯한 토큰의 대외 정보 관리를 맡고 있습니다. 프로젝트에 배정된 거래 수수료는 이제 Kentauros의 회사 Safe 지갑으로 직접 들어옵니다. 커뮤니티가 올바른 토큰을 식별할 수 있도록 [토큰 컨트랙트 주소](https://hoodscan.co/token/0xddd4947010496b500abe96ab0965c38584413ba3)를 [@nautiloapp](https://x.com/nautiloapp)에서 공개합니다.
 
 **토큰은 커뮤니티가 만들었습니다. Kentauros가 만든 것이 아니며, Kentauros는 ICO를 진행하지 않았습니다.**
+
+#### MindSwapper를 쓰고 $NAUTILO를 돌려받으세요.
+
+[MindSwapper](https://mindswapper.ai/)를 사용하고 지갑을 연결하면 사용량에 따라 $NAUTILO 보상을 자동으로 받을 수 있습니다. 참여하기 위해 토큰을 구매하거나 보유할 필요는 없습니다. 테스트하는 동안은 소액 지급부터 시작합니다. 모든 것이 원활하게 작동하는 것을 확인하면 지급액을 늘릴 예정입니다.
 
 Nautilo를 사용하기 위해 $NAUTILO를 보유할 필요는 없습니다. 토큰을 보유해도 Kentauros의 지분, 회사에 대한 거버넌스 권한, Nautilo 제품이나 서비스를 받을 권리는 부여되지 않습니다.

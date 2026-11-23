@@ -8,7 +8,7 @@
 
 Nautilo 的界面目前为英语。README 和本地安装指南已提供翻译，其他文档可能仍为英文。
 
-<!-- Translation source: README.md; SHA-256: 478c663dcf1cc3f2b7cf890cd5843594c0721666a63b1b0dc7681ba8e226fc50 -->
+<!-- Translation source: README.md; SHA-256: 96bbb32664a451346d5417429827a406d04a80cc494e20d45b68fcdcf0795445 -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### AI，进入多人模式。
@@ -146,5 +146,9 @@ $NAUTILO 起源于 Bankr 社区。社区创建了这个代币，并将部分交�
 Nautilo 背后的公司 Kentauros, Inc. 现已接手代币对外信息的管理，包括其 DEX Screener 页面。分配给项目的交易手续费现在直接进入 Kentauros 的公司 Safe 金库。我们通过 [@nautiloapp](https://x.com/nautiloapp) 公布[代币合约地址](https://hoodscan.co/token/0xddd4947010496b500abe96ab0965c38584413ba3)，方便社区识别正确的代币。
 
 **代币由社区创建。Kentauros 没有创建该代币，也没有进行 ICO。**
+
+#### 使用 MindSwapper，获得 $NAUTILO 回馈。
+
+使用 [MindSwapper](https://mindswapper.ai/) 并连接钱包，即可根据使用情况自动获得 $NAUTILO 奖励。无需购买或持有代币即可参与。测试期间，我们先从小额发放开始。确认一切运行顺畅后，再提高发放金额。
 
 使用 Nautilo 无需持有 $NAUTILO。持有代币不赋予 Kentauros 的股权、公司治理权，也不赋予获得 Nautilo 产品或服务的权利。
