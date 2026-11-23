@@ -230,6 +230,17 @@ describe("Postgres Message backfill progress", () => {
     );
   });
 
+  test("reads scoped progress for the initial plaintext policy revision", async () => {
+    const executor = new RecordingExecutor([aggregateRow()]);
+    await readMessageBackfillProgressAggregate(executor, {
+      subjectHumanId: HUMAN,
+      policyRevision: 0,
+    });
+    expect(executor.calls).toHaveLength(1);
+    expect(executor.calls[0]!.parameters).toContain(HUMAN);
+    expect(executor.calls[0]!.parameters).toContain(0);
+  });
+
   test("rejects invalid authority and policy coordinates before querying", async () => {
     const executor = new RecordingExecutor([]);
     expect(readMessageBackfillProgressAggregate(executor, {
@@ -238,7 +249,7 @@ describe("Postgres Message backfill progress", () => {
     })).rejects.toThrow("subject Human ID");
     expect(readMessageBackfillProgressAggregate(executor, {
       subjectHumanId: HUMAN,
-      policyRevision: 0,
+      policyRevision: -1,
     })).rejects.toThrow("policy revision");
     expect(executor.calls).toHaveLength(0);
   });

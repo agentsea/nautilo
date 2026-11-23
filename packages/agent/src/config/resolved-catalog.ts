@@ -7,7 +7,7 @@
  * - identity / cost / routing : `ASSISTANT_MODELS` (`./assistant-models`)
  * - modalities / features / provenance / lastVerifiedAt
  * : `resolveModelCapabilities` (`@nautilo/model-capabilities`)
- * - venice capability overlay : `readVeniceCapabilityHintsSync` (`./venice-catalog-cache`)
+ * - venice capability overlay : `readVeniceCatalogModelSync` (`./venice-catalog-cache`)
  * - privacy grade : `MODEL_PRIVACY_GRADE` (`./model-privacy`)
  * - intelligence tier / rank : `MODEL_INTELLIGENCE_TIER` / `INTELLIGENCE_RANK` (`./model-selection`)
  * - signed execution limits : active model-catalog entry
@@ -59,11 +59,8 @@ import {
   getKnownModelMaxOutputTokens,
 } from "../providers/models";
 import {
-  readVeniceCapabilityHintsSync,
-  readVeniceCatalogSnapshotSync,
-  isVeniceCatalogSnapshotFresh,
+  readVeniceCatalogModelSync,
   scheduleVeniceCatalogRefreshIfNeeded,
-  type VeniceCatalogSnapshot,
   type VeniceParsedCaps,
 } from "./venice-catalog-cache";
 import {
@@ -207,14 +204,12 @@ function resolveAvailability(
  */
 function refineVeniceAvailability(
   base: AvailabilityOutcome,
-  id: string,
-  snapshot: VeniceCatalogSnapshot | null,
+  observation: ReturnType<typeof readVeniceCatalogModelSync>,
 ): AvailabilityOutcome {
-  if (!isVeniceModelId(id) || !snapshot || !snapshot.complete || !isVeniceCatalogSnapshotFresh(snapshot)) {
+  if (!observation?.freshAndComplete) {
     return base;
   }
-  const sku = id.slice("venice:".length);
-  const live = snapshot.models.get(sku);
+  const live = observation.model;
   if (!live) {
     return {
       availability: "disabled",
@@ -231,7 +226,7 @@ function refineVeniceAvailability(
 }
 
 /** Features with explicit `null` for unknown (: never coerce unknown→false). */
-function resolveFeatures(id: string): ResolvedCatalogFeatures {
+function resolveFeatures(id: string, hint: VeniceParsedCaps | undefined): ResolvedCatalogFeatures {
   const resolved = resolveModelCapabilities(id);
   const f = resolved.features;
   const features: ResolvedCatalogFeatures = {
@@ -242,15 +237,12 @@ function resolveFeatures(id: string): ResolvedCatalogFeatures {
     webSearch: null,
     e2ee: null,
   };
-  if (isVeniceModelId(id)) {
-    const hint = readVeniceCapabilityHintsSync().get(id);
-    if (hint) {
-      features.tools = hint.tools;
-      features.reasoning = hint.reasoning;
-      features.e2ee = hint.e2ee;
-      features.webSearch = hint.webSearch;
-      // Venice hints do not carry structuredOutputs → stays null.
-    }
+  if (hint) {
+    features.tools = hint.tools;
+    features.reasoning = hint.reasoning;
+    features.e2ee = hint.e2ee;
+    features.webSearch = hint.webSearch;
+    // Venice hints do not carry structuredOutputs → stays null.
   }
   return features;
 }
@@ -300,25 +292,19 @@ function resolveCatalogConfig(
 function resolveModalitiesFor(
   id: string,
   entry: ModelCatalogEntry | undefined,
+  veniceHint: VeniceParsedCaps | undefined,
 ): {
   input: readonly ResolvedCatalogInputModality[];
   output: readonly ResolvedCatalogOutputModality[];
-  veniceHint: VeniceParsedCaps | undefined;
 } {
   const resolved = resolveModelCapabilities(id);
   let input = resolved.input as readonly ResolvedCatalogInputModality[];
   const output = resolved.output as readonly ResolvedCatalogOutputModality[];
-  let veniceHint: VeniceParsedCaps | undefined;
-  if (isVeniceModelId(id)) {
-    veniceHint = readVeniceCapabilityHintsSync().get(id);
-    // Live Venice metadata enriches legacy rows whose signed entry omitted
-    // modalities. An explicit signed modality tuple is authoritative in both
-    // directions and cannot be widened or narrowed by the observational cache.
-    if (!entry?.modalities && veniceHint?.vision && !input.includes("image")) {
-      input = [...input, "image"];
-    }
+  // Only enrich legacy rows that omit signed modalities.
+  if (!entry?.modalities && veniceHint?.vision && !input.includes("image")) {
+    input = [...input, "image"];
   }
-  return { input, output, veniceHint };
+  return { input, output };
 }
 
 /**
@@ -367,6 +353,7 @@ function resolveGenerationFor(
 function resolveFeaturesFor(
   id: string,
   entry: ModelCatalogEntry | undefined,
+  veniceHint: VeniceParsedCaps | undefined,
 ): ResolvedCatalogFeatures {
   // Decision capability facts are not chat/tool capabilities. An observational
   // provider cache must never fill in chat features for this separate workload.
@@ -392,7 +379,7 @@ function resolveFeaturesFor(
       e2ee: null,
     };
   }
-  return resolveFeatures(id);
+  return resolveFeatures(id, veniceHint);
 }
 
 /**
@@ -485,7 +472,8 @@ export function resolveCatalogModel(
     };
   }
 
-  const veniceSnapshot = isVeniceModelId(id) ? readVeniceCatalogSnapshotSync() : null;
+  const veniceObservation = isVeniceModelId(id) ? readVeniceCatalogModelSync(id.slice("venice:".length)) : null;
+  const veniceHint = veniceObservation?.model?.capabilities ?? undefined;
   const baseAvailability = resolveAvailability(
     config,
     id,
@@ -493,15 +481,15 @@ export function resolveCatalogModel(
     resolveChinaUpstreamConsent(options.allowChinaUpstream, env),
     entry?.workload ?? "chat",
   );
-  const refinedAvailability = refineVeniceAvailability(baseAvailability, id, veniceSnapshot);
+  const refinedAvailability = refineVeniceAvailability(baseAvailability, veniceObservation);
   const decisionInputSupported = entry?.workload !== "decision"
     || (entry.modalities?.input.length === 1 && entry.modalities.input[0] === "text");
   const { availability, reason } = decisionInputSupported ? refinedAvailability
     : { availability: "disabled" as const, reason: "installed decision adapters accept text input only" };
-  const { input, output, veniceHint } = resolveModalitiesFor(id, entry);
+  const { input, output } = resolveModalitiesFor(id, entry, veniceHint);
   const workload = entry?.workload ?? "chat";
   const generation = resolveGenerationFor(entry);
-  const features = resolveFeaturesFor(id, entry);
+  const features = resolveFeaturesFor(id, entry, veniceHint);
   // Descriptive axes prefer the published snapshot; fall back to local tables
   // for dynamic ids not present in the snapshot.
   const tier: ResolvedCatalogModel["intelligenceTier"] = entry
@@ -548,14 +536,14 @@ export function resolveCatalogModel(
     contextTokens,
     maxOutputTokens,
     provenance,
-    lastVerifiedAt: veniceSnapshot?.models.has(id.slice("venice:".length))
-      ? veniceSnapshot.fetchedAt
+    lastVerifiedAt: veniceObservation?.model
+      ? veniceObservation.fetchedAt
       : (resolved.lastVerifiedAt ?? null),
   };
 
   // Warm the venice cache asynchronously (never awaited; rows use current cache).
   if (isVeniceModelId(id)) {
-    scheduleVeniceCatalogRefreshIfNeeded();
+    scheduleVeniceCatalogRefreshIfNeeded(veniceObservation?.fetchedAt ?? null);
   }
 
   return row;
