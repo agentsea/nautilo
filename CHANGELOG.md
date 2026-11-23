@@ -7,6 +7,12 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Keep chat model lists responsive when Venice metadata is present by reusing
+  the parsed provider catalog across lookups. File changes and model
+  availability are checked on subsequent lookups.
+
+- Show message backfill progress for servers on their initial plaintext policy.
+
 - Honor OpenRouter's requested wait when temporary credit holds reject a request,
   then retry the same model within the existing retry policy. Preserve cancellation
   and spending checks, and distinguish temporary holds from insufficient credit.

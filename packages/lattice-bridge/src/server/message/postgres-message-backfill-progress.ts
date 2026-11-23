@@ -55,8 +55,8 @@ export async function readMessageBackfillProgressAggregate(
     claimed?: MessageBackfillProgressClaim;
   }>,
 ): Promise<MessageBackfillProgressAggregate> {
-  if (!Number.isSafeInteger(input.policyRevision) || input.policyRevision <= 0) {
-    throw new RangeError("Message backfill policy revision must be positive");
+  if (!Number.isSafeInteger(input.policyRevision) || input.policyRevision < 0) {
+    throw new RangeError("Message backfill policy revision must be nonnegative");
   }
   const candidate = messageBackfillCandidateProjection({
     subjectHumanId: input.subjectHumanId,
