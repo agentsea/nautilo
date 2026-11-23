@@ -10,3 +10,9 @@ libglib2.0-0t64 2.84.4-3~deb13u5
 libpcre2-8-0 10.46-1~deb13u2
 libsqlite3-0 3.46.1-7+deb13u2
 perl-base 5.40.1-6+deb13u1
+
+# DSA-6650-1 fixes the supported Kerberos security issues.
+libgssapi-krb5-2 1.21.3-5+deb13u2
+libk5crypto3 1.21.3-5+deb13u2
+libkrb5-3 1.21.3-5+deb13u2
+libkrb5support0 1.21.3-5+deb13u2

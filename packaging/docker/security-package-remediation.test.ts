@@ -60,9 +60,9 @@ describe("Debian 13 security update and exception retirement", () => {
   test("remaining decisions match reviewed package versions and production schema", () => {
     const floors = new Map(readFileSync(join(import.meta.dir, "server-security-package-floors.txt"), "utf8")
       .split("\n").filter((line) => line && !line.startsWith("#")).map((line) => line.split(" ") as [string, string]));
-    expect(floors.size).toBe(8);
+    expect(floors.size).toBe(12);
     expect([...floors.keys()].sort()).toEqual([
-      "gzip", "libbrotli1", "libc-bin", "libc6", "libglib2.0-0t64", "libpcre2-8-0", "libsqlite3-0", "perl-base",
+      "gzip", "libbrotli1", "libc-bin", "libc6", "libglib2.0-0t64", "libgssapi-krb5-2", "libk5crypto3", "libkrb5-3", "libkrb5support0", "libpcre2-8-0", "libsqlite3-0", "perl-base",
     ]);
     expect(floors.has("chromium-common")).toBe(false);
     expect(floors.has("chromium-headless-shell")).toBe(false);
@@ -83,9 +83,10 @@ describe("Debian 13 security update and exception retirement", () => {
       if (entry.reviewedAt === "2026-10-05T10:40:00Z" || entry.reviewedAt === "2026-10-03T15:15:00Z" || entry.reviewedAt === "2026-10-01T21:39:28Z" || entry.reviewedAt === "2026-10-01T20:28:00Z" || entry.reviewedAt === "2026-09-30T15:20:00Z" ||
           ["CVE-2026-88806", "CVE-2026-88807", "CVE-2026-88372", "CVE-2026-93543"].includes(entry.advisoryId)) continue;
       const p = review.packages.find((p) => p.package === entry.packageName)!;
-      // The September snapshot keeps its original glibc identity after later floor advances.
+      // The September snapshot keeps its original package identities after later floor advances.
       const reviewedFloor = ["libc6", "libc-bin"].includes(entry.packageName)
-        ? "2.41-12+deb13u4" : floors.get(entry.packageName);
+        ? "2.41-12+deb13u4" : ["libgssapi-krb5-2", "libk5crypto3", "libkrb5-3", "libkrb5support0"].includes(entry.packageName)
+          ? "1.21.3-5+deb13u1" : floors.get(entry.packageName);
       const expectedVersion = /^CVE-2026-933(?:72|73|74|75|77|81|82)$/.test(entry.advisoryId)
         ? "153.0.8010.52-1~deb13u1"
         : (entry.packageName.startsWith("chromium-") ? p.previousVersion : (reviewedFloor ?? p.previousVersion));

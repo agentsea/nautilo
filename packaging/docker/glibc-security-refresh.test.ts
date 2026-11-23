@@ -7,6 +7,8 @@ const read = (file: string) => JSON.parse(readFileSync(join(import.meta.dir, fil
 const fixed = new Set(["CVE-2026-19499", "CVE-2026-5435"]);
 const glibc = (entry: { packageName: string }) => ["libc6", "libc-bin"].includes(entry.packageName);
 const version = "2.41-12+deb13u5";
+// Later Kerberos retirement is covered by kerberos-security-refresh.test.ts.
+const retiredKerberos = (entry: { installedVersion: string }) => entry.installedVersion === "1.21.3-5+deb13u1";
 
 test("both image contracts require the supported glibc refresh", () => {
   const bootstrap = readFileSync(join(import.meta.dir, "Dockerfile.bootstrap"), "utf8");
@@ -22,8 +24,8 @@ for (const kind of ["server", "bootstrap"] as const) {
   const residual = current.exceptions.filter(glibc);
   test(`${kind}: retires only fixed tuples and preserves unrelated decisions and expiry`, () => {
     expect(current.exceptions.filter((entry: any) => fixed.has(entry.advisoryId) && glibc(entry))).toEqual([]);
-    expect(current.exceptions.filter((entry: any) => !glibc(entry))).toEqual(before.exceptions.filter((entry: any) => !glibc(entry)));
-    expect(before.exceptions.length - current.exceptions.length).toBe(kind === "server" ? 4 : 2);
+    expect(current.exceptions.filter((entry: any) => !glibc(entry) && !retiredKerberos(entry))).toEqual(before.exceptions.filter((entry: any) => !glibc(entry) && !retiredKerberos(entry)));
+    expect(before.exceptions.length - current.exceptions.length).toBe((kind === "server" ? 4 : 2) + before.exceptions.filter(retiredKerberos).length);
     expect(residual).toHaveLength(kind === "server" ? 2 : 1);
     for (const entry of residual) {
       const old = before.exceptions.find((item: any) => item.advisoryId === entry.advisoryId && item.packageName === entry.packageName);
