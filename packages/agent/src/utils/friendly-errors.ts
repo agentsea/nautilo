@@ -364,7 +364,9 @@ const MIND_SWAPPER_MESSAGES: Record<MindSwapperRequestError["code"], Pick<Friend
 export function toFriendlyError(error: unknown): FriendlyError {
   if (error instanceof MindSwapperRequestError) {
     const presentation = MIND_SWAPPER_MESSAGES[error.outcomeUnknown ? "outcome_unknown" : error.code];
-    return { ...presentation, code: CATEGORY_CODES[presentation.category], detailsForLog: `mindswapper_${error.code}` };
+    const streamCode = error.gatewayStreamCode ? ` gateway_stream_code=${error.gatewayStreamCode}` : "";
+    const request = error.outcomeUnknown && error.requestId ? ` provider_request_id=${error.requestId}` : "";
+    return { ...presentation, code: CATEGORY_CODES[presentation.category], detailsForLog: `mindswapper_${error.code}${streamCode}${request}` };
   }
   const subscriptionError = findChatGPTSubscriptionError(error);
   if (subscriptionError) {
