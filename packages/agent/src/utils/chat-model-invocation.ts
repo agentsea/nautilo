@@ -1,4 +1,5 @@
 import { runAdmittedDirectModelRecovery } from "../runtime/direct-model-recovery";
+import { setTimeout as delay } from "node:timers/promises";
 import { findChatGPTSubscriptionError } from "../providers/chatgpt-plan-errors";
 import type { AIMessage, BaseMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
@@ -609,6 +610,17 @@ async function invokeOnceWithShortRetries(
       // transport shape (503, 408, ECONNRESET) would normally be retryable.
       if (personalAttemptError?.disposition !== undefined
         && personalAttemptError.disposition !== "safe_refusal") throw error;
+      if (providerError instanceof OpenRouterCreditError && providerError.inFlightBudget) {
+        const retryAfterMs = providerError.inFlightBudget.retryAfterMs;
+        if (attempt >= maximumAttempts || retryAfterMs === undefined
+          || hasAssistantVisibleOutputForCurrentTurn(agentId)) throw error;
+        log(`[nautilo/agent] OpenRouter temporarily reserved the available credit; waiting ${retryAfterMs}ms before retrying ${modelId}`);
+        // OpenRouter confirms this request never reached a provider. Keep the
+        // same model, request and payer, honor its minimum wait without jitter,
+        // and use the existing bounded retry and live funding recheck above.
+        await delay(retryAfterMs, undefined, { signal: llmCallConfig.signal });
+        continue;
+      }
       const classified = classifyError(providerError);
       if (attempt >= maximumAttempts || !classified.retryable) throw error;
       const strategy = getRetryStrategy(classified);

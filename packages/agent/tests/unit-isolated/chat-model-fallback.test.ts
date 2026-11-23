@@ -335,6 +335,67 @@ describe("invokeChatModelWithFallback (chain)", () => {
     expect(markModelInvokeFailureMock).not.toHaveBeenCalled();
   });
 
+  test("OpenRouter waits for a temporary hold after negotiating affordable output", async () => {
+    let calls = 0;
+    const recheckAttempt = mock(async (_modelId: string, _transport?: string) => {});
+    const session: ForegroundChatFundingSession = {
+      kind: "server", recheckAttempt,
+      async runAttempt(_modelId, callback) {
+        return callback({ usageFunding: { kind: "server", humanUserId: "sponsor", providerRoute: "openrouter" } });
+      },
+    };
+    const bodies: unknown[] = [];
+    createUniversalModelMock.mockImplementation(async (_id, options): Promise<AuraModel> => {
+      const model: AuraModel = { bindTools: () => model, invoke: async request => {
+        bodies.push(request);
+        calls++;
+        if (calls === 1) throw new OpenRouterCreditError({ requested: Number(options?.["maxTokens"]), affordable: 1000 });
+        expect(options?.["maxTokens"]).toBe(1000);
+        if (calls === 2) throw new OpenRouterCreditError(undefined, { retryAfterMs: 1 });
+        return new AIMessage("Completed after the hold settled");
+      } };
+      return model;
+    });
+    const result = await invokeChatModelWithFallback(messages, tools, T1, "user-1", "agent-1", null,
+      undefined, { maxOutputTokens: 2000, fundingSession: session });
+    expect(result.response.content).toBe("Completed after the hold settled");
+    expect(calls).toBe(3);
+    expect(bodies[1]).toEqual(bodies[2]);
+    expect(modelIdsFromCalls()).toEqual([T1, T1]);
+    expect(recheckAttempt).toHaveBeenCalledTimes(2);
+    expect(recheckAttempt.mock.calls.every(call => call[1] === "direct")).toBe(true);
+    expect(markModelInvokeFailureMock).not.toHaveBeenCalled();
+    expect(capturedEvents.filter(event => event.type === "model.fallback")).toEqual([]);
+  });
+
+  test("temporary credit holds retain the caller's retry bound and require a wait header", async () => {
+    for (const [retryAfterMs, mode, expected] of [[0, "short", 2], [0, "none", 1], [undefined, "short", 1]] as const) {
+      createUniversalModelMock.mockClear();
+      let calls = 0;
+      const failure = new OpenRouterCreditError(undefined, retryAfterMs === undefined ? {} : { retryAfterMs });
+      const model: AuraModel = { bindTools: () => model, invoke: async () => { calls++; throw failure; } };
+      createUniversalModelMock.mockResolvedValue(model);
+      expect(await invokeChatModelWithFallback(messages, tools, T1, "user-1", "agent-1", null,
+        undefined, { sameModelRetryMode: mode }).catch((error: unknown) => error)).toBe(failure);
+      expect(calls).toBe(expected);
+      expect(modelIdsFromCalls()).toEqual([T1]);
+    }
+  });
+
+  test("cancelling during OpenRouter's wait prevents another request", async () => {
+    const controller = new AbortController();
+    const invoke = mock(async () => {
+      setTimeout(() => controller.abort(), 0);
+      throw new OpenRouterCreditError(undefined, { retryAfterMs: 120_000 });
+    });
+    const model: AuraModel = { bindTools: () => model, invoke };
+    createUniversalModelMock.mockResolvedValue(model);
+    const failure = await invokeChatModelWithFallback(messages, tools, T1, "user-1", "agent-1", null,
+      { signal: controller.signal }).catch((error: unknown) => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(invoke).toHaveBeenCalledTimes(1);
+  });
+
   test("OpenRouter needs matching positive allowance evidence before retrying", async () => {
     for (const allowance of [undefined, { requested: 2000, affordable: 0 }, { requested: 3000, affordable: 1000 }]) {
       createUniversalModelMock.mockClear();

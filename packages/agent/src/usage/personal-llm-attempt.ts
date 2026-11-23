@@ -61,7 +61,7 @@ export function classifyPersonalAttemptFailure(
   if (error instanceof MindSwapperRequestError && !providerWorkObserved && error.status === 402) {
     return { outcome: "failed", failureCode: error.code, disposition: "safe_refusal" };
   }
-  if (error instanceof OpenRouterCreditError && error.allowance && !providerWorkObserved) {
+  if (error instanceof OpenRouterCreditError && (error.allowance || error.inFlightBudget) && !providerWorkObserved) {
     return { outcome: "failed", failureCode: error.code, disposition: "safe_refusal" };
   }
   const status = classifyError(error).statusCode;
