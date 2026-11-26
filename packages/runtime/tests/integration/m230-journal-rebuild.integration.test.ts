@@ -78,6 +78,7 @@ const SECOND_MESSAGE_TIME = new Date("2000-01-01T08:01:30.000Z");
 const FIRST_EXTRACTION_TIME = new Date("2000-01-01T08:03:00.000Z");
 const SECOND_EXTRACTION_TIME = new Date("2000-01-01T08:04:00.000Z");
 const DEPENDENT_EDIT_TIME = new Date("2000-01-01T08:05:00.000Z");
+const SECOND_DEPENDENT_EDIT_TIME = new Date("2000-01-01T08:06:00.000Z");
 const QUARANTINE_TIME = new Date("2029-01-01T00:00:00.000Z");
 const TARGET_RECOVERY_TIME = new Date("2030-01-03T00:00:00.000Z");
 const DEPENDENCY_RECOVERY_TIME = new Date("2030-01-04T00:00:00.000Z");
@@ -384,9 +385,10 @@ describe("M230 Room-journal rebuild (live Postgres)", () => {
     }
   });
 
-  test("sunsets a quarantined native Record and settles it at scheduled recovery", async () => {
+  test("sunsets pending native Records across rebuild generations and settles stale Reflection work", async () => {
     const fixture = await makeFixture("quarantined-sunset");
     const recordRefs: string[] = [];
+    const cleanupRecordRefs: string[] = [];
     try {
       await initializeFixtureJournal(fixture);
       const firstClaim = await claimNextExtraction({ db, now: FIRST_EXTRACTION_TIME });
@@ -417,6 +419,7 @@ describe("M230 Room-journal rebuild (live Postgres)", () => {
         .where(eq(roomEvents.roomId, fixture.roomId));
       if (firstEvent?.recordId == null) throw new Error("missing first native Journal Record");
       recordRefs.push(firstEvent.recordId);
+      cleanupRecordRefs.push(firstEvent.recordId);
 
       const secondClaim = await claimNextExtraction({ db, now: SECOND_EXTRACTION_TIME });
       expect(secondClaim?.roomId).toBe(fixture.roomId);
@@ -448,6 +451,7 @@ describe("M230 Room-journal rebuild (live Postgres)", () => {
       const targetRecordRef = events[1]?.recordId;
       if (targetRecordRef == null) throw new Error("missing dependent native Journal Record");
       recordRefs.push(targetRecordRef);
+      cleanupRecordRefs.push(targetRecordRef);
       expect(await db.select()
         .from(reflectionRecordAuthorityDependencies)
         .where(and(
@@ -455,17 +459,18 @@ describe("M230 Room-journal rebuild (live Postgres)", () => {
           eq(reflectionRecordAuthorityDependencies.dependencyRecordId, firstEvent.recordId),
         ))).toHaveLength(1);
 
-      for (const [recordRef, recoverAfter] of [
-        [targetRecordRef, TARGET_RECOVERY_TIME],
-        [firstEvent.recordId, DEPENDENCY_RECOVERY_TIME],
+      for (const [recordRef, stage] of [
+        [targetRecordRef, "organization"],
+        [firstEvent.recordId, "authority_projection"],
       ] as const) {
         await db.update(reflectionRecordSemanticWork).set({
+          stage,
           state: "quarantined",
           attemptCount: 8,
           quarantineRound: 1,
           recoveryPolicyVersion: 2,
           nextAttemptAt: null,
-          recoverAfter,
+          recoverAfter: TARGET_RECOVERY_TIME,
           failureCode: "authority_unavailable",
           updatedAt: QUARANTINE_TIME,
         }).where(eq(reflectionRecordSemanticWork.recordId, recordRef));
@@ -500,6 +505,35 @@ describe("M230 Room-journal rebuild (live Postgres)", () => {
         .where(eq(roomJournalRecordRebuildRetirements.roomId, fixture.roomId)))
         .toEqual([{ state: "pending" }, { state: "pending" }]);
 
+      await editHumanRoomMessage({
+        roomId: fixture.roomId,
+        messageId: fixture.messageId,
+        callerUserId: fixture.userId,
+        callerActorId: fixture.userActorId,
+        content: "Journal evidence after the second edit",
+        expectedRevision: 1,
+        now: SECOND_DEPENDENT_EDIT_TIME,
+      });
+      expect(await readState(fixture.roomId)).toMatchObject({
+        rebuildGeneration: 2,
+        rebuildRequestedAt: SECOND_DEPENDENT_EDIT_TIME,
+      });
+      expect(await db.select({
+        rebuildGeneration: roomJournalRecordRebuildRetirements.rebuildGeneration,
+        recordId: roomJournalRecordRebuildRetirements.recordId,
+        state: roomJournalRecordRebuildRetirements.state,
+      }).from(roomJournalRecordRebuildRetirements)
+        .where(eq(roomJournalRecordRebuildRetirements.roomId, fixture.roomId))
+        .orderBy(
+          roomJournalRecordRebuildRetirements.rebuildGeneration,
+          roomJournalRecordRebuildRetirements.recordId,
+        ))
+        .toEqual([1, 2].flatMap(rebuildGeneration => [...recordRefs].sort().map(recordId => ({
+          rebuildGeneration,
+          recordId,
+          state: "pending",
+        }))));
+
       expect(await prepareNextJournalRebuild({ db, now: REBUILD_TIME }))
         .toBe(fixture.roomId);
       const rebuildClaim = await claimJournalRebuildExtraction(fixture.roomId, {
@@ -509,14 +543,37 @@ describe("M230 Room-journal rebuild (live Postgres)", () => {
       expect(rebuildClaim).not.toBeNull();
       expect(await publisher.publishExtraction({
         claim: rebuildClaim!,
-        operations: [],
+        operations: [{
+          op: "append",
+          kind: "fact",
+          statement: "Current Journal evidence after the rebuild.",
+          sourceMessageIds: [fixture.messageId],
+        }],
         modelId: null,
         now: REBUILD_TIME,
-      })).toEqual({ published: true, eventsWritten: 0 });
+      })).toEqual({ published: true, eventsWritten: 1 });
       expect(await readState(fixture.roomId)).toMatchObject({
+        rebuildGeneration: 2,
         rebuildRequestedAt: null,
         rebuildTargetMessageId: null,
       });
+      const [survivor] = await db.select({
+        recordId: roomEvents.recordId,
+      }).from(roomEvents)
+        .where(and(
+          eq(roomEvents.roomId, fixture.roomId),
+          eq(roomEvents.status, "active"),
+        ));
+      if (survivor?.recordId == null) throw new Error("missing current rebuild survivor");
+      cleanupRecordRefs.push(survivor.recordId);
+      expect(recordRefs).not.toContain(survivor.recordId);
+      expect(await db.select({ lifecycle: reflectionRecords.lifecycle })
+        .from(reflectionRecords)
+        .where(eq(reflectionRecords.recordId, survivor.recordId)))
+        .toEqual([{ lifecycle: "current" }]);
+      await db.update(reflectionRecordSemanticWork).set({
+        nextAttemptAt: DEPENDENCY_RECOVERY_TIME,
+      }).where(eq(reflectionRecordSemanticWork.recordId, survivor.recordId));
       const sunsetRecords = await db.select({
         recordId: reflectionRecords.recordId,
         lifecycle: reflectionRecords.lifecycle,
@@ -528,20 +585,17 @@ describe("M230 Room-journal rebuild (live Postgres)", () => {
         expect(sunsetRecords.find(record => record.recordId === recordRef)?.lifecycle)
           .toBe("sunset");
       }
-      expect(await db.select({ state: roomJournalRecordRebuildRetirements.state })
+      expect(await db.select({
+        rebuildGeneration: roomJournalRecordRebuildRetirements.rebuildGeneration,
+        state: roomJournalRecordRebuildRetirements.state,
+      })
         .from(roomJournalRecordRebuildRetirements)
-        .where(eq(roomJournalRecordRebuildRetirements.roomId, fixture.roomId)))
-        .toEqual([{ state: "sunset" }, { state: "sunset" }]);
-
-      const [beforeRecovery] = await db.select({
-        state: reflectionRecordSemanticWork.state,
-        recoverAfter: reflectionRecordSemanticWork.recoverAfter,
-      }).from(reflectionRecordSemanticWork)
-        .where(eq(reflectionRecordSemanticWork.recordId, targetRecordRef));
-      expect(beforeRecovery).toMatchObject({
-        state: "quarantined",
-        recoverAfter: TARGET_RECOVERY_TIME,
-      });
+        .where(eq(roomJournalRecordRebuildRetirements.roomId, fixture.roomId))
+        .orderBy(roomJournalRecordRebuildRetirements.rebuildGeneration))
+        .toEqual([1, 1, 2, 2].map(rebuildGeneration => ({
+          rebuildGeneration,
+          state: "sunset",
+        })));
 
       const handle = await verifyRecordProductPostgresHandle(
         createRecordProductPostgresConnection(db),
@@ -557,36 +611,55 @@ describe("M230 Room-journal rebuild (live Postgres)", () => {
         commitments: createHmacRecordSemanticCommitmentPort(new Uint8Array(32).fill(61)),
         clock: () => TARGET_RECOVERY_TIME,
       });
-      const recovered = await semanticWork.claimNext();
-      expect(recovered).toMatchObject({
-        status: "claimed",
-        claim: {
-          recordRef: targetRecordRef,
-          recoveredFromQuarantine: true,
-        },
-      });
-      if (recovered.status !== "claimed") throw new Error("expected scheduled recovery claim");
-      expect(await semanticWork.settleCurrentState({ claim: recovered.claim }))
-        .toMatchObject({
-          status: "settled",
-          reason: "record_lifecycle_obsolete",
+      const recoveredStages = new Map<string, string>();
+      for (let index = 0; index < recordRefs.length; index += 1) {
+        const recovered = await semanticWork.claimNext();
+        expect(recovered).toMatchObject({
+          status: "claimed",
+          claim: {
+            recoveredFromQuarantine: true,
+          },
         });
+        if (recovered.status !== "claimed") throw new Error("expected scheduled recovery claim");
+        recoveredStages.set(recovered.claim.recordRef, recovered.claim.stage);
+        expect(await semanticWork.settleCurrentState({ claim: recovered.claim }))
+          .toMatchObject({
+            status: "settled",
+            reason: "record_lifecycle_obsolete",
+          });
+      }
+      expect(recoveredStages.get(targetRecordRef)).toBe("organization");
+      expect(recoveredStages.get(firstEvent.recordId)).toBe("authority_projection");
       expect(await db.select({
+        recordId: reflectionRecordSemanticWork.recordId,
         state: reflectionRecordSemanticWork.state,
         completionOutcome: reflectionRecordSemanticWork.completionOutcome,
         recoverAfter: reflectionRecordSemanticWork.recoverAfter,
       }).from(reflectionRecordSemanticWork)
-        .where(eq(reflectionRecordSemanticWork.recordId, targetRecordRef)))
-        .toEqual([{
+        .where(inArray(reflectionRecordSemanticWork.recordId, recordRefs))
+        .orderBy(reflectionRecordSemanticWork.recordId))
+        .toEqual([...recordRefs].sort().map(recordId => ({
+          recordId,
           state: "complete",
           completionOutcome: "record_lifecycle_obsolete",
           recoverAfter: null,
-        }]);
+        })));
+      expect(await db.select({
+        lifecycle: reflectionRecords.lifecycle,
+        semanticWorkState: reflectionRecordSemanticWork.state,
+      })
+        .from(reflectionRecords)
+        .innerJoin(
+          reflectionRecordSemanticWork,
+          eq(reflectionRecordSemanticWork.recordId, reflectionRecords.recordId),
+        )
+        .where(eq(reflectionRecords.recordId, survivor.recordId)))
+        .toEqual([{ lifecycle: "current", semanticWorkState: "due" }]);
     } finally {
-      if (recordRefs.length > 0) {
+      if (cleanupRecordRefs.length > 0) {
         await db.update(reflectionRecords)
           .set({ disposition: "purged" })
-          .where(inArray(reflectionRecords.recordId, recordRefs));
+          .where(inArray(reflectionRecords.recordId, cleanupRecordRefs));
       }
       await cleanupFixture(fixture);
     }
