@@ -6,7 +6,7 @@ const RECOVERY_ROUTE =
 const STENOGRAPHER_STATUS_ROUTE =
   "http:request_response:GET /api/admin/stenographer-status";
 
-export const REVIEWED_MEMORY_REVIEW_DTO_LOCATORS = new Set([
+const REVIEWED_MEMORY_REVIEW_DTO_LOCATORS = new Set([
   RECOVERY_ROUTE,
   STENOGRAPHER_STATUS_ROUTE,
 ]);
