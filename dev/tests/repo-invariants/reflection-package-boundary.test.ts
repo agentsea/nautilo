@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
+import { checkoutFiles } from "./checkout-files";
 
 const ROOT = resolve(import.meta.dir, "../../..");
 const REFLECTION_SOURCE = join(ROOT, "packages/reflection/src");
@@ -111,13 +112,12 @@ describe("M257 Reflection bridge ownership boundary", () => {
   });
 
   test("Record product SQL has one bridge owner and no production caller", () => {
-    const roots = ["apps", "bin", "packages"];
     const table = "reflection_record_publications";
-    const references = roots.flatMap((root) => {
-      const directory = join(ROOT, root);
-      return existsSync(directory) ? TypeScriptFiles(directory) : [];
-    }).filter((file) => readFileSync(file, "utf8").includes(table))
-      .map((file) => relative(ROOT, file).replaceAll("\\", "/"))
+    // Checkout files only: walking node_modules and other ignored content made
+    // this scan exceed the test timeout on Windows.
+    const references = checkoutFiles(ROOT, ["apps", "bin", "packages"])
+      .filter((file) => file.endsWith(".ts"))
+      .filter((file) => readFileSync(join(ROOT, file), "utf8").includes(table))
       .filter((file) =>
         !file.startsWith("packages/db/")
         && !file.startsWith("packages/reflection-bridge/src/server/")
