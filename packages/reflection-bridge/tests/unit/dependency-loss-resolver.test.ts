@@ -300,6 +300,234 @@ describe("exact grounded dependency loss", () => {
     }]);
   });
 
+  test("reports a bounded six-Record successor-normalized metadata cycle without opening its payloads", async () => {
+    let rewrites = 0;
+    let metadataCalls = 0;
+    const cycle = Array.from({ length: 6 }, (_, index) => `record:cycle:${index + 1}`);
+    const successor = new Map([
+      ["record:old-child", cycle[0]!],
+    ]);
+    const resolver = new ExactGroundedDependencyLossResolver({
+      eligibility: { async check() { return { status: "unavailable", reason: "not_eligible" }; } } as never,
+      recordBindings: {
+        async read(recordRef) {
+          return {
+            originPublicationBindingRef: `binding:${recordRef}`,
+            currentAccessBindingRefs: [`binding:${recordRef}`],
+            representationGeneration: 1,
+            authorityProjectionGeneration: null,
+          };
+        },
+      },
+      recordState: {
+        async readState(recordRef) {
+          metadataCalls += 1;
+          return {
+            status: "available",
+            lifecycle: successor.has(recordRef) ? "superseded" : "current",
+            processingGeneration: 1,
+            disposition: "available",
+          };
+        },
+        async readSuccessors({ recordRef }) {
+          metadataCalls += 1;
+          const next = successor.get(recordRef);
+          return {
+            status: "available",
+            successorRecordRefs: next === undefined ? [] : [next],
+            complete: true,
+          };
+        },
+        async readDependencyRecordRefs({ recordRef, limit }) {
+          metadataCalls += 1;
+          const index = cycle.indexOf(recordRef);
+          const refs = index < 0 ? [] : [cycle[(index + 1) % cycle.length]!];
+          return {
+            status: "available",
+            dependencyRecordRefs: refs.slice(0, limit),
+            complete: refs.length <= limit,
+          };
+        },
+      },
+      repository: {
+        async read({ recordRef }: { recordRef: string }) {
+          if (recordRef !== cycle[0]) {
+            throw new Error("cycle diagnostic opened a metadata-only payload");
+          }
+          return {
+            status: "available",
+            record: { ...input.record, recordRef },
+          };
+        },
+      } as never,
+      source: {} as never,
+      invalidation: { async admit() {} },
+      statements: {
+        async rewrite() {
+          rewrites += 1;
+          return { status: "unavailable" };
+        },
+      },
+    });
+
+    expect(await resolver.resolve({
+      ...input,
+      record: {
+        ...input.record,
+        semantic: {
+          ...input.record.semantic,
+          sourceDependencies: [],
+          childRecordRefs: ["record:old-child"],
+        },
+      },
+    })).toEqual({
+      status: "unavailable",
+      evidence: { kind: "dependency_cycle" },
+    });
+    expect(rewrites).toBe(0);
+    expect(metadataCalls).toBeLessThanOrEqual(input.maxVisitedRecords);
+
+    metadataCalls = 0;
+    expect(await resolver.resolve({
+      ...input,
+      maxVisitedRecords: 4,
+      record: {
+        ...input.record,
+        semantic: {
+          ...input.record.semantic,
+          sourceDependencies: [],
+          childRecordRefs: ["record:old-child"],
+        },
+      },
+    })).toEqual({ status: "unavailable" });
+    expect(metadataCalls).toBeLessThanOrEqual(8);
+    expect(rewrites).toBe(0);
+  });
+
+  test("does not infer eligibility for an acyclic successor with a revoked or missing projection", async () => {
+    let rewrites = 0;
+    const reads: string[] = [];
+    const resolver = new ExactGroundedDependencyLossResolver({
+      eligibility: { async check() { return { status: "unavailable", reason: "not_eligible" }; } } as never,
+      recordBindings: {
+        async read(recordRef) {
+          return {
+            originPublicationBindingRef: `binding:${recordRef}`,
+            currentAccessBindingRefs: [`binding:${recordRef}`],
+            representationGeneration: 1,
+            authorityProjectionGeneration: null,
+          };
+        },
+      },
+      recordState: {
+        async readState(recordRef) {
+          return {
+            status: "available",
+            lifecycle: recordRef === "record:old-child" ? "superseded" : "current",
+            processingGeneration: 1,
+            disposition: "available",
+          };
+        },
+        async readSuccessors({ recordRef }) {
+          return {
+            status: "available",
+            successorRecordRefs: recordRef === "record:old-child"
+              ? ["record:replacement"]
+              : [],
+            complete: true,
+          };
+        },
+        async readDependencyRecordRefs({ recordRef }) {
+          return {
+            status: "available",
+            dependencyRecordRefs: recordRef === "record:replacement"
+              ? ["record:unproven"]
+              : [],
+            complete: true,
+          };
+        },
+      },
+      repository: {
+        async read({ recordRef }: { recordRef: string }) {
+          reads.push(recordRef);
+          if (recordRef === "record:unproven") {
+            throw new Error("ineligible diagnostic payload opened");
+          }
+          return {
+            status: "available",
+            record: {
+              ...input.record,
+              recordRef,
+              structuralHeight: 0,
+              semantic: {
+                ...input.record.semantic,
+                sourceDependencies: [],
+                childRecordRefs: [],
+                modelExposureDependencies: recordRef === "record:replacement"
+                  ? [{
+                      kind: "record" as const,
+                      recordRef: "record:unproven",
+                      observedProcessingGeneration: 1,
+                      terminalAuthorityLeafHandles: ["namespace:one"],
+                    }]
+                  : [],
+              },
+            },
+          };
+        },
+      } as never,
+      source: {} as never,
+      invalidation: { async admit() {} },
+      statements: {
+        async rewrite() {
+          rewrites += 1;
+          return { status: "unavailable" };
+        },
+      },
+    });
+
+    expect(await resolver.resolve({
+      ...input,
+      record: {
+        ...input.record,
+        semantic: {
+          ...input.record.semantic,
+          sourceDependencies: [],
+          childRecordRefs: ["record:old-child"],
+        },
+      },
+    })).toEqual({ status: "unavailable" });
+    expect(rewrites).toBe(0);
+    expect(reads).toEqual(["record:replacement"]);
+  });
+
+  test("propagates unexpected authority failures instead of classifying them as evidence", async () => {
+    const resolver = new ExactGroundedDependencyLossResolver({
+      eligibility: {
+        async check() { throw new Error("authority storage failed"); },
+      } as never,
+      repository: {
+        async read() {
+          return {
+            status: "available",
+            record: { ...input.record, recordRef: "record:remaining" },
+          };
+        },
+      } as never,
+      source: {} as never,
+      invalidation: { async admit() {} },
+      statements: {} as never,
+    });
+
+    expect(resolver.resolve({
+      ...input,
+      record: {
+        ...input.record,
+        semantic: { ...input.record.semantic, sourceDependencies: [] },
+      },
+    })).rejects.toThrow("authority storage failed");
+  });
+
   test("fails closed on cyclic successor metadata", async () => {
     const result = await resolveCurrentDependencyInputRef({
       recordRef: "record:a",

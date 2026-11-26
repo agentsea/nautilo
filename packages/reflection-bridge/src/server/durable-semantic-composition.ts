@@ -308,7 +308,12 @@ export interface CrossRoomOrganizerPartitionPort {
 
 export type GroundedDependencyLossDecision =
   | { readonly status: "stable" }
-  | { readonly status: "unavailable" }
+  | Readonly<{
+      status: "unavailable";
+      evidence?: Readonly<{
+        kind: "dependency_cycle";
+      }>;
+    }>
   | { readonly status: "total_loss" }
   | Readonly<{
       status: "partial_loss";
@@ -821,7 +826,13 @@ implements DurableSleepSemanticPort {
     });
     if (loss.status === "stable") return { status: "not_applicable" };
     if (loss.status === "unavailable") {
-      return { status: "unavailable", failureCode: "candidate_unavailable" };
+      return {
+        status: "unavailable",
+        failureCode: "candidate_unavailable",
+        ...(loss.evidence?.kind === "dependency_cycle"
+          ? { failureDetail: "candidate_selection_invalid" as const }
+          : {}),
+      };
     }
     const proposal = loss.status === "total_loss"
       ? {

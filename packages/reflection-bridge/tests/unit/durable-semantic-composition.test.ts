@@ -204,6 +204,64 @@ describe("same-Room durable semantic composition", () => {
     expect(appliedPlan).toMatchObject({ applicationPlanToken: planned });
   });
 
+  test("persists proven dependency cycles through the existing candidate diagnostic", async () => {
+    const predecessor = record("record:changed", "A cyclic derived Record.");
+    const composition = new SameRoomDurableSemanticComposition({
+      repository: {
+        read: () => Promise.resolve({ status: "available", record: predecessor }),
+      } as never,
+      readiness: {} as never,
+      bindings: {
+        resolveWork: () => Promise.resolve({
+          readBindingRef: "read:parent",
+          invocationAudience: {
+            humanRefs: ["human:a"],
+            includesPublicBoundary: false,
+          },
+        }),
+        resolve: () => Promise.resolve({
+          status: "available",
+          binding: {
+            roomAnchorRef: "room:one",
+            invocationAudience: {
+              humanRefs: ["human:a"],
+              includesPublicBoundary: false,
+            },
+            readBindingRef: "read:parent",
+            searchBindingRef: "search:parent",
+            publicationBindingRef: "publish:parent",
+          },
+        }),
+      },
+      organizerNeighbors: {} as never,
+      memories: {} as never,
+      model: {} as never,
+      dependencyLoss: {
+        resolve: () => Promise.resolve({
+          status: "unavailable",
+          evidence: { kind: "dependency_cycle" },
+        }),
+      },
+      proposals: {} as never,
+    });
+
+    expect(await composition.resolveDependencyLoss({
+      claim: { ...claim, changeReason: "dependency_lost" },
+      idempotencyKey: "sleep-dependency-loss:record:changed:cycle",
+      budget: {
+        maxModelCalls: 2,
+        maxVisitedRecords: 16,
+        maxCreatedRecords: 1,
+        maxTraversalWork: 32,
+        maxStatementCharacters: 800,
+      },
+    })).toEqual({
+      status: "unavailable",
+      failureCode: "candidate_unavailable",
+      failureDetail: "candidate_selection_invalid",
+    });
+  });
+
   test("plans the exact same-Room authored-source evidence used by dependency repair", async () => {
     const predecessor = {
       ...record("record:changed", "A parent with authored support."),

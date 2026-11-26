@@ -32,6 +32,25 @@ test("recovery reports truncated successor sets instead of selecting an arbitrar
   expect(await state.readSuccessors({recordRef: "old-record", limit: 2})).toEqual({status: "available", successorRecordRefs: ["a", "b"], complete: false});
 });
 
+test("cycle diagnosis reads the bounded union of content-free dependency indices", async () => {
+  const {state, statements} = await fixture([
+    {dependency_record_ref: "a"},
+    {dependency_record_ref: "b"},
+    {dependency_record_ref: "c"},
+  ]);
+  expect(await state.readDependencyRecordRefs({
+    recordRef: "parent",
+    limit: 2,
+  })).toEqual({
+    status: "available",
+    dependencyRecordRefs: ["a", "b"],
+    complete: false,
+  });
+  expect(statements[0]).toContain('"reflection_record_dependencies"');
+  expect(statements[0]).toContain('"reflection_record_authority_dependencies"');
+  expect(statements[0]).not.toContain("payload");
+});
+
 test("a persisted protected grant restores only the logical Record coordinate", async () => {
   const {state, statements} = await fixture([{record_id: "logical-record"}]);
   expect(await state.readRecordRefForProtectedObject("old-object")).toBe("logical-record");

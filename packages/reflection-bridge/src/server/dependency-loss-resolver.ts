@@ -60,6 +60,18 @@ export interface GroundedDependencyRecordStatePort {
       }>
     | Readonly<{ status: "unavailable" }>
   >;
+  /** Content-free union of direct semantic support and authenticated exposure edges. */
+  readDependencyRecordRefs?(input: Readonly<{
+    recordRef: string;
+    limit: number;
+  }>): Promise<
+    | Readonly<{
+        status: "available";
+        dependencyRecordRefs: readonly string[];
+        complete: boolean;
+      }>
+    | Readonly<{ status: "unavailable" }>
+  >;
 }
 
 export type CurrentDependencyInputRefResult =
@@ -115,6 +127,93 @@ export async function resolveCurrentDependencyInputRef(input: Readonly<{
     }
     recordRef = successorRef;
   }
+}
+
+type DependencyCycleEvidence = Readonly<{ kind: "dependency_cycle" }>;
+
+/**
+ * Diagnose only from product-owned, content-free edge indices. The single
+ * work counter bounds every metadata read and every returned edge considered.
+ */
+async function diagnoseCurrentDependencyCycle(input: Readonly<{
+  recordState: GroundedDependencyRecordStatePort;
+  rootRecordRef: string;
+  maxWork: number;
+  signal?: AbortSignal;
+}>): Promise<DependencyCycleEvidence | undefined> {
+  const readDependencies = input.recordState.readDependencyRecordRefs?.bind(
+    input.recordState,
+  );
+  if (readDependencies === undefined || input.maxWork < 1) return undefined;
+  let remainingWork = input.maxWork;
+  let indeterminate = false;
+  let cycle = false;
+  const consume = (): boolean => {
+    if (remainingWork < 1) return false;
+    remainingWork -= 1;
+    return true;
+  };
+  const boundedRecordState: GroundedDependencyRecordStatePort = {
+    readState: async (recordRef) => consume()
+      ? input.recordState.readState(recordRef)
+      : { status: "unavailable" },
+    readSuccessors: async (successorInput) => consume()
+      ? input.recordState.readSuccessors(successorInput)
+      : { status: "unavailable" },
+  };
+  const normalize = async (recordRef: string): Promise<string | undefined> => {
+    const current = await resolveCurrentDependencyInputRef({
+      recordState: boundedRecordState,
+      recordRef,
+      maxVisitedRecords: input.maxWork,
+      ...(input.signal === undefined ? {} : { signal: input.signal }),
+    });
+    return current.status === "current" ? current.recordRef : undefined;
+  };
+
+  const completed = new Set<string>();
+  const visiting = new Set<string>();
+  const visitCurrent = async (recordRef: string): Promise<void> => {
+    if (cycle || indeterminate || completed.has(recordRef)) return;
+    if (visiting.has(recordRef)) {
+      cycle = true;
+      return;
+    }
+    visiting.add(recordRef);
+    if (!consume()) {
+      indeterminate = true;
+      return;
+    }
+    const page = await readDependencies({
+      recordRef,
+      limit: Math.max(1, remainingWork),
+    });
+    input.signal?.throwIfAborted();
+    if (page.status !== "available" || !page.complete) {
+      indeterminate = true;
+      return;
+    }
+    for (const dependencyRecordRef of page.dependencyRecordRefs) {
+      if (!consume()) {
+        indeterminate = true;
+        return;
+      }
+      const current = await normalize(dependencyRecordRef);
+      if (current === undefined) {
+        indeterminate = true;
+        return;
+      }
+      await visitCurrent(current);
+      if (cycle || indeterminate) return;
+    }
+    visiting.delete(recordRef);
+    completed.add(recordRef);
+  };
+
+  const root = await normalize(input.rootRecordRef);
+  if (root === undefined) return undefined;
+  await visitCurrent(root);
+  return cycle && !indeterminate ? { kind: "dependency_cycle" } : undefined;
 }
 
 function validReplacement(statement: string): boolean {
@@ -184,7 +283,7 @@ implements GroundedDependencyLossPort {
       }
     };
 
-    const openCurrentRecord = async (
+    const openCanonicalCurrentRecord = async (
       recordRef: string,
       expectedGeneration?: number,
     ): Promise<
@@ -220,21 +319,13 @@ implements GroundedDependencyLossPort {
           || currentProcessingGeneration !== opened.record.processingGeneration
         )
       ) return { status: "unavailable" };
-      if (opened.record.lifecycle === "current") {
-        const eligible = await this.ports.eligibility.check({
-          recordRef: currentRecordRef,
-          invocationAudience: input.binding.invocationAudience,
-        });
-        return eligible.status === "eligible"
-          ? {
-              status: "available",
-              record: opened.record,
-              replaced: currentRecordRef !== recordRef
-                || expectedGeneration !== undefined
-                  && opened.record.processingGeneration !== expectedGeneration,
-            }
-          : { status: "unavailable" };
-      }
+      if (opened.record.lifecycle === "current") return {
+        status: "available",
+        record: opened.record,
+        replaced: currentRecordRef !== recordRef
+          || expectedGeneration !== undefined
+            && opened.record.processingGeneration !== expectedGeneration,
+      };
       return resolveSuccessor(
         recordRef,
         readBindingRef,
@@ -279,13 +370,35 @@ implements GroundedDependencyLossPort {
       if (successor.status !== "available" || successor.record.lifecycle !== "current") {
         return { status: "unavailable" };
       }
+      return { status: "available", record: successor.record, replaced: true };
+    };
+
+    const openCurrentRecord = async (
+      recordRef: string,
+      expectedGeneration?: number,
+    ): Promise<
+      | { readonly status: "available"; readonly record: DurableRecordEnvelope; readonly replaced: boolean }
+      | { readonly status: "lost" }
+      | Extract<GroundedDependencyLossDecision, {status: "unavailable"}>
+    > => {
+      const opened = await openCanonicalCurrentRecord(recordRef, expectedGeneration);
+      if (opened.status !== "available") return opened;
       const eligible = await this.ports.eligibility.check({
-        recordRef: successorRef,
+        recordRef: opened.record.recordRef,
         invocationAudience: input.binding.invocationAudience,
       });
-      return eligible.status === "eligible"
-        ? { status: "available", record: successor.record, replaced: true }
-        : { status: "unavailable" };
+      if (eligible.status === "eligible") return opened;
+      const evidence = opened.replaced && this.ports.recordState !== undefined
+        ? await diagnoseCurrentDependencyCycle({
+            recordState: this.ports.recordState,
+            rootRecordRef: opened.record.recordRef,
+            maxWork: input.maxVisitedRecords,
+            ...(input.signal === undefined ? {} : { signal: input.signal }),
+          })
+        : undefined;
+      return evidence === undefined
+        ? { status: "unavailable" }
+        : { status: "unavailable", evidence };
     };
 
     const retainSource = async (
@@ -344,7 +457,7 @@ implements GroundedDependencyLossPort {
           ? priorExposure.observedProcessingGeneration
           : undefined,
       );
-      if (current.status === "unavailable") return { status: "unavailable" };
+      if (current.status === "unavailable") return current;
       if (current.status === "lost") { lost += 1; continue; }
       if (current.replaced) lost += 1;
       retainRecord(current.record, true);
@@ -374,7 +487,7 @@ implements GroundedDependencyLossPort {
           exposure.recordRef,
           exposure.observedProcessingGeneration,
         );
-        if (current.status === "unavailable") return { status: "unavailable" };
+        if (current.status === "unavailable") return current;
         if (current.status === "lost") { lost += 1; continue; }
         if (current.replaced) lost += 1;
         retainRecord(current.record, false);
