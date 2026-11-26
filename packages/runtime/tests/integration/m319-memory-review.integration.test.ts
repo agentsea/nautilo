@@ -200,6 +200,7 @@ describe("M319 durable Memory processing on PostgreSQL", () => {
     expect(await repo.reconcile(claim)).toBe("not_published");
     expect(await repo.modelReplaySafety(claim)).toBe("allow");
     expect(await repo.bindServiceModel(claim, () => "changed-default")).toBe(model);
+    await repo.beginModelRecoveryDispatch(claim);
     expect(await repo.claimNext({ now: new Date(claim.leaseUntil.getTime() + 1) })).toBeNull();
 
     await repo.load(claim);
@@ -212,6 +213,70 @@ describe("M319 durable Memory processing on PostgreSQL", () => {
     expect(receipts.filter(receipt => receipt.outcome === "published")).toHaveLength(1);
     expect(await repo.requestModelRecovery(request)).toBe("blocked");
     expect(await repo.claimNext({ now })).toBeNull();
+  });
+
+  test("a resumed turn revokes an unsent recovery reservation and allows fresh consent", async () => {
+    const resumedTurnId = randomUUID();
+    await admit(resumedTurnId);
+    await admit(randomUUID());
+    const previous = await repo.claimNext({ now: new Date() });
+    if (!previous) throw new Error("expected original review claim");
+    const modelId = "openai:gpt-5.6-sol";
+    const accepted = {
+      version: 1 as const, kind: "service" as const, role: "memoryReview" as const, modelId,
+      inputCommitment: `hmac-sha256:${"a".repeat(43)}`,
+    };
+    await repo.bindModelOperation(previous, async () => accepted);
+    await db.insert(llmUsageEvents).values({
+      roomId, callType: "memory_review", model: modelId, provider: "openai",
+      fundingKind: "service", providerRoute: "surplus", providerRequestId: randomUUID(),
+      endpoint: "/v1/chat/completions", attemptOutcome: "succeeded", costState: "actual",
+      actualCostUsd: "0.01", metadata: { workId: previous.workId, attemptId: previous.attemptId },
+    });
+    await repo.fail({ claim: previous, phase: "model", reason: "provider_outcome_unknown", retryable: false, now: new Date() });
+    const request = () => repo.requestModelRecovery({
+      workId: previous.workId, headTurnId: previous.turnIds[0]!, authorizedBy: userId, now: new Date(),
+    });
+    expect(await request()).toBe("queued");
+    const reserved = await repo.claimNext({ now: new Date() });
+    if (!reserved) throw new Error("expected a reserved review claim");
+    expect(await request()).toBe("already_requested");
+
+    const appended = await appendTranscriptMessages(threadId, userId, "owner", [new AIMessage("Synthetic resumed review evidence")], {
+      agentId, roomId, humanTurnId: resumedTurnId,
+      memoryReview: { ownerId: userId, actorId, accessScope: "namespace", checkpointThreadId: threadId },
+    });
+    expect(appended.insertedCount).toBe(1);
+    await Promise.resolve(expect(repo.beginModelRecoveryDispatch(reserved)).rejects.toThrow("lease_lost"));
+    await repo.fail({ claim: reserved, phase: "model", reason: "source_or_lease_changed", retryable: false, now: new Date() });
+    expect(await request()).toBe("blocked");
+    await db.transaction(tx => markMemoryReviewTurnInTx(tx, {
+      threadId, agentId, turnId: resumedTurnId, reviewTurnId: previous.turnIds[0]!, state: "completed",
+    }));
+    expect(await repo.claimNext({ now: new Date() })).toBeNull();
+    const [firstReservation] = await db.select().from(memoryReviewModelRecoveries)
+      .where(eq(memoryReviewModelRecoveries.workId, previous.workId));
+    expect(firstReservation).toMatchObject({ spentAt: null, recoveryAttemptId: reserved.attemptId });
+
+    expect(await request()).toBe("queued");
+    const renewed = await repo.claimNext({ now: new Date() });
+    if (!renewed) throw new Error("expected a renewed review claim");
+    expect(renewed.turnIds).toEqual(reserved.turnIds);
+    expect(renewed.sourceIds).toContain(Number(appended.insertedRows[0]!.id));
+    expect(renewed.attemptId).not.toBe(reserved.attemptId);
+    const refreshed = { ...accepted, inputCommitment: `hmac-sha256:${"b".repeat(43)}` };
+    expect(await repo.bindModelOperation(renewed, async (legacyModelId) => {
+      expect(legacyModelId).toBe(modelId);
+      return refreshed;
+    })).toEqual(refreshed);
+    expect(await repo.modelReplaySafety(renewed)).toBe("allow");
+    await repo.load(renewed);
+    await repo.beginModelRecoveryDispatch(renewed);
+    await Promise.resolve(expect(repo.beginModelRecoveryDispatch(renewed)).rejects.toThrow("dispatch authorization changed"));
+    expect(await request()).toBe("already_requested");
+    expect(await repo.claimNext({ now: new Date(renewed.leaseUntil.getTime() + 1) })).toBeNull();
+    const proposal: PreparedMemoryReview = { envelope, speakerUserId: userId, operations: [], snapshots: [] };
+    expect(await repo.publish({ claim: renewed, proposal, modelId, now: new Date(), durationMs: 0 })).toBe("published");
   });
 
   test("two unusable results remain exactly retryable for each service provider route", async () => {

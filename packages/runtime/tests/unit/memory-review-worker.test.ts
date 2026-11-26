@@ -159,6 +159,35 @@ describe("durable Memory review worker", () => {
     expect(failures[0]).toMatchObject({ phase: "model", reason: "provider_failed", retryable: false });
   });
 
+  test.each(["granted", "revoked"] as const)("fences every recovery model invocation when dispatch admission is %s", async (status) => {
+    const admitted = status === "granted";
+    const { deps, events, failures } = fixture();
+    deps.repository.claimNext = async () => ({ ...claim, modelRecovery: "authorized" });
+    deps.repository.modelReplaySafety = async () => "allow";
+    deps.repository.beginModelRecoveryDispatch = async (recovery) => {
+      expect(recovery.attemptId).toBe(claim.attemptId);
+      events.push("dispatch");
+      if (!admitted) throw new Error("lease_lost");
+    };
+    deps.invokeModel = async () => {
+      events.push("provider");
+      return new AIMessage("fixture response");
+    };
+    deps.prepare = async (messages, options) => {
+      await options?.invokeModel?.({ messages, tools: [], modelId: "model" });
+      await options?.invokeModel?.({ messages, tools: [], modelId: "model" });
+      return { status: "prepared", turns: 2, modelId: "model", proposal };
+    };
+
+    await run(deps);
+
+    expect(events.filter((event) => event === "dispatch" || event === "provider")).toEqual(
+      admitted ? ["dispatch", "provider", "provider"] : ["dispatch"],
+    );
+    expect(events.includes("publish")).toBe(admitted);
+    if (!admitted) expect(failures[0]).toMatchObject({ phase: "model", retryable: false });
+  });
+
   test("uncertain publication is not transformed into an automatic model retry", async () => {
     const { deps, events, failures } = fixture();
     deps.repository.publish = async () => { throw new Error("connection lost"); };

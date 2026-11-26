@@ -64,17 +64,17 @@ export const MIGRATION_TREE_BASELINE = {
 // Message-content boundary; only routing, isolation, and archive coordinates
 // are bounded metadata. The fixed restore fence remains the single additional
 // statically unresolved transport and has no caller-controlled SQL input.
-// Memory review recovery adds one server-only typed INSERT and two typed UPDATE
-// sites. They persist and consume only exact UUID review coordinates and
-// authorization/consumption timestamps; no review input or model output is
-// stored in the recovery receipt.
+// Memory review recovery writes only exact UUID review coordinates and
+// authorization/dispatch timestamps. Reconfirming a reservation that never
+// dispatched also updates the selected turns with their existing service model
+// so current inputs can bind again. Recovery receipts store no model content.
 export const DATABASE_WRITER_BASELINE = {
-  "count": 1670,
+  "count": 1673,
   "insert": 535,
-  "update": 924,
+  "update": 927,
   "delete": 193,
   "unresolved": 18,
-  "sha256": "4ec83d472134ae57478c496647fbe306ffb9141ab5847c00f257c7e0cd95ab6f"
+  "sha256": "5eed5d926e80874e8292220636c878317f433368b8aab6e1ccdea55f8e962701"
 } as const;
 
 /**
