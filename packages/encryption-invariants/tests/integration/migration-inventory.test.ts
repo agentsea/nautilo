@@ -173,6 +173,10 @@ const IMMUTABLE_MEMORY_RECOVERY_MIGRATION_MANIFEST = [
     path: "0388_acoustic_lester.sql",
     sha256: "25e107928a7960016bf5d97f25f311d10dff8e58b948a5ca50942fd5163a82ef",
   },
+  {
+    path: "0389_memory_review_model_recovery_privileges.sql",
+    sha256: "2adf4e7c773b177daf414a6a44d92788c4b43207918578620dd776394ffde1f4",
+  },
 ] as const;
 
 function temporaryMigrationTree(name: string): string {
@@ -523,10 +527,10 @@ describe("migration inventory", () => {
     expect(inventory.migrations.every((migration) => !migration.path.startsWith("/")))
       .toBe(true);
     expect(inventory.migrations.at(-1)).toEqual({
-      index: 388,
-      tag: "0388_acoustic_lester",
-      path: "0388_acoustic_lester.sql",
-      sha256: "25e107928a7960016bf5d97f25f311d10dff8e58b948a5ca50942fd5163a82ef",
+      index: 389,
+      tag: "0389_memory_review_model_recovery_privileges",
+      path: "0389_memory_review_model_recovery_privileges.sql",
+      sha256: "2adf4e7c773b177daf414a6a44d92788c4b43207918578620dd776394ffde1f4",
     });
 
     const comparison = compareSchemaAndMigrationInventory(
@@ -575,11 +579,11 @@ describe("migration inventory", () => {
     });
   });
 
-  test("pins the Memory recovery and failure-vocabulary migrations without a DB", () => {
+  test("pins the Memory recovery, failure-vocabulary, and privilege migrations without a DB", () => {
     const directory = resolve(import.meta.dir, "../../../db/src/migrations");
     const inventory = inventoryMigrationTree(directory);
 
-    expect(inventory.migrations.slice(387, 389).map((migration) => ({
+    expect(inventory.migrations.slice(387, 390).map((migration) => ({
       path: migration.path,
       sha256: migration.sha256,
     }))).toEqual([...IMMUTABLE_MEMORY_RECOVERY_MIGRATION_MANIFEST]);

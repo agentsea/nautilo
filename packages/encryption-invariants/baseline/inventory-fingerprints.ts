@@ -10,14 +10,15 @@ export const SOURCE_ALARM_BASELINE = {
 // persistence tail followed by the external operator transport, isolated
 // control storage, legacy audit archive, owner-deletion correction, and
 // destination-bound MindSwapper credential constraints, the server-only Memory
-// review recovery receipt, and the Stenographer failure-vocabulary update. The
-// focused migration inventory pins the appended SQL bytes and proves the
-// current schema/snapshot pair remains structurally identical without a DB.
+// review recovery receipt, the Stenographer failure-vocabulary update, and the
+// additive Memory recovery privilege correction. The focused migration
+// inventory pins the appended SQL bytes and proves the current schema/snapshot
+// pair remains structurally identical without a DB.
 export const MIGRATION_TREE_BASELINE = {
-  "migrations": 389,
-  "snapshots": 360,
-  "tip": 388,
-  "sha256": "89be094bb98038234f9f4dc4bfe0409b629849f080532363a63bbec7d57784ba"
+  "migrations": 390,
+  "snapshots": 361,
+  "tip": 389,
+  "sha256": "3b0166acdb147d64b4360228bb861f15921e4daabca521884f80dd5a41c47164"
 } as const;
 
 /**
