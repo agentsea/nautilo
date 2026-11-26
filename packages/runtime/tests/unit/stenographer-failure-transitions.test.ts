@@ -126,6 +126,28 @@ describe("Stenographer failure transitions", () => {
     expect(state.updates[1]?.values["extractionRetryAfter"]).toBeNull();
   });
 
+  test("surfaces unavailable input authority without scheduling extraction replay", async () => {
+    const state = failureDb({ extraction_failure_count: 0 });
+
+    await failExtraction({
+      claim: {
+        batchId: BATCH_ID,
+        roomId: ROOM_ID,
+        leaseToken: LEASE_TOKEN,
+      } as never,
+      errorCode: "input_authority_unavailable",
+      modelId: "openrouter:test-model",
+      now: NOW,
+      db: state.db as never,
+    });
+
+    expect(state.updates[0]?.values["errorCode"])
+      .toBe("input_authority_unavailable");
+    expect(state.updates[1]?.values["lastExtractionErrorCode"])
+      .toBe("input_authority_unavailable");
+    expect(state.updates[1]?.values["extractionRetryAfter"]).toBeNull();
+  });
+
   test("persists uncertain provider outcomes without scheduling compaction replay", async () => {
     const state = failureDb({ compaction_failure_count: 0 });
 

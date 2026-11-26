@@ -1,7 +1,9 @@
-import { and, eq, gt, resolveModelAttemptReplaySafety, roomJournalBatches, roomJournalState, type DirectDatabase,
+import { and, eq, gt, inArray, resolveModelAttemptReplaySafety, roomJournalBatches, roomJournalState,
+  sessionMessages, sessions, users, type DirectDatabase,
   type StenographerCompactionAcceptedPlan } from "@nautilo/db";
 import { MemoryProviderOutcomeUnknownError } from "@nautilo/agent";
 import { createRoomSideModelInvoker, extractionModelExposureDependencies, compactionModelExposureDependencies,
+  StenographerInputAuthorityUnavailableError,
   type ExtractionClaim, type CompactionClaim, type AdmittedStenographerModel } from "@nautilo/runtime";
 import type { DurableModelExposureDependency, DurableRecordEnvelope } from "@nautilo/reflection/durable";
 import type { MemoryOperationBinding } from "@nautilo/types";
@@ -61,6 +63,35 @@ function sameCompactionPlan(
       === JSON.stringify(right.selectedEventIds)
     && JSON.stringify(left.protectedTailEventIds)
       === JSON.stringify(right.protectedTailEventIds);
+}
+
+async function assertDirectInputAuthorityAvailable(input: Readonly<{
+  db: DirectDatabase;
+  roomId: string;
+  dependencies: readonly DurableModelExposureDependency[] | undefined;
+}>): Promise<void> {
+  const messageIds = [...new Set((input.dependencies ?? []).flatMap((dependency) => {
+    if (dependency.kind !== "source" || dependency.sourceKind !== "message") return [];
+    const match = /^message:(\d+)$/.exec(dependency.logicalSourceRef);
+    if (match === null) return [];
+    const id = Number(match[1]);
+    return Number.isSafeInteger(id) && id > 0 ? [id] : [];
+  }))];
+  if (messageIds.length === 0) return;
+  const rows = await input.db.select({
+    id: sessionMessages.id,
+    disabledAt: users.disabledAt,
+  }).from(sessionMessages)
+    .innerJoin(sessions, eq(sessions.id, sessionMessages.sessionId))
+    .innerJoin(users, eq(users.id, sessions.ownerId))
+    .where(and(
+      inArray(sessionMessages.id, messageIds),
+      eq(sessions.roomId, input.roomId),
+    ))
+    .limit(messageIds.length + 1);
+  if (rows.some((row) => row.disabledAt !== null)) {
+    throw new StenographerInputAuthorityUnavailableError();
+  }
 }
 
 /** The existing batch/compaction lease owns both acceptance and publication. */
@@ -137,6 +168,22 @@ export function createStenographerMemoryFunding(input: Common) {
       !protectedEvidence && extraction && readPredecessor !== undefined
         ? (dependency: RecordDependency) => readPredecessor(dependency, claim.roomId)
         : undefined;
+    if (!protectedEvidence && extraction) {
+      const replaySafety = await resolveModelAttemptReplaySafety({
+        kind: "operation",
+        roomId: claim.roomId,
+        callType: "room_stenographer",
+        operationId: operationKey,
+      }, { db: input.db });
+      if (replaySafety.decision === "block_unknown") {
+        throw new MemoryProviderOutcomeUnknownError();
+      }
+      await assertDirectInputAuthorityAvailable({
+        db: input.db,
+        roomId: claim.roomId,
+        dependencies: expectedDependencies,
+      });
+    }
     const admitted = await openMemoryOperation({
       ports, role: "memorySummarization", operationKey, dependencies, bind, assertCurrent,
       budget: input.budget, commitmentKey: input.commitmentKey,

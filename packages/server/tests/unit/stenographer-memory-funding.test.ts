@@ -29,6 +29,7 @@ function database(replayRows: readonly Record<string, unknown>[]) {
     const rows = results.shift() ?? [];
     const query = {
       from() { return this; },
+      innerJoin() { return this; },
       where() { return this; },
       for() { return this; },
       limit: () => Promise.resolve(rows),
@@ -107,18 +108,27 @@ function ordinaryCompactionDatabase() {
   };
 }
 
-function ordinaryExtractionDatabase() {
+function ordinaryExtractionDatabase(
+  disabledAt: Date | null = null,
+  replayRows: readonly Record<string, unknown>[] = [],
+) {
   let accepted: MemoryOperationBinding | null = null;
+  let authorityReads = 0;
   const updates: Record<string, unknown>[] = [];
   const select = (fields: Record<string, unknown>) => {
     const keys = Object.keys(fields);
     const rows = keys.includes("acceptedPlan")
       ? [{ roomId: ROOM, accepted, acceptedPlan: null }]
-      : keys.includes("accepted")
-        ? [{ accepted }]
-        : [{ roomId: ROOM }];
+      : keys.includes("attemptOutcome")
+        ? [...replayRows]
+      : keys.includes("disabledAt")
+        ? (authorityReads += 1, [{ id: 41, disabledAt }])
+        : keys.includes("accepted")
+          ? [{ accepted }]
+          : [{ roomId: ROOM }];
     const query = {
       from() { return this; },
+      innerJoin() { return this; },
       where() { return this; },
       for() { return this; },
       limit: () => Promise.resolve(rows),
@@ -143,6 +153,7 @@ function ordinaryExtractionDatabase() {
   return {
     db: { select, update, transaction } as unknown as DirectDatabase,
     accepted: () => accepted,
+    authorityReads: () => authorityReads,
     updates,
   };
 }
@@ -391,6 +402,43 @@ describe("ordinary Stenographer Memory funding", () => {
     expect(revokedState.accepted()).toBeNull();
     expect(revokedState.updates).toHaveLength(0);
     expect(revokedInvocations).toHaveLength(0);
+
+    const disabledState = ordinaryExtractionDatabase(
+      new Date("2026-11-26T12:01:00.000Z"),
+    );
+    const disabledRooms: string[] = [];
+    const disabledInvocations: Array<Parameters<typeof createRoomSideModelInvoker>[0]> = [];
+    const disabled = await createRuntime(
+      disabledState,
+      disabledRooms,
+      disabledInvocations,
+    ).admitExtractionModel(liveClaim, extractionModelExposureDependencies(liveClaim))
+      .catch((error: unknown) => error);
+    expect(disabled).toMatchObject({
+      message: "Stenographer input authority is unavailable",
+    });
+    expect(disabledRooms).toEqual([]);
+    expect(disabledState.authorityReads()).toBe(1);
+    expect(disabledState.accepted()).toBeNull();
+    expect(disabledState.updates).toHaveLength(0);
+    expect(disabledInvocations).toHaveLength(0);
+
+    const uncertainState = ordinaryExtractionDatabase(
+      new Date("2026-11-26T12:01:00.000Z"),
+      [{
+        id: "attempt-unknown",
+        attemptOutcome: "succeeded",
+        failureCode: null,
+        metadata: { operationId: BATCH },
+      }],
+    );
+    const uncertain = await createRuntime(uncertainState, [], [])
+      .admitExtractionModel(liveClaim, extractionModelExposureDependencies(liveClaim))
+      .catch((error: unknown) => error);
+    expect(uncertain).toBeInstanceOf(MemoryProviderOutcomeUnknownError);
+    expect(uncertainState.authorityReads()).toBe(0);
+    expect(uncertainState.accepted()).toBeNull();
+    expect(uncertainState.updates).toHaveLength(0);
   });
 
   test("freezes a personal compaction binding from exact current Human Record ancestry", async () => {

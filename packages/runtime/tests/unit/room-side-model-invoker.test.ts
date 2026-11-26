@@ -4,6 +4,7 @@ import {
   classifyRoomSideInvocationFailure,
   mapModelFailure,
   runRoomSideModelWithDeadline,
+  StenographerInputAuthorityUnavailableError,
 } from "../../src/stenographer/model-invoker";
 
 describe("room-side model failure classification", () => {
@@ -15,6 +16,11 @@ describe("room-side model failure classification", () => {
 
   test("preserves an uncertain direct Memory outcome as a non-replayable failure", () => {
     expect(mapModelFailure(new MemoryProviderOutcomeUnknownError())).toBe("provider_outcome_unknown");
+  });
+
+  test("maps unavailable exact input authority to its durable fence", () => {
+    expect(mapModelFailure(new StenographerInputAuthorityUnavailableError()))
+      .toBe("input_authority_unavailable");
   });
 
   test("retains ordinary provider and timeout recovery", () => {

@@ -2717,6 +2717,13 @@
       "when": 1795713624762,
       "tag": "0387_eminent_absorbing_man",
       "breakpoints": true
+    },
+    {
+      "idx": 388,
+      "version": "7",
+      "when": 1795713910646,
+      "tag": "0388_acoustic_lester",
+      "breakpoints": true
     }
   ]
 }

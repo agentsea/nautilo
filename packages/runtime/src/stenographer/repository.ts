@@ -63,6 +63,7 @@ import {
 export type StenographerErrorCode =
   | "provider"
   | "provider_outcome_unknown"
+  | "input_authority_unavailable"
   | "timeout"
   | "invalid_output"
   | "input_too_large"
@@ -372,7 +373,7 @@ export async function candidateRoomIds(
       ),
       eq(roomJournalBatches.status, "failed"),
     ));
-  const uncertainFailedAttempt = db.select({ one: sql`1` })
+  const blockedFailedAttempt = db.select({ one: sql`1` })
     .from(roomJournalBatches)
     .where(and(
       eq(roomJournalBatches.roomId, roomJournalState.roomId),
@@ -382,7 +383,10 @@ export async function candidateRoomIds(
         roomJournalState.lastProcessedMessageId,
       ),
       eq(roomJournalBatches.status, "failed"),
-      eq(roomJournalBatches.errorCode, "provider_outcome_unknown"),
+      inArray(roomJournalBatches.errorCode, [
+        "provider_outcome_unknown",
+        "input_authority_unavailable",
+      ]),
     ));
   const agentMember = db.select({ one: sql`1` })
     .from(roomMembers)
@@ -415,7 +419,7 @@ export async function candidateRoomIds(
       notInArray(rooms.kind, ["task", "access"]),
       isNull(roomJournalState.rebuildRequestedAt),
       isNull(roomJournalState.suspendedAt),
-      notExists(uncertainFailedAttempt),
+      notExists(blockedFailedAttempt),
       or(
         isNull(roomJournalState.extractionRetryAfter),
         lte(roomJournalState.extractionRetryAfter, now),
@@ -520,7 +524,7 @@ export async function historicalCandidateRoomIds(
       eq(roomMembers.roomId, rooms.id),
       eq(actors.kind, "agent"),
     ));
-  const uncertainFailedAttempt = db.select({ one: sql`1` })
+  const blockedFailedAttempt = db.select({ one: sql`1` })
     .from(roomJournalBatches)
     .where(and(
       eq(roomJournalBatches.roomId, roomJournalState.roomId),
@@ -530,7 +534,10 @@ export async function historicalCandidateRoomIds(
         roomJournalState.historicalBackfillCursorMessageId,
       ),
       eq(roomJournalBatches.status, "failed"),
-      eq(roomJournalBatches.errorCode, "provider_outcome_unknown"),
+      inArray(roomJournalBatches.errorCode, [
+        "provider_outcome_unknown",
+        "input_authority_unavailable",
+      ]),
     ));
   const result = await db.select({ room_id: roomJournalState.roomId })
     .from(roomJournalState)
@@ -539,7 +546,7 @@ export async function historicalCandidateRoomIds(
       notInArray(rooms.kind, ["task", "access"]),
       isNull(roomJournalState.rebuildRequestedAt),
       isNull(roomJournalState.suspendedAt),
-      notExists(uncertainFailedAttempt),
+      notExists(blockedFailedAttempt),
       eq(roomJournalState.historicalBackfillStatus, "pending"),
       isNotNull(roomJournalState.historicalBackfillCursorMessageId),
       isNotNull(roomJournalState.historicalBackfillTargetMessageId),
@@ -961,7 +968,8 @@ export async function tryClaimRoom(
     if (!state.has_agent || state.suspended_at !== null) return null;
     if (
       state.replay_batch_status === "failed"
-      && state.replay_batch_error_code === "provider_outcome_unknown"
+      && (state.replay_batch_error_code === "provider_outcome_unknown"
+        || state.replay_batch_error_code === "input_authority_unavailable")
     ) {
       return null;
     }
@@ -1583,6 +1591,7 @@ export async function failExtraction(input: {
     if (!current) return;
     const failureCount = asNumber(current.extraction_failure_count) + 1;
     const retryAfter = input.errorCode === "provider_outcome_unknown"
+        || input.errorCode === "input_authority_unavailable"
       ? null
       : new Date(now.getTime() + retryDelayMs(failureCount));
     await tx

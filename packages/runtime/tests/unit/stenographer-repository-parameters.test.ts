@@ -485,7 +485,10 @@ describe("stenographer postgres-js parameters", () => {
     },
   );
 
-  test("does not reclaim extraction after an uncertain provider outcome", async () => {
+  test.each([
+    "provider_outcome_unknown",
+    "input_authority_unavailable",
+  ] as const)("does not reclaim extraction after %s", async (errorCode) => {
     const roomId = "44444444-4444-4444-8444-444444444444";
     let executes = 0;
     const tx = {
@@ -509,7 +512,7 @@ describe("stenographer postgres-js parameters", () => {
         has_agent: true,
         upper_bound_message_id: 11,
         replay_batch_status: "failed",
-        replay_batch_error_code: "provider_outcome_unknown",
+        replay_batch_error_code: errorCode,
         replay_through_message_id: 11,
       }]),
     };
