@@ -1309,7 +1309,7 @@ export function createNautiloToolInvocationSession(
           taskReadPendingPages: state.taskReadPendingPages ?? [],
           taskReadMaxResponseBytes: state.taskReadPageBytes == null ? undefined : Math.floor(state.taskReadPageBytes / Math.max(1,
             [...state.messages].reverse().find((message) => AIMessage.isInstance(message))?.tool_calls?.filter((call) =>
-              call.name === "read_tool_result" || call.name === "task" && call.args["command"] === "read").length ?? 0)),
+              call.name === "read_tool_result" || call.name === "app_nautilo_writer__read_open_writer_range" || call.name === "task" && call.args["command"] === "read").length ?? 0)),
           relayCapabilities: state.relayCapabilities,
           // Focused-resource consumers such as ask_peer need the authoritative
           // per-turn manifest, not just the apply_patch router derived from it.

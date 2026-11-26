@@ -573,6 +573,7 @@ export {
 export {
   getModelTokenLimit,
   getModelMaxOutputTokens,
+  modelSupportsAgentInput,
   resolveModelExecutionLimits,
   resolveModelClass,
   type ModelClass,

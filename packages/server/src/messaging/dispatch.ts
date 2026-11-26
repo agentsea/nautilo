@@ -122,7 +122,7 @@ import {
   openForegroundConductorFundingSession,
 } from "../lib/foreground-chat-funding";
 import { resolveForegroundChatPreflightFunding, resolveForegroundChatPreflightModelId } from "../lib/foreground-chat-preflight";
-import { ModelFundingError } from "../lib/model-funding";
+import { ModelFundingError, type ModelFundingDecision } from "../lib/model-funding";
 import {
   clearPendingAgentRedirect,
   isRedirectAllowedForConductorWake,
@@ -962,6 +962,7 @@ export async function dispatchRoomMessageSend(
   activeMiniApp = sanitizeActiveMiniAppContextSafe(opts.body.activeMiniApp);
   liveMiniAppSession = await resolveTrustedLiveMiniAppSession({
     raw: opts.body.liveMiniAppSession,
+    activeMiniApp,
     userId: sessionUserId,
   });
   try {
@@ -1304,7 +1305,7 @@ export async function dispatchRoomMessageSend(
     }
 
     const preflightTargets = isDm ? agentMembers.slice(0, 1) : explicitTargets;
-    const preflightFundingByAgentId = new Map<string, "personal" | "server">();
+    const preflightFundingByAgentId = new Map<string, ModelFundingDecision>();
     for (const target of preflightTargets) {
       if (!target.agentId) continue;
       try {
@@ -1312,7 +1313,7 @@ export async function dispatchRoomMessageSend(
           humanUserId: sessionUserId, roomId: detail.id,
           agentId: target.agentId, turnModelId: model,
         });
-        preflightFundingByAgentId.set(target.agentId, funding.kind);
+        preflightFundingByAgentId.set(target.agentId, funding);
       } catch (error) {
         if (!(error instanceof ModelFundingError)) throw error;
         return reply.code(422).send({ code: error.code, error: "The selected model cannot be funded." });
@@ -1321,14 +1322,14 @@ export async function dispatchRoomMessageSend(
 
     // Protected composition has a separate server-owned authority path. Keep
     // personal credentials outside it until that path admits them explicitly.
-    if (fullPrepared && [...preflightFundingByAgentId.values()].includes("personal")) {
+    if (fullPrepared && [...preflightFundingByAgentId.values()].some(({ kind }) => kind === "personal")) {
       return reply.code(422).send({
         code: "unsupported_workload",
         error: "Personal provider credentials do not support protected chat.",
       });
     }
 
-    if ([...preflightFundingByAgentId.values()].includes("server")) {
+    if ([...preflightFundingByAgentId.values()].some(({ kind }) => kind === "server")) {
       try {
         await (opts.assertCanUseServerProviderCredentials ?? assertCanUseServerProviderCredentials)(
           sessionUserId,
@@ -1355,24 +1356,18 @@ export async function dispatchRoomMessageSend(
           })), silence).map((member) => member.actorId));
           targets = targets.filter((member) => wakeableIds.has(member.actorId));
         }
-        const modelsWithAgents = await Promise.all(targets.filter((member) => !!member.agentId).map(async (member) => ({
-          agentId: member.agentId!,
-          id: await resolveForegroundChatPreflightModelId({
+        const models = await Promise.all(targets.filter((member) => !!member.agentId).map(async (member) => {
+          const funding = preflightFundingByAgentId.get(member.agentId!);
+          if (funding) return { id: funding.modelId, funding };
+          const id = await resolveForegroundChatPreflightModelId({
             humanUserId: sessionUserId, roomId: detail.id, agentId: member.agentId!, turnModelId: model,
-          }),
-        })));
-        const fundingKinds = new Set(modelsWithAgents.flatMap(({ agentId }) => {
-          const kind = preflightFundingByAgentId.get(agentId);
-          return kind ? [kind] : [];
+          });
+          return { id };
         }));
-        const fundingKind = fundingKinds.size === 1
-          && modelsWithAgents.every(({ agentId }) => preflightFundingByAgentId.has(agentId))
-          ? [...fundingKinds][0]
-          : undefined;
         await assertChatAttachmentImageSupport({
           ...uploadedAttachmentArgs(attachmentRefs, request.sessionActorId, request.memoryEnvelope),
-          models: modelsWithAgents.map(({ id }) => ({ id })),
-          humanUserId: sessionUserId, ...(fundingKind ? { fundingKind } : {}),
+          models,
+          humanUserId: sessionUserId,
         });
       } catch (error) {
         if (!(error instanceof ImageAttachmentModelError)) throw error;

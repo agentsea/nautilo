@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { resolveCatalogModel } from "@nautilo/agent";
+import { resolveCatalogModel, withMindSwapperModels, type MindSwapperChatModel } from "@nautilo/agent";
 import type { EligibleModel } from "@nautilo/trust";
 import {
   resolveCallerImageInput,
@@ -72,6 +72,31 @@ describe("automatic caller image selection", () => {
     expect(await resolveCallerImageInput({ humanUserId: HUMAN, modelId: "openai:vision",
       funding: decision("openai:vision") }, h.deps)).toBe("direct");
     expect(h.calls).toEqual([]);
+  });
+
+  test("ignores unrelated MindSwapper offers and returns unavailable when the admitted key is stale", async () => {
+    const model: MindSwapperChatModel = {
+      id: "mindswapper:maker/model",
+      displayName: "Model",
+      offers: [{ inputModalities: ["text", "image"], supportedParameters: ["tools"], maxInputTokens: 2000, maxOutputTokens: 1000 }],
+    };
+    const funding: ModelFundingDecision = { ...decision(model.id), providerRoute: "mindswapper" };
+    const input = { humanUserId: HUMAN, modelId: model.id, funding };
+    const deps: ImageAssistanceExecutionDeps = {
+      readMindSwapperModel: async () => undefined,
+      readPreferences: async () => ({ revision: 0, overrides: {} }),
+      getServerSelection: () => null,
+      listModels: () => [],
+    };
+    await withMindSwapperModels([model], async () => {
+      expect(await resolveCallerImageInput(input, deps)).toBe("unavailable");
+      const textTools = { ...model.offers[0]!, inputModalities: ["text"] as const };
+      const imageOnly = { ...model.offers[0]!, supportedParameters: [] };
+      expect(await resolveCallerImageInput(input, {
+        ...deps,
+        readMindSwapperModel: async () => ({ ...model, offers: [textTools, imageOnly] }),
+      })).toBe("unavailable");
+    });
   });
 
   test("a native vision model with an unqualified marketplace image route cannot advertise assistance", async () => {

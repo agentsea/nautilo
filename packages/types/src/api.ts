@@ -122,6 +122,19 @@ export type LiveDocumentTableReadCursor = Readonly<{
  */
 export type LiveDocumentReadCoverageFact =
   | Readonly<{
+      kind: "text_slices";
+      documentVersion: LiveDocumentVersion;
+      blockCount: number;
+      totalEntries: number;
+      sourceFingerprint: string;
+      slices: readonly Readonly<{
+        ordinal: number;
+        startOffset: number;
+        endOffset: number;
+        textLength: number;
+      }>[];
+    }>
+  | Readonly<{
       kind: "block_range";
       documentVersion: LiveDocumentVersion;
       blockCount: number;
@@ -144,6 +157,47 @@ export interface LiveMiniAppSessionCapability {
   documentVersion: LiveDocumentVersion;
 }
 
+/** Captured editor coordinates; the reader validates them against canonical content. */
+export type CapturedWriterSelection = Readonly<{
+  anchor: Readonly<{ blockId: string; offset: number }>;
+  focus: Readonly<{ blockId: string; offset: number }>;
+  tableCellRange?: Readonly<{
+    blockId: string;
+    start: Readonly<{ rowIndex: number; colIndex: number }>;
+    end: Readonly<{ rowIndex: number; colIndex: number }>;
+  }>;
+}>;
+
+/** Parse only editor coordinates, excluding arbitrary iframe/model metadata. */
+export function parseCapturedWriterSelection(raw: unknown): CapturedWriterSelection | null {
+  const object = (value: unknown): Record<string, unknown> | null =>
+    value !== null && typeof value === "object" && !Array.isArray(value)
+      ? value as Record<string, unknown> : null;
+  const position = (value: unknown) => {
+    const item = object(value);
+    return item && typeof item["blockId"] === "string" && item["blockId"].length > 0 &&
+      Number.isSafeInteger(item["offset"]) && (item["offset"] as number) >= 0
+      ? { blockId: item["blockId"], offset: item["offset"] as number } : null;
+  };
+  const cell = (value: unknown) => {
+    const item = object(value);
+    return item && Number.isSafeInteger(item["rowIndex"]) && (item["rowIndex"] as number) >= 0 &&
+      Number.isSafeInteger(item["colIndex"]) && (item["colIndex"] as number) >= 0
+      ? { rowIndex: item["rowIndex"] as number, colIndex: item["colIndex"] as number } : null;
+  };
+  const value = object(raw);
+  if (!value) return null;
+  const anchor = position(value["anchor"]);
+  const focus = position(value["focus"]);
+  if (!anchor || !focus) return null;
+  if (value["tableCellRange"] === undefined) return { anchor, focus };
+  const range = object(value["tableCellRange"]);
+  const start = cell(range?.["start"]);
+  const end = cell(range?.["end"]);
+  if (!range || typeof range["blockId"] !== "string" || !range["blockId"] || !start || !end) return null;
+  return { anchor, focus, tableCellRange: { blockId: range["blockId"], start, end } };
+}
+
 /**
  * Host-owned, server-validated live-review context. Unlike `activeMiniApp`,
  * this is not advisory iframe data and is only constructed after registry
@@ -152,6 +206,8 @@ export interface LiveMiniAppSessionCapability {
 export interface TrustedLiveMiniAppSessionContext extends LiveMiniAppSessionCapability {
   appId: string;
   instructions: string;
+  /** Captured from matching app/session/version context, never model arguments. */
+  writerSelection?: CapturedWriterSelection;
 }
 
 export type IssueLiveMiniAppSessionRequest = {

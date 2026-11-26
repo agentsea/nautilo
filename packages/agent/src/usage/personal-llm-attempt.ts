@@ -7,6 +7,7 @@ import type { ExtractedUsage } from "./usage-callback";
 import { classifyError } from "../utils/errors";
 import { findMindSwapperModel, isMindSwapperModelId } from "../config/mindswapper-models";
 import { MindSwapperRequestError } from "../providers/mindswapper-completions";
+import { OpenRouterCreditError } from "../providers/openrouter-credit-error";
 import {
   getPersonalLlmAttemptOwner,
   type PersonalLlmAttemptOwnerBinding,
@@ -55,10 +56,13 @@ export function classifyPersonalAttemptFailure(
     return { outcome: "cancelled", failureCode: "cancelled", disposition: "terminal_cancelled" };
   }
   if (error instanceof MindSwapperRequestError && error.outcomeUnknown) {
-    return { outcome: "unknown", failureCode: "outcome_unknown", disposition: "terminal_unknown" };
+    return { outcome: "unknown", failureCode: error.gatewayStreamCode ?? "outcome_unknown", disposition: "terminal_unknown" };
   }
   if (error instanceof MindSwapperRequestError && !providerWorkObserved && error.status === 402) {
-    return { outcome: "failed", failureCode: "insufficient_balance", disposition: "safe_refusal" };
+    return { outcome: "failed", failureCode: error.code, disposition: "safe_refusal" };
+  }
+  if (error instanceof OpenRouterCreditError && (error.allowance || error.inFlightBudget) && !providerWorkObserved) {
+    return { outcome: "failed", failureCode: error.code, disposition: "safe_refusal" };
   }
   const status = classifyError(error).statusCode;
   if (!providerWorkObserved && status !== undefined && VERIFIED_PRE_SERVICE_REFUSAL_STATUSES.has(status)) {

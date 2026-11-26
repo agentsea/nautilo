@@ -74,6 +74,7 @@ const statMock = mock(async () => ({
   size: 5,
   modified: null,
 }));
+const openExternalLinkMock = mock(async (_input: { url: string }) => {});
 const readFileMock = mock(async () => "hello");
 const readAuthoredChangeMock = mock(async (_input: { path: string; expectedSha256: string }): Promise<unknown> => ({ kind: "none" }));
 const getWorkspaceArtifactAuthoredChangeMock = mock(async (
@@ -120,6 +121,7 @@ mock.module("../../src/lib/desktop", () => ({
   isDesktop: true,
   canSwitchDesktopServer: () => false,
   desktopAPI: {
+    browserControl: { openExternal: openExternalLinkMock },
     documentMutations: { readAuthoredChange: readAuthoredChangeMock },
     mediaExport: { supportsWorkspacePublication: true, supportsExportSettings: true, startWorkspace: startMediaExportMock, start: startMediaExportMock, cancel: mock(async () => ({ ok: true, data: null })), onProgress: () => () => {} },
     fs: {
@@ -1321,6 +1323,46 @@ describe("app state", () => {
 });
 
 describe("installAppBridge", () => {
+  test("opens links only for the bound Writer frame with a real activation and safe scheme", async () => {
+    openExternalLinkMock.mockClear();
+    let active = true;
+    Object.defineProperty(window.navigator, "userActivation", { configurable: true, get: () => ({ isActive: active }) });
+    const iframe = document.createElement("iframe");
+    const frame = {} as Window;
+    const posted: unknown[] = [];
+    Object.defineProperty(iframe, "contentWindow", { value: frame, configurable: true });
+    frame.postMessage = ((data: unknown) => posted.push(data)) as typeof frame.postMessage;
+    let teardown = installAppBridge({ iframe, appId: "nautilo-writer" });
+    const message = { type: "nautilo.app.links.req", requestId: "link", op: "open", url: "https://example.com/source?q=1&x=2#part" };
+    const send = async (data: unknown = message, source: unknown = frame) => {
+      window.dispatchEvent(new MessageEvent("message", { data, source: source as MessageEventSource }));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    };
+    try {
+      await send(message, {});
+      expect(openExternalLinkMock).not.toHaveBeenCalled();
+      await send();
+      expect(openExternalLinkMock).toHaveBeenCalledWith({ url: message.url });
+      expect(posted.at(-1)).toMatchObject({ ok: true });
+      openExternalLinkMock.mockClear();
+      active = false;
+      await send();
+      expect(posted.at(-1)).toMatchObject({ ok: false });
+      active = true;
+      for (const url of ["javascript:alert(1)", "data:text/html,hello", "file:///etc/passwd"]) {
+        await send({ ...message, url });
+        expect(posted.at(-1)).toMatchObject({ ok: false });
+      }
+      expect(isAppBridgeRequest({ ...message, appId: "nautilo-writer" })).toBe(false);
+      expect(isAppBridgeRequest({ ...message, userGesture: true })).toBe(false);
+      teardown();
+      teardown = installAppBridge({ iframe, appId: "another-app" });
+      await send();
+      expect(posted.at(-1)).toMatchObject({ ok: false });
+      expect(openExternalLinkMock).not.toHaveBeenCalled();
+    } finally { teardown(); Reflect.deleteProperty(window.navigator, "userActivation"); }
+  });
+
   test("delegates valid export results without logging or posting a generic bridge error", async () => {
     const iframe = document.createElement("iframe");
     const iframeWindow = {} as Window;

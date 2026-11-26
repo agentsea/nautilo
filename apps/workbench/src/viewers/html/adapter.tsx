@@ -4,6 +4,7 @@ import { loadArtifactViewerBlob } from "../artifact-byte-source";
 import { buildCsp } from "./csp";
 import { SandboxedHtmlIframe } from "./iframe";
 import { buildSrcdoc } from "./srcdoc";
+import { htmlPageAnchorNavigationScript } from "./page-anchor-navigation";
 import {
   renderWriterPreview,
   shouldInjectWriterPreviewHydration,
@@ -54,7 +55,7 @@ function buildHtmlSrcdoc(htmlContent: string): string {
   const trustedScripts = shouldInjectWriterPreviewHydration(htmlContent)
     ? [writerPreviewHydrationScript()]
     : [];
-  return buildSrcdoc(renderWriterPreview(htmlContent), csp, workbenchNwRuntime, trustedScripts);
+  return buildSrcdoc(renderWriterPreview(htmlContent), csp, workbenchNwRuntime, [htmlPageAnchorNavigationScript(), ...trustedScripts]);
 }
 
 export const htmlViewerAdapter: ViewerAdapter = {

@@ -164,7 +164,8 @@ compact where every listed member shares the same version and license.
 | [@napi-rs/canvas](https://github.com/Brooooooklyn/canvas) | 1.0.7 | napi-rs contributors | MIT | PDF.js Node runtime geometry support; optional platform binaries selected by the package manager. |
 | [docx](https://github.com/dolanmiu/docx) / [Wafflebase Docs](https://github.com/wafflebase/wafflebase) | 9.6.1 / owned 0.6.9 | dolanmiu / Wafflebase | MIT / Apache-2.0 | Server document creation and editing. |
 | [CodeMirror](https://github.com/codemirror) language/state/view packages | language 6.12.3; state 6.6.0; view 6.43.1; format-specific packages in `bun.lock` | CodeMirror | MIT | Workbench editor. |
-| [Lexical](https://github.com/facebook/lexical) packages via [MDXEditor](https://github.com/mdx-editor/editor) | 0.35.0 / 4.0.4 | Meta / MDXEditor | MIT / MIT | Workbench rich-text editor. |
+| [Lexical](https://github.com/facebook/lexical) packages via [MDXEditor](https://github.com/mdx-editor/editor) | 0.35.0 / 4.0.4 | Meta / MDXEditor | MIT / MIT | Workbench Markdown and HTML text editors. |
+| [parse5](https://github.com/inikulin/parse5) | 8.0.1 | parse5 contributors | MIT | Workbench HTML text source mapping and inert edit previews. |
 | [assistant-ui](https://github.com/assistant-ui/assistant-ui) packages | core 0.2.20; React/Markdown 0.14.5–0.14.26; React Lexical 0.2.4 | assistant-ui | MIT | Workbench. |
 | [Shiki](https://github.com/shikijs/shiki) engine, languages, and themes | 4.0.2 | Shiki | MIT | Workbench syntax highlighting. |
 | [xterm.js](https://github.com/xtermjs/xterm.js) / [TanStack Virtual](https://github.com/TanStack/virtual) | 6.0.0 + fit 0.11.0 / 3.13.24 | xterm.js / TanStack | MIT / MIT | Workbench. |
@@ -201,7 +202,7 @@ not invent versions that the checked-in source cannot prove.
 | --- | --- | --- | --- |
 | [tini](https://github.com/krallin/tini) | Dynamic Debian package; release SBOM is authoritative | krallin/tini | MIT |
 | [Mozilla CA Certificate Store](https://www.mozilla.org/en-US/about/governance/policies/security-group/certs/) / Debian `ca-certificates` | Dynamic Debian package; release SBOM is authoritative | Mozilla / Debian | MPL-2.0 and package-local notices |
-| [Chrome for Testing headless shell](https://developer.chrome.com/docs/automation-and-testing/headless-chrome-shell) | 157.0.8103.78; architecture-specific archives and executable hashes in `packaging/docker/chromium-artifacts.json` | Google Chrome for Testing / Chromium authors | Chromium BSD-style and bundled third-party licenses; see the shipped `LICENSE.headless_shell` |
+| [Chrome for Testing headless shell](https://developer.chrome.com/docs/automation-and-testing/headless-chrome-shell) | 158.0.8127.36; architecture-specific archives and executable hashes in `packaging/docker/chromium-artifacts.json` | Google Chrome for Testing / Chromium authors | Chromium BSD-style and bundled third-party licenses; see the shipped `LICENSE.headless_shell` |
 | [ICU](https://github.com/unicode-org/icu) (`libicuNN`) | Highest available Debian `libicuNN`, selected at image build | Unicode | ICU License |
 | [GNU tar](https://www.gnu.org/software/tar/) | Dynamic Debian package; release SBOM is authoritative | GNU | GPL-3.0-or-later |
 | [PostgreSQL client](https://www.postgresql.org/) utilities | 17 from the final image; 16 binaries copied from the pinned build stage | PostgreSQL Global Development Group | PostgreSQL License |

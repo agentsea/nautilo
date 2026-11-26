@@ -1,4 +1,5 @@
 import { runAdmittedDirectModelRecovery } from "../runtime/direct-model-recovery";
+import { setTimeout as delay } from "node:timers/promises";
 import { findChatGPTSubscriptionError } from "../providers/chatgpt-plan-errors";
 import type { AIMessage, BaseMessage } from "@langchain/core/messages";
 import type { RunnableConfig } from "@langchain/core/runnables";
@@ -37,6 +38,7 @@ import { DEFAULT_REASONING_EFFORT, shouldUseOpenAIResponsesApi } from "../provid
 import { isDirectGpt6Model } from "../providers/openai-compat";
 import { modelRouteProvider } from "../providers/model-route";
 import { resolveOpenRouterTransport } from "../providers/openrouter-transport";
+import { OpenRouterCreditError } from "../providers/openrouter-credit-error";
 import { hasStubModelForTests } from "../providers/stub-model-state";
 import type { ReasoningEffort } from "../providers/types";
 import { resolveFireworksKimiK3ServingProfile, type ResolvedFireworksKimiK3ServingProfile } from "../providers/serving-profile";
@@ -548,7 +550,7 @@ async function invokeOnceWithShortRetries(
   fundingService: ModelFundingService | undefined,
   fundingSession: ForegroundChatFundingSession | undefined,
   agentId: string | null,
-  attemptPolicyOptions: { readonly providerTimeoutMs?: number; readonly callerSuppliedProviderTimeout: boolean; readonly firstProgressTimeoutMs?: number; readonly isolatedProgress?: boolean; readonly validateResponse?: (response: AIMessage) => void },
+  attemptPolicyOptions: { readonly providerTimeoutMs?: number; readonly callerSuppliedProviderTimeout: boolean; readonly firstProgressTimeoutMs?: number; readonly isolatedProgress?: boolean; readonly validateResponse?: (response: AIMessage) => void; readonly onOpenRouterCreditHoldSettled?: () => void; readonly hasAttemptOutput?: () => boolean },
   endpoint: string,
   maximumAttempts = SAME_MODEL_RETRYABLE_ATTEMPTS,
 ): Promise<AIMessage> {
@@ -608,6 +610,18 @@ async function invokeOnceWithShortRetries(
       // transport shape (503, 408, ECONNRESET) would normally be retryable.
       if (personalAttemptError?.disposition !== undefined
         && personalAttemptError.disposition !== "safe_refusal") throw error;
+      if (providerError instanceof OpenRouterCreditError && providerError.inFlightBudget) {
+        const retryAfterMs = providerError.inFlightBudget.retryAfterMs;
+        if (attempt >= maximumAttempts || retryAfterMs === undefined
+          || attemptPolicyOptions.hasAttemptOutput?.() || hasAssistantVisibleOutputForCurrentTurn(agentId)) throw error;
+        log(`[nautilo/agent] OpenRouter temporarily reserved the available credit; waiting ${retryAfterMs}ms before retrying ${modelId}`);
+        // OpenRouter confirms this request never reached a provider. Keep the
+        // same model, request and payer, honor its minimum wait without jitter,
+        // and use the existing bounded retry and live funding recheck above.
+        await delay(retryAfterMs, undefined, { signal: llmCallConfig.signal });
+        attemptPolicyOptions.onOpenRouterCreditHoldSettled?.();
+        continue;
+      }
       const classified = classifyError(providerError);
       if (attempt >= maximumAttempts || !classified.retryable) throw error;
       const strategy = getRetryStrategy(classified);
@@ -638,7 +652,7 @@ async function invokeForegroundAttemptWithUsageContext(
   funding: UsageFundingProvenance,
   useOpenAIResponsesApi: boolean,
   sameModelRetryMode: "none" | "short",
-  attemptPolicyOptions: { readonly providerTimeoutMs?: number; readonly callerSuppliedProviderTimeout: boolean; readonly firstProgressTimeoutMs?: number; readonly isolatedProgress?: boolean; readonly validateResponse?: (response: AIMessage) => void },
+  attemptPolicyOptions: { readonly providerTimeoutMs?: number; readonly callerSuppliedProviderTimeout: boolean; readonly firstProgressTimeoutMs?: number; readonly isolatedProgress?: boolean; readonly validateResponse?: (response: AIMessage) => void; readonly onOpenRouterCreditHoldSettled?: () => void; readonly hasAttemptOutput?: () => boolean },
   endpoint: string,
 ): Promise<AIMessage> {
   const invoke = () => invokeOnceWithShortRetries(
@@ -953,6 +967,11 @@ async function invokeScopedChatModelWithFallback(
     return invokeOptions?.reasoningOutput ?? true;
   };
   let disableReasoningOutput = false;
+  // Negotiate the affordable bound once, with one refresh permitted after a
+  // verified credit-hold wait. Neither path may chase a changing balance.
+  const affordableOutputByModel = new Map<string, number>();
+  const creditHoldSettledByModel = new Set<string>();
+  const refreshedCreditAllowanceByModel = new Set<string>();
   let providerAttemptStarted = false;
   const assertNotCancelled = () => {
     if (invocationConfig?.signal?.aborted) throw invocationConfig.signal.reason instanceof Error
@@ -1045,6 +1064,8 @@ async function invokeScopedChatModelWithFallback(
         if (!Number.isSafeInteger(invokeOptions.maxOutputTokens) || invokeOptions.maxOutputTokens < 1) throw new RangeError("maxOutputTokens must be a positive safe integer");
         maxTokens = Math.min(maxTokens, invokeOptions.maxOutputTokens);
       }
+      const affordableOutput = affordableOutputByModel.get(currentModelId);
+      if (affordableOutput !== undefined) maxTokens = Math.min(maxTokens, affordableOutput);
     } catch (error) {
       if (isPreparedContextExceededError(error)) {
         if (await recoverContext("preflight")) continue;
@@ -1131,7 +1152,8 @@ async function invokeScopedChatModelWithFallback(
           // Apply the server-wide serving preference inside the admitted payer.
           // Supported routes reuse the current signed catalogue and preserve
           // the selected provider pin.
-          if (!isMindSwapperModelId(currentModelId) && (!attemptFundingSession || usageFunding.providerRoute === "surplus")) {
+          if (!affordableOutputByModel.has(currentModelId) && !isMindSwapperModelId(currentModelId)
+            && (!attemptFundingSession || usageFunding.providerRoute === "surplus")) {
             kickServerModelConfigRefresh();
             const surplusKey = usageFunding.kind === "personal"
               ? personalCredential?.apiKey ?? null : resolveProviderKey("surplus");
@@ -1346,6 +1368,8 @@ async function invokeScopedChatModelWithFallback(
               ...(callerFirstProgressTimeoutMs === undefined ? {} : { firstProgressTimeoutMs: callerFirstProgressTimeoutMs }),
               ...(invokeOptions?.isolatedProgress ? { isolatedProgress: true } : {}),
               ...(invokeOptions?.validateResponse ? { validateResponse: invokeOptions.validateResponse } : {}),
+              onOpenRouterCreditHoldSettled: () => { creditHoldSettledByModel.add(currentModelId); },
+              hasAttemptOutput: attemptVisibility.hasVisibleOutput,
             },
             endpoint,
           );
@@ -1359,16 +1383,17 @@ async function invokeScopedChatModelWithFallback(
       if (fundingSession) {
         // Later same-model, context-recovery, reasoning, and fallback attempts
         // recheck the live operation boundary before decrypting another key.
-        if (providerAttemptStarted) await fundingSession.recheckAttempt(currentModelId);
+        const transport = affordableOutputByModel.has(currentModelId) ? "direct" : undefined;
+        if (providerAttemptStarted) await fundingSession.recheckAttempt(currentModelId, transport);
         providerAttemptStarted = true;
-        response = await fundingSession.runAttempt(currentModelId, runProviderAttempt);
+        response = await fundingSession.runAttempt(currentModelId, runProviderAttempt, transport);
       } else {
         // Preserve the legacy server-funded path for all callers that do not
         // opt into the request-local foreground session.
         await assertModelFunding(invokeOptions?.fundingHumanUserId, invokeOptions?.serverFundedService);
         providerAttemptStarted = true;
         kickServerModelConfigRefresh();
-        const allowSurplus = resolveSurplusChatServingAvailability({
+        const allowSurplus = !affordableOutputByModel.has(currentModelId) && resolveSurplusChatServingAvailability({
           catalogModelId: currentModelId,
           policyEnabled: getCachedServerModelConfigRow()?.preferSurplus === true,
           keyConfigured: resolveProviderKey("surplus") !== null,
@@ -1434,6 +1459,31 @@ async function invokeScopedChatModelWithFallback(
       }
       const subscriptionError = findChatGPTSubscriptionError(providerFailure);
       if (subscriptionError) throw subscriptionError;
+      if (providerFailure instanceof OpenRouterCreditError) {
+        const allowance = providerFailure.allowance;
+        if (modelRouteProvider(currentModelId) === "openrouter" && allowance
+          // The provider can lower the requested maximum to fit its measured
+          // context. Recovery must remain below both that bound and our own.
+          && allowance.requested <= maxTokens && allowance.affordable > 0
+          && allowance.affordable < allowance.requested
+          && (!affordableOutputByModel.has(currentModelId)
+            || (creditHoldSettledByModel.has(currentModelId) && !refreshedCreditAllowanceByModel.has(currentModelId)))
+          && !personalRecoveryAttemptedForModel
+          && (!personalAttemptError || personalAttemptError.disposition === "safe_refusal")
+          && !attemptVisibility.hasVisibleOutput() && !hasAssistantVisibleOutputForCurrentTurn(agentId)) {
+          // Settling another request can spend credit while we wait. Refresh
+          // the allowance once after that verified wait, without an unbounded
+          // loop chasing changes in the account balance.
+          if (affordableOutputByModel.has(currentModelId)) refreshedCreditAllowanceByModel.add(currentModelId);
+          affordableOutputByModel.set(currentModelId, allowance.affordable);
+          attemptedModels.pop();
+          log(`[nautilo/agent] Retrying ${currentModelId} with the provider-reported affordable output allowance`);
+          // The ordinary loop rechecks cancellation, live funding, credentials,
+          // controls and accounting before dispatching the unchanged request.
+          continue;
+        }
+        throw providerFailure;
+      }
       const classified = classifyError(providerFailure);
       if (!isMindSwapperModelId(currentModelId) && !personalRecoveryAttemptedForModel && serverDirectAttemptedForModel
         && currentModelId === initialModelId && fundingSession?.kind === "server"

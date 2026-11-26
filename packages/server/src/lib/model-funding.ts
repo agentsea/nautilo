@@ -341,9 +341,10 @@ export async function readCallerMindSwapperModels(
 export async function readAdmittedMindSwapperModel(
   decision: ModelFundingDecision,
   tools?: boolean,
+  deps: ModelFundingDeps = DEFAULT_DEPS,
 ): Promise<MindSwapperChatModel | undefined> {
   if (decision.providerRoute !== "mindswapper") return undefined;
-  const available = await mindSwapperProjections(decision.humanUserId, DEFAULT_DEPS, decision.kind);
+  const available = await mindSwapperProjections(decision.humanUserId, deps, decision.kind);
   if (decision.kind === "server" && decision.connectionRevision !== available.serverRevision) return undefined;
   if (decision.kind === "personal" && (available.personalRecord?.id !== decision.credentialId
     || available.personalRecord.revision !== decision.credentialRevision)) return undefined;

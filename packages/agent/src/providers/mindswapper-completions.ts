@@ -1,9 +1,12 @@
+import { AsyncLocalStorage } from "node:async_hooks";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   ChatOpenAICompletions,
   convertCompletionsDeltaToBaseMessageChunk,
   convertCompletionsMessageToBaseMessage,
 } from "@langchain/openai";
 import type { MindSwapperChatOffer } from "../config/mindswapper-models";
+import { readBoundedMediaJson } from "./media-response";
 
 type ChatDelta = Parameters<typeof convertCompletionsDeltaToBaseMessageChunk>[0];
 type ChatCompletion = Parameters<typeof convertCompletionsMessageToBaseMessage>[0];
@@ -12,9 +15,26 @@ type WireRecord = Record<string, unknown>;
 const NON_PROMPT_FIELDS = new Set(["model", "stream", "stream_options", "n", "max_tokens", "max_completion_tokens",
   "gateway_context", "temperature", "top_p", "seed", "stop", "parallel_tool_calls"]);
 const REQUEST_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const streamRequest = new AsyncLocalStorage<{ requestId?: string }>();
 
-type MindSwapperRequestErrorCode = "authentication_error" | "insufficient_balance" | "unsupported_request"
+const BILLING_REFUSALS = {
+  insufficient_balance: "the selected account has insufficient credit. Check its balance.",
+  billing_needs_review: "the account has a request awaiting billing review. Check MindSwapper Billing.",
+  spend_limit_reached: "an account or key spending limit was reached. Check MindSwapper Billing.",
+  billing_error: "MindSwapper declined this request for billing reasons. Check MindSwapper Billing.",
+} as const;
+
+function admissionRefusal(status: number | undefined, code: unknown) {
+  if (status === 429 && code === "qa_concurrency_limit") return "qa_concurrency_limit";
+  if (status === 503 && code === "gateway_busy") return "gateway_busy";
+  if (status === 503 && code === "capacity_database_contended") return "capacity_database_contended";
+  return undefined;
+}
+
+type MindSwapperRequestErrorCode = Exclude<ReturnType<typeof admissionRefusal>, undefined> | "authentication_error" | keyof typeof BILLING_REFUSALS | "unsupported_request"
   | "no_eligible_supply" | "rate_limit_error" | "outcome_unknown" | "context_length_exceeded" | "invalid_endpoint";
+
+type MindSwapperStreamErrorCode = "upstream_incomplete" | "stream_memory_exhausted";
 
 export class MindSwapperRequestError extends Error {
   readonly provider = "mindswapper";
@@ -25,6 +45,7 @@ export class MindSwapperRequestError extends Error {
     readonly status?: number,
     readonly requestId?: string,
     readonly outcomeUnknown = false,
+    readonly gatewayStreamCode?: MindSwapperStreamErrorCode,
   ) {
     super(`MindSwapper: ${message}`);
     this.name = "MindSwapperRequestError";
@@ -45,12 +66,27 @@ export function sanitizeMindSwapperError(error: unknown): Error {
   if (error instanceof Error && error.name === "AbortError") return error;
   const details = asRecord(error);
   const status = typeof details?.["status"] === "number" ? details["status"] : undefined;
-  const id = requestId(details?.["request_id"]);
+  const headers = details?.["headers"];
+  // The SDK keeps response headers on errors decoded from an SSE frame.
+  const id = requestId(details?.["request_id"])
+    ?? (headers instanceof Headers ? requestId(headers.get("x-request-id")) : undefined)
+    ?? streamRequest.getStore()?.requestId;
+  const streamCode = status === undefined && headers instanceof Headers
+    && (details?.["code"] === "upstream_incomplete" || details?.["code"] === "stream_memory_exhausted")
+    ? details["code"] : undefined;
   if (status === 401 || status === 403) {
     return new MindSwapperRequestError("the connection key was rejected. Check the key in Settings.", "authentication_error", status, id);
   }
   if (status === 402) {
-    return new MindSwapperRequestError("the selected account has insufficient credit. Check its balance.", "insufficient_balance", status, id);
+    const wireCode = details?.["code"];
+    const code = wireCode === "insufficient_balance" || wireCode === "billing_needs_review" || wireCode === "spend_limit_reached"
+      ? wireCode : "billing_error";
+    return new MindSwapperRequestError(BILLING_REFUSALS[code], code, status, id);
+  }
+  const admission = admissionRefusal(status, details?.["code"]);
+  if (admission && details?.["dispatch"] === "not-started") {
+    return new MindSwapperRequestError("Gateway capacity is busy. No supplier request was sent. Try again shortly.",
+      admission, status, requestId(details?.["correlation_id"]) ?? id);
   }
   if (status === 413) {
     return new MindSwapperRequestError("the request is too large or complex for this connection.", "unsupported_request", status, id);
@@ -62,7 +98,7 @@ export function sanitizeMindSwapperError(error: unknown): Error {
     return new MindSwapperRequestError("the selected model or its supply is unavailable.", "no_eligible_supply", status, id, id !== undefined);
   }
   if (status === 429) return new MindSwapperRequestError("the account or server is rate limited.", "rate_limit_error", status, id, id !== undefined);
-  return new MindSwapperRequestError("the connection ended before a complete response. Check the request before retrying.", "outcome_unknown", status, id, true);
+  return new MindSwapperRequestError("the connection ended before a complete response. Check the request before retrying.", "outcome_unknown", status, id, true, streamCode);
 }
 
 function hasImage(value: unknown): boolean {
@@ -121,7 +157,8 @@ function withoutToolMessageNames(request: WireRecord): WireRecord {
 /** MindSwapper's SSE contract requires a terminal data event. Never accept a truncated body as a completed generation. */
 function requireStreamTerminator(response: Response): Response {
   const body = response.body;
-  if (!body) throw new MindSwapperRequestError("the streaming response was empty.", "outcome_unknown", undefined, requestId(response.headers.get("x-request-id")), true);
+  const id = requestId(response.headers.get("x-request-id"));
+  if (!body) throw new MindSwapperRequestError("the streaming response was empty.", "outcome_unknown", undefined, id, true);
   const decoder = new TextDecoder();
   const terminator = "data: [DONE]";
   let done = false;
@@ -148,7 +185,7 @@ function requireStreamTerminator(response: Response): Response {
     flush() {
       inspect(decoder.decode());
       if (!done && (lineOverflow || line.trimEnd() !== terminator)) {
-        throw new MindSwapperRequestError("the streaming response ended before its completion marker.", "outcome_unknown", undefined, requestId(response.headers.get("x-request-id")), true);
+        throw new MindSwapperRequestError("the streaming response ended before its completion marker.", "outcome_unknown", undefined, id, true);
       }
     },
   })), { headers: response.headers, status: response.status, statusText: response.statusText });
@@ -174,39 +211,77 @@ export function createMindSwapperFetch(
     }
     const normalizedRequest = withoutToolMessageNames(request);
     assertWireOffer(normalizedRequest, offer);
-    const response = await globalThis.fetch(endpoint, {
-      method: "POST",
-      body: JSON.stringify(normalizedRequest),
-      headers: {
-        Authorization: `Bearer ${connection.apiKey}`,
-        "Content-Type": "application/json",
-        Accept: request["stream"] === true ? "text/event-stream" : "application/json",
-      },
-      redirect: "error",
-      ...(init.signal === undefined ? {} : { signal: init.signal }),
-    });
-    if (!response.ok) {
-      await response.body?.cancel().catch(() => undefined);
-      throw sanitizeMindSwapperError({ status: response.status, request_id: response.headers.get("x-request-id") });
+    const signal = init.signal ?? (input instanceof Request ? input.signal : undefined);
+    const body = JSON.stringify(normalizedRequest);
+    for (let attempt = 0; ; attempt++) {
+      const response = await globalThis.fetch(endpoint, {
+        method: "POST", body,
+        headers: {
+          Authorization: `Bearer ${connection.apiKey}`,
+          "Content-Type": "application/json",
+          Accept: request["stream"] === true ? "text/event-stream" : "application/json",
+        },
+        redirect: "error",
+        ...(signal ? { signal } : {}),
+      });
+      if (response.ok) {
+        if (request["stream"] !== true) return response;
+        const observed = streamRequest.getStore();
+        const id = requestId(response.headers.get("x-request-id"));
+        if (observed && id) observed.requestId = id;
+        return requireStreamTerminator(response);
+      }
+
+      let code: unknown;
+      if ([402, 429, 503].includes(response.status) && response.headers.get("content-type")?.startsWith("application/json")) {
+        const payload = asRecord(await readBoundedMediaJson(response).catch(() => undefined));
+        code = asRecord(payload?.["error"])?.["code"];
+      } else {
+        await response.body?.cancel().catch(() => undefined);
+      }
+      const dispatch = response.headers.get("x-mindswapper-dispatch");
+      // Only an explicit rejection by the admitted endpoint can authorize one
+      // replay. A provider 429 or an interrupted stream can already be billable.
+      if (attempt === 0 && endpoint.startsWith("https://") && dispatch === "not-started" &&
+          admissionRefusal(response.status, code) && !response.headers.has("retry-after")) {
+        await delay(250 + Math.random() * 500, undefined, signal ? { signal } : undefined);
+        continue;
+      }
+      throw sanitizeMindSwapperError({ status: response.status, code, dispatch, request_id: response.headers.get("x-request-id"),
+        correlation_id: response.headers.get("x-mindswapper-correlation-id") });
     }
-    return request["stream"] === true ? requireStreamTerminator(response) : response;
   }) as typeof fetch;
 }
 
 export class MindSwapperCompletions extends ChatOpenAICompletions {
   override async *_streamResponseChunks(...args: Parameters<ChatOpenAICompletions["_streamResponseChunks"]>) {
-    let id: string | undefined;
+    // An SDK/transport failure can arrive before any model chunk, or without
+    // the typed SDK error that carries response headers. Scope the admitted
+    // header to this iterator so concurrent streams cannot share an identity.
+    const observed: { requestId?: string } = {};
+    const source = super._streamResponseChunks(...args);
+    const chunks = {
+      [Symbol.asyncIterator]: () => ({
+        next: () => streamRequest.run(observed, () => source.next()),
+        return: () => streamRequest.run(observed, () => source.return(undefined)),
+      }),
+    };
+    let outputId: string | undefined;
     let finished = false;
-    for await (const chunk of super._streamResponseChunks(...args)) {
-      if (!id) {
-        id = requestId(chunk.message.id);
-        if (id) chunk.message.response_metadata["request_id"] = id;
+    try {
+      for await (const chunk of chunks) {
+        if (!outputId) {
+          outputId = observed.requestId ?? requestId(chunk.message.id);
+          if (outputId) chunk.message.response_metadata["request_id"] = outputId;
+        }
+        if (typeof chunk.generationInfo?.["finish_reason"] === "string") finished = true;
+        yield chunk;
       }
-      if (typeof chunk.generationInfo?.["finish_reason"] === "string") finished = true;
-      yield chunk;
+    } catch (error) {
+      throw streamRequest.run(observed, () => sanitizeMindSwapperError(error));
     }
     if (!finished) {
-      throw new MindSwapperRequestError("the streaming response ended without a finish reason.", "outcome_unknown", undefined, id, true);
+      throw new MindSwapperRequestError("the streaming response ended without a finish reason.", "outcome_unknown", undefined, observed.requestId ?? outputId, true);
     }
   }
 

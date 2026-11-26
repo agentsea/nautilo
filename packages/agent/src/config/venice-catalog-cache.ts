@@ -57,10 +57,19 @@ export interface VeniceCatalogSnapshot {
   readonly models: ReadonlyMap<string, VeniceCatalogModelHint>;
 }
 
+interface CachedVeniceCatalog {
+  readonly path: string;
+  readonly stat: fs.BigIntStats;
+  readonly file: VeniceModelsCacheFile;
+  readonly hasCapabilities: boolean;
+}
+
+let cachedCatalog: CachedVeniceCatalog | null = null;
 let refreshInflight: Promise<void> | null = null;
 let loggedDefaultsFallback = false;
 
 export function resetVeniceCatalogCacheModuleForTests(): void {
+  cachedCatalog = null;
   refreshInflight = null;
   loggedDefaultsFallback = false;
 }
@@ -215,10 +224,29 @@ function parseCacheFile(raw: unknown): VeniceModelsCacheFile | null {
   return { fetchedAt: r["fetchedAt"], complete, models: cleaned };
 }
 
-function loadVeniceModelsCacheFromDisk(): VeniceModelsCacheFile | null {
+function sameFileVersion(a: fs.BigIntStats, b: fs.BigIntStats): boolean {
+  return a.dev === b.dev && a.ino === b.ino && a.size === b.size
+    && a.mtimeNs === b.mtimeNs && a.ctimeNs === b.ctimeNs;
+}
+
+function loadVeniceModelsCacheFromDisk(): CachedVeniceCatalog | null {
   try {
-    const text = fs.readFileSync(cacheFilePath(), "utf8");
-    return parseCacheFile(JSON.parse(text) as unknown);
+    const filePath = cacheFilePath();
+    const stat = fs.statSync(filePath, { bigint: true });
+    if (cachedCatalog?.path === filePath && sameFileVersion(stat, cachedCatalog.stat)) {
+      return cachedCatalog;
+    }
+    const file = parseCacheFile(JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown);
+    if (!file) return null;
+    // Never use a changed or partially replaced file to narrow signed availability.
+    if (!sameFileVersion(stat, fs.statSync(filePath, { bigint: true }))) return null;
+    cachedCatalog = {
+      path: filePath,
+      stat,
+      file,
+      hasCapabilities: Object.values(file.models).some((hint) => hint.capabilities !== null),
+    };
+    return cachedCatalog;
   } catch {
     return null;
   }
@@ -233,38 +261,30 @@ function cacheFresh(fetchedAt: string): boolean {
 
 /** Synchronously reads the cached list snapshot; no network is ever used. */
 export function readVeniceCatalogSnapshotSync(): VeniceCatalogSnapshot | null {
-  const disk = loadVeniceModelsCacheFromDisk();
+  const disk = loadVeniceModelsCacheFromDisk()?.file;
   if (!disk) return null;
   return {
     fetchedAt: disk.fetchedAt,
     complete: disk.complete,
-    models: new Map(Object.entries(disk.models)),
+    models: new Map(Object.entries(structuredClone(disk.models))),
   };
 }
 
-/** A stale, partial, or failed snapshot must not narrow signed fallbacks. */
-export function isVeniceCatalogSnapshotFresh(snapshot: VeniceCatalogSnapshot): boolean {
-  return cacheFresh(snapshot.fetchedAt);
-}
-
-/**
- * Sync map keyed by `venice:${sku}` for lookup from eligible-model ids.
- * Empty map when no readable cache; picker still works via static defaults.
- */
-export function readVeniceCapabilityHintsSync(): Map<string, VeniceParsedCaps> {
-  const disk = loadVeniceModelsCacheFromDisk();
-  const map = new Map<string, VeniceParsedCaps>();
-  if (!disk) {
-    return map;
-  }
-  for (const [sku, hint] of Object.entries(disk.models)) {
-    if (hint.capabilities) map.set(`venice:${sku}`, hint.capabilities);
-  }
-  if (map.size === 0 && process.env["VENICE_API_KEY"]?.trim() && !loggedDefaultsFallback) {
+/** Read a single SKU without rebuilding the full capability map. */
+export function readVeniceCatalogModelSync(sku: string) {
+  const cached = loadVeniceModelsCacheFromDisk();
+  if (!cached) return null;
+  if (!cached.hasCapabilities && process.env["VENICE_API_KEY"]?.trim() && !loggedDefaultsFallback) {
     loggedDefaultsFallback = true;
     log("[nautilo/venice] capability cache empty on disk — using static defaults until refresh");
   }
-  return map;
+  const { file } = cached;
+  const model = file.models[sku];
+  return {
+    fetchedAt: file.fetchedAt,
+    freshAndComplete: file.complete && cacheFresh(file.fetchedAt),
+    model: model && { ...model, capabilities: model.capabilities && { ...model.capabilities } },
+  };
 }
 
 export function mergeVeniceCatalogCapabilities(
@@ -287,6 +307,7 @@ async function writeVeniceCacheFile(payload: VeniceModelsCacheFile): Promise<voi
   const p = cacheFilePath();
   await fsp.mkdir(path.dirname(p), { recursive: true });
   await fsp.writeFile(p, `${JSON.stringify(payload, null, 2)}\n`, "utf8");
+  if (cachedCatalog?.path === p) cachedCatalog = null;
 }
 
 export async function refreshVeniceCatalogCache(): Promise<void> {
@@ -321,16 +342,16 @@ export async function refreshVeniceCatalogCache(): Promise<void> {
 }
 
 /** When cache is missing or past TTL and a Venice key exists, refresh in the background (single-flight). */
-export function scheduleVeniceCatalogRefreshIfNeeded(): void {
+export function scheduleVeniceCatalogRefreshIfNeeded(snapshotFetchedAt?: string | null): void {
   if (process.env["NAUTILO_SKIP_VENICE_REFRESH"] === "1") return;
 
   const key = process.env["VENICE_API_KEY"]?.trim();
   if (!key) return;
 
-  const disk = loadVeniceModelsCacheFromDisk();
-  if (disk && cacheFresh(disk.fetchedAt)) return;
-
   if (refreshInflight) return;
+  const fetchedAt = snapshotFetchedAt === undefined
+    ? loadVeniceModelsCacheFromDisk()?.file.fetchedAt : snapshotFetchedAt;
+  if (fetchedAt && cacheFresh(fetchedAt)) return;
   refreshInflight = refreshVeniceCatalogCache().finally(() => {
     refreshInflight = null;
   });

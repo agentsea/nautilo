@@ -20,6 +20,8 @@ import { resolveModelExecutionLimits } from "../../src/providers/models";
 import { createDiscoverModelsTool } from "../../src/tools/meta/discover-models";
 import { buildForegroundModelControlPlan } from "../../src/config/foreground-model-controls";
 import { resolveCompletionBudget, resolvePreparedMessageBudget } from "../../src/utils/chat-model-invocation";
+import { toFriendlyError } from "../../src/utils/friendly-errors";
+import { classifyPersonalAttemptFailure } from "../../src/usage/personal-llm-attempt";
 
 const modelId = "mindswapper:maker/Test-model";
 const upstreamId = "maker/Test-model";
@@ -302,6 +304,41 @@ describe("MindSwapper Chat Completions", () => {
     expect(original.messages.at(-1)?.name).toBe(toolName);
   });
 
+  test("retries a confirmed pre-dispatch refusal once and preserves its correlation ID", async () => {
+    const fetch = createMindSwapperFetch(connection, upstreamId, model.offers[0]!);
+    const body = JSON.stringify({ model: upstreamId, max_tokens: 8, messages: [{ role: "user", content: "hello" }] });
+    let calls = 0;
+    stubFetch(() => {
+      calls++;
+      return Response.json({ error: { code: "gateway_busy" } }, { status: 503,
+        headers: { "x-mindswapper-dispatch": "not-started", "x-mindswapper-correlation-id": requestId } });
+    });
+    await assert.rejects(fetch(`${connection.baseUrl}/chat/completions`, { method: "POST", body }),
+      { code: "gateway_busy", requestId, outcomeUnknown: false });
+    expect(calls).toBe(2);
+  });
+
+  test("an upstream refusal or abort never replays a possibly billable request", async () => {
+    const fetch = createMindSwapperFetch(connection, upstreamId, model.offers[0]!);
+    const body = JSON.stringify({ model: upstreamId, max_tokens: 8, messages: [{ role: "user", content: "hello" }] });
+    const controller = new AbortController();
+    let calls = 0;
+    stubFetch(() => {
+      calls++;
+      return Response.json({ error: { code: "gateway_busy" } }, { status: 503 });
+    });
+    await assert.rejects(fetch(`${connection.baseUrl}/chat/completions`, { method: "POST", body }), { code: "no_eligible_supply" });
+    expect(calls).toBe(1);
+    stubFetch(() => {
+      calls++;
+      controller.abort();
+      return Response.json({ error: { code: "qa_concurrency_limit" } }, { status: 429,
+        headers: { "x-mindswapper-dispatch": "not-started" } });
+    });
+    await assert.rejects(fetch(`${connection.baseUrl}/chat/completions`, { method: "POST", body, signal: controller.signal }), { name: "AbortError" });
+    expect(calls).toBe(2);
+  });
+
   test("rejects an unsupported input before sending any request", async () => {
     let requests = 0;
     stubFetch(() => { requests++; return completion(); });
@@ -314,16 +351,33 @@ describe("MindSwapper Chat Completions", () => {
     expect(requests).toBe(0);
   });
 
-  test("distinguishes insufficient credit without leaking the provider error body or retrying", async () => {
+  test.each([
+    ["insufficient_balance", "insufficient_balance", "insufficient credit"],
+    ["billing_needs_review", "billing_needs_review", "charge is under review"],
+    ["spend_limit_reached", "spend_limit_reached", "reached its spending limit"],
+    [undefined, "billing_error", "declined the request for billing reasons"],
+    ["untrusted-provider-code", "billing_error", "declined the request for billing reasons"],
+  ])("preserves the appropriate billing refusal for upstream code %s", async (wireCode, code, message) => {
     let requests = 0;
+    const privateDetails = `untrusted provider details including ${connection.apiKey}`;
     stubFetch(() => {
       requests++;
-      return Response.json({ error: { message: "untrusted provider details" } }, { status: 402 });
+      return Response.json({ error: { code: wireCode, message: privateDetails } }, {
+        status: 402, headers: { "x-request-id": requestId },
+      });
     });
     await assert.rejects(withConnection(async () => {
       const chat = await createUnmeteredEvaluationModel(modelId);
       return chat.invoke([new HumanMessage("hello")]);
-    }), { status: 402, code: "insufficient_balance", outcomeUnknown: false });
+    }), (error: unknown) => {
+      expect(error).toMatchObject({ status: 402, code, outcomeUnknown: false, requestId });
+      expect(toFriendlyError(error).message).toContain(message);
+      expect(classifyPersonalAttemptFailure(error, false)).toEqual({
+        outcome: "failed", failureCode: code, disposition: "safe_refusal",
+      });
+      expect(String(error)).not.toContain(privateDetails);
+      return true;
+    });
     expect(requests).toBe(1);
   });
 
@@ -391,6 +445,85 @@ describe("MindSwapper Chat Completions", () => {
     await assert.rejects(withConnection(async () => {
       const chat = await createUnmeteredEvaluationModel(modelId);
       for await (const _ of await chat.stream!([new HumanMessage("hello")])) { /* consume */ }
-    }), { code: "outcome_unknown", outcomeUnknown: true });
+    }), { code: "outcome_unknown", outcomeUnknown: true, requestId });
+  });
+
+  test.each([
+    ["upstream_incomplete", "upstream_incomplete"],
+    ["stream_memory_exhausted", "stream_memory_exhausted"],
+    ["supplier_private_error", undefined],
+  ])("keeps the admitted stream identity and only displays recognized diagnostic codes for %s", async (wireCode, safeCode) => {
+    const privateMessage = `private text including ${connection.apiKey}`;
+    const untrustedId = "00000000-0000-4000-8000-000000000000";
+    const errorFrame = `data: ${JSON.stringify({ type: "gateway.error", error: { code: wireCode, message: privateMessage, request_id: untrustedId } })}\n\n`;
+    let calls = 0;
+    stubFetch(() => {
+      calls++;
+      return streamResponse(frame([{ index: 0, delta: { role: "assistant", content: "partial" }, finish_reason: null }]) + errorFrame, false);
+    });
+    await assert.rejects(withConnection(async () => {
+      const chat = await createUnmeteredEvaluationModel(modelId);
+      for await (const _ of await chat.stream!([new HumanMessage("hello")])) { /* consume */ }
+    }), (error: unknown) => {
+      expect(error).toMatchObject({ code: "outcome_unknown", outcomeUnknown: true, requestId, gatewayStreamCode: safeCode });
+      expect(classifyPersonalAttemptFailure(error, false)).toEqual({
+        outcome: "unknown", failureCode: safeCode ?? "outcome_unknown", disposition: "terminal_unknown",
+      });
+      const friendly = toFriendlyError(error);
+      expect(friendly.detailsForLog).toBe(`mindswapper_outcome_unknown${safeCode ? ` gateway_stream_code=${safeCode}` : ""} provider_request_id=${requestId}`);
+      expect(friendly.message).not.toContain(requestId);
+      expect(JSON.stringify(error)).not.toContain(privateMessage);
+      expect(JSON.stringify(error)).not.toContain(untrustedId);
+      return true;
+    });
+    expect(calls).toBe(1);
+  });
+
+  test("keeps the HTTP request id when the network drops after a partial reply", async () => {
+    let failTransport: () => void = () => { throw new Error("test transport not opened"); };
+    const privateMessage = "private network detail";
+    stubFetch(() => new Response(new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(frame([
+          { index: 0, delta: { role: "assistant", content: "partial" }, finish_reason: null },
+        ])));
+        failTransport = () => controller.error(new Error(privateMessage));
+      },
+    }), { headers: { "content-type": "text/event-stream", "x-request-id": requestId } }));
+    await assert.rejects(withConnection(async () => {
+      const chat = await createUnmeteredEvaluationModel(modelId);
+      for await (const chunk of await chat.stream!([new HumanMessage("hello")])) {
+        expect(chunk).toMatchObject({ content: "partial" });
+        failTransport();
+      }
+    }), (error: unknown) => {
+      expect(error).toMatchObject({ code: "outcome_unknown", outcomeUnknown: true, requestId });
+      expect(String(error)).not.toContain(privateMessage);
+      return true;
+    });
+  });
+
+  test("keeps distinct HTTP request ids for overlapping streams without finish reasons", async () => {
+    const otherId = "d17cfd05-036a-4ed3-9bdc-022851ba66af";
+    let calls = 0;
+    stubFetch((_url, init) => {
+      calls++;
+      const messages = wireBody(init)["messages"] as Array<{ content: string }>;
+      return new Response("data: [DONE]\n\n", {
+        headers: {
+          "content-type": "text/event-stream",
+          "x-request-id": messages[0]?.content === "first" ? requestId : otherId,
+        },
+      });
+    });
+    await withConnection(async () => {
+      const chat = await createUnmeteredEvaluationModel(modelId);
+      await Promise.all([["first", requestId], ["other", otherId]].map(async ([prompt, id]) => {
+        await assert.rejects(async () => {
+          for await (const _ of await chat.stream!([new HumanMessage(prompt!)])) { /* consume */ }
+        }, { code: "outcome_unknown", requestId: id, outcomeUnknown: true });
+      }));
+    });
+    expect(calls).toBe(2);
   });
 });

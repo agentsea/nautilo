@@ -2,8 +2,8 @@ import { createHash } from "node:crypto";
 import { HumanMessage, AIMessage, type BaseMessage } from "@langchain/core/messages";
 import type { ChatMultimodalImagePart, ImageAssistanceSummary } from "@nautilo/types";
 import { normalizeAcceptedChatImageMime } from "@nautilo/attachments";
-import { modelSupportsInput } from "@nautilo/model-capabilities";
 import { scanContent } from "@nautilo/security";
+import { modelSupportsAgentInput } from "../providers/models";
 import { invokeChatModelWithFallback } from "../utils/chat-model-invocation";
 import { resolveCatalogModel } from "../config/resolved-catalog";
 import type { ForegroundChatFundingSession } from "../runtime/foreground-chat-funding";
@@ -67,7 +67,7 @@ export async function maybeSummarizeImagesWithVisionFallback(args: {
   retainedResults?: readonly ImageAssistanceResult[];
   invoke?: typeof invokeChatModelWithFallback;
 }): Promise<ImageAssistanceResult | null> {
-  if (args.images.length === 0 || modelSupportsInput(args.mainModelId, "image")) return null;
+  if (args.images.length === 0 || modelSupportsAgentInput(args.mainModelId, "image")) return null;
   args.signal?.throwIfAborted();
   const inputDigest = imageAssistanceInputDigest(args);
   const retained = args.retainedResults?.find((result) => result.inputDigest === inputDigest);

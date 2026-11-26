@@ -22,8 +22,11 @@ import {
 } from "../../src/apps/live-review-extension-registry";
 import {
   createDefaultManifest,
+  parseWriterHtml,
   serializeWriterHtml,
 } from "../../../first-party-apps/writer/src/office-document";
+import { readWriterContext } from "@nautilo/writer-proposal-core";
+import type { Document } from "@nautilo/office-docs/node";
 import { createEmptyDocument } from "../../../first-party-apps/design/src/scene-graph";
 import { editOpenDesign } from "../../../first-party-apps/design/src/design-operations";
 
@@ -696,7 +699,7 @@ describe("app tool registration", () => {
     expect(receivedArtifactResolver).toBe(true);
   });
 
-  test("propagates turnId from catalog factory context into invoke request (M206)", async () => {
+  test("propagates turnId from catalog factory context into invoke request", async () => {
     const root = await makeAppsRoot();
     await writeTestApp(root);
     const catalog = new ToolCatalog();
@@ -803,7 +806,7 @@ const ARTIFACT_VERSION = { kind: "artifact_revision" as const, revision: 7 };
 const LOCAL_SHA = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
 const LOCAL_VERSION = { kind: "local_sha" as const, sha256: LOCAL_SHA };
 
-describe("app tool registration — live Writer session gate (D386)", () => {
+describe("app tool registration — live Writer session gate", () => {
   const binding = {
     targetKind: "artifact" as const,
     appId: "nautilo-writer",
@@ -819,8 +822,8 @@ describe("app tool registration — live Writer session gate (D386)", () => {
     userId: "user-1",
     localTargetId: "local-target-1",
     relayId: "relay-1",
-    canonicalPath: "/Users/human/project/docs/readme.md",
-    currentFolderRoot: "/Users/human/project",
+    canonicalPath: "/workspace/project/docs/readme.md",
+    currentFolderRoot: "/workspace/project",
     relativePath: "docs/readme.md",
     documentVersion: LOCAL_VERSION,
   };
@@ -2084,9 +2087,11 @@ describe("app tool registration — live Writer session gate (D386)", () => {
     await writeLiveWriterTestApp(root);
     const catalog = new ToolCatalog();
     const registry = new LiveMiniAppSessionRegistry();
-    const { token } = registry.issue(binding);
+    const { token, sessionId } = registry.issue(binding);
+    const selection = { anchor: { blockId: "block-1", offset: 0 }, focus: { blockId: "block-1", offset: 4 } };
     let reads = 0;
     const seen: unknown[] = [];
+    const contexts: AppToolRunnerContext[] = [];
     await registerAppToolsForApp(root, "nautilo-writer", {
       catalog, liveSessionRegistry: registry,
       readLiveCanonical: async (bound) => {
@@ -2100,18 +2105,20 @@ describe("app tool registration — live Writer session gate (D386)", () => {
       },
       invoke: async (request) => {
         seen.push(request.args);
+        contexts.push(request.context);
         if (request.tool.id === "locate-open-writer-text") {
           return { ok: true, result: { ok: true, status: "locator_resolved", documentVersion: ARTIFACT_VERSION, blockId: "block-1", __range: { start: 2, end: 5 } } };
         }
         return { ok: true, result: { ok: true, status: "range_read", documentVersion: ARTIFACT_VERSION, blocks: [] } };
       },
     });
-    const tools = new Map(catalog.getToolsForActor(runnerContext()).map((tool) => [tool.name, tool]));
+    const tools = new Map(catalog.getToolsForActor({ ...runnerContext({ liveMiniAppSession: { appId: "nautilo-writer", sessionToken: token, sessionId, documentVersion: ARTIFACT_VERSION, instructions: "Read", writerSelection: selection } }), taskReadMaxResponseBytes: 6000 }).map((tool) => [tool.name, tool]));
     const range = parseToolResult(await tools.get("app_nautilo_writer__read_open_writer_range")!.invoke({
       sessionToken: token, documentVersion: ARTIFACT_VERSION, blockId: "block-1",
     }));
     expect(range).toMatchObject({ ok: true, status: "range_read" });
     expect(reads).toBe(1);
+    expect(contexts[0]).toMatchObject({ readResponseBudgetBytes: 6000 - Math.max(0, Buffer.byteLength(JSON.stringify(token)) - Buffer.byteLength(JSON.stringify("server-validated-live-session"))), writerSelection: selection, writerReadSessionId: sessionId });
     expect(seen[0]).toMatchObject({ __canonicalContent: "<canonical>only-server</canonical>" });
     expect(seen[0]).not.toHaveProperty("target");
 
@@ -2122,6 +2129,58 @@ describe("app tool registration — live Writer session gate (D386)", () => {
     expect(located).toHaveProperty("locatorHandle");
     expect(JSON.stringify(located)).not.toContain("__range");
     expect(JSON.stringify(located)).not.toContain("only-server");
+  });
+
+  test("restores only the admitted continuation bearer and reserves its serialized byte growth", async () => {
+    const root = await makeAppsRoot();
+    await writeLiveWriterTestApp(root);
+    const catalog = new ToolCatalog();
+    const registry = new LiveMiniAppSessionRegistry();
+    const { token, sessionId } = registry.issue(binding);
+    const budget = 1500;
+    await registerAppToolsForApp(root, "nautilo-writer", {
+      catalog, liveSessionRegistry: registry,
+      readLiveCanonical: async () => ({ ok: true, content: "<canonical/>" }),
+      invoke: async (request) => {
+        const args = request.args as Record<string, unknown>;
+        expect(args["sessionToken"]).toBe("server-validated-live-session");
+        expect(JSON.stringify(request.args)).not.toContain(token);
+        expect(request.context.writerReadSessionId).toBe(sessionId);
+        const allowance = budget - Math.max(0, Buffer.byteLength(JSON.stringify(token)) - Buffer.byteLength(JSON.stringify(args["sessionToken"])));
+        expect(request.context.readResponseBudgetBytes).toBe(allowance);
+        const page = { ok: true, status: "context_read", documentVersion: ARTIFACT_VERSION, text: "", nextRead: { sessionToken: args["sessionToken"], documentVersion: ARTIFACT_VERSION, cursor: "opaque" } };
+        page.text = "a".repeat(allowance - Buffer.byteLength(JSON.stringify(page)));
+        return { ok: true, result: page };
+      },
+    });
+    const tool = catalog.getToolsForActor({ ...runnerContext(), taskReadMaxResponseBytes: budget }).find((tool) => tool.name === "app_nautilo_writer__read_open_writer_range")!;
+    const content: unknown = await tool.invoke({ sessionToken: token, documentVersion: ARTIFACT_VERSION, blockId: "block-1" });
+    expect(typeof content).toBe("string");
+    expect(Buffer.byteLength(content as string)).toBe(budget);
+    expect(parseToolResult(content)).toMatchObject({ nextRead: { sessionToken: token, documentVersion: ARTIFACT_VERSION, cursor: "opaque" } });
+  });
+
+  test("does not reuse captured selection for another validated session", async () => {
+    const root = await makeAppsRoot();
+    await writeLiveWriterTestApp(root);
+    const catalog = new ToolCatalog();
+    const registry = new LiveMiniAppSessionRegistry();
+    const first = registry.issue(binding);
+    const second = registry.issue(binding);
+    const selection = { anchor: { blockId: "block-1", offset: 0 }, focus: { blockId: "block-1", offset: 4 } };
+    await registerAppToolsForApp(root, "nautilo-writer", {
+      catalog, liveSessionRegistry: registry,
+      readLiveCanonical: async () => ({ ok: true, content: "<canonical/>" }),
+      invoke: async (request) => {
+        expect(request.context.writerSelection).toBeUndefined();
+        expect(request.context.readResponseBudgetBytes).toBeUndefined();
+        return { ok: true, result: { ok: true, status: "range_read", documentVersion: ARTIFACT_VERSION, blocks: [] } };
+      },
+    });
+    const context = { ...runnerContext({ liveMiniAppSession: { appId: "nautilo-writer", sessionToken: first.token,
+      sessionId: first.sessionId, documentVersion: ARTIFACT_VERSION, instructions: "Read", writerSelection: selection } }), taskReadMaxResponseBytes: -1 };
+    const tool = catalog.getToolsForActor(context).find((tool) => tool.name === "app_nautilo_writer__read_open_writer_range")!;
+    expect(parseToolResult(await tool.invoke({ sessionToken: second.token, documentVersion: ARTIFACT_VERSION, blockId: "block-1" }))).toMatchObject({ ok: true });
   });
 
   test("records first-party range reread coverage only on the exact verification Task run", async () => {
@@ -2153,29 +2212,32 @@ describe("app tool registration — live Writer session gate (D386)", () => {
     expect(beginTaskWriterReviewVerification({
       taskId: "coverage-task", taskRunId: "coverage-run", ownerId: binding.userId,
     })).toBe(true);
+    // Both host admission and the worker read the same canonical bytes. A second
+    // serialization would mint a different metadata.updatedAt and fingerprint.
+    const canonicalSource = liveWriterCanonical("verified");
     await registerAppToolsForApp(root, "nautilo-writer", {
       catalog,
       liveSessionRegistry: registry,
-      readLiveCanonical: async () => ({ ok: true, content: liveWriterCanonical("verified") }),
-      invoke: async (): Promise<AppToolInvokeResult> => ({
-        ok: true,
-        result: {
-          ok: true,
-          status: "range_read",
-          documentVersion: ARTIFACT_VERSION,
-          blocks: [{ id: "block-1", type: "paragraph", text: "verified" }],
-        },
-      }),
+      readLiveCanonical: async () => ({ ok: true, content: canonicalSource }),
+      invoke: async (request): Promise<AppToolInvokeResult> => {
+        expect((request.args as Record<string, unknown>)["__canonicalContent"]).toBe(canonicalSource);
+        const parsed = parseWriterHtml(canonicalSource);
+        if (!parsed.ok) throw new Error("Invalid canonical test fixture");
+        return { ok: true, result: await readWriterContext({ sessionToken: "server-validated-live-session", documentVersion: ARTIFACT_VERSION,
+          scope: { kind: "document" }, document: parsed.document.document as unknown as Document, canonicalSource,
+          responseBudgetBytes: request.context.readResponseBudgetBytes, sessionIdentity: request.context.writerReadSessionId,
+        }) };
+      },
     });
-    const tool = catalog.getToolsForActor(runnerContext({
+    const tool = catalog.getToolsForActor({ ...runnerContext({
       currentTaskId: "coverage-task",
       currentTaskRunId: "coverage-run",
-    })).find((entry) => entry.name === "app_nautilo_writer__read_open_writer_range")!;
+    }), taskReadMaxResponseBytes: 10_000 }).find((entry) => entry.name === "app_nautilo_writer__read_open_writer_range")!;
     expect(parseToolResult(await tool.invoke({
       sessionToken: issued.token,
       documentVersion: ARTIFACT_VERSION,
       blockId: "block-1",
-    }))).toMatchObject({ ok: true, status: "range_read" });
+    }))).toMatchObject({ ok: true, status: "context_read" });
     expect(taskWriterReviewVerificationCoverageState({
       taskId: "coverage-task", taskRunId: "coverage-run", ownerId: binding.userId,
     })).toBe("complete");
@@ -3005,7 +3067,7 @@ async function writeGenericOfficeTransformTestApp(root: string): Promise<void> {
   await writeFile(join(appDir, "package.json"), `${JSON.stringify({ private: true, type: "module" }, null, 2)}\n`);
 }
 
-describe("app tool registration — OfficeCLI platform-gate (D391)", () => {
+describe("app tool registration — OfficeCLI platform-gate", () => {
   test("hides declared DOCX transformations when officeCliAvailable() is false; keeps ordinary tools", async () => {
     const root = await makeAppsRoot();
     await writeDocxTestApp(root);

@@ -8,7 +8,7 @@ Guide local illustré: [English](https://nautilo.ai/docs/operator/deploy/local) 
 
 L’interface de Nautilo est actuellement en anglais. Le README et le guide local sont traduits ; les autres documents peuvent rester en anglais.
 
-<!-- Translation source: README.md; SHA-256: 70b9d8b55da933e1da5c68d0656f5c2e4ac61690fd958de91b9be5268859f07a -->
+<!-- Translation source: README.md; SHA-256: 7d5da3b8c2bd4a27146f94a6430bc44c8f1a3d01f2bf1a844cdb357fef4709f6 -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### L’IA passe en multijoueur.
@@ -137,8 +137,16 @@ Nautilo est [sous licence MIT](LICENSE). Consultez les [mentions des tiers](THIR
 
 [Soutenez Nautilo via agentsea sur GitHub Sponsors](https://github.com/sponsors/agentsea) · Don ponctuel ou mensuel.
 
-[![Merci à la communauté Bankr](https://nautilo.ai/community/bankr-thanks-fr.png)](https://hoodscan.co/token/0xddd4947010496b500abe96ab0965c38584413ba3)
+[![Merci à la communauté Bankr](https://nautilo.ai/community/bankr-thanks-fr.png?v=kentauros)](https://hoodscan.co/token/0xddd4947010496b500abe96ab0965c38584413ba3)
 
-L’open source avance grâce aux gens qui se soutiennent. La communauté Bankr a créé un [jeton Nautilo](https://hoodscan.co/token/0xddd4947010496b500abe96ab0965c38584413ba3) indépendant et affecté une part de ses frais de transaction au soutien de notre travail. Merci de nous aider à continuer à construire.
+### Le jeton communautaire NAUTILO
 
-Ce jeton communautaire n’est ni émis ni cautionné par Nautilo. Il n’a aucun rôle dans le logiciel et ne confère aucun droit d’accès au produit, de propriété ou de gouvernance.
+$NAUTILO est né dans la communauté Bankr, qui a créé le jeton et affecté une part de ses frais de transaction au développement de Nautilo. Nous remercions les personnes à l’origine de cette initiative et toutes celles qui ont soutenu le projet.
+
+Kentauros, Inc., l’entreprise derrière Nautilo, a depuis repris la gestion de la présence publique du jeton, notamment de son profil DEX Screener. La part des frais de transaction allouée au projet est désormais versée directement à la trésorerie Safe de Kentauros. Nous publions l’[adresse du contrat du jeton](https://hoodscan.co/token/0xddd4947010496b500abe96ab0965c38584413ba3) via [@nautiloapp](https://x.com/nautiloapp) pour permettre à notre communauté d’identifier le bon jeton.
+
+**Le jeton a été créé par la communauté. Kentauros ne l’a pas créé et n’a pas réalisé d’ICO.**
+
+#### Utilisez MindSwapper. Recevez des $NAUTILO en retour.
+
+Utilisez [MindSwapper](https://mindswapper.ai/) et connectez un portefeuille pour recevoir automatiquement des récompenses en $NAUTILO selon votre utilisation. Aucun achat de jetons requis. Nous commençons par de petits versements pendant les tests. Ils augmenteront quand nous saurons que tout fonctionne bien.

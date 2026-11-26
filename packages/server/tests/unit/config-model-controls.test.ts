@@ -13,6 +13,7 @@ import {
   configureRuntimeModelCatalog,
   hydrateRuntimeModelCatalog,
   resetRuntimeModelCatalog,
+  type MindSwapperChatModel,
 } from "@nautilo/agent";
 import { ModelCatalogSchema } from "@nautilo/types";
 import {
@@ -28,6 +29,34 @@ import {
 const EMPTY_IMAGE_ASSISTANCE_PREFERENCES = Object.freeze({
   revision: 0,
   overrides: Object.freeze({}),
+});
+
+test("projects MindSwapper vision from the selected funding connection's offer", async () => {
+  const model: MindSwapperChatModel = {
+    id: "mindswapper:maker/model",
+    displayName: "Model",
+    offers: [{ inputModalities: ["text", "image"], supportedParameters: ["tools"], maxInputTokens: 2000, maxOutputTokens: 1000 }],
+  };
+  const humanUserId = "synthetic-human";
+  const textOffer = { ...model.offers[0]!, inputModalities: ["text"] as const };
+  const result = await resolveCallerModelAvailability(humanUserId, model.id, { purpose: "chat-tools" }, {
+    mindswapperModels: [model],
+    resolveFunding: async (request) => {
+      if (request.modelId !== model.id) throw new ModelFundingError("provider_credentials_missing");
+      return {
+        kind: "server", humanUserId, modelId: request.modelId, workload: request.workload,
+        providerRoute: "mindswapper", connectionRevision: "selected-connection",
+      };
+    },
+    readMindSwapperModel: async (decision, tools) => {
+      expect(decision).toMatchObject({ kind: "server", connectionRevision: "selected-connection" });
+      expect(tools).toBe(true);
+      return { ...model, offers: [textOffer] };
+    },
+    readImageAssistancePreferences: async () => EMPTY_IMAGE_ASSISTANCE_PREFERENCES,
+  });
+  expect(result.model.capabilities.vision).toBe(false);
+  expect(result.model.imageInput).toBe("unavailable");
 });
 
 describe("GET /api/config/models controls", () => {

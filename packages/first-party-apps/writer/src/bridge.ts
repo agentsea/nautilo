@@ -6,7 +6,7 @@ export type NautiloDocumentEnvelope = {
   mimeType?: string;
   path?: string;
   baseSha256: string | null;
-  /** M193 artifact revision; null for Current Folder local documents. */
+  /** Artifact revision; null for Current Folder local documents. */
   baseRevision: number | null;
 };
 
@@ -116,6 +116,7 @@ export type WriterSpellPreference = {
 };
 
 export interface NautiloAppBridge {
+  links?: { open(url: string): Promise<void> };
   document: {
     read(): Promise<NautiloDocumentEnvelope>;
     write(

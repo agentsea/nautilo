@@ -40,7 +40,7 @@ type OutlineEntry = {
     columnCount: number;
     cellCount: number;
     preview: string;
-    readHint: "Use read-open-writer-range with this table blockId to discover editable cell blocks; follow any returned nextCursor.";
+    readHint: "Use read-open-writer-range with scope {kind: 'block', blockId: this table blockId}; follow nextRead until complete.";
   };
 };
 
@@ -52,8 +52,7 @@ export type WriterDocumentSummary = {
   outlineContinuation: {
     returnedBlockCount: number;
     truncated: boolean;
-    nextBlockIndex?: number;
-    readHint: "Use read-open-writer-range to continue from nextBlockIndex until the complete document has been inspected.";
+    readHint: "This outline is only a preview. Use read-open-writer-range with scope {kind: 'document'}; follow nextRead until complete.";
   };
   dirty: boolean;
   liveSession?: WriterLiveSessionSummary;
@@ -71,7 +70,7 @@ export type WriterContextEnvelope = {
 };
 
 const OPEN_DOCUMENT_WORKFLOW =
-  "This document is open. For proofreading, rewrites, formatting, moves, or any change, use edit-open-writer only; it creates reviewable suggestions. Do not use path-targeted direct mutation tools.";
+  "This Writer document is open. Read it with read-open-writer-range, including for read-only summaries or quotations; discover and activate that tool if needed. Use scope.kind document for the whole document and copy nextRead unchanged until complete. Do not substitute file.read or closed-document inspection. For proofreading, rewrites, formatting, moves, or any change, use edit-open-writer only; it creates reviewable suggestions. Do not use path-targeted direct mutation tools.";
 
 function truncate(text: string, limit: number): string {
   if (text.length <= limit) return text;
@@ -109,7 +108,7 @@ export function buildContextSummary(input: BuildContextSummaryInput): WriterDocu
         columnCount: block.tableData!.columnWidths.length,
         cellCount: block.tableData!.rows.reduce((count, row) => count + row.cells.length, 0),
         preview: tablePreview(block),
-        readHint: "Use read-open-writer-range with this table blockId to discover editable cell blocks; follow any returned nextCursor.",
+        readHint: "Use read-open-writer-range with scope {kind: 'block', blockId: this table blockId}; follow nextRead until complete.",
       };
     }
     if (block.headingLevel !== undefined) {
@@ -125,8 +124,7 @@ export function buildContextSummary(input: BuildContextSummaryInput): WriterDocu
     outlineContinuation: {
       returnedBlockCount: outline.length,
       truncated: blocks.length > outline.length,
-      ...(blocks.length > outline.length ? { nextBlockIndex: outline.length } : {}),
-      readHint: "Use read-open-writer-range to continue from nextBlockIndex until the complete document has been inspected.",
+      readHint: "This outline is only a preview. Use read-open-writer-range with scope {kind: 'document'}; follow nextRead until complete.",
     },
     dirty: input.dirty,
   };

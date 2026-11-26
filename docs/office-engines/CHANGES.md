@@ -3,6 +3,13 @@
 Baseline: Wafflebase 0.6.9, acde58012910ec68645c65b6896d5408fad1645c.
 Modification dates: 2026-09-06 through 2026-09-13. Original-file hashes are in snapshot.json.
 
+## Writer undo position — 2026-11-19
+
+Docs undo/redo preserves the local caret when a store has no history presence,
+clamps it to surviving text, and chooses a neighboring editable block when the
+current block disappears. Cursor affinity and header/footer context survive;
+refocusing the hidden input leaves scrolling to the editor's caret renderer.
+
 ## Sheets date parsing — 2026-10-19
 
 - Date-only strings (`YYYY-MM-DD`) are read as local calendar dates in the
@@ -301,3 +308,6 @@ including the bounded-cost large-paste indicator fixture. Docs uses the owned
 `browser.js` / `browser.cjs` entry names for both consumers. Current Folder
 creation retains the coordinated missing-preimage guard for native text and
 binary exports, including binary hash receipts and retry classification.
+
+- Docs exposes an embedding-host callback for link opening so sandboxed Writer
+  can route modifier-click and read-only navigation through its host bridge.

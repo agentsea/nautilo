@@ -1,7 +1,10 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { renameWithWindowsRetrySync } from "@nautilo/config/private-filesystem";
+import { getEligibleModels } from "../../src/config/eligible-models";
+import { resolveCatalogModel } from "../../src/config/resolved-catalog";
 import {
   mergeVeniceCatalogCapabilities,
   parseVeniceCatalogSnapshotResponse,
@@ -252,6 +255,49 @@ describe("refreshVeniceCatalogCache", () => {
     await refreshVeniceCatalogCache();
 
     expect(fs.existsSync(process.env["NAUTILO_VENICE_MODELS_CACHE_PATH"]!)).toBe(false);
+  });
+
+  test("model discovery parses each provider file version once and rechecks freshness", () => {
+    const cachePath = process.env["NAUTILO_VENICE_MODELS_CACHE_PATH"]!;
+    const id = "venice:sonilo-v1-1-music";
+    const sku = id.slice("venice:".length);
+    const fetchedAt = new Date();
+    const payload = (key: string) => JSON.stringify({
+      fetchedAt: fetchedAt.toISOString(), complete: true, models: { [key]: { type: "music" } },
+    });
+    const present = payload(sku);
+    const absent = payload("x".repeat(sku.length));
+    fs.writeFileSync(cachePath, present);
+    fs.utimesSync(cachePath, fetchedAt, fetchedAt);
+    const parse = spyOn(JSON, "parse");
+    const clock = spyOn(Date, "now").mockReturnValue(fetchedAt.getTime());
+    try {
+      const discover = () => getEligibleModels({ includeUnavailable: true })
+        .find((row) => row.id === id);
+      discover();
+      expect(resolveCatalogModel(id).availability).toBe("selectable");
+      expect(parse.mock.calls.filter(([text]) => text === present)).toHaveLength(1);
+
+      const replacement = path.join(tmpDir, "replacement.json");
+      fs.writeFileSync(replacement, absent);
+      fs.utimesSync(replacement, fetchedAt, fetchedAt);
+      renameWithWindowsRetrySync(replacement, cachePath);
+      expect(discover()?.unavailableReason).toBe("model absent from fresh complete Venice catalog");
+      clock.mockReturnValue(fetchedAt.getTime() + 24 * 60 * 60 * 1000);
+      process.env["NAUTILO_SKIP_VENICE_REFRESH"] = "1";
+      expect(resolveCatalogModel(id).availability).toBe("selectable");
+      expect(parse.mock.calls.filter(([text]) => text === absent)).toHaveLength(1);
+
+      clock.mockReturnValue(fetchedAt.getTime());
+      fs.writeFileSync(cachePath, present);
+      expect(resolveCatalogModel(id).availability).toBe("selectable");
+      expect(parse.mock.calls.filter(([text]) => text === present)).toHaveLength(2);
+      fs.unlinkSync(cachePath);
+      expect(resolveCatalogModel(id).lastVerifiedAt).not.toBe(fetchedAt.toISOString());
+    } finally {
+      parse.mockRestore();
+      clock.mockRestore();
+    }
   });
 
   test("legacy capability-only cache remains usable but never becomes complete", () => {

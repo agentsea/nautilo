@@ -23,6 +23,7 @@ import { getServerDirectDb } from "../lib/server-direct-db";
 import {
   createModelFundingSnapshot,
   ModelFundingError,
+  readAdmittedMindSwapperModel,
   readCallerMindSwapperModels,
   resolveModelFunding,
   type ModelFundingDecision,
@@ -55,6 +56,7 @@ export interface CallerModelAvailabilityDeps {
   /** Pure offline seam for vendor-confirmed route projections. */
   readonly getQualifiedSurplusChatRoutes?: () => readonly QualifiedSurplusChatRoute[];
   readonly mindswapperModels?: readonly MindSwapperChatModel[];
+  readonly readMindSwapperModel?: typeof readAdmittedMindSwapperModel;
 }
 
 const FUNDING_UNAVAILABLE_REASON: Readonly<Record<ModelFundingError["code"], string>> = {
@@ -196,12 +198,14 @@ async function resolveCallerModelAvailabilityInScope(
       availability: "selectable",
       imageInput: await (deps.resolveImageInput ?? resolveCallerImageInput)({
         humanUserId, modelId, funding,
+        ...(isMindSwapperModelId(modelId) ? { mindSwapperTools: options.purpose === "chat-tools" } : {}),
       }, {
         ...(deps.resolveFunding ? { resolveFunding: deps.resolveFunding } : {}),
         ...(deps.imageAssistanceSelections ? { selectionCache: deps.imageAssistanceSelections } : {}),
         ...(deps.readImageAssistancePreferences ? { readPreferences: deps.readImageAssistancePreferences } : {}),
         ...(deps.hydrateSurplusChatCatalog ? { hydrateSurplusChatCatalog: deps.hydrateSurplusChatCatalog } : {}),
         ...(deps.getQualifiedSurplusChatRoutes ? { getQualifiedSurplusChatRoutes: deps.getQualifiedSurplusChatRoutes } : {}),
+        ...(deps.readMindSwapperModel ? { readMindSwapperModel: deps.readMindSwapperModel } : {}),
       }),
       ...(surplusRoute
         ? {
@@ -227,6 +231,9 @@ async function resolveCallerModelAvailabilityInScope(
           }
         : {}),
     };
+    if (funding.providerRoute === "mindswapper") {
+      model.capabilities = { ...model.capabilities, vision: model.imageInput === "direct" };
+    }
     delete model.unavailableReason;
     return {
       model,
@@ -342,7 +349,10 @@ export function configRoutes(app: FastifyInstance, deps: ConfigRouteDeps = {}) {
           candidate.id,
           { purpose: "chat-tools", allowChinaUpstream, env: {} },
           { imageAssistanceSelections, readImageAssistancePreferences, mindswapperModels: models,
-            ...(snapshot ? { resolveFunding: (input) => resolveModelFunding(input, snapshot.deps) } : {}) },
+            ...(snapshot ? {
+              resolveFunding: (input) => resolveModelFunding(input, snapshot.deps),
+              readMindSwapperModel: (decision, tools) => readAdmittedMindSwapperModel(decision, tools, snapshot.deps),
+            } : {}) },
         );
         return {
           ...availability.model,

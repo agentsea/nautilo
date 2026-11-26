@@ -1,4 +1,4 @@
-// D372 P4 / M205 Phase 3 — pure DOCX mapping for the Writer app.
+// Pure DOCX mapping for the Writer app.
 // No Node built-ins and no OfficeCLI package imports belong in this file.
 
 import {
@@ -1036,7 +1036,7 @@ export function mapWriterDocumentToOfficeCliBatch(document: { blocks: unknown[] 
     }
     const id = readExportString(block, "id") ?? undefined;
     const type = readExportString(block, "type") ?? "unknown";
-    if (type === "paragraph" || type === "heading" || type === "list-item") {
+    if (type === "paragraph" || type === "title" || type === "subtitle" || type === "heading" || type === "list-item") {
       paragraphIndex += 1;
       appendParagraphCommands(
         block,
@@ -1055,7 +1055,8 @@ export function mapWriterDocumentToOfficeCliBatch(document: { blocks: unknown[] 
     }
     if (type === "table") {
       tableIndex += 1;
-      commands.push(...tableCommands(block, tableIndex, id, skipped));
+      commands.push(...tableCommands(block, tableIndex, id, skipped, imageInputs,
+        () => imageBytesTotal, (next) => { imageBytesTotal = next; }));
       continue;
     }
     if (type === "page-break") {
@@ -1099,16 +1100,18 @@ function appendParagraphCommands(
   blockId: string | undefined,
   getImageBytesTotal: () => number,
   setImageBytesTotal: (next: number) => void,
+  parentPath = "/body",
+  reuseParagraph = false,
 ): void {
   const segments = groupInlineSegments(block, skipped, blockId);
   const shellProps = paragraphShellProps(block, type);
+  const paraPath = `${parentPath}/p[${paragraphIndex}]`;
 
   if (canUseParagraphTextFastPath(segments)) {
-    const plain = segments[0]!;
+    const plain = segments[0];
     commands.push({
-      command: "add",
-      parent: "/body",
-      type: "paragraph",
+      ...(reuseParagraph ? { command: "set" as const, path: paraPath }
+        : { command: "add" as const, parent: parentPath, type: "paragraph" as const }),
       props: {
         ...shellProps,
         text: plain.inlines.map((inline) => inline.text).join(""),
@@ -1119,13 +1122,11 @@ function appendParagraphCommands(
   }
 
   commands.push({
-    command: "add",
-    parent: "/body",
-    type: "paragraph",
-    props: shellProps,
+    ...(reuseParagraph ? { command: "set" as const, path: paraPath }
+      : { command: "add" as const, parent: parentPath, type: "paragraph" as const }),
+    props: reuseParagraph ? { ...shellProps, text: "" } : shellProps,
   });
 
-  const paraPath = `/body/p[${paragraphIndex}]`;
   let hyperlinkIndex = 0;
   for (const segment of segments) {
     if (segment.kind === "image") {
@@ -1392,6 +1393,8 @@ function paragraphShellProps(block: Record<string, unknown>, type: string): Reco
     const level = readExportNumber(block, "headingLevel") ?? 1;
     props["style"] = `Heading${Math.max(1, Math.min(6, Math.floor(level)))}`;
   }
+  if (type === "title") props["style"] = "Title";
+  if (type === "subtitle") props["style"] = "Subtitle";
   if (type === "list-item") {
     props["listStyle"] = readExportString(block, "listKind") === "unordered" ? "bullet" : "ordered";
     const level = readExportNumber(block, "listLevel");
@@ -1489,6 +1492,9 @@ function tableCommands(
   tableIndex: number,
   id: string | undefined,
   skipped: ExportSkippedNode[],
+  imageInputs: OfficeRunDataUrlImageInput[],
+  getImageBytesTotal: () => number,
+  setImageBytesTotal: (next: number) => void,
 ): OfficeCliBatchCommand[] {
   const tableData = asRecord(block["tableData"]);
   const rows = Array.isArray(tableData?.["rows"]) ? tableData["rows"] : [];
@@ -1514,7 +1520,7 @@ function tableCommands(
     return Array.from({ length: colCount }, (_, index) => {
       const cell = asRecord(cells[index]);
       if (isCoveredCell(cell)) return "";
-      return csvCell(cellText(cell));
+      return cellHasLinks(cell) ? "" : csvCell(cellText(cell));
     }).join(",");
   });
   const addProps: Record<string, string> = {
@@ -1539,6 +1545,16 @@ function tableCommands(
       const cell = asRecord(cells[colIndex]);
       if (cell === null || isCoveredCell(cell)) continue;
       const cellPath = `${tablePath}/tr[${rowIndex + 1}]/tc[${colIndex + 1}]`;
+      if (cellHasLinks(cell)) {
+        const blocks = Array.isArray(cell["blocks"]) ? cell["blocks"] : [];
+        blocks.forEach((rawBlock, index) => {
+          const paragraph = asRecord(rawBlock);
+          if (!paragraph) return;
+          appendParagraphCommands(paragraph, readExportString(paragraph, "type") ?? "paragraph",
+            index + 1, commands, imageInputs, skipped, id,
+            getImageBytesTotal, setImageBytesTotal, cellPath, index === 0);
+        });
+      }
       const styleProps = tableCellStyleProps(cell, id, skipped);
       if (Object.keys(styleProps).length > 0) {
         commands.push({ command: "set", path: cellPath, props: styleProps });
@@ -1652,6 +1668,17 @@ function tableCellStyleProps(
 
 function isCoveredCell(cell: Record<string, unknown> | null): boolean {
   return readExportNumber(cell ?? {}, "colSpan") === 0;
+}
+
+function cellHasLinks(cell: Record<string, unknown> | null): boolean {
+  const blocks = Array.isArray(cell?.["blocks"]) ? cell["blocks"] : [];
+  return blocks.some((block) => {
+    const inlines = asRecord(block)?.["inlines"];
+    return Array.isArray(inlines) && inlines.some((inline) => {
+      const style = asRecord(asRecord(inline)?.["style"]);
+      return typeof style?.["href"] === "string";
+    });
+  });
 }
 
 function cellText(cell: Record<string, unknown> | null): string {

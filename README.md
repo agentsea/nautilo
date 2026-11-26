@@ -156,8 +156,16 @@ media, and document fixtures.
 
 [Support Nautilo through agentsea on GitHub Sponsors](https://github.com/sponsors/agentsea) · One-time or monthly.
 
-[![A thank-you to the Bankr community](https://nautilo.ai/community/bankr-thanks-en.png)](https://hoodscan.co/token/0xddd4947010496b500abe96ab0965c38584413ba3)
+[![A thank-you to the Bankr community](https://nautilo.ai/community/bankr-thanks-en.png?v=kentauros)](https://hoodscan.co/token/0xddd4947010496b500abe96ab0965c38584413ba3)
 
-Open source runs on people showing up for each other. The Bankr community created an independent [Nautilo token](https://hoodscan.co/token/0xddd4947010496b500abe96ab0965c38584413ba3) and directed a share of its trading fees to support our work. Thank you for helping us keep building.
+### The NAUTILO community token
 
-This is a community token, not issued or endorsed by Nautilo. It has no role in the software and grants no product, ownership, or governance rights.
+$NAUTILO began with the Bankr community, who created the token and allocated a share of its trading fees to support Nautilo’s development. We’re grateful to the people who started it and everyone who has supported the project.
+
+Kentauros, Inc., the company behind Nautilo, has since taken over management of the token’s public presence, including its DEX Screener profile. The project’s allocated trading fees now go directly to Kentauros’s company Safe treasury. We publish the [token’s contract address](https://hoodscan.co/token/0xddd4947010496b500abe96ab0965c38584413ba3) through [@nautiloapp](https://x.com/nautiloapp) so our community can identify the correct token.
+
+**The token was community-created. Kentauros did not create it or conduct an ICO.**
+
+#### Use MindSwapper. Get $NAUTILO back.
+
+Use [MindSwapper](https://mindswapper.ai/) and connect a wallet to receive automatic $NAUTILO rewards for your usage. No token purchase required. We’re starting with small payouts while we test. Bigger ones once we know everything’s working smoothly.

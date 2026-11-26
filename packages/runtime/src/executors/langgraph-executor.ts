@@ -32,7 +32,7 @@ import {
   createProtectedTaskAdditionalAuthorityResumeMapV1,
   interruptValueToServerEvent,
   maybeSummarizeImagesWithVisionFallback,
-  modelSupportsInput,
+  modelSupportsAgentInput,
   imageAssistanceContext,
   imageAssistanceInputDigest,
   type ImageAssistanceResult,
@@ -997,6 +997,7 @@ export async function* langgraphExecutor(
     protectedTurn: protectedTurn !== undefined,
   });
   const modelId = resolveAdmittedForegroundModelId(foregroundModelPlan.initialModelId, fundingSession);
+  const mindswapperModels = fundingSession?.mindswapperModels ?? [];
   assertForegroundChatFundingWorkloadSupported(fundingSession, {
     hasImages: multimodalImages.length > 0,
     voiceRequested: input["voiceMode"] === true,
@@ -1074,7 +1075,7 @@ export async function* langgraphExecutor(
   let imageReplyContext = "";
   // Context preparation runs before graph nodes establish their funding scope.
   const historyMessages = await withMindSwapperModels(
-    fundingSession?.mindswapperModels ?? [],
+    mindswapperModels,
     async () => (externalTurn?.operatorControl ? [] : protectedTurn === undefined
       ? await prepareForegroundEncryptedContext(
         () => resolveForegroundHistoryMessages({
@@ -1129,10 +1130,10 @@ export async function* langgraphExecutor(
   // use the model too, so they deliberately run after Message, Journal,
   // Reflection, and Memory context has passed the Strict gate above.
   const userMessageForTranscript = taskWake === undefined
-    ? buildForegroundUserHumanMessage({
+    ? withMindSwapperModels(mindswapperModels, () => buildForegroundUserHumanMessage({
       userText: message, attachmentTextBlocks, multimodalImages, modelId,
       suppressImageDropNote: true, replyToMessageId,
-    })
+    }))
     : null;
   const canonicalCurrentHumanBody = typeof userMessageForTranscript?.content === "string"
     ? userMessageForTranscript.content
@@ -1321,25 +1322,26 @@ export async function* langgraphExecutor(
   }
 
   if (protectedTurn) imageReplyContext = protectedTurn.history.find((hit) => hit.messageId === input["replyToMessageId"])?.snippet ?? "";
-  const needsImageAssistance = multimodalImages.length > 0
-    && !withMindSwapperModels(fundingSession?.mindswapperModels ?? [], () => modelSupportsInput(modelId, "image"));
-  if (needsImageAssistance) await fundingSession?.recheckAttempt(modelId).catch((error) => failImageAssistance(error, signal));
-  const retainedImageResultAvailable = retainedImageResults.some((result) => result.inputDigest === imageAssistanceInputDigest({
-    turnId: turnId || _jobId, userText: message, replyContext: imageReplyContext, images: multimodalImages,
-  }));
-  const assistance = needsImageAssistance && !retainedImageResultAvailable ? await openImageAssistanceForInvocation({
-    authority: getCurrentAcceptedInvocationAuthority(), jobInput: input,
-    causalHumanUserId, entrypoint: foregroundActivationState.trustedExecutionEntrypoint === "foreground.main" ? "foreground.main" : null,
-    modelId, roomId, agentId, fundingKind: fundingSession?.kind ?? "server",
-    jobId: _jobId, turnId: turnId || _jobId,
-    inputDigest: imageAssistanceInputDigest({ turnId: turnId || _jobId, userText: message, replyContext: imageReplyContext, images: multimodalImages }),
-    ...(fundingSession ? { parentFunding: fundingSession } : {}),
-  }).catch((error) => failImageAssistance(error, signal)) : null;
-  const imageAssistanceResult = await maybeSummarizeImagesWithVisionFallback({
-    humanUserId: causalHumanUserId ?? "", mainModelId: modelId,
-    images: multimodalImages, userText: message, turnId: turnId || _jobId,
-    roomId, agentId, replyContext: imageReplyContext, retainedResults: retainedImageResults,
-    assistance, signal,
+  const imageAssistanceResult = await withMindSwapperModels(mindswapperModels, async () => {
+    const needsImageAssistance = multimodalImages.length > 0 && !modelSupportsAgentInput(modelId, "image");
+    if (needsImageAssistance) await fundingSession?.recheckAttempt(modelId).catch((error) => failImageAssistance(error, signal));
+    const retainedImageResultAvailable = retainedImageResults.some((result) => result.inputDigest === imageAssistanceInputDigest({
+      turnId: turnId || _jobId, userText: message, replyContext: imageReplyContext, images: multimodalImages,
+    }));
+    const assistance = needsImageAssistance && !retainedImageResultAvailable ? await openImageAssistanceForInvocation({
+      authority: getCurrentAcceptedInvocationAuthority(), jobInput: input,
+      causalHumanUserId, entrypoint: foregroundActivationState.trustedExecutionEntrypoint === "foreground.main" ? "foreground.main" : null,
+      modelId, roomId, agentId, fundingKind: fundingSession?.kind ?? "server",
+      jobId: _jobId, turnId: turnId || _jobId,
+      inputDigest: imageAssistanceInputDigest({ turnId: turnId || _jobId, userText: message, replyContext: imageReplyContext, images: multimodalImages }),
+      ...(fundingSession ? { parentFunding: fundingSession } : {}),
+    }).catch((error) => failImageAssistance(error, signal)) : null;
+    return maybeSummarizeImagesWithVisionFallback({
+      humanUserId: causalHumanUserId ?? "", mainModelId: modelId,
+      images: multimodalImages, userText: message, turnId: turnId || _jobId,
+      roomId, agentId, replyContext: imageReplyContext, retainedResults: retainedImageResults,
+      assistance, signal,
+    });
   });
   const visionSummaryBlocks = imageAssistanceResult ? [imageAssistanceContext(imageAssistanceResult)] : [];
   const suppressImageDropNote = imageAssistanceResult !== null;
@@ -1361,10 +1363,10 @@ export async function* langgraphExecutor(
   // a separate un-prefixed copy below. When no prefix is set (group rooms /
   // guests) both are the same object, so behavior is byte-for-byte unchanged.
   const userMessage = taskWake === undefined
-    ? buildForegroundUserHumanMessage({
+    ? withMindSwapperModels(mindswapperModels, () => buildForegroundUserHumanMessage({
       ...userMessageArgs,
       serverTimePrefixIso,
-    })
+    }))
     : null;
   if (userMessage !== null) {
     bindModelInputExposure(userMessage, projectNeutralCurrentHumanMessageExposure({
@@ -1665,7 +1667,7 @@ export async function* langgraphExecutor(
         signal,
         ...(foregroundContextRefreshEligible ? {
           rebuildForegroundContext: (transition) => withMindSwapperModels(
-            fundingSession?.mindswapperModels ?? [],
+            mindswapperModels,
             () => createForegroundContextRebuilder({
               roomId, ownerId: transcriptOwnerId, agentId, receipts: foregroundContextReceipts,
               ...(protectedTurn === undefined ? {} : { protectedTurn }),

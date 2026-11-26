@@ -3,7 +3,7 @@ import type { AppRecoveryRead, AppRecoveryWrite } from "./app-draft-recovery";
 import type { AppSlideTemplateLibrary } from "./app-slide-templates";
 
 /**
- * M185 — iframe-side client for the mini-app postMessage bridge.
+ * iframe-side client for the mini-app postMessage bridge.
  *
  * Runs inside the sandboxed mini-app `srcDoc` iframe. The parent workbench
  * (`mini-app-surface.tsx`, wired separately) installs the host-side handler
@@ -227,6 +227,7 @@ export type NautiloAppBridgeClientCapabilities = Readonly<{
 
 export interface NautiloAppBridge {
   version: 1;
+  links: { open(url: string): Promise<void> };
   templates?: AppSlideTemplateLibrary;
   /** Omitted when the host has no native recovery journal. */
   recovery?: {
@@ -1706,6 +1707,11 @@ function bridgeClientInstaller(
 
   winRecord["nautiloApp"] = Object.freeze({
     version: 1 as const,
+    links: Object.freeze({
+      async open(url: string): Promise<void> {
+        await postRequest({ type: "nautilo.app.links.req", op: "open", url });
+      },
+    }),
     assets: Object.freeze({
       pick: () => postRequest({ type: "nautilo.app.assets.req", op: "pick" }),
       read: (ref: string) => postRequest({ type: "nautilo.app.assets.req", op: "read", ref }),

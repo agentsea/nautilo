@@ -403,6 +403,8 @@ COPY deploy/contracts/generate-auth-contract.ts deploy/contracts/generate-auth-c
 COPY deploy/contracts/auth.ts                       deploy/contracts/auth.ts
 COPY deploy/dependency-pins.ts                      deploy/dependency-pins.ts
 COPY bin/nautilo-local/src/bootstrap-logto.ts       bin/nautilo-local/src/bootstrap-logto.ts
+COPY bin/nautilo-local/src/logto-application-secret.ts \
+     bin/nautilo-local/src/logto-application-secret.ts
 COPY bin/nautilo-local/src/logto-hosted-auth-branding.ts \
      bin/nautilo-local/src/logto-hosted-auth-branding.ts
 COPY bin/nautilo-local/src/logto-forgot-password-relay.ts \

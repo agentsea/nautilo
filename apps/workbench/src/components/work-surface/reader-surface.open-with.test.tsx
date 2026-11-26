@@ -387,7 +387,7 @@ describe("ReaderSurface app-open actions", () => {
     expect(requestOpenMiniApp).toHaveBeenCalledWith("kanban", plainHtmlTarget);
   });
 
-  test("plain HTML falls back to Edit Source after app association check", async () => {
+  test("plain HTML falls back to Edit text after app association check", async () => {
     const onEdit = mock(() => {});
     installedAppsState = { kind: "ready", apps: [sheetsApp] };
     associationContent = "<h1>Plain document</h1>";
@@ -400,12 +400,22 @@ describe("ReaderSurface app-open actions", () => {
     });
 
     await waitFor(() => {
-      expect(view.getByRole("button", { name: "Edit Source" })).toBeTruthy();
+      expect(view.getByRole("button", { name: "Edit text" })).toBeTruthy();
     });
 
-    fireEvent.click(view.getByRole("button", { name: "Edit Source" }));
+    fireEvent.click(view.getByRole("button", { name: "Edit text" }));
     expect(onEdit).toHaveBeenCalledWith(plainHtmlTarget);
     expect(requestOpenMiniApp).not.toHaveBeenCalled();
+  });
+
+  test("a native HTML manifest without an installed owner never offers generic text editing", async () => {
+    installedAppsState = { kind: "ready", apps: [sheetsApp] };
+    associationContent = '<script type="application/vnd.nautilo.document+json" id="manifest">{"documentType":"other-native","version":"1.0"}</script><p>Preview</p>';
+    const view = render(<ReaderSurface file={plainHtmlTarget} onClose={() => {}} onEdit={() => {}} />);
+    await waitFor(() => expect(view.getByTestId("preview")).toBeTruthy());
+    await act(async () => { await Promise.resolve(); });
+    expect(view.getByRole("button", { name: "Edit Source" })).toBeTruthy();
+    expect(view.queryByRole("button", { name: "Edit text" })).toBeNull();
   });
 
   test("shows Edit Source while app associations are still loading", async () => {

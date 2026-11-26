@@ -1526,11 +1526,7 @@ export function WorkbenchShell() {
           return {
             kind: "file",
             mode: prev.mode,
-            file: {
-              ...currentArtifact,
-              path: nextPath,
-              reloadToken: (currentArtifact.reloadToken ?? 0) + 1,
-            },
+            file: nextTarget,
           };
         });
       }, {
@@ -2061,7 +2057,15 @@ export function WorkbenchShell() {
               <EditorSurface
                 file={readingFile!}
                 onView={() =>
-                  setWorkSurface({ kind: "file", file: workSurface.file, mode: "read" })
+                  setWorkSurface({
+                    kind: "file",
+                    // Own saves preserve the editor session, so its opener's
+                    // byte length may describe the revision before editing.
+                    file: workSurface.file.kind === "artifact"
+                      ? reloadArtifactOpenFileTarget(workSurface.file)
+                      : workSurface.file,
+                    mode: "read",
+                  })
                 }
                 onClose={clearWorkSurface}
                 onFocus={focusWorkSurface}

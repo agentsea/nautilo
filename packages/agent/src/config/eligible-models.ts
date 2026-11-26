@@ -2,6 +2,7 @@ import type {
   EligibleModel,
   EligibleModelCapabilities,
   EligibleModelControls,
+  ResolvedCatalogModel,
   GetEligibleModelsOptions,
   ModelAvailability,
   ModelPurpose,
@@ -60,8 +61,7 @@ function routingToClass(routing: string | undefined): RoutingClass {
  * remains strict: capability qualification uses the nullable resolved row and
  * every provider route requires its own credential.
  */
-function projectEligibleCapabilities(modelId: string): EligibleModelCapabilities {
-  const row = resolveCatalogModel(modelId);
+function projectEligibleCapabilities(row: ResolvedCatalogModel): EligibleModelCapabilities {
   const f = row.features;
   return {
     tools: row.workload === "chat" && (f.tools ?? true),
@@ -118,6 +118,7 @@ function projectEligibleControls(entry: ModelCatalogEntry): EligibleModelControl
 
 function toEligibleModel(
   entry: ModelCatalogEntry,
+  resolved: ResolvedCatalogModel,
   availability: ModelAvailability,
   unavailableReason: string | undefined,
   routingClass: RoutingClass | undefined,
@@ -132,7 +133,7 @@ function toEligibleModel(
     costCoefficient: entry.cost.coefficient,
     enabled: selectable,
     ...(routingClass !== undefined ? { routing: routingClass } : {}),
-    capabilities: projectEligibleCapabilities(entry.id),
+    capabilities: projectEligibleCapabilities(resolved),
     ...(controls !== undefined ? { controls } : {}),
     availability,
     ...(unavailableReason !== undefined ? { unavailableReason } : {}),
@@ -180,7 +181,7 @@ function projectEligibleModels(
     if (!entry.defaultEnabled) {
       if (includeUnavailable) {
         out.push(
-          toEligibleModel(entry, "filtered", "catalog row disabled", undefined),
+          toEligibleModel(entry, resolveCatalogModel(entry.id), "filtered", "catalog row disabled", undefined),
         );
       }
       continue;
@@ -214,7 +215,7 @@ function projectEligibleModels(
         break;
     }
     if (availability !== "selectable" && !includeUnavailable) continue;
-    out.push(toEligibleModel(entry, availability, reason, routingClass));
+    out.push(toEligibleModel(entry, resolved, availability, reason, routingClass));
   }
 
   for (const id of mindSwapperIds) {
@@ -230,7 +231,7 @@ function projectEligibleModels(
       priority: Number.MAX_SAFE_INTEGER,
       costCoefficient: row.costCoefficient,
       enabled: availability === "selectable",
-      capabilities: projectEligibleCapabilities(id),
+      capabilities: projectEligibleCapabilities(row),
       availability,
       ...(failure ? { unavailableReason: failure } : {}),
     });

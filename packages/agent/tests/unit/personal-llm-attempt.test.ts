@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { withMindSwapperModels } from "../../src/config/mindswapper-models";
+import { MindSwapperRequestError } from "../../src/providers/mindswapper-completions";
 import {
   classifyPersonalAttemptFailure,
   runPersonalLlmAttempt,
@@ -154,6 +155,25 @@ describe("durable personal direct attempts", () => {
         failureCode: "outcome_unknown",
       });
     }
+  });
+  test("records a recognized MindSwapper stream failure and request id without declaring a settled cost", async () => {
+    const h = harness();
+    const requestId = "c9c6d06b-1ba7-40df-b07d-34b0169b6684";
+    const failure = new MindSwapperRequestError("interrupted stream", "outcome_unknown", undefined, requestId, true, "upstream_incomplete");
+    const thrown = await runWithUsageContext({ callType: "chat", funding: { ...funding, providerRoute: "mindswapper" } },
+      () => runPersonalLlmAttempt({
+        modelId: "mindswapper:maker/test",
+        endpoint: "/v1/chat/completions",
+        invoke: async () => { throw failure; },
+      }, h.deps)).then(() => null, (error: unknown) => error);
+    expect(thrown).toMatchObject({ disposition: "terminal_unknown", cause: failure });
+    expect(h.settled).toHaveLength(1);
+    expect(h.settled[0]).toMatchObject({
+      outcome: "unknown",
+      failureCode: "upstream_incomplete",
+      providerRequestId: requestId,
+      costState: "unknown",
+    });
   });
   test("ledger admission failure prevents paid work; post-answer settlement failure never repeats it", async () => {
     let calls = 0;

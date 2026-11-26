@@ -8,7 +8,7 @@ Bebilderte Anleitung für die lokale Einrichtung: [Englisch](https://nautilo.ai/
 
 Die Benutzeroberfläche von Nautilo ist derzeit auf Englisch. Die README und die Anleitung zur lokalen Einrichtung sind übersetzt; andere Dokumentation kann weiterhin auf Englisch sein.
 
-<!-- Translation source: README.md; SHA-256: 70b9d8b55da933e1da5c68d0656f5c2e4ac61690fd958de91b9be5268859f07a -->
+<!-- Translation source: README.md; SHA-256: 7d5da3b8c2bd4a27146f94a6430bc44c8f1a3d01f2bf1a844cdb357fef4709f6 -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### KI wird mehrspielerfähig.
@@ -168,13 +168,16 @@ behandeln Grafiken, generierte Medien und Dokument-Testdaten.
 
 [Unterstütze Nautilo über agentsea auf GitHub Sponsors](https://github.com/sponsors/agentsea) · Einmalig oder monatlich.
 
-[![Ein Dankeschön an die Bankr-Community](https://nautilo.ai/community/bankr-thanks-en.png)](https://hoodscan.co/token/0xddd4947010496b500abe96ab0965c38584413ba3)
+[![Ein Dankeschön an die Bankr-Community](https://nautilo.ai/community/bankr-thanks-en.png?v=kentauros)](https://hoodscan.co/token/0xddd4947010496b500abe96ab0965c38584413ba3)
 
-Open Source lebt von Menschen, die einander unterstützen. Die Bankr-Community
-hat einen unabhängigen [Nautilo-Token](https://hoodscan.co/token/0xddd4947010496b500abe96ab0965c38584413ba3)
-geschaffen und einen Teil seiner Handelsgebühren zur Unterstützung unserer Arbeit
-bereitgestellt. Danke, dass ihr uns helft, die Entwicklung fortzusetzen.
+### Der NAUTILO-Community-Token
 
-Dies ist ein Community-Token, der weder von Nautilo herausgegeben noch von Nautilo
-befürwortet wird. Er hat keine Funktion in der Software und gewährt keine Produkt-,
-Eigentums- oder Mitbestimmungsrechte.
+$NAUTILO entstand in der Bankr-Community. Sie schuf den Token und stellte einen Teil seiner Handelsgebühren zur Unterstützung der Entwicklung von Nautilo bereit. Wir danken den Menschen, die das angestoßen haben, und allen, die das Projekt unterstützen.
+
+Kentauros, Inc., das Unternehmen hinter Nautilo, hat inzwischen die Verwaltung des öffentlichen Auftritts des Tokens übernommen, einschließlich seines Profils auf DEX Screener. Der dem Projekt zugewiesene Anteil der Handelsgebühren fließt jetzt direkt in die Safe-Treasury von Kentauros. Wir veröffentlichen die [Vertragsadresse des Tokens](https://hoodscan.co/token/0xddd4947010496b500abe96ab0965c38584413ba3) über [@nautiloapp](https://x.com/nautiloapp), damit unsere Community den richtigen Token erkennen kann.
+
+**Der Token wurde von der Community geschaffen. Kentauros hat ihn weder geschaffen noch einen ICO durchgeführt.**
+
+#### Nutze MindSwapper. Erhalte $NAUTILO zurück.
+
+Nutze [MindSwapper](https://mindswapper.ai/) und verbinde eine Wallet, um für deine Nutzung automatisch Belohnungen in $NAUTILO zu erhalten. Kein Tokenkauf erforderlich. Wir beginnen während der Tests mit kleinen Auszahlungen. Größere folgen, sobald wir wissen, dass alles reibungslos läuft.
