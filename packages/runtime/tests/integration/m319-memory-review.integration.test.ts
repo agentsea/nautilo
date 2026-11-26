@@ -4,7 +4,7 @@ import { findResumedMemoryReviewAdmission } from "../../src/memory-review/admiss
 import { randomUUID } from "node:crypto";
 import {
   actors, agents, rooms, roomMembers, namespaces, sessions, sessionMessages, users,
-  groups, groupMembers, memoryReviewTurns, memoryReviewReceipts,
+  groups, groupMembers, memoryReviewTurns, memoryReviewReceipts, memoryReviewModelRecoveries, llmUsageEvents,
   admitMemoryReviewSourceInTx, markMemoryReviewTurnInTx, eq, sql,
 } from "@nautilo/db";
 import { bootstrapTestDbInstance } from "@nautilo/db/testing";
@@ -54,6 +54,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   if (userId) {
+    if (roomId) await db.delete(llmUsageEvents).where(eq(llmUsageEvents.roomId, roomId));
     await db.delete(memoryReviewReceipts).where(eq(memoryReviewReceipts.ownerId, userId));
     await db.delete(memoryReviewTurns).where(eq(memoryReviewTurns.ownerId, userId));
     if (sessionId) { await db.delete(sessionMessages).where(eq(sessionMessages.sessionId, sessionId)); await db.delete(sessions).where(eq(sessions.id, sessionId)); }
@@ -152,6 +153,61 @@ describe("M319 durable Memory processing on PostgreSQL", () => {
     await repo.fail({ claim, phase: "publication", reason: "publication_uncertain", retryable: false, now: new Date() });
     expect(await repo.reconcile(claim)).toBe("published");
     expect(await repo.claimNext({ now: new Date() })).toBeNull();
+  });
+
+  test("an exact operator recovery reuses the work identity and publishes once after reading settled history", async () => {
+    await admit(randomUUID());
+    await admit(randomUUID());
+    const now = new Date();
+    const previous = await repo.claimNext({ now });
+    if (!previous) throw new Error("expected original review claim");
+    const request = { workId: previous.workId, headTurnId: previous.turnIds[0]!, authorizedBy: userId, now };
+    const model = "fixture:recovery";
+    await repo.bindServiceModel(previous, () => model);
+    expect(await repo.requestModelRecovery(request)).toBe("blocked");
+    await repo.fail({ claim: previous, phase: "model", reason: "provider_outcome_unknown", retryable: false, now });
+
+    // The ledger can belong to an older invocation, because the latest failed
+    // lease may have been assigned only to detect the unresolved result.
+    const priorWireAttemptId = randomUUID();
+    const [wire] = await db.insert(llmUsageEvents).values({
+      roomId, callType: "memory_review", model, provider: "fixture",
+      fundingKind: "service", providerRoute: "surplus", providerRequestId: randomUUID(),
+      endpoint: "/v1/chat/completions",
+      attemptOutcome: "succeeded", costState: "pending",
+      metadata: { workId: previous.workId, attemptId: priorWireAttemptId },
+    }).returning({ id: llmUsageEvents.id });
+    expect(await repo.requestModelRecovery(request)).toBe("blocked");
+    await db.update(llmUsageEvents).set({ costState: "actual", actualCostUsd: "0.01" })
+      .where(eq(llmUsageEvents.id, wire!.id));
+    expect(await repo.requestModelRecovery({ ...request, headTurnId: previous.turnIds[1]! })).toBe("blocked");
+    expect((await Promise.all([repo.requestModelRecovery(request), repo.requestModelRecovery(request)])).sort())
+      .toEqual(["already_requested", "queued"]);
+    await Promise.resolve(expect(withSerializableAgentTrustContext({ userId, agentId }, tx =>
+      tx.update(memoryReviewModelRecoveries).set({ spentAt: now }).where(eq(memoryReviewModelRecoveries.workId, previous.workId)),
+    )).rejects.toThrow());
+
+    const next = (await Promise.all([repo.claimNext({ now }), repo.claimNext({ now })]))
+      .filter(claim => claim !== null);
+    expect(next).toHaveLength(1);
+    const claim = next[0]!;
+    expect(claim).toMatchObject({ workId: previous.workId, turnIds: previous.turnIds, modelRecovery: "authorized" });
+    expect(claim.attemptId).not.toBe(previous.attemptId);
+    expect(await repo.reconcile(claim)).toBe("not_published");
+    expect(await repo.modelReplaySafety(claim)).toBe("allow");
+    expect(await repo.bindServiceModel(claim, () => "changed-default")).toBe(model);
+    expect(await repo.claimNext({ now: new Date(claim.leaseUntil.getTime() + 1) })).toBeNull();
+
+    await repo.load(claim);
+    const proposal: PreparedMemoryReview = { envelope, speakerUserId: userId, operations: [], snapshots: [] };
+    expect(await repo.publish({ claim, proposal, modelId: model, now, durationMs: 0 })).toBe("published");
+    await repo.fail({ claim, phase: "publication", reason: "publication_uncertain", retryable: false, now });
+    expect(await repo.reconcile(claim)).toBe("published");
+    const receipts = await db.select({ outcome: memoryReviewReceipts.outcome }).from(memoryReviewReceipts)
+      .where(eq(memoryReviewReceipts.workId, previous.workId));
+    expect(receipts.filter(receipt => receipt.outcome === "published")).toHaveLength(1);
+    expect(await repo.requestModelRecovery(request)).toBe("blocked");
+    expect(await repo.claimNext({ now })).toBeNull();
   });
 
   test("Agent guard observes disabled users and its role cannot rewrite publication receipts", async () => {

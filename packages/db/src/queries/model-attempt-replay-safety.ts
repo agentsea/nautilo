@@ -8,6 +8,8 @@ export type ModelAttemptReplayIdentity =
       roomId: string;
       workId: string;
       attemptIds: readonly string[];
+      /** Check all other history, including legacy rows without an attempt coordinate. */
+      match?: "except";
     }>
   | Readonly<{
       kind: "operation";
@@ -22,6 +24,40 @@ export type ModelAttemptReplaySafety = Readonly<{
 }>;
 
 type ModelAttemptReplayDb = Pick<DirectDatabase, "select">;
+
+/** The operator recovery is limited to exact, already settled service calls. */
+export async function hasSettledServiceMemoryReview(
+  input: Readonly<{ roomId: string; workId: string; modelId: string }>,
+  db: ModelAttemptReplayDb,
+): Promise<boolean> {
+  const rows = await db.select({
+    fundingKind: llmUsageEvents.fundingKind,
+    payerHumanId: llmUsageEvents.payerHumanId,
+    providerRoute: llmUsageEvents.providerRoute,
+    model: llmUsageEvents.model,
+    actualCost: llmUsageEvents.actualCostUsd,
+    requestId: llmUsageEvents.providerRequestId,
+    attemptOutcome: llmUsageEvents.attemptOutcome,
+    costState: llmUsageEvents.costState,
+    recoveryState: llmUsageEvents.recoveryState,
+    attemptId: sql<string | null>`${llmUsageEvents.metadata}->>'attemptId'`,
+  }).from(llmUsageEvents).where(and(
+    eq(llmUsageEvents.roomId, input.roomId),
+    eq(llmUsageEvents.callType, "memory_review"),
+    eq(sql<string>`${llmUsageEvents.metadata}->>'workId'`, input.workId),
+  ));
+  return rows.length > 0 && rows.every((row) =>
+    (row.fundingKind === "service" || row.fundingKind === "server")
+    && row.payerHumanId === null
+    && row.providerRoute === "surplus"
+    && row.model === input.modelId
+    && row.actualCost !== null
+    && row.requestId
+    && row.attemptId
+    && row.attemptOutcome === "succeeded"
+    && row.costState === "actual"
+    && row.recoveryState === null);
+}
 
 type AttemptRow = Pick<
   typeof llmUsageEvents.$inferSelect,
@@ -63,7 +99,7 @@ export async function resolveModelAttemptReplaySafety(
   identity: ModelAttemptReplayIdentity,
   options: Readonly<{ db?: ModelAttemptReplayDb; knownNonusableResult?: boolean }> = {},
 ): Promise<ModelAttemptReplaySafety> {
-  if (identity.kind === "memory_review" && identity.attemptIds.length === 0) {
+  if (identity.kind === "memory_review" && identity.match !== "except" && identity.attemptIds.length === 0) {
     return { decision: "allow" };
   }
   const callType = identity.kind === "memory_review" ? "memory_review" : identity.callType;
@@ -90,6 +126,7 @@ export async function resolveModelAttemptReplaySafety(
         ne(llmUsageEvents.attemptOutcome, "failed"),
         unsafeFailedAttempt,
       );
+  const attemptId = sql<string>`${llmUsageEvents.metadata}->>'attemptId'`;
   const rows = await (options.db ?? getSharedDirectDb())
     .select({
       id: llmUsageEvents.id,
@@ -104,7 +141,11 @@ export async function resolveModelAttemptReplaySafety(
       ...(identity.kind === "memory_review"
         ? [
             eq(sql<string>`${llmUsageEvents.metadata}->>'workId'`, identity.workId),
-            inArray(sql<string>`${llmUsageEvents.metadata}->>'attemptId'`, [...identity.attemptIds]),
+            identity.match !== "except"
+              ? inArray(attemptId, [...identity.attemptIds])
+              : identity.attemptIds.length === 0
+                ? undefined
+                : or(isNull(attemptId), notInArray(attemptId, [...identity.attemptIds])),
           ]
         : [eq(sql<string>`${llmUsageEvents.metadata}->>'operationId'`, identity.operationId)]),
       blockingAttempt,

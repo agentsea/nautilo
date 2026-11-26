@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import { AIMessage, HumanMessage, SystemMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
 import {
   and, asc, desc, lt, eq, inArray, isNull, sql, getSharedDirectDb, memoryReviewTurns, acquireRoomWriteLock,
-  memoryReviewReceipts, sessionMessages, users,
-  resolveModelAttemptReplaySafety,
+  memoryReviewModelRecoveries, memoryReviewReceipts, sessionMessages, users,
+  hasSettledServiceMemoryReview, resolveModelAttemptReplaySafety,
   type DirectDatabase,
 } from "@nautilo/db";
 import {
@@ -25,6 +25,8 @@ type Turn = typeof memoryReviewTurns.$inferSelect;
 type Source = typeof sessionMessages.$inferSelect;
 type Tx = Parameters<Parameters<DirectDatabase["transaction"]>[0]>[0];
 
+const KNOWN_NONUSABLE_MODEL_FAILURES = ["invalid_proposal", "iteration_exhausted"] as const;
+
 /** Completed prefix only: a paused lower fork prevents later coverage. */
 export function selectMemoryReviewPrefix(turns: readonly Turn[], threshold: number): Turn[] {
   const selected: Turn[] = [];
@@ -32,6 +34,7 @@ export function selectMemoryReviewPrefix(turns: readonly Turn[], threshold: numb
   for (const turn of turns) {
     if (turn.state === "pending" || turn.state === "awaiting") break;
     if (turn.state === "covered") continue;
+    if (selected.length > 0 && turn.failureCode === "provider_outcome_unknown") break;
     selected.push(turn);
     if (turn.state === "completed") completedHumans += turn.hasHuman;
     if (completedHumans >= threshold) return selected;
@@ -46,8 +49,8 @@ export function classifyPriorMemoryReviewAttempts(turns: readonly Turn[]): Reado
   const attempts = new Map<string, boolean>();
   for (const turn of turns) {
     if (!turn.attemptId) continue;
-    const knownNonusable = turn.failurePhase === "model"
-      && (turn.failureCode === "invalid_proposal" || turn.failureCode === "iteration_exhausted");
+    const knownNonusable = turn.failurePhase === "model" && turn.failureCode !== null
+      && (KNOWN_NONUSABLE_MODEL_FAILURES as readonly string[]).includes(turn.failureCode);
     attempts.set(turn.attemptId, (attempts.get(turn.attemptId) ?? true) && knownNonusable);
   }
   return {
@@ -55,6 +58,33 @@ export function classifyPriorMemoryReviewAttempts(turns: readonly Turn[]): Reado
     knownNonusableAttemptIds: [...attempts]
       .flatMap(([attemptId, knownNonusable]) => knownNonusable ? [attemptId] : []),
   };
+}
+
+type MemoryReviewModelRecoveryRequest = Readonly<{
+  workId: string;
+  headTurnId: string;
+  authorizedBy: string;
+  now: Date;
+}>;
+
+type MemoryReviewModelRecoveryResult = "queued" | "already_requested" | "blocked";
+
+function serviceModelId(binding: Turn["acceptedModelBinding"]): string | null {
+  const current = acceptedOperation(binding);
+  if (current !== null) return current.kind === "service" ? current.modelId : null;
+  return legacyServiceBinding(binding)?.modelId ?? null;
+}
+
+function recoveryPrefix(turns: readonly Turn[], blockedAttemptId: string, now: Date): Turn[] {
+  if (turns.some((turn) => turn.leaseUntil && turn.leaseUntil > now)) return [];
+  const members = turns.filter((turn) => turn.attemptId === blockedAttemptId);
+  const modelId = serviceModelId(turns[0]?.acceptedModelBinding ?? null);
+  return modelId !== null && members.length > 0 && members.every((turn, index) =>
+    turn.id === turns[index]?.id
+    && (turn.state === "completed" || turn.state === "interrupted")
+    && turn.failurePhase === "model" && turn.failureCode === "provider_outcome_unknown"
+    && serviceModelId(turn.acceptedModelBinding) === modelId)
+    ? members : [];
 }
 
 function sourceFingerprint(rows: readonly Source[]): string {
@@ -98,38 +128,91 @@ export class PostgresMemoryReviewRepository implements MemoryReviewRepository {
     fingerprintProfileSoul?: (input: ProfileSoulFingerprintInput) => string;
   }, private readonly db: DirectDatabase = getSharedDirectDb()) {}
 
+  private async lockScope(tx: Tx, head: Turn): Promise<Turn[]> {
+    return tx.select().from(memoryReviewTurns).where(and(
+      eq(memoryReviewTurns.sessionId, head.sessionId), eq(memoryReviewTurns.agentId, head.agentId),
+      eq(memoryReviewTurns.ownerId, head.ownerId), eq(memoryReviewTurns.accessScope, head.accessScope),
+      isNull(memoryReviewTurns.receiptId),
+    )).orderBy(asc(memoryReviewTurns.firstMessageId)).for("update");
+  }
+
+  async requestModelRecovery(input: MemoryReviewModelRecoveryRequest): Promise<MemoryReviewModelRecoveryResult> {
+    await this.policy.assertAvailable();
+    return this.db.transaction(async (tx) => {
+      const [head] = await tx.select().from(memoryReviewTurns).where(and(
+        eq(memoryReviewTurns.id, input.headTurnId), eq(memoryReviewTurns.generationId, input.workId),
+      )).for("update");
+      if (!head || head.receiptId || head.state === "covered") return "blocked";
+      const [previousRequest] = await tx.select({ workId: memoryReviewModelRecoveries.workId })
+        .from(memoryReviewModelRecoveries).where(eq(memoryReviewModelRecoveries.workId, input.workId));
+      if (previousRequest) return "already_requested";
+      if (!head.attemptId || head.failureCode !== "provider_outcome_unknown") return "blocked";
+      const turns = await this.lockScope(tx, head);
+      const prefix = recoveryPrefix(turns, head.attemptId, input.now);
+      if (prefix[0]?.id !== head.id) return "blocked";
+      const [receipt] = await tx.select({ id: memoryReviewReceipts.id }).from(memoryReviewReceipts).where(and(
+        eq(memoryReviewReceipts.workId, input.workId), eq(memoryReviewReceipts.outcome, "published"),
+      ));
+      const modelId = serviceModelId(head.acceptedModelBinding);
+      if (receipt || modelId === null
+        || !await hasSettledServiceMemoryReview({ roomId: head.roomId, workId: input.workId, modelId }, tx)) return "blocked";
+      await tx.insert(memoryReviewModelRecoveries).values({
+        workId: input.workId, headTurnId: head.id,
+        authorizedBy: input.authorizedBy, authorizedAt: input.now,
+        blockedAttemptId: head.attemptId, turnIds: prefix.map((turn) => turn.id),
+      });
+      return "queued";
+    });
+  }
+
   async claimNext({ now }: { now: Date }): Promise<MemoryReviewClaim | null> {
     // One scope per scan; SQL groups only durable metadata, never transcript text.
+    const recoveryPending = sql`(t.failure_code='provider_outcome_unknown' AND EXISTS (
+      SELECT 1 FROM ${memoryReviewModelRecoveries} recovery
+      WHERE recovery.work_id=t.generation_id AND recovery.head_turn_id=t.id AND recovery.spent_at IS NULL
+    ))`;
     const candidates = await this.db.execute<{ id: string }>(sql`
       SELECT t.id FROM memory_review_turns t
       WHERE t.receipt_id IS NULL
         AND (t.failure_code IS NULL
           OR (t.failure_code='publication_uncertain' AND t.retry_at IS NULL)
+          OR ${recoveryPending}
           OR (t.retry_at IS NOT NULL AND t.retry_at <= ${now.toISOString()}))
         AND (t.lease_until IS NULL OR t.lease_until <= ${now.toISOString()})
         AND NOT EXISTS (SELECT 1 FROM memory_review_turns p
           WHERE p.session_id=t.session_id AND p.agent_id=t.agent_id AND p.owner_id=t.owner_id
             AND p.access_scope=t.access_scope AND p.receipt_id IS NULL AND p.first_message_id<t.first_message_id)
-        AND (SELECT coalesce(sum(c.has_human),0) FROM memory_review_turns c
+        AND (${recoveryPending}
+          OR (SELECT coalesce(sum(c.has_human),0) FROM memory_review_turns c
           WHERE c.session_id=t.session_id AND c.agent_id=t.agent_id AND c.owner_id=t.owner_id
             AND c.access_scope=t.access_scope AND c.receipt_id IS NULL AND c.state='completed'
             AND NOT EXISTS (SELECT 1 FROM memory_review_turns barrier
               WHERE barrier.session_id=t.session_id AND barrier.agent_id=t.agent_id AND barrier.owner_id=t.owner_id
                 AND barrier.access_scope=t.access_scope AND barrier.state IN ('pending','awaiting')
-                AND barrier.first_message_id<c.first_message_id)) >= ${this.policy.threshold()}
+                AND barrier.first_message_id<c.first_message_id)) >= ${this.policy.threshold()})
       ORDER BY t.updated_at, t.first_message_id LIMIT 1`);
     const id = candidates[0]?.id;
     if (!id) return null;
     return this.db.transaction(async (tx) => {
       const [head] = await tx.select().from(memoryReviewTurns).where(eq(memoryReviewTurns.id, id)).for("update", { skipLocked: true });
-      if (!head || head.receiptId || (head.leaseUntil && head.leaseUntil > now)
-        || (head.failureCode && (head.retryAt ? head.retryAt > now : head.failureCode !== "publication_uncertain"))) return null;
-      const turns = await tx.select().from(memoryReviewTurns).where(and(
-        eq(memoryReviewTurns.sessionId, head.sessionId), eq(memoryReviewTurns.agentId, head.agentId),
-        eq(memoryReviewTurns.ownerId, head.ownerId), eq(memoryReviewTurns.accessScope, head.accessScope),
-        isNull(memoryReviewTurns.receiptId),
-      )).orderBy(asc(memoryReviewTurns.firstMessageId)).for("update");
-      const prefix = selectMemoryReviewPrefix(turns, this.policy.threshold());
+      if (!head || head.receiptId || (head.leaseUntil && head.leaseUntil > now)) return null;
+      const [recovery] = await tx.select().from(memoryReviewModelRecoveries).where(and(
+        eq(memoryReviewModelRecoveries.workId, head.generationId), eq(memoryReviewModelRecoveries.headTurnId, head.id),
+      )).for("update");
+      const recovering = recovery?.spentAt === null && head.failureCode === "provider_outcome_unknown";
+      if (!recovering && head.failureCode
+        && (head.retryAt ? head.retryAt > now : head.failureCode !== "publication_uncertain")) return null;
+      const turns = await this.lockScope(tx, head);
+      if (turns[0]?.id !== head.id) return null;
+      const prefix = recovering ? recoveryPrefix(turns, recovery.blockedAttemptId, now)
+        : selectMemoryReviewPrefix(turns, this.policy.threshold());
+      if (recovering && (prefix.length !== recovery.turnIds.length
+        || prefix.some((turn, index) => turn.id !== recovery.turnIds[index]))) {
+        if (turns.some((turn) => turn.leaseUntil && turn.leaseUntil > now)) return null;
+        await tx.update(memoryReviewModelRecoveries).set({ spentAt: now })
+          .where(eq(memoryReviewModelRecoveries.workId, head.generationId));
+        return null;
+      }
       // Rotate below-cadence/awaiting scopes fairly without inventing overdue work.
       if (!prefix.length) {
         await tx.update(memoryReviewTurns).set({ updatedAt: now }).where(eq(memoryReviewTurns.id, id));
@@ -143,14 +226,22 @@ export class PostgresMemoryReviewRepository implements MemoryReviewRepository {
       const priorAttempts = classifyPriorMemoryReviewAttempts(prefix);
       const leaseUntil = new Date(now.getTime() + this.policy.leaseMs);
       const turnIds = prefix.map((turn) => turn.id);
-      await tx.update(memoryReviewTurns).set({ attemptId, leaseUntil, lastAttemptAt: now, failureCode: null, failurePhase: null, retryAt: null }).where(inArray(memoryReviewTurns.id, turnIds));
+      await tx.update(memoryReviewTurns).set({
+        attemptId, leaseUntil, lastAttemptAt: now,
+        // Keep a claimed recovery fenced even on restart or server rollback.
+        failureCode: recovery ? "provider_outcome_unknown" : null,
+        failurePhase: recovery ? "model" : null, retryAt: null,
+      }).where(inArray(memoryReviewTurns.id, turnIds));
+      if (recovery?.spentAt === null) {
+        await tx.update(memoryReviewModelRecoveries).set({
+          spentAt: now, ...(recovering ? { recoveryAttemptId: attemptId } : {}),
+        }).where(eq(memoryReviewModelRecoveries.workId, head.generationId));
+      }
       return { workId: head.generationId, attemptId,
-        ...(priorAttempts.attemptIds.length === 0
-          ? {}
-          : { priorAttemptIds: priorAttempts.attemptIds }),
-        ...(priorAttempts.knownNonusableAttemptIds.length === 0
-          ? {}
-          : { knownNonusableAttemptIds: priorAttempts.knownNonusableAttemptIds }),
+        ...(recovery ? { modelRecovery: recovering ? "authorized" : "spent" } : {}),
+        ...(priorAttempts.attemptIds.length > 0 ? { priorAttemptIds: priorAttempts.attemptIds } : {}),
+        ...(priorAttempts.knownNonusableAttemptIds.length > 0
+          ? { knownNonusableAttemptIds: priorAttempts.knownNonusableAttemptIds } : {}),
         ownerId: head.ownerId, actorId: head.actorId,
         agentId: head.agentId, roomId: head.roomId, threadId: head.threadId,
         scopeId: head.accessScope === "namespace" ? null : head.accessScope,
@@ -159,18 +250,31 @@ export class PostgresMemoryReviewRepository implements MemoryReviewRepository {
   }
 
   async modelReplaySafety(claim: MemoryReviewClaim): Promise<"allow" | "block_unknown"> {
-    const attemptIds = claim.priorAttemptIds ?? [];
-    if (attemptIds.length === 0) return "allow";
-    const knownNonusable = new Set(claim.knownNonusableAttemptIds ?? []);
-    const unaccountedAttemptIds = attemptIds.filter((attemptId) => !knownNonusable.has(attemptId));
-    if (unaccountedAttemptIds.length > 0) {
-      const unaccounted = await resolveModelAttemptReplaySafety({
-        kind: "memory_review", roomId: claim.roomId, workId: claim.workId,
-        attemptIds: unaccountedAttemptIds,
-      }, { db: this.db });
-      if (unaccounted.decision === "block_unknown") return "block_unknown";
+    if (claim.modelRecovery === "spent") return "block_unknown";
+    if (claim.modelRecovery === "authorized") {
+      const [head] = await this.db.select({
+        recoveryAttemptId: memoryReviewModelRecoveries.recoveryAttemptId,
+        binding: memoryReviewTurns.acceptedModelBinding,
+      }).from(memoryReviewModelRecoveries)
+        .innerJoin(memoryReviewTurns, eq(memoryReviewTurns.id, memoryReviewModelRecoveries.headTurnId))
+        .where(and(
+          eq(memoryReviewModelRecoveries.workId, claim.workId),
+          eq(memoryReviewTurns.id, claim.turnIds[0]!), eq(memoryReviewTurns.generationId, claim.workId),
+          eq(memoryReviewTurns.attemptId, claim.attemptId), sql`${memoryReviewTurns.leaseUntil} > now()`,
+        ));
+      const modelId = serviceModelId(head?.binding ?? null);
+      return head?.recoveryAttemptId === claim.attemptId && modelId !== null
+        && await hasSettledServiceMemoryReview({ ...claim, modelId }, this.db) ? "allow" : "block_unknown";
     }
-    const exactKnownNonusableAttemptIds = attemptIds.filter((attemptId) => knownNonusable.has(attemptId));
+    const knownNonusable = new Set(claim.knownNonusableAttemptIds ?? []);
+    const exactKnownNonusableAttemptIds = (claim.priorAttemptIds ?? []).filter((attemptId) => knownNonusable.has(attemptId));
+    // A lease rotation or source append can discard a turn's previous attempt
+    // pointer. The work identity still owns those provider outcomes.
+    const unaccounted = await resolveModelAttemptReplaySafety({
+      kind: "memory_review", roomId: claim.roomId, workId: claim.workId,
+      attemptIds: exactKnownNonusableAttemptIds, match: "except",
+    }, { db: this.db });
+    if (unaccounted.decision === "block_unknown") return "block_unknown";
     if (exactKnownNonusableAttemptIds.length === 0) return "allow";
     const known = await resolveModelAttemptReplaySafety({
       kind: "memory_review", roomId: claim.roomId, workId: claim.workId,
@@ -411,9 +515,16 @@ export class PostgresMemoryReviewRepository implements MemoryReviewRepository {
         outcome: "failed", phase: input.phase, code: input.reason, modelId: "",
         counts: { created: 0, replaced: 0, promoted: 0, demoted: 0 }, effects: [], durationMs: 0, createdAt: input.now,
       }).onConflictDoNothing();
-      await tx.update(memoryReviewTurns).set({ failurePhase: input.phase, failureCode: input.reason, leaseUntil: null,
-        // Unknown outcomes get another receipt check, never a blind model retry.
-        retryAt: input.retryable || input.reason === "publication_uncertain" ? new Date(input.now.getTime() + this.policy.retryMs) : null, updatedAt: input.now,
+      const recovery = input.claim.modelRecovery !== undefined;
+      await tx.update(memoryReviewTurns).set({
+        failurePhase: recovery ? "model" : input.phase,
+        failureCode: recovery ? "provider_outcome_unknown" : input.reason,
+        leaseUntil: null,
+        // Ordinary uncertain publication can reconcile the receipt. An explicit
+        // recovery stays spent and cannot be automatically re-dispatched.
+        retryAt: !recovery && (input.retryable || input.reason === "publication_uncertain")
+          ? new Date(input.now.getTime() + this.policy.retryMs) : null,
+        updatedAt: input.now,
       }).where(and(inArray(memoryReviewTurns.id, input.claim.turnIds), eq(memoryReviewTurns.attemptId, input.claim.attemptId), isNull(memoryReviewTurns.receiptId)));
     });
   }

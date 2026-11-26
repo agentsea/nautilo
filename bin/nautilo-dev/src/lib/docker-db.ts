@@ -293,6 +293,7 @@ export const DATA_TABLES = [
   "public.message_backfill_tool_contexts",
   "public.message_backfill_tool_pending_calls",
   "public.memory_review_turns",
+  "public.memory_review_model_recoveries",
   "public.memory_review_receipts",
   // content-free live Shadow turn receipt. It references Session and
   // Room, and message crypto revisions may reference it, so restore it after

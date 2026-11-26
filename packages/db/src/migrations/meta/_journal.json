@@ -2710,6 +2710,13 @@
       "when": 1794420507762,
       "tag": "0386_blue_vulcan",
       "breakpoints": true
+    },
+    {
+      "idx": 387,
+      "version": "7",
+      "when": 1795713624762,
+      "tag": "0387_eminent_absorbing_man",
+      "breakpoints": true
     }
   ]
 }

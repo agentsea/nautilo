@@ -1,15 +1,25 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { memoryAdminStatusSchema, memoryRetryResponseSchema, type MemoryAdminStatus } from "@nautilo/types";
 import { getUserCapabilities } from "@nautilo/trust";
+import { z } from "zod";
 import { STENOGRAPHER_STATUS_WINDOW_MS } from "./stenographer-status";
 
 export interface MemoryStatusRoutesDeps {
   queryStatus(input: { now: Date; since: Date; until: Date }): Promise<MemoryAdminStatus>;
   /** The repository atomically marks only safely retryable failed work due. */
   retryFailed(): Promise<{ requested: number }>;
+  requestModelRecovery(input: {
+    workId: string; headTurnId: string; authorizedBy: string; now: Date;
+  }): Promise<"queued" | "already_requested" | "blocked">;
   getCapabilities?: typeof getUserCapabilities;
   now?: () => Date;
 }
+
+const modelRecoveryRequest = z.object({
+  workId: z.string().uuid(),
+  headTurnId: z.string().uuid(),
+  confirmBillableRerun: z.literal(true),
+}).strict();
 
 export function memoryStatusRoutes(app: FastifyInstance, deps: MemoryStatusRoutesDeps): void {
   const capabilities = deps.getCapabilities ?? getUserCapabilities;
@@ -35,6 +45,20 @@ export function memoryStatusRoutes(app: FastifyInstance, deps: MemoryStatusRoute
       })));
     } catch {
       return reply.code(503).send({ error: "Memory processing status unavailable" });
+    }
+  });
+  app.post("/api/admin/memory-review-recovery", async (request, reply) => {
+    if (!await authorize(request, reply, "manage_server_operations")) return;
+    const input = modelRecoveryRequest.safeParse(request.body);
+    if (!input.success) return reply.code(400).send({ error: "Exact review coordinates and rerun confirmation required" });
+    try {
+      const result = await deps.requestModelRecovery({
+        workId: input.data.workId, headTurnId: input.data.headTurnId,
+        authorizedBy: request.sessionUserId!, now: (deps.now ?? (() => new Date()))(),
+      });
+      return reply.code(result === "blocked" ? 409 : result === "queued" ? 202 : 200).send({ status: result });
+    } catch {
+      return reply.code(503).send({ error: "Memory review recovery unavailable" });
     }
   });
   app.post("/api/admin/memory-retry", async (request, reply) => {

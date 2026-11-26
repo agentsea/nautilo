@@ -200,8 +200,10 @@ describe("Memory repository query contracts without a live database", () => {
     expect(safe.predicates).toHaveLength(2);
     const unaccountedQuery = dialect.sqlToQuery(safe.predicates[0]!);
     const knownQuery = dialect.sqlToQuery(safe.predicates[1]!);
-    expect(unaccountedQuery.params).toContain("attempt-unaccounted");
-    expect(unaccountedQuery.params).not.toContain("attempt-known");
+    expect(unaccountedQuery.params).not.toContain("attempt-unaccounted");
+    expect(unaccountedQuery.params).toContain("attempt-known");
+    expect(unaccountedQuery.sql).toContain("not in");
+    expect(unaccountedQuery.sql).toContain("is null");
     expect(knownQuery.params).toContain("attempt-known");
     expect(knownQuery.params).not.toContain("attempt-unaccounted");
 
@@ -211,6 +213,13 @@ describe("Memory repository query contracts without a live database", () => {
     const unknownRepository = new PostgresMemoryReviewRepository(policy, unknown.handle as never);
     expect(await unknownRepository.modelReplaySafety(replayClaim)).toBe("block_unknown");
     expect(unknown.predicates).toHaveLength(1);
+
+    const oldWire = makeDb([[attemptRow("wire-with-faded-turn-pointer", "succeeded")]]);
+    const reopened = new PostgresMemoryReviewRepository(policy, oldWire.handle as never);
+    expect(await reopened.modelReplaySafety(claim)).toBe("block_unknown");
+    const reopenedQuery = dialect.sqlToQuery(oldWire.predicates[0]!);
+    expect(reopenedQuery.params).toContain(claim.workId);
+    expect(reopenedQuery.sql).not.toContain("->>'attemptId'");
   });
 
   test("failed attempts persist content-free diagnostics and fence newer or committed attempts", async () => {

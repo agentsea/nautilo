@@ -145,6 +145,20 @@ describe("durable Memory review worker", () => {
     expect(failures[0]).toMatchObject({ phase: "model", reason: "iteration_exhausted" });
   });
 
+  test("one authorized recovery does not schedule ordinary retry even after a transient model failure", async () => {
+    const { deps, events, failures } = fixture();
+    deps.repository.claimNext = async () => ({ ...claim, modelRecovery: "authorized" });
+    deps.repository.modelReplaySafety = async () => "allow";
+    deps.prepare = async () => {
+      events.push("model");
+      return { status: "failed", reason: "provider_failed", turns: 1 };
+    };
+    await run(deps);
+    expect(events.filter(event => event === "model")).toHaveLength(1);
+    expect(events).not.toContain("publish");
+    expect(failures[0]).toMatchObject({ phase: "model", reason: "provider_failed", retryable: false });
+  });
+
   test("uncertain publication is not transformed into an automatic model retry", async () => {
     const { deps, events, failures } = fixture();
     deps.repository.publish = async () => { throw new Error("connection lost"); };

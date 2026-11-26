@@ -4,6 +4,7 @@ import { PgDialect } from "drizzle-orm/pg-core";
 import type { DirectDatabase } from "../../src/config/direct-database";
 import {
   classifyModelAttemptReplaySafety,
+  hasSettledServiceMemoryReview,
   resolveModelAttemptReplaySafety,
   type ModelAttemptReplayIdentity,
 } from "../../src/queries/model-attempt-replay-safety";
@@ -113,6 +114,31 @@ describe("model attempt replay safety", () => {
     expect(refusalQuery.params).toContain("provider_refused");
     expect(refusalQuery.params).toContain("no_sellers_for_model");
     expect(refusalQuery.params).toContain("pre_service_refusal");
+  });
+
+  test("operator recovery requires every exact wire attempt to be settled service-funded Surplus usage", async () => {
+    const input = { roomId: "11111111-1111-4111-8111-111111111111", workId: "work", modelId: "fixture:model" };
+    const settled = {
+      fundingKind: "service", payerHumanId: null, providerRoute: "surplus", model: input.modelId, actualCost: "0.01",
+      requestId: "provider-receipt", attemptId: "original-attempt", attemptOutcome: "succeeded",
+      costState: "actual", recoveryState: null,
+    };
+    let predicate: SQL | undefined;
+    const database = (rows: readonly unknown[]) => ({
+      select: () => ({ from: () => ({ where: async (query: SQL) => { predicate = query; return rows; } }) }),
+    }) as unknown as DirectDatabase;
+    expect(await hasSettledServiceMemoryReview(input, database([]))).toBe(false);
+    expect(await hasSettledServiceMemoryReview(input, database([settled]))).toBe(true);
+    for (const changed of [
+      { attemptOutcome: "in_progress" }, { costState: "pending" }, { recoveryState: "retryable" },
+      { fundingKind: "personal" }, { payerHumanId: "owner" }, { requestId: null },
+      { providerRoute: "other" }, { model: "fixture:other" }, { actualCost: null }, { attemptId: null },
+    ]) {
+      expect(await hasSettledServiceMemoryReview(input, database([settled, { ...settled, ...changed }]))).toBe(false);
+    }
+    const query = new PgDialect().sqlToQuery(predicate!);
+    expect(query.params).toEqual([input.roomId, "memory_review", input.workId]);
+    expect(query.sql).toContain("->>'workId'");
   });
 
   test("scopes image assistance by operation and never replays a succeeded wire without retained output", async () => {

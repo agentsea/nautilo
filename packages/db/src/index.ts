@@ -959,6 +959,7 @@ export {
 } from "./queries/llm-usage";
 export {
   classifyModelAttemptReplaySafety,
+  hasSettledServiceMemoryReview,
   resolveModelAttemptReplaySafety,
   type ModelAttemptReplayIdentity,
   type ModelAttemptReplaySafety,

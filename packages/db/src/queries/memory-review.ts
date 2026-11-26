@@ -64,6 +64,8 @@ export async function admitMemoryReviewSourceInTx(tx: Tx, input: SourceInput): P
         AND coalesce(existing_human.human_turn_id, existing_human.fingerprint, 'message:' || existing_human.id::text) = candidate.key
     )
   )`;
+  const fencedModelResult = sql`${memoryReviewTurns.receiptId} IS NULL
+    AND ${memoryReviewTurns.failureCode} = 'provider_outcome_unknown'`;
   await tx.insert(memoryReviewTurns).values({
     sessionId: input.sessionId, threadId: input.threadId, agentId: input.agentId, roomId: input.roomId,
     ownerId: input.ownerId, actorId: input.actorId, accessScope: input.accessScope,
@@ -76,7 +78,10 @@ export async function admitMemoryReviewSourceInTx(tx: Tx, input: SourceInput): P
       sourceIds: sql`CASE WHEN ${memoryReviewTurns.receiptId} IS NOT NULL THEN ${incoming} ELSE ${mergedIds} END`,
       firstMessageId: sql`CASE WHEN ${memoryReviewTurns.receiptId} IS NOT NULL THEN ${sourceIds[0]} ELSE least(${memoryReviewTurns.firstMessageId}, ${sourceIds[0]}) END`,
       hasHuman: sql`CASE WHEN ${memoryReviewTurns.receiptId} IS NOT NULL THEN excluded.has_human ELSE ${memoryReviewTurns.hasHuman} + excluded.has_human END`,
-      receiptId: null, attemptId: null, leaseUntil: null, failureCode: null, failurePhase: null, retryAt: null,
+      receiptId: null, leaseUntil: null, retryAt: null,
+      attemptId: sql`CASE WHEN ${fencedModelResult} THEN ${memoryReviewTurns.attemptId} ELSE NULL END`,
+      failureCode: sql`CASE WHEN ${fencedModelResult} THEN ${memoryReviewTurns.failureCode} ELSE NULL END`,
+      failurePhase: sql`CASE WHEN ${fencedModelResult} THEN ${memoryReviewTurns.failurePhase} ELSE NULL END`,
       state: "pending", completedAt: null, updatedAt: new Date(),
     },
     // Pure replay must not reopen reviewed work, clear an active lease, or

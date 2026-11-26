@@ -26,6 +26,7 @@ export interface MemoryReviewClaim {
   attemptId: string;
   priorAttemptIds?: readonly string[];
   knownNonusableAttemptIds?: readonly string[];
+  modelRecovery?: "authorized" | "spent";
   ownerId: string;
   actorId: string;
   agentId: string;
@@ -249,7 +250,9 @@ export class MemoryReviewWorker {
   }
 
   private fail(claim: MemoryReviewClaim, phase: MemoryReviewPhase, reason: string, retryable: boolean): Promise<void> {
-    return this.deps.repository.fail({ claim, phase, reason, retryable, now: this.now() });
+    return this.deps.repository.fail({
+      claim, phase, reason, retryable: retryable && claim.modelRecovery === undefined, now: this.now(),
+    });
   }
 
   private async admitServiceModel(claim: MemoryReviewClaim, assertCurrent: () => Promise<void>) {

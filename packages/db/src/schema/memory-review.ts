@@ -48,6 +48,23 @@ export const memoryReviewTurns = pgTable("memory_review_turns", {
   }),
 ]).enableRLS();
 
+/** Server-only permission for one new attempt on an exact, previously blocked review. */
+export const memoryReviewModelRecoveries = pgTable("memory_review_model_recoveries", {
+  workId: uuid("work_id").primaryKey(),
+  headTurnId: uuid("head_turn_id").notNull().references(() => memoryReviewTurns.id, { onDelete: "cascade" }),
+  authorizedBy: uuid("authorized_by").notNull(),
+  authorizedAt: timestamp("authorized_at", { withTimezone: true }).notNull(),
+  blockedAttemptId: uuid("blocked_attempt_id").notNull(),
+  turnIds: uuid("turn_ids").array().notNull(),
+  spentAt: timestamp("spent_at", { withTimezone: true }),
+  recoveryAttemptId: uuid("recovery_attempt_id"),
+}, (table) => [
+  index("memory_review_model_recovery_head_idx").on(table.headTurnId),
+  pgPolicy("memory_review_model_recoveries_product", {
+    for: "all", to: pgRole("nautilo").existing(), using: sql`true`, withCheck: sql`true`,
+  }),
+]).enableRLS();
+
 /** Successful publication is authoritative, including required delivery acknowledgments. */
 export const memoryReviewReceipts = pgTable("memory_review_receipts", {
   id: uuid("id").primaryKey(),

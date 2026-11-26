@@ -81,12 +81,13 @@ export function createServerMemoryReviewRuntime(
     // unavailable rather than running the ordinary transcript reader.
     return result.result.disposition === "ordinary";
   };
+  const admitted = async () => memoryReviewRuntimeAdmission({
+    enabled: await enabled(),
+    maintenanceAccepting: await maintenanceGate.isAcceptingWork(),
+    ordinaryContentAvailable: await protection(),
+  });
   const available = async () => {
-    if (!memoryReviewRuntimeAdmission({
-      enabled: await enabled(),
-      maintenanceAccepting: await maintenanceGate.isAcceptingWork(),
-      ordinaryContentAvailable: await protection(),
-    })) return false;
+    if (!await admitted()) return false;
     if (!recovered) {
       const recovery = await recoverMemoryReviewTurnsAtStartup({
         db: getServerDirectDb(), pageSize: MEMORY_REVIEW_RUNTIME_POLICY.recoveryPageSize,
@@ -153,5 +154,12 @@ export function createServerMemoryReviewRuntime(
       });
     },
     async retryFailed() { const result = await retryFailedMemoryReviews(getServerDirectDb()); worker?.wake(); return result; },
+    async requestModelRecovery(input: Parameters<PostgresMemoryReviewRepository["requestModelRecovery"]>[0]) {
+      if (stopped || !await admitted()) return "blocked" as const;
+      const current = ensure();
+      const result = await current.repository.requestModelRecovery(input);
+      if (result === "queued") current.worker.wake();
+      return result;
+    },
   };
 }
