@@ -80,15 +80,14 @@ describe("stenographer status postgres-js parameters", () => {
           return { from: async () => results[1] };
         }
         if (selectCalls === 2) {
-          return {
-            from: () => ({
-              where: () => ({
-                unionAll: () => ({
-                  orderBy: () => ({ limit: async () => results[3] }),
-                }),
-              }),
-            }),
+          const builder = {
+            from: () => builder,
+            where: () => builder,
+            unionAll: () => builder,
+            orderBy: () => builder,
+            limit: async () => results[3],
           };
+          return builder;
         }
         return { from: () => ({ where: () => ({}) }) };
       }) as unknown) as DirectDatabase["select"],
@@ -147,15 +146,21 @@ describe("stenographer status postgres-js parameters", () => {
     ).toSQL();
     const recentFailuresSql = recentFailures.sql.toLowerCase();
     expect(recentFailuresSql).toContain('from "room_journal_batches"');
-    expect(recentFailuresSql).toContain("union all");
+    expect(recentFailuresSql.match(/union all/gu)).toHaveLength(2);
     expect(recentFailuresSql).toContain('from "room_journal_state"');
+    expect(recentFailures.params).toContain("input_authority_unavailable");
+    expect(recentFailuresSql).toContain("not exists");
+    expect(recentFailuresSql).toContain('"room_journal_state"."extraction_failure_count" >');
+    expect(recentFailuresSql).toContain('"room_journal_batches"."room_id" = "room_journal_state"."room_id"');
+    expect(recentFailuresSql).toContain('"room_journal_batches"."error_code" = "room_journal_state"."last_extraction_error_code"');
+    expect(recentFailuresSql).toContain('"room_journal_batches"."last_error_at" = "room_journal_state"."last_extraction_error_at"');
     expect(recentFailuresSql).toContain('order by "last_error_at" desc');
     expect(recentFailures.params.some((param) => param instanceof Date)).toBe(
       false,
     );
     expect(recentFailures.params.filter((param) => param === SINCE.toISOString()))
-      .toHaveLength(2);
+      .toHaveLength(3);
     expect(recentFailures.params.filter((param) => param === NOW.toISOString()))
-      .toHaveLength(2);
+      .toHaveLength(3);
   });
 });

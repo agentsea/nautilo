@@ -1,5 +1,5 @@
 import type { StenographerAdminStatus } from "@nautilo/types";
-import { and, desc, eq, gt, gte, isNotNull, lte, sql } from "drizzle-orm";
+import { and, desc, eq, gt, gte, isNotNull, lte, notExists, sql } from "drizzle-orm";
 import type { DirectDatabase } from "../config/direct-database";
 import { getSharedDirectDb } from "../config/database";
 import {
@@ -154,6 +154,33 @@ export function buildStenographerRecentFailuresQuery(
         isNotNull(roomJournalBatches.errorCode),
       ),
     );
+  const currentAuthorityDeferrals = db
+    .select({
+      stage:
+        sql<"extraction" | "compaction">`'extraction'::text`,
+      error_code: roomJournalState.lastExtractionErrorCode,
+      occurred_at: roomJournalState.lastExtractionErrorAt,
+      attempt_count: roomJournalState.extractionFailureCount,
+      model_id: sql<string | null>`NULL::text`,
+    })
+    .from(roomJournalState)
+    .where(
+      and(
+        eq(roomJournalState.lastExtractionErrorCode, "input_authority_unavailable"),
+        gt(roomJournalState.extractionFailureCount, 0),
+        gte(roomJournalState.lastExtractionErrorAt, input.since),
+        lte(roomJournalState.lastExtractionErrorAt, input.until),
+        notExists(
+          db.select({ one: sql`1` })
+            .from(roomJournalBatches)
+            .where(and(
+              eq(roomJournalBatches.roomId, roomJournalState.roomId),
+              eq(roomJournalBatches.errorCode, roomJournalState.lastExtractionErrorCode),
+              eq(roomJournalBatches.lastErrorAt, roomJournalState.lastExtractionErrorAt),
+            )),
+        ),
+      ),
+    );
   const compactionFailures = db
     .select({
       stage:
@@ -174,6 +201,7 @@ export function buildStenographerRecentFailuresQuery(
     );
 
   return extractionFailures
+    .unionAll(currentAuthorityDeferrals)
     .unionAll(compactionFailures)
     .orderBy(({ occurred_at }) => desc(occurred_at))
     .limit(5);

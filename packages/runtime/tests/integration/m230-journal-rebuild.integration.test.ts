@@ -19,6 +19,7 @@ import {
   eq,
   inArray,
   llmUsageEvents,
+  queryStenographerAdminStatus,
   namespaces,
   reflectionRecordAuthorityBlocks,
   reflectionRecordAuthorityDependencies,
@@ -870,6 +871,8 @@ describe("M230 Room-journal rebuild (live Postgres)", () => {
     const authorityFailureTime = new Date("2000-01-01T09:01:00.000Z");
     const beforeRetryTime = new Date("2000-01-01T09:01:29.999Z");
     const retryTime = new Date("2000-01-01T09:01:30.000Z");
+    const recentFailures = async (now: Date) =>
+      (await queryStenographerAdminStatus({ now, since: REBUILD_TIME, until: now }, db)).recentFailures;
     try {
       await editHumanRoomMessage({
         roomId: fixture.roomId,
@@ -903,6 +906,7 @@ describe("M230 Room-journal rebuild (live Postgres)", () => {
         db,
         now: invalidOutputTime,
       });
+      expect((await recentFailures(invalidOutputTime)).map((failure) => failure.errorCode)).toEqual(["invalid_output"]);
       expect(
         await prepareNextJournalRebuild({ db, now: invalidOutputRetryTime }),
       ).toBe(fixture.roomId);
@@ -948,6 +952,9 @@ describe("M230 Room-journal rebuild (live Postgres)", () => {
         extractionRetryAfter: retryTime,
         lastExtractionErrorCode: "input_authority_unavailable",
       });
+      const deferredFailures = await recentFailures(authorityFailureTime);
+      expect(deferredFailures.map((failure) => failure.errorCode)).toEqual(["input_authority_unavailable", "invalid_output"]);
+      expect(deferredFailures[0]).toMatchObject({ occurredAt: authorityFailureTime.toISOString(), attemptCount: 2 });
 
       expect(
         await prepareNextJournalRebuild({ db, now: beforeRetryTime }),
@@ -989,6 +996,8 @@ describe("M230 Room-journal rebuild (live Postgres)", () => {
         extractionFailureCount: 0,
         extractionRetryAfter: null,
       });
+      expect((await recentFailures(new Date("2000-01-01T09:01:31.000Z"))).map((failure) => failure.errorCode))
+        .toEqual([]);
     } finally {
       await db.delete(llmUsageEvents).where(eq(llmUsageEvents.roomId, fixture.roomId));
       await db.update(users)
