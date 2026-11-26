@@ -133,7 +133,7 @@ export class PostgresMemoryReviewRepository implements MemoryReviewRepository {
       eq(memoryReviewTurns.sessionId, head.sessionId), eq(memoryReviewTurns.agentId, head.agentId),
       eq(memoryReviewTurns.ownerId, head.ownerId), eq(memoryReviewTurns.accessScope, head.accessScope),
       isNull(memoryReviewTurns.receiptId),
-    )).orderBy(asc(memoryReviewTurns.firstMessageId)).for("update");
+    )).orderBy(asc(memoryReviewTurns.firstMessageId), asc(memoryReviewTurns.id)).for("update");
   }
 
   async requestModelRecovery(input: MemoryReviewModelRecoveryRequest): Promise<MemoryReviewModelRecoveryResult> {
@@ -181,7 +181,8 @@ export class PostgresMemoryReviewRepository implements MemoryReviewRepository {
         AND (t.lease_until IS NULL OR t.lease_until <= ${now.toISOString()})
         AND NOT EXISTS (SELECT 1 FROM memory_review_turns p
           WHERE p.session_id=t.session_id AND p.agent_id=t.agent_id AND p.owner_id=t.owner_id
-            AND p.access_scope=t.access_scope AND p.receipt_id IS NULL AND p.first_message_id<t.first_message_id)
+            AND p.access_scope=t.access_scope AND p.receipt_id IS NULL
+            AND (p.first_message_id,p.id)<(t.first_message_id,t.id))
         AND (${recoveryPending}
           OR (SELECT coalesce(sum(c.has_human),0) FROM memory_review_turns c
           WHERE c.session_id=t.session_id AND c.agent_id=t.agent_id AND c.owner_id=t.owner_id
@@ -190,7 +191,7 @@ export class PostgresMemoryReviewRepository implements MemoryReviewRepository {
               WHERE barrier.session_id=t.session_id AND barrier.agent_id=t.agent_id AND barrier.owner_id=t.owner_id
                 AND barrier.access_scope=t.access_scope AND barrier.state IN ('pending','awaiting')
                 AND barrier.first_message_id<c.first_message_id)) >= ${this.policy.threshold()})
-      ORDER BY t.updated_at, t.first_message_id LIMIT 1`);
+      ORDER BY t.updated_at, t.first_message_id, t.id LIMIT 1`);
     const id = candidates[0]?.id;
     if (!id) return null;
     return this.db.transaction(async (tx) => {

@@ -142,6 +142,7 @@ describe("Memory repository query contracts without a live database", () => {
     expect(sql).not.toContain("session_messages");
     expect(sql).not.toContain("content");
     expect(sql).toContain("p.agent_id=t.agent_id");
+    expect(sql).toContain("(p.first_message_id,p.id)<(t.first_message_id,t.id)");
     expect(sql).toContain("p.owner_id=t.owner_id");
     expect(sql).toContain("p.access_scope=t.access_scope");
     expect(sql).toContain("t.failure_code IS NULL");
