@@ -267,8 +267,21 @@ export class PostgresMemoryReviewRepository implements MemoryReviewRepository {
       return head?.recoveryAttemptId === claim.attemptId && modelId !== null
         && await hasSettledServiceMemoryReview({ ...claim, modelId }, this.db) ? "allow" : "block_unknown";
     }
-    const knownNonusable = new Set(claim.knownNonusableAttemptIds ?? []);
-    const exactKnownNonusableAttemptIds = (claim.priorAttemptIds ?? []).filter((attemptId) => knownNonusable.has(attemptId));
+    const durableKnownNonusable = await this.db.select({ id: memoryReviewReceipts.id })
+      .from(memoryReviewReceipts).where(and(
+        eq(memoryReviewReceipts.workId, claim.workId),
+        eq(memoryReviewReceipts.outcome, "failed"),
+        eq(memoryReviewReceipts.phase, "model"),
+        inArray(memoryReviewReceipts.code, [...KNOWN_NONUSABLE_MODEL_FAILURES]),
+      ));
+    // Turn rows retain only the latest attempt pointer. Failed receipts retain
+    // the exact unusable-result proof across later manual retries; the row
+    // classification remains a fallback for pre-receipt/legacy state.
+    const rowKnownNonusable = new Set(claim.knownNonusableAttemptIds ?? []);
+    const exactKnownNonusableAttemptIds = [...new Set([
+      ...durableKnownNonusable.map((receipt) => receipt.id),
+      ...(claim.priorAttemptIds ?? []).filter((attemptId) => rowKnownNonusable.has(attemptId)),
+    ])];
     // A lease rotation or source append can discard a turn's previous attempt
     // pointer. The work identity still owns those provider outcomes.
     const unaccounted = await resolveModelAttemptReplaySafety({
@@ -551,7 +564,11 @@ export class PostgresMemoryReviewRepository implements MemoryReviewRepository {
         SELECT r.id FROM memory_review_receipts r WHERE r.created_at<${before}::timestamptz
           AND r.delivered=jsonb_array_length(r.effects)
           AND NOT EXISTS (SELECT 1 FROM memory_review_turns t WHERE t.receipt_id=r.id
-            OR (t.generation_id=r.work_id AND t.failure_code='publication_uncertain'))
+            OR (t.generation_id=r.work_id AND (
+              t.failure_code='publication_uncertain'
+              OR (t.receipt_id IS NULL AND r.outcome='failed' AND r.phase='model'
+                AND r.code=ANY(${sql.param([...KNOWN_NONUSABLE_MODEL_FAILURES])}::text[]))
+            )))
         ORDER BY r.created_at LIMIT ${this.policy.retentionBatchSize}
       ) DELETE FROM memory_review_receipts WHERE id IN (SELECT id FROM retired)`);
   }

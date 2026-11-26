@@ -5,7 +5,8 @@ import { randomUUID } from "node:crypto";
 import {
   actors, agents, rooms, roomMembers, namespaces, sessions, sessionMessages, users,
   groups, groupMembers, memoryReviewTurns, memoryReviewReceipts, memoryReviewModelRecoveries, llmUsageEvents,
-  admitMemoryReviewSourceInTx, markMemoryReviewTurnInTx, getSharedDirectDb, eq, sql,
+  admitMemoryReviewSourceInTx, markMemoryReviewTurnInTx, retryFailedMemoryReviews,
+  getSharedDirectDb, eq, sql,
 } from "@nautilo/db";
 import { bootstrapTestDbInstance } from "@nautilo/db/testing";
 import { appendTranscriptMessages, withSerializableAgentTrustContext, type PreparedMemoryReview } from "@nautilo/agent";
@@ -211,6 +212,58 @@ describe("M319 durable Memory processing on PostgreSQL", () => {
     expect(receipts.filter(receipt => receipt.outcome === "published")).toHaveLength(1);
     expect(await repo.requestModelRecovery(request)).toBe("blocked");
     expect(await repo.claimNext({ now })).toBeNull();
+  });
+
+  test("two unusable results remain exactly retryable for each service provider route", async () => {
+    const routes = [
+      { providerRoute: "openai", provider: "openai", model: "openai:gpt-5.6-sol" },
+      { providerRoute: "venice", provider: "venice", model: "venice:z-ai-glm-5-3" },
+      { providerRoute: "surplus", provider: "openai", model: "openai:gpt-5.6-sol" },
+    ] as const;
+
+    for (const route of routes) {
+      await admit(randomUUID());
+      await admit(randomUUID());
+      let claim = await repo.claimNext({ now: new Date() });
+      if (!claim) throw new Error(`expected initial ${route.providerRoute} review claim`);
+      await repo.bindServiceModel(claim, () => route.model);
+      let oldestReceiptId = "";
+
+      for (const [index, reason] of (["invalid_proposal", "iteration_exhausted"] as const).entries()) {
+        if (index > 0) expect(await repo.modelReplaySafety(claim)).toBe("allow");
+        await db.insert(llmUsageEvents).values({
+          roomId, callType: "memory_review", model: route.model, provider: route.provider,
+          fundingKind: "service", providerRoute: route.providerRoute, providerRequestId: randomUUID(),
+          endpoint: "/v1/chat/completions", attemptOutcome: "succeeded",
+          costState: route.providerRoute === "surplus" ? "actual" : "estimated",
+          ...(route.providerRoute === "surplus" ? { actualCostUsd: "0.01" } : { estimatedCostUsd: "0.01" }),
+          metadata: { workId: claim.workId, attemptId: claim.attemptId },
+        });
+        if (index === 0) oldestReceiptId = claim.attemptId;
+        await repo.fail({ claim, phase: "model", reason, retryable: false, now: new Date() });
+        expect(await retryFailedMemoryReviews(db)).toEqual({ requested: 1 });
+        const next = await repo.claimNext({ now: new Date() });
+        if (!next) throw new Error(`expected retry after ${route.providerRoute} ${reason}`);
+        expect(next.workId).toBe(claim.workId);
+        claim = next;
+      }
+
+      const pruneAt = new Date();
+      await db.update(memoryReviewReceipts).set({
+        createdAt: new Date(pruneAt.getTime() - 2 * 86_400_000),
+      }).where(eq(memoryReviewReceipts.id, oldestReceiptId));
+      await repo.drainEffects({ now: pruneAt });
+      const retained = await db.select({ id: memoryReviewReceipts.id }).from(memoryReviewReceipts)
+        .where(eq(memoryReviewReceipts.id, oldestReceiptId));
+      expect(retained).toEqual([{ id: oldestReceiptId }]);
+
+      expect(await repo.modelReplaySafety(claim)).toBe("allow");
+      expect(await repo.bindServiceModel(claim, () => "changed-default")).toBe(route.model);
+      await repo.load(claim);
+      const proposal: PreparedMemoryReview = { envelope, speakerUserId: userId, operations: [], snapshots: [] };
+      expect(await repo.publish({ claim, proposal, modelId: route.model, now: new Date(), durationMs: 0 }))
+        .toBe("published");
+    }
   });
 
   test("startup reconciles a stale checkpoint barrier and review advances through it", async () => {

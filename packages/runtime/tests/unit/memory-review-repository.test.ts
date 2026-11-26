@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { PgDialect } from "drizzle-orm/pg-core";
-import { memoryReviewTurns, type SQL } from "@nautilo/db";
+import { memoryReviewReceipts, memoryReviewTurns, type SQL } from "@nautilo/db";
 import {
   classifyPriorMemoryReviewAttempts,
   PostgresMemoryReviewRepository,
@@ -168,14 +168,19 @@ describe("Memory repository query contracts without a live database", () => {
       attemptOutcome: "succeeded" | "failed" | "unknown",
       failureCode: string | null = null,
     ) => ({ id, attemptOutcome, failureCode, metadata: {} });
-    const makeDb = (responses: unknown[][]) => {
+    const makeDb = (receiptRows: readonly { id: string }[], responses: unknown[][]) => {
       const predicates: SQL[] = [];
       return {
         predicates,
         handle: {
           select: () => {
             const builder = {
-              from: () => builder,
+              from: (table: unknown) => table === memoryReviewReceipts
+                ? { where: async (predicate: SQL) => {
+                    predicates.push(predicate);
+                    return receiptRows;
+                  } }
+                : builder,
               where: (predicate: SQL) => {
                 predicates.push(predicate);
                 return builder;
@@ -190,35 +195,50 @@ describe("Memory repository query contracts without a live database", () => {
     const replayClaim: MemoryReviewClaim = {
       ...claim,
       priorAttemptIds: ["attempt-known", "attempt-unaccounted"],
-      knownNonusableAttemptIds: ["attempt-known"],
+      knownNonusableAttemptIds: ["attempt-known", "attempt-not-prior"],
     };
-    const safe = makeDb([
+    const safe = makeDb([{ id: "attempt-older-known" }], [
       [attemptRow("wire-refused", "failed", "provider_refused")],
       [attemptRow("wire-known", "succeeded")],
     ]);
     const safeRepository = new PostgresMemoryReviewRepository(policy, safe.handle as never);
     expect(await safeRepository.modelReplaySafety(replayClaim)).toBe("allow");
-    expect(safe.predicates).toHaveLength(2);
-    const unaccountedQuery = dialect.sqlToQuery(safe.predicates[0]!);
-    const knownQuery = dialect.sqlToQuery(safe.predicates[1]!);
+    expect(safe.predicates).toHaveLength(3);
+    const receiptQuery = dialect.sqlToQuery(safe.predicates[0]!);
+    const unaccountedQuery = dialect.sqlToQuery(safe.predicates[1]!);
+    const knownQuery = dialect.sqlToQuery(safe.predicates[2]!);
+    expect(receiptQuery.params).toContain(claim.workId);
+    expect(receiptQuery.params).toContain("invalid_proposal");
+    expect(receiptQuery.params).toContain("iteration_exhausted");
     expect(unaccountedQuery.params).not.toContain("attempt-unaccounted");
     expect(unaccountedQuery.params).toContain("attempt-known");
+    expect(unaccountedQuery.params).toContain("attempt-older-known");
+    expect(unaccountedQuery.params).not.toContain("attempt-not-prior");
     expect(unaccountedQuery.sql).toContain("not in");
     expect(unaccountedQuery.sql).toContain("is null");
     expect(knownQuery.params).toContain("attempt-known");
+    expect(knownQuery.params).toContain("attempt-older-known");
+    expect(knownQuery.params).not.toContain("attempt-not-prior");
     expect(knownQuery.params).not.toContain("attempt-unaccounted");
 
-    const unknown = makeDb([[
+    const unknown = makeDb([], [[
       attemptRow("wire-unknown", "unknown"),
     ]]);
     const unknownRepository = new PostgresMemoryReviewRepository(policy, unknown.handle as never);
     expect(await unknownRepository.modelReplaySafety(replayClaim)).toBe("block_unknown");
-    expect(unknown.predicates).toHaveLength(1);
+    expect(unknown.predicates).toHaveLength(2);
 
-    const oldWire = makeDb([[attemptRow("wire-with-faded-turn-pointer", "succeeded")]]);
+    const mixed = makeDb([{ id: "attempt-older-known" }], [[
+      attemptRow("wire-unaccounted-unknown", "unknown"),
+    ]]);
+    const mixedRepository = new PostgresMemoryReviewRepository(policy, mixed.handle as never);
+    expect(await mixedRepository.modelReplaySafety(replayClaim)).toBe("block_unknown");
+    expect(mixed.predicates).toHaveLength(2);
+
+    const oldWire = makeDb([], [[attemptRow("wire-with-faded-turn-pointer", "succeeded")]]);
     const reopened = new PostgresMemoryReviewRepository(policy, oldWire.handle as never);
     expect(await reopened.modelReplaySafety(claim)).toBe("block_unknown");
-    const reopenedQuery = dialect.sqlToQuery(oldWire.predicates[0]!);
+    const reopenedQuery = dialect.sqlToQuery(oldWire.predicates[1]!);
     expect(reopenedQuery.params).toContain(claim.workId);
     expect(reopenedQuery.sql).not.toContain("->>'attemptId'");
   });
@@ -309,4 +329,8 @@ test("retention preserves first/latest coverage and every unacknowledged effect"
   expect(retirement[1]!.sql).toContain("t.receipt_id=r.id");
   expect(retirement[1]!.sql).toContain("t.generation_id=r.work_id");
   expect(retirement[1]!.sql).toContain("t.failure_code='publication_uncertain'");
+  expect(retirement[1]!.sql).toContain("t.receipt_id IS NULL");
+  expect(retirement[1]!.sql).toContain("r.outcome='failed'");
+  expect(retirement[1]!.sql).toContain("r.phase='model'");
+  expect(retirement[1]!.params).toContainEqual(["invalid_proposal", "iteration_exhausted"]);
 });
