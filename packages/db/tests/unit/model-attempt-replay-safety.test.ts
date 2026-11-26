@@ -77,7 +77,6 @@ describe("model attempt replay safety", () => {
         kind: "memory_review",
         roomId: "11111111-1111-4111-8111-111111111111",
         workId: "memory-work-1",
-        attemptIds: ["memory-attempt-1"],
       },
       ...(["room_stenographer", "room_event_compaction", "room_reflection", "image_assistance"] as const).map((callType) => ({
         kind: "operation" as const,
@@ -100,7 +99,11 @@ describe("model attempt replay safety", () => {
         expect(query.sql).toContain("->>'workId'");
         expect(query.params).toContain(identity.workId);
         expect(query.sql).toContain("->>'attemptId'");
-        expect(query.params).toContain(identity.attemptIds[0]);
+        expect(query.sql).toContain("not exists");
+        expect(query.sql).toContain('"memory_review_receipts"."id"::text');
+        expect(query.sql).toContain('"memory_review_receipts"."work_id"');
+        expect(query.params).toContain("invalid_proposal");
+        expect(query.params).toContain("iteration_exhausted");
       } else {
         expect(query.sql).toContain("->>'operationId'");
         expect(query.params).toContain(identity.operationId);

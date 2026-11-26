@@ -2738,6 +2738,13 @@
       "when": 1795715797169,
       "tag": "0390_protected_task_wake_continuation_fk_permissions",
       "breakpoints": true
+    },
+    {
+      "idx": 391,
+      "version": "7",
+      "when": 1795718103180,
+      "tag": "0391_memory_review_receipt_write_authority",
+      "breakpoints": true
     }
   ]
 }

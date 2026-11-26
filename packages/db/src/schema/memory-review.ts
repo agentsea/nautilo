@@ -87,6 +87,6 @@ export const memoryReviewReceipts = pgTable("memory_review_receipts", {
   pgPolicy("memory_review_receipts_product", { for: "all", to: pgRole("nautilo").existing(), using: sql`true`, withCheck: sql`true` }),
   pgPolicy("memory_review_receipts_agent", { for: "all", to: pgRole("nautilo_agent").existing(),
     using: sql`${table.agentId} = app_current_agent_id() AND EXISTS (SELECT 1 FROM actors a WHERE a.id::text = ${table.actorId} AND a.owner_id = app_current_user_id() AND a.kind = 'user')`,
-    withCheck: sql`${table.agentId} = app_current_agent_id() AND EXISTS (SELECT 1 FROM actors a WHERE a.id::text = ${table.actorId} AND a.owner_id = app_current_user_id() AND a.kind = 'user')`,
+    withCheck: sql`${table.outcome} = 'published' AND ${table.agentId} = app_current_agent_id() AND EXISTS (SELECT 1 FROM actors a WHERE a.id::text = ${table.actorId} AND a.owner_id = app_current_user_id() AND a.kind = 'user')`,
   }),
 ]).enableRLS();

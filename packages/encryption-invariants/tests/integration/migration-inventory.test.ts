@@ -532,10 +532,10 @@ describe("migration inventory", () => {
     expect(inventory.migrations.every((migration) => !migration.path.startsWith("/")))
       .toBe(true);
     expect(inventory.migrations.at(-1)).toEqual({
-      index: 390,
-      tag: "0390_protected_task_wake_continuation_fk_permissions",
-      path: "0390_protected_task_wake_continuation_fk_permissions.sql",
-      sha256: "7d4b232cc874788a3d5932e2026b09df91c7819fcc74cdc1770ca4f4972f0ce0",
+      index: 391,
+      tag: "0391_memory_review_receipt_write_authority",
+      path: "0391_memory_review_receipt_write_authority.sql",
+      sha256: "1465d7c93e205323d6b61306a9d99e0b32f120930edb7b4661ebbc695d01da77",
     });
 
     const comparison = compareSchemaAndMigrationInventory(

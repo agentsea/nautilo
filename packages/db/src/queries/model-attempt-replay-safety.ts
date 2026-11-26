@@ -1,15 +1,16 @@
-import { and, eq, inArray, isNull, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, notExists, notInArray, or, sql } from "drizzle-orm";
+import { QueryBuilder } from "drizzle-orm/pg-core";
 import { getSharedDirectDb, type DirectDatabase } from "../config/direct-database";
 import { llmUsageEvents } from "../schema/llm-usage";
+import { memoryReviewReceipts } from "../schema/memory-review";
+
+export const KNOWN_NONUSABLE_MEMORY_REVIEW_FAILURES = ["invalid_proposal", "iteration_exhausted"] as const;
 
 export type ModelAttemptReplayIdentity =
   | Readonly<{
       kind: "memory_review";
       roomId: string;
       workId: string;
-      attemptIds: readonly string[];
-      /** Check all other history, including legacy rows without an attempt coordinate. */
-      match?: "except";
     }>
   | Readonly<{
       kind: "operation";
@@ -94,20 +95,17 @@ export function classifyModelAttemptReplaySafety(
   return { decision: "allow" };
 }
 
-/** Bounded callers pass exact prior attempt ids or one stable operation id. */
+/** Match one stable work identity and inspect at most one blocking wire outcome. */
 export async function resolveModelAttemptReplaySafety(
   identity: ModelAttemptReplayIdentity,
   options: Readonly<{ db?: ModelAttemptReplayDb; knownNonusableResult?: boolean }> = {},
 ): Promise<ModelAttemptReplaySafety> {
-  if (identity.kind === "memory_review" && identity.match !== "except" && identity.attemptIds.length === 0) {
-    return { decision: "allow" };
-  }
   const callType = identity.kind === "memory_review" ? "memory_review" : identity.callType;
   // Image assistance has no separate durable work row that can prove a
   // succeeded provider result was unusable. Without a retained transcript
   // observation, every non-refusal wire outcome remains non-replayable.
   const knownNonusableResult = options.knownNonusableResult === true
-    && callType !== "image_assistance";
+    && identity.kind === "operation" && callType !== "image_assistance";
   const unsafeFailedAttempt = and(
     eq(llmUsageEvents.attemptOutcome, "failed"),
     or(
@@ -115,18 +113,24 @@ export async function resolveModelAttemptReplaySafety(
       notInArray(llmUsageEvents.failureCode, [...SAFE_PRE_SERVICE_FAILURE_CODES]),
     ),
   );
-  const blockingAttempt = knownNonusableResult
-    ? or(
-        isNull(llmUsageEvents.attemptOutcome),
-        notInArray(llmUsageEvents.attemptOutcome, ["failed", "succeeded"]),
-        unsafeFailedAttempt,
-      )
-    : or(
-        isNull(llmUsageEvents.attemptOutcome),
-        ne(llmUsageEvents.attemptOutcome, "failed"),
-        unsafeFailedAttempt,
-      );
-  const attemptId = sql<string>`${llmUsageEvents.metadata}->>'attemptId'`;
+  const provenRejection = identity.kind === "memory_review"
+    ? new QueryBuilder().select({ id: memoryReviewReceipts.id }).from(memoryReviewReceipts).where(and(
+        eq(memoryReviewReceipts.workId, identity.workId),
+        eq(sql<string>`${memoryReviewReceipts.id}::text`, sql<string>`${llmUsageEvents.metadata}->>'attemptId'`),
+        eq(memoryReviewReceipts.outcome, "failed"),
+        eq(memoryReviewReceipts.phase, "model"),
+        inArray(memoryReviewReceipts.code, [...KNOWN_NONUSABLE_MEMORY_REVIEW_FAILURES]),
+      ))
+    : undefined;
+  const blockingAttempt = or(
+    isNull(llmUsageEvents.attemptOutcome),
+    notInArray(llmUsageEvents.attemptOutcome, ["failed", "succeeded"]),
+    unsafeFailedAttempt,
+    knownNonusableResult ? undefined : and(
+      eq(llmUsageEvents.attemptOutcome, "succeeded"),
+      provenRejection === undefined ? undefined : notExists(provenRejection),
+    ),
+  );
   const rows = await (options.db ?? getSharedDirectDb())
     .select({
       id: llmUsageEvents.id,
@@ -139,14 +143,7 @@ export async function resolveModelAttemptReplaySafety(
       eq(llmUsageEvents.roomId, identity.roomId),
       eq(llmUsageEvents.callType, callType),
       ...(identity.kind === "memory_review"
-        ? [
-            eq(sql<string>`${llmUsageEvents.metadata}->>'workId'`, identity.workId),
-            identity.match !== "except"
-              ? inArray(attemptId, [...identity.attemptIds])
-              : identity.attemptIds.length === 0
-                ? undefined
-                : or(isNull(attemptId), notInArray(attemptId, [...identity.attemptIds])),
-          ]
+        ? [eq(sql<string>`${llmUsageEvents.metadata}->>'workId'`, identity.workId)]
         : [eq(sql<string>`${llmUsageEvents.metadata}->>'operationId'`, identity.operationId)]),
       blockingAttempt,
     ))

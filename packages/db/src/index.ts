@@ -960,6 +960,7 @@ export {
 export {
   classifyModelAttemptReplaySafety,
   hasSettledServiceMemoryReview,
+  KNOWN_NONUSABLE_MEMORY_REVIEW_FAILURES,
   resolveModelAttemptReplaySafety,
   type ModelAttemptReplayIdentity,
   type ModelAttemptReplaySafety,

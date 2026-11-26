@@ -373,13 +373,24 @@ describe("M319 durable Memory processing on PostgreSQL", () => {
     expect(await repo.claimNext({ now: new Date() })).toBeNull();
   });
 
-  test("Agent guard observes disabled users and its role cannot rewrite publication receipts", async () => {
+  test("Agent guard observes disabled users and only the server can record failed review receipts", async () => {
     const trust = { userId, agentId };
     const guard = () => withSerializableAgentTrustContext(trust, (tx) => tx.execute<{ active: boolean }>(sql`SELECT app_memory_review_actor_is_active() AS active`));
     expect((await guard())[0]!.active).toBe(true);
     await db.update(users).set({ disabledAt: new Date() }).where(eq(users.id, userId));
     try { expect((await guard())[0]!.active).toBe(false); }
     finally { await db.update(users).set({ disabledAt: null }).where(eq(users.id, userId)); }
+    const receiptInsert = withSerializableAgentTrustContext(trust, (tx) => tx.insert(memoryReviewReceipts).values({
+      id: randomUUID(), workId: randomUUID(), actorId, ownerId: userId, agentId, modelId: "",
+      outcome: "failed", phase: "model", code: "invalid_proposal",
+      counts: { created: 0, replaced: 0, promoted: 0, demoted: 0 }, effects: [], durationMs: 0,
+    }));
+    const denied = await receiptInsert.catch((error: unknown) => error);
+    if (!(denied instanceof Error) || !(denied.cause instanceof Error)) {
+      throw new Error("expected failed-receipt authority rejection");
+    }
+    expect(denied.cause).toMatchObject({ code: "42501" });
+    expect(denied.cause.message).toContain("row-level security");
     expect(await withSerializableAgentTrustContext(trust, (tx) => tx.execute(sql`UPDATE memory_review_receipts SET delivered=0 WHERE owner_id=${userId}::uuid`)).then(() => false, () => true)).toBe(true);
     expect(await withSerializableAgentTrustContext(trust, (tx) => tx.execute(sql`SELECT email FROM users WHERE id=${userId}::uuid`)).then(() => false, () => true)).toBe(true);
   });

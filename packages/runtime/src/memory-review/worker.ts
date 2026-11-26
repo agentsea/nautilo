@@ -24,8 +24,6 @@ import { runBackgroundModelInvocation } from "../background-processing/model-inv
 export interface MemoryReviewClaim {
   workId: string;
   attemptId: string;
-  priorAttemptIds?: readonly string[];
-  knownNonusableAttemptIds?: readonly string[];
   modelRecovery?: "authorized" | "spent";
   ownerId: string;
   actorId: string;

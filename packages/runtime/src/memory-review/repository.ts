@@ -3,7 +3,7 @@ import { AIMessage, HumanMessage, SystemMessage, ToolMessage, type BaseMessage }
 import {
   and, asc, desc, lt, eq, inArray, isNull, sql, getSharedDirectDb, memoryReviewTurns, acquireRoomWriteLock,
   memoryReviewModelRecoveries, memoryReviewReceipts, sessionMessages, users,
-  hasSettledServiceMemoryReview, resolveModelAttemptReplaySafety,
+  hasSettledServiceMemoryReview, KNOWN_NONUSABLE_MEMORY_REVIEW_FAILURES, resolveModelAttemptReplaySafety,
   type DirectDatabase,
 } from "@nautilo/db";
 import {
@@ -25,8 +25,6 @@ type Turn = typeof memoryReviewTurns.$inferSelect;
 type Source = typeof sessionMessages.$inferSelect;
 type Tx = Parameters<Parameters<DirectDatabase["transaction"]>[0]>[0];
 
-const KNOWN_NONUSABLE_MODEL_FAILURES = ["invalid_proposal", "iteration_exhausted"] as const;
-
 /** Completed prefix only: a paused lower fork prevents later coverage. */
 export function selectMemoryReviewPrefix(turns: readonly Turn[], threshold: number): Turn[] {
   const selected: Turn[] = [];
@@ -40,24 +38,6 @@ export function selectMemoryReviewPrefix(turns: readonly Turn[], threshold: numb
     if (completedHumans >= threshold) return selected;
   }
   return [];
-}
-
-export function classifyPriorMemoryReviewAttempts(turns: readonly Turn[]): Readonly<{
-  attemptIds: readonly string[];
-  knownNonusableAttemptIds: readonly string[];
-}> {
-  const attempts = new Map<string, boolean>();
-  for (const turn of turns) {
-    if (!turn.attemptId) continue;
-    const knownNonusable = turn.failurePhase === "model" && turn.failureCode !== null
-      && (KNOWN_NONUSABLE_MODEL_FAILURES as readonly string[]).includes(turn.failureCode);
-    attempts.set(turn.attemptId, (attempts.get(turn.attemptId) ?? true) && knownNonusable);
-  }
-  return {
-    attemptIds: [...attempts.keys()],
-    knownNonusableAttemptIds: [...attempts]
-      .flatMap(([attemptId, knownNonusable]) => knownNonusable ? [attemptId] : []),
-  };
 }
 
 type MemoryReviewModelRecoveryRequest = Readonly<{
@@ -243,7 +223,6 @@ export class PostgresMemoryReviewRepository implements MemoryReviewRepository {
       // receipt before reading content or invoking a model, including uncertain
       // attempts left by older servers without a reconciliation retry time.
       const attemptId = randomUUID();
-      const priorAttempts = classifyPriorMemoryReviewAttempts(prefix);
       const leaseUntil = new Date(now.getTime() + this.policy.leaseMs);
       const turnIds = prefix.map((turn) => turn.id);
       await tx.update(memoryReviewTurns).set({
@@ -258,9 +237,6 @@ export class PostgresMemoryReviewRepository implements MemoryReviewRepository {
       }
       return { workId: head.generationId, attemptId,
         ...(recovery ? { modelRecovery: recovering ? "authorized" : "spent" } : {}),
-        ...(priorAttempts.attemptIds.length > 0 ? { priorAttemptIds: priorAttempts.attemptIds } : {}),
-        ...(priorAttempts.knownNonusableAttemptIds.length > 0
-          ? { knownNonusableAttemptIds: priorAttempts.knownNonusableAttemptIds } : {}),
         ownerId: head.ownerId, actorId: head.actorId,
         agentId: head.agentId, roomId: head.roomId, threadId: head.threadId,
         scopeId: head.accessScope === "namespace" ? null : head.accessScope,
@@ -314,34 +290,11 @@ export class PostgresMemoryReviewRepository implements MemoryReviewRepository {
       return head?.recoveryAttemptId === claim.attemptId && modelId !== null
         && await hasSettledServiceMemoryReview({ ...claim, modelId }, this.db) ? "allow" : "block_unknown";
     }
-    const durableKnownNonusable = await this.db.select({ id: memoryReviewReceipts.id })
-      .from(memoryReviewReceipts).where(and(
-        eq(memoryReviewReceipts.workId, claim.workId),
-        eq(memoryReviewReceipts.outcome, "failed"),
-        eq(memoryReviewReceipts.phase, "model"),
-        inArray(memoryReviewReceipts.code, [...KNOWN_NONUSABLE_MODEL_FAILURES]),
-      ));
-    // Turn rows retain only the latest attempt pointer. Failed receipts retain
-    // the exact unusable-result proof across later manual retries; the row
-    // classification remains a fallback for pre-receipt/legacy state.
-    const rowKnownNonusable = new Set(claim.knownNonusableAttemptIds ?? []);
-    const exactKnownNonusableAttemptIds = [...new Set([
-      ...durableKnownNonusable.map((receipt) => receipt.id),
-      ...(claim.priorAttemptIds ?? []).filter((attemptId) => rowKnownNonusable.has(attemptId)),
-    ])];
-    // A lease rotation or source append can discard a turn's previous attempt
-    // pointer. The work identity still owns those provider outcomes.
-    const unaccounted = await resolveModelAttemptReplaySafety({
+    // The work identity owns wire history, even after a turn's attempt changes.
+    const replay = await resolveModelAttemptReplaySafety({
       kind: "memory_review", roomId: claim.roomId, workId: claim.workId,
-      attemptIds: exactKnownNonusableAttemptIds, match: "except",
     }, { db: this.db });
-    if (unaccounted.decision === "block_unknown") return "block_unknown";
-    if (exactKnownNonusableAttemptIds.length === 0) return "allow";
-    const known = await resolveModelAttemptReplaySafety({
-      kind: "memory_review", roomId: claim.roomId, workId: claim.workId,
-      attemptIds: exactKnownNonusableAttemptIds,
-    }, { db: this.db, knownNonusableResult: true });
-    return known.decision;
+    return replay.decision;
   }
 
   private async envelope(claim: MemoryReviewClaim): Promise<MemoryAccessEnvelope> {
@@ -614,7 +567,7 @@ export class PostgresMemoryReviewRepository implements MemoryReviewRepository {
             OR (t.generation_id=r.work_id AND (
               t.failure_code='publication_uncertain'
               OR (t.receipt_id IS NULL AND r.outcome='failed' AND r.phase='model'
-                AND r.code=ANY(${sql.param([...KNOWN_NONUSABLE_MODEL_FAILURES])}::text[]))
+                AND r.code=ANY(${sql.param([...KNOWN_NONUSABLE_MEMORY_REVIEW_FAILURES])}::text[]))
             )))
         ORDER BY r.created_at LIMIT ${this.policy.retentionBatchSize}
       ) DELETE FROM memory_review_receipts WHERE id IN (SELECT id FROM retired)`);
