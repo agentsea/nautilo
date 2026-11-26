@@ -209,8 +209,8 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   database role in-process on the instance's published port, with the same
   credentialed and fail-closed checks.
 - `server-start` waits for a slow first boot while the server process is
-  alive, fails at once if it exits, and no longer leaves a booting server
-  running after a timeout.
+  alive, fails at once if it exits, and no longer leaves a booting server,
+  or a launcher that would start one later, running after a timeout.
 - `nautilo setup` and other configuration writes check an OpenAI-compatible
   gateway key against `GET <NAUTILO_GATEWAY_BASE_URL>/models` instead of
   rejecting it as an unknown provider. A gateway that serves its model list

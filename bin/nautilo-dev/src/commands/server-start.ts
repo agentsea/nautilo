@@ -40,6 +40,13 @@ const HEALTH_POLL_MS = 250;
  */
 export const HEALTH_WAIT_MS = 180_000;
 const HEALTH_PROBE_TIMEOUT_MS = 2_000;
+/**
+ * How long a launcher stopped at the deadline gets to deliver a PID line it
+ * had already written. Stopping it ends its stdout, so the wait normally
+ * ends at once; the bound only covers a pipe that some other process holds
+ * open.
+ */
+const LAUNCHER_STOP_SETTLE_MS = 400;
 
 const SERVER_ENTRY = resolve(import.meta.dirname, "../../../nautilo-server/src/index.ts");
 
@@ -279,6 +286,38 @@ export function readDaemonLauncherPid(
   });
 }
 
+/** A started `--daemon` launcher: its PID report and a way to stop it. */
+export interface DaemonLaunch {
+  /**
+   * Resolves the detached server's PID once the launcher reports it (null:
+   * the launcher exited cleanly without one) and rejects when the launcher
+   * itself fails.
+   */
+  pid: Promise<number | null>;
+  /**
+   * Stop a launcher that is still running, so it cannot start a server after
+   * `server:start` has given up. No effect on a launcher that has exited.
+   */
+  cancel: () => void;
+}
+
+/** Observe a spawned launcher process and keep the handle that stops it. */
+export function daemonLaunchFrom(
+  launcher: DaemonLauncherProcess & { kill(signal?: NodeJS.Signals): boolean },
+): DaemonLaunch {
+  return {
+    pid: readDaemonLauncherPid(launcher),
+    cancel: () => {
+      try {
+        // The launcher holds no state of its own; it only starts the server.
+        launcher.kill("SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    },
+  };
+}
+
 function parsePidFromFileContent(raw: string): number | null {
   const n = Number.parseInt(raw.trim(), 10);
   return Number.isFinite(n) && n > 0 ? n : null;
@@ -343,12 +382,13 @@ export interface ServerStartDeps {
   removePidFile: () => void;
   isProcessAlive: (pid: number) => boolean;
   /**
-   * Launch `nautilo-server --daemon`. The promise resolves the detached
-   * server's PID once the launcher reports it (null or no promise: unknown)
-   * and rejects when the launcher itself fails. With the PID a server that
-   * dies during boot fails fast and one that never becomes ready is stopped.
+   * Launch `nautilo-server --daemon`. The returned launch reports the
+   * detached server's PID (nothing returned: unknown). With the PID a server
+   * that dies during boot fails fast and one that never becomes ready is
+   * stopped; a launcher that has not reported by the deadline is stopped
+   * through the same handle.
    */
-  spawnDaemon: () => Promise<number | null> | void;
+  spawnDaemon: () => DaemonLaunch | void;
   fetchHealth: () => Promise<{ ok: boolean; status?: string }>;
   /**
    * Returns the PID listening on the configured port, or null. Used to
@@ -456,13 +496,20 @@ export async function runServerStart(deps: ServerStartDeps): Promise<number> {
   // server that is still booting. The launcher's report is collected while
   // the loop polls rather than awaited, so a launcher that never reports
   // cannot outlast the deadline.
-  const launch: { pid: number | null; failure: string | null } = { pid: null, failure: null };
-  void Promise.resolve(deps.spawnDaemon()).then(
+  const launch: { pid: number | null; failure: string | null; reported: boolean } = {
+    pid: null,
+    failure: null,
+    reported: false,
+  };
+  const daemon = deps.spawnDaemon() ?? null;
+  const launcherReport = (daemon?.pid ?? Promise.resolve(null)).then(
     (pid) => {
-      launch.pid = pid ?? null;
+      launch.pid = pid;
+      launch.reported = true;
     },
     (err: unknown) => {
       launch.failure = err instanceof Error ? err.message : String(err);
+      launch.reported = true;
     },
   );
 
@@ -488,6 +535,17 @@ export async function runServerStart(deps: ServerStartDeps): Promise<number> {
       return 1;
     }
     await deps.sleep(HEALTH_POLL_MS);
+  }
+
+  if (daemon !== null && !launch.reported) {
+    // A launcher that is still running would start the server after this
+    // command has reported failure. Stop it, then give a PID line it wrote
+    // just before a moment to arrive, so that server is stopped below.
+    daemon.cancel();
+    await Promise.race([launcherReport, deps.sleep(LAUNCHER_STOP_SETTLE_MS)]);
+    deps.warn(
+      "[server:start] the daemon launcher had not reported a server by the deadline and was stopped",
+    );
   }
 
   const pidToKill = deps.readPidFile() ?? launch.pid;
@@ -671,7 +729,7 @@ export async function serverStart(options: ServerStartOptions = {}): Promise<num
         env: daemonEnv,
       });
       child.unref();
-      return readDaemonLauncherPid(child);
+      return daemonLaunchFrom(child);
     },
     fetchHealth: () => fetchServerHealth(healthUrl),
     log: (s) => {

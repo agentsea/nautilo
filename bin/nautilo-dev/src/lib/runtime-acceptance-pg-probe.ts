@@ -17,6 +17,14 @@ import postgres from "postgres";
  */
 const AUTHORITATIVE_PG_CONNECT_TIMEOUT_S = 30;
 
+/**
+ * Bounds closing one probe's connection (seconds). The driver otherwise waits
+ * until the server closes the socket, so a server that stops answering after
+ * the probe's verdict would hold up the readiness check. The verdict is
+ * already final when the connection is closed.
+ */
+const AUTHORITATIVE_PG_END_TIMEOUT_S = 5;
+
 export type AuthoritativePasswordEnv =
   | "NAUTILO_DB_PASSWORD"
   | "NAUTILO_AGENT_DB_PASSWORD"
@@ -84,7 +92,13 @@ export function buildLocalPostgresProbeSpecs(port: number): {
   };
 }
 
-const defaultLocalPostgresProbeConnect: LocalPostgresProbeConnect = (options) => {
+/**
+ * The driver-backed probe connection. `endTimeoutSeconds` bounds its close;
+ * tests shorten it.
+ */
+export const localPostgresProbeConnect = (
+  endTimeoutSeconds: number = AUTHORITATIVE_PG_END_TIMEOUT_S,
+): LocalPostgresProbeConnect => (options) => {
   const sql = postgres({
     ...options,
     max: 1,
@@ -96,9 +110,11 @@ const defaultLocalPostgresProbeConnect: LocalPostgresProbeConnect = (options) =>
   return {
     query: async (text, params) =>
       [...(await sql.unsafe(text, [...params], { prepare: true }))] as Array<Record<string, unknown>>,
-    close: () => sql.end(),
+    close: () => sql.end({ timeout: endTimeoutSeconds }),
   };
 };
+
+const defaultLocalPostgresProbeConnect = localPostgresProbeConnect();
 
 /**
  * Run one wire probe and report it in the gate's exec-result shape. Nonzero

@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { createServer, type AddressInfo, type Socket } from "node:net";
 import { __resetResolvedInstanceForTests, resolveInstance } from "@nautilo/config";
 import {
   buildAuthoritativeTargets,
@@ -13,6 +14,7 @@ import {
 } from "../../src/lib/verify";
 import {
   buildLocalPostgresProbeSpecs,
+  localPostgresProbeConnect,
   runLocalPostgresProbe,
 } from "../../src/lib/runtime-acceptance-pg-probe";
 import {
@@ -224,6 +226,65 @@ describe("D427 dev:verify — buildAuthoritativeTargets", () => {
     );
     expect(result.code).toBe(1);
   });
+
+  test("real sockets: a server that never closes its side cannot hold up probe cleanup", async () => {
+    // Speaks just enough of the PostgreSQL wire protocol to accept the
+    // session and answer every query with zero rows, and keeps its half of
+    // the socket open after the client hangs up. The driver's close waits
+    // for the socket to close, so only the cleanup bound lets the probe
+    // return.
+    const message = (type: string, body: Buffer = Buffer.alloc(0)): Buffer => {
+      const length = Buffer.alloc(4);
+      length.writeInt32BE(body.length + 4);
+      return Buffer.concat([Buffer.from(type), length, body]);
+    };
+    const readyForQuery = message("Z", Buffer.from("I"));
+    const commandComplete = message("C", Buffer.from("SELECT 0\0"));
+    const replies: Record<string, Buffer> = {
+      P: message("1"), // Parse -> ParseComplete
+      D: Buffer.concat([message("t", Buffer.alloc(2)), message("n")]), // Describe -> no parameters, NoData
+      B: message("2"), // Bind -> BindComplete
+      E: commandComplete, // Execute
+      S: readyForQuery, // Sync
+      Q: Buffer.concat([commandComplete, readyForQuery]), // simple Query
+    };
+    const sockets: Socket[] = [];
+    const server = createServer({ allowHalfOpen: true }, (socket) => {
+      sockets.push(socket);
+      let started = false;
+      let pending = Buffer.alloc(0);
+      socket.on("error", () => {});
+      socket.on("data", (chunk) => {
+        if (!started) {
+          // The startup message; AuthenticationOk needs no password exchange.
+          started = true;
+          socket.write(Buffer.concat([message("R", Buffer.alloc(4)), readyForQuery]));
+          return;
+        }
+        pending = Buffer.concat([pending, chunk]);
+        while (pending.length >= 5 && pending.length >= 1 + pending.readInt32BE(1)) {
+          const reply = replies[String.fromCharCode(pending[0]!)];
+          if (reply) socket.write(reply);
+          pending = pending.subarray(1 + pending.readInt32BE(1));
+        }
+      });
+    });
+    await new Promise<void>((resolveListen) => server.listen(0, "127.0.0.1", resolveListen));
+    try {
+      const { port } = server.address() as AddressInfo;
+      const startedAt = Date.now();
+      const result = await runLocalPostgresProbe(
+        buildLocalPostgresProbeSpecs(port).direct,
+        { NAUTILO_AGENT_DB_PASSWORD: "pw-agent" },
+        localPostgresProbeConnect(0.2),
+      );
+      expect(result).toEqual({ code: 1, stderr: `unexpected probe result from 127.0.0.1:${port}` });
+      expect(Date.now() - startedAt).toBeLessThan(4_000);
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      server.close();
+    }
+  }, 30_000);
 
   test("probe transport selects canonical file credentials over ambient drift", () => {
     const root = mkdtempSync(join(tmpdir(), "nautilo-verify-env-"));

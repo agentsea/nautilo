@@ -224,8 +224,8 @@ export function buildAuthoritativeTargets(
 
   // App-role connection probes authenticate each runtime role over the
   // host-published port. The direct wire probe repeats the agent role with a
-  // bound parameter (M215), which catches auth/port mismatches a bare
-  // SELECT 1 might miss.
+  // prepared statement and one bound parameter, verifying that the port
+  // answers the extended query protocol the runtime pools use.
   const specs = buildLocalPostgresProbeSpecs(dbPort);
   const appRoleProbes = specs.appRoles.map((spec) => ({
     role: spec.role,

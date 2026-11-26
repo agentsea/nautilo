@@ -9,12 +9,14 @@ import {
   buildServerDaemonEnv,
   checkFirstPartyAppPrerequisitesForServerStart,
   checkWorkbenchDistForServerStart,
+  daemonLaunchFrom,
   fetchServerHealth,
   HEALTH_WAIT_MS,
   parseDaemonLauncherPid,
   readDaemonLauncherPid,
   runServerStart,
   serverDaemonEnv,
+  type DaemonLaunch,
   type ServerStartDeps,
 } from "../../src/commands/server-start";
 import { runServerStop, type ServerStopDeps } from "../../src/commands/server-stop";
@@ -316,7 +318,7 @@ describe("runServerStart", () => {
       writePidFile: () => {},
       removePidFile: () => {},
       isProcessAlive: (pid) => pid === 4242,
-      spawnDaemon: () => Promise.resolve(4242),
+      spawnDaemon: () => ({ pid: Promise.resolve(4242), cancel: () => {} }),
       fetchHealth: async () => ({ ok: false }),
       findListenerPid: () => null,
       looksLikeNautiloServer: () => false,
@@ -381,7 +383,10 @@ describe("runServerStart", () => {
     const clock = { t: 0 };
     const warnings: string[] = [];
     const deps = bootDeps(clock, {
-      spawnDaemon: () => Promise.reject(new Error("daemon launcher exited with code 3")),
+      spawnDaemon: () => ({
+        pid: Promise.reject(new Error("daemon launcher exited with code 3")),
+        cancel: () => {},
+      }),
       warn: (s) => { warnings.push(s); },
     });
     expect(await runServerStart(deps)).toBe(1);
@@ -392,16 +397,86 @@ describe("runServerStart", () => {
   test("a launcher that never reports cannot outlast the deadline", async () => {
     const clock = { t: 0 };
     const warnings: string[] = [];
+    let cancelled = 0;
     const deps = bootDeps(clock, {
-      spawnDaemon: () => new Promise<number | null>(() => {}),
+      spawnDaemon: () => ({
+        pid: new Promise<number | null>(() => {}),
+        cancel: () => { cancelled += 1; },
+      }),
       warn: (s) => { warnings.push(s); },
     });
     expect(await runServerStart(deps)).toBe(1);
     expect(clock.t).toBeGreaterThanOrEqual(HEALTH_WAIT_MS);
+    expect(cancelled).toBe(1);
     expect(warnings).toEqual([
+      "[server:start] the daemon launcher had not reported a server by the deadline and was stopped",
       `[server:start] timed out after ${HEALTH_WAIT_MS}ms waiting for ${paths.serverUrl}/health (see ${paths.logPath})`,
     ]);
   });
+
+  test("a launcher that has reported its server is not cancelled at the deadline", async () => {
+    const clock = { t: 0 };
+    let cancelled = 0;
+    const deps = bootDeps(clock, {
+      spawnDaemon: () => ({ pid: Promise.resolve(4242), cancel: () => { cancelled += 1; } }),
+      killPid: () => {},
+    });
+    expect(await runServerStart(deps)).toBe(1);
+    expect(cancelled).toBe(0);
+  });
+
+  test("a server the launcher reports while it is being stopped is stopped too", async () => {
+    // The launcher started the server just before the deadline; its PID line
+    // arrives only once the launcher is stopped.
+    const clock = { t: 0 };
+    const kills: { pid: number; signal: NodeJS.Signals }[] = [];
+    let report: (pid: number) => void = () => {};
+    const deps = bootDeps(clock, {
+      spawnDaemon: () => ({
+        pid: new Promise<number | null>((resolvePid) => { report = resolvePid; }),
+        cancel: () => { report(4242); },
+      }),
+      killPid: (pid, signal) => { kills.push({ pid, signal }); },
+    });
+    expect(await runServerStart(deps)).toBe(1);
+    expect(kills).toEqual([
+      { pid: 4242, signal: "SIGTERM" },
+      { pid: 4242, signal: "SIGKILL" },
+    ]);
+  });
+
+  test("real processes: a launcher still running at the deadline is stopped and starts no server later", async () => {
+    // The launcher reports its server only after a delay, far beyond the
+    // fake clock's deadline. Left running, it would start the server after
+    // server:start has already reported the failure.
+    const launcherScript = [
+      "setTimeout(() => {",
+      '  const { spawn } = require("node:child_process");',
+      '  const server = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { detached: true, stdio: "ignore" });',
+      "  server.unref();",
+      "  console.log(`[daemon] started, pid=${server.pid}`);",
+      "  process.exit(0);",
+      "}, 1500);",
+    ].join("\n");
+    const clock = { t: 0 };
+    let launch: DaemonLaunch | undefined;
+    const deps = bootDeps(clock, {
+      spawnDaemon: () => {
+        launch = daemonLaunchFrom(
+          spawn(process.execPath, ["-e", launcherScript], { stdio: ["ignore", "pipe", "ignore"] }),
+        );
+        return launch;
+      },
+    });
+    expect(await runServerStart(deps)).toBe(1);
+    // Settles when the launcher is gone: a number would be a started server.
+    const outcome = await launch!.pid.catch(() => null);
+    try {
+      expect(outcome).toBeNull();
+    } finally {
+      if (outcome !== null) process.kill(outcome);
+    }
+  }, 30_000);
 });
 
 describe("daemon launcher PID", () => {
