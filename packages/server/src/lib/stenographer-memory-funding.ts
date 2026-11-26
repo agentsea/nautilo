@@ -174,7 +174,12 @@ export function createStenographerMemoryFunding(input: Common) {
         roomId: claim.roomId,
         callType: "room_stenographer",
         operationId: operationKey,
-      }, { db: input.db });
+      }, {
+        db: input.db,
+        knownNonusableResult:
+          "batchId" in claim
+          && claim.previousModelResultKnownNonusable === true,
+      });
       if (replaySafety.decision === "block_unknown") {
         throw new MemoryProviderOutcomeUnknownError();
       }

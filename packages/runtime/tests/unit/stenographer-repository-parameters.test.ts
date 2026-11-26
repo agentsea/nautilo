@@ -1037,8 +1037,9 @@ describe("stenographer postgres-js parameters", () => {
     ).toBe(false);
   });
 
-  test("historical claims use their own durable cursor and lane", async () => {
+  test("historical claims retain their durable cursor, lane, and known-nonusable proof", async () => {
     const roomId = "44444444-4444-4444-8444-444444444444";
+    const batchId = "33333333-3333-4333-8333-333333333333";
     const queries: SQL[] = [];
     const executeResponses: unknown[] = [
       [],
@@ -1057,9 +1058,11 @@ describe("stenographer postgres-js parameters", () => {
         stenographer_prior_conversation_limit: 10,
         prior_context_floor_message_id: 0,
         has_agent: true,
-        upper_bound_message_id: 20,
-        replay_batch_status: null,
-        replay_through_message_id: null,
+        upper_bound_message_id: 11,
+        replay_batch_id: batchId,
+        replay_batch_status: "failed",
+        replay_batch_error_code: "invalid_output",
+        replay_through_message_id: 11,
       }],
       [{
         id: 11,
@@ -1101,7 +1104,7 @@ describe("stenographer postgres-js parameters", () => {
       selectDistinct: scriptedSelect(selectResponses),
       insert: () => resultBuilder(
         () => [{
-          id: "33333333-3333-4333-8333-333333333333",
+          id: batchId,
           attempt_count: 1,
         }],
         (value) => insertedValues.push(value),
@@ -1125,6 +1128,7 @@ describe("stenographer postgres-js parameters", () => {
       now: NOW,
     });
     expect(claimed?.lane).toBe("historical");
+    expect(claimed?.previousModelResultKnownNonusable).toBeTrue();
     expect(claimed?.plan.fromMessageIdExclusive).toBe(10);
     expect(claimed?.plan.throughMessageIdInclusive).toBe(11);
     expect(claimed?.sourceRows[0]?.text).toBe("An old decision.");

@@ -441,6 +441,84 @@ describe("ordinary Stenographer Memory funding", () => {
     expect(uncertainState.updates).toHaveLength(0);
   });
 
+  test.each([
+    "openai:gpt-6-luna",
+    "venice:openai-gpt-56-luna",
+    "openrouter:minimax/minimax-m3",
+  ])("admits an exact known-nonusable extraction retry for %s", async (modelId) => {
+    const state = ordinaryExtractionDatabase(null, [{
+      id: "settled-provider-result",
+      attemptOutcome: "succeeded",
+      failureCode: null,
+      metadata: { operationId: BATCH },
+    }]);
+    const claim: ExtractionClaim = {
+      ...ordinaryExtractionClaim(null),
+      previousModelResultKnownNonusable: true,
+      visibleEvents: [],
+    };
+    const invocations: Array<Parameters<typeof createRoomSideModelInvoker>[0]> = [];
+    const runtime = createStenographerMemoryFunding({
+      db: state.db,
+      ports: {
+        readRecord: async () => null,
+        readSource: async () => ({
+          status: "current",
+          kind: "human",
+          authorHumanId: HUMAN,
+          audienceHumanIds: [HUMAN],
+          includesPublicBoundary: true,
+        }),
+        readAudience: async () => null,
+      },
+      budget: { maxVisitedRecords: 4, maxTraversalWork: 16 },
+      commitmentKey: new Uint8Array(32).fill(17),
+      resolveServiceModel: () => modelId,
+      assertAvailable: () => Promise.resolve(),
+      createInvoker: (options) => {
+        invocations.push(options);
+        return async () => "unused";
+      },
+    });
+
+    const admitted = await runtime.admitExtractionModel(
+      claim,
+      extractionModelExposureDependencies(claim),
+    );
+
+    expect(admitted.modelId).toBe(modelId);
+    expect(invocations).toHaveLength(1);
+    expect(invocations[0]).toMatchObject({ modelId, operationId: BATCH });
+    expect(state.authorityReads()).toBe(1);
+  });
+
+  test("keeps an uncertain wire outcome quarantined despite a known-nonusable claim", async () => {
+    const state = ordinaryExtractionDatabase(null, [{
+      id: "unsettled-provider-result",
+      attemptOutcome: "unknown",
+      failureCode: null,
+      metadata: { operationId: BATCH },
+    }]);
+    const claim: ExtractionClaim = {
+      ...ordinaryExtractionClaim(null),
+      previousModelResultKnownNonusable: true,
+    };
+
+    const result = await createStenographerMemoryFunding({
+      db: state.db,
+      ports: protectedEvidence,
+      budget: { maxVisitedRecords: 4, maxTraversalWork: 16 },
+      commitmentKey: new Uint8Array(32).fill(19),
+      resolveServiceModel: () => "openai:gpt-6-luna",
+      assertAvailable: () => Promise.resolve(),
+    }).admitExtractionModel(claim, extractionModelExposureDependencies(claim))
+      .catch((error: unknown) => error);
+
+    expect(result).toBeInstanceOf(MemoryProviderOutcomeUnknownError);
+    expect(state.authorityReads()).toBe(0);
+    expect(state.accepted()).toBeNull();
+  });
+
   test("freezes a personal compaction binding from exact current Human Record ancestry", async () => {
     const state = ordinaryCompactionDatabase();
     const claim = ordinaryCompactionClaim();

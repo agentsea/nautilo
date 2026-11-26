@@ -83,6 +83,8 @@ export interface ExtractionClaim {
   ownerId: string;
   leaseToken: string;
   attemptCount: number;
+  /** Durable job state proves the previous provider result was rejected before publication. */
+  previousModelResultKnownNonusable?: true;
   lane: "live" | "historical";
   plan: StenographerBatchPlan;
   /** Previously processed same-lane rows; context-only and never citable. */
@@ -180,6 +182,7 @@ interface StateRow {
   extraction_retry_after: string | Date | null;
   has_agent: boolean;
   upper_bound_message_id: number | string | null;
+  replay_batch_id: string | null;
   replay_batch_status: "completed" | "failed" | "running" | null;
   replay_batch_error_code: string | null;
   replay_through_message_id: number | string | null;
@@ -926,6 +929,7 @@ export async function tryClaimRoom(
             replay_batch.through_message_id_inclusive,
             ${pendingUpperBoundExpression}
           ) AS upper_bound_message_id,
+          replay_batch.id AS replay_batch_id,
           replay_batch.status AS replay_batch_status,
           replay_batch.error_code AS replay_batch_error_code,
           replay_batch.through_message_id_inclusive AS replay_through_message_id
@@ -933,6 +937,7 @@ export async function tryClaimRoom(
         INNER JOIN rooms r ON r.id = rjs.room_id
         LEFT JOIN LATERAL (
           SELECT
+            rjb.id,
             rjb.status,
             rjb.error_code,
             rjb.through_message_id_inclusive
@@ -1146,6 +1151,10 @@ export async function tryClaimRoom(
       });
     const batch = batchRows[0];
     if (!batch) throw new Error("journal batch upsert returned no row");
+    const previousModelResultKnownNonusable =
+      state.replay_batch_id === batch.id
+      && state.replay_batch_status === "failed"
+      && state.replay_batch_error_code === "invalid_output";
     const replaySafety = await resolveModelAttemptReplaySafety({
       kind: "operation",
       roomId,
@@ -1153,9 +1162,7 @@ export async function tryClaimRoom(
       operationId: batch.id,
     }, {
       db: tx,
-      knownNonusableResult:
-        state.replay_batch_status === "failed"
-        && state.replay_batch_error_code === "invalid_output",
+      knownNonusableResult: previousModelResultKnownNonusable,
     });
     if (replaySafety.decision === "block_unknown") {
       await tx.update(roomJournalBatches).set({
@@ -1196,6 +1203,9 @@ export async function tryClaimRoom(
       ownerId: state.owner_id,
       leaseToken,
       attemptCount: asNumber(batch.attempt_count),
+      ...(previousModelResultKnownNonusable
+        ? { previousModelResultKnownNonusable: true as const }
+        : {}),
       lane,
       plan,
       priorContextRows,
