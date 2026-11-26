@@ -9,14 +9,15 @@ export const SOURCE_ALARM_BASELINE = {
 // The complete immutable migration tree includes the reviewed protected-Task
 // persistence tail followed by the external operator transport, isolated
 // control storage, legacy audit archive, owner-deletion correction, and
-// destination-bound MindSwapper credential constraints. The
+// destination-bound MindSwapper credential constraints, the server-only Memory
+// review recovery receipt, and the Stenographer failure-vocabulary update. The
 // focused migration inventory pins the appended SQL bytes and proves the
 // current schema/snapshot pair remains structurally identical without a DB.
 export const MIGRATION_TREE_BASELINE = {
-  "migrations": 387,
-  "snapshots": 358,
-  "tip": 386,
-  "sha256": "3c1d9736f29ad582233443746d0dd647082e0be852033a697dd83e6ac7b3e74d"
+  "migrations": 389,
+  "snapshots": 360,
+  "tip": 388,
+  "sha256": "89be094bb98038234f9f4dc4bfe0409b629849f080532363a63bbec7d57784ba"
 } as const;
 
 /**
@@ -61,13 +62,17 @@ export const MIGRATION_TREE_BASELINE = {
 // Message-content boundary; only routing, isolation, and archive coordinates
 // are bounded metadata. The fixed restore fence remains the single additional
 // statically unresolved transport and has no caller-controlled SQL input.
+// Memory review recovery adds one server-only typed INSERT and two typed UPDATE
+// sites. They persist and consume only exact UUID review coordinates and
+// authorization/consumption timestamps; no review input or model output is
+// stored in the recovery receipt.
 export const DATABASE_WRITER_BASELINE = {
-  "count": 1667,
-  "insert": 534,
-  "update": 922,
+  "count": 1670,
+  "insert": 535,
+  "update": 924,
   "delete": 193,
   "unresolved": 18,
-  "sha256": "a1309da5cc48b967e0581e3a3b81ca32e33c0e87a14e66281680009e860446ff"
+  "sha256": "4ec83d472134ae57478c496647fbe306ffb9141ab5847c00f257c7e0cd95ab6f"
 } as const;
 
 /**

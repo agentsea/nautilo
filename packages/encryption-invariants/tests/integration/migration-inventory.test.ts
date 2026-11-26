@@ -34,6 +34,7 @@ const TABLES_ADDED_SINCE_THE_PRIOR_MIGRATION_ASSERTION = [
   "public.foreground_memory_crypto_publication_receipts",
   "public.group_moderation_scopes",
   "public.message_deletion_receipts",
+  "public.memory_review_model_recoveries",
   "public.moderation_actions",
   "public.moderation_restrictions",
   "public.moderation_subjects",
@@ -160,6 +161,17 @@ const IMMUTABLE_EXTERNAL_OPERATOR_MIGRATION_MANIFEST = [
   {
     path: "0385_operator_control_archive_cascade.sql",
     sha256: "80ff376b15d59816d08f95ef96733ab27e9f59abf8aed12daf80febbf755d091",
+  },
+] as const;
+
+const IMMUTABLE_MEMORY_RECOVERY_MIGRATION_MANIFEST = [
+  {
+    path: "0387_eminent_absorbing_man.sql",
+    sha256: "44d2c0041ce99a34e63733f9baba894d976b8f58ccff371e6eef56a2dcf55a72",
+  },
+  {
+    path: "0388_acoustic_lester.sql",
+    sha256: "25e107928a7960016bf5d97f25f311d10dff8e58b948a5ca50942fd5163a82ef",
   },
 ] as const;
 
@@ -293,11 +305,11 @@ describe("migration inventory", () => {
     expect(inventory.missingSnapshotIndices).toContain(6);
     expect(inventory.missingSnapshotIndices).toContain(118);
     expect(inventory.latestSnapshotIndex).toBe(MIGRATION_TREE_BASELINE.tip);
-    expect(inventory.currentTables).toHaveLength(241);
+    expect(inventory.currentTables).toHaveLength(242);
     const currentTableLocators = new Set(
       inventory.currentTables.map((table) => table.locator),
     );
-    expect(TABLES_ADDED_SINCE_THE_PRIOR_MIGRATION_ASSERTION).toHaveLength(29);
+    expect(TABLES_ADDED_SINCE_THE_PRIOR_MIGRATION_ASSERTION).toHaveLength(30);
     for (const locator of TABLES_ADDED_SINCE_THE_PRIOR_MIGRATION_ASSERTION) {
       expect(currentTableLocators).toContain(locator);
     }
@@ -308,8 +320,8 @@ describe("migration inventory", () => {
       schema: "public",
       name: "session_messages",
     });
-    expect(inventory.currentColumns).toHaveLength(3310);
-    expect(inventory.currentConstraints).toHaveLength(936);
+    expect(inventory.currentColumns).toHaveLength(3318);
+    expect(inventory.currentConstraints).toHaveLength(938);
     expect(inventory.currentConstraints).toContainEqual({
       locator: "public.actors#foreign_key:actors_owner_id_users_id_fk",
       tableLocator: "public.actors",
@@ -321,7 +333,7 @@ describe("migration inventory", () => {
       onDelete: "cascade",
       onUpdate: "no action",
     });
-    expect(inventory.historicalCreatedTables).toHaveLength(257);
+    expect(inventory.historicalCreatedTables).toHaveLength(258);
     expect(inventory.historicalDroppedTables).toEqual([
       "public.collaboration_sessions",
       "public.grant_domain_envelope_acknowledgements",
@@ -511,10 +523,10 @@ describe("migration inventory", () => {
     expect(inventory.migrations.every((migration) => !migration.path.startsWith("/")))
       .toBe(true);
     expect(inventory.migrations.at(-1)).toEqual({
-      index: 385,
-      tag: "0385_operator_control_archive_cascade",
-      path: "0385_operator_control_archive_cascade.sql",
-      sha256: "80ff376b15d59816d08f95ef96733ab27e9f59abf8aed12daf80febbf755d091",
+      index: 388,
+      tag: "0388_acoustic_lester",
+      path: "0388_acoustic_lester.sql",
+      sha256: "25e107928a7960016bf5d97f25f311d10dff8e58b948a5ca50942fd5163a82ef",
     });
 
     const comparison = compareSchemaAndMigrationInventory(
@@ -557,10 +569,20 @@ describe("migration inventory", () => {
       path: migration.path,
       sha256: migration.sha256,
     }))).toEqual([...IMMUTABLE_EXTERNAL_OPERATOR_MIGRATION_MANIFEST]);
-    expect(inventory.migrations.at(-1)).toMatchObject({
+    expect(inventory.migrations[385]).toMatchObject({
       index: 385,
       tag: "0385_operator_control_archive_cascade",
     });
+  });
+
+  test("pins the Memory recovery and failure-vocabulary migrations without a DB", () => {
+    const directory = resolve(import.meta.dir, "../../../db/src/migrations");
+    const inventory = inventoryMigrationTree(directory);
+
+    expect(inventory.migrations.slice(387, 389).map((migration) => ({
+      path: migration.path,
+      sha256: migration.sha256,
+    }))).toEqual([...IMMUTABLE_MEMORY_RECOVERY_MIGRATION_MANIFEST]);
   });
 
   test("allows intentionally missing intermediate snapshots and paths containing spaces", () => {
