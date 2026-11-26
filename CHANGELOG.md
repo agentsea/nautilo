@@ -285,8 +285,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   database role in-process on the instance's published port, with the same
   credentialed and fail-closed checks.
 - `server-start` waits for a slow first boot while the server process is
-  alive, fails at once if it exits, and no longer leaves a booting server,
-  or a launcher that would start one later, running after a timeout.
+  alive, fails at once if it exits, and no longer leaves a booting server
+  running after a timeout: it starts the server process itself and holds its
+  PID from the start.
 - On Windows, private file operations name the required PowerShell 7 location
   when `pwsh.exe` is not there, instead of failing with only "Private
   filesystem operation failed". A Microsoft Store installation is not at that

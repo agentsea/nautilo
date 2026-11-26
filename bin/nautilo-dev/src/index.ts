@@ -168,7 +168,7 @@ Commands:
                                     flags: --with-volumes
   infra-status                      M051: report container + service-probe state
                                     of every infrastructure dependency.
-  server-start [flags]              M100: start bin/nautilo-server --daemon for this
+  server-start [flags]              M100: start bin/nautilo-server detached for this
                                     instance (PID + logs under ~/.nautilo*; idempotent).
                                     If a foreign Nautilo server is already listening
                                     (no PID file, e.g. from 'bun run server'), claims

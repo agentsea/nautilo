@@ -1,6 +1,8 @@
 /**
- * M100 Phase 3 — thin wrapper around `bin/nautilo-server --daemon` (PID +
- * logs + health wait). Does not fork a third daemon implementation.
+ * M100 Phase 3 — thin wrapper that starts `bin/nautilo-server` as a detached
+ * process (PID + logs + health wait). It starts the server itself instead of
+ * going through the server's `--daemon` launcher, so it holds the server's
+ * PID from the moment the process exists.
  */
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
@@ -40,13 +42,6 @@ const HEALTH_POLL_MS = 250;
  */
 export const HEALTH_WAIT_MS = 180_000;
 const HEALTH_PROBE_TIMEOUT_MS = 2_000;
-/**
- * How long a launcher stopped at the deadline gets to deliver a PID line it
- * had already written. Stopping it ends its stdout, so the wait normally
- * ends at once; the bound only covers a pipe that some other process holds
- * open.
- */
-const LAUNCHER_STOP_SETTLE_MS = 400;
 
 const SERVER_ENTRY = resolve(import.meta.dirname, "../../../nautilo-server/src/index.ts");
 
@@ -224,98 +219,34 @@ export function buildServerDaemonEnv(params: {
 }
 
 /**
- * Extract the detached server PID from the `--daemon` launcher's stdout. Only
- * a complete line counts, so a chunk that ends inside the number is not read
- * as a shorter PID.
+ * Start the server as a detached process and return its PID. The PID is
+ * known as soon as the process exists, so no stretch of the boot is left in
+ * which a server runs that this command cannot stop.
+ *
+ * This is what `nautilo-server --daemon` does for its own child: the same
+ * arguments without the flag, no stdio, and the marker that tells the server
+ * it already is the daemon. The server writes its own log file.
  */
-export function parseDaemonLauncherPid(output: string): number | null {
-  const match = /\[daemon\] started, pid=(\d+)\r?\n/.exec(output);
-  if (!match?.[1]) return null;
-  const pid = Number.parseInt(match[1], 10);
-  return Number.isSafeInteger(pid) && pid > 0 ? pid : null;
-}
-
-/** The part of the launcher child process readDaemonLauncherPid observes. */
-interface DaemonLauncherProcess {
-  stdout: NodeJS.ReadableStream | null;
-  once(event: "error", listener: (err: Error) => void): unknown;
-  once(event: "exit", listener: (code: number | null) => void): unknown;
-}
-
-/**
- * Resolve the server PID as soon as the launcher prints it. It does not wait
- * for the launcher's stdout to close: a detached server that inherited the
- * pipe would keep it open for its whole life. A launcher that exits without a
- * PID resolves null on a clean exit and rejects on a failed one.
- */
-export function readDaemonLauncherPid(
-  launcher: DaemonLauncherProcess,
-): Promise<number | null> {
-  return new Promise((resolvePid, rejectPid) => {
-    const { stdout } = launcher;
-    let output = "";
-    let ended = stdout === null;
-    let exitCode: number | null | undefined;
-    // Without a PID the verdict needs both the exit code and the end of
-    // stdout, which arrive in either order.
-    const settleWithoutPid = (): void => {
-      if (!ended || exitCode === undefined) return;
-      if (exitCode === 0) resolvePid(null);
-      else rejectPid(new Error(`daemon launcher exited with code ${String(exitCode)}`));
-    };
-    launcher.once("error", rejectPid);
-    launcher.once("exit", (code) => {
-      exitCode = code;
-      settleWithoutPid();
-    });
-    if (stdout === null) return;
-    stdout.setEncoding("utf8");
-    stdout.on("data", (chunk: string) => {
-      output += chunk;
-      const pid = parseDaemonLauncherPid(output);
-      if (pid === null) return;
-      resolvePid(pid);
-      // Release the pipe so a server that inherited it cannot hold this
-      // process open.
-      (stdout as { destroy?: () => void }).destroy?.();
-    });
-    stdout.on("end", () => {
-      ended = true;
-      settleWithoutPid();
-    });
+export function spawnDetachedServer(params: {
+  entry: string;
+  args: readonly string[];
+  env: NodeJS.ProcessEnv;
+  cwd?: string;
+}): number {
+  const child = spawn(process.execPath, [params.entry, ...params.args], {
+    cwd: params.cwd ?? process.cwd(),
+    stdio: "ignore",
+    detached: true,
+    env: { ...params.env, NAUTILO_DAEMON_CHILD: "1" },
   });
-}
-
-/** A started `--daemon` launcher: its PID report and a way to stop it. */
-export interface DaemonLaunch {
-  /**
-   * Resolves the detached server's PID once the launcher reports it (null:
-   * the launcher exited cleanly without one) and rejects when the launcher
-   * itself fails.
-   */
-  pid: Promise<number | null>;
-  /**
-   * Stop a launcher that is still running, so it cannot start a server after
-   * `server:start` has given up. No effect on a launcher that has exited.
-   */
-  cancel: () => void;
-}
-
-/** Observe a spawned launcher process and keep the handle that stops it. */
-export function daemonLaunchFrom(
-  launcher: DaemonLauncherProcess & { kill(signal?: NodeJS.Signals): boolean },
-): DaemonLaunch {
-  return {
-    pid: readDaemonLauncherPid(launcher),
-    cancel: () => {
-      try {
-        // The launcher holds no state of its own; it only starts the server.
-        launcher.kill("SIGKILL");
-      } catch {
-        /* already gone */
-      }
-    },
-  };
+  // A failed spawn reports through this event as well; without a listener it
+  // would end this process instead of the error below.
+  child.once("error", () => {});
+  child.unref();
+  if (child.pid === undefined) {
+    throw new Error("the server process could not be started");
+  }
+  return child.pid;
 }
 
 function parsePidFromFileContent(raw: string): number | null {
@@ -382,13 +313,12 @@ export interface ServerStartDeps {
   removePidFile: () => void;
   isProcessAlive: (pid: number) => boolean;
   /**
-   * Launch `nautilo-server --daemon`. The returned launch reports the
-   * detached server's PID (nothing returned: unknown). With the PID a server
+   * Start the detached server and return its PID (nothing returned:
+   * unknown); throws when no process could be started. With the PID a server
    * that dies during boot fails fast and one that never becomes ready is
-   * stopped; a launcher that has not reported by the deadline is stopped
-   * through the same handle.
+   * stopped.
    */
-  spawnDaemon: () => DaemonLaunch | void;
+  spawnDaemon: () => number | void;
   fetchHealth: () => Promise<{ ok: boolean; status?: string }>;
   /**
    * Returns the PID listening on the configured port, or null. Used to
@@ -492,26 +422,17 @@ export async function runServerStart(deps: ServerStartDeps): Promise<number> {
     return 1;
   }
   // The server writes server.pid only after its HTTP listener is bound, so
-  // the PID reported by the `--daemon` launcher is the only handle on a
-  // server that is still booting. The launcher's report is collected while
-  // the loop polls rather than awaited, so a launcher that never reports
-  // cannot outlast the deadline.
-  const launch: { pid: number | null; failure: string | null; reported: boolean } = {
-    pid: null,
-    failure: null,
-    reported: false,
-  };
-  const daemon = deps.spawnDaemon() ?? null;
-  const launcherReport = (daemon?.pid ?? Promise.resolve(null)).then(
-    (pid) => {
-      launch.pid = pid;
-      launch.reported = true;
-    },
-    (err: unknown) => {
-      launch.failure = err instanceof Error ? err.message : String(err);
-      launch.reported = true;
-    },
-  );
+  // the PID of the process started here is the only handle on a server that
+  // is still booting.
+  let serverPid: number | null;
+  try {
+    serverPid = deps.spawnDaemon() ?? null;
+  } catch (err) {
+    deps.warn(
+      `[server:start] ${err instanceof Error ? err.message : String(err)}; no server was started`,
+    );
+    return 1;
+  }
 
   const deadline = deps.now() + HEALTH_WAIT_MS;
   while (deps.now() < deadline) {
@@ -524,31 +445,16 @@ export async function runServerStart(deps: ServerStartDeps): Promise<number> {
       deps.log(`  log : ${paths.logPath}`);
       return 0;
     }
-    if (launch.failure !== null) {
-      deps.warn(`[server:start] ${launch.failure}; no server was started`);
-      return 1;
-    }
-    if (launch.pid !== null && !deps.isProcessAlive(launch.pid)) {
+    if (serverPid !== null && !deps.isProcessAlive(serverPid)) {
       deps.warn(
-        `[server:start] server process ${launch.pid} exited before ${healthUrl} became ready (see ${paths.logPath})`,
+        `[server:start] server process ${serverPid} exited before ${healthUrl} became ready (see ${paths.logPath})`,
       );
       return 1;
     }
     await deps.sleep(HEALTH_POLL_MS);
   }
 
-  if (daemon !== null && !launch.reported) {
-    // A launcher that is still running would start the server after this
-    // command has reported failure. Stop it, then give a PID line it wrote
-    // just before a moment to arrive, so that server is stopped below.
-    daemon.cancel();
-    await Promise.race([launcherReport, deps.sleep(LAUNCHER_STOP_SETTLE_MS)]);
-    deps.warn(
-      "[server:start] the daemon launcher had not reported a server by the deadline and was stopped",
-    );
-  }
-
-  const pidToKill = deps.readPidFile() ?? launch.pid;
+  const pidToKill = deps.readPidFile() ?? serverPid;
   if (pidToKill !== null && deps.isProcessAlive(pidToKill)) {
     try {
       deps.killPid(pidToKill, "SIGTERM");
@@ -716,20 +622,11 @@ export async function serverStart(options: ServerStartOptions = {}): Promise<num
       warn: (s) => { console.warn(s); },
     }),
     spawnDaemon: () => {
-      const args = [SERVER_ENTRY, "--daemon"];
-      if (instanceId !== "") {
-        args.push("--instance", instanceId);
-      }
-      const child = spawn(process.execPath, args, {
-        cwd: process.cwd(),
-        // stdout carries the launcher's one `[daemon] started, pid=N` line;
-        // the launcher exits right after it.
-        stdio: ["ignore", "pipe", "ignore"],
-        detached: true,
+      return spawnDetachedServer({
+        entry: SERVER_ENTRY,
+        args: instanceId !== "" ? ["--instance", instanceId] : [],
         env: daemonEnv,
       });
-      child.unref();
-      return daemonLaunchFrom(child);
     },
     fetchHealth: () => fetchServerHealth(healthUrl),
     log: (s) => {
