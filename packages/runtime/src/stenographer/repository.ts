@@ -386,10 +386,7 @@ export async function candidateRoomIds(
         roomJournalState.lastProcessedMessageId,
       ),
       eq(roomJournalBatches.status, "failed"),
-      inArray(roomJournalBatches.errorCode, [
-        "provider_outcome_unknown",
-        "input_authority_unavailable",
-      ]),
+      eq(roomJournalBatches.errorCode, "provider_outcome_unknown"),
     ));
   const agentMember = db.select({ one: sql`1` })
     .from(roomMembers)
@@ -537,10 +534,7 @@ export async function historicalCandidateRoomIds(
         roomJournalState.historicalBackfillCursorMessageId,
       ),
       eq(roomJournalBatches.status, "failed"),
-      inArray(roomJournalBatches.errorCode, [
-        "provider_outcome_unknown",
-        "input_authority_unavailable",
-      ]),
+      eq(roomJournalBatches.errorCode, "provider_outcome_unknown"),
     ));
   const result = await db.select({ room_id: roomJournalState.roomId })
     .from(roomJournalState)
@@ -973,8 +967,7 @@ export async function tryClaimRoom(
     if (!state.has_agent || state.suspended_at !== null) return null;
     if (
       state.replay_batch_status === "failed"
-      && (state.replay_batch_error_code === "provider_outcome_unknown"
-        || state.replay_batch_error_code === "input_authority_unavailable")
+      && state.replay_batch_error_code === "provider_outcome_unknown"
     ) {
       return null;
     }
@@ -1576,7 +1569,13 @@ function retryDelayMs(failureCount: number): number {
 }
 
 export async function failExtraction(input: {
-  claim: Pick<ExtractionClaim, "batchId" | "roomId" | "leaseToken">;
+  claim: Pick<
+    ExtractionClaim,
+    | "batchId"
+    | "roomId"
+    | "leaseToken"
+    | "previousModelResultKnownNonusable"
+  >;
   errorCode: StenographerErrorCode;
   modelId: string | null;
   now?: Date;
@@ -1601,18 +1600,24 @@ export async function failExtraction(input: {
     if (!current) return;
     const failureCount = asNumber(current.extraction_failure_count) + 1;
     const retryAfter = input.errorCode === "provider_outcome_unknown"
-        || input.errorCode === "input_authority_unavailable"
       ? null
       : new Date(now.getTime() + retryDelayMs(failureCount));
+    const preserveKnownNonusableResult =
+      input.errorCode === "input_authority_unavailable"
+      && input.claim.previousModelResultKnownNonusable === true;
     await tx
       .update(roomJournalBatches)
       .set({
         status: "failed",
-        errorCode: input.errorCode,
-        modelId: input.modelId,
-        lastErrorAt: now,
-        lastErrorAttempt: roomJournalBatches.attemptCount,
-        lastErrorModelId: input.modelId,
+        ...(preserveKnownNonusableResult
+          ? { errorCode: "invalid_output" as const }
+          : {
+              errorCode: input.errorCode,
+              modelId: input.modelId,
+              lastErrorAt: now,
+              lastErrorAttempt: roomJournalBatches.attemptCount,
+              lastErrorModelId: input.modelId,
+            }),
       })
       .where(
         and(

@@ -18,6 +18,7 @@ import {
   getSharedDirectDb,
   eq,
   inArray,
+  llmUsageEvents,
   namespaces,
   reflectionRecordAuthorityBlocks,
   reflectionRecordAuthorityDependencies,
@@ -25,6 +26,7 @@ import {
   reflectionRecordSuccessors,
   reflectionRecords,
   roomEvents,
+  roomJournalBatches,
   roomJournalRecordRebuildRetirements,
   roomJournalState,
   roomMembers,
@@ -857,6 +859,141 @@ describe("M230 Room-journal rebuild (live Postgres)", () => {
         extractionFailureCount: 0,
       });
     } finally {
+      await cleanupFixture(fixture);
+    }
+  });
+
+  test("a rebuild preserves invalid-output replay proof across restored input authority", async () => {
+    const fixture = await makeFixture("authority-retry");
+    const invalidOutputTime = new Date("2000-01-01T09:00:30.000Z");
+    const invalidOutputRetryTime = new Date("2000-01-01T09:00:45.000Z");
+    const authorityFailureTime = new Date("2000-01-01T09:01:00.000Z");
+    const beforeRetryTime = new Date("2000-01-01T09:01:29.999Z");
+    const retryTime = new Date("2000-01-01T09:01:30.000Z");
+    try {
+      await editHumanRoomMessage({
+        roomId: fixture.roomId,
+        messageId: fixture.messageId,
+        callerUserId: fixture.userId,
+        callerActorId: fixture.userActorId,
+        content: "edited content waits for restored authority",
+        expectedRevision: 0,
+        now: FIRST_EDIT_TIME,
+      });
+      expect(
+        await prepareNextJournalRebuild({ db, now: REBUILD_TIME }),
+      ).toBe(fixture.roomId);
+      const claim = await claimJournalRebuildExtraction(fixture.roomId, {
+        db,
+        now: REBUILD_TIME,
+      });
+      expect(claim).not.toBeNull();
+
+      await db.insert(llmUsageEvents).values({
+        roomId: fixture.roomId, callType: "room_stenographer", model: "openai:gpt-5.6-sol",
+        provider: "openai", fundingKind: "service", providerRoute: "openai",
+        providerRequestId: randomUUID(), endpoint: "/v1/chat/completions",
+        attemptOutcome: "succeeded", costState: "estimated", estimatedCostUsd: "0.01",
+        metadata: { operationId: claim!.batchId },
+      });
+      await failExtraction({
+        claim: claim!,
+        errorCode: "invalid_output",
+        modelId: "openai:gpt-5.6-sol",
+        db,
+        now: invalidOutputTime,
+      });
+      expect(
+        await prepareNextJournalRebuild({ db, now: invalidOutputRetryTime }),
+      ).toBe(fixture.roomId);
+      const authorityClaim = await claimJournalRebuildExtraction(fixture.roomId, {
+        db,
+        now: invalidOutputRetryTime,
+      });
+      expect(authorityClaim).not.toBeNull();
+      expect(authorityClaim?.batchId).toBe(claim?.batchId);
+      expect(authorityClaim?.attemptCount).toBe(2);
+      expect(authorityClaim?.previousModelResultKnownNonusable).toBeTrue();
+
+      await db.update(users)
+        .set({ disabledAt: authorityFailureTime })
+        .where(eq(users.id, fixture.userId));
+      await failExtraction({
+        claim: authorityClaim!,
+        errorCode: "input_authority_unavailable",
+        modelId: null,
+        db,
+        now: authorityFailureTime,
+      });
+      const [deferredBatch] = await db.select({
+        errorCode: roomJournalBatches.errorCode,
+        lastErrorAt: roomJournalBatches.lastErrorAt,
+        lastErrorAttempt: roomJournalBatches.lastErrorAttempt,
+        lastErrorModelId: roomJournalBatches.lastErrorModelId,
+      }).from(roomJournalBatches)
+        .where(eq(roomJournalBatches.id, claim!.batchId));
+      expect(deferredBatch).toEqual({
+        errorCode: "invalid_output",
+        lastErrorAt: invalidOutputTime,
+        lastErrorAttempt: 1,
+        lastErrorModelId: "openai:gpt-5.6-sol",
+      });
+      expect(await readState(fixture.roomId)).toMatchObject({
+        rebuildGeneration: 1,
+        rebuildRequestedAt: FIRST_EDIT_TIME,
+        rebuildTargetMessageId: fixture.messageId,
+        leaseToken: null,
+        leaseExpiresAt: null,
+        extractionFailureCount: 2,
+        extractionRetryAfter: retryTime,
+        lastExtractionErrorCode: "input_authority_unavailable",
+      });
+
+      expect(
+        await prepareNextJournalRebuild({ db, now: beforeRetryTime }),
+      ).toBe(fixture.roomId);
+      expect(await claimJournalRebuildExtraction(fixture.roomId, {
+        db,
+        now: beforeRetryTime,
+      })).toBeNull();
+
+      await db.update(users)
+        .set({ disabledAt: null })
+        .where(eq(users.id, fixture.userId));
+      expect(
+        await prepareNextJournalRebuild({ db, now: retryTime }),
+      ).toBe(fixture.roomId);
+      const retry = await claimJournalRebuildExtraction(fixture.roomId, {
+        db,
+        now: retryTime,
+      });
+      expect(retry).not.toBeNull();
+      expect(retry?.batchId).toBe(claim?.batchId);
+      expect(retry?.attemptCount).toBe(3);
+      expect(retry?.previousModelResultKnownNonusable).toBeTrue();
+      expect(retry?.plan.fromMessageIdExclusive).toBe(0);
+      expect(retry?.plan.throughMessageIdInclusive).toBe(fixture.messageId);
+      expect(retry?.sourceRows.map((row) => row.text)).toEqual([
+        "edited content waits for restored authority",
+      ]);
+
+      expect(await publisher.publishExtraction({
+        claim: retry!,
+        operations: [],
+        modelId: null,
+        now: new Date("2000-01-01T09:01:31.000Z"),
+      })).toEqual({ published: true, eventsWritten: 0 });
+      expect(await readState(fixture.roomId)).toMatchObject({
+        rebuildRequestedAt: null,
+        rebuildTargetMessageId: null,
+        extractionFailureCount: 0,
+        extractionRetryAfter: null,
+      });
+    } finally {
+      await db.delete(llmUsageEvents).where(eq(llmUsageEvents.roomId, fixture.roomId));
+      await db.update(users)
+        .set({ disabledAt: null })
+        .where(eq(users.id, fixture.userId));
       await cleanupFixture(fixture);
     }
   });

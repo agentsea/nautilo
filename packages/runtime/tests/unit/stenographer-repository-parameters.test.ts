@@ -485,10 +485,7 @@ describe("stenographer postgres-js parameters", () => {
     },
   );
 
-  test.each([
-    "provider_outcome_unknown",
-    "input_authority_unavailable",
-  ] as const)("does not reclaim extraction after %s", async (errorCode) => {
+  test("does not reclaim extraction after provider_outcome_unknown", async () => {
     const roomId = "44444444-4444-4444-8444-444444444444";
     let executes = 0;
     const tx = {
@@ -512,7 +509,7 @@ describe("stenographer postgres-js parameters", () => {
         has_agent: true,
         upper_bound_message_id: 11,
         replay_batch_status: "failed",
-        replay_batch_error_code: errorCode,
+        replay_batch_error_code: "provider_outcome_unknown",
         replay_through_message_id: 11,
       }]),
     };
@@ -524,6 +521,47 @@ describe("stenographer postgres-js parameters", () => {
     expect(await tryClaimRoom(db as never, roomId, NOW)).toBeNull();
     expect(executes).toBe(2);
   });
+
+  test.each(["live", "historical"] as const)(
+    "waits for the bounded %s input-authority recheck time",
+    async (lane) => {
+      const roomId = "44444444-4444-4444-8444-444444444444";
+      let executes = 0;
+      const tx = {
+        execute: async () => (++executes === 1 ? [] : [{
+          room_id: roomId,
+          owner_id: "55555555-5555-4555-8555-555555555555",
+          kind: "private",
+          last_processed_message_id: 10,
+          suspended_at: null,
+          lease_token: null,
+          lease_expires_at: null,
+          extraction_retry_after: new Date(NOW.getTime() + 1),
+          historical_backfill_status: lane === "historical" ? "pending" : "not_needed",
+          historical_backfill_cursor_message_id: lane === "historical" ? 10 : null,
+          historical_backfill_target_message_id: lane === "historical" ? 20 : null,
+          stenographer_prior_conversation_limit: 10,
+          prior_context_floor_message_id: 0,
+          rebuild_generation: 0,
+          rebuild_requested_at: null,
+          rebuild_target_message_id: null,
+          has_agent: true,
+          upper_bound_message_id: 11,
+          replay_batch_status: "failed",
+          replay_batch_error_code: "input_authority_unavailable",
+          replay_through_message_id: 11,
+        }]),
+      };
+      const db = {
+        transaction: async <T>(run: (executor: typeof tx) => Promise<T>) =>
+          run(tx),
+      };
+
+      expect(await tryClaimRoom(db as never, roomId, NOW, 120_000, lane))
+        .toBeNull();
+      expect(executes).toBe(2);
+    },
+  );
 
   test("reuses an expired running extraction range before a newer live head", async () => {
     const roomId = "44444444-4444-4444-8444-444444444444";
