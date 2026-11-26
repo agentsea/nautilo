@@ -179,6 +179,11 @@ const IMMUTABLE_MEMORY_RECOVERY_MIGRATION_MANIFEST = [
   },
 ] as const;
 
+const IMMUTABLE_WAKE_FK_PERMISSION_MIGRATION = {
+  path: "0390_protected_task_wake_continuation_fk_permissions.sql",
+  sha256: "7d4b232cc874788a3d5932e2026b09df91c7819fcc74cdc1770ca4f4972f0ce0",
+} as const;
+
 function temporaryMigrationTree(name: string): string {
   const directory = mkdtempSync(resolve(tmpdir(), `m220 ${name} `));
   temporaryDirectories.push(directory);
@@ -527,10 +532,10 @@ describe("migration inventory", () => {
     expect(inventory.migrations.every((migration) => !migration.path.startsWith("/")))
       .toBe(true);
     expect(inventory.migrations.at(-1)).toEqual({
-      index: 389,
-      tag: "0389_memory_review_model_recovery_privileges",
-      path: "0389_memory_review_model_recovery_privileges.sql",
-      sha256: "2adf4e7c773b177daf414a6a44d92788c4b43207918578620dd776394ffde1f4",
+      index: 390,
+      tag: "0390_protected_task_wake_continuation_fk_permissions",
+      path: "0390_protected_task_wake_continuation_fk_permissions.sql",
+      sha256: "7d4b232cc874788a3d5932e2026b09df91c7819fcc74cdc1770ca4f4972f0ce0",
     });
 
     const comparison = compareSchemaAndMigrationInventory(
@@ -587,6 +592,17 @@ describe("migration inventory", () => {
       path: migration.path,
       sha256: migration.sha256,
     }))).toEqual([...IMMUTABLE_MEMORY_RECOVERY_MIGRATION_MANIFEST]);
+  });
+
+  test("pins the protected Task wake-continuation FK permission without a DB", () => {
+    const directory = resolve(import.meta.dir, "../../../db/src/migrations");
+    const inventory = inventoryMigrationTree(directory);
+
+    expect(inventory.migrations[390]).toMatchObject({
+      index: 390,
+      tag: "0390_protected_task_wake_continuation_fk_permissions",
+      ...IMMUTABLE_WAKE_FK_PERMISSION_MIGRATION,
+    });
   });
 
   test("allows intentionally missing intermediate snapshots and paths containing spaces", () => {

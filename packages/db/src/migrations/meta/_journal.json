@@ -2731,6 +2731,13 @@
       "when": 1795715552085,
       "tag": "0389_memory_review_model_recovery_privileges",
       "breakpoints": true
+    },
+    {
+      "idx": 390,
+      "version": "7",
+      "when": 1795715797169,
+      "tag": "0390_protected_task_wake_continuation_fk_permissions",
+      "breakpoints": true
     }
   ]
 }
