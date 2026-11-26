@@ -134,8 +134,7 @@ export function createStenographerMemoryFunding(input: Common) {
     }
     const readPredecessor = input.readRetiredJournalPredecessor;
     const readRetiredJournalPredecessor =
-      !protectedEvidence && extraction && "rebuildGeneration" in claim
-        && claim.rebuildGeneration != null && readPredecessor !== undefined
+      !protectedEvidence && extraction && readPredecessor !== undefined
         ? (dependency: RecordDependency) => readPredecessor(dependency, claim.roomId)
         : undefined;
     const admitted = await openMemoryOperation({

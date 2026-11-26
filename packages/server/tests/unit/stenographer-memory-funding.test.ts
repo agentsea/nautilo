@@ -289,7 +289,7 @@ const protectedEvidence = {
 };
 
 describe("ordinary Stenographer Memory funding", () => {
-  test("uses retired Journal ancestry only for an ordinary live rebuild", async () => {
+  test("uses exact retired Journal ancestry for ordinary live and rebuild extraction", async () => {
     const oldDependency: Extract<DurableModelExposureDependency, { kind: "record" }> = {
       kind: "record",
       recordRef: "record:event-old",
@@ -309,7 +309,7 @@ describe("ordinary Stenographer Memory funding", () => {
       processingGeneration: 2,
     };
     const createRuntime = (state: ReturnType<typeof ordinaryExtractionDatabase>, rooms: string[],
-      invocations: Array<Parameters<typeof createRoomSideModelInvoker>[0]>) => createStenographerMemoryFunding({
+      invocations: Array<Parameters<typeof createRoomSideModelInvoker>[0]>, retiredAvailable = true) => createStenographerMemoryFunding({
         db: state.db,
         ports: {
           readRecord: async (dependency) => dependency.recordRef === currentRecord.recordRef ? currentRecord : null,
@@ -323,7 +323,9 @@ describe("ordinary Stenographer Memory funding", () => {
         assertAvailable: () => Promise.resolve(),
         readRetiredJournalPredecessor: async (dependency, roomId) => {
           rooms.push(roomId);
-          return dependency.recordRef === retiredRecord.recordRef ? retiredRecord : null;
+          return retiredAvailable && dependency.recordRef === retiredRecord.recordRef
+            ? retiredRecord
+            : null;
         },
         createInvoker: (options) => {
           invocations.push(options);
@@ -356,14 +358,39 @@ describe("ordinary Stenographer Memory funding", () => {
     const liveRooms: string[] = [];
     const liveInvocations: Array<Parameters<typeof createRoomSideModelInvoker>[0]> = [];
     const liveClaim = ordinaryExtractionClaim(null);
-    const blocked = await createRuntime(liveState, liveRooms, liveInvocations)
-      .admitExtractionModel(liveClaim, extractionModelExposureDependencies(liveClaim))
+    const liveAdmitted = await createRuntime(liveState, liveRooms, liveInvocations)
+      .admitExtractionModel(liveClaim, extractionModelExposureDependencies(liveClaim));
+    expect(liveAdmitted.modelId).toBe("openai:service");
+    expect(liveState.accepted()).toMatchObject({
+      version: 1,
+      kind: "service",
+      role: "memorySummarization",
+      modelId: "openai:service",
+    });
+    expect(liveState.updates).toHaveLength(1);
+    expect(liveInvocations).toHaveLength(1);
+    expect(liveInvocations[0]).not.toHaveProperty("fundingSession");
+    expect(liveRooms).toEqual([ROOM, ROOM]);
+    await liveAdmitted.assertCurrent();
+    expect(liveRooms).toEqual([ROOM, ROOM, ROOM]);
+
+    const revokedState = ordinaryExtractionDatabase();
+    const revokedRooms: string[] = [];
+    const revokedInvocations: Array<Parameters<typeof createRoomSideModelInvoker>[0]> = [];
+    const revoked = await createRuntime(
+      revokedState,
+      revokedRooms,
+      revokedInvocations,
+      false,
+    ).admitExtractionModel(liveClaim, extractionModelExposureDependencies(liveClaim))
       .catch((error: unknown) => error);
-    expect(blocked).toMatchObject({message: "Memory input evidence or current authority changed"});
-    expect(liveRooms).toEqual([]);
-    expect(liveState.accepted()).toBeNull();
-    expect(liveState.updates).toHaveLength(0);
-    expect(liveInvocations).toHaveLength(0);
+    expect(revoked).toMatchObject({
+      message: "Memory input evidence or current authority changed",
+    });
+    expect(revokedRooms).toEqual([ROOM]);
+    expect(revokedState.accepted()).toBeNull();
+    expect(revokedState.updates).toHaveLength(0);
+    expect(revokedInvocations).toHaveLength(0);
   });
 
   test("freezes a personal compaction binding from exact current Human Record ancestry", async () => {

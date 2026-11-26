@@ -114,7 +114,7 @@ export async function classifyPersonalMemoryEvidence(input: Readonly<{
             : record.lifecycle !== "current"
               || record.processingGeneration !== dependency.observedProcessingGeneration)
           || !sameAuthority(record, dependency)) throw new PersonalMemoryEvidenceChangedError();
-        // Retired ancestry can prove only that a rebuild's immutable exposure
+        // Retired Journal ancestry can prove only that an immutable exposure
         // remains explainable. It can never establish an exclusive Human payer.
         if (retired) reason ??= "incomplete";
         for (const leaf of record.semantic.terminalAuthorityLeafHandles) {
