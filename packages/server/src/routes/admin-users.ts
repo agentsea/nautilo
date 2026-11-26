@@ -32,6 +32,7 @@ import { HANDLE_RE } from "@nautilo/types";
 import {
   findCanonicalGroupByType,
   findUserById,
+  findUserHighestRoleSlug,
   getLogtoAdminClient,
   hashPin,
   getUserMemberships,
@@ -40,6 +41,7 @@ import {
   type ServerRoleSlug,
   userHasCapability,
 } from "@nautilo/trust";
+import { canResetPasswordForRole } from "../lib/admin-password-reset-authority";
 import {
   isPolicyCompliantProvisioningPassword,
   provisionMember,
@@ -847,11 +849,19 @@ export function adminUsersRoutes(app: FastifyInstance, deps: AdminUsersRoutesDep
   app.post<{ Params: { id: string } }>(
     "/api/admin/users/:id/reset-password",
     async (request, reply) => {
-      if (!(await requireAdmin(request, reply))) return;
+      const callerUserId = await requireAdmin(request, reply);
+      if (!callerUserId) return;
       const target = await findUserById(request.params.id);
       if (!target) return reply.code(404).send({ error: "user_not_found" });
       if (target.server !== null) {
         return reply.code(422).send({ error: "federated_user", code: "federated_user" });
+      }
+      const [callerRole, targetRole] = await Promise.all([
+        findUserHighestRoleSlug(callerUserId),
+        findUserHighestRoleSlug(target.id),
+      ]);
+      if (!canResetPasswordForRole(callerRole, targetRole)) {
+        return reply.code(403).send({ code: "delegation_ceiling" });
       }
       const [emailRow] = await db
         .select({ email: users.email })

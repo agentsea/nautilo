@@ -4567,7 +4567,7 @@ export const SERVER_ROLE_TO_GROUP_TYPE: Record<ServerRoleSlug, string> = {
 const M128_CANONICAL_GROUP_TYPES = Object.values(SERVER_ROLE_TO_GROUP_TYPE);
 
 function isServerRoleSlug(slug: string): slug is ServerRoleSlug {
-  return slug in SERVER_ROLE_RANK;
+  return Object.hasOwn(SERVER_ROLE_RANK, slug);
 }
 
 /**
