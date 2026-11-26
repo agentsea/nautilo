@@ -1541,6 +1541,8 @@ export {
 
 export { deriveSurplusMediaModelId, findSurplusMediaModel, type SurplusMediaFamily, type SurplusMediaRequirements } from "./providers/surplus-media-route";
 
+export { normalizeGatewayBaseUrl } from "./providers/universal";
+
 export { getCapabilityFundingSession, runWithCapabilityFundingSession, type AdmittedCapabilityMedia, type CapabilityFundingSession, type PersonalCapabilityRole } from "./runtime/capability-funding";
 
 export { isSupportedPersonalTool } from "./runtime/personal-tool-readiness";

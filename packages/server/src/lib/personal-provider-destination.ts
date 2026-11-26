@@ -1,6 +1,6 @@
+import { normalizeGatewayBaseUrl } from "@nautilo/agent";
 import { isApprovedMindSwapperDestination, normalizeMindSwapperBaseUrl } from "@nautilo/config-guard";
 import type { PersonalProviderId } from "@nautilo/db";
-import { GATEWAY_BASE_URL_ENV, gatewayKeyDestination } from "@nautilo/types";
 
 export {
   getApprovedMindSwapperDestinations,
@@ -15,7 +15,15 @@ type PersonalProviderDestinationRecord = Readonly<{
 
 /** The fixed administrator-configured destination used by personal Gateway keys. */
 export function currentPersonalGatewayDestination(): string | null {
-  return gatewayKeyDestination(process.env[GATEWAY_BASE_URL_ENV]);
+  const normalized = normalizeGatewayBaseUrl(
+    process.env["NAUTILO_GATEWAY_BASE_URL"],
+  );
+  if (!normalized) return null;
+  const parsed = new URL(normalized);
+  if (parsed.username || parsed.password || parsed.search || parsed.hash) {
+    return null;
+  }
+  return normalized;
 }
 
 /**
