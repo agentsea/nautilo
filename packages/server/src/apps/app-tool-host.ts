@@ -991,7 +991,7 @@ async function resolveOfficeImportBinaryPath(): Promise<
   | { ok: true; binaryPath: string }
   | { ok: false; error: string; code: string }
 > {
-  // D391 2.4 — verify-once integrity gate (cached per process, darwin-tolerant).
+  // verify-once integrity gate (cached per process, darwin-tolerant).
   // Replaces the previous per-call `checkOfficeCliProvisioning` re-hash of the
   // ~34MB binary on every import/export invocation.
   const outcome = await verifyOfficeCliOnce({ repoRoot: OFFICECLI_REPO_ROOT });
@@ -1005,7 +1005,7 @@ async function resolveOfficeImportBinaryPath(): Promise<
 }
 
 // ---------------------------------------------------------------------------
-// M205 — generic `office.run` host primitive.
+// generic `office.run` host primitive.
 //
 // Format-agnostic OfficeCLI runner with zone-aware byte I/O. The server core
 // reads/writes bytes and runs the binary but NEVER parses a document format:
@@ -1243,7 +1243,7 @@ async function writeOfficeOutputBytes(
 }
 
 /**
- * M205 — create a NEW document from a conversion (import). Writes DIRECTLY
+ * create a NEW document from a conversion (import). Writes DIRECTLY
  * (never through the turn-scoped agent patch pipeline, which throws without an
  * agent `turnId`). Format-agnostic — no document-format knowledge lives here.
  *   - `surface: "currentFolder"` → journaled Desktop content commit; create-only
@@ -1627,9 +1627,11 @@ async function executeOfficeRun(
         };
       }
       if (staged.resolvedOps.length > 0) {
+        const commandsPath = join(scratchDir, "commands.json");
+        await fsp.writeFile(commandsPath, JSON.stringify(staged.resolvedOps), { mode: 0o600 });
         const batch = await runOfficeCliRaw({
           binaryPath,
-          argv: ["batch", outPath, "--commands", JSON.stringify(staged.resolvedOps), "--stop-on-error", "--json"],
+          argv: ["batch", outPath, "--input", commandsPath, "--stop-on-error", "--json"],
         });
         if (batch.exitCode !== 0) {
           return {

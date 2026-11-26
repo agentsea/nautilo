@@ -1,0 +1,10 @@
+{
+  "extends": "../../../apps/workbench/tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "allowImportingTsExtensions": true,
+    "noEmit": true
+  },
+  "include": ["*.ts", "*.tsx", "*.mts"]
+}

@@ -58,8 +58,8 @@ describe("resolveTrustedLiveMiniAppSession", () => {
       userId: "u1",
       localTargetId: "local-target",
       relayId: "relay-1",
-      canonicalPath: "/Users/alice/project/docs/report.html",
-      currentFolderRoot: "/Users/alice/project",
+      canonicalPath: "/workspace/project/docs/report.html",
+      currentFolderRoot: "/workspace/project",
       relativePath: "docs/report.html",
       documentVersion: { kind: "local_sha", sha256: LOCAL_SHA },
     });
@@ -80,7 +80,7 @@ describe("resolveTrustedLiveMiniAppSession", () => {
       documentVersion: { kind: "local_sha", sha256: LOCAL_SHA },
       instructions: "local writer instruction",
     });
-    expect(JSON.stringify(trusted)).not.toContain("/Users/alice");
+    expect(JSON.stringify(trusted)).not.toContain("/workspace");
     expect(JSON.stringify(trusted)).not.toContain("relay-1");
     expect(JSON.stringify(trusted)).not.toContain("local-target");
   });
@@ -128,4 +128,25 @@ describe("resolveTrustedLiveMiniAppSession", () => {
     expect(await resolveTrustedLiveMiniAppSession({ raw, userId: "u1", appsRoot: await appRoot(), registry })).toBeNull();
     expect(await resolveTrustedLiveMiniAppSession({ raw, userId: "u1", appsRoot: await appRoot("safe"), registry: new LiveMiniAppSessionRegistry() })).toBeNull();
   });
+});
+
+
+test("captures Writer selection only from the same app, session, and document version", async () => {
+  const registry = new LiveMiniAppSessionRegistry();
+  const documentVersion = { kind: "artifact_revision" as const, revision: 4 };
+  const issued = registry.issue({ targetKind: "artifact", appId: "nautilo-writer", userId: "u1",
+    namespaceIds: ["n"], artifactId: "a", documentId: "d", documentVersion });
+  const raw = { sessionToken: issued.token, sessionId: issued.sessionId, documentVersion };
+  const selection = { anchor: { blockId: "p", offset: 0 }, focus: { blockId: "p", offset: 9 } };
+  const activeMiniApp = { appId: "nautilo-writer", updatedAt: 1, selection, summary: { liveSession: raw } };
+  const appsRoot = await appRoot("Reader instructions");
+  const resolve = (active: typeof activeMiniApp) => resolveTrustedLiveMiniAppSession({ raw, activeMiniApp: active, userId: "u1", appsRoot, registry });
+  expect((await resolve(activeMiniApp))?.writerSelection).toEqual(selection);
+  for (const active of [
+    { ...activeMiniApp, appId: "other" },
+    { ...activeMiniApp, summary: { liveSession: { ...raw, sessionId: "different" } } },
+    { ...activeMiniApp, summary: { liveSession: { ...raw, documentVersion: { ...documentVersion, revision: 5 } } } },
+    { ...activeMiniApp, selection: { ...selection, anchor: { blockId: "p", offset: -1 } } },
+  ]) expect((await resolve(active))?.writerSelection).toBeUndefined();
+  expect((await resolveTrustedLiveMiniAppSession({ raw: { ...raw, writerSelection: selection }, userId: "u1", appsRoot, registry }))?.writerSelection).toBeUndefined();
 });

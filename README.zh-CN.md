@@ -8,7 +8,7 @@
 
 Nautilo 的界面目前为英语。README 和本地安装指南已提供翻译，其他文档可能仍为英文。
 
-<!-- Translation source: README.md; SHA-256: 70b9d8b55da933e1da5c68d0656f5c2e4ac61690fd958de91b9be5268859f07a -->
+<!-- Translation source: README.md; SHA-256: 7d5da3b8c2bd4a27146f94a6430bc44c8f1a3d01f2bf1a844cdb357fef4709f6 -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### AI，进入多人模式。
@@ -137,8 +137,16 @@ Nautilo 采用 [MIT 许可证](LICENSE)。依赖项的许可证与署名请参�
 
 [通过 GitHub Sponsors 上的 agentsea 支持 Nautilo](https://github.com/sponsors/agentsea) · 一次性或按月赞助。
 
-[![感谢 Bankr 社区](https://nautilo.ai/community/bankr-thanks-zh-CN.png)](https://hoodscan.co/token/0xddd4947010496b500abe96ab0965c38584413ba3)
+[![感谢 Bankr 社区](https://nautilo.ai/community/bankr-thanks-zh-CN.png?v=kentauros)](https://hoodscan.co/token/0xddd4947010496b500abe96ab0965c38584413ba3)
 
-开源离不开人们彼此支持。Bankr 社区创建了一个独立的 [Nautilo 代币](https://hoodscan.co/token/0xddd4947010496b500abe96ab0965c38584413ba3)，并将部分交易手续费用于支持我们的工作。感谢你们让我们能够继续构建。
+### NAUTILO 社区代币
 
-这是社区创建的代币，并非由 Nautilo 发行或背书。它在软件中没有任何用途，也不赋予产品使用权、所有权或治理权。
+$NAUTILO 起源于 Bankr 社区。社区创建了这个代币，并将部分交易手续费用于支持 Nautilo 的开发。我们感谢发起这件事的人，也感谢所有支持项目的人。
+
+Nautilo 背后的公司 Kentauros, Inc. 现已接手代币对外信息的管理，包括其 DEX Screener 页面。分配给项目的交易手续费现在直接进入 Kentauros 的公司 Safe 金库。我们通过 [@nautiloapp](https://x.com/nautiloapp) 公布[代币合约地址](https://hoodscan.co/token/0xddd4947010496b500abe96ab0965c38584413ba3)，方便社区识别正确的代币。
+
+**代币由社区创建。Kentauros 没有创建该代币，也没有进行 ICO。**
+
+#### 使用 MindSwapper，获得 $NAUTILO 回馈。
+
+使用 [MindSwapper](https://mindswapper.ai/) 并连接钱包，即可根据使用情况自动获得 $NAUTILO 奖励。无需购买代币。测试期间，我们先从小额发放开始。确认一切运行顺畅后，再提高发放金额。

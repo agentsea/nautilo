@@ -8,8 +8,8 @@ import { xml } from "@codemirror/lang-xml";
 import { yaml } from "@codemirror/lang-yaml";
 import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
-import type { Extension } from "@codemirror/state";
-import { EditorView, lineNumbers } from "@codemirror/view";
+import { Prec, type Extension } from "@codemirror/state";
+import { EditorView, keymap, lineNumbers } from "@codemirror/view";
 import CodeMirror from "@uiw/react-codemirror";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 
@@ -115,14 +115,43 @@ export function languageExtensionsForPath(path: string): Extension[] {
   }
 }
 
+export type CodeEditorSelection = { anchor: number; head: number; scrollTop: number };
+export type CodeEditorChangeSelection = { before: CodeEditorSelection; after: CodeEditorSelection };
 export type CodeEditorProps = {
   value: string;
-  onChange: (value: string) => void;
+  onChange: (value: string, selection?: CodeEditorChangeSelection) => void;
   path: string;
+  externalHistory?: { undo: () => void; redo: () => void };
+  restoreSelection?: CodeEditorSelection;
 };
 
-export function CodeEditor({ value, onChange, path }: CodeEditorProps) {
-  const extensions = useMemo(() => [workbenchSyntax, ...languageExtensionsForPath(path)], [path]);
+function restoreCodeSelection(view: EditorView, selection: CodeEditorSelection | undefined) {
+  if (!selection) return;
+  const length = view.state.doc.length;
+  view.dispatch({ selection: {
+    anchor: Math.min(selection.anchor, length),
+    head: Math.min(selection.head, length),
+  } });
+  view.focus();
+  view.scrollDOM.scrollTop = selection.scrollTop;
+}
+
+export function CodeEditor({ value, onChange, path, externalHistory, restoreSelection }: CodeEditorProps) {
+  const viewRef = useRef<EditorView | null>(null);
+  const restoreRef = useRef(restoreSelection);
+  restoreRef.current = restoreSelection;
+  const extensions = useMemo(() => [
+    workbenchSyntax,
+    ...languageExtensionsForPath(path),
+    ...(externalHistory ? [Prec.highest(keymap.of([
+      { key: "Mod-z", run: () => { externalHistory.undo(); return true; }, preventDefault: true },
+      { key: "Mod-Shift-z", run: () => { externalHistory.redo(); return true; }, preventDefault: true },
+      { key: "Mod-y", run: () => { externalHistory.redo(); return true; }, preventDefault: true },
+    ]))] : []),
+  ], [path, externalHistory]);
+  useEffect(() => {
+    if (viewRef.current) restoreCodeSelection(viewRef.current, restoreSelection);
+  }, [restoreSelection]);
 
   return (
     <CodeMirror
@@ -130,7 +159,15 @@ export function CodeEditor({ value, onChange, path }: CodeEditorProps) {
       height="100%"
       theme={workbenchCodeMirrorTheme}
       extensions={extensions}
-      onChange={onChange}
+      {...(externalHistory ? { basicSetup: { history: false } } : {})}
+      onCreateEditor={(view) => {
+        viewRef.current = view;
+        restoreCodeSelection(view, restoreRef.current);
+      }}
+      onChange={(next, update) => onChange(next, {
+        before: { anchor: update.startState.selection.main.anchor, head: update.startState.selection.main.head, scrollTop: update.view.scrollDOM.scrollTop },
+        after: { anchor: update.state.selection.main.anchor, head: update.state.selection.main.head, scrollTop: update.view.scrollDOM.scrollTop },
+      })}
       className="h-full [&_.cm-editor]:h-full [&_.cm-scroller]:overflow-auto"
     />
   );

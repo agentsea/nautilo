@@ -17,7 +17,8 @@
  */
 import { modelSupportsInput } from "@nautilo/model-capabilities";
 import { imageAttachmentModelError } from "@nautilo/attachments/composer-chat-extensions";
-import { resolveModelFunding } from "../lib/model-funding";
+import { resolveModelFunding, type ModelFundingDecision } from "../lib/model-funding";
+import { isMindSwapperModelId } from "../lib/mindswapper-catalog";
 import { resolveCallerImageInput } from "../lib/image-assistance";
 import { readFile, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -410,7 +411,7 @@ export async function assertChatAttachmentImageSupport(
     attachmentIds: readonly string[];
     uploaderActorId: string;
     writableNamespaceId: string | null;
-    models: readonly { id: string; label?: string }[];
+    models: readonly { id: string; label?: string; funding?: ModelFundingDecision }[];
     humanUserId?: string;
     fundingKind?: "server" | "personal";
   },
@@ -436,8 +437,9 @@ export async function assertChatAttachmentImageSupport(
     let supported = modelSupportsInput(model.id, "image");
     if (args.humanUserId) {
       try {
-        const funding = await resolveFunding({ humanUserId: args.humanUserId,
+        const funding = model.funding ?? await resolveFunding({ humanUserId: args.humanUserId,
           modelId: model.id, workload: "foreground_text_chat",
+          ...(isMindSwapperModelId(model.id) ? { mindSwapperTools: true } : {}),
           ...(args.fundingKind ? { fundingKind: args.fundingKind } : {}),
         });
         supported = await resolveImageInput({ humanUserId: args.humanUserId,

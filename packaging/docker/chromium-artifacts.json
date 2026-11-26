@@ -1,20 +1,20 @@
 {
   "schemaVersion": 1,
-  "version": "157.0.8103.78",
+  "version": "158.0.8127.36",
   "targets": {
     "linux/amd64": {
-      "url": "https://storage.googleapis.com/chrome-for-testing-public/157.0.8103.78/linux64/chrome-headless-shell-linux64.zip",
-      "sha256": "f90329720fb61e5a76da9b6b509b6ad12a484c9c5df0359403e935177c6d153a",
-      "size": 127965683,
+      "url": "https://storage.googleapis.com/chrome-for-testing-public/158.0.8127.36/linux64/chrome-headless-shell-linux64.zip",
+      "sha256": "2d3a23017323c54fd457a678e4351f895c4076d8050e39d5aa6247f93448b73a",
+      "size": 132087165,
       "archiveRoot": "chrome-headless-shell-linux64",
-      "executableSha256": "8e4c5db8c070059cb570a05c171dfcaec022d46334722ec3a16376614d687a96"
+      "executableSha256": "ed65d54a43663fa60ed8a277329fe73f307c31dd5b5db8dcfe91fda4274cf963"
     },
     "linux/arm64": {
-      "url": "https://storage.googleapis.com/chrome-for-testing-public/157.0.8103.78/linux-arm64/chrome-headless-shell-linux-arm64.zip",
-      "sha256": "912fbf877e53de34d7b3cca5104f3b95607d41bd35412ccc6cd2a599ff0c0dbf",
-      "size": 128047138,
+      "url": "https://storage.googleapis.com/chrome-for-testing-public/158.0.8127.36/linux-arm64/chrome-headless-shell-linux-arm64.zip",
+      "sha256": "176ee5c55486c22de43128871189061365ea28e881fc96016fd18e7cb59437c8",
+      "size": 129938239,
       "archiveRoot": "chrome-headless-shell-linux-arm64",
-      "executableSha256": "25f3815c08b0c7da38b3e9801fadb322af8b80ff5df5888fc0c006084fd105bb"
+      "executableSha256": "be17eb55973db1e498a78bc1baec89f200cf687b3da3f58f5d9607b7f79a3192"
     }
   }
 }

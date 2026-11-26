@@ -4,8 +4,8 @@ import { artifactsRelocateModule } from "./commands/artifacts-relocate.ts";
  *
  * This is deliberately a positive allowlist instead of a variation of the
  * ordinary client CLI. It owns lifecycle administration, narrow Human-session
- * plumbing, and explicitly reviewed server-domain commands. It is not an auth
- * namespace, raw identity-provider console, or TUI/client workflow.
+ * plumbing, managed auth maintenance, and reviewed server-domain commands.
+ * It is not a raw identity-provider console or TUI/client workflow.
  */
 import type { Argv, CommandModule } from "yargs";
 import yargs from "yargs";
@@ -15,6 +15,7 @@ import { setActiveProfileResolver } from "./lib/cli-session.ts";
 import { readActiveProfileName, setCliProfileFlagOverride } from "./lib/profile-aware-server.ts";
 import { VERSION, API_VERSION } from "./version.ts";
 import { adoptModule } from "./commands/adopt.ts";
+import { authMaintenanceModule } from "./commands/auth-maintenance.ts";
 import { accessModule } from "./commands/access.ts";
 import { backupModule } from "./commands/backup.ts";
 import { bootstrapLegacyModule } from "./commands/bootstrap.ts";
@@ -52,6 +53,7 @@ export const SERVER_ADMIN_COMMAND_ALLOWLIST = [
   "logout",
   "whoami",
   "change-password",
+  "auth plan|reconcile",
   "members invite|provision|rollout plan|apply|status|resume|list|show|disable|enable|reset-password|remove",
   "access catalogue|effective|change plan|apply",
   "security posture|audit|approvals list|revoke",
@@ -84,6 +86,7 @@ const SERVER_ADMIN_MODULES: CommandModule[] = [
   logoutModule,
   whoamiModule,
   changePasswordModule,
+  authMaintenanceModule,
   membersModule,
   accessModule,
   securityModule,

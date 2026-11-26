@@ -250,6 +250,7 @@ export class TextEditor {
 
   /** Callback invoked when Cmd/Ctrl+K is pressed to request link insertion. */
   onLinkRequest?: () => void;
+  onOpenLink?: (href: string) => void;
 
   /** Callback invoked when Cmd/Ctrl+F is pressed to open find bar. */
   onFindRequest?: () => void;
@@ -743,7 +744,7 @@ export class TextEditor {
   }
 
   focus(): void {
-    this.textarea.focus();
+    this.textarea.focus({ preventScroll: true });
   }
 
   /**
@@ -1839,7 +1840,8 @@ export class TextEditor {
       const href = this.getLinkHrefAtMouse(e);
       if (href && isSafeUrl(href)) {
         e.preventDefault();
-        window.open(href, '_blank', 'noopener,noreferrer');
+        if (this.onOpenLink) this.onOpenLink(href);
+        else window.open(href, '_blank', 'noopener,noreferrer');
         return;
       }
     }
@@ -2178,7 +2180,8 @@ export class TextEditor {
         (range.anchor.blockId === range.focus.blockId &&
           range.anchor.offset === range.focus.offset);
       if (collapsed && isSafeUrl(href)) {
-        window.open(href, '_blank', 'noopener,noreferrer');
+        if (this.onOpenLink) this.onOpenLink(href);
+        else window.open(href, '_blank', 'noopener,noreferrer');
       }
     }
   };

@@ -20,7 +20,7 @@ import {
 } from "../../apps/run-conversion";
 import { useConversionRunner } from "../../apps/use-conversion-runner";
 import { useInstalledApps } from "../../apps/use-installed-apps";
-import { canEditInThisChannel } from "../../editors/editor-kind";
+import { canEditInThisChannel, isHtmlTextCandidate } from "../../editors/editor-kind";
 import { desktopAPI } from "../../lib/desktop";
 import { isUnderRoot, relativeFromWorkspace } from "../browser-column/cited-paths";
 import type { OpenFileTarget } from "../browser-column/open-file-target";
@@ -137,6 +137,7 @@ export function ReaderSurface({
   const [openWithAppsResult, setOpenWithAppsResult] = useState<{
     targetIdentity: string;
     apps: PublicMiniAppDto[];
+    htmlTextCandidate?: boolean;
   } | null>(null);
   const previewDispatchRef = useRef<string | null>(null);
   const installedApps = useInstalledApps();
@@ -174,6 +175,7 @@ export function ReaderSurface({
         setOpenWithAppsResult({
           targetIdentity: associationIdentity,
           apps: matches.map((match) => match.app),
+          htmlTextCandidate: content !== null && isHtmlTextCandidate(file, content),
         });
       })();
       return () => {
@@ -350,7 +352,7 @@ export function ReaderSurface({
             </ReaderActionButton>
           ) : null}
           {showGenericEdit ? (
-            <ReaderActionButton onClick={() => onEdit?.(file)}>Edit Source</ReaderActionButton>
+            <ReaderActionButton onClick={() => onEdit?.(file)}>{openWithAppsResult?.targetIdentity === associationIdentity && openWithAppsResult.htmlTextCandidate ? "Edit text" : "Edit Source"}</ReaderActionButton>
           ) : null}
           {officeEnabled && file.kind === "artifact" && isOfficeDocPath(file.path) ? (
             <button

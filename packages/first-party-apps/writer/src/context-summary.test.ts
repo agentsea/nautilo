@@ -69,7 +69,7 @@ describe("writer context-summary", () => {
         columnCount: 2,
         cellCount: 4,
         preview: "First cell preview",
-        readHint: "Use read-open-writer-range with this table blockId to discover editable cell blocks; follow any returned nextCursor.",
+        readHint: "Use read-open-writer-range with scope {kind: 'block', blockId: this table blockId}; follow nextRead until complete.",
       },
     });
     expect(entry.text).not.toContain("First cell preview");
@@ -90,8 +90,7 @@ describe("writer context-summary", () => {
     expect(summary.outlineContinuation).toEqual({
       returnedBlockCount: 30,
       truncated: true,
-      nextBlockIndex: 30,
-      readHint: "Use read-open-writer-range to continue from nextBlockIndex until the complete document has been inspected.",
+      readHint: "This outline is only a preview. Use read-open-writer-range with scope {kind: 'document'}; follow nextRead until complete.",
     });
   });
 
@@ -119,7 +118,7 @@ describe("writer context-summary", () => {
     expect(envelope.summary).not.toHaveProperty("documentPath");
     expect(envelope.summary).not.toHaveProperty("path");
     expect(envelope.summary.openDocumentWorkflow).toBe(
-      "This document is open. For proofreading, rewrites, formatting, moves, or any change, use edit-open-writer only; it creates reviewable suggestions. Do not use path-targeted direct mutation tools.",
+      "This Writer document is open. Read it with read-open-writer-range, including for read-only summaries or quotations; discover and activate that tool if needed. Use scope.kind document for the whole document and copy nextRead unchanged until complete. Do not substitute file.read or closed-document inspection. For proofreading, rewrites, formatting, moves, or any change, use edit-open-writer only; it creates reviewable suggestions. Do not use path-targeted direct mutation tools.",
     );
   });
 
@@ -133,7 +132,7 @@ describe("writer context-summary", () => {
     expect(summary.outlineContinuation).toEqual({
       returnedBlockCount: 0,
       truncated: false,
-      readHint: "Use read-open-writer-range to continue from nextBlockIndex until the complete document has been inspected.",
+      readHint: "This outline is only a preview. Use read-open-writer-range with scope {kind: 'document'}; follow nextRead until complete.",
     });
   });
 

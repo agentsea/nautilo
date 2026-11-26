@@ -95,7 +95,36 @@ function fakeRunner(responses: Record<string, OfficeCliRunResult>): (argv: reado
   };
 }
 
-describe("handleLocalFileDispatch — local office (M206 Phase 3)", () => {
+describe("handleLocalFileDispatch — local office", () => {
+  test("large office.run batches use private input files and clean them after failure", async () => {
+    const { root, journalRoot, guard, cleanup } = await fixture();
+    const ops = [{ command: "add", parent: "/body", type: "paragraph", props: { text: "Synthetic text. ".repeat(10_000) } }];
+    let inputPath = "";
+    try {
+      const result = await handleLocalFileDispatch(officeReq({
+        subkind: "officeRun", mode: "write", outputPath: "large.docx", officeType: "docx", ops, overwrite: false,
+        _routing: routing({ currentFolder: root }),
+      }, { roots: [root], approvalObtained: true }), {
+        relayId: RELAY, guard, journalRootDir: journalRoot,
+        officeRun: async (argv) => {
+          expect(argv.some((arg) => Buffer.byteLength(arg) >= 131_072)).toBe(false);
+          if (argv[0] === "batch") {
+            expect(argv).not.toContain("--commands");
+            inputPath = argv[argv.indexOf("--input") + 1]!;
+            expect(JSON.parse(await fs.readFile(inputPath, "utf8"))).toEqual(ops);
+            if (process.platform !== "win32") expect((await fs.stat(inputPath)).mode & 0o777).toBe(0o600);
+            return { stdout: "", stderr: "Synthetic conversion failure", exitCode: 1 };
+          }
+          return { stdout: "{}", stderr: "", exitCode: 0 };
+        },
+      });
+      expect(inputPath).not.toBe("");
+      expect(result.result).toMatchObject({ ok: false });
+      expect(await fs.stat(inputPath).then(() => true, () => false)).toBe(false);
+      expect(await fs.stat(path.join(root, "large.docx")).then(() => true, () => false)).toBe(false);
+    } finally { await cleanup(); }
+  });
+
   test("rejects mutating officecli without approvalObtained", async () => {
     const { root, journalRoot, guard, cleanup } = await fixture();
     try {

@@ -12,6 +12,7 @@ import {
 } from "@nautilo/agent";
 import {
   ModelFundingError,
+  readAdmittedMindSwapperModel,
   resolveModelFunding,
   resolveServerFundingRoute,
   withAdmittedPersonalProviderKey,
@@ -126,6 +127,22 @@ describe("MindSwapper funding", () => {
     expect(await code(resolveModelFunding({ ...task, priorDecision }, h.deps))).toBe("personal_credential_stale");
     expect(await code(resolveModelFunding({ ...tools, transport: "surplus" }, h.deps))).toBe("funding_source_changed");
     expect(await code(resolveModelFunding({ ...tools, workload: "research" }, h.deps))).toBe("unsupported_workload");
+  });
+
+  test("reads only the admitted connection's current qualified offers", async () => {
+    const h = harness();
+    h.capabilities.set(ALICE, ["use_server_provider_credentials", "use_personal_provider_credentials"]);
+    h.deps.getMindSwapperServerRevision = () => "a".repeat(64);
+    h.deps.readMindSwapperServerModels = async () => [model];
+    const personalOffer = { ...model.offers[0]!, inputModalities: ["text", "image"] as const };
+    h.deps.readMindSwapperPersonalModels = async () => [{ ...model, offers: [personalOffer] }];
+    h.rows.set(ALICE + ":mindswapper", row(ALICE, "mindswapper"));
+    const personal = await resolveModelFunding({ ...tools, fundingKind: "personal" }, h.deps);
+    const server = await resolveModelFunding({ ...tools, fundingKind: "server" }, h.deps);
+    expect((await readAdmittedMindSwapperModel(personal, true, h.deps))?.offers).toEqual([personalOffer]);
+    expect(await readAdmittedMindSwapperModel(server, true, h.deps)).toEqual(model);
+    h.rows.set(ALICE + ":mindswapper", row(ALICE, "mindswapper", 2));
+    expect(await readAdmittedMindSwapperModel(personal, true, h.deps)).toBeUndefined();
   });
 });
 

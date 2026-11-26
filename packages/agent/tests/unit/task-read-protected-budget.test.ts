@@ -29,10 +29,18 @@ test("protected model output carries task paging debt and actual smaller-model b
   const catalog = new ToolCatalog();
   catalog.register({ name: "task", exposure: "core", category: "documents", trustTier: "standard", impact: "read-only", executor: "cloud", resultScanPolicy: "never",
     factory: (context) => {
-      if (context?.["taskReadMaxResponseBytes"] !== undefined) captured.push(context);
+      if (context?.["taskReadMaxResponseBytes"] !== undefined && context["toolCallId"] !== "writer-read") captured.push(context);
       return new DynamicStructuredTool({ name: "task", description: "Read a saved task", schema: z.object({ command: z.literal("read"), taskId: z.string(), continueRead: z.boolean().optional() }), func: async (input: { taskId: string }) => input.taskId === "invalid-cursor" || input.taskId === "no-budget"
         ? JSON.stringify({ version: "task-read-v1", kind: "error", code: input.taskId === "invalid-cursor" ? "task_read_cursor_invalid" : "task_read_budget_unavailable", message: "Select an available bounded page." })
         : JSON.stringify({ resultText: "The successful report describes error handling and recovery." }) });
+    },
+  });
+  const writerReader = "app_nautilo_writer__read_open_writer_range";
+  catalog.register({ name: writerReader, exposure: "core", category: "documents", trustTier: "standard", impact: "read-only", executor: "cloud", resultScanPolicy: "never",
+    factory: (context) => {
+      if (context?.["taskReadMaxResponseBytes"] !== undefined && context["toolCallId"] === "writer-read") captured.push(context);
+      return new DynamicStructuredTool({ name: writerReader, description: "Read Writer", schema: z.object({}),
+        func: async () => JSON.stringify({ resultText: "The successful Writer read describes error handling and recovery." }) });
     },
   });
   initToolCatalog(catalog);
@@ -41,7 +49,8 @@ test("protected model output carries task paging debt and actual smaller-model b
   const page = pageSchema.parse(JSON.parse(await readTaskSection(args, { ownerId: "owner", agentId: "agent", maxResponseBytes: 20_000 }, { task: { id: "child-task", status: "completed" }, runs: [run] }, [run])));
   const original = new ToolMessage({ id: "task-page", name: "task", tool_call_id: "prior-read", content: JSON.stringify(page), status: "success" });
   const canonical: BaseMessage[] = [new HumanMessage("Inspect the child's complete report."), new AIMessage({ content: "", tool_calls: [{ id: "prior-read", name: "task", args }] }), original];
-  const calls = ["left", "right"].map((id) => ({ id, name: "task", args: { command: "read", taskId: "child-task", continueRead: true } }));
+  const calls: NonNullable<AIMessage["tool_calls"]> = ["left", "right"].map((id) => ({ id, name: "task", args: { command: "read", taskId: "child-task", continueRead: true } }));
+  calls.push({ id: "writer-read", name: writerReader, args: {} });
   const response = new AIMessage({ content: "Recover the omitted report input.", tool_calls: calls });
   let expectedBudget = 0;
   let initialBudget = 0;
@@ -55,7 +64,7 @@ test("protected model output carries task paging debt and actual smaller-model b
     return { modelUsed, response };
   });
   const checkpoint = { messages: canonical, preparedMessages: [], soulFile: "", memoryBrief: "", skills: [], userId: "owner", personaId: "owner", agentId: "agent", roomId: "", turnId: "turn", actorRole: "owner",
-    model: "openai:gpt-5.6-sol", subagentDepth: 1, subagentRun: false, toolWhitelist: ["task"], activatedToolNames: ["task"], activatedToolLeases: [], engagedSkillNames: [], relayCapabilities: {},
+    model: "openai:gpt-5.6-sol", subagentDepth: 1, subagentRun: false, toolWhitelist: ["task", writerReader], activatedToolNames: ["task", writerReader], activatedToolLeases: [], engagedSkillNames: [], relayCapabilities: {},
     taskReadPageBytes: null, taskReadPendingPages: [], requiredHostRelays: {}, verifiedOrdinaryOrigin: null, memoryAccessEnvelope: null,
   } as unknown as NautiloState;
   try {
@@ -90,16 +99,16 @@ test("protected model output carries task paging debt and actual smaller-model b
     const actualState = { ...checkpoint, ...output };
     const session = createNautiloToolInvocationSession(createServerToolInvocationContext(actualState, () => ({ status: "allowed" })));
     const admittedCalls = admittedResponse.tool_calls ?? [];
-    expect(admittedCalls).toHaveLength(2);
+    expect(admittedCalls).toHaveLength(3);
     const receipts = await Promise.all(admittedCalls.map((call) => {
       if (!call.id) throw new Error("Expected an admitted canonical tool-call ID");
-      return session.invoke({ callId: call.id, toolName: "task", args: call.args, authorityRef: "admitted-test" });
+      return session.invoke({ callId: call.id, toolName: call.name, args: call.args, authorityRef: "admitted-test" });
     }));
     expect(receipts.every((receipt) => receipt.status === "success")).toBe(true);
     expect(receipts.every((receipt) => typeof receipt.content === "string" && receipt.content.includes("error handling"))).toBe(true);
-    expect(captured).toHaveLength(2);
+    expect(captured).toHaveLength(3);
     for (const context of captured) {
-      expect(context["taskReadMaxResponseBytes"]).toBe(Math.floor(expectedBudget / 2));
+      expect(context["taskReadMaxResponseBytes"]).toBe(Math.floor(expectedBudget / 3));
       expect(context["taskReadPendingPages"]).toEqual(output.taskReadPendingPages);
       expect(context["taskReadMessages"]).toEqual(output.messages);
       expect(JSON.stringify(context)).not.toContain("private runtime-only configuration");

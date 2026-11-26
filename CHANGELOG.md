@@ -7,6 +7,82 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Keep MindSwapper's request reference and recognized stream error reason
+  when a response fails, so the failed attempt can be traced from Costs.
+
+- Keep chat model lists responsive when Venice metadata is present by reusing
+  the parsed provider catalog across lookups. File changes and model
+  availability are checked on subsequent lookups.
+
+- Show message backfill progress for servers on their initial plaintext policy.
+
+- Honor OpenRouter's requested wait when temporary credit holds reject a request,
+  then retry the same model within the existing retry policy. Preserve cancellation
+  and spending checks, and distinguish temporary holds from insufficient credit.
+
+- Recover OpenRouter credit refusals by retrying the same request with its
+  reported affordable output allowance. Preserve spending limits and explain
+  unresolved credit failures without exposing provider diagnostics.
+
+- Let Enter split HTML paragraphs at the cursor and Shift+Enter insert line
+  breaks. Keep new paragraphs and blank lines editable, with formatting,
+  links, selection, and undo/redo preserved.
+
+- Add superscript formatting and its keyboard shortcut to HTML text editing.
+  Link selected text to a heading or paragraph in the same document, creating a
+  destination anchor when needed. In-page links scroll within the HTML preview.
+
+- Keep text pasted or typed after a superscript/subscript citation outside its
+  formatting and link. Paste into an inline element at the current caret instead
+  of moving the inserted text to the end of the element.
+
+- Keep cleared HTML paragraphs editable after refocusing or reopening. Add a
+  Delete paragraph toolbar action, and let Backspace/Delete remove an already
+  empty paragraph, with undo/redo and cursor restoration.
+
+- Validate and retain working legacy authentication credentials omitted from
+  Logto secret readback, without selecting a different key or rotating one.
+
+- Keep managed authentication reconciliation compatible with current Logto
+  application-secret responses without rotating existing client credentials.
+
+- Restore managed authentication planning and explicit backed-up reconciliation
+  in the signed administrator CLI, allowing upgrades to resume after an earlier
+  authentication baseline change without bypassing compatibility checks.
+
+- Update the server’s pinned headless Chrome runtime to stable 158.0.8127.36
+  on Linux AMD64 and ARM64, retaining archive integrity, executable integrity,
+  bundled licenses, and native OfficeCLI browser qualification.
+
+- Edit text directly in ordinary HTML pages, with a Text/Source switch,
+  document-wide undo and redo, bold/italic/underline and link controls, and the
+  existing autosave/conflict controls. Use Cmd/Ctrl+B, I, U, and K to format text
+  and edit links without opening Source.
+  Restore the cursor and scroll position across text regions and editing modes,
+  preserve inline styling and surrounding markup, and refresh previews after
+  external edits. Verify document size and revision before adopting refreshed
+  content, preserving the current draft when a read is incomplete or inconsistent.
+  Page scripts stay paused in text-editing mode.
+
+- Let Genies read a Writer document, section, selection, or block range in one
+  request when it fits their available context, with exact continuation for
+  larger reads. Replace the five-block window with runtime-sized pages and
+  track partial text coverage before declaring a document fully inspected.
+
+- Use the selected MindSwapper connection’s live model capabilities for chat
+  attachments. Distinguish billing review and spending limits from low credit.
+
+- Keep Writer undo and redo near the current cursor instead of jumping to the
+  start of the document. Clarify that Genies can batch edits across multiple
+  blocks in one review proposal.
+
+- Preserve clickable links in Writer HTML previews and exports, including older
+  saved documents. Show link destinations with open, edit and remove controls,
+  and support the link keyboard shortcut and host-routed link opening.
+  Large Word exports pass conversion commands through a temporary file instead
+  of exceeding the operating system's command-line argument limit, and retain
+  table hyperlinks, document titles and subtitles.
+
 - CLI runtime database acceptance resolves dependencies from the packaged
   server workspace, while retaining support for earlier image layouts and
   refusing automatic package downloads during probes.

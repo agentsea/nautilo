@@ -1,49 +1,18 @@
 /**
- * M051 (Logto cluster): one-shot bootstrap script.
+ * Bootstrap and reconcile managed Logto state.
  *
- * Runs once on first boot when `--with-logto` is passed and the Logto
- * Postgres database has just been seeded by `logto-seed`. Owns the
- * whole "make Logto admin-console-ready without a browser wizard" flow.
+ * The PostgreSQL probe supplies seeded management credentials and determines
+ * whether the administrator already exists. Only first bootstrap creates the
+ * administrator and changes the initial sign-in mode. Repeated runs preserve
+ * that account while reconciling managed applications, resources, organization
+ * roles, browser redirects, branding and configured password recovery.
  *
- * Algorithm (canonical: `research/logto-integration-v1.md` §7.6;
- * issue M051 Phase 5b):
+ * Application upserts search before creation. Existing M2M credentials are
+ * read without rotation, then projected through config-guard's transactional
+ * writer. Generated first-boot credentials are saved privately, never logged.
  *
- *  1. Wait until ${LOGTO_ENDPOINT}/oidc/.well-known/openid-configuration
- *     returns 200.
- *  2. Connect to Postgres via the LOGTO_DB credentials and read the
- *     m-admin Machine-to-Machine app's plaintext secret. This is the
- *     ONE step that bypasses Logto's HTTP API.
- *  3. Detect already-bootstrapped state via
- *     `SELECT sign_in_mode FROM sign_in_experiences WHERE tenant_id='admin'`.
- *     If 'SignIn' → exit 0 with "already bootstrapped" log. Idempotent.
- *  4. PATCH /api/sign-in-exp on both tenants disabling pwned-password
- *     check (offline-mode safety, see §7.6.1).
- *  4b. D104 Phase 5 — default tenant: reconcile hosted sign-in branding
- *      (Nautilo colors + self-hosted recovery copy in customCss) via
- *      GET/PATCH /api/sign-in-exp; idempotent; preserves operator CSS
- *      outside Nautilo sentinels. Canonical tokens: @nautilo/config.
- *  5. Mint M2M token for `resource=https://admin.logto.app/api`.
- *  6-9. Create admin-console user, add to t-default org with admin
- *       role, assign every system user role.
- * 10. PATCH /api/sign-in-exp (admin) to flip `signInMode` to "SignIn"
- *     so subsequent admin-console hits get a sign-in page, not the
- *     welcome wizard. After this point, step 3's idempotency check
- *     fires on re-runs.
- * 11. Mint M2M token for `resource=https://default.logto.app/api`.
- * 12. In the default tenant: create the SPA + Native + M2M apps,
- *     register the API resource (no scopes), seed RBAC org roles.
- * 13. Write the resulting LOGTO_* block to ~/.nautilo/instance.env via
- *     config-guard's transactional writer.
- * 14. Print a one-time boxed banner with admin URL + username +
- *     password. Exit 0.
- *
- * Per-object idempotency: every POST /api/applications,
- * /api/resources, and /api/organization-roles is preceded by a search
- * to avoid duplicates if the script crashes mid-flight (between steps
- * 6 and 13, before step 10 flips sign_in_mode).
- *
- * Reference implementation: appthrust/logto-admin-creator (steps 1-10).
- * Steps 11-14 are Nautilo-specific.
+ * Reference implementation: appthrust/logto-admin-creator for initial admin
+ * bootstrap; Nautilo owns the default-tenant application/configuration steps.
  */
 import { randomBytes } from "node:crypto";
 import {
@@ -66,6 +35,7 @@ import { isLoopbackHostname } from "@nautilo/config/loopback-origin";
 import { resolveDotenvPath, transaction as transactionImport } from "@nautilo/config-guard";
 import { log, warn } from "@nautilo/logger";
 import { computeLogtoHostedBrandingReconcilePatch } from "./logto-hosted-auth-branding";
+import { readConfiguredM2mSecret, readLogtoApplicationSecret } from "./logto-application-secret";
 import {
   computeForgotPasswordRelayPlan,
   type LogtoConnectorRow,
@@ -79,13 +49,13 @@ export interface LogtoConfig {
   endpoint: string;
   workbenchAppId: string;
   tuiAppId: string;
-  /** M102 — legacy-named Native app used by CLI loopback PKCE. */
+  /** legacy-named Native app used by CLI loopback PKCE. */
   tuiLoopbackAppId: string;
-  /** M055: Native app for Electron loopback PKCE (RFC 8252 §7.3). */
+  /** Native app for Electron loopback PKCE (RFC 8252 §7.3). */
   desktopAppId: string;
-  /** M199: Native app for the mobile (Expo) client — custom-scheme PKCE (nautilo://callback), public client, no secret. */
+  /** Native app for the mobile (Expo) client — custom-scheme PKCE (nautilo://callback), public client, no secret. */
   mobileAppId: string;
-  /** D515: SPA app for Mobile Web — exact current-origin /mobile/callback, public client, no secret. */
+  /** SPA app for Mobile Web — exact current-origin /mobile/callback, public client, no secret. */
   mobileWebAppId: string;
   m2mAppId: string;
   m2mAppSecret: string;
@@ -101,7 +71,7 @@ export const OSS_RELAY_FORGOT_PASSWORD_CUSTOM_PHRASES_EN = {
 } as const;
 
 /**
- * M064 — body for `PATCH /api/account-center` on the Logto default tenant
+ * body for `PATCH /api/account-center` on the Logto default tenant
  * (enables Account Center password self-service for retained clients).
  */
 export const ACCOUNT_CENTER_ENABLE_PATCH_BODY = {
@@ -110,16 +80,15 @@ export const ACCOUNT_CENTER_ENABLE_PATCH_BODY = {
 } as const;
 
 /**
- * M107 Phase 1b — canonical `PATCH /api/sign-in-exp` body that flips the
+ * canonical `PATCH /api/sign-in-exp` body that flips the
  * default tenant to username-based sign-in / sign-up. Sent unconditionally
  * on every bootstrap so:
  *   - fresh installs land in username-mode out of the gate (no email
  *     prompt the user has no way to satisfy on a local single-household
  *     install with no SMTP);
- *   - upgrade installs that pre-date M107 are auto-flipped on next boot.
+ *   - older email-mode installs switch to username sign-in on next boot.
  *
- * Shape verified against Logto OSS 1.38.0 in Phase 0 — see
- * `playbook/logto-operations.md` "M107 Phase 0" addendum. Unrelated SIE
+ * Shape supported by the Logto OSS sign-in experience API. Unrelated SIE
  * fields (`color`, `branding`, `customCss`, `passwordPolicy`, …) are
  * preserved by Logto's per-key merge on PATCH.
  *
@@ -166,10 +135,9 @@ export const LOGTO_ENV_KEY_NAMES = [
  * `transaction()`. Pulled out so a unit test can confirm the key set without
  * standing up Logto.
  *
- * M055 added LOGTO_DESKTOP_APP_ID for the Electron Native app. M102 adds
- * LOGTO_TUI_LOOPBACK_APP_ID (legacy-named CLI loopback PKCE sibling to device-flow
- * LOGTO_TUI_APP_ID). M072 removed the legacy auth-mode config-guard set-op —
- * that registry entry is gone post-rip and config-guard rejects unknown keys.
+ * Desktop and CLI loopback PKCE use separate Native application IDs; the
+ * legacy-named CLI device-flow application keeps LOGTO_TUI_APP_ID. Emit only
+ * registered configuration keys so config-guard can validate the whole set.
  */
 export function buildLogtoEnvOperations(
   cfg: LogtoConfig,
@@ -260,7 +228,7 @@ export function formatBootstrapBanner(input: BootstrapBannerInput): string {
 }
 
 /**
- * M059 — admin-console credential file.
+ * admin-console credential file.
  *
  * Written ONCE during first-time bootstrap (the same branch that mints
  * the admin password) so the operator has a known location to retrieve
@@ -365,11 +333,11 @@ function defaultAtomicWriter(path: string, contents: string): void {
 export const APP_NAMES = {
   workbench: "Nautilo Workbench",
   tui: "Nautilo TUI",
-  /** M102 — legacy-named loopback PKCE Native app; device-flow stays on `tui`. */
+  /** legacy-named loopback PKCE Native app; device-flow stays on `tui`. */
   tuiLoopback: "Nautilo TUI (loopback)",
   m2m: "Nautilo Server",
   /**
-   * M055 — separate Native app for Electron's loopback PKCE flow.
+   * separate Native app for Electron's loopback PKCE flow.
    * Logto OSS only honours RFC 8252 §7.3 port-flex on `127.0.0.1`
    * for `type: "Native"` apps; the Workbench SPA app rejects
    * port-specific URIs even when the bare `http://127.0.0.1/callback`
@@ -377,13 +345,13 @@ export const APP_NAMES = {
    */
   desktop: "Nautilo Desktop",
   /**
-   * M199 — Native app for the mobile (Expo / React Native) client's
+   * Native app for the mobile (Expo / React Native) client's
    * custom-scheme PKCE flow. A phone can't host a loopback HTTP server
    * like Electron (RFC 8252 §7.3), so mobile uses a custom URL scheme
    * (`nautilo://callback`) instead of `http://127.0.0.1/callback`.
    */
   mobile: "Nautilo Mobile",
-  /** D515 — browser SPA kept separate from native and Workbench custody. */
+  /** browser SPA kept separate from native and Workbench custody. */
   mobileWeb: "Nautilo Mobile Web",
 } as const;
 
@@ -443,12 +411,12 @@ function deriveWorkbenchBrowserOrigins(instance: ResolvedInstance): string[] {
 }
 
 /**
- * M071 / 1D.1 — Workbench SPA `redirectUris` derived from `resolveInstance()`.
+ * Workbench SPA `redirectUris` derived from `resolveInstance()`.
  * Covers Bun server + Vite dev server (`bun run gui`) callback URLs.
- * D152 smoke follow-up also registers the settings step-up target used by
+ * Also registers the settings step-up target used by
  * the recovery-code re-auth flow.
  *
- * D230 — local browser SPA redirects are still exact registrations, but
+ * local browser SPA redirects are still exact registrations, but
  * the default instance may be reached as localhost, 127.0.0.1, or [::1].
  * Register each concrete loopback alias; do not use wildcards or pattern
  * matching.
@@ -462,7 +430,7 @@ export function deriveWorkbenchOidcRedirectUris(
 }
 
 /**
- * M071 / 1D.1 — Workbench SPA `postLogoutRedirectUris` from server + workbench origins.
+ * Workbench SPA `postLogoutRedirectUris` from server + workbench origins.
  */
 export function deriveWorkbenchPostLogoutRedirectUris(
   instance: ResolvedInstance,
@@ -492,7 +460,7 @@ export function deriveMobileWebPostLogoutRedirectUris(
 }
 
 /**
- * M071 / 1D.2 — Pure additive merge for Logto `oidcClientMetadata` redirect lists.
+ * Pure additive merge for Logto `oidcClientMetadata` redirect lists.
  * Matches the set-union shape `ensureApp` PATCHes when an application already exists.
  */
 export function computeOidcUriUnionPatch(
@@ -563,7 +531,7 @@ export function computeOidcUriRebindPatch(
 }
 
 /**
- * M055 — Electron Native app's redirect URI. Logto OSS honours RFC
+ * Electron Native app's redirect URI. Logto OSS honours RFC
  * 8252 §7.3 port-flex on `127.0.0.1` for Native apps, so the
  * port-less form covers every per-launch loopback port the desktop
  * spins up.
@@ -573,10 +541,10 @@ export const DESKTOP_REDIRECT_URIS = [
 ] as const;
 
 /**
- * M102 — Native app redirect URI for CLI loopback PKCE.
+ * Native app redirect URI for CLI loopback PKCE.
  * The legacy-named device-flow app (`Nautilo TUI`) cannot host this grant because
  * `customClientMetadata.isDeviceFlow=true` makes it device-flow-only —
- * Logto OSS sets `response_types=[]` on those clients. So the M102 CLI
+ * Logto OSS sets `response_types=[]` on those clients. So the CLI
  * loopback path needs a second Native app, exactly mirroring the Electron
  * Desktop pattern.
  */
@@ -585,18 +553,18 @@ export const TUI_LOOPBACK_REDIRECT_URIS = [
 ] as const;
 
 /**
- * M057 + M102 — redirect URIs for the legacy-named **device-flow** Native app only.
+ * Redirect URIs for the legacy-named **device-flow** Native app only.
  *
  * Device flow (RFC 8628) does not use a browser redirect, but Logto OSS
  * validates `redirect_uris.length >= 1` before issuing a device code.
- * The placeholder satisfies that structural check (M057).
+ * The placeholder satisfies that structural check.
  *
- * M102 CLI loopback PKCE uses a **separate** legacy-named app (`Nautilo TUI (loopback)` +
+ * CLI loopback PKCE uses a **separate** legacy-named app (`Nautilo TUI (loopback)` +
  * `TUI_LOOPBACK_REDIRECT_URIS`) — never register `http://127.0.0.1/callback`
  * on the device-flow client: Logto rejects `response_type=code` there.
  *
  * Reconciliation note: older bootstraps may have merged
- * `http://127.0.0.1/callback` onto this app before M102 split that URI out.
+ * `http://127.0.0.1/callback` onto this app before CLI loopback was separated.
  * Leaving that orphan registered is harmless (unused); do not add a stripper.
  */
 export const TUI_REDIRECT_URIS = [
@@ -609,11 +577,11 @@ export const DESKTOP_POST_LOGOUT_REDIRECT_URIS = [
 ] as const;
 
 /**
- * M199 — Mobile (Expo) Native app redirect URI. A native app has no
+ * Mobile (Expo) Native app redirect URI. A native app has no
  * origin; the OS routes a custom URL scheme back to the app (the mobile
  * equivalent of desktop's loopback redirect). Static across every Nautilo
  * server so the bootstrap seed registers it without per-server knowledge.
- * Must match the redirect `expo-auth-session` produces in D369.
+ * Must match the redirect produced by `expo-auth-session` in the mobile client.
  */
 export const MOBILE_REDIRECT_URIS = ["nautilo://callback"] as const;
 
@@ -621,13 +589,13 @@ export const MOBILE_POST_LOGOUT_REDIRECT_URIS = [
   "nautilo://sign-out",
 ] as const;
 
-// M060 — `customClientMetadata.alwaysIssueRefreshToken` was the
-// initial Phase 2 candidate for re-enabling refresh-token issuance,
+// `customClientMetadata.alwaysIssueRefreshToken` was the
+// considered for re-enabling refresh-token issuance,
 // but Logto core source `oidc/init.ts:212-221` reveals it ONLY applies
 // to `applicationType === 'web'` (i.e. Traditional). For our Native
-// Native (Desktop and legacy-named CLI clients) and SPA (Workbench) apps the flag is a no-op.
+// clients (Desktop and legacy-named CLI) and SPA (Workbench) apps the flag is a no-op.
 //
-// The actual Phase 2 fix lives in the CLIENT layer:
+// Refresh-token issuance is configured in the client layer:
 // `apps/desktop/electron/auth/sign-in.ts` and
 // The CLI device-flow client sets `prompt=consent` on the
 // authorize / device-auth requests. Without it, Logto's first-party
@@ -666,7 +634,7 @@ export interface BootstrapOptions {
   /** Override discovery-poll deadline. Default 60s. */
   discoveryTimeoutMs?: number;
   /**
-   * M117 — extra `redirectUris` to register on the Workbench SPA app
+   * extra `redirectUris` to register on the Workbench SPA app
    * (set-union with `deriveWorkbenchOidcRedirectUris(instance)`).
    *
    * For `https=letsencrypt` deploys, the public URL is the LE domain
@@ -679,11 +647,11 @@ export interface BootstrapOptions {
    * pick up new URIs additively without disturbing existing ones.
    */
   extraWorkbenchRedirectUris?: readonly string[];
-  /** M117 — extra `postLogoutRedirectUris` for the Workbench SPA app. */
+  /** extra `postLogoutRedirectUris` for the Workbench SPA app. */
   extraWorkbenchPostLogoutUris?: readonly string[];
-  /** D515 — exact public server-origin Mobile Web callback registrations. */
+  /** exact public server-origin Mobile Web callback registrations. */
   extraMobileWebRedirectUris?: readonly string[];
-  /** D515 — exact public server-origin Mobile Web logout registrations. */
+  /** exact public server-origin Mobile Web logout registrations. */
   extraMobileWebPostLogoutUris?: readonly string[];
   /**
    * Restore-only, request-memory authority for replacing Nautilo-managed
@@ -691,21 +659,21 @@ export interface BootstrapOptions {
    */
   managedWorkbenchOriginReplacement?: ManagedWorkbenchOriginReplacement;
   /**
-   * M120 — when set, configure Logto's `http-email` connector to deliver the
+   * when set, configure Logto's `http-email` connector to deliver the
    * native ForgotPassword email code to Nautilo's webhook, and enable the
    * `EmailVerificationCode` forgot-password method. `webhookEndpoint` is the
    * URL Logto POSTs to (compose deploys use container DNS,
    * `http://nautilo-server:3001/api/internal/logto/email-webhook`);
    * `webhookSecret` is sent verbatim as `Authorization: Bearer <secret>` and
    * must match the server's `NAUTILO_LOGTO_HTTP_EMAIL_WEBHOOK_SECRET`.
-   * Omitted → the relay is left unconfigured (M120 disabled for this deploy).
+   * Omitted → the relay is left unconfigured ( disabled for this deploy).
    */
   forgotPasswordRelay?: {
     webhookEndpoint: string;
     webhookSecret: string;
   };
   /**
-   * M120 / deploy-mode hosted reset: where Logto should send direct hosted UI
+   *  / deploy-mode hosted reset: where Logto should send direct hosted UI
    * hits / unknown sessions. Compose-deployed Workbench is served by the
    * Nautilo server, so callers should pass `resolveInstance().server.url`.
    * Omitted keeps the historical local-dev Vite target.
@@ -898,6 +866,32 @@ export const TOKEN_MINT_MAX_ATTEMPTS = 6;
 const TOKEN_MINT_BACKOFF_CEILING_MS = 8_000;
 const TOKEN_MINT_REQUEST_TIMEOUT_MS = 10_000;
 
+/** Validate an existing credential only; discard the token and never rotate it. */
+export async function verifyExistingM2mCredential(
+  endpoint: string,
+  applicationId: string,
+  secret: string,
+): Promise<boolean> {
+  try {
+    const response = await fetch(`${endpoint}/oidc/token`, {
+      method: "POST",
+      headers: {
+        authorization: `Basic ${Buffer.from(`${applicationId}:${secret}`).toString("base64")}`,
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({ grant_type: "client_credentials", resource: "https://default.logto.app/api", scope: "all" }),
+      signal: AbortSignal.timeout(TOKEN_MINT_REQUEST_TIMEOUT_MS),
+    });
+    if (!response.ok) return false;
+    const result: unknown = await response.json();
+    return result !== null && typeof result === "object"
+      && "access_token" in result && typeof result.access_token === "string"
+      && result.access_token.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
 export async function mintM2mToken(
   endpoint: string,
   clientId: string,
@@ -1013,7 +1007,7 @@ async function api<T = unknown>(
   }
 }
 
-/** M064 — Account Center API (`PATCH /api/account-center`). */
+/** Account Center API (`PATCH /api/account-center`). */
 async function ensureAccountCenterEnabled(client: ApiClientOptions): Promise<void> {
   await api(client, "PATCH", "/api/account-center", {
     enabled: ACCOUNT_CENTER_ENABLE_PATCH_BODY.enabled,
@@ -1075,7 +1069,7 @@ function selectExactProvisionedApplication(
  * Idempotent app upsert: GETs by name first, POSTs only if not found.
  * If the app DOES exist, reconciles the desired `redirectUris` /
  * `postLogoutRedirectUris` via a set-union PATCH so subsequent
- * bootstraps pick up new entries we added (e.g. M054 port-3000 dev
+ * bootstraps pick up new entries we added (e.g. port-3000 dev
  * redirect) without blowing away admin-console-added URIs.
  *
  * Returns the existing-or-just-created app row.
@@ -1104,7 +1098,7 @@ export function selectManagedWorkbenchApplication<T extends { readonly id: strin
 }
 
 /**
- * M060 — set-union merge for `customClientMetadata`.
+ * set-union merge for `customClientMetadata`.
  *
  * Logto OSS replaces (not merges) `customClientMetadata` on PATCH —
  * sending `{alwaysIssueRefreshToken:true}` alone overwrites the object
@@ -1132,14 +1126,14 @@ export function mergeCustomClientMetadata(
 }
 
 /**
- * M057 — legacy-named CLI device-flow app upsert.
+ * legacy-named CLI device-flow app upsert.
  *
  * Differs from `ensureApp` in two ways:
  *   1. POSTs include `customClientMetadata.isDeviceFlow: true`.
  *   2. If an app with this name already exists but DOESN'T have
  *      `isDeviceFlow=true`, DELETE + re-POST. Logto OSS rejects
  *      PATCHes that flip the flag (`device_flow_not_changeable`), so
- *      a one-shot rebuild is the only path forward for pre-M057 dev
+ *      a one-shot rebuild is the only path forward for older development
  *      installs.
  */
 async function ensureDeviceFlowTuiApp(
@@ -1169,7 +1163,7 @@ async function ensureDeviceFlowTuiApp(
   if (match.customClientMetadata?.["isDeviceFlow"] === true) {
     // Already a device-flow app. Reconcile the redirect URI set AND
     // the customClientMetadata so refresh-token issuance flips on for
-    // pre-M060 dev installs without a destructive recreate.
+    // older development installs without a destructive recreate.
     const current = match.oidcClientMetadata ?? {};
     const desired = payload.oidcClientMetadata;
     const currentRedirects = current.redirectUris ?? [];
@@ -1209,7 +1203,7 @@ async function ensureDeviceFlowTuiApp(
     return match;
   }
 
-  // Pre-M057 install: the legacy-named app exists as a regular Native app. Delete
+  // Older install: the legacy-named app exists as a regular Native app. Delete
   // and recreate as a device-flow app. The new app will have a fresh
   // ID; the env-writer step below picks it up automatically.
   log(
@@ -1233,7 +1227,7 @@ async function reconcileDefaultTenantHostedAuthBranding(
       "GET",
       "/api/sign-in-exp",
     );
-    // M105 Phase B follow-up — point Logto's "unknown session" landing at
+    // Point Logto's "unknown session" landing at
     // the workbench root so direct hits on /sign-in (no OAuth flow) don't
     // dead-end on Logto's 404.
     const workbenchUrl =
@@ -1248,7 +1242,7 @@ async function reconcileDefaultTenantHostedAuthBranding(
       log("[bootstrap-logto] hosted sign-in branding already matches Nautilo defaults");
       return;
     }
-    log("[bootstrap-logto] patching default-tenant hosted sign-in branding (D104 Phase 5)...");
+    log("[bootstrap-logto] patching default-tenant hosted sign-in branding ...");
     await api(client, "PATCH", "/api/sign-in-exp", patch);
   } catch (e) {
     warn(
@@ -1298,11 +1292,11 @@ export async function reconcileOssRelayForgotPasswordPhrases(
 
   const merged = mergeOssRelayForgotPasswordPhrases(currentTranslation);
   if (JSON.stringify(merged) === JSON.stringify(currentTranslation)) {
-    log("[bootstrap-logto] M120: OSS relay custom phrases already configured");
+    log("[bootstrap-logto] OSS relay custom phrases already configured");
     return;
   }
 
-  log("[bootstrap-logto] M120: patching OSS relay custom phrases...");
+  log("[bootstrap-logto] patching OSS relay custom phrases...");
   await api(client, "PUT", "/api/custom-phrases/en", merged);
 }
 
@@ -1346,7 +1340,7 @@ export async function reconcileOssRelayForgotPasswordPhrasesInLogtoDb(
 }
 
 /**
- * M120 — configure Logto so the native ForgotPassword email-code flow
+ * configure Logto so the native ForgotPassword email-code flow
  * delivers its code to Nautilo's HTTP Email webhook (no SMTP), and enable the
  * `EmailVerificationCode` forgot-password method. Idempotent. Throws if a
  * different (operator-owned) email connector is already configured — POSTing
@@ -1387,28 +1381,28 @@ export async function reconcileForgotPasswordRelay(
 
   if (plan.connector === "conflict") {
     throw new Error(
-      `[bootstrap-logto] M120: an operator-owned email connector ` +
+      `[bootstrap-logto] an operator-owned email connector ` +
         `(${plan.conflictConnectorId}) is already configured. Refusing to ` +
         `replace it (POSTing one makes Logto delete existing email ` +
         `connectors). Remove that connector or use a deployment profile that ` +
-        `does not configure the OSS M120 relay.`,
+        `does not configure the OSS relay.`,
     );
   }
 
   if (plan.connector === "create" && plan.connectorBody) {
-    log("[bootstrap-logto] M120: configuring http-email connector → Nautilo webhook...");
+    log("[bootstrap-logto] configuring http-email connector → Nautilo webhook...");
     await api(client, "POST", "/api/connectors", plan.connectorBody);
   } else {
-    log("[bootstrap-logto] M120: http-email connector already configured");
+    log("[bootstrap-logto] http-email connector already configured");
   }
 
   if (plan.forgotPasswordMethods) {
-    log("[bootstrap-logto] M120: enabling EmailVerificationCode forgot-password method...");
+    log("[bootstrap-logto] enabling EmailVerificationCode forgot-password method...");
     await api(client, "PATCH", "/api/sign-in-exp", {
       forgotPasswordMethods: plan.forgotPasswordMethods,
     });
   } else {
-    log("[bootstrap-logto] M120: EmailVerificationCode forgot-password method already enabled");
+    log("[bootstrap-logto] EmailVerificationCode forgot-password method already enabled");
   }
 }
 
@@ -1427,7 +1421,7 @@ async function ensureApp(
     };
     requireManagedWorkbenchIdentity?: true;
     /**
-     * M060 — opt-in customClientMetadata. M2M apps don't need it; SPA
+     * opt-in customClientMetadata. M2M apps don't need it; SPA
      * + Native apps that drive interactive sign-ins do (refresh-token
      * issuance is gated on `alwaysIssueRefreshToken`). Set-union
      * merged into existing customClientMetadata so we never drop
@@ -1481,7 +1475,7 @@ async function ensureApp(
       };
   const { missingRedirects, missingPostLogout } = uriUnion;
 
-  // M060 — customClientMetadata reconciliation. PATCH semantics on
+  // customClientMetadata reconciliation. PATCH semantics on
   // this field are REPLACE, not merge, so we read-merge-write the
   // full object via mergeCustomClientMetadata.
   const customMerge = payload.customClientMetadata
@@ -1585,6 +1579,7 @@ async function readProvisionedLogtoConfig(
   client: ApiClientOptions,
   endpoint: string,
   resource: string,
+  envPath: string,
 ): Promise<LogtoConfig> {
   try {
     // Do not depend on an unfiltered collection being complete: Logto may
@@ -1617,7 +1612,13 @@ async function readProvisionedLogtoConfig(
       resource,
       applications,
       resources,
-      m2mSecret: m2mDetails.secret,
+      m2mSecret: await readLogtoApplicationSecret({
+        applicationId: m2m.id,
+        legacySecret: m2mDetails.secret,
+        preferredSecret: readConfiguredM2mSecret(envPath, m2m.id),
+        readSecrets: () => api(client, "GET", `/api/applications/${encodeURIComponent(m2m.id)}/secrets`),
+        verifyPreferredSecret: (secret) => verifyExistingM2mCredential(endpoint, m2m.id, secret),
+      }),
     });
   } catch (error) {
     if (error instanceof ProvisionedLogtoIdentityError) throw error;
@@ -1655,7 +1656,7 @@ async function ensureOrgRole(
 }
 
 /**
- * M055 — extracted from the original `runBootstrap` body. Steps 4-10
+ * extracted from the original `runBootstrap` body. Steps 4-10
  * of the bootstrap algorithm: relax pwned-password check, create the
  * admin user, add to the t-default org with admin role, assign system
  * user roles, flip admin tenant signInMode → SignIn. Only runs on the
@@ -1852,7 +1853,7 @@ async function reconcileMobileWebApplication(
     type: "SPA",
     oidcClientMetadata: { redirectUris, postLogoutRedirectUris },
     description:
-      "Nautilo Mobile Web — exact-origin /mobile PKCE SPA. Public client, no secret (D515).",
+      "Nautilo Mobile Web — exact-origin /mobile PKCE SPA. Public client, no secret.",
   });
 }
 
@@ -1908,16 +1909,10 @@ export async function runBootstrap(
     );
   }
 
-  // M055: split the idempotency model. Previously a single
-  // `alreadyBootstrapped` short-circuit returned at this point and
-  // skipped EVERYTHING below — including app provisioning. That meant
-  // existing M051 dev installs would never see new app specs added in
-  // later cluster issues (M055's `Nautilo Desktop` app, future M0XX
-  // additions, etc.). The probe still gates user creation + sign-in-
-  // mode flip, but app + resource + role + config-env writes run
-  // unconditionally. `ensureApp` is set-union over redirect URIs and
-  // `transaction()` is idempotent on equal-value writes, so re-runs are
-  // cheap and never destructive.
+  // Gate administrator creation and the initial admin sign-in mode on the
+  // probe, but reconcile managed apps, resources, roles and configuration on
+  // repeated runs too. Existing installs must receive new client registrations.
+  // Redirect reconciliation uses set union; equal-value config writes are no-ops.
 
   // Step 4 + 5: mint two M2M tokens. m-admin manages the admin tenant
   // (admin user creation + sign-in-mode flip); m-default manages the
@@ -1974,7 +1969,7 @@ export async function runBootstrap(
     // reconciliation rather than invoking any of the normal ensure*/seed
     // paths below. The in-memory callback is the only handoff channel.
     if (managedOriginReplacement !== undefined) {
-      const config = await readProvisionedLogtoConfig(defaultClient, endpoint, resource);
+      const config = await readProvisionedLogtoConfig(defaultClient, endpoint, resource, options.envPath ?? resolveDotenvPath());
       if (options.persistConfig !== undefined) await options.persistConfig(config);
       return config;
     }
@@ -1998,7 +1993,7 @@ export async function runBootstrap(
     return;
   }
 
-  // M055: stages 4-10 (password policy, admin user, org membership,
+  // stages 4-10 (password policy, admin user, org membership,
   // sign-in-mode flip) only run on first bootstrap. App provisioning
   // (stage 12) runs unconditionally — see comment above.
   let adminUsername = "";
@@ -2017,19 +2012,17 @@ export async function runBootstrap(
 
   // Default-tenant pwned-password policy relaxation runs every boot —
   // PATCH is idempotent, and an upgrade-path bootstrap that lands on a
-  // tenant that doesn't have it set yet (older M051 install) shouldn't
+  // tenant that doesn't have it set yet (older install) shouldn't
   // be silently left in a state where new-user creation hangs offline.
   await api(defaultClient, "PATCH", "/api/sign-in-exp", {
     passwordPolicy: { rejects: { pwned: false } },
   });
 
-  // M107 Phase 1b — flip the default tenant to username-based sign-in.
+  // flip the default tenant to username-based sign-in.
   // Idempotent (Logto returns 200 with no diff when the body matches
-  // the existing record). Runs unconditionally so upgrades that pre-date
-  // M107 catch up on the next boot without operator action. See the
-  // doc-block on SIGN_IN_EXP_USERNAME_PATCH_BODY for the Phase 0 probe
-  // notes that locked this shape.
-  log("[bootstrap-logto] ensuring default-tenant SIE is username-based (M107)...");
+  // the existing record). Runs unconditionally so older installations
+  // converge on the supported sign-in experience on their next boot.
+  log("[bootstrap-logto] ensuring default-tenant SIE is username-based ...");
   await api(
     defaultClient,
     "PATCH",
@@ -2043,7 +2036,7 @@ export async function runBootstrap(
       : {}),
   });
 
-  // M120 — configure the ForgotPassword email relay (http-email connector +
+  // configure the ForgotPassword email relay (http-email connector +
   // EmailVerificationCode method) when the deploy supplied a webhook target.
   // Runs unconditionally on every boot (idempotent) so upgrades pick it up.
   if (options.forgotPasswordRelay) {
@@ -2052,19 +2045,19 @@ export async function runBootstrap(
   }
 
   // Step 12: default-tenant Nautilo objects. Runs unconditionally so
-  // app spec changes (e.g. M055 added the "Nautilo Desktop" Native
-  // app) land on existing M051 dev installs without an operator flag.
+  // app spec changes (such as the "Nautilo Desktop" Native app)
+  // land on existing development installs without an operator flag.
   log("[bootstrap-logto] creating Nautilo applications + resource + roles...");
 
-  // M117 — set-union LAN-derived URIs with any extras supplied by the
+  // set-union LAN-derived URIs with any extras supplied by the
   // caller (compose-driver passes `https://<domain>/auth/callback` etc
   // for `https=letsencrypt` deploys). `ensureApp`'s reconciler also
   // does set-union PATCH so re-deploys converge regardless.
   // POST /api/applications schema requires both redirectUris AND
   // postLogoutRedirectUris when oidcClientMetadata is present (Logto's
   // Zod validator rejects partial metadata even though Cloud's docs
-  // imply the second field is optional). M055 populates the SPA's
-  // postLogoutRedirectUris so the M054 browser sign-out lands on the
+  // imply the second field is optional). Populate the SPA's
+  // postLogoutRedirectUris so browser sign-out lands on the
   // workbench origin.
   const workbenchApp = await reconcileWorkbenchApplication(
     defaultClient,
@@ -2072,7 +2065,7 @@ export async function runBootstrap(
     managedOriginReplacement,
   );
 
-  // M057 — RFC 8628 device-flow Native app. Logto OSS gates the
+  // RFC 8628 device-flow Native app. Logto OSS gates the
   // `urn:ietf:params:oauth:grant-type:device_code` on
   // `customClientMetadata.isDeviceFlow=true` (see Logto schemas
   // `CustomClientMetadataKey.IsDeviceFlow`). Without it, Native apps
@@ -2082,7 +2075,7 @@ export async function runBootstrap(
   //
   // Crucially, Logto refuses to PATCH `isDeviceFlow` after creation
   // (`application.device_flow_not_changeable`), so we can only set it
-  // on POST. The pre-M057 bootstrap created the legacy-named app without this
+  // on POST. Older bootstrap versions created the legacy-named app without this
   // flag → existing dev installs need a one-shot rebuild. Detect via
   // the `customClientMetadata.isDeviceFlow` field on the GET, and
   // DELETE + re-POST if missing. App ID changes — the env writer
@@ -2101,7 +2094,7 @@ export async function runBootstrap(
   };
   const tuiApp = await ensureDeviceFlowTuiApp(defaultClient, tuiPayload);
 
-  // D112 Phase 6 — loopback claim redeem mints a PAT then exchanges it for
+  // loopback claim redeem mints a PAT then exchanges it for
   // API access tokens. Logto requires `allowTokenExchange` on the client app.
   try {
     const curTui = await api<{
@@ -2117,7 +2110,7 @@ export async function runBootstrap(
         customClientMetadata: merged,
       });
       log(
-        "[bootstrap-logto] enabled customClientMetadata.allowTokenExchange on legacy CLI device-flow app (D112 claim handoff)",
+        "[bootstrap-logto] enabled customClientMetadata.allowTokenExchange on legacy CLI device-flow app (claim handoff)",
       );
     }
   } catch (err) {
@@ -2126,7 +2119,7 @@ export async function runBootstrap(
     );
   }
 
-  // M055 — fourth app: Native Electron loopback PKCE (RFC 8252 §7.3).
+  // fourth app: Native Electron loopback PKCE (RFC 8252 §7.3).
   // Distinct from the SPA Workbench app because Logto OSS only honours
   // port-flex on `127.0.0.1` for Native apps. Probed 2026-04-28.
   const desktopApp = await ensureApp(defaultClient, {
@@ -2140,10 +2133,10 @@ export async function runBootstrap(
       "Nautilo Electron desktop app — loopback PKCE per RFC 8252 §7.3.",
   });
 
-  // M102 — legacy-named CLI loopback PKCE Native app. The device-flow app cannot
+  // legacy-named CLI loopback PKCE Native app. The device-flow app cannot
   // host authorization_code because Logto OSS gates response_types=[]
   // when customClientMetadata.isDeviceFlow=true. Mirror the Electron
-  // Desktop pattern: a second Native app for the M102 CLI laptop path.
+  // Desktop pattern: a second Native app for the CLI laptop path.
   const tuiLoopbackApp = await ensureApp(defaultClient, {
     name: APP_NAMES.tuiLoopback,
     type: "Native",
@@ -2152,10 +2145,10 @@ export async function runBootstrap(
       postLogoutRedirectUris: [],
     },
     description:
-      "CLI loopback PKCE — RFC 8252 §7.3 (M102). Uses the legacy Nautilo TUI loopback registration; its sibling is device-flow-only.",
+      "CLI loopback PKCE — RFC 8252 §7.3. Uses the legacy Nautilo TUI loopback registration; its sibling is device-flow-only.",
   });
 
-  // M199 — Native app for the mobile (Expo) client's custom-scheme PKCE
+  // Native app for the mobile (Expo) client's custom-scheme PKCE
   // flow. Mobile has no origin and can't host a loopback server like
   // Electron, so it uses `nautilo://callback` instead of
   // `http://127.0.0.1/callback`. Same public-client PKCE shape as the
@@ -2169,7 +2162,7 @@ export async function runBootstrap(
       postLogoutRedirectUris: MOBILE_POST_LOGOUT_REDIRECT_URIS,
     },
     description:
-      "Nautilo mobile app (Expo / React Native) — custom-scheme PKCE (nautilo://callback). Public client, no secret (M199).",
+      "Nautilo mobile app (Expo / React Native) — custom-scheme PKCE (nautilo://callback). Public client, no secret.",
   });
 
   const mobileWebApp = await reconcileMobileWebApplication(defaultClient, options);
@@ -2180,7 +2173,7 @@ export async function runBootstrap(
   });
 
   // Best-effort: assign Logto Management API access role to the M2M app
-  // so it can later invite users / assign roles from server code (M052+).
+  // so server code can invite users and assign roles.
   try {
     const allRoles = await api<{ id: string; name: string }[]>(
       defaultClient,
@@ -2213,7 +2206,7 @@ export async function runBootstrap(
     await ensureOrgRole(defaultClient, roleName);
   }
 
-  // M064 — default-tenant Account Center (password edit). Uses the same
+  // default-tenant Account Center (password edit). Uses the same
   // `defaultClient` minted with resource=https://default.logto.app/api
   // (m-default M2M token against core :3301 — not the admin port).
   await ensureAccountCenterEnabled(defaultClient);
@@ -2229,16 +2222,17 @@ export async function runBootstrap(
     );
     m2mSecret = fresh.secret;
   }
-  if (!m2mSecret) {
-    throw new Error(
-      `Could not retrieve secret for M2M app ${m2mApp.id}; bootstrap incomplete.`,
-    );
-  }
+  m2mSecret = await readLogtoApplicationSecret({
+    applicationId: m2mApp.id,
+    legacySecret: m2mSecret,
+    preferredSecret: readConfiguredM2mSecret(options.envPath ?? resolveDotenvPath(), m2mApp.id),
+    readSecrets: () => api(defaultClient, "GET", `/api/applications/${encodeURIComponent(m2mApp.id)}/secrets`),
+    verifyPreferredSecret: (secret) => verifyExistingM2mCredential(endpoint, m2mApp.id, secret),
+  });
 
   // Step 13: persist via config-guard. Idempotent on equal-value
-  // writes; the only dirty events are when an app id rotated (full
-  // re-bootstrap) or when a new key landed (e.g. M055's
-  // LOGTO_DESKTOP_APP_ID on upgrade boots).
+  // writes; changed application identities and newly supported configuration
+  // keys are projected together.
   const cfg: LogtoConfig = {
     endpoint,
     workbenchAppId: workbenchApp.id,
@@ -2254,7 +2248,7 @@ export async function runBootstrap(
   log(options.persistConfig
     ? "[bootstrap-logto] handing reconciled LOGTO configuration to hosted output sink..."
     : "[bootstrap-logto] writing LOGTO_* to instance.env...");
-  // M120 — persist the ForgotPassword webhook secret in the SAME
+  // persist the ForgotPassword webhook secret in the SAME
   // transaction as the LOGTO_* keys. config-guard's crossKeyInvariants
   // rejects a partial Logto key-set, so writing the secret on its own
   // (before these keys land) fails; bundling it here satisfies the
@@ -2274,7 +2268,7 @@ export async function runBootstrap(
       operations,
       healthCheck: "none",
       overwrite: true,
-      reason: "M051 logto bootstrap",
+      reason: "Logto bootstrap",
       actor: "cli",
     });
     if (!txn.success) {
@@ -2308,7 +2302,7 @@ export async function runBootstrap(
 }
 
 // ---------------------------------------------------------------------
-// M120 — host-run dev server ForgotPassword relay.
+// host-run dev server ForgotPassword relay.
 //
 // The compose-driver (`nautilo deploy`) runs `nautilo-server` as a
 // container and reconciles the Logto `http-email` connector against
@@ -2417,7 +2411,7 @@ export function resolveHostDevForgotPasswordRelay(
 // CLI runner: `bun bin/nautilo-local/src/bootstrap-logto.ts` runs the
 // bootstrap directly (used by `infra:start`, `bin/nautilo-local
 // --with-logto`, and as an operator escape hatch). All of these run the
-// server on the host, so wire the M120 ForgotPassword relay for the
+// server on the host, so wire the ForgotPassword relay for the
 // host-dev topology.
 if (import.meta.main) {
   (async () => {

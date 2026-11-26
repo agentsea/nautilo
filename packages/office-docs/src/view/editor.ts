@@ -1,4 +1,5 @@
 import { Doc } from '../model/document.js';
+import { walkBlocks } from '../model/block-walk.js';
 import { indentedListLevel } from '../model/list-level.js';
 import { readOnlyDocStore } from '../store/read-only.js';
 import type { Block, InlineStyle, BlockStyle, BlockType, HeadingLevel, SearchMatch, CellAddress, CellRange, CellStyle, ImageData, PageSetup } from '../model/types.js';
@@ -220,6 +221,8 @@ export interface EditorAPI {
   requestLink(): void;
   /** Register a callback for Cmd/Ctrl+K link requests */
   onLinkRequest(cb: () => void): void;
+  /** Delegate link navigation to the embedding host (for sandboxed editors). */
+  onOpenLink(cb: ((href: string) => void) | undefined): void;
   /** Register a callback for cursor-position-based link detection (fires when cursor enters/leaves a link) */
   onCursorLinkChange(cb: (info: { href: string; rect: { x: number; y: number; width: number; height: number } } | undefined) => void): void;
   /** Get the cursor's screen (viewport) coordinates for popover positioning */
@@ -2313,86 +2316,61 @@ export function initialize(
     }
   };
 
-  // Wire up text editor
-  const undoFn = () => {
-    if (docStore.canUndo()) {
-      // Reverting a change moves the offsets the image selection is measured
-      // in. The keyboard path clears it via `imageKeyHandler`'s catch-all, but
-      // the toolbar's Undo button calls this directly, so the clear has to live
-      // here too. Assigned rather than routed through
-      // `clearImageSelectionForMutation()` because this function renders once
-      // at the end and an early render would paint the pre-undo document.
-      selectedImage = null;
-      // An in-flight resize drag names the same moving offsets, so it has to
-      // go with the selection: left armed, its `mouseup` would commit a size
-      // onto whatever the undo put at that coordinate.
-      abortImageResizeDrag();
-      pending.clear();
-      docStore.undo();
-      doc.refresh();
-      textEditor?.setEditContext('body');
-      layoutCache = undefined;
+  // History presence is optional: Writer's local store records document
+  // snapshots only. Keep its local caret instead of treating absent presence
+  // as a request to navigate to the start of the document.
+  const applyHistory = (action: 'undo' | 'redo') => {
+    if (!(action === 'undo' ? docStore.canUndo() : docStore.canRedo())) return;
+    const previousPos = { ...cursor.position };
+    const previousBlocks = [...walkBlocks(doc.getContextBlocks())];
 
-      // Restore cursor from Yorkie presence (automatically restored by undo)
-      const restoredPos = 'getPresenceCursorPos' in docStore
-        ? (docStore as { getPresenceCursorPos(): DocPosition | undefined })
-            .getPresenceCursorPos()
-        : undefined;
-      if (restoredPos && doc.findBlock(restoredPos.blockId)) {
-        const block = doc.getBlock(restoredPos.blockId);
-        const maxOffset = block.inlines.reduce((sum, i) => sum + i.text.length, 0);
-        // Carry the affinity presence restored: the mutation recorded the
-        // caret's reading, so rebuilding the position without it would
-        // re-collapse a wrap-boundary caret onto the previous visual line.
-        cursor.moveTo({
-          ...restoredPos,
-          offset: Math.min(restoredPos.offset, maxOffset),
-        });
-      } else if (doc.document.blocks.length > 0) {
-        cursor.moveTo({ blockId: doc.document.blocks[0].id, offset: 0 });
+    // History changes the offsets named by image selection and resize drags.
+    // Clear them here so toolbar and keyboard commands behave identically.
+    selectedImage = null;
+    abortImageResizeDrag();
+    pending.clear();
+    docStore[action]();
+    doc.refresh();
+    layoutCache = undefined;
+
+    const restoredPos = 'getPresenceCursorPos' in docStore
+      ? (docStore as { getPresenceCursorPos(): DocPosition | undefined })
+          .getPresenceCursorPos()
+      : undefined;
+    let target = restoredPos && doc.findBlock(restoredPos.blockId)
+      ? restoredPos
+      : previousPos;
+    if (!doc.findBlock(target.blockId)) {
+      // A split/insert can disappear on undo (or a merge/delete on redo).
+      // Prefer the preceding paragraph's former end (the split point), then
+      // the following paragraph's start. Descend into table cells rather than landing on a
+      // non-editable table wrapper.
+      const index = previousBlocks.findIndex((block) => block.id === previousPos.blockId);
+      const before = previousBlocks.slice(0, Math.max(0, index)).reverse()
+        .find((block) => block.type !== 'table' && doc.findBlock(block.id));
+      const after = previousBlocks.slice(index + 1)
+        .find((block) => block.type !== 'table' && doc.findBlock(block.id));
+      const nearby = before ?? after;
+      const fallback = (nearby && doc.findBlock(nearby.id))
+        || [...walkBlocks(doc.document.blocks)].find((block) => block.type !== 'table');
+      if (fallback) {
+        target = { blockId: fallback.id, offset: before ? getBlockTextLength(before) : 0 };
       }
-      restoreSelectionFromPresence();
-
-      needsScrollIntoView = true;
-      render();
     }
-  };
-  const redoFn = () => {
-    if (docStore.canRedo()) {
-      // Same reasoning as `undoFn`: the toolbar's Redo button never passes
-      // through the keydown that would have cleared the image selection.
-      selectedImage = null;
-      abortImageResizeDrag();
-      pending.clear();
-      docStore.redo();
-      doc.refresh();
-      textEditor?.setEditContext('body');
-      layoutCache = undefined;
-
-      // Restore cursor from Yorkie presence (automatically restored by redo)
-      const restoredPos = 'getPresenceCursorPos' in docStore
-        ? (docStore as { getPresenceCursorPos(): DocPosition | undefined })
-            .getPresenceCursorPos()
-        : undefined;
-      if (restoredPos && doc.findBlock(restoredPos.blockId)) {
-        const block = doc.getBlock(restoredPos.blockId);
-        const maxOffset = block.inlines.reduce((sum, i) => sum + i.text.length, 0);
-        // Carry the affinity presence restored: the mutation recorded the
-        // caret's reading, so rebuilding the position without it would
-        // re-collapse a wrap-boundary caret onto the previous visual line.
-        cursor.moveTo({
-          ...restoredPos,
-          offset: Math.min(restoredPos.offset, maxOffset),
-        });
-      } else if (doc.document.blocks.length > 0) {
-        cursor.moveTo({ blockId: doc.document.blocks[0].id, offset: 0 });
-      }
-      restoreSelectionFromPresence();
-
-      needsScrollIntoView = true;
-      render();
+    const block = doc.findBlock(target.blockId);
+    if (block) {
+      cursor.moveTo({ ...target, offset: Math.min(target.offset, getBlockTextLength(block)) });
     }
+    const inRegion = (blocks: Block[] | undefined) =>
+      blocks && [...walkBlocks(blocks)].some((candidate) => candidate.id === target.blockId);
+    textEditor?.setEditContext(inRegion(doc.document.header?.blocks) ? 'header'
+      : inRegion(doc.document.footer?.blocks) ? 'footer' : 'body');
+    restoreSelectionFromPresence();
+    needsScrollIntoView = true;
+    render();
   };
+  const undoFn = () => applyHistory('undo');
+  const redoFn = () => applyHistory('redo');
 
   let cursorLinkChangeCallback: ((info: { href: string; rect: { x: number; y: number; width: number; height: number } } | undefined) => void) | null = null;
   let textEditorRef: TextEditor | null = null;
@@ -3732,6 +3710,9 @@ export function initialize(
     },
     requestLink: () => {
       textEditor?.onLinkRequest?.();
+    },
+    onOpenLink: (cb) => {
+      if (textEditor) textEditor.onOpenLink = cb;
     },
     onLinkRequest: (cb: () => void) => {
       if (textEditor) textEditor.onLinkRequest = cb;

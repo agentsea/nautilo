@@ -8,7 +8,7 @@
 
 Nautilo의 인터페이스는 현재 영어입니다. README와 로컬 설치 가이드는 번역되어 있으며, 다른 문서는 영어일 수 있습니다.
 
-<!-- Translation source: README.md; SHA-256: 70b9d8b55da933e1da5c68d0656f5c2e4ac61690fd958de91b9be5268859f07a -->
+<!-- Translation source: README.md; SHA-256: 7d5da3b8c2bd4a27146f94a6430bc44c8f1a3d01f2bf1a844cdb357fef4709f6 -->
 <!-- Review status: AI-assisted translation; fluent-speaker review pending. -->
 
 ### AI가 멀티플레이어가 됩니다.
@@ -137,8 +137,16 @@ Nautilo는 [MIT 라이선스](LICENSE)로 제공됩니다. 의존성 라이선�
 
 [GitHub Sponsors의 agentsea를 통해 Nautilo 후원하기](https://github.com/sponsors/agentsea) · 일회성 또는 월간 후원.
 
-[![Bankr 커뮤니티에 감사드립니다](https://nautilo.ai/community/bankr-thanks-ko.png)](https://hoodscan.co/token/0xddd4947010496b500abe96ab0965c38584413ba3)
+[![Bankr 커뮤니티에 감사드립니다](https://nautilo.ai/community/bankr-thanks-ko.png?v=kentauros)](https://hoodscan.co/token/0xddd4947010496b500abe96ab0965c38584413ba3)
 
-오픈 소스는 서로를 돕는 사람들의 힘으로 움직입니다. Bankr 커뮤니티는 독립적인 [Nautilo 토큰](https://hoodscan.co/token/0xddd4947010496b500abe96ab0965c38584413ba3)을 만들고 거래 수수료의 일부를 저희 작업을 지원하는 데 배정해 주었습니다. 계속 만들어 갈 수 있도록 도와주셔서 감사합니다.
+### NAUTILO 커뮤니티 토큰
 
-이 토큰은 커뮤니티가 만든 것으로, Nautilo가 발행하거나 지지하는 토큰이 아닙니다. 소프트웨어에서 어떤 역할도 하지 않으며, 제품 이용권이나 소유권, 거버넌스 권한을 부여하지 않습니다.
+$NAUTILO는 Bankr 커뮤니티에서 시작되었습니다. 커뮤니티는 토큰을 만들고 거래 수수료의 일부를 Nautilo 개발 지원에 배정했습니다. 이를 시작해 주신 분들과 프로젝트를 지원해 주신 모든 분들께 감사드립니다.
+
+Nautilo를 만드는 회사인 Kentauros, Inc.는 현재 DEX Screener 프로필을 비롯한 토큰의 대외 정보 관리를 맡고 있습니다. 프로젝트에 배정된 거래 수수료는 이제 Kentauros의 회사 Safe 지갑으로 직접 들어옵니다. 커뮤니티가 올바른 토큰을 식별할 수 있도록 [토큰 컨트랙트 주소](https://hoodscan.co/token/0xddd4947010496b500abe96ab0965c38584413ba3)를 [@nautiloapp](https://x.com/nautiloapp)에서 공개합니다.
+
+**토큰은 커뮤니티가 만들었습니다. Kentauros가 만든 것이 아니며, Kentauros는 ICO를 진행하지 않았습니다.**
+
+#### MindSwapper를 쓰고 $NAUTILO를 돌려받으세요.
+
+[MindSwapper](https://mindswapper.ai/)를 사용하고 지갑을 연결하면 사용량에 따라 $NAUTILO 보상을 자동으로 받을 수 있습니다. 토큰을 구매할 필요는 없습니다. 테스트하는 동안은 소액 지급부터 시작합니다. 모든 것이 원활하게 작동하는 것을 확인하면 지급액을 늘릴 예정입니다.

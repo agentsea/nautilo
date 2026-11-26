@@ -74,7 +74,7 @@ describe("October security package decisions", () => {
     for (const pkg of ["chromium-common", "chromium-headless-shell"]) {
       expect(floors.split("\n").some((line) => line.startsWith(pkg + " "))).toBe(false);
     }
-    expect(CHROMIUM_VENDOR_MANIFEST.version).toBe("157.0.8103.78");
+    expect(CHROMIUM_VENDOR_MANIFEST.version).toBe("158.0.8127.36");
     for (const platform of ["linux/amd64", "linux/arm64"] as const) {
       expect(CHROMIUM_VENDOR_MANIFEST.targets[platform].sha256).toMatch(/^[a-f0-9]{64}$/);
       expect(CHROMIUM_VENDOR_MANIFEST.targets[platform].executableSha256).toMatch(/^[a-f0-9]{64}$/);

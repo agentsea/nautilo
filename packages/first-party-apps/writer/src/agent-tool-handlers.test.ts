@@ -145,18 +145,11 @@ describe("writer agent-tool-handlers", () => {
     const { host } = mockHost();
     const args = { sessionToken: "session", documentVersion: { kind: "artifact_revision", revision: 3 }, blockId: "live-table", __canonicalContent: content };
 
-    const read = await readOpenWriterRange(args, { nautiloApp: host });
-    expect(read).toMatchObject({
-      ok: true,
-      status: "table_read",
-      table: {
-        tableBlockId: "live-table",
-        cells: [
-          { rowIndex: 0, colIndex: 0, editable: true, blocks: [{ id: "live-cell-a", text: "first cell target" }] },
-          { rowIndex: 0, colIndex: 1, editable: true, blocks: [{ id: "live-cell-b", text: "second cell" }] },
-        ],
-      },
-    });
+    const read = await readOpenWriterRange({ sessionToken: args.sessionToken, documentVersion: args.documentVersion, scope: { kind: "block", blockId: "live-table" }, __canonicalContent: content }, { nautiloApp: host, readResponseBudgetBytes: 10000 });
+    expect(read).toMatchObject({ ok: true, status: "context_read", complete: true,
+      blocks: [{ id: "live-table", table: { rowCount: 1, columnCount: 2 } },
+        { id: "live-cell-a", text: "first cell target", editable: true, tablePath: [{ tableBlockId: "live-table", rowIndex: 0, colIndex: 0 }] },
+        { id: "live-cell-b", text: "second cell", editable: true }] });
     expect(JSON.stringify(read)).not.toContain("first cell targetsecond cell");
 
     const located = await locateOpenWriterText(
@@ -178,65 +171,30 @@ describe("writer agent-tool-handlers", () => {
     )).resolves.toMatchObject({ ok: false, error: 'collapseTo must be "start" or "end"' });
   });
 
-  test("keeps ordinary live paragraph range reads unchanged", async () => {
-    const block = makeBlock("paragraph", "ordinary paragraph");
-    block.id = "ordinary";
-    const content = serializeWriterHtml(createDefaultManifest(), seedDocument([block]));
+  test("reads all ordinary paragraphs and requires the host response budget", async () => {
+    const blocks = Array.from({ length: 12 }, (_, i) => ({ ...makeBlock("paragraph", `paragraph ${i}`), id: `p${i}` }));
+    const content = serializeWriterHtml(createDefaultManifest(), seedDocument(blocks));
     const { host } = mockHost();
-    await expect(readOpenWriterRange(
-      { sessionToken: "session", documentVersion: { kind: "artifact_revision", revision: 3 }, blockId: "ordinary", __canonicalContent: content },
-      { nautiloApp: host },
-    )).resolves.toEqual({
-      ok: true,
-      status: "range_read",
-      documentVersion: { kind: "artifact_revision", revision: 3 },
-      blocks: [{ id: "ordinary", type: "paragraph", text: "ordinary paragraph" }],
-    });
+    const args = { sessionToken: "session", documentVersion: { kind: "artifact_revision", revision: 3 }, scope: { kind: "document" }, __canonicalContent: content };
+    const read = await readOpenWriterRange(args, { nautiloApp: host, readResponseBudgetBytes: 10000 });
+    expect(read).toMatchObject({ ok: true, status: "context_read", complete: true, totalEntries: 12 });
+    await expect(readOpenWriterRange(args, { nautiloApp: host })).resolves.toMatchObject({ ok: false });
+    await expect(readOpenWriterRange({ ...args, blockId: "p0" }, { nautiloApp: host, readResponseBudgetBytes: 10000 })).resolves.toMatchObject({ ok: false });
   });
 
-  test("continues live table reads with only validated logical cursors", async () => {
-    const table = createTableBlock(51, 1);
-    table.id = "paged-table";
-    for (let row = 0; row < 51; row++) {
-      table.tableData!.rows[row]!.cells[0]!.blocks[0]!.inlines = [{ text: `row-${row}`, style: {} }];
-    }
+  test("continues a live table with exact ready-to-copy arguments", async () => {
+    const table = createTableBlock(51, 1); table.id = "paged-table";
+    for (let row = 0; row < 51; row++) table.tableData!.rows[row]!.cells[0]!.blocks[0]!.inlines = [{ text: `row-${row}`, style: {} }];
     const content = serializeWriterHtml(createDefaultManifest(), seedDocument([table]));
     const { host } = mockHost();
-    const first = await readOpenWriterRange(
-      { sessionToken: "session", documentVersion: { kind: "artifact_revision", revision: 3 }, blockId: "paged-table", __canonicalContent: content },
-      { nautiloApp: host },
-    );
-    expect(first).toMatchObject({
-      ok: true,
-      status: "table_read",
-      table: { nextCursor: { rowIndex: 50, colIndex: 0, blockIndex: 0, sliceIndex: 0 } },
-    });
-    if (!first.ok || first.status !== "table_read" || !first.table.nextCursor) throw new Error("expected table cursor");
-    const second = await readOpenWriterRange(
-      {
-        sessionToken: "session",
-        documentVersion: { kind: "artifact_revision", revision: 3 },
-        blockId: "paged-table",
-        tableCursor: first.table.nextCursor,
-        __canonicalContent: content,
-      },
-      { nautiloApp: host },
-    );
-    expect(second).toMatchObject({
-      ok: true,
-      status: "table_read",
-      table: { cells: [{ rowIndex: 50, colIndex: 0, blocks: [{ text: "row-50", textComplete: true }] }] },
-    });
-    await expect(readOpenWriterRange(
-      {
-        sessionToken: "session",
-        documentVersion: { kind: "artifact_revision", revision: 3 },
-        blockId: "paged-table",
-        tableCursor: { rowIndex: 99, colIndex: 0, blockIndex: 0, sliceIndex: 0 },
-        __canonicalContent: content,
-      },
-      { nautiloApp: host },
-    )).resolves.toEqual({ ok: false, error: "tableCursor is invalid or stale for this canonical table" });
+    const first = await readOpenWriterRange({ sessionToken: "session", documentVersion: { kind: "artifact_revision", revision: 3 }, scope: { kind: "block", blockId: "paged-table" }, __canonicalContent: content }, { nautiloApp: host, readResponseBudgetBytes: 1800 });
+    expect(first).toMatchObject({ ok: true, status: "context_read", complete: false });
+    if (!first.ok || !first.nextRead) throw new Error("expected continuation");
+    const second = await readOpenWriterRange({ ...first.nextRead, __canonicalContent: content }, { nautiloApp: host, readResponseBudgetBytes: 1800 });
+    expect(second).toMatchObject({ ok: true, status: "context_read" });
+    if (!second.ok) throw new Error("expected second page");
+    expect(second.blocks[0]!.ordinal).toBeGreaterThan(first.blocks.at(-1)!.ordinal);
+    await expect(readOpenWriterRange({ ...first.nextRead, cursor: "malformed", __canonicalContent: content }, { nautiloApp: host, readResponseBudgetBytes: 1800 })).resolves.toMatchObject({ ok: false });
   });
 
   test("editOpenWriter returns a token-free proposal envelope with zero document access", async () => {
@@ -626,7 +584,7 @@ describe("writer agent-tool-handlers", () => {
   });
 
   // -------------------------------------------------------------------------
-  // New D372 tools: set-block-type, apply-block-style, format-text,
+  // New tools: set-block-type, apply-block-style, format-text,
   // delete-blocks, move-blocks, insert-table.
   // -------------------------------------------------------------------------
 
@@ -1160,7 +1118,7 @@ describe("writer agent-tool-handlers", () => {
   });
 
   // -------------------------------------------------------------------------
-  // D372 parity tools: insert/delete table row/column, merge/split, cell
+  // parity tools: insert/delete table row/column, merge/split, cell
   // style, delete-table, indent/outdent.
   // -------------------------------------------------------------------------
 
@@ -1817,7 +1775,7 @@ describe("writer agent-tool-handlers", () => {
     expect(result).toEqual({ ok: true, status: "not_found", displayPath: "workspace:doc.html" });
   });
 
-  test("all D372 table write tools propagate conflicts", async () => {
+  test("all table write tools propagate conflicts", async () => {
     // Seed host: used to stage documents whose read view the conflict host
     // will mirror. The conflict host's write always returns conflict.
     const seedHost = mockHost();
@@ -2169,7 +2127,7 @@ describe("writer import-docx / export-docx", () => {
     });
   });
 
-  // M205 — symmetric conflict handling: a pre-existing target surfaces as
+  // symmetric conflict handling: a pre-existing target surfaces as
   // status:"conflict" (with the attempted target) on BOTH import and export,
   // and an explicit overwrite flows through to the host write.
   test("importDocx returns a conflict when the target already exists", async () => {

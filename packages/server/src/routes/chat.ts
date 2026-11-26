@@ -1,15 +1,12 @@
 /**
- * @deprecated **POST `/api/chat`** — D174 legacy message-creation alias (ISSUE-D174
- * `ISSUE-D174-entity-correct-message-creation-route.md`, Phase 2 / MR3). Prefer
- * **`POST /api/rooms/:roomId/messages`** (canonical entity-correct route). This
- * alias is preserved for **≥ one release** post-merge so older clients and
- * out-of-tree HTTP clients keep working; callsite migration is tracked under
- * D174 Phase 3 (client moves off `roomId`-in-body).
+ * @deprecated **POST `/api/chat`** is a legacy message-creation alias. Prefer
+ * **`POST /api/rooms/:roomId/messages`**. The alias remains for older clients
+ * that supply `roomId` in the request body.
  *
  * **Contract:** translates `{ message, roomId?, … }` → dispatcher `{ content, … }`
  * with `roomId` lifted to the canonical URL param shape via
  * `dispatchRoomMessageSend`. Success responses remain **`SendMessageResponse`**
- * (HTTP **202**, `laneKey` = `room:<uuid>` on the dispatcher path per Phase 11.2).
+ * (HTTP **202**, `laneKey` = `room:<uuid>` on the dispatcher path).
  *
  * @see `packages/server/src/messaging/dispatch.ts`
  */
@@ -75,7 +72,7 @@ export async function defaultReplyToMessageInRoom(messageId: number, roomId: str
   return rows.length > 0;
 }
 
-// M042D: the ChatRouteDeps interface used to carry `ownerActorId` as a
+// the ChatRouteDeps interface used to carry `ownerActorId` as a
 // policy pass-through into job input. The resolver now derives
 // approver actors from the agent's ownership group, so the route no
 // longer needs any server-scoped state — the function is deps-less.
@@ -86,27 +83,27 @@ export interface ChatRoutesDeps {
     laneKey: string,
     input: Record<string, unknown>,
     /**
-     * D420 — optional executor override (unused by the chat dispatch path;
+     * optional executor override (unused by the chat dispatch path;
      * kept in the signature so the bound runtime `jobManager.createForegroundJob`
      * stays positional-compatible with the authority argument below).
      */
     executorOverride?: import("@nautilo/runtime").JobExecutor,
     /**
-     * D420 (Wave 2 task 2.2.1) — carried by conductor-wake continuation paths
+     * carried by conductor-wake continuation paths
      * so the drain gate cannot reject a turn accepted before drain. Omitted by
      * NEW-work sends (the gate rejects before acceptance).
      */
     authority?: MaintenanceAcceptanceAuthority,
     /**
-     * D453 — route selected for this accepted turn. It is deliberately last
+     * route selected for this accepted turn. It is deliberately last
      * and travels with the virtual turn; it is never stored by graph thread.
      */
     executionRoute?: ForegroundExecutionRoute,
-    /** M254 — accepted Human invocation authority; always last. */
+    /** accepted Human invocation authority; always last. */
     invocationAuthority?: import("@nautilo/trust").AcceptedInvocationAuthority,
-    /** D513 — opaque server-private exact-client eligibility callback. */
+    /** opaque server-private exact-client eligibility callback. */
     foregroundTurnCandidate?: import("@nautilo/runtime").ForegroundTurnCandidate,
-    /** M282 — trusted pre-bound virtual Job id; never client-authored. */
+    /** trusted pre-bound virtual Job id; never client-authored. */
     preferredVirtualJobId?: string,
   ) => Promise<CreateForegroundJobResult>;
   loadRoomRoster: typeof loadRoomRoster;
@@ -119,15 +116,15 @@ export interface ChatRoutesDeps {
     roomId: string,
   ) => Promise<MemoryAccessEnvelope>;
   /**
-   * D124 — validate quote-reply target. Injected in unit tests; default
+   * validate quote-reply target. Injected in unit tests; default
    * queries `session_messages` joined to `sessions` by `room_id`.
    */
   replyToMessageInRoom?: (messageId: number, roomId: string) => Promise<boolean>;
-  /** M297 — injectable exact Human-pair admission seam. */
+  /** injectable exact Human-pair admission seam. */
   humanPairIsBlocked?: (firstUserId: string, secondUserId: string) => Promise<boolean>;
-  /** M302 — durable policy read at the exact plaintext-consumer boundary. */
+  /** durable policy read at the exact plaintext-consumer boundary. */
   currentStrictShadowPolicy?: typeof currentStrictShadowPolicy;
-  /** M302 — canonical Strict Shadow decision plus bounded health recording. */
+  /** canonical Strict Shadow decision plus bounded health recording. */
   enforceStrictShadowBoundary?: typeof enforceRegisteredStrictShadowBoundary;
 }
 
@@ -185,15 +182,16 @@ export function chatRoutes(
     let currentFolder: string | null = null;
     let currentFolderRelayId: string | null = null;
     let workspacePath: string | null = null;
-    let activeMiniApp = null as ReturnType<typeof sanitizeActiveMiniAppContextSafe>;
+    const activeMiniApp = sanitizeActiveMiniAppContextSafe(request.body.activeMiniApp);
     const liveMiniAppSession = await resolveTrustedLiveMiniAppSession({
       raw: request.body.liveMiniAppSession,
+      activeMiniApp,
       userId: memoryOwnerId,
     });
     let attachmentRefs: string[] = [];
     let artifactRefs: ChatArtifactRef[] = [];
     let focusedResources: ChatFocusedResourceRef[] = [];
-    // D304 — folder context is advisory; never block a message on it.
+    // folder context is advisory; never block a message on it.
     currentFolder = validateClientPathSafe(request.body.currentFolder, "currentFolder");
     currentFolderRelayId = typeof request.body.currentFolderRelayId === "string" &&
       request.body.currentFolderRelayId.length > 0 &&
@@ -202,7 +200,6 @@ export function chatRoutes(
       ? request.body.currentFolderRelayId
       : null;
     workspacePath = validateClientPathSafe(request.body.workspacePath, "workspacePath");
-    activeMiniApp = sanitizeActiveMiniAppContextSafe(request.body.activeMiniApp);
     try {
       attachmentRefs = parseChatAttachmentRefs(request.body.attachments);
     } catch (err) {
@@ -345,7 +342,7 @@ export function chatRoutes(
           .code(err.httpStatus)
           .send({ error: err.code, code: err.code, message: err.message });
       }
-      // D420 — render the typed retryable maintenance rejection (the drain gate
+      // render the typed retryable maintenance rejection (the drain gate
       // inside `createForegroundJob` threw before acceptance/202).
       if (isMaintenanceDrainError(err)) {
         return replyMaintenanceRejection(reply, err);

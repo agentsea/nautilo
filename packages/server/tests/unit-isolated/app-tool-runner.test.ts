@@ -81,6 +81,10 @@ export async function echo(args) {
   return { echoed: args };
 }
 
+export async function readerContext(args, ctx) {
+  return { readResponseBudgetBytes: ctx.readResponseBudgetBytes ?? null, writerSelection: ctx.writerSelection ?? null, writerReadSessionId: ctx.writerReadSessionId ?? null };
+}
+
 export async function throws() {
   throw new Error("handler boom");
 }
@@ -1190,4 +1194,22 @@ describe("invokeAppTool runner", () => {
       });
     }
   });
+});
+
+
+test("delivers trusted read context to the worker without model argument overrides", async () => {
+  const root = await makeTempRoot();
+  const { bundlePath, modulePath } = await writeFixtureBundle(root);
+  const request = baseRequest(root, bundlePath, modulePath, "readerContext", {
+    readResponseBudgetBytes: 999999, writerSelection: { forged: true },
+  });
+  const selection = { anchor: { blockId: "p", offset: 0 }, focus: { blockId: "p", offset: 4 } };
+  request.context = { ...request.context, readResponseBudgetBytes: 3210, writerSelection: selection, writerReadSessionId: "bound-session" };
+  expect(await invokeAppTool(request)).toMatchObject({ ok: true, result: { readResponseBudgetBytes: 3210, writerSelection: selection, writerReadSessionId: "bound-session" } });
+  for (const budget of [-1, NaN, Infinity, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+    request.context = { ...request.context, readResponseBudgetBytes: budget };
+    expect(await invokeAppTool(request)).toMatchObject({ ok: true, result: { readResponseBudgetBytes: null } });
+  }
+  request.context = { ...request.context, readResponseBudgetBytes: 0 };
+  expect(await invokeAppTool(request)).toMatchObject({ ok: true, result: { readResponseBudgetBytes: 0 } });
 });

@@ -27,7 +27,7 @@
   },
   "agent": {
     "contextProvider": "writer.activeContext",
-    "instructions": "To create a new Writer document, use create-file, populate its returned target with the closed-document tools, and direct the Human to the Open document card. For tables, pass cells to insert-table to write the table text in the same save. Do not ask the Human to create a blank document first. First inspect the callable tools. If the live Writer review tools are absent, call discover_tools with a concise Writer-review intent in the productivity category, activate the returned eligible Writer review tools, then continue on the next model loop when their schemas are callable. Deferred tools are not unavailable. For an open document, use the live-review tools and pass the supplied sessionToken and documentVersion only in tool arguments. Never expose or fabricate those values in natural-language output. Use review proposals rather than direct mutation tools. When edit-open-writer returns proposal_ready, stop calling tools and end the current run; the host presents Human review, performs any accepted canonical save, and resumes the same Task for verification. Never search for or call a separate apply/save tool. Read exactly 1–5 canonical blocks; for repeated, ambiguous, or micro edits, locate the text, then submit the locator handle; use match anchors only when unique. For insertions, locate adjacent text with collapseTo start or end and submit that collapsed locator; do not use block, match, or sentence scope for insert.",
+    "instructions": "To create a new Writer document, use create-file, populate its returned target with the closed-document tools, and direct the Human to the Open document card. For tables, pass cells to insert-table to write the table text in the same save. Do not ask the Human to create a blank document first. First inspect the callable tools. If the live Writer review tools are absent, call discover_tools with a concise Writer-review intent in the productivity category, activate the returned eligible Writer review tools, then continue on the next model loop when their schemas are callable. Deferred tools are not unavailable. For every read of the currently open Writer document, including read-only summaries and quotations, use read-open-writer-range. Do not substitute file.read, raw HTML inspection, or closed-document inspect tools. Discover and activate the Writer reader if needed. Use the live-review tools and pass the supplied sessionToken and documentVersion only in tool arguments. Never expose or fabricate those values in natural-language output. Use review proposals rather than direct mutation tools. When edit-open-writer returns proposal_ready, stop calling tools and end the current run; the host presents Human review, performs any accepted canonical save, and resumes the same Task for verification. Never search for or call a separate apply/save tool. Read with a meaningful scope: document for document-wide work, selection for the Human’s captured selection, section with a known headingBlockId, range with known fromBlockId/toBlockId, or block with a known blockId. For example, scope {\"kind\":\"document\"} reads the document and scope {\"kind\":\"selection\"} reads the captured selection without invented offsets. The outline is only a preview. The host sizes responses to your available context. If complete is false, call read-open-writer-range again with the returned nextRead arguments unchanged until complete is true for that scope; never guess cursors or treat a partial text slice as a whole block. A section or selection being complete does not mean the whole document was inspected. Read-only entries are context, not edit targets. On stale-version or invalid-cursor errors, use the supplied recovery and reread; never combine versions. Collect independent edits across all affected blocks in one edit-open-writer operations array before submitting the proposal. A read page is not a proposal-size limit. For a multi-block request, do not submit one proposal per block. For a whole-block rewrite, use replace with scope.kind block and one operation per affected block; for repeated, ambiguous, or micro edits, locate the text, then submit the locator handle; use match anchors only when unique. For insertions, locate adjacent text with collapseTo start or end and submit that collapsed locator; do not use block, match, or sentence scope for insert.",
     "tools": [
       {
         "id": "create-file",
@@ -56,7 +56,7 @@
       {
         "id": "edit-open-writer",
         "title": "Propose edits to open Writer",
-        "description": "Required for open Writer edits. Creates reviewable suggestions before save. For text corrections, set operations[].kind to exact \"replace\"; never \"replace_text\" (that is the closed-document tool). For insertion, locate nearby text with collapseTo start (insert before it) or end (insert after it), then submit that locator handle; insert accepts locator scope only. For table text: use the outline's table blockId with read-open-writer-range, choose a returned editable nested cell blockId, then locate-open-writer-text and submit its locator. Structural table edits use tableBlockId plus cell coordinates. For repeated, ambiguous, or micro edits: read-open-writer-range, then locate-open-writer-text, then submit the returned locator handle as scope.kind locator. Independent same-block edits may be submitted together in any order; use a separate locator-first proposal only if the server returns a typed proposal conflict. Never invent or submit ranges, offsets, oldString, copied source, occurrence counts, patch grammar, targets, or paths. Use match anchors only when unique within their block; skip only when canonical location cannot be resolved.",
+        "description": "Required for open Writer edits. Creates reviewable suggestions before save. For text corrections, set operations[].kind to exact \"replace\"; never \"replace_text\" (that is the closed-document tool). For insertion, locate nearby text with collapseTo start (insert before it) or end (insert after it), then submit that locator handle; insert accepts locator scope only. For table text: call read-open-writer-range with scope.kind block and the outline's table blockId, choose a returned editable nested cell blockId, then locate-open-writer-text and submit its locator. Structural table edits use tableBlockId plus cell coordinates. For repeated, ambiguous, or micro edits: read-open-writer-range, then locate-open-writer-text, then submit the returned locator handle as scope.kind locator. Batch independent edits across different blocks, including a contiguous run, in one operations array and one review proposal. Whole-block rewrites use one replace operation per block with scope.kind block. Follow nextRead until the affected scope is complete before submitting. Independent same-block edits may also be submitted together in any order; use a separate locator-first proposal only if the server returns a typed proposal conflict. Never invent or submit ranges, offsets, oldString, copied source, occurrence counts, patch grammar, targets, or paths. Use match anchors only when unique within their block; skip only when canonical location cannot be resolved.",
         "runtime": "server",
         "module": "./agent-tools.ts",
         "handler": "editOpenWriter",
@@ -329,8 +329,8 @@
       },
       {
         "id": "read-open-writer-range",
-        "title": "Read canonical open Writer range",
-        "description": "Read exactly 1–5 canonical Writer text blocks from the validated open session. When blockId is a table from the outline, returns a UTF-8-byte-bounded coordinate-addressed table payload with editable nested cell block IDs and explicit text completeness. Follow returned nextCursor exactly to paginate; it is a validated logical table coordinate, not a document offset. Covered merged cells are non-editable and identify their anchor. Supply only sessionToken, documentVersion, blockId, optional tableCursor, and optional adjacent block counts; never supply a target or path.",
+        "title": "Read open Writer document or scope",
+        "description": "Read exact canonical Writer text for scope document, selection, section, range, or block. Use document for document-wide requests; selection uses the selection captured with this chat request, never model-supplied offsets. section requires a known headingBlockId and includes its subordinate headings; range requires known inclusive fromBlockId/toBlockId. Tables return cell block IDs and coordinates; editable=false entries cannot be edited. The host fits complete JSON to available context and may split oversized blocks. complete describes only the requested scope, not the whole document. If complete=false, repeat with nextRead unchanged. Returned startOffset/endOffset describe UTF-16 text slices, not edit instructions; use locators for precise edits. Never infer missing text from the outline or complete a rewrite from a fragment. Missing selection or insufficient context returns actionable recovery; never invent a selection, cursor, budget, path, or block ID.",
         "runtime": "server",
         "module": "./agent-tools.ts",
         "handler": "readOpenWriterRange",
@@ -361,22 +361,97 @@
                 }
               ]
             },
-            "blockId": { "type": "string", "minLength": 1, "maxLength": 200 },
-            "beforeBlocks": { "type": "integer", "minimum": 0, "maximum": 4 },
-            "afterBlocks": { "type": "integer", "minimum": 0, "maximum": 4 },
-            "tableCursor": {
-              "type": "object",
-              "additionalProperties": false,
-              "properties": {
-                "rowIndex": { "type": "integer", "minimum": 0 },
-                "colIndex": { "type": "integer", "minimum": 0 },
-                "blockIndex": { "type": "integer", "minimum": 0 },
-                "sliceIndex": { "type": "integer", "minimum": 0 }
-              },
-              "required": ["rowIndex", "colIndex", "blockIndex", "sliceIndex"]
+            "scope": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "document"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "selection"
+                    }
+                  },
+                  "required": [
+                    "kind"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "section"
+                    },
+                    "headingBlockId": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "headingBlockId"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "range"
+                    },
+                    "fromBlockId": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "toBlockId": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "fromBlockId",
+                    "toBlockId"
+                  ]
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "kind": {
+                      "const": "block"
+                    },
+                    "blockId": {
+                      "type": "string",
+                      "minLength": 1
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "blockId"
+                  ]
+                }
+              ]
+            },
+            "cursor": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Opaque continuation from nextRead. Copy unchanged; omit for a new read."
             }
           },
-          "required": ["sessionToken", "documentVersion", "blockId"]
+          "required": ["sessionToken", "documentVersion", "scope"]
         },
         "impact": "read-only",
         "requiredCapability": null,

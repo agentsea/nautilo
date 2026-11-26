@@ -317,6 +317,7 @@ html, body, #app {
 .wr-field { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; }
 .wr-num { width: 44px; border: 1px solid #cbd5e1; border-radius: 6px; padding: 3px 4px; font: inherit; font-size: 12px; }
 .wr-link { display: flex; flex-direction: column; gap: 6px; width: 240px; }
+.wr-link-url { overflow-wrap: anywhere; user-select: text; }
 .wr-text { width: 100%; border: 1px solid #cbd5e1; border-radius: 6px; padding: 5px 8px; font: inherit; font-size: 12px; }
 .wr-primary {
   border: 0;

@@ -214,7 +214,9 @@ describe("live Task return binding", () => {
     let validation = liveWriterContext.liveMiniAppSession;
     expect(registerTaskLiveMiniAppBinding(
       "task-writer",
-      liveWriterContext,
+      { ...liveWriterContext, liveMiniAppSession: { ...liveWriterContext.liveMiniAppSession,
+        writerSelection: { anchor: { blockId: "p", offset: 1 }, focus: { blockId: "p", offset: 5 } },
+      } },
       () => validation,
     )).toBe(true);
 
@@ -356,6 +358,39 @@ describe("live Task return binding", () => {
     expect(taskWriterReviewVerificationCoverageState({
       taskId: "task-table-verify", taskRunId: "run-table-verify", ownerId: "owner-1",
     })).toBe("complete");
+  });
+
+  test("unions text fragments without counting gaps, retries, or omitted structure as complete", () => {
+    const ids = { taskId: "slice-task", taskRunId: "slice-run", ownerId: "owner-1" };
+    const version = liveWriterContext.liveMiniAppSession.documentVersion;
+    expect(registerTaskLiveMiniAppBinding(ids.taskId, liveWriterContext, () => liveWriterContext.liveMiniAppSession)).toBe(true);
+    expect(beginTaskWriterReviewVerification(ids)).toBe(true);
+    const base = { kind: "text_slices" as const, documentVersion: version, blockCount: 1, totalEntries: 2, sourceFingerprint: "a".repeat(64) };
+    const record = (slices: Array<{ ordinal: number; startOffset: number; endOffset: number; textLength: number }>) =>
+      recordTaskWriterReviewReadCoverage({ ...ids, coverage: { ...base, slices } });
+    const first = { ordinal: 0, startOffset: 0, endOffset: 3, textLength: 10 };
+    expect(record([first, first, { ...first, startOffset: 7, endOffset: 10 }])).toBe(true);
+    expect(taskWriterReviewVerificationCoverageState(ids)).toBe("incomplete");
+    expect(recordTaskWriterReviewReadCoverage({ ...ids, coverage: { ...base, sourceFingerprint: "b".repeat(64), slices: [first] } })).toBe(false);
+    expect(record([{ ...first, textLength: 11 }])).toBe(false);
+    expect(record([{ ...first, ordinal: 2 }])).toBe(false);
+    expect(record([{ ...first, startOffset: 0, endOffset: 0 }])).toBe(false);
+    expect(record([{ ...first, startOffset: 2, endOffset: 8 }])).toBe(true);
+    expect(taskWriterReviewVerificationCoverageState(ids)).toBe("incomplete");
+    expect(record([{ ordinal: 1, startOffset: 0, endOffset: 0, textLength: 0 }])).toBe(true);
+    expect(taskWriterReviewVerificationCoverageState(ids)).toBe("complete");
+    expect(recordTaskWriterReviewReadCoverage({ ...ids, coverage: { kind: "block_range", documentVersion: version, blockCount: 1, blockIndexes: [0] } })).toBe(false);
+  });
+
+  test("an empty canonical document can be fully read without fabricated block coverage", () => {
+    const ids = { taskId: "empty-task", taskRunId: "empty-run", ownerId: "owner-1" };
+    expect(registerTaskLiveMiniAppBinding(ids.taskId, liveWriterContext, () => liveWriterContext.liveMiniAppSession)).toBe(true);
+    expect(beginTaskWriterReviewVerification(ids)).toBe(true);
+    expect(recordTaskWriterReviewReadCoverage({ ...ids, coverage: {
+      kind: "text_slices", documentVersion: liveWriterContext.liveMiniAppSession.documentVersion,
+      blockCount: 0, totalEntries: 0, sourceFingerprint: "a".repeat(64), slices: [],
+    } })).toBe(true);
+    expect(taskWriterReviewVerificationCoverageState(ids)).toBe("complete");
   });
 
   test("counts a Task with both return and Writer bindings only once", () => {

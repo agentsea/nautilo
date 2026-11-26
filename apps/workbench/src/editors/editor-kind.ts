@@ -1,4 +1,5 @@
 import type { OpenFileTarget } from "../components/browser-column/open-file-target";
+import { hasNautiloDocumentManifest } from "../lib/nautilo-document-html";
 import { previewKindForPath } from "../lib/file-preview";
 import { htmlViewerAdapter } from "../viewers/html/index";
 import {
@@ -104,4 +105,10 @@ export function canEditInThisChannel(
   if (editorKindForFile(file) === null) return false;
   if (file.kind === "fs" && !isDesktopRuntime) return false;
   return true;
+}
+
+/** Friendly text editing is an HTML presentation mode, not a new persistence path. */
+export function isHtmlTextCandidate(file: OpenFileTarget, source?: string): boolean {
+  return htmlViewerAdapter.canView(file) &&
+    (source === undefined || !hasNautiloDocumentManifest(source));
 }

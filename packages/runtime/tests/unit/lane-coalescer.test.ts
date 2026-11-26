@@ -5,6 +5,7 @@ import {
   jobInputToCoalescedInput,
   coalescedInputToJobInput,
   parseFocusedResourcesInput,
+  parseTrustedLiveMiniAppSessionInput,
   type CoalescedInput,
 } from "../../src/lane-coalescer";
 import type { ResolvedFocusedResource } from "@nautilo/types";
@@ -42,7 +43,7 @@ function focusedAttachment(attachmentId: string, displayName = `${attachmentId}.
   };
 }
 
-describe("D302 P4 — humanAlreadyPersisted survives coalescer round-trip", () => {
+describe("humanAlreadyPersisted survives coalescer round-trip", () => {
   test("jobInput → coalesced → jobInput preserves the flag", () => {
     const coalesced = jobInputToCoalescedInput(
       { message: "hi", humanAlreadyPersisted: true },
@@ -67,7 +68,7 @@ describe("D302 P4 — humanAlreadyPersisted survives coalescer round-trip", () =
   });
 });
 
-describe("D547 — background Task authority survives coalescer round-trip", () => {
+describe("background Task authority survives coalescer round-trip", () => {
   test("preserves the initiating Human when the Agent owner differs", () => {
     const coalesced = jobInputToCoalescedInput(
       { message: "return the scheduled reminder", ownerId: "agent-owner" },
@@ -100,7 +101,7 @@ describe("D547 — background Task authority survives coalescer round-trip", () 
   });
 });
 
-describe("D500 — Auto-Approve posture is an ephemeral, fail-closed turn input", () => {
+describe("Auto-Approve posture is an ephemeral, fail-closed turn input", () => {
   test("round-trips only the literal true posture and defaults legacy input off", () => {
     const enabled = jobInputToCoalescedInput(
       { message: "trusted SSH", autoApprove: true },
@@ -135,7 +136,7 @@ describe("D500 — Auto-Approve posture is an ephemeral, fail-closed turn input"
   });
 });
 
-describe("D391 — retainedAttachmentIds survive coalescer round-trip", () => {
+describe("retainedAttachmentIds survive coalescer round-trip", () => {
   test("jobInput → coalesced → jobInput preserves the ids", () => {
     const coalesced = jobInputToCoalescedInput(
       { message: "hi", retainedAttachmentIds: ["a1", "a2"] },
@@ -159,7 +160,7 @@ describe("D391 — retainedAttachmentIds survive coalescer round-trip", () => {
   });
 });
 
-describe("M233 — notification provenance survives coalescing", () => {
+describe("notification provenance survives coalescing", () => {
   test("round-trips causal Human and unions structured mentions", () => {
     const first = baseInput({
       laneKey: "room:r:user:u:bot:b",
@@ -231,7 +232,7 @@ function baseInput(partial: Partial<Omit<CoalescedInput, "laneKey">> & { laneKey
   };
 }
 
-describe("M085 — ordinary-origin authority stays a coherent coalesced snapshot", () => {
+describe("ordinary-origin authority stays a coherent coalesced snapshot", () => {
   test("round-trips current folder, relay id, and validated-origin-shaped payload", () => {
     const origin = ordinaryOrigin("relay-a");
     const coalesced = jobInputToCoalescedInput({
@@ -272,7 +273,7 @@ describe("M085 — ordinary-origin authority stays a coherent coalesced snapshot
   });
 });
 
-describe("D356 — artifactRefs survive coalescing (union, dedupe by id)", () => {
+describe("artifactRefs survive coalescing (union, dedupe by id)", () => {
   test("mergeInputs unions refs across burst segments and dedupes by artifactId", () => {
     const merged = mergeInputs([
       baseInput({
@@ -451,7 +452,7 @@ describe("LaneCoalescer", () => {
     expect(mergedCapture!.message).toBe("m1\n\nm2\n\nm3");
     expect(mergedCapture!.attachmentTextBlocks).toEqual(["t1", "t2"]);
     expect(mergedCapture!.multimodalImages.map((i) => i.attachmentId)).toEqual(["i1", "i2"]);
-    // D391 — retained attachment ids are unioned (dedupe) across segments so a
+    // retained attachment ids are unioned (dedupe) across segments so a
     // coalesced turn's single human row stamps all of them.
     expect(mergedCapture!.retainedAttachmentIds).toEqual(["i1", "i2"]);
   });
@@ -588,7 +589,7 @@ describe("LaneCoalescer", () => {
   });
 });
 
-describe("D423 — focusedResources (resolved manifest) survive coalescer round-trip", () => {
+describe("focusedResources (resolved manifest) survive coalescer round-trip", () => {
   test("parseFocusedResourcesInput drops malformed entries", () => {
     const out = parseFocusedResourcesInput([
       focusedArtifact("a/1"),
@@ -649,4 +650,15 @@ test("Memory admission retains all already-persisted Human sources across coales
   expect(merged["currentMessageId"]).toBe(12);
   expect(merged["memoryReviewSourceMessageIds"]).toEqual([10, 11, 12]);
   expect(merged["humanAlreadyPersisted"]).toBe(true);
+});
+
+
+test("preserves captured Writer coordinates while dropping malformed or other-app selection", () => {
+  const selection = { anchor: { blockId: "p", offset: 1 }, focus: { blockId: "p", offset: 5 },
+    tableCellRange: { blockId: "t", start: { rowIndex: 0, colIndex: 0 }, end: { rowIndex: 1, colIndex: 2 } } };
+  const raw = { appId: "nautilo-writer", sessionToken: "opaque", sessionId: "s", instructions: "read", documentVersion: { kind: "artifact_revision", revision: 3 }, writerSelection: selection };
+  expect(parseTrustedLiveMiniAppSessionInput(raw)?.writerSelection).toEqual(selection);
+  expect(parseTrustedLiveMiniAppSessionInput({ ...raw, appId: "other" })?.writerSelection).toBeUndefined();
+  expect(parseTrustedLiveMiniAppSessionInput({ ...raw, writerSelection: { ...selection, focus: { blockId: "p", offset: 1.5 } } })?.writerSelection).toBeUndefined();
+  expect(parseTrustedLiveMiniAppSessionInput({ ...raw, writerSelection: { ...selection, tableCellRange: { ...selection.tableCellRange, end: { rowIndex: -1, colIndex: 0 } } } })?.writerSelection).toBeUndefined();
 });

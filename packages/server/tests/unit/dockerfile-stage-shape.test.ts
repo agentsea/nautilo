@@ -59,6 +59,7 @@ const AUTH_CONTRACT_COPY_CLOSURE = [
   "deploy/contracts/auth.ts",
   "deploy/dependency-pins.ts",
   "bin/nautilo-local/src/bootstrap-logto.ts",
+  "bin/nautilo-local/src/logto-application-secret.ts",
   "bin/nautilo-local/src/logto-hosted-auth-branding.ts",
   "bin/nautilo-local/src/logto-forgot-password-relay.ts",
   "packages/config",
@@ -771,7 +772,7 @@ describe("Dockerfile cache-topology guards", () => {
     );
   });
 
-  test("workbench-build copies every direct workspace package dependency before Turbo", () => {
+  test("workbench-build has every direct workspace package dependency before Turbo", () => {
     const workbench = byName.get("workbench-build");
     expect(workbench).toBeDefined();
     const manifest = JSON.parse(readFileSync(WORKBENCH_PACKAGE_JSON, "utf8")) as {
@@ -793,8 +794,12 @@ describe("Dockerfile cache-topology guards", () => {
       .map(([name]) => workspaceDirsByName.get(name))
       .filter((dir): dir is string => dir !== undefined)
       .sort();
-    const missing = required.filter(
-      (dir) => !stageContainsCopySource(workbench!.body, dir),
+    // A full source directory copied by the direct parent survives FROM.
+    // A manifests-only copy in an earlier stage cannot satisfy this check.
+    const parent = byName.get(workbench!.from);
+    const inheritedDirectories = new Set(collectContextCopySources(parent?.body ?? ""));
+    const missing = required.filter((dir) =>
+      !stageContainsCopySource(workbench!.body, dir) && !inheritedDirectories.has(dir),
     );
 
     expect(missing).toEqual([]);

@@ -1,5 +1,5 @@
 import type { MemoryAccessEnvelope } from "@nautilo/trust";
-import type { TrustedLiveMiniAppSessionContext } from "@nautilo/types";
+import type { CapturedWriterSelection, TrustedLiveMiniAppSessionContext } from "@nautilo/types";
 import type { SlideTemplateContentDto, SlideTemplateListPageDto, SlideTemplateSummaryDto } from "@nautilo/api-client";
 import type { MiniAppAgentToolManifest, MiniAppManifest } from "./app-manifest";
 import type {
@@ -63,7 +63,7 @@ export type AppDocumentCreateResult = {
 };
 
 /**
- * M205 — args for the generic `office.run` host primitive. Format-agnostic:
+ * args for the generic `office.run` host primitive. Format-agnostic:
  * the server core reads/writes bytes + runs the OfficeCLI binary, but never
  * parses any document format. The mapper (in the app worker) supplies OfficeCLI
  * argv (read) / batch ops (write); the host stages bytes and runs the binary.
@@ -93,7 +93,7 @@ export type AppOfficeRunArgs = {
   /** Where to write the produced office bytes. */
   output?: { surface: "workspace" | "currentFolder"; path: string };
   /**
-   * M205 — write-path collision policy. Default (false/undefined): an existing
+   * write-path collision policy. Default (false/undefined): an existing
    * target is a structured `EXISTS` result (the UI prompts overwrite / rename /
    * cancel). True: overwrite in place (workspace = revision bump, current folder
    * = re-write the file).
@@ -120,7 +120,7 @@ export type AppOfficeRunResult =
     }
   | { ok: false; code: string; message: string };
 
-/** M205 — result of `document.createDocument`. */
+/** result of `document.createDocument`. */
 export type AppDocumentCreateDocumentResult =
   | { ok: true; artifactPath: string; artifactInternalId?: string; artifactId?: string; sha256: string; byteLength: number }
   | {
@@ -175,6 +175,12 @@ export type AppToolRunnerContext = {
   currentFolder?: string | null;
   workspacePath?: string | null;
   memoryAccessEnvelope: MemoryAccessEnvelope;
+  /** Caller-derived shared response allowance; never a model argument. */
+  readResponseBudgetBytes?: number;
+  /** Populated only after matching the live session binding. */
+  writerSelection?: CapturedWriterSelection;
+  /** Non-secret identity for binding Writer read continuations. */
+  writerReadSessionId?: string;
   /** Trusted ingress state; never sourced from model arguments. */
   liveMiniAppSession?: TrustedLiveMiniAppSessionContext | null;
 };
@@ -326,7 +332,7 @@ export type ServerNautiloAppHost = {
       mimeType?: string;
       colocateWith?: { surface: "workspace"; path: string };
       /**
-       * M205 — collision policy. Default: an existing target is a structured
+       * collision policy. Default: an existing target is a structured
        * `EXISTS` failure. True: overwrite in place (workspace = revision bump,
        * current folder = re-write).
        */

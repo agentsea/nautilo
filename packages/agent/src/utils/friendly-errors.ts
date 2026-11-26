@@ -32,6 +32,7 @@
  */
 
 import { findChatGPTSubscriptionError, type ChatGPTSubscriptionFailure } from "../providers/chatgpt-plan-errors";
+import { OpenRouterCreditError } from "../providers/openrouter-credit-error";
 import { classifyError, type ErrorCategory } from "./errors";
 import { ModelOutputLimitError } from "../graph/model-output-limit";
 import { formatProviderError } from "../providers/errors";
@@ -344,8 +345,14 @@ const SUBSCRIPTION_MESSAGES: Record<ChatGPTSubscriptionFailure, { category: Frie
 };
 
 const MIND_SWAPPER_MESSAGES: Record<MindSwapperRequestError["code"], Pick<FriendlyError, "category" | "message">> = {
+  qa_concurrency_limit: { category: "rate_limit", message: "MindSwapper is handling too many simultaneous calls. Try again shortly." },
+  gateway_busy: { category: "rate_limit", message: "MindSwapper is temporarily short of request capacity. Try again shortly." },
+  capacity_database_contended: { category: "rate_limit", message: "MindSwapper could not reserve capacity for this call. Try again shortly." },
   authentication_error: { category: "auth", message: "MindSwapper rejected the key for this connection. Check its provider settings." },
   insufficient_balance: { category: "provider_unavailable", message: "The connected MindSwapper account has insufficient credit. Check its balance before trying again." },
+  billing_needs_review: { category: "provider_unavailable", message: "MindSwapper declined the request because a charge is under review. Check the account’s Billing page." },
+  spend_limit_reached: { category: "provider_unavailable", message: "The connected MindSwapper account or key reached its spending limit. Check the account’s Billing page." },
+  billing_error: { category: "provider_unavailable", message: "MindSwapper declined the request for billing reasons. Check the account’s Billing page." },
   unsupported_request: { category: "bad_request", message: "The selected MindSwapper model cannot handle this request. Change the input or choose another available model." },
   no_eligible_supply: { category: "provider_unavailable", message: "The selected MindSwapper model is currently unavailable. Refresh the model list or choose another model." },
   rate_limit_error: { category: "rate_limit", message: "MindSwapper is rate limiting this connection. Try again later." },
@@ -357,7 +364,9 @@ const MIND_SWAPPER_MESSAGES: Record<MindSwapperRequestError["code"], Pick<Friend
 export function toFriendlyError(error: unknown): FriendlyError {
   if (error instanceof MindSwapperRequestError) {
     const presentation = MIND_SWAPPER_MESSAGES[error.outcomeUnknown ? "outcome_unknown" : error.code];
-    return { ...presentation, code: CATEGORY_CODES[presentation.category], detailsForLog: `mindswapper_${error.code}` };
+    const streamCode = error.gatewayStreamCode ? ` gateway_stream_code=${error.gatewayStreamCode}` : "";
+    const request = error.outcomeUnknown && error.requestId ? ` provider_request_id=${error.requestId}` : "";
+    return { ...presentation, code: CATEGORY_CODES[presentation.category], detailsForLog: `mindswapper_${error.code}${streamCode}${request}` };
   }
   const subscriptionError = findChatGPTSubscriptionError(error);
   if (subscriptionError) {
@@ -483,6 +492,16 @@ export function toFriendlyError(error: unknown): FriendlyError {
   // detail is preserved on `detailsForLog` for server.log only.
   if (isGraphRecursionError(error)) {
     return toFriendlyGraphBudgetError(DEFAULT_GRAPH_RECURSION_LIMIT, error);
+  }
+  if (error instanceof OpenRouterCreditError) {
+    return {
+      message: error.inFlightBudget
+        ? "OpenRouter temporarily reserved the available credit for running or recently completed requests. Wait for those requests to settle, then try again."
+        : "OpenRouter could not fund this request within the available credits or spending limits. Check the OpenRouter account balance and key budget. Auto top-up may not trigger while the balance is above its threshold.",
+      category: "unknown",
+      code: "MDL007",
+      detailsForLog: error.code,
+    };
   }
   const classified = classifyError(error);
   const category = mapCategory(classified.category);

@@ -1508,7 +1508,9 @@ const SAFE_RECOVERY_REASONS = new Set([
   "receipt_read_unavailable",
   "receipt_request_rejected",
   "receipt_service_unavailable",
+  "stream_memory_exhausted",
   "truncated_response",
+  "upstream_incomplete",
 ]);
 
 function safeRecoveryReason(value: string | null, fallback: string): string {

@@ -1,13 +1,21 @@
-import { NautiloApiClient } from "@nautilo/api-client/browser";
+import { NautiloApiClient, saveArtifactToDisk } from "@nautilo/api-client/browser";
 import { workbenchFetch } from "./admission-fetch";
 import { withLiveSessionCleanup } from "./live-session-fetch";
 
 /**
- * Singleton API client for the workbench. Uses relative URLs — post-M167
+ * Singleton API client for the workbench. Uses relative URLs because
  * the server always serves the SPA single-origin (UI + API + WS share one
  * origin) in every mode, so there is no separate API host.
  */
-export const apiClient = new NautiloApiClient("", { fetchImpl: withLiveSessionCleanup(workbenchFetch) });
+class WorkbenchApiClient extends NautiloApiClient {
+  override async downloadArtifact(id: string, filename: string, opts?: { roomId?: string }): Promise<void> {
+    const original = await this.getWorkspaceArtifactBytes(id, opts);
+    const { prepareArtifactDownload } = await import("./artifact-download");
+    await saveArtifactToDisk(await prepareArtifactDownload(original, filename), filename);
+  }
+}
+
+export const apiClient = new WorkbenchApiClient("", { fetchImpl: withLiveSessionCleanup(workbenchFetch) });
 
 function websocketUrl(): string {
   if (typeof window === "undefined") return "";

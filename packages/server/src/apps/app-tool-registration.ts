@@ -12,6 +12,7 @@ import {
   physicalPathFromStorageUri,
   resolveWorkspaceArtifact,
 } from "@nautilo/agent";
+import { liveDocumentVersionEquals, parseCapturedWriterSelection } from "@nautilo/types";
 import { z, type ZodTypeAny } from "zod";
 import { buildMiniApp } from "./app-builder";
 import {
@@ -282,6 +283,8 @@ function contextFromUnknown(context: unknown): AppToolRunnerContext | null {
     userId,
     agentId,
     memoryAccessEnvelope: envelope as AppToolRunnerContext["memoryAccessEnvelope"],
+    ...(Number.isSafeInteger(raw["taskReadMaxResponseBytes"]) && (raw["taskReadMaxResponseBytes"] as number) >= 0
+      ? { readResponseBudgetBytes: raw["taskReadMaxResponseBytes"] as number } : {}),
     ...(raw["liveMiniAppSession"] !== undefined
       ? { liveMiniAppSession: raw["liveMiniAppSession"] as NonNullable<AppToolRunnerContext["liveMiniAppSession"]> | null }
       : {}),
@@ -734,6 +737,7 @@ function createAppToolRegistration(args: {
           const runnerContext = contextFromUnknown(context);
           let invokeArgs = toolArgs;
           let liveSessionId: string | null = null;
+          let writerReadSessionToken: string | null = null;
           let liveDocumentVersion: LiveDocumentVersion | null = null;
           let liveCanonicalContent: string | null = null;
           let liveMutationBinding: LiveMiniAppSessionBinding | null = null;
@@ -866,7 +870,23 @@ function createAppToolRegistration(args: {
               }
             }
             liveSessionId = validation.sessionId;
+            if (app.id === "nautilo-writer" && tool.id === "read-open-writer-range") {
+              writerReadSessionToken = token;
+              runnerContext.writerReadSessionId = validation.sessionId;
+              // The worker sees only a sentinel. Reserve the exact wire growth
+              // before restoring the admitted bearer to a returned continuation.
+              const tokenByteGrowth = Math.max(0, Buffer.byteLength(JSON.stringify(token), "utf8") -
+                Buffer.byteLength(JSON.stringify(LIVE_SESSION_VALIDATED_SENTINEL), "utf8"));
+              if (runnerContext.readResponseBudgetBytes !== undefined) {
+                runnerContext.readResponseBudgetBytes = Math.max(0, runnerContext.readResponseBudgetBytes - tokenByteGrowth);
+              }
+            }
             liveDocumentVersion = cloneLiveDocumentVersion(validation.binding.documentVersion);
+            const capturedSelection = app.id === "nautilo-writer" && trustedSession?.appId === app.id &&
+              trustedSession.sessionId === validation.sessionId &&
+              liveDocumentVersionEquals(trustedSession.documentVersion, validation.binding.documentVersion)
+              ? parseCapturedWriterSelection(trustedSession.writerSelection) : null;
+            if (capturedSelection) runnerContext.writerSelection = capturedSelection;
             if (isDirectMutationLiveTool) liveMutationBinding = validation.binding;
             invokeArgs = withWorkerVersionLegacyShim(
               validation.binding,
@@ -1065,6 +1085,13 @@ function createAppToolRegistration(args: {
             }
             return platformFailureToToolContent(result.platformFailure);
           }
+          if (writerReadSessionToken !== null && result.ok && result.result && typeof result.result === "object" && !Array.isArray(result.result)) {
+            const readResult = result.result as Record<string, unknown>;
+            if (readResult["ok"] === true && readResult["status"] === "context_read" &&
+              readResult["nextRead"] && typeof readResult["nextRead"] === "object" && !Array.isArray(readResult["nextRead"])) {
+              result.result = { ...readResult, nextRead: { ...(readResult["nextRead"] as Record<string, unknown>), sessionToken: writerReadSessionToken } };
+            }
+          }
           if (
             isLiveReviewTool &&
             liveReviewExtension !== null &&
@@ -1082,7 +1109,7 @@ function createAppToolRegistration(args: {
             // record only the app-classified structural fact for this exact
             // process-local Task/run/version. A failed/mismatched fact simply
             // leaves the eventual verification continuation incomplete.
-            const coverage = liveReviewExtension.readCoverageFactFromResult({
+            const coverage = await liveReviewExtension.readCoverageFactFromResult({
               canonicalContent: liveCanonicalContent,
               args: invokeArgs as Record<string, unknown>,
               result: result.result,

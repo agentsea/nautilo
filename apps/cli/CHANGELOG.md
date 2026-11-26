@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.41] - 2026-11-20
+
+### Fixed
+
+- Preserve configured legacy M2M credentials that Logto still accepts but omits
+  from secret readback. Verify their existing client-credentials grant instead
+  of switching to a different listed secret; failed validation remains a refusal.
+
+## [0.1.40] - 2026-11-20
+
+### Fixed
+
+- Read existing managed application secrets through the supported Logto API
+  when its legacy secret field is absent. Preserve the configured active
+  credential; reject missing, expired, foreign or ambiguous secrets without
+  creating or rotating one. Legacy Logto responses remain supported.
+
+## [0.1.39] - 2026-11-19
+
+### Fixed
+
+- Expose managed `auth plan` and `auth reconcile` in the signed administrator
+  CLI. Reconciliation retains full recovery capture, explicit session-impact
+  confirmation and live verification before advancing the applied contract.
+  Legacy identity-provider commands remain outside the standalone command set.
+
 ## [0.1.38] - 2026-11-14
 
 ### Fixed
