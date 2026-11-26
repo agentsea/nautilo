@@ -17,7 +17,15 @@ import {
   createDirectDb,
   getSharedDirectDb,
   eq,
+  inArray,
   namespaces,
+  reflectionRecordAuthorityBlocks,
+  reflectionRecordAuthorityDependencies,
+  reflectionRecordSemanticWork,
+  reflectionRecordSuccessors,
+  reflectionRecords,
+  roomEvents,
+  roomJournalRecordRebuildRetirements,
   roomJournalState,
   roomMembers,
   rooms,
@@ -26,13 +34,24 @@ import {
   users,
 } from "@nautilo/db";
 import { bootstrapTestDbInstance } from "@nautilo/db/testing";
+import {
+  PostgresSemanticWorkStore,
+  createHmacRecordSemanticCommitmentPort,
+  verifyRecordProductPostgresHandle,
+} from "@nautilo/reflection-bridge/server";
 import { editHumanRoomMessage } from "@nautilo/trust";
+import { createProductionReflectionMemoryRuntime } from "../../src/reflection/production-reflection-memory";
 import {
   claimJournalRebuildExtraction,
+  claimNextExtraction,
   failExtraction,
   prepareNextJournalRebuild,
 } from "../../src/stenographer/repository";
-import { createNativeStenographerExtractionPublisher, type NativeStenographerPublicationRuntime } from "../../src/stenographer/native-record-publication";
+import {
+  createNativeStenographerExtractionPublisher,
+  createRecordProductPostgresConnection,
+  type NativeStenographerPublicationRuntime,
+} from "../../src/stenographer/native-record-publication";
 
 let db: ReturnType<typeof createDirectDb>;
 let publisher: NativeStenographerPublicationRuntime;
@@ -55,6 +74,13 @@ const BASE = new Date("2000-01-01T08:00:00.000Z");
 const MESSAGE_TIME = new Date("2000-01-01T08:01:00.000Z");
 const FIRST_EDIT_TIME = new Date("2000-01-01T08:02:00.000Z");
 const REBUILD_TIME = new Date("2000-01-01T09:00:00.000Z");
+const SECOND_MESSAGE_TIME = new Date("2000-01-01T08:01:30.000Z");
+const FIRST_EXTRACTION_TIME = new Date("2000-01-01T08:03:00.000Z");
+const SECOND_EXTRACTION_TIME = new Date("2000-01-01T08:04:00.000Z");
+const DEPENDENT_EDIT_TIME = new Date("2000-01-01T08:05:00.000Z");
+const QUARANTINE_TIME = new Date("2029-01-01T00:00:00.000Z");
+const TARGET_RECOVERY_TIME = new Date("2030-01-03T00:00:00.000Z");
+const DEPENDENCY_RECOVERY_TIME = new Date("2030-01-04T00:00:00.000Z");
 
 beforeAll(async () => {
   bootstrapTestDbInstance();
@@ -194,6 +220,17 @@ async function readState(roomId: string) {
     .from(roomJournalState)
     .where(eq(roomJournalState.roomId, roomId));
   return state;
+}
+
+async function initializeFixtureJournal(fixture: Fixture): Promise<void> {
+  await db.insert(roomJournalState).values({
+    roomId: fixture.roomId,
+    lastProcessedMessageId: 0,
+    extractorVersion: "m219-v1",
+    historicalBackfillStatus: "not_needed",
+    createdAt: BASE,
+    updatedAt: BASE,
+  });
 }
 
 describe("M230 Room-journal rebuild (live Postgres)", () => {
@@ -343,6 +380,334 @@ describe("M230 Room-journal rebuild (live Postgres)", () => {
         leaseExpiresAt: null,
       });
     } finally {
+      await cleanupFixture(fixture);
+    }
+  });
+
+  test("sunsets a quarantined native Record and settles it at scheduled recovery", async () => {
+    const fixture = await makeFixture("quarantined-sunset");
+    const recordRefs: string[] = [];
+    try {
+      await initializeFixtureJournal(fixture);
+      const firstClaim = await claimNextExtraction({ db, now: FIRST_EXTRACTION_TIME });
+      expect(firstClaim?.roomId).toBe(fixture.roomId);
+      expect(await publisher.publishExtraction({
+        claim: firstClaim!,
+        operations: [{
+          op: "append",
+          kind: "fact",
+          statement: "Journal evidence before the edit.",
+          sourceMessageIds: [fixture.messageId],
+        }],
+        modelId: null,
+        now: FIRST_EXTRACTION_TIME,
+      })).toEqual({ published: true, eventsWritten: 1 });
+
+      const [secondMessage] = await db.insert(sessionMessages).values({
+        sessionId: fixture.sessionId,
+        role: "assistant",
+        content: "Dependent journal evidence before the edit",
+        fingerprint: `fp:v1:assistant:${randomUUID()}`,
+        createdAt: SECOND_MESSAGE_TIME,
+      }).returning({ id: sessionMessages.id });
+      if (!secondMessage) throw new Error("failed to create dependent message");
+
+      const [firstEvent] = await db.select({ recordId: roomEvents.recordId })
+        .from(roomEvents)
+        .where(eq(roomEvents.roomId, fixture.roomId));
+      if (firstEvent?.recordId == null) throw new Error("missing first native Journal Record");
+      recordRefs.push(firstEvent.recordId);
+
+      const secondClaim = await claimNextExtraction({ db, now: SECOND_EXTRACTION_TIME });
+      expect(secondClaim?.roomId).toBe(fixture.roomId);
+      expect(await publisher.publishExtraction({
+        claim: secondClaim!,
+        operations: [{
+          op: "append",
+          kind: "fact",
+          statement: "Journal evidence depending on the earlier Record.",
+          sourceMessageIds: [secondMessage.id],
+        }],
+        modelExposureDependencies: [{
+          kind: "record",
+          recordRef: firstEvent.recordId,
+          observedProcessingGeneration: 1,
+          terminalAuthorityLeafHandles: [fixture.namespaceId],
+        }],
+        modelId: null,
+        now: SECOND_EXTRACTION_TIME,
+      })).toEqual({ published: true, eventsWritten: 1 });
+
+      const events = await db.select({
+        recordId: roomEvents.recordId,
+        sequence: roomEvents.sequence,
+      }).from(roomEvents)
+        .where(eq(roomEvents.roomId, fixture.roomId))
+        .orderBy(roomEvents.sequence);
+      expect(events).toHaveLength(2);
+      const targetRecordRef = events[1]?.recordId;
+      if (targetRecordRef == null) throw new Error("missing dependent native Journal Record");
+      recordRefs.push(targetRecordRef);
+      expect(await db.select()
+        .from(reflectionRecordAuthorityDependencies)
+        .where(and(
+          eq(reflectionRecordAuthorityDependencies.recordId, targetRecordRef),
+          eq(reflectionRecordAuthorityDependencies.dependencyRecordId, firstEvent.recordId),
+        ))).toHaveLength(1);
+
+      for (const [recordRef, recoverAfter] of [
+        [targetRecordRef, TARGET_RECOVERY_TIME],
+        [firstEvent.recordId, DEPENDENCY_RECOVERY_TIME],
+      ] as const) {
+        await db.update(reflectionRecordSemanticWork).set({
+          state: "quarantined",
+          attemptCount: 8,
+          quarantineRound: 1,
+          recoveryPolicyVersion: 2,
+          nextAttemptAt: null,
+          recoverAfter,
+          failureCode: "authority_unavailable",
+          updatedAt: QUARANTINE_TIME,
+        }).where(eq(reflectionRecordSemanticWork.recordId, recordRef));
+      }
+
+      await editHumanRoomMessage({
+        roomId: fixture.roomId,
+        messageId: fixture.messageId,
+        callerUserId: fixture.userId,
+        callerActorId: fixture.userActorId,
+        content: "Journal evidence after the edit",
+        expectedRevision: 0,
+        now: DEPENDENT_EDIT_TIME,
+      });
+      const staleRecords = await db.select({
+        recordId: reflectionRecords.recordId,
+        lifecycle: reflectionRecords.lifecycle,
+      }).from(reflectionRecords)
+        .where(inArray(reflectionRecords.recordId, recordRefs))
+        .orderBy(reflectionRecords.recordId);
+      expect(staleRecords).toHaveLength(recordRefs.length);
+      for (const recordRef of recordRefs) {
+        expect(staleRecords.find(record => record.recordId === recordRef)?.lifecycle)
+          .toBe("stale");
+      }
+      expect(await db.select()
+        .from(reflectionRecordSuccessors)
+        .where(inArray(reflectionRecordSuccessors.predecessorRecordId, recordRefs)))
+        .toHaveLength(0);
+      expect(await db.select({ state: roomJournalRecordRebuildRetirements.state })
+        .from(roomJournalRecordRebuildRetirements)
+        .where(eq(roomJournalRecordRebuildRetirements.roomId, fixture.roomId)))
+        .toEqual([{ state: "pending" }, { state: "pending" }]);
+
+      expect(await prepareNextJournalRebuild({ db, now: REBUILD_TIME }))
+        .toBe(fixture.roomId);
+      const rebuildClaim = await claimJournalRebuildExtraction(fixture.roomId, {
+        db,
+        now: REBUILD_TIME,
+      });
+      expect(rebuildClaim).not.toBeNull();
+      expect(await publisher.publishExtraction({
+        claim: rebuildClaim!,
+        operations: [],
+        modelId: null,
+        now: REBUILD_TIME,
+      })).toEqual({ published: true, eventsWritten: 0 });
+      expect(await readState(fixture.roomId)).toMatchObject({
+        rebuildRequestedAt: null,
+        rebuildTargetMessageId: null,
+      });
+      const sunsetRecords = await db.select({
+        recordId: reflectionRecords.recordId,
+        lifecycle: reflectionRecords.lifecycle,
+      }).from(reflectionRecords)
+        .where(inArray(reflectionRecords.recordId, recordRefs))
+        .orderBy(reflectionRecords.recordId);
+      expect(sunsetRecords).toHaveLength(recordRefs.length);
+      for (const recordRef of recordRefs) {
+        expect(sunsetRecords.find(record => record.recordId === recordRef)?.lifecycle)
+          .toBe("sunset");
+      }
+      expect(await db.select({ state: roomJournalRecordRebuildRetirements.state })
+        .from(roomJournalRecordRebuildRetirements)
+        .where(eq(roomJournalRecordRebuildRetirements.roomId, fixture.roomId)))
+        .toEqual([{ state: "sunset" }, { state: "sunset" }]);
+
+      const [beforeRecovery] = await db.select({
+        state: reflectionRecordSemanticWork.state,
+        recoverAfter: reflectionRecordSemanticWork.recoverAfter,
+      }).from(reflectionRecordSemanticWork)
+        .where(eq(reflectionRecordSemanticWork.recordId, targetRecordRef));
+      expect(beforeRecovery).toMatchObject({
+        state: "quarantined",
+        recoverAfter: TARGET_RECOVERY_TIME,
+      });
+
+      const handle = await verifyRecordProductPostgresHandle(
+        createRecordProductPostgresConnection(db),
+      );
+      const beforeDeadline = new PostgresSemanticWorkStore({
+        handle,
+        commitments: createHmacRecordSemanticCommitmentPort(new Uint8Array(32).fill(61)),
+        clock: () => QUARANTINE_TIME,
+      });
+      expect(await beforeDeadline.claimNext()).toEqual({ status: "empty" });
+      const semanticWork = new PostgresSemanticWorkStore({
+        handle,
+        commitments: createHmacRecordSemanticCommitmentPort(new Uint8Array(32).fill(61)),
+        clock: () => TARGET_RECOVERY_TIME,
+      });
+      const recovered = await semanticWork.claimNext();
+      expect(recovered).toMatchObject({
+        status: "claimed",
+        claim: {
+          recordRef: targetRecordRef,
+          recoveredFromQuarantine: true,
+        },
+      });
+      if (recovered.status !== "claimed") throw new Error("expected scheduled recovery claim");
+      expect(await semanticWork.settleCurrentState({ claim: recovered.claim }))
+        .toMatchObject({
+          status: "settled",
+          reason: "record_lifecycle_obsolete",
+        });
+      expect(await db.select({
+        state: reflectionRecordSemanticWork.state,
+        completionOutcome: reflectionRecordSemanticWork.completionOutcome,
+        recoverAfter: reflectionRecordSemanticWork.recoverAfter,
+      }).from(reflectionRecordSemanticWork)
+        .where(eq(reflectionRecordSemanticWork.recordId, targetRecordRef)))
+        .toEqual([{
+          state: "complete",
+          completionOutcome: "record_lifecycle_obsolete",
+          recoverAfter: null,
+        }]);
+    } finally {
+      if (recordRefs.length > 0) {
+        await db.update(reflectionRecords)
+          .set({ disposition: "purged" })
+          .where(inArray(reflectionRecords.recordId, recordRefs));
+      }
+      await cleanupFixture(fixture);
+    }
+  });
+
+  test("reads a retired native Journal predecessor only through its canonical edge", async () => {
+    const fixture = await makeFixture("retired-predecessor");
+    const recordRefs: string[] = [];
+    try {
+      await initializeFixtureJournal(fixture);
+      const firstClaim = await claimNextExtraction({ db, now: FIRST_EXTRACTION_TIME });
+      expect(firstClaim?.roomId).toBe(fixture.roomId);
+      expect(await publisher.publishExtraction({
+        claim: firstClaim!,
+        operations: [{
+          op: "append",
+          kind: "fact",
+          statement: "Original Journal evidence.",
+          sourceMessageIds: [fixture.messageId],
+        }],
+        modelId: null,
+        now: FIRST_EXTRACTION_TIME,
+      })).toEqual({ published: true, eventsWritten: 1 });
+
+      const [originalEvent] = await db.select({
+        recordId: roomEvents.recordId,
+        sequence: roomEvents.sequence,
+      }).from(roomEvents)
+        .where(eq(roomEvents.roomId, fixture.roomId));
+      if (originalEvent?.recordId == null) throw new Error("missing original native Journal Record");
+      recordRefs.push(originalEvent.recordId);
+      const [originalRecord] = await db.select({
+        processingGeneration: reflectionRecords.processingGeneration,
+      }).from(reflectionRecords)
+        .where(eq(reflectionRecords.recordId, originalEvent.recordId));
+      if (originalRecord === undefined) throw new Error("missing original Record generation");
+      const oldDependency = {
+        kind: "record" as const,
+        recordRef: originalEvent.recordId,
+        observedProcessingGeneration: originalRecord.processingGeneration,
+        terminalAuthorityLeafHandles: [fixture.namespaceId],
+      };
+
+      const [secondMessage] = await db.insert(sessionMessages).values({
+        sessionId: fixture.sessionId,
+        role: "assistant",
+        content: "Corrected Journal evidence",
+        fingerprint: `fp:v1:assistant:${randomUUID()}`,
+        createdAt: SECOND_MESSAGE_TIME,
+      }).returning({ id: sessionMessages.id });
+      if (!secondMessage) throw new Error("failed to create replacement message");
+      const secondClaim = await claimNextExtraction({ db, now: SECOND_EXTRACTION_TIME });
+      expect(secondClaim?.roomId).toBe(fixture.roomId);
+      expect(await publisher.publishExtraction({
+        claim: secondClaim!,
+        operations: [{
+          op: "supersede",
+          eventSequence: originalEvent.sequence,
+          kind: "fact",
+          statement: "Corrected Journal evidence.",
+          sourceMessageIds: [secondMessage.id],
+        }],
+        modelId: null,
+        now: SECOND_EXTRACTION_TIME,
+      })).toEqual({ published: true, eventsWritten: 1 });
+      const successorEvents = await db.select({ recordId: roomEvents.recordId })
+        .from(roomEvents)
+        .where(eq(roomEvents.roomId, fixture.roomId));
+      recordRefs.push(...successorEvents.flatMap(event => event.recordId === null
+        || event.recordId === originalEvent.recordId ? [] : [event.recordId]));
+
+      const runtime = await createProductionReflectionMemoryRuntime({
+        db,
+        selection: { selectedRepresentation: "ordinary", migrationGeneration: 1 },
+        commitmentKey: new Uint8Array(32).fill(67),
+        maintenanceGate: { isAcceptingWork: async () => false },
+        resolveModelId: () => "integration:no-model-call",
+        recordEmbedding: {
+          embed: async () => ({
+            status: "available",
+            embedding: {
+              provenance: {
+                provider: "openai",
+                canonicalModel: "text-embedding-3-small",
+                dimensions: 1_536,
+                contractVersion: 1,
+              },
+              vector: Array.from({ length: 1_536 }, () => 0),
+            },
+          }),
+        },
+      });
+      expect(await runtime.readMemoryEvidenceRecord(oldDependency)).toBeNull();
+      expect(await runtime.readRetiredJournalPredecessor(oldDependency, fixture.roomId))
+        .toMatchObject({
+          recordRef: originalEvent.recordId,
+          lifecycle: "superseded",
+          processingGeneration: originalRecord.processingGeneration + 1,
+        });
+      expect(await runtime.readRetiredJournalPredecessor(oldDependency, randomUUID()))
+        .toBeNull();
+      expect(await runtime.readRetiredJournalPredecessor({
+        ...oldDependency,
+        observedProcessingGeneration: oldDependency.observedProcessingGeneration + 1,
+      }, fixture.roomId)).toBeNull();
+
+      await db.insert(reflectionRecordAuthorityBlocks).values({
+        blockId: `integration-journal-block:${fixture.roomId}`,
+        recordId: originalEvent.recordId,
+        disposition: "blocked",
+      });
+      expect(await runtime.readRetiredJournalPredecessor(oldDependency, fixture.roomId))
+        .toBeNull();
+    } finally {
+      // Authority blocks are immutable. Retire the fixture Records so later
+      // workers cannot claim them.
+      if (recordRefs.length > 0) {
+        await db.update(reflectionRecords)
+          .set({ disposition: "purged" })
+          .where(inArray(reflectionRecords.recordId, recordRefs));
+      }
       await cleanupFixture(fixture);
     }
   });

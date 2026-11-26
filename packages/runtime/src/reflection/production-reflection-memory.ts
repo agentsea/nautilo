@@ -38,7 +38,7 @@ import {
   type RecordEvidencePort,
   type RecordSearchPort,
 } from "@nautilo/reflection/search";
-import type { DurableModelExposureDependency } from "@nautilo/reflection/durable";
+import type { DurableModelExposureDependency, DurableRecordEnvelope } from "@nautilo/reflection/durable";
 import type { MemoryOperationBinding } from "@nautilo/types";
 import {
   BoundedRecordEvidenceTraversalCheckpoints,
@@ -174,8 +174,11 @@ export const REFLECTION_SEMANTIC_RUNTIME_POLICY_V1 = Object.freeze({
   } satisfies DurableSleepRunBudget),
 } as const);
 
+type MemoryEvidenceRecordDependency = Extract<DurableModelExposureDependency, { kind: "record" }>;
+
 export interface ProductionReflectionMemoryRuntime {
-  readonly readMemoryEvidenceRecord: (dependency: Extract<import("@nautilo/reflection/durable").DurableModelExposureDependency, { kind: "record" }>) => Promise<import("@nautilo/reflection/durable").DurableRecordEnvelope | null>;
+  readonly readMemoryEvidenceRecord: (dependency: MemoryEvidenceRecordDependency) => Promise<DurableRecordEnvelope | null>;
+  readonly readRetiredJournalPredecessor: (dependency: MemoryEvidenceRecordDependency, roomId: string) => Promise<DurableRecordEnvelope | null>;
   readonly worker: ReflectionSemanticWorker;
   readonly recallRecordsPortForState: RecallRecordsPortForState;
   readonly foregroundRecordContextPortForRoom: (
@@ -1057,6 +1060,37 @@ export async function createProductionReflectionMemoryRuntime(
       if (context === null || context.opened.processingGeneration !== dependency.observedProcessingGeneration
         || JSON.stringify([...context.opened.semantic.terminalAuthorityLeafHandles].sort()) !== JSON.stringify([...dependency.terminalAuthorityLeafHandles].sort())) return null;
       return context.opened;
+    },
+    async readRetiredJournalPredecessor(dependency, roomId) {
+      if (input.selection.selectedRepresentation !== "ordinary") return null;
+      const blocked = await authorityProjections.isImmediatelyBlocked({
+        recordRef: dependency.recordRef,
+        terminalAuthorityLeafHandles: dependency.terminalAuthorityLeafHandles,
+      });
+      if (blocked !== null) return null;
+      const context = await contextForRecord(dependency.recordRef);
+      if (context === null || context.binding.roomAnchorRef !== roomId) return null;
+      const { opened } = context;
+      if (
+        (opened.lifecycle !== "superseded" && opened.lifecycle !== "resolved")
+        || opened.processingGeneration !== dependency.observedProcessingGeneration + 1
+        || opened.semantic.producer.producerRef !== "stenographer"
+        || !opened.semantic.sourceOwnedKind?.startsWith("journal_event:")
+      ) return null;
+      // The historical model observation still describes these immutable bytes.
+      // Require the Journal's exact replacement edge before traversing its proof.
+      const successors = await repository.readSuccessors({
+        recordRef: opened.recordRef,
+        readBindingRef: context.binding.readBindingRef,
+        limit: 2,
+      });
+      if (
+        successors.status !== "available"
+        || successors.page.continuation !== undefined
+        || successors.page.items.length !== 1
+        || successors.page.items[0]?.relation !== (opened.lifecycle === "superseded" ? "supersedes" : "resolves")
+      ) return null;
+      return opened;
     },
     worker,
     recallRecordsPortForState,

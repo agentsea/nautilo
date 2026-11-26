@@ -19,6 +19,11 @@ const record = (exposure: readonly DurableModelExposureDependency[] | undefined)
     terminalAuthorityLeafHandles:["namespace"], ...(exposure === undefined ? {} : { modelExposureDependencies: exposure }) },
 });
 const recordDep: DurableModelExposureDependency = { kind:"record",recordRef:"record-a", observedProcessingGeneration:1, terminalAuthorityLeafHandles:["namespace"] };
+const nestedRecordDep: DurableModelExposureDependency = { kind:"record",recordRef:"record-old", observedProcessingGeneration:1, terminalAuthorityLeafHandles:["namespace"] };
+const retiredRecord = (overrides: Partial<DurableRecordEnvelope> = {}): DurableRecordEnvelope => ({
+  ...record([source("human")]), recordRef:"record-old", lifecycle:"superseded", processingGeneration:2,
+  ...overrides,
+});
 describe("personal Memory exact input proof", () => {
   test("a complete new derived AI/tool input follows all exposed leaves", async () => {
     const result = await classifyPersonalMemoryEvidence({ dependencies: [source("assistant")], budget, ports: port({
@@ -53,6 +58,55 @@ describe("personal Memory exact input proof", () => {
     expect(await classifyPersonalMemoryEvidence({dependencies:[source("x")],budget,ports:port({readSource:async()=>null})}).catch((error: unknown) => error)).toBeInstanceOf(PersonalMemoryEvidenceChangedError);
     expect(await classifyPersonalMemoryEvidence({dependencies:[recordDep],budget,ports:port({readRecord:async()=>({...record([source("x")]),processingGeneration:2})})}).catch((error: unknown) => error)).toBeInstanceOf(PersonalMemoryEvidenceChangedError);
     expect(await classifyPersonalMemoryEvidence({dependencies:[recordDep],budget,ports:port({readRecord:async()=>record([source("x")]),readAudience:async()=>null})}).catch((error: unknown) => error)).toBeInstanceOf(PersonalMemoryEvidenceChangedError);
+  });
+  test("an ordinary rebuild may validate retired nested Journal ancestry only as service evidence", async () => {
+    const retiredReads: string[] = [];
+    const result = await classifyPersonalMemoryEvidence({dependencies:[recordDep],budget,ports:port({
+      readRecord:async(dependency)=>dependency.recordRef === "record-a" ? record([nestedRecordDep]) : null,
+    }),readRetiredJournalPredecessor:async(dependency)=>{
+      retiredReads.push(dependency.recordRef);
+      return retiredRecord();
+    }});
+    expect(result).toEqual({kind:"service",reason:"incomplete"});
+    expect(retiredReads).toEqual(["record-old"]);
+  });
+  test("direct Records never use retired rebuild ancestry even when visited nested first", async () => {
+    let retiredReads = 0;
+    const result = await classifyPersonalMemoryEvidence({
+      dependencies:[
+        {kind:"source",sourceKind:"message",logicalSourceRef:"derived",observedRevision:"0",observedContentFingerprint:"exact-content",terminalAuthorityLeafHandle:"namespace"},
+        nestedRecordDep,
+      ],budget,ports:port({
+        readSource:async()=>({status:"current",kind:"derived",audienceHumanIds:["human-a"],includesPublicBoundary:false,modelExposureDependencies:[nestedRecordDep]}),
+      }),readRetiredJournalPredecessor:async()=>{retiredReads += 1; return retiredRecord();},
+    }).catch((error: unknown)=>error);
+    expect(result).toBeInstanceOf(PersonalMemoryEvidenceChangedError);
+    expect(retiredReads).toBe(0);
+  });
+  test("unsupported or missing retired Journal ancestry remains fatal", async () => {
+    const invalid = [
+      null,
+      retiredRecord({lifecycle:"stale"}),
+      retiredRecord({processingGeneration:3}),
+      retiredRecord({semantic:{...retiredRecord().semantic,terminalAuthorityLeafHandles:["other-namespace"]}}),
+    ];
+    for (const predecessor of invalid) {
+      const result = await classifyPersonalMemoryEvidence({dependencies:[recordDep],budget,ports:port({
+        readRecord:async(dependency)=>dependency.recordRef === "record-a" ? record([nestedRecordDep]) : null,
+      }),readRetiredJournalPredecessor:async()=>predecessor}).catch((error: unknown)=>error);
+      expect(result).toBeInstanceOf(PersonalMemoryEvidenceChangedError);
+    }
+  });
+  test("accepted personal funding rejects a later retired-ancestry service proof", async () => {
+    const accepted = await classifyPersonalMemoryEvidence({dependencies:[recordDep],budget,ports:port({
+      readRecord:async()=>record([source("human")]),
+    })});
+    const changed = await classifyPersonalMemoryEvidence({dependencies:[recordDep],budget,ports:port({
+      readRecord:async(dependency)=>dependency.recordRef === "record-a" ? record([nestedRecordDep]) : null,
+    }),readRetiredJournalPredecessor:async()=>retiredRecord()});
+    expect(accepted).toEqual({kind:"human",humanUserId:"human-a"});
+    expect(changed).toEqual({kind:"service",reason:"incomplete"});
+    expect(()=>assertSamePersonalMemoryEvidence(accepted,changed)).toThrow(PersonalMemoryEvidenceChangedError);
   });
   test("cyclic derivation and exhausted current policy are incomplete", async () => {
     const ports = port({readSource:async()=>({status:"current",kind:"derived",audienceHumanIds:["human-a"],includesPublicBoundary:false,modelExposureDependencies:[source("x")]})});

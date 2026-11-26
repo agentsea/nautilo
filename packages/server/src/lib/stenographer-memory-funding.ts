@@ -3,15 +3,18 @@ import { and, eq, gt, resolveModelAttemptReplaySafety, roomJournalBatches, roomJ
 import { MemoryProviderOutcomeUnknownError } from "@nautilo/agent";
 import { createRoomSideModelInvoker, extractionModelExposureDependencies, compactionModelExposureDependencies,
   type ExtractionClaim, type CompactionClaim, type AdmittedStenographerModel } from "@nautilo/runtime";
-import type { DurableModelExposureDependency } from "@nautilo/reflection/durable";
+import type { DurableModelExposureDependency, DurableRecordEnvelope } from "@nautilo/reflection/durable";
 import type { MemoryOperationBinding } from "@nautilo/types";
 import { openMemoryOperation, type OpenMemoryOperationInput } from "./personal-memory-operation";
 import { getCurrentProtectedMemoryEvidence } from "./protected-memory-model-evidence";
+
+type RecordDependency = Extract<DurableModelExposureDependency, { kind: "record" }>;
 
 type Common = Pick<OpenMemoryOperationInput, "ports" | "budget" | "commitmentKey"> & {
   db: DirectDatabase;
   resolveServiceModel(): string;
   assertAvailable(): Promise<void>;
+  readRetiredJournalPredecessor?: (dependency: RecordDependency, roomId: string) => Promise<DurableRecordEnvelope | null>;
   /** Pure injection seam for funding-boundary tests. */
   createInvoker?: typeof createRoomSideModelInvoker;
 };
@@ -129,9 +132,17 @@ export function createStenographerMemoryFunding(input: Common) {
     if (ports === undefined) {
       throw new Error("Protected Memory evidence is unavailable");
     }
+    const readPredecessor = input.readRetiredJournalPredecessor;
+    const readRetiredJournalPredecessor =
+      !protectedEvidence && extraction && "rebuildGeneration" in claim
+        && claim.rebuildGeneration != null && readPredecessor !== undefined
+        ? (dependency: RecordDependency) => readPredecessor(dependency, claim.roomId)
+        : undefined;
     const admitted = await openMemoryOperation({
-      ...input, ports, role: "memorySummarization", operationKey, dependencies,
-      bind, assertCurrent,
+      ports, role: "memorySummarization", operationKey, dependencies, bind, assertCurrent,
+      budget: input.budget, commitmentKey: input.commitmentKey,
+      resolveServiceModel: () => input.resolveServiceModel(),
+      ...(readRetiredJournalPredecessor === undefined ? {} : { readRetiredJournalPredecessor }),
     });
     await admitted.assertExposure(expectedDependencies);
     if (protectedEvidence) {

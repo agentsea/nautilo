@@ -1974,6 +1974,8 @@ export async function createApp(options?: CreateAppOptions) {
     db: getServerDirectDb(), ports: memoryEvidence,
     budget: REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.budget.hierarchy,
     get commitmentKey() { return getReflectionCommitmentKey(); }, resolveServiceModel: resolveStenographerModel,
+    readRetiredJournalPredecessor: async (dependency, roomId) =>
+      (await reflectionRuntime()).readRetiredJournalPredecessor(dependency, roomId),
     assertAvailable: async () => {
       await maintenanceGate.assertAcceptingNewWork();
       const policy = await getEncryptionTransitionPolicy(getServerDirectDb());

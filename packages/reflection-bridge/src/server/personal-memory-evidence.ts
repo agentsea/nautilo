@@ -43,6 +43,13 @@ export async function classifyPersonalMemoryEvidence(input: Readonly<{
   dependencies: readonly DurableModelExposureDependency[] | undefined;
   ports: PersonalMemoryEvidencePort;
   budget: OrganizerEvidenceBudget;
+  /**
+   * Ordinary Journal rebuilds may retain immutable ancestry coordinates after
+   * their Records have moved to a terminal successor lifecycle. This reader is
+   * consulted only for nested Record ancestry that the current reader cannot
+   * open; direct prompt Records always require the ordinary current proof.
+   */
+  readRetiredJournalPredecessor?: PersonalMemoryEvidencePort["readRecord"];
 }>): Promise<PersonalMemoryEvidence> {
   if (![input.budget.maxVisitedRecords, input.budget.maxTraversalWork].every((value) => Number.isSafeInteger(value) && value >= 0)) {
     throw new TypeError("Memory evidence budget must use nonnegative safe integers");
@@ -54,6 +61,13 @@ export async function classifyPersonalMemoryEvidence(input: Readonly<{
   let records = 0;
   let human: string | undefined;
   let reason: "incomplete" | "mixed" | "shared" | undefined;
+  const directRecordRefs = new Set(input.dependencies.flatMap((dependency) =>
+    dependency.kind === "record" ? [dependency.recordRef] : []));
+  const sameAuthority = (
+    record: DurableRecordEnvelope,
+    dependency: Extract<DurableModelExposureDependency, { kind: "record" }>,
+  ): boolean => JSON.stringify([...record.semantic.terminalAuthorityLeafHandles].sort())
+    === JSON.stringify([...dependency.terminalAuthorityLeafHandles].sort());
   const mergeAudience = (ids: readonly string[], publicBoundary: boolean): void => {
     const exact = [...new Set(ids)];
     if (publicBoundary || exact.length !== 1) { reason ??= "shared"; return; }
@@ -83,12 +97,26 @@ export async function classifyPersonalMemoryEvidence(input: Readonly<{
         else for (const child of source.modelExposureDependencies) await visit(child);
       } else {
         if (++records > input.budget.maxVisitedRecords) { reason ??= "incomplete"; return; }
-        const record = await input.ports.readRecord(dependency);
+        let record = await input.ports.readRecord(dependency);
+        let retired = false;
+        if (record === null
+          && !directRecordRefs.has(dependency.recordRef)
+          && input.readRetiredJournalPredecessor !== undefined) {
+          record = await input.readRetiredJournalPredecessor(dependency);
+          retired = true;
+        }
+        const retiredGeneration = dependency.observedProcessingGeneration + 1;
         if (!record || record.recordRef !== dependency.recordRef
-          || record.processingGeneration !== dependency.observedProcessingGeneration
-          || record.lifecycle !== "current"
-          || JSON.stringify([...record.semantic.terminalAuthorityLeafHandles].sort())
-            !== JSON.stringify([...dependency.terminalAuthorityLeafHandles].sort())) throw new PersonalMemoryEvidenceChangedError();
+          || (retired
+            ? (record.lifecycle !== "superseded" && record.lifecycle !== "resolved")
+              || !Number.isSafeInteger(retiredGeneration)
+              || record.processingGeneration !== retiredGeneration
+            : record.lifecycle !== "current"
+              || record.processingGeneration !== dependency.observedProcessingGeneration)
+          || !sameAuthority(record, dependency)) throw new PersonalMemoryEvidenceChangedError();
+        // Retired ancestry can prove only that a rebuild's immutable exposure
+        // remains explainable. It can never establish an exclusive Human payer.
+        if (retired) reason ??= "incomplete";
         for (const leaf of record.semantic.terminalAuthorityLeafHandles) {
           const audience = await input.ports.readAudience(leaf);
           if (!audience) throw new PersonalMemoryEvidenceChangedError();

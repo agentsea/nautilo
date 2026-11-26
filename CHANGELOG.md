@@ -7,6 +7,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
+- Let Room Journal rebuilds continue after a rebuilt observation replaces
+  an earlier one, so Reflection can retire work for the old Journal.
+
 - Keep MindSwapper's request reference and recognized stream error reason
   when a response fails, so the failed attempt can be traced from Costs.
 

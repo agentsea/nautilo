@@ -12,6 +12,7 @@ export interface OpenMemoryOperationInput {
   readonly operationKey: string;
   readonly dependencies: () => Promise<readonly DurableModelExposureDependency[] | undefined>;
   readonly ports: PersonalMemoryEvidencePort;
+  readonly readRetiredJournalPredecessor?: PersonalMemoryEvidencePort["readRecord"];
   readonly budget: OrganizerEvidenceBudget;
   readonly commitmentKey: Uint8Array;
   /** Reflection batches retain one accepted payer/model across proven claim subsets. */
@@ -37,7 +38,14 @@ export async function openMemoryOperation(input: OpenMemoryOperationInput): Prom
   await input.assertCurrent();
   const dependencies = await input.dependencies();
   const classify = (current: readonly DurableModelExposureDependency[] | undefined) =>
-    classifyPersonalMemoryEvidence({ dependencies: current, ports: input.ports, budget: input.budget });
+    classifyPersonalMemoryEvidence({
+      dependencies: current,
+      ports: input.ports,
+      budget: input.budget,
+      ...(input.readRetiredJournalPredecessor === undefined ? {} : {
+        readRetiredJournalPredecessor: input.readRetiredJournalPredecessor,
+      }),
+    });
   const initial = await classify(dependencies);
   const commitment = (current: readonly DurableModelExposureDependency[] | undefined): string =>
     `hmac-sha256:${createHmac("sha256", input.commitmentKey).update(JSON.stringify([

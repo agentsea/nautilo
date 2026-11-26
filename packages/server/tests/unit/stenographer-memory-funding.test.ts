@@ -2,7 +2,8 @@ import { describe, expect, spyOn, test } from "bun:test";
 import { MemoryProviderOutcomeUnknownError, type CapabilityFundingSession } from "@nautilo/agent";
 import type { DirectDatabase } from "@nautilo/db";
 import type { DurableModelExposureDependency, DurableRecordEnvelope } from "@nautilo/reflection/durable";
-import { compactionModelExposureDependencies, createRoomSideModelInvoker, type CompactionClaim } from "@nautilo/runtime";
+import { compactionModelExposureDependencies, createRoomSideModelInvoker, extractionModelExposureDependencies,
+  type CompactionClaim, type ExtractionClaim } from "@nautilo/runtime";
 import type { MemoryOperationBinding } from "@nautilo/types";
 
 import * as capabilityFunding from "../../src/lib/capability-funding";
@@ -106,6 +107,46 @@ function ordinaryCompactionDatabase() {
   };
 }
 
+function ordinaryExtractionDatabase() {
+  let accepted: MemoryOperationBinding | null = null;
+  const updates: Record<string, unknown>[] = [];
+  const select = (fields: Record<string, unknown>) => {
+    const keys = Object.keys(fields);
+    const rows = keys.includes("acceptedPlan")
+      ? [{ roomId: ROOM, accepted, acceptedPlan: null }]
+      : keys.includes("accepted")
+        ? [{ accepted }]
+        : [{ roomId: ROOM }];
+    const query = {
+      from() { return this; },
+      where() { return this; },
+      for() { return this; },
+      limit: () => Promise.resolve(rows),
+    };
+    return query;
+  };
+  const update = () => ({
+    set: (values: Record<string, unknown>) => ({
+      where: async () => {
+        updates.push(values);
+        if ("acceptedModelBinding" in values) {
+          accepted = values["acceptedModelBinding"] as MemoryOperationBinding;
+        }
+        return [];
+      },
+    }),
+  });
+  const transaction = async <T>(run: (tx: {
+    select: typeof select;
+    update: typeof update;
+  }) => Promise<T>) => run({ select, update });
+  return {
+    db: { select, update, transaction } as unknown as DirectDatabase,
+    accepted: () => accepted,
+    updates,
+  };
+}
+
 const humanSource: Extract<DurableModelExposureDependency, { kind: "source" }> = {
   kind: "source",
   sourceKind: "message",
@@ -193,6 +234,54 @@ function ordinaryCompactionClaim(): CompactionClaim {
   };
 }
 
+function ordinaryExtractionClaim(rebuildGeneration: number | null): ExtractionClaim {
+  const createdAt = new Date("2026-11-26T12:00:00.000Z");
+  const row = {
+    id: 41,
+    createdAt,
+    role: "user" as const,
+    text: "Remember the exact current observation.",
+    displayLabel: "Human",
+    editRevision: 3,
+  };
+  return {
+    batchId: BATCH,
+    roomId: ROOM,
+    ownerId: HUMAN,
+    leaseToken: LEASE,
+    attemptCount: 1,
+    lane: "live",
+    namespaceId: NAMESPACE,
+    rebuildGeneration,
+    plan: {
+      fromMessageIdExclusive: 40,
+      throughMessageIdInclusive: 41,
+      trigger: "count",
+      sourceRows: [{ ...row, conversationalBoundary: true }],
+      coveredMessageIds: [41],
+      conversationalMessageCount: 1,
+      newestEligibleSourceAt: createdAt,
+    },
+    sourceRows: [row],
+    priorContextRows: [],
+    latestRollup: null,
+    visibleEvents: [{
+      id: "record:event-current",
+      roomId: ROOM,
+      sequence: 1,
+      kind: "fact",
+      statement: "Current journal fact.",
+      status: "active",
+      modelExposureDependency: {
+        kind: "record",
+        recordRef: "record:event-current",
+        observedProcessingGeneration: 1,
+        terminalAuthorityLeafHandles: [NAMESPACE],
+      },
+    }],
+  };
+}
+
 const protectedEvidence = {
   readRecord: () => Promise.resolve(null),
   readSource: () => Promise.resolve(null),
@@ -200,6 +289,83 @@ const protectedEvidence = {
 };
 
 describe("ordinary Stenographer Memory funding", () => {
+  test("uses retired Journal ancestry only for an ordinary live rebuild", async () => {
+    const oldDependency: Extract<DurableModelExposureDependency, { kind: "record" }> = {
+      kind: "record",
+      recordRef: "record:event-old",
+      observedProcessingGeneration: 1,
+      terminalAuthorityLeafHandles: [NAMESPACE],
+    };
+    const currentRecord = {
+      ...journalRecord("record:event-current"),
+      semantic: {
+        ...journalRecord("record:event-current").semantic,
+        modelExposureDependencies: [oldDependency],
+      },
+    };
+    const retiredRecord: DurableRecordEnvelope = {
+      ...journalRecord(oldDependency.recordRef),
+      lifecycle: "superseded",
+      processingGeneration: 2,
+    };
+    const createRuntime = (state: ReturnType<typeof ordinaryExtractionDatabase>, rooms: string[],
+      invocations: Array<Parameters<typeof createRoomSideModelInvoker>[0]>) => createStenographerMemoryFunding({
+        db: state.db,
+        ports: {
+          readRecord: async (dependency) => dependency.recordRef === currentRecord.recordRef ? currentRecord : null,
+          readSource: async () => ({status: "current", kind: "human", authorHumanId: HUMAN,
+            audienceHumanIds: [HUMAN], includesPublicBoundary: false}),
+          readAudience: async () => ({humanIds: [HUMAN], includesPublicBoundary: false}),
+        },
+        budget: {maxVisitedRecords: 8, maxTraversalWork: 16},
+        commitmentKey: new Uint8Array(32).fill(13),
+        resolveServiceModel: () => "openai:service",
+        assertAvailable: () => Promise.resolve(),
+        readRetiredJournalPredecessor: async (dependency, roomId) => {
+          rooms.push(roomId);
+          return dependency.recordRef === retiredRecord.recordRef ? retiredRecord : null;
+        },
+        createInvoker: (options) => {
+          invocations.push(options);
+          return async () => { throw new Error("provider must not run during admission"); };
+        },
+      });
+
+    const rebuildState = ordinaryExtractionDatabase();
+    const rebuildRooms: string[] = [];
+    const rebuildInvocations: Array<Parameters<typeof createRoomSideModelInvoker>[0]> = [];
+    const rebuildClaim = ordinaryExtractionClaim(7);
+    const rebuildDependencies = extractionModelExposureDependencies(rebuildClaim);
+    const admitted = await createRuntime(rebuildState, rebuildRooms, rebuildInvocations)
+      .admitExtractionModel(rebuildClaim, rebuildDependencies);
+    expect(admitted.modelId).toBe("openai:service");
+    expect(rebuildState.accepted()).toMatchObject({
+      version: 1,
+      kind: "service",
+      role: "memorySummarization",
+      modelId: "openai:service",
+    });
+    expect(rebuildState.updates).toHaveLength(1);
+    expect(rebuildInvocations).toHaveLength(1);
+    expect(rebuildInvocations[0]).not.toHaveProperty("fundingSession");
+    expect(rebuildRooms).toEqual([ROOM, ROOM]);
+    await admitted.assertCurrent();
+    expect(rebuildRooms).toEqual([ROOM, ROOM, ROOM]);
+
+    const liveState = ordinaryExtractionDatabase();
+    const liveRooms: string[] = [];
+    const liveInvocations: Array<Parameters<typeof createRoomSideModelInvoker>[0]> = [];
+    const liveClaim = ordinaryExtractionClaim(null);
+    const blocked = await createRuntime(liveState, liveRooms, liveInvocations)
+      .admitExtractionModel(liveClaim, extractionModelExposureDependencies(liveClaim))
+      .catch((error: unknown) => error);
+    expect(blocked).toMatchObject({message: "Memory input evidence or current authority changed"});
+    expect(liveRooms).toEqual([]);
+    expect(liveState.accepted()).toBeNull();
+    expect(liveState.updates).toHaveLength(0);
+    expect(liveInvocations).toHaveLength(0);
+  });
+
   test("freezes a personal compaction binding from exact current Human Record ancestry", async () => {
     const state = ordinaryCompactionDatabase();
     const claim = ordinaryCompactionClaim();
