@@ -18,6 +18,38 @@ export function recoveredMemoryReviewTurnState(
     ? "awaiting" : "interrupted";
 }
 
+export interface MemoryReviewCheckpointReconciliationRow {
+  readonly id: string;
+  readonly checkpointThreadId: string;
+  readonly turnId: string;
+  readonly updatedAt: Date;
+}
+
+/** Reconcile one already-selected row without widening the caller's bounded scan. */
+export async function reconcileMemoryReviewTurnCheckpoint(options: {
+  db: DirectDatabase;
+  row: MemoryReviewCheckpointReconciliationRow;
+  isTurnActive(turnId: string): boolean;
+  readCheckpoint(threadId: string): Promise<unknown>;
+  now?: Date;
+}): Promise<"active" | "changed" | "unchanged"> {
+  const { row } = options;
+  if (options.isTurnActive(row.turnId)) return "active";
+  // Read failure leaves durable pending state unchanged for honest recovery.
+  const tuple = await options.readCheckpoint(row.checkpointThreadId);
+  if (options.isTurnActive(row.turnId)) return "active";
+  const updated = await options.db.update(memoryReviewTurns).set({
+    state: recoveredMemoryReviewTurnState(row.turnId, tuple),
+    updatedAt: options.now ?? new Date(),
+  }).where(and(
+    eq(memoryReviewTurns.id, row.id),
+    inArray(memoryReviewTurns.state, ["pending", "awaiting"]),
+    isNull(memoryReviewTurns.receiptId),
+    eq(memoryReviewTurns.updatedAt, row.updatedAt),
+  )).returning({ id: memoryReviewTurns.id });
+  return updated.length === 1 ? "changed" : "unchanged";
+}
+
 /**
  * Run at startup after opening the canonical ordinary
  * availability gate. A checkpoint load is confidential and never precedes it.
@@ -50,15 +82,13 @@ export async function recoverMemoryReviewTurnsAtStartup(options: {
     for (const row of rows) {
       if (!(await options.checkAvailable())) return { recovered, unavailable: true };
       cursor = row.id;
-      if (options.isTurnActive(row.turnId)) continue;
-      // Read failure leaves durable pending state unchanged for honest recovery.
-      const tuple = await options.readCheckpoint(row.checkpointThreadId);
-      if (options.isTurnActive(row.turnId)) continue;
-      await options.db.update(memoryReviewTurns).set({
-        state: recoveredMemoryReviewTurnState(row.turnId, tuple), updatedAt: new Date(),
-      }).where(and(eq(memoryReviewTurns.id, row.id), inArray(memoryReviewTurns.state, ["pending", "awaiting"]), isNull(memoryReviewTurns.receiptId), eq(memoryReviewTurns.updatedAt, row.updatedAt)));
-      recovered++;
-      cursor = row.id;
+      const result = await reconcileMemoryReviewTurnCheckpoint({
+        db: options.db,
+        row,
+        isTurnActive: turnId => options.isTurnActive(turnId),
+        readCheckpoint: threadId => options.readCheckpoint(threadId),
+      });
+      if (result === "changed") recovered++;
     }
   }
 }
