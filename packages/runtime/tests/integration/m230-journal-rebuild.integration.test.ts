@@ -6,7 +6,7 @@
  *     packages/runtime/tests/integration/m230-journal-rebuild.integration.test.ts
  *
  * No model or external service is used. The repository is driven directly
- * with empty extraction operations to prove generation/lease/cursor behavior.
+ * with synthetic extraction operations to prove the generation, lease, and cursor behavior.
  */
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
@@ -97,7 +97,7 @@ afterAll(async () => {
   for (const fixture of [...liveFixtures]) {
     await cleanupFixture(fixture);
   }
-  await db.end();
+  await db?.end();
 });
 
 async function makeFixture(label: string): Promise<Fixture> {
@@ -203,7 +203,7 @@ async function makeFixture(label: string): Promise<Fixture> {
 }
 
 async function cleanupFixture(fixture: Fixture): Promise<void> {
-  if (!liveFixtures.delete(fixture)) return;
+  if (!liveFixtures.has(fixture)) return;
   await db.delete(sessionMessages).where(eq(sessionMessages.sessionId, fixture.sessionId));
   await db.delete(sessions).where(eq(sessions.id, fixture.sessionId));
   await db.delete(roomMembers).where(eq(roomMembers.roomId, fixture.roomId));
@@ -213,6 +213,7 @@ async function cleanupFixture(fixture: Fixture): Promise<void> {
   await db.delete(agents).where(eq(agents.id, fixture.agentId));
   await db.delete(actors).where(eq(actors.id, fixture.userActorId));
   await db.delete(users).where(eq(users.id, fixture.userId));
+  liveFixtures.delete(fixture);
 }
 
 async function readState(roomId: string) {
@@ -459,22 +460,36 @@ describe("M230 Room-journal rebuild (live Postgres)", () => {
           eq(reflectionRecordAuthorityDependencies.dependencyRecordId, firstEvent.recordId),
         ))).toHaveLength(1);
 
-      for (const [recordRef, stage] of [
-        [targetRecordRef, "organization"],
-        [firstEvent.recordId, "authority_projection"],
-      ] as const) {
-        await db.update(reflectionRecordSemanticWork).set({
-          stage,
-          state: "quarantined",
-          attemptCount: 8,
-          quarantineRound: 1,
-          recoveryPolicyVersion: 2,
-          nextAttemptAt: null,
-          recoverAfter: TARGET_RECOVERY_TIME,
-          failureCode: "authority_unavailable",
-          updatedAt: QUARANTINE_TIME,
-        }).where(eq(reflectionRecordSemanticWork.recordId, recordRef));
+      const handle = await verifyRecordProductPostgresHandle(
+        createRecordProductPostgresConnection(getSharedDirectDb()),
+      );
+      const commitments = createHmacRecordSemanticCommitmentPort(new Uint8Array(32).fill(61));
+      const beforeDeadline = new PostgresSemanticWorkStore({
+        handle,
+        commitments,
+        clock: () => QUARANTINE_TIME,
+      });
+      const quarantine = (recordRef: string) => db.update(reflectionRecordSemanticWork).set({
+        state: "quarantined",
+        attemptCount: 8,
+        quarantineRound: 1,
+        recoveryPolicyVersion: 2,
+        nextAttemptAt: null,
+        recoverAfter: TARGET_RECOVERY_TIME,
+        failureCode: "authority_unavailable",
+        updatedAt: QUARANTINE_TIME,
+      }).where(eq(reflectionRecordSemanticWork.recordId, recordRef));
+      await quarantine(firstEvent.recordId);
+      // Advance the dependent Record through the production checkpoint path.
+      for (const stage of ["authority_projection", "search_projection"] as const) {
+        const work = await beforeDeadline.claimNext();
+        expect(work).toMatchObject({ status: "claimed", claim: { recordRef: targetRecordRef, stage } });
+        if (work.status !== "claimed") throw new Error("expected dependent Record claim");
+        expect(await beforeDeadline.checkpoint({
+          claim: work.claim, completedStage: stage,
+        })).toMatchObject({ status: "accepted" });
       }
+      await quarantine(targetRecordRef);
 
       await editHumanRoomMessage({
         roomId: fixture.roomId,
@@ -597,18 +612,10 @@ describe("M230 Room-journal rebuild (live Postgres)", () => {
           state: "sunset",
         })));
 
-      const handle = await verifyRecordProductPostgresHandle(
-        createRecordProductPostgresConnection(db),
-      );
-      const beforeDeadline = new PostgresSemanticWorkStore({
-        handle,
-        commitments: createHmacRecordSemanticCommitmentPort(new Uint8Array(32).fill(61)),
-        clock: () => QUARANTINE_TIME,
-      });
       expect(await beforeDeadline.claimNext()).toEqual({ status: "empty" });
       const semanticWork = new PostgresSemanticWorkStore({
         handle,
-        commitments: createHmacRecordSemanticCommitmentPort(new Uint8Array(32).fill(61)),
+        commitments,
         clock: () => TARGET_RECOVERY_TIME,
       });
       const recoveredStages = new Map<string, string>();

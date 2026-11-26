@@ -5,16 +5,17 @@ import { randomUUID } from "node:crypto";
 import {
   actors, agents, rooms, roomMembers, namespaces, sessions, sessionMessages, users,
   groups, groupMembers, memoryReviewTurns, memoryReviewReceipts, memoryReviewModelRecoveries, llmUsageEvents,
-  admitMemoryReviewSourceInTx, markMemoryReviewTurnInTx, eq, sql,
+  admitMemoryReviewSourceInTx, markMemoryReviewTurnInTx, getSharedDirectDb, eq, sql,
 } from "@nautilo/db";
 import { bootstrapTestDbInstance } from "@nautilo/db/testing";
 import { appendTranscriptMessages, withSerializableAgentTrustContext, type PreparedMemoryReview } from "@nautilo/agent";
 import { initPolicyResolver, type NamespaceMemoryEnvelope } from "@nautilo/trust";
 import { PostgresMemoryReviewRepository } from "../../src/memory-review/repository";
+import { recoverMemoryReviewTurnsAtStartup } from "../../src/memory-review/startup-recovery";
 import { createIntegrationStubPolicyResolver } from "./integration-stub-policy";
 import { createTestUser, createTestRoom, getDirectDb, closeDirectDb } from "./helpers";
 
-// This suite mutates only its UUID-scoped synthetic fixture on the approved clone.
+// This suite mutates only its UUID-scoped synthetic fixture on the explicit test instance.
 const instanceId = process.env["NAUTILO_INSTANCE_ID"]?.trim();
 if (!instanceId || !/(?:^|[-_])(tests?|qa|cruft)(?:$|[-_])/iu.test(instanceId)) throw new Error("M319 integration requires an explicit test, tests, qa, or cruft instance");
 const db = getDirectDb();
@@ -26,7 +27,9 @@ let actorId = "";
 let sessionId = "";
 const threadId = `m319-integration:${randomUUID()}`;
 let envelope: NamespaceMemoryEnvelope;
-const repo = new PostgresMemoryReviewRepository({ threshold: () => 2, leaseMs: 120_000, retryMs: 15_000, retentionMs: 86_400_000, retentionBatchSize: 10, assertAvailable: async () => {} }, db);
+// Exercise recovery through the runtime product role even when a suite uses
+// a separate direct connection for fixtures.
+const repo = new PostgresMemoryReviewRepository({ threshold: () => 2, leaseMs: 120_000, retryMs: 15_000, retentionMs: 86_400_000, retentionBatchSize: 10, assertAvailable: async () => {} }, getSharedDirectDb());
 
 beforeAll(async () => {
   bootstrapTestDbInstance();
@@ -208,6 +211,48 @@ describe("M319 durable Memory processing on PostgreSQL", () => {
     expect(receipts.filter(receipt => receipt.outcome === "published")).toHaveLength(1);
     expect(await repo.requestModelRecovery(request)).toBe("blocked");
     expect(await repo.claimNext({ now })).toBeNull();
+  });
+
+  test("startup reconciles a stale checkpoint barrier and review advances through it", async () => {
+    const awaitingTurnId = randomUUID();
+    const newerTurnId = randomUUID();
+    await admit(awaitingTurnId);
+    await admit(newerTurnId);
+    await admit(randomUUID());
+    const now = new Date();
+    const [barrier] = await db.update(memoryReviewTurns).set({
+      state: "awaiting", completedAt: null, updatedAt: new Date(now.getTime() - 1_000),
+    }).where(eq(memoryReviewTurns.turnId, awaitingTurnId)).returning({ id: memoryReviewTurns.id });
+    if (!barrier) throw new Error("expected the fixture checkpoint barrier");
+    expect(await repo.claimNext({ now })).toBeNull();
+
+    const reconciled = await recoverMemoryReviewTurnsAtStartup({
+      db: getSharedDirectDb(), bootCutoff: now, pageSize: 1,
+      isTurnActive: (turnId) => turnId !== awaitingTurnId,
+      checkAvailable: async () => true,
+      readCheckpoint: (checkpointThreadId) => {
+        expect(checkpointThreadId).toBe(threadId);
+        return Promise.resolve({
+          checkpoint: { channel_values: { turnId: newerTurnId } },
+          pendingWrites: [],
+        });
+      },
+    });
+    expect(reconciled).toEqual({ recovered: 1, unavailable: false });
+    const [interrupted] = await db.select({ state: memoryReviewTurns.state })
+      .from(memoryReviewTurns).where(eq(memoryReviewTurns.id, barrier.id));
+    expect(interrupted?.state).toBe("interrupted");
+
+    const claim = await repo.claimNext({ now: new Date() });
+    if (!claim) throw new Error("expected review to advance past the stale checkpoint");
+    expect(claim.turnIds).toHaveLength(3);
+    expect(claim.turnIds[0]).toBe(barrier.id);
+    await repo.load(claim);
+    const proposal: PreparedMemoryReview = { envelope, speakerUserId: userId, operations: [], snapshots: [] };
+    expect(await repo.publish({
+      claim, proposal, modelId: "fixture:checkpoint", now: new Date(), durationMs: 0,
+    })).toBe("published");
+    expect(await repo.claimNext({ now: new Date() })).toBeNull();
   });
 
   test("Agent guard observes disabled users and its role cannot rewrite publication receipts", async () => {
