@@ -128,117 +128,116 @@ describePostgres("Reflection semantic worker PostgreSQL liveness", () => {
   test("one model request completes two independently leased organization items", async () => {
     if (connectionString === undefined) throw new Error("missing integration database URL");
     process.env["DB_DIRECT_CONNECTION"] = connectionString;
-    const db = getDirectDb();
-    const handle = await verifyRecordProductPostgresHandle(
-      createRecordProductPostgresConnection(db),
-    );
-    const semanticWork = new PostgresSemanticWorkStore({
-      handle,
-      commitments: createHmacRecordSemanticCommitmentPort(new Uint8Array(32).fill(23)),
-    });
-    const fixturePrefix = `runtime-integration:reflection-batch:${randomUUID()}`;
-    const recordRefs = [`${fixturePrefix}:one`, `${fixturePrefix}:two`];
-    let batchCalls = 0;
-    const admittedClaims: DurableSleepClaim[] = [];
-    const openSessions = new Set<string>();
-    const closedSessions: string[] = [];
-    const observedOutcomes: string[] = [];
-    const openOrganizationAttempt = createReflectionOrganizationAttemptOpener({
-      checkAvailable: async () => true,
-      assertClaimCurrent: claim => semanticWork.isClaimCurrent(claim),
-      async openAccess(identity, signal, claim) {
-        expect(identity).toMatchObject({ family: "reflection", stage: "organization",
-          workId: `sleep:${claim.logicalObjectRef}:${claim.generation}`, attemptId: claim.leaseToken });
-        expect(signal.aborted).toBe(false);
-        expect(await semanticWork.isClaimCurrent(claim)).toBe(true);
-        admittedClaims.push(claim);
-        openSessions.add(claim.recordRef);
-        return {
-          async assertCurrent() { expect(openSessions.has(claim.recordRef)).toBe(true); },
-          async close() { openSessions.delete(claim.recordRef); closedSessions.push(claim.recordRef); },
-        };
-      },
-      observe(observation) { observedOutcomes.push(observation.outcome); },
-    });
-    const viewFor = (recordRef: string): DurableSleepOrganizerView => ({
-      changed: {
-        handle: "R1",
-        snapshot: {
-          recordRef,
-          observedContentFingerprint: `fingerprint:${recordRef}`,
-          posture: "derived",
-          anchors: ["room:integration"],
-          statement: `Evidence ${recordRef}`,
-          sourceRefs: [],
-          childRecordRefs: [],
-          structuralHeight: 0,
-          lifecycle: "current",
+    await withIsolatedRecordProductTransaction(async ({ handle, executor }) => {
+      // Only the fixture is due at this clock, even when other suites left work.
+      const observedAt = new Date(0);
+      const semanticWork = new PostgresSemanticWorkStore({
+        handle,
+        clock: () => observedAt,
+        commitments: createHmacRecordSemanticCommitmentPort(new Uint8Array(32).fill(23)),
+      });
+      const fixturePrefix = `runtime-integration:reflection-batch:${randomUUID()}`;
+      const recordRefs = [`${fixturePrefix}:one`, `${fixturePrefix}:two`];
+      let batchCalls = 0;
+      const admittedClaims: DurableSleepClaim[] = [];
+      const openSessions = new Set<string>();
+      const closedSessions: string[] = [];
+      const observedOutcomes: string[] = [];
+      const openOrganizationAttempt = createReflectionOrganizationAttemptOpener({
+        checkAvailable: async () => true,
+        assertClaimCurrent: claim => semanticWork.isClaimCurrent(claim),
+        async openAccess(identity, signal, claim) {
+          expect(identity).toMatchObject({ family: "reflection", stage: "organization",
+            workId: `sleep:${claim.logicalObjectRef}:${claim.generation}`, attemptId: claim.leaseToken });
+          expect(signal.aborted).toBe(false);
+          expect(await semanticWork.isClaimCurrent(claim)).toBe(true);
+          admittedClaims.push(claim);
+          openSessions.add(claim.recordRef);
+          return {
+            async assertCurrent() { expect(openSessions.has(claim.recordRef)).toBe(true); },
+            async close() { openSessions.delete(claim.recordRef); closedSessions.push(claim.recordRef); },
+          };
         },
-        dependency: { kind: "record", recordRef },
-      },
-      candidates: [{
-        handle: "R2",
-        snapshot: {
-          recordRef: `${recordRef}:neighbor`,
-          observedContentFingerprint: `fingerprint:${recordRef}:neighbor`,
-          posture: "derived",
-          anchors: ["room:integration"],
-          statement: `Neighbor ${recordRef}`,
-          sourceRefs: [],
-          childRecordRefs: [],
-          structuralHeight: 0,
-          lifecycle: "current",
+        observe(observation) { observedOutcomes.push(observation.outcome); },
+      });
+      const viewFor = (recordRef: string): DurableSleepOrganizerView => ({
+        changed: {
+          handle: "R1",
+          snapshot: {
+            recordRef,
+            observedContentFingerprint: `fingerprint:${recordRef}`,
+            posture: "derived",
+            anchors: ["room:integration"],
+            statement: `Evidence ${recordRef}`,
+            sourceRefs: [],
+            childRecordRefs: [],
+            structuralHeight: 0,
+            lifecycle: "current",
+          },
+          dependency: { kind: "record", recordRef },
         },
-        dependency: { kind: "record", recordRef: `${recordRef}:neighbor` },
-      }],
-      existingParents: [],
-      maxSelectedChildren: 2,
-    });
-    const semantic: DurableSleepSemanticPort = {
-      ...SEMANTIC,
-      openOrganizationAttempt,
-      loadOrganizerView: async (claim) => {
-        expect(openSessions.has(claim.recordRef)).toBe(true);
-        return { status: "ready", view: viewFor(claim.recordRef) };
-      },
-      invokeOrganizerBatch: async (claims) => {
-        expect(claims).toHaveLength(2);
-        expect(claims.every(claim => openSessions.has(claim.recordRef))).toBe(true);
-        for (const claim of claims) expect(await semanticWork.isClaimCurrent(claim)).toBe(true);
-        batchCalls += 1;
-        return JSON.stringify({
-          answers: claims.map((_, index) => ({
-            question: `Q${index + 1}`,
-            proposal: { operation: "no_change" },
-          })),
-        });
-      },
-      applyProposal: async ({ claim }) => {
-        expect(openSessions.has(claim.recordRef)).toBe(true);
-        expect(await semanticWork.isClaimCurrent(claim)).toBe(true);
-        return {
-          status: "applied", operation: "no_change", replayed: false,
-          usage: { modelCalls: 0, visitedRecords: 0, createdRecords: 0, traversalWork: 0 },
-        };
-      },
-    };
+        candidates: [{
+          handle: "R2",
+          snapshot: {
+            recordRef: `${recordRef}:neighbor`,
+            observedContentFingerprint: `fingerprint:${recordRef}:neighbor`,
+            posture: "derived",
+            anchors: ["room:integration"],
+            statement: `Neighbor ${recordRef}`,
+            sourceRefs: [],
+            childRecordRefs: [],
+            structuralHeight: 0,
+            lifecycle: "current",
+          },
+          dependency: { kind: "record", recordRef: `${recordRef}:neighbor` },
+        }],
+        existingParents: [],
+        maxSelectedChildren: 2,
+      });
+      const semantic: DurableSleepSemanticPort = {
+        ...SEMANTIC,
+        openOrganizationAttempt,
+        loadOrganizerView: async (claim) => {
+          expect(openSessions.has(claim.recordRef)).toBe(true);
+          return { status: "ready", view: viewFor(claim.recordRef) };
+        },
+        invokeOrganizerBatch: async (claims) => {
+          expect(claims).toHaveLength(2);
+          expect(claims.every(claim => openSessions.has(claim.recordRef))).toBe(true);
+          for (const claim of claims) expect(await semanticWork.isClaimCurrent(claim)).toBe(true);
+          batchCalls += 1;
+          return JSON.stringify({
+            answers: claims.map((_, index) => ({
+              question: `Q${index + 1}`,
+              proposal: { operation: "no_change" },
+            })),
+          });
+        },
+        applyProposal: async ({ claim }) => {
+          expect(openSessions.has(claim.recordRef)).toBe(true);
+          expect(await semanticWork.isClaimCurrent(claim)).toBe(true);
+          return {
+            status: "applied", operation: "no_change", replayed: false,
+            usage: { modelCalls: 0, visitedRecords: 0, createdRecords: 0, traversalWork: 0 },
+          };
+        },
+      };
 
-    try {
       for (const recordRef of recordRefs) {
-        await db.$client.unsafe(
+        await executor.query(
           `INSERT INTO reflection_records (
              record_id, lifecycle, structural_height, producer_policy_version,
              processing_generation, payload_version, disposition
            ) VALUES ($1, 'current', 0, 'runtime-integration', 1, 1, 'available')`,
           [recordRef],
         );
-        await db.$client.unsafe(
+        await executor.query(
           `INSERT INTO reflection_record_semantic_work (
              record_id, generation, completed_generation, change_reason, stage,
              state, attempt_count, next_attempt_at, due_since
            ) VALUES ($1, 1, 0, 'created', 'organization', 'checkpointed', 0,
-                     now(), '2001-01-01T00:00:00.000Z')`,
-          [recordRef],
+                     $2, $2)`,
+          [recordRef, observedAt],
         );
       }
 
@@ -267,7 +266,7 @@ describePostgres("Reflection semantic worker PostgreSQL liveness", () => {
         usage: { modelCalls: 1 },
         diagnostics: { modelBatches: 1, modelBatchItems: 2 },
       });
-      const rows = await db.$client.unsafe(
+      const rows = await executor.query(
         `SELECT state, completed_generation
            FROM reflection_record_semantic_work
           WHERE record_id = ANY($1::text[])
@@ -277,14 +276,7 @@ describePostgres("Reflection semantic worker PostgreSQL liveness", () => {
       expect(rows).toHaveLength(2);
       expect(rows.every((row) =>
         row["state"] === "complete" && row["completed_generation"] === 1)).toBe(true);
-    } finally {
-      await db.$client.unsafe(
-        `UPDATE reflection_records
-            SET disposition = 'purged', updated_at = greatest(updated_at, now())
-          WHERE record_id = ANY($1::text[]) AND disposition = 'available'`,
-        [recordRefs],
-      );
-    }
+    });
   }, 15_000);
 
   test("yielded work rotates behind an untouched peer without losing backlog age", async () => {
@@ -1081,7 +1073,13 @@ describePostgres("Reflection semantic worker PostgreSQL liveness", () => {
           },
         },
         bootstrap: {
-          bootstrapPage: (input) => semanticWork.bootstrapPage(input),
+          // The shared scratch can contain unrelated available Records without
+          // work. Start this worker's bootstrap cursor at its unique fixture so
+          // the full page proves bootstrap/Sleep fairness, not global scan order.
+          bootstrapPage: (input) => semanticWork.bootstrapPage({
+            ...input,
+            continuation: input.continuation ?? fixturePrefix,
+          }),
         },
         readPressure: async () => {
           const health = await semanticWork.health();
