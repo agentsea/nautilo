@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { runDependencyLossRewrite } from "@nautilo/reflection";
+import type { EffectiveAudienceAlternative } from "@nautilo/reflection/authority";
 
 import {
   ExactGroundedDependencyLossResolver,
@@ -396,7 +397,7 @@ describe("exact grounded dependency loss", () => {
     let wires = 0;
     const resolver = new ExactGroundedDependencyLossResolver({
       eligibility: {
-        async check({ invocationAudience }: { invocationAudience: typeof input.binding.invocationAudience }) {
+        async check({ invocationAudience }: { invocationAudience: EffectiveAudienceAlternative }) {
           return invocationAudience.humanRefs.includes("human:revoked")
             ? { status: "unavailable" as const, reason: "not_eligible" as const }
             : { status: "eligible" as const };
@@ -583,7 +584,7 @@ describe("exact grounded dependency loss", () => {
     });
     expect(await resolver.resolve(input)).toMatchObject({ status: "partial_loss" });
     const assertEvidenceCurrent = (rewriteInput as {
-      assertEvidenceCurrent: (audience: typeof input.binding.invocationAudience) => Promise<boolean>;
+      assertEvidenceCurrent: (audience: EffectiveAudienceAlternative) => Promise<boolean>;
     }).assertEvidenceCurrent;
     const freshAudience = {
       humanRefs: ["human:fresh"],
