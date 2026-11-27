@@ -523,6 +523,136 @@ describe("durable hierarchy Sleep state machine", () => {
     });
   });
 
+  test("reassesses a stale saved proposal without another model call", async () => {
+    const events: string[] = [];
+    const resumedClaim = claim("record:stale-proposal", "organization", 3);
+    let modelCalls = 0;
+    let viewLoads = 0;
+    const checkpoint: DurableOrganizerProposalCheckpoint = {
+      proposal: {
+        operation: "create_parent",
+        statement: "The retained answer must not be rebound to fresh input.",
+        childRecordRefs: ["record:stale-proposal", "record:old-neighbor"],
+        sourceDependencies: [],
+      },
+      applicationPlanToken: "plan:stale",
+      modelExposureDependencies: [{
+        kind: "record",
+        recordRef: "record:old-neighbor",
+        observedProcessingGeneration: 1,
+        terminalAuthorityLeafHandles: ["leaf:old-neighbor"],
+      }],
+    };
+    const semantic = semanticHarness(events);
+    semantic.organizerCheckpoints = {
+      read: async () => checkpoint,
+      save: async () => {
+        throw new Error("a resumed proposal must not be saved again");
+      },
+    };
+    semantic.applyProposal = async () => ({
+      status: "stale",
+      failureDetail: "publication_plan_stale",
+    });
+    semantic.loadOrganizerView = async () => {
+      viewLoads += 1;
+      events.push("reassess");
+      return { status: "no_change", reason: "already_covered" };
+    };
+    semantic.invokeOrganizer = async () => {
+      modelCalls += 1;
+      throw new Error("canonical reassessment must not invoke the model");
+    };
+    const completed: Parameters<DurableSleepWorkPort["complete"]>[0][] = [];
+    const work = workHarness([resumedClaim], events);
+    work.port.complete = async (input) => {
+      completed.push(input);
+      events.push("complete:reassessed");
+      return { status: "accepted" };
+    };
+
+    const result = await runDurableHierarchySleep({
+      work: work.port,
+      semantic,
+      budget: { hierarchy: hierarchyBudget, maxWorkItems: 1 },
+    });
+
+    expect(modelCalls).toBe(0);
+    expect(viewLoads).toBe(1);
+    expect(completed).toEqual([{ claim: resumedClaim }]);
+    expect(result).toMatchObject({
+      completed: 1,
+      deferred: 0,
+      usage: { modelCalls: 0 },
+      terminalOutcomes: { already_covered: 1 },
+      failureDetails: { publication_plan_stale: 1 },
+      diagnostics: { batchStaleRescheduled: 1 },
+    });
+  });
+
+  test("holds a stale saved proposal that still needs billable model work", async () => {
+    const events: string[] = [];
+    const resumedClaim = claim("record:stale-billable", "organization", 4);
+    const semantic = semanticHarness(events);
+    semantic.organizerCheckpoints = {
+      read: async () => ({
+        proposal: {
+          operation: "create_parent",
+          statement: "This paid result was planned against stale evidence.",
+          childRecordRefs: ["record:stale-billable", "record:old-neighbor"],
+          sourceDependencies: [],
+        },
+        applicationPlanToken: "plan:stale-billable",
+        modelExposureDependencies: [{
+          kind: "record",
+          recordRef: "record:old-neighbor",
+          observedProcessingGeneration: 1,
+          terminalAuthorityLeafHandles: ["leaf:old-neighbor"],
+        }],
+      }),
+      save: async () => {
+        throw new Error("a resumed proposal must not be saved again");
+      },
+    };
+    semantic.applyProposal = async () => ({
+      status: "stale",
+      failureDetail: "publication_plan_stale",
+    });
+    semantic.loadOrganizerView = async () => ({
+      status: "ready",
+      view: mixedView(),
+    });
+    semantic.invokeOrganizer = async () => {
+      throw new Error("stale paid work must wait for an operator click");
+    };
+    const deferrals: Parameters<DurableSleepWorkPort["defer"]>[0][] = [];
+    const work = workHarness([resumedClaim], events);
+    work.port.defer = async (input) => {
+      deferrals.push(input);
+      return { status: "quarantined" };
+    };
+
+    const result = await runDurableHierarchySleep({
+      work: work.port,
+      semantic,
+      budget: { hierarchy: hierarchyBudget, maxWorkItems: 1 },
+    });
+
+    expect(deferrals).toEqual([{
+      claim: resumedClaim,
+      failureCode: "publication_unavailable",
+      failureDetail: "publication_plan_stale",
+      requiresFreshCalculation: true,
+    }]);
+    expect(result).toMatchObject({
+      completed: 0,
+      quarantined: 1,
+      usage: { modelCalls: 0 },
+      failures: { publication_unavailable: 1 },
+      failureDetails: { publication_plan_stale: 1 },
+    });
+  });
+
   test("saves every validated batch proposal before publishing the first item", async () => {
     const events: string[] = [];
     const claims = [

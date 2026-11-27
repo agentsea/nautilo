@@ -1535,6 +1535,47 @@ describe("PostgreSQL semantic work leases", () => {
     )?.parameters).toContain("unexpected_candidate_stage_failure");
   });
 
+  test("holds a stale saved publication for an explicitly authorized fresh calculation", async () => {
+    const value = await verifiedConnection(async <Row extends RecordProductPostgresRow>(
+      statement: string,
+    ) => {
+      const normalized = normalizedSql(statement);
+      if (normalized.startsWith("update reflection_record_semantic_work")
+        && normalized.includes("returning state")) {
+        return [{ state: "quarantined" }] as unknown as Row[];
+      }
+      throw new Error(`unexpected SQL: ${statement}`);
+    });
+    const store = new PostgresSemanticWorkStore({
+      handle: value.handle,
+      commitments: createHmacRecordSemanticCommitmentPort(new Uint8Array(32).fill(4)),
+      clock: () => new Date("2026-11-27T10:00:00.000Z"),
+    });
+    expect(await store.defer({
+      claim: {
+        logicalObjectRef: "record:stale-plan",
+        generation: 3,
+        recordRef: "record:stale-plan",
+        changeReason: "created",
+        stage: "organization",
+        leaseToken: "11111111-1111-4111-8111-111111111111",
+      },
+      failureCode: "publication_unavailable",
+      failureDetail: "publication_plan_stale",
+      requiresFreshCalculation: true,
+    })).toEqual({ status: "quarantined" });
+    const query = value.queries.find((candidate) =>
+      normalizedSql(candidate.statement).includes("returning state")
+    );
+    const statement = normalizedSql(query?.statement ?? "");
+    expect(statement).toContain("state = case when true then 'quarantined'");
+    expect(statement).toContain("recover_after = 'infinity'::timestamptz");
+    expect(statement).toContain("organizer_proposal_checkpoint =");
+    expect(statement).toContain("organizer_proposal_resumed_at =");
+    expect(statement).toContain("recovery_policy_version =");
+    expect(query?.parameters).toContain("publication_plan_stale");
+  });
+
   test.each([
     "recoverable_availability",
     "key_waiting",

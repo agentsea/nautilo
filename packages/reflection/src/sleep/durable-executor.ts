@@ -302,6 +302,10 @@ export interface DurableSleepWorkPort {
     readonly claim: DurableSleepClaim;
     readonly failureCode: DurableSleepFailureCode;
     readonly failureDetail?: DurableSleepFailureDetail;
+    /** A verified paid result cannot be published against current topology.
+     * Drop only its saved proposal and hold this generation for a fresh,
+     * explicitly authorized computation. */
+    readonly requiresFreshCalculation?: true;
   }): Promise<DurableSleepDeferralResult>;
   /** Coalesced admission is adapter-owned and monotonically generation-aware. */
   enqueue(input: {
@@ -1186,13 +1190,19 @@ export async function runDurableHierarchySleep(input: {
     claim: DurableSleepClaim,
     failureCode: DurableSleepFailureCode,
     failureDetail?: DurableSleepFailureDetail,
+    requiresFreshCalculation = false,
   ): Promise<void> => {
     failures[failureCode] = (failures[failureCode] ?? 0) + 1;
     if (failureDetail !== undefined) {
       failureDetails[failureDetail] = (failureDetails[failureDetail] ?? 0) + 1;
     }
     try {
-      const result = await input.work.defer({ claim, failureCode, ...(failureDetail === undefined ? {} : { failureDetail }) });
+      const result = await input.work.defer({
+        claim,
+        failureCode,
+        ...(failureDetail === undefined ? {} : { failureDetail }),
+        ...(requiresFreshCalculation ? { requiresFreshCalculation: true } : {}),
+      });
       switch (result.status) {
         case "deferred": deferred += 1; break;
         case "quarantined": quarantined += 1; break;
@@ -1255,7 +1265,10 @@ export async function runDurableHierarchySleep(input: {
     checkpoint: DurableOrganizerProposalCheckpoint,
     resumed = false,
     onTopologyChanged?: (recordRef: RecordRef) => void,
-  ): Promise<void> => {
+  ): Promise<Readonly<
+    | { status: "settled" }
+    | { status: "reassess"; failureDetail: DurableSleepFailureDetail }
+  >> => {
     const publicationStartedAt = now();
     let application: DurableSleepApplyResult;
     let publicationElapsedMs = 0;
@@ -1276,19 +1289,21 @@ export async function runDurableHierarchySleep(input: {
       item.outcome = "unavailable";
       diagnostics.batchStaleRescheduled += 1;
       if (resumed) {
-        // A saved answer pins the original input. Back off if its plan is no
-        // longer current; a later poll must never fall through to another call.
-        await deferClaim(item.claim, "publication_unavailable", application.failureDetail);
+        // A saved answer pins the original input and must never be silently
+        // rebound to a newer plan. Let the caller reassess current topology
+        // without invoking the model: deterministic settlement is free, while
+        // any still-model-bearing result becomes an explicit billable hold.
+        return { status: "reassess", failureDetail: application.failureDetail };
       } else {
         failureDetails[application.failureDetail] = (failureDetails[application.failureDetail] ?? 0) + 1;
         await pauseClaim(item.claim);
       }
-      return;
+      return { status: "settled" };
     }
     if (application.status === "unavailable") {
       item.outcome = "unavailable";
       await deferClaim(item.claim, application.failureCode, application.failureDetail);
-      return;
+      return { status: "settled" };
     }
     if (application.operation !== "no_change") item.outcome = "completed";
     if (!applicationMatchesProposal(checkpoint.proposal.operation, application.operation)) {
@@ -1325,7 +1340,7 @@ export async function runDurableHierarchySleep(input: {
     });
     if (!acceptLeaseResult(completion)) {
       if (item.outcome !== "completed") item.outcome = "unavailable";
-      return;
+      return { status: "settled" };
     }
     item.outcome = "completed";
     completed += 1;
@@ -1333,6 +1348,7 @@ export async function runDurableHierarchySleep(input: {
     recordCompletedItem(item.claim, completion, mode);
     if (mode === "same_room") planning.sameRoomCompletions += 1;
     else planning.crossRoomCompletions += 1;
+    return { status: "settled" };
   };
   const pendingFitsWorstCase = (view: DurableSleepOrganizerView): boolean => {
     const reserved = [...pendingOrganizer.map((item) => item.view), view]
@@ -2065,7 +2081,57 @@ export async function runDurableHierarchySleep(input: {
             outcome: attemptOutcome,
           };
           try {
-            await settleOrganizerProposal(resumed, saved, true);
+            const settlement = await settleOrganizerProposal(resumed, saved, true);
+            if (settlement.status === "reassess") {
+              loaded = await input.semantic.loadOrganizerView(claim, input.signal);
+              if (loaded.status === "unavailable") {
+                failureDetails[settlement.failureDetail] =
+                  (failureDetails[settlement.failureDetail] ?? 0) + 1;
+                await deferClaim(claim, loaded.failureCode, loaded.failureDetail);
+              } else if (loaded.status === "waiting") {
+                failureDetails[settlement.failureDetail] =
+                  (failureDetails[settlement.failureDetail] ?? 0) + 1;
+                await pauseClaim(
+                  claim,
+                  requireReadinessWaitingRetryAt(loaded, now()),
+                  "authority",
+                );
+              } else if (loaded.status === "no_change") {
+                failureDetails[settlement.failureDetail] =
+                  (failureDetails[settlement.failureDetail] ?? 0) + 1;
+                await completeTerminalClaim(claim, loaded.reason);
+              } else if (
+                organizerOperationFeasibility(loaded.view) !== "model_required"
+              ) {
+                failureDetails[settlement.failureDetail] =
+                  (failureDetails[settlement.failureDetail] ?? 0) + 1;
+                operations.no_change += 1;
+                diagnostics.deterministicNoChanges += 1;
+                const completion = await input.work.complete({ claim });
+                if (acceptLeaseResult(completion)) {
+                  resumed.outcome = "completed";
+                  completed += 1;
+                  recordCompletedItem(
+                    claim,
+                    completion,
+                    loaded.view.applicationPlanToken === undefined
+                      ? "same_room"
+                      : "cross_room",
+                  );
+                }
+              } else {
+                // The provider result is known and saved, but its plan cannot
+                // publish against current topology. Preserve that precise
+                // blocker, discard only the unusable proposal checkpoint, and
+                // require a fresh operator authorization before new billing.
+                await deferClaim(
+                  claim,
+                  "publication_unavailable",
+                  settlement.failureDetail,
+                  true,
+                );
+              }
+            }
           } finally {
             attemptOutcome = resumed.outcome;
           }

@@ -933,27 +933,45 @@ export class PostgresSemanticWorkStore
         if (row.state === "quarantined") {
           const retryable = row.lifecycle === "current"
             && row.disposition === "available"
+            && !unsafeRecords.has(recordRef)
+            // Authority can become available without changing the saved paid
+            // result. A diagnosed candidate-selection cycle is canonical,
+            // deterministic evidence and cannot be repaired by reclaiming the
+            // same generation, so it remains held.
             && (
               row.failure_code === "authority_unavailable"
               || (
-                row.failure_code === "candidate_unavailable"
-                && row.failure_detail === "candidate_selection_invalid"
+                row.failure_code === "publication_unavailable"
+                && row.failure_detail === "publication_plan_stale"
+                && row.organizer_proposal_checkpoint !== null
               )
             );
           if (retryable) retryableQuarantines.push(row);
-          continue;
+          const needsFreshCalculation = row.lifecycle === "current"
+            && row.disposition === "available"
+            && !unsafeRecords.has(recordRef)
+            && row.failure_code === "publication_unavailable"
+            && row.failure_detail === "publication_plan_stale"
+            && row.organizer_proposal_checkpoint === null;
+          if (!needsFreshCalculation) continue;
         }
         const familyKey = reflectionManualRecoveryFamilyKey({
           recordRef,
           binding: row.accepted_model_binding,
         });
+        const safeTerminalHold = row.state === "complete"
+          && row.completion_outcome === "provider_outcome_unknown"
+          && row.completed_generation === generation;
+        const safeFreshCalculationHold = row.state === "quarantined"
+          && row.failure_code === "publication_unavailable"
+          && row.failure_detail === "publication_plan_stale"
+          && row.organizer_proposal_checkpoint === null;
         const safe = familyKey !== null
           && row.lifecycle === "current"
           && row.disposition === "available"
           && row.stage === "organization"
-          && row.completed_generation === generation
+          && (safeTerminalHold || safeFreshCalculationHold)
           && row.accepted_model_binding_generation === generation
-          && row.organizer_proposal_checkpoint === null
           && !unsafeRecords.has(recordRef);
         if (!safe) continue;
         const family = families.get(familyKey) ?? [];
@@ -975,8 +993,9 @@ export class PostgresSemanticWorkStore
             row.failure_code === "authority_unavailable"
               ? eq(work.failureCode, "authority_unavailable")
               : and(
-                eq(work.failureCode, "candidate_unavailable"),
-                eq(work.failureDetail, "candidate_selection_invalid"),
+                eq(work.failureCode, "publication_unavailable"),
+                eq(work.failureDetail, "publication_plan_stale"),
+                sql`${work.organizerProposalCheckpoint} is not null`,
               ),
           )).returning({ record_id: work.recordId }));
         if (retried.length === 1) queued += 1;
@@ -2229,8 +2248,10 @@ export class PostgresSemanticWorkStore
     input: Parameters<DurableSleepWorkPort["defer"]>[0],
   ): Promise<DurableSleepDeferralResult> {
     return this.#claimedDeferral(input.claim, async (tx, now) => {
-      const exhausted = sql`${reflectionRecordSemanticWork.attemptCount}
-        >= ${MAXIMUM_ATTEMPTS}`;
+      const exhausted = input.requiresFreshCalculation === true
+        ? sql`true`
+        : sql`${reflectionRecordSemanticWork.attemptCount}
+          >= ${MAXIMUM_ATTEMPTS}`;
       const rows = await executeTypedRecordProductQuery(tx,
         recordProductTypedDb.update(reflectionRecordSemanticWork)
           .set({
@@ -2243,23 +2264,33 @@ export class PostgresSemanticWorkStore
             }::timestamptz end`,
             quarantineRound: sql`${reflectionRecordSemanticWork.quarantineRound}
               + case when ${exhausted} then 1 else 0 end`,
-            recoverAfter: sql`case when ${exhausted} then
-              ${now}::timestamptz + least(
-                ${DURABLE_SLEEP_QUARANTINE_RECOVERY_POLICY_V1.maximumDelayMilliseconds}
-                  ::double precision,
-                ${DURABLE_SLEEP_QUARANTINE_RECOVERY_POLICY_V1.initialDelayMilliseconds}
-                  ::double precision * power(
-                  ${DURABLE_SLEEP_QUARANTINE_RECOVERY_POLICY_V1.backoffMultiplier}
-                    ::double precision,
-                  ${reflectionRecordSemanticWork.quarantineRound}::double precision
-                )
-              ) * interval '1 millisecond'
-              else null end`,
+            recoverAfter: input.requiresFreshCalculation === true
+              ? sql`'infinity'::timestamptz`
+              : sql`case when ${exhausted} then
+                  ${now}::timestamptz + least(
+                    ${DURABLE_SLEEP_QUARANTINE_RECOVERY_POLICY_V1.maximumDelayMilliseconds}
+                      ::double precision,
+                    ${DURABLE_SLEEP_QUARANTINE_RECOVERY_POLICY_V1.initialDelayMilliseconds}
+                      ::double precision * power(
+                      ${DURABLE_SLEEP_QUARANTINE_RECOVERY_POLICY_V1.backoffMultiplier}
+                        ::double precision,
+                      ${reflectionRecordSemanticWork.quarantineRound}::double precision
+                    )
+                  ) * interval '1 millisecond'
+                  else null end`,
             failureCode: input.failureCode,
             failureDetail: input.failureDetail ?? null,
             waitingReason: null,
             completionOutcome: null,
             completedAt: null,
+            ...(input.requiresFreshCalculation === true
+              ? {
+                  organizerProposalCheckpoint: null,
+                  organizerProposalResumedAt: now,
+                  recoveryPolicyVersion:
+                    DURABLE_SLEEP_QUARANTINE_RECOVERY_POLICY_VERSION,
+                }
+              : {}),
             updatedAt: sql`greatest(${reflectionRecordSemanticWork.updatedAt}, ${now})`,
           })
           .where(and(

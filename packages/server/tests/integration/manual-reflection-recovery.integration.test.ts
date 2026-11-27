@@ -7,6 +7,7 @@ import {
   inArray,
   llmUsageEvents,
   reflectionRecords,
+  reflectionRecordPublications,
   reflectionRecordSemanticWork,
   users,
 } from "@nautilo/db";
@@ -49,12 +50,14 @@ test("manual Reflection recovery queues each observed service hold once and reta
     newer: `manual-reflection-${suffix}-newer`,
     candidateQuarantine: `manual-reflection-${suffix}-candidate-quarantine`,
     authorityQuarantine: `manual-reflection-${suffix}-authority-quarantine`,
+    staleCheckpointQuarantine: `manual-reflection-${suffix}-stale-checkpoint-quarantine`,
+    staleFreshCalculation: `manual-reflection-${suffix}-stale-fresh-calculation`,
     otherQuarantine: `manual-reflection-${suffix}-other-quarantine`,
   } as const;
-  const failedAt = new Date("2026-11-27T10:00:00.000Z");
-  const observedThrough = new Date("2026-11-27T10:01:00.000Z");
-  const newerFailureAt = new Date("2026-11-27T10:02:00.000Z");
-  const now = new Date("2026-11-27T10:03:00.000Z");
+  const failedAt = new Date("2001-01-01T10:00:00.000Z");
+  const observedThrough = new Date("2001-01-01T10:01:00.000Z");
+  const newerFailureAt = new Date("2001-01-01T10:02:00.000Z");
+  const now = new Date("2001-01-01T10:03:00.000Z");
   const oldModel = "openai:reflection-old";
   const configuredModel = "anthropic:reflection-current";
   const serviceBinding: MemoryOperationBinding = {
@@ -115,7 +118,7 @@ test("manual Reflection recovery queues each observed service hold once and reta
       createdAt: failedAt,
       updatedAt: updatedAt as Date,
     })));
-    const recoverAfter = new Date("2026-11-28T10:00:00.000Z");
+    const recoverAfter = new Date("2001-01-02T10:00:00.000Z");
     const savedCheckpoint = new Uint8Array([1, 2, 3, 4]);
     await db.insert(reflectionRecordSemanticWork).values([{
       recordId: recordIds.candidateQuarantine,
@@ -164,6 +167,42 @@ test("manual Reflection recovery queues each observed service hold once and reta
       startedAt: failedAt,
       createdAt: failedAt,
       updatedAt: failedAt,
+    }, {
+      recordId: recordIds.staleCheckpointQuarantine,
+      generation: 1,
+      changeReason: "created",
+      stage: "organization",
+      state: "quarantined",
+      attemptCount: 8,
+      quarantineRound: 1,
+      recoverAfter,
+      failureCode: "publication_unavailable",
+      failureDetail: "publication_plan_stale",
+      acceptedModelBinding: serviceBinding,
+      acceptedModelBindingGeneration: 1,
+      organizerProposalCheckpoint: savedCheckpoint,
+      dueSince: failedAt,
+      startedAt: failedAt,
+      createdAt: failedAt,
+      updatedAt: failedAt,
+    }, {
+      recordId: recordIds.staleFreshCalculation,
+      generation: 1,
+      changeReason: "created",
+      stage: "organization",
+      state: "quarantined",
+      attemptCount: 8,
+      quarantineRound: 1,
+      recoverAfter,
+      failureCode: "publication_unavailable",
+      failureDetail: "publication_plan_stale",
+      acceptedModelBinding: serviceBinding,
+      acceptedModelBindingGeneration: 1,
+      organizerProposalResumedAt: failedAt,
+      dueSince: failedAt,
+      startedAt: failedAt,
+      createdAt: failedAt,
+      updatedAt: failedAt,
     }]);
     usageIds = (await db.insert(llmUsageEvents).values([
       { route: "openai", outcome: "unknown" as const, requestId: randomUUID() },
@@ -192,7 +231,7 @@ test("manual Reflection recovery queues each observed service hold once and reta
         authorizedBy: operator.id,
         modelId: configuredModel,
       }), { isolationLevel: "read committed" });
-    expect(await request(observedThrough)).toEqual({ queued: 4, held: 2 });
+    expect(await request(observedThrough)).toEqual({ queued: 5, held: 3 });
     const first = await db.select().from(reflectionRecordSemanticWork)
       .where(inArray(reflectionRecordSemanticWork.recordId, Object.values(recordIds)))
       .orderBy(reflectionRecordSemanticWork.recordId);
@@ -215,7 +254,7 @@ test("manual Reflection recovery queues each observed service hold once and reta
     expect(byId.get(recordIds.candidateQuarantine)).toMatchObject({
       generation: 1,
       state: "quarantined",
-      recoverAfter: now,
+      recoverAfter,
       failureCode: "candidate_unavailable",
       failureDetail: "candidate_selection_invalid",
     });
@@ -226,6 +265,24 @@ test("manual Reflection recovery queues each observed service hold once and reta
       acceptedModelBinding: serviceBinding,
       organizerProposalCheckpoint: savedCheckpoint,
     });
+    expect(byId.get(recordIds.staleCheckpointQuarantine)).toMatchObject({
+      generation: 1,
+      state: "quarantined",
+      recoverAfter: now,
+      failureCode: "publication_unavailable",
+      failureDetail: "publication_plan_stale",
+      organizerProposalCheckpoint: savedCheckpoint,
+    });
+    expect(byId.get(recordIds.staleFreshCalculation)).toMatchObject({
+      generation: 2,
+      state: "due",
+      acceptedModelBinding: null,
+      acceptedModelBindingGeneration: null,
+      manualRecoverySourceGeneration: 1,
+      manualRecoveryAuthorizedBy: operator.id,
+      manualRecoveryObservedThrough: observedThrough,
+      manualRecoveryServiceModelId: configuredModel,
+    });
     expect(byId.get(recordIds.otherQuarantine)).toMatchObject({
       generation: 1,
       state: "quarantined",
@@ -234,8 +291,8 @@ test("manual Reflection recovery queues each observed service hold once and reta
 
     // Replaying the same HTTP observation cannot authorize the newer failure
     // and cannot create another generation for either already-queued subject.
-    expect(await request(observedThrough)).toEqual({ queued: 0, held: 2 });
-    expect(await request(newerFailureAt)).toEqual({ queued: 1, held: 2 });
+    expect(await request(observedThrough)).toEqual({ queued: 0, held: 3 });
+    expect(await request(newerFailureAt)).toEqual({ queued: 1, held: 3 });
   } finally {
     if (usageIds.length > 0) {
       await db.delete(llmUsageEvents).where(inArray(llmUsageEvents.id, usageIds));
@@ -245,5 +302,79 @@ test("manual Reflection recovery queues each observed service hold once and reta
       Object.values(recordIds),
     ));
     await db.delete(users).where(eq(users.id, operator.id));
+  }
+});
+
+test("manual Reflection recovery retains a stale checkpoint behind a pending publication", async () => {
+  const suffix = randomUUID();
+  const rollback = new Error("rollback pending-publication fixture");
+  try {
+    await createPostgresJsCanonicalBridgeConnection(db).transaction(async (tx, executor) => {
+      const [operator] = await tx.insert(users).values({
+        name: "Reflection publication fence operator",
+        email: `manual-reflection-publication-${suffix}@integration.test`,
+        handle: `manual_reflection_pub_${suffix.replaceAll("-", "").slice(0, 8)}`,
+      }).returning({ id: users.id });
+      if (!operator) throw new Error("missing Reflection publication fence operator");
+      const recordId = `manual-reflection-${suffix}-pending-publication`;
+      const failedAt = new Date("2001-01-01T11:00:00.000Z");
+      const observedThrough = new Date("2001-01-01T11:01:00.000Z");
+      const binding: MemoryOperationBinding = {
+        version: 1,
+        kind: "service",
+        role: "memoryReflection",
+        modelId: "openai:reflection-old",
+        inputCommitment: `hmac-sha256:${"P".repeat(43)}`,
+      };
+      await tx.insert(reflectionRecords).values({
+        recordId,
+        lifecycle: "current",
+        structuralHeight: 1,
+        producerPolicyVersion: "manual-recovery-test-v1",
+        processingGeneration: 1,
+      });
+      await tx.insert(reflectionRecordSemanticWork).values({
+        recordId,
+        generation: 1,
+        changeReason: "created",
+        stage: "organization",
+        state: "quarantined",
+        attemptCount: 8,
+        quarantineRound: 1,
+        recoverAfter: new Date("2001-01-02T11:00:00.000Z"),
+        failureCode: "publication_unavailable",
+        failureDetail: "publication_plan_stale",
+        acceptedModelBinding: binding,
+        acceptedModelBindingGeneration: 1,
+        organizerProposalCheckpoint: new Uint8Array([1, 2, 3]),
+        dueSince: failedAt,
+        startedAt: failedAt,
+        createdAt: failedAt,
+        updatedAt: failedAt,
+      });
+      await tx.insert(reflectionRecordPublications).values({
+        publicationId: `manual-reflection-publication-${suffix}`,
+        recordId,
+        representation: "protected",
+        representationGeneration: 1,
+        requestCommitment: new Uint8Array(32).fill(7),
+        publicationBindingRef: `manual-reflection-binding-${suffix}`,
+        state: "reserved",
+        createdAt: failedAt,
+        updatedAt: failedAt,
+      });
+
+      expect(await requestManualReflectionRecovery({
+        db: tx,
+        executor,
+        now: new Date("2001-01-01T11:02:00.000Z"),
+        observedThrough,
+        authorizedBy: operator.id,
+        modelId: "anthropic:reflection-current",
+      })).toEqual({ queued: 0, held: 1 });
+      throw rollback;
+    }, { isolationLevel: "read committed" });
+  } catch (error) {
+    if (error !== rollback) throw error;
   }
 });
