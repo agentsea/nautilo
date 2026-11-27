@@ -1980,11 +1980,7 @@ export async function createApp(options?: CreateAppOptions) {
     fingerprintProfileSoul: (profile) => createHmacProfileSoulFingerprint(getReflectionCommitmentKey())(profile),
     readRecord: async (dependency) => (await reflectionRuntime()).readMemoryEvidenceRecord(dependency),
   });
-  const memoryReviewRuntime = createServerMemoryReviewRuntime({
-    isAcceptingWork: () => maintenanceGate.isAcceptingWork(),
-    isAcceptingWorkInTransaction: async (db, now) =>
-      (await new MaintenanceController({ db, now: () => now }).getState()).state === "normal",
-  }, {
+  const memoryReviewRuntime = createServerMemoryReviewRuntime(maintenanceGate, {
     evidence: memoryEvidence, budget: REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.budget.hierarchy,
     get commitmentKey() { return getReflectionCommitmentKey(); },
     fingerprintProfileSoul: (profile) => createHmacProfileSoulFingerprint(getReflectionCommitmentKey())(profile),

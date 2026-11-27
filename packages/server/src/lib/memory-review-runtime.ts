@@ -6,7 +6,7 @@ import type { DurableModelExposureDependency } from "@nautilo/reflection/durable
 import type { PersonalMemoryEvidencePort } from "@nautilo/reflection-bridge/server";
 import {
   getServerContextConfig, getCachedServerModelConfigRow, kickServerModelConfigRefresh,
-  getEncryptionTransitionPolicy, getServerModelConfigRow, queryMemoryReviewStatus,
+  getEncryptionTransitionPolicy, getServerModelConfigRow, queryMemoryReviewStatus, recoverExpiredMaintenanceWith,
   retryFailedMemoryReviews,
   type DirectDatabase, type MemoryReviewStatusInput,
 } from "@nautilo/db";
@@ -67,10 +67,7 @@ export class MemoryReviewManualRecoveryUnavailableError extends Error {
 }
 
 export function createServerMemoryReviewRuntime(
-  maintenanceGate: {
-    isAcceptingWork(): Promise<boolean>;
-    isAcceptingWorkInTransaction(db: DirectDatabase, now: Date): Promise<boolean>;
-  },
+  maintenanceGate: { isAcceptingWork(): Promise<boolean> },
   personalFunding?: ServerMemoryReviewPersonalFundingOptions,
 ) {
   let worker: MemoryReviewWorker | null = null;
@@ -221,8 +218,9 @@ export function createServerMemoryReviewRuntime(
           ...input,
           modelId: selected.id,
           enabledByDefault: fromRuntimeConfig().nautilo_reviewer_enabled,
-          maintenanceAccepting: (db, now) =>
-            maintenanceGate.isAcceptingWorkInTransaction(db, now),
+          // The maintenance singleton stays locked until this lane commits.
+          maintenanceAccepting: async (tx, now) =>
+            (await recoverExpiredMaintenanceWith(tx, now)).snapshot.state === "normal",
         });
       } catch (error) {
         if (error instanceof ManualMemoryReviewRecoveryMaintenanceError) {

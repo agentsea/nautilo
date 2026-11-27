@@ -107,11 +107,6 @@ test("manual Memory review recovery durably deduplicates explicit service retrie
   let activePolicy = originalPolicy;
   const runtime = createServerMemoryReviewRuntime({
     isAcceptingWork: async () => true,
-    isAcceptingWorkInTransaction: async (transaction, transactionNow) =>
-      (await new MaintenanceController({
-        db: transaction,
-        now: () => transactionNow,
-      }).getState()).state === "normal",
   });
 
   try {
