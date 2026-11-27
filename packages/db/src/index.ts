@@ -964,6 +964,7 @@ export {
   hasSettledServiceMemoryReview,
   hasOnlyRefusedServiceAttempts,
   KNOWN_NONUSABLE_MEMORY_REVIEW_FAILURES,
+  resolveFreshCompactionAttemptReplaySafety,
   resolveModelAttemptReplaySafety,
   type ModelAttemptReplayIdentity,
   type ModelAttemptReplaySafety,

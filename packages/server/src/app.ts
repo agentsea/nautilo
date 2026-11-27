@@ -48,7 +48,7 @@ import { protectedTaskForegroundCreationIdentity, protectedTaskForegroundCreatio
   protectedTaskForegroundUpdateIdentity } from "./routes/protected-task-foreground-creation-identity";
 import type { ProtectedTaskCreationPlanV1 } from "@nautilo/runtime";
 import {decodeBackgroundProcessorWorkDescriptorV2} from "@nautilo/lattice-crypto/background";
-import { createHmacProtectedStenographerRecordCommitmentPort, createHmacRecordSemanticCommitmentPort, verifyRecordProductPostgresHandle } from "@nautilo/reflection-bridge/server";
+import { classifyPersonalMemoryEvidence, createHmacProtectedStenographerRecordCommitmentPort, createHmacRecordSemanticCommitmentPort, verifyRecordProductPostgresHandle } from "@nautilo/reflection-bridge/server";
 import { createProductionProtectedStenographerComposition } from "./background/stenographer-composition";
 import { createEventFeed } from "@nautilo/event-feed";
 import type { ServerEvent } from "@nautilo/types";
@@ -2660,7 +2660,12 @@ export async function createApp(options?: CreateAppOptions) {
           serverSurplus: { policyEnabled: config?.preferSurplus === true },
         });
         if (exact !== input.modelId) throw new Error("Pinned Stenographer model is unavailable");
-        return { state: "assessed", ...await requestManualJournalRecovery(input) };
+        return { state: "assessed", ...await requestManualJournalRecovery({
+          ...input,
+          admitsFreshServiceInputs: async dependencies => (await classifyPersonalMemoryEvidence({
+            dependencies, ports: memoryEvidence, budget: REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.budget.hierarchy,
+          })).kind === "service",
+        }) };
       },
       reflection: async input => {
         if (!(await getServerContextConfig(input.db)).reflectionSleepEnabled

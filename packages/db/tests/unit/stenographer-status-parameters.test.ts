@@ -52,6 +52,7 @@ describe("stenographer status postgres-js parameters", () => {
           processing_rooms: 0,
           retrying_rooms: 0,
           stale_leases: 0,
+          stale_authorized_source_rooms: 2,
           oldest_overdue_ms: 0,
           maximum_failure_count: 0,
           last_completed_at: null,
@@ -94,12 +95,19 @@ describe("stenographer status postgres-js parameters", () => {
     } as unknown as DirectDatabase;
 
     const status = await queryStenographerAdminStatus(
-      { now: NOW, since: SINCE, until: NOW },
+      {
+        now: NOW,
+        since: SINCE,
+        until: NOW,
+        includeRecovery: true,
+        includeRecoverySources: true,
+      },
       db,
     );
 
     expect(status.health).toBe("delayed");
     expect(status.current.rebuildingRooms).toBe(1);
+    expect(status.staleAuthorizedSourceRooms).toBe(2);
     expect(status.last24h).toEqual({
       completedExtractionBatches: 2,
       extractionBatchesWithErrors: 1,
@@ -145,6 +153,11 @@ describe("stenographer status postgres-js parameters", () => {
       "last_compaction_error_code = 'invalid_output'",
     );
     expect(compactionSql).toContain("compaction_failure_count > 0");
+    expect(compactionSql).toContain("count(distinct compaction_state.room_id) filter");
+    expect(compactionSql).toContain("stale_recovery.source_changed_at is not null");
+    expect(compactionSql).toContain("replacement_recovery.fresh_service_inputs = true");
+    expect(compactionSql).toContain("replacement_recovery.source_changed_at is null");
+    expect(compactionSql).toContain("as stale_authorized_source_rooms");
 
     const offlineDb = drizzle.mock() as unknown as DirectDatabase;
     const rolling = buildStenographerRollingStatusQuery(

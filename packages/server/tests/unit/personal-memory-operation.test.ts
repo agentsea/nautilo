@@ -40,7 +40,7 @@ function fixture() {
     }),
   };
   return { options, binding: () => accepted, counters: () => ({ selections, opens }),
-    shared: () => { audience = ["human", "other"]; }, author: (value: string) => { author = value; }, change: () => { generation = "1"; } };
+    shared: () => { audience = ["human", "other"]; }, private: () => { audience = ["human"]; }, author: (value: string) => { author = value; }, change: () => { generation = "1"; } };
 }
 async function expectEvidenceChange(operation: Promise<unknown>): Promise<void> {
   const error = await operation.catch((failure: unknown) => failure);
@@ -77,6 +77,20 @@ const historicalOrganizerRecord = (): DurableRecordEnvelope => ({
 });
 
 describe("existing Memory operation admission", () => {
+  test("changed inputs require a current service payer even when the prior service model is pinned", async () => {
+    const f = fixture();
+    const fresh = { ...f.options, requireCurrentServicePayer: true,
+      bind: (resolve: Parameters<typeof f.options.bind>[0]) => resolve("venice:approved") };
+    await expectEvidenceChange(openMemoryOperation(fresh));
+    f.shared();
+    const admitted = await openMemoryOperation(fresh);
+    expect(admitted.modelId).toBe("venice:approved");
+    await admitted.assertCurrent();
+    f.private();
+    await expectEvidenceChange(admitted.assertCurrent());
+    expect(f.counters()).toEqual({ selections: 0, opens: 0 });
+  });
+
   test("protected evidence never acquires ordinary historical readers", () => {
     const f = fixture();
     const readers = {

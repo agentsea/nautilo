@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   actors,
   and,
@@ -20,6 +20,7 @@ import {
   reflectionRecordPayloadRepresentationHeads,
   reflectionRecordPayloadRepresentations,
   reflectionRecords,
+  resolveFreshCompactionAttemptReplaySafety,
   resolveModelAttemptReplaySafety,
   roomMembers,
   roomEventRollups,
@@ -52,6 +53,7 @@ import {
   planJournalCompaction,
   type JournalCompactionPlan,
 } from "@nautilo/reflection";
+import { compactionModelExposureDependencies } from "./semantic-adapter";
 import type { DurableModelExposureDependency } from "@nautilo/reflection/durable";
 import {
   stenographerJournalEventObservationFingerprint,
@@ -119,6 +121,7 @@ export interface CompactionClaim {
   /** One operator-approved fresh service call, spent by the funding boundary. */
   manualModelRecoveryId?: string;
   manualRecoveryModelId?: string;
+  requiresCurrentServicePayer?: true;
 }
 
 function acceptedOrdinaryCompactionPlan(
@@ -1809,6 +1812,8 @@ export async function resolveCurrentOrdinaryCompactionCoordinates(
 ): Promise<Readonly<{
   workId: string;
   rebuildGeneration: number;
+  inputDigest: string;
+  dependencies: readonly DurableModelExposureDependency[] | undefined;
 }> | null> {
   const [state] = await tx.select({
     namespaceId: rooms.namespaceId,
@@ -1833,14 +1838,10 @@ export async function resolveCurrentOrdinaryCompactionCoordinates(
     });
     if (!planned.ok || !planned.plan) return null;
     const rebuildGeneration = state.rebuildGeneration;
+    const workId = ordinaryCompactionOperationId(roomId, rebuildGeneration, journal.latestRollup?.id ?? null, planned.plan);
     return {
-      rebuildGeneration,
-      workId: ordinaryCompactionOperationId(
-        roomId,
-        rebuildGeneration,
-        journal.latestRollup?.id ?? null,
-        planned.plan,
-      ),
+      rebuildGeneration, workId, inputDigest: compactionInputDigest(workId, journal.latestRollup, planned.plan),
+      dependencies: compactionModelExposureDependencies({ plan: planned.plan, previousRollup: journal.latestRollup }),
     };
   } catch (error) {
     if (error instanceof StenographerSourceRepresentationUnavailableError) {
@@ -1888,6 +1889,18 @@ export async function isCurrentOrdinaryCompactionAcceptedPlan(
   }
 }
 
+// Bind a replacement to the exact ordinary input, including changes inside
+// the same event sequence window. Only the digest is stored in the grant.
+function compactionInputDigest(
+  workId: string,
+  previous: RoomEventRollupView | null,
+  plan: JournalCompactionPlan<EffectiveRoomEvent>,
+): string {
+  return createHash("sha256").update(JSON.stringify([
+    workId, previous, plan.selectedEvents, plan.protectedTail,
+  ])).digest("hex");
+}
+
 function ordinaryCompactionOperationId(
   roomId: string,
   rebuildGeneration: number,
@@ -1899,6 +1912,26 @@ function ordinaryCompactionOperationId(
 
 function retryDelayMs(failureCount: number): number {
   return Math.min(15 * 60_000, 15_000 * 2 ** Math.max(0, failureCount - 1));
+}
+
+/** The caller owns the Room and state row locks for this exact reservation. */
+async function retireFreshCompactionGrant(tx: JournalExecutor, roomId: string, recoveryId: string, now: Date): Promise<boolean> {
+  const grant = roomJournalModelRecoveries;
+  const [retired] = await tx.update(roomJournalModelRecoveries).set({
+    sourceChangedAt: now, replacementInputDigest: grant.authorizedInputDigest,
+  }).where(and(eq(grant.id, recoveryId), eq(grant.roomId, roomId), eq(grant.workKind, "compaction"),
+    eq(grant.freshServiceInputs, true), isNotNull(grant.authorizedInputDigest),
+    isNull(grant.spentAt), isNull(grant.sourceChangedAt),
+  )).returning({ token: grant.claimLeaseToken });
+  if (!retired) return false;
+  const [released] = await tx.update(roomJournalState).set({
+    compactionAcceptedPlan: null, compactionAcceptedModelBinding: null,
+    compactionLeaseToken: null, compactionLeaseExpiresAt: null, compactionRetryAfter: null, updatedAt: now,
+  }).where(and(eq(roomJournalState.roomId, roomId), retired.token === null
+    ? isNull(roomJournalState.compactionLeaseToken)
+    : eq(roomJournalState.compactionLeaseToken, retired.token))).returning({ roomId: roomJournalState.roomId });
+  if (!released) throw new Error("Compaction recovery lease changed");
+  return true;
 }
 
 /** Park only the exact unspent claim. A fresh token immediately fences the
@@ -2132,11 +2165,40 @@ export async function tryClaimCompactionRoom(
           latestRollup: journal.latestRollup,
           allEvents,
         });
-    if (acceptedPlan !== null && currentAcceptedPlan === null) return null;
     const planned = currentAcceptedPlan ?? planJournalCompaction({
           events: allEvents,
           rollups: journal.latestRollup ? [journal.latestRollup] : [],
         });
+    if (state.last_compaction_error_code === "provider_outcome_unknown"
+      && state.last_compaction_error_attempt != null && state.last_compaction_error_at !== null) {
+      const current = planned.ok ? planned.plan : null;
+      const workId = current && ordinaryCompactionOperationId(roomId, rebuildGeneration, journal.latestRollup?.id ?? null, current);
+      const digest = current && workId ? compactionInputDigest(workId, journal.latestRollup, current)
+        : createHash("sha256").update(JSON.stringify([roomId, rebuildGeneration, "no_compactable_input"])).digest("hex");
+      const grants = roomJournalModelRecoveries;
+      const [changed] = await tx.update(roomJournalModelRecoveries).set({ sourceChangedAt: now, replacementInputDigest: digest }).where(and(
+        eq(grants.roomId, roomId), eq(grants.workKind, "compaction"),
+        eq(grants.rebuildGeneration, rebuildGeneration),
+        eq(grants.observedAttempt, asNumber(state.last_compaction_error_attempt)),
+        eq(grants.observedFailureAt, asDate(state.last_compaction_error_at)),
+        isNull(grants.spentAt), isNull(grants.sourceChangedAt),
+        state.compaction_lease_token === null ? isNull(grants.claimLeaseToken)
+          : eq(grants.claimLeaseToken, state.compaction_lease_token),
+        // Only acceptance established for this legacy grant can be retired here.
+        acceptedPlan === null ? undefined : and(isNotNull(grants.authorizedInputDigest), eq(grants.workId, acceptedPlan.operationId)),
+        !workId || (acceptedPlan !== null && currentAcceptedPlan === null) ? undefined
+          : or(ne(grants.workId, workId), ne(grants.authorizedInputDigest, digest)),
+      )).returning({ id: grants.id });
+      if (changed) {
+        await tx.update(roomJournalState).set({
+          compactionAcceptedPlan: null, compactionAcceptedModelBinding: null,
+          compactionLeaseToken: null, compactionLeaseExpiresAt: null,
+          compactionRetryAfter: null, updatedAt: now,
+        }).where(eq(roomJournalState.roomId, roomId));
+        return null;
+      }
+    }
+    if (acceptedPlan !== null && currentAcceptedPlan === null) return null;
     if (!planned.ok) {
       const failureCount = asNumber(state.compaction_failure_count) + 1;
       await tx
@@ -2227,6 +2289,8 @@ export async function tryClaimCompactionRoom(
           id: roomJournalModelRecoveries.id,
           targetModelId: roomJournalModelRecoveries.targetModelId,
           claimLeaseToken: roomJournalModelRecoveries.claimLeaseToken,
+          freshServiceInputs: roomJournalModelRecoveries.freshServiceInputs,
+          authorizedAt: roomJournalModelRecoveries.authorizedAt,
         }).from(roomJournalModelRecoveries).where(and(
           eq(roomJournalModelRecoveries.roomId, roomId),
           eq(roomJournalModelRecoveries.workKind, "compaction"),
@@ -2234,6 +2298,11 @@ export async function tryClaimCompactionRoom(
           eq(roomJournalModelRecoveries.rebuildGeneration, rebuildGeneration),
           eq(roomJournalModelRecoveries.observedAttempt, lastCompactionErrorAttempt),
           isNull(roomJournalModelRecoveries.spentAt),
+          isNull(roomJournalModelRecoveries.sourceChangedAt),
+          or(
+            eq(roomJournalModelRecoveries.freshServiceInputs, false),
+            isNotNull(roomJournalModelRecoveries.authorizedInputDigest),
+          ),
           reclaimingUnspentRecovery
             ? and(
                 eq(roomJournalModelRecoveries.claimLeaseToken, state.compaction_lease_token!),
@@ -2246,51 +2315,6 @@ export async function tryClaimCompactionRoom(
               ),
         )).limit(1)
           .for("update", { of: roomJournalModelRecoveries });
-    if (claimingFreshRecovery
-      && manualRecovery === undefined
-      && acceptedPlan === null
-      && state.compaction_accepted_model_binding === null
-      && state.last_compaction_error_code === "provider_outcome_unknown"
-      && state.last_compaction_error_at !== null) {
-      const [driftedLegacyRecovery] = await tx.select({
-        id: roomJournalModelRecoveries.id,
-      }).from(roomJournalModelRecoveries).where(and(
-        eq(roomJournalModelRecoveries.roomId, roomId),
-        eq(roomJournalModelRecoveries.workKind, "compaction"),
-        ne(roomJournalModelRecoveries.workId, modelOperationId),
-        eq(roomJournalModelRecoveries.rebuildGeneration, rebuildGeneration),
-        eq(roomJournalModelRecoveries.observedAttempt, lastCompactionErrorAttempt),
-        eq(
-          roomJournalModelRecoveries.observedFailureAt,
-          asDate(state.last_compaction_error_at),
-        ),
-        isNull(roomJournalModelRecoveries.spentAt),
-        reclaimingUnspentRecovery
-          ? and(
-              eq(
-                roomJournalModelRecoveries.claimLeaseToken,
-                state.compaction_lease_token!,
-              ),
-              isNotNull(roomJournalModelRecoveries.claimedAt),
-              lte(roomJournalModelRecoveries.claimedAt, now),
-            )
-          : and(
-              isNull(roomJournalModelRecoveries.claimLeaseToken),
-              isNull(roomJournalModelRecoveries.claimedAt),
-            ),
-      )).limit(1).for("update", { of: roomJournalModelRecoveries });
-      if (driftedLegacyRecovery !== undefined) {
-        await tx.update(roomJournalState).set({
-          compactionRetryAfter: new Date(
-            now.getTime() + retryDelayMs(Math.max(
-              1,
-              asNumber(state.compaction_failure_count),
-            )),
-          ),
-          updatedAt: now,
-        }).where(eq(roomJournalState.roomId, roomId));
-      }
-    }
     if (claimingFreshRecovery
       && manualRecovery === undefined) return null;
     if (legacyMissingCompactionBinding && manualRecovery === undefined) {
@@ -2305,6 +2329,24 @@ export async function tryClaimCompactionRoom(
         && state.compaction_lease_token === null
         && acceptedPlan !== null,
     });
+    const freshReplaySafety = manualRecovery?.freshServiceInputs === true
+      ? await resolveFreshCompactionAttemptReplaySafety({
+          roomId,
+          operationId: modelOperationId,
+          occurredAtOrAfter: manualRecovery.authorizedAt,
+        }, tx)
+      : null;
+    if (freshReplaySafety?.decision === "block_unknown") {
+      if (!await retireFreshCompactionGrant(
+        tx,
+        roomId,
+        manualRecovery!.id,
+        now,
+      )) {
+        throw new Error("Fresh compaction recovery authorization changed");
+      }
+      return null;
+    }
     if (replaySafety.decision === "block_unknown" && manualRecovery === undefined) {
       await tx.update(roomJournalState).set({
         compactionLeaseToken: null, compactionLeaseExpiresAt: null,
@@ -2382,6 +2424,7 @@ export async function tryClaimCompactionRoom(
       ...(manualRecovery === undefined
         ? {}
         : { manualModelRecoveryId: manualRecovery.id, manualRecoveryModelId: manualRecovery.targetModelId }),
+      ...(manualRecovery?.freshServiceInputs ? { requiresCurrentServicePayer: true as const } : {}),
     };
   });
 }
@@ -2400,6 +2443,7 @@ export async function compactionCandidateRooms(
       eq(roomJournalModelRecoveries.rebuildGeneration, roomJournalState.rebuildGeneration),
       eq(roomJournalModelRecoveries.observedAttempt, roomJournalState.lastCompactionErrorAttempt),
       isNull(roomJournalModelRecoveries.spentAt),
+      isNull(roomJournalModelRecoveries.sourceChangedAt),
       or(
         eq(roomJournalModelRecoveries.workId, sql<string>`${roomJournalState.compactionAcceptedPlan}->>'operationId'`),
         and(
@@ -2471,16 +2515,7 @@ export async function compactionCandidateRooms(
       ),
     )
     .orderBy(
-      asc(sql`CASE
-        WHEN ${roomJournalState.compactionAcceptedPlan} IS NULL
-          AND ${roomJournalState.compactionAcceptedModelBinding} IS NULL
-          AND ${roomJournalState.lastCompactionErrorCode} = 'provider_outcome_unknown'
-        THEN GREATEST(
-          ${roomJournalState.compactionDueAt},
-          COALESCE(${roomJournalState.compactionRetryAfter}, ${roomJournalState.compactionDueAt})
-        )
-        ELSE ${roomJournalState.compactionDueAt}
-      END`),
+      asc(roomJournalState.compactionDueAt),
       asc(roomJournalState.roomId),
     )
     .limit(limit);
@@ -2861,6 +2896,9 @@ export async function failCompaction(input: {
     if (!rows[0]) return;
     const current = rows[0];
     const failureCount = asNumber(current.compaction_failure_count) + 1;
+    if (input.errorCode === "input_authority_unavailable" && input.claim.requiresCurrentServicePayer
+      && input.claim.manualModelRecoveryId
+      && await retireFreshCompactionGrant(tx, input.claim.roomId, input.claim.manualModelRecoveryId, now)) return;
     const parkedToken = await parkUnspentJournalGrant(tx, input.claim, "compaction", input.claim.modelOperationId);
     if (parkedToken !== null) {
       // Preserve the failure coordinates that authorize this exact compaction.

@@ -135,6 +135,7 @@ export function createStenographerMemoryFunding(input: Common) {
         eq(roomJournalModelRecoveries.workId, operationKey),
         eq(roomJournalModelRecoveries.claimLeaseToken, claim.leaseToken),
         isNull(roomJournalModelRecoveries.spentAt),
+        isNull(roomJournalModelRecoveries.sourceChangedAt),
       )).limit(1).for("update", { of: roomJournalModelRecoveries });
       if (!recovery) {
         throw new Error("Manual Journal recovery authorization changed");
@@ -255,6 +256,7 @@ export function createStenographerMemoryFunding(input: Common) {
     }
     const admitted = await openMemoryOperation({
       ports, role: "memorySummarization", operationKey, dependencies, bind, assertCurrent,
+      requireCurrentServicePayer: "requiresCurrentServicePayer" in claim && claim.requiresCurrentServicePayer === true,
       budget: input.budget, commitmentKey: input.commitmentKey,
       resolveServiceModel: () => input.resolveServiceModel(),
       ...(readRetiredJournalPredecessor === undefined ? {} : { readRetiredJournalPredecessor }),
@@ -287,6 +289,7 @@ export function createStenographerMemoryFunding(input: Common) {
           eq(roomJournalModelRecoveries.claimLeaseToken, claim.leaseToken),
           eq(roomJournalModelRecoveries.targetModelId, admitted.modelId),
           isNull(roomJournalModelRecoveries.spentAt),
+          isNull(roomJournalModelRecoveries.sourceChangedAt),
         )).limit(1).for("update", { of: roomJournalModelRecoveries });
         if (!recovery) throw new Error("Manual Journal recovery authorization changed");
         const spent = await tx.update(roomJournalModelRecoveries).set({
@@ -294,6 +297,7 @@ export function createStenographerMemoryFunding(input: Common) {
         }).where(and(
           eq(roomJournalModelRecoveries.id, manualRecoveryId),
           isNull(roomJournalModelRecoveries.spentAt),
+          isNull(roomJournalModelRecoveries.sourceChangedAt),
         )).returning({ id: roomJournalModelRecoveries.id });
         if (spent.length !== 1) throw new Error("Manual Journal recovery authorization changed");
       });

@@ -99,6 +99,13 @@ function memoryActiveWork(status: MemoryAdminStatus): number {
 }
 
 export function summarizeStenographer(status: StenographerAdminStatus): RecoverySummary {
+  const staleAuthorizedSourceRooms = status.staleAuthorizedSourceRooms ?? 0;
+  if (staleAuthorizedSourceRooms > 0) {
+    return {
+      state: "needs_attention",
+      detail: `${staleAuthorizedSourceRooms.toLocaleString()} ${staleAuthorizedSourceRooms === 1 ? "Room needs" : "Rooms need"} a fresh Journal compaction check. The inputs or funding evidence changed. Use Recover all memory to authorize eligible inputs.`,
+    };
+  }
   const unknownOutcome = stenographerHasUnknownOutcome(status);
   if (unknownOutcome) return { state: "needs_attention", detail: "A journal batch is held because the provider outcome is unknown." };
   if (status.health === "degraded" || status.current.staleLeases > 0 || status.compaction.staleLeases > 0) {
@@ -258,7 +265,7 @@ function OperatorMemoryRecoveryCard({ operatorId }: { operatorId: string | null 
     const sequence = ++refreshSequence.current;
     setLoading(true);
     const [stenographer, reflection, memory, receipt] = await Promise.allSettled([
-      apiClient.admin.stenographerStatus.get({ includeRecovery: true }),
+      apiClient.admin.stenographerStatus.get({ includeRecovery: true, includeRecoverySources: true }),
       apiClient.admin.reflectionStatus.get({ includeRecovery: true }),
       apiClient.admin.memoryStatus.get(),
       apiClient.admin.memoryRecovery.latest(),

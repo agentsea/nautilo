@@ -1,4 +1,5 @@
 import { getSharedDirectDb, type DirectDatabase } from "@nautilo/db";
+import { PersonalMemoryEvidenceChangedError } from "@nautilo/reflection-bridge/server";
 import type { DurableModelExposureDependency } from "@nautilo/reflection/durable";
 import { error as logError, log, warn } from "@nautilo/logger";
 import type {
@@ -489,7 +490,8 @@ export function createOrdinaryStenographerIntentAdapter(
       } catch (error) {
         await failCompactionWork({
           claim,
-          errorCode: mapModelFailure(error) as StenographerErrorCode,
+          errorCode: claim.requiresCurrentServicePayer && error instanceof PersonalMemoryEvidenceChangedError
+            ? "input_authority_unavailable" : mapModelFailure(error) as StenographerErrorCode,
           modelId,
           now: currentTime(),
           ...(options.db === undefined ? {} : { db: options.db }),

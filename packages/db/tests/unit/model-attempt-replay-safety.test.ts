@@ -6,6 +6,7 @@ import {
   classifyModelAttemptReplaySafety,
   hasOnlyRefusedServiceAttempts,
   hasSettledServiceMemoryReview,
+  resolveFreshCompactionAttemptReplaySafety,
   resolveModelAttemptReplaySafety,
   type ModelAttemptReplayIdentity,
 } from "../../src/queries/model-attempt-replay-safety";
@@ -41,6 +42,51 @@ function queryDb(rows: ReturnType<typeof row>[]) {
 }
 
 describe("model attempt replay safety", () => {
+  test("fresh compaction ignores only proven zero-cost pre-wire denials", async () => {
+    const input = {
+      roomId: "11111111-1111-4111-8111-111111111111",
+      operationId: "compaction:changed-input",
+      occurredAtOrAfter: new Date("2026-11-27T10:00:00.000Z"),
+    };
+    const blocked = queryDb([row("succeeded")]);
+    expect(await resolveFreshCompactionAttemptReplaySafety(input, blocked.db))
+      .toEqual({
+        decision: "block_unknown",
+        blockingAttemptId: "attempt-succeeded",
+      });
+    const query = blocked.query();
+    expect(query.limit).toBe(1);
+    expect(query.params).toContain(input.roomId);
+    expect(query.params).toContain("room_event_compaction");
+    expect(query.params).toContain(input.operationId);
+    expect(query.params).toContain(input.occurredAtOrAfter.toISOString());
+    expect(query.params).toContain("actual");
+    expect(query.params).toContain("0");
+    expect(query.params).toContain("service");
+    expect(query.params).toContain("server");
+    expect(query.params).toContain("provider_refused");
+    expect(query.sql).toContain("actual_cost_usd");
+    expect(query.sql).toContain("recovery_state");
+
+    const allowed = queryDb([]);
+    expect(await resolveFreshCompactionAttemptReplaySafety({
+      roomId: input.roomId,
+      operationId: input.operationId,
+      occurredAfter: input.occurredAtOrAfter,
+    }, allowed.db)).toEqual({ decision: "allow" });
+    let boundaryError: unknown;
+    try {
+      await resolveFreshCompactionAttemptReplaySafety({
+        ...input,
+        occurredAfter: input.occurredAtOrAfter,
+      }, allowed.db);
+    } catch (error) {
+      boundaryError = error;
+    }
+    expect(boundaryError).toBeInstanceOf(TypeError);
+    expect((boundaryError as Error).message).toContain("replay boundary is ambiguous");
+  });
+
   test("allows work with no prior wire and verified pre-service refusals", () => {
     expect(classifyModelAttemptReplaySafety([]).decision).toBe("allow");
     for (const failureCode of ["provider_refused", "no_sellers_for_model", "pre_service_refusal"]) {

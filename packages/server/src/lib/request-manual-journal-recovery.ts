@@ -4,6 +4,7 @@ import {
   actors,
   and,
   asc,
+  desc,
   eq,
   exists,
   gt,
@@ -19,10 +20,12 @@ import {
   roomJournalState,
   roomMembers,
   rooms,
+  resolveFreshCompactionAttemptReplaySafety,
   sql,
   users,
   type DirectDatabase,
 } from "@nautilo/db";
+import type { DurableModelExposureDependency } from "@nautilo/reflection/durable";
 import { resolveCurrentOrdinaryCompactionCoordinates } from "@nautilo/runtime";
 import { isUuidString } from "@nautilo/trust";
 import { parseMemoryOperationBinding } from "@nautilo/types";
@@ -33,6 +36,7 @@ export interface ManualJournalRecoveryInput {
   readonly observedThrough: Date;
   readonly authorizedBy: string;
   readonly modelId: string;
+  readonly admitsFreshServiceInputs?: (dependencies: readonly DurableModelExposureDependency[]) => Promise<boolean>;
   readonly page?: Readonly<{
     readonly after: string | null;
     readonly limit: number;
@@ -222,6 +226,8 @@ async function queueCandidate(
       && state.conversionLeaseExpiresAt !== null
       && state.conversionLeaseExpiresAt > input.now;
     if (extractionActive || compactionActive || conversionActive) return "progressing";
+    let inputDigest: string | undefined;
+    let dependencies: readonly DurableModelExposureDependency[] | undefined;
     if (candidate.workKind === "compaction" && candidate.workId === "") {
       const coordinates = await resolveCurrentOrdinaryCompactionCoordinates(
         tx,
@@ -232,6 +238,8 @@ async function queueCandidate(
         return "held";
       }
       candidate = { ...candidate, workId: coordinates.workId };
+      inputDigest = coordinates.inputDigest;
+      dependencies = coordinates.dependencies;
     }
 
     let binding: ReturnType<typeof serviceBinding>;
@@ -372,28 +380,71 @@ async function queueCandidate(
         failureModelId,
         failureAt,
       );
-    if (!canonicalServiceAttempt && !legacyServiceAttempt) return "held";
+    const grants = roomJournalModelRecoveries;
+    const sameFailure = and(
+      eq(grants.roomId, candidate.roomId),
+      eq(grants.workKind, candidate.workKind),
+      eq(grants.rebuildGeneration, candidate.rebuildGeneration),
+      eq(grants.observedAttempt, candidate.observedAttempt),
+      eq(grants.observedFailureAt, candidate.observedFailureAt),
+    );
+    const [prior] = await tx.select().from(grants)
+      .where(and(sameFailure, eq(grants.workId, candidate.workId)))
+      .limit(1).for("update", { of: grants });
+    let freshServiceInputs = false;
+    if (inputDigest !== undefined && acceptedBindingWasNull && failureCode === "provider_outcome_unknown") {
+      const [changed] = await tx.select().from(grants)
+        .where(and(sameFailure, isNotNull(grants.sourceChangedAt), isNull(grants.spentAt)))
+        .orderBy(desc(grants.sourceChangedAt), asc(grants.id))
+        .limit(1).for("update", { of: grants });
+      if (changed?.sourceChangedAt) {
+        // A replayed receipt cannot authorize inputs first observed after that click.
+        if (changed.sourceChangedAt >= input.observedThrough) return "held";
+        if (changed.replacementInputDigest !== inputDigest) {
+          await tx.update(roomJournalModelRecoveries).set({ sourceChangedAt: input.now, replacementInputDigest: inputDigest })
+            .where(eq(grants.id, changed.id));
+          return "held";
+        }
+        const replaySafety = await resolveFreshCompactionAttemptReplaySafety({
+          roomId: candidate.roomId,
+          operationId: candidate.workId,
+          // Old rows for the original failed operation have already been proved
+          // service-funded. Any newer wire may belong to the changed inputs.
+          ...(legacyServiceAttempt ? { occurredAfter: failureAt } : {}),
+        }, tx);
+        if (replaySafety.decision === "block_unknown"
+          || !dependencies?.length
+          || !await input.admitsFreshServiceInputs?.(dependencies)) return "held";
+        freshServiceInputs = true;
+      }
+    }
+    if (!canonicalServiceAttempt && !legacyServiceAttempt && !freshServiceInputs) return "held";
 
-    const [prior] = await tx.select({
-      spentAt: roomJournalModelRecoveries.spentAt,
-    }).from(roomJournalModelRecoveries).where(and(
-      eq(roomJournalModelRecoveries.roomId, candidate.roomId),
-      eq(roomJournalModelRecoveries.workKind, candidate.workKind),
-      eq(roomJournalModelRecoveries.workId, candidate.workId),
-      eq(roomJournalModelRecoveries.rebuildGeneration, candidate.rebuildGeneration),
-      eq(roomJournalModelRecoveries.observedAttempt, candidate.observedAttempt),
-    )).limit(1).for("update", { of: roomJournalModelRecoveries });
     const classification = classifyManualJournalRecoveryRequest({
       failureAt,
       observedThrough: input.observedThrough,
       now: input.now,
-      prior: prior === undefined ? "none"
+      prior: prior === undefined || (freshServiceInputs && prior.sourceChangedAt !== null) ? "none"
         : prior.spentAt === null ? "pending" : "spent",
     });
     if (classification !== "queue") {
       return classification === "duplicate" ? "duplicate" : "held";
     }
+    const authorization = {
+      observedThrough: input.observedThrough,
+      authorizedAt: input.observedThrough,
+      targetModelId: input.modelId,
+      authorizedBy: input.authorizedBy,
+      authorizedInputDigest: inputDigest ?? null,
+      freshServiceInputs,
+    };
+    if (prior && freshServiceInputs && prior.sourceChangedAt !== null && prior.spentAt === null) {
+      await tx.update(roomJournalModelRecoveries).set({ ...authorization, claimedAt: null, claimLeaseToken: null,
+        sourceChangedAt: null, replacementInputDigest: null }).where(eq(grants.id, prior.id));
+      return "queued";
+    }
     await tx.insert(roomJournalModelRecoveries).values({
+      ...authorization,
       roomId: candidate.roomId,
       workKind: candidate.workKind,
       workId: candidate.workId,
@@ -401,10 +452,6 @@ async function queueCandidate(
       rebuildGeneration: candidate.rebuildGeneration,
       observedAttempt: candidate.observedAttempt,
       observedFailureAt: candidate.observedFailureAt,
-      observedThrough: input.observedThrough,
-      targetModelId: input.modelId,
-      authorizedBy: input.authorizedBy,
-      authorizedAt: input.observedThrough,
     });
   return "queued";
 }

@@ -4699,9 +4699,13 @@ export class NautiloApiClient {
       }),
     },
     stenographerStatus: {
-      get: async (options?: { includeRecovery?: boolean }): Promise<StenographerAdminStatus> => {
+      get: async (options?: { includeRecovery?: boolean; includeRecoverySources?: boolean }): Promise<StenographerAdminStatus> => {
+        const includeRecoverySources = options?.includeRecovery === true
+          && options.includeRecoverySources === true;
         return this.request<StenographerAdminStatus>({
-          path: `/api/admin/stenographer-status${options?.includeRecovery ? "?recovery=1" : ""}`,
+          path: `/api/admin/stenographer-status${options?.includeRecovery
+            ? `?recovery=1${includeRecoverySources ? "&sources=1" : ""}`
+            : ""}`,
           schema: stenographerAdminStatusSchema,
           defaultErrorPrefix: "GET /api/admin/stenographer-status",
         });

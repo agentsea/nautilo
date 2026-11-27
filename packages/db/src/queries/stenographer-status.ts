@@ -35,6 +35,7 @@ interface JournalCompactionRow {
   stale_leases: number | string;
   unresolved_provider_outcomes: number | string;
   manual_invalid_output_holds: number | string;
+  stale_authorized_source_rooms: number | string;
   oldest_overdue_ms: number | string;
   maximum_failure_count: number | string;
   last_completed_at: string | Date | null;
@@ -217,6 +218,7 @@ export async function queryStenographerAdminStatus(
     since: Date;
     until: Date;
     includeRecovery?: boolean;
+    includeRecoverySources?: boolean;
   },
   db: DirectDatabase = getSharedDirectDb(),
 ): Promise<StenographerAdminStatus> {
@@ -544,6 +546,31 @@ export async function queryStenographerAdminStatus(
                   AND rjmr.spent_at <= compaction_state.last_compaction_error_at
             )
         )::integer AS manual_invalid_output_holds,
+        COUNT(DISTINCT compaction_state.room_id) FILTER (
+          WHERE ${input.includeRecovery === true && input.includeRecoverySources === true}
+            AND EXISTS (
+            SELECT 1
+            FROM room_journal_model_recoveries stale_recovery
+            WHERE stale_recovery.room_id = compaction_state.room_id
+              AND stale_recovery.work_kind = 'compaction'
+              AND stale_recovery.rebuild_generation = compaction_state.rebuild_generation
+              AND stale_recovery.observed_attempt = compaction_state.last_compaction_error_attempt
+              AND stale_recovery.observed_failure_at = compaction_state.last_compaction_error_at
+              AND stale_recovery.source_changed_at IS NOT NULL
+              AND stale_recovery.spent_at IS NULL
+              AND NOT EXISTS (
+                SELECT 1
+                FROM room_journal_model_recoveries replacement_recovery
+                WHERE replacement_recovery.room_id = stale_recovery.room_id
+                  AND replacement_recovery.work_kind = 'compaction'
+                  AND replacement_recovery.rebuild_generation = stale_recovery.rebuild_generation
+                  AND replacement_recovery.observed_attempt = stale_recovery.observed_attempt
+                  AND replacement_recovery.observed_failure_at = stale_recovery.observed_failure_at
+                  AND replacement_recovery.fresh_service_inputs = true
+                  AND replacement_recovery.source_changed_at IS NULL
+              )
+          )
+        )::integer AS stale_authorized_source_rooms,
         COALESCE(MAX(
           CASE WHEN category = 'awaiting'
             THEN EXTRACT(EPOCH FROM (${now} - compaction_due_at)) * 1000
@@ -593,6 +620,9 @@ export async function queryStenographerAdminStatus(
           ? "delayed"
           : "healthy",
     ...(input.includeRecovery === true ? { unresolvedProviderOutcomes: n(current.unresolved_provider_outcomes) + n(journalCompaction.unresolved_provider_outcomes) } : {}),
+    ...(input.includeRecovery === true && input.includeRecoverySources === true
+      ? { staleAuthorizedSourceRooms: n(journalCompaction.stale_authorized_source_rooms) }
+      : {}),
     current: {
       eligibleRooms: n(current.eligible_rooms),
       caughtUpRooms: n(current.caught_up_rooms),

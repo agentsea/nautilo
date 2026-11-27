@@ -210,12 +210,27 @@ describe("MemoryRecoveryCard", () => {
       occurredAt: receipt.observedThrough, nextRetryAt: null, retryable: false }] }).state).toBe("healthy");
   });
 
+  test("asks the operator to authorize changed compaction inputs", () => {
+    const summary = summarizeStenographer({
+      ...stenographerFixture(),
+      staleAuthorizedSourceRooms: 2,
+    });
+    expect(summary.state).toBe("needs_attention");
+    expect(summary.detail).toBe(
+      "2 Rooms need a fresh Journal compaction check. The inputs or funding evidence changed. Use Recover all memory to authorize eligible inputs.",
+    );
+  });
+
   test("refreshes all processor summaries", async () => {
     const view = show();
     await waitFor(() => expect(getMemory).toHaveBeenCalledTimes(1));
     fireEvent.click(view.getByRole("button", { name: "Refresh" }));
     await waitFor(() => expect(getMemory).toHaveBeenCalledTimes(2));
     expect(getStenographer).toHaveBeenCalledTimes(2);
+    expect(getStenographer).toHaveBeenLastCalledWith({
+      includeRecovery: true,
+      includeRecoverySources: true,
+    });
     expect(getReflection).toHaveBeenCalledTimes(2);
   });
 

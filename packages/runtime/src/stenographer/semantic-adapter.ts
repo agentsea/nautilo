@@ -292,7 +292,7 @@ function resolveExtractionModelExposure(
 }
 
 function resolveCompactionModelExposure(
-  claim: CompactionClaim,
+  claim: Pick<CompactionClaim, "plan" | "previousRollup">,
   exposure: StenographerCompactionModelExposure | null,
 ): readonly DurableModelExposureDependency[] | undefined {
   if (exposure === null) return undefined;
@@ -350,4 +350,4 @@ export function extractionModelExposureDependencies(claim: ExtractionClaim): rea
   if (!projection.ok || !snapshot.hasConversationalContent) return undefined;
   return resolveExtractionModelExposure(claim, { ...projection.modelExposure, latestRollupIncluded: snapshot.latestRollup !== null, visibleEventReferences: snapshot.visibleEvents.map(event => event.localReference) });
 }
-export function compactionModelExposureDependencies(claim: CompactionClaim): readonly DurableModelExposureDependency[] | undefined { return resolveCompactionModelExposure(claim, claim.plan.modelExposure); }
+export function compactionModelExposureDependencies(claim: Pick<CompactionClaim, "plan" | "previousRollup">): readonly DurableModelExposureDependency[] | undefined { return resolveCompactionModelExposure(claim, claim.plan.modelExposure); }

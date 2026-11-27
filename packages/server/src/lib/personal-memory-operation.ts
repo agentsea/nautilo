@@ -16,6 +16,8 @@ export interface OpenMemoryOperationInput {
   readonly readRetiredJournalPredecessor?: PersonalMemoryEvidencePort["readRecord"];
   readonly budget: OrganizerEvidenceBudget;
   readonly commitmentKey: Uint8Array;
+  /** A replacement compaction must qualify for service funding on every recheck. */
+  readonly requireCurrentServicePayer?: boolean;
   /** Reflection batches retain one accepted payer/model across proven claim subsets. */
   readonly bindingScope?: "exact_operation" | "claim_family";
   /** CAS owner returns its existing binding without evaluating resolve again. */
@@ -51,8 +53,8 @@ export async function openMemoryOperation(input: OpenMemoryOperationInput): Prom
   if (input.commitmentKey.byteLength < 32) throw new TypeError("Memory commitment key is unavailable");
   await input.assertCurrent();
   const dependencies = await input.dependencies();
-  const classify = (current: readonly DurableModelExposureDependency[] | undefined) =>
-    classifyPersonalMemoryEvidence({
+  const classify = async (current: readonly DurableModelExposureDependency[] | undefined) => {
+    const payer = await classifyPersonalMemoryEvidence({
       dependencies: current,
       ports: input.ports,
       budget: input.budget,
@@ -64,6 +66,11 @@ export async function openMemoryOperation(input: OpenMemoryOperationInput): Prom
         readRetiredJournalPredecessor: input.readRetiredJournalPredecessor,
       }),
     });
+    if (input.requireCurrentServicePayer && (!current?.length || payer.kind !== "service")) {
+      throw new PersonalMemoryEvidenceChangedError();
+    }
+    return payer;
+  };
   const initial = await classify(dependencies);
   const commitment = (current: readonly DurableModelExposureDependency[] | undefined): string =>
     `hmac-sha256:${createHmac("sha256", input.commitmentKey).update(JSON.stringify([
@@ -112,8 +119,9 @@ export async function openMemoryOperation(input: OpenMemoryOperationInput): Prom
     assertCurrent,
     async assertExposure(exposure) {
       await assertCurrent();
-      if (binding.kind === "human") assertSamePersonalMemoryEvidence(
-        { kind: "human", humanUserId: binding.humanUserId }, await classify(exposure));
+      if (input.requireCurrentServicePayer || binding.kind === "human") {
+        assertSamePersonalMemoryEvidence(initial, await classify(exposure));
+      }
     },
   };
 }

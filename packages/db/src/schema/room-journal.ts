@@ -429,6 +429,12 @@ export const roomJournalModelRecoveries = pgTable(
       withTimezone: true,
     }).notNull(),
     targetModelId: text("target_model_id").notNull(),
+    /** A superseded, unspent grant cannot be claimed. A subsequent click may
+     * authorize the replacement input observed under the Room lock. */
+    sourceChangedAt: timestamp("source_changed_at", { withTimezone: true }),
+    replacementInputDigest: text("replacement_input_digest"),
+    authorizedInputDigest: text("authorized_input_digest"),
+    freshServiceInputs: boolean("fresh_service_inputs").notNull().default(false),
     authorizedBy: uuid("authorized_by").notNull(),
     authorizedAt: timestamp("authorized_at", {
       withTimezone: true,
@@ -468,6 +474,17 @@ export const roomJournalModelRecoveries = pgTable(
         AND char_length(${table.workId}) BETWEEN 1 AND 512
         AND char_length(${table.targetModelId}) BETWEEN 1 AND 512
         AND btrim(${table.targetModelId}) = ${table.targetModelId}`,
+    ),
+    check(
+      "room_journal_model_recovery_source_change",
+      sql`(${table.sourceChangedAt} IS NULL) = (${table.replacementInputDigest} IS NULL)
+        AND (${table.replacementInputDigest} IS NULL OR (
+          ${table.workKind} = 'compaction' AND ${table.spentAt} IS NULL
+          AND ${table.replacementInputDigest} ~ '^[0-9a-f]{64}$'
+        ))
+        AND (${table.authorizedInputDigest} IS NULL OR (
+          ${table.workKind} = 'compaction' AND ${table.authorizedInputDigest} ~ '^[0-9a-f]{64}$'
+        ))`,
     ),
     check(
       "room_journal_model_recovery_claim",

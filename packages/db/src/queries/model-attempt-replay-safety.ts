@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray, isNull, lte, notExists, notInArray, or, sql } from "drizzle-orm";
+import { and, eq, gt, gte, inArray, isNotNull, isNull, lte, ne, notExists, notInArray, or, sql } from "drizzle-orm";
 import { QueryBuilder } from "drizzle-orm/pg-core";
 import { getSharedDirectDb, type DirectDatabase } from "../config/direct-database";
 import { llmUsageEvents } from "../schema/llm-usage";
@@ -195,4 +195,51 @@ export async function resolveModelAttemptReplaySafety(
     ))
     .limit(1);
   return classifyModelAttemptReplaySafety(rows, { knownNonusableResult });
+}
+
+/** A changed-input grant may ignore only a positively settled, zero-cost
+ * authorization refusal. Every other receipt is evidence of a possible wire. */
+export async function resolveFreshCompactionAttemptReplaySafety(
+  input: Readonly<{
+    roomId: string;
+    operationId: string;
+    occurredAfter?: Date;
+    occurredAtOrAfter?: Date;
+  }>,
+  db: ModelAttemptReplayDb,
+): Promise<ModelAttemptReplaySafety> {
+  if (input.occurredAfter !== undefined
+    && input.occurredAtOrAfter !== undefined) {
+    throw new TypeError("Fresh compaction replay boundary is ambiguous");
+  }
+  const [blocking] = await db.select({
+    id: llmUsageEvents.id,
+  }).from(llmUsageEvents).where(and(
+    eq(llmUsageEvents.roomId, input.roomId),
+    eq(llmUsageEvents.callType, "room_event_compaction"),
+    eq(sql<string>`${llmUsageEvents.metadata}->>'operationId'`, input.operationId),
+    input.occurredAfter === undefined
+      ? undefined
+      : gt(llmUsageEvents.occurredAt, input.occurredAfter),
+    input.occurredAtOrAfter === undefined
+      ? undefined
+      : gte(llmUsageEvents.occurredAt, input.occurredAtOrAfter),
+    or(
+      isNull(llmUsageEvents.attemptOutcome),
+      ne(llmUsageEvents.attemptOutcome, "failed"),
+      isNull(llmUsageEvents.failureCode),
+      notInArray(llmUsageEvents.failureCode, [...SAFE_PRE_SERVICE_FAILURE_CODES]),
+      isNull(llmUsageEvents.costState),
+      ne(llmUsageEvents.costState, "actual"),
+      isNull(llmUsageEvents.actualCostUsd),
+      ne(llmUsageEvents.actualCostUsd, "0"),
+      isNull(llmUsageEvents.fundingKind),
+      notInArray(llmUsageEvents.fundingKind, ["service", "server"]),
+      isNotNull(llmUsageEvents.payerHumanId),
+      isNotNull(llmUsageEvents.recoveryState),
+    ),
+  )).limit(1);
+  return blocking === undefined
+    ? { decision: "allow" }
+    : { decision: "block_unknown", blockingAttemptId: blocking.id };
 }

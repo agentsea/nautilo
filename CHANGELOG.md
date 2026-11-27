@@ -14,6 +14,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
   batches after the tab closes or the server restarts. After a processor reports an
   unavailable result, another operator can start a fresh assessment. Retrying
   an unconfirmed click in the same browser tab preserves its authorization.
+  If Journal compaction inputs change before dispatch, the Memory screen shows
+  the hold. A fresh click can authorize the current inputs when they qualify for
+  server funding.
 
 - Let Room Journal rebuilds continue after a rebuilt observation replaces
   an earlier one, so Reflection can retire work for the old Journal.

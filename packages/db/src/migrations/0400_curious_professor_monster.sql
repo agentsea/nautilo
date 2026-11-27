@@ -1,0 +1,1 @@
+ALTER TABLE "room_journal_model_recoveries" ADD COLUMN "fresh_service_inputs" boolean DEFAULT false NOT NULL;

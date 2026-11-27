@@ -988,7 +988,7 @@ describe("manual Journal recovery on PostgreSQL", () => {
       .not.toBe(recovered?.manualModelRecoveryId);
   }, 30_000);
 
-  test("defers a drifted legacy compaction grant so another Room gets a turn", async () => {
+  test("parks changed compaction inputs until a fresh service-authorized click", async () => {
     const f = await fixture("drifted-legacy-compaction");
     const other = await fixture("compaction-fairness");
     const [sourceBatch] = await db.insert(roomJournalBatches).values({
@@ -1005,7 +1005,7 @@ describe("manual Journal recovery on PostgreSQL", () => {
     }).returning({ id: roomJournalBatches.id });
     await addNativeCompactionEvents(f, sourceBatch!.id, 1, 80);
     const failedAt = new Date(Date.now() - 20_000);
-    const dueAt = new Date(failedAt.getTime() - 1_000);
+    const dueAt = new Date("2000-01-01T00:00:00.000Z");
     await db.update(roomJournalState).set({
       compactionDueAt: dueAt,
       compactionFailureCount: 1,
@@ -1049,17 +1049,124 @@ describe("manual Journal recovery on PostgreSQL", () => {
     }).from(roomJournalState).where(eq(roomJournalState.roomId, f.roomId));
     expect(deferred?.binding).toBeNull();
     expect(deferred?.plan).toBeNull();
-    expect(deferred?.retryAfter?.getTime()).toBeGreaterThan(claimAt.getTime());
-    const [grant] = await db.select({
-      spentAt: roomJournalModelRecoveries.spentAt,
-    }).from(roomJournalModelRecoveries).where(and(
+    expect(deferred?.retryAfter).toBeNull();
+    const [grant] = await db.select().from(roomJournalModelRecoveries).where(and(
       eq(roomJournalModelRecoveries.roomId, f.roomId),
       eq(roomJournalModelRecoveries.workKind, "compaction"),
     ));
     expect(grant?.spentAt).toBeNull();
-    const afterDeferredRetry = new Date(deferred!.retryAfter!.getTime() + 1);
-    expect((await compactionCandidateRooms(db, afterDeferredRetry, 1))
+    expect(grant?.sourceChangedAt).toEqual(claimAt);
+    expect(grant?.replacementInputDigest).toMatch(/^[0-9a-f]{64}$/);
+    expect((await compactionCandidateRooms(db, new Date(claimAt.getTime() + 86_400_000), 1))
       .map(candidate => candidate.roomId)).toEqual([other.roomId]);
+    const status = () => queryStenographerAdminStatus({
+      now: claimAt, since: BASE, until: claimAt, includeRecovery: true, includeRecoverySources: true,
+    }, db);
+    expect((await status()).staleAuthorizedSourceRooms).toBe(1);
+    const next = new Date(claimAt.getTime() + 1);
+    const clicked = {
+      db, now: next, observedThrough: next, authorizedBy: f.userId, modelId: "venice:new-target",
+      admitsFreshServiceInputs: async (dependencies: readonly unknown[]) => dependencies.length > 0,
+    };
+    expect(await requestManualJournalRecovery({ ...clicked, observedThrough: failedAt })).toEqual({ queued: 0, held: 1 });
+    expect(await requestManualJournalRecovery({ ...clicked, admitsFreshServiceInputs: async () => false }))
+      .toEqual({ queued: 0, held: 1 });
+    // A subsequent change cannot reuse an earlier observation of the replacement.
+    await addNativeCompactionEvents(f, sourceBatch!.id, 82, 1);
+    expect(await requestManualJournalRecovery(clicked)).toEqual({ queued: 0, held: 1 });
+    expect(await requestManualJournalRecovery(clicked)).toEqual({ queued: 0, held: 1 });
+    const freshAt = new Date(next.getTime() + 1);
+    const fresh = { ...clicked, now: freshAt, observedThrough: freshAt };
+    expect(await requestManualJournalRecovery(fresh)).toEqual({ queued: 1, held: 0 });
+    expect(await requestManualJournalRecovery(fresh)).toEqual({ queued: 0, held: 0 });
+    expect((await status()).staleAuthorizedSourceRooms).toBe(0);
+    const lateCoordinates = await db.transaction(tx =>
+      resolveCurrentOrdinaryCompactionCoordinates(tx, f.roomId));
+    if (!lateCoordinates) throw new Error("expected freshly authorized compaction coordinates");
+    const lateReceiptAt = new Date(freshAt.getTime() + 1);
+    await recordUnknownAttempt({
+      roomId: f.roomId,
+      callType: "room_event_compaction",
+      operationId: lateCoordinates.workId,
+      modelId: fresh.modelId,
+      at: lateReceiptAt,
+    });
+    expect(await tryClaimCompactionRoom(db, f.roomId, lateReceiptAt)).toBeNull();
+    const [lateGrant] = await db.select().from(roomJournalModelRecoveries).where(and(
+      eq(roomJournalModelRecoveries.roomId, f.roomId),
+      eq(roomJournalModelRecoveries.workKind, "compaction"),
+      eq(roomJournalModelRecoveries.freshServiceInputs, true),
+    ));
+    expect(lateGrant?.spentAt).toBeNull();
+    expect(lateGrant?.sourceChangedAt).toEqual(lateReceiptAt);
+    expect(lateGrant?.replacementInputDigest).toBe(lateGrant?.authorizedInputDigest);
+
+    // A late wire consumes the observation, not a fresh authorization. New
+    // inputs need their own stable observation and subsequent operator click.
+    await addNativeCompactionEvents(f, sourceBatch!.id, 83, 1);
+    const changedAgainAt = new Date(lateReceiptAt.getTime() + 1);
+    const changedAgain = {
+      ...fresh,
+      now: changedAgainAt,
+      observedThrough: changedAgainAt,
+    };
+    expect(await requestManualJournalRecovery(changedAgain))
+      .toEqual({ queued: 0, held: 1 });
+    const reauthorizedAt = new Date(changedAgainAt.getTime() + 1);
+    const reauthorized = {
+      ...fresh,
+      now: reauthorizedAt,
+      observedThrough: reauthorizedAt,
+    };
+    expect(await requestManualJournalRecovery(reauthorized))
+      .toEqual({ queued: 1, held: 0 });
+    const payerDeniedClaim = await tryClaimCompactionRoom(
+      db,
+      f.roomId,
+      reauthorizedAt,
+    );
+    if (!payerDeniedClaim) throw new Error("expected reauthorized compaction claim");
+    const payerDeniedAt = new Date(reauthorizedAt.getTime() + 1);
+    await failCompaction({
+      claim: payerDeniedClaim,
+      errorCode: "input_authority_unavailable",
+      modelId: reauthorized.modelId,
+      db,
+      now: payerDeniedAt,
+    });
+    const [payerDeniedGrant] = await db.select().from(roomJournalModelRecoveries)
+      .where(eq(roomJournalModelRecoveries.id, payerDeniedClaim.manualModelRecoveryId!));
+    expect(payerDeniedGrant?.spentAt).toBeNull();
+    expect(payerDeniedGrant?.sourceChangedAt).toEqual(payerDeniedAt);
+    expect((await compactionCandidateRooms(db, payerDeniedAt))
+      .map(candidate => candidate.roomId)).not.toContain(f.roomId);
+
+    const payerReauthorizedAt = new Date(payerDeniedAt.getTime() + 1);
+    const payerReauthorized = {
+      ...fresh,
+      now: payerReauthorizedAt,
+      observedThrough: payerReauthorizedAt,
+    };
+    expect(await requestManualJournalRecovery(payerReauthorized))
+      .toEqual({ queued: 1, held: 0 });
+    const claim = await tryClaimCompactionRoom(db, f.roomId, payerReauthorizedAt);
+    if (!claim) throw new Error("expected newly authorized inputs");
+    expect(claim.requiresCurrentServicePayer).toBe(true);
+    expect(claim.manualRecoveryModelId).toBe(payerReauthorized.modelId);
+    expect(claim.modelOperationId).not.toBe(coordinates.workId);
+    let calls = 0;
+    const admitted = await funding(() => async () => { calls++; return "result"; }, f.userId)
+      .admitCompactionModel(claim, compactionModelExposureDependencies(claim));
+    await admitted.invoke("compaction fixture");
+    expect(calls).toBe(1);
+    const [spent] = await db.select().from(roomJournalModelRecoveries)
+      .where(eq(roomJournalModelRecoveries.id, claim.manualModelRecoveryId!));
+    expect(spent?.spentAt).not.toBeNull();
+    expect(spent?.targetModelId).toBe(payerReauthorized.modelId);
+    expect(spent?.authorizedInputDigest).toBeString();
+    const [retired] = await db.select().from(roomJournalModelRecoveries)
+      .where(eq(roomJournalModelRecoveries.id, grant!.id));
+    expect(retired?.spentAt).toBeNull();
   }, 30_000);
 
   test("requires exact service receipts for legacy work and revalidates extraction access after a null-binding crash", async () => {
