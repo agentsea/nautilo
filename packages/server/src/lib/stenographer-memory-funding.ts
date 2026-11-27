@@ -1,4 +1,5 @@
-import { and, eq, gt, inArray, resolveModelAttemptReplaySafety, roomJournalBatches, roomJournalState,
+import { and, eq, gt, inArray, isNull, resolveModelAttemptReplaySafety, roomJournalBatches,
+  roomJournalModelRecoveries, roomJournalState,
   sessionMessages, sessions, users, type DirectDatabase,
   type StenographerCompactionAcceptedPlan } from "@nautilo/db";
 import { MemoryProviderOutcomeUnknownError } from "@nautilo/agent";
@@ -180,7 +181,9 @@ export function createStenographerMemoryFunding(input: Common) {
           "batchId" in claim
           && claim.previousModelResultKnownNonusable === true,
       });
-      if (replaySafety.decision === "block_unknown") {
+      if (replaySafety.decision === "block_unknown"
+        && !("manualModelRecoveryId" in claim
+          && claim.manualModelRecoveryId !== undefined)) {
         throw new MemoryProviderOutcomeUnknownError();
       }
       await assertDirectInputAuthorityAvailable({
@@ -209,25 +212,56 @@ export function createStenographerMemoryFunding(input: Common) {
         throw new MemoryProviderOutcomeUnknownError();
       }
     }
+    const manualRecoveryId = "manualModelRecoveryId" in claim
+      ? claim.manualModelRecoveryId
+      : undefined;
+    const invoke = (input.createInvoker ?? createRoomSideModelInvoker)({ modelId: admitted.modelId,
+      ...(admitted.humanUserId === null ? {} : { userId: admitted.humanUserId }),
+      roomId: claim.roomId, laneKey: `room:${claim.roomId}:${stage}`, operationId: operationKey,
+      callType: stage === "extraction" ? "room_stenographer" : "room_event_compaction",
+      invocationPolicy: {
+        modelFallbackMode: "none",
+        sameModelRetryMode: "none",
+      },
+      ...(!protectedEvidence ? { allowUnpinnedSurplusRetry: true as const } : {}),
+      ...(admitted.fundingSession === undefined ? {} : {
+        fundingSession: protectedEvidence
+          ? admitted.fundingSession
+          : Object.freeze({ ...admitted.fundingSession, allowUnpinnedSurplusRetry: true as const }),
+      }),
+      assertCurrent: () => admitted.assertCurrent(),
+    });
+    let dispatched = false;
     return {
       modelId: admitted.modelId,
       assertCurrent: () => admitted.assertCurrent(),
-      invoke: (input.createInvoker ?? createRoomSideModelInvoker)({ modelId: admitted.modelId,
-        ...(admitted.humanUserId === null ? {} : { userId: admitted.humanUserId }),
-        roomId: claim.roomId, laneKey: `room:${claim.roomId}:${stage}`, operationId: operationKey,
-        callType: stage === "extraction" ? "room_stenographer" : "room_event_compaction",
-        invocationPolicy: {
-          modelFallbackMode: "none",
-          sameModelRetryMode: "none",
-        },
-        ...(!protectedEvidence ? { allowUnpinnedSurplusRetry: true as const } : {}),
-        ...(admitted.fundingSession === undefined ? {} : {
-          fundingSession: protectedEvidence
-            ? admitted.fundingSession
-            : Object.freeze({ ...admitted.fundingSession, allowUnpinnedSurplusRetry: true as const }),
-        }),
-        assertCurrent: () => admitted.assertCurrent(),
-      }),
+      invoke: manualRecoveryId === undefined ? invoke : async (prompt, signal) => {
+        if (dispatched) throw new Error("Manual Journal recovery was already dispatched");
+        await admitted.assertCurrent();
+        await input.db.transaction(async tx => {
+          const [recovery] = await tx.select({
+            id: roomJournalModelRecoveries.id,
+          }).from(roomJournalModelRecoveries).where(and(
+            eq(roomJournalModelRecoveries.id, manualRecoveryId),
+            eq(roomJournalModelRecoveries.roomId, claim.roomId),
+            eq(roomJournalModelRecoveries.workKind, stage),
+            eq(roomJournalModelRecoveries.workId, operationKey),
+            eq(roomJournalModelRecoveries.claimLeaseToken, claim.leaseToken),
+            eq(roomJournalModelRecoveries.targetModelId, admitted.modelId),
+            isNull(roomJournalModelRecoveries.spentAt),
+          )).limit(1).for("update", { of: roomJournalModelRecoveries });
+          if (!recovery) throw new Error("Manual Journal recovery authorization changed");
+          const spent = await tx.update(roomJournalModelRecoveries).set({
+            spentAt: new Date(),
+          }).where(and(
+            eq(roomJournalModelRecoveries.id, manualRecoveryId),
+            isNull(roomJournalModelRecoveries.spentAt),
+          )).returning({ id: roomJournalModelRecoveries.id });
+          if (spent.length !== 1) throw new Error("Manual Journal recovery authorization changed");
+        });
+        dispatched = true;
+        return invoke(prompt, signal);
+      },
     };
   };
   return {
