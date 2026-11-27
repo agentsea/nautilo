@@ -43,6 +43,17 @@ const snapshot: StenographerExtractionSnapshot = {
 };
 
 describe("shared Stenographer extraction", () => {
+  test("records a rejected response after one authorized call", async () => {
+    let calls = 0;
+    const result = await runStenographerExtraction({
+      snapshot,
+      allowOutputRepair: false,
+      invoke: async () => { calls++; return JSON.stringify({ operations: [] }); },
+      validateProposal: () => ({ ok: false, reason: "invalid evidence" }),
+    });
+    expect(calls).toBe(1);
+    expect(result).toEqual({ ok: false, errorCode: "invalid_output", attempts: 1 });
+  });
   test("constructs the locked prompt and returns an opaque proposal", async () => {
     const prompts: string[] = [];
     const result = await runStenographerExtraction({
@@ -232,6 +243,16 @@ describe("shared Stenographer extraction", () => {
 });
 
 describe("shared Stenographer compaction", () => {
+  test("records malformed output without requesting a second call", async () => {
+    let calls = 0;
+    const result = await runStenographerCompaction({
+      prompt: "fixture",
+      allowOutputRepair: false,
+      invoke: async () => { calls++; return "malformed"; },
+    });
+    expect(calls).toBe(1);
+    expect(result).toEqual({ ok: false, errorCode: "invalid_output", attempts: 1 });
+  });
   test("uses the locked prompt, repairs once, and propagates cancellation", async () => {
     const controller = new AbortController();
     const prompts: string[] = [];

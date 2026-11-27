@@ -207,7 +207,7 @@ export async function validateStenographerOutputWithRepair(input: {
   validateProposal?: (
     proposal: StenographerProposal,
   ) => { ok: true } | { ok: false; reason: string };
-  repair: (
+  repair?: (
     invalidResponse: unknown,
     failure: { readonly reason: string },
   ) => Promise<unknown>;
@@ -217,7 +217,7 @@ export async function validateStenographerOutputWithRepair(input: {
       ok: false;
       errorCode: "invalid_output";
       reason: string;
-      attempts: 2;
+      attempts: 1 | 2;
     }
 > {
   const check = (
@@ -235,6 +235,7 @@ export async function validateStenographerOutputWithRepair(input: {
 
   const initial = check(input.initialResponse);
   if (initial.ok) return { ...initial, attempts: 1 };
+  if (!input.repair) return { ...initial, attempts: 1 };
 
   const repairedResponse = await input.repair(input.initialResponse, initial);
   const repaired = check(repairedResponse);

@@ -28,10 +28,13 @@ import {
 import { bootstrapTestDbInstance } from "@nautilo/db/testing";
 import type { DurableRecordEnvelope } from "@nautilo/reflection/durable";
 import {
+  candidateRoomIds,
+  compactionCandidateRooms,
   compactionModelExposureDependencies,
   extractionModelExposureDependencies,
   failCompaction,
   failExtraction,
+  historicalCandidateRoomIds,
   tryClaimCompactionRoom,
   tryClaimRoom,
   type CompactionClaim,
@@ -408,6 +411,123 @@ describe("manual Journal recovery on PostgreSQL", () => {
     30_000,
   );
 
+  test.each(["live", "historical"] as const)(
+    "holds a spent manual %s invalid response until a new explicit recovery click",
+    async (lane) => {
+      const f = await fixture(`manual-invalid-${lane}`);
+      if (lane === "historical") {
+        await db.update(roomJournalState).set({
+          historicalBackfillStatus: "pending",
+          historicalBackfillCursorMessageId: 0,
+          historicalBackfillTargetMessageId: f.messageId,
+        }).where(eq(roomJournalState.roomId, f.roomId));
+      }
+      const firstAt = new Date(Date.now() - 10_000);
+      const first = await tryClaimRoom(db, f.roomId, firstAt, 120_000, lane);
+      if (!first) throw new Error(`expected ${lane} extraction claim`);
+      await funding(() => async () => "unused", f.userId)
+        .admitExtractionModel(first, extractionModelExposureDependencies(first));
+      const unknownAt = new Date(firstAt.getTime() + 1_000);
+      await recordUnknownAttempt({
+        roomId: f.roomId,
+        callType: "room_stenographer",
+        operationId: first.batchId,
+        modelId: MODEL,
+        at: unknownAt,
+      });
+      await failExtraction({
+        claim: first,
+        errorCode: "provider_outcome_unknown",
+        modelId: MODEL,
+        db,
+        now: unknownAt,
+      });
+      const authorizedAt = new Date(unknownAt.getTime() + 1_000);
+      await requestManualJournalRecovery({
+        db,
+        now: authorizedAt,
+        observedThrough: unknownAt,
+        authorizedBy: f.userId,
+        modelId: RECOVERY_MODEL,
+      });
+      const paid = await tryClaimRoom(
+        db,
+        f.roomId,
+        new Date(authorizedAt.getTime() + 1_000),
+        120_000,
+        lane,
+      );
+      if (!paid?.manualModelRecoveryId) {
+        throw new Error("expected paid extraction recovery claim");
+      }
+      let calls = 0;
+      const admitted = await funding(
+        () => async () => (calls += 1, "malformed"),
+        f.userId,
+      ).admitExtractionModel(paid, extractionModelExposureDependencies(paid));
+      await admitted.invoke("synthetic prompt");
+      expect(calls).toBe(1);
+      const statusBeforeInvalid = lane === "live"
+        ? await queryStenographerAdminStatus({
+            now: new Date(), since: BASE, until: new Date(), includeRecovery: true,
+          }, db)
+        : null;
+      const invalidAt = new Date();
+      await failExtraction({
+        claim: paid,
+        errorCode: "invalid_output",
+        modelId: RECOVERY_MODEL,
+        db,
+        now: invalidAt,
+      });
+      if (statusBeforeInvalid !== null) {
+        const statusAfterInvalid = await queryStenographerAdminStatus({
+          now: invalidAt, since: BASE, until: invalidAt, includeRecovery: true,
+        }, db);
+        expect(statusAfterInvalid.unresolvedProviderOutcomes)
+          .toBe((statusBeforeInvalid.unresolvedProviderOutcomes ?? 0) - 1);
+        expect(statusAfterInvalid.health).toBe("degraded");
+      }
+
+      const scheduledAt = new Date(invalidAt.getTime() + 60_000);
+      const scheduledCandidates = lane === "live"
+        ? await candidateRoomIds(db, scheduledAt)
+        : await historicalCandidateRoomIds(db, scheduledAt);
+      expect(scheduledCandidates).not.toContain(f.roomId);
+      expect(await tryClaimRoom(
+        db,
+        f.roomId,
+        scheduledAt,
+        120_000,
+        lane,
+      )).toBeNull();
+
+      const clickedAt = new Date(invalidAt.getTime() + 1_000);
+      const click = await requestManualJournalRecovery({
+        db,
+        now: clickedAt,
+        observedThrough: invalidAt,
+        authorizedBy: f.userId,
+        modelId: RECOVERY_MODEL,
+      });
+      expect(click.queued).toBeGreaterThanOrEqual(1);
+      const clickedCandidates = lane === "live"
+        ? await candidateRoomIds(db, scheduledAt)
+        : await historicalCandidateRoomIds(db, scheduledAt);
+      expect(clickedCandidates).toContain(f.roomId);
+      const rearmed = await tryClaimRoom(
+        db,
+        f.roomId,
+        scheduledAt,
+        120_000,
+        lane,
+      );
+      expect(rearmed?.manualModelRecoveryId).toBeString();
+      expect(rearmed?.manualModelRecoveryId).not.toBe(paid.manualModelRecoveryId);
+    },
+    30_000,
+  );
+
   test("does not reclaim an unspent extraction across generation, lease, or payer fences", async () => {
     const prepare = async (label: string) => {
       const f = await fixture(`pre-dispatch-fence-${label}`);
@@ -587,13 +707,31 @@ describe("manual Journal recovery on PostgreSQL", () => {
       authorizedBy: f.userId, modelId: RECOVERY_MODEL,
     });
     expect(result).toEqual({ queued: 1, held: 0 });
-    const recovered = await tryClaimCompactionRoom(db, f.roomId, new Date(failedAt.getTime() + 2_000));
+    const recoveredAt = new Date(failedAt.getTime() + 2_000);
+    const recovered = await tryClaimCompactionRoom(db, f.roomId, recoveredAt, 1);
     expect(recovered?.manualModelRecoveryId).toBeString();
+    const reboundOnce = await tryClaimCompactionRoom(
+      db,
+      f.roomId,
+      new Date(recoveredAt.getTime() + 1),
+      1,
+    );
+    const reboundTwice = await tryClaimCompactionRoom(
+      db,
+      f.roomId,
+      new Date(recoveredAt.getTime() + 2),
+      120_000,
+    );
+    expect(reboundOnce?.manualModelRecoveryId)
+      .toBe(recovered?.manualModelRecoveryId);
+    expect(reboundTwice?.manualModelRecoveryId)
+      .toBe(recovered?.manualModelRecoveryId);
+    expect(reboundTwice?.leaseToken).not.toBe(reboundOnce?.leaseToken);
     let calls = 0;
     const admitted = await funding(() => async () => (calls += 1, "rollup"), f.userId)
       .admitCompactionModel(
-        recovered as CompactionClaim,
-        compactionModelExposureDependencies(recovered as CompactionClaim),
+        reboundTwice as CompactionClaim,
+        compactionModelExposureDependencies(reboundTwice as CompactionClaim),
       );
     expect(admitted.modelId).toBe(RECOVERY_MODEL);
     await admitted.invoke("synthetic compaction prompt");
@@ -612,5 +750,33 @@ describe("manual Journal recovery on PostgreSQL", () => {
         eq(roomJournalModelRecoveries.workKind, "compaction"),
       ));
     expect(authorization?.spentAt).not.toBeNull();
+    const invalidAt = new Date();
+    await failCompaction({
+      claim: reboundTwice as CompactionClaim,
+      errorCode: "invalid_output",
+      modelId: RECOVERY_MODEL,
+      db,
+      now: invalidAt,
+    });
+    const scheduledAt = new Date(invalidAt.getTime() + 60_000);
+    expect((await compactionCandidateRooms(db, scheduledAt))
+      .map((candidate) => candidate.roomId)).not.toContain(f.roomId);
+    expect(await tryClaimCompactionRoom(db, f.roomId, scheduledAt)).toBeNull();
+
+    const clickedAt = new Date(invalidAt.getTime() + 1_000);
+    const clicked = await requestManualJournalRecovery({
+      db,
+      now: clickedAt,
+      observedThrough: invalidAt,
+      authorizedBy: f.userId,
+      modelId: RECOVERY_MODEL,
+    });
+    expect(clicked.queued).toBeGreaterThanOrEqual(1);
+    expect((await compactionCandidateRooms(db, scheduledAt))
+      .map((candidate) => candidate.roomId)).toContain(f.roomId);
+    const rearmed = await tryClaimCompactionRoom(db, f.roomId, scheduledAt);
+    expect(rearmed?.manualModelRecoveryId).toBeString();
+    expect(rearmed?.manualModelRecoveryId)
+      .not.toBe(recovered?.manualModelRecoveryId);
   }, 30_000);
 });

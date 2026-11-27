@@ -131,10 +131,18 @@ describe("stenographer status postgres-js parameters", () => {
     expect(currentSql).toContain(
       "last_extraction_error_code = 'provider_outcome_unknown'",
     );
+    expect(currentSql).toContain("as manual_invalid_output_holds");
+    expect(currentSql).toContain(
+      "last_extraction_error_code = 'invalid_output'",
+    );
     expect(currentSql).toContain("extraction_failure_count > 0");
     const compactionSql = new PgDialect().sqlToQuery(queries[1]!).sql.toLowerCase();
     expect(compactionSql).toContain(
       "last_compaction_error_code = 'provider_outcome_unknown'",
+    );
+    expect(compactionSql).toContain("as manual_invalid_output_holds");
+    expect(compactionSql).toContain(
+      "last_compaction_error_code = 'invalid_output'",
     );
     expect(compactionSql).toContain("compaction_failure_count > 0");
 

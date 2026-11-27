@@ -17,6 +17,7 @@ interface CurrentRow {
   due_rooms: number | string;
   stale_leases: number | string;
   unresolved_provider_outcomes: number | string;
+  manual_invalid_output_holds: number | string;
   oldest_overdue_ms: number | string;
   maximum_failure_count: number | string;
   rebuilding_rooms: number | string;
@@ -33,6 +34,7 @@ interface JournalCompactionRow {
   retrying_rooms: number | string;
   stale_leases: number | string;
   unresolved_provider_outcomes: number | string;
+  manual_invalid_output_holds: number | string;
   oldest_overdue_ms: number | string;
   maximum_failure_count: number | string;
   last_completed_at: string | Date | null;
@@ -230,7 +232,9 @@ export async function queryStenographerAdminStatus(
           rjs.extraction_retry_after,
           rjs.extraction_failure_count,
           rjs.last_extraction_error_code,
+          rjs.last_extraction_error_at,
           rjs.historical_backfill_status,
+          rjs.rebuild_generation,
           rjs.rebuild_requested_at
         FROM rooms r
         INNER JOIN room_journal_state rjs ON rjs.room_id = r.id
@@ -330,7 +334,9 @@ export async function queryStenographerAdminStatus(
           er.extraction_retry_after,
           er.extraction_failure_count,
           er.last_extraction_error_code,
+          er.last_extraction_error_at,
           er.historical_backfill_status,
+          er.rebuild_generation,
           er.rebuild_requested_at
         FROM eligible_rooms er
         LEFT JOIN source_stats ss ON ss.room_id = er.room_id
@@ -395,6 +401,28 @@ export async function queryStenographerAdminStatus(
         )::integer
           AS unresolved_provider_outcomes,
         COUNT(*) FILTER (
+          WHERE last_extraction_error_code = 'invalid_output'
+            AND extraction_failure_count > 0
+            AND EXISTS (
+                SELECT 1
+                FROM room_journal_batches rjb
+                INNER JOIN room_journal_model_recoveries rjmr
+                  ON rjmr.room_id = rjb.room_id
+                  AND rjmr.work_kind = 'extraction'
+                  AND rjmr.work_id = rjb.id::text
+                  AND rjmr.rebuild_generation = classified.rebuild_generation
+                  AND rjmr.target_model_id = rjb.last_error_model_id
+                  AND rjmr.claimed_at = rjb.started_at
+                  AND rjmr.claim_lease_token IS NOT NULL
+                  AND rjmr.spent_at IS NOT NULL
+                  AND rjmr.spent_at <= rjb.last_error_at
+                WHERE rjb.room_id = classified.room_id
+                  AND rjb.status = 'failed'
+                  AND rjb.error_code = 'invalid_output'
+                  AND rjb.last_error_at = classified.last_extraction_error_at
+            )
+        )::integer AS manual_invalid_output_holds,
+        COUNT(*) FILTER (
           WHERE rebuild_requested_at IS NOT NULL
         )::integer AS rebuilding_rooms,
         COUNT(*) FILTER (
@@ -414,6 +442,7 @@ export async function queryStenographerAdminStatus(
     due_rooms: 0,
     stale_leases: 0,
     unresolved_provider_outcomes: 0,
+    manual_invalid_output_holds: 0,
     oldest_overdue_ms: 0,
     maximum_failure_count: 0,
     rebuilding_rooms: 0,
@@ -498,6 +527,23 @@ export async function queryStenographerAdminStatus(
             AND compaction_failure_count > 0
         )::integer
           AS unresolved_provider_outcomes,
+        COUNT(*) FILTER (
+          WHERE last_compaction_error_code = 'invalid_output'
+            AND compaction_failure_count > 0
+            AND EXISTS (
+                SELECT 1
+                FROM room_journal_model_recoveries rjmr
+                WHERE rjmr.room_id = compaction_state.room_id
+                  AND rjmr.work_kind = 'compaction'
+                  AND rjmr.work_id = compaction_state.compaction_accepted_plan->>'operationId'
+                  AND rjmr.rebuild_generation = compaction_state.rebuild_generation
+                  AND rjmr.observed_attempt = compaction_state.last_compaction_error_attempt - 1
+                  AND rjmr.target_model_id = compaction_state.last_compaction_error_model_id
+                  AND rjmr.claim_lease_token IS NOT NULL
+                  AND rjmr.spent_at IS NOT NULL
+                  AND rjmr.spent_at <= compaction_state.last_compaction_error_at
+            )
+        )::integer AS manual_invalid_output_holds,
         COALESCE(MAX(
           CASE WHEN category = 'awaiting'
             THEN EXTRACT(EPOCH FROM (${now} - compaction_due_at)) * 1000
@@ -517,11 +563,13 @@ export async function queryStenographerAdminStatus(
 
   const extractionDegraded =
     n(current.unresolved_provider_outcomes) > 0 ||
+    n(current.manual_invalid_output_holds) > 0 ||
     n(current.stale_leases) > 0 ||
     n(current.maximum_failure_count) >= 3 ||
     n(current.oldest_overdue_ms) >= 5 * 60_000;
   const compactionDegraded =
     n(journalCompaction.unresolved_provider_outcomes) > 0 ||
+    n(journalCompaction.manual_invalid_output_holds) > 0 ||
     n(journalCompaction.stale_leases) > 0 ||
     n(journalCompaction.maximum_failure_count) >= 3 ||
     n(journalCompaction.oldest_overdue_ms) >= 5 * 60_000;

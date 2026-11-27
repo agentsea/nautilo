@@ -6,9 +6,11 @@ import {
   asc,
   eq,
   exists,
+  isNotNull,
   isNull,
   llmUsageEvents,
   lte,
+  or,
   roomEvents,
   roomJournalBatches,
   roomJournalCryptoPublications,
@@ -168,6 +170,7 @@ async function queueCandidate(
         lastErrorAt: roomJournalBatches.lastErrorAt,
         lastErrorAttempt: roomJournalBatches.lastErrorAttempt,
         lastErrorModelId: roomJournalBatches.lastErrorModelId,
+        startedAt: roomJournalBatches.startedAt,
         fromMessageIdExclusive: roomJournalBatches.fromMessageIdExclusive,
         throughMessageIdInclusive: roomJournalBatches.throughMessageIdInclusive,
         lane: roomJournalBatches.lane,
@@ -176,11 +179,32 @@ async function queueCandidate(
         eq(roomJournalBatches.roomId, candidate.roomId),
       )).limit(1).for("update", { of: roomJournalBatches });
       if (!batch || batch.status !== "failed"
-        || batch.errorCode !== "provider_outcome_unknown"
+        || (batch.errorCode !== "provider_outcome_unknown"
+          && batch.errorCode !== "invalid_output")
         || batch.attemptCount !== candidate.observedAttempt
         || batch.lastErrorAttempt !== candidate.observedAttempt
         || batch.lastErrorAt?.getTime() !== candidate.observedFailureAt.getTime()
         || batch.lastErrorModelId === null) return "held";
+      if (batch.errorCode === "invalid_output") {
+        const [spentRecovery] = batch.startedAt === null || batch.lastErrorAt === null
+          ? []
+          : await tx.select({ id: roomJournalModelRecoveries.id })
+              .from(roomJournalModelRecoveries)
+              .where(and(
+                eq(roomJournalModelRecoveries.roomId, candidate.roomId),
+                eq(roomJournalModelRecoveries.workKind, "extraction"),
+                eq(roomJournalModelRecoveries.workId, candidate.workId),
+                eq(roomJournalModelRecoveries.rebuildGeneration, candidate.rebuildGeneration),
+                eq(roomJournalModelRecoveries.targetModelId, batch.lastErrorModelId),
+                eq(roomJournalModelRecoveries.claimedAt, batch.startedAt),
+                isNotNull(roomJournalModelRecoveries.claimLeaseToken),
+                isNotNull(roomJournalModelRecoveries.spentAt),
+                lte(roomJournalModelRecoveries.spentAt, batch.lastErrorAt),
+              ))
+              .limit(1)
+              .for("update", { of: roomJournalModelRecoveries });
+        if (!spentRecovery) return "held";
+      }
       binding = serviceBinding(batch.acceptedModelBinding);
       failureAt = batch.lastErrorAt;
       failureModelId = batch.lastErrorModelId;
@@ -211,7 +235,8 @@ async function queueCandidate(
     } else {
       const plan = state.compactionPlan;
       if (state.rebuildRequestedAt !== null
-        || state.compactionErrorCode !== "provider_outcome_unknown"
+        || (state.compactionErrorCode !== "provider_outcome_unknown"
+          && state.compactionErrorCode !== "invalid_output")
         || state.compactionFailureCount !== candidate.observedAttempt
         || state.compactionErrorAttempt !== candidate.observedAttempt
         || state.compactionErrorAt?.getTime() !== candidate.observedFailureAt.getTime()
@@ -219,6 +244,29 @@ async function queueCandidate(
         || plan === null || plan.owner !== "ordinary"
         || plan.operationId !== candidate.workId
         || plan.rebuildGeneration !== state.rebuildGeneration) return "held";
+      if (state.compactionErrorCode === "invalid_output") {
+        const [spentRecovery] = state.compactionErrorAt === null
+          || state.compactionErrorModelId === null
+          || state.compactionErrorAttempt === null
+          || state.compactionErrorAttempt < 1
+          ? []
+          : await tx.select({ id: roomJournalModelRecoveries.id })
+              .from(roomJournalModelRecoveries)
+              .where(and(
+                eq(roomJournalModelRecoveries.roomId, candidate.roomId),
+                eq(roomJournalModelRecoveries.workKind, "compaction"),
+                eq(roomJournalModelRecoveries.workId, candidate.workId),
+                eq(roomJournalModelRecoveries.rebuildGeneration, candidate.rebuildGeneration),
+                eq(roomJournalModelRecoveries.observedAttempt, state.compactionErrorAttempt - 1),
+                eq(roomJournalModelRecoveries.targetModelId, state.compactionErrorModelId),
+                isNotNull(roomJournalModelRecoveries.claimLeaseToken),
+                isNotNull(roomJournalModelRecoveries.spentAt),
+                lte(roomJournalModelRecoveries.spentAt, state.compactionErrorAt),
+              ))
+              .limit(1)
+              .for("update", { of: roomJournalModelRecoveries });
+        if (!spentRecovery) return "held";
+      }
       binding = serviceBinding(state.compactionBinding);
       failureAt = state.compactionErrorAt;
       failureModelId = state.compactionErrorModelId;
@@ -285,6 +333,19 @@ export async function requestManualJournalRecovery(
       isNull(users.disabledAt),
     )).limit(1);
     if (!authorizer) throw new Error("Journal recovery authorizer is unavailable");
+    const spentExtractionRecovery = tx.select({ one: sql`1` })
+      .from(roomJournalModelRecoveries)
+      .where(and(
+        eq(roomJournalModelRecoveries.roomId, roomJournalBatches.roomId),
+        eq(roomJournalModelRecoveries.workKind, "extraction"),
+        eq(roomJournalModelRecoveries.workId, sql<string>`${roomJournalBatches.id}::text`),
+        eq(roomJournalModelRecoveries.rebuildGeneration, roomJournalState.rebuildGeneration),
+        eq(roomJournalModelRecoveries.targetModelId, roomJournalBatches.lastErrorModelId),
+        eq(roomJournalModelRecoveries.claimedAt, roomJournalBatches.startedAt),
+        isNotNull(roomJournalModelRecoveries.claimLeaseToken),
+        isNotNull(roomJournalModelRecoveries.spentAt),
+        lte(roomJournalModelRecoveries.spentAt, roomJournalBatches.lastErrorAt),
+      ));
     const extraction = await tx.select({
     roomId: roomJournalBatches.roomId,
     workId: roomJournalBatches.id,
@@ -295,10 +356,29 @@ export async function requestManualJournalRecovery(
     .innerJoin(roomJournalState, eq(roomJournalState.roomId, roomJournalBatches.roomId))
     .where(and(
       eq(roomJournalBatches.status, "failed"),
-      eq(roomJournalBatches.errorCode, "provider_outcome_unknown"),
+      or(
+        eq(roomJournalBatches.errorCode, "provider_outcome_unknown"),
+        and(
+          eq(roomJournalBatches.errorCode, "invalid_output"),
+          exists(spentExtractionRecovery),
+        ),
+      ),
       eq(roomJournalBatches.lastErrorAttempt, roomJournalBatches.attemptCount),
       lte(roomJournalBatches.lastErrorAt, input.observedThrough),
     )).orderBy(asc(roomJournalBatches.roomId), asc(roomJournalBatches.id));
+    const spentCompactionRecovery = tx.select({ one: sql`1` })
+      .from(roomJournalModelRecoveries)
+      .where(and(
+        eq(roomJournalModelRecoveries.roomId, roomJournalState.roomId),
+        eq(roomJournalModelRecoveries.workKind, "compaction"),
+        eq(roomJournalModelRecoveries.rebuildGeneration, roomJournalState.rebuildGeneration),
+        eq(roomJournalModelRecoveries.workId, sql<string>`${roomJournalState.compactionAcceptedPlan}->>'operationId'`),
+        eq(roomJournalModelRecoveries.observedAttempt, sql<number>`${roomJournalState.lastCompactionErrorAttempt} - 1`),
+        eq(roomJournalModelRecoveries.targetModelId, roomJournalState.lastCompactionErrorModelId),
+        isNotNull(roomJournalModelRecoveries.claimLeaseToken),
+        isNotNull(roomJournalModelRecoveries.spentAt),
+        lte(roomJournalModelRecoveries.spentAt, roomJournalState.lastCompactionErrorAt),
+      ));
     const compaction = await tx.select({
     roomId: roomJournalState.roomId,
     rebuildGeneration: roomJournalState.rebuildGeneration,
@@ -306,7 +386,13 @@ export async function requestManualJournalRecovery(
     observedFailureAt: roomJournalState.lastCompactionErrorAt,
     plan: roomJournalState.compactionAcceptedPlan,
   }).from(roomJournalState).where(and(
-    eq(roomJournalState.lastCompactionErrorCode, "provider_outcome_unknown"),
+    or(
+      eq(roomJournalState.lastCompactionErrorCode, "provider_outcome_unknown"),
+      and(
+        eq(roomJournalState.lastCompactionErrorCode, "invalid_output"),
+        exists(spentCompactionRecovery),
+      ),
+    ),
     eq(roomJournalState.lastCompactionErrorAttempt, roomJournalState.compactionFailureCount),
     lte(roomJournalState.lastCompactionErrorAt, input.observedThrough),
   )).orderBy(asc(roomJournalState.roomId));

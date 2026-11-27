@@ -197,7 +197,7 @@ export type ExtractionModelResult =
   | {
       ok: false;
       errorCode: "invalid_output" | "input_too_large";
-      attempts: 0 | 2;
+      attempts: 0 | 1 | 2;
     };
 
 export async function runExtractionModel(input: {
@@ -208,6 +208,7 @@ export async function runExtractionModel(input: {
   const result = await runStenographerExtraction({
     snapshot: prepared.snapshot,
     invoke: input.invoke,
+    allowOutputRepair: input.claim.manualModelRecoveryId === undefined,
     validateProposal: (proposal) => {
       const mapped = mapStenographerProposal(proposal, prepared.mappingContext);
       return mapped.ok ? { ok: true } : mapped;
@@ -219,7 +220,7 @@ export async function runExtractionModel(input: {
     prepared.mappingContext,
   );
   if (!mapped.ok) {
-    return { ok: false, errorCode: "invalid_output", attempts: 2 };
+    return { ok: false, errorCode: "invalid_output", attempts: result.attempts };
   }
   const modelExposureDependencies = resolveExtractionModelExposure(
     input.claim,
@@ -326,6 +327,7 @@ export async function runCompactionModel(input: {
   const result = await runStenographerCompaction({
     prompt: input.claim.plan.prompt,
     invoke: input.invoke,
+    allowOutputRepair: input.claim.manualModelRecoveryId === undefined,
     modelExposure: input.claim.plan.modelExposure,
   });
   if (!result.ok) return result;
