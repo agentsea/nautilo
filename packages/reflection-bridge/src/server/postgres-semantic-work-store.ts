@@ -942,7 +942,10 @@ export class PostgresSemanticWorkStore
               row.failure_code === "authority_unavailable"
               || (
                 row.failure_code === "publication_unavailable"
-                && row.failure_detail === "publication_plan_stale"
+                && [
+                  "publication_plan_stale",
+                  "publication_source_unavailable",
+                ].includes(String(row.failure_detail))
                 && row.organizer_proposal_checkpoint !== null
               )
             );
@@ -980,10 +983,34 @@ export class PostgresSemanticWorkStore
       }
 
       let queued = 0;
+      const conditionalRecoveryIds = new Map<string, string>();
       for (const row of retryableQuarantines) {
+        const conditionalFamilyKey = row.failure_code === "publication_unavailable"
+          ? reflectionManualRecoveryFamilyKey({
+              recordRef: row.record_id,
+              binding: row.accepted_model_binding,
+            })
+          : null;
+        const conditionalRecoveryId = conditionalFamilyKey === null
+          ? null
+          : conditionalRecoveryIds.get(conditionalFamilyKey) ?? randomUUID();
+        if (conditionalFamilyKey !== null && conditionalRecoveryId !== null) {
+          conditionalRecoveryIds.set(conditionalFamilyKey, conditionalRecoveryId);
+        }
         const retried = await executeTypedRecordProductQuery(tx,
           recordProductTypedDb.update(work).set({
             recoverAfter: input.now,
+            ...(conditionalRecoveryId === null
+              ? {}
+              : {
+                  manualRecoveryId: conditionalRecoveryId,
+                  manualRecoverySourceGeneration: row.generation,
+                  manualRecoveryAuthorizedBy: input.authorizedBy,
+                  manualRecoveryAuthorizedAt: input.now,
+                  manualRecoveryObservedThrough: input.observedThrough,
+                  manualRecoveryServiceModelId: input.modelId,
+                  manualRecoverySpentAt: null,
+                }),
             updatedAt: input.now,
           }).where(and(
             eq(work.recordId, row.record_id),
@@ -994,7 +1021,10 @@ export class PostgresSemanticWorkStore
               ? eq(work.failureCode, "authority_unavailable")
               : and(
                 eq(work.failureCode, "publication_unavailable"),
-                eq(work.failureDetail, "publication_plan_stale"),
+                inArray(work.failureDetail, [
+                  "publication_plan_stale",
+                  "publication_source_unavailable",
+                ]),
                 sql`${work.organizerProposalCheckpoint} is not null`,
               ),
           )).returning({ record_id: work.recordId }));
@@ -2248,6 +2278,106 @@ export class PostgresSemanticWorkStore
     input: Parameters<DurableSleepWorkPort["defer"]>[0],
   ): Promise<DurableSleepDeferralResult> {
     return this.#claimedDeferral(input.claim, async (tx, now) => {
+      if (input.requiresFreshCalculation === true) {
+        const conditional = await executeTypedRecordProductQuery(tx,
+          recordProductTypedDb.select({
+            generation: reflectionRecordSemanticWork.generation,
+            accepted_model_binding: reflectionRecordSemanticWork.acceptedModelBinding,
+            accepted_model_binding_generation:
+              reflectionRecordSemanticWork.acceptedModelBindingGeneration,
+            manual_recovery_id: reflectionRecordSemanticWork.manualRecoveryId,
+            manual_recovery_source_generation:
+              reflectionRecordSemanticWork.manualRecoverySourceGeneration,
+            manual_recovery_authorized_by:
+              reflectionRecordSemanticWork.manualRecoveryAuthorizedBy,
+            manual_recovery_authorized_at:
+              reflectionRecordSemanticWork.manualRecoveryAuthorizedAt,
+            manual_recovery_observed_through:
+              reflectionRecordSemanticWork.manualRecoveryObservedThrough,
+            manual_recovery_service_model_id:
+              reflectionRecordSemanticWork.manualRecoveryServiceModelId,
+            manual_recovery_spent_at:
+              reflectionRecordSemanticWork.manualRecoverySpentAt,
+            organizer_proposal_checkpoint:
+              reflectionRecordSemanticWork.organizerProposalCheckpoint,
+          }).from(reflectionRecordSemanticWork).where(and(
+            eq(reflectionRecordSemanticWork.recordId, input.claim.recordRef),
+            eq(reflectionRecordSemanticWork.generation, input.claim.generation),
+            eq(reflectionRecordSemanticWork.claimGeneration, input.claim.generation),
+            eq(reflectionRecordSemanticWork.leaseToken, input.claim.leaseToken),
+            eq(reflectionRecordSemanticWork.state, "claimed"),
+            eq(reflectionRecordSemanticWork.stage, input.claim.stage),
+            gt(reflectionRecordSemanticWork.leaseExpiresAt, now),
+          )).for("update", { of: reflectionRecordSemanticWork }));
+        const authorization = conditional[0];
+        const binding = authorization?.accepted_model_binding === null
+          || authorization?.accepted_model_binding === undefined
+          ? null
+          : parseMemoryOperationBinding(authorization.accepted_model_binding);
+        const authorizedAt = authorization === undefined
+          ? null
+          : rowDate({
+              manual_recovery_authorized_at: authorization.manual_recovery_authorized_at,
+            }, "manual_recovery_authorized_at");
+        const observedThrough = authorization === undefined
+          ? null
+          : rowDate({
+              manual_recovery_observed_through: authorization.manual_recovery_observed_through,
+            }, "manual_recovery_observed_through");
+        const recoveryId = authorization?.manual_recovery_id;
+        const authorizedBy = authorization?.manual_recovery_authorized_by;
+        const modelId = authorization?.manual_recovery_service_model_id;
+        const conditionallyAuthorized = conditional.length === 1
+          && authorization !== undefined
+          && binding?.kind === "service"
+          && authorization.accepted_model_binding_generation === input.claim.generation
+          && authorization.manual_recovery_source_generation === input.claim.generation
+          && typeof recoveryId === "string"
+          && typeof authorizedBy === "string"
+          && authorizedAt !== null
+          && observedThrough !== null
+          && typeof modelId === "string"
+          && modelId.length > 0
+          && authorization.manual_recovery_spent_at === null
+          && authorization.organizer_proposal_checkpoint !== null;
+        if (conditionallyAuthorized) {
+          const admitted = await admitSemanticWorkWithinTransaction(tx, {
+            recordRef: input.claim.recordRef,
+            changeReason: input.claim.changeReason,
+            admissionCommitment: this.options.commitments.manualRecovery({
+              recordRef: input.claim.recordRef,
+              sourceGeneration: input.claim.generation,
+              recoveryId,
+              authorizedBy,
+              observedThrough,
+            }),
+            now,
+          });
+          if (!admitted.admitted || admitted.generation !== input.claim.generation + 1) {
+            throw new Error("Reflection conditional recovery lost its generation fence");
+          }
+          const transferred = await executeTypedRecordProductQuery(tx,
+            recordProductTypedDb.update(reflectionRecordSemanticWork).set({
+              manualRecoveryId: recoveryId,
+              manualRecoverySourceGeneration: input.claim.generation,
+              manualRecoveryAuthorizedBy: authorizedBy,
+              manualRecoveryAuthorizedAt: authorizedAt,
+              manualRecoveryObservedThrough: observedThrough,
+              manualRecoveryServiceModelId: modelId,
+              manualRecoverySpentAt: null,
+            }).where(and(
+              eq(reflectionRecordSemanticWork.recordId, input.claim.recordRef),
+              eq(reflectionRecordSemanticWork.generation, admitted.generation),
+              eq(reflectionRecordSemanticWork.state, "due"),
+              isNull(reflectionRecordSemanticWork.acceptedModelBinding),
+              isNull(reflectionRecordSemanticWork.organizerProposalCheckpoint),
+            )).returning({ record_id: reflectionRecordSemanticWork.recordId }));
+          if (transferred.length !== 1) {
+            throw new Error("Reflection conditional recovery marker was not transferred");
+          }
+          return "deferred";
+        }
+      }
       const exhausted = input.requiresFreshCalculation === true
         ? sql`true`
         : sql`${reflectionRecordSemanticWork.attemptCount}

@@ -279,6 +279,12 @@ describe("Reflection durable Record schema", () => {
       "${table.manualRecoverySourceGeneration} = ${table.generation} - 1",
     );
     expect(manualRecoveryCheck).toContain(
+      "${table.manualRecoverySourceGeneration} = ${table.generation}",
+    );
+    expect(manualRecoveryCheck).toContain(
+      "${table.acceptedModelBindingGeneration} = ${table.generation}",
+    );
+    expect(manualRecoveryCheck).toContain(
       "${table.manualRecoveryObservedThrough} <= ${table.manualRecoveryAuthorizedAt}",
     );
     expect(manualRecoveryCheck).toContain(
@@ -287,6 +293,20 @@ describe("Reflection durable Record schema", () => {
     expect(manualRecoveryCheck).toContain(
       "${table.manualRecoverySpentAt} >= ${table.manualRecoveryAuthorizedAt}",
     );
+    const conditionalConsentMigration = readFileSync(
+      new URL("../../src/migrations/0394_absurd_young_avengers.sql", import.meta.url),
+      "utf8",
+    );
+    expect(conditionalConsentMigration).toContain(
+      'DROP CONSTRAINT "reflection_record_semantic_work_manual_recovery_coherent"',
+    );
+    expect(conditionalConsentMigration).toContain(
+      '"manual_recovery_source_generation" = "reflection_record_semantic_work"."generation"',
+    );
+    expect(conditionalConsentMigration).toContain(
+      '"accepted_model_binding_generation" = "reflection_record_semantic_work"."generation"',
+    );
+    expect(conditionalConsentMigration).not.toContain("ADD COLUMN");
     expect(columnNames(reflectionRecordSemanticWorkAdmissions)).toEqual([
       "record_id",
       "admission_commitment",

@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import {
+  and,
   createDirectDb,
   createPostgresJsCanonicalBridgeConnection,
   eq,
   inArray,
   llmUsageEvents,
+  type PostgresJsBridgeExecutor,
   reflectionRecords,
   reflectionRecordPublications,
   reflectionRecordSemanticWork,
@@ -13,7 +15,13 @@ import {
 } from "@nautilo/db";
 import { bootstrapTestDbInstance } from "@nautilo/db/testing";
 import { PUSH_TOKEN_ENCRYPTION_KEY } from "@nautilo/operator-secrets";
+import { DURABLE_SLEEP_QUARANTINE_RECOVERY_POLICY_VERSION } from "@nautilo/reflection";
 import { reflectionModelOperationId } from "@nautilo/runtime";
+import {
+  PostgresSemanticWorkStore,
+  createHmacRecordSemanticCommitmentPort,
+  verifyRecordProductPostgresHandle,
+} from "@nautilo/reflection-bridge/server";
 import type { MemoryOperationBinding } from "@nautilo/types";
 
 import { requestManualReflectionRecovery } from "../../src/reflection/request-manual-recovery";
@@ -51,6 +59,8 @@ test("manual Reflection recovery queues each observed service hold once and reta
     candidateQuarantine: `manual-reflection-${suffix}-candidate-quarantine`,
     authorityQuarantine: `manual-reflection-${suffix}-authority-quarantine`,
     staleCheckpointQuarantine: `manual-reflection-${suffix}-stale-checkpoint-quarantine`,
+    sourceCheckpointQuarantine: `manual-reflection-${suffix}-source-checkpoint-quarantine`,
+    humanStaleCheckpoint: `manual-reflection-${suffix}-human-stale-checkpoint`,
     staleFreshCalculation: `manual-reflection-${suffix}-stale-fresh-calculation`,
     otherQuarantine: `manual-reflection-${suffix}-other-quarantine`,
   } as const;
@@ -186,6 +196,42 @@ test("manual Reflection recovery queues each observed service hold once and reta
       createdAt: failedAt,
       updatedAt: failedAt,
     }, {
+      recordId: recordIds.sourceCheckpointQuarantine,
+      generation: 1,
+      changeReason: "created",
+      stage: "organization",
+      state: "quarantined",
+      attemptCount: 8,
+      quarantineRound: 1,
+      recoverAfter,
+      failureCode: "publication_unavailable",
+      failureDetail: "publication_source_unavailable",
+      acceptedModelBinding: serviceBinding,
+      acceptedModelBindingGeneration: 1,
+      organizerProposalCheckpoint: savedCheckpoint,
+      dueSince: failedAt,
+      startedAt: failedAt,
+      createdAt: failedAt,
+      updatedAt: failedAt,
+    }, {
+      recordId: recordIds.humanStaleCheckpoint,
+      generation: 1,
+      changeReason: "created",
+      stage: "organization",
+      state: "quarantined",
+      attemptCount: 8,
+      quarantineRound: 1,
+      recoverAfter,
+      failureCode: "publication_unavailable",
+      failureDetail: "publication_plan_stale",
+      acceptedModelBinding: humanBinding,
+      acceptedModelBindingGeneration: 1,
+      organizerProposalCheckpoint: savedCheckpoint,
+      dueSince: failedAt,
+      startedAt: failedAt,
+      createdAt: failedAt,
+      updatedAt: failedAt,
+    }, {
       recordId: recordIds.staleFreshCalculation,
       generation: 1,
       changeReason: "created",
@@ -231,7 +277,7 @@ test("manual Reflection recovery queues each observed service hold once and reta
         authorizedBy: operator.id,
         modelId: configuredModel,
       }), { isolationLevel: "read committed" });
-    expect(await request(observedThrough)).toEqual({ queued: 5, held: 3 });
+    expect(await request(observedThrough)).toEqual({ queued: 7, held: 3 });
     const first = await db.select().from(reflectionRecordSemanticWork)
       .where(inArray(reflectionRecordSemanticWork.recordId, Object.values(recordIds)))
       .orderBy(reflectionRecordSemanticWork.recordId);
@@ -272,6 +318,38 @@ test("manual Reflection recovery queues each observed service hold once and reta
       failureCode: "publication_unavailable",
       failureDetail: "publication_plan_stale",
       organizerProposalCheckpoint: savedCheckpoint,
+      manualRecoverySourceGeneration: 1,
+      manualRecoveryAuthorizedBy: operator.id,
+      manualRecoveryObservedThrough: observedThrough,
+      manualRecoveryServiceModelId: configuredModel,
+      manualRecoverySpentAt: null,
+    });
+    expect(byId.get(recordIds.sourceCheckpointQuarantine)).toMatchObject({
+      generation: 1,
+      state: "quarantined",
+      recoverAfter: now,
+      failureCode: "publication_unavailable",
+      failureDetail: "publication_source_unavailable",
+      organizerProposalCheckpoint: savedCheckpoint,
+      manualRecoverySourceGeneration: 1,
+      manualRecoveryAuthorizedBy: operator.id,
+      manualRecoveryObservedThrough: observedThrough,
+      manualRecoveryServiceModelId: configuredModel,
+      manualRecoverySpentAt: null,
+    });
+    expect(byId.get(recordIds.sourceCheckpointQuarantine)?.manualRecoveryId)
+      .toBe(byId.get(recordIds.staleCheckpointQuarantine)?.manualRecoveryId);
+    expect(byId.get(recordIds.humanStaleCheckpoint)).toMatchObject({
+      generation: 1,
+      state: "quarantined",
+      recoverAfter: now,
+      acceptedModelBinding: humanBinding,
+      acceptedModelBindingGeneration: 1,
+      organizerProposalCheckpoint: savedCheckpoint,
+      manualRecoveryId: null,
+      manualRecoverySourceGeneration: null,
+      manualRecoveryServiceModelId: null,
+      manualRecoverySpentAt: null,
     });
     expect(byId.get(recordIds.staleFreshCalculation)).toMatchObject({
       generation: 2,
@@ -293,6 +371,84 @@ test("manual Reflection recovery queues each observed service hold once and reta
     // and cannot create another generation for either already-queued subject.
     expect(await request(observedThrough)).toEqual({ queued: 0, held: 3 });
     expect(await request(newerFailureAt)).toEqual({ queued: 1, held: 3 });
+
+    // A saved service-funded result that proves it needs a fresh calculation
+    // carries this click's exact authorization forward by one generation. The
+    // old claim cannot roll it over twice, and the Human-funded sibling never
+    // acquires service-spend authorization.
+    await db.update(reflectionRecordSemanticWork).set({
+      recoveryPolicyVersion: DURABLE_SLEEP_QUARANTINE_RECOVERY_POLICY_VERSION,
+    }).where(inArray(reflectionRecordSemanticWork.recordId, [
+      recordIds.authorityQuarantine,
+      recordIds.candidateQuarantine,
+      recordIds.humanStaleCheckpoint,
+      recordIds.otherQuarantine,
+      recordIds.sourceCheckpointQuarantine,
+    ]));
+    await db.update(reflectionRecordSemanticWork).set({
+      recoverAfter: new Date("2000-12-31T10:00:00.000Z"),
+    }).where(and(
+      eq(reflectionRecordSemanticWork.recordId, recordIds.staleCheckpointQuarantine),
+      eq(reflectionRecordSemanticWork.generation, 1),
+    ));
+    const createStore = async (executor: PostgresJsBridgeExecutor) => {
+      const handle = await verifyRecordProductPostgresHandle({
+        query: executor.query.bind(executor),
+        transaction: use => use(executor),
+      });
+      return new PostgresSemanticWorkStore({
+        handle,
+        commitments: createHmacRecordSemanticCommitmentPort(new Uint8Array(32).fill(0x5a)),
+        clock: () => new Date("2001-01-01T10:04:00.000Z"),
+      });
+    };
+    const claimed = await createPostgresJsCanonicalBridgeConnection(db)
+      .transaction(async (_tx, executor) => (await createStore(executor)).claimNext(), {
+        isolationLevel: "read committed",
+      });
+    expect(claimed).toMatchObject({
+      status: "claimed",
+      claim: { recordRef: recordIds.staleCheckpointQuarantine, generation: 1 },
+    });
+    if (claimed.status !== "claimed") throw new Error("missing conditional recovery claim");
+    const claim = claimed.claim;
+    const rollover = () => createPostgresJsCanonicalBridgeConnection(db)
+      .transaction(async (_tx, executor) => {
+        return (await createStore(executor)).defer({
+          claim,
+          failureCode: "publication_unavailable",
+          failureDetail: "publication_plan_stale",
+          requiresFreshCalculation: true,
+        });
+      }, { isolationLevel: "read committed" });
+    const conditionalRecoveryId = byId.get(recordIds.staleCheckpointQuarantine)
+      ?.manualRecoveryId;
+    expect(conditionalRecoveryId).toBeString();
+    expect(await rollover()).toEqual({ status: "deferred" });
+    const [rolledOver] = await db.select().from(reflectionRecordSemanticWork).where(eq(
+      reflectionRecordSemanticWork.recordId,
+      recordIds.staleCheckpointQuarantine,
+    ));
+    expect(rolledOver).toMatchObject({
+      generation: 2,
+      state: "due",
+      acceptedModelBinding: null,
+      acceptedModelBindingGeneration: null,
+      organizerProposalCheckpoint: null,
+      manualRecoveryId: conditionalRecoveryId,
+      manualRecoverySourceGeneration: 1,
+      manualRecoveryAuthorizedBy: operator.id,
+      manualRecoveryObservedThrough: observedThrough,
+      manualRecoveryServiceModelId: configuredModel,
+      manualRecoverySpentAt: null,
+    });
+    expect(await rollover()).toEqual({ status: "superseded" });
+    expect((await db.select({
+      generation: reflectionRecordSemanticWork.generation,
+    }).from(reflectionRecordSemanticWork).where(eq(
+      reflectionRecordSemanticWork.recordId,
+      recordIds.staleCheckpointQuarantine,
+    )))[0]?.generation).toBe(2);
   } finally {
     if (usageIds.length > 0) {
       await db.delete(llmUsageEvents).where(inArray(llmUsageEvents.id, usageIds));

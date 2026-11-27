@@ -1540,6 +1540,9 @@ describe("PostgreSQL semantic work leases", () => {
       statement: string,
     ) => {
       const normalized = normalizedSql(statement);
+      if (normalized.startsWith("select") && normalized.includes("manual_recovery_id")) {
+        return [];
+      }
       if (normalized.startsWith("update reflection_record_semantic_work")
         && normalized.includes("returning state")) {
         return [{ state: "quarantined" }] as unknown as Row[];

@@ -1059,7 +1059,15 @@ export const reflectionRecordSemanticWork = pgTable(
         ${table.manualRecoveryId} is not null
         and ${table.manualRecoverySourceGeneration} is not null
         and ${table.manualRecoverySourceGeneration} > 0
-        and ${table.manualRecoverySourceGeneration} = ${table.generation} - 1
+        and (
+          ${table.manualRecoverySourceGeneration} = ${table.generation} - 1
+          or (
+            ${table.manualRecoverySourceGeneration} = ${table.generation}
+            and ${table.manualRecoverySpentAt} is null
+            and ${table.acceptedModelBinding} is not null
+            and ${table.acceptedModelBindingGeneration} = ${table.generation}
+          )
+        )
         and ${table.manualRecoveryAuthorizedBy} is not null
         and ${table.manualRecoveryAuthorizedAt} is not null
         and ${table.manualRecoveryObservedThrough} is not null
