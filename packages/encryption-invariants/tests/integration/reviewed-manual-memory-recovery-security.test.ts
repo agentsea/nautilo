@@ -21,9 +21,9 @@ async function source(path: string): Promise<string> {
 
 describe("manual Memory recovery encryption review", () => {
   test("classifies only the exact new operational metadata surfaces", () => {
-    expect(MANUAL_MEMORY_RECOVERY_DATABASE_LOCATORS).toHaveLength(33);
-    expect(new Set(MANUAL_MEMORY_RECOVERY_DATABASE_LOCATORS).size).toBe(33);
-    expect(REVIEWED_MANUAL_MEMORY_RECOVERY_COVERAGE).toHaveLength(35);
+    expect(MANUAL_MEMORY_RECOVERY_DATABASE_LOCATORS).toHaveLength(37);
+    expect(new Set(MANUAL_MEMORY_RECOVERY_DATABASE_LOCATORS).size).toBe(37);
+    expect(REVIEWED_MANUAL_MEMORY_RECOVERY_COVERAGE).toHaveLength(39);
 
     for (const entry of REVIEWED_MANUAL_MEMORY_RECOVERY_COVERAGE) {
       expect(validateCoverageEntry(entry)).toEqual({ ok: true });
@@ -84,8 +84,15 @@ describe("manual Memory recovery encryption review", () => {
     ]);
     for (const declaration of REVIEWED_MANUAL_RECOVERY_DTO_DECLARATIONS) {
       expect(declaration.arbitraryPayloads).toEqual([]);
-      if (declaration.locator.endsWith("-status")) {
+      if (declaration.locator.endsWith("reflection-status")) {
         expect(declaration.structuralSignatures).toContain("request.query:{recovery?:string}");
+        continue;
+      }
+      if (declaration.locator.endsWith("stenographer-status")) {
+        expect(declaration.structuralSignatures).toContain("request.query:{recovery?:string;sources?:string}");
+        expect(declaration.structuralSignatures?.join("\n")).toContain(
+          "staleAuthorizedSourceRooms?:number",
+        );
         continue;
       }
       expect(declaration.structuralSignatures?.join("\n")).toContain(

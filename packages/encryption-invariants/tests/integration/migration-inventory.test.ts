@@ -331,7 +331,7 @@ describe("migration inventory", () => {
       schema: "public",
       name: "session_messages",
     });
-    expect(inventory.currentColumns).toHaveLength(3349);
+    expect(inventory.currentColumns).toHaveLength(3353);
     expect(inventory.currentConstraints).toHaveLength(943);
     expect(inventory.currentConstraints).toContainEqual({
       locator: "public.actors#foreign_key:actors_owner_id_users_id_fk",
@@ -542,6 +542,10 @@ describe("migration inventory", () => {
       { path: "0396_wise_apocalypse.sql", sha256: "ef342a61cec17bcd8ee32f3ef0c72b75e75ec0a8dd2a9541f12ccb394b97bac3" },
       { path: "0397_dry_mikhail_rasputin.sql", sha256: "0fcac8081329c323f78be0c225db20694779c3154072faef91993c0640a9dcd5" },
       { path: "0398_tricky_leper_queen.sql", sha256: "f0bf750a6bfd9799b2200dc9fb6b7648a7bf0b00a58cf765d3c430f79bf771b2" },
+      { path: "0399_thick_madame_masque.sql", sha256: "54e24cdc36fab0174054e43552849cd9022c8aaba78ba190ca1b0e3a572b7932" },
+      { path: "0400_curious_professor_monster.sql", sha256: "37b81025441248afda5aee03369737d8774774b6141334a3260683b4c0db1468" },
+      { path: "0401_fearless_giant_girl.sql", sha256: "c7017122e7825da9754778c73985182b1d2deccf69495a96bf18421fa5a0ed81" },
+      { path: "0402_romantic_frightful_four.sql", sha256: "b3e4a9df3482257f8e6453a5de512411bbbb1538e667400a56c2924f84908323" },
     ]);
 
     const comparison = compareSchemaAndMigrationInventory(

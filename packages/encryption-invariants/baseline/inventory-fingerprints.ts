@@ -16,14 +16,16 @@ export const SOURCE_ALARM_BASELINE = {
 // creation. Ordinary Reflection proposal checkpoints, operator-authorized
 // Journal/Reflection recovery receipts, and the narrow same-generation
 // unspent-authorization constraint, paged recovery checkpoint, and family
-// lookup index append migrations 0392-0398. The focused
+// lookup index append migrations 0392-0398. Source-change commitments, the
+// fresh-service-input fence, checkpoint-family eligibility, and all-state
+// connected-family binding/grant lookup append migrations 0399-0402. The focused
 // migration inventory pins those exact generated SQL and snapshot bytes and
 // proves the earlier schema/snapshot tree remains byte-identical without a DB.
 export const MIGRATION_TREE_BASELINE = {
-  "migrations": 399,
-  "snapshots": 370,
-  "tip": 398,
-  "sha256": "d25eec68365338b9714196f377d41b2b42b08653e24d51a7eb1e12c8f6f3dbc9"
+  "migrations": 403,
+  "snapshots": 374,
+  "tip": 402,
+  "sha256": "d908ad4d026aa20a3caff198654a6cbd09f6f6c60ba2c6d3e262fc83f541cb3b"
 } as const;
 
 /**
@@ -80,13 +82,18 @@ export const MIGRATION_TREE_BASELINE = {
 // updates. Delete and unresolved inventories do not change.
 // Page completion, lock-contention checkpoints, binding a legacy compaction,
 // and deferring its next probe after source drift add four metadata-only updates.
+// The seven-fix safety review adds twelve exact metadata-only updates: refused
+// compaction rebinding; two Memory-review grant parks; Journal grant parking,
+// source-change retirement, and retry scheduling; one lane-target checkpoint;
+// and two fresh-input authorization repairs. The focused inventory test pins
+// every exact locator and the four generated migration/snapshot pairs.
 export const DATABASE_WRITER_BASELINE = {
-  "count": 1697,
+  "count": 1709,
   "insert": 539,
-  "update": 947,
+  "update": 959,
   "delete": 193,
   "unresolved": 18,
-  "sha256": "d7c6cfdfe5ac6c3bdb5f8f8dd8f88aba672b14ace5976255e1959c89a6118ea1"
+  "sha256": "2115672b5c45ac63bec7df583c6b67a19b50504403772a3ca7e24948e009bd13"
 } as const;
 
 /**

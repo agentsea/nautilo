@@ -49,8 +49,9 @@ export const REVIEWED_MANUAL_RECOVERY_DTO_DECLARATIONS:
     observationId: "wire.http.request.response.get.api.admin.stenographer.status.v9h5bb",
     locator: "http:request_response:GET /api/admin/stenographer-status",
     structuralSignatures: [
-      "request.query:{recovery?:string}",
+      "request.query:{recovery?:string;sources?:string}",
       "response.body:{compaction:{awaitingRooms:number;lastCompletedAt?:string;oldestOverdueMs:number;processingRooms:number;retryingRooms:number;staleLeases:number};current:{accumulatingRooms:number;caughtUpRooms:number;dueRooms:number;eligibleRooms:number;historicalCompletedRooms:number;historicalPendingRooms:number;oldestOverdueMs:number;processingRooms:number;rebuildingRooms:number;retryingRooms:number;staleLeases:number};generatedAt:string;health:\"degraded\"|\"delayed\"|\"healthy\";journal:{projectedBodyCodePointsMax?:number;projectedBodyCodePointsP50?:number;projectedBodyCodePointsP95?:number};last24h:{completedExtractionBatches:number;eventsWritten:number;extractionBatchesWithErrors:number;extractionDurationP50Ms?:number;extractionDurationP95Ms?:number;retriedExtractionBatches:number;zeroEventExtractionBatches:number};recentFailures:{attemptCount:number;errorCode:\"input_authority_unavailable\"|\"input_too_large\"|\"invalid_output\"|\"lease_lost\"|\"persistence\"|\"provider\"|\"provider_outcome_unknown\"|\"timeout\"|\"unknown\";modelId?:string;occurredAt:string;stage:\"compaction\"|\"extraction\"}[];unresolvedProviderOutcomes?:number;window:{since:string;until:string}}",
+      "response.body:{compaction:{awaitingRooms:number;lastCompletedAt?:string;oldestOverdueMs:number;processingRooms:number;retryingRooms:number;staleLeases:number};current:{accumulatingRooms:number;caughtUpRooms:number;dueRooms:number;eligibleRooms:number;historicalCompletedRooms:number;historicalPendingRooms:number;oldestOverdueMs:number;processingRooms:number;rebuildingRooms:number;retryingRooms:number;staleLeases:number};generatedAt:string;health:\"degraded\"|\"delayed\"|\"healthy\";journal:{projectedBodyCodePointsMax?:number;projectedBodyCodePointsP50?:number;projectedBodyCodePointsP95?:number};last24h:{completedExtractionBatches:number;eventsWritten:number;extractionBatchesWithErrors:number;extractionDurationP50Ms?:number;extractionDurationP95Ms?:number;retriedExtractionBatches:number;zeroEventExtractionBatches:number};recentFailures:{attemptCount:number;errorCode:\"input_authority_unavailable\"|\"input_too_large\"|\"invalid_output\"|\"lease_lost\"|\"persistence\"|\"provider\"|\"provider_outcome_unknown\"|\"timeout\"|\"unknown\";modelId?:string;occurredAt:string;stage:\"compaction\"|\"extraction\"}[];staleAuthorizedSourceRooms?:number;unresolvedProviderOutcomes?:number;window:{since:string;until:string}}",
       "response.body:{error:string}",
     ],
     arbitraryPayloads: [],
@@ -89,6 +90,10 @@ const JOURNAL_FIELDS = [
   "observed_attempt",
   "observed_failure_at",
   "observed_through",
+  "source_changed_at",
+  "replacement_input_digest",
+  "authorized_input_digest",
+  "fresh_service_inputs",
   "rebuild_generation",
   "room_id",
   "source_batch_id",
@@ -162,7 +167,7 @@ export const REVIEWED_MANUAL_MEMORY_RECOVERY_COVERAGE:
       "packages/server/tests/unit/memory-status-route.test.ts",
     ],
     reason:
-      "The product-only run contains one request UUID, one operator UUID, an observation timestamp, and three closed lane results containing only state and counts. It contains no prompt, Memory content, model output, provider response, credential, or cryptographic material.",
+      "The product-only run contains one request UUID, one operator UUID, an observation timestamp, three closed lane results containing only state and counts, and internal progress containing the click-time configured service-model identifier for each lane plus a servicing timestamp. It contains no prompt, Memory content, model output, provider response, credential, or cryptographic material.",
     includeTable: true,
   }),
   ...metadataEntries({
@@ -186,7 +191,7 @@ export const REVIEWED_MANUAL_MEMORY_RECOVERY_COVERAGE:
       "packages/server/tests/unit/request-manual-journal-recovery.test.ts",
     ],
     reason:
-      "The product-only receipt contains exact Journal work coordinates, attempt and rebuild counters, a configured model identifier, operator and lease UUIDs, and lifecycle timestamps. It contains no Journal text, model input or output, provider response, credential, or cryptographic material.",
+      "The product-only receipt contains exact Journal work coordinates, attempt and rebuild counters, a configured model identifier, operator and lease UUIDs, lifecycle timestamps, a fresh-service-input flag, and fixed 64-hex SHA-256 equality commitments over the exact compaction input. The content-derived commitments can disclose repeat-input equality, are retained only to fence authorization to the reviewed input, and are never used as encryption or authentication keys. The receipt contains no Journal text, reversible model input, model output, provider response, credential, or cryptographic key material.",
     includeTable: true,
   }),
   ...metadataEntries({
