@@ -318,6 +318,159 @@ describe("MemoryRecoveryCard", () => {
     }
   });
 
+  test.each([
+    ["disabled", { enabled: false }],
+    ["without a model", { model: { ...memoryFixture().model, available: false } }],
+    ["without encryption access", { encryption: { ...memoryFixture().encryption, available: false } }],
+  ])("does not poll queued Memory work while %s", async (_label, override) => {
+    jest.useFakeTimers();
+    try {
+      getStenographer.mockImplementation(async () => ({
+        ...stenographerFixture(),
+        health: "healthy",
+        current: {
+          ...stenographerFixture().current,
+          caughtUpRooms: 4,
+          processingRooms: 0,
+          retryingRooms: 0,
+        },
+      }));
+      getMemory.mockImplementation(async () => ({
+        ...memoryFixture(),
+        ...override,
+        current: { ...memoryFixture().current, due: 2, retrying: 1 },
+        followUpPending: 1,
+      }));
+      const view = show();
+      await act(async () => {});
+      await act(async () => jest.advanceTimersByTime(60_000));
+      expect(getMemory).toHaveBeenCalledTimes(1);
+      view.unmount();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test("keeps polling an in-flight Memory review after automatic admission is disabled", async () => {
+    jest.useFakeTimers();
+    try {
+      getStenographer.mockImplementation(async () => ({
+        ...stenographerFixture(),
+        health: "healthy",
+        current: {
+          ...stenographerFixture().current,
+          caughtUpRooms: 4,
+          processingRooms: 0,
+          retryingRooms: 0,
+        },
+      }));
+      getMemory.mockImplementation(async () => ({
+        ...memoryFixture(),
+        enabled: false,
+        current: { ...memoryFixture().current, due: 2, processing: 1, retrying: 1 },
+        followUpPending: 1,
+      }));
+      const view = show();
+      await act(async () => {});
+      for (let poll = 0; poll < 5; poll += 1) {
+        await act(async () => jest.advanceTimersByTime(10_000));
+        await act(async () => {});
+      }
+      expect(getMemory).toHaveBeenCalledTimes(6);
+      view.unmount();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test("rests after three stable polls when Stenographer due work is held", async () => {
+    jest.useFakeTimers();
+    try {
+      getStenographer.mockImplementation(async () => ({
+        ...stenographerFixture(),
+        health: "degraded",
+        unresolvedProviderOutcomes: 2,
+        current: {
+          ...stenographerFixture().current,
+          caughtUpRooms: 2,
+          processingRooms: 0,
+          retryingRooms: 0,
+          dueRooms: 1,
+          rebuildingRooms: 1,
+          historicalPendingRooms: 1,
+        },
+        compaction: { ...stenographerFixture().compaction, awaitingRooms: 1 },
+      }));
+      const view = show();
+      await act(async () => {});
+      for (let poll = 0; poll < 3; poll += 1) {
+        await act(async () => jest.advanceTimersByTime(10_000));
+        await act(async () => {});
+      }
+      expect(getStenographer).toHaveBeenCalledTimes(4);
+      await act(async () => jest.advanceTimersByTime(60_000));
+      expect(getStenographer).toHaveBeenCalledTimes(4);
+      expect(view.getAllByText("Needs attention")).toHaveLength(1);
+      view.unmount();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test("keeps polling healthy Stenographer due work beyond the hold observation limit", async () => {
+    jest.useFakeTimers();
+    try {
+      getStenographer.mockImplementation(async () => ({
+        ...stenographerFixture(),
+        health: "delayed",
+        unresolvedProviderOutcomes: 0,
+        current: {
+          ...stenographerFixture().current,
+          processingRooms: 0,
+          retryingRooms: 0,
+          dueRooms: 1,
+        },
+      }));
+      const view = show();
+      await act(async () => {});
+      for (let poll = 0; poll < 5; poll += 1) {
+        await act(async () => jest.advanceTimersByTime(10_000));
+        await act(async () => {});
+      }
+      expect(getStenographer).toHaveBeenCalledTimes(6);
+      view.unmount();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test("keeps polling an active worker even when another Stenographer room is held", async () => {
+    jest.useFakeTimers();
+    try {
+      getStenographer.mockImplementation(async () => ({
+        ...stenographerFixture(),
+        health: "degraded",
+        unresolvedProviderOutcomes: 1,
+        current: {
+          ...stenographerFixture().current,
+          processingRooms: 1,
+          retryingRooms: 0,
+          dueRooms: 1,
+        },
+      }));
+      const view = show();
+      await act(async () => {});
+      for (let poll = 0; poll < 5; poll += 1) {
+        await act(async () => jest.advanceTimersByTime(10_000));
+        await act(async () => {});
+      }
+      expect(getStenographer).toHaveBeenCalledTimes(6);
+      view.unmount();
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   test("polls scheduler-admitted deferred Reflection work", async () => {
     jest.useFakeTimers();
     try {

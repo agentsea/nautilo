@@ -8,8 +8,10 @@ import { useAuth } from "../../../hooks/use-auth";
 const buttonClass = "rounded-md border border-border bg-background-element px-2.5 py-1 text-xs font-medium text-foreground hover:bg-background-panel disabled:opacity-50";
 const MEMORY_RECOVERY_POLL_MS = 10_000;
 const TRANSIENT_REFRESH_RETRY_LIMIT = 3;
+const STENOGRAPHER_HELD_STABLE_POLL_LIMIT = 3;
 type RecoveryState = "catching_up" | "waiting" | "healthy" | "paused" | "needs_attention";
 type RecoverySummary = { state: RecoveryState; detail: string; recovery?: string; counts?: string };
+type HeldStenographerObservation = { signature: string; stablePolls: number };
 
 function stateLabel(state: RecoveryState): string {
   switch (state) {
@@ -37,6 +39,46 @@ function stenographerActiveWork(status: StenographerAdminStatus): number {
     + status.compaction.processingRooms + status.compaction.retryingRooms;
 }
 
+function stenographerHasUnknownOutcome(status: StenographerAdminStatus): boolean {
+  return status.unresolvedProviderOutcomes === undefined
+    ? status.recentFailures.some(({ errorCode }) => errorCode === "provider_outcome_unknown")
+    : status.unresolvedProviderOutcomes > 0;
+}
+
+function observeStenographerActiveWork(
+  status: StenographerAdminStatus,
+  previous: HeldStenographerObservation | null,
+): { active: boolean; observation: HeldStenographerObservation | null } {
+  const leasedOrRunnable = status.current.processingRooms + status.current.retryingRooms
+    + status.compaction.processingRooms + status.compaction.retryingRooms;
+  if (leasedOrRunnable > 0) return { active: true, observation: null };
+
+  const potentiallyHeld = status.current.dueRooms + status.current.rebuildingRooms
+    + status.current.historicalPendingRooms + status.compaction.awaitingRooms;
+  if (potentiallyHeld === 0) return { active: false, observation: null };
+  if (!stenographerHasUnknownOutcome(status)) return { active: true, observation: null };
+
+  const signature = [
+    status.current.eligibleRooms,
+    status.current.caughtUpRooms,
+    status.current.dueRooms,
+    status.current.rebuildingRooms,
+    status.current.historicalPendingRooms,
+    status.current.historicalCompletedRooms,
+    status.compaction.awaitingRooms,
+    status.compaction.lastCompletedAt,
+    status.unresolvedProviderOutcomes ?? "legacy",
+  ].join(":");
+  const observation = {
+    signature,
+    stablePolls: previous?.signature === signature ? previous.stablePolls + 1 : 0,
+  };
+  return {
+    active: observation.stablePolls < STENOGRAPHER_HELD_STABLE_POLL_LIMIT,
+    observation,
+  };
+}
+
 function reflectionActiveWork(status: ReflectionAdminStatus): number {
   if (status.scheduler.state === "disabled" || status.scheduler.state === "pressure_paused") {
     return 0;
@@ -50,13 +92,14 @@ function reflectionActiveWork(status: ReflectionAdminStatus): number {
 }
 
 function memoryActiveWork(status: MemoryAdminStatus): number {
-  return status.current.due + status.current.processing + status.current.retrying + status.followUpPending;
+  const queuedWorkCanRun = status.enabled && status.model.available && status.encryption.available;
+  return status.current.processing + (queuedWorkCanRun
+    ? status.current.due + status.current.retrying + status.followUpPending
+    : 0);
 }
 
 export function summarizeStenographer(status: StenographerAdminStatus): RecoverySummary {
-  const unknownOutcome = status.unresolvedProviderOutcomes === undefined
-    ? status.recentFailures.some(({ errorCode }) => errorCode === "provider_outcome_unknown")
-    : status.unresolvedProviderOutcomes > 0;
+  const unknownOutcome = stenographerHasUnknownOutcome(status);
   if (unknownOutcome) return { state: "needs_attention", detail: "A journal batch is held because the provider outcome is unknown." };
   if (status.health === "degraded" || status.current.staleLeases > 0 || status.compaction.staleLeases > 0) {
     return { state: "needs_attention", detail: "Recovery has unresolved failures or stale work. Stenographer details show the blocking stage and reason." };
@@ -209,6 +252,7 @@ function OperatorMemoryRecoveryCard({ operatorId }: { operatorId: string | null 
   });
   const submitting = useRef(false);
   const refreshSequence = useRef(0);
+  const heldStenographerObservation = useRef<HeldStenographerObservation | null>(null);
   const refresh = useCallback(async () => {
     if (!canRead) return;
     const sequence = ++refreshSequence.current;
@@ -233,8 +277,12 @@ function OperatorMemoryRecoveryCard({ operatorId }: { operatorId: string | null 
     setConsecutiveRefreshErrors(previous => hadError
       ? Math.min(previous + 1, TRANSIENT_REFRESH_RETRY_LIMIT + 1)
       : 0);
+    const stenographerWork = stenographer.status === "fulfilled"
+      ? observeStenographerActiveWork(stenographer.value, heldStenographerObservation.current)
+      : { active: false, observation: null };
+    heldStenographerObservation.current = stenographerWork.observation;
     setLiveWorkActive(
-      (stenographer.status === "fulfilled" && stenographerActiveWork(stenographer.value) > 0)
+      stenographerWork.active
       || (reflection.status === "fulfilled" && reflectionActiveWork(reflection.value) > 0)
       || (memory.status === "fulfilled" && memoryActiveWork(memory.value) > 0),
     );
