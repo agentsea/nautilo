@@ -115,6 +115,7 @@ export {
   asPostgresJsExecutor,
   createPostgresJsBridgeConnection,
   createPostgresJsCanonicalBridgeConnection,
+  createPostgresJsCanonicalBridgeExecutor,
   type PostgresJsBridgeConnection,
   type PostgresJsCanonicalBridgeConnection,
   type PostgresJsCanonicalTransaction,

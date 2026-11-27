@@ -152,6 +152,17 @@ function bridgeExecutor(
   });
 }
 
+/**
+ * Expose raw bridge queries on an already-owned canonical Drizzle transaction
+ * or savepoint. The returned executor never opens another connection, and a
+ * rejected query is therefore rolled back by that exact transaction boundary.
+ */
+export function createPostgresJsCanonicalBridgeExecutor(
+  transaction: PostgresJsCanonicalTransaction,
+): PostgresJsBridgeExecutor {
+  return bridgeExecutor(transactionClient(transaction));
+}
+
 function beginOptions(
   options: Readonly<{
     isolationLevel: PostgresJsBridgeIsolationLevel;
@@ -214,7 +225,7 @@ export function createPostgresJsCanonicalBridgeConnection(
     ): Promise<Result> => {
       return db.transaction(async (transaction) => callback(
         transaction,
-        bridgeExecutor(transactionClient(transaction)),
+        createPostgresJsCanonicalBridgeExecutor(transaction),
       ), options);
     },
   });

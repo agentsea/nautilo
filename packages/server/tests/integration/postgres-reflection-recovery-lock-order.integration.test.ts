@@ -6,6 +6,7 @@ import {
   createPostgresJsCanonicalBridgeConnection,
   eq,
   inArray,
+  memoryRecoveryRuns,
   reflectionRecords,
   reflectionRecordSemanticWork,
 } from "@nautilo/db";
@@ -15,6 +16,7 @@ import {
   PostgresSemanticWorkStore,
   verifyRecordProductPostgresHandle,
 } from "@nautilo/reflection-bridge/server";
+import { createManualMemoryRecovery } from "../../src/lib/manual-memory-recovery";
 
 let db: ReturnType<typeof createDirectDb>;
 
@@ -36,6 +38,20 @@ function deferred(): Readonly<{
     resolve = accept;
   });
   return { promise, resolve };
+}
+
+async function promptly<T>(promise: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("operation did not settle promptly")), 2_000);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function insertProviderHolds(
@@ -352,7 +368,6 @@ test("a partially bound existing grant stays one family across page selection an
   const unrelatedRecoveryId = "44444444-4444-4444-8444-444444444444";
   const authorizedBy = randomUUID();
   const observedThrough = new Date("2004-05-06T07:10:09.000Z");
-  const now = new Date(observedThrough.getTime() + 1_000);
   const serviceBinding = {
     version: 1 as const,
     kind: "service" as const,
@@ -472,8 +487,50 @@ test("a partially bound existing grant stays one family across page selection an
   }]);
   const locked = deferred();
   const release = deferred();
+  const requestId = randomUUID();
   let blocker: Promise<void> | undefined;
+  const completed = { state: "assessed", queued: 0, held: 0 } as const;
+  const calls = { reflection: 0, memory: 0 };
+  const coordinator = createManualMemoryRecovery({
+    db: () => db,
+    assertAvailable: async () => {},
+    pageAvailable: async () => true,
+    pageSize: 1,
+    pollMs: 1_000,
+    lockTimeoutMs: 100,
+    onError: () => {},
+    recover: {
+      stenographer: async () => completed,
+      reflection: async ({ executor, now: pageNow, observedThrough, authorizedBy, page }) => {
+        calls.reflection += 1;
+        const handle = await verifyRecordProductPostgresHandle({
+          query: executor.query.bind(executor),
+          transaction: use => use(executor),
+        });
+        const result = await new PostgresSemanticWorkStore({
+          handle,
+          commitments: createHmacRecordSemanticCommitmentPort(new Uint8Array(32).fill(32)),
+          clock: () => pageNow,
+        }).requestManualProviderRecovery({
+          now: pageNow,
+          observedThrough,
+          authorizedBy,
+          modelId: "surplus:synthetic-model",
+          page,
+        });
+        return { state: "assessed" as const, ...result };
+      },
+      memory: async ({ page }) => {
+        calls.memory += 1;
+        const current = page.after === null ? 0 : Number(page.after.slice(1));
+        return current < 6
+          ? { ...completed, nextCursor: `m${current + 1}` }
+          : completed;
+      },
+    },
+  });
   try {
+    await coordinator.request({ requestId, authorizedBy, now: observedThrough });
     blocker = db.transaction(async tx => {
       await tx.select({ recordId: reflectionRecordSemanticWork.recordId })
         .from(reflectionRecordSemanticWork)
@@ -483,63 +540,83 @@ test("a partially bound existing grant stays one family across page selection an
       await release.promise;
     });
     await locked.promise;
-    const handle = await verifyRecordProductPostgresHandle(
-      createPostgresJsBridgeConnection(db),
-    );
-    const store = new PostgresSemanticWorkStore({
-      handle,
-      commitments: createHmacRecordSemanticCommitmentPort(new Uint8Array(32).fill(32)),
-      clock: () => now,
-    });
-    const ownerKey = `recovery:${[
-      recoveryId,
-      otherRecoveryId,
-      ...spentRecoveryIds,
-    ].sort().at(-1)!}`;
-    let ownerAfter: string | null = null;
-    let pageNumber = 0;
-    for (;;) {
-      const page = await store.requestManualProviderRecovery({
-        now,
-        observedThrough,
-        authorizedBy,
-        modelId: "surplus:synthetic-model",
-        page: { after: ownerAfter, limit: 1 },
-      });
-      if (page.nextCursor === ownerKey) {
-        expect(page).toMatchObject({ queued: 0, held: 5, scanned: 1 });
+    const predecessor = `recovery:${otherRecoveryId}`;
+    // Stenographer finishes first. Reflection and the deliberately long Memory
+    // lane then alternate through durable page progress.
+    expect(await coordinator.processNextPage(requestId)).toBe(true);
+    let beforeContention: typeof memoryRecoveryRuns.$inferSelect | undefined;
+    let lastObserved: typeof memoryRecoveryRuns.$inferSelect | undefined;
+    for (let attempt = 0; attempt < 20; ++attempt) {
+      const [saved] = await db.select().from(memoryRecoveryRuns)
+        .where(eq(memoryRecoveryRuns.id, requestId));
+      lastObserved = saved;
+      const reflection = saved?.progress?.reflection;
+      const memory = saved?.progress?.memory;
+      if (reflection?.after === predecessor
+        && (memory?.pages ?? 0) === reflection.pages) {
+        beforeContention = saved;
         break;
       }
-      const unrelatedPage = page.nextCursor === `recovery:${unrelatedRecoveryId}`;
-      expect(page).toMatchObject({
-        queued: unrelatedPage ? 1 : 0,
-        held: 0,
-        scanned: 1,
-      });
-      expect(page.nextCursor).toBeString();
-      if (pageNumber === 0) {
-        const [unrelated] = await db.select({
-          recoverAfter: reflectionRecordSemanticWork.recoverAfter,
-        }).from(reflectionRecordSemanticWork).where(eq(
-          reflectionRecordSemanticWork.recordId,
-          recordIds[5],
-        ));
-        expect(unrelated?.recoverAfter?.getTime()).toBe(observedThrough.getTime());
-      }
-      ownerAfter = page.nextCursor!;
-      pageNumber += 1;
+      expect(await promptly(coordinator.processNextPage(requestId))).toBe(true);
     }
+    if (beforeContention === undefined) {
+      throw new Error(`durable Reflection cursor did not reach its locked family: ${JSON.stringify({
+        calls,
+        progress: lastObserved?.progress,
+        reflection: lastObserved?.reflection,
+        memory: lastObserved?.memory,
+      })}`);
+    }
+    expect(beforeContention?.progress?.reflection).toMatchObject({
+      state: "assessed",
+      queued: 1,
+      held: 0,
+      after: predecessor,
+    });
+    const reflectionCallsBefore = calls.reflection;
+    const memoryCallsBefore = calls.memory;
+    const contentionResult = await promptly(coordinator.processNextPage(requestId));
+    const [contended] = await db.select().from(memoryRecoveryRuns)
+      .where(eq(memoryRecoveryRuns.id, requestId));
+    if (!contentionResult) {
+      throw new Error(`durable Reflection contention escaped its savepoint: ${JSON.stringify({
+        calls,
+        progress: contended?.progress,
+        reflection: contended?.reflection,
+        memory: contended?.memory,
+      })}`);
+    }
+    expect(calls.reflection).toBe(reflectionCallsBefore + 1);
+    expect(calls.memory).toBe(memoryCallsBefore);
+    expect(contended?.progress?.reflection).toMatchObject({
+      state: "assessed",
+      queued: 1,
+      held: 0,
+      after: predecessor,
+      pages: (beforeContention?.progress?.reflection?.pages ?? 0) + 1,
+    });
+    // The coordinator persisted the contention round without moving the seed,
+    // then gives the lower-round Memory lane its promised turn.
+    expect(await promptly(coordinator.processNextPage(requestId))).toBe(true);
+    expect(calls.memory).toBe(memoryCallsBefore + 1);
+
     release.resolve();
     await blocker;
     blocker = undefined;
-
-    expect(await store.requestManualProviderRecovery({
-      now,
-      observedThrough,
-      authorizedBy,
-      modelId: "surplus:synthetic-model",
-      page: { after: ownerAfter, limit: 1 },
-    })).toMatchObject({ queued: 5, held: 0, scanned: 1 });
+    for (let attempt = 0; attempt < 20; ++attempt) {
+      const [saved] = await db.select().from(memoryRecoveryRuns)
+        .where(eq(memoryRecoveryRuns.id, requestId));
+      if (saved?.stenographer && saved.reflection && saved.memory) break;
+      await promptly(coordinator.processNextPage(requestId));
+    }
+    const [receipt] = await db.select().from(memoryRecoveryRuns)
+      .where(eq(memoryRecoveryRuns.id, requestId));
+    expect(receipt).toMatchObject({
+      stenographer: completed,
+      reflection: { state: "assessed", queued: 6, held: 0 },
+      memory: completed,
+      progress: {},
+    });
     const stored = await db.select({
       recordId: reflectionRecordSemanticWork.recordId,
       generation: reflectionRecordSemanticWork.generation,
@@ -554,8 +631,11 @@ test("a partially bound existing grant stays one family across page selection an
     expect(byId.get(recordIds[0])?.recoveryId).toBe(recoveryId);
     expect(byId.get(recordIds[1])?.recoveryId).toBe(recoveryId);
     expect(byId.get(recordIds[2])?.recoveryId).toBe(otherRecoveryId);
-    expect(recordIds.slice(0, 3).every(recordId =>
-      byId.get(recordId)?.recoverAfter?.getTime() === now.getTime())).toBe(true);
+    expect(recordIds.slice(0, 3).every(recordId => {
+      const recoverAfter = byId.get(recordId)?.recoverAfter;
+      return recoverAfter !== null && recoverAfter !== undefined
+        && recoverAfter > observedThrough;
+    })).toBe(true);
     const freshRecoveryId = byId.get(recordIds[3])?.recoveryId;
     expect(byId.get(recordIds[3])?.generation).toBe(3);
     expect(byId.get(recordIds[4])?.generation).toBe(3);
@@ -565,11 +645,13 @@ test("a partially bound existing grant stays one family across page selection an
     expect(byId.get(recordIds[5])).toMatchObject({
       generation: 2,
       recoveryId: unrelatedRecoveryId,
-      recoverAfter: now,
     });
+    expect(byId.get(recordIds[5])?.recoverAfter?.getTime())
+      .toBeGreaterThan(observedThrough.getTime());
   } finally {
     release.resolve();
     await Promise.allSettled(blocker === undefined ? [] : [blocker]);
+    await db.delete(memoryRecoveryRuns).where(eq(memoryRecoveryRuns.id, requestId));
     await deleteProviderHolds(recordIds);
   }
 }, 15_000);

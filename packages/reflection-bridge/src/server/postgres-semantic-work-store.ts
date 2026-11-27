@@ -1086,49 +1086,52 @@ export class PostgresSemanticWorkStore
       };
       if (candidates.length === 0) return pageResult({ queued: 0, held: 0 });
 
-      // This method can share a surrounding server transaction with derived
-      // lineage repair, which has already written (and therefore row-locked)
-      // other work Records. Lock only immediately available existing rows: no
-      // advisory lock is needed because every recovery receipt is unique and
-      // the existing work row serializes its generation. This avoids both
-      // row/advisory inversion and advisory-lock growth with backlog size.
+      // Legacy direct callers retain their non-blocking partial assessment.
+      // Durable pages instead fail the entire savepoint immediately when any
+      // family member is locked. The coordinator recognizes 55P03, preserves
+      // its seed cursor and rotates lanes before retrying, so a page can never
+      // advance past a partially locked paid family.
       const candidateRecordRefs = candidates.map(row => row.record_id);
-      const locked = await executeTypedRecordProductQuery(tx,
-        recordProductTypedDb.select({
-          record_id: work.recordId,
-          generation: work.generation,
-          completed_generation: work.completedGeneration,
-          change_reason: work.changeReason,
-          stage: work.stage,
-          accepted_model_binding: work.acceptedModelBinding,
-          accepted_model_binding_generation: work.acceptedModelBindingGeneration,
-          organizer_proposal_checkpoint: work.organizerProposalCheckpoint,
-          manual_recovery_id: work.manualRecoveryId,
-          manual_recovery_source_generation: work.manualRecoverySourceGeneration,
-          manual_recovery_service_model_id: work.manualRecoveryServiceModelId,
-          manual_recovery_spent_at: work.manualRecoverySpentAt,
-          family_key: familyKey.as("family_key"),
-          state: work.state,
-          completion_outcome: work.completionOutcome,
-          failure_code: work.failureCode,
-          failure_detail: work.failureDetail,
-          lifecycle: reflectionRecords.lifecycle,
-          disposition: reflectionRecords.disposition,
-        }).from(work)
-          .innerJoin(reflectionRecords, eq(reflectionRecords.recordId, work.recordId))
-          .where(and(
-            sql`${work.recordId} = ANY(${sql.param(candidateRecordRefs)}::text[])`,
-            lte(work.updatedAt, input.observedThrough),
-            or(
-              and(
-                eq(work.state, "complete"),
-                eq(work.completionOutcome, "provider_outcome_unknown"),
-              ),
-              eq(work.state, "quarantined"),
+      const lockQuery = recordProductTypedDb.select({
+        record_id: work.recordId,
+        generation: work.generation,
+        completed_generation: work.completedGeneration,
+        change_reason: work.changeReason,
+        stage: work.stage,
+        accepted_model_binding: work.acceptedModelBinding,
+        accepted_model_binding_generation: work.acceptedModelBindingGeneration,
+        organizer_proposal_checkpoint: work.organizerProposalCheckpoint,
+        manual_recovery_id: work.manualRecoveryId,
+        manual_recovery_source_generation: work.manualRecoverySourceGeneration,
+        manual_recovery_service_model_id: work.manualRecoveryServiceModelId,
+        manual_recovery_spent_at: work.manualRecoverySpentAt,
+        family_key: familyKey.as("family_key"),
+        state: work.state,
+        completion_outcome: work.completionOutcome,
+        failure_code: work.failureCode,
+        failure_detail: work.failureDetail,
+        lifecycle: reflectionRecords.lifecycle,
+        disposition: reflectionRecords.disposition,
+      }).from(work)
+        .innerJoin(reflectionRecords, eq(reflectionRecords.recordId, work.recordId))
+        .where(and(
+          sql`${work.recordId} = ANY(${sql.param(candidateRecordRefs)}::text[])`,
+          lte(work.updatedAt, input.observedThrough),
+          or(
+            and(
+              eq(work.state, "complete"),
+              eq(work.completionOutcome, "provider_outcome_unknown"),
             ),
-          ))
-          .orderBy(asc(familyKey), asc(work.recordId))
-          .for("update", { of: work, skipLocked: true }));
+            eq(work.state, "quarantined"),
+          ),
+        ))
+        .orderBy(asc(familyKey), asc(work.recordId));
+      const locked = await executeTypedRecordProductQuery(
+        tx,
+        input.page === undefined
+          ? lockQuery.for("update", { of: work, skipLocked: true })
+          : lockQuery.for("update", { of: work, noWait: true }),
+      );
       if (locked.length === 0) {
         return pageResult({ queued: 0, held: candidates.length });
       }

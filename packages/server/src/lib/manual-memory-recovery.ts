@@ -1,6 +1,7 @@
 import {
-  and, asc, createPostgresJsCanonicalBridgeConnection, desc, eq, isNull, memoryRecoveryRuns, or, sql,
-  type DirectDatabase, type PostgresJsBridgeExecutor,
+  and, asc, createPostgresJsCanonicalBridgeExecutor, desc, eq,
+  isNull, memoryRecoveryRuns, or, sql, type DirectDatabase,
+  type PostgresJsBridgeExecutor,
 } from "@nautilo/db";
 import type { MemoryRecoveryLaneResult, MemoryRecoveryRun } from "@nautilo/types";
 
@@ -70,10 +71,9 @@ export function createManualMemoryRecovery(options: {
   let processing: Promise<void> | undefined;
 
   async function processNextPage(requestId?: string): Promise<boolean> {
-    const connection = createPostgresJsCanonicalBridgeConnection(options.db());
     let outcome: { wakeMemory: boolean; continueImmediately: boolean } | null;
     try {
-      outcome = await connection.transaction(async (tx, executor) => {
+      outcome = await options.db().transaction(async tx => {
         // This precedes the run, policy, maintenance and work locks. A blocked
         // page therefore releases every global gate promptly and can be retried.
         await tx.execute(sql`SELECT set_config('lock_timeout', ${`${lockTimeoutMs}ms`}, true)`);
@@ -98,6 +98,7 @@ export function createManualMemoryRecovery(options: {
         let page: Awaited<ReturnType<Recover>>;
         try {
           page = await tx.transaction(async savepoint => {
+            const executor = createPostgresJsCanonicalBridgeExecutor(savepoint);
             const assessment = await options.recover[processor]({
               db: savepoint, executor, authorizedBy: row.authorizedBy,
               now, observedThrough: row.observedThrough,
