@@ -127,6 +127,16 @@ describe("stenographer status postgres-js parameters", () => {
     }
     expect(parameterSets[0]).toContain(NOW.toISOString());
     expect(parameterSets[1]).toContain(NOW.toISOString());
+    const currentSql = new PgDialect().sqlToQuery(queries[0]!).sql.toLowerCase();
+    expect(currentSql).toContain(
+      "last_extraction_error_code = 'provider_outcome_unknown'",
+    );
+    expect(currentSql).toContain("extraction_failure_count > 0");
+    const compactionSql = new PgDialect().sqlToQuery(queries[1]!).sql.toLowerCase();
+    expect(compactionSql).toContain(
+      "last_compaction_error_code = 'provider_outcome_unknown'",
+    );
+    expect(compactionSql).toContain("compaction_failure_count > 0");
 
     const offlineDb = drizzle.mock() as unknown as DirectDatabase;
     const rolling = buildStenographerRollingStatusQuery(

@@ -10,6 +10,7 @@ import {
   inArray,
   llmUsageEvents,
   namespaces,
+  queryStenographerAdminStatus,
   reflectionRecordPayloadRepresentationHeads,
   reflectionRecordPayloadRepresentations,
   reflectionRecords,
@@ -204,6 +205,28 @@ async function recordUnknownAttempt(input: Readonly<{
 }
 
 describe("manual Journal recovery on PostgreSQL", () => {
+  test("reports active unknown provider outcomes until each journal lane recovers", async () => {
+    const room = await fixture("Recovery dashboard");
+    const currentHolds = async () => (await queryStenographerAdminStatus({
+      now: BASE, since: BASE, until: BASE, includeRecovery: true,
+    }, db)).unresolvedProviderOutcomes!;
+    const baseline = await currentHolds();
+    const roomState = eq(roomJournalState.roomId, room.roomId);
+    await db.update(roomJournalState).set({
+      lastExtractionErrorCode: "provider_outcome_unknown",
+      lastExtractionErrorAt: BASE,
+      extractionFailureCount: 1,
+      lastCompactionErrorCode: "provider_outcome_unknown",
+      lastCompactionErrorAt: BASE,
+      compactionFailureCount: 1,
+    }).where(roomState);
+    expect(await currentHolds()).toBe(baseline + 2);
+    await db.update(roomJournalState).set({ extractionFailureCount: 0 }).where(roomState);
+    expect(await currentHolds()).toBe(baseline + 1);
+    await db.update(roomJournalState).set({ compactionFailureCount: 0 }).where(roomState);
+    expect(await currentHolds()).toBe(baseline);
+  });
+
   test("rejects a disabled Human operator before assessing work", async () => {
     const f = await fixture("disabled-operator");
     await db.update(users).set({ disabledAt: new Date() }).where(eq(users.id, f.userId));

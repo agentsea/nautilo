@@ -389,7 +389,10 @@ export async function queryStenographerAdminStatus(
           END
         ), 0)::bigint AS oldest_overdue_ms,
         COALESCE(MAX(extraction_failure_count), 0)::integer AS maximum_failure_count,
-        COUNT(*) FILTER (WHERE last_extraction_error_code = 'provider_outcome_unknown')::integer
+        COUNT(*) FILTER (
+          WHERE last_extraction_error_code = 'provider_outcome_unknown'
+            AND extraction_failure_count > 0
+        )::integer
           AS unresolved_provider_outcomes,
         COUNT(*) FILTER (
           WHERE rebuild_requested_at IS NOT NULL
@@ -490,7 +493,10 @@ export async function queryStenographerAdminStatus(
               OR compaction_lease_expires_at <= ${now}
             )
         )::integer AS stale_leases,
-        COUNT(*) FILTER (WHERE last_compaction_error_code = 'provider_outcome_unknown')::integer
+        COUNT(*) FILTER (
+          WHERE last_compaction_error_code = 'provider_outcome_unknown'
+            AND compaction_failure_count > 0
+        )::integer
           AS unresolved_provider_outcomes,
         COALESCE(MAX(
           CASE WHEN category = 'awaiting'
