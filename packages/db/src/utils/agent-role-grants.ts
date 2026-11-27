@@ -34,6 +34,8 @@ export const SENSITIVE_TABLES = [
   // Agent runtime may trigger recovery through the bounded product path, but
   // must never inspect or mutate the diagnostic rows directly.
   "memory_review_model_recoveries",
+  "memory_recovery_runs",
+  "room_journal_model_recoveries",
   "protected_task_run_output_bindings",
   "task_run_message_associations",
   "protected_task_execution_segment_receipts",

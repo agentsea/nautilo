@@ -932,6 +932,16 @@ export const reflectionRecordSemanticWork = pgTable(
     acceptedModelBindingGeneration: integer(
       "accepted_model_binding_generation",
     ),
+    /** Latest operator-authorized fresh computation after an ambiguous wire
+     * outcome. The canonical claim-time admission still derives and verifies
+     * the new server-keyed input commitment before any provider dispatch. */
+    manualRecoveryId: uuid("manual_recovery_id"),
+    manualRecoverySourceGeneration: integer("manual_recovery_source_generation"),
+    manualRecoveryAuthorizedBy: uuid("manual_recovery_authorized_by"),
+    manualRecoveryAuthorizedAt: timestamp("manual_recovery_authorized_at", { withTimezone: true }),
+    manualRecoveryObservedThrough: timestamp("manual_recovery_observed_through", { withTimezone: true }),
+    manualRecoveryServiceModelId: text("manual_recovery_service_model_id"),
+    manualRecoverySpentAt: timestamp("manual_recovery_spent_at", { withTimezone: true }),
     /** Sealed proposal for this generation, written only by ordinary Reflection. */
     organizerProposalCheckpoint: bytea("organizer_proposal_checkpoint"),
     organizerProposalResumedAt: timestamp("organizer_proposal_resumed_at", { withTimezone: true }),
@@ -1033,6 +1043,34 @@ export const reflectionRecordSemanticWork = pgTable(
         ${table.acceptedModelBinding} is not null
         and ${table.acceptedModelBindingGeneration} is not null
         and ${table.acceptedModelBindingGeneration} = ${table.generation}
+      )`,
+    ),
+    check(
+      "reflection_record_semantic_work_manual_recovery_coherent",
+      sql`(
+        ${table.manualRecoveryId} is null
+        and ${table.manualRecoverySourceGeneration} is null
+        and ${table.manualRecoveryAuthorizedBy} is null
+        and ${table.manualRecoveryAuthorizedAt} is null
+        and ${table.manualRecoveryObservedThrough} is null
+        and ${table.manualRecoveryServiceModelId} is null
+        and ${table.manualRecoverySpentAt} is null
+      ) or (
+        ${table.manualRecoveryId} is not null
+        and ${table.manualRecoverySourceGeneration} is not null
+        and ${table.manualRecoverySourceGeneration} > 0
+        and ${table.manualRecoverySourceGeneration} = ${table.generation} - 1
+        and ${table.manualRecoveryAuthorizedBy} is not null
+        and ${table.manualRecoveryAuthorizedAt} is not null
+        and ${table.manualRecoveryObservedThrough} is not null
+        and ${table.manualRecoveryObservedThrough} <= ${table.manualRecoveryAuthorizedAt}
+        and ${table.manualRecoveryServiceModelId} is not null
+        and octet_length(${table.manualRecoveryServiceModelId}) > 0
+        and btrim(${table.manualRecoveryServiceModelId}) = ${table.manualRecoveryServiceModelId}
+        and (
+          ${table.manualRecoverySpentAt} is null
+          or ${table.manualRecoverySpentAt} >= ${table.manualRecoveryAuthorizedAt}
+        )
       )`,
     ),
     check(

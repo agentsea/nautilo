@@ -2752,6 +2752,13 @@
       "when": 1795782909201,
       "tag": "0392_flaky_spencer_smythe",
       "breakpoints": true
+    },
+    {
+      "idx": 393,
+      "version": "7",
+      "when": 1795786131322,
+      "tag": "0393_past_shocker",
+      "breakpoints": true
     }
   ]
 }
