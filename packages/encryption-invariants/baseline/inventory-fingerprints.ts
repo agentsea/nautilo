@@ -13,14 +13,16 @@ export const SOURCE_ALARM_BASELINE = {
 // review recovery receipt, the Stenographer failure-vocabulary update, and the
 // additive Memory recovery privilege correction, the narrow protected-Task
 // wake-continuation FK permission, and server-only Memory review receipt
-// creation. The focused migration inventory pins the
-// appended SQL bytes and proves the current schema/snapshot pair remains
-// structurally identical without a DB.
+// creation. Ordinary Reflection proposal checkpoints, operator-authorized
+// Journal/Reflection recovery receipts, and the narrow same-generation
+// unspent-authorization constraint append migrations 0392-0394. The focused
+// migration inventory pins those exact generated SQL and snapshot bytes and
+// proves the earlier schema/snapshot tree remains byte-identical without a DB.
 export const MIGRATION_TREE_BASELINE = {
-  "migrations": 392,
-  "snapshots": 363,
-  "tip": 391,
-  "sha256": "b4fdd8a2ef9c491afeda04aed403d24798883ed90ba9d013e6bcc87e4f2e7ac0"
+  "migrations": 395,
+  "snapshots": 366,
+  "tip": 394,
+  "sha256": "142ccd50ac6518556c55f9f545cc533aca03445eca10f16986f38b6d39acb82f"
 } as const;
 
 /**
@@ -69,13 +71,19 @@ export const MIGRATION_TREE_BASELINE = {
 // authorization/dispatch timestamps. Reconfirming a reservation that never
 // dispatched also updates the selected turns with their existing service model
 // so current inputs can bind again. Recovery receipts store no model content.
+// Journal/Reflection/Memory recovery adds five inserts and seventeen updates for
+// bounded receipts, exact claim consumption, checkpoint persistence, model
+// rebinding, and deterministic re-admission. One obsolete Memory-review
+// rotation update is removed, and the canonical transcript rebuild insert
+// moves into its shared typed helper, for a net four inserts and sixteen
+// updates. Delete and unresolved inventories do not change.
 export const DATABASE_WRITER_BASELINE = {
-  "count": 1673,
-  "insert": 535,
-  "update": 927,
+  "count": 1693,
+  "insert": 539,
+  "update": 943,
   "delete": 193,
   "unresolved": 18,
-  "sha256": "5eed5d926e80874e8292220636c878317f433368b8aab6e1ccdea55f8e962701"
+  "sha256": "d86b0b28138d0a08ae60908a85e0c504cd46bdb8fedf289f38411b685f061f0a"
 } as const;
 
 /**
