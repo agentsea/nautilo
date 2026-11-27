@@ -367,7 +367,7 @@ export function createPersonalMemoryEvidencePort(
         row === null
         || row.content === null
         || row.type === null
-        || row.contentRevision < 1
+        || row.contentRevision < 0
         || options.fingerprints === undefined
         || !exactObservedSource(
           dependency,
@@ -412,7 +412,9 @@ export function createPersonalMemoryEvidencePort(
           value.includesPublicBoundary
         ),
       };
-      return ancestry === undefined
+      // The fingerprint establishes current legacy content. Revision zero
+      // still cannot establish exclusive authorship for personal funding.
+      return row.contentRevision === 0 || ancestry === undefined
         ? sourceResult(currentAudience, { kind: "unknown" })
         : sourceResult(currentAudience, {
             kind: "derived",
