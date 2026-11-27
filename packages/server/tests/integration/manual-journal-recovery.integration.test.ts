@@ -1120,13 +1120,32 @@ describe("manual Journal recovery on PostgreSQL", () => {
     };
     expect(await requestManualJournalRecovery(reauthorized))
       .toEqual({ queued: 1, held: 0 });
-    const payerDeniedClaim = await tryClaimCompactionRoom(
-      db,
-      f.roomId,
-      reauthorizedAt,
-    );
+    const beforeRevision = await db.transaction(tx => resolveCurrentOrdinaryCompactionCoordinates(tx, f.roomId));
+    if (!beforeRevision) throw new Error("expected eligible inputs");
+    await db.transaction(async tx => {
+      const recordId = f.recordIds[0]!;
+      await tx.insert(reflectionRecordPayloadRepresentations).values({
+        recordId, representation: "ordinary", representationGeneration: 2, payloadVersion: 1,
+        plaintextPayloadBytes: new TextEncoder().encode(JSON.stringify({
+          statement: `Synthetic compaction fact 1. ${"x".repeat(520)}`,
+        })),
+      });
+      await tx.update(reflectionRecordPayloadRepresentationHeads).set({ currentRepresentationGeneration: 2 })
+        .where(and(eq(reflectionRecordPayloadRepresentationHeads.recordId, recordId),
+          eq(reflectionRecordPayloadRepresentationHeads.representation, "ordinary")));
+    });
+    const afterRevision = await db.transaction(tx => resolveCurrentOrdinaryCompactionCoordinates(tx, f.roomId));
+    expect(afterRevision?.workId).toBe(beforeRevision.workId);
+    expect(afterRevision?.inputDigest).not.toBe(beforeRevision.inputDigest);
+    const revisionAt = new Date(reauthorizedAt.getTime() + 1);
+    expect(await tryClaimCompactionRoom(db, f.roomId, revisionAt)).toBeNull();
+    expect(await requestManualJournalRecovery(reauthorized)).toEqual({ queued: 0, held: 1 });
+    const revisedAt = new Date(revisionAt.getTime() + 1);
+    expect(await requestManualJournalRecovery({ ...fresh, now: revisedAt, observedThrough: revisedAt }))
+      .toEqual({ queued: 1, held: 0 });
+    const payerDeniedClaim = await tryClaimCompactionRoom(db, f.roomId, revisedAt);
     if (!payerDeniedClaim) throw new Error("expected reauthorized compaction claim");
-    const payerDeniedAt = new Date(reauthorizedAt.getTime() + 1);
+    const payerDeniedAt = new Date(revisedAt.getTime() + 1);
     await failCompaction({
       claim: payerDeniedClaim,
       errorCode: "input_authority_unavailable",
