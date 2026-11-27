@@ -36,6 +36,7 @@ import {
   failCompaction,
   failExtraction,
   historicalCandidateRoomIds,
+  resolveCurrentOrdinaryCompactionCoordinates,
   tryClaimCompactionRoom,
   tryClaimRoom,
   type CompactionClaim,
@@ -59,6 +60,7 @@ type Fixture = Readonly<{
 
 let db: Db;
 const fixtures: Fixture[] = [];
+const TEST_EXTRACTOR_VERSION = "journal-recovery-fixture-v1";
 const BASE = new Date(Date.now() - 4 * 60_000);
 const MODEL = "fixture:journal-service";
 const RECOVERY_MODEL = "fixture:journal-recovery-service";
@@ -137,7 +139,7 @@ async function fixture(label: string): Promise<Fixture> {
     fingerprint: `fp:v1:human:${id}`, createdAt: new Date(BASE.getTime() + 1_000),
   }).returning({ id: sessionMessages.id });
   await db.insert(roomJournalState).values({
-    roomId, extractorVersion: "m219-v1", historicalBackfillStatus: "not_needed",
+    roomId, extractorVersion: TEST_EXTRACTOR_VERSION, historicalBackfillStatus: "not_needed",
     createdAt: BASE, updatedAt: BASE,
   });
   const value = {
@@ -220,6 +222,69 @@ async function recordUnknownAttempt(input: Readonly<{
     }),
     occurredAt: input.at,
     metadata: { operationId: input.operationId },
+  });
+}
+
+async function addNativeCompactionEvents(
+  f: Fixture,
+  sourceBatchId: string,
+  startSequence: number,
+  count: number,
+): Promise<void> {
+  const recordIds = Array.from({ length: count }, () => randomUUID());
+  f.recordIds.push(...recordIds);
+  const encoder = new TextEncoder();
+  await db.transaction(async (tx) => {
+    await tx.insert(reflectionRecords).values(recordIds.map(recordId => ({
+      recordId,
+      lifecycle: "current" as const,
+      structuralHeight: 0,
+      producerPolicyVersion: "manual-journal-recovery-fixture-v1",
+      processingGeneration: 1,
+      payloadVersion: 1,
+      disposition: "available" as const,
+      createdAt: BASE,
+      updatedAt: BASE,
+    })));
+    await tx.insert(reflectionRecordPayloadRepresentations).values(
+      recordIds.map((recordId, index) => ({
+        recordId,
+        representation: "ordinary" as const,
+        representationGeneration: 1,
+        payloadVersion: 1,
+        plaintextPayloadBytes: encoder.encode(JSON.stringify({
+          statement: `Synthetic compaction fact ${startSequence + index} ${"x".repeat(520)}`,
+        })),
+        createdAt: BASE,
+      })),
+    );
+    await tx.insert(reflectionRecordPayloadRepresentationHeads).values(
+      recordIds.map(recordId => ({
+        recordId,
+        representation: "ordinary" as const,
+        currentRepresentationGeneration: 1,
+        updatedAt: BASE,
+      })),
+    );
+    await tx.execute(sql`
+      SELECT set_config('nautilo.stenographer_writer_version', '2', true)
+    `);
+    await tx.insert(roomEvents).values(recordIds.map((recordId, index) => ({
+      id: recordId,
+      roomId: f.roomId,
+      sequence: startSequence + index,
+      kind: "fact" as const,
+      statement: null,
+      status: "active" as const,
+      sourceMessageIds: [f.messageId],
+      sourceBatchId,
+      batchLocalOrdinal: startSequence + index - 1,
+      extractorVersion: TEST_EXTRACTOR_VERSION,
+      projectionKind: "native" as const,
+      recordId,
+      nativeAttachedAt: BASE,
+      createdAt: BASE,
+    })));
   });
 }
 
@@ -692,65 +757,12 @@ describe("manual Journal recovery on PostgreSQL", () => {
     const f = await fixture("compaction");
     const [sourceBatch] = await db.insert(roomJournalBatches).values({
       roomId: f.roomId, fromMessageIdExclusive: 0,
-      throughMessageIdInclusive: f.messageId, extractorVersion: "m219-v1",
+      throughMessageIdInclusive: f.messageId, extractorVersion: TEST_EXTRACTOR_VERSION,
       observationPublicationVersion: 2,
       status: "completed", attemptCount: 1, operationCount: 0,
       completedAt: BASE, createdAt: BASE,
     }).returning({ id: roomJournalBatches.id });
-    f.recordIds.push(...Array.from({ length: 80 }, () => randomUUID()));
-    const encoder = new TextEncoder();
-    await db.transaction(async (tx) => {
-      await tx.insert(reflectionRecords).values(f.recordIds.map(recordId => ({
-        recordId,
-        lifecycle: "current" as const,
-        structuralHeight: 0,
-        producerPolicyVersion: "manual-journal-recovery-fixture-v1",
-        processingGeneration: 1,
-        payloadVersion: 1,
-        disposition: "available" as const,
-        createdAt: BASE,
-        updatedAt: BASE,
-      })));
-      await tx.insert(reflectionRecordPayloadRepresentations).values(
-        f.recordIds.map((recordId, index) => ({
-          recordId,
-          representation: "ordinary" as const,
-          representationGeneration: 1,
-          payloadVersion: 1,
-          plaintextPayloadBytes: encoder.encode(JSON.stringify({
-            statement: `Synthetic compaction fact ${index + 1} ${"x".repeat(520)}`,
-          })),
-          createdAt: BASE,
-        })),
-      );
-      await tx.insert(reflectionRecordPayloadRepresentationHeads).values(
-        f.recordIds.map(recordId => ({
-          recordId,
-          representation: "ordinary" as const,
-          currentRepresentationGeneration: 1,
-          updatedAt: BASE,
-        })),
-      );
-      await tx.execute(sql`
-        SELECT set_config('nautilo.stenographer_writer_version', '2', true)
-      `);
-      await tx.insert(roomEvents).values(f.recordIds.map((recordId, index) => ({
-        id: recordId,
-        roomId: f.roomId,
-        sequence: index + 1,
-        kind: "fact" as const,
-        statement: null,
-        status: "active" as const,
-        sourceMessageIds: [f.messageId],
-        sourceBatchId: sourceBatch!.id,
-        batchLocalOrdinal: index,
-        extractorVersion: "m219-v1",
-        projectionKind: "native" as const,
-        recordId,
-        nativeAttachedAt: BASE,
-        createdAt: BASE,
-      })));
-    });
+    await addNativeCompactionEvents(f, sourceBatch!.id, 1, 80);
     const dueAt = new Date(Date.now() - 60_000);
     await db.update(roomJournalState).set({ compactionDueAt: dueAt })
       .where(eq(roomJournalState.roomId, f.roomId));
@@ -766,6 +778,18 @@ describe("manual Journal recovery on PostgreSQL", () => {
       compactionAcceptedModelBinding: null,
       compactionAcceptedPlan: null,
     }).where(eq(roomJournalState.roomId, f.roomId));
+    const beforeFailure = new Date(failedAt.getTime() - 1);
+    expect(await requestManualJournalRecovery({
+      db,
+      now: new Date(failedAt.getTime() + 1_000),
+      observedThrough: beforeFailure,
+      authorizedBy: f.userId,
+      modelId: RECOVERY_MODEL,
+    })).toEqual({ queued: 0, held: 0 });
+    expect(await db.select({
+      plan: roomJournalState.compactionAcceptedPlan,
+    }).from(roomJournalState).where(eq(roomJournalState.roomId, f.roomId)))
+      .toEqual([{ plan: null }]);
     const unrelatedWorkId = `${claim.modelOperationId}:unrelated`;
     await db.update(llmUsageEvents).set({
       metadata: { operationId: unrelatedWorkId },
@@ -783,6 +807,10 @@ describe("manual Journal recovery on PostgreSQL", () => {
       eq(roomJournalModelRecoveries.roomId, f.roomId),
       eq(roomJournalModelRecoveries.workKind, "compaction"),
     ))).toHaveLength(0);
+    expect(await db.select({
+      plan: roomJournalState.compactionAcceptedPlan,
+    }).from(roomJournalState).where(eq(roomJournalState.roomId, f.roomId)))
+      .toEqual([{ plan: null }]);
     await db.update(llmUsageEvents).set({
       metadata: { operationId: claim.modelOperationId },
     }).where(and(
@@ -810,6 +838,8 @@ describe("manual Journal recovery on PostgreSQL", () => {
     ));
     expect(queuedRecovery?.workId).toBe(claim.modelOperationId);
     const recoveredAt = new Date(failedAt.getTime() + 2_000);
+    expect((await compactionCandidateRooms(db, recoveredAt))
+      .map((candidate) => candidate.roomId)).toContain(f.roomId);
     const recovered = await tryClaimCompactionRoom(db, f.roomId, recoveredAt, 1);
     expect(recovered?.manualModelRecoveryId).toBeString();
     const reboundOnce = await tryClaimCompactionRoom(
@@ -909,6 +939,80 @@ describe("manual Journal recovery on PostgreSQL", () => {
     expect(rearmed?.manualModelRecoveryId).toBeString();
     expect(rearmed?.manualModelRecoveryId)
       .not.toBe(recovered?.manualModelRecoveryId);
+  }, 30_000);
+
+  test("defers a drifted legacy compaction grant so another Room gets a turn", async () => {
+    const f = await fixture("drifted-legacy-compaction");
+    const other = await fixture("compaction-fairness");
+    const [sourceBatch] = await db.insert(roomJournalBatches).values({
+      roomId: f.roomId,
+      fromMessageIdExclusive: 0,
+      throughMessageIdInclusive: f.messageId,
+      extractorVersion: TEST_EXTRACTOR_VERSION,
+      observationPublicationVersion: 2,
+      status: "completed",
+      attemptCount: 1,
+      operationCount: 0,
+      completedAt: BASE,
+      createdAt: BASE,
+    }).returning({ id: roomJournalBatches.id });
+    await addNativeCompactionEvents(f, sourceBatch!.id, 1, 80);
+    const failedAt = new Date(Date.now() - 20_000);
+    const dueAt = new Date(failedAt.getTime() - 1_000);
+    await db.update(roomJournalState).set({
+      compactionDueAt: dueAt,
+      compactionFailureCount: 1,
+      lastCompactionErrorCode: "provider_outcome_unknown",
+      lastCompactionErrorAt: failedAt,
+      lastCompactionErrorAttempt: 1,
+      lastCompactionErrorModelId: MODEL,
+    }).where(eq(roomJournalState.roomId, f.roomId));
+    const coordinates = await db.transaction(tx =>
+      resolveCurrentOrdinaryCompactionCoordinates(tx, f.roomId));
+    if (!coordinates) throw new Error("expected legacy compaction coordinates");
+    await recordUnknownAttempt({
+      roomId: f.roomId,
+      callType: "room_event_compaction",
+      operationId: coordinates.workId,
+      modelId: MODEL,
+      at: failedAt,
+    });
+    const authorizedAt = new Date(failedAt.getTime() + 1_000);
+    expect(await requestManualJournalRecovery({
+      db,
+      now: authorizedAt,
+      observedThrough: failedAt,
+      authorizedBy: f.userId,
+      modelId: RECOVERY_MODEL,
+    })).toEqual({ queued: 1, held: 0 });
+
+    await db.update(roomJournalState).set({
+      compactionDueAt: new Date(dueAt.getTime() + 1),
+    }).where(eq(roomJournalState.roomId, other.roomId));
+    await addNativeCompactionEvents(f, sourceBatch!.id, 81, 1);
+    const claimAt = new Date(authorizedAt.getTime() + 1_000);
+    expect((await compactionCandidateRooms(db, claimAt, 1))
+      .map(candidate => candidate.roomId)).toEqual([f.roomId]);
+    expect(await tryClaimCompactionRoom(db, f.roomId, claimAt)).toBeNull();
+
+    const [deferred] = await db.select({
+      binding: roomJournalState.compactionAcceptedModelBinding,
+      plan: roomJournalState.compactionAcceptedPlan,
+      retryAfter: roomJournalState.compactionRetryAfter,
+    }).from(roomJournalState).where(eq(roomJournalState.roomId, f.roomId));
+    expect(deferred?.binding).toBeNull();
+    expect(deferred?.plan).toBeNull();
+    expect(deferred?.retryAfter?.getTime()).toBeGreaterThan(claimAt.getTime());
+    const [grant] = await db.select({
+      spentAt: roomJournalModelRecoveries.spentAt,
+    }).from(roomJournalModelRecoveries).where(and(
+      eq(roomJournalModelRecoveries.roomId, f.roomId),
+      eq(roomJournalModelRecoveries.workKind, "compaction"),
+    ));
+    expect(grant?.spentAt).toBeNull();
+    const afterDeferredRetry = new Date(deferred!.retryAfter!.getTime() + 1);
+    expect((await compactionCandidateRooms(db, afterDeferredRetry, 1))
+      .map(candidate => candidate.roomId)).toEqual([other.roomId]);
   }, 30_000);
 
   test("requires exact service receipts for legacy work and revalidates extraction access after a null-binding crash", async () => {

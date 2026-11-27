@@ -24,6 +24,7 @@ const addedWriters = [
   "update|public.reflection_record_semantic_work|packages/reflection-bridge/src/server/postgres-semantic-work-store.ts#saveOrganizerProposalCheckpoints:update:public.reflection_record_semantic_work:1",
   "update|public.room_journal_model_recoveries|packages/runtime/src/stenographer/repository.ts#tryClaimCompactionRoom:update:public.room_journal_model_recoveries:1",
   "update|public.room_journal_state|packages/runtime/src/stenographer/repository.ts#tryClaimCompactionRoom:update:public.room_journal_state:5",
+  "update|public.room_journal_state|packages/runtime/src/stenographer/repository.ts#tryClaimCompactionRoom:update:public.room_journal_state:6",
   "update|public.room_journal_batches|packages/runtime/src/stenographer/repository.ts#tryClaimRoom:update:public.room_journal_batches:2",
   "update|public.room_journal_model_recoveries|packages/runtime/src/stenographer/repository.ts#tryClaimRoom:update:public.room_journal_model_recoveries:1",
   "insert|public.memory_recovery_runs|packages/server/src/lib/manual-memory-recovery.ts#request:insert:public.memory_recovery_runs:1",

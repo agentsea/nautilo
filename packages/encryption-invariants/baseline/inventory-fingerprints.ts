@@ -78,15 +78,15 @@ export const MIGRATION_TREE_BASELINE = {
 // rotation update is removed, and the canonical transcript rebuild insert
 // moves into its shared typed helper, for a net four inserts and sixteen
 // updates. Delete and unresolved inventories do not change.
-// Page completion, lock-contention checkpoints, and binding a recovered legacy
-// compaction add three metadata-only updates.
+// Page completion, lock-contention checkpoints, binding a legacy compaction,
+// and deferring its next probe after source drift add four metadata-only updates.
 export const DATABASE_WRITER_BASELINE = {
-  "count": 1696,
+  "count": 1697,
   "insert": 539,
-  "update": 946,
+  "update": 947,
   "delete": 193,
   "unresolved": 18,
-  "sha256": "dbc1d8f4d3827703722c6cb20a8db6ba4190299f66ba368032848c2b10d949da"
+  "sha256": "d7c6cfdfe5ac6c3bdb5f8f8dd8f88aba672b14ace5976255e1959c89a6118ea1"
 } as const;
 
 /**

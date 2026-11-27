@@ -2166,6 +2166,51 @@ export async function tryClaimCompactionRoom(
         )).limit(1)
           .for("update", { of: roomJournalModelRecoveries });
     if (claimingFreshRecovery
+      && manualRecovery === undefined
+      && acceptedPlan === null
+      && state.compaction_accepted_model_binding === null
+      && state.last_compaction_error_code === "provider_outcome_unknown"
+      && state.last_compaction_error_at !== null) {
+      const [driftedLegacyRecovery] = await tx.select({
+        id: roomJournalModelRecoveries.id,
+      }).from(roomJournalModelRecoveries).where(and(
+        eq(roomJournalModelRecoveries.roomId, roomId),
+        eq(roomJournalModelRecoveries.workKind, "compaction"),
+        ne(roomJournalModelRecoveries.workId, modelOperationId),
+        eq(roomJournalModelRecoveries.rebuildGeneration, rebuildGeneration),
+        eq(roomJournalModelRecoveries.observedAttempt, lastCompactionErrorAttempt),
+        eq(
+          roomJournalModelRecoveries.observedFailureAt,
+          asDate(state.last_compaction_error_at),
+        ),
+        isNull(roomJournalModelRecoveries.spentAt),
+        reclaimingUnspentRecovery
+          ? and(
+              eq(
+                roomJournalModelRecoveries.claimLeaseToken,
+                state.compaction_lease_token!,
+              ),
+              isNotNull(roomJournalModelRecoveries.claimedAt),
+              lte(roomJournalModelRecoveries.claimedAt, now),
+            )
+          : and(
+              isNull(roomJournalModelRecoveries.claimLeaseToken),
+              isNull(roomJournalModelRecoveries.claimedAt),
+            ),
+      )).limit(1).for("update", { of: roomJournalModelRecoveries });
+      if (driftedLegacyRecovery !== undefined) {
+        await tx.update(roomJournalState).set({
+          compactionRetryAfter: new Date(
+            now.getTime() + retryDelayMs(Math.max(
+              1,
+              asNumber(state.compaction_failure_count),
+            )),
+          ),
+          updatedAt: now,
+        }).where(eq(roomJournalState.roomId, roomId));
+      }
+    }
+    if (claimingFreshRecovery
       && manualRecovery === undefined) return null;
     if (legacyMissingCompactionBinding && manualRecovery === undefined) {
       return null;
@@ -2273,8 +2318,27 @@ export async function compactionCandidateRooms(
       eq(roomJournalModelRecoveries.workKind, "compaction"),
       eq(roomJournalModelRecoveries.rebuildGeneration, roomJournalState.rebuildGeneration),
       eq(roomJournalModelRecoveries.observedAttempt, roomJournalState.lastCompactionErrorAttempt),
-      eq(roomJournalModelRecoveries.workId, sql<string>`${roomJournalState.compactionAcceptedPlan}->>'operationId'`),
       isNull(roomJournalModelRecoveries.spentAt),
+      or(
+        eq(roomJournalModelRecoveries.workId, sql<string>`${roomJournalState.compactionAcceptedPlan}->>'operationId'`),
+        and(
+          isNull(roomJournalState.compactionAcceptedPlan),
+          isNull(roomJournalState.compactionAcceptedModelBinding),
+          eq(roomJournalState.lastCompactionErrorCode, "provider_outcome_unknown"),
+          eq(roomJournalModelRecoveries.observedFailureAt, roomJournalState.lastCompactionErrorAt),
+          or(
+            and(
+              isNull(roomJournalModelRecoveries.claimLeaseToken),
+              isNull(roomJournalModelRecoveries.claimedAt),
+            ),
+            and(
+              isNotNull(roomJournalModelRecoveries.claimLeaseToken),
+              isNotNull(roomJournalModelRecoveries.claimedAt),
+              eq(roomJournalModelRecoveries.claimLeaseToken, roomJournalState.compactionLeaseToken),
+            ),
+          ),
+        ),
+      ),
     ));
   const spentManualInvalidOutput = db.select({ one: sql`1` })
     .from(roomJournalModelRecoveries)
@@ -2326,7 +2390,16 @@ export async function compactionCandidateRooms(
       ),
     )
     .orderBy(
-      asc(roomJournalState.compactionDueAt),
+      asc(sql`CASE
+        WHEN ${roomJournalState.compactionAcceptedPlan} IS NULL
+          AND ${roomJournalState.compactionAcceptedModelBinding} IS NULL
+          AND ${roomJournalState.lastCompactionErrorCode} = 'provider_outcome_unknown'
+        THEN GREATEST(
+          ${roomJournalState.compactionDueAt},
+          COALESCE(${roomJournalState.compactionRetryAfter}, ${roomJournalState.compactionDueAt})
+        )
+        ELSE ${roomJournalState.compactionDueAt}
+      END`),
       asc(roomJournalState.roomId),
     )
     .limit(limit);
