@@ -198,12 +198,27 @@ async function recordUnknownAttempt(input: Readonly<{
   operationId: string;
   modelId: string;
   at: Date;
+  fundingKind?: "personal" | "server" | "service" | null;
+  payerHumanId?: string;
 }>): Promise<void> {
+  const fundingKind = input.fundingKind === undefined
+    ? "service"
+    : input.fundingKind;
   await db.insert(llmUsageEvents).values({
     roomId: input.roomId, callType: input.callType, provider: "fixture",
-    model: input.modelId, providerRoute: "fixture", fundingKind: "service",
-    endpoint: "/v1/chat/completions", attemptOutcome: "succeeded",
-    costState: "estimated", estimatedCostUsd: "0.01", occurredAt: input.at,
+    model: input.modelId,
+    providerRoute: fundingKind === null ? null : "fixture",
+    fundingKind,
+    payerHumanId: fundingKind === "personal" ? input.payerHumanId : null,
+    credentialId: fundingKind === "personal" ? randomUUID() : null,
+    credentialRevision: fundingKind === "personal" ? 1 : null,
+    ...(fundingKind === null ? {} : {
+      endpoint: "/v1/chat/completions",
+      attemptOutcome: "succeeded" as const,
+      costState: "estimated" as const,
+      estimatedCostUsd: "0.01",
+    }),
+    occurredAt: input.at,
     metadata: { operationId: input.operationId },
   });
 }
@@ -250,7 +265,7 @@ describe("manual Journal recovery on PostgreSQL", () => {
     expect((rejected as Error).message).toBe("Journal recovery authorizer is unavailable");
   });
 
-  test("authorizes, deduplicates, claims, spends, and observation-fences extraction", async () => {
+  test("recovers a legacy null-binding extraction and observation-fences it", async () => {
     const f = await fixture("extraction");
     const claimedAt = new Date(Date.now() - 60_000);
     const claim = await tryClaimRoom(db, f.roomId, claimedAt);
@@ -263,6 +278,9 @@ describe("manual Journal recovery on PostgreSQL", () => {
       operationId: claim.batchId, modelId: MODEL, at: failedAt,
     });
     await failExtraction({ claim, errorCode: "provider_outcome_unknown", modelId: MODEL, db, now: failedAt });
+    await db.update(roomJournalBatches).set({
+      acceptedModelBinding: null,
+    }).where(eq(roomJournalBatches.id, claim.batchId));
 
     const request = { db, now: new Date(failedAt.getTime() + 1_000), observedThrough: failedAt,
       authorizedBy: f.userId, modelId: RECOVERY_MODEL };
@@ -277,6 +295,17 @@ describe("manual Journal recovery on PostgreSQL", () => {
         extractionModelExposureDependencies(recovered as ExtractionClaim),
       );
     expect(admitted.modelId).toBe(RECOVERY_MODEL);
+    const [canonicallyBoundBatch] = await db.select({
+      binding: roomJournalBatches.acceptedModelBinding,
+    }).from(roomJournalBatches).where(eq(roomJournalBatches.id, claim.batchId));
+    expect(canonicallyBoundBatch?.binding).toMatchObject({
+      version: 1,
+      kind: "service",
+      role: "memorySummarization",
+      modelId: RECOVERY_MODEL,
+    });
+    expect(canonicallyBoundBatch?.binding?.inputCommitment)
+      .toMatch(/^hmac-sha256:[A-Za-z0-9_-]{43}$/);
     await admitted.invoke("synthetic prompt");
     expect(calls).toBe(1);
     const [spent] = await db.select().from(roomJournalModelRecoveries).where(eq(
@@ -659,7 +688,7 @@ describe("manual Journal recovery on PostgreSQL", () => {
     });
   }, 30_000);
 
-  test("claims and spends an exact compaction hold without publishing twice", async () => {
+  test("recovers a legacy null-binding compaction hold without publishing twice", async () => {
     const f = await fixture("compaction");
     const [sourceBatch] = await db.insert(roomJournalBatches).values({
       roomId: f.roomId, fromMessageIdExclusive: 0,
@@ -733,11 +762,53 @@ describe("manual Journal recovery on PostgreSQL", () => {
     await recordUnknownAttempt({ roomId: f.roomId, callType: "room_event_compaction",
       operationId: claim.modelOperationId, modelId: MODEL, at: failedAt });
     await failCompaction({ claim, errorCode: "provider_outcome_unknown", modelId: MODEL, db, now: failedAt });
+    await db.update(roomJournalState).set({
+      compactionAcceptedModelBinding: null,
+      compactionAcceptedPlan: null,
+    }).where(eq(roomJournalState.roomId, f.roomId));
+    const unrelatedWorkId = `${claim.modelOperationId}:unrelated`;
+    await db.update(llmUsageEvents).set({
+      metadata: { operationId: unrelatedWorkId },
+    }).where(and(
+      eq(llmUsageEvents.roomId, f.roomId),
+      eq(llmUsageEvents.callType, "room_event_compaction"),
+      eq(sql<string>`${llmUsageEvents.metadata}->>'operationId'`, claim.modelOperationId),
+    ));
+    const mismatched = await requestManualJournalRecovery({
+      db, now: new Date(failedAt.getTime() + 1_000), observedThrough: failedAt,
+      authorizedBy: f.userId, modelId: RECOVERY_MODEL,
+    });
+    expect(mismatched.held).toBeGreaterThanOrEqual(1);
+    expect(await db.select().from(roomJournalModelRecoveries).where(and(
+      eq(roomJournalModelRecoveries.roomId, f.roomId),
+      eq(roomJournalModelRecoveries.workKind, "compaction"),
+    ))).toHaveLength(0);
+    await db.update(llmUsageEvents).set({
+      metadata: { operationId: claim.modelOperationId },
+    }).where(and(
+      eq(llmUsageEvents.roomId, f.roomId),
+      eq(llmUsageEvents.callType, "room_event_compaction"),
+      eq(sql<string>`${llmUsageEvents.metadata}->>'operationId'`, unrelatedWorkId),
+    ));
+    await recordUnknownAttempt({
+      roomId: f.roomId,
+      callType: "room_event_compaction",
+      operationId: unrelatedWorkId,
+      modelId: MODEL,
+      at: new Date(failedAt.getTime() + 500),
+    });
     const result = await requestManualJournalRecovery({
       db, now: new Date(failedAt.getTime() + 1_000), observedThrough: failedAt,
       authorizedBy: f.userId, modelId: RECOVERY_MODEL,
     });
     expect(result).toEqual({ queued: 1, held: 0 });
+    const [queuedRecovery] = await db.select({
+      workId: roomJournalModelRecoveries.workId,
+    }).from(roomJournalModelRecoveries).where(and(
+      eq(roomJournalModelRecoveries.roomId, f.roomId),
+      eq(roomJournalModelRecoveries.workKind, "compaction"),
+    ));
+    expect(queuedRecovery?.workId).toBe(claim.modelOperationId);
     const recoveredAt = new Date(failedAt.getTime() + 2_000);
     const recovered = await tryClaimCompactionRoom(db, f.roomId, recoveredAt, 1);
     expect(recovered?.manualModelRecoveryId).toBeString();
@@ -758,6 +829,10 @@ describe("manual Journal recovery on PostgreSQL", () => {
     expect(reboundTwice?.manualModelRecoveryId)
       .toBe(recovered?.manualModelRecoveryId);
     expect(reboundTwice?.leaseToken).not.toBe(reboundOnce?.leaseToken);
+    const [legacyClaimedState] = await db.select({
+      binding: roomJournalState.compactionAcceptedModelBinding,
+    }).from(roomJournalState).where(eq(roomJournalState.roomId, f.roomId));
+    expect(legacyClaimedState?.binding).toBeNull();
     let calls = 0;
     const adapter = createOrdinaryStenographerIntentAdapter({
       ...funding(
@@ -780,6 +855,17 @@ describe("manual Journal recovery on PostgreSQL", () => {
       now: new Date(recoveredAt.getTime() + 2),
       signal: new AbortController().signal,
     });
+    const [canonicallyBoundState] = await db.select({
+      binding: roomJournalState.compactionAcceptedModelBinding,
+    }).from(roomJournalState).where(eq(roomJournalState.roomId, f.roomId));
+    expect(canonicallyBoundState?.binding).toMatchObject({
+      version: 1,
+      kind: "service",
+      role: "memorySummarization",
+      modelId: RECOVERY_MODEL,
+    });
+    expect(canonicallyBoundState?.binding?.inputCommitment)
+      .toMatch(/^hmac-sha256:[A-Za-z0-9_-]{43}$/);
     expect(await prepared.publish({ revalidationToken: 1 }))
       .toMatchObject({ status: "failed", processed: true });
     expect(calls).toBe(1);
@@ -823,5 +909,197 @@ describe("manual Journal recovery on PostgreSQL", () => {
     expect(rearmed?.manualModelRecoveryId).toBeString();
     expect(rearmed?.manualModelRecoveryId)
       .not.toBe(recovered?.manualModelRecoveryId);
+  }, 30_000);
+
+  test("requires exact service receipts for legacy work and revalidates extraction access after a null-binding crash", async () => {
+    type Receipt = Readonly<{
+      modelId: string;
+      fundingKind: "personal" | "server" | "service" | null;
+      occurredAfterFailure?: boolean;
+    }>;
+    const prepare = async (label: string, receipts: readonly Receipt[]) => {
+      const f = await fixture(`legacy-receipt-${label}`);
+      const claimedAt = new Date(Date.now() - 20_000);
+      const claim = await tryClaimRoom(db, f.roomId, claimedAt);
+      if (!claim) throw new Error("expected legacy extraction claim");
+      const failedAt = new Date(claimedAt.getTime() + 1_000);
+      for (const receipt of receipts) {
+        await recordUnknownAttempt({
+          roomId: f.roomId,
+          callType: "room_stenographer",
+          operationId: claim.batchId,
+          modelId: receipt.modelId,
+          at: receipt.occurredAfterFailure
+            ? new Date(failedAt.getTime() + 1)
+            : failedAt,
+          fundingKind: receipt.fundingKind,
+          payerHumanId: f.userId,
+        });
+      }
+      await failExtraction({
+        claim,
+        errorCode: "provider_outcome_unknown",
+        modelId: MODEL,
+        db,
+        now: failedAt,
+      });
+      return { f, claim, failedAt };
+    };
+
+    const exact = await prepare("exact", [
+      { modelId: MODEL, fundingKind: "service" },
+    ]);
+    const personal = await prepare("personal", [
+      { modelId: MODEL, fundingKind: "personal" },
+    ]);
+    const mixed = await prepare("mixed", [
+      { modelId: MODEL, fundingKind: "service" },
+      { modelId: MODEL, fundingKind: "personal" },
+    ]);
+    const absent = await prepare("absent", []);
+    const unknownFunding = await prepare("unknown-funding", [
+      { modelId: MODEL, fundingKind: null },
+    ]);
+    const otherModel = await prepare("other-model", [
+      { modelId: "fixture:other-service", fundingKind: "service" },
+    ]);
+    const lateOnly = await prepare("late-only", [{
+      modelId: MODEL,
+      fundingKind: "service",
+      occurredAfterFailure: true,
+    }]);
+    const all = [
+      exact,
+      personal,
+      mixed,
+      absent,
+      unknownFunding,
+      otherModel,
+      lateOnly,
+    ];
+    const prepareCompactionReceiptFailure = async (
+      label: string,
+      receipts: readonly Receipt[],
+    ) => {
+      const f = await fixture(`legacy-compaction-receipt-${label}`);
+      const failedAt = new Date(Date.now() - 10_000);
+      const workId = `legacy-compaction:${f.roomId}:${label}`;
+      for (const receipt of receipts) {
+        await recordUnknownAttempt({
+          roomId: f.roomId,
+          callType: "room_event_compaction",
+          operationId: workId,
+          modelId: receipt.modelId,
+          at: receipt.occurredAfterFailure
+            ? new Date(failedAt.getTime() + 1)
+            : failedAt,
+          fundingKind: receipt.fundingKind,
+          payerHumanId: f.userId,
+        });
+      }
+      await db.update(roomJournalState).set({
+        compactionDueAt: failedAt,
+        compactionFailureCount: 1,
+        lastCompactionErrorCode: "provider_outcome_unknown",
+        lastCompactionErrorAt: failedAt,
+        lastCompactionErrorAttempt: 1,
+        lastCompactionErrorModelId: MODEL,
+      }).where(eq(roomJournalState.roomId, f.roomId));
+      return { f, failedAt };
+    };
+    const rejectedCompactions = [
+      await prepareCompactionReceiptFailure("personal", [
+        { modelId: MODEL, fundingKind: "personal" },
+      ]),
+      await prepareCompactionReceiptFailure("mixed", [
+        { modelId: MODEL, fundingKind: "service" },
+        { modelId: MODEL, fundingKind: "personal" },
+      ]),
+      await prepareCompactionReceiptFailure("absent", []),
+      await prepareCompactionReceiptFailure("unknown-funding", [
+        { modelId: MODEL, fundingKind: null },
+      ]),
+      await prepareCompactionReceiptFailure("other-model", [
+        { modelId: "fixture:other-service", fundingKind: "service" },
+      ]),
+      await prepareCompactionReceiptFailure("late-only", [{
+        modelId: MODEL,
+        fundingKind: "service",
+        occurredAfterFailure: true,
+      }]),
+    ];
+    const observedThrough = new Date(Math.max(
+      ...all.map((item) => item.failedAt.getTime()),
+      ...rejectedCompactions.map((item) => item.failedAt.getTime()),
+    ));
+    const authorizedAt = new Date(observedThrough.getTime() + 1_000);
+    const receiptAssessment = await requestManualJournalRecovery({
+      db,
+      now: authorizedAt,
+      observedThrough,
+      authorizedBy: exact.f.userId,
+      modelId: RECOVERY_MODEL,
+    });
+    expect(receiptAssessment.held).toBeGreaterThanOrEqual(12);
+
+    const queued = await db.select({
+      roomId: roomJournalModelRecoveries.roomId,
+    }).from(roomJournalModelRecoveries).where(inArray(
+      roomJournalModelRecoveries.roomId,
+      all.map((item) => item.f.roomId),
+    ));
+    expect(queued.map((row) => row.roomId)).toEqual([exact.f.roomId]);
+    const rejectedCompactionRecoveries = await db.select({
+      roomId: roomJournalModelRecoveries.roomId,
+    }).from(roomJournalModelRecoveries).where(inArray(
+      roomJournalModelRecoveries.roomId,
+      rejectedCompactions.map((item) => item.f.roomId),
+    ));
+    expect(rejectedCompactionRecoveries).toHaveLength(0);
+
+    const firstClaimAt = new Date(authorizedAt.getTime() + 1_000);
+    const first = await tryClaimRoom(
+      db,
+      exact.f.roomId,
+      firstClaimAt,
+      1,
+    );
+    if (!first?.manualModelRecoveryId) {
+      throw new Error("expected exact legacy recovery claim");
+    }
+    const reclaimed = await tryClaimRoom(
+      db,
+      exact.f.roomId,
+      new Date(firstClaimAt.getTime() + 1),
+      120_000,
+    );
+    expect(reclaimed?.manualModelRecoveryId)
+      .toBe(first.manualModelRecoveryId);
+    expect(reclaimed?.leaseToken).not.toBe(first.leaseToken);
+    const [stillLegacy] = await db.select({
+      binding: roomJournalBatches.acceptedModelBinding,
+    }).from(roomJournalBatches).where(eq(
+      roomJournalBatches.id,
+      exact.claim.batchId,
+    ));
+    expect(stillLegacy?.binding).toBeNull();
+
+    await db.update(users).set({ disabledAt: new Date() })
+      .where(eq(users.id, exact.f.userId));
+    const rejection = await funding(
+      () => async () => "must not dispatch",
+      exact.f.userId,
+    ).admitExtractionModel(
+      reclaimed as ExtractionClaim,
+      extractionModelExposureDependencies(reclaimed as ExtractionClaim),
+    ).then(() => undefined, (error: unknown) => error);
+    expect(rejection).toBeInstanceOf(Error);
+    const [unspent] = await db.select({
+      spentAt: roomJournalModelRecoveries.spentAt,
+    }).from(roomJournalModelRecoveries).where(eq(
+      roomJournalModelRecoveries.id,
+      first.manualModelRecoveryId,
+    ));
+    expect(unspent?.spentAt).toBeNull();
   }, 30_000);
 });

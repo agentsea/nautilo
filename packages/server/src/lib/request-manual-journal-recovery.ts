@@ -22,6 +22,7 @@ import {
   users,
   type DirectDatabase,
 } from "@nautilo/db";
+import { resolveCurrentOrdinaryCompactionCoordinates } from "@nautilo/runtime";
 import { parseMemoryOperationBinding } from "@nautilo/types";
 
 export interface ManualJournalRecoveryInput {
@@ -82,10 +83,25 @@ function serviceBinding(value: unknown) {
 async function hasOnlyServiceAttempts(
   tx: Pick<DirectDatabase, "select">,
   candidate: Candidate,
+  exactModelId?: string,
+  observedAtOrBefore?: Date,
 ): Promise<boolean> {
-  const rows = await tx.select({
-    fundingKind: llmUsageEvents.fundingKind,
-    payerHumanId: llmUsageEvents.payerHumanId,
+  const [row] = await tx.select({
+    proven: sql<boolean>`count(*) > 0
+      AND coalesce(bool_or(coalesce(
+        ${observedAtOrBefore === undefined
+          ? sql`true`
+          : lte(llmUsageEvents.occurredAt, observedAtOrBefore)},
+        false
+      )), false)
+      AND coalesce(bool_and(coalesce(
+      ${llmUsageEvents.fundingKind} IN ('service', 'server')
+      AND ${llmUsageEvents.payerHumanId} IS NULL
+      AND ${exactModelId === undefined
+        ? sql`true`
+        : eq(llmUsageEvents.model, exactModelId)},
+      false
+    )), false)`,
   }).from(llmUsageEvents).where(and(
     eq(llmUsageEvents.roomId, candidate.roomId),
     eq(
@@ -96,9 +112,7 @@ async function hasOnlyServiceAttempts(
     ),
     eq(sql<string>`${llmUsageEvents.metadata}->>'operationId'`, candidate.workId),
   ));
-  return rows.length > 0 && rows.every((row) =>
-    (row.fundingKind === "service" || row.fundingKind === "server")
-    && row.payerHumanId === null);
+  return row?.proven === true;
 }
 
 async function queueCandidate(
@@ -157,8 +171,21 @@ async function queueCandidate(
       && state.conversionLeaseExpiresAt !== null
       && state.conversionLeaseExpiresAt > input.now;
     if (extractionActive || compactionActive || conversionActive) return "progressing";
+    if (candidate.workKind === "compaction" && candidate.workId === "") {
+      const coordinates = await resolveCurrentOrdinaryCompactionCoordinates(
+        tx,
+        candidate.roomId,
+      );
+      if (coordinates === null
+        || coordinates.rebuildGeneration !== candidate.rebuildGeneration) {
+        return "held";
+      }
+      candidate = { ...candidate, workId: coordinates.workId };
+    }
 
     let binding: ReturnType<typeof serviceBinding>;
+    let acceptedBindingWasNull = false;
+    let failureCode: "provider_outcome_unknown" | "invalid_output";
     let failureAt: Date | null;
     let failureModelId: string | null;
     if (candidate.workKind === "extraction") {
@@ -206,6 +233,8 @@ async function queueCandidate(
         if (!spentRecovery) return "held";
       }
       binding = serviceBinding(batch.acceptedModelBinding);
+      acceptedBindingWasNull = batch.acceptedModelBinding === null;
+      failureCode = batch.errorCode;
       failureAt = batch.lastErrorAt;
       failureModelId = batch.lastErrorModelId;
       const currentCursor = batch.lane === "live"
@@ -241,9 +270,9 @@ async function queueCandidate(
         || state.compactionErrorAttempt !== candidate.observedAttempt
         || state.compactionErrorAt?.getTime() !== candidate.observedFailureAt.getTime()
         || state.compactionErrorModelId === null
-        || plan === null || plan.owner !== "ordinary"
-        || plan.operationId !== candidate.workId
-        || plan.rebuildGeneration !== state.rebuildGeneration) return "held";
+        || (plan !== null && (plan.owner !== "ordinary"
+          || plan.operationId !== candidate.workId
+          || plan.rebuildGeneration !== state.rebuildGeneration))) return "held";
       if (state.compactionErrorCode === "invalid_output") {
         const [spentRecovery] = state.compactionErrorAt === null
           || state.compactionErrorModelId === null
@@ -268,6 +297,8 @@ async function queueCandidate(
         if (!spentRecovery) return "held";
       }
       binding = serviceBinding(state.compactionBinding);
+      acceptedBindingWasNull = state.compactionBinding === null;
+      failureCode = state.compactionErrorCode;
       failureAt = state.compactionErrorAt;
       failureModelId = state.compactionErrorModelId;
       const [cryptoPublication] = await tx.select({
@@ -278,9 +309,19 @@ async function queueCandidate(
       )).limit(1);
       if (cryptoPublication) return "held";
     }
-    if (failureAt === null || binding === null
-      || binding.modelId !== failureModelId
-      || !await hasOnlyServiceAttempts(tx, candidate)) return "held";
+    if (failureAt === null || failureModelId === null) return "held";
+    const canonicalServiceAttempt = binding !== null
+      && binding.modelId === failureModelId
+      && await hasOnlyServiceAttempts(tx, candidate);
+    const legacyServiceAttempt = acceptedBindingWasNull
+      && failureCode === "provider_outcome_unknown"
+      && await hasOnlyServiceAttempts(
+        tx,
+        candidate,
+        failureModelId,
+        failureAt,
+      );
+    if (!canonicalServiceAttempt && !legacyServiceAttempt) return "held";
 
     const [prior] = await tx.select({
       spentAt: roomJournalModelRecoveries.spentAt,
@@ -402,8 +443,9 @@ export async function requestManualJournalRecovery(
       sourceBatchId: row.workId, rebuildGeneration: row.rebuildGeneration,
       observedAttempt: row.observedAttempt, observedFailureAt: row.observedFailureAt,
     }]),
-    ...compaction.flatMap((row) => row.observedFailureAt === null || row.plan === null ? [] : [{
-      roomId: row.roomId, workKind: "compaction" as const, workId: row.plan.operationId,
+    ...compaction.flatMap((row) => row.observedFailureAt === null ? [] : [{
+      roomId: row.roomId, workKind: "compaction" as const,
+      workId: row.plan?.operationId ?? "",
       sourceBatchId: null, rebuildGeneration: row.rebuildGeneration,
       observedAttempt: row.observedAttempt, observedFailureAt: row.observedFailureAt,
     }]),

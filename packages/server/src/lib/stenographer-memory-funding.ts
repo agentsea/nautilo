@@ -7,7 +7,7 @@ import { createRoomSideModelInvoker, extractionModelExposureDependencies, compac
   StenographerInputAuthorityUnavailableError,
   type ExtractionClaim, type CompactionClaim, type AdmittedStenographerModel } from "@nautilo/runtime";
 import type { DurableModelExposureDependency, DurableRecordEnvelope } from "@nautilo/reflection/durable";
-import type { MemoryOperationBinding } from "@nautilo/types";
+import { parseMemoryOperationBinding, type MemoryOperationBinding } from "@nautilo/types";
 import { openMemoryOperation, type OpenMemoryOperationInput } from "./personal-memory-operation";
 import { getCurrentProtectedMemoryEvidence } from "./protected-memory-model-evidence";
 
@@ -119,12 +119,48 @@ export function createStenographerMemoryFunding(input: Common) {
     const currentLease = () => and(eq(roomJournalState.roomId, claim.roomId),
       eq(extraction ? roomJournalState.leaseToken : roomJournalState.compactionLeaseToken, claim.leaseToken),
       gt(extraction ? roomJournalState.leaseExpiresAt : roomJournalState.compactionLeaseExpiresAt, new Date()));
+    const manualRecoveryId = "manualModelRecoveryId" in claim
+      ? claim.manualModelRecoveryId
+      : undefined;
+    const manualRecoveryTarget = async (
+      tx: Parameters<Parameters<DirectDatabase["transaction"]>[0]>[0],
+    ): Promise<string | null> => {
+      if (manualRecoveryId === undefined) return null;
+      const [recovery] = await tx.select({
+        targetModelId: roomJournalModelRecoveries.targetModelId,
+      }).from(roomJournalModelRecoveries).where(and(
+        eq(roomJournalModelRecoveries.id, manualRecoveryId),
+        eq(roomJournalModelRecoveries.roomId, claim.roomId),
+        eq(roomJournalModelRecoveries.workKind, stage),
+        eq(roomJournalModelRecoveries.workId, operationKey),
+        eq(roomJournalModelRecoveries.claimLeaseToken, claim.leaseToken),
+        isNull(roomJournalModelRecoveries.spentAt),
+      )).limit(1).for("update", { of: roomJournalModelRecoveries });
+      if (!recovery) {
+        throw new Error("Manual Journal recovery authorization changed");
+      }
+      return recovery.targetModelId;
+    };
+    const assertManualServiceBinding = (
+      value: MemoryOperationBinding,
+      targetModelId: string | null,
+    ) => {
+      if (targetModelId !== null
+        && (value.kind !== "service"
+          || value.role !== "memorySummarization"
+          || value.modelId !== targetModelId)) {
+        throw new Error("Manual Journal recovery binding changed");
+      }
+      return value;
+    };
     const assertCurrent = async () => {
       await input.assertAvailable();
       const lease = await input.db.select({ roomId: roomJournalState.roomId }).from(roomJournalState).where(currentLease()).limit(2);
       if (lease.length !== 1) throw new Error("Memory processing lease changed");
     };
-    const bind = (resolve: () => Promise<MemoryOperationBinding>) => input.db.transaction(async tx => {
+    const bind = (
+      resolve: (legacyServiceModelId?: string) => Promise<MemoryOperationBinding>,
+    ) => input.db.transaction(async tx => {
       const leases = await tx.select({ roomId: roomJournalState.roomId,
         accepted: roomJournalState.compactionAcceptedModelBinding,
         acceptedPlan: roomJournalState.compactionAcceptedPlan })
@@ -134,24 +170,49 @@ export function createStenographerMemoryFunding(input: Common) {
         const rows = await tx.select({ accepted: roomJournalBatches.acceptedModelBinding }).from(roomJournalBatches)
           .where(and(eq(roomJournalBatches.id, operationKey), eq(roomJournalBatches.roomId, claim.roomId), eq(roomJournalBatches.status, "running"))).for("update").limit(2);
         if (rows.length !== 1) throw new Error("Memory extraction batch changed");
-        if (rows[0]!.accepted !== null) return rows[0]!.accepted;
-        const accepted = await resolve();
+        const targetModelId = await manualRecoveryTarget(tx);
+        if (rows[0]!.accepted !== null) {
+          return assertManualServiceBinding(
+            parseMemoryOperationBinding(rows[0]!.accepted),
+            targetModelId,
+          );
+        }
+        const accepted = await (targetModelId === null
+          ? resolve()
+          : resolve(targetModelId));
+        assertManualServiceBinding(accepted, targetModelId);
         await tx.update(roomJournalBatches).set({ acceptedModelBinding: accepted }).where(eq(roomJournalBatches.id, operationKey));
         return accepted;
       }
       const acceptedPlan = "acceptedPlan" in claim
         ? claim.acceptedPlan
         : (() => { throw new TypeError("Memory compaction plan is invalid"); })();
+      const targetModelId = await manualRecoveryTarget(tx);
       if (leases[0]!.accepted !== null) {
         if (!sameCompactionPlan(leases[0]!.acceptedPlan, acceptedPlan)) {
           throw new Error("Memory compaction acceptance changed");
         }
-        return leases[0]!.accepted;
+        return assertManualServiceBinding(
+          parseMemoryOperationBinding(leases[0]!.accepted),
+          targetModelId,
+        );
       }
       if (leases[0]!.acceptedPlan !== null) {
-        throw new Error("Memory compaction acceptance is incoherent");
+        if (targetModelId === null
+          || !sameCompactionPlan(leases[0]!.acceptedPlan, acceptedPlan)) {
+          throw new Error("Memory compaction acceptance is incoherent");
+        }
+        const accepted = await resolve(targetModelId);
+        assertManualServiceBinding(accepted, targetModelId);
+        await tx.update(roomJournalState).set({
+          compactionAcceptedModelBinding: accepted,
+        }).where(currentLease());
+        return accepted;
       }
-      const accepted = await resolve();
+      const accepted = await (targetModelId === null
+        ? resolve()
+        : resolve(targetModelId));
+      assertManualServiceBinding(accepted, targetModelId);
       await tx.update(roomJournalState).set({
         compactionAcceptedModelBinding: accepted,
         compactionAcceptedPlan: acceptedPlan,
@@ -212,9 +273,6 @@ export function createStenographerMemoryFunding(input: Common) {
         throw new MemoryProviderOutcomeUnknownError();
       }
     }
-    const manualRecoveryId = "manualModelRecoveryId" in claim
-      ? claim.manualModelRecoveryId
-      : undefined;
     const invoke = (input.createInvoker ?? createRoomSideModelInvoker)({ modelId: admitted.modelId,
       ...(admitted.humanUserId === null ? {} : { userId: admitted.humanUserId }),
       roomId: claim.roomId, laneKey: `room:${claim.roomId}:${stage}`, operationId: operationKey,

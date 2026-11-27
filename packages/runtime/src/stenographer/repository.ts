@@ -1303,20 +1303,27 @@ export async function tryClaimRoom(
         eq(roomJournalBatches.status, "running"),
         eq(roomJournalBatches.attemptCount, batch.attempt_count),
       )).limit(1).for("update", { of: roomJournalBatches });
-      let accepted;
-      try {
-        accepted = parseMemoryOperationBinding(current?.binding);
-      } catch {
+      if (!current) {
         throw new Error("Manual Stenographer extraction recovery binding changed");
       }
-      if (accepted.kind !== "service" || accepted.role !== "memorySummarization") {
+      let accepted: ReturnType<typeof parseMemoryOperationBinding> | null = null;
+      if (current.binding !== null) {
+        try {
+          accepted = parseMemoryOperationBinding(current.binding);
+        } catch {
+          throw new Error("Manual Stenographer extraction recovery binding changed");
+        }
+      }
+      if (accepted !== null
+        && (accepted.kind !== "service"
+          || accepted.role !== "memorySummarization")) {
         throw new Error("Manual Stenographer extraction recovery binding changed");
       }
-      if (reclaimingUnspentRecovery) {
+      if (reclaimingUnspentRecovery && accepted !== null) {
         if (accepted.modelId !== manualRecovery.targetModelId) {
           throw new Error("Manual Stenographer extraction recovery binding changed");
         }
-      } else {
+      } else if (!reclaimingUnspentRecovery && accepted !== null) {
         await tx.update(roomJournalBatches).set({
           acceptedModelBinding: { ...accepted, modelId: manualRecovery.targetModelId },
         }).where(eq(roomJournalBatches.id, batch.id));
@@ -1762,6 +1769,67 @@ async function loadAllRoomEvents(
   }));
 }
 
+/**
+ * Reconstruct the exact current ordinary compaction identity without claiming
+ * a lease or mutating durable acceptance. Legacy rows created before funding
+ * bindings and accepted plans existed may use this as their recovery witness.
+ */
+export async function resolveCurrentOrdinaryCompactionCoordinates(
+  tx: JournalExecutor,
+  roomId: string,
+): Promise<Readonly<{
+  workId: string;
+  rebuildGeneration: number;
+}> | null> {
+  const [state] = await tx.select({
+    namespaceId: rooms.namespaceId,
+    rebuildGeneration: roomJournalState.rebuildGeneration,
+    rebuildRequestedAt: roomJournalState.rebuildRequestedAt,
+    acceptedBinding: roomJournalState.compactionAcceptedModelBinding,
+    acceptedPlan: roomJournalState.compactionAcceptedPlan,
+  }).from(roomJournalState)
+    .innerJoin(rooms, eq(rooms.id, roomJournalState.roomId))
+    .where(eq(roomJournalState.roomId, roomId))
+    .limit(1);
+  if (!state || state.rebuildRequestedAt !== null
+    || state.acceptedBinding !== null || state.acceptedPlan !== null) {
+    return null;
+  }
+  try {
+    const journal = await loadPromptJournal(tx, roomId, state.namespaceId);
+    const events = await loadAllRoomEvents(tx, roomId, state.namespaceId);
+    const planned = planJournalCompaction({
+      events,
+      rollups: journal.latestRollup ? [journal.latestRollup] : [],
+    });
+    if (!planned.ok || !planned.plan) return null;
+    const rebuildGeneration = state.rebuildGeneration;
+    return {
+      rebuildGeneration,
+      workId: ordinaryCompactionOperationId(
+        roomId,
+        rebuildGeneration,
+        journal.latestRollup?.id ?? null,
+        planned.plan,
+      ),
+    };
+  } catch (error) {
+    if (error instanceof StenographerSourceRepresentationUnavailableError) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+function ordinaryCompactionOperationId(
+  roomId: string,
+  rebuildGeneration: number,
+  previousRollupId: string | null,
+  plan: JournalCompactionPlan<EffectiveRoomEvent>,
+): string {
+  return `compaction:${roomId}:${rebuildGeneration}:${previousRollupId ?? "initial"}:${plan.throughEventSequence}:${plan.protectedTail.at(-1)?.sequence ?? plan.throughEventSequence}`;
+}
+
 function retryDelayMs(failureCount: number): number {
   return Math.min(15 * 60_000, 15_000 * 2 ** Math.max(0, failureCount - 1));
 }
@@ -1909,12 +1977,13 @@ export async function tryClaimCompactionRoom(
     if (state.last_compaction_error_code === "provider_outcome_unknown"
       && (state.last_compaction_error_attempt === null
         || state.last_compaction_error_attempt === undefined)) return null;
-    if (
-      (state.compaction_accepted_model_binding === null)
-        !== (state.compaction_accepted_plan === null)
-    ) {
+    if (state.compaction_accepted_model_binding !== null
+      && state.compaction_accepted_plan === null) {
       throw new Error("Stenographer compaction acceptance is incoherent");
     }
+    const legacyMissingCompactionBinding =
+      state.compaction_accepted_model_binding === null
+      && state.compaction_accepted_plan !== null;
     if (
       state.kind === "task" ||
       state.kind === "access" ||
@@ -2015,7 +2084,12 @@ export async function tryClaimCompactionRoom(
       )
     ) return null;
     const modelOperationId = acceptedPlan?.operationId
-      ?? `compaction:${roomId}:${rebuildGeneration}:${journal.latestRollup?.id ?? "initial"}:${planned.plan.throughEventSequence}:${planned.plan.protectedTail.at(-1)?.sequence ?? planned.plan.throughEventSequence}`;
+      ?? ordinaryCompactionOperationId(
+        roomId,
+        rebuildGeneration,
+        journal.latestRollup?.id ?? null,
+        planned.plan,
+      );
     const claimPlan = acceptedPlan ?? Object.freeze({
       version: 1 as const,
       owner: "ordinary" as const,
@@ -2093,6 +2167,9 @@ export async function tryClaimCompactionRoom(
           .for("update", { of: roomJournalModelRecoveries });
     if (claimingFreshRecovery
       && manualRecovery === undefined) return null;
+    if (legacyMissingCompactionBinding && manualRecovery === undefined) {
+      return null;
+    }
     const replaySafety = await resolveModelAttemptReplaySafety({
       kind: "operation", roomId, callType: "room_event_compaction", operationId: modelOperationId,
     }, {
@@ -2112,16 +2189,23 @@ export async function tryClaimCompactionRoom(
     }
     const leaseToken = randomUUID();
     if (manualRecovery !== undefined) {
-      let binding;
-      try {
-        binding = parseMemoryOperationBinding(state.compaction_accepted_model_binding);
-      } catch {
-        throw new Error("Manual Stenographer compaction recovery binding changed");
+      let binding: ReturnType<typeof parseMemoryOperationBinding> | null = null;
+      if (state.compaction_accepted_model_binding !== null) {
+        try {
+          binding = parseMemoryOperationBinding(
+            state.compaction_accepted_model_binding,
+          );
+        } catch {
+          throw new Error("Manual Stenographer compaction recovery binding changed");
+        }
       }
-      if (binding.kind !== "service" || binding.role !== "memorySummarization") {
+      if (binding !== null
+        && (binding.kind !== "service"
+          || binding.role !== "memorySummarization")) {
         throw new Error("Manual Stenographer compaction recovery binding changed");
       }
       if (reclaimingUnspentRecovery
+        && binding !== null
         && binding.modelId !== manualRecovery.targetModelId) {
         throw new Error("Manual Stenographer compaction recovery binding changed");
       }
@@ -2141,7 +2225,7 @@ export async function tryClaimCompactionRoom(
               isNull(roomJournalModelRecoveries.claimedAt),
             ),
       ));
-      if (!reclaimingUnspentRecovery) {
+      if (!reclaimingUnspentRecovery && binding !== null) {
         await tx.update(roomJournalState).set({
           compactionAcceptedModelBinding: {
             ...binding,
