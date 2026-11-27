@@ -9,6 +9,7 @@ import type { DurableRecordPublication } from "@nautilo/reflection/durable";
 import {
   admitSemanticWorkWithinTransaction,
   createHmacRecordSemanticCommitmentPort,
+  manualRecoveryConnectedFamilyRoots,
   PostgresSemanticWorkStore,
   reflectionManualRecoveryFamilyKey,
 } from "../../src/server/postgres-semantic-work-store";
@@ -297,6 +298,29 @@ describe("PostgreSQL semantic work commitments and admission", () => {
       recordRef: "record:human",
       binding: { ...binding, kind: "human" },
     })).toBeNull();
+  });
+
+  test("finds a connected paid family larger than the JavaScript call stack", () => {
+    const rowCount = 70_000;
+    const binding = (index: number) => ({
+      version: 1 as const,
+      kind: "service" as const,
+      role: "memoryReflection" as const,
+      modelId: "model:old",
+      inputCommitment: `hmac-sha256:${String(index).padStart(43, "A")}`,
+    });
+    const rows = Array.from({ length: rowCount }, (_, index) => ({
+      record_id: `record:${index}`,
+      manual_recovery_id: `recovery:${index % 2 === 0 ? index : index - 1}`,
+      accepted_model_binding: binding(index === 0
+        ? 0
+        : index % 2 === 0 ? index - 1 : index),
+    }));
+
+    const roots = manualRecoveryConnectedFamilyRoots(rows);
+
+    expect(roots.size).toBe(rowCount);
+    expect(new Set(roots.values()).size).toBe(1);
   });
 
   test("uses domain-separated stable HMACs without exposing source identity", () => {

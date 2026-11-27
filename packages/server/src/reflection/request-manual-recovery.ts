@@ -14,9 +14,12 @@ import {
 } from "@nautilo/reflection-bridge/server";
 
 import { resolveCurrentReflectionCommitmentKey } from "./record-repository-selection";
+import { readManualReflectionRefusalRecoveryPage } from "../lib/memory-recovery-service";
+
+const MANUAL_REFUSAL_RECOVERY_PAGE_LIMIT = 256;
 
 export interface RequestManualReflectionRecoveryInput {
-  readonly db: Pick<DirectDatabase, "select">;
+  readonly db: Pick<DirectDatabase, "select" | "selectDistinct" | "execute">;
   readonly executor: PostgresJsBridgeExecutor;
   readonly now: Date;
   readonly observedThrough: Date;
@@ -25,7 +28,7 @@ export interface RequestManualReflectionRecoveryInput {
   readonly page?: Readonly<{ after: string | null; limit: number }>;
 }
 
-type ReflectionRecoveryPhase = "derived" | "provider";
+type ReflectionRecoveryPhase = "derived" | "provider" | "refused";
 
 type ReflectionRecoveryCursor = Readonly<{
   version: 1;
@@ -51,7 +54,9 @@ function decodeReflectionRecoveryCursor(value: string): ReflectionRecoveryCursor
   const row = parsed as Record<string, unknown>;
   if (Object.keys(row).length !== 4
     || row["version"] !== 1
-    || (row["phase"] !== "derived" && row["phase"] !== "provider")
+    || (row["phase"] !== "derived"
+      && row["phase"] !== "provider"
+      && row["phase"] !== "refused")
     || typeof row["observedThrough"] !== "string"
     || !Number.isFinite(new Date(row["observedThrough"]).getTime())
     || (row["after"] !== null && typeof row["after"] !== "string")) {
@@ -122,9 +127,8 @@ export async function requestManualReflectionRecovery(
     handle,
     commitments,
   });
-  const repaired = cursor.phase === "provider"
-    ? { requeued: 0, scanned: 0 }
-    : await repairBlockedDerivedRecordLineage({
+  const repaired = cursor.phase === "derived"
+    ? await repairBlockedDerivedRecordLineage({
         handle,
         now: input.now,
         observedThrough: input.observedThrough,
@@ -132,7 +136,8 @@ export async function requestManualReflectionRecovery(
         ...(input.page === undefined
           ? {}
           : { page: { after: cursor.after, limit: input.page.limit } }),
-      });
+      })
+    : { requeued: 0, scanned: 0 };
   if (input.page !== undefined && repaired.nextCursor !== undefined) {
     return {
       queued: repaired.requeued,
@@ -150,35 +155,132 @@ export async function requestManualReflectionRecovery(
       },
     };
   }
-  const remaining = input.page === undefined
+  let remaining = input.page === undefined
     ? undefined
     : input.page.limit - (repaired.scanned ?? 0);
-  const providerRecovery = await store.requestManualProviderRecovery({
-    now: input.now,
-    authorizedAt: input.observedThrough,
-    observedThrough: input.observedThrough,
-    authorizedBy: operator.id,
-    modelId: input.modelId,
-    ...(remaining === undefined
-      ? {}
-      : {
-          page: {
-            after: cursor.phase === "provider" ? cursor.after : null,
-            limit: remaining,
-          },
-        }),
-  });
+  if (input.page !== undefined && remaining === 0) {
+    return {
+      queued: repaired.requeued,
+      held: 0,
+      nextCursor: encodeReflectionRecoveryCursor({
+        version: 1,
+        phase: "provider",
+        observedThrough: cursor.observedThrough,
+        after: null,
+      }),
+      derivedRepair: {
+        retired: 0,
+        sourcesQueued: 0,
+        summariesQueued: repaired.requeued,
+      },
+    };
+  }
+  const providerRecovery = cursor.phase === "refused"
+    ? { queued: 0, held: 0, scanned: 0 }
+    : await store.requestManualProviderRecovery({
+        now: input.now,
+        authorizedAt: input.observedThrough,
+        observedThrough: input.observedThrough,
+        authorizedBy: operator.id,
+        modelId: input.modelId,
+        ...(remaining === undefined
+          ? {}
+          : {
+              page: {
+                after: cursor.phase === "provider" ? cursor.after : null,
+                limit: remaining,
+              },
+            }),
+      });
+  if (providerRecovery.nextCursor !== undefined) {
+    return {
+      queued: repaired.requeued + providerRecovery.queued,
+      held: providerRecovery.held,
+      nextCursor: encodeReflectionRecoveryCursor({
+        version: 1,
+        phase: "provider",
+        observedThrough: cursor.observedThrough,
+        after: providerRecovery.nextCursor,
+      }),
+      derivedRepair: {
+        retired: 0,
+        sourcesQueued: 0,
+        summariesQueued: repaired.requeued,
+      },
+    };
+  }
+  remaining = remaining === undefined
+    ? undefined
+    : remaining - (providerRecovery.scanned ?? 0);
+  if (input.page !== undefined && remaining === 0) {
+    return {
+      queued: repaired.requeued + providerRecovery.queued,
+      held: providerRecovery.held,
+      nextCursor: encodeReflectionRecoveryCursor({
+        version: 1,
+        phase: "refused",
+        observedThrough: cursor.observedThrough,
+        after: null,
+      }),
+      derivedRepair: {
+        retired: 0,
+        sourcesQueued: 0,
+        summariesQueued: repaired.requeued,
+      },
+    };
+  }
+  let refusedQueued = 0;
+  let refusedHeld = 0;
+  let refusedNextCursor: string | undefined;
+  const recoverRefusedPage = async (after: string | null, limit: number) => {
+    const proof = await readManualReflectionRefusalRecoveryPage(input.db, {
+      targetModelId: input.modelId,
+      observedThrough: input.observedThrough,
+      after,
+      limit,
+    });
+    refusedHeld += proof.held;
+    if (proof.recordRefs.length > 0) {
+      const recovered = await store.requestManualProviderRecovery({
+        now: input.now,
+        authorizedAt: input.observedThrough,
+        observedThrough: input.observedThrough,
+        authorizedBy: operator.id,
+        modelId: input.modelId,
+        provenRefusedRecordRefs: proof.recordRefs,
+        onlyProvenRefusals: true,
+      });
+      refusedQueued += recovered.queued;
+      refusedHeld += recovered.held;
+    }
+    return proof.nextCursor;
+  };
+  if (remaining === undefined) {
+    let after: string | null = null;
+    do {
+      refusedNextCursor = await recoverRefusedPage(
+        after,
+        MANUAL_REFUSAL_RECOVERY_PAGE_LIMIT,
+      );
+      after = refusedNextCursor ?? null;
+    } while (refusedNextCursor !== undefined);
+  } else {
+    refusedNextCursor = await recoverRefusedPage(
+      cursor.phase === "refused" ? cursor.after : null,
+      remaining,
+    );
+  }
   return {
-    queued: repaired.requeued + providerRecovery.queued,
-    held: providerRecovery.held,
-    ...(providerRecovery.nextCursor === undefined
+    queued: repaired.requeued + providerRecovery.queued + refusedQueued,
+    held: providerRecovery.held + refusedHeld,
+    ...(refusedNextCursor === undefined
       ? {}
       : {
           nextCursor: encodeReflectionRecoveryCursor({
             version: 1,
-            phase: "provider",
+            phase: "refused",
             observedThrough: cursor.observedThrough,
-            after: providerRecovery.nextCursor,
+            after: refusedNextCursor,
           }),
         }),
     derivedRepair: {

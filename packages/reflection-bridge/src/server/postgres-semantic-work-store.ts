@@ -8,6 +8,7 @@ import {
   exists,
   gt,
   inArray,
+  isNotNull,
   isNull,
   lte,
   ne,
@@ -871,23 +872,35 @@ function manualRecoveryLockFamilyKeys(input: Readonly<{
   return keys.sort((left, right) => left.localeCompare(right));
 }
 
-function manualRecoveryConnectedFamilyRoots(rows: readonly Readonly<{
+export function manualRecoveryConnectedFamilyRoots(rows: readonly Readonly<{
   record_id: string;
   accepted_model_binding: unknown;
   manual_recovery_id: unknown;
 }>[]): ReadonlyMap<string, string> {
-  const parent = new Map(rows.map(row => [row.record_id, row.record_id]));
+  const parent = new Map<string, string>(rows.map(row =>
+    [row.record_id, row.record_id] as const));
+  const size = new Map<string, number>([...parent.keys()].map(recordId =>
+    [recordId, 1] as const));
   const find = (recordId: string): string => {
-    const prior = parent.get(recordId)!;
-    if (prior === recordId) return recordId;
-    const root = find(prior);
-    parent.set(recordId, root);
+    let root = recordId;
+    while (parent.get(root)! !== root) root = parent.get(root)!;
+    let current = recordId;
+    while (current !== root) {
+      const prior = parent.get(current)!;
+      parent.set(current, root);
+      current = prior;
+    }
     return root;
   };
   const unite = (left: string, right: string) => {
-    const leftRoot = find(left);
-    const rightRoot = find(right);
-    if (leftRoot !== rightRoot) parent.set(rightRoot, leftRoot);
+    let leftRoot = find(left);
+    let rightRoot = find(right);
+    if (leftRoot === rightRoot) return;
+    if (size.get(leftRoot)! < size.get(rightRoot)!) {
+      [leftRoot, rightRoot] = [rightRoot, leftRoot];
+    }
+    parent.set(rightRoot, leftRoot);
+    size.set(leftRoot, size.get(leftRoot)! + size.get(rightRoot)!);
   };
   const keyOwner = new Map<string, string>();
   for (const row of rows) {
@@ -945,6 +958,8 @@ export class PostgresSemanticWorkStore
     authorizedAt?: Date;
     modelId: string;
     page?: Readonly<{ after: string | null; limit: number }>;
+    provenRefusedRecordRefs?: readonly string[];
+    onlyProvenRefusals?: boolean;
   }>): Promise<Readonly<{
     queued: number;
     held: number;
@@ -966,6 +981,11 @@ export class PostgresSemanticWorkStore
     if (!input.modelId || input.modelId.trim() !== input.modelId) {
       throw new TypeError("Reflection recovery model must be non-empty and trimmed");
     }
+    const provenRefusedRecordRefs = [...new Set(input.provenRefusedRecordRefs ?? [])];
+    if (provenRefusedRecordRefs.some(recordRef => recordRef.length === 0)
+      || (input.onlyProvenRefusals === true && provenRefusedRecordRefs.length === 0)) {
+      throw new TypeError("Reflection proven-refusal family is invalid");
+    }
     if (input.page !== undefined && (
       !Number.isSafeInteger(input.page.limit)
       || input.page.limit < 1
@@ -981,15 +1001,30 @@ export class PostgresSemanticWorkStore
       const bindingKey = reflectionManualRecoveryBindingKeySql(
         work.acceptedModelBinding,
       );
+      const ordinaryEligibility = or(
+        and(
+          eq(work.state, "complete"),
+          eq(work.completionOutcome, "provider_outcome_unknown"),
+        ),
+        eq(work.state, "quarantined"),
+      );
+      const provenRefusalEligibility = provenRefusedRecordRefs.length === 0
+        ? undefined
+        : and(
+            sql`${work.recordId}
+              = ANY(${sql.param(provenRefusedRecordRefs)}::text[])`,
+            eq(work.state, "checkpointed"),
+            eq(work.stage, "organization"),
+            eq(work.waitingReason, "provider"),
+            isNull(work.leaseToken),
+            isNotNull(work.manualRecoveryId),
+            isNotNull(work.manualRecoverySpentAt),
+          );
       const eligibility = and(
         lte(work.updatedAt, input.observedThrough),
-        or(
-          and(
-            eq(work.state, "complete"),
-            eq(work.completionOutcome, "provider_outcome_unknown"),
-          ),
-          eq(work.state, "quarantined"),
-        ),
+        input.onlyProvenRefusals === true
+          ? provenRefusalEligibility
+          : or(ordinaryEligibility, provenRefusalEligibility),
       );
       const selectedFamilyKeys = input.page === undefined
         ? undefined
@@ -1134,6 +1169,8 @@ export class PostgresSemanticWorkStore
         family_key: familyKey.as("family_key"),
         updated_at: work.updatedAt,
         state: work.state,
+        waiting_reason: work.waitingReason,
+        lease_token: work.leaseToken,
         completion_outcome: work.completionOutcome,
         failure_code: work.failureCode,
         failure_detail: work.failureDetail,
@@ -1272,12 +1309,22 @@ export class PostgresSemanticWorkStore
           && row.failure_code === "publication_unavailable"
           && row.failure_detail === "publication_plan_stale"
           && row.organizer_proposal_checkpoint === null;
+        const refusedBinding = manualRecoveryServiceBinding(row.accepted_model_binding);
+        const safeProvenRefusal = provenRefusedRecordRefs.includes(recordRef)
+          && row.state === "checkpointed"
+          && row.waiting_reason === "provider"
+          && row.lease_token === null
+          && typeof row.manual_recovery_id === "string"
+          && row.manual_recovery_source_generation === generation - 1
+          && row.manual_recovery_spent_at !== null
+          && refusedBinding !== null
+          && refusedBinding.modelId === row.manual_recovery_service_model_id;
         return safelyObserved(row)
           && familyKey !== null
           && row.lifecycle === "current"
           && row.disposition === "available"
           && row.stage === "organization"
-          && (safeTerminalHold || safeFreshCalculationHold)
+          && (safeTerminalHold || safeFreshCalculationHold || safeProvenRefusal)
           && row.accepted_model_binding_generation === generation
           && !unsafeRecords.has(recordRef);
       };
@@ -1285,9 +1332,16 @@ export class PostgresSemanticWorkStore
       let queued = 0;
       for (const family of heldFamilies.values()) {
         if (family.every(retryableQuarantine)) {
+          const conditionalFamilyKeys = new Set(family.map(row =>
+            reflectionManualRecoveryFamilyKey({
+              recordRef: row.record_id,
+              binding: row.accepted_model_binding,
+            })));
           const conditionalRecoveryId = family.every(row =>
             row.failure_code === "publication_unavailable"
             && row.failure_detail === "publication_plan_stale")
+            && conditionalFamilyKeys.size === 1
+            && !conditionalFamilyKeys.has(null)
             ? randomUUID()
             : null;
           for (const row of family) {

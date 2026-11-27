@@ -7,11 +7,16 @@ import {
   eq,
   inArray,
   llmUsageEvents,
+  namespaces,
   readReflectionRecoveryDiagnostics,
   type PostgresJsBridgeExecutor,
   reflectionRecords,
   reflectionRecordPublications,
   reflectionRecordSemanticWork,
+  roomEvents,
+  roomJournalBatches,
+  rooms,
+  sql,
   users,
 } from "@nautilo/db";
 import { bootstrapTestDbInstance } from "@nautilo/db/testing";
@@ -113,6 +118,22 @@ test("manual Reflection recovery queues each observed service hold once and reta
     modelId: oldModel,
     inputCommitment: `hmac-sha256:${"D".repeat(43)}`,
   };
+  const authorityBinding: MemoryOperationBinding = {
+    ...serviceBinding,
+    inputCommitment: `hmac-sha256:${"A".repeat(43)}`,
+  };
+  const staleCheckpointBinding: MemoryOperationBinding = {
+    ...serviceBinding,
+    inputCommitment: `hmac-sha256:${"S".repeat(43)}`,
+  };
+  const sourceCheckpointBinding: MemoryOperationBinding = {
+    ...serviceBinding,
+    inputCommitment: `hmac-sha256:${"P".repeat(43)}`,
+  };
+  const staleFreshBinding: MemoryOperationBinding = {
+    ...serviceBinding,
+    inputCommitment: `hmac-sha256:${"F".repeat(43)}`,
+  };
   const newerBinding: MemoryOperationBinding = {
     ...serviceBinding,
     inputCommitment: `hmac-sha256:${"N".repeat(43)}`,
@@ -191,7 +212,7 @@ test("manual Reflection recovery queues each observed service hold once and reta
       quarantineRound: 1,
       recoverAfter,
       failureCode: "authority_unavailable",
-      acceptedModelBinding: serviceBinding,
+      acceptedModelBinding: authorityBinding,
       acceptedModelBindingGeneration: 1,
       organizerProposalCheckpoint: savedCheckpoint,
       dueSince: failedAt,
@@ -224,7 +245,7 @@ test("manual Reflection recovery queues each observed service hold once and reta
       recoverAfter,
       failureCode: "publication_unavailable",
       failureDetail: "publication_plan_stale",
-      acceptedModelBinding: serviceBinding,
+      acceptedModelBinding: staleCheckpointBinding,
       acceptedModelBindingGeneration: 1,
       organizerProposalCheckpoint: savedCheckpoint,
       dueSince: failedAt,
@@ -242,7 +263,7 @@ test("manual Reflection recovery queues each observed service hold once and reta
       recoverAfter,
       failureCode: "publication_unavailable",
       failureDetail: "publication_source_unavailable",
-      acceptedModelBinding: serviceBinding,
+      acceptedModelBinding: sourceCheckpointBinding,
       acceptedModelBindingGeneration: 1,
       organizerProposalCheckpoint: savedCheckpoint,
       dueSince: failedAt,
@@ -278,7 +299,7 @@ test("manual Reflection recovery queues each observed service hold once and reta
       recoverAfter,
       failureCode: "publication_unavailable",
       failureDetail: "publication_plan_stale",
-      acceptedModelBinding: serviceBinding,
+      acceptedModelBinding: staleFreshBinding,
       acceptedModelBindingGeneration: 1,
       organizerProposalResumedAt: failedAt,
       dueSince: failedAt,
@@ -378,7 +399,7 @@ test("manual Reflection recovery queues each observed service hold once and reta
       generation: 1,
       state: "quarantined",
       recoverAfter: now,
-      acceptedModelBinding: serviceBinding,
+      acceptedModelBinding: authorityBinding,
       organizerProposalCheckpoint: savedCheckpoint,
     });
     expect(byId.get(recordIds.staleCheckpointQuarantine)).toMatchObject({
@@ -642,5 +663,152 @@ test("manual Reflection recovery retains a stale checkpoint behind a pending pub
     }, { isolationLevel: "read committed" });
   } catch (error) {
     if (error !== rollback) throw error;
+  }
+});
+
+test("a later Reflection click replaces a fully refused spent family with one fresh grant", async () => {
+  const suffix = randomUUID();
+  const [operator] = await db.insert(users).values({
+    name: "Reflection refusal recovery operator",
+    email: `reflection-refusal-click-${suffix}@integration.test`,
+    handle: `reflection_click_${suffix.replaceAll("-", "").slice(0, 10)}`,
+  }).returning({ id: users.id });
+  if (!operator) throw new Error("missing refusal recovery operator");
+  const [namespace] = await db.insert(namespaces).values({
+    scope: "private", label: `reflection-refusal-click-${suffix}`,
+  }).returning({ id: namespaces.id });
+  if (!namespace) throw new Error("missing refusal recovery namespace");
+  const roomId = randomUUID();
+  const batchId = randomUUID();
+  const recordIds = [
+    randomUUID(),
+    randomUUID(),
+  ];
+  const authorizedAt = new Date("2001-02-01T10:00:00.000Z");
+  const spentAt = new Date("2001-02-01T10:00:30.000Z");
+  const refusedAt = new Date("2001-02-01T10:01:00.000Z");
+  const beforeRefusal = new Date(refusedAt.getTime() - 1);
+  const clickedAt = new Date("2001-02-01T10:02:00.000Z");
+  const processedAt = new Date("2001-02-01T10:03:00.000Z");
+  const retryAt = new Date("2001-02-02T10:00:00.000Z");
+  const oldModel = "openai:reflection-old";
+  const newModel = "anthropic:reflection-current";
+  const binding: MemoryOperationBinding = {
+    version: 1, kind: "service", role: "memoryReflection", modelId: oldModel,
+    inputCommitment: `hmac-sha256:${"R".repeat(43)}`,
+  };
+  const oldRecoveryId = randomUUID();
+  try {
+    await db.insert(rooms).values({
+      id: roomId, ownerId: operator.id, type: "private",
+      label: "Reflection refusal click", graphThreadId: `room:${roomId}`,
+      namespaceId: namespace.id,
+    });
+    await db.insert(roomJournalBatches).values({
+      id: batchId, roomId, fromMessageIdExclusive: 0, throughMessageIdInclusive: 2,
+      extractorVersion: "reflection-refusal-click-v1", status: "completed",
+    });
+    await db.insert(reflectionRecords).values(recordIds.map(recordId => ({
+      recordId, lifecycle: "current" as const, structuralHeight: 1,
+      producerPolicyVersion: "reflection-refusal-click-v1", processingGeneration: 1,
+    })));
+    await db.transaction(async tx => {
+      await tx.execute(sql`SELECT set_config('nautilo.stenographer_writer_version', '2', true)`);
+      await tx.insert(roomEvents).values(recordIds.map((recordId, index) => ({
+        id: recordId, roomId, sequence: index + 1, kind: "fact" as const,
+        statement: null, status: "active" as const, sourceMessageIds: [index + 1],
+        sourceBatchId: batchId, batchLocalOrdinal: index,
+        extractorVersion: "reflection-refusal-click-v1", projectionKind: "native" as const,
+        recordId, nativeAttachedAt: authorizedAt, createdAt: authorizedAt,
+      })));
+    });
+    await db.insert(reflectionRecordSemanticWork).values(recordIds.map(recordId => ({
+      recordId, generation: 2, changeReason: "created" as const,
+      stage: "organization" as const, state: "checkpointed" as const,
+      waitingReason: "provider" as const, acceptedModelBindingGeneration: 2,
+      acceptedModelBinding: binding, dueSince: authorizedAt, startedAt: authorizedAt,
+      nextAttemptAt: retryAt, manualRecoveryId: oldRecoveryId,
+      manualRecoverySourceGeneration: 1, manualRecoveryAuthorizedBy: operator.id,
+      manualRecoveryAuthorizedAt: authorizedAt,
+      manualRecoveryObservedThrough: authorizedAt,
+      manualRecoveryServiceModelId: oldModel, manualRecoverySpentAt: spentAt,
+      createdAt: authorizedAt, updatedAt: spentAt,
+    })));
+    await db.insert(llmUsageEvents).values({
+      roomId, occurredAt: refusedAt, callType: "room_reflection", model: oldModel,
+      provider: "openai", providerRoute: "surplus", fundingKind: "service",
+      endpoint: "/v1/chat/completions", attemptOutcome: "failed",
+      costState: "unknown", failureCode: "provider_refused",
+      metadata: { operationId: reflectionModelOperationId(binding, "primary") },
+    });
+    const request = (
+      observedThrough: Date,
+      now: Date,
+      page?: Readonly<{ after: string | null; limit: number }>,
+    ) =>
+      createPostgresJsCanonicalBridgeConnection(db).transaction((tx, executor) =>
+        requestManualReflectionRecovery({
+          db: tx, executor, now, observedThrough,
+          authorizedBy: operator.id, modelId: newModel,
+          ...(page === undefined ? {} : { page }),
+        }), { isolationLevel: "read committed" });
+
+    expect(await request(beforeRefusal, clickedAt)).toMatchObject({ queued: 0, held: 2 });
+    const before = await db.select().from(reflectionRecordSemanticWork)
+      .where(inArray(reflectionRecordSemanticWork.recordId, recordIds));
+    expect(before.every(row => row.generation === 2
+      && row.manualRecoveryId === oldRecoveryId
+      && row.acceptedModelBinding?.modelId === oldModel)).toBe(true);
+    expect(await request(refusedAt, clickedAt)).toMatchObject({ queued: 0, held: 2 });
+
+    let cursor: string | null = null;
+    let queued = 0;
+    let held = 0;
+    let pages = 0;
+    do {
+      const result = await request(clickedAt, processedAt, { after: cursor, limit: 1 });
+      queued += result.queued;
+      held += result.held;
+      cursor = result.nextCursor ?? null;
+      pages += 1;
+      expect(pages).toBeLessThan(8);
+      if (result.nextCursor !== undefined) {
+        const decoded = Buffer.from(result.nextCursor, "base64url").toString("utf8");
+        expect(recordIds.every(recordId => !decoded.includes(recordId))).toBe(true);
+      }
+    } while (cursor !== null);
+    expect({ queued, held }).toEqual({ queued: 2, held: 0 });
+    const after = await db.select().from(reflectionRecordSemanticWork)
+      .where(inArray(reflectionRecordSemanticWork.recordId, recordIds));
+    const newRecoveryId = after[0]?.manualRecoveryId;
+    expect(newRecoveryId).toBeString();
+    expect(newRecoveryId).not.toBe(oldRecoveryId);
+    expect(after.every(row => row.generation === 3
+      && row.state === "due"
+      && row.acceptedModelBinding === null
+      && row.manualRecoveryId === newRecoveryId
+      && row.manualRecoverySourceGeneration === 2
+      && row.manualRecoveryAuthorizedAt?.getTime() === clickedAt.getTime()
+      && row.manualRecoveryServiceModelId === newModel
+      && row.manualRecoverySpentAt === null)).toBe(true);
+    const [historicRefusal] = await db.select({
+      model: llmUsageEvents.model,
+      outcome: llmUsageEvents.attemptOutcome,
+      failureCode: llmUsageEvents.failureCode,
+    }).from(llmUsageEvents).where(eq(llmUsageEvents.roomId, roomId));
+    expect(historicRefusal).toEqual({
+      model: oldModel, outcome: "failed", failureCode: "provider_refused",
+    });
+  } finally {
+    await db.delete(llmUsageEvents).where(eq(llmUsageEvents.roomId, roomId));
+    await db.delete(roomEvents).where(eq(roomEvents.roomId, roomId));
+    await db.update(reflectionRecords).set({ disposition: "purged" })
+      .where(inArray(reflectionRecords.recordId, recordIds));
+    await db.delete(reflectionRecordSemanticWork)
+      .where(inArray(reflectionRecordSemanticWork.recordId, recordIds));
+    await db.delete(roomJournalBatches).where(eq(roomJournalBatches.id, batchId));
+    await db.delete(rooms).where(eq(rooms.id, roomId));
+    await db.delete(namespaces).where(eq(namespaces.id, namespace.id));
+    await db.delete(users).where(eq(users.id, operator.id));
   }
 });

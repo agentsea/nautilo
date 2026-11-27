@@ -234,7 +234,12 @@ describe("model attempt replay safety", () => {
       },
     }) as unknown as DirectDatabase;
 
-    const current = { modelId: "openai:gpt-5.6-luna", attemptId: "current-attempt", occurredAtOrAfter: new Date("2026-11-27T10:00:00Z") };
+    const current = {
+      modelId: "openai:gpt-5.6-luna",
+      attemptId: "current-attempt",
+      occurredAtOrAfter: new Date("2026-11-27T10:00:00Z"),
+      occurredAtOrBefore: new Date("2026-11-27T10:01:00Z"),
+    };
     expect(await hasOnlyRefusedServiceAttempts([], database(true), current)).toBe(false);
     expect(queries).toBe(0);
     expect(await hasOnlyRefusedServiceAttempts(identities, database(true), current)).toBe(true);
@@ -262,6 +267,7 @@ describe("model attempt replay safety", () => {
       current.modelId,
       current.attemptId,
       current.occurredAtOrAfter.toISOString(),
+      current.occurredAtOrBefore.toISOString(),
       "provider_refused",
       "no_sellers_for_model",
       "pre_service_refusal",

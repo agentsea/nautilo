@@ -2808,6 +2808,20 @@
       "when": 1795808997262,
       "tag": "0400_curious_professor_monster",
       "breakpoints": true
+    },
+    {
+      "idx": 401,
+      "version": "7",
+      "when": 1795809314489,
+      "tag": "0401_fearless_giant_girl",
+      "breakpoints": true
+    },
+    {
+      "idx": 402,
+      "version": "7",
+      "when": 1795809998935,
+      "tag": "0402_romantic_frightful_four",
+      "breakpoints": true
     }
   ]
 }

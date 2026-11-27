@@ -1252,17 +1252,17 @@ export const reflectionRecordSemanticWork = pgTable(
         sql`(${reflectionManualRecoveryFamilyKeySql(table)})`,
         table.recordId,
       )
-      .where(sql`${table.state} in ('complete', 'quarantined')`),
+      .where(sql`${table.state} in ('complete', 'quarantined', 'checkpointed')`),
     index("idx_reflection_record_semantic_work_manual_recovery_binding")
       .on(
         sql`(${reflectionManualRecoveryBindingKeySql(table.acceptedModelBinding)})`,
         table.recordId,
       )
-      .where(sql`${table.state} in ('complete', 'quarantined')`),
+      .where(sql`${reflectionManualRecoveryBindingKeySql(table.acceptedModelBinding)}
+        is not null`),
     index("idx_reflection_record_semantic_work_manual_recovery_grant")
       .on(table.manualRecoveryId, table.recordId)
-      .where(sql`${table.state} in ('complete', 'quarantined')
-        and ${table.manualRecoveryId} is not null`),
+      .where(sql`${table.manualRecoveryId} is not null`),
     index("idx_reflection_record_semantic_work_derived_recovery_cursor")
       .on(
         sql`(${reflectionDerivedRecoveryCursorKeySql(table.recordId)})`,

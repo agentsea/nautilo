@@ -3,7 +3,8 @@ import {
   hasOnlyRefusedServiceAttempts, inArray, isNotNull, isNull, llmUsageEvents, ne,
   readRoomJournalCompactionServiceRecoveryPage, readRoomJournalServiceRecoveryPage,
   rebindRoomJournalFailedBatchServiceModel, rebindRoomJournalFailedCompactionServiceModel,
-  reflectionRecordSemanticWork, reflectionRecords, roomEvents, rooms, sql,
+  reflectionManualRecoveryFamilyKeySql, reflectionRecordSemanticWork,
+  reflectionRecords, roomEvents, rooms, sql, lte,
   type DirectDatabase,
 } from "@nautilo/db";
 import { isCurrentOrdinaryCompactionAcceptedPlan, reflectionModelOperationId } from "@nautilo/runtime";
@@ -22,6 +23,7 @@ type ReflectionFamily = Readonly<{
   roomAssociationProven: boolean;
 }>;
 type QueryDb = Pick<DirectDatabase, "select">;
+type ManualRecoveryDb = Pick<DirectDatabase, "select" | "selectDistinct" | "execute">;
 function eligibleReflectionBinding(work: ReflectionWork): Extract<MemoryOperationBinding, { kind: "service" }> | null {
   const binding = reflectionServiceBinding(work);
   return binding !== null && work.state === "checkpointed" && work.stage === "organization" && work.waitingReason === "provider"
@@ -80,10 +82,8 @@ async function readReflectionFamily(
   }).from(reflectionRecordSemanticWork).innerJoin(
     reflectionRecords,
     eq(reflectionRecords.recordId, reflectionRecordSemanticWork.recordId),
-  ).where(eq(
-    sql<string>`${reflectionRecordSemanticWork.acceptedModelBinding}->>'inputCommitment'`,
-    binding.inputCommitment,
-  )).orderBy(asc(reflectionRecordSemanticWork.recordId))
+  ).where(eq(reflectionRecordSemanticWork.acceptedModelBinding, binding))
+    .orderBy(asc(reflectionRecordSemanticWork.recordId))
     .for("update", { of: reflectionRecordSemanticWork });
   if (members.length === 0 || !members.some(member => member.work.recordId === seed.recordId)) return null;
   const recordIds = members.map(member => member.work.recordId);
@@ -142,6 +142,135 @@ async function canRetryReflection(db: QueryDb, family: ReflectionFamily): Promis
   });
 }
 
+function familyCarriesManualRecovery(family: ReflectionFamily): boolean {
+  return family.members.some(({ work }) => work.manualRecoveryId !== null);
+}
+
+export type ManualReflectionRefusalRecoveryPage = Readonly<{
+  recordRefs: readonly string[];
+  held: number;
+  scanned: number;
+  nextCursor?: string;
+}>;
+
+/**
+ * Lock and prove a bounded page of spent manual Reflection families whose
+ * exact old service operation was refused before the operator's new click.
+ * The caller must consume these coordinates in the same transaction.
+ */
+export async function readManualReflectionRefusalRecoveryPage(
+  db: ManualRecoveryDb,
+  input: Readonly<{
+    targetModelId: string;
+    observedThrough: Date;
+    after: string | null;
+    limit: number;
+  }>,
+): Promise<ManualReflectionRefusalRecoveryPage> {
+  if (!input.targetModelId.trim()
+    || !Number.isFinite(input.observedThrough.getTime())
+    || !Number.isSafeInteger(input.limit)
+    || input.limit < 1) {
+    throw new TypeError("Manual Reflection refusal recovery page is invalid");
+  }
+  const work = reflectionRecordSemanticWork;
+  const familyKey = reflectionManualRecoveryFamilyKeySql(work);
+  const seedEligibility = and(
+    eq(work.state, "checkpointed"),
+    eq(work.stage, "organization"),
+    eq(work.waitingReason, "provider"),
+    isNull(work.leaseToken),
+    eq(work.acceptedModelBindingGeneration, work.generation),
+    isNotNull(work.manualRecoveryId),
+    isNotNull(work.manualRecoverySpentAt),
+    lte(work.updatedAt, input.observedThrough),
+    eq(sql<string>`${work.acceptedModelBinding}->>'kind'`, "service"),
+    eq(sql<string>`${work.acceptedModelBinding}->>'role'`, "memoryReflection"),
+    ne(sql<string>`${work.acceptedModelBinding}->>'modelId'`, input.targetModelId),
+  );
+  const seedKeys = (await db.selectDistinct({ familyKey: familyKey.as("family_key") })
+    .from(work)
+    .where(and(
+      seedEligibility,
+      input.after === null ? undefined : gt(familyKey, input.after),
+    ))
+    .orderBy(asc(familyKey))
+    .limit(input.limit))
+    .map(row => row.familyKey);
+  const recordRefs: string[] = [];
+  let held = 0;
+  for (const key of seedKeys) {
+    const seedRows = await db.select().from(work).where(and(
+      seedEligibility,
+      eq(familyKey, key),
+    )).orderBy(asc(work.recordId));
+    const seed = seedRows[0];
+    const proven = await (async (): Promise<readonly string[] | null> => {
+      if (seed === undefined || seed.startedAt === null
+        || seed.manualRecoveryAuthorizedAt === null) return null;
+      const binding = eligibleReflectionBinding(seed);
+      if (binding === null) return null;
+      const latestPriorAttempt = new Date(input.observedThrough.getTime() - 1);
+      if (!Number.isFinite(latestPriorAttempt.getTime())) return null;
+      const refusalAfter = new Date(Math.max(
+        seed.startedAt.getTime(),
+        seed.manualRecoveryAuthorizedAt.getTime(),
+      ));
+      const operationIds = reflectionRecoveryAttemptIdentities(binding)
+        .map(identity => identity.operationId);
+      const [invocation] = await db.select({ roomId: llmUsageEvents.roomId })
+        .from(llmUsageEvents).where(and(
+          eq(llmUsageEvents.callType, "room_reflection"),
+          inArray(sql<string>`${llmUsageEvents.metadata}->>'operationId'`, operationIds),
+          eq(llmUsageEvents.model, binding.modelId),
+          gte(llmUsageEvents.occurredAt, refusalAfter),
+          lte(llmUsageEvents.occurredAt, latestPriorAttempt),
+          isNotNull(llmUsageEvents.roomId),
+        )).orderBy(asc(llmUsageEvents.occurredAt), asc(llmUsageEvents.id)).limit(1);
+      if (invocation?.roomId === null || invocation?.roomId === undefined) return null;
+      await acquireRoomWriteLock(db, invocation.roomId);
+      const family = await readReflectionFamily(db, invocation.roomId, seed);
+      if (family === null || family.binding.modelId === input.targetModelId
+        || !reflectionFamilyEligible(family)) return null;
+      const recoveryId = family.members[0]?.work.manualRecoveryId;
+      const safeManualFamily = typeof recoveryId === "string"
+        && family.members.every(({ work: member }) =>
+          member.manualRecoveryId === recoveryId
+          && member.manualRecoverySourceGeneration === member.generation - 1
+          && member.manualRecoveryServiceModelId === family.binding.modelId
+          && member.manualRecoveryAuthorizedAt !== null
+          && member.manualRecoveryAuthorizedAt < input.observedThrough
+          && member.manualRecoverySpentAt !== null
+          && member.manualRecoverySpentAt <= input.observedThrough
+          && member.updatedAt <= input.observedThrough);
+      if (!safeManualFamily) return null;
+      const authorizedAfter = new Date(Math.max(
+        family.generationStartedAt.getTime(),
+        ...family.members.map(member => member.work.manualRecoveryAuthorizedAt!.getTime()),
+      ));
+      if (!await hasOnlyRefusedServiceAttempts(
+        reflectionRecoveryAttemptIdentities(family.binding),
+        db,
+        {
+          modelId: family.binding.modelId,
+          occurredAtOrAfter: authorizedAfter,
+          occurredAtOrBefore: latestPriorAttempt,
+        },
+      )) return null;
+      return family.members.map(member => member.work.recordId);
+    })();
+    if (proven === null) held += seedRows.length;
+    else recordRefs.push(...proven);
+  }
+  const nextCursor = seedKeys.length === input.limit ? seedKeys.at(-1) : undefined;
+  return {
+    recordRefs,
+    held,
+    scanned: seedKeys.length,
+    ...(nextCursor === undefined ? {} : { nextCursor }),
+  };
+}
+
 async function recoverReflectionFamily(
   db: DirectDatabase,
   seed: ReflectionWork,
@@ -171,6 +300,7 @@ async function recoverReflectionFamily(
     if (!room) return;
     const family = await readReflectionFamily(tx, roomId, seed);
     if (!family || !await canRetryReflection(tx, family)) return;
+    if (familyCarriesManualRecovery(family)) return;
     await tx.update(reflectionRecordSemanticWork).set({
       acceptedModelBinding: { ...family.binding, modelId },
       nextAttemptAt: now,
