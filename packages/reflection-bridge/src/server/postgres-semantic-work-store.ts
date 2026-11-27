@@ -1635,6 +1635,7 @@ export class PostgresSemanticWorkStore
           stage: stage as DurableSleepClaim["stage"],
           leaseToken: rowString(row, "lease_token"),
           modelBatchFamilyKey,
+          ...(manualRecoveryId == null ? {} : { operatorAuthorizedAttempt: true as const }),
           timing: {
             admittedAtEpochMs: rowDate(row, "due_since")!.getTime(),
             firstClaimedAtEpochMs: rowDate(row, "started_at")!.getTime(),

@@ -948,6 +948,21 @@ describe("durable hierarchy Sleep state machine", () => {
     });
   });
 
+  test.each([true, false])("limits a manually recovered job to one provider attempt (batch %s)", async usesBatch => {
+    const events: string[] = [];
+    let calls = 0;
+    const invalid = async () => { calls++; return "{}"; };
+    const semantic = semanticHarness(events, mixedView(), undefined, invalid);
+    if (usesBatch) semantic.invokeOrganizerBatch = invalid;
+    const result = await runDurableHierarchySleep({
+      work: workHarness([{ ...claim("record:manual", "organization"), operatorAuthorizedAttempt: true }], events).port,
+      semantic,
+      budget: { hierarchy: hierarchyBudget, maxWorkItems: 1 },
+    });
+    expect(calls).toBe(1);
+    expect(result.failures.invalid_model_output).toBe(1);
+  });
+
   test.each(["different namespace reads", "exposure limit"])("splits model batches before dispatch for %s", async (reason) => {
     const events: string[] = [];
     const claims = [

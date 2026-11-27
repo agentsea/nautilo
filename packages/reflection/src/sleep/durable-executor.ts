@@ -108,6 +108,8 @@ export interface DurableSleepClaim {
   readonly leaseToken: string;
   /** Ephemeral opaque affinity for provider admission batching. */
   readonly modelBatchFamilyKey?: string;
+  /** The operator authorized one fresh provider attempt for this held work. */
+  readonly operatorAuthorizedAttempt?: true;
   /** Durable admission and first-claim coordinates for exact queue/service time. */
   readonly timing?: Readonly<{
     readonly admittedAtEpochMs: number;
@@ -1529,6 +1531,7 @@ export async function runDurableHierarchySleep(input: {
     try {
       if (usesBatchPort) {
         organized = await runOrganizerBatch({
+          allowFormatRepair: batch.every(item => !item.claim.operatorAuthorizedAttempt),
           snapshots: batch.map((item) => organizerInput(item.claim, item.view)),
           invoke: (prompt, signal, indexes) => invokeModel(indexes.map((index) => batch[index]!), prompt, signal),
           assertRepairCurrent: (index) => batch[index]!.attempt?.assertCurrent() ?? Promise.resolve(),
@@ -1538,6 +1541,7 @@ export async function runDurableHierarchySleep(input: {
         const results: OrganizerBatchItemResult[] = [];
         for (const [index, item] of batch.entries()) {
           const result = await runOrganizer({
+            allowFormatRepair: !item.claim.operatorAuthorizedAttempt,
             snapshot: organizerInput(item.claim, item.view),
             invoke: (prompt, signal) => invokeModel([item], prompt, signal),
             ...(input.signal === undefined ? {} : { signal: input.signal }),
