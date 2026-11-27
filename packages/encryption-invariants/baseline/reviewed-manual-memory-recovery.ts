@@ -21,7 +21,7 @@ export const REVIEWED_MANUAL_RECOVERY_DTO_DECLARATIONS:
     locator: GET_RECOVERY_ROUTE,
     structuralSignatures: [
       "response.body:{error:string}",
-      "response.body:{run:{memory?:{derivedRepair?:{retired:number;sourcesQueued:number};held:number;queued:number;state:\"assessed\"}|{state:\"paused\"}|{state:\"unavailable\"};observedThrough:string;reflection?:{derivedRepair?:{retired:number;sourcesQueued:number};held:number;queued:number;state:\"assessed\"}|{state:\"paused\"}|{state:\"unavailable\"};requestId:string;stenographer?:{derivedRepair?:{retired:number;sourcesQueued:number};held:number;queued:number;state:\"assessed\"}|{state:\"paused\"}|{state:\"unavailable\"}}}",
+      "response.body:{run:{memory?:{derivedRepair?:{retired:number;sourcesQueued:number;summariesQueued?:number};held:number;queued:number;state:\"assessed\"}|{state:\"paused\"}|{state:\"unavailable\"};observedThrough:string;reflection?:{derivedRepair?:{retired:number;sourcesQueued:number;summariesQueued?:number};held:number;queued:number;state:\"assessed\"}|{state:\"paused\"}|{state:\"unavailable\"};requestId:string;stenographer?:{derivedRepair?:{retired:number;sourcesQueued:number;summariesQueued?:number};held:number;queued:number;state:\"assessed\"}|{state:\"paused\"}|{state:\"unavailable\"}}}",
     ],
     arbitraryPayloads: [],
   },
@@ -31,7 +31,7 @@ export const REVIEWED_MANUAL_RECOVERY_DTO_DECLARATIONS:
     locator: POST_RECOVERY_ROUTE,
     structuralSignatures: [
       "response.body:{error:string}",
-      "response.body:{memory?:{derivedRepair?:{retired:number;sourcesQueued:number};held:number;queued:number;state:\"assessed\"}|{state:\"paused\"}|{state:\"unavailable\"};observedThrough:string;reflection?:{derivedRepair?:{retired:number;sourcesQueued:number};held:number;queued:number;state:\"assessed\"}|{state:\"paused\"}|{state:\"unavailable\"};requestId:string;stenographer?:{derivedRepair?:{retired:number;sourcesQueued:number};held:number;queued:number;state:\"assessed\"}|{state:\"paused\"}|{state:\"unavailable\"}}",
+      "response.body:{memory?:{derivedRepair?:{retired:number;sourcesQueued:number;summariesQueued?:number};held:number;queued:number;state:\"assessed\"}|{state:\"paused\"}|{state:\"unavailable\"};observedThrough:string;reflection?:{derivedRepair?:{retired:number;sourcesQueued:number;summariesQueued?:number};held:number;queued:number;state:\"assessed\"}|{state:\"paused\"}|{state:\"unavailable\"};requestId:string;stenographer?:{derivedRepair?:{retired:number;sourcesQueued:number;summariesQueued?:number};held:number;queued:number;state:\"assessed\"}|{state:\"paused\"}|{state:\"unavailable\"}}",
     ],
     arbitraryPayloads: [],
   },

@@ -136,8 +136,19 @@ function admissionText(lane: MemoryRecoveryLaneResult | null): string {
     ? `${lane.queued.toLocaleString()} queued · ${lane.held.toLocaleString()} held at request`
     : "No work needed a retry";
   const repair = lane.derivedRepair;
-  if (!repair || !repair.retired) return admission;
-  return `${admission}. Generated summaries retired: ${repair.retired.toLocaleString()}. Source records queued for rebuilding: ${repair.sourcesQueued.toLocaleString()}.`;
+  if (!repair) return admission;
+  const details = [
+    repair.summariesQueued
+      ? `Generated summaries queued for reassessment: ${repair.summariesQueued.toLocaleString()}.`
+      : null,
+    repair.retired
+      ? `Generated summaries retired: ${repair.retired.toLocaleString()}.`
+      : null,
+    repair.sourcesQueued
+      ? `Source records queued for rebuilding: ${repair.sourcesQueued.toLocaleString()}.`
+      : null,
+  ].filter((detail): detail is string => detail !== null);
+  return details.length === 0 ? admission : `${admission}. ${details.join(" ")}`;
 }
 
 export function MemoryRecoveryCard() {
@@ -216,7 +227,7 @@ export function MemoryRecoveryCard() {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div><h3 className="text-sm font-semibold">Memory recovery</h3>
           <p id="memory-recovery-cost" className="mt-1 max-w-prose text-xs text-foreground-muted">
-            Recover stuck work across all Rooms using the configured <Link to="/admin#models" className="text-primary hover:underline">Server Models</Link>. Recovery can rebuild invalid generated summaries from verified sources. Starting it authorizes provider calls, including a possible second charge for an earlier attempt.
+            Recover stuck work across all Rooms using the configured <Link to="/admin#models" className="text-primary hover:underline">Server Models</Link>. Recovery can queue generated summaries for reassessment. Workers check current sources and access before repairing a generated summary. Starting it authorizes provider calls, including a possible second charge for an earlier attempt.
           </p>
         </div>
         <div className="flex gap-2">

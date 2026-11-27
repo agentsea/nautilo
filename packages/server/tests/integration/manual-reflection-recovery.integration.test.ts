@@ -277,7 +277,11 @@ test("manual Reflection recovery queues each observed service hold once and reta
         authorizedBy: operator.id,
         modelId: configuredModel,
       }), { isolationLevel: "read committed" });
-    expect(await request(observedThrough)).toEqual({ queued: 7, held: 3 });
+    expect(await request(observedThrough)).toEqual({
+      queued: 7,
+      held: 3,
+      derivedRepair: { retired: 0, sourcesQueued: 0, summariesQueued: 0 },
+    });
     const first = await db.select().from(reflectionRecordSemanticWork)
       .where(inArray(reflectionRecordSemanticWork.recordId, Object.values(recordIds)))
       .orderBy(reflectionRecordSemanticWork.recordId);
@@ -331,14 +335,13 @@ test("manual Reflection recovery queues each observed service hold once and reta
       failureCode: "publication_unavailable",
       failureDetail: "publication_source_unavailable",
       organizerProposalCheckpoint: savedCheckpoint,
-      manualRecoverySourceGeneration: 1,
-      manualRecoveryAuthorizedBy: operator.id,
-      manualRecoveryObservedThrough: observedThrough,
-      manualRecoveryServiceModelId: configuredModel,
+      manualRecoveryId: null,
+      manualRecoverySourceGeneration: null,
+      manualRecoveryAuthorizedBy: null,
+      manualRecoveryObservedThrough: null,
+      manualRecoveryServiceModelId: null,
       manualRecoverySpentAt: null,
     });
-    expect(byId.get(recordIds.sourceCheckpointQuarantine)?.manualRecoveryId)
-      .toBe(byId.get(recordIds.staleCheckpointQuarantine)?.manualRecoveryId);
     expect(byId.get(recordIds.humanStaleCheckpoint)).toMatchObject({
       generation: 1,
       state: "quarantined",
@@ -369,8 +372,16 @@ test("manual Reflection recovery queues each observed service hold once and reta
 
     // Replaying the same HTTP observation cannot authorize the newer failure
     // and cannot create another generation for either already-queued subject.
-    expect(await request(observedThrough)).toEqual({ queued: 0, held: 3 });
-    expect(await request(newerFailureAt)).toEqual({ queued: 1, held: 3 });
+    expect(await request(observedThrough)).toEqual({
+      queued: 0,
+      held: 3,
+      derivedRepair: { retired: 0, sourcesQueued: 0, summariesQueued: 0 },
+    });
+    expect(await request(newerFailureAt)).toEqual({
+      queued: 1,
+      held: 3,
+      derivedRepair: { retired: 0, sourcesQueued: 0, summariesQueued: 0 },
+    });
 
     // A saved service-funded result that proves it needs a fresh calculation
     // carries this click's exact authorization forward by one generation. The
@@ -527,7 +538,11 @@ test("manual Reflection recovery retains a stale checkpoint behind a pending pub
         observedThrough,
         authorizedBy: operator.id,
         modelId: "anthropic:reflection-current",
-      })).toEqual({ queued: 0, held: 1 });
+      })).toEqual({
+        queued: 0,
+        held: 1,
+        derivedRepair: { retired: 0, sourcesQueued: 0, summariesQueued: 0 },
+      });
       throw rollback;
     }, { isolationLevel: "read committed" });
   } catch (error) {

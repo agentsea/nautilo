@@ -68,7 +68,7 @@ describe("manual Memory recovery encryption review", () => {
         continue;
       }
       expect(declaration.structuralSignatures?.join("\n")).toContain(
-        "derivedRepair?:{retired:number;sourcesQueued:number}",
+        "derivedRepair?:{retired:number;sourcesQueued:number;summariesQueued?:number}",
       );
       expect(declaration.structuralSignatures?.join("\n")).toContain(
         "observedThrough:string",

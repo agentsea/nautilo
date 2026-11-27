@@ -1,5 +1,8 @@
 import { expect, test } from "bun:test";
-import { memoryAdminStatusSchema } from "../../src/memory-admin";
+import {
+  memoryAdminStatusSchema,
+  memoryRecoveryRunSchema,
+} from "../../src/memory-admin";
 
 const status = {
   generatedAt: "2026-09-05T12:00:00Z", window: { since: "2026-09-04T12:00:00Z", until: "2026-09-05T12:00:00Z" },
@@ -24,4 +27,32 @@ test("diagnostics reject content fields and arbitrary provider failure text", ()
     phase: "model", code: "provider body with private data", occurredAt: status.generatedAt,
     nextRetryAt: null, retryable: false,
   }] }).success).toBe(false);
+});
+
+test("recovery receipts accept old repair evidence and optional reassessment counts", () => {
+  const run = {
+    requestId: "11111111-1111-4111-8111-111111111111",
+    observedThrough: status.generatedAt,
+    stenographer: null,
+    memory: null,
+    reflection: {
+      state: "assessed" as const,
+      queued: 37,
+      held: 0,
+      derivedRepair: { retired: 0, sourcesQueued: 0 },
+    },
+  };
+  expect(memoryRecoveryRunSchema.parse(run).reflection).toEqual(run.reflection);
+  expect(memoryRecoveryRunSchema.parse({
+    ...run,
+    reflection: {
+      ...run.reflection,
+      derivedRepair: {
+        ...run.reflection.derivedRepair,
+        summariesQueued: 37,
+      },
+    },
+  }).reflection).toMatchObject({
+    derivedRepair: { summariesQueued: 37 },
+  });
 });

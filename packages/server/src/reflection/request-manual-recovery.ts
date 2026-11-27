@@ -9,6 +9,7 @@ import {
 import {
   PostgresSemanticWorkStore,
   createHmacRecordSemanticCommitmentPort,
+  repairBlockedDerivedRecordLineage,
   verifyRecordProductPostgresHandle,
 } from "@nautilo/reflection-bridge/server";
 
@@ -31,7 +32,15 @@ export interface RequestManualReflectionRecoveryInput {
  */
 export async function requestManualReflectionRecovery(
   input: RequestManualReflectionRecoveryInput,
-): Promise<Readonly<{ queued: number; held: number }>> {
+): Promise<Readonly<{
+  queued: number;
+  held: number;
+  derivedRepair: Readonly<{
+    retired: number;
+    sourcesQueued: number;
+    summariesQueued: number;
+  }>;
+}>> {
   const [operator] = await input.db.select({ id: users.id }).from(users).where(and(
     eq(users.id, input.authorizedBy),
     isNull(users.disabledAt),
@@ -45,16 +54,34 @@ export async function requestManualReflectionRecovery(
       transaction: use => use(input.executor),
     },
   );
-  const semanticWork = new PostgresSemanticWorkStore({
+  const commitments = createHmacRecordSemanticCommitmentPort(
+    resolveCurrentReflectionCommitmentKey(),
+  );
+  const repaired = await repairBlockedDerivedRecordLineage({
     handle,
-    commitments: createHmacRecordSemanticCommitmentPort(
-      resolveCurrentReflectionCommitmentKey(),
-    ),
+    now: input.now,
+    observedThrough: input.observedThrough,
+    authorizedBy: operator.id,
   });
-  return semanticWork.requestManualProviderRecovery({
+  const providerRecovery = await new PostgresSemanticWorkStore({
+    handle,
+    commitments,
+  }).requestManualProviderRecovery({
     now: input.now,
     observedThrough: input.observedThrough,
     authorizedBy: operator.id,
     modelId: input.modelId,
   });
+  return {
+    queued: repaired.requeued + providerRecovery.queued,
+    held: providerRecovery.held,
+    derivedRepair: {
+      retired: 0,
+      // The current repair safely re-arms the derived summary itself. It does
+      // not admit a source Record rebuild, so keep the public source count
+      // distinct from the total queued count above.
+      sourcesQueued: 0,
+      summariesQueued: repaired.requeued,
+    },
+  };
 }

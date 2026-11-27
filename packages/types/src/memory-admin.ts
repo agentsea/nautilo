@@ -69,7 +69,11 @@ const memoryRecoveryLaneResultSchema = z.discriminatedUnion("state", [
     state: z.literal("assessed"),
     queued: count,
     held: count,
-    derivedRepair: z.object({ retired: count, sourcesQueued: count }).strict().optional(),
+    derivedRepair: z.object({
+      retired: count,
+      sourcesQueued: count,
+      summariesQueued: count.optional(),
+    }).strict().optional(),
   }).strict(),
   z.object({ state: z.literal("paused") }).strict(),
   z.object({ state: z.literal("unavailable") }).strict(),

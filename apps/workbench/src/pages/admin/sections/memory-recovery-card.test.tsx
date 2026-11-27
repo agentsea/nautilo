@@ -115,6 +115,24 @@ describe("MemoryRecoveryCard", () => {
     ));
   });
 
+  test("reports generated summaries as queued for reassessment, not already repaired", async () => {
+    latest.mockImplementation(async () => ({ run: {
+      ...receipt,
+      reflection: {
+        state: "assessed",
+        queued: 37,
+        held: 0,
+        derivedRepair: { retired: 0, sourcesQueued: 0, summariesQueued: 37 },
+      },
+    } }));
+    const view = show();
+    await waitFor(() => expect(view.getByRole("status").textContent).toContain(
+      "37 queued · 0 held at request. Generated summaries queued for reassessment: 37.",
+    ));
+    expect(view.getByRole("status").textContent).not.toContain("retired");
+    expect(view.getByRole("status").textContent).not.toContain("rebuilding");
+  });
+
   test("explains quarantines even after provider holds have cleared", () => {
     const summary = summarizeReflection({ ...reflectionFixture(),
       current: { ...reflectionFixture().current, quarantined: 5 },
