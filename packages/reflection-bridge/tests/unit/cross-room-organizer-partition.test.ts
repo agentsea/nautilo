@@ -456,6 +456,13 @@ describe("cross-Room Organizer partition", () => {
     const candidate = codec.open(result.applicationPlanToken);
     expect(candidate.publicationPlan).toBeDefined();
     expect(candidate.publicationPlan).not.toHaveProperty("applicationPlanToken");
+    expect(result.batchCoordinates?.size).toBe(candidate.inputs.length);
+    for (const coordinate of candidate.inputs) {
+      const identity = coordinate.kind === "record"
+        ? `record\0${coordinate.recordRef}`
+        : `source\0${coordinate.sourceKind}\0${coordinate.logicalSourceRef}`;
+      expect(result.batchCoordinates?.get(identity)).toBe(JSON.stringify({ ...coordinate, role: "candidate" }));
+    }
     expect(candidate.publicationPlan?.modelExposureDependencies).toEqual([
       expect.objectContaining({ kind: "record", recordRef: "record:changed" }),
       expect.objectContaining({ kind: "record", recordRef: "record:same-room" }),

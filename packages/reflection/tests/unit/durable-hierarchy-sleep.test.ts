@@ -948,7 +948,7 @@ describe("durable hierarchy Sleep state machine", () => {
     });
   });
 
-  test("splits model batches before the producer exact-plan ceiling", async () => {
+  test.each(["different namespace reads", "exposure limit"])("splits model batches before dispatch for %s", async (reason) => {
     const events: string[] = [];
     const claims = [
       claim("record:a", "organization"),
@@ -973,7 +973,9 @@ describe("durable hierarchy Sleep state machine", () => {
         }],
         existingParents: [],
         maxSelectedChildren: 2,
-        modelExposureBatchMaximum: 2,
+        modelExposureBatchMaximum: reason === "exposure limit" ? 2 : 10,
+        batchCoordinates: new Map([["shared-record", reason === "different namespace reads"
+          ? `namespace-for-${current.recordRef}` : "same-namespace"]]),
         modelExposureDependencies: [{
           kind: "record",
           recordRef: current.recordRef,

@@ -223,6 +223,7 @@ export type CrossRoomOrganizerAugmentationResult =
       candidates: readonly OrganizerRecordInput[];
       existingParents: readonly OrganizerRecordInput[];
       applicationPlanToken: CrossRoomApplicationPlanToken;
+      batchCoordinates?: ReadonlyMap<string, string>;
       unsupportedAuthorityShapes: number;
       authorityParentsResolved: number;
       authorityParentsSkipped: number;
@@ -580,6 +581,7 @@ implements DurableSleepSemanticPort {
     }
 
     let applicationPlanToken: CrossRoomApplicationPlanToken | undefined;
+    let batchCoordinates: ReadonlyMap<string, string> | undefined;
     let modelExposureDependencies:
       | readonly DurableModelExposureDependency[]
       | undefined;
@@ -723,6 +725,7 @@ implements DurableSleepSemanticPort {
         existingParents.push({ ...entry, handle: `P${existingParents.length + 1}` });
       }
       applicationPlanToken = augmented.applicationPlanToken;
+      batchCoordinates = augmented.batchCoordinates;
       modelExposureDependencies = this.ports.crossRoom
         .readModelExposureDependencies?.(applicationPlanToken);
       unsupportedAuthorityShapes = augmented.unsupportedAuthorityShapes;
@@ -737,6 +740,7 @@ implements DurableSleepSemanticPort {
         changed: recordInput("R1", changed.record),
         candidates,
         existingParents,
+        ...(batchCoordinates === undefined ? {} : { batchCoordinates }),
         maxSelectedChildren: applicationPlanToken === undefined
           ? CANDIDATE_POLICY_V1.sameRoomBound
           : CANDIDATE_POLICY_V1.sameRoomBound + CANDIDATE_POLICY_V1.crossRoomBound,

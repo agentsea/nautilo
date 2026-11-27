@@ -343,6 +343,8 @@ export interface DurableSleepOrganizerView {
   readonly modelExposureDependencies?: readonly DurableModelExposureDependency[];
   /** Producer-owned exact-plan ceiling for one combined provider prompt. */
   readonly modelExposureBatchMaximum?: number;
+  /** Ephemeral exact read/generation coordinates. Never placed in the prompt or checkpoint. */
+  readonly batchCoordinates?: ReadonlyMap<string, string>;
   /**
    * Opaque bridge-owned exact-plan token. Reflection neither opens nor derives
    * product authority from it; it only returns the token with the accepted
@@ -1371,8 +1373,27 @@ export async function runDurableHierarchySleep(input: {
     if (pendingOrganizer.length === 0) return;
     let batchLength = pendingOrganizer.length;
     const exposureIdentities = new Set<string>();
+    const batchCoordinates = new Map<string, string>();
     let exposureMaximum = Number.POSITIVE_INFINITY;
     for (const [index, item] of pendingOrganizer.entries()) {
+      // A record can be readable through different Namespaces in two plans.
+      // Such plans cannot share a model answer or pass the merged publication fence.
+      const coordinates = item.view.batchCoordinates;
+      if (coordinates) {
+        let compatible = true;
+        for (const [identity, coordinate] of coordinates) {
+          const previous = batchCoordinates.get(identity);
+          if (previous !== undefined && previous !== coordinate) {
+            compatible = false;
+            break;
+          }
+          batchCoordinates.set(identity, coordinate);
+        }
+        if (!compatible) {
+          batchLength = index;
+          break;
+        }
+      }
       if (item.view.modelExposureDependencies === undefined) continue;
       exposureMaximum = Math.min(
         exposureMaximum,
