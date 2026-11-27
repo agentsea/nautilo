@@ -17,6 +17,7 @@ import {
 import {
   CANDIDATE_POLICY_V1,
   DurableSleepModelLaneUnavailableError,
+  DurableSleepOrganizationUnavailableError,
   DurableSleepProviderOutcomeUnknownError,
   DURABLE_SLEEP_MAX_WORK_ITEMS_PER_RUN,
   runDependencyLossRewrite,
@@ -275,6 +276,49 @@ export function selectRetainedReflectionRepair<T extends object>(
   return first;
 }
 
+/** Process-local model state belongs to the exact leased claim objects.
+ * A replacement lease can carry the same Record generation and must not
+ * inherit admission assertions or replay checks captured by its predecessor. */
+export class ReflectionModelInvocationState<T extends object> {
+  private readonly admitted = new WeakMap<DurableSleepClaim, T>();
+  private readonly replayChecked = new WeakMap<DurableSleepClaim, Set<string>>();
+
+  selectRepair(
+    claims: readonly DurableSleepClaim[],
+    consumed: WeakSet<T>,
+  ): T | null {
+    return selectRetainedReflectionRepair(
+      claims.map((claim) => this.admitted.get(claim)),
+      consumed,
+    );
+  }
+
+  retain(claims: readonly DurableSleepClaim[], admission: T): void {
+    for (const claim of claims) this.admitted.set(claim, admission);
+  }
+
+  admissionFor(claim: DurableSleepClaim): T | undefined {
+    return this.admitted.get(claim);
+  }
+
+  delete(claim: DurableSleepClaim): void {
+    this.admitted.delete(claim);
+    this.replayChecked.delete(claim);
+  }
+
+  wasReplayChecked(claims: readonly DurableSleepClaim[], operationId: string): boolean {
+    return claims.every((claim) => this.replayChecked.get(claim)?.has(operationId) === true);
+  }
+
+  markReplayChecked(claims: readonly DurableSleepClaim[], operationId: string): void {
+    for (const claim of claims) {
+      const checked = this.replayChecked.get(claim) ?? new Set<string>();
+      checked.add(operationId);
+      this.replayChecked.set(claim, checked);
+    }
+  }
+}
+
 function recordEmbedding(): RecordEmbeddingPort {
   return Object.freeze({
     async embed(input: RecordEmbeddingRequest): Promise<RecordEmbeddingResult> {
@@ -528,11 +572,8 @@ export async function createProductionReflectionMemoryRuntime(
     return { opened: opened.record, binding: resolved.binding };
   };
   type ModelInvocationContext = Readonly<{ roomId: string }>;
-  const admittedModels = new Map<string, AdmittedReflectionMemoryModel>();
+  const modelInvocationState = new ReflectionModelInvocationState<AdmittedReflectionMemoryModel>();
   const consumedRepairs = new WeakSet<AdmittedReflectionMemoryModel>();
-  const replayCheckedExecutions = new Set<string>();
-  const claimKey = (claim: DurableSleepClaim): string =>
-    `${claim.recordRef}\0${claim.generation}`;
   const dispatchForRecords = async (
     claims: readonly DurableSleepClaim[],
     prompt: string,
@@ -543,23 +584,23 @@ export async function createProductionReflectionMemoryRuntime(
     if (claims.length < 1) throw new TypeError("Record model batch cannot be empty");
     const contexts = await resolveContexts();
     if (contexts.length !== claims.length) {
-      throw new Error("record_model_binding_unavailable");
+      throw new DurableSleepOrganizationUnavailableError();
     }
-    if (contexts.some((context) => context === null) || signal?.aborted) {
-      throw new Error("record_model_binding_unavailable");
+    if (contexts.some((context) => context === null)) {
+      throw new DurableSleepOrganizationUnavailableError();
     }
+    signal?.throwIfAborted();
     const context = contexts[0]!;
     const assertCurrent = async () => {
-      if (signal?.aborted) throw new Error("record_model_binding_unavailable");
+      signal?.throwIfAborted();
       const current = await Promise.all(
         claims.map((claim) => semanticWork.isClaimCurrent(claim)),
       );
       if (current.some((value) => !value)) {
-        throw new Error("record_model_binding_unavailable");
+        throw new DurableSleepOrganizationUnavailableError();
       }
     };
     let wireKind: "primary" | "repair" = "primary";
-    const cached = claims.map((claim) => admittedModels.get(claimKey(claim)));
     let admitted: AdmittedReflectionMemoryModel | Readonly<{
       modelId: string;
       humanUserId: null;
@@ -567,7 +608,7 @@ export async function createProductionReflectionMemoryRuntime(
       assertCurrent: () => Promise<void>;
       assertExposure: () => Promise<void>;
     }>;
-    const retained = selectRetainedReflectionRepair(cached, consumedRepairs);
+    const retained = modelInvocationState.selectRepair(claims, consumedRepairs);
     if (retained !== null) {
       admitted = retained;
       wireKind = "repair";
@@ -605,12 +646,11 @@ export async function createProductionReflectionMemoryRuntime(
         : `reflection:${sortedClaims
             .map((claim) => `${claim.recordRef}:${claim.generation}`)
             .join(":")}`;
-      const executionKey = `${operationId}:${sortedClaims.map((claim) => claim.leaseToken).join(":")}`;
       const assertInvocationCurrent = async () => {
         await admitted.assertCurrent();
         await admitted.assertExposure(dependencies);
       };
-      if (!replayCheckedExecutions.has(executionKey)) {
+      if (!modelInvocationState.wasReplayChecked(claims, operationId)) {
         await assertInvocationCurrent();
         const replaySafety = await resolveModelAttemptReplaySafety({
           kind: "operation",
@@ -621,7 +661,7 @@ export async function createProductionReflectionMemoryRuntime(
         if (replaySafety.decision === "block_unknown") {
           throw new DurableSleepProviderOutcomeUnknownError();
         }
-        replayCheckedExecutions.add(executionKey);
+        modelInvocationState.markReplayChecked(claims, operationId);
       }
       if (wireKind === "repair" && "binding" in admitted) {
         consumedRepairs.add(admitted);
@@ -656,7 +696,7 @@ export async function createProductionReflectionMemoryRuntime(
         throw new DurableSleepProviderOutcomeUnknownError();
       }
       if ("binding" in admitted) {
-        for (const claim of claims) admittedModels.set(claimKey(claim), admitted);
+        modelInvocationState.retain(claims, admitted);
       }
       return response;
     } catch (error) {
@@ -713,7 +753,7 @@ export async function createProductionReflectionMemoryRuntime(
       if (application.claim.changeReason === "parent_conflict") {
         throw new TypeError("parent-conflict work cannot publish an Organizer proposal");
       }
-      const admitted = admittedModels.get(claimKey(application.claim));
+      const admitted = modelInvocationState.admissionFor(application.claim);
       try {
         await admitted?.assertCurrent();
         const context = await contextForRecord(application.claim.recordRef);
@@ -787,12 +827,7 @@ export async function createProductionReflectionMemoryRuntime(
           ...(application.signal === undefined ? {} : { signal: application.signal }),
         });
       } finally {
-        admittedModels.delete(claimKey(application.claim));
-        for (const key of replayCheckedExecutions) {
-          if (key.includes(`:${application.claim.leaseToken}`)) {
-            replayCheckedExecutions.delete(key);
-          }
-        }
+        modelInvocationState.delete(application.claim);
       }
     },
   };

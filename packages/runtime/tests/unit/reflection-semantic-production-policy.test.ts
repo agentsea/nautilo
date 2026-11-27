@@ -5,6 +5,7 @@ import type { DirectDatabase } from "@nautilo/db";
 import {
   DURABLE_SLEEP_MAX_WORK_ITEMS_PER_RUN,
   DurableSleepModelLaneUnavailableError,
+  DurableSleepOrganizationUnavailableError,
   ORGANIZER_BATCH_MAX_ITEMS,
   type DurableSleepClaim,
   type DurableSleepSemanticPort,
@@ -12,6 +13,7 @@ import {
 
 import {
   REFLECTION_SEMANTIC_RUNTIME_POLICY_V1,
+  ReflectionModelInvocationState,
   createProductionReflectionMemoryRuntime,
   selectRetainedReflectionRepair,
   classifyReflectionModelInvocationFailure,
@@ -84,6 +86,41 @@ describe("production Reflection semantic policy", () => {
     consumed.add(admission);
     expect(() => selectRetainedReflectionRepair([admission], consumed))
       .toThrow("admission changed");
+  });
+  test("retains repairs only for the exact OpenAI, Venice, and Surplus lease", () => {
+    for (const providerRoute of ["openai", "venice", "surplus"] as const) {
+      const state = new ReflectionModelInvocationState<{ providerRoute: typeof providerRoute }>();
+      const consumed = new WeakSet<{ providerRoute: typeof providerRoute }>();
+      const claim: DurableSleepClaim = {
+        logicalObjectRef: `logical:record:${providerRoute}`,
+        generation: 7,
+        recordRef: `record:${providerRoute}`,
+        changeReason: "created",
+        stage: "organization",
+        leaseToken: `lease:${providerRoute}:original`,
+      };
+      const replacement: DurableSleepClaim = {
+        ...claim,
+        leaseToken: `lease:${providerRoute}:replacement`,
+      };
+      const admission = { providerRoute };
+
+      state.retain([claim], admission);
+      expect(state.selectRepair([claim], consumed)).toBe(admission);
+      expect(state.selectRepair([replacement], consumed)).toBeNull();
+
+      state.markReplayChecked([claim], `reflection:${providerRoute}:primary`);
+      expect(state.wasReplayChecked([claim], `reflection:${providerRoute}:primary`)).toBeTrue();
+      expect(state.wasReplayChecked([replacement], `reflection:${providerRoute}:primary`)).toBeFalse();
+    }
+  });
+  test("keeps stale lease authority separate from provider cooldown", () => {
+    const staleLease = new DurableSleepOrganizationUnavailableError();
+    expect(classifyReflectionModelInvocationFailure(
+      staleLease,
+      "openai:gpt-5.6-sol",
+      "openai:gpt-5.6-sol",
+    )).toBe(staleLease);
   });
   test("quarantines uncertain Memory provider outcomes instead of entering lane retry", () => {
     expect(classifyReflectionModelInvocationFailure(
