@@ -94,6 +94,7 @@ test("manual Memory review recovery durably deduplicates explicit service retrie
     { scope: "publication", binding: binding("P"), code: "publication_uncertain", phase: "publication", at: failedAt },
     { scope: "personal", binding: personal, code: "provider_outcome_unknown", phase: "model", at: failedAt },
     { scope: "unbound", binding: null, code: "provider_outcome_unknown", phase: "model", at: failedAt },
+    { scope: "fragmented", binding: binding("F"), code: "invalid_proposal", phase: "model", at: failedAt },
     { scope: "newer", binding: binding("N"), code: "invalid_proposal", phase: "model", at: newerFailureAt },
   ].map((value, index) => ({
     ...value,
@@ -101,6 +102,11 @@ test("manual Memory review recovery durably deduplicates explicit service retrie
     generationId: randomUUID(),
     attemptId: randomUUID(),
     firstMessageId: index + 1,
+  }));
+  const fragmented = fixtures.find(value => value.scope === "fragmented")!;
+  // The failed attempt appears on both sides of another turn in this scope.
+  const interleaved = [randomUUID(), fragmented.attemptId].map((attemptId, i) => ({
+    ...fragmented, id: randomUUID(), generationId: randomUUID(), attemptId, firstMessageId: fixtures.length + i + 1,
   }));
   const turnIds = fixtures.map(value => value.id);
   let usageId: string | undefined;
@@ -111,7 +117,7 @@ test("manual Memory review recovery durably deduplicates explicit service retrie
   });
 
   try {
-    await db.insert(memoryReviewTurns).values(fixtures.map(value => ({
+    await db.insert(memoryReviewTurns).values([...fixtures, ...interleaved].map(value => ({
       id: value.id,
       generationId: value.generationId,
       sessionId: session.id,
@@ -122,7 +128,7 @@ test("manual Memory review recovery durably deduplicates explicit service retrie
       accessScope: value.scope,
       threadId,
       checkpointThreadId: threadId,
-      turnId: `${value.scope}:${suffix}`,
+      turnId: `${value.scope}:${value.firstMessageId}:${suffix}`,
       sourceIds: [value.firstMessageId],
       firstMessageId: value.firstMessageId,
       hasHuman: 1,
@@ -167,11 +173,12 @@ test("manual Memory review recovery durably deduplicates explicit service retrie
       metadata: { workId: direct.generationId, attemptId: direct.attemptId },
     }).returning({ id: llmUsageEvents.id })).map(row => row.id);
 
-    const request = (cutoff: Date) => db.transaction((receiptTx) =>
+    const request = (cutoff: Date, page?: { after: string | null; limit: number }) => db.transaction((receiptTx) =>
       runtime.requestManualRecovery({
         db: receiptTx,
         now,
         observedThrough: cutoff,
+        ...(page && { page }),
         authorizedBy: operator.id,
       }));
     activePolicy = await compareAndSwapEncryptionTransitionPolicy(db, {
@@ -179,8 +186,20 @@ test("manual Memory review recovery durably deduplicates explicit service retrie
       targetMode: "shadow_encryption",
       targetShadowBehavior: "fallback",
     });
-    expect(await request(observedThrough)).toEqual({ queued: 2, held: 4 });
-    expect(await request(observedThrough)).toEqual({ queued: 0, held: 4 });
+    let after: string | null = null;
+    const counts = { queued: 0, held: 0 };
+    let pages = 0;
+    do {
+      const result = await request(observedThrough, { after, limit: 2 });
+      expect(result.queued + result.held).toBeLessThanOrEqual(2);
+      counts.queued += result.queued;
+      counts.held += result.held;
+      pages++;
+      after = result.nextCursor ?? null;
+    } while (after);
+    expect(pages).toBeGreaterThan(1);
+    expect(counts).toEqual({ queued: 2, held: 5 });
+    expect(await request(observedThrough)).toEqual({ queued: 0, held: 5 });
     const maintenance = new MaintenanceController({ db });
     const maintenanceOperationId = randomUUID();
     await maintenance.enterDraining({ operationId: maintenanceOperationId });
@@ -210,14 +229,14 @@ test("manual Memory review recovery durably deduplicates explicit service retrie
       targetMode: "shadow_encryption",
       targetShadowBehavior: "fallback",
     });
-    expect(await request(newerFailureAt)).toEqual({ queued: 1, held: 3 });
-    expect(await request(newerFailureAt)).toEqual({ queued: 0, held: 3 });
+    expect(await request(newerFailureAt)).toEqual({ queued: 1, held: 4 });
+    expect(await request(newerFailureAt)).toEqual({ queued: 0, held: 4 });
 
     const recoveries = await db.select().from(memoryReviewModelRecoveries)
       .where(inArray(memoryReviewModelRecoveries.workId, fixtures.map(value => value.generationId)));
     expect(recoveries).toHaveLength(3);
     const held = new Set<string>(fixtures.filter(value => value.scope === "publication"
-      || value.scope === "personal" || value.scope === "unbound")
+      || value.scope === "personal" || value.scope === "unbound" || value.scope === "fragmented")
       .map(value => value.generationId));
     expect(recoveries.every(value => !held.has(value.workId)
       && value.spentAt === null && value.recoveryAttemptId === null)).toBe(true);
@@ -264,7 +283,7 @@ test("manual Memory review recovery durably deduplicates explicit service retrie
       memoryReviewReceipts.workId,
       fixtures.map(value => value.generationId),
     ));
-    await db.delete(memoryReviewTurns).where(inArray(memoryReviewTurns.id, turnIds));
+    await db.delete(memoryReviewTurns).where(inArray(memoryReviewTurns.id, [...turnIds, ...interleaved.map(row => row.id)]));
     await db.delete(sessions).where(eq(sessions.id, session.id));
     await db.delete(rooms).where(eq(rooms.id, room.id));
     await db.delete(namespaces).where(eq(namespaces.id, namespace.id));

@@ -29,7 +29,7 @@ import {
 
 // Match existing Stenographer polling/lease/shutdown policy. The lease is
 // renewable; it fences publication, not a limit on the number of Memory turns.
-const MEMORY_REVIEW_RUNTIME_POLICY = {
+export const MEMORY_REVIEW_RUNTIME_POLICY = {
   scanIntervalMs: 15_000, shutdownWaitMs: 10_000,
   leaseMs: 2 * 60_000, retryMs: 15_000, recoveryPageSize: 100,
 } as const;
@@ -203,6 +203,7 @@ export function createServerMemoryReviewRuntime(
       db: Pick<DirectDatabase, "transaction" | "select" | "insert" | "update" | "execute">;
       now: Date;
       observedThrough: Date;
+      page?: { after: string | null; limit: number };
       authorizedBy: string;
     }>) {
       if (stopped) throw new MemoryReviewManualRecoveryUnavailableError("runtime_stopped");

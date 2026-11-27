@@ -10,7 +10,7 @@ import { taskOrdinaryFallbackRoutes } from "./routes/task-ordinary-fallback-rout
 import { createProtectedTaskRequestAuthorityResolver } from "./routes/task-protected-request-authority";
 import { createProtectedTaskActivationReadinessAssertion, ProtectedTaskActivationReadinessError } from "./routes/protected-task-activation-readiness";
 import { createProtectedTaskActivationParkedIntegrityInspector } from "./routes/protected-task-activation-parked-integrity";
-import { lockProtectedTaskActivationDrainingLease, readProtectedTaskActivationOperationalPersistenceInTransaction } from "@nautilo/db";
+import { recoverExpiredMaintenanceWith, lockProtectedTaskActivationDrainingLease, readProtectedTaskActivationOperationalPersistenceInTransaction } from "@nautilo/db";
 import { protectedTaskPendingAttentionRoutes } from "./routes/protected-task-pending-attention-routes";
 import { createProtectedTaskHumanResponse } from "./routes/protected-task-human-response";
 import { createTaskLocalExecutionCaptureAdmission, resolveTaskLocalExecutionCaptureTarget, taskNeedsLocalExecutionCapture } from "./local-execution-task-capture";
@@ -72,7 +72,7 @@ import { createPersonalMemoryEvidencePort } from "./lib/personal-memory-evidence
 import { createStenographerMemoryFunding } from "./lib/stenographer-memory-funding";
 import { createReviewMemoryExposureResolver } from "./lib/memory-review-exposure";
 import { createHmacOrdinarySourceFingerprintPort } from "@nautilo/runtime";
-import { createServerMemoryReviewRuntime } from "./lib/memory-review-runtime";
+import { createServerMemoryReviewRuntime, MEMORY_REVIEW_RUNTIME_POLICY } from "./lib/memory-review-runtime";
 import { createPersonalLlmAttemptOwnerRuntime } from "./lib/personal-llm-attempt-owner";
 import { createSurplusCostRecovery } from "./lib/surplus-cost-reconciliation";
 import { createCloudConversionRuntime } from "./conversions";
@@ -2604,6 +2604,14 @@ export async function createApp(options?: CreateAppOptions) {
   });
   costsRoutes(app);
   const manualMemoryRecovery = createManualMemoryRecovery({
+    pageAvailable: async (tx, now) => {
+      // Match the worker lock order. Hold both fences through this page only.
+      await acquireEncryptionConsumptionFence(tx);
+      return (await recoverExpiredMaintenanceWith(tx, now)).snapshot.state === "normal";
+    },
+    pageSize: MEMORY_REVIEW_RUNTIME_POLICY.recoveryPageSize,
+    pollMs: MEMORY_REVIEW_RUNTIME_POLICY.scanIntervalMs,
+    wakeMemory: () => memoryReviewRuntime.wake(),
     db: getServerDirectDb,
     assertAvailable: () => maintenanceGate.assertAcceptingNewWork(),
     onError: processor => app.log.warn({ processor }, "Memory recovery could not assess processor"),
@@ -2630,11 +2638,7 @@ export async function createApp(options?: CreateAppOptions) {
   });
   memoryStatusRoutes(app, { ...memoryReviewRuntime, recovery: {
     latest: () => manualMemoryRecovery.latest(),
-    request: async input => {
-      const run = await manualMemoryRecovery.request(input);
-      if (run.memory?.state === "assessed" && run.memory.queued > 0) memoryReviewRuntime.wake();
-      return run;
-    },
+    request: input => manualMemoryRecovery.request(input),
   } });
   stenographerStatusRoutes(app, {
     queryStatus: (input) =>
@@ -5364,6 +5368,7 @@ export async function createApp(options?: CreateAppOptions) {
   app.addHook("onClose", async () => {
     await getTtsService().dispose();
     setLiveReviewWriteGuard(null);
+    await manualMemoryRecovery.stop();
     await memoryReviewRuntime.stop();
     await stenographerWorker.stop();
     if (protectedStenographerPromise !== null) await (await protectedStenographerPromise).dispose();
@@ -5416,6 +5421,7 @@ export async function createApp(options?: CreateAppOptions) {
   app.addHook("onListen", () => {
     stenographerWorker.start();
     memoryReviewRuntime.start();
+    manualMemoryRecovery.start();
     void getServerContextConfig(getServerDirectDb())
       .then((config) => reflectionSleepController.setEnabled(
         config.reflectionSleepEnabled,

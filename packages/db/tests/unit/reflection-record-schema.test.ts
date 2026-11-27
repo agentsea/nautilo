@@ -263,6 +263,18 @@ describe("Reflection durable Record schema", () => {
     expect(semanticWorkConfig.checks.map((item) => item.name)).toContain(
       "reflection_record_semantic_work_manual_recovery_coherent",
     );
+    expect(semanticWorkConfig.indexes.map((item) => item.config.name)).toContain(
+      "idx_reflection_record_semantic_work_manual_recovery_family",
+    );
+    expect(semanticWorkConfig.indexes.map((item) => item.config.name)).toContain(
+      "idx_reflection_record_semantic_work_derived_recovery_cursor",
+    );
+    expect(semanticWorkConfig.indexes.map((item) => item.config.name)).toContain(
+      "idx_reflection_record_semantic_work_manual_recovery_binding",
+    );
+    expect(semanticWorkConfig.indexes.map((item) => item.config.name)).toContain(
+      "idx_reflection_record_semantic_work_manual_recovery_grant",
+    );
     const reflectionSchema = readFileSync(
       new URL("../../src/schema/reflection-records.ts", import.meta.url),
       "utf8",
@@ -292,6 +304,18 @@ describe("Reflection durable Record schema", () => {
     );
     expect(manualRecoveryCheck).toContain(
       "${table.manualRecoverySpentAt} >= ${table.manualRecoveryAuthorizedAt}",
+    );
+    expect(reflectionSchema).toContain(
+      "'binding:' || encode(sha256(jsonb_send(${acceptedModelBinding})), 'hex')",
+    );
+    expect(reflectionSchema).toContain(
+      "'recovery:' || ${columns.manualRecoveryId}::text",
+    );
+    expect(reflectionSchema).toContain(
+      "'record:' || md5(${columns.recordId})",
+    );
+    expect(reflectionSchema).toContain(
+      "jsonb_object(array['record', ${recordId}])",
     );
     const conditionalConsentMigration = readFileSync(
       new URL("../../src/migrations/0394_absurd_young_avengers.sql", import.meta.url),

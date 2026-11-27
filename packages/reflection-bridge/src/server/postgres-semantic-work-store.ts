@@ -25,6 +25,8 @@ import {
   reflectionRecordSourceChangeRepairs,
   reflectionRecordSourceDependencyIndex,
   reflectionRecords,
+  reflectionManualRecoveryBindingKeySql,
+  reflectionManualRecoveryFamilyKeySql,
   reflectionRecordSuccessors,
   sql,
 } from "@nautilo/db";
@@ -905,7 +907,13 @@ export class PostgresSemanticWorkStore
     observedThrough: Date;
     authorizedBy: string;
     modelId: string;
-  }>): Promise<Readonly<{ queued: number; held: number }>> {
+    page?: Readonly<{ after: string | null; limit: number }>;
+  }>): Promise<Readonly<{
+    queued: number;
+    held: number;
+    scanned?: number;
+    nextCursor?: string;
+  }>> {
     const nowMs = input.now.getTime();
     const observedThroughMs = input.observedThrough.getTime();
     if (!Number.isFinite(nowMs) || !Number.isFinite(observedThroughMs)
@@ -916,27 +924,167 @@ export class PostgresSemanticWorkStore
     if (!input.modelId || input.modelId.trim() !== input.modelId) {
       throw new TypeError("Reflection recovery model must be non-empty and trimmed");
     }
+    if (input.page !== undefined && (
+      !Number.isSafeInteger(input.page.limit)
+      || input.page.limit < 1
+      || (input.page.after !== null
+        && !/^(?:binding:[0-9a-f]{64}|recovery:[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}|record:[0-9a-f]{32})$/
+          .test(input.page.after))
+    )) {
+      throw new RangeError("Reflection provider recovery page is invalid");
+    }
     return this.options.handle.transaction(async tx => {
       const work = reflectionRecordSemanticWork;
-      const candidates = await executeTypedRecordProductQuery(tx,
-        recordProductTypedDb.select({
+      const familyKey = reflectionManualRecoveryFamilyKeySql(work);
+      const bindingKey = reflectionManualRecoveryBindingKeySql(
+        work.acceptedModelBinding,
+      );
+      const eligibility = and(
+        lte(work.updatedAt, input.observedThrough),
+        or(
+          and(
+            eq(work.state, "complete"),
+            eq(work.completionOutcome, "provider_outcome_unknown"),
+          ),
+          eq(work.state, "quarantined"),
+        ),
+      );
+      const selectedFamilyKeys = input.page === undefined
+        ? undefined
+        : (await executeTypedRecordProductQuery(tx,
+            recordProductTypedDb.selectDistinct({
+              family_key: familyKey.as("family_key"),
+            }).from(work)
+              .innerJoin(reflectionRecords, eq(reflectionRecords.recordId, work.recordId))
+              .where(and(
+                eligibility,
+                input.page.after === null
+                  ? undefined
+                  : gt(familyKey, input.page.after),
+              ))
+              .orderBy(asc(familyKey))
+              .limit(input.page.limit)))
+          .map(row => row.family_key);
+      if (selectedFamilyKeys?.length === 0) {
+        return { queued: 0, held: 0, scanned: 0 };
+      }
+      const candidateSelection = {
           record_id: work.recordId,
           accepted_model_binding: work.acceptedModelBinding,
           manual_recovery_id: work.manualRecoveryId,
-        }).from(work)
-          .innerJoin(reflectionRecords, eq(reflectionRecords.recordId, work.recordId))
-          .where(and(
-            lte(work.updatedAt, input.observedThrough),
-            or(
-              and(
-                eq(work.state, "complete"),
-                eq(work.completionOutcome, "provider_outcome_unknown"),
-              ),
-              eq(work.state, "quarantined"),
-            ),
-          ))
-          .orderBy(asc(work.recordId)));
-      if (candidates.length === 0) return { queued: 0, held: 0 };
+          family_key: familyKey.as("family_key"),
+          binding_key: bindingKey.as("binding_key"),
+        };
+      const pageCursorKey = selectedFamilyKeys?.at(-1);
+      const candidates = selectedFamilyKeys === undefined
+        ? await executeTypedRecordProductQuery(tx,
+            recordProductTypedDb.select(candidateSelection).from(work)
+              .innerJoin(reflectionRecords, eq(reflectionRecords.recordId, work.recordId))
+              .where(eligibility)
+              .orderBy(asc(familyKey), asc(work.recordId)))
+        : await (async () => {
+            const byRecord = new Map<string, Readonly<{
+              record_id: string;
+              accepted_model_binding: unknown;
+              manual_recovery_id: string | null;
+              family_key: string;
+              binding_key: string | null;
+            }>>();
+            const recoveryIds = new Set<string>();
+            const bindingKeys = new Set<string>();
+            let changed = true;
+            while (changed) {
+              changed = false;
+              const rows = await executeTypedRecordProductQuery(tx,
+                recordProductTypedDb.select(candidateSelection).from(work)
+                  .innerJoin(reflectionRecords, eq(reflectionRecords.recordId, work.recordId))
+                  .where(and(
+                    eligibility,
+                    or(
+                      inArray(familyKey, selectedFamilyKeys),
+                      recoveryIds.size === 0
+                        ? undefined
+                        : inArray(work.manualRecoveryId, [...recoveryIds]),
+                      bindingKeys.size === 0
+                        ? undefined
+                        : inArray(bindingKey, [...bindingKeys]),
+                    ),
+                  ))
+                  .orderBy(asc(familyKey), asc(work.recordId)));
+              for (const row of rows) {
+                if (!byRecord.has(row.record_id)) {
+                  byRecord.set(row.record_id, row);
+                  changed = true;
+                }
+                if (row.manual_recovery_id !== null
+                  && !recoveryIds.has(row.manual_recovery_id)) {
+                  recoveryIds.add(row.manual_recovery_id);
+                  changed = true;
+                }
+                if (row.binding_key !== null && !bindingKeys.has(row.binding_key)) {
+                  bindingKeys.add(row.binding_key);
+                  changed = true;
+                }
+              }
+            }
+            const expanded = [...byRecord.values()].sort((left, right) =>
+              left.family_key.localeCompare(right.family_key)
+                || left.record_id.localeCompare(right.record_id));
+            const parent = new Map(expanded.map(row => [row.record_id, row.record_id]));
+            const find = (recordId: string): string => {
+              const prior = parent.get(recordId)!;
+              if (prior === recordId) return recordId;
+              const root = find(prior);
+              parent.set(recordId, root);
+              return root;
+            };
+            const unite = (left: string, right: string) => {
+              const leftRoot = find(left);
+              const rightRoot = find(right);
+              if (leftRoot !== rightRoot) parent.set(rightRoot, leftRoot);
+            };
+            const keyOwner = new Map<string, string>();
+            for (const row of expanded) {
+              for (const key of manualRecoveryLockFamilyKeys({
+                recordRef: row.record_id,
+                binding: row.accepted_model_binding,
+                recoveryId: row.manual_recovery_id,
+              })) {
+                const owner = keyOwner.get(key);
+                if (owner === undefined) keyOwner.set(key, row.record_id);
+                else unite(row.record_id, owner);
+              }
+            }
+            const components = new Map<string, { selected: boolean; maximumKey: string }>();
+            for (const row of expanded) {
+              const root = find(row.record_id);
+              const component = components.get(root) ?? {
+                selected: false,
+                maximumKey: row.family_key,
+              };
+              component.selected ||= selectedFamilyKeys.includes(row.family_key);
+              if (row.family_key > component.maximumKey) {
+                component.maximumKey = row.family_key;
+              }
+              components.set(root, component);
+            }
+            return expanded.filter(row => {
+              const component = components.get(find(row.record_id))!;
+              return component.selected && component.maximumKey <= pageCursorKey!;
+            });
+          })();
+      const pageResult = (result: Readonly<{ queued: number; held: number }>) => {
+        if (input.page === undefined || selectedFamilyKeys === undefined) return result;
+        const nextCursor = selectedFamilyKeys.length === input.page.limit
+          ? pageCursorKey
+          : undefined;
+        return {
+          ...result,
+          scanned: selectedFamilyKeys.length,
+          ...(nextCursor === undefined ? {} : { nextCursor }),
+        };
+      };
+      if (candidates.length === 0) return pageResult({ queued: 0, held: 0 });
 
       // This method can share a surrounding server transaction with derived
       // lineage repair, which has already written (and therefore row-locked)
@@ -959,6 +1107,7 @@ export class PostgresSemanticWorkStore
           manual_recovery_source_generation: work.manualRecoverySourceGeneration,
           manual_recovery_service_model_id: work.manualRecoveryServiceModelId,
           manual_recovery_spent_at: work.manualRecoverySpentAt,
+          family_key: familyKey.as("family_key"),
           state: work.state,
           completion_outcome: work.completionOutcome,
           failure_code: work.failureCode,
@@ -978,10 +1127,10 @@ export class PostgresSemanticWorkStore
               eq(work.state, "quarantined"),
             ),
           ))
-          .orderBy(asc(work.recordId))
+          .orderBy(asc(familyKey), asc(work.recordId))
           .for("update", { of: work, skipLocked: true }));
       if (locked.length === 0) {
-        return { queued: 0, held: candidates.length };
+        return pageResult({ queued: 0, held: candidates.length });
       }
 
       // A paid operation can span multiple Records. If row contention skipped
@@ -996,6 +1145,7 @@ export class PostgresSemanticWorkStore
           recoveryId: row.manual_recovery_id,
         }),
       ]));
+      const candidateByRecord = new Map(candidates.map(row => [row.record_id, row]));
       const lockedRecordRefs = new Set(locked.map(row => row.record_id));
       const incompleteFamilies = new Set<string>();
       for (const row of candidates) {
@@ -1016,7 +1166,9 @@ export class PostgresSemanticWorkStore
       for (const row of locked) {
         const candidateFamilyKeys = candidateFamiliesByRecord.get(row.record_id) ?? [];
         const lockedFamilyKeys = lockedFamiliesByRecord.get(row.record_id) ?? [];
-        if (JSON.stringify(candidateFamilyKeys) !== JSON.stringify(lockedFamilyKeys)) {
+        const candidate = candidateByRecord.get(row.record_id);
+        if (candidate?.family_key !== row.family_key
+          || JSON.stringify(candidateFamilyKeys) !== JSON.stringify(lockedFamilyKeys)) {
           for (const familyKey of [...candidateFamilyKeys, ...lockedFamilyKeys]) {
             incompleteFamilies.add(familyKey);
           }
@@ -1028,7 +1180,9 @@ export class PostgresSemanticWorkStore
         return JSON.stringify(candidateFamilyKeys) === JSON.stringify(lockedFamilyKeys)
           && lockedFamilyKeys.every(familyKey => !incompleteFamilies.has(familyKey));
       });
-      if (held.length === 0) return { queued: 0, held: candidates.length };
+      if (held.length === 0) {
+        return pageResult({ queued: 0, held: candidates.length });
+      }
 
       const recordRefs = held.map(row => row.record_id);
       const unsafePublications = await executeTypedRecordProductQuery(tx,
@@ -1206,7 +1360,7 @@ export class PostgresSemanticWorkStore
           queued += 1;
         }
       }
-      return { queued, held: candidates.length - queued };
+      return pageResult({ queued, held: candidates.length - queued });
     }, { isolationLevel: "read committed" });
   }
 

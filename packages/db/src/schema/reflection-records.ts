@@ -1,4 +1,5 @@
 import { sql } from "drizzle-orm";
+import type { SQL } from "drizzle-orm";
 import type { MemoryOperationBinding } from "@nautilo/types";
 import {
   boolean,
@@ -38,6 +39,50 @@ export const REFLECTION_RECORD_COLLECTION_LIMITS = Object.freeze({
   // Mirrors Reflection's existing durable Record traversal-page maximum.
   repairPageMaximum: 256,
 });
+
+/**
+ * Bounded, content-free key for one manual provider-recovery family.
+ * Existing grants take precedence so bound and not-yet-bound siblings remain
+ * one family after a partial claim. Otherwise canonical service bindings
+ * share one paid-operation family and every other row is isolated.
+ * Consumers still recheck the exact binding/recovery identity under row lock,
+ * so a digest collision can only co-page rows and cannot combine grants.
+ */
+export function reflectionManualRecoveryFamilyKeySql(columns: Readonly<{
+  acceptedModelBinding: AnyPgColumn;
+  manualRecoveryId: AnyPgColumn;
+  recordId: AnyPgColumn;
+}>): SQL<string> {
+  return sql<string>`case
+    when ${columns.manualRecoveryId} is not null
+    then 'recovery:' || ${columns.manualRecoveryId}::text
+    when ${reflectionManualRecoveryBindingKeySql(columns.acceptedModelBinding)} is not null
+    then ${reflectionManualRecoveryBindingKeySql(columns.acceptedModelBinding)}
+    else 'record:' || md5(${columns.recordId})
+  end`;
+}
+
+/** Indexed pseudonymous lookup key for exact canonical service bindings. */
+export function reflectionManualRecoveryBindingKeySql(
+  acceptedModelBinding: AnyPgColumn,
+): SQL<string | null> {
+  return sql<string | null>`case
+    when ${acceptedModelBinding}->>'version' = '1'
+      and ${acceptedModelBinding}->>'kind' = 'service'
+      and ${acceptedModelBinding}->>'role' = 'memoryReflection'
+    then 'binding:' || encode(sha256(jsonb_send(${acceptedModelBinding})), 'hex')
+    else null
+  end`;
+}
+
+/** Stable pseudonymous keyset coordinate for derived-lineage repair pages. */
+export function reflectionDerivedRecoveryCursorKeySql(
+  recordId: AnyPgColumn,
+): SQL<string> {
+  return sql<string>`'derived:' || encode(sha256(jsonb_send(
+    jsonb_object(array['record', ${recordId}])
+  )), 'hex')`;
+}
 
 export const REFLECTION_RECORD_SEMANTIC_WORK_STAGES = Object.freeze([
   "authority_projection",
@@ -1202,6 +1247,28 @@ export const reflectionRecordSemanticWork = pgTable(
       table.attemptCount,
       table.dueSince,
     ),
+    index("idx_reflection_record_semantic_work_manual_recovery_family")
+      .on(
+        sql`(${reflectionManualRecoveryFamilyKeySql(table)})`,
+        table.recordId,
+      )
+      .where(sql`${table.state} in ('complete', 'quarantined')`),
+    index("idx_reflection_record_semantic_work_manual_recovery_binding")
+      .on(
+        sql`(${reflectionManualRecoveryBindingKeySql(table.acceptedModelBinding)})`,
+        table.recordId,
+      )
+      .where(sql`${table.state} in ('complete', 'quarantined')`),
+    index("idx_reflection_record_semantic_work_manual_recovery_grant")
+      .on(table.manualRecoveryId, table.recordId)
+      .where(sql`${table.state} in ('complete', 'quarantined')
+        and ${table.manualRecoveryId} is not null`),
+    index("idx_reflection_record_semantic_work_derived_recovery_cursor")
+      .on(
+        sql`(${reflectionDerivedRecoveryCursorKeySql(table.recordId)})`,
+        table.recordId,
+      )
+      .where(sql`${table.state} = 'quarantined'`),
     productPolicy("reflection_record_semantic_work"),
   ],
 ).enableRLS();

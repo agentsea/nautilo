@@ -331,7 +331,7 @@ describe("migration inventory", () => {
       schema: "public",
       name: "session_messages",
     });
-    expect(inventory.currentColumns).toHaveLength(3348);
+    expect(inventory.currentColumns).toHaveLength(3349);
     expect(inventory.currentConstraints).toHaveLength(943);
     expect(inventory.currentConstraints).toContainEqual({
       locator: "public.actors#foreign_key:actors_owner_id_users_id_fk",
@@ -538,6 +538,10 @@ describe("migration inventory", () => {
       { path: "0392_flaky_spencer_smythe.sql", sha256: "22ffc8f0d9fc59c6c63386f395b240dd874d75c90f6f0adb783ee03e7427de56" },
       { path: "0393_past_shocker.sql", sha256: "4129a4432c0e224827f8034921544dbc9faff127ebfbf676646c2f80e2b60007" },
       { path: "0394_absurd_young_avengers.sql", sha256: "978a13f89a637a05ea1fbb05f83085c11038b5dbc7a6c88d327454bcce13574a" },
+      { path: "0395_big_blizzard.sql", sha256: "02184ee600e44d98c3703a97f0e91a458b82e52b56ab38d5f47690d73c2edc6c" },
+      { path: "0396_wise_apocalypse.sql", sha256: "ef342a61cec17bcd8ee32f3ef0c72b75e75ec0a8dd2a9541f12ccb394b97bac3" },
+      { path: "0397_dry_mikhail_rasputin.sql", sha256: "0fcac8081329c323f78be0c225db20694779c3154072faef91993c0640a9dcd5" },
+      { path: "0398_tricky_leper_queen.sql", sha256: "f0bf750a6bfd9799b2200dc9fb6b7648a7bf0b00a58cf765d3c430f79bf771b2" },
     ]);
 
     const comparison = compareSchemaAndMigrationInventory(

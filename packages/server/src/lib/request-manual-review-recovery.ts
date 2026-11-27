@@ -1,5 +1,5 @@
 import {
-  acquireEncryptionConsumptionFence, and, asc, eq, inArray, isNotNull, isNull, lte, memoryReviewModelRecoveries,
+  acquireEncryptionConsumptionFence, and, asc, desc, eq, gt, inArray, isNotNull, isNull, lte, memoryReviewModelRecoveries,
   getServerContextConfig, memoryReviewReceipts, memoryReviewTurns, users, type DirectDatabase,
 } from "@nautilo/db";
 import { memoryReviewOrdinaryPolicyAvailable } from "@nautilo/runtime";
@@ -123,9 +123,13 @@ export async function requestManualReviewRecovery(input: Readonly<{
   observedThrough: Date;
   authorizedBy: string;
   modelId: string;
+  page?: { after: string | null; limit: number };
   enabledByDefault: boolean;
   maintenanceAccepting: (tx: Tx, now: Date) => Promise<boolean>;
-}>): Promise<{ queued: number; held: number }> {
+}>): Promise<{ queued: number; held: number; nextCursor?: string }> {
+  if (input.page && (!Number.isSafeInteger(input.page.limit) || input.page.limit < 1)) {
+    throw new RangeError("Manual Memory recovery page size must be positive");
+  }
   const now = validDate(input.now, "manual Memory recovery time");
   const observedThrough = validDate(input.observedThrough, "manual Memory recovery observation cutoff");
   const modelId = input.modelId.trim();
@@ -133,9 +137,7 @@ export async function requestManualReviewRecovery(input: Readonly<{
   if (!input.authorizedBy.trim()) throw new TypeError("manual Memory recovery authorizer is invalid");
 
   return input.db.transaction(async (tx: Tx) => {
-    // One shared policy fence covers the bulk candidate inventory and every
-    // exact locked recheck/update. An Admin transition cannot split this click
-    // across ordinary and protected policy epochs.
+    // Recheck policy and maintenance in the transaction that admits this page.
     const policy = await acquireEncryptionConsumptionFence(tx);
     if (!memoryReviewOrdinaryPolicyAvailable(policy)) {
       throw new ManualMemoryReviewRecoveryPolicyError();
@@ -151,8 +153,7 @@ export async function requestManualReviewRecovery(input: Readonly<{
       isNull(users.disabledAt),
     )).limit(1);
     if (!authorizer) throw new Error("Memory review recovery authorizer is unavailable");
-    // Discover only mature failed heads. Lock them in the same total scope and
-    // turn order used by the worker, then take each exact scope lock below.
+    // A scope has one earliest unreceipted head. Page by that stable turn ID.
     // Healthy accumulating scopes are never locked by this operator command.
     const predecessor = alias(memoryReviewTurns, "manual_memory_recovery_predecessor");
     const prior = tx.select({ one: sql`1` }).from(predecessor).where(and(
@@ -164,7 +165,8 @@ export async function requestManualReviewRecovery(input: Readonly<{
       sql`(${predecessor.firstMessageId}, ${predecessor.id}) <
         (${memoryReviewTurns.firstMessageId}, ${memoryReviewTurns.id})`,
     ));
-    const candidates = await tx.select({
+    const heads = tx.select({
+      attemptId: memoryReviewTurns.attemptId,
       id: memoryReviewTurns.id,
       sessionId: memoryReviewTurns.sessionId,
       agentId: memoryReviewTurns.agentId,
@@ -176,21 +178,29 @@ export async function requestManualReviewRecovery(input: Readonly<{
       isNotNull(memoryReviewTurns.attemptId),
       inArray(memoryReviewTurns.state, ["completed", "interrupted"]),
       or(isNull(memoryReviewTurns.leaseUntil), lte(memoryReviewTurns.leaseUntil, now)),
+      input.page?.after ? gt(memoryReviewTurns.id, input.page.after) : undefined,
       notExists(prior),
-    )).orderBy(
-      asc(memoryReviewTurns.sessionId), asc(memoryReviewTurns.agentId),
-      asc(memoryReviewTurns.ownerId), asc(memoryReviewTurns.accessScope),
-      asc(memoryReviewTurns.firstMessageId), asc(memoryReviewTurns.id),
-    ).for("update", { of: memoryReviewTurns });
+    )).orderBy(asc(memoryReviewTurns.id)).for("update", { of: memoryReviewTurns });
+    const candidates = await (input.page ? heads.limit(input.page.limit) : heads);
 
     let queued = 0;
     let held = 0;
     for (const candidate of candidates) {
+      if (!candidate.attemptId) continue;
+      // Read through the last member of this attempt, including intervening
+      // turns so the existing contiguous-prefix check sees any broken family.
+      const member = alias(memoryReviewTurns, "manual_recovery_attempt_member");
+      const lastMember = tx.select({ position: member.firstMessageId, id: member.id }).from(member).where(and(
+        eq(member.attemptId, candidate.attemptId), isNull(member.receiptId),
+        eq(member.sessionId, candidate.sessionId), eq(member.agentId, candidate.agentId),
+        eq(member.ownerId, candidate.ownerId), eq(member.accessScope, candidate.accessScope),
+      )).orderBy(desc(member.firstMessageId), desc(member.id)).limit(1);
       const turns = await tx.select().from(memoryReviewTurns).where(and(
         eq(memoryReviewTurns.sessionId, candidate.sessionId),
         eq(memoryReviewTurns.agentId, candidate.agentId),
         eq(memoryReviewTurns.ownerId, candidate.ownerId),
         eq(memoryReviewTurns.accessScope, candidate.accessScope),
+        sql`(${memoryReviewTurns.firstMessageId}, ${memoryReviewTurns.id}) <= ${lastMember}`,
         isNull(memoryReviewTurns.receiptId),
       )).orderBy(asc(memoryReviewTurns.firstMessageId), asc(memoryReviewTurns.id)).for("update");
       const head = turns[0];
@@ -218,8 +228,8 @@ export async function requestManualReviewRecovery(input: Readonly<{
         eq(memoryReviewReceipts.id, blockedAttemptId),
         eq(memoryReviewReceipts.workId, head.generationId),
       )).limit(1);
-      const failedAt = new Date(Math.max(
-        ...prefix.map(turn => turn.updatedAt.getTime()),
+      const failedAt = new Date(prefix.reduce(
+        (latest, turn) => Math.max(latest, turn.updatedAt.getTime()),
         latestAttemptReceipt?.createdAt.getTime() ?? 0,
       ));
       if (failedAt > observedThrough || latestAttemptReceipt?.outcome === "published") {
@@ -273,13 +283,14 @@ export async function requestManualReviewRecovery(input: Readonly<{
           acceptedModelBinding: binding,
           retryAt: null,
         }).where(and(
-          inArray(memoryReviewTurns.id, turnIds),
+          sql`${memoryReviewTurns.id} = ANY(${sql.param(turnIds)}::uuid[])`,
           eq(memoryReviewTurns.attemptId, blockedAttemptId),
           isNull(memoryReviewTurns.receiptId),
         ));
         queued += 1;
       }
     }
-    return { queued, held };
+    const nextCursor = input.page && candidates.length === input.page.limit ? candidates.at(-1)?.id : undefined;
+    return { queued, held, ...(nextCursor && { nextCursor }) };
   });
 }

@@ -36,6 +36,8 @@ export const memoryReviewTurns = pgTable("memory_review_turns", {
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 }, (table) => [
   unique("memory_review_turn_identity").on(table.sessionId, table.agentId, table.ownerId, table.accessScope, table.turnId),
+  index("memory_review_open_scope_order").on(table.sessionId, table.agentId, table.ownerId,
+    table.accessScope, table.firstMessageId, table.id).where(sql`${table.receiptId} IS NULL`),
   index("memory_review_pending_idx").on(table.state, table.retryAt, table.firstMessageId),
   pgPolicy("memory_review_turns_product", { for: "all", to: pgRole("nautilo").existing(), using: sql`true`, withCheck: sql`true` }),
   pgPolicy("memory_review_turns_agent", { for: "all", to: pgRole("nautilo_agent").existing(),

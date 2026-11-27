@@ -67,7 +67,7 @@ function fakeDb(input: {
         const builder: Record<string, unknown> = {};
         builder["where"] = () => builder;
         builder["orderBy"] = () => builder;
-        builder["for"] = async () => rows;
+        builder["for"] = () => builder;
         builder["limit"] = async () => rows;
         builder["then"] = (resolve: (value: unknown) => void) => resolve(rows);
         return builder;

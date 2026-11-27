@@ -304,7 +304,11 @@ test("manual Reflection recovery queues each observed service hold once and reta
       metadata: { operationId: reflectionModelOperationId(serviceBinding, "primary") },
     }))).returning({ id: llmUsageEvents.id })).map(row => row.id);
 
-    const request = (cutoff: Date, requestAt = now) => createPostgresJsCanonicalBridgeConnection(db)
+    const request = (
+      cutoff: Date,
+      requestAt = now,
+      page?: Readonly<{ after: string | null; limit: number }>,
+    ) => createPostgresJsCanonicalBridgeConnection(db)
       .transaction((tx, executor) => requestManualReflectionRecovery({
         db: tx,
         executor,
@@ -312,12 +316,38 @@ test("manual Reflection recovery queues each observed service hold once and reta
         observedThrough: cutoff,
         authorizedBy: operator.id,
         modelId: configuredModel,
+        ...(page === undefined ? {} : { page }),
       }), { isolationLevel: "read committed" });
-    expect(await request(observedThrough)).toEqual({
-      queued: 7,
-      held: 3,
-      derivedRepair: { retired: 0, sourcesQueued: 0, summariesQueued: 0 },
-    });
+    let cursor: string | null = null;
+    let pagedQueued = 0;
+    let pagedHeld = 0;
+    let pagedSummaries = 0;
+    let pageCount = 0;
+    do {
+      const page = await request(observedThrough, now, { after: cursor, limit: 2 });
+      pagedQueued += page.queued;
+      pagedHeld += page.held;
+      pagedSummaries += page.derivedRepair.summariesQueued;
+      cursor = page.nextCursor ?? null;
+      pageCount += 1;
+      expect(pageCount).toBeLessThan(10);
+      if (page.nextCursor !== undefined) {
+        const decoded = Buffer.from(page.nextCursor, "base64url").toString("utf8");
+        expect(decoded).not.toContain(oldModel);
+        expect(Object.values(recordIds).every(recordId => !decoded.includes(recordId))).toBe(true);
+        if (pageCount === 1) {
+          const changedCutoff = await request(
+            new Date(observedThrough.getTime() + 1),
+            now,
+            { after: page.nextCursor, limit: 2 },
+          ).then(() => undefined, (error: unknown) => error);
+          expect(changedCutoff).toBeInstanceOf(RangeError);
+        }
+      }
+    } while (cursor !== null);
+    expect({ queued: pagedQueued, held: pagedHeld, summariesQueued: pagedSummaries })
+      .toEqual({ queued: 7, held: 3, summariesQueued: 0 });
+    expect(pageCount).toBeGreaterThan(1);
     const first = await db.select().from(reflectionRecordSemanticWork)
       .where(inArray(reflectionRecordSemanticWork.recordId, Object.values(recordIds)))
       .orderBy(reflectionRecordSemanticWork.recordId);

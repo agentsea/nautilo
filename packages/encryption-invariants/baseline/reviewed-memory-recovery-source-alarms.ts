@@ -26,7 +26,7 @@ export const REVIEWED_MEMORY_RECOVERY_SOURCE_ALARMS:
     closure: "reviewed_exclusion",
     exclusionId: "exclusion.memory-recovery.manual-assessment-warning",
     reason:
-      "This exact warning emits a fixed manual-recovery assessment-failure literal plus only the closed processor discriminator stenographer, reflection, or memory. It includes no request UUID, operator, Room, Record, work, model, provider, response, credential, error object, prompt, content, or model output.",
+      "This exact warning emits a fixed manual-recovery assessment-failure literal plus only the closed processor discriminator stenographer, reflection, memory, or worker. It includes no request UUID, operator, Room, Record, work, model, provider, response, credential, error object, prompt, content, or model output.",
   },
   {
     locator: "packages/server/src/routes/reflection-status.ts#log_emitter:a90c23f4818770fe:3",

@@ -166,8 +166,8 @@ function ProcessorRow({ name, href, summary }: { name: string; href: string; sum
 
 function admissionText(lane: MemoryRecoveryLaneResult | null): string {
   if (lane === null) return "Request in progress";
-  if (lane.state === "paused") return "Paused by server policy";
-  if (lane.state === "unavailable") return "Could not assess this processor. Recover all memory starts a new assessment of current failures.";
+  if (lane.state === "paused") return "Assessment paused by server policy. Earlier batches may already be queued.";
+  if (lane.state === "unavailable") return "Assessment incomplete. Earlier batches may already be queued. Use Recover all memory to assess the remaining failures.";
   const admission = lane.queued || lane.held
     ? `${lane.queued.toLocaleString()} queued · ${lane.held.toLocaleString()} held at request`
     : "No work needed a retry";

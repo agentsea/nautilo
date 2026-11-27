@@ -206,7 +206,19 @@ test("re-arms exact deterministic work while fencing protected, pending, bound, 
       const observedThrough = new Date(BASE.getTime() + 60_000);
       const run = () => repairBlockedDerivedRecordLineage({handle,
         now, observedThrough, authorizedBy: ownerId});
-      expect(await run()).toEqual({requeued: 2});
+      let cursor: string | null = null;
+      let requeued = 0;
+      let pages = 0;
+      do {
+        const page = await repairBlockedDerivedRecordLineage({handle,
+          now, observedThrough, authorizedBy: ownerId,
+          page: {after: cursor, limit: 1}});
+        requeued += page.requeued;
+        cursor = page.nextCursor ?? null;
+        pages += 1;
+        expect(pages).toBeLessThan(4);
+      } while (cursor !== null);
+      expect({requeued, pages}).toEqual({requeued: 2, pages: 3});
       const stored = await tx.select({id: reflectionRecords.recordId,
         lifecycle: reflectionRecords.lifecycle, generation: reflectionRecords.processingGeneration})
         .from(reflectionRecords).where(inArray(reflectionRecords.recordId, [

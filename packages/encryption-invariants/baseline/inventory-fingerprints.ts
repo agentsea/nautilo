@@ -15,14 +15,15 @@ export const SOURCE_ALARM_BASELINE = {
 // wake-continuation FK permission, and server-only Memory review receipt
 // creation. Ordinary Reflection proposal checkpoints, operator-authorized
 // Journal/Reflection recovery receipts, and the narrow same-generation
-// unspent-authorization constraint append migrations 0392-0394. The focused
+// unspent-authorization constraint, paged recovery checkpoint, and family
+// lookup index append migrations 0392-0398. The focused
 // migration inventory pins those exact generated SQL and snapshot bytes and
 // proves the earlier schema/snapshot tree remains byte-identical without a DB.
 export const MIGRATION_TREE_BASELINE = {
-  "migrations": 395,
-  "snapshots": 366,
-  "tip": 394,
-  "sha256": "142ccd50ac6518556c55f9f545cc533aca03445eca10f16986f38b6d39acb82f"
+  "migrations": 399,
+  "snapshots": 370,
+  "tip": 398,
+  "sha256": "d25eec68365338b9714196f377d41b2b42b08653e24d51a7eb1e12c8f6f3dbc9"
 } as const;
 
 /**
@@ -77,13 +78,15 @@ export const MIGRATION_TREE_BASELINE = {
 // rotation update is removed, and the canonical transcript rebuild insert
 // moves into its shared typed helper, for a net four inserts and sixteen
 // updates. Delete and unresolved inventories do not change.
+// Page completion, lock-contention checkpoints, and binding a recovered legacy
+// compaction add three metadata-only updates.
 export const DATABASE_WRITER_BASELINE = {
-  "count": 1693,
+  "count": 1696,
   "insert": 539,
-  "update": 943,
+  "update": 946,
   "delete": 193,
   "unresolved": 18,
-  "sha256": "4cb410dbf47cdab212310cea13ba511e0cc0fd4633744a3916986849cf615a46"
+  "sha256": "dbc1d8f4d3827703722c6cb20a8db6ba4190299f66ba368032848c2b10d949da"
 } as const;
 
 /**

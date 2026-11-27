@@ -6,6 +6,7 @@ import {
   asc,
   eq,
   exists,
+  gt,
   isNotNull,
   isNull,
   llmUsageEvents,
@@ -23,6 +24,7 @@ import {
   type DirectDatabase,
 } from "@nautilo/db";
 import { resolveCurrentOrdinaryCompactionCoordinates } from "@nautilo/runtime";
+import { isUuidString } from "@nautilo/trust";
 import { parseMemoryOperationBinding } from "@nautilo/types";
 
 export interface ManualJournalRecoveryInput {
@@ -31,6 +33,10 @@ export interface ManualJournalRecoveryInput {
   readonly observedThrough: Date;
   readonly authorizedBy: string;
   readonly modelId: string;
+  readonly page?: Readonly<{
+    readonly after: string | null;
+    readonly limit: number;
+  }>;
 }
 
 export type ManualJournalRecoveryDatabase = Pick<
@@ -43,6 +49,51 @@ type Transaction = Parameters<Parameters<DirectDatabase["transaction"]>[0]>[0];
 export interface ManualJournalRecoveryResult {
   readonly queued: number;
   readonly held: number;
+  readonly nextCursor?: string;
+}
+
+type ManualJournalRecoveryPage = Readonly<{
+  phase: "extraction" | "compaction";
+  roomAfter: string | null;
+  batchAfter: string | null;
+  limit: number;
+}>;
+
+function parseManualJournalRecoveryPage(
+  page: ManualJournalRecoveryInput["page"],
+): ManualJournalRecoveryPage | null {
+  if (page === undefined) return null;
+  if (!Number.isSafeInteger(page.limit) || page.limit < 1) {
+    throw new TypeError("Invalid Journal recovery page limit");
+  }
+  if (page.after === null) {
+    return {
+      phase: "extraction",
+      roomAfter: null,
+      batchAfter: null,
+      limit: page.limit,
+    };
+  }
+  const parts = page.after.split(":");
+  if (parts[0] === "extraction" && parts.length === 3
+    && isUuidString(parts[1] ?? "") && isUuidString(parts[2] ?? "")) {
+    return {
+      phase: "extraction",
+      roomAfter: parts[1]!,
+      batchAfter: parts[2]!,
+      limit: page.limit,
+    };
+  }
+  if (parts[0] === "compaction" && parts.length === 2
+    && (parts[1] === "" || isUuidString(parts[1] ?? ""))) {
+    return {
+      phase: "compaction",
+      roomAfter: parts[1] || null,
+      batchAfter: null,
+      limit: page.limit,
+    };
+  }
+  throw new TypeError("Invalid Journal recovery cursor");
 }
 
 export function classifyManualJournalRecoveryRequest(input: Readonly<{
@@ -368,6 +419,7 @@ export async function requestManualJournalRecovery(
 ): Promise<ManualJournalRecoveryResult> {
   if (!input.modelId.trim() || input.modelId.trim() !== input.modelId
     || input.observedThrough > input.now) return { queued: 0, held: 0 };
+  const page = parseManualJournalRecoveryPage(input.page);
   return input.db.transaction(async (tx) => {
     const [authorizer] = await tx.select({ id: users.id }).from(users).where(and(
       eq(users.id, input.authorizedBy),
@@ -387,7 +439,10 @@ export async function requestManualJournalRecovery(
         isNotNull(roomJournalModelRecoveries.spentAt),
         lte(roomJournalModelRecoveries.spentAt, roomJournalBatches.lastErrorAt),
       ));
-    const extraction = await tx.select({
+    // Discovery and exact locked rechecks share the Journal worker's stable
+    // Room/batch ordering. The cursor advances over every inspected row,
+    // including holds and duplicate or actively progressing candidates.
+    const extractionQuery = tx.select({
     roomId: roomJournalBatches.roomId,
     workId: roomJournalBatches.id,
     rebuildGeneration: roomJournalState.rebuildGeneration,
@@ -396,6 +451,11 @@ export async function requestManualJournalRecovery(
   }).from(roomJournalBatches)
     .innerJoin(roomJournalState, eq(roomJournalState.roomId, roomJournalBatches.roomId))
     .where(and(
+      page?.phase === "extraction"
+        && page.roomAfter !== null && page.batchAfter !== null
+        ? sql`(${roomJournalBatches.roomId}, ${roomJournalBatches.id})
+            > (${page.roomAfter}::uuid, ${page.batchAfter}::uuid)`
+        : undefined,
       eq(roomJournalBatches.status, "failed"),
       or(
         eq(roomJournalBatches.errorCode, "provider_outcome_unknown"),
@@ -407,6 +467,11 @@ export async function requestManualJournalRecovery(
       eq(roomJournalBatches.lastErrorAttempt, roomJournalBatches.attemptCount),
       lte(roomJournalBatches.lastErrorAt, input.observedThrough),
     )).orderBy(asc(roomJournalBatches.roomId), asc(roomJournalBatches.id));
+    const extraction = page?.phase === "compaction"
+      ? []
+      : await (page === null
+        ? extractionQuery
+        : extractionQuery.limit(page.limit));
     const spentCompactionRecovery = tx.select({ one: sql`1` })
       .from(roomJournalModelRecoveries)
       .where(and(
@@ -420,13 +485,16 @@ export async function requestManualJournalRecovery(
         isNotNull(roomJournalModelRecoveries.spentAt),
         lte(roomJournalModelRecoveries.spentAt, roomJournalState.lastCompactionErrorAt),
       ));
-    const compaction = await tx.select({
+    const compactionQuery = tx.select({
     roomId: roomJournalState.roomId,
     rebuildGeneration: roomJournalState.rebuildGeneration,
     observedAttempt: roomJournalState.compactionFailureCount,
     observedFailureAt: roomJournalState.lastCompactionErrorAt,
     plan: roomJournalState.compactionAcceptedPlan,
   }).from(roomJournalState).where(and(
+    page?.phase === "compaction" && page.roomAfter !== null
+      ? gt(roomJournalState.roomId, page.roomAfter)
+      : undefined,
     or(
       eq(roomJournalState.lastCompactionErrorCode, "provider_outcome_unknown"),
       and(
@@ -437,6 +505,11 @@ export async function requestManualJournalRecovery(
     eq(roomJournalState.lastCompactionErrorAttempt, roomJournalState.compactionFailureCount),
     lte(roomJournalState.lastCompactionErrorAt, input.observedThrough),
   )).orderBy(asc(roomJournalState.roomId));
+    const compaction = page !== null && page.phase === "extraction"
+      ? []
+      : await (page === null
+        ? compactionQuery
+        : compactionQuery.limit(page.limit));
     const candidates: Candidate[] = [
     ...extraction.flatMap((row) => row.observedFailureAt === null ? [] : [{
       roomId: row.roomId, workKind: "extraction" as const, workId: row.workId,
@@ -456,6 +529,25 @@ export async function requestManualJournalRecovery(
       const outcome = await queueCandidate(tx, candidate, input);
       if (outcome === "queued") queued += 1;
       else if (outcome === "held") held += 1;
+    }
+    if (page?.phase === "extraction") {
+      const last = extraction.at(-1);
+      return {
+        queued,
+        held,
+        nextCursor: extraction.length === page.limit && last !== undefined
+          ? `extraction:${last.roomId}:${last.workId}`
+          : "compaction:",
+      };
+    }
+    const last = compaction.at(-1);
+    if (page?.phase === "compaction"
+      && compaction.length === page.limit && last !== undefined) {
+      return {
+        queued,
+        held,
+        nextCursor: `compaction:${last.roomId}`,
+      };
     }
     return { queued, held };
   });

@@ -97,7 +97,7 @@ describe("MemoryRecoveryCard", () => {
     const partial: MemoryRecoveryRun = { ...receipt, reflection: { state: "unavailable" } };
     latest.mockResolvedValueOnce({ run: partial }).mockResolvedValueOnce({ run: receipt });
     const view = show();
-    await waitFor(() => expect(view.getByRole("status").textContent).toContain("new assessment"));
+    await waitFor(() => expect(view.getByRole("status").textContent).toContain("Assessment incomplete. Earlier batches may already be queued."));
     fireEvent.click(view.getByRole("button", { name: "Recover all memory" }));
     await waitFor(() => expect(view.getByRole("status").textContent).toContain("8 queued · 1 held"));
     expect(recover.mock.calls).toHaveLength(1);
@@ -154,7 +154,7 @@ describe("MemoryRecoveryCard", () => {
     operatorId = "second-operator";
     latest.mockResolvedValueOnce({ run: { ...receipt, reflection: { state: "unavailable" } } });
     const second = show();
-    await waitFor(() => expect(second.getByRole("status").textContent).toContain("new assessment"));
+    await waitFor(() => expect(second.getByRole("status").textContent).toContain("Assessment incomplete. Earlier batches may already be queued."));
     expect(second.queryByRole("alert")).toBeNull();
     fireEvent.click(second.getByRole("button", { name: "Recover all memory" }));
     await waitFor(() => expect(recover).toHaveBeenCalledTimes(2));

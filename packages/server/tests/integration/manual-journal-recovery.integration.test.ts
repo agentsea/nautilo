@@ -1033,13 +1033,34 @@ describe("manual Journal recovery on PostgreSQL", () => {
       ...rejectedCompactions.map((item) => item.failedAt.getTime()),
     ));
     const authorizedAt = new Date(observedThrough.getTime() + 1_000);
-    const receiptAssessment = await requestManualJournalRecovery({
-      db,
-      now: authorizedAt,
-      observedThrough,
-      authorizedBy: exact.f.userId,
-      modelId: RECOVERY_MODEL,
-    });
+    const receiptAssessment = { queued: 0, held: 0 };
+    const cursors = new Set<string>();
+    let after: string | null = null;
+    do {
+      const result = await requestManualJournalRecovery({
+        db,
+        now: authorizedAt,
+        observedThrough,
+        authorizedBy: exact.f.userId,
+        modelId: RECOVERY_MODEL,
+        page: { after, limit: 2 },
+      });
+      expect(result.queued + result.held).toBeLessThanOrEqual(2);
+      receiptAssessment.queued += result.queued;
+      receiptAssessment.held += result.held;
+      after = result.nextCursor ?? null;
+      if (after !== null) {
+        expect(cursors.has(after)).toBe(false);
+        cursors.add(after);
+      }
+    } while (after !== null);
+    expect([...cursors].some((cursor) =>
+      cursor.startsWith("extraction:")
+    )).toBe(true);
+    expect(cursors.has("compaction:")).toBe(true);
+    expect([...cursors].some((cursor) =>
+      cursor.startsWith("compaction:") && cursor !== "compaction:"
+    )).toBe(true);
     expect(receiptAssessment.held).toBeGreaterThanOrEqual(12);
 
     const queued = await db.select({

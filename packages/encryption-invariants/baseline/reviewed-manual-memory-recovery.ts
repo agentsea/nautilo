@@ -76,6 +76,7 @@ const RUN_FIELDS = [
   "observed_through",
   "reflection",
   "stenographer",
+  "progress",
 ] as const;
 
 const JOURNAL_TABLE = "public.room_journal_model_recoveries";

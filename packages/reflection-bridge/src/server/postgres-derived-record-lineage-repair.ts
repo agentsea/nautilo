@@ -1,9 +1,11 @@
 import {
   and,
+  asc,
   encryptionTransitionPolicy,
   eq,
   exists,
   gt,
+  inArray,
   isNull,
   lt,
   lte,
@@ -14,6 +16,7 @@ import {
   reflectionRecordPayloadRepresentationHeads,
   reflectionRecordPublications,
   reflectionRecords,
+  reflectionDerivedRecoveryCursorKeySql,
   reflectionRecordSemanticWork,
   users,
 } from "@nautilo/db";
@@ -27,6 +30,8 @@ import {
 
 export interface DerivedRecordLineageRepairResult {
   readonly requeued: number;
+  readonly scanned?: number;
+  readonly nextCursor?: string;
 }
 
 /**
@@ -40,6 +45,7 @@ export async function repairBlockedDerivedRecordLineage(input: Readonly<{
   now: Date;
   observedThrough: Date;
   authorizedBy: string;
+  page?: Readonly<{ after: string | null; limit: number }>;
 }>): Promise<DerivedRecordLineageRepairResult> {
   assertVerifiedRecordProductPostgresHandle(input.handle);
   const now = input.now;
@@ -53,6 +59,14 @@ export async function repairBlockedDerivedRecordLineage(input: Readonly<{
   ) throw new RangeError("derived Record repair timestamps are invalid");
   if (input.authorizedBy.trim().length === 0) {
     throw new TypeError("derived Record repair authorizer is invalid");
+  }
+  if (input.page !== undefined && (
+    !Number.isSafeInteger(input.page.limit)
+    || input.page.limit < 1
+    || (input.page.after !== null
+      && !/^derived:[0-9a-f]{64}$/.test(input.page.after))
+  )) {
+    throw new RangeError("derived Record repair page is invalid");
   }
 
   return input.handle.transaction(async (tx) => {
@@ -105,39 +119,81 @@ export async function repairBlockedDerivedRecordLineage(input: Readonly<{
       ),
       ne(reflectionRecordAuthorityReconciliations.state, "complete"),
     ));
+    const eligibility = and(
+      eq(reflectionRecords.recordId, reflectionRecordSemanticWork.recordId),
+      eq(reflectionRecordSemanticWork.state, "quarantined"),
+      eq(reflectionRecordSemanticWork.stage, "organization"),
+      eq(reflectionRecordSemanticWork.changeReason, "dependency_lost"),
+      eq(reflectionRecordSemanticWork.failureCode, "candidate_unavailable"),
+      // Dependency revalidation also returns a plain candidate hold when
+      // an upstream projection or exact source binding was unavailable.
+      or(
+        eq(reflectionRecordSemanticWork.failureDetail, "candidate_selection_invalid"),
+        isNull(reflectionRecordSemanticWork.failureDetail),
+      ),
+      isNull(reflectionRecordSemanticWork.manualRecoveryId),
+      lte(reflectionRecordSemanticWork.updatedAt, observedThrough),
+      lt(reflectionRecordSemanticWork.updatedAt, now),
+      isNull(reflectionRecordSemanticWork.claimGeneration),
+      isNull(reflectionRecordSemanticWork.leaseToken),
+      isNull(reflectionRecordSemanticWork.leaseExpiresAt),
+      isNull(reflectionRecordSemanticWork.acceptedModelBinding),
+      isNull(reflectionRecordSemanticWork.organizerProposalCheckpoint),
+      eq(reflectionRecords.lifecycle, "current"),
+      eq(reflectionRecords.disposition, "available"),
+      gt(reflectionRecords.structuralHeight, 0),
+      eq(reflectionRecords.producerPolicyVersion, "candidate-policy-v1"),
+      exists(ordinaryHead),
+      notExists(protectedHead),
+      notExists(pendingPublication),
+      notExists(pendingReconciliation),
+    );
+    const cursorKey = reflectionDerivedRecoveryCursorKeySql(
+      reflectionRecordSemanticWork.recordId,
+    );
+    const candidateQuery = recordProductTypedDb.select({
+      recordId: reflectionRecordSemanticWork.recordId,
+      cursor: cursorKey.as("cursor"),
+    }).from(reflectionRecordSemanticWork).innerJoin(
+      reflectionRecords,
+      eq(reflectionRecords.recordId, reflectionRecordSemanticWork.recordId),
+    ).where(and(
+      eligibility,
+      input.page?.after
+        ? gt(cursorKey, input.page.after)
+        : undefined,
+    )).orderBy(asc(cursorKey), asc(reflectionRecordSemanticWork.recordId)).for(
+      "update",
+      { of: reflectionRecordSemanticWork },
+    );
+    const candidates = await executeTypedRecordProductQuery(
+      tx,
+      input.page === undefined
+        ? candidateQuery
+        : candidateQuery.limit(input.page.limit),
+    );
+    if (candidates.length === 0) {
+      return input.page === undefined
+        ? { requeued: 0 }
+        : { requeued: 0, scanned: 0 };
+    }
+    const candidateIds = candidates.map(candidate => candidate.record_id);
     const queued = await executeTypedRecordProductQuery(tx,
       recordProductTypedDb.update(reflectionRecordSemanticWork).set({
         recoverAfter: now,
         updatedAt: now,
       }).from(reflectionRecords).where(and(
-        eq(reflectionRecords.recordId, reflectionRecordSemanticWork.recordId),
-        eq(reflectionRecordSemanticWork.state, "quarantined"),
-        eq(reflectionRecordSemanticWork.stage, "organization"),
-        eq(reflectionRecordSemanticWork.changeReason, "dependency_lost"),
-        eq(reflectionRecordSemanticWork.failureCode, "candidate_unavailable"),
-        // Dependency revalidation also returns a plain candidate hold when
-        // an upstream projection or exact source binding was unavailable.
-        or(
-          eq(reflectionRecordSemanticWork.failureDetail, "candidate_selection_invalid"),
-          isNull(reflectionRecordSemanticWork.failureDetail),
-        ),
-        isNull(reflectionRecordSemanticWork.manualRecoveryId),
-        lte(reflectionRecordSemanticWork.updatedAt, observedThrough),
-        lt(reflectionRecordSemanticWork.updatedAt, now),
-        isNull(reflectionRecordSemanticWork.claimGeneration),
-        isNull(reflectionRecordSemanticWork.leaseToken),
-        isNull(reflectionRecordSemanticWork.leaseExpiresAt),
-        isNull(reflectionRecordSemanticWork.acceptedModelBinding),
-        isNull(reflectionRecordSemanticWork.organizerProposalCheckpoint),
-        eq(reflectionRecords.lifecycle, "current"),
-        eq(reflectionRecords.disposition, "available"),
-        gt(reflectionRecords.structuralHeight, 0),
-        eq(reflectionRecords.producerPolicyVersion, "candidate-policy-v1"),
-        exists(ordinaryHead),
-        notExists(protectedHead),
-        notExists(pendingPublication),
-        notExists(pendingReconciliation),
+        eligibility,
+        inArray(reflectionRecordSemanticWork.recordId, candidateIds),
       )).returning({ recordId: reflectionRecordSemanticWork.recordId }));
-    return { requeued: queued.length };
+    if (input.page === undefined) return { requeued: queued.length };
+    const nextCursor = candidates.length === input.page.limit
+      ? candidates.at(-1)?.cursor
+      : undefined;
+    return {
+      requeued: queued.length,
+      scanned: candidates.length,
+      ...(nextCursor === undefined ? {} : { nextCursor }),
+    };
   }, { isolationLevel: "serializable" });
 }
