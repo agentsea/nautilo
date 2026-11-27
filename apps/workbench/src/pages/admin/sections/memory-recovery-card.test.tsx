@@ -135,6 +135,7 @@ describe("MemoryRecoveryCard", () => {
       unresolvedProviderOutcomes: 3,
       providerSucceededResultMissing: 2,
       resumedFromSavedProposal: 4,
+      quarantinedByReason: { invalidSelection: 37, missingAuthority: 4 },
       last24h: { completedWork: 6, syntheticParentsCreated: 0 },
     }));
     const view = show();
@@ -142,7 +143,7 @@ describe("MemoryRecoveryCard", () => {
     expect(view.getByText(/1 job has an unknown provider outcome/)).toBeTruthy();
     expect(view.getByText(/Automatic retries are on hold/)).toBeTruthy();
     expect(view.getByText(/4 resumed from a saved proposal. Completed in the past 24 hours: 6/)).toBeTruthy();
-    expect(view.getByText(/Held work is excluded/)).toBeTruthy();
+    expect(view.getByText(/37 with invalid source links · 4 missing current access evidence/)).toBeTruthy();
   });
 
   test("requires read permission before requesting status", () => {

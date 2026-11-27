@@ -24,7 +24,7 @@ export interface ReflectionStatusRoutesDeps {
   queryStatus: QueryReflectionStatus;
   queryRecoveryStatus?: (
     input: ReflectionStatusQueryInput,
-  ) => Promise<Pick<ReflectionAdminStatus, "providerSucceededResultMissing" | "resumedFromSavedProposal">>;
+  ) => Promise<Pick<ReflectionAdminStatus, "providerSucceededResultMissing" | "resumedFromSavedProposal" | "quarantinedByReason">>;
   queryAuthorityStatus?: (
     input: ReflectionStatusQueryInput,
   ) => Promise<ReflectionProtectedAuthorityStatus>;

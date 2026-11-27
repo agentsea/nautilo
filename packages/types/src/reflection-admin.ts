@@ -159,6 +159,9 @@ export const reflectionAdminStatusSchema = z.object({
   /** Current terminal holds whose exact settled provider ledger succeeded but
    * whose result is not durably available. This is never replay authority. */
   providerSucceededResultMissing: nonNegativeInteger.optional(),
+  quarantinedByReason: z.object({
+    invalidSelection: nonNegativeInteger, missingAuthority: nonNegativeInteger,
+  }).strict().optional(),
   unresolvedProviderOutcomes: nonNegativeInteger.optional(),
   /** Normal-worker resumptions from a durable saved proposal in this window.
    * Terminal holds are excluded. */

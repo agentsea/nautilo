@@ -50,9 +50,14 @@ export function summarizeReflection(status: ReflectionAdminStatus): RecoverySumm
   const succeededWithoutResult = status.providerSucceededResultMissing ?? 0;
   const unresolved = status.unresolvedProviderOutcomes ?? 0;
   const ambiguous = Math.max(0, unresolved - succeededWithoutResult);
+  const holds = status.quarantinedByReason;
+  const sourceHolds = [
+    holds?.invalidSelection ? `${holds.invalidSelection.toLocaleString()} with invalid source links` : null,
+    holds?.missingAuthority ? `${holds.missingAuthority.toLocaleString()} missing current access evidence` : null,
+  ].filter(Boolean).join(" · ");
   const recovery = status.resumedFromSavedProposal === undefined
     ? undefined
-    : `${status.resumedFromSavedProposal.toLocaleString()} resumed from a saved proposal. Completed in the past 24 hours: ${status.last24h.completedWork.toLocaleString()}. Held work is excluded.`;
+    : `${status.resumedFromSavedProposal.toLocaleString()} resumed from a saved proposal. Completed in the past 24 hours: ${status.last24h.completedWork.toLocaleString()}. Held work is excluded.${sourceHolds ? ` Quarantined: ${sourceHolds}.` : ""}`;
   if (succeededWithoutResult > 0 || ambiguous > 0) {
     const reasons = [
       succeededWithoutResult > 0

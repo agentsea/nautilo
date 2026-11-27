@@ -2647,6 +2647,7 @@ export async function createApp(options?: CreateAppOptions) {
       }, getServerDirectDb());
       return {
         providerSucceededResultMissing: diagnostics.providerSucceededResultMissing,
+        quarantinedByReason: diagnostics.quarantinedByReason,
         resumedFromSavedProposal: diagnostics.resumedFromSavedProposal,
       };
     },

@@ -11,6 +11,7 @@ export type ReflectionRecoveryDiagnostics = Readonly<{
   providerSucceededResultMissing: number;
   providerOutcomeUnknown: number;
   resumedFromSavedProposal: number;
+  quarantinedByReason: { invalidSelection: number; missingAuthority: number };
 }>;
 
 function serviceBinding(value: unknown): ServiceBinding | null {
@@ -125,9 +126,21 @@ export async function readReflectionRecoveryDiagnostics(
     ),
   ));
 
+  const work = reflectionRecordSemanticWork;
+  const reasons = await db.select({ code: work.failureCode, detail: work.failureDetail, total: count() })
+    .from(work).where(and(eq(work.state, "quarantined"), or(
+      eq(work.failureCode, "authority_unavailable"),
+      and(eq(work.failureCode, "candidate_unavailable"), eq(work.failureDetail, "candidate_selection_invalid")),
+    ))).groupBy(work.failureCode, work.failureDetail);
+  const quarantinedByReason = { invalidSelection: 0, missingAuthority: 0 };
+  for (const reason of reasons) {
+    if (reason.code === "authority_unavailable") quarantinedByReason.missingAuthority += reason.total;
+    else quarantinedByReason.invalidSelection += reason.total;
+  }
   return {
     providerSucceededResultMissing,
     providerOutcomeUnknown: unproven,
+    quarantinedByReason,
     resumedFromSavedProposal: Number(resume?.count ?? 0),
   };
 }
