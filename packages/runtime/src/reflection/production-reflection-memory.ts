@@ -43,6 +43,7 @@ import {
   type RecordSearchPort,
 } from "@nautilo/reflection/search";
 import type { DurableModelExposureDependency, DurableRecordEnvelope } from "@nautilo/reflection/durable";
+import { invocationAudienceIsEligible } from "@nautilo/reflection/authority";
 import type { MemoryOperationBinding } from "@nautilo/types";
 import {
   BoundedRecordEvidenceTraversalCheckpoints,
@@ -489,6 +490,7 @@ export async function createProductionReflectionMemoryRuntime(
     bindings: bindings.evidence,
     ordinary: createDirectDatabaseOrdinaryRoomSourceQueries(input.db),
     fingerprints: createHmacOrdinarySourceFingerprintPort(input.commitmentKey),
+    authorityBlocks: authorityProjections,
     ...(input.protectedMemoryCandidates === undefined
       ? {}
       : { protectedMemoryCandidates: input.protectedMemoryCandidates }),
@@ -924,6 +926,30 @@ export async function createProductionReflectionMemoryRuntime(
               const resolved = await bindings.evidence.resolveNamespace(
                 dependency.terminalAuthorityLeafHandle,
               );
+              if (
+                application.claim.changeReason === "dependency_lost"
+                && input.selection.selectedRepresentation === "ordinary"
+                && (
+                  typeof dependency.observedRevision !== "string"
+                  || dependency.observedRevision.trim().length === 0
+                  || typeof dependency.observedContentFingerprint !== "string"
+                  || dependency.observedContentFingerprint.trim().length === 0
+                  || !context.opened.semantic.terminalAuthorityLeafHandles.includes(
+                    dependency.terminalAuthorityLeafHandle,
+                  )
+                  || resolved === null
+                  || !invocationAudienceIsEligible(
+                    context.binding.invocationAudience,
+                    [resolved.audience],
+                  )
+                  || await authorityProjections.isImmediatelyBlocked({
+                    recordRef: context.opened.recordRef,
+                    terminalAuthorityLeafHandles: [
+                      dependency.terminalAuthorityLeafHandle,
+                    ],
+                  }) !== null
+                )
+              ) return null;
               return resolved?.bindingRef ?? null;
             },
           },
@@ -1028,6 +1054,9 @@ export async function createProductionReflectionMemoryRuntime(
           recordBindings: publicationBindings,
           eligibility,
           source: sources,
+          ...(input.selection.selectedRepresentation === "ordinary"
+            ? { inheritedMemorySource: sources }
+            : {}),
           invalidation,
           statements: {
             async rewrite(rewriteInput) {

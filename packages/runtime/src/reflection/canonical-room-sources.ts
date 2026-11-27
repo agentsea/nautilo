@@ -12,11 +12,14 @@ import {
   RECORD_SEARCH_POLICY_V1,
 } from "@nautilo/reflection/search";
 import { CANDIDATE_POLICY_V1 } from "@nautilo/reflection";
+import { invocationAudienceIsEligible } from "@nautilo/reflection/authority";
 import type {
+  AuthorityProjectionStorePort,
   CanonicalRecordSourceReadPort,
   CanonicalRecordSourceReadResult,
   CrossRoomMemoryCandidate,
   CrossRoomMemoryOpenPort,
+  DeclaredInheritedMemorySourceReadPort,
   RecordRepositorySelection,
   RoomLocalMemoryCandidate,
   RoomLocalMemoryCandidatePort,
@@ -225,12 +228,13 @@ function bytes(value: string): number {
 /** Selected-mode source adapter. Protected selection never opens ordinary bytes. */
 export class SelectedRoomLocalSourceAdapter
 implements RoomLocalMemoryCandidatePort, CanonicalRecordSourceReadPort,
-CrossRoomMemoryOpenPort {
+CrossRoomMemoryOpenPort, DeclaredInheritedMemorySourceReadPort {
   constructor(private readonly ports: Readonly<{
     selection: RecordRepositorySelection;
     bindings: CanonicalRoomEvidenceBindingPort;
     ordinary: OrdinaryRoomSourceQueryPort;
     fingerprints: OrdinarySourceFingerprintPort;
+    authorityBlocks?: Pick<AuthorityProjectionStorePort, "isImmediatelyBlocked">;
     protectedMemoryCandidates?: RoomLocalMemoryCandidatePort;
     protectedSource?: CanonicalRecordSourceReadPort;
   }>) {}
@@ -340,6 +344,46 @@ CrossRoomMemoryOpenPort {
       );
     }
     return { status: "unavailable" };
+  }
+
+  async readExactDeclaredMemory(
+    input: Parameters<DeclaredInheritedMemorySourceReadPort["readExactDeclaredMemory"]>[0],
+  ): ReturnType<DeclaredInheritedMemorySourceReadPort["readExactDeclaredMemory"]> {
+    if (
+      this.ports.selection.selectedRepresentation !== "ordinary"
+      || input.signal?.aborted
+      || input.dependency.sourceKind !== MEMORY_SOURCE_KIND
+      || !input.dependency.authorityBearing
+    ) return { status: "not_applicable" };
+    if (
+      typeof input.dependency.observedRevision !== "string"
+      || input.dependency.observedRevision.trim().length === 0
+      || typeof input.dependency.observedContentFingerprint !== "string"
+      || input.dependency.observedContentFingerprint.trim().length === 0
+    ) return { status: "unavailable" };
+    const native = await this.ports.bindings.resolveNamespace(
+      input.dependency.terminalAuthorityLeafHandle,
+    );
+    if (
+      native === null
+      || native.namespaceId !== input.dependency.terminalAuthorityLeafHandle
+    ) return { status: "unavailable" };
+    if (native.bindingRef === input.evidenceBindingRef) {
+      return { status: "not_applicable" };
+    }
+    if (
+      !invocationAudienceIsEligible(input.invocationAudience, [native.audience])
+      || this.ports.authorityBlocks === undefined
+      || await this.ports.authorityBlocks.isImmediatelyBlocked({
+        recordRef: input.owningRecordRef,
+        terminalAuthorityLeafHandles: [native.namespaceId],
+      }) !== null
+    ) return { status: "unavailable" };
+    return this.#readMemory(
+      input.dependency,
+      native.namespaceId,
+      input.returnedBytesMaximum,
+    );
   }
 
   async open(

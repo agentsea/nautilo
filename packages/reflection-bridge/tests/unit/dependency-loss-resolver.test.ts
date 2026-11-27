@@ -133,6 +133,170 @@ describe("exact grounded dependency loss", () => {
     expect(rewrites).toBe(0);
   });
 
+  test("reopens declared inherited Memory and revalidates it before rewrite", async () => {
+    const changedDependency = {
+      ...dependency,
+      logicalSourceRef: "memory:changed",
+    };
+    const inheritedReads: unknown[] = [];
+    const invalidations: unknown[] = [];
+    let rewriteInput: unknown;
+    const resolver = new ExactGroundedDependencyLossResolver({
+      eligibility: {} as never,
+      repository: {} as never,
+      source: {
+        async readExact({ dependency: current }) {
+          return current.logicalSourceRef === dependency.logicalSourceRef
+            ? { status: "unavailable" as const }
+            : { status: "changed" as const };
+        },
+      },
+      inheritedMemorySource: {
+        async readExactDeclaredMemory(value) {
+          inheritedReads.push(value);
+          return {
+            status: "available",
+            kind: "memory",
+            content: "Exact inherited Memory support.",
+          };
+        },
+      },
+      invalidation: { async admit(value) { invalidations.push(value); } },
+      statements: {
+        async rewrite(value) {
+          rewriteInput = value;
+          return {
+            status: "available",
+            statement: "Inherited support remains current.",
+            modelCalls: 1,
+          };
+        },
+      },
+    });
+
+    expect(await resolver.resolve({
+      ...input,
+      record: {
+        ...input.record,
+        semantic: {
+          ...input.record.semantic,
+          sourceDependencies: [dependency, changedDependency],
+          childRecordRefs: [],
+        },
+      },
+    })).toMatchObject({
+      status: "partial_loss",
+      remainingSourceDependencies: [dependency],
+    });
+    expect(inheritedReads).toHaveLength(2);
+    expect(inheritedReads[0]).toMatchObject({
+      dependency,
+      owningRecordRef: input.record.recordRef,
+      evidenceBindingRef: input.binding.readBindingRef,
+      invocationAudience: input.binding.invocationAudience,
+    });
+    expect(rewriteInput).toEqual({
+      remainingSupportStatements: ["Exact inherited Memory support."],
+    });
+    expect(invalidations).toEqual([{
+      dependency: changedDependency,
+      reason: "changed",
+    }]);
+  });
+
+  test("leaves undeclared or inaccessible inherited Memory untouched", async () => {
+    for (const variant of ["undeclared", "inaccessible"] as const) {
+      const invalidations: unknown[] = [];
+      let inheritedReads = 0;
+      const resolver = new ExactGroundedDependencyLossResolver({
+        eligibility: {} as never,
+        repository: {} as never,
+        source: { async readExact() { return { status: "unavailable" }; } },
+        inheritedMemorySource: {
+          async readExactDeclaredMemory() {
+            inheritedReads += 1;
+            return { status: "unavailable" };
+          },
+        },
+        invalidation: { async admit(value) { invalidations.push(value); } },
+        statements: {} as never,
+      });
+      expect(await resolver.resolve({
+        ...input,
+        record: {
+          ...input.record,
+          semantic: {
+            ...input.record.semantic,
+            childRecordRefs: [],
+            terminalAuthorityLeafHandles: variant === "undeclared"
+              ? ["namespace:other"]
+              : [dependency.terminalAuthorityLeafHandle],
+          },
+        },
+      })).toEqual({ status: "unavailable" });
+      expect(inheritedReads).toBe(variant === "undeclared" ? 0 : 1);
+      expect(invalidations).toEqual([]);
+    }
+  });
+
+  test("stops before rewrite when inherited Memory access is revoked", async () => {
+    const changedDependency = {
+      ...dependency,
+      logicalSourceRef: "memory:changed",
+    };
+    let inheritedReads = 0;
+    let rewrites = 0;
+    const invalidations: unknown[] = [];
+    const resolver = new ExactGroundedDependencyLossResolver({
+      eligibility: {} as never,
+      repository: {} as never,
+      source: {
+        async readExact({ dependency: current }) {
+          return current.logicalSourceRef === dependency.logicalSourceRef
+            ? { status: "unavailable" as const }
+            : { status: "changed" as const };
+        },
+      },
+      inheritedMemorySource: {
+        async readExactDeclaredMemory() {
+          inheritedReads += 1;
+          return inheritedReads === 1
+            ? {
+                status: "available",
+                kind: "memory",
+                content: "Exact inherited Memory support.",
+              }
+            : { status: "unavailable" };
+        },
+      },
+      invalidation: { async admit(value) { invalidations.push(value); } },
+      statements: {
+        async rewrite() {
+          rewrites += 1;
+          return { status: "unavailable" };
+        },
+      },
+    });
+
+    expect(await resolver.resolve({
+      ...input,
+      record: {
+        ...input.record,
+        semantic: {
+          ...input.record.semantic,
+          sourceDependencies: [dependency, changedDependency],
+          childRecordRefs: [],
+        },
+      },
+    })).toEqual({ status: "unavailable" });
+    expect(inheritedReads).toBe(2);
+    expect(rewrites).toBe(0);
+    expect(invalidations).toEqual([{
+      dependency: changedDependency,
+      reason: "changed",
+    }]);
+  });
+
   test("sunsets when the only source is proven changed", async () => {
     let rewrites = 0;
     const resolver = new ExactGroundedDependencyLossResolver({

@@ -51,6 +51,10 @@ export interface CanonicalRoomEvidenceBindingPort {
     roomId: string;
     namespaceId: string;
     bindingRef: string;
+    audience: Readonly<{
+      humanRefs: readonly string[];
+      includesPublicBoundary: boolean;
+    }>;
   }> | null>;
 }
 
@@ -279,6 +283,7 @@ export function createCanonicalSameRoomBindingPorts(input: Readonly<{
         roomId: room.roomId,
         namespaceId: normalized,
         bindingRef: `journal:namespace:${normalized}:${input.selection.selectedRepresentation}:v${input.selection.migrationGeneration}`,
+        audience: audience(access),
       };
     },
   };

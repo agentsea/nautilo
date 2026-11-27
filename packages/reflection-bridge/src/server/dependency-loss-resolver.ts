@@ -3,6 +3,7 @@ import type {
   DurableRecordEnvelope,
   DurableSourceDependency,
 } from "@nautilo/reflection/durable";
+import type { EffectiveAudienceAlternative } from "@nautilo/reflection/authority";
 
 import type { ProjectedAuthorityEligibility } from "./authority-eligibility";
 import type { RecordRepositoryPort } from "./contracts";
@@ -12,6 +13,7 @@ import type {
 } from "./durable-semantic-composition";
 import type {
   CanonicalRecordSourceReadPort,
+  CanonicalRecordSourceReadResult,
   RecordSourceInvalidationPort,
 } from "./record-source-evidence";
 import type { CurrentRecordPublicationBindingPort } from "./postgres-current-record-publication-binding";
@@ -38,6 +40,20 @@ export interface GroundedDependencyStatementPort {
   }>): Promise<
     | { readonly status: "available"; readonly statement: string; readonly modelCalls: 1 | 2 }
     | { readonly status: "unavailable" }
+  >;
+}
+
+export interface DeclaredInheritedMemorySourceReadPort {
+  readExactDeclaredMemory(input: Readonly<{
+    dependency: DurableSourceDependency;
+    owningRecordRef: string;
+    evidenceBindingRef: string;
+    invocationAudience: EffectiveAudienceAlternative;
+    returnedBytesMaximum: number;
+    signal?: AbortSignal;
+  }>): Promise<
+    CanonicalRecordSourceReadResult
+    | Readonly<{ status: "not_applicable" }>
   >;
 }
 
@@ -246,6 +262,7 @@ implements GroundedDependencyLossPort {
     recordBindings?: CurrentRecordPublicationBindingPort;
     eligibility: ProjectedAuthorityEligibility;
     source: CanonicalRecordSourceReadPort;
+    inheritedMemorySource?: DeclaredInheritedMemorySourceReadPort;
     invalidation: RecordSourceInvalidationPort;
     statements: GroundedDependencyStatementPort;
   }>) {}
@@ -268,6 +285,7 @@ implements GroundedDependencyLossPort {
       priorExposures.set(identity, exposure);
     }
     const support: string[] = [];
+    const sourceRevalidations = new Map<string, () => Promise<boolean>>();
     let lost = 0;
     let recomputeWithoutHistoricalExposure = false;
 
@@ -419,14 +437,42 @@ implements GroundedDependencyLossPort {
       semanticSupport: boolean,
     ): Promise<"available" | "lost" | "unavailable"> => {
       const identity = `source\0${dependency.sourceKind}\0${dependency.logicalSourceRef}`;
-      const exact = await this.ports.source.readExact({
-        dependency,
-        evidenceBindingRef: input.binding.readBindingRef,
-        returnedBytesMaximum: SUPPORT_BODY_BYTES_MAXIMUM,
-        ...(input.signal === undefined ? {} : { signal: input.signal }),
-      });
+      const openExact = async (): Promise<Readonly<{
+        result: CanonicalRecordSourceReadResult;
+        inherited: boolean;
+      }>> => {
+        const sameRoom = await this.ports.source.readExact({
+          dependency,
+          evidenceBindingRef: input.binding.readBindingRef,
+          returnedBytesMaximum: SUPPORT_BODY_BYTES_MAXIMUM,
+          ...(input.signal === undefined ? {} : { signal: input.signal }),
+        });
+        if (
+          sameRoom.status !== "unavailable"
+          || this.ports.inheritedMemorySource === undefined
+        ) return { result: sameRoom, inherited: false };
+        if (!input.record.semantic.terminalAuthorityLeafHandles.includes(
+          dependency.terminalAuthorityLeafHandle,
+        )) return { result: { status: "unavailable" }, inherited: true };
+        const inherited = await this.ports.inheritedMemorySource
+          .readExactDeclaredMemory({
+            dependency,
+            owningRecordRef: input.record.recordRef,
+            evidenceBindingRef: input.binding.readBindingRef,
+            invocationAudience: input.binding.invocationAudience,
+            returnedBytesMaximum: SUPPORT_BODY_BYTES_MAXIMUM,
+            ...(input.signal === undefined ? {} : { signal: input.signal }),
+          });
+        return inherited.status === "not_applicable"
+          ? { result: sameRoom, inherited: false }
+          : { result: inherited, inherited: true };
+      };
+      const opened = await openExact();
+      const exact = opened.result;
       if (exact.status === "unavailable") {
-        await this.ports.invalidation.admit({ dependency, reason: "unavailable" });
+        if (!opened.inherited) {
+          await this.ports.invalidation.admit({ dependency, reason: "unavailable" });
+        }
         return "unavailable";
       }
       if (exact.status === "changed") {
@@ -440,6 +486,10 @@ implements GroundedDependencyLossPort {
       if (!supportIdentities.has(identity)) {
         supportIdentities.add(identity);
         support.push(exact.content);
+        sourceRevalidations.set(identity, async () => {
+          const current = (await openExact()).result;
+          return current.status === "available" && current.content === exact.content;
+        });
       }
       if (!exposureIdentities.has(identity)) {
         exposureIdentities.add(identity);
@@ -609,6 +659,9 @@ implements GroundedDependencyLossPort {
     ) return recomputeWithoutHistoricalExposure
       ? { status: "unavailable" }
       : { status: "total_loss" };
+    for (const revalidate of sourceRevalidations.values()) {
+      if (!await revalidate()) return { status: "unavailable" };
+    }
     const rewritten = await this.ports.statements.rewrite({
       remainingSupportStatements: support,
       ...(input.signal === undefined ? {} : { signal: input.signal }),

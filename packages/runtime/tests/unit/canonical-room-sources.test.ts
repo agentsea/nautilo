@@ -15,6 +15,7 @@ import {
 const ROOM = "55000000-0000-4000-8000-000000000001";
 const NAMESPACE = "66000000-0000-4000-8000-000000000001";
 const MEMORY = "77000000-0000-4000-8000-000000000001";
+const HUMAN = "11111111-1111-4111-8111-111111111111";
 const BINDING = `journal:namespace:${NAMESPACE}:ordinary:v1`;
 const VECTOR = Object.freeze(new Array<number>(1_536).fill(Math.fround(0.01)));
 const QUERY_EMBEDDING = Object.freeze({
@@ -40,7 +41,7 @@ const MEMORY_ROW: OrdinaryMemorySourceRow = Object.freeze({
   updatedAtCoordinate: "2026-08-14T10:00:00.864695Z",
 });
 
-function bindings() {
+function bindings(humanRefs: readonly string[] = [HUMAN]) {
   return {
     resolve: async (bindingRef: string) =>
       bindingRef === BINDING ? { roomId: ROOM, namespaceId: NAMESPACE } : null,
@@ -48,7 +49,12 @@ function bindings() {
       roomId === ROOM ? { roomId: ROOM, namespaceId: NAMESPACE } : null,
     resolveNamespace: async (namespaceId: string) =>
       namespaceId === NAMESPACE
-        ? { roomId: ROOM, namespaceId: NAMESPACE, bindingRef: BINDING }
+        ? {
+            roomId: ROOM,
+            namespaceId: NAMESPACE,
+            bindingRef: BINDING,
+            audience: { humanRefs, includesPublicBoundary: false },
+          }
         : null,
   };
 }
@@ -77,15 +83,24 @@ function adapter(input: Readonly<{
   ordinary?: OrdinaryRoomSourceQueryPort;
   protectedMemoryCandidates?: RoomLocalMemoryCandidatePort;
   protectedSource?: CanonicalRecordSourceReadPort;
+  audienceHumanRefs?: readonly string[];
+  blocked?: boolean;
+  authorityBlockInputs?: unknown[];
 }> = {}) {
   return new SelectedRoomLocalSourceAdapter({
     selection: {
       selectedRepresentation: input.representation ?? "ordinary",
       migrationGeneration: 1,
     },
-    bindings: bindings(),
+    bindings: bindings(input.audienceHumanRefs),
     ordinary: input.ordinary ?? queries(),
     fingerprints: FINGERPRINTS,
+    authorityBlocks: {
+      isImmediatelyBlocked: async (value) => {
+        input.authorityBlockInputs?.push(value);
+        return input.blocked === true ? "blocked" : null;
+      },
+    },
     ...(input.protectedSource === undefined
       ? {}
       : { protectedSource: input.protectedSource }),
@@ -265,6 +280,102 @@ describe("selected Room-local Memory and Message source adapter", () => {
     expect(await adapter().open({
       candidate: { ...candidate, updatedAtCoordinate: "2026-08-14T10:00:00.864696Z" },
     })).toEqual({ status: "stale" });
+  });
+
+  test("reopens declared inherited Memory only through its native eligible audience", async () => {
+    const dependency = {
+      sourceKind: "memory",
+      logicalSourceRef: `memory:${MEMORY}`,
+      observedRevision: "4",
+      observedContentFingerprint: FINGERPRINTS.memory(MEMORY_ROW),
+      terminalAuthorityLeafHandle: NAMESPACE,
+      authorityBearing: true,
+    } as const;
+    const request = {
+      dependency,
+      owningRecordRef: "record:summary",
+      evidenceBindingRef:
+        "journal:namespace:88000000-0000-4000-8000-000000000001:ordinary:v1",
+      invocationAudience: {
+        humanRefs: [HUMAN],
+        includesPublicBoundary: false,
+      },
+      returnedBytesMaximum: 8_192,
+    } as const;
+    const authorityBlockInputs: unknown[] = [];
+    expect(await adapter({ authorityBlockInputs }).readExactDeclaredMemory(request)).toEqual({
+      status: "available",
+      kind: "memory",
+      content: MEMORY_ROW.content,
+    });
+    expect(authorityBlockInputs).toEqual([{
+      recordRef: "record:summary",
+      terminalAuthorityLeafHandles: [NAMESPACE],
+    }]);
+    expect(await adapter({ audienceHumanRefs: ["human:other"] })
+      .readExactDeclaredMemory(request)).toEqual({ status: "unavailable" });
+    expect(await adapter({ blocked: true }).readExactDeclaredMemory(request))
+      .toEqual({ status: "unavailable" });
+    expect(await adapter().readExactDeclaredMemory({
+      ...request,
+      dependency: {
+        ...dependency,
+        terminalAuthorityLeafHandle:
+          "99000000-0000-4000-8000-000000000001",
+      },
+    })).toEqual({ status: "unavailable" });
+    expect(await adapter().readExactDeclaredMemory({
+      ...request,
+      dependency: {
+        ...dependency,
+        observedContentFingerprint: "hmac-sha256:wrong",
+      },
+    })).toEqual({ status: "changed" });
+    expect(await adapter().readExactDeclaredMemory({
+      ...request,
+      dependency: { ...dependency, observedRevision: "" },
+    })).toEqual({ status: "unavailable" });
+    expect(await adapter().readExactDeclaredMemory({
+      ...request,
+      dependency: { ...dependency, observedContentFingerprint: "" },
+    })).toEqual({ status: "unavailable" });
+  });
+
+  test("inherited Memory opening excludes same-binding and protected reads", async () => {
+    const dependency = {
+      sourceKind: "memory",
+      logicalSourceRef: `memory:${MEMORY}`,
+      observedRevision: "4",
+      observedContentFingerprint: FINGERPRINTS.memory(MEMORY_ROW),
+      terminalAuthorityLeafHandle: NAMESPACE,
+      authorityBearing: true,
+    } as const;
+    const input = {
+      dependency,
+      owningRecordRef: "record:summary",
+      evidenceBindingRef: BINDING,
+      invocationAudience: {
+        humanRefs: [HUMAN],
+        includesPublicBoundary: false,
+      },
+      returnedBytesMaximum: 8_192,
+    } as const;
+    expect(await adapter().readExactDeclaredMemory(input))
+      .toEqual({ status: "not_applicable" });
+    let ordinaryReads = 0;
+    expect(await adapter({
+      representation: "protected",
+      ordinary: queries({
+        readMemory: async () => {
+          ordinaryReads += 1;
+          return MEMORY_ROW;
+        },
+      }),
+    }).readExactDeclaredMemory({
+      ...input,
+      evidenceBindingRef: "protected:other",
+    })).toEqual({ status: "not_applicable" });
+    expect(ordinaryReads).toBe(0);
   });
 
   test("reauthorizes exact Message Room, revision, and Stenographer fingerprint", async () => {
