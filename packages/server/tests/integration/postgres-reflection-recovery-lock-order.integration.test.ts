@@ -96,7 +96,7 @@ async function insertDerivedRepairHolds(
     attemptCount: 8,
     quarantineRound: 8,
     failureCode: "candidate_unavailable" as const,
-    failureDetail: "candidate_selection_invalid",
+    failureDetail: "candidate_selection_invalid" as const,
     recoverAfter: updatedAt,
     dueSince: updatedAt,
     startedAt: updatedAt,
