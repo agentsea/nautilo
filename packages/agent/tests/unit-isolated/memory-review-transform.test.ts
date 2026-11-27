@@ -70,13 +70,29 @@ describe("Memory transform completion", () => {
   test("only explicit successful no-change completes an empty proposal", async () => {
     setup();
     const options = { workId: "work", modelId: "model", memoryAccessEnvelope: envelope };
-    for (const content of [
-      "Nothing to save.",
-      [{ type: "text" as const, text: "Nothing to save." }],
+    for (const response of [
+      new AIMessage("Nothing to save."),
+      new AIMessage({ content: [{ type: "text" as const, text: "Nothing to save." }] }),
+      // Installed @langchain/anthropic streaming aggregation retains adaptive
+      // thinking beside the visible text in the AIMessage content array.
+      new AIMessage({
+        content: [
+          { type: "thinking", thinking: "private reasoning", signature: "provider-signature", index: 0 },
+          { type: "text", text: "Nothing to save.", index: 1 },
+        ],
+        response_metadata: { model_provider: "anthropic" },
+      }),
+      new AIMessage({
+        content: [
+          { type: "redacted_thinking", data: "opaque-provider-data", index: 0 },
+          { type: "text", text: "Nothing to save.", index: 1 },
+        ],
+        response_metadata: { model_provider: "anthropic" },
+      }),
     ]) {
       const result = await prepareMemoryReview([], {
         ...options,
-        invokeModel: model([new AIMessage({ content })]),
+        invokeModel: model([response]),
       });
       expect(result.status).toBe("prepared");
       if (result.status === "prepared") expect(result.proposal.operations).toEqual([]);
@@ -92,6 +108,7 @@ describe("Memory transform completion", () => {
       [{ type: "text" as const, text: "Nothing to save." }, { type: "text" as const, text: "Extra" }],
       [{ type: "image_url" as const, image_url: { url: "data:image/png;base64," } }],
       [{ type: "text" as const, text: 42 }],
+      [{ type: "thinking", thinking: "reasoning", signature: "provider-signature" }],
     ];
     for (const content of invalidContents) {
       const result = await prepareMemoryReview([], {
@@ -100,6 +117,46 @@ describe("Memory transform completion", () => {
       });
       expect(result).toMatchObject({ status: "failed", reason: "invalid_proposal" });
     }
+    for (const response of [
+      // Reasoning is never itself an explicit no-change decision.
+      new AIMessage({
+        content: [{ type: "thinking", thinking: "Nothing to save.", signature: "provider-signature" }],
+        response_metadata: { model_provider: "anthropic" },
+      }),
+      // Extra visible/provider content remains invalid even when the sentinel
+      // and a valid private Anthropic envelope are both present.
+      new AIMessage({
+        content: [
+          { type: "thinking", thinking: "private reasoning", signature: "provider-signature" },
+          { type: "text", text: "Nothing to save." },
+          { type: "image_url", image_url: { url: "data:image/png;base64," } },
+        ],
+        response_metadata: { model_provider: "anthropic" },
+      }),
+      // Identical-looking blocks from another adapter are not granted the
+      // Anthropic provider-envelope exception.
+      new AIMessage({
+        content: [
+          { type: "thinking", thinking: "private reasoning", signature: "provider-signature" },
+          { type: "text", text: "Nothing to save." },
+        ],
+        response_metadata: { model_provider: "openai" },
+      }),
+      // A malformed Anthropic reasoning block cannot be hidden from strict
+      // visible-content validation.
+      new AIMessage({
+        content: [
+          { type: "thinking", thinking: "private reasoning" },
+          { type: "text", text: "Nothing to save." },
+        ],
+        response_metadata: { model_provider: "anthropic" },
+      }),
+    ]) {
+      expect(await prepareMemoryReview([], {
+        ...options,
+        invokeModel: model([response]),
+      })).toMatchObject({ status: "failed", reason: "invalid_proposal" });
+    }
     expect(await prepareMemoryReview([], {
       ...options,
       invokeModel: model([new AIMessage({
@@ -107,6 +164,28 @@ describe("Memory transform completion", () => {
         invalid_tool_calls: [{ name: "manage_memory", args: "{", error: "invalid" }],
       })]),
     })).toMatchObject({ status: "failed", reason: "invalid_proposal" });
+  });
+  test("Anthropic private reasoning does not displace strict tool-call completion", async () => {
+    setup();
+    const result = await prepareMemoryReview([], {
+      workId: "work", modelId: "model", memoryAccessEnvelope: envelope,
+      invokeModel: model([
+        new AIMessage({
+          content: [{ type: "thinking", thinking: "private reasoning", signature: "provider-signature" }],
+          tool_calls: [{ name: "manage_memory", args: { action: "save", content: "Fact" } }],
+          response_metadata: { model_provider: "anthropic" },
+        }),
+        new AIMessage({
+          content: [
+            { type: "thinking", thinking: "private reasoning", signature: "provider-signature" },
+            { type: "text", text: "Done." },
+          ],
+          response_metadata: { model_provider: "anthropic" },
+        }),
+      ]),
+    });
+    expect(result.status).toBe("prepared");
+    if (result.status === "prepared") expect(result.proposal.operations).toHaveLength(1);
   });
   test("reports content-free exposure before the next paid call and publication", async () => {
     setup();

@@ -158,7 +158,7 @@ async function prepareMemoryReviewWithUsage(messages: BaseMessage[], options: Me
                   admittedModelExposureDependencies,
               }),
         };
-        if (proposal.operations.length === 0 && cleanTextResponse(admittedResponse.content) !== NO_MEMORY_CHANGES_SENTINEL) throw new MemoryReviewError("invalid_proposal");
+        if (proposal.operations.length === 0 && cleanTextResponse(admittedResponse) !== NO_MEMORY_CHANGES_SENTINEL) throw new MemoryReviewError("invalid_proposal");
         return { status: "prepared", proposal, turns, modelId };
       }
       for (const [index, call] of admittedResponse.tool_calls.entries()) {
@@ -180,10 +180,25 @@ async function prepareMemoryReviewWithUsage(messages: BaseMessage[], options: Me
   }
 }
 
-function cleanTextResponse(content: BaseMessage["content"]): string | null {
+function isAnthropicPrivateReasoningBlock(
+  block: unknown,
+  response: AIMessage,
+): boolean {
+  if (response.response_metadata["model_provider"] !== "anthropic"
+    || !block || typeof block !== "object") return false;
+  const candidate = block as Record<string, unknown>;
+  return candidate["type"] === "thinking"
+    ? typeof candidate["thinking"] === "string" && typeof candidate["signature"] === "string"
+    : candidate["type"] === "redacted_thinking" && typeof candidate["data"] === "string";
+}
+
+function cleanTextResponse(response: AIMessage): string | null {
+  const { content } = response;
   if (typeof content === "string") return content.trim();
-  if (!Array.isArray(content) || content.length !== 1) return null;
-  const [part] = content;
+  if (!Array.isArray(content)) return null;
+  const visible = content.filter((part) => !isAnthropicPrivateReasoningBlock(part, response));
+  if (visible.length !== 1) return null;
+  const [part] = visible;
   if (!part || typeof part !== "object" || part.type !== "text" || typeof part.text !== "string") return null;
   return part.text.trim();
 }
