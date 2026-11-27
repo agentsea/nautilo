@@ -2580,9 +2580,15 @@ describe.serial("Protected Reflection protected Reflection production compositio
             statement: "Protected Reflection protected authored Memory candidate",
           }});
       }
+      const {modelExposureDependencies, applicationPlanToken} = organizerView.view;
+      if (modelExposureDependencies === undefined || applicationPlanToken === undefined) {
+        throw new Error("Protected Organizer must prepare exact exposure and a publication plan");
+      }
       const modelResponse = await protectedSemantics.invokeOrganizer(
         organizationClaim,
         "Protected Reflection deterministic protected Organizer prompt",
+        undefined,
+        modelExposureDependencies,
       );
       expect(JSON.parse(modelResponse)).toEqual({
         operation: "create_parent",
@@ -2591,6 +2597,9 @@ describe.serial("Protected Reflection protected Reflection production compositio
       });
       const application = await organizationAttempt.publish(() => protectedSemantics.applyProposal({
         claim: organizationClaim,
+        modelExposureDependencies,
+        applicationPlanToken,
+        applicationPlanTokens: [applicationPlanToken],
         proposal: {
           operation: "create_parent",
           statement: "Protected Reflection protected sibling synthesis",
