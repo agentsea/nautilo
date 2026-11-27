@@ -296,6 +296,7 @@ export interface DurableSleepWorkPort {
     readonly claim: DurableSleepClaim;
     readonly ordinaryFallbackReason?: DurableSleepOrdinaryFallbackReason;
     readonly completionOutcome?: "completed" | "provider_outcome_unknown" | "dependency_repaired" | "dependency_retired";
+    readonly resumedOrganizerProposal?: true;
   }): Promise<DurableSleepLeaseResult>;
   defer(input: {
     readonly claim: DurableSleepClaim;
@@ -467,7 +468,20 @@ export class DurableSleepOrganizationUnavailableError extends Error {
   constructor() { super("reflection_organization_unavailable"); }
 }
 
+export type DurableOrganizerProposalCheckpoint = Readonly<
+  Pick<Parameters<DurableSleepSemanticPort["applyProposal"]>[0],
+    "proposal" | "applicationPlanToken" | "modelExposureDependencies" | "applicationPlanTokens">
+>;
+
 export interface DurableSleepSemanticPort {
+  /** Optional recovery for a validated, already-produced Organizer result. */
+  organizerCheckpoints?: Readonly<{
+    read(claim: DurableSleepClaim, signal?: AbortSignal): Promise<DurableOrganizerProposalCheckpoint | null>;
+    save(
+      items: readonly Readonly<{ claim: DurableSleepClaim; checkpoint: DurableOrganizerProposalCheckpoint }>[],
+      signal?: AbortSignal,
+    ): Promise<void>;
+  }>;
   openOrganizationAttempt?(
     claim: DurableSleepClaim, signal?: AbortSignal,
   ): Promise<DurableSleepOrganizationAttempt>;
@@ -1236,6 +1250,90 @@ export async function runDurableHierarchySleep(input: {
     recordCompletedItem(claim, completion, mode);
     return true;
   };
+  const settleOrganizerProposal = async (
+    item: Pick<PendingOrganizerItem, "claim" | "attempt" | "accumulator" | "outcome">,
+    checkpoint: DurableOrganizerProposalCheckpoint,
+    resumed = false,
+    onTopologyChanged?: (recordRef: RecordRef) => void,
+  ): Promise<void> => {
+    const publicationStartedAt = now();
+    let application: DurableSleepApplyResult;
+    let publicationElapsedMs = 0;
+    try {
+      const publish = () => input.semantic.applyProposal({
+        ...checkpoint,
+        claim: item.claim,
+        idempotencyKey: `sleep:${item.claim.logicalObjectRef}:${item.claim.generation}`,
+        budget: remainingBudget(input.budget.hierarchy, usage),
+        ...(input.signal === undefined ? {} : { signal: input.signal }),
+      });
+      application = item.attempt ? await item.attempt.publish(publish) : await publish();
+    } finally {
+      publicationElapsedMs = Math.max(0, Math.round(now() - publicationStartedAt));
+      diagnostics.publicationElapsedMs += publicationElapsedMs;
+    }
+    if (application.status === "stale") {
+      item.outcome = "unavailable";
+      diagnostics.batchStaleRescheduled += 1;
+      if (resumed) {
+        // A saved answer pins the original input. Back off if its plan is no
+        // longer current; a later poll must never fall through to another call.
+        await deferClaim(item.claim, "publication_unavailable", application.failureDetail);
+      } else {
+        failureDetails[application.failureDetail] = (failureDetails[application.failureDetail] ?? 0) + 1;
+        await pauseClaim(item.claim);
+      }
+      return;
+    }
+    if (application.status === "unavailable") {
+      item.outcome = "unavailable";
+      await deferClaim(item.claim, application.failureCode, application.failureDetail);
+      return;
+    }
+    if (application.operation !== "no_change") item.outcome = "completed";
+    if (!applicationMatchesProposal(checkpoint.proposal.operation, application.operation)) {
+      throw new TypeError("durable Sleep application operation mismatch");
+    }
+    if (application.operation === "no_change" && checkpoint.proposal.operation !== "no_change") {
+      diagnostics.deterministicNoChanges += 1;
+    }
+    if (application.terminalOutcome !== undefined) {
+      if (application.operation !== "no_change") {
+        throw new TypeError("durable Sleep terminal application must be no_change");
+      }
+      terminalOutcomes[application.terminalOutcome] = (terminalOutcomes[application.terminalOutcome] ?? 0) + 1;
+    }
+    if (item.accumulator !== undefined) {
+      if (application.timing === undefined) {
+        item.accumulator.productPublicationElapsedMs += publicationElapsedMs;
+      } else {
+        item.accumulator.publicationPlanningElapsedMs += application.timing.publicationPlanningElapsedMs;
+        item.accumulator.finalAuthorityElapsedMs += application.timing.finalAuthorityElapsedMs;
+        item.accumulator.productPublicationElapsedMs += application.timing.productPublicationElapsedMs;
+        item.accumulator.recursiveAdmissionElapsedMs += application.timing.recursiveAdmissionElapsedMs;
+      }
+    }
+    usage = addUsage(usage, application.usage);
+    operations[application.operation] += 1;
+    if (application.operation !== "no_change" && application.changedRecord !== undefined) {
+      // The effect is already durable even if acknowledging the lease fails.
+      onTopologyChanged?.(application.changedRecord.recordRef);
+    }
+    const completion = await input.work.complete({
+      claim: item.claim,
+      ...(resumed ? { resumedOrganizerProposal: true } : {}),
+    });
+    if (!acceptLeaseResult(completion)) {
+      if (item.outcome !== "completed") item.outcome = "unavailable";
+      return;
+    }
+    item.outcome = "completed";
+    completed += 1;
+    const mode = checkpoint.applicationPlanToken === undefined ? "same_room" : "cross_room";
+    recordCompletedItem(item.claim, completion, mode);
+    if (mode === "same_room") planning.sameRoomCompletions += 1;
+    else planning.crossRoomCompletions += 1;
+  };
   const pendingFitsWorstCase = (view: DurableSleepOrganizerView): boolean => {
     const reserved = [...pendingOrganizer.map((item) => item.view), view]
       .map(viewWorstCaseReservation)
@@ -1482,6 +1580,49 @@ export async function runDurableHierarchySleep(input: {
       }
     }
 
+    const checkpoints = new Map<PendingOrganizerItem, DurableOrganizerProposalCheckpoint>();
+    for (const [index, item] of batch.entries()) {
+      const result = organized[index]?.result;
+      if (result?.ok !== true) continue;
+      const startedAt = now();
+      try {
+        const proposal = partitionOrganizerProposal({
+          proposal: result.proposal,
+          selectedInputs: [item.view.changed, ...item.view.candidates],
+          existingParents: item.view.existingParents,
+        });
+        checkpoints.set(item, {
+          proposal,
+          ...(item.view.applicationPlanToken === undefined ? {} : { applicationPlanToken: item.view.applicationPlanToken }),
+          ...(item.modelExposureDependencies === undefined ? {} : { modelExposureDependencies: item.modelExposureDependencies }),
+          ...(item.applicationPlanTokens === undefined ? {} : { applicationPlanTokens: item.applicationPlanTokens }),
+        });
+      } catch {
+        // Treat only this answer as invalid; the other paid results are usable.
+      } finally {
+        if (item.accumulator !== undefined) {
+          item.accumulator.proposalValidationElapsedMs += Math.max(0, Math.round(now() - startedAt));
+        }
+      }
+    }
+    // Preserve the whole validated provider batch before the first publication
+    // can invalidate a sibling's lease or change its view.
+    if (checkpoints.size > 0 && input.semantic.organizerCheckpoints !== undefined) {
+      try {
+        await input.semantic.organizerCheckpoints.save(
+          [...checkpoints].map(([item, checkpoint]) => ({ claim: item.claim, checkpoint })),
+          input.signal,
+        );
+      } catch (error) {
+        for (const item of batch) {
+          item.outcome = "unavailable";
+          if (input.signal?.aborted) await pauseClaim(item.claim);
+          else if (error instanceof DurableSleepOrganizationUnavailableError) await deferClaim(item.claim, "authority_unavailable");
+          else await deferClaim(item.claim, "unexpected_failure", "unexpected_publication_stage_failure");
+        }
+        return;
+      }
+    }
     const changedTopologyRefs = new Set<RecordRef>();
     for (const [index, item] of batch.entries()) {
       const organizedItem = organized[index];
@@ -1513,7 +1654,7 @@ export async function runDurableHierarchySleep(input: {
         }
         continue;
       }
-      if (organizedItem === undefined || !organizedItem.result.ok) {
+      if (organizedItem === undefined || !organizedItem.result.ok || !checkpoints.has(item)) {
         await deferClaim(item.claim, "invalid_model_output");
         continue;
       }
@@ -1525,119 +1666,13 @@ export async function runDurableHierarchySleep(input: {
         continue;
       }
       try {
-        const proposalValidationStartedAt = now();
-        const proposal = partitionOrganizerProposal({
-          proposal: organizedItem.result.proposal,
-          selectedInputs: [item.view.changed, ...item.view.candidates],
-          existingParents: item.view.existingParents,
-        });
-        if (item.accumulator !== undefined) {
-          item.accumulator.proposalValidationElapsedMs += Math.max(
-            0,
-            Math.round(now() - proposalValidationStartedAt),
-          );
-        }
-        const publicationStartedAt = now();
-        let publicationElapsedMs = 0;
-        let application: DurableSleepApplyResult;
-        try {
-          const publish = () => input.semantic.applyProposal({
-            claim: item.claim,
-            proposal,
-            ...(item.view.applicationPlanToken === undefined
-              ? {}
-              : { applicationPlanToken: item.view.applicationPlanToken }),
-            ...(item.modelExposureDependencies === undefined
-              ? {}
-              : { modelExposureDependencies: item.modelExposureDependencies }),
-            ...(item.applicationPlanTokens === undefined
-              ? {}
-              : { applicationPlanTokens: item.applicationPlanTokens }),
-            idempotencyKey:
-              `sleep:${item.claim.logicalObjectRef}:${item.claim.generation}`,
-            budget: remainingBudget(input.budget.hierarchy, usage),
-            ...(input.signal === undefined ? {} : { signal: input.signal }),
-          });
-          application = item.attempt ? await item.attempt.publish(publish) : await publish();
-        } finally {
-          publicationElapsedMs = Math.max(
-            0,
-            Math.round(now() - publicationStartedAt),
-          );
-          diagnostics.publicationElapsedMs += publicationElapsedMs;
-        }
-        if (application.status === "stale") {
-          item.outcome = "unavailable";
-          diagnostics.batchStaleRescheduled += 1;
-          failureDetails[application.failureDetail] =
-            (failureDetails[application.failureDetail] ?? 0) + 1;
-          await pauseClaim(item.claim);
-          continue;
-        }
-        if (application.status === "unavailable") {
-          item.outcome = "unavailable";
-          await deferClaim(
-            item.claim,
-            application.failureCode,
-            application.failureDetail,
-          );
-          continue;
-        }
-        if (application.operation !== "no_change") item.outcome = "completed";
-        if (!applicationMatchesProposal(proposal.operation, application.operation)) {
-          throw new TypeError("durable Sleep application operation mismatch");
-        }
-        if (application.operation === "no_change" && proposal.operation !== "no_change") {
-          diagnostics.deterministicNoChanges += 1;
-        }
-        if (application.terminalOutcome !== undefined) {
-          if (application.operation !== "no_change") {
-            throw new TypeError("durable Sleep terminal application must be no_change");
-          }
-          terminalOutcomes[application.terminalOutcome] =
-            (terminalOutcomes[application.terminalOutcome] ?? 0) + 1;
-        }
-        if (item.accumulator !== undefined && application.timing !== undefined) {
-          item.accumulator.publicationPlanningElapsedMs +=
-            application.timing.publicationPlanningElapsedMs;
-          item.accumulator.finalAuthorityElapsedMs +=
-            application.timing.finalAuthorityElapsedMs;
-          item.accumulator.productPublicationElapsedMs +=
-            application.timing.productPublicationElapsedMs;
-          item.accumulator.recursiveAdmissionElapsedMs +=
-            application.timing.recursiveAdmissionElapsedMs;
-        } else if (item.accumulator !== undefined) {
-          item.accumulator.productPublicationElapsedMs += publicationElapsedMs;
-        }
-        usage = addUsage(usage, application.usage);
-        operations[application.operation] += 1;
-        if (
-          application.changedRecord !== undefined
-          && application.operation !== "no_change"
-        ) {
-          // Publication is already durable even if completing this older work
-          // lease loses a generation race. Later answers in the same batch
-          // must therefore treat every inspected overlapping coordinate stale.
+        const saved = checkpoints.get(item);
+        if (saved === undefined) throw new Error("Organizer validation result is missing");
+        await settleOrganizerProposal(item, saved, false, changedRef => {
+          // Later answers in the batch must treat changed topology as stale.
           for (const recordRef of itemRefs) changedTopologyRefs.add(recordRef);
-          changedTopologyRefs.add(application.changedRecord.recordRef);
-        }
-        const completion = await input.work.complete({ claim: item.claim });
-        if (!acceptLeaseResult(completion)) {
-          if (item.outcome !== "completed") item.outcome = "unavailable";
-          continue;
-        }
-        item.outcome = "completed";
-        completed += 1;
-        recordCompletedItem(
-          item.claim,
-          completion,
-          item.view.applicationPlanToken === undefined ? "same_room" : "cross_room",
-        );
-        if (item.view.applicationPlanToken === undefined) {
-          planning.sameRoomCompletions += 1;
-        } else {
-          planning.crossRoomCompletions += 1;
-        }
+          changedTopologyRefs.add(changedRef);
+        });
       } catch (error) {
         if (item.outcome !== "completed" && error instanceof DurableSleepOrganizationUnavailableError) {
           item.outcome = "unavailable";
@@ -2019,6 +2054,22 @@ export async function runDurableHierarchySleep(input: {
           await pauseClaim(claim);
           pausedForBudget = true;
           break;
+        }
+        const saved = await input.semantic.organizerCheckpoints?.read(claim, input.signal);
+        if (saved != null) {
+          unexpectedFailureDetail = "unexpected_publication_stage_failure";
+          const resumed: Pick<PendingOrganizerItem, "claim" | "attempt" | "accumulator" | "outcome"> = {
+            claim,
+            ...(attempt ? { attempt } : {}),
+            ...(itemAccumulator === undefined ? {} : { accumulator: itemAccumulator }),
+            outcome: attemptOutcome,
+          };
+          try {
+            await settleOrganizerProposal(resumed, saved, true);
+          } finally {
+            attemptOutcome = resumed.outcome;
+          }
+          continue;
         }
         loaded = await input.semantic.loadOrganizerView(claim, input.signal);
       } finally {

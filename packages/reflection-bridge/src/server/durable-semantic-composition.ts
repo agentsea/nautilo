@@ -366,8 +366,10 @@ function recordInput(
 export class SameRoomDurableSemanticComposition
 implements DurableSleepSemanticPort {
   readonly openOrganizationAttempt?: NonNullable<DurableSleepSemanticPort["openOrganizationAttempt"]>;
+  readonly organizerCheckpoints?: NonNullable<DurableSleepSemanticPort["organizerCheckpoints"]>;
   constructor(private readonly ports: Readonly<{
     openOrganizationAttempt?: NonNullable<DurableSleepSemanticPort["openOrganizationAttempt"]>;
+    organizerCheckpoints?: NonNullable<DurableSleepSemanticPort["organizerCheckpoints"]>;
     repository: DurableRecordReadPort;
     readiness: DurableSemanticReadinessPort;
     bindings: SameRoomSemanticBindingPort;
@@ -382,6 +384,7 @@ implements DurableSleepSemanticPort {
     now?: () => number;
   }>) {
     if (ports.openOrganizationAttempt) this.openOrganizationAttempt = ports.openOrganizationAttempt;
+    if (ports.organizerCheckpoints) this.organizerCheckpoints = ports.organizerCheckpoints;
   }
 
   resolveParentConflict(input: Readonly<{

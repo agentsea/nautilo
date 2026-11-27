@@ -1,0 +1,2 @@
+ALTER TABLE "reflection_record_semantic_work" ADD COLUMN "organizer_proposal_checkpoint" "bytea";--> statement-breakpoint
+ALTER TABLE "reflection_record_semantic_work" ADD COLUMN "organizer_proposal_resumed_at" timestamp with time zone;

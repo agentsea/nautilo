@@ -932,6 +932,9 @@ export const reflectionRecordSemanticWork = pgTable(
     acceptedModelBindingGeneration: integer(
       "accepted_model_binding_generation",
     ),
+    /** Sealed proposal for this generation, written only by ordinary Reflection. */
+    organizerProposalCheckpoint: bytea("organizer_proposal_checkpoint"),
+    organizerProposalResumedAt: timestamp("organizer_proposal_resumed_at", { withTimezone: true }),
     attemptCount: smallint("attempt_count").notNull().default(0),
     quarantineRound: integer("quarantine_round").notNull().default(0),
     recoveryPolicyVersion: integer("recovery_policy_version").notNull().default(0),

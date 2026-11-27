@@ -1,5 +1,6 @@
 import { getExternalRoomPolicy } from "@nautilo/trust";
 import { log } from "@nautilo/logger";
+import { createHmac } from "node:crypto";
 
 import {
   embedTextWithProvenance,
@@ -20,12 +21,14 @@ import {
   DurableSleepOrganizationUnavailableError,
   DurableSleepProviderOutcomeUnknownError,
   DURABLE_SLEEP_MAX_WORK_ITEMS_PER_RUN,
+  ORGANIZER_BATCH_MAX_ITEMS,
   runDependencyLossRewrite,
   type DurableSleepRunBudget,
   type DurableSleepClaim,
   type DurableSleepSemanticPort,
   type DurableSleepStageAdmission,
   type DurableSleepWorkPort,
+  type DurableOrganizerProposalCheckpoint,
 } from "@nautilo/reflection";
 import type {
   ForegroundRecordContextPort,
@@ -44,6 +47,7 @@ import type { MemoryOperationBinding } from "@nautilo/types";
 import {
   BoundedRecordEvidenceTraversalCheckpoints,
   BoundedRecordSearchTraversalCheckpoints,
+  CROSS_ROOM_EXECUTION_PLAN_LIMITS,
   CanonicalRecordSourceReadPort,
   DualModeAuthorityFilteredRecordSearch,
   DualModeRecordRepository,
@@ -574,6 +578,52 @@ export async function createProductionReflectionMemoryRuntime(
   type ModelInvocationContext = Readonly<{ roomId: string }>;
   const modelInvocationState = new ReflectionModelInvocationState<AdmittedReflectionMemoryModel>();
   const consumedRepairs = new WeakSet<AdmittedReflectionMemoryModel>();
+  // Only ordinary execution is admitted to this server-keyed store. Protected
+  // Reflection's output remains owned by its Namespace publication gate.
+  const organizerCheckpointSeal = createHmacAuthorityProjectionCheckpointPort(
+    createHmac("sha256", input.commitmentKey).update("nautilo-reflection-organizer-proposal-v1").digest(),
+  );
+  const organizerCheckpointMaxBytes = ORGANIZER_BATCH_MAX_ITEMS
+    * CROSS_ROOM_EXECUTION_PLAN_LIMITS.applicationPlanTokenBytes
+    + CROSS_ROOM_EXECUTION_PLAN_LIMITS.inputBytes
+    + CROSS_ROOM_EXECUTION_PLAN_LIMITS.outputBytes;
+  const checkpointIdentity = (claim: DurableSleepClaim, binding: MemoryOperationBinding) => [
+    "organizer-proposal/v1", claim.recordRef, claim.generation, claim.changeReason,
+    binding.modelId, binding.inputCommitment,
+  ];
+  const organizerCheckpoints: NonNullable<DurableSleepSemanticPort["organizerCheckpoints"]> = {
+    async read(claim, signal) {
+      signal?.throwIfAborted();
+      const saved = await semanticWork.readOrganizerProposalCheckpoint(claim);
+      if (saved === null) return null;
+      if (saved.sealed.byteLength > organizerCheckpointMaxBytes) throw new Error("Organizer checkpoint exceeds its bound");
+      const [identity, checkpoint] = JSON.parse(organizerCheckpointSeal.openSealedCheckpoint(saved.sealed)) as [
+        ReturnType<typeof checkpointIdentity>, DurableOrganizerProposalCheckpoint,
+      ];
+      if (JSON.stringify(identity) !== JSON.stringify(checkpointIdentity(claim, saved.binding))) {
+        throw new DurableSleepOrganizationUnavailableError();
+      }
+      return checkpoint;
+    },
+    async save(items, signal) {
+      const sealed = [];
+      for (const { claim, checkpoint } of items) {
+        signal?.throwIfAborted();
+        // A complete authenticated plan is needed to revalidate all original
+        // question evidence, including uncited inputs and batch siblings.
+        if (checkpoint.applicationPlanToken === undefined || checkpoint.modelExposureDependencies === undefined) continue;
+        const admitted = modelInvocationState.admissionFor(claim);
+        if (admitted === undefined) continue;
+        await admitted.assertCurrent();
+        const ciphertext = organizerCheckpointSeal.sealCheckpoint(
+          JSON.stringify([checkpointIdentity(claim, admitted.binding), checkpoint]),
+        );
+        if (ciphertext.byteLength > organizerCheckpointMaxBytes) throw new Error("Organizer checkpoint exceeds its bound");
+        sealed.push({ claim, binding: admitted.binding, sealed: ciphertext });
+      }
+      if (sealed.length > 0) await semanticWork.saveOrganizerProposalCheckpoints(sealed);
+    },
+  };
   const dispatchForRecords = async (
     claims: readonly DurableSleepClaim[],
     prompt: string,
@@ -832,6 +882,7 @@ export async function createProductionReflectionMemoryRuntime(
     },
   };
   const semantic = new SameRoomDurableSemanticComposition({
+    organizerCheckpoints,
     openOrganizationAttempt: createReflectionOrganizationAttemptOpener({
       checkAvailable: () => input.maintenanceGate.isAcceptingWork(),
       assertClaimCurrent: (claim) => semanticWork.isClaimCurrent(claim),

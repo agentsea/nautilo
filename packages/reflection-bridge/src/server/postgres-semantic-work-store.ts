@@ -36,6 +36,7 @@ import {
   DURABLE_SLEEP_QUARANTINE_RECOVERY_POLICY_V1,
   DURABLE_SLEEP_QUARANTINE_RECOVERY_POLICY_VERSION,
   DURABLE_SLEEP_WORK_INTENT_POLICY_V1,
+  DurableSleepOrganizationUnavailableError,
 } from "@nautilo/reflection";
 import type {
   DurableRecordPublication,
@@ -671,6 +672,8 @@ export async function admitSemanticWorkWithinTransaction(
         ordinaryFallbackReason: null,
         acceptedModelBinding: null,
         acceptedModelBindingGeneration: null,
+        organizerProposalCheckpoint: null,
+        organizerProposalResumedAt: null,
         dueSince: sql`greatest(${reflectionRecordSemanticWork.dueSince}, ${input.now})`,
         startedAt: null,
         completedAt: null,
@@ -1369,11 +1372,8 @@ export class PostgresSemanticWorkStore
     };
   }
 
-  #currentClaimQuery(claim: DurableSleepClaim) {
-    return recordProductTypedDb.select({ record_id: reflectionRecordSemanticWork.recordId, lease_expires_at: reflectionRecordSemanticWork.leaseExpiresAt })
-        .from(reflectionRecordSemanticWork)
-        .innerJoin(reflectionRecords, eq(reflectionRecords.recordId, reflectionRecordSemanticWork.recordId))
-        .where(and(
+  #currentClaimPredicate(claim: DurableSleepClaim) {
+    return and(
           eq(reflectionRecordSemanticWork.recordId, claim.recordRef),
           eq(reflectionRecordSemanticWork.generation, claim.generation),
           eq(reflectionRecordSemanticWork.claimGeneration, claim.generation),
@@ -1383,7 +1383,14 @@ export class PostgresSemanticWorkStore
           eq(reflectionRecordSemanticWork.changeReason, claim.changeReason),
           gt(reflectionRecordSemanticWork.leaseExpiresAt, this.#clock()),
           eq(reflectionRecords.disposition, "available"),
-        ));
+        );
+  }
+
+  #currentClaimQuery(claim: DurableSleepClaim) {
+    return recordProductTypedDb.select({ record_id: reflectionRecordSemanticWork.recordId, lease_expires_at: reflectionRecordSemanticWork.leaseExpiresAt })
+        .from(reflectionRecordSemanticWork)
+        .innerJoin(reflectionRecords, eq(reflectionRecords.recordId, reflectionRecordSemanticWork.recordId))
+        .where(this.#currentClaimPredicate(claim));
   }
 
   /** Metadata-only access check. Publication uses the locking sibling below. */
@@ -1391,6 +1398,58 @@ export class PostgresSemanticWorkStore
     if (claim.logicalObjectRef !== claim.recordRef) return false;
     const rows = await executeTypedRecordProductQuery(this.options.handle, this.#currentClaimQuery(claim));
     return rows.length === 1;
+  }
+
+  /** A successful model call may outlive the lease that produced its proposal. */
+  async readOrganizerProposalCheckpoint(claim: DurableSleepClaim): Promise<Readonly<{
+    sealed: Uint8Array;
+    binding: MemoryOperationBinding;
+  }> | null> {
+    if (claim.logicalObjectRef !== claim.recordRef || claim.stage !== "organization") {
+      throw new DurableSleepOrganizationUnavailableError();
+    }
+    const work = reflectionRecordSemanticWork;
+    const [row] = await executeTypedRecordProductQuery(this.options.handle,
+      recordProductTypedDb.select({
+        organizer_proposal_checkpoint: work.organizerProposalCheckpoint,
+        accepted_model_binding: work.acceptedModelBinding,
+      }).from(work)
+        .innerJoin(reflectionRecords, eq(reflectionRecords.recordId, work.recordId))
+        .where(this.#currentClaimPredicate(claim)));
+    if (row === undefined) throw new DurableSleepOrganizationUnavailableError();
+    if (row.organizer_proposal_checkpoint === null) return null;
+    return {
+      sealed: row.organizer_proposal_checkpoint,
+      binding: parseMemoryOperationBinding(row.accepted_model_binding),
+    };
+  }
+
+  /** Publish none of a shared provider batch until its validated answers are durable. */
+  async saveOrganizerProposalCheckpoints(items: readonly Readonly<{
+    claim: DurableSleepClaim;
+    binding: MemoryOperationBinding;
+    sealed: Uint8Array;
+  }>[]): Promise<void> {
+    const work = reflectionRecordSemanticWork;
+    await this.options.handle.transaction(async tx => {
+      // Match the lock order of accepted model binding.
+      for (const { claim, binding, sealed } of [...items].sort((left, right) =>
+        left.claim.recordRef.localeCompare(right.claim.recordRef))) {
+        if (claim.logicalObjectRef !== claim.recordRef || claim.stage !== "organization") {
+          throw new DurableSleepOrganizationUnavailableError();
+        }
+        const rows = await executeTypedRecordProductQuery(tx,
+          recordProductTypedDb.update(work).set({ organizerProposalCheckpoint: sealed })
+            .from(reflectionRecords).where(and(
+              eq(reflectionRecords.recordId, work.recordId),
+              this.#currentClaimPredicate(claim),
+              eq(work.acceptedModelBindingGeneration, claim.generation),
+              eq(work.acceptedModelBinding, binding),
+              isNull(work.organizerProposalCheckpoint),
+            )).returning({ recordId: work.recordId }));
+        if (rows.length !== 1) throw new DurableSleepOrganizationUnavailableError();
+      }
+    }, { isolationLevel: "read committed" });
   }
 
   /**
@@ -1623,6 +1682,7 @@ export class PostgresSemanticWorkStore
             waitingReason: null,
             ordinaryFallbackReason: null,
             completionOutcome: reason,
+            organizerProposalCheckpoint: null,
             completedAt: now,
             updatedAt: sql`greatest(${reflectionRecordSemanticWork.updatedAt}, ${now})`,
           })
@@ -1809,6 +1869,7 @@ export class PostgresSemanticWorkStore
           leaseExpiresAt: null, nextAttemptAt: null, quarantineRound: 0, recoverAfter: null,
           failureCode: null, failureDetail: null, waitingReason: null,
           ordinaryFallbackReason: null, completionOutcome: "completed" as const,
+          organizerProposalCheckpoint: null,
           completedAt: sql`now()`} : {}),
         updatedAt: sql`greatest(${table.updatedAt}, now())`,
       }).where(eq(table.recordId, input.recordRef)));
@@ -1841,6 +1902,8 @@ export class PostgresSemanticWorkStore
             waitingReason: null,
             ordinaryFallbackReason: input.ordinaryFallbackReason ?? null,
             completionOutcome: input.completionOutcome ?? "completed",
+            organizerProposalCheckpoint: null,
+            organizerProposalResumedAt: input.resumedOrganizerProposal === true ? now : null,
             completedAt: now,
             updatedAt: sql`greatest(${reflectionRecordSemanticWork.updatedAt}, ${now})`,
           })

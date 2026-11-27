@@ -102,9 +102,21 @@ function semanticPort(input: Readonly<{
   label: "ordinary" | "protected";
   includeAttempt?: boolean;
   includeBatch?: boolean;
+  includeCheckpoints?: boolean;
 }>): DurableSleepSemanticPort {
   const call = (method: string) => input.calls.push(`${input.label}:${method}`);
   return {
+    ...(input.includeCheckpoints === true
+      ? {
+          organizerCheckpoints: {
+            read: async () => {
+              call("checkpoint-read");
+              return null;
+            },
+            save: async () => { call("checkpoint-save"); },
+          },
+        }
+      : {}),
     ...(input.includeAttempt === true
       ? {
           openOrganizationAttempt: async () => {
@@ -187,6 +199,127 @@ const HIERARCHY_BUDGET = Object.freeze({
 });
 
 describe("Reflection semantic data operation port", () => {
+  test("Plain routes Organizer checkpoint reads and saves through policy revalidation", async () => {
+    const selected = claim("plain-checkpoint", "organization");
+    const calls: string[] = [];
+    const ports = bindReflectionSemanticDataOperationPort({
+      policy: policyBinding({ policy: POLICIES.plain, calls }),
+      work: workPort({
+        next: async () => ({
+          status: "claimed",
+          claim: selected,
+          executionRepresentation: "ordinary",
+          maximumStage: "organization",
+        }),
+      }),
+      ordinary: semanticPort({
+        calls,
+        label: "ordinary",
+        includeCheckpoints: true,
+      }),
+      protected: semanticPort({ calls, label: "protected" }),
+    });
+    await ports.work.claimNext();
+    calls.length = 0;
+
+    expect(await ports.semantic.organizerCheckpoints?.read(selected)).toBeNull();
+    await ports.semantic.organizerCheckpoints?.save([{
+      claim: selected,
+      checkpoint: { proposal: { operation: "no_change" } },
+    }]);
+
+    expect(calls).toEqual([
+      "revalidate:1",
+      "ordinary:checkpoint-read",
+      "revalidate:1",
+      "revalidate:1",
+      "ordinary:checkpoint-save",
+      "revalidate:1",
+    ]);
+  });
+
+  test.each([
+    ["fallback", "ordinary"],
+    ["strict", "protected"],
+    ["full", "protected"],
+  ] as const)(
+    "%s %s selection never reaches ordinary Organizer checkpoints",
+    async (policyName, executionRepresentation) => {
+      const selected = claim(`${policyName}-checkpoint`, "organization");
+      const calls: string[] = [];
+      const protectedSemantic = semanticPort({ calls, label: "protected" });
+      const ports = bindReflectionSemanticDataOperationPort({
+        policy: policyBinding({ policy: POLICIES[policyName], calls }),
+        work: workPort({
+          next: async () => ({
+            status: "claimed",
+            claim: selected,
+            executionRepresentation,
+            maximumStage: "organization",
+          }),
+        }),
+        ordinary: semanticPort({
+          calls,
+          label: "ordinary",
+          includeCheckpoints: true,
+        }),
+        protected: {
+          ensureAuthority: protectedSemantic.ensureAuthority.bind(protectedSemantic),
+          semantic: protectedSemantic,
+        },
+      });
+      await ports.work.claimNext();
+      calls.length = 0;
+
+      expect(await ports.semantic.organizerCheckpoints?.read(selected)).toBeNull();
+      await ports.semantic.organizerCheckpoints?.save([{
+        claim: selected,
+        checkpoint: { proposal: { operation: "no_change" } },
+      }]);
+
+      expect(calls).not.toContain("ordinary:checkpoint-read");
+      expect(calls).not.toContain("ordinary:checkpoint-save");
+    },
+  );
+
+  test("revoked Plain policy denies Organizer checkpoint access before ordinary I/O", async () => {
+    const selected = claim("revoked-checkpoint", "organization");
+    const calls: string[] = [];
+    const policy = policyBinding({ policy: POLICIES.plain, calls });
+    const ports = bindReflectionSemanticDataOperationPort({
+      policy,
+      work: workPort({
+        next: async () => ({
+          status: "claimed",
+          claim: selected,
+          executionRepresentation: "ordinary",
+          maximumStage: "organization",
+        }),
+      }),
+      ordinary: semanticPort({
+        calls,
+        label: "ordinary",
+        includeCheckpoints: true,
+      }),
+      protected: semanticPort({ calls, label: "protected" }),
+    });
+    await ports.work.claimNext();
+    policy.token += 1;
+    calls.length = 0;
+
+    expect(ports.semantic.organizerCheckpoints?.read(selected)).rejects.toMatchObject({
+      failureClass: "stale",
+    });
+    expect(ports.semantic.organizerCheckpoints?.save([{
+      claim: selected,
+      checkpoint: { proposal: { operation: "no_change" } },
+    }])).rejects.toMatchObject({ failureClass: "stale" });
+    await Promise.resolve();
+
+    expect(calls).not.toContain("ordinary:checkpoint-read");
+    expect(calls).not.toContain("ordinary:checkpoint-save");
+  });
+
   test.each([
     ["plain", "ordinary", { ordinary: "any", protected: "none" }],
     ["fallback", "ordinary", {
