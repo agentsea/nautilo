@@ -156,6 +156,7 @@ export const reflectionAdminStatusSchema = z.object({
     until: isoTimestamp,
   }).strict(),
   health: z.enum(["healthy", "delayed", "degraded"]),
+  unresolvedProviderOutcomes: nonNegativeInteger.optional(),
   scheduler: reflectionSemanticSchedulerStatusSchema,
   current: z.object({
     totalRecords: nonNegativeInteger,

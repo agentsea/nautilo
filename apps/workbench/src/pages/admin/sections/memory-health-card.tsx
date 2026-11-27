@@ -59,7 +59,6 @@ export function MemorySection() {
   const [error, setError] = useState<string | null>(null);
   const [mutationError, setMutationError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [notice, setNotice] = useState<string | null>(null);
   const card = useRef<HTMLElement>(null);
   const cardVisible = useRef(true);
   const refreshing = useRef(false);
@@ -102,19 +101,13 @@ export function MemorySection() {
     };
   }, [canRead, refresh]);
 
-  const mutate = async (action: "toggle" | "retry") => {
+  const toggle = async () => {
     if (!canManage || !status || mutating.current) return;
     mutating.current = true;
     setSaving(true);
     setMutationError(null);
-    setNotice(null);
     try {
-      if (action === "toggle") {
-        await apiClient.admin.serverContext.set({ memoryReviewEnabled: !status.enabled });
-      } else {
-        const result = await apiClient.admin.memoryStatus.retry();
-        setNotice(`${result.requested} failed review${result.requested === 1 ? "" : "s"} scheduled for normal retry.`);
-      }
+      await apiClient.admin.serverContext.set({ memoryReviewEnabled: !status.enabled });
       await refresh();
     } catch {
       setMutationError("Change could not be confirmed. Refresh to check the current state before retrying.");
@@ -133,7 +126,6 @@ export function MemorySection() {
       </div>
       {error ? <p role="alert" className="mt-3 text-sm text-error">{error}{status ? " Displayed values are stale." : ""}</p> : null}
       {mutationError ? <p role="alert" className="mt-3 text-sm text-error">{mutationError}</p> : null}
-      {notice ? <p role="status" className="mt-3 text-sm">{notice}</p> : null}
       {!status && loading ? <p className="mt-3 text-sm">Loading Memory status…</p> : null}
       {status ? <div className="mt-3 space-y-3">
         <div className="flex flex-wrap items-center gap-2">
@@ -146,10 +138,8 @@ export function MemorySection() {
         <p className="text-sm font-semibold" data-testid="memory-headline">{memoryStatusHeadline(status)}</p>
         <div className="flex flex-wrap items-center gap-2">
           {canManage ? <>
-            <button type="button" className={buttonClass} disabled={saving || loading || !!error} onClick={() => void mutate("toggle")}>
+            <button type="button" className={buttonClass} disabled={saving || loading || !!error} onClick={() => void toggle()}>
               {status.enabled ? "Pause automatic review" : "Enable automatic review"}</button>
-            {status.current.safelyRetryable > 0 ? <button type="button" className={buttonClass} disabled={saving || loading || !!error}
-              onClick={() => void mutate("retry")}>Retry failed reviews</button> : null}
           </> : null}
           <Link to="/admin#models" className="text-xs text-primary hover:underline">Model settings</Link>
         </div>
@@ -172,7 +162,7 @@ export function MemorySection() {
           <ul className="mt-1 space-y-1 text-xs">{status.recentFailures.map((failure, index) => <li key={`${failure.occurredAt}:${index}`}>
             {failure.phase.replaceAll("_", " ")} · {failure.code.replaceAll("_", " ")} · {time(failure.occurredAt)}.
             {failure.code === "iteration_exhausted" ? " Review reached its configured iteration budget; check model settings and reviewer configuration." : ""}
-            {failure.nextRetryAt ? ` Next retry ${time(failure.nextRetryAt)}.` : failure.retryable ? " Safe retry is available." : " No automatic retry is scheduled; current work is shown above."}
+            {failure.nextRetryAt ? ` Next retry ${time(failure.nextRetryAt)}.` : failure.retryable ? " Eligible for automatic recovery." : " No automatic retry is scheduled; current work is shown above."}
           </li>)}</ul></div> : null}
         <details className="text-xs"><summary className="cursor-pointer">Processing details</summary>
           <p className="mt-2">Exit flush: not scheduled</p>

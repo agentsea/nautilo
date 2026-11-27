@@ -331,6 +331,133 @@ describe("M319 durable Memory processing on PostgreSQL", () => {
     }
   });
 
+  test("a newly configured service model gets one exact rejected-review recovery", async () => {
+    await admit(randomUUID());
+    await admit(randomUUID());
+    const now = new Date();
+    const originalModel = "openai:gpt-5.6-luna";
+    const previouslyTriedModel = "anthropic:claude-haiku-5-5";
+    const replacementModel = "openai:gpt-5.6-sol";
+    const original = await repo.claimNext({ now });
+    if (!original) throw new Error("expected original review claim");
+    const accepted = {
+      version: 1 as const, kind: "service" as const, role: "memoryReview" as const,
+      modelId: originalModel, inputCommitment: `hmac-sha256:${"c".repeat(43)}`,
+    };
+    await repo.bindModelOperation(original, async () => accepted);
+    await db.insert(llmUsageEvents).values({
+      roomId, callType: "memory_review", model: originalModel, provider: "openai",
+      fundingKind: "service", providerRoute: "openai", endpoint: "/v1/responses",
+      attemptOutcome: "succeeded", costState: "estimated", estimatedCostUsd: "0.01",
+      metadata: { workId: original.workId, attemptId: original.attemptId },
+    });
+    await repo.fail({ claim: original, phase: "model", reason: "invalid_proposal", retryable: false, now });
+
+    expect(await repo.claimNext({ now, currentServiceModelId: originalModel })).toBeNull();
+    await db.insert(llmUsageEvents).values({
+      roomId, callType: "memory_review", model: previouslyTriedModel, provider: "anthropic",
+      fundingKind: "service", providerRoute: "anthropic", endpoint: "/v1/messages",
+      attemptOutcome: "failed", failureCode: "provider_refused", costState: "unknown",
+      metadata: { workId: original.workId, attemptId: randomUUID() },
+    });
+    expect(await repo.claimNext({ now, currentServiceModelId: previouslyTriedModel })).toBeNull();
+
+    const recovery = await repo.claimNext({ now, currentServiceModelId: replacementModel });
+    if (!recovery) throw new Error("expected automatic model-change recovery");
+    expect(recovery).toMatchObject({
+      workId: original.workId, turnIds: original.turnIds, automaticModelRecovery: true,
+    });
+    expect(await repo.bindModelOperation(recovery, async () => {
+      throw new Error("the recovered binding must already be frozen");
+    })).toEqual({ ...accepted, modelId: replacementModel });
+    expect(await repo.modelReplaySafety(recovery)).toBe("allow");
+    await repo.load(recovery);
+    expect(await repo.publish({
+      claim: recovery,
+      proposal: { envelope, speakerUserId: userId, operations: [], snapshots: [] },
+      modelId: replacementModel, now: new Date(), durationMs: 0,
+    })).toBe("published");
+  });
+
+  test("a proven pre-service refusal bypasses remaining backoff on config change", async () => {
+    await admit(randomUUID());
+    await admit(randomUUID());
+    const now = new Date();
+    const refusedModel = "openai:gpt-5.6-luna";
+    const replacementModel = "anthropic:claude-haiku-5-5";
+    const original = await repo.claimNext({ now });
+    if (!original) throw new Error("expected refused review claim");
+    await repo.bindServiceModel(original, () => refusedModel);
+    await db.insert(llmUsageEvents).values({
+      roomId, callType: "memory_review", model: refusedModel, provider: "openai",
+      fundingKind: "service", providerRoute: "openai", endpoint: "/v1/responses",
+      attemptOutcome: "failed", failureCode: "provider_refused", costState: "unknown",
+      metadata: { workId: original.workId, attemptId: original.attemptId },
+    });
+    await repo.fail({ claim: original, phase: "model", reason: "provider_failed", retryable: true, now });
+    const failed = await db.select({ retryAt: memoryReviewTurns.retryAt }).from(memoryReviewTurns)
+      .where(eq(memoryReviewTurns.id, original.turnIds[0]!));
+    expect(failed[0]?.retryAt).toEqual(new Date(now.getTime() + 15_000));
+    expect(await repo.claimNext({ now, currentServiceModelId: refusedModel })).toBeNull();
+
+    // The exact failed receipt must survive normal retention while this work
+    // still depends on it as the evidence for changing models.
+    await repo.drainEffects({ now: new Date(now.getTime() + 2 * 86_400_000) });
+    const recovery = await repo.claimNext({ now, currentServiceModelId: replacementModel });
+    if (!recovery) throw new Error("expected refused review model-change recovery");
+    expect(recovery.automaticModelRecovery).toBe(true);
+    expect(await repo.bindServiceModel(recovery, () => refusedModel)).toBe(replacementModel);
+    await repo.load(recovery);
+    expect(await repo.publish({
+      claim: recovery,
+      proposal: { envelope, speakerUserId: userId, operations: [], snapshots: [] },
+      modelId: replacementModel, now: new Date(), durationMs: 0,
+    })).toBe("published");
+  });
+
+  test.each(["unchanged model", "previously refused replacement"] as const)(
+    "a proven pre-service refusal keeps ordinary scheduled retry with %s", async (configuration) => {
+    await admit(randomUUID());
+    await admit(randomUUID());
+    const now = new Date();
+    const refusedModel = "openai:gpt-5.6-luna";
+    const original = await repo.claimNext({ now });
+    if (!original) throw new Error("expected scheduled-refusal review claim");
+    await repo.bindServiceModel(original, () => refusedModel);
+    await db.insert(llmUsageEvents).values({
+      roomId, callType: "memory_review", model: refusedModel, provider: "openai",
+      fundingKind: "service", providerRoute: "openai", endpoint: "/v1/responses",
+      attemptOutcome: "failed", failureCode: "provider_refused", costState: "unknown",
+      metadata: { workId: original.workId, attemptId: original.attemptId },
+    });
+    await repo.fail({ claim: original, phase: "model", reason: "provider_failed", retryable: true, now });
+    expect(await repo.claimNext({
+      now: new Date(now.getTime() + 14_999), currentServiceModelId: refusedModel,
+    })).toBeNull();
+
+    const currentModel = configuration === "unchanged model" ? refusedModel : "venice:test-model";
+    if (currentModel !== refusedModel) {
+      await db.insert(llmUsageEvents).values({
+        roomId, callType: "memory_review", model: currentModel, provider: "venice",
+        fundingKind: "service", providerRoute: "venice", endpoint: "/v1/chat/completions",
+        attemptOutcome: "failed", failureCode: "provider_refused", costState: "unknown",
+        metadata: { workId: original.workId, attemptId: randomUUID() },
+      });
+    }
+    const retry = await repo.claimNext({
+      now: new Date(now.getTime() + 15_001), currentServiceModelId: currentModel,
+    });
+    if (!retry) throw new Error("expected same-model scheduled retry");
+    expect(retry.automaticModelRecovery).toBeUndefined();
+    expect(await repo.bindServiceModel(retry, () => "unexpected-model")).toBe(refusedModel);
+    await repo.load(retry);
+    expect(await repo.publish({
+      claim: retry,
+      proposal: { envelope, speakerUserId: userId, operations: [], snapshots: [] },
+      modelId: refusedModel, now: new Date(), durationMs: 0,
+    })).toBe("published");
+  });
+
   test("startup reconciles a stale checkpoint barrier and review advances through it", async () => {
     const awaitingTurnId = randomUUID();
     const newerTurnId = randomUUID();
@@ -395,66 +522,4 @@ describe("M319 durable Memory processing on PostgreSQL", () => {
     expect(await withSerializableAgentTrustContext(trust, (tx) => tx.execute(sql`SELECT email FROM users WHERE id=${userId}::uuid`)).then(() => false, () => true)).toBe(true);
   });
 
-  test("Room recovery previews one rejected cohort and allows one exact service model change", async () => {
-    await admit(randomUUID());
-    await admit(randomUUID());
-    const now = new Date();
-    const claim = await repo.claimNext({ now });
-    if (!claim) throw new Error("expected recovery fixture claim");
-    const originalModel = "openai:gpt-5.6-luna";
-    const targetModel = "anthropic:claude-haiku-5-5";
-    await repo.bindServiceModel(claim, () => originalModel);
-    await db.insert(llmUsageEvents).values({
-      roomId, callType: "memory_review", model: originalModel, provider: "openai",
-      fundingKind: "service", providerRoute: "openai", endpoint: "/v1/responses",
-      attemptOutcome: "failed", failureCode: "provider_refused", costState: "unknown",
-      metadata: { workId: claim.workId, attemptId: claim.attemptId },
-    });
-    await repo.fail({ claim, phase: "model", reason: "provider_failed", retryable: false, now });
-    const jobs = await repo.readRecoveryJobs(roomId, now, 5);
-    expect(jobs).toHaveLength(1);
-    const job = jobs[0]!;
-    expect(job).toMatchObject({
-      id: claim.turnIds[0], lane: "memory", action: "retry_with_model", modelId: originalModel,
-    });
-    expect(await repo.readRecoveryJobs(randomUUID(), now, 5)).toEqual([]);
-    const staleRecovery = { roomId, headTurnId: job.id, expectedVersion: job.version, modelId: targetModel, now };
-    await db.update(memoryReviewTurns).set({ updatedAt: new Date(now.getTime() + 1) })
-      .where(eq(memoryReviewTurns.id, claim.turnIds[1]!));
-    expect(await repo.requestRecoveryRetry(staleRecovery)).toBe("stale");
-
-    let refreshedJob = (await repo.readRecoveryJobs(roomId, now, 5))[0]!;
-    expect(refreshedJob.action).toBe("retry_with_model");
-    expect(await repo.requestRecoveryRetry({
-      roomId, headTurnId: refreshedJob.id, expectedVersion: refreshedJob.version, now,
-    })).toBe("blocked");
-
-    const mismatchedThreadId = `${threadId}:wrong-cohort`;
-    await db.update(memoryReviewTurns).set({ threadId: mismatchedThreadId })
-      .where(eq(memoryReviewTurns.id, claim.turnIds[1]!));
-    expect((await repo.readRecoveryJobs(roomId, now, 5))[0]?.action).toBe("blocked");
-    expect(await repo.requestRecoveryRetry({
-      roomId, headTurnId: refreshedJob.id, expectedVersion: refreshedJob.version, modelId: targetModel, now,
-    })).toBe("blocked");
-    await db.update(memoryReviewTurns).set({ threadId })
-      .where(eq(memoryReviewTurns.id, claim.turnIds[1]!));
-    refreshedJob = (await repo.readRecoveryJobs(roomId, now, 5))[0]!;
-
-    const recovery = { roomId, headTurnId: refreshedJob.id, expectedVersion: refreshedJob.version, modelId: targetModel, now };
-    expect(await repo.requestRecoveryRetry({ ...recovery, roomId: randomUUID() })).toBe("stale");
-    const outcomes = await Promise.all([repo.requestRecoveryRetry(recovery), repo.requestRecoveryRetry(recovery)]);
-    expect(outcomes.sort()).toEqual(["queued", "stale"]);
-
-    const retry = await repo.claimNext({ now: new Date() });
-    if (!retry) throw new Error("expected queued review");
-    expect(retry.workId).toBe(claim.workId);
-    expect(await repo.bindServiceModel(retry, () => originalModel)).toBe(targetModel);
-    expect(await repo.modelReplaySafety(retry)).toBe("allow");
-    await repo.load(retry);
-    expect(await repo.publish({
-      claim: retry, proposal: { envelope, speakerUserId: userId, operations: [], snapshots: [] },
-      modelId: targetModel, now: new Date(), durationMs: 0,
-    })).toBe("published");
-    expect(await repo.readRecoveryJobs(roomId, new Date(), 5)).toEqual([]);
-  });
 });

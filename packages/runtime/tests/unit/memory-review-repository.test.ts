@@ -128,6 +128,20 @@ describe("Memory repository query contracts without a live database", () => {
     expect(params.some((value: unknown) => value instanceof Date)).toBe(false);
   });
 
+  test("worker scans rejected service work only when the effective model changed", async () => {
+    const queries: SQL[] = [];
+    const db = { execute: async (query: SQL) => { queries.push(query); return []; } };
+    const repo = new PostgresMemoryReviewRepository(policy, db as never);
+    expect(await repo.claimNext({ now: NOW, currentServiceModelId: "new-model" })).toBeNull();
+    const { sql, params } = dialect.sqlToQuery(queries[0]!);
+    expect(sql).toContain("accepted_model_binding->>'kind'='service'");
+    expect(sql).toContain("accepted_model_binding->>'modelId'<>");
+    expect(params).toContain("new-model");
+    expect(params).toContainEqual([
+      "invalid_proposal", "iteration_exhausted", "provider_failed", "model_unavailable",
+    ]);
+  });
+
   test("receipt reconciliation keys logical work across attempts and requires published outcome", async () => {
     let predicate: SQL | undefined;
     const db = { select: () => ({ from: () => ({ where: async (query: SQL) => { predicate = query; return [{ id: "previous-attempt" }]; } }) }) };

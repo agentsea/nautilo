@@ -25,6 +25,8 @@ export interface MemoryReviewClaim {
   workId: string;
   attemptId: string;
   modelRecovery?: "authorized" | "spent";
+  /** One service-funded retry bound to a newly effective configured model. */
+  automaticModelRecovery?: true;
   ownerId: string;
   actorId: string;
   agentId: string;
@@ -70,7 +72,7 @@ function retryableMemoryFailure(reason: string): boolean {
 }
 
 export interface MemoryReviewRepository {
-  claimNext(input: { now: Date }): Promise<MemoryReviewClaim | null>;
+  claimNext(input: { now: Date; currentServiceModelId?: string }): Promise<MemoryReviewClaim | null>;
   assertCurrent(claim: MemoryReviewClaim): Promise<void>;
   load(claim: MemoryReviewClaim): Promise<MemoryReviewInput>;
   modelReplaySafety?(claim: MemoryReviewClaim): Promise<"allow" | "block_unknown">;
@@ -153,7 +155,11 @@ export class MemoryReviewWorker {
     try { await this.deps.repository.drainEffects({ now: this.now() }); }
     catch (error) { this.reportError("effects", error); }
     if (this.stopped || !(await this.deps.checkAvailable())) return;
-    const claim = await this.deps.repository.claimNext({ now: this.now() });
+    const currentServiceModelId = this.currentServiceModelId();
+    const claim = await this.deps.repository.claimNext({
+      now: this.now(),
+      ...(currentServiceModelId === undefined ? {} : { currentServiceModelId }),
+    });
     if (!claim) return;
     let phase: MemoryReviewPhase = "reconciliation";
     const startedAt = performance.now();
@@ -258,8 +264,21 @@ export class MemoryReviewWorker {
 
   private fail(claim: MemoryReviewClaim, phase: MemoryReviewPhase, reason: string, retryable: boolean): Promise<void> {
     return this.deps.repository.fail({
-      claim, phase, reason, retryable: retryable && claim.modelRecovery === undefined, now: this.now(),
+      claim, phase, reason,
+      retryable: retryable && claim.modelRecovery === undefined && claim.automaticModelRecovery !== true,
+      now: this.now(),
     });
+  }
+
+  private currentServiceModelId(): string | undefined {
+    try {
+      const resolved = this.deps.resolveModelId?.().trim();
+      return resolved || undefined;
+    } catch {
+      // Personal claims can remain runnable while the service selection is
+      // unavailable. Service admission records its own typed failure later.
+      return undefined;
+    }
   }
 
   private async admitServiceModel(claim: MemoryReviewClaim, assertCurrent: () => Promise<void>) {

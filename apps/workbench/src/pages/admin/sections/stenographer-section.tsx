@@ -7,7 +7,7 @@ export function StenographerSection() {
       <StenographerHealthCard />
       <ContextRetentionCard />
       <a href="/admin#memory" className="mt-3 inline-flex text-xs font-medium text-primary hover:underline">
-        Open Memory recovery
+        View automatic recovery
       </a>
     </section>
   );

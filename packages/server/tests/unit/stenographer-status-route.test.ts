@@ -175,10 +175,26 @@ describe("GET /api/admin/stenographer-status", () => {
     expect(queryStatus).toHaveBeenCalledTimes(1);
     const input = queryStatus.mock.calls[0]?.[0] as StenographerStatusQueryInput;
     expect(input.now.toISOString()).toBe(NOW.toISOString());
+    expect(input).not.toHaveProperty("includeRecovery");
     expect(input.until.toISOString()).toBe(NOW.toISOString());
     expect(input.since.toISOString()).toBe(
       new Date(NOW.getTime() - STENOGRAPHER_STATUS_WINDOW_MS).toISOString(),
     );
+  });
+
+  test("exposes durable unknown outcomes when the client opts in", async () => {
+    const { app: recoveryApp } = buildApp({
+      queryStatus: async input => ({
+        ...statusFixture(),
+        ...(input.includeRecovery ? { unresolvedProviderOutcomes: 1 } : {}),
+      }),
+    });
+    const response = await recoveryApp.inject({
+      method: "GET", url: "/api/admin/stenographer-status?recovery=1",
+      headers: { "x-test-user": AUTHORIZED },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ unresolvedProviderOutcomes: 1 });
   });
 
   test("rejects non-contract identity/content fields from the repository", async () => {

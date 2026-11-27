@@ -2772,6 +2772,49 @@ describe("automatic semantic recovery", () => {
     expect(result).toMatchObject({paused: 1, deferred: 0, failures: {}});
     expect(pause).toMatchObject({nextAttemptAt: 100_000, waitingReason: "provider"});
   });
+
+  test("candidate-set churn refunds the claim through the configured scheduler delay", async () => {
+    const events: string[] = [];
+    const work = workHarness([
+      claim("record:changing-candidate", "organization"),
+    ], events);
+    const semantic = semanticHarness(events);
+    semantic.loadOrganizerView = async () => ({
+      status: "unavailable",
+      failureCode: "candidate_unavailable",
+      failureDetail: "candidate_record_changed",
+    });
+    let pause: Parameters<DurableSleepWorkPort["pause"]>[0] | undefined;
+    work.port.pause = async (input) => {
+      pause = input;
+      return { status: "accepted" };
+    };
+    work.port.defer = async () => {
+      throw new Error("candidate-set churn must not consume a failure attempt");
+    };
+
+    const result = await runDurableHierarchySleep({
+      work: work.port,
+      semantic,
+      now: () => 10_000,
+      budget: { hierarchy: hierarchyBudget, maxWorkItems: 1 },
+    });
+
+    expect(pause).toMatchObject({
+      retryAfterSchedulerDelay: true,
+      waitingReason: "capacity",
+    });
+    expect(pause?.claim.recordRef).toBe("record:changing-candidate");
+    expect(result).toMatchObject({
+      paused: 1,
+      deferred: 0,
+      quarantined: 0,
+      failures: {},
+      failureDetails: { candidate_record_changed: 1 },
+      usage: { modelCalls: 0 },
+      diagnostics: { batchStaleRescheduled: 1 },
+    });
+  });
 });
 
 test("stable dependency repair leaves projection refresh to an exact search-stage claim", async () => {

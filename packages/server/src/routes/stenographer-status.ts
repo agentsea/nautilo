@@ -13,6 +13,7 @@ export interface StenographerStatusQueryInput {
   now: Date;
   since: Date;
   until: Date;
+  includeRecovery?: boolean;
 }
 
 /**
@@ -75,14 +76,15 @@ export function stenographerStatusRoutes(
     });
   const now = deps.now ?? (() => new Date());
 
-  app.get("/api/admin/stenographer-status", async (request, reply) => {
+  app.get<{ Querystring: { recovery?: string } }>("/api/admin/stenographer-status", async (request, reply) => {
     if (!(await requireServerSettingsRead(request, reply, hasCapability))) return;
 
+    const includeRecovery = request.query.recovery === "1";
     const until = now();
     const since = new Date(until.getTime() - STENOGRAPHER_STATUS_WINDOW_MS);
 
     try {
-      const status = await deps.queryStatus({ now: until, since, until });
+      const status = await deps.queryStatus({ now: until, since, until, ...(includeRecovery ? { includeRecovery } : {}) });
       return reply.send(stenographerAdminStatusSchema.parse(status));
     } catch {
       return reply.code(500).send({ error: "Stenographer status unavailable" });

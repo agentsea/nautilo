@@ -1,266 +1,141 @@
-import { useState, type FormEvent } from "react";
-import type {
-  MemoryRecoveryJob,
-  MemoryRecoveryPreview,
-  MemoryRecoveryRequest,
-  MemoryRecoveryResult,
-} from "@nautilo/types";
+import { useCallback, useEffect, useState } from "react";
+import { Link } from "react-router-dom";
+import type { MemoryAdminStatus, ReflectionAdminStatus, StenographerAdminStatus } from "@nautilo/types";
 import { apiClient } from "../../../lib/api";
 import { useCan } from "../../../hooks/use-can";
 
-const buttonClass = "rounded-md border border-border bg-background-element px-2.5 py-1.5 text-xs font-medium text-foreground hover:bg-background-panel disabled:opacity-50";
-const inputClass = "rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-foreground-muted disabled:opacity-50";
+const buttonClass = "rounded-md border border-border bg-background-element px-2.5 py-1 text-xs font-medium text-foreground hover:bg-background-panel disabled:opacity-50";
+type RecoveryState = "catching_up" | "waiting" | "healthy" | "paused" | "needs_attention";
+type RecoverySummary = { state: RecoveryState; detail: string };
 
-function Fact({ label, value }: { label: string; value: string }) {
+function stateLabel(state: RecoveryState): string {
+  switch (state) {
+    case "catching_up": return "Catching up";
+    case "waiting": return "Waiting";
+    case "healthy": return "Healthy";
+    case "paused": return "Paused";
+    case "needs_attention": return "Needs attention";
+  }
+}
+
+function stateClass(state: RecoveryState): string {
+  switch (state) {
+    case "healthy": return "border-emerald-500/40 bg-emerald-500/10 text-emerald-700 dark:text-emerald-400";
+    case "catching_up":
+    case "waiting": return "border-amber-500/40 bg-amber-500/10 text-amber-700 dark:text-amber-400";
+    case "needs_attention": return "border-error/40 bg-error/10 text-error";
+    case "paused": return "border-border bg-background-element text-foreground-muted";
+  }
+}
+
+export function summarizeStenographer(status: StenographerAdminStatus): RecoverySummary {
+  const unknownOutcome = (status.unresolvedProviderOutcomes ?? 0) > 0
+    || status.recentFailures.some(({ errorCode }) => errorCode === "provider_outcome_unknown");
+  if (unknownOutcome) return { state: "needs_attention", detail: "A provider outcome is unknown. Inspect Stenographer details before assuming the attempt completed." };
+  if (status.health === "degraded" || status.current.staleLeases > 0 || status.compaction.staleLeases > 0) {
+    return { state: "needs_attention", detail: "Recovery has unresolved failures or stale work. Stenographer details show the blocking stage and reason." };
+  }
+  const active = status.current.processingRooms + status.current.retryingRooms + status.current.dueRooms
+    + status.current.rebuildingRooms + status.current.historicalPendingRooms + status.compaction.awaitingRooms
+    + status.compaction.processingRooms + status.compaction.retryingRooms;
+  if (active > 0) return { state: "catching_up", detail: "Journal or compaction work is queued, retrying, or processing automatically." };
+  if (status.current.eligibleRooms === 0 || status.current.accumulatingRooms > 0) {
+    return { state: "waiting", detail: "Healthy and waiting for enough eligible conversation to process." };
+  }
+  return { state: "healthy", detail: "Eligible Room journals are caught up." };
+}
+
+export function summarizeReflection(status: ReflectionAdminStatus): RecoverySummary {
+  if ((status.unresolvedProviderOutcomes ?? 0) > 0) {
+    return { state: "needs_attention", detail: "A Reflection provider outcome remains unresolved." };
+  }
+  if (status.scheduler.state === "disabled" || status.scheduler.state === "pressure_paused") {
+    const reason = status.scheduler.pauseReason?.replaceAll("_", " ");
+    return { state: "paused", detail: reason ? `Automatic Reflection is paused: ${reason}.` : "Automatic Reflection is paused." };
+  }
+  if (status.health === "degraded" || status.current.staleLeases > 0
+    || status.current.currentParentViolations > 0 || status.currentFailures.some(({ errorCode }) => errorCode === "retry_exhausted")) {
+    return { state: "needs_attention", detail: "Recovery has unresolved or exhausted work. Reflection details show the blocking stage and reason." };
+  }
+  const active = status.current.backlog + status.current.due + status.current.claimed + status.current.checkpointed
+    + status.current.recoveryEligible + status.projections.pending;
+  if (active > 0) return { state: "catching_up", detail: "Reflection or projection work is waiting, recovering, or processing automatically." };
+  if (status.current.totalRecords === 0 || status.scheduler.state === "cooldown") {
+    return { state: "waiting", detail: "Healthy and waiting for eligible Stenographer work or the next scheduler poll." };
+  }
+  return { state: "healthy", detail: "Reflection records and search projections are caught up." };
+}
+
+export function summarizeMemory(status: MemoryAdminStatus): RecoverySummary {
+  if (!status.enabled) return { state: "paused", detail: "Automatic Memory review is paused; pending conversation is preserved." };
+  const unknownOutcome = status.recentFailures.some(({ code }) => code === "provider_outcome_unknown" || code === "publication_uncertain");
+  if (unknownOutcome) return { state: "needs_attention", detail: "An attempt has an unknown outcome. Inspect Memory details before assuming it completed or retrying it." };
+  if (status.current.blocked > 0 || status.health === "degraded" || status.health === "unavailable") {
+    return { state: "needs_attention", detail: "Some reviews remain blocked. Memory details show the recorded phase, reason, and whether another retry is safe." };
+  }
+  if (!status.model.available) return { state: "waiting", detail: "Waiting for an effective Memory model in Server Models." };
+  if (!status.encryption.available) return { state: "waiting", detail: "Waiting for authorized processing access." };
+  const active = status.current.due + status.current.processing + status.current.retrying + status.followUpPending;
+  if (active > 0) return { state: "catching_up", detail: "Memory review or follow-up work is queued, retrying, or processing automatically." };
+  if (status.current.accumulating > 0 || status.trackedSince === null || status.health === "waiting") {
+    return { state: "waiting", detail: "Healthy and waiting for enough eligible conversation to review." };
+  }
+  return { state: "healthy", detail: "Tracked Memory review work is caught up." };
+}
+
+function ProcessorRow({ name, href, summary }: { name: string; href: string; summary: RecoverySummary }) {
   return (
-    <div className="rounded-md border border-border/60 bg-background-element px-3 py-2">
-      <dt className="text-[11px] uppercase tracking-wide text-foreground-muted">{label}</dt>
-      <dd className="mt-0.5 text-sm font-semibold text-foreground">{value}</dd>
-    </div>
+    <li className="rounded-md border border-border/60 bg-background-element px-3 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="text-sm font-semibold text-foreground">{name}</span>
+        <span className={`rounded-full border px-2 py-0.5 text-xs font-semibold ${stateClass(summary.state)}`}>
+          {stateLabel(summary.state)}
+        </span>
+      </div>
+      <p className="mt-1 text-xs text-foreground-muted">{summary.detail}</p>
+      <Link to={href} className="mt-2 inline-flex text-xs font-medium text-primary hover:underline">View {name} details</Link>
+    </li>
   );
 }
 
-export function memoryRecoveryStatusText(status: MemoryRecoveryResult["status"]): string {
-  switch (status) {
-    case "queued":
-      return "Queued. Current state was refreshed; refresh this Room later to watch progress.";
-    case "already_queued":
-      return "Conflict: recovery is already queued. Current state was refreshed; refresh this Room later to watch progress.";
-    case "blocked":
-      return "Blocked. Review the refreshed job failure before trying again.";
-    case "stale":
-      return "The preview was stale. The same Room was refreshed; review it before running again.";
-  }
-}
-
-function actionLabel(job: MemoryRecoveryJob): string {
-  switch (job.action) {
-    case "retry_with_model": return "Run with selected model";
-    case "retry_review": return "Retry review";
-    case "reconcile_review": return "Reconcile and rerun";
-    case "blocked": return "Blocked";
-  }
-}
-
 export function MemoryRecoveryCard() {
-  const can = useCan();
-  const canRead = can("read_server_settings");
-  const canManage = can("manage_server_operations");
-  const [roomId, setRoomId] = useState("");
-  const [preview, setPreview] = useState<MemoryRecoveryPreview | null>(null);
-  const [previewing, setPreviewing] = useState(false);
-  const [running, setRunning] = useState<string | null>(null);
-  const [modelsByJob, setModelsByJob] = useState<Record<string, string>>({});
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-
+  const canRead = useCan()("read_server_settings");
+  const [summaries, setSummaries] = useState<Record<string, RecoverySummary | null>>({ stenographer: null, reflection: null, memory: null });
+  const [loading, setLoading] = useState(canRead);
+  const refresh = useCallback(async () => {
+    if (!canRead) return;
+    setLoading(true);
+    const [stenographer, reflection, memory] = await Promise.allSettled([
+      apiClient.admin.stenographerStatus.get({ includeRecovery: true }),
+      apiClient.admin.reflectionStatus.get({ includeRecovery: true }),
+      apiClient.admin.memoryStatus.get(),
+    ]);
+    setSummaries({
+      stenographer: stenographer.status === "fulfilled" ? summarizeStenographer(stenographer.value) : null,
+      reflection: reflection.status === "fulfilled" ? summarizeReflection(reflection.value) : null,
+      memory: memory.status === "fulfilled" ? summarizeMemory(memory.value) : null,
+    });
+    setLoading(false);
+  }, [canRead]);
+  useEffect(() => { void refresh(); }, [refresh]);
   if (!canRead) return null;
-
-  const loadPreview = async (requestedRoomId = roomId.trim()) => {
-    if (!requestedRoomId || previewing || running !== null) return;
-    setPreviewing(true);
-    setError(null);
-    try {
-      const next = await apiClient.admin.memoryRecovery.preview(requestedRoomId);
-      setPreview(next);
-      setModelsByJob({});
-    } catch {
-      setPreview(null);
-      setError("Recovery preview unavailable. No recovery work was started.");
-    } finally {
-      setPreviewing(false);
-    }
-  };
-
-  const submitPreview = (event: FormEvent) => {
-    event.preventDefault();
-    setNotice(null);
-    void loadPreview();
-  };
-
-  const run = async (key: string, request: MemoryRecoveryRequest) => {
-    if (!canManage || running !== null || !preview || request.roomId !== preview.roomId) return;
-    setRunning(key);
-    setError(null);
-    setNotice(null);
-    try {
-      const result = await apiClient.admin.memoryRecovery.run(request);
-      setNotice(memoryRecoveryStatusText(result.status));
-      try {
-        const verified = await apiClient.admin.memoryRecovery.preview(request.roomId);
-        setPreview(verified);
-        setModelsByJob({});
-      } catch {
-        setPreview(null);
-        setModelsByJob({});
-        setError("The recovery request returned, but verification refresh failed. Preview this Room again before another action.");
-      }
-    } catch {
-      setPreview(null);
-      setModelsByJob({});
-      setError("Recovery could not be confirmed. Preview this Room again before retrying.");
-    } finally {
-      setRunning(null);
-    }
-  };
-
+  const unavailable: RecoverySummary = { state: "needs_attention", detail: "Status is unavailable, so the current recovery outcome is unknown. Open details or refresh before drawing a conclusion." };
   return (
     <div className="mt-4 rounded-lg border border-border bg-background-panel/50 p-4" data-testid="memory-recovery-card">
-      <div>
-        <h3 className="text-sm font-semibold">Recovery</h3>
-        <p className="mt-0.5 text-xs text-foreground-muted">
-          Preview one Room, then explicitly run recovery for its current Journal or affected job.
-        </p>
+      <div className="flex items-start justify-between gap-3">
+        <div><h3 className="text-sm font-semibold">Automatic recovery</h3><p className="mt-0.5 text-xs text-foreground-muted">The three processors recover eligible work automatically across the server.</p></div>
+        <button className={buttonClass} type="button" disabled={loading} onClick={() => void refresh()}>{loading ? "Refreshing…" : "Refresh"}</button>
       </div>
-
-      <form className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-end" onSubmit={submitPreview}>
-        <label className="flex min-w-0 flex-1 flex-col gap-1 text-xs font-medium">
-          Room ID
-          <input
-            className={inputClass}
-            value={roomId}
-            placeholder="Room ID"
-            autoComplete="off"
-            disabled={previewing || running !== null}
-            onChange={(event) => {
-              setRoomId(event.target.value);
-              setPreview(null);
-              setModelsByJob({});
-              setError(null);
-              setNotice(null);
-            }}
-          />
-        </label>
-        <button className={buttonClass} type="submit" disabled={!roomId.trim() || previewing || running !== null}>
-          {previewing ? "Previewing…" : "Preview"}
-        </button>
-      </form>
-      <p className="mt-2 text-xs text-foreground-muted">Preview only reads recovery state. It does not start model work.</p>
-
-      {error ? <p className="mt-3 text-sm text-error" role="alert">{error}</p> : null}
-      {notice ? <p className="mt-3 text-sm" role="status">{notice}</p> : null}
-
-      {preview ? (
-        <div className="mt-4 space-y-4" data-testid="memory-recovery-preview">
-          <div className="flex flex-wrap items-center gap-2 text-xs text-foreground-muted">
-            <span className="font-medium text-foreground">Room {preview.roomId}</span>
-            <span>Previewed {new Date(preview.generatedAt).toLocaleString()}</span>
-          </div>
-          <dl className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-            <Fact label="Journal cursor" value={`${preview.journal.cursor}${preview.journal.target === null ? "" : ` / ${preview.journal.target}`}`} />
-            <Fact label="Journal generation" value={preview.journal.generation.toLocaleString()} />
-            <Fact label="Journal rebuild" value={preview.journal.rebuild.replaceAll("_", " ")} />
-            <Fact label="Journal last complete" value={preview.journal.lastCompletedAt ? new Date(preview.journal.lastCompletedAt).toLocaleString() : "None"} />
-            <Fact label="Reflection complete" value={preview.reflection.completed.toLocaleString()} />
-            <Fact label="Reflection pending" value={preview.reflection.pending.toLocaleString()} />
-            <Fact label="Memory covered" value={preview.memory.covered.toLocaleString()} />
-            <Fact label="Memory pending" value={preview.memory.pending.toLocaleString()} />
-            <Fact label="Latest Memory outcome" value={preview.memory.latestOutcome?.replaceAll("_", " ") ?? "None"} />
-          </dl>
-
-          <div className="rounded-md border border-border/60 p-3">
-            <h4 className="text-xs font-semibold uppercase tracking-wide text-foreground-muted">Journal regeneration</h4>
-            <p className="mt-1 text-xs text-foreground-muted">
-              Regenerates the existing whole-Room Journal and can incur model usage. The server preserves source messages.
-            </p>
-            {preview.journal.rebuild === "available" && canManage ? (
-              <button
-                type="button"
-                className={`${buttonClass} mt-2`}
-                disabled={running !== null}
-                onClick={() => void run("journal", {
-                  roomId: preview.roomId,
-                  action: "rebuild_journal",
-                  generation: preview.journal.generation,
-                  cursor: preview.journal.cursor,
-                  confirmBillableWork: true,
-                })}
-              >
-                {running === "journal" ? "Queuing…" : "Regenerate Room Journal"}
-              </button>
-            ) : (
-              <p className="mt-2 text-xs font-medium capitalize">{preview.journal.rebuild.replaceAll("_", " ")}</p>
-            )}
-          </div>
-
-          <div>
-            <h4 className="text-xs font-semibold uppercase tracking-wide text-foreground-muted">Affected jobs</h4>
-            {preview.jobs.length === 0 ? (
-              <p className="mt-2 text-sm text-foreground-muted">No recovery job is currently available for this Room.</p>
-            ) : (
-              <ul className="mt-2 space-y-2">
-                {preview.jobs.map((job) => {
-                  const eligibleModels = preview.models.filter((model) =>
-                    model.lanes.includes(job.lane) && model.id !== job.modelId
-                  );
-                  const selectedModel = modelsByJob[job.id] ?? "";
-                  return (
-                    <li key={job.id} className="rounded-md border border-border/60 bg-background-element p-3 text-xs">
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <p className="font-semibold capitalize text-foreground">{job.lane} recovery</p>
-                        <span className="text-foreground-muted">Job {job.id}</span>
-                      </div>
-                      <p className="mt-1 text-foreground-muted">Last step: {job.stage.replaceAll("_", " ")}</p>
-                      <p className="mt-1 text-foreground-muted">Failure: {job.reason.replaceAll("_", " ")}</p>
-                      {job.modelId ? <p className="mt-1 text-foreground-muted">Last model: {job.modelId}</p> : null}
-                      {job.action === "reconcile_review" ? (
-                        <p className="mt-2 text-foreground-muted">
-                          First reconcile the local receipt. The approved one-time rerun can incur another model charge.
-                        </p>
-                      ) : null}
-                      {job.action === "retry_with_model" && eligibleModels.length > 0 ? (
-                        <label className="mt-2 flex max-w-md flex-col gap-1 font-medium">
-                          Connected model for this job
-                          <select
-                            className={inputClass}
-                            value={selectedModel}
-                            disabled={!canManage || running !== null}
-                            onChange={(event) => setModelsByJob((current) => ({ ...current, [job.id]: event.target.value }))}
-                          >
-                            <option value="">Choose a connected model</option>
-                            {eligibleModels.map((model) => <option key={model.id} value={model.id}>{model.label}</option>)}
-                          </select>
-                        </label>
-                      ) : null}
-                      {job.action === "retry_with_model" && eligibleModels.length === 0 ? (
-                        <p className="mt-2 font-medium text-foreground-muted">No other connected model is eligible for this job.</p>
-                      ) : null}
-                      {job.action === "blocked" ? (
-                        <p className="mt-2 font-medium text-error">Blocked — no safe recovery action is currently available.</p>
-                      ) : canManage ? (
-                        <button
-                          type="button"
-                          className={`${buttonClass} mt-2`}
-                          disabled={running !== null || (job.action === "retry_with_model" && !selectedModel)}
-                          onClick={() => {
-                            const base = { roomId: preview.roomId, jobId: job.id, version: job.version };
-                            if (job.action === "retry_with_model") {
-                              if (!selectedModel) return;
-                              void run(job.id, { ...base, action: job.action, lane: job.lane, modelId: selectedModel });
-                            } else if (job.action === "retry_review") {
-                              void run(job.id, { ...base, action: job.action });
-                            } else if (job.action === "reconcile_review") {
-                              void run(job.id, { ...base, action: job.action, confirmBillableWork: true });
-                            }
-                          }}
-                        >
-                          {running === job.id ? "Queuing…" : actionLabel(job)}
-                        </button>
-                      ) : null}
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-            {preview.hasMoreJobs ? <p className="mt-2 text-xs text-foreground-muted">More affected jobs exist. Recover the current listed jobs, then preview again.</p> : null}
-          </div>
-          {!canManage ? (
-            <p className="text-xs text-foreground-muted">
-              Read-only — <code>manage_server_operations</code> is required to run recovery.
-            </p>
-          ) : null}
-        </div>
-      ) : null}
+      <p className="mt-3 text-xs text-foreground-muted">
+        After a confirmed provider refusal, eligible work retries with the model selected in <Link to="/admin#models" className="text-primary hover:underline">Server Models</Link>. An uncertain outcome requires attention.
+      </p>
+      {loading && Object.values(summaries).every(value => value === null) ? <p className="mt-3 text-sm text-foreground-muted">Loading recovery status…</p> : (
+        <ul className="mt-3 grid gap-2 lg:grid-cols-3" data-testid="memory-recovery-summary">
+          <ProcessorRow name="Stenographer" href="/admin#stenographer" summary={summaries.stenographer ?? unavailable} />
+          <ProcessorRow name="Reflection" href="/admin#reflection" summary={summaries.reflection ?? unavailable} />
+          <ProcessorRow name="Memory" href="/admin#memory" summary={summaries.memory ?? unavailable} />
+        </ul>
+      )}
     </div>
   );
 }

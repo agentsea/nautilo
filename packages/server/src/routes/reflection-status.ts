@@ -13,6 +13,7 @@ export interface ReflectionStatusQueryInput {
   now: Date;
   since: Date;
   until: Date;
+  includeRecovery?: boolean;
 }
 
 export type QueryReflectionStatus = (
@@ -59,15 +60,16 @@ export function reflectionStatusRoutes(
   });
   const now = deps.now ?? (() => new Date());
 
-  app.get("/api/admin/reflection-status", async (request, reply) => {
+  app.get<{ Querystring: { recovery?: string } }>("/api/admin/reflection-status", async (request, reply) => {
     if (!(await requireServerSettingsRead(request, reply, hasCapability))) return;
+    const includeRecovery = request.query.recovery === "1";
     const until = now();
     const since = new Date(until.getTime() - REFLECTION_STATUS_WINDOW_MS);
     let status: ReflectionAdminStatus;
     try {
       const input = { now: until, since, until };
       const [ordinaryStatus, protectedAuthority] = await Promise.all([
-        deps.queryStatus(input),
+        deps.queryStatus({ ...input, ...(includeRecovery ? { includeRecovery } : {}) }),
         deps.queryAuthorityStatus?.(input),
       ]);
       status = protectedAuthority === undefined

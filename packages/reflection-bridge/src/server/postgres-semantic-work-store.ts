@@ -541,6 +541,16 @@ function rowDate(row: RecordProductPostgresRow, key: string): Date | null {
   throw new TypeError("Invalid semantic work timestamp");
 }
 
+async function lockSemanticWorkAdmission(
+  tx: RecordProductPostgresExecutor,
+  recordRef: string,
+): Promise<void> {
+  await tx.query(
+    "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+    [`reflection-semantic-work:${recordRef}`],
+  );
+}
+
 /**
  * Exact, transaction-neutral admission primitive. The immutable receipt makes
  * replays no-ops even after later first-seen changes advanced the work row.
@@ -568,10 +578,7 @@ export async function admitSemanticWorkWithinTransaction(
   ) {
     throw new RangeError("semantic work timestamps must be valid and not-before cannot precede admission");
   }
-  await tx.query(
-    "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
-    [`reflection-semantic-work:${input.recordRef}`],
-  );
+  await lockSemanticWorkAdmission(tx, input.recordRef);
   const receipt = await executeTypedRecordProductQuery(tx,
     recordProductTypedDb.select({
       assigned_generation: reflectionRecordSemanticWorkAdmissions.assignedGeneration,
@@ -1721,6 +1728,14 @@ export class PostgresSemanticWorkStore
     return this.#claimedMutation(input.claim, async (tx, now) => {
       if (
         input.nextAttemptAt !== undefined
+        && input.retryAfterSchedulerDelay === true
+      ) {
+        throw new TypeError(
+          "Semantic work pause cannot combine an exact timestamp with the scheduler retry delay",
+        );
+      }
+      if (
+        input.nextAttemptAt !== undefined
         && (
           !Number.isSafeInteger(input.nextAttemptAt)
           || input.nextAttemptAt <= now.getTime()
@@ -1731,9 +1746,11 @@ export class PostgresSemanticWorkStore
           "Semantic work next attempt must be a future bounded timestamp",
         );
       }
-      const nextAttemptAt = input.nextAttemptAt === undefined
-        ? now
-        : new Date(input.nextAttemptAt);
+      const nextAttemptAt = input.retryAfterSchedulerDelay === true
+        ? new Date(now.getTime() + this.#retryMilliseconds)
+        : input.nextAttemptAt === undefined
+          ? now
+          : new Date(input.nextAttemptAt);
       const state = input.claim.stage === "authority_projection" ? "due" : "checkpointed";
       const rows = await executeTypedRecordProductQuery(tx,
         recordProductTypedDb.update(reflectionRecordSemanticWork)
@@ -2181,6 +2198,8 @@ export class PostgresSemanticWorkStore
     limit: number;
     policyVersion: string;
     continuation?: string;
+    /** Restrict repair to pre-dispatch quarantines caused by candidate-set churn. */
+    undispatchedCandidateRecordChangedOnly?: boolean;
   }>): Promise<SemanticWorkRepairPage> {
     assertPageLimit(input.limit);
     assertOpaque(input.policyVersion, "candidate-policy recovery version");
@@ -2204,6 +2223,15 @@ export class PostgresSemanticWorkStore
             eq(reflectionRecords.lifecycle, "current"),
             eq(reflectionRecordSemanticWork.state, "quarantined"),
             eq(reflectionRecordSemanticWork.failureCode, "candidate_unavailable"),
+            input.undispatchedCandidateRecordChangedOnly === true
+              ? eq(
+                reflectionRecordSemanticWork.failureDetail,
+                "candidate_record_changed",
+              )
+              : undefined,
+            input.undispatchedCandidateRecordChangedOnly === true
+              ? isNull(reflectionRecordSemanticWork.acceptedModelBinding)
+              : undefined,
             input.continuation === undefined
               ? undefined
               : gt(reflectionRecords.recordId, input.continuation),
@@ -2217,6 +2245,34 @@ export class PostgresSemanticWorkStore
         const recordRef = rowString(row, "record_id");
         const processingGeneration = rowInteger(row, "processing_generation");
         const structuralHeight = rowInteger(row, "structural_height");
+        // Reuse the canonical admission lock order before trusting the scan.
+        // A worker may have reclaimed or bound this generation since the page
+        // SELECT; the locked latest row is the authority for repair admission.
+        await lockSemanticWorkAdmission(tx, recordRef);
+        const latest = await executeTypedRecordProductQuery(tx,
+          recordProductTypedDb.select({
+            state: reflectionRecordSemanticWork.state,
+            failure_code: reflectionRecordSemanticWork.failureCode,
+            failure_detail: reflectionRecordSemanticWork.failureDetail,
+            accepted_model_binding:
+              reflectionRecordSemanticWork.acceptedModelBinding,
+          })
+            .from(reflectionRecordSemanticWork)
+            .where(eq(reflectionRecordSemanticWork.recordId, recordRef))
+            .for("update"));
+        const current = latest[0];
+        if (
+          current === undefined
+          || current["state"] !== "quarantined"
+          || current["failure_code"] !== "candidate_unavailable"
+          || (
+            input.undispatchedCandidateRecordChangedOnly === true
+            && (
+              current["failure_detail"] !== "candidate_record_changed"
+              || current["accepted_model_binding"] !== null
+            )
+          )
+        ) continue;
         const result = await admitSemanticWorkWithinTransaction(tx, {
           recordRef,
           changeReason: structuralHeight === 0 ? "created" : "scheduled_review",

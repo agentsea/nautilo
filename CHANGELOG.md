@@ -7,9 +7,8 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 
 ## [Unreleased]
 
-- Preview and recover stuck Journal, Reflection, and Memory review jobs for a Room
-  from Server Admin. Retry confirmed provider refusals with a connected model,
-  request a Journal rebuild, and verify progress from published results.
+- Recover background Journal, Reflection, and Memory review work automatically
+  when it is safe to retry. Server Admin shows recovery progress across the server.
 
 - Let Room Journal rebuilds continue after a rebuilt observation replaces
   an earlier one, so Reflection can retire work for the old Journal.

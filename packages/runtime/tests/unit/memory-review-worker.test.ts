@@ -159,6 +159,19 @@ describe("durable Memory review worker", () => {
     expect(failures[0]).toMatchObject({ phase: "model", reason: "provider_failed", retryable: false });
   });
 
+  test("one automatic model-change recovery never schedules a recursive paid retry", async () => {
+    const { deps, events, failures } = fixture();
+    deps.repository.claimNext = async () => ({ ...claim, automaticModelRecovery: true });
+    deps.prepare = async () => {
+      events.push("model");
+      return { status: "failed", reason: "provider_failed", turns: 1 };
+    };
+    await run(deps);
+    expect(events.filter(event => event === "model")).toHaveLength(1);
+    expect(events).not.toContain("publish");
+    expect(failures[0]).toMatchObject({ phase: "model", reason: "provider_failed", retryable: false });
+  });
+
   test.each(["granted", "revoked"] as const)("fences every recovery model invocation when dispatch admission is %s", async (status) => {
     const admitted = status === "granted";
     const { deps, events, failures } = fixture();
@@ -228,7 +241,7 @@ describe("durable Memory review worker", () => {
     expect(events).toContain("publish");
   });
 
-  test("bound service work does not consult a changed or invalid current default", async () => {
+  test("bound service work survives an unavailable current default after the recovery scan", async () => {
     const { deps, events } = fixture();
     let resolved = false;
     deps.resolveModelId = () => { resolved = true; throw new Error("current default unavailable"); };
@@ -239,8 +252,21 @@ describe("durable Memory review worker", () => {
       return { status: "prepared", turns: 1, modelId: options.modelId!, proposal };
     };
     await run(deps);
-    expect(resolved).toBe(false);
+    expect(resolved).toBe(true);
     expect(events).toContain("publish");
+  });
+
+  test("passes the effective service model into the ordinary repository scan", async () => {
+    const { deps } = fixture();
+    let scannedModel: string | undefined;
+    const claimNext = deps.repository.claimNext;
+    deps.repository.claimNext = async (input) => {
+      scannedModel = input.currentServiceModelId;
+      return claimNext(input);
+    };
+    deps.resolveModelId = () => " newly-configured-model ";
+    await run(deps);
+    expect(scannedModel).toBe("newly-configured-model");
   });
 
   test("trusted admission fences exposure, every invocation, and publication", async () => {

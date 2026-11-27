@@ -19,10 +19,9 @@ import {
   eq,
   inArray,
   llmUsageEvents,
-  previewRoomJournalRecovery,
+  readRoomJournalServiceRecoveryPage,
   queryStenographerAdminStatus,
-  queueRoomJournalRecovery,
-  readRoomJournalRecoveryMetadata,
+  rebindRoomJournalFailedBatchServiceModel,
   namespaces,
   reflectionRecordAuthorityBlocks,
   reflectionRecordAuthorityDependencies,
@@ -242,80 +241,79 @@ async function initializeFixtureJournal(fixture: Fixture): Promise<void> {
 }
 
 describe("M230 Room-journal rebuild (live Postgres)", () => {
-  test("previews and queues an exact administrative rebuild without rewriting source rows", async () => {
-    const fixture = await makeFixture("administrative-recovery");
+  test.each([
+    ["openai:gpt-5.6-sol", "openai", "venice:test-model", "provider_refused", false],
+    ["venice:test-model", "venice", "openai:gpt-5.6-sol", "provider_refused", false],
+    ["openai:gpt-5.6-sol", "surplus", "venice:test-model", "no_sellers_for_model", false],
+    ["openai:gpt-5.6-sol", "surplus", "venice:test-model", "no_sellers_for_model", true],
+  ] as const)("rediscovers and fences a refused %s Journal attempt via %s", async (
+    oldModel, route, configuredModel, refusal, earlierUnknown,
+  ) => {
+    const fixture = await makeFixture("automatic-provider-recovery");
+    const binding = {
+      version: 1, kind: "service", role: "memorySummarization",
+      modelId: oldModel, inputCommitment: `hmac-sha256:${"B".repeat(42)}A`,
+    } as const;
     try {
-      await initializeFixtureJournal(fixture);
-      const before = await db.select({
-        id: sessionMessages.id,
-        content: sessionMessages.content,
-        editRevision: sessionMessages.editRevision,
-      }).from(sessionMessages).where(and(
-        eq(sessionMessages.id, fixture.messageId),
-        eq(sessionMessages.sessionId, fixture.sessionId),
-      ));
-
-      expect(await readRoomJournalRecoveryMetadata(db, fixture.roomId))
-        .toMatchObject({
-          roomId: fixture.roomId,
-          rebuildGeneration: 0,
-          lastProcessedMessageId: 0,
-          rebuildRequestedAt: null,
-          rebuildTargetMessageId: null,
-        });
-      expect(await previewRoomJournalRecovery(db, {
-        roomId: fixture.roomId,
-        expectedRebuildGeneration: 0,
-        expectedCursor: 0,
-        now: FIRST_EDIT_TIME,
-      })).toEqual({ status: "allowed", rebuildGeneration: 0 });
-      await db.update(roomJournalState).set({
-        lastProcessedMessageId: fixture.messageId,
-      }).where(eq(roomJournalState.roomId, fixture.roomId));
-      expect(await queueRoomJournalRecovery(db, {
-        roomId: fixture.roomId,
-        expectedRebuildGeneration: 0,
-        expectedCursor: 0,
-        now: FIRST_EDIT_TIME,
-      })).toEqual({ status: "stale", rebuildGeneration: 0 });
-      await db.update(roomJournalState).set({
-        lastProcessedMessageId: 0,
-      }).where(eq(roomJournalState.roomId, fixture.roomId));
-      expect(await queueRoomJournalRecovery(db, {
-        roomId: fixture.roomId,
-        expectedRebuildGeneration: 0,
-        expectedCursor: 0,
-        now: FIRST_EDIT_TIME,
-      })).toEqual({ status: "queued", rebuildGeneration: 1 });
-      expect(await queueRoomJournalRecovery(db, {
-        roomId: fixture.roomId,
-        expectedRebuildGeneration: 1,
-        expectedCursor: 0,
-        now: FIRST_EDIT_TIME,
-      })).toEqual({ status: "already_queued", rebuildGeneration: 1 });
-      expect(await queueRoomJournalRecovery(db, {
-        roomId: fixture.roomId,
-        expectedRebuildGeneration: 0,
-        expectedCursor: 0,
-        now: FIRST_EDIT_TIME,
-      })).toEqual({ status: "stale", rebuildGeneration: 1 });
-
-      expect(await prepareNextJournalRebuild({ db, now: REBUILD_TIME }))
-        .toBe(fixture.roomId);
-      expect(await readState(fixture.roomId)).toMatchObject({
-        rebuildGeneration: 1,
-        rebuildRequestedAt: FIRST_EDIT_TIME,
-        rebuildTargetMessageId: fixture.messageId,
+      // A prepared rebuild must resume the exact failed batch via normal
+      // scheduling. Unprepared rebuilds still belong to transcript invalidation.
+      await editHumanRoomMessage({
+        roomId: fixture.roomId, messageId: fixture.messageId,
+        callerUserId: fixture.userId, callerActorId: fixture.userActorId,
+        content: "journal text after edit", expectedRevision: 0, now: FIRST_EDIT_TIME,
       });
-      expect(await db.select({
-        id: sessionMessages.id,
-        content: sessionMessages.content,
-        editRevision: sessionMessages.editRevision,
-      }).from(sessionMessages).where(and(
-        eq(sessionMessages.id, fixture.messageId),
-        eq(sessionMessages.sessionId, fixture.sessionId),
-      ))).toEqual(before);
+      expect(await prepareNextJournalRebuild({ db, now: REBUILD_TIME })).toBe(fixture.roomId);
+      const claim = await claimJournalRebuildExtraction(fixture.roomId, { db, now: REBUILD_TIME });
+      if (!claim) throw new Error("expected a prepared rebuild claim");
+      await db.update(roomJournalBatches).set({ acceptedModelBinding: binding })
+        .where(eq(roomJournalBatches.id, claim.batchId));
+      const usage = {
+        roomId: fixture.roomId, callType: "room_stenographer",
+        model: oldModel, provider: route, providerRoute: route, fundingKind: "service",
+        endpoint: "/v1/chat/completions",
+        metadata: { operationId: claim.batchId },
+      } as const;
+      const failedAt = new Date(REBUILD_TIME.getTime() + 1_000);
+      if (earlierUnknown) {
+        await db.insert(llmUsageEvents).values({
+          ...usage, occurredAt: new Date(REBUILD_TIME.getTime() - 1_000),
+          attemptOutcome: "unknown", costState: "unknown", failureCode: "outcome_unknown",
+        });
+      }
+      await db.insert(llmUsageEvents).values({
+        ...usage, occurredAt: failedAt, attemptOutcome: "failed", failureCode: refusal,
+        costState: route === "surplus" ? "unknown" : "estimated",
+      });
+      await failExtraction({ claim, errorCode: "provider", modelId: oldModel, db, now: failedAt });
+      const page = await readRoomJournalServiceRecoveryPage(db, { modelId: configuredModel, limit: 20 });
+      const candidate = page.find(row => row.batchId === claim.batchId);
+      if (!candidate) throw new Error("expected the failed rebuild batch on the recovery page");
+      expect(await readRoomJournalServiceRecoveryPage(db, { modelId: oldModel, limit: 20 }))
+        .not.toContainEqual(candidate);
+
+      const now = new Date(failedAt.getTime() + 1_000);
+      const result = await rebindRoomJournalFailedBatchServiceModel(db, { ...candidate, modelId: configuredModel, now });
+      if (earlierUnknown) {
+        expect(result).toMatchObject({ status: "blocked", reason: "attempt_outcome_not_refused" });
+        await db.update(roomJournalState).set({ lastExtractionErrorCode: "provider_outcome_unknown" })
+          .where(eq(roomJournalState.roomId, fixture.roomId));
+        const health = await queryStenographerAdminStatus({ now, since: now, until: now, includeRecovery: true }, db);
+        expect(health.recentFailures).toEqual([]);
+        expect(health.health).toBe("degraded");
+        expect(health.unresolvedProviderOutcomes).toBe(1);
+        return;
+      }
+      expect(result).toEqual({ status: "queued", rebuildGeneration: candidate.expectedRebuildGeneration });
+      expect(await rebindRoomJournalFailedBatchServiceModel(db, { ...candidate, modelId: configuredModel, now }))
+        .toMatchObject({ status: "stale" });
+      expect(await prepareNextJournalRebuild({ db, now })).toBe(fixture.roomId);
+      const resumed = await claimJournalRebuildExtraction(fixture.roomId, { db, now });
+      expect(resumed).toMatchObject({ batchId: claim.batchId, rebuildGeneration: claim.rebuildGeneration });
+      expect(await db.select({ binding: roomJournalBatches.acceptedModelBinding })
+        .from(roomJournalBatches).where(eq(roomJournalBatches.id, claim.batchId)))
+        .toEqual([{ binding: { ...binding, modelId: configuredModel } }]);
     } finally {
+      await db.delete(llmUsageEvents).where(eq(llmUsageEvents.roomId, fixture.roomId));
       await cleanupFixture(fixture);
     }
   });

@@ -16,6 +16,7 @@ interface CurrentRow {
   retrying_rooms: number | string;
   due_rooms: number | string;
   stale_leases: number | string;
+  unresolved_provider_outcomes: number | string;
   oldest_overdue_ms: number | string;
   maximum_failure_count: number | string;
   rebuilding_rooms: number | string;
@@ -31,6 +32,7 @@ interface JournalCompactionRow {
   processing_rooms: number | string;
   retrying_rooms: number | string;
   stale_leases: number | string;
+  unresolved_provider_outcomes: number | string;
   oldest_overdue_ms: number | string;
   maximum_failure_count: number | string;
   last_completed_at: string | Date | null;
@@ -212,6 +214,7 @@ export async function queryStenographerAdminStatus(
     now: Date;
     since: Date;
     until: Date;
+    includeRecovery?: boolean;
   },
   db: DirectDatabase = getSharedDirectDb(),
 ): Promise<StenographerAdminStatus> {
@@ -226,6 +229,7 @@ export async function queryStenographerAdminStatus(
           rjs.lease_expires_at,
           rjs.extraction_retry_after,
           rjs.extraction_failure_count,
+          rjs.last_extraction_error_code,
           rjs.historical_backfill_status,
           rjs.rebuild_requested_at
         FROM rooms r
@@ -325,6 +329,7 @@ export async function queryStenographerAdminStatus(
           er.lease_expires_at,
           er.extraction_retry_after,
           er.extraction_failure_count,
+          er.last_extraction_error_code,
           er.historical_backfill_status,
           er.rebuild_requested_at
         FROM eligible_rooms er
@@ -384,6 +389,8 @@ export async function queryStenographerAdminStatus(
           END
         ), 0)::bigint AS oldest_overdue_ms,
         COALESCE(MAX(extraction_failure_count), 0)::integer AS maximum_failure_count,
+        COUNT(*) FILTER (WHERE last_extraction_error_code = 'provider_outcome_unknown')::integer
+          AS unresolved_provider_outcomes,
         COUNT(*) FILTER (
           WHERE rebuild_requested_at IS NOT NULL
         )::integer AS rebuilding_rooms,
@@ -403,6 +410,7 @@ export async function queryStenographerAdminStatus(
     retrying_rooms: 0,
     due_rooms: 0,
     stale_leases: 0,
+    unresolved_provider_outcomes: 0,
     oldest_overdue_ms: 0,
     maximum_failure_count: 0,
     rebuilding_rooms: 0,
@@ -482,6 +490,8 @@ export async function queryStenographerAdminStatus(
               OR compaction_lease_expires_at <= ${now}
             )
         )::integer AS stale_leases,
+        COUNT(*) FILTER (WHERE last_compaction_error_code = 'provider_outcome_unknown')::integer
+          AS unresolved_provider_outcomes,
         COALESCE(MAX(
           CASE WHEN category = 'awaiting'
             THEN EXTRACT(EPOCH FROM (${now} - compaction_due_at)) * 1000
@@ -500,10 +510,12 @@ export async function queryStenographerAdminStatus(
   )) as FailureRow[];
 
   const extractionDegraded =
+    n(current.unresolved_provider_outcomes) > 0 ||
     n(current.stale_leases) > 0 ||
     n(current.maximum_failure_count) >= 3 ||
     n(current.oldest_overdue_ms) >= 5 * 60_000;
   const compactionDegraded =
+    n(journalCompaction.unresolved_provider_outcomes) > 0 ||
     n(journalCompaction.stale_leases) > 0 ||
     n(journalCompaction.maximum_failure_count) >= 3 ||
     n(journalCompaction.oldest_overdue_ms) >= 5 * 60_000;
@@ -526,6 +538,7 @@ export async function queryStenographerAdminStatus(
         : delayed
           ? "delayed"
           : "healthy",
+    ...(input.includeRecovery === true ? { unresolvedProviderOutcomes: n(current.unresolved_provider_outcomes) + n(journalCompaction.unresolved_provider_outcomes) } : {}),
     current: {
       eligibleRooms: n(current.eligible_rooms),
       caughtUpRooms: n(current.caught_up_rooms),

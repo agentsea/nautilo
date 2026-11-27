@@ -995,6 +995,42 @@ describe("PostgreSQL semantic work leases", () => {
     expect(pause.parameters).toContain(new Date(retryAt).toISOString());
   });
 
+  test("pauses transient churn through the configured scheduler retry delay", async () => {
+    const now = new Date("2026-08-14T10:00:00.000Z");
+    const retryMilliseconds = 12_345;
+    const value = await verifiedConnection(async <Row extends RecordProductPostgresRow>(
+      statement: string,
+    ) => normalizedSql(statement).includes("returning record_id")
+      ? [{ record_id: "record:changing-candidate" }] as unknown as Row[]
+      : [] as Row[]);
+    const store = new PostgresSemanticWorkStore({
+      handle: value.handle,
+      commitments: createHmacRecordSemanticCommitmentPort(
+        new Uint8Array(32).fill(3),
+      ),
+      clock: () => now,
+      retryMilliseconds,
+    });
+    const changingClaim: DurableSleepClaim = {
+      logicalObjectRef: "record:changing-candidate",
+      generation: 3,
+      recordRef: "record:changing-candidate",
+      changeReason: "revised",
+      stage: "organization",
+      leaseToken: "11111111-1111-4111-8111-111111111111",
+    };
+
+    expect(await store.pause({
+      claim: changingClaim,
+      retryAfterSchedulerDelay: true,
+      waitingReason: "capacity",
+    })).toMatchObject({ status: "accepted" });
+
+    expect(value.queries[0]?.parameters).toContain(
+      new Date(now.getTime() + retryMilliseconds).toISOString(),
+    );
+  });
+
   test("rejects malformed or non-future pause timestamps before SQL mutation", async () => {
     const now = new Date("2026-08-14T10:00:00.000Z");
     const value = await verifiedConnection(async <Row extends RecordProductPostgresRow>() =>
@@ -2126,7 +2162,7 @@ describe("PostgreSQL semantic work repair and publication", () => {
     expect(updates.some((query) => query.parameters?.includes("search_projection"))).toBe(true);
   });
 
-  test("re-admits obsolete candidate quarantines once per policy receipt", async () => {
+  test("re-admits only undispatched candidate-record-change quarantines when requested", async () => {
     const value = await verifiedConnection(async <Row extends RecordProductPostgresRow>(
       statement: string,
     ) => {
@@ -2146,6 +2182,15 @@ describe("PostgreSQL semantic work repair and publication", () => {
         ] as unknown as Row[];
       }
       if (statement.includes("pg_advisory_xact_lock")) return [];
+      if (normalized.includes("accepted_model_binding")
+        && normalized.includes("for update")) {
+        return [{
+          state: "quarantined",
+          failure_code: "candidate_unavailable",
+          failure_detail: "candidate_record_changed",
+          accepted_model_binding: null,
+        }] as unknown as Row[];
+      }
       if (normalized.includes("select assigned_generation")) return [];
       if (normalized.includes("select generation") && normalized.includes("for update")) {
         return [{
@@ -2166,12 +2211,62 @@ describe("PostgreSQL semantic work repair and publication", () => {
     expect(await store.recoverCandidatePolicyQuarantinesPage({
       limit: 1,
       policyVersion: "authority-aware-parent-normalization-v1",
+      undispatchedCandidateRecordChangedOnly: true,
     })).toEqual({ admitted: 1, continuation: "record:a" });
     const recoverySql = value.queries.find((query) =>
       normalizedSql(query.statement).includes("inner join reflection_record_semantic_work")
     );
     expect(recoverySql?.statement).not.toContain("payload");
     expect(normalizedSql(recoverySql?.statement ?? "")).toContain("failure_code =");
+    expect(normalizedSql(recoverySql?.statement ?? "")).toContain("failure_detail =");
+    expect(normalizedSql(recoverySql?.statement ?? "")).toContain(
+      "accepted_model_binding is null",
+    );
     expect(recoverySql?.parameters).toContain("candidate_unavailable");
+    expect(recoverySql?.parameters).toContain("candidate_record_changed");
+  });
+
+  test("skips a candidate quarantine reclaimed after the repair scan", async () => {
+    const value = await verifiedConnection(async <Row extends RecordProductPostgresRow>(
+      statement: string,
+    ) => {
+      const normalized = normalizedSql(statement);
+      if (normalized.includes("inner join reflection_record_semantic_work")) {
+        return [{
+          record_id: "record:reclaimed",
+          processing_generation: 2,
+          structural_height: 0,
+        }] as unknown as Row[];
+      }
+      if (statement.includes("pg_advisory_xact_lock")) return [];
+      if (normalized.includes("accepted_model_binding")
+        && normalized.includes("for update")) {
+        return [{
+          state: "claimed",
+          failure_code: null,
+          failure_detail: null,
+          accepted_model_binding: { kind: "service", modelId: "retained" },
+        }] as unknown as Row[];
+      }
+      throw new Error(`unexpected SQL: ${statement}`);
+    });
+    const store = new PostgresSemanticWorkStore({
+      handle: value.handle,
+      commitments: createHmacRecordSemanticCommitmentPort(
+        new Uint8Array(32).fill(9),
+      ),
+      clock: () => new Date("2026-08-21T10:00:00.000Z"),
+    });
+
+    expect(await store.recoverCandidatePolicyQuarantinesPage({
+      limit: 1,
+      policyVersion: "authority-aware-parent-normalization-v1",
+      undispatchedCandidateRecordChangedOnly: true,
+    })).toEqual({ admitted: 0 });
+    expect(value.queries.some((query) =>
+      normalizedSql(query.statement).includes(
+        "insert into reflection_record_semantic_work_admissions",
+      )
+    )).toBe(false);
   });
 });

@@ -1,136 +1,109 @@
 import { reapplyHappyDomGlobals } from "../../../../tests/bun-dom-preload";
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
-import type {
-  CapabilitySlug,
-  MemoryRecoveryPreview,
-  MemoryRecoveryRequest,
-  MemoryRecoveryResult,
-} from "@nautilo/types";
+import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
+import type { CapabilitySlug, MemoryAdminStatus, ReflectionAdminStatus, StenographerAdminStatus } from "@nautilo/types";
 
 let capabilities = new Set<CapabilitySlug>();
-const preview = mock(async (_roomId: string): Promise<MemoryRecoveryPreview> => fixture());
-const run = mock(async (_request: MemoryRecoveryRequest): Promise<MemoryRecoveryResult> => ({ status: "queued" }));
+const getStenographer = mock(async (): Promise<StenographerAdminStatus> => stenographerFixture());
+const getReflection = mock(async (): Promise<ReflectionAdminStatus> => reflectionFixture());
+const getMemory = mock(async (): Promise<MemoryAdminStatus> => memoryFixture());
 mock.module("../../../hooks/use-can", () => ({ useCan: () => (capability: CapabilitySlug) => capabilities.has(capability) }));
-mock.module("../../../lib/api", () => ({ apiClient: { admin: { memoryRecovery: { preview, run } } } }));
+mock.module("../../../lib/api", () => ({ apiClient: { admin: {
+  stenographerStatus: { get: getStenographer }, reflectionStatus: { get: getReflection }, memoryStatus: { get: getMemory },
+} } }));
 
-const { MemoryRecoveryCard, memoryRecoveryStatusText } = await import("./memory-recovery-card");
+const { MemoryRecoveryCard, summarizeMemory, summarizeReflection, summarizeStenographer } = await import("./memory-recovery-card");
 
-function fixture(): MemoryRecoveryPreview {
+function stenographerFixture(): StenographerAdminStatus {
   return {
-    roomId: "room-1",
-    generatedAt: "2026-11-27T10:00:00.000Z",
-    journal: { generation: 3, cursor: 8, lastCompletedAt: null, target: 12, rebuild: "available" },
-    reflection: { pending: 2, completed: 6 },
-    memory: { pending: 1, covered: 7, latestOutcome: "no_change" },
-    jobs: [{
-      id: "job-1", lane: "stenographer", version: "v4", stage: "model_call",
-      reason: "provider_failed", modelId: null, action: "retry_with_model",
-    }],
-    hasMoreJobs: false,
-    models: [{ id: "anthropic:haiku", label: "Haiku", lanes: ["stenographer"] }],
+    generatedAt: "2026-11-27T10:00:00.000Z", window: { since: "2026-11-26T10:00:00.000Z", until: "2026-11-27T10:00:00.000Z" }, health: "delayed",
+    current: { eligibleRooms: 4, caughtUpRooms: 2, accumulatingRooms: 0, processingRooms: 1, retryingRooms: 1, dueRooms: 0, staleLeases: 0, oldestOverdueMs: 1000, rebuildingRooms: 0, historicalPendingRooms: 0, historicalCompletedRooms: 0 },
+    last24h: { completedExtractionBatches: 1, extractionBatchesWithErrors: 0, retriedExtractionBatches: 1, zeroEventExtractionBatches: 0, eventsWritten: 1, extractionDurationP50Ms: 1, extractionDurationP95Ms: 1 },
+    journal: { projectedBodyCodePointsP50: 1, projectedBodyCodePointsP95: 1, projectedBodyCodePointsMax: 1 },
+    compaction: { awaitingRooms: 0, processingRooms: 0, retryingRooms: 0, staleLeases: 0, oldestOverdueMs: 0, lastCompletedAt: null }, recentFailures: [],
+  };
+}
+
+function reflectionFixture(): ReflectionAdminStatus {
+  const distribution = { samples: 0, p50Ms: 0, p90Ms: 0, maximumMs: 0 };
+  const latency = { endToEnd: distribution, queue: distribution, candidate: distribution, model: distribution, publication: distribution };
+  return {
+    generatedAt: "2026-11-27T10:00:00.000Z", window: { since: "2026-11-26T10:00:00.000Z", until: "2026-11-27T10:00:00.000Z" }, health: "healthy",
+    scheduler: { state: "cooldown", pauseReason: null, recoveryIntervalMs: 15_000, nextEligiblePollAt: null, lastPoll: null,
+      window: { polls: 0, admitted: 0, completed: 0, created: 0 }, backlog: { size: 0, oldestAgeMs: 0 }, latency: { sameRoom: latency, crossRoom: latency }, amplification: "normal" },
+    current: { totalRecords: 0, backlog: 0, due: 0, claimed: 0, checkpointed: 0, deferred: 0, complete: 0, quarantined: 0, recoveryEligible: 0, maximumRecoveryRound: 0, staleLeases: 0, oldestOverdueMs: 0, maximumAttempts: 0, currentParentViolations: 0 },
+    stages: { authorityProjection: 0, searchProjection: 0, organization: 0 }, projections: { availableRecords: 0, current: 0, pending: 0, incompatible: 0 },
+    last24h: { completedWork: 0, syntheticParentsCreated: 0 }, lastCompletedAt: null, nextRecoveryAt: null, currentFailures: [],
+  };
+}
+
+function memoryFixture(): MemoryAdminStatus {
+  return {
+    generatedAt: "2026-11-27T10:00:00.000Z", window: { since: "2026-11-26T10:00:00.000Z", until: "2026-11-27T10:00:00.000Z" }, enabled: true,
+    model: { id: "test:model", provider: "test", source: "server", available: true }, encryption: { mode: "ordinary", available: true }, trackedSince: "2026-11-26T10:00:00.000Z", health: "healthy",
+    current: { accumulating: 0, due: 0, processing: 0, retrying: 0, blocked: 0, caughtUp: 3, safelyRetryable: 0, oldestOverdueMs: null },
+    lastSuccessfulReviewAt: "2026-11-27T09:00:00.000Z", lastAttemptAt: "2026-11-27T09:00:00.000Z",
+    last24h: { completedReviews: 1, noChangeReviews: 0, created: 1, replaced: 0, promoted: 0, demoted: 0, failures: 0, lastReviewDurationMs: 1 }, recentFailures: [], followUpPending: 0, exitFlush: "not_scheduled",
   };
 }
 
 beforeEach(() => {
-  reapplyHappyDomGlobals();
-  cleanup();
-  capabilities = new Set(["read_server_settings", "manage_server_operations"]);
-  preview.mockClear();
-  run.mockClear();
-  preview.mockImplementation(async () => fixture());
-  run.mockImplementation(async () => ({ status: "queued" }));
+  reapplyHappyDomGlobals(); cleanup(); capabilities = new Set(["read_server_settings"]);
+  getStenographer.mockClear(); getReflection.mockClear(); getMemory.mockClear();
+  getStenographer.mockImplementation(async () => stenographerFixture());
+  getReflection.mockImplementation(async () => reflectionFixture());
+  getMemory.mockImplementation(async () => memoryFixture());
 });
 afterEach(cleanup);
+const show = () => render(<MemoryRouter><MemoryRecoveryCard /></MemoryRouter>);
 
 describe("MemoryRecoveryCard", () => {
-  test("previews without executing, runs an explicit current job, verifies it, and invalidates edited input", async () => {
-    const view = render(<MemoryRecoveryCard />);
-    const user = userEvent.setup();
-    const room = view.getByLabelText("Room ID");
-    await user.type(room, "room-1");
-    await act(async () => { fireEvent.click(view.getByRole("button", { name: "Preview" })); });
-
-    await waitFor(() => expect(view.getByTestId("memory-recovery-preview")).toBeTruthy());
-    expect(preview).toHaveBeenCalledWith("room-1");
-    expect(run).not.toHaveBeenCalled();
-    expect(view.getByText("8 / 12")).toBeTruthy();
-    expect(view.getByText("Last step: model call")).toBeTruthy();
-    expect(view.getByText("Failure: provider failed")).toBeTruthy();
-
-    await user.selectOptions(view.getByLabelText("Connected model for this job"), "anthropic:haiku");
-    await act(async () => { fireEvent.click(view.getByRole("button", { name: "Run with selected model" })); });
-    await waitFor(() => expect(run).toHaveBeenCalledWith({
-      roomId: "room-1", action: "retry_with_model", lane: "stenographer",
-      jobId: "job-1", version: "v4", modelId: "anthropic:haiku",
-    }));
-    await waitFor(() => expect(preview).toHaveBeenCalledTimes(2));
-    expect(view.getByRole("status").textContent).toContain("Queued");
-
-    await user.clear(room);
-    await user.type(room, "room-2");
-    expect(view.queryByTestId("memory-recovery-preview")).toBeNull();
-    expect(view.queryByRole("status")).toBeNull();
+  test("shows a server-wide read-only summary without Room, job, or model controls", async () => {
+    const view = show();
+    await waitFor(() => expect(view.getByTestId("memory-recovery-summary")).toBeTruthy());
+    expect(view.queryByLabelText("Room ID")).toBeNull();
+    expect(view.queryByRole("button", { name: /retry|run|preview/i })).toBeNull();
+    expect(view.queryByRole("combobox")).toBeNull();
+    expect(view.getByText("Catching up")).toBeTruthy();
+    expect(view.getByText("Waiting")).toBeTruthy();
+    expect(view.getByText("Healthy")).toBeTruthy();
+    expect(view.getByRole("link", { name: "Server Models" }).getAttribute("href")).toBe("/admin#models");
+    expect(view.getByRole("link", { name: "View Stenographer details" }).getAttribute("href")).toBe("/admin#stenographer");
   });
 
-  test("labels every manual outcome and a clear Room without jobs", async () => {
-    expect(memoryRecoveryStatusText("queued")).toContain("refresh this Room later");
-    expect(memoryRecoveryStatusText("already_queued")).toContain("Conflict");
-    expect(memoryRecoveryStatusText("already_queued")).toContain("already queued");
-    expect(memoryRecoveryStatusText("blocked")).toContain("Blocked");
-    expect(memoryRecoveryStatusText("stale")).toContain("stale");
-    preview.mockImplementation(async () => ({ ...fixture(), jobs: [], journal: { ...fixture().journal, rebuild: "unavailable" } }));
-    const view = render(<MemoryRecoveryCard />);
-    const user = userEvent.setup();
-    await user.type(view.getByLabelText("Room ID"), "room-1");
-    await act(async () => { fireEvent.click(view.getByRole("button", { name: "Preview" })); });
-    await waitFor(() => expect(view.getByText("No recovery job is currently available for this Room.")).toBeTruthy());
-    expect(run).not.toHaveBeenCalled();
+  test("keeps available processors visible when one status read fails", async () => {
+    getReflection.mockRejectedValueOnce(new Error("unavailable"));
+    const view = show();
+    await waitFor(() => expect(view.getByTestId("memory-recovery-summary")).toBeTruthy());
+    expect(view.getByText("Journal or compaction work is queued, retrying, or processing automatically.")).toBeTruthy();
+    expect(view.getByText("Tracked Memory review work is caught up.")).toBeTruthy();
+    expect(view.getByText(/current recovery outcome is unknown/)).toBeTruthy();
+    expect(view.getAllByText("Needs attention")).toHaveLength(1);
   });
 
-  test("locks Room identity during requests and invalidates an unverifiable recovery", async () => {
-    let finishPreview!: (value: MemoryRecoveryPreview) => void;
-    preview.mockImplementationOnce(() => new Promise((resolve) => { finishPreview = resolve; }));
-    const view = render(<MemoryRecoveryCard />);
-    const user = userEvent.setup();
-    const room = view.getByLabelText("Room ID") as HTMLInputElement;
-    await user.type(room, "room-1");
-    await act(async () => { fireEvent.click(view.getByRole("button", { name: "Preview" })); });
-    expect(room.disabled).toBe(true);
-    finishPreview(fixture());
-    await waitFor(() => expect(view.getByTestId("memory-recovery-preview")).toBeTruthy());
-
-    run.mockRejectedValueOnce(new Error("unknown outcome"));
-    await user.selectOptions(view.getByLabelText("Connected model for this job"), "anthropic:haiku");
-    await act(async () => { fireEvent.click(view.getByRole("button", { name: "Run with selected model" })); });
-    await waitFor(() => expect(view.getByRole("alert").textContent).toContain("could not be confirmed"));
-    expect(view.queryByTestId("memory-recovery-preview")).toBeNull();
-    expect(room.disabled).toBe(false);
-
-    preview.mockImplementationOnce(async () => fixture());
-    preview.mockImplementationOnce(async () => { throw new Error("verification unavailable"); });
-    run.mockResolvedValueOnce({ status: "queued" });
-    await act(async () => { fireEvent.click(view.getByRole("button", { name: "Preview" })); });
-    await waitFor(() => expect(view.getByTestId("memory-recovery-preview")).toBeTruthy());
-    await user.selectOptions(view.getByLabelText("Connected model for this job"), "anthropic:haiku");
-    await act(async () => { fireEvent.click(view.getByRole("button", { name: "Run with selected model" })); });
-    await waitFor(() => expect(view.getByRole("alert").textContent).toContain("verification refresh failed"));
-    expect(view.queryByTestId("memory-recovery-preview")).toBeNull();
+  test("refreshes all processor summaries", async () => {
+    const view = show();
+    await waitFor(() => expect(getMemory).toHaveBeenCalledTimes(1));
+    fireEvent.click(view.getByRole("button", { name: "Refresh" }));
+    await waitFor(() => expect(getMemory).toHaveBeenCalledTimes(2));
+    expect(getStenographer).toHaveBeenCalledTimes(2);
+    expect(getReflection).toHaveBeenCalledTimes(2);
   });
 
-  test("excludes the prior model and explains when no alternative is eligible", async () => {
-    preview.mockImplementation(async () => ({
-      ...fixture(),
-      jobs: [{ ...fixture().jobs[0]!, modelId: "anthropic:haiku" }],
-    }));
-    const view = render(<MemoryRecoveryCard />);
-    const user = userEvent.setup();
-    await user.type(view.getByLabelText("Room ID"), "room-1");
-    await act(async () => { fireEvent.click(view.getByRole("button", { name: "Preview" })); });
-    await waitFor(() => expect(view.getByText("No other connected model is eligible for this job.")).toBeTruthy());
-    expect(view.queryByLabelText("Connected model for this job")).toBeNull();
-    expect(view.getByRole("button", { name: "Run with selected model" }).hasAttribute("disabled")).toBe(true);
-    expect(run).not.toHaveBeenCalled();
+  test("never clears unknown outcomes and distinguishes pauses from attention", () => {
+    expect(summarizeStenographer({ ...stenographerFixture(), recentFailures: [{ stage: "extraction", errorCode: "provider_outcome_unknown", occurredAt: "2026-11-27T10:00:00.000Z", attemptCount: 1, modelId: "test:model" }] }).state).toBe("needs_attention");
+    expect(summarizeMemory({ ...memoryFixture(), recentFailures: [{ phase: "model", code: "provider_outcome_unknown", occurredAt: "2026-11-27T10:00:00.000Z", nextRetryAt: null, retryable: false }] }).state).toBe("needs_attention");
+    expect(summarizeStenographer({ ...stenographerFixture(), unresolvedProviderOutcomes: 1 }).state).toBe("needs_attention");
+    expect(summarizeReflection({ ...reflectionFixture(), unresolvedProviderOutcomes: 1 }).state).toBe("needs_attention");
+    expect(summarizeMemory({ ...memoryFixture(), enabled: false }).state).toBe("paused");
+    expect(summarizeReflection({ ...reflectionFixture(), scheduler: { ...reflectionFixture().scheduler, state: "pressure_paused", pauseReason: "repeated_failure" } }).state).toBe("paused");
+  });
+
+  test("requires read permission before requesting status", () => {
+    capabilities.clear();
+    const view = show();
+    expect(view.queryByTestId("memory-recovery-card")).toBeNull();
+    expect(getMemory).not.toHaveBeenCalled();
   });
 });

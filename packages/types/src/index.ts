@@ -39,7 +39,6 @@ export * from "./realtime";
 export * from "./stenographer-admin";
 export * from "./stenographer-protection-status";
 export * from "./memory-admin";
-export * from "./memory-recovery";
 export * from "./memory-list-cursor";
 export * from "./reflection-admin";
 export * from "./remote-control-proof";

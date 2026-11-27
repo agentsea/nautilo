@@ -47,7 +47,7 @@ export interface ReflectionSemanticWorkerDeps {
       limit: number;
       continuation?: string;
       stageAdmission: DurableSleepStageAdmission;
-    }>): Promise<Readonly<{ admitted: number; continuation?: string }>>;
+    }>, signal: AbortSignal): Promise<Readonly<{ admitted: number; continuation?: string }>>;
   };
   /** Aggregate durable state only; no Record or source coordinate crosses this seam. */
   readPressure?(): Promise<Readonly<{
@@ -576,7 +576,7 @@ export class ReflectionSemanticWorker {
           ...(this.bootstrapContinuation === undefined
             ? {}
             : { continuation: this.bootstrapContinuation }),
-        }));
+        }, signal));
       if (signal.aborted || this.stopped) return { status: "aborted" };
       if (
         !Number.isSafeInteger(page.admitted)

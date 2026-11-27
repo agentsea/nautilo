@@ -288,6 +288,8 @@ export interface DurableSleepWorkPort {
     readonly claim: DurableSleepClaim;
     /** Absolute epoch milliseconds for a readiness wait; omission is due now. */
     readonly nextAttemptAt?: number;
+    /** Use the durable adapter's configured retry delay without charging an attempt. */
+    readonly retryAfterSchedulerDelay?: true;
     readonly waitingReason?: DurableSleepWaitingReason;
   }): Promise<DurableSleepLeaseResult>;
   complete(input: {
@@ -1209,10 +1211,12 @@ export async function runDurableHierarchySleep(input: {
     claim: DurableSleepClaim,
     nextAttemptAt?: number,
     waitingReason: DurableSleepWaitingReason = "capacity",
+    retryAfterSchedulerDelay = false,
   ): Promise<void> => {
     const result = await input.work.pause({
       claim,
       ...(nextAttemptAt === undefined ? {} : { nextAttemptAt }),
+      ...(retryAfterSchedulerDelay ? { retryAfterSchedulerDelay: true } : {}),
       waitingReason,
     });
     if (result.status === "accepted") paused += 1;
@@ -2030,7 +2034,14 @@ export async function runDurableHierarchySleep(input: {
       }
       if (loaded.status === "unavailable") {
         attemptOutcome = "unavailable";
-        await deferClaim(claim, loaded.failureCode, loaded.failureDetail);
+        if (loaded.failureDetail === "candidate_record_changed") {
+          failureDetails.candidate_record_changed =
+            (failureDetails.candidate_record_changed ?? 0) + 1;
+          diagnostics.batchStaleRescheduled += 1;
+          await pauseClaim(claim, undefined, "capacity", true);
+        } else {
+          await deferClaim(claim, loaded.failureCode, loaded.failureDetail);
+        }
         continue;
       }
       if (loaded.status === "waiting") {

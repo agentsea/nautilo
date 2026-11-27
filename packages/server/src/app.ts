@@ -89,8 +89,7 @@ import { assertTaskFundingAdmission, TaskFundingError } from "@nautilo/runtime";
 import { getLatestResumableTaskRun, type NewTask, type Task } from "@nautilo/db";
 import { assertCanUseServerProviderCredentials } from "@nautilo/trust";
 import { memoryStatusRoutes } from "./routes/memory-status";
-import { memoryRecoveryRoutes } from "./routes/memory-recovery";
-import { createMemoryRecoveryService } from "./lib/memory-recovery-service";
+import { createAutomaticMemoryRecovery } from "./lib/memory-recovery-service";
 import {
   createForegroundMemoryEffectRecovery,
   createPostgresForegroundMemoryEffectRecoveryStore,
@@ -1934,6 +1933,11 @@ export async function createApp(options?: CreateAppOptions) {
       resolvedStenographerModelId: resolveStenographerModel(),
     });
   };
+  const automaticMemoryRecovery = createAutomaticMemoryRecovery({
+    db: getServerDirectDb,
+    resolveJournalModel: resolveStenographerModel,
+    resolveReflectionModel,
+  });
   let ordinaryPublisherPromise: ReturnType<
     typeof createNativeStenographerExtractionPublisher
   > | null = null;
@@ -2104,6 +2108,13 @@ export async function createApp(options?: CreateAppOptions) {
       protected: async () => (await protectedStenographer()).candidates,
     }),
     resolveModelId: resolveStenographerModel,
+    recoverProviderRefusals: async input => {
+      try {
+        await automaticMemoryRecovery.recoverJournal({ ...input, limit: 10 });
+      } catch {
+        app.log.warn("[stenographer] automatic provider recovery scan failed");
+      }
+    },
   });
   const reflectionPolicy = createLiveShadowDataOperationPolicyBinding(
     () => getEncryptionTransitionPolicy(getServerDirectDb()),
@@ -2193,6 +2204,13 @@ export async function createApp(options?: CreateAppOptions) {
               releaseWaitingSemantic: async (claim, stage, failure) => (await reflectionAuthority()).releaseWaitingSemantic(claim, stage, failure), maintain: async operation => (await reflectionAuthority()).maintain(operation)}});
         },
         resolveModelId: resolveReflectionModel,
+        recoverProviderRefusals: async input => {
+          try {
+            await automaticMemoryRecovery.recoverReflection(input);
+          } catch {
+            app.log.warn("[reflection] automatic provider recovery scan failed");
+          }
+        },
         admitMemoryModel: async (request) => openMemoryOperation({
           role: "memoryReflection", bindingScope: "claim_family",
           operationKey: `reflection:${[...request.claims].sort((left, right) => left.recordRef.localeCompare(right.recordRef)).map(claim => `${claim.recordRef}:${claim.generation}`).join(":")}`,
@@ -2562,12 +2580,6 @@ export async function createApp(options?: CreateAppOptions) {
   });
   costsRoutes(app);
   memoryStatusRoutes(app, memoryReviewRuntime);
-  memoryRecoveryRoutes(app, createMemoryRecoveryService({
-    db: getServerDirectDb,
-    readReviewJobs: (roomId, now, limit) => memoryReviewRuntime.readRecoveryJobs(roomId, now, limit),
-    retryReview: input => memoryReviewRuntime.retryRoomReview(input),
-    reconcileReview: input => memoryReviewRuntime.reconcileRoomReview(input),
-  }));
   stenographerStatusRoutes(app, {
     queryStatus: (input) =>
       queryStenographerAdminStatus(input, getServerDirectDb()),

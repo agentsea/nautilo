@@ -154,23 +154,6 @@ export function createServerMemoryReviewRuntime(
       });
     },
     async retryFailed() { const result = await retryFailedMemoryReviews(getServerDirectDb()); worker?.wake(); return result; },
-    readRecoveryJobs(roomId: string, now: Date, limit: number) {
-      return ensure().repository.readRecoveryJobs(roomId, now, limit);
-    },
-    async retryRoomReview(input: Parameters<PostgresMemoryReviewRepository["requestRecoveryRetry"]>[0]) {
-      if (stopped || !await admitted()) return "blocked" as const;
-      const current = ensure();
-      const result = await current.repository.requestRecoveryRetry(input);
-      if (result === "queued") current.worker.wake();
-      return result;
-    },
-    async reconcileRoomReview(input: Parameters<PostgresMemoryReviewRepository["requestRoomModelRecovery"]>[0]) {
-      if (stopped || !await admitted()) return "blocked" as const;
-      const current = ensure();
-      const result = await current.repository.requestRoomModelRecovery(input);
-      if (result === "queued") current.worker.wake();
-      return result;
-    },
     async requestModelRecovery(input: Parameters<PostgresMemoryReviewRepository["requestModelRecovery"]>[0]) {
       if (stopped || !await admitted()) return "blocked" as const;
       const current = ensure();

@@ -28,6 +28,7 @@ export const stenographerAdminStatusSchema = z
       })
       .strict(),
     health: z.enum(["healthy", "delayed", "degraded"]),
+    unresolvedProviderOutcomes: nonNegativeInteger.optional(),
     current: z
       .object({
         eligibleRooms: nonNegativeInteger,

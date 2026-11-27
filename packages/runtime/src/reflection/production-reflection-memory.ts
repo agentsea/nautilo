@@ -220,6 +220,7 @@ export interface ProductionReflectionMemoryInput {
     }>): Promise<void>;
   }>;
   readonly resolveModelId: () => string;
+  readonly recoverProviderRefusals?: (input: { now: Date; limit: number; signal: AbortSignal }) => Promise<void>;
   readonly admitMemoryModel?: (
     request: AdmitReflectionMemoryModelRequest,
   ) => Promise<AdmittedReflectionMemoryModel>;
@@ -906,6 +907,8 @@ export async function createProductionReflectionMemoryRuntime(
   }) ?? { work: semanticWork, semantic };
   // Persisted admissions and current projection metadata make this scan restart-safe.
   let roomProjectionContinuation: string | undefined;
+  let candidateRecoveryContinuation: string | undefined;
+  let candidateRecoveryComplete = false;
   const worker = new ReflectionSemanticWorker({
     maintenanceGate: input.maintenanceGate,
     ...(input.resolveStageAdmission === undefined
@@ -915,7 +918,7 @@ export async function createProductionReflectionMemoryRuntime(
     semantic: dataOperations.semantic,
     budget: REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.budget,
     bootstrap: {
-      async bootstrapPage(pageInput) {
+      async bootstrapPage(pageInput, signal) {
         await dataOperations.maintain?.({ limit: pageInput.limit });
         const bootstrapInput = {
           limit: pageInput.limit,
@@ -925,6 +928,25 @@ export async function createProductionReflectionMemoryRuntime(
         };
         if (pageInput.stageAdmission.maximumStage !== "organization") {
           return semanticWork.bootstrapPage(bootstrapInput);
+        }
+        await input.recoverProviderRefusals?.({ now: new Date(), limit: pageInput.limit, signal });
+        if (!candidateRecoveryComplete && !signal.aborted) {
+          const recovery = await semanticWork.recoverCandidatePolicyQuarantinesPage({
+            limit: pageInput.limit,
+            policyVersion: "candidate-record-changed-v1",
+            undispatchedCandidateRecordChangedOnly: true,
+            ...(candidateRecoveryContinuation === undefined ? {} : { continuation: candidateRecoveryContinuation }),
+          });
+          if (!signal.aborted) {
+            candidateRecoveryContinuation = recovery.continuation;
+            candidateRecoveryComplete = recovery.continuation === undefined;
+          }
+          if (recovery.admitted > 0) {
+            return {
+              admitted: recovery.admitted,
+              ...(pageInput.continuation === undefined ? {} : { continuation: pageInput.continuation }),
+            };
+          }
         }
         const projectionRepair = await semanticWork.admitMissingRoomProjectionPage({
           limit: pageInput.limit,

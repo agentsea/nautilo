@@ -288,6 +288,12 @@ function StatusBody({
         </p>
       </div>
 
+      {(status.unresolvedProviderOutcomes ?? 0) > 0 ? (
+        <p className="mt-4 text-xs text-error">
+          Unresolved provider outcomes ({status.unresolvedProviderOutcomes})
+        </p>
+      ) : null}
+
       {status.currentFailures.length > 0 ? (
         <div className="mt-4 border-t border-border/60 pt-3">
           <h4 className="text-xs font-semibold uppercase tracking-wide text-foreground-muted">
@@ -338,7 +344,7 @@ export function ReflectionHealthCard() {
     setLoading(true);
     setError(null);
     try {
-      setStatus(await apiClient.admin.reflectionStatus.get());
+      setStatus(await apiClient.admin.reflectionStatus.get({ includeRecovery: true }));
     } catch {
       setError("Reflection status is unavailable.");
     } finally {

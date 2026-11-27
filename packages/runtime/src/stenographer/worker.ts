@@ -42,6 +42,7 @@ export interface StenographerWorkerDeps {
     identity: BackgroundAttemptIdentity,
     signal: AbortSignal,
   ) => Promise<BackgroundAccessSession>;
+  recoverProviderRefusals?: (input: { now: Date; signal: AbortSignal }) => Promise<void>;
   now?: () => Date;
   logger?: {
     info(message: string, fields?: Record<string, unknown>): void;
@@ -167,6 +168,8 @@ export class StenographerWorker {
     const controller = new AbortController();
     this.activeController = controller;
     try {
+      await this.deps.recoverProviderRefusals?.({ now, signal: controller.signal });
+      if (this.stopped) return;
       // Repair shares the poll and cannot monopolize the extraction schedule.
       if (this.deps.operations.runNextOutputRepair !== undefined) {
         await this.runIntent("next-output-repair", "output-repair",

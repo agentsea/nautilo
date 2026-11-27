@@ -69,13 +69,8 @@ import {
 } from "./schemas/memory-processor-transport";
 import {
   memoryAdminStatusSchema,
-  memoryRecoveryPreviewSchema,
-  memoryRecoveryResultSchema,
   memoryRetryResponseSchema,
   type MemoryAdminStatus,
-  type MemoryRecoveryPreview,
-  type MemoryRecoveryRequest,
-  type MemoryRecoveryResult,
   connectedWebAccountCancelLoginResponseSchema,
   connectedWebAccountCancelReadResponseSchema,
   connectedWebAccountClosePageResponseSchema,
@@ -4691,24 +4686,10 @@ export class NautiloApiClient {
         defaultErrorPrefix: "POST /api/admin/memory-retry",
       }),
     },
-    memoryRecovery: {
-      preview: async (roomId: string): Promise<MemoryRecoveryPreview> => this.request({
-        path: `/api/admin/memory-recovery/${encodeURIComponent(roomId)}`,
-        schema: memoryRecoveryPreviewSchema,
-        defaultErrorPrefix: "GET /api/admin/memory-recovery",
-      }),
-      run: async (input: MemoryRecoveryRequest): Promise<MemoryRecoveryResult> => this.request({
-        method: "POST",
-        path: "/api/admin/memory-recovery",
-        body: input,
-        schema: memoryRecoveryResultSchema,
-        defaultErrorPrefix: "POST /api/admin/memory-recovery",
-      }),
-    },
     stenographerStatus: {
-      get: async (): Promise<StenographerAdminStatus> => {
+      get: async (options?: { includeRecovery?: boolean }): Promise<StenographerAdminStatus> => {
         return this.request<StenographerAdminStatus>({
-          path: "/api/admin/stenographer-status",
+          path: `/api/admin/stenographer-status${options?.includeRecovery ? "?recovery=1" : ""}`,
           schema: stenographerAdminStatusSchema,
           defaultErrorPrefix: "GET /api/admin/stenographer-status",
         });
@@ -4724,9 +4705,9 @@ export class NautiloApiClient {
     // content-free durable Reflection/Sleep operational health.
     // Requires `read_server_settings`.
     reflectionStatus: {
-      get: async (): Promise<ReflectionAdminStatus> => {
+      get: async (options?: { includeRecovery?: boolean }): Promise<ReflectionAdminStatus> => {
         return this.request<ReflectionAdminStatus>({
-          path: "/api/admin/reflection-status",
+          path: `/api/admin/reflection-status${options?.includeRecovery ? "?recovery=1" : ""}`,
           schema: reflectionAdminStatusSchema,
           defaultErrorPrefix: "GET /api/admin/reflection-status",
         });
