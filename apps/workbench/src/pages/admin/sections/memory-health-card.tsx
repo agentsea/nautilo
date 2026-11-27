@@ -118,7 +118,8 @@ export function MemorySection() {
   };
   if (!canRead) return null;
   return <section ref={card} id="memory" aria-label="Memory" data-testid="admin-memory-section">
-    <div className="rounded-lg border border-border bg-background-panel/50 p-4" data-testid="memory-health-card">
+    <MemoryRecoveryCard />
+    <div className="mt-4 rounded-lg border border-border bg-background-panel/50 p-4" data-testid="memory-health-card">
       <div className="flex items-start justify-between gap-3">
         <div><h3 className="text-sm font-semibold">Memory processing</h3>
           <p className="text-xs text-foreground-muted">Automatic review of conversation into editable Memories.</p></div>
@@ -172,6 +173,5 @@ export function MemorySection() {
         {can("manage_billing") ? <Link to="/costs" className="inline-flex text-xs text-primary hover:underline">View model costs — Memory review and Memory flush</Link> : null}
       </div> : null}
     </div>
-    <MemoryRecoveryCard />
   </section>;
 }

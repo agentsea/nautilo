@@ -5,12 +5,17 @@ import { MemoryRouter } from "react-router-dom";
 import type { CapabilitySlug, MemoryAdminStatus, ReflectionAdminStatus, StenographerAdminStatus } from "@nautilo/types";
 
 let capabilities = new Set<CapabilitySlug>();
+const receipt = { requestId: "11111111-1111-4111-8111-111111111111", observedThrough: "2026-11-27T10:00:00Z",
+  stenographer: { state: "assessed" as const, queued: 2, held: 0 }, reflection: { state: "assessed" as const, queued: 8, held: 1 },
+  memory: { state: "assessed" as const, queued: 1, held: 0 } };
+const recover = mock(async (_id: string) => receipt);
+const latest = mock(async (): Promise<{ run: typeof receipt | null }> => ({ run: null }));
 const getStenographer = mock(async (): Promise<StenographerAdminStatus> => stenographerFixture());
 const getReflection = mock(async (): Promise<ReflectionAdminStatus> => reflectionFixture());
 const getMemory = mock(async (): Promise<MemoryAdminStatus> => memoryFixture());
 mock.module("../../../hooks/use-can", () => ({ useCan: () => (capability: CapabilitySlug) => capabilities.has(capability) }));
 mock.module("../../../lib/api", () => ({ apiClient: { admin: {
-  stenographerStatus: { get: getStenographer }, reflectionStatus: { get: getReflection }, memoryStatus: { get: getMemory },
+  memoryRecovery: { latest, run: recover }, stenographerStatus: { get: getStenographer }, reflectionStatus: { get: getReflection }, memoryStatus: { get: getMemory },
 } } }));
 
 const { MemoryRecoveryCard, summarizeMemory, summarizeReflection, summarizeStenographer } = await import("./memory-recovery-card");
@@ -50,6 +55,7 @@ function memoryFixture(): MemoryAdminStatus {
 
 beforeEach(() => {
   reapplyHappyDomGlobals(); cleanup(); capabilities = new Set(["read_server_settings"]);
+  recover.mockClear(); latest.mockClear(); latest.mockImplementation(async () => ({ run: null }));
   getStenographer.mockClear(); getReflection.mockClear(); getMemory.mockClear();
   getStenographer.mockImplementation(async () => stenographerFixture());
   getReflection.mockImplementation(async () => reflectionFixture());
@@ -62,6 +68,7 @@ describe("MemoryRecoveryCard", () => {
   test("shows a server-wide read-only summary without Room, job, or model controls", async () => {
     const view = show();
     await waitFor(() => expect(view.getByTestId("memory-recovery-summary")).toBeTruthy());
+    expect(view.queryByRole("button", { name: "Recover all memory" })).toBeNull();
     expect(view.queryByLabelText("Room ID")).toBeNull();
     expect(view.queryByRole("button", { name: /retry|run|preview/i })).toBeNull();
     expect(view.queryByRole("combobox")).toBeNull();
@@ -82,6 +89,28 @@ describe("MemoryRecoveryCard", () => {
     expect(view.getAllByText("Needs attention")).toHaveLength(1);
   });
 
+  test("one operator click covers every processor and retries a lost response with the same request", async () => {
+    capabilities.add("manage_server_operations");
+    recover.mockRejectedValueOnce(new Error("disconnected"));
+    const view = show();
+    await waitFor(() => expect(view.getByTestId("memory-recovery-summary")).toBeTruthy());
+    expect(recover).not.toHaveBeenCalled();
+    fireEvent.click(view.getByRole("button", { name: "Recover all memory" }));
+    await waitFor(() => expect(view.getByRole("alert").textContent).toContain("same request"));
+    latest.mockImplementation(async () => ({ run: receipt }));
+    fireEvent.click(view.getByRole("button", { name: "Recover all memory" }));
+    await waitFor(() => expect(view.getByRole("status").textContent).toContain("8 queued · 1 held at request"));
+    expect(recover).toHaveBeenCalledTimes(2);
+    expect(recover.mock.calls[0]?.[0]).toBe(recover.mock.calls[1]?.[0]);
+  });
+
+  test("resolved historical failures do not keep the recovery indicators red", () => {
+    expect(summarizeStenographer({ ...stenographerFixture(), unresolvedProviderOutcomes: 0,
+      recentFailures: [{ stage: "extraction", errorCode: "provider_outcome_unknown", occurredAt: receipt.observedThrough, attemptCount: 1, modelId: null }] }).state).toBe("catching_up");
+    expect(summarizeMemory({ ...memoryFixture(), recentFailures: [{ phase: "model", code: "provider_outcome_unknown",
+      occurredAt: receipt.observedThrough, nextRetryAt: null, retryable: false }] }).state).toBe("healthy");
+  });
+
   test("refreshes all processor summaries", async () => {
     const view = show();
     await waitFor(() => expect(getMemory).toHaveBeenCalledTimes(1));
@@ -91,9 +120,9 @@ describe("MemoryRecoveryCard", () => {
     expect(getReflection).toHaveBeenCalledTimes(2);
   });
 
-  test("never clears unknown outcomes and distinguishes pauses from attention", () => {
+  test("never clears current unknown outcomes and distinguishes pauses from attention", () => {
     expect(summarizeStenographer({ ...stenographerFixture(), recentFailures: [{ stage: "extraction", errorCode: "provider_outcome_unknown", occurredAt: "2026-11-27T10:00:00.000Z", attemptCount: 1, modelId: "test:model" }] }).state).toBe("needs_attention");
-    expect(summarizeMemory({ ...memoryFixture(), recentFailures: [{ phase: "model", code: "provider_outcome_unknown", occurredAt: "2026-11-27T10:00:00.000Z", nextRetryAt: null, retryable: false }] }).state).toBe("needs_attention");
+    expect(summarizeMemory({ ...memoryFixture(), current: { ...memoryFixture().current, blocked: 1 }, recentFailures: [{ phase: "model", code: "provider_outcome_unknown", occurredAt: "2026-11-27T10:00:00.000Z", nextRetryAt: null, retryable: false }] }).state).toBe("needs_attention");
     expect(summarizeStenographer({ ...stenographerFixture(), unresolvedProviderOutcomes: 1 }).state).toBe("needs_attention");
     expect(summarizeReflection({ ...reflectionFixture(), unresolvedProviderOutcomes: 1 }).state).toBe("needs_attention");
     expect(summarizeMemory({ ...memoryFixture(), enabled: false }).state).toBe("paused");
@@ -111,7 +140,7 @@ describe("MemoryRecoveryCard", () => {
     const view = show();
     await waitFor(() => expect(view.getByText(/2 jobs have a successful provider call and a missing result/)).toBeTruthy());
     expect(view.getByText(/1 job has an unknown provider outcome/)).toBeTruthy();
-    expect(view.getByText(/held without a billable replay/)).toBeTruthy();
+    expect(view.getByText(/Automatic retries are on hold/)).toBeTruthy();
     expect(view.getByText(/4 resumed from a saved proposal. Completed in the past 24 hours: 6/)).toBeTruthy();
     expect(view.getByText(/Held work is excluded/)).toBeTruthy();
   });

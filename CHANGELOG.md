@@ -8,7 +8,9 @@ See [`RELEASE.md`](RELEASE.md) for publication and verification procedures.
 ## [Unreleased]
 
 - Recover background Journal, Reflection, and Memory review work automatically
-  when it is safe to retry. Server Admin shows recovery progress across the server.
+  when it is safe to retry. In Server Admin → Memory, **Recover all memory** lets
+  an operator authorize fresh provider calls for stuck work across all Rooms and
+  see what each processor queued or kept on hold.
 
 - Let Room Journal rebuilds continue after a rebuilt observation replaces
   an earlier one, so Reflection can retire work for the old Journal.
