@@ -2148,7 +2148,7 @@ export class PostgresSemanticWorkStore
         throw new TypeError("Reflection model binding role is invalid");
       }
       if (recoveryRows.length > 0 && resolved.kind !== "service") {
-        throw new Error("Reflection manual recovery service authority changed");
+        throw new DurableSleepOrganizationUnavailableError();
       }
       const accepted: MemoryOperationBinding = recoveryRows.length > 0
         ? { ...resolved, modelId: recoveryModelId! }

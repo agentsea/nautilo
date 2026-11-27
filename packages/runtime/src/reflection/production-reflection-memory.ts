@@ -181,8 +181,17 @@ export const REFLECTION_SEMANTIC_RUNTIME_POLICY_V1 = Object.freeze({
 
 type MemoryEvidenceRecordDependency = Extract<DurableModelExposureDependency, { kind: "record" }>;
 
+function sameAuthorityLeaves(
+  left: readonly string[],
+  right: readonly string[],
+): boolean {
+  return JSON.stringify([...left].sort()) === JSON.stringify([...right].sort());
+}
+
 export interface ProductionReflectionMemoryRuntime {
   readonly readMemoryEvidenceRecord: (dependency: MemoryEvidenceRecordDependency) => Promise<DurableRecordEnvelope | null>;
+  readonly readHistoricalOrganizerEvidenceRecord: (dependency: MemoryEvidenceRecordDependency) => Promise<DurableRecordEnvelope | null>;
+  readonly readHistoricalJournalEvidenceRecord: (dependency: MemoryEvidenceRecordDependency) => Promise<DurableRecordEnvelope | null>;
   readonly readRetiredJournalPredecessor: (dependency: MemoryEvidenceRecordDependency, roomId: string) => Promise<DurableRecordEnvelope | null>;
   readonly worker: ReflectionSemanticWorker;
   readonly recallRecordsPortForState: RecallRecordsPortForState;
@@ -574,6 +583,48 @@ export async function createProductionReflectionMemoryRuntime(
     const resolved = await bindings.semantic.resolve(opened.record);
     if (resolved.status !== "available") return null;
     return { opened: opened.record, binding: resolved.binding };
+  };
+  const readHistoricalJournalEvidenceRecord = async (
+    dependency: MemoryEvidenceRecordDependency,
+    roomId?: string,
+  ): Promise<DurableRecordEnvelope | null> => {
+    if (input.selection.selectedRepresentation !== "ordinary") return null;
+    const blocked = await authorityProjections.isImmediatelyBlocked({
+      recordRef: dependency.recordRef,
+      terminalAuthorityLeafHandles: dependency.terminalAuthorityLeafHandles,
+    });
+    if (blocked !== null) return null;
+    const context = await contextForRecord(dependency.recordRef);
+    if (
+      context === null
+      || (roomId !== undefined && context.binding.roomAnchorRef !== roomId)
+    ) return null;
+    const { opened } = context;
+    if (
+      (opened.lifecycle !== "superseded" && opened.lifecycle !== "resolved")
+      || opened.processingGeneration
+        !== dependency.observedProcessingGeneration + 1
+      || opened.semantic.producer.producerRef !== "stenographer"
+      || !opened.semantic.sourceOwnedKind?.startsWith("journal_event:")
+      || !sameAuthorityLeaves(
+        opened.semantic.terminalAuthorityLeafHandles,
+        dependency.terminalAuthorityLeafHandles,
+      )
+    ) return null;
+    const successors = await repository.readSuccessors({
+      recordRef: opened.recordRef,
+      readBindingRef: context.binding.readBindingRef,
+      limit: 2,
+    });
+    if (
+      successors.status !== "available"
+      || successors.page.continuation !== undefined
+      || successors.page.items.length !== 1
+      || successors.page.items[0]?.predecessorRecordRef !== opened.recordRef
+      || successors.page.items[0]?.relation
+        !== (opened.lifecycle === "superseded" ? "supersedes" : "resolves")
+    ) return null;
+    return opened;
   };
   type ModelInvocationContext = Readonly<{ roomId: string }>;
   const modelInvocationState = new ReflectionModelInvocationState<AdmittedReflectionMemoryModel>();
@@ -1211,10 +1262,13 @@ export async function createProductionReflectionMemoryRuntime(
     async readMemoryEvidenceRecord(dependency) {
       const context = await contextForRecord(dependency.recordRef);
       if (context === null || context.opened.processingGeneration !== dependency.observedProcessingGeneration
-        || JSON.stringify([...context.opened.semantic.terminalAuthorityLeafHandles].sort()) !== JSON.stringify([...dependency.terminalAuthorityLeafHandles].sort())) return null;
+        || !sameAuthorityLeaves(
+          context.opened.semantic.terminalAuthorityLeafHandles,
+          dependency.terminalAuthorityLeafHandles,
+        )) return null;
       return context.opened;
     },
-    async readRetiredJournalPredecessor(dependency, roomId) {
+    async readHistoricalOrganizerEvidenceRecord(dependency) {
       if (input.selection.selectedRepresentation !== "ordinary") return null;
       const blocked = await authorityProjections.isImmediatelyBlocked({
         recordRef: dependency.recordRef,
@@ -1222,16 +1276,31 @@ export async function createProductionReflectionMemoryRuntime(
       });
       if (blocked !== null) return null;
       const context = await contextForRecord(dependency.recordRef);
-      if (context === null || context.binding.roomAnchorRef !== roomId) return null;
+      if (context === null) return null;
       const { opened } = context;
       if (
         (opened.lifecycle !== "superseded" && opened.lifecycle !== "resolved")
-        || opened.processingGeneration !== dependency.observedProcessingGeneration + 1
-        || opened.semantic.producer.producerRef !== "stenographer"
-        || !opened.semantic.sourceOwnedKind?.startsWith("journal_event:")
+        || opened.processingGeneration
+          !== dependency.observedProcessingGeneration + 1
+        || opened.semantic.producer.producerRef !== "organizer"
+        || !sameAuthorityLeaves(
+          opened.semantic.terminalAuthorityLeafHandles,
+          dependency.terminalAuthorityLeafHandles,
+        )
       ) return null;
-      // The historical model observation still describes these immutable bytes.
-      // Require the Journal's exact replacement edge before traversing its proof.
+      const authority = await authorityProjections.readCurrent(
+        dependency.recordRef,
+      );
+      if (
+        authority === null
+        || authority.processingState !== "current"
+        || authority.recordDisposition !== "available"
+        || authority.recordLifecycle !== opened.lifecycle
+        || !sameAuthorityLeaves(
+          authority.terminalAuthorityLeafHandles,
+          dependency.terminalAuthorityLeafHandles,
+        )
+      ) return null;
       const successors = await repository.readSuccessors({
         recordRef: opened.recordRef,
         readBindingRef: context.binding.readBindingRef,
@@ -1241,9 +1310,15 @@ export async function createProductionReflectionMemoryRuntime(
         successors.status !== "available"
         || successors.page.continuation !== undefined
         || successors.page.items.length !== 1
-        || successors.page.items[0]?.relation !== (opened.lifecycle === "superseded" ? "supersedes" : "resolves")
+        || successors.page.items[0]?.predecessorRecordRef !== opened.recordRef
+        || successors.page.items[0]?.relation
+          !== (opened.lifecycle === "superseded" ? "supersedes" : "resolves")
       ) return null;
       return opened;
+    },
+    readHistoricalJournalEvidenceRecord,
+    async readRetiredJournalPredecessor(dependency, roomId) {
+      return readHistoricalJournalEvidenceRecord(dependency, roomId);
     },
     worker,
     recallRecordsPortForState,

@@ -24,6 +24,14 @@ const retiredRecord = (overrides: Partial<DurableRecordEnvelope> = {}): DurableR
   ...record([source("human")]), recordRef:"record-old", lifecycle:"superseded", processingGeneration:2,
   ...overrides,
 });
+const historicalOrganizerRecord = (overrides: Partial<DurableRecordEnvelope> = {}): DurableRecordEnvelope => ({
+  ...retiredRecord(),
+  semantic: {
+    ...retiredRecord().semantic,
+    producer: { producerRef: "organizer", policyVersion: "v1" },
+  },
+  ...overrides,
+});
 describe("personal Memory exact input proof", () => {
   test("a complete new derived AI/tool input follows all exposed leaves", async () => {
     const result = await classifyPersonalMemoryEvidence({ dependencies: [source("assistant")], budget, ports: port({
@@ -61,14 +69,67 @@ describe("personal Memory exact input proof", () => {
   });
   test("an ordinary rebuild may validate retired nested Journal ancestry only as service evidence", async () => {
     const retiredReads: string[] = [];
+    let organizerReads = 0;
     const result = await classifyPersonalMemoryEvidence({dependencies:[recordDep],budget,ports:port({
       readRecord:async(dependency)=>dependency.recordRef === "record-a" ? record([nestedRecordDep]) : null,
-    }),readRetiredJournalPredecessor:async(dependency)=>{
+    }),readHistoricalOrganizerPredecessor:async()=>{organizerReads += 1; return null;},
+    readRetiredJournalPredecessor:async(dependency)=>{
       retiredReads.push(dependency.recordRef);
       return retiredRecord();
     }});
     expect(result).toEqual({kind:"service",reason:"incomplete"});
+    expect(organizerReads).toBe(1);
     expect(retiredReads).toEqual(["record-old"]);
+  });
+  test("complete nested Organizer history preserves its proven Human payer", async () => {
+    const result = await classifyPersonalMemoryEvidence({
+      dependencies:[recordDep],budget,ports:port({
+        readRecord:async(dependency)=>dependency.recordRef === "record-a"
+          ? record([nestedRecordDep])
+          : null,
+      }),
+      readHistoricalOrganizerPredecessor:async()=>historicalOrganizerRecord(),
+    });
+    expect(result).toEqual({kind:"human",humanUserId:"human-a"});
+  });
+  test("historical Organizer ancestry still applies shared and traversal guards", async () => {
+    const rootPort = port({
+      readRecord:async(dependency)=>dependency.recordRef === "record-a"
+        ? record([nestedRecordDep])
+        : null,
+    });
+    expect(await classifyPersonalMemoryEvidence({
+      dependencies:[recordDep],budget,ports:{...rootPort,
+        readSource:async()=>({status:"current",kind:"human",authorHumanId:"human-a",audienceHumanIds:["human-a","human-b"],includesPublicBoundary:false}),
+      },
+      readHistoricalOrganizerPredecessor:async()=>historicalOrganizerRecord(),
+    })).toEqual({kind:"service",reason:"shared"});
+    expect(await classifyPersonalMemoryEvidence({
+      dependencies:[recordDep],budget:{maxVisitedRecords:1,maxTraversalWork:16},ports:rootPort,
+      readHistoricalOrganizerPredecessor:async()=>historicalOrganizerRecord(),
+    })).toEqual({kind:"service",reason:"incomplete"});
+  });
+  test("missing or mismatched historical Organizer ancestry fails closed", async () => {
+    const invalid = [
+      null,
+      historicalOrganizerRecord({lifecycle:"stale"}),
+      historicalOrganizerRecord({processingGeneration:3}),
+      historicalOrganizerRecord({semantic:{
+        ...historicalOrganizerRecord().semantic,
+        terminalAuthorityLeafHandles:["other-namespace"],
+      }}),
+    ];
+    for (const predecessor of invalid) {
+      const result = await classifyPersonalMemoryEvidence({
+        dependencies:[recordDep],budget,ports:port({
+          readRecord:async(dependency)=>dependency.recordRef === "record-a"
+            ? record([nestedRecordDep])
+            : null,
+        }),
+        readHistoricalOrganizerPredecessor:async()=>predecessor,
+      }).catch((error: unknown)=>error);
+      expect(result).toBeInstanceOf(PersonalMemoryEvidenceChangedError);
+    }
   });
   test("direct Records never use retired rebuild ancestry even when visited nested first", async () => {
     let retiredReads = 0;
@@ -78,7 +139,8 @@ describe("personal Memory exact input proof", () => {
         nestedRecordDep,
       ],budget,ports:port({
         readSource:async()=>({status:"current",kind:"derived",audienceHumanIds:["human-a"],includesPublicBoundary:false,modelExposureDependencies:[nestedRecordDep]}),
-      }),readRetiredJournalPredecessor:async()=>{retiredReads += 1; return retiredRecord();},
+      }),readHistoricalOrganizerPredecessor:async()=>{retiredReads += 1; return historicalOrganizerRecord();},
+      readRetiredJournalPredecessor:async()=>{retiredReads += 1; return retiredRecord();},
     }).catch((error: unknown)=>error);
     expect(result).toBeInstanceOf(PersonalMemoryEvidenceChangedError);
     expect(retiredReads).toBe(0);

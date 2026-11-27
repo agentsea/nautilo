@@ -64,7 +64,10 @@ import { resolveArtifactFeedAuthor, resolveArtifactFeedPeople, resolveArtifactCr
   resolveArtifactFeedActorNames } from "./event-feed/artifact-identities";
 import { setWorkspaceArtifactCreatedSink } from "@nautilo/agent";
 import { getCurrentProtectedMemoryEvidence } from "./lib/protected-memory-model-evidence";
-import { openMemoryOperation } from "./lib/personal-memory-operation";
+import {
+  openMemoryOperation,
+  ordinaryHistoricalMemoryEvidenceReaders,
+} from "./lib/personal-memory-operation";
 import { createPersonalMemoryEvidencePort } from "./lib/personal-memory-evidence-port";
 import { createStenographerMemoryFunding } from "./lib/stenographer-memory-funding";
 import { createReviewMemoryExposureResolver } from "./lib/memory-review-exposure";
@@ -2218,15 +2221,29 @@ export async function createApp(options?: CreateAppOptions) {
             app.log.warn("[reflection] automatic provider recovery scan failed");
           }
         },
-        admitMemoryModel: async (request) => openMemoryOperation({
-          role: "memoryReflection", bindingScope: "claim_family",
-          operationKey: `reflection:${[...request.claims].sort((left, right) => left.recordRef.localeCompare(right.recordRef)).map(claim => `${claim.recordRef}:${claim.generation}`).join(":")}`,
-          dependencies: () => Promise.resolve(request.dependencies), ports: getCurrentProtectedMemoryEvidence() ?? memoryEvidence,
-          budget: REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.budget.hierarchy,
-          commitmentKey: getReflectionCommitmentKey(), bind: request.bind,
-          assertCurrent: async () => { await maintenanceGate.assertAcceptingNewWork(); await request.assertCurrent(); },
-          resolveServiceModel: resolveReflectionModel,
-        }),
+        admitMemoryModel: async (request) => {
+          const protectedEvidence = getCurrentProtectedMemoryEvidence();
+          return openMemoryOperation({
+            role: "memoryReflection", bindingScope: "claim_family",
+            operationKey: `reflection:${[...request.claims].sort((left, right) => left.recordRef.localeCompare(right.recordRef)).map(claim => `${claim.recordRef}:${claim.generation}`).join(":")}`,
+            dependencies: () => Promise.resolve(request.dependencies),
+            ports: protectedEvidence ?? memoryEvidence,
+            budget: REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.budget.hierarchy,
+            commitmentKey: getReflectionCommitmentKey(), bind: request.bind,
+            ...ordinaryHistoricalMemoryEvidenceReaders(protectedEvidence, {
+              readHistoricalOrganizerPredecessor: (dependency) =>
+                reflectionRuntime().then(runtime =>
+                  runtime.readHistoricalOrganizerEvidenceRecord(dependency)
+                ),
+              readRetiredJournalPredecessor: (dependency) =>
+                reflectionRuntime().then(runtime =>
+                  runtime.readHistoricalJournalEvidenceRecord(dependency)
+                ),
+            }),
+            assertCurrent: async () => { await maintenanceGate.assertAcceptingNewWork(); await request.assertCurrent(); },
+            resolveServiceModel: resolveReflectionModel,
+          });
+        },
       });
       reflectionRuntimePromise = pending;
       void pending.catch(() => {

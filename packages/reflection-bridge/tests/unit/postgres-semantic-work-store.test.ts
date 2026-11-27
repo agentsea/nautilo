@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 
-import type { DurableSleepClaim } from "@nautilo/reflection";
+import {
+  DurableSleepOrganizationUnavailableError,
+  type DurableSleepClaim,
+} from "@nautilo/reflection";
 import type { DurableRecordPublication } from "@nautilo/reflection/durable";
 
 import {
@@ -669,7 +672,7 @@ describe("PostgreSQL semantic work leases", () => {
         credentialId: "77777777-7777-4777-8777-777777777777",
         credentialRevision: 1,
       },
-    }))).rejects.toThrow("service authority changed");
+    }))).rejects.toBeInstanceOf(DurableSleepOrganizationUnavailableError);
     expect(value.queries).toHaveLength(1);
   });
 

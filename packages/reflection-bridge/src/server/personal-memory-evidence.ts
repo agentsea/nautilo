@@ -44,6 +44,12 @@ export async function classifyPersonalMemoryEvidence(input: Readonly<{
   ports: PersonalMemoryEvidencePort;
   budget: OrganizerEvidenceBudget;
   /**
+   * Ordinary Reflection may retain an immutable Organizer input after that
+   * exact Record acquired one terminal successor. The caller must authenticate
+   * the historical generation, authority leaves, and unique terminal edge.
+   */
+  readHistoricalOrganizerPredecessor?: PersonalMemoryEvidencePort["readRecord"];
+  /**
    * Ordinary Journal rebuilds may retain immutable ancestry coordinates after
    * their Records have moved to a terminal successor lifecycle. This reader is
    * consulted only for nested Record ancestry that the current reader cannot
@@ -98,25 +104,33 @@ export async function classifyPersonalMemoryEvidence(input: Readonly<{
       } else {
         if (++records > input.budget.maxVisitedRecords) { reason ??= "incomplete"; return; }
         let record = await input.ports.readRecord(dependency);
-        let retired = false;
-        if (record === null
-          && !directRecordRefs.has(dependency.recordRef)
-          && input.readRetiredJournalPredecessor !== undefined) {
-          record = await input.readRetiredJournalPredecessor(dependency);
-          retired = true;
+        let historical: "organizer" | "journal" | undefined;
+        if (record === null && !directRecordRefs.has(dependency.recordRef)) {
+          if (input.readHistoricalOrganizerPredecessor !== undefined) {
+            record = await input.readHistoricalOrganizerPredecessor(dependency);
+            if (record !== null) historical = "organizer";
+          }
+          if (
+            record === null
+            && input.readRetiredJournalPredecessor !== undefined
+          ) {
+            record = await input.readRetiredJournalPredecessor(dependency);
+            if (record !== null) historical = "journal";
+          }
         }
         const retiredGeneration = dependency.observedProcessingGeneration + 1;
         if (!record || record.recordRef !== dependency.recordRef
-          || (retired
+          || (historical !== undefined
             ? (record.lifecycle !== "superseded" && record.lifecycle !== "resolved")
               || !Number.isSafeInteger(retiredGeneration)
               || record.processingGeneration !== retiredGeneration
             : record.lifecycle !== "current"
               || record.processingGeneration !== dependency.observedProcessingGeneration)
           || !sameAuthority(record, dependency)) throw new PersonalMemoryEvidenceChangedError();
-        // Retired Journal ancestry can prove only that an immutable exposure
-        // remains explainable. It can never establish an exclusive Human payer.
-        if (retired) reason ??= "incomplete";
+        // A Journal rebuild proves explainability, not the original payer.
+        // An authenticated Organizer predecessor retains its complete exposure
+        // ancestry and may still prove the same exclusive Human recursively.
+        if (historical === "journal") reason ??= "incomplete";
         for (const leaf of record.semantic.terminalAuthorityLeafHandles) {
           const audience = await input.ports.readAudience(leaf);
           if (!audience) throw new PersonalMemoryEvidenceChangedError();

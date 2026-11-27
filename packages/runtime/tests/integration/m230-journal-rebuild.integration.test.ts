@@ -848,6 +848,12 @@ describe("M230 Room-journal rebuild (live Postgres)", () => {
           lifecycle: "superseded",
           processingGeneration: originalRecord.processingGeneration + 1,
         });
+      expect(await runtime.readHistoricalJournalEvidenceRecord(oldDependency))
+        .toMatchObject({
+          recordRef: originalEvent.recordId,
+          lifecycle: "superseded",
+          processingGeneration: originalRecord.processingGeneration + 1,
+        });
       expect(await runtime.readRetiredJournalPredecessor(oldDependency, randomUUID()))
         .toBeNull();
       expect(await runtime.readRetiredJournalPredecessor({
@@ -861,6 +867,8 @@ describe("M230 Room-journal rebuild (live Postgres)", () => {
         disposition: "blocked",
       });
       expect(await runtime.readRetiredJournalPredecessor(oldDependency, fixture.roomId))
+        .toBeNull();
+      expect(await runtime.readHistoricalJournalEvidenceRecord(oldDependency))
         .toBeNull();
     } finally {
       // Authority blocks are immutable. Retire the fixture Records so later

@@ -12,6 +12,7 @@ export interface OpenMemoryOperationInput {
   readonly operationKey: string;
   readonly dependencies: () => Promise<readonly DurableModelExposureDependency[] | undefined>;
   readonly ports: PersonalMemoryEvidencePort;
+  readonly readHistoricalOrganizerPredecessor?: PersonalMemoryEvidencePort["readRecord"];
   readonly readRetiredJournalPredecessor?: PersonalMemoryEvidencePort["readRecord"];
   readonly budget: OrganizerEvidenceBudget;
   readonly commitmentKey: Uint8Array;
@@ -32,6 +33,19 @@ export interface AdmittedMemoryOperation {
   assertExposure(dependencies: readonly DurableModelExposureDependency[] | undefined): Promise<void>;
 }
 
+type HistoricalMemoryEvidenceReaders = Pick<
+  OpenMemoryOperationInput,
+  "readHistoricalOrganizerPredecessor" | "readRetiredJournalPredecessor"
+>;
+
+/** Protected questions own their exact evidence port and never cross-open ordinary history. */
+export function ordinaryHistoricalMemoryEvidenceReaders(
+  protectedEvidence: PersonalMemoryEvidencePort | undefined,
+  readers: HistoricalMemoryEvidenceReaders,
+): Partial<HistoricalMemoryEvidenceReaders> {
+  return protectedEvidence === undefined ? readers : {};
+}
+
 /** Personal eligibility is proved from actual inputs, never a Room owner. */
 export async function openMemoryOperation(input: OpenMemoryOperationInput): Promise<AdmittedMemoryOperation> {
   if (input.commitmentKey.byteLength < 32) throw new TypeError("Memory commitment key is unavailable");
@@ -42,6 +56,10 @@ export async function openMemoryOperation(input: OpenMemoryOperationInput): Prom
       dependencies: current,
       ports: input.ports,
       budget: input.budget,
+      ...(input.readHistoricalOrganizerPredecessor === undefined ? {} : {
+        readHistoricalOrganizerPredecessor:
+          input.readHistoricalOrganizerPredecessor,
+      }),
       ...(input.readRetiredJournalPredecessor === undefined ? {} : {
         readRetiredJournalPredecessor: input.readRetiredJournalPredecessor,
       }),
