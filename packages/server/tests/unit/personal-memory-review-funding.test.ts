@@ -47,14 +47,14 @@ describe("personal Memory review funding adapter", () => {
         invokeChat: async (_messages, _tools, selectedModel, _user, _agent, _lane, config, options) => {
           expect(selectedModel).toBe(modelId);
           expect(options?.serverFundedService).toBe("shared_memory_maintenance");
+          expect(config?.signal).toBe(controller.signal);
           await options?.beforeProviderDispatch?.(config?.signal);
           order.push("wire");
           throw wireError;
         },
       });
       const admitted = await admit({ ...claim, modelRecovery: "authorized" }, { messages: [], memoryAccessEnvelope: envelope }, async () => {});
-      const seen = await admitted.invokeModel({ modelId, messages: [], tools: [], signal: controller.signal }, async signal => {
-        expect(signal).toBe(controller.signal);
+      const seen = await admitted.invokeModel({ modelId, messages: [], tools: [], signal: controller.signal }, async () => {
         order.push("spend");
       }).catch((error: unknown) => error);
       expect(seen).toBe(wireError);
