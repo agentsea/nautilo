@@ -596,8 +596,10 @@ implements DurableSleepSemanticPort {
     let crossRoomElapsedMs = 0;
     if (this.ports.crossRoom !== undefined) {
       const crossRoomStartedAt = now();
-      const namespaceFromBinding = /^journal:namespace:([^:]+):/u
-        .exec(binding.readBindingRef)?.[1]
+      const namespacePattern = /^journal:namespace:([^:]+):/u;
+      const accessNamespace = namespacePattern.exec(binding.readBindingRef)?.[1];
+      const originNamespace = namespacePattern.exec(binding.publicationBindingRef)?.[1];
+      const namespaceFromBinding = accessNamespace
         ?? changed.record.semantic.terminalAuthorityLeafHandles[0]
         ?? binding.roomAnchorRef;
       const selectedRecordCoordinates = new Map([
@@ -624,6 +626,15 @@ implements DurableSleepSemanticPort {
         } else if (entry.dependency?.kind === "source") {
           const revision = Number(entry.dependency.dependency.observedRevision ?? 0);
           if (!Number.isSafeInteger(revision) || revision < 0) continue;
+          // Room-local Memory was opened in the origin Room. A derived
+          // record can be readable through a different access Namespace.
+          const leaf = entry.dependency.dependency.terminalAuthorityLeafHandle;
+          const sourceBinding = originNamespace === leaf
+            ? binding.publicationBindingRef
+            : binding.readBindingRef;
+          if (originNamespace !== leaf && accessNamespace !== undefined && accessNamespace !== leaf) {
+            return { status: "unavailable", failureCode: "candidate_unavailable", failureDetail: "candidate_fence_stale" };
+          }
           sameRoomPlanInputs.push({
             kind: "source",
             sourceKind: "memory",
@@ -633,9 +644,8 @@ implements DurableSleepSemanticPort {
             representationGeneration: revision + 1,
             authorityGeneration: 1,
             read: {
-              namespaceRef:
-                entry.dependency.dependency.terminalAuthorityLeafHandle,
-              bindingRef: binding.readBindingRef,
+              namespaceRef: leaf,
+              bindingRef: sourceBinding,
             },
           });
         }

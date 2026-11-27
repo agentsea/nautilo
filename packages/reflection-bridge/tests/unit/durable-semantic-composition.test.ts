@@ -608,15 +608,15 @@ describe("same-Room durable semantic composition", () => {
                 humanRefs: ["human:one"],
                 includesPublicBoundary: false,
               },
-              readBindingRef: "read:one",
+              readBindingRef: "journal:namespace:access:ordinary:v1",
               searchBindingRef: "search:one",
-              publicationBindingRef: "publish:one",
+              publicationBindingRef: "journal:namespace:origin:ordinary:v1",
             },
           };
         },
         async resolveWork() {
           return {
-            readBindingRef: "read:one",
+            readBindingRef: "journal:namespace:access:ordinary:v1",
             invocationAudience: {
               humanRefs: ["human:one"],
               includesPublicBoundary: false,
@@ -687,7 +687,7 @@ describe("same-Room durable semantic composition", () => {
                 logicalSourceRef: "memory:authored",
                 observedRevision: "4",
                 observedContentFingerprint: "sha256:memory",
-                terminalAuthorityLeafHandle: "namespace:one",
+                terminalAuthorityLeafHandle: "origin",
                 authorityBearing: true,
               },
             }],
@@ -701,6 +701,9 @@ describe("same-Room durable semantic composition", () => {
         async augment(input) {
           expect(input.queryEmbedding).toBe(QUERY_EMBEDDING);
           expect(input.sameRoomCandidates).toHaveLength(2);
+          expect(input.sameRoomPlanInputs.find(row => row.kind === "source")?.read).toEqual({
+            namespaceRef: "origin", bindingRef: "journal:namespace:origin:ordinary:v1",
+          });
           expect(input.authorityParentSeeds).toEqual([{
             recordRef: "record:external-parent-seed",
             score: 0.89,
