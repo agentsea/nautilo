@@ -292,7 +292,7 @@ describe("production Reflection semantic policy", () => {
     expect(wire).toBeGreaterThan(consume);
   });
 
-  test("rechecks inherited source access through the real invocation fence", () => {
+  test("rechecks exact dependency evidence and preserves invalid model output", () => {
     const source = readFileSync(
       new URL("../../src/reflection/production-reflection-memory.ts", import.meta.url),
       "utf8",
@@ -305,7 +305,9 @@ describe("production Reflection semantic policy", () => {
     expect(dependencyLoss).toContain("contextForRecord(");
     expect(dependencyLoss).toContain("lossInput.claim.recordRef");
     expect(dependencyLoss).toContain("current.binding.invocationAudience");
-    expect(dependencyLoss).toContain("assertSourceEvidenceCurrent");
+    expect(dependencyLoss).toContain("assertEvidenceCurrent");
+    expect(dependencyLoss).toContain('result.errorCode === "invalid_output"');
+    expect(dependencyLoss).toContain('status: "invalid_model_output"');
   });
 
   test("consumes an operator attempt after replay checks and before the provider wire", () => {

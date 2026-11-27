@@ -36,13 +36,14 @@ async function currentReadBinding(
 export interface GroundedDependencyStatementPort {
   rewrite(input: Readonly<{
     remainingSupportStatements: readonly string[];
-    modelExposureDependencies?: readonly DurableModelExposureDependency[];
-    assertSourceEvidenceCurrent?: (
+    modelExposureDependencies: readonly DurableModelExposureDependency[];
+    assertEvidenceCurrent: (
       invocationAudience: EffectiveAudienceAlternative,
     ) => Promise<boolean>;
     signal?: AbortSignal;
   }>): Promise<
     | { readonly status: "available"; readonly statement: string; readonly modelCalls: 1 | 2 }
+    | { readonly status: "invalid_model_output" }
     | { readonly status: "unavailable" }
   >;
 }
@@ -289,13 +290,60 @@ implements GroundedDependencyLossPort {
       priorExposures.set(identity, exposure);
     }
     const support: string[] = [];
-    const sourceRevalidations = new Map<
+    const evidenceRevalidations = new Map<
       string,
       (invocationAudience: EffectiveAudienceAlternative) => Promise<boolean>
     >();
-    const inheritedSourceIdentities = new Set<string>();
     let lost = 0;
     let recomputeWithoutHistoricalExposure = false;
+
+    const validateCurrentRecord = async (
+      exposure: Extract<DurableModelExposureDependency, { kind: "record" }>,
+      expected: DurableRecordEnvelope,
+      invocationAudience: EffectiveAudienceAlternative,
+    ): Promise<boolean> => {
+      input.signal?.throwIfAborted();
+      const readBindingRef = await currentReadBinding(
+        this.ports.recordBindings,
+        exposure.recordRef,
+        input.binding.readBindingRef,
+      );
+      if (readBindingRef === null) return false;
+      const opened = await this.ports.repository.read({
+        recordRef: exposure.recordRef,
+        readBindingRef,
+      });
+      if (
+        opened.status !== "available"
+        || opened.record.recordRef !== exposure.recordRef
+        || opened.record.lifecycle !== "current"
+        || opened.record.processingGeneration
+          !== exposure.observedProcessingGeneration
+        || opened.record.semantic.statement !== expected.semantic.statement
+        || opened.record.semantic.observedContentFingerprint
+          !== expected.semantic.observedContentFingerprint
+        || !sameExactStrings(
+          opened.record.semantic.terminalAuthorityLeafHandles,
+          exposure.terminalAuthorityLeafHandles,
+        )
+      ) return false;
+      if (this.ports.recordState !== undefined) {
+        input.signal?.throwIfAborted();
+        const state = await this.ports.recordState.readState(exposure.recordRef);
+        if (
+          state.status !== "available"
+          || state.disposition !== "available"
+          || state.lifecycle !== "current"
+          || state.processingGeneration !== exposure.observedProcessingGeneration
+        ) return false;
+      }
+      input.signal?.throwIfAborted();
+      const eligible = await this.ports.eligibility.check({
+        recordRef: exposure.recordRef,
+        invocationAudience,
+      });
+      return eligible.status === "eligible";
+    };
 
     const retainRecord = (
       record: DurableRecordEnvelope,
@@ -311,14 +359,17 @@ implements GroundedDependencyLossPort {
         support.push(record.semantic.statement);
       }
       if (!exposureIdentities.has(identity)) {
-        exposureIdentities.add(identity);
-        remainingModelExposureDependencies.push({
-          kind: "record",
+        const exposure = {
+          kind: "record" as const,
           recordRef: record.recordRef,
           observedProcessingGeneration: record.processingGeneration,
           terminalAuthorityLeafHandles:
             record.semantic.terminalAuthorityLeafHandles,
-        });
+        };
+        exposureIdentities.add(identity);
+        remainingModelExposureDependencies.push(exposure);
+        evidenceRevalidations.set(identity, (invocationAudience) =>
+          validateCurrentRecord(exposure, record, invocationAudience));
       }
     };
 
@@ -496,12 +547,11 @@ implements GroundedDependencyLossPort {
       if (!supportIdentities.has(identity)) {
         supportIdentities.add(identity);
         support.push(exact.content);
-        sourceRevalidations.set(identity, async (invocationAudience) => {
+        evidenceRevalidations.set(identity, async (invocationAudience) => {
           const current = (await openExact(invocationAudience)).result;
           return current.status === "available" && current.content === exact.content;
         });
       }
-      if (opened.inherited) inheritedSourceIdentities.add(identity);
       if (!exposureIdentities.has(identity)) {
         exposureIdentities.add(identity);
         remainingModelExposureDependencies.push({
@@ -604,15 +654,7 @@ implements GroundedDependencyLossPort {
       // new model input or publication, so never copy its text or coordinate
       // into a replacement proposal.
       if (historical) return "historical";
-      const identity = `record\0${exposure.recordRef}`;
-      if (!supportIdentities.has(identity)) {
-        supportIdentities.add(identity);
-        support.push(opened.record.semantic.statement);
-      }
-      if (!exposureIdentities.has(identity)) {
-        exposureIdentities.add(identity);
-        remainingModelExposureDependencies.push(exposure);
-      }
+      retainRecord(opened.record, false);
       return "available";
     };
 
@@ -670,28 +712,29 @@ implements GroundedDependencyLossPort {
     ) return recomputeWithoutHistoricalExposure
       ? { status: "unavailable" }
       : { status: "total_loss" };
-    for (const revalidate of sourceRevalidations.values()) {
+    for (const revalidate of evidenceRevalidations.values()) {
+      input.signal?.throwIfAborted();
       if (!await revalidate(input.binding.invocationAudience)) {
         return { status: "unavailable" };
       }
     }
     const rewritten = await this.ports.statements.rewrite({
       remainingSupportStatements: support,
-      ...(inheritedSourceIdentities.size === 0
-        ? {}
-        : {
-            modelExposureDependencies: remainingModelExposureDependencies,
-            assertSourceEvidenceCurrent: async (
-              invocationAudience: EffectiveAudienceAlternative,
-            ) => {
-              for (const revalidate of sourceRevalidations.values()) {
-                if (!await revalidate(invocationAudience)) return false;
-              }
-              return true;
-            },
-          }),
+      modelExposureDependencies: remainingModelExposureDependencies,
+      assertEvidenceCurrent: async (
+        invocationAudience: EffectiveAudienceAlternative,
+      ) => {
+        for (const revalidate of evidenceRevalidations.values()) {
+          input.signal?.throwIfAborted();
+          if (!await revalidate(invocationAudience)) return false;
+        }
+        return true;
+      },
       ...(input.signal === undefined ? {} : { signal: input.signal }),
     });
+    if (rewritten.status === "invalid_model_output") {
+      return { status: "invalid_model_output" };
+    }
     if (rewritten.status !== "available" || !validReplacement(rewritten.statement)) {
       return { status: "unavailable" };
     }

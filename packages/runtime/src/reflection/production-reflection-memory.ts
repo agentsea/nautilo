@@ -1073,12 +1073,7 @@ export async function createProductionReflectionMemoryRuntime(
               const result = await runDependencyLossRewrite({
                 remainingSupportStatements: rewriteInput.remainingSupportStatements,
                 invoke: async (prompt, signal) => {
-                  const assertSourceEvidenceCurrent =
-                    rewriteInput.assertSourceEvidenceCurrent;
-                  if (assertSourceEvidenceCurrent === undefined) {
-                    await lossInput.assertCurrent?.();
-                    return invokeForRecord(lossInput.claim, prompt, signal);
-                  }
+                  const assertEvidenceCurrent = rewriteInput.assertEvidenceCurrent;
                   return invokeForRecord(
                     lossInput.claim,
                     prompt,
@@ -1091,7 +1086,7 @@ export async function createProductionReflectionMemoryRuntime(
                       );
                       if (
                         current === null
-                        || !await assertSourceEvidenceCurrent(
+                        || !await assertEvidenceCurrent(
                           current.binding.invocationAudience,
                         )
                       ) throw new DurableSleepOrganizationUnavailableError();
@@ -1102,12 +1097,13 @@ export async function createProductionReflectionMemoryRuntime(
                   ? {}
                   : { signal: rewriteInput.signal }),
               });
-              return result.ok
-                ? {
-                    status: "available" as const,
-                    statement: result.statement,
-                    modelCalls: result.attempts,
-                  }
+              if (result.ok) return {
+                status: "available" as const,
+                statement: result.statement,
+                modelCalls: result.attempts,
+              };
+              return result.errorCode === "invalid_output"
+                ? { status: "invalid_model_output" as const }
                 : { status: "unavailable" as const };
             },
           },

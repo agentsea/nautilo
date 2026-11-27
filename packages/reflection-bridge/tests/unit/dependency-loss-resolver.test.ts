@@ -207,19 +207,19 @@ describe("exact grounded dependency loss", () => {
         terminalAuthorityLeafHandle: dependency.terminalAuthorityLeafHandle,
       }],
     });
-    const assertSourceEvidenceCurrent = (rewriteInput as {
-      assertSourceEvidenceCurrent: (
+    const assertEvidenceCurrent = (rewriteInput as {
+      assertEvidenceCurrent: (
         audience: Readonly<{
           humanRefs: readonly string[];
           includesPublicBoundary: boolean;
         }>,
       ) => Promise<boolean>;
-    }).assertSourceEvidenceCurrent;
+    }).assertEvidenceCurrent;
     const currentAudience = {
       humanRefs: ["human:one", "human:two"],
       includesPublicBoundary: false,
     } as const;
-    expect(await assertSourceEvidenceCurrent(currentAudience)).toBe(true);
+    expect(await assertEvidenceCurrent(currentAudience)).toBe(true);
     expect(inheritedReads).toHaveLength(3);
     expect(inheritedReads[2]).toMatchObject({
       invocationAudience: currentAudience,
@@ -361,7 +361,7 @@ describe("exact grounded dependency loss", () => {
                 const audience = wires === allowedCalls
                   ? { humanRefs: ["human:revoked"], includesPublicBoundary: false }
                   : input.binding.invocationAudience;
-                if (!await value.assertSourceEvidenceCurrent?.(audience)) throw revoked;
+                if (!await value.assertEvidenceCurrent(audience)) throw revoked;
                 wires++;
                 // An invalid first response exercises the real corrective call.
                 return "{}";
@@ -389,6 +389,273 @@ describe("exact grounded dependency loss", () => {
       },
     })).toEqual({ status: "unavailable" });
     expect(wires).toBe(allowedCalls);
+  });
+
+  test.each([0, 1])("refuses the next provider call when retained Record access is revoked after %i calls", async (allowedCalls) => {
+    const recordRefs = Array.from({ length: 5 }, (_, index) => `record:support:${index + 1}`);
+    let wires = 0;
+    const resolver = new ExactGroundedDependencyLossResolver({
+      eligibility: {
+        async check({ invocationAudience }: { invocationAudience: typeof input.binding.invocationAudience }) {
+          return invocationAudience.humanRefs.includes("human:revoked")
+            ? { status: "unavailable" as const, reason: "not_eligible" as const }
+            : { status: "eligible" as const };
+        },
+      } as never,
+      recordBindings: {
+        async read(recordRef) {
+          return {
+            originPublicationBindingRef: `binding:${recordRef}`,
+            currentAccessBindingRefs: [`binding:${recordRef}`],
+            representationGeneration: 1,
+            authorityProjectionGeneration: 1,
+          };
+        },
+      },
+      recordState: {
+        async readState() {
+          return {
+            status: "available" as const,
+            lifecycle: "current" as const,
+            processingGeneration: 1,
+            disposition: "available" as const,
+          };
+        },
+        async readSuccessors() {
+          return { status: "available" as const, successorRecordRefs: [], complete: true };
+        },
+      },
+      repository: {
+        async read({ recordRef }: { recordRef: string }) {
+          return {
+            status: "available" as const,
+            record: {
+              ...input.record,
+              recordRef,
+              structuralHeight: 0,
+              semantic: {
+                ...input.record.semantic,
+                observedContentFingerprint: `sha256:${recordRef}`,
+                statement: `Exact support from ${recordRef}.`,
+                sourceDependencies: [],
+                childRecordRefs: [],
+              },
+            },
+          };
+        },
+      } as never,
+      source: { async readExact() { return { status: "changed" as const }; } },
+      invalidation: { async admit() {} },
+      statements: {
+        async rewrite(value) {
+          const revoked = new Error("record access revoked");
+          try {
+            const result = await runDependencyLossRewrite({
+              remainingSupportStatements: value.remainingSupportStatements,
+              invoke: async () => {
+                const audience = wires === allowedCalls
+                  ? { humanRefs: ["human:revoked"], includesPublicBoundary: false }
+                  : input.binding.invocationAudience;
+                if (!await value.assertEvidenceCurrent(audience)) throw revoked;
+                wires += 1;
+                return "{}";
+              },
+            });
+            if (!result.ok) throw new Error("expected revocation before retry exhaustion");
+            return {
+              status: "available" as const,
+              statement: result.statement,
+              modelCalls: result.attempts,
+            };
+          } catch (error) {
+            if (error !== revoked) throw error;
+            return { status: "unavailable" as const };
+          }
+        },
+      },
+    });
+
+    expect(await resolver.resolve({
+      ...input,
+      record: {
+        ...input.record,
+        semantic: {
+          ...input.record.semantic,
+          childRecordRefs: recordRefs,
+        },
+      },
+    })).toEqual({ status: "unavailable" });
+    expect(wires).toBe(allowedCalls);
+  });
+
+  test("reopens an exact retained Record coordinate for every current-evidence check", async () => {
+    type CurrentState = {
+      bindingAvailable: boolean;
+      disposition: "available" | "blocked";
+      eligible: boolean;
+      lifecycle: "current" | "superseded";
+      processingGeneration: number;
+      statement: string;
+      fingerprint: string;
+      leaves: string[];
+    };
+    const original = (): CurrentState => ({
+      bindingAvailable: true,
+      disposition: "available",
+      eligible: true,
+      lifecycle: "current",
+      processingGeneration: 1,
+      statement: "Exact retained Record support.",
+      fingerprint: "sha256:retained",
+      leaves: ["namespace:one"],
+    });
+    let current = original();
+    const audiences: unknown[] = [];
+    let rewriteInput: unknown;
+    const resolver = new ExactGroundedDependencyLossResolver({
+      eligibility: {
+        async check({ invocationAudience }: { invocationAudience: unknown }) {
+          audiences.push(invocationAudience);
+          return current.eligible
+            ? { status: "eligible" as const }
+            : { status: "unavailable" as const, reason: "not_eligible" as const };
+        },
+      } as never,
+      recordBindings: {
+        async read() {
+          return current.bindingAvailable
+            ? {
+                originPublicationBindingRef: "binding:current",
+                currentAccessBindingRefs: ["binding:current"],
+                representationGeneration: 1,
+                authorityProjectionGeneration: 1,
+              }
+            : null;
+        },
+      },
+      recordState: {
+        async readState() {
+          return {
+            status: "available" as const,
+            lifecycle: current.lifecycle,
+            processingGeneration: current.processingGeneration,
+            disposition: current.disposition,
+          };
+        },
+        async readSuccessors() {
+          return { status: "available" as const, successorRecordRefs: [], complete: true };
+        },
+      },
+      repository: {
+        async read() {
+          return {
+            status: "available" as const,
+            record: {
+              ...input.record,
+              recordRef: "record:remaining",
+              lifecycle: current.lifecycle,
+              processingGeneration: current.processingGeneration,
+              structuralHeight: 0,
+              semantic: {
+                ...input.record.semantic,
+                observedContentFingerprint: current.fingerprint,
+                statement: current.statement,
+                terminalAuthorityLeafHandles: current.leaves,
+                sourceDependencies: [],
+                childRecordRefs: [],
+              },
+            },
+          };
+        },
+      } as never,
+      source: { async readExact() { return { status: "changed" as const }; } },
+      invalidation: { async admit() {} },
+      statements: {
+        async rewrite(value) {
+          rewriteInput = value;
+          return {
+            status: "available" as const,
+            statement: "Replacement from exact support.",
+            modelCalls: 1 as const,
+          };
+        },
+      },
+    });
+    expect(await resolver.resolve(input)).toMatchObject({ status: "partial_loss" });
+    const assertEvidenceCurrent = (rewriteInput as {
+      assertEvidenceCurrent: (audience: typeof input.binding.invocationAudience) => Promise<boolean>;
+    }).assertEvidenceCurrent;
+    const freshAudience = {
+      humanRefs: ["human:fresh"],
+      includesPublicBoundary: false,
+    } as const;
+    expect(await assertEvidenceCurrent(freshAudience)).toBe(true);
+    expect(audiences.at(-1)).toEqual(freshAudience);
+
+    const mutations: Array<(state: CurrentState) => void> = [
+      state => { state.bindingAvailable = false; },
+      state => { state.disposition = "blocked"; },
+      state => { state.eligible = false; },
+      state => { state.lifecycle = "superseded"; },
+      state => { state.processingGeneration = 2; },
+      state => { state.statement = "Changed support."; },
+      state => { state.fingerprint = "sha256:changed"; },
+      state => { state.leaves = ["namespace:other"]; },
+    ];
+    for (const mutate of mutations) {
+      current = original();
+      mutate(current);
+      expect(await assertEvidenceCurrent(freshAudience)).toBe(false);
+    }
+  });
+
+  test("preserves exhausted invalid model output as a distinct dependency-loss result", async () => {
+    const resolver = new ExactGroundedDependencyLossResolver({
+      eligibility: { async check() { return { status: "eligible" }; } } as never,
+      repository: {
+        async read() {
+          return {
+            status: "available",
+            record: {
+              ...input.record,
+              recordRef: "record:remaining",
+              structuralHeight: 0,
+              semantic: {
+                ...input.record.semantic,
+                sourceDependencies: [],
+                childRecordRefs: [],
+              },
+            },
+          };
+        },
+      } as never,
+      source: { async readExact() { return { status: "changed" }; } },
+      invalidation: { async admit() {} },
+      statements: {
+        async rewrite(value) {
+          const result = await runDependencyLossRewrite({
+            remainingSupportStatements: value.remainingSupportStatements,
+            invoke: async () => "{}",
+          });
+          expect(result).toEqual({
+            ok: false,
+            errorCode: "invalid_output",
+            attempts: 2,
+          });
+          return result.ok
+            ? {
+                status: "available" as const,
+                statement: result.statement,
+                modelCalls: result.attempts,
+              }
+            : result.errorCode === "invalid_output"
+              ? { status: "invalid_model_output" as const }
+              : { status: "unavailable" as const };
+        },
+      },
+    });
+
+    expect(await resolver.resolve(input)).toEqual({ status: "invalid_model_output" });
   });
 
   test("sunsets when the only source is proven changed", async () => {
@@ -543,6 +810,10 @@ describe("exact grounded dependency loss", () => {
       ],
     });
     expect(reads).toEqual([
+      {
+        recordRef: "record:remaining-v3",
+        readBindingRef: "binding:record:remaining-v3",
+      },
       {
         recordRef: "record:remaining-v3",
         readBindingRef: "binding:record:remaining-v3",
@@ -807,7 +1078,7 @@ describe("exact grounded dependency loss", () => {
     }
     expect(verified.decision.remainingModelExposureDependencies)
       .not.toContainEqual(historicalExposure);
-    expect(verified.rewriteInput).toEqual({
+    expect(verified.rewriteInput).toMatchObject({
       remainingSupportStatements: [
         "Current source-grounded structural leaf.",
       ],
@@ -815,10 +1086,12 @@ describe("exact grounded dependency loss", () => {
     expect(verified.reads).toEqual([
       "record:structural-leaf",
       historicalExposure.recordRef,
+      "record:structural-leaf",
     ]);
     expect(verified.eligibilityChecks).toEqual([
       "record:structural-leaf",
       historicalExposure.recordRef,
+      "record:structural-leaf",
     ]);
 
     const stable = await run(true, true, true, false);
@@ -833,7 +1106,7 @@ describe("exact grounded dependency loss", () => {
         expect.objectContaining({ recordRef: "record:structural-leaf" }),
       ],
     });
-    expect(revoked.rewriteInput).toEqual({
+    expect(revoked.rewriteInput).toMatchObject({
       remainingSupportStatements: ["Current source-grounded structural leaf."],
     });
     expect(revoked.reads).not.toContain("record:replacement");
@@ -844,11 +1117,17 @@ describe("exact grounded dependency loss", () => {
       status: "partial_loss",
       remainingChildRecordRefs: ["record:structural-leaf"],
     });
-    expect(missingBinding.rewriteInput).toEqual({
+    expect(missingBinding.rewriteInput).toMatchObject({
       remainingSupportStatements: ["Current source-grounded structural leaf."],
     });
-    expect(missingBinding.reads).toEqual(["record:structural-leaf"]);
-    expect(missingBinding.eligibilityChecks).toEqual(["record:structural-leaf"]);
+    expect(missingBinding.reads).toEqual([
+      "record:structural-leaf",
+      "record:structural-leaf",
+    ]);
+    expect(missingBinding.eligibilityChecks).toEqual([
+      "record:structural-leaf",
+      "record:structural-leaf",
+    ]);
 
     const ungrounded = await run(true, false, false);
     expect(ungrounded.decision).toEqual({ status: "unavailable" });
@@ -1009,7 +1288,7 @@ describe("exact grounded dependency loss", () => {
         recordRef: "record:remaining",
       }],
     });
-    expect(rewriteInput).toEqual({
+    expect(rewriteInput).toMatchObject({
       remainingSupportStatements: ["The surviving record statement."],
     });
   });
@@ -1096,7 +1375,7 @@ describe("exact grounded dependency loss", () => {
         { kind: "source", logicalSourceRef: dependency.logicalSourceRef },
       ],
     });
-    expect(rewriteInput).toEqual({
+    expect(rewriteInput).toMatchObject({
       remainingSupportStatements: [
         "Postgres won because of durable queries and managed hosting.",
         "Exact source support.",

@@ -309,6 +309,7 @@ export interface CrossRoomOrganizerPartitionPort {
 
 export type GroundedDependencyLossDecision =
   | { readonly status: "stable" }
+  | { readonly status: "invalid_model_output" }
   | Readonly<{
       status: "unavailable";
       evidence?: Readonly<{
@@ -842,6 +843,9 @@ implements DurableSleepSemanticPort {
       ...(input.signal === undefined ? {} : { signal: input.signal }),
     });
     if (loss.status === "stable") return { status: "not_applicable" };
+    if (loss.status === "invalid_model_output") {
+      return { status: "unavailable", failureCode: "invalid_model_output" };
+    }
     if (loss.status === "unavailable") {
       return {
         status: "unavailable",

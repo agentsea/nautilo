@@ -204,7 +204,18 @@ describe("same-Room durable semantic composition", () => {
     expect(appliedPlan).toMatchObject({ applicationPlanToken: planned });
   });
 
-  test("persists proven dependency cycles through the existing candidate diagnostic", async () => {
+  test.each([
+    {
+      failure: "dependency cycle",
+      decision: { status: "unavailable", evidence: { kind: "dependency_cycle" } },
+      expected: { failureCode: "candidate_unavailable", failureDetail: "candidate_selection_invalid" },
+    },
+    {
+      failure: "invalid model output",
+      decision: { status: "invalid_model_output" },
+      expected: { failureCode: "invalid_model_output" },
+    },
+  ] as const)("reports the specific dependency rewrite failure for $failure", async ({ decision, expected }) => {
     const predecessor = record("record:changed", "A cyclic derived Record.");
     const composition = new SameRoomDurableSemanticComposition({
       repository: {
@@ -237,10 +248,7 @@ describe("same-Room durable semantic composition", () => {
       memories: {} as never,
       model: {} as never,
       dependencyLoss: {
-        resolve: () => Promise.resolve({
-          status: "unavailable",
-          evidence: { kind: "dependency_cycle" },
-        }),
+        resolve: () => Promise.resolve(decision),
       },
       proposals: {} as never,
     });
@@ -257,8 +265,7 @@ describe("same-Room durable semantic composition", () => {
       },
     })).toEqual({
       status: "unavailable",
-      failureCode: "candidate_unavailable",
-      failureDetail: "candidate_selection_invalid",
+      ...expected,
     });
   });
 
