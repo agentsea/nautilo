@@ -402,9 +402,9 @@ describe("manual Journal recovery on PostgreSQL", () => {
     ))).toHaveLength(1);
   }, 30_000);
 
-  test.each(["live", "historical"] as const)(
-    "reclaims an exact unspent %s extraction after a crash before first model dispatch",
-    async (lane) => {
+  test.each([["live", "crash"], ["historical", "crash"], ["live", "admission failure"], ["historical", "admission failure"]] as const)(
+    "reclaims an exact unspent %s extraction after %s before first model dispatch",
+    async (lane, failure) => {
       const f = await fixture(`pre-dispatch-crash-${lane}`);
       if (lane === "historical") {
         await db.update(roomJournalState).set({
@@ -413,7 +413,7 @@ describe("manual Journal recovery on PostgreSQL", () => {
           historicalBackfillTargetMessageId: f.messageId,
         }).where(eq(roomJournalState.roomId, f.roomId));
       }
-      const firstClaimedAt = new Date(Date.now() - 10_000);
+      const firstClaimedAt = new Date(Date.now() - 90_000);
       const first = await tryClaimRoom(
         db,
         f.roomId,
@@ -455,7 +455,7 @@ describe("manual Journal recovery on PostgreSQL", () => {
         db,
         f.roomId,
         recoveryClaimedAt,
-        1,
+        failure === "crash" ? 1 : 120_000,
         lane,
       );
       if (!beforeCrash?.manualModelRecoveryId) {
@@ -464,7 +464,27 @@ describe("manual Journal recovery on PostgreSQL", () => {
       const recoveryId = beforeCrash.manualModelRecoveryId;
       const recoveryLease = beforeCrash.leaseToken;
 
-      const restartedAt = new Date(recoveryClaimedAt.getTime() + 1);
+      let restartedAt = new Date(recoveryClaimedAt.getTime() + 1);
+      if (failure === "admission failure") {
+        const rejected = createOrdinaryStenographerIntentAdapter({
+          db, now: () => recoveryClaimedAt, claimExtraction: async () => beforeCrash,
+          admitExtractionModel: async () => { throw new Error("model temporarily unavailable"); },
+          failExtraction: async (input) => {
+            expect(input.modelId).toBe(RECOVERY_MODEL);
+            await failExtraction(input);
+          },
+          publishExtraction: async () => { throw new Error("unexpected publication"); },
+        });
+        await rejected.prepareExtraction({
+          roomId: f.roomId, lane, modelId: "venice:changed-default",
+          signal: new AbortController().signal, now: recoveryClaimedAt,
+        });
+        const [state] = await db.select().from(roomJournalState).where(eq(roomJournalState.roomId, f.roomId));
+        expect(state?.leaseToken).not.toBe(recoveryLease);
+        expect(await tryClaimRoom(db, f.roomId, restartedAt, 120_000, lane)).toBeNull();
+        if (!state?.extractionRetryAfter) throw new Error("expected retry after admission failure");
+        restartedAt = new Date(state.extractionRetryAfter.getTime() + 1);
+      }
       const reclaimed = await tryClaimRoom(
         db,
         f.roomId,
@@ -871,6 +891,25 @@ describe("manual Journal recovery on PostgreSQL", () => {
       binding: roomJournalState.compactionAcceptedModelBinding,
     }).from(roomJournalState).where(eq(roomJournalState.roomId, f.roomId));
     expect(legacyClaimedState?.binding).toBeNull();
+    const rejected = createOrdinaryStenographerIntentAdapter({
+      db, now: () => new Date(recoveredAt.getTime() + 3), claimCompaction: async () => reboundTwice,
+      admitCompactionModel: async () => { throw new Error("model temporarily unavailable"); },
+      failCompaction: async (input) => {
+        expect(input.modelId).toBe(RECOVERY_MODEL);
+        await failCompaction(input);
+      },
+      publishExtraction: async () => { throw new Error("unexpected publication"); },
+    });
+    await rejected.prepareCompaction({
+      roomId: f.roomId, modelId: "venice:changed-default",
+      now: recoveredAt, signal: new AbortController().signal,
+    });
+    const [parked] = await db.select().from(roomJournalState).where(eq(roomJournalState.roomId, f.roomId));
+    if (!parked?.compactionRetryAfter) throw new Error("expected deferred compaction");
+    expect(parked.compactionLeaseToken).not.toBe(reboundTwice?.leaseToken);
+    const retryAt = new Date(parked.compactionRetryAfter.getTime() + 1);
+    const resumed = await tryClaimCompactionRoom(db, f.roomId, retryAt);
+    expect(resumed?.manualModelRecoveryId).toBe(recovered?.manualModelRecoveryId);
     let calls = 0;
     const adapter = createOrdinaryStenographerIntentAdapter({
       ...funding(
@@ -883,7 +922,7 @@ describe("manual Journal recovery on PostgreSQL", () => {
       ),
       db,
       claimExtraction: async () => null,
-      claimCompaction: async () => reboundTwice as CompactionClaim,
+      claimCompaction: async () => resumed as CompactionClaim,
       prepareNextRebuild: async () => null,
       publishExtraction: async () => ({ published: true, eventsWritten: 0 }),
     });

@@ -259,7 +259,7 @@ export function createOrdinaryStenographerIntentAdapter(
       if (claim === null) {
         return { publish: () => Promise.resolve(unavailable()) };
       }
-      let modelId = input.modelId;
+      let modelId = claim.manualRecoveryModelId ?? input.modelId;
       if (claim.plan.trigger === "skip_excluded") {
         return {
           publish: async (context: StenographerPublicationContext) => {
@@ -409,7 +409,7 @@ export function createOrdinaryStenographerIntentAdapter(
       if (claim === null) {
         return { publish: () => Promise.resolve(unavailable()) };
       }
-      let modelId = input.modelId;
+      let modelId = claim.manualRecoveryModelId ?? input.modelId;
       try {
         const admitted = await options.admitCompactionModel?.(claim, compactionModelExposureDependencies(claim));
         if (admitted !== undefined) modelId = admitted.modelId;

@@ -99,6 +99,7 @@ export interface ExtractionClaim {
   rebuildGeneration?: number | null;
   /** One operator-approved fresh service call, spent by the funding boundary. */
   manualModelRecoveryId?: string;
+  manualRecoveryModelId?: string;
 }
 
 export interface CompactionClaim {
@@ -117,6 +118,7 @@ export interface CompactionClaim {
   previousRollup?: RoomEventRollupView | null;
   /** One operator-approved fresh service call, spent by the funding boundary. */
   manualModelRecoveryId?: string;
+  manualRecoveryModelId?: string;
 }
 
 function acceptedOrdinaryCompactionPlan(
@@ -1415,7 +1417,7 @@ export async function tryClaimRoom(
           : asNumber(state.rebuild_generation),
       ...(manualRecovery === undefined
         ? {}
-        : { manualModelRecoveryId: manualRecovery.id }),
+        : { manualModelRecoveryId: manualRecovery.id, manualRecoveryModelId: manualRecovery.targetModelId }),
     };
     });
   } catch (error) {
@@ -1834,6 +1836,29 @@ function retryDelayMs(failureCount: number): number {
   return Math.min(15 * 60_000, 15_000 * 2 ** Math.max(0, failureCount - 1));
 }
 
+/** Park only the exact unspent claim. A fresh token immediately fences the
+ * failed worker. The existing expired-lease path reclaims it after backoff. */
+async function parkUnspentJournalGrant(
+  tx: Pick<DirectDatabase, "update">,
+  claim: { roomId: string; leaseToken: string; manualModelRecoveryId?: string },
+  kind: "extraction" | "compaction",
+  workId: string,
+): Promise<string | null> {
+  if (claim.manualModelRecoveryId === undefined) return null;
+  const nextToken = randomUUID();
+  const [parked] = await tx.update(roomJournalModelRecoveries)
+    .set({ claimLeaseToken: nextToken })
+    .where(and(
+      eq(roomJournalModelRecoveries.id, claim.manualModelRecoveryId),
+      eq(roomJournalModelRecoveries.roomId, claim.roomId),
+      eq(roomJournalModelRecoveries.workKind, kind),
+      eq(roomJournalModelRecoveries.workId, workId),
+      eq(roomJournalModelRecoveries.claimLeaseToken, claim.leaseToken),
+      isNull(roomJournalModelRecoveries.spentAt),
+    )).returning({ id: roomJournalModelRecoveries.id });
+  return parked ? nextToken : null;
+}
+
 export async function failExtraction(input: {
   claim: Pick<
     ExtractionClaim,
@@ -1841,6 +1866,7 @@ export async function failExtraction(input: {
     | "roomId"
     | "leaseToken"
     | "previousModelResultKnownNonusable"
+    | "manualModelRecoveryId"
   >;
   errorCode: StenographerErrorCode;
   modelId: string | null;
@@ -1865,6 +1891,16 @@ export async function failExtraction(input: {
     const current = rows[0];
     if (!current) return;
     const failureCount = asNumber(current.extraction_failure_count) + 1;
+    const parkedToken = await parkUnspentJournalGrant(tx, input.claim, "extraction", input.claim.batchId);
+    if (parkedToken !== null) {
+      const retryAt = new Date(now.getTime() + retryDelayMs(failureCount));
+      await tx.update(roomJournalState).set({
+        leaseToken: parkedToken, leaseExpiresAt: retryAt, extractionRetryAfter: retryAt,
+        extractionFailureCount: failureCount, lastExtractionErrorCode: input.errorCode,
+        lastExtractionErrorAt: now, updatedAt: now,
+      }).where(eq(roomJournalState.roomId, input.claim.roomId));
+      return;
+    }
     const retryAfter = input.errorCode === "provider_outcome_unknown"
       ? null
       : new Date(now.getTime() + retryDelayMs(failureCount));
@@ -2300,7 +2336,7 @@ export async function tryClaimCompactionRoom(
       previousRollup: journal.latestRollup,
       ...(manualRecovery === undefined
         ? {}
-        : { manualModelRecoveryId: manualRecovery.id }),
+        : { manualModelRecoveryId: manualRecovery.id, manualRecoveryModelId: manualRecovery.targetModelId }),
     };
   });
 }
@@ -2780,6 +2816,18 @@ export async function failCompaction(input: {
     if (!rows[0]) return;
     const current = rows[0];
     const failureCount = asNumber(current.compaction_failure_count) + 1;
+    const parkedToken = await parkUnspentJournalGrant(tx, input.claim, "compaction", input.claim.modelOperationId);
+    if (parkedToken !== null) {
+      // Preserve the failure coordinates that authorize this exact compaction.
+      // No new provider attempt happened. The first worker after backoff can
+      // resume the same reservation even if the server model has changed.
+      const retryAt = new Date(now.getTime() + retryDelayMs(failureCount));
+      await tx.update(roomJournalState).set({
+        compactionLeaseToken: parkedToken, compactionLeaseExpiresAt: retryAt,
+        compactionRetryAfter: retryAt, updatedAt: now,
+      }).where(eq(roomJournalState.roomId, input.claim.roomId));
+      return;
+    }
     await tx
       .update(roomJournalState)
       .set({
