@@ -221,6 +221,18 @@ function validReplacement(statement: string): boolean {
     && Array.from(statement).length <= REPLACEMENT_STATEMENT_CODE_POINTS_MAXIMUM;
 }
 
+function sameExactStrings(
+  left: readonly string[],
+  right: readonly string[],
+): boolean {
+  if (left.length !== right.length) return false;
+  const sortedLeft = [...left].sort();
+  const sortedRight = [...right].sort();
+  return new Set(sortedLeft).size === sortedLeft.length
+    && new Set(sortedRight).size === sortedRight.length
+    && sortedLeft.every((value, index) => value === sortedRight[index]);
+}
+
 /**
  * Revalidates every exact direct support before resolving dependency loss.
  * Missing bodies never enter the rewrite input; changed/missing sources are
@@ -257,6 +269,7 @@ implements GroundedDependencyLossPort {
     }
     const support: string[] = [];
     let lost = 0;
+    let recomputeWithoutHistoricalExposure = false;
 
     const retainRecord = (
       record: DurableRecordEnvelope,
@@ -449,6 +462,99 @@ implements GroundedDependencyLossPort {
       return "available";
     };
 
+    const retainExactRecordExposure = async (
+      exposure: Extract<DurableModelExposureDependency, { kind: "record" }>,
+    ): Promise<
+      "available" | "historical" | "excluded" | "lost" | "unavailable"
+    > => {
+      const readBindingRef = await currentReadBinding(
+        this.ports.recordBindings,
+        exposure.recordRef,
+        input.binding.readBindingRef,
+      );
+      // Binding and eligibility unavailability intentionally remain
+      // non-terminal: they may combine absence, revocation, or incomplete
+      // authority materialization. We may reorganize from independently
+      // verified current structural support, but never sunset on this signal.
+      if (readBindingRef === null) return "excluded";
+      const opened = await this.ports.repository.read({
+        recordRef: exposure.recordRef,
+        readBindingRef,
+      });
+      if (
+        opened.status !== "available"
+        || opened.record.recordRef !== exposure.recordRef
+      ) return "unavailable";
+      if (!sameExactStrings(
+        opened.record.semantic.terminalAuthorityLeafHandles,
+        exposure.terminalAuthorityLeafHandles,
+      )) return "unavailable";
+      if (this.ports.recordState !== undefined) {
+        const state = await this.ports.recordState.readState(exposure.recordRef);
+        if (
+          state.status !== "available"
+          || state.disposition !== "available"
+          || state.lifecycle !== opened.record.lifecycle
+          || state.processingGeneration !== opened.record.processingGeneration
+        ) return "unavailable";
+      }
+      let historical = false;
+      if (opened.record.lifecycle === "current") {
+        if (
+          opened.record.processingGeneration
+          !== exposure.observedProcessingGeneration
+        ) return "unavailable";
+      } else if (
+        opened.record.lifecycle === "superseded"
+        || opened.record.lifecycle === "resolved"
+      ) {
+        historical = true;
+        if (
+          opened.record.processingGeneration
+          !== exposure.observedProcessingGeneration + 1
+        ) return "unavailable";
+        const successors = await this.ports.repository.readSuccessors({
+          recordRef: exposure.recordRef,
+          readBindingRef,
+          limit: 2,
+        });
+        const edge = successors.status === "available"
+          && successors.page.continuation === undefined
+          && successors.page.items.length === 1
+          ? successors.page.items[0]
+          : undefined;
+        if (
+          edge === undefined
+          || edge.predecessorRecordRef !== exposure.recordRef
+          || edge.relation !== (opened.record.lifecycle === "superseded"
+            ? "supersedes"
+            : "resolves")
+        ) return "unavailable";
+      } else {
+        return "lost";
+      }
+      const eligible = await this.ports.eligibility.check({
+        recordRef: exposure.recordRef,
+        invocationAudience: input.binding.invocationAudience,
+      });
+      if (eligible.status !== "eligible") return "excluded";
+      // Authenticated retired exposure proves that the existing summary may
+      // remain stable. It is immutable provenance, not current evidence for a
+      // new model input or publication, so never copy its text or coordinate
+      // into a replacement proposal.
+      if (historical) return "historical";
+      const identity = `record\0${exposure.recordRef}`;
+      if (!supportIdentities.has(identity)) {
+        supportIdentities.add(identity);
+        support.push(opened.record.semantic.statement);
+      }
+      if (!exposureIdentities.has(identity)) {
+        exposureIdentities.add(identity);
+        remainingModelExposureDependencies.push(exposure);
+      }
+      return "available";
+    };
+
     for (const childRecordRef of input.record.semantic.childRecordRefs) {
       const priorExposure = priorExposures.get(`record\0${childRecordRef}`);
       const current = await openCurrentRecord(
@@ -483,14 +589,10 @@ implements GroundedDependencyLossPort {
         : `source\0${exposure.sourceKind}\0${exposure.logicalSourceRef}`;
       if (exposureIdentities.has(identity)) continue;
       if (exposure.kind === "record") {
-        const current = await openCurrentRecord(
-          exposure.recordRef,
-          exposure.observedProcessingGeneration,
-        );
-        if (current.status === "unavailable") return current;
-        if (current.status === "lost") { lost += 1; continue; }
-        if (current.replaced) lost += 1;
-        retainRecord(current.record, false);
+        const current = await retainExactRecordExposure(exposure);
+        if (current === "unavailable") return { status: "unavailable" };
+        if (current === "lost") lost += 1;
+        if (current === "excluded") recomputeWithoutHistoricalExposure = true;
         continue;
       }
       const current = await retainSource({ ...exposure, authorityBearing: true }, false);
@@ -498,11 +600,15 @@ implements GroundedDependencyLossPort {
       if (current === "lost") lost += 1;
     }
 
-    if (lost === 0) return { status: "stable" };
+    if (lost === 0 && !recomputeWithoutHistoricalExposure) {
+      return { status: "stable" };
+    }
     if (
       remainingChildRecordRefs.length === 0
       && remainingSourceDependencies.length === 0
-    ) return { status: "total_loss" };
+    ) return recomputeWithoutHistoricalExposure
+      ? { status: "unavailable" }
+      : { status: "total_loss" };
     const rewritten = await this.ports.statements.rewrite({
       remainingSupportStatements: support,
       ...(input.signal === undefined ? {} : { signal: input.signal }),

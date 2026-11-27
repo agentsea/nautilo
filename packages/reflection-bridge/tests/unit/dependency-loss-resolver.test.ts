@@ -404,96 +404,197 @@ describe("exact grounded dependency loss", () => {
     expect(rewrites).toBe(0);
   });
 
-  test("does not treat historical exposure as a structural cycle or infer missing authority", async () => {
-    let rewrites = 0;
-    const reads: string[] = [];
-    const resolver = new ExactGroundedDependencyLossResolver({
-      eligibility: { async check() { return { status: "unavailable", reason: "not_eligible" }; } } as never,
-      recordBindings: {
-        async read(recordRef) {
-          return {
-            originPublicationBindingRef: `binding:${recordRef}`,
-            currentAccessBindingRefs: [`binding:${recordRef}`],
-            representationGeneration: 1,
-            authorityProjectionGeneration: null,
-          };
+  test("keeps exact historical exposure distinct from structural support and never self-supports", async () => {
+    const historicalExposure = {
+      kind: "record" as const,
+      recordRef: "record:old-exposure",
+      observedProcessingGeneration: 1,
+      terminalAuthorityLeafHandles: ["namespace:one"],
+    };
+    const run = async (
+      historicalEligible: boolean,
+      includeStructuralSupport = true,
+      historicalBindingAvailable = true,
+      sourceChanged = true,
+    ) => {
+      const reads: string[] = [];
+      const eligibilityChecks: string[] = [];
+      let rewriteInput: unknown;
+      const resolver = new ExactGroundedDependencyLossResolver({
+        eligibility: {
+          async check({ recordRef }: { recordRef: string }) {
+            eligibilityChecks.push(recordRef);
+            return recordRef !== historicalExposure.recordRef || historicalEligible
+              ? { status: "eligible" as const }
+              : { status: "unavailable" as const, reason: "not_eligible" as const };
+          },
+        } as never,
+        recordBindings: {
+          async read(recordRef) {
+            if (
+              recordRef === historicalExposure.recordRef
+              && !historicalBindingAvailable
+            ) return null;
+            return {
+              originPublicationBindingRef: `binding:${recordRef}`,
+              currentAccessBindingRefs: [`binding:${recordRef}`],
+              representationGeneration: 1,
+              authorityProjectionGeneration: 1,
+            };
+          },
         },
-      },
-      recordState: {
-        async readState(recordRef) {
-          return {
-            status: "available",
-            lifecycle: recordRef === "record:old-child" ? "superseded" : "current",
-            processingGeneration: 1,
-            disposition: "available",
-          };
+        recordState: {
+          async readState(recordRef) {
+            return {
+              status: "available" as const,
+              lifecycle: recordRef === historicalExposure.recordRef
+                ? "superseded" as const
+                : "current" as const,
+              processingGeneration: recordRef === historicalExposure.recordRef ? 2 : 1,
+              disposition: "available" as const,
+            };
+          },
+          async readSuccessors() {
+            return { status: "available" as const, successorRecordRefs: [], complete: true };
+          },
         },
-        async readSuccessors({ recordRef }) {
-          return {
-            status: "available",
-            successorRecordRefs: recordRef === "record:old-child"
-              ? ["record:replacement"]
-              : [],
-            complete: true,
-          };
-        },
-        async readStructuralDependencyRecordRefs() {
-          return {
-            status: "available",
-            dependencyRecordRefs: [],
-            complete: true,
-          };
-        },
-      },
-      repository: {
-        async read({ recordRef }: { recordRef: string }) {
-          reads.push(recordRef);
-          return {
-            status: "available",
-            record: {
-              ...input.record,
-              recordRef,
-              structuralHeight: 0,
-              semantic: {
-                ...input.record.semantic,
-                sourceDependencies: [],
-                childRecordRefs: [],
-                modelExposureDependencies: recordRef === "record:replacement"
-                  ? [{
-                      kind: "record" as const,
-                      recordRef: "record:old-child",
-                      observedProcessingGeneration: 1,
-                      terminalAuthorityLeafHandles: ["namespace:one"],
-                    }]
-                  : [],
+        repository: {
+          async read({ recordRef }: { recordRef: string }) {
+            reads.push(recordRef);
+            const historical = recordRef === historicalExposure.recordRef;
+            return {
+              status: "available" as const,
+              record: {
+                ...input.record,
+                recordRef,
+                lifecycle: historical ? "superseded" as const : "current" as const,
+                processingGeneration: historical ? 2 : 1,
+                structuralHeight: 0,
+                semantic: {
+                  ...input.record.semantic,
+                  statement: historical
+                    ? "Retired context observed by the original model call."
+                    : "Current source-grounded structural leaf.",
+                  sourceDependencies: [],
+                  childRecordRefs: [],
+                  modelExposureDependencies: [],
+                },
               },
-            },
-          };
+            };
+          },
+          async readSuccessors() {
+            return {
+              status: "available" as const,
+              page: {
+                items: [{
+                  predecessorRecordRef: historicalExposure.recordRef,
+                  successorRecordRef: "record:sibling-successor",
+                  relation: "supersedes" as const,
+                }],
+              },
+            };
+          },
+        } as never,
+        source: {
+          async readExact() {
+            return sourceChanged
+              ? { status: "changed" as const }
+              : {
+                  status: "available" as const,
+                  kind: "memory" as const,
+                  content: "Current exact source.",
+                };
+          },
         },
-      } as never,
-      source: {} as never,
-      invalidation: { async admit() {} },
-      statements: {
-        async rewrite() {
-          rewrites += 1;
-          return { status: "unavailable" };
+        invalidation: { async admit() {} },
+        statements: {
+          async rewrite(value) {
+            rewriteInput = value;
+            return {
+              status: "available" as const,
+              statement: "Reorganized only from authenticated remaining support.",
+              modelCalls: 1 as const,
+            };
+          },
         },
-      },
-    });
+      });
+      const decision = await resolver.resolve({
+        ...input,
+        record: {
+          ...input.record,
+          recordRef: "record:replacement",
+          semantic: {
+            ...input.record.semantic,
+            childRecordRefs: includeStructuralSupport
+              ? ["record:structural-leaf"]
+              : [],
+            modelExposureDependencies: [historicalExposure],
+          },
+        },
+      });
+      return { decision, eligibilityChecks, reads, rewriteInput };
+    };
 
-    expect(await resolver.resolve({
-      ...input,
-      record: {
-        ...input.record,
-        semantic: {
-          ...input.record.semantic,
-          sourceDependencies: [],
-          childRecordRefs: ["record:old-child"],
-        },
-      },
-    })).toEqual({ status: "unavailable" });
-    expect(rewrites).toBe(0);
-    expect(reads).toEqual(["record:replacement"]);
+    const verified = await run(true);
+    expect(verified.decision).toMatchObject({
+      status: "partial_loss",
+      remainingChildRecordRefs: ["record:structural-leaf"],
+      remainingSourceDependencies: [],
+      remainingModelExposureDependencies: [
+        expect.objectContaining({ recordRef: "record:structural-leaf" }),
+      ],
+    });
+    if (verified.decision.status !== "partial_loss") {
+      throw new Error("expected verified historical rewrite");
+    }
+    expect(verified.decision.remainingModelExposureDependencies)
+      .not.toContainEqual(historicalExposure);
+    expect(verified.rewriteInput).toEqual({
+      remainingSupportStatements: [
+        "Current source-grounded structural leaf.",
+      ],
+    });
+    expect(verified.reads).toEqual([
+      "record:structural-leaf",
+      historicalExposure.recordRef,
+    ]);
+    expect(verified.eligibilityChecks).toEqual([
+      "record:structural-leaf",
+      historicalExposure.recordRef,
+    ]);
+
+    const stable = await run(true, true, true, false);
+    expect(stable.decision).toEqual({ status: "stable" });
+    expect(stable.rewriteInput).toBeUndefined();
+
+    const revoked = await run(false);
+    expect(revoked.decision).toMatchObject({
+      status: "partial_loss",
+      remainingChildRecordRefs: ["record:structural-leaf"],
+      remainingModelExposureDependencies: [
+        expect.objectContaining({ recordRef: "record:structural-leaf" }),
+      ],
+    });
+    expect(revoked.rewriteInput).toEqual({
+      remainingSupportStatements: ["Current source-grounded structural leaf."],
+    });
+    expect(revoked.reads).not.toContain("record:replacement");
+    expect(revoked.eligibilityChecks).not.toContain("record:replacement");
+
+    const missingBinding = await run(true, true, false);
+    expect(missingBinding.decision).toMatchObject({
+      status: "partial_loss",
+      remainingChildRecordRefs: ["record:structural-leaf"],
+    });
+    expect(missingBinding.rewriteInput).toEqual({
+      remainingSupportStatements: ["Current source-grounded structural leaf."],
+    });
+    expect(missingBinding.reads).toEqual(["record:structural-leaf"]);
+    expect(missingBinding.eligibilityChecks).toEqual(["record:structural-leaf"]);
+
+    const ungrounded = await run(true, false, false);
+    expect(ungrounded.decision).toEqual({ status: "unavailable" });
+    expect(ungrounded.rewriteInput).toBeUndefined();
   });
 
   test("propagates unexpected authority failures instead of classifying them as evidence", async () => {
