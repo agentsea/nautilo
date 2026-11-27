@@ -111,8 +111,10 @@ test("Reflection recovery finds refused service work past an ambiguous attempt a
     expect(status.last24h.completedWork).toBe(0);
   } finally {
     await db.delete(llmUsageEvents).where(eq(llmUsageEvents.roomId, roomId));
+    // Keep these append-only fixture identities out of later worker bootstrap scans.
+    await db.update(reflectionRecords).set({disposition: "purged"})
+      .where(inArray(reflectionRecords.recordId, recordIds));
     await db.delete(reflectionRecordSemanticWork).where(inArray(reflectionRecordSemanticWork.recordId, recordIds));
-    // Reflection Record identities are append-only, including in disposable test databases.
     await db.delete(rooms).where(eq(rooms.id, roomId));
     await db.delete(namespaces).where(eq(namespaces.id, namespace.id));
     await db.delete(users).where(eq(users.id, owner.id));
