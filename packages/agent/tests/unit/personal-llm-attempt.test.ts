@@ -29,6 +29,20 @@ const scope = <T>(fn: () => T) => runWithUsageContext({ callType: "chat", fundin
 const modelId = "openai:gpt-5.6-luna";
 
 describe("durable personal direct attempts", () => {
+  test("ordinary calls start the provider before control returns to the caller", async () => {
+    let entered = false;
+    const result = runPersonalLlmAttempt({
+      modelId,
+      endpoint: "/v1/chat/completions",
+      invoke: async () => {
+        entered = true;
+        return "answer";
+      },
+    });
+    expect(entered).toBe(true);
+    expect(await result).toBe("answer");
+  });
+
   test("an old uninstall cannot clear a later process owner", () => {
     const uninstallFirst = installPersonalLlmAttemptOwner(owner);
     expect(getPersonalLlmAttemptOwner()).toEqual(owner);

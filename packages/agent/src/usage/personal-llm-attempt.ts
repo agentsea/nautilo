@@ -176,7 +176,10 @@ export async function runPersonalLlmAttempt<T>(input: {
       await input.assertStillAuthorized();
       input.signal?.throwIfAborted();
     }
-    await input.beforeProviderDispatch?.();
+    if (input.beforeProviderDispatch) {
+      input.signal?.throwIfAborted();
+      await input.beforeProviderDispatch();
+    }
     return input.invoke();
   }
   const nonpersonalBegin = funding.kind === "service" ? deps.beginService : deps.beginServer;
