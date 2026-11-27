@@ -36,6 +36,10 @@ async function currentReadBinding(
 export interface GroundedDependencyStatementPort {
   rewrite(input: Readonly<{
     remainingSupportStatements: readonly string[];
+    modelExposureDependencies?: readonly DurableModelExposureDependency[];
+    assertSourceEvidenceCurrent?: (
+      invocationAudience: EffectiveAudienceAlternative,
+    ) => Promise<boolean>;
     signal?: AbortSignal;
   }>): Promise<
     | { readonly status: "available"; readonly statement: string; readonly modelCalls: 1 | 2 }
@@ -285,7 +289,11 @@ implements GroundedDependencyLossPort {
       priorExposures.set(identity, exposure);
     }
     const support: string[] = [];
-    const sourceRevalidations = new Map<string, () => Promise<boolean>>();
+    const sourceRevalidations = new Map<
+      string,
+      (invocationAudience: EffectiveAudienceAlternative) => Promise<boolean>
+    >();
+    const inheritedSourceIdentities = new Set<string>();
     let lost = 0;
     let recomputeWithoutHistoricalExposure = false;
 
@@ -437,7 +445,9 @@ implements GroundedDependencyLossPort {
       semanticSupport: boolean,
     ): Promise<"available" | "lost" | "unavailable"> => {
       const identity = `source\0${dependency.sourceKind}\0${dependency.logicalSourceRef}`;
-      const openExact = async (): Promise<Readonly<{
+      const openExact = async (
+        invocationAudience: EffectiveAudienceAlternative,
+      ): Promise<Readonly<{
         result: CanonicalRecordSourceReadResult;
         inherited: boolean;
       }>> => {
@@ -459,7 +469,7 @@ implements GroundedDependencyLossPort {
             dependency,
             owningRecordRef: input.record.recordRef,
             evidenceBindingRef: input.binding.readBindingRef,
-            invocationAudience: input.binding.invocationAudience,
+            invocationAudience,
             returnedBytesMaximum: SUPPORT_BODY_BYTES_MAXIMUM,
             ...(input.signal === undefined ? {} : { signal: input.signal }),
           });
@@ -467,7 +477,7 @@ implements GroundedDependencyLossPort {
           ? { result: sameRoom, inherited: false }
           : { result: inherited, inherited: true };
       };
-      const opened = await openExact();
+      const opened = await openExact(input.binding.invocationAudience);
       const exact = opened.result;
       if (exact.status === "unavailable") {
         if (!opened.inherited) {
@@ -486,11 +496,12 @@ implements GroundedDependencyLossPort {
       if (!supportIdentities.has(identity)) {
         supportIdentities.add(identity);
         support.push(exact.content);
-        sourceRevalidations.set(identity, async () => {
-          const current = (await openExact()).result;
+        sourceRevalidations.set(identity, async (invocationAudience) => {
+          const current = (await openExact(invocationAudience)).result;
           return current.status === "available" && current.content === exact.content;
         });
       }
+      if (opened.inherited) inheritedSourceIdentities.add(identity);
       if (!exposureIdentities.has(identity)) {
         exposureIdentities.add(identity);
         remainingModelExposureDependencies.push({
@@ -660,10 +671,25 @@ implements GroundedDependencyLossPort {
       ? { status: "unavailable" }
       : { status: "total_loss" };
     for (const revalidate of sourceRevalidations.values()) {
-      if (!await revalidate()) return { status: "unavailable" };
+      if (!await revalidate(input.binding.invocationAudience)) {
+        return { status: "unavailable" };
+      }
     }
     const rewritten = await this.ports.statements.rewrite({
       remainingSupportStatements: support,
+      ...(inheritedSourceIdentities.size === 0
+        ? {}
+        : {
+            modelExposureDependencies: remainingModelExposureDependencies,
+            assertSourceEvidenceCurrent: async (
+              invocationAudience: EffectiveAudienceAlternative,
+            ) => {
+              for (const revalidate of sourceRevalidations.values()) {
+                if (!await revalidate(invocationAudience)) return false;
+              }
+              return true;
+            },
+          }),
       ...(input.signal === undefined ? {} : { signal: input.signal }),
     });
     if (rewritten.status !== "available" || !validReplacement(rewritten.statement)) {

@@ -683,6 +683,7 @@ export async function createProductionReflectionMemoryRuntime(
     resolveContexts: () => Promise<readonly (ModelInvocationContext | null)[]>,
     signal?: AbortSignal,
     dependencies?: readonly DurableModelExposureDependency[],
+    assertAdditionalCurrent?: () => Promise<void>,
   ): Promise<string> => {
     if (claims.length < 1) throw new TypeError("Record model batch cannot be empty");
     const contexts = await resolveContexts();
@@ -752,6 +753,7 @@ export async function createProductionReflectionMemoryRuntime(
       const assertInvocationCurrent = async () => {
         await admitted.assertCurrent();
         await admitted.assertExposure(dependencies);
+        await assertAdditionalCurrent?.();
       };
       if (!modelInvocationState.wasReplayChecked(claims, operationId)) {
         await assertInvocationCurrent();
@@ -765,6 +767,9 @@ export async function createProductionReflectionMemoryRuntime(
           throw new DurableSleepProviderOutcomeUnknownError();
         }
         modelInvocationState.markReplayChecked(claims, operationId);
+      }
+      if (assertAdditionalCurrent !== undefined) {
+        await assertInvocationCurrent();
       }
       const hasOperatorAttempt = claims.some(claim => claim.operatorAuthorizedAttempt);
       const manualAttempt = hasOperatorAttempt
@@ -832,6 +837,7 @@ export async function createProductionReflectionMemoryRuntime(
     prompt: string,
     signal?: AbortSignal,
     dependencies?: readonly DurableModelExposureDependency[],
+    assertAdditionalCurrent?: () => Promise<void>,
   ): Promise<string> => dispatchForRecords(
     claims,
     prompt,
@@ -845,6 +851,7 @@ export async function createProductionReflectionMemoryRuntime(
     })),
     signal,
     dependencies,
+    assertAdditionalCurrent,
   );
   const invokePreparedOrganizerBatch: NonNullable<
     DurableSleepSemanticPort["invokeOrganizerBatch"]
@@ -865,7 +872,10 @@ export async function createProductionReflectionMemoryRuntime(
     prompt: string,
     signal?: AbortSignal,
     dependencies?: readonly DurableModelExposureDependency[],
-  ): Promise<string> => invokeForRecords([claim], prompt, signal, dependencies);
+    assertAdditionalCurrent?: () => Promise<void>,
+  ): Promise<string> => invokeForRecords(
+    [claim], prompt, signal, dependencies, assertAdditionalCurrent,
+  );
   const proposals: DurableOrganizerProposalApplicationPort = {
     async apply(application) {
       if (application.claim.changeReason === "parent_conflict") {
@@ -1063,8 +1073,30 @@ export async function createProductionReflectionMemoryRuntime(
               const result = await runDependencyLossRewrite({
                 remainingSupportStatements: rewriteInput.remainingSupportStatements,
                 invoke: async (prompt, signal) => {
-                  await lossInput.assertCurrent?.();
-                  return invokeForRecord(lossInput.claim, prompt, signal);
+                  const assertSourceEvidenceCurrent =
+                    rewriteInput.assertSourceEvidenceCurrent;
+                  if (assertSourceEvidenceCurrent === undefined) {
+                    await lossInput.assertCurrent?.();
+                    return invokeForRecord(lossInput.claim, prompt, signal);
+                  }
+                  return invokeForRecord(
+                    lossInput.claim,
+                    prompt,
+                    signal,
+                    rewriteInput.modelExposureDependencies,
+                    async () => {
+                      await lossInput.assertCurrent?.();
+                      const current = await contextForRecord(
+                        lossInput.claim.recordRef,
+                      );
+                      if (
+                        current === null
+                        || !await assertSourceEvidenceCurrent(
+                          current.binding.invocationAudience,
+                        )
+                      ) throw new DurableSleepOrganizationUnavailableError();
+                    },
+                  );
                 },
                 ...(rewriteInput.signal === undefined
                   ? {}

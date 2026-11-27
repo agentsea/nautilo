@@ -275,12 +275,37 @@ describe("production Reflection semantic policy", () => {
     );
     expect(dispatch).toContain("await admitted.assertCurrent()");
     expect(dispatch).toContain("await admitted.assertExposure(dependencies)");
+    expect(dispatch).toContain("await assertAdditionalCurrent?.()");
+    expect(dispatch).toContain("if (assertAdditionalCurrent !== undefined)");
+    expect(dispatch).toContain("assertCurrent: assertInvocationCurrent");
     const recheck = dispatch.indexOf("await assertInvocationCurrent()");
+    const inheritedRecheck = dispatch.indexOf(
+      "if (assertAdditionalCurrent !== undefined)",
+    );
+    const operatorConsume = dispatch.indexOf("consumeManualProviderAttempt");
     const consume = dispatch.indexOf("consumedRepairs.add(admitted)");
     const wire = dispatch.indexOf("createRoomSideModelInvoker");
     expect(recheck).toBeGreaterThan(-1);
-    expect(consume).toBeGreaterThan(recheck);
+    expect(inheritedRecheck).toBeGreaterThan(recheck);
+    expect(operatorConsume).toBeGreaterThan(inheritedRecheck);
+    expect(consume).toBeGreaterThan(inheritedRecheck);
     expect(wire).toBeGreaterThan(consume);
+  });
+
+  test("rechecks inherited source access through the real invocation fence", () => {
+    const source = readFileSync(
+      new URL("../../src/reflection/production-reflection-memory.ts", import.meta.url),
+      "utf8",
+    );
+    const dependencyLoss = source.slice(
+      source.indexOf("dependencyLoss: {"),
+      source.indexOf("const dataOperations", source.indexOf("dependencyLoss: {")),
+    );
+    expect(dependencyLoss).toContain("rewriteInput.modelExposureDependencies");
+    expect(dependencyLoss).toContain("contextForRecord(");
+    expect(dependencyLoss).toContain("lossInput.claim.recordRef");
+    expect(dependencyLoss).toContain("current.binding.invocationAudience");
+    expect(dependencyLoss).toContain("assertSourceEvidenceCurrent");
   });
 
   test("consumes an operator attempt after replay checks and before the provider wire", () => {

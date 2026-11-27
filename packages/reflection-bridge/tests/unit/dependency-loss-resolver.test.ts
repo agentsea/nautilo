@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { runDependencyLossRewrite } from "@nautilo/reflection";
 
 import {
   ExactGroundedDependencyLossResolver,
@@ -195,8 +196,33 @@ describe("exact grounded dependency loss", () => {
       evidenceBindingRef: input.binding.readBindingRef,
       invocationAudience: input.binding.invocationAudience,
     });
-    expect(rewriteInput).toEqual({
+    expect(rewriteInput).toMatchObject({
       remainingSupportStatements: ["Exact inherited Memory support."],
+      modelExposureDependencies: [{
+        kind: "source",
+        sourceKind: dependency.sourceKind,
+        logicalSourceRef: dependency.logicalSourceRef,
+        observedRevision: dependency.observedRevision,
+        observedContentFingerprint: dependency.observedContentFingerprint,
+        terminalAuthorityLeafHandle: dependency.terminalAuthorityLeafHandle,
+      }],
+    });
+    const assertSourceEvidenceCurrent = (rewriteInput as {
+      assertSourceEvidenceCurrent: (
+        audience: Readonly<{
+          humanRefs: readonly string[];
+          includesPublicBoundary: boolean;
+        }>,
+      ) => Promise<boolean>;
+    }).assertSourceEvidenceCurrent;
+    const currentAudience = {
+      humanRefs: ["human:one", "human:two"],
+      includesPublicBoundary: false,
+    } as const;
+    expect(await assertSourceEvidenceCurrent(currentAudience)).toBe(true);
+    expect(inheritedReads).toHaveLength(3);
+    expect(inheritedReads[2]).toMatchObject({
+      invocationAudience: currentAudience,
     });
     expect(invalidations).toEqual([{
       dependency: changedDependency,
@@ -295,6 +321,74 @@ describe("exact grounded dependency loss", () => {
       dependency: changedDependency,
       reason: "changed",
     }]);
+  });
+
+  test.each([0, 1])("refuses the next provider call when inherited Memory is revoked after %i calls", async (allowedCalls) => {
+    const changedDependency = {
+      ...dependency,
+      logicalSourceRef: "memory:changed",
+    };
+    let wires = 0;
+    const resolver = new ExactGroundedDependencyLossResolver({
+      eligibility: {} as never,
+      repository: {} as never,
+      source: {
+        async readExact({ dependency: current }) {
+          return current.logicalSourceRef === dependency.logicalSourceRef
+            ? { status: "unavailable" as const }
+            : { status: "changed" as const };
+        },
+      },
+      inheritedMemorySource: {
+        async readExactDeclaredMemory(value) {
+          return value.invocationAudience.humanRefs.includes("human:revoked")
+            ? { status: "unavailable" }
+            : {
+                status: "available",
+                kind: "memory",
+                content: "Exact inherited Memory support.",
+              };
+        },
+      },
+      invalidation: { async admit() {} },
+      statements: {
+        async rewrite(value) {
+          const revoked = new Error("access revoked");
+          try {
+            const result = await runDependencyLossRewrite({
+              remainingSupportStatements: value.remainingSupportStatements,
+              invoke: async () => {
+                const audience = wires === allowedCalls
+                  ? { humanRefs: ["human:revoked"], includesPublicBoundary: false }
+                  : input.binding.invocationAudience;
+                if (!await value.assertSourceEvidenceCurrent?.(audience)) throw revoked;
+                wires++;
+                // An invalid first response exercises the real corrective call.
+                return "{}";
+              },
+            });
+            if (!result.ok) throw new Error("expected revocation before retry exhaustion");
+            return { status: "available", statement: result.statement, modelCalls: result.attempts };
+          } catch (error) {
+            if (error !== revoked) throw error;
+            return { status: "unavailable" };
+          }
+        },
+      },
+    });
+
+    expect(await resolver.resolve({
+      ...input,
+      record: {
+        ...input.record,
+        semantic: {
+          ...input.record.semantic,
+          sourceDependencies: [dependency, changedDependency],
+          childRecordRefs: [],
+        },
+      },
+    })).toEqual({ status: "unavailable" });
+    expect(wires).toBe(allowedCalls);
   });
 
   test("sunsets when the only source is proven changed", async () => {
