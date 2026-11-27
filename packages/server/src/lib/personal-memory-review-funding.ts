@@ -50,6 +50,7 @@ export interface PersonalMemoryReviewFundingOptions {
   ) => Promise<readonly DurableModelExposureDependency[] | undefined>;
   readonly openHumanSession?: (humanUserId: string, recheck: () => Promise<void>) => CapabilityFundingSession;
   /** Test seam; production uses the shared operation admission owner. */
+  readonly invokeChat?: typeof invokeChatModelWithFallback;
   readonly openOperation?: (input: OpenMemoryOperationInput) => Promise<AdmittedMemoryOperation>;
 }
 
@@ -88,9 +89,8 @@ export function createPersonalMemoryReviewAdmitter(options: PersonalMemoryReview
           ? (() => { throw new Error("personal_memory_review_funding_unavailable"); })()
           : { fundingHumanUserId: operation.humanUserId, fundingSession: operation.fundingSession,
               modelFallbackMode: "none" as const, sameModelRetryMode: "none" as const,
-              ...(beforeProviderDispatch === undefined ? {} : { beforeProviderDispatch }),
               useOpenAIResponsesApi: true, reasoningOutput: operation.modelId.startsWith("openai:") };
-      const { response } = await invokeChatModelWithFallback(
+      const { response } = await (options.invokeChat ?? invokeChatModelWithFallback)(
         invocation.messages,
         invocation.tools,
         operation.modelId,
@@ -98,7 +98,7 @@ export function createPersonalMemoryReviewAdmitter(options: PersonalMemoryReview
         claim.agentId,
         `room:${claim.roomId}`,
         invocation.signal ? { signal: invocation.signal } : undefined,
-        fundingOptions,
+        { ...fundingOptions, ...(beforeProviderDispatch === undefined ? {} : { beforeProviderDispatch }) },
       );
       return response;
     }));
