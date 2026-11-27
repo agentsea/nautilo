@@ -6,6 +6,8 @@ import { useCan } from "../../../hooks/use-can";
 import { useAuth } from "../../../hooks/use-auth";
 
 const buttonClass = "rounded-md border border-border bg-background-element px-2.5 py-1 text-xs font-medium text-foreground hover:bg-background-panel disabled:opacity-50";
+const MEMORY_RECOVERY_POLL_MS = 10_000;
+const TRANSIENT_REFRESH_RETRY_LIMIT = 3;
 type RecoveryState = "catching_up" | "waiting" | "healthy" | "paused" | "needs_attention";
 type RecoverySummary = { state: RecoveryState; detail: string; recovery?: string; counts?: string };
 
@@ -29,6 +31,28 @@ function stateClass(state: RecoveryState): string {
   }
 }
 
+function stenographerActiveWork(status: StenographerAdminStatus): number {
+  return status.current.processingRooms + status.current.retryingRooms + status.current.dueRooms
+    + status.current.rebuildingRooms + status.current.historicalPendingRooms + status.compaction.awaitingRooms
+    + status.compaction.processingRooms + status.compaction.retryingRooms;
+}
+
+function reflectionActiveWork(status: ReflectionAdminStatus): number {
+  if (status.scheduler.state === "disabled" || status.scheduler.state === "pressure_paused") {
+    return 0;
+  }
+  const scheduledDeferred = status.scheduler.state === "running"
+    || status.scheduler.nextEligiblePollAt !== null
+    ? status.current.deferred
+    : 0;
+  return status.current.due + status.current.claimed + status.current.checkpointed
+    + status.current.recoveryEligible + status.projections.pending + scheduledDeferred;
+}
+
+function memoryActiveWork(status: MemoryAdminStatus): number {
+  return status.current.due + status.current.processing + status.current.retrying + status.followUpPending;
+}
+
 export function summarizeStenographer(status: StenographerAdminStatus): RecoverySummary {
   const unknownOutcome = status.unresolvedProviderOutcomes === undefined
     ? status.recentFailures.some(({ errorCode }) => errorCode === "provider_outcome_unknown")
@@ -37,9 +61,7 @@ export function summarizeStenographer(status: StenographerAdminStatus): Recovery
   if (status.health === "degraded" || status.current.staleLeases > 0 || status.compaction.staleLeases > 0) {
     return { state: "needs_attention", detail: "Recovery has unresolved failures or stale work. Stenographer details show the blocking stage and reason." };
   }
-  const active = status.current.processingRooms + status.current.retryingRooms + status.current.dueRooms
-    + status.current.rebuildingRooms + status.current.historicalPendingRooms + status.compaction.awaitingRooms
-    + status.compaction.processingRooms + status.compaction.retryingRooms;
+  const active = stenographerActiveWork(status);
   if (active > 0) return { state: "catching_up", detail: "Journal or compaction work is queued, retrying, or processing automatically." };
   if (status.current.eligibleRooms === 0 || status.current.accumulatingRooms > 0) {
     return { state: "waiting", detail: "Healthy and waiting for enough eligible conversation to process." };
@@ -102,8 +124,7 @@ function reflectionHealth(status: ReflectionAdminStatus): RecoverySummary {
       recovery,
     };
   }
-  const active = status.current.backlog + status.current.due + status.current.claimed + status.current.checkpointed
-    + status.current.recoveryEligible + status.projections.pending;
+  const active = reflectionActiveWork(status);
   if (active > 0) return { state: "catching_up", detail: "Reflection or projection work is waiting, recovering, or processing automatically.", ...(recovery === undefined ? {} : { recovery }) };
   if (status.current.totalRecords === 0 || status.scheduler.state === "cooldown") {
     return { state: "waiting", detail: "Healthy and waiting for eligible Stenographer work or the next scheduler poll.", ...(recovery === undefined ? {} : { recovery }) };
@@ -118,7 +139,7 @@ export function summarizeMemory(status: MemoryAdminStatus): RecoverySummary {
   }
   if (!status.model.available) return { state: "waiting", detail: "Waiting for an effective Memory model in Server Models." };
   if (!status.encryption.available) return { state: "waiting", detail: "Waiting for authorized processing access." };
-  const active = status.current.due + status.current.processing + status.current.retrying + status.followUpPending;
+  const active = memoryActiveWork(status);
   if (active > 0) return { state: "catching_up", detail: "Memory review or follow-up work is queued, retrying, or processing automatically." };
   if (status.current.accumulating > 0 || status.trackedSince === null || status.health === "waiting") {
     return { state: "waiting", detail: "Healthy and waiting for enough eligible conversation to review." };
@@ -180,13 +201,14 @@ function OperatorMemoryRecoveryCard({ operatorId }: { operatorId: string | null 
   const [running, setRunning] = useState(false);
   const [receiptKnown, setReceiptKnown] = useState(false);
   const [run, setRun] = useState<MemoryRecoveryRun | null>(null);
+  const [consecutiveRefreshErrors, setConsecutiveRefreshErrors] = useState(0);
+  const [liveWorkActive, setLiveWorkActive] = useState(false);
   const storageKey = `nautilo:unconfirmed-memory-recovery:${operatorId}`;
   const [pendingRequest, setPendingRequest] = useState<string | null>(() => {
     try { return sessionStorage.getItem(storageKey); } catch { return null; }
   });
   const submitting = useRef(false);
   const refreshSequence = useRef(0);
-  const hasRun = run !== null;
   const refresh = useCallback(async () => {
     if (!canRead) return;
     const sequence = ++refreshSequence.current;
@@ -201,7 +223,21 @@ function OperatorMemoryRecoveryCard({ operatorId }: { operatorId: string | null 
     if (receipt.status === "fulfilled") {
       setRun(receipt.value.run);
       setReceiptKnown(true);
+    } else {
+      // A prior receipt remains visible, but it cannot prove that a pending
+      // admission is still current or authorize another provider spend.
+      setReceiptKnown(false);
     }
+    const hadError = [stenographer, reflection, memory, receipt]
+      .some(result => result.status === "rejected");
+    setConsecutiveRefreshErrors(previous => hadError
+      ? Math.min(previous + 1, TRANSIENT_REFRESH_RETRY_LIMIT + 1)
+      : 0);
+    setLiveWorkActive(
+      (stenographer.status === "fulfilled" && stenographerActiveWork(stenographer.value) > 0)
+      || (reflection.status === "fulfilled" && reflectionActiveWork(reflection.value) > 0)
+      || (memory.status === "fulfilled" && memoryActiveWork(memory.value) > 0),
+    );
     setSummaries({
       stenographer: stenographer.status === "fulfilled" ? {
         ...summarizeStenographer(stenographer.value),
@@ -218,31 +254,40 @@ function OperatorMemoryRecoveryCard({ operatorId }: { operatorId: string | null 
     });
     setLoading(false);
   }, [canRead]);
-  useEffect(() => { void refresh(); return () => { refreshSequence.current++; }; }, [refresh]);
   useEffect(() => {
-    if (!canRead || !hasRun || loading || running) return;
+    const sequence = refreshSequence;
+    void refresh();
+    return () => { sequence.current++; };
+  }, [refresh]);
+  useEffect(() => {
+    const admissionActive = receiptKnown && run !== null
+      && [run.stenographer, run.reflection, run.memory].some(lane => lane === null);
+    const retryTemporaryError = consecutiveRefreshErrors > 0
+      && consecutiveRefreshErrors <= TRANSIENT_REFRESH_RETRY_LIMIT;
+    if (!canRead || loading || running
+      || (!admissionActive && !liveWorkActive && !retryTemporaryError)) return;
     let timer: number | undefined;
     function schedule() {
       window.clearTimeout(timer);
       if (document.visibilityState !== "hidden") {
-        timer = window.setTimeout(() => { void refresh(); }, 10_000);
+        timer = window.setTimeout(() => { void refresh(); }, MEMORY_RECOVERY_POLL_MS);
       }
     }
     // A fast status read can settle in a single render. Schedule again when
-    // the summaries change even if React batched the loading state updates.
+    // active-work or admission state changes even if loading updates batch.
     schedule();
     document.addEventListener("visibilitychange", schedule);
     return () => {
       window.clearTimeout(timer);
       document.removeEventListener("visibilitychange", schedule);
     };
-  }, [canRead, hasRun, loading, running, refresh, summaries]);
+  }, [canRead, consecutiveRefreshErrors, liveWorkActive, loading, receiptKnown, run, running, refresh, summaries]);
   async function recover() {
     if (!canManage || !receiptKnown || submitting.current) return;
     submitting.current = true;
     setRunning(true);
     const lanes = run && [run.stenographer, run.reflection, run.memory];
-    const inProgress = lanes?.includes(null) && !lanes.some(lane => lane?.state === "unavailable");
+    const inProgress = lanes?.includes(null) === true;
     const requestId = pendingRequest ?? (run && inProgress ? run.requestId : crypto.randomUUID());
     setPendingRequest(requestId);
     try { sessionStorage.setItem(storageKey, requestId); } catch { /* In-memory retries remain idempotent. */ }
