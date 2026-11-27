@@ -588,6 +588,21 @@ async function lockSemanticWorkAdmission(
   );
 }
 
+async function tryLockSemanticWorkAdmission(
+  tx: RecordProductPostgresExecutor,
+  recordRef: string,
+): Promise<boolean> {
+  const rows = await executeTypedRecordProductQuery(tx,
+    recordProductTypedDb.select({
+      locked: sql<boolean>`pg_try_advisory_xact_lock(hashtextextended(${
+        `reflection-semantic-work:${recordRef}`
+      }, 0))`.as("locked"),
+    }).from(reflectionRecords)
+      .where(eq(reflectionRecords.recordId, recordRef))
+      .limit(1));
+  return rows[0]?.locked === true;
+}
+
 /**
  * Exact, transaction-neutral admission primitive. The immutable receipt makes
  * replays no-ops even after later first-seen changes advanced the work row.
@@ -2902,6 +2917,9 @@ export class PostgresSemanticWorkStore
           record_id: reflectionRecords.recordId,
           processing_generation: reflectionRecords.processingGeneration,
           structural_height: reflectionRecords.structuralHeight,
+          work_record_id: sql<string | null>`${
+            reflectionRecordSemanticWork.recordId
+          }`.as("work_record_id"),
         })
           .from(reflectionRecords)
           .leftJoin(
@@ -2937,11 +2955,12 @@ export class PostgresSemanticWorkStore
       let admitted = 0;
       for (const row of selected) {
         const recordRef = rowString(row, "record_id");
+        // Never wait behind a manual recovery that already owns this Record's
+        // work row. A later bounded page can reconsider the same candidate.
+        if (!await tryLockSemanticWorkAdmission(tx, recordRef)) continue;
         // The page scan is intentionally unlocked so unrelated Records do not
-        // serialize. Re-enter the canonical admission lock and re-read both
-        // the Record coordinate and mutable work row before promoting it. A
-        // provider hold or operator recovery may have arrived after the scan.
-        await lockSemanticWorkAdmission(tx, recordRef);
+        // serialize. Re-read both the Record coordinate and mutable work row;
+        // a provider hold or operator recovery may have arrived after it.
         const currentRecords = await executeTypedRecordProductQuery(tx,
           recordProductTypedDb.select({
             processing_generation: reflectionRecords.processingGeneration,
@@ -2957,9 +2976,19 @@ export class PostgresSemanticWorkStore
             completion_outcome: reflectionRecordSemanticWork.completionOutcome,
           }).from(reflectionRecordSemanticWork)
             .where(eq(reflectionRecordSemanticWork.recordId, recordRef))
-            .for("update"));
+            .for("update", { skipLocked: true }));
         const currentRecord = currentRecords[0];
         const currentWork = currentWorkRows[0];
+        const scannedWorkExisted = row["work_record_id"] !== null;
+        if (currentWork === undefined && scannedWorkExisted) continue;
+        if (currentWork === undefined) {
+          const visibleWork = await executeTypedRecordProductQuery(tx,
+            recordProductTypedDb.select({
+              record_id: reflectionRecordSemanticWork.recordId,
+            }).from(reflectionRecordSemanticWork)
+              .where(eq(reflectionRecordSemanticWork.recordId, recordRef)));
+          if (visibleWork.length > 0) continue;
+        }
         if (
           currentRecord === undefined
           || currentRecord.disposition !== "available"

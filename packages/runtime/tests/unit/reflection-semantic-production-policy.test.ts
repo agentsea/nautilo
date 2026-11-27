@@ -37,7 +37,9 @@ function productDb(): DirectDatabase {
     unsafe(statement: string) {
       return Promise.resolve(statement.includes("current_user")
         ? [{ current_role: "nautilo", session_role: "nautilo" }]
-        : []);
+        : statement.includes("pg_try_advisory_xact_lock")
+          ? [{ locked: true }]
+          : []);
     },
     begin(
       _isolation: string,

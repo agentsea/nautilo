@@ -2369,13 +2369,18 @@ describe("PostgreSQL semantic work repair and publication", () => {
             record_id: "record:a",
             processing_generation: 2,
             structural_height: 0,
+            work_record_id: null,
           },
           {
             record_id: "record:b",
             processing_generation: 1,
             structural_height: 1,
+            work_record_id: null,
           },
         ] as unknown as Row[];
+      }
+      if (statement.includes("pg_try_advisory_xact_lock")) {
+        return [{ locked: true }] as unknown as Row[];
       }
       if (statement.includes("pg_advisory_xact_lock")) return [];
       if (normalized.includes("from reflection_records where")) {
@@ -2388,6 +2393,9 @@ describe("PostgreSQL semantic work repair and publication", () => {
       }
       if (normalized.includes("select state, change_reason, completion_outcome")
         && normalized.includes("for update")) return [];
+      if (normalized.includes("select record_id from reflection_record_semantic_work")) {
+        return [];
+      }
       if (normalized.includes("select assigned_generation")) return [];
       if (normalized.includes("select generation") && normalized.includes("for update")) return [];
       if (normalized.includes("insert into reflection_record_semantic_work_admissions")) return [];
@@ -2425,7 +2433,11 @@ describe("PostgreSQL semantic work repair and publication", () => {
           record_id,
           processing_generation: 5,
           structural_height: 1,
+          work_record_id: record_id,
         })) as unknown as Row[];
+      }
+      if (statement.includes("pg_try_advisory_xact_lock")) {
+        return [{ locked: true }] as unknown as Row[];
       }
       if (statement.includes("pg_advisory_xact_lock")) return [];
       if (normalized.includes("from reflection_records where")) {
@@ -2457,7 +2469,7 @@ describe("PostgreSQL semantic work repair and publication", () => {
 
     expect(await store.bootstrapPage({ limit: 2 })).toEqual({ admitted: 0 });
     expect(value.queries.filter(query =>
-      query.statement.includes("pg_advisory_xact_lock")
+      query.statement.includes("pg_try_advisory_xact_lock")
     )).toHaveLength(2);
     expect(value.queries.filter(query =>
       normalizedSql(query.statement).includes(

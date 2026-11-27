@@ -30,6 +30,20 @@ afterAll(async () => {
   await db?.end();
 });
 
+function deferred<Value = void>(): Readonly<{
+  promise: Promise<Value>;
+  resolve: (value: Value) => void;
+  reject: (error: unknown) => void;
+}> {
+  let resolve!: (value: Value) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<Value>((accept, decline) => {
+    resolve = accept;
+    reject = decline;
+  });
+  return { promise, resolve, reject };
+}
+
 test("one exact manual provider attempt survives binding and rejects concurrent or changed-lease replay", async () => {
   const suffix = randomUUID();
   const now = new Date("2002-03-04T05:06:07.000Z");
@@ -143,6 +157,122 @@ test("one exact manual provider attempt survives binding and rejects concurrent 
     await db.delete(users).where(eq(users.id, operator.id));
   }
 });
+
+test("scheduled bootstrap skips a row that became a provider hold after its scan", async () => {
+  const suffix = randomUUID();
+  const now = new Date("2004-05-06T07:08:09.000Z");
+  const observedThrough = new Date(now.getTime() - 1_000);
+  const prefix = `zz-manual-lock-order-${suffix}:`;
+  const recordId = `${prefix}hold`;
+  const acceptedBinding: MemoryOperationBinding = {
+    version: 1,
+    kind: "service",
+    role: "memoryReflection",
+    modelId: "surplus:synthetic-model",
+    inputCommitment: `hmac-sha256:${"L".repeat(43)}`,
+  };
+  const [operator] = await db.insert(users).values({
+    name: "Manual recovery lock operator",
+    email: `manual-recovery-lock-${suffix}@integration.test`,
+  }).returning({ id: users.id });
+  if (operator === undefined) throw new Error("missing recovery lock operator");
+  const releaseBlocker = deferred();
+  const blockerReady = deferred();
+  let blocker: Promise<void> | undefined;
+  try {
+    await db.insert(reflectionRecords).values({
+      recordId,
+      lifecycle: "current",
+      structuralHeight: 1,
+      producerPolicyVersion: "manual-recovery-lock-order-v1",
+      processingGeneration: 1,
+    });
+    await db.insert(reflectionRecordSemanticWork).values({
+      recordId,
+      generation: 1,
+      completedGeneration: 1,
+      changeReason: "dependency_lost",
+      stage: "organization",
+      state: "complete",
+      acceptedModelBinding: acceptedBinding,
+      acceptedModelBindingGeneration: 1,
+      completionOutcome: "completed",
+      completedAt: observedThrough,
+      dueSince: new Date(now.getTime() - 10_000),
+      createdAt: new Date(now.getTime() - 10_000),
+      updatedAt: observedThrough,
+    });
+    blocker = db.transaction(async tx => {
+      await tx.delete(reflectionRecordSemanticWork)
+        .where(eq(reflectionRecordSemanticWork.recordId, recordId));
+      await tx.insert(reflectionRecordSemanticWork).values({
+        recordId,
+        generation: 2,
+        completedGeneration: 2,
+        changeReason: "dependency_lost",
+        stage: "organization",
+        state: "complete",
+        acceptedModelBinding: acceptedBinding,
+        acceptedModelBindingGeneration: 2,
+        completionOutcome: "provider_outcome_unknown",
+        dueSince: new Date(now.getTime() - 10_000),
+        completedAt: observedThrough,
+        createdAt: new Date(now.getTime() - 10_000),
+        updatedAt: observedThrough,
+      });
+      blockerReady.resolve();
+      await releaseBlocker.promise;
+    });
+    await blockerReady.promise;
+    const handle = await verifyRecordProductPostgresHandle(
+      createPostgresJsBridgeConnection(db),
+    );
+    const store = new PostgresSemanticWorkStore({
+      handle,
+      commitments: createHmacRecordSemanticCommitmentPort(
+        new Uint8Array(32).fill(31),
+      ),
+      clock: () => now,
+    });
+    const bootstrap = store.bootstrapPage({ limit: 1, continuation: prefix });
+    let bootstrapTimer: ReturnType<typeof setTimeout> | undefined;
+    const bootstrapResult = await Promise.race([
+      bootstrap,
+      new Promise<never>((_resolve, reject) => {
+        bootstrapTimer = setTimeout(
+          () => reject(new Error("bootstrap waited behind manual recovery")),
+          2_000,
+        );
+      }),
+    ]).finally(() => clearTimeout(bootstrapTimer));
+    expect(bootstrapResult.admitted).toBe(0);
+    releaseBlocker.resolve();
+    await blocker;
+    const [held] = await db.select({
+      generation: reflectionRecordSemanticWork.generation,
+      completionOutcome: reflectionRecordSemanticWork.completionOutcome,
+    }).from(reflectionRecordSemanticWork)
+      .where(eq(reflectionRecordSemanticWork.recordId, recordId));
+    expect(held).toEqual({
+      generation: 2,
+      completionOutcome: "provider_outcome_unknown",
+    });
+    expect(await store.requestManualProviderRecovery({
+      now,
+      observedThrough,
+      authorizedBy: operator.id,
+      modelId: "surplus:synthetic-model",
+    })).toEqual({ queued: 1, held: 0 });
+  } finally {
+    releaseBlocker.resolve();
+    await Promise.allSettled(blocker === undefined ? [] : [blocker]);
+    await db.update(reflectionRecords).set({ disposition: "purged" })
+      .where(eq(reflectionRecords.recordId, recordId));
+    await db.delete(reflectionRecordSemanticWork)
+      .where(eq(reflectionRecordSemanticWork.recordId, recordId));
+    await db.delete(users).where(eq(users.id, operator.id));
+  }
+}, 15_000);
 
 test("scheduled bootstrap preserves ambiguous outcomes while promoting completed work", async () => {
   const suffix = randomUUID();
