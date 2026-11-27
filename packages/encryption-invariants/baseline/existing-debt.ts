@@ -8,6 +8,7 @@ import {
 } from "./reviewed-ci-wire-coverage";
 import { REVIEWED_PROTECTED_TASK_EXTERNAL_REQUEST_COVERAGE } from "./reviewed-protected-task-external-request-coverage";
 import { REVIEWED_MEMORY_REVIEW_RECOVERY_COVERAGE } from "./reviewed-memory-review-recovery";
+import { REVIEWED_MANUAL_MEMORY_RECOVERY_COVERAGE } from "./reviewed-manual-memory-recovery";
 import {
   RETIRED_RELEASE_RECONCILIATION_FROZEN_DEBT,
   REVIEWED_RELEASE_RECONCILIATION_COVERAGE,
@@ -1992,6 +1993,7 @@ export const BASELINE_REGISTRY: CoverageRegistry = {
     ),
     ...REVIEWED_RELEASE_RECONCILIATION_COVERAGE,
     ...REVIEWED_MEMORY_REVIEW_RECOVERY_COVERAGE,
+    ...REVIEWED_MANUAL_MEMORY_RECOVERY_COVERAGE,
     ...REVIEWED_CI_DATABASE_COVERAGE,
     ...REVIEWED_CI_WIRE_COVERAGE_ENTRIES,
   ].filter((entry) =>
