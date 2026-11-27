@@ -27,7 +27,7 @@ test("a failed lane rolls back its changes, other lanes finish, and concurrent o
         const insert = db.insert(memoryRecoveryRuns).values({
           id: rollbackMarker, authorizedBy: input.authorizedBy, observedThrough: input.now,
         }).toSQL();
-        await executor.query(insert.sql, insert.params);
+        await executor.query(insert.sql, insert.params.map(String));
         throw new Error("injected admission failure");
       },
       memory: async () => { calls.memory++; return { state: "assessed", queued: 1, held: 0 }; },
