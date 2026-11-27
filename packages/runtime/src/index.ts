@@ -781,7 +781,11 @@ export {
 export { MemoryReviewWorker, type MemoryReviewClaim, type MemoryReviewRepository,
   type MemoryReviewWorkerDeps, type MemoryReviewInput, type AdmittedMemoryReviewModel, type MemoryReviewPhase,
   type MemoryReviewPublicationState } from "./memory-review/worker";
-export { PostgresMemoryReviewRepository, selectMemoryReviewPrefix } from "./memory-review/repository";
+export {
+  memoryReviewOrdinaryPolicyAvailable,
+  PostgresMemoryReviewRepository,
+  selectMemoryReviewPrefix,
+} from "./memory-review/repository";
 export { memoryReviewAdmission, finishMemoryReviewTurn } from "./memory-review/admission";
 export { recoverMemoryReviewTurnsAtStartup, readOrdinaryMemoryReviewCheckpoint } from "./memory-review/startup-recovery";
 

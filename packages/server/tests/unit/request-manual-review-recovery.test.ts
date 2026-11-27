@@ -1,12 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import {
-  memoryReviewModelRecoveries, memoryReviewReceipts, memoryReviewTurns,
+  encryptionTransitionPolicy, memoryReviewModelRecoveries, memoryReviewReceipts, memoryReviewTurns,
   users,
 } from "@nautilo/db";
 import {
+  ManualMemoryReviewRecoveryPausedError,
+  ManualMemoryReviewRecoveryPolicyError,
   manualReviewRecoveryBinding,
   requestManualReviewRecovery,
 } from "../../src/lib/request-manual-review-recovery";
+import { memoryReviewOrdinaryPolicyAvailable } from "@nautilo/runtime";
 
 const NOW = new Date("2026-11-27T12:00:00.000Z");
 const OLD = new Date("2026-11-27T11:00:00.000Z");
@@ -40,29 +43,33 @@ function fakeDb(input: {
   turns: Array<typeof memoryReviewTurns.$inferSelect>;
   receipt?: Partial<typeof memoryReviewReceipts.$inferSelect>;
   recovery?: typeof memoryReviewModelRecoveries.$inferSelect;
+  policy?: Readonly<{
+    mode: "plaintext_only" | "shadow_encryption" | "encrypted_only";
+    shadowBehavior: "fallback" | "strict";
+    revision: number;
+  }>;
 }) {
   const inserted: Array<{ table: unknown; value: Record<string, unknown> }> = [];
   const updated: Array<{ table: unknown; value: Record<string, unknown> }> = [];
+  const calls: string[] = [];
   const tx = {
-    execute: async () => input.turns.map(value => ({
-      id: value.id,
-      session_id: value.sessionId,
-      agent_id: value.agentId,
-      owner_id: value.ownerId,
-      access_scope: value.accessScope,
-    })),
+    execute: async () => { calls.push("policy-lock"); return []; },
     select: () => ({
       from: (table: unknown) => {
-        const rows = table === memoryReviewTurns ? input.turns
+        const rows = table === encryptionTransitionPolicy
+          ? [input.policy ?? { mode: "plaintext_only", shadowBehavior: "fallback", revision: 1 }]
+          : table === memoryReviewTurns ? input.turns
           : table === memoryReviewReceipts ? (input.receipt ? [input.receipt] : [])
           : table === memoryReviewModelRecoveries ? (input.recovery ? [input.recovery] : [])
           : table === users ? [{ id: "88888888-8888-4888-8888-888888888888" }]
           : [];
+        calls.push(table === encryptionTransitionPolicy ? "policy-read" : "work-read");
         const builder: Record<string, unknown> = {};
         builder["where"] = () => builder;
         builder["orderBy"] = () => builder;
         builder["for"] = async () => rows;
         builder["limit"] = async () => rows;
+        builder["then"] = (resolve: (value: unknown) => void) => resolve(rows);
         return builder;
       },
     }),
@@ -79,10 +86,57 @@ function fakeDb(input: {
     db: { transaction: async <T>(run: (value: typeof tx) => Promise<T>) => run(tx) },
     inserted,
     updated,
+    calls,
   };
 }
 
 describe("manual Memory-review recovery", () => {
+  test("admits ordinary recovery only in Plaintext and Fallback Shadow", () => {
+    expect(memoryReviewOrdinaryPolicyAvailable({
+      mode: "plaintext_only", shadowBehavior: "fallback", revision: 1,
+    })).toBe(true);
+    expect(memoryReviewOrdinaryPolicyAvailable({
+      mode: "shadow_encryption", shadowBehavior: "fallback", revision: 2,
+    })).toBe(true);
+    expect(memoryReviewOrdinaryPolicyAvailable({
+      mode: "shadow_encryption", shadowBehavior: "strict", revision: 3,
+    })).toBe(false);
+    expect(memoryReviewOrdinaryPolicyAvailable({
+      mode: "encrypted_only", shadowBehavior: "strict", revision: 4,
+    })).toBe(false);
+  });
+
+  test("takes the policy fence before bulk discovery and leaves intent untouched when Strict blocks ordinary review", async () => {
+    const fixture = fakeDb({
+      turns: [turn()],
+      policy: { mode: "shadow_encryption", shadowBehavior: "strict", revision: 3 },
+    });
+    const rejection = await requestManualReviewRecovery({
+      db: fixture.db as never, now: NOW, observedThrough: NOW,
+      authorizedBy: "88888888-8888-4888-8888-888888888888", modelId: MODEL,
+      enabledByDefault: true,
+      maintenanceAccepting: async () => true,
+    }).then(() => undefined, (error: unknown) => error);
+    expect(rejection).toBeInstanceOf(ManualMemoryReviewRecoveryPolicyError);
+    expect(fixture.calls).toEqual(["policy-lock", "policy-read"]);
+    expect(fixture.inserted).toHaveLength(0);
+    expect(fixture.updated).toHaveLength(0);
+  });
+
+  test("checks durable enablement on the fenced transaction before discovering work", async () => {
+    const fixture = fakeDb({ turns: [turn()] });
+    const rejection = await requestManualReviewRecovery({
+      db: fixture.db as never, now: NOW, observedThrough: NOW,
+      authorizedBy: "88888888-8888-4888-8888-888888888888", modelId: MODEL,
+      enabledByDefault: false,
+      maintenanceAccepting: async () => true,
+    }).then(() => undefined, (error: unknown) => error);
+    expect(rejection).toBeInstanceOf(ManualMemoryReviewRecoveryPausedError);
+    expect(fixture.calls.slice(0, 3)).toEqual(["policy-lock", "policy-read", "work-read"]);
+    expect(fixture.inserted).toHaveLength(0);
+    expect(fixture.updated).toHaveLength(0);
+  });
+
   test("preserves service operation identity while rebinding the current model and never converts personal funding", () => {
     const service = turn().acceptedModelBinding;
     if (service === null) throw new Error("expected service fixture");
@@ -109,6 +163,8 @@ describe("manual Memory-review recovery", () => {
     expect(await requestManualReviewRecovery({
       db: fixture.db as never, now: NOW, observedThrough: NOW,
       authorizedBy: "88888888-8888-4888-8888-888888888888", modelId: MODEL,
+      enabledByDefault: true,
+      maintenanceAccepting: async () => true,
     })).toEqual({ queued: 1, held: 0 });
     expect(fixture.inserted).toHaveLength(1);
     expect(fixture.inserted[0]?.table).toBe(memoryReviewModelRecoveries);
@@ -133,6 +189,8 @@ describe("manual Memory-review recovery", () => {
     expect(await requestManualReviewRecovery({
       db: fixture.db as never, now: NOW, observedThrough: NOW,
       authorizedBy: blocked.ownerId, modelId: MODEL,
+      enabledByDefault: true,
+      maintenanceAccepting: async () => true,
     })).toEqual({ queued: 1, held: 0 });
     expect(fixture.updated.find(value => value.table === memoryReviewTurns)?.value)
       .toMatchObject({ acceptedModelBinding: { kind: "service", modelId: MODEL } });
@@ -153,6 +211,8 @@ describe("manual Memory-review recovery", () => {
       expect(await requestManualReviewRecovery({
         db: fixture.db as never, now: NOW, observedThrough: NOW,
         authorizedBy: "88888888-8888-4888-8888-888888888888", modelId: MODEL,
+        enabledByDefault: true,
+        maintenanceAccepting: async () => true,
       })).toEqual({ queued: 0, held: 1 });
       expect(fixture.inserted).toHaveLength(0);
     }
@@ -170,6 +230,8 @@ describe("manual Memory-review recovery", () => {
     expect(await requestManualReviewRecovery({
       db: duplicate.db as never, now: NOW, observedThrough: NOW,
       authorizedBy: current.ownerId, modelId: "openai:gpt-old",
+      enabledByDefault: true,
+      maintenanceAccepting: async () => true,
     })).toEqual({ queued: 0, held: 0 });
     expect(duplicate.inserted).toHaveLength(0);
     expect(duplicate.updated).toHaveLength(0);
@@ -181,6 +243,8 @@ describe("manual Memory-review recovery", () => {
     expect(await requestManualReviewRecovery({
       db: changedInput.db as never, now: NOW, observedThrough: NOW,
       authorizedBy: current.ownerId, modelId: "openai:gpt-old",
+      enabledByDefault: true,
+      maintenanceAccepting: async () => true,
     })).toEqual({ queued: 1, held: 0 });
     expect(changedInput.updated.find(value => value.table === memoryReviewModelRecoveries)?.value)
       .toMatchObject({ authorizedAt: NOW, blockedAttemptId: current.attemptId });
@@ -195,6 +259,8 @@ describe("manual Memory-review recovery", () => {
     expect(await requestManualReviewRecovery({
       db: terminal.db as never, now: NOW, observedThrough: NOW,
       authorizedBy: current.ownerId, modelId: MODEL,
+      enabledByDefault: true,
+      maintenanceAccepting: async () => true,
     })).toEqual({ queued: 1, held: 0 });
     expect(terminal.updated.find(value => value.table === memoryReviewModelRecoveries)?.value)
       .toMatchObject({ blockedAttemptId: current.attemptId, recoveryAttemptId: null, spentAt: null });

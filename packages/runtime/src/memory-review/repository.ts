@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { AIMessage, HumanMessage, SystemMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
 import {
-  and, asc, desc, lt, eq, inArray, isNull, sql, getSharedDirectDb, memoryReviewTurns, acquireRoomWriteLock,
+  acquireEncryptionConsumptionFence, and, asc, desc, lt, eq, inArray, isNull, sql,
+  getSharedDirectDb, memoryReviewTurns, acquireRoomWriteLock,
   llmUsageEvents, memoryReviewModelRecoveries, memoryReviewReceipts, sessionMessages, users,
   hasOnlyRefusedServiceAttempts, hasSettledServiceMemoryReview,
   KNOWN_NONUSABLE_MEMORY_REVIEW_FAILURES, resolveModelAttemptReplaySafety,
   type DirectDatabase,
 } from "@nautilo/db";
+import { enforceStrictShadowDecision } from "@nautilo/lattice-bridge";
 import {
   getPolicyResolver, resolveSpeakerUserId, type MemoryAccessEnvelope,
 } from "@nautilo/trust";
@@ -25,6 +27,24 @@ import { parseMemoryOperationBinding, type MemoryOperationBinding } from "@nauti
 type Turn = typeof memoryReviewTurns.$inferSelect;
 type Source = typeof sessionMessages.$inferSelect;
 type Tx = Parameters<Parameters<DirectDatabase["transaction"]>[0]>[0];
+
+/** Shared admission for the ordinary Memory-review consumer and its spend seam. */
+export function memoryReviewOrdinaryPolicyAvailable(policy: Readonly<{
+  mode: "plaintext_only" | "shadow_encryption" | "encrypted_only";
+  shadowBehavior: "fallback" | "strict";
+  revision: number;
+}>): boolean {
+  return enforceStrictShadowDecision(policy, {
+    boundaryId: "background.memory.review",
+    family: "memory",
+    operation: "process",
+    actorClass: "background",
+    state: "unsupported",
+    reason: "unsupported_operation",
+    retryable: false,
+    policyRevision: policy.revision,
+  }).disposition === "ordinary";
+}
 
 /** Completed prefix only: a paused lower fork prevents later coverage. */
 export function selectMemoryReviewPrefix(turns: readonly Turn[], threshold: number): Turn[] {
@@ -202,6 +222,11 @@ export class PostgresMemoryReviewRepository implements MemoryReviewRepository {
   async requestModelRecovery(input: MemoryReviewModelRecoveryRequest): Promise<MemoryReviewModelRecoveryResult> {
     await this.policy.assertAvailable();
     return this.db.transaction(async (tx) => {
+      // The injected preflight avoids needless exact-work contention, but the
+      // durable policy may transition before this transaction begins. Recheck
+      // under the shared fence before taking recovery or turn locks.
+      const encryption = await acquireEncryptionConsumptionFence(tx);
+      if (!memoryReviewOrdinaryPolicyAvailable(encryption)) return "blocked";
       const [head] = await tx.select().from(memoryReviewTurns).where(and(
         eq(memoryReviewTurns.id, input.headTurnId), eq(memoryReviewTurns.generationId, input.workId),
       )).for("update");
@@ -361,6 +386,10 @@ export class PostgresMemoryReviewRepository implements MemoryReviewRepository {
   /** Spend consent only after the reserved claim and its exact inputs still hold. */
   async beginModelRecoveryDispatch(claim: MemoryReviewClaim): Promise<void> {
     await this.db.transaction(async (tx) => {
+      const policy = await acquireEncryptionConsumptionFence(tx);
+      if (!memoryReviewOrdinaryPolicyAvailable(policy)) {
+        throw new MemoryReviewError("memory_unavailable");
+      }
       const [head] = await tx.select().from(memoryReviewTurns).where(and(
         eq(memoryReviewTurns.id, claim.turnIds[0]!),
         eq(memoryReviewTurns.generationId, claim.workId),

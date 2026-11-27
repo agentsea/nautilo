@@ -1980,7 +1980,11 @@ export async function createApp(options?: CreateAppOptions) {
     fingerprintProfileSoul: (profile) => createHmacProfileSoulFingerprint(getReflectionCommitmentKey())(profile),
     readRecord: async (dependency) => (await reflectionRuntime()).readMemoryEvidenceRecord(dependency),
   });
-  const memoryReviewRuntime = createServerMemoryReviewRuntime(maintenanceGate, {
+  const memoryReviewRuntime = createServerMemoryReviewRuntime({
+    isAcceptingWork: () => maintenanceGate.isAcceptingWork(),
+    isAcceptingWorkInTransaction: async (db, now) =>
+      (await new MaintenanceController({ db, now: () => now }).getState()).state === "normal",
+  }, {
     evidence: memoryEvidence, budget: REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.budget.hierarchy,
     get commitmentKey() { return getReflectionCommitmentKey(); },
     fingerprintProfileSoul: (profile) => createHmacProfileSoulFingerprint(getReflectionCommitmentKey())(profile),
@@ -2621,7 +2625,8 @@ export async function createApp(options?: CreateAppOptions) {
         try {
           return { state: "assessed", ...await memoryReviewRuntime.requestManualRecovery(input) };
         } catch (error) {
-          if (error instanceof MemoryReviewManualRecoveryUnavailableError && error.code === "paused") return { state: "paused" };
+          if (error instanceof MemoryReviewManualRecoveryUnavailableError
+            && (error.code === "paused" || error.code === "access_unavailable")) return { state: "paused" };
           throw error;
         }
       },

@@ -1,7 +1,8 @@
 import {
-  and, asc, eq, inArray, isNotNull, isNull, lte, memoryReviewModelRecoveries,
-  memoryReviewReceipts, memoryReviewTurns, users, type DirectDatabase,
+  acquireEncryptionConsumptionFence, and, asc, eq, inArray, isNotNull, isNull, lte, memoryReviewModelRecoveries,
+  getServerContextConfig, memoryReviewReceipts, memoryReviewTurns, users, type DirectDatabase,
 } from "@nautilo/db";
+import { memoryReviewOrdinaryPolicyAvailable } from "@nautilo/runtime";
 import { notExists, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { parseMemoryOperationBinding, type MemoryOperationBinding } from "@nautilo/types";
@@ -9,6 +10,27 @@ import { parseMemoryOperationBinding, type MemoryOperationBinding } from "@nauti
 type Turn = typeof memoryReviewTurns.$inferSelect;
 type Recovery = typeof memoryReviewModelRecoveries.$inferSelect;
 type Tx = Parameters<Parameters<DirectDatabase["transaction"]>[0]>[0];
+
+export class ManualMemoryReviewRecoveryPolicyError extends Error {
+  constructor() {
+    super("Manual Memory-review recovery cannot consume ordinary content under the current encryption policy");
+    this.name = "ManualMemoryReviewRecoveryPolicyError";
+  }
+}
+
+export class ManualMemoryReviewRecoveryPausedError extends Error {
+  constructor() {
+    super("Manual Memory-review recovery is paused");
+    this.name = "ManualMemoryReviewRecoveryPausedError";
+  }
+}
+
+export class ManualMemoryReviewRecoveryMaintenanceError extends Error {
+  constructor() {
+    super("Manual Memory-review recovery is unavailable during maintenance");
+    this.name = "ManualMemoryReviewRecoveryMaintenanceError";
+  }
+}
 
 function validDate(value: Date, name: string): Date {
   if (!(value instanceof Date) || Number.isNaN(value.getTime())) {
@@ -99,6 +121,8 @@ export async function requestManualReviewRecovery(input: Readonly<{
   observedThrough: Date;
   authorizedBy: string;
   modelId: string;
+  enabledByDefault: boolean;
+  maintenanceAccepting: (tx: Tx, now: Date) => Promise<boolean>;
 }>): Promise<{ queued: number; held: number }> {
   const now = validDate(input.now, "manual Memory recovery time");
   const observedThrough = validDate(input.observedThrough, "manual Memory recovery observation cutoff");
@@ -107,6 +131,19 @@ export async function requestManualReviewRecovery(input: Readonly<{
   if (!input.authorizedBy.trim()) throw new TypeError("manual Memory recovery authorizer is invalid");
 
   return input.db.transaction(async (tx: Tx) => {
+    // One shared policy fence covers the bulk candidate inventory and every
+    // exact locked recheck/update. An Admin transition cannot split this click
+    // across ordinary and protected policy epochs.
+    const policy = await acquireEncryptionConsumptionFence(tx);
+    if (!memoryReviewOrdinaryPolicyAvailable(policy)) {
+      throw new ManualMemoryReviewRecoveryPolicyError();
+    }
+    const enabled = (await getServerContextConfig(tx)).memoryReviewEnabled
+      ?? input.enabledByDefault;
+    if (!enabled) throw new ManualMemoryReviewRecoveryPausedError();
+    if (!await input.maintenanceAccepting(tx, now)) {
+      throw new ManualMemoryReviewRecoveryMaintenanceError();
+    }
     const [authorizer] = await tx.select({ id: users.id }).from(users).where(and(
       eq(users.id, input.authorizedBy),
       isNull(users.disabledAt),

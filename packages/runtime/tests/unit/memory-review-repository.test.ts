@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { PgDialect } from "drizzle-orm/pg-core";
-import { memoryReviewTurns, type SQL } from "@nautilo/db";
+import { encryptionTransitionPolicy, memoryReviewTurns, type SQL } from "@nautilo/db";
 import {
   PostgresMemoryReviewRepository,
   selectMemoryReviewPrefix,
@@ -41,6 +41,75 @@ describe("Memory durable coverage selection", () => {
 });
 
 describe("Memory repository query contracts without a live database", () => {
+  test("requestModelRecovery blocks a Strict transition after its injected preflight", async () => {
+    const calls: string[] = [];
+    let preflights = 0;
+    const tx = {
+      execute: async (query: SQL) => {
+        calls.push(dialect.sqlToQuery(query).sql);
+        return [];
+      },
+      select: () => ({
+        from: (table: unknown) => {
+          expect(table).toBe(encryptionTransitionPolicy);
+          return { where: async () => [{
+            mode: "shadow_encryption",
+            shadowBehavior: "strict",
+            revision: 5,
+          }] };
+        },
+      }),
+    };
+    const repo = new PostgresMemoryReviewRepository({
+      ...policy,
+      assertAvailable: async () => { preflights += 1; },
+    }, {
+      transaction: async <T>(run: (value: typeof tx) => Promise<T>) => run(tx),
+    } as never);
+    expect(await repo.requestModelRecovery({
+      workId: claim.workId,
+      headTurnId: claim.turnIds[0]!,
+      authorizedBy: claim.ownerId,
+      now: NOW,
+    })).toBe("blocked");
+    expect(preflights).toBe(1);
+    expect(calls).toEqual([
+      "SELECT pg_advisory_xact_lock_shared(hashtextextended('nautilo:encryption-transition-policy:v1', 0))",
+    ]);
+  });
+
+  test("rechecks the current policy fence before spending an authorized recovery", async () => {
+    const calls: string[] = [];
+    const tx = {
+      execute: async (query: SQL) => {
+        calls.push(dialect.sqlToQuery(query).sql);
+        return [];
+      },
+      select: () => ({
+        from: (table: unknown) => {
+          expect(table).toBe(encryptionTransitionPolicy);
+          return { where: async () => [{
+            mode: "shadow_encryption",
+            shadowBehavior: "strict",
+            revision: 4,
+          }] };
+        },
+      }),
+      update: () => { throw new Error("Strict policy must not spend recovery consent"); },
+    };
+    const repo = new PostgresMemoryReviewRepository(policy, {
+      transaction: async <T>(run: (value: typeof tx) => Promise<T>) => run(tx),
+    } as never);
+    const rejection = await repo.beginModelRecoveryDispatch({
+      ...claim,
+      modelRecovery: "authorized",
+    }).then(() => undefined, (error: unknown) => error);
+    expect(rejection).toMatchObject({ code: "memory_unavailable" });
+    expect(calls).toEqual([
+      "SELECT pg_advisory_xact_lock_shared(hashtextextended('nautilo:encryption-transition-policy:v1', 0))",
+    ]);
+  });
+
   test("service model binding is frozen across retry and rejects disagreeing coalesced turns", async () => {
     const baseTurn = { ...turn("1", "completed"), attemptId: claim.attemptId, receiptId: null,
       leaseUntil: new Date("2099-01-01"), acceptedModelBinding: { kind: "service" as const, modelId: "first-model" } };

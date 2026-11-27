@@ -400,6 +400,7 @@ export {
 } from "./utils/server-profile-queries";
 export {
   resolveServerModelConfig,
+  getServerModelConfigRow,
   getServerModelConfig,
   upsertServerModelConfig,
   type ResolvedServerModelConfig,

@@ -1,19 +1,27 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import {
-  agents, createDirectDb, eq, inArray, llmUsageEvents,
+  agents, compareAndSwapEncryptionTransitionPolicy, createDirectDb, eq,
+  getEncryptionTransitionPolicy, inArray, llmUsageEvents,
   memoryReviewModelRecoveries, memoryReviewReceipts, memoryReviewTurns,
   namespaces, rooms, sessions, users,
 } from "@nautilo/db";
 import { bootstrapTestDbInstance } from "@nautilo/db/testing";
+import { MaintenanceController } from "@nautilo/runtime";
 import type { MemoryOperationBinding } from "@nautilo/types";
-import { requestManualReviewRecovery } from "../../src/lib/request-manual-review-recovery";
+import {
+  createServerMemoryReviewRuntime,
+  MemoryReviewManualRecoveryUnavailableError,
+} from "../../src/lib/memory-review-runtime";
 
 let db: ReturnType<typeof createDirectDb>;
 
 beforeAll(() => {
   bootstrapTestDbInstance();
-  db = createDirectDb(4);
+  // The production request runs under an already-open durable receipt
+  // transaction. One connection proves every nested operation stays on that
+  // transaction/savepoint instead of trying to re-enter a sibling pool slot.
+  db = createDirectDb(1);
 });
 
 afterAll(async () => {
@@ -58,7 +66,6 @@ test("manual Memory review recovery durably deduplicates explicit service retrie
   const newerFailureAt = new Date("2026-11-27T10:02:00.000Z");
   const now = new Date("2026-11-27T10:03:00.000Z");
   const oldModel = "openai:memory-old";
-  const currentModel = "anthropic:memory-current";
   const binding = (marker: string): MemoryOperationBinding => ({
     version: 1,
     kind: "service",
@@ -96,6 +103,16 @@ test("manual Memory review recovery durably deduplicates explicit service retrie
   }));
   const turnIds = fixtures.map(value => value.id);
   let usageId: string | undefined;
+  const originalPolicy = await getEncryptionTransitionPolicy(db);
+  let activePolicy = originalPolicy;
+  const runtime = createServerMemoryReviewRuntime({
+    isAcceptingWork: async () => true,
+    isAcceptingWorkInTransaction: async (transaction, transactionNow) =>
+      (await new MaintenanceController({
+        db: transaction,
+        now: () => transactionNow,
+      }).getState()).state === "normal",
+  });
 
   try {
     await db.insert(memoryReviewTurns).values(fixtures.map(value => ({
@@ -154,15 +171,49 @@ test("manual Memory review recovery durably deduplicates explicit service retrie
       metadata: { workId: direct.generationId, attemptId: direct.attemptId },
     }).returning({ id: llmUsageEvents.id })).map(row => row.id);
 
-    const request = (cutoff: Date) => requestManualReviewRecovery({
-      db,
-      now,
-      observedThrough: cutoff,
-      authorizedBy: operator.id,
-      modelId: currentModel,
+    const request = (cutoff: Date) => db.transaction((receiptTx) =>
+      runtime.requestManualRecovery({
+        db: receiptTx,
+        now,
+        observedThrough: cutoff,
+        authorizedBy: operator.id,
+      }));
+    activePolicy = await compareAndSwapEncryptionTransitionPolicy(db, {
+      expectedRevision: activePolicy.revision,
+      targetMode: "shadow_encryption",
+      targetShadowBehavior: "fallback",
     });
     expect(await request(observedThrough)).toEqual({ queued: 2, held: 3 });
     expect(await request(observedThrough)).toEqual({ queued: 0, held: 3 });
+    const maintenance = new MaintenanceController({ db });
+    const maintenanceOperationId = randomUUID();
+    await maintenance.enterDraining({ operationId: maintenanceOperationId });
+    try {
+      const maintenanceRejection = await request(newerFailureAt)
+        .then(() => undefined, (error: unknown) => error);
+      expect(maintenanceRejection).toBeInstanceOf(
+        MemoryReviewManualRecoveryUnavailableError,
+      );
+      expect((maintenanceRejection as MemoryReviewManualRecoveryUnavailableError).code)
+        .toBe("maintenance_unavailable");
+    } finally {
+      await maintenance.cancel(maintenanceOperationId);
+    }
+    activePolicy = await compareAndSwapEncryptionTransitionPolicy(db, {
+      expectedRevision: activePolicy.revision,
+      targetMode: "shadow_encryption",
+      targetShadowBehavior: "strict",
+    });
+    const strictRejection = await request(newerFailureAt)
+      .then(() => undefined, (error: unknown) => error);
+    expect(strictRejection).toBeInstanceOf(MemoryReviewManualRecoveryUnavailableError);
+    expect((strictRejection as MemoryReviewManualRecoveryUnavailableError).code)
+      .toBe("access_unavailable");
+    activePolicy = await compareAndSwapEncryptionTransitionPolicy(db, {
+      expectedRevision: activePolicy.revision,
+      targetMode: "shadow_encryption",
+      targetShadowBehavior: "fallback",
+    });
     expect(await request(newerFailureAt)).toEqual({ queued: 1, held: 2 });
     expect(await request(newerFailureAt)).toEqual({ queued: 0, held: 2 });
 
@@ -174,6 +225,14 @@ test("manual Memory review recovery durably deduplicates explicit service retrie
     expect(recoveries.every(value => !held.has(value.workId)
       && value.spentAt === null && value.recoveryAttemptId === null)).toBe(true);
   } finally {
+    if (activePolicy.mode !== originalPolicy.mode
+      || activePolicy.shadowBehavior !== originalPolicy.shadowBehavior) {
+      activePolicy = await compareAndSwapEncryptionTransitionPolicy(db, {
+        expectedRevision: activePolicy.revision,
+        targetMode: originalPolicy.mode,
+        targetShadowBehavior: originalPolicy.shadowBehavior,
+      });
+    }
     if (usageId) await db.delete(llmUsageEvents).where(eq(llmUsageEvents.id, usageId));
     await db.delete(memoryReviewReceipts).where(inArray(
       memoryReviewReceipts.workId,

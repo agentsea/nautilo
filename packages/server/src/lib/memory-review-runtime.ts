@@ -6,7 +6,8 @@ import type { DurableModelExposureDependency } from "@nautilo/reflection/durable
 import type { PersonalMemoryEvidencePort } from "@nautilo/reflection-bridge/server";
 import {
   getServerContextConfig, getCachedServerModelConfigRow, kickServerModelConfigRefresh,
-  getEncryptionTransitionPolicy, queryMemoryReviewStatus, retryFailedMemoryReviews,
+  getEncryptionTransitionPolicy, getServerModelConfigRow, queryMemoryReviewStatus,
+  retryFailedMemoryReviews,
   type DirectDatabase, type MemoryReviewStatusInput,
 } from "@nautilo/db";
 import { MemoryReviewWorker, PostgresMemoryReviewRepository,
@@ -19,7 +20,12 @@ import { enforceRegisteredStrictShadowBoundary } from "./strict-shadow-policy";
 import { createPersonalMemoryReviewAdmitter } from "./personal-memory-review-funding";
 import type { ProfileSoulFingerprintInput, MemoryReviewClaim } from "@nautilo/runtime";
 import type { MemoryReviewOptions } from "@nautilo/agent";
-import { requestManualReviewRecovery } from "./request-manual-review-recovery";
+import {
+  ManualMemoryReviewRecoveryMaintenanceError,
+  ManualMemoryReviewRecoveryPausedError,
+  ManualMemoryReviewRecoveryPolicyError,
+  requestManualReviewRecovery,
+} from "./request-manual-review-recovery";
 
 // Match existing Stenographer polling/lease/shutdown policy. The lease is
 // renewable; it fences publication, not a limit on the number of Memory turns.
@@ -61,7 +67,10 @@ export class MemoryReviewManualRecoveryUnavailableError extends Error {
 }
 
 export function createServerMemoryReviewRuntime(
-  maintenanceGate: { isAcceptingWork(): Promise<boolean> },
+  maintenanceGate: {
+    isAcceptingWork(): Promise<boolean>;
+    isAcceptingWorkInTransaction(db: DirectDatabase, now: Date): Promise<boolean>;
+  },
   personalFunding?: ServerMemoryReviewPersonalFundingOptions,
 ) {
   let worker: MemoryReviewWorker | null = null;
@@ -69,12 +78,14 @@ export function createServerMemoryReviewRuntime(
   let stopped = false;
   const bootCutoff = new Date();
   let recovered = false;
-  const model = (): MemoryReviewStatusInput["model"] => {
-    kickServerModelConfigRefresh();
-    const config = getCachedServerModelConfigRow();
+  const resolveModel = (config: Readonly<{
+    memoryReviewModel: string | null | undefined;
+    conductorModel: string | null | undefined;
+  }>): MemoryReviewStatusInput["model"] => {
     const configured = config?.memoryReviewModel?.trim();
     const runtimeConductor = fromRuntimeConfig().nautilo_conductor_model;
-    const source = configured ? "server" : "conductor";
+    const source: MemoryReviewStatusInput["model"]["source"] = configured
+      ? "server" : "conductor";
     let id: string | null = configured || config?.conductorModel?.trim() || runtimeConductor || null;
     let available = false;
     try {
@@ -87,7 +98,24 @@ export function createServerMemoryReviewRuntime(
     } catch { /* Unavailable selections remain visible without silent substitution. */ }
     return { id, provider: id ? getProviderFromModelId(id) : null, source, available };
   };
-  const enabled = async () => (await getServerContextConfig(getServerDirectDb())).memoryReviewEnabled ?? fromRuntimeConfig().nautilo_reviewer_enabled;
+  const model = (): MemoryReviewStatusInput["model"] => {
+    kickServerModelConfigRefresh();
+    return resolveModel(getCachedServerModelConfigRow() ?? {
+      memoryReviewModel: null,
+      conductorModel: null,
+    });
+  };
+  const manualModel = async (
+    db: Pick<DirectDatabase, "select">,
+  ): Promise<MemoryReviewStatusInput["model"]> => resolveModel(
+    await getServerModelConfigRow(db) ?? {
+      memoryReviewModel: null,
+      conductorModel: null,
+    },
+  );
+  const enabled = async () =>
+    (await getServerContextConfig(getServerDirectDb())).memoryReviewEnabled
+      ?? fromRuntimeConfig().nautilo_reviewer_enabled;
   const protection = async () => {
     const result = await enforceRegisteredStrictShadowBoundary({ boundaryId: "background.memory.review", state: "unsupported", reason: "unsupported_operation", retryable: false });
     // No protected-content Memory review adapter exists yet. Strict must stay
@@ -181,19 +209,33 @@ export function createServerMemoryReviewRuntime(
       authorizedBy: string;
     }>) {
       if (stopped) throw new MemoryReviewManualRecoveryUnavailableError("runtime_stopped");
-      if (!await enabled()) throw new MemoryReviewManualRecoveryUnavailableError("paused");
-      if (!await maintenanceGate.isAcceptingWork()) {
-        throw new MemoryReviewManualRecoveryUnavailableError("maintenance_unavailable");
-      }
-      if (!await protection()) throw new MemoryReviewManualRecoveryUnavailableError("access_unavailable");
-      const selected = model();
+      // The manual-recovery coordinator checks maintenance before opening its
+      // durable receipt transaction. Database-backed enablement and policy
+      // admission run inside requestManualReviewRecovery's supplied savepoint.
+      const selected = await manualModel(input.db);
       if (!selected.available || !selected.id) {
         throw new MemoryReviewManualRecoveryUnavailableError("model_unavailable");
       }
-      return requestManualReviewRecovery({
-        ...input,
-        modelId: selected.id,
-      });
+      try {
+        return await requestManualReviewRecovery({
+          ...input,
+          modelId: selected.id,
+          enabledByDefault: fromRuntimeConfig().nautilo_reviewer_enabled,
+          maintenanceAccepting: (db, now) =>
+            maintenanceGate.isAcceptingWorkInTransaction(db, now),
+        });
+      } catch (error) {
+        if (error instanceof ManualMemoryReviewRecoveryMaintenanceError) {
+          throw new MemoryReviewManualRecoveryUnavailableError("maintenance_unavailable");
+        }
+        if (error instanceof ManualMemoryReviewRecoveryPausedError) {
+          throw new MemoryReviewManualRecoveryUnavailableError("paused");
+        }
+        if (error instanceof ManualMemoryReviewRecoveryPolicyError) {
+          throw new MemoryReviewManualRecoveryUnavailableError("access_unavailable");
+        }
+        throw error;
+      }
     },
   };
 }
