@@ -110,6 +110,77 @@ describe("Memory repository query contracts without a live database", () => {
     ]);
   });
 
+  test("cancellation during the recovery spend rolls its transaction back before commit", async () => {
+    const update = Promise.withResolvers<void>();
+    const updateStarted = Promise.withResolvers<void>();
+    const cancellation = new AbortController();
+    let committed = false;
+    const currentTurn = {
+      ...turn("1", "completed"),
+      id: claim.turnIds[0]!,
+      generationId: claim.workId,
+      attemptId: claim.attemptId,
+      receiptId: null,
+      leaseUntil: new Date("2099-01-01T00:00:00Z"),
+      acceptedModelBinding: {
+        version: 1,
+        kind: "service",
+        role: "memoryReview",
+        modelId: "openai:test",
+        inputCommitment: `hmac-sha256:${"a".repeat(43)}`,
+      },
+    };
+    const recovery = {
+      workId: claim.workId,
+      headTurnId: claim.turnIds[0]!,
+      recoveryAttemptId: claim.attemptId,
+      turnIds: claim.turnIds,
+      spentAt: null,
+    };
+    const tx = {
+      execute: async () => [],
+      select: () => ({
+        from: (table: unknown) => table === encryptionTransitionPolicy
+          ? { where: async () => [{ mode: "plaintext_only", shadowBehavior: "fallback", revision: 1 }] }
+          : { where: () => {
+              const rows = table === memoryReviewTurns ? [currentTurn] : [recovery];
+              return {
+                for: async () => rows,
+                orderBy: () => ({ for: async () => rows }),
+              };
+            } },
+      }),
+      update: () => ({ set: () => ({ where: () => ({
+        returning: async () => {
+          updateStarted.resolve();
+          await update.promise;
+          return [{ workId: claim.workId }];
+        },
+      }) }) }),
+    };
+    const repo = new PostgresMemoryReviewRepository(policy, {
+      transaction: async <T>(run: (value: typeof tx) => Promise<T>) => {
+        const result = await run(tx);
+        committed = true;
+        return result;
+      },
+    } as never);
+
+    const spending = repo.beginModelRecoveryDispatch(
+      { ...claim, modelRecovery: "authorized" },
+      cancellation.signal,
+    ).catch((error: unknown) => error);
+    await Promise.race([
+      updateStarted.promise,
+      spending.then((error) => { throw error; }),
+    ]);
+    cancellation.abort(new Error("cancelled during recovery spend"));
+    update.resolve();
+
+    expect(await spending).toMatchObject({ message: "cancelled during recovery spend" });
+    expect(committed).toBe(false);
+  });
+
   test("service model binding is frozen across retry and rejects disagreeing coalesced turns", async () => {
     const baseTurn = { ...turn("1", "completed"), attemptId: claim.attemptId, receiptId: null,
       leaseUntil: new Date("2099-01-01"), acceptedModelBinding: { kind: "service" as const, modelId: "first-model" } };

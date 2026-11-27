@@ -202,6 +202,44 @@ describe("durable Memory review worker", () => {
     if (!admitted) expect(failures[0]).toMatchObject({ phase: "model", retryable: false });
   });
 
+  test("cancellation while recovery spend is waiting never commits or invokes", async () => {
+    const { deps, events } = fixture();
+    const lock = Promise.withResolvers<void>();
+    let dispatchSignal: AbortSignal | undefined;
+    deps.repository.claimNext = async () => ({ ...claim, modelRecovery: "authorized" });
+    deps.repository.modelReplaySafety = async () => "allow";
+    deps.repository.beginModelRecoveryDispatch = async (_recovery, signal) => {
+      dispatchSignal = signal;
+      events.push("dispatch-wait");
+      await lock.promise;
+      signal?.throwIfAborted();
+      events.push("dispatch-spent");
+    };
+    deps.invokeModel = async (_invocation, beforeProviderDispatch) => {
+      await beforeProviderDispatch?.();
+      events.push("provider");
+      return new AIMessage("unreachable");
+    };
+    deps.prepare = async (messages, options) => {
+      await options?.invokeModel?.({ messages, tools: [], modelId: "model" });
+      return { status: "prepared", turns: 1, modelId: "model", proposal };
+    };
+
+    const worker = new MemoryReviewWorker(deps, {
+      scanIntervalMs: 60_000,
+      shutdownWaitMs: 100,
+    });
+    worker.start();
+    while (!events.includes("dispatch-wait")) await tick();
+    const stopped = worker.stop();
+    while (dispatchSignal?.aborted !== true) await tick();
+    lock.resolve();
+    await stopped;
+
+    expect(events).not.toContain("dispatch-spent");
+    expect(events).not.toContain("provider");
+  });
+
   test("uncertain publication is not transformed into an automatic model retry", async () => {
     const { deps, events, failures } = fixture();
     deps.repository.publish = async () => { throw new Error("connection lost"); };

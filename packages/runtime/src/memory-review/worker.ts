@@ -79,7 +79,7 @@ export interface MemoryReviewRepository {
   assertCurrent(claim: MemoryReviewClaim): Promise<void>;
   load(claim: MemoryReviewClaim): Promise<MemoryReviewInput>;
   modelReplaySafety?(claim: MemoryReviewClaim): Promise<"allow" | "block_unknown">;
-  beginModelRecoveryDispatch?(claim: MemoryReviewClaim): Promise<void>;
+  beginModelRecoveryDispatch?(claim: MemoryReviewClaim, signal?: AbortSignal): Promise<void>;
   /** Freezes the first service model accepted for every coalesced turn. */
   getAcceptedModelOperation?(claim: MemoryReviewClaim): Promise<MemoryOperationBinding | null>;
   bindModelOperation?(claim: MemoryReviewClaim, resolve: (legacyServiceModelId?: string) => Promise<MemoryOperationBinding>): Promise<MemoryOperationBinding>;
@@ -209,11 +209,15 @@ export class MemoryReviewWorker {
           const beforeProviderDispatch = async () => {
             await context.assertCurrent();
             await admitted.assertCurrent();
+            context.signal.throwIfAborted();
             if (claim.modelRecovery === "authorized") {
               if (!this.deps.repository.beginModelRecoveryDispatch) {
                 throw new Error("Memory recovery dispatch admission is unavailable");
               }
-              recoveryDispatch ??= this.deps.repository.beginModelRecoveryDispatch(claim);
+              recoveryDispatch ??= this.deps.repository.beginModelRecoveryDispatch(
+                claim,
+                context.signal,
+              );
               await recoveryDispatch;
             }
           };

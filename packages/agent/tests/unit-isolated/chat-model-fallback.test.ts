@@ -93,6 +93,7 @@ const invokeSurplusChatAttemptMock = mock(async (_input?: {
   funding: UsageFundingProvenance;
   hasDeliveredOutput: () => boolean;
   assertStillAuthorized?: () => void | Promise<void>;
+  beforeProviderDispatch?: () => void | Promise<void>;
   invokeModel: (
     model: { invoke(messages: BaseMessage[], options?: RunnableConfig): Promise<unknown> },
     messages: BaseMessage[],
@@ -225,7 +226,7 @@ let invokeChatModelWithFallback: (
     preparedStableSystemPrefixLength?: number;
     providerCacheRoomId?: string | null;
     recoverContext?: RecoverPreparedContext;
-    beforeProviderDispatch?: () => Promise<void>;
+    beforeProviderDispatch?: (signal?: AbortSignal) => Promise<void>;
   },
 ) => Promise<{ response: AIMessage; modelUsed: string }>;
 
@@ -3350,6 +3351,7 @@ describe("personal marketplace invocation", () => {
     invokeSurplusChatAttemptMock.mockImplementation(async (input) => {
       order.push("marketplace-adapter");
       await input?.assertStillAuthorized?.();
+      await input?.beforeProviderDispatch?.();
       order.push("provider");
       return { kind: "served", response: new AIMessage("surplus") };
     });

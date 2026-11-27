@@ -112,6 +112,7 @@ function ordinaryExtractionDatabase(
   disabledAt: Date | null = null,
   replayRows: readonly Record<string, unknown>[] = [],
   manualRecovery?: Readonly<{ id: string; targetModelId: string }>,
+  manualRecoveryLock?: Promise<void>,
 ) {
   let accepted: MemoryOperationBinding | null = null;
   let authorityReads = 0;
@@ -131,13 +132,16 @@ function ordinaryExtractionDatabase(
         : keys.includes("accepted")
           ? [{ accepted }]
           : [{ roomId: ROOM }];
+    const result = keys.length === 1 && keys[0] === "id" && manualRecoveryLock
+      ? manualRecoveryLock.then(() => rows)
+      : Promise.resolve(rows);
     const query = {
       from() { return this; },
       innerJoin() { return this; },
       where() { return this; },
       for() { return this; },
-      limit: () => Object.assign(Promise.resolve(rows), {
-        for: () => Promise.resolve(rows),
+      limit: () => Object.assign(result, {
+        for: () => result,
       }),
     };
     return query;
@@ -540,7 +544,7 @@ describe("ordinary Stenographer Memory funding", () => {
       manualRecoveryModelId: recovery.targetModelId,
     };
     let providerCalls = 0;
-    let guard: (() => Promise<void>) | undefined;
+    let guard: ((signal?: AbortSignal) => Promise<void>) | undefined;
     const runtime = createStenographerMemoryFunding({
       db: state.db,
       ports: {
@@ -583,6 +587,55 @@ describe("ordinary Stenographer Memory funding", () => {
     expect(providerCalls).toBe(1);
     await guard!();
     expect(state.updates.filter((update) => "spentAt" in update)).toHaveLength(1);
+  });
+
+  test("cancellation while the recovery row is locked rolls back before spend", async () => {
+    const recovery = {
+      id: "60000000-0000-4000-8000-000000000002",
+      targetModelId: "openai:gpt-6-luna",
+    };
+    const lock = Promise.withResolvers<void>();
+    const state = ordinaryExtractionDatabase(null, [], recovery, lock.promise);
+    const claim: ExtractionClaim = {
+      ...ordinaryExtractionClaim(null),
+      manualModelRecoveryId: recovery.id,
+      manualRecoveryModelId: recovery.targetModelId,
+    };
+    let guard: ((signal?: AbortSignal) => Promise<void>) | undefined;
+    const admitted = await createStenographerMemoryFunding({
+      db: state.db,
+      ports: {
+        readRecord: async (dependency) => journalRecord(dependency.recordRef),
+        readSource: async () => ({
+          status: "current",
+          kind: "human",
+          authorHumanId: HUMAN,
+          audienceHumanIds: [HUMAN],
+          includesPublicBoundary: true,
+        }),
+        readAudience: async () => ({ humanIds: [HUMAN], includesPublicBoundary: true }),
+      },
+      budget: { maxVisitedRecords: 4, maxTraversalWork: 16 },
+      commitmentKey: new Uint8Array(32).fill(31),
+      resolveServiceModel: () => "openai:other-model",
+      assertAvailable: () => Promise.resolve(),
+      createInvoker: (options) => {
+        guard = options.beforeProviderDispatch;
+        return async () => "unreachable";
+      },
+    }).admitExtractionModel(claim, extractionModelExposureDependencies(claim));
+
+    const cancellation = new AbortController();
+    const spending = guard!(cancellation.signal).catch((error: unknown) => error);
+    await Promise.resolve();
+    cancellation.abort(new Error("cancelled while waiting for recovery lock"));
+    lock.resolve();
+
+    expect(await spending).toMatchObject({
+      message: "cancelled while waiting for recovery lock",
+    });
+    expect(state.updates.some((update) => "spentAt" in update)).toBe(false);
+    expect(admitted.modelId).toBe(recovery.targetModelId);
   });
 
   test("freezes a personal compaction binding from exact current Human Record ancestry", async () => {

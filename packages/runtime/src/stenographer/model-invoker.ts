@@ -58,7 +58,7 @@ export function createRoomSideModelInvoker(opts: {
   /** Trusted admission for one same-model marketplace retry without a provider pin. */
   allowUnpinnedSurplusRetry?: true;
   /** Final live fence at the direct or marketplace provider-attempt seam. */
-  beforeProviderDispatch?: () => Promise<void>;
+  beforeProviderDispatch?: (signal?: AbortSignal) => Promise<void>;
   assertCurrent?: () => Promise<void>;
 }): (prompt: string, signal?: AbortSignal) => Promise<string> {
   return async (prompt, signal) => {

@@ -276,8 +276,9 @@ export function createStenographerMemoryFunding(input: Common) {
       }
     }
     let recoveryDispatch: Promise<void> | undefined;
-    const beforeProviderDispatch = manualRecoveryId === undefined ? undefined : async () => {
+    const beforeProviderDispatch = manualRecoveryId === undefined ? undefined : async (signal?: AbortSignal) => {
       await admitted.assertCurrent();
+      signal?.throwIfAborted();
       recoveryDispatch ??= input.db.transaction(async tx => {
         const [recovery] = await tx.select({
           id: roomJournalModelRecoveries.id,
@@ -292,6 +293,9 @@ export function createStenographerMemoryFunding(input: Common) {
           isNull(roomJournalModelRecoveries.sourceChangedAt),
         )).limit(1).for("update", { of: roomJournalModelRecoveries });
         if (!recovery) throw new Error("Manual Journal recovery authorization changed");
+        // The recovery row lock may have been held while cancellation arrived.
+        // Throwing here rolls the transaction back without consuming consent.
+        signal?.throwIfAborted();
         const spent = await tx.update(roomJournalModelRecoveries).set({
           spentAt: new Date(),
         }).where(and(
@@ -300,6 +304,9 @@ export function createStenographerMemoryFunding(input: Common) {
           isNull(roomJournalModelRecoveries.sourceChangedAt),
         )).returning({ id: roomJournalModelRecoveries.id });
         if (spent.length !== 1) throw new Error("Manual Journal recovery authorization changed");
+        // Cancellation during the UPDATE still aborts this transaction before
+        // COMMIT; there is deliberately no cancellation check after COMMIT.
+        signal?.throwIfAborted();
       });
       await recoveryDispatch;
     };

@@ -384,7 +384,11 @@ export class PostgresMemoryReviewRepository implements MemoryReviewRepository {
   }
 
   /** Spend consent only after the reserved claim and its exact inputs still hold. */
-  async beginModelRecoveryDispatch(claim: MemoryReviewClaim): Promise<void> {
+  async beginModelRecoveryDispatch(
+    claim: MemoryReviewClaim,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    signal?.throwIfAborted();
     await this.db.transaction(async (tx) => {
       const policy = await acquireEncryptionConsumptionFence(tx);
       if (!memoryReviewOrdinaryPolicyAvailable(policy)) {
@@ -407,8 +411,18 @@ export class PostgresMemoryReviewRepository implements MemoryReviewRepository {
         throw new Error("Memory recovery dispatch authorization changed");
       }
       await this.lockClaim(tx, claim);
-      await tx.update(memoryReviewModelRecoveries).set({ spentAt: new Date() })
-        .where(eq(memoryReviewModelRecoveries.workId, claim.workId));
+      // The transaction may have waited on the claim or recovery lock. Abort
+      // before the spend so throwing rolls back every write in this callback.
+      signal?.throwIfAborted();
+      const spent = await tx.update(memoryReviewModelRecoveries).set({ spentAt: new Date() })
+        .where(eq(memoryReviewModelRecoveries.workId, claim.workId))
+        .returning({ workId: memoryReviewModelRecoveries.workId });
+      if (spent.length !== 1) {
+        throw new Error("Memory recovery dispatch authorization changed");
+      }
+      // Cancellation during the UPDATE must roll the transaction back. The
+      // provider boundary treats cancellation after COMMIT conservatively.
+      signal?.throwIfAborted();
     });
   }
 
