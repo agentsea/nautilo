@@ -258,7 +258,7 @@ export async function requestManualReviewRecovery(input: Readonly<{
           await tx.update(memoryReviewModelRecoveries).set({
             headTurnId: head.id,
             authorizedBy: input.authorizedBy,
-            authorizedAt: now,
+            authorizedAt: observedThrough,
             blockedAttemptId,
             turnIds,
             spentAt: null,
@@ -274,7 +274,7 @@ export async function requestManualReviewRecovery(input: Readonly<{
             workId: head.generationId,
             headTurnId: head.id,
             authorizedBy: input.authorizedBy,
-            authorizedAt: now,
+            authorizedAt: observedThrough,
             blockedAttemptId,
             turnIds,
           });

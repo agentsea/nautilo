@@ -12,6 +12,7 @@ type Transaction = Parameters<Parameters<DirectDatabase["transaction"]>[0]>[0];
 type Assessed = Extract<MemoryRecoveryLaneResult, { state: "assessed" }>;
 type Recover = (input: {
   db: Transaction; executor: PostgresJsBridgeExecutor; authorizedBy: string; now: Date; observedThrough: Date;
+  modelId: string;
   page: { after: string | null; limit: number };
 }) => Promise<MemoryRecoveryLaneResult & { nextCursor?: string }>;
 
@@ -53,6 +54,7 @@ function totals(prior: Assessed | undefined, page: Assessed): Assessed {
 export function createManualMemoryRecovery(options: {
   db: () => DirectDatabase;
   assertAvailable(): Promise<void>;
+  resolveTargets(db: DirectDatabase): Promise<Partial<Record<Processor, string>>>;
   pageAvailable(tx: Transaction, now: Date): Promise<boolean>;
   recover: Record<Processor, Recover>;
   pageSize: number;
@@ -95,13 +97,26 @@ export function createManualMemoryRecovery(options: {
           .sort((a, b) => (progress[a]?.pages ?? 0) - (progress[b]?.pages ?? 0));
         if (!processor) return null;
         const prior = progress[processor];
+        const modelId = progress.targets?.[processor]?.trim();
+        if (!modelId) {
+          // Receipts created before model targets were durable carry no proof
+          // of what the operator authorized. Never borrow a later server
+          // configuration for them; a new click creates a fully pinned run.
+          const result = { state: "unavailable" } as const;
+          const remainsPending = processors.some(key => key !== processor && row[key] === null);
+          if (remainsPending) progress.lastServicedAt = now.toISOString();
+          else delete progress.lastServicedAt;
+          await tx.update(memoryRecoveryRuns).set({ [processor]: result, progress })
+            .where(eq(memoryRecoveryRuns.id, row.id));
+          return { wakeMemory: false, continueImmediately: true };
+        }
         let page: Awaited<ReturnType<Recover>>;
         try {
           page = await tx.transaction(async savepoint => {
             const executor = createPostgresJsCanonicalBridgeExecutor(savepoint);
             const assessment = await options.recover[processor]({
               db: savepoint, executor, authorizedBy: row.authorizedBy,
-              now, observedThrough: row.observedThrough,
+              now, observedThrough: row.observedThrough, modelId,
               page: { after: prior?.after ?? null, limit: options.pageSize },
             });
             if (assessment.nextCursor !== undefined && (!assessment.nextCursor || assessment.nextCursor === prior?.after)) {
@@ -181,15 +196,22 @@ export function createManualMemoryRecovery(options: {
     async request(input: { requestId: string; authorizedBy: string; now: Date }): Promise<MemoryRecoveryRun> {
       await options.assertAvailable();
       const db = options.db();
-      await db.insert(memoryRecoveryRuns).values({
-        id: input.requestId, authorizedBy: input.authorizedBy, observedThrough: input.now,
-      }).onConflictDoNothing({ target: memoryRecoveryRuns.id });
+      const [existing] = await db.select().from(memoryRecoveryRuns)
+        .where(eq(memoryRecoveryRuns.id, input.requestId)).limit(1);
+      if (!existing) {
+        const targets = await options.resolveTargets(db);
+        await db.insert(memoryRecoveryRuns).values({
+          id: input.requestId, authorizedBy: input.authorizedBy, observedThrough: input.now,
+          progress: { targets },
+        }).onConflictDoNothing({ target: memoryRecoveryRuns.id });
+      }
       const [row] = await db.select().from(memoryRecoveryRuns).where(eq(memoryRecoveryRuns.id, input.requestId));
       if (!row) throw new Error("Recovery request unavailable");
       // An explicit replay may resume failed pages. Keep the original grant,
       // cutoff and cursor, including when another operator reopens the receipt.
       for (const processor of processors) {
         if (row[processor]?.state !== "unavailable") continue;
+        if (!row.progress?.targets?.[processor]?.trim()) continue;
         await db.update(memoryRecoveryRuns).set({ [processor]: null }).where(and(
           eq(memoryRecoveryRuns.id, row.id), eq(memoryRecoveryRuns[processor], { state: "unavailable" }),
         ));

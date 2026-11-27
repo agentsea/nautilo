@@ -404,7 +404,7 @@ async function queueCandidate(
       observedThrough: input.observedThrough,
       targetModelId: input.modelId,
       authorizedBy: input.authorizedBy,
-      authorizedAt: input.now,
+      authorizedAt: input.observedThrough,
     });
   return "queued";
 }

@@ -8,6 +8,12 @@ let db: ReturnType<typeof createDirectDb>;
 beforeAll(() => { bootstrapTestDbInstance(); db = createDirectDb(4); });
 afterAll(async () => { await db?.end(); });
 
+const defaultTargets = {
+  stenographer: "openai:journal-at-click",
+  reflection: "venice:reflection-at-click",
+  memory: "surplus:memory-at-click",
+};
+
 async function promptly<T>(promise: Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
@@ -29,11 +35,13 @@ test("a failed lane rolls back its changes, other lanes finish, and concurrent o
   let maintenance = false;
   const calls = { stenographer: 0, memory: 0, reflection: 0 };
   const createService = () => createManualMemoryRecovery({
+    resolveTargets: async () => defaultTargets,
     pageAvailable: async () => !maintenance,
     pageSize: 1, pollMs: 1000, db: () => db, assertAvailable: async () => { if (maintenance) throw new Error("maintenance"); }, onError: () => {},
     recover: {
-      stenographer: async ({ observedThrough, authorizedBy, page }) => {
+      stenographer: async ({ observedThrough, authorizedBy, modelId, page }) => {
         expect(authorizedBy).toBe(input.authorizedBy);
+        expect(modelId).toBe(defaultTargets.stenographer);
         expect(page.limit).toBe(1);
         expect(observedThrough.toISOString()).toBe(input.now.toISOString());
         calls.stenographer++;
@@ -94,16 +102,129 @@ test("a failed lane rolls back its changes, other lanes finish, and concurrent o
   }
 });
 
-test("a newly started worker finishes a saved request without another HTTP call", async () => {
+test("one click pins every configured model and authorizer across config changes, pages, duplicates, and restart", async () => {
+  const click = { requestId: randomUUID(), authorizedBy: randomUUID(), now: new Date() };
+  const laterOperator = randomUUID();
+  let configured = {
+    stenographer: "openai:gpt-at-click",
+    reflection: "venice:llama-at-click",
+    memory: "surplus:review-at-click",
+  };
+  let resolutions = 0;
+  const observed: Record<keyof typeof configured, Array<{
+    modelId: string; authorizedBy: string; after: string | null;
+  }>> = { stenographer: [], reflection: [], memory: [] };
+  type Recover = Parameters<typeof createManualMemoryRecovery>[0]["recover"]["stenographer"];
+  const recoverLane = (lane: keyof typeof observed): Recover =>
+    async ({ modelId, authorizedBy, page }) => {
+      observed[lane].push({ modelId, authorizedBy, after: page.after });
+      return page.after === null
+        ? { state: "assessed", queued: 1, held: 0, nextCursor: `${lane}-next` }
+        : { state: "assessed", queued: 1, held: 0 };
+    };
+  const createService = () => createManualMemoryRecovery({
+    db: () => db,
+    assertAvailable: async () => {},
+    resolveTargets: async () => { resolutions++; return { ...configured }; },
+    pageAvailable: async () => true,
+    pageSize: 1,
+    pollMs: 1_000,
+    onError: () => {},
+    recover: {
+      stenographer: recoverLane("stenographer"),
+      reflection: recoverLane("reflection"),
+      memory: recoverLane("memory"),
+    },
+  });
+  const pinned = { ...configured };
+  try {
+    const first = await createService().request(click);
+    configured = {
+      stenographer: "venice:changed-after-click",
+      reflection: "surplus:changed-after-click",
+      memory: "openai:changed-after-click",
+    };
+    const duplicate = await createService().request({
+      ...click,
+      authorizedBy: laterOperator,
+      now: new Date(click.now.getTime() + 60_000),
+    });
+    expect(duplicate).toEqual(first);
+    expect(resolutions).toBe(1);
+
+    // Recreate the coordinator for every page to prove only durable state is used.
+    while (await createService().processNextPage(click.requestId)) { /* drain */ }
+    for (const lane of Object.keys(observed) as Array<keyof typeof observed>) {
+      expect(observed[lane]).toEqual([
+        { modelId: pinned[lane], authorizedBy: click.authorizedBy, after: null },
+        { modelId: pinned[lane], authorizedBy: click.authorizedBy, after: `${lane}-next` },
+      ]);
+    }
+    const [saved] = await db.select().from(memoryRecoveryRuns)
+      .where(eq(memoryRecoveryRuns.id, click.requestId));
+    expect(saved).toMatchObject({
+      authorizedBy: click.authorizedBy,
+      observedThrough: click.now,
+      progress: { targets: pinned },
+      stenographer: { state: "assessed", queued: 2, held: 0 },
+      reflection: { state: "assessed", queued: 2, held: 0 },
+      memory: { state: "assessed", queued: 2, held: 0 },
+    });
+  } finally {
+    await db.delete(memoryRecoveryRuns).where(eq(memoryRecoveryRuns.id, click.requestId));
+  }
+});
+
+test("an unavailable lane is held without blocking pinned lanes or activating after config change", async () => {
+  const requestId = randomUUID();
+  let targets: Partial<typeof defaultTargets> = {
+    stenographer: defaultTargets.stenographer,
+    reflection: defaultTargets.reflection,
+  };
+  const createService = () => createManualMemoryRecovery({
+    db: () => db,
+    assertAvailable: async () => {},
+    resolveTargets: async () => targets,
+    pageAvailable: async () => true,
+    pageSize: 1,
+    pollMs: 1_000,
+    onError: () => {},
+    recover: {
+      stenographer: async () => ({ state: "assessed", queued: 0, held: 0 }),
+      reflection: async () => ({ state: "assessed", queued: 0, held: 0 }),
+      memory: async () => ({ state: "assessed", queued: 0, held: 0 }),
+    },
+  });
+  try {
+    await createService().request({ requestId, authorizedBy: randomUUID(), now: new Date() });
+    targets = defaultTargets;
+    while (await createService().processNextPage(requestId)) { /* drain */ }
+    const [saved] = await db.select().from(memoryRecoveryRuns)
+      .where(eq(memoryRecoveryRuns.id, requestId));
+    expect(saved).toMatchObject({
+      stenographer: { state: "assessed" },
+      reflection: { state: "assessed" },
+      memory: { state: "unavailable" },
+      progress: { targets: {
+        stenographer: defaultTargets.stenographer,
+        reflection: defaultTargets.reflection,
+      } },
+    });
+  } finally {
+    await db.delete(memoryRecoveryRuns).where(eq(memoryRecoveryRuns.id, requestId));
+  }
+});
+
+test("a legacy receipt without model targets is held until an explicit new click", async () => {
   const input = { requestId: randomUUID(), authorizedBy: randomUUID(), now: new Date() };
+  const replacement = { ...input, requestId: randomUUID(), now: new Date(input.now.getTime() + 1) };
   const completed = { state: "assessed", queued: 0, held: 0 } as const;
   let wakeCount = 0;
-  let wake!: () => void;
-  const dispatched = new Promise<void>(resolve => { wake = resolve; });
   const service = createManualMemoryRecovery({
+    resolveTargets: async () => defaultTargets,
     db: () => db, assertAvailable: async () => {}, pageAvailable: async () => true,
     pageSize: 1, pollMs: 25, onError: () => {},
-    wakeMemory: () => { ++wakeCount; wake(); },
+    wakeMemory: () => { ++wakeCount; },
     recover: {
       stenographer: async () => completed, reflection: async () => completed,
       memory: async input => {
@@ -113,20 +234,34 @@ test("a newly started worker finishes a saved request without another HTTP call"
     },
   });
   try {
-    // Old receipts have no progress object. The worker must keep completed
-    // lanes intact and begin the remaining lane at its first page.
+    // Old receipts have no target object. The worker must keep completed
+    // lanes intact but may not infer authority for the remaining lane.
     await db.insert(memoryRecoveryRuns).values({
       id: input.requestId, authorizedBy: input.authorizedBy, observedThrough: input.now,
       stenographer: completed, reflection: completed,
     });
     service.start();
-    await dispatched;
+    await new Promise(resolve => setTimeout(resolve, 100));
     const [saved] = await db.select().from(memoryRecoveryRuns).where(eq(memoryRecoveryRuns.id, input.requestId));
-    expect(saved?.memory).toEqual({ ...completed, queued: 1 });
+    expect(saved?.memory).toEqual({ state: "unavailable" });
+    expect(wakeCount).toBe(0);
+
+    await service.request(replacement);
+    while (await service.processNextPage(replacement.requestId)) { /* drain */ }
+    const [recovered] = await db.select().from(memoryRecoveryRuns)
+      .where(eq(memoryRecoveryRuns.id, replacement.requestId));
+    expect(recovered).toMatchObject({
+      stenographer: completed,
+      reflection: completed,
+      memory: { ...completed, queued: 1 },
+      progress: { targets: defaultTargets },
+    });
     expect(wakeCount).toBe(1);
   } finally {
     await service.stop();
-    await db.delete(memoryRecoveryRuns).where(eq(memoryRecoveryRuns.id, input.requestId));
+    await db.delete(memoryRecoveryRuns).where(inArray(memoryRecoveryRuns.id, [
+      input.requestId, replacement.requestId,
+    ]));
   }
 });
 
@@ -142,6 +277,7 @@ test("lock contention preserves the grant and cursor, releases global gates, and
   let gateBlocker: Promise<unknown> | undefined;
   let workBlocker: Promise<unknown> | undefined;
   const service = createManualMemoryRecovery({
+    resolveTargets: async () => defaultTargets,
     db: () => db,
     assertAvailable: async () => {},
     pageAvailable: async (tx, now) =>
@@ -180,7 +316,7 @@ test("lock contention preserves the grant and cursor, releases global gates, and
     expect(calls).toEqual({ stenographer: 0, reflection: 0, memory: 0 });
     const [afterGateContention] = await db.select().from(memoryRecoveryRuns)
       .where(eq(memoryRecoveryRuns.id, input.requestId));
-    expect(afterGateContention?.progress).toBeNull();
+    expect(afterGateContention?.progress).toEqual({ targets: defaultTargets });
     releaseGate();
     await gateBlocker;
 
@@ -220,7 +356,8 @@ test("lock contention preserves the grant and cursor, releases global gates, and
     const [saved] = await db.select().from(memoryRecoveryRuns)
       .where(eq(memoryRecoveryRuns.id, input.requestId));
     expect(saved).toMatchObject({
-      stenographer: completed, reflection: completed, memory: completed, progress: {},
+      stenographer: completed, reflection: completed, memory: completed,
+      progress: { targets: defaultTargets },
     });
     expect(calls).toEqual({ stenographer: 3, reflection: 1, memory: 1 });
   } finally {
@@ -245,6 +382,7 @@ test("persisted service order lets a newer request finish while an older request
   const workRelease = new Promise<void>(resolve => { releaseWork = resolve; });
   let workBlocker: Promise<unknown> | undefined;
   const createService = () => createManualMemoryRecovery({
+    resolveTargets: async () => defaultTargets,
     db: () => db,
     assertAvailable: async () => {},
     pageAvailable: async () => true,

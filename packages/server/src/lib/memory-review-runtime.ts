@@ -205,15 +205,32 @@ export function createServerMemoryReviewRuntime(
       observedThrough: Date;
       page?: { after: string | null; limit: number };
       authorizedBy: string;
+      /** Exact click-time pin supplied by the durable recovery coordinator. */
+      modelId?: string;
     }>) {
       if (stopped) throw new MemoryReviewManualRecoveryUnavailableError("runtime_stopped");
       // The manual-recovery coordinator checks maintenance before opening its
       // durable receipt transaction. Database-backed enablement and policy
       // admission run inside requestManualReviewRecovery's supplied savepoint.
-      const selected = await manualModel(input.db);
-      if (!selected.available || !selected.id) {
-        throw new MemoryReviewManualRecoveryUnavailableError("model_unavailable");
+      const pinnedModelId = input.modelId?.trim();
+      let selected: { id: string | null; available: boolean };
+      if (pinnedModelId) {
+        const config = await getServerModelConfigRow(input.db);
+        try {
+          const exact = resolveMemoryReviewModelId({
+            serverConfiguredModelId: pinnedModelId,
+            serverConfiguredConductorModelId: null,
+            runtimeConfiguredConductorModelId: fromRuntimeConfig().nautilo_conductor_model,
+            serverSurplus: { policyEnabled: config?.preferSurplus === true },
+          });
+          selected = { id: exact, available: exact === pinnedModelId };
+        } catch {
+          selected = { id: pinnedModelId, available: false };
+        }
+      } else {
+        selected = await manualModel(input.db);
       }
+      if (!selected.available || !selected.id) throw new MemoryReviewManualRecoveryUnavailableError("model_unavailable");
       try {
         return await requestManualReviewRecovery({
           ...input,

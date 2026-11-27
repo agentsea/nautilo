@@ -4,7 +4,11 @@ import type { MemoryRecoveryLaneResult } from "@nautilo/types";
 
 type Lane = "stenographer" | "reflection" | "memory";
 type PageReceipt = Extract<MemoryRecoveryLaneResult, { state: "assessed" }> & { after: string | null; pages: number };
-type RecoveryProgress = Partial<Record<Lane, PageReceipt>> & { lastServicedAt?: string };
+type RecoveryProgress = Partial<Record<Lane, PageReceipt>> & {
+  /** Exact service-funded model selection authorized by the operator click. */
+  targets?: Partial<Record<Lane, string>>;
+  lastServicedAt?: string;
+};
 
 /** Each operator click authorizes one snapshot of existing failures. */
 export const memoryRecoveryRuns = pgTable("memory_recovery_runs", {

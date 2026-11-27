@@ -494,6 +494,11 @@ test("a partially bound existing grant stays one family across page selection an
   const coordinator = createManualMemoryRecovery({
     db: () => db,
     assertAvailable: async () => {},
+    resolveTargets: async () => ({
+      stenographer: "test:stenographer",
+      reflection: "surplus:synthetic-model",
+      memory: "test:memory",
+    }),
     pageAvailable: async () => true,
     pageSize: 1,
     pollMs: 1_000,

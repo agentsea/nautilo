@@ -155,6 +155,7 @@ export async function requestManualReflectionRecovery(
     : input.page.limit - (repaired.scanned ?? 0);
   const providerRecovery = await store.requestManualProviderRecovery({
     now: input.now,
+    authorizedAt: input.observedThrough,
     observedThrough: input.observedThrough,
     authorizedBy: operator.id,
     modelId: input.modelId,

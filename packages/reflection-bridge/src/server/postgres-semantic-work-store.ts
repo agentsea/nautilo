@@ -906,6 +906,7 @@ export class PostgresSemanticWorkStore
     now: Date;
     observedThrough: Date;
     authorizedBy: string;
+    authorizedAt?: Date;
     modelId: string;
     page?: Readonly<{ after: string | null; limit: number }>;
   }>): Promise<Readonly<{
@@ -916,8 +917,13 @@ export class PostgresSemanticWorkStore
   }>> {
     const nowMs = input.now.getTime();
     const observedThroughMs = input.observedThrough.getTime();
+    const authorizedAt = input.authorizedAt ?? input.now;
+    const authorizedAtMs = authorizedAt.getTime();
     if (!Number.isFinite(nowMs) || !Number.isFinite(observedThroughMs)
-      || observedThroughMs >= nowMs) {
+      || !Number.isFinite(authorizedAtMs)
+      || observedThroughMs >= nowMs
+      || authorizedAtMs < observedThroughMs
+      || authorizedAtMs > nowMs) {
       throw new RangeError("Reflection recovery timestamps are invalid");
     }
     assertOpaque(input.authorizedBy, "Reflection recovery authorizer");
@@ -1302,7 +1308,7 @@ export class PostgresSemanticWorkStore
                   manualRecoveryId: conditionalRecoveryId,
                   manualRecoverySourceGeneration: row.generation,
                   manualRecoveryAuthorizedBy: input.authorizedBy,
-                  manualRecoveryAuthorizedAt: input.now,
+                  manualRecoveryAuthorizedAt: authorizedAt,
                   manualRecoveryObservedThrough: input.observedThrough,
                   manualRecoveryServiceModelId: input.modelId,
                   manualRecoverySpentAt: null,
@@ -1347,7 +1353,7 @@ export class PostgresSemanticWorkStore
               manualRecoveryId: recoveryId,
               manualRecoverySourceGeneration: sourceGeneration,
               manualRecoveryAuthorizedBy: input.authorizedBy,
-              manualRecoveryAuthorizedAt: input.now,
+              manualRecoveryAuthorizedAt: authorizedAt,
               manualRecoveryObservedThrough: input.observedThrough,
               manualRecoveryServiceModelId: input.modelId,
               manualRecoverySpentAt: null,

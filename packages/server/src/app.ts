@@ -601,6 +601,7 @@ import {
   installTaskFundingPort,
   uninstallTaskFundingPort,
   resolveReflectionModelId,
+  resolveMemoryReviewModelId,
   resolveStenographerModelId,
   type WorkstationAccessAuditEvent,
   type WorkstationAdmissionAuditEvent,
@@ -669,6 +670,7 @@ import {
   materializeDefaultServerProfileOnce,
   refreshServerModelConfigCache,
   getCachedServerModelConfigRow,
+  getServerModelConfigRow,
   kickServerModelConfigRefresh,
   countAcceptedWorkWith,
   countActiveTaskWorkWith,
@@ -2604,6 +2606,38 @@ export async function createApp(options?: CreateAppOptions) {
   });
   costsRoutes(app);
   const manualMemoryRecovery = createManualMemoryRecovery({
+    resolveTargets: async db => {
+      // Use one fresh server-config snapshot for the whole operator click.
+      // The selected ids are persisted before any asynchronous lane begins.
+      const config = await getServerModelConfigRow(db);
+      const runtimeConductor = fromRuntimeConfig().nautilo_conductor_model;
+      const serverSurplus = { policyEnabled: config?.preferSurplus === true };
+      const targets: Partial<Record<"stenographer" | "reflection" | "memory", string>> = {};
+      try {
+        targets.stenographer = resolveStenographerModelId({
+          serverConfiguredModelId: config?.stenographerModel,
+          serverConfiguredConductorModelId: config?.conductorModel,
+          runtimeConfiguredConductorModelId: runtimeConductor,
+          serverSurplus,
+        });
+      } catch { /* One unavailable lane must not suppress the other two. */ }
+      try {
+        targets.reflection = resolveReflectionModelId({
+          serverConfiguredModelId: config?.reflectionModel,
+          resolvedStenographerModelId: targets.stenographer ?? "",
+          serverSurplus,
+        });
+      } catch { /* Persist the lane as unavailable at click. */ }
+      try {
+        targets.memory = resolveMemoryReviewModelId({
+          serverConfiguredModelId: config?.memoryReviewModel,
+          serverConfiguredConductorModelId: config?.conductorModel,
+          runtimeConfiguredConductorModelId: runtimeConductor,
+          serverSurplus,
+        });
+      } catch { /* Persist the lane as unavailable at click. */ }
+      return targets;
+    },
     pageAvailable: async (tx, now) => {
       // Match the worker lock order. Hold both fences through this page only.
       await acquireEncryptionConsumptionFence(tx);
@@ -2618,12 +2652,27 @@ export async function createApp(options?: CreateAppOptions) {
     recover: {
       stenographer: async input => {
         if ((await acquireEncryptionConsumptionFence(input.db)).mode !== "plaintext_only") return { state: "paused" };
-        return { state: "assessed", ...await requestManualJournalRecovery({ ...input, modelId: resolveStenographerModel() }) };
+        const config = await getServerModelConfigRow(input.db);
+        const exact = resolveStenographerModelId({
+          serverConfiguredModelId: input.modelId,
+          serverConfiguredConductorModelId: null,
+          runtimeConfiguredConductorModelId: fromRuntimeConfig().nautilo_conductor_model,
+          serverSurplus: { policyEnabled: config?.preferSurplus === true },
+        });
+        if (exact !== input.modelId) throw new Error("Pinned Stenographer model is unavailable");
+        return { state: "assessed", ...await requestManualJournalRecovery(input) };
       },
       reflection: async input => {
         if (!(await getServerContextConfig(input.db)).reflectionSleepEnabled
           || (await acquireEncryptionConsumptionFence(input.db)).mode !== "plaintext_only") return { state: "paused" };
-        return { state: "assessed", ...await requestManualReflectionRecovery({ ...input, modelId: resolveReflectionModel() }) };
+        const config = await getServerModelConfigRow(input.db);
+        const exact = resolveReflectionModelId({
+          serverConfiguredModelId: input.modelId,
+          resolvedStenographerModelId: "",
+          serverSurplus: { policyEnabled: config?.preferSurplus === true },
+        });
+        if (exact !== input.modelId) throw new Error("Pinned Reflection model is unavailable");
+        return { state: "assessed", ...await requestManualReflectionRecovery(input) };
       },
       memory: async input => {
         try {
