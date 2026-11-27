@@ -674,7 +674,10 @@ export class PostgresMemoryReviewRepository implements MemoryReviewRepository {
   async fail(input: Parameters<MemoryReviewRepository["fail"]>[0]) {
     this.sources.delete(input.claim.attemptId);
     await this.db.transaction(async (tx) => {
-      const current = await tx.select({ id: memoryReviewTurns.id }).from(memoryReviewTurns).where(and(
+      const current = await tx.select({
+        id: memoryReviewTurns.id, state: memoryReviewTurns.state,
+        sourceIds: memoryReviewTurns.sourceIds, updatedAt: memoryReviewTurns.updatedAt,
+      }).from(memoryReviewTurns).where(and(
         inArray(memoryReviewTurns.id, input.claim.turnIds), eq(memoryReviewTurns.attemptId, input.claim.attemptId), isNull(memoryReviewTurns.receiptId),
       )).for("update");
       if (current.length !== input.claim.turnIds.length) return;
@@ -691,7 +694,11 @@ export class PostgresMemoryReviewRepository implements MemoryReviewRepository {
         )).for("update");
         const exactUnspentReservation = recovery?.spentAt === null
           && recovery.turnIds.length === input.claim.turnIds.length
-          && recovery.turnIds.every((turnId, index) => turnId === input.claim.turnIds[index]);
+          && recovery.turnIds.every((turnId, index) => turnId === input.claim.turnIds[index])
+          && current.every(turn => (turn.state === "completed" || turn.state === "interrupted")
+            && turn.updatedAt <= recovery.authorizedAt)
+          && JSON.stringify(current.flatMap(turn => turn.sourceIds).sort((left, right) => left - right))
+            === JSON.stringify(input.claim.sourceIds);
         if (exactUnspentReservation) {
           await tx.update(memoryReviewModelRecoveries).set({ recoveryAttemptId: null }).where(and(
             eq(memoryReviewModelRecoveries.workId, input.claim.workId),

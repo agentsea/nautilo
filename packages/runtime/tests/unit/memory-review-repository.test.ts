@@ -340,11 +340,12 @@ describe("Memory repository query contracts without a live database", () => {
       recoveryAttemptId: claim.attemptId,
       blockedAttemptId: "blocked-attempt",
       turnIds: [...claim.turnIds],
-      spentAt: null,
+      spentAt: null, authorizedAt: NOW,
     };
+    const current = { id: "turn", state: "completed", sourceIds: [...claim.sourceIds], updatedAt: NOW };
     const db = {
       select: () => ({ from: (table: unknown) => ({ where: () => ({
-        for: async () => table === memoryReviewModelRecoveries ? [recovery] : [{ id: "turn" }],
+        for: async () => table === memoryReviewModelRecoveries ? [recovery] : [current],
       }) }) }),
       insert: () => ({ values: () => ({ onConflictDoNothing: async () => {} }) }),
       update: (table: unknown) => ({ set: (values: Record<string, unknown>) => ({
@@ -364,6 +365,13 @@ describe("Memory repository query contracts without a live database", () => {
       { table: memoryReviewTurns, values: { attemptId: "blocked-attempt", leaseUntil: null } },
     ]);
     expect(updates[1]!.values).not.toHaveProperty("updatedAt");
+    // A turn may keep its ID and timestamps while its evidence changes.
+    current.sourceIds.push(999);
+    updates.length = 0;
+    await repo.fail({ claim: recoveryClaim, phase: "model", reason: "source_or_lease_changed",
+      retryable: false, now: NOW });
+    expect(updates.some(update => update.table === memoryReviewModelRecoveries)).toBe(false);
+    expect(updates[0]?.values).toMatchObject({ failureCode: "provider_outcome_unknown", retryAt: null });
   });
 
   test("a spent recovery with an ambiguous provider failure remains quarantined", async () => {
