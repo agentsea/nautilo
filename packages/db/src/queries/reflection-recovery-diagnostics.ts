@@ -94,7 +94,7 @@ export async function readReflectionRecoveryDiagnostics(
       attemptOutcome: llmUsageEvents.attemptOutcome,
     }).from(llmUsageEvents).where(and(
       eq(llmUsageEvents.callType, "room_reflection"),
-      inArray(operationId, allOperationIds),
+      sql`${operationId} = ANY(${sql.param(allOperationIds)}::text[])`,
     ));
     for (const attempt of attempts) {
       const key = operationToFamily.get(attempt.operationId);

@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import {
   and,
@@ -7,6 +7,7 @@ import {
   eq,
   inArray,
   llmUsageEvents,
+  readReflectionRecoveryDiagnostics,
   type PostgresJsBridgeExecutor,
   reflectionRecords,
   reflectionRecordPublications,
@@ -40,6 +41,40 @@ afterAll(async () => {
   if (previousCommitmentKey === undefined) delete process.env[PUSH_TOKEN_ENCRYPTION_KEY];
   else process.env[PUSH_TOKEN_ENCRYPTION_KEY] = previousCommitmentKey;
   await db?.end();
+});
+
+test("Reflection diagnostics find the last matching wire beyond the driver parameter limit", async () => {
+  const recordId = randomUUID();
+  const now = new Date();
+  const binding = {
+    version: 1, kind: "service", role: "memoryReflection", modelId: "openai:reflection-test",
+    inputCommitment: `hmac-sha256:${randomBytes(32).toString("base64url")}`,
+  } as const;
+  const wires = Array.from({ length: 65_535 }, (_, i) => `${recordId}:${i}`);
+  const rollbackFixture = new Error("roll back diagnostic fixture");
+  const rollback = await db.transaction(async tx => {
+    await tx.insert(reflectionRecords).values({
+      recordId, lifecycle: "current", structuralHeight: 0, producerPolicyVersion: "test", processingGeneration: 1,
+    });
+    await tx.insert(reflectionRecordSemanticWork).values({
+      recordId, generation: 1, completedGeneration: 1, changeReason: "created", stage: "organization",
+      state: "complete", acceptedModelBindingGeneration: 1, acceptedModelBinding: binding,
+      completionOutcome: "provider_outcome_unknown", startedAt: now, completedAt: now, dueSince: now,
+    });
+    await tx.insert(llmUsageEvents).values({
+      occurredAt: now, callType: "room_reflection", model: binding.modelId, provider: "openai",
+      providerRoute: "openai", fundingKind: "service", costState: "actual", actualCostUsd: "0.01",
+      endpoint: "/v1/responses", providerRequestId: randomUUID(), attemptOutcome: "succeeded",
+      metadata: { operationId: wires.at(-1)! },
+    });
+    const result = await readReflectionRecoveryDiagnostics({
+      since: now, until: now,
+      operationIds: current => current.inputCommitment === binding.inputCommitment ? wires : [],
+    }, tx);
+    expect(result.providerSucceededResultMissing).toBe(1);
+    throw rollbackFixture;
+  }).catch((error: unknown) => error);
+  expect(rollback).toBe(rollbackFixture);
 });
 
 test("manual Reflection recovery queues each observed service hold once and retains unsafe or Human work", async () => {

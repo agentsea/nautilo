@@ -921,23 +921,8 @@ export class PostgresSemanticWorkStore
       const candidates = await executeTypedRecordProductQuery(tx,
         recordProductTypedDb.select({
           record_id: work.recordId,
-          generation: work.generation,
-          completed_generation: work.completedGeneration,
-          change_reason: work.changeReason,
-          stage: work.stage,
           accepted_model_binding: work.acceptedModelBinding,
-          accepted_model_binding_generation: work.acceptedModelBindingGeneration,
-          organizer_proposal_checkpoint: work.organizerProposalCheckpoint,
           manual_recovery_id: work.manualRecoveryId,
-          manual_recovery_source_generation: work.manualRecoverySourceGeneration,
-          manual_recovery_service_model_id: work.manualRecoveryServiceModelId,
-          manual_recovery_spent_at: work.manualRecoverySpentAt,
-          state: work.state,
-          completion_outcome: work.completionOutcome,
-          failure_code: work.failureCode,
-          failure_detail: work.failureDetail,
-          lifecycle: reflectionRecords.lifecycle,
-          disposition: reflectionRecords.disposition,
         }).from(work)
           .innerJoin(reflectionRecords, eq(reflectionRecords.recordId, work.recordId))
           .where(and(
@@ -983,7 +968,7 @@ export class PostgresSemanticWorkStore
         }).from(work)
           .innerJoin(reflectionRecords, eq(reflectionRecords.recordId, work.recordId))
           .where(and(
-            inArray(work.recordId, candidateRecordRefs),
+            sql`${work.recordId} = ANY(${sql.param(candidateRecordRefs)}::text[])`,
             lte(work.updatedAt, input.observedThrough),
             or(
               and(
@@ -1020,13 +1005,26 @@ export class PostgresSemanticWorkStore
           }
         }
       }
-      const held = locked.filter(row => {
-        const candidateFamilyKeys = candidateFamiliesByRecord.get(row.record_id) ?? [];
-        const lockedFamilyKeys = manualRecoveryLockFamilyKeys({
+      const lockedFamiliesByRecord = new Map(locked.map(row => [
+        row.record_id,
+        manualRecoveryLockFamilyKeys({
           recordRef: row.record_id,
           binding: row.accepted_model_binding,
           recoveryId: row.manual_recovery_id,
-        });
+        }),
+      ]));
+      for (const row of locked) {
+        const candidateFamilyKeys = candidateFamiliesByRecord.get(row.record_id) ?? [];
+        const lockedFamilyKeys = lockedFamiliesByRecord.get(row.record_id) ?? [];
+        if (JSON.stringify(candidateFamilyKeys) !== JSON.stringify(lockedFamilyKeys)) {
+          for (const familyKey of [...candidateFamilyKeys, ...lockedFamilyKeys]) {
+            incompleteFamilies.add(familyKey);
+          }
+        }
+      }
+      const held = locked.filter(row => {
+        const candidateFamilyKeys = candidateFamiliesByRecord.get(row.record_id) ?? [];
+        const lockedFamilyKeys = lockedFamiliesByRecord.get(row.record_id) ?? [];
         return JSON.stringify(candidateFamilyKeys) === JSON.stringify(lockedFamilyKeys)
           && lockedFamilyKeys.every(familyKey => !incompleteFamilies.has(familyKey));
       });
@@ -1037,14 +1035,16 @@ export class PostgresSemanticWorkStore
         recordProductTypedDb.select({ record_id: reflectionRecordPublications.recordId })
           .from(reflectionRecordPublications)
           .where(and(
-            inArray(reflectionRecordPublications.recordId, recordRefs),
+            sql`${reflectionRecordPublications.recordId}
+              = ANY(${sql.param(recordRefs)}::text[])`,
             ne(reflectionRecordPublications.state, "complete"),
           )));
       const unsafeAuthority = await executeTypedRecordProductQuery(tx,
         recordProductTypedDb.select({ record_id: reflectionRecordAuthorityReconciliations.recordId })
           .from(reflectionRecordAuthorityReconciliations)
           .where(and(
-            inArray(reflectionRecordAuthorityReconciliations.recordId, recordRefs),
+            sql`${reflectionRecordAuthorityReconciliations.recordId}
+              = ANY(${sql.param(recordRefs)}::text[])`,
             ne(reflectionRecordAuthorityReconciliations.state, "complete"),
           )));
       const unsafeRecords = new Set([

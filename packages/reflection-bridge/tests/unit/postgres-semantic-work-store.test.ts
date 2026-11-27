@@ -146,6 +146,107 @@ describe("PostgreSQL semantic work commitments and admission", () => {
     expect(value.queries.every(query => !query.statement.includes("pg_advisory"))).toBeTrue();
   });
 
+  test("holds both observed families when a lock-time binding changed", async () => {
+    const now = new Date("2026-11-27T10:05:30.000Z");
+    const observedThrough = new Date(now.getTime() - 1_000);
+    const binding = (marker: string) => ({
+      version: 1,
+      kind: "service",
+      role: "memoryReflection",
+      modelId: "surplus:synthetic-model",
+      inputCommitment: `hmac-sha256:${marker.repeat(43)}`,
+    });
+    const before = binding("X");
+    const after = binding("Y");
+    const value = await verifiedConnection(async <Row extends RecordProductPostgresRow>(
+      statement: string,
+    ) => {
+      const normalized = normalizedSql(statement);
+      if (normalized.includes("from reflection_record_semantic_work inner join reflection_records")) {
+        return (normalized.includes("for update")
+          ? [
+              { record_id: "record:a", accepted_model_binding: after },
+              { record_id: "record:b", accepted_model_binding: before },
+            ]
+          : [
+              { record_id: "record:a", accepted_model_binding: before },
+              { record_id: "record:b", accepted_model_binding: before },
+            ]) as unknown as Row[];
+      }
+      throw new Error(`unexpected SQL: ${statement}`);
+    });
+    const store = new PostgresSemanticWorkStore({
+      handle: value.handle,
+      commitments: createHmacRecordSemanticCommitmentPort(new Uint8Array(32).fill(29)),
+      clock: () => now,
+    });
+
+    expect(await store.requestManualProviderRecovery({
+      now,
+      observedThrough,
+      authorizedBy: "operator:one",
+      modelId: "surplus:synthetic-model",
+    })).toEqual({ queued: 0, held: 2 });
+    expect(value.queries).toHaveLength(2);
+  });
+
+  test("binds each manual recovery candidate set as one PostgreSQL array", async () => {
+    const now = new Date("2026-11-27T10:06:00.000Z");
+    const observedThrough = new Date(now.getTime() - 1_000);
+    const recordRef = "record:large-set-control";
+    const row = {
+      record_id: recordRef,
+      generation: 8,
+      completed_generation: 0,
+      change_reason: "dependency_lost",
+      stage: "organization",
+      accepted_model_binding: null,
+      accepted_model_binding_generation: null,
+      organizer_proposal_checkpoint: null,
+      manual_recovery_id: null,
+      manual_recovery_source_generation: null,
+      manual_recovery_service_model_id: null,
+      manual_recovery_spent_at: null,
+      state: "quarantined",
+      completion_outcome: null,
+      failure_code: "candidate_unavailable",
+      failure_detail: "candidate_selection_invalid",
+      lifecycle: "current",
+      disposition: "available",
+    };
+    const value = await verifiedConnection(async <Row extends RecordProductPostgresRow>(
+      statement: string,
+    ) => {
+      const normalized = normalizedSql(statement);
+      if (normalized.includes("from reflection_record_semantic_work inner join reflection_records")) {
+        return [row] as unknown as Row[];
+      }
+      if (normalized.includes("from reflection_record_publications")
+        || normalized.includes("from reflection_record_authority_reconciliations")) {
+        return [] as Row[];
+      }
+      throw new Error(`unexpected SQL: ${statement}`);
+    });
+    const store = new PostgresSemanticWorkStore({
+      handle: value.handle,
+      commitments: createHmacRecordSemanticCommitmentPort(new Uint8Array(32).fill(28)),
+      clock: () => now,
+    });
+
+    expect(await store.requestManualProviderRecovery({
+      now,
+      observedThrough,
+      authorizedBy: "operator:one",
+      modelId: "surplus:synthetic-model",
+    })).toEqual({ queued: 0, held: 1 });
+    const boundedPredicates = value.queries.slice(1, 4);
+    expect(boundedPredicates).toHaveLength(3);
+    for (const query of boundedPredicates) {
+      expect(normalizedSql(query.statement)).toContain("= any($1::text[])");
+      expect(query.parameters?.[0]).toEqual([recordRef]);
+    }
+  });
+
   test("cohorts exact service operations but isolates legacy service rows", () => {
     const binding = {
       version: 1 as const,

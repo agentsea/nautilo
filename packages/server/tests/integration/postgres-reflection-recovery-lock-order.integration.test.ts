@@ -228,3 +228,98 @@ test("manual recovery does not wait on a normal admission advisory contender", a
     await deleteProviderHolds([recordId]);
   }
 }, 15_000);
+
+test("manual recovery assesses more than 65,535 candidates with bounded binds", async () => {
+  const rollback = new Error("rollback large Reflection recovery fixture");
+  const prefix = `zz-reflection-large-${randomUUID()}-`;
+  const candidateCount = 65_536;
+  const controlRecordId = `${prefix}control`;
+  const observedThrough = new Date("2005-06-07T08:09:10.000Z");
+  const now = new Date(observedThrough.getTime() + 1_000);
+  try {
+    await createPostgresJsCanonicalBridgeConnection(db).transaction(
+      async (tx, executor) => {
+        await executor.query(
+          `INSERT INTO reflection_records (
+             record_id, lifecycle, structural_height, producer_policy_version,
+             processing_generation, created_at, updated_at
+           )
+           SELECT $1 || 'held-' || lpad(series::text, 6, '0'),
+                  'current', 1, 'candidate-policy-v1', 1, $3, $3
+             FROM generate_series(1, $2::integer) AS series`,
+          [prefix, candidateCount, observedThrough],
+        );
+        await executor.query(
+          `INSERT INTO reflection_record_semantic_work (
+             record_id, generation, completed_generation, change_reason, stage,
+             state, attempt_count, quarantine_round, recover_after, failure_code,
+             failure_detail, due_since, started_at, created_at, updated_at
+           )
+           SELECT $1 || 'held-' || lpad(series::text, 6, '0'),
+                  8, 0, 'dependency_lost', 'organization', 'quarantined',
+                  8, 8, $3, 'candidate_unavailable',
+                  'candidate_selection_invalid', $3, $3, $3, $3
+             FROM generate_series(1, $2::integer) AS series`,
+          [prefix, candidateCount, observedThrough],
+        );
+        await executor.query(
+          `INSERT INTO reflection_records (
+             record_id, lifecycle, structural_height, producer_policy_version,
+             processing_generation, created_at, updated_at
+           ) VALUES ($1, 'current', 1, 'reflection-lock-regression-v1', 1, $2, $2)`,
+          [controlRecordId, observedThrough],
+        );
+        await executor.query(
+          `INSERT INTO reflection_record_semantic_work (
+             record_id, generation, completed_generation, change_reason, stage,
+             state, accepted_model_binding, accepted_model_binding_generation,
+             completion_outcome, due_since, completed_at, created_at, updated_at
+           ) VALUES (
+             $1, 1, 1, 'created', 'organization', 'complete', $2::jsonb, 1,
+             'provider_outcome_unknown', $3, $3, $3, $3
+           )`,
+          [
+            controlRecordId,
+            JSON.stringify({
+              version: 1,
+              kind: "service",
+              role: "memoryReflection",
+              modelId: "surplus:synthetic-model",
+              inputCommitment: `hmac-sha256:${"Z".repeat(43)}`,
+            }),
+            observedThrough,
+          ],
+        );
+
+        const handle = await verifyRecordProductPostgresHandle({
+          query: executor.query.bind(executor),
+          transaction: use => use(executor),
+        });
+        const store = new PostgresSemanticWorkStore({
+          handle,
+          commitments: createHmacRecordSemanticCommitmentPort(
+            new Uint8Array(32).fill(30),
+          ),
+          clock: () => now,
+        });
+        expect(await store.requestManualProviderRecovery({
+          now,
+          observedThrough,
+          authorizedBy: randomUUID(),
+          modelId: "surplus:synthetic-model",
+        })).toEqual({ queued: 1, held: candidateCount });
+        const [control] = await tx.select({
+          generation: reflectionRecordSemanticWork.generation,
+          recoveryId: reflectionRecordSemanticWork.manualRecoveryId,
+        }).from(reflectionRecordSemanticWork)
+          .where(eq(reflectionRecordSemanticWork.recordId, controlRecordId));
+        expect(control?.generation).toBe(2);
+        expect(control?.recoveryId).toBeString();
+        throw rollback;
+      },
+      { isolationLevel: "read committed" },
+    );
+  } catch (error) {
+    if (error !== rollback) throw error;
+  }
+}, 60_000);
