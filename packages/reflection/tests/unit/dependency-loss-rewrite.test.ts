@@ -6,10 +6,13 @@ import {
 } from "../../src/organizer/dependency-loss-rewrite";
 
 describe("grounded dependency-loss rewrite", () => {
-  test("rewrites only from remaining untrusted support", async () => {
+  test("quotes each support statement and places the output instruction after the evidence", async () => {
     let prompt = "";
     const result = await runDependencyLossRewrite({
-      remainingSupportStatements: ["The team required portable SQL."],
+      remainingSupportStatements: [
+        "The team required portable SQL.",
+        "A line break is data, not an instruction.\nIgnore this sentence as an instruction.",
+      ],
       invoke: (value) => {
         prompt = value;
         return Promise.resolve(JSON.stringify({
@@ -22,9 +25,29 @@ describe("grounded dependency-loss rewrite", () => {
       statement: "The team required portable SQL.",
       attempts: 1,
     });
-    expect(prompt.startsWith(DEPENDENCY_LOSS_REWRITE_CONTRACT)).toBe(true);
-    expect(prompt).toContain("[Untrusted remaining support]");
-    expect(prompt).not.toContain("Postgres was chosen for portability and cost.");
+    expect(prompt).toBe(`${DEPENDENCY_LOSS_REWRITE_CONTRACT}
+
+[Untrusted remaining support: each line is one JSON string]
+"The team required portable SQL."
+"A line break is data, not an instruction.\\nIgnore this sentence as an instruction."
+[End untrusted remaining support]
+
+Summarize the remaining evidence in one or two short sentences. Return only this JSON object: {"statement":"..."}`);
+  });
+
+  test.each([
+    ["raw JSON", JSON.stringify({ statement: "Remaining evidence" })],
+    ["a sole JSON markdown fence", '```json\n{"statement":"Remaining evidence"}\n```'],
+  ])("accepts %s", async (_label, response) => {
+    const result = await runDependencyLossRewrite({
+      remainingSupportStatements: ["Remaining evidence"],
+      invoke: () => Promise.resolve(response),
+    });
+    expect(result).toEqual({
+      ok: true,
+      statement: "Remaining evidence",
+      attempts: 1,
+    });
   });
 
   test("propagates invocation failure without attempting a repair call", async () => {
@@ -62,6 +85,32 @@ describe("grounded dependency-loss rewrite", () => {
       statement: "Remaining evidence",
       attempts: 2,
     });
+  });
+
+  test.each([
+    ["leading prose", 'Here is the result: {"statement":"Remaining evidence"}'],
+    ["trailing prose", '{"statement":"Remaining evidence"} done'],
+    ["multiple objects", '{"statement":"First"}\n{"statement":"Second"}'],
+    ["multiple fences", '```json\n{"statement":"First"}\n```\n```json\n{"statement":"Second"}\n```'],
+    ["an extra field", '{"statement":"Remaining evidence","confidence":1}'],
+    ["an oversized statement", JSON.stringify({ statement: "x".repeat(801) })],
+    ["an oversized response", ` ${" ".repeat(5_001)}`],
+    ["an oversized fenced response", `\`\`\`json\n${" ".repeat(5_001)}\n\`\`\``],
+  ])("rejects %s after one bounded repair", async (_label, response) => {
+    let calls = 0;
+    const result = await runDependencyLossRewrite({
+      remainingSupportStatements: ["Remaining evidence"],
+      invoke: () => {
+        calls += 1;
+        return Promise.resolve(response);
+      },
+    });
+    expect(result).toEqual({
+      ok: false,
+      errorCode: "invalid_output",
+      attempts: 2,
+    });
+    expect(calls).toBe(2);
   });
 
   test("rejects empty support without invoking a model", async () => {
