@@ -492,6 +492,8 @@ test("manual Reflection recovery queues each observed service hold once and reta
     if (usageIds.length > 0) {
       await db.delete(llmUsageEvents).where(inArray(llmUsageEvents.id, usageIds));
     }
+    await db.update(reflectionRecords).set({ disposition: "purged" })
+      .where(inArray(reflectionRecords.recordId, Object.values(recordIds)));
     await db.delete(reflectionRecordSemanticWork).where(inArray(
       reflectionRecordSemanticWork.recordId,
       Object.values(recordIds),

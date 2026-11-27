@@ -134,8 +134,10 @@ test("one exact manual provider attempt survives binding and rejects concurrent 
     expect(await store.consumeManualProviderAttempt(claims)).toBe("blocked");
     expect(await store.consumeManualProviderAttempt(changedLeaseClaims)).toBe("blocked");
   } finally {
-    // Record identities are immutable product history. Remove the disposable
-    // mutable work only; the empty identities can remain in the scratch DB.
+    // Immutable fixture identities must also be invisible to subsequent
+    // worker bootstrap scans after their mutable work is removed.
+    await db.update(reflectionRecords).set({ disposition: "purged" })
+      .where(inArray(reflectionRecords.recordId, recordIds));
     await db.delete(reflectionRecordSemanticWork)
       .where(inArray(reflectionRecordSemanticWork.recordId, recordIds));
     await db.delete(users).where(eq(users.id, operator.id));
