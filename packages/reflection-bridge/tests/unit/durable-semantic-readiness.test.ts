@@ -342,7 +342,137 @@ describe("durable semantic readiness", () => {
     });
   });
 
-  test("rejects an exposed Record that is no longer at its authenticated generation", async () => {
+  test("keeps an exact retired predecessor exposure as authorized provenance without making it structural ancestry", async () => {
+    const predecessor: DurableRecordEnvelope = {
+      ...record,
+      recordRef: "record:predecessor",
+      lifecycle: "superseded",
+      processingGeneration: 4,
+      semantic: {
+        ...record.semantic,
+        observedContentFingerprint: "sha256:predecessor",
+        sourceDependencies: [{
+          sourceKind: "memory",
+          logicalSourceRef: "memory:predecessor",
+          observedRevision: "3",
+          observedContentFingerprint: "sha256:memory-predecessor",
+          terminalAuthorityLeafHandle: "namespace:predecessor",
+          authorityBearing: true,
+        }],
+        terminalAuthorityLeafHandles: ["namespace:predecessor"],
+      },
+    };
+    const successor: DurableRecordEnvelope = {
+      ...record,
+      semantic: {
+        ...record.semantic,
+        sourceDependencies: [{
+          sourceKind: "memory",
+          logicalSourceRef: "memory:successor",
+          observedRevision: "1",
+          observedContentFingerprint: "sha256:memory-successor",
+          terminalAuthorityLeafHandle: "namespace:successor",
+          authorityBearing: true,
+        }],
+        modelExposureDependencies: [{
+          kind: "record",
+          recordRef: predecessor.recordRef,
+          observedProcessingGeneration: 3,
+          terminalAuthorityLeafHandles: ["namespace:predecessor"],
+        }],
+        terminalAuthorityLeafHandles: [
+          "namespace:predecessor",
+          "namespace:successor",
+        ],
+      },
+    };
+    let installed: unknown;
+    let rootInstalled = false;
+    const eligibilityChecks: string[] = [];
+    const readiness = new DurableRecordSemanticReadiness({
+      commitments: { roomAnchor: () => ROOM_COMMITMENT },
+      repository: {
+        async read(input: { recordRef: string }) {
+          return {
+            status: "available" as const,
+            record: input.recordRef === predecessor.recordRef
+              ? predecessor
+              : successor,
+          };
+        },
+        async readSuccessors(input: { recordRef: string }) {
+          return {
+            status: "available" as const,
+            page: {
+              items: input.recordRef === predecessor.recordRef
+                ? [{
+                    predecessorRecordRef: predecessor.recordRef,
+                    successorRecordRef: successor.recordRef,
+                    relation: "supersedes" as const,
+                  }]
+                : [],
+            },
+          };
+        },
+      } as never,
+      bindings: {
+        async resolveWork(recordRef: string) {
+          return {
+            readBindingRef: `read:${recordRef}`,
+            invocationAudience: {
+              humanRefs: ["human:one"],
+              includesPublicBoundary: false,
+            },
+          };
+        },
+      } as never,
+      eligibility: {
+        async check(input: { recordRef: string }) {
+          eligibilityChecks.push(input.recordRef);
+          return { status: "eligible" as const };
+        },
+      } as never,
+      embedding: {} as never,
+      searchProjections: {} as never,
+      authorityProjections: {
+        async readCurrent(recordRef: string) {
+          if (recordRef === predecessor.recordRef) {
+            return {
+              processingState: "current" as const,
+              recordDisposition: "available" as const,
+              recordLifecycle: "superseded" as const,
+              terminalAuthorityLeafHandles: ["namespace:predecessor"],
+            };
+          }
+          return rootInstalled ? {
+            processingState: "current" as const,
+            recordDisposition: "available" as const,
+          } : null;
+        },
+        async installInitialClosure(input: unknown) {
+          installed = input;
+          rootInstalled = true;
+          return "installed" as const;
+        },
+      } as never,
+      authorityReconciliation: {
+        selection: { selectedRepresentation: "ordinary" },
+      } as never,
+    });
+
+    expect(await readiness.ensureAuthority(claim)).toEqual({ status: "ready" });
+    expect(eligibilityChecks).toEqual([predecessor.recordRef]);
+    expect(installed).toEqual({
+      recordRef: successor.recordRef,
+      closureGeneration: 1,
+      terminalAuthorityLeafHandles: [
+        "namespace:predecessor",
+        "namespace:successor",
+      ],
+    });
+  });
+
+  test("fails closed when a retired exposure lacks current authority proof", async () => {
     const staleChild: DurableRecordEnvelope = {
       ...record,
       recordRef: "record:stale-exposure",
@@ -375,6 +505,18 @@ describe("durable semantic readiness", () => {
             record: input.recordRef === root.recordRef ? root : staleChild,
           });
         },
+        readSuccessors() {
+          return Promise.resolve({
+            status: "available" as const,
+            page: {
+              items: [{
+                predecessorRecordRef: staleChild.recordRef,
+                successorRecordRef: root.recordRef,
+                relation: "supersedes" as const,
+              }],
+            },
+          });
+        },
       } as never,
       bindings: {
         resolveWork(recordRef: string) {
@@ -400,6 +542,111 @@ describe("durable semantic readiness", () => {
       status: "unavailable",
       failureCode: "authority_unavailable",
     });
+    expect(installations).toBe(0);
+  });
+
+  test("bounds cumulative historical exposure opens and successor verification", async () => {
+    const dependencies = Array.from({ length: 200 }, (_, index) => ({
+      kind: "record" as const,
+      recordRef: `record:historical:${index}`,
+      observedProcessingGeneration: 1,
+      terminalAuthorityLeafHandles: [`namespace:historical:${index}`],
+    }));
+    const root: DurableRecordEnvelope = {
+      ...record,
+      semantic: {
+        ...record.semantic,
+        modelExposureDependencies: dependencies,
+        terminalAuthorityLeafHandles: dependencies.flatMap(
+          (dependency) => dependency.terminalAuthorityLeafHandles,
+        ),
+      },
+    };
+    let recordReads = 0;
+    let successorReads = 0;
+    let installations = 0;
+    const readiness = new DurableRecordSemanticReadiness({
+      commitments: { roomAnchor: () => ROOM_COMMITMENT },
+      repository: {
+        async read(input: { recordRef: string }) {
+          recordReads += 1;
+          const dependency = dependencies.find((candidate) =>
+            candidate.recordRef === input.recordRef
+          );
+          return {
+            status: "available" as const,
+            record: dependency === undefined
+              ? root
+              : {
+                  ...record,
+                  recordRef: dependency.recordRef,
+                  lifecycle: "superseded" as const,
+                  processingGeneration: 2,
+                  semantic: {
+                    ...record.semantic,
+                    terminalAuthorityLeafHandles:
+                      dependency.terminalAuthorityLeafHandles,
+                  },
+                },
+          };
+        },
+        async readSuccessors(input: { recordRef: string }) {
+          successorReads += 1;
+          return {
+            status: "available" as const,
+            page: { items: [{
+              predecessorRecordRef: input.recordRef,
+              successorRecordRef: `record:successor:${input.recordRef}`,
+              relation: "supersedes" as const,
+            }] },
+          };
+        },
+      } as never,
+      bindings: {
+        async resolveWork(recordRef: string) {
+          return {
+            readBindingRef: `read:${recordRef}`,
+            invocationAudience: {
+              humanRefs: ["human:one"],
+              includesPublicBoundary: false,
+            },
+          };
+        },
+      } as never,
+      eligibility: {
+        async check() { return { status: "eligible" as const }; },
+      } as never,
+      embedding: {} as never,
+      searchProjections: {} as never,
+      authorityProjections: {
+        async readCurrent(recordRef: string) {
+          if (recordRef === root.recordRef) return null;
+          const dependency = dependencies.find((candidate) =>
+            candidate.recordRef === recordRef
+          )!;
+          return {
+            processingState: "current" as const,
+            recordDisposition: "available" as const,
+            recordLifecycle: "superseded" as const,
+            terminalAuthorityLeafHandles:
+              dependency.terminalAuthorityLeafHandles,
+          };
+        },
+        async installInitialClosure() {
+          installations += 1;
+          return "installed" as const;
+        },
+      } as never,
+      authorityReconciliation: {
+        selection: { selectedRepresentation: "ordinary" },
+      } as never,
+    });
+
+    expect(await readiness.ensureAuthority(claim)).toEqual({
+      status: "unavailable",
+      failureCode: "authority_unavailable",
+    });
+    expect(recordReads + successorReads).toBeLessThanOrEqual(256);
     expect(installations).toBe(0);
   });
 
@@ -486,8 +733,8 @@ describe("durable semantic readiness", () => {
     expect(reads).toEqual([
       "record:one",
       "record:branch-a",
-      "record:shared-exposure",
       "record:branch-b",
+      "record:shared-exposure",
     ]);
     expect(installations).toBe(0);
   });

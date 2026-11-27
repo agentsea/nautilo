@@ -2,7 +2,6 @@ import {
   and,
   asc,
   eq,
-  reflectionRecordAuthorityDependencies,
   reflectionRecordDependencies,
   reflectionRecords,
   reflectionRecordSuccessors,
@@ -47,29 +46,19 @@ export class PostgresGroundedDependencyRecordState implements GroundedDependency
       complete: rows.length <= input.limit};
   }
 
-  async readDependencyRecordRefs(input: {
+  async readStructuralDependencyRecordRefs(input: {
     recordRef: string;
     limit: number;
-  }): ReturnType<NonNullable<GroundedDependencyRecordStatePort["readDependencyRecordRefs"]>> {
-    const dependencies = recordProductTypedDb.select({
+  }): ReturnType<NonNullable<GroundedDependencyRecordStatePort["readStructuralDependencyRecordRefs"]>> {
+    const rows = await executeTypedRecordProductQuery(this.handle,
+      recordProductTypedDb.select({
       dependency_record_ref: sql<string>`${reflectionRecordDependencies.childRecordId}`
         .as("dependency_record_ref"),
     }).from(reflectionRecordDependencies).where(eq(
       reflectionRecordDependencies.parentRecordId,
       input.recordRef,
-    )).union(recordProductTypedDb.select({
-      dependency_record_ref:
-        sql<string>`${reflectionRecordAuthorityDependencies.dependencyRecordId}`
-          .as("dependency_record_ref"),
-    }).from(reflectionRecordAuthorityDependencies).where(eq(
-      reflectionRecordAuthorityDependencies.recordId,
-      input.recordRef,
-    ))).as("record_dependency_refs");
-    const rows = await executeTypedRecordProductQuery(this.handle,
-      recordProductTypedDb.select({
-        dependency_record_ref: dependencies.dependency_record_ref,
-      }).from(dependencies)
-        .orderBy(asc(dependencies.dependency_record_ref))
+    ))
+        .orderBy(asc(reflectionRecordDependencies.childRecordId))
         .limit(input.limit + 1));
     return {
       status: "available",

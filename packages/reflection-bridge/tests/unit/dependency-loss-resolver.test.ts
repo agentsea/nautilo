@@ -338,7 +338,7 @@ describe("exact grounded dependency loss", () => {
             complete: true,
           };
         },
-        async readDependencyRecordRefs({ recordRef, limit }) {
+        async readStructuralDependencyRecordRefs({ recordRef, limit }) {
           metadataCalls += 1;
           const index = cycle.indexOf(recordRef);
           const refs = index < 0 ? [] : [cycle[(index + 1) % cycle.length]!];
@@ -404,7 +404,7 @@ describe("exact grounded dependency loss", () => {
     expect(rewrites).toBe(0);
   });
 
-  test("does not infer eligibility for an acyclic successor with a revoked or missing projection", async () => {
+  test("does not treat historical exposure as a structural cycle or infer missing authority", async () => {
     let rewrites = 0;
     const reads: string[] = [];
     const resolver = new ExactGroundedDependencyLossResolver({
@@ -437,12 +437,10 @@ describe("exact grounded dependency loss", () => {
             complete: true,
           };
         },
-        async readDependencyRecordRefs({ recordRef }) {
+        async readStructuralDependencyRecordRefs() {
           return {
             status: "available",
-            dependencyRecordRefs: recordRef === "record:replacement"
-              ? ["record:unproven"]
-              : [],
+            dependencyRecordRefs: [],
             complete: true,
           };
         },
@@ -450,9 +448,6 @@ describe("exact grounded dependency loss", () => {
       repository: {
         async read({ recordRef }: { recordRef: string }) {
           reads.push(recordRef);
-          if (recordRef === "record:unproven") {
-            throw new Error("ineligible diagnostic payload opened");
-          }
           return {
             status: "available",
             record: {
@@ -466,7 +461,7 @@ describe("exact grounded dependency loss", () => {
                 modelExposureDependencies: recordRef === "record:replacement"
                   ? [{
                       kind: "record" as const,
-                      recordRef: "record:unproven",
+                      recordRef: "record:old-child",
                       observedProcessingGeneration: 1,
                       terminalAuthorityLeafHandles: ["namespace:one"],
                     }]

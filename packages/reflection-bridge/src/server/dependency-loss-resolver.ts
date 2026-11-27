@@ -60,8 +60,8 @@ export interface GroundedDependencyRecordStatePort {
       }>
     | Readonly<{ status: "unavailable" }>
   >;
-  /** Content-free union of direct semantic support and authenticated exposure edges. */
-  readDependencyRecordRefs?(input: Readonly<{
+  /** Content-free direct structural support only; authority exposure is not ancestry. */
+  readStructuralDependencyRecordRefs?(input: Readonly<{
     recordRef: string;
     limit: number;
   }>): Promise<
@@ -141,7 +141,7 @@ async function diagnoseCurrentDependencyCycle(input: Readonly<{
   maxWork: number;
   signal?: AbortSignal;
 }>): Promise<DependencyCycleEvidence | undefined> {
-  const readDependencies = input.recordState.readDependencyRecordRefs?.bind(
+  const readDependencies = input.recordState.readStructuralDependencyRecordRefs?.bind(
     input.recordState,
   );
   if (readDependencies === undefined || input.maxWork < 1) return undefined;
