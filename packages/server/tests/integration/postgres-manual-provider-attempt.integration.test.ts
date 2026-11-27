@@ -16,8 +16,8 @@ import type { MemoryOperationBinding } from "@nautilo/types";
 import {
   createHmacRecordSemanticCommitmentPort,
   PostgresSemanticWorkStore,
-} from "../../src/server/postgres-semantic-work-store";
-import { verifyRecordProductPostgresHandle } from "../../src/server/product-postgres";
+  verifyRecordProductPostgresHandle,
+} from "@nautilo/reflection-bridge/server";
 
 let db: ReturnType<typeof createDirectDb>;
 

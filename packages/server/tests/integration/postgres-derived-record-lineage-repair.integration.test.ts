@@ -9,10 +9,11 @@ import {
 } from "@nautilo/db";
 import { bootstrapTestDbInstance } from "@nautilo/db/testing";
 import type { DurableRecordEnvelope } from "@nautilo/reflection/durable";
-import { verifyRecordProductPostgresHandle } from "../../src/server";
-import { repairBlockedDerivedRecordLineage }
-  from "../../src/server/postgres-derived-record-lineage-repair";
-import { encodeDurableRecordEnvelope } from "../../src/server/record-mapping";
+import {
+  encodeDurableRecordEnvelope,
+  repairBlockedDerivedRecordLineage,
+  verifyRecordProductPostgresHandle,
+} from "@nautilo/reflection-bridge/server";
 
 type Db = ReturnType<typeof createDirectDb>;
 let db: Db;
