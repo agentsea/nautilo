@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, mock, test } from "bun:test";
 import { AIMessage, HumanMessage, ToolMessage, type BaseMessage } from "@langchain/core/messages";
+import { convertResponsesMessageToAIMessage } from "@langchain/openai";
 import { getUsageContext } from "../../src/usage/usage-context";
 import { setConfigOverrides } from "@nautilo/config";
 import { createMemoryReviewStaging, type MemoryReviewStagingPorts } from "../../src/memory/memory-review-staging";
@@ -47,6 +48,32 @@ function memory(id = "memory-1", content = "Original fact"): MemoryDetail & {
     demotedFrom: null, namespaceIds: ["ns"],
   };
 }
+function responsesMessage(value: unknown): Parameters<typeof convertResponsesMessageToAIMessage>[0] {
+  return value as Parameters<typeof convertResponsesMessageToAIMessage>[0];
+}
+function openAINoChangeResponse(extraOutput: unknown[] = []) {
+  return convertResponsesMessageToAIMessage(responsesMessage({
+    id: "resp_memory_review",
+    object: "response",
+    status: "completed",
+    model: "gpt-5.5",
+    output: [
+      {
+        type: "reasoning",
+        id: "rs_memory_review",
+        summary: [{ type: "summary_text", text: "The conversation adds no durable memory." }],
+      },
+      ...extraOutput,
+      {
+        type: "message",
+        id: "msg_memory_review",
+        status: "completed",
+        role: "assistant",
+        content: [{ type: "output_text", text: "Nothing to save.", annotations: [] }],
+      },
+    ],
+  }));
+}
 describe("Memory transform completion", () => {
   test("reviews complete supplied assistant and tool evidence, with stable staged writes", async () => {
     setup();
@@ -88,6 +115,45 @@ describe("Memory transform completion", () => {
           { type: "text", text: "Nothing to save.", index: 1 },
         ],
         response_metadata: { model_provider: "anthropic" },
+      }),
+      // The pinned @langchain/openai Responses converter retains the private
+      // reasoning summary beside the single visible text block.
+      openAINoChangeResponse(),
+    ]) {
+      const result = await prepareMemoryReview([], {
+        ...options,
+        invokeModel: model([response]),
+      });
+      expect(result.status).toBe("prepared");
+      if (result.status === "prepared") expect(result.proposal.operations).toEqual([]);
+    }
+  });
+  test("accepts the pinned OpenAI Responses no-change envelope after model routing", async () => {
+    setup();
+    for (const modelId of ["openai:gpt-5.5", "configured-routed-model"]) {
+      const result = await prepareMemoryReview([], {
+        workId: `work-${modelId}`,
+        modelId,
+        memoryAccessEnvelope: envelope,
+        invokeModel: model([openAINoChangeResponse()]),
+      });
+      expect(result.status).toBe("prepared");
+      if (result.status === "prepared") expect(result.proposal.operations).toEqual([]);
+    }
+  });
+  test("keeps Venice and Surplus chat-completion no-change responses provider-neutral", async () => {
+    setup();
+    const options = { workId: "work", modelId: "model", memoryAccessEnvelope: envelope };
+    for (const response of [
+      new AIMessage({
+        content: [{ type: "text", text: "Nothing to save." }],
+        additional_kwargs: { reasoning_content: "private Venice reasoning" },
+        response_metadata: { model_provider: "openai", model_name: "venice-model" },
+      }),
+      new AIMessage({
+        content: [{ type: "text", text: "Nothing to save." }],
+        additional_kwargs: { reasoning: "private Surplus reasoning" },
+        response_metadata: { model_provider: "openai", model_name: "surplus-model", finish_reason: "stop" },
       }),
     ]) {
       const result = await prepareMemoryReview([], {
@@ -151,6 +217,33 @@ describe("Memory transform completion", () => {
         ],
         response_metadata: { model_provider: "anthropic" },
       }),
+      // OpenAI-compatible Chat Completions responses from Venice and Surplus
+      // share LangChain's provider marker but not its Responses envelope.
+      new AIMessage({
+        content: [
+          { type: "reasoning", reasoning: "private Venice reasoning" },
+          { type: "text", text: "Nothing to save." },
+        ],
+        additional_kwargs: { reasoning_content: "private Venice reasoning" },
+        response_metadata: { model_provider: "openai", model_name: "venice-model" },
+      }),
+      new AIMessage({
+        content: [
+          { type: "reasoning", reasoning: "private Surplus reasoning" },
+          { type: "text", text: "Nothing to save." },
+        ],
+        additional_kwargs: { reasoning: "private Surplus reasoning" },
+        response_metadata: { model_provider: "openai", model_name: "surplus-model", finish_reason: "stop" },
+      }),
+      // A Responses-looking block is not authenticated without the matching
+      // completed raw reasoning envelope emitted by the pinned converter.
+      new AIMessage({
+        content: [
+          { type: "reasoning", reasoning: "private reasoning" },
+          { type: "text", text: "Nothing to save." },
+        ],
+        response_metadata: { model_provider: "openai", object: "response", status: "completed" },
+      }),
     ]) {
       expect(await prepareMemoryReview([], {
         ...options,
@@ -164,6 +257,41 @@ describe("Memory transform completion", () => {
         invalid_tool_calls: [{ name: "manage_memory", args: "{", error: "invalid" }],
       })]),
     })).toMatchObject({ status: "failed", reason: "invalid_proposal" });
+  });
+  test("rejects reasoning-only, malformed, arbitrary, and multi-text OpenAI Responses decisions", async () => {
+    setup();
+    const options = { workId: "work", modelId: "openai:gpt-5.5", memoryAccessEnvelope: envelope };
+    const reasoningOnly = openAINoChangeResponse();
+    reasoningOnly.content = reasoningOnly.content.slice(0, 1);
+    const malformed = openAINoChangeResponse();
+    malformed.content = [
+      { type: "reasoning", reasoning: 42 },
+      { type: "text", text: "Nothing to save." },
+    ];
+    const arbitrary = openAINoChangeResponse();
+    arbitrary.content = [
+      ...(arbitrary.content as Exclude<BaseMessage["content"], string>),
+      { type: "image_url", image_url: { url: "data:image/png;base64," } },
+    ];
+    const arbitraryProviderOutput = openAINoChangeResponse([{
+      type: "web_search_call", id: "search_memory_review", status: "completed",
+    }]);
+    const duplicateReasoning = openAINoChangeResponse();
+    const blocks = duplicateReasoning.content as Exclude<BaseMessage["content"], string>;
+    duplicateReasoning.content = [blocks[0]!, ...blocks];
+    const multipleText = openAINoChangeResponse();
+    multipleText.content = [
+      ...(multipleText.content as Exclude<BaseMessage["content"], string>),
+      { type: "text", text: "Extra" },
+    ];
+    for (const response of [
+      reasoningOnly, malformed, arbitrary, arbitraryProviderOutput, duplicateReasoning, multipleText,
+    ]) {
+      expect(await prepareMemoryReview([], {
+        ...options,
+        invokeModel: model([response]),
+      })).toMatchObject({ status: "failed", reason: "invalid_proposal" });
+    }
   });
   test("Anthropic private reasoning does not displace strict tool-call completion", async () => {
     setup();

@@ -192,11 +192,72 @@ function isAnthropicPrivateReasoningBlock(
     : candidate["type"] === "redacted_thinking" && typeof candidate["data"] === "string";
 }
 
+function record(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function openAIReasoningSummaryText(value: unknown): string | null {
+  if (!Array.isArray(value) || value.length === 0) return null;
+  const text: string[] = [];
+  for (const part of value) {
+    const summary = record(part);
+    if (summary?.["type"] !== "summary_text" || typeof summary["text"] !== "string") {
+      return null;
+    }
+    if (summary["text"]) text.push(summary["text"]);
+  }
+  return text.length > 0 ? text.join("") : null;
+}
+
+function isOpenAIResponsesPrivateReasoningBlock(
+  block: unknown,
+  response: AIMessage,
+): boolean {
+  const metadata = response.response_metadata;
+  if (metadata["model_provider"] !== "openai"
+    || metadata["object"] !== "response"
+    || metadata["status"] !== "completed") return false;
+  const candidate = record(block);
+  if (candidate?.["type"] !== "reasoning" || typeof candidate["reasoning"] !== "string") {
+    return false;
+  }
+  const rawReasoning = record(response.additional_kwargs["reasoning"]);
+  const rawId = rawReasoning?.["id"];
+  const summaryText = rawReasoning?.["type"] === "reasoning"
+    ? openAIReasoningSummaryText(rawReasoning["summary"])
+    : null;
+  if (typeof rawId !== "string" || rawId.length === 0
+    || summaryText === null || candidate["reasoning"] !== summaryText) return false;
+  const output = metadata["output"];
+  if (!Array.isArray(output) || output.length !== 2) return false;
+  const reasoningItems = output.filter((item) => record(item)?.["type"] === "reasoning");
+  const messageItems = output.filter((item) => record(item)?.["type"] === "message");
+  if (reasoningItems.length !== 1 || messageItems.length !== 1) return false;
+  const outputReasoning = record(reasoningItems[0]);
+  const outputMessage = record(messageItems[0]);
+  const outputContent = outputMessage?.["content"];
+  if (outputMessage?.["status"] !== "completed" || outputMessage["role"] !== "assistant"
+    || !Array.isArray(outputContent) || outputContent.length !== 1) return false;
+  const outputText = record(outputContent[0]);
+  if (outputText?.["type"] !== "output_text" || typeof outputText["text"] !== "string") {
+    return false;
+  }
+  const responseContent = response.content;
+  if (!Array.isArray(responseContent) || responseContent.length !== 2) return false;
+  return outputReasoning?.["id"] === rawId
+    && openAIReasoningSummaryText(outputReasoning["summary"]) === summaryText
+    && responseContent.some((part) => record(part)?.["type"] === "text"
+      && record(part)?.["text"] === outputText["text"]);
+}
+
 function cleanTextResponse(response: AIMessage): string | null {
   const { content } = response;
   if (typeof content === "string") return content.trim();
   if (!Array.isArray(content)) return null;
-  const visible = content.filter((part) => !isAnthropicPrivateReasoningBlock(part, response));
+  const visible = content.filter((part) => !isAnthropicPrivateReasoningBlock(part, response)
+    && !isOpenAIResponsesPrivateReasoningBlock(part, response));
   if (visible.length !== 1) return null;
   const [part] = visible;
   if (!part || typeof part !== "object" || part.type !== "text" || typeof part.text !== "string") return null;
