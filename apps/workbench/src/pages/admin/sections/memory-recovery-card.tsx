@@ -209,12 +209,23 @@ function OperatorMemoryRecoveryCard({ operatorId }: { operatorId: string | null 
   }, [canRead]);
   useEffect(() => { void refresh(); return () => { refreshSequence.current++; }; }, [refresh]);
   useEffect(() => {
-    if (!canRead || !hasRun) return;
-    const poll = window.setInterval(() => {
-      if (document.visibilityState !== "hidden" && !submitting.current) void refresh();
-    }, 10_000);
-    return () => window.clearInterval(poll);
-  }, [canRead, hasRun, refresh]);
+    if (!canRead || !hasRun || loading || running) return;
+    let timer: number | undefined;
+    function schedule() {
+      window.clearTimeout(timer);
+      if (document.visibilityState !== "hidden") {
+        timer = window.setTimeout(() => { void refresh(); }, 10_000);
+      }
+    }
+    // A fast status read can settle in a single render. Schedule again when
+    // the summaries change even if React batched the loading state updates.
+    schedule();
+    document.addEventListener("visibilitychange", schedule);
+    return () => {
+      window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", schedule);
+    };
+  }, [canRead, hasRun, loading, running, refresh, summaries]);
   async function recover() {
     if (!canManage || !receiptKnown || submitting.current) return;
     submitting.current = true;

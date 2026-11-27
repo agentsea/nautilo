@@ -1,6 +1,6 @@
 import { reapplyHappyDomGlobals } from "../../../../tests/bun-dom-preload";
-import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, jest, mock, test } from "bun:test";
+import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import type { CapabilitySlug, MemoryAdminStatus, MemoryRecoveryRun, ReflectionAdminStatus, StenographerAdminStatus } from "@nautilo/types";
 
@@ -217,6 +217,34 @@ describe("MemoryRecoveryCard", () => {
     await waitFor(() => expect(getMemory).toHaveBeenCalledTimes(2));
     expect(getStenographer).toHaveBeenCalledTimes(2);
     expect(getReflection).toHaveBeenCalledTimes(2);
+  });
+
+  test("waits for slow diagnostics to settle before scheduling the next poll", async () => {
+    jest.useFakeTimers();
+    try {
+      latest.mockResolvedValue({ run: receipt });
+      const view = show();
+      await act(async () => {});
+      const slow = Promise.withResolvers<MemoryAdminStatus>();
+      getMemory.mockImplementationOnce(() => slow.promise);
+      await act(async () => jest.advanceTimersByTime(10_000));
+      expect(getMemory).toHaveBeenCalledTimes(2);
+      await act(async () => jest.advanceTimersByTime(30_000));
+      expect(getMemory).toHaveBeenCalledTimes(2);
+      await act(async () => slow.resolve({ ...memoryFixture(), enabled: false }));
+      expect(view.getByText("Paused")).toBeTruthy();
+      await act(async () => jest.advanceTimersByTime(9_999));
+      expect(getMemory).toHaveBeenCalledTimes(2);
+      await act(async () => jest.advanceTimersByTime(1));
+      expect(getMemory).toHaveBeenCalledTimes(3);
+      await act(async () => jest.advanceTimersByTime(10_000));
+      expect(getMemory).toHaveBeenCalledTimes(4);
+      view.unmount();
+      await act(async () => jest.advanceTimersByTime(10_000));
+      expect(getMemory).toHaveBeenCalledTimes(4);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   test("never clears current unknown outcomes and distinguishes pauses from attention", () => {
