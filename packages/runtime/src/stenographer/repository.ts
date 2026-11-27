@@ -179,6 +179,33 @@ function acceptedOrdinaryCompactionPlan(
   });
 }
 
+function currentAcceptedOrdinaryCompactionPlan(input: Readonly<{
+  acceptedPlan: Extract<StenographerCompactionAcceptedPlan, { owner: "ordinary" }>;
+  rebuildGeneration: number;
+  latestRollup: RoomEventRollupView | null;
+  allEvents: readonly EffectiveRoomEvent[];
+}>): ReturnType<typeof planJournalCompaction<EffectiveRoomEvent>> | null {
+  const eventById = new Map(input.allEvents.map(event => [event.id, event]));
+  const frozenEvents = [
+    ...input.acceptedPlan.selectedEventIds,
+    ...input.acceptedPlan.protectedTailEventIds,
+  ].map(id => eventById.get(id));
+  if (input.acceptedPlan.rebuildGeneration !== input.rebuildGeneration
+    || input.acceptedPlan.previousRollupId !== (input.latestRollup?.id ?? null)
+    || frozenEvents.some(event => event === undefined)) return null;
+  const planned = planJournalCompaction({
+    events: frozenEvents as EffectiveRoomEvent[],
+    rollups: input.latestRollup ? [input.latestRollup] : [],
+    forceDue: true,
+  });
+  if (!planned.ok || !planned.plan) return planned;
+  if (JSON.stringify(planned.plan.selectedEvents.map(event => event.id))
+      !== JSON.stringify(input.acceptedPlan.selectedEventIds)
+    || JSON.stringify(planned.plan.protectedTail.map(event => event.id))
+      !== JSON.stringify(input.acceptedPlan.protectedTailEventIds)) return null;
+  return planned;
+}
+
 interface StateRow {
   room_id: string;
   owner_id: string;
@@ -1823,6 +1850,44 @@ export async function resolveCurrentOrdinaryCompactionCoordinates(
   }
 }
 
+/** Recompute one stored ordinary plan from its exact current source under the caller's lock. */
+export async function isCurrentOrdinaryCompactionAcceptedPlan(
+  tx: JournalExecutor,
+  roomId: string,
+): Promise<boolean> {
+  const [state] = await tx.select({
+    namespaceId: rooms.namespaceId,
+    rebuildGeneration: roomJournalState.rebuildGeneration,
+    rebuildRequestedAt: roomJournalState.rebuildRequestedAt,
+    acceptedPlan: roomJournalState.compactionAcceptedPlan,
+  }).from(roomJournalState)
+    .innerJoin(rooms, eq(rooms.id, roomJournalState.roomId))
+    .where(eq(roomJournalState.roomId, roomId))
+    .limit(1);
+  if (!state || state.rebuildRequestedAt !== null) return false;
+  let accepted: Extract<StenographerCompactionAcceptedPlan, { owner: "ordinary" }> | null;
+  try {
+    accepted = acceptedOrdinaryCompactionPlan(state.acceptedPlan);
+  } catch {
+    return false;
+  }
+  if (accepted === null) return false;
+  try {
+    const journal = await loadPromptJournal(tx, roomId, state.namespaceId);
+    const events = await loadAllRoomEvents(tx, roomId, state.namespaceId);
+    const planned = currentAcceptedOrdinaryCompactionPlan({
+      acceptedPlan: accepted,
+      rebuildGeneration: state.rebuildGeneration,
+      latestRollup: journal.latestRollup,
+      allEvents: events,
+    });
+    return !!(planned?.ok && planned.plan);
+  } catch (error) {
+    if (error instanceof StenographerSourceRepresentationUnavailableError) return false;
+    throw error;
+  }
+}
+
 function ordinaryCompactionOperationId(
   roomId: string,
   rebuildGeneration: number,
@@ -2060,29 +2125,18 @@ export async function tryClaimCompactionRoom(
     const acceptedPlan = acceptedOrdinaryCompactionPlan(
       state.compaction_accepted_plan,
     );
-    const eventById = new Map(allEvents.map((event) => [event.id, event]));
-    const frozenEvents = acceptedPlan === null
-      ? null
-      : [
-          ...acceptedPlan.selectedEventIds,
-          ...acceptedPlan.protectedTailEventIds,
-        ].map((id) => eventById.get(id));
-    if (
-      acceptedPlan !== null
-      && (
-        acceptedPlan.rebuildGeneration !== rebuildGeneration
-        || acceptedPlan.previousRollupId
-          !== (journal.latestRollup?.id ?? null)
-        || (frozenEvents?.some((event) => event === undefined) ?? true)
-      )
-    ) return null;
-    const planned = planJournalCompaction({
-      events: acceptedPlan === null
-        ? allEvents
-        : frozenEvents as EffectiveRoomEvent[],
-      rollups: journal.latestRollup ? [journal.latestRollup] : [],
-      ...(acceptedPlan === null ? {} : { forceDue: true }),
-    });
+    const currentAcceptedPlan = acceptedPlan === null ? null
+      : currentAcceptedOrdinaryCompactionPlan({
+          acceptedPlan,
+          rebuildGeneration,
+          latestRollup: journal.latestRollup,
+          allEvents,
+        });
+    if (acceptedPlan !== null && currentAcceptedPlan === null) return null;
+    const planned = currentAcceptedPlan ?? planJournalCompaction({
+          events: allEvents,
+          rollups: journal.latestRollup ? [journal.latestRollup] : [],
+        });
     if (!planned.ok) {
       const failureCount = asNumber(state.compaction_failure_count) + 1;
       await tx
@@ -2110,15 +2164,6 @@ export async function tryClaimCompactionRoom(
         .where(eq(roomJournalState.roomId, roomId));
       return null;
     }
-    if (
-      acceptedPlan !== null
-      && (
-        JSON.stringify(planned.plan.selectedEvents.map((event) => event.id))
-          !== JSON.stringify(acceptedPlan.selectedEventIds)
-        || JSON.stringify(planned.plan.protectedTail.map((event) => event.id))
-          !== JSON.stringify(acceptedPlan.protectedTailEventIds)
-      )
-    ) return null;
     const modelOperationId = acceptedPlan?.operationId
       ?? ordinaryCompactionOperationId(
         roomId,

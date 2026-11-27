@@ -1,4 +1,4 @@
-import { and, eq, gte, inArray, isNull, notExists, notInArray, or, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, isNull, lte, notExists, notInArray, or, sql } from "drizzle-orm";
 import { QueryBuilder } from "drizzle-orm/pg-core";
 import { getSharedDirectDb, type DirectDatabase } from "../config/direct-database";
 import { llmUsageEvents } from "../schema/llm-usage";
@@ -103,13 +103,19 @@ function matchingAttempts(identity: ModelAttemptReplayIdentity) {
 export async function hasOnlyRefusedServiceAttempts(
   identities: readonly ModelAttemptReplayIdentity[],
   db: ModelAttemptReplayDb,
-  current: Readonly<{ modelId: string; attemptId?: string; occurredAtOrAfter?: Date }>,
+  current: Readonly<{
+    modelId: string;
+    attemptId?: string;
+    occurredAtOrAfter?: Date;
+    occurredAtOrBefore?: Date;
+  }>,
 ): Promise<boolean> {
   if (identities.length === 0) return false;
   const currentAttempt = and(
     eq(llmUsageEvents.model, current.modelId),
     current.attemptId === undefined ? undefined : eq(sql<string>`${llmUsageEvents.metadata}->>'attemptId'`, current.attemptId),
     current.occurredAtOrAfter === undefined ? undefined : gte(llmUsageEvents.occurredAt, current.occurredAtOrAfter),
+    current.occurredAtOrBefore === undefined ? undefined : lte(llmUsageEvents.occurredAt, current.occurredAtOrBefore),
   );
   const [row] = await db.select({
     proven: sql<boolean>`coalesce(bool_or(${currentAttempt}), false) and coalesce(bool_and(coalesce(

@@ -1,11 +1,12 @@
 import {
   acquireRoomWriteLock, and, asc, eq, getEncryptionTransitionPolicy, gt, gte,
   hasOnlyRefusedServiceAttempts, inArray, isNotNull, isNull, llmUsageEvents, ne,
-  readRoomJournalServiceRecoveryPage, rebindRoomJournalFailedBatchServiceModel,
+  readRoomJournalCompactionServiceRecoveryPage, readRoomJournalServiceRecoveryPage,
+  rebindRoomJournalFailedBatchServiceModel, rebindRoomJournalFailedCompactionServiceModel,
   reflectionRecordSemanticWork, reflectionRecords, roomEvents, rooms, sql,
   type DirectDatabase,
 } from "@nautilo/db";
-import { reflectionModelOperationId } from "@nautilo/runtime";
+import { isCurrentOrdinaryCompactionAcceptedPlan, reflectionModelOperationId } from "@nautilo/runtime";
 import { parseMemoryOperationBinding, type MemoryOperationBinding } from "@nautilo/types";
 
 type ReflectionWork = typeof reflectionRecordSemanticWork.$inferSelect;
@@ -189,6 +190,7 @@ export function createAutomaticMemoryRecovery(options: Readonly<{
   resolveReflectionModel(): string;
 }>) {
   let journalAfter: string | undefined;
+  let journalCompactionAfter: string | undefined;
   let reflectionAfter: string | undefined;
 
   return {
@@ -207,6 +209,23 @@ export function createAutomaticMemoryRecovery(options: Readonly<{
         journalAfter = candidate.batchId;
       }
       if (page.length < input.limit) journalAfter = undefined;
+      const compactions = await readRoomJournalCompactionServiceRecoveryPage(db, {
+        modelId, limit: input.limit,
+        ...(journalCompactionAfter === undefined ? {} : { after: journalCompactionAfter }),
+      });
+      for (const candidate of compactions) {
+        if (input.signal.aborted || options.resolveJournalModel() !== modelId) return;
+        await rebindRoomJournalFailedCompactionServiceModel(
+          db,
+          { ...candidate, modelId, now: input.now },
+          (tx, current) => isCurrentOrdinaryCompactionAcceptedPlan(
+            tx,
+            current.roomId,
+          ),
+        );
+        journalCompactionAfter = candidate.roomId;
+      }
+      if (compactions.length < input.limit) journalCompactionAfter = undefined;
     },
 
     async recoverReflection(input: Readonly<{ now: Date; limit: number; signal: AbortSignal }>) {

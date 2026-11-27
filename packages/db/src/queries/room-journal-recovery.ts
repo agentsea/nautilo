@@ -15,7 +15,9 @@ import type { DirectDatabase } from "../config/direct-database";
 import {
   roomJournalBatches,
   roomJournalCryptoPublications,
+  roomJournalModelRecoveries,
   roomJournalState,
+  type StenographerCompactionAcceptedPlan,
 } from "../schema/room-journal";
 import { roomMembers, rooms } from "../schema/rooms";
 import { actors } from "../schema/trust";
@@ -42,7 +44,29 @@ export type RoomJournalServiceModelRebindBlockedReason =
   | "rebuild_pending"
   | "lease_active"
   | "crypto_publication_exists"
-  | "attempt_outcome_not_refused";
+  | "attempt_outcome_not_refused"
+  | "manual_recovery_exists"
+  | "plan_not_current";
+
+export interface RoomJournalCompactionServiceModelRebindInput {
+  readonly roomId: string;
+  readonly expectedRebuildGeneration: number;
+  readonly expectedFailureAttempt: number;
+  readonly expectedCurrentModelId: string;
+  readonly expectedOperationId: string;
+  readonly modelId: string;
+  readonly now?: Date;
+}
+
+type OrdinaryCompactionPlan = Extract<
+  StenographerCompactionAcceptedPlan,
+  { owner: "ordinary" }
+>;
+
+export type CurrentOrdinaryCompactionPlanGuard = (
+  tx: RecoveryTransaction,
+  input: Readonly<{ roomId: string; plan: OrdinaryCompactionPlan }>,
+) => Promise<boolean>;
 
 export type RebindRoomJournalServiceModelResult =
   | Readonly<{ status: "queued"; rebuildGeneration: number }>
@@ -394,6 +418,187 @@ export async function rebindRoomJournalFailedBatchServiceModel(
       rebuildGeneration: result.value.rebuildGeneration,
     };
   });
+}
+
+function ordinaryCompactionPlan(value: unknown): OrdinaryCompactionPlan | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const row = value as Record<string, unknown>;
+  const selected = row["selectedEventIds"];
+  const protectedTail = row["protectedTailEventIds"];
+  if (row["version"] !== 1 || row["owner"] !== "ordinary"
+    || typeof row["operationId"] !== "string" || row["operationId"].length === 0
+    || !Number.isSafeInteger(row["rebuildGeneration"])
+    || !(row["previousRollupId"] === null || typeof row["previousRollupId"] === "string")
+    || !Array.isArray(selected)
+    || !Array.isArray(protectedTail)
+    || [...selected as readonly unknown[], ...protectedTail as readonly unknown[]]
+      .some(id => typeof id !== "string" || id.length === 0)) return null;
+  return value as OrdinaryCompactionPlan;
+}
+
+/**
+ * Rebind one exact refused service-funded compaction without replacing its
+ * accepted source plan, failure coordinates, or any operator recovery grant.
+ */
+export async function rebindRoomJournalFailedCompactionServiceModel(
+  db: Pick<DirectDatabase, "select" | "update" | "transaction">,
+  input: RoomJournalCompactionServiceModelRebindInput,
+  currentPlan: CurrentOrdinaryCompactionPlanGuard,
+): Promise<RebindRoomJournalServiceModelResult> {
+  if (!input.modelId || input.modelId.trim() !== input.modelId) {
+    return { status: "stale", rebuildGeneration: null };
+  }
+  const now = input.now ?? new Date();
+  return db.transaction(async tx => {
+    await acquireRoomWriteLock(tx, input.roomId);
+    const agentMember = tx.select({ one: sql`1` }).from(roomMembers)
+      .innerJoin(actors, eq(actors.id, roomMembers.actorId))
+      .where(and(
+        eq(roomMembers.roomId, rooms.id),
+        eq(actors.kind, "agent"),
+      ));
+    const [state] = await tx.select({
+      roomKind: rooms.kind,
+      archivedAt: rooms.archivedAt,
+      suspendedAt: roomJournalState.suspendedAt,
+      hasAgent: exists(agentMember).mapWith(Boolean),
+      rebuildGeneration: roomJournalState.rebuildGeneration,
+      rebuildRequestedAt: roomJournalState.rebuildRequestedAt,
+      compactionDueAt: roomJournalState.compactionDueAt,
+      binding: roomJournalState.compactionAcceptedModelBinding,
+      plan: roomJournalState.compactionAcceptedPlan,
+      failureCount: roomJournalState.compactionFailureCount,
+      errorCode: roomJournalState.lastCompactionErrorCode,
+      errorAt: roomJournalState.lastCompactionErrorAt,
+      errorAttempt: roomJournalState.lastCompactionErrorAttempt,
+      errorModelId: roomJournalState.lastCompactionErrorModelId,
+      extractionLeaseActive: and(
+        isNotNull(roomJournalState.leaseToken),
+        gt(roomJournalState.leaseExpiresAt, now),
+      )!.mapWith(Boolean),
+      compactionLeaseActive: and(
+        isNotNull(roomJournalState.compactionLeaseToken),
+        gt(roomJournalState.compactionLeaseExpiresAt, now),
+      )!.mapWith(Boolean),
+      conversionLeaseActive: and(
+        isNotNull(roomJournalState.recordConversionLeaseToken),
+        gt(roomJournalState.recordConversionLeaseExpiresAt, now),
+      )!.mapWith(Boolean),
+      extractionAttemptRunning: exists(
+        tx.select({ one: sql`1` }).from(roomJournalBatches).where(and(
+          eq(roomJournalBatches.roomId, roomJournalState.roomId),
+          eq(roomJournalBatches.status, "running"),
+        )),
+      ).mapWith(Boolean),
+    }).from(roomJournalState)
+      .innerJoin(rooms, eq(rooms.id, roomJournalState.roomId))
+      .where(eq(roomJournalState.roomId, input.roomId))
+      .limit(1).for("update", { of: roomJournalState });
+    if (!state) return { status: "stale", rebuildGeneration: null };
+    if (state.rebuildGeneration !== input.expectedRebuildGeneration
+      || state.failureCount !== input.expectedFailureAttempt
+      || state.errorAttempt !== input.expectedFailureAttempt) {
+      return { status: "stale", rebuildGeneration: state.rebuildGeneration };
+    }
+    if (state.roomKind === "task" || state.roomKind === "access"
+      || state.archivedAt !== null || state.suspendedAt !== null || !state.hasAgent) {
+      return { status: "blocked", reason: "ineligible_room", rebuildGeneration: state.rebuildGeneration };
+    }
+    if (state.rebuildRequestedAt !== null || state.compactionDueAt === null) {
+      return { status: "blocked", reason: "rebuild_pending", rebuildGeneration: state.rebuildGeneration };
+    }
+    if (state.extractionLeaseActive || state.compactionLeaseActive
+      || state.conversionLeaseActive || state.extractionAttemptRunning) {
+      return { status: "blocked", reason: "lease_active", rebuildGeneration: state.rebuildGeneration };
+    }
+    if (state.errorCode !== "provider" || state.errorAt === null
+      || state.errorModelId !== input.expectedCurrentModelId) {
+      return { status: "blocked", reason: "batch_not_failed", rebuildGeneration: state.rebuildGeneration };
+    }
+    let binding: MemoryOperationBinding;
+    try {
+      binding = parseMemoryOperationBinding(state.binding);
+    } catch {
+      return { status: "blocked", reason: "binding_not_service", rebuildGeneration: state.rebuildGeneration };
+    }
+    const plan = ordinaryCompactionPlan(state.plan);
+    if (binding.kind !== "service" || binding.role !== "memorySummarization"
+      || binding.modelId !== input.expectedCurrentModelId || plan === null
+      || plan.operationId !== input.expectedOperationId
+      || plan.rebuildGeneration !== state.rebuildGeneration) {
+      return { status: "blocked", reason: "binding_not_service", rebuildGeneration: state.rebuildGeneration };
+    }
+    if (binding.modelId === input.modelId) {
+      return { status: "blocked", reason: "model_unchanged", rebuildGeneration: state.rebuildGeneration };
+    }
+    const [manualRecovery] = await tx.select({ id: roomJournalModelRecoveries.id })
+      .from(roomJournalModelRecoveries).where(and(
+        eq(roomJournalModelRecoveries.roomId, input.roomId),
+        eq(roomJournalModelRecoveries.workKind, "compaction"),
+        eq(roomJournalModelRecoveries.workId, plan.operationId),
+        eq(roomJournalModelRecoveries.rebuildGeneration, state.rebuildGeneration),
+        isNull(roomJournalModelRecoveries.spentAt),
+      )).limit(1).for("update", { of: roomJournalModelRecoveries });
+    if (manualRecovery) {
+      return { status: "blocked", reason: "manual_recovery_exists", rebuildGeneration: state.rebuildGeneration };
+    }
+    if (!await hasOnlyRefusedServiceAttempts([{
+      kind: "operation",
+      roomId: input.roomId,
+      callType: "room_event_compaction",
+      operationId: plan.operationId,
+    }], tx, { modelId: binding.modelId, occurredAtOrBefore: state.errorAt })) {
+      return { status: "blocked", reason: "attempt_outcome_not_refused", rebuildGeneration: state.rebuildGeneration };
+    }
+    if (!await currentPlan(tx, { roomId: input.roomId, plan })) {
+      return { status: "blocked", reason: "plan_not_current", rebuildGeneration: state.rebuildGeneration };
+    }
+    const [updated] = await tx.update(roomJournalState).set({
+      compactionAcceptedModelBinding: { ...binding, modelId: input.modelId },
+      compactionRetryAfter: null,
+      updatedAt: now,
+    }).where(and(
+      eq(roomJournalState.roomId, input.roomId),
+      eq(roomJournalState.rebuildGeneration, state.rebuildGeneration),
+      eq(roomJournalState.compactionFailureCount, input.expectedFailureAttempt),
+      eq(roomJournalState.lastCompactionErrorAttempt, input.expectedFailureAttempt),
+      eq(roomJournalState.lastCompactionErrorModelId, input.expectedCurrentModelId),
+    )).returning({ roomId: roomJournalState.roomId });
+    return updated
+      ? { status: "queued", rebuildGeneration: state.rebuildGeneration }
+      : { status: "stale", rebuildGeneration: state.rebuildGeneration };
+  });
+}
+
+/** Scan refused service compactions; the mutator rechecks every coordinate under lock. */
+export async function readRoomJournalCompactionServiceRecoveryPage(
+  db: Pick<DirectDatabase, "select">,
+  input: Readonly<{ modelId: string; after?: string; limit: number }>,
+): Promise<Omit<RoomJournalCompactionServiceModelRebindInput, "modelId" | "now">[]> {
+  const oldModel = sql<string>`${roomJournalState.compactionAcceptedModelBinding}->>'modelId'`;
+  const operationId = sql<string>`${roomJournalState.compactionAcceptedPlan}->>'operationId'`;
+  return db.select({
+    roomId: roomJournalState.roomId,
+    expectedRebuildGeneration: roomJournalState.rebuildGeneration,
+    expectedFailureAttempt: sql<number>`${roomJournalState.lastCompactionErrorAttempt}`,
+    expectedCurrentModelId: oldModel,
+    expectedOperationId: operationId,
+  }).from(roomJournalState)
+    .innerJoin(rooms, eq(rooms.id, roomJournalState.roomId))
+    .where(and(
+      isNotNull(roomJournalState.compactionDueAt),
+      isNull(roomJournalState.rebuildRequestedAt),
+      eq(roomJournalState.lastCompactionErrorCode, "provider"),
+      eq(roomJournalState.lastCompactionErrorAttempt, roomJournalState.compactionFailureCount),
+      eq(roomJournalState.lastCompactionErrorModelId, oldModel),
+      eq(sql<string>`${roomJournalState.compactionAcceptedModelBinding}->>'kind'`, "service"),
+      eq(sql<string>`${roomJournalState.compactionAcceptedModelBinding}->>'role'`, "memorySummarization"),
+      eq(sql<string>`${roomJournalState.compactionAcceptedPlan}->>'owner'`, "ordinary"),
+      ne(oldModel, input.modelId),
+      isNull(rooms.archivedAt),
+      isNull(roomJournalState.suspendedAt),
+      input.after === undefined ? undefined : gt(roomJournalState.roomId, input.after),
+    )).orderBy(asc(roomJournalState.roomId)).limit(input.limit);
 }
 
 /** Scan current failed batches only. The rebind rechecks the exact coordinates under lock. */
