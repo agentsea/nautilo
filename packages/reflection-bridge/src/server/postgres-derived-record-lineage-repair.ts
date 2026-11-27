@@ -9,6 +9,7 @@ import {
   lte,
   ne,
   notExists,
+  or,
   reflectionRecordAuthorityReconciliations,
   reflectionRecordPayloadRepresentationHeads,
   reflectionRecordPublications,
@@ -29,7 +30,7 @@ export interface DerivedRecordLineageRepairResult {
 }
 
 /**
- * Re-arm exact deterministic candidate-selection failures in place. This
+ * Re-arm pre-dispatch dependency checks on generated Records in place. This
  * command never opens payload or source text, changes a Record, binds a model,
  * or creates a billable generation. The ordinary worker remains the sole
  * owner of source access, authority, cycle, and publication revalidation.
@@ -114,10 +115,13 @@ export async function repairBlockedDerivedRecordLineage(input: Readonly<{
         eq(reflectionRecordSemanticWork.stage, "organization"),
         eq(reflectionRecordSemanticWork.changeReason, "dependency_lost"),
         eq(reflectionRecordSemanticWork.failureCode, "candidate_unavailable"),
-        eq(
-          reflectionRecordSemanticWork.failureDetail,
-          "candidate_selection_invalid",
+        // Dependency revalidation also returns a plain candidate hold when
+        // an upstream projection or exact source binding was unavailable.
+        or(
+          eq(reflectionRecordSemanticWork.failureDetail, "candidate_selection_invalid"),
+          isNull(reflectionRecordSemanticWork.failureDetail),
         ),
+        isNull(reflectionRecordSemanticWork.manualRecoveryId),
         lte(reflectionRecordSemanticWork.updatedAt, observedThrough),
         lt(reflectionRecordSemanticWork.updatedAt, now),
         isNull(reflectionRecordSemanticWork.claimGeneration),

@@ -105,7 +105,7 @@ test("re-arms exact deterministic work while fencing protected, pending, bound, 
         createdAt: BASE}).returning({id: roomJournalBatches.id});
 
       const ids = {source: randomUUID(), good: `derived-good-${suffix}`,
-        pending: `derived-pending-${suffix}`,
+        pending: `derived-pending-${suffix}`, missing: `derived-missing-${suffix}`,
         protected: `derived-protected-${suffix}`, bound: `derived-bound-${suffix}`,
         newer: `derived-newer-${suffix}`};
       const source = {id: message!.id, revision: message!.revision, content};
@@ -114,6 +114,8 @@ test("re-arms exact deterministic work while fencing protected, pending, bound, 
           namespaceId: namespace!.id, message: source}),
         envelope({recordRef: ids.good, children: [ids.source],
           height: 2, roomId, namespaceId: namespace!.id}),
+        envelope({recordRef: ids.missing, children: [ids.source], height: 1, roomId,
+          namespaceId: namespace!.id}),
         envelope({recordRef: ids.pending, children: [ids.source], height: 1, roomId,
           namespaceId: namespace!.id}),
         envelope({recordRef: ids.protected, children: [ids.source], height: 1, roomId,
@@ -158,6 +160,7 @@ test("re-arms exact deterministic work while fencing protected, pending, bound, 
       });
       await tx.insert(reflectionRecordDependencies).values([
         {parentRecordId: ids.good, childRecordId: ids.source},
+        {parentRecordId: ids.missing, childRecordId: ids.source},
         {parentRecordId: ids.pending, childRecordId: ids.source},
         {parentRecordId: ids.protected, childRecordId: ids.source},
         {parentRecordId: ids.bound, childRecordId: ids.source},
@@ -178,8 +181,10 @@ test("re-arms exact deterministic work while fencing protected, pending, bound, 
       });
       await tx.insert(reflectionRecordSemanticWork).values([
         completeWork(ids.source), quarantinedWork(ids.good), quarantinedWork(ids.pending),
-        quarantinedWork(ids.protected),
+        quarantinedWork(ids.missing, {failureDetail: null}),
+        quarantinedWork(ids.protected, {failureDetail: null}),
         quarantinedWork(ids.bound, {
+          failureDetail: null,
           acceptedModelBinding: {version: 1, kind: "human", role: "memoryReflection",
             modelId: "openai:human", inputCommitment: `hmac-sha256:${"P".repeat(43)}`,
             humanUserId: ownerId, preferenceRevision: 1,
@@ -201,7 +206,7 @@ test("re-arms exact deterministic work while fencing protected, pending, bound, 
       const observedThrough = new Date(BASE.getTime() + 60_000);
       const run = () => repairBlockedDerivedRecordLineage({handle,
         now, observedThrough, authorizedBy: ownerId});
-      expect(await run()).toEqual({requeued: 1});
+      expect(await run()).toEqual({requeued: 2});
       const stored = await tx.select({id: reflectionRecords.recordId,
         lifecycle: reflectionRecords.lifecycle, generation: reflectionRecords.processingGeneration})
         .from(reflectionRecords).where(inArray(reflectionRecords.recordId, [
@@ -216,6 +221,10 @@ test("re-arms exact deterministic work while fencing protected, pending, bound, 
         .where(eq(reflectionRecordSemanticWork.recordId, ids.good));
       expect(good).toMatchObject({generation: 8, state: "quarantined", recoverAfter: now,
         updatedAt: now});
+      const [missing] = await tx.select().from(reflectionRecordSemanticWork)
+        .where(eq(reflectionRecordSemanticWork.recordId, ids.missing));
+      expect(missing).toMatchObject({generation: 8, state: "quarantined", recoverAfter: now,
+        manualRecoveryId: null, manualRecoverySpentAt: null, acceptedModelBinding: null});
       const [pending] = await tx.select().from(reflectionRecordSemanticWork)
         .where(eq(reflectionRecordSemanticWork.recordId, ids.pending));
       expect(pending).toMatchObject({generation: 8, state: "quarantined", recoverAfter: BASE,
