@@ -960,6 +960,7 @@ export {
 export {
   classifyModelAttemptReplaySafety,
   hasSettledServiceMemoryReview,
+  hasOnlyRefusedServiceAttempts,
   KNOWN_NONUSABLE_MEMORY_REVIEW_FAILURES,
   resolveModelAttemptReplaySafety,
   type ModelAttemptReplayIdentity,
@@ -1064,6 +1065,7 @@ export * from "./queries/claude-connections";
 export * from "./queries/memory-review";
 
 export * from "./queries/memory-review-status";
+export * from "./queries/room-journal-recovery";
 
 export { shareWorkspaceArtifact, listWorkspaceSharesForHuman } from "./queries/workspace-sharing";
 

@@ -4,6 +4,7 @@ import type { MemoryAdminStatus } from "@nautilo/types";
 import { apiClient } from "../../../lib/api";
 import { useCan } from "../../../hooks/use-can";
 import { formatRelativeTime } from "../../../components/approvals/format-relative-time";
+import { MemoryRecoveryCard } from "./memory-recovery-card";
 
 // Same display-refresh cadence as the existing Encryption Admin card; not worker policy.
 const AUTO_REFRESH_MS = 10_000;
@@ -181,5 +182,6 @@ export function MemorySection() {
         {can("manage_billing") ? <Link to="/costs" className="inline-flex text-xs text-primary hover:underline">View model costs — Memory review and Memory flush</Link> : null}
       </div> : null}
     </div>
+    <MemoryRecoveryCard />
   </section>;
 }

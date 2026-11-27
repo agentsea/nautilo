@@ -6,6 +6,9 @@ export function StenographerSection() {
     <section id="stenographer" data-testid="admin-stenographer-section" aria-label="Stenographer">
       <StenographerHealthCard />
       <ContextRetentionCard />
+      <a href="/admin#memory" className="mt-3 inline-flex text-xs font-medium text-primary hover:underline">
+        Open Memory recovery
+      </a>
     </section>
   );
 }

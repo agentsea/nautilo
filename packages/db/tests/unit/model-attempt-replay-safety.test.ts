@@ -4,6 +4,7 @@ import { PgDialect } from "drizzle-orm/pg-core";
 import type { DirectDatabase } from "../../src/config/direct-database";
 import {
   classifyModelAttemptReplaySafety,
+  hasOnlyRefusedServiceAttempts,
   hasSettledServiceMemoryReview,
   resolveModelAttemptReplaySafety,
   type ModelAttemptReplayIdentity,
@@ -142,6 +143,71 @@ describe("model attempt replay safety", () => {
     const query = new PgDialect().sqlToQuery(predicate!);
     expect(query.params).toEqual([input.roomId, "memory_review", input.workId]);
     expect(query.sql).toContain("->>'workId'");
+  });
+
+  test("provider replacement requires only refused service-funded attempts for exact identities", async () => {
+    const memoryIdentity: Extract<ModelAttemptReplayIdentity, { kind: "memory_review" }> = {
+      kind: "memory_review",
+      roomId: "11111111-1111-4111-8111-111111111111",
+      workId: "memory-work-1",
+    };
+    const reflectionIdentity: Extract<ModelAttemptReplayIdentity, { kind: "operation" }> = {
+      kind: "operation",
+      roomId: "11111111-1111-4111-8111-111111111111",
+      callType: "room_reflection",
+      operationId: "reflection:operation-1",
+    };
+    const identities = [memoryIdentity, reflectionIdentity];
+    let aggregate: SQL | undefined;
+    let predicate: SQL | undefined;
+    let queries = 0;
+    const database = (proven: boolean | null) => ({
+      select: (selection: { proven: SQL }) => {
+        aggregate = selection.proven;
+        return {
+        from: () => ({
+          where: async (query: SQL) => {
+            queries += 1;
+            predicate = query;
+            return proven === null ? [] : [{ proven }];
+          },
+        }),
+        };
+      },
+    }) as unknown as DirectDatabase;
+
+    const current = { modelId: "openai:gpt-5.6-luna", attemptId: "current-attempt", occurredAtOrAfter: new Date("2026-11-27T10:00:00Z") };
+    expect(await hasOnlyRefusedServiceAttempts([], database(true), current)).toBe(false);
+    expect(queries).toBe(0);
+    expect(await hasOnlyRefusedServiceAttempts(identities, database(true), current)).toBe(true);
+    expect(await hasOnlyRefusedServiceAttempts(identities, database(false), current)).toBe(false);
+    expect(await hasOnlyRefusedServiceAttempts(identities, database(null), current)).toBe(false);
+
+    const dialect = new PgDialect();
+    const predicateQuery = dialect.sqlToQuery(predicate!);
+    expect(predicateQuery.params).toEqual([
+      memoryIdentity.roomId,
+      "memory_review",
+      memoryIdentity.workId,
+      reflectionIdentity.roomId,
+      "room_reflection",
+      reflectionIdentity.operationId,
+    ]);
+    expect(predicateQuery.sql).toContain("->>'workId'");
+    expect(predicateQuery.sql).toContain("->>'operationId'");
+    const aggregateQuery = dialect.sqlToQuery(aggregate!);
+    expect(aggregateQuery.sql).toContain("bool_and");
+    expect(aggregateQuery.sql).toContain("bool_or");
+    expect(aggregateQuery.sql).toContain("funding_kind");
+    expect(aggregateQuery.sql).toContain("payer_human_id");
+    expect(aggregateQuery.params).toEqual([
+      current.modelId,
+      current.attemptId,
+      current.occurredAtOrAfter.toISOString(),
+      "provider_refused",
+      "no_sellers_for_model",
+      "pre_service_refusal",
+    ]);
   });
 
   test("scopes image assistance by operation and never replays a succeeded wire without retained output", async () => {

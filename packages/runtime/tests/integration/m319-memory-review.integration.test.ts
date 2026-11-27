@@ -394,4 +394,67 @@ describe("M319 durable Memory processing on PostgreSQL", () => {
     expect(await withSerializableAgentTrustContext(trust, (tx) => tx.execute(sql`UPDATE memory_review_receipts SET delivered=0 WHERE owner_id=${userId}::uuid`)).then(() => false, () => true)).toBe(true);
     expect(await withSerializableAgentTrustContext(trust, (tx) => tx.execute(sql`SELECT email FROM users WHERE id=${userId}::uuid`)).then(() => false, () => true)).toBe(true);
   });
+
+  test("Room recovery previews one rejected cohort and allows one exact service model change", async () => {
+    await admit(randomUUID());
+    await admit(randomUUID());
+    const now = new Date();
+    const claim = await repo.claimNext({ now });
+    if (!claim) throw new Error("expected recovery fixture claim");
+    const originalModel = "openai:gpt-5.6-luna";
+    const targetModel = "anthropic:claude-haiku-5-5";
+    await repo.bindServiceModel(claim, () => originalModel);
+    await db.insert(llmUsageEvents).values({
+      roomId, callType: "memory_review", model: originalModel, provider: "openai",
+      fundingKind: "service", providerRoute: "openai", endpoint: "/v1/responses",
+      attemptOutcome: "failed", failureCode: "provider_refused", costState: "unknown",
+      metadata: { workId: claim.workId, attemptId: claim.attemptId },
+    });
+    await repo.fail({ claim, phase: "model", reason: "provider_failed", retryable: false, now });
+    const jobs = await repo.readRecoveryJobs(roomId, now, 5);
+    expect(jobs).toHaveLength(1);
+    const job = jobs[0]!;
+    expect(job).toMatchObject({
+      id: claim.turnIds[0], lane: "memory", action: "retry_with_model", modelId: originalModel,
+    });
+    expect(await repo.readRecoveryJobs(randomUUID(), now, 5)).toEqual([]);
+    const staleRecovery = { roomId, headTurnId: job.id, expectedVersion: job.version, modelId: targetModel, now };
+    await db.update(memoryReviewTurns).set({ updatedAt: new Date(now.getTime() + 1) })
+      .where(eq(memoryReviewTurns.id, claim.turnIds[1]!));
+    expect(await repo.requestRecoveryRetry(staleRecovery)).toBe("stale");
+
+    let refreshedJob = (await repo.readRecoveryJobs(roomId, now, 5))[0]!;
+    expect(refreshedJob.action).toBe("retry_with_model");
+    expect(await repo.requestRecoveryRetry({
+      roomId, headTurnId: refreshedJob.id, expectedVersion: refreshedJob.version, now,
+    })).toBe("blocked");
+
+    const mismatchedThreadId = `${threadId}:wrong-cohort`;
+    await db.update(memoryReviewTurns).set({ threadId: mismatchedThreadId })
+      .where(eq(memoryReviewTurns.id, claim.turnIds[1]!));
+    expect((await repo.readRecoveryJobs(roomId, now, 5))[0]?.action).toBe("blocked");
+    expect(await repo.requestRecoveryRetry({
+      roomId, headTurnId: refreshedJob.id, expectedVersion: refreshedJob.version, modelId: targetModel, now,
+    })).toBe("blocked");
+    await db.update(memoryReviewTurns).set({ threadId })
+      .where(eq(memoryReviewTurns.id, claim.turnIds[1]!));
+    refreshedJob = (await repo.readRecoveryJobs(roomId, now, 5))[0]!;
+
+    const recovery = { roomId, headTurnId: refreshedJob.id, expectedVersion: refreshedJob.version, modelId: targetModel, now };
+    expect(await repo.requestRecoveryRetry({ ...recovery, roomId: randomUUID() })).toBe("stale");
+    const outcomes = await Promise.all([repo.requestRecoveryRetry(recovery), repo.requestRecoveryRetry(recovery)]);
+    expect(outcomes.sort()).toEqual(["queued", "stale"]);
+
+    const retry = await repo.claimNext({ now: new Date() });
+    if (!retry) throw new Error("expected queued review");
+    expect(retry.workId).toBe(claim.workId);
+    expect(await repo.bindServiceModel(retry, () => originalModel)).toBe(targetModel);
+    expect(await repo.modelReplaySafety(retry)).toBe("allow");
+    await repo.load(retry);
+    expect(await repo.publish({
+      claim: retry, proposal: { envelope, speakerUserId: userId, operations: [], snapshots: [] },
+      modelId: targetModel, now: new Date(), durationMs: 0,
+    })).toBe("published");
+    expect(await repo.readRecoveryJobs(roomId, new Date(), 5)).toEqual([]);
+  });
 });

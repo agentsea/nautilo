@@ -19,7 +19,10 @@ import {
   eq,
   inArray,
   llmUsageEvents,
+  previewRoomJournalRecovery,
   queryStenographerAdminStatus,
+  queueRoomJournalRecovery,
+  readRoomJournalRecoveryMetadata,
   namespaces,
   reflectionRecordAuthorityBlocks,
   reflectionRecordAuthorityDependencies,
@@ -239,6 +242,84 @@ async function initializeFixtureJournal(fixture: Fixture): Promise<void> {
 }
 
 describe("M230 Room-journal rebuild (live Postgres)", () => {
+  test("previews and queues an exact administrative rebuild without rewriting source rows", async () => {
+    const fixture = await makeFixture("administrative-recovery");
+    try {
+      await initializeFixtureJournal(fixture);
+      const before = await db.select({
+        id: sessionMessages.id,
+        content: sessionMessages.content,
+        editRevision: sessionMessages.editRevision,
+      }).from(sessionMessages).where(and(
+        eq(sessionMessages.id, fixture.messageId),
+        eq(sessionMessages.sessionId, fixture.sessionId),
+      ));
+
+      expect(await readRoomJournalRecoveryMetadata(db, fixture.roomId))
+        .toMatchObject({
+          roomId: fixture.roomId,
+          rebuildGeneration: 0,
+          lastProcessedMessageId: 0,
+          rebuildRequestedAt: null,
+          rebuildTargetMessageId: null,
+        });
+      expect(await previewRoomJournalRecovery(db, {
+        roomId: fixture.roomId,
+        expectedRebuildGeneration: 0,
+        expectedCursor: 0,
+        now: FIRST_EDIT_TIME,
+      })).toEqual({ status: "allowed", rebuildGeneration: 0 });
+      await db.update(roomJournalState).set({
+        lastProcessedMessageId: fixture.messageId,
+      }).where(eq(roomJournalState.roomId, fixture.roomId));
+      expect(await queueRoomJournalRecovery(db, {
+        roomId: fixture.roomId,
+        expectedRebuildGeneration: 0,
+        expectedCursor: 0,
+        now: FIRST_EDIT_TIME,
+      })).toEqual({ status: "stale", rebuildGeneration: 0 });
+      await db.update(roomJournalState).set({
+        lastProcessedMessageId: 0,
+      }).where(eq(roomJournalState.roomId, fixture.roomId));
+      expect(await queueRoomJournalRecovery(db, {
+        roomId: fixture.roomId,
+        expectedRebuildGeneration: 0,
+        expectedCursor: 0,
+        now: FIRST_EDIT_TIME,
+      })).toEqual({ status: "queued", rebuildGeneration: 1 });
+      expect(await queueRoomJournalRecovery(db, {
+        roomId: fixture.roomId,
+        expectedRebuildGeneration: 1,
+        expectedCursor: 0,
+        now: FIRST_EDIT_TIME,
+      })).toEqual({ status: "already_queued", rebuildGeneration: 1 });
+      expect(await queueRoomJournalRecovery(db, {
+        roomId: fixture.roomId,
+        expectedRebuildGeneration: 0,
+        expectedCursor: 0,
+        now: FIRST_EDIT_TIME,
+      })).toEqual({ status: "stale", rebuildGeneration: 1 });
+
+      expect(await prepareNextJournalRebuild({ db, now: REBUILD_TIME }))
+        .toBe(fixture.roomId);
+      expect(await readState(fixture.roomId)).toMatchObject({
+        rebuildGeneration: 1,
+        rebuildRequestedAt: FIRST_EDIT_TIME,
+        rebuildTargetMessageId: fixture.messageId,
+      });
+      expect(await db.select({
+        id: sessionMessages.id,
+        content: sessionMessages.content,
+        editRevision: sessionMessages.editRevision,
+      }).from(sessionMessages).where(and(
+        eq(sessionMessages.id, fixture.messageId),
+        eq(sessionMessages.sessionId, fixture.sessionId),
+      ))).toEqual(before);
+    } finally {
+      await cleanupFixture(fixture);
+    }
+  });
+
   test("prepares a dirty Room through the typed cleanup transaction", async () => {
     const fixture = await makeFixture("typed-cleanup");
     try {

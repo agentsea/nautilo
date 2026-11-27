@@ -89,6 +89,8 @@ import { assertTaskFundingAdmission, TaskFundingError } from "@nautilo/runtime";
 import { getLatestResumableTaskRun, type NewTask, type Task } from "@nautilo/db";
 import { assertCanUseServerProviderCredentials } from "@nautilo/trust";
 import { memoryStatusRoutes } from "./routes/memory-status";
+import { memoryRecoveryRoutes } from "./routes/memory-recovery";
+import { createMemoryRecoveryService } from "./lib/memory-recovery-service";
 import {
   createForegroundMemoryEffectRecovery,
   createPostgresForegroundMemoryEffectRecoveryStore,
@@ -2560,6 +2562,12 @@ export async function createApp(options?: CreateAppOptions) {
   });
   costsRoutes(app);
   memoryStatusRoutes(app, memoryReviewRuntime);
+  memoryRecoveryRoutes(app, createMemoryRecoveryService({
+    db: getServerDirectDb,
+    readReviewJobs: (roomId, now, limit) => memoryReviewRuntime.readRecoveryJobs(roomId, now, limit),
+    retryReview: input => memoryReviewRuntime.retryRoomReview(input),
+    reconcileReview: input => memoryReviewRuntime.reconcileRoomReview(input),
+  }));
   stenographerStatusRoutes(app, {
     queryStatus: (input) =>
       queryStenographerAdminStatus(input, getServerDirectDb()),

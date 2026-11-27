@@ -301,6 +301,7 @@ export {
   createProductionReflectionMemoryRuntime,
   type ProductionReflectionMemoryInput,
   type ProductionReflectionMemoryRuntime,
+  reflectionModelOperationId,
 } from "./reflection/production-reflection-memory";
 export { forkLanggraphExecutor } from "./executors/fork-langgraph-executor";
 export { classifyTurnKind, type TurnKind, type TurnKindSignal } from "./executors/turn-kind";

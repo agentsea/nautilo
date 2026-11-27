@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, notExists, notInArray, or, sql } from "drizzle-orm";
+import { and, eq, gte, inArray, isNull, notExists, notInArray, or, sql } from "drizzle-orm";
 import { QueryBuilder } from "drizzle-orm/pg-core";
 import { getSharedDirectDb, type DirectDatabase } from "../config/direct-database";
 import { llmUsageEvents } from "../schema/llm-usage";
@@ -77,6 +77,38 @@ function isSafePreServiceFailure(row: AttemptRow): boolean {
     && (SAFE_PRE_SERVICE_FAILURE_CODES as readonly string[]).includes(row.failureCode);
 }
 
+function matchingAttempts(identity: ModelAttemptReplayIdentity) {
+  return and(
+    eq(llmUsageEvents.roomId, identity.roomId),
+    eq(llmUsageEvents.callType, identity.kind === "memory_review" ? "memory_review" : identity.callType),
+    identity.kind === "memory_review"
+      ? eq(sql<string>`${llmUsageEvents.metadata}->>'workId'`, identity.workId)
+      : eq(sql<string>`${llmUsageEvents.metadata}->>'operationId'`, identity.operationId),
+  );
+}
+
+/** Changing provider requires positive refusal evidence and a server-funded work history. */
+export async function hasOnlyRefusedServiceAttempts(
+  identities: readonly ModelAttemptReplayIdentity[],
+  db: ModelAttemptReplayDb,
+  current: Readonly<{ modelId: string; attemptId?: string; occurredAtOrAfter?: Date }>,
+): Promise<boolean> {
+  if (identities.length === 0) return false;
+  const currentAttempt = and(
+    eq(llmUsageEvents.model, current.modelId),
+    current.attemptId === undefined ? undefined : eq(sql<string>`${llmUsageEvents.metadata}->>'attemptId'`, current.attemptId),
+    current.occurredAtOrAfter === undefined ? undefined : gte(llmUsageEvents.occurredAt, current.occurredAtOrAfter),
+  );
+  const [row] = await db.select({
+    proven: sql<boolean>`coalesce(bool_or(${currentAttempt}), false) and coalesce(bool_and(coalesce(
+      ${llmUsageEvents.attemptOutcome} = 'failed'
+      and ${inArray(llmUsageEvents.failureCode, [...SAFE_PRE_SERVICE_FAILURE_CODES])}
+      and ${llmUsageEvents.fundingKind} in ('service', 'server')
+      and ${llmUsageEvents.payerHumanId} is null, false)), false)`,
+  }).from(llmUsageEvents).where(or(...identities.map(matchingAttempts)));
+  return row?.proven === true;
+}
+
 /**
  * Pure classification for a job-owned operation. A durable funding binding is
  * not wire evidence. Once a matching wire row exists, only a verified
@@ -140,11 +172,7 @@ export async function resolveModelAttemptReplaySafety(
     })
     .from(llmUsageEvents)
     .where(and(
-      eq(llmUsageEvents.roomId, identity.roomId),
-      eq(llmUsageEvents.callType, callType),
-      ...(identity.kind === "memory_review"
-        ? [eq(sql<string>`${llmUsageEvents.metadata}->>'workId'`, identity.workId)]
-        : [eq(sql<string>`${llmUsageEvents.metadata}->>'operationId'`, identity.operationId)]),
+      matchingAttempts(identity),
       blockingAttempt,
     ))
     .limit(1);
