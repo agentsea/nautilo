@@ -349,6 +349,127 @@ test("family-key pages recover interleaved paid families once and advance past i
   }
 }, 15_000);
 
+test("manual recovery holds a whole paid family when crash settlement left hidden siblings", async () => {
+  for (const paged of [false, true]) {
+    const suffix = randomUUID();
+    const recordIds = {
+      terminal: `reflection-whole-family-${suffix}-terminal`,
+      checkpointed: `reflection-whole-family-${suffix}-checkpointed`,
+      cutoff: `reflection-whole-family-${suffix}-cutoff`,
+      excluded: `reflection-whole-family-${suffix}-excluded`,
+      independent: `reflection-whole-family-${suffix}-independent`,
+    } as const;
+    const allRecordIds = Object.values(recordIds);
+    const observedThrough = new Date("2004-05-06T07:09:39.000Z");
+    const now = new Date(observedThrough.getTime() + 1_000);
+    const familyBinding = {
+      version: 1 as const,
+      kind: "service" as const,
+      role: "memoryReflection" as const,
+      modelId: "surplus:synthetic-model",
+      inputCommitment: `hmac-sha256:${"F".repeat(43)}`,
+    };
+    const independentBinding = {
+      ...familyBinding,
+      inputCommitment: `hmac-sha256:${"I".repeat(43)}`,
+    };
+    await db.insert(reflectionRecords).values(allRecordIds.map(recordId => ({
+      recordId,
+      lifecycle: "current" as const,
+      structuralHeight: 1,
+      producerPolicyVersion: "reflection-whole-family-v1",
+      processingGeneration: 1,
+      createdAt: observedThrough,
+      updatedAt: observedThrough,
+    })));
+    await db.update(reflectionRecords).set({ disposition: "blocked" })
+      .where(eq(reflectionRecords.recordId, recordIds.excluded));
+    const terminal = (recordId: string, binding: typeof familyBinding, updatedAt: Date) => ({
+      recordId,
+      generation: 1,
+      completedGeneration: 1,
+      changeReason: "created" as const,
+      stage: "organization" as const,
+      state: "complete" as const,
+      completionOutcome: "provider_outcome_unknown" as const,
+      acceptedModelBinding: binding,
+      acceptedModelBindingGeneration: 1,
+      dueSince: observedThrough,
+      completedAt: observedThrough,
+      createdAt: observedThrough,
+      updatedAt,
+    });
+    await db.insert(reflectionRecordSemanticWork).values([
+      terminal(recordIds.terminal, familyBinding, observedThrough),
+      {
+        recordId: recordIds.checkpointed,
+        generation: 1,
+        changeReason: "created" as const,
+        stage: "organization" as const,
+        state: "checkpointed" as const,
+        acceptedModelBinding: familyBinding,
+        acceptedModelBindingGeneration: 1,
+        nextAttemptAt: now,
+        dueSince: observedThrough,
+        startedAt: observedThrough,
+        createdAt: observedThrough,
+        updatedAt: observedThrough,
+      },
+      terminal(recordIds.cutoff, familyBinding, now),
+      terminal(recordIds.excluded, familyBinding, observedThrough),
+      terminal(recordIds.independent, independentBinding, observedThrough),
+    ]);
+    try {
+      const handle = await verifyRecordProductPostgresHandle(
+        createPostgresJsBridgeConnection(db),
+      );
+      const store = new PostgresSemanticWorkStore({
+        handle,
+        commitments: createHmacRecordSemanticCommitmentPort(new Uint8Array(32).fill(33)),
+        clock: () => now,
+      });
+      let cursor: string | null = null;
+      let queued = 0;
+      let held = 0;
+      do {
+        const result = await store.requestManualProviderRecovery({
+          now,
+          observedThrough,
+          authorizedBy: randomUUID(),
+          modelId: "surplus:synthetic-model",
+          ...(paged ? { page: { after: cursor, limit: 1 } } : {}),
+        });
+        queued += result.queued;
+        held += result.held;
+        cursor = paged ? result.nextCursor ?? null : null;
+      } while (cursor !== null);
+      expect({ paged, queued, held }).toEqual({ paged, queued: 1, held: 4 });
+
+      const stored = await db.select({
+        recordId: reflectionRecordSemanticWork.recordId,
+        generation: reflectionRecordSemanticWork.generation,
+        state: reflectionRecordSemanticWork.state,
+        recoveryId: reflectionRecordSemanticWork.manualRecoveryId,
+      }).from(reflectionRecordSemanticWork).where(inArray(
+        reflectionRecordSemanticWork.recordId,
+        allRecordIds,
+      ));
+      const byId = new Map(stored.map(row => [row.recordId, row]));
+      for (const recordId of allRecordIds.slice(0, 4)) {
+        expect(byId.get(recordId)).toMatchObject({ generation: 1, recoveryId: null });
+      }
+      expect(byId.get(recordIds.checkpointed)?.state).toBe("checkpointed");
+      expect(byId.get(recordIds.independent)).toMatchObject({
+        generation: 2,
+        state: "due",
+      });
+      expect(byId.get(recordIds.independent)?.recoveryId).toBeString();
+    } finally {
+      await deleteProviderHolds(allRecordIds);
+    }
+  }
+}, 15_000);
+
 test("a partially bound existing grant stays one family across page selection and row contention", async () => {
   const suffix = randomUUID();
   const recordIds = [
@@ -618,9 +739,8 @@ test("a partially bound existing grant stays one family across page selection an
       .where(eq(memoryRecoveryRuns.id, requestId));
     expect(receipt).toMatchObject({
       stenographer: completed,
-      reflection: { state: "assessed", queued: 6, held: 0 },
+      reflection: { state: "assessed", queued: 1, held: 5 },
       memory: completed,
-      progress: {},
     });
     const stored = await db.select({
       recordId: reflectionRecordSemanticWork.recordId,
@@ -636,17 +756,17 @@ test("a partially bound existing grant stays one family across page selection an
     expect(byId.get(recordIds[0])?.recoveryId).toBe(recoveryId);
     expect(byId.get(recordIds[1])?.recoveryId).toBe(recoveryId);
     expect(byId.get(recordIds[2])?.recoveryId).toBe(otherRecoveryId);
-    expect(recordIds.slice(0, 3).every(recordId => {
-      const recoverAfter = byId.get(recordId)?.recoverAfter;
-      return recoverAfter !== null && recoverAfter !== undefined
-        && recoverAfter > observedThrough;
-    })).toBe(true);
-    const freshRecoveryId = byId.get(recordIds[3])?.recoveryId;
-    expect(byId.get(recordIds[3])?.generation).toBe(3);
-    expect(byId.get(recordIds[4])?.generation).toBe(3);
-    expect(freshRecoveryId).toBeString();
-    expect(byId.get(recordIds[4])?.recoveryId).toBe(freshRecoveryId);
-    expect(spentRecoveryIds).not.toContain(freshRecoveryId);
+    expect(recordIds.slice(0, 3).every(recordId =>
+      byId.get(recordId)?.recoverAfter?.getTime() === observedThrough.getTime()))
+      .toBe(true);
+    expect(byId.get(recordIds[3])).toMatchObject({
+      generation: 2,
+      recoveryId: spentRecoveryIds[0],
+    });
+    expect(byId.get(recordIds[4])).toMatchObject({
+      generation: 2,
+      recoveryId: spentRecoveryIds[1],
+    });
     expect(byId.get(recordIds[5])).toMatchObject({
       generation: 2,
       recoveryId: unrelatedRecoveryId,

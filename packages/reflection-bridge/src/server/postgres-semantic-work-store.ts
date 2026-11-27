@@ -560,8 +560,7 @@ function parentConflictCapacityExceeded(): DurableParentConflictResolutionResult
   };
 }
 
-function rowDate(row: RecordProductPostgresRow, key: string): Date | null {
-  const value = row[key];
+function semanticWorkDate(value: unknown): Date | null {
   if (value === null) return null;
   if (value instanceof Date && Number.isFinite(value.getTime())) return value;
   const parts = typeof value === "string"
@@ -578,6 +577,10 @@ function rowDate(row: RecordProductPostgresRow, key: string): Date | null {
     if (Number.isFinite(parsed.getTime())) return parsed;
   }
   throw new TypeError("Invalid semantic work timestamp");
+}
+
+function rowDate(row: RecordProductPostgresRow, key: string): Date | null {
+  return semanticWorkDate(row[key]);
 }
 
 async function lockSemanticWorkAdmission(
@@ -868,6 +871,39 @@ function manualRecoveryLockFamilyKeys(input: Readonly<{
   return keys.sort((left, right) => left.localeCompare(right));
 }
 
+function manualRecoveryConnectedFamilyRoots(rows: readonly Readonly<{
+  record_id: string;
+  accepted_model_binding: unknown;
+  manual_recovery_id: unknown;
+}>[]): ReadonlyMap<string, string> {
+  const parent = new Map(rows.map(row => [row.record_id, row.record_id]));
+  const find = (recordId: string): string => {
+    const prior = parent.get(recordId)!;
+    if (prior === recordId) return recordId;
+    const root = find(prior);
+    parent.set(recordId, root);
+    return root;
+  };
+  const unite = (left: string, right: string) => {
+    const leftRoot = find(left);
+    const rightRoot = find(right);
+    if (leftRoot !== rightRoot) parent.set(rightRoot, leftRoot);
+  };
+  const keyOwner = new Map<string, string>();
+  for (const row of rows) {
+    for (const key of manualRecoveryLockFamilyKeys({
+      recordRef: row.record_id,
+      binding: row.accepted_model_binding,
+      recoveryId: row.manual_recovery_id,
+    })) {
+      const owner = keyOwner.get(key);
+      if (owner === undefined) keyOwner.set(key, row.record_id);
+      else unite(row.record_id, owner);
+    }
+  }
+  return new Map([...parent.keys()].map(recordId => [recordId, find(recordId)]));
+}
+
 export class PostgresSemanticWorkStore
   implements DurableSleepWorkPort, RecordSemanticPublicationPort {
   readonly #clock: () => Date;
@@ -980,41 +1016,48 @@ export class PostgresSemanticWorkStore
           manual_recovery_id: work.manualRecoveryId,
           family_key: familyKey.as("family_key"),
           binding_key: bindingKey.as("binding_key"),
+          eligible: sql<boolean>`${eligibility}`.as("eligible"),
         };
       const pageCursorKey = selectedFamilyKeys?.at(-1);
-      const candidates = selectedFamilyKeys === undefined
-        ? await executeTypedRecordProductQuery(tx,
-            recordProductTypedDb.select(candidateSelection).from(work)
-              .innerJoin(reflectionRecords, eq(reflectionRecords.recordId, work.recordId))
-              .where(eligibility)
-              .orderBy(asc(familyKey), asc(work.recordId)))
-        : await (async () => {
+      const seedRows = await executeTypedRecordProductQuery(tx,
+        recordProductTypedDb.select(candidateSelection).from(work)
+          .innerJoin(reflectionRecords, eq(reflectionRecords.recordId, work.recordId))
+          .where(selectedFamilyKeys === undefined
+            ? eligibility
+            : inArray(familyKey, selectedFamilyKeys))
+          .orderBy(asc(familyKey), asc(work.recordId)));
+      const candidates = await (async () => {
             const byRecord = new Map<string, Readonly<{
               record_id: string;
               accepted_model_binding: unknown;
               manual_recovery_id: string | null;
               family_key: string;
               binding_key: string | null;
-            }>>();
+              eligible: boolean;
+            }>>(seedRows.map(row => [row.record_id, row]));
             const recoveryIds = new Set<string>();
             const bindingKeys = new Set<string>();
+            for (const row of seedRows) {
+              if (typeof row.manual_recovery_id === "string") {
+                recoveryIds.add(row.manual_recovery_id);
+              }
+              if (typeof row.binding_key === "string") bindingKeys.add(row.binding_key);
+            }
             let changed = true;
-            while (changed) {
+            while (changed && (recoveryIds.size > 0 || bindingKeys.size > 0)) {
               changed = false;
               const rows = await executeTypedRecordProductQuery(tx,
                 recordProductTypedDb.select(candidateSelection).from(work)
                   .innerJoin(reflectionRecords, eq(reflectionRecords.recordId, work.recordId))
-                  .where(and(
-                    eligibility,
-                    or(
-                      inArray(familyKey, selectedFamilyKeys),
-                      recoveryIds.size === 0
-                        ? undefined
-                        : inArray(work.manualRecoveryId, [...recoveryIds]),
-                      bindingKeys.size === 0
-                        ? undefined
-                        : inArray(bindingKey, [...bindingKeys]),
-                    ),
+                  .where(or(
+                    recoveryIds.size === 0
+                      ? undefined
+                      : sql`${work.manualRecoveryId}
+                          = ANY(${sql.param([...recoveryIds])}::uuid[])`,
+                    bindingKeys.size === 0
+                      ? undefined
+                      : sql`${bindingKey}
+                          = ANY(${sql.param([...bindingKeys])}::text[])`,
                   ))
                   .orderBy(asc(familyKey), asc(work.recordId)));
               for (const row of rows) {
@@ -1022,12 +1065,12 @@ export class PostgresSemanticWorkStore
                   byRecord.set(row.record_id, row);
                   changed = true;
                 }
-                if (row.manual_recovery_id !== null
+                if (typeof row.manual_recovery_id === "string"
                   && !recoveryIds.has(row.manual_recovery_id)) {
                   recoveryIds.add(row.manual_recovery_id);
                   changed = true;
                 }
-                if (row.binding_key !== null && !bindingKeys.has(row.binding_key)) {
+                if (typeof row.binding_key === "string" && !bindingKeys.has(row.binding_key)) {
                   bindingKeys.add(row.binding_key);
                   changed = true;
                 }
@@ -1036,47 +1079,24 @@ export class PostgresSemanticWorkStore
             const expanded = [...byRecord.values()].sort((left, right) =>
               left.family_key.localeCompare(right.family_key)
                 || left.record_id.localeCompare(right.record_id));
-            const parent = new Map(expanded.map(row => [row.record_id, row.record_id]));
-            const find = (recordId: string): string => {
-              const prior = parent.get(recordId)!;
-              if (prior === recordId) return recordId;
-              const root = find(prior);
-              parent.set(recordId, root);
-              return root;
-            };
-            const unite = (left: string, right: string) => {
-              const leftRoot = find(left);
-              const rightRoot = find(right);
-              if (leftRoot !== rightRoot) parent.set(rightRoot, leftRoot);
-            };
-            const keyOwner = new Map<string, string>();
-            for (const row of expanded) {
-              for (const key of manualRecoveryLockFamilyKeys({
-                recordRef: row.record_id,
-                binding: row.accepted_model_binding,
-                recoveryId: row.manual_recovery_id,
-              })) {
-                const owner = keyOwner.get(key);
-                if (owner === undefined) keyOwner.set(key, row.record_id);
-                else unite(row.record_id, owner);
-              }
-            }
+            const roots = manualRecoveryConnectedFamilyRoots(expanded);
             const components = new Map<string, { selected: boolean; maximumKey: string }>();
             for (const row of expanded) {
-              const root = find(row.record_id);
+              const root = roots.get(row.record_id)!;
               const component = components.get(root) ?? {
-                selected: false,
-                maximumKey: row.family_key,
+                selected: selectedFamilyKeys === undefined,
+                maximumKey: row.eligible ? row.family_key : "",
               };
-              component.selected ||= selectedFamilyKeys.includes(row.family_key);
-              if (row.family_key > component.maximumKey) {
+              component.selected ||= selectedFamilyKeys?.includes(row.family_key) ?? false;
+              if (row.eligible && row.family_key > component.maximumKey) {
                 component.maximumKey = row.family_key;
               }
               components.set(root, component);
             }
             return expanded.filter(row => {
-              const component = components.get(find(row.record_id))!;
-              return component.selected && component.maximumKey <= pageCursorKey!;
+              const component = components.get(roots.get(row.record_id)!)!;
+              return component.selected
+                && (pageCursorKey === undefined || component.maximumKey <= pageCursorKey);
             });
           })();
       const pageResult = (result: Readonly<{ queued: number; held: number }>) => {
@@ -1112,6 +1132,7 @@ export class PostgresSemanticWorkStore
         manual_recovery_service_model_id: work.manualRecoveryServiceModelId,
         manual_recovery_spent_at: work.manualRecoverySpentAt,
         family_key: familyKey.as("family_key"),
+        updated_at: work.updatedAt,
         state: work.state,
         completion_outcome: work.completionOutcome,
         failure_code: work.failureCode,
@@ -1120,17 +1141,7 @@ export class PostgresSemanticWorkStore
         disposition: reflectionRecords.disposition,
       }).from(work)
         .innerJoin(reflectionRecords, eq(reflectionRecords.recordId, work.recordId))
-        .where(and(
-          sql`${work.recordId} = ANY(${sql.param(candidateRecordRefs)}::text[])`,
-          lte(work.updatedAt, input.observedThrough),
-          or(
-            and(
-              eq(work.state, "complete"),
-              eq(work.completionOutcome, "provider_outcome_unknown"),
-            ),
-            eq(work.state, "quarantined"),
-          ),
-        ))
+        .where(sql`${work.recordId} = ANY(${sql.param(candidateRecordRefs)}::text[])`)
         .orderBy(asc(familyKey), asc(work.recordId));
       const locked = await executeTypedRecordProductQuery(
         tx,
@@ -1146,48 +1157,36 @@ export class PostgresSemanticWorkStore
       // any candidate member, leave every member of that observed family held
       // so a later request cannot split one shared provider result into
       // independently billable recovery generations.
-      const candidateFamiliesByRecord = new Map(candidates.map(row => [
-        row.record_id,
-        manualRecoveryLockFamilyKeys({
-          recordRef: row.record_id,
-          binding: row.accepted_model_binding,
-          recoveryId: row.manual_recovery_id,
-        }),
-      ]));
       const candidateByRecord = new Map(candidates.map(row => [row.record_id, row]));
       const lockedRecordRefs = new Set(locked.map(row => row.record_id));
-      const incompleteFamilies = new Set<string>();
+      const connectedRoots = manualRecoveryConnectedFamilyRoots([...candidates, ...locked]);
+      const incompleteRoots = new Set<string>();
       for (const row of candidates) {
         if (!lockedRecordRefs.has(row.record_id)) {
-          for (const familyKey of candidateFamiliesByRecord.get(row.record_id) ?? []) {
-            incompleteFamilies.add(familyKey);
-          }
+          incompleteRoots.add(connectedRoots.get(row.record_id)!);
         }
       }
-      const lockedFamiliesByRecord = new Map(locked.map(row => [
-        row.record_id,
-        manualRecoveryLockFamilyKeys({
+      for (const row of locked) {
+        const candidate = candidateByRecord.get(row.record_id);
+        const candidateFamilyKeys = candidate === undefined
+          ? []
+          : manualRecoveryLockFamilyKeys({
+              recordRef: candidate.record_id,
+              binding: candidate.accepted_model_binding,
+              recoveryId: candidate.manual_recovery_id,
+            });
+        const lockedFamilyKeys = manualRecoveryLockFamilyKeys({
           recordRef: row.record_id,
           binding: row.accepted_model_binding,
           recoveryId: row.manual_recovery_id,
-        }),
-      ]));
-      for (const row of locked) {
-        const candidateFamilyKeys = candidateFamiliesByRecord.get(row.record_id) ?? [];
-        const lockedFamilyKeys = lockedFamiliesByRecord.get(row.record_id) ?? [];
-        const candidate = candidateByRecord.get(row.record_id);
+        });
         if (candidate?.family_key !== row.family_key
           || JSON.stringify(candidateFamilyKeys) !== JSON.stringify(lockedFamilyKeys)) {
-          for (const familyKey of [...candidateFamilyKeys, ...lockedFamilyKeys]) {
-            incompleteFamilies.add(familyKey);
-          }
+          incompleteRoots.add(connectedRoots.get(row.record_id)!);
         }
       }
       const held = locked.filter(row => {
-        const candidateFamilyKeys = candidateFamiliesByRecord.get(row.record_id) ?? [];
-        const lockedFamilyKeys = lockedFamiliesByRecord.get(row.record_id) ?? [];
-        return JSON.stringify(candidateFamilyKeys) === JSON.stringify(lockedFamilyKeys)
-          && lockedFamilyKeys.every(familyKey => !incompleteFamilies.has(familyKey));
+        return !incompleteRoots.has(connectedRoots.get(row.record_id)!);
       });
       if (held.length === 0) {
         return pageResult({ queued: 0, held: candidates.length });
@@ -1215,50 +1214,53 @@ export class PostgresSemanticWorkStore
         ...unsafeAuthority.map(row => row.record_id),
       ]);
 
-      const families = new Map<string, Array<(typeof held)[number]>>();
-      const retryableQuarantines: Array<(typeof held)[number]> = [];
+      const heldFamilies = new Map<string, Array<(typeof held)[number]>>();
       for (const row of held) {
+        const root = connectedRoots.get(row.record_id)!;
+        const family = heldFamilies.get(root) ?? [];
+        family.push(row);
+        heldFamilies.set(root, family);
+      }
+
+      const safelyObserved = (row: (typeof held)[number]) =>
+        semanticWorkDate(row.updated_at)! <= input.observedThrough;
+      const retryableQuarantine = (row: (typeof held)[number]) => {
         const recordRef = row.record_id;
         const generation = row.generation;
-        if (row.state === "quarantined") {
-          // The original operator grant is still available if the failure
-          // happened before the worker even bound a model. Keep its identity,
-          // generation, model and single-spend fence when making it due again.
-          const unspentAdmission = row.failure_code === "unexpected_failure"
-            && row.failure_detail === "unexpected_model_invocation_failure"
-            && row.manual_recovery_id != null
-            && row.manual_recovery_source_generation === generation - 1
-            && row.manual_recovery_service_model_id === input.modelId
-            && row.manual_recovery_spent_at === null
-            && row.accepted_model_binding === null
-            && row.organizer_proposal_checkpoint === null;
-          const retryable = row.lifecycle === "current"
-            && row.disposition === "available"
-            && !unsafeRecords.has(recordRef)
-            // Authority can become available without changing the saved paid
-            // result. A diagnosed candidate-selection cycle is canonical,
-            // deterministic evidence and cannot be repaired by reclaiming the
-            // same generation, so it remains held.
-            && (
-              unspentAdmission || row.failure_code === "authority_unavailable"
-              || (
-                row.failure_code === "publication_unavailable"
-                && [
-                  "publication_plan_stale",
-                  "publication_source_unavailable",
-                ].includes(String(row.failure_detail))
-                && row.organizer_proposal_checkpoint !== null
-              )
-            );
-          if (retryable) retryableQuarantines.push(row);
-          const needsFreshCalculation = row.lifecycle === "current"
-            && row.disposition === "available"
-            && !unsafeRecords.has(recordRef)
-            && row.failure_code === "publication_unavailable"
-            && row.failure_detail === "publication_plan_stale"
-            && row.organizer_proposal_checkpoint === null;
-          if (!needsFreshCalculation) continue;
-        }
+        if (row.state !== "quarantined" || !safelyObserved(row)) return false;
+        // The original operator grant is still available if the failure
+        // happened before the worker even bound a model. Keep its identity,
+        // generation, model and single-spend fence when making it due again.
+        const unspentAdmission = row.failure_code === "unexpected_failure"
+          && row.failure_detail === "unexpected_model_invocation_failure"
+          && row.manual_recovery_id != null
+          && row.manual_recovery_source_generation === generation - 1
+          && row.manual_recovery_service_model_id === input.modelId
+          && row.manual_recovery_spent_at === null
+          && row.accepted_model_binding === null
+          && row.organizer_proposal_checkpoint === null;
+        return row.lifecycle === "current"
+          && row.disposition === "available"
+          && !unsafeRecords.has(recordRef)
+          // Authority can become available without changing the saved paid
+          // result. A diagnosed candidate-selection cycle is canonical,
+          // deterministic evidence and cannot be repaired by reclaiming the
+          // same generation, so it remains held.
+          && (
+            unspentAdmission || row.failure_code === "authority_unavailable"
+            || (
+              row.failure_code === "publication_unavailable"
+              && [
+                "publication_plan_stale",
+                "publication_source_unavailable",
+              ].includes(String(row.failure_detail))
+              && row.organizer_proposal_checkpoint !== null
+            )
+          );
+      };
+      const safeFreshCalculation = (row: (typeof held)[number]) => {
+        const recordRef = row.record_id;
+        const generation = row.generation;
         const familyKey = reflectionManualRecoveryFamilyKey({
           recordRef,
           binding: row.accepted_model_binding,
@@ -1270,63 +1272,62 @@ export class PostgresSemanticWorkStore
           && row.failure_code === "publication_unavailable"
           && row.failure_detail === "publication_plan_stale"
           && row.organizer_proposal_checkpoint === null;
-        const safe = familyKey !== null
+        return safelyObserved(row)
+          && familyKey !== null
           && row.lifecycle === "current"
           && row.disposition === "available"
           && row.stage === "organization"
           && (safeTerminalHold || safeFreshCalculationHold)
           && row.accepted_model_binding_generation === generation
           && !unsafeRecords.has(recordRef);
-        if (!safe) continue;
-        const family = families.get(familyKey) ?? [];
-        family.push(row);
-        families.set(familyKey, family);
-      }
+      };
 
       let queued = 0;
-      const conditionalRecoveryIds = new Map<string, string>();
-      for (const row of retryableQuarantines) {
-        const conditionalFamilyKey = row.failure_code === "publication_unavailable"
-          && row.failure_detail === "publication_plan_stale"
-          ? reflectionManualRecoveryFamilyKey({
-              recordRef: row.record_id,
-              binding: row.accepted_model_binding,
-            })
-          : null;
-        const conditionalRecoveryId = conditionalFamilyKey === null
-          ? null
-          : conditionalRecoveryIds.get(conditionalFamilyKey) ?? randomUUID();
-        if (conditionalFamilyKey !== null && conditionalRecoveryId !== null) {
-          conditionalRecoveryIds.set(conditionalFamilyKey, conditionalRecoveryId);
+      for (const family of heldFamilies.values()) {
+        if (family.every(retryableQuarantine)) {
+          const conditionalRecoveryId = family.every(row =>
+            row.failure_code === "publication_unavailable"
+            && row.failure_detail === "publication_plan_stale")
+            ? randomUUID()
+            : null;
+          for (const row of family) {
+            const retried = await executeTypedRecordProductQuery(tx,
+              recordProductTypedDb.update(work).set({
+                recoverAfter: input.now,
+                ...(conditionalRecoveryId === null
+                  ? {}
+                  : {
+                      manualRecoveryId: conditionalRecoveryId,
+                      manualRecoverySourceGeneration: row.generation,
+                      manualRecoveryAuthorizedBy: input.authorizedBy,
+                      manualRecoveryAuthorizedAt: authorizedAt,
+                      manualRecoveryObservedThrough: input.observedThrough,
+                      manualRecoveryServiceModelId: input.modelId,
+                      manualRecoverySpentAt: null,
+                    }),
+                updatedAt: input.now,
+              }).where(and(
+                eq(work.recordId, row.record_id),
+                eq(work.generation, row.generation),
+                eq(work.state, "quarantined"),
+                lte(work.updatedAt, input.observedThrough),
+                eq(work.failureCode, row.failure_code!),
+                row.failure_detail === null
+                  ? isNull(work.failureDetail)
+                  : eq(work.failureDetail, row.failure_detail),
+              )).returning({ record_id: work.recordId }));
+            if (retried.length === 1) queued += 1;
+          }
+          continue;
         }
-        const retried = await executeTypedRecordProductQuery(tx,
-          recordProductTypedDb.update(work).set({
-            recoverAfter: input.now,
-            ...(conditionalRecoveryId === null
-              ? {}
-              : {
-                  manualRecoveryId: conditionalRecoveryId,
-                  manualRecoverySourceGeneration: row.generation,
-                  manualRecoveryAuthorizedBy: input.authorizedBy,
-                  manualRecoveryAuthorizedAt: authorizedAt,
-                  manualRecoveryObservedThrough: input.observedThrough,
-                  manualRecoveryServiceModelId: input.modelId,
-                  manualRecoverySpentAt: null,
-                }),
-            updatedAt: input.now,
-          }).where(and(
-            eq(work.recordId, row.record_id),
-            eq(work.generation, row.generation),
-            eq(work.state, "quarantined"),
-            lte(work.updatedAt, input.observedThrough),
-            eq(work.failureCode, row.failure_code!),
-            row.failure_detail === null
-              ? isNull(work.failureDetail)
-              : eq(work.failureDetail, row.failure_detail),
-          )).returning({ record_id: work.recordId }));
-        if (retried.length === 1) queued += 1;
-      }
-      for (const family of families.values()) {
+        const freshFamilyKeys = new Set(family.map(row =>
+          reflectionManualRecoveryFamilyKey({
+            recordRef: row.record_id,
+            binding: row.accepted_model_binding,
+          })));
+        if (!family.every(safeFreshCalculation)
+          || freshFamilyKeys.size !== 1
+          || freshFamilyKeys.has(null)) continue;
         const recoveryId = randomUUID();
         for (const row of family) {
           const recordRef = row.record_id;

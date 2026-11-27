@@ -110,17 +110,31 @@ describe("PostgreSQL semantic work commitments and admission", () => {
           inputCommitment: `hmac-sha256:${"W".repeat(43)}`,
         };
         const rows = [
-          { record_id: "record:a", accepted_model_binding: binding },
-          { record_id: "record:b", accepted_model_binding: binding },
+          {
+            record_id: "record:a", accepted_model_binding: binding,
+            manual_recovery_id: null, family_key: "binding:shared",
+            binding_key: "binding:shared", eligible: true,
+          },
+          {
+            record_id: "record:b", accepted_model_binding: binding,
+            manual_recovery_id: null, family_key: "binding:shared",
+            binding_key: "binding:shared", eligible: true,
+          },
           {
             record_id: "record:c",
             accepted_model_binding: null,
             manual_recovery_id: "11111111-1111-4111-8111-111111111111",
+            family_key: "recovery:11111111-1111-4111-8111-111111111111",
+            binding_key: null,
+            eligible: true,
           },
           {
             record_id: "record:d",
             accepted_model_binding: null,
             manual_recovery_id: "11111111-1111-4111-8111-111111111111",
+            family_key: "recovery:11111111-1111-4111-8111-111111111111",
+            binding_key: null,
+            eligible: true,
           },
         ];
         return (normalized.includes("for update") ? [rows[0], rows[2]] : rows) as unknown as Row[];
@@ -140,7 +154,7 @@ describe("PostgreSQL semantic work commitments and admission", () => {
       modelId: "surplus:synthetic-model",
     })).toEqual({ queued: 0, held: 4 });
     expect(normalizedSql(value.queries[0]!.statement)).not.toContain("for update");
-    expect(normalizedSql(value.queries[1]!.statement)).toContain(
+    expect(normalizedSql(value.queries[2]!.statement)).toContain(
       "for update of reflection_record_semantic_work skip locked",
     );
     expect(value.queries.every(query => !query.statement.includes("pg_advisory"))).toBeTrue();
@@ -165,12 +179,26 @@ describe("PostgreSQL semantic work commitments and admission", () => {
       if (normalized.includes("from reflection_record_semantic_work inner join reflection_records")) {
         return (normalized.includes("for update")
           ? [
-              { record_id: "record:a", accepted_model_binding: after },
-              { record_id: "record:b", accepted_model_binding: before },
+              {
+                record_id: "record:a", accepted_model_binding: after,
+                manual_recovery_id: null, family_key: "binding:after",
+              },
+              {
+                record_id: "record:b", accepted_model_binding: before,
+                manual_recovery_id: null, family_key: "binding:before",
+              },
             ]
           : [
-              { record_id: "record:a", accepted_model_binding: before },
-              { record_id: "record:b", accepted_model_binding: before },
+              {
+                record_id: "record:a", accepted_model_binding: before,
+                manual_recovery_id: null, family_key: "binding:before",
+                binding_key: "binding:before", eligible: true,
+              },
+              {
+                record_id: "record:b", accepted_model_binding: before,
+                manual_recovery_id: null, family_key: "binding:before",
+                binding_key: "binding:before", eligible: true,
+              },
             ]) as unknown as Row[];
       }
       throw new Error(`unexpected SQL: ${statement}`);
@@ -187,7 +215,7 @@ describe("PostgreSQL semantic work commitments and admission", () => {
       authorizedBy: "operator:one",
       modelId: "surplus:synthetic-model",
     })).toEqual({ queued: 0, held: 2 });
-    expect(value.queries).toHaveLength(2);
+    expect(value.queries).toHaveLength(3);
   });
 
   test("binds each manual recovery candidate set as one PostgreSQL array", async () => {
@@ -207,6 +235,7 @@ describe("PostgreSQL semantic work commitments and admission", () => {
       manual_recovery_source_generation: null,
       manual_recovery_service_model_id: null,
       manual_recovery_spent_at: null,
+      updated_at: observedThrough,
       state: "quarantined",
       completion_outcome: null,
       failure_code: "candidate_unavailable",
