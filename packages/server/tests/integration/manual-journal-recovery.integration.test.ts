@@ -31,6 +31,7 @@ import {
   candidateRoomIds,
   compactionCandidateRooms,
   compactionModelExposureDependencies,
+  createOrdinaryStenographerIntentAdapter,
   extractionModelExposureDependencies,
   failCompaction,
   failExtraction,
@@ -450,10 +451,11 @@ describe("manual Journal recovery on PostgreSQL", () => {
         authorizedBy: f.userId,
         modelId: RECOVERY_MODEL,
       });
+      const paidClaimedAt = new Date(authorizedAt.getTime() + 1_000);
       const paid = await tryClaimRoom(
         db,
         f.roomId,
-        new Date(authorizedAt.getTime() + 1_000),
+        paidClaimedAt,
         120_000,
         lane,
       );
@@ -461,25 +463,54 @@ describe("manual Journal recovery on PostgreSQL", () => {
         throw new Error("expected paid extraction recovery claim");
       }
       let calls = 0;
-      const admitted = await funding(
-        () => async () => (calls += 1, "malformed"),
-        f.userId,
-      ).admitExtractionModel(paid, extractionModelExposureDependencies(paid));
-      await admitted.invoke("synthetic prompt");
-      expect(calls).toBe(1);
       const statusBeforeInvalid = lane === "live"
         ? await queryStenographerAdminStatus({
             now: new Date(), since: BASE, until: new Date(), includeRecovery: true,
           }, db)
         : null;
-      const invalidAt = new Date();
-      await failExtraction({
-        claim: paid,
-        errorCode: "invalid_output",
-        modelId: RECOVERY_MODEL,
+      const adapter = createOrdinaryStenographerIntentAdapter({
+        ...funding(
+          () => async () => {
+            await new Promise<void>((resolve) => setTimeout(resolve, 5));
+            calls += 1;
+            return "malformed";
+          },
+          f.userId,
+        ),
         db,
-        now: invalidAt,
+        claimExtraction: async () => paid,
+        claimCompaction: async () => null,
+        prepareNextRebuild: async () => null,
+        publishExtraction: async () => ({ published: true, eventsWritten: 0 }),
       });
+      const prepared = await adapter.prepareExtraction({
+        roomId: f.roomId,
+        lane,
+        modelId: RECOVERY_MODEL,
+        now: paidClaimedAt,
+        signal: new AbortController().signal,
+      });
+      expect(await prepared.publish({ revalidationToken: 1 }))
+        .toMatchObject({ status: "failed", processed: true });
+      expect(calls).toBe(1);
+      const [completedBatch] = await db.select({
+        lastErrorAt: roomJournalBatches.lastErrorAt,
+      }).from(roomJournalBatches).where(eq(roomJournalBatches.id, paid.batchId));
+      const [spentRecovery] = await db.select({
+        spentAt: roomJournalModelRecoveries.spentAt,
+      }).from(roomJournalModelRecoveries).where(eq(
+        roomJournalModelRecoveries.id,
+        paid.manualModelRecoveryId,
+      ));
+      const invalidAt = completedBatch?.lastErrorAt;
+      if (invalidAt === null || invalidAt === undefined || spentRecovery?.spentAt === null
+        || spentRecovery?.spentAt === undefined) {
+        throw new Error("expected durable spent recovery and invalid completion");
+      }
+      expect(invalidAt.getTime()).toBeGreaterThanOrEqual(
+        spentRecovery.spentAt.getTime(),
+      );
+      expect(invalidAt.getTime()).toBeGreaterThan(paidClaimedAt.getTime());
       if (statusBeforeInvalid !== null) {
         const statusAfterInvalid = await queryStenographerAdminStatus({
           now: invalidAt, since: BASE, until: invalidAt, includeRecovery: true,
@@ -728,21 +759,29 @@ describe("manual Journal recovery on PostgreSQL", () => {
       .toBe(recovered?.manualModelRecoveryId);
     expect(reboundTwice?.leaseToken).not.toBe(reboundOnce?.leaseToken);
     let calls = 0;
-    const admitted = await funding(() => async () => (calls += 1, "rollup"), f.userId)
-      .admitCompactionModel(
-        reboundTwice as CompactionClaim,
-        compactionModelExposureDependencies(reboundTwice as CompactionClaim),
-      );
-    expect(admitted.modelId).toBe(RECOVERY_MODEL);
-    await admitted.invoke("synthetic compaction prompt");
-    let duplicate: unknown;
-    try {
-      await admitted.invoke("duplicate dispatch");
-    } catch (error) {
-      duplicate = error;
-    }
-    expect(duplicate).toBeInstanceOf(Error);
-    expect((duplicate as Error).message).toContain("already dispatched");
+    const adapter = createOrdinaryStenographerIntentAdapter({
+      ...funding(
+        () => async () => {
+          await new Promise<void>((resolve) => setTimeout(resolve, 5));
+          calls += 1;
+          return "malformed";
+        },
+        f.userId,
+      ),
+      db,
+      claimExtraction: async () => null,
+      claimCompaction: async () => reboundTwice as CompactionClaim,
+      prepareNextRebuild: async () => null,
+      publishExtraction: async () => ({ published: true, eventsWritten: 0 }),
+    });
+    const prepared = await adapter.prepareCompaction({
+      roomId: f.roomId,
+      modelId: RECOVERY_MODEL,
+      now: new Date(recoveredAt.getTime() + 2),
+      signal: new AbortController().signal,
+    });
+    expect(await prepared.publish({ revalidationToken: 1 }))
+      .toMatchObject({ status: "failed", processed: true });
     expect(calls).toBe(1);
     const [authorization] = await db.select().from(roomJournalModelRecoveries)
       .where(and(
@@ -750,14 +789,20 @@ describe("manual Journal recovery on PostgreSQL", () => {
         eq(roomJournalModelRecoveries.workKind, "compaction"),
       ));
     expect(authorization?.spentAt).not.toBeNull();
-    const invalidAt = new Date();
-    await failCompaction({
-      claim: reboundTwice as CompactionClaim,
-      errorCode: "invalid_output",
-      modelId: RECOVERY_MODEL,
-      db,
-      now: invalidAt,
-    });
+    const [invalidState] = await db.select({
+      lastErrorAt: roomJournalState.lastCompactionErrorAt,
+      lastErrorCode: roomJournalState.lastCompactionErrorCode,
+    }).from(roomJournalState).where(eq(roomJournalState.roomId, f.roomId));
+    const invalidAt = invalidState?.lastErrorAt;
+    if (invalidAt === null || invalidAt === undefined || authorization?.spentAt === null
+      || authorization?.spentAt === undefined) {
+      throw new Error("expected durable spent compaction recovery and invalid completion");
+    }
+    expect(invalidState?.lastErrorCode).toBe("invalid_output");
+    expect(invalidAt.getTime()).toBeGreaterThanOrEqual(
+      authorization.spentAt.getTime(),
+    );
+    expect(invalidAt.getTime()).toBeGreaterThan(recoveredAt.getTime() + 2);
     const scheduledAt = new Date(invalidAt.getTime() + 60_000);
     expect((await compactionCandidateRooms(db, scheduledAt))
       .map((candidate) => candidate.roomId)).not.toContain(f.roomId);
