@@ -713,6 +713,21 @@ export async function createProductionReflectionMemoryRuntime(
         }
         modelInvocationState.markReplayChecked(claims, operationId);
       }
+      const hasOperatorAttempt = claims.some(claim => claim.operatorAuthorizedAttempt);
+      const manualAttempt = hasOperatorAttempt
+        ? await semanticWork.consumeManualProviderAttempt(claims)
+        : "not_applicable";
+      if (
+        hasOperatorAttempt
+        && (
+          claims.some(claim => !claim.operatorAuthorizedAttempt)
+          || manualAttempt !== "consumed"
+        )
+      ) {
+        // A prior stamp may represent an already-reached wire. Never guess by
+        // dispatching it again; the durable hold requires a new operator click.
+        throw new DurableSleepProviderOutcomeUnknownError();
+      }
       if (wireKind === "repair" && "binding" in admitted) {
         consumedRepairs.add(admitted);
       }

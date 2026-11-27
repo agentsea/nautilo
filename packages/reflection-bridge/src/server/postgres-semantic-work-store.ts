@@ -986,6 +986,7 @@ export class PostgresSemanticWorkStore
       const conditionalRecoveryIds = new Map<string, string>();
       for (const row of retryableQuarantines) {
         const conditionalFamilyKey = row.failure_code === "publication_unavailable"
+          && row.failure_detail === "publication_plan_stale"
           ? reflectionManualRecoveryFamilyKey({
               recordRef: row.record_id,
               binding: row.accepted_model_binding,
@@ -1815,9 +1816,14 @@ export class PostgresSemanticWorkStore
           .orderBy(asc(reflectionRecordSemanticWork.recordId))
           .for("update", { of: reflectionRecordSemanticWork }));
       if (rows.length !== sorted.length) throw new Error("Reflection model lease changed");
+      const rowsByRecordRef = new Map(rows.map(row => [row.record_id, row]));
+      if (rowsByRecordRef.size !== rows.length) {
+        throw new Error("Reflection model lease changed");
+      }
       const bindings: MemoryOperationBinding[] = [];
-      for (const [index, claim] of sorted.entries()) {
-        const row = rows[index]!;
+      for (const claim of sorted) {
+        const row = rowsByRecordRef.get(claim.recordRef);
+        if (row === undefined) throw new Error("Reflection model lease changed");
         const expiresAt = rowDate(
           { lease_expires_at: row["lease_expires_at"] },
           "lease_expires_at",
@@ -1894,7 +1900,6 @@ export class PostgresSemanticWorkStore
             .set({
               acceptedModelBinding: accepted,
               acceptedModelBindingGeneration: claim.generation,
-              ...(recoveryRows.length === 0 ? {} : { manualRecoverySpentAt: now }),
               updatedAt: sql`greatest(${reflectionRecordSemanticWork.updatedAt}, ${now})`,
             })
             .where(and(
@@ -1918,6 +1923,134 @@ export class PostgresSemanticWorkStore
       }
       return accepted;
     }, { isolationLevel: "serializable" });
+  }
+
+  /**
+   * Consume one operator-authorized provider attempt at the last durable
+   * boundary before dispatch. Binding a model is deliberately separate: a
+   * cooldown, replay-safety check, or lost lease must not spend the click.
+   *
+   * A stamped receipt is never reusable. This also expires receipts written
+   * by the older bind-time implementation without guessing whether a wire was
+   * reached. Same-generation markers belong to conditional saved-proposal
+   * recovery and cannot authorize a fresh model invocation.
+   */
+  async consumeManualProviderAttempt(
+    claims: readonly DurableSleepClaim[],
+  ): Promise<"not_applicable" | "consumed" | "blocked"> {
+    if (claims.length === 0) throw new TypeError("Reflection model batch cannot be empty");
+    const sorted = [...claims].sort((left, right) =>
+      left.recordRef.localeCompare(right.recordRef)
+    );
+    if (new Set(sorted.map(claim => claim.recordRef)).size !== sorted.length) {
+      throw new TypeError("Reflection model batch contains duplicate records");
+    }
+    return this.options.handle.transaction(async tx => {
+      const now = this.#clock();
+      const rows = await executeTypedRecordProductQuery(tx,
+        recordProductTypedDb.select({
+          record_id: reflectionRecordSemanticWork.recordId,
+          generation: reflectionRecordSemanticWork.generation,
+          claim_generation: reflectionRecordSemanticWork.claimGeneration,
+          lease_token: reflectionRecordSemanticWork.leaseToken,
+          lease_expires_at: reflectionRecordSemanticWork.leaseExpiresAt,
+          state: reflectionRecordSemanticWork.state,
+          stage: reflectionRecordSemanticWork.stage,
+          change_reason: reflectionRecordSemanticWork.changeReason,
+          disposition: reflectionRecords.disposition,
+          accepted_model_binding: reflectionRecordSemanticWork.acceptedModelBinding,
+          accepted_model_binding_generation:
+            reflectionRecordSemanticWork.acceptedModelBindingGeneration,
+          manual_recovery_id: reflectionRecordSemanticWork.manualRecoveryId,
+          manual_recovery_source_generation:
+            reflectionRecordSemanticWork.manualRecoverySourceGeneration,
+          manual_recovery_service_model_id:
+            reflectionRecordSemanticWork.manualRecoveryServiceModelId,
+          manual_recovery_spent_at: reflectionRecordSemanticWork.manualRecoverySpentAt,
+        }).from(reflectionRecordSemanticWork)
+          .innerJoin(
+            reflectionRecords,
+            eq(reflectionRecords.recordId, reflectionRecordSemanticWork.recordId),
+          )
+          .where(inArray(
+            reflectionRecordSemanticWork.recordId,
+            sorted.map(claim => claim.recordRef),
+          ))
+          .orderBy(asc(reflectionRecordSemanticWork.recordId))
+          .for("update", { of: reflectionRecordSemanticWork }));
+      if (rows.length !== sorted.length) return "blocked";
+      const rowsByRecordRef = new Map(rows.map(row => [row.record_id, row]));
+      if (rowsByRecordRef.size !== rows.length) return "blocked";
+      for (const claim of sorted) {
+        const row = rowsByRecordRef.get(claim.recordRef);
+        if (row === undefined) return "blocked";
+        const expiresAt = rowDate(
+          { lease_expires_at: row.lease_expires_at },
+          "lease_expires_at",
+        );
+        if (
+          row.record_id !== claim.recordRef
+          || row.generation !== claim.generation
+          || row.claim_generation !== claim.generation
+          || row.lease_token !== claim.leaseToken
+          || row.state !== "claimed"
+          || row.stage !== claim.stage
+          || row.change_reason !== claim.changeReason
+          || row.disposition !== "available"
+          || expiresAt === null
+          || expiresAt.getTime() <= now.getTime()
+        ) return "blocked";
+      }
+      const recoveryRows = rows.filter(row => row.manual_recovery_id !== null);
+      if (recoveryRows.length === 0) return "not_applicable";
+      if (recoveryRows.length !== rows.length) return "blocked";
+      const recoveryId = recoveryRows[0]!.manual_recovery_id;
+      if (typeof recoveryId !== "string") return "blocked";
+      for (const row of recoveryRows) {
+        const binding = row.accepted_model_binding === null
+          ? null
+          : parseMemoryOperationBinding(row.accepted_model_binding);
+        if (
+          row.manual_recovery_id !== recoveryId
+          || row.manual_recovery_spent_at !== null
+          || row.manual_recovery_source_generation !== row.generation - 1
+          || row.accepted_model_binding_generation !== row.generation
+          || binding?.kind !== "service"
+          || binding.role !== "memoryReflection"
+          || binding.modelId !== row.manual_recovery_service_model_id
+        ) return "blocked";
+      }
+      for (const claim of sorted) {
+        const consumed = await executeTypedRecordProductQuery(tx,
+          recordProductTypedDb.update(reflectionRecordSemanticWork)
+            .set({
+              manualRecoverySpentAt: now,
+              updatedAt: sql`greatest(${reflectionRecordSemanticWork.updatedAt}, ${now})`,
+            })
+            .where(and(
+              eq(reflectionRecordSemanticWork.recordId, claim.recordRef),
+              eq(reflectionRecordSemanticWork.generation, claim.generation),
+              eq(reflectionRecordSemanticWork.claimGeneration, claim.generation),
+              eq(reflectionRecordSemanticWork.leaseToken, claim.leaseToken),
+              eq(reflectionRecordSemanticWork.state, "claimed"),
+              eq(reflectionRecordSemanticWork.manualRecoveryId, recoveryId),
+              eq(
+                reflectionRecordSemanticWork.manualRecoverySourceGeneration,
+                claim.generation - 1,
+              ),
+              isNull(reflectionRecordSemanticWork.manualRecoverySpentAt),
+              gt(reflectionRecordSemanticWork.leaseExpiresAt, now),
+            ))
+            .returning({ record_id: reflectionRecordSemanticWork.recordId }));
+        if (consumed.length !== 1) {
+          throw new Error("Reflection manual recovery attempt changed");
+        }
+      }
+      return "consumed";
+    // Exact row locks plus the spent-at CAS serialize callers without a
+    // predicate read. READ COMMITTED lets the second caller observe the first
+    // stamp instead of surfacing a retryable 40001 after it waited on the lock.
+    }, { isolationLevel: "read committed" });
   }
 
   async settleCurrentState(input: Readonly<{

@@ -347,7 +347,7 @@ describe("PostgreSQL semantic work leases", () => {
           mode === "fresh" ? null : mode === "resumed" || index === 0
             ? accepted
             : null,
-        )) as unknown as Row[];
+        )).reverse() as unknown as Row[];
       }
       if (normalized.startsWith("update reflection_record_semantic_work")) {
         return [{ record_id: "updated" }] as unknown as Row[];
@@ -447,7 +447,7 @@ describe("PostgreSQL semantic work leases", () => {
     expect(value.queries).toHaveLength(1);
   });
 
-  test("spends manual service recovery only while binding a fresh canonical input", async () => {
+  test("binds manual service recovery without spending its provider attempt", async () => {
     const now = new Date("2026-11-27T10:03:00.000Z");
     const claim: DurableSleepClaim = {
       logicalObjectRef: "record:manual",
@@ -500,9 +500,121 @@ describe("PostgreSQL semantic work leases", () => {
     });
     const update = value.queries.find(query =>
       normalizedSql(query.statement).startsWith("update reflection_record_semantic_work"));
-    expect(normalizedSql(update?.statement ?? "")).toContain("manual_recovery_spent_at");
+    expect(normalizedSql(update?.statement ?? "")).not.toContain("manual_recovery_spent_at =");
     expect(JSON.stringify(update?.parameters)).toContain(fresh.inputCommitment);
     expect(JSON.stringify(update?.parameters)).toContain("model:configured-at-click");
+  });
+
+  test.each([
+    "openai:gpt-5.6-sol",
+    "venice:llama-3.3-70b",
+    "surplus:synthetic-model",
+  ])("consumes one exact manual %s attempt only at the provider boundary", async modelId => {
+    const now = new Date("2026-11-27T10:04:00.000Z");
+    const claim: DurableSleepClaim = {
+      logicalObjectRef: `record:${modelId}`,
+      recordRef: `record:${modelId}`,
+      generation: 4,
+      changeReason: "created",
+      stage: "organization",
+      leaseToken: `lease:${modelId}`,
+      operatorAuthorizedAttempt: true,
+    };
+    const binding = {
+      version: 1 as const,
+      kind: "service" as const,
+      role: "memoryReflection" as const,
+      modelId,
+      inputCommitment: `hmac-sha256:${"S".repeat(43)}`,
+    };
+    const value = await verifiedConnection(async <Row extends RecordProductPostgresRow>(statement: string) => {
+      const normalized = normalizedSql(statement);
+      if (normalized.startsWith("select")) return [{
+        record_id: claim.recordRef,
+        generation: claim.generation,
+        claim_generation: claim.generation,
+        lease_token: claim.leaseToken,
+        lease_expires_at: new Date(now.getTime() + 30_000),
+        state: "claimed",
+        stage: claim.stage,
+        change_reason: claim.changeReason,
+        disposition: "available",
+        accepted_model_binding: binding,
+        accepted_model_binding_generation: claim.generation,
+        manual_recovery_id: "77777777-7777-4777-8777-777777777777",
+        manual_recovery_source_generation: claim.generation - 1,
+        manual_recovery_service_model_id: modelId,
+        manual_recovery_spent_at: null,
+      }] as unknown as Row[];
+      if (normalized.startsWith("update reflection_record_semantic_work")) {
+        return [{ record_id: claim.recordRef }] as unknown as Row[];
+      }
+      throw new Error(`unexpected SQL: ${statement}`);
+    });
+    const store = new PostgresSemanticWorkStore({
+      handle: value.handle,
+      commitments: createHmacRecordSemanticCommitmentPort(new Uint8Array(32).fill(23)),
+      clock: () => now,
+    });
+
+    expect(await store.consumeManualProviderAttempt([claim])).toBe("consumed");
+    const update = value.queries.find(query =>
+      normalizedSql(query.statement).startsWith("update reflection_record_semantic_work"));
+    expect(normalizedSql(update?.statement ?? "")).toContain("manual_recovery_spent_at");
+    expect(normalizedSql(update?.statement ?? "")).toContain("manual_recovery_source_generation");
+  });
+
+  test.each([
+    ["an existing stamped receipt", 3, new Date("2026-11-27T10:03:59.000Z")],
+    ["a same-generation conditional marker", 4, null],
+  ] as const)("blocks %s before provider dispatch", async (_label, sourceGeneration, spentAt) => {
+    const now = new Date("2026-11-27T10:04:00.000Z");
+    const claim: DurableSleepClaim = {
+      logicalObjectRef: "record:blocked",
+      recordRef: "record:blocked",
+      generation: 4,
+      changeReason: "created",
+      stage: "organization",
+      leaseToken: "lease:blocked",
+      operatorAuthorizedAttempt: true,
+    };
+    const binding = {
+      version: 1 as const,
+      kind: "service" as const,
+      role: "memoryReflection" as const,
+      modelId: "openai:gpt-5.6-sol",
+      inputCommitment: `hmac-sha256:${"T".repeat(43)}`,
+    };
+    const value = await verifiedConnection(async <Row extends RecordProductPostgresRow>(statement: string) => {
+      if (!normalizedSql(statement).startsWith("select")) {
+        throw new Error(`unexpected SQL: ${statement}`);
+      }
+      return [{
+        record_id: claim.recordRef,
+        generation: claim.generation,
+        claim_generation: claim.generation,
+        lease_token: claim.leaseToken,
+        lease_expires_at: new Date(now.getTime() + 30_000),
+        state: "claimed",
+        stage: claim.stage,
+        change_reason: claim.changeReason,
+        disposition: "available",
+        accepted_model_binding: binding,
+        accepted_model_binding_generation: claim.generation,
+        manual_recovery_id: "88888888-8888-4888-8888-888888888888",
+        manual_recovery_source_generation: sourceGeneration,
+        manual_recovery_service_model_id: binding.modelId,
+        manual_recovery_spent_at: spentAt,
+      }] as unknown as Row[];
+    });
+    const store = new PostgresSemanticWorkStore({
+      handle: value.handle,
+      commitments: createHmacRecordSemanticCommitmentPort(new Uint8Array(32).fill(24)),
+      clock: () => now,
+    });
+
+    expect(await store.consumeManualProviderAttempt([claim])).toBe("blocked");
+    expect(value.queries).toHaveLength(1);
   });
 
   test("does not turn an operator click into Human-funded Reflection authority", async () => {

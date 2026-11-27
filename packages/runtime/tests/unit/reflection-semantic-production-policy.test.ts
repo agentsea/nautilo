@@ -283,6 +283,24 @@ describe("production Reflection semantic policy", () => {
     expect(wire).toBeGreaterThan(consume);
   });
 
+  test("consumes an operator attempt after replay checks and before the provider wire", () => {
+    const source = readFileSync(
+      new URL("../../src/reflection/production-reflection-memory.ts", import.meta.url),
+      "utf8",
+    );
+    const dispatch = source.slice(
+      source.indexOf("const dispatchForRecords"),
+      source.indexOf("const invokeForRecords"),
+    );
+    const replay = dispatch.indexOf("resolveModelAttemptReplaySafety");
+    const consume = dispatch.indexOf("consumeManualProviderAttempt");
+    const wire = dispatch.indexOf("createRoomSideModelInvoker");
+    expect(replay).toBeGreaterThan(-1);
+    expect(consume).toBeGreaterThan(replay);
+    expect(wire).toBeGreaterThan(consume);
+    expect(dispatch).toContain('manualAttempt !== "consumed"');
+  });
+
   test("binds body-free structural Record search through the production authority-filtered selector", () => {
     const source = readFileSync(
       new URL("../../src/reflection/production-reflection-memory.ts", import.meta.url),
