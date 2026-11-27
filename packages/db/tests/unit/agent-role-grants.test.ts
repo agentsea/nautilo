@@ -122,7 +122,7 @@ describe("agent-role-grants SQL shape — public contract preserved", () => {
       "memory_review_model_recoveries",
       "memory_recovery_runs",
       "room_journal_model_recoveries",
-    ]) {
+    ] as const) {
       expect(SENSITIVE_TABLES).toContain(table);
       expect(sql).toContain(`'${table}'`);
       expect(sql.indexOf(`'${table}'`)).toBeGreaterThan(
