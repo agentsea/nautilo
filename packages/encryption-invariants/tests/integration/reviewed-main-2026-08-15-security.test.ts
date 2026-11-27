@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 
 import { DTO_BASELINE_DECLARATIONS } from "../../baseline/dto-declarations";
 import { BASELINE_REGISTRY } from "../../baseline/existing-debt";
+import { MANUAL_MEMORY_RECOVERY_DATABASE_LOCATORS } from
+  "../../baseline/reviewed-manual-memory-recovery";
 import { REVIEWED_PERSONAL_MEMORY_FUNDING_COVERAGE } from
   "../../baseline/reviewed-personal-memory-funding-coverage";
 import {
@@ -28,7 +30,7 @@ const CURRENT_REFLECTION_SEMANTIC_WORK_LOCATORS = [
 ] as const;
 
 describe("reviewed 2026-08-15 encryption inventory", () => {
-  test("keeps Reflection semantic work content-free metadata", () => {
+  test("seals the organizer proposal and keeps Reflection work coordinates content-free", () => {
     const currentReflectionEntries = REVIEWED_MAIN_2026_10_13_COVERAGE_ENTRIES
       .filter((entry) =>
         CURRENT_REFLECTION_SEMANTIC_WORK_LOCATORS.includes(
@@ -52,10 +54,17 @@ describe("reviewed 2026-08-15 encryption inventory", () => {
       || entry.locator.includes("reflection_record_dependency_change_repairs")
     );
     expect(semanticWork.length).toBeGreaterThanOrEqual(56);
-    expect(semanticWork.every((entry) =>
-      entry.classification === "bounded_metadata"
-    )).toBe(true);
+    const checkpoint = "public.reflection_record_semantic_work.organizer_proposal_checkpoint";
+    expect(semanticWork.filter((entry) => entry.classification !== "bounded_metadata")
+      .map((entry) => entry.locator)).toEqual([checkpoint]);
     for (const entry of semanticWork) {
+      if (entry.locator === checkpoint) {
+        expect(entry).toMatchObject({
+          classification: "server_encrypted", algorithm: "AES-256-GCM",
+          representationScope: "ordinary_only", supportsEncryptedMode: false,
+        });
+        continue;
+      }
       if (entry.classification !== "bounded_metadata") {
         throw new Error(`${entry.locator} must remain bounded metadata`);
       }
@@ -78,6 +87,8 @@ describe("reviewed 2026-08-15 encryption inventory", () => {
               "humanUserId", "preferenceRevision", "funding.kind",
               "funding.providerRoute", "funding.credentialId", "funding.credentialRevision"],
         );
+      } else if (MANUAL_MEMORY_RECOVERY_DATABASE_LOCATORS.some(locator => locator === entry.locator)) {
+        expect(entry.metadataAllowlist).toEqual([entry.locator.split(".").at(-1)!]);
       } else {
         expect(entry.plaintextReason).toMatch(/content-free|writes no Record payload/);
         expect(entry.plaintextReason).toMatch(/prompts?|source content/);

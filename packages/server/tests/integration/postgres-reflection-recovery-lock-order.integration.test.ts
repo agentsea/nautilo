@@ -38,8 +38,10 @@ function deferred(): Readonly<{
   return { promise, resolve };
 }
 
-async function insertProviderHolds(recordIds: readonly string[], updatedAt: Date): Promise<void> {
-  await db.insert(reflectionRecords).values(recordIds.map(recordId => ({
+async function insertProviderHolds(
+  connection: Pick<typeof db, "insert">, recordIds: readonly string[], updatedAt: Date,
+): Promise<void> {
+  await connection.insert(reflectionRecords).values(recordIds.map(recordId => ({
     recordId,
     lifecycle: "current" as const,
     structuralHeight: 1,
@@ -48,7 +50,7 @@ async function insertProviderHolds(recordIds: readonly string[], updatedAt: Date
     createdAt: updatedAt,
     updatedAt,
   })));
-  await db.insert(reflectionRecordSemanticWork).values(recordIds.map(recordId => ({
+  await connection.insert(reflectionRecordSemanticWork).values(recordIds.map(recordId => ({
     recordId,
     generation: 1,
     completedGeneration: 1,
@@ -184,7 +186,7 @@ test("manual recovery does not wait on a normal admission advisory contender", a
   const now = new Date(observedThrough.getTime() + 1_000);
   const advisoryHeld = deferred();
   const releaseAdvisory = deferred();
-  await insertProviderHolds([recordId], observedThrough);
+  await insertProviderHolds(db, [recordId], observedThrough);
   let blocker: Promise<void> | undefined;
   try {
     blocker = createPostgresJsCanonicalBridgeConnection(db).transaction(
@@ -262,34 +264,7 @@ test("manual recovery assesses more than 65,535 candidates with bounded binds", 
              FROM generate_series(1, $2::integer) AS series`,
           [prefix, candidateCount, observedThrough],
         );
-        await executor.query(
-          `INSERT INTO reflection_records (
-             record_id, lifecycle, structural_height, producer_policy_version,
-             processing_generation, created_at, updated_at
-           ) VALUES ($1, 'current', 1, 'reflection-lock-regression-v1', 1, $2, $2)`,
-          [controlRecordId, observedThrough],
-        );
-        await executor.query(
-          `INSERT INTO reflection_record_semantic_work (
-             record_id, generation, completed_generation, change_reason, stage,
-             state, accepted_model_binding, accepted_model_binding_generation,
-             completion_outcome, due_since, completed_at, created_at, updated_at
-           ) VALUES (
-             $1, 1, 1, 'created', 'organization', 'complete', $2::jsonb, 1,
-             'provider_outcome_unknown', $3, $3, $3, $3
-           )`,
-          [
-            controlRecordId,
-            JSON.stringify({
-              version: 1,
-              kind: "service",
-              role: "memoryReflection",
-              modelId: "surplus:synthetic-model",
-              inputCommitment: `hmac-sha256:${"Z".repeat(43)}`,
-            }),
-            observedThrough,
-          ],
-        );
+        await insertProviderHolds(tx, [controlRecordId], observedThrough);
 
         const handle = await verifyRecordProductPostgresHandle({
           query: executor.query.bind(executor),

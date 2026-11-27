@@ -83,7 +83,7 @@ export const DATABASE_WRITER_BASELINE = {
   "update": 943,
   "delete": 193,
   "unresolved": 18,
-  "sha256": "d86b0b28138d0a08ae60908a85e0c504cd46bdb8fedf289f38411b685f061f0a"
+  "sha256": "4cb410dbf47cdab212310cea13ba511e0cc0fd4633744a3916986849cf615a46"
 } as const;
 
 /**
