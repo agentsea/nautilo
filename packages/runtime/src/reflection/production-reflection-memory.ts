@@ -652,12 +652,12 @@ export async function createProductionReflectionMemoryRuntime(
       };
       if (!modelInvocationState.wasReplayChecked(claims, operationId)) {
         await assertInvocationCurrent();
-        const replaySafety = await resolveModelAttemptReplaySafety({
-          kind: "operation",
-          roomId: context.roomId,
-          callType: "room_reflection",
-          operationId,
-        }, { db: input.db });
+        const replaySafety = await resolveModelAttemptReplaySafety(
+          "binding" in admitted
+            ? { kind: "reflection_operation", operationId }
+            : { kind: "operation", roomId: context.roomId, callType: "room_reflection", operationId },
+          { db: input.db },
+        );
         if (replaySafety.decision === "block_unknown") {
           throw new DurableSleepProviderOutcomeUnknownError();
         }

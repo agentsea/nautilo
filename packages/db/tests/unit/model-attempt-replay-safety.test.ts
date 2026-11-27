@@ -73,7 +73,7 @@ describe("model attempt replay safety", () => {
   });
 
   test("queries the exact durable Memory correlation and blocks lost results", async () => {
-    const identities: ModelAttemptReplayIdentity[] = [
+    const identities: Exclude<ModelAttemptReplayIdentity, { kind: "reflection_operation" }>[] = [
       {
         kind: "memory_review",
         roomId: "11111111-1111-4111-8111-111111111111",
@@ -118,6 +118,18 @@ describe("model attempt replay safety", () => {
     expect(refusalQuery.params).toContain("provider_refused");
     expect(refusalQuery.params).toContain("no_sellers_for_model");
     expect(refusalQuery.params).toContain("pre_service_refusal");
+  });
+
+  test("a reclaimed Reflection family checks the same wire across accounting Rooms", async () => {
+    const identity = {
+      kind: "reflection_operation",
+      operationId: "reflection:committed-family:primary",
+    } as const;
+    const fake = queryDb([row("succeeded")]);
+    expect(await resolveModelAttemptReplaySafety(identity, { db: fake.db }))
+      .toMatchObject({ decision: "block_unknown" });
+    expect(fake.query().params.slice(0, 2)).toEqual(["room_reflection", identity.operationId]);
+    expect(fake.query().sql).not.toContain('"room_id"');
   });
 
   test("operator recovery requires every exact wire attempt to be settled service-funded Surplus usage", async () => {

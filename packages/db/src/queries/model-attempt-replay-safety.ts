@@ -17,6 +17,10 @@ export type ModelAttemptReplayIdentity =
       roomId: string;
       callType: "room_stenographer" | "room_event_compaction" | "room_reflection" | "image_assistance";
       operationId: string;
+    }>
+  | Readonly<{
+      kind: "reflection_operation";
+      operationId: string;
     }>;
 
 export type ModelAttemptReplaySafety = Readonly<{
@@ -77,10 +81,18 @@ function isSafePreServiceFailure(row: AttemptRow): boolean {
     && (SAFE_PRE_SERVICE_FAILURE_CODES as readonly string[]).includes(row.failureCode);
 }
 
+function replayCallType(identity: ModelAttemptReplayIdentity) {
+  if (identity.kind === "memory_review") return "memory_review";
+  if (identity.kind === "reflection_operation") return "room_reflection";
+  return identity.callType;
+}
+
 function matchingAttempts(identity: ModelAttemptReplayIdentity) {
   return and(
-    eq(llmUsageEvents.roomId, identity.roomId),
-    eq(llmUsageEvents.callType, identity.kind === "memory_review" ? "memory_review" : identity.callType),
+    // A co-bound Reflection family can resume with a different accounting Room.
+    // Its committed operation ID remains the same for every member.
+    identity.kind === "reflection_operation" ? undefined : eq(llmUsageEvents.roomId, identity.roomId),
+    eq(llmUsageEvents.callType, replayCallType(identity)),
     identity.kind === "memory_review"
       ? eq(sql<string>`${llmUsageEvents.metadata}->>'workId'`, identity.workId)
       : eq(sql<string>`${llmUsageEvents.metadata}->>'operationId'`, identity.operationId),
@@ -132,7 +144,7 @@ export async function resolveModelAttemptReplaySafety(
   identity: ModelAttemptReplayIdentity,
   options: Readonly<{ db?: ModelAttemptReplayDb; knownNonusableResult?: boolean }> = {},
 ): Promise<ModelAttemptReplaySafety> {
-  const callType = identity.kind === "memory_review" ? "memory_review" : identity.callType;
+  const callType = replayCallType(identity);
   // Image assistance has no separate durable work row that can prove a
   // succeeded provider result was unusable. Without a retained transcript
   // observation, every non-refusal wire outcome remains non-replayable.
