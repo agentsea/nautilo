@@ -444,4 +444,42 @@ describe("coverage report", () => {
       expect(report).toContain(entry.releaseImpact);
     }
   });
+  test("counts ordinary server-encrypted storage separately from protected coverage", () => {
+    const serverEncrypted = {
+      id: "db.example.ordinary-checkpoint",
+      surface: "db",
+      locator: "example.ordinary_checkpoint",
+      classification: "server_encrypted",
+      owner: "packages/runtime",
+      readers: ["packages/runtime/src/example.ts"],
+      writers: ["packages/runtime/src/example.ts"],
+      migrationState: "ciphertext_only",
+      retention: "Retained for the bounded work lifetime.",
+      testEvidence: ["packages/runtime/tests/example.test.ts"],
+      representationScope: "ordinary_only",
+      supportsEncryptedMode: false,
+      keyCustody: "server_instance_commitment_key",
+      keyDerivation: "A domain-separated server-key derivation.",
+      algorithm: "AES-256-GCM",
+      envelopeVersion: 1,
+      nonceBytes: 12,
+      authenticationTagBytes: 16,
+      additionalAuthenticatedData: "A stable domain-separated envelope context.",
+      maximumStoredBytes: 4096,
+      plaintextContents: "A bounded ordinary checkpoint payload.",
+      lifecycle: "Opened only for current work and then cleared.",
+      clearConditions: ["Cleared when the work completes."],
+    } as const;
+    const report = formatCoverageReport({
+      ...input,
+      registry: { ...input.registry, entries: [...input.registry.entries, serverEncrypted] },
+      observed: [...input.observed, {
+        id: serverEncrypted.id,
+        surface: serverEncrypted.surface,
+        locator: serverEncrypted.locator,
+      }],
+    });
+    expect(report).toContain("| server_encrypted | 1 |");
+    expect(report).toContain("| protected | 0 |");
+  });
 });

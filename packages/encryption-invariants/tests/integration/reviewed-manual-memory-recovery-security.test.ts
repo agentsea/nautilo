@@ -21,18 +21,39 @@ async function source(path: string): Promise<string> {
 
 describe("manual Memory recovery encryption review", () => {
   test("classifies only the exact new operational metadata surfaces", () => {
-    expect(MANUAL_MEMORY_RECOVERY_DATABASE_LOCATORS).toHaveLength(31);
-    expect(new Set(MANUAL_MEMORY_RECOVERY_DATABASE_LOCATORS).size).toBe(31);
-    expect(REVIEWED_MANUAL_MEMORY_RECOVERY_COVERAGE).toHaveLength(33);
+    expect(MANUAL_MEMORY_RECOVERY_DATABASE_LOCATORS).toHaveLength(32);
+    expect(new Set(MANUAL_MEMORY_RECOVERY_DATABASE_LOCATORS).size).toBe(32);
+    expect(REVIEWED_MANUAL_MEMORY_RECOVERY_COVERAGE).toHaveLength(34);
 
     for (const entry of REVIEWED_MANUAL_MEMORY_RECOVERY_COVERAGE) {
       expect(validateCoverageEntry(entry)).toEqual({ ok: true });
-      expect(entry.classification).toBe("bounded_metadata");
       expect(BASELINE_REGISTRY.entries).toContainEqual(entry);
       expect(CURRENT_FROZEN_BASELINE_DEBT.some((debt) =>
         debt.locator === entry.locator
       )).toBe(false);
     }
+
+    const checkpoint = REVIEWED_MANUAL_MEMORY_RECOVERY_COVERAGE.find((entry) =>
+      entry.locator === "public.reflection_record_semantic_work.organizer_proposal_checkpoint"
+    );
+    expect(checkpoint?.classification).toBe("server_encrypted");
+    if (checkpoint?.classification !== "server_encrypted") throw new Error("Missing checkpoint coverage");
+    expect(checkpoint).toMatchObject({
+      surface: "db",
+      migrationState: "ciphertext_only",
+      representationScope: "ordinary_only",
+      supportsEncryptedMode: false,
+      keyCustody: "server_instance_commitment_key",
+      algorithm: "AES-256-GCM",
+      envelopeVersion: 1,
+      nonceBytes: 12,
+      authenticationTagBytes: 16,
+      additionalAuthenticatedData: "nautilo-reflection-authority-checkpoint-v1",
+      maximumStoredBytes: 3_407_872,
+    });
+    expect(REVIEWED_MANUAL_MEMORY_RECOVERY_COVERAGE.filter((entry) =>
+      entry !== checkpoint
+    ).every((entry) => entry.classification === "bounded_metadata")).toBe(true);
 
     const allowlist = REVIEWED_MANUAL_MEMORY_RECOVERY_COVERAGE.flatMap(
       (entry) => entry.classification === "bounded_metadata"
@@ -138,5 +159,29 @@ describe("manual Memory recovery encryption review", () => {
     expect(migration).not.toContain(
       'GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE "memory_recovery_runs", "room_journal_model_recoveries" TO "nautilo_agent"',
     );
+  });
+
+  test("anchors ordinary checkpoint coverage to the authenticated server-keyed implementation", async () => {
+    const runtime = await source(
+      "packages/runtime/src/reflection/production-reflection-memory.ts",
+    );
+    expect(runtime).toContain("Only ordinary execution is admitted to this server-keyed store");
+    expect(runtime).toContain('update("nautilo-reflection-organizer-proposal-v1")');
+    expect(runtime).toContain("ORGANIZER_BATCH_MAX_ITEMS\n    * CROSS_ROOM_EXECUTION_PLAN_LIMITS.applicationPlanTokenBytes\n    + CROSS_ROOM_EXECUTION_PLAN_LIMITS.inputBytes\n    + CROSS_ROOM_EXECUTION_PLAN_LIMITS.outputBytes");
+    expect(runtime).toContain("if (ciphertext.byteLength > organizerCheckpointMaxBytes)");
+    expect(runtime).toContain("checkpointIdentity(claim, admitted.binding)");
+
+    const seal = await source(
+      "packages/reflection-bridge/src/server/authority-commitment.ts",
+    );
+    expect(seal).toContain('"nautilo-reflection-authority-checkpoint-key-v1"');
+    expect(seal).toContain('"nautilo-reflection-authority-checkpoint-v1"');
+    expect(seal).toContain('createCipheriv("aes-256-gcm", encryptionKey, nonce)');
+    expect(seal).toContain("const nonce = randomBytes(12)");
+    expect(seal).toContain("Buffer.from([1])");
+    expect(seal).toContain("const tag = cipher.getAuthTag()");
+
+    const schema = await source("packages/db/src/schema/reflection-records.ts");
+    expect(schema).toContain('organizerProposalCheckpoint: bytea("organizer_proposal_checkpoint")');
   });
 });

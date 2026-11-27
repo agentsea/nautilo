@@ -85,6 +85,25 @@ export type DeviceLocalCoverageEntry = CoverageCommon & {
   readonly cleanupContract: string;
 };
 
+/** Durable ciphertext owned by the ordinary server runtime, not Namespace/Agent protection. */
+export type ServerEncryptedDatabaseCoverageEntry = CoverageCommon & {
+  readonly classification: "server_encrypted";
+  readonly surface: "db";
+  readonly representationScope: "ordinary_only";
+  readonly supportsEncryptedMode: false;
+  readonly keyCustody: "server_instance_commitment_key";
+  readonly keyDerivation: string;
+  readonly algorithm: "AES-256-GCM";
+  readonly envelopeVersion: 1;
+  readonly nonceBytes: 12;
+  readonly authenticationTagBytes: 16;
+  readonly additionalAuthenticatedData: string;
+  readonly maximumStoredBytes: number;
+  readonly plaintextContents: string;
+  readonly lifecycle: string;
+  readonly clearConditions: readonly string[];
+};
+
 /** Reviewed transient disclosure; this is never an encryption classification. */
 export type AuthorizedPlaintextCoverageEntry = CoverageCommon & {
   readonly classification: "authorized_plaintext";
@@ -104,6 +123,7 @@ export type EncryptionCoverageEntry =
   | PublicCoverageEntry
   | OperatorSecretCoverageEntry
   | DeviceLocalCoverageEntry
+  | ServerEncryptedDatabaseCoverageEntry
   | AuthorizedPlaintextCoverageEntry;
 
 export type EncryptionClassification = EncryptionCoverageEntry["classification"];
@@ -155,6 +175,19 @@ type CandidateObject = Record<string, unknown> & {
   excludedFromAgentGrants?: unknown;
   deviceStorage?: unknown;
   cleanupContract?: unknown;
+  representationScope?: unknown;
+  supportsEncryptedMode?: unknown;
+  keyCustody?: unknown;
+  keyDerivation?: unknown;
+  algorithm?: unknown;
+  envelopeVersion?: unknown;
+  nonceBytes?: unknown;
+  authenticationTagBytes?: unknown;
+  additionalAuthenticatedData?: unknown;
+  maximumStoredBytes?: unknown;
+  plaintextContents?: unknown;
+  lifecycle?: unknown;
+  clearConditions?: unknown;
   mode?: unknown;
   transientOnly?: unknown;
   modeGate?: unknown;
@@ -308,6 +341,42 @@ export function validateCoverageEntry(input: unknown): ValidationResult {
       }
       if (!isDescriptive(input.cleanupContract)) {
         errors.push("cleanupContract must be descriptive");
+      }
+      break;
+    case "server_encrypted":
+      if (input.surface !== "db") errors.push("server-encrypted coverage is limited to database fields");
+      if (input.representationScope !== "ordinary_only") {
+        errors.push("server-encrypted coverage must be ordinary-only");
+      }
+      if (input.supportsEncryptedMode !== false) {
+        errors.push("server-encrypted coverage cannot claim encrypted-mode support");
+      }
+      if (input.keyCustody !== "server_instance_commitment_key") {
+        errors.push("server-encrypted coverage requires server instance key custody");
+      }
+      if (!isDescriptive(input.keyDerivation)) errors.push("keyDerivation must be descriptive");
+      if (input.algorithm !== "AES-256-GCM") errors.push("server-encrypted coverage requires AES-256-GCM");
+      if (input.envelopeVersion !== 1) errors.push("server-encrypted envelopeVersion must be 1");
+      if (input.nonceBytes !== 12) errors.push("server-encrypted nonceBytes must be 12");
+      if (input.authenticationTagBytes !== 16) {
+        errors.push("server-encrypted authenticationTagBytes must be 16");
+      }
+      if (!isDescriptive(input.additionalAuthenticatedData)) {
+        errors.push("additionalAuthenticatedData must be descriptive");
+      }
+      if (!Number.isSafeInteger(input.maximumStoredBytes) || Number(input.maximumStoredBytes) <= 0) {
+        errors.push("maximumStoredBytes must be a positive safe integer");
+      }
+      if (!isDescriptive(input.plaintextContents)) errors.push("plaintextContents must be descriptive");
+      if (!isDescriptive(input.lifecycle)) errors.push("lifecycle must be descriptive");
+      if (!isNonEmptyStringArray(input.clearConditions) || !input.clearConditions.every(isDescriptive)) {
+        errors.push("clearConditions must contain descriptive lifecycle events");
+      }
+      if (input.migrationState !== "ciphertext_only") {
+        errors.push("server-encrypted database fields must be ciphertext-only");
+      }
+      if (input.keyFamily !== undefined || input.bridgeRepository !== undefined) {
+        errors.push("server-encrypted coverage cannot claim Namespace or Agent protection");
       }
       break;
     case "authorized_plaintext":

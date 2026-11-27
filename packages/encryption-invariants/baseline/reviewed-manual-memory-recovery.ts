@@ -98,6 +98,7 @@ const JOURNAL_FIELDS = [
 ] as const;
 
 const REFLECTION_TABLE = "public.reflection_record_semantic_work";
+const REFLECTION_CHECKPOINT = `${REFLECTION_TABLE}.organizer_proposal_checkpoint`;
 const REFLECTION_FIELDS = [
   "manual_recovery_authorized_at",
   "manual_recovery_authorized_by",
@@ -208,6 +209,51 @@ export const REVIEWED_MANUAL_MEMORY_RECOVERY_COVERAGE:
       "These fields contain one recovery UUID, one operator UUID, source-generation and configured-model coordinates, and observation, authorization, and consumption timestamps. They contain no Record payload, model input or output, provider response, credential, HMAC key, or commitment secret.",
     includeTable: false,
   }),
+  {
+    id: "db.manual-memory-recovery.reflection-organizer-checkpoint",
+    surface: "db",
+    locator: REFLECTION_CHECKPOINT,
+    owner: "packages/runtime",
+    readers: [
+      "packages/runtime/src/reflection/production-reflection-memory.ts",
+      "packages/reflection-bridge/src/server/postgres-semantic-work-store.ts",
+    ],
+    writers: [
+      "packages/runtime/src/reflection/production-reflection-memory.ts",
+      "packages/reflection-bridge/src/server/postgres-semantic-work-store.ts",
+    ],
+    migrationState: "ciphertext_only",
+    retention:
+      "Retained only on the owning ordinary semantic-work generation until completion, replacement admission, or a required fresh calculation clears it.",
+    testEvidence: [
+      "packages/reflection-bridge/tests/unit/authority-commitment.test.ts",
+      "packages/reflection-bridge/tests/unit/postgres-semantic-work-store.test.ts",
+      "packages/runtime/tests/integration/reflection-semantic-worker-liveness.integration.test.ts",
+      SECURITY_TEST,
+    ],
+    classification: "server_encrypted",
+    representationScope: "ordinary_only",
+    supportsEncryptedMode: false,
+    keyCustody: "server_instance_commitment_key",
+    keyDerivation:
+      "HMAC-SHA-256 with nautilo-reflection-organizer-proposal-v1 derives the checkpoint port key; SHA-256 with nautilo-reflection-authority-checkpoint-key-v1 derives the AES key.",
+    algorithm: "AES-256-GCM",
+    envelopeVersion: 1,
+    nonceBytes: 12,
+    authenticationTagBytes: 16,
+    additionalAuthenticatedData: "nautilo-reflection-authority-checkpoint-v1",
+    maximumStoredBytes: 3_407_872,
+    plaintextContents:
+      "A bounded organizer proposal checkpoint with its exact claim, model, input commitment, application plan token, and authenticated model exposure dependencies.",
+    lifecycle:
+      "The ordinary semantic worker authenticates and opens the sealed checkpoint only for the exact current claim identity before publication revalidation.",
+    clearConditions: [
+      "The semantic work completes or settles terminally.",
+      "A newer canonical admission replaces the work generation.",
+      "Canonical validation requires a fresh organizer calculation.",
+      "Deletion of the owning Record cascades the semantic work row.",
+    ],
+  },
   ...metadataEntries({
     id: "reflection-checkpoint-resume",
     table: REFLECTION_TABLE,
@@ -264,5 +310,6 @@ export const MANUAL_MEMORY_RECOVERY_DATABASE_LOCATORS = [
   JOURNAL_TABLE,
   ...JOURNAL_FIELDS.map((field) => `${JOURNAL_TABLE}.${field}`),
   ...REFLECTION_FIELDS.map((field) => `${REFLECTION_TABLE}.${field}`),
+  REFLECTION_CHECKPOINT,
   `${REFLECTION_TABLE}.organizer_proposal_resumed_at`,
 ] as const;
