@@ -579,6 +579,7 @@ import {
   createLiveShadowDataOperationPolicyBinding,
   createNativeStenographerExtractionPublisher,
   createProductionReflectionMemoryRuntime,
+  reflectionModelOperationId,
   disabledReflectionSemanticSchedulerStatus,
   REFLECTION_SEMANTIC_RUNTIME_POLICY_V1,
   installForegroundRecordContextPortFactory,
@@ -667,6 +668,7 @@ import {
   listStoppableTasksForOwnerRoom,
   queryStenographerAdminStatus,
   queryReflectionAdminStatus,
+  readReflectionRecoveryDiagnostics,
   getAccountSecurityRowByUserId,
   getEncryptionTransitionPolicy,
   recordStrictShadowBoundaryHealth,
@@ -2599,6 +2601,19 @@ export async function createApp(options?: CreateAppOptions) {
             REFLECTION_SEMANTIC_RUNTIME_POLICY_V1.scanIntervalMilliseconds,
           ),
       }, getServerDirectDb()),
+    queryRecoveryStatus: async (input) => {
+      const diagnostics = await readReflectionRecoveryDiagnostics({
+        ...input,
+        operationIds: (binding) => [
+          reflectionModelOperationId(binding, "primary"),
+          reflectionModelOperationId(binding, "repair"),
+        ],
+      }, getServerDirectDb());
+      return {
+        providerSucceededResultMissing: diagnostics.providerSucceededResultMissing,
+        resumedFromSavedProposal: diagnostics.resumedFromSavedProposal,
+      };
+    },
     queryAuthorityStatus: async (input) =>
       readPostgresReflectionAuthorityStatus({
         product: getServerDirectDb(),

@@ -100,6 +100,22 @@ describe("MemoryRecoveryCard", () => {
     expect(summarizeReflection({ ...reflectionFixture(), scheduler: { ...reflectionFixture().scheduler, state: "pressure_paused", pauseReason: "repeated_failure" } }).state).toBe("paused");
   });
 
+  test("distinguishes settled success with no durable result from an unknown provider outcome", async () => {
+    getReflection.mockImplementationOnce(async () => ({
+      ...reflectionFixture(),
+      unresolvedProviderOutcomes: 3,
+      providerSucceededResultMissing: 2,
+      resumedFromSavedProposal: 4,
+      last24h: { completedWork: 6, syntheticParentsCreated: 0 },
+    }));
+    const view = show();
+    await waitFor(() => expect(view.getByText(/2 jobs have a successful provider call and a missing result/)).toBeTruthy());
+    expect(view.getByText(/1 job has an unknown provider outcome/)).toBeTruthy();
+    expect(view.getByText(/held without a billable replay/)).toBeTruthy();
+    expect(view.getByText(/4 resumed from a saved proposal. Completed in the past 24 hours: 6/)).toBeTruthy();
+    expect(view.getByText(/Held work is excluded/)).toBeTruthy();
+  });
+
   test("requires read permission before requesting status", () => {
     capabilities.clear();
     const view = show();

@@ -124,12 +124,18 @@ function reflectionFamilyEligible(family: ReflectionFamily): boolean {
   });
 }
 
-async function canRetryReflection(db: QueryDb, roomId: string, family: ReflectionFamily): Promise<boolean> {
+export function reflectionRecoveryAttemptIdentities(
+  binding: Extract<MemoryOperationBinding, { kind: "service" }>,
+) {
+  return (["primary", "repair"] as const).map(wireKind => ({
+    kind: "reflection_operation" as const,
+    operationId: reflectionModelOperationId(binding, wireKind),
+  }));
+}
+
+async function canRetryReflection(db: QueryDb, family: ReflectionFamily): Promise<boolean> {
   if (!reflectionFamilyEligible(family)) return false;
-  return hasOnlyRefusedServiceAttempts((["primary", "repair"] as const).map(wireKind => ({
-    kind: "operation", roomId, callType: "room_reflection",
-    operationId: reflectionModelOperationId(family.binding, wireKind),
-  })), db, {
+  return hasOnlyRefusedServiceAttempts(reflectionRecoveryAttemptIdentities(family.binding), db, {
     modelId: family.binding.modelId,
     occurredAtOrAfter: family.generationStartedAt,
   });
@@ -163,7 +169,7 @@ async function recoverReflectionFamily(
       .where(and(eq(rooms.id, roomId), isNull(rooms.archivedAt))).limit(1);
     if (!room) return;
     const family = await readReflectionFamily(tx, roomId, seed);
-    if (!family || !await canRetryReflection(tx, roomId, family)) return;
+    if (!family || !await canRetryReflection(tx, family)) return;
     await tx.update(reflectionRecordSemanticWork).set({
       acceptedModelBinding: { ...family.binding, modelId },
       nextAttemptAt: now,

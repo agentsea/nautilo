@@ -156,7 +156,13 @@ export const reflectionAdminStatusSchema = z.object({
     until: isoTimestamp,
   }).strict(),
   health: z.enum(["healthy", "delayed", "degraded"]),
+  /** Current terminal holds whose exact settled provider ledger succeeded but
+   * whose result is not durably available. This is never replay authority. */
+  providerSucceededResultMissing: nonNegativeInteger.optional(),
   unresolvedProviderOutcomes: nonNegativeInteger.optional(),
+  /** Normal-worker resumptions from a durable saved proposal in this window.
+   * Terminal holds are excluded. */
+  resumedFromSavedProposal: nonNegativeInteger.optional(),
   scheduler: reflectionSemanticSchedulerStatusSchema,
   current: z.object({
     totalRecords: nonNegativeInteger,

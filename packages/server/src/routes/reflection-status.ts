@@ -22,6 +22,9 @@ export type QueryReflectionStatus = (
 
 export interface ReflectionStatusRoutesDeps {
   queryStatus: QueryReflectionStatus;
+  queryRecoveryStatus?: (
+    input: ReflectionStatusQueryInput,
+  ) => Promise<Pick<ReflectionAdminStatus, "providerSucceededResultMissing" | "resumedFromSavedProposal">>;
   queryAuthorityStatus?: (
     input: ReflectionStatusQueryInput,
   ) => Promise<ReflectionProtectedAuthorityStatus>;
@@ -68,13 +71,16 @@ export function reflectionStatusRoutes(
     let status: ReflectionAdminStatus;
     try {
       const input = { now: until, since, until };
-      const [ordinaryStatus, protectedAuthority] = await Promise.all([
+      const [ordinaryStatus, protectedAuthority, recoveryStatus] = await Promise.all([
         deps.queryStatus({ ...input, ...(includeRecovery ? { includeRecovery } : {}) }),
         deps.queryAuthorityStatus?.(input),
+        includeRecovery ? deps.queryRecoveryStatus?.(input) : undefined,
       ]);
-      status = protectedAuthority === undefined
-        ? ordinaryStatus
-        : { ...ordinaryStatus, protectedAuthority };
+      status = {
+        ...ordinaryStatus,
+        ...(recoveryStatus ?? {}),
+        ...(protectedAuthority === undefined ? {} : { protectedAuthority }),
+      };
     } catch (error) {
       logError("[reflection-status] query failed", {
         failureCode: "reflection_status_query_failed",

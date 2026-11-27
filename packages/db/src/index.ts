@@ -1060,6 +1060,11 @@ export {
   classifyReflectionHealth,
   queryReflectionAdminStatus,
 } from "./queries/reflection-status";
+export {
+  classifyReflectionHeldProviderEvidence,
+  readReflectionRecoveryDiagnostics,
+  type ReflectionRecoveryDiagnostics,
+} from "./queries/reflection-recovery-diagnostics";
 export * from "./queries/codex";
 export * from "./queries/claude-connections";
 export * from "./queries/memory-review";

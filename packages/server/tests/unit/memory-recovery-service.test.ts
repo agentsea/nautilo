@@ -1,10 +1,32 @@
 import { describe, expect, test } from "bun:test";
-import { reflectionRecoveryFamilyRoomProven } from "../../src/lib/memory-recovery-service";
+import {
+  reflectionRecoveryAttemptIdentities,
+  reflectionRecoveryFamilyRoomProven,
+} from "../../src/lib/memory-recovery-service";
 
 const ROOM = "11111111-1111-4111-8111-111111111111";
 const OTHER_ROOM = "22222222-2222-4222-8222-222222222222";
 
 describe("Reflection recovery family Room proof", () => {
+  test("uses exact cross-Room operation identities without weakening Room association proof", () => {
+    expect(reflectionRecoveryAttemptIdentities({
+      version: 1,
+      kind: "service",
+      role: "memoryReflection",
+      modelId: "test:model",
+      inputCommitment: "commitment",
+    })).toEqual([
+      { kind: "reflection_operation", operationId: "reflection:commitment:primary" },
+      { kind: "reflection_operation", operationId: "reflection:commitment:repair" },
+    ]);
+    expect(reflectionRecoveryFamilyRoomProven({
+      roomId: ROOM,
+      memberRecordIds: ["record"],
+      eventAssociations: [{ recordId: "record", roomId: OTHER_ROOM }],
+      attemptRoomIds: [ROOM],
+    })).toBe(false);
+  });
+
   test("accepts an exact co-bound family whose members and invocation share one Room", () => {
     expect(reflectionRecoveryFamilyRoomProven({
       roomId: ROOM,

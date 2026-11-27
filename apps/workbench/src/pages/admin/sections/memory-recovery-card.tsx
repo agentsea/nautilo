@@ -6,7 +6,7 @@ import { useCan } from "../../../hooks/use-can";
 
 const buttonClass = "rounded-md border border-border bg-background-element px-2.5 py-1 text-xs font-medium text-foreground hover:bg-background-panel disabled:opacity-50";
 type RecoveryState = "catching_up" | "waiting" | "healthy" | "paused" | "needs_attention";
-type RecoverySummary = { state: RecoveryState; detail: string };
+type RecoverySummary = { state: RecoveryState; detail: string; recovery?: string };
 
 function stateLabel(state: RecoveryState): string {
   switch (state) {
@@ -46,8 +46,26 @@ export function summarizeStenographer(status: StenographerAdminStatus): Recovery
 }
 
 export function summarizeReflection(status: ReflectionAdminStatus): RecoverySummary {
-  if ((status.unresolvedProviderOutcomes ?? 0) > 0) {
-    return { state: "needs_attention", detail: "A Reflection provider outcome remains unresolved." };
+  const succeededWithoutResult = status.providerSucceededResultMissing ?? 0;
+  const unresolved = status.unresolvedProviderOutcomes ?? 0;
+  const ambiguous = Math.max(0, unresolved - succeededWithoutResult);
+  const recovery = status.resumedFromSavedProposal === undefined
+    ? undefined
+    : `${status.resumedFromSavedProposal.toLocaleString()} resumed from a saved proposal. Completed in the past 24 hours: ${status.last24h.completedWork.toLocaleString()}. Held work is excluded.`;
+  if (succeededWithoutResult > 0 || ambiguous > 0) {
+    const reasons = [
+      succeededWithoutResult > 0
+        ? `${succeededWithoutResult.toLocaleString()} ${succeededWithoutResult === 1 ? "job has" : "jobs have"} a successful provider call and a missing result`
+        : null,
+      ambiguous > 0
+        ? `${ambiguous.toLocaleString()} ${ambiguous === 1 ? "job has" : "jobs have"} an unknown provider outcome`
+        : null,
+    ].filter((value): value is string => value !== null).join(". ");
+    return {
+      state: "needs_attention",
+      detail: `${reasons}. This work is held without a billable replay.`,
+      ...(recovery === undefined ? {} : { recovery }),
+    };
   }
   if (status.scheduler.state === "disabled" || status.scheduler.state === "pressure_paused") {
     const reason = status.scheduler.pauseReason?.replaceAll("_", " ");
@@ -59,11 +77,11 @@ export function summarizeReflection(status: ReflectionAdminStatus): RecoverySumm
   }
   const active = status.current.backlog + status.current.due + status.current.claimed + status.current.checkpointed
     + status.current.recoveryEligible + status.projections.pending;
-  if (active > 0) return { state: "catching_up", detail: "Reflection or projection work is waiting, recovering, or processing automatically." };
+  if (active > 0) return { state: "catching_up", detail: "Reflection or projection work is waiting, recovering, or processing automatically.", ...(recovery === undefined ? {} : { recovery }) };
   if (status.current.totalRecords === 0 || status.scheduler.state === "cooldown") {
-    return { state: "waiting", detail: "Healthy and waiting for eligible Stenographer work or the next scheduler poll." };
+    return { state: "waiting", detail: "Healthy and waiting for eligible Stenographer work or the next scheduler poll.", ...(recovery === undefined ? {} : { recovery }) };
   }
-  return { state: "healthy", detail: "Reflection records and search projections are caught up." };
+  return { state: "healthy", detail: "Reflection records and search projections are caught up.", ...(recovery === undefined ? {} : { recovery }) };
 }
 
 export function summarizeMemory(status: MemoryAdminStatus): RecoverySummary {
@@ -93,6 +111,7 @@ function ProcessorRow({ name, href, summary }: { name: string; href: string; sum
         </span>
       </div>
       <p className="mt-1 text-xs text-foreground-muted">{summary.detail}</p>
+      {summary.recovery ? <p className="mt-1 text-xs text-foreground-muted"><span className="font-medium text-foreground">Recovery evidence:</span> {summary.recovery}</p> : null}
       <Link to={href} className="mt-2 inline-flex text-xs font-medium text-primary hover:underline">View {name} details</Link>
     </li>
   );
@@ -123,11 +142,11 @@ export function MemoryRecoveryCard() {
   return (
     <div className="mt-4 rounded-lg border border-border bg-background-panel/50 p-4" data-testid="memory-recovery-card">
       <div className="flex items-start justify-between gap-3">
-        <div><h3 className="text-sm font-semibold">Automatic recovery</h3><p className="mt-0.5 text-xs text-foreground-muted">The three processors recover eligible work automatically across the server.</p></div>
+        <div><h3 className="text-sm font-semibold">Automatic recovery</h3><p className="mt-0.5 text-xs text-foreground-muted">The three processors recover eligible work automatically across all Rooms.</p></div>
         <button className={buttonClass} type="button" disabled={loading} onClick={() => void refresh()}>{loading ? "Refreshing…" : "Refresh"}</button>
       </div>
       <p className="mt-3 text-xs text-foreground-muted">
-        After a confirmed provider refusal, eligible work retries with the model selected in <Link to="/admin#models" className="text-primary hover:underline">Server Models</Link>. An uncertain outcome requires attention.
+        After a confirmed provider refusal, eligible work retries with the model selected in <Link to="/admin#models" className="text-primary hover:underline">Server Models</Link>. A successful call without a saved result, or an uncertain provider outcome, is held without another billable call.
       </p>
       {loading && Object.values(summaries).every(value => value === null) ? <p className="mt-3 text-sm text-foreground-muted">Loading recovery status…</p> : (
         <ul className="mt-3 grid gap-2 lg:grid-cols-3" data-testid="memory-recovery-summary">
