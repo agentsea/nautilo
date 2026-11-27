@@ -231,6 +231,8 @@ describe("Reflection durable Record schema", () => {
       "claim_generation",
       "accepted_model_binding",
       "accepted_model_binding_generation",
+      "organizer_proposal_checkpoint",
+      "organizer_proposal_resumed_at",
       "attempt_count",
       "quarantine_round",
       "recovery_policy_version",
