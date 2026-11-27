@@ -2917,6 +2917,13 @@ export class PostgresSemanticWorkStore
                 gt(reflectionRecords.structuralHeight, 0),
                 eq(reflectionRecordSemanticWork.state, "complete"),
                 ne(reflectionRecordSemanticWork.changeReason, "scheduled_review"),
+                or(
+                  isNull(reflectionRecordSemanticWork.completionOutcome),
+                  ne(
+                    reflectionRecordSemanticWork.completionOutcome,
+                    "provider_outcome_unknown",
+                  ),
+                ),
               ),
             ),
             input.continuation === undefined
@@ -2930,8 +2937,45 @@ export class PostgresSemanticWorkStore
       let admitted = 0;
       for (const row of selected) {
         const recordRef = rowString(row, "record_id");
-        const processingGeneration = rowInteger(row, "processing_generation");
-        const structuralHeight = rowInteger(row, "structural_height");
+        // The page scan is intentionally unlocked so unrelated Records do not
+        // serialize. Re-enter the canonical admission lock and re-read both
+        // the Record coordinate and mutable work row before promoting it. A
+        // provider hold or operator recovery may have arrived after the scan.
+        await lockSemanticWorkAdmission(tx, recordRef);
+        const currentRecords = await executeTypedRecordProductQuery(tx,
+          recordProductTypedDb.select({
+            processing_generation: reflectionRecords.processingGeneration,
+            structural_height: reflectionRecords.structuralHeight,
+            lifecycle: reflectionRecords.lifecycle,
+            disposition: reflectionRecords.disposition,
+          }).from(reflectionRecords)
+            .where(eq(reflectionRecords.recordId, recordRef)));
+        const currentWorkRows = await executeTypedRecordProductQuery(tx,
+          recordProductTypedDb.select({
+            state: reflectionRecordSemanticWork.state,
+            change_reason: reflectionRecordSemanticWork.changeReason,
+            completion_outcome: reflectionRecordSemanticWork.completionOutcome,
+          }).from(reflectionRecordSemanticWork)
+            .where(eq(reflectionRecordSemanticWork.recordId, recordRef))
+            .for("update"));
+        const currentRecord = currentRecords[0];
+        const currentWork = currentWorkRows[0];
+        if (
+          currentRecord === undefined
+          || currentRecord.disposition !== "available"
+          || (
+            currentWork !== undefined
+            && (
+              currentRecord.lifecycle !== "current"
+              || currentRecord.structural_height <= 0
+              || currentWork.state !== "complete"
+              || currentWork.change_reason === "scheduled_review"
+              || currentWork.completion_outcome === "provider_outcome_unknown"
+            )
+          )
+        ) continue;
+        const processingGeneration = currentRecord.processing_generation;
+        const structuralHeight = currentRecord.structural_height;
         const result = await admitSemanticWorkWithinTransaction(tx, {
           recordRef,
           changeReason: structuralHeight === 0 ? "created" : "scheduled_review",

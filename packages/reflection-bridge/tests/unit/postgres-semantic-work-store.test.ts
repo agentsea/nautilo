@@ -2378,6 +2378,16 @@ describe("PostgreSQL semantic work repair and publication", () => {
         ] as unknown as Row[];
       }
       if (statement.includes("pg_advisory_xact_lock")) return [];
+      if (normalized.includes("from reflection_records where")) {
+        return [{
+          processing_generation: 2,
+          structural_height: 0,
+          lifecycle: "current",
+          disposition: "available",
+        }] as unknown as Row[];
+      }
+      if (normalized.includes("select state, change_reason, completion_outcome")
+        && normalized.includes("for update")) return [];
       if (normalized.includes("select assigned_generation")) return [];
       if (normalized.includes("select generation") && normalized.includes("for update")) return [];
       if (normalized.includes("insert into reflection_record_semantic_work_admissions")) return [];
@@ -2399,7 +2409,66 @@ describe("PostgreSQL semantic work repair and publication", () => {
     expect(bootstrapSql?.statement).not.toContain("payload");
     expect(normalizedSql(bootstrapSql?.statement ?? "")).toContain("state =");
     expect(normalizedSql(bootstrapSql?.statement ?? "")).toContain("change_reason <>");
+    expect(normalizedSql(bootstrapSql?.statement ?? ""))
+      .toContain("completion_outcome <>");
     expect(bootstrapSql?.parameters).toContain(2);
+  });
+
+  test("rechecks bootstrap candidates under lock and preserves newer provider holds", async () => {
+    const value = await verifiedConnection(async <Row extends RecordProductPostgresRow>(
+      statement: string,
+      parameters?: readonly RecordProductPostgresScalar[],
+    ) => {
+      const normalized = normalizedSql(statement);
+      if (normalized.includes("left join reflection_record_semantic_work")) {
+        return ["record:unknown", "record:manual"].map(record_id => ({
+          record_id,
+          processing_generation: 5,
+          structural_height: 1,
+        })) as unknown as Row[];
+      }
+      if (statement.includes("pg_advisory_xact_lock")) return [];
+      if (normalized.includes("from reflection_records where")) {
+        return [{
+          processing_generation: 5,
+          structural_height: 1,
+          lifecycle: "current",
+          disposition: "available",
+        }] as unknown as Row[];
+      }
+      if (normalized.includes("select state, change_reason, completion_outcome")
+        && normalized.includes("for update")) {
+        return [{
+          state: parameters?.includes("record:unknown") ? "complete" : "due",
+          change_reason: "dependency_lost",
+          completion_outcome: parameters?.includes("record:unknown")
+            ? "provider_outcome_unknown"
+            : null,
+        }] as unknown as Row[];
+      }
+      throw new Error(`unexpected SQL: ${statement}`);
+    });
+    const store = new PostgresSemanticWorkStore({
+      handle: value.handle,
+      commitments: createHmacRecordSemanticCommitmentPort(
+        new Uint8Array(32).fill(27),
+      ),
+    });
+
+    expect(await store.bootstrapPage({ limit: 2 })).toEqual({ admitted: 0 });
+    expect(value.queries.filter(query =>
+      query.statement.includes("pg_advisory_xact_lock")
+    )).toHaveLength(2);
+    expect(value.queries.filter(query =>
+      normalizedSql(query.statement).includes(
+        "select state, change_reason, completion_outcome",
+      ) && normalizedSql(query.statement).includes("for update")
+    )).toHaveLength(2);
+    expect(value.queries.some(query =>
+      normalizedSql(query.statement).includes(
+        "insert into reflection_record_semantic_work_admissions",
+      )
+    )).toBeFalse();
   });
 
   test("admits completed missing Room projections and restages outstanding organization work", async () => {
